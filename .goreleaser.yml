@@ -1,0 +1,73 @@
+version: 2
+
+builds:
+  - id: "auth"
+    env:
+      - CGO_ENABLED=0
+    main: ./cmd
+    binary: auth
+
+    goos:
+      - linux
+      - windows
+      - darwin
+      - freebsd
+
+    goarch:
+      - "386"
+      - amd64
+      - arm
+      - ppc64
+
+    goarm:
+      - "7"
+
+archives:
+  - format: zip
+
+nfpms:
+  - id: packages
+    license: Apache-2.0 license
+    maintainer: Lerian Studio Technologies <https://github.com/LerianStudio/>
+    package_name: auth
+    homepage: https://github.com/LerianStudio/auth
+    bindir: /usr/local/bin
+    formats:
+      - apk
+      - deb
+      - rpm
+      - archlinux
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "merge conflict"
+      - Merge pull request
+      - Merge remote-tracking branch
+      - Merge branch
+      - go mod tidy
+  groups:
+    - title: "Breaking Changes"
+      regexp: "^.*breaking[(\\w)]*:+.*$"
+      order: 0
+    - title: "New Features"
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 10
+    - title: "Improvements"
+      regexp: "^.*chore[(\\w)]*:+.*$"
+      order: 20
+    - title: "Bug Fixes"
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 30
+    - title: "Security Updates"
+      regexp: '^.*?sec(\([[:word:]]+\))??!?:.+$'
+      order: 40
+    - title: "Documentation Updates"
+      regexp: ^.*?docs(\([[:word:]]+\))??!?:.+$
+      order: 50
+    - title: "Tests"
+      regexp: ^.*?(test(s)?(\([[:word:]]+\))?)!?:.+$
+      order: 60
+    - title: Other Work
+      order: 999
