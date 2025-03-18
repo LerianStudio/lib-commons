@@ -30,7 +30,7 @@ func (mc *MongoConnection) Connect(ctx context.Context) error {
 	noSQLDB, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
 		mc.Logger.Fatal("failed to open connect to mongodb", zap.Error(err))
-		return nil
+		return err
 	}
 
 	if err := noSQLDB.Ping(ctx, nil); err != nil {
