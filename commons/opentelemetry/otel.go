@@ -3,6 +3,7 @@ package opentelemetry
 import (
 	"context"
 	"github.com/LerianStudio/lib-commons/commons"
+	"github.com/LerianStudio/lib-commons/commons/constants"
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -21,8 +22,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
 	"os"
-
-	"github.com/LerianStudio/midaz/pkg/constant"
 )
 
 type Telemetry struct {
@@ -243,7 +242,7 @@ func InjectContext(ctx context.Context) context.Context {
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(md))
 
 	if traceparentValue, exists := md["Traceparent"]; exists {
-		md[constant.MDTraceparent] = traceparentValue
+		md[constant.MetadataTraceparent] = traceparentValue
 		delete(md, "Traceparent")
 	}
 

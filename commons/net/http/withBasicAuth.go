@@ -3,11 +3,9 @@ package http
 import (
 	"crypto/subtle"
 	"encoding/base64"
+	"github.com/LerianStudio/lib-commons/commons/constants"
 	"net/http"
 	"strings"
-
-	"github.com/LerianStudio/midaz/pkg"
-	cn "github.com/LerianStudio/midaz/pkg/constant"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -30,13 +28,13 @@ func FixedBasicAuthFunc(username, password string) BasicAuthFunc {
 // WithBasicAuth creates a basic authentication middleware.
 func WithBasicAuth(f BasicAuthFunc, realm string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		auth := c.Get("Authorization")
+		auth := c.Get(constant.Authorization)
 		if auth == "" {
 			return unauthorizedResponse(c, realm)
 		}
 
 		parts := strings.SplitN(auth, " ", 2)
-		if len(parts) != 2 || parts[0] != "Basic" {
+		if len(parts) != 2 || parts[0] != constant.Basic {
 			return unauthorizedResponse(c, realm)
 		}
 
@@ -59,9 +57,11 @@ func WithBasicAuth(f BasicAuthFunc, realm string) fiber.Handler {
 }
 
 func unauthorizedResponse(c *fiber.Ctx, realm string) error {
-	c.Set("WWW-Authenticate", `Basic realm="`+realm+`"`)
+	c.Set(constant.WWWAuthenticate, `Basic realm="`+realm+`"`)
 
-	err := pkg.ValidateBusinessError(cn.ErrInvalidToken, "Basic Auth")
-
-	return c.Status(http.StatusBadRequest).JSON(err)
+	return c.Status(http.StatusUnauthorized).JSON(ResponseError{
+		Code:    "401",
+		Title:   "Invalid Token",
+		Message: "The provided token is expired, invalid or malformed. Please provide a valid token and try again.",
+	})
 }

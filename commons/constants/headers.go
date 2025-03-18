@@ -11,4 +11,8 @@ const (
 	HeaderID            = "X-Request-Id"
 	IdempotencyKey      = "X-Idempotency"
 	IdempotencyTTL      = "X-TTL"
+	Authorization       = "Authorization"
+	Basic               = "Basic"
+	BasicAuth           = "Basic Auth"
+	WWWAuthenticate     = "WWW-Authenticate"
 )

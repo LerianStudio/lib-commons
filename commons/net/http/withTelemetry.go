@@ -4,10 +4,6 @@ import (
 	"context"
 	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
-	"github.com/LerianStudio/midaz/pkg"
-	cn "github.com/LerianStudio/midaz/pkg/constant"
-	"net/http"
-
 	"github.com/gofiber/fiber/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -15,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"net/http"
 	"strings"
 )
 
@@ -86,9 +83,13 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 		if err != nil {
 			opentelemetry.HandleSpanError(&span, "Failed to collect metrics", err)
 
-			e := pkg.ValidateBusinessError(cn.ErrInternalServer, "Failed to collect metrics")
+			jsonStringError, err := commons.StructToJSONString(ResponseError{
+				Code:    "500",
+				Title:   "Internal Server Error",
+				Message: "The server encountered an unexpected error. Please try again later or contact support.",
+				Err:     err,
+			})
 
-			jsonStringError, err := pkg.StructToJSONString(e)
 			if err != nil {
 				opentelemetry.HandleSpanError(&span, "Failed to marshal error response", err)
 
@@ -131,14 +132,14 @@ func (tm *TelemetryMiddleware) collectMetrics(ctx context.Context) error {
 		return err
 	}
 
-	go pkg.GetCPUUsage(ctx, cpuGauge)
+	go commons.GetCPUUsage(ctx, cpuGauge)
 
 	memGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.mem.usage", metric.WithUnit("percentage"))
 	if err != nil {
 		return err
 	}
 
-	go pkg.GetMemUsage(ctx, memGauge)
+	go commons.GetMemUsage(ctx, memGauge)
 
 	return nil
 }
