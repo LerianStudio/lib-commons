@@ -61,7 +61,7 @@ func unauthorizedResponse(c *fiber.Ctx, realm string) error {
 
 	return c.Status(http.StatusUnauthorized).JSON(ResponseError{
 		Code:    "401",
-		Title:   "Invalid Token",
-		Message: "The provided token is expired, invalid or malformed. Please provide a valid token and try again.",
+		Title:   "Invalid Credentials",
+		Message: "The provided credentials are invalid. Please provide valid credentials and try again.",
 	})
 }
