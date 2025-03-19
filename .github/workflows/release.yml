@@ -8,12 +8,12 @@ on:
       - hotfix/v*
     paths-ignore:
       - '.gitignore'
-      - '**/*.env'    # Ignora todos os arquivos .env
-      - '*.env'       # Ignora .env na raiz
-      - '**/*.md'     # Ignora arquivos .md
-      - '*.md'        # Ignora .md na raiz
-      - '**/*.txt'    # Ignora arquivos .txt
-      - '*.txt'       # Ignora .txt na raiz
+      - '**/*.env'
+      - '*.env'
+      - '**/*.md'
+      - '*.md'
+      - '**/*.txt'
+      - '*.txt'
     tags-ignore:
       - '**'
 
@@ -38,7 +38,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Certifique-se de obter todo o histórico de git, incluindo tags
+          fetch-depth: 0
 
       - uses: actions/checkout@v4
         with:
