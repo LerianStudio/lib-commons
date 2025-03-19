@@ -4,8 +4,8 @@ import (
 	constant "github.com/LerianStudio/lib-commons/commons/constants"
 )
 
-// Error represents a business error with code, title, and message.
-type Error struct {
+// Response represents a business error with code, title, and message.
+type Response struct {
 	EntityType string `json:"entityType,omitempty"`
 	Title      string `json:"title,omitempty"`
 	Message    string `json:"message,omitempty"`
@@ -13,7 +13,7 @@ type Error struct {
 	Err        error  `json:"err,omitempty"`
 }
 
-func (e Error) Error() string {
+func (e Response) Error() string {
 	return e.Message
 }
 
@@ -28,25 +28,25 @@ func (e Error) Error() string {
 //   - error: The appropriate business error with code, title, and message.
 func ValidateBusinessError(err error, entityType string, args ...any) error {
 	errorMap := map[error]error{
-		constant.ErrAccountIneligibility: Error{
+		constant.ErrAccountIneligibility: Response{
 			EntityType: entityType,
 			Code:       constant.ErrAccountIneligibility.Error(),
-			Title:      "Account Ineligibility Error",
+			Title:      "Account Ineligibility Response",
 			Message:    "One or more accounts listed in the transaction are not eligible to participate. Please review the account statuses and try again.",
 		},
-		constant.ErrInsufficientFunds: Error{
+		constant.ErrInsufficientFunds: Response{
 			EntityType: entityType,
 			Code:       constant.ErrInsufficientFunds.Error(),
-			Title:      "Insufficient Funds Error",
+			Title:      "Insufficient Funds Response",
 			Message:    "The transaction could not be completed due to insufficient funds in the account. Please add sufficient funds to your account and try again.",
 		},
-		constant.ErrAssetCodeNotFound: Error{
+		constant.ErrAssetCodeNotFound: Response{
 			EntityType: entityType,
 			Code:       constant.ErrAssetCodeNotFound.Error(),
 			Title:      "Asset Code Not Found",
 			Message:    "The provided asset code does not exist in our records. Please verify the asset code and try again.",
 		},
-		constant.ErrAccountStatusTransactionRestriction: Error{
+		constant.ErrAccountStatusTransactionRestriction: Response{
 			EntityType: entityType,
 			Code:       constant.ErrAccountStatusTransactionRestriction.Error(),
 			Title:      "Account Status Transaction Restriction",

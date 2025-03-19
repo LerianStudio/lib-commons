@@ -1,6 +1,7 @@
 package http
 
 import (
+	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/gofiber/fiber/v2"
 	"net/http"
 	"strconv"
@@ -8,17 +9,9 @@ import (
 
 const NotImplementedMessage = "Not implemented yet"
 
-type ResponseError struct {
-	EntityType string `json:"entityType,omitempty"`
-	Title      string `json:"title,omitempty"`
-	Message    string `json:"message,omitempty"`
-	Code       string `json:"code,omitempty"`
-	Err        error  `json:"err,omitempty"`
-}
-
 // Unauthorized sends an HTTP 401 Unauthorized response with a custom code, title and message.
 func Unauthorized(c *fiber.Ctx, code, title, message string) error {
-	return c.Status(http.StatusUnauthorized).JSON(ResponseError{
+	return c.Status(http.StatusUnauthorized).JSON(commons.Response{
 		Code:    code,
 		Title:   title,
 		Message: message,
@@ -27,7 +20,7 @@ func Unauthorized(c *fiber.Ctx, code, title, message string) error {
 
 // Forbidden sends an HTTP 403 Forbidden response with a custom code, title and message.
 func Forbidden(c *fiber.Ctx, code, title, message string) error {
-	return c.Status(http.StatusForbidden).JSON(ResponseError{
+	return c.Status(http.StatusForbidden).JSON(commons.Response{
 		Code:    code,
 		Title:   title,
 		Message: message,
@@ -71,7 +64,7 @@ func RangeNotSatisfiable(c *fiber.Ctx) error {
 
 // NotFound sends an HTTP 404 Not Found response with a custom code, title and message.
 func NotFound(c *fiber.Ctx, code, title, message string) error {
-	return c.Status(http.StatusNotFound).JSON(ResponseError{
+	return c.Status(http.StatusNotFound).JSON(commons.Response{
 		Code:    code,
 		Title:   title,
 		Message: message,
@@ -80,7 +73,7 @@ func NotFound(c *fiber.Ctx, code, title, message string) error {
 
 // Conflict sends an HTTP 409 Conflict response with a custom code, title and message.
 func Conflict(c *fiber.Ctx, code, title, message string) error {
-	return c.Status(http.StatusConflict).JSON(ResponseError{
+	return c.Status(http.StatusConflict).JSON(commons.Response{
 		Code:    code,
 		Title:   title,
 		Message: message,
@@ -89,7 +82,7 @@ func Conflict(c *fiber.Ctx, code, title, message string) error {
 
 // NotImplemented sends an HTTP 501 Not Implemented response with a custom message.
 func NotImplemented(c *fiber.Ctx, message string) error {
-	return c.Status(http.StatusNotImplemented).JSON(ResponseError{
+	return c.Status(http.StatusNotImplemented).JSON(commons.Response{
 		Code:    strconv.Itoa(http.StatusNotImplemented),
 		Title:   NotImplementedMessage,
 		Message: message,
@@ -98,16 +91,16 @@ func NotImplemented(c *fiber.Ctx, message string) error {
 
 // UnprocessableEntity sends an HTTP 422 Unprocessable Entity response with a custom code, title and message.
 func UnprocessableEntity(c *fiber.Ctx, code, title, message string) error {
-	return c.Status(http.StatusUnprocessableEntity).JSON(ResponseError{
+	return c.Status(http.StatusUnprocessableEntity).JSON(commons.Response{
 		Code:    code,
 		Title:   title,
 		Message: message,
 	})
 }
 
-// InternalServerError sends an HTTP 500 Internal Server Error response
+// InternalServerError sends an HTTP 500 Internal Server Response response
 func InternalServerError(c *fiber.Ctx, code, title, message string) error {
-	return c.Status(http.StatusInternalServerError).JSON(ResponseError{
+	return c.Status(http.StatusInternalServerError).JSON(commons.Response{
 		Code:    code,
 		Title:   title,
 		Message: message,
@@ -115,7 +108,7 @@ func InternalServerError(c *fiber.Ctx, code, title, message string) error {
 }
 
 // JSONResponseError sends a JSON formatted error response with a custom error struct.
-func JSONResponseError(c *fiber.Ctx, err ResponseError) error {
+func JSONResponseError(c *fiber.Ctx, err commons.Response) error {
 	code, _ := strconv.Atoi(err.Code)
 
 	return c.Status(code).JSON(err)
