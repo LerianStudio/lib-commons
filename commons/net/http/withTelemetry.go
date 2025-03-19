@@ -83,7 +83,7 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 		if err != nil {
 			opentelemetry.HandleSpanError(&span, "Failed to collect metrics", err)
 
-			jsonStringError, err := commons.StructToJSONString(ResponseError{
+			jsonStringError, err := commons.StructToJSONString(commons.Response{
 				Code:    "500",
 				Title:   "Internal Server Error",
 				Message: "The server encountered an unexpected error. Please try again later or contact support.",

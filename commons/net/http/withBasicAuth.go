@@ -3,6 +3,7 @@ package http
 import (
 	"crypto/subtle"
 	"encoding/base64"
+	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/LerianStudio/lib-commons/commons/constants"
 	"net/http"
 	"strings"
@@ -59,7 +60,7 @@ func WithBasicAuth(f BasicAuthFunc, realm string) fiber.Handler {
 func unauthorizedResponse(c *fiber.Ctx, realm string) error {
 	c.Set(constant.WWWAuthenticate, `Basic realm="`+realm+`"`)
 
-	return c.Status(http.StatusUnauthorized).JSON(ResponseError{
+	return c.Status(http.StatusUnauthorized).JSON(commons.Response{
 		Code:    "401",
 		Title:   "Invalid Credentials",
 		Message: "The provided credentials are invalid. Please provide valid credentials and try again.",
