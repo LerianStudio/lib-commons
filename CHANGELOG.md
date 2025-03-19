@@ -1,3 +1,16 @@
+## [1.0.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.0.0-beta.1...v1.0.0-beta.2) (2025-03-19)
+
+
+### Features
+
+* add transaction validations to the lib-commons; :sparkles: ([098b730](https://github.com/LerianStudio/lib-commons/commit/098b730fa1686b2f683faec69fabd6aa1607cf0b))
+
+
+### Bug Fixes
+
+* update some places and adjust golint; :bug: ([db18dbb](https://github.com/LerianStudio/lib-commons/commit/db18dbb7270675e87c150f3216ac9be1b2610c1c))
+* update to use one response json objetc; :bug: ([2e42859](https://github.com/LerianStudio/lib-commons/commit/2e428598b1f41f9c2de369a34510c5ed2ba21569))
+
 ## 1.0.0-beta.1 (2025-03-18)
 
 
