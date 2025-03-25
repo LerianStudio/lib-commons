@@ -1,3 +1,10 @@
+## [1.1.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.0.0...v1.1.0-beta.1) (2025-03-25)
+
+
+### Bug Fixes
+
+* golang lint fixed version to v1.64.8; go mod and sum update packages; :bug: ([6b825c1](https://github.com/LerianStudio/lib-commons/commit/6b825c1a0162326df2abb93b128419f2ea9a4175))
+
 ## 1.0.0 (2025-03-19)
 
 
