@@ -1,3 +1,10 @@
+## [1.1.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.1.0-beta.1...v1.1.0-beta.2) (2025-03-27)
+
+
+### Features
+
+* organize golangci-lint module ([8d71f3b](https://github.com/LerianStudio/lib-commons/commit/8d71f3bb2079457617a5ff8a8290492fd885b30d))
+
 ## [1.1.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.0.0...v1.1.0-beta.1) (2025-03-25)
 
 
