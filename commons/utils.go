@@ -156,6 +156,15 @@ func SafeInt64ToInt(val int64) int {
 	return int(val)
 }
 
+// SafeUintToInt64 safe mode to converter int to int64
+func SafeUintToInt64(val uint) int64 {
+	if val > math.MaxInt64 {
+		return math.MaxInt64
+	}
+
+	return int64(val)
+}
+
 // IsUUID Validate if the string pass through is an uuid
 func IsUUID(s string) bool {
 	_, err := uuid.Parse(s)
