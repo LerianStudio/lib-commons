@@ -1,3 +1,16 @@
+## [1.1.0](https://github.com/LerianStudio/lib-commons/compare/v1.0.0...v1.1.0) (2025-04-03)
+
+
+### Features
+
+* add safe uint convertion ([0d9e405](https://github.com/LerianStudio/lib-commons/commit/0d9e4052ebbd70b18508d68906296c35b881d85e))
+* organize golangci-lint module ([8d71f3b](https://github.com/LerianStudio/lib-commons/commit/8d71f3bb2079457617a5ff8a8290492fd885b30d))
+
+
+### Bug Fixes
+
+* golang lint fixed version to v1.64.8; go mod and sum update packages; :bug: ([6b825c1](https://github.com/LerianStudio/lib-commons/commit/6b825c1a0162326df2abb93b128419f2ea9a4175))
+
 ## [1.1.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.1.0-beta.2...v1.1.0-beta.3) (2025-04-03)
 
 
