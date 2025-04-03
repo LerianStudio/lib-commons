@@ -1,3 +1,11 @@
+## [1.2.0](https://github.com/LerianStudio/lib-commons/compare/v1.1.0...v1.2.0) (2025-04-03)
+
+
+### Bug Fixes
+
+* update safe uint convertion to convert int instead of int64 ([a85628b](https://github.com/LerianStudio/lib-commons/commit/a85628bb031d64d542b378180c2254c198e9ae59))
+* update safe uint convertion to convert max int to uint first to validate ([c7dee02](https://github.com/LerianStudio/lib-commons/commit/c7dee026532f42712eabdb3fde0c8d2b8ec7cdd8))
+
 ## [1.2.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.1.0...v1.2.0-beta.1) (2025-04-03)
 
 
