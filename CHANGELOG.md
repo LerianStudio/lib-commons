@@ -1,3 +1,10 @@
+## [1.1.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.1.0-beta.2...v1.1.0-beta.3) (2025-04-03)
+
+
+### Features
+
+* add safe uint convertion ([0d9e405](https://github.com/LerianStudio/lib-commons/commit/0d9e4052ebbd70b18508d68906296c35b881d85e))
+
 ## [1.1.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.1.0-beta.1...v1.1.0-beta.2) (2025-03-27)
 
 
