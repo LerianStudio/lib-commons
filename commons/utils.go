@@ -4,10 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/google/uuid"
-	"github.com/shirou/gopsutil/cpu"
-	"github.com/shirou/gopsutil/mem"
-	"go.opentelemetry.io/otel/metric"
 	"math"
 	"os/exec"
 	"reflect"
@@ -15,6 +11,11 @@ import (
 	"strconv"
 	"time"
 	"unicode"
+
+	"github.com/google/uuid"
+	"github.com/shirou/gopsutil/cpu"
+	"github.com/shirou/gopsutil/mem"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Contains checks if an item is in a slice. This function uses type parameters to work with any slice type.
@@ -94,7 +95,7 @@ func ValidateAccountType(t string) error {
 
 // ValidateType validate type values of currencies
 func ValidateType(t string) error {
-	types := []string{"crypto", "currency", "commodity", "others"}
+	types := []string{"crypto", "currency", "fiat", "commodity", "others"}
 
 	if !slices.Contains(types, t) {
 		return errors.New("0040")
@@ -159,9 +160,9 @@ func SafeInt64ToInt(val int64) int {
 // SafeUintToInt converts a uint to int64 safely by capping values at math.MaxInt64.
 func SafeUintToInt(val uint) int {
 	if val > uint(math.MaxInt) {
-	    return math.MaxInt
+		return math.MaxInt
 	}
- 	
+
 	return int(val)
 }
 
