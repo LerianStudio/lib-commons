@@ -108,7 +108,7 @@ func (r Rate) IsEmpty() bool {
 // swagger:model FromTo
 // @Description FromTo is the struct designed to represent the from/to fields of an operation.
 type FromTo struct {
-	Account         string         `json:"accountAlias,omitempty" example:"@person1"`
+	Account         string         `json:"account,omitempty" example:"@person1"`
 	Amount          *Amount        `json:"amount,omitempty"`
 	Share           *Share         `json:"share,omitempty"`
 	Remaining       string         `json:"remaining,omitempty" example:"remaining"`
