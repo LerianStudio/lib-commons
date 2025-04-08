@@ -1,3 +1,5 @@
+## [1.3.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.2.0...v1.3.0-beta.1) (2025-04-08)
+
 ## [1.2.0](https://github.com/LerianStudio/lib-commons/compare/v1.1.0...v1.2.0) (2025-04-03)
 
 
