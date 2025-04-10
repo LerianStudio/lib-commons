@@ -1,3 +1,10 @@
+## [1.5.0](https://github.com/LerianStudio/lib-commons/compare/v1.4.0...v1.5.0) (2025-04-10)
+
+
+### Features
+
+* adding accountAlias field to keep backward compatibility ([81bf528](https://github.com/LerianStudio/lib-commons/commit/81bf528dfa8ceb5055714589745c1d3987cfa6da))
+
 ## [1.5.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.4.0...v1.5.0-beta.1) (2025-04-09)
 
 
