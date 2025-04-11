@@ -2,13 +2,14 @@ package commons
 
 import (
 	"fmt"
-	"github.com/joho/godotenv"
-	"github.com/pkg/errors"
 	"os"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/joho/godotenv"
+	"github.com/pkg/errors"
 )
 
 // GetenvOrDefault encapsulate built-in os.Getenv behavior but if key is not present it returns the defaultValue.
@@ -68,7 +69,7 @@ func InitLocalEnvConfig() *LocalEnvConfig {
 	version := GetenvOrDefault("VERSION", "NO-VERSION")
 	envName := GetenvOrDefault("ENV_NAME", "local")
 
-	fmt.Printf("MIDAZ VERSION: \u001B[31m%s\u001B[0m\n", version)
+	fmt.Printf("VERSION: \u001B[31m%s\u001B[0m\n", version)
 	fmt.Printf("ENVIRONMENT NAME: \u001B[31m(%s)\u001B[0m\n", envName)
 
 	if envName == "local" {

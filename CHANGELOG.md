@@ -1,3 +1,10 @@
+## [1.6.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.5.0...v1.6.0-beta.1) (2025-04-11)
+
+
+### Bug Fixes
+
+* **transaction:** correct percentage calculation in CalculateTotal ([02b939c](https://github.com/LerianStudio/lib-commons/commit/02b939c3abf1834de2078c2d0ae40b4fd9095bca))
+
 ## [1.5.0](https://github.com/LerianStudio/lib-commons/compare/v1.4.0...v1.5.0) (2025-04-10)
 
 
