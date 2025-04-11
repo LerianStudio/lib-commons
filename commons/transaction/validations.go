@@ -2,12 +2,13 @@ package transaction
 
 import (
 	"context"
-	"github.com/LerianStudio/lib-commons/commons"
-	"github.com/LerianStudio/lib-commons/commons/constants"
-	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
 	"math"
 	"math/big"
 	"strings"
+
+	"github.com/LerianStudio/lib-commons/commons"
+	"github.com/LerianStudio/lib-commons/commons/constants"
+	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
 )
 
 // ValidateBalancesRules function with some validates in accounts and DSL operations
@@ -343,7 +344,7 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan int64, ft chan map[strin
 				percentageOfPercentage = 100
 			}
 
-			shareValue := float64(send.Value) * (float64(percentage) / float64(percentageOfPercentage))
+			shareValue := float64(send.Value) * ((float64(percentage) / 100) * (float64(percentageOfPercentage) / 100))
 			amount := FindScale(send.Asset, shareValue, send.Scale)
 
 			Normalize(&total, &amount, &remaining)
