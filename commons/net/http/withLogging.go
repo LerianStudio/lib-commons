@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/LerianStudio/lib-commons/commons/constants"
 	"github.com/LerianStudio/lib-commons/commons/log"
@@ -10,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -60,7 +62,20 @@ func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
 	body := ""
 
 	if c.Request().Header.ContentLength() > 0 {
-		body = string(c.Body())
+		bodyBytes := c.Body()
+		obfuscateFieldsEnv := os.Getenv("SECURE_LOG_FIELDS")
+
+		var obfuscateFields []string
+
+		if obfuscateFieldsEnv != "" {
+			obfuscateFields = strings.Split(obfuscateFieldsEnv, ",")
+		}
+
+		if len(obfuscateFields) <= 0 {
+			body = string(bodyBytes)
+		} else {
+			body = getBodyObfuscatedString(c, bodyBytes, obfuscateFields)
+		}
 	}
 
 	return &RequestInfo{
@@ -234,4 +249,77 @@ func setRequestHeaderID(c *fiber.Ctx) {
 
 	ctx := commons.ContextWithHeaderID(c.UserContext(), headerID)
 	c.SetUserContext(ctx)
+}
+
+func getBodyObfuscatedString(c *fiber.Ctx, bodyBytes []byte, fieldsToObfuscate []string) string {
+	contentType := c.Get("Content-Type")
+
+	var obfuscatedBody string
+
+	if strings.Contains(contentType, "application/json") {
+		obfuscatedBody = handleJSONBody(bodyBytes, fieldsToObfuscate)
+	} else if strings.Contains(contentType, "application/x-www-form-urlencoded") {
+		obfuscatedBody = handleURLFormBody(c, fieldsToObfuscate)
+	} else if strings.Contains(contentType, "multipart/form-data") {
+		obfuscatedBody = handleMultipartFormBody(c, fieldsToObfuscate)
+	} else {
+		obfuscatedBody = string(bodyBytes)
+	}
+
+	return obfuscatedBody
+}
+
+func handleJSONBody(bodyBytes []byte, fieldsToObfuscate []string) string {
+	var bodyData map[string]any
+	if err := json.Unmarshal(bodyBytes, &bodyData); err != nil {
+		return string(bodyBytes)
+	}
+
+	for _, field := range fieldsToObfuscate {
+		if _, exists := bodyData[field]; exists {
+			bodyData[field] = "*****"
+		}
+	}
+
+	updatedBody, err := json.Marshal(bodyData)
+	if err != nil {
+		return string(bodyBytes)
+	}
+
+	return string(updatedBody)
+}
+
+func handleURLFormBody(c *fiber.Ctx, fieldsToObfuscate []string) string {
+	formData := c.AllParams()
+
+	for _, field := range fieldsToObfuscate {
+		if value := c.FormValue(field); value != "" {
+			formData[field] = "*****"
+		}
+	}
+
+	updatedBody := url.Values{}
+
+	for key, value := range formData {
+		updatedBody.Set(key, value)
+	}
+
+	return updatedBody.Encode()
+}
+
+func handleMultipartFormBody(c *fiber.Ctx, fieldsToObfuscate []string) string {
+	formData := c.AllParams()
+	updatedBody := url.Values{}
+
+	for _, field := range fieldsToObfuscate {
+		if _, exists := formData[field]; exists {
+			formData[field] = "*****"
+		}
+	}
+
+	for key, value := range formData {
+		updatedBody.Set(key, value)
+	}
+
+	return updatedBody.Encode()
 }
