@@ -27,6 +27,8 @@ A comprehensive Go library providing common utilities and components for buildin
 ### Observability
 
 - **Logging**: Pluggable logging interface with multiple implementations
+- **Logging Obfuscation**: Dynamic environment variable to obfuscate specific fields from the request payload logging
+  - `SECURE_LOG_FIELDS=password,apiKey`
 - **OpenTelemetry**: Integrated tracing, metrics, and logs through OpenTelemetry
 - **Zap**: Integration with Uber's Zap logging library
 
