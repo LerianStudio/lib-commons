@@ -76,7 +76,6 @@ func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
 		} else {
 			body = getBodyObfuscatedString(c, bodyBytes, obfuscateFields)
 		}
-
 	}
 
 	return &RequestInfo{
@@ -258,54 +257,69 @@ func getBodyObfuscatedString(c *fiber.Ctx, bodyBytes []byte, fieldsToObfuscate [
 	var obfuscatedBody string
 
 	if strings.Contains(contentType, "application/json") {
-		var bodyData map[string]any
-		if err := json.Unmarshal(bodyBytes, &bodyData); err == nil {
-			for _, field := range fieldsToObfuscate {
-				if _, exists := bodyData[field]; exists {
-					bodyData[field] = "*****" // Obfuscate the field
-				}
-			}
-
-			updatedBody, err := json.Marshal(bodyData)
-			if err == nil {
-				obfuscatedBody = string(updatedBody)
-			}
-		} else {
-			obfuscatedBody = string(bodyBytes)
-		}
+		obfuscatedBody = handleJSONBody(bodyBytes, fieldsToObfuscate)
 	} else if strings.Contains(contentType, "application/x-www-form-urlencoded") {
-		formData := c.AllParams()
-
-		for _, field := range fieldsToObfuscate {
-			if value := c.FormValue(field); value != "" {
-				formData[field] = "*****" // Obfuscate the field
-			}
-		}
-
-		updatedBody := url.Values{}
-		for key, value := range formData {
-			updatedBody.Set(key, value)
-		}
-
-		obfuscatedBody = updatedBody.Encode()
+		obfuscatedBody = handleURLFormBody(c, fieldsToObfuscate)
 	} else if strings.Contains(contentType, "multipart/form-data") {
-		formData := c.AllParams()
-		updatedBody := url.Values{}
-
-		for _, field := range fieldsToObfuscate {
-			if _, exists := formData[field]; exists {
-				formData[field] = "*****" // Obfuscate the field
-			}
-		}
-
-		for key, value := range formData {
-			updatedBody.Set(key, value)
-		}
-
-		obfuscatedBody = updatedBody.Encode()
+		obfuscatedBody = handleMultipartFormBody(c, fieldsToObfuscate)
 	} else {
 		obfuscatedBody = string(bodyBytes)
 	}
 
 	return obfuscatedBody
+}
+
+func handleJSONBody(bodyBytes []byte, fieldsToObfuscate []string) string {
+	var bodyData map[string]any
+	if err := json.Unmarshal(bodyBytes, &bodyData); err != nil {
+		return string(bodyBytes)
+	}
+
+	for _, field := range fieldsToObfuscate {
+		if _, exists := bodyData[field]; exists {
+			bodyData[field] = "*****"
+		}
+	}
+
+	updatedBody, err := json.Marshal(bodyData)
+	if err != nil {
+		return string(bodyBytes)
+	}
+
+	return string(updatedBody)
+}
+
+func handleURLFormBody(c *fiber.Ctx, fieldsToObfuscate []string) string {
+	formData := c.AllParams()
+
+	for _, field := range fieldsToObfuscate {
+		if value := c.FormValue(field); value != "" {
+			formData[field] = "*****"
+		}
+	}
+
+	updatedBody := url.Values{}
+
+	for key, value := range formData {
+		updatedBody.Set(key, value)
+	}
+
+	return updatedBody.Encode()
+}
+
+func handleMultipartFormBody(c *fiber.Ctx, fieldsToObfuscate []string) string {
+	formData := c.AllParams()
+	updatedBody := url.Values{}
+
+	for _, field := range fieldsToObfuscate {
+		if _, exists := formData[field]; exists {
+			formData[field] = "*****"
+		}
+	}
+
+	for key, value := range formData {
+		updatedBody.Set(key, value)
+	}
+
+	return updatedBody.Encode()
 }
