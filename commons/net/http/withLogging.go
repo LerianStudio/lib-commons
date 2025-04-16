@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/LerianStudio/lib-commons/commons/constants"
 	"github.com/LerianStudio/lib-commons/commons/log"
@@ -60,7 +61,70 @@ func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
 	body := ""
 
 	if c.Request().Header.ContentLength() > 0 {
-		body = string(c.Body())
+		bodyBytes := c.Body()
+
+		// Try to handle different content types
+		contentType := c.Get("Content-Type")
+
+		var obfuscatedBody string
+
+		if strings.Contains(contentType, "application/json") {
+			// Handle JSON
+			var bodyData map[string]any
+			if err := json.Unmarshal(bodyBytes, &bodyData); err == nil {
+				// Check if the body contains a "password" field
+				if _, exists := bodyData["password"]; exists {
+					// Replace the password value with a placeholder (e.g., "*****")
+					bodyData["password"] = "*****"
+
+					// Re-marshal the updated data back to JSON
+					updatedBody, err := json.Marshal(bodyData)
+					if err == nil {
+						obfuscatedBody = string(updatedBody)
+					}
+				} else {
+					// If no password, leave the body as-is
+					obfuscatedBody = string(bodyBytes)
+				}
+			} else {
+				// If there's an error unmarshalling JSON, log as-is (raw body)
+				obfuscatedBody = string(bodyBytes)
+			}
+		} else if strings.Contains(contentType, "application/x-www-form-urlencoded") {
+			// Handle URL-encoded form data
+			// Check if the 'password' field exists in form data
+			password := c.FormValue("password")
+			formData := c.AllParams() // Retrieves all form fields as a map
+
+			// Manually obfuscate the password field for logging, without modifying the request
+			if password != "" {
+				formData["password"] = "*****"
+			}
+
+			// Reconstruct the body using all form fields
+			updatedBody := url.Values{}
+			for key, value := range formData {
+				updatedBody.Set(key, value)
+			}
+
+			obfuscatedBody = updatedBody.Encode() // Re-encode form data as application/x-www-form-urlencoded
+		} else if strings.Contains(contentType, "multipart/form-data") {
+			// Handle multipart form data (file uploads)
+			// Form values can be accessed through c.FormFile or c.FormValue
+			formData := c.AllParams() // Retrieves all form fields as a map
+			updatedBody := url.Values{}
+
+			for key, value := range formData {
+				updatedBody.Set(key, value)
+			}
+
+			obfuscatedBody = updatedBody.Encode() // Re-encode form data
+		} else {
+			// For other content types (text/plain, etc.), leave body as-is
+			obfuscatedBody = string(bodyBytes)
+		}
+
+		body = obfuscatedBody
 	}
 
 	return &RequestInfo{
