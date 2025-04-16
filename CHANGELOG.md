@@ -1,3 +1,10 @@
+## [1.7.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.7.0-beta.2...v1.7.0-beta.3) (2025-04-16)
+
+
+### Bug Fixes
+
+* lint complexity over 31 in getBodyObfuscatedString ([0f9eb4a](https://github.com/LerianStudio/lib-commons/commit/0f9eb4a82a544204119500db09d38fd6ec003c7e))
+
 ## [1.7.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.7.0-beta.1...v1.7.0-beta.2) (2025-04-16)
 
 ## [1.7.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.6.0...v1.7.0-beta.1) (2025-04-16)
