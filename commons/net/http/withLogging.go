@@ -65,11 +65,12 @@ func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
 
 		// Try to handle different content types
 		contentType := c.Get("Content-Type")
+
 		var obfuscatedBody string
 
 		if strings.Contains(contentType, "application/json") {
 			// Handle JSON
-			var bodyData map[string]interface{}
+			var bodyData map[string]any
 			if err := json.Unmarshal(bodyBytes, &bodyData); err == nil {
 				// Check if the body contains a "password" field
 				if _, exists := bodyData["password"]; exists {
@@ -105,15 +106,18 @@ func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
 			for key, value := range formData {
 				updatedBody.Set(key, value)
 			}
+
 			obfuscatedBody = updatedBody.Encode() // Re-encode form data as application/x-www-form-urlencoded
 		} else if strings.Contains(contentType, "multipart/form-data") {
 			// Handle multipart form data (file uploads)
 			// Form values can be accessed through c.FormFile or c.FormValue
 			formData := c.AllParams() // Retrieves all form fields as a map
 			updatedBody := url.Values{}
+
 			for key, value := range formData {
 				updatedBody.Set(key, value)
 			}
+
 			obfuscatedBody = updatedBody.Encode() // Re-encode form data
 		} else {
 			// For other content types (text/plain, etc.), leave body as-is
