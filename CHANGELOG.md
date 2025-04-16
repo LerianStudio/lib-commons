@@ -1,3 +1,12 @@
+## [1.7.0](https://github.com/LerianStudio/lib-commons/compare/v1.6.0...v1.7.0) (2025-04-16)
+
+
+### Bug Fixes
+
+* fix lint cuddled code ([dcbf7c6](https://github.com/LerianStudio/lib-commons/commit/dcbf7c6f26f379cec9790e14b76ee2e6868fb142))
+* lint complexity over 31 in getBodyObfuscatedString ([0f9eb4a](https://github.com/LerianStudio/lib-commons/commit/0f9eb4a82a544204119500db09d38fd6ec003c7e))
+* obfuscate password field in the body before logging ([e35bfa3](https://github.com/LerianStudio/lib-commons/commit/e35bfa36424caae3f90b351ed979d2c6e6e143f5))
+
 ## [1.7.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.7.0-beta.2...v1.7.0-beta.3) (2025-04-16)
 
 
