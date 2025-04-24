@@ -17,7 +17,7 @@ permissions:
   pull-requests: read
   actions: read
   security-events: write
-
+#Check the code with golangci-lint and gosec
 jobs:
   GoLangCI-Lint:
     name: Run GoLangCI-Lint to SDK
