@@ -42,7 +42,7 @@ func (rc *RabbitMQConnection) Connect() error {
 		return err
 	}
 
-	if ch == nil || !rc.healthCheck() {
+	if ch == nil || !rc.HealthCheck() {
 		rc.Connected = false
 		err = errors.New("can't connect rabbitmq")
 		rc.Logger.Fatalf("RabbitMQ.HealthCheck: %v", zap.Error(err))
@@ -73,8 +73,8 @@ func (rc *RabbitMQConnection) GetNewConnect() (*amqp.Channel, error) {
 	return rc.Channel, nil
 }
 
-// healthCheck rabbitmq when server is started
-func (rc *RabbitMQConnection) healthCheck() bool {
+// HealthCheck rabbitmq when the server is started
+func (rc *RabbitMQConnection) HealthCheck() bool {
 	url := fmt.Sprintf("http://%s:%s/api/health/checks/alarms", rc.Host, rc.Port)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
