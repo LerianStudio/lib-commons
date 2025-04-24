@@ -1,3 +1,10 @@
+## [1.8.0](https://github.com/LerianStudio/lib-commons/compare/v1.7.0...v1.8.0) (2025-04-24)
+
+
+### Features
+
+* update go mod and go sum and change method health visibility; :sparkles: ([355991f](https://github.com/LerianStudio/lib-commons/commit/355991f4416722ee51356139ed3c4fe08e1fe47e))
+
 ## [1.8.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.7.0...v1.8.0-beta.1) (2025-04-24)
 
 
