@@ -140,8 +140,8 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 		}
 
 		amount = Amount{
-			Value: validate.From[ft.Account].Value,
-			Scale: validate.From[ft.Account].Scale,
+			Value: validate.From[SplitAlias(ft.Account)].Value,
+			Scale: validate.From[SplitAlias(ft.Account)].Scale,
 		}
 
 		balanceAfter = ba
@@ -152,10 +152,10 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 			OnHold:    balance.OnHold,
 		}
 
-		ba := OperateBalances(validate.To[ft.Account], blc, constant.CREDIT)
+		ba := OperateBalances(validate.To[SplitAlias(ft.Account)], blc, constant.CREDIT)
 		amount = Amount{
-			Value: validate.To[ft.Account].Value,
-			Scale: validate.To[ft.Account].Scale,
+			Value: validate.To[SplitAlias(ft.Account)].Value,
+			Scale: validate.To[SplitAlias(ft.Account)].Scale,
 		}
 
 		balanceAfter = ba
