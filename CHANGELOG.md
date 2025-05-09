@@ -1,3 +1,11 @@
+## [1.9.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.8.0...v1.9.0-beta.1) (2025-05-09)
+
+
+### Bug Fixes
+
+* **transaction:** improve validation in send source and distribute calculations ([4a8f3f5](https://github.com/LerianStudio/lib-commons/commit/4a8f3f59da5563842e0785732ad5b05989f62fb7))
+* **transaction:** improve validation in send source and distribute calculations ([1cf5b04](https://github.com/LerianStudio/lib-commons/commit/1cf5b04fb510594c5d13989c137cc8401ea2e23d))
+
 ## [1.8.0](https://github.com/LerianStudio/lib-commons/compare/v1.7.0...v1.8.0) (2025-04-24)
 
 
