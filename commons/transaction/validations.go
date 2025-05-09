@@ -206,8 +206,8 @@ func UpdateBalances(operation string, fromTo map[string]Amount, balances []*Bala
 	result <- newBalances
 }
 
-// DeconcatAlias function to deconcat alias with index
-func DeconcatAlias(alias string) string {
+// SplitAlias function to split alias with index
+func SplitAlias(alias string) string {
 	return strings.Split(alias, "#")[1]
 }
 
