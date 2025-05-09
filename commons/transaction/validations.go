@@ -4,10 +4,11 @@ import (
 	"context"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/LerianStudio/lib-commons/commons"
-	"github.com/LerianStudio/lib-commons/commons/constants"
+	constant "github.com/LerianStudio/lib-commons/commons/constants"
 	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
 )
 
@@ -205,6 +206,16 @@ func UpdateBalances(operation string, fromTo map[string]Amount, balances []*Bala
 	result <- newBalances
 }
 
+// DeconcatAlias function to deconcat alias with index
+func DeconcatAlias(alias string) string {
+	return strings.Split(alias, "#")[1]
+}
+
+// ConcatAlias function to concat alias with index
+func ConcatAlias(i int, alias string) string {
+	return strconv.Itoa(i) + "#" + alias
+}
+
 // Scale func scale: (V * 10^ (S0-S1))
 func Scale(v, s0, s1 int64) int64 {
 	return int64(float64(v) * math.Pow(10, float64(s1)-float64(s0)))
@@ -348,7 +359,7 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan int64, ft chan map[strin
 			amount := FindScale(send.Asset, shareValue, send.Scale)
 
 			Normalize(&total, &amount, &remaining)
-			fmto[fromTos[i].Account] = amount
+			fmto[ConcatAlias(i, fromTos[i].Account)] = amount
 		}
 
 		if fromTos[i].Amount != nil && fromTos[i].Amount.Value > 0 && fromTos[i].Amount.Scale > -1 {
@@ -359,13 +370,13 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan int64, ft chan map[strin
 			}
 
 			Normalize(&total, &amount, &remaining)
-			fmto[fromTos[i].Account] = amount
+			fmto[ConcatAlias(i, fromTos[i].Account)] = amount
 		}
 
 		if !commons.IsNilOrEmpty(&fromTos[i].Remaining) {
 			total.Value += remaining.Value
 
-			fmto[fromTos[i].Account] = remaining
+			fmto[ConcatAlias(i, fromTos[i].Account)] = remaining
 			fromTos[i].Amount = &remaining
 		}
 
