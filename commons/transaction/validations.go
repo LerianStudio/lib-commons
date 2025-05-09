@@ -426,14 +426,14 @@ func ValidateSendSourceAndDistribute(transaction Transaction) (*Responses, error
 	response.Destinations = <-sd
 	response.Aliases = append(response.Aliases, response.Destinations...)
 
-	for _, source := range response.Sources {
-		if _, ok := response.To[source]; ok {
+	for i, source := range response.Sources {
+		if _, ok := response.To[ConcatAlias(i, source)]; ok {
 			return nil, commons.ValidateBusinessError(constant.ErrTransactionAmbiguous, "ValidateSendSourceAndDistribute")
 		}
 	}
 
-	for _, destination := range response.Destinations {
-		if _, ok := response.From[destination]; ok {
+	for i, destination := range response.Destinations {
+		if _, ok := response.From[ConcatAlias(i, destination)]; ok {
 			return nil, commons.ValidateBusinessError(constant.ErrTransactionAmbiguous, "ValidateSendSourceAndDistribute")
 		}
 	}
