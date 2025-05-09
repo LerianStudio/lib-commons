@@ -1,3 +1,10 @@
+## [1.9.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.3...v1.9.0-beta.4) (2025-05-09)
+
+
+### Bug Fixes
+
+* **transaction:** add index variable to loop iteration ([e2974f0](https://github.com/LerianStudio/lib-commons/commit/e2974f0c2cc87f39417bf42943e143188c3f9fc8))
+
 ## [1.9.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.2...v1.9.0-beta.3) (2025-05-09)
 
 
