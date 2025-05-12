@@ -359,7 +359,7 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan int64, ft chan map[strin
 			amount := FindScale(send.Asset, shareValue, send.Scale)
 
 			Normalize(&total, &amount, &remaining)
-			fmto[ConcatAlias(i, fromTos[i].Account)] = amount
+			fmto[fromTos[i].ConcatAlias(i)] = amount
 		}
 
 		if fromTos[i].Amount != nil && fromTos[i].Amount.Value > 0 && fromTos[i].Amount.Scale > -1 {
@@ -370,13 +370,13 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan int64, ft chan map[strin
 			}
 
 			Normalize(&total, &amount, &remaining)
-			fmto[ConcatAlias(i, fromTos[i].Account)] = amount
+			fmto[fromTos[i].ConcatAlias(i)] = amount
 		}
 
 		if !commons.IsNilOrEmpty(&fromTos[i].Remaining) {
 			total.Value += remaining.Value
 
-			fmto[ConcatAlias(i, fromTos[i].Account)] = remaining
+			fmto[fromTos[i].ConcatAlias(i)] = remaining
 			fromTos[i].Amount = &remaining
 		}
 
