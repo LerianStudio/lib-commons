@@ -1,6 +1,10 @@
 package transaction
 
-import "time"
+import (
+	"strconv"
+	"strings"
+	"time"
+)
 
 // Balance structure for marshaling/unmarshalling JSON.
 //
@@ -119,6 +123,16 @@ type FromTo struct {
 	Metadata        map[string]any `json:"metadata" validate:"dive,keys,keymax=100,endkeys,nonested,valuemax=2000"`
 	IsFrom          bool           `json:"isFrom,omitempty" example:"true"`
 } // @name FromTo
+
+// SplitAlias function to split alias with index
+func (ft FromTo) SplitAlias() string {
+	return strings.Split(ft.AccountAlias, "#")[1]
+}
+
+// ConcatAlias function to concat alias with index
+func (ft FromTo) ConcatAlias(i int) string {
+	return strconv.Itoa(i) + "#" + ft.AccountAlias
+}
 
 // Distribute structure for marshaling/unmarshalling JSON.
 //
