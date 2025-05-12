@@ -124,12 +124,12 @@ type FromTo struct {
 	IsFrom          bool           `json:"isFrom,omitempty" example:"true"`
 } // @name FromTo
 
-// SplitAlias function to split alias with index
+// SplitAlias function to split alias with index.
 func (ft FromTo) SplitAlias() string {
 	return strings.Split(ft.AccountAlias, "#")[1]
 }
 
-// ConcatAlias function to concat alias with index
+// ConcatAlias function to concat alias with index.
 func (ft FromTo) ConcatAlias(i int) string {
 	return strconv.Itoa(i) + "#" + ft.AccountAlias
 }
