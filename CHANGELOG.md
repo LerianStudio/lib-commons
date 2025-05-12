@@ -1,3 +1,10 @@
+## [1.9.0-beta.5](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.4...v1.9.0-beta.5) (2025-05-12)
+
+
+### Bug Fixes
+
+* **transaction:** optimize balance operations in UpdateBalances function ([8b6397d](https://github.com/LerianStudio/lib-commons/commit/8b6397df3261cc0f5af190c69b16a55e215952ed))
+
 ## [1.9.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.3...v1.9.0-beta.4) (2025-05-09)
 
 
