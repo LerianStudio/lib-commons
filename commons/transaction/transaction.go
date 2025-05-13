@@ -126,12 +126,20 @@ type FromTo struct {
 
 // SplitAlias function to split alias with index.
 func (ft FromTo) SplitAlias() string {
-	return strings.Split(ft.AccountAlias, "#")[1]
+	if ft.Account != "" {
+		return strings.Split(ft.Account, "#")[1]
+	} else {
+		return strings.Split(ft.AccountAlias, "#")[1]
+	}
 }
 
 // ConcatAlias function to concat alias with index.
 func (ft FromTo) ConcatAlias(i int) string {
-	return strconv.Itoa(i) + "#" + ft.AccountAlias
+	if ft.Account != "" {
+		return strconv.Itoa(i) + "#" + ft.Account
+	} else {
+		return strconv.Itoa(i) + "#" + ft.AccountAlias
+	}
 }
 
 // Distribute structure for marshaling/unmarshalling JSON.
