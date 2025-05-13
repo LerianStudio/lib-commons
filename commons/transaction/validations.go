@@ -208,7 +208,11 @@ func UpdateBalances(operation string, fromTo map[string]Amount, balances []*Bala
 
 // SplitAlias function to split alias with index
 func SplitAlias(alias string) string {
-	return strings.Split(alias, "#")[1]
+	if strings.Contains(alias, "#") {
+		return strings.Split(alias, "#")[1]
+	}
+
+	return alias
 }
 
 // ConcatAlias function to concat alias with index

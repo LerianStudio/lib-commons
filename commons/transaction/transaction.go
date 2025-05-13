@@ -127,9 +127,17 @@ type FromTo struct {
 // SplitAlias function to split alias with index.
 func (ft FromTo) SplitAlias() string {
 	if ft.Account != "" {
-		return strings.Split(ft.Account, "#")[1]
+		if strings.Contains(ft.Account, "#") {
+			return strings.Split(ft.Account, "#")[1]
+		}
+
+		return ft.Account
 	} else {
-		return strings.Split(ft.AccountAlias, "#")[1]
+		if strings.Contains(ft.AccountAlias, "#") {
+			return strings.Split(ft.AccountAlias, "#")[1]
+		}
+
+		return ft.AccountAlias
 	}
 }
 
