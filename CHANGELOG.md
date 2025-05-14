@@ -1,3 +1,11 @@
+## [1.9.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.6...v1.9.0-beta.7) (2025-05-13)
+
+
+### Bug Fixes
+
+* add check if account is empty using accountAlias; :bug: ([d2054d8](https://github.com/LerianStudio/lib-commons/commit/d2054d8e0924accd15cfcac95ef1be6e58abae93))
+* some more adjusts; :bug: ([af69b44](https://github.com/LerianStudio/lib-commons/commit/af69b447658b0f4dfcd2e2f252dd2d0d68753094))
+
 ## [1.9.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.5...v1.9.0-beta.6) (2025-05-12)
 
 
