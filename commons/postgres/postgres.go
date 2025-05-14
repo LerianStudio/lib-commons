@@ -28,6 +28,7 @@ type PostgresConnection struct {
 	ConnectionDB            *dbresolver.DB
 	Connected               bool
 	Component               string
+	MigrationsPath          string
 	Logger                  log.Logger
 	MaxOpenConnections      int
 	MaxIdleConnections      int
@@ -62,11 +63,8 @@ func (pc *PostgresConnection) Connect() error {
 		dbresolver.WithReplicaDBs(dbReadOnlyReplica),
 		dbresolver.WithLoadBalancer(dbresolver.RoundRobinLB))
 
-	migrationsPath, err := filepath.Abs(filepath.Join("components", pc.Component, "migrations"))
+	migrationsPath, err := pc.getMigrationsPath()
 	if err != nil {
-		pc.Logger.Fatal("failed get filepath",
-			zap.Error(err))
-
 		return err
 	}
 
@@ -134,4 +132,20 @@ func (pc *PostgresConnection) GetDB() (dbresolver.DB, error) {
 	}
 
 	return *pc.ConnectionDB, nil
+}
+
+// getMigrationsPath returns the path to migration files, calculating it if not explicitly provided
+func (pc *PostgresConnection) getMigrationsPath() (string, error) {
+	if pc.MigrationsPath != "" {
+		return pc.MigrationsPath, nil
+	}
+
+	calculatedPath, err := filepath.Abs(filepath.Join("components", pc.Component, "migrations"))
+	if err != nil {
+		pc.Logger.Error("failed to get migration filepath", zap.Error(err))
+
+		return "", err
+	}
+
+	return calculatedPath, nil
 }
