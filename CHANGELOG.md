@@ -1,3 +1,10 @@
+## [1.9.0-beta.8](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.7...v1.9.0-beta.8) (2025-05-14)
+
+
+### Bug Fixes
+
+* final adjust to use multiple identical accounts; :bug: ([b2165de](https://github.com/LerianStudio/lib-commons/commit/b2165de3642c9c9949cda25d370cad9358e5f5be))
+
 ## [1.9.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.6...v1.9.0-beta.7) (2025-05-13)
 
 
