@@ -4,10 +4,11 @@ import (
 	"context"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/LerianStudio/lib-commons/commons"
-	"github.com/LerianStudio/lib-commons/commons/constants"
+	constant "github.com/LerianStudio/lib-commons/commons/constants"
 	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
 )
 
@@ -205,6 +206,20 @@ func UpdateBalances(operation string, fromTo map[string]Amount, balances []*Bala
 	result <- newBalances
 }
 
+// SplitAlias function to split alias with index
+func SplitAlias(alias string) string {
+	if strings.Contains(alias, "#") {
+		return strings.Split(alias, "#")[1]
+	}
+
+	return alias
+}
+
+// ConcatAlias function to concat alias with index
+func ConcatAlias(i int, alias string) string {
+	return strconv.Itoa(i) + "#" + alias
+}
+
 // Scale func scale: (V * 10^ (S0-S1))
 func Scale(v, s0, s1 int64) int64 {
 	return int64(float64(v) * math.Pow(10, float64(s1)-float64(s0)))
@@ -369,7 +384,7 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan int64, ft chan map[strin
 			fromTos[i].Amount = &remaining
 		}
 
-		scdt = append(scdt, fromTos[i].Account)
+		scdt = append(scdt, fromTos[i].SplitAlias())
 	}
 
 	ttl := total.Value
@@ -380,6 +395,17 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan int64, ft chan map[strin
 	t <- ttl
 	ft <- fmto
 	sd <- scdt
+}
+
+// AppendIfNotExist Append if not exist
+func AppendIfNotExist(slice []string, s []string) []string {
+	for _, v := range s {
+		if !commons.Contains(slice, v) {
+			slice = append(slice, v)
+		}
+	}
+
+	return slice
 }
 
 // ValidateSendSourceAndDistribute Validate send and distribute totals
@@ -407,22 +433,22 @@ func ValidateSendSourceAndDistribute(transaction Transaction) (*Responses, error
 	sourcesTotal = <-t
 	response.From = <-ft
 	response.Sources = <-sd
-	response.Aliases = append(response.Aliases, response.Sources...)
+	response.Aliases = AppendIfNotExist(response.Aliases, response.Sources)
 
 	go CalculateTotal(transaction.Send.Distribute.To, transaction.Send, t, ft, sd)
 	destinationsTotal = <-t
 	response.To = <-ft
 	response.Destinations = <-sd
-	response.Aliases = append(response.Aliases, response.Destinations...)
+	response.Aliases = AppendIfNotExist(response.Aliases, response.Destinations)
 
-	for _, source := range response.Sources {
-		if _, ok := response.To[source]; ok {
+	for i, source := range response.Sources {
+		if _, ok := response.To[ConcatAlias(i, source)]; ok {
 			return nil, commons.ValidateBusinessError(constant.ErrTransactionAmbiguous, "ValidateSendSourceAndDistribute")
 		}
 	}
 
-	for _, destination := range response.Destinations {
-		if _, ok := response.From[destination]; ok {
+	for i, destination := range response.Destinations {
+		if _, ok := response.From[ConcatAlias(i, destination)]; ok {
 			return nil, commons.ValidateBusinessError(constant.ErrTransactionAmbiguous, "ValidateSendSourceAndDistribute")
 		}
 	}

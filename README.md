@@ -59,18 +59,18 @@ go get github.com/LerianStudio/lib-commons
 
 #### Application Management (`commons`)
 
-| Method                           | Description                                              |
-| -------------------------------- | -------------------------------------------------------- |
+| Method                             | Description                                              |
+| ---------------------------------- | -------------------------------------------------------- |
 | `NewLauncher(...LauncherOption)` | Creates a new application launcher with provided options |
 | `WithLogger(logger)`             | LauncherOption that adds a logger to the launcher        |
 | `RunApp(name, app)`              | LauncherOption that registers an application to run      |
 | `Launcher.Add(appName, app)`     | Registers an application to run                          |
-| `Launcher.Run()`                 | Runs all registered applications in goroutines           |
+| `Launcher.Run()`                 | Runs all registered applications in goroutines.          |
 
 #### Context Utilities (`commons`)
 
-| Method                               | Description                     |
-| ------------------------------------ | ------------------------------- |
+| Method                                 | Description                     |
+| -------------------------------------- | ------------------------------- |
 | `ContextWithLogger(ctx, logger)`     | Returns a context with logger   |
 | `NewLoggerFromContext(ctx)`          | Extracts logger from context    |
 | `ContextWithTracer(ctx, tracer)`     | Returns a context with tracer   |
@@ -80,8 +80,8 @@ go get github.com/LerianStudio/lib-commons
 
 #### Error Handling (`commons`)
 
-| Method                                            | Description                                                                  |
-| ------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Method                                              | Description                                                                  |
+| --------------------------------------------------- | ---------------------------------------------------------------------------- |
 | `ValidateBusinessError(err, entityType, ...args)` | Maps domain errors to business responses with appropriate codes and messages |
 | `Response.Error()`                                | Returns the error message from a Response                                    |
 
@@ -89,8 +89,8 @@ go get github.com/LerianStudio/lib-commons
 
 #### PostgreSQL (`commons/postgres`)
 
-| Method                                      | Description                                              |
-| ------------------------------------------- | -------------------------------------------------------- |
+| Method                                        | Description                                              |
+| --------------------------------------------- | -------------------------------------------------------- |
 | `PostgresConnection.Connect()`              | Establishes connection to PostgreSQL primary and replica |
 | `PostgresConnection.GetDB()`                | Returns the database connection                          |
 | `PostgresConnection.MigrateUp(sourceDir)`   | Runs database migrations                                 |
@@ -99,8 +99,8 @@ go get github.com/LerianStudio/lib-commons
 
 #### MongoDB (`commons/mongo`)
 
-| Method                                | Description                       |
-| ------------------------------------- | --------------------------------- |
+| Method                                  | Description                       |
+| --------------------------------------- | --------------------------------- |
 | `MongoConnection.Connect()`           | Establishes connection to MongoDB |
 | `MongoConnection.GetClient()`         | Returns the MongoDB client        |
 | `MongoConnection.GetDatabase()`       | Returns the MongoDB database      |
@@ -108,8 +108,8 @@ go get github.com/LerianStudio/lib-commons
 
 #### Redis (`commons/redis`)
 
-| Method                                             | Description                     |
-| -------------------------------------------------- | ------------------------------- |
+| Method                                               | Description                     |
+| ---------------------------------------------------- | ------------------------------- |
 | `RedisConnection.Connect()`                        | Establishes connection to Redis |
 | `RedisConnection.GetClient()`                      | Returns the Redis client        |
 | `RedisConnection.Set(ctx, key, value, expiration)` | Sets a key-value pair in Redis  |
@@ -120,8 +120,8 @@ go get github.com/LerianStudio/lib-commons
 
 #### RabbitMQ (`commons/rabbitmq`)
 
-| Method                                                      | Description                        |
-| ----------------------------------------------------------- | ---------------------------------- |
+| Method                                                        | Description                        |
+| ------------------------------------------------------------- | ---------------------------------- |
 | `RabbitMQConnection.Connect()`                              | Establishes connection to RabbitMQ |
 | `RabbitMQConnection.GetChannel()`                           | Returns a RabbitMQ channel         |
 | `RabbitMQConnection.DeclareQueue(name)`                     | Declares a queue                   |
@@ -134,8 +134,8 @@ go get github.com/LerianStudio/lib-commons
 
 #### Logging (`commons/log`)
 
-| Method                                | Description                                    |
-| ------------------------------------- | ---------------------------------------------- |
+| Method                                  | Description                                    |
+| --------------------------------------- | ---------------------------------------------- |
 | `Info(args...)`                       | Logs info level message                        |
 | `Infof(format, args...)`              | Logs formatted info level message              |
 | `Error(args...)`                      | Logs error level message                       |
@@ -152,8 +152,8 @@ go get github.com/LerianStudio/lib-commons
 
 #### Zap Integration (`commons/zap`)
 
-| Method                                   | Description                                 |
-| ---------------------------------------- | ------------------------------------------- |
+| Method                                     | Description                                 |
+| ------------------------------------------ | ------------------------------------------- |
 | `NewZapLogger(config)`                   | Creates a new Zap logger                    |
 | `ZapLoggerAdapter.Info(args...)`         | Logs info level message using Zap           |
 | `ZapLoggerAdapter.Error(args...)`        | Logs error level message using Zap          |
@@ -161,8 +161,8 @@ go get github.com/LerianStudio/lib-commons
 
 #### OpenTelemetry (`commons/opentelemetry`)
 
-| Method                                  | Description                                                     |
-| --------------------------------------- | --------------------------------------------------------------- |
+| Method                                    | Description                                                     |
+| ----------------------------------------- | --------------------------------------------------------------- |
 | `Telemetry.InitializeTelemetry(logger)` | Initializes OpenTelemetry with trace, metric, and log providers |
 | `Telemetry.ShutdownTelemetry()`         | Shuts down OpenTelemetry providers                              |
 | `Telemetry.GetTracer()`                 | Returns a tracer from the provider                              |
@@ -175,8 +175,8 @@ go get github.com/LerianStudio/lib-commons
 
 #### String Utilities (`commons`)
 
-| Method                                | Description                              |
-| ------------------------------------- | ---------------------------------------- |
+| Method                                  | Description                              |
+| --------------------------------------- | ---------------------------------------- |
 | `IsNilOrEmpty(s)`                     | Checks if string pointer is nil or empty |
 | `TruncateString(s, maxLen)`           | Truncates string to maximum length       |
 | `MaskEmail(email)`                    | Masks email address for privacy          |
@@ -186,8 +186,8 @@ go get github.com/LerianStudio/lib-commons
 
 #### OS Utilities (`commons`)
 
-| Method                  | Description                                  |
-| ----------------------- | -------------------------------------------- |
+| Method                    | Description                                  |
+| ------------------------- | -------------------------------------------- |
 | `GetEnv(key, fallback)` | Gets environment variable with fallback      |
 | `MustGetEnv(key)`       | Gets required environment variable or panics |
 | `LoadEnvFile(file)`     | Loads environment variables from file        |
@@ -196,8 +196,8 @@ go get github.com/LerianStudio/lib-commons
 
 #### Time Utilities (`commons`)
 
-| Method                       | Description                          |
-| ---------------------------- | ------------------------------------ |
+| Method                         | Description                          |
+| ------------------------------ | ------------------------------------ |
 | `FormatTime(t, layout)`      | Formats time according to layout     |
 | `ParseTime(s, layout)`       | Parses time from string using layout |
 | `GetCurrentTime()`           | Gets current time in UTC             |
@@ -205,8 +205,8 @@ go get github.com/LerianStudio/lib-commons
 
 #### Pointer Utilities (`commons/pointers`)
 
-| Method             | Description                                            |
-| ------------------ | ------------------------------------------------------ |
+| Method               | Description                                            |
+| -------------------- | ------------------------------------------------------ |
 | `ToString(s)`      | Creates string pointer from string                     |
 | `ToInt(i)`         | Creates int pointer from int                           |
 | `ToBool(b)`        | Creates bool pointer from bool                         |
@@ -216,8 +216,8 @@ go get github.com/LerianStudio/lib-commons
 
 #### Transaction Processing (`commons/transaction`)
 
-| Method                              | Description                                            |
-| ----------------------------------- | ------------------------------------------------------ |
+| Method                                | Description                                            |
+| ------------------------------------- | ------------------------------------------------------ |
 | `ValidateTransactionRequest(req)`   | Validates transaction request against business rules   |
 | `ValidateAccountBalances(accounts)` | Validates account balances for transaction processing  |
 | `ValidateAssetCode(code)`           | Validates asset code existence and status              |
@@ -225,16 +225,16 @@ go get github.com/LerianStudio/lib-commons
 
 #### Shell Utilities (`commons/shell`)
 
-| Method                                        | Description                               |
-| --------------------------------------------- | ----------------------------------------- |
+| Method                                          | Description                               |
+| ----------------------------------------------- | ----------------------------------------- |
 | `ExecuteCommand(command)`                     | Executes shell command and returns output |
 | `ExecuteCommandWithTimeout(command, timeout)` | Executes shell command with timeout       |
 | `ExecuteCommandInBackground(command)`         | Executes shell command in background      |
 
 #### Network Utilities (`commons/net`)
 
-| Method                   | Description                            |
-| ------------------------ | -------------------------------------- |
+| Method                     | Description                            |
+| -------------------------- | -------------------------------------- |
 | `ValidateURL(url)`       | Validates URL format and accessibility |
 | `GetLocalIP()`           | Gets local IP address                  |
 | `IsPortOpen(host, port)` | Checks if port is open on host         |
