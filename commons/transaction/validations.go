@@ -363,7 +363,7 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan int64, ft chan map[strin
 			amount := FindScale(send.Asset, shareValue, send.Scale)
 
 			Normalize(&total, &amount, &remaining)
-			fmto[fromTos[i].ConcatAlias(i)] = amount
+			fmto[fromTos[i].Account] = amount
 		}
 
 		if fromTos[i].Amount != nil && fromTos[i].Amount.Value > 0 && fromTos[i].Amount.Scale > -1 {
@@ -374,17 +374,17 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan int64, ft chan map[strin
 			}
 
 			Normalize(&total, &amount, &remaining)
-			fmto[fromTos[i].ConcatAlias(i)] = amount
+			fmto[fromTos[i].Account] = amount
 		}
 
 		if !commons.IsNilOrEmpty(&fromTos[i].Remaining) {
 			total.Value += remaining.Value
 
-			fmto[fromTos[i].ConcatAlias(i)] = remaining
+			fmto[fromTos[i].Account] = remaining
 			fromTos[i].Amount = &remaining
 		}
 
-		scdt = append(scdt, fromTos[i].Account)
+		scdt = append(scdt, fromTos[i].SplitAlias())
 	}
 
 	ttl := total.Value
@@ -395,6 +395,17 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan int64, ft chan map[strin
 	t <- ttl
 	ft <- fmto
 	sd <- scdt
+}
+
+// AppendIfNotExist Append if not exist
+func AppendIfNotExist(slice []string, s []string) []string {
+	for _, v := range s {
+		if !commons.Contains(slice, v) {
+			slice = append(slice, v)
+		}
+	}
+
+	return slice
 }
 
 // ValidateSendSourceAndDistribute Validate send and distribute totals
@@ -422,13 +433,13 @@ func ValidateSendSourceAndDistribute(transaction Transaction) (*Responses, error
 	sourcesTotal = <-t
 	response.From = <-ft
 	response.Sources = <-sd
-	response.Aliases = append(response.Aliases, response.Sources...)
+	response.Aliases = AppendIfNotExist(response.Aliases, response.Sources)
 
 	go CalculateTotal(transaction.Send.Distribute.To, transaction.Send, t, ft, sd)
 	destinationsTotal = <-t
 	response.To = <-ft
 	response.Destinations = <-sd
-	response.Aliases = append(response.Aliases, response.Destinations...)
+	response.Aliases = AppendIfNotExist(response.Aliases, response.Destinations)
 
 	for i, source := range response.Sources {
 		if _, ok := response.To[ConcatAlias(i, source)]; ok {
