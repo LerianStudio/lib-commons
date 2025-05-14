@@ -1,3 +1,10 @@
+## [1.10.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.9.0...v1.10.0-beta.1) (2025-05-14)
+
+
+### Features
+
+* **postgres:** sets migrations path from environment variable :sparkles: ([7f9d40e](https://github.com/LerianStudio/lib-commons/commit/7f9d40e88a9e9b94a8d6076121e73324421bd6e8))
+
 ## [1.9.0](https://github.com/LerianStudio/lib-commons/compare/v1.8.0...v1.9.0) (2025-05-14)
 
 
