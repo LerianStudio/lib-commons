@@ -51,12 +51,6 @@ func (gs *GracefulShutdown) HandleShutdown() {
 
 // executeShutdown performs the actual shutdown operations in the correct order.
 func (gs *GracefulShutdown) executeShutdown() {
-	// Shutdown license background refresh if available
-	if gs.licenseClient != nil {
-		gs.logger.Info("Shutting down license background refresh...")
-		gs.licenseClient.ShutdownBackgroundRefresh()
-	}
-
 	// Shutdown the server
 	if gs.app != nil {
 		gs.logger.Info("Shutting down HTTP server...")
@@ -79,6 +73,12 @@ func (gs *GracefulShutdown) executeShutdown() {
 		}
 	}
 
+	// Shutdown license background refresh if available
+	if gs.licenseClient != nil {
+		gs.logger.Info("Shutting down license background refresh...")
+		gs.licenseClient.ShutdownBackgroundRefresh()
+	}
+
 	gs.logger.Info("Graceful shutdown completed")
 }
 
@@ -98,6 +98,15 @@ func StartServerWithGracefulShutdown(
 
 	// Create graceful shutdown handler
 	gs := NewGracefulShutdown(app, licenseClient, telemetry, logger)
+
+	// Run everything in a recover block
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Errorf("Fatal error (panic): %v", r)
+			gs.executeShutdown()
+			os.Exit(1)
+		}
+	}()
 
 	// Start server in a separate goroutine
 	go func() {
