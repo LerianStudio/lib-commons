@@ -3,7 +3,7 @@ package shutdown
 import (
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
-	libLicense "github.com/LerianStudio/lib-license/middleware"
+	libLicense "github.com/LerianStudio/lib-license-go/middleware"
 	"github.com/gofiber/fiber/v2"
 	"os"
 	"os/signal"
