@@ -1,3 +1,10 @@
+## [1.11.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.10.0...v1.11.0-beta.1) (2025-05-19)
+
+
+### Features
+
+* add info and debug log levels to zap logger initializer by env name ([c132299](https://github.com/LerianStudio/lib-commons/commit/c13229910647081facf9f555e4b4efa74aff60ec))
+
 ## [1.10.0](https://github.com/LerianStudio/lib-commons/compare/v1.9.0...v1.10.0) (2025-05-14)
 
 
