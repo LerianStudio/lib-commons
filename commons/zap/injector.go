@@ -18,9 +18,11 @@ func InitializeLogger() clog.Logger {
 	if os.Getenv("ENV_NAME") == "production" {
 		zapCfg = zap.NewProductionConfig()
 		zapCfg.EncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+		zapCfg.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
 	} else {
 		zapCfg = zap.NewDevelopmentConfig()
 		zapCfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+		zapCfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
 	}
 
 	if val, ok := os.LookupEnv("LOG_LEVEL"); ok {
