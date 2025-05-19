@@ -1,3 +1,100 @@
+## [1.11.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.10.0...v1.11.0-beta.1) (2025-05-19)
+
+
+### Features
+
+* add info and debug log levels to zap logger initializer by env name ([c132299](https://github.com/LerianStudio/lib-commons/commit/c13229910647081facf9f555e4b4efa74aff60ec))
+
+## [1.10.0](https://github.com/LerianStudio/lib-commons/compare/v1.9.0...v1.10.0) (2025-05-14)
+
+
+### Features
+
+* **postgres:** sets migrations path from environment variable :sparkles: ([7f9d40e](https://github.com/LerianStudio/lib-commons/commit/7f9d40e88a9e9b94a8d6076121e73324421bd6e8))
+
+## [1.10.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.9.0...v1.10.0-beta.1) (2025-05-14)
+
+
+### Features
+
+* **postgres:** sets migrations path from environment variable :sparkles: ([7f9d40e](https://github.com/LerianStudio/lib-commons/commit/7f9d40e88a9e9b94a8d6076121e73324421bd6e8))
+
+## [1.9.0](https://github.com/LerianStudio/lib-commons/compare/v1.8.0...v1.9.0) (2025-05-14)
+
+
+### Bug Fixes
+
+* add check if account is empty using accountAlias; :bug: ([d2054d8](https://github.com/LerianStudio/lib-commons/commit/d2054d8e0924accd15cfcac95ef1be6e58abae93))
+* **transaction:** add index variable to loop iteration ([e2974f0](https://github.com/LerianStudio/lib-commons/commit/e2974f0c2cc87f39417bf42943e143188c3f9fc8))
+* final adjust to use multiple identical accounts; :bug: ([b2165de](https://github.com/LerianStudio/lib-commons/commit/b2165de3642c9c9949cda25d370cad9358e5f5be))
+* **transaction:** improve validation in send source and distribute calculations ([625f2f9](https://github.com/LerianStudio/lib-commons/commit/625f2f9598a61dbb4227722f605e1d4798a9a881))
+* **transaction:** improve validation in send source and distribute calculations ([2b05323](https://github.com/LerianStudio/lib-commons/commit/2b05323b81eea70278dbb2326423dedaf5078373))
+* **transaction:** improve validation in send source and distribute calculations ([4a8f3f5](https://github.com/LerianStudio/lib-commons/commit/4a8f3f59da5563842e0785732ad5b05989f62fb7))
+* **transaction:** improve validation in send source and distribute calculations ([1cf5b04](https://github.com/LerianStudio/lib-commons/commit/1cf5b04fb510594c5d13989c137cc8401ea2e23d))
+* **transaction:** optimize balance operations in UpdateBalances function ([524fe97](https://github.com/LerianStudio/lib-commons/commit/524fe975d125742d10920236e055db879809b01e))
+* **transaction:** optimize balance operations in UpdateBalances function ([63201dd](https://github.com/LerianStudio/lib-commons/commit/63201ddeb00835d8b8b9269f8a32850e4f28374e))
+* **transaction:** optimize balance operations in UpdateBalances function ([8b6397d](https://github.com/LerianStudio/lib-commons/commit/8b6397df3261cc0f5af190c69b16a55e215952ed))
+* some more adjusts; :bug: ([af69b44](https://github.com/LerianStudio/lib-commons/commit/af69b447658b0f4dfcd2e2f252dd2d0d68753094))
+
+## [1.9.0-beta.8](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.7...v1.9.0-beta.8) (2025-05-14)
+
+
+### Bug Fixes
+
+* final adjust to use multiple identical accounts; :bug: ([b2165de](https://github.com/LerianStudio/lib-commons/commit/b2165de3642c9c9949cda25d370cad9358e5f5be))
+
+## [1.9.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.6...v1.9.0-beta.7) (2025-05-13)
+
+
+### Bug Fixes
+
+* add check if account is empty using accountAlias; :bug: ([d2054d8](https://github.com/LerianStudio/lib-commons/commit/d2054d8e0924accd15cfcac95ef1be6e58abae93))
+* some more adjusts; :bug: ([af69b44](https://github.com/LerianStudio/lib-commons/commit/af69b447658b0f4dfcd2e2f252dd2d0d68753094))
+
+## [1.9.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.5...v1.9.0-beta.6) (2025-05-12)
+
+
+### Bug Fixes
+
+* **transaction:** optimize balance operations in UpdateBalances function ([524fe97](https://github.com/LerianStudio/lib-commons/commit/524fe975d125742d10920236e055db879809b01e))
+* **transaction:** optimize balance operations in UpdateBalances function ([63201dd](https://github.com/LerianStudio/lib-commons/commit/63201ddeb00835d8b8b9269f8a32850e4f28374e))
+
+## [1.9.0-beta.5](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.4...v1.9.0-beta.5) (2025-05-12)
+
+
+### Bug Fixes
+
+* **transaction:** optimize balance operations in UpdateBalances function ([8b6397d](https://github.com/LerianStudio/lib-commons/commit/8b6397df3261cc0f5af190c69b16a55e215952ed))
+
+## [1.9.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.3...v1.9.0-beta.4) (2025-05-09)
+
+
+### Bug Fixes
+
+* **transaction:** add index variable to loop iteration ([e2974f0](https://github.com/LerianStudio/lib-commons/commit/e2974f0c2cc87f39417bf42943e143188c3f9fc8))
+
+## [1.9.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.2...v1.9.0-beta.3) (2025-05-09)
+
+
+### Bug Fixes
+
+* **transaction:** improve validation in send source and distribute calculations ([625f2f9](https://github.com/LerianStudio/lib-commons/commit/625f2f9598a61dbb4227722f605e1d4798a9a881))
+
+## [1.9.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.9.0-beta.1...v1.9.0-beta.2) (2025-05-09)
+
+
+### Bug Fixes
+
+* **transaction:** improve validation in send source and distribute calculations ([2b05323](https://github.com/LerianStudio/lib-commons/commit/2b05323b81eea70278dbb2326423dedaf5078373))
+
+## [1.9.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.8.0...v1.9.0-beta.1) (2025-05-09)
+
+
+### Bug Fixes
+
+* **transaction:** improve validation in send source and distribute calculations ([4a8f3f5](https://github.com/LerianStudio/lib-commons/commit/4a8f3f59da5563842e0785732ad5b05989f62fb7))
+* **transaction:** improve validation in send source and distribute calculations ([1cf5b04](https://github.com/LerianStudio/lib-commons/commit/1cf5b04fb510594c5d13989c137cc8401ea2e23d))
+
 ## [1.8.0](https://github.com/LerianStudio/lib-commons/compare/v1.7.0...v1.8.0) (2025-04-24)
 
 
