@@ -54,6 +54,7 @@ func (gs *GracefulShutdown) executeShutdown() {
 	// Shutdown the server
 	if gs.app != nil {
 		gs.logger.Info("Shutting down HTTP server...")
+
 		if err := gs.app.Shutdown(); err != nil {
 			gs.logger.Errorf("Error during server shutdown: %v", err)
 		}
@@ -68,6 +69,7 @@ func (gs *GracefulShutdown) executeShutdown() {
 	// Sync logger if available
 	if gs.logger != nil {
 		gs.logger.Info("Syncing logger...")
+
 		if err := gs.logger.Sync(); err != nil {
 			gs.logger.Errorf("Failed to sync logger: %v", err)
 		}
@@ -111,6 +113,7 @@ func StartServerWithGracefulShutdown(
 	// Start server in a separate goroutine
 	go func() {
 		logger.Infof("Starting HTTP server on %s", serverAddress)
+		
 		if err := app.Listen(serverAddress); err != nil {
 			// During normal shutdown, app.Listen() will return an error
 			// We only want to log unexpected errors
