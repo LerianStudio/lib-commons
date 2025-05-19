@@ -1,3 +1,18 @@
+## [1.11.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.11.0-beta.1...v1.11.0-beta.2) (2025-05-19)
+
+
+### Features
+
+* add start app with graceful shutdown module ([21d9697](https://github.com/LerianStudio/lib-commons/commit/21d9697c35686e82adbf3f41744ce25c369119ce))
+* bump lib-license-go version to v1.0.8 ([4d93834](https://github.com/LerianStudio/lib-commons/commit/4d93834af0dd4d4d48564b98f9d2dc766369c1be))
+* move license shutdown to the end of execution and add recover from panic in graceful shutdown ([6cf1171](https://github.com/LerianStudio/lib-commons/commit/6cf117159cc10b3fa97200c53fbb6a058566c7d6))
+
+
+### Bug Fixes
+
+* fix lint - remove cuddled if blocks ([cd6424b](https://github.com/LerianStudio/lib-commons/commit/cd6424b741811ec119a2bf35189760070883b993))
+* import corret lib license go uri ([f55338f](https://github.com/LerianStudio/lib-commons/commit/f55338fa2c9ed1d974ab61f28b1c70101b35eb61))
+
 ## [1.11.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.10.0...v1.11.0-beta.1) (2025-05-19)
 
 
