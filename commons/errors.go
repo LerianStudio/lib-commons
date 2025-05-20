@@ -52,6 +52,12 @@ func ValidateBusinessError(err error, entityType string, args ...any) error {
 			Title:      "Account Status Transaction Restriction",
 			Message:    "The current statuses of the source and/or destination accounts do not permit transactions. Change the account status(es) and try again.",
 		},
+		constant.ErrOverFlowInt64: Response{
+			EntityType: entityType,
+			Code:       constant.ErrOverFlowInt64.Error(),
+			Title:      "Overflow Values",
+			Message:    "The application can't do math operations caused by overflow. Please verify the value and try again.",
+		},
 	}
 
 	if mappedError, found := errorMap[err]; found {
