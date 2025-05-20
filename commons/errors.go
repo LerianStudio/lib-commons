@@ -55,8 +55,8 @@ func ValidateBusinessError(err error, entityType string, args ...any) error {
 		constant.ErrOverFlowInt64: Response{
 			EntityType: entityType,
 			Code:       constant.ErrOverFlowInt64.Error(),
-			Title:      "Overflow Values",
-			Message:    "The application can't do math operations caused by overflow. Please verify the value and try again.",
+			Title:      "Overflow Error",
+			Message:    "The request could not be completed due to an overflow. Please check the values, and try again.",
 		},
 	}
 
