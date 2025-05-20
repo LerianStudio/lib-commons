@@ -1,3 +1,11 @@
+## [1.12.0](https://github.com/LerianStudio/lib-commons/compare/v1.11.0...v1.12.0) (2025-05-20)
+
+
+### Bug Fixes
+
+* Add integer overflow protection to transaction operations; :bug: ([32904de](https://github.com/LerianStudio/lib-commons/commit/32904def9bee6388f12a6e2cc997c20a594db696))
+* change message error and add check scale value > 18; :bug: ([f398012](https://github.com/LerianStudio/lib-commons/commit/f3980128f99b903926c672146bf0ee7921b7e588))
+
 ## [1.12.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.12.0-beta.1...v1.12.0-beta.2) (2025-05-20)
 
 
