@@ -68,7 +68,10 @@ func validateBalance(balance *Balance, dsl Transaction, from map[string]Amount) 
 					OnHold:    balance.OnHold,
 				}
 
-				ba := OperateBalances(from[f.Account], blc, constant.DEBIT)
+				ba, err := OperateBalances(from[f.Account], blc, constant.DEBIT)
+				if err != nil {
+					return err
+				}
 
 				if ba.Available < 0 && balance.AccountType != constant.ExternalAccountType {
 					return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateBalance", balance.Alias)
@@ -133,7 +136,10 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 			OnHold:    balance.OnHold,
 		}
 
-		ba := OperateBalances(validate.From[ft.Account], blc, constant.DEBIT)
+		ba, err := OperateBalances(validate.From[ft.Account], blc, constant.DEBIT)
+		if err != nil {
+			return Amount{}, Balance{}, err
+		}
 
 		if ba.Available < 0 && balance.AccountType != constant.ExternalAccountType {
 			return amount, balanceAfter, commons.ValidateBusinessError(constant.ErrInsufficientFunds, "ValidateFromToOperation", balance.Alias)
@@ -152,7 +158,11 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 			OnHold:    balance.OnHold,
 		}
 
-		ba := OperateBalances(validate.To[ft.Account], blc, constant.CREDIT)
+		ba, err := OperateBalances(validate.To[ft.Account], blc, constant.CREDIT)
+		if err != nil {
+			return Amount{}, Balance{}, err
+		}
+
 		amount = Amount{
 			Value: validate.To[ft.Account].Value,
 			Scale: validate.To[ft.Account].Scale,
@@ -165,7 +175,7 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 }
 
 // UpdateBalances function with some updates values in balances.
-func UpdateBalances(operation string, fromTo map[string]Amount, balances []*Balance, result chan []*Balance) {
+func UpdateBalances(operation string, fromTo map[string]Amount, balances []*Balance, result chan []*Balance, er chan error) {
 	newBalances := make([]*Balance, 0)
 
 	for _, balance := range balances {
@@ -177,7 +187,12 @@ func UpdateBalances(operation string, fromTo map[string]Amount, balances []*Bala
 					OnHold:    balance.OnHold,
 				}
 
-				b := OperateBalances(fromTo[key], blc, operation)
+				b, err := OperateBalances(fromTo[key], blc, operation)
+				if err != nil {
+					er <- err
+
+					return
+				}
 
 				ac := Balance{
 					ID:             balance.ID,
@@ -294,8 +309,25 @@ func Normalize(total, amount, remaining *Amount) {
 	}
 }
 
+// WillOverflow Function to check if the value will overflow
+func WillOverflow(a, b, scale int64) bool {
+	if b > 0 && a > math.MaxInt64-b {
+		return true
+	}
+
+	if b < 0 && a < math.MinInt64-b {
+		return true
+	}
+
+	if scale > 18 {
+		return true
+	}
+
+	return false
+}
+
 // OperateBalances Function to sum or sub two balances and Normalize the scale
-func OperateBalances(amount Amount, balance Balance, operation string) Balance {
+func OperateBalances(amount Amount, balance Balance, operation string) (Balance, error) {
 	var (
 		scale int64
 		total int64
@@ -305,32 +337,46 @@ func OperateBalances(amount Amount, balance Balance, operation string) Balance {
 	case constant.DEBIT:
 		if balance.Scale < amount.Scale {
 			v0 := Scale(balance.Available, balance.Scale, amount.Scale)
+			if WillOverflow(v0, -amount.Value, amount.Scale) {
+				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
+			}
+
 			total = v0 - amount.Value
 			scale = amount.Scale
 		} else {
 			v0 := Scale(amount.Value, amount.Scale, balance.Scale)
+			if WillOverflow(balance.Available, -v0, amount.Scale) {
+				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
+			}
+
 			total = balance.Available - v0
 			scale = balance.Scale
 		}
-	default:
+	default: // CREDIT
 		if balance.Scale < amount.Scale {
 			v0 := Scale(balance.Available, balance.Scale, amount.Scale)
+			if WillOverflow(v0, amount.Value, amount.Scale) {
+				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
+			}
+
 			total = v0 + amount.Value
 			scale = amount.Scale
 		} else {
 			v0 := Scale(amount.Value, amount.Scale, balance.Scale)
+			if WillOverflow(balance.Available, v0, amount.Scale) {
+				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
+			}
+
 			total = balance.Available + v0
 			scale = balance.Scale
 		}
 	}
 
-	blc := Balance{
+	return Balance{
 		Available: total,
 		OnHold:    balance.OnHold,
 		Scale:     scale,
-	}
-
-	return blc
+	}, nil
 }
 
 // CalculateTotal Calculate total for sources/destinations based on shares, amounts and remains
