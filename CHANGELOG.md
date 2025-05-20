@@ -1,3 +1,10 @@
+## [1.12.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.11.0...v1.12.0-beta.1) (2025-05-20)
+
+
+### Bug Fixes
+
+* Add integer overflow protection to transaction operations; :bug: ([32904de](https://github.com/LerianStudio/lib-commons/commit/32904def9bee6388f12a6e2cc997c20a594db696))
+
 ## [1.11.0](https://github.com/LerianStudio/lib-commons/compare/v1.10.0...v1.11.0) (2025-05-19)
 
 
