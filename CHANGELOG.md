@@ -1,3 +1,10 @@
+## [1.12.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.12.0-beta.1...v1.12.0-beta.2) (2025-05-20)
+
+
+### Bug Fixes
+
+* change message error and add check scale value > 18; :bug: ([f398012](https://github.com/LerianStudio/lib-commons/commit/f3980128f99b903926c672146bf0ee7921b7e588))
+
 ## [1.12.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.11.0...v1.12.0-beta.1) (2025-05-20)
 
 
