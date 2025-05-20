@@ -310,12 +310,16 @@ func Normalize(total, amount, remaining *Amount) {
 }
 
 // WillOverflow Function to check if the value will overflow
-func WillOverflow(a, b int64) bool {
+func WillOverflow(a, b, scale int64) bool {
 	if b > 0 && a > math.MaxInt64-b {
 		return true
 	}
 
 	if b < 0 && a < math.MinInt64-b {
+		return true
+	}
+
+	if scale > 18 {
 		return true
 	}
 
@@ -333,7 +337,7 @@ func OperateBalances(amount Amount, balance Balance, operation string) (Balance,
 	case constant.DEBIT:
 		if balance.Scale < amount.Scale {
 			v0 := Scale(balance.Available, balance.Scale, amount.Scale)
-			if WillOverflow(v0, -amount.Value) {
+			if WillOverflow(v0, -amount.Value, amount.Scale) {
 				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
 			}
 
@@ -341,7 +345,7 @@ func OperateBalances(amount Amount, balance Balance, operation string) (Balance,
 			scale = amount.Scale
 		} else {
 			v0 := Scale(amount.Value, amount.Scale, balance.Scale)
-			if WillOverflow(balance.Available, -v0) {
+			if WillOverflow(balance.Available, -v0, amount.Scale) {
 				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
 			}
 
@@ -351,7 +355,7 @@ func OperateBalances(amount Amount, balance Balance, operation string) (Balance,
 	default: // CREDIT
 		if balance.Scale < amount.Scale {
 			v0 := Scale(balance.Available, balance.Scale, amount.Scale)
-			if WillOverflow(v0, amount.Value) {
+			if WillOverflow(v0, amount.Value, amount.Scale) {
 				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
 			}
 
@@ -359,7 +363,7 @@ func OperateBalances(amount Amount, balance Balance, operation string) (Balance,
 			scale = amount.Scale
 		} else {
 			v0 := Scale(amount.Value, amount.Scale, balance.Scale)
-			if WillOverflow(balance.Available, v0) {
+			if WillOverflow(balance.Available, v0, amount.Scale) {
 				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
 			}
 
