@@ -3,10 +3,12 @@ package observability
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +19,121 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// testLogger implements log.Logger interface and writes to a buffer for testing
+type testLogger struct {
+	buf   *bytes.Buffer
+	level log.LogLevel
+}
+
+func newTestLogger(buf *bytes.Buffer, level log.LogLevel) *testLogger {
+	return &testLogger{
+		buf:   buf,
+		level: level,
+	}
+}
+
+func (tl *testLogger) Info(args ...any) {
+	if tl.level >= log.InfoLevel {
+		fmt.Fprint(tl.buf, args...)
+	}
+}
+
+func (tl *testLogger) Infof(format string, args ...any) {
+	if tl.level >= log.InfoLevel {
+		fmt.Fprintf(tl.buf, format, args...)
+	}
+}
+
+func (tl *testLogger) Infoln(args ...any) {
+	if tl.level >= log.InfoLevel {
+		fmt.Fprintln(tl.buf, args...)
+	}
+}
+
+func (tl *testLogger) Error(args ...any) {
+	if tl.level >= log.ErrorLevel {
+		fmt.Fprint(tl.buf, args...)
+	}
+}
+
+func (tl *testLogger) Errorf(format string, args ...any) {
+	if tl.level >= log.ErrorLevel {
+		fmt.Fprintf(tl.buf, format, args...)
+	}
+}
+
+func (tl *testLogger) Errorln(args ...any) {
+	if tl.level >= log.ErrorLevel {
+		fmt.Fprintln(tl.buf, args...)
+	}
+}
+
+func (tl *testLogger) Warn(args ...any) {
+	if tl.level >= log.WarnLevel {
+		fmt.Fprint(tl.buf, args...)
+	}
+}
+
+func (tl *testLogger) Warnf(format string, args ...any) {
+	if tl.level >= log.WarnLevel {
+		fmt.Fprintf(tl.buf, format, args...)
+	}
+}
+
+func (tl *testLogger) Warnln(args ...any) {
+	if tl.level >= log.WarnLevel {
+		fmt.Fprintln(tl.buf, args...)
+	}
+}
+
+func (tl *testLogger) Debug(args ...any) {
+	if tl.level >= log.DebugLevel {
+		fmt.Fprint(tl.buf, args...)
+	}
+}
+
+func (tl *testLogger) Debugf(format string, args ...any) {
+	if tl.level >= log.DebugLevel {
+		fmt.Fprintf(tl.buf, format, args...)
+	}
+}
+
+func (tl *testLogger) Debugln(args ...any) {
+	if tl.level >= log.DebugLevel {
+		fmt.Fprintln(tl.buf, args...)
+	}
+}
+
+func (tl *testLogger) Fatal(args ...any) {
+	if tl.level >= log.FatalLevel {
+		fmt.Fprint(tl.buf, args...)
+	}
+}
+
+func (tl *testLogger) Fatalf(format string, args ...any) {
+	if tl.level >= log.FatalLevel {
+		fmt.Fprintf(tl.buf, format, args...)
+	}
+}
+
+func (tl *testLogger) Fatalln(args ...any) {
+	if tl.level >= log.FatalLevel {
+		fmt.Fprintln(tl.buf, args...)
+	}
+}
+
+func (tl *testLogger) WithFields(fields ...any) log.Logger {
+	return tl // For simplicity in tests, return self
+}
+
+func (tl *testLogger) WithDefaultMessageTemplate(message string) log.Logger {
+	return tl // For simplicity in tests, return self
+}
+
+func (tl *testLogger) Sync() error {
+	return nil
+}
 
 func TestNewObservabilityMiddleware(t *testing.T) {
 	ctx := context.Background()
@@ -96,7 +213,8 @@ func TestObservabilityMiddlewareHandler(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	// Use testLogger that writes to buffer, then wrap with StructuredLogger
+	baseLogger := newTestLogger(buf, log.InfoLevel)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -203,7 +321,7 @@ func TestObservabilityMiddlewareHandler(t *testing.T) {
 		buf.Reset()
 
 		app.Get("/api/panic", func(c *fiber.Ctx) error {
-			return fmt.Errorf("something went wrong")
+			return errors.New("something went wrong")
 		})
 
 		req := httptest.NewRequest("GET", "/api/panic", nil)
@@ -229,7 +347,8 @@ func TestObservabilityMiddlewareMetrics(t *testing.T) {
 	require.NoError(t, err)
 	defer provider.Shutdown(ctx)
 
-	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	buf := &bytes.Buffer{}
+	baseLogger := newTestLogger(buf, log.InfoLevel)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -249,7 +368,6 @@ func TestObservabilityMiddlewareMetrics(t *testing.T) {
 	})
 
 	req := httptest.NewRequest("GET", "/api/test", nil)
-	req.Header.Set("Content-Length", "100")
 
 	resp, err := app.Test(req)
 	require.NoError(t, err)
@@ -267,7 +385,8 @@ func TestObservabilityMiddlewareTracing(t *testing.T) {
 	require.NoError(t, err)
 	defer provider.Shutdown(ctx)
 
-	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	buf := &bytes.Buffer{}
+	baseLogger := newTestLogger(buf, log.InfoLevel)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -307,7 +426,8 @@ func TestObservabilityMiddlewareHeaders(t *testing.T) {
 	require.NoError(t, err)
 	defer provider.Shutdown(ctx)
 
-	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	buf := &bytes.Buffer{}
+	baseLogger := newTestLogger(buf, log.InfoLevel)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -354,7 +474,7 @@ func TestObservabilityMiddlewareRequestSize(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	baseLogger := newTestLogger(buf, log.InfoLevel)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -397,7 +517,7 @@ func TestObservabilityMiddlewareResponseSize(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	baseLogger := newTestLogger(buf, log.InfoLevel)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -443,7 +563,7 @@ func TestObservabilityMiddlewareDuration(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	baseLogger := newTestLogger(buf, log.InfoLevel)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -488,7 +608,7 @@ func TestObservabilityMiddlewareStatusClasses(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	baseLogger := newTestLogger(buf, log.InfoLevel)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -557,7 +677,7 @@ func TestObservabilityMiddlewareStatusClasses(t *testing.T) {
 			assert.Equal(t, tt.statusCode, resp.StatusCode)
 
 			logOutput := buf.String()
-			assert.Contains(t, logOutput, fmt.Sprintf("%d", tt.statusCode))
+			assert.Contains(t, logOutput, strconv.Itoa(tt.statusCode))
 		})
 	}
 }
@@ -572,7 +692,7 @@ func TestObservabilityMiddlewareIPExtraction(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	baseLogger := newTestLogger(buf, log.InfoLevel)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -613,7 +733,7 @@ func TestObservabilityMiddlewareIntegration(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	baseLogger := newTestLogger(buf, log.InfoLevel)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -717,7 +837,7 @@ func TestObservabilityMiddlewareIntegration(t *testing.T) {
 			logOutput := buf.String()
 			assert.Contains(t, logOutput, tt.expectedLog)
 			assert.Contains(t, logOutput, tt.method)
-			assert.Contains(t, logOutput, fmt.Sprintf("%d", tt.expectedStatus))
+			assert.Contains(t, logOutput, strconv.Itoa(tt.expectedStatus))
 		})
 	}
 }

@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"reflect"
@@ -37,15 +38,15 @@ func NewValidationError(message, field string) ValidationError {
 // Required validates that a value is not empty/zero
 func Required(value interface{}, fieldName string) error {
 	if value == nil {
-		return NewValidationError(fmt.Sprintf("%s is required", fieldName), fieldName)
+		return NewValidationError(fieldName+" is required", fieldName)
 	}
 
 	v := reflect.ValueOf(value)
-	
+
 	// Handle pointers
 	if v.Kind() == reflect.Ptr {
 		if v.IsNil() {
-			return NewValidationError(fmt.Sprintf("%s is required", fieldName), fieldName)
+			return NewValidationError(fieldName+" is required", fieldName)
 		}
 		v = v.Elem()
 	}
@@ -53,23 +54,23 @@ func Required(value interface{}, fieldName string) error {
 	switch v.Kind() {
 	case reflect.String:
 		if strings.TrimSpace(v.String()) == "" {
-			return NewValidationError(fmt.Sprintf("%s is required", fieldName), fieldName)
+			return NewValidationError(fieldName+" is required", fieldName)
 		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		if v.Int() == 0 {
-			return NewValidationError(fmt.Sprintf("%s is required", fieldName), fieldName)
+			return NewValidationError(fieldName+" is required", fieldName)
 		}
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		if v.Uint() == 0 {
-			return NewValidationError(fmt.Sprintf("%s is required", fieldName), fieldName)
+			return NewValidationError(fieldName+" is required", fieldName)
 		}
 	case reflect.Float32, reflect.Float64:
 		if v.Float() == 0 {
-			return NewValidationError(fmt.Sprintf("%s is required", fieldName), fieldName)
+			return NewValidationError(fieldName+" is required", fieldName)
 		}
 	case reflect.Slice, reflect.Array, reflect.Map:
 		if v.Len() == 0 {
-			return NewValidationError(fmt.Sprintf("%s is required", fieldName), fieldName)
+			return NewValidationError(fieldName+" is required", fieldName)
 		}
 	case reflect.Bool:
 		// bool is always valid for required check
@@ -77,10 +78,10 @@ func Required(value interface{}, fieldName string) error {
 	default:
 		// For other types, check if it's the zero value
 		if v.IsZero() {
-			return NewValidationError(fmt.Sprintf("%s is required", fieldName), fieldName)
+			return NewValidationError(fieldName+" is required", fieldName)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -121,20 +122,20 @@ func URL(urlStr string, fieldName string) error {
 	if urlStr == "" {
 		return NewValidationError("URL is required", fieldName)
 	}
-	
+
 	u, err := url.Parse(urlStr)
 	if err != nil {
 		return NewValidationError("invalid URL format", fieldName)
 	}
-	
+
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return NewValidationError("URL must use http or https scheme", fieldName)
 	}
-	
+
 	if u.Host == "" {
 		return NewValidationError("URL must have a host", fieldName)
 	}
-	
+
 	return nil
 }
 
@@ -162,18 +163,18 @@ func Matches(value, pattern, fieldName string) error {
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return NewValidationError(
-			fmt.Sprintf("invalid pattern for %s", fieldName),
+			"invalid pattern for "+fieldName,
 			fieldName,
 		)
 	}
-	
+
 	if !re.MatchString(value) {
 		return NewValidationError(
-			fmt.Sprintf("%s does not match required pattern", fieldName),
+			fieldName+" does not match required pattern",
 			fieldName,
 		)
 	}
-	
+
 	return nil
 }
 
@@ -181,26 +182,26 @@ func Matches(value, pattern, fieldName string) error {
 func OneOf(value string, allowed []string, fieldName string) error {
 	if len(allowed) == 0 {
 		return NewValidationError(
-			fmt.Sprintf("%s must be one of: (no values defined)", fieldName),
+			fieldName+" must be one of: (no values defined)",
 			fieldName,
 		)
 	}
-	
+
 	for _, a := range allowed {
 		if value == a {
 			return nil
 		}
 	}
-	
+
 	return NewValidationError(
-		fmt.Sprintf("%s must be one of: %v", fieldName, allowed),
+		fieldName+" must be one of: "+fmt.Sprintf("%v", allowed),
 		fieldName,
 	)
 }
 
 // customValidators holds registered custom validators
 var (
-	customValidators = make(map[string]func(interface{}) error)
+	customValidators   = make(map[string]func(interface{}) error)
 	customValidatorsMu sync.RWMutex
 )
 
@@ -208,11 +209,11 @@ var (
 func RegisterCustomValidator(name string, fn func(interface{}) error) error {
 	customValidatorsMu.Lock()
 	defer customValidatorsMu.Unlock()
-	
+
 	if _, exists := customValidators[name]; exists {
 		return fmt.Errorf("validator %s already registered", name)
 	}
-	
+
 	customValidators[name] = fn
 	return nil
 }
@@ -220,32 +221,32 @@ func RegisterCustomValidator(name string, fn func(interface{}) error) error {
 // ValidateStruct validates a struct based on validate tags
 func ValidateStruct(s interface{}) []ValidationError {
 	var errors []ValidationError
-	
+
 	v := reflect.ValueOf(s)
 	t := reflect.TypeOf(s)
-	
+
 	// Handle pointers
 	if v.Kind() == reflect.Ptr {
 		v = v.Elem()
 		t = t.Elem()
 	}
-	
+
 	if v.Kind() != reflect.Struct {
 		errors = append(errors, NewValidationError("input must be a struct", ""))
 		return errors
 	}
-	
+
 	// Iterate through struct fields
 	for i := 0; i < v.NumField(); i++ {
 		field := t.Field(i)
 		fieldValue := v.Field(i)
-		
+
 		// Get validate tag
 		validateTag := field.Tag.Get("validate")
 		if validateTag == "" {
 			continue
 		}
-		
+
 		// Parse validation rules
 		rules := strings.Split(validateTag, ",")
 		for _, rule := range rules {
@@ -258,11 +259,11 @@ func ValidateStruct(s interface{}) []ValidationError {
 			}
 		}
 	}
-	
+
 	if len(errors) == 0 {
 		return nil
 	}
-	
+
 	return errors
 }
 
@@ -270,33 +271,35 @@ func ValidateStruct(s interface{}) []ValidationError {
 func validateField(value interface{}, fieldName, rule string) error {
 	parts := strings.SplitN(rule, "=", 2)
 	ruleName := parts[0]
-	
+
 	switch ruleName {
 	case "required":
 		return Required(value, fieldName)
-		
+
 	case "email":
 		if str, ok := value.(string); ok && str != "" {
 			return Email(str, fieldName)
 		}
-		
+
 	case "url":
 		if str, ok := value.(string); ok && str != "" {
 			return URL(str, fieldName)
 		}
-		
+
 	case "uuid":
 		if str, ok := value.(string); ok && str != "" {
 			return UUID(str, fieldName)
 		}
-		
+
 	case "min":
 		if len(parts) != 2 {
-			return fmt.Errorf("min rule requires a value")
+			return errors.New("min rule requires a value")
 		}
 		var min int
-		fmt.Sscanf(parts[1], "%d", &min)
-		
+		if _, err := fmt.Sscanf(parts[1], "%d", &min); err != nil {
+			return fmt.Errorf("invalid min value: %w", err)
+		}
+
 		switch v := value.(type) {
 		case string:
 			return MinLength(v, min, fieldName)
@@ -305,14 +308,16 @@ func validateField(value interface{}, fieldName, rule string) error {
 		case int64:
 			return InRange(v, int64(min), int64(^uint(0)>>1), fieldName)
 		}
-		
+
 	case "max":
 		if len(parts) != 2 {
-			return fmt.Errorf("max rule requires a value")
+			return errors.New("max rule requires a value")
 		}
 		var max int
-		fmt.Sscanf(parts[1], "%d", &max)
-		
+		if _, err := fmt.Sscanf(parts[1], "%d", &max); err != nil {
+			return fmt.Errorf("invalid max value: %w", err)
+		}
+
 		switch v := value.(type) {
 		case string:
 			return MaxLength(v, max, fieldName)
@@ -321,28 +326,28 @@ func validateField(value interface{}, fieldName, rule string) error {
 		case int64:
 			return InRange(v, int64(-int(^uint(0)>>1)-1), int64(max), fieldName)
 		}
-		
+
 	case "oneof":
 		if len(parts) != 2 {
-			return fmt.Errorf("oneof rule requires values")
+			return errors.New("oneof rule requires values")
 		}
 		allowed := strings.Split(parts[1], " ")
 		if str, ok := value.(string); ok {
 			return OneOf(str, allowed, fieldName)
 		}
-		
+
 	default:
 		// Check custom validators
 		customValidatorsMu.RLock()
 		validator, exists := customValidators[ruleName]
 		customValidatorsMu.RUnlock()
-		
+
 		if exists {
 			return validator(value)
 		}
-		
+
 		return fmt.Errorf("unknown validation rule: %s", ruleName)
 	}
-	
+
 	return nil
 }

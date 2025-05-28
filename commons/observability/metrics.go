@@ -11,29 +11,27 @@ import (
 // BusinessMetrics provides business-specific metrics
 type BusinessMetrics struct {
 	meter metric.Meter
-	
+
 	// Transaction metrics
-	transactionCounter       metric.Int64Counter
-	transactionDuration      metric.Float64Histogram
-	transactionAmount        metric.Float64Histogram
-	transactionErrorCounter  metric.Int64Counter
-	
+	transactionCounter      metric.Int64Counter
+	transactionDuration     metric.Float64Histogram
+	transactionAmount       metric.Float64Histogram
+	transactionErrorCounter metric.Int64Counter
+
 	// Account metrics
-	accountCounter           metric.Int64Counter
-	accountBalanceGauge      metric.Float64ObservableGauge
-	
+	accountCounter metric.Int64Counter
+
 	// Ledger metrics
-	ledgerCounter            metric.Int64Counter
-	
+	ledgerCounter metric.Int64Counter
+
 	// Asset metrics
-	assetCounter             metric.Int64Counter
-	assetRateGauge           metric.Float64ObservableGauge
+	assetCounter metric.Int64Counter
 }
 
 // NewBusinessMetrics creates a new business metrics instance
 func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 	bm := &BusinessMetrics{meter: meter}
-	
+
 	// Initialize transaction metrics
 	transactionCounter, err := meter.Int64Counter(
 		"midaz.transaction.count",
@@ -44,7 +42,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 		return nil, fmt.Errorf("failed to create transaction counter: %w", err)
 	}
 	bm.transactionCounter = transactionCounter
-	
+
 	transactionDuration, err := meter.Float64Histogram(
 		"midaz.transaction.duration",
 		metric.WithDescription("Transaction processing duration"),
@@ -54,7 +52,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 		return nil, fmt.Errorf("failed to create transaction duration histogram: %w", err)
 	}
 	bm.transactionDuration = transactionDuration
-	
+
 	transactionAmount, err := meter.Float64Histogram(
 		"midaz.transaction.amount",
 		metric.WithDescription("Transaction amounts"),
@@ -64,7 +62,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 		return nil, fmt.Errorf("failed to create transaction amount histogram: %w", err)
 	}
 	bm.transactionAmount = transactionAmount
-	
+
 	transactionErrorCounter, err := meter.Int64Counter(
 		"midaz.transaction.errors",
 		metric.WithDescription("Total number of transaction errors"),
@@ -74,7 +72,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 		return nil, fmt.Errorf("failed to create transaction error counter: %w", err)
 	}
 	bm.transactionErrorCounter = transactionErrorCounter
-	
+
 	// Initialize account metrics
 	accountCounter, err := meter.Int64Counter(
 		"midaz.account.count",
@@ -85,7 +83,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 		return nil, fmt.Errorf("failed to create account counter: %w", err)
 	}
 	bm.accountCounter = accountCounter
-	
+
 	// Initialize ledger metrics
 	ledgerCounter, err := meter.Int64Counter(
 		"midaz.ledger.count",
@@ -96,7 +94,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 		return nil, fmt.Errorf("failed to create ledger counter: %w", err)
 	}
 	bm.ledgerCounter = ledgerCounter
-	
+
 	// Initialize asset metrics
 	assetCounter, err := meter.Int64Counter(
 		"midaz.asset.count",
@@ -107,7 +105,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 		return nil, fmt.Errorf("failed to create asset counter: %w", err)
 	}
 	bm.assetCounter = assetCounter
-	
+
 	return bm, nil
 }
 
@@ -127,13 +125,13 @@ func (bm *BusinessMetrics) RecordTransaction(
 		attribute.String("status", status),
 		attribute.String("type", transactionType),
 	}
-	
+
 	if currency != "" {
 		attrs = append(attrs, attribute.String("currency", currency))
 	}
-	
+
 	bm.transactionCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
-	
+
 	if amount > 0 {
 		bm.transactionAmount.Record(ctx, amount, metric.WithAttributes(attrs...))
 	}
@@ -150,7 +148,7 @@ func (bm *BusinessMetrics) RecordTransactionDuration(
 		attribute.String("organization_id", organizationID),
 		attribute.String("ledger_id", ledgerID),
 	}
-	
+
 	bm.transactionDuration.Record(ctx, duration, metric.WithAttributes(attrs...))
 }
 
@@ -166,7 +164,7 @@ func (bm *BusinessMetrics) RecordTransactionError(
 		attribute.String("ledger_id", ledgerID),
 		attribute.String("error_type", errorType),
 	}
-	
+
 	bm.transactionErrorCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
@@ -182,7 +180,7 @@ func (bm *BusinessMetrics) RecordAccount(
 		attribute.String("ledger_id", ledgerID),
 		attribute.String("account_type", accountType),
 	}
-	
+
 	bm.accountCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
@@ -194,7 +192,7 @@ func (bm *BusinessMetrics) RecordLedger(
 	attrs := []attribute.KeyValue{
 		attribute.String("organization_id", organizationID),
 	}
-	
+
 	bm.ledgerCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
@@ -210,6 +208,6 @@ func (bm *BusinessMetrics) RecordAsset(
 		attribute.String("ledger_id", ledgerID),
 		attribute.String("asset_type", assetType),
 	}
-	
+
 	bm.assetCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
 }

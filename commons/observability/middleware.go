@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"errors"
 	"fmt"
 	"time"
 
@@ -37,10 +38,10 @@ func NewObservabilityMiddleware(
 ) (*ObservabilityMiddleware, error) {
 	// Validate required parameters
 	if tracerProvider == nil {
-		return nil, fmt.Errorf("tracerProvider cannot be nil")
+		return nil, errors.New("tracerProvider cannot be nil")
 	}
 	if metricProvider == nil {
-		return nil, fmt.Errorf("metricProvider cannot be nil")
+		return nil, errors.New("metricProvider cannot be nil")
 	}
 
 	om := &ObservabilityMiddleware{

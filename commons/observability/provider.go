@@ -2,6 +2,7 @@ package observability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -137,7 +138,7 @@ type Option func(*Config) error
 func WithServiceName(name string) Option {
 	return func(c *Config) error {
 		if name == "" {
-			return fmt.Errorf("service name cannot be empty")
+			return errors.New("service name cannot be empty")
 		}
 		c.ServiceName = name
 		return nil
@@ -148,7 +149,7 @@ func WithServiceName(name string) Option {
 func WithServiceVersion(version string) Option {
 	return func(c *Config) error {
 		if version == "" {
-			return fmt.Errorf("service version cannot be empty")
+			return errors.New("service version cannot be empty")
 		}
 		c.ServiceVersion = version
 		return nil
@@ -159,7 +160,7 @@ func WithServiceVersion(version string) Option {
 func WithEnvironment(env string) Option {
 	return func(c *Config) error {
 		if env == "" {
-			return fmt.Errorf("environment cannot be empty")
+			return errors.New("environment cannot be empty")
 		}
 		c.Environment = env
 		return nil
@@ -170,7 +171,7 @@ func WithEnvironment(env string) Option {
 func WithCollectorEndpoint(endpoint string) Option {
 	return func(c *Config) error {
 		if endpoint == "" {
-			return fmt.Errorf("collector endpoint cannot be empty")
+			return errors.New("collector endpoint cannot be empty")
 		}
 		c.CollectorEndpoint = endpoint
 		return nil
@@ -192,7 +193,7 @@ func WithLogLevel(level LogLevel) Option {
 func WithLogOutput(output io.Writer) Option {
 	return func(c *Config) error {
 		if output == nil {
-			return fmt.Errorf("log output cannot be nil")
+			return errors.New("log output cannot be nil")
 		}
 		c.LogOutput = output
 		return nil
@@ -203,7 +204,7 @@ func WithLogOutput(output io.Writer) Option {
 func WithTraceSampleRate(rate float64) Option {
 	return func(c *Config) error {
 		if rate < 0.0 || rate > 1.0 {
-			return fmt.Errorf("trace sample rate must be between 0.0 and 1.0")
+			return errors.New("trace sample rate must be between 0.0 and 1.0")
 		}
 		c.TraceSampleRate = rate
 		return nil
@@ -232,7 +233,7 @@ func WithAttributes(attrs ...attribute.KeyValue) Option {
 func WithPropagators(propagators ...propagation.TextMapPropagator) Option {
 	return func(c *Config) error {
 		if len(propagators) == 0 {
-			return fmt.Errorf("at least one propagator must be provided")
+			return errors.New("at least one propagator must be provided")
 		}
 		c.Propagators = propagators
 		return nil
@@ -419,7 +420,7 @@ func (p *ObservabilityProvider) initTracing(ctx context.Context, res *sdkresourc
 
 	// Create a tracer for this library
 	p.tracer = p.tracerProvider.Tracer(
-		fmt.Sprintf("github.com/LerianStudio/lib-commons/%s", p.config.ServiceName),
+		"github.com/LerianStudio/lib-commons/" + p.config.ServiceName,
 	)
 
 	// Add shutdown function
@@ -465,7 +466,7 @@ func (p *ObservabilityProvider) initMetrics(ctx context.Context, res *sdkresourc
 
 	// Create a meter for this library
 	p.meter = p.meterProvider.Meter(
-		fmt.Sprintf("github.com/LerianStudio/lib-commons/%s", p.config.ServiceName),
+		"github.com/LerianStudio/lib-commons/" + p.config.ServiceName,
 	)
 
 	// Add shutdown function

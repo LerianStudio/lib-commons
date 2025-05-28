@@ -3,9 +3,11 @@ package observability
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptrace"
+	"strconv"
 	"strings"
 	"time"
 
@@ -32,7 +34,7 @@ type httpClientMiddleware struct {
 func WithIgnoreHeaders(headers ...string) HTTPClientOption {
 	return func(m *httpClientMiddleware) error {
 		if len(headers) == 0 {
-			return fmt.Errorf("at least one header must be provided")
+			return errors.New("at least one header must be provided")
 		}
 
 		headerMap := make(map[string]struct{})
@@ -54,7 +56,7 @@ func WithIgnoreHeaders(headers ...string) HTTPClientOption {
 func WithIgnorePaths(paths ...string) HTTPClientOption {
 	return func(m *httpClientMiddleware) error {
 		if len(paths) == 0 {
-			return fmt.Errorf("at least one path must be provided")
+			return errors.New("at least one path must be provided")
 		}
 
 		m.ignorePaths = append(m.ignorePaths, paths...)
@@ -66,7 +68,7 @@ func WithIgnorePaths(paths ...string) HTTPClientOption {
 func WithMaskedParams(params ...string) HTTPClientOption {
 	return func(m *httpClientMiddleware) error {
 		if len(params) == 0 {
-			return fmt.Errorf("at least one parameter must be provided")
+			return errors.New("at least one parameter must be provided")
 		}
 
 		m.maskedParams = append(m.maskedParams, params...)
@@ -340,7 +342,7 @@ func (m *httpClientMiddleware) recordRequestMetrics(ctx context.Context, req *ht
 	if err != nil || (resp != nil && resp.StatusCode >= 400) {
 		errorStatus := "unknown"
 		if resp != nil {
-			errorStatus = fmt.Sprintf("%d", resp.StatusCode)
+			errorStatus = strconv.Itoa(resp.StatusCode)
 		}
 		attrs = append(attrs, attribute.String(KeyErrorCode, errorStatus))
 		RecordMetric(ctx, m.provider, MetricRequestErrorTotal, 1, attrs...)

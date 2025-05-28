@@ -325,7 +325,7 @@ func TestHTTPClientMiddlewareIgnorePaths(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(fmt.Sprintf("path %s", tt.path), func(t *testing.T) {
+		t.Run("path "+tt.path, func(t *testing.T) {
 			req, err := http.NewRequest("GET", server.URL+tt.path, nil)
 			require.NoError(t, err)
 
@@ -543,7 +543,7 @@ func TestIsIgnoredHeader(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		t.Run(fmt.Sprintf("header %s", tt.header), func(t *testing.T) {
+		t.Run("header "+tt.header, func(t *testing.T) {
 			result := m.isIgnoredHeader(tt.header)
 			assert.Equal(t, tt.expected, result)
 		})

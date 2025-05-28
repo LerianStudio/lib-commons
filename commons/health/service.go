@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"runtime"
 	"sync"
@@ -89,12 +90,12 @@ func (s *Service) Handler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		ctx := c.Context()
 		response := s.performHealthCheck(ctx)
-		
+
 		statusCode := fiber.StatusOK
 		if response.Status == StatusDown {
 			statusCode = fiber.StatusServiceUnavailable
 		}
-		
+
 		return c.Status(statusCode).JSON(response)
 	}
 }
@@ -119,13 +120,13 @@ func (s *Service) performHealthCheck(ctx context.Context) *Response {
 			Status:  StatusUp,
 			Details: make(map[string]interface{}),
 		}
-		
+
 		if err := checker.Check(ctx); err != nil {
 			check.Status = StatusDown
 			check.Details["error"] = err.Error()
 			response.Status = StatusDown
 		}
-		
+
 		response.Checks[name] = check
 	}
 
@@ -157,16 +158,16 @@ func NewPostgresChecker(db *sql.DB) *PostgresChecker {
 // Check performs the health check
 func (c *PostgresChecker) Check(ctx context.Context) error {
 	if c.db == nil {
-		return fmt.Errorf("database connection is nil")
+		return errors.New("database connection is nil")
 	}
-	
+
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	
+
 	if err := c.db.PingContext(ctx); err != nil {
 		return fmt.Errorf("failed to ping database: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -183,16 +184,16 @@ func NewMongoChecker(client *mongo.Client) *MongoChecker {
 // Check performs the health check
 func (c *MongoChecker) Check(ctx context.Context) error {
 	if c.client == nil {
-		return fmt.Errorf("mongo client is nil")
+		return errors.New("mongo client is nil")
 	}
-	
+
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	
+
 	if err := c.client.Ping(ctx, readpref.Primary()); err != nil {
 		return fmt.Errorf("failed to ping mongodb: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -209,16 +210,16 @@ func NewRedisChecker(client *redis.Client) *RedisChecker {
 // Check performs the health check
 func (c *RedisChecker) Check(ctx context.Context) error {
 	if c.client == nil {
-		return fmt.Errorf("redis client is nil")
+		return errors.New("redis client is nil")
 	}
-	
+
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	
+
 	if err := c.client.Ping(ctx).Err(); err != nil {
 		return fmt.Errorf("failed to ping redis: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -235,13 +236,13 @@ func NewRabbitMQChecker(conn *amqp.Connection) *RabbitMQChecker {
 // Check performs the health check
 func (c *RabbitMQChecker) Check(ctx context.Context) error {
 	if c.conn == nil {
-		return fmt.Errorf("rabbitmq connection is nil")
+		return errors.New("rabbitmq connection is nil")
 	}
-	
+
 	if c.conn.IsClosed() {
-		return fmt.Errorf("rabbitmq connection is closed")
+		return errors.New("rabbitmq connection is closed")
 	}
-	
+
 	return nil
 }
 
@@ -262,7 +263,7 @@ func NewCustomChecker(name string, fn func(ctx context.Context) error) *CustomCh
 // Check performs the health check
 func (c *CustomChecker) Check(ctx context.Context) error {
 	if c.fn == nil {
-		return fmt.Errorf("custom check function is nil")
+		return errors.New("custom check function is nil")
 	}
 	return c.fn(ctx)
 }

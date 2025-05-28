@@ -26,18 +26,18 @@ var (
 func copyValue(dst, src interface{}) error {
 	dstVal := reflect.ValueOf(dst)
 	if dstVal.Kind() != reflect.Ptr {
-		return fmt.Errorf("destination must be a pointer")
+		return errors.New("destination must be a pointer")
 	}
-	
+
 	dstElem := dstVal.Elem()
 	srcVal := reflect.ValueOf(src)
-	
+
 	// Handle direct assignment if types match
 	if dstElem.Type() == srcVal.Type() {
 		dstElem.Set(srcVal)
 		return nil
 	}
-	
+
 	// Special handling for common type conversions
 	switch dstElem.Interface().(type) {
 	case string:
@@ -56,17 +56,17 @@ func copyValue(dst, src interface{}) error {
 			return nil
 		}
 	}
-	
+
 	// Try to use JSON as intermediate format for complex types
 	data, err := json.Marshal(src)
 	if err != nil {
 		return fmt.Errorf("failed to marshal source: %w", err)
 	}
-	
+
 	if err := json.Unmarshal(data, dst); err != nil {
 		return fmt.Errorf("failed to unmarshal to destination: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -129,13 +129,13 @@ type cacheEntry struct {
 
 // MemoryCache is an in-memory cache implementation
 type MemoryCache struct {
-	mu               sync.RWMutex
-	data             map[string]*cacheEntry
-	maxSize          int
-	evictionPolicy   EvictionPolicy
-	metrics          Metrics
-	cleanupInterval  time.Duration
-	stopCleanup      chan struct{}
+	mu              sync.RWMutex
+	data            map[string]*cacheEntry
+	maxSize         int
+	evictionPolicy  EvictionPolicy
+	metrics         Metrics
+	cleanupInterval time.Duration
+	stopCleanup     chan struct{}
 }
 
 // MemoryCacheOption configures a MemoryCache
@@ -177,16 +177,16 @@ func NewMemoryCache(opts ...MemoryCacheOption) *MemoryCache {
 		evictionPolicy: EvictionLRU,
 		stopCleanup:    make(chan struct{}),
 	}
-	
+
 	for _, opt := range opts {
 		opt(c)
 	}
-	
+
 	// Start cleanup goroutine if interval is set
 	if c.cleanupInterval > 0 {
 		go c.startCleanup()
 	}
-	
+
 	return c
 }
 
@@ -195,14 +195,14 @@ func (c *MemoryCache) Get(ctx context.Context, key string, value interface{}) er
 	c.mu.RLock()
 	entry, exists := c.data[key]
 	c.mu.RUnlock()
-	
+
 	if !exists {
 		if c.metrics != nil {
 			c.metrics.IncrMisses("memory")
 		}
 		return ErrKeyNotFound
 	}
-	
+
 	// Check expiration
 	if !entry.expiration.IsZero() && time.Now().After(entry.expiration) {
 		c.mu.Lock()
@@ -214,22 +214,22 @@ func (c *MemoryCache) Get(ctx context.Context, key string, value interface{}) er
 		}
 		return ErrKeyNotFound
 	}
-	
+
 	// Update access stats
 	c.mu.Lock()
 	entry.hits++
 	entry.lastAccess = time.Now()
 	c.mu.Unlock()
-	
+
 	// Copy value using reflection for generic support
 	if err := copyValue(value, entry.value); err != nil {
 		return err
 	}
-	
+
 	if c.metrics != nil {
 		c.metrics.IncrHits("memory")
 	}
-	
+
 	return nil
 }
 
@@ -238,10 +238,10 @@ func (c *MemoryCache) Set(ctx context.Context, key string, value interface{}, tt
 	if ttl < 0 {
 		return ErrInvalidTTL
 	}
-	
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	// Check if we need to evict
 	if c.maxSize > 0 && len(c.data) >= c.maxSize {
 		if _, exists := c.data[key]; !exists {
@@ -249,23 +249,23 @@ func (c *MemoryCache) Set(ctx context.Context, key string, value interface{}, tt
 			c.evict()
 		}
 	}
-	
+
 	entry := &cacheEntry{
 		value:      value,
 		lastAccess: time.Now(),
 	}
-	
+
 	if ttl > 0 {
 		entry.expiration = time.Now().Add(ttl)
 	}
-	
+
 	c.data[key] = entry
-	
+
 	if c.metrics != nil {
 		c.metrics.IncrSets("memory")
 		c.metrics.ObserveSize("memory", len(c.data))
 	}
-	
+
 	return nil
 }
 
@@ -273,14 +273,14 @@ func (c *MemoryCache) Set(ctx context.Context, key string, value interface{}, tt
 func (c *MemoryCache) Delete(ctx context.Context, key string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	delete(c.data, key)
-	
+
 	if c.metrics != nil {
 		c.metrics.IncrDeletes("memory")
 		c.metrics.ObserveSize("memory", len(c.data))
 	}
-	
+
 	return nil
 }
 
@@ -289,11 +289,11 @@ func (c *MemoryCache) Exists(ctx context.Context, key string) (bool, error) {
 	c.mu.RLock()
 	entry, exists := c.data[key]
 	c.mu.RUnlock()
-	
+
 	if !exists {
 		return false, nil
 	}
-	
+
 	// Check expiration
 	if !entry.expiration.IsZero() && time.Now().After(entry.expiration) {
 		c.mu.Lock()
@@ -301,7 +301,7 @@ func (c *MemoryCache) Exists(ctx context.Context, key string) (bool, error) {
 		c.mu.Unlock()
 		return false, nil
 	}
-	
+
 	return true, nil
 }
 
@@ -309,13 +309,13 @@ func (c *MemoryCache) Exists(ctx context.Context, key string) (bool, error) {
 func (c *MemoryCache) Clear(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	c.data = make(map[string]*cacheEntry)
-	
+
 	if c.metrics != nil {
 		c.metrics.ObserveSize("memory", 0)
 	}
-	
+
 	return nil
 }
 
@@ -324,20 +324,20 @@ func (c *MemoryCache) TTL(ctx context.Context, key string) (time.Duration, error
 	c.mu.RLock()
 	entry, exists := c.data[key]
 	c.mu.RUnlock()
-	
+
 	if !exists {
 		return 0, ErrKeyNotFound
 	}
-	
+
 	if entry.expiration.IsZero() {
 		return 0, nil // No expiration
 	}
-	
+
 	ttl := time.Until(entry.expiration)
 	if ttl < 0 {
 		return 0, ErrKeyNotFound
 	}
-	
+
 	return ttl, nil
 }
 
@@ -345,16 +345,16 @@ func (c *MemoryCache) TTL(ctx context.Context, key string) (time.Duration, error
 func (c *MemoryCache) Keys(ctx context.Context, pattern string) ([]string, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	keys := make([]string, 0, len(c.data))
 	now := time.Now()
-	
+
 	for key, entry := range c.data {
 		// Skip expired entries
 		if !entry.expiration.IsZero() && now.After(entry.expiration) {
 			continue
 		}
-		
+
 		if pattern == "*" {
 			keys = append(keys, key)
 		} else {
@@ -369,7 +369,7 @@ func (c *MemoryCache) Keys(ctx context.Context, pattern string) ([]string, error
 			}
 		}
 	}
-	
+
 	return keys, nil
 }
 
@@ -378,9 +378,9 @@ func (c *MemoryCache) evict() {
 	if len(c.data) == 0 {
 		return
 	}
-	
+
 	var evictKey string
-	
+
 	switch c.evictionPolicy {
 	case EvictionLRU:
 		var oldestTime time.Time
@@ -405,7 +405,7 @@ func (c *MemoryCache) evict() {
 			break
 		}
 	}
-	
+
 	if evictKey != "" {
 		delete(c.data, evictKey)
 		if c.metrics != nil {
@@ -417,10 +417,10 @@ func (c *MemoryCache) evict() {
 // GetMultiple retrieves multiple values from the cache
 func (c *MemoryCache) GetMultiple(ctx context.Context, keys []string) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
-	
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	now := time.Now()
 	for _, key := range keys {
 		entry, exists := c.data[key]
@@ -435,7 +435,7 @@ func (c *MemoryCache) GetMultiple(ctx context.Context, keys []string) (map[strin
 			}
 		}
 	}
-	
+
 	return result, nil
 }
 
@@ -443,7 +443,7 @@ func (c *MemoryCache) GetMultiple(ctx context.Context, keys []string) (map[strin
 func (c *MemoryCache) SetMultiple(ctx context.Context, items map[string]interface{}, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	for key, value := range items {
 		// Check if we need to evict
 		if c.maxSize > 0 && len(c.data) >= c.maxSize {
@@ -451,27 +451,27 @@ func (c *MemoryCache) SetMultiple(ctx context.Context, items map[string]interfac
 				c.evict()
 			}
 		}
-		
+
 		entry := &cacheEntry{
 			value:      value,
 			lastAccess: time.Now(),
 		}
-		
+
 		if ttl > 0 {
 			entry.expiration = time.Now().Add(ttl)
 		}
-		
+
 		c.data[key] = entry
-		
+
 		if c.metrics != nil {
 			c.metrics.IncrSets("memory")
 		}
 	}
-	
+
 	if c.metrics != nil {
 		c.metrics.ObserveSize("memory", len(c.data))
 	}
-	
+
 	return nil
 }
 
@@ -479,7 +479,7 @@ func (c *MemoryCache) SetMultiple(ctx context.Context, items map[string]interfac
 func (c *MemoryCache) startCleanup() {
 	ticker := time.NewTicker(c.cleanupInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ticker.C:
@@ -494,7 +494,7 @@ func (c *MemoryCache) startCleanup() {
 func (c *MemoryCache) cleanup() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
 	now := time.Now()
 	for key, entry := range c.data {
 		if !entry.expiration.IsZero() && now.After(entry.expiration) {
@@ -504,7 +504,7 @@ func (c *MemoryCache) cleanup() {
 			}
 		}
 	}
-	
+
 	if c.metrics != nil {
 		c.metrics.ObserveSize("memory", len(c.data))
 	}
@@ -521,7 +521,6 @@ func (c *MemoryCache) Stop() {
 type LoadingCache struct {
 	cache    Cache
 	loadFunc LoadFunc
-	mu       sync.Map // For per-key locking
 }
 
 // NewLoadingCache creates a new loading cache
@@ -539,27 +538,27 @@ func (lc *LoadingCache) Get(ctx context.Context, key string, value interface{}) 
 	if err == nil {
 		return nil
 	}
-	
+
 	if err != ErrKeyNotFound {
 		return err
 	}
-	
+
 	// Load value
 	loaded, ttl, err := lc.loadFunc(ctx, key)
 	if err != nil {
 		return err
 	}
-	
+
 	// Store in cache
 	if err := lc.cache.Set(ctx, key, loaded, ttl); err != nil {
 		return err
 	}
-	
+
 	// Copy loaded value to output
 	if err := copyValue(value, loaded); err != nil {
 		return err
 	}
-	
+
 	return nil
 }
 
@@ -599,7 +598,7 @@ func (lc *LoadingCache) Refresh(ctx context.Context, key string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	return lc.cache.Set(ctx, key, loaded, ttl)
 }
 
@@ -648,13 +647,13 @@ func (nc *NamespaceCache) Clear(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	
+
 	for _, key := range keys {
 		if err := nc.cache.Delete(ctx, key); err != nil {
 			return err
 		}
 	}
-	
+
 	return nil
 }
 
@@ -670,14 +669,14 @@ func (nc *NamespaceCache) Keys(ctx context.Context, pattern string) ([]string, e
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Remove namespace prefix from keys
 	result := make([]string, len(keys))
 	prefix := nc.namespace + ":"
 	for i, key := range keys {
 		result[i] = key[len(prefix):]
 	}
-	
+
 	return result, nil
 }
 

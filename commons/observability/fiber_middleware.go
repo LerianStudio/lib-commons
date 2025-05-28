@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -39,7 +40,7 @@ type fiberMiddleware struct {
 func WithIgnorePathsFiber(paths ...string) FiberMiddlewareOption {
 	return func(m *fiberMiddleware) error {
 		if len(paths) == 0 {
-			return fmt.Errorf("at least one path must be provided")
+			return errors.New("at least one path must be provided")
 		}
 		m.ignorePaths = append(m.ignorePaths, paths...)
 		return nil
@@ -50,7 +51,7 @@ func WithIgnorePathsFiber(paths ...string) FiberMiddlewareOption {
 func WithIgnoreHeadersFiber(headers ...string) FiberMiddlewareOption {
 	return func(m *fiberMiddleware) error {
 		if len(headers) == 0 {
-			return fmt.Errorf("at least one header must be provided")
+			return errors.New("at least one header must be provided")
 		}
 
 		headerMap := make(map[string]struct{})
@@ -72,7 +73,7 @@ func WithIgnoreHeadersFiber(headers ...string) FiberMiddlewareOption {
 func WithMaskedParamsFiber(params ...string) FiberMiddlewareOption {
 	return func(m *fiberMiddleware) error {
 		if len(params) == 0 {
-			return fmt.Errorf("at least one parameter must be provided")
+			return errors.New("at least one parameter must be provided")
 		}
 		m.maskedParams = append(m.maskedParams, params...)
 		return nil
@@ -83,7 +84,7 @@ func WithMaskedParamsFiber(params ...string) FiberMiddlewareOption {
 func WithUserIDExtractor(fn func(*fiber.Ctx) string) FiberMiddlewareOption {
 	return func(m *fiberMiddleware) error {
 		if fn == nil {
-			return fmt.Errorf("user ID extractor cannot be nil")
+			return errors.New("user ID extractor cannot be nil")
 		}
 		m.extractUserID = fn
 		return nil
@@ -94,7 +95,7 @@ func WithUserIDExtractor(fn func(*fiber.Ctx) string) FiberMiddlewareOption {
 func WithRequestIDExtractor(fn func(*fiber.Ctx) string) FiberMiddlewareOption {
 	return func(m *fiberMiddleware) error {
 		if fn == nil {
-			return fmt.Errorf("request ID extractor cannot be nil")
+			return errors.New("request ID extractor cannot be nil")
 		}
 		m.extractRequestID = fn
 		return nil
