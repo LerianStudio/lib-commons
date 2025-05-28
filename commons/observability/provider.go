@@ -28,20 +28,20 @@ const (
 	KeyServiceName    = "service.name"
 	KeyServiceVersion = "service.version"
 	KeyEnvironment    = "environment"
-	
+
 	// Operation attributes
 	KeyOperationName = "operation.name"
 	KeyOperationType = "operation.type"
-	
+
 	// Resource attributes
 	KeyResourceType = "resource.type"
 	KeyResourceID   = "resource.id"
-	
+
 	// Organization attributes
 	KeyOrganizationID = "organization.id"
 	KeyLedgerID       = "ledger.id"
 	KeyAccountID      = "account.id"
-	
+
 	// HTTP attributes
 	KeyHTTPMethod   = "http.method"
 	KeyHTTPPath     = "http.path"
@@ -49,7 +49,7 @@ const (
 	KeyHTTPHost     = "http.host"
 	KeyErrorCode    = "error.code"
 	KeyErrorMessage = "error.message"
-	
+
 	// Metric names
 	MetricRequestTotal        = "request.total"
 	MetricRequestDuration     = "request.duration"
@@ -64,16 +64,16 @@ const (
 type Provider interface {
 	// Tracer returns a tracer for creating spans
 	Tracer() trace.Tracer
-	
+
 	// Meter returns a meter for creating metrics
 	Meter() metric.Meter
-	
+
 	// Logger returns a logger
 	Logger() Logger
-	
+
 	// Shutdown gracefully shuts down the provider
 	Shutdown(ctx context.Context) error
-	
+
 	// IsEnabled returns true if observability is enabled
 	IsEnabled() bool
 }
@@ -82,37 +82,37 @@ type Provider interface {
 type Config struct {
 	// ServiceName is the name of the service
 	ServiceName string
-	
+
 	// ServiceVersion is the version of the service
 	ServiceVersion string
-	
+
 	// Environment is the environment (development, staging, production)
 	Environment string
-	
+
 	// CollectorEndpoint is the endpoint for the OpenTelemetry collector
 	CollectorEndpoint string
-	
+
 	// LogLevel is the minimum log level
 	LogLevel LogLevel
-	
+
 	// LogOutput is where to write logs (defaults to os.Stderr)
 	LogOutput io.Writer
-	
+
 	// TraceSampleRate is the sampling rate for traces (0.0 to 1.0)
 	TraceSampleRate float64
-	
+
 	// EnabledComponents controls which components are enabled
 	EnabledComponents EnabledComponents
-	
+
 	// Attributes are additional attributes to add to all telemetry
 	Attributes []attribute.KeyValue
-	
+
 	// Propagators for context propagation
 	Propagators []propagation.TextMapPropagator
-	
+
 	// PropagationHeaders to extract for trace context
 	PropagationHeaders []string
-	
+
 	// Insecure disables TLS for gRPC connections
 	Insecure bool
 }
@@ -304,50 +304,50 @@ type ObservabilityProvider struct {
 func New(ctx context.Context, opts ...Option) (Provider, error) {
 	// Start with default configuration
 	config := DefaultConfig()
-	
+
 	// Apply all options
 	for _, opt := range opts {
 		if err := opt(config); err != nil {
 			return nil, fmt.Errorf("failed to apply option: %w", err)
 		}
 	}
-	
+
 	provider := &ObservabilityProvider{
 		config:            config,
 		shutdownFunctions: []func(context.Context) error{},
 		enabled:           true,
 	}
-	
+
 	// Create a resource with service information
 	res, err := provider.createResource()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create resource: %w", err)
 	}
-	
+
 	// Initialize tracing if enabled
 	if config.EnabledComponents.Tracing {
 		if err := provider.initTracing(ctx, res); err != nil {
 			return nil, fmt.Errorf("failed to initialize tracing: %w", err)
 		}
 	}
-	
+
 	// Initialize metrics if enabled
 	if config.EnabledComponents.Metrics {
 		if err := provider.initMetrics(ctx, res); err != nil {
 			return nil, fmt.Errorf("failed to initialize metrics: %w", err)
 		}
 	}
-	
+
 	// Initialize logging if enabled
 	if config.EnabledComponents.Logging {
 		if err := provider.initLogging(res); err != nil {
 			return nil, fmt.Errorf("failed to initialize logging: %w", err)
 		}
 	}
-	
+
 	// Set up context propagation
 	provider.setupPropagation()
-	
+
 	return provider, nil
 }
 
@@ -359,10 +359,10 @@ func (p *ObservabilityProvider) createResource() (*sdkresource.Resource, error) 
 		semconv.DeploymentEnvironmentKey.String(p.config.Environment),
 		attribute.String("language", "go"),
 	}
-	
+
 	// Add custom attributes
 	attributes = append(attributes, p.config.Attributes...)
-	
+
 	// Create and return the resource
 	return sdkresource.Merge(
 		sdkresource.Default(),
@@ -377,8 +377,8 @@ func (p *ObservabilityProvider) createResource() (*sdkresource.Resource, error) 
 func (p *ObservabilityProvider) initTracing(ctx context.Context, res *sdkresource.Resource) error {
 	var exporter *otlptrace.Exporter
 	var err error
-	
-	// Set up exporter
+
+	// Set up exporter if endpoint is provided
 	if p.config.CollectorEndpoint != "" {
 		// Use OTLP exporter with gRPC
 		opts := []otlptracegrpc.Option{
@@ -387,36 +387,40 @@ func (p *ObservabilityProvider) initTracing(ctx context.Context, res *sdkresourc
 		if p.config.Insecure {
 			opts = append(opts, otlptracegrpc.WithInsecure())
 		}
-		
+
 		exporter, err = otlptracegrpc.New(ctx, opts...)
 		if err != nil {
 			return fmt.Errorf("failed to create trace exporter: %w", err)
 		}
-	} else {
-		// No exporter if no endpoint specified
-		return nil
 	}
-	
+
 	// Configure and create the trace provider
-	p.tracerProvider = sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exporter),
+	var tracerOpts []sdktrace.TracerProviderOption
+	tracerOpts = append(tracerOpts,
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sdktrace.TraceIDRatioBased(p.config.TraceSampleRate)),
 	)
-	
+
+	// Add exporter if available
+	if exporter != nil {
+		tracerOpts = append(tracerOpts, sdktrace.WithBatcher(exporter))
+	}
+
+	p.tracerProvider = sdktrace.NewTracerProvider(tracerOpts...)
+
 	// Set the global trace provider
 	otel.SetTracerProvider(p.tracerProvider)
-	
+
 	// Create a tracer for this library
 	p.tracer = p.tracerProvider.Tracer(
 		fmt.Sprintf("github.com/LerianStudio/lib-commons/%s", p.config.ServiceName),
 	)
-	
+
 	// Add shutdown function
 	p.shutdownFunctions = append(p.shutdownFunctions, func(ctx context.Context) error {
 		return p.tracerProvider.Shutdown(ctx)
 	})
-	
+
 	return nil
 }
 
@@ -424,7 +428,7 @@ func (p *ObservabilityProvider) initTracing(ctx context.Context, res *sdkresourc
 func (p *ObservabilityProvider) initMetrics(ctx context.Context, res *sdkresource.Resource) error {
 	var exporter sdkmetric.Exporter
 	var err error
-	
+
 	// Set up exporter
 	if p.config.CollectorEndpoint != "" {
 		// Use OTLP exporter with gRPC
@@ -434,7 +438,7 @@ func (p *ObservabilityProvider) initMetrics(ctx context.Context, res *sdkresourc
 		if p.config.Insecure {
 			opts = append(opts, otlpmetricgrpc.WithInsecure())
 		}
-		
+
 		exporter, err = otlpmetricgrpc.New(ctx, opts...)
 		if err != nil {
 			return fmt.Errorf("failed to create metric exporter: %w", err)
@@ -443,26 +447,26 @@ func (p *ObservabilityProvider) initMetrics(ctx context.Context, res *sdkresourc
 		// No exporter if no endpoint specified
 		return nil
 	}
-	
+
 	// Configure and create the meter provider
 	p.meterProvider = sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)),
 	)
-	
+
 	// Set the global meter provider
 	otel.SetMeterProvider(p.meterProvider)
-	
+
 	// Create a meter for this library
 	p.meter = p.meterProvider.Meter(
 		fmt.Sprintf("github.com/LerianStudio/lib-commons/%s", p.config.ServiceName),
 	)
-	
+
 	// Add shutdown function
 	p.shutdownFunctions = append(p.shutdownFunctions, func(ctx context.Context) error {
 		return p.meterProvider.Shutdown(ctx)
 	})
-	
+
 	return nil
 }
 
@@ -521,9 +525,9 @@ func (p *ObservabilityProvider) Shutdown(ctx context.Context) error {
 	if !p.enabled {
 		return nil
 	}
-	
+
 	p.enabled = false
-	
+
 	// Call all shutdown functions
 	var errors []error
 	for _, shutdownFn := range p.shutdownFunctions {
@@ -531,11 +535,11 @@ func (p *ObservabilityProvider) Shutdown(ctx context.Context) error {
 			errors = append(errors, err)
 		}
 	}
-	
+
 	if len(errors) > 0 {
 		return fmt.Errorf("errors during shutdown: %v", errors)
 	}
-	
+
 	return nil
 }
 
@@ -550,11 +554,11 @@ func WithSpan(ctx context.Context, provider Provider, name string, fn func(conte
 	if !provider.IsEnabled() {
 		return fn(ctx)
 	}
-	
+
 	// Start a new span
 	ctx, span := provider.Tracer().Start(ctx, name, opts...)
 	defer span.End()
-	
+
 	// Run the function and handle errors
 	err := fn(ctx)
 	if err != nil {
@@ -563,7 +567,7 @@ func WithSpan(ctx context.Context, provider Provider, name string, fn func(conte
 	} else {
 		span.SetStatus(codes.Ok, "")
 	}
-	
+
 	return err
 }
 
@@ -573,13 +577,13 @@ func RecordMetric(ctx context.Context, provider Provider, name string, value flo
 	if !provider.IsEnabled() {
 		return
 	}
-	
+
 	counter, err := provider.Meter().Float64Counter(name)
 	if err != nil {
 		provider.Logger().Errorf("Failed to create counter for metric %s: %v", name, err)
 		return
 	}
-	
+
 	counter.Add(ctx, value, metric.WithAttributes(attrs...))
 }
 
@@ -589,14 +593,14 @@ func RecordDuration(ctx context.Context, provider Provider, name string, start t
 	if !provider.IsEnabled() {
 		return
 	}
-	
+
 	duration := time.Since(start).Milliseconds()
-	
+
 	histogram, err := provider.Meter().Int64Histogram(name)
 	if err != nil {
 		provider.Logger().Errorf("Failed to create histogram for metric %s: %v", name, err)
 		return
 	}
-	
+
 	histogram.Record(ctx, duration, metric.WithAttributes(attrs...))
 }
