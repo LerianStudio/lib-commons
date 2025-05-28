@@ -26,13 +26,13 @@ type fiberMiddleware struct {
 	hideBody         bool
 	extractUserID    func(*fiber.Ctx) string
 	extractRequestID func(*fiber.Ctx) string
-	
+
 	// Metrics
-	requestCounter   metric.Int64Counter
-	requestDuration  metric.Float64Histogram
-	requestSize      metric.Int64Histogram
-	responseSize     metric.Int64Histogram
-	activeRequests   metric.Int64UpDownCounter
+	requestCounter  metric.Int64Counter
+	requestDuration metric.Float64Histogram
+	requestSize     metric.Int64Histogram
+	responseSize    metric.Int64Histogram
+	activeRequests  metric.Int64UpDownCounter
 }
 
 // WithIgnorePathsFiber specifies URL paths that should not be traced
@@ -52,7 +52,7 @@ func WithIgnoreHeadersFiber(headers ...string) FiberMiddlewareOption {
 		if len(headers) == 0 {
 			return fmt.Errorf("at least one header must be provided")
 		}
-		
+
 		headerMap := make(map[string]struct{})
 		for _, h := range m.ignoreHeaders {
 			headerMap[strings.ToLower(h)] = struct{}{}
@@ -327,8 +327,19 @@ func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
 	// Record start time
 	start := time.Now()
 
-	// Process request
-	err := c.Next()
+	// Process request with panic recovery
+	var err error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Convert panic to error
+				err = fmt.Errorf("panic recovered: %v", r)
+				// Set 500 status code for panic
+				c.Status(500)
+			}
+		}()
+		err = c.Next()
+	}()
 
 	// Calculate duration
 	duration := time.Since(start)
@@ -349,7 +360,7 @@ func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		responseAttrs = append(responseAttrs, 
+		responseAttrs = append(responseAttrs,
 			attribute.Bool("error", true),
 			attribute.String("error.type", fmt.Sprintf("%T", err)),
 			attribute.String("error.message", err.Error()),

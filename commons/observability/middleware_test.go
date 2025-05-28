@@ -29,14 +29,13 @@ func TestNewObservabilityMiddleware(t *testing.T) {
 		require.NoError(t, err)
 		defer provider.Shutdown(ctx)
 
-		buf := &bytes.Buffer{}
 		baseLogger := &log.GoLogger{Level: log.InfoLevel}
 		logger := log.NewStructuredLogger(baseLogger)
 
 		om, err := NewObservabilityMiddleware(
 			"test-service",
-			provider.(*ObservabilityProvider).tracerProvider,
-			provider.(*ObservabilityProvider).meterProvider,
+			provider.TracerProvider(),
+			provider.MeterProvider(),
 			logger,
 		)
 
@@ -54,8 +53,8 @@ func TestNewObservabilityMiddleware(t *testing.T) {
 	})
 
 	t.Run("with nil providers", func(t *testing.T) {
-		buf := &bytes.Buffer{}
-		logger := log.NewStructuredLogger(log.InfoLevel, buf)
+		baseLogger := &log.GoLogger{Level: log.InfoLevel}
+		logger := log.NewStructuredLogger(baseLogger)
 
 		_, err := NewObservabilityMiddleware(
 			"test-service",
@@ -97,7 +96,8 @@ func TestObservabilityMiddlewareHandler(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	logger := log.NewStructuredLogger(log.InfoLevel, buf)
+	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
 		"test-service",
@@ -229,8 +229,8 @@ func TestObservabilityMiddlewareMetrics(t *testing.T) {
 	require.NoError(t, err)
 	defer provider.Shutdown(ctx)
 
-	buf := &bytes.Buffer{}
-	logger := log.NewStructuredLogger(log.InfoLevel, buf)
+	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
 		"test-service",
@@ -267,8 +267,8 @@ func TestObservabilityMiddlewareTracing(t *testing.T) {
 	require.NoError(t, err)
 	defer provider.Shutdown(ctx)
 
-	buf := &bytes.Buffer{}
-	logger := log.NewStructuredLogger(log.InfoLevel, buf)
+	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
 		"test-service",
@@ -307,8 +307,8 @@ func TestObservabilityMiddlewareHeaders(t *testing.T) {
 	require.NoError(t, err)
 	defer provider.Shutdown(ctx)
 
-	buf := &bytes.Buffer{}
-	logger := log.NewStructuredLogger(log.InfoLevel, buf)
+	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
 		"test-service",
@@ -354,7 +354,8 @@ func TestObservabilityMiddlewareRequestSize(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	logger := log.NewStructuredLogger(log.InfoLevel, buf)
+	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
 		"test-service",
@@ -396,7 +397,8 @@ func TestObservabilityMiddlewareResponseSize(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	logger := log.NewStructuredLogger(log.InfoLevel, buf)
+	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
 		"test-service",
@@ -441,7 +443,8 @@ func TestObservabilityMiddlewareDuration(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	logger := log.NewStructuredLogger(log.InfoLevel, buf)
+	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
 		"test-service",
@@ -485,7 +488,8 @@ func TestObservabilityMiddlewareStatusClasses(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	logger := log.NewStructuredLogger(log.InfoLevel, buf)
+	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
 		"test-service",
@@ -568,7 +572,8 @@ func TestObservabilityMiddlewareIPExtraction(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	logger := log.NewStructuredLogger(log.InfoLevel, buf)
+	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
 		"test-service",
@@ -608,7 +613,8 @@ func TestObservabilityMiddlewareIntegration(t *testing.T) {
 	defer provider.Shutdown(ctx)
 
 	buf := &bytes.Buffer{}
-	logger := log.NewStructuredLogger(log.InfoLevel, buf)
+	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
 		"integration-service",
@@ -725,8 +731,8 @@ func BenchmarkObservabilityMiddleware(b *testing.B) {
 	require.NoError(b, err)
 	defer provider.Shutdown(ctx)
 
-	buf := &bytes.Buffer{}
-	logger := log.NewStructuredLogger(log.InfoLevel, buf)
+	baseLogger := &log.GoLogger{Level: log.InfoLevel}
+	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
 		"bench-service",

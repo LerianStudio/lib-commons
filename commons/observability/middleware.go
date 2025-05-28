@@ -13,19 +13,19 @@ import (
 
 // ObservabilityMiddleware provides comprehensive observability for HTTP requests
 type ObservabilityMiddleware struct {
-	serviceName      string
-	tracerProvider   trace.TracerProvider
-	metricProvider   metric.MeterProvider
-	logger           *log.StructuredLogger
-	tracer           trace.Tracer
-	meter            metric.Meter
-	
+	serviceName    string
+	tracerProvider trace.TracerProvider
+	metricProvider metric.MeterProvider
+	logger         *log.StructuredLogger
+	tracer         trace.Tracer
+	meter          metric.Meter
+
 	// Metrics
-	requestCounter   metric.Int64Counter
-	requestDuration  metric.Float64Histogram
-	requestSize      metric.Int64Histogram
-	responseSize     metric.Int64Histogram
-	activeRequests   metric.Int64UpDownCounter
+	requestCounter  metric.Int64Counter
+	requestDuration metric.Float64Histogram
+	requestSize     metric.Int64Histogram
+	responseSize    metric.Int64Histogram
+	activeRequests  metric.Int64UpDownCounter
 }
 
 // NewObservabilityMiddleware creates a new observability middleware
@@ -35,17 +35,25 @@ func NewObservabilityMiddleware(
 	metricProvider metric.MeterProvider,
 	logger *log.StructuredLogger,
 ) (*ObservabilityMiddleware, error) {
+	// Validate required parameters
+	if tracerProvider == nil {
+		return nil, fmt.Errorf("tracerProvider cannot be nil")
+	}
+	if metricProvider == nil {
+		return nil, fmt.Errorf("metricProvider cannot be nil")
+	}
+
 	om := &ObservabilityMiddleware{
 		serviceName:    serviceName,
 		tracerProvider: tracerProvider,
 		metricProvider: metricProvider,
 		logger:         logger,
 	}
-	
+
 	// Set up tracer and meter
 	om.tracer = tracerProvider.Tracer(serviceName)
 	om.meter = metricProvider.Meter(serviceName)
-	
+
 	// Initialize metrics
 	requestCounter, err := om.meter.Int64Counter(
 		"http.server.request_count",
@@ -56,7 +64,7 @@ func NewObservabilityMiddleware(
 		return nil, fmt.Errorf("failed to create request counter: %w", err)
 	}
 	om.requestCounter = requestCounter
-	
+
 	requestDuration, err := om.meter.Float64Histogram(
 		"http.server.duration",
 		metric.WithDescription("HTTP request duration in milliseconds"),
@@ -66,7 +74,7 @@ func NewObservabilityMiddleware(
 		return nil, fmt.Errorf("failed to create request duration histogram: %w", err)
 	}
 	om.requestDuration = requestDuration
-	
+
 	requestSize, err := om.meter.Int64Histogram(
 		"http.server.request_content_length",
 		metric.WithDescription("HTTP request body size in bytes"),
@@ -76,7 +84,7 @@ func NewObservabilityMiddleware(
 		return nil, fmt.Errorf("failed to create request size histogram: %w", err)
 	}
 	om.requestSize = requestSize
-	
+
 	responseSize, err := om.meter.Int64Histogram(
 		"http.server.response_content_length",
 		metric.WithDescription("HTTP response body size in bytes"),
@@ -86,7 +94,7 @@ func NewObservabilityMiddleware(
 		return nil, fmt.Errorf("failed to create response size histogram: %w", err)
 	}
 	om.responseSize = responseSize
-	
+
 	activeRequests, err := om.meter.Int64UpDownCounter(
 		"http.server.active_requests",
 		metric.WithDescription("Number of active HTTP requests"),
@@ -96,7 +104,7 @@ func NewObservabilityMiddleware(
 		return nil, fmt.Errorf("failed to create active requests counter: %w", err)
 	}
 	om.activeRequests = activeRequests
-	
+
 	return om, nil
 }
 
@@ -104,7 +112,7 @@ func NewObservabilityMiddleware(
 func (om *ObservabilityMiddleware) Middleware() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		start := time.Now()
-		
+
 		// Extract request attributes
 		attrs := []attribute.KeyValue{
 			attribute.String("http.method", c.Method()),
@@ -115,7 +123,7 @@ func (om *ObservabilityMiddleware) Middleware() fiber.Handler {
 			attribute.String("http.user_agent", c.Get("User-Agent")),
 			attribute.String("net.peer.ip", c.IP()),
 		}
-		
+
 		// Start span
 		ctx, span := om.tracer.Start(
 			c.UserContext(),
@@ -124,61 +132,61 @@ func (om *ObservabilityMiddleware) Middleware() fiber.Handler {
 			trace.WithSpanKind(trace.SpanKindServer),
 		)
 		defer span.End()
-		
+
 		// Update context
 		c.SetUserContext(ctx)
-		
+
 		// Record active request
 		om.activeRequests.Add(ctx, 1, metric.WithAttributes(attrs...))
 		defer om.activeRequests.Add(ctx, -1, metric.WithAttributes(attrs...))
-		
+
 		// Record request size
 		if c.Request().Header.ContentLength() > 0 {
 			om.requestSize.Record(ctx, int64(c.Request().Header.ContentLength()), metric.WithAttributes(attrs...))
 		}
-		
+
 		// Process request
 		err := c.Next()
-		
+
 		// Calculate duration
 		duration := time.Since(start).Milliseconds()
-		
+
 		// Add response attributes
 		statusCode := c.Response().StatusCode()
-		attrs = append(attrs, 
+		attrs = append(attrs,
 			attribute.Int("http.status_code", statusCode),
 			attribute.String("http.status_class", fmt.Sprintf("%dxx", statusCode/100)),
 		)
-		
+
 		// Update span
 		span.SetAttributes(attrs...)
 		if err != nil {
 			span.RecordError(err)
 			attrs = append(attrs, attribute.String("error.type", fmt.Sprintf("%T", err)))
 		}
-		
+
 		// Record metrics
 		om.requestCounter.Add(ctx, 1, metric.WithAttributes(attrs...))
 		om.requestDuration.Record(ctx, float64(duration), metric.WithAttributes(attrs...))
-		
+
 		// Record response size
 		responseSize := len(c.Response().Body())
 		if responseSize > 0 {
 			om.responseSize.Record(ctx, int64(responseSize), metric.WithAttributes(attrs...))
 		}
-		
+
 		// Log request
 		fields := map[string]interface{}{
-			"method":       c.Method(),
-			"path":         c.Path(),
-			"status":       statusCode,
-			"duration_ms":  duration,
-			"request_size": c.Request().Header.ContentLength(),
+			"method":        c.Method(),
+			"path":          c.Path(),
+			"status":        statusCode,
+			"duration_ms":   duration,
+			"request_size":  c.Request().Header.ContentLength(),
 			"response_size": responseSize,
-			"ip":          c.IP(),
-			"user_agent":  c.Get("User-Agent"),
+			"ip":            c.IP(),
+			"user_agent":    c.Get("User-Agent"),
 		}
-		
+
 		if err != nil {
 			fields["error"] = err.Error()
 			om.logger.WithFields(fields).Error("Request failed")
@@ -187,7 +195,7 @@ func (om *ObservabilityMiddleware) Middleware() fiber.Handler {
 		} else {
 			om.logger.WithFields(fields).Info("Request completed successfully")
 		}
-		
+
 		return err
 	}
 }

@@ -68,6 +68,12 @@ type Provider interface {
 	// Meter returns a meter for creating metrics
 	Meter() metric.Meter
 
+	// TracerProvider returns the underlying tracer provider
+	TracerProvider() trace.TracerProvider
+
+	// MeterProvider returns the underlying meter provider
+	MeterProvider() metric.MeterProvider
+
 	// Logger returns a logger
 	Logger() Logger
 
@@ -509,6 +515,24 @@ func (p *ObservabilityProvider) Meter() metric.Meter {
 		return otel.GetMeterProvider().Meter("")
 	}
 	return p.meter
+}
+
+// TracerProvider returns the underlying tracer provider
+func (p *ObservabilityProvider) TracerProvider() trace.TracerProvider {
+	if !p.enabled || !p.config.EnabledComponents.Tracing || p.tracerProvider == nil {
+		// Return a no-op tracer provider if tracing is disabled or not initialized
+		return trace.NewNoopTracerProvider()
+	}
+	return p.tracerProvider
+}
+
+// MeterProvider returns the underlying meter provider
+func (p *ObservabilityProvider) MeterProvider() metric.MeterProvider {
+	if !p.enabled || !p.config.EnabledComponents.Metrics || p.meterProvider == nil {
+		// Return the default global meter provider if metrics are disabled or not initialized
+		return otel.GetMeterProvider()
+	}
+	return p.meterProvider
 }
 
 // Logger returns a logger
