@@ -174,20 +174,23 @@ func WithCleanupInterval(interval time.Duration) MemoryCacheOption {
 // NewMemoryCache creates a new in-memory cache
 func NewMemoryCache(opts ...MemoryCacheOption) *MemoryCache {
 	c := &MemoryCache{
-		data:           make(map[string]*cacheEntry),
-		maxSize:        1000,
-		evictionPolicy: EvictionLRU,
-		stopCleanup:    make(chan struct{}),
+		data:            make(map[string]*cacheEntry),
+		maxSize:         1000,
+		evictionPolicy:  EvictionLRU,
+		cleanupInterval: 5 * time.Minute, // Default cleanup interval to prevent memory leaks
+		stopCleanup:     make(chan struct{}),
 	}
 
 	for _, opt := range opts {
 		opt(c)
 	}
 
-	// Start cleanup goroutine if interval is set
-	if c.cleanupInterval > 0 {
-		go c.startCleanup()
+	// Always start cleanup goroutine to prevent memory leaks
+	// Even if interval is 0, we set a reasonable default
+	if c.cleanupInterval <= 0 {
+		c.cleanupInterval = 10 * time.Minute // Fallback default
 	}
+	go c.startCleanup()
 
 	return c
 }
@@ -247,12 +250,11 @@ func (c *MemoryCache) Set(_ context.Context, key string, value interface{}, ttl 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Check if we need to evict
-	if c.maxSize > 0 && len(c.data) >= c.maxSize {
-		if _, exists := c.data[key]; !exists {
-			// Need to evict something
-			c.evict()
-		}
+	// Atomic size check and eviction to prevent race conditions
+	_, keyExists := c.data[key]
+	if c.maxSize > 0 && len(c.data) >= c.maxSize && !keyExists {
+		// Need to evict something before adding new entry
+		c.evict()
 	}
 
 	entry := &cacheEntry{

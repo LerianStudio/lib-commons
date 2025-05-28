@@ -311,7 +311,7 @@ func TestPostgresConnection_GetDB(t *testing.T) {
 			setupFunc: func(pc *PostgresConnection) {
 				mockLogger := pc.Logger.(*MockLogger)
 				mockLogger.On("Info", mock.Anything).Maybe()
-				mockLogger.On("Fatalf", mock.Anything, mock.Anything).Maybe()
+				mockLogger.On("Error", mock.Anything, mock.Anything).Maybe()
 				mockLogger.On("Infof", mock.Anything, mock.Anything).Maybe()
 			},
 			expectError: true,
@@ -386,9 +386,8 @@ func TestPostgresConnection_Connect_Errors(t *testing.T) {
 			mockLogger := &MockLogger{}
 			mockLogger.On("Info", mock.Anything).Maybe()
 			mockLogger.On("Infof", mock.Anything, mock.Anything).Maybe()
-			mockLogger.On("Fatal", mock.Anything, mock.Anything).Maybe()
-			mockLogger.On("Fatalf", mock.Anything, mock.Anything).Maybe()
 			mockLogger.On("Error", mock.Anything, mock.Anything).Maybe()
+			mockLogger.On("Errorf", mock.Anything, mock.Anything).Maybe()
 			mockLogger.On("Warn", mock.Anything).Maybe()
 
 			tt.pc.Logger = mockLogger
@@ -402,14 +401,12 @@ func TestPostgresConnection_Connect_Errors(t *testing.T) {
 				defer tt.cleanup()
 			}
 
-			// Since sql.Open doesn't actually connect until used, and we can't easily mock it,
-			// we expect Connect to return nil (due to Fatal calls) or an error
+			// Since we now properly return errors instead of calling Fatal,
+			// we expect Connect to return an error for invalid connections
 			err := tt.pc.Connect()
 
-			// The function might return nil due to Fatal calls or an actual error
-			if err != nil {
-				assert.Error(t, err)
-			}
+			// The function should return an error for invalid connections
+			assert.Error(t, err)
 		})
 	}
 }
@@ -463,8 +460,9 @@ func TestPostgresConnection_Connect_MigrationScenarios(t *testing.T) {
 			mockLogger := &MockLogger{}
 			mockLogger.On("Info", mock.Anything).Maybe()
 			mockLogger.On("Infof", mock.Anything, mock.Anything).Maybe()
-			mockLogger.On("Fatal", mock.Anything, mock.Anything).Maybe()
-			mockLogger.On("Fatalf", mock.Anything, mock.Anything).Maybe()
+			mockLogger.On("Error", mock.Anything, mock.Anything).Maybe()
+			mockLogger.On("Errorf", mock.Anything, mock.Anything).Maybe()
+			mockLogger.On("Warn", mock.Anything).Maybe()
 
 			if tt.setupLogger != nil {
 				tt.setupLogger(mockLogger)
@@ -602,10 +600,9 @@ func TestDatabaseErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			mockLogger := &MockLogger{}
 			mockLogger.On("Info", mock.Anything).Maybe()
-			mockLogger.On("Fatal", mock.Anything, mock.Anything).Maybe()
-			mockLogger.On("Fatalf", mock.Anything, mock.Anything).Maybe()
 			mockLogger.On("Error", mock.Anything, mock.Anything).Maybe()
-			mockLogger.On("Infof", mock.Anything, mock.Anything).Maybe()
+			mockLogger.On("Errorf", mock.Anything, mock.Anything).Maybe()
+			mockLogger.On("Warn", mock.Anything).Maybe()
 
 			pc := &PostgresConnection{
 				ConnectionStringPrimary: tc.primaryConn,

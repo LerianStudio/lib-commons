@@ -4,10 +4,10 @@ package rabbitmq
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/commons/log"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -23,53 +23,86 @@ type RabbitMQConnection struct {
 	User                   string
 	Pass                   string
 	Channel                *amqp.Channel
+	Connection             *amqp.Connection
 	Logger                 log.Logger
 	Connected              bool
 }
 
 // Connect keeps a singleton connection with rabbitmq.
 func (rc *RabbitMQConnection) Connect() error {
-	rc.Logger.Info("Connecting on rabbitmq...")
+	rc.Logger.Info("Connecting to rabbitmq...")
 
 	conn, err := amqp.Dial(rc.ConnectionStringSource)
 	if err != nil {
-		rc.Logger.Fatal("failed to connect on rabbitmq", zap.Error(err))
-
-		return err
+		rc.Logger.Error("failed to connect to rabbitmq", zap.Error(err))
+		return fmt.Errorf("failed to connect to rabbitmq: %w", err)
 	}
 
 	ch, err := conn.Channel()
 	if err != nil {
-		rc.Logger.Fatal("failed to open channel on rabbitmq", zap.Error(err))
-
-		return err
+		conn.Close() // Clean up connection if channel creation fails
+		rc.Logger.Error("failed to open channel on rabbitmq", zap.Error(err))
+		return fmt.Errorf("failed to open rabbitmq channel: %w", err)
 	}
 
-	if ch == nil || !rc.HealthCheck() {
-		rc.Connected = false
-		err = errors.New("can't connect rabbitmq")
-		rc.Logger.Fatalf("RabbitMQ.HealthCheck: %v", zap.Error(err))
-
-		return err
+	// Test connection with AMQP-level health check instead of HTTP
+	if err := rc.testAMQPConnection(ch); err != nil {
+		ch.Close()
+		conn.Close()
+		rc.Logger.Error("AMQP connection health check failed", zap.Error(err))
+		return fmt.Errorf("rabbitmq health check failed: %w", err)
 	}
 
-	rc.Logger.Info("Connected on rabbitmq ✅ \n")
+	rc.Logger.Info("Connected to rabbitmq ✅")
 
 	rc.Connected = true
-
 	rc.Channel = ch
+	rc.Connection = conn
+
+	return nil
+}
+
+// testAMQPConnection performs AMQP-level health check instead of HTTP API
+func (rc *RabbitMQConnection) testAMQPConnection(ch *amqp.Channel) error {
+	// Try to declare a temporary queue to test the connection
+	tempQueue := fmt.Sprintf("health-check-%d", time.Now().UnixNano())
+	_, err := ch.QueueDeclare(
+		tempQueue, // name
+		false,     // durable
+		true,      // delete when unused
+		true,      // exclusive
+		false,     // no-wait
+		nil,       // arguments
+	)
+	if err != nil {
+		return fmt.Errorf("failed to declare test queue: %w", err)
+	}
+
+	// Clean up the test queue
+	_, err = ch.QueueDelete(tempQueue, false, false, false)
+	if err != nil {
+		rc.Logger.Warn("failed to delete test queue", zap.Error(err))
+		// Don't fail the health check for cleanup failure
+	}
 
 	return nil
 }
 
 // GetNewConnect returns a pointer to the rabbitmq connection, initializing it if necessary.
 func (rc *RabbitMQConnection) GetNewConnect() (*amqp.Channel, error) {
-	if !rc.Connected {
-		err := rc.Connect()
-		if err != nil {
-			rc.Logger.Infof("ERRCONECT %s", err)
+	if !rc.Connected || rc.Channel == nil || rc.Connection == nil {
+		if err := rc.Connect(); err != nil {
+			rc.Logger.Error("failed to establish rabbitmq connection", zap.Error(err))
+			return nil, fmt.Errorf("rabbitmq connection failed: %w", err)
+		}
+	}
 
-			return nil, err
+	// Check if connection is still alive
+	if rc.Connection.IsClosed() {
+		rc.Logger.Info("detected closed connection, attempting to reconnect...")
+		rc.Connected = false
+		if err := rc.Connect(); err != nil {
+			return nil, fmt.Errorf("rabbitmq reconnection failed: %w", err)
 		}
 	}
 
@@ -127,4 +160,31 @@ func (rc *RabbitMQConnection) HealthCheck() bool {
 	rc.Logger.Error("rabbitmq unhealthy...")
 
 	return false
+}
+
+// Close properly closes the RabbitMQ connection and channel
+func (rc *RabbitMQConnection) Close() error {
+	var errs []error
+
+	if rc.Channel != nil {
+		if err := rc.Channel.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close channel: %w", err))
+		}
+		rc.Channel = nil
+	}
+
+	if rc.Connection != nil {
+		if err := rc.Connection.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("failed to close connection: %w", err))
+		}
+		rc.Connection = nil
+	}
+
+	rc.Connected = false
+
+	if len(errs) > 0 {
+		return fmt.Errorf("errors during close: %v", errs)
+	}
+
+	return nil
 }

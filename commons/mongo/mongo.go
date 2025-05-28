@@ -4,6 +4,7 @@ package mongo
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -32,21 +33,22 @@ func (mc *MongoConnection) Connect(ctx context.Context) error {
 
 	noSQLDB, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
-		mc.Logger.Fatal("failed to open connect to mongodb", zap.Error(err))
-		return err
+		mc.Logger.Error("failed to open connect to mongodb", zap.Error(err))
+		return fmt.Errorf("failed to connect to mongodb: %w", err)
 	}
 
 	if err := noSQLDB.Ping(ctx, nil); err != nil {
-		mc.Logger.Infof("MongoDBConnection.Ping %v",
-			zap.Error(err))
-
-		return err
+		// Close the connection if ping fails
+		if disconnectErr := noSQLDB.Disconnect(ctx); disconnectErr != nil {
+			mc.Logger.Error("failed to disconnect after ping failure", zap.Error(disconnectErr))
+		}
+		mc.Logger.Error("mongodb health check failed", zap.Error(err))
+		return fmt.Errorf("mongodb health check failed: %w", err)
 	}
 
-	mc.Logger.Info("Connected to mongodb ✅ \n")
+	mc.Logger.Info("Connected to mongodb ✅")
 
 	mc.Connected = true
-
 	mc.DB = noSQLDB
 
 	return nil

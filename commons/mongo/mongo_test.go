@@ -187,7 +187,7 @@ func TestMongoConnection_GetDB_NotConnected(t *testing.T) {
 	// Setup expectations for Connect being called
 	mockLogger.On("Info", mock.Anything).Maybe()
 	mockLogger.On("Infof", mock.Anything, mock.Anything).Maybe()
-	mockLogger.On("Fatal", mock.Anything).Maybe()
+	mockLogger.On("Error", mock.Anything, mock.Anything).Maybe()
 
 	mc := &MongoConnection{
 		ConnectionStringSource: "mongodb://localhost:27017",
@@ -307,7 +307,7 @@ func TestMongoConnection_ErrorScenarios(t *testing.T) {
 		mockLogger := new(MockLogger)
 		mockLogger.On("Info", mock.Anything).Maybe()
 		mockLogger.On("Infof", mock.Anything, mock.Anything).Maybe()
-		mockLogger.On("Fatal", mock.Anything).Maybe()
+		mockLogger.On("Error", mock.Anything, mock.Anything).Maybe()
 
 		mc := &MongoConnection{
 			ConnectionStringSource: "invalid://connection",
@@ -319,10 +319,9 @@ func TestMongoConnection_ErrorScenarios(t *testing.T) {
 		ctx := context.Background()
 		db, err := mc.GetDB(ctx)
 
-		// In real implementation, this would return an error
-		// This test shows we should handle connection errors properly
-		_ = db
-		_ = err
+		// Should return an error now instead of calling Fatal
+		assert.Error(t, err)
+		assert.Nil(t, db)
 	})
 }
 
