@@ -156,7 +156,7 @@ func TestMongoConnection_Connect_InvalidURI(t *testing.T) {
 
 func TestMongoConnection_GetDB_AlreadyConnected(t *testing.T) {
 	mockLogger := new(MockLogger)
-	
+
 	// Create a mock client
 	mockClient := &mongo.Client{}
 
@@ -171,11 +171,11 @@ func TestMongoConnection_GetDB_AlreadyConnected(t *testing.T) {
 	// When DB is already set, it should return it without connecting
 	ctx := context.Background()
 	db, err := mc.GetDB(ctx)
-	
+
 	assert.NoError(t, err)
 	assert.NotNil(t, db)
 	assert.Equal(t, mockClient, db)
-	
+
 	// Verify no connection attempt was made
 	mockLogger.AssertNotCalled(t, "Info", "Connecting to mongodb...")
 }
@@ -221,56 +221,56 @@ func TestMongoConnection_DefaultValues(t *testing.T) {
 
 func TestMongoConnection_ConfigurationVariations(t *testing.T) {
 	testCases := []struct {
-		name                   string
-		connectionString       string
-		maxPoolSize            uint64
-		database               string
+		name                     string
+		connectionString         string
+		maxPoolSize              uint64
+		database                 string
 		expectedConnectionString string
-		expectedMaxPoolSize    uint64
-		expectedDatabase       string
+		expectedMaxPoolSize      uint64
+		expectedDatabase         string
 	}{
 		{
-			name:                   "Standard configuration",
-			connectionString:       "mongodb://localhost:27017",
-			maxPoolSize:            10,
-			database:               "testdb",
+			name:                     "Standard configuration",
+			connectionString:         "mongodb://localhost:27017",
+			maxPoolSize:              10,
+			database:                 "testdb",
 			expectedConnectionString: "mongodb://localhost:27017",
-			expectedMaxPoolSize:    10,
-			expectedDatabase:       "testdb",
+			expectedMaxPoolSize:      10,
+			expectedDatabase:         "testdb",
 		},
 		{
-			name:                   "With authentication",
-			connectionString:       "mongodb://user:pass@localhost:27017",
-			maxPoolSize:            20,
-			database:               "authdb",
+			name:                     "With authentication",
+			connectionString:         "mongodb://user:pass@localhost:27017",
+			maxPoolSize:              20,
+			database:                 "authdb",
 			expectedConnectionString: "mongodb://user:pass@localhost:27017",
-			expectedMaxPoolSize:    20,
-			expectedDatabase:       "authdb",
+			expectedMaxPoolSize:      20,
+			expectedDatabase:         "authdb",
 		},
 		{
-			name:                   "Replica set configuration",
-			connectionString:       "mongodb://host1:27017,host2:27017,host3:27017/?replicaSet=myRepl",
-			maxPoolSize:            50,
-			database:               "replicadb",
+			name:                     "Replica set configuration",
+			connectionString:         "mongodb://host1:27017,host2:27017,host3:27017/?replicaSet=myRepl",
+			maxPoolSize:              50,
+			database:                 "replicadb",
 			expectedConnectionString: "mongodb://host1:27017,host2:27017,host3:27017/?replicaSet=myRepl",
-			expectedMaxPoolSize:    50,
-			expectedDatabase:       "replicadb",
+			expectedMaxPoolSize:      50,
+			expectedDatabase:         "replicadb",
 		},
 		{
-			name:                   "Zero pool size",
-			connectionString:       "mongodb://localhost:27017",
-			maxPoolSize:            0,
-			database:               "testdb",
+			name:                     "Zero pool size",
+			connectionString:         "mongodb://localhost:27017",
+			maxPoolSize:              0,
+			database:                 "testdb",
 			expectedConnectionString: "mongodb://localhost:27017",
-			expectedMaxPoolSize:    0,
-			expectedDatabase:       "testdb",
+			expectedMaxPoolSize:      0,
+			expectedDatabase:         "testdb",
 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			mockLogger := new(MockLogger)
-			
+
 			mc := &MongoConnection{
 				ConnectionStringSource: tc.connectionString,
 				Logger:                 mockLogger,
@@ -318,7 +318,7 @@ func TestMongoConnection_ErrorScenarios(t *testing.T) {
 		// This will fail to connect in a real scenario
 		ctx := context.Background()
 		db, err := mc.GetDB(ctx)
-		
+
 		// In real implementation, this would return an error
 		// This test shows we should handle connection errors properly
 		_ = db
@@ -330,36 +330,36 @@ func TestMongoConnection_ErrorScenarios(t *testing.T) {
 // These would actually connect to a test MongoDB instance
 func TestMongoConnection_Integration(t *testing.T) {
 	t.Skip("Integration tests require a running MongoDB instance")
-	
+
 	// Example of what an integration test might look like:
 	/*
-	logger := log.NewLogger() // Real logger instance
-	
-	mc := &MongoConnection{
-		ConnectionStringSource: "mongodb://localhost:27017/testdb",
-		Logger:                 logger,
-		MaxPoolSize:            10,
-		Database:               "testdb",
-	}
-	
-	err := mc.Connect(ctx)
-	assert.NoError(t, err)
-	assert.True(t, mc.Connected)
-	assert.NotNil(t, mc.DB)
-	
-	// Test ping
-	err = mc.DB.Ping(ctx, nil)
-	assert.NoError(t, err)
-	
-	// Test GetDB when already connected
-	db, err := mc.GetDB(ctx)
-	assert.NoError(t, err)
-	assert.NotNil(t, db)
-	assert.Equal(t, mc.DB, db)
-	
-	// Cleanup
-	err = mc.DB.Disconnect(ctx)
-	assert.NoError(t, err)
+		logger := log.NewLogger() // Real logger instance
+
+		mc := &MongoConnection{
+			ConnectionStringSource: "mongodb://localhost:27017/testdb",
+			Logger:                 logger,
+			MaxPoolSize:            10,
+			Database:               "testdb",
+		}
+
+		err := mc.Connect(ctx)
+		assert.NoError(t, err)
+		assert.True(t, mc.Connected)
+		assert.NotNil(t, mc.DB)
+
+		// Test ping
+		err = mc.DB.Ping(ctx, nil)
+		assert.NoError(t, err)
+
+		// Test GetDB when already connected
+		db, err := mc.GetDB(ctx)
+		assert.NoError(t, err)
+		assert.NotNil(t, db)
+		assert.Equal(t, mc.DB, db)
+
+		// Cleanup
+		err = mc.DB.Disconnect(ctx)
+		assert.NoError(t, err)
 	*/
 }
 

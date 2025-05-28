@@ -12,12 +12,12 @@ import (
 
 // Test step implementations
 type testStep struct {
-	name         string
-	executeFunc  func(ctx context.Context, data interface{}) error
+	name           string
+	executeFunc    func(ctx context.Context, data interface{}) error
 	compensateFunc func(ctx context.Context, data interface{}) error
-	executed     bool
-	compensated  bool
-	mu           sync.Mutex
+	executed       bool
+	compensated    bool
+	mu             sync.Mutex
 }
 
 func (s *testStep) Name() string {
@@ -28,7 +28,7 @@ func (s *testStep) Execute(ctx context.Context, data interface{}) error {
 	s.mu.Lock()
 	s.executed = true
 	s.mu.Unlock()
-	
+
 	if s.executeFunc != nil {
 		return s.executeFunc(ctx, data)
 	}
@@ -39,7 +39,7 @@ func (s *testStep) Compensate(ctx context.Context, data interface{}) error {
 	s.mu.Lock()
 	s.compensated = true
 	s.mu.Unlock()
-	
+
 	if s.compensateFunc != nil {
 		return s.compensateFunc(ctx, data)
 	}
@@ -74,7 +74,7 @@ func TestSaga(t *testing.T) {
 		// Execute
 		ctx := context.Background()
 		data := map[string]string{"key": "value"}
-		
+
 		err := saga.Execute(ctx, data)
 		assert.NoError(t, err)
 
@@ -109,7 +109,7 @@ func TestSaga(t *testing.T) {
 		// Execute
 		ctx := context.Background()
 		data := map[string]string{"key": "value"}
-		
+
 		err := saga.Execute(ctx, data)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "step3 failed")
@@ -150,13 +150,13 @@ func TestSaga(t *testing.T) {
 		// Execute with cancellation
 		ctx, cancel := context.WithCancel(context.Background())
 		data := map[string]string{"key": "value"}
-		
+
 		// Cancel after a short delay
 		go func() {
 			time.Sleep(50 * time.Millisecond)
 			cancel()
 		}()
-		
+
 		err := saga.Execute(ctx, data)
 		assert.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
@@ -191,10 +191,10 @@ func TestSaga(t *testing.T) {
 		// Execute
 		ctx := context.Background()
 		data := map[string]string{"key": "value"}
-		
+
 		err := saga.Execute(ctx, data)
 		assert.Error(t, err)
-		
+
 		// Should contain both original error and compensation error
 		assert.Contains(t, err.Error(), "step3 failed")
 		assert.Contains(t, err.Error(), "compensation failed")
@@ -259,7 +259,7 @@ func TestDistributedSaga(t *testing.T) {
 		// Create event store
 		events := make([]Event, 0)
 		var mu sync.Mutex
-		
+
 		store := &mockEventStore{
 			publishFunc: func(ctx context.Context, event Event) error {
 				mu.Lock()
@@ -311,9 +311,9 @@ func TestDistributedSaga(t *testing.T) {
 		// Verify events
 		mu.Lock()
 		defer mu.Unlock()
-		
+
 		assert.Greater(t, len(events), 0)
-		
+
 		// Should have saga started event
 		hasStarted := false
 		for _, e := range events {
@@ -339,7 +339,7 @@ func TestDistributedSaga(t *testing.T) {
 		// Create event store
 		events := make([]Event, 0)
 		var mu sync.Mutex
-		
+
 		store := &mockEventStore{
 			publishFunc: func(ctx context.Context, event Event) error {
 				mu.Lock()
@@ -386,7 +386,7 @@ func TestDistributedSaga(t *testing.T) {
 		// Verify compensation events
 		mu.Lock()
 		defer mu.Unlock()
-		
+
 		// Should have saga failed event
 		hasFailed := false
 		for _, e := range events {
@@ -424,9 +424,9 @@ func (m *mockEventStore) Publish(ctx context.Context, event Event) error {
 func TestSagaBuilder(t *testing.T) {
 	t.Run("build saga with options", func(t *testing.T) {
 		builder := NewSagaBuilder("test-saga").
-			WithTimeout(5 * time.Second).
+			WithTimeout(5*time.Second).
 			WithRetry(3, 100*time.Millisecond).
-			WithStep("step1", 
+			WithStep("step1",
 				func(ctx context.Context, data interface{}) error {
 					return nil
 				},
@@ -472,7 +472,7 @@ func TestSagaBuilder(t *testing.T) {
 		saga := builder.Build()
 		ctx := context.Background()
 		err := saga.Execute(ctx, nil)
-		
+
 		assert.NoError(t, err)
 		assert.Equal(t, 3, attempts)
 	})

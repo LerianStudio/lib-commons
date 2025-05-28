@@ -113,7 +113,7 @@ func StartServerWithGracefulShutdown(
 	// Start server in a separate goroutine
 	go func() {
 		logger.Infof("Starting HTTP server on %s", serverAddress)
-		
+
 		if err := app.Listen(serverAddress); err != nil {
 			// During normal shutdown, app.Listen() will return an error
 			// We only want to log unexpected errors

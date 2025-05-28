@@ -159,9 +159,9 @@ func SafeInt64ToInt(val int64) int {
 // SafeUintToInt converts a uint to int64 safely by capping values at math.MaxInt64.
 func SafeUintToInt(val uint) int {
 	if val > uint(math.MaxInt) {
-	    return math.MaxInt
+		return math.MaxInt
 	}
- 	
+
 	return int(val)
 }
 

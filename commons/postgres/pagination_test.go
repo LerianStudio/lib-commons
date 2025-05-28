@@ -181,7 +181,7 @@ func TestPagination_JSONSerialization(t *testing.T) {
 	assert.NotNil(t, jsonMap["limit"])
 	assert.NotNil(t, jsonMap["page"])
 	assert.NotNil(t, jsonMap["next_cursor"])
-	
+
 	// SortOrder, StartDate, and EndDate should not be in JSON (json:"-")
 	assert.Nil(t, jsonMap["sort_order"])
 	assert.Nil(t, jsonMap["start_date"])
@@ -221,15 +221,15 @@ func TestPagination_EdgeCases(t *testing.T) {
 
 	t.Run("should handle multiple SetItems calls", func(t *testing.T) {
 		p := &Pagination{}
-		
+
 		// First set
 		p.SetItems([]int{1, 2, 3})
 		assert.Equal(t, []int{1, 2, 3}, p.Items)
-		
+
 		// Second set (should override)
 		p.SetItems([]string{"a", "b", "c"})
 		assert.Equal(t, []string{"a", "b", "c"}, p.Items)
-		
+
 		// Third set with nil
 		p.SetItems(nil)
 		assert.Nil(t, p.Items)
@@ -237,17 +237,17 @@ func TestPagination_EdgeCases(t *testing.T) {
 
 	t.Run("should handle multiple SetCursor calls", func(t *testing.T) {
 		p := &Pagination{}
-		
+
 		// First set
 		p.SetCursor("next1", "prev1")
 		assert.Equal(t, "next1", p.NextCursor)
 		assert.Equal(t, "prev1", p.PrevCursor)
-		
+
 		// Second set (should override)
 		p.SetCursor("next2", "prev2")
 		assert.Equal(t, "next2", p.NextCursor)
 		assert.Equal(t, "prev2", p.PrevCursor)
-		
+
 		// Third set with empty strings
 		p.SetCursor("", "")
 		assert.Equal(t, "", p.NextCursor)
@@ -257,7 +257,7 @@ func TestPagination_EdgeCases(t *testing.T) {
 
 func TestPagination_DateHandling(t *testing.T) {
 	loc, _ := time.LoadLocation("America/New_York")
-	
+
 	tests := []struct {
 		name      string
 		startDate time.Time
@@ -346,9 +346,9 @@ func TestPagination_ComplexItems(t *testing.T) {
 
 func TestPagination_ConcurrentAccess(t *testing.T) {
 	// Test concurrent access to pagination struct
-	// Note: The current implementation is not thread-safe, 
+	// Note: The current implementation is not thread-safe,
 	// but this test documents the behavior
-	
+
 	p := &Pagination{
 		Items:      []int{1, 2, 3},
 		NextCursor: "initial",
@@ -391,7 +391,7 @@ func BenchmarkPagination_SetItems(b *testing.B) {
 	}
 
 	p := &Pagination{}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		p.SetItems(items)
@@ -402,7 +402,7 @@ func BenchmarkPagination_SetCursor(b *testing.B) {
 	p := &Pagination{}
 	nextCursor := "MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwMA=="
 	prevCursor := "MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwMQ=="
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		p.SetCursor(nextCursor, prevCursor)
@@ -425,7 +425,7 @@ func BenchmarkPagination_JSONMarshal(b *testing.B) {
 		PrevCursor: "prev-cursor-value",
 		Limit:      100,
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = json.Marshal(p)

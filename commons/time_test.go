@@ -70,7 +70,7 @@ func TestIsValidDate(t *testing.T) {
 
 func TestIsInitialDateBeforeFinalDate(t *testing.T) {
 	baseDate := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
-	
+
 	tests := []struct {
 		name     string
 		initial  time.Time
@@ -119,7 +119,7 @@ func TestIsInitialDateBeforeFinalDate(t *testing.T) {
 
 func TestIsDateRangeWithinMonthLimit(t *testing.T) {
 	initial := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
-	
+
 	tests := []struct {
 		name     string
 		initial  time.Time
@@ -195,7 +195,7 @@ func TestIsDateRangeWithinMonthLimit(t *testing.T) {
 
 func TestNormalizeDate(t *testing.T) {
 	baseDate := time.Date(2024, 1, 15, 10, 30, 45, 123456789, time.UTC)
-	
+
 	tests := []struct {
 		name     string
 		date     time.Time
@@ -268,7 +268,7 @@ func BenchmarkIsValidDate(b *testing.B) {
 		"2024-02-29",
 		"",
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, date := range dates {
@@ -280,7 +280,7 @@ func BenchmarkIsValidDate(b *testing.B) {
 func BenchmarkIsInitialDateBeforeFinalDate(b *testing.B) {
 	initial := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	final := time.Date(2024, 2, 15, 0, 0, 0, 0, time.UTC)
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = IsInitialDateBeforeFinalDate(initial, final)
@@ -290,7 +290,7 @@ func BenchmarkIsInitialDateBeforeFinalDate(b *testing.B) {
 func BenchmarkIsDateRangeWithinMonthLimit(b *testing.B) {
 	initial := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	final := time.Date(2024, 2, 15, 0, 0, 0, 0, time.UTC)
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = IsDateRangeWithinMonthLimit(initial, final, 3)
@@ -300,7 +300,7 @@ func BenchmarkIsDateRangeWithinMonthLimit(b *testing.B) {
 func BenchmarkNormalizeDate(b *testing.B) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	days := 5
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = NormalizeDate(date, &days)

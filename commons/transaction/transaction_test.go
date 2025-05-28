@@ -229,7 +229,7 @@ func TestBalanceStructure(t *testing.T) {
 	// Test Balance structure initialization and field access
 	now := time.Now()
 	deletedAt := time.Now().Add(24 * time.Hour)
-	
+
 	balance := Balance{
 		ID:             "123e4567-e89b-12d3-a456-426614174000",
 		OrganizationID: "223e4567-e89b-12d3-a456-426614174000",
@@ -464,35 +464,35 @@ func TestComplexTransactionStructure(t *testing.T) {
 func TestFromToHelperFunctions(t *testing.T) {
 	// Test both instance methods and their usage
 	testCases := []struct {
-		name          string
-		account       string
-		accountAlias  string
-		index         int
-		expectedSplit string
+		name           string
+		account        string
+		accountAlias   string
+		index          int
+		expectedSplit  string
 		expectedConcat string
 	}{
 		{
-			name:          "account with index",
-			account:       "5#mainAccount",
-			accountAlias:  "",
-			index:         3,
-			expectedSplit: "mainAccount",
+			name:           "account with index",
+			account:        "5#mainAccount",
+			accountAlias:   "",
+			index:          3,
+			expectedSplit:  "mainAccount",
 			expectedConcat: "3#5#mainAccount",
 		},
 		{
-			name:          "alias without index",
-			account:       "",
-			accountAlias:  "userAlias",
-			index:         0,
-			expectedSplit: "userAlias",
+			name:           "alias without index",
+			account:        "",
+			accountAlias:   "userAlias",
+			index:          0,
+			expectedSplit:  "userAlias",
 			expectedConcat: "0#userAlias",
 		},
 		{
-			name:          "complex alias with special chars",
-			account:       "10#user@domain.com",
-			accountAlias:  "",
-			index:         99,
-			expectedSplit: "user@domain.com",
+			name:           "complex alias with special chars",
+			account:        "10#user@domain.com",
+			accountAlias:   "",
+			index:          99,
+			expectedSplit:  "user@domain.com",
 			expectedConcat: "99#10#user@domain.com",
 		},
 	}

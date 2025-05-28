@@ -147,12 +147,12 @@ type WithdrawCommand struct {
 
 // Mock event store
 type mockEventStore struct {
-	mu         sync.RWMutex
-	events     map[string][]Event
-	streams    map[string][]Event
-	appendErr  error
-	loadErr    error
-	listeners  []EventListener
+	mu        sync.RWMutex
+	events    map[string][]Event
+	streams   map[string][]Event
+	appendErr error
+	loadErr   error
+	listeners []EventListener
 }
 
 func newMockEventStore() *mockEventStore {
@@ -177,14 +177,14 @@ func (m *mockEventStore) Append(ctx context.Context, streamID string, events []E
 	}
 
 	m.events[streamID] = append(m.events[streamID], events...)
-	
+
 	// Notify listeners
 	for _, listener := range m.listeners {
 		for _, event := range events {
 			go listener(event)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -319,7 +319,7 @@ func TestEventSourcingRepository(t *testing.T) {
 		// Load aggregate
 		loaded, err := repo.Get(ctx, "acc-1")
 		assert.NoError(t, err)
-		
+
 		loadedAccount := loaded.(*BankAccount)
 		assert.Equal(t, "acc-1", loadedAccount.ID)
 		assert.Equal(t, "John", loadedAccount.Owner)
@@ -380,7 +380,7 @@ func TestEventBus(t *testing.T) {
 		received := make(map[string]bool)
 		var mu sync.Mutex
 		done := make(chan bool, 2)
-		
+
 		// Subscribe
 		bus.Subscribe("AccountCreated", func(event Event) {
 			mu.Lock()

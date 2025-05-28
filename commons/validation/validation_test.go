@@ -555,12 +555,12 @@ func TestOneOf(t *testing.T) {
 
 func TestValidateStruct(t *testing.T) {
 	type TestStruct struct {
-		Name     string `validate:"required,min=3,max=50"`
-		Email    string `validate:"required,email"`
-		Age      int    `validate:"required,min=18,max=100"`
-		Status   string `validate:"required,oneof=active inactive"`
-		Website  string `validate:"url"`
-		ID       string `validate:"uuid"`
+		Name    string `validate:"required,min=3,max=50"`
+		Email   string `validate:"required,email"`
+		Age     int    `validate:"required,min=18,max=100"`
+		Status  string `validate:"required,oneof=active inactive"`
+		Website string `validate:"url"`
+		ID      string `validate:"uuid"`
 	}
 
 	tests := []struct {
@@ -586,7 +586,7 @@ func TestValidateStruct(t *testing.T) {
 			input: TestStruct{
 				Name:    "Jo", // too short
 				Email:   "invalid-email",
-				Age:     17, // too young
+				Age:     17,        // too young
 				Status:  "deleted", // not allowed
 				Website: "not-a-url",
 				ID:      "not-a-uuid",
@@ -608,11 +608,11 @@ func TestValidateStruct(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			errs := ValidateStruct(tt.input)
-			
+
 			if tt.expectError {
 				assert.NotNil(t, errs)
 				assert.True(t, len(errs) > 0)
-				
+
 				// Check that all expected fields have errors
 				for _, field := range tt.errorFields {
 					found := false
@@ -693,7 +693,7 @@ func BenchmarkEmail(b *testing.B) {
 		"user+tag@mail.example.com",
 		"@example.com",
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		for _, email := range emails {
@@ -708,13 +708,13 @@ func BenchmarkValidateStruct(b *testing.B) {
 		Email string `validate:"required,email"`
 		Age   int    `validate:"required,min=18,max=100"`
 	}
-	
+
 	s := TestStruct{
 		Name:  "John Doe",
 		Email: "john@example.com",
 		Age:   25,
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = ValidateStruct(s)

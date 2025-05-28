@@ -520,7 +520,7 @@ func TestOperateBalances(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got, err := OperateBalances(tt.amount, tt.balance, tt.operation)
-			
+
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errMsg)
@@ -536,10 +536,10 @@ func TestOperateBalances(t *testing.T) {
 
 func TestCalculateTotal(t *testing.T) {
 	tests := []struct {
-		name     string
-		fromTos  []FromTo
-		send     Send
-		wantTotal int64
+		name       string
+		fromTos    []FromTo
+		send       Send
+		wantTotal  int64
 		wantFromTo map[string]Amount
 		wantScdt   []string
 	}{
@@ -549,7 +549,7 @@ func TestCalculateTotal(t *testing.T) {
 				{Account: "0#acc1", Amount: &Amount{Asset: "USD", Value: 3000, Scale: 2}},
 				{Account: "1#acc2", Amount: &Amount{Asset: "USD", Value: 7000, Scale: 2}},
 			},
-			send: Send{Asset: "USD", Value: 10000, Scale: 2},
+			send:      Send{Asset: "USD", Value: 10000, Scale: 2},
 			wantTotal: 10000,
 			wantFromTo: map[string]Amount{
 				"0#acc1": {Asset: "USD", Value: 3000, Scale: 2},
@@ -563,7 +563,7 @@ func TestCalculateTotal(t *testing.T) {
 				{Account: "0#acc1", Share: &Share{Percentage: 60, PercentageOfPercentage: 100}},
 				{Account: "1#acc2", Share: &Share{Percentage: 40, PercentageOfPercentage: 100}},
 			},
-			send: Send{Asset: "USD", Value: 10000, Scale: 2},
+			send:      Send{Asset: "USD", Value: 10000, Scale: 2},
 			wantTotal: 10000,
 			wantFromTo: map[string]Amount{
 				"0#acc1": {Asset: "USD", Value: 6000, Scale: 2},
@@ -577,7 +577,7 @@ func TestCalculateTotal(t *testing.T) {
 				{Account: "0#acc1", Share: &Share{Percentage: 50, PercentageOfPercentage: 50}},
 				{Account: "1#acc2", Share: &Share{Percentage: 50, PercentageOfPercentage: 50}},
 			},
-			send: Send{Asset: "USD", Value: 10000, Scale: 2},
+			send:      Send{Asset: "USD", Value: 10000, Scale: 2},
 			wantTotal: 5000,
 			wantFromTo: map[string]Amount{
 				"0#acc1": {Asset: "USD", Value: 2500, Scale: 2},
@@ -591,7 +591,7 @@ func TestCalculateTotal(t *testing.T) {
 				{Account: "0#acc1", Amount: &Amount{Asset: "USD", Value: 3000, Scale: 2}},
 				{Account: "1#acc2", Remaining: "remaining"},
 			},
-			send: Send{Asset: "USD", Value: 10000, Scale: 2},
+			send:      Send{Asset: "USD", Value: 10000, Scale: 2},
 			wantTotal: 10000,
 			wantFromTo: map[string]Amount{
 				"0#acc1": {Asset: "USD", Value: 3000, Scale: 2},
@@ -606,7 +606,7 @@ func TestCalculateTotal(t *testing.T) {
 				{Account: "1#acc2", Share: &Share{Percentage: 50, PercentageOfPercentage: 100}},
 				{Account: "2#acc3", Remaining: "remaining"},
 			},
-			send: Send{Asset: "USD", Value: 10000, Scale: 2},
+			send:      Send{Asset: "USD", Value: 10000, Scale: 2},
 			wantTotal: 10000,
 			wantFromTo: map[string]Amount{
 				"0#acc1": {Asset: "USD", Value: 2000, Scale: 2},
@@ -1052,13 +1052,13 @@ func TestValidateBalancesRules(t *testing.T) {
 			},
 			balances: []*Balance{
 				{
-					ID:             "id1",
-					Alias:          "acc1",
-					AssetCode:      "USD",
-					Available:      100,
-					Scale:          2,
-					AllowSending:   true,
-					AccountType:    "standard",
+					ID:           "id1",
+					Alias:        "acc1",
+					AssetCode:    "USD",
+					Available:    100,
+					Scale:        2,
+					AllowSending: true,
+					AccountType:  "standard",
 				},
 				{
 					ID:             "id2",
@@ -1166,7 +1166,7 @@ func TestValidateBalancesRules(t *testing.T) {
 			name: "account not allowed to receive",
 			validate: Responses{
 				Asset: "USD",
-				From: map[string]Amount{},
+				From:  map[string]Amount{},
 				To: map[string]Amount{
 					"acc1": {Value: 50, Scale: 2},
 				},
@@ -1187,7 +1187,7 @@ func TestValidateBalancesRules(t *testing.T) {
 			name: "external account with positive balance trying to receive",
 			validate: Responses{
 				Asset: "USD",
-				From: map[string]Amount{},
+				From:  map[string]Amount{},
 				To: map[string]Amount{
 					"acc1": {Value: 50, Scale: 2},
 				},
@@ -1241,7 +1241,7 @@ func TestValidateBalancesRules(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateBalancesRules(ctx, tt.transaction, tt.validate, tt.balances)
-			
+
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errMsg)
@@ -1254,14 +1254,14 @@ func TestValidateBalancesRules(t *testing.T) {
 
 func TestValidateFromToOperation(t *testing.T) {
 	tests := []struct {
-		name         string
-		ft           FromTo
-		validate     Responses
-		balance      *Balance
-		wantAmount   Amount
-		wantBalance  Balance
-		wantErr      bool
-		errMsg       string
+		name        string
+		ft          FromTo
+		validate    Responses
+		balance     *Balance
+		wantAmount  Amount
+		wantBalance Balance
+		wantErr     bool
+		errMsg      string
 	}{
 		{
 			name: "valid from operation",
@@ -1355,7 +1355,7 @@ func TestValidateFromToOperation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gotAmount, gotBalance, err := ValidateFromToOperation(tt.ft, tt.validate, tt.balance)
-			
+
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tt.errMsg)
@@ -1375,7 +1375,7 @@ func TestEdgeCasesAndBoundaries(t *testing.T) {
 		// Test with very large scale differences
 		result := Scale(1, 0, 15)
 		assert.Equal(t, int64(1000000000000000), result)
-		
+
 		// Test with negative scale (scaling down)
 		result = Scale(1000000000000000, 15, 0)
 		assert.Equal(t, int64(1), result)
@@ -1403,7 +1403,7 @@ func TestEdgeCasesAndBoundaries(t *testing.T) {
 		// Test adding 1 to max value - 1
 		amount := Amount{Value: 1, Scale: 0}
 		balance := Balance{Available: math.MaxInt64 - 1, Scale: 0}
-		
+
 		result, err := OperateBalances(amount, balance, constant.CREDIT)
 		assert.NoError(t, err)
 		assert.Equal(t, int64(math.MaxInt64), result.Available)

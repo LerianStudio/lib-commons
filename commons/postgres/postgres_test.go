@@ -214,12 +214,12 @@ func (m *MockLogger) Sync() error {
 
 func TestPostgresConnection_getMigrationsPath(t *testing.T) {
 	tests := []struct {
-		name           string
-		pc             *PostgresConnection
-		expectedPath   string
-		expectError    bool
-		setupFunc      func()
-		cleanupFunc    func()
+		name         string
+		pc           *PostgresConnection
+		expectedPath string
+		expectError  bool
+		setupFunc    func()
+		cleanupFunc  func()
 	}{
 		{
 			name: "should return provided migrations path",
@@ -405,7 +405,7 @@ func TestPostgresConnection_Connect_Errors(t *testing.T) {
 			// Since sql.Open doesn't actually connect until used, and we can't easily mock it,
 			// we expect Connect to return nil (due to Fatal calls) or an error
 			err := tt.pc.Connect()
-			
+
 			// The function might return nil due to Fatal calls or an actual error
 			if err != nil {
 				assert.Error(t, err)
@@ -634,24 +634,24 @@ func TestPostgresConnection_Integration(t *testing.T) {
 	t.Skip("Integration test requires PostgreSQL instance")
 
 	/*
-	pc := &PostgresConnection{
-		ConnectionStringPrimary: os.Getenv("TEST_POSTGRES_PRIMARY_URL"),
-		ConnectionStringReplica: os.Getenv("TEST_POSTGRES_REPLICA_URL"),
-		PrimaryDBName:          "test_db",
-		ReplicaDBName:          "test_db",
-		Logger:                 log.NewLogger(), // Would use real logger
-		MaxOpenConnections:     10,
-		MaxIdleConnections:     5,
-	}
+		pc := &PostgresConnection{
+			ConnectionStringPrimary: os.Getenv("TEST_POSTGRES_PRIMARY_URL"),
+			ConnectionStringReplica: os.Getenv("TEST_POSTGRES_REPLICA_URL"),
+			PrimaryDBName:          "test_db",
+			ReplicaDBName:          "test_db",
+			Logger:                 log.NewLogger(), // Would use real logger
+			MaxOpenConnections:     10,
+			MaxIdleConnections:     5,
+		}
 
-	err := pc.Connect()
-	assert.NoError(t, err)
-	assert.True(t, pc.Connected)
-	assert.NotNil(t, pc.ConnectionDB)
+		err := pc.Connect()
+		assert.NoError(t, err)
+		assert.True(t, pc.Connected)
+		assert.NotNil(t, pc.ConnectionDB)
 
-	db, err := pc.GetDB()
-	assert.NoError(t, err)
-	assert.NotNil(t, db)
+		db, err := pc.GetDB()
+		assert.NoError(t, err)
+		assert.NotNil(t, db)
 	*/
 }
 

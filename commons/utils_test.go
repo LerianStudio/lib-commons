@@ -120,7 +120,7 @@ func TestCheckMetadataKeyAndValueLength(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := CheckMetadataKeyAndValueLength(tt.limit, tt.metadata)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Equal(t, tt.errorCode, err.Error())
@@ -177,7 +177,7 @@ func TestValidateCountryAddress(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateCountryAddress(tt.country)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Equal(t, "0032", err.Error())
@@ -234,7 +234,7 @@ func TestValidateAccountType(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateAccountType(tt.accountType)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Equal(t, "0066", err.Error())
@@ -286,7 +286,7 @@ func TestValidateType(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateType(tt.assetType)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Equal(t, "0040", err.Error())
@@ -348,7 +348,7 @@ func TestValidateCode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateCode(tt.code)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Equal(t, tt.errorCode, err.Error())
@@ -400,7 +400,7 @@ func TestValidateCurrency(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateCurrency(tt.code)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 				assert.Equal(t, "0005", err.Error())
@@ -587,18 +587,18 @@ func TestGenerateUUIDv7(t *testing.T) {
 
 	for i := 0; i < count; i++ {
 		uuid := GenerateUUIDv7()
-		
+
 		// Check it's not nil
 		require.NotNil(t, uuid)
-		
+
 		// Check it's not empty
 		assert.NotEmpty(t, uuid.String())
-		
+
 		// Check for uniqueness
 		_, exists := uuids[uuid.String()]
 		assert.False(t, exists, "Duplicate UUID generated: %s", uuid.String())
 		uuids[uuid.String()] = true
-		
+
 		// Check it's a valid UUID v7 format (version bits should be 0111)
 		assert.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$`, uuid.String())
 	}
@@ -656,7 +656,7 @@ func TestStructToJSONString(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result, err := StructToJSONString(tt.input)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
@@ -716,7 +716,7 @@ func TestMergeMaps(t *testing.T) {
 
 func TestGetMapNumKinds(t *testing.T) {
 	numKinds := GetMapNumKinds()
-	
+
 	// Check all expected numeric kinds are present
 	expectedKinds := []reflect.Kind{
 		reflect.Int,
@@ -727,14 +727,14 @@ func TestGetMapNumKinds(t *testing.T) {
 		reflect.Float32,
 		reflect.Float64,
 	}
-	
+
 	for _, kind := range expectedKinds {
 		assert.True(t, numKinds[kind], "Expected kind %v to be in map", kind)
 	}
-	
+
 	// Check map has exactly the expected number of entries
 	assert.Len(t, numKinds, len(expectedKinds))
-	
+
 	// Check non-numeric kinds are not present
 	assert.False(t, numKinds[reflect.String])
 	assert.False(t, numKinds[reflect.Bool])
@@ -791,7 +791,7 @@ func TestReverse(t *testing.T) {
 func TestInternalKey(t *testing.T) {
 	orgID := uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
 	ledgerID := uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
-	
+
 	tests := []struct {
 		name     string
 		orgID    uuid.UUID
@@ -833,7 +833,7 @@ func TestInternalKey(t *testing.T) {
 func TestLockInternalKey(t *testing.T) {
 	orgID := uuid.MustParse("550e8400-e29b-41d4-a716-446655440000")
 	ledgerID := uuid.MustParse("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
-	
+
 	tests := []struct {
 		name     string
 		orgID    uuid.UUID
@@ -868,7 +868,7 @@ func TestLockInternalKey(t *testing.T) {
 // Benchmarks
 func BenchmarkContains(b *testing.B) {
 	slice := []string{"apple", "banana", "orange", "grape", "kiwi", "mango", "peach", "pear"}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = Contains(slice, "mango")
@@ -889,13 +889,13 @@ func BenchmarkStructToJSONString(b *testing.B) {
 		Age   int    `json:"age"`
 		Email string `json:"email"`
 	}
-	
+
 	data := testStruct{
 		Name:  "John Doe",
 		Age:   30,
 		Email: "john@example.com",
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = StructToJSONString(data)
@@ -909,7 +909,7 @@ func BenchmarkMergeMaps(b *testing.B) {
 	target := map[string]any{
 		"f": 6, "g": 7, "h": 8, "i": 9, "j": 10,
 	}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = MergeMaps(source, target)
@@ -918,7 +918,7 @@ func BenchmarkMergeMaps(b *testing.B) {
 
 func BenchmarkReverse(b *testing.B) {
 	slice := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}
-	
+
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		sliceCopy := make([]int, len(slice))
