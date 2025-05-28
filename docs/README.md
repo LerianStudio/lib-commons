@@ -10,7 +10,7 @@ Welcome to the comprehensive documentation for lib-commons, a Go library providi
 - [Logging](./logging.md) - Flexible logging interface with multiple implementations
 
 ### Database Connectors
-- [PostgreSQL](./database/postgresql.md) - Connection management, migrations, and utilities
+- [PostgreSQL](./database/postgres.md) - Connection management, migrations, and utilities
 - [MongoDB](./database/mongodb.md) - Connection management and document operations
 - [Redis](./database/redis.md) - Caching and key-value operations
 
@@ -23,13 +23,13 @@ Welcome to the comprehensive documentation for lib-commons, a Go library providi
 - [Rate Limiting](./distributed/rate-limiting.md) - Request rate control algorithms
 - [Request ID Propagation](./distributed/request-id.md) - Distributed tracing support
 - [Saga Pattern](./distributed/saga.md) - Distributed transaction management
-- [Event Sourcing](./distributed/event-sourcing.md) - Event-driven architecture support
+- [Event Sourcing](./event-sourcing.md) - Event-driven architecture support
 
 ### Caching
-- [Cache Abstractions](./caching/cache.md) - Flexible caching with multiple backends
+- [Cache Abstractions](./caching.md) - Flexible caching with multiple backends
 
 ### Validation
-- [Input Validation](./validation/validation.md) - Struct and field validation utilities
+- [Input Validation](./validation.md) - Struct and field validation utilities
 
 ### Observability
 - [OpenTelemetry](./observability/opentelemetry.md) - Distributed tracing, metrics, and logs
@@ -45,7 +45,7 @@ Welcome to the comprehensive documentation for lib-commons, a Go library providi
 ## Quick Start
 
 ```go
-import "github.com/LerianStudio/lib-commons/commons"
+import "github.com/yourusername/commons-go/commons"
 
 // Initialize logger
 logger := commons.NewLoggerFromContext(ctx)
