@@ -41,6 +41,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction counter: %w", err)
 	}
+
 	bm.transactionCounter = transactionCounter
 
 	transactionDuration, err := meter.Float64Histogram(
@@ -51,6 +52,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction duration histogram: %w", err)
 	}
+
 	bm.transactionDuration = transactionDuration
 
 	transactionAmount, err := meter.Float64Histogram(
@@ -61,6 +63,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction amount histogram: %w", err)
 	}
+
 	bm.transactionAmount = transactionAmount
 
 	transactionErrorCounter, err := meter.Int64Counter(
@@ -71,6 +74,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transaction error counter: %w", err)
 	}
+
 	bm.transactionErrorCounter = transactionErrorCounter
 
 	// Initialize account metrics
@@ -82,6 +86,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create account counter: %w", err)
 	}
+
 	bm.accountCounter = accountCounter
 
 	// Initialize ledger metrics
@@ -93,6 +98,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ledger counter: %w", err)
 	}
+
 	bm.ledgerCounter = ledgerCounter
 
 	// Initialize asset metrics
@@ -104,6 +110,7 @@ func NewBusinessMetrics(meter metric.Meter) (*BusinessMetrics, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create asset counter: %w", err)
 	}
+
 	bm.assetCounter = assetCounter
 
 	return bm, nil

@@ -41,13 +41,16 @@ func WithIgnoreHeaders(headers ...string) HTTPClientOption {
 		for _, h := range m.ignoreHeaders {
 			headerMap[strings.ToLower(h)] = struct{}{}
 		}
+
 		for _, h := range headers {
 			headerMap[strings.ToLower(h)] = struct{}{}
 		}
+
 		m.ignoreHeaders = make([]string, 0, len(headerMap))
 		for h := range headerMap {
 			m.ignoreHeaders = append(m.ignoreHeaders, h)
 		}
+
 		return nil
 	}
 }
@@ -60,6 +63,7 @@ func WithIgnorePaths(paths ...string) HTTPClientOption {
 		}
 
 		m.ignorePaths = append(m.ignorePaths, paths...)
+
 		return nil
 	}
 }
@@ -72,6 +76,7 @@ func WithMaskedParams(params ...string) HTTPClientOption {
 		}
 
 		m.maskedParams = append(m.maskedParams, params...)
+
 		return nil
 	}
 }
@@ -97,6 +102,7 @@ func WithDefaultSensitiveHeaders() HTTPClientOption {
 			"x-jwt-token",
 			"x-middleware-token",
 		}
+
 		return nil
 	}
 }
@@ -118,6 +124,7 @@ func WithDefaultSensitiveParams() HTTPClientOption {
 			"refresh_token",
 			"refresh-token",
 		}
+
 		return nil
 	}
 }
@@ -128,10 +135,13 @@ func WithSecurityDefaults() HTTPClientOption {
 		if err := WithDefaultSensitiveHeaders()(m); err != nil {
 			return err
 		}
+
 		if err := WithDefaultSensitiveParams()(m); err != nil {
 			return err
 		}
+
 		m.hideBody = true
+
 		return nil
 	}
 }
@@ -252,6 +262,7 @@ func (m *httpClientMiddleware) middleware(next http.RoundTripper) http.RoundTrip
 			span.SetStatus(codes.Error, err.Error())
 			span.RecordError(err)
 			span.End()
+
 			return resp, err
 		}
 
@@ -294,6 +305,7 @@ func (m *httpClientMiddleware) isIgnoredHeader(header string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 
@@ -311,10 +323,12 @@ func (m *httpClientMiddleware) sanitizeURL(urlStr string) string {
 				} else {
 					parts[1] = "[REDACTED]" + parts[1][endIdx:]
 				}
+
 				urlStr = strings.Join(parts, param+"=")
 			}
 		}
 	}
+
 	return urlStr
 }
 
@@ -344,6 +358,7 @@ func (m *httpClientMiddleware) recordRequestMetrics(ctx context.Context, req *ht
 		if resp != nil {
 			errorStatus = strconv.Itoa(resp.StatusCode)
 		}
+
 		attrs = append(attrs, attribute.String(KeyErrorCode, errorStatus))
 		RecordMetric(ctx, m.provider, MetricRequestErrorTotal, 1, attrs...)
 	} else {

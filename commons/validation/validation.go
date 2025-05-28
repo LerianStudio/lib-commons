@@ -24,6 +24,7 @@ func (e ValidationError) Error() string {
 	if e.Field != "" {
 		return fmt.Sprintf("%s: %s", e.Field, e.Message)
 	}
+
 	return e.Message
 }
 
@@ -48,6 +49,7 @@ func Required(value interface{}, fieldName string) error {
 		if v.IsNil() {
 			return NewValidationError(fieldName+" is required", fieldName)
 		}
+
 		v = v.Elem()
 	}
 
@@ -93,6 +95,7 @@ func MinLength(value string, min int, fieldName string) error {
 			fieldName,
 		)
 	}
+
 	return nil
 }
 
@@ -104,6 +107,7 @@ func MaxLength(value string, max int, fieldName string) error {
 			fieldName,
 		)
 	}
+
 	return nil
 }
 
@@ -114,6 +118,7 @@ func Email(email string, fieldName string) error {
 	if !emailRegex.MatchString(email) {
 		return NewValidationError("invalid email format", fieldName)
 	}
+
 	return nil
 }
 
@@ -144,6 +149,7 @@ func UUID(uuidStr string, fieldName string) error {
 	if _, err := uuid.Parse(uuidStr); err != nil {
 		return NewValidationError("invalid UUID format", fieldName)
 	}
+
 	return nil
 }
 
@@ -155,6 +161,7 @@ func InRange(value, min, max int64, fieldName string) error {
 			fieldName,
 		)
 	}
+
 	return nil
 }
 
@@ -215,6 +222,7 @@ func RegisterCustomValidator(name string, fn func(interface{}) error) error {
 	}
 
 	customValidators[name] = fn
+
 	return nil
 }
 
@@ -295,6 +303,7 @@ func validateField(value interface{}, fieldName, rule string) error {
 		if len(parts) != 2 {
 			return errors.New("min rule requires a value")
 		}
+
 		var min int
 		if _, err := fmt.Sscanf(parts[1], "%d", &min); err != nil {
 			return fmt.Errorf("invalid min value: %w", err)
@@ -313,6 +322,7 @@ func validateField(value interface{}, fieldName, rule string) error {
 		if len(parts) != 2 {
 			return errors.New("max rule requires a value")
 		}
+
 		var max int
 		if _, err := fmt.Sscanf(parts[1], "%d", &max); err != nil {
 			return fmt.Errorf("invalid max value: %w", err)
@@ -331,6 +341,7 @@ func validateField(value interface{}, fieldName, rule string) error {
 		if len(parts) != 2 {
 			return errors.New("oneof rule requires values")
 		}
+
 		allowed := strings.Split(parts[1], " ")
 		if str, ok := value.(string); ok {
 			return OneOf(str, allowed, fieldName)

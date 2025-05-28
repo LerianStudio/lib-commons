@@ -51,10 +51,10 @@ type Step interface {
 
 // Saga represents a saga transaction
 type Saga struct {
-	name     string
-	steps    []Step
-	timeout  time.Duration
-	retries  int
+	name       string
+	steps      []Step
+	timeout    time.Duration
+	retries    int
 	retryDelay time.Duration
 }
 
@@ -84,6 +84,7 @@ func (s *Saga) WithTimeout(timeout time.Duration) *Saga {
 func (s *Saga) WithRetry(retries int, delay time.Duration) *Saga {
 	s.retries = retries
 	s.retryDelay = delay
+
 	return s
 }
 
@@ -98,6 +99,7 @@ func (s *Saga) Execute(ctx context.Context, data interface{}) error {
 
 	// Execute steps
 	var executedSteps []Step
+
 	for _, step := range s.steps {
 		// Execute with retry
 		err := s.executeStep(ctx, step, data)
@@ -111,8 +113,10 @@ func (s *Saga) Execute(ctx context.Context, data interface{}) error {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return err
 			}
+
 			return fmt.Errorf("%w: %v", ErrStepFailed, err)
 		}
+
 		executedSteps = append(executedSteps, step)
 	}
 
@@ -122,6 +126,7 @@ func (s *Saga) Execute(ctx context.Context, data interface{}) error {
 // executeStep executes a single step with retry logic
 func (s *Saga) executeStep(ctx context.Context, step Step, data interface{}) error {
 	var lastErr error
+
 	attempts := s.retries + 1
 
 	for i := 0; i < attempts; i++ {
@@ -138,6 +143,7 @@ func (s *Saga) executeStep(ctx context.Context, step Step, data interface{}) err
 		if err == nil {
 			return nil
 		}
+
 		lastErr = err
 	}
 
@@ -152,7 +158,7 @@ func (s *Saga) compensate(ctx context.Context, executedSteps []Step, data interf
 	for i := len(executedSteps) - 1; i >= 0; i-- {
 		step := executedSteps[i]
 		if err := step.Compensate(ctx, data); err != nil {
-			compensationErrors = append(compensationErrors, 
+			compensationErrors = append(compensationErrors,
 				fmt.Errorf("failed to compensate step %s: %w", step.Name(), err))
 		}
 	}
@@ -224,13 +230,13 @@ func (c *Coordinator) Start(ctx context.Context, sagaName string, data interface
 	// Execute saga asynchronously
 	go func() {
 		err := saga.Execute(ctx, data)
-		
+
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		
+
 		now := time.Now()
 		execution.EndTime = &now
-		
+
 		if err != nil {
 			execution.Status = SagaStatusFailed
 			execution.Error = err
@@ -246,27 +252,28 @@ func (c *Coordinator) Start(ctx context.Context, sagaName string, data interface
 func (c *Coordinator) GetStatus(executionID string) *SagaExecution {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	
+
 	execution, exists := c.executions[executionID]
 	if !exists {
 		return nil
 	}
-	
+
 	// Return a copy to avoid race conditions
 	copy := *execution
+
 	return &copy
 }
 
 // Event types for distributed sagas
 const (
-	EventTypeSagaStarted       = "SagaStarted"
-	EventTypeSagaCompleted     = "SagaCompleted"
-	EventTypeSagaFailed        = "SagaFailed"
-	EventTypeStepStarted       = "StepStarted"
-	EventTypeStepCompleted     = "StepCompleted"
-	EventTypeStepFailed        = "StepFailed"
-	EventTypeStepCompensating  = "StepCompensating"
-	EventTypeStepCompensated   = "StepCompensated"
+	EventTypeSagaStarted      = "SagaStarted"
+	EventTypeSagaCompleted    = "SagaCompleted"
+	EventTypeSagaFailed       = "SagaFailed"
+	EventTypeStepStarted      = "StepStarted"
+	EventTypeStepCompleted    = "StepCompleted"
+	EventTypeStepFailed       = "StepFailed"
+	EventTypeStepCompensating = "StepCompensating"
+	EventTypeStepCompensated  = "StepCompensated"
 )
 
 // Event represents a saga event
@@ -311,6 +318,7 @@ func (s *DistributedStep) Execute(ctx context.Context, data interface{}) error {
 	if s.execute != nil {
 		return s.execute(ctx, data)
 	}
+
 	return nil
 }
 
@@ -319,6 +327,7 @@ func (s *DistributedStep) Compensate(ctx context.Context, data interface{}) erro
 	if s.compensate != nil {
 		return s.compensate(ctx, data)
 	}
+
 	return nil
 }
 
@@ -351,21 +360,22 @@ func (ds *DistributedSaga) Execute(ctx context.Context, data interface{}) error 
 
 	// Execute steps with event publishing
 	var executedSteps []Step
+
 	for _, step := range ds.steps {
 		// Publish step started
 		ds.publishEvent(ctx, EventTypeStepStarted, step.Name(), data, nil)
-		
+
 		// Execute step
 		err := step.Execute(ctx, data)
 		if err != nil {
 			// Publish step failed
 			ds.publishEvent(ctx, EventTypeStepFailed, step.Name(), data, err)
-			
+
 			// Compensate executed steps
 			for i := len(executedSteps) - 1; i >= 0; i-- {
 				compensatingStep := executedSteps[i]
 				ds.publishEvent(ctx, EventTypeStepCompensating, compensatingStep.Name(), data, nil)
-				
+
 				compensateErr := compensatingStep.Compensate(ctx, data)
 				if compensateErr != nil {
 					ds.publishEvent(ctx, EventTypeStepFailed, compensatingStep.Name(), data, compensateErr)
@@ -373,12 +383,13 @@ func (ds *DistributedSaga) Execute(ctx context.Context, data interface{}) error 
 					ds.publishEvent(ctx, EventTypeStepCompensated, compensatingStep.Name(), data, nil)
 				}
 			}
-			
+
 			// Publish saga failed
 			ds.publishEvent(ctx, EventTypeSagaFailed, "", data, err)
+
 			return err
 		}
-		
+
 		// Publish step completed
 		ds.publishEvent(ctx, EventTypeStepCompleted, step.Name(), data, nil)
 		executedSteps = append(executedSteps, step)
@@ -386,6 +397,7 @@ func (ds *DistributedSaga) Execute(ctx context.Context, data interface{}) error 
 
 	// Publish saga completed event
 	ds.publishEvent(ctx, EventTypeSagaCompleted, "", data, nil)
+
 	return nil
 }
 
@@ -399,11 +411,11 @@ func (ds *DistributedSaga) publishEvent(ctx context.Context, eventType, stepName
 		Data:      data,
 		Timestamp: time.Now(),
 	}
-	
+
 	if err != nil {
 		event.Error = err.Error()
 	}
-	
+
 	// Ignore publish errors for simplicity
 	_ = ds.eventStore.Publish(ctx, event)
 }
@@ -438,6 +450,7 @@ func (sb *SagaBuilder) WithTimeout(timeout time.Duration) *SagaBuilder {
 func (sb *SagaBuilder) WithRetry(retries int, delay time.Duration) *SagaBuilder {
 	sb.retries = retries
 	sb.retryDelay = delay
+
 	return sb
 }
 
@@ -449,6 +462,7 @@ func (sb *SagaBuilder) WithStep(name string, execute, compensate func(ctx contex
 		compensate: compensate,
 	}
 	sb.steps = append(sb.steps, step)
+
 	return sb
 }
 
@@ -458,10 +472,10 @@ func (sb *SagaBuilder) Build() *Saga {
 	saga.timeout = sb.timeout
 	saga.retries = sb.retries
 	saga.retryDelay = sb.retryDelay
-	
+
 	for _, step := range sb.steps {
 		saga.AddStep(step)
 	}
-	
+
 	return saga
 }

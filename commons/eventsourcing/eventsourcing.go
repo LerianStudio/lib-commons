@@ -62,9 +62,9 @@ type Snapshot struct {
 
 // Repository provides methods for loading and saving aggregates
 type Repository struct {
-	store           EventStore
+	store            EventStore
 	aggregateFactory func() Aggregate
-	snapshotFreq    int
+	snapshotFreq     int
 }
 
 // RepositoryOption configures a Repository
@@ -84,18 +84,18 @@ func NewRepository(store EventStore, factory func() Aggregate, opts ...Repositor
 		aggregateFactory: factory,
 		snapshotFreq:     10, // Default snapshot every 10 events
 	}
-	
+
 	for _, opt := range opts {
 		opt(r)
 	}
-	
+
 	return r
 }
 
 // Get loads an aggregate by ID
 func (r *Repository) Get(ctx context.Context, id string) (Aggregate, error) {
 	aggregate := r.aggregateFactory()
-	
+
 	// Try to load from snapshot
 	snapshot, err := r.store.LoadSnapshot(ctx, id)
 	if err == nil && snapshot != nil {
@@ -103,29 +103,29 @@ func (r *Repository) Get(ctx context.Context, id string) (Aggregate, error) {
 		// In a real implementation, you'd deserialize the snapshot data
 		// For now, we'll just load all events
 	}
-	
+
 	// Load events
 	fromVersion := 0
 	if snapshot != nil {
 		fromVersion = snapshot.Version
 	}
-	
+
 	events, err := r.store.Load(ctx, id, fromVersion)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load events: %w", err)
 	}
-	
+
 	if len(events) == 0 && snapshot == nil {
 		return nil, ErrAggregateNotFound
 	}
-	
+
 	// Apply events to aggregate
 	for _, event := range events {
 		if err := aggregate.Apply(event); err != nil {
 			return nil, fmt.Errorf("failed to apply event: %w", err)
 		}
 	}
-	
+
 	return aggregate, nil
 }
 
@@ -134,13 +134,13 @@ func (r *Repository) Save(ctx context.Context, aggregate Aggregate, events []Eve
 	if len(events) == 0 {
 		return ErrNoEvents
 	}
-	
+
 	// Append events
 	expectedVersion := aggregate.GetVersion() - len(events)
 	if err := r.store.Append(ctx, aggregate.GetID(), events, expectedVersion); err != nil {
 		return fmt.Errorf("failed to append events: %w", err)
 	}
-	
+
 	// Check if we should take a snapshot
 	if r.snapshotFreq > 0 && aggregate.GetVersion()%r.snapshotFreq == 0 {
 		snapshot := Snapshot{
@@ -154,7 +154,7 @@ func (r *Repository) Save(ctx context.Context, aggregate Aggregate, events []Eve
 			// In production, you'd use proper logging
 		}
 	}
-	
+
 	return nil
 }
 
@@ -182,6 +182,7 @@ func ChainHandlers(handlers ...EventHandler) EventHandler {
 				return err
 			}
 		}
+
 		return nil
 	})
 }
@@ -204,7 +205,7 @@ func NewEventBus() *EventBus {
 func (eb *EventBus) Subscribe(eventType string, listener EventListener) {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
-	
+
 	eb.handlers[eventType] = append(eb.handlers[eventType], listener)
 }
 
@@ -217,7 +218,7 @@ func (eb *EventBus) SubscribeAll(listener EventListener) {
 func (eb *EventBus) Use(middleware EventHandler) {
 	eb.mu.Lock()
 	defer eb.mu.Unlock()
-	
+
 	eb.middleware = append(eb.middleware, middleware)
 }
 
@@ -229,24 +230,24 @@ func (eb *EventBus) Publish(ctx context.Context, event Event) error {
 			return err
 		}
 	}
-	
+
 	eb.mu.RLock()
 	defer eb.mu.RUnlock()
-	
+
 	// Notify specific handlers
 	if handlers, ok := eb.handlers[event.Type]; ok {
 		for _, handler := range handlers {
 			go handler(event)
 		}
 	}
-	
+
 	// Notify wildcard handlers
 	if handlers, ok := eb.handlers["*"]; ok {
 		for _, handler := range handlers {
 			go handler(event)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -283,39 +284,39 @@ func (pb *ProjectionBuilder) Build(ctx context.Context, streamIDs []string) erro
 	for _, proj := range pb.projections {
 		proj.Reset()
 	}
-	
+
 	// Load and apply events from each stream
 	for _, streamID := range streamIDs {
 		events, err := pb.eventStore.Load(ctx, streamID, 0)
 		if err != nil {
 			return fmt.Errorf("failed to load events for stream %s: %w", streamID, err)
 		}
-		
+
 		for _, event := range events {
 			for _, proj := range pb.projections {
 				proj.Apply(event)
 			}
 		}
 	}
-	
+
 	return nil
 }
 
 // Rebuild rebuilds a specific projection
 func (pb *ProjectionBuilder) Rebuild(ctx context.Context, projection Projection, streamIDs []string) error {
 	projection.Reset()
-	
+
 	for _, streamID := range streamIDs {
 		events, err := pb.eventStore.Load(ctx, streamID, 0)
 		if err != nil {
 			return fmt.Errorf("failed to load events for stream %s: %w", streamID, err)
 		}
-		
+
 		for _, event := range events {
 			projection.Apply(event)
 		}
 	}
-	
+
 	return nil
 }
 
@@ -336,7 +337,7 @@ func NewEventProcessor() *EventProcessor {
 func (ep *EventProcessor) Register(eventType string, handler EventHandler) {
 	ep.mu.Lock()
 	defer ep.mu.Unlock()
-	
+
 	ep.handlers[eventType] = handler
 }
 
@@ -345,11 +346,11 @@ func (ep *EventProcessor) Process(ctx context.Context, event Event) error {
 	ep.mu.RLock()
 	handler, ok := ep.handlers[event.Type]
 	ep.mu.RUnlock()
-	
+
 	if !ok {
 		return nil // No handler for this event type
 	}
-	
+
 	return handler.Handle(ctx, event)
 }
 
@@ -360,5 +361,6 @@ func (ep *EventProcessor) ProcessBatch(ctx context.Context, events []Event) erro
 			return fmt.Errorf("failed to process event %s: %w", event.ID, err)
 		}
 	}
+
 	return nil
 }

@@ -40,6 +40,7 @@ func NewObservabilityMiddleware(
 	if tracerProvider == nil {
 		return nil, errors.New("tracerProvider cannot be nil")
 	}
+
 	if metricProvider == nil {
 		return nil, errors.New("metricProvider cannot be nil")
 	}
@@ -64,6 +65,7 @@ func NewObservabilityMiddleware(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request counter: %w", err)
 	}
+
 	om.requestCounter = requestCounter
 
 	requestDuration, err := om.meter.Float64Histogram(
@@ -74,6 +76,7 @@ func NewObservabilityMiddleware(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request duration histogram: %w", err)
 	}
+
 	om.requestDuration = requestDuration
 
 	requestSize, err := om.meter.Int64Histogram(
@@ -84,6 +87,7 @@ func NewObservabilityMiddleware(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request size histogram: %w", err)
 	}
+
 	om.requestSize = requestSize
 
 	responseSize, err := om.meter.Int64Histogram(
@@ -94,6 +98,7 @@ func NewObservabilityMiddleware(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create response size histogram: %w", err)
 	}
+
 	om.responseSize = responseSize
 
 	activeRequests, err := om.meter.Int64UpDownCounter(
@@ -104,6 +109,7 @@ func NewObservabilityMiddleware(
 	if err != nil {
 		return nil, fmt.Errorf("failed to create active requests counter: %w", err)
 	}
+
 	om.activeRequests = activeRequests
 
 	return om, nil
@@ -161,6 +167,7 @@ func (om *ObservabilityMiddleware) Middleware() fiber.Handler {
 
 		// Update span
 		span.SetAttributes(attrs...)
+
 		if err != nil {
 			span.RecordError(err)
 			attrs = append(attrs, attribute.String("error.type", fmt.Sprintf("%T", err)))

@@ -20,8 +20,6 @@ linters:
     - predeclared # Detects code that shadows one of Go's predeclared identifiers
     - reassign
     - revive # Metalinter; drop-in replacement for golint.
-    - stylecheck # Replacement for golint
-    - tenv # Detects using os.Setenv instead of t.Setenv.
     - thelper # Detects test helpers without t.Helper().
     - tparallel # Detects inappropriate usage of t.Parallel().
     - unconvert # Detects unnecessary type conversions.
@@ -81,7 +79,7 @@ issues:
     # (unlike the "include" option), the "exclude" option does not take exclusion
     # ID's.
     #
-    # These exclusion patterns are copied from the default excluses at:
+    # These exclusion patterns are copied from the default excludes at:
     # https://github.com/golangci/golangci-lint/blob/v1.44.0/pkg/config/issues.go#L10-L104
     # EXC0001
     - text: "Error return value of .((os\\.)?std(out|err)\\..*|.*Close|.*Flush|os\\.Remove(All)?|.*print(f|ln)?|os\\.(Un)?Setenv). is not checked"
@@ -132,7 +130,7 @@ issues:
         - gosec
     - text: "ST1000: at least one file in a package should have a package comment"
       linters:
-        - stylecheck
+        - staticcheck
     # Allow "err" and "ok" vars to shadow existing declarations, otherwise we get too many false positives.
     - text: '^shadow: declaration of "(err|ok)" shadows declaration'
       linters:

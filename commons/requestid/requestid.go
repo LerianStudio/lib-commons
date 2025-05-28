@@ -48,6 +48,7 @@ func FromContext(ctx context.Context) string {
 	if id, ok := ctx.Value(requestIDKey).(string); ok {
 		return id
 	}
+
 	return ""
 }
 
@@ -56,8 +57,9 @@ func EnsureContext(ctx context.Context) (context.Context, string) {
 	if id := FromContext(ctx); id != "" {
 		return ctx, id
 	}
-	
+
 	id := Generate()
+
 	return NewContext(ctx, id), id
 }
 
@@ -67,14 +69,14 @@ func ExtractFromHeaders(headers http.Header, headerNames ...string) string {
 	if len(headerNames) == 0 {
 		headerNames = []string{DefaultHeader}
 	}
-	
+
 	// Check each header in order
 	for _, name := range headerNames {
 		if id := headers.Get(name); id != "" {
 			return id
 		}
 	}
-	
+
 	return ""
 }
 
@@ -88,19 +90,19 @@ func HTTPMiddlewareWithHeader(next http.Handler, headerName string) http.Handler
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Try to get ID from header
 		requestID := r.Header.Get(headerName)
-		
+
 		// Generate if not present
 		if requestID == "" {
 			requestID = Generate()
 		}
-		
+
 		// Add to context
 		ctx := NewContext(r.Context(), requestID)
 		r = r.WithContext(ctx)
-		
+
 		// Add to response header
 		w.Header().Set(headerName, requestID)
-		
+
 		// Continue
 		next.ServeHTTP(w, r)
 	})
@@ -116,18 +118,18 @@ func FiberMiddlewareWithHeader(headerName string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		// Try to get ID from header
 		requestID := c.Get(headerName)
-		
+
 		// Generate if not present
 		if requestID == "" {
 			requestID = Generate()
 		}
-		
+
 		// Store in locals for access
 		c.Locals("requestID", requestID)
-		
+
 		// Add to response header
 		c.Set(headerName, requestID)
-		
+
 		// Continue
 		return c.Next()
 	}
@@ -138,6 +140,7 @@ func FromFiberContext(c *fiber.Ctx) string {
 	if id, ok := c.Locals("requestID").(string); ok {
 		return id
 	}
+
 	return ""
 }
 
@@ -153,21 +156,22 @@ func (t *HTTPTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if id := FromContext(req.Context()); id != "" {
 		// Clone request to avoid modifying the original
 		req = req.Clone(req.Context())
-		
+
 		// Set header
 		headerName := t.HeaderName
 		if headerName == "" {
 			headerName = DefaultHeader
 		}
+
 		req.Header.Set(headerName, id)
 	}
-	
+
 	// Use base transport
 	base := t.Base
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	
+
 	return base.RoundTrip(req)
 }
 

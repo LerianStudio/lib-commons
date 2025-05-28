@@ -96,6 +96,7 @@ func (c MapCarrier) Keys() []string {
 	for k := range c {
 		keys = append(keys, k)
 	}
+
 	return keys
 }
 
@@ -127,6 +128,7 @@ func (c *TraceContextCarrier) Keys() []string {
 	for k := range c.headers {
 		keys = append(keys, k)
 	}
+
 	return keys
 }
 

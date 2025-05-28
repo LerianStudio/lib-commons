@@ -253,7 +253,6 @@ func FindScale(asset string, v float64, s int64) Amount {
 	// - Integer values use base scale
 	// - Decimal values: if s > 0, scale value by s and use s*2 as scale
 	// - Special case: when actual decimal places equal s, use s as scale
-	
 	// Handle zero value
 	if v == 0 {
 		return Amount{
@@ -276,23 +275,23 @@ func FindScale(asset string, v float64, s int64) Amount {
 	// Count actual decimal places
 	valueString := strconv.FormatFloat(v, 'f', -1, 64)
 	parts := strings.Split(valueString, ".")
-	
+
 	actualDecimals := int64(0)
 	if len(parts) > 1 {
 		// Count all decimal places (don't trim trailing zeros for comparison)
 		actualDecimals = int64(len(parts[1]))
 	}
-	
+
 	// Based on test patterns:
 	if s > 0 {
 		// Scale the value by base scale s
 		value := int64(math.Round(v * math.Pow(10, float64(s))))
-		
+
 		// For the scale:
 		// Default is to double the base scale
 		// Exception: if actual decimals == base scale AND it's a power of 10 fraction (like 0.00000001)
 		scale := s * 2
-		
+
 		// Check if it's a special case like 0.00000001 (1 satoshi for BTC)
 		// These cases use the base scale without doubling
 		if actualDecimals == s {
@@ -302,7 +301,7 @@ func FindScale(asset string, v float64, s int64) Amount {
 				scale = s
 			}
 		}
-		
+
 		return Amount{
 			Asset: asset,
 			Value: value,
@@ -311,6 +310,7 @@ func FindScale(asset string, v float64, s int64) Amount {
 	} else {
 		// No base scale, use actual decimal places
 		value := int64(math.Round(v * math.Pow(10, float64(actualDecimals))))
+
 		return Amount{
 			Asset: asset,
 			Value: value,

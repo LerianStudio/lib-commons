@@ -60,21 +60,21 @@ type CircuitBreaker struct {
 	failures             int64
 	consecutiveSuccesses int64
 	lastFailureTime      time.Time
-	
+
 	// Metrics
-	requests   atomic.Int64
-	successes  atomic.Int64
+	requests      atomic.Int64
+	successes     atomic.Int64
 	totalFailures atomic.Int64
-	rejections atomic.Int64
+	rejections    atomic.Int64
 }
 
 // config holds circuit breaker configuration
 type config struct {
-	threshold         int64
-	successThreshold  int64
-	timeout           time.Duration
-	failureCondition  func(error) bool
-	onStateChange     func(StateChange)
+	threshold        int64
+	successThreshold int64
+	timeout          time.Duration
+	failureCondition func(error) bool
+	onStateChange    func(StateChange)
 }
 
 // Option configures the circuit breaker
@@ -147,12 +147,12 @@ func (cb *CircuitBreaker) Name() string {
 func (cb *CircuitBreaker) State() State {
 	cb.mu.RLock()
 	defer cb.mu.RUnlock()
-	
+
 	// Check if we should transition from open to half-open
 	if cb.state == StateOpen && time.Since(cb.lastFailureTime) > cb.config.timeout {
 		return StateHalfOpen
 	}
-	
+
 	return cb.state
 }
 
@@ -174,12 +174,13 @@ func (cb *CircuitBreaker) ExecuteWithContext(ctx context.Context, fn func() erro
 
 	// Check current state
 	state := cb.State()
-	
+
 	// Update internal state if needed
 	cb.mu.Lock()
 	if cb.state == StateOpen && state == StateHalfOpen {
 		cb.changeState(StateHalfOpen)
 	}
+
 	currentState := cb.state
 	cb.mu.Unlock()
 
@@ -188,19 +189,21 @@ func (cb *CircuitBreaker) ExecuteWithContext(ctx context.Context, fn func() erro
 	case StateOpen:
 		cb.rejections.Add(1)
 		return ErrCircuitOpen
-		
+
 	case StateHalfOpen:
 		// Allow the request but monitor closely
 		err := fn()
 		cb.recordResult(err, true)
+
 		return err
-		
+
 	case StateClosed:
 		// Normal operation
 		err := fn()
 		cb.recordResult(err, false)
+
 		return err
-		
+
 	default:
 		return errors.New("unknown circuit breaker state")
 	}
@@ -215,6 +218,7 @@ func (cb *CircuitBreaker) recordResult(err error, isHalfOpen bool) {
 
 	if isFailure {
 		cb.totalFailures.Add(1)
+
 		cb.failures++
 		cb.consecutiveSuccesses = 0
 		cb.lastFailureTime = time.Now()
@@ -228,8 +232,9 @@ func (cb *CircuitBreaker) recordResult(err error, isHalfOpen bool) {
 		}
 	} else {
 		cb.successes.Add(1)
+
 		cb.consecutiveSuccesses++
-		
+
 		if isHalfOpen && cb.consecutiveSuccesses >= cb.config.successThreshold {
 			// Enough successes in half-open, close the circuit
 			cb.changeState(StateClosed)
@@ -253,9 +258,9 @@ func (cb *CircuitBreaker) changeState(newState State) {
 		To:   newState,
 		When: time.Now(),
 	}
-	
+
 	cb.state = newState
-	
+
 	// Notify observer (in goroutine to avoid blocking)
 	go cb.config.onStateChange(change)
 }
@@ -264,7 +269,7 @@ func (cb *CircuitBreaker) changeState(newState State) {
 func (cb *CircuitBreaker) Reset() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
-	
+
 	cb.changeState(StateClosed)
 	cb.failures = 0
 	cb.consecutiveSuccesses = 0
@@ -274,7 +279,7 @@ func (cb *CircuitBreaker) Reset() {
 func (cb *CircuitBreaker) Metrics() Metrics {
 	cb.mu.RLock()
 	defer cb.mu.RUnlock()
-	
+
 	return Metrics{
 		Requests:            cb.requests.Load(),
 		Successes:           cb.successes.Load(),

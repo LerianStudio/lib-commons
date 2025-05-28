@@ -140,7 +140,9 @@ func WithServiceName(name string) Option {
 		if name == "" {
 			return errors.New("service name cannot be empty")
 		}
+
 		c.ServiceName = name
+
 		return nil
 	}
 }
@@ -151,7 +153,9 @@ func WithServiceVersion(version string) Option {
 		if version == "" {
 			return errors.New("service version cannot be empty")
 		}
+
 		c.ServiceVersion = version
+
 		return nil
 	}
 }
@@ -162,7 +166,9 @@ func WithEnvironment(env string) Option {
 		if env == "" {
 			return errors.New("environment cannot be empty")
 		}
+
 		c.Environment = env
+
 		return nil
 	}
 }
@@ -173,7 +179,9 @@ func WithCollectorEndpoint(endpoint string) Option {
 		if endpoint == "" {
 			return errors.New("collector endpoint cannot be empty")
 		}
+
 		c.CollectorEndpoint = endpoint
+
 		return nil
 	}
 }
@@ -184,7 +192,9 @@ func WithLogLevel(level LogLevel) Option {
 		if level < DebugLevel || level > FatalLevel {
 			return fmt.Errorf("invalid log level: %d", level)
 		}
+
 		c.LogLevel = level
+
 		return nil
 	}
 }
@@ -195,7 +205,9 @@ func WithLogOutput(output io.Writer) Option {
 		if output == nil {
 			return errors.New("log output cannot be nil")
 		}
+
 		c.LogOutput = output
+
 		return nil
 	}
 }
@@ -206,7 +218,9 @@ func WithTraceSampleRate(rate float64) Option {
 		if rate < 0.0 || rate > 1.0 {
 			return errors.New("trace sample rate must be between 0.0 and 1.0")
 		}
+
 		c.TraceSampleRate = rate
+
 		return nil
 	}
 }
@@ -217,6 +231,7 @@ func WithComponentEnabled(tracing, metrics, logging bool) Option {
 		c.EnabledComponents.Tracing = tracing
 		c.EnabledComponents.Metrics = metrics
 		c.EnabledComponents.Logging = logging
+
 		return nil
 	}
 }
@@ -235,7 +250,9 @@ func WithPropagators(propagators ...propagation.TextMapPropagator) Option {
 		if len(propagators) == 0 {
 			return errors.New("at least one propagator must be provided")
 		}
+
 		c.Propagators = propagators
+
 		return nil
 	}
 }
@@ -255,6 +272,7 @@ func WithDevelopmentDefaults() Option {
 		c.LogLevel = DebugLevel
 		c.TraceSampleRate = 0.5
 		c.Insecure = true
+
 		return nil
 	}
 }
@@ -266,6 +284,7 @@ func WithProductionDefaults() Option {
 		c.LogLevel = InfoLevel
 		c.TraceSampleRate = 0.1
 		c.Insecure = false
+
 		return nil
 	}
 }
@@ -383,6 +402,7 @@ func (p *ObservabilityProvider) createResource() (*sdkresource.Resource, error) 
 // initTracing initializes OpenTelemetry tracing
 func (p *ObservabilityProvider) initTracing(ctx context.Context, res *sdkresource.Resource) error {
 	var exporter *otlptrace.Exporter
+
 	var err error
 
 	// Set up exporter if endpoint is provided
@@ -434,6 +454,7 @@ func (p *ObservabilityProvider) initTracing(ctx context.Context, res *sdkresourc
 // initMetrics initializes OpenTelemetry metrics
 func (p *ObservabilityProvider) initMetrics(ctx context.Context, res *sdkresource.Resource) error {
 	var exporter sdkmetric.Exporter
+
 	var err error
 
 	// Set up exporter
@@ -506,6 +527,7 @@ func (p *ObservabilityProvider) Tracer() trace.Tracer {
 		// Return a no-op tracer if tracing is disabled
 		return trace.NewNoopTracerProvider().Tracer("")
 	}
+
 	return p.tracer
 }
 
@@ -515,6 +537,7 @@ func (p *ObservabilityProvider) Meter() metric.Meter {
 		// Return the default global meter if metrics are disabled
 		return otel.GetMeterProvider().Meter("")
 	}
+
 	return p.meter
 }
 
@@ -524,6 +547,7 @@ func (p *ObservabilityProvider) TracerProvider() trace.TracerProvider {
 		// Return a no-op tracer provider if tracing is disabled or not initialized
 		return trace.NewNoopTracerProvider()
 	}
+
 	return p.tracerProvider
 }
 
@@ -533,6 +557,7 @@ func (p *ObservabilityProvider) MeterProvider() metric.MeterProvider {
 		// Return the default global meter provider if metrics are disabled or not initialized
 		return otel.GetMeterProvider()
 	}
+
 	return p.meterProvider
 }
 
@@ -542,6 +567,7 @@ func (p *ObservabilityProvider) Logger() Logger {
 		// Return a no-op logger if logging is disabled
 		return NewNoopLogger()
 	}
+
 	return p.logger
 }
 
@@ -555,6 +581,7 @@ func (p *ObservabilityProvider) Shutdown(ctx context.Context) error {
 
 	// Call all shutdown functions
 	var errors []error
+
 	for _, shutdownFn := range p.shutdownFunctions {
 		if err := shutdownFn(ctx); err != nil {
 			errors = append(errors, err)

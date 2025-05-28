@@ -135,6 +135,7 @@ func (s *Service) performHealthCheck(ctx context.Context) *Response {
 
 func (s *Service) getSystemInfo() *SystemInfo {
 	var memStats runtime.MemStats
+
 	runtime.ReadMemStats(&memStats)
 
 	return &SystemInfo{
@@ -265,6 +266,7 @@ func (c *CustomChecker) Check(ctx context.Context) error {
 	if c.fn == nil {
 		return errors.New("custom check function is nil")
 	}
+
 	return c.fn(ctx)
 }
 
@@ -294,6 +296,7 @@ func (c *HTTPChecker) Check(ctx context.Context) error {
 // MarshalJSON custom JSON marshalling for Response
 func (r *Response) MarshalJSON() ([]byte, error) {
 	type Alias Response
+
 	return json.Marshal(&struct {
 		*Alias
 		Service string `json:"service"`

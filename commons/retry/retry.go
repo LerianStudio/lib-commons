@@ -16,13 +16,13 @@ type OperationWithResult[T any] func() (T, error)
 
 // config holds retry configuration
 type config struct {
-	maxRetries  int
-	delay       time.Duration
-	maxDelay    time.Duration
-	multiplier  float64
-	jitter      float64
-	retryIf     func(error) bool
-	onRetry     func(n int, err error)
+	maxRetries int
+	delay      time.Duration
+	maxDelay   time.Duration
+	multiplier float64
+	jitter     float64
+	retryIf    func(error) bool
+	onRetry    func(n int, err error)
 }
 
 // Option configures retry behavior
@@ -104,6 +104,7 @@ func Do(ctx context.Context, operation Operation, opts ...Option) error {
 	}
 
 	var err error
+
 	delay := cfg.delay
 
 	for attempt := 0; attempt <= cfg.maxRetries; attempt++ {
@@ -135,6 +136,7 @@ func Do(ctx context.Context, operation Operation, opts ...Option) error {
 
 		// Calculate delay with jitter
 		actualDelay := delay
+
 		if cfg.jitter > 0 {
 			jitterAmount := float64(delay) * cfg.jitter
 			actualDelay = time.Duration(float64(delay) + (rand.Float64()*2-1)*jitterAmount)
@@ -164,11 +166,14 @@ func Do(ctx context.Context, operation Operation, opts ...Option) error {
 // DoWithResult executes an operation that returns a result with retry logic
 func DoWithResult[T any](ctx context.Context, operation OperationWithResult[T], opts ...Option) (T, error) {
 	var result T
+
 	err := Do(ctx, func() error {
 		var opErr error
 		result, opErr = operation()
+
 		return opErr
 	}, opts...)
+
 	return result, err
 }
 
@@ -196,6 +201,7 @@ func MarkPermanent(err error) error {
 	if err == nil {
 		return nil
 	}
+
 	return Permanent{Err: err}
 }
 
@@ -216,5 +222,6 @@ func IsRetryable(err error) bool {
 	if errors.As(err, &re) {
 		return re.Retryable()
 	}
+
 	return true // Default to retryable if not specified
 }

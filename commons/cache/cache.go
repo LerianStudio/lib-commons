@@ -200,6 +200,7 @@ func (c *MemoryCache) Get(ctx context.Context, key string, value interface{}) er
 		if c.metrics != nil {
 			c.metrics.IncrMisses("memory")
 		}
+
 		return ErrKeyNotFound
 	}
 
@@ -208,10 +209,12 @@ func (c *MemoryCache) Get(ctx context.Context, key string, value interface{}) er
 		c.mu.Lock()
 		delete(c.data, key)
 		c.mu.Unlock()
+
 		if c.metrics != nil {
 			c.metrics.IncrMisses("memory")
 			c.metrics.IncrEvictions("memory")
 		}
+
 		return ErrKeyNotFound
 	}
 
@@ -299,6 +302,7 @@ func (c *MemoryCache) Exists(ctx context.Context, key string) (bool, error) {
 		c.mu.Lock()
 		delete(c.data, key)
 		c.mu.Unlock()
+
 		return false, nil
 	}
 
@@ -408,6 +412,7 @@ func (c *MemoryCache) evict() {
 
 	if evictKey != "" {
 		delete(c.data, evictKey)
+
 		if c.metrics != nil {
 			c.metrics.IncrEvictions("memory")
 		}
@@ -422,10 +427,12 @@ func (c *MemoryCache) GetMultiple(ctx context.Context, keys []string) (map[strin
 	defer c.mu.RUnlock()
 
 	now := time.Now()
+
 	for _, key := range keys {
 		entry, exists := c.data[key]
 		if exists && (entry.expiration.IsZero() || now.Before(entry.expiration)) {
 			result[key] = entry.value
+
 			if c.metrics != nil {
 				c.metrics.IncrHits("memory")
 			}
@@ -499,6 +506,7 @@ func (c *MemoryCache) cleanup() {
 	for key, entry := range c.data {
 		if !entry.expiration.IsZero() && now.After(entry.expiration) {
 			delete(c.data, key)
+
 			if c.metrics != nil {
 				c.metrics.IncrEvictions("memory")
 			}
@@ -665,6 +673,7 @@ func (nc *NamespaceCache) TTL(ctx context.Context, key string) (time.Duration, e
 // Keys returns all keys matching a pattern in the namespace
 func (nc *NamespaceCache) Keys(ctx context.Context, pattern string) ([]string, error) {
 	nsPattern := nc.namespace + ":" + pattern
+
 	keys, err := nc.cache.Keys(ctx, nsPattern)
 	if err != nil {
 		return nil, err
@@ -673,6 +682,7 @@ func (nc *NamespaceCache) Keys(ctx context.Context, pattern string) ([]string, e
 	// Remove namespace prefix from keys
 	result := make([]string, len(keys))
 	prefix := nc.namespace + ":"
+
 	for i, key := range keys {
 		result[i] = key[len(prefix):]
 	}
@@ -699,10 +709,12 @@ type GobSerializer struct{}
 // Serialize converts a value to gob bytes
 func (gs *GobSerializer) Serialize(value interface{}) ([]byte, error) {
 	var buf []byte
+
 	enc := gob.NewEncoder(&buffer{data: &buf})
 	if err := enc.Encode(value); err != nil {
 		return nil, err
 	}
+
 	return buf, nil
 }
 
@@ -728,8 +740,10 @@ func (b *buffer) Read(p []byte) (n int, err error) {
 	if b.pos >= len(*b.data) {
 		return 0, errors.New("EOF")
 	}
+
 	n = copy(p, (*b.data)[b.pos:])
 	b.pos += n
+
 	return n, nil
 }
 

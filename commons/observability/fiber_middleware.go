@@ -42,7 +42,9 @@ func WithIgnorePathsFiber(paths ...string) FiberMiddlewareOption {
 		if len(paths) == 0 {
 			return errors.New("at least one path must be provided")
 		}
+
 		m.ignorePaths = append(m.ignorePaths, paths...)
+
 		return nil
 	}
 }
@@ -58,13 +60,16 @@ func WithIgnoreHeadersFiber(headers ...string) FiberMiddlewareOption {
 		for _, h := range m.ignoreHeaders {
 			headerMap[strings.ToLower(h)] = struct{}{}
 		}
+
 		for _, h := range headers {
 			headerMap[strings.ToLower(h)] = struct{}{}
 		}
+
 		m.ignoreHeaders = make([]string, 0, len(headerMap))
 		for h := range headerMap {
 			m.ignoreHeaders = append(m.ignoreHeaders, h)
 		}
+
 		return nil
 	}
 }
@@ -75,7 +80,9 @@ func WithMaskedParamsFiber(params ...string) FiberMiddlewareOption {
 		if len(params) == 0 {
 			return errors.New("at least one parameter must be provided")
 		}
+
 		m.maskedParams = append(m.maskedParams, params...)
+
 		return nil
 	}
 }
@@ -86,7 +93,9 @@ func WithUserIDExtractor(fn func(*fiber.Ctx) string) FiberMiddlewareOption {
 		if fn == nil {
 			return errors.New("user ID extractor cannot be nil")
 		}
+
 		m.extractUserID = fn
+
 		return nil
 	}
 }
@@ -97,7 +106,9 @@ func WithRequestIDExtractor(fn func(*fiber.Ctx) string) FiberMiddlewareOption {
 		if fn == nil {
 			return errors.New("request ID extractor cannot be nil")
 		}
+
 		m.extractRequestID = fn
+
 		return nil
 	}
 }
@@ -127,6 +138,7 @@ func WithSecurityDefaultsFiber() FiberMiddlewareOption {
 			"refresh_token",
 		}
 		m.hideBody = true
+
 		return nil
 	}
 }
@@ -201,6 +213,7 @@ func (m *fiberMiddleware) initMetrics() error {
 	if err != nil {
 		return fmt.Errorf("failed to create request counter: %w", err)
 	}
+
 	m.requestCounter = requestCounter
 
 	requestDuration, err := meter.Float64Histogram(
@@ -211,6 +224,7 @@ func (m *fiberMiddleware) initMetrics() error {
 	if err != nil {
 		return fmt.Errorf("failed to create request duration histogram: %w", err)
 	}
+
 	m.requestDuration = requestDuration
 
 	requestSize, err := meter.Int64Histogram(
@@ -221,6 +235,7 @@ func (m *fiberMiddleware) initMetrics() error {
 	if err != nil {
 		return fmt.Errorf("failed to create request size histogram: %w", err)
 	}
+
 	m.requestSize = requestSize
 
 	responseSize, err := meter.Int64Histogram(
@@ -231,6 +246,7 @@ func (m *fiberMiddleware) initMetrics() error {
 	if err != nil {
 		return fmt.Errorf("failed to create response size histogram: %w", err)
 	}
+
 	m.responseSize = responseSize
 
 	activeRequests, err := meter.Int64UpDownCounter(
@@ -241,6 +257,7 @@ func (m *fiberMiddleware) initMetrics() error {
 	if err != nil {
 		return fmt.Errorf("failed to create active requests counter: %w", err)
 	}
+
 	m.activeRequests = activeRequests
 
 	return nil
@@ -264,6 +281,7 @@ func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
 
 	// Start span
 	spanName := fmt.Sprintf("%s %s", c.Method(), c.Route().Path)
+
 	ctx, span := m.provider.Tracer().Start(
 		ctx,
 		spanName,
@@ -330,6 +348,7 @@ func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
 
 	// Process request with panic recovery
 	var err error
+
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -339,6 +358,7 @@ func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
 				c.Status(500)
 			}
 		}()
+
 		err = c.Next()
 	}()
 
@@ -443,5 +463,6 @@ func (m *fiberMiddleware) isIgnoredHeader(header string) bool {
 			return true
 		}
 	}
+
 	return false
 }

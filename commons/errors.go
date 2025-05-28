@@ -17,6 +17,7 @@ func (e Response) Error() string {
 	if e.Code != "" {
 		return e.Code + ": " + e.Message
 	}
+
 	return e.Message
 }
 

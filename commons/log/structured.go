@@ -24,17 +24,17 @@ func (sl *StructuredLogger) WithFields(fields map[string]interface{}) *Structure
 		logger: sl.logger,
 		fields: make(map[string]interface{}),
 	}
-	
+
 	// Copy existing fields
 	for k, v := range sl.fields {
 		newLogger.fields[k] = v
 	}
-	
+
 	// Add new fields
 	for k, v := range fields {
 		newLogger.fields[k] = v
 	}
-	
+
 	return newLogger
 }
 
@@ -59,9 +59,11 @@ func (sl *StructuredLogger) WithBusinessContext(organizationID, ledgerID string)
 	if organizationID != "" {
 		fields["organization_id"] = organizationID
 	}
+
 	if ledgerID != "" {
 		fields["ledger_id"] = ledgerID
 	}
+
 	return sl.WithFields(fields)
 }
 
@@ -70,6 +72,7 @@ func (sl *StructuredLogger) WithError(err error) *StructuredLogger {
 	if err != nil {
 		return sl.WithField("error", err.Error())
 	}
+
 	return sl
 }
 
@@ -78,15 +81,16 @@ func (sl *StructuredLogger) formatMessage(msg string) string {
 	if len(sl.fields) == 0 {
 		return msg
 	}
-	
+
 	fieldStr := ""
 	for k, v := range sl.fields {
 		if fieldStr != "" {
 			fieldStr += " "
 		}
+
 		fieldStr += fmt.Sprintf("%s=%v", k, v)
 	}
-	
+
 	return fmt.Sprintf("%s [%s]", msg, fieldStr)
 }
 
