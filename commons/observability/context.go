@@ -6,6 +6,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/baggage"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // ContextKey is the type for context keys
@@ -104,7 +105,7 @@ func Start(ctx context.Context, name string, opts ...trace.SpanStartOption) (con
 		return provider.Tracer().Start(ctx, name, opts...)
 	}
 
-	return trace.NewNoopTracerProvider().Tracer("").Start(ctx, name, opts...)
+	return noop.NewTracerProvider().Tracer("").Start(ctx, name, opts...)
 }
 
 // Log returns a logger from the context

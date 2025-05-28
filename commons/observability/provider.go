@@ -21,6 +21,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 // Constants for attribute keys
@@ -525,7 +526,7 @@ func (p *ObservabilityProvider) setupPropagation() {
 func (p *ObservabilityProvider) Tracer() trace.Tracer {
 	if !p.enabled || !p.config.EnabledComponents.Tracing || p.tracer == nil {
 		// Return a no-op tracer if tracing is disabled
-		return trace.NewNoopTracerProvider().Tracer("")
+		return noop.NewTracerProvider().Tracer("")
 	}
 
 	return p.tracer
@@ -545,7 +546,7 @@ func (p *ObservabilityProvider) Meter() metric.Meter {
 func (p *ObservabilityProvider) TracerProvider() trace.TracerProvider {
 	if !p.enabled || !p.config.EnabledComponents.Tracing || p.tracerProvider == nil {
 		// Return a no-op tracer provider if tracing is disabled or not initialized
-		return trace.NewNoopTracerProvider()
+		return noop.NewTracerProvider()
 	}
 
 	return p.tracerProvider
