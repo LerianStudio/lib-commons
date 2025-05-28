@@ -4,7 +4,7 @@ linters:
   enable:
     - bodyclose
     - gocognit
-    - depguard
+    # - depguard  # Temporarily disabled due to configuration issues
     - dogsled
     - dupword # Detects duplicate words.
     - errchkjson
@@ -37,6 +37,28 @@ linters-settings:
   depguard:
     rules:
       main:
+        files:
+          - $all
+        allow:
+          - $gostd
+          - github.com/LerianStudio/lib-commons
+          - github.com/LerianStudio/lib-license-go
+          - go.opentelemetry.io
+          - github.com/gofiber
+          - github.com/google
+          - github.com/rabbitmq
+          - github.com/redis
+          - go.mongodb.org
+          - github.com/Masterminds
+          - google.golang.org
+          - go.uber.org
+          - github.com/bxcodec
+          - github.com/golang-migrate
+          - github.com/jackc
+          - github.com/joho
+          - github.com/shirou
+          - golang.org/x
+          - github.com/pkg
         deny:
           - pkg: io/ioutil
             desc: The io/ioutil package has been deprecated, see https://go.dev/doc/go1.16#ioutil

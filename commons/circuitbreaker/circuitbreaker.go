@@ -1,3 +1,5 @@
+// Package circuitbreaker implements the circuit breaker pattern for fault tolerance.
+// It provides protection against cascading failures in distributed systems.
 package circuitbreaker
 
 import (

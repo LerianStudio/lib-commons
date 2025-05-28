@@ -1,3 +1,5 @@
+// Package constant defines common constants used across the application.
+// It includes error codes, status values, and other shared constant definitions.
 package constant
 
 import "errors"

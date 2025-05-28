@@ -1,3 +1,5 @@
+// Package log provides structured logging functionality with support for different log levels.
+// It offers a unified logging interface with context support and structured output.
 package log
 
 import (

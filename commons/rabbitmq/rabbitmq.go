@@ -1,14 +1,17 @@
+// Package rabbitmq provides RabbitMQ connection and messaging functionality.
+// It includes connection management, health checks, and message publishing/consuming.
 package rabbitmq
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+
 	"github.com/LerianStudio/lib-commons/commons/log"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
-	"io"
-	"net/http"
 )
 
 // RabbitMQConnection is a hub which deal with rabbitmq connections.
@@ -95,7 +98,11 @@ func (rc *RabbitMQConnection) HealthCheck() bool {
 		return false
 	}
 
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil {
+			rc.Logger.Errorf("failed to close response body: %v", closeErr.Error())
+		}
+	}()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {

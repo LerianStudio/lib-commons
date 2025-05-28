@@ -1,8 +1,11 @@
+// Package commons provides common utilities and shared functionality for Go applications.
+// It includes logging, configuration, error handling, and other foundational components.
 package commons
 
 import (
-	"github.com/LerianStudio/lib-commons/commons/log"
 	"sync"
+
+	"github.com/LerianStudio/lib-commons/commons/log"
 )
 
 // App represents an application that will run as a deployable component.

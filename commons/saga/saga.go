@@ -98,7 +98,7 @@ func (s *Saga) Execute(ctx context.Context, data interface{}) error {
 	}
 
 	// Execute steps
-	var executedSteps []Step
+	executedSteps := make([]Step, 0, len(s.steps))
 
 	for _, step := range s.steps {
 		// Execute with retry
@@ -359,7 +359,7 @@ func (ds *DistributedSaga) Execute(ctx context.Context, data interface{}) error 
 	ds.publishEvent(ctx, EventTypeSagaStarted, "", data, nil)
 
 	// Execute steps with event publishing
-	var executedSteps []Step
+	executedSteps := make([]Step, 0, len(ds.steps))
 
 	for _, step := range ds.steps {
 		// Publish step started

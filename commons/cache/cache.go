@@ -1,3 +1,5 @@
+// Package cache provides caching functionality with support for Redis and in-memory caching.
+// It offers a unified interface for different caching backends with TTL support.
 package cache
 
 import (
@@ -191,7 +193,7 @@ func NewMemoryCache(opts ...MemoryCacheOption) *MemoryCache {
 }
 
 // Get retrieves a value from the cache
-func (c *MemoryCache) Get(ctx context.Context, key string, value interface{}) error {
+func (c *MemoryCache) Get(_ context.Context, key string, value interface{}) error {
 	c.mu.RLock()
 	entry, exists := c.data[key]
 	c.mu.RUnlock()
@@ -237,7 +239,7 @@ func (c *MemoryCache) Get(ctx context.Context, key string, value interface{}) er
 }
 
 // Set stores a value in the cache with optional TTL
-func (c *MemoryCache) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+func (c *MemoryCache) Set(_ context.Context, key string, value interface{}, ttl time.Duration) error {
 	if ttl < 0 {
 		return ErrInvalidTTL
 	}
@@ -273,7 +275,7 @@ func (c *MemoryCache) Set(ctx context.Context, key string, value interface{}, tt
 }
 
 // Delete removes a value from the cache
-func (c *MemoryCache) Delete(ctx context.Context, key string) error {
+func (c *MemoryCache) Delete(_ context.Context, key string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -288,7 +290,7 @@ func (c *MemoryCache) Delete(ctx context.Context, key string) error {
 }
 
 // Exists checks if a key exists in the cache
-func (c *MemoryCache) Exists(ctx context.Context, key string) (bool, error) {
+func (c *MemoryCache) Exists(_ context.Context, key string) (bool, error) {
 	c.mu.RLock()
 	entry, exists := c.data[key]
 	c.mu.RUnlock()
@@ -310,7 +312,7 @@ func (c *MemoryCache) Exists(ctx context.Context, key string) (bool, error) {
 }
 
 // Clear removes all values from the cache
-func (c *MemoryCache) Clear(ctx context.Context) error {
+func (c *MemoryCache) Clear(_ context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -324,7 +326,7 @@ func (c *MemoryCache) Clear(ctx context.Context) error {
 }
 
 // TTL returns the remaining TTL for a key
-func (c *MemoryCache) TTL(ctx context.Context, key string) (time.Duration, error) {
+func (c *MemoryCache) TTL(_ context.Context, key string) (time.Duration, error) {
 	c.mu.RLock()
 	entry, exists := c.data[key]
 	c.mu.RUnlock()
@@ -346,7 +348,7 @@ func (c *MemoryCache) TTL(ctx context.Context, key string) (time.Duration, error
 }
 
 // Keys returns all keys matching a pattern (* for all)
-func (c *MemoryCache) Keys(ctx context.Context, pattern string) ([]string, error) {
+func (c *MemoryCache) Keys(_ context.Context, pattern string) ([]string, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -420,7 +422,7 @@ func (c *MemoryCache) evict() {
 }
 
 // GetMultiple retrieves multiple values from the cache
-func (c *MemoryCache) GetMultiple(ctx context.Context, keys []string) (map[string]interface{}, error) {
+func (c *MemoryCache) GetMultiple(_ context.Context, keys []string) (map[string]interface{}, error) {
 	result := make(map[string]interface{})
 
 	c.mu.RLock()
@@ -447,7 +449,7 @@ func (c *MemoryCache) GetMultiple(ctx context.Context, keys []string) (map[strin
 }
 
 // SetMultiple stores multiple values in the cache
-func (c *MemoryCache) SetMultiple(ctx context.Context, items map[string]interface{}, ttl time.Duration) error {
+func (c *MemoryCache) SetMultiple(_ context.Context, items map[string]interface{}, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

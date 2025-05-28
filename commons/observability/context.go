@@ -1,3 +1,5 @@
+// Package observability provides monitoring, tracing, and metrics functionality.
+// It includes OpenTelemetry integration, custom metrics, and distributed tracing support.
 package observability
 
 import (

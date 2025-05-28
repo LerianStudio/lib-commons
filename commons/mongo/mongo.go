@@ -1,7 +1,10 @@
+// Package mongo provides MongoDB connection and operation utilities.
+// It includes connection management, query helpers, and database operations.
 package mongo
 
 import (
 	"context"
+
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"

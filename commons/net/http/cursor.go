@@ -1,12 +1,15 @@
+// Package http provides HTTP utilities and helpers for web applications.
+// It includes cursor-based pagination, request handling, and response utilities.
 package http
 
 import (
 	"encoding/base64"
 	"encoding/json"
-	"github.com/LerianStudio/lib-commons/commons"
-	"github.com/LerianStudio/lib-commons/commons/constants"
-	"github.com/Masterminds/squirrel"
 	"strings"
+
+	"github.com/LerianStudio/lib-commons/commons"
+	constant "github.com/LerianStudio/lib-commons/commons/constants"
+	"github.com/Masterminds/squirrel"
 )
 
 type Cursor struct {

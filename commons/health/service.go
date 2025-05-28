@@ -1,3 +1,5 @@
+// Package health provides health check functionality for monitoring service status.
+// It includes checks for databases, external services, and system resources.
 package health
 
 import (
@@ -235,7 +237,7 @@ func NewRabbitMQChecker(conn *amqp.Connection) *RabbitMQChecker {
 }
 
 // Check performs the health check
-func (c *RabbitMQChecker) Check(ctx context.Context) error {
+func (c *RabbitMQChecker) Check(_ context.Context) error {
 	if c.conn == nil {
 		return errors.New("rabbitmq connection is nil")
 	}
@@ -287,7 +289,7 @@ func NewHTTPChecker(name, url string, headers map[string]string) *HTTPChecker {
 }
 
 // Check performs the health check
-func (c *HTTPChecker) Check(ctx context.Context) error {
+func (c *HTTPChecker) Check(_ context.Context) error {
 	// Simple implementation - can be enhanced with actual HTTP client
 	// For now, just return nil to avoid external dependencies
 	return nil

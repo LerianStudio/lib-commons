@@ -1,3 +1,5 @@
+// Package eventsourcing provides event sourcing functionality for capturing and replaying events.
+// It enables building systems that maintain a complete audit trail of all changes.
 package eventsourcing
 
 import (
