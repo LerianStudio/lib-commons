@@ -20,6 +20,20 @@ cover:
 	@sh ./scripts/coverage.sh
 	@go tool cover -html=coverage.out -o coverage.html
 
+.PHONY: test-integration
+test-integration:
+	@echo "$(BLUE)Running integration tests...$(NC)"
+	$(call check_command,go,"Install Go from https://golang.org/doc/install")
+	@echo "$(YELLOW)Starting test containers...$(NC)"
+	@go test -v -tags=integration ./... -timeout 10m
+
+.PHONY: bench
+bench:
+	@echo "$(BLUE)Running benchmarks...$(NC)"
+	$(call check_command,go,"Install Go from https://golang.org/doc/install")
+	@go test -bench=. -benchmem ./... | tee bench.txt
+	@echo "$(GREEN)$(BOLD)[ok]$(NC) Benchmarks completed$(GREEN) ✔️$(NC)"
+
 # Code Quality Commands
 .PHONY: lint
 lint:
@@ -105,14 +119,6 @@ check-envs:
 		echo "$(GREEN)No exposed secrets found in environment files$(GREEN) ✔️$(NC)"; \
 	fi
 
-.PHONY: format
-format:
-	@echo "$(BLUE)Formatting Go code using gofmt...$(NC)"
-	$(call title1,"Formatting all golang source code")
-	$(call check_command,gofmt,"Install Go from https://golang.org/doc/install")
-	@gofmt -w ./
-	@echo "$(GREEN)$(BOLD)[ok]$(NC) All go files formatted$(GREEN) ✔️$(NC)"
-
 # Development Commands
 .PHONY: tidy
 tidy:
@@ -131,11 +137,3 @@ sec:
 	@echo "$(BLUE)Running security checks using gosec...$(NC)"
 	$(call check_command,gosec,"go install github.com/securego/gosec/v2/cmd/gosec@latest")
 	gosec ./...
-
-.PHONY: format
-format:
-	@echo "$(BLUE)Formatting Go code using gofmt...$(NC)"
-	$(call title1,"Formatting all golang source code")
-	$(call check_command,gofmt,"Install Go from https://golang.org/doc/install")
-	@gofmt -w ./
-	@echo "$(GREEN)$(BOLD)[ok]$(NC) All go files formatted$(GREEN) ✔️$(NC)"

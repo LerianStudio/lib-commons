@@ -12,6 +12,9 @@ type customContextKey string
 
 var CustomContextKey = customContextKey("custom_context")
 
+// LoggerKey is the context key for the logger
+var LoggerKey = customContextKey("logger")
+
 type CustomContextKeyValue struct {
 	HeaderID string
 	Tracer   trace.Tracer

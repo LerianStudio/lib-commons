@@ -2,6 +2,40 @@
 
 A comprehensive Go library providing common utilities and components for building robust microservices and applications in the Lerian Studio ecosystem.
 
+## 📚 Documentation
+
+For comprehensive documentation, please visit the [docs](./docs) folder:
+
+- 📖 [Complete Documentation Index](./docs/README.md)
+- 🚀 [Quick Start Guide](./docs/README.md#quick-start)
+- 🔄 [Migration Guide](./docs/migration-guide.md)
+
+### Key Documentation Sections
+
+**Core Components**
+- [Context Management](./docs/context-management.md) - Request tracking and context propagation
+- [Error Handling](./docs/error-handling.md) - Standardized error responses
+- [Logging](./docs/logging.md) - Structured logging with multiple backends
+
+**Distributed Systems**
+- [Circuit Breaker](./docs/distributed/circuit-breaker.md) - Fault tolerance patterns
+- [Retry Logic](./docs/distributed/retry.md) - Configurable retry mechanisms
+- [Rate Limiting](./docs/distributed/rate-limiting.md) - Request rate control
+- [Request ID Propagation](./docs/distributed/request-id.md) - Distributed tracing
+- [Saga Pattern](./docs/distributed/saga.md) - Distributed transactions
+- [Event Sourcing](./docs/distributed/event-sourcing.md) - Event-driven architecture
+
+**Data Management**
+- [PostgreSQL](./docs/database/postgresql.md) - Connection and migration management
+- [MongoDB](./docs/database/mongodb.md) - Document database operations
+- [Redis](./docs/database/redis.md) - Caching and key-value storage
+- [Cache Abstractions](./docs/caching/cache.md) - Flexible caching layer
+
+**Other Components**
+- [Validation](./docs/validation/validation.md) - Input validation utilities
+- [RabbitMQ](./docs/messaging/rabbitmq.md) - Message queue operations
+- [OpenTelemetry](./docs/observability/opentelemetry.md) - Observability integration
+
 ## Overview
 
 `lib-commons` is a utility library that provides a collection of reusable components and helpers for Go applications. It includes standardized implementations for database connections, message queuing, logging, context management, error handling, transaction processing, and more.

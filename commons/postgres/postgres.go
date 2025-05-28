@@ -25,7 +25,7 @@ type PostgresConnection struct {
 	ConnectionStringReplica string
 	PrimaryDBName           string
 	ReplicaDBName           string
-	ConnectionDB            *dbresolver.DB
+	ConnectionDB            dbresolver.DB
 	Connected               bool
 	Component               string
 	MigrationsPath          string
@@ -85,7 +85,7 @@ func (pc *PostgresConnection) Connect() error {
 	})
 	if err != nil {
 		pc.Logger.Fatalf("failed to open connect to database %v", zap.Error(err))
-		return nil
+		return err
 	}
 
 	m, err := migrate.NewWithDatabaseInstance(primaryURL.String(), pc.PrimaryDBName, primaryDriver)
@@ -115,7 +115,7 @@ func (pc *PostgresConnection) Connect() error {
 	}
 
 	pc.Connected = true
-	pc.ConnectionDB = &connectionDB
+	pc.ConnectionDB = connectionDB
 
 	pc.Logger.Info("Connected to postgres ✅ \n")
 
@@ -131,7 +131,7 @@ func (pc *PostgresConnection) GetDB() (dbresolver.DB, error) {
 		}
 	}
 
-	return *pc.ConnectionDB, nil
+	return pc.ConnectionDB, nil
 }
 
 // getMigrationsPath returns the path to migration files, calculating it if not explicitly provided

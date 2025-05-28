@@ -128,13 +128,19 @@ type FromTo struct {
 func (ft FromTo) SplitAlias() string {
 	if ft.Account != "" {
 		if strings.Contains(ft.Account, "#") {
-			return strings.Split(ft.Account, "#")[1]
+			parts := strings.SplitN(ft.Account, "#", 2)
+			if len(parts) > 1 {
+				return parts[1]
+			}
 		}
 
 		return ft.Account
 	} else {
 		if strings.Contains(ft.AccountAlias, "#") {
-			return strings.Split(ft.AccountAlias, "#")[1]
+			parts := strings.SplitN(ft.AccountAlias, "#", 2)
+			if len(parts) > 1 {
+				return parts[1]
+			}
 		}
 
 		return ft.AccountAlias
