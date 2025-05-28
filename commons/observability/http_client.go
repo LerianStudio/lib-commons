@@ -197,104 +197,119 @@ func (m *httpClientMiddleware) middleware(next http.RoundTripper) http.RoundTrip
 			return next.RoundTrip(req)
 		}
 
-		// Check if we should ignore this path
-		for _, path := range m.ignorePaths {
-			if strings.HasPrefix(req.URL.Path, path) {
-				return next.RoundTrip(req)
-			}
+		if m.shouldIgnoreRequest(req) {
+			return next.RoundTrip(req)
 		}
 
-		// Start a new span for this request
-		name := fmt.Sprintf("HTTP %s %s", req.Method, req.URL.Path)
-		ctx, span := m.provider.Tracer().Start(
-			req.Context(),
-			name,
-			trace.WithSpanKind(trace.SpanKindClient),
-		)
+		ctx, span := m.prepareSpan(req)
+		defer span.End()
 
-		// Add HTTP attributes to span
-		span.SetAttributes(
-			attribute.String("http.method", req.Method),
-			attribute.String("http.url", m.sanitizeURL(req.URL.String())),
-			attribute.String("http.host", req.URL.Host),
-			attribute.String("http.path", req.URL.Path),
-		)
+		m.processRequestHeaders(req, span)
+		m.injectTraceContext(ctx, req)
 
-		// Add custom attributes
-		span.SetAttributes(
-			attribute.String(KeyOperationName, name),
-			attribute.String(KeyOperationType, "http.request"),
-		)
-
-		// Add request headers to span (excluding sensitive ones)
-		for key, values := range req.Header {
-			if !m.isIgnoredHeader(key) {
-				for i, v := range values {
-					if i == 0 {
-						span.SetAttributes(attribute.String("http.request.header."+strings.ToLower(key), v))
-					}
-				}
-			}
-		}
-
-		// Inject trace context into request headers
-		carrier := propagation.HeaderCarrier(req.Header)
-		// Use the global propagator
-		otel.GetTextMapPropagator().Inject(ctx, carrier)
-
-		// Update request with trace context
 		req = req.WithContext(httptrace.WithClientTrace(ctx, m.createClientTrace(span)))
 
-		// Record the request start time
 		start := time.Now()
-
-		// Execute the request
 		resp, err := next.RoundTrip(req)
-
-		// Record the request duration
 		duration := time.Since(start)
 
-		// Record metrics
 		m.recordRequestMetrics(ctx, req, resp, err, duration)
 
-		// Handle error
 		if err != nil {
-			span.SetStatus(codes.Error, err.Error())
-			span.RecordError(err)
-			span.End()
-
-			return resp, err
+			return m.handleRequestError(span, resp, err)
 		}
 
-		// Add response attributes to span
-		span.SetAttributes(
-			attribute.Int("http.status_code", resp.StatusCode),
-		)
-
-		// Add response headers to span (excluding sensitive ones)
-		for key, values := range resp.Header {
-			if !m.isIgnoredHeader(key) {
-				for i, v := range values {
-					if i == 0 {
-						span.SetAttributes(attribute.String("http.response.header."+strings.ToLower(key), v))
-					}
-				}
-			}
-		}
-
-		// Set status based on response code
-		if resp.StatusCode >= 400 {
-			span.SetStatus(codes.Error, fmt.Sprintf("HTTP status code: %d", resp.StatusCode))
-			span.SetAttributes(attribute.Bool("error", true))
-		} else {
-			span.SetStatus(codes.Ok, "")
-		}
-
-		// End the span
-		span.End()
+		m.processResponse(span, resp)
 
 		return resp, nil
 	})
+}
+
+// shouldIgnoreRequest checks if the request should be ignored based on path
+func (m *httpClientMiddleware) shouldIgnoreRequest(req *http.Request) bool {
+	for _, path := range m.ignorePaths {
+		if strings.HasPrefix(req.URL.Path, path) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// prepareSpan creates and configures a new span for the request
+func (m *httpClientMiddleware) prepareSpan(req *http.Request) (context.Context, trace.Span) {
+	name := fmt.Sprintf("HTTP %s %s", req.Method, req.URL.Path)
+	ctx, span := m.provider.Tracer().Start(
+		req.Context(),
+		name,
+		trace.WithSpanKind(trace.SpanKindClient),
+	)
+
+	// Add HTTP attributes to span
+	span.SetAttributes(
+		attribute.String("http.method", req.Method),
+		attribute.String("http.url", m.sanitizeURL(req.URL.String())),
+		attribute.String("http.host", req.URL.Host),
+		attribute.String("http.path", req.URL.Path),
+		attribute.String(KeyOperationName, name),
+		attribute.String(KeyOperationType, "http.request"),
+	)
+
+	return ctx, span
+}
+
+// processRequestHeaders adds request headers to the span (excluding sensitive ones)
+func (m *httpClientMiddleware) processRequestHeaders(req *http.Request, span trace.Span) {
+	for key, values := range req.Header {
+		if !m.isIgnoredHeader(key) {
+			for i, v := range values {
+				if i == 0 {
+					span.SetAttributes(attribute.String("http.request.header."+strings.ToLower(key), v))
+				}
+			}
+		}
+	}
+}
+
+// injectTraceContext injects trace context into request headers
+func (m *httpClientMiddleware) injectTraceContext(ctx context.Context, req *http.Request) {
+	carrier := propagation.HeaderCarrier(req.Header)
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+}
+
+// handleRequestError handles request errors and sets span status
+func (m *httpClientMiddleware) handleRequestError(span trace.Span, resp *http.Response, err error) (*http.Response, error) {
+	span.SetStatus(codes.Error, err.Error())
+	span.RecordError(err)
+
+	return resp, err
+}
+
+// processResponse processes the response and adds attributes to span
+func (m *httpClientMiddleware) processResponse(span trace.Span, resp *http.Response) {
+	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
+
+	m.processResponseHeaders(span, resp)
+
+	if resp.StatusCode >= 400 {
+		span.SetStatus(codes.Error, fmt.Sprintf("HTTP status code: %d", resp.StatusCode))
+		span.SetAttributes(attribute.Bool("error", true))
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
+}
+
+// processResponseHeaders adds response headers to the span (excluding sensitive ones)
+func (m *httpClientMiddleware) processResponseHeaders(span trace.Span, resp *http.Response) {
+	for key, values := range resp.Header {
+		if !m.isIgnoredHeader(key) {
+			for i, v := range values {
+				if i == 0 {
+					span.SetAttributes(attribute.String("http.response.header."+strings.ToLower(key), v))
+				}
+			}
+		}
+	}
 }
 
 // isIgnoredHeader checks if a header should be ignored (case-insensitive)

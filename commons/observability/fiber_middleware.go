@@ -1,6 +1,7 @@
 package observability
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -265,14 +266,40 @@ func (m *fiberMiddleware) initMetrics() error {
 
 // middleware is the actual Fiber handler
 func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
-	// Check if we should ignore this path
-	path := c.Path()
+	if m.shouldIgnorePath(c.Path()) {
+		return c.Next()
+	}
+
+	ctx, span := m.prepareRequest(c)
+	defer span.End()
+
+	attrs := m.buildRequestAttributes(c, span)
+	m.processRequestHeaders(c, span)
+	m.recordRequestMetrics(ctx, c, attrs)
+
+	start := time.Now()
+	err := m.executeWithPanicRecovery(c)
+	duration := time.Since(start)
+
+	m.processResponse(ctx, c, span, err, duration, attrs)
+	m.logRequest(c, span, err, c.Response().StatusCode(), duration)
+
+	return err
+}
+
+// shouldIgnorePath checks if the request path should be ignored
+func (m *fiberMiddleware) shouldIgnorePath(path string) bool {
 	for _, ignorePath := range m.ignorePaths {
 		if strings.HasPrefix(path, ignorePath) {
-			return c.Next()
+			return true
 		}
 	}
 
+	return false
+}
+
+// prepareRequest sets up the trace context and span for the request
+func (m *fiberMiddleware) prepareRequest(c *fiber.Ctx) (context.Context, trace.Span) {
 	// Extract trace context from headers
 	ctx := otel.GetTextMapPropagator().Extract(
 		c.UserContext(),
@@ -281,19 +308,24 @@ func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
 
 	// Start span
 	spanName := fmt.Sprintf("%s %s", c.Method(), c.Route().Path)
-
 	ctx, span := m.provider.Tracer().Start(
 		ctx,
 		spanName,
 		trace.WithSpanKind(trace.SpanKindServer),
 	)
-	defer span.End()
 
 	// Update context with provider
 	ctx = WithProvider(ctx, m.provider)
 	c.SetUserContext(ctx)
 
-	// Extract request attributes
+	return ctx, span
+}
+
+// buildRequestAttributes creates the base attributes for the request
+func (m *fiberMiddleware) buildRequestAttributes(c *fiber.Ctx, span trace.Span) []attribute.KeyValue {
+	path := c.Path()
+	spanName := fmt.Sprintf("%s %s", c.Method(), c.Route().Path)
+
 	attrs := []attribute.KeyValue{
 		attribute.String("http.method", c.Method()),
 		attribute.String("http.route", c.Route().Path),
@@ -324,14 +356,21 @@ func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
 	// Set span attributes
 	span.SetAttributes(attrs...)
 
-	// Add request headers to span (excluding sensitive ones)
+	return attrs
+}
+
+// processRequestHeaders adds request headers to the span
+func (m *fiberMiddleware) processRequestHeaders(c *fiber.Ctx, span trace.Span) {
 	c.Request().Header.VisitAll(func(key, value []byte) {
 		keyStr := string(key)
 		if !m.isIgnoredHeader(keyStr) {
 			span.SetAttributes(attribute.String("http.request.header."+strings.ToLower(keyStr), string(value)))
 		}
 	})
+}
 
+// recordRequestMetrics records metrics for the incoming request
+func (m *fiberMiddleware) recordRequestMetrics(ctx context.Context, c *fiber.Ctx, attrs []attribute.KeyValue) {
 	// Record active request
 	if m.activeRequests != nil {
 		m.activeRequests.Add(ctx, 1, metric.WithAttributes(attrs...))
@@ -342,11 +381,10 @@ func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
 	if m.requestSize != nil && c.Request().Header.ContentLength() > 0 {
 		m.requestSize.Record(ctx, int64(c.Request().Header.ContentLength()), metric.WithAttributes(attrs...))
 	}
+}
 
-	// Record start time
-	start := time.Now()
-
-	// Process request with panic recovery
+// executeWithPanicRecovery executes the request with panic recovery
+func (m *fiberMiddleware) executeWithPanicRecovery(c *fiber.Ctx) error {
 	var err error
 
 	func() {
@@ -362,10 +400,11 @@ func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
 		err = c.Next()
 	}()
 
-	// Calculate duration
-	duration := time.Since(start)
+	return err
+}
 
-	// Get response status
+// processResponse handles response processing, metrics, and span updates
+func (m *fiberMiddleware) processResponse(ctx context.Context, c *fiber.Ctx, span trace.Span, err error, duration time.Duration, attrs []attribute.KeyValue) {
 	statusCode := c.Response().StatusCode()
 
 	// Add response attributes
@@ -377,7 +416,7 @@ func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
 	// Update span with response info
 	span.SetAttributes(attribute.Int("http.status_code", statusCode))
 
-	// Handle error
+	// Handle error and status
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
@@ -393,7 +432,7 @@ func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
 		span.SetStatus(codes.Ok, "")
 	}
 
-	// Add response headers to span (excluding sensitive ones)
+	// Add response headers to span
 	c.Response().Header.VisitAll(func(key, value []byte) {
 		keyStr := string(key)
 		if !m.isIgnoredHeader(keyStr) {
@@ -417,12 +456,14 @@ func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
 			m.responseSize.Record(ctx, int64(responseSize), metric.WithAttributes(responseAttrs...))
 		}
 	}
+}
 
-	// Log request
+// logRequest handles request logging with appropriate level based on status
+func (m *fiberMiddleware) logRequest(c *fiber.Ctx, span trace.Span, err error, statusCode int, duration time.Duration) {
 	logger := m.provider.Logger().WithSpan(span)
 	fields := map[string]interface{}{
 		"method":        c.Method(),
-		"path":          path,
+		"path":          c.Path(),
 		"status":        statusCode,
 		"duration_ms":   duration.Milliseconds(),
 		"request_size":  c.Request().Header.ContentLength(),
@@ -451,8 +492,6 @@ func (m *fiberMiddleware) middleware(c *fiber.Ctx) error {
 	} else {
 		logger.With(fields).Info("Request completed successfully")
 	}
-
-	return err
 }
 
 // isIgnoredHeader checks if a header should be ignored (case-insensitive)
