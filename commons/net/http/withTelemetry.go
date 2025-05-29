@@ -15,6 +15,7 @@ import (
 	"strings"
 )
 
+// TelemetryMiddleware provides middleware for adding telemetry to HTTP handlers.
 type TelemetryMiddleware struct {
 	Telemetry *opentelemetry.Telemetry
 }
@@ -113,7 +114,7 @@ func (tm *TelemetryMiddleware) EndTracingSpansInterceptor() grpc.UnaryServerInte
 	return func(
 		ctx context.Context,
 		req any,
-		info *grpc.UnaryServerInfo,
+		_ *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
 		resp, err := handler(ctx, req)

@@ -1,3 +1,6 @@
+// Package redis provides Redis connection management and operations utilities.
+// It includes connection pooling, health checks, and helper functions for interacting
+// with Redis databases in a safe and efficient manner.
 package redis
 
 import (
@@ -7,9 +10,12 @@ import (
 	"go.uber.org/zap"
 )
 
+// RedisTTL defines the default time-to-live (TTL) for Redis cache entries in seconds.
 const RedisTTL = 300
 
 // RedisConnection is a hub which deal with redis connections.
+// The type name intentionally matches the package name for clarity in external usage.
+//
 type RedisConnection struct {
 	Addr      string
 	User      string

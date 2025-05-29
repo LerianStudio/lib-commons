@@ -9,6 +9,8 @@ import (
 //
 // It implements Logger interface.
 // The shutdown function is used to close the logger provider.
+// The type name intentionally matches the package name for clarity in external usage.
+//
 type ZapWithTraceLogger struct {
 	Logger                 *zap.SugaredLogger
 	defaultMessageTemplate string

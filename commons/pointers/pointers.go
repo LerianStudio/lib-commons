@@ -1,3 +1,6 @@
+// Package pointers provides utility functions for converting values to their pointer equivalents.
+// This package simplifies working with pointer types in Go by providing convenient helper functions
+// for common types like string, bool, int, int64, float64, and time.Time.
 package pointers
 
 import "time"

@@ -1,3 +1,5 @@
+// Package zap provides Zap logger integration and adapters for the commons logging interface.
+// It includes high-performance structured logging with OpenTelemetry integration.
 package zap
 
 import (

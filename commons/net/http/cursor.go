@@ -1,14 +1,18 @@
+// Package http provides HTTP utilities and helpers for web applications.
+// It includes cursor-based pagination, request handling, and response utilities.
 package http
 
 import (
 	"encoding/base64"
 	"encoding/json"
-	"github.com/LerianStudio/lib-commons/commons"
-	"github.com/LerianStudio/lib-commons/commons/constants"
-	"github.com/Masterminds/squirrel"
 	"strings"
+
+	"github.com/LerianStudio/lib-commons/commons"
+	constant "github.com/LerianStudio/lib-commons/commons/constants"
+	"github.com/Masterminds/squirrel"
 )
 
+// Cursor represents a cursor for pagination, containing an ID and direction information.
 type Cursor struct {
 	ID         string `json:"id"`
 	PointsNext bool   `json:"points_next"`
@@ -94,7 +98,7 @@ func ApplyCursorPagination(findAll squirrel.SelectBuilder, decodedCursor Cursor,
 }
 
 // PaginateRecords paginates records based on the cursor.
-func PaginateRecords[T any](isFirstPage bool, hasPagination bool, pointsNext bool, items []T, limit int, orderDirection string) []T {
+func PaginateRecords[T any](isFirstPage bool, hasPagination bool, pointsNext bool, items []T, limit int, _ string) []T {
 	paginatedItems := items
 
 	if isFirstPage {
