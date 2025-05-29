@@ -42,7 +42,7 @@ func (ct ConnectionType) String() string {
 // RedisClient interface abstracts both single and cluster clients
 type RedisClient interface {
 	Ping(ctx context.Context) *redis.StatusCmd
-	Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd
+	Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd
 	Get(ctx context.Context, key string) *redis.StringCmd
 	Del(ctx context.Context, keys ...string) *redis.IntCmd
 	Close() error
@@ -186,7 +186,7 @@ func (rcc *RedisClusterConnection) HealthCheck(ctx context.Context) (err error) 
 }
 
 // GetClusterInfo returns cluster topology information
-func (rcc *RedisClusterConnection) GetClusterInfo(ctx context.Context) (result map[string]interface{}, err error) {
+func (rcc *RedisClusterConnection) GetClusterInfo(ctx context.Context) (result map[string]any, err error) {
 	if rcc.ClusterClient == nil {
 		return nil, fmt.Errorf("cluster not connected")
 	}
@@ -215,7 +215,7 @@ func (rcc *RedisClusterConnection) GetClusterInfo(ctx context.Context) (result m
 		return nil, fmt.Errorf("failed to get cluster info: %w", infoErr)
 	}
 
-	return map[string]interface{}{
+	return map[string]any{
 		"nodes": clusterNodes,
 		"info":  clusterInfo,
 	}, nil
@@ -230,7 +230,7 @@ func (rcc *RedisClusterConnection) Ping(ctx context.Context) *redis.StatusCmd {
 }
 
 // Set implements RedisClient interface
-func (rcc *RedisClusterConnection) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
+func (rcc *RedisClusterConnection) Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd {
 	if rcc.ClusterClient == nil {
 		return redis.NewStatusCmd(ctx)
 	}
@@ -270,7 +270,7 @@ type RedisConnectionFactory struct {
 }
 
 // CreateConnection factory method for creating Redis connections
-func (f *RedisConnectionFactory) CreateConnection(connType ConnectionType, config interface{}) (RedisClient, error) {
+func (f *RedisConnectionFactory) CreateConnection(connType ConnectionType, config any) (RedisClient, error) {
 	switch connType {
 	case SingleInstance:
 		if config == nil {

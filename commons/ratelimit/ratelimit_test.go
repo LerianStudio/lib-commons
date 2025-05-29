@@ -169,7 +169,7 @@ func TestRateLimiter(t *testing.T) {
 	})
 
 	t.Run("per-key rate limiting", func(t *testing.T) {
-		limiter := NewKeyedLimiter(func(key string) Limiter {
+		limiter := NewKeyedLimiter(func(_ string) Limiter {
 			return NewTokenBucket(2, 10)
 		})
 
@@ -185,7 +185,7 @@ func TestRateLimiter(t *testing.T) {
 
 	t.Run("cleanup old keys", func(t *testing.T) {
 		limiter := NewKeyedLimiter(
-			func(key string) Limiter {
+			func(_ string) Limiter {
 				return NewTokenBucket(1, 1)
 			},
 			WithCleanupInterval(100*time.Millisecond),
@@ -262,7 +262,7 @@ func BenchmarkRateLimiter(b *testing.B) {
 	})
 
 	b.Run("KeyedLimiter", func(b *testing.B) {
-		limiter := NewKeyedLimiter(func(key string) Limiter {
+		limiter := NewKeyedLimiter(func(_ string) Limiter {
 			return NewTokenBucket(1000, 10000)
 		})
 		keys := []string{"user1", "user2", "user3", "user4", "user5"}

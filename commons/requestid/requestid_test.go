@@ -58,8 +58,9 @@ func TestRequestID(t *testing.T) {
 		// Context with ID keeps the existing one
 		existingID := "existing-id"
 		ctx = NewContext(context.Background(), existingID)
-		ctx, id = EnsureContext(ctx)
-		assert.Equal(t, existingID, id)
+		resultCtx, resultID := EnsureContext(ctx)
+		assert.Equal(t, existingID, resultID)
+		assert.Equal(t, existingID, FromContext(resultCtx))
 	})
 
 	t.Run("HTTP middleware", func(t *testing.T) {
@@ -96,7 +97,7 @@ func TestRequestID(t *testing.T) {
 
 	t.Run("HTTP middleware with custom header", func(t *testing.T) {
 		customHeader := "X-Trace-ID"
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 
@@ -176,7 +177,7 @@ func TestRequestID(t *testing.T) {
 
 		resp, err := client.Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		assert.Equal(t, "client-request-id", resp.Header.Get(DefaultHeader))
 	})
@@ -241,7 +242,7 @@ func BenchmarkRequestID(b *testing.B) {
 	})
 
 	b.Run("HTTPMiddleware", func(b *testing.B) {
-		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
 		})
 		wrapped := HTTPMiddleware(handler)

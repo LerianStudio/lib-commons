@@ -204,7 +204,7 @@ func NewGCPTokenProvider(config *GCPAuthConfig, logger log.Logger) (*GCPTokenPro
 	}
 
 	// Validate JSON format
-	var serviceAccount map[string]interface{}
+	var serviceAccount map[string]any
 	if err := json.Unmarshal(serviceAccountBytes, &serviceAccount); err != nil {
 		return nil, &AuthError{
 			Operation: "parse_service_account",
@@ -258,7 +258,7 @@ func (gcp *GCPTokenProvider) GetToken(ctx context.Context) (string, error) {
 }
 
 // RefreshToken fetches a new token from GCP
-func (gcp *GCPTokenProvider) RefreshToken(ctx context.Context) (string, error) {
+func (gcp *GCPTokenProvider) RefreshToken(_ context.Context) (string, error) {
 	gcp.tokenMutex.Lock()
 	defer gcp.tokenMutex.Unlock()
 
@@ -491,7 +491,7 @@ func (arc *AuthenticatedRedisConnection) Ping(ctx context.Context) *redis.Status
 }
 
 // Set implements RedisClient interface
-func (arc *AuthenticatedRedisConnection) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
+func (arc *AuthenticatedRedisConnection) Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd {
 	if arc.BaseConnection != nil {
 		return arc.BaseConnection.Set(ctx, key, value, expiration)
 	}

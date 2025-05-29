@@ -296,7 +296,7 @@ func TestRedisConnectionFactory_CreateConnection(t *testing.T) {
 	testCases := []struct {
 		name        string
 		connType    ConnectionType
-		config      interface{}
+		config      any
 		expectError bool
 		errorMsg    string
 	}{

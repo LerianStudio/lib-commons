@@ -96,7 +96,7 @@ func TestLoggerImpl(t *testing.T) {
 
 	t.Run("With fields", func(t *testing.T) {
 		buf.Reset()
-		fields := map[string]interface{}{
+		fields := map[string]any{
 			"user_id": "123",
 			"action":  "login",
 		}
@@ -120,7 +120,7 @@ func TestLoggerImpl(t *testing.T) {
 		ctx := context.Background()
 		provider, err := New(ctx, WithServiceName("test-service"))
 		require.NoError(t, err)
-		defer provider.Shutdown(ctx)
+		defer func() { _ = provider.Shutdown(ctx) }()
 
 		tracer := provider.Tracer()
 		_, span := tracer.Start(ctx, "test-span")
@@ -144,7 +144,7 @@ func TestLoggerImpl(t *testing.T) {
 		ctx := context.Background()
 		provider, err := New(ctx, WithServiceName("test-service"))
 		require.NoError(t, err)
-		defer provider.Shutdown(ctx)
+		defer func() { _ = provider.Shutdown(ctx) }()
 
 		tracer := provider.Tracer()
 		_, span := tracer.Start(ctx, "test-span")
@@ -221,14 +221,14 @@ func TestNoopLogger(t *testing.T) {
 		logger.Errorf("test %s", "formatted")
 
 		// Test With methods return the same logger
-		withFields := logger.With(map[string]interface{}{"key": "value"})
+		withFields := logger.With(map[string]any{"key": "value"})
 		assert.Equal(t, logger, withFields)
 
 		// Create a dummy span context
 		ctx := context.Background()
 		provider, err := New(ctx, WithServiceName("test-service"))
 		require.NoError(t, err)
-		defer provider.Shutdown(ctx)
+		defer func() { _ = provider.Shutdown(ctx) }()
 
 		tracer := provider.Tracer()
 		_, span := tracer.Start(ctx, "test-span")
@@ -291,7 +291,7 @@ func TestLoggerFieldsHandling(t *testing.T) {
 
 	t.Run("Empty fields", func(t *testing.T) {
 		buf.Reset()
-		loggerWithFields := logger.With(map[string]interface{}{})
+		loggerWithFields := logger.With(map[string]any{})
 		loggerWithFields.Info("message")
 
 		output := buf.String()
@@ -311,7 +311,7 @@ func TestLoggerFieldsHandling(t *testing.T) {
 
 	t.Run("Complex field types", func(t *testing.T) {
 		buf.Reset()
-		fields := map[string]interface{}{
+		fields := map[string]any{
 			"string": "value",
 			"int":    42,
 			"float":  3.14,
@@ -343,8 +343,8 @@ func TestLoggerChaining(t *testing.T) {
 	t.Run("Chain With calls", func(t *testing.T) {
 		buf.Reset()
 
-		fields1 := map[string]interface{}{"key1": "value1"}
-		fields2 := map[string]interface{}{"key2": "value2"}
+		fields1 := map[string]any{"key1": "value1"}
+		fields2 := map[string]any{"key2": "value2"}
 
 		chainedLogger := logger.With(fields1).With(fields2)
 		chainedLogger.Info("chained message")

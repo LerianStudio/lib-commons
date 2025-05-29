@@ -15,9 +15,9 @@ func TestContextUtilities(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
-	t.Run("WithProvider and GetProvider", func(t *testing.T) {
+	t.Run("WithProvider and GetProvider", func(_ *testing.T) {
 		ctxWithProvider := WithProvider(ctx, provider)
 		retrievedProvider := GetProvider(ctxWithProvider)
 
@@ -25,12 +25,12 @@ func TestContextUtilities(t *testing.T) {
 		assert.Equal(t, provider, retrievedProvider)
 	})
 
-	t.Run("GetProvider from context without provider", func(t *testing.T) {
+	t.Run("GetProvider from context without provider", func(_ *testing.T) {
 		retrievedProvider := GetProvider(ctx)
 		assert.Nil(t, retrievedProvider)
 	})
 
-	t.Run("WithSpanAttributes", func(t *testing.T) {
+	t.Run("WithSpanAttributes", func(_ *testing.T) {
 		// Create a span context first
 		tracer := provider.Tracer()
 		spanCtx, span := tracer.Start(ctx, "test-span")
@@ -47,7 +47,7 @@ func TestContextUtilities(t *testing.T) {
 		assert.Equal(t, spanCtx, ctxWithAttrs)
 	})
 
-	t.Run("AddSpanAttributes", func(t *testing.T) {
+	t.Run("AddSpanAttributes", func(_ *testing.T) {
 		// Create a span context first
 		tracer := provider.Tracer()
 		spanCtx, span := tracer.Start(ctx, "test-span")
@@ -62,7 +62,7 @@ func TestContextUtilities(t *testing.T) {
 		AddSpanAttributes(spanCtx, attrs...)
 	})
 
-	t.Run("AddSpanEvent", func(t *testing.T) {
+	t.Run("AddSpanEvent", func(_ *testing.T) {
 		// Create a span context first
 		tracer := provider.Tracer()
 		spanCtx, span := tracer.Start(ctx, "test-span")
@@ -76,7 +76,7 @@ func TestContextUtilities(t *testing.T) {
 		AddSpanEvent(spanCtx, "test-event", attrs...)
 	})
 
-	t.Run("WithBaggageItem and GetBaggageItem", func(t *testing.T) {
+	t.Run("WithBaggageItem and GetBaggageItem", func(_ *testing.T) {
 		ctxWithBaggage, err := WithBaggageItem(ctx, "test-key", "test-value")
 		require.NoError(t, err)
 
@@ -84,18 +84,18 @@ func TestContextUtilities(t *testing.T) {
 		assert.Equal(t, "test-value", value)
 	})
 
-	t.Run("GetBaggageItem non-existent key", func(t *testing.T) {
+	t.Run("GetBaggageItem non-existent key", func(_ *testing.T) {
 		value := GetBaggageItem(ctx, "non-existent")
 		assert.Empty(t, value)
 	})
 
-	t.Run("WithBaggageItem invalid key", func(t *testing.T) {
+	t.Run("WithBaggageItem invalid key", func(_ *testing.T) {
 		// Test with invalid baggage key (contains invalid characters)
 		_, err := WithBaggageItem(ctx, "invalid key with spaces", "value")
 		assert.Error(t, err)
 	})
 
-	t.Run("Start span", func(t *testing.T) {
+	t.Run("Start span", func(_ *testing.T) {
 		spanCtx, span := Start(ctx, "test-span")
 		defer span.End()
 
@@ -108,7 +108,7 @@ func TestContextUtilities(t *testing.T) {
 		assert.Equal(t, span, retrievedSpan)
 	})
 
-	t.Run("Log", func(t *testing.T) {
+	t.Run("Log", func(_ *testing.T) {
 		logger := Log(ctx)
 		assert.NotNil(t, logger)
 
@@ -116,7 +116,7 @@ func TestContextUtilities(t *testing.T) {
 		logger.Info("test message")
 	})
 
-	t.Run("TraceID", func(t *testing.T) {
+	t.Run("TraceID", func(_ *testing.T) {
 		tracer := provider.Tracer()
 		spanCtx, span := tracer.Start(ctx, "test-span")
 		defer span.End()
@@ -128,12 +128,12 @@ func TestContextUtilities(t *testing.T) {
 		assert.Len(t, traceID, 32) // 32 hex characters
 	})
 
-	t.Run("TraceID from context without span", func(t *testing.T) {
+	t.Run("TraceID from context without span", func(_ *testing.T) {
 		traceID := TraceID(ctx)
 		assert.Empty(t, traceID)
 	})
 
-	t.Run("SpanID", func(t *testing.T) {
+	t.Run("SpanID", func(_ *testing.T) {
 		tracer := provider.Tracer()
 		spanCtx, span := tracer.Start(ctx, "test-span")
 		defer span.End()
@@ -145,12 +145,12 @@ func TestContextUtilities(t *testing.T) {
 		assert.Len(t, spanID, 16) // 16 hex characters
 	})
 
-	t.Run("SpanID from context without span", func(t *testing.T) {
+	t.Run("SpanID from context without span", func(_ *testing.T) {
 		spanID := SpanID(ctx)
 		assert.Empty(t, spanID)
 	})
 
-	t.Run("ExtractSpanContext", func(t *testing.T) {
+	t.Run("ExtractSpanContext", func(_ *testing.T) {
 		tracer := provider.Tracer()
 		spanCtx, span := tracer.Start(ctx, "test-span")
 		defer span.End()
@@ -160,12 +160,12 @@ func TestContextUtilities(t *testing.T) {
 		assert.Equal(t, span.SpanContext(), extractedSpanContext)
 	})
 
-	t.Run("ExtractSpanContext from context without span", func(t *testing.T) {
+	t.Run("ExtractSpanContext from context without span", func(_ *testing.T) {
 		extractedSpanContext := ExtractSpanContext(ctx)
 		assert.False(t, extractedSpanContext.IsValid())
 	})
 
-	t.Run("IsRecording", func(t *testing.T) {
+	t.Run("IsRecording", func(_ *testing.T) {
 		tracer := provider.Tracer()
 		spanCtx, span := tracer.Start(ctx, "test-span")
 		defer span.End()
@@ -175,7 +175,7 @@ func TestContextUtilities(t *testing.T) {
 		assert.IsType(t, true, recording)
 	})
 
-	t.Run("IsRecording from context without span", func(t *testing.T) {
+	t.Run("IsRecording from context without span", func(_ *testing.T) {
 		recording := IsRecording(ctx)
 		assert.False(t, recording)
 	})
@@ -184,7 +184,7 @@ func TestContextUtilities(t *testing.T) {
 func TestBaggageIntegration(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("Multiple baggage items", func(t *testing.T) {
+	t.Run("Multiple baggage items", func(_ *testing.T) {
 		ctx1, err := WithBaggageItem(ctx, "key1", "value1")
 		require.NoError(t, err)
 
@@ -196,7 +196,7 @@ func TestBaggageIntegration(t *testing.T) {
 		assert.Equal(t, "value2", GetBaggageItem(ctx2, "key2"))
 	})
 
-	t.Run("Overwrite baggage item", func(t *testing.T) {
+	t.Run("Overwrite baggage item", func(_ *testing.T) {
 		ctx1, err := WithBaggageItem(ctx, "key", "value1")
 		require.NoError(t, err)
 
@@ -207,7 +207,7 @@ func TestBaggageIntegration(t *testing.T) {
 		assert.Equal(t, "value2", GetBaggageItem(ctx2, "key"))
 	})
 
-	t.Run("Baggage with existing baggage in context", func(t *testing.T) {
+	t.Run("Baggage with existing baggage in context", func(_ *testing.T) {
 		// Create initial baggage
 		member, err := baggage.NewMember("existing", "value")
 		require.NoError(t, err)

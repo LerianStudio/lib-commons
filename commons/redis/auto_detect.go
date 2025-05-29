@@ -226,7 +226,7 @@ func (gcd *GCPEnvironmentDetector) GetGCPProjectID(ctx context.Context) (string,
 	}
 
 	// Try metadata service
-	req, err := http.NewRequestWithContext(ctx, "GET", GCPProjectEndpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, GCPProjectEndpoint, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create metadata request: %w", err)
 	}
@@ -280,7 +280,7 @@ func (gcd *GCPEnvironmentDetector) checkGCPEnvironmentVariables() bool {
 
 // checkGCPMetadataService queries the GCP metadata service
 func (gcd *GCPEnvironmentDetector) checkGCPMetadataService(ctx context.Context) (bool, string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", GCPProjectEndpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, GCPProjectEndpoint, nil)
 	if err != nil {
 		return false, "", err
 	}
@@ -605,7 +605,7 @@ func (rtd *RedisTopologyDetector) detectClusterFromMultipleAddresses(ctx context
 				_ = closeErr
 			}
 			if err != nil {
-				return true, addresses, nil // It's a cluster, use provided addresses
+				return true, addresses, err // It's a cluster, use provided addresses
 			}
 			return true, nodes, nil
 		}

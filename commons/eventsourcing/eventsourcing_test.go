@@ -66,7 +66,7 @@ func (a *BankAccount) Apply(event Event) error {
 	return nil
 }
 
-func (a *BankAccount) HandleCommand(cmd interface{}) ([]Event, error) {
+func (a *BankAccount) HandleCommand(cmd any) ([]Event, error) {
 	switch c := cmd.(type) {
 	case CreateAccountCommand:
 		if a.ID != "" {
@@ -162,7 +162,7 @@ func newMockEventStore() *mockEventStore {
 	}
 }
 
-func (m *mockEventStore) Append(ctx context.Context, streamID string, events []Event, expectedVersion int) error {
+func (m *mockEventStore) Append(_ context.Context, streamID string, events []Event, expectedVersion int) error {
 	if m.appendErr != nil {
 		return m.appendErr
 	}
@@ -188,7 +188,7 @@ func (m *mockEventStore) Append(ctx context.Context, streamID string, events []E
 	return nil
 }
 
-func (m *mockEventStore) Load(ctx context.Context, streamID string, fromVersion int) ([]Event, error) {
+func (m *mockEventStore) Load(_ context.Context, streamID string, fromVersion int) ([]Event, error) {
 	if m.loadErr != nil {
 		return nil, m.loadErr
 	}
@@ -209,11 +209,11 @@ func (m *mockEventStore) Load(ctx context.Context, streamID string, fromVersion 
 	return events, nil
 }
 
-func (m *mockEventStore) LoadSnapshot(ctx context.Context, streamID string) (*Snapshot, error) {
+func (m *mockEventStore) LoadSnapshot(_ context.Context, _ string) (*Snapshot, error) {
 	return nil, nil // No snapshots in mock
 }
 
-func (m *mockEventStore) SaveSnapshot(ctx context.Context, snapshot Snapshot) error {
+func (m *mockEventStore) SaveSnapshot(_ context.Context, _ Snapshot) error {
 	return nil // No snapshots in mock
 }
 
@@ -342,9 +342,9 @@ func TestEventSourcingRepository(t *testing.T) {
 			InitialBalance: 1000,
 		})
 		for _, event := range createEvents {
-			account.Apply(event)
+			_ = account.Apply(event)
 		}
-		repo.Save(ctx, account, createEvents)
+		_ = repo.Save(ctx, account, createEvents)
 
 		// Load and update
 		loaded, _ := repo.Get(ctx, "acc-1")
@@ -358,7 +358,7 @@ func TestEventSourcingRepository(t *testing.T) {
 		assert.NoError(t, err)
 
 		for _, event := range depositEvents {
-			account.Apply(event)
+			_ = account.Apply(event)
 		}
 
 		err = repo.Save(ctx, account, depositEvents)
@@ -405,8 +405,8 @@ func TestEventBus(t *testing.T) {
 			Data: AmountDeposited{Amount: 100},
 		}
 
-		bus.Publish(ctx, event1)
-		bus.Publish(ctx, event2)
+		_ = bus.Publish(ctx, event1)
+		_ = bus.Publish(ctx, event2)
 
 		// Wait for both events
 		for i := 0; i < 2; i++ {
@@ -434,13 +434,13 @@ func TestEventBus(t *testing.T) {
 
 		// Multiple subscribers
 		for i := 0; i < 3; i++ {
-			bus.Subscribe("TestEvent", func(event Event) {
+			bus.Subscribe("TestEvent", func(_ Event) {
 				wg.Done()
 			})
 		}
 
 		// Publish one event
-		bus.Publish(ctx, Event{Type: "TestEvent"})
+		_ = bus.Publish(ctx, Event{Type: "TestEvent"})
 
 		// All subscribers should receive it
 		done := make(chan bool)
@@ -530,21 +530,21 @@ func TestEventHandlerChain(t *testing.T) {
 		var order []string
 		var mu sync.Mutex
 
-		handler1 := EventHandlerFunc(func(ctx context.Context, event Event) error {
+		handler1 := EventHandlerFunc(func(_ context.Context, _ Event) error {
 			mu.Lock()
 			order = append(order, "handler1")
 			mu.Unlock()
 			return nil
 		})
 
-		handler2 := EventHandlerFunc(func(ctx context.Context, event Event) error {
+		handler2 := EventHandlerFunc(func(_ context.Context, _ Event) error {
 			mu.Lock()
 			order = append(order, "handler2")
 			mu.Unlock()
 			return nil
 		})
 
-		handler3 := EventHandlerFunc(func(ctx context.Context, event Event) error {
+		handler3 := EventHandlerFunc(func(_ context.Context, _ Event) error {
 			mu.Lock()
 			order = append(order, "handler3")
 			mu.Unlock()
@@ -566,17 +566,17 @@ func TestEventHandlerChain(t *testing.T) {
 	t.Run("stop on error", func(t *testing.T) {
 		var called []string
 
-		handler1 := EventHandlerFunc(func(ctx context.Context, event Event) error {
+		handler1 := EventHandlerFunc(func(_ context.Context, _ Event) error {
 			called = append(called, "handler1")
 			return nil
 		})
 
-		handler2 := EventHandlerFunc(func(ctx context.Context, event Event) error {
+		handler2 := EventHandlerFunc(func(_ context.Context, _ Event) error {
 			called = append(called, "handler2")
 			return errors.New("handler2 error")
 		})
 
-		handler3 := EventHandlerFunc(func(ctx context.Context, event Event) error {
+		handler3 := EventHandlerFunc(func(_ context.Context, _ Event) error {
 			called = append(called, "handler3")
 			return nil
 		})
@@ -605,7 +605,7 @@ func BenchmarkEventStore(b *testing.B) {
 				Version:     i + 1,
 				Timestamp:   time.Now(),
 			}}
-			store.Append(ctx, "agg-1", events, i)
+			_ = store.Append(ctx, "agg-1", events, i)
 		}
 	})
 
@@ -619,12 +619,12 @@ func BenchmarkEventStore(b *testing.B) {
 				Version:     i + 1,
 				Timestamp:   time.Now(),
 			}}
-			store.Append(ctx, "agg-1", events, i)
+			_ = store.Append(ctx, "agg-1", events, i)
 		}
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			store.Load(ctx, "agg-1", 0)
+			_, _ = store.Load(ctx, "agg-1", 0)
 		}
 	})
 }

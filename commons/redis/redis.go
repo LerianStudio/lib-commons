@@ -36,7 +36,7 @@ type RedisConnection struct {
 	
 	// Internal fields for smart connection management
 	detectedConfig *DetectionResult
-	actualClient   interface{} // Can be *redis.Client or *redis.ClusterClient
+	actualClient   any // Can be *redis.Client or *redis.ClusterClient
 	tokenProvider  TokenProvider
 	gcpAuth        *GCPAuthConfig
 }
@@ -120,7 +120,7 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 }
 
 // createOptimalClient creates the most appropriate Redis client based on detection
-func (rc *RedisConnection) createOptimalClient(ctx context.Context, detection *DetectionResult) (RedisClient, interface{}, error) {
+func (rc *RedisConnection) createOptimalClient(ctx context.Context, detection *DetectionResult) (RedisClient, any, error) {
 	// Determine connection strategy
 	switch {
 	case detection.IsGCP && detection.IsCluster:
@@ -135,7 +135,7 @@ func (rc *RedisConnection) createOptimalClient(ctx context.Context, detection *D
 }
 
 // createGCPClusterClient creates a GCP IAM authenticated cluster client
-func (rc *RedisConnection) createGCPClusterClient(ctx context.Context, detection *DetectionResult) (RedisClient, interface{}, error) {
+func (rc *RedisConnection) createGCPClusterClient(ctx context.Context, detection *DetectionResult) (RedisClient, any, error) {
 	config, err := ConfigFromEnv()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load GCP config: %w", err)
@@ -190,7 +190,7 @@ func (rc *RedisConnection) createGCPClusterClient(ctx context.Context, detection
 }
 
 // createGCPSingleClient creates a GCP IAM authenticated single instance client
-func (rc *RedisConnection) createGCPSingleClient(ctx context.Context, detection *DetectionResult) (RedisClient, interface{}, error) {
+func (rc *RedisConnection) createGCPSingleClient(ctx context.Context, _ *DetectionResult) (RedisClient, any, error) {
 	config, err := ConfigFromEnv()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load GCP config: %w", err)
@@ -251,7 +251,7 @@ func (rc *RedisConnection) createGCPSingleClient(ctx context.Context, detection 
 }
 
 // createRegularClusterClient creates a regular cluster client without GCP auth
-func (rc *RedisConnection) createRegularClusterClient(ctx context.Context, detection *DetectionResult) (RedisClient, interface{}, error) {
+func (rc *RedisConnection) createRegularClusterClient(_ context.Context, detection *DetectionResult) (RedisClient, any, error) {
 	addrs := detection.ClusterNodes
 	if len(addrs) == 0 {
 		// Parse comma-separated addresses
@@ -279,7 +279,7 @@ func (rc *RedisConnection) createRegularClusterClient(ctx context.Context, detec
 }
 
 // createRegularSingleClient creates a regular single instance client
-func (rc *RedisConnection) createRegularSingleClient(ctx context.Context) (RedisClient, interface{}, error) {
+func (rc *RedisConnection) createRegularSingleClient(_ context.Context) (RedisClient, any, error) {
 	// Parse comma-separated addresses and use the first one for single client
 	addresses := rc.parseAddresses()
 	singleAddr := addresses[0]
@@ -357,6 +357,7 @@ func (rc *RedisConnection) GetClient(ctx context.Context) (*redis.Client, error)
 
 // getSingleClientFromCluster creates a single client connection for backward compatibility
 func (rc *RedisConnection) getSingleClientFromCluster(clusterClient *redis.ClusterClient) *redis.Client {
+	_ = clusterClient // Parameter required for interface compatibility but not used in current implementation
 	// Create a single connection to the first available node
 	return redis.NewClient(&redis.Options{
 		Addr:     rc.Addr,
@@ -373,7 +374,7 @@ func (rc *RedisConnection) GetDetectedConfig() *DetectionResult {
 }
 
 // GetActualClient returns the actual underlying client (cluster or single)
-func (rc *RedisConnection) GetActualClient() interface{} {
+func (rc *RedisConnection) GetActualClient() any {
 	return rc.actualClient
 }
 
@@ -396,7 +397,7 @@ func (rc *RedisConnection) Ping(ctx context.Context) *redis.StatusCmd {
 }
 
 // Set implements RedisClient interface
-func (rc *RedisConnection) Set(ctx context.Context, key string, value interface{}, expiration time.Duration) *redis.StatusCmd {
+func (rc *RedisConnection) Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd {
 	if rc.Client == nil {
 		return redis.NewStatusCmd(ctx)
 	}

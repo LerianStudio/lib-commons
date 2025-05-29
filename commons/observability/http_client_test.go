@@ -24,9 +24,9 @@ func TestNewHTTPClientMiddleware(t *testing.T) {
 			Transport: middleware(http.DefaultTransport),
 		}
 
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
+			_, _ = w.Write([]byte("OK"))
 		}))
 		defer server.Close()
 
@@ -35,7 +35,7 @@ func TestNewHTTPClientMiddleware(t *testing.T) {
 
 		resp, err := client.Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
@@ -46,7 +46,7 @@ func TestNewHTTPClientMiddleware(t *testing.T) {
 			WithComponentEnabled(true, true, true),
 		)
 		require.NoError(t, err)
-		defer provider.Shutdown(ctx)
+		defer func() { _ = provider.Shutdown(ctx) }()
 
 		middleware := NewHTTPClientMiddleware(provider)
 		require.NotNil(t, middleware)
@@ -55,9 +55,9 @@ func TestNewHTTPClientMiddleware(t *testing.T) {
 			Transport: middleware(http.DefaultTransport),
 		}
 
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
+			_, _ = w.Write([]byte("OK"))
 		}))
 		defer server.Close()
 
@@ -66,7 +66,7 @@ func TestNewHTTPClientMiddleware(t *testing.T) {
 
 		resp, err := client.Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
@@ -77,7 +77,7 @@ func TestNewHTTPClientMiddleware(t *testing.T) {
 			WithComponentEnabled(false, false, false),
 		)
 		require.NoError(t, err)
-		defer provider.Shutdown(ctx)
+		defer func() { _ = provider.Shutdown(ctx) }()
 
 		middleware := NewHTTPClientMiddleware(provider)
 		require.NotNil(t, middleware)
@@ -86,9 +86,9 @@ func TestNewHTTPClientMiddleware(t *testing.T) {
 			Transport: middleware(http.DefaultTransport),
 		}
 
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
+			_, _ = w.Write([]byte("OK"))
 		}))
 		defer server.Close()
 
@@ -97,7 +97,7 @@ func TestNewHTTPClientMiddleware(t *testing.T) {
 
 		resp, err := client.Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
@@ -110,7 +110,7 @@ func TestHTTPClientOptions(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	t.Run("WithIgnoreHeaders", func(t *testing.T) {
 		t.Run("valid headers", func(t *testing.T) {
@@ -213,7 +213,7 @@ func TestHTTPClientMiddlewareRequestHandling(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	t.Run("successful request", func(t *testing.T) {
 		middleware := NewHTTPClientMiddleware(provider)
@@ -221,10 +221,10 @@ func TestHTTPClientMiddlewareRequestHandling(t *testing.T) {
 			Transport: middleware(http.DefaultTransport),
 		}
 
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`{"status": "ok"}`))
+			_, _ = w.Write([]byte(`{"status": "ok"}`))
 		}))
 		defer server.Close()
 
@@ -234,7 +234,7 @@ func TestHTTPClientMiddlewareRequestHandling(t *testing.T) {
 
 		resp, err := client.Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Equal(t, "application/json", resp.Header.Get("Content-Type"))
@@ -246,9 +246,9 @@ func TestHTTPClientMiddlewareRequestHandling(t *testing.T) {
 			Transport: middleware(http.DefaultTransport),
 		}
 
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Internal Server Error"))
+			_, _ = w.Write([]byte("Internal Server Error"))
 		}))
 		defer server.Close()
 
@@ -257,7 +257,7 @@ func TestHTTPClientMiddlewareRequestHandling(t *testing.T) {
 
 		resp, err := client.Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 	})
@@ -284,7 +284,7 @@ func TestHTTPClientMiddlewareRequestHandling(t *testing.T) {
 
 		resp, err := client.Do(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
@@ -297,7 +297,7 @@ func TestHTTPClientMiddlewareIgnorePaths(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware := NewHTTPClientMiddleware(provider,
 		WithIgnorePaths("/health", "/metrics"),
@@ -306,9 +306,9 @@ func TestHTTPClientMiddlewareIgnorePaths(t *testing.T) {
 		Transport: middleware(http.DefaultTransport),
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -331,7 +331,7 @@ func TestHTTPClientMiddlewareIgnorePaths(t *testing.T) {
 
 			resp, err := client.Do(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
 		})
@@ -345,7 +345,7 @@ func TestHTTPClientMiddlewareSanitizeURL(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware := NewHTTPClientMiddleware(provider,
 		WithMaskedParams("secret", "password", "token"),
@@ -354,7 +354,7 @@ func TestHTTPClientMiddlewareSanitizeURL(t *testing.T) {
 		Transport: middleware(http.DefaultTransport),
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -388,7 +388,7 @@ func TestHTTPClientMiddlewareSanitizeURL(t *testing.T) {
 
 			resp, err := client.Do(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
 		})
@@ -402,7 +402,7 @@ func TestHTTPClientMiddlewareTracing(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware := NewHTTPClientMiddleware(provider)
 	client := &http.Client{
@@ -423,7 +423,7 @@ func TestHTTPClientMiddlewareTracing(t *testing.T) {
 
 	resp, err := client.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
@@ -435,17 +435,17 @@ func TestHTTPClientMiddlewareMetrics(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware := NewHTTPClientMiddleware(provider)
 	client := &http.Client{
 		Transport: middleware(http.DefaultTransport),
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(10 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -454,7 +454,7 @@ func TestHTTPClientMiddlewareMetrics(t *testing.T) {
 
 	resp, err := client.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
@@ -466,7 +466,7 @@ func TestHTTPClientMiddlewareErrorHandling(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware := NewHTTPClientMiddleware(provider)
 	client := &http.Client{
@@ -474,7 +474,7 @@ func TestHTTPClientMiddlewareErrorHandling(t *testing.T) {
 		Timeout:   1 * time.Millisecond,
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(10 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -494,7 +494,7 @@ func TestHTTPClientMiddlewareSecurityDefaults(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware := NewHTTPClientMiddleware(provider,
 		WithSecurityDefaults(),
@@ -503,7 +503,7 @@ func TestHTTPClientMiddlewareSecurityDefaults(t *testing.T) {
 		Transport: middleware(http.DefaultTransport),
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Set-Cookie", "session=abc123")
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -516,7 +516,7 @@ func TestHTTPClientMiddlewareSecurityDefaults(t *testing.T) {
 
 	resp, err := client.Do(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
@@ -645,7 +645,7 @@ func TestTLSCipherSuiteString(t *testing.T) {
 
 func TestRoundTripperFunc(t *testing.T) {
 	called := false
-	fn := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	fn := roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
 		called = true
 		return &http.Response{
 			StatusCode: http.StatusOK,
@@ -669,7 +669,7 @@ func TestHTTPClientMiddlewareIntegration(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware := NewHTTPClientMiddleware(provider,
 		WithSecurityDefaults(),
@@ -684,14 +684,14 @@ func TestHTTPClientMiddlewareIntegration(t *testing.T) {
 		switch r.URL.Path {
 		case "/health":
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("OK"))
+			_, _ = w.Write([]byte("OK"))
 		case "/api/users":
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(`[{"id": 1, "name": "John"}]`))
+			_, _ = w.Write([]byte(`[{"id": 1, "name": "John"}]`))
 		case "/api/error":
 			w.WriteHeader(http.StatusInternalServerError)
-			w.Write([]byte("Internal Server Error"))
+			_, _ = w.Write([]byte("Internal Server Error"))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -722,7 +722,7 @@ func TestHTTPClientMiddlewareIntegration(t *testing.T) {
 
 			resp, err := client.Do(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			assert.Equal(t, tt.expectedStatus, resp.StatusCode)
 		})
@@ -736,16 +736,16 @@ func BenchmarkHTTPClientMiddleware(b *testing.B) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(b, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware := NewHTTPClientMiddleware(provider)
 	client := &http.Client{
 		Transport: middleware(http.DefaultTransport),
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		_, _ = w.Write([]byte("OK"))
 	}))
 	defer server.Close()
 
@@ -757,7 +757,7 @@ func BenchmarkHTTPClientMiddleware(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 	})
 }

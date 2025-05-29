@@ -107,7 +107,7 @@ func Example_smartClusterDetection() {
 }
 
 // TestGCPAuthentication demonstrates GCP IAM authentication (renamed to avoid timestamp issues)
-func TestGCPAuthentication(t *testing.T) {
+func TestGCPAuthentication(_ *testing.T) {
 	// Set up GCP environment (in real usage, these would be set by the platform)
 	_ = os.Setenv("GCP_VALKEY_AUTH", "true")
 	_ = os.Setenv("GCP_PROJECT_ID", "my-project")
@@ -234,21 +234,21 @@ func Example_detectionCaching() {
 // nopLogger implements log.Logger interface for examples
 type nopLogger struct{}
 
-func (n *nopLogger) Info(args ...interface{})                      {}
-func (n *nopLogger) Infof(format string, args ...interface{})     {}
-func (n *nopLogger) Infoln(args ...interface{})                   {}
-func (n *nopLogger) Debug(args ...interface{})                    {}
-func (n *nopLogger) Debugf(format string, args ...interface{})    {}
-func (n *nopLogger) Debugln(args ...interface{})                  {}
-func (n *nopLogger) Error(args ...interface{})                    {}
-func (n *nopLogger) Errorf(format string, args ...interface{})    {}
-func (n *nopLogger) Errorln(args ...interface{})                  {}
-func (n *nopLogger) Warn(args ...interface{})                     {}
-func (n *nopLogger) Warnf(format string, args ...interface{})     {}
-func (n *nopLogger) Warnln(args ...interface{})                   {}
-func (n *nopLogger) Fatal(args ...interface{})                    {}
-func (n *nopLogger) Fatalf(format string, args ...interface{})    {}
-func (n *nopLogger) Fatalln(args ...interface{})                  {}
-func (n *nopLogger) WithFields(fields ...interface{}) log.Logger  { return n }
-func (n *nopLogger) WithDefaultMessageTemplate(message string) log.Logger { return n }
+func (n *nopLogger) Info(_ ...any)                      {}
+func (n *nopLogger) Infof(_ string, _ ...any)     {}
+func (n *nopLogger) Infoln(_ ...any)                   {}
+func (n *nopLogger) Debug(_ ...any)                    {}
+func (n *nopLogger) Debugf(_ string, _ ...any)    {}
+func (n *nopLogger) Debugln(_ ...any)                  {}
+func (n *nopLogger) Error(_ ...any)                    {}
+func (n *nopLogger) Errorf(_ string, _ ...any)    {}
+func (n *nopLogger) Errorln(_ ...any)                  {}
+func (n *nopLogger) Warn(_ ...any)                     {}
+func (n *nopLogger) Warnf(_ string, _ ...any)     {}
+func (n *nopLogger) Warnln(_ ...any)                   {}
+func (n *nopLogger) Fatal(_ ...any)                    {}
+func (n *nopLogger) Fatalf(_ string, _ ...any)    {}
+func (n *nopLogger) Fatalln(_ ...any)                  {}
+func (n *nopLogger) WithFields(_ ...any) log.Logger  { return n }
+func (n *nopLogger) WithDefaultMessageTemplate(_ string) log.Logger { return n }
 func (n *nopLogger) Sync() error                                  { return nil }

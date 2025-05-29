@@ -63,7 +63,7 @@ func TestMemoryCache(t *testing.T) {
 		ctx := context.Background()
 
 		// Set and delete
-		cache.Set(ctx, "del-key", "value", 0)
+		_ = cache.Set(ctx, "del-key", "value", 0)
 		err := cache.Delete(ctx, "del-key")
 		assert.NoError(t, err)
 
@@ -78,9 +78,9 @@ func TestMemoryCache(t *testing.T) {
 		ctx := context.Background()
 
 		// Set multiple values
-		cache.Set(ctx, "key1", "value1", 0)
-		cache.Set(ctx, "key2", "value2", 0)
-		cache.Set(ctx, "key3", "value3", 0)
+		_ = cache.Set(ctx, "key1", "value1", 0)
+		_ = cache.Set(ctx, "key2", "value2", 0)
+		_ = cache.Set(ctx, "key3", "value3", 0)
 
 		// Clear all
 		err := cache.Clear(ctx)
@@ -103,7 +103,7 @@ func TestMemoryCache(t *testing.T) {
 		assert.False(t, exists)
 
 		// Set and check
-		cache.Set(ctx, "key", "value", 0)
+		_ = cache.Set(ctx, "key", "value", 0)
 		exists, err = cache.Exists(ctx, "key")
 		assert.NoError(t, err)
 		assert.True(t, exists)
@@ -114,8 +114,8 @@ func TestMemoryCache(t *testing.T) {
 		ctx := context.Background()
 
 		// Set multiple
-		cache.Set(ctx, "key1", "value1", 0)
-		cache.Set(ctx, "key2", "value2", 0)
+		_ = cache.Set(ctx, "key1", "value1", 0)
+		_ = cache.Set(ctx, "key2", "value2", 0)
 
 		// Get multiple
 		results, err := cache.GetMultiple(ctx, []string{"key1", "key2", "key3"})
@@ -131,7 +131,7 @@ func TestMemoryCache(t *testing.T) {
 		ctx := context.Background()
 
 		// Set multiple
-		items := map[string]interface{}{
+		items := map[string]any{
 			"multi1": "value1",
 			"multi2": "value2",
 			"multi3": "value3",
@@ -194,7 +194,7 @@ func TestMemoryCache(t *testing.T) {
 				defer wg.Done()
 				key := string(rune('a' + n%26))
 				var val int
-				cache.Get(ctx, key, &val)
+				_ = cache.Get(ctx, key, &val)
 			}(i)
 		}
 
@@ -212,12 +212,12 @@ func TestMemoryCache(t *testing.T) {
 		ctx := context.Background()
 
 		// Fill cache
-		cache.Set(ctx, "key1", "value1", 0)
-		cache.Set(ctx, "key2", "value2", 0)
-		cache.Set(ctx, "key3", "value3", 0)
+		_ = cache.Set(ctx, "key1", "value1", 0)
+		_ = cache.Set(ctx, "key2", "value2", 0)
+		_ = cache.Set(ctx, "key3", "value3", 0)
 
 		// Add one more (should evict oldest)
-		cache.Set(ctx, "key4", "value4", 0)
+		_ = cache.Set(ctx, "key4", "value4", 0)
 
 		// key1 should be evicted
 		var result string
@@ -237,9 +237,9 @@ func TestMemoryCache(t *testing.T) {
 		ctx := context.Background()
 
 		// Set with short TTL
-		cache.Set(ctx, "expire1", "value1", 30*time.Millisecond)
-		cache.Set(ctx, "expire2", "value2", 30*time.Millisecond)
-		cache.Set(ctx, "keep", "value3", 5*time.Second)
+		_ = cache.Set(ctx, "expire1", "value1", 30*time.Millisecond)
+		_ = cache.Set(ctx, "expire2", "value2", 30*time.Millisecond)
+		_ = cache.Set(ctx, "keep", "value3", 5*time.Second)
 
 		// Wait for cleanup
 		time.Sleep(100 * time.Millisecond)
@@ -259,7 +259,7 @@ func TestCacheWrapper(t *testing.T) {
 		base := NewMemoryCache()
 		loads := int32(0)
 
-		loader := func(ctx context.Context, key string) (interface{}, time.Duration, error) {
+		loader := func(_ context.Context, key string) (any, time.Duration, error) {
 			atomic.AddInt32(&loads, 1)
 			return "loaded-" + key, 0, nil
 		}
@@ -283,7 +283,7 @@ func TestCacheWrapper(t *testing.T) {
 
 	t.Run("loader error", func(t *testing.T) {
 		base := NewMemoryCache()
-		loader := func(ctx context.Context, key string) (interface{}, time.Duration, error) {
+		loader := func(_ context.Context, _ string) (any, time.Duration, error) {
 			return nil, 0, errors.New("load failed")
 		}
 
@@ -300,7 +300,7 @@ func TestCacheWrapper(t *testing.T) {
 		base := NewMemoryCache()
 		loads := int32(0)
 
-		loader := func(ctx context.Context, key string) (interface{}, time.Duration, error) {
+		loader := func(_ context.Context, _ string) (any, time.Duration, error) {
 			n := atomic.AddInt32(&loads, 1)
 			return "value-" + string(rune('0'+n)), 50 * time.Millisecond, nil
 		}
@@ -310,14 +310,14 @@ func TestCacheWrapper(t *testing.T) {
 
 		// Load value
 		var result string
-		cache.Get(ctx, "key", &result)
+		_ = cache.Get(ctx, "key", &result)
 		assert.Equal(t, "value-1", result)
 
 		// Wait for expiration
 		time.Sleep(100 * time.Millisecond)
 
 		// Should reload
-		cache.Get(ctx, "key", &result)
+		_ = cache.Get(ctx, "key", &result)
 		assert.Equal(t, "value-2", result)
 		assert.Equal(t, int32(2), atomic.LoadInt32(&loads))
 	})
@@ -328,7 +328,7 @@ func TestCacheWrapper(t *testing.T) {
 		ctx := context.Background()
 
 		// Set in namespace
-		cache.Set(ctx, "key", "value", 0)
+		_ = cache.Set(ctx, "key", "value", 0)
 
 		// Get from namespace
 		var result string
@@ -357,12 +357,12 @@ type mockMetrics struct {
 	size      int
 }
 
-func (m *mockMetrics) IncrHits(cache string)              { m.hits++ }
-func (m *mockMetrics) IncrMisses(cache string)            { m.misses++ }
-func (m *mockMetrics) IncrSets(cache string)              { m.sets++ }
-func (m *mockMetrics) IncrDeletes(cache string)           { m.deletes++ }
-func (m *mockMetrics) IncrEvictions(cache string)         { m.evictions++ }
-func (m *mockMetrics) ObserveSize(cache string, size int) { m.size = size }
+func (m *mockMetrics) IncrHits(_ string)              { m.hits++ }
+func (m *mockMetrics) IncrMisses(_ string)            { m.misses++ }
+func (m *mockMetrics) IncrSets(_ string)              { m.sets++ }
+func (m *mockMetrics) IncrDeletes(_ string)           { m.deletes++ }
+func (m *mockMetrics) IncrEvictions(_ string)         { m.evictions++ }
+func (m *mockMetrics) ObserveSize(_ string, size int) { m.size = size }
 
 func TestCacheMetrics(t *testing.T) {
 	t.Run("track hits and misses", func(t *testing.T) {
@@ -371,13 +371,13 @@ func TestCacheMetrics(t *testing.T) {
 		ctx := context.Background()
 
 		// Some hits and misses
-		cache.Set(ctx, "key1", "value1", 0)
+		_ = cache.Set(ctx, "key1", "value1", 0)
 
 		var result string
-		cache.Get(ctx, "key1", &result) // hit
-		cache.Get(ctx, "key1", &result) // hit
-		cache.Get(ctx, "key2", &result) // miss
-		cache.Get(ctx, "key3", &result) // miss
+		_ = cache.Get(ctx, "key1", &result) // hit
+		_ = cache.Get(ctx, "key1", &result) // hit
+		_ = cache.Get(ctx, "key2", &result) // miss
+		_ = cache.Get(ctx, "key3", &result) // miss
 
 		assert.Equal(t, 2, metrics.hits)
 		assert.Equal(t, 2, metrics.misses)
@@ -438,7 +438,7 @@ func BenchmarkCache(b *testing.B) {
 		b.RunParallel(func(pb *testing.PB) {
 			i := 0
 			for pb.Next() {
-				cache.Set(ctx, "key"+string(rune(i%100)), i, 0)
+				_ = cache.Set(ctx, "key"+string(rune(i%100)), i, 0)
 				i++
 			}
 		})
@@ -450,7 +450,7 @@ func BenchmarkCache(b *testing.B) {
 
 		// Pre-populate
 		for i := 0; i < 100; i++ {
-			cache.Set(ctx, "key"+string(rune(i)), i, 0)
+			_ = cache.Set(ctx, "key"+string(rune(i)), i, 0)
 		}
 
 		b.ResetTimer()
@@ -458,7 +458,7 @@ func BenchmarkCache(b *testing.B) {
 			i := 0
 			var result int
 			for pb.Next() {
-				cache.Get(ctx, "key"+string(rune(i%100)), &result)
+				_ = cache.Get(ctx, "key"+string(rune(i%100)), &result)
 				i++
 			}
 		})

@@ -300,7 +300,6 @@ func (c *HTTPChecker) Check(_ context.Context) error {
 // MarshalJSON custom JSON marshalling for Response
 func (r *Response) MarshalJSON() ([]byte, error) {
 	type Alias Response
-
 	return json.Marshal(&struct {
 		*Alias
 		Service string `json:"service"`

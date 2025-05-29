@@ -26,10 +26,10 @@ type testLogger struct {
 	level log.LogLevel
 }
 
-func newTestLogger(buf *bytes.Buffer, level log.LogLevel) *testLogger {
+func newTestLogger(buf *bytes.Buffer) *testLogger {
 	return &testLogger{
 		buf:   buf,
-		level: level,
+		level: log.InfoLevel,
 	}
 }
 
@@ -123,11 +123,11 @@ func (tl *testLogger) Fatalln(args ...any) {
 	}
 }
 
-func (tl *testLogger) WithFields(fields ...any) log.Logger {
+func (tl *testLogger) WithFields(_ ...any) log.Logger {
 	return tl // For simplicity in tests, return self
 }
 
-func (tl *testLogger) WithDefaultMessageTemplate(message string) log.Logger {
+func (tl *testLogger) WithDefaultMessageTemplate(_ string) log.Logger {
 	return tl // For simplicity in tests, return self
 }
 
@@ -144,7 +144,7 @@ func TestNewObservabilityMiddleware(t *testing.T) {
 			WithComponentEnabled(true, true, true),
 		)
 		require.NoError(t, err)
-		defer provider.Shutdown(ctx)
+		defer func() { _ = provider.Shutdown(ctx) }()
 
 		baseLogger := &log.GoLogger{Level: log.InfoLevel}
 		logger := log.NewStructuredLogger(baseLogger)
@@ -189,7 +189,7 @@ func TestNewObservabilityMiddleware(t *testing.T) {
 			WithComponentEnabled(true, true, true),
 		)
 		require.NoError(t, err)
-		defer provider.Shutdown(ctx)
+		defer func() { _ = provider.Shutdown(ctx) }()
 
 		om, err := NewObservabilityMiddleware(
 			"test-service",
@@ -210,11 +210,11 @@ func TestObservabilityMiddlewareHandler(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	buf := &bytes.Buffer{}
 	// Use testLogger that writes to buffer, then wrap with StructuredLogger
-	baseLogger := newTestLogger(buf, log.InfoLevel)
+	baseLogger := newTestLogger(buf)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -238,7 +238,7 @@ func TestObservabilityMiddlewareHandler(t *testing.T) {
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -267,7 +267,7 @@ func TestObservabilityMiddlewareHandler(t *testing.T) {
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		assert.Equal(t, http.StatusCreated, resp.StatusCode)
 
@@ -288,7 +288,7 @@ func TestObservabilityMiddlewareHandler(t *testing.T) {
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 
@@ -308,7 +308,7 @@ func TestObservabilityMiddlewareHandler(t *testing.T) {
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		assert.Equal(t, http.StatusNotFound, resp.StatusCode)
 
@@ -320,7 +320,7 @@ func TestObservabilityMiddlewareHandler(t *testing.T) {
 	t.Run("request with error", func(t *testing.T) {
 		buf.Reset()
 
-		app.Get("/api/panic", func(c *fiber.Ctx) error {
+		app.Get("/api/panic", func(_ *fiber.Ctx) error {
 			return errors.New("something went wrong")
 		})
 
@@ -328,7 +328,7 @@ func TestObservabilityMiddlewareHandler(t *testing.T) {
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 
@@ -345,10 +345,10 @@ func TestObservabilityMiddlewareMetrics(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	buf := &bytes.Buffer{}
-	baseLogger := newTestLogger(buf, log.InfoLevel)
+	baseLogger := newTestLogger(buf)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -371,7 +371,7 @@ func TestObservabilityMiddlewareMetrics(t *testing.T) {
 
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
@@ -383,10 +383,10 @@ func TestObservabilityMiddlewareTracing(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	buf := &bytes.Buffer{}
-	baseLogger := newTestLogger(buf, log.InfoLevel)
+	baseLogger := newTestLogger(buf)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -411,7 +411,7 @@ func TestObservabilityMiddlewareTracing(t *testing.T) {
 
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.True(t, spanContext.IsValid())
@@ -424,10 +424,10 @@ func TestObservabilityMiddlewareHeaders(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	buf := &bytes.Buffer{}
-	baseLogger := newTestLogger(buf, log.InfoLevel)
+	baseLogger := newTestLogger(buf)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -455,7 +455,7 @@ func TestObservabilityMiddlewareHeaders(t *testing.T) {
 
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -471,10 +471,10 @@ func TestObservabilityMiddlewareRequestSize(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	buf := &bytes.Buffer{}
-	baseLogger := newTestLogger(buf, log.InfoLevel)
+	baseLogger := newTestLogger(buf)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -498,7 +498,7 @@ func TestObservabilityMiddlewareRequestSize(t *testing.T) {
 
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -514,10 +514,10 @@ func TestObservabilityMiddlewareResponseSize(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	buf := &bytes.Buffer{}
-	baseLogger := newTestLogger(buf, log.InfoLevel)
+	baseLogger := newTestLogger(buf)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -540,7 +540,7 @@ func TestObservabilityMiddlewareResponseSize(t *testing.T) {
 
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -560,10 +560,10 @@ func TestObservabilityMiddlewareDuration(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	buf := &bytes.Buffer{}
-	baseLogger := newTestLogger(buf, log.InfoLevel)
+	baseLogger := newTestLogger(buf)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -589,7 +589,7 @@ func TestObservabilityMiddlewareDuration(t *testing.T) {
 	duration := time.Since(start)
 
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.GreaterOrEqual(t, duration, 50*time.Millisecond)
@@ -605,10 +605,10 @@ func TestObservabilityMiddlewareStatusClasses(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	buf := &bytes.Buffer{}
-	baseLogger := newTestLogger(buf, log.InfoLevel)
+	baseLogger := newTestLogger(buf)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -672,7 +672,7 @@ func TestObservabilityMiddlewareStatusClasses(t *testing.T) {
 
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			assert.Equal(t, tt.statusCode, resp.StatusCode)
 
@@ -689,10 +689,10 @@ func TestObservabilityMiddlewareIPExtraction(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	buf := &bytes.Buffer{}
-	baseLogger := newTestLogger(buf, log.InfoLevel)
+	baseLogger := newTestLogger(buf)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -715,7 +715,7 @@ func TestObservabilityMiddlewareIPExtraction(t *testing.T) {
 
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -730,10 +730,10 @@ func TestObservabilityMiddlewareIntegration(t *testing.T) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	buf := &bytes.Buffer{}
-	baseLogger := newTestLogger(buf, log.InfoLevel)
+	baseLogger := newTestLogger(buf)
 	logger := log.NewStructuredLogger(baseLogger)
 
 	om, err := NewObservabilityMiddleware(
@@ -760,7 +760,7 @@ func TestObservabilityMiddlewareIntegration(t *testing.T) {
 	})
 
 	app.Post("/api/users", func(c *fiber.Ctx) error {
-		var user map[string]interface{}
+		var user map[string]any
 		if err := c.BodyParser(&user); err != nil {
 			return c.Status(400).JSON(fiber.Map{"error": "invalid JSON"})
 		}
@@ -830,7 +830,7 @@ func TestObservabilityMiddlewareIntegration(t *testing.T) {
 
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			assert.Equal(t, tt.expectedStatus, resp.StatusCode)
 
@@ -849,7 +849,7 @@ func BenchmarkObservabilityMiddleware(b *testing.B) {
 		WithComponentEnabled(true, true, true),
 	)
 	require.NoError(b, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	baseLogger := &log.GoLogger{Level: log.InfoLevel}
 	logger := log.NewStructuredLogger(baseLogger)
@@ -877,7 +877,7 @@ func BenchmarkObservabilityMiddleware(b *testing.B) {
 			if err != nil {
 				b.Fatal(err)
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		}
 	})
 }
