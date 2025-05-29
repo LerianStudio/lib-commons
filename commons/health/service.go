@@ -23,7 +23,9 @@ import (
 type Status string
 
 const (
+	// StatusUp indicates that a service or health check is healthy and operational.
 	StatusUp   Status = "UP"
+	// StatusDown indicates that a service or health check is unhealthy or non-operational.
 	StatusDown Status = "DOWN"
 )
 

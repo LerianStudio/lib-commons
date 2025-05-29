@@ -1,4 +1,4 @@
-source $PWD/pkg/shell/colors.sh
+source "$(dirname "$0")/colors.sh"
 
 border() {
   local str="$*" # Put all arguments into single string

@@ -1,3 +1,5 @@
+// Package saga provides distributed saga pattern implementation for coordinating transactions across services.
+// It includes support for step execution, compensation, timeouts, retries, and event publishing.
 package saga
 
 import (
@@ -21,7 +23,10 @@ var (
 	ErrSagaTimedOut = errors.New("saga timed out")
 )
 
-// SagaStatus represents the status of a saga execution
+// SagaStatus represents the status of a saga execution.
+// The type name intentionally matches the package name for clarity in external usage.
+//
+//nolint:revive // Intentional stuttering for external package clarity
 type SagaStatus string
 
 const (
@@ -170,7 +175,10 @@ func (s *Saga) compensate(ctx context.Context, executedSteps []Step, data interf
 	return nil
 }
 
-// SagaExecution represents a saga execution instance
+// SagaExecution represents a saga execution instance.
+// The type name intentionally matches the package name for clarity in external usage.
+//
+//nolint:revive // Intentional stuttering for external package clarity
 type SagaExecution struct {
 	ID        string
 	Name      string
@@ -259,9 +267,9 @@ func (c *Coordinator) GetStatus(executionID string) *SagaExecution {
 	}
 
 	// Return a copy to avoid race conditions
-	copy := *execution
+	executionCopy := *execution
 
-	return &copy
+	return &executionCopy
 }
 
 // Event types for distributed sagas
@@ -420,7 +428,10 @@ func (ds *DistributedSaga) publishEvent(ctx context.Context, eventType, stepName
 	_ = ds.eventStore.Publish(ctx, event)
 }
 
-// SagaBuilder helps build sagas fluently
+// SagaBuilder helps build sagas fluently.
+// The type name intentionally matches the package name for clarity in external usage.
+//
+//nolint:revive // Intentional stuttering for external package clarity
 type SagaBuilder struct {
 	name       string
 	steps      []Step

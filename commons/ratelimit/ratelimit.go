@@ -1,3 +1,6 @@
+// Package ratelimit provides rate limiting algorithms and utilities for controlling request rates.
+// It includes implementations of various rate limiting strategies such as token bucket,
+// sliding window, fixed window, and keyed rate limiting for per-client rate control.
 package ratelimit
 
 import (
@@ -93,7 +96,7 @@ func (tb *TokenBucket) refill() {
 	elapsed := now.Sub(tb.lastRefill).Seconds()
 	tokensToAdd := elapsed * tb.refillRate
 
-	tb.tokens = min(tb.tokens+tokensToAdd, tb.capacity)
+	tb.tokens = minFloat64(tb.tokens+tokensToAdd, tb.capacity)
 	tb.lastRefill = now
 }
 
@@ -160,9 +163,8 @@ func (tb *TokenBucket) ReserveN(n float64) Reservation {
 
 	// Reserve the tokens
 	tb.tokens -= n
-	if tb.tokens < 0 {
-		// Will go negative but will refill over time
-	}
+	// Note: tokens can go negative temporarily but will refill over time
+	// This is intentional behavior for token bucket algorithm
 
 	return &tokenReservation{
 		ok:       true,
@@ -204,7 +206,7 @@ func (r *tokenReservation) Cancel() {
 
 	if !r.canceled && r.ok {
 		r.limiter.mu.Lock()
-		r.limiter.tokens = min(r.limiter.tokens+r.tokens, r.limiter.capacity)
+		r.limiter.tokens = minFloat64(r.limiter.tokens+r.tokens, r.limiter.capacity)
 		r.limiter.mu.Unlock()
 		r.canceled = true
 	}
@@ -299,7 +301,7 @@ func (sw *SlidingWindow) Wait(ctx context.Context) error {
 }
 
 // Reserve implements Limiter (not supported for sliding window)
-func (sw *SlidingWindow) Reserve(n int) Reservation {
+func (sw *SlidingWindow) Reserve(_ int) Reservation {
 	return &tokenReservation{ok: false}
 }
 
@@ -389,7 +391,7 @@ func (fw *FixedWindow) Wait(ctx context.Context) error {
 }
 
 // Reserve implements Limiter (not supported for fixed window)
-func (fw *FixedWindow) Reserve(n int) Reservation {
+func (fw *FixedWindow) Reserve(_ int) Reservation {
 	return &tokenReservation{ok: false}
 }
 
@@ -529,8 +531,9 @@ func (kl *KeyedLimiter) Stop() {
 	}
 }
 
-// min returns the minimum of two float64 values
-func min(a, b float64) float64 {
+// minFloat64 returns the minimum of two float64 values.
+// Named to avoid conflict with built-in min function.
+func minFloat64(a, b float64) float64 {
 	if a < b {
 		return a
 	}

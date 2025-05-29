@@ -307,15 +307,15 @@ func FindScale(asset string, v float64, s int64) Amount {
 			Value: value,
 			Scale: scale,
 		}
-	} else {
-		// No base scale, use actual decimal places
-		value := int64(math.Round(v * math.Pow(10, float64(actualDecimals))))
+	}
+	
+	// No base scale, use actual decimal places
+	value := int64(math.Round(v * math.Pow(10, float64(actualDecimals))))
 
-		return Amount{
-			Asset: asset,
-			Value: value,
-			Scale: actualDecimals,
-		}
+	return Amount{
+		Asset: asset,
+		Value: value,
+		Scale: actualDecimals,
 	}
 }
 

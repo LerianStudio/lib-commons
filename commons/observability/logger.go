@@ -264,50 +264,50 @@ func NewNoopLogger() Logger {
 }
 
 // Debug is a no-op
-func (l *NoopLogger) Debug(args ...interface{}) {}
+func (l *NoopLogger) Debug(_ ...interface{}) {}
 
 // Debugf is a no-op
-func (l *NoopLogger) Debugf(format string, args ...interface{}) {}
+func (l *NoopLogger) Debugf(_ string, _ ...interface{}) {}
 
 // Info is a no-op
-func (l *NoopLogger) Info(args ...interface{}) {}
+func (l *NoopLogger) Info(_ ...interface{}) {}
 
 // Infof is a no-op
-func (l *NoopLogger) Infof(format string, args ...interface{}) {}
+func (l *NoopLogger) Infof(_ string, _ ...interface{}) {}
 
 // Warn is a no-op
-func (l *NoopLogger) Warn(args ...interface{}) {}
+func (l *NoopLogger) Warn(_ ...interface{}) {}
 
 // Warnf is a no-op
-func (l *NoopLogger) Warnf(format string, args ...interface{}) {}
+func (l *NoopLogger) Warnf(_ string, _ ...interface{}) {}
 
 // Error is a no-op
-func (l *NoopLogger) Error(args ...interface{}) {}
+func (l *NoopLogger) Error(_ ...interface{}) {}
 
 // Errorf is a no-op
-func (l *NoopLogger) Errorf(format string, args ...interface{}) {}
+func (l *NoopLogger) Errorf(_ string, _ ...interface{}) {}
 
 // Fatal is a no-op (but still exits)
-func (l *NoopLogger) Fatal(args ...interface{}) {
+func (l *NoopLogger) Fatal(_ ...interface{}) {
 	os.Exit(1)
 }
 
 // Fatalf is a no-op (but still exits)
-func (l *NoopLogger) Fatalf(format string, args ...interface{}) {
+func (l *NoopLogger) Fatalf(_ string, _ ...interface{}) {
 	os.Exit(1)
 }
 
 // With returns the same no-op logger
-func (l *NoopLogger) With(fields map[string]interface{}) Logger {
+func (l *NoopLogger) With(_ map[string]interface{}) Logger {
 	return l
 }
 
 // WithContext returns the same no-op logger
-func (l *NoopLogger) WithContext(ctx trace.SpanContext) Logger {
+func (l *NoopLogger) WithContext(_ trace.SpanContext) Logger {
 	return l
 }
 
 // WithSpan returns the same no-op logger
-func (l *NoopLogger) WithSpan(span trace.Span) Logger {
+func (l *NoopLogger) WithSpan(_ trace.Span) Logger {
 	return l
 }

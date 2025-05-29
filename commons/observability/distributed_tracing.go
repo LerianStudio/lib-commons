@@ -254,7 +254,7 @@ func (p *AsyncSpanProcessor) ProcessAsync(
 }
 
 // Link creates a link between spans
-func Link(ctx context.Context, linkedSpanContext trace.SpanContext, attributes ...attribute.KeyValue) trace.Link {
+func Link(_ context.Context, linkedSpanContext trace.SpanContext, attributes ...attribute.KeyValue) trace.Link {
 	return trace.Link{
 		SpanContext: linkedSpanContext,
 		Attributes:  attributes,

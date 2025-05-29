@@ -12,7 +12,10 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// ObservabilityMiddleware provides comprehensive observability for HTTP requests
+// ObservabilityMiddleware provides comprehensive observability for HTTP requests.
+// The type name intentionally matches the package name for clarity in external usage.
+//
+//nolint:revive // Intentional stuttering for external package clarity
 type ObservabilityMiddleware struct {
 	serviceName    string
 	tracerProvider trace.TracerProvider

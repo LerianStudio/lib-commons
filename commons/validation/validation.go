@@ -1,3 +1,5 @@
+// Package validation provides comprehensive input validation functions and utilities.
+// It includes struct validation, field validation, and custom validator registration.
 package validation
 
 import (
@@ -12,7 +14,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// ValidationError represents a validation error
+// ValidationError represents a validation error with field and message details.
+// The type name intentionally matches the package name for clarity in external usage.
+//
+//nolint:revive // Intentional stuttering for external package clarity
 type ValidationError struct {
 	Field   string
 	Message string
@@ -88,10 +93,10 @@ func Required(value interface{}, fieldName string) error {
 }
 
 // MinLength validates minimum string length
-func MinLength(value string, min int, fieldName string) error {
-	if len(value) < min {
+func MinLength(value string, minLength int, fieldName string) error {
+	if len(value) < minLength {
 		return NewValidationError(
-			fmt.Sprintf("%s must have minimum length of %d", fieldName, min),
+			fmt.Sprintf("%s must have minimum length of %d", fieldName, minLength),
 			fieldName,
 		)
 	}
@@ -100,10 +105,10 @@ func MinLength(value string, min int, fieldName string) error {
 }
 
 // MaxLength validates maximum string length
-func MaxLength(value string, max int, fieldName string) error {
-	if len(value) > max {
+func MaxLength(value string, maxLength int, fieldName string) error {
+	if len(value) > maxLength {
 		return NewValidationError(
-			fmt.Sprintf("%s must have maximum length of %d", fieldName, max),
+			fmt.Sprintf("%s must have maximum length of %d", fieldName, maxLength),
 			fieldName,
 		)
 	}
@@ -111,9 +116,10 @@ func MaxLength(value string, max int, fieldName string) error {
 	return nil
 }
 
-// Email validates email format
+// Email validates email format using a standard regex pattern
 var emailRegex = regexp.MustCompile(`^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$`)
 
+// Email validates that the provided email string matches a valid email format
 func Email(email string, fieldName string) error {
 	if !emailRegex.MatchString(email) {
 		return NewValidationError("invalid email format", fieldName)
@@ -154,10 +160,10 @@ func UUID(uuidStr string, fieldName string) error {
 }
 
 // InRange validates that a number is within a range
-func InRange(value, min, max int64, fieldName string) error {
-	if value < min || value > max {
+func InRange(value, minVal, maxVal int64, fieldName string) error {
+	if value < minVal || value > maxVal {
 		return NewValidationError(
-			fmt.Sprintf("%s must be in range [%d, %d]", fieldName, min, max),
+			fmt.Sprintf("%s must be in range [%d, %d]", fieldName, minVal, maxVal),
 			fieldName,
 		)
 	}
@@ -304,18 +310,18 @@ func validateField(value interface{}, fieldName, rule string) error {
 			return errors.New("min rule requires a value")
 		}
 
-		var min int
-		if _, err := fmt.Sscanf(parts[1], "%d", &min); err != nil {
+		var minVal int
+		if _, err := fmt.Sscanf(parts[1], "%d", &minVal); err != nil {
 			return fmt.Errorf("invalid min value: %w", err)
 		}
 
 		switch v := value.(type) {
 		case string:
-			return MinLength(v, min, fieldName)
+			return MinLength(v, minVal, fieldName)
 		case int:
-			return InRange(int64(v), int64(min), int64(^uint(0)>>1), fieldName)
+			return InRange(int64(v), int64(minVal), int64(^uint(0)>>1), fieldName)
 		case int64:
-			return InRange(v, int64(min), int64(^uint(0)>>1), fieldName)
+			return InRange(v, int64(minVal), int64(^uint(0)>>1), fieldName)
 		}
 
 	case "max":
@@ -323,18 +329,18 @@ func validateField(value interface{}, fieldName, rule string) error {
 			return errors.New("max rule requires a value")
 		}
 
-		var max int
-		if _, err := fmt.Sscanf(parts[1], "%d", &max); err != nil {
+		var maxVal int
+		if _, err := fmt.Sscanf(parts[1], "%d", &maxVal); err != nil {
 			return fmt.Errorf("invalid max value: %w", err)
 		}
 
 		switch v := value.(type) {
 		case string:
-			return MaxLength(v, max, fieldName)
+			return MaxLength(v, maxVal, fieldName)
 		case int:
-			return InRange(int64(v), int64(-int(^uint(0)>>1)-1), int64(max), fieldName)
+			return InRange(int64(v), int64(-int(^uint(0)>>1)-1), int64(maxVal), fieldName)
 		case int64:
-			return InRange(v, int64(-int(^uint(0)>>1)-1), int64(max), fieldName)
+			return InRange(v, int64(-int(^uint(0)>>1)-1), int64(maxVal), fieldName)
 		}
 
 	case "oneof":

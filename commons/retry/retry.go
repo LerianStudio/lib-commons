@@ -86,11 +86,11 @@ func newDefaultConfig() *config {
 		maxDelay:   0, // no limit by default
 		multiplier: 1.0,
 		jitter:     0.0,
-		retryIf: func(err error) bool {
+		retryIf: func(_ error) bool {
 			// By default, retry all errors
 			return true
 		},
-		onRetry: func(n int, err error) {
+		onRetry: func(_ int, _ error) {
 			// No-op by default
 		},
 	}

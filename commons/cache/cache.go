@@ -190,6 +190,7 @@ func NewMemoryCache(opts ...MemoryCacheOption) *MemoryCache {
 	if c.cleanupInterval <= 0 {
 		c.cleanupInterval = 10 * time.Minute // Fallback default
 	}
+
 	go c.startCleanup()
 
 	return c

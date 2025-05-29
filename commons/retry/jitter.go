@@ -1,3 +1,6 @@
+// Package retry provides retry functionality with various jitter algorithms and backoff strategies.
+// It includes implementations of full jitter, equal jitter, decorrelated jitter, and exponential
+// backoff to prevent thundering herd problems and improve system resilience.
 package retry
 
 import (
@@ -93,6 +96,7 @@ func (jc *JitterConfig) calculateExponentialDelay(attempt int) time.Duration {
 	if delay > jc.MaxDelay {
 		delay = jc.MaxDelay
 	}
+
 	return delay
 }
 

@@ -11,17 +11,20 @@ import (
 
 	"go.uber.org/zap"
 
-	// File system migration source. We need to import it to be able to use it as source in migrate.NewWithSourceInstance
-
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
+	// Import file migration source driver for golang-migrate to enable file:// URL schemes
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	// Import pgx driver for PostgreSQL database/sql compatibility
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // PostgresConnection is a hub which deal with postgres connections.
+// The type name intentionally matches the package name for clarity in external usage.
+//
+//nolint:revive // Intentional stuttering for external package clarity
 type PostgresConnection struct {
 	ConnectionStringPrimary string
 	ConnectionStringReplica string
@@ -49,8 +52,10 @@ func (pc *PostgresConnection) Connect() error {
 
 	// Test primary connection
 	if err := dbPrimary.Ping(); err != nil {
-		dbPrimary.Close()
+		_ = dbPrimary.Close() // Ignore close error during cleanup
+
 		pc.Logger.Error("failed to ping primary database", zap.Error(err))
+
 		return fmt.Errorf("primary database health check failed: %w", err)
 	}
 
@@ -62,16 +67,20 @@ func (pc *PostgresConnection) Connect() error {
 	// Replica database connection
 	dbReadOnlyReplica, err := sql.Open("pgx", pc.ConnectionStringReplica)
 	if err != nil {
-		dbPrimary.Close() // Cleanup primary on replica failure
+		_ = dbPrimary.Close() // Cleanup primary on replica failure, ignore close error
+
 		pc.Logger.Error("failed to open connection to replica database", zap.Error(err))
+
 		return fmt.Errorf("failed to connect to replica database: %w", err)
 	}
 
 	// Test replica connection
 	if err := dbReadOnlyReplica.Ping(); err != nil {
-		dbPrimary.Close()
-		dbReadOnlyReplica.Close()
+		_ = dbPrimary.Close() // Ignore close errors during cleanup
+		_ = dbReadOnlyReplica.Close()
+
 		pc.Logger.Error("failed to ping replica database", zap.Error(err))
+
 		return fmt.Errorf("replica database health check failed: %w", err)
 	}
 
@@ -88,16 +97,19 @@ func (pc *PostgresConnection) Connect() error {
 
 	// Run migrations
 	if err := pc.runMigrations(dbPrimary); err != nil {
-		dbPrimary.Close()
-		dbReadOnlyReplica.Close()
+		_ = dbPrimary.Close() // Ignore close errors during cleanup
+		_ = dbReadOnlyReplica.Close()
+
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 
 	// Final health check
 	if err := connectionDB.Ping(); err != nil {
-		dbPrimary.Close()
-		dbReadOnlyReplica.Close()
+		_ = dbPrimary.Close() // Ignore close errors during cleanup
+		_ = dbReadOnlyReplica.Close()
+
 		pc.Logger.Error("final database health check failed", zap.Error(err))
+
 		return fmt.Errorf("database health check failed: %w", err)
 	}
 

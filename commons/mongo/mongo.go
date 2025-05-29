@@ -13,6 +13,9 @@ import (
 )
 
 // MongoConnection is a hub which deal with mongodb connections.
+// The type name intentionally matches the package name for clarity in external usage.
+//
+//nolint:revive // Intentional stuttering for external package clarity
 type MongoConnection struct {
 	ConnectionStringSource string
 	DB                     *mongo.Client
@@ -42,7 +45,9 @@ func (mc *MongoConnection) Connect(ctx context.Context) error {
 		if disconnectErr := noSQLDB.Disconnect(ctx); disconnectErr != nil {
 			mc.Logger.Error("failed to disconnect after ping failure", zap.Error(disconnectErr))
 		}
+
 		mc.Logger.Error("mongodb health check failed", zap.Error(err))
+
 		return fmt.Errorf("mongodb health check failed: %w", err)
 	}
 

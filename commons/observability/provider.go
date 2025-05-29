@@ -315,7 +315,10 @@ func DefaultConfig() *Config {
 	}
 }
 
-// ObservabilityProvider is the main implementation of the Provider interface
+// ObservabilityProvider is the main implementation of the Provider interface.
+// The type name intentionally matches the package name for clarity in external usage.
+//
+//nolint:revive // Intentional stuttering for external package clarity
 type ObservabilityProvider struct {
 	config            *Config
 	tracerProvider    *sdktrace.TracerProvider
@@ -367,9 +370,7 @@ func New(ctx context.Context, opts ...Option) (Provider, error) {
 
 	// Initialize logging if enabled
 	if config.EnabledComponents.Logging {
-		if err := provider.initLogging(res); err != nil {
-			return nil, fmt.Errorf("failed to initialize logging: %w", err)
-		}
+		provider.initLogging(res)
 	}
 
 	// Set up context propagation
@@ -500,10 +501,9 @@ func (p *ObservabilityProvider) initMetrics(ctx context.Context, res *sdkresourc
 }
 
 // initLogging initializes structured logging
-func (p *ObservabilityProvider) initLogging(res *sdkresource.Resource) error {
+func (p *ObservabilityProvider) initLogging(res *sdkresource.Resource) {
 	// Create logger with resource attributes
 	p.logger = NewLogger(p.config.LogLevel, p.config.LogOutput, res)
-	return nil
 }
 
 // setupPropagation configures context propagation for distributed tracing

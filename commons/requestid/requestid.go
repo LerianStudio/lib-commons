@@ -1,3 +1,6 @@
+// Package requestid provides request ID generation and propagation utilities for distributed tracing.
+// It includes middleware for HTTP and Fiber frameworks, context management, and HTTP client
+// transport that automatically propagates request IDs across service boundaries.
 package requestid
 
 import (

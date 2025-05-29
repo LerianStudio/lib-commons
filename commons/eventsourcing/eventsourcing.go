@@ -99,12 +99,11 @@ func (r *Repository) Get(ctx context.Context, id string) (Aggregate, error) {
 	aggregate := r.aggregateFactory()
 
 	// Try to load from snapshot
-	snapshot, err := r.store.LoadSnapshot(ctx, id)
-	if err == nil && snapshot != nil {
-		// Apply snapshot
-		// In a real implementation, you'd deserialize the snapshot data
-		// For now, we'll just load all events
-	}
+	snapshot, _ := r.store.LoadSnapshot(ctx, id)
+	// Note: Snapshot application is not implemented yet.
+	// In a real implementation, you'd deserialize the snapshot data
+	// and apply it to the aggregate before loading subsequent events.
+	_ = snapshot // Silence unused variable warning until implementation
 
 	// Load events
 	fromVersion := 0
@@ -152,8 +151,10 @@ func (r *Repository) Save(ctx context.Context, aggregate Aggregate, events []Eve
 			Timestamp:   time.Now(),
 		}
 		if err := r.store.SaveSnapshot(ctx, snapshot); err != nil {
-			// Log error but don't fail the save
-			// In production, you'd use proper logging
+			// Log error but don't fail the save operation
+			// Snapshot failure should not prevent event saving
+			// TODO: Replace with proper logging in production
+			_ = err // Silence linter until proper logging is implemented
 		}
 	}
 

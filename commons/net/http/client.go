@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/commons/retry"
 )
 
 // ClientConfig holds configuration for creating HTTP clients
@@ -35,6 +37,11 @@ type ClientConfig struct {
 
 	// Proxy settings
 	ProxyURL string
+
+	// Retry settings
+	EnableRetry bool                // Enable automatic retries
+	MaxRetries  int                 // Maximum number of retry attempts
+	RetryConfig *retry.JitterConfig // Retry configuration with jitter
 }
 
 // DefaultClientConfig returns a configuration with modern defaults
@@ -71,6 +78,16 @@ func DefaultClientConfig() *ClientConfig {
 			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
 			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
 		},
+
+		// Retry settings with jitter to prevent thundering herd
+		EnableRetry: true,
+		MaxRetries:  3,
+		RetryConfig: &retry.JitterConfig{
+			Type:       retry.EqualJitter,
+			BaseDelay:  500 * time.Millisecond,
+			MaxDelay:   10 * time.Second,
+			Multiplier: 2.0,
+		},
 	}
 }
 
@@ -106,7 +123,10 @@ func ProductionClientConfig() *ClientConfig {
 	return config
 }
 
-// HTTPClient wraps an HTTP client with intelligent protocol handling
+// HTTPClient wraps an HTTP client with intelligent protocol handling.
+// The type name intentionally matches the package name for clarity in external usage.
+//
+//nolint:revive // Intentional stuttering for external package clarity
 type HTTPClient struct {
 	httpsClient *http.Client
 	httpClient  *http.Client
@@ -127,10 +147,9 @@ func NewHTTPClient(config *ClientConfig) (*HTTPClient, error) {
 
 	// Create HTTP client (for fallback)
 	var httpClient *http.Client
-	if config.AllowHTTPFallback {
-		httpConfig := *config
-		httpConfig.InsecureSkipVerify = true // Allow HTTP
 
+	if config.AllowHTTPFallback {
+		// Create transport directly without TLS for HTTP fallback
 		transport := &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
@@ -188,6 +207,85 @@ func (c *HTTPClient) Do(req *http.Request) (*http.Response, error) {
 	return nil, fmt.Errorf("HTTPS request failed and no HTTP fallback available: %w", err)
 }
 
+// DoWithRetry performs an HTTP request with retry logic and jitter
+func (c *HTTPClient) DoWithRetry(req *http.Request) (*http.Response, error) {
+	if !c.config.EnableRetry {
+		return c.Do(req)
+	}
+
+	var lastErr error
+
+	var lastResp *http.Response
+
+	for attempt := 1; attempt <= c.config.MaxRetries+1; attempt++ {
+		// Clone request for each attempt (in case body needs to be reread)
+		reqClone := req.Clone(req.Context())
+
+		resp, err := c.Do(reqClone)
+
+		// Success case
+		if !c.isRetryableStatus(resp.StatusCode) {
+			return resp, nil
+		}
+
+		// Store last response/error
+		lastResp = resp
+		lastErr = err
+
+		// Don't retry on last attempt
+		if attempt > c.config.MaxRetries {
+			break
+		}
+
+		// Don't retry if not retryable
+		if err == nil && resp != nil && !c.isRetryableStatus(resp.StatusCode) {
+			return resp, nil
+		}
+
+		// Close response body if we're going to retry
+		if resp != nil {
+			if err := resp.Body.Close(); err != nil {
+				// Log the close error but don't fail the retry attempt
+				// The original request error is more important
+				// TODO: Add proper logging for close errors
+				_ = err // Silence linter until proper logging is implemented
+			}
+		}
+
+		// Calculate delay with jitter
+		delay := c.config.RetryConfig.CalculateDelay(attempt)
+
+		// Sleep with context cancellation support
+		select {
+		case <-req.Context().Done():
+			return nil, req.Context().Err()
+		case <-time.After(delay):
+			// Continue to next attempt
+		}
+	}
+
+	// Return last response/error
+	if lastResp != nil {
+		return lastResp, nil
+	}
+
+	return nil, lastErr
+}
+
+// isRetryableStatus determines if an HTTP status code should be retried
+func (c *HTTPClient) isRetryableStatus(statusCode int) bool {
+	switch statusCode {
+	case 408, // Request Timeout
+		429, // Too Many Requests
+		502, // Bad Gateway
+		503, // Service Unavailable
+		504: // Gateway Timeout
+		return true
+	default:
+		return false
+	}
+}
+
 // convertToHTTPS converts a request URL to HTTPS
 func (c *HTTPClient) convertToHTTPS(req *http.Request) *http.Request {
 	if req.URL.Scheme == "http" {
@@ -197,10 +295,13 @@ func (c *HTTPClient) convertToHTTPS(req *http.Request) *http.Request {
 		if httpsURL.Port() == "80" {
 			httpsURL.Host = strings.Replace(httpsURL.Host, ":80", ":443", 1)
 		}
+
 		httpsReq := *req
 		httpsReq.URL = &httpsURL
+
 		return &httpsReq
 	}
+
 	return req
 }
 
@@ -213,10 +314,13 @@ func (c *HTTPClient) convertToHTTP(req *http.Request) *http.Request {
 		if httpURL.Port() == "443" {
 			httpURL.Host = strings.Replace(httpURL.Host, ":443", ":80", 1)
 		}
+
 		httpReq := *req
 		httpReq.URL = &httpURL
+
 		return &httpReq
 	}
+
 	return req
 }
 
@@ -251,6 +355,7 @@ func newBaseHTTPClient(config *ClientConfig) (*http.Client, error) {
 		if config.SSLVerificationStrict && !config.InsecureSkipVerify {
 			tlsConfig.InsecureSkipVerify = false
 		}
+
 		if config.MinTLSVersion > tlsConfig.MinVersion {
 			tlsConfig.MinVersion = config.MinTLSVersion
 		}
@@ -329,7 +434,9 @@ func WithTLSConfig(tlsConfig *tls.Config) ClientOption {
 		if tlsConfig == nil {
 			return fmt.Errorf("TLS config cannot be nil")
 		}
+
 		config.TLSConfig = tlsConfig
+
 		return nil
 	}
 }
@@ -340,9 +447,11 @@ func WithTimeouts(timeout, dialTimeout, tlsTimeout time.Duration) ClientOption {
 		if timeout <= 0 || dialTimeout <= 0 || tlsTimeout <= 0 {
 			return fmt.Errorf("all timeouts must be positive")
 		}
+
 		config.Timeout = timeout
 		config.DialTimeout = dialTimeout
 		config.TLSHandshakeTimeout = tlsTimeout
+
 		return nil
 	}
 }
@@ -353,9 +462,11 @@ func WithConnectionLimits(maxIdle, maxIdlePerHost, maxPerHost int) ClientOption 
 		if maxIdle <= 0 || maxIdlePerHost <= 0 || maxPerHost <= 0 {
 			return fmt.Errorf("all connection limits must be positive")
 		}
+
 		config.MaxIdleConns = maxIdle
 		config.MaxIdleConnsPerHost = maxIdlePerHost
 		config.MaxConnsPerHost = maxPerHost
+
 		return nil
 	}
 }
@@ -375,6 +486,37 @@ func WithInternalNetworkMode() ClientOption {
 		config.PreferHTTPS = true
 		config.SSLVerificationStrict = false
 		config.InsecureSkipVerify = true // Allow self-signed certs
+
+		return nil
+	}
+}
+
+// WithRetryConfig configures retry behavior with jitter
+func WithRetryConfig(enabled bool, maxRetries int, jitterConfig *retry.JitterConfig) ClientOption {
+	return func(config *ClientConfig) error {
+		config.EnableRetry = enabled
+		config.MaxRetries = maxRetries
+
+		if jitterConfig != nil {
+			config.RetryConfig = jitterConfig
+		}
+
+		return nil
+	}
+}
+
+// WithDefaultRetryJitter enables retry with sensible defaults
+func WithDefaultRetryJitter() ClientOption {
+	return func(config *ClientConfig) error {
+		config.EnableRetry = true
+		config.MaxRetries = 3
+		config.RetryConfig = &retry.JitterConfig{
+			Type:       retry.EqualJitter,
+			BaseDelay:  500 * time.Millisecond,
+			MaxDelay:   10 * time.Second,
+			Multiplier: 2.0,
+		}
+
 		return nil
 	}
 }

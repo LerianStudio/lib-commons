@@ -1,3 +1,5 @@
+// Package shutdown provides graceful shutdown functionality for applications.
+// It handles cleanup of resources, connections, and telemetry providers.
 package shutdown
 
 import (

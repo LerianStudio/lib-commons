@@ -111,6 +111,10 @@ issues:
     - text: "func name will be used as test\\.Test.* by other packages, and that stutters; consider calling this"
       linters:
         - revive
+    # Exclude stuttering type names - these are intentional design choices for external clarity
+    - text: "exported: type name will be used as .* by other packages, and that stutters; consider calling this"
+      linters:
+        - revive
     # EXC0006
     - text: "Use of unsafe calls should be audited"
       linters:

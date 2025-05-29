@@ -45,7 +45,7 @@ Welcome to the comprehensive documentation for lib-commons, a Go library providi
 ## Quick Start
 
 ```go
-import "github.com/yourusername/commons-go/commons"
+import "github.com/lerianstudio/lib-commons/commons"
 
 // Initialize logger
 logger := commons.NewLoggerFromContext(ctx)
