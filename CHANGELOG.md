@@ -1,3 +1,10 @@
+## [1.13.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.12.0...v1.13.0-beta.1) (2025-05-29)
+
+
+### Features
+
+* **commons-go:** comprehensive library enhancement with 14K+ lines of documentation ([#68](https://github.com/LerianStudio/lib-commons/issues/68)) ([df012f3](https://github.com/LerianStudio/lib-commons/commit/df012f30ff7c1b90378c8134734ed4c2285076b4))
+
 ## [1.12.0](https://github.com/LerianStudio/lib-commons/compare/v1.11.0...v1.12.0) (2025-05-20)
 
 
