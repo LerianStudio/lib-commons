@@ -364,7 +364,6 @@ func (rtd *RedisTopologyDetector) IsCluster(ctx context.Context, addr string) (b
 	// Parse cluster info to check if it's actually clustered
 	if strings.Contains(clusterInfo, "cluster_enabled:1") ||
 	   strings.Contains(clusterInfo, "cluster_state:ok") {
-		
 		// Get cluster nodes
 		nodes, err := rtd.getClusterNodes(clusterCtx, client)
 		if err != nil {
