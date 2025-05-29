@@ -191,7 +191,7 @@ func TestCircuitBreaker(t *testing.T) {
 		// Now test concurrent access with open circuit
 		for i := 0; i < 20; i++ {
 			wg.Add(1)
-			go func(id int) {
+			go func(_ int) {
 				defer wg.Done()
 				err := cb.Execute(func() error {
 					return nil

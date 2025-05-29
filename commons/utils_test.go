@@ -13,8 +13,8 @@ import (
 func TestContains(t *testing.T) {
 	tests := []struct {
 		name     string
-		slice    interface{}
-		item     interface{}
+		slice    any
+		item     any
 		expected bool
 	}{
 		{
@@ -744,8 +744,8 @@ func TestGetMapNumKinds(t *testing.T) {
 func TestReverse(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    interface{}
-		expected interface{}
+		input    any
+		expected any
 	}{
 		{
 			name:     "Int slice",

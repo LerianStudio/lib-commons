@@ -17,11 +17,11 @@ func TestDistributedTracingHelper(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	tracer := provider.Tracer()
 
-	t.Run("PropagateServiceCall", func(t *testing.T) {
+	t.Run("PropagateServiceCall", func(_ *testing.T) {
 		called := false
 		err := helper.PropagateServiceCall(ctx, tracer, "test-service", "test-operation", func(ctx context.Context) error {
 			called = true
@@ -34,16 +34,16 @@ func TestDistributedTracingHelper(t *testing.T) {
 		assert.True(t, called)
 	})
 
-	t.Run("PropagateServiceCall with error", func(t *testing.T) {
+	t.Run("PropagateServiceCall with error", func(_ *testing.T) {
 		testErr := assert.AnError
-		err := helper.PropagateServiceCall(ctx, tracer, "test-service", "test-operation", func(ctx context.Context) error {
+		err := helper.PropagateServiceCall(ctx, tracer, "test-service", "test-operation", func(_ context.Context) error {
 			return testErr
 		})
 
 		assert.Equal(t, testErr, err)
 	})
 
-	t.Run("InjectContext and ExtractContext", func(t *testing.T) {
+	t.Run("InjectContext and ExtractContext", func(_ *testing.T) {
 		// Create a span context
 		ctx, span := tracer.Start(ctx, "test-span")
 		defer span.End()
@@ -60,7 +60,7 @@ func TestDistributedTracingHelper(t *testing.T) {
 		assert.NotNil(t, newCtx)
 	})
 
-	t.Run("CreateChildSpan", func(t *testing.T) {
+	t.Run("CreateChildSpan", func(_ *testing.T) {
 		parentCtx, parentSpan := tracer.Start(ctx, "parent-span")
 		defer parentSpan.End()
 
@@ -76,18 +76,18 @@ func TestDistributedTracingHelper(t *testing.T) {
 func TestMapCarrier(t *testing.T) {
 	carrier := make(MapCarrier)
 
-	t.Run("Set and Get", func(t *testing.T) {
+	t.Run("Set and Get", func(_ *testing.T) {
 		carrier.Set("test-key", "test-value")
 		value := carrier.Get("test-key")
 		assert.Equal(t, "test-value", value)
 	})
 
-	t.Run("Get non-existent key", func(t *testing.T) {
+	t.Run("Get non-existent key", func(_ *testing.T) {
 		value := carrier.Get("non-existent")
 		assert.Empty(t, value)
 	})
 
-	t.Run("Keys", func(t *testing.T) {
+	t.Run("Keys", func(_ *testing.T) {
 		carrier.Set("key1", "value1")
 		carrier.Set("key2", "value2")
 
@@ -102,18 +102,18 @@ func TestTraceContextCarrier(t *testing.T) {
 	carrier := NewTraceContextCarrier()
 	require.NotNil(t, carrier)
 
-	t.Run("Set and Get", func(t *testing.T) {
+	t.Run("Set and Get", func(_ *testing.T) {
 		carrier.Set("test-header", "test-value")
 		value := carrier.Get("test-header")
 		assert.Equal(t, "test-value", value)
 	})
 
-	t.Run("Get non-existent header", func(t *testing.T) {
+	t.Run("Get non-existent header", func(_ *testing.T) {
 		value := carrier.Get("non-existent")
 		assert.Empty(t, value)
 	})
 
-	t.Run("Keys", func(t *testing.T) {
+	t.Run("Keys", func(_ *testing.T) {
 		carrier.Set("header1", "value1")
 		carrier.Set("header2", "value2")
 
@@ -122,7 +122,7 @@ func TestTraceContextCarrier(t *testing.T) {
 		assert.Contains(t, keys, "header2")
 	})
 
-	t.Run("GetHeaders", func(t *testing.T) {
+	t.Run("GetHeaders", func(_ *testing.T) {
 		headers := carrier.GetHeaders()
 		assert.NotNil(t, headers)
 		assert.Contains(t, headers, "test-header")
@@ -135,12 +135,12 @@ func TestSpanProcessor(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	processor := NewSpanProcessor(provider)
 	require.NotNil(t, processor)
 
-	t.Run("ProcessWithSpan success", func(t *testing.T) {
+	t.Run("ProcessWithSpan success", func(_ *testing.T) {
 		called := false
 		err := processor.ProcessWithSpan(ctx, "test-span", func(ctx context.Context) error {
 			called = true
@@ -153,17 +153,17 @@ func TestSpanProcessor(t *testing.T) {
 		assert.True(t, called)
 	})
 
-	t.Run("ProcessWithSpan error", func(t *testing.T) {
+	t.Run("ProcessWithSpan error", func(_ *testing.T) {
 		testErr := assert.AnError
-		err := processor.ProcessWithSpan(ctx, "test-span", func(ctx context.Context) error {
+		err := processor.ProcessWithSpan(ctx, "test-span", func(_ context.Context) error {
 			return testErr
 		})
 
 		assert.Equal(t, testErr, err)
 	})
 
-	t.Run("ProcessWithSpanAndResult success", func(t *testing.T) {
-		result, err := processor.ProcessWithSpanAndResult(ctx, "test-span", func(ctx context.Context) (interface{}, error) {
+	t.Run("ProcessWithSpanAndResult success", func(_ *testing.T) {
+		result, err := processor.ProcessWithSpanAndResult(ctx, "test-span", func(ctx context.Context) (any, error) {
 			span := trace.SpanFromContext(ctx)
 			assert.NotNil(t, span)
 			return "test-result", nil
@@ -173,9 +173,9 @@ func TestSpanProcessor(t *testing.T) {
 		assert.Equal(t, "test-result", result)
 	})
 
-	t.Run("ProcessWithSpanAndResult error", func(t *testing.T) {
+	t.Run("ProcessWithSpanAndResult error", func(_ *testing.T) {
 		testErr := assert.AnError
-		result, err := processor.ProcessWithSpanAndResult(ctx, "test-span", func(ctx context.Context) (interface{}, error) {
+		result, err := processor.ProcessWithSpanAndResult(ctx, "test-span", func(_ context.Context) (any, error) {
 			return nil, testErr
 		})
 
@@ -188,12 +188,12 @@ func TestAsyncSpanProcessor(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	processor := NewAsyncSpanProcessor(provider)
 	require.NotNil(t, processor)
 
-	t.Run("ProcessAsync success", func(t *testing.T) {
+	t.Run("ProcessAsync success", func(_ *testing.T) {
 		called := false
 		errChan := processor.ProcessAsync(ctx, "test-span", func(ctx context.Context) error {
 			called = true
@@ -207,9 +207,9 @@ func TestAsyncSpanProcessor(t *testing.T) {
 		assert.True(t, called)
 	})
 
-	t.Run("ProcessAsync error", func(t *testing.T) {
+	t.Run("ProcessAsync error", func(_ *testing.T) {
 		testErr := assert.AnError
-		errChan := processor.ProcessAsync(ctx, "test-span", func(ctx context.Context) error {
+		errChan := processor.ProcessAsync(ctx, "test-span", func(_ context.Context) error {
 			return testErr
 		})
 
@@ -222,11 +222,11 @@ func TestTracingUtilities(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	tracer := provider.Tracer()
 
-	t.Run("Link", func(t *testing.T) {
+	t.Run("Link", func(_ *testing.T) {
 		_, span := tracer.Start(ctx, "test-span")
 		spanContext := span.SpanContext()
 		span.End()
@@ -236,7 +236,7 @@ func TestTracingUtilities(t *testing.T) {
 		assert.Len(t, link.Attributes, 1)
 	})
 
-	t.Run("GetCurrentSpan", func(t *testing.T) {
+	t.Run("GetCurrentSpan", func(_ *testing.T) {
 		ctx, span := tracer.Start(ctx, "test-span")
 		defer span.End()
 
@@ -245,7 +245,7 @@ func TestTracingUtilities(t *testing.T) {
 		assert.Equal(t, span.SpanContext().SpanID(), currentSpan.SpanContext().SpanID())
 	})
 
-	t.Run("SetSpanError", func(t *testing.T) {
+	t.Run("SetSpanError", func(_ *testing.T) {
 		ctx, span := tracer.Start(ctx, "test-span")
 		defer span.End()
 
@@ -254,7 +254,7 @@ func TestTracingUtilities(t *testing.T) {
 		// No assertion needed, just ensure it doesn't panic
 	})
 
-	t.Run("SetSpanSuccess", func(t *testing.T) {
+	t.Run("SetSpanSuccess", func(_ *testing.T) {
 		ctx, span := tracer.Start(ctx, "test-span")
 		defer span.End()
 

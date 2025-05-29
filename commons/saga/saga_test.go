@@ -13,8 +13,8 @@ import (
 // Test step implementations
 type testStep struct {
 	name           string
-	executeFunc    func(ctx context.Context, data interface{}) error
-	compensateFunc func(ctx context.Context, data interface{}) error
+	executeFunc    func(_ context.Context, _ any) error
+	compensateFunc func(_ context.Context, _ any) error
 	executed       bool
 	compensated    bool
 	mu             sync.Mutex
@@ -24,7 +24,7 @@ func (s *testStep) Name() string {
 	return s.name
 }
 
-func (s *testStep) Execute(ctx context.Context, data interface{}) error {
+func (s *testStep) Execute(ctx context.Context, data any) error {
 	s.mu.Lock()
 	s.executed = true
 	s.mu.Unlock()
@@ -35,7 +35,7 @@ func (s *testStep) Execute(ctx context.Context, data interface{}) error {
 	return nil
 }
 
-func (s *testStep) Compensate(ctx context.Context, data interface{}) error {
+func (s *testStep) Compensate(ctx context.Context, data any) error {
 	s.mu.Lock()
 	s.compensated = true
 	s.mu.Unlock()
@@ -95,7 +95,7 @@ func TestSaga(t *testing.T) {
 		step2 := &testStep{name: "step2"}
 		step3 := &testStep{
 			name: "step3",
-			executeFunc: func(ctx context.Context, data interface{}) error {
+			executeFunc: func(_ context.Context, _ any) error {
 				return errors.New("step3 failed")
 			},
 		}
@@ -130,7 +130,7 @@ func TestSaga(t *testing.T) {
 		step1 := &testStep{name: "step1"}
 		step2 := &testStep{
 			name: "step2",
-			executeFunc: func(ctx context.Context, data interface{}) error {
+			executeFunc: func(ctx context.Context, _ any) error {
 				select {
 				case <-time.After(100 * time.Millisecond):
 					return nil
@@ -170,14 +170,14 @@ func TestSaga(t *testing.T) {
 		// Create steps
 		step1 := &testStep{
 			name: "step1",
-			compensateFunc: func(ctx context.Context, data interface{}) error {
+			compensateFunc: func(_ context.Context, _ any) error {
 				return errors.New("compensation failed")
 			},
 		}
 		step2 := &testStep{name: "step2"}
 		step3 := &testStep{
 			name: "step3",
-			executeFunc: func(ctx context.Context, data interface{}) error {
+			executeFunc: func(_ context.Context, _ any) error {
 				return errors.New("step3 failed")
 			},
 		}
@@ -261,7 +261,7 @@ func TestDistributedSaga(t *testing.T) {
 		var mu sync.Mutex
 
 		store := &mockEventStore{
-			publishFunc: func(ctx context.Context, event Event) error {
+			publishFunc: func(_ context.Context, event Event) error {
 				mu.Lock()
 				events = append(events, event)
 				mu.Unlock()
@@ -274,22 +274,22 @@ func TestDistributedSaga(t *testing.T) {
 
 		// Add steps
 		step1 := NewDistributedStep("reserve-inventory",
-			func(ctx context.Context, data interface{}) error {
+			func(_ context.Context, _ any) error {
 				// Simulate inventory reservation
 				return nil
 			},
-			func(ctx context.Context, data interface{}) error {
+			func(_ context.Context, _ any) error {
 				// Simulate inventory release
 				return nil
 			},
 		)
 
 		step2 := NewDistributedStep("charge-payment",
-			func(ctx context.Context, data interface{}) error {
+			func(_ context.Context, _ any) error {
 				// Simulate payment charge
 				return nil
 			},
-			func(ctx context.Context, data interface{}) error {
+			func(_ context.Context, _ any) error {
 				// Simulate payment refund
 				return nil
 			},
@@ -300,7 +300,7 @@ func TestDistributedSaga(t *testing.T) {
 
 		// Execute
 		ctx := context.Background()
-		data := map[string]interface{}{
+		data := map[string]any{
 			"orderId": "order-123",
 			"amount":  100.0,
 		}
@@ -341,7 +341,7 @@ func TestDistributedSaga(t *testing.T) {
 		var mu sync.Mutex
 
 		store := &mockEventStore{
-			publishFunc: func(ctx context.Context, event Event) error {
+			publishFunc: func(_ context.Context, event Event) error {
 				mu.Lock()
 				events = append(events, event)
 				mu.Unlock()
@@ -354,19 +354,19 @@ func TestDistributedSaga(t *testing.T) {
 
 		// Add steps
 		step1 := NewDistributedStep("reserve-inventory",
-			func(ctx context.Context, data interface{}) error {
+			func(_ context.Context, _ any) error {
 				return nil
 			},
-			func(ctx context.Context, data interface{}) error {
+			func(_ context.Context, _ any) error {
 				return nil
 			},
 		)
 
 		step2 := NewDistributedStep("charge-payment",
-			func(ctx context.Context, data interface{}) error {
+			func(_ context.Context, _ any) error {
 				return errors.New("payment failed")
 			},
-			func(ctx context.Context, data interface{}) error {
+			func(_ context.Context, _ any) error {
 				return nil
 			},
 		)
@@ -376,7 +376,7 @@ func TestDistributedSaga(t *testing.T) {
 
 		// Execute
 		ctx := context.Background()
-		data := map[string]interface{}{
+		data := map[string]any{
 			"orderId": "order-123",
 		}
 
@@ -427,18 +427,18 @@ func TestSagaBuilder(t *testing.T) {
 			WithTimeout(5*time.Second).
 			WithRetry(3, 100*time.Millisecond).
 			WithStep("step1",
-				func(ctx context.Context, data interface{}) error {
+				func(_ context.Context, _ any) error {
 					return nil
 				},
-				func(ctx context.Context, data interface{}) error {
+				func(_ context.Context, _ any) error {
 					return nil
 				},
 			).
 			WithStep("step2",
-				func(ctx context.Context, data interface{}) error {
+				func(_ context.Context, _ any) error {
 					return nil
 				},
-				func(ctx context.Context, data interface{}) error {
+				func(_ context.Context, _ any) error {
 					return nil
 				},
 			)
@@ -457,14 +457,14 @@ func TestSagaBuilder(t *testing.T) {
 		builder := NewSagaBuilder("test-saga").
 			WithRetry(3, 10*time.Millisecond).
 			WithStep("flaky-step",
-				func(ctx context.Context, data interface{}) error {
+				func(_ context.Context, _ any) error {
 					attempts++
 					if attempts < 3 {
 						return errors.New("temporary error")
 					}
 					return nil
 				},
-				func(ctx context.Context, data interface{}) error {
+				func(_ context.Context, _ any) error {
 					return nil
 				},
 			)
@@ -484,7 +484,7 @@ func BenchmarkSaga(b *testing.B) {
 	for i := 0; i < 5; i++ {
 		saga.AddStep(&testStep{
 			name: "step" + string(rune('0'+i)),
-			executeFunc: func(ctx context.Context, data interface{}) error {
+			executeFunc: func(_ context.Context, _ any) error {
 				// Simulate some work
 				time.Sleep(time.Microsecond)
 				return nil
@@ -497,6 +497,6 @@ func BenchmarkSaga(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		saga.Execute(ctx, data)
+		_ = saga.Execute(ctx, data)
 	}
 }

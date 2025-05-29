@@ -152,7 +152,7 @@ func TestRetry(t *testing.T) {
 				return errors.New("retry me")
 			}
 			return nil
-		}, WithOnRetry(func(n int, err error) {
+		}, WithOnRetry(func(_ int, err error) {
 			retriedErrors = append(retriedErrors, err)
 		}))
 
@@ -262,7 +262,7 @@ func TestConcurrentRetries(t *testing.T) {
 		results := make(chan error, goroutines)
 
 		for i := 0; i < goroutines; i++ {
-			go func(id int) {
+			go func(_ int) {
 				attempts := 0
 				err := Do(context.Background(), func() error {
 					attempts++

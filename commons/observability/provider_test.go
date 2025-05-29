@@ -233,11 +233,11 @@ func TestWithSpan(t *testing.T) {
 		WithLogOutput(buf),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	t.Run("successful operation", func(t *testing.T) {
 		called := false
-		err := WithSpan(ctx, provider, "test-span", func(ctx context.Context) error {
+		err := WithSpan(ctx, provider, "test-span", func(_ context.Context) error {
 			called = true
 			// Verify we have a span in context
 			span := trace.SpanFromContext(ctx)
@@ -254,7 +254,7 @@ func TestWithSpan(t *testing.T) {
 
 	t.Run("failed operation", func(t *testing.T) {
 		testErr := assert.AnError
-		err := WithSpan(ctx, provider, "test-span", func(ctx context.Context) error {
+		err := WithSpan(ctx, provider, "test-span", func(_ context.Context) error {
 			return testErr
 		})
 
@@ -262,10 +262,10 @@ func TestWithSpan(t *testing.T) {
 	})
 
 	t.Run("with disabled provider", func(t *testing.T) {
-		provider.Shutdown(ctx)
+		_ = provider.Shutdown(ctx)
 
 		called := false
-		err := WithSpan(ctx, provider, "test-span", func(ctx context.Context) error {
+		err := WithSpan(ctx, provider, "test-span", func(_ context.Context) error {
 			called = true
 			return nil
 		})
@@ -282,7 +282,7 @@ func TestRecordMetric(t *testing.T) {
 		WithServiceName("test-service"),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	// Should not panic
 	RecordMetric(ctx, provider, "test.metric", 42,
@@ -297,7 +297,7 @@ func TestRecordDuration(t *testing.T) {
 		WithServiceName("test-service"),
 	)
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	start := time.Now().Add(-100 * time.Millisecond)
 

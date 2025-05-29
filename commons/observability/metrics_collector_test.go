@@ -13,10 +13,10 @@ import (
 func TestNewMetricsCollector(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("with enabled provider", func(t *testing.T) {
+	t.Run("with enabled provider", func(_ *testing.T) {
 		provider, err := New(ctx, WithServiceName("test-service"))
 		require.NoError(t, err)
-		defer provider.Shutdown(ctx)
+		defer func() { _ = provider.Shutdown(ctx) }()
 
 		collector, err := NewMetricsCollector(provider)
 		require.NoError(t, err)
@@ -31,13 +31,13 @@ func TestNewMetricsCollector(t *testing.T) {
 		assert.NotNil(t, collector.requestBatchLatency)
 	})
 
-	t.Run("with disabled provider", func(t *testing.T) {
+	t.Run("with disabled provider", func(_ *testing.T) {
 		provider, err := New(ctx,
 			WithServiceName("test-service"),
 			WithComponentEnabled(false, false, false),
 		)
 		require.NoError(t, err)
-		defer provider.Shutdown(ctx)
+		defer func() { _ = provider.Shutdown(ctx) }()
 
 		collector, err := NewMetricsCollector(provider)
 		require.NoError(t, err)
@@ -45,11 +45,11 @@ func TestNewMetricsCollector(t *testing.T) {
 		assert.Equal(t, provider, collector.provider)
 	})
 
-	t.Run("with nil provider", func(t *testing.T) {
+	t.Run("with nil provider", func(_ *testing.T) {
 		// This would panic in the current implementation
 		// but we can test the behavior if we modify it
 		assert.Panics(t, func() {
-			NewMetricsCollector(nil)
+			_, _ = NewMetricsCollector(nil)
 		})
 	})
 }
@@ -58,12 +58,12 @@ func TestMetricsCollector_RecordRequest(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	collector, err := NewMetricsCollector(provider)
 	require.NoError(t, err)
 
-	t.Run("successful request", func(t *testing.T) {
+	t.Run("successful request", func(_ *testing.T) {
 		duration := 100 * time.Millisecond
 		attrs := []attribute.KeyValue{
 			attribute.String("test", "value"),
@@ -73,7 +73,7 @@ func TestMetricsCollector_RecordRequest(t *testing.T) {
 		collector.RecordRequest(ctx, "test-operation", "test-resource", 200, duration, attrs...)
 	})
 
-	t.Run("error request", func(t *testing.T) {
+	t.Run("error request", func(_ *testing.T) {
 		duration := 200 * time.Millisecond
 		attrs := []attribute.KeyValue{
 			attribute.String("error", "test-error"),
@@ -83,20 +83,20 @@ func TestMetricsCollector_RecordRequest(t *testing.T) {
 		collector.RecordRequest(ctx, "test-operation", "test-resource", 500, duration, attrs...)
 	})
 
-	t.Run("client error request", func(t *testing.T) {
+	t.Run("client error request", func(_ *testing.T) {
 		duration := 50 * time.Millisecond
 
 		// Should not panic
 		collector.RecordRequest(ctx, "test-operation", "test-resource", 404, duration)
 	})
 
-	t.Run("with disabled provider", func(t *testing.T) {
+	t.Run("with disabled provider", func(_ *testing.T) {
 		disabledProvider, err := New(ctx,
 			WithServiceName("test-service"),
 			WithComponentEnabled(false, false, false),
 		)
 		require.NoError(t, err)
-		defer disabledProvider.Shutdown(ctx)
+		defer func() { _ = disabledProvider.Shutdown(ctx) }()
 
 		disabledCollector, err := NewMetricsCollector(disabledProvider)
 		require.NoError(t, err)
@@ -110,12 +110,12 @@ func TestMetricsCollector_RecordBatchRequest(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	collector, err := NewMetricsCollector(provider)
 	require.NoError(t, err)
 
-	t.Run("batch request", func(t *testing.T) {
+	t.Run("batch request", func(_ *testing.T) {
 		duration := 500 * time.Millisecond
 		batchSize := 10
 		attrs := []attribute.KeyValue{
@@ -126,7 +126,7 @@ func TestMetricsCollector_RecordBatchRequest(t *testing.T) {
 		collector.RecordBatchRequest(ctx, "batch-operation", "batch-resource", batchSize, duration, attrs...)
 	})
 
-	t.Run("empty batch", func(t *testing.T) {
+	t.Run("empty batch", func(_ *testing.T) {
 		duration := 10 * time.Millisecond
 		batchSize := 0
 
@@ -134,7 +134,7 @@ func TestMetricsCollector_RecordBatchRequest(t *testing.T) {
 		collector.RecordBatchRequest(ctx, "batch-operation", "batch-resource", batchSize, duration)
 	})
 
-	t.Run("large batch", func(t *testing.T) {
+	t.Run("large batch", func(_ *testing.T) {
 		duration := 2 * time.Second
 		batchSize := 1000
 
@@ -147,12 +147,12 @@ func TestMetricsCollector_RecordRetry(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	collector, err := NewMetricsCollector(provider)
 	require.NoError(t, err)
 
-	t.Run("first retry", func(t *testing.T) {
+	t.Run("first retry", func(_ *testing.T) {
 		attrs := []attribute.KeyValue{
 			attribute.String("reason", "timeout"),
 		}
@@ -161,7 +161,7 @@ func TestMetricsCollector_RecordRetry(t *testing.T) {
 		collector.RecordRetry(ctx, "retry-operation", "retry-resource", 1, attrs...)
 	})
 
-	t.Run("multiple retries", func(t *testing.T) {
+	t.Run("multiple retries", func(_ *testing.T) {
 		for attempt := 1; attempt <= 3; attempt++ {
 			attrs := []attribute.KeyValue{
 				attribute.String("reason", "connection_error"),
@@ -178,12 +178,12 @@ func TestMetricsCollector_RecordError(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	collector, err := NewMetricsCollector(provider)
 	require.NoError(t, err)
 
-	t.Run("network error", func(t *testing.T) {
+	t.Run("network error", func(_ *testing.T) {
 		attrs := []attribute.KeyValue{
 			attribute.String("error_code", "NETWORK_TIMEOUT"),
 		}
@@ -192,7 +192,7 @@ func TestMetricsCollector_RecordError(t *testing.T) {
 		collector.RecordError(ctx, "network-operation", "network-resource", "timeout", attrs...)
 	})
 
-	t.Run("validation error", func(t *testing.T) {
+	t.Run("validation error", func(_ *testing.T) {
 		attrs := []attribute.KeyValue{
 			attribute.String("field", "email"),
 		}
@@ -201,7 +201,7 @@ func TestMetricsCollector_RecordError(t *testing.T) {
 		collector.RecordError(ctx, "validation-operation", "validation-resource", "validation_error", attrs...)
 	})
 
-	t.Run("unknown error", func(t *testing.T) {
+	t.Run("unknown error", func(_ *testing.T) {
 		// Should not panic
 		collector.RecordError(ctx, "unknown-operation", "unknown-resource", "unknown")
 	})
@@ -211,12 +211,12 @@ func TestTimer(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	collector, err := NewMetricsCollector(provider)
 	require.NoError(t, err)
 
-	t.Run("successful timer", func(t *testing.T) {
+	t.Run("successful timer", func(_ *testing.T) {
 		timer := collector.NewTimer(ctx, "timer-operation", "timer-resource",
 			attribute.String("test", "value"),
 		)
@@ -233,7 +233,7 @@ func TestTimer(t *testing.T) {
 		timer.Stop(200, attribute.String("additional", "attr"))
 	})
 
-	t.Run("error timer", func(t *testing.T) {
+	t.Run("error timer", func(_ *testing.T) {
 		timer := collector.NewTimer(ctx, "error-operation", "error-resource")
 
 		// Simulate some work
@@ -243,7 +243,7 @@ func TestTimer(t *testing.T) {
 		timer.StopWithError("test_error", attribute.String("error_detail", "test"))
 	})
 
-	t.Run("batch timer", func(t *testing.T) {
+	t.Run("batch timer", func(_ *testing.T) {
 		timer := collector.NewTimer(ctx, "batch-operation", "batch-resource")
 
 		// Simulate some work
@@ -258,12 +258,12 @@ func TestBatchTimer(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	collector, err := NewMetricsCollector(provider)
 	require.NoError(t, err)
 
-	t.Run("batch timer with items", func(t *testing.T) {
+	t.Run("batch timer with items", func(_ *testing.T) {
 		batchTimer := collector.NewBatchTimer(ctx, "batch-operation", "batch-resource",
 			attribute.String("batch_id", "test-batch"),
 		)
@@ -284,7 +284,7 @@ func TestBatchTimer(t *testing.T) {
 		batchTimer.Stop(attribute.String("result", "success"))
 	})
 
-	t.Run("empty batch timer", func(t *testing.T) {
+	t.Run("empty batch timer", func(_ *testing.T) {
 		batchTimer := collector.NewBatchTimer(ctx, "empty-batch", "empty-resource")
 
 		// Don't add any items
@@ -294,11 +294,11 @@ func TestBatchTimer(t *testing.T) {
 		batchTimer.Stop()
 	})
 
-	t.Run("batch timer with complex items", func(t *testing.T) {
+	t.Run("batch timer with complex items", func(_ *testing.T) {
 		batchTimer := collector.NewBatchTimer(ctx, "complex-batch", "complex-resource")
 
 		// Add different types of items
-		batchTimer.AddItem(map[string]interface{}{"id": 1, "name": "test"})
+		batchTimer.AddItem(map[string]any{"id": 1, "name": "test"})
 		batchTimer.AddItem([]int{1, 2, 3})
 		batchTimer.AddItem(struct{ Value string }{Value: "test"})
 
@@ -313,12 +313,12 @@ func TestCounter(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	collector, err := NewMetricsCollector(provider)
 	require.NoError(t, err)
 
-	t.Run("counter increment", func(t *testing.T) {
+	t.Run("counter increment", func(_ *testing.T) {
 		counter := collector.NewCounter("test-counter", "counter-resource",
 			attribute.String("counter_type", "test"),
 		)
@@ -331,7 +331,7 @@ func TestCounter(t *testing.T) {
 		counter.Inc(ctx, attribute.String("increment", "test"))
 	})
 
-	t.Run("counter add", func(t *testing.T) {
+	t.Run("counter add", func(_ *testing.T) {
 		counter := collector.NewCounter("add-counter", "add-resource")
 
 		// Should not panic
@@ -340,13 +340,13 @@ func TestCounter(t *testing.T) {
 		counter.Add(ctx, 0, attribute.String("add_value", "0"))
 	})
 
-	t.Run("counter with disabled provider", func(t *testing.T) {
+	t.Run("counter with disabled provider", func(_ *testing.T) {
 		disabledProvider, err := New(ctx,
 			WithServiceName("test-service"),
 			WithComponentEnabled(false, false, false),
 		)
 		require.NoError(t, err)
-		defer disabledProvider.Shutdown(ctx)
+		defer func() { _ = disabledProvider.Shutdown(ctx) }()
 
 		disabledCollector, err := NewMetricsCollector(disabledProvider)
 		require.NoError(t, err)
@@ -363,12 +363,12 @@ func TestMetricsCollectorIntegration(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("integration-test"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	collector, err := NewMetricsCollector(provider)
 	require.NoError(t, err)
 
-	t.Run("complete workflow", func(t *testing.T) {
+	t.Run("complete workflow", func(_ *testing.T) {
 		// Start a timer
 		timer := collector.NewTimer(ctx, "integration-operation", "integration-resource",
 			attribute.String("workflow", "complete"),
@@ -399,7 +399,7 @@ func TestMetricsCollectorIntegration(t *testing.T) {
 		batchTimer.Stop(attribute.String("batch_result", "success"))
 	})
 
-	t.Run("error workflow", func(t *testing.T) {
+	t.Run("error workflow", func(_ *testing.T) {
 		timer := collector.NewTimer(ctx, "error-workflow", "error-resource")
 
 		// Record multiple retries
@@ -429,7 +429,7 @@ func BenchmarkMetricsCollector(b *testing.B) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("benchmark-test"))
 	require.NoError(b, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	collector, err := NewMetricsCollector(provider)
 	require.NoError(b, err)

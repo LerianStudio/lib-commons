@@ -56,12 +56,12 @@ func (m *MockDB) Driver() driver.Driver {
 	return args.Get(0).(driver.Driver)
 }
 
-func (m *MockDB) Exec(query string, args ...interface{}) (sql.Result, error) {
+func (m *MockDB) Exec(query string, args ...any) (sql.Result, error) {
 	mockArgs := m.Called(query, args)
 	return nil, mockArgs.Error(1)
 }
 
-func (m *MockDB) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+func (m *MockDB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
 	mockArgs := m.Called(ctx, query, args)
 	return nil, mockArgs.Error(1)
 }
@@ -86,22 +86,22 @@ func (m *MockDB) PrepareContext(ctx context.Context, query string) (dbresolver.S
 	return nil, args.Error(1)
 }
 
-func (m *MockDB) Query(query string, args ...interface{}) (*sql.Rows, error) {
+func (m *MockDB) Query(query string, args ...any) (*sql.Rows, error) {
 	mockArgs := m.Called(query, args)
 	return nil, mockArgs.Error(1)
 }
 
-func (m *MockDB) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
+func (m *MockDB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
 	mockArgs := m.Called(ctx, query, args)
 	return nil, mockArgs.Error(1)
 }
 
-func (m *MockDB) QueryRow(query string, args ...interface{}) *sql.Row {
+func (m *MockDB) QueryRow(query string, args ...any) *sql.Row {
 	m.Called(query, args)
 	return nil
 }
 
-func (m *MockDB) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
+func (m *MockDB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	m.Called(ctx, query, args)
 	return nil
 }
@@ -416,7 +416,7 @@ func TestPostgresConnection_Connect_MigrationScenarios(t *testing.T) {
 	// Create a temporary directory for migration files
 	tempDir, err := os.MkdirTemp("", "postgres_test_migrations")
 	require.NoError(t, err)
-	defer os.RemoveAll(tempDir)
+	defer func() { _ = os.RemoveAll(tempDir) }()
 
 	// Create a test migration file
 	migrationFile := filepath.Join(tempDir, "001_test.up.sql")

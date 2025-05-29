@@ -6,17 +6,17 @@ import (
 )
 
 func TestZap(t *testing.T) {
-	t.Run("log with hydration", func(t *testing.T) {
+	t.Run("log with hydration", func(_ *testing.T) {
 		l := &ZapWithTraceLogger{}
-		l.logWithHydration(func(a ...any) {}, "")
+		l.logWithHydration(func(_ ...any) {}, "")
 	})
 
-	t.Run("logf with hydration", func(t *testing.T) {
+	t.Run("logf with hydration", func(_ *testing.T) {
 		l := &ZapWithTraceLogger{}
-		l.logfWithHydration(func(s string, a ...any) {}, "", "")
+		l.logfWithHydration(func(_ string, _ ...any) {}, "", "")
 	})
 
-	t.Run("ZapWithTraceLogger info", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger info", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -24,10 +24,10 @@ func TestZap(t *testing.T) {
 			Logger:                 sugar,
 			defaultMessageTemplate: "default template: ",
 		}
-		zapLogger.Info(func(s string, a ...any) {}, "", "")
+		zapLogger.Info(func(_ string, _ ...any) {}, "", "")
 	})
 
-	t.Run("ZapWithTraceLogger infof", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger infof", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -38,7 +38,7 @@ func TestZap(t *testing.T) {
 		zapLogger.Infof("", "")
 	})
 
-	t.Run("ZapWithTraceLogger infoln", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger infoln", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -49,7 +49,7 @@ func TestZap(t *testing.T) {
 		zapLogger.Infoln("", "")
 	})
 
-	t.Run("ZapWithTraceLogger Error", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger Error", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -60,7 +60,7 @@ func TestZap(t *testing.T) {
 		zapLogger.Error("", "")
 	})
 
-	t.Run("ZapWithTraceLogger Errorf", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger Errorf", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -71,7 +71,7 @@ func TestZap(t *testing.T) {
 		zapLogger.Errorf("", "")
 	})
 
-	t.Run("ZapWithTraceLogger Errorln", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger Errorln", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -82,7 +82,7 @@ func TestZap(t *testing.T) {
 		zapLogger.Errorln("", "")
 	})
 
-	t.Run("ZapWithTraceLogger Warn", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger Warn", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -93,7 +93,7 @@ func TestZap(t *testing.T) {
 		zapLogger.Warn("", "")
 	})
 
-	t.Run("ZapWithTraceLogger Warnf", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger Warnf", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -104,7 +104,7 @@ func TestZap(t *testing.T) {
 		zapLogger.Warnf("", "")
 	})
 
-	t.Run("ZapWithTraceLogger Warnln", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger Warnln", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -115,7 +115,7 @@ func TestZap(t *testing.T) {
 		zapLogger.Warnln("", "")
 	})
 
-	t.Run("ZapWithTraceLogger Debug", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger Debug", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -126,7 +126,7 @@ func TestZap(t *testing.T) {
 		zapLogger.Debug("", "")
 	})
 
-	t.Run("ZapWithTraceLogger Debugf", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger Debugf", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -137,7 +137,7 @@ func TestZap(t *testing.T) {
 		zapLogger.Debugf("", "")
 	})
 
-	t.Run("ZapWithTraceLogger Debugln", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger Debugln", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -148,7 +148,7 @@ func TestZap(t *testing.T) {
 		zapLogger.Debugln("", "")
 	})
 
-	t.Run("ZapWithTraceLogger WithFields", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger WithFields", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -159,7 +159,7 @@ func TestZap(t *testing.T) {
 		zapLogger.WithFields("", "")
 	})
 
-	t.Run("ZapWithTraceLogger Sync)", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger Sync)", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -167,10 +167,10 @@ func TestZap(t *testing.T) {
 			Logger:                 sugar,
 			defaultMessageTemplate: "default template: ",
 		}
-		zapLogger.Sync()
+		_ = zapLogger.Sync()
 	})
 
-	t.Run("ZapWithTraceLogger WithDefaultMessageTemplate)", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger WithDefaultMessageTemplate)", func(_ *testing.T) {
 		logger, _ := zap.NewDevelopment()
 		sugar := logger.Sugar()
 
@@ -181,7 +181,7 @@ func TestZap(t *testing.T) {
 		zapLogger.WithDefaultMessageTemplate("")
 	})
 
-	t.Run("ZapWithTraceLogger WithDefaultMessageTemplate)", func(t *testing.T) {
+	t.Run("ZapWithTraceLogger hydrateArgs)", func(_ *testing.T) {
 		hydrateArgs("", []any{})
 	})
 }

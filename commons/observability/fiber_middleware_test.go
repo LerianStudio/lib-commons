@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -29,16 +30,16 @@ func TestNewFiberMiddleware(t *testing.T) {
 			return c.SendString("ok")
 		})
 
-		req := httptest.NewRequest("GET", "/test", nil)
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 
 	t.Run("with enabled provider", func(t *testing.T) {
 		provider, err := New(ctx, WithServiceName("test-service"))
 		require.NoError(t, err)
-		defer provider.Shutdown(ctx)
+		defer func() { _ = provider.Shutdown(ctx) }()
 
 		middleware, err := NewFiberMiddleware(provider)
 		require.NoError(t, err)
@@ -51,7 +52,7 @@ func TestNewFiberMiddleware(t *testing.T) {
 			WithComponentEnabled(false, false, false),
 		)
 		require.NoError(t, err)
-		defer provider.Shutdown(ctx)
+		defer func() { _ = provider.Shutdown(ctx) }()
 
 		middleware, err := NewFiberMiddleware(provider)
 		require.NoError(t, err)
@@ -63,7 +64,7 @@ func TestFiberMiddlewareOptions(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	t.Run("WithIgnorePathsFiber", func(t *testing.T) {
 		middleware, err := NewFiberMiddleware(provider,
@@ -164,7 +165,7 @@ func TestFiberMiddlewareRequestHandling(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware, err := NewFiberMiddleware(provider)
 	require.NoError(t, err)
@@ -185,13 +186,13 @@ func TestFiberMiddlewareRequestHandling(t *testing.T) {
 			return c.JSON(fiber.Map{"message": "success"})
 		})
 
-		req := httptest.NewRequest("GET", "/test", nil)
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		req.Header.Set("User-Agent", "test-agent")
 		req.Header.Set("X-Request-ID", "test-request-id")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 
 	t.Run("request with error", func(t *testing.T) {
@@ -199,7 +200,7 @@ func TestFiberMiddlewareRequestHandling(t *testing.T) {
 			return fiber.NewError(500, "internal server error")
 		})
 
-		req := httptest.NewRequest("GET", "/error", nil)
+		req := httptest.NewRequest(http.MethodGet, "/error", nil)
 		resp, err := app.Test(req)
 		require.NoError(t, err)
 		assert.Equal(t, 500, resp.StatusCode)
@@ -211,14 +212,14 @@ func TestFiberMiddlewareRequestHandling(t *testing.T) {
 		})
 
 		body := strings.NewReader(`{"test": "data"}`)
-		req := httptest.NewRequest("POST", "/custom", body)
+		req := httptest.NewRequest(http.MethodPost, "/custom", body)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer token123")
 		req.Header.Set("X-Custom-Header", "custom-value")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 }
 
@@ -226,7 +227,7 @@ func TestFiberMiddlewareIgnorePaths(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware, err := NewFiberMiddleware(provider,
 		WithIgnorePathsFiber("/health", "/metrics"),
@@ -251,16 +252,16 @@ func TestFiberMiddlewareIgnorePaths(t *testing.T) {
 		})
 
 		// Test health endpoint
-		req := httptest.NewRequest("GET", "/health", nil)
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		// Test metrics endpoint
-		req = httptest.NewRequest("GET", "/metrics", nil)
+		req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
 		resp, err = app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 
 	t.Run("non-ignored paths", func(t *testing.T) {
@@ -271,10 +272,10 @@ func TestFiberMiddlewareIgnorePaths(t *testing.T) {
 			return c.SendString("api response")
 		})
 
-		req := httptest.NewRequest("GET", "/api/test", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 }
 
@@ -282,7 +283,7 @@ func TestFiberMiddlewareExtractors(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	userIDExtractor := func(c *fiber.Ctx) string {
 		return c.Get("X-User-ID")
@@ -306,22 +307,22 @@ func TestFiberMiddlewareExtractors(t *testing.T) {
 			return c.SendString("extracted")
 		})
 
-		req := httptest.NewRequest("GET", "/extract", nil)
+		req := httptest.NewRequest(http.MethodGet, "/extract", nil)
 		req.Header.Set("X-User-ID", "user123")
 		req.Header.Set("X-Request-ID", "req456")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 
 	t.Run("without extractors", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/extract", nil)
+		req := httptest.NewRequest(http.MethodGet, "/extract", nil)
 		// No headers set
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 }
 
@@ -329,7 +330,7 @@ func TestFiberMiddlewareSecurityDefaults(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware, err := NewFiberMiddleware(provider,
 		WithSecurityDefaultsFiber(),
@@ -345,7 +346,7 @@ func TestFiberMiddlewareSecurityDefaults(t *testing.T) {
 		})
 
 		body := strings.NewReader(`{"password": "secret123"}`)
-		req := httptest.NewRequest("POST", "/secure", body)
+		req := httptest.NewRequest(http.MethodPost, "/secure", body)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer sensitive-token")
 		req.Header.Set("Cookie", "session=secret")
@@ -353,7 +354,7 @@ func TestFiberMiddlewareSecurityDefaults(t *testing.T) {
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 }
 
@@ -361,7 +362,7 @@ func TestFiberMiddlewareErrorHandling(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware, err := NewFiberMiddleware(provider)
 	require.NoError(t, err)
@@ -370,7 +371,7 @@ func TestFiberMiddlewareErrorHandling(t *testing.T) {
 	app.Use(middleware)
 
 	t.Run("404 error", func(t *testing.T) {
-		req := httptest.NewRequest("GET", "/nonexistent", nil)
+		req := httptest.NewRequest(http.MethodGet, "/nonexistent", nil)
 		resp, err := app.Test(req)
 		require.NoError(t, err)
 		assert.Equal(t, 404, resp.StatusCode)
@@ -381,7 +382,7 @@ func TestFiberMiddlewareErrorHandling(t *testing.T) {
 			return fiber.NewError(500, "internal server error")
 		})
 
-		req := httptest.NewRequest("GET", "/server-error", nil)
+		req := httptest.NewRequest(http.MethodGet, "/server-error", nil)
 		resp, err := app.Test(req)
 		require.NoError(t, err)
 		assert.Equal(t, 500, resp.StatusCode)
@@ -392,7 +393,7 @@ func TestFiberMiddlewareErrorHandling(t *testing.T) {
 			return fiber.NewError(400, "bad request")
 		})
 
-		req := httptest.NewRequest("POST", "/bad-request", nil)
+		req := httptest.NewRequest(http.MethodPost, "/bad-request", nil)
 		resp, err := app.Test(req)
 		require.NoError(t, err)
 		assert.Equal(t, 400, resp.StatusCode)
@@ -403,7 +404,7 @@ func TestFiberMiddlewareErrorHandling(t *testing.T) {
 			panic("test panic")
 		})
 
-		req := httptest.NewRequest("GET", "/panic", nil)
+		req := httptest.NewRequest(http.MethodGet, "/panic", nil)
 		resp, err := app.Test(req)
 		require.NoError(t, err)
 		// Fiber should handle the panic and return 500
@@ -415,7 +416,7 @@ func TestFiberMiddlewareMetrics(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware, err := NewFiberMiddleware(provider)
 	require.NoError(t, err)
@@ -430,12 +431,12 @@ func TestFiberMiddlewareMetrics(t *testing.T) {
 		})
 
 		requestBody := `{"test": "data", "number": 123}`
-		req := httptest.NewRequest("POST", "/with-body", strings.NewReader(requestBody))
+		req := httptest.NewRequest(http.MethodPost, "/with-body", strings.NewReader(requestBody))
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		// Read response body
 		respBody, err := io.ReadAll(resp.Body)
@@ -448,10 +449,10 @@ func TestFiberMiddlewareMetrics(t *testing.T) {
 			return c.SendString("no body response")
 		})
 
-		req := httptest.NewRequest("GET", "/no-body", nil)
+		req := httptest.NewRequest(http.MethodGet, "/no-body", nil)
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 }
 
@@ -459,7 +460,7 @@ func TestFiberMiddlewareTracing(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("test-service"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware, err := NewFiberMiddleware(provider)
 	require.NoError(t, err)
@@ -482,12 +483,12 @@ func TestFiberMiddlewareTracing(t *testing.T) {
 			return c.SendString("traced")
 		})
 
-		req := httptest.NewRequest("GET", "/trace", nil)
+		req := httptest.NewRequest(http.MethodGet, "/trace", nil)
 		req.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.NotNil(t, capturedSpan)
 	})
 
@@ -511,10 +512,10 @@ func TestFiberMiddlewareTracing(t *testing.T) {
 			return c.SendString("nested")
 		})
 
-		req := httptest.NewRequest("GET", "/nested", nil)
+		req := httptest.NewRequest(http.MethodGet, "/nested", nil)
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 	})
 }
 
@@ -522,7 +523,7 @@ func TestFiberMiddlewareIntegration(t *testing.T) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("integration-test"))
 	require.NoError(t, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware, err := NewFiberMiddleware(provider,
 		WithIgnorePathsFiber("/health"),
@@ -560,31 +561,31 @@ func TestFiberMiddlewareIntegration(t *testing.T) {
 
 	t.Run("complete integration test", func(t *testing.T) {
 		// Test health endpoint (should be ignored)
-		req := httptest.NewRequest("GET", "/health", nil)
+		req := httptest.NewRequest(http.MethodGet, "/health", nil)
 		resp, err := app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		// Test API endpoint with tracing
-		req = httptest.NewRequest("GET", "/api/users/123", nil)
+		req = httptest.NewRequest(http.MethodGet, "/api/users/123", nil)
 		req.Header.Set("X-User-ID", "user456")
 		req.Header.Set("X-Request-ID", "req789")
 		req.Header.Set("Authorization", "Bearer secret-token")
 		resp, err = app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		// Test POST with body
 		body := strings.NewReader(`{"username": "test", "password": "secret123"}`)
-		req = httptest.NewRequest("POST", "/api/login", body)
+		req = httptest.NewRequest(http.MethodPost, "/api/login", body)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-Request-ID", "login-req")
 		resp, err = app.Test(req)
 		require.NoError(t, err)
-		assert.Equal(t, 200, resp.StatusCode)
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 		// Test error endpoint
-		req = httptest.NewRequest("GET", "/api/error", nil)
+		req = httptest.NewRequest(http.MethodGet, "/api/error", nil)
 		req.Header.Set("X-Request-ID", "error-req")
 		resp, err = app.Test(req)
 		require.NoError(t, err)
@@ -596,7 +597,7 @@ func BenchmarkFiberMiddleware(b *testing.B) {
 	ctx := context.Background()
 	provider, err := New(ctx, WithServiceName("benchmark-test"))
 	require.NoError(b, err)
-	defer provider.Shutdown(ctx)
+	defer func() { _ = provider.Shutdown(ctx) }()
 
 	middleware, err := NewFiberMiddleware(provider)
 	require.NoError(b, err)
@@ -610,13 +611,13 @@ func BenchmarkFiberMiddleware(b *testing.B) {
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
-			req := httptest.NewRequest("GET", "/benchmark", nil)
+			req := httptest.NewRequest(http.MethodGet, "/benchmark", nil)
 			resp, err := app.Test(req)
 			if err != nil {
 				b.Fatal(err)
 			}
-			if resp.StatusCode != 200 {
-				b.Fatalf("expected 200, got %d", resp.StatusCode)
+			if resp.StatusCode != http.StatusOK {
+				b.Fatalf("expected %d, got %d", http.StatusOK, resp.StatusCode)
 			}
 		}
 	})

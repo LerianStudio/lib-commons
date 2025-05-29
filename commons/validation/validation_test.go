@@ -9,7 +9,7 @@ import (
 func TestRequired(t *testing.T) {
 	tests := []struct {
 		name        string
-		value       interface{}
+		value       any
 		fieldName   string
 		expectError bool
 	}{
@@ -633,7 +633,7 @@ func TestValidateStruct(t *testing.T) {
 
 func TestCustomValidator(t *testing.T) {
 	// Test custom validator registration
-	err := RegisterCustomValidator("customtest", func(value interface{}) error {
+	err := RegisterCustomValidator("customtest", func(value any) error {
 		str, ok := value.(string)
 		if !ok || str != "valid" {
 			return NewValidationError("value must be 'valid'", "custom")

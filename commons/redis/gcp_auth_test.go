@@ -229,7 +229,7 @@ func TestGCPTokenProvider(t *testing.T) {
 		tempDir := t.TempDir()
 		serviceAccountPath := filepath.Join(tempDir, "service-account.json")
 		
-		serviceAccount := map[string]interface{}{
+		serviceAccount := map[string]any{
 			"type":                        "service_account",
 			"project_id":                  "test-project",
 			"private_key_id":              "key-id",
