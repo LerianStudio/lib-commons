@@ -32,7 +32,7 @@ const (
 // Check represents a health check result
 type Check struct {
 	Status  Status                 `json:"status"`
-	Details map[string]interface{} `json:"details,omitempty"`
+	Details map[string]any `json:"details,omitempty"`
 }
 
 // Response represents the health check response
@@ -122,7 +122,7 @@ func (s *Service) performHealthCheck(ctx context.Context) *Response {
 	for name, checker := range s.checkers {
 		check := &Check{
 			Status:  StatusUp,
-			Details: make(map[string]interface{}),
+			Details: make(map[string]any),
 		}
 
 		if err := checker.Check(ctx); err != nil {

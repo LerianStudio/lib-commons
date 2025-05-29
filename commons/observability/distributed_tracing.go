@@ -187,9 +187,9 @@ func (p *SpanProcessor) ProcessWithSpan(
 func (p *SpanProcessor) ProcessWithSpanAndResult(
 	ctx context.Context,
 	spanName string,
-	fn func(context.Context) (interface{}, error),
+	fn func(context.Context) (any, error),
 	opts ...trace.SpanStartOption,
-) (interface{}, error) {
+) (any, error) {
 	if !p.provider.IsEnabled() {
 		return fn(ctx)
 	}
@@ -236,10 +236,10 @@ func (p *AsyncSpanProcessor) ProcessAsync(
 			return
 		}
 
-		ctx, span := p.provider.Tracer().Start(ctx, spanName, opts...)
+		spanCtx, span := p.provider.Tracer().Start(ctx, spanName, opts...)
 		defer span.End()
 
-		err := fn(ctx)
+		err := fn(spanCtx)
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())

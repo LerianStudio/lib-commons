@@ -25,7 +25,7 @@ var (
 )
 
 // copyValue copies src to dst using reflection
-func copyValue(dst, src interface{}) error {
+func copyValue(dst, src any) error {
 	dstVal := reflect.ValueOf(dst)
 	if dstVal.Kind() != reflect.Ptr {
 		return errors.New("destination must be a pointer")
@@ -75,9 +75,9 @@ func copyValue(dst, src interface{}) error {
 // Cache defines the interface for cache implementations
 type Cache interface {
 	// Get retrieves a value from the cache
-	Get(ctx context.Context, key string, value interface{}) error
+	Get(ctx context.Context, key string, value any) error
 	// Set stores a value in the cache with optional TTL
-	Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error
+	Set(ctx context.Context, key string, value any, ttl time.Duration) error
 	// Delete removes a value from the cache
 	Delete(ctx context.Context, key string) error
 	// Exists checks if a key exists in the cache
@@ -91,12 +91,12 @@ type Cache interface {
 }
 
 // LoadFunc defines a function that loads a value when not in cache
-type LoadFunc func(ctx context.Context, key string) (interface{}, time.Duration, error)
+type LoadFunc func(ctx context.Context, key string) (any, time.Duration, error)
 
 // Serializer defines the interface for serializing cache values
 type Serializer interface {
-	Serialize(value interface{}) ([]byte, error)
-	Deserialize(data []byte, value interface{}) error
+	Serialize(value any) ([]byte, error)
+	Deserialize(data []byte, value any) error
 }
 
 // Metrics defines the interface for cache metrics
@@ -123,7 +123,7 @@ const (
 
 // cacheEntry represents an entry in the memory cache
 type cacheEntry struct {
-	value      interface{}
+	value      any
 	expiration time.Time
 	hits       int
 	lastAccess time.Time
@@ -197,7 +197,7 @@ func NewMemoryCache(opts ...MemoryCacheOption) *MemoryCache {
 }
 
 // Get retrieves a value from the cache
-func (c *MemoryCache) Get(_ context.Context, key string, value interface{}) error {
+func (c *MemoryCache) Get(_ context.Context, key string, value any) error {
 	c.mu.RLock()
 	entry, exists := c.data[key]
 	c.mu.RUnlock()
@@ -243,7 +243,7 @@ func (c *MemoryCache) Get(_ context.Context, key string, value interface{}) erro
 }
 
 // Set stores a value in the cache with optional TTL
-func (c *MemoryCache) Set(_ context.Context, key string, value interface{}, ttl time.Duration) error {
+func (c *MemoryCache) Set(_ context.Context, key string, value any, ttl time.Duration) error {
 	if ttl < 0 {
 		return ErrInvalidTTL
 	}
@@ -425,8 +425,8 @@ func (c *MemoryCache) evict() {
 }
 
 // GetMultiple retrieves multiple values from the cache
-func (c *MemoryCache) GetMultiple(_ context.Context, keys []string) (map[string]interface{}, error) {
-	result := make(map[string]interface{})
+func (c *MemoryCache) GetMultiple(_ context.Context, keys []string) (map[string]any, error) {
+	result := make(map[string]any)
 
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -452,7 +452,7 @@ func (c *MemoryCache) GetMultiple(_ context.Context, keys []string) (map[string]
 }
 
 // SetMultiple stores multiple values in the cache
-func (c *MemoryCache) SetMultiple(_ context.Context, items map[string]interface{}, ttl time.Duration) error {
+func (c *MemoryCache) SetMultiple(_ context.Context, items map[string]any, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -545,7 +545,7 @@ func NewLoadingCache(cache Cache, loadFunc LoadFunc) *LoadingCache {
 }
 
 // Get retrieves a value, loading it if not present
-func (lc *LoadingCache) Get(ctx context.Context, key string, value interface{}) error {
+func (lc *LoadingCache) Get(ctx context.Context, key string, value any) error {
 	// Try to get from cache first
 	err := lc.cache.Get(ctx, key, value)
 	if err == nil {
@@ -576,7 +576,7 @@ func (lc *LoadingCache) Get(ctx context.Context, key string, value interface{}) 
 }
 
 // Set stores a value in the cache
-func (lc *LoadingCache) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+func (lc *LoadingCache) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
 	return lc.cache.Set(ctx, key, value, ttl)
 }
 
@@ -635,12 +635,12 @@ func (nc *NamespaceCache) nsKey(key string) string {
 }
 
 // Get retrieves a value from the cache
-func (nc *NamespaceCache) Get(ctx context.Context, key string, value interface{}) error {
+func (nc *NamespaceCache) Get(ctx context.Context, key string, value any) error {
 	return nc.cache.Get(ctx, nc.nsKey(key), value)
 }
 
 // Set stores a value in the cache
-func (nc *NamespaceCache) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+func (nc *NamespaceCache) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
 	return nc.cache.Set(ctx, nc.nsKey(key), value, ttl)
 }
 
@@ -699,12 +699,12 @@ func (nc *NamespaceCache) Keys(ctx context.Context, pattern string) ([]string, e
 type JSONSerializer struct{}
 
 // Serialize converts a value to JSON bytes
-func (js *JSONSerializer) Serialize(value interface{}) ([]byte, error) {
+func (js *JSONSerializer) Serialize(value any) ([]byte, error) {
 	return json.Marshal(value)
 }
 
 // Deserialize converts JSON bytes to a value
-func (js *JSONSerializer) Deserialize(data []byte, value interface{}) error {
+func (js *JSONSerializer) Deserialize(data []byte, value any) error {
 	return json.Unmarshal(data, value)
 }
 
@@ -712,7 +712,7 @@ func (js *JSONSerializer) Deserialize(data []byte, value interface{}) error {
 type GobSerializer struct{}
 
 // Serialize converts a value to gob bytes
-func (gs *GobSerializer) Serialize(value interface{}) ([]byte, error) {
+func (gs *GobSerializer) Serialize(value any) ([]byte, error) {
 	var buf []byte
 
 	enc := gob.NewEncoder(&buffer{data: &buf})
@@ -724,7 +724,7 @@ func (gs *GobSerializer) Serialize(value interface{}) ([]byte, error) {
 }
 
 // Deserialize converts gob bytes to a value
-func (gs *GobSerializer) Deserialize(data []byte, value interface{}) error {
+func (gs *GobSerializer) Deserialize(data []byte, value any) error {
 	dec := gob.NewDecoder(&buffer{data: &data, read: true})
 	return dec.Decode(value)
 }

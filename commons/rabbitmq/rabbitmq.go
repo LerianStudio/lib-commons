@@ -19,7 +19,6 @@ import (
 // RabbitMQConnection is a hub which deal with rabbitmq connections.
 // The type name intentionally matches the package name for clarity in external usage.
 //
-//nolint:revive // Intentional stuttering for external package clarity
 type RabbitMQConnection struct {
 	ConnectionStringSource string
 	Queue                  string

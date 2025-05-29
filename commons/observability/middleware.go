@@ -15,7 +15,6 @@ import (
 // ObservabilityMiddleware provides comprehensive observability for HTTP requests.
 // The type name intentionally matches the package name for clarity in external usage.
 //
-//nolint:revive // Intentional stuttering for external package clarity
 type ObservabilityMiddleware struct {
 	serviceName    string
 	tracerProvider trace.TracerProvider
@@ -187,7 +186,7 @@ func (om *ObservabilityMiddleware) Middleware() fiber.Handler {
 		}
 
 		// Log request
-		fields := map[string]interface{}{
+		fields := map[string]any{
 			"method":        c.Method(),
 			"path":          c.Path(),
 			"status":        statusCode,

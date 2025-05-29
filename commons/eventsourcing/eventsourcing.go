@@ -26,10 +26,10 @@ type Event struct {
 	ID          string
 	AggregateID string
 	Type        string
-	Data        interface{}
+	Data        any
 	Version     int
 	Timestamp   time.Time
-	Metadata    map[string]interface{}
+	Metadata    map[string]any
 }
 
 // Aggregate represents an event-sourced aggregate
@@ -57,7 +57,7 @@ type EventStore interface {
 // Snapshot represents an aggregate snapshot
 type Snapshot struct {
 	AggregateID string
-	Data        interface{}
+	Data        any
 	Version     int
 	Timestamp   time.Time
 }

@@ -26,18 +26,16 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # Using GolangCI-Lint Module
-      - name: Run GoLangCI Lint
-        uses: LerianStudio/github-actions-golangci-lint@main
+      - name: Setup Go
+        uses: actions/setup-go@v5
         with:
-          lerian_studio_midaz_push_bot_app_id: ${{ secrets.LERIAN_STUDIO_MIDAZ_PUSH_BOT_APP_ID }}
-          lerian_studio_midaz_push_bot_private_key: ${{ secrets.LERIAN_STUDIO_MIDAZ_PUSH_BOT_PRIVATE_KEY }}
-          lerian_ci_cd_user_gpg_key: ${{ secrets.LERIAN_CI_CD_USER_GPG_KEY }}
-          lerian_ci_cd_user_gpg_key_password: ${{ secrets.LERIAN_CI_CD_USER_GPG_KEY_PASSWORD }}
-          lerian_ci_cd_user_name: ${{ secrets.LERIAN_CI_CD_USER_NAME }}
-          lerian_ci_cd_user_email: ${{ secrets.LERIAN_CI_CD_USER_EMAIL }}
-          go_version: '1.23'  # Versão do Go, se necessário alterar
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          go-version: '1.23'
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
 
   GoSec:
     name: Run GoSec to SDK

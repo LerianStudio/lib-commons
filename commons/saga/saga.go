@@ -26,7 +26,6 @@ var (
 // SagaStatus represents the status of a saga execution.
 // The type name intentionally matches the package name for clarity in external usage.
 //
-//nolint:revive // Intentional stuttering for external package clarity
 type SagaStatus string
 
 const (
@@ -49,9 +48,9 @@ type Step interface {
 	// Name returns the step name
 	Name() string
 	// Execute performs the step's forward action
-	Execute(ctx context.Context, data interface{}) error
+	Execute(ctx context.Context, data any) error
 	// Compensate performs the step's compensating action
-	Compensate(ctx context.Context, data interface{}) error
+	Compensate(ctx context.Context, data any) error
 }
 
 // Saga represents a saga transaction
@@ -94,7 +93,7 @@ func (s *Saga) WithRetry(retries int, delay time.Duration) *Saga {
 }
 
 // Execute runs the saga
-func (s *Saga) Execute(ctx context.Context, data interface{}) error {
+func (s *Saga) Execute(ctx context.Context, data any) error {
 	// Apply timeout
 	if s.timeout > 0 {
 		var cancel context.CancelFunc
@@ -129,7 +128,7 @@ func (s *Saga) Execute(ctx context.Context, data interface{}) error {
 }
 
 // executeStep executes a single step with retry logic
-func (s *Saga) executeStep(ctx context.Context, step Step, data interface{}) error {
+func (s *Saga) executeStep(ctx context.Context, step Step, data any) error {
 	var lastErr error
 
 	attempts := s.retries + 1
@@ -156,7 +155,7 @@ func (s *Saga) executeStep(ctx context.Context, step Step, data interface{}) err
 }
 
 // compensate runs compensation for executed steps in reverse order
-func (s *Saga) compensate(ctx context.Context, executedSteps []Step, data interface{}) error {
+func (s *Saga) compensate(ctx context.Context, executedSteps []Step, data any) error {
 	var compensationErrors []error
 
 	// Compensate in reverse order
@@ -178,7 +177,6 @@ func (s *Saga) compensate(ctx context.Context, executedSteps []Step, data interf
 // SagaExecution represents a saga execution instance.
 // The type name intentionally matches the package name for clarity in external usage.
 //
-//nolint:revive // Intentional stuttering for external package clarity
 type SagaExecution struct {
 	ID        string
 	Name      string
@@ -186,7 +184,7 @@ type SagaExecution struct {
 	StartTime time.Time
 	EndTime   *time.Time
 	Error     error
-	Data      interface{}
+	Data      any
 }
 
 // Coordinator manages saga executions
@@ -212,7 +210,7 @@ func (c *Coordinator) Register(saga *Saga) {
 }
 
 // Start starts a saga execution
-func (c *Coordinator) Start(ctx context.Context, sagaName string, data interface{}) (string, error) {
+func (c *Coordinator) Start(ctx context.Context, sagaName string, data any) (string, error) {
 	c.mu.RLock()
 	saga, exists := c.sagas[sagaName]
 	c.mu.RUnlock()
@@ -290,7 +288,7 @@ type Event struct {
 	Type      string
 	SagaID    string
 	StepName  string
-	Data      interface{}
+	Data      any
 	Error     string
 	Timestamp time.Time
 }
@@ -303,12 +301,12 @@ type EventStore interface {
 // DistributedStep represents a step in a distributed saga
 type DistributedStep struct {
 	name       string
-	execute    func(ctx context.Context, data interface{}) error
-	compensate func(ctx context.Context, data interface{}) error
+	execute    func(ctx context.Context, data any) error
+	compensate func(ctx context.Context, data any) error
 }
 
 // NewDistributedStep creates a new distributed step
-func NewDistributedStep(name string, execute, compensate func(ctx context.Context, data interface{}) error) *DistributedStep {
+func NewDistributedStep(name string, execute, compensate func(ctx context.Context, data any) error) *DistributedStep {
 	return &DistributedStep{
 		name:       name,
 		execute:    execute,
@@ -322,7 +320,7 @@ func (s *DistributedStep) Name() string {
 }
 
 // Execute performs the step's forward action
-func (s *DistributedStep) Execute(ctx context.Context, data interface{}) error {
+func (s *DistributedStep) Execute(ctx context.Context, data any) error {
 	if s.execute != nil {
 		return s.execute(ctx, data)
 	}
@@ -331,7 +329,7 @@ func (s *DistributedStep) Execute(ctx context.Context, data interface{}) error {
 }
 
 // Compensate performs the step's compensating action
-func (s *DistributedStep) Compensate(ctx context.Context, data interface{}) error {
+func (s *DistributedStep) Compensate(ctx context.Context, data any) error {
 	if s.compensate != nil {
 		return s.compensate(ctx, data)
 	}
@@ -362,7 +360,7 @@ func (ds *DistributedSaga) AddStep(step Step) *DistributedSaga {
 }
 
 // Execute runs the distributed saga with event publishing
-func (ds *DistributedSaga) Execute(ctx context.Context, data interface{}) error {
+func (ds *DistributedSaga) Execute(ctx context.Context, data any) error {
 	// Publish saga started event
 	ds.publishEvent(ctx, EventTypeSagaStarted, "", data, nil)
 
@@ -410,7 +408,7 @@ func (ds *DistributedSaga) Execute(ctx context.Context, data interface{}) error 
 }
 
 // publishEvent publishes a saga event
-func (ds *DistributedSaga) publishEvent(ctx context.Context, eventType, stepName string, data interface{}, err error) {
+func (ds *DistributedSaga) publishEvent(ctx context.Context, eventType, stepName string, data any, err error) {
 	event := Event{
 		ID:        uuid.New().String(),
 		Type:      eventType,
@@ -431,7 +429,6 @@ func (ds *DistributedSaga) publishEvent(ctx context.Context, eventType, stepName
 // SagaBuilder helps build sagas fluently.
 // The type name intentionally matches the package name for clarity in external usage.
 //
-//nolint:revive // Intentional stuttering for external package clarity
 type SagaBuilder struct {
 	name       string
 	steps      []Step
@@ -466,7 +463,7 @@ func (sb *SagaBuilder) WithRetry(retries int, delay time.Duration) *SagaBuilder 
 }
 
 // WithStep adds a step to the saga
-func (sb *SagaBuilder) WithStep(name string, execute, compensate func(ctx context.Context, data interface{}) error) *SagaBuilder {
+func (sb *SagaBuilder) WithStep(name string, execute, compensate func(ctx context.Context, data any) error) *SagaBuilder {
 	step := &DistributedStep{
 		name:       name,
 		execute:    execute,

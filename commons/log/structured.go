@@ -7,22 +7,22 @@ import (
 // StructuredLogger provides structured logging with fields
 type StructuredLogger struct {
 	logger Logger
-	fields map[string]interface{}
+	fields map[string]any
 }
 
 // NewStructuredLogger creates a new structured logger
 func NewStructuredLogger(logger Logger) *StructuredLogger {
 	return &StructuredLogger{
 		logger: logger,
-		fields: make(map[string]interface{}),
+		fields: make(map[string]any),
 	}
 }
 
 // WithFields adds fields to the logger
-func (sl *StructuredLogger) WithFields(fields map[string]interface{}) *StructuredLogger {
+func (sl *StructuredLogger) WithFields(fields map[string]any) *StructuredLogger {
 	newLogger := &StructuredLogger{
 		logger: sl.logger,
-		fields: make(map[string]interface{}),
+		fields: make(map[string]any),
 	}
 
 	// Copy existing fields
@@ -39,8 +39,8 @@ func (sl *StructuredLogger) WithFields(fields map[string]interface{}) *Structure
 }
 
 // WithField adds a single field to the logger
-func (sl *StructuredLogger) WithField(key string, value interface{}) *StructuredLogger {
-	return sl.WithFields(map[string]interface{}{key: value})
+func (sl *StructuredLogger) WithField(key string, value any) *StructuredLogger {
+	return sl.WithFields(map[string]any{key: value})
 }
 
 // WithService adds service context
@@ -55,7 +55,7 @@ func (sl *StructuredLogger) WithOperation(operationName string) *StructuredLogge
 
 // WithBusinessContext adds business context
 func (sl *StructuredLogger) WithBusinessContext(organizationID, ledgerID string) *StructuredLogger {
-	fields := make(map[string]interface{})
+	fields := make(map[string]any)
 	if organizationID != "" {
 		fields["organization_id"] = organizationID
 	}
@@ -100,7 +100,7 @@ func (sl *StructuredLogger) Info(msg string) {
 }
 
 // Infof logs a formatted info message
-func (sl *StructuredLogger) Infof(format string, args ...interface{}) {
+func (sl *StructuredLogger) Infof(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	sl.Info(msg)
 }
@@ -111,7 +111,7 @@ func (sl *StructuredLogger) Error(msg string) {
 }
 
 // Errorf logs a formatted error message
-func (sl *StructuredLogger) Errorf(format string, args ...interface{}) {
+func (sl *StructuredLogger) Errorf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	sl.Error(msg)
 }
@@ -122,7 +122,7 @@ func (sl *StructuredLogger) Warn(msg string) {
 }
 
 // Warnf logs a formatted warning message
-func (sl *StructuredLogger) Warnf(format string, args ...interface{}) {
+func (sl *StructuredLogger) Warnf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	sl.Warn(msg)
 }
@@ -133,7 +133,7 @@ func (sl *StructuredLogger) Debug(msg string) {
 }
 
 // Debugf logs a formatted debug message
-func (sl *StructuredLogger) Debugf(format string, args ...interface{}) {
+func (sl *StructuredLogger) Debugf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	sl.Debug(msg)
 }
@@ -144,7 +144,7 @@ func (sl *StructuredLogger) Fatal(msg string) {
 }
 
 // Fatalf logs a formatted fatal message
-func (sl *StructuredLogger) Fatalf(format string, args ...interface{}) {
+func (sl *StructuredLogger) Fatalf(format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
 	sl.Fatal(msg)
 }

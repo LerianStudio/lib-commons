@@ -17,11 +17,10 @@ import (
 // ValidationError represents a validation error with field and message details.
 // The type name intentionally matches the package name for clarity in external usage.
 //
-//nolint:revive // Intentional stuttering for external package clarity
 type ValidationError struct {
 	Field   string
 	Message string
-	Value   interface{}
+	Value   any
 }
 
 // Error implements the error interface
@@ -42,7 +41,7 @@ func NewValidationError(message, field string) ValidationError {
 }
 
 // Required validates that a value is not empty/zero
-func Required(value interface{}, fieldName string) error {
+func Required(value any, fieldName string) error {
 	if value == nil {
 		return NewValidationError(fieldName+" is required", fieldName)
 	}
@@ -54,41 +53,78 @@ func Required(value interface{}, fieldName string) error {
 		if v.IsNil() {
 			return NewValidationError(fieldName+" is required", fieldName)
 		}
-
 		v = v.Elem()
 	}
 
+	return validateRequiredByKind(v, fieldName)
+}
+
+// validateRequiredByKind validates required constraint based on the value's kind
+func validateRequiredByKind(v reflect.Value, fieldName string) error {
 	switch v.Kind() {
 	case reflect.String:
-		if strings.TrimSpace(v.String()) == "" {
-			return NewValidationError(fieldName+" is required", fieldName)
-		}
+		return validateRequiredString(v, fieldName)
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		if v.Int() == 0 {
-			return NewValidationError(fieldName+" is required", fieldName)
-		}
+		return validateRequiredInt(v, fieldName)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		if v.Uint() == 0 {
-			return NewValidationError(fieldName+" is required", fieldName)
-		}
+		return validateRequiredUint(v, fieldName)
 	case reflect.Float32, reflect.Float64:
-		if v.Float() == 0 {
-			return NewValidationError(fieldName+" is required", fieldName)
-		}
+		return validateRequiredFloat(v, fieldName)
 	case reflect.Slice, reflect.Array, reflect.Map:
-		if v.Len() == 0 {
-			return NewValidationError(fieldName+" is required", fieldName)
-		}
+		return validateRequiredCollection(v, fieldName)
 	case reflect.Bool:
 		// bool is always valid for required check
 		return nil
 	default:
-		// For other types, check if it's the zero value
-		if v.IsZero() {
-			return NewValidationError(fieldName+" is required", fieldName)
-		}
+		return validateRequiredDefault(v, fieldName)
 	}
+}
 
+// validateRequiredString validates required constraint for string values
+func validateRequiredString(v reflect.Value, fieldName string) error {
+	if strings.TrimSpace(v.String()) == "" {
+		return NewValidationError(fieldName+" is required", fieldName)
+	}
+	return nil
+}
+
+// validateRequiredInt validates required constraint for signed integer values
+func validateRequiredInt(v reflect.Value, fieldName string) error {
+	if v.Int() == 0 {
+		return NewValidationError(fieldName+" is required", fieldName)
+	}
+	return nil
+}
+
+// validateRequiredUint validates required constraint for unsigned integer values
+func validateRequiredUint(v reflect.Value, fieldName string) error {
+	if v.Uint() == 0 {
+		return NewValidationError(fieldName+" is required", fieldName)
+	}
+	return nil
+}
+
+// validateRequiredFloat validates required constraint for floating point values
+func validateRequiredFloat(v reflect.Value, fieldName string) error {
+	if v.Float() == 0 {
+		return NewValidationError(fieldName+" is required", fieldName)
+	}
+	return nil
+}
+
+// validateRequiredCollection validates required constraint for slices, arrays, and maps
+func validateRequiredCollection(v reflect.Value, fieldName string) error {
+	if v.Len() == 0 {
+		return NewValidationError(fieldName+" is required", fieldName)
+	}
+	return nil
+}
+
+// validateRequiredDefault validates required constraint for other types using zero value check
+func validateRequiredDefault(v reflect.Value, fieldName string) error {
+	if v.IsZero() {
+		return NewValidationError(fieldName+" is required", fieldName)
+	}
 	return nil
 }
 
@@ -214,12 +250,12 @@ func OneOf(value string, allowed []string, fieldName string) error {
 
 // customValidators holds registered custom validators
 var (
-	customValidators   = make(map[string]func(interface{}) error)
+	customValidators   = make(map[string]func(any) error)
 	customValidatorsMu sync.RWMutex
 )
 
 // RegisterCustomValidator registers a custom validator function
-func RegisterCustomValidator(name string, fn func(interface{}) error) error {
+func RegisterCustomValidator(name string, fn func(any) error) error {
 	customValidatorsMu.Lock()
 	defer customValidatorsMu.Unlock()
 
@@ -233,8 +269,8 @@ func RegisterCustomValidator(name string, fn func(interface{}) error) error {
 }
 
 // ValidateStruct validates a struct based on validate tags
-func ValidateStruct(s interface{}) []ValidationError {
-	var errors []ValidationError
+func ValidateStruct(s any) []ValidationError {
+	var validationErrors []ValidationError
 
 	v := reflect.ValueOf(s)
 	t := reflect.TypeOf(s)
@@ -246,8 +282,8 @@ func ValidateStruct(s interface{}) []ValidationError {
 	}
 
 	if v.Kind() != reflect.Struct {
-		errors = append(errors, NewValidationError("input must be a struct", ""))
-		return errors
+		validationErrors = append(validationErrors, NewValidationError("input must be a struct", ""))
+		return validationErrors
 	}
 
 	// Iterate through struct fields
@@ -266,105 +302,146 @@ func ValidateStruct(s interface{}) []ValidationError {
 		for _, rule := range rules {
 			if err := validateField(fieldValue.Interface(), field.Name, rule); err != nil {
 				if vErr, ok := err.(ValidationError); ok {
-					errors = append(errors, vErr)
+					validationErrors = append(validationErrors, vErr)
 				} else {
-					errors = append(errors, NewValidationError(err.Error(), field.Name))
+					validationErrors = append(validationErrors, NewValidationError(err.Error(), field.Name))
 				}
 			}
 		}
 	}
 
-	if len(errors) == 0 {
+	if len(validationErrors) == 0 {
 		return nil
 	}
 
-	return errors
+	return validationErrors
 }
 
 // validateField validates a single field based on a rule
-func validateField(value interface{}, fieldName, rule string) error {
+func validateField(value any, fieldName, rule string) error {
 	parts := strings.SplitN(rule, "=", 2)
 	ruleName := parts[0]
 
 	switch ruleName {
 	case "required":
 		return Required(value, fieldName)
-
 	case "email":
-		if str, ok := value.(string); ok && str != "" {
-			return Email(str, fieldName)
-		}
-
+		return validateEmail(value, fieldName)
 	case "url":
-		if str, ok := value.(string); ok && str != "" {
-			return URL(str, fieldName)
-		}
-
+		return validateURL(value, fieldName)
 	case "uuid":
-		if str, ok := value.(string); ok && str != "" {
-			return UUID(str, fieldName)
-		}
-
+		return validateUUID(value, fieldName)
 	case "min":
-		if len(parts) != 2 {
-			return errors.New("min rule requires a value")
-		}
-
-		var minVal int
-		if _, err := fmt.Sscanf(parts[1], "%d", &minVal); err != nil {
-			return fmt.Errorf("invalid min value: %w", err)
-		}
-
-		switch v := value.(type) {
-		case string:
-			return MinLength(v, minVal, fieldName)
-		case int:
-			return InRange(int64(v), int64(minVal), int64(^uint(0)>>1), fieldName)
-		case int64:
-			return InRange(v, int64(minVal), int64(^uint(0)>>1), fieldName)
-		}
-
+		return validateMin(value, fieldName, parts)
 	case "max":
-		if len(parts) != 2 {
-			return errors.New("max rule requires a value")
-		}
-
-		var maxVal int
-		if _, err := fmt.Sscanf(parts[1], "%d", &maxVal); err != nil {
-			return fmt.Errorf("invalid max value: %w", err)
-		}
-
-		switch v := value.(type) {
-		case string:
-			return MaxLength(v, maxVal, fieldName)
-		case int:
-			return InRange(int64(v), int64(-int(^uint(0)>>1)-1), int64(maxVal), fieldName)
-		case int64:
-			return InRange(v, int64(-int(^uint(0)>>1)-1), int64(maxVal), fieldName)
-		}
-
+		return validateMax(value, fieldName, parts)
 	case "oneof":
-		if len(parts) != 2 {
-			return errors.New("oneof rule requires values")
-		}
-
-		allowed := strings.Split(parts[1], " ")
-		if str, ok := value.(string); ok {
-			return OneOf(str, allowed, fieldName)
-		}
-
+		return validateOneOf(value, fieldName, parts)
 	default:
-		// Check custom validators
-		customValidatorsMu.RLock()
-		validator, exists := customValidators[ruleName]
-		customValidatorsMu.RUnlock()
+		return validateCustomRule(ruleName, value)
+	}
+}
 
-		if exists {
-			return validator(value)
-		}
+// validateEmail validates email format for string values
+func validateEmail(value any, fieldName string) error {
+	if str, ok := value.(string); ok && str != "" {
+		return Email(str, fieldName)
+	}
+	return nil
+}
 
-		return fmt.Errorf("unknown validation rule: %s", ruleName)
+// validateURL validates URL format for string values
+func validateURL(value any, fieldName string) error {
+	if str, ok := value.(string); ok && str != "" {
+		return URL(str, fieldName)
+	}
+	return nil
+}
+
+// validateUUID validates UUID format for string values
+func validateUUID(value any, fieldName string) error {
+	if str, ok := value.(string); ok && str != "" {
+		return UUID(str, fieldName)
+	}
+	return nil
+}
+
+// validateMin validates minimum length/value constraints
+func validateMin(value any, fieldName string, parts []string) error {
+	if len(parts) != 2 {
+		return errors.New("min rule requires a value")
 	}
 
+	var minVal int
+	if _, err := fmt.Sscanf(parts[1], "%d", &minVal); err != nil {
+		return fmt.Errorf("invalid min value: %w", err)
+	}
+
+	return applyMinValidation(value, fieldName, minVal)
+}
+
+// validateMax validates maximum length/value constraints
+func validateMax(value any, fieldName string, parts []string) error {
+	if len(parts) != 2 {
+		return errors.New("max rule requires a value")
+	}
+
+	var maxVal int
+	if _, err := fmt.Sscanf(parts[1], "%d", &maxVal); err != nil {
+		return fmt.Errorf("invalid max value: %w", err)
+	}
+
+	return applyMaxValidation(value, fieldName, maxVal)
+}
+
+// validateOneOf validates that value is one of allowed values
+func validateOneOf(value any, fieldName string, parts []string) error {
+	if len(parts) != 2 {
+		return errors.New("oneof rule requires values")
+	}
+
+	allowed := strings.Split(parts[1], " ")
+	if str, ok := value.(string); ok {
+		return OneOf(str, allowed, fieldName)
+	}
+	return nil
+}
+
+// validateCustomRule checks and applies custom validators
+func validateCustomRule(ruleName string, value any) error {
+	customValidatorsMu.RLock()
+	validator, exists := customValidators[ruleName]
+	customValidatorsMu.RUnlock()
+
+	if exists {
+		return validator(value)
+	}
+
+	return fmt.Errorf("unknown validation rule: %s", ruleName)
+}
+
+// applyMinValidation applies minimum validation based on value type
+func applyMinValidation(value any, fieldName string, minVal int) error {
+	switch v := value.(type) {
+	case string:
+		return MinLength(v, minVal, fieldName)
+	case int:
+		return InRange(int64(v), int64(minVal), int64(^uint(0)>>1), fieldName)
+	case int64:
+		return InRange(v, int64(minVal), int64(^uint(0)>>1), fieldName)
+	}
+	return nil
+}
+
+// applyMaxValidation applies maximum validation based on value type
+func applyMaxValidation(value any, fieldName string, maxVal int) error {
+	switch v := value.(type) {
+	case string:
+		return MaxLength(v, maxVal, fieldName)
+	case int:
+		return InRange(int64(v), int64(-int(^uint(0)>>1)-1), int64(maxVal), fieldName)
+	case int64:
+		return InRange(v, int64(-int(^uint(0)>>1)-1), int64(maxVal), fieldName)
+	}
 	return nil
 }

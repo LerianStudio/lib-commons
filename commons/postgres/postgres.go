@@ -24,7 +24,6 @@ import (
 // PostgresConnection is a hub which deal with postgres connections.
 // The type name intentionally matches the package name for clarity in external usage.
 //
-//nolint:revive // Intentional stuttering for external package clarity
 type PostgresConnection struct {
 	ConnectionStringPrimary string
 	ConnectionStringReplica string

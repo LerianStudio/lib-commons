@@ -461,7 +461,7 @@ func (m *fiberMiddleware) processResponse(ctx context.Context, c *fiber.Ctx, spa
 // logRequest handles request logging with appropriate level based on status
 func (m *fiberMiddleware) logRequest(c *fiber.Ctx, span trace.Span, err error, statusCode int, duration time.Duration) {
 	logger := m.provider.Logger().WithSpan(span)
-	fields := map[string]interface{}{
+	fields := map[string]any{
 		"method":        c.Method(),
 		"path":          c.Path(),
 		"status":        statusCode,

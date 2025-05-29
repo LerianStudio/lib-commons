@@ -254,7 +254,7 @@ func (t *Timer) StopWithError(errorType string, additionalAttrs ...attribute.Key
 // BatchTimer provides a convenient way to record batch operations
 type BatchTimer struct {
 	Timer
-	items []interface{}
+	items []any
 }
 
 // NewBatchTimer creates a new timer for batch operations
@@ -268,17 +268,17 @@ func (m *MetricsCollector) NewBatchTimer(ctx context.Context, operation, resourc
 			resourceType: resourceType,
 			attrs:        attrs,
 		},
-		items: make([]interface{}, 0),
+		items: make([]any, 0),
 	}
 }
 
 // AddItem adds an item to the batch
-func (bt *BatchTimer) AddItem(item interface{}) {
+func (bt *BatchTimer) AddItem(item any) {
 	bt.items = append(bt.items, item)
 }
 
 // AddItems adds multiple items to the batch
-func (bt *BatchTimer) AddItems(items ...interface{}) {
+func (bt *BatchTimer) AddItems(items ...any) {
 	bt.items = append(bt.items, items...)
 }
 

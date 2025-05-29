@@ -16,7 +16,6 @@ const RedisTTL = 300
 // RedisConnection is a hub which deal with redis connections.
 // The type name intentionally matches the package name for clarity in external usage.
 //
-//nolint:revive // Intentional stuttering for external package clarity
 type RedisConnection struct {
 	Addr      string
 	User      string

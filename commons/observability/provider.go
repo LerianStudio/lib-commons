@@ -318,7 +318,6 @@ func DefaultConfig() *Config {
 // ObservabilityProvider is the main implementation of the Provider interface.
 // The type name intentionally matches the package name for clarity in external usage.
 //
-//nolint:revive // Intentional stuttering for external package clarity
 type ObservabilityProvider struct {
 	config            *Config
 	tracerProvider    *sdktrace.TracerProvider
@@ -581,16 +580,16 @@ func (p *ObservabilityProvider) Shutdown(ctx context.Context) error {
 	p.enabled = false
 
 	// Call all shutdown functions
-	var errors []error
+	var errs []error
 
 	for _, shutdownFn := range p.shutdownFunctions {
 		if err := shutdownFn(ctx); err != nil {
-			errors = append(errors, err)
+			errs = append(errs, err)
 		}
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("errors during shutdown: %v", errors)
+	if len(errs) > 0 {
+		return fmt.Errorf("errors during shutdown: %v", errs)
 	}
 
 	return nil
