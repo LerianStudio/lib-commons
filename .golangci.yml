@@ -1,6 +1,7 @@
-version: "2"
 run:
+  timeout: 5m
   tests: false
+
 linters:
   enable:
     - bodyclose
@@ -26,97 +27,85 @@ linters:
     - unparam
     - usestdlibvars
     - wastedassign
-  settings:
-    depguard:
-      rules:
-        main:
-          deny:
-            - pkg: io/ioutil
-              desc: The io/ioutil package has been deprecated, see https://go.dev/doc/go1.16#ioutil
-    gocyclo:
-      min-complexity: 16
-    govet:
-      enable:
-        - shadow
-      settings:
-        shadow:
-          strict: true
-    revive:
-      rules:
-        - name: import-shadowing
-          severity: warning
-          disabled: false
-        - name: empty-block
-          severity: warning
-          disabled: false
-        - name: empty-lines
-          severity: warning
-          disabled: false
-        - name: use-any
-          severity: warning
-          disabled: false
-  exclusions:
-    generated: lax
+
+linters-settings:
+  depguard:
+    list-type: blacklist
+    packages-with-error-message:
+      - io/ioutil: "The io/ioutil package has been deprecated, see https://go.dev/doc/go1.16#ioutil"
+  gocyclo:
+    min-complexity: 16
+  govet:
+    enable:
+      - shadow
+    settings:
+      shadow:
+        strict: true
+  revive:
     rules:
-      - linters:
-          - errcheck
-        text: Error return value of .((os\.)?std(out|err)\..*|.*Close|.*Flush|os\.Remove(All)?|.*print(f|ln)?|os\.(Un)?Setenv). is not checked
-      - linters:
-          - revive
-        text: func name will be used as test\.Test.* by other packages, and that stutters; consider calling this
-      - linters:
-          - gosec
-        text: Use of unsafe calls should be audited
-      - linters:
-          - gosec
-        text: Subprocess launch(ed with variable|ing should be audited)
-      - linters:
-          - gosec
-        text: G307
-      - linters:
-          - gosec
-        text: (Expect directory permissions to be 0750 or less|Expect file permissions to be 0600 or less)
-      - linters:
-          - gosec
-        text: Potential file inclusion via variable
-      - linters:
-          - gosec
-        text: G113
-      - linters:
-          - gosec
-        text: G104
-      - linters:
-          - gosec
-        text: "G204: Subprocess launched with a potential tainted input or cmd arguments"
-      - linters:
-          - gosec
-        text: "G306: Expect WriteFile permissions to be 0600 or less"
-      - linters:
-          - revive
-        text: "package-comments: should have a package comment"
-      - linters:
-          - errcheck
-          - gosec
-        path: _test\.go
-      - linters:
-          - staticcheck
-        text: "ST1000: at least one file in a package should have a package comment"
-      - linters:
-          - govet
-        text: '^shadow: declaration of "(err|ok)" shadows declaration'
-      - path: (.+)\.go$
-        text: parameter .* always receives
-    paths:
-      - third_party$
-      - builtin$
-      - examples$
+      - name: import-shadowing
+        severity: warning
+        disabled: false
+      - name: empty-block
+        severity: warning
+        disabled: false
+      - name: empty-lines
+        severity: warning
+        disabled: false
+      - name: use-any
+        severity: warning
+        disabled: false
+
 issues:
+  exclude-use-default: false
+  exclude-rules:
+    - text: "Error return value of .((os\\.)?std(out|err)\\..*|.*Close|.*Flush|os\\.Remove(All)?|.*print(f|ln)?|os\\.(Un)?Setenv). is not checked"
+      linters:
+        - errcheck
+    - text: "func name will be used as test\\.Test.* by other packages, and that stutters; consider calling this"
+      linters:
+        - revive
+    - text: "Use of unsafe calls should be audited"
+      linters:
+        - gosec
+    - text: "Subprocess launch(ed with variable|ing should be audited)"
+      linters:
+        - gosec
+    - text: "G307"
+      linters:
+        - gosec
+    - text: "(Expect directory permissions to be 0750 or less|Expect file permissions to be 0600 or less)"
+      linters:
+        - gosec
+    - text: "Potential file inclusion via variable"
+      linters:
+        - gosec
+    - text: "G113"
+      linters:
+        - gosec
+    - text: "G104"
+      linters:
+        - gosec
+    - text: "G204: Subprocess launched with a potential tainted input or cmd arguments"
+      linters:
+        - gosec
+    - text: "G306: Expect WriteFile permissions to be 0600 or less"
+      linters:
+        - gosec
+    - text: "package-comments: should have a package comment"
+      linters:
+        - revive
+    - path: _test\.go
+      linters:
+        - errcheck
+        - gosec
+    - text: "ST1000: at least one file in a package should have a package comment"
+      linters:
+        - staticcheck
+    - text: '^shadow: declaration of "(err|ok)" shadows declaration'
+      linters:
+        - govet
+    - path: (.+)\.go$
+      text: parameter .* always receives
   max-issues-per-linter: 0
   max-same-issues: 0
-formatters:
-  exclusions:
-    generated: lax
-    paths:
-      - third_party$
-      - builtin$
-      - examples$
