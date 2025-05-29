@@ -11,7 +11,7 @@ linters:
     - gocyclo
     - loggercheck
     - ineffassign
-    - wsl
+    # - wsl  # Disabled due to overly strict whitespace formatting that doesn't affect functionality
     - misspell # Detects commonly misspelled English words in comments.
     - nakedret
     - nilerr # Detects code that returns nil even if it checks that the error is not nil.

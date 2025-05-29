@@ -137,7 +137,6 @@ func (rc *RabbitMQConnection) testAMQPConnection(ch *amqp.Channel) error {
 		rc.Logger.Warn("failed to delete test queue", zap.Error(err))
 		// Don't fail the health check for cleanup failure
 	}
-
 	return nil
 }
 
@@ -315,7 +314,6 @@ func (rc *RabbitMQConnection) ConnectWithRetry(ctx context.Context) error {
 			// Continue to next attempt
 		}
 	}
-
 	return fmt.Errorf("failed to connect after %d attempts: %w", rc.maxReconnectAttempts, lastErr)
 }
 

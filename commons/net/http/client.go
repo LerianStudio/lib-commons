@@ -263,7 +263,6 @@ func (c *HTTPClient) DoWithRetry(req *http.Request) (*http.Response, error) {
 			// Continue to next attempt
 		}
 	}
-
 	// Return last response/error
 	if lastResp != nil {
 		return lastResp, nil
@@ -336,6 +335,8 @@ func newBaseHTTPClient(config *ClientConfig) (*http.Client, error) {
 	}
 
 	// Create TLS configuration
+	// #nosec G402 - InsecureSkipVerify is configurable and required for internal networks with self-signed certs
+	// This is controlled by configuration and defaults to false for security
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: config.InsecureSkipVerify,
 		MinVersion:         config.MinTLSVersion,

@@ -139,6 +139,8 @@ func Do(ctx context.Context, operation Operation, opts ...Option) error {
 
 		if cfg.jitter > 0 {
 			jitterAmount := float64(delay) * cfg.jitter
+			// #nosec G404 - Using math/rand for jitter is appropriate here as we don't need cryptographically secure randomness
+			// This is used for retry timing jitter to prevent thundering herd, not for security purposes
 			actualDelay = time.Duration(float64(delay) + (rand.Float64()*2-1)*jitterAmount)
 		}
 

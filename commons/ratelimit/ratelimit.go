@@ -299,7 +299,6 @@ func (sw *SlidingWindow) Wait(ctx context.Context) error {
 		}
 	}
 }
-
 // Reserve implements Limiter (not supported for sliding window)
 func (sw *SlidingWindow) Reserve(_ int) Reservation {
 	return &tokenReservation{ok: false}
@@ -389,7 +388,6 @@ func (fw *FixedWindow) Wait(ctx context.Context) error {
 		}
 	}
 }
-
 // Reserve implements Limiter (not supported for fixed window)
 func (fw *FixedWindow) Reserve(_ int) Reservation {
 	return &tokenReservation{ok: false}
