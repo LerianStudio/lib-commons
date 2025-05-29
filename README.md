@@ -47,9 +47,6 @@ A comprehensive Go library providing common utilities and components for buildin
 - [Validation Framework](#validation-framework)
 - [Transaction Processing](#transaction-processing)
 
-### 🛠️ Development
-- [Development Scripts](#development-scripts)
-
 ---
 
 ## Installation
@@ -566,26 +563,6 @@ if err != nil {
 **When to use:** Financial applications, accounting systems, transaction processing, ledger systems.
 
 ---
-
-## Development Scripts
-
-**Package:** `scripts/`
-
-| File | Purpose | When to Use |
-|------|---------|-------------|
-| `ascii.sh` | ASCII art and border functions | Terminal output formatting in build scripts |
-| `colors.sh` | Terminal color definitions | Colored output in shell scripts |
-| `makefile_colors.mk` | ANSI color codes for Makefiles | Consistent Makefile formatting |
-| `makefile_utils.mk` | Common Makefile utility functions | Shared Makefile functionality |
-
-**Usage in Makefiles:**
-```makefile
-COMMONS_GO_ROOT := $(shell cd ../../libs/commons-go && pwd)
-include $(COMMONS_GO_ROOT)/scripts/makefile_colors.mk
-include $(COMMONS_GO_ROOT)/scripts/makefile_utils.mk
-```
-
-**When to use:** Build automation, development tooling, consistent terminal output across components.
 
 ---
 

@@ -1,63 +1,55 @@
 # Commons-Go Library Makefile
 .DEFAULT_GOAL := help
 
-# Colors for output
-BLUE := \033[34m
-GREEN := \033[32m
-YELLOW := \033[33m
-RED := \033[31m
-NC := \033[0m
-BOLD := \033[1m
-
 .PHONY: help
 help: ## Show this help message
-	@echo "$(BOLD)Commons-Go Library$(NC)"
+	@echo "Commons-Go Library"
 	@echo "Available commands:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  $(BLUE)%-12s$(NC) %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
 
 .PHONY: test
 test: ## Run all tests
-	@echo "$(BLUE)Running tests...$(NC)"
+	@echo "Running tests..."
 	@go test -v ./...
-	@echo "$(GREEN)✓ Tests completed$(NC)"
+	@echo "Tests completed"
 
 .PHONY: test-cover
 test-cover: ## Run tests with coverage
-	@echo "$(BLUE)Running tests with coverage...$(NC)"
+	@echo "Running tests with coverage..."
 	@go test -v -coverprofile=coverage.out ./...
 	@go tool cover -html=coverage.out -o coverage.html
-	@echo "$(GREEN)✓ Coverage report generated: coverage.html$(NC)"
+	@echo "Coverage report generated: coverage.html"
 
 .PHONY: bench
 bench: ## Run benchmarks
-	@echo "$(BLUE)Running benchmarks...$(NC)"
+	@echo "Running benchmarks..."
 	@go test -bench=. -benchmem ./...
-	@echo "$(GREEN)✓ Benchmarks completed$(NC)"
+	@echo "Benchmarks completed"
 
 .PHONY: lint
 lint: ## Run linter
-	@echo "$(BLUE)Running linter...$(NC)"
+	@echo "Running linter..."
 	@golangci-lint run --fix ./...
-	@echo "$(GREEN)✓ Linting completed$(NC)"
+	@echo "Linting completed"
 
 .PHONY: format
 format: ## Format code
-	@echo "$(BLUE)Formatting code...$(NC)"
+	@echo "Formatting code..."
 	@gofmt -w .
-	@echo "$(GREEN)✓ Code formatted$(NC)"
+	@echo "Code formatted"
 
 .PHONY: tidy
 tidy: ## Clean up dependencies
-	@echo "$(BLUE)Tidying dependencies...$(NC)"
+	@echo "Tidying dependencies..."
 	@go mod tidy
-	@echo "$(GREEN)✓ Dependencies cleaned$(NC)"
+	@echo "Dependencies cleaned"
 
 .PHONY: clean
 clean: ## Clean build artifacts
-	@echo "$(BLUE)Cleaning build artifacts...$(NC)"
+	@echo "Cleaning build artifacts..."
 	@rm -f coverage.out coverage.html
-	@echo "$(GREEN)✓ Clean completed$(NC)"
+	@echo "Clean completed"
 
 .PHONY: check
 check: format lint test ## Run format, lint, and test
-	@echo "$(GREEN)$(BOLD)✓ All checks passed$(NC)"
+	@echo "All checks passed"
