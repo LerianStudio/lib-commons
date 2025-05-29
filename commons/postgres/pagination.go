@@ -1,3 +1,5 @@
+// Package postgres provides PostgreSQL-specific utilities including pagination helpers,
+// database connection management, and migration support for PostgreSQL databases.
 package postgres
 
 import "time"

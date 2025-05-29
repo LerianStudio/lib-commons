@@ -1,3 +1,5 @@
+// Package transaction provides data structures and utilities for financial transaction processing.
+// It includes models for transactions, balances, amounts, and validation functions.
 package transaction
 
 import (
@@ -30,6 +32,7 @@ type Balance struct {
 	Metadata       map[string]any `json:"metadata,omitempty"`
 } // @name Balance
 
+// Responses represents the aggregated response data for transaction operations.
 type Responses struct {
 	Total        int64
 	Asset        string
@@ -128,26 +131,32 @@ type FromTo struct {
 func (ft FromTo) SplitAlias() string {
 	if ft.Account != "" {
 		if strings.Contains(ft.Account, "#") {
-			return strings.Split(ft.Account, "#")[1]
+			parts := strings.SplitN(ft.Account, "#", 2)
+			if len(parts) > 1 {
+				return parts[1]
+			}
 		}
 
 		return ft.Account
-	} else {
-		if strings.Contains(ft.AccountAlias, "#") {
-			return strings.Split(ft.AccountAlias, "#")[1]
-		}
-
-		return ft.AccountAlias
 	}
+
+	if strings.Contains(ft.AccountAlias, "#") {
+		parts := strings.SplitN(ft.AccountAlias, "#", 2)
+		if len(parts) > 1 {
+			return parts[1]
+		}
+	}
+
+	return ft.AccountAlias
 }
 
 // ConcatAlias function to concat alias with index.
 func (ft FromTo) ConcatAlias(i int) string {
 	if ft.Account != "" {
 		return strconv.Itoa(i) + "#" + ft.Account
-	} else {
-		return strconv.Itoa(i) + "#" + ft.AccountAlias
 	}
+
+	return strconv.Itoa(i) + "#" + ft.AccountAlias
 }
 
 // Distribute structure for marshaling/unmarshalling JSON.

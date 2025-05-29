@@ -1,3 +1,5 @@
+// Package opentelemetry provides OpenTelemetry integration utilities for distributed tracing,
+// metrics collection, and observability features within the Midaz platform.
 package opentelemetry
 
 import (
@@ -24,6 +26,9 @@ import (
 	"os"
 )
 
+// Telemetry provides OpenTelemetry configuration and initialization for distributed tracing,
+// metrics collection, and logging. It manages the lifecycle of telemetry providers and
+// handles graceful shutdown of telemetry resources.
 type Telemetry struct {
 	LibraryName               string
 	ServiceName               string

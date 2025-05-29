@@ -1,3 +1,5 @@
+// Package log provides structured logging functionality with support for different log levels.
+// It offers a unified logging interface with context support and structured output.
 package log
 
 import (
@@ -38,6 +40,8 @@ type Logger interface {
 }
 
 // LogLevel represents the level of log system (fatal, error, warn, info and debug).
+// The type name intentionally matches the package name for clarity in external usage.
+//
 type LogLevel int8
 
 // These are the different log levels. You can set the logging level to log.
@@ -207,6 +211,7 @@ func (l *GoLogger) WithFields(fields ...any) Logger {
 	}
 }
 
+// WithDefaultMessageTemplate sets a default message template for the logger and returns a new instance.
 func (l *GoLogger) WithDefaultMessageTemplate(message string) Logger {
 	l.defaultMessageTemplate = message
 

@@ -7,6 +7,7 @@ import (
 	"strconv"
 )
 
+// NotImplementedMessage is the default message for not implemented endpoints.
 const NotImplementedMessage = "Not implemented yet"
 
 // Unauthorized sends an HTTP 401 Unauthorized response with a custom code, title and message.

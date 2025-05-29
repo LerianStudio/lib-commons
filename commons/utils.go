@@ -103,6 +103,7 @@ func ValidateType(t string) error {
 	return nil
 }
 
+// ValidateCode validates that a code contains only uppercase letters
 func ValidateCode(code string) error {
 	for _, r := range code {
 		if !unicode.IsLetter(r) {
@@ -159,9 +160,9 @@ func SafeInt64ToInt(val int64) int {
 // SafeUintToInt converts a uint to int64 safely by capping values at math.MaxInt64.
 func SafeUintToInt(val uint) int {
 	if val > uint(math.MaxInt) {
-	    return math.MaxInt
+		return math.MaxInt
 	}
- 	
+
 	return int(val)
 }
 
@@ -202,12 +203,15 @@ func MergeMaps(source, target map[string]any) map[string]any {
 	return target
 }
 
+// SyscmdI defines the interface for executing system commands
 type SyscmdI interface {
 	ExecCmd(name string, arg ...string) ([]byte, error)
 }
 
+// Syscmd implements the SyscmdI interface for executing system commands
 type Syscmd struct{}
 
+// ExecCmd executes a system command with the given name and arguments
 func (r *Syscmd) ExecCmd(name string, arg ...string) ([]byte, error) {
 	return exec.Command(name, arg...).Output()
 }
@@ -221,7 +225,7 @@ func GetCPUUsage(ctx context.Context, cpuGauge metric.Int64Gauge) {
 		logger.Warnf("Errot to get cpu use: %v", err)
 	}
 
-	var percentageCPU int64 = 0
+	var percentageCPU int64
 	if len(out) > 0 {
 		percentageCPU = int64(out[0])
 	}
@@ -233,7 +237,7 @@ func GetCPUUsage(ctx context.Context, cpuGauge metric.Int64Gauge) {
 func GetMemUsage(ctx context.Context, memGauge metric.Int64Gauge) {
 	logger := NewLoggerFromContext(ctx)
 
-	var percentageMem int64 = 0
+	var percentageMem int64
 
 	out, err := mem.VirtualMemory()
 	if err != nil {
@@ -278,12 +282,14 @@ func Reverse[T any](s []T) []T {
 	return s
 }
 
+// InternalKey generates an internal key from organization ID, ledger ID and key
 func InternalKey(organizationID, ledgerID uuid.UUID, key string) string {
 	internalKey := organizationID.String() + ":" + ledgerID.String() + ":" + key
 
 	return internalKey
 }
 
+// LockInternalKey generates a lock internal key from organization ID, ledger ID and key
 func LockInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
 	lockInternalKey := "lock:" + InternalKey(organizationID, ledgerID, key)
 

@@ -14,6 +14,10 @@ type Response struct {
 }
 
 func (e Response) Error() string {
+	if e.Code != "" {
+		return e.Code + ": " + e.Message
+	}
+
 	return e.Message
 }
 
@@ -26,7 +30,7 @@ func (e Response) Error() string {
 //
 // Returns:
 //   - error: The appropriate business error with code, title, and message.
-func ValidateBusinessError(err error, entityType string, args ...any) error {
+func ValidateBusinessError(err error, entityType string, _ ...any) error {
 	errorMap := map[error]error{
 		constant.ErrAccountIneligibility: Response{
 			EntityType: entityType,

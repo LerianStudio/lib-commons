@@ -10,8 +10,13 @@ import (
 
 type customContextKey string
 
+// CustomContextKey is the context key for storing custom context values
 var CustomContextKey = customContextKey("custom_context")
 
+// LoggerKey is the context key for the logger
+var LoggerKey = customContextKey("logger")
+
+// CustomContextKeyValue holds custom values stored in context
 type CustomContextKeyValue struct {
 	HeaderID string
 	Tracer   trace.Tracer
