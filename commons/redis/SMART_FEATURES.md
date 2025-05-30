@@ -1,3 +1,4 @@
+
 # Smart Redis Connection - Opt-In Auto-Detection Features
 
 The `RedisConnection` includes intelligent auto-detection capabilities that automatically choose the optimal connection type and authentication method while maintaining 100% backward compatibility. All smart features are **opt-in only** and require explicit configuration to activate.
