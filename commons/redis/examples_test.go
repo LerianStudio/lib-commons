@@ -148,9 +148,8 @@ func TestGCPAuthentication(_ *testing.T) {
 
 // Example_multipleFeatures demonstrates smart detection with multiple features
 func Example_multipleFeatures() {
-	// Both cluster addresses AND GCP environment
-	_ = os.Setenv("GOOGLE_CLOUD_PROJECT", "my-project")
-	defer func() { _ = os.Unsetenv("GOOGLE_CLOUD_PROJECT") }()
+	// Cluster addresses should trigger cluster detection
+	// (GCP auth disabled for this example to show cluster-only behavior)
 
 	rc := &RedisConnection{
 		Addr:   "cluster-node1:7000,cluster-node2:7001",
@@ -159,7 +158,7 @@ func Example_multipleFeatures() {
 
 	ctx := context.Background()
 
-	// Automatically detects both cluster topology and GCP environment
+	// Automatically detects cluster topology (GCP disabled by default)
 	err := rc.Connect(ctx)
 	if err != nil {
 		fmt.Printf("Multi-feature connection failed (expected): %v\n", err)
@@ -182,9 +181,9 @@ func Example_multipleFeatures() {
 
 	// Output:
 	// Multi-feature connection failed (expected): failed to ping Redis: dial tcp: lookup cluster-node1: no such host
-	// GCP detected: true
+	// GCP detected: false
 	// Cluster detected: false
-	// Detection summary: GCP(project=my-project), Single, Error=cluster detection failed: failed to connect to any of the provided addresses
+	// Detection summary: Non-GCP, Single, Error=cluster detection failed: failed to connect to any of the provided addresses
 	// GetClient failed (expected): failed to ping Redis: dial tcp: lookup cluster-node1: no such host
 }
 

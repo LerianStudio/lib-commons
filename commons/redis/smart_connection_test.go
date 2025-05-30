@@ -26,8 +26,12 @@ func TestSmartRedisConnection_BackwardCompatibility(t *testing.T) {
 		// Connection will fail without real Redis, but the API should work
 		// The important thing is the method signature and structure hasn't changed
 		assert.Error(t, err) // Expected since no real Redis instance
-		assert.NotNil(t, rc.autoDetector)
+		// autoDetector is now nil when auto-detection is disabled (default behavior)
+		assert.Nil(t, rc.autoDetector)
 		assert.NotNil(t, rc.detectedConfig)
+		// Should be non-GCP, non-cluster by default
+		assert.False(t, rc.detectedConfig.IsGCP)
+		assert.False(t, rc.detectedConfig.IsCluster)
 	})
 
 	t.Run("GetClient method signature unchanged", func(t *testing.T) {

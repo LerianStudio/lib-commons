@@ -210,8 +210,13 @@ func (gcd *GCPEnvironmentDetector) IsGCP(ctx context.Context) (bool, string, err
 		return true, projectID, err
 	}
 
-	// Check metadata service
-	return gcd.checkGCPMetadataService(ctx)
+	// Only check metadata service if GCP_VALKEY_AUTH is explicitly enabled
+	if os.Getenv("GCP_VALKEY_AUTH") == "true" {
+		return gcd.checkGCPMetadataService(ctx)
+	}
+
+	// Default: not GCP unless explicitly enabled
+	return false, "", nil
 }
 
 // GetGCPProjectID retrieves the GCP project ID
@@ -259,6 +264,11 @@ func (gcd *GCPEnvironmentDetector) GetGCPProjectID(ctx context.Context) (string,
 
 // checkGCPEnvironmentVariables checks for GCP-specific environment variables
 func (gcd *GCPEnvironmentDetector) checkGCPEnvironmentVariables() bool {
+	// Only enable GCP detection if explicitly requested
+	if os.Getenv("GCP_VALKEY_AUTH") != "true" {
+		return false
+	}
+
 	gcpIndicators := []string{
 		"GOOGLE_APPLICATION_CREDENTIALS",
 		"GCP_PROJECT_ID",

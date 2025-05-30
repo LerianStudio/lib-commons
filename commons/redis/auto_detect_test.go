@@ -318,10 +318,12 @@ func TestAutoDetector(t *testing.T) {
 // TestGCPEnvironmentDetector tests GCP environment detection
 func TestGCPEnvironmentDetector(t *testing.T) {
 	t.Run("GCP detection via environment variables", func(t *testing.T) {
-		// Set up GCP environment variables
+		// Set up GCP environment variables including the required auth flag
+		_ = os.Setenv("GCP_VALKEY_AUTH", "true")
 		_ = os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "/path/to/credentials.json")
 		_ = os.Setenv("GCP_PROJECT_ID", "test-project-env")
 		defer func() {
+			_ = os.Unsetenv("GCP_VALKEY_AUTH")
 			_ = os.Unsetenv("GOOGLE_APPLICATION_CREDENTIALS")
 			_ = os.Unsetenv("GCP_PROJECT_ID")
 		}()
@@ -440,13 +442,17 @@ func TestGCPEnvironmentDetector(t *testing.T) {
 		for _, tc := range testCases {
 			t.Run(tc.name, func(t *testing.T) {
 				// Clear all env vars first
-				for _, env := range []string{"GOOGLE_APPLICATION_CREDENTIALS", "GCP_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GAE_APPLICATION", "GAE_SERVICE", "K_SERVICE", "FUNCTION_NAME"} {
+				for _, env := range []string{"GCP_VALKEY_AUTH", "GOOGLE_APPLICATION_CREDENTIALS", "GCP_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GAE_APPLICATION", "GAE_SERVICE", "K_SERVICE", "FUNCTION_NAME"} {
 					_ = os.Unsetenv(env)
 				}
 
-				// Set the test env var
+				// Set the required auth flag and test env var
+				_ = os.Setenv("GCP_VALKEY_AUTH", "true")
 				_ = os.Setenv(tc.envVar, tc.value)
-				defer func() { _ = os.Unsetenv(tc.envVar) }()
+				defer func() { 
+					_ = os.Unsetenv("GCP_VALKEY_AUTH")
+					_ = os.Unsetenv(tc.envVar) 
+				}()
 
 				detector := NewGCPEnvironmentDetector()
 				result := detector.checkGCPEnvironmentVariables()

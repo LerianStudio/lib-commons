@@ -10,6 +10,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -45,21 +46,43 @@ type RedisConnection struct {
 // Automatically detects GCP environment and cluster topology for optimal connection.
 func (rc *RedisConnection) Connect(ctx context.Context) error {
 	if rc.Logger != nil {
-		rc.Logger.Info("Connecting to redis with auto-detection...")
+		rc.Logger.Info("Connecting to redis...")
 	}
 
-	// Initialize auto-detector if not already set
-	if rc.autoDetector == nil {
-		rc.autoDetector = NewAutoDetector(rc.Logger)
-	}
-
-	// Perform auto-detection
-	detection, err := rc.autoDetector.Detect(ctx, rc.Addr)
-	if err != nil {
+	// Only run auto-detection if explicitly enabled via environment variables
+	var detection *DetectionResult
+	shouldAutoDetect := rc.shouldEnableAutoDetection()
+	
+	if shouldAutoDetect {
 		if rc.Logger != nil {
-			rc.Logger.Warn("Auto-detection failed, using fallback", "error", err)
+			rc.Logger.Info("Auto-detection enabled, scanning environment...")
 		}
-		// Continue with fallback to regular connection
+		
+		// Initialize auto-detector if not already set
+		if rc.autoDetector == nil {
+			rc.autoDetector = NewAutoDetector(rc.Logger)
+		}
+
+		// Perform auto-detection
+		var err error
+		detection, err = rc.autoDetector.Detect(ctx, rc.Addr)
+		if err != nil {
+			if rc.Logger != nil {
+				rc.Logger.Warn("Auto-detection failed, using fallback", "error", err)
+			}
+			// Continue with fallback to regular connection
+			detection = &DetectionResult{
+				IsGCP:      false,
+				IsCluster:  false,
+				DetectedAt: time.Now(),
+			}
+		}
+	} else {
+		if rc.Logger != nil {
+			rc.Logger.Info("Auto-detection disabled, using standard connection")
+		}
+		
+		// Skip auto-detection, use default single instance connection
 		detection = &DetectionResult{
 			IsGCP:      false,
 			IsCluster:  false,
@@ -258,18 +281,32 @@ func (rc *RedisConnection) createRegularClusterClient(_ context.Context, detecti
 		addrs = rc.parseAddresses()
 	}
 
-	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    addrs,
-		Username: rc.User,
-		Password: rc.Password,
-	})
+	// Create cluster options - only include auth if actually set
+	clusterOptions := &redis.ClusterOptions{
+		Addrs: addrs,
+	}
+	
+	// Only set authentication if credentials are provided
+	if rc.User != "" || rc.Password != "" {
+		clusterOptions.Username = rc.User
+		clusterOptions.Password = rc.Password
+	}
+	
+	clusterClient := redis.NewClusterClient(clusterOptions)
 
+	// Create cluster config - only include auth if actually set  
+	clusterConfig := ClusterConfig{
+		Addrs: addrs,
+	}
+	
+	// Only set authentication if credentials are provided
+	if rc.User != "" || rc.Password != "" {
+		clusterConfig.Username = rc.User
+		clusterConfig.Password = rc.Password
+	}
+	
 	clusterConn := &RedisClusterConnection{
-		ClusterConfig: ClusterConfig{
-			Addrs:    addrs,
-			Username: rc.User,
-			Password: rc.Password,
-		},
+		ClusterConfig: clusterConfig,
 		ClusterClient: clusterClient,
 		Connected:     true,
 		Logger:        rc.Logger,
@@ -284,13 +321,20 @@ func (rc *RedisConnection) createRegularSingleClient(_ context.Context) (RedisCl
 	addresses := rc.parseAddresses()
 	singleAddr := addresses[0]
 	
-	singleClient := redis.NewClient(&redis.Options{
+	// Create Redis options - only include auth if actually set
+	options := &redis.Options{
 		Addr:     singleAddr,
-		Username: rc.User,
-		Password: rc.Password,
 		DB:       rc.DB,
 		Protocol: rc.Protocol,
-	})
+	}
+	
+	// Only set authentication if credentials are provided
+	if rc.User != "" || rc.Password != "" {
+		options.Username = rc.User
+		options.Password = rc.Password
+	}
+	
+	singleClient := redis.NewClient(options)
 
 	// Note: rc.Client will be set later in Connect() after successful ping test
 	return rc, singleClient, nil
@@ -445,6 +489,52 @@ func (rc *RedisConnection) RefreshDetection(ctx context.Context) error {
 	}
 	
 	return rc.Connect(ctx)
+}
+
+// shouldEnableAutoDetection checks if auto-detection should be enabled
+// based on environment variables. Returns true only if explicit GCP or cluster
+// environment variables are set, making auto-detection opt-in only.
+func (rc *RedisConnection) shouldEnableAutoDetection() bool {
+	// Check for explicit GCP authentication enablement
+	gcpConfig, err := ConfigFromEnv()
+	if err == nil && gcpConfig.Enabled {
+		return true
+	}
+	
+	// Check for cluster-specific environment variables or multi-address format
+	if strings.Contains(rc.Addr, ",") {
+		// Only enable if it looks like a real multi-address format (not just trailing comma)
+		addresses := rc.parseAddresses()
+		if len(addresses) > 1 {
+			return true
+		}
+	}
+	
+	// Check for explicit cluster environment variables
+	if clusterEnvSet() {
+		return true
+	}
+	
+	// Default: no auto-detection unless explicitly enabled
+	return false
+}
+
+// clusterEnvSet checks for cluster-specific environment variables
+func clusterEnvSet() bool {
+	clusterIndicators := []string{
+		"REDIS_CLUSTER_ENABLED",
+		"VALKEY_CLUSTER_ENABLED", 
+		"REDIS_CLUSTER_NODES",
+		"VALKEY_CLUSTER_NODES",
+	}
+	
+	for _, env := range clusterIndicators {
+		if os.Getenv(env) != "" {
+			return true
+		}
+	}
+	
+	return false
 }
 
 // parseAddresses extracts individual addresses from the Addr field
