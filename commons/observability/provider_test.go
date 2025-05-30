@@ -237,10 +237,10 @@ func TestWithSpan(t *testing.T) {
 
 	t.Run("successful operation", func(t *testing.T) {
 		called := false
-		err := WithSpan(ctx, provider, "test-span", func(_ context.Context) error {
+		err := WithSpan(ctx, provider, "test-span", func(spanCtx context.Context) error {
 			called = true
 			// Verify we have a span in context
-			span := trace.SpanFromContext(ctx)
+			span := trace.SpanFromContext(spanCtx)
 			assert.NotNil(t, span)
 			// Note: span.IsRecording() might be false due to sampling or no exporter
 			// but we should still have a valid span context

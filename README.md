@@ -275,13 +275,38 @@ if err != nil {
 
 | Function | Signature | What & When to Use |
 |----------|-----------|-------------------|
-| `RedisConnection.Connect` | `Connect(ctx context.Context) error` | Establish Redis connection. Use for cache initialization. |
-| `RedisConnection.GetClient` | `GetClient(ctx context.Context) *redis.Client` | Get Redis client. Use for cache operations. |
+| `RedisConnection.Connect` | `Connect(ctx context.Context) error` | Establish Redis connection with smart auto-detection. Use for cache initialization. |
+| `RedisConnection.GetClient` | `GetClient(ctx context.Context) *redis.Client` | Get Redis client with optimal connection type. Use for cache operations. |
 | `RedisConnection.Set` | `Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error` | Set key-value with TTL. Use for caching data. |
 | `RedisConnection.Get` | `Get(ctx context.Context, key string) (string, error)` | Get value by key. Use for cache retrieval. |
 | `RedisConnection.Del` | `Del(ctx context.Context, keys ...string) error` | Delete keys. Use for cache invalidation. |
 
-**When to use:** Caching, session storage, rate limiting, real-time features.
+### Smart Detection Features (Opt-in)
+
+**Auto-Cluster Detection:**
+- Comma-separated addresses: `"host1:6379,host2:6379,host3:6379"` automatically enables cluster mode
+- Environment variables for cluster mode: `REDIS_CLUSTER_ENABLED`, `VALKEY_CLUSTER_ENABLED`, `REDIS_CLUSTER_NODES`, `VALKEY_CLUSTER_NODES`
+- Graceful fallback to single instance if cluster detection fails
+
+**GCP IAM Authentication (Opt-in):**
+- Requires `GCP_VALKEY_AUTH=true` to enable GCP authentication
+- Supports automatic OAuth2 token management for GCP Valkey instances
+- Falls back to standard authentication if GCP auth fails
+
+### Environment Variables
+
+| Variable | Purpose | Example |
+|----------|---------|---------|
+| `GCP_VALKEY_AUTH` | Enable GCP IAM authentication | `true` |
+| `GCP_PROJECT_ID` | GCP project ID | `my-project-id` |
+| `GCP_SERVICE_ACCOUNT_PATH` | Path to service account JSON | `/path/to/service-account.json` |
+| `GCP_TOKEN_REFRESH_BUFFER` | Token refresh buffer time | `5m` |
+| `REDIS_CLUSTER_ENABLED` | Force cluster mode | `true` |
+| `VALKEY_CLUSTER_ENABLED` | Force cluster mode for Valkey | `true` |
+| `REDIS_CLUSTER_NODES` | Cluster node addresses | `host1:6379,host2:6379` |
+| `VALKEY_CLUSTER_NODES` | Valkey cluster node addresses | `host1:6379,host2:6379` |
+
+**When to use:** Caching, session storage, rate limiting, real-time features. Supports GCP cloud environments and Redis clusters with automatic detection and zero-configuration setup.
 
 ---
 

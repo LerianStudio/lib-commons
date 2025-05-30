@@ -142,6 +142,11 @@ func ConfigFromEnv() (*GCPAuthConfig, error) {
 	// Load other environment variables
 	config.ServiceAccountPath = os.Getenv(EnvGCPServiceAccount)
 	config.ProjectID = os.Getenv(EnvGCPProjectID)
+	
+	// Try alternative project ID environment variable if primary not set
+	if config.ProjectID == "" {
+		config.ProjectID = os.Getenv("GOOGLE_CLOUD_PROJECT")
+	}
 
 	// Parse token refresh buffer
 	if bufferStr := os.Getenv(EnvGCPTokenRefreshBuffer); bufferStr != "" {

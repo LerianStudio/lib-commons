@@ -6,6 +6,10 @@ The Redis package provides connection management, caching utilities, and distrib
 
 - [Overview](#overview)
 - [Connection Management](#connection-management)
+- [Smart Auto-Detection (Opt-in)](#smart-auto-detection-opt-in)
+- [Environment Variables Reference](#environment-variables-reference)
+- [Smart Connection Examples](#smart-connection-examples)
+- [Migration Guide](#migration-guide)
 - [Basic Operations](#basic-operations)
 - [Data Structures](#data-structures)
 - [Pub/Sub](#pubsub)
@@ -107,6 +111,335 @@ if err != nil {
     log.Fatal(err)
 }
 ```
+
+## Smart Auto-Detection (Opt-in)
+
+The Redis package includes intelligent auto-detection capabilities that automatically choose the optimal connection type and authentication method while maintaining **100% backward compatibility**. All smart features are **opt-in only** and require explicit environment variable configuration.
+
+### Key Features
+
+- **🔄 100% Backward Compatibility** - Existing code works unchanged without any modifications
+- **🧠 Automatic Cluster Detection** - Detects cluster mode from comma-separated addresses or environment variables
+- **☁️ GCP IAM Authentication** - Opt-in Google Cloud Platform authentication with automatic token management
+- **⚡ Performance Optimized** - Detection results cached for 10 minutes to reduce overhead
+- **🛡️ Secure by Default** - Features only activate when explicitly enabled via environment variables
+
+### Auto-Detection Triggers
+
+Smart detection activates only when:
+
+1. **GCP Authentication**: `GCP_VALKEY_AUTH=true` is set
+2. **Cluster Detection**: Multiple addresses provided (`"host1:6379,host2:6379,host3:6379"`)
+3. **Cluster Environment Variables**: Any cluster-specific environment variable is set
+
+### Default Behavior
+
+By default (without configuration):
+- Uses standard single-instance Redis connection
+- No automatic detection or authentication
+- Identical behavior to previous versions
+- Zero performance overhead
+
+## Environment Variables Reference
+
+### GCP Authentication Variables
+
+| Variable | Required | Description | Example |
+|----------|----------|-------------|----------|
+| `GCP_VALKEY_AUTH` | **Yes** | Enable GCP IAM authentication | `true` |
+| `GCP_PROJECT_ID` | **Yes** | GCP project identifier | `my-project-123` |
+| `GCP_SERVICE_ACCOUNT_PATH` | **Yes** | Path to service account JSON file | `/path/to/service-account.json` |
+| `GCP_TOKEN_REFRESH_BUFFER` | No | Token refresh buffer time | `5m` (default) |
+| `GOOGLE_CLOUD_PROJECT` | No | Alternative project ID variable | `my-project-123` |
+| `GOOGLE_APPLICATION_CREDENTIALS` | No | Alternative service account path | `/path/to/creds.json` |
+
+### Cluster Detection Variables
+
+| Variable | Required | Description | Example |
+|----------|----------|-------------|----------|
+| `REDIS_CLUSTER_ENABLED` | No | Explicitly enable cluster detection | `true` |
+| `VALKEY_CLUSTER_ENABLED` | No | Enable cluster detection for Valkey | `true` |
+| `REDIS_CLUSTER_NODES` | No | Comma-separated cluster addresses | `node1:6379,node2:6379,node3:6379` |
+| `VALKEY_CLUSTER_NODES` | No | Comma-separated Valkey cluster addresses | `valkey1:6379,valkey2:6379` |
+
+### Detection Behavior Variables
+
+| Variable | Required | Description | Example |
+|----------|----------|-------------|----------|
+| `GAE_APPLICATION` | No | Google App Engine indicator | `my-app` |
+| `GAE_SERVICE` | No | App Engine service name | `default` |
+| `K_SERVICE` | No | Google Cloud Run service indicator | `my-service` |
+| `FUNCTION_NAME` | No | Google Cloud Functions indicator | `my-function` |
+
+## Smart Connection Examples
+
+### Standard Connection (Unchanged)
+
+```go
+// Existing code works exactly as before - no changes needed
+rc := &redis.RedisConnection{
+    Addr:     "localhost:6379",
+    Password: "password",
+    DB:       0,
+}
+
+ctx := context.Background()
+err := rc.Connect(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+client, err := rc.GetClient(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Use client as normal
+pong, err := client.Ping(ctx).Result()
+log.Printf("Connected: %s", pong)
+```
+
+### GCP Authentication (New)
+
+```go
+// Set environment variables:
+// export GCP_VALKEY_AUTH=true
+// export GCP_PROJECT_ID=my-project
+// export GCP_SERVICE_ACCOUNT_PATH=/path/to/service-account.json
+
+rc := &redis.RedisConnection{
+    Addr: "valkey-instance.gcp.internal:6379",
+    // No password needed - automatically uses GCP IAM token
+}
+
+ctx := context.Background()
+err := rc.Connect(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Automatically authenticated with GCP IAM
+client, err := rc.GetClient(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Check if GCP authentication was used
+if rc.IsGCPAuthenticated() {
+    log.Println("Connected using GCP IAM authentication")
+}
+```
+
+### Cluster Auto-Detection (New)
+
+```go
+// Option 1: Comma-separated addresses (triggers auto-detection)
+rc := &redis.RedisConnection{
+    Addr:     "node1:7000,node2:7001,node3:7002",
+    Password: "cluster-password",
+}
+
+// Option 2: Environment variable approach
+// export REDIS_CLUSTER_ENABLED=true
+// export REDIS_CLUSTER_NODES=node1:7000,node2:7001,node3:7002
+rc := &redis.RedisConnection{
+    Addr:     "node1:7000", // Will auto-detect other nodes
+    Password: "cluster-password",
+}
+
+ctx := context.Background()
+err := rc.Connect(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Same API - automatically handles cluster complexity
+client, err := rc.GetClient(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Check connection type
+if rc.IsClusterConnection() {
+    log.Println("Connected to Redis cluster")
+    log.Printf("Detected %d cluster nodes", len(rc.GetDetectedConfig().ClusterNodes))
+}
+```
+
+### Combined GCP + Cluster (New)
+
+```go
+// Set environment variables:
+// export GCP_VALKEY_AUTH=true
+// export GCP_PROJECT_ID=my-project
+// export GCP_SERVICE_ACCOUNT_PATH=/path/to/service-account.json
+
+rc := &redis.RedisConnection{
+    // Multi-address format triggers cluster detection
+    // GCP environment variables trigger IAM authentication
+    Addr: "cluster1.gcp.internal:7000,cluster2.gcp.internal:7001,cluster3.gcp.internal:7002",
+}
+
+ctx := context.Background()
+err := rc.Connect(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+client, err := rc.GetClient(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Check what was detected
+if rc.IsGCPAuthenticated() && rc.IsClusterConnection() {
+    log.Println("Connected to GCP-authenticated Redis cluster")
+}
+
+// Get detailed detection information
+detection := rc.GetDetectedConfig()
+log.Printf("Detection summary: %s", detection.DetectionSummary())
+```
+
+### Inspection and Debugging
+
+```go
+rc := &redis.RedisConnection{
+    Addr:   "localhost:6379",
+    Logger: logger, // Enable detailed logging
+}
+
+ctx := context.Background()
+err := rc.Connect(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+// Inspect detection results
+log.Printf("Is cluster: %v", rc.IsClusterConnection())
+log.Printf("Is GCP authenticated: %v", rc.IsGCPAuthenticated())
+
+// Get the actual underlying client
+actualClient := rc.GetActualClient()
+switch client := actualClient.(type) {
+case *redis.Client:
+    log.Println("Using single instance Redis client")
+case *redis.ClusterClient:
+    log.Println("Using Redis cluster client")
+default:
+    log.Printf("Using client type: %T", client)
+}
+
+// Get detailed detection config
+detection := rc.GetDetectedConfig()
+if detection != nil {
+    log.Printf("Detection summary: %s", detection.DetectionSummary())
+    log.Printf("Detected at: %s", detection.DetectedAt.Format(time.RFC3339))
+    log.Printf("GCP Project ID: %s", detection.GCPProjectID)
+    log.Printf("Cluster nodes: %v", detection.ClusterNodes)
+}
+
+// Force re-detection (clears cache)
+err = rc.RefreshDetection(ctx)
+if err != nil {
+    log.Printf("Failed to refresh detection: %v", err)
+}
+```
+
+## Migration Guide
+
+### No Changes Required
+
+Existing applications require **zero changes** to continue working:
+
+```go
+// This code works exactly as before
+rc := &redis.RedisConnection{
+    Addr:     "localhost:6379",
+    Password: "password",
+    DB:       0,
+}
+
+ctx := context.Background()
+err := rc.Connect(ctx)
+client, err := rc.GetClient(ctx)
+// Everything works unchanged
+```
+
+### Enabling GCP Authentication
+
+To enable GCP IAM authentication:
+
+1. **Set environment variables**:
+   ```bash
+   export GCP_VALKEY_AUTH=true
+   export GCP_PROJECT_ID=your-project-id
+   export GCP_SERVICE_ACCOUNT_PATH=/path/to/service-account.json
+   ```
+
+2. **Remove password from code** (optional):
+   ```go
+   // Before
+   rc := &redis.RedisConnection{
+       Addr:     "valkey-instance:6379",
+       Password: "manual-token", // Remove this
+   }
+   
+   // After  
+   rc := &redis.RedisConnection{
+       Addr: "valkey-instance:6379",
+       // Password automatically managed via GCP IAM
+   }
+   ```
+
+### Enabling Cluster Auto-Detection
+
+To enable cluster auto-detection:
+
+**Option 1: Address format**
+```go
+// Before (manual cluster setup required)
+clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
+    Addrs: []string{"node1:7000", "node2:7001", "node3:7002"},
+})
+
+// After (automatic detection)
+rc := &redis.RedisConnection{
+    Addr: "node1:7000,node2:7001,node3:7002", // Comma-separated
+}
+client, _ := rc.GetClient(ctx) // Automatically uses cluster
+```
+
+**Option 2: Environment variables**
+```bash
+export REDIS_CLUSTER_ENABLED=true
+export REDIS_CLUSTER_NODES=node1:7000,node2:7001,node3:7002
+```
+
+### Troubleshooting Common Issues
+
+**Auto-detection not working:**
+- Verify environment variables are set correctly
+- Check that `GCP_VALKEY_AUTH=true` for GCP authentication
+- Ensure cluster addresses are comma-separated
+- Enable logging to see detection details
+
+**GCP authentication fails:**
+- Verify service account file exists and is readable
+- Check GCP project ID is correct
+- Ensure application has proper IAM permissions
+- Validate service account JSON format
+
+**Cluster detection fails:**
+- Verify all cluster nodes are reachable
+- Check that Redis cluster mode is actually enabled
+- Ensure network connectivity between nodes
+- Try single address first to test basic connectivity
+
+**Performance concerns:**
+- Detection is cached for 10 minutes after first run
+- Use single address format if cluster detection isn't needed
+- Monitor logs for repeated detection attempts
 
 ## Basic Operations
 
