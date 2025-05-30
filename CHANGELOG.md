@@ -1,3 +1,54 @@
+## [2.0.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.13.0-beta.2...v2.0.0-beta.1) (2025-05-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **redis:** Redis auto-detection features are now opt-in only, requiring explicit environment variables
+
+## Problems Solved
+- Fixed WRONGPASS authentication errors when connecting to Redis/Valkey without credentials
+- Made GCP IAM authentication and cluster detection opt-in only to prevent unwanted detection overhead
+- Resolved containers failing to connect to standard Redis instances
+
+## Key Changes
+
+### Redis Auto-Detection (Opt-in Only)
+- GCP authentication now requires GCP_VALKEY_AUTH=true to enable
+- Cluster detection only triggers with comma-separated addresses or explicit env vars
+- Default behavior: standard Redis connection without detection overhead
+- Maintains 100% backward compatibility for existing applications
+
+### Authentication Fixes
+- Only set Redis authentication fields when credentials are actually provided
+- Prevents empty username/password from being interpreted as auth attempts
+- Fixed both single instance and cluster client creation
+
+### Documentation Updates
+- Updated README.md with comprehensive environment variables table
+- Enhanced docs/database/redis.md with opt-in configuration examples
+- Improved SMART_FEATURES.md with troubleshooting and migration guides
+
+### Test Improvements
+- Fixed observability provider test context handling
+- Updated Redis tests to reflect opt-in behavior
+- Added test scenarios for authentication and detection logic
+
+## Environment Variables
+- GCP_VALKEY_AUTH: Enable GCP IAM authentication (required)
+- GCP_PROJECT_ID, GCP_SERVICE_ACCOUNT_PATH: GCP configuration
+- REDIS_CLUSTER_ENABLED, VALKEY_CLUSTER_ENABLED: Force cluster mode
+- Plus alternative detection variables
+
+## Migration
+No code changes required - existing applications work unchanged.
+To enable new features, set appropriate environment variables.
+
+Fixes containers unable to connect to Redis/Valkey instances.
+
+### Bug Fixes
+
+* **redis:** implement opt-in auto-detection and resolve authentication issues ([#72](https://github.com/LerianStudio/lib-commons/issues/72)) ([1cc9b24](https://github.com/LerianStudio/lib-commons/commit/1cc9b24e90a95923c1a2b7ba7b752d51a4ed5b8c)), closes [#69](https://github.com/LerianStudio/lib-commons/issues/69)
+
 ## [1.13.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.13.0-beta.1...v1.13.0-beta.2) (2025-05-29)
 
 
