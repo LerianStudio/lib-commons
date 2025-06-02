@@ -24,14 +24,14 @@ type Status string
 
 const (
 	// StatusUp indicates that a service or health check is healthy and operational.
-	StatusUp   Status = "UP"
+	StatusUp Status = "UP"
 	// StatusDown indicates that a service or health check is unhealthy or non-operational.
 	StatusDown Status = "DOWN"
 )
 
 // Check represents a health check result
 type Check struct {
-	Status  Status                 `json:"status"`
+	Status  Status         `json:"status"`
 	Details map[string]any `json:"details,omitempty"`
 }
 

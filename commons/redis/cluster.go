@@ -276,24 +276,24 @@ func (f *RedisConnectionFactory) CreateConnection(connType ConnectionType, confi
 		if config == nil {
 			return nil, fmt.Errorf("config cannot be nil")
 		}
-		
+
 		redisConn, ok := config.(*RedisConnection)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for single instance connection: expected *RedisConnection")
 		}
-		
+
 		// Set logger if not already set
 		if redisConn.Logger == nil {
 			redisConn.Logger = f.Logger
 		}
-		
+
 		return redisConn, nil
 
 	case Cluster:
 		if config == nil {
 			return nil, fmt.Errorf("config cannot be nil")
 		}
-		
+
 		clusterConfig, ok := config.(*ClusterConfig)
 		if !ok {
 			return nil, fmt.Errorf("invalid config type for cluster connection: expected *ClusterConfig")

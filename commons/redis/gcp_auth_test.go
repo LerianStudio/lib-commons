@@ -228,7 +228,7 @@ func TestGCPTokenProvider(t *testing.T) {
 		// Create a temporary service account file
 		tempDir := t.TempDir()
 		serviceAccountPath := filepath.Join(tempDir, "service-account.json")
-		
+
 		serviceAccount := map[string]any{
 			"type":                        "service_account",
 			"project_id":                  "test-project",
@@ -428,7 +428,7 @@ func TestAuthenticatedRedisConnection(t *testing.T) {
 	t.Run("authenticated connection creation", func(t *testing.T) {
 		mockProvider := &GCPMockTokenProvider{}
 		mockLogger := &GCPMockLogger{}
-		
+
 		config := &GCPAuthConfig{
 			Enabled:            true,
 			ServiceAccountPath: "/path/to/service-account.json",
@@ -532,7 +532,7 @@ func TestAuthError(t *testing.T) {
 func TestRedisConnectionBuilder(t *testing.T) {
 	t.Run("builder pattern with GCP auth", func(t *testing.T) {
 		mockLogger := &GCPMockLogger{}
-		
+
 		config := &GCPAuthConfig{
 			Enabled:            true,
 			ServiceAccountPath: "/path/to/service-account.json",
@@ -582,7 +582,7 @@ func TestErrorScenarios(t *testing.T) {
 	t.Run("service account file read errors", func(t *testing.T) {
 		// Test with directory instead of file
 		tempDir := t.TempDir()
-		
+
 		config := &GCPAuthConfig{
 			Enabled:            true,
 			ServiceAccountPath: tempDir, // Directory, not a file
@@ -590,7 +590,7 @@ func TestErrorScenarios(t *testing.T) {
 		}
 
 		mockLogger := &GCPMockLogger{}
-		
+
 		provider, err := NewGCPTokenProvider(config, mockLogger)
 		assert.Error(t, err)
 		assert.Nil(t, provider)
@@ -599,7 +599,7 @@ func TestErrorScenarios(t *testing.T) {
 	t.Run("invalid JSON in service account file", func(t *testing.T) {
 		tempDir := t.TempDir()
 		serviceAccountPath := filepath.Join(tempDir, "invalid.json")
-		
+
 		// Write invalid JSON
 		err := os.WriteFile(serviceAccountPath, []byte("invalid json content"), 0644)
 		require.NoError(t, err)

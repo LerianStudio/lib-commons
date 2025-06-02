@@ -41,7 +41,6 @@ type Logger interface {
 
 // LogLevel represents the level of log system (fatal, error, warn, info and debug).
 // The type name intentionally matches the package name for clarity in external usage.
-//
 type LogLevel int8
 
 // These are the different log levels. You can set the logging level to log.

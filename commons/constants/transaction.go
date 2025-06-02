@@ -2,11 +2,11 @@ package constant
 
 const (
 	// DEBIT represents a debit transaction type.
-	DEBIT                             = "DEBIT"
+	DEBIT = "DEBIT"
 	// CREDIT represents a credit transaction type.
-	CREDIT                            = "CREDIT"
+	CREDIT = "CREDIT"
 	// DefaultExternalAccountAliasPrefix represents the default prefix for external account aliases.
 	DefaultExternalAccountAliasPrefix = "@external/"
 	// ExternalAccountType represents the external account type identifier.
-	ExternalAccountType               = "external"
+	ExternalAccountType = "external"
 )

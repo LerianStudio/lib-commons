@@ -22,7 +22,7 @@ func TestSmartRedisConnection_BackwardCompatibility(t *testing.T) {
 
 		ctx := context.Background()
 		err := rc.Connect(ctx)
-		
+
 		// Connection will fail without real Redis, but the API should work
 		// The important thing is the method signature and structure hasn't changed
 		assert.Error(t, err) // Expected since no real Redis instance
@@ -41,10 +41,10 @@ func TestSmartRedisConnection_BackwardCompatibility(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		
+
 		// This exact pattern should continue to work unchanged
 		client, err := rc.GetClient(ctx)
-		
+
 		// Even if connection fails, the method signature is correct
 		assert.Error(t, err) // Expected since no real Redis instance
 		assert.Nil(t, client)

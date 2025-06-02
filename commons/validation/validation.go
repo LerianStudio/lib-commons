@@ -16,7 +16,6 @@ import (
 
 // ValidationError represents a validation error with field and message details.
 // The type name intentionally matches the package name for clarity in external usage.
-//
 type ValidationError struct {
 	Field   string
 	Message string

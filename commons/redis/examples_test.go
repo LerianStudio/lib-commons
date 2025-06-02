@@ -233,21 +233,21 @@ func Example_detectionCaching() {
 // nopLogger implements log.Logger interface for examples
 type nopLogger struct{}
 
-func (n *nopLogger) Info(_ ...any)                      {}
-func (n *nopLogger) Infof(_ string, _ ...any)     {}
-func (n *nopLogger) Infoln(_ ...any)                   {}
-func (n *nopLogger) Debug(_ ...any)                    {}
-func (n *nopLogger) Debugf(_ string, _ ...any)    {}
-func (n *nopLogger) Debugln(_ ...any)                  {}
-func (n *nopLogger) Error(_ ...any)                    {}
-func (n *nopLogger) Errorf(_ string, _ ...any)    {}
-func (n *nopLogger) Errorln(_ ...any)                  {}
-func (n *nopLogger) Warn(_ ...any)                     {}
-func (n *nopLogger) Warnf(_ string, _ ...any)     {}
-func (n *nopLogger) Warnln(_ ...any)                   {}
-func (n *nopLogger) Fatal(_ ...any)                    {}
-func (n *nopLogger) Fatalf(_ string, _ ...any)    {}
-func (n *nopLogger) Fatalln(_ ...any)                  {}
-func (n *nopLogger) WithFields(_ ...any) log.Logger  { return n }
+func (n *nopLogger) Info(_ ...any)                                  {}
+func (n *nopLogger) Infof(_ string, _ ...any)                       {}
+func (n *nopLogger) Infoln(_ ...any)                                {}
+func (n *nopLogger) Debug(_ ...any)                                 {}
+func (n *nopLogger) Debugf(_ string, _ ...any)                      {}
+func (n *nopLogger) Debugln(_ ...any)                               {}
+func (n *nopLogger) Error(_ ...any)                                 {}
+func (n *nopLogger) Errorf(_ string, _ ...any)                      {}
+func (n *nopLogger) Errorln(_ ...any)                               {}
+func (n *nopLogger) Warn(_ ...any)                                  {}
+func (n *nopLogger) Warnf(_ string, _ ...any)                       {}
+func (n *nopLogger) Warnln(_ ...any)                                {}
+func (n *nopLogger) Fatal(_ ...any)                                 {}
+func (n *nopLogger) Fatalf(_ string, _ ...any)                      {}
+func (n *nopLogger) Fatalln(_ ...any)                               {}
+func (n *nopLogger) WithFields(_ ...any) log.Logger                 { return n }
 func (n *nopLogger) WithDefaultMessageTemplate(_ string) log.Logger { return n }
-func (n *nopLogger) Sync() error                                  { return nil }
+func (n *nopLogger) Sync() error                                    { return nil }

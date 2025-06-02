@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-
 func TestClusterConfig_DefaultValues(t *testing.T) {
 	config := ClusterConfig{}
 
@@ -217,7 +216,7 @@ func TestRedisClusterConnection_GetClusterClient_NotConnected(t *testing.T) {
 func TestRedisClusterConnection_HealthCheck(t *testing.T) {
 	t.Run("healthy cluster", func(t *testing.T) {
 		mockLogger := new(MockLogger)
-		
+
 		// Create a mock cluster client
 		mockClient := &redis.ClusterClient{}
 
@@ -230,7 +229,7 @@ func TestRedisClusterConnection_HealthCheck(t *testing.T) {
 		// For unit testing, we'll test the method exists and handles disconnected state
 		ctx := context.Background()
 		err := rcc.HealthCheck(ctx)
-		
+
 		// This will fail in unit test environment but validates the method signature
 		assert.Error(t, err) // Expected since we're not connected to real Redis
 	})
@@ -381,19 +380,19 @@ func TestConnectionType_String(t *testing.T) {
 
 func TestClusterConfig_ToRedisOptions(t *testing.T) {
 	config := ClusterConfig{
-		Addrs:           []string{"localhost:7000", "localhost:7001"},
-		Password:        "secret",
-		Username:        "user",
-		MaxRetries:      5,
-		PoolSize:        20,
-		MinIdleConns:    10,
-		MaxConnAge:      10 * time.Minute,
-		PoolTimeout:     5 * time.Second,
-		IdleTimeout:     2 * time.Minute,
-		ReadTimeout:     3 * time.Second,
-		WriteTimeout:    3 * time.Second,
-		RouteByLatency:  true,
-		RouteRandomly:   false,
+		Addrs:          []string{"localhost:7000", "localhost:7001"},
+		Password:       "secret",
+		Username:       "user",
+		MaxRetries:     5,
+		PoolSize:       20,
+		MinIdleConns:   10,
+		MaxConnAge:     10 * time.Minute,
+		PoolTimeout:    5 * time.Second,
+		IdleTimeout:    2 * time.Minute,
+		ReadTimeout:    3 * time.Second,
+		WriteTimeout:   3 * time.Second,
+		RouteByLatency: true,
+		RouteRandomly:  false,
 	}
 
 	options := config.ToRedisOptions()

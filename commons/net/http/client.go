@@ -125,7 +125,6 @@ func ProductionClientConfig() *ClientConfig {
 
 // HTTPClient wraps an HTTP client with intelligent protocol handling.
 // The type name intentionally matches the package name for clarity in external usage.
-//
 type HTTPClient struct {
 	httpsClient *http.Client
 	httpClient  *http.Client

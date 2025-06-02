@@ -48,7 +48,7 @@ func DefaultJitterConfig() *JitterConfig {
 		Multiplier: 2.0,
 		RandomSeed: time.Now().UnixNano(),
 		// #nosec G404 - Using math/rand for jitter timing is appropriate, not for security
-		rand:       rand.New(rand.NewSource(time.Now().UnixNano())),
+		rand: rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -61,7 +61,7 @@ func NewJitterConfig(jitterType JitterType, baseDelay, maxDelay time.Duration) *
 		Multiplier: 2.0,
 		RandomSeed: time.Now().UnixNano(),
 		// #nosec G404 - Using math/rand for jitter timing is appropriate, not for security
-		rand:       rand.New(rand.NewSource(time.Now().UnixNano())),
+		rand: rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 

@@ -34,13 +34,13 @@ const (
 
 // GCP-specific errors
 var (
-	ErrGCPAuthDisabled        = fmt.Errorf("GCP authentication is disabled")
-	ErrInvalidCredentials     = fmt.Errorf("invalid GCP credentials")
-	ErrTokenExpired           = fmt.Errorf("GCP access token expired")
-	ErrTokenRefreshFailed     = fmt.Errorf("failed to refresh GCP token")
-	ErrServiceAccountMissing  = fmt.Errorf("GCP service account path not configured")
-	ErrProjectIDMissing       = fmt.Errorf("GCP project ID not configured")
-	ErrInvalidServiceAccount  = fmt.Errorf("invalid GCP service account file")
+	ErrGCPAuthDisabled       = fmt.Errorf("GCP authentication is disabled")
+	ErrInvalidCredentials    = fmt.Errorf("invalid GCP credentials")
+	ErrTokenExpired          = fmt.Errorf("GCP access token expired")
+	ErrTokenRefreshFailed    = fmt.Errorf("failed to refresh GCP token")
+	ErrServiceAccountMissing = fmt.Errorf("GCP service account path not configured")
+	ErrProjectIDMissing      = fmt.Errorf("GCP project ID not configured")
+	ErrInvalidServiceAccount = fmt.Errorf("invalid GCP service account file")
 )
 
 // Note: ConnectionType, RedisClient, and RedisClusterConnection are already defined in cluster.go
@@ -142,7 +142,7 @@ func ConfigFromEnv() (*GCPAuthConfig, error) {
 	// Load other environment variables
 	config.ServiceAccountPath = os.Getenv(EnvGCPServiceAccount)
 	config.ProjectID = os.Getenv(EnvGCPProjectID)
-	
+
 	// Try alternative project ID environment variable if primary not set
 	if config.ProjectID == "" {
 		config.ProjectID = os.Getenv("GOOGLE_CLOUD_PROJECT")
@@ -240,7 +240,7 @@ func NewGCPTokenProvider(config *GCPAuthConfig, logger log.Logger) (*GCPTokenPro
 	}
 
 	if logger != nil {
-		logger.Info("GCP token provider initialized", 
+		logger.Info("GCP token provider initialized",
 			"project_id", config.ProjectID,
 			"service_account_path", config.ServiceAccountPath)
 	}
@@ -291,7 +291,7 @@ func (gcp *GCPTokenProvider) RefreshToken(_ context.Context) (string, error) {
 	gcp.tokenExpiry = token.Expiry
 
 	if gcp.Logger != nil {
-		gcp.Logger.Info("GCP token refreshed successfully", 
+		gcp.Logger.Info("GCP token refreshed successfully",
 			"expires_at", token.Expiry.Format(time.RFC3339))
 	}
 
@@ -303,13 +303,13 @@ func (gcp *GCPTokenProvider) IsTokenExpired() bool {
 	if gcp.tokenExpiry.IsZero() {
 		return true // No token set
 	}
-	
+
 	// Consider token expired if it expires within the refresh buffer
 	bufferTime := gcp.refreshInterval
 	if bufferTime == 0 {
 		bufferTime = DefaultTokenRefreshBuffer
 	}
-	
+
 	return time.Now().Add(bufferTime).After(gcp.tokenExpiry)
 }
 
@@ -318,7 +318,7 @@ func (gcp *GCPTokenProvider) GetTokenTTL() time.Duration {
 	if gcp.tokenExpiry.IsZero() || gcp.IsTokenExpired() {
 		return 0
 	}
-	
+
 	return time.Until(gcp.tokenExpiry)
 }
 
@@ -418,7 +418,7 @@ func (arc *AuthenticatedRedisConnection) Connect(ctx context.Context) error {
 	}
 
 	arc.Connected = true
-	
+
 	// In a real implementation, this would configure the Redis client with the token
 	// For now, we just track the connected state
 	_ = token // Use the token (placeholder for actual Redis auth)
@@ -522,18 +522,18 @@ func (arc *AuthenticatedRedisConnection) Del(ctx context.Context, keys ...string
 // Close implements RedisClient interface for AuthenticatedRedisConnection
 func (arc *AuthenticatedRedisConnection) Close() error {
 	var closeErr error
-	
+
 	if arc.BaseConnection != nil {
 		closeErr = arc.BaseConnection.Close()
 	}
-	
+
 	// Stop auto-refresh if provider supports it
 	if arc.TokenProvider != nil {
 		if err := arc.TokenProvider.StopAutoRefresh(); err != nil && arc.Logger != nil {
 			arc.Logger.Warn("Failed to stop token auto-refresh", "error", err)
 		}
 	}
-	
+
 	arc.Connected = false
 	return closeErr
 }

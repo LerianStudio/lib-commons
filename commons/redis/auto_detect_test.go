@@ -243,7 +243,6 @@ func TestAutoDetector(t *testing.T) {
 		mockEnv.On("IsGCP", mock.Anything).Return(true, "cached-project", nil).Once()
 		mockTopo.On("IsCluster", mock.Anything, "cached:6379").Return(false, []string{"cached:6379"}, nil).Once()
 
-
 		detector := &AutoDetector{
 			envDetector:  mockEnv,
 			topoDetector: mockTopo,
@@ -282,7 +281,6 @@ func TestAutoDetector(t *testing.T) {
 		// Mock detection calls - should be called twice due to cache expiration
 		mockEnv.On("IsGCP", mock.Anything).Return(true, "expired-project", nil).Twice()
 		mockTopo.On("IsCluster", mock.Anything, "expired:6379").Return(false, []string{"expired:6379"}, nil).Twice()
-
 
 		detector := &AutoDetector{
 			envDetector:  mockEnv,
@@ -349,13 +347,13 @@ func TestGCPEnvironmentDetector(t *testing.T) {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			
+
 			if strings.Contains(r.URL.Path, "project-id") {
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte("test-project-metadata"))
 				return
 			}
-			
+
 			w.WriteHeader(http.StatusNotFound)
 		}))
 		defer server.Close()
@@ -416,7 +414,7 @@ func TestGCPEnvironmentDetector(t *testing.T) {
 
 		ctx := context.Background()
 		isGCP, projectID, err := detector.IsGCP(ctx)
-		
+
 		// Should not be GCP (metadata service unavailable)
 		assert.NoError(t, err)
 		assert.False(t, isGCP)
@@ -425,10 +423,10 @@ func TestGCPEnvironmentDetector(t *testing.T) {
 
 	t.Run("environment variable detection", func(t *testing.T) {
 		testCases := []struct {
-			name    string
-			envVar  string
-			value   string
-			isGCP   bool
+			name   string
+			envVar string
+			value  string
+			isGCP  bool
 		}{
 			{"Google Application Credentials", "GOOGLE_APPLICATION_CREDENTIALS", "/path/to/creds.json", true},
 			{"GCP Project ID", "GCP_PROJECT_ID", "my-project", true},
@@ -449,9 +447,9 @@ func TestGCPEnvironmentDetector(t *testing.T) {
 				// Set the required auth flag and test env var
 				_ = os.Setenv("GCP_VALKEY_AUTH", "true")
 				_ = os.Setenv(tc.envVar, tc.value)
-				defer func() { 
+				defer func() {
 					_ = os.Unsetenv("GCP_VALKEY_AUTH")
-					_ = os.Unsetenv(tc.envVar) 
+					_ = os.Unsetenv(tc.envVar)
 				}()
 
 				detector := NewGCPEnvironmentDetector()
@@ -492,7 +490,7 @@ e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 127.0.0.1:30001@31001 myself,master - 0
 		// In a real implementation, we'd mock the Redis client
 		expectedNodes := []string{
 			"127.0.0.1:30004",
-			"127.0.0.1:30002", 
+			"127.0.0.1:30002",
 			"127.0.0.1:30003",
 			"127.0.0.1:30005",
 			"127.0.0.1:30006",
@@ -502,7 +500,7 @@ e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 127.0.0.1:30001@31001 myself,master - 0
 		// Test the parsing logic by extracting addresses from the nodes info
 		lines := strings.Split(nodesInfo, "\n")
 		var parsedNodes []string
-		
+
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -534,7 +532,7 @@ e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 127.0.0.1:30001@31001 myself,master - 0
 		// Test with multiple invalid addresses
 		addrs := []string{"invalid1:6379", "invalid2:6379", "invalid3:6379"}
 		nodes, err := detector.DetectNodes(ctx, addrs)
-		
+
 		// Should fail to detect any valid nodes
 		assert.Error(t, err)
 		assert.Nil(t, nodes)
@@ -603,7 +601,6 @@ func TestConcurrentDetection(t *testing.T) {
 		mockEnv.On("IsGCP", mock.Anything).Return(true, "concurrent-project", nil)
 		mockTopo.On("IsCluster", mock.Anything, "concurrent:6379").Return(false, []string{"concurrent:6379"}, nil)
 
-
 		detector := &AutoDetector{
 			envDetector:  mockEnv,
 			topoDetector: mockTopo,
@@ -668,7 +665,7 @@ func TestConcurrentDetection(t *testing.T) {
 func TestCacheManagement(t *testing.T) {
 	t.Run("clear cache", func(t *testing.T) {
 		detector := NewAutoDetector(nil)
-		
+
 		// Manually set cache result
 		detector.cache.mu.Lock()
 		detector.cache.result = &DetectionResult{
@@ -691,7 +688,7 @@ func TestCacheManagement(t *testing.T) {
 
 	t.Run("set cache TTL", func(t *testing.T) {
 		detector := NewAutoDetector(nil)
-		
+
 		// Set custom TTL
 		customTTL := 30 * time.Second
 		detector.SetCacheTTL(customTTL)

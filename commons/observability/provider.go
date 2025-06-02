@@ -317,7 +317,6 @@ func DefaultConfig() *Config {
 
 // ObservabilityProvider is the main implementation of the Provider interface.
 // The type name intentionally matches the package name for clarity in external usage.
-//
 type ObservabilityProvider struct {
 	config            *Config
 	tracerProvider    *sdktrace.TracerProvider

@@ -14,7 +14,6 @@ import (
 
 // MongoConnection is a hub which deal with mongodb connections.
 // The type name intentionally matches the package name for clarity in external usage.
-//
 type MongoConnection struct {
 	ConnectionStringSource string
 	DB                     *mongo.Client

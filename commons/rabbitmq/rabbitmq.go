@@ -18,7 +18,6 @@ import (
 
 // RabbitMQConnection is a hub which deal with rabbitmq connections.
 // The type name intentionally matches the package name for clarity in external usage.
-//
 type RabbitMQConnection struct {
 	ConnectionStringSource string
 	Queue                  string

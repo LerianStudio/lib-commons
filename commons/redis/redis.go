@@ -1,7 +1,7 @@
 // Package redis provides Redis connection management and operations utilities.
 // It includes connection pooling, health checks, and helper functions for interacting
 // with Redis databases in a safe and efficient manner.
-// 
+//
 // The SmartRedisConnection automatically detects cluster mode and GCP IAM authentication
 // based on address format and environment variables, while maintaining 100% backward
 // compatibility with existing RedisConnection usage patterns.
@@ -30,11 +30,11 @@ type RedisConnection struct {
 	Password     string
 	DB           int
 	Protocol     int
-	Client       *redis.Client  // Keep original type for 100% backward compatibility
+	Client       *redis.Client // Keep original type for 100% backward compatibility
 	Connected    bool
 	Logger       log.Logger
 	autoDetector *AutoDetector
-	
+
 	// Internal fields for smart connection management
 	detectedConfig *DetectionResult
 	actualClient   any // Can be *redis.Client or *redis.ClusterClient
@@ -46,19 +46,18 @@ type RedisConnection struct {
 // Automatically detects GCP environment and cluster topology for optimal connection.
 func (rc *RedisConnection) Connect(ctx context.Context) error {
 	if rc.Logger != nil {
-<<<<<<< HEAD
 		rc.Logger.Info("Connecting to redis...")
 	}
 
 	// Only run auto-detection if explicitly enabled via environment variables
 	var detection *DetectionResult
 	shouldAutoDetect := rc.shouldEnableAutoDetection()
-	
+
 	if shouldAutoDetect {
 		if rc.Logger != nil {
 			rc.Logger.Info("Auto-detection enabled, scanning environment...")
 		}
-		
+
 		// Initialize auto-detector if not already set
 		if rc.autoDetector == nil {
 			rc.autoDetector = NewAutoDetector(rc.Logger)
@@ -82,7 +81,7 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 		if rc.Logger != nil {
 			rc.Logger.Info("Auto-detection disabled, using standard connection")
 		}
-		
+
 		// Skip auto-detection, use default single instance connection
 		detection = &DetectionResult{
 			IsGCP:      false,
@@ -94,45 +93,7 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 	rc.detectedConfig = detection
 
 	if rc.Logger != nil {
-		rc.Logger.Info("Detection completed", 
-			"summary", detection.DetectionSummary(),
-			"addr", rc.Addr)
-	}
-
-	// Create appropriate client based on detection
-	client, actualClient, err := rc.createOptimalClient(ctx, detection)
-	if err != nil {
-		if rc.Logger != nil {
-			rc.Logger.Error("Failed to create optimal client", "error", err)
-		}
-		return err
-=======
-		rc.Logger.Info("Connecting to redis with auto-detection...")
-	}
-
-	// Initialize auto-detector if not already set
-	if rc.autoDetector == nil {
-		rc.autoDetector = NewAutoDetector(rc.Logger)
-	}
-
-	// Perform auto-detection
-	detection, err := rc.autoDetector.Detect(ctx, rc.Addr)
-	if err != nil {
-		if rc.Logger != nil {
-			rc.Logger.Warn("Auto-detection failed, using fallback", "error", err)
-		}
-		// Continue with fallback to regular connection
-		detection = &DetectionResult{
-			IsGCP:      false,
-			IsCluster:  false,
-			DetectedAt: time.Now(),
-		}
-	}
-
-	rc.detectedConfig = detection
-
-	if rc.Logger != nil {
-		rc.Logger.Info("Detection completed", 
+		rc.Logger.Info("Detection completed",
 			"summary", detection.DetectionSummary(),
 			"addr", rc.Addr)
 	}
@@ -157,7 +118,7 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 		// Fallback to interface method
 		pingErr = client.Ping(ctx).Err()
 	}
-	
+
 	if pingErr != nil {
 		if rc.Logger != nil {
 			rc.Logger.Error("Failed to ping Redis", "error", pingErr)
@@ -173,7 +134,7 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 	rc.Connected = true
 
 	if rc.Logger != nil {
-		rc.Logger.Info("Connected to redis ✅", 
+		rc.Logger.Info("Connected to redis ✅",
 			"type", rc.getConnectionType(),
 			"auth", rc.getAuthType())
 	}
@@ -281,243 +242,7 @@ func (rc *RedisConnection) createGCPSingleClient(ctx context.Context, _ *Detecti
 	// Parse comma-separated addresses and use the first one for single client
 	addresses := rc.parseAddresses()
 	singleAddr := addresses[0]
-	
-	singleClient := redis.NewClient(&redis.Options{
-		Addr:     singleAddr,
-		Username: "default", // GCP uses token as password
-		Password: token,
-		DB:       rc.DB,
-		Protocol: rc.Protocol,
-	})
 
-	// Store token provider and config for token management
-	// Note: rc.Client will be set later in Connect() after successful ping test
-	rc.tokenProvider = tokenProvider
-	rc.gcpAuth = config
-
-	// Create an authenticated wrapper that doesn't cause circular references
-	authConn := &AuthenticatedRedisConnection{
-		BaseConnection: rc,
-		TokenProvider:  tokenProvider,
-		AuthConfig:     *config,
-		Connected:      true,
-		Logger:         rc.Logger,
-	}
-
-	// Start token auto-refresh
-	if err := tokenProvider.StartAutoRefresh(ctx); err != nil && rc.Logger != nil {
-		rc.Logger.Warn("Failed to start token auto-refresh", "error", err)
-	}
-
-	return authConn, singleClient, nil
-}
-
-// createRegularClusterClient creates a regular cluster client without GCP auth
-func (rc *RedisConnection) createRegularClusterClient(_ context.Context, detection *DetectionResult) (RedisClient, any, error) {
-	addrs := detection.ClusterNodes
-	if len(addrs) == 0 {
-		// Parse comma-separated addresses
-		addrs = rc.parseAddresses()
-	}
-
-	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    addrs,
-		Username: rc.User,
-		Password: rc.Password,
-	})
-
-	clusterConn := &RedisClusterConnection{
-		ClusterConfig: ClusterConfig{
-			Addrs:    addrs,
-			Username: rc.User,
-			Password: rc.Password,
-		},
-		ClusterClient: clusterClient,
-		Connected:     true,
-		Logger:        rc.Logger,
-	}
-
-	return clusterConn, clusterClient, nil
-}
-
-// createRegularSingleClient creates a regular single instance client
-func (rc *RedisConnection) createRegularSingleClient(_ context.Context) (RedisClient, any, error) {
-	// Parse comma-separated addresses and use the first one for single client
-	addresses := rc.parseAddresses()
-	singleAddr := addresses[0]
-	
-	singleClient := redis.NewClient(&redis.Options{
-		Addr:     singleAddr,
-		Username: rc.User,
-		Password: rc.Password,
-		DB:       rc.DB,
-		Protocol: rc.Protocol,
-	})
-
-	// Note: rc.Client will be set later in Connect() after successful ping test
-	return rc, singleClient, nil
-}
-
-// getConnectionType returns human-readable connection type
-func (rc *RedisConnection) getConnectionType() string {
-	if rc.detectedConfig == nil {
-		return "unknown"
->>>>>>> origin/feature/improvements
-	}
-	if rc.detectedConfig.IsCluster {
-		return "cluster"
-	}
-	return "single"
-}
-
-<<<<<<< HEAD
-	// Test connection using the actual client
-	var pingErr error
-	switch actualClient := actualClient.(type) {
-	case *redis.Client:
-		pingErr = actualClient.Ping(ctx).Err()
-	case *redis.ClusterClient:
-		pingErr = actualClient.Ping(ctx).Err()
-	default:
-		// Fallback to interface method
-		pingErr = client.Ping(ctx).Err()
-	}
-	
-	if pingErr != nil {
-		if rc.Logger != nil {
-			rc.Logger.Error("Failed to ping Redis", "error", pingErr)
-		}
-		return fmt.Errorf("failed to ping Redis: %w", pingErr)
-	}
-
-	// Store the actual client for backward compatibility
-	if redisClient, ok := actualClient.(*redis.Client); ok {
-		rc.Client = redisClient
-	}
-	rc.actualClient = actualClient
-	rc.Connected = true
-
-	if rc.Logger != nil {
-		rc.Logger.Info("Connected to redis ✅", 
-			"type", rc.getConnectionType(),
-			"auth", rc.getAuthType())
-	}
-
-	return nil
-=======
-// getAuthType returns human-readable auth type
-func (rc *RedisConnection) getAuthType() string {
-	if rc.detectedConfig == nil {
-		return "unknown"
-	}
-	if rc.detectedConfig.IsGCP {
-		return "gcp-iam"
-	}
-	return "standard"
->>>>>>> origin/feature/improvements
-}
-
-// createOptimalClient creates the most appropriate Redis client based on detection
-func (rc *RedisConnection) createOptimalClient(ctx context.Context, detection *DetectionResult) (RedisClient, any, error) {
-	// Determine connection strategy
-	switch {
-	case detection.IsGCP && detection.IsCluster:
-		return rc.createGCPClusterClient(ctx, detection)
-	case detection.IsGCP && !detection.IsCluster:
-		return rc.createGCPSingleClient(ctx, detection)
-	case !detection.IsGCP && detection.IsCluster:
-		return rc.createRegularClusterClient(ctx, detection)
-	default:
-		return rc.createRegularSingleClient(ctx)
-	}
-}
-
-// createGCPClusterClient creates a GCP IAM authenticated cluster client
-func (rc *RedisConnection) createGCPClusterClient(ctx context.Context, detection *DetectionResult) (RedisClient, any, error) {
-	config, err := ConfigFromEnv()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to load GCP config: %w", err)
-	}
-
-	if !config.Enabled {
-		if rc.Logger != nil {
-			rc.Logger.Warn("GCP detected but authentication disabled, using regular cluster connection")
-		}
-		return rc.createRegularClusterClient(ctx, detection)
-	}
-
-	// Create GCP authenticated cluster connection
-	tokenProvider, err := NewGCPTokenProvider(config, rc.Logger)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create GCP token provider: %w", err)
-	}
-
-	// Get access token
-	token, err := tokenProvider.GetToken(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get GCP token: %w", err)
-	}
-
-	// Create cluster client with GCP auth
-	addrs := detection.ClusterNodes
-	if len(addrs) == 0 {
-		// Parse comma-separated addresses
-		addrs = rc.parseAddresses()
-	}
-
-	clusterClient := redis.NewClusterClient(&redis.ClusterOptions{
-		Addrs:    addrs,
-		Username: "default", // GCP uses token as password
-		Password: token,
-	})
-
-	// Wrap in authenticated connection for token management
-	authConn := &AuthenticatedRedisConnection{
-		BaseConnection: &RedisClusterConnection{
-			ClusterClient: clusterClient,
-			Connected:     true,
-			Logger:        rc.Logger,
-		},
-		TokenProvider: tokenProvider,
-		AuthConfig:    *config,
-		Connected:     true,
-		Logger:        rc.Logger,
-	}
-
-	return authConn, clusterClient, nil
-}
-
-// createGCPSingleClient creates a GCP IAM authenticated single instance client
-func (rc *RedisConnection) createGCPSingleClient(ctx context.Context, _ *DetectionResult) (RedisClient, any, error) {
-	config, err := ConfigFromEnv()
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to load GCP config: %w", err)
-	}
-
-	if !config.Enabled {
-		if rc.Logger != nil {
-			rc.Logger.Warn("GCP detected but authentication disabled, using regular connection")
-		}
-		return rc.createRegularSingleClient(ctx)
-	}
-
-	// Create GCP authenticated single connection
-	tokenProvider, err := NewGCPTokenProvider(config, rc.Logger)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create GCP token provider: %w", err)
-	}
-
-	// Get access token
-	token, err := tokenProvider.GetToken(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to get GCP token: %w", err)
-	}
-
-	// Create single client with GCP auth
-	// Parse comma-separated addresses and use the first one for single client
-	addresses := rc.parseAddresses()
-	singleAddr := addresses[0]
-	
 	singleClient := redis.NewClient(&redis.Options{
 		Addr:     singleAddr,
 		Username: "default", // GCP uses token as password
@@ -560,26 +285,26 @@ func (rc *RedisConnection) createRegularClusterClient(_ context.Context, detecti
 	clusterOptions := &redis.ClusterOptions{
 		Addrs: addrs,
 	}
-	
+
 	// Only set authentication if credentials are provided
 	if rc.User != "" || rc.Password != "" {
 		clusterOptions.Username = rc.User
 		clusterOptions.Password = rc.Password
 	}
-	
+
 	clusterClient := redis.NewClusterClient(clusterOptions)
 
-	// Create cluster config - only include auth if actually set  
+	// Create cluster config - only include auth if actually set
 	clusterConfig := ClusterConfig{
 		Addrs: addrs,
 	}
-	
+
 	// Only set authentication if credentials are provided
 	if rc.User != "" || rc.Password != "" {
 		clusterConfig.Username = rc.User
 		clusterConfig.Password = rc.Password
 	}
-	
+
 	clusterConn := &RedisClusterConnection{
 		ClusterConfig: clusterConfig,
 		ClusterClient: clusterClient,
@@ -595,20 +320,20 @@ func (rc *RedisConnection) createRegularSingleClient(_ context.Context) (RedisCl
 	// Parse comma-separated addresses and use the first one for single client
 	addresses := rc.parseAddresses()
 	singleAddr := addresses[0]
-	
+
 	// Create Redis options - only include auth if actually set
 	options := &redis.Options{
 		Addr:     singleAddr,
 		DB:       rc.DB,
 		Protocol: rc.Protocol,
 	}
-	
+
 	// Only set authentication if credentials are provided
 	if rc.User != "" || rc.Password != "" {
 		options.Username = rc.User
 		options.Password = rc.Password
 	}
-	
+
 	singleClient := redis.NewClient(options)
 
 	// Note: rc.Client will be set later in Connect() after successful ping test
@@ -757,16 +482,15 @@ func (rc *RedisConnection) RefreshDetection(ctx context.Context) error {
 	if rc.autoDetector != nil {
 		rc.autoDetector.ClearCache()
 	}
-	
+
 	// Reconnect with fresh detection
 	if err := rc.Close(); err != nil {
 		return fmt.Errorf("failed to close existing connection: %w", err)
 	}
-	
+
 	return rc.Connect(ctx)
 }
 
-<<<<<<< HEAD
 // shouldEnableAutoDetection checks if auto-detection should be enabled
 // based on environment variables. Returns true only if explicit GCP or cluster
 // environment variables are set, making auto-detection opt-in only.
@@ -776,7 +500,7 @@ func (rc *RedisConnection) shouldEnableAutoDetection() bool {
 	if err == nil && gcpConfig.Enabled {
 		return true
 	}
-	
+
 	// Check for cluster-specific environment variables or multi-address format
 	if strings.Contains(rc.Addr, ",") {
 		// Only enable if it looks like a real multi-address format (not just trailing comma)
@@ -785,12 +509,12 @@ func (rc *RedisConnection) shouldEnableAutoDetection() bool {
 			return true
 		}
 	}
-	
+
 	// Check for explicit cluster environment variables
 	if clusterEnvSet() {
 		return true
 	}
-	
+
 	// Default: no auto-detection unless explicitly enabled
 	return false
 }
@@ -799,22 +523,20 @@ func (rc *RedisConnection) shouldEnableAutoDetection() bool {
 func clusterEnvSet() bool {
 	clusterIndicators := []string{
 		"REDIS_CLUSTER_ENABLED",
-		"VALKEY_CLUSTER_ENABLED", 
+		"VALKEY_CLUSTER_ENABLED",
 		"REDIS_CLUSTER_NODES",
 		"VALKEY_CLUSTER_NODES",
 	}
-	
+
 	for _, env := range clusterIndicators {
 		if os.Getenv(env) != "" {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
-=======
->>>>>>> origin/feature/improvements
 // parseAddresses extracts individual addresses from the Addr field
 // Supports formats: "host:port" or "host1:port1,host2:port2,host3:port3"
 func (rc *RedisConnection) parseAddresses() []string {

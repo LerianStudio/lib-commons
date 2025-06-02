@@ -25,7 +25,6 @@ var (
 
 // SagaStatus represents the status of a saga execution.
 // The type name intentionally matches the package name for clarity in external usage.
-//
 type SagaStatus string
 
 const (
@@ -176,7 +175,6 @@ func (s *Saga) compensate(ctx context.Context, executedSteps []Step, data any) e
 
 // SagaExecution represents a saga execution instance.
 // The type name intentionally matches the package name for clarity in external usage.
-//
 type SagaExecution struct {
 	ID        string
 	Name      string
@@ -428,7 +426,6 @@ func (ds *DistributedSaga) publishEvent(ctx context.Context, eventType, stepName
 
 // SagaBuilder helps build sagas fluently.
 // The type name intentionally matches the package name for clarity in external usage.
-//
 type SagaBuilder struct {
 	name       string
 	steps      []Step
