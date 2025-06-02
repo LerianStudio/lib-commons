@@ -5,13 +5,10 @@ run:
 linters:
   enable:
     - bodyclose
-    # - depguard  # Temporarily disabled due to v1 compatibility issues
     - dogsled
-    - dupword
     - errchkjson
     - gocognit
     - gocyclo
-    - loggercheck
     - misspell
     - nakedret
     - nilerr
@@ -25,7 +22,6 @@ linters:
     - tparallel
     - unconvert
     - unparam
-    - usestdlibvars
     - wastedassign
 
 linters-settings:

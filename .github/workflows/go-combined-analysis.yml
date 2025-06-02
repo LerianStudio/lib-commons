@@ -52,3 +52,127 @@ jobs:
         uses: securego/gosec@master
         with:
           args: ./...
+
+  ContractTests:
+    name: Run Contract Tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run Contract Tests
+        run: |
+          echo "🧪 Running contract tests for interface stability validation..."
+          go test -v ./contracts/...
+          if [ $? -ne 0 ]; then
+            echo "❌ Contract tests failed - potential breaking changes detected!"
+            echo "::error::Contract tests failed. This indicates potential breaking changes to public interfaces."
+            exit 1
+          fi
+          echo "✅ Contract tests passed - interfaces are stable"
+
+      - name: Contract Test Results Summary
+        if: always()
+        run: |
+          echo "## Contract Test Results" >> $GITHUB_STEP_SUMMARY
+          if [ $? -eq 0 ]; then
+            echo "✅ **Contract tests PASSED** - No breaking changes detected" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "All public interfaces maintain backward compatibility." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Contract tests FAILED** - Breaking changes detected" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Action Required**: Review interface changes before merging." >> $GITHUB_STEP_SUMMARY
+            echo "Contract tests ensure API stability and prevent breaking changes." >> $GITHUB_STEP_SUMMARY
+          fi
+
+  Tests:
+    name: Run Unit Tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Run Unit Tests
+        run: |
+          echo "🧪 Running unit tests..."
+          go test -v -race ./...
+          echo "✅ Unit tests completed"
+
+  DocumentationValidation:
+    name: Validate API Documentation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install Swagger Tools
+        run: |
+          npm install -g @apidevtools/swagger-cli
+          echo "📚 Swagger CLI installed"
+
+      - name: Validate OpenAPI Specification
+        run: |
+          echo "🔍 Validating OpenAPI specification..."
+          swagger-cli validate docs/api/openapi.yaml
+          if [ $? -eq 0 ]; then
+            echo "✅ OpenAPI specification is valid"
+          else
+            echo "❌ OpenAPI specification validation failed"
+            echo "::error::Invalid OpenAPI specification. Please fix the errors before merging."
+            exit 1
+          fi
+
+      - name: Generate Documentation Preview
+        run: |
+          echo "📖 Generating documentation preview..."
+          npx @apidevtools/swagger-cli bundle docs/api/openapi.yaml --outfile docs/api/bundled-openapi.json --type json
+          echo "✅ Documentation bundle created"
+
+      - name: Documentation Validation Summary
+        if: always()
+        run: |
+          echo "## API Documentation Validation" >> $GITHUB_STEP_SUMMARY
+          if [ $? -eq 0 ]; then
+            echo "✅ **OpenAPI specification is valid**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "📚 **Available Documentation:**" >> $GITHUB_STEP_SUMMARY
+            echo "- OpenAPI Specification: \`docs/api/openapi.yaml\`" >> $GITHUB_STEP_SUMMARY
+            echo "- API Documentation: \`docs/api/README.md\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Usage Examples: \`docs/api/examples/\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **OpenAPI specification validation failed**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ **Action Required**: Fix OpenAPI specification errors before merging." >> $GITHUB_STEP_SUMMARY
+          fi

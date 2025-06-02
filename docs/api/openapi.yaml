@@ -1,0 +1,404 @@
+openapi: 3.0.3
+info:
+  title: LerianStudio lib-commons HTTP Components
+  description: |
+    OpenAPI specification for the HTTP response functions and utilities provided by the LerianStudio lib-commons library.
+    
+    This library provides standardized HTTP response functions that ensure consistent error handling and response formatting across all services in the LerianStudio ecosystem.
+    
+    ## Key Features
+    - **Standardized Response Format**: All error responses follow a consistent structure
+    - **Fiber Framework Integration**: Optimized for use with GoFiber
+    - **Type Safety**: Strong typing with comprehensive error handling
+    - **Business Error Mapping**: Automatic mapping from business errors to appropriate HTTP responses
+    
+    ## Usage
+    ```go
+    import httpCommons "github.com/LerianStudio/lib-commons/commons/net/http"
+    
+    // Success response
+    return httpCommons.OK(c, responseData)
+    
+    // Error response  
+    return httpCommons.BadRequest(c, errorData)
+    
+    // Structured error
+    return httpCommons.NotFound(c, "USR001", "User Not Found", "User with ID 123 not found")
+    ```
+  version: 1.0.0
+  contact:
+    name: LerianStudio
+    url: https://github.com/LerianStudio/lib-commons
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+tags:
+  - name: Success Responses
+    description: HTTP success response functions (2xx status codes)
+  - name: Client Error Responses  
+    description: HTTP client error response functions (4xx status codes)
+  - name: Server Error Responses
+    description: HTTP server error response functions (5xx status codes)
+  - name: Generic Responses
+    description: Generic response functions with custom status codes
+
+paths:
+  /example/success:
+    get:
+      tags:
+        - Success Responses
+      summary: Example usage of success response functions
+      description: |
+        This endpoint demonstrates the various success response functions available in the lib-commons library.
+        These functions are used by implementers to send standardized success responses.
+      responses:
+        '200':
+          description: Standard OK response
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    description: Custom response data
+                    example:
+                      message: "Operation completed successfully"
+                      data: { "id": 123, "name": "Example" }
+                  - $ref: '#/components/schemas/Response'
+              examples:
+                simple_data:
+                  summary: Simple data response
+                  value:
+                    message: "User retrieved successfully"
+                    user:
+                      id: 123
+                      name: "John Doe"
+                      email: "john@example.com"
+        '201':
+          description: Resource created successfully
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                resource_created:
+                  summary: Resource creation response
+                  value:
+                    id: "uuid-123"
+                    message: "Resource created successfully"
+                    created_at: "2024-01-01T10:00:00Z"
+        '202':
+          description: Request accepted for processing
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                async_operation:
+                  summary: Asynchronous operation accepted
+                  value:
+                    request_id: "req-456"
+                    status: "processing"
+                    estimated_completion: "2024-01-01T10:05:00Z"
+        '204':
+          description: No content - operation completed successfully without response body
+        '206':
+          description: Partial content response
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                partial_data:
+                  summary: Partial data response
+                  value:
+                    data: ["item1", "item2", "item3"]
+                    range: "items 1-3/100"
+                    has_more: true
+
+  /example/client-errors:
+    post:
+      tags:
+        - Client Error Responses
+      summary: Example usage of client error response functions
+      description: |
+        This endpoint demonstrates the various client error response functions (4xx status codes).
+        These functions return the standardized `Response` schema for error details.
+      responses:
+        '400':
+          description: Bad Request - Invalid input data
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Response'
+                  - type: object
+                    description: Custom error data
+              examples:
+                validation_error:
+                  summary: Validation error example
+                  value:
+                    error: "Invalid input"
+                    details: ["Email is required", "Password too short"]
+                custom_error:
+                  summary: Custom error data
+                  value:
+                    message: "Invalid request format"
+                    field_errors:
+                      email: "Must be a valid email address"
+                      age: "Must be between 18 and 100"
+        '401':
+          description: Unauthorized - Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response'
+              examples:
+                missing_token:
+                  summary: Missing authentication token
+                  value:
+                    code: "AUTH001"
+                    title: "Authentication Required"
+                    message: "Access token is required for this endpoint"
+                invalid_token:
+                  summary: Invalid authentication token
+                  value:
+                    code: "AUTH002" 
+                    title: "Invalid Token"
+                    message: "The provided access token is invalid or expired"
+        '403':
+          description: Forbidden - Insufficient permissions
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response'
+              examples:
+                insufficient_permissions:
+                  summary: Insufficient permissions
+                  value:
+                    code: "PERM001"
+                    title: "Access Denied"
+                    message: "You do not have permission to access this resource"
+        '404':
+          description: Not Found - Resource does not exist
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response'
+              examples:
+                resource_not_found:
+                  summary: Resource not found
+                  value:
+                    code: "RES001"
+                    title: "Resource Not Found"
+                    message: "The requested user with ID 123 was not found"
+        '409':
+          description: Conflict - Resource conflict
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response'
+              examples:
+                resource_conflict:
+                  summary: Resource already exists
+                  value:
+                    code: "CONF001"
+                    title: "Resource Conflict" 
+                    message: "A user with this email already exists"
+        '422':
+          description: Unprocessable Entity - Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response'
+              examples:
+                validation_failed:
+                  summary: Entity validation failed
+                  value:
+                    code: "VAL001"
+                    title: "Validation Failed"
+                    message: "The provided data failed validation rules"
+
+  /example/server-errors:
+    get:
+      tags:
+        - Server Error Responses
+      summary: Example usage of server error response functions
+      description: |
+        This endpoint demonstrates server error response functions (5xx status codes).
+        These are used when the server encounters an error while processing the request.
+      responses:
+        '500':
+          description: Internal Server Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response'
+              examples:
+                database_error:
+                  summary: Database connection error
+                  value:
+                    code: "SYS001"
+                    title: "System Error"
+                    message: "Database connection failed. Please try again later."
+                processing_error:
+                  summary: Processing error
+                  value:
+                    code: "SYS002"
+                    title: "Processing Error"
+                    message: "An error occurred while processing your request"
+        '501':
+          description: Not Implemented
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response'
+              examples:
+                feature_not_implemented:
+                  summary: Feature not yet implemented
+                  value:
+                    code: "501"
+                    title: "Not implemented yet"
+                    message: "This feature is planned for a future release"
+
+  /example/generic:
+    put:
+      tags:
+        - Generic Responses
+      summary: Example usage of generic response functions
+      description: |
+        This endpoint demonstrates generic response functions that allow custom status codes.
+        These provide flexibility for specific use cases not covered by standard responses.
+      responses:
+        '418':
+          description: I'm a teapot (custom status example)
+          content:
+            application/json:
+              schema:
+                type: object
+              examples:
+                teapot_response:
+                  summary: Custom status code example
+                  value:
+                    message: "I'm a teapot"
+                    brew_status: "ready"
+        '999':
+          description: Custom error response using JSONResponseError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Response'
+              examples:
+                custom_error_response:
+                  summary: Custom error with Response schema
+                  value:
+                    code: "CUSTOM001"
+                    title: "Custom Error"
+                    message: "This is a custom error response"
+                    entityType: "CustomEntity"
+
+components:
+  schemas:
+    Response:
+      type: object
+      description: |
+        Standard error response format used across all LerianStudio services.
+        This schema ensures consistent error reporting and debugging capabilities.
+      properties:
+        entityType:
+          type: string
+          description: The type of entity related to the error (optional)
+          example: "User"
+        title:
+          type: string  
+          description: Human-readable error title
+          example: "Validation Error"
+        message:
+          type: string
+          description: Detailed error message for debugging and user feedback
+          example: "The provided email address is already in use"
+        code:
+          type: string
+          description: Machine-readable error code for programmatic handling
+          example: "USR001"
+        err:
+          type: object
+          description: Internal error details (optional, for debugging)
+          nullable: true
+      example:
+        code: "USR001"
+        title: "User Not Found"
+        message: "User with ID 123 does not exist"
+        entityType: "User"
+
+    BusinessError:
+      type: object
+      description: |
+        Business-specific error mappings that automatically convert domain errors
+        to appropriate HTTP responses with standardized codes and messages.
+      properties:
+        error_type:
+          type: string
+          enum:
+            - "ErrAccountIneligibility"
+            - "ErrInsufficientFunds" 
+            - "ErrAssetCodeNotFound"
+            - "ErrAccountStatusTransactionRestriction"
+            - "ErrOverFlowInt64"
+          description: Business error type that gets mapped to Response
+        mapped_response:
+          $ref: '#/components/schemas/Response'
+      examples:
+        insufficient_funds:
+          value:
+            error_type: "ErrInsufficientFunds"
+            mapped_response:
+              code: "FUND001"
+              title: "Insufficient Funds Response"  
+              message: "The transaction could not be completed due to insufficient funds in the account. Please add sufficient funds to your account and try again."
+        account_ineligible:
+          value:
+            error_type: "ErrAccountIneligibility"
+            mapped_response:
+              code: "ACC001"
+              title: "Account Ineligibility Response"
+              message: "One or more accounts listed in the transaction are not eligible to participate. Please review the account statuses and try again."
+
+  examples:
+    StandardErrorResponse:
+      summary: Standard error response
+      description: Example of a standard error response with all fields populated
+      value:
+        code: "ERR001"
+        title: "Operation Failed"
+        message: "The requested operation could not be completed due to invalid input"
+        entityType: "Transaction"
+
+    SimpleErrorResponse:
+      summary: Simple error response  
+      description: Minimal error response with just code and message
+      value:
+        code: "ERR002"
+        message: "Resource not found"
+
+    DetailedSuccessResponse:
+      summary: Detailed success response
+      description: Example of a successful operation response with data
+      value:
+        success: true
+        data:
+          id: "txn_123"
+          status: "completed"
+          amount: 100.50
+          currency: "USD"
+        meta:
+          request_id: "req_456"
+          processing_time_ms: 234
+
+servers:
+  - url: https://api.example.com/v1
+    description: Production server (example)
+  - url: https://staging-api.example.com/v1  
+    description: Staging server (example)
+  - url: http://localhost:8080/v1
+    description: Local development server (example)
