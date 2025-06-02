@@ -4,8 +4,10 @@ package opentelemetry
 
 import (
 	"context"
+	"os"
+
 	"github.com/LerianStudio/lib-commons/commons"
-	"github.com/LerianStudio/lib-commons/commons/constants"
+	constant "github.com/LerianStudio/lib-commons/commons/constants"
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -23,7 +25,6 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
-	"os"
 )
 
 // Telemetry provides OpenTelemetry configuration and initialization for distributed tracing,
@@ -61,7 +62,11 @@ func (tl *Telemetry) newResource() (*sdkresource.Resource, error) {
 
 // NewLoggerExporter creates a new logger exporter that writes to stdout.
 func (tl *Telemetry) newLoggerExporter(ctx context.Context) (*otlploggrpc.Exporter, error) {
-	exporter, err := otlploggrpc.New(ctx, otlploggrpc.WithEndpoint(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")), otlploggrpc.WithInsecure())
+	exporter, err := otlploggrpc.New(
+		ctx,
+		otlploggrpc.WithEndpoint(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
+		otlploggrpc.WithInsecure(),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +76,11 @@ func (tl *Telemetry) newLoggerExporter(ctx context.Context) (*otlploggrpc.Export
 
 // newMetricExporter creates a new metric exporter that writes to stdout.
 func (tl *Telemetry) newMetricExporter(ctx context.Context) (*otlpmetricgrpc.Exporter, error) {
-	exp, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithEndpoint(tl.CollectorExporterEndpoint), otlpmetricgrpc.WithInsecure())
+	exp, err := otlpmetricgrpc.New(
+		ctx,
+		otlpmetricgrpc.WithEndpoint(tl.CollectorExporterEndpoint),
+		otlpmetricgrpc.WithInsecure(),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +90,11 @@ func (tl *Telemetry) newMetricExporter(ctx context.Context) (*otlpmetricgrpc.Exp
 
 // newTracerExporter creates a new tracer exporter that writes to stdout.
 func (tl *Telemetry) newTracerExporter(ctx context.Context) (*otlptrace.Exporter, error) {
-	exporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithEndpoint(tl.CollectorExporterEndpoint), otlptracegrpc.WithInsecure())
+	exporter, err := otlptracegrpc.New(
+		ctx,
+		otlptracegrpc.WithEndpoint(tl.CollectorExporterEndpoint),
+		otlptracegrpc.WithInsecure(),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +103,10 @@ func (tl *Telemetry) newTracerExporter(ctx context.Context) (*otlptrace.Exporter
 }
 
 // NewLoggerProvider creates a new logger provider with stdout exporter and default resource.
-func (tl *Telemetry) newLoggerProvider(rsc *sdkresource.Resource, exp *otlploggrpc.Exporter) *sdklog.LoggerProvider {
+func (tl *Telemetry) newLoggerProvider(
+	rsc *sdkresource.Resource,
+	exp *otlploggrpc.Exporter,
+) *sdklog.LoggerProvider {
 	bp := sdklog.NewBatchProcessor(exp)
 	lp := sdklog.NewLoggerProvider(sdklog.WithResource(rsc), sdklog.WithProcessor(bp))
 
@@ -98,7 +114,10 @@ func (tl *Telemetry) newLoggerProvider(rsc *sdkresource.Resource, exp *otlploggr
 }
 
 // newMeterProvider creates a new meter provider with stdout exporter and default resource.
-func (tl *Telemetry) newMeterProvider(res *sdkresource.Resource, exp *otlpmetricgrpc.Exporter) *sdkmetric.MeterProvider {
+func (tl *Telemetry) newMeterProvider(
+	res *sdkresource.Resource,
+	exp *otlpmetricgrpc.Exporter,
+) *sdkmetric.MeterProvider {
 	mp := sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
@@ -108,7 +127,10 @@ func (tl *Telemetry) newMeterProvider(res *sdkresource.Resource, exp *otlpmetric
 }
 
 // newTracerProvider creates a new tracer provider with stdout exporter and default resource.
-func (tl *Telemetry) newTracerProvider(rsc *sdkresource.Resource, exp *otlptrace.Exporter) *sdktrace.TracerProvider {
+func (tl *Telemetry) newTracerProvider(
+	rsc *sdkresource.Resource,
+	exp *otlptrace.Exporter,
+) *sdktrace.TracerProvider {
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp),
 		sdktrace.WithResource(rsc),
@@ -197,7 +219,12 @@ func (tl *Telemetry) InitializeTelemetry(logger log.Logger) *Telemetry {
 		}
 	}
 
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{},
+			propagation.Baggage{},
+		),
+	)
 
 	logger.Infof("Telemetry initialized ✅ ")
 

@@ -80,7 +80,11 @@ func WithSnapshotFrequency(freq int) RepositoryOption {
 }
 
 // NewRepository creates a new repository
-func NewRepository(store EventStore, factory func() Aggregate, opts ...RepositoryOption) *Repository {
+func NewRepository(
+	store EventStore,
+	factory func() Aggregate,
+	opts ...RepositoryOption,
+) *Repository {
 	r := &Repository{
 		store:            store,
 		aggregateFactory: factory,
@@ -306,7 +310,11 @@ func (pb *ProjectionBuilder) Build(ctx context.Context, streamIDs []string) erro
 }
 
 // Rebuild rebuilds a specific projection
-func (pb *ProjectionBuilder) Rebuild(ctx context.Context, projection Projection, streamIDs []string) error {
+func (pb *ProjectionBuilder) Rebuild(
+	ctx context.Context,
+	projection Projection,
+	streamIDs []string,
+) error {
 	projection.Reset()
 
 	for _, streamID := range streamIDs {

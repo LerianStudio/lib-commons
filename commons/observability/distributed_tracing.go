@@ -58,12 +58,18 @@ func (h *DistributedTracingHelper) PropagateServiceCall(
 }
 
 // InjectContext injects trace context into a carrier for propagation
-func (h *DistributedTracingHelper) InjectContext(ctx context.Context, carrier propagation.TextMapCarrier) {
+func (h *DistributedTracingHelper) InjectContext(
+	ctx context.Context,
+	carrier propagation.TextMapCarrier,
+) {
 	h.propagator.Inject(ctx, carrier)
 }
 
 // ExtractContext extracts trace context from a carrier
-func (h *DistributedTracingHelper) ExtractContext(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
+func (h *DistributedTracingHelper) ExtractContext(
+	ctx context.Context,
+	carrier propagation.TextMapCarrier,
+) context.Context {
 	return h.propagator.Extract(ctx, carrier)
 }
 
@@ -254,7 +260,11 @@ func (p *AsyncSpanProcessor) ProcessAsync(
 }
 
 // Link creates a link between spans
-func Link(_ context.Context, linkedSpanContext trace.SpanContext, attributes ...attribute.KeyValue) trace.Link {
+func Link(
+	_ context.Context,
+	linkedSpanContext trace.SpanContext,
+	attributes ...attribute.KeyValue,
+) trace.Link {
 	return trace.Link{
 		SpanContext: linkedSpanContext,
 		Attributes:  attributes,

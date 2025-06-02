@@ -21,7 +21,11 @@ func (l *ZapWithTraceLogger) logWithHydration(logFunc func(...any), args ...any)
 }
 
 // logfWithHydration is a helper method to log formatted messages with hydrated arguments using the default message template.
-func (l *ZapWithTraceLogger) logfWithHydration(logFunc func(string, ...any), format string, args ...any) {
+func (l *ZapWithTraceLogger) logfWithHydration(
+	logFunc func(string, ...any),
+	format string,
+	args ...any,
+) {
 	logFunc(l.defaultMessageTemplate+format, args...)
 }
 

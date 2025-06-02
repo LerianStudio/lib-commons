@@ -15,6 +15,7 @@ import (
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
+
 	// Import file migration source driver for golang-migrate to enable file:// URL schemes
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	// Import pgx driver for PostgreSQL database/sql compatibility

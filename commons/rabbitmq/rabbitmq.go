@@ -253,7 +253,12 @@ func (rc *RabbitMQConnection) EnablePublisherConfirms(enabled bool) {
 }
 
 // PublishWithConfirm publishes a message and waits for confirmation
-func (rc *RabbitMQConnection) PublishWithConfirm(ctx context.Context, exchange, routingKey string, mandatory, immediate bool, msg amqp.Publishing) error {
+func (rc *RabbitMQConnection) PublishWithConfirm(
+	ctx context.Context,
+	exchange, routingKey string,
+	mandatory, immediate bool,
+	msg amqp.Publishing,
+) error {
 	ch, err := rc.GetNewConnect()
 	if err != nil {
 		return fmt.Errorf("failed to get connection: %w", err)

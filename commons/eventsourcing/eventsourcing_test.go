@@ -162,7 +162,12 @@ func newMockEventStore() *mockEventStore {
 	}
 }
 
-func (m *mockEventStore) Append(_ context.Context, streamID string, events []Event, expectedVersion int) error {
+func (m *mockEventStore) Append(
+	_ context.Context,
+	streamID string,
+	events []Event,
+	expectedVersion int,
+) error {
 	if m.appendErr != nil {
 		return m.appendErr
 	}
@@ -188,7 +193,11 @@ func (m *mockEventStore) Append(_ context.Context, streamID string, events []Eve
 	return nil
 }
 
-func (m *mockEventStore) Load(_ context.Context, streamID string, fromVersion int) ([]Event, error) {
+func (m *mockEventStore) Load(
+	_ context.Context,
+	streamID string,
+	fromVersion int,
+) ([]Event, error) {
 	if m.loadErr != nil {
 		return nil, m.loadErr
 	}

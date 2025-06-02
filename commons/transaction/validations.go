@@ -12,7 +12,12 @@ import (
 )
 
 // ValidateBalancesRules function with some validates in accounts and DSL operations
-func ValidateBalancesRules(ctx context.Context, transaction Transaction, validate Responses, balances []*Balance) error {
+func ValidateBalancesRules(
+	ctx context.Context,
+	transaction Transaction,
+	validate Responses,
+	balances []*Balance,
+) error {
 	logger := commons.NewLoggerFromContext(ctx)
 	tracer := commons.NewTracerFromContext(ctx)
 
@@ -21,14 +26,22 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 	if len(balances) != (len(validate.From) + len(validate.To)) {
 		err := commons.ValidateBusinessError(constant.ErrAccountIneligibility, "ValidateAccounts")
 
-		opentelemetry.HandleSpanError(&spanValidateBalances, "validations.validate_balances_rules", err)
+		opentelemetry.HandleSpanError(
+			&spanValidateBalances,
+			"validations.validate_balances_rules",
+			err,
+		)
 
 		return err
 	}
 
 	for _, balance := range balances {
 		if err := validateFromBalances(balance, validate.From, validate.Asset); err != nil {
-			opentelemetry.HandleSpanError(&spanValidateBalances, "validations.validate_from_balances_", err)
+			opentelemetry.HandleSpanError(
+				&spanValidateBalances,
+				"validations.validate_from_balances_",
+				err,
+			)
 
 			logger.Errorf("validations.validate_from_balances_err: %s", err)
 
@@ -36,7 +49,11 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 		}
 
 		if err := validateToBalances(balance, validate.To, validate.Asset); err != nil {
-			opentelemetry.HandleSpanError(&spanValidateBalances, "validations.validate_to_balances_", err)
+			opentelemetry.HandleSpanError(
+				&spanValidateBalances,
+				"validations.validate_to_balances_",
+				err,
+			)
 
 			logger.Errorf("validations.validate_to_balances_err: %s", err)
 
@@ -44,7 +61,11 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 		}
 
 		if err := validateBalance(balance, transaction, validate.From); err != nil {
-			opentelemetry.HandleSpanError(&spanValidateBalances, "validations.validate_to_balances_", err)
+			opentelemetry.HandleSpanError(
+				&spanValidateBalances,
+				"validations.validate_to_balances_",
+				err,
+			)
 
 			logger.Errorf("validations.validate_balances_err: %s", err)
 
@@ -73,7 +94,11 @@ func validateBalance(balance *Balance, dsl Transaction, from map[string]Amount) 
 				}
 
 				if ba.Available < 0 && balance.AccountType != constant.ExternalAccountType {
-					return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateBalance", balance.Alias)
+					return commons.ValidateBusinessError(
+						constant.ErrInsufficientFunds,
+						"validateBalance",
+						balance.Alias,
+					)
 				}
 			}
 		}
@@ -86,15 +111,25 @@ func validateFromBalances(balance *Balance, from map[string]Amount, asset string
 	for key := range from {
 		if balance.ID == key || balance.Alias == key {
 			if balance.AssetCode != asset {
-				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateFromAccounts")
+				return commons.ValidateBusinessError(
+					constant.ErrAssetCodeNotFound,
+					"validateFromAccounts",
+				)
 			}
 
 			if !balance.AllowSending {
-				return commons.ValidateBusinessError(constant.ErrAccountStatusTransactionRestriction, "validateFromAccounts")
+				return commons.ValidateBusinessError(
+					constant.ErrAccountStatusTransactionRestriction,
+					"validateFromAccounts",
+				)
 			}
 
 			if balance.Available <= 0 && balance.AccountType != constant.ExternalAccountType {
-				return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateFromAccounts", balance.Alias)
+				return commons.ValidateBusinessError(
+					constant.ErrInsufficientFunds,
+					"validateFromAccounts",
+					balance.Alias,
+				)
 			}
 		}
 	}
@@ -106,15 +141,25 @@ func validateToBalances(balance *Balance, to map[string]Amount, asset string) er
 	for key := range to {
 		if balance.ID == key || balance.Alias == key {
 			if balance.AssetCode != asset {
-				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateToAccounts")
+				return commons.ValidateBusinessError(
+					constant.ErrAssetCodeNotFound,
+					"validateToAccounts",
+				)
 			}
 
 			if !balance.AllowReceiving {
-				return commons.ValidateBusinessError(constant.ErrAccountStatusTransactionRestriction, "validateToAccounts")
+				return commons.ValidateBusinessError(
+					constant.ErrAccountStatusTransactionRestriction,
+					"validateToAccounts",
+				)
 			}
 
 			if balance.Available > 0 && balance.AccountType == constant.ExternalAccountType {
-				return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateToAccounts", balance.Alias)
+				return commons.ValidateBusinessError(
+					constant.ErrInsufficientFunds,
+					"validateToAccounts",
+					balance.Alias,
+				)
 			}
 		}
 	}
@@ -123,7 +168,11 @@ func validateToBalances(balance *Balance, to map[string]Amount, asset string) er
 }
 
 // ValidateFromToOperation func that validate operate balance
-func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (Amount, Balance, error) {
+func ValidateFromToOperation(
+	ft FromTo,
+	validate Responses,
+	balance *Balance,
+) (Amount, Balance, error) {
 	amount := Amount{}
 
 	balanceAfter := Balance{}
@@ -141,7 +190,11 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 		}
 
 		if ba.Available < 0 && balance.AccountType != constant.ExternalAccountType {
-			return amount, balanceAfter, commons.ValidateBusinessError(constant.ErrInsufficientFunds, "ValidateFromToOperation", balance.Alias)
+			return amount, balanceAfter, commons.ValidateBusinessError(
+				constant.ErrInsufficientFunds,
+				"ValidateFromToOperation",
+				balance.Alias,
+			)
 		}
 
 		amount = Amount{
@@ -174,7 +227,13 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 }
 
 // UpdateBalances function with some updates values in balances.
-func UpdateBalances(operation string, fromTo map[string]Amount, balances []*Balance, result chan []*Balance, er chan error) {
+func UpdateBalances(
+	operation string,
+	fromTo map[string]Amount,
+	balances []*Balance,
+	result chan []*Balance,
+	er chan error,
+) {
 	newBalances := make([]*Balance, 0)
 
 	for _, balance := range balances {
@@ -386,7 +445,10 @@ func OperateBalances(amount Amount, balance Balance, operation string) (Balance,
 		if balance.Scale < amount.Scale {
 			v0 := Scale(balance.Available, balance.Scale, amount.Scale)
 			if WillOverflow(v0, -amount.Value, amount.Scale) {
-				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
+				return Balance{}, commons.ValidateBusinessError(
+					constant.ErrOverFlowInt64,
+					"WillOverflow",
+				)
 			}
 
 			total = v0 - amount.Value
@@ -404,7 +466,10 @@ func OperateBalances(amount Amount, balance Balance, operation string) (Balance,
 		if balance.Scale < amount.Scale {
 			v0 := Scale(balance.Available, balance.Scale, amount.Scale)
 			if WillOverflow(v0, amount.Value, amount.Scale) {
-				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
+				return Balance{}, commons.ValidateBusinessError(
+					constant.ErrOverFlowInt64,
+					"WillOverflow",
+				)
 			}
 
 			total = v0 + amount.Value
@@ -428,7 +493,13 @@ func OperateBalances(amount Amount, balance Balance, operation string) (Balance,
 }
 
 // CalculateTotal Calculate total for sources/destinations based on shares, amounts and remains
-func CalculateTotal(fromTos []FromTo, send Send, t chan int64, ft chan map[string]Amount, sd chan []string) {
+func CalculateTotal(
+	fromTos []FromTo,
+	send Send,
+	t chan int64,
+	ft chan map[string]Amount,
+	sd chan []string,
+) {
 	fmto := make(map[string]Amount)
 	scdt := make([]string, 0)
 
@@ -453,7 +524,9 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan int64, ft chan map[strin
 				percentageOfPercentage = 100
 			}
 
-			shareValue := float64(send.Value) * ((float64(percentage) / 100) * (float64(percentageOfPercentage) / 100))
+			shareValue := float64(
+				send.Value,
+			) * ((float64(percentage) / 100) * (float64(percentageOfPercentage) / 100))
 			amount := FindScale(send.Asset, shareValue, send.Scale)
 
 			Normalize(&total, &amount, &remaining)
@@ -537,22 +610,34 @@ func ValidateSendSourceAndDistribute(transaction Transaction) (*Responses, error
 
 	for i, source := range response.Sources {
 		if _, ok := response.To[ConcatAlias(i, source)]; ok {
-			return nil, commons.ValidateBusinessError(constant.ErrTransactionAmbiguous, "ValidateSendSourceAndDistribute")
+			return nil, commons.ValidateBusinessError(
+				constant.ErrTransactionAmbiguous,
+				"ValidateSendSourceAndDistribute",
+			)
 		}
 	}
 
 	for i, destination := range response.Destinations {
 		if _, ok := response.From[ConcatAlias(i, destination)]; ok {
-			return nil, commons.ValidateBusinessError(constant.ErrTransactionAmbiguous, "ValidateSendSourceAndDistribute")
+			return nil, commons.ValidateBusinessError(
+				constant.ErrTransactionAmbiguous,
+				"ValidateSendSourceAndDistribute",
+			)
 		}
 	}
 
 	if math.Abs(float64(response.Total)-float64(sourcesTotal)) != 0 {
-		return nil, commons.ValidateBusinessError(constant.ErrTransactionValueMismatch, "ValidateSendSourceAndDistribute")
+		return nil, commons.ValidateBusinessError(
+			constant.ErrTransactionValueMismatch,
+			"ValidateSendSourceAndDistribute",
+		)
 	}
 
 	if math.Abs(float64(sourcesTotal)-float64(destinationsTotal)) != 0 {
-		return nil, commons.ValidateBusinessError(constant.ErrTransactionValueMismatch, "ValidateSendSourceAndDistribute")
+		return nil, commons.ValidateBusinessError(
+			constant.ErrTransactionValueMismatch,
+			"ValidateSendSourceAndDistribute",
+		)
 	}
 
 	return response, nil

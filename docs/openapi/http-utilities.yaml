@@ -1,0 +1,612 @@
+openapi: 3.0.3
+info:
+  title: LerianStudio lib-commons HTTP Utilities
+  description: |
+    OpenAPI specification for HTTP utility functions provided by the LerianStudio lib-commons library.
+    
+    This specification documents the standardized HTTP response patterns and middleware components
+    available for building consistent APIs using the lib-commons library.
+    
+    ## Key Features
+    - **Standardized Response Functions**: Consistent HTTP status code handlers
+    - **Error Response Format**: Unified error structure across all services
+    - **Middleware Components**: CORS, authentication, logging, telemetry
+    - **Health Check Framework**: Standardized health monitoring endpoints
+    - **Pagination Support**: Cursor-based pagination helpers
+    
+    ## Usage Pattern
+    ```go
+    import httpCommons "github.com/LerianStudio/lib-commons/commons/net/http"
+    
+    // In your Fiber handlers
+    func GetUser(c *fiber.Ctx) error {
+        user, err := userService.GetUser(c.Params("id"))
+        if err != nil {
+            return httpCommons.NotFound(c, "USER_001", "User Not Found", err.Error())
+        }
+        return httpCommons.OK(c, user)
+    }
+    ```
+  version: 1.0.0
+  contact:
+    name: LerianStudio
+    url: https://github.com/LerianStudio/lib-commons
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.example.com/v1
+    description: Example API server using lib-commons
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: response-patterns
+    description: Standardized HTTP response functions
+  - name: error-handling
+    description: Error response patterns and formats
+  - name: health-checks
+    description: Health monitoring endpoints
+  - name: middleware
+    description: HTTP middleware components
+
+paths:
+  /health:
+    get:
+      tags:
+        - health-checks
+      summary: Health Check Endpoint
+      description: |
+        Standard health check endpoint pattern using lib-commons health framework.
+        
+        Example implementation:
+        ```go
+        func setupHealthCheck(app *fiber.App, db *gorm.DB, redis *redis.Client) {
+            healthService := health.NewService("my-service", "1.0.0", "production", "hostname")
+            healthService.RegisterChecker("database", health.NewPostgresChecker(db))
+            healthService.RegisterChecker("cache", health.NewRedisChecker(redis))
+            
+            app.Get("/health", healthService.Handler())
+        }
+        ```
+      operationId: healthCheck
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                healthy_service:
+                  summary: Healthy service with all checks passing
+                  value:
+                    status: UP
+                    version: "1.0.0"
+                    environment: "production"
+                    hostname: "api-server-1"
+                    timestamp: "2024-12-02T16:00:00Z"
+                    checks:
+                      database:
+                        status: UP
+                        details:
+                          connection_time: "2ms"
+                          pool_active: 5
+                          pool_idle: 10
+                      cache:
+                        status: UP
+                        details:
+                          ping_time: "1ms"
+                          connected_clients: 15
+                    system:
+                      uptime: 3600.5
+                      memory_usage: 45.2
+                      cpu_count: 8
+                      goroutine_num: 24
+        '503':
+          description: Service is unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                unhealthy_service:
+                  summary: Service with failing database check
+                  value:
+                    status: DOWN
+                    version: "1.0.0"
+                    environment: "production"
+                    hostname: "api-server-1"
+                    timestamp: "2024-12-02T16:00:00Z"
+                    checks:
+                      database:
+                        status: DOWN
+                        details:
+                          error: "connection refused"
+                          last_success: "2024-12-02T15:55:00Z"
+                      cache:
+                        status: UP
+                        details:
+                          ping_time: "1ms"
+                    system:
+                      uptime: 3600.5
+                      memory_usage: 45.2
+                      cpu_count: 8
+                      goroutine_num: 24
+
+  /users/{id}:
+    get:
+      tags:
+        - response-patterns
+      summary: Example User Retrieval (Success Pattern)
+      description: |
+        Example demonstrating successful response pattern using `httpCommons.OK()`.
+        
+        Implementation:
+        ```go
+        func GetUser(c *fiber.Ctx) error {
+            user, err := userService.GetUser(c.Params("id"))
+            if err != nil {
+                return httpCommons.NotFound(c, "USER_001", "User Not Found", err.Error())
+            }
+            return httpCommons.OK(c, user)
+        }
+        ```
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        '200':
+          description: User retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              examples:
+                successful_user:
+                  summary: Successfully retrieved user
+                  value:
+                    id: "550e8400-e29b-41d4-a716-446655440000"
+                    name: "John Doe"
+                    email: "john.doe@example.com"
+                    created_at: "2024-01-15T10:00:00Z"
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                user_not_found:
+                  summary: User not found error
+                  value:
+                    code: "USER_001"
+                    title: "User Not Found"
+                    message: "User with ID 550e8400-e29b-41d4-a716-446655440000 does not exist"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                internal_error:
+                  summary: Database connection error
+                  value:
+                    code: "SYS_001"
+                    title: "Internal Server Error"
+                    message: "Database connection failed"
+
+  /users:
+    post:
+      tags:
+        - response-patterns
+      summary: Example User Creation (Created Pattern)
+      description: |
+        Example demonstrating creation response pattern using `httpCommons.Created()`.
+        
+        Implementation:
+        ```go
+        func CreateUser(c *fiber.Ctx) error {
+            var req CreateUserRequest
+            if err := c.BodyParser(&req); err != nil {
+                return httpCommons.BadRequest(c, map[string]string{"error": "Invalid request body"})
+            }
+            
+            user, err := userService.CreateUser(req)
+            if err != nil {
+                return httpCommons.InternalServerError(c, "USER_002", "User Creation Failed", err.Error())
+            }
+            
+            return httpCommons.Created(c, user)
+        }
+        ```
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateUserRequest'
+            examples:
+              new_user:
+                summary: Create new user
+                value:
+                  name: "Jane Smith"
+                  email: "jane.smith@example.com"
+      responses:
+        '201':
+          description: User created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              examples:
+                created_user:
+                  summary: Successfully created user
+                  value:
+                    id: "550e8400-e29b-41d4-a716-446655440001"
+                    name: "Jane Smith"
+                    email: "jane.smith@example.com"
+                    created_at: "2024-12-02T16:00:00Z"
+        '400':
+          description: Bad request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationErrorResponse'
+              examples:
+                validation_error:
+                  summary: Validation failed
+                  value:
+                    error: "Invalid request body"
+                    details:
+                      - field: "email"
+                        error: "Invalid email format"
+                      - field: "name"
+                        error: "Name is required"
+        '422':
+          description: Unprocessable entity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                duplicate_email:
+                  summary: Email already exists
+                  value:
+                    code: "USER_003"
+                    title: "Duplicate Email"
+                    message: "User with this email already exists"
+
+  /auth/login:
+    post:
+      tags:
+        - error-handling
+      summary: Example Authentication (Unauthorized Pattern)
+      description: |
+        Example demonstrating authentication error patterns using `httpCommons.Unauthorized()`.
+        
+        Implementation:
+        ```go
+        func Login(c *fiber.Ctx) error {
+            var req LoginRequest
+            if err := c.BodyParser(&req); err != nil {
+                return httpCommons.BadRequest(c, map[string]string{"error": "Invalid request body"})
+            }
+            
+            token, err := authService.Authenticate(req.Email, req.Password)
+            if err != nil {
+                return httpCommons.Unauthorized(c, "AUTH_001", "Authentication Failed", "Invalid credentials")
+            }
+            
+            return httpCommons.OK(c, map[string]string{"token": token})
+        }
+        ```
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                    example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_credentials:
+                  summary: Invalid username or password
+                  value:
+                    code: "AUTH_001"
+                    title: "Authentication Failed"
+                    message: "Invalid credentials"
+                token_expired:
+                  summary: Token has expired
+                  value:
+                    code: "AUTH_002"
+                    title: "Token Expired"
+                    message: "Authentication token has expired"
+
+  /admin/users:
+    get:
+      tags:
+        - error-handling
+      summary: Example Authorization (Forbidden Pattern)
+      description: |
+        Example demonstrating authorization error patterns using `httpCommons.Forbidden()`.
+        
+        Implementation:
+        ```go
+        func ListAllUsers(c *fiber.Ctx) error {
+            userRole := c.Locals("user_role").(string)
+            if userRole != "admin" {
+                return httpCommons.Forbidden(c, "AUTH_003", "Access Denied", "Admin role required")
+            }
+            
+            users, err := userService.ListAllUsers()
+            if err != nil {
+                return httpCommons.InternalServerError(c, "SYS_002", "Database Error", err.Error())
+            }
+            
+            return httpCommons.OK(c, users)
+        }
+        ```
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Users retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/User'
+        '403':
+          description: Access denied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                access_denied:
+                  summary: Insufficient permissions
+                  value:
+                    code: "AUTH_003"
+                    title: "Access Denied"
+                    message: "Admin role required"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    ErrorResponse:
+      type: object
+      description: |
+        Standard error response format used by all lib-commons HTTP response functions.
+        
+        Maps to `commons.Response` struct with consistent field naming.
+      properties:
+        code:
+          type: string
+          description: Error code for programmatic handling
+          example: "USER_001"
+        title:
+          type: string
+          description: Human-readable error title
+          example: "User Not Found"
+        message:
+          type: string
+          description: Detailed error message
+          example: "User with ID 550e8400-e29b-41d4-a716-446655440000 does not exist"
+        entityType:
+          type: string
+          description: Optional entity type that caused the error
+          example: "User"
+      required:
+        - code
+        - title
+        - message
+
+    ValidationErrorResponse:
+      type: object
+      description: Validation error response with field-level details
+      properties:
+        error:
+          type: string
+          description: General validation error message
+          example: "Invalid request body"
+        details:
+          type: array
+          description: Field-specific validation errors
+          items:
+            type: object
+            properties:
+              field:
+                type: string
+                description: Field name that failed validation
+                example: "email"
+              error:
+                type: string
+                description: Validation error for this field
+                example: "Invalid email format"
+
+    HealthResponse:
+      type: object
+      description: |
+        Health check response format from `commons/health` package.
+        
+        Generated by `health.Service.Handler()` method.
+      properties:
+        status:
+          type: string
+          enum: [UP, DOWN]
+          description: Overall service health status
+          example: UP
+        version:
+          type: string
+          description: Service version
+          example: "1.0.0"
+        environment:
+          type: string
+          description: Environment (dev, staging, prod)
+          example: "production"
+        hostname:
+          type: string
+          description: Server hostname
+          example: "api-server-1"
+        timestamp:
+          type: string
+          format: date-time
+          description: Health check timestamp in RFC3339 format
+          example: "2024-12-02T16:00:00Z"
+        checks:
+          type: object
+          description: Individual health check results
+          additionalProperties:
+            $ref: '#/components/schemas/HealthCheck'
+        system:
+          $ref: '#/components/schemas/SystemInfo'
+      required:
+        - status
+        - version
+        - environment
+        - hostname
+        - timestamp
+        - checks
+        - system
+
+    HealthCheck:
+      type: object
+      description: Individual health check result
+      properties:
+        status:
+          type: string
+          enum: [UP, DOWN]
+          description: Check status
+          example: UP
+        details:
+          type: object
+          description: Check-specific details
+          additionalProperties: true
+          example:
+            connection_time: "2ms"
+            pool_active: 5
+            pool_idle: 10
+
+    SystemInfo:
+      type: object
+      description: System resource information
+      properties:
+        uptime:
+          type: number
+          format: float64
+          description: System uptime in seconds
+          example: 3600.5
+        memory_usage:
+          type: number
+          format: float64
+          description: Memory usage percentage
+          example: 45.2
+        cpu_count:
+          type: integer
+          description: Number of CPU cores
+          example: 8
+        goroutine_num:
+          type: integer
+          description: Number of active goroutines
+          example: 24
+      required:
+        - uptime
+        - memory_usage
+        - cpu_count
+        - goroutine_num
+
+    User:
+      type: object
+      description: User entity example
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: User unique identifier
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        name:
+          type: string
+          description: User full name
+          example: "John Doe"
+        email:
+          type: string
+          format: email
+          description: User email address
+          example: "john.doe@example.com"
+        created_at:
+          type: string
+          format: date-time
+          description: User creation timestamp
+          example: "2024-01-15T10:00:00Z"
+      required:
+        - id
+        - name
+        - email
+        - created_at
+
+    CreateUserRequest:
+      type: object
+      description: Request to create a new user
+      properties:
+        name:
+          type: string
+          description: User full name
+          example: "Jane Smith"
+          minLength: 1
+          maxLength: 100
+        email:
+          type: string
+          format: email
+          description: User email address
+          example: "jane.smith@example.com"
+      required:
+        - name
+        - email
+
+    LoginRequest:
+      type: object
+      description: Authentication request
+      properties:
+        email:
+          type: string
+          format: email
+          description: User email
+          example: "john.doe@example.com"
+        password:
+          type: string
+          format: password
+          description: User password
+          example: "securePassword123"
+          minLength: 8
+      required:
+        - email
+        - password

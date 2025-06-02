@@ -89,9 +89,18 @@ type AuthError struct {
 
 func (e *AuthError) Error() string {
 	if e.Cause != nil {
-		return fmt.Sprintf("GCP auth error in %s: %v (at %s)", e.Operation, e.Cause, e.Timestamp.Format(time.RFC3339))
+		return fmt.Sprintf(
+			"GCP auth error in %s: %v (at %s)",
+			e.Operation,
+			e.Cause,
+			e.Timestamp.Format(time.RFC3339),
+		)
 	}
-	return fmt.Sprintf("GCP auth error in %s (at %s)", e.Operation, e.Timestamp.Format(time.RFC3339))
+	return fmt.Sprintf(
+		"GCP auth error in %s (at %s)",
+		e.Operation,
+		e.Timestamp.Format(time.RFC3339),
+	)
 }
 
 func (e *AuthError) Unwrap() error {
@@ -219,7 +228,10 @@ func NewGCPTokenProvider(config *GCPAuthConfig, logger log.Logger) (*GCPTokenPro
 	}
 
 	// Create OAuth2 token source
-	credentials, err := google.CredentialsFromJSON(context.Background(), serviceAccountBytes, config.TokenScope...)
+	credentials, err := google.CredentialsFromJSON(
+		context.Background(),
+		serviceAccountBytes,
+		config.TokenScope...)
 	if err != nil {
 		return nil, &AuthError{
 			Operation: "create_credentials",
@@ -427,7 +439,9 @@ func (arc *AuthenticatedRedisConnection) Connect(ctx context.Context) error {
 }
 
 // GetAuthenticatedClient returns the authenticated Redis client
-func (arc *AuthenticatedRedisConnection) GetAuthenticatedClient(ctx context.Context) (RedisClient, error) {
+func (arc *AuthenticatedRedisConnection) GetAuthenticatedClient(
+	ctx context.Context,
+) (RedisClient, error) {
 	if !arc.Connected {
 		if err := arc.Connect(ctx); err != nil {
 			return nil, err
@@ -444,7 +458,9 @@ func (builder *RedisConnectionBuilder) WithGCPAuth(config *GCPAuthConfig) *Redis
 }
 
 // WithCluster enables cluster mode
-func (builder *RedisConnectionBuilder) WithCluster(config *GCPClusterConfig) *RedisConnectionBuilder {
+func (builder *RedisConnectionBuilder) WithCluster(
+	config *GCPClusterConfig,
+) *RedisConnectionBuilder {
 	builder.ConnectionType = Cluster
 	builder.ClusterConfig = config
 	return builder
@@ -496,7 +512,12 @@ func (arc *AuthenticatedRedisConnection) Ping(ctx context.Context) *redis.Status
 }
 
 // Set implements RedisClient interface
-func (arc *AuthenticatedRedisConnection) Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd {
+func (arc *AuthenticatedRedisConnection) Set(
+	ctx context.Context,
+	key string,
+	value any,
+	expiration time.Duration,
+) *redis.StatusCmd {
 	if arc.BaseConnection != nil {
 		return arc.BaseConnection.Set(ctx, key, value, expiration)
 	}

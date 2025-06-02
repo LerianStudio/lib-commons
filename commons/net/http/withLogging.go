@@ -3,18 +3,19 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"github.com/LerianStudio/lib-commons/commons"
-	"github.com/LerianStudio/lib-commons/commons/constants"
-	"github.com/LerianStudio/lib-commons/commons/log"
-	"github.com/gofiber/fiber/v2"
-	"github.com/google/uuid"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/metadata"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/commons"
+	constant "github.com/LerianStudio/lib-commons/commons/constants"
+	"github.com/LerianStudio/lib-commons/commons/log"
+	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 // RequestInfo is a struct design to store http access log data.

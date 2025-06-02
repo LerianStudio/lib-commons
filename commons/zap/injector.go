@@ -3,12 +3,13 @@
 package zap
 
 import (
+	"log"
+	"os"
+
 	clog "github.com/LerianStudio/lib-commons/commons/log"
 	"go.opentelemetry.io/contrib/bridges/otelzap"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"log"
-	"os"
 )
 
 // InitializeLogger initializes our log layer and returns it
@@ -40,9 +41,12 @@ func InitializeLogger() clog.Logger {
 
 	zapCfg.DisableStacktrace = true
 
-	logger, err := zapCfg.Build(zap.AddCallerSkip(2), zap.WrapCore(func(core zapcore.Core) zapcore.Core {
-		return zapcore.NewTee(core, otelzap.NewCore(os.Getenv("OTEL_LIBRARY_NAME")))
-	}))
+	logger, err := zapCfg.Build(
+		zap.AddCallerSkip(2),
+		zap.WrapCore(func(core zapcore.Core) zapcore.Core {
+			return zapcore.NewTee(core, otelzap.NewCore(os.Getenv("OTEL_LIBRARY_NAME")))
+		}),
+	)
 	if err != nil {
 		log.Fatalf("can't initialize zap logger: %v", err)
 	}

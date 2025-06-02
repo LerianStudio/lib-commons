@@ -166,7 +166,11 @@ func Do(ctx context.Context, operation Operation, opts ...Option) error {
 }
 
 // DoWithResult executes an operation that returns a result with retry logic
-func DoWithResult[T any](ctx context.Context, operation OperationWithResult[T], opts ...Option) (T, error) {
+func DoWithResult[T any](
+	ctx context.Context,
+	operation OperationWithResult[T],
+	opts ...Option,
+) (T, error) {
 	var result T
 
 	err := Do(ctx, func() error {

@@ -547,8 +547,16 @@ func TestHashSHA256(t *testing.T) {
 	// Test known hash values
 	t.Run("known hash values", func(t *testing.T) {
 		// Known SHA256 hashes
-		assert.Equal(t, "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", HashSHA256("hello"))
-		assert.Equal(t, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", HashSHA256(""))
+		assert.Equal(
+			t,
+			"2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+			HashSHA256("hello"),
+		)
+		assert.Equal(
+			t,
+			"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			HashSHA256(""),
+		)
 	})
 }
 

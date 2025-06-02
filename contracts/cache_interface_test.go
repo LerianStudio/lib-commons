@@ -82,7 +82,11 @@ func TestCacheInterfaceContract(t *testing.T) {
 
 		// Error messages should be consistent
 		assert.Equal(t, "key not found", cache.ErrKeyNotFound.Error())
-		assert.Equal(t, "key not found", cache.ErrCacheMiss.Error()) // ErrCacheMiss is alias for ErrKeyNotFound
+		assert.Equal(
+			t,
+			"key not found",
+			cache.ErrCacheMiss.Error(),
+		) // ErrCacheMiss is alias for ErrKeyNotFound
 	})
 
 	t.Run("memory_cache_contract", func(t *testing.T) {
@@ -235,7 +239,12 @@ type methodSignature struct {
 	returns []string
 }
 
-func validateMethodSignature(t *testing.T, method reflect.Method, expected methodSignature, methodName string) {
+func validateMethodSignature(
+	t *testing.T,
+	method reflect.Method,
+	expected methodSignature,
+	methodName string,
+) {
 	methodType := method.Type
 
 	// For interface methods, NumIn() includes receiver, but we want to check without receiver

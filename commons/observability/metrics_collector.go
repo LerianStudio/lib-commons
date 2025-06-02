@@ -104,7 +104,13 @@ func NewMetricsCollector(provider Provider) (*MetricsCollector, error) {
 }
 
 // RecordRequest records a request with its result and duration
-func (m *MetricsCollector) RecordRequest(ctx context.Context, operation, resourceType string, statusCode int, duration time.Duration, attrs ...attribute.KeyValue) {
+func (m *MetricsCollector) RecordRequest(
+	ctx context.Context,
+	operation, resourceType string,
+	statusCode int,
+	duration time.Duration,
+	attrs ...attribute.KeyValue,
+) {
 	// If provider is not enabled, do nothing
 	if !m.provider.IsEnabled() {
 		return
@@ -125,7 +131,11 @@ func (m *MetricsCollector) RecordRequest(ctx context.Context, operation, resourc
 	m.requestCounter.Add(ctx, 1, metric.WithAttributes(allAttrs...))
 
 	// Record duration in milliseconds
-	m.requestDuration.Record(ctx, float64(duration.Milliseconds()), metric.WithAttributes(allAttrs...))
+	m.requestDuration.Record(
+		ctx,
+		float64(duration.Milliseconds()),
+		metric.WithAttributes(allAttrs...),
+	)
 
 	// Record success or error
 	if statusCode >= 400 {
@@ -138,7 +148,13 @@ func (m *MetricsCollector) RecordRequest(ctx context.Context, operation, resourc
 }
 
 // RecordBatchRequest records a batch request with its size and latency
-func (m *MetricsCollector) RecordBatchRequest(ctx context.Context, operation, resourceType string, batchSize int, duration time.Duration, attrs ...attribute.KeyValue) {
+func (m *MetricsCollector) RecordBatchRequest(
+	ctx context.Context,
+	operation, resourceType string,
+	batchSize int,
+	duration time.Duration,
+	attrs ...attribute.KeyValue,
+) {
 	// If provider is not enabled, do nothing
 	if !m.provider.IsEnabled() {
 		return
@@ -162,7 +178,12 @@ func (m *MetricsCollector) RecordBatchRequest(ctx context.Context, operation, re
 }
 
 // RecordRetry records a retry attempt
-func (m *MetricsCollector) RecordRetry(ctx context.Context, operation, resourceType string, attempt int, attrs ...attribute.KeyValue) {
+func (m *MetricsCollector) RecordRetry(
+	ctx context.Context,
+	operation, resourceType string,
+	attempt int,
+	attrs ...attribute.KeyValue,
+) {
 	// If provider is not enabled, do nothing
 	if !m.provider.IsEnabled() {
 		return
@@ -184,7 +205,11 @@ func (m *MetricsCollector) RecordRetry(ctx context.Context, operation, resourceT
 }
 
 // RecordError records an error occurrence
-func (m *MetricsCollector) RecordError(ctx context.Context, operation, resourceType, errorType string, attrs ...attribute.KeyValue) {
+func (m *MetricsCollector) RecordError(
+	ctx context.Context,
+	operation, resourceType, errorType string,
+	attrs ...attribute.KeyValue,
+) {
 	// If provider is not enabled, do nothing
 	if !m.provider.IsEnabled() {
 		return
@@ -216,7 +241,11 @@ type Timer struct {
 }
 
 // NewTimer creates a new timer for recording the duration of an operation
-func (m *MetricsCollector) NewTimer(ctx context.Context, operation, resourceType string, attrs ...attribute.KeyValue) *Timer {
+func (m *MetricsCollector) NewTimer(
+	ctx context.Context,
+	operation, resourceType string,
+	attrs ...attribute.KeyValue,
+) *Timer {
 	return &Timer{
 		startTime:    time.Now(),
 		collector:    m,
@@ -238,7 +267,13 @@ func (t *Timer) Stop(statusCode int, additionalAttrs ...attribute.KeyValue) {
 func (t *Timer) StopBatch(batchSize int, additionalAttrs ...attribute.KeyValue) {
 	duration := time.Since(t.startTime)
 	allAttrs := append(t.attrs, additionalAttrs...)
-	t.collector.RecordBatchRequest(t.ctx, t.operation, t.resourceType, batchSize, duration, allAttrs...)
+	t.collector.RecordBatchRequest(
+		t.ctx,
+		t.operation,
+		t.resourceType,
+		batchSize,
+		duration,
+		allAttrs...)
 }
 
 // StopWithError records the duration and marks it as an error
@@ -258,7 +293,11 @@ type BatchTimer struct {
 }
 
 // NewBatchTimer creates a new timer for batch operations
-func (m *MetricsCollector) NewBatchTimer(ctx context.Context, operation, resourceType string, attrs ...attribute.KeyValue) *BatchTimer {
+func (m *MetricsCollector) NewBatchTimer(
+	ctx context.Context,
+	operation, resourceType string,
+	attrs ...attribute.KeyValue,
+) *BatchTimer {
 	return &BatchTimer{
 		Timer: Timer{
 			startTime:    time.Now(),
@@ -296,7 +335,10 @@ type Counter struct {
 }
 
 // NewCounter creates a new counter
-func (m *MetricsCollector) NewCounter(name, resourceType string, attrs ...attribute.KeyValue) *Counter {
+func (m *MetricsCollector) NewCounter(
+	name, resourceType string,
+	attrs ...attribute.KeyValue,
+) *Counter {
 	return &Counter{
 		collector:    m,
 		name:         name,

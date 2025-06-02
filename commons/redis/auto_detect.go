@@ -181,7 +181,11 @@ func (ad *AutoDetector) Detect(ctx context.Context, addr string) (*DetectionResu
 
 	// Combine errors if both failed
 	if gcpErr != nil && clusterErr != nil {
-		result.DetectionError = fmt.Errorf("detection failed: gcp=%v, cluster=%v", gcpErr, clusterErr)
+		result.DetectionError = fmt.Errorf(
+			"detection failed: gcp=%v, cluster=%v",
+			gcpErr,
+			clusterErr,
+		)
 	} else if gcpErr != nil {
 		result.DetectionError = fmt.Errorf("gcp detection failed: %w", gcpErr)
 	} else if clusterErr != nil {
@@ -289,7 +293,9 @@ func (gcd *GCPEnvironmentDetector) checkGCPEnvironmentVariables() bool {
 }
 
 // checkGCPMetadataService queries the GCP metadata service
-func (gcd *GCPEnvironmentDetector) checkGCPMetadataService(ctx context.Context) (bool, string, error) {
+func (gcd *GCPEnvironmentDetector) checkGCPMetadataService(
+	ctx context.Context,
+) (bool, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, GCPProjectEndpoint, nil)
 	if err != nil {
 		return false, "", err
@@ -322,7 +328,10 @@ func (gcd *GCPEnvironmentDetector) checkGCPMetadataService(ctx context.Context) 
 }
 
 // IsCluster detects if the Redis endpoint is a cluster
-func (rtd *RedisTopologyDetector) IsCluster(ctx context.Context, addr string) (bool, []string, error) {
+func (rtd *RedisTopologyDetector) IsCluster(
+	ctx context.Context,
+	addr string,
+) (bool, []string, error) {
 	// Parse comma-separated addresses
 	addresses := parseCommaSeparatedAddresses(addr)
 
@@ -387,7 +396,10 @@ func (rtd *RedisTopologyDetector) IsCluster(ctx context.Context, addr string) (b
 }
 
 // DetectNodes discovers all nodes in a Redis cluster
-func (rtd *RedisTopologyDetector) DetectNodes(ctx context.Context, addrs []string) ([]string, error) {
+func (rtd *RedisTopologyDetector) DetectNodes(
+	ctx context.Context,
+	addrs []string,
+) ([]string, error) {
 	var allNodes []string
 	seen := make(map[string]bool)
 
@@ -420,7 +432,10 @@ func (rtd *RedisTopologyDetector) DetectNodes(ctx context.Context, addrs []strin
 }
 
 // getClusterNodes retrieves all cluster node addresses
-func (rtd *RedisTopologyDetector) getClusterNodes(ctx context.Context, client *redis.Client) ([]string, error) {
+func (rtd *RedisTopologyDetector) getClusterNodes(
+	ctx context.Context,
+	client *redis.Client,
+) ([]string, error) {
 	nodesInfo, err := client.ClusterNodes(ctx).Result()
 	if err != nil {
 		return nil, err
@@ -577,7 +592,10 @@ func isValidRedisAddress(addr string) bool {
 }
 
 // detectClusterFromMultipleAddresses tries to detect cluster mode using multiple addresses
-func (rtd *RedisTopologyDetector) detectClusterFromMultipleAddresses(ctx context.Context, addresses []string) (bool, []string, error) {
+func (rtd *RedisTopologyDetector) detectClusterFromMultipleAddresses(
+	ctx context.Context,
+	addresses []string,
+) (bool, []string, error) {
 	// Try each address to see if any respond
 	for _, addr := range addresses {
 		client := redis.NewClient(&redis.Options{
@@ -606,7 +624,8 @@ func (rtd *RedisTopologyDetector) detectClusterFromMultipleAddresses(ctx context
 		clusterInfo, err := client.ClusterInfo(clusterCtx).Result()
 		cancel()
 
-		if err == nil && (strings.Contains(clusterInfo, "cluster_enabled:1") || strings.Contains(clusterInfo, "cluster_state:ok")) {
+		if err == nil &&
+			(strings.Contains(clusterInfo, "cluster_enabled:1") || strings.Contains(clusterInfo, "cluster_state:ok")) {
 			// This is a cluster node, get all cluster nodes
 			nodes, err := rtd.getClusterNodes(clusterCtx, client)
 			if closeErr := client.Close(); closeErr != nil {

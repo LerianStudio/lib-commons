@@ -380,12 +380,18 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 					Scale: 2,
 					Source: Source{
 						From: []FromTo{
-							{Account: "0#source1", Amount: &Amount{Asset: "USD", Value: 10000, Scale: 2}},
+							{
+								Account: "0#source1",
+								Amount:  &Amount{Asset: "USD", Value: 10000, Scale: 2},
+							},
 						},
 					},
 					Distribute: Distribute{
 						To: []FromTo{
-							{Account: "0#dest1", Amount: &Amount{Asset: "USD", Value: 10000, Scale: 2}},
+							{
+								Account: "0#dest1",
+								Amount:  &Amount{Asset: "USD", Value: 10000, Scale: 2},
+							},
 						},
 					},
 				},
@@ -414,12 +420,18 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 					Scale: 2,
 					Source: Source{
 						From: []FromTo{
-							{Account: "0#source1", Amount: &Amount{Asset: "USD", Value: 5000, Scale: 2}},
+							{
+								Account: "0#source1",
+								Amount:  &Amount{Asset: "USD", Value: 5000, Scale: 2},
+							},
 						},
 					},
 					Distribute: Distribute{
 						To: []FromTo{
-							{Account: "0#dest1", Amount: &Amount{Asset: "USD", Value: 10000, Scale: 2}},
+							{
+								Account: "0#dest1",
+								Amount:  &Amount{Asset: "USD", Value: 10000, Scale: 2},
+							},
 						},
 					},
 				},
@@ -436,12 +448,18 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 					Scale: 2,
 					Source: Source{
 						From: []FromTo{
-							{Account: "0#source1", Amount: &Amount{Asset: "USD", Value: 10000, Scale: 2}},
+							{
+								Account: "0#source1",
+								Amount:  &Amount{Asset: "USD", Value: 10000, Scale: 2},
+							},
 						},
 					},
 					Distribute: Distribute{
 						To: []FromTo{
-							{Account: "0#dest1", Amount: &Amount{Asset: "USD", Value: 5000, Scale: 2}},
+							{
+								Account: "0#dest1",
+								Amount:  &Amount{Asset: "USD", Value: 5000, Scale: 2},
+							},
 						},
 					},
 				},
@@ -458,12 +476,18 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 					Scale: 2,
 					Source: Source{
 						From: []FromTo{
-							{Account: "0#account1", Amount: &Amount{Asset: "USD", Value: 10000, Scale: 2}},
+							{
+								Account: "0#account1",
+								Amount:  &Amount{Asset: "USD", Value: 10000, Scale: 2},
+							},
 						},
 					},
 					Distribute: Distribute{
 						To: []FromTo{
-							{Account: "0#account1", Amount: &Amount{Asset: "USD", Value: 10000, Scale: 2}},
+							{
+								Account: "0#account1",
+								Amount:  &Amount{Asset: "USD", Value: 10000, Scale: 2},
+							},
 						},
 					},
 				},
@@ -486,8 +510,14 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 					},
 					Distribute: Distribute{
 						To: []FromTo{
-							{Account: "0#dest1", Amount: &Amount{Asset: "USD", Value: 7000, Scale: 2}},
-							{Account: "1#dest2", Amount: &Amount{Asset: "USD", Value: 3000, Scale: 2}},
+							{
+								Account: "0#dest1",
+								Amount:  &Amount{Asset: "USD", Value: 7000, Scale: 2},
+							},
+							{
+								Account: "1#dest2",
+								Amount:  &Amount{Asset: "USD", Value: 3000, Scale: 2},
+							},
 						},
 					},
 				},

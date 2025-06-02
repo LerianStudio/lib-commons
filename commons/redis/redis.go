@@ -143,7 +143,10 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 }
 
 // createOptimalClient creates the most appropriate Redis client based on detection
-func (rc *RedisConnection) createOptimalClient(ctx context.Context, detection *DetectionResult) (RedisClient, any, error) {
+func (rc *RedisConnection) createOptimalClient(
+	ctx context.Context,
+	detection *DetectionResult,
+) (RedisClient, any, error) {
 	// Determine connection strategy
 	switch {
 	case detection.IsGCP && detection.IsCluster:
@@ -158,7 +161,10 @@ func (rc *RedisConnection) createOptimalClient(ctx context.Context, detection *D
 }
 
 // createGCPClusterClient creates a GCP IAM authenticated cluster client
-func (rc *RedisConnection) createGCPClusterClient(ctx context.Context, detection *DetectionResult) (RedisClient, any, error) {
+func (rc *RedisConnection) createGCPClusterClient(
+	ctx context.Context,
+	detection *DetectionResult,
+) (RedisClient, any, error) {
 	config, err := ConfigFromEnv()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load GCP config: %w", err)
@@ -166,7 +172,9 @@ func (rc *RedisConnection) createGCPClusterClient(ctx context.Context, detection
 
 	if !config.Enabled {
 		if rc.Logger != nil {
-			rc.Logger.Warn("GCP detected but authentication disabled, using regular cluster connection")
+			rc.Logger.Warn(
+				"GCP detected but authentication disabled, using regular cluster connection",
+			)
 		}
 		return rc.createRegularClusterClient(ctx, detection)
 	}
@@ -213,7 +221,10 @@ func (rc *RedisConnection) createGCPClusterClient(ctx context.Context, detection
 }
 
 // createGCPSingleClient creates a GCP IAM authenticated single instance client
-func (rc *RedisConnection) createGCPSingleClient(ctx context.Context, _ *DetectionResult) (RedisClient, any, error) {
+func (rc *RedisConnection) createGCPSingleClient(
+	ctx context.Context,
+	_ *DetectionResult,
+) (RedisClient, any, error) {
 	config, err := ConfigFromEnv()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load GCP config: %w", err)
@@ -274,7 +285,10 @@ func (rc *RedisConnection) createGCPSingleClient(ctx context.Context, _ *Detecti
 }
 
 // createRegularClusterClient creates a regular cluster client without GCP auth
-func (rc *RedisConnection) createRegularClusterClient(_ context.Context, detection *DetectionResult) (RedisClient, any, error) {
+func (rc *RedisConnection) createRegularClusterClient(
+	_ context.Context,
+	detection *DetectionResult,
+) (RedisClient, any, error) {
 	addrs := detection.ClusterNodes
 	if len(addrs) == 0 {
 		// Parse comma-separated addresses
@@ -400,7 +414,9 @@ func (rc *RedisConnection) GetClient(ctx context.Context) (*redis.Client, error)
 }
 
 // getSingleClientFromCluster creates a single client connection for backward compatibility
-func (rc *RedisConnection) getSingleClientFromCluster(clusterClient *redis.ClusterClient) *redis.Client {
+func (rc *RedisConnection) getSingleClientFromCluster(
+	clusterClient *redis.ClusterClient,
+) *redis.Client {
 	_ = clusterClient // Parameter required for interface compatibility but not used in current implementation
 	// Create a single connection to the first available node
 	return redis.NewClient(&redis.Options{
@@ -441,7 +457,12 @@ func (rc *RedisConnection) Ping(ctx context.Context) *redis.StatusCmd {
 }
 
 // Set implements RedisClient interface
-func (rc *RedisConnection) Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd {
+func (rc *RedisConnection) Set(
+	ctx context.Context,
+	key string,
+	value any,
+	expiration time.Duration,
+) *redis.StatusCmd {
 	if rc.Client == nil {
 		return redis.NewStatusCmd(ctx)
 	}

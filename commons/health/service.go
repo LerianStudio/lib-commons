@@ -1,5 +1,117 @@
-// Package health provides health check functionality for monitoring service status.
-// It includes checks for databases, external services, and system resources.
+// Package health provides comprehensive health check functionality for monitoring service status.
+// It includes built-in checks for databases, external services, and system resources,
+// with support for custom health checkers and detailed monitoring metrics.
+//
+// # Overview
+//
+// The health package implements the standard health check pattern used in microservices
+// to provide operational visibility. It supports:
+//   - Multiple database types (PostgreSQL, MongoDB, Redis, RabbitMQ)
+//   - Custom business logic health checks
+//   - System resource monitoring (CPU, memory, goroutines)
+//   - HTTP endpoint for health status reporting
+//   - Detailed error reporting and timing metrics
+//
+// # Quick Start
+//
+// Basic health service setup:
+//
+//	// Create health service
+//	healthService := health.NewService("my-service", "1.0.0", "production", "hostname")
+//
+//	// Register database health checks
+//	healthService.RegisterChecker("database", health.NewPostgresChecker(db))
+//	healthService.RegisterChecker("cache", health.NewRedisChecker(redisClient))
+//
+//	// Register custom business logic check
+//	healthService.RegisterChecker("business-rules", health.NewCustomChecker("rules",
+//	    func(ctx context.Context) error {
+//	        // Check business-critical functionality
+//	        return validateBusinessRules()
+//	    }))
+//
+//	// Add to Fiber app
+//	app.Get("/health", healthService.Handler())
+//
+// # Built-in Health Checkers
+//
+// Available checker constructors:
+//   - NewPostgresChecker(db): PostgreSQL database connectivity
+//   - NewMongoChecker(client): MongoDB database connectivity
+//   - NewRedisChecker(client): Redis cache connectivity
+//   - NewRabbitMQChecker(conn): RabbitMQ message broker connectivity
+//   - NewHTTPChecker(url): External HTTP service availability
+//   - NewCustomChecker(name, fn): Custom business logic validation
+//
+// # Response Format
+//
+// Health endpoint returns standardized JSON:
+//
+//	{
+//	    "status": "UP",                    // Overall status (UP/DOWN)
+//	    "version": "1.0.0",               // Service version
+//	    "environment": "production",      // Environment name
+//	    "hostname": "api-server-1",       // Server hostname
+//	    "timestamp": "2024-12-02T16:00:00Z", // Check timestamp (RFC3339)
+//	    "checks": {                       // Individual check results
+//	        "database": {
+//	            "status": "UP",
+//	            "details": {
+//	                "connection_time": "2ms",
+//	                "pool_active": 5
+//	            }
+//	        }
+//	    },
+//	    "system": {                       // System resource information
+//	        "uptime": 3600.5,
+//	        "memory_usage": 45.2,
+//	        "cpu_count": 8,
+//	        "goroutine_num": 24
+//	    }
+//	}
+//
+// # HTTP Status Codes
+//
+//   - 200 OK: All health checks passed (status: "UP")
+//   - 503 Service Unavailable: One or more checks failed (status: "DOWN")
+//
+// # Custom Health Checkers
+//
+// Implement the Checker interface for custom health checks:
+//
+//	type CustomBusinessChecker struct {
+//	    businessService BusinessService
+//	}
+//
+//	func (c *CustomBusinessChecker) Check(ctx context.Context) error {
+//	    // Validate critical business functionality
+//	    if !c.businessService.IsOperational() {
+//	        return errors.New("business service not operational")
+//	    }
+//	    return nil
+//	}
+//
+//	// Register custom checker
+//	healthService.RegisterChecker("business", &CustomBusinessChecker{businessService})
+//
+// # Monitoring Integration
+//
+// Health checks integrate with monitoring systems:
+//   - Prometheus: Export health metrics for alerting
+//   - Kubernetes: Liveness and readiness probe endpoint
+//   - Load Balancers: Backend health verification
+//   - APM Tools: Service dependency monitoring
+//
+// # Best Practices
+//
+//  1. Keep health checks lightweight and fast (< 30 seconds total)
+//  2. Check only critical dependencies that affect service functionality
+//  3. Use timeouts to prevent hanging health checks
+//  4. Include meaningful error messages for troubleshooting
+//  5. Monitor health check performance and failure patterns
+//  6. Use circuit breakers for external service health checks
+//
+// See OpenAPI documentation and contracts/ for detailed API specifications.
 package health
 
 import (

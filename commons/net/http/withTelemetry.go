@@ -2,6 +2,9 @@ package http
 
 import (
 	"context"
+	"net/http"
+	"strings"
+
 	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
 	"github.com/gofiber/fiber/v2"
@@ -11,8 +14,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"net/http"
-	"strings"
 )
 
 // TelemetryMiddleware provides middleware for adding telemetry to HTTP handlers.
@@ -68,7 +69,9 @@ func (tm *TelemetryMiddleware) EndTracingSpans(c *fiber.Ctx) error {
 }
 
 // WithTelemetryInterceptor is a gRPC interceptor that adds tracing to the context.
-func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Telemetry) grpc.UnaryServerInterceptor {
+func (tm *TelemetryMiddleware) WithTelemetryInterceptor(
+	tl *opentelemetry.Telemetry,
+) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
 		req any,
@@ -128,14 +131,16 @@ func (tm *TelemetryMiddleware) EndTracingSpansInterceptor() grpc.UnaryServerInte
 }
 
 func (tm *TelemetryMiddleware) collectMetrics(ctx context.Context) error {
-	cpuGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.cpu.usage", metric.WithUnit("percentage"))
+	cpuGauge, err := otel.Meter(tm.Telemetry.ServiceName).
+		Int64Gauge("system.cpu.usage", metric.WithUnit("percentage"))
 	if err != nil {
 		return err
 	}
 
 	go commons.GetCPUUsage(ctx, cpuGauge)
 
-	memGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.mem.usage", metric.WithUnit("percentage"))
+	memGauge, err := otel.Meter(tm.Telemetry.ServiceName).
+		Int64Gauge("system.mem.usage", metric.WithUnit("percentage"))
 	if err != nil {
 		return err
 	}

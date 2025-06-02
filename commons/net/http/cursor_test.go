@@ -2,16 +2,19 @@ package http
 
 import (
 	"encoding/base64"
-	"github.com/LerianStudio/lib-commons/commons/constants"
-	"github.com/Masterminds/squirrel"
-	"github.com/stretchr/testify/assert"
 	"strings"
 	"testing"
+
+	constant "github.com/LerianStudio/lib-commons/commons/constants"
+	"github.com/Masterminds/squirrel"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestDecodeCursor(t *testing.T) {
 	cursor := CreateCursor("test_id", true)
-	encodedCursor := base64.StdEncoding.EncodeToString([]byte(`{"id":"test_id","points_next":true}`))
+	encodedCursor := base64.StdEncoding.EncodeToString(
+		[]byte(`{"id":"test_id","points_next":true}`),
+	)
 
 	decodedCursor, err := DecodeCursor(encodedCursor)
 	assert.NoError(t, err)
@@ -27,7 +30,9 @@ func TestApplyCursorPaginationDesc(t *testing.T) {
 
 	resultQuery, resultOrder := ApplyCursorPagination(query, decodedCursor, orderDirection, limit)
 	sqlResult, _, _ := resultQuery.ToSql()
-	expectedQuery := query.Where(squirrel.Expr("id < ?", "test_id")).OrderBy("id DESC").Limit(uint64(limit + 1))
+	expectedQuery := query.Where(squirrel.Expr("id < ?", "test_id")).
+		OrderBy("id DESC").
+		Limit(uint64(limit + 1))
 	sqlExpected, _, _ := expectedQuery.ToSql()
 
 	assert.Equal(t, sqlExpected, sqlResult)
@@ -59,7 +64,9 @@ func TestApplyCursorPaginationPrevPage(t *testing.T) {
 
 	resultQuery, resultOrder := ApplyCursorPagination(query, decodedCursor, orderDirection, limit)
 	sqlResult, _, _ := resultQuery.ToSql()
-	expectedQuery := query.Where(squirrel.Expr("id < ?", "test_id")).OrderBy("id DESC").Limit(uint64(limit + 1))
+	expectedQuery := query.Where(squirrel.Expr("id < ?", "test_id")).
+		OrderBy("id DESC").
+		Limit(uint64(limit + 1))
 	sqlExpected, _, _ := expectedQuery.ToSql()
 
 	assert.Equal(t, sqlExpected, sqlResult)
@@ -75,7 +82,9 @@ func TestApplyCursorPaginationPrevPageDesc(t *testing.T) {
 
 	resultQuery, resultOrder := ApplyCursorPagination(query, decodedCursor, orderDirection, limit)
 	sqlResult, _, _ := resultQuery.ToSql()
-	expectedQuery := query.Where(squirrel.Expr("id > ?", "test_id")).OrderBy("id ASC").Limit(uint64(limit + 1))
+	expectedQuery := query.Where(squirrel.Expr("id > ?", "test_id")).
+		OrderBy("id ASC").
+		Limit(uint64(limit + 1))
 	sqlExpected, _, _ := expectedQuery.ToSql()
 
 	assert.Equal(t, sqlExpected, sqlResult)

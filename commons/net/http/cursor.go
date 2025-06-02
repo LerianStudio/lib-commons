@@ -51,7 +51,12 @@ func DecodeCursor(cursor string) (Cursor, error) {
 }
 
 // ApplyCursorPagination applies cursor-based pagination to a query.
-func ApplyCursorPagination(findAll squirrel.SelectBuilder, decodedCursor Cursor, orderDirection string, limit int) (squirrel.SelectBuilder, string) {
+func ApplyCursorPagination(
+	findAll squirrel.SelectBuilder,
+	decodedCursor Cursor,
+	orderDirection string,
+	limit int,
+) (squirrel.SelectBuilder, string) {
 	var operator string
 
 	var sortOrder string
@@ -98,7 +103,14 @@ func ApplyCursorPagination(findAll squirrel.SelectBuilder, decodedCursor Cursor,
 }
 
 // PaginateRecords paginates records based on the cursor.
-func PaginateRecords[T any](isFirstPage bool, hasPagination bool, pointsNext bool, items []T, limit int, _ string) []T {
+func PaginateRecords[T any](
+	isFirstPage bool,
+	hasPagination bool,
+	pointsNext bool,
+	items []T,
+	limit int,
+	_ string,
+) []T {
 	paginatedItems := items
 
 	if isFirstPage {
@@ -125,7 +137,10 @@ func PaginateRecords[T any](isFirstPage bool, hasPagination bool, pointsNext boo
 }
 
 // CalculateCursor calculates the cursor pagination.
-func CalculateCursor(isFirstPage, hasPagination, pointsNext bool, firstItemID, lastItemID string) (CursorPagination, error) {
+func CalculateCursor(
+	isFirstPage, hasPagination, pointsNext bool,
+	firstItemID, lastItemID string,
+) (CursorPagination, error) {
 	prevCur := Cursor{}
 	nextCur := Cursor{}
 	pagination := CursorPagination{}

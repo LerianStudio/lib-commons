@@ -375,7 +375,12 @@ type loggerMethodSignature struct {
 	returns []string
 }
 
-func validateLoggerMethodSignature(t *testing.T, method reflect.Method, expected loggerMethodSignature, methodName string) {
+func validateLoggerMethodSignature(
+	t *testing.T,
+	method reflect.Method,
+	expected loggerMethodSignature,
+	methodName string,
+) {
 	methodType := method.Type
 
 	// For interface methods from reflect.Type.Method(), NumIn() does NOT include receiver

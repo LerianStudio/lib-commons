@@ -17,10 +17,22 @@ const (
 // Replace it with a real CORS middleware implementation.
 func WithCORS() fiber.Handler {
 	return cors.New(cors.Config{
-		AllowOrigins:     commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_ORIGIN", defaultAccessControlAllowOrigin),
-		AllowMethods:     commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_METHODS", defaultAccessControlAllowMethods),
-		AllowHeaders:     commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_HEADERS", defaultAccessControlAllowHeaders),
-		ExposeHeaders:    commons.GetenvOrDefault("ACCESS_CONTROL_EXPOSE_HEADERS", defaultAccessControlExposeHeaders),
+		AllowOrigins: commons.GetenvOrDefault(
+			"ACCESS_CONTROL_ALLOW_ORIGIN",
+			defaultAccessControlAllowOrigin,
+		),
+		AllowMethods: commons.GetenvOrDefault(
+			"ACCESS_CONTROL_ALLOW_METHODS",
+			defaultAccessControlAllowMethods,
+		),
+		AllowHeaders: commons.GetenvOrDefault(
+			"ACCESS_CONTROL_ALLOW_HEADERS",
+			defaultAccessControlAllowHeaders,
+		),
+		ExposeHeaders: commons.GetenvOrDefault(
+			"ACCESS_CONTROL_EXPOSE_HEADERS",
+			defaultAccessControlExposeHeaders,
+		),
 		AllowCredentials: true,
 	})
 }

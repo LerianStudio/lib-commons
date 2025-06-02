@@ -208,7 +208,11 @@ func ExecuteWithJitter(retryFunc func() error, config *JitterConfig, maxAttempts
 }
 
 // CalculateJitteredDelay is a convenience function for calculating jittered delays
-func CalculateJitteredDelay(jitterType JitterType, baseDelay, maxDelay time.Duration, attempt int) time.Duration {
+func CalculateJitteredDelay(
+	jitterType JitterType,
+	baseDelay, maxDelay time.Duration,
+	attempt int,
+) time.Duration {
 	config := NewJitterConfig(jitterType, baseDelay, maxDelay)
 	return config.CalculateDelay(attempt)
 }

@@ -322,7 +322,10 @@ func (m *fiberMiddleware) prepareRequest(c *fiber.Ctx) (context.Context, trace.S
 }
 
 // buildRequestAttributes creates the base attributes for the request
-func (m *fiberMiddleware) buildRequestAttributes(c *fiber.Ctx, span trace.Span) []attribute.KeyValue {
+func (m *fiberMiddleware) buildRequestAttributes(
+	c *fiber.Ctx,
+	span trace.Span,
+) []attribute.KeyValue {
 	path := c.Path()
 	spanName := fmt.Sprintf("%s %s", c.Method(), c.Route().Path)
 
@@ -364,13 +367,19 @@ func (m *fiberMiddleware) processRequestHeaders(c *fiber.Ctx, span trace.Span) {
 	c.Request().Header.VisitAll(func(key, value []byte) {
 		keyStr := string(key)
 		if !m.isIgnoredHeader(keyStr) {
-			span.SetAttributes(attribute.String("http.request.header."+strings.ToLower(keyStr), string(value)))
+			span.SetAttributes(
+				attribute.String("http.request.header."+strings.ToLower(keyStr), string(value)),
+			)
 		}
 	})
 }
 
 // recordRequestMetrics records metrics for the incoming request
-func (m *fiberMiddleware) recordRequestMetrics(ctx context.Context, c *fiber.Ctx, attrs []attribute.KeyValue) {
+func (m *fiberMiddleware) recordRequestMetrics(
+	ctx context.Context,
+	c *fiber.Ctx,
+	attrs []attribute.KeyValue,
+) {
 	// Record active request
 	if m.activeRequests != nil {
 		m.activeRequests.Add(ctx, 1, metric.WithAttributes(attrs...))
@@ -379,7 +388,11 @@ func (m *fiberMiddleware) recordRequestMetrics(ctx context.Context, c *fiber.Ctx
 
 	// Record request size
 	if m.requestSize != nil && c.Request().Header.ContentLength() > 0 {
-		m.requestSize.Record(ctx, int64(c.Request().Header.ContentLength()), metric.WithAttributes(attrs...))
+		m.requestSize.Record(
+			ctx,
+			int64(c.Request().Header.ContentLength()),
+			metric.WithAttributes(attrs...),
+		)
 	}
 }
 
@@ -404,7 +417,14 @@ func (m *fiberMiddleware) executeWithPanicRecovery(c *fiber.Ctx) error {
 }
 
 // processResponse handles response processing, metrics, and span updates
-func (m *fiberMiddleware) processResponse(ctx context.Context, c *fiber.Ctx, span trace.Span, err error, duration time.Duration, attrs []attribute.KeyValue) {
+func (m *fiberMiddleware) processResponse(
+	ctx context.Context,
+	c *fiber.Ctx,
+	span trace.Span,
+	err error,
+	duration time.Duration,
+	attrs []attribute.KeyValue,
+) {
 	statusCode := c.Response().StatusCode()
 
 	// Add response attributes
@@ -436,7 +456,9 @@ func (m *fiberMiddleware) processResponse(ctx context.Context, c *fiber.Ctx, spa
 	c.Response().Header.VisitAll(func(key, value []byte) {
 		keyStr := string(key)
 		if !m.isIgnoredHeader(keyStr) {
-			span.SetAttributes(attribute.String("http.response.header."+strings.ToLower(keyStr), string(value)))
+			span.SetAttributes(
+				attribute.String("http.response.header."+strings.ToLower(keyStr), string(value)),
+			)
 		}
 	})
 
@@ -446,7 +468,11 @@ func (m *fiberMiddleware) processResponse(ctx context.Context, c *fiber.Ctx, spa
 	}
 
 	if m.requestDuration != nil {
-		m.requestDuration.Record(ctx, float64(duration.Milliseconds()), metric.WithAttributes(responseAttrs...))
+		m.requestDuration.Record(
+			ctx,
+			float64(duration.Milliseconds()),
+			metric.WithAttributes(responseAttrs...),
+		)
 	}
 
 	// Record response size
@@ -459,7 +485,13 @@ func (m *fiberMiddleware) processResponse(ctx context.Context, c *fiber.Ctx, spa
 }
 
 // logRequest handles request logging with appropriate level based on status
-func (m *fiberMiddleware) logRequest(c *fiber.Ctx, span trace.Span, err error, statusCode int, duration time.Duration) {
+func (m *fiberMiddleware) logRequest(
+	c *fiber.Ctx,
+	span trace.Span,
+	err error,
+	statusCode int,
+	duration time.Duration,
+) {
 	logger := m.provider.Logger().WithSpan(span)
 	fields := map[string]any{
 		"method":        c.Method(),

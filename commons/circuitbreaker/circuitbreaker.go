@@ -1,5 +1,196 @@
-// Package circuitbreaker implements the circuit breaker pattern for fault tolerance.
-// It provides protection against cascading failures in distributed systems.
+// Package circuitbreaker implements the circuit breaker pattern for fault tolerance
+// and protection against cascading failures in distributed systems.
+//
+// # Overview
+//
+// The circuit breaker pattern prevents a service from repeatedly attempting operations
+// that are likely to fail, allowing the system to recover gracefully from faults.
+// This implementation provides:
+//   - Three-state circuit breaker (Closed, Open, Half-Open)
+//   - Configurable failure thresholds and timeouts
+//   - Comprehensive metrics and observability
+//   - Context-aware operations with cancellation support
+//   - Custom failure condition detection
+//   - Thread-safe concurrent operations
+//
+// # Circuit Breaker States
+//
+//   - **Closed**: Normal operation, requests are allowed through
+//   - **Open**: Failure threshold exceeded, requests are immediately rejected
+//   - **Half-Open**: Testing recovery, limited requests are allowed
+//
+// # State Transitions
+//
+//	[Closed]
+//	    |
+//	    | (failures >= threshold)
+//	    v
+//	[Open] -----> (timeout expires) -----> [Half-Open]
+//	    ^                                        |
+//	    |                                        |
+//	    | (failure in half-open)                 |
+//	    |                                        | (success >= threshold)
+//	    +----------------------------------------+
+//	                                             |
+//	                                             v
+//	                                         [Closed]
+//
+// # Quick Start
+//
+// Basic circuit breaker usage:
+//
+//	// Create circuit breaker with default settings
+//	cb := circuitbreaker.New("external-api")
+//
+//	// Execute operation with protection
+//	err := cb.Execute(func() error {
+//	    return callExternalAPI()
+//	})
+//
+//	if err != nil {
+//	    if err == circuitbreaker.ErrCircuitOpen {
+//	        // Circuit is open, operation was not attempted
+//	        log.Warn("Circuit breaker is open, skipping external API call")
+//	        return useDefaultValue()
+//	    }
+//	    // Other error from the operation itself
+//	    return err
+//	}
+//
+// # Configuration Options
+//
+// Customize circuit breaker behavior:
+//
+//	cb := circuitbreaker.New("database",
+//	    circuitbreaker.WithThreshold(10),              // Open after 10 failures
+//	    circuitbreaker.WithTimeout(60*time.Second),    // Try half-open after 60s
+//	    circuitbreaker.WithSuccessThreshold(3),        // Close after 3 successes
+//	    circuitbreaker.WithFailureCondition(func(err error) bool {
+//	        // Only count specific errors as failures
+//	        return !errors.Is(err, ErrNotFound)
+//	    }),
+//	    circuitbreaker.WithOnStateChange(func(change StateChange) {
+//	        log.Info("Circuit breaker state changed",
+//	            "from", change.From,
+//	            "to", change.To,
+//	            "when", change.When,
+//	        )
+//	    }),
+//	)
+//
+// # Context-Aware Operations
+//
+// Use context for timeout and cancellation:
+//
+//	func CallWithTimeout(ctx context.Context) error {
+//	    // Create context with timeout
+//	    ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+//	    defer cancel()
+//
+//	    return cb.ExecuteWithContext(ctx, func() error {
+//	        return slowExternalOperation(ctx)
+//	    })
+//	}
+//
+// # Metrics and Monitoring
+//
+// Monitor circuit breaker performance:
+//
+//	func MonitorCircuitBreaker(cb *circuitbreaker.CircuitBreaker) {
+//	    metrics := cb.Metrics()
+//
+//	    log.Info("Circuit breaker metrics",
+//	        "name", cb.Name(),
+//	        "state", cb.State(),
+//	        "requests", metrics.Requests,
+//	        "successes", metrics.Successes,
+//	        "failures", metrics.Failures,
+//	        "rejections", metrics.Rejections,
+//	        "consecutive_failures", metrics.ConsecutiveFailures,
+//	        "last_failure", metrics.LastFailureTime,
+//	    )
+//
+//	    // Calculate success rate
+//	    if metrics.Requests > 0 {
+//	        successRate := float64(metrics.Successes) / float64(metrics.Requests) * 100
+//	        log.Info("Success rate", "percentage", successRate)
+//	    }
+//	}
+//
+// # Integration with HTTP Services
+//
+// Protect HTTP client calls:
+//
+//	type ProtectedHTTPClient struct {
+//	    client *http.Client
+//	    cb     *circuitbreaker.CircuitBreaker
+//	}
+//
+//	func (p *ProtectedHTTPClient) Get(ctx context.Context, url string) (*http.Response, error) {
+//	    var resp *http.Response
+//	    err := p.cb.ExecuteWithContext(ctx, func() error {
+//	        req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+//	        if err != nil {
+//	            return err
+//	        }
+//
+//	        resp, err = p.client.Do(req)
+//	        if err != nil {
+//	            return err
+//	        }
+//
+//	        // Treat 5xx status codes as failures
+//	        if resp.StatusCode >= 500 {
+//	            return fmt.Errorf("server error: %d", resp.StatusCode)
+//	        }
+//
+//	        return nil
+//	    })
+//
+//	    return resp, err
+//	}
+//
+// # Database Connection Protection
+//
+// Protect database operations:
+//
+//	func (repo *UserRepository) GetUser(ctx context.Context, id string) (*User, error) {
+//	    var user *User
+//
+//	    err := repo.circuitBreaker.ExecuteWithContext(ctx, func() error {
+//	        var err error
+//	        user, err = repo.db.GetUser(ctx, id)
+//	        return err
+//	    })
+//
+//	    if err == circuitbreaker.ErrCircuitOpen {
+//	        // Return cached user or default
+//	        return repo.getCachedUser(id)
+//	    }
+//
+//	    return user, err
+//	}
+//
+// # Best Practices
+//
+//  1. Use appropriate failure thresholds based on service criticality
+//  2. Set reasonable timeouts for recovery attempts (30-60 seconds)
+//  3. Implement fallback mechanisms for when circuits are open
+//  4. Monitor circuit breaker metrics and adjust thresholds as needed
+//  5. Use different circuit breakers for different types of operations
+//  6. Consider using custom failure conditions for business logic
+//  7. Implement graceful degradation when external services are unavailable
+//
+// # Error Handling
+//
+// The circuit breaker returns specific errors:
+//   - `ErrCircuitOpen`: Circuit is open, operation was not attempted
+//   - Original error: Circuit is closed/half-open, operation was attempted but failed
+//
+// # Thread Safety
+//
+// All operations are thread-safe and can be used concurrently from multiple goroutines.
+// The circuit breaker uses atomic operations and mutexes for safe concurrent access.
 package circuitbreaker
 
 import (

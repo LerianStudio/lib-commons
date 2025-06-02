@@ -1,10 +1,11 @@
 package http
 
 import (
-	"github.com/LerianStudio/lib-commons/commons"
-	"github.com/gofiber/fiber/v2"
 	"log"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/commons"
+	"github.com/gofiber/fiber/v2"
 )
 
 // Ping returns HTTP Status 200 with response "pong".

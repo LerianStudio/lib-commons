@@ -1,3 +1,168 @@
+// Package observability provides comprehensive OpenTelemetry integration for distributed tracing,
+// metrics collection, and observability in microservices architectures.
+//
+// # Overview
+//
+// This package implements enterprise-grade observability patterns using OpenTelemetry (OTEL)
+// to provide unified telemetry data collection across services. It supports:
+//   - Distributed tracing with automatic span creation and propagation
+//   - Metrics collection with Prometheus-compatible exporters
+//   - Resource detection and service identification
+//   - OTLP (OpenTelemetry Protocol) export to observability backends
+//   - Context-based request correlation and logging integration
+//
+// # Quick Start
+//
+// Basic observability provider setup:
+//
+//	// Create provider configuration
+//	config := observability.ProviderConfig{
+//	    ServiceName:     "my-api-service",
+//	    ServiceVersion:  "1.2.3",
+//	    Environment:     "production",
+//	    OTLPEndpoint:    "http://jaeger:14268/api/traces",
+//	    MetricsEnabled:  true,
+//	    TracingEnabled:  true,
+//	}
+//
+//	// Initialize provider
+//	provider, err := observability.NewProvider(config)
+//	if err != nil {
+//	    log.Fatal("Failed to create observability provider", err)
+//	}
+//
+//	// Start provider (begins exporting telemetry)
+//	ctx := context.Background()
+//	if err := provider.Start(ctx); err != nil {
+//	    log.Fatal("Failed to start observability provider", err)
+//	}
+//	defer provider.Stop(ctx)
+//
+// # Fiber Middleware Integration
+//
+// Add observability to HTTP endpoints:
+//
+//	app := fiber.New()
+//
+//	// Add telemetry middleware (automatic tracing and metrics)
+//	app.Use(http.WithTelemetry(provider))
+//
+//	// Add logging with correlation IDs
+//	app.Use(http.WithHTTPLogging())
+//
+//	app.Get("/users/:id", func(c *fiber.Ctx) error {
+//	    // Request automatically traced and metrics collected
+//	    span := trace.SpanFromContext(c.Context())
+//	    span.SetAttributes(attribute.String("user.id", c.Params("id")))
+//
+//	    return http.OK(c, userData)
+//	})
+//
+// # Context-Based Tracing
+//
+// Manual span creation for detailed tracing:
+//
+//	func ProcessUser(ctx context.Context, userID string) error {
+//	    // Get tracer from context
+//	    tracer := observability.NewTracerFromContext(ctx)
+//	    if tracer == nil {
+//	        tracer = otel.Tracer("my-service")
+//	    }
+//
+//	    // Create child span
+//	    ctx, span := tracer.Start(ctx, "process_user")
+//	    defer span.End()
+//
+//	    span.SetAttributes(
+//	        attribute.String("user.id", userID),
+//	        attribute.String("operation", "process"),
+//	    )
+//
+//	    // Business logic here...
+//	    if err := validateUser(ctx, userID); err != nil {
+//	        span.RecordError(err)
+//	        span.SetStatus(codes.Error, "validation failed")
+//	        return err
+//	    }
+//
+//	    span.SetStatus(codes.Ok, "user processed successfully")
+//	    return nil
+//	}
+//
+// # Metrics Collection
+//
+// Standard HTTP metrics automatically collected:
+//   - request.total: Total number of HTTP requests (counter)
+//   - request.duration: HTTP request duration (histogram)
+//   - request.error.total: Total number of HTTP errors (counter)
+//
+// Labels included:
+//   - method: HTTP method (GET, POST, etc.)
+//   - path: Request path template
+//   - status: HTTP status code
+//   - service: Service name
+//   - environment: Environment name
+//
+// # Custom Metrics
+//
+// Create custom metrics for business logic:
+//
+//	func setupCustomMetrics(provider observability.Provider) {
+//	    meter := provider.GetMeterProvider().Meter("my-service")
+//
+//	    // Create counter for business events
+//	    userCounter, _ := meter.Int64Counter(
+//	        "users.created.total",
+//	        metric.WithDescription("Total number of users created"),
+//	    )
+//
+//	    // Use in business logic
+//	    func CreateUser(ctx context.Context, req CreateUserRequest) error {
+//	        // ... create user logic
+//	        userCounter.Add(ctx, 1, metric.WithAttributes(
+//	            attribute.String("user.type", req.Type),
+//	            attribute.String("registration.source", req.Source),
+//	        ))
+//	        return nil
+//	    }
+//	}
+//
+// # Observability Backends
+//
+// Supported export destinations:
+//   - Jaeger: Distributed tracing visualization
+//   - Prometheus: Metrics collection and alerting
+//   - Grafana: Metrics and traces dashboards
+//   - Honeycomb: Observability and debugging platform
+//   - DataDog: APM and infrastructure monitoring
+//   - Any OTLP-compatible backend
+//
+// # Resource Detection
+//
+// Automatic detection of service metadata:
+//   - Service name and version from configuration
+//   - Environment information (k8s, docker, etc.)
+//   - Host information (hostname, OS, arch)
+//   - Process information (PID, command line)
+//
+// # Best Practices
+//
+//  1. Use consistent service naming across environments
+//  2. Include meaningful span attributes for debugging
+//  3. Set appropriate sampling rates for high-traffic services
+//  4. Use semantic conventions for attribute naming
+//  5. Monitor observability overhead and adjust accordingly
+//  6. Include business context in traces (user ID, tenant, etc.)
+//  7. Use structured logging with trace correlation IDs
+//
+// # Performance Considerations
+//
+//   - Tracing adds minimal overhead (~0.1ms per span)
+//   - Metrics collection is highly optimized for throughput
+//   - Sampling reduces trace volume while maintaining visibility
+//   - Batching reduces export overhead for high-volume services
+//
+// See middleware documentation and examples/ for integration patterns.
 package observability
 
 import (
@@ -600,7 +765,13 @@ func (p *ObservabilityProvider) IsEnabled() bool {
 }
 
 // WithSpan creates a new span and executes the function within that span
-func WithSpan(ctx context.Context, provider Provider, name string, fn func(context.Context) error, opts ...trace.SpanStartOption) error {
+func WithSpan(
+	ctx context.Context,
+	provider Provider,
+	name string,
+	fn func(context.Context) error,
+	opts ...trace.SpanStartOption,
+) error {
 	// If observability is disabled, just run the function
 	if !provider.IsEnabled() {
 		return fn(ctx)
@@ -623,7 +794,13 @@ func WithSpan(ctx context.Context, provider Provider, name string, fn func(conte
 }
 
 // RecordMetric records a metric using the provided meter
-func RecordMetric(ctx context.Context, provider Provider, name string, value float64, attrs ...attribute.KeyValue) {
+func RecordMetric(
+	ctx context.Context,
+	provider Provider,
+	name string,
+	value float64,
+	attrs ...attribute.KeyValue,
+) {
 	// If observability is disabled, just return
 	if !provider.IsEnabled() {
 		return
@@ -639,7 +816,13 @@ func RecordMetric(ctx context.Context, provider Provider, name string, value flo
 }
 
 // RecordDuration records a duration metric using the provided meter
-func RecordDuration(ctx context.Context, provider Provider, name string, start time.Time, attrs ...attribute.KeyValue) {
+func RecordDuration(
+	ctx context.Context,
+	provider Provider,
+	name string,
+	start time.Time,
+	attrs ...attribute.KeyValue,
+) {
 	// If observability is disabled, just return
 	if !provider.IsEnabled() {
 		return

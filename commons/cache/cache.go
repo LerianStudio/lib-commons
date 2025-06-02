@@ -452,7 +452,11 @@ func (c *MemoryCache) GetMultiple(_ context.Context, keys []string) (map[string]
 }
 
 // SetMultiple stores multiple values in the cache
-func (c *MemoryCache) SetMultiple(_ context.Context, items map[string]any, ttl time.Duration) error {
+func (c *MemoryCache) SetMultiple(
+	_ context.Context,
+	items map[string]any,
+	ttl time.Duration,
+) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

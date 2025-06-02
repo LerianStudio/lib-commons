@@ -147,7 +147,10 @@ func WithSecurityDefaults() HTTPClientOption {
 }
 
 // NewHTTPClientMiddleware creates a new HTTP client middleware for tracing and metrics
-func NewHTTPClientMiddleware(provider Provider, opts ...HTTPClientOption) func(http.RoundTripper) http.RoundTripper {
+func NewHTTPClientMiddleware(
+	provider Provider,
+	opts ...HTTPClientOption,
+) func(http.RoundTripper) http.RoundTripper {
 	if provider == nil {
 		// Return a no-op middleware
 		return func(next http.RoundTripper) http.RoundTripper {
@@ -264,7 +267,9 @@ func (m *httpClientMiddleware) processRequestHeaders(req *http.Request, span tra
 		if !m.isIgnoredHeader(key) {
 			for i, v := range values {
 				if i == 0 {
-					span.SetAttributes(attribute.String("http.request.header."+strings.ToLower(key), v))
+					span.SetAttributes(
+						attribute.String("http.request.header."+strings.ToLower(key), v),
+					)
 				}
 			}
 		}
@@ -278,7 +283,11 @@ func (m *httpClientMiddleware) injectTraceContext(ctx context.Context, req *http
 }
 
 // handleRequestError handles request errors and sets span status
-func (m *httpClientMiddleware) handleRequestError(span trace.Span, resp *http.Response, err error) (*http.Response, error) {
+func (m *httpClientMiddleware) handleRequestError(
+	span trace.Span,
+	resp *http.Response,
+	err error,
+) (*http.Response, error) {
 	span.SetStatus(codes.Error, err.Error())
 	span.RecordError(err)
 
@@ -305,7 +314,9 @@ func (m *httpClientMiddleware) processResponseHeaders(span trace.Span, resp *htt
 		if !m.isIgnoredHeader(key) {
 			for i, v := range values {
 				if i == 0 {
-					span.SetAttributes(attribute.String("http.response.header."+strings.ToLower(key), v))
+					span.SetAttributes(
+						attribute.String("http.response.header."+strings.ToLower(key), v),
+					)
 				}
 			}
 		}
@@ -348,7 +359,13 @@ func (m *httpClientMiddleware) sanitizeURL(urlStr string) string {
 }
 
 // recordRequestMetrics records metrics about the HTTP request
-func (m *httpClientMiddleware) recordRequestMetrics(ctx context.Context, req *http.Request, resp *http.Response, err error, duration time.Duration) {
+func (m *httpClientMiddleware) recordRequestMetrics(
+	ctx context.Context,
+	req *http.Request,
+	resp *http.Response,
+	err error,
+	duration time.Duration,
+) {
 	// Create attributes for the metrics
 	attrs := []attribute.KeyValue{
 		attribute.String(KeyHTTPMethod, req.Method),

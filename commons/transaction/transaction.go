@@ -13,22 +13,22 @@ import (
 // swagger:model Balance
 // @Description Balance is the struct designed to represent the account balance.
 type Balance struct {
-	ID             string         `json:"id" example:"00000000-0000-0000-0000-000000000000"`
-	OrganizationID string         `json:"organizationId" example:"00000000-0000-0000-0000-000000000000"`
-	LedgerID       string         `json:"ledgerId" example:"00000000-0000-0000-0000-000000000000"`
-	AccountID      string         `json:"accountId" example:"00000000-0000-0000-0000-000000000000"`
-	Alias          string         `json:"alias" example:"@person1"`
-	AssetCode      string         `json:"assetCode" example:"BRL"`
-	Available      int64          `json:"available" example:"1500"`
-	OnHold         int64          `json:"onHold" example:"500"`
-	Scale          int64          `json:"scale" example:"2"`
-	Version        int64          `json:"version" example:"1"`
-	AccountType    string         `json:"accountType" example:"creditCard"`
-	AllowSending   bool           `json:"allowSending" example:"true"`
-	AllowReceiving bool           `json:"allowReceiving" example:"true"`
-	CreatedAt      time.Time      `json:"createdAt" example:"2021-01-01T00:00:00Z"`
-	UpdatedAt      time.Time      `json:"updatedAt" example:"2021-01-01T00:00:00Z"`
-	DeletedAt      *time.Time     `json:"deletedAt" example:"2021-01-01T00:00:00Z"`
+	ID             string         `json:"id"                 example:"00000000-0000-0000-0000-000000000000"`
+	OrganizationID string         `json:"organizationId"     example:"00000000-0000-0000-0000-000000000000"`
+	LedgerID       string         `json:"ledgerId"           example:"00000000-0000-0000-0000-000000000000"`
+	AccountID      string         `json:"accountId"          example:"00000000-0000-0000-0000-000000000000"`
+	Alias          string         `json:"alias"              example:"@person1"`
+	AssetCode      string         `json:"assetCode"          example:"BRL"`
+	Available      int64          `json:"available"          example:"1500"`
+	OnHold         int64          `json:"onHold"             example:"500"`
+	Scale          int64          `json:"scale"              example:"2"`
+	Version        int64          `json:"version"            example:"1"`
+	AccountType    string         `json:"accountType"        example:"creditCard"`
+	AllowSending   bool           `json:"allowSending"       example:"true"`
+	AllowReceiving bool           `json:"allowReceiving"     example:"true"`
+	CreatedAt      time.Time      `json:"createdAt"          example:"2021-01-01T00:00:00Z"`
+	UpdatedAt      time.Time      `json:"updatedAt"          example:"2021-01-01T00:00:00Z"`
+	DeletedAt      *time.Time     `json:"deletedAt"          example:"2021-01-01T00:00:00Z"`
 	Metadata       map[string]any `json:"metadata,omitempty"`
 } // @name Balance
 
@@ -57,9 +57,9 @@ type Metadata struct {
 // swagger:model Amount
 // @Description Amount is the struct designed to represent the amount of an operation.
 type Amount struct {
-	Asset     string `json:"asset,omitempty" validate:"required" example:"BRL"`
-	Value     int64  `json:"value,omitempty" validate:"required" example:"1000"`
-	Scale     int64  `json:"scale,omitempty" validate:"gte=0" example:"2"`
+	Asset     string `json:"asset,omitempty"     validate:"required" example:"BRL"`
+	Value     int64  `json:"value,omitempty"     validate:"required" example:"1000"`
+	Scale     int64  `json:"scale,omitempty"     validate:"gte=0"    example:"2"`
 	Operation string `json:"operation,omitempty"`
 } // @name Amount
 
@@ -68,7 +68,7 @@ type Amount struct {
 // swagger:model Share
 // @Description Share is the struct designed to represent the sharing fields of an operation.
 type Share struct {
-	Percentage             int64 `json:"percentage,omitempty" validate:"required"`
+	Percentage             int64 `json:"percentage,omitempty"             validate:"required"`
 	PercentageOfPercentage int64 `json:"percentageOfPercentage,omitempty"`
 } // @name Share
 
@@ -77,10 +77,10 @@ type Share struct {
 // swagger:model Send
 // @Description Send is the struct designed to represent the sending fields of an operation.
 type Send struct {
-	Asset      string     `json:"asset,omitempty" validate:"required" example:"BRL"`
-	Value      int64      `json:"value,omitempty" validate:"required" example:"1000"`
-	Scale      int64      `json:"scale,omitempty" validate:"gte=0" example:"2"`
-	Source     Source     `json:"source,omitempty" validate:"required"`
+	Asset      string     `json:"asset,omitempty"      validate:"required" example:"BRL"`
+	Value      int64      `json:"value,omitempty"      validate:"required" example:"1000"`
+	Scale      int64      `json:"scale,omitempty"      validate:"gte=0"    example:"2"`
+	Source     Source     `json:"source,omitempty"     validate:"required"`
 	Distribute Distribute `json:"distribute,omitempty" validate:"required"`
 } // @name Send
 
@@ -90,7 +90,7 @@ type Send struct {
 // @Description Source is the struct designed to represent the source fields of an operation.
 type Source struct {
 	Remaining string   `json:"remaining,omitempty" example:"remaining"`
-	From      []FromTo `json:"from,omitempty" validate:"singletransactiontype,required,dive"`
+	From      []FromTo `json:"from,omitempty"                          validate:"singletransactiontype,required,dive"`
 } // @name Source
 
 // Rate structure for marshaling/unmarshalling JSON.
@@ -98,10 +98,10 @@ type Source struct {
 // swagger:model Rate
 // @Description Rate is the struct designed to represent the rate fields of an operation.
 type Rate struct {
-	From       string `json:"from" validate:"required" example:"BRL"`
-	To         string `json:"to" validate:"required" example:"USDe"`
-	Value      int64  `json:"value" validate:"required" example:"1000"`
-	Scale      int64  `json:"scale" validate:"gte=0" example:"2"`
+	From       string `json:"from"       validate:"required"      example:"BRL"`
+	To         string `json:"to"         validate:"required"      example:"USDe"`
+	Value      int64  `json:"value"      validate:"required"      example:"1000"`
+	Scale      int64  `json:"scale"      validate:"gte=0"         example:"2"`
 	ExternalID string `json:"externalId" validate:"uuid,required" example:"00000000-0000-0000-0000-000000000000"`
 } // @name Rate
 
@@ -115,16 +115,16 @@ func (r Rate) IsEmpty() bool {
 // swagger:model FromTo
 // @Description FromTo is the struct designed to represent the from/to fields of an operation.
 type FromTo struct {
-	Account         string         `json:"account,omitempty" example:"@person1"`
+	Account         string         `json:"account,omitempty"      example:"@person1"`
 	AccountAlias    string         `json:"accountAlias,omitempty" example:"@person1"`
 	Amount          *Amount        `json:"amount,omitempty"`
 	Share           *Share         `json:"share,omitempty"`
-	Remaining       string         `json:"remaining,omitempty" example:"remaining"`
+	Remaining       string         `json:"remaining,omitempty"    example:"remaining"`
 	Rate            *Rate          `json:"rate,omitempty"`
-	Description     string         `json:"description,omitempty" example:"description"`
-	ChartOfAccounts string         `json:"chartOfAccounts" example:"1000"`
-	Metadata        map[string]any `json:"metadata" validate:"dive,keys,keymax=100,endkeys,nonested,valuemax=2000"`
-	IsFrom          bool           `json:"isFrom,omitempty" example:"true"`
+	Description     string         `json:"description,omitempty"  example:"description"`
+	ChartOfAccounts string         `json:"chartOfAccounts"        example:"1000"`
+	Metadata        map[string]any `json:"metadata"                                     validate:"dive,keys,keymax=100,endkeys,nonested,valuemax=2000"`
+	IsFrom          bool           `json:"isFrom,omitempty"       example:"true"`
 } // @name FromTo
 
 // SplitAlias function to split alias with index.
@@ -165,7 +165,7 @@ func (ft FromTo) ConcatAlias(i int) string {
 // @Description Distribute is the struct designed to represent the distribution fields of an operation.
 type Distribute struct {
 	Remaining string   `json:"remaining,omitempty"`
-	To        []FromTo `json:"to,omitempty" validate:"singletransactiontype,required,dive"`
+	To        []FromTo `json:"to,omitempty"        validate:"singletransactiontype,required,dive"`
 } // @name Distribute
 
 // Transaction structure for marshaling/unmarshalling JSON.
@@ -174,11 +174,11 @@ type Distribute struct {
 // @Description Transaction is a struct designed to store transaction data.
 type Transaction struct {
 	ChartOfAccountsGroupName string         `json:"chartOfAccountsGroupName,omitempty" example:"1000"`
-	Description              string         `json:"description,omitempty" example:"Description"`
-	Code                     string         `json:"code,omitempty" example:"00000000-0000-0000-0000-000000000000"`
-	Pending                  bool           `json:"pending,omitempty" example:"false"`
-	Metadata                 map[string]any `json:"metadata,omitempty" validate:"dive,keys,keymax=100,endkeys,nonested,valuemax=2000"`
-	Send                     Send           `json:"send" validate:"required"`
+	Description              string         `json:"description,omitempty"              example:"Description"`
+	Code                     string         `json:"code,omitempty"                     example:"00000000-0000-0000-0000-000000000000"`
+	Pending                  bool           `json:"pending,omitempty"                  example:"false"`
+	Metadata                 map[string]any `json:"metadata,omitempty"                                                                validate:"dive,keys,keymax=100,endkeys,nonested,valuemax=2000"`
+	Send                     Send           `json:"send"                                                                              validate:"required"`
 } // @name Transaction
 
 // IsEmpty is a func that validate if transaction is Empty.

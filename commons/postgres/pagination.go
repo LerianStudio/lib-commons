@@ -10,13 +10,13 @@ import "time"
 // @Description Pagination is the struct designed to store the pagination data of an entity list.
 type Pagination struct {
 	Items      any       `json:"items"`
-	Page       int       `json:"page,omitempty" example:"1"`
+	Page       int       `json:"page,omitempty"        example:"1"`
 	PrevCursor string    `json:"prev_cursor,omitempty" example:"MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwMA==" extensions:"x-omitempty"`
 	NextCursor string    `json:"next_cursor,omitempty" example:"MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwMA==" extensions:"x-omitempty"`
-	Limit      int       `json:"limit" example:"10"`
-	SortOrder  string    `json:"-" example:"asc"`
-	StartDate  time.Time `json:"-" example:"2021-01-01"`
-	EndDate    time.Time `json:"-" example:"2021-12-31"`
+	Limit      int       `json:"limit"                 example:"10"`
+	SortOrder  string    `json:"-"                     example:"asc"`
+	StartDate  time.Time `json:"-"                     example:"2021-01-01"`
+	EndDate    time.Time `json:"-"                     example:"2021-12-31"`
 } // @name Pagination
 
 // SetItems set an array of any struct in items.

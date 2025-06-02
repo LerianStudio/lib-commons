@@ -101,7 +101,11 @@ func GetBaggageItem(ctx context.Context, key string) string {
 }
 
 // Start starts a new span from a context
-func Start(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
+func Start(
+	ctx context.Context,
+	name string,
+	opts ...trace.SpanStartOption,
+) (context.Context, trace.Span) {
 	provider := GetProvider(ctx)
 	if provider != nil && provider.IsEnabled() {
 		return provider.Tracer().Start(ctx, name, opts...)

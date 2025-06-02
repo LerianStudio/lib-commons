@@ -110,7 +110,12 @@ func (s *Saga) Execute(ctx context.Context, data any) error {
 			// Compensate in reverse order
 			compensationErr := s.compensate(ctx, executedSteps, data)
 			if compensationErr != nil {
-				return fmt.Errorf("%w: %v, compensation error: %v", ErrStepFailed, err, compensationErr)
+				return fmt.Errorf(
+					"%w: %v, compensation error: %v",
+					ErrStepFailed,
+					err,
+					compensationErr,
+				)
 			}
 			// If the error is a context error, return it directly
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -304,7 +309,10 @@ type DistributedStep struct {
 }
 
 // NewDistributedStep creates a new distributed step
-func NewDistributedStep(name string, execute, compensate func(ctx context.Context, data any) error) *DistributedStep {
+func NewDistributedStep(
+	name string,
+	execute, compensate func(ctx context.Context, data any) error,
+) *DistributedStep {
 	return &DistributedStep{
 		name:       name,
 		execute:    execute,
@@ -382,7 +390,13 @@ func (ds *DistributedSaga) Execute(ctx context.Context, data any) error {
 
 				compensateErr := compensatingStep.Compensate(ctx, data)
 				if compensateErr != nil {
-					ds.publishEvent(ctx, EventTypeStepFailed, compensatingStep.Name(), data, compensateErr)
+					ds.publishEvent(
+						ctx,
+						EventTypeStepFailed,
+						compensatingStep.Name(),
+						data,
+						compensateErr,
+					)
 				} else {
 					ds.publishEvent(ctx, EventTypeStepCompensated, compensatingStep.Name(), data, nil)
 				}
@@ -406,7 +420,12 @@ func (ds *DistributedSaga) Execute(ctx context.Context, data any) error {
 }
 
 // publishEvent publishes a saga event
-func (ds *DistributedSaga) publishEvent(ctx context.Context, eventType, stepName string, data any, err error) {
+func (ds *DistributedSaga) publishEvent(
+	ctx context.Context,
+	eventType, stepName string,
+	data any,
+	err error,
+) {
 	event := Event{
 		ID:        uuid.New().String(),
 		Type:      eventType,
@@ -460,7 +479,10 @@ func (sb *SagaBuilder) WithRetry(retries int, delay time.Duration) *SagaBuilder 
 }
 
 // WithStep adds a step to the saga
-func (sb *SagaBuilder) WithStep(name string, execute, compensate func(ctx context.Context, data any) error) *SagaBuilder {
+func (sb *SagaBuilder) WithStep(
+	name string,
+	execute, compensate func(ctx context.Context, data any) error,
+) *SagaBuilder {
 	step := &DistributedStep{
 		name:       name,
 		execute:    execute,

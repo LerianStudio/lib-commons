@@ -2,6 +2,7 @@ package commons
 
 import (
 	"context"
+
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"

@@ -3,10 +3,11 @@ package http
 import (
 	"crypto/subtle"
 	"encoding/base64"
-	"github.com/LerianStudio/lib-commons/commons"
-	"github.com/LerianStudio/lib-commons/commons/constants"
 	"net/http"
 	"strings"
+
+	"github.com/LerianStudio/lib-commons/commons"
+	constant "github.com/LerianStudio/lib-commons/commons/constants"
 
 	"github.com/gofiber/fiber/v2"
 )
@@ -18,7 +19,8 @@ type BasicAuthFunc func(username, password string) bool
 // FixedBasicAuthFunc is a fixed username and password to use as BasicAuthFunc.
 func FixedBasicAuthFunc(username, password string) BasicAuthFunc {
 	return func(user, pass string) bool {
-		if subtle.ConstantTimeCompare([]byte(user), []byte(username)) == 1 && subtle.ConstantTimeCompare([]byte(pass), []byte(password)) == 1 {
+		if subtle.ConstantTimeCompare([]byte(user), []byte(username)) == 1 &&
+			subtle.ConstantTimeCompare([]byte(pass), []byte(password)) == 1 {
 			return true
 		}
 

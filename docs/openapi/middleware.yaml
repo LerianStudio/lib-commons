@@ -1,0 +1,582 @@
+openapi: 3.0.3
+info:
+  title: LerianStudio lib-commons Middleware Components
+  description: |
+    OpenAPI specification for HTTP middleware components provided by the LerianStudio lib-commons library.
+    
+    This specification documents the middleware functions and their configuration options for building
+    secure, observable, and reliable HTTP services.
+    
+    ## Available Middleware
+    - **CORS**: Cross-Origin Resource Sharing configuration
+    - **Authentication**: Basic authentication middleware
+    - **Logging**: Structured request/response logging
+    - **Telemetry**: OpenTelemetry integration for observability
+    
+    ## Usage Pattern
+    ```go
+    import (
+        httpCommons "github.com/LerianStudio/lib-commons/commons/net/http"
+        "github.com/LerianStudio/lib-commons/commons/observability"
+    )
+    
+    func setupMiddleware(app *fiber.App, provider observability.Provider) {
+        // CORS middleware
+        app.Use(httpCommons.WithCORS())
+        
+        // Logging middleware
+        app.Use(httpCommons.WithHTTPLogging())
+        
+        // Telemetry middleware
+        app.Use(httpCommons.WithTelemetry(provider))
+        
+        // Basic authentication for admin routes
+        admin := app.Group("/admin")
+        admin.Use(httpCommons.WithBasicAuth("admin", "secretpassword"))
+    }
+    ```
+  version: 1.0.0
+  contact:
+    name: LerianStudio
+    url: https://github.com/LerianStudio/lib-commons
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.example.com/v1
+    description: Example API server with middleware
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: cors
+    description: Cross-Origin Resource Sharing middleware
+  - name: authentication
+    description: Authentication middleware components
+  - name: logging
+    description: HTTP request/response logging
+  - name: telemetry
+    description: OpenTelemetry observability middleware
+  - name: proxy
+    description: HTTP proxy middleware
+
+paths:
+  /api/public:
+    get:
+      tags:
+        - cors
+      summary: Public Endpoint with CORS
+      description: |
+        Example endpoint demonstrating CORS middleware behavior.
+        
+        Implementation:
+        ```go
+        func setupCORS(app *fiber.App) {
+            // Apply CORS middleware globally
+            app.Use(httpCommons.WithCORS())
+            
+            app.Get("/api/public", func(c *fiber.Ctx) error {
+                return httpCommons.OK(c, map[string]string{"message": "Public endpoint"})
+            })
+        }
+        ```
+        
+        The CORS middleware automatically handles:
+        - Preflight OPTIONS requests
+        - CORS headers for actual requests
+        - Origin validation (configurable)
+      responses:
+        '200':
+          description: Successful response with CORS headers
+          headers:
+            Access-Control-Allow-Origin:
+              description: Allowed origins for CORS
+              schema:
+                type: string
+                example: "*"
+            Access-Control-Allow-Methods:
+              description: Allowed HTTP methods
+              schema:
+                type: string
+                example: "GET, POST, PUT, DELETE, OPTIONS"
+            Access-Control-Allow-Headers:
+              description: Allowed headers
+              schema:
+                type: string
+                example: "Content-Type, Authorization, X-Requested-With"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Public endpoint"
+
+    options:
+      tags:
+        - cors
+      summary: CORS Preflight Request
+      description: |
+        Preflight request handled automatically by CORS middleware.
+        
+        This endpoint is automatically created by the `WithCORS()` middleware and handles
+        OPTIONS requests for CORS preflight checks.
+      responses:
+        '204':
+          description: Preflight request successful
+          headers:
+            Access-Control-Allow-Origin:
+              description: Allowed origins
+              schema:
+                type: string
+                example: "*"
+            Access-Control-Allow-Methods:
+              description: Allowed methods
+              schema:
+                type: string
+                example: "GET, POST, PUT, DELETE, OPTIONS"
+            Access-Control-Allow-Headers:
+              description: Allowed headers
+              schema:
+                type: string
+                example: "Content-Type, Authorization, X-Requested-With"
+            Access-Control-Max-Age:
+              description: Cache duration for preflight result
+              schema:
+                type: integer
+                example: 86400
+
+  /admin/users:
+    get:
+      tags:
+        - authentication
+      summary: Protected Endpoint with Basic Auth
+      description: |
+        Example endpoint protected by Basic Authentication middleware.
+        
+        Implementation:
+        ```go
+        func setupBasicAuth(app *fiber.App) {
+            admin := app.Group("/admin")
+            admin.Use(httpCommons.WithBasicAuth("admin", "secretpassword"))
+            
+            admin.Get("/users", func(c *fiber.Ctx) error {
+                return httpCommons.OK(c, []string{"user1", "user2"})
+            })
+        }
+        ```
+      security:
+        - basicAuth: []
+      responses:
+        '200':
+          description: Successfully authenticated request
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+                example: ["user1", "user2"]
+        '401':
+          description: Authentication required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                auth_required:
+                  summary: Basic authentication required
+                  value:
+                    code: "AUTH_001"
+                    title: "Authentication Required"
+                    message: "Basic authentication credentials required"
+                invalid_credentials:
+                  summary: Invalid credentials
+                  value:
+                    code: "AUTH_002"
+                    title: "Authentication Failed"
+                    message: "Invalid username or password"
+
+  /api/monitored:
+    get:
+      tags:
+        - logging
+        - telemetry
+      summary: Endpoint with Logging and Telemetry
+      description: |
+        Example endpoint demonstrating logging and telemetry middleware.
+        
+        Implementation:
+        ```go
+        func setupObservability(app *fiber.App, provider observability.Provider) {
+            // Add logging middleware
+            app.Use(httpCommons.WithHTTPLogging())
+            
+            // Add telemetry middleware
+            app.Use(httpCommons.WithTelemetry(provider))
+            
+            app.Get("/api/monitored", func(c *fiber.Ctx) error {
+                // Request automatically logged and traced
+                return httpCommons.OK(c, map[string]string{"status": "monitored"})
+            })
+        }
+        ```
+        
+        The middleware automatically:
+        - Logs request/response details
+        - Creates distributed traces
+        - Records metrics (request count, duration, errors)
+        - Adds correlation IDs
+      parameters:
+        - name: X-Request-ID
+          in: header
+          description: Optional request correlation ID
+          schema:
+            type: string
+            format: uuid
+          example: "550e8400-e29b-41d4-a716-446655440000"
+      responses:
+        '200':
+          description: Successful response with observability headers
+          headers:
+            X-Request-ID:
+              description: Request correlation ID
+              schema:
+                type: string
+                format: uuid
+                example: "550e8400-e29b-41d4-a716-446655440000"
+            X-Response-Time:
+              description: Response time in milliseconds
+              schema:
+                type: string
+                example: "15ms"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "monitored"
+
+  /proxy/{path}:
+    get:
+      tags:
+        - proxy
+      summary: HTTP Proxy Endpoint
+      description: |
+        Example endpoint demonstrating HTTP proxy middleware functionality.
+        
+        Implementation:
+        ```go
+        func setupProxy(app *fiber.App) {
+            app.Use("/proxy", httpCommons.WithProxy("http://upstream-service:8080"))
+            
+            // Alternatively, configure proxy with options
+            app.Use("/api/v2", httpCommons.WithProxy("http://new-api-service:8080", ProxyOptions{
+                ModifyRequest: func(req *http.Request) error {
+                    req.Header.Set("X-Forwarded-By", "lib-commons-proxy")
+                    return nil
+                },
+                ModifyResponse: func(resp *http.Response) error {
+                    resp.Header.Set("X-Proxied", "true")
+                    return nil
+                },
+            }))
+        }
+        ```
+      parameters:
+        - name: path
+          in: path
+          required: true
+          description: Path to proxy to upstream service
+          schema:
+            type: string
+          example: "users/123"
+      responses:
+        '200':
+          description: Successful proxy response
+          headers:
+            X-Proxied:
+              description: Indicates response was proxied
+              schema:
+                type: string
+                example: "true"
+            X-Forwarded-By:
+              description: Proxy identification
+              schema:
+                type: string
+                example: "lib-commons-proxy"
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Response from upstream service
+                additionalProperties: true
+        '502':
+          description: Proxy error - upstream service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                upstream_error:
+                  summary: Upstream service error
+                  value:
+                    code: "PROXY_001"
+                    title: "Upstream Service Error"
+                    message: "Unable to connect to upstream service"
+        '504':
+          description: Proxy timeout
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                timeout_error:
+                  summary: Upstream service timeout
+                  value:
+                    code: "PROXY_002"
+                    title: "Upstream Timeout"
+                    message: "Upstream service did not respond within timeout period"
+
+components:
+  securitySchemes:
+    basicAuth:
+      type: http
+      scheme: basic
+
+  schemas:
+    ErrorResponse:
+      type: object
+      description: Standard error response format
+      properties:
+        code:
+          type: string
+          description: Error code for programmatic handling
+          example: "AUTH_001"
+        title:
+          type: string
+          description: Human-readable error title
+          example: "Authentication Required"
+        message:
+          type: string
+          description: Detailed error message
+          example: "Basic authentication credentials required"
+      required:
+        - code
+        - title
+        - message
+
+    MiddlewareConfig:
+      type: object
+      description: Configuration object for middleware components
+      properties:
+        cors:
+          $ref: '#/components/schemas/CORSConfig'
+        auth:
+          $ref: '#/components/schemas/AuthConfig'
+        logging:
+          $ref: '#/components/schemas/LoggingConfig'
+        telemetry:
+          $ref: '#/components/schemas/TelemetryConfig'
+        proxy:
+          $ref: '#/components/schemas/ProxyConfig'
+
+    CORSConfig:
+      type: object
+      description: CORS middleware configuration
+      properties:
+        allowOrigins:
+          type: array
+          items:
+            type: string
+          description: Allowed origins for CORS
+          example: ["https://example.com", "https://app.example.com"]
+          default: ["*"]
+        allowMethods:
+          type: array
+          items:
+            type: string
+          description: Allowed HTTP methods
+          example: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+          default: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+        allowHeaders:
+          type: array
+          items:
+            type: string
+          description: Allowed headers
+          example: ["Content-Type", "Authorization", "X-Requested-With"]
+          default: ["Content-Type", "Authorization", "X-Requested-With"]
+        exposeHeaders:
+          type: array
+          items:
+            type: string
+          description: Headers exposed to client
+          example: ["X-Request-ID", "X-Response-Time"]
+        allowCredentials:
+          type: boolean
+          description: Allow credentials in CORS requests
+          default: false
+        maxAge:
+          type: integer
+          description: Cache duration for preflight results in seconds
+          example: 86400
+          default: 86400
+
+    AuthConfig:
+      type: object
+      description: Authentication middleware configuration
+      properties:
+        basic:
+          type: object
+          properties:
+            username:
+              type: string
+              description: Basic auth username
+              example: "admin"
+            password:
+              type: string
+              format: password
+              description: Basic auth password
+              example: "secretpassword"
+        jwt:
+          type: object
+          properties:
+            secret:
+              type: string
+              format: password
+              description: JWT signing secret
+            algorithm:
+              type: string
+              description: JWT signing algorithm
+              example: "HS256"
+              default: "HS256"
+
+    LoggingConfig:
+      type: object
+      description: Logging middleware configuration
+      properties:
+        enabled:
+          type: boolean
+          description: Enable request/response logging
+          default: true
+        level:
+          type: string
+          enum: [debug, info, warn, error]
+          description: Log level
+          default: "info"
+        format:
+          type: string
+          enum: [text, json]
+          description: Log output format
+          default: "json"
+        includeRequestBody:
+          type: boolean
+          description: Include request body in logs
+          default: false
+        includeResponseBody:
+          type: boolean
+          description: Include response body in logs
+          default: false
+        excludePaths:
+          type: array
+          items:
+            type: string
+          description: Paths to exclude from logging
+          example: ["/health", "/metrics"]
+
+    TelemetryConfig:
+      type: object
+      description: Telemetry middleware configuration
+      properties:
+        enabled:
+          type: boolean
+          description: Enable telemetry collection
+          default: true
+        serviceName:
+          type: string
+          description: Service name for telemetry
+          example: "my-api-service"
+        serviceVersion:
+          type: string
+          description: Service version
+          example: "1.0.0"
+        environment:
+          type: string
+          description: Environment name
+          example: "production"
+        otlpEndpoint:
+          type: string
+          format: uri
+          description: OTLP endpoint for traces and metrics
+          example: "http://jaeger:14268/api/traces"
+        metrics:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              description: Enable metrics collection
+              default: true
+            histogram_buckets:
+              type: array
+              items:
+                type: number
+              description: Histogram buckets for request duration
+              example: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]
+        tracing:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              description: Enable distributed tracing
+              default: true
+            sample_rate:
+              type: number
+              minimum: 0.0
+              maximum: 1.0
+              description: Trace sampling rate (0.0 to 1.0)
+              example: 0.1
+              default: 1.0
+
+    ProxyConfig:
+      type: object
+      description: HTTP proxy middleware configuration
+      properties:
+        target:
+          type: string
+          format: uri
+          description: Target upstream service URL
+          example: "http://upstream-service:8080"
+        timeout:
+          type: integer
+          description: Proxy timeout in seconds
+          example: 30
+          default: 30
+        retries:
+          type: integer
+          description: Number of retry attempts
+          example: 3
+          default: 0
+        modifyRequest:
+          type: boolean
+          description: Enable request modification
+          default: false
+        modifyResponse:
+          type: boolean
+          description: Enable response modification
+          default: false
+        preserveHost:
+          type: boolean
+          description: Preserve original host header
+          default: false
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+          description: Additional headers to add to proxied requests
+          example:
+            X-Forwarded-By: "lib-commons-proxy"
+            X-API-Version: "v1"

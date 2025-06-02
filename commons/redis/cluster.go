@@ -148,7 +148,9 @@ func (rcc *RedisClusterConnection) ConnectCluster(ctx context.Context) error {
 }
 
 // GetClusterClient returns cluster client with health check
-func (rcc *RedisClusterConnection) GetClusterClient(ctx context.Context) (*redis.ClusterClient, error) {
+func (rcc *RedisClusterConnection) GetClusterClient(
+	ctx context.Context,
+) (*redis.ClusterClient, error) {
 	if rcc.ClusterClient == nil || !rcc.Connected {
 		if err := rcc.ConnectCluster(ctx); err != nil {
 			return nil, err
@@ -186,7 +188,9 @@ func (rcc *RedisClusterConnection) HealthCheck(ctx context.Context) (err error) 
 }
 
 // GetClusterInfo returns cluster topology information
-func (rcc *RedisClusterConnection) GetClusterInfo(ctx context.Context) (result map[string]any, err error) {
+func (rcc *RedisClusterConnection) GetClusterInfo(
+	ctx context.Context,
+) (result map[string]any, err error) {
 	if rcc.ClusterClient == nil {
 		return nil, fmt.Errorf("cluster not connected")
 	}
@@ -230,7 +234,12 @@ func (rcc *RedisClusterConnection) Ping(ctx context.Context) *redis.StatusCmd {
 }
 
 // Set implements RedisClient interface
-func (rcc *RedisClusterConnection) Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd {
+func (rcc *RedisClusterConnection) Set(
+	ctx context.Context,
+	key string,
+	value any,
+	expiration time.Duration,
+) *redis.StatusCmd {
 	if rcc.ClusterClient == nil {
 		return redis.NewStatusCmd(ctx)
 	}
@@ -270,7 +279,10 @@ type RedisConnectionFactory struct {
 }
 
 // CreateConnection factory method for creating Redis connections
-func (f *RedisConnectionFactory) CreateConnection(connType ConnectionType, config any) (RedisClient, error) {
+func (f *RedisConnectionFactory) CreateConnection(
+	connType ConnectionType,
+	config any,
+) (RedisClient, error) {
 	switch connType {
 	case SingleInstance:
 		if config == nil {
@@ -279,7 +291,9 @@ func (f *RedisConnectionFactory) CreateConnection(connType ConnectionType, confi
 
 		redisConn, ok := config.(*RedisConnection)
 		if !ok {
-			return nil, fmt.Errorf("invalid config type for single instance connection: expected *RedisConnection")
+			return nil, fmt.Errorf(
+				"invalid config type for single instance connection: expected *RedisConnection",
+			)
 		}
 
 		// Set logger if not already set
@@ -296,7 +310,9 @@ func (f *RedisConnectionFactory) CreateConnection(connType ConnectionType, confi
 
 		clusterConfig, ok := config.(*ClusterConfig)
 		if !ok {
-			return nil, fmt.Errorf("invalid config type for cluster connection: expected *ClusterConfig")
+			return nil, fmt.Errorf(
+				"invalid config type for cluster connection: expected *ClusterConfig",
+			)
 		}
 
 		clusterConn := &RedisClusterConnection{

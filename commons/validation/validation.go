@@ -281,7 +281,10 @@ func ValidateStruct(s any) []ValidationError {
 	}
 
 	if v.Kind() != reflect.Struct {
-		validationErrors = append(validationErrors, NewValidationError("input must be a struct", ""))
+		validationErrors = append(
+			validationErrors,
+			NewValidationError("input must be a struct", ""),
+		)
 		return validationErrors
 	}
 

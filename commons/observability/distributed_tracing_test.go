@@ -23,12 +23,18 @@ func TestDistributedTracingHelper(t *testing.T) {
 
 	t.Run("PropagateServiceCall", func(_ *testing.T) {
 		called := false
-		err := helper.PropagateServiceCall(ctx, tracer, "test-service", "test-operation", func(ctx context.Context) error {
-			called = true
-			span := trace.SpanFromContext(ctx)
-			assert.NotNil(t, span)
-			return nil
-		})
+		err := helper.PropagateServiceCall(
+			ctx,
+			tracer,
+			"test-service",
+			"test-operation",
+			func(ctx context.Context) error {
+				called = true
+				span := trace.SpanFromContext(ctx)
+				assert.NotNil(t, span)
+				return nil
+			},
+		)
 
 		assert.NoError(t, err)
 		assert.True(t, called)
@@ -36,9 +42,15 @@ func TestDistributedTracingHelper(t *testing.T) {
 
 	t.Run("PropagateServiceCall with error", func(_ *testing.T) {
 		testErr := assert.AnError
-		err := helper.PropagateServiceCall(ctx, tracer, "test-service", "test-operation", func(_ context.Context) error {
-			return testErr
-		})
+		err := helper.PropagateServiceCall(
+			ctx,
+			tracer,
+			"test-service",
+			"test-operation",
+			func(_ context.Context) error {
+				return testErr
+			},
+		)
 
 		assert.Equal(t, testErr, err)
 	})
@@ -163,11 +175,15 @@ func TestSpanProcessor(t *testing.T) {
 	})
 
 	t.Run("ProcessWithSpanAndResult success", func(_ *testing.T) {
-		result, err := processor.ProcessWithSpanAndResult(ctx, "test-span", func(ctx context.Context) (any, error) {
-			span := trace.SpanFromContext(ctx)
-			assert.NotNil(t, span)
-			return "test-result", nil
-		})
+		result, err := processor.ProcessWithSpanAndResult(
+			ctx,
+			"test-span",
+			func(ctx context.Context) (any, error) {
+				span := trace.SpanFromContext(ctx)
+				assert.NotNil(t, span)
+				return "test-result", nil
+			},
+		)
 
 		assert.NoError(t, err)
 		assert.Equal(t, "test-result", result)
@@ -175,9 +191,13 @@ func TestSpanProcessor(t *testing.T) {
 
 	t.Run("ProcessWithSpanAndResult error", func(_ *testing.T) {
 		testErr := assert.AnError
-		result, err := processor.ProcessWithSpanAndResult(ctx, "test-span", func(_ context.Context) (any, error) {
-			return nil, testErr
-		})
+		result, err := processor.ProcessWithSpanAndResult(
+			ctx,
+			"test-span",
+			func(_ context.Context) (any, error) {
+				return nil, testErr
+			},
+		)
 
 		assert.Equal(t, testErr, err)
 		assert.Nil(t, result)

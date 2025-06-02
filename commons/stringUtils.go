@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"golang.org/x/text/runes"
-	"golang.org/x/text/transform"
-	"golang.org/x/text/unicode/norm"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
+
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 )
 
 // RemoveAccents removes accents of a given word and returns it
@@ -41,7 +42,8 @@ func RemoveSpaces(word string) string {
 // IsNilOrEmpty returns a boolean indicating if a *string is nil or empty.
 // It's use TrimSpace so, a string "  " and "" and "null" and "nil" will be considered empty
 func IsNilOrEmpty(s *string) bool {
-	return s == nil || strings.TrimSpace(*s) == "" || strings.TrimSpace(*s) == "null" || strings.TrimSpace(*s) == "nil"
+	return s == nil || strings.TrimSpace(*s) == "" || strings.TrimSpace(*s) == "null" ||
+		strings.TrimSpace(*s) == "nil"
 }
 
 // CamelToSnakeCase converts a given camelCase string to snake_case format.

@@ -3,13 +3,14 @@
 package shutdown
 
 import (
+	"os"
+	"os/signal"
+	"syscall"
+
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
 	libLicense "github.com/LerianStudio/lib-license-go/middleware"
 	"github.com/gofiber/fiber/v2"
-	"os"
-	"os/signal"
-	"syscall"
 )
 
 // GracefulShutdown handles the graceful shutdown of application components.

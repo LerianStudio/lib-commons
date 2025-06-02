@@ -140,7 +140,8 @@ func TestAutoDetector(t *testing.T) {
 
 		// Mock successful cluster detection
 		clusterNodes := []string{"node1:6379", "node2:6379", "node3:6379"}
-		mockTopo.On("IsCluster", mock.Anything, "redis.example.com:6379").Return(true, clusterNodes, nil)
+		mockTopo.On("IsCluster", mock.Anything, "redis.example.com:6379").
+			Return(true, clusterNodes, nil)
 
 		detector := &AutoDetector{
 			envDetector:  mockEnv,
@@ -175,7 +176,8 @@ func TestAutoDetector(t *testing.T) {
 		mockEnv.On("IsGCP", mock.Anything).Return(false, "", nil)
 
 		// Mock single instance detection
-		mockTopo.On("IsCluster", mock.Anything, "localhost:6379").Return(false, []string{"localhost:6379"}, nil)
+		mockTopo.On("IsCluster", mock.Anything, "localhost:6379").
+			Return(false, []string{"localhost:6379"}, nil)
 
 		detector := &AutoDetector{
 			envDetector:  mockEnv,
@@ -206,10 +208,12 @@ func TestAutoDetector(t *testing.T) {
 		mockEnv := &MockEnvironmentDetector{}
 		mockTopo := &MockTopologyDetector{}
 		// Mock GCP detection error
-		mockEnv.On("IsGCP", mock.Anything).Return(false, "", fmt.Errorf("GCP metadata service unavailable"))
+		mockEnv.On("IsGCP", mock.Anything).
+			Return(false, "", fmt.Errorf("GCP metadata service unavailable"))
 
 		// Mock cluster detection error
-		mockTopo.On("IsCluster", mock.Anything, "unreachable:6379").Return(false, []string(nil), fmt.Errorf("connection refused"))
+		mockTopo.On("IsCluster", mock.Anything, "unreachable:6379").
+			Return(false, []string(nil), fmt.Errorf("connection refused"))
 
 		detector := &AutoDetector{
 			envDetector:  mockEnv,
@@ -241,7 +245,9 @@ func TestAutoDetector(t *testing.T) {
 
 		// Mock detection calls - should only be called once due to caching
 		mockEnv.On("IsGCP", mock.Anything).Return(true, "cached-project", nil).Once()
-		mockTopo.On("IsCluster", mock.Anything, "cached:6379").Return(false, []string{"cached:6379"}, nil).Once()
+		mockTopo.On("IsCluster", mock.Anything, "cached:6379").
+			Return(false, []string{"cached:6379"}, nil).
+			Once()
 
 		detector := &AutoDetector{
 			envDetector:  mockEnv,
@@ -280,7 +286,9 @@ func TestAutoDetector(t *testing.T) {
 
 		// Mock detection calls - should be called twice due to cache expiration
 		mockEnv.On("IsGCP", mock.Anything).Return(true, "expired-project", nil).Twice()
-		mockTopo.On("IsCluster", mock.Anything, "expired:6379").Return(false, []string{"expired:6379"}, nil).Twice()
+		mockTopo.On("IsCluster", mock.Anything, "expired:6379").
+			Return(false, []string{"expired:6379"}, nil).
+			Twice()
 
 		detector := &AutoDetector{
 			envDetector:  mockEnv,
@@ -428,7 +436,12 @@ func TestGCPEnvironmentDetector(t *testing.T) {
 			value  string
 			isGCP  bool
 		}{
-			{"Google Application Credentials", "GOOGLE_APPLICATION_CREDENTIALS", "/path/to/creds.json", true},
+			{
+				"Google Application Credentials",
+				"GOOGLE_APPLICATION_CREDENTIALS",
+				"/path/to/creds.json",
+				true,
+			},
 			{"GCP Project ID", "GCP_PROJECT_ID", "my-project", true},
 			{"Google Cloud Project", "GOOGLE_CLOUD_PROJECT", "my-project", true},
 			{"GAE Application", "GAE_APPLICATION", "my-app", true},
@@ -517,7 +530,8 @@ e7d1eecce10fd6bb5eb35b9f99a514335d9ba9ca 127.0.0.1:30001@31001 myself,master - 0
 				nodeAddr = nodeAddr[:idx]
 			}
 
-			if host, port, err := net.SplitHostPort(nodeAddr); err == nil && host != "" && port != "" {
+			if host, port, err := net.SplitHostPort(nodeAddr); err == nil && host != "" &&
+				port != "" {
 				parsedNodes = append(parsedNodes, nodeAddr)
 			}
 		}
@@ -599,7 +613,8 @@ func TestConcurrentDetection(t *testing.T) {
 
 		// Mock successful detection - will be called multiple times in concurrent scenarios
 		mockEnv.On("IsGCP", mock.Anything).Return(true, "concurrent-project", nil)
-		mockTopo.On("IsCluster", mock.Anything, "concurrent:6379").Return(false, []string{"concurrent:6379"}, nil)
+		mockTopo.On("IsCluster", mock.Anything, "concurrent:6379").
+			Return(false, []string{"concurrent:6379"}, nil)
 
 		detector := &AutoDetector{
 			envDetector:  mockEnv,
@@ -722,7 +737,8 @@ func TestDetectionTimeouts(t *testing.T) {
 
 		// Mock slow responses that exceed timeout
 		mockEnv.On("IsGCP", mock.Anything).Return(false, "", context.DeadlineExceeded)
-		mockTopo.On("IsCluster", mock.Anything, "slow:6379").Return(false, []string{}, context.DeadlineExceeded)
+		mockTopo.On("IsCluster", mock.Anything, "slow:6379").
+			Return(false, []string{}, context.DeadlineExceeded)
 
 		detector := &AutoDetector{
 			envDetector:      mockEnv,

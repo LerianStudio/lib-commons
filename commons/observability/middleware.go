@@ -150,7 +150,11 @@ func (om *ObservabilityMiddleware) Middleware() fiber.Handler {
 
 		// Record request size
 		if c.Request().Header.ContentLength() > 0 {
-			om.requestSize.Record(ctx, int64(c.Request().Header.ContentLength()), metric.WithAttributes(attrs...))
+			om.requestSize.Record(
+				ctx,
+				int64(c.Request().Header.ContentLength()),
+				metric.WithAttributes(attrs...),
+			)
 		}
 
 		// Process request

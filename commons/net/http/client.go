@@ -392,7 +392,9 @@ func newBaseHTTPClient(config *ClientConfig) (*http.Client, error) {
 func validateConfig(config *ClientConfig) error {
 	// Skip InsecureSkipVerify check for internal networks
 	if config.SSLVerificationStrict && config.InsecureSkipVerify {
-		return fmt.Errorf("InsecureSkipVerify is enabled with strict verification - this is a security risk")
+		return fmt.Errorf(
+			"InsecureSkipVerify is enabled with strict verification - this is a security risk",
+		)
 	}
 
 	if config.MinTLSVersion < tls.VersionTLS12 {
@@ -408,7 +410,10 @@ func validateConfig(config *ClientConfig) error {
 	}
 
 	if config.TLSHandshakeTimeout <= 0 {
-		return fmt.Errorf("TLS handshake timeout must be positive, got %v", config.TLSHandshakeTimeout)
+		return fmt.Errorf(
+			"TLS handshake timeout must be positive, got %v",
+			config.TLSHandshakeTimeout,
+		)
 	}
 
 	return nil

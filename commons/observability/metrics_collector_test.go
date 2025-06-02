@@ -102,7 +102,13 @@ func TestMetricsCollector_RecordRequest(t *testing.T) {
 		require.NoError(t, err)
 
 		// Should not panic and should do nothing
-		disabledCollector.RecordRequest(ctx, "test-operation", "test-resource", 200, time.Millisecond)
+		disabledCollector.RecordRequest(
+			ctx,
+			"test-operation",
+			"test-resource",
+			200,
+			time.Millisecond,
+		)
 	})
 }
 
@@ -123,7 +129,13 @@ func TestMetricsCollector_RecordBatchRequest(t *testing.T) {
 		}
 
 		// Should not panic
-		collector.RecordBatchRequest(ctx, "batch-operation", "batch-resource", batchSize, duration, attrs...)
+		collector.RecordBatchRequest(
+			ctx,
+			"batch-operation",
+			"batch-resource",
+			batchSize,
+			duration,
+			attrs...)
 	})
 
 	t.Run("empty batch", func(_ *testing.T) {
@@ -198,7 +210,12 @@ func TestMetricsCollector_RecordError(t *testing.T) {
 		}
 
 		// Should not panic
-		collector.RecordError(ctx, "validation-operation", "validation-resource", "validation_error", attrs...)
+		collector.RecordError(
+			ctx,
+			"validation-operation",
+			"validation-resource",
+			"validation_error",
+			attrs...)
 	})
 
 	t.Run("unknown error", func(_ *testing.T) {
@@ -437,7 +454,13 @@ func BenchmarkMetricsCollector(b *testing.B) {
 	b.Run("RecordRequest", func(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			collector.RecordRequest(ctx, "benchmark-operation", "benchmark-resource", 200, time.Millisecond)
+			collector.RecordRequest(
+				ctx,
+				"benchmark-operation",
+				"benchmark-resource",
+				200,
+				time.Millisecond,
+			)
 		}
 	})
 

@@ -1,8 +1,9 @@
 package zap
 
 import (
-	"go.uber.org/zap"
 	"testing"
+
+	"go.uber.org/zap"
 )
 
 func TestZap(t *testing.T) {

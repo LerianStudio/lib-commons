@@ -74,7 +74,11 @@ func TestGenerateUUIDv7(t *testing.T) {
 		uuids[uuid.String()] = true
 
 		// Check it's a valid UUID v7 format (version bits should be 0111)
-		assert.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$`, uuid.String())
+		assert.Regexp(
+			t,
+			`^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$`,
+			uuid.String(),
+		)
 	}
 }
 

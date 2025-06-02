@@ -253,7 +253,12 @@ func TestHTTPResponseBehaviorContract(t *testing.T) {
 
 		// Test InternalServerError response (500)
 		app.Get("/test-internal-error", func(c *fiber.Ctx) error {
-			return httpCommons.InternalServerError(c, "SYS001", "System Error", "Database connection failed")
+			return httpCommons.InternalServerError(
+				c,
+				"SYS001",
+				"System Error",
+				"Database connection failed",
+			)
 		})
 
 		req = httptest.NewRequest("GET", "/test-internal-error", nil)

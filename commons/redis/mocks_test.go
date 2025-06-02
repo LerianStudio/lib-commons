@@ -99,7 +99,12 @@ func (m *MockRedisClusterClient) Ping(ctx context.Context) *redis.StatusCmd {
 	return args.Get(0).(*redis.StatusCmd)
 }
 
-func (m *MockRedisClusterClient) Set(ctx context.Context, key string, value any, expiration time.Duration) *redis.StatusCmd {
+func (m *MockRedisClusterClient) Set(
+	ctx context.Context,
+	key string,
+	value any,
+	expiration time.Duration,
+) *redis.StatusCmd {
 	args := m.Called(ctx, key, value, expiration)
 	return args.Get(0).(*redis.StatusCmd)
 }
