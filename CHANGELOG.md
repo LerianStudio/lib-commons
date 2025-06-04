@@ -1,3 +1,10 @@
+## [1.13.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.13.0-beta.1...v1.13.0-beta.2) (2025-06-04)
+
+
+### Bug Fixes
+
+* adjust validations and create test; ([8d96296](https://github.com/LerianStudio/lib-commons/commit/8d96296f5b228a9241d36a39acf864c4eecdb46c))
+
 ## [1.13.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.12.1...v1.13.0-beta.1) (2025-06-04)
 
 
