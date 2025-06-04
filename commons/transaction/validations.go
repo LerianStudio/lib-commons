@@ -234,9 +234,9 @@ func OperateBalances(amount Amount, balance Balance, operation string) (Balance,
 
 	switch operation {
 	case constant.DEBIT:
-		total.Add(balance.Available.Sub(amount.Value))
+		total = balance.Available.Sub(amount.Value)
 	default: // CREDIT
-		total.Add(balance.Available.Add(amount.Value))
+		total = balance.Available.Add(amount.Value)
 	}
 
 	return Balance{
@@ -276,6 +276,7 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan decimal.Decimal, ft chan
 			shareValue := send.Value.Mul(firstPart).Mul(secondPart)
 
 			fmto[fromTos[i].AccountAlias] = Amount{Asset: send.Asset, Value: shareValue}
+			total.Value = total.Value.Add(shareValue)
 		}
 
 		if fromTos[i].Amount != nil && fromTos[i].Amount.Value.IsPositive() {
@@ -285,10 +286,11 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan decimal.Decimal, ft chan
 			}
 
 			fmto[fromTos[i].AccountAlias] = amount
+			total.Value = total.Value.Add(amount.Value)
 		}
 
 		if !commons.IsNilOrEmpty(&fromTos[i].Remaining) {
-			total.Value.Add(remaining.Value)
+			total.Value = total.Value.Add(remaining.Value)
 
 			fmto[fromTos[i].AccountAlias] = remaining
 			fromTos[i].Amount = &remaining
