@@ -1,3 +1,10 @@
+## [1.13.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.13.0-beta.2...v1.13.0-beta.3) (2025-06-04)
+
+
+### Features
+
+* create log test; ([f7733eb](https://github.com/LerianStudio/lib-commons/commit/f7733ebb01a9bb5e284bde68fc62c16396f21ab6))
+
 ## [1.13.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.13.0-beta.1...v1.13.0-beta.2) (2025-06-04)
 
 
