@@ -9,6 +9,21 @@
 ### Bug Fixes
 
 * add version; ([71c011a](https://github.com/LerianStudio/lib-commons/commit/71c011a4b660d0d775921f465bbb51b95693e01c))
+* remove duplicate code on action; ([f671eb5](https://github.com/LerianStudio/lib-commons/commit/f671eb502a2a3fe186b74840143046dd734849b8))
+* update go mod and go sum; ([effc265](https://github.com/LerianStudio/lib-commons/commit/effc265461cd987ee37bd60005dd9e642134b200))
+* update golangci; ([0a03900](https://github.com/LerianStudio/lib-commons/commit/0a0390027ec0a52b295f8248f31ba7c2ea9507c6))
+
+## [1.13.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.12.1...v1.13.0-beta.1) (2025-06-04)
+
+
+### Features
+
+* refactor transaction module to use decimal library; ([ea1ca34](https://github.com/LerianStudio/lib-commons/commit/ea1ca346198223f15735571525933c4060e72fd7))
+
+
+### Bug Fixes
+
+* add version; ([71c011a](https://github.com/LerianStudio/lib-commons/commit/71c011a4b660d0d775921f465bbb51b95693e01c))
 * update go mod and go sum; ([effc265](https://github.com/LerianStudio/lib-commons/commit/effc265461cd987ee37bd60005dd9e642134b200))
 * update golangci; ([0a03900](https://github.com/LerianStudio/lib-commons/commit/0a0390027ec0a52b295f8248f31ba7c2ea9507c6))
 
