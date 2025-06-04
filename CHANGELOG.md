@@ -1,3 +1,15 @@
+## [1.13.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.12.1...v1.13.0-beta.1) (2025-06-04)
+
+
+### Features
+
+* refactor transaction module to use decimal library; ([ea1ca34](https://github.com/LerianStudio/lib-commons/commit/ea1ca346198223f15735571525933c4060e72fd7))
+
+
+### Bug Fixes
+
+* update go mod and go sum; ([effc265](https://github.com/LerianStudio/lib-commons/commit/effc265461cd987ee37bd60005dd9e642134b200))
+
 ## [1.12.0](https://github.com/LerianStudio/lib-commons/compare/v1.11.0...v1.12.0) (2025-05-20)
 
 
