@@ -3,7 +3,7 @@ module github.com/LerianStudio/lib-commons
 go 1.23.2
 
 require (
-	github.com/LerianStudio/lib-license-go v1.2.0
+	github.com/LerianStudio/lib-license-go v1.0.0
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/bxcodec/dbresolver/v2 v2.2.0
 	github.com/gofiber/fiber/v2 v2.52.8
