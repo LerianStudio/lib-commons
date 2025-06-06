@@ -1,3 +1,10 @@
+## [1.13.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v1.13.0-beta.3...v1.13.0-beta.4) (2025-06-06)
+
+
+### Features
+
+* add rabbitmq test and coverage script; ([b07cb0e](https://github.com/LerianStudio/lib-commons/commit/b07cb0e84496c2f078821a62c8fab019aae0fd58))
+
 ## [1.13.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.13.0-beta.2...v1.13.0-beta.3) (2025-06-04)
 
 
