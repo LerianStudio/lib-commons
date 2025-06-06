@@ -1,3 +1,10 @@
+## [1.14.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.13.0...v1.14.0-beta.1) (2025-06-06)
+
+
+### Features
+
+* add license shutdown in libcommons ([1d7e80c](https://github.com/LerianStudio/lib-commons/commit/1d7e80ce62d85f0b3bac3eefe1bef13c447de77e))
+
 ## [1.13.0](https://github.com/LerianStudio/lib-commons/compare/v1.12.1...v1.13.0) (2025-06-06)
 
 
