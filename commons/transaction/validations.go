@@ -330,6 +330,7 @@ func ValidateSendSourceAndDistribute(transaction Transaction) (*Responses, error
 		Sources:      make([]string, 0),
 		Destinations: make([]string, 0),
 		Aliases:      make([]string, 0),
+		Pending:      transaction.Pending,
 	}
 
 	t := make(chan decimal.Decimal)
