@@ -1,3 +1,15 @@
+## [1.15.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.14.0...v1.15.0-beta.1) (2025-06-11)
+
+
+### Features
+
+* add field pending on flat struct response of transaction to simplify the code; ([9ccfd17](https://github.com/LerianStudio/lib-commons/commit/9ccfd17f02cf9959ff900a67cd7e3b155b6dad49))
+
+
+### Bug Fixes
+
+* update go mod and go sum; ([43f06e2](https://github.com/LerianStudio/lib-commons/commit/43f06e28730b339bb4fa656aded361435a8071b9))
+
 ## [1.14.0](https://github.com/LerianStudio/lib-commons/compare/v1.13.0...v1.14.0) (2025-06-09)
 
 
