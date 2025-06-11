@@ -38,6 +38,7 @@ type Responses struct {
 	Sources      []string
 	Destinations []string
 	Aliases      []string
+	Pending      bool
 }
 
 // Metadata structure for marshaling/unmarshalling JSON.
