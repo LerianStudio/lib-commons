@@ -100,10 +100,10 @@ func TestValidateBalancesRules(t *testing.T) {
 			validate: Responses{
 				Asset: "USD",
 				From: map[string]Amount{
-					"@account1": {Value: decimal.NewFromInt(100)},
+					"@account1": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT},
 				},
 				To: map[string]Amount{
-					"@account2": {Value: decimal.NewFromInt(100)},
+					"@account2": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT},
 				},
 			},
 			balances: []*Balance{
@@ -132,7 +132,7 @@ func TestValidateBalancesRules(t *testing.T) {
 			errorCode:   "0018", // ErrInsufficientFunds
 		},
 		{
-			name: "invalid - wrong number of balances",
+			name:        "invalid - wrong number of balances",
 			transaction: Transaction{},
 			validate: Responses{
 				From: map[string]Amount{
@@ -151,7 +151,7 @@ func TestValidateBalancesRules(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateBalancesRules(ctx, tt.transaction, tt.validate, tt.balances)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 				if tt.errorCode != "" {
@@ -266,7 +266,7 @@ func TestValidateFromBalances(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validateFromBalances(tt.balance, tt.from, tt.asset)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 				if tt.errorCode != "" {
@@ -365,7 +365,7 @@ func TestValidateToBalances(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validateToBalances(tt.balance, tt.to, tt.asset)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 				if tt.errorCode != "" {
@@ -444,8 +444,8 @@ func TestOperateBalances(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := OperateBalances(tt.amount, tt.balance, tt.operation)
-			
+			result, err := OperateBalances(tt.amount, tt.balance)
+
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
@@ -789,7 +789,7 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ValidateSendSourceAndDistribute(tt.transaction)
+			got, err := ValidateSendSourceAndDistribute(tt.transaction, constant.CREATED)
 
 			if tt.expectError {
 				assert.Error(t, err)

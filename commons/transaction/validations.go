@@ -233,19 +233,18 @@ func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 		totalOnHold decimal.Decimal
 	)
 
-	total = balance.Available
 	totalOnHold = balance.OnHold
 
 	switch amount.Operation {
-	case constant.DEBIT:
-		total = balance.Available.Sub(amount.Value)
-	case constant.CREDIT:
-		total = balance.Available.Add(amount.Value)
 	case constant.ONHOLD:
 		total = balance.Available.Sub(amount.Value)
 		totalOnHold = balance.OnHold.Add(amount.Value)
 	case constant.RELEASE:
 		totalOnHold = balance.OnHold.Sub(amount.Value)
+		total = balance.Available.Add(amount.Value)
+	case constant.DEBIT:
+		total = balance.Available.Sub(amount.Value)
+	default: //	constant.CREDIT
 		total = balance.Available.Add(amount.Value)
 	}
 
