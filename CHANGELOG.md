@@ -1,3 +1,16 @@
+## [1.16.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.15.0...v1.16.0-beta.1) (2025-06-11)
+
+
+### Features
+
+* add new sub and add to pre transaction; ([9589b3f](https://github.com/LerianStudio/lib-commons/commit/9589b3f8fbf600f1790c1cc2074a1e0ac49644e0))
+
+
+### Bug Fixes
+
+* make test and make lint; ([4686b75](https://github.com/LerianStudio/lib-commons/commit/4686b75bdc944398b781e37b2c028b3a47d26357))
+* resolve make lint; ([948fa9d](https://github.com/LerianStudio/lib-commons/commit/948fa9dabcc843b8cd881a4eec3e031182aa7230))
+
 ## [1.15.0](https://github.com/LerianStudio/lib-commons/compare/v1.14.0...v1.15.0) (2025-06-11)
 
 
