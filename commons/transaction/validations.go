@@ -65,7 +65,7 @@ func validateBalance(balance *Balance, dsl Transaction, from map[string]Amount) 
 					OnHold:    balance.OnHold,
 				}
 
-				ba, err := OperateBalances(from[f.AccountAlias], blc, constant.DEBIT)
+				ba, err := OperateBalances(from[f.AccountAlias], blc)
 				if err != nil {
 					return err
 				}
@@ -132,7 +132,7 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 			OnHold:    balance.OnHold,
 		}
 
-		ba, err := OperateBalances(validate.From[ft.AccountAlias], blc, constant.DEBIT)
+		ba, err := OperateBalances(validate.From[ft.AccountAlias], blc)
 		if err != nil {
 			return Amount{}, Balance{}, err
 		}
@@ -152,7 +152,7 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 			OnHold:    balance.OnHold,
 		}
 
-		ba, err := OperateBalances(validate.To[ft.AccountAlias], blc, constant.CREDIT)
+		ba, err := OperateBalances(validate.To[ft.AccountAlias], blc)
 		if err != nil {
 			return Amount{}, Balance{}, err
 		}
@@ -168,7 +168,7 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 }
 
 // UpdateBalances function with some updates values in balances.
-func UpdateBalances(operation string, fromTo map[string]Amount, balances []*Balance, result chan []*Balance, er chan error) {
+func UpdateBalances(fromTo map[string]Amount, balances []*Balance, result chan []*Balance, er chan error) {
 	newBalances := make([]*Balance, 0)
 
 	for _, balance := range balances {
@@ -179,7 +179,7 @@ func UpdateBalances(operation string, fromTo map[string]Amount, balances []*Bala
 					OnHold:    balance.OnHold,
 				}
 
-				b, err := OperateBalances(fromTo[key], blc, operation)
+				b, err := OperateBalances(fromTo[key], blc)
 				if err != nil {
 					er <- err
 
@@ -227,40 +227,68 @@ func ConcatAlias(i int, alias string) string {
 }
 
 // OperateBalances Function to sum or sub two balances and Normalize the scale
-func OperateBalances(amount Amount, balance Balance, operation string) (Balance, error) {
+func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 	var (
-		total decimal.Decimal
+		total       decimal.Decimal
+		totalOnHold decimal.Decimal
 	)
 
-	switch operation {
+	totalOnHold = balance.OnHold
+
+	switch amount.Operation {
+	case constant.ONHOLD:
+		total = balance.Available.Sub(amount.Value)
+		totalOnHold = balance.OnHold.Add(amount.Value)
+	case constant.RELEASE:
+		totalOnHold = balance.OnHold.Sub(amount.Value)
+		total = balance.Available.Add(amount.Value)
 	case constant.DEBIT:
 		total = balance.Available.Sub(amount.Value)
-	default: // CREDIT
+	default: //	constant.CREDIT
 		total = balance.Available.Add(amount.Value)
 	}
 
 	return Balance{
 		Available: total,
-		OnHold:    balance.OnHold,
+		OnHold:    totalOnHold,
 	}, nil
 }
 
+// DetermineOperation Function to determine the operation
+func DetermineOperation(isPending bool, isFrom bool, transactionType string) string {
+	if isPending && isFrom && transactionType == constant.PENDING {
+		return constant.ONHOLD
+	} else if isPending && isFrom && transactionType == constant.CANCELED {
+		return constant.RELEASE
+	} else if isPending && !isFrom && transactionType == constant.PENDING {
+		return constant.CREDIT
+	} else if !isPending && isFrom {
+		return constant.DEBIT
+	} else if !isPending && !isFrom {
+		return constant.CREDIT
+	}
+
+	return ""
+}
+
 // CalculateTotal Calculate total for sources/destinations based on shares, amounts and remains
-func CalculateTotal(fromTos []FromTo, send Send, t chan decimal.Decimal, ft chan map[string]Amount, sd chan []string) {
+func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType string, t chan decimal.Decimal, ft chan map[string]Amount, sd chan []string) {
 	fmto := make(map[string]Amount)
 	scdt := make([]string, 0)
 
 	total := Amount{
-		Asset: send.Asset,
+		Asset: transaction.Send.Asset,
 		Value: decimal.NewFromInt(0),
 	}
 
 	remaining := Amount{
-		Asset: send.Asset,
-		Value: send.Value,
+		Asset: transaction.Send.Asset,
+		Value: transaction.Send.Value,
 	}
 
 	for i := range fromTos {
+		operation := DetermineOperation(transaction.Pending, fromTos[i].IsFrom, transactionType)
+
 		if fromTos[i].Share != nil && fromTos[i].Share.Percentage != 0 {
 			oneHundred := decimal.NewFromInt(100)
 
@@ -273,16 +301,22 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan decimal.Decimal, ft chan
 
 			firstPart := percentage.Div(oneHundred)
 			secondPart := percentageOfPercentage.Div(oneHundred)
-			shareValue := send.Value.Mul(firstPart).Mul(secondPart)
+			shareValue := transaction.Send.Value.Mul(firstPart).Mul(secondPart)
 
-			fmto[fromTos[i].AccountAlias] = Amount{Asset: send.Asset, Value: shareValue}
+			fmto[fromTos[i].AccountAlias] = Amount{
+				Asset:     transaction.Send.Asset,
+				Value:     shareValue,
+				Operation: operation,
+			}
+
 			total.Value = total.Value.Add(shareValue)
 		}
 
 		if fromTos[i].Amount != nil && fromTos[i].Amount.Value.IsPositive() {
 			amount := Amount{
-				Asset: fromTos[i].Amount.Asset,
-				Value: fromTos[i].Amount.Value,
+				Asset:     fromTos[i].Amount.Asset,
+				Value:     fromTos[i].Amount.Value,
+				Operation: operation,
 			}
 
 			fmto[fromTos[i].AccountAlias] = amount
@@ -291,6 +325,8 @@ func CalculateTotal(fromTos []FromTo, send Send, t chan decimal.Decimal, ft chan
 
 		if !commons.IsNilOrEmpty(&fromTos[i].Remaining) {
 			total.Value = total.Value.Add(remaining.Value)
+
+			remaining.Operation = operation
 
 			fmto[fromTos[i].AccountAlias] = remaining
 			fromTos[i].Amount = &remaining
@@ -316,7 +352,7 @@ func AppendIfNotExist(slice []string, s []string) []string {
 }
 
 // ValidateSendSourceAndDistribute Validate send and distribute totals
-func ValidateSendSourceAndDistribute(transaction Transaction) (*Responses, error) {
+func ValidateSendSourceAndDistribute(transaction Transaction, transactionType string) (*Responses, error) {
 	var (
 		sourcesTotal      decimal.Decimal
 		destinationsTotal decimal.Decimal
@@ -337,13 +373,13 @@ func ValidateSendSourceAndDistribute(transaction Transaction) (*Responses, error
 	ft := make(chan map[string]Amount)
 	sd := make(chan []string)
 
-	go CalculateTotal(transaction.Send.Source.From, transaction.Send, t, ft, sd)
+	go CalculateTotal(transaction.Send.Source.From, transaction, transactionType, t, ft, sd)
 	sourcesTotal = <-t
 	response.From = <-ft
 	response.Sources = <-sd
 	response.Aliases = AppendIfNotExist(response.Aliases, response.Sources)
 
-	go CalculateTotal(transaction.Send.Distribute.To, transaction.Send, t, ft, sd)
+	go CalculateTotal(transaction.Send.Distribute.To, transaction, transactionType, t, ft, sd)
 	destinationsTotal = <-t
 	response.To = <-ft
 	response.Destinations = <-sd
