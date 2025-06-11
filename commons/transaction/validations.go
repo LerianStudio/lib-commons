@@ -255,6 +255,23 @@ func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 	}, nil
 }
 
+// DetermineOperation Function to determine the operation
+func DetermineOperation(isPending bool, isFrom bool, transactionType string) string {
+	if isPending && isFrom && transactionType == constant.PENDING {
+		return constant.ONHOLD
+	} else if isPending && isFrom && transactionType == constant.CANCELED {
+		return constant.RELEASE
+	} else if isPending && !isFrom && transactionType == constant.PENDING {
+		return constant.CREDIT
+	} else if !isPending && isFrom {
+		return constant.DEBIT
+	} else if !isPending && !isFrom {
+		return constant.CREDIT
+	}
+
+	return ""
+}
+
 // CalculateTotal Calculate total for sources/destinations based on shares, amounts and remains
 func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType string, t chan decimal.Decimal, ft chan map[string]Amount, sd chan []string) {
 	fmto := make(map[string]Amount)
@@ -271,18 +288,7 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 	}
 
 	for i := range fromTos {
-		operation := ""
-		if transaction.Pending && fromTos[i].IsFrom && transactionType == constant.PENDING {
-			operation = constant.ONHOLD
-		} else if transaction.Pending && fromTos[i].IsFrom && transactionType == constant.CANCELED {
-			operation = constant.RELEASE
-		} else if transaction.Pending && !fromTos[i].IsFrom && transactionType == constant.PENDING {
-			operation = constant.CREDIT
-		} else if !transaction.Pending && fromTos[i].IsFrom {
-			operation = constant.DEBIT
-		} else if !transaction.Pending && !fromTos[i].IsFrom {
-			operation = constant.CREDIT
-		}
+		operation := DetermineOperation(transaction.Pending, fromTos[i].IsFrom, transactionType)
 
 		if fromTos[i].Share != nil && fromTos[i].Share.Percentage != 0 {
 			oneHundred := decimal.NewFromInt(100)
