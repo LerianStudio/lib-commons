@@ -123,44 +123,6 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 	}
 }
 
-// UpdateBalances function with some updates values in balances.
-func UpdateBalances(fromTo map[string]Amount, balances []*Balance, result chan []*Balance, er chan error) {
-	newBalances := make([]*Balance, 0)
-
-	for _, balance := range balances {
-		for key := range fromTo {
-			if balance.ID == key || balance.Alias == key {
-				b, err := OperateBalances(fromTo[key], *balance)
-				if err != nil {
-					er <- err
-
-					return
-				}
-
-				newBalances = append(newBalances, &Balance{
-					ID:             balance.ID,
-					Alias:          balance.Alias,
-					OrganizationID: balance.OrganizationID,
-					LedgerID:       balance.LedgerID,
-					AssetCode:      balance.AssetCode,
-					Available:      b.Available,
-					OnHold:         b.OnHold,
-					AllowSending:   balance.AllowSending,
-					AllowReceiving: balance.AllowReceiving,
-					AccountType:    balance.AccountType,
-					Version:        balance.Version,
-					CreatedAt:      balance.CreatedAt,
-					UpdatedAt:      balance.UpdatedAt,
-				})
-
-				break
-			}
-		}
-	}
-
-	result <- newBalances
-}
-
 // SplitAlias function to split alias with index
 func SplitAlias(alias string) string {
 	if strings.Contains(alias, "#") {
@@ -185,16 +147,20 @@ func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 	total = balance.Available
 	totalOnHold = balance.OnHold
 
-	switch amount.Operation {
-	case constant.ONHOLD:
+	switch {
+	case amount.Operation == constant.ONHOLD && amount.TransactionType == constant.PENDING:
 		total = balance.Available.Sub(amount.Value)
 		totalOnHold = balance.OnHold.Add(amount.Value)
-	case constant.RELEASE:
+	case amount.Operation == constant.RELEASE && amount.TransactionType == constant.CANCELED:
 		totalOnHold = balance.OnHold.Sub(amount.Value)
 		total = balance.Available.Add(amount.Value)
-	case constant.DEBIT:
+	case amount.Operation == constant.DEBIT && amount.TransactionType == constant.APPROVED:
+		totalOnHold = balance.OnHold.Sub(amount.Value)
+	case amount.Operation == constant.CREDIT && amount.TransactionType == constant.APPROVED:
+		total = balance.Available.Add(amount.Value)
+	case amount.Operation == constant.DEBIT && amount.TransactionType == constant.CREATED:
 		total = balance.Available.Sub(amount.Value)
-	case constant.CREDIT:
+	case amount.Operation == constant.CREDIT && amount.TransactionType == constant.CREATED:
 		total = balance.Available.Add(amount.Value)
 	}
 
@@ -206,19 +172,20 @@ func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 
 // DetermineOperation Function to determine the operation
 func DetermineOperation(isPending bool, isFrom bool, transactionType string) string {
-	if isPending && isFrom && transactionType == constant.PENDING {
+	switch {
+	case isPending && isFrom && transactionType == constant.PENDING:
 		return constant.ONHOLD
-	} else if isPending && isFrom && transactionType == constant.CANCELED {
+	case isPending && isFrom && transactionType == constant.CANCELED:
 		return constant.RELEASE
-	} else if isPending && !isFrom && transactionType == constant.PENDING {
+	case isPending && !isFrom && transactionType == constant.PENDING:
 		return constant.CREDIT
-	} else if !isPending && isFrom {
+	case !isPending && isFrom:
 		return constant.DEBIT
-	} else if !isPending {
+	case !isPending:
 		return constant.CREDIT
+	default:
+		return ""
 	}
-
-	return ""
 }
 
 // CalculateTotal Calculate total for sources/destinations based on shares, amounts and remains
@@ -254,9 +221,10 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 			shareValue := transaction.Send.Value.Mul(firstPart).Mul(secondPart)
 
 			fmto[fromTos[i].AccountAlias] = Amount{
-				Asset:     transaction.Send.Asset,
-				Value:     shareValue,
-				Operation: operation,
+				Asset:           transaction.Send.Asset,
+				Value:           shareValue,
+				Operation:       operation,
+				TransactionType: transactionType,
 			}
 
 			total.Value = total.Value.Add(shareValue)
@@ -264,9 +232,10 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 
 		if fromTos[i].Amount != nil && fromTos[i].Amount.Value.IsPositive() {
 			amount := Amount{
-				Asset:     fromTos[i].Amount.Asset,
-				Value:     fromTos[i].Amount.Value,
-				Operation: operation,
+				Asset:           fromTos[i].Amount.Asset,
+				Value:           fromTos[i].Amount.Value,
+				Operation:       operation,
+				TransactionType: transactionType,
 			}
 
 			fmto[fromTos[i].AccountAlias] = amount
@@ -277,6 +246,7 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 			total.Value = total.Value.Add(remaining.Value)
 
 			remaining.Operation = operation
+			remaining.TransactionType = transactionType
 
 			fmto[fromTos[i].AccountAlias] = remaining
 			fromTos[i].Amount = &remaining

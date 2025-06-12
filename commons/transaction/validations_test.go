@@ -49,10 +49,10 @@ func TestValidateBalancesRules(t *testing.T) {
 			validate: Responses{
 				Asset: "USD",
 				From: map[string]Amount{
-					"@account1": {Value: decimal.NewFromInt(100)},
+					"@account1": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT, TransactionType: constant.CREATED},
 				},
 				To: map[string]Amount{
-					"@account2": {Value: decimal.NewFromInt(100)},
+					"@account2": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT, TransactionType: constant.CREATED},
 				},
 			},
 			balances: []*Balance{
@@ -100,10 +100,10 @@ func TestValidateBalancesRules(t *testing.T) {
 			validate: Responses{
 				Asset: "USD",
 				From: map[string]Amount{
-					"@account1": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT},
+					"@account1": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT, TransactionType: constant.CREATED},
 				},
 				To: map[string]Amount{
-					"@account2": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT},
+					"@account2": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT, TransactionType: constant.CREATED},
 				},
 			},
 			balances: []*Balance{
@@ -136,10 +136,10 @@ func TestValidateBalancesRules(t *testing.T) {
 			transaction: Transaction{},
 			validate: Responses{
 				From: map[string]Amount{
-					"@account1": {Value: decimal.NewFromInt(100)},
+					"@account1": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT, TransactionType: constant.CREATED},
 				},
 				To: map[string]Amount{
-					"@account2": {Value: decimal.NewFromInt(100)},
+					"@account2": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT, TransactionType: constant.CREATED},
 				},
 			},
 			balances:    []*Balance{}, // Empty balances
@@ -395,8 +395,9 @@ func TestOperateBalances(t *testing.T) {
 		{
 			name: "debit operation",
 			amount: Amount{
-				Value:     decimal.NewFromInt(50),
-				Operation: constant.DEBIT,
+				Value:           decimal.NewFromInt(50),
+				Operation:       constant.DEBIT,
+				TransactionType: constant.CREATED,
 			},
 			balance: Balance{
 				Available: decimal.NewFromInt(100),
@@ -411,8 +412,9 @@ func TestOperateBalances(t *testing.T) {
 		{
 			name: "credit operation",
 			amount: Amount{
-				Value:     decimal.NewFromInt(50),
-				Operation: constant.CREDIT,
+				Value:           decimal.NewFromInt(50),
+				Operation:       constant.CREDIT,
+				TransactionType: constant.CREATED,
 			},
 			balance: Balance{
 				Available: decimal.NewFromInt(100),
