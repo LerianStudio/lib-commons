@@ -10,4 +10,5 @@ var (
 	ErrTransactionValueMismatch            = errors.New("0073")
 	ErrTransactionAmbiguous                = errors.New("0090")
 	ErrOverFlowInt64                       = errors.New("0097")
+	ErrOnHoldExternalAccount               = errors.New("0098")
 )
