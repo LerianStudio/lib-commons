@@ -1,3 +1,15 @@
+## [1.16.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.16.0-beta.1...v1.16.0-beta.2) (2025-06-12)
+
+
+### Features
+
+* update validate and refactor some bad codes; ([9435ca8](https://github.com/LerianStudio/lib-commons/commit/9435ca8f2d07ba5b4de592e2646ddbaa01151d5e))
+
+
+### Bug Fixes
+
+* make lint; ([79619f3](https://github.com/LerianStudio/lib-commons/commit/79619f3e5369317308cab4a517a74b06225bc056))
+
 ## [1.16.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.15.0...v1.16.0-beta.1) (2025-06-11)
 
 
