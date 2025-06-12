@@ -16,6 +16,7 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 	tracer := commons.NewTracerFromContext(ctx)
 
 	_, spanValidateBalances := tracer.Start(ctx, "validations.validate_balances_rules")
+	defer spanValidateBalances.End()
 
 	if len(balances) != (len(validate.From) + len(validate.To)) {
 		err := commons.ValidateBusinessError(constant.ErrAccountIneligibility, "ValidateAccounts")
@@ -42,7 +43,6 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 			return err
 		}
 	}
-	spanValidateBalances.End()
 
 	return nil
 }
