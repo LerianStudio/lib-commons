@@ -75,7 +75,7 @@ func (rc *RabbitMQConnection) GetNewConnect() (*amqp.Channel, error) {
 
 // HealthCheck rabbitmq when the server is started
 func (rc *RabbitMQConnection) HealthCheck() bool {
-	url := fmt.Sprintf("http://%s:%s/api/health/checks/alarms", rc.Host, rc.Port)
+	url := fmt.Sprintf("%s:%s/api/health/checks/alarms", rc.Host, rc.Port)
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
