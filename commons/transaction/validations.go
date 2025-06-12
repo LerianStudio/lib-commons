@@ -26,7 +26,7 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 	}
 
 	for _, balance := range balances {
-		if err := validateFromBalances(balance, validate.From, validate.Asset); err != nil {
+		if err := validateFromBalances(balance, validate.From, validate.Asset, validate.Pending); err != nil {
 			opentelemetry.HandleSpanError(&spanValidateBalances, "validations.validate_from_balances_", err)
 
 			logger.Errorf("validations.validate_from_balances_err: %s", err)
@@ -41,48 +41,15 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 
 			return err
 		}
-
-		if err := validateBalance(balance, transaction, validate.From); err != nil {
-			opentelemetry.HandleSpanError(&spanValidateBalances, "validations.validate_to_balances_", err)
-
-			logger.Errorf("validations.validate_balances_err: %s", err)
-
-			return err
-		}
 	}
-
 	spanValidateBalances.End()
 
 	return nil
 }
 
-func validateBalance(balance *Balance, dsl Transaction, from map[string]Amount) error {
+func validateFromBalances(balance *Balance, from map[string]Amount, asset string, pending bool) error {
 	for key := range from {
-		for _, f := range dsl.Send.Source.From {
-			if balance.ID == key || balance.Alias == key {
-				blc := Balance{
-					Available: balance.Available,
-					OnHold:    balance.OnHold,
-				}
-
-				ba, err := OperateBalances(from[f.AccountAlias], blc)
-				if err != nil {
-					return err
-				}
-
-				if ba.Available.IsNegative() && balance.AccountType != constant.ExternalAccountType {
-					return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateBalance", balance.Alias)
-				}
-			}
-		}
-	}
-
-	return nil
-}
-
-func validateFromBalances(balance *Balance, from map[string]Amount, asset string) error {
-	for key := range from {
-		if balance.ID == key || balance.Alias == key {
+		if key == balance.ID || key == balance.Alias {
 			if balance.AssetCode != asset {
 				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateFromAccounts")
 			}
@@ -94,6 +61,19 @@ func validateFromBalances(balance *Balance, from map[string]Amount, asset string
 			if (balance.Available.IsZero() || balance.Available.IsNegative()) && balance.AccountType != constant.ExternalAccountType {
 				return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateFromAccounts", balance.Alias)
 			}
+
+			ba, err := OperateBalances(from[key], *balance)
+			if err != nil {
+				return err
+			}
+
+			if ba.Available.IsNegative() && balance.AccountType != constant.ExternalAccountType {
+				return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateBalance", balance.Alias)
+			}
+
+			if pending && balance.AccountType == constant.ExternalAccountType {
+				return commons.ValidateBusinessError(constant.ErrOnHoldExternalAccount, "validateBalance", balance.Alias)
+			}
 		}
 	}
 
@@ -102,7 +82,7 @@ func validateFromBalances(balance *Balance, from map[string]Amount, asset string
 
 func validateToBalances(balance *Balance, to map[string]Amount, asset string) error {
 	for key := range to {
-		if balance.ID == key || balance.Alias == key {
+		if key == balance.ID || key == balance.Alias {
 			if balance.AssetCode != asset {
 				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateToAccounts")
 			}
@@ -122,49 +102,25 @@ func validateToBalances(balance *Balance, to map[string]Amount, asset string) er
 
 // ValidateFromToOperation func that validate operate balance
 func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (Amount, Balance, error) {
-	amount := Amount{}
-
-	balanceAfter := Balance{}
-
 	if ft.IsFrom {
-		blc := Balance{
-			Available: balance.Available,
-			OnHold:    balance.OnHold,
-		}
-
-		ba, err := OperateBalances(validate.From[ft.AccountAlias], blc)
+		ba, err := OperateBalances(validate.From[ft.AccountAlias], *balance)
 		if err != nil {
 			return Amount{}, Balance{}, err
 		}
 
 		if ba.Available.IsNegative() && balance.AccountType != constant.ExternalAccountType {
-			return amount, balanceAfter, commons.ValidateBusinessError(constant.ErrInsufficientFunds, "ValidateFromToOperation", balance.Alias)
+			return Amount{}, Balance{}, commons.ValidateBusinessError(constant.ErrInsufficientFunds, "ValidateFromToOperation", balance.Alias)
 		}
 
-		amount = Amount{
-			Value: validate.From[ft.AccountAlias].Value,
-		}
-
-		balanceAfter = ba
+		return validate.From[ft.AccountAlias], ba, nil
 	} else {
-		blc := Balance{
-			Available: balance.Available,
-			OnHold:    balance.OnHold,
-		}
-
-		ba, err := OperateBalances(validate.To[ft.AccountAlias], blc)
+		ba, err := OperateBalances(validate.To[ft.AccountAlias], *balance)
 		if err != nil {
 			return Amount{}, Balance{}, err
 		}
 
-		amount = Amount{
-			Value: validate.To[ft.AccountAlias].Value,
-		}
-
-		balanceAfter = ba
+		return validate.To[ft.AccountAlias], ba, nil
 	}
-
-	return amount, balanceAfter, nil
 }
 
 // UpdateBalances function with some updates values in balances.
@@ -174,19 +130,14 @@ func UpdateBalances(fromTo map[string]Amount, balances []*Balance, result chan [
 	for _, balance := range balances {
 		for key := range fromTo {
 			if balance.ID == key || balance.Alias == key {
-				blc := Balance{
-					Available: balance.Available,
-					OnHold:    balance.OnHold,
-				}
-
-				b, err := OperateBalances(fromTo[key], blc)
+				b, err := OperateBalances(fromTo[key], *balance)
 				if err != nil {
 					er <- err
 
 					return
 				}
 
-				ac := Balance{
+				newBalances = append(newBalances, &Balance{
 					ID:             balance.ID,
 					Alias:          balance.Alias,
 					OrganizationID: balance.OrganizationID,
@@ -200,9 +151,7 @@ func UpdateBalances(fromTo map[string]Amount, balances []*Balance, result chan [
 					Version:        balance.Version,
 					CreatedAt:      balance.CreatedAt,
 					UpdatedAt:      balance.UpdatedAt,
-				}
-
-				newBalances = append(newBalances, &ac)
+				})
 
 				break
 			}
@@ -233,6 +182,7 @@ func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 		totalOnHold decimal.Decimal
 	)
 
+	total = balance.Available
 	totalOnHold = balance.OnHold
 
 	switch amount.Operation {
@@ -244,7 +194,7 @@ func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 		total = balance.Available.Add(amount.Value)
 	case constant.DEBIT:
 		total = balance.Available.Sub(amount.Value)
-	default: //	constant.CREDIT
+	case constant.CREDIT:
 		total = balance.Available.Add(amount.Value)
 	}
 
@@ -264,7 +214,7 @@ func DetermineOperation(isPending bool, isFrom bool, transactionType string) str
 		return constant.CREDIT
 	} else if !isPending && isFrom {
 		return constant.DEBIT
-	} else if !isPending && !isFrom {
+	} else if !isPending {
 		return constant.CREDIT
 	}
 

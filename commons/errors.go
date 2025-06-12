@@ -58,6 +58,12 @@ func ValidateBusinessError(err error, entityType string, args ...any) error {
 			Title:      "Overflow Error",
 			Message:    "The request could not be completed due to an overflow. Please check the values, and try again.",
 		},
+		constant.ErrOnHoldExternalAccount: Response{
+			EntityType: entityType,
+			Code:       constant.ErrOnHoldExternalAccount.Error(),
+			Title:      "Invalid Pending Transaction",
+			Message:    "External accounts cannot be used for pending transactions in source operations. Please check the accounts and try again.",
+		},
 	}
 
 	if mappedError, found := errorMap[err]; found {

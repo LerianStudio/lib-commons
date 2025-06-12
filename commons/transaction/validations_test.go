@@ -265,7 +265,7 @@ func TestValidateFromBalances(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateFromBalances(tt.balance, tt.from, tt.asset)
+			err := validateFromBalances(tt.balance, tt.from, tt.asset, false)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -395,13 +395,13 @@ func TestOperateBalances(t *testing.T) {
 		{
 			name: "debit operation",
 			amount: Amount{
-				Value: decimal.NewFromInt(50),
+				Value:     decimal.NewFromInt(50),
+				Operation: constant.DEBIT,
 			},
 			balance: Balance{
 				Available: decimal.NewFromInt(100),
 				OnHold:    decimal.NewFromInt(10),
 			},
-			operation: constant.DEBIT,
 			expected: Balance{
 				Available: decimal.NewFromInt(50), // 100 - 50 = 50
 				OnHold:    decimal.NewFromInt(10),
@@ -411,31 +411,15 @@ func TestOperateBalances(t *testing.T) {
 		{
 			name: "credit operation",
 			amount: Amount{
-				Value: decimal.NewFromInt(50),
+				Value:     decimal.NewFromInt(50),
+				Operation: constant.CREDIT,
 			},
 			balance: Balance{
 				Available: decimal.NewFromInt(100),
 				OnHold:    decimal.NewFromInt(10),
 			},
-			operation: constant.CREDIT,
 			expected: Balance{
 				Available: decimal.NewFromInt(150), // 100 + 50 = 150
-				OnHold:    decimal.NewFromInt(10),
-			},
-			expectError: false,
-		},
-		{
-			name: "default operation (credit)",
-			amount: Amount{
-				Value: decimal.NewFromInt(50),
-			},
-			balance: Balance{
-				Available: decimal.NewFromInt(100),
-				OnHold:    decimal.NewFromInt(10),
-			},
-			operation: "INVALID",
-			expected: Balance{
-				Available: decimal.NewFromInt(150), // 100 + 50 = 150 (default is credit)
 				OnHold:    decimal.NewFromInt(10),
 			},
 			expectError: false,
