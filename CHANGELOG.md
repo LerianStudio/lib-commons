@@ -1,3 +1,10 @@
+## [1.16.0-beta.5](https://github.com/LerianStudio/lib-commons/compare/v1.16.0-beta.4...v1.16.0-beta.5) (2025-06-13)
+
+
+### Features
+
+* add new check; ([c48b83d](https://github.com/LerianStudio/lib-commons/commit/c48b83d6c32866a96081ce3500f13ffe7c540330))
+
 ## [1.16.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v1.16.0-beta.3...v1.16.0-beta.4) (2025-06-13)
 
 
