@@ -194,13 +194,15 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 	scdt := make([]string, 0)
 
 	total := Amount{
-		Asset: transaction.Send.Asset,
-		Value: decimal.NewFromInt(0),
+		Asset:           transaction.Send.Asset,
+		Value:           decimal.NewFromInt(0),
+		TransactionType: transactionType,
 	}
 
 	remaining := Amount{
-		Asset: transaction.Send.Asset,
-		Value: transaction.Send.Value,
+		Asset:           transaction.Send.Asset,
+		Value:           transaction.Send.Value,
+		TransactionType: transactionType,
 	}
 
 	for i := range fromTos {
@@ -246,11 +248,12 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 			total.Value = total.Value.Add(remaining.Value)
 
 			remaining.Operation = operation
-			remaining.TransactionType = transactionType
 
 			fmto[fromTos[i].AccountAlias] = remaining
 			fromTos[i].Amount = &remaining
 		}
+
+		total.Operation = operation
 
 		scdt = append(scdt, fromTos[i].SplitAlias())
 	}

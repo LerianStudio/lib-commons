@@ -35,7 +35,7 @@ func (m *mockRabbitMQConnection) setupMockServer() *httptest.Server {
 
 		// Set content type for JSON response
 		w.Header().Set("Content-Type", "application/json")
-		
+
 		// Return appropriate status based on test case
 		if m.healthyResponse {
 			w.Write([]byte(`{"status":"ok"}`))
@@ -183,8 +183,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 				defer server.Close()
 
 				// Parse the server URL to get host and port
-				serverURL := server.URL[7:] // Remove http://
-				hostParts := strings.SplitN(serverURL, ":", 2)
+				hostParts := strings.SplitN(server.URL, ":", 2)
 				conn.Host = hostParts[0]
 				if len(hostParts) > 1 {
 					conn.Port = hostParts[1]
@@ -219,8 +218,7 @@ func TestRabbitMQConnection_HealthCheck_Authentication(t *testing.T) {
 	defer server.Close()
 
 	// Parse the server URL
-	serverURL := server.URL[7:] // Remove http://
-	hostParts := strings.SplitN(serverURL, ":", 2)
+	hostParts := strings.SplitN(server.URL, ":", 2)
 	host := hostParts[0]
 	var port string
 	if len(hostParts) > 1 {
