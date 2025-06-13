@@ -157,10 +157,11 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			conn := &RabbitMQConnection{
-				Host:   "localhost",
-				User:   "user",
-				Pass:   "pass",
-				Logger: logger,
+				HealthCheckURL: "localhost",
+				Host:           "localhost",
+				User:           "worg",
+				Pass:           "pass",
+				Logger:         logger,
 			}
 
 			if tt.invalidRequest {
@@ -188,6 +189,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 				if len(hostParts) > 1 {
 					conn.Port = hostParts[1]
 				}
+				conn.HealthCheckURL = server.URL
 
 				// Run the test
 				isHealthy := conn.HealthCheck()
@@ -239,11 +241,12 @@ func TestRabbitMQConnection_HealthCheck_Authentication(t *testing.T) {
 
 	// Test with correct credentials
 	goodAuthConn := &RabbitMQConnection{
-		Host:   host,
-		Port:   port,
-		User:   "correct",
-		Pass:   "correct",
-		Logger: logger,
+		HealthCheckURL: server.URL,
+		Host:           host,
+		Port:           port,
+		User:           "correct",
+		Pass:           "correct",
+		Logger:         logger,
 	}
 
 	isHealthy = goodAuthConn.HealthCheck()
