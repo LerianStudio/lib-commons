@@ -1,3 +1,11 @@
+## [1.12.0](https://github.com/LerianStudio/lib-commons/compare/v1.11.0...v1.12.0) (2025-06-13)
+
+
+### Bug Fixes
+
+* Add integer overflow protection to transaction operations; :bug: ([32904de](https://github.com/LerianStudio/lib-commons/commit/32904def9bee6388f12a6e2cc997c20a594db696))
+* add url for health check to read. from envs; update testes; update go mod and go sum; ([e9b8333](https://github.com/LerianStudio/lib-commons/commit/e9b83330834c7c2949dfb05a4dc46f4786cd509d))
+
 ## [1.12.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.11.0...v1.12.0-beta.1) (2025-06-13)
 
 
