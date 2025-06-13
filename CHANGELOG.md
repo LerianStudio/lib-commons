@@ -1,3 +1,10 @@
+## [1.16.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v1.16.0-beta.3...v1.16.0-beta.4) (2025-06-13)
+
+
+### Bug Fixes
+
+* some testes and others stuffs; ([7577579](https://github.com/LerianStudio/lib-commons/commit/75775796cc745c79b448ed3292d97aa0900f7f67))
+
 ## [1.16.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.16.0-beta.2...v1.16.0-beta.3) (2025-06-13)
 
 
