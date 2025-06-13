@@ -1,3 +1,18 @@
+## [1.12.0](https://github.com/LerianStudio/lib-commons/compare/v1.11.0...v1.12.0) (2025-06-13)
+
+
+### Features
+
+* add log test; ([7ad741f](https://github.com/LerianStudio/lib-commons/commit/7ad741f558e7a725e95dab257500d5d24b2536e5))
+* add shutdown test ([9d5fb77](https://github.com/LerianStudio/lib-commons/commit/9d5fb77893e10a708136767eda3f9bac99363ba4))
+
+
+### Bug Fixes
+
+* Add integer overflow protection to transaction operations; :bug: ([32904de](https://github.com/LerianStudio/lib-commons/commit/32904def9bee6388f12a6e2cc997c20a594db696))
+* add url for health check to read. from envs; update testes; update go mod and go sum; ([e9b8333](https://github.com/LerianStudio/lib-commons/commit/e9b83330834c7c2949dfb05a4dc46f4786cd509d))
+* create redis test; ([3178547](https://github.com/LerianStudio/lib-commons/commit/317854731e550d222713503eecbdf26e2c26fa90))
+
 ## [1.12.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.11.0...v1.12.0-beta.1) (2025-06-13)
 
 
