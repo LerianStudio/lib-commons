@@ -173,20 +173,31 @@ func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 // DetermineOperation Function to determine the operation
 func DetermineOperation(isPending bool, isFrom bool, transactionType string) string {
 	switch {
-	case isPending && isFrom && transactionType == constant.PENDING:
-		return constant.ONHOLD
+	case isPending && transactionType == constant.PENDING:
+		switch {
+		case isFrom:
+			return constant.ONHOLD
+		default:
+			return constant.CREDIT
+		}
 	case isPending && isFrom && transactionType == constant.CANCELED:
 		return constant.RELEASE
-	case isPending && !isFrom && transactionType == constant.PENDING:
-		return constant.CREDIT
-	case isPending && isFrom && transactionType == constant.APPROVED:
-		return constant.DEBIT
-	case !isPending && isFrom:
-		return constant.DEBIT
+	case isPending && transactionType == constant.APPROVED:
+		switch {
+		case isFrom:
+			return constant.DEBIT
+		default:
+			return constant.CREDIT
+		}
 	case !isPending:
-		return constant.CREDIT
+		switch {
+		case isFrom:
+			return constant.DEBIT
+		default:
+			return constant.CREDIT
+		}
 	default:
-		return ""
+		return constant.CREDIT
 	}
 }
 

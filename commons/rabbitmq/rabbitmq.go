@@ -3,7 +3,6 @@ package rabbitmq
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"github.com/LerianStudio/lib-commons/commons/log"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
@@ -76,7 +75,7 @@ func (rc *RabbitMQConnection) GetNewConnect() (*amqp.Channel, error) {
 
 // HealthCheck rabbitmq when the server is started
 func (rc *RabbitMQConnection) HealthCheck() bool {
-	url := fmt.Sprintf("%s/api/health/checks/alarms", rc.HealthCheckURL)
+	url := rc.HealthCheckURL + "/api/health/checks/alarms"
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
