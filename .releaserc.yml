@@ -62,5 +62,5 @@ branches:
   - main
   - name: develop
     prerelease: "beta"
-  - name: hotfix/*
+  - name: hotfix/COMMONS-997
     prerelease: "hf"
