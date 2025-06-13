@@ -179,6 +179,8 @@ func DetermineOperation(isPending bool, isFrom bool, transactionType string) str
 		return constant.RELEASE
 	case isPending && !isFrom && transactionType == constant.PENDING:
 		return constant.CREDIT
+	case isPending && isFrom && transactionType == constant.APPROVED:
+		return constant.DEBIT
 	case !isPending && isFrom:
 		return constant.DEBIT
 	case !isPending:
