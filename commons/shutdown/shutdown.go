@@ -1,20 +1,20 @@
 package shutdown
 
 import (
-	"github.com/LerianStudio/lib-commons/commons/log"
-	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
-	libLicense "github.com/LerianStudio/lib-license-go/middleware"
-	"github.com/gofiber/fiber/v2"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/LerianStudio/lib-commons/commons/log"
+	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
+	"github.com/gofiber/fiber/v2"
 )
 
 // GracefulShutdown handles the graceful shutdown of application components.
 // It's designed to be reusable across different services.
 type GracefulShutdown struct {
 	app           *fiber.App
-	licenseClient *libLicense.LicenseClient
+	licenseClient *LicenseManagerShutdown
 	telemetry     *opentelemetry.Telemetry
 	logger        log.Logger
 }
@@ -22,7 +22,7 @@ type GracefulShutdown struct {
 // NewGracefulShutdown creates a new instance of GracefulShutdown.
 func NewGracefulShutdown(
 	app *fiber.App,
-	licenseClient *libLicense.LicenseClient,
+	licenseClient *LicenseManagerShutdown,
 	telemetry *opentelemetry.Telemetry,
 	logger log.Logger,
 ) *GracefulShutdown {
@@ -78,7 +78,7 @@ func (gs *GracefulShutdown) executeShutdown() {
 	// Shutdown license background refresh if available
 	if gs.licenseClient != nil {
 		gs.logger.Info("Shutting down license background refresh...")
-		gs.licenseClient.ShutdownBackgroundRefresh()
+		gs.licenseClient.Terminate("shutdown")
 	}
 
 	gs.logger.Info("Graceful shutdown completed")
@@ -88,7 +88,7 @@ func (gs *GracefulShutdown) executeShutdown() {
 // sets up graceful shutdown handling.
 func StartServerWithGracefulShutdown(
 	app *fiber.App,
-	licenseClient *libLicense.LicenseClient,
+	licenseClient *LicenseManagerShutdown,
 	telemetry *opentelemetry.Telemetry,
 	serverAddress string,
 	logger log.Logger,
@@ -113,7 +113,7 @@ func StartServerWithGracefulShutdown(
 	// Start server in a separate goroutine
 	go func() {
 		logger.Infof("Starting HTTP server on %s", serverAddress)
-		
+
 		if err := app.Listen(serverAddress); err != nil {
 			// During normal shutdown, app.Listen() will return an error
 			// We only want to log unexpected errors
