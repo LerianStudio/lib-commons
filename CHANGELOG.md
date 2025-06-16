@@ -1,3 +1,10 @@
+## [1.17.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.16.0...v1.17.0-beta.1) (2025-06-16)
+
+
+### Features
+
+* revert code that was on the main; ([c2f1772](https://github.com/LerianStudio/lib-commons/commit/c2f17729bde8d2f5bbc36381173ad9226640d763))
+
 ## [1.12.0](https://github.com/LerianStudio/lib-commons/compare/v1.11.0...v1.12.0) (2025-06-13)
 
 
