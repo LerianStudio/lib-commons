@@ -1,6 +1,7 @@
 package shutdown
 
 import (
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -104,7 +105,12 @@ func StartServerWithGracefulShutdown(
 	// Run everything in a recover block
 	defer func() {
 		if r := recover(); r != nil {
-			logger.Errorf("Fatal error (panic): %v", r)
+			if logger != nil {
+				logger.Errorf("Fatal error (panic): %v", r)
+			} else {
+				// Fallback to standard log if logger is nil
+				fmt.Printf("Fatal error (panic): %v\n", r)
+			}
 			gs.executeShutdown()
 			os.Exit(1)
 		}
