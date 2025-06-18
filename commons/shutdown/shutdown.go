@@ -111,7 +111,9 @@ func StartServerWithGracefulShutdown(
 				// Fallback to standard log if logger is nil
 				fmt.Printf("Fatal error (panic): %v\n", r)
 			}
+
 			gs.executeShutdown()
+
 			os.Exit(1)
 		}
 	}()
