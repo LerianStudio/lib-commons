@@ -206,11 +206,7 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 	fmto := make(map[string]Amount)
 	scdt := make([]string, 0)
 
-	total := Amount{
-		Asset:           transaction.Send.Asset,
-		Value:           decimal.NewFromInt(0),
-		TransactionType: transactionType,
-	}
+	total := decimal.NewFromInt(0)
 
 	remaining := Amount{
 		Asset:           transaction.Send.Asset,
@@ -231,15 +227,9 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 				percentageOfPercentage = oneHundred
 			}
 
-			scale := -transaction.Send.Value.Exponent()
-			if scale < 0 {
-				scale = 2
-			}
-
 			firstPart := percentage.Div(oneHundred)
 			secondPart := percentageOfPercentage.Div(oneHundred)
-			value := transaction.Send.Value.Mul(firstPart).Mul(secondPart).StringFixed(scale)
-			shareValue, _ := decimal.NewFromString(value)
+			shareValue := transaction.Send.Value.Mul(firstPart).Mul(secondPart)
 
 			fmto[fromTos[i].AccountAlias] = Amount{
 				Asset:           transaction.Send.Asset,
@@ -248,7 +238,8 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 				TransactionType: transactionType,
 			}
 
-			total.Value = total.Value.Add(shareValue)
+			total = total.Add(shareValue)
+			remaining.Value = remaining.Value.Sub(shareValue)
 		}
 
 		if fromTos[i].Amount != nil && fromTos[i].Amount.Value.IsPositive() {
@@ -260,11 +251,13 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 			}
 
 			fmto[fromTos[i].AccountAlias] = amount
-			total.Value = total.Value.Add(amount.Value)
+			total = total.Add(amount.Value)
+
+			remaining.Value = remaining.Value.Sub(amount.Value)
 		}
 
 		if !commons.IsNilOrEmpty(&fromTos[i].Remaining) {
-			total.Value = total.Value.Add(remaining.Value)
+			total = total.Add(remaining.Value)
 
 			remaining.Operation = operation
 
@@ -272,12 +265,10 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 			fromTos[i].Amount = &remaining
 		}
 
-		total.Operation = operation
-
 		scdt = append(scdt, fromTos[i].SplitAlias())
 	}
 
-	t <- total.Value
+	t <- total
 	ft <- fmto
 	sd <- scdt
 }

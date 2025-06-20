@@ -689,7 +689,7 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "valid transaction with amounts",
+			name: "valid transaction with remains",
 			transaction: Transaction{
 				Send: Send{
 					Asset: "USD",
@@ -698,17 +698,15 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 						From: []FromTo{
 							{
 								AccountAlias: "@account1",
-								Amount: &Amount{
-									Asset: "USD",
-									Value: decimal.NewFromInt(60),
+								Share: &Share{
+									Percentage: 50,
 								},
+								IsFrom: true,
 							},
 							{
 								AccountAlias: "@account2",
-								Amount: &Amount{
-									Asset: "USD",
-									Value: decimal.NewFromInt(40),
-								},
+								Remaining:    "remaining",
+								IsFrom:       true,
 							},
 						},
 					},
@@ -716,10 +714,7 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 						To: []FromTo{
 							{
 								AccountAlias: "@account3",
-								Amount: &Amount{
-									Asset: "USD",
-									Value: decimal.NewFromInt(100),
-								},
+								Remaining:    "remaining",
 							},
 						},
 					},
@@ -728,8 +723,8 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 			want: &Responses{
 				Asset: "USD",
 				From: map[string]Amount{
-					"@account1": {Value: decimal.NewFromInt(60)},
-					"@account2": {Value: decimal.NewFromInt(40)},
+					"@account1": {Value: decimal.NewFromInt(50)},
+					"@account2": {Value: decimal.NewFromInt(50)},
 				},
 				To: map[string]Amount{
 					"@account3": {Value: decimal.NewFromInt(100)},
@@ -858,7 +853,7 @@ func TestValidateTransactionWithPercentageAndRemaining(t *testing.T) {
 								Share: &Share{
 									Percentage: 50,
 								},
-								Description:  "regression test",
+								Description: "regression test",
 								Metadata: map[string]interface{}{
 									"key": "value",
 								},
@@ -874,7 +869,7 @@ func TestValidateTransactionWithPercentageAndRemaining(t *testing.T) {
 			transaction: Transaction{
 				ChartOfAccountsGroupName: "PAG_CONTAS_CODE_1",
 				Description:              "transaction with value mismatch",
-				Pending: false,
+				Pending:                  false,
 				Send: Send{
 					Asset: "BRL",
 					Value: decimal.NewFromFloat(100.00),
@@ -911,7 +906,7 @@ func TestValidateTransactionWithPercentageAndRemaining(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Call ValidateSendSourceAndDistribute to get the responses
 			responses, err := ValidateSendSourceAndDistribute(tt.transaction, constant.CREATED)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 				if tt.errorCode != "" {
@@ -920,35 +915,35 @@ func TestValidateTransactionWithPercentageAndRemaining(t *testing.T) {
 				}
 				return
 			}
-			
+
 			assert.NoError(t, err)
 			assert.NotNil(t, responses)
-			
+
 			// For successful case, validate response structure
 			assert.Equal(t, tt.transaction.Send.Value, responses.Total)
 			assert.Equal(t, tt.transaction.Send.Asset, responses.Asset)
-			
+
 			// Verify the source account is included in the response
 			fromKey := "@external/BRL"
 			_, exists := responses.From[fromKey]
 			assert.True(t, exists, "From account should exist: %s", fromKey)
-				
+
 			// Verify the destination accounts are included in the response
 			toKey1 := "@mcgregor_0"
 			_, exists = responses.To[toKey1]
 			assert.True(t, exists, "To account should exist: %s", toKey1)
-			
+
 			toKey2 := "@mcgregor_1"
 			_, exists = responses.To[toKey2]
 			assert.True(t, exists, "To account should exist: %s", toKey2)
-				
+
 			// Verify total amount is correctly distributed
 			var total decimal.Decimal
 			for _, amount := range responses.To {
 				total = total.Add(amount.Value)
 			}
-			assert.True(t, responses.Total.Equal(total), 
-				"Total amount (%s) should equal sum of destination amounts (%s)", 
+			assert.True(t, responses.Total.Equal(total),
+				"Total amount (%s) should equal sum of destination amounts (%s)",
 				responses.Total.String(), total.String())
 		})
 	}
