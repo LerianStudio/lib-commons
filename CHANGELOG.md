@@ -1,3 +1,11 @@
+## [1.17.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.3...v1.17.0-beta.4) (2025-06-20)
+
+
+### Bug Fixes
+
+* adjust decimal values from remains and percentage; ([e1dc4b1](https://github.com/LerianStudio/lib-commons/commit/e1dc4b183d0ca2d1247f727b81f8f27d4ddcc3c7))
+* adjust some code and test; ([c6aca75](https://github.com/LerianStudio/lib-commons/commit/c6aca756499e8b9875e1474e4f7949bb9cc9f60c))
+
 ## [1.17.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.2...v1.17.0-beta.3) (2025-06-20)
 
 
