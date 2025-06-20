@@ -1,3 +1,10 @@
+## [1.17.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.1...v1.17.0-beta.2) (2025-06-20)
+
+
+### Features
+
+* add variable tableAlias variadic to ApplyCursorPagination; ([1579a9e](https://github.com/LerianStudio/lib-commons/commit/1579a9e25eae1da3247422ccd64e48730c59ba31))
+
 ## [1.17.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.16.0...v1.17.0-beta.1) (2025-06-16)
 
 
