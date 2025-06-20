@@ -689,7 +689,7 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "valid transaction with amounts",
+			name: "valid transaction with remains",
 			transaction: Transaction{
 				Send: Send{
 					Asset: "USD",
@@ -698,15 +698,15 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 						From: []FromTo{
 							{
 								AccountAlias: "@account1",
-								Amount: &Amount{
-									Value: decimal.NewFromInt(60),
+								Share: &Share{
+									Percentage: 50,
 								},
+								IsFrom: true,
 							},
 							{
 								AccountAlias: "@account2",
-								Amount: &Amount{
-									Value: decimal.NewFromInt(40),
-								},
+								Remaining:    "remaining",
+								IsFrom:       true,
 							},
 						},
 					},
@@ -714,9 +714,7 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 						To: []FromTo{
 							{
 								AccountAlias: "@account3",
-								Amount: &Amount{
-									Value: decimal.NewFromInt(100),
-								},
+								Remaining:    "remaining",
 							},
 						},
 					},
@@ -725,8 +723,8 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 			want: &Responses{
 				Asset: "USD",
 				From: map[string]Amount{
-					"@account1": {Value: decimal.NewFromInt(60)},
-					"@account2": {Value: decimal.NewFromInt(40)},
+					"@account1": {Value: decimal.NewFromInt(50)},
+					"@account2": {Value: decimal.NewFromInt(50)},
 				},
 				To: map[string]Amount{
 					"@account3": {Value: decimal.NewFromInt(100)},
@@ -745,12 +743,14 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 							{
 								AccountAlias: "@account1",
 								Amount: &Amount{
+									Asset: "USD",
 									Value: decimal.NewFromInt(60),
 								},
 							},
 							{
 								AccountAlias: "@account2",
 								Amount: &Amount{
+									Asset: "USD",
 									Value: decimal.NewFromInt(30), // Total is 90, not 100
 								},
 							},
@@ -761,6 +761,7 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 							{
 								AccountAlias: "@account3",
 								Amount: &Amount{
+									Asset: "USD",
 									Value: decimal.NewFromInt(100),
 								},
 							},
@@ -796,6 +797,154 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 					assert.Equal(t, len(tt.want.To), len(got.To))
 				}
 			}
+		})
+	}
+}
+
+func TestValidateTransactionWithPercentageAndRemaining(t *testing.T) {
+	tests := []struct {
+		name        string
+		transaction Transaction
+		expectError bool
+		errorCode   string
+	}{
+		{
+			name: "valid transaction with percentage and remaining",
+			transaction: Transaction{
+				ChartOfAccountsGroupName: "PAG_CONTAS_CODE_1",
+				Description:              "description for the transaction person1 to person2 value of 100 reais",
+				Metadata: map[string]interface{}{
+					"depositType": "PIX",
+					"valor":       "100.00",
+				},
+				Pending: false,
+				Route:   "00000000-0000-0000-0000-000000000000",
+				Send: Send{
+					Asset: "BRL",
+					Value: decimal.NewFromFloat(100.00),
+					Source: Source{
+						From: []FromTo{
+							{
+								AccountAlias: "@external/BRL",
+								Remaining:    "remaining",
+								Description:  "Loan payment 1",
+								Route:        "00000000-0000-0000-0000-000000000000",
+								Metadata: map[string]interface{}{
+									"1":   "m",
+									"Cpf": "43049498x",
+								},
+							},
+						},
+					},
+					Distribute: Distribute{
+						To: []FromTo{
+							{
+								AccountAlias: "@mcgregor_0",
+								Share: &Share{
+									Percentage: 50,
+								},
+								Route: "00000000-0000-0000-0000-000000000000",
+								Metadata: map[string]interface{}{
+									"mensagem": "tks",
+								},
+							},
+							{
+								AccountAlias: "@mcgregor_1",
+								Share: &Share{
+									Percentage: 50,
+								},
+								Description: "regression test",
+								Metadata: map[string]interface{}{
+									"key": "value",
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "transaction with value mismatch",
+			transaction: Transaction{
+				ChartOfAccountsGroupName: "PAG_CONTAS_CODE_1",
+				Description:              "transaction with value mismatch",
+				Pending:                  false,
+				Send: Send{
+					Asset: "BRL",
+					Value: decimal.NewFromFloat(100.00),
+					Source: Source{
+						From: []FromTo{
+							{
+								AccountAlias: "@external/BRL",
+								Amount: &Amount{
+									Asset: "BRL",
+									// Source amount doesn't match transaction value
+									Value: decimal.NewFromFloat(90.00),
+								},
+							},
+						},
+					},
+					Distribute: Distribute{
+						To: []FromTo{
+							{
+								AccountAlias: "@mcgregor_0",
+								Share: &Share{
+									Percentage: 100,
+								},
+							},
+						},
+					},
+				},
+			},
+			expectError: true,
+			errorCode:   "0073", // ErrTransactionValueMismatch
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Call ValidateSendSourceAndDistribute to get the responses
+			responses, err := ValidateSendSourceAndDistribute(tt.transaction, constant.CREATED)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				if tt.errorCode != "" {
+					errMsg := err.Error()
+					assert.Contains(t, errMsg, tt.errorCode, "Error should contain the expected error code")
+				}
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.NotNil(t, responses)
+
+			// For successful case, validate response structure
+			assert.Equal(t, tt.transaction.Send.Value, responses.Total)
+			assert.Equal(t, tt.transaction.Send.Asset, responses.Asset)
+
+			// Verify the source account is included in the response
+			fromKey := "@external/BRL"
+			_, exists := responses.From[fromKey]
+			assert.True(t, exists, "From account should exist: %s", fromKey)
+
+			// Verify the destination accounts are included in the response
+			toKey1 := "@mcgregor_0"
+			_, exists = responses.To[toKey1]
+			assert.True(t, exists, "To account should exist: %s", toKey1)
+
+			toKey2 := "@mcgregor_1"
+			_, exists = responses.To[toKey2]
+			assert.True(t, exists, "To account should exist: %s", toKey2)
+
+			// Verify total amount is correctly distributed
+			var total decimal.Decimal
+			for _, amount := range responses.To {
+				total = total.Add(amount.Value)
+			}
+			assert.True(t, responses.Total.Equal(total),
+				"Total amount (%s) should equal sum of destination amounts (%s)",
+				responses.Total.String(), total.String())
 		})
 	}
 }
