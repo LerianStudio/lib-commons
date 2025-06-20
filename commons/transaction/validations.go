@@ -231,9 +231,15 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 				percentageOfPercentage = oneHundred
 			}
 
+			scale := -transaction.Send.Value.Exponent()
+			if scale < 0 {
+				scale = 2
+			}
+
 			firstPart := percentage.Div(oneHundred)
 			secondPart := percentageOfPercentage.Div(oneHundred)
-			shareValue := transaction.Send.Value.Mul(firstPart).Mul(secondPart)
+			value := transaction.Send.Value.Mul(firstPart).Mul(secondPart).StringFixed(scale)
+			shareValue, _ := decimal.NewFromString(value)
 
 			fmto[fromTos[i].AccountAlias] = Amount{
 				Asset:           transaction.Send.Asset,
