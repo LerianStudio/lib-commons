@@ -3,10 +3,11 @@ package http
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strings"
+
 	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/LerianStudio/lib-commons/commons/constants"
 	"github.com/Masterminds/squirrel"
-	"strings"
 )
 
 type Cursor struct {
@@ -47,13 +48,18 @@ func DecodeCursor(cursor string) (Cursor, error) {
 }
 
 // ApplyCursorPagination applies cursor-based pagination to a query.
-func ApplyCursorPagination(findAll squirrel.SelectBuilder, decodedCursor Cursor, orderDirection string, limit int) (squirrel.SelectBuilder, string) {
+func ApplyCursorPagination(findAll squirrel.SelectBuilder, decodedCursor Cursor, orderDirection string, limit int, tableAlias ...string) (squirrel.SelectBuilder, string) {
 	var operator string
 
 	var sortOrder string
 
 	ascOrder := strings.ToUpper(string(constant.Asc))
 	descOrder := strings.ToUpper(string(constant.Desc))
+
+	ID := "id "
+	if len(tableAlias) > 0 {
+		ID = tableAlias[0] + "." + ID
+	}
 
 	if decodedCursor.ID != "" {
 		pointsNext := decodedCursor.PointsNext
@@ -78,17 +84,17 @@ func ApplyCursorPagination(findAll squirrel.SelectBuilder, decodedCursor Cursor,
 			sortOrder = ascOrder
 		}
 
-		whereClause := squirrel.Expr("id "+operator+" ?", decodedCursor.ID)
+		whereClause := squirrel.Expr(ID+operator+" ?", decodedCursor.ID)
 
 		// Forward pagination with DESC order
 		findAll = findAll.Where(whereClause).
-			OrderBy("id " + sortOrder)
+			OrderBy(ID + sortOrder)
 
 		return findAll.Limit(commons.SafeIntToUint64(limit + 1)), orderDirection
 	}
 
 	// No cursor means this is the first page; use the order as normal
-	findAll = findAll.OrderBy("id " + orderDirection)
+	findAll = findAll.OrderBy(ID + orderDirection)
 
 	return findAll.Limit(commons.SafeIntToUint64(limit + 1)), orderDirection
 }
