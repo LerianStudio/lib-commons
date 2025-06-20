@@ -1,3 +1,10 @@
+## [1.17.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.2...v1.17.0-beta.3) (2025-06-20)
+
+
+### Bug Fixes
+
+* add fallback logging when logger is nil in shutdown handler ([800d644](https://github.com/LerianStudio/lib-commons/commit/800d644d920bd54abf787d3be457cc0a1117c7a1))
+
 ## [1.17.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.1...v1.17.0-beta.2) (2025-06-20)
 
 
