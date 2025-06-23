@@ -106,5 +106,6 @@ func (rc *RedisConnection) Close() error {
 	if rc.Client != nil {
 		return rc.Client.Close()
 	}
+
 	return nil
 }
