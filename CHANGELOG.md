@@ -1,3 +1,17 @@
+## [1.17.0-beta.5](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.4...v1.17.0-beta.5) (2025-06-23)
+
+
+### Features
+
+* add TTL support to Redis/Valkey and support cluster + sentinel modes alongside standalone ([1d825df](https://github.com/LerianStudio/lib-commons/commit/1d825dfefbf574bfe3db0bc718b9d0876aec5e03))
+* Merge pull request [#118](https://github.com/LerianStudio/lib-commons/issues/118) from LerianStudio/feat/COMMONS-52 ([e8f8917](https://github.com/LerianStudio/lib-commons/commit/e8f8917b5c828c487f6bf2236b391dd4f8da5623))
+
+
+### Bug Fixes
+
+* .golangci.yml ([038bedd](https://github.com/LerianStudio/lib-commons/commit/038beddbe9ed4a867f6ed93dd4e84480ed65bb1b))
+* gitactions; ([7f9ebeb](https://github.com/LerianStudio/lib-commons/commit/7f9ebeb1a9328a902e82c8c60428b2a8246793cf))
+
 ## [1.17.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.3...v1.17.0-beta.4) (2025-06-20)
 
 
