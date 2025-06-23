@@ -8,7 +8,7 @@ import (
 	"go.uber.org/zap"
 )
 
-// RedisTTL default redis ttl to cache
+// TTL default redis ttl to cache
 const TTL = 300
 
 // Mode define the Redis connection mode supported
