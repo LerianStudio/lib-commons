@@ -8,13 +8,11 @@ import (
 	"go.uber.org/zap"
 )
 
-// TTL default redis ttl to cache
-const TTL = 300
-
 // Mode define the Redis connection mode supported
 type Mode string
 
 const (
+	TTL            int  = 300
 	ModeStandalone Mode = "standalone"
 	ModeSentinel   Mode = "sentinel"
 	ModeCluster    Mode = "cluster"
@@ -22,24 +20,17 @@ const (
 
 // RedisConnection this struct represent a Redis connection hub
 type RedisConnection struct {
-	Mode Mode
-
-	Address string
-	DB      int
-
-	SentinelAddress []string
-	MasterName      string
-
-	ClusterAddress []string
-
-	Password  string
-	Protocol  int
-	UseTLS    bool
-	TLSConfig *tls.Config
-
-	Logger    log.Logger
-	Connected bool
-	Client    redis.UniversalClient
+	Mode       Mode
+	Address    []string
+	DB         int
+	MasterName string
+	Password   string
+	Protocol   int
+	UseTLS     bool
+	TLSConfig  *tls.Config
+	Logger     log.Logger
+	Connected  bool
+	Client     redis.UniversalClient
 }
 
 // Connect initializes a Redis connection
@@ -47,9 +38,10 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 	rc.Logger.Info("Connecting to Redis...")
 
 	opts := &redis.UniversalOptions{
+		Addrs:      rc.Address,
 		Password:   rc.Password,
+		MasterName: rc.MasterName,
 		DB:         rc.DB,
-		MasterName: "",
 		Protocol:   rc.Protocol,
 	}
 
@@ -61,17 +53,6 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 				MinVersion: tls.VersionTLS12,
 			}
 		}
-	}
-
-	switch rc.Mode {
-	case ModeSentinel:
-		opts.Addrs = rc.SentinelAddress
-		opts.MasterName = rc.MasterName
-	case ModeCluster:
-		opts.Addrs = rc.ClusterAddress
-	default: //Standalone
-		opts.Addrs = []string{rc.Address}
-		opts.DB = 0
 	}
 
 	rdb := redis.NewUniversalClient(opts)
