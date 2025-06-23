@@ -28,16 +28,16 @@ func TestRedisConnection_Connect(t *testing.T) {
 		{
 			name: "successful connection",
 			redisConn: &RedisConnection{
-				Addr:   mr.Addr(),
-				Logger: logger,
+				Address: mr.Addr(),
+				Logger:  logger,
 			},
 			expectError: false,
 		},
 		{
-			name: "failed connection - wrong address",
+			name: "failed connection - wrong Addressess",
 			redisConn: &RedisConnection{
-				Addr:   "wrong_address:6379",
-				Logger: logger,
+				Address: "wrong_Addressess:6379",
+				Logger:  logger,
 			},
 			expectError: true,
 		},
@@ -75,8 +75,8 @@ func TestRedisConnection_GetClient(t *testing.T) {
 	t.Run("get client - first time initialization", func(t *testing.T) {
 		ctx := context.Background()
 		redisConn := &RedisConnection{
-			Addr:   mr.Addr(),
-			Logger: logger,
+			Address: mr.Addr(),
+			Logger:  logger,
 		}
 
 		client, err := redisConn.GetClient(ctx)
@@ -88,8 +88,8 @@ func TestRedisConnection_GetClient(t *testing.T) {
 	t.Run("get client - already initialized", func(t *testing.T) {
 		ctx := context.Background()
 		redisConn := &RedisConnection{
-			Addr:   mr.Addr(),
-			Logger: logger,
+			Address: mr.Addr(),
+			Logger:  logger,
 		}
 
 		// First call to initialize
@@ -106,8 +106,8 @@ func TestRedisConnection_GetClient(t *testing.T) {
 	t.Run("get client - connection fails", func(t *testing.T) {
 		ctx := context.Background()
 		redisConn := &RedisConnection{
-			Addr:   "wrong_address:6379",
-			Logger: logger,
+			Address: "wrong_Addressess:6379",
+			Logger:  logger,
 		}
 
 		client, err := redisConn.GetClient(ctx)
@@ -135,12 +135,12 @@ func TestRedisIntegration(t *testing.T) {
 
 	// Create Redis connection
 	redisConn := &RedisConnection{
-		Addr:   mr.Addr(),
-		Logger: logger,
+		Address: mr.Addr(),
+		Logger:  logger,
 	}
 
 	ctx := context.Background()
-	
+
 	// Connect to Redis
 	err = redisConn.Connect(ctx)
 	assert.NoError(t, err)
@@ -152,10 +152,10 @@ func TestRedisIntegration(t *testing.T) {
 	// Test setting and getting a value
 	key := "test_key"
 	value := "test_value"
-	
+
 	err = client.Set(ctx, key, value, 0).Err()
 	assert.NoError(t, err)
-	
+
 	result, err := client.Get(ctx, key).Result()
 	assert.NoError(t, err)
 	assert.Equal(t, value, result)
