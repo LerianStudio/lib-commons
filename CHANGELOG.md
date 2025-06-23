@@ -1,3 +1,15 @@
+## [1.17.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.5...v1.17.0-beta.6) (2025-06-23)
+
+
+### Features
+
+* adjust to use only one host; ([22696b0](https://github.com/LerianStudio/lib-commons/commit/22696b0f989eff5db22aeeff06d82df3b16230e4))
+
+
+### Bug Fixes
+
+* Merge pull request [#119](https://github.com/LerianStudio/lib-commons/issues/119) from LerianStudio/feat/COMMONS-52 ([3ba9ca0](https://github.com/LerianStudio/lib-commons/commit/3ba9ca0e284cf36797772967904d21947f8856a5))
+
 ## [1.17.0-beta.5](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.4...v1.17.0-beta.5) (2025-06-23)
 
 
