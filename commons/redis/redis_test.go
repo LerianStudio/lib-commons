@@ -32,7 +32,7 @@ func TestRedisConnection_Connect(t *testing.T) {
 			name: "successful connection - standalone mode",
 			redisConn: &RedisConnection{
 				Mode:    ModeStandalone,
-				Address: mr.Addr(),
+				Address: []string{mr.Addr()},
 				Logger:  logger,
 			},
 			expectError: false,
@@ -40,10 +40,10 @@ func TestRedisConnection_Connect(t *testing.T) {
 		{
 			name: "successful connection - sentinel mode",
 			redisConn: &RedisConnection{
-				Mode:            ModeSentinel,
-				SentinelAddress: []string{mr.Addr()},
-				MasterName:      "mymaster",
-				Logger:          logger,
+				Mode:       ModeSentinel,
+				Address:    []string{mr.Addr()},
+				MasterName: "mymaster",
+				Logger:     logger,
 			},
 			skip:       true,
 			skipReason: "miniredis doesn't support sentinel commands",
@@ -51,9 +51,9 @@ func TestRedisConnection_Connect(t *testing.T) {
 		{
 			name: "successful connection - cluster mode",
 			redisConn: &RedisConnection{
-				Mode:           ModeCluster,
-				ClusterAddress: []string{mr.Addr()},
-				Logger:         logger,
+				Mode:    ModeCluster,
+				Address: []string{mr.Addr()},
+				Logger:  logger,
 			},
 			expectError: false,
 		},
@@ -61,7 +61,7 @@ func TestRedisConnection_Connect(t *testing.T) {
 			name: "failed connection - wrong addresses",
 			redisConn: &RedisConnection{
 				Mode:    ModeStandalone,
-				Address: "wrong_address:6379",
+				Address: []string{"wrong_address:6379"},
 				Logger:  logger,
 			},
 			expectError: true,
@@ -69,19 +69,19 @@ func TestRedisConnection_Connect(t *testing.T) {
 		{
 			name: "failed connection - wrong sentinel addresses",
 			redisConn: &RedisConnection{
-				Mode:            ModeSentinel,
-				SentinelAddress: []string{"wrong_address:6379"},
-				MasterName:      "mymaster",
-				Logger:          logger,
+				Mode:       ModeSentinel,
+				Address:    []string{"wrong_address:6379"},
+				MasterName: "mymaster",
+				Logger:     logger,
 			},
 			expectError: true,
 		},
 		{
 			name: "failed connection - wrong cluster addresses",
 			redisConn: &RedisConnection{
-				Mode:           ModeCluster,
-				ClusterAddress: []string{"wrong_address:6379"},
-				Logger:         logger,
+				Mode:    ModeCluster,
+				Address: []string{"wrong_address:6379"},
+				Logger:  logger,
 			},
 			expectError: true,
 		},
@@ -124,7 +124,7 @@ func TestRedisConnection_GetClient(t *testing.T) {
 		ctx := context.Background()
 		redisConn := &RedisConnection{
 			Mode:    ModeStandalone,
-			Address: mr.Addr(),
+			Address: []string{mr.Addr()},
 			Logger:  logger,
 		}
 
@@ -138,7 +138,7 @@ func TestRedisConnection_GetClient(t *testing.T) {
 		ctx := context.Background()
 		redisConn := &RedisConnection{
 			Mode:    ModeStandalone,
-			Address: mr.Addr(),
+			Address: []string{mr.Addr()},
 			Logger:  logger,
 		}
 
@@ -157,7 +157,7 @@ func TestRedisConnection_GetClient(t *testing.T) {
 		ctx := context.Background()
 		redisConn := &RedisConnection{
 			Mode:    ModeStandalone,
-			Address: "wrong_address:6379",
+			Address: []string{"wrong_address:6379"},
 			Logger:  logger,
 		}
 
@@ -169,28 +169,28 @@ func TestRedisConnection_GetClient(t *testing.T) {
 
 	// Test different connection modes
 	testModes := []struct {
-		name      string
-		redisConn *RedisConnection
-		skip      bool
+		name       string
+		redisConn  *RedisConnection
+		skip       bool
 		skipReason string
 	}{
 		{
 			name: "sentinel mode",
 			redisConn: &RedisConnection{
-				Mode:            ModeSentinel,
-				SentinelAddress: []string{mr.Addr()},
-				MasterName:      "mymaster",
-				Logger:          logger,
+				Mode:       ModeSentinel,
+				Address:    []string{mr.Addr()},
+				MasterName: "mymaster",
+				Logger:     logger,
 			},
-			skip: true,
+			skip:       true,
 			skipReason: "miniredis doesn't support sentinel commands",
 		},
 		{
 			name: "cluster mode",
 			redisConn: &RedisConnection{
-				Mode:           ModeCluster,
-				ClusterAddress: []string{mr.Addr()},
-				Logger:         logger,
+				Mode:    ModeCluster,
+				Address: []string{mr.Addr()},
+				Logger:  logger,
 			},
 		},
 	}
@@ -229,7 +229,7 @@ func TestRedisIntegration(t *testing.T) {
 	// Create Redis connection
 	redisConn := &RedisConnection{
 		Mode:    ModeStandalone,
-		Address: mr.Addr(),
+		Address: []string{mr.Addr()},
 		Logger:  logger,
 	}
 
@@ -269,7 +269,7 @@ func TestTTLFunctionality(t *testing.T) {
 	// Create Redis connection
 	redisConn := &RedisConnection{
 		Mode:    ModeStandalone,
-		Address: mr.Addr(),
+		Address: []string{mr.Addr()},
 		Logger:  logger,
 	}
 
@@ -328,36 +328,36 @@ func TestModesIntegration(t *testing.T) {
 
 	// Test all connection modes
 	modes := []struct {
-		name      string
-		redisConn *RedisConnection
-		skip      bool
+		name       string
+		redisConn  *RedisConnection
+		skip       bool
 		skipReason string
 	}{
 		{
 			name: "standalone mode",
 			redisConn: &RedisConnection{
 				Mode:    ModeStandalone,
-				Address: mr.Addr(),
+				Address: []string{mr.Addr()},
 				Logger:  logger,
 			},
 		},
 		{
 			name: "sentinel mode",
 			redisConn: &RedisConnection{
-				Mode:            ModeSentinel,
-				SentinelAddress: []string{mr.Addr()},
-				MasterName:      "mymaster",
-				Logger:          logger,
+				Mode:       ModeSentinel,
+				Address:    []string{mr.Addr()},
+				MasterName: "mymaster",
+				Logger:     logger,
 			},
-			skip: true,
+			skip:       true,
 			skipReason: "miniredis doesn't support sentinel commands",
 		},
 		{
 			name: "cluster mode",
 			redisConn: &RedisConnection{
-				Mode:           ModeCluster,
-				ClusterAddress: []string{mr.Addr()},
-				Logger:         logger,
+				Mode:    ModeCluster,
+				Address: []string{mr.Addr()},
+				Logger:  logger,
 			},
 		},
 	}
@@ -409,7 +409,7 @@ func TestRedisWithTLSConfig(t *testing.T) {
 	// Create Redis connection with TLS
 	redisConn := &RedisConnection{
 		Mode:    ModeStandalone,
-		Address: "localhost:6379",
+		Address: []string{"localhost:6379"},
 		UseTLS:  true,
 		Logger:  logger,
 	}
@@ -427,7 +427,7 @@ func TestRedisWithTLSConfig(t *testing.T) {
 	for _, modeTest := range modes {
 		t.Run("tls_config_"+modeTest.name, func(t *testing.T) {
 			redisConn.Mode = modeTest.mode
-			
+
 			// We don't actually connect, just verify the TLS config would be used
 			assert.True(t, redisConn.UseTLS)
 		})
