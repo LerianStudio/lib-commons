@@ -92,6 +92,7 @@ func (rc *RedisConnection) Close() error {
 }
 
 // BuildTLSConfig generates a *tls.Config configuration for GCP
+// #nosec G304
 func BuildTLSConfig(caCertPath, clientCertPath, clientKeyPath string) (*tls.Config, error) {
 	caCert, err := os.ReadFile(caCertPath)
 	if err != nil {
