@@ -47,7 +47,7 @@ type RedisConnection struct {
 
 	UseIAMAuth         bool
 	ServiceAccountName string
-	TokenLifetime      time.Duration
+	TokenLifeTime      time.Duration
 	RefreshDuration    time.Duration
 
 	token              string
@@ -176,12 +176,12 @@ func (rc *RedisConnection) retrieveToken(ctx context.Context) (string, error) {
 	req := &iamcredentialspb.GenerateAccessTokenRequest{
 		Name:     rc.ServiceAccountName,
 		Scope:    []string{Scope},
-		Lifetime: durationpb.New(rc.TokenLifetime),
+		Lifetime: durationpb.New(rc.TokenLifeTime),
 	}
 
 	resp, err := client.GenerateAccessToken(ctx, req)
 	if err != nil {
-		return "", fmt.Errorf("generate access token: %w", err)
+		return "", fmt.Errorf("problem to generate access token: %w", err)
 	}
 
 	return resp.AccessToken, nil
