@@ -1,3 +1,11 @@
+## [1.17.0-beta.9](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.8...v1.17.0-beta.9) (2025-06-24)
+
+
+### Bug Fixes
+
+* adjust redis key to use {} to calculate slot on cluster; ([318f269](https://github.com/LerianStudio/lib-commons/commit/318f26947ee847aebfc600ed6e21cb903ee6a795))
+* Merge pull request [#122](https://github.com/LerianStudio/lib-commons/issues/122) from LerianStudio/feat/COMMONS-52-4 ([46f5140](https://github.com/LerianStudio/lib-commons/commit/46f51404f5f472172776abb1fbfd3bab908fc540))
+
 ## [1.17.0-beta.8](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.7...v1.17.0-beta.8) (2025-06-24)
 
 
