@@ -1,3 +1,11 @@
+## [1.17.0-beta.10](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.9...v1.17.0-beta.10) (2025-06-24)
+
+
+### Bug Fixes
+
+* adjust camel case time name; ([5ba77b9](https://github.com/LerianStudio/lib-commons/commit/5ba77b958a0386a2ab9f8197503bbd4bd57235f0))
+* Merge pull request [#123](https://github.com/LerianStudio/lib-commons/issues/123) from LerianStudio/fix/COMMONS-52-5 ([788915b](https://github.com/LerianStudio/lib-commons/commit/788915b8c333156046e1d79860f80dc84f9aa08b))
+
 ## [1.17.0-beta.9](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.8...v1.17.0-beta.9) (2025-06-24)
 
 
