@@ -24,17 +24,19 @@ const (
 
 // RedisConnection this struct represent a Redis connection hub
 type RedisConnection struct {
-	Mode       Mode
-	Address    []string
-	DB         int
-	MasterName string
-	Password   string
-	Protocol   int
-	UseTLS     bool
-	TLSConfig  *tls.Config
-	Logger     log.Logger
-	Connected  bool
-	Client     redis.UniversalClient
+	Mode           Mode
+	Address        []string
+	DB             int
+	MasterName     string
+	Password       string
+	Protocol       int
+	UseTLS         bool
+	Logger         log.Logger
+	Connected      bool
+	Client         redis.UniversalClient
+	CACertPath     *string
+	ClientCertPath *string
+	ClientKeyPath  *string
 }
 
 // Connect initializes a Redis connection
@@ -50,9 +52,14 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 	}
 
 	if rc.UseTLS {
-		if rc.TLSConfig != nil {
-			opts.TLSConfig = rc.TLSConfig
+		tlsConfig, err := rc.BuildTLSConfig(rc.CACertPath, rc.ClientCertPath, rc.ClientKeyPath)
+		if err != nil {
+			rc.Logger.Infof("RedisConnection.BuildTLSConfig error %v", zap.Error(err))
+
+			return err
 		}
+
+		opts.TLSConfig = tlsConfig
 	}
 
 	rdb := redis.NewUniversalClient(opts)
@@ -93,8 +100,12 @@ func (rc *RedisConnection) Close() error {
 
 // BuildTLSConfig generates a *tls.Config configuration for GCP
 // #nosec G304
-func BuildTLSConfig(caCertPath, clientCertPath, clientKeyPath string) (*tls.Config, error) {
-	caCert, err := os.ReadFile(caCertPath)
+func (rc *RedisConnection) BuildTLSConfig(caCertPath, clientCertPath, clientKeyPath *string) (*tls.Config, error) {
+	if commons.IsNilOrEmpty(caCertPath) {
+		return nil, fmt.Errorf("problems to find CA cert")
+	}
+
+	caCert, err := os.ReadFile(*caCertPath)
 	if err != nil {
 		return nil, fmt.Errorf("problems reading CA cert: %w", err)
 	}
@@ -109,8 +120,8 @@ func BuildTLSConfig(caCertPath, clientCertPath, clientKeyPath string) (*tls.Conf
 		MinVersion: tls.VersionTLS12,
 	}
 
-	if !commons.IsNilOrEmpty(&clientCertPath) && !commons.IsNilOrEmpty(&clientKeyPath) {
-		clientCert, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
+	if !commons.IsNilOrEmpty(clientCertPath) && !commons.IsNilOrEmpty(clientKeyPath) {
+		clientCert, err := tls.LoadX509KeyPair(*clientCertPath, *clientKeyPath)
 		if err != nil {
 			return nil, fmt.Errorf("problems loading client cert: %w", err)
 		}
