@@ -3,9 +3,13 @@ package redis
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"fmt"
+	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+	"os"
 )
 
 // Mode define the Redis connection mode supported
@@ -48,10 +52,6 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 	if rc.UseTLS {
 		if rc.TLSConfig != nil {
 			opts.TLSConfig = rc.TLSConfig
-		} else {
-			opts.TLSConfig = &tls.Config{
-				MinVersion: tls.VersionTLS12,
-			}
 		}
 	}
 
@@ -89,4 +89,33 @@ func (rc *RedisConnection) Close() error {
 	}
 
 	return nil
+}
+
+// BuildTLSConfig generates a *tls.Config configuration for GCP
+func BuildTLSConfig(caCertPath, clientCertPath, clientKeyPath string) (*tls.Config, error) {
+	caCert, err := os.ReadFile(caCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("problems reading CA cert: %w", err)
+	}
+
+	caCertPool := x509.NewCertPool()
+	if !caCertPool.AppendCertsFromPEM(caCert) {
+		return nil, fmt.Errorf("problems adding CA cert: %w", err)
+	}
+
+	tlsCfg := &tls.Config{
+		RootCAs:    caCertPool,
+		MinVersion: tls.VersionTLS12,
+	}
+
+	if !commons.IsNilOrEmpty(&clientCertPath) && !commons.IsNilOrEmpty(&clientKeyPath) {
+		clientCert, err := tls.LoadX509KeyPair(clientCertPath, clientKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("problems loading client cert: %w", err)
+		}
+
+		tlsCfg.Certificates = []tls.Certificate{clientCert}
+	}
+
+	return tlsCfg, nil
 }
