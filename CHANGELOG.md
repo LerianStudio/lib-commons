@@ -1,3 +1,15 @@
+## [1.17.0-beta.8](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.7...v1.17.0-beta.8) (2025-06-24)
+
+
+### Features
+
+* implements IAM refresh token; ([3d21e04](https://github.com/LerianStudio/lib-commons/commit/3d21e04194a10710a1b9de46a3f3aba89804c8b8))
+
+
+### Bug Fixes
+
+* Merge pull request [#121](https://github.com/LerianStudio/lib-commons/issues/121) from LerianStudio/feat/COMMONS-52-3 ([69c9e00](https://github.com/LerianStudio/lib-commons/commit/69c9e002ab0a4fcd24622c79c5da7857eb22c922))
+
 ## [1.17.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.6...v1.17.0-beta.7) (2025-06-24)
 
 
