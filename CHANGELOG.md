@@ -1,3 +1,16 @@
+## [1.17.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.6...v1.17.0-beta.7) (2025-06-24)
+
+
+### Features
+
+* merge pull request [#120](https://github.com/LerianStudio/lib-commons/issues/120) from LerianStudio/feat/COMMONS-52-2 ([4293e11](https://github.com/LerianStudio/lib-commons/commit/4293e11ae36942afd7a376ab3ee3db3981922ebf))
+
+
+### Bug Fixes
+
+* adjust to create tls on redis using variable; ([e78ae20](https://github.com/LerianStudio/lib-commons/commit/e78ae2035b5583ce59654e3c7f145d93d86051e7))
+* go lint ([2499476](https://github.com/LerianStudio/lib-commons/commit/249947604ed5d5382cd46e28e03c7396b9096d63))
+
 ## [1.17.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.5...v1.17.0-beta.6) (2025-06-23)
 
 
