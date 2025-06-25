@@ -1,3 +1,11 @@
+## [1.17.0-beta.14](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.13...v1.17.0-beta.14) (2025-06-25)
+
+
+### Features
+
+* change cacert to string to receive base64; ([a24f5f4](https://github.com/LerianStudio/lib-commons/commit/a24f5f472686e39b44031e00fcc2b7989f1cf6b7))
+* merge pull request [#127](https://github.com/LerianStudio/lib-commons/issues/127) from LerianStudio/feat/COMMONS-52-9 ([12ee2a9](https://github.com/LerianStudio/lib-commons/commit/12ee2a947d2fc38e8957b9b9f6e129b65e4b87a2))
+
 ## [1.17.0-beta.13](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.12...v1.17.0-beta.13) (2025-06-25)
 
 
