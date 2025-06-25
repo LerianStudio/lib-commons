@@ -6,14 +6,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"google.golang.org/protobuf/types/known/durationpb"
-	"os"
 	"sync"
 	"time"
 )
@@ -22,34 +21,31 @@ import (
 type Mode string
 
 const (
-	TTL            int    = 300
-	Scope          string = "https://www.googleapis.com/auth/cloud-platform"
-	ModeStandalone Mode   = "standalone"
-	ModeSentinel   Mode   = "sentinel"
-	ModeCluster    Mode   = "cluster"
+	TTL                    int    = 300
+	Scope                  string = "https://www.googleapis.com/auth/cloud-platform"
+	PrefixServicesAccounts string = "projects/-/serviceAccounts/"
+	ModeStandalone         Mode   = "standalone"
+	ModeSentinel           Mode   = "sentinel"
+	ModeCluster            Mode   = "cluster"
 )
 
 // RedisConnection represents a Redis connection hub
 type RedisConnection struct {
-	Mode           Mode
-	Address        []string
-	DB             int
-	MasterName     string
-	Password       string
-	Protocol       int
-	UseTLS         bool
-	Logger         log.Logger
-	Connected      bool
-	Client         redis.UniversalClient
-	CACertPath     *string
-	ClientCertPath *string
-	ClientKeyPath  *string
-
-	UseIAMAuth         bool
+	Mode               Mode
+	Address            []string
+	DB                 int
+	MasterName         string
+	Password           string
+	Protocol           int
+	UseTLS             bool
+	Logger             log.Logger
+	Connected          bool
+	Client             redis.UniversalClient
+	CACert             string
+	UseGCPIAMAuth      bool
 	ServiceAccountName string
 	TokenLifeTime      time.Duration
 	RefreshDuration    time.Duration
-
 	token              string
 	lastRefreshInstant time.Time
 	errLastSeen        error
@@ -61,7 +57,7 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 	rc.Logger.Info("Connecting to Redis/Valkey...")
 
 	var err error
-	if rc.UseIAMAuth {
+	if rc.UseGCPIAMAuth {
 		rc.token, err = rc.retrieveToken(ctx)
 		if err != nil {
 			rc.Logger.Infof("initial token retrieval failed: %v", zap.Error(err))
@@ -80,7 +76,7 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 		Protocol:   rc.Protocol,
 	}
 
-	if rc.UseIAMAuth {
+	if rc.UseGCPIAMAuth {
 		opts.Password = rc.token
 		opts.Username = "default"
 	} else {
@@ -88,7 +84,7 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 	}
 
 	if rc.UseTLS {
-		tlsConfig, err := rc.BuildTLSConfig(rc.CACertPath, rc.ClientCertPath, rc.ClientKeyPath)
+		tlsConfig, err := rc.BuildTLSConfig()
 		if err != nil {
 			rc.Logger.Infof("BuildTLSConfig error: %v", zap.Error(err))
 			return err
@@ -143,14 +139,12 @@ func (rc *RedisConnection) Close() error {
 
 // BuildTLSConfig generates a *tls.Config configuration
 // #nosec G304
-func (rc *RedisConnection) BuildTLSConfig(caCertPath, clientCertPath, clientKeyPath *string) (*tls.Config, error) {
-	if commons.IsNilOrEmpty(caCertPath) {
-		return nil, errors.New("CA cert path is required for TLS")
-	}
-
-	caCert, err := os.ReadFile(*caCertPath)
+func (rc *RedisConnection) BuildTLSConfig() (*tls.Config, error) {
+	caCert, err := base64.StdEncoding.DecodeString(rc.CACert)
 	if err != nil {
-		return nil, errors.New("reading CA cert: " + err.Error())
+		rc.Logger.Infof("Base64 caceret error to decode error: %v", zap.Error(err))
+
+		return nil, err
 	}
 
 	caCertPool := x509.NewCertPool()
@@ -161,15 +155,6 @@ func (rc *RedisConnection) BuildTLSConfig(caCertPath, clientCertPath, clientKeyP
 	tlsCfg := &tls.Config{
 		RootCAs:    caCertPool,
 		MinVersion: tls.VersionTLS12,
-	}
-
-	if !commons.IsNilOrEmpty(clientCertPath) && !commons.IsNilOrEmpty(clientKeyPath) {
-		clientCert, err := tls.LoadX509KeyPair(*clientCertPath, *clientKeyPath)
-		if err != nil {
-			return nil, fmt.Errorf("loading client cert: %w", err)
-		}
-
-		tlsCfg.Certificates = []tls.Certificate{clientCert}
 	}
 
 	return tlsCfg, nil
@@ -184,7 +169,7 @@ func (rc *RedisConnection) retrieveToken(ctx context.Context) (string, error) {
 	defer client.Close()
 
 	req := &iamcredentialspb.GenerateAccessTokenRequest{
-		Name:     rc.ServiceAccountName,
+		Name:     PrefixServicesAccounts + rc.ServiceAccountName,
 		Scope:    []string{Scope},
 		Lifetime: durationpb.New(rc.TokenLifeTime),
 	}
