@@ -8,7 +8,6 @@ import (
 	"go.uber.org/zap"
 	"io"
 	"net/http"
-	"time"
 )
 
 // RabbitMQConnection is a hub which deal with rabbitmq connections.
@@ -23,58 +22,50 @@ type RabbitMQConnection struct {
 	Channel                *amqp.Channel
 	Logger                 log.Logger
 	Connected              bool
-	conn                   *amqp.Connection
-	HeartBeat              int
 }
 
 // Connect keeps a singleton connection with rabbitmq.
 func (rc *RabbitMQConnection) Connect() error {
-	rc.Logger.Info("Connecting to RabbitMQ...")
+	rc.Logger.Info("Connecting on rabbitmq...")
 
-	conn, err := amqp.DialConfig(rc.ConnectionStringSource, amqp.Config{
-		Heartbeat: time.Duration(rc.HeartBeat) * time.Second,
-	})
-
+	conn, err := amqp.Dial(rc.ConnectionStringSource)
 	if err != nil {
-		rc.Connected = false
-		rc.Logger.Fatal("failed to connect to RabbitMQ", zap.Error(err))
+		rc.Logger.Fatal("failed to connect on rabbitmq", zap.Error(err))
 
 		return err
 	}
 
 	ch, err := conn.Channel()
 	if err != nil {
-		rc.Connected = false
-		rc.Logger.Fatal("failed to open channel", zap.Error(err))
+		rc.Logger.Fatal("failed to open channel on rabbitmq", zap.Error(err))
 
 		return err
 	}
 
-	rc.conn = conn
-	rc.Channel = ch
+	if ch == nil || !rc.HealthCheck() {
+		rc.Connected = false
+		err = errors.New("can't connect rabbitmq")
+		rc.Logger.Fatalf("RabbitMQ.HealthCheck: %v", zap.Error(err))
+
+		return err
+	}
+
+	rc.Logger.Info("Connected on rabbitmq ✅ \n")
+
 	rc.Connected = true
 
-	rc.Logger.Info("Connected to RabbitMQ ✅ \n")
-
-	if conn.IsClosed() {
-		err := errors.New("connection is closed after connect")
-		rc.Logger.Error("RabbitMQ: connection unexpectedly closed", zap.Error(err))
-
-		rc.Connected = false
-
-		return err
-	}
+	rc.Channel = ch
 
 	return nil
 }
 
 // GetNewConnect returns a pointer to the rabbitmq connection, initializing it if necessary.
 func (rc *RabbitMQConnection) GetNewConnect() (*amqp.Channel, error) {
-	if rc.conn == nil || rc.conn.IsClosed() || rc.Channel == nil || rc.Channel.IsClosed() {
-		rc.Logger.Warn("RabbitMQ connection or channel is closed. Reconnecting...")
+	if !rc.Connected {
+		err := rc.Connect()
+		if err != nil {
+			rc.Logger.Infof("ERRCONECT %s", err)
 
-		if err := rc.Connect(); err != nil {
-			rc.Logger.Error("Failed to reconnect to RabbitMQ", zap.Error(err))
 			return nil, err
 		}
 	}
