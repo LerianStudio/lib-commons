@@ -1,3 +1,15 @@
+## [1.17.0-beta.11](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.10...v1.17.0-beta.11) (2025-06-25)
+
+
+### Features
+
+* merge pull request [#124](https://github.com/LerianStudio/lib-commons/issues/124) from LerianStudio/feat/COMMONS-52-6 ([8aaaf65](https://github.com/LerianStudio/lib-commons/commit/8aaaf652e399746c67c0b8699c57f4a249271ef0))
+
+
+### Bug Fixes
+
+* rabbit hearthbeat and log type of client conn on redis/valkey; ([9607bf5](https://github.com/LerianStudio/lib-commons/commit/9607bf5c0abf21603372d32ea8d66b5d34c77ec0))
+
 ## [1.17.0-beta.10](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.9...v1.17.0-beta.10) (2025-06-24)
 
 
