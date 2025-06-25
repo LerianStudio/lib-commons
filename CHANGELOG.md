@@ -1,3 +1,11 @@
+## [1.17.0-beta.13](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.12...v1.17.0-beta.13) (2025-06-25)
+
+
+### Bug Fixes
+
+* Merge pull request [#126](https://github.com/LerianStudio/lib-commons/issues/126) from LerianStudio/fix-COMMONS-52-8 ([cfe9bbd](https://github.com/LerianStudio/lib-commons/commit/cfe9bbde1bcf97847faf3fdc7e72e20ff723d586))
+* revert to original rabbit source; ([351c6ea](https://github.com/LerianStudio/lib-commons/commit/351c6eac3e27301e4a65fce293032567bfd88807))
+
 ## [1.17.0-beta.12](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.11...v1.17.0-beta.12) (2025-06-25)
 
 
