@@ -1,3 +1,10 @@
+## [1.17.0-beta.12](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.11...v1.17.0-beta.12) (2025-06-25)
+
+
+### Bug Fixes
+
+* add new check channel is closed; ([e3956c4](https://github.com/LerianStudio/lib-commons/commit/e3956c46eb8a87e637e035d7676d5c592001b509))
+
 ## [1.17.0-beta.11](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.10...v1.17.0-beta.11) (2025-06-25)
 
 
