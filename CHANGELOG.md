@@ -1,3 +1,11 @@
+## [1.17.0-beta.15](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.14...v1.17.0-beta.15) (2025-06-25)
+
+
+### Features
+
+* add some refactors ([8cd3f91](https://github.com/LerianStudio/lib-commons/commit/8cd3f915f3b136afe9d2365b36a3cc96934e1c52))
+* Merge pull request [#128](https://github.com/LerianStudio/lib-commons/issues/128) from LerianStudio/feat/COMMONS-52-10 ([775f24a](https://github.com/LerianStudio/lib-commons/commit/775f24ac85da8eb5e08a6e374ee61f327e798094))
+
 ## [1.17.0-beta.14](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.13...v1.17.0-beta.14) (2025-06-25)
 
 
