@@ -70,11 +70,11 @@ func (rc *RabbitMQConnection) Connect() error {
 
 // GetNewConnect returns a pointer to the rabbitmq connection, initializing it if necessary.
 func (rc *RabbitMQConnection) GetNewConnect() (*amqp.Channel, error) {
-	if rc.conn == nil || rc.conn.IsClosed() || rc.Channel == nil {
-		rc.Logger.Warn("RabbitMQ connection/channel lost, reconnecting...")
-		rc.Connected = false
+	if rc.conn == nil || rc.conn.IsClosed() || rc.Channel == nil || rc.Channel.IsClosed() {
+		rc.Logger.Warn("RabbitMQ connection or channel is closed. Reconnecting...")
 
 		if err := rc.Connect(); err != nil {
+			rc.Logger.Error("Failed to reconnect to RabbitMQ", zap.Error(err))
 			return nil, err
 		}
 	}
