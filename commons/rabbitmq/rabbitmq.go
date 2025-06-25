@@ -8,6 +8,7 @@ import (
 	"go.uber.org/zap"
 	"io"
 	"net/http"
+	"time"
 )
 
 // RabbitMQConnection is a hub which deal with rabbitmq connections.
@@ -22,50 +23,58 @@ type RabbitMQConnection struct {
 	Channel                *amqp.Channel
 	Logger                 log.Logger
 	Connected              bool
+	conn                   *amqp.Connection
+	HeartBeat              int
 }
 
 // Connect keeps a singleton connection with rabbitmq.
 func (rc *RabbitMQConnection) Connect() error {
-	rc.Logger.Info("Connecting on rabbitmq...")
+	rc.Logger.Info("Connecting to RabbitMQ...")
 
-	conn, err := amqp.Dial(rc.ConnectionStringSource)
+	conn, err := amqp.DialConfig(rc.ConnectionStringSource, amqp.Config{
+		Heartbeat: time.Duration(rc.HeartBeat) * time.Second,
+	})
+
 	if err != nil {
-		rc.Logger.Fatal("failed to connect on rabbitmq", zap.Error(err))
+		rc.Connected = false
+		rc.Logger.Fatal("failed to connect to RabbitMQ", zap.Error(err))
 
 		return err
 	}
 
 	ch, err := conn.Channel()
 	if err != nil {
-		rc.Logger.Fatal("failed to open channel on rabbitmq", zap.Error(err))
-
-		return err
-	}
-
-	if ch == nil || !rc.HealthCheck() {
 		rc.Connected = false
-		err = errors.New("can't connect rabbitmq")
-		rc.Logger.Fatalf("RabbitMQ.HealthCheck: %v", zap.Error(err))
+		rc.Logger.Fatal("failed to open channel", zap.Error(err))
 
 		return err
 	}
 
-	rc.Logger.Info("Connected on rabbitmq ✅ \n")
-
+	rc.conn = conn
+	rc.Channel = ch
 	rc.Connected = true
 
-	rc.Channel = ch
+	rc.Logger.Info("Connected to RabbitMQ ✅ \n")
+
+	if conn.IsClosed() {
+		err := errors.New("connection is closed after connect")
+		rc.Logger.Error("RabbitMQ: connection unexpectedly closed", zap.Error(err))
+
+		rc.Connected = false
+
+		return err
+	}
 
 	return nil
 }
 
 // GetNewConnect returns a pointer to the rabbitmq connection, initializing it if necessary.
 func (rc *RabbitMQConnection) GetNewConnect() (*amqp.Channel, error) {
-	if !rc.Connected {
-		err := rc.Connect()
-		if err != nil {
-			rc.Logger.Infof("ERRCONECT %s", err)
+	if rc.conn == nil || rc.conn.IsClosed() || rc.Channel == nil {
+		rc.Logger.Warn("RabbitMQ connection/channel lost, reconnecting...")
+		rc.Connected = false
 
+		if err := rc.Connect(); err != nil {
 			return nil, err
 		}
 	}

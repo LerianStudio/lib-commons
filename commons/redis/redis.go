@@ -105,7 +105,17 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 
 	rc.Client = rdb
 	rc.Connected = true
-	rc.Logger.Info("Connected to Redis/Valkey ✅")
+
+	switch rc.Client.(type) {
+	case *redis.ClusterClient:
+		rc.Logger.Info("Connected to Redis/Valkey in CLUSTER mode ✅ \n")
+	case *redis.Client:
+		rc.Logger.Info("Connected to Redis/Valkey in STANDALONE mode ✅ \n")
+	case *redis.Ring:
+		rc.Logger.Info("Connected to Redis/Valkey in SENTINEL mode ✅ \n")
+	default:
+		rc.Logger.Warn("Unknown Redis/Valkey mode ⚠️ \n")
+	}
 
 	return nil
 }
