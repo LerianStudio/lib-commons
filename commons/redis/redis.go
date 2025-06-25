@@ -87,6 +87,7 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 		tlsConfig, err := rc.BuildTLSConfig()
 		if err != nil {
 			rc.Logger.Infof("BuildTLSConfig error: %v", zap.Error(err))
+
 			return err
 		}
 
@@ -137,8 +138,7 @@ func (rc *RedisConnection) Close() error {
 	return nil
 }
 
-// BuildTLSConfig generates a *tls.Config configuration
-// #nosec G304
+// BuildTLSConfig generates a *tls.Config configuration using ca cert on base64
 func (rc *RedisConnection) BuildTLSConfig() (*tls.Config, error) {
 	caCert, err := base64.StdEncoding.DecodeString(rc.CACert)
 	if err != nil {
@@ -160,7 +160,7 @@ func (rc *RedisConnection) BuildTLSConfig() (*tls.Config, error) {
 	return tlsCfg, nil
 }
 
-// retrieveToken generates a new IAM token
+// retrieveToken generates a new GCP IAM token
 func (rc *RedisConnection) retrieveToken(ctx context.Context) (string, error) {
 	client, err := iamcredentials.NewIamCredentialsClient(ctx)
 	if err != nil {
@@ -182,7 +182,7 @@ func (rc *RedisConnection) retrieveToken(ctx context.Context) (string, error) {
 	return resp.AccessToken, nil
 }
 
-// refreshTokenLoop periodically refreshes the IAM token
+// refreshTokenLoop periodically refreshes the GCP IAM token
 func (rc *RedisConnection) refreshTokenLoop(ctx context.Context) {
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
