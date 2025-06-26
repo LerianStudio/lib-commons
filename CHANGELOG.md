@@ -1,3 +1,10 @@
+## [1.17.0-beta.16](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.15...v1.17.0-beta.16) (2025-06-26)
+
+
+### Features
+
+* add gcp credentials to use passing by app like base64 string; ([326ff60](https://github.com/LerianStudio/lib-commons/commit/326ff601e7eccbfd9aa7a31a54488cd68d8d2bbb))
+
 ## [1.17.0-beta.15](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.14...v1.17.0-beta.15) (2025-06-25)
 
 
