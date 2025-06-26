@@ -12,6 +12,7 @@ import (
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/durationpb"
 	"sync"
 	"time"
@@ -31,25 +32,26 @@ const (
 
 // RedisConnection represents a Redis connection hub
 type RedisConnection struct {
-	Mode               Mode
-	Address            []string
-	DB                 int
-	MasterName         string
-	Password           string
-	Protocol           int
-	UseTLS             bool
-	Logger             log.Logger
-	Connected          bool
-	Client             redis.UniversalClient
-	CACert             string
-	UseGCPIAMAuth      bool
-	ServiceAccountName string
-	TokenLifeTime      time.Duration
-	RefreshDuration    time.Duration
-	token              string
-	lastRefreshInstant time.Time
-	errLastSeen        error
-	mu                 sync.RWMutex
+	Mode                         Mode
+	Address                      []string
+	DB                           int
+	MasterName                   string
+	Password                     string
+	Protocol                     int
+	UseTLS                       bool
+	Logger                       log.Logger
+	Connected                    bool
+	Client                       redis.UniversalClient
+	CACert                       string
+	UseGCPIAMAuth                bool
+	GoogleApplicationCredentials string
+	ServiceAccount               string
+	TokenLifeTime                time.Duration
+	RefreshDuration              time.Duration
+	token                        string
+	lastRefreshInstant           time.Time
+	errLastSeen                  error
+	mu                           sync.RWMutex
 }
 
 // Connect initializes a Redis connection
@@ -162,14 +164,23 @@ func (rc *RedisConnection) BuildTLSConfig() (*tls.Config, error) {
 
 // retrieveToken generates a new GCP IAM token
 func (rc *RedisConnection) retrieveToken(ctx context.Context) (string, error) {
-	client, err := iamcredentials.NewIamCredentialsClient(ctx)
+	credentials, err := base64.StdEncoding.DecodeString(rc.GoogleApplicationCredentials)
+	if err != nil {
+		rc.Logger.Infof("Base64 credentials error to decode error: %v", zap.Error(err))
+
+		return "", err
+	}
+
+	opts := option.WithCredentialsJSON(credentials)
+
+	client, err := iamcredentials.NewIamCredentialsClient(ctx, opts)
 	if err != nil {
 		return "", fmt.Errorf("creating IAM credentials client: %w", err)
 	}
 	defer client.Close()
 
 	req := &iamcredentialspb.GenerateAccessTokenRequest{
-		Name:     PrefixServicesAccounts + rc.ServiceAccountName,
+		Name:     PrefixServicesAccounts + rc.ServiceAccount,
 		Scope:    []string{Scope},
 		Lifetime: durationpb.New(rc.TokenLifeTime),
 	}
