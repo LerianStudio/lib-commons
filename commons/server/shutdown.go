@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/LerianStudio/lib-commons/commons/license"
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
 	"github.com/gofiber/fiber/v2"
@@ -18,7 +19,7 @@ import (
 type ServerManager struct {
 	httpServer     *fiber.App
 	grpcServer     *grpc.Server
-	licenseClient  *LicenseManagerShutdown
+	licenseClient  *license.ManagerShutdown
 	telemetry      *opentelemetry.Telemetry
 	logger         log.Logger
 	httpAddress    string
@@ -28,7 +29,7 @@ type ServerManager struct {
 
 // NewServerManager creates a new instance of ServerManager.
 func NewServerManager(
-	licenseClient *LicenseManagerShutdown,
+	licenseClient *license.ManagerShutdown,
 	telemetry *opentelemetry.Telemetry,
 	logger log.Logger,
 ) *ServerManager {
@@ -214,7 +215,7 @@ func (sm *ServerManager) executeShutdown() {
 type GracefulShutdown struct {
 	app           *fiber.App
 	grpcServer    *grpc.Server
-	licenseClient *LicenseManagerShutdown
+	licenseClient *license.ManagerShutdown
 	telemetry     *opentelemetry.Telemetry
 	logger        log.Logger
 }
@@ -224,7 +225,7 @@ type GracefulShutdown struct {
 func NewGracefulShutdown(
 	app *fiber.App,
 	grpcServer *grpc.Server,
-	licenseClient *LicenseManagerShutdown,
+	licenseClient *license.ManagerShutdown,
 	telemetry *opentelemetry.Telemetry,
 	logger log.Logger,
 ) *GracefulShutdown {

@@ -3,6 +3,7 @@
 package server
 
 import (
+	"github.com/LerianStudio/lib-commons/commons/license"
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
 	"github.com/gofiber/fiber/v2"
@@ -20,9 +21,9 @@ func ExampleHTTPOnly() {
 	})
 
 	// Create logger, telemetry, and license client
-	logger := &log.GoLogger{}                  // Replace with your logger initialization
-	telemetry := &opentelemetry.Telemetry{}    // Replace with your telemetry initialization
-	licenseClient := &LicenseManagerShutdown{} // Replace with your license client
+	logger := &log.GoLogger{Level: log.InfoLevel}
+	telemetry := &opentelemetry.Telemetry{}
+	licenseClient := license.New()
 
 	// Create ServerManager and configure HTTP server
 	serverManager := NewServerManager(licenseClient, telemetry, logger).
@@ -42,9 +43,9 @@ func ExampleGRPCOnly() {
 	// pb.RegisterYourServiceServer(grpcServer, &yourServiceImpl{})
 
 	// Create logger, telemetry, and license client
-	logger := &log.GoLogger{}                  // Replace with your logger initialization
-	telemetry := &opentelemetry.Telemetry{}    // Replace with your telemetry initialization
-	licenseClient := &LicenseManagerShutdown{} // Replace with your license client
+	logger := &log.GoLogger{Level: log.InfoLevel}
+	telemetry := &opentelemetry.Telemetry{}
+	licenseClient := license.New()
 
 	// Create ServerManager and configure gRPC server
 	serverManager := NewServerManager(licenseClient, telemetry, logger).
@@ -70,9 +71,9 @@ func ExampleBothServers() {
 	// pb.RegisterYourServiceServer(grpcServer, &yourServiceImpl{})
 
 	// Create logger, telemetry, and license client
-	logger := &log.GoLogger{}                  // Replace with your logger initialization
-	telemetry := &opentelemetry.Telemetry{}    // Replace with your telemetry initialization
-	licenseClient := &LicenseManagerShutdown{} // Replace with your license client
+	logger := &log.GoLogger{Level: log.InfoLevel}
+	telemetry := &opentelemetry.Telemetry{}
+	licenseClient := license.New()
 
 	// Create ServerManager and configure both servers
 	serverManager := NewServerManager(licenseClient, telemetry, logger).
@@ -100,9 +101,9 @@ func ExampleMigrationFromOldAPI() {
 	// NEW WAY (unified and coordinated):
 	app := fiber.New()
 	grpcServer := grpc.NewServer()
-	logger := &log.GoLogger{}
+	logger := &log.GoLogger{Level: log.InfoLevel}
 	telemetry := &opentelemetry.Telemetry{}
-	licenseClient := &LicenseManagerShutdown{}
+	licenseClient := license.New()
 
 	NewServerManager(licenseClient, telemetry, logger).
 		WithHTTPServer(app, ":8080").
