@@ -1,19 +1,19 @@
-package shutdown_test
+package server_test
 
 import (
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/commons/shutdown"
+	"github.com/LerianStudio/lib-commons/commons/server"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestNew(t *testing.T) {
-	manager := shutdown.New()
+	manager := server.New()
 	assert.NotNil(t, manager, "New should return a non-nil manager")
 }
 
 func TestSetHandler(t *testing.T) {
-	manager := shutdown.New()
+	manager := server.New()
 	handlerCalled := false
 	testHandler := func(reason string) {
 		handlerCalled = true
@@ -27,7 +27,7 @@ func TestSetHandler(t *testing.T) {
 }
 
 func TestSetHandlerWithNil(t *testing.T) {
-	manager := shutdown.New()
+	manager := server.New()
 	handlerCalled := false
 	testHandler := func(reason string) {
 		handlerCalled = true
@@ -41,7 +41,7 @@ func TestSetHandlerWithNil(t *testing.T) {
 }
 
 func TestDefaultHandler(t *testing.T) {
-	manager := shutdown.New()
+	manager := server.New()
 	
 	assert.Panics(t, func() {
 		manager.Terminate("default handler test")
