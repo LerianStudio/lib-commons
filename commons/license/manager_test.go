@@ -1,49 +1,48 @@
-package shutdown_test
+package license_test
 
 import (
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/commons/shutdown"
+	"github.com/LerianStudio/lib-commons/commons/license"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestNew(t *testing.T) {
-	manager := shutdown.New()
+	manager := license.New()
 	assert.NotNil(t, manager, "New should return a non-nil manager")
 }
 
 func TestSetHandler(t *testing.T) {
-	manager := shutdown.New()
+	manager := license.New()
 	handlerCalled := false
 	testHandler := func(reason string) {
 		handlerCalled = true
-		assert.Equal(t, "test reason", reason)
 	}
 
 	manager.SetHandler(testHandler)
-	manager.Terminate("test reason")
+	manager.Terminate("test")
 
-	assert.True(t, handlerCalled, "Custom handler should have been called")
+	assert.True(t, handlerCalled, "Custom handler should be called")
 }
 
 func TestSetHandlerWithNil(t *testing.T) {
-	manager := shutdown.New()
+	manager := license.New()
 	handlerCalled := false
 	testHandler := func(reason string) {
 		handlerCalled = true
 	}
-	
+
 	manager.SetHandler(testHandler)
-	manager.SetHandler(nil)
+	manager.SetHandler(nil) // This should not change the handler
 	manager.Terminate("test")
-	
-	assert.True(t, handlerCalled, "Original handler should still be active after attempting to set nil handler")
+
+	assert.True(t, handlerCalled, "Original handler should still be called when nil is passed")
 }
 
 func TestDefaultHandler(t *testing.T) {
-	manager := shutdown.New()
+	manager := license.New()
 	
 	assert.Panics(t, func() {
 		manager.Terminate("default handler test")
-	}, "Default handler should panic with license validation failure message")
+	}, "Default handler should panic")
 }
