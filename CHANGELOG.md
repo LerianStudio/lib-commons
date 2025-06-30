@@ -1,3 +1,11 @@
+## [1.17.0-beta.19](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.18...v1.17.0-beta.19) (2025-06-30)
+
+
+### Features
+
+* create a new const called x-idempotency-replayed; ([df9946c](https://github.com/LerianStudio/lib-commons/commit/df9946c830586ed80577495cc653109b636b4575))
+* Merge pull request [#132](https://github.com/LerianStudio/lib-commons/issues/132) from LerianStudio/feat/COMMOS-1023 ([e2cce46](https://github.com/LerianStudio/lib-commons/commit/e2cce46b11ca9172f45769dae444de48e74e051f))
+
 ## [1.17.0-beta.18](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.17...v1.17.0-beta.18) (2025-06-27)
 
 ## [1.17.0-beta.17](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.16...v1.17.0-beta.17) (2025-06-27)
