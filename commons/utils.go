@@ -289,3 +289,21 @@ func IdempotencyInternalKey(organizationID, ledgerID uuid.UUID, key string) stri
 
 	return lockInternalKey
 }
+
+func SettingsTransactionInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+	lockInternalKey := "transaction_settings:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
+
+	return lockInternalKey
+}
+
+func SettingsOnboardingInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+	lockInternalKey := "onboarding_settings:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
+
+	return lockInternalKey
+}
+
+func AccountingRoutesInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+	lockInternalKey := "accounting_routes:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
+
+	return lockInternalKey
+}
