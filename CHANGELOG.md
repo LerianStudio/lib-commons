@@ -1,3 +1,10 @@
+## [1.17.0-beta.20](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.19...v1.17.0-beta.20) (2025-07-01)
+
+
+### Features
+
+* add new internal key generation functions for settings and accounting routes :sparkles: ([d328f29](https://github.com/LerianStudio/lib-commons/commit/d328f29ef095c8ca2e3741744918da4761a1696f))
+
 ## [1.17.0-beta.19](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.18...v1.17.0-beta.19) (2025-06-30)
 
 
