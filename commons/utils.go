@@ -4,17 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/google/uuid"
-	"github.com/shirou/gopsutil/cpu"
-	"github.com/shirou/gopsutil/mem"
-	"go.opentelemetry.io/otel/metric"
 	"math"
 	"os/exec"
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 	"unicode"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
+	"github.com/shirou/gopsutil/cpu"
+	"github.com/shirou/gopsutil/mem"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Contains checks if an item is in a slice. This function uses type parameters to work with any slice type.
@@ -306,4 +309,26 @@ func AccountingRoutesInternalKey(organizationID, ledgerID uuid.UUID, key string)
 	lockInternalKey := "accounting_routes:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
 
 	return lockInternalKey
+}
+
+// ExtractTokenFromHeader extracts the authentication token from the Authorization header.
+// It handles both "Bearer TOKEN" format and raw token format.
+func ExtractTokenFromHeader(c *fiber.Ctx) string {
+	authHeader := c.Get(fiber.HeaderAuthorization)
+
+	if authHeader == "" {
+		return ""
+	}
+
+	splitToken := strings.Split(authHeader, " ")
+
+	if len(splitToken) > 1 && strings.EqualFold(splitToken[0], "bearer") {
+		return strings.TrimSpace(splitToken[1])
+	}
+
+	if len(splitToken) > 0 {
+		return strings.TrimSpace(splitToken[0])
+	}
+
+	return ""
 }
