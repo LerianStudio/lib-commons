@@ -1,10 +1,12 @@
 package http
 
 import (
+	"log"
+	"strings"
+	"time"
+
 	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/gofiber/fiber/v2"
-	"log"
-	"time"
 )
 
 // Ping returns HTTP Status 200 with response "pong".
@@ -44,4 +46,26 @@ func File(filePath string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		return c.SendFile(filePath)
 	}
+}
+
+// ExtractTokenFromHeader extracts the authentication token from the Authorization header.
+// It handles both "Bearer TOKEN" format and raw token format.
+func ExtractTokenFromHeader(c *fiber.Ctx) string {
+	authHeader := c.Get(fiber.HeaderAuthorization)
+
+	if authHeader == "" {
+		return ""
+	}
+
+	splitToken := strings.Split(authHeader, " ")
+
+	if len(splitToken) > 1 && strings.EqualFold(splitToken[0], "bearer") {
+		return strings.TrimSpace(splitToken[1])
+	}
+
+	if len(splitToken) > 0 {
+		return strings.TrimSpace(splitToken[0])
+	}
+
+	return ""
 }

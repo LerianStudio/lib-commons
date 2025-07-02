@@ -4,10 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/google/uuid"
-	"github.com/shirou/gopsutil/cpu"
-	"github.com/shirou/gopsutil/mem"
-	"go.opentelemetry.io/otel/metric"
 	"math"
 	"os/exec"
 	"reflect"
@@ -15,6 +11,11 @@ import (
 	"strconv"
 	"time"
 	"unicode"
+
+	"github.com/google/uuid"
+	"github.com/shirou/gopsutil/cpu"
+	"github.com/shirou/gopsutil/mem"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Contains checks if an item is in a slice. This function uses type parameters to work with any slice type.
