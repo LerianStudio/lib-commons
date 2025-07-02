@@ -1,3 +1,10 @@
+## [1.17.0-beta.21](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.20...v1.17.0-beta.21) (2025-07-02)
+
+
+### Features
+
+* **utils:** add ExtractTokenFromHeader function to parse Authorization headers ([c91ea16](https://github.com/LerianStudio/lib-commons/commit/c91ea16580bba21118a726c3ad0751752fe59e5b))
+
 ## [1.17.0-beta.20](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.19...v1.17.0-beta.20) (2025-07-01)
 
 
