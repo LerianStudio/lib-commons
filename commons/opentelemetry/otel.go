@@ -2,8 +2,10 @@ package opentelemetry
 
 import (
 	"context"
+	"os"
+
 	"github.com/LerianStudio/lib-commons/commons"
-	"github.com/LerianStudio/lib-commons/commons/constants"
+	constant "github.com/LerianStudio/lib-commons/commons/constants"
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -21,7 +23,6 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
-	"os"
 )
 
 type Telemetry struct {
@@ -241,26 +242,38 @@ func InjectContext(ctx context.Context) context.Context {
 	// returned without modifications.
 	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(md))
 
-	if traceparentValue, exists := md["Traceparent"]; exists {
-		md[constant.MetadataTraceparent] = traceparentValue
+	if traceparentValues, exists := md["Traceparent"]; exists && len(traceparentValues) > 0 {
+		md[constant.MetadataTraceparent] = traceparentValues
 		delete(md, "Traceparent")
+	}
+
+	if tracestateValues, exists := md["Tracestate"]; exists && len(tracestateValues) > 0 {
+		md[constant.MetadataTracestate] = tracestateValues
+		delete(md, "Tracestate")
 	}
 
 	return metadata.NewOutgoingContext(ctx, md)
 }
 
-// ExtractContext extracts the OpenTelemetry headers (in lowercase) from the context and returns the new context.
+// ExtractContext extracts the OpenTelemetry trace context from incoming gRPC metadata
+// and injects it into the context. It handles case normalization for W3C trace headers.
 func ExtractContext(ctx context.Context) context.Context {
 	md, ok := metadata.FromIncomingContext(ctx)
-
-	if traceparentValue, exists := md["traceparent"]; exists {
-		md["Traceparent"] = traceparentValue
-		delete(md, "traceparent")
+	if !ok || md == nil {
+		return ctx
 	}
 
-	if ok {
-		ctx = otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(md))
+	mdCopy := md.Copy()
+
+	if traceparentValues, exists := mdCopy["traceparent"]; exists && len(traceparentValues) > 0 {
+		mdCopy["Traceparent"] = traceparentValues
+		delete(mdCopy, "traceparent")
 	}
 
-	return ctx
+	if tracestateValues, exists := mdCopy["tracestate"]; exists && len(tracestateValues) > 0 {
+		mdCopy["Tracestate"] = tracestateValues
+		delete(mdCopy, "tracestate")
+	}
+
+	return otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(mdCopy))
 }
