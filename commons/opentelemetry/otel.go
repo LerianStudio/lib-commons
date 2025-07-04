@@ -2,11 +2,13 @@ package opentelemetry
 
 import (
 	"context"
+	"net/http"
 	"os"
 
 	"github.com/LerianStudio/lib-commons/commons"
 	constant "github.com/LerianStudio/lib-commons/commons/constants"
 	"github.com/LerianStudio/lib-commons/commons/log"
+	"github.com/gofiber/fiber/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -226,8 +228,36 @@ func HandleSpanError(span *trace.Span, message string, err error) {
 	(*span).RecordError(err)
 }
 
-// InjectContext injects the context with the OpenTelemetry headers (in lowercase) and returns the new context.
-func InjectContext(ctx context.Context) context.Context {
+// InjectHTTPContext modifies HTTP headers for trace propagation in outgoing client requests
+func InjectHTTPContext(headers *http.Header, ctx context.Context) {
+	carrier := propagation.HeaderCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+
+	for k, v := range carrier {
+		if len(v) > 0 {
+			headers.Set(k, v[0])
+		}
+	}
+}
+
+// ExtractHTTPContext extracts OpenTelemetry trace context from incoming HTTP headers
+// and injects it into the context. It works with Fiber's HTTP context.
+func ExtractHTTPContext(c *fiber.Ctx) context.Context {
+	// Create a carrier from the HTTP headers
+	carrier := propagation.HeaderCarrier{}
+
+	// Extract headers that might contain trace information
+	c.Request().Header.VisitAll(func(key, value []byte) {
+		carrier.Set(string(key), string(value))
+	})
+
+	// Extract the trace context
+	return otel.GetTextMapPropagator().Extract(c.UserContext(), carrier)
+}
+
+// InjectGRPCContext injects OpenTelemetry trace context into outgoing gRPC metadata.
+// It normalizes W3C trace headers to lowercase for gRPC compatibility.
+func InjectGRPCContext(ctx context.Context) context.Context {
 	md, _ := metadata.FromOutgoingContext(ctx)
 	if md == nil {
 		md = metadata.New(nil)
@@ -255,9 +285,9 @@ func InjectContext(ctx context.Context) context.Context {
 	return metadata.NewOutgoingContext(ctx, md)
 }
 
-// ExtractContext extracts the OpenTelemetry trace context from incoming gRPC metadata
+// ExtractGRPCContext extracts OpenTelemetry trace context from incoming gRPC metadata
 // and injects it into the context. It handles case normalization for W3C trace headers.
-func ExtractContext(ctx context.Context) context.Context {
+func ExtractGRPCContext(ctx context.Context) context.Context {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok || md == nil {
 		return ctx
