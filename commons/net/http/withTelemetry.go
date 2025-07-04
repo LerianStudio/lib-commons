@@ -33,6 +33,7 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry) fiber.
 		}
 
 		tracer := otel.Tracer(tl.LibraryName)
+
 		ctx, span := tracer.Start(opentelemetry.ExtractHTTPContext(c), c.Method()+" "+commons.ReplaceUUIDWithPlaceholder(c.Path()))
 		defer span.End()
 
