@@ -4,10 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/google/uuid"
-	"github.com/shirou/gopsutil/cpu"
-	"github.com/shirou/gopsutil/mem"
-	"go.opentelemetry.io/otel/metric"
 	"math"
 	"os/exec"
 	"reflect"
@@ -15,6 +11,11 @@ import (
 	"strconv"
 	"time"
 	"unicode"
+
+	"github.com/google/uuid"
+	"github.com/shirou/gopsutil/cpu"
+	"github.com/shirou/gopsutil/mem"
+	"go.opentelemetry.io/otel/metric"
 )
 
 // Contains checks if an item is in a slice. This function uses type parameters to work with any slice type.
@@ -159,9 +160,9 @@ func SafeInt64ToInt(val int64) int {
 // SafeUintToInt converts a uint to int64 safely by capping values at math.MaxInt64.
 func SafeUintToInt(val uint) int {
 	if val > uint(math.MaxInt) {
-	    return math.MaxInt
+		return math.MaxInt
 	}
- 	
+
 	return int(val)
 }
 
@@ -278,14 +279,32 @@ func Reverse[T any](s []T) []T {
 	return s
 }
 
-func InternalKey(organizationID, ledgerID uuid.UUID, key string) string {
-	internalKey := organizationID.String() + ":" + ledgerID.String() + ":" + key
+func TransactionInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+	lockInternalKey := "transaction:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
 
-	return internalKey
+	return lockInternalKey
 }
 
-func LockInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
-	lockInternalKey := "lock:" + InternalKey(organizationID, ledgerID, key)
+func IdempotencyInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+	lockInternalKey := "idempotency:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
+
+	return lockInternalKey
+}
+
+func SettingsTransactionInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+	lockInternalKey := "transaction_settings:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
+
+	return lockInternalKey
+}
+
+func SettingsOnboardingInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+	lockInternalKey := "onboarding_settings:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
+
+	return lockInternalKey
+}
+
+func AccountingRoutesInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+	lockInternalKey := "accounting_routes:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
 
 	return lockInternalKey
 }

@@ -1,3 +1,175 @@
+## [1.17.0-beta.21](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.20...v1.17.0-beta.21) (2025-07-02)
+
+
+### Features
+
+* **utils:** add ExtractTokenFromHeader function to parse Authorization headers ([c91ea16](https://github.com/LerianStudio/lib-commons/commit/c91ea16580bba21118a726c3ad0751752fe59e5b))
+
+## [1.17.0-beta.20](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.19...v1.17.0-beta.20) (2025-07-01)
+
+
+### Features
+
+* add new internal key generation functions for settings and accounting routes :sparkles: ([d328f29](https://github.com/LerianStudio/lib-commons/commit/d328f29ef095c8ca2e3741744918da4761a1696f))
+
+## [1.17.0-beta.19](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.18...v1.17.0-beta.19) (2025-06-30)
+
+
+### Features
+
+* create a new const called x-idempotency-replayed; ([df9946c](https://github.com/LerianStudio/lib-commons/commit/df9946c830586ed80577495cc653109b636b4575))
+* Merge pull request [#132](https://github.com/LerianStudio/lib-commons/issues/132) from LerianStudio/feat/COMMOS-1023 ([e2cce46](https://github.com/LerianStudio/lib-commons/commit/e2cce46b11ca9172f45769dae444de48e74e051f))
+
+## [1.17.0-beta.18](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.17...v1.17.0-beta.18) (2025-06-27)
+
+## [1.17.0-beta.17](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.16...v1.17.0-beta.17) (2025-06-27)
+
+## [1.17.0-beta.16](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.15...v1.17.0-beta.16) (2025-06-26)
+
+
+### Features
+
+* add gcp credentials to use passing by app like base64 string; ([326ff60](https://github.com/LerianStudio/lib-commons/commit/326ff601e7eccbfd9aa7a31a54488cd68d8d2bbb))
+
+## [1.17.0-beta.15](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.14...v1.17.0-beta.15) (2025-06-25)
+
+
+### Features
+
+* add some refactors ([8cd3f91](https://github.com/LerianStudio/lib-commons/commit/8cd3f915f3b136afe9d2365b36a3cc96934e1c52))
+* Merge pull request [#128](https://github.com/LerianStudio/lib-commons/issues/128) from LerianStudio/feat/COMMONS-52-10 ([775f24a](https://github.com/LerianStudio/lib-commons/commit/775f24ac85da8eb5e08a6e374ee61f327e798094))
+
+## [1.17.0-beta.14](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.13...v1.17.0-beta.14) (2025-06-25)
+
+
+### Features
+
+* change cacert to string to receive base64; ([a24f5f4](https://github.com/LerianStudio/lib-commons/commit/a24f5f472686e39b44031e00fcc2b7989f1cf6b7))
+* merge pull request [#127](https://github.com/LerianStudio/lib-commons/issues/127) from LerianStudio/feat/COMMONS-52-9 ([12ee2a9](https://github.com/LerianStudio/lib-commons/commit/12ee2a947d2fc38e8957b9b9f6e129b65e4b87a2))
+
+## [1.17.0-beta.13](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.12...v1.17.0-beta.13) (2025-06-25)
+
+
+### Bug Fixes
+
+* Merge pull request [#126](https://github.com/LerianStudio/lib-commons/issues/126) from LerianStudio/fix-COMMONS-52-8 ([cfe9bbd](https://github.com/LerianStudio/lib-commons/commit/cfe9bbde1bcf97847faf3fdc7e72e20ff723d586))
+* revert to original rabbit source; ([351c6ea](https://github.com/LerianStudio/lib-commons/commit/351c6eac3e27301e4a65fce293032567bfd88807))
+
+## [1.17.0-beta.12](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.11...v1.17.0-beta.12) (2025-06-25)
+
+
+### Bug Fixes
+
+* add new check channel is closed; ([e3956c4](https://github.com/LerianStudio/lib-commons/commit/e3956c46eb8a87e637e035d7676d5c592001b509))
+
+## [1.17.0-beta.11](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.10...v1.17.0-beta.11) (2025-06-25)
+
+
+### Features
+
+* merge pull request [#124](https://github.com/LerianStudio/lib-commons/issues/124) from LerianStudio/feat/COMMONS-52-6 ([8aaaf65](https://github.com/LerianStudio/lib-commons/commit/8aaaf652e399746c67c0b8699c57f4a249271ef0))
+
+
+### Bug Fixes
+
+* rabbit hearthbeat and log type of client conn on redis/valkey; ([9607bf5](https://github.com/LerianStudio/lib-commons/commit/9607bf5c0abf21603372d32ea8d66b5d34c77ec0))
+
+## [1.17.0-beta.10](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.9...v1.17.0-beta.10) (2025-06-24)
+
+
+### Bug Fixes
+
+* adjust camel case time name; ([5ba77b9](https://github.com/LerianStudio/lib-commons/commit/5ba77b958a0386a2ab9f8197503bbd4bd57235f0))
+* Merge pull request [#123](https://github.com/LerianStudio/lib-commons/issues/123) from LerianStudio/fix/COMMONS-52-5 ([788915b](https://github.com/LerianStudio/lib-commons/commit/788915b8c333156046e1d79860f80dc84f9aa08b))
+
+## [1.17.0-beta.9](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.8...v1.17.0-beta.9) (2025-06-24)
+
+
+### Bug Fixes
+
+* adjust redis key to use {} to calculate slot on cluster; ([318f269](https://github.com/LerianStudio/lib-commons/commit/318f26947ee847aebfc600ed6e21cb903ee6a795))
+* Merge pull request [#122](https://github.com/LerianStudio/lib-commons/issues/122) from LerianStudio/feat/COMMONS-52-4 ([46f5140](https://github.com/LerianStudio/lib-commons/commit/46f51404f5f472172776abb1fbfd3bab908fc540))
+
+## [1.17.0-beta.8](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.7...v1.17.0-beta.8) (2025-06-24)
+
+
+### Features
+
+* implements IAM refresh token; ([3d21e04](https://github.com/LerianStudio/lib-commons/commit/3d21e04194a10710a1b9de46a3f3aba89804c8b8))
+
+
+### Bug Fixes
+
+* Merge pull request [#121](https://github.com/LerianStudio/lib-commons/issues/121) from LerianStudio/feat/COMMONS-52-3 ([69c9e00](https://github.com/LerianStudio/lib-commons/commit/69c9e002ab0a4fcd24622c79c5da7857eb22c922))
+
+## [1.17.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.6...v1.17.0-beta.7) (2025-06-24)
+
+
+### Features
+
+* merge pull request [#120](https://github.com/LerianStudio/lib-commons/issues/120) from LerianStudio/feat/COMMONS-52-2 ([4293e11](https://github.com/LerianStudio/lib-commons/commit/4293e11ae36942afd7a376ab3ee3db3981922ebf))
+
+
+### Bug Fixes
+
+* adjust to create tls on redis using variable; ([e78ae20](https://github.com/LerianStudio/lib-commons/commit/e78ae2035b5583ce59654e3c7f145d93d86051e7))
+* go lint ([2499476](https://github.com/LerianStudio/lib-commons/commit/249947604ed5d5382cd46e28e03c7396b9096d63))
+
+## [1.17.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.5...v1.17.0-beta.6) (2025-06-23)
+
+
+### Features
+
+* adjust to use only one host; ([22696b0](https://github.com/LerianStudio/lib-commons/commit/22696b0f989eff5db22aeeff06d82df3b16230e4))
+
+
+### Bug Fixes
+
+* Merge pull request [#119](https://github.com/LerianStudio/lib-commons/issues/119) from LerianStudio/feat/COMMONS-52 ([3ba9ca0](https://github.com/LerianStudio/lib-commons/commit/3ba9ca0e284cf36797772967904d21947f8856a5))
+
+## [1.17.0-beta.5](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.4...v1.17.0-beta.5) (2025-06-23)
+
+
+### Features
+
+* add TTL support to Redis/Valkey and support cluster + sentinel modes alongside standalone ([1d825df](https://github.com/LerianStudio/lib-commons/commit/1d825dfefbf574bfe3db0bc718b9d0876aec5e03))
+* Merge pull request [#118](https://github.com/LerianStudio/lib-commons/issues/118) from LerianStudio/feat/COMMONS-52 ([e8f8917](https://github.com/LerianStudio/lib-commons/commit/e8f8917b5c828c487f6bf2236b391dd4f8da5623))
+
+
+### Bug Fixes
+
+* .golangci.yml ([038bedd](https://github.com/LerianStudio/lib-commons/commit/038beddbe9ed4a867f6ed93dd4e84480ed65bb1b))
+* gitactions; ([7f9ebeb](https://github.com/LerianStudio/lib-commons/commit/7f9ebeb1a9328a902e82c8c60428b2a8246793cf))
+
+## [1.17.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.3...v1.17.0-beta.4) (2025-06-20)
+
+
+### Bug Fixes
+
+* adjust decimal values from remains and percentage; ([e1dc4b1](https://github.com/LerianStudio/lib-commons/commit/e1dc4b183d0ca2d1247f727b81f8f27d4ddcc3c7))
+* adjust some code and test; ([c6aca75](https://github.com/LerianStudio/lib-commons/commit/c6aca756499e8b9875e1474e4f7949bb9cc9f60c))
+
+## [1.17.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.2...v1.17.0-beta.3) (2025-06-20)
+
+
+### Bug Fixes
+
+* add fallback logging when logger is nil in shutdown handler ([800d644](https://github.com/LerianStudio/lib-commons/commit/800d644d920bd54abf787d3be457cc0a1117c7a1))
+
+## [1.17.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.1...v1.17.0-beta.2) (2025-06-20)
+
+
+### Features
+
+* add variable tableAlias variadic to ApplyCursorPagination; ([1579a9e](https://github.com/LerianStudio/lib-commons/commit/1579a9e25eae1da3247422ccd64e48730c59ba31))
+
+## [1.17.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.16.0...v1.17.0-beta.1) (2025-06-16)
+
+
+### Features
+
+* revert code that was on the main; ([c2f1772](https://github.com/LerianStudio/lib-commons/commit/c2f17729bde8d2f5bbc36381173ad9226640d763))
+
 ## [1.12.0](https://github.com/LerianStudio/lib-commons/compare/v1.11.0...v1.12.0) (2025-06-13)
 
 
