@@ -1,3 +1,5 @@
+## [1.17.0-beta.23](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.22...v1.17.0-beta.23) (2025-07-07)
+
 ## [1.17.0-beta.22](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.21...v1.17.0-beta.22) (2025-07-07)
 
 
