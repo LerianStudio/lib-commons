@@ -41,7 +41,7 @@ type Telemetry struct {
 }
 
 // NewResource creates a new resource with custom attributes.
-func (tl *Telemetry) newResource() (*sdkresource.Resource, error) {
+func (tl *Telemetry) newResource() *sdkresource.Resource {
 	// Create a resource with only our custom attributes to avoid schema URL conflicts
 	r := sdkresource.NewWithAttributes(
 		semconv.SchemaURL,
@@ -52,7 +52,7 @@ func (tl *Telemetry) newResource() (*sdkresource.Resource, error) {
 		semconv.TelemetrySDKLanguageGo,
 	)
 
-	return r, nil
+	return r
 }
 
 // NewLoggerExporter creates a new logger exporter that writes to stdout.
@@ -130,10 +130,7 @@ func (tl *Telemetry) InitializeTelemetry(logger log.Logger) *Telemetry {
 
 	logger.Infof("Initializing telemetry...")
 
-	r, err := tl.newResource()
-	if err != nil {
-		logger.Fatalf("can't initialize resource: %v", err)
-	}
+	r := tl.newResource()
 
 	tExp, err := tl.newTracerExporter(ctx)
 	if err != nil {
