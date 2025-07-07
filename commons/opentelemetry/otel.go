@@ -40,19 +40,17 @@ type Telemetry struct {
 	EnableTelemetry           bool
 }
 
-// NewResource creates a new resource with default attributes.
+// NewResource creates a new resource with custom attributes.
 func (tl *Telemetry) newResource() (*sdkresource.Resource, error) {
-	r, err := sdkresource.Merge(
-		sdkresource.Default(),
-		sdkresource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName(tl.ServiceName),
-			semconv.ServiceVersion(tl.ServiceVersion),
-			semconv.DeploymentEnvironmentName(tl.DeploymentEnv)),
+	// Create a resource with only our custom attributes to avoid schema URL conflicts
+	r := sdkresource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceName(tl.ServiceName),
+		semconv.ServiceVersion(tl.ServiceVersion),
+		semconv.DeploymentEnvironmentName(tl.DeploymentEnv),
+		semconv.TelemetrySDKName(constant.TelemetrySDKName),
+		semconv.TelemetrySDKLanguageGo,
 	)
-	if err != nil {
-		return nil, err
-	}
 
 	return r, nil
 }
