@@ -1,3 +1,10 @@
+## [1.17.0-beta.22](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.21...v1.17.0-beta.22) (2025-07-07)
+
+
+### Features
+
+* **otel:** enhance trace context propagation with tracestate support for grpc ([f6f65ee](https://github.com/LerianStudio/lib-commons/commit/f6f65eec7999c9bb4d6c14b2314c5c7e5d7f76ea))
+
 ## [1.17.0-beta.21](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.20...v1.17.0-beta.21) (2025-07-02)
 
 
