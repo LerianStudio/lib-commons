@@ -22,7 +22,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdkresource "go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
 )
@@ -48,7 +48,7 @@ func (tl *Telemetry) newResource() (*sdkresource.Resource, error) {
 			semconv.SchemaURL,
 			semconv.ServiceName(tl.ServiceName),
 			semconv.ServiceVersion(tl.ServiceVersion),
-			semconv.DeploymentEnvironment(tl.DeploymentEnv)),
+			semconv.DeploymentEnvironmentName(tl.DeploymentEnv)),
 	)
 	if err != nil {
 		return nil, err
