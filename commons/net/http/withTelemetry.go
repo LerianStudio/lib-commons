@@ -2,6 +2,9 @@ package http
 
 import (
 	"context"
+	"net/http"
+	"strings"
+
 	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
 	"github.com/gofiber/fiber/v2"
@@ -11,8 +14,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"net/http"
-	"strings"
 )
 
 type TelemetryMiddleware struct {
@@ -27,22 +28,22 @@ func NewTelemetryMiddleware(tl *opentelemetry.Telemetry) *TelemetryMiddleware {
 // WithTelemetry is a middleware that adds tracing to the context.
 func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		tracer := otel.Tracer(tl.LibraryName)
-		ctx := commons.ContextWithTracer(c.UserContext(), tracer)
-
 		if strings.Contains(c.Path(), "swagger") && c.Path() != "/swagger/index.html" {
 			return c.Next()
 		}
 
-		ctx, span := tracer.Start(ctx, c.Method()+" "+commons.ReplaceUUIDWithPlaceholder(c.Path()))
+		tracer := otel.Tracer(tl.LibraryName)
+
+		ctx, span := tracer.Start(opentelemetry.ExtractHTTPContext(c), c.Method()+" "+commons.ReplaceUUIDWithPlaceholder(c.Path()))
 		defer span.End()
+
+		ctx = commons.ContextWithTracer(ctx, tracer)
 
 		c.SetUserContext(ctx)
 
 		err := tm.collectMetrics(ctx)
 		if err != nil {
 			opentelemetry.HandleSpanError(&span, "Failed to collect metrics", err)
-
 			return c.Status(http.StatusBadRequest).JSON(err)
 		}
 
@@ -75,7 +76,7 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 		handler grpc.UnaryHandler,
 	) (any, error) {
 		tracer := otel.Tracer(tl.LibraryName)
-		ctx, span := tracer.Start(opentelemetry.ExtractContext(ctx), info.FullMethod)
+		ctx, span := tracer.Start(opentelemetry.ExtractGRPCContext(ctx), info.FullMethod)
 
 		ctx = commons.ContextWithTracer(ctx, tracer)
 
