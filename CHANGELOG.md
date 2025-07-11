@@ -1,3 +1,10 @@
+## [1.17.0-beta.25](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.24...v1.17.0-beta.25) (2025-07-11)
+
+
+### Features
+
+* **transaction:** add accounting routes to Responses struct :sparkles: ([5f36263](https://github.com/LerianStudio/lib-commons/commit/5f36263e6036d5e993d17af7d846c10c9290e610))
+
 ## [1.17.0-beta.24](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.23...v1.17.0-beta.24) (2025-07-07)
 
 
