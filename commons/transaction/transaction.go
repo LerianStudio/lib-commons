@@ -1,10 +1,11 @@
 package transaction
 
 import (
-	"github.com/shopspring/decimal"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 // Balance structure for marshaling/unmarshalling JSON.
@@ -31,14 +32,17 @@ type Balance struct {
 } // @name Balance
 
 type Responses struct {
-	Total        decimal.Decimal
-	Asset        string
-	From         map[string]Amount
-	To           map[string]Amount
-	Sources      []string
-	Destinations []string
-	Aliases      []string
-	Pending      bool
+	Total               decimal.Decimal
+	Asset               string
+	From                map[string]Amount
+	To                  map[string]Amount
+	Sources             []string
+	Destinations        []string
+	Aliases             []string
+	Pending             bool
+	TransactionRoute    string
+	OperationRoutesFrom map[string]string
+	OperationRoutesTo   map[string]string
 }
 
 // Metadata structure for marshaling/unmarshalling JSON.
