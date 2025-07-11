@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 	"unicode"
 
@@ -17,6 +18,8 @@ import (
 	"github.com/shirou/gopsutil/mem"
 	"go.opentelemetry.io/otel/metric"
 )
+
+const keySeparator = ":"
 
 // Contains checks if an item is in a slice. This function uses type parameters to work with any slice type.
 func Contains[T comparable](slice []T, item T) bool {
@@ -280,31 +283,71 @@ func Reverse[T any](s []T) []T {
 }
 
 func TransactionInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
-	lockInternalKey := "transaction:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
+	var builder strings.Builder
 
-	return lockInternalKey
+	builder.WriteString("transaction:{")
+	builder.WriteString(organizationID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(ledgerID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(key)
+	builder.WriteString("}")
+
+	return builder.String()
 }
 
 func IdempotencyInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
-	lockInternalKey := "idempotency:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
+	var builder strings.Builder
 
-	return lockInternalKey
+	builder.WriteString("idempotency:{")
+	builder.WriteString(organizationID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(ledgerID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(key)
+	builder.WriteString("}")
+
+	return builder.String()
 }
 
 func SettingsTransactionInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
-	lockInternalKey := "transaction_settings:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
+	var builder strings.Builder
 
-	return lockInternalKey
+	builder.WriteString("transaction_settings:{")
+	builder.WriteString(organizationID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(ledgerID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(key)
+	builder.WriteString("}")
+
+	return builder.String()
 }
 
 func SettingsOnboardingInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
-	lockInternalKey := "onboarding_settings:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
+	var builder strings.Builder
 
-	return lockInternalKey
+	builder.WriteString("onboarding_settings:{")
+	builder.WriteString(organizationID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(ledgerID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(key)
+	builder.WriteString("}")
+
+	return builder.String()
 }
 
-func AccountingRoutesInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
-	lockInternalKey := "accounting_routes:{" + organizationID.String() + ":" + ledgerID.String() + ":" + key + "}"
+func AccountingRoutesInternalKey(organizationID, ledgerID, key uuid.UUID) string {
+	var builder strings.Builder
 
-	return lockInternalKey
+	builder.WriteString("accounting_routes:{")
+	builder.WriteString(organizationID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(ledgerID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(key.String())
+	builder.WriteString("}")
+
+	return builder.String()
 }
