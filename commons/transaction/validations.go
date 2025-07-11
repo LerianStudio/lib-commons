@@ -2,12 +2,13 @@ package transaction
 
 import (
 	"context"
+	"strconv"
+	"strings"
+
 	"github.com/LerianStudio/lib-commons/commons"
 	constant "github.com/LerianStudio/lib-commons/commons/constants"
 	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
 	"github.com/shopspring/decimal"
-	"strconv"
-	"strings"
 )
 
 // ValidateBalancesRules function with some validates in accounts and DSL operations
@@ -202,7 +203,7 @@ func DetermineOperation(isPending bool, isFrom bool, transactionType string) str
 }
 
 // CalculateTotal Calculate total for sources/destinations based on shares, amounts and remains
-func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType string, t chan decimal.Decimal, ft chan map[string]Amount, sd chan []string) {
+func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType string, t chan decimal.Decimal, ft chan map[string]Amount, sd chan []string, or chan map[string]string) {
 	fmto := make(map[string]Amount)
 	scdt := make([]string, 0)
 
@@ -214,7 +215,11 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 		TransactionType: transactionType,
 	}
 
+	operationRoute := make(map[string]string)
+
 	for i := range fromTos {
+		operationRoute[ConcatAlias(i, fromTos[i].AccountAlias)] = fromTos[i].Route
+
 		operation := DetermineOperation(transaction.Pending, fromTos[i].IsFrom, transactionType)
 
 		if fromTos[i].Share != nil && fromTos[i].Share.Percentage != 0 {
@@ -271,6 +276,7 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 	t <- total
 	ft <- fmto
 	sd <- scdt
+	or <- operationRoute
 }
 
 // AppendIfNotExist Append if not exist
@@ -292,30 +298,36 @@ func ValidateSendSourceAndDistribute(transaction Transaction, transactionType st
 	)
 
 	response := &Responses{
-		Total:        transaction.Send.Value,
-		Asset:        transaction.Send.Asset,
-		From:         make(map[string]Amount),
-		To:           make(map[string]Amount),
-		Sources:      make([]string, 0),
-		Destinations: make([]string, 0),
-		Aliases:      make([]string, 0),
-		Pending:      transaction.Pending,
+		Total:               transaction.Send.Value,
+		Asset:               transaction.Send.Asset,
+		From:                make(map[string]Amount),
+		To:                  make(map[string]Amount),
+		Sources:             make([]string, 0),
+		Destinations:        make([]string, 0),
+		Aliases:             make([]string, 0),
+		Pending:             transaction.Pending,
+		TransactionRoute:    transaction.Route,
+		OperationRoutesFrom: make(map[string]string),
+		OperationRoutesTo:   make(map[string]string),
 	}
 
 	t := make(chan decimal.Decimal)
 	ft := make(chan map[string]Amount)
 	sd := make(chan []string)
+	or := make(chan map[string]string)
 
-	go CalculateTotal(transaction.Send.Source.From, transaction, transactionType, t, ft, sd)
+	go CalculateTotal(transaction.Send.Source.From, transaction, transactionType, t, ft, sd, or)
 	sourcesTotal = <-t
 	response.From = <-ft
 	response.Sources = <-sd
+	response.OperationRoutesFrom = <-or
 	response.Aliases = AppendIfNotExist(response.Aliases, response.Sources)
 
-	go CalculateTotal(transaction.Send.Distribute.To, transaction, transactionType, t, ft, sd)
+	go CalculateTotal(transaction.Send.Distribute.To, transaction, transactionType, t, ft, sd, or)
 	destinationsTotal = <-t
 	response.To = <-ft
 	response.Destinations = <-sd
+	response.OperationRoutesTo = <-or
 	response.Aliases = AppendIfNotExist(response.Aliases, response.Destinations)
 
 	for i, source := range response.Sources {
