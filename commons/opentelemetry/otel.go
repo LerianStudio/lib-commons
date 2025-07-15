@@ -242,9 +242,9 @@ func ExtractHTTPContext(c *fiber.Ctx) context.Context {
 	carrier := propagation.HeaderCarrier{}
 
 	// Extract headers that might contain trace information
-	c.Request().Header.VisitAll(func(key, value []byte) {
+	for key, value := range c.Request().Header.All() {
 		carrier.Set(string(key), string(value))
-	})
+	}
 
 	// Extract the trace context
 	return otel.GetTextMapPropagator().Extract(c.UserContext(), carrier)
@@ -301,4 +301,8 @@ func ExtractGRPCContext(ctx context.Context) context.Context {
 	}
 
 	return otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(mdCopy))
+}
+
+func (tl *Telemetry) EndTracingSpans(ctx context.Context) {
+	trace.SpanFromContext(ctx).End()
 }

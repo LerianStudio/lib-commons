@@ -1,12 +1,14 @@
 package http
 
 import (
+	"errors"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/gofiber/fiber/v2"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Ping returns HTTP Status 200 with response "pong".
@@ -68,4 +70,24 @@ func ExtractTokenFromHeader(c *fiber.Ctx) string {
 	}
 
 	return ""
+}
+
+// HandleFiberError handles errors for Fiber, properly unwrapping errors to check for fiber.Error
+func HandleFiberError(c *fiber.Ctx, err error) error {
+	// Safely end spans if user context exists
+	ctx := c.UserContext()
+	if ctx != nil {
+		// End the span immediately instead of in a goroutine to ensure prompt completion
+		trace.SpanFromContext(ctx).End()
+	}
+
+	// Default error handling
+	code := fiber.StatusInternalServerError
+	var e *fiber.Error
+	if errors.As(err, &e) {
+		code = e.Code
+	}
+	return c.Status(code).JSON(fiber.Map{
+		"error": err.Error(),
+	})
 }
