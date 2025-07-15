@@ -1,3 +1,10 @@
+## [1.17.0-beta.28](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.27...v1.17.0-beta.28) (2025-07-15)
+
+
+### Features
+
+* **http:** add Fiber error handler with OpenTelemetry span management ([5c7deed](https://github.com/LerianStudio/lib-commons/commit/5c7deed8216321edd0527b10bad220dde1492d2e))
+
 ## [1.17.0-beta.27](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.26...v1.17.0-beta.27) (2025-07-15)
 
 ## [1.17.0-beta.26](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.25...v1.17.0-beta.26) (2025-07-15)
