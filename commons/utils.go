@@ -23,13 +23,7 @@ const keySeparator = ":"
 
 // Contains checks if an item is in a slice. This function uses type parameters to work with any slice type.
 func Contains[T comparable](slice []T, item T) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(slice, item)
 }
 
 // CheckMetadataKeyAndValueLength check the length of key and value to a limit pass by on field limit
