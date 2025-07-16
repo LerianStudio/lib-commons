@@ -1,3 +1,11 @@
+## [1.17.0-beta.29](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.28...v1.17.0-beta.29) (2025-07-16)
+
+
+### Features
+
+* merge pull request [#153](https://github.com/LerianStudio/lib-commons/issues/153) from LerianStudio/feat/COMMONS-1055 ([1cc6cb5](https://github.com/LerianStudio/lib-commons/commit/1cc6cb53c71515bd0c574ece0bb6335682aab953))
+* Preallocate structures and isolate channels per goroutine for CalculateTotal ([8e92258](https://github.com/LerianStudio/lib-commons/commit/8e922587f4b88f93434dfac5e16f0e570bef4a98))
+
 ## [1.17.0-beta.28](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.27...v1.17.0-beta.28) (2025-07-15)
 
 
