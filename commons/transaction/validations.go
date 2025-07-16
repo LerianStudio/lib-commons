@@ -297,37 +297,45 @@ func ValidateSendSourceAndDistribute(transaction Transaction, transactionType st
 		destinationsTotal decimal.Decimal
 	)
 
+	sizeFrom := len(transaction.Send.Source.From)
+	sizeTo := len(transaction.Send.Distribute.To)
+
 	response := &Responses{
 		Total:               transaction.Send.Value,
 		Asset:               transaction.Send.Asset,
-		From:                make(map[string]Amount),
-		To:                  make(map[string]Amount),
-		Sources:             make([]string, 0),
-		Destinations:        make([]string, 0),
-		Aliases:             make([]string, 0),
+		From:                make(map[string]Amount, sizeFrom),
+		To:                  make(map[string]Amount, sizeTo),
+		Sources:             make([]string, 0, sizeFrom),
+		Destinations:        make([]string, 0, sizeTo),
+		Aliases:             make([]string, 0, sizeFrom+sizeTo),
 		Pending:             transaction.Pending,
 		TransactionRoute:    transaction.Route,
-		OperationRoutesFrom: make(map[string]string),
-		OperationRoutesTo:   make(map[string]string),
+		OperationRoutesFrom: make(map[string]string, sizeFrom),
+		OperationRoutesTo:   make(map[string]string, sizeTo),
 	}
 
-	t := make(chan decimal.Decimal)
-	ft := make(chan map[string]Amount)
-	sd := make(chan []string)
-	or := make(chan map[string]string)
+	tFrom := make(chan decimal.Decimal, sizeFrom)
+	ftFrom := make(chan map[string]Amount, sizeFrom)
+	sdFrom := make(chan []string, sizeFrom)
+	orFrom := make(chan map[string]string, sizeFrom)
 
-	go CalculateTotal(transaction.Send.Source.From, transaction, transactionType, t, ft, sd, or)
-	sourcesTotal = <-t
-	response.From = <-ft
-	response.Sources = <-sd
-	response.OperationRoutesFrom = <-or
+	go CalculateTotal(transaction.Send.Source.From, transaction, transactionType, tFrom, ftFrom, sdFrom, orFrom)
+	sourcesTotal = <-tFrom
+	response.From = <-ftFrom
+	response.Sources = <-sdFrom
+	response.OperationRoutesFrom = <-orFrom
 	response.Aliases = AppendIfNotExist(response.Aliases, response.Sources)
 
-	go CalculateTotal(transaction.Send.Distribute.To, transaction, transactionType, t, ft, sd, or)
-	destinationsTotal = <-t
-	response.To = <-ft
-	response.Destinations = <-sd
-	response.OperationRoutesTo = <-or
+	tTo := make(chan decimal.Decimal, sizeTo)
+	ftTo := make(chan map[string]Amount, sizeTo)
+	sdTo := make(chan []string, sizeTo)
+	orTo := make(chan map[string]string, sizeTo)
+
+	go CalculateTotal(transaction.Send.Distribute.To, transaction, transactionType, tTo, ftTo, sdTo, orTo)
+	destinationsTotal = <-tTo
+	response.To = <-ftTo
+	response.Destinations = <-sdTo
+	response.OperationRoutesTo = <-orTo
 	response.Aliases = AppendIfNotExist(response.Aliases, response.Destinations)
 
 	for i, source := range response.Sources {
