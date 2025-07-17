@@ -1,3 +1,10 @@
+## [1.17.0-beta.30](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.29...v1.17.0-beta.30) (2025-07-17)
+
+
+### Bug Fixes
+
+* improve error handling and prevent deadlocks in server and license management ([24282ee](https://github.com/LerianStudio/lib-commons/commit/24282ee9a411e0d5bf1977447a97e1e3fb260835))
+
 ## [1.17.0-beta.29](https://github.com/LerianStudio/lib-commons/compare/v1.17.0-beta.28...v1.17.0-beta.29) (2025-07-16)
 
 
