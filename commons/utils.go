@@ -4,28 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/google/uuid"
-	"github.com/shirou/gopsutil/cpu"
-	"github.com/shirou/gopsutil/mem"
-	"go.opentelemetry.io/otel/metric"
 	"math"
 	"os/exec"
 	"reflect"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 	"unicode"
+
+	"github.com/google/uuid"
+	"github.com/shirou/gopsutil/cpu"
+	"github.com/shirou/gopsutil/mem"
+	"go.opentelemetry.io/otel/metric"
 )
+
+const keySeparator = ":"
 
 // Contains checks if an item is in a slice. This function uses type parameters to work with any slice type.
 func Contains[T comparable](slice []T, item T) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(slice, item)
 }
 
 // CheckMetadataKeyAndValueLength check the length of key and value to a limit pass by on field limit
@@ -159,9 +157,9 @@ func SafeInt64ToInt(val int64) int {
 // SafeUintToInt converts a uint to int64 safely by capping values at math.MaxInt64.
 func SafeUintToInt(val uint) int {
 	if val > uint(math.MaxInt) {
-	    return math.MaxInt
+		return math.MaxInt
 	}
- 	
+
 	return int(val)
 }
 
@@ -278,14 +276,44 @@ func Reverse[T any](s []T) []T {
 	return s
 }
 
-func InternalKey(organizationID, ledgerID uuid.UUID, key string) string {
-	internalKey := organizationID.String() + ":" + ledgerID.String() + ":" + key
+func TransactionInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+	var builder strings.Builder
 
-	return internalKey
+	builder.WriteString("transaction:{")
+	builder.WriteString(organizationID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(ledgerID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(key)
+	builder.WriteString("}")
+
+	return builder.String()
 }
 
-func LockInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
-	lockInternalKey := "lock:" + InternalKey(organizationID, ledgerID, key)
+func IdempotencyInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+	var builder strings.Builder
 
-	return lockInternalKey
+	builder.WriteString("idempotency:{")
+	builder.WriteString(organizationID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(ledgerID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(key)
+	builder.WriteString("}")
+
+	return builder.String()
+}
+
+func AccountingRoutesInternalKey(organizationID, ledgerID, key uuid.UUID) string {
+	var builder strings.Builder
+
+	builder.WriteString("accounting_routes:{")
+	builder.WriteString(organizationID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(ledgerID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(key.String())
+	builder.WriteString("}")
+
+	return builder.String()
 }

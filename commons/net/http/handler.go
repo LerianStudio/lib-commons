@@ -1,10 +1,15 @@
 package http
 
 import (
+	"errors"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+
 	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/gofiber/fiber/v2"
-	"log"
-	"time"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Ping returns HTTP Status 200 with response "pong".
@@ -44,4 +49,58 @@ func File(filePath string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		return c.SendFile(filePath)
 	}
+}
+
+// ExtractTokenFromHeader extracts the authentication token from the Authorization header.
+// It handles both "Bearer TOKEN" format and raw token format.
+func ExtractTokenFromHeader(c *fiber.Ctx) string {
+	authHeader := c.Get(fiber.HeaderAuthorization)
+
+	if authHeader == "" {
+		return ""
+	}
+
+	splitToken := strings.Split(authHeader, " ")
+
+	if len(splitToken) > 1 && strings.EqualFold(splitToken[0], "bearer") {
+		return strings.TrimSpace(splitToken[1])
+	}
+
+	if len(splitToken) > 0 {
+		return strings.TrimSpace(splitToken[0])
+	}
+
+	return ""
+}
+
+// HandleFiberError handles errors for Fiber, properly unwrapping errors to check for fiber.Error
+func HandleFiberError(c *fiber.Ctx, err error) error {
+	// Safely end spans if user context exists
+	ctx := c.UserContext()
+	if ctx != nil {
+		// End the span immediately instead of in a goroutine to ensure prompt completion
+		trace.SpanFromContext(ctx).End()
+	}
+
+	// Default error handling
+	code := fiber.StatusInternalServerError
+
+	var e *fiber.Error
+
+	if errors.As(err, &e) {
+		code = e.Code
+	}
+
+	if code == fiber.StatusInternalServerError {
+		// Log the actual error for debugging purposes.
+		log.Printf("handler error on %s %s: %v", c.Method(), c.Path(), err)
+
+		return c.Status(code).JSON(fiber.Map{
+			"error": http.StatusText(code),
+		})
+	}
+
+	return c.Status(code).JSON(fiber.Map{
+		"error": err.Error(),
+	})
 }

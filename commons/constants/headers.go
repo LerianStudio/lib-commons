@@ -11,6 +11,7 @@ const (
 	HeaderID            = "X-Request-Id"
 	IdempotencyKey      = "X-Idempotency"
 	IdempotencyTTL      = "X-TTL"
+	IdempotencyReplayed = "X-Idempotency-Replayed"
 	Authorization       = "Authorization"
 	Basic               = "Basic"
 	BasicAuth           = "Basic Auth"

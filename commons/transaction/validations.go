@@ -2,14 +2,13 @@ package transaction
 
 import (
 	"context"
-	"math"
-	"math/big"
 	"strconv"
 	"strings"
 
 	"github.com/LerianStudio/lib-commons/commons"
 	constant "github.com/LerianStudio/lib-commons/commons/constants"
 	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
+	"github.com/shopspring/decimal"
 )
 
 // ValidateBalancesRules function with some validates in accounts and DSL operations
@@ -18,6 +17,7 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 	tracer := commons.NewTracerFromContext(ctx)
 
 	_, spanValidateBalances := tracer.Start(ctx, "validations.validate_balances_rules")
+	defer spanValidateBalances.End()
 
 	if len(balances) != (len(validate.From) + len(validate.To)) {
 		err := commons.ValidateBusinessError(constant.ErrAccountIneligibility, "ValidateAccounts")
@@ -28,7 +28,7 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 	}
 
 	for _, balance := range balances {
-		if err := validateFromBalances(balance, validate.From, validate.Asset); err != nil {
+		if err := validateFromBalances(balance, validate.From, validate.Asset, validate.Pending); err != nil {
 			opentelemetry.HandleSpanError(&spanValidateBalances, "validations.validate_from_balances_", err)
 
 			logger.Errorf("validations.validate_from_balances_err: %s", err)
@@ -43,49 +43,14 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 
 			return err
 		}
-
-		if err := validateBalance(balance, transaction, validate.From); err != nil {
-			opentelemetry.HandleSpanError(&spanValidateBalances, "validations.validate_to_balances_", err)
-
-			logger.Errorf("validations.validate_balances_err: %s", err)
-
-			return err
-		}
-	}
-
-	spanValidateBalances.End()
-
-	return nil
-}
-
-func validateBalance(balance *Balance, dsl Transaction, from map[string]Amount) error {
-	for key := range from {
-		for _, f := range dsl.Send.Source.From {
-			if balance.ID == key || balance.Alias == key {
-				blc := Balance{
-					Scale:     balance.Scale,
-					Available: balance.Available,
-					OnHold:    balance.OnHold,
-				}
-
-				ba, err := OperateBalances(from[f.Account], blc, constant.DEBIT)
-				if err != nil {
-					return err
-				}
-
-				if ba.Available < 0 && balance.AccountType != constant.ExternalAccountType {
-					return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateBalance", balance.Alias)
-				}
-			}
-		}
 	}
 
 	return nil
 }
 
-func validateFromBalances(balance *Balance, from map[string]Amount, asset string) error {
+func validateFromBalances(balance *Balance, from map[string]Amount, asset string, pending bool) error {
 	for key := range from {
-		if balance.ID == key || balance.Alias == key {
+		if key == balance.ID || key == balance.Alias {
 			if balance.AssetCode != asset {
 				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateFromAccounts")
 			}
@@ -94,8 +59,21 @@ func validateFromBalances(balance *Balance, from map[string]Amount, asset string
 				return commons.ValidateBusinessError(constant.ErrAccountStatusTransactionRestriction, "validateFromAccounts")
 			}
 
-			if balance.Available <= 0 && balance.AccountType != constant.ExternalAccountType {
+			if (balance.Available.IsZero() || balance.Available.IsNegative()) && balance.AccountType != constant.ExternalAccountType {
 				return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateFromAccounts", balance.Alias)
+			}
+
+			ba, err := OperateBalances(from[key], *balance)
+			if err != nil {
+				return err
+			}
+
+			if ba.Available.IsNegative() && balance.AccountType != constant.ExternalAccountType {
+				return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateBalance", balance.Alias)
+			}
+
+			if pending && balance.AccountType == constant.ExternalAccountType {
+				return commons.ValidateBusinessError(constant.ErrOnHoldExternalAccount, "validateBalance", balance.Alias)
 			}
 		}
 	}
@@ -105,7 +83,7 @@ func validateFromBalances(balance *Balance, from map[string]Amount, asset string
 
 func validateToBalances(balance *Balance, to map[string]Amount, asset string) error {
 	for key := range to {
-		if balance.ID == key || balance.Alias == key {
+		if key == balance.ID || key == balance.Alias {
 			if balance.AssetCode != asset {
 				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateToAccounts")
 			}
@@ -114,7 +92,7 @@ func validateToBalances(balance *Balance, to map[string]Amount, asset string) er
 				return commons.ValidateBusinessError(constant.ErrAccountStatusTransactionRestriction, "validateToAccounts")
 			}
 
-			if balance.Available > 0 && balance.AccountType == constant.ExternalAccountType {
+			if balance.Available.IsPositive() && balance.AccountType == constant.ExternalAccountType {
 				return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateToAccounts", balance.Alias)
 			}
 		}
@@ -125,100 +103,25 @@ func validateToBalances(balance *Balance, to map[string]Amount, asset string) er
 
 // ValidateFromToOperation func that validate operate balance
 func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (Amount, Balance, error) {
-	amount := Amount{}
-
-	balanceAfter := Balance{}
-
 	if ft.IsFrom {
-		blc := Balance{
-			Scale:     balance.Scale,
-			Available: balance.Available,
-			OnHold:    balance.OnHold,
-		}
-
-		ba, err := OperateBalances(validate.From[ft.Account], blc, constant.DEBIT)
+		ba, err := OperateBalances(validate.From[ft.AccountAlias], *balance)
 		if err != nil {
 			return Amount{}, Balance{}, err
 		}
 
-		if ba.Available < 0 && balance.AccountType != constant.ExternalAccountType {
-			return amount, balanceAfter, commons.ValidateBusinessError(constant.ErrInsufficientFunds, "ValidateFromToOperation", balance.Alias)
+		if ba.Available.IsNegative() && balance.AccountType != constant.ExternalAccountType {
+			return Amount{}, Balance{}, commons.ValidateBusinessError(constant.ErrInsufficientFunds, "ValidateFromToOperation", balance.Alias)
 		}
 
-		amount = Amount{
-			Value: validate.From[ft.Account].Value,
-			Scale: validate.From[ft.Account].Scale,
-		}
-
-		balanceAfter = ba
+		return validate.From[ft.AccountAlias], ba, nil
 	} else {
-		blc := Balance{
-			Scale:     balance.Scale,
-			Available: balance.Available,
-			OnHold:    balance.OnHold,
-		}
-
-		ba, err := OperateBalances(validate.To[ft.Account], blc, constant.CREDIT)
+		ba, err := OperateBalances(validate.To[ft.AccountAlias], *balance)
 		if err != nil {
 			return Amount{}, Balance{}, err
 		}
 
-		amount = Amount{
-			Value: validate.To[ft.Account].Value,
-			Scale: validate.To[ft.Account].Scale,
-		}
-
-		balanceAfter = ba
+		return validate.To[ft.AccountAlias], ba, nil
 	}
-
-	return amount, balanceAfter, nil
-}
-
-// UpdateBalances function with some updates values in balances.
-func UpdateBalances(operation string, fromTo map[string]Amount, balances []*Balance, result chan []*Balance, er chan error) {
-	newBalances := make([]*Balance, 0)
-
-	for _, balance := range balances {
-		for key := range fromTo {
-			if balance.ID == key || balance.Alias == key {
-				blc := Balance{
-					Scale:     balance.Scale,
-					Available: balance.Available,
-					OnHold:    balance.OnHold,
-				}
-
-				b, err := OperateBalances(fromTo[key], blc, operation)
-				if err != nil {
-					er <- err
-
-					return
-				}
-
-				ac := Balance{
-					ID:             balance.ID,
-					Alias:          balance.Alias,
-					OrganizationID: balance.OrganizationID,
-					LedgerID:       balance.LedgerID,
-					AssetCode:      balance.AssetCode,
-					Available:      b.Available,
-					Scale:          b.Scale,
-					OnHold:         b.OnHold,
-					AllowSending:   balance.AllowSending,
-					AllowReceiving: balance.AllowReceiving,
-					AccountType:    balance.AccountType,
-					Version:        balance.Version,
-					CreatedAt:      balance.CreatedAt,
-					UpdatedAt:      balance.UpdatedAt,
-				}
-
-				newBalances = append(newBalances, &ac)
-
-				break
-			}
-		}
-	}
-
-	result <- newBalances
 }
 
 // SplitAlias function to split alias with index
@@ -235,208 +138,145 @@ func ConcatAlias(i int, alias string) string {
 	return strconv.Itoa(i) + "#" + alias
 }
 
-// Scale func scale: (V * 10^ (S0-S1))
-func Scale(v, s0, s1 int64) int64 {
-	return int64(float64(v) * math.Pow(10, float64(s1)-float64(s0)))
-}
-
-// UndoScale Function to undo the scale calculation
-func UndoScale(v float64, s int64) int64 {
-	return int64(v * math.Pow(10, float64(s)))
-}
-
-// FindScale Function to find the scale for any value of a value
-func FindScale(asset string, v float64, s int64) Amount {
-	valueString := big.NewFloat(v).String()
-	parts := strings.Split(valueString, ".")
-
-	scale := s
-	value := int64(v)
-
-	if len(parts) > 1 {
-		scale = int64(len(parts[1]))
-		value = UndoScale(v, scale)
-
-		if parts[1] != "0" {
-			scale += s
-		}
-	}
-
-	amount := Amount{
-		Asset: asset,
-		Value: value,
-		Scale: scale,
-	}
-
-	return amount
-}
-
-// Normalize func that Normalize scale from all values
-func Normalize(total, amount, remaining *Amount) {
-	if total.Scale < amount.Scale {
-		if total.Value != 0 {
-			v0 := Scale(total.Value, total.Scale, amount.Scale)
-
-			total.Value = v0 + amount.Value
-		} else {
-			total.Value += amount.Value
-		}
-
-		total.Scale = amount.Scale
-	} else {
-		if total.Value != 0 {
-			v0 := Scale(amount.Value, amount.Scale, total.Scale)
-
-			total.Value += v0
-
-			amount.Value = v0
-			amount.Scale = total.Scale
-		} else {
-			total.Value += amount.Value
-			total.Scale = amount.Scale
-		}
-	}
-
-	if remaining.Scale < amount.Scale {
-		v0 := Scale(remaining.Value, remaining.Scale, amount.Scale)
-
-		remaining.Value = v0 - amount.Value
-		remaining.Scale = amount.Scale
-	} else {
-		v0 := Scale(amount.Value, amount.Scale, remaining.Scale)
-
-		remaining.Value -= v0
-	}
-}
-
-// WillOverflow Function to check if the value will overflow
-func WillOverflow(a, b int64) bool {
-	if b > 0 && a > math.MaxInt64-b {
-		return true
-	}
-
-	if b < 0 && a < math.MinInt64-b {
-		return true
-	}
-
-	return false
-}
-
 // OperateBalances Function to sum or sub two balances and Normalize the scale
-func OperateBalances(amount Amount, balance Balance, operation string) (Balance, error) {
+func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 	var (
-		scale int64
-		total int64
+		total       decimal.Decimal
+		totalOnHold decimal.Decimal
 	)
 
-	switch operation {
-	case constant.DEBIT:
-		if balance.Scale < amount.Scale {
-			v0 := Scale(balance.Available, balance.Scale, amount.Scale)
-			if WillOverflow(v0, -amount.Value) {
-				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
-			}
+	total = balance.Available
+	totalOnHold = balance.OnHold
 
-			total = v0 - amount.Value
-			scale = amount.Scale
-		} else {
-			v0 := Scale(amount.Value, amount.Scale, balance.Scale)
-			if WillOverflow(balance.Available, -v0) {
-				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
-			}
-
-			total = balance.Available - v0
-			scale = balance.Scale
-		}
-	default: // CREDIT
-		if balance.Scale < amount.Scale {
-			v0 := Scale(balance.Available, balance.Scale, amount.Scale)
-			if WillOverflow(v0, amount.Value) {
-				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
-			}
-
-			total = v0 + amount.Value
-			scale = amount.Scale
-		} else {
-			v0 := Scale(amount.Value, amount.Scale, balance.Scale)
-			if WillOverflow(balance.Available, v0) {
-				return Balance{}, commons.ValidateBusinessError(constant.ErrOverFlowInt64, "WillOverflow")
-			}
-
-			total = balance.Available + v0
-			scale = balance.Scale
-		}
+	switch {
+	case amount.Operation == constant.ONHOLD && amount.TransactionType == constant.PENDING:
+		total = balance.Available.Sub(amount.Value)
+		totalOnHold = balance.OnHold.Add(amount.Value)
+	case amount.Operation == constant.RELEASE && amount.TransactionType == constant.CANCELED:
+		totalOnHold = balance.OnHold.Sub(amount.Value)
+		total = balance.Available.Add(amount.Value)
+	case amount.Operation == constant.DEBIT && amount.TransactionType == constant.APPROVED:
+		totalOnHold = balance.OnHold.Sub(amount.Value)
+	case amount.Operation == constant.CREDIT && amount.TransactionType == constant.APPROVED:
+		total = balance.Available.Add(amount.Value)
+	case amount.Operation == constant.DEBIT && amount.TransactionType == constant.CREATED:
+		total = balance.Available.Sub(amount.Value)
+	case amount.Operation == constant.CREDIT && amount.TransactionType == constant.CREATED:
+		total = balance.Available.Add(amount.Value)
 	}
 
 	return Balance{
 		Available: total,
-		OnHold:    balance.OnHold,
-		Scale:     scale,
+		OnHold:    totalOnHold,
 	}, nil
 }
 
+// DetermineOperation Function to determine the operation
+func DetermineOperation(isPending bool, isFrom bool, transactionType string) string {
+	switch {
+	case isPending && transactionType == constant.PENDING:
+		switch {
+		case isFrom:
+			return constant.ONHOLD
+		default:
+			return constant.CREDIT
+		}
+	case isPending && isFrom && transactionType == constant.CANCELED:
+		return constant.RELEASE
+	case isPending && transactionType == constant.APPROVED:
+		switch {
+		case isFrom:
+			return constant.DEBIT
+		default:
+			return constant.CREDIT
+		}
+	case !isPending:
+		switch {
+		case isFrom:
+			return constant.DEBIT
+		default:
+			return constant.CREDIT
+		}
+	default:
+		return constant.CREDIT
+	}
+}
+
 // CalculateTotal Calculate total for sources/destinations based on shares, amounts and remains
-func CalculateTotal(fromTos []FromTo, send Send, t chan int64, ft chan map[string]Amount, sd chan []string) {
+func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType string, t chan decimal.Decimal, ft chan map[string]Amount, sd chan []string, or chan map[string]string) {
 	fmto := make(map[string]Amount)
 	scdt := make([]string, 0)
 
-	total := Amount{
-		Asset: send.Asset,
-		Scale: 0,
-		Value: 0,
-	}
+	total := decimal.NewFromInt(0)
 
 	remaining := Amount{
-		Asset: send.Asset,
-		Scale: send.Scale,
-		Value: send.Value,
+		Asset:           transaction.Send.Asset,
+		Value:           transaction.Send.Value,
+		TransactionType: transactionType,
 	}
 
-	for i := range fromTos {
-		if fromTos[i].Share != nil && fromTos[i].Share.Percentage != 0 {
-			percentage := fromTos[i].Share.Percentage
+	operationRoute := make(map[string]string)
 
-			percentageOfPercentage := fromTos[i].Share.PercentageOfPercentage
-			if percentageOfPercentage == 0 {
-				percentageOfPercentage = 100
+	for i := range fromTos {
+		operationRoute[ConcatAlias(i, fromTos[i].AccountAlias)] = fromTos[i].Route
+
+		operation := DetermineOperation(transaction.Pending, fromTos[i].IsFrom, transactionType)
+
+		if fromTos[i].Share != nil && fromTos[i].Share.Percentage != 0 {
+			oneHundred := decimal.NewFromInt(100)
+
+			percentage := decimal.NewFromInt(fromTos[i].Share.Percentage)
+
+			percentageOfPercentage := decimal.NewFromInt(fromTos[i].Share.PercentageOfPercentage)
+			if percentageOfPercentage.IsZero() {
+				percentageOfPercentage = oneHundred
 			}
 
-			shareValue := float64(send.Value) * ((float64(percentage) / 100) * (float64(percentageOfPercentage) / 100))
-			amount := FindScale(send.Asset, shareValue, send.Scale)
+			firstPart := percentage.Div(oneHundred)
+			secondPart := percentageOfPercentage.Div(oneHundred)
+			shareValue := transaction.Send.Value.Mul(firstPart).Mul(secondPart)
 
-			Normalize(&total, &amount, &remaining)
-			fmto[fromTos[i].Account] = amount
+			fmto[fromTos[i].AccountAlias] = Amount{
+				Asset:           transaction.Send.Asset,
+				Value:           shareValue,
+				Operation:       operation,
+				TransactionType: transactionType,
+			}
+
+			total = total.Add(shareValue)
+			remaining.Value = remaining.Value.Sub(shareValue)
 		}
 
-		if fromTos[i].Amount != nil && fromTos[i].Amount.Value > 0 && fromTos[i].Amount.Scale > -1 {
+		if fromTos[i].Amount != nil && fromTos[i].Amount.Value.IsPositive() {
 			amount := Amount{
-				Asset: fromTos[i].Amount.Asset,
-				Scale: fromTos[i].Amount.Scale,
-				Value: fromTos[i].Amount.Value,
+				Asset:           fromTos[i].Amount.Asset,
+				Value:           fromTos[i].Amount.Value,
+				Operation:       operation,
+				TransactionType: transactionType,
 			}
 
-			Normalize(&total, &amount, &remaining)
-			fmto[fromTos[i].Account] = amount
+			fmto[fromTos[i].AccountAlias] = amount
+			total = total.Add(amount.Value)
+
+			remaining.Value = remaining.Value.Sub(amount.Value)
 		}
 
 		if !commons.IsNilOrEmpty(&fromTos[i].Remaining) {
-			total.Value += remaining.Value
+			total = total.Add(remaining.Value)
 
-			fmto[fromTos[i].Account] = remaining
+			remaining.Operation = operation
+
+			fmto[fromTos[i].AccountAlias] = remaining
 			fromTos[i].Amount = &remaining
 		}
 
 		scdt = append(scdt, fromTos[i].SplitAlias())
 	}
 
-	ttl := total.Value
-	if total.Scale > send.Scale {
-		ttl = Scale(total.Value, total.Scale, send.Scale)
-	}
-
-	t <- ttl
+	t <- total
 	ft <- fmto
 	sd <- scdt
+	or <- operationRoute
 }
 
 // AppendIfNotExist Append if not exist
@@ -451,36 +291,51 @@ func AppendIfNotExist(slice []string, s []string) []string {
 }
 
 // ValidateSendSourceAndDistribute Validate send and distribute totals
-func ValidateSendSourceAndDistribute(transaction Transaction) (*Responses, error) {
-	response := &Responses{
-		Total:        transaction.Send.Value,
-		Asset:        transaction.Send.Asset,
-		From:         make(map[string]Amount),
-		To:           make(map[string]Amount),
-		Sources:      make([]string, 0),
-		Destinations: make([]string, 0),
-		Aliases:      make([]string, 0),
-	}
-
+func ValidateSendSourceAndDistribute(transaction Transaction, transactionType string) (*Responses, error) {
 	var (
-		sourcesTotal      int64
-		destinationsTotal int64
+		sourcesTotal      decimal.Decimal
+		destinationsTotal decimal.Decimal
 	)
 
-	t := make(chan int64)
-	ft := make(chan map[string]Amount)
-	sd := make(chan []string)
+	sizeFrom := len(transaction.Send.Source.From)
+	sizeTo := len(transaction.Send.Distribute.To)
 
-	go CalculateTotal(transaction.Send.Source.From, transaction.Send, t, ft, sd)
-	sourcesTotal = <-t
-	response.From = <-ft
-	response.Sources = <-sd
+	response := &Responses{
+		Total:               transaction.Send.Value,
+		Asset:               transaction.Send.Asset,
+		From:                make(map[string]Amount, sizeFrom),
+		To:                  make(map[string]Amount, sizeTo),
+		Sources:             make([]string, 0, sizeFrom),
+		Destinations:        make([]string, 0, sizeTo),
+		Aliases:             make([]string, 0, sizeFrom+sizeTo),
+		Pending:             transaction.Pending,
+		TransactionRoute:    transaction.Route,
+		OperationRoutesFrom: make(map[string]string, sizeFrom),
+		OperationRoutesTo:   make(map[string]string, sizeTo),
+	}
+
+	tFrom := make(chan decimal.Decimal, sizeFrom)
+	ftFrom := make(chan map[string]Amount, sizeFrom)
+	sdFrom := make(chan []string, sizeFrom)
+	orFrom := make(chan map[string]string, sizeFrom)
+
+	go CalculateTotal(transaction.Send.Source.From, transaction, transactionType, tFrom, ftFrom, sdFrom, orFrom)
+	sourcesTotal = <-tFrom
+	response.From = <-ftFrom
+	response.Sources = <-sdFrom
+	response.OperationRoutesFrom = <-orFrom
 	response.Aliases = AppendIfNotExist(response.Aliases, response.Sources)
 
-	go CalculateTotal(transaction.Send.Distribute.To, transaction.Send, t, ft, sd)
-	destinationsTotal = <-t
-	response.To = <-ft
-	response.Destinations = <-sd
+	tTo := make(chan decimal.Decimal, sizeTo)
+	ftTo := make(chan map[string]Amount, sizeTo)
+	sdTo := make(chan []string, sizeTo)
+	orTo := make(chan map[string]string, sizeTo)
+
+	go CalculateTotal(transaction.Send.Distribute.To, transaction, transactionType, tTo, ftTo, sdTo, orTo)
+	destinationsTotal = <-tTo
+	response.To = <-ftTo
+	response.Destinations = <-sdTo
+	response.OperationRoutesTo = <-orTo
 	response.Aliases = AppendIfNotExist(response.Aliases, response.Destinations)
 
 	for i, source := range response.Sources {
@@ -495,11 +350,7 @@ func ValidateSendSourceAndDistribute(transaction Transaction) (*Responses, error
 		}
 	}
 
-	if math.Abs(float64(response.Total)-float64(sourcesTotal)) != 0 {
-		return nil, commons.ValidateBusinessError(constant.ErrTransactionValueMismatch, "ValidateSendSourceAndDistribute")
-	}
-
-	if math.Abs(float64(sourcesTotal)-float64(destinationsTotal)) != 0 {
+	if !sourcesTotal.Equal(destinationsTotal) || !destinationsTotal.Equal(response.Total) {
 		return nil, commons.ValidateBusinessError(constant.ErrTransactionValueMismatch, "ValidateSendSourceAndDistribute")
 	}
 
