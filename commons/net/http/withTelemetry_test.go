@@ -291,11 +291,10 @@ func TestEndTracingSpans(t *testing.T) {
 					assert.Equal(t, "test-span", spans[0].Name())
 				}
 			} else {
-				// Give a moment for any unexpected goroutines to run
-				time.Sleep(50 * time.Millisecond)
-				// No spans should be ended
-				spans := spanRecorder.Ended()
-				assert.Empty(t, spans, "Expected no spans to be ended")
+				// Assert that no spans are ended by polling for a short duration
+				assert.Never(t, func() bool {
+					return len(spanRecorder.Ended()) > 0
+				}, 100*time.Millisecond, 10*time.Millisecond, "Expected no spans to be ended")
 			}
 		})
 	}

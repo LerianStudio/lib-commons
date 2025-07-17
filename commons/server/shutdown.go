@@ -147,6 +147,20 @@ func (sm *ServerManager) startServers() {
 	close(sm.serversStarted)
 }
 
+// logInfo safely logs an info message if logger is available
+func (sm *ServerManager) logInfo(msg string) {
+	if sm.logger != nil {
+		sm.logger.Info(msg)
+	}
+}
+
+// logErrorf safely logs an error message if logger is available
+func (sm *ServerManager) logErrorf(format string, args ...any) {
+	if sm.logger != nil {
+		sm.logger.Errorf(format, args...)
+	}
+}
+
 // handleShutdown sets up signal handling and executes the shutdown sequence
 // when a termination signal is received.
 func (sm *ServerManager) handleShutdown() {
@@ -156,7 +170,7 @@ func (sm *ServerManager) handleShutdown() {
 
 	// Block until we receive a signal
 	<-c
-	sm.logger.Info("Gracefully shutting down all servers...")
+	sm.logInfo("Gracefully shutting down all servers...")
 
 	// Execute shutdown sequence
 	sm.executeShutdown()
@@ -171,49 +185,49 @@ func (sm *ServerManager) executeShutdown() {
 		// Servers started, proceed with normal shutdown.
 	default:
 		// Servers did not start (or start was interrupted).
-		sm.logger.Info("Shutdown initiated before servers were fully started.")
+		sm.logInfo("Shutdown initiated before servers were fully started.")
 	}
 
 	// Shutdown the HTTP server if available
 	if sm.httpServer != nil {
-		sm.logger.Info("Shutting down HTTP server...")
+		sm.logInfo("Shutting down HTTP server...")
 
 		if err := sm.httpServer.Shutdown(); err != nil {
-			sm.logger.Errorf("Error during HTTP server shutdown: %v", err)
+			sm.logErrorf("Error during HTTP server shutdown: %v", err)
 		}
 	}
 
 	// Shutdown the gRPC server if available
 	if sm.grpcServer != nil {
-		sm.logger.Info("Shutting down gRPC server...")
+		sm.logInfo("Shutting down gRPC server...")
 
 		// Use GracefulStop which waits for all RPCs to finish
 		sm.grpcServer.GracefulStop()
-		sm.logger.Info("gRPC server stopped gracefully")
+		sm.logInfo("gRPC server stopped gracefully")
 	}
 
 	// Shutdown telemetry if available
 	if sm.telemetry != nil {
-		sm.logger.Info("Shutting down telemetry...")
+		sm.logInfo("Shutting down telemetry...")
 		sm.telemetry.ShutdownTelemetry()
 	}
 
 	// Sync logger if available
 	if sm.logger != nil {
-		sm.logger.Info("Syncing logger...")
+		sm.logInfo("Syncing logger...")
 
 		if err := sm.logger.Sync(); err != nil {
-			sm.logger.Errorf("Failed to sync logger: %v", err)
+			sm.logErrorf("Failed to sync logger: %v", err)
 		}
 	}
 
 	// Shutdown license background refresh if available
 	if sm.licenseClient != nil {
-		sm.logger.Info("Shutting down license background refresh...")
+		sm.logInfo("Shutting down license background refresh...")
 		sm.licenseClient.Terminate("shutdown")
 	}
 
-	sm.logger.Info("Graceful shutdown completed")
+	sm.logInfo("Graceful shutdown completed")
 }
 
 // GracefulShutdown handles the graceful shutdown of application components.

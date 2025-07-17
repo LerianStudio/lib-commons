@@ -3,6 +3,7 @@ package http
 import (
 	"errors"
 	"log"
+	"net/http"
 	"strings"
 	"time"
 
@@ -90,12 +91,12 @@ func HandleFiberError(c *fiber.Ctx, err error) error {
 		code = e.Code
 	}
 
-	if code >= fiber.StatusInternalServerError {
+	if code == fiber.StatusInternalServerError {
 		// Log the actual error for debugging purposes.
-		log.Printf("handler error: %v", err)
+		log.Printf("handler error on %s %s: %v", c.Method(), c.Path(), err)
 
 		return c.Status(code).JSON(fiber.Map{
-			"error": "Internal Server Error",
+			"error": http.StatusText(code),
 		})
 	}
 
