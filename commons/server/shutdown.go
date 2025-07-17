@@ -164,8 +164,15 @@ func (sm *ServerManager) handleShutdown() {
 
 // executeShutdown performs the actual shutdown operations in the correct order for ServerManager.
 func (sm *ServerManager) executeShutdown() {
-	// Wait for servers to start before shutting them down
-	<-sm.serversStarted
+	// Use a non-blocking read to check if servers have started.
+	// This prevents a deadlock if a panic occurs before startServers() completes.
+	select {
+	case <-sm.serversStarted:
+		// Servers started, proceed with normal shutdown.
+	default:
+		// Servers did not start (or start was interrupted).
+		sm.logger.Info("Shutdown initiated before servers were fully started.")
+	}
 
 	// Shutdown the HTTP server if available
 	if sm.httpServer != nil {

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/commons"
 	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
@@ -194,46 +196,38 @@ func TestWithTelemetry(t *testing.T) {
 // TestEndTracingSpans tests the EndTracingSpans middleware function
 func TestEndTracingSpans(t *testing.T) {
 	tests := []struct {
-		name        string
-		setupCtx    bool
-		handlerErr  error
-		expectedErr error
+		name       string
+		setupCtx   bool
+		handlerErr error
 	}{
 		{
-			name:        "With context",
-			setupCtx:    true,
-			handlerErr:  nil,
-			expectedErr: nil,
+			name:       "With context",
+			setupCtx:   true,
+			handlerErr: nil,
 		},
 		{
-			name:        "Without context",
-			setupCtx:    false,
-			handlerErr:  nil,
-			expectedErr: nil,
+			name:       "Without context",
+			setupCtx:   false,
+			handlerErr: nil,
 		},
 		{
-			name:        "With context and handler error",
-			setupCtx:    true,
-			handlerErr:  errors.New("handler error"),
-			expectedErr: errors.New("handler error"),
+			name:       "With context and handler error",
+			setupCtx:   true,
+			handlerErr: errors.New("handler error"),
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			
-			// Setup test tracer
-			tp, spanRecorder := setupTestTracer()
+			// Setup test tracer with span recorder
+			spanRecorder := tracetest.NewSpanRecorder()
+			tp := sdktrace.NewTracerProvider(
+				sdktrace.WithSpanProcessor(spanRecorder),
+			)
 			defer func() {
-				_ = tp.Shutdown(ctx)
+				_ = tp.Shutdown(context.Background())
 			}()
-			
-			// Replace the global tracer provider for this test
-			oldTracerProvider := otel.GetTracerProvider()
-			otel.SetTracerProvider(tp)
-			defer otel.SetTracerProvider(oldTracerProvider)
-			
+
 			// Create telemetry
 			telemetry := &opentelemetry.Telemetry{
 				LibraryName:     "test-library",
@@ -244,61 +238,64 @@ func TestEndTracingSpans(t *testing.T) {
 			// Create middleware
 			middleware := NewTelemetryMiddleware(telemetry)
 
-			// Create fiber app with error handler
-			app := fiber.New(fiber.Config{
-				ErrorHandler: func(c *fiber.Ctx, err error) error {
-					return c.Status(http.StatusInternalServerError).SendString(err.Error())
-				},
-			})
+			// Create a fiber app
+			app := fiber.New()
 
-			// Add middleware
-			app.Use(middleware.EndTracingSpans)
+			// Create a middleware that sets up the context before the handler runs
+			setupMiddleware := func(c *fiber.Ctx) error {
+				ctx := c.UserContext()
+				if ctx == nil {
+					ctx = context.Background()
+				}
 
-			// Add test route
-			app.Get("/test", func(c *fiber.Ctx) error {
+				// Create a span if the test requires it
 				if tt.setupCtx {
 					tracer := tp.Tracer("test")
-					ctx, span := tracer.Start(c.UserContext(), "test-span")
+					ctx, _ = tracer.Start(ctx, "test-span")
 					c.SetUserContext(ctx)
-					// Don't end the span here, let the middleware do it
-					_ = span
 				}
+
+				return c.Next()
+			}
+
+			// Create a simple handler that returns the test error
+			handler := func(c *fiber.Ctx) error {
 				return tt.handlerErr
-			})
+			}
 
-			// Create test request
-			req, err := http.NewRequest("GET", "/test", nil)
-			require.NoError(t, err)
+			// Register the route with setup middleware, then EndTracingSpans middleware, then handler
+			app.Get("/test", setupMiddleware, middleware.EndTracingSpans, handler)
 
-			// Execute request
+			// Create and execute the request
+			req := httptest.NewRequest("GET", "/test", nil)
 			resp, err := app.Test(req)
 			require.NoError(t, err)
 			defer resp.Body.Close()
 
-			// Check if handler error was properly propagated
+			// Verify error propagation via status code
 			if tt.handlerErr != nil {
-				assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+				assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 			} else {
-				assert.Equal(t, http.StatusOK, resp.StatusCode)
+				assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 			}
-			
-			// Since EndTracingSpans uses a goroutine to end spans, we need to
-			// modify our test to directly end the span instead of relying on the middleware
-			// This is a workaround for testing purposes only
+
+			// To test the async behavior of EndTracingSpans, we poll for the result.
 			if tt.setupCtx {
-				// Manually end the span for testing
-				tracer := tp.Tracer("test")
-				_, span := tracer.Start(context.Background(), "test-span")
-				span.End()
-				
-				// Check if spans were ended
+				// Check if the span started in the handler was ended by the middleware
+				assert.Eventually(t, func() bool {
+					return len(spanRecorder.Ended()) == 1
+				}, time.Second, 10*time.Millisecond, "Expected middleware to end one span")
+
 				spans := spanRecorder.Ended()
-				require.Equal(t, 1, len(spans), "Expected one span to be ended")
-				assert.Equal(t, "test-span", spans[0].Name())
+				if assert.Len(t, spans, 1) {
+					assert.Equal(t, "test-span", spans[0].Name())
+				}
 			} else {
+				// Give a moment for any unexpected goroutines to run
+				time.Sleep(50 * time.Millisecond)
 				// No spans should be ended
 				spans := spanRecorder.Ended()
-				assert.Equal(t, 0, len(spans), "Expected no spans to be ended")
+				assert.Empty(t, spans, "Expected no spans to be ended")
 			}
 		})
 	}

@@ -90,6 +90,15 @@ func HandleFiberError(c *fiber.Ctx, err error) error {
 		code = e.Code
 	}
 
+	if code >= fiber.StatusInternalServerError {
+		// Log the actual error for debugging purposes.
+		log.Printf("handler error: %v", err)
+
+		return c.Status(code).JSON(fiber.Map{
+			"error": "Internal Server Error",
+		})
+	}
+
 	return c.Status(code).JSON(fiber.Map{
 		"error": err.Error(),
 	})

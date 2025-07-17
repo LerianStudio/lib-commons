@@ -43,5 +43,9 @@ func (m *ManagerShutdown) Terminate(reason string) {
 	handler := m.handler
 	m.mu.RUnlock()
 
+	if handler == nil {
+		panic("license.ManagerShutdown used without initialization. Use license.New() to create an instance.")
+	}
+
 	handler(reason)
 }
