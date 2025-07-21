@@ -1,3 +1,10 @@
+## [1.18.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.17.0...v1.18.0-beta.1) (2025-07-21)
+
+
+### Bug Fixes
+
+* remove alias concat on operation route assignment :bug: ([ddf7530](https://github.com/LerianStudio/lib-commons/commit/ddf7530692f9e1121b986b1c4d7cc27022b22f24))
+
 ## [1.17.0](https://github.com/LerianStudio/lib-commons/compare/v1.16.0...v1.17.0) (2025-07-17)
 
 
