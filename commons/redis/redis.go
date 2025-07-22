@@ -22,21 +22,12 @@ import (
 type Mode string
 
 const (
-	TTL                    int           = 300
-	Scope                  string        = "https://www.googleapis.com/auth/cloud-platform"
-	PrefixServicesAccounts string        = "projects/-/serviceAccounts/"
-	ModeStandalone         Mode          = "standalone"
-	ModeSentinel           Mode          = "sentinel"
-	ModeCluster            Mode          = "cluster"
-	PoolSize               int           = 200
-	MinIdleConns           int           = 20
-	ReadTimeout            time.Duration = 500 * time.Millisecond
-	WriteTimeout           time.Duration = 500 * time.Millisecond
-	DialTimeout            time.Duration = 2 * time.Second
-	PoolTimeout            time.Duration = 5 * time.Second
-	MaxRetries             int           = 3
-	MinRetryBackoff        time.Duration = 100 * time.Millisecond
-	MaxRetryBackoff        time.Duration = 1 * time.Second
+	TTL                    int    = 300
+	Scope                  string = "https://www.googleapis.com/auth/cloud-platform"
+	PrefixServicesAccounts string = "projects/-/serviceAccounts/"
+	ModeStandalone         Mode   = "standalone"
+	ModeSentinel           Mode   = "sentinel"
+	ModeCluster            Mode   = "cluster"
 )
 
 // RedisConnection represents a Redis connection hub
@@ -61,11 +52,22 @@ type RedisConnection struct {
 	lastRefreshInstant           time.Time
 	errLastSeen                  error
 	mu                           sync.RWMutex
+	PoolSize                     int
+	MinIdleConns                 int
+	ReadTimeout                  time.Duration
+	WriteTimeout                 time.Duration
+	DialTimeout                  time.Duration
+	PoolTimeout                  time.Duration
+	MaxRetries                   int
+	MinRetryBackoff              time.Duration
+	MaxRetryBackoff              time.Duration
 }
 
 // Connect initializes a Redis connection
 func (rc *RedisConnection) Connect(ctx context.Context) error {
 	rc.Logger.Info("Connecting to Redis/Valkey...")
+
+	rc.InitVariables()
 
 	var err error
 	if rc.UseGCPIAMAuth {
@@ -85,15 +87,15 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 		MasterName:      rc.MasterName,
 		DB:              rc.DB,
 		Protocol:        rc.Protocol,
-		PoolSize:        PoolSize,
-		MinIdleConns:    MinIdleConns,
-		ReadTimeout:     ReadTimeout,
-		WriteTimeout:    WriteTimeout,
-		DialTimeout:     DialTimeout,
-		PoolTimeout:     PoolTimeout,
-		MaxRetries:      MaxRetries,
-		MinRetryBackoff: MinRetryBackoff,
-		MaxRetryBackoff: MaxRetryBackoff,
+		PoolSize:        rc.PoolSize,
+		MinIdleConns:    rc.MinIdleConns,
+		ReadTimeout:     rc.ReadTimeout,
+		WriteTimeout:    rc.WriteTimeout,
+		DialTimeout:     rc.DialTimeout,
+		PoolTimeout:     rc.PoolTimeout,
+		MaxRetries:      rc.MaxRetries,
+		MinRetryBackoff: rc.MinRetryBackoff,
+		MaxRetryBackoff: rc.MaxRetryBackoff,
 	}
 
 	if rc.UseGCPIAMAuth {
@@ -246,5 +248,44 @@ func (rc *RedisConnection) refreshTokenLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// InitVariables sets default values for RedisConnection
+func (rc *RedisConnection) InitVariables() {
+	if rc.PoolSize == 0 {
+		rc.PoolSize = 200
+	}
+
+	if rc.MinIdleConns == 0 {
+		rc.MinIdleConns = 20
+	}
+
+	if rc.ReadTimeout == 0 {
+		rc.ReadTimeout = 500 * time.Second
+	}
+
+	if rc.WriteTimeout == 0 {
+		rc.WriteTimeout = 500 * time.Second
+	}
+
+	if rc.DialTimeout == 0 {
+		rc.DialTimeout = 2 * time.Second
+	}
+
+	if rc.PoolTimeout == 0 {
+		rc.PoolTimeout = 5 * time.Second
+	}
+
+	if rc.MaxRetries == 0 {
+		rc.MaxRetries = 3
+	}
+
+	if rc.MinRetryBackoff == 0 {
+		rc.MinRetryBackoff = 100 * time.Millisecond
+	}
+
+	if rc.MaxRetryBackoff == 0 {
+		rc.MaxRetryBackoff = 1 * time.Second
 	}
 }
