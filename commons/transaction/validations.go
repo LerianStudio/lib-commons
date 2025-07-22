@@ -218,7 +218,7 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 	operationRoute := make(map[string]string)
 
 	for i := range fromTos {
-		operationRoute[ConcatAlias(i, fromTos[i].AccountAlias)] = fromTos[i].Route
+		operationRoute[fromTos[i].AccountAlias] = fromTos[i].Route
 
 		operation := DetermineOperation(transaction.Pending, fromTos[i].IsFrom, transactionType)
 

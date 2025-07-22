@@ -1,3 +1,38 @@
+## [1.18.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v1.18.0-beta.3...v1.18.0-beta.4) (2025-07-22)
+
+
+### Bug Fixes
+
+* add redis values default; ([7fe8252](https://github.com/LerianStudio/lib-commons/commit/7fe8252291623f0c148155c60e33e48c7e2722ec))
+
+## [1.18.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.18.0-beta.2...v1.18.0-beta.3) (2025-07-22)
+
+
+### Bug Fixes
+
+* add variables default config; ([3c0b0a8](https://github.com/LerianStudio/lib-commons/commit/3c0b0a8d5a07979ed668885d9799fb5c1c60aa3b))
+* change default values to regular size; ([42ff053](https://github.com/LerianStudio/lib-commons/commit/42ff053d9545be847d7f6033c6e3afd8f4fd4bf0))
+
+## [1.18.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.18.0-beta.1...v1.18.0-beta.2) (2025-07-22)
+
+
+### Features
+
+* Improve Redis client configuration with UniversalOptions and connection pool tuning ([1587047](https://github.com/LerianStudio/lib-commons/commit/158704738d1c823af6fbf3bc37f97d9e9734ed8e))
+* Merge pull request [#159](https://github.com/LerianStudio/lib-commons/issues/159) from LerianStudio/feat/COMMONS-REDIS-RETRY ([e279ae9](https://github.com/LerianStudio/lib-commons/commit/e279ae92be1464100e7f11c236afa9df408834cb))
+
+
+### Bug Fixes
+
+* add on const magic numbers; ([ff4d39b](https://github.com/LerianStudio/lib-commons/commit/ff4d39b9ae209ce83827d5ba8b73f1e54692caad))
+
+## [1.18.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.17.0...v1.18.0-beta.1) (2025-07-21)
+
+
+### Bug Fixes
+
+* remove alias concat on operation route assignment :bug: ([ddf7530](https://github.com/LerianStudio/lib-commons/commit/ddf7530692f9e1121b986b1c4d7cc27022b22f24))
+
 ## [1.17.0](https://github.com/LerianStudio/lib-commons/compare/v1.16.0...v1.17.0) (2025-07-17)
 
 
