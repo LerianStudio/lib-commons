@@ -262,19 +262,19 @@ func (rc *RedisConnection) InitVariables() {
 	}
 
 	if rc.ReadTimeout == 0 {
-		rc.ReadTimeout = 15 * time.Second
+		rc.ReadTimeout = 500 * time.Second
 	}
 
 	if rc.WriteTimeout == 0 {
-		rc.WriteTimeout = 15 * time.Second
+		rc.WriteTimeout = 500 * time.Second
 	}
 
 	if rc.DialTimeout == 0 {
-		rc.DialTimeout = 20 * time.Second
+		rc.DialTimeout = 2 * time.Second
 	}
 
 	if rc.PoolTimeout == 0 {
-		rc.PoolTimeout = 20 * time.Second
+		rc.PoolTimeout = 5 * time.Second
 	}
 
 	if rc.MaxRetries == 0 {
@@ -282,10 +282,10 @@ func (rc *RedisConnection) InitVariables() {
 	}
 
 	if rc.MinRetryBackoff == 0 {
-		rc.MinRetryBackoff = 500 * time.Millisecond
+		rc.MinRetryBackoff = 100 * time.Millisecond
 	}
 
 	if rc.MaxRetryBackoff == 0 {
-		rc.MaxRetryBackoff = 10 * time.Second
+		rc.MaxRetryBackoff = 1 * time.Second
 	}
 }
