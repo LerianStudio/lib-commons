@@ -254,27 +254,27 @@ func (rc *RedisConnection) refreshTokenLoop(ctx context.Context) {
 // InitVariables sets default values for RedisConnection
 func (rc *RedisConnection) InitVariables() {
 	if rc.PoolSize == 0 {
-		rc.PoolSize = 200
+		rc.PoolSize = 10
 	}
 
 	if rc.MinIdleConns == 0 {
-		rc.MinIdleConns = 20
+		rc.MinIdleConns = 0
 	}
 
 	if rc.ReadTimeout == 0 {
-		rc.ReadTimeout = 500 * time.Second
+		rc.ReadTimeout = 3 * time.Second
 	}
 
 	if rc.WriteTimeout == 0 {
-		rc.WriteTimeout = 500 * time.Second
+		rc.WriteTimeout = 3 * time.Second
 	}
 
 	if rc.DialTimeout == 0 {
-		rc.DialTimeout = 2 * time.Second
+		rc.DialTimeout = 5 * time.Second
 	}
 
 	if rc.PoolTimeout == 0 {
-		rc.PoolTimeout = 5 * time.Second
+		rc.PoolTimeout = 2 * time.Second
 	}
 
 	if rc.MaxRetries == 0 {
@@ -282,7 +282,7 @@ func (rc *RedisConnection) InitVariables() {
 	}
 
 	if rc.MinRetryBackoff == 0 {
-		rc.MinRetryBackoff = 100 * time.Millisecond
+		rc.MinRetryBackoff = 8 * time.Millisecond
 	}
 
 	if rc.MaxRetryBackoff == 0 {
