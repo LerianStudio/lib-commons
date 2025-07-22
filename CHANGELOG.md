@@ -1,3 +1,10 @@
+## [1.18.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v1.18.0-beta.3...v1.18.0-beta.4) (2025-07-22)
+
+
+### Bug Fixes
+
+* add redis values default; ([7fe8252](https://github.com/LerianStudio/lib-commons/commit/7fe8252291623f0c148155c60e33e48c7e2722ec))
+
 ## [1.18.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.18.0-beta.2...v1.18.0-beta.3) (2025-07-22)
 
 
