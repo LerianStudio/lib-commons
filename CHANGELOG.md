@@ -1,3 +1,11 @@
+## [1.18.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.18.0-beta.2...v1.18.0-beta.3) (2025-07-22)
+
+
+### Bug Fixes
+
+* add variables default config; ([3c0b0a8](https://github.com/LerianStudio/lib-commons/commit/3c0b0a8d5a07979ed668885d9799fb5c1c60aa3b))
+* change default values to regular size; ([42ff053](https://github.com/LerianStudio/lib-commons/commit/42ff053d9545be847d7f6033c6e3afd8f4fd4bf0))
+
 ## [1.18.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.18.0-beta.1...v1.18.0-beta.2) (2025-07-22)
 
 
