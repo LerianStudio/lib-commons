@@ -1,3 +1,16 @@
+## [1.18.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.18.0-beta.1...v1.18.0-beta.2) (2025-07-22)
+
+
+### Features
+
+* Improve Redis client configuration with UniversalOptions and connection pool tuning ([1587047](https://github.com/LerianStudio/lib-commons/commit/158704738d1c823af6fbf3bc37f97d9e9734ed8e))
+* Merge pull request [#159](https://github.com/LerianStudio/lib-commons/issues/159) from LerianStudio/feat/COMMONS-REDIS-RETRY ([e279ae9](https://github.com/LerianStudio/lib-commons/commit/e279ae92be1464100e7f11c236afa9df408834cb))
+
+
+### Bug Fixes
+
+* add on const magic numbers; ([ff4d39b](https://github.com/LerianStudio/lib-commons/commit/ff4d39b9ae209ce83827d5ba8b73f1e54692caad))
+
 ## [1.18.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.17.0...v1.18.0-beta.1) (2025-07-21)
 
 
