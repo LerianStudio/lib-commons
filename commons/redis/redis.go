@@ -22,12 +22,21 @@ import (
 type Mode string
 
 const (
-	TTL                    int    = 300
-	Scope                  string = "https://www.googleapis.com/auth/cloud-platform"
-	PrefixServicesAccounts string = "projects/-/serviceAccounts/"
-	ModeStandalone         Mode   = "standalone"
-	ModeSentinel           Mode   = "sentinel"
-	ModeCluster            Mode   = "cluster"
+	TTL                    int           = 300
+	Scope                  string        = "https://www.googleapis.com/auth/cloud-platform"
+	PrefixServicesAccounts string        = "projects/-/serviceAccounts/"
+	ModeStandalone         Mode          = "standalone"
+	ModeSentinel           Mode          = "sentinel"
+	ModeCluster            Mode          = "cluster"
+	PoolSize               int           = 200
+	MinIdleConns           int           = 20
+	ReadTimeout            time.Duration = 500 * time.Millisecond
+	WriteTimeout           time.Duration = 500 * time.Millisecond
+	DialTimeout            time.Duration = 2 * time.Second
+	PoolTimeout            time.Duration = 5 * time.Second
+	MaxRetries             int           = 3
+	MinRetryBackoff        time.Duration = 100 * time.Millisecond
+	MaxRetryBackoff        time.Duration = 1 * time.Second
 )
 
 // RedisConnection represents a Redis connection hub
@@ -72,21 +81,19 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 	}
 
 	opts := &redis.UniversalOptions{
-		Addrs:        rc.Address,
-		MasterName:   rc.MasterName,
-		DB:           rc.DB,
-		Protocol:     rc.Protocol,
-		PoolSize:     200,
-		MinIdleConns: 20,
-		ReadTimeout:  500 * time.Millisecond,
-		WriteTimeout: 500 * time.Millisecond,
-		DialTimeout:  2 * time.Second,
-		PoolTimeout:  5 * time.Second,
-
-		// retry e backoff
-		MaxRetries:      3,
-		MinRetryBackoff: 100 * time.Millisecond,
-		MaxRetryBackoff: 1 * time.Second,
+		Addrs:           rc.Address,
+		MasterName:      rc.MasterName,
+		DB:              rc.DB,
+		Protocol:        rc.Protocol,
+		PoolSize:        PoolSize,
+		MinIdleConns:    MinIdleConns,
+		ReadTimeout:     ReadTimeout,
+		WriteTimeout:    WriteTimeout,
+		DialTimeout:     DialTimeout,
+		PoolTimeout:     PoolTimeout,
+		MaxRetries:      MaxRetries,
+		MinRetryBackoff: MinRetryBackoff,
+		MaxRetryBackoff: MaxRetryBackoff,
 	}
 
 	if rc.UseGCPIAMAuth {
