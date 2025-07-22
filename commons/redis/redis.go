@@ -72,10 +72,21 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 	}
 
 	opts := &redis.UniversalOptions{
-		Addrs:      rc.Address,
-		MasterName: rc.MasterName,
-		DB:         rc.DB,
-		Protocol:   rc.Protocol,
+		Addrs:        rc.Address,
+		MasterName:   rc.MasterName,
+		DB:           rc.DB,
+		Protocol:     rc.Protocol,
+		PoolSize:     200,
+		MinIdleConns: 20,
+		ReadTimeout:  500 * time.Millisecond,
+		WriteTimeout: 500 * time.Millisecond,
+		DialTimeout:  2 * time.Second,
+		PoolTimeout:  5 * time.Second,
+
+		// retry e backoff
+		MaxRetries:      3,
+		MinRetryBackoff: 100 * time.Millisecond,
+		MaxRetryBackoff: 1 * time.Second,
 	}
 
 	if rc.UseGCPIAMAuth {
