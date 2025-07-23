@@ -40,6 +40,7 @@ func DefaultSensitiveFieldsMap() map[string]bool {
 	for _, field := range defaultSensitiveFields {
 		fieldMap[field] = true
 	}
+
 	return fieldMap
 }
 
