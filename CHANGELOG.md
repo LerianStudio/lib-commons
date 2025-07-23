@@ -1,3 +1,10 @@
+## [1.19.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.18.0...v1.19.0-beta.1) (2025-07-23)
+
+
+### Features
+
+* **security:** implement sensitive field obfuscation for telemetry and logging ([b98bd60](https://github.com/LerianStudio/lib-commons/commit/b98bd604259823c733711ef552d23fb347a86956))
+
 ## [1.18.0](https://github.com/LerianStudio/lib-commons/compare/v1.17.0...v1.18.0) (2025-07-22)
 
 
