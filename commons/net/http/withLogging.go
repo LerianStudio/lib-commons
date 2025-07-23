@@ -3,18 +3,19 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
 	"github.com/LerianStudio/lib-commons/commons"
-	"github.com/LerianStudio/lib-commons/commons/constants"
+	cn "github.com/LerianStudio/lib-commons/commons/constants"
 	"github.com/LerianStudio/lib-commons/commons/log"
+	"github.com/LerianStudio/lib-commons/commons/security"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
-	"net/url"
-	"os"
-	"strconv"
-	"strings"
-	"time"
 )
 
 // RequestInfo is a struct design to store http access log data.
@@ -63,28 +64,18 @@ func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
 
 	if c.Request().Header.ContentLength() > 0 {
 		bodyBytes := c.Body()
-		obfuscateFieldsEnv := os.Getenv("SECURE_LOG_FIELDS")
 
-		var obfuscateFields []string
-
-		if obfuscateFieldsEnv != "" {
-			obfuscateFields = strings.Split(obfuscateFieldsEnv, ",")
-		}
-
-		if len(obfuscateFields) <= 0 {
-			body = string(bodyBytes)
-		} else {
-			body = getBodyObfuscatedString(c, bodyBytes, obfuscateFields)
-		}
+		// Use shared sensitive fields list for consistent obfuscation across the library
+		body = getBodyObfuscatedString(c, bodyBytes, security.DefaultSensitiveFields())
 	}
 
 	return &RequestInfo{
-		TraceID:       c.Get(constant.HeaderID),
+		TraceID:       c.Get(cn.HeaderID),
 		Method:        c.Method(),
 		URI:           c.OriginalURL(),
 		Username:      username,
 		Referer:       referer,
-		UserAgent:     c.Get(constant.HeaderUserAgent),
+		UserAgent:     c.Get(cn.HeaderUserAgent),
 		RemoteAddress: c.IP(),
 		Protocol:      c.Protocol(),
 		Date:          time.Now().UTC(),
@@ -174,11 +165,11 @@ func WithHTTPLogging(opts ...LogMiddlewareOption) fiber.Handler {
 
 		info := NewRequestInfo(c)
 
-		headerID := c.Get(constant.HeaderID)
+		headerID := c.Get(cn.HeaderID)
 
 		mid := buildOpts(opts...)
 		logger := mid.Logger.WithFields(
-			constant.HeaderID, info.TraceID,
+			cn.HeaderID, info.TraceID,
 		).WithDefaultMessageTemplate(headerID + " | ")
 
 		rw := ResponseMetricsWrapper{
@@ -214,7 +205,7 @@ func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
 	) (any, error) {
 		md, ok := metadata.FromIncomingContext(ctx)
 		if ok {
-			headerID := md.Get(constant.MetadataID)
+			headerID := md.Get(cn.MetadataID)
 			if headerID != nil && !commons.IsNilOrEmpty(&headerID[0]) {
 				ctx = commons.ContextWithHeaderID(ctx, headerID[0])
 			} else {
@@ -238,13 +229,13 @@ func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
 }
 
 func setRequestHeaderID(c *fiber.Ctx) {
-	headerID := c.Get(constant.HeaderID)
+	headerID := c.Get(cn.HeaderID)
 
 	if commons.IsNilOrEmpty(&headerID) {
 		headerID = uuid.New().String()
-		c.Set(constant.HeaderID, headerID)
-		c.Request().Header.Set(constant.HeaderID, headerID)
-		c.Response().Header.Set(constant.HeaderID, headerID)
+		c.Set(cn.HeaderID, headerID)
+		c.Request().Header.Set(cn.HeaderID, headerID)
+		c.Response().Header.Set(cn.HeaderID, headerID)
 	}
 
 	ctx := commons.ContextWithHeaderID(c.UserContext(), headerID)
@@ -277,7 +268,7 @@ func handleJSONBody(bodyBytes []byte, fieldsToObfuscate []string) string {
 
 	for _, field := range fieldsToObfuscate {
 		if _, exists := bodyData[field]; exists {
-			bodyData[field] = "*****"
+			bodyData[field] = cn.ObfuscatedValue
 		}
 	}
 
@@ -294,7 +285,7 @@ func handleURLFormBody(c *fiber.Ctx, fieldsToObfuscate []string) string {
 
 	for _, field := range fieldsToObfuscate {
 		if value := c.FormValue(field); value != "" {
-			formData[field] = "*****"
+			formData[field] = cn.ObfuscatedValue
 		}
 	}
 
@@ -313,7 +304,7 @@ func handleMultipartFormBody(c *fiber.Ctx, fieldsToObfuscate []string) string {
 
 	for _, field := range fieldsToObfuscate {
 		if _, exists := formData[field]; exists {
-			formData[field] = "*****"
+			formData[field] = cn.ObfuscatedValue
 		}
 	}
 
