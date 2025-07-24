@@ -276,6 +276,20 @@ func Reverse[T any](s []T) []T {
 	return s
 }
 
+func SettingsInternalKey(organizationID, ledgerID, applicationName string) string {
+	var builder strings.Builder
+
+	builder.WriteString("settings:{")
+	builder.WriteString(organizationID)
+	builder.WriteString(keySeparator)
+	builder.WriteString(ledgerID)
+	builder.WriteString(keySeparator)
+	builder.WriteString(applicationName)
+	builder.WriteString("}")
+
+	return builder.String()
+}
+
 func TransactionInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
 	var builder strings.Builder
 
