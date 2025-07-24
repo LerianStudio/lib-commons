@@ -66,7 +66,9 @@ type SettingsConnection struct {
 	collection string
 }
 
-func NewSettingsConsumer(ctx context.Context, rc *redis.RedisConnection, mc mongo.MongoConnection) *SettingsConnection {
+func NewSettingsConsumer(rc *redis.RedisConnection, mc mongo.MongoConnection) *SettingsConnection {
+	ctx := context.Background()
+
 	r := &SettingsConnection{
 		redis:      rc,
 		mongo:      &mc,
