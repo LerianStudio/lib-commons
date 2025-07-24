@@ -52,22 +52,22 @@ func (s *JSON) Scan(value any) error {
 	return json.Unmarshal(b, &s)
 }
 
-// Repository interface
-type Repository interface {
+// SettingsRepository interface
+type SettingsRepository interface {
 	CreateSettings(ctx context.Context, settings *Settings) error
 	FindSettings(ctx context.Context, organizationID, ledgerID, applicationName string) (*Settings, error)
 	DeleteSettings(ctx context.Context, organizationID, ledgerID, applicationName string)
 }
 
-// SettingsRepository struct
-type SettingsRepository struct {
+// SettingsConnection struct
+type SettingsConnection struct {
 	redis      *redis.RedisConnection
 	mongo      *mongo.MongoConnection
 	collection string
 }
 
-func NewSettingsConsumer(ctx context.Context, rc *redis.RedisConnection, mc mongo.MongoConnection) *SettingsRepository {
-	r := &SettingsRepository{
+func NewSettingsConsumer(ctx context.Context, rc *redis.RedisConnection, mc mongo.MongoConnection) *SettingsConnection {
+	r := &SettingsConnection{
 		redis:      rc,
 		mongo:      &mc,
 		collection: strings.ToLower(reflect.TypeOf(Settings{}).Name()),
@@ -83,7 +83,7 @@ func NewSettingsConsumer(ctx context.Context, rc *redis.RedisConnection, mc mong
 	return r
 }
 
-func (sr *SettingsRepository) CreateSettings(ctx context.Context, settings *Settings) error {
+func (sr *SettingsConnection) CreateSettings(ctx context.Context, settings *Settings) error {
 	tracer := commons.NewTracerFromContext(ctx)
 	logger := commons.NewLoggerFromContext(ctx)
 
@@ -125,7 +125,7 @@ func (sr *SettingsRepository) CreateSettings(ctx context.Context, settings *Sett
 	return nil
 }
 
-func (sr *SettingsRepository) FindSettings(ctx context.Context, organizationID, ledgerID, applicationName string) (*Settings, error) {
+func (sr *SettingsConnection) FindSettings(ctx context.Context, organizationID, ledgerID, applicationName string) (*Settings, error) {
 	tracer := commons.NewTracerFromContext(ctx)
 	logger := commons.NewLoggerFromContext(ctx)
 
@@ -173,7 +173,7 @@ func (sr *SettingsRepository) FindSettings(ctx context.Context, organizationID, 
 	}
 }
 
-func (sr *SettingsRepository) DeleteSettings(ctx context.Context, organizationID, ledgerID, applicationName string) {
+func (sr *SettingsConnection) DeleteSettings(ctx context.Context, organizationID, ledgerID, applicationName string) {
 	tracer := commons.NewTracerFromContext(ctx)
 	logger := commons.NewLoggerFromContext(ctx)
 
@@ -197,7 +197,7 @@ func (sr *SettingsRepository) DeleteSettings(ctx context.Context, organizationID
 	}
 }
 
-func (sr *SettingsRepository) createMongo(ctx context.Context, settings *Settings) error {
+func (sr *SettingsConnection) createMongo(ctx context.Context, settings *Settings) error {
 	tracer := commons.NewTracerFromContext(ctx)
 	logger := commons.NewLoggerFromContext(ctx)
 
@@ -232,7 +232,7 @@ func (sr *SettingsRepository) createMongo(ctx context.Context, settings *Setting
 	return nil
 }
 
-func (sr *SettingsRepository) findMongo(ctx context.Context, organizationID, ledgerID, applicationName string) (*Settings, error) {
+func (sr *SettingsConnection) findMongo(ctx context.Context, organizationID, ledgerID, applicationName string) (*Settings, error) {
 	tracer := commons.NewTracerFromContext(ctx)
 	logger := commons.NewLoggerFromContext(ctx)
 
@@ -270,7 +270,7 @@ func (sr *SettingsRepository) findMongo(ctx context.Context, organizationID, led
 	return &record, nil
 }
 
-func (sr *SettingsRepository) deleteMongo(ctx context.Context, organizationID, ledgerID, applicationName string) error {
+func (sr *SettingsConnection) deleteMongo(ctx context.Context, organizationID, ledgerID, applicationName string) error {
 	tracer := commons.NewTracerFromContext(ctx)
 	logger := commons.NewLoggerFromContext(ctx)
 
@@ -310,7 +310,7 @@ func (sr *SettingsRepository) deleteMongo(ctx context.Context, organizationID, l
 	return nil
 }
 
-func (sr *SettingsRepository) setNXRedis(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
+func (sr *SettingsConnection) setNXRedis(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
 	logger := commons.NewLoggerFromContext(ctx)
 	tracer := commons.NewTracerFromContext(ctx)
 
@@ -336,7 +336,7 @@ func (sr *SettingsRepository) setNXRedis(ctx context.Context, key string, value 
 	return isLocked, nil
 }
 
-func (sr *SettingsRepository) getRedis(ctx context.Context, key string) (string, error) {
+func (sr *SettingsConnection) getRedis(ctx context.Context, key string) (string, error) {
 	logger := commons.NewLoggerFromContext(ctx)
 	tracer := commons.NewTracerFromContext(ctx)
 
@@ -364,7 +364,7 @@ func (sr *SettingsRepository) getRedis(ctx context.Context, key string) (string,
 	return val, nil
 }
 
-func (sr *SettingsRepository) deleteRedis(ctx context.Context, key string) error {
+func (sr *SettingsConnection) deleteRedis(ctx context.Context, key string) error {
 	logger := commons.NewLoggerFromContext(ctx)
 	tracer := commons.NewTracerFromContext(ctx)
 
