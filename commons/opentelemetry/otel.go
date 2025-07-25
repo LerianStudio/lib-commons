@@ -327,6 +327,7 @@ func InjectQueueTraceContext(ctx context.Context) map[string]string {
 	otel.GetTextMapPropagator().Inject(ctx, carrier)
 
 	headers := make(map[string]string)
+	
 	for k, v := range carrier {
 		if len(v) > 0 {
 			headers[k] = v[0]
@@ -359,10 +360,13 @@ func GetTraceIDFromContext(ctx context.Context) string {
 	if span == nil {
 		return ""
 	}
+	
 	spanContext := span.SpanContext()
+	
 	if !spanContext.IsValid() {
 		return ""
 	}
+	
 	return spanContext.TraceID().String()
 }
 
@@ -373,10 +377,13 @@ func GetTraceStateFromContext(ctx context.Context) string {
 	if span == nil {
 		return ""
 	}
+	
 	spanContext := span.SpanContext()
+	
 	if !spanContext.IsValid() {
 		return ""
 	}
+	
 	return spanContext.TraceState().String()
 }
 
@@ -420,6 +427,7 @@ func ExtractTraceContextFromQueueHeaders(baseCtx context.Context, amqpHeaders ma
 
 	// Convert amqp.Table headers to map[string]string for trace extraction
 	traceHeaders := make(map[string]string)
+	
 	for k, v := range amqpHeaders {
 		if str, ok := v.(string); ok {
 			traceHeaders[k] = str
