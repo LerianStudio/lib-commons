@@ -1,3 +1,10 @@
+## [1.19.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.2...v1.19.0-beta.3) (2025-07-25)
+
+
+### Features
+
+* **telemetry:** add telemetry queue propagation ([610c702](https://github.com/LerianStudio/lib-commons/commit/610c702c3f927d08bcd3f5279caf99b75127dfd8))
+
 ## [1.19.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.1...v1.19.0-beta.2) (2025-07-25)
 
 
