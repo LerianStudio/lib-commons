@@ -37,10 +37,8 @@ func NormalizeDateTime(date time.Time, days *int, endOfDay bool) string {
 	}
 
 	if endOfDay {
-		// Define como 23:59:59
 		date = time.Date(date.Year(), date.Month(), date.Day(), 23, 59, 59, 0, date.Location())
 	} else {
-		// Define como 00:00:00
 		date = time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, date.Location())
 	}
 
