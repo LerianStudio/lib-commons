@@ -1,3 +1,12 @@
+## [1.19.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.1...v1.19.0-beta.2) (2025-07-25)
+
+
+### Bug Fixes
+
+* Add NormalizeDateTime helper for date offset and time bounds formatting ([838c5f1](https://github.com/LerianStudio/lib-commons/commit/838c5f1940fd06c109ba9480f30781553e80ff45))
+* Merge pull request [#164](https://github.com/LerianStudio/lib-commons/issues/164) from LerianStudio/fix/COMMONS-1111 ([295ca40](https://github.com/LerianStudio/lib-commons/commit/295ca4093e919513bfcf7a0de50108c9e5609eb2))
+* remove commets; ([333fe49](https://github.com/LerianStudio/lib-commons/commit/333fe499e1a8a43654cd6c0f0546e3a1c5279bc9))
+
 ## [1.19.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.18.0...v1.19.0-beta.1) (2025-07-23)
 
 
