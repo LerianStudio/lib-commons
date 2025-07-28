@@ -304,6 +304,20 @@ func IdempotencyInternalKey(organizationID, ledgerID uuid.UUID, key string) stri
 	return builder.String()
 }
 
+func BalanceInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+	var builder strings.Builder
+
+	builder.WriteString("balance:{")
+	builder.WriteString(organizationID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(ledgerID.String())
+	builder.WriteString(keySeparator)
+	builder.WriteString(key)
+	builder.WriteString("}")
+
+	return builder.String()
+}
+
 func AccountingRoutesInternalKey(organizationID, ledgerID, key uuid.UUID) string {
 	var builder strings.Builder
 
