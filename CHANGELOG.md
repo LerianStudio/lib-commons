@@ -1,3 +1,11 @@
+## [1.19.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.3...v1.19.0-beta.4) (2025-07-28)
+
+
+### Features
+
+* create a new balance internal key to lock balance on redis; ([715e2e7](https://github.com/LerianStudio/lib-commons/commit/715e2e72b47c681064fd83dcef89c053c1d33d1c))
+* Merge pull request [#166](https://github.com/LerianStudio/lib-commons/issues/166) from LerianStudio/feat/add-new-redis-key ([3199765](https://github.com/LerianStudio/lib-commons/commit/3199765d6832d8a068f8e925773ea44acce5291e))
+
 ## [1.19.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.2...v1.19.0-beta.3) (2025-07-25)
 
 
