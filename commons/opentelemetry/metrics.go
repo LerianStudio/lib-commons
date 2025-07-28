@@ -30,10 +30,10 @@ type MetricOption struct {
 var (
 	// DefaultLatencyBuckets for latency measurements (in seconds)
 	DefaultLatencyBuckets = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
-	
+
 	// DefaultAccountBuckets for account creation counts
 	DefaultAccountBuckets = []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000}
-	
+
 	// DefaultTransactionBuckets for transaction count per time period
 	DefaultTransactionBuckets = []float64{1, 10, 50, 100, 500, 1000, 2500, 5000, 8000, 10000}
 )
@@ -54,6 +54,7 @@ func (f *MetricsFactory) Counter(name string, opts ...MetricOption) *CounterBuil
 	}
 
 	counter := f.getOrCreateCounter(name, option)
+
 	return &CounterBuilder{
 		factory: f,
 		counter: counter,
@@ -69,6 +70,7 @@ func (f *MetricsFactory) Gauge(name string, opts ...MetricOption) *GaugeBuilder 
 	}
 
 	gauge := f.getOrCreateGauge(name, option)
+
 	return &GaugeBuilder{
 		factory: f,
 		gauge:   gauge,
@@ -97,6 +99,7 @@ func (f *MetricsFactory) Histogram(name string, opts ...MetricOption) *Histogram
 	}
 
 	histogram := f.getOrCreateHistogram(name, option)
+
 	return &HistogramBuilder{
 		factory:   f,
 		histogram: histogram,
@@ -115,6 +118,7 @@ func (f *MetricsFactory) getOrCreateCounter(name string, option MetricOption) me
 	if option.Description != "" {
 		counterOpts = append(counterOpts, metric.WithDescription(option.Description))
 	}
+
 	if option.Unit != "" {
 		counterOpts = append(counterOpts, metric.WithUnit(option.Unit))
 	}
@@ -148,6 +152,7 @@ func (f *MetricsFactory) getOrCreateGauge(name string, option MetricOption) metr
 	if option.Description != "" {
 		gaugeOpts = append(gaugeOpts, metric.WithDescription(option.Description))
 	}
+
 	if option.Unit != "" {
 		gaugeOpts = append(gaugeOpts, metric.WithUnit(option.Unit))
 	}
@@ -181,9 +186,11 @@ func (f *MetricsFactory) getOrCreateHistogram(name string, option MetricOption) 
 	if option.Description != "" {
 		histogramOpts = append(histogramOpts, metric.WithDescription(option.Description))
 	}
+
 	if option.Unit != "" {
 		histogramOpts = append(histogramOpts, metric.WithUnit(option.Unit))
 	}
+
 	if option.Buckets != nil {
 		histogramOpts = append(histogramOpts, metric.WithExplicitBucketBoundaries(option.Buckets...))
 	}
@@ -206,8 +213,6 @@ func (f *MetricsFactory) getOrCreateHistogram(name string, option MetricOption) 
 	return histogram
 }
 
-
-
 // containsSubstring checks if name contains any of the given substrings (case-insensitive)
 func containsSubstring(name string, substrings ...string) bool {
 	nameL := strings.ToLower(name)
@@ -216,5 +221,6 @@ func containsSubstring(name string, substrings ...string) bool {
 			return true
 		}
 	}
+
 	return false
 }
