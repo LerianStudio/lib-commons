@@ -19,7 +19,9 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+const beginningKey = "{"
 const keySeparator = ":"
+const endKey = "}"
 
 // Contains checks if an item is in a slice. This function uses type parameters to work with any slice type.
 func Contains[T comparable](slice []T, item T) bool {
@@ -276,58 +278,52 @@ func Reverse[T any](s []T) []T {
 	return s
 }
 
-func TransactionInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+// GenericInternalKey returns a key with the following format to be used on redis cluster:
+// "name:{organizationID:ledgerID:key}"
+func GenericInternalKey(name, organizationID, ledgerID, key string) string {
 	var builder strings.Builder
 
-	builder.WriteString("transaction:{")
-	builder.WriteString(organizationID.String())
+	builder.WriteString(name)
 	builder.WriteString(keySeparator)
-	builder.WriteString(ledgerID.String())
-	builder.WriteString(keySeparator)
-	builder.WriteString(key)
-	builder.WriteString("}")
-
-	return builder.String()
-}
-
-func IdempotencyInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
-	var builder strings.Builder
-
-	builder.WriteString("idempotency:{")
-	builder.WriteString(organizationID.String())
-	builder.WriteString(keySeparator)
-	builder.WriteString(ledgerID.String())
-	builder.WriteString(keySeparator)
-	builder.WriteString(key)
-	builder.WriteString("}")
-
-	return builder.String()
-}
-
-func BalanceInternalKey(organizationID, ledgerID, key string) string {
-	var builder strings.Builder
-
-	builder.WriteString("balance:{")
+	builder.WriteString(beginningKey)
 	builder.WriteString(organizationID)
 	builder.WriteString(keySeparator)
 	builder.WriteString(ledgerID)
 	builder.WriteString(keySeparator)
 	builder.WriteString(key)
-	builder.WriteString("}")
+	builder.WriteString(endKey)
 
 	return builder.String()
 }
 
+// TransactionInternalKey returns a key with the following format to be used on redis cluster:
+// "transaction:{organizationID:ledgerID:key}"
+func TransactionInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+	transaction := GenericInternalKey("transaction", organizationID.String(), ledgerID.String(), key)
+
+	return transaction
+}
+
+// IdempotencyInternalKey returns a key with the following format to be used on redis cluster:
+// "idempotency:{organizationID:ledgerID:key}"
+func IdempotencyInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
+	idempotency := GenericInternalKey("idempotency", organizationID.String(), ledgerID.String(), key)
+
+	return idempotency
+}
+
+// BalanceInternalKey returns a key with the following format to be used on redis cluster:
+// "balance:{organizationID:ledgerID:key}"
+func BalanceInternalKey(organizationID, ledgerID, key string) string {
+	balance := GenericInternalKey("balance", organizationID, ledgerID, key)
+
+	return balance
+}
+
+// AccountingRoutesInternalKey returns a key with the following format to be used on redis cluster:
+// "accounting_routes:{organizationID:ledgerID:key}"
 func AccountingRoutesInternalKey(organizationID, ledgerID, key uuid.UUID) string {
-	var builder strings.Builder
+	accountingRoutes := GenericInternalKey("accounting_routes", organizationID.String(), ledgerID.String(), key.String())
 
-	builder.WriteString("accounting_routes:{")
-	builder.WriteString(organizationID.String())
-	builder.WriteString(keySeparator)
-	builder.WriteString(ledgerID.String())
-	builder.WriteString(keySeparator)
-	builder.WriteString(key.String())
-	builder.WriteString("}")
-
-	return builder.String()
+	return accountingRoutes
 }
