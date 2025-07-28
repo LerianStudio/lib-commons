@@ -2,11 +2,10 @@ package opentelemetry
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"net/http"
-	"os"
 
-	"github.com/LerianStudio/lib-commons/commons"
 	constant "github.com/LerianStudio/lib-commons/commons/constants"
 	"github.com/LerianStudio/lib-commons/commons/log"
 	"github.com/gofiber/fiber/v2"
@@ -37,6 +36,7 @@ type Telemetry struct {
 	TracerProvider            *sdktrace.TracerProvider
 	MetricProvider            *sdkmetric.MeterProvider
 	LoggerProvider            *sdklog.LoggerProvider
+	MetricsFactory            *MetricsFactory
 	shutdown                  func()
 	EnableTelemetry           bool
 }
@@ -58,7 +58,7 @@ func (tl *Telemetry) newResource() *sdkresource.Resource {
 
 // NewLoggerExporter creates a new logger exporter that writes to stdout.
 func (tl *Telemetry) newLoggerExporter(ctx context.Context) (*otlploggrpc.Exporter, error) {
-	exporter, err := otlploggrpc.New(ctx, otlploggrpc.WithEndpoint(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")), otlploggrpc.WithInsecure())
+	exporter, err := otlploggrpc.New(ctx, otlploggrpc.WithEndpoint(tl.CollectorExporterEndpoint), otlploggrpc.WithInsecure())
 	if err != nil {
 		return nil, err
 	}
@@ -152,6 +152,11 @@ func (tl *Telemetry) InitializeTelemetry(logger log.Logger) *Telemetry {
 	otel.SetMeterProvider(mp)
 	tl.MetricProvider = mp
 
+	// Initialize MetricsFactory with the meter from the provider
+	meter := mp.Meter(tl.LibraryName)
+	metricsFactory := NewMetricsFactory(meter, logger)
+	tl.MetricsFactory = metricsFactory
+
 	tp := tl.newTracerProvider(r, tExp)
 	otel.SetTracerProvider(tp)
 	tl.TracerProvider = tp
@@ -196,10 +201,17 @@ func (tl *Telemetry) InitializeTelemetry(logger log.Logger) *Telemetry {
 	logger.Infof("Telemetry initialized ✅ ")
 
 	return &Telemetry{
-		LibraryName:    tl.LibraryName,
-		TracerProvider: tp,
-		MetricProvider: mp,
-		shutdown:       tl.shutdown,
+		LibraryName:               tl.LibraryName,
+		ServiceName:               tl.ServiceName,
+		ServiceVersion:            tl.ServiceVersion,
+		DeploymentEnv:             tl.DeploymentEnv,
+		CollectorExporterEndpoint: tl.CollectorExporterEndpoint,
+		TracerProvider:            tp,
+		MetricProvider:            mp,
+		LoggerProvider:            lp,
+		MetricsFactory:            metricsFactory,
+		shutdown:                  tl.shutdown,
+		EnableTelemetry:           tl.EnableTelemetry,
 	}
 }
 
@@ -219,15 +231,14 @@ func SetSpanAttributesFromStructWithObfuscation(span *trace.Span, key string, va
 		return err
 	}
 
-	// Convert to JSON string
-	vStr, err := commons.StructToJSONString(processedStruct)
+	jsonByte, err := json.Marshal(processedStruct)
 	if err != nil {
 		return err
 	}
 
 	(*span).SetAttributes(attribute.KeyValue{
 		Key:   attribute.Key(key),
-		Value: attribute.StringValue(vStr),
+		Value: attribute.StringValue(string(jsonByte)),
 	})
 
 	return nil
@@ -327,7 +338,7 @@ func InjectQueueTraceContext(ctx context.Context) map[string]string {
 	otel.GetTextMapPropagator().Inject(ctx, carrier)
 
 	headers := make(map[string]string)
-	
+
 	for k, v := range carrier {
 		if len(v) > 0 {
 			headers[k] = v[0]
@@ -360,13 +371,13 @@ func GetTraceIDFromContext(ctx context.Context) string {
 	if span == nil {
 		return ""
 	}
-	
+
 	spanContext := span.SpanContext()
-	
+
 	if !spanContext.IsValid() {
 		return ""
 	}
-	
+
 	return spanContext.TraceID().String()
 }
 
@@ -377,13 +388,13 @@ func GetTraceStateFromContext(ctx context.Context) string {
 	if span == nil {
 		return ""
 	}
-	
+
 	spanContext := span.SpanContext()
-	
+
 	if !spanContext.IsValid() {
 		return ""
 	}
-	
+
 	return spanContext.TraceState().String()
 }
 
@@ -427,7 +438,7 @@ func ExtractTraceContextFromQueueHeaders(baseCtx context.Context, amqpHeaders ma
 
 	// Convert amqp.Table headers to map[string]string for trace extraction
 	traceHeaders := make(map[string]string)
-	
+
 	for k, v := range amqpHeaders {
 		if str, ok := v.(string); ok {
 			traceHeaders[k] = str

@@ -38,6 +38,7 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry) fiber.
 		defer span.End()
 
 		ctx = commons.ContextWithTracer(ctx, tracer)
+		ctx = commons.ContextWithMetricFactory(ctx, tl.MetricsFactory)
 
 		c.SetUserContext(ctx)
 
@@ -79,6 +80,7 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 		ctx, span := tracer.Start(opentelemetry.ExtractGRPCContext(ctx), info.FullMethod)
 
 		ctx = commons.ContextWithTracer(ctx, tracer)
+		ctx = commons.ContextWithMetricFactory(ctx, tl.MetricsFactory)
 
 		err := tm.collectMetrics(ctx)
 		if err != nil {
