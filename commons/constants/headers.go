@@ -9,6 +9,7 @@ const (
 	DSL                 = "dsl"
 	FileExtension       = ".gold"
 	HeaderID            = "X-Request-Id"
+	HeaderTraceparent   = "Traceparent"
 	IdempotencyKey      = "X-Idempotency"
 	IdempotencyTTL      = "X-TTL"
 	IdempotencyReplayed = "X-Idempotency-Replayed"
