@@ -1,3 +1,11 @@
+## [1.19.0-beta.5](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.4...v1.19.0-beta.5) (2025-07-28)
+
+
+### Features
+
+* adjust internal keys on redis to use generic one; ([c0e4556](https://github.com/LerianStudio/lib-commons/commit/c0e45566040c9da35043601b8128b3792c43cb61))
+* Merge pull request [#168](https://github.com/LerianStudio/lib-commons/issues/168) from LerianStudio/feat/COMMONS-redis-balance-key ([2b66484](https://github.com/LerianStudio/lib-commons/commit/2b66484703bb7551fbe5264cc8f20618fe61bd5b))
+
 ## [1.19.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.3...v1.19.0-beta.4) (2025-07-28)
 
 
