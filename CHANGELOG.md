@@ -1,3 +1,10 @@
+## [1.19.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.6...v1.19.0-beta.7) (2025-07-29)
+
+
+### Features
+
+* extract logger separator constant and enhance telemetry span attributes ([2f611bb](https://github.com/LerianStudio/lib-commons/commit/2f611bb808f4fb68860b9745490a3ffdf8ba37a9))
+
 ## [1.19.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.5...v1.19.0-beta.6) (2025-07-28)
 
 
