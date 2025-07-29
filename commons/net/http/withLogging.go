@@ -170,7 +170,7 @@ func WithHTTPLogging(opts ...LogMiddlewareOption) fiber.Handler {
 		mid := buildOpts(opts...)
 		logger := mid.Logger.WithFields(
 			cn.HeaderID, info.TraceID,
-		).WithDefaultMessageTemplate(headerID + " | ")
+		).WithDefaultMessageTemplate(headerID + cn.LoggerDefaultSeparator)
 
 		rw := ResponseMetricsWrapper{
 			Context:    c,
@@ -214,7 +214,7 @@ func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
 		}
 
 		mid := buildOpts(opts...)
-		logger := mid.Logger.WithDefaultMessageTemplate(commons.NewHeaderIDFromContext(ctx) + " | ")
+		logger := mid.Logger.WithDefaultMessageTemplate(commons.NewHeaderIDFromContext(ctx) + cn.LoggerDefaultSeparator)
 
 		ctx = commons.ContextWithLogger(ctx, logger)
 

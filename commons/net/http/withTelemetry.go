@@ -9,6 +9,7 @@ import (
 	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
 	"github.com/gofiber/fiber/v2"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
@@ -36,6 +37,15 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry) fiber.
 
 		ctx, span := tracer.Start(opentelemetry.ExtractHTTPContext(c), c.Method()+" "+commons.ReplaceUUIDWithPlaceholder(c.Path()))
 		defer span.End()
+
+		span.SetAttributes(
+			attribute.String("http.method", c.Method()),
+			attribute.String("http.url", c.OriginalURL()),
+			attribute.String("http.route", c.Route().Path),
+			attribute.String("http.scheme", c.Protocol()),
+			attribute.String("http.host", c.Hostname()),
+			attribute.String("http.user_agent", c.Get("User-Agent")),
+		)
 
 		ctx = commons.ContextWithTracer(ctx, tracer)
 		ctx = commons.ContextWithMetricFactory(ctx, tl.MetricsFactory)
