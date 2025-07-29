@@ -215,17 +215,15 @@ func (tl *Telemetry) InitializeTelemetry(logger log.Logger) *Telemetry {
 	}
 }
 
-// SetSpanAttributesFromStruct converts a struct to a JSON string and sets it as an attribute on the span.
-// This is the basic version without obfuscation for backward compatibility.
-func SetSpanAttributesFromStruct(span *trace.Span, key string, valueStruct any) error {
-	return SetSpanAttributesFromStructWithObfuscation(span, key, valueStruct, nil)
+// SetSpanAttributesFromStructWithObfuscation converts a struct to a JSON string,
+// obfuscates sensitive fields using the default obfuscator, and sets it as an attribute on the span.
+func SetSpanAttributesFromStructWithObfuscation(span *trace.Span, key string, valueStruct any) error {
+	return SetSpanAttributesFromStructWithCustomObfuscation(span, key, valueStruct, NewDefaultObfuscator())
 }
 
-// SetSpanAttributesFromStructWithObfuscation converts a struct to a JSON string,
-// obfuscates sensitive fields using the provided obfuscator, and sets it as an attribute on the span.
-// If obfuscator is nil, no obfuscation is performed.
-func SetSpanAttributesFromStructWithObfuscation(span *trace.Span, key string, valueStruct any, obfuscator FieldObfuscator) error {
-	// Apply obfuscation using the dedicated obfuscation utility
+// SetSpanAttributesFromStructWithCustomObfuscation converts a struct to a JSON string,
+// obfuscates sensitive fields using the custom obfuscator provided, and sets it as an attribute on the span.
+func SetSpanAttributesFromStructWithCustomObfuscation(span *trace.Span, key string, valueStruct any, obfuscator FieldObfuscator) error {
 	processedStruct, err := ObfuscateStruct(valueStruct, obfuscator)
 	if err != nil {
 		return err

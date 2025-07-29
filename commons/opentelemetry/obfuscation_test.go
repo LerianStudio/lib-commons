@@ -245,7 +245,7 @@ func TestObfuscateStruct_InvalidJSON(t *testing.T) {
 	assert.Nil(t, result)
 }
 
-func TestSetSpanAttributesFromStruct_BackwardCompatibility(t *testing.T) {
+func TestSetSpanAttributesFromStructWithObfuscation_Default(t *testing.T) {
 	// Create a no-op tracer for testing
 	tracer := noop.NewTracerProvider().Tracer("test")
 	_, span := tracer.Start(context.TODO(), "test-span")
@@ -258,12 +258,10 @@ func TestSetSpanAttributesFromStruct_BackwardCompatibility(t *testing.T) {
 		PublicData: "public info",
 	}
 
-	// Test the original function (should not obfuscate)
-	err := SetSpanAttributesFromStruct(&span, "test_data", testStruct)
+	err := SetSpanAttributesFromStructWithObfuscation(&span, "test_data", testStruct)
 	require.NoError(t, err)
 
-	// The span should contain the original data without obfuscation
-	// Note: In a real test, you would check the span attributes, but noop spans don't store them
+	// The span should contain the obfuscated data (noop span doesn't store attributes)
 }
 
 func TestSetSpanAttributesFromStructWithObfuscation(t *testing.T) {
@@ -314,7 +312,12 @@ func TestSetSpanAttributesFromStructWithObfuscation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := SetSpanAttributesFromStructWithObfuscation(&span, "test_data", testStruct, tt.obfuscator)
+			var err error
+		if tt.obfuscator == nil || tt.name == "with default obfuscator" {
+			err = SetSpanAttributesFromStructWithObfuscation(&span, "test_data", testStruct)
+		} else {
+			err = SetSpanAttributesFromStructWithCustomObfuscation(&span, "test_data", testStruct, tt.obfuscator)
+		}
 
 			if tt.wantError {
 				assert.Error(t, err)
@@ -348,8 +351,7 @@ func TestSetSpanAttributesFromStructWithObfuscation_NestedStruct(t *testing.T) {
 		Tokens: []string{"token1", "token2"},
 	}
 
-	obfuscator := NewDefaultObfuscator()
-	err := SetSpanAttributesFromStructWithObfuscation(&span, "nested_data", nestedStruct, obfuscator)
+	err := SetSpanAttributesFromStructWithObfuscation(&span, "nested_data", nestedStruct)
 
 	assert.NoError(t, err)
 }
@@ -368,8 +370,7 @@ func TestSetSpanAttributesFromStructWithObfuscation_InvalidJSON(t *testing.T) {
 		Channel: make(chan int),
 	}
 
-	obfuscator := NewDefaultObfuscator()
-	err := SetSpanAttributesFromStructWithObfuscation(&span, "invalid_data", invalidStruct, obfuscator)
+	err := SetSpanAttributesFromStructWithObfuscation(&span, "invalid_data", invalidStruct)
 
 	assert.Error(t, err)
 }
@@ -409,7 +410,7 @@ func TestCustomObfuscatorInterface(t *testing.T) {
 		obfuscatedValue: "[REDACTED]",
 	}
 
-	err := SetSpanAttributesFromStructWithObfuscation(&span, "test_data", testStruct, mockObfuscator)
+	err := SetSpanAttributesFromStructWithCustomObfuscation(&span, "test_data", testStruct, mockObfuscator)
 	assert.NoError(t, err)
 }
 
