@@ -1,3 +1,10 @@
+## [1.19.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.5...v1.19.0-beta.6) (2025-07-28)
+
+
+### Features
+
+* **telemetry:** add metrics factory with fluent API for counter, gauge and histogram metrics ([517352b](https://github.com/LerianStudio/lib-commons/commit/517352b95111de59613d9b2f15429c751302b779))
+
 ## [1.19.0-beta.5](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.4...v1.19.0-beta.5) (2025-07-28)
 
 
