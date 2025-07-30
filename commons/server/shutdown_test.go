@@ -3,7 +3,7 @@ package server_test
 import (
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/commons/server"
+	"github.com/LerianStudio/lib-commons/v2/commons/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/gofiber/fiber/v2"
 	"google.golang.org/grpc"

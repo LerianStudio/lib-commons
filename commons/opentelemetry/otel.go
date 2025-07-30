@@ -2,12 +2,12 @@ package opentelemetry
 
 import (
 	"context"
+	"encoding/json"
+	"maps"
 	"net/http"
-	"os"
 
-	"github.com/LerianStudio/lib-commons/commons"
-	constant "github.com/LerianStudio/lib-commons/commons/constants"
-	"github.com/LerianStudio/lib-commons/commons/log"
+	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
+	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"github.com/gofiber/fiber/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -36,6 +36,7 @@ type Telemetry struct {
 	TracerProvider            *sdktrace.TracerProvider
 	MetricProvider            *sdkmetric.MeterProvider
 	LoggerProvider            *sdklog.LoggerProvider
+	MetricsFactory            *MetricsFactory
 	shutdown                  func()
 	EnableTelemetry           bool
 }
@@ -57,7 +58,7 @@ func (tl *Telemetry) newResource() *sdkresource.Resource {
 
 // NewLoggerExporter creates a new logger exporter that writes to stdout.
 func (tl *Telemetry) newLoggerExporter(ctx context.Context) (*otlploggrpc.Exporter, error) {
-	exporter, err := otlploggrpc.New(ctx, otlploggrpc.WithEndpoint(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")), otlploggrpc.WithInsecure())
+	exporter, err := otlploggrpc.New(ctx, otlploggrpc.WithEndpoint(tl.CollectorExporterEndpoint), otlploggrpc.WithInsecure())
 	if err != nil {
 		return nil, err
 	}
@@ -151,6 +152,11 @@ func (tl *Telemetry) InitializeTelemetry(logger log.Logger) *Telemetry {
 	otel.SetMeterProvider(mp)
 	tl.MetricProvider = mp
 
+	// Initialize MetricsFactory with the meter from the provider
+	meter := mp.Meter(tl.LibraryName)
+	metricsFactory := NewMetricsFactory(meter, logger)
+	tl.MetricsFactory = metricsFactory
+
 	tp := tl.newTracerProvider(r, tExp)
 	otel.SetTracerProvider(tp)
 	tl.TracerProvider = tp
@@ -195,23 +201,42 @@ func (tl *Telemetry) InitializeTelemetry(logger log.Logger) *Telemetry {
 	logger.Infof("Telemetry initialized ✅ ")
 
 	return &Telemetry{
-		LibraryName:    tl.LibraryName,
-		TracerProvider: tp,
-		MetricProvider: mp,
-		shutdown:       tl.shutdown,
+		LibraryName:               tl.LibraryName,
+		ServiceName:               tl.ServiceName,
+		ServiceVersion:            tl.ServiceVersion,
+		DeploymentEnv:             tl.DeploymentEnv,
+		CollectorExporterEndpoint: tl.CollectorExporterEndpoint,
+		TracerProvider:            tp,
+		MetricProvider:            mp,
+		LoggerProvider:            lp,
+		MetricsFactory:            metricsFactory,
+		shutdown:                  tl.shutdown,
+		EnableTelemetry:           tl.EnableTelemetry,
 	}
 }
 
-// SetSpanAttributesFromStruct converts a struct to a JSON string and sets it as an attribute on the span.
-func SetSpanAttributesFromStruct(span *trace.Span, key string, valueStruct any) error {
-	vStr, err := commons.StructToJSONString(valueStruct)
+// SetSpanAttributesFromStructWithObfuscation converts a struct to a JSON string,
+// obfuscates sensitive fields using the default obfuscator, and sets it as an attribute on the span.
+func SetSpanAttributesFromStructWithObfuscation(span *trace.Span, key string, valueStruct any) error {
+	return SetSpanAttributesFromStructWithCustomObfuscation(span, key, valueStruct, NewDefaultObfuscator())
+}
+
+// SetSpanAttributesFromStructWithCustomObfuscation converts a struct to a JSON string,
+// obfuscates sensitive fields using the custom obfuscator provided, and sets it as an attribute on the span.
+func SetSpanAttributesFromStructWithCustomObfuscation(span *trace.Span, key string, valueStruct any, obfuscator FieldObfuscator) error {
+	processedStruct, err := ObfuscateStruct(valueStruct, obfuscator)
+	if err != nil {
+		return err
+	}
+
+	jsonByte, err := json.Marshal(processedStruct)
 	if err != nil {
 		return err
 	}
 
 	(*span).SetAttributes(attribute.KeyValue{
 		Key:   attribute.Key(key),
-		Value: attribute.StringValue(vStr),
+		Value: attribute.StringValue(string(jsonByte)),
 	})
 
 	return nil
@@ -290,17 +315,140 @@ func ExtractGRPCContext(ctx context.Context) context.Context {
 
 	mdCopy := md.Copy()
 
-	if traceparentValues, exists := mdCopy["traceparent"]; exists && len(traceparentValues) > 0 {
+	if traceparentValues, exists := mdCopy[constant.MetadataTraceparent]; exists && len(traceparentValues) > 0 {
 		mdCopy["Traceparent"] = traceparentValues
-		delete(mdCopy, "traceparent")
+		delete(mdCopy, constant.MetadataTraceparent)
 	}
 
-	if tracestateValues, exists := mdCopy["tracestate"]; exists && len(tracestateValues) > 0 {
+	if tracestateValues, exists := mdCopy[constant.MetadataTracestate]; exists && len(tracestateValues) > 0 {
 		mdCopy["Tracestate"] = tracestateValues
-		delete(mdCopy, "tracestate")
+		delete(mdCopy, constant.MetadataTracestate)
 	}
 
 	return otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(mdCopy))
+}
+
+// InjectQueueTraceContext injects OpenTelemetry trace context into RabbitMQ headers
+// for distributed tracing across queue messages. Returns a map of headers to be
+// added to the RabbitMQ message headers.
+func InjectQueueTraceContext(ctx context.Context) map[string]string {
+	carrier := propagation.HeaderCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+
+	headers := make(map[string]string)
+
+	for k, v := range carrier {
+		if len(v) > 0 {
+			headers[k] = v[0]
+		}
+	}
+
+	return headers
+}
+
+// ExtractQueueTraceContext extracts OpenTelemetry trace context from RabbitMQ headers
+// and returns a new context with the extracted trace information. This enables
+// distributed tracing continuity across queue message boundaries.
+func ExtractQueueTraceContext(ctx context.Context, headers map[string]string) context.Context {
+	if headers == nil {
+		return ctx
+	}
+
+	carrier := propagation.HeaderCarrier{}
+	for k, v := range headers {
+		carrier.Set(k, v)
+	}
+
+	return otel.GetTextMapPropagator().Extract(ctx, carrier)
+}
+
+// GetTraceIDFromContext extracts the trace ID from the current span context
+// Returns empty string if no active span or trace ID is found
+func GetTraceIDFromContext(ctx context.Context) string {
+	span := trace.SpanFromContext(ctx)
+	if span == nil {
+		return ""
+	}
+
+	spanContext := span.SpanContext()
+
+	if !spanContext.IsValid() {
+		return ""
+	}
+
+	return spanContext.TraceID().String()
+}
+
+// GetTraceStateFromContext extracts the trace state from the current span context
+// Returns empty string if no active span or trace state is found
+func GetTraceStateFromContext(ctx context.Context) string {
+	span := trace.SpanFromContext(ctx)
+	if span == nil {
+		return ""
+	}
+
+	spanContext := span.SpanContext()
+
+	if !spanContext.IsValid() {
+		return ""
+	}
+
+	return spanContext.TraceState().String()
+}
+
+// PrepareQueueHeaders prepares RabbitMQ headers with trace context injection
+// following W3C trace context standards. Returns a map suitable for amqp.Table.
+func PrepareQueueHeaders(ctx context.Context, baseHeaders map[string]any) map[string]any {
+	headers := make(map[string]any)
+
+	// Copy base headers first
+	maps.Copy(headers, baseHeaders)
+
+	// Inject trace context using W3C standards
+	traceHeaders := InjectQueueTraceContext(ctx)
+	for k, v := range traceHeaders {
+		headers[k] = v
+	}
+
+	return headers
+}
+
+// InjectTraceHeadersIntoQueue adds OpenTelemetry trace headers to existing RabbitMQ headers
+// following W3C trace context standards. Modifies the headers map in place.
+func InjectTraceHeadersIntoQueue(ctx context.Context, headers *map[string]any) {
+	if headers == nil {
+		return
+	}
+
+	// Inject trace context using W3C standards
+	traceHeaders := InjectQueueTraceContext(ctx)
+	for k, v := range traceHeaders {
+		(*headers)[k] = v
+	}
+}
+
+// ExtractTraceContextFromQueueHeaders extracts OpenTelemetry trace context from RabbitMQ amqp.Table headers
+// and returns a new context with the extracted trace information. Handles type conversion automatically.
+func ExtractTraceContextFromQueueHeaders(baseCtx context.Context, amqpHeaders map[string]any) context.Context {
+	if len(amqpHeaders) == 0 {
+		return baseCtx
+	}
+
+	// Convert amqp.Table headers to map[string]string for trace extraction
+	traceHeaders := make(map[string]string)
+
+	for k, v := range amqpHeaders {
+		if str, ok := v.(string); ok {
+			traceHeaders[k] = str
+		}
+	}
+
+	if len(traceHeaders) == 0 {
+		return baseCtx
+	}
+
+	// Extract trace context using existing function
+	return ExtractQueueTraceContext(baseCtx, traceHeaders)
 }
 
 func (tl *Telemetry) EndTracingSpans(ctx context.Context) {

@@ -5,10 +5,11 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/LerianStudio/lib-commons/commons"
-	"github.com/LerianStudio/lib-commons/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v2/commons"
+	"github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
 	"github.com/gofiber/fiber/v2"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
@@ -32,12 +33,25 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry) fiber.
 			return c.Next()
 		}
 
+		reqId := commons.NewHeaderIDFromContext(c.UserContext())
+
 		tracer := otel.Tracer(tl.LibraryName)
 
 		ctx, span := tracer.Start(opentelemetry.ExtractHTTPContext(c), c.Method()+" "+commons.ReplaceUUIDWithPlaceholder(c.Path()))
 		defer span.End()
 
+		span.SetAttributes(
+			attribute.String("app.request.request_id", reqId),
+			attribute.String("http.method", c.Method()),
+			attribute.String("http.url", c.OriginalURL()),
+			attribute.String("http.route", c.Route().Path),
+			attribute.String("http.scheme", c.Protocol()),
+			attribute.String("http.host", c.Hostname()),
+			attribute.String("http.user_agent", c.Get("User-Agent")),
+		)
+
 		ctx = commons.ContextWithTracer(ctx, tracer)
+		ctx = commons.ContextWithMetricFactory(ctx, tl.MetricsFactory)
 
 		c.SetUserContext(ctx)
 
@@ -47,7 +61,13 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry) fiber.
 			return c.Status(http.StatusBadRequest).JSON(err)
 		}
 
-		return c.Next()
+		err = c.Next()
+
+		span.SetAttributes(
+			attribute.Int("http.status_code", c.Response().StatusCode()),
+		)
+
+		return err
 	}
 }
 
@@ -79,6 +99,7 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 		ctx, span := tracer.Start(opentelemetry.ExtractGRPCContext(ctx), info.FullMethod)
 
 		ctx = commons.ContextWithTracer(ctx, tracer)
+		ctx = commons.ContextWithMetricFactory(ctx, tl.MetricsFactory)
 
 		err := tm.collectMetrics(ctx)
 		if err != nil {

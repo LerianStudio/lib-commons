@@ -2,7 +2,9 @@ package commons
 
 import (
 	"context"
-	"github.com/LerianStudio/lib-commons/commons/log"
+
+	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -13,9 +15,10 @@ type customContextKey string
 var CustomContextKey = customContextKey("custom_context")
 
 type CustomContextKeyValue struct {
-	HeaderID string
-	Tracer   trace.Tracer
-	Logger   log.Logger
+	HeaderID      string
+	Tracer        trace.Tracer
+	Logger        log.Logger
+	MetricFactory *opentelemetry.MetricsFactory
 }
 
 // NewLoggerFromContext extract the Logger from "logger" value inside context
@@ -62,6 +65,30 @@ func ContextWithTracer(ctx context.Context, tracer trace.Tracer) context.Context
 	}
 
 	values.Tracer = tracer
+
+	return context.WithValue(ctx, CustomContextKey, values)
+}
+
+// NewMetricFactoryFromContext returns a new metric factory from the context.
+//
+//nolint:ireturn
+func NewMetricFactoryFromContext(ctx context.Context) *opentelemetry.MetricsFactory {
+	if customContext, ok := ctx.Value(CustomContextKey).(*CustomContextKeyValue); ok &&
+		customContext.MetricFactory != nil {
+		return customContext.MetricFactory
+	}
+
+	return opentelemetry.NewMetricsFactory(otel.GetMeterProvider().Meter("default"), &log.NoneLogger{})
+}
+
+// ContextWithMetricFactory returns a context within a MetricsFactory in "metricFactory" value.
+func ContextWithMetricFactory(ctx context.Context, metricFactory *opentelemetry.MetricsFactory) context.Context {
+	values, _ := ctx.Value(CustomContextKey).(*CustomContextKeyValue)
+	if values == nil {
+		values = &CustomContextKeyValue{}
+	}
+
+	values.MetricFactory = metricFactory
 
 	return context.WithValue(ctx, CustomContextKey, values)
 }
