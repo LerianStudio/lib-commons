@@ -1,3 +1,10 @@
+## [1.19.0-beta.10](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.9...v1.19.0-beta.10) (2025-07-30)
+
+
+### Features
+
+* **security:** add accesstoken and refreshtoken to sensitive fields ([ede9b9b](https://github.com/LerianStudio/lib-commons/commit/ede9b9ba17b7f98ffe53a927d42cfb7b0f867f29))
+
 ## [1.19.0-beta.9](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.8...v1.19.0-beta.9) (2025-07-30)
 
 ## [1.19.0-beta.8](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.7...v1.19.0-beta.8) (2025-07-29)
