@@ -1,3 +1,19 @@
+## [2.0.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.11...v2.0.0-beta.1) (2025-07-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* change version and paths to v2
+
+### Features
+
+* **security:** add accesstoken and refreshtoken to sensitive fields list ([9e884c7](https://github.com/LerianStudio/lib-commons/commit/9e884c784e686c15354196fa09526371570f01e1))
+
+
+### Code Refactoring
+
+* update module to v2 ([1c20f97](https://github.com/LerianStudio/lib-commons/commit/1c20f97279dd7ab0c59e447b4e1ffc1595077deb))
+
 ## [1.19.0-beta.11](https://github.com/LerianStudio/lib-commons/v2/compare/v1.19.0-beta.10...v1.19.0-beta.11) (2025-07-30)
 
 
