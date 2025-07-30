@@ -1,3 +1,10 @@
+## [1.19.0-beta.11](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.10...v1.19.0-beta.11) (2025-07-30)
+
+
+### Features
+
+* **telemetry:** add request ID to HTTP span attributes ([3c60b29](https://github.com/LerianStudio/lib-commons/commit/3c60b29f9432c012219f0c08b1403594ea54069b))
+
 ## [1.19.0-beta.10](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.9...v1.19.0-beta.10) (2025-07-30)
 
 
