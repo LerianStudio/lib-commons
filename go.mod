@@ -1,4 +1,4 @@
-module github.com/LerianStudio/lib-commons
+module github.com/LerianStudio/lib-commons/v2
 
 go 1.23.2
 

@@ -6,8 +6,8 @@ import (
 	"maps"
 	"net/http"
 
-	constant "github.com/LerianStudio/lib-commons/commons/constants"
-	"github.com/LerianStudio/lib-commons/commons/log"
+	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
+	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"github.com/gofiber/fiber/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"

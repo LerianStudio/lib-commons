@@ -50,7 +50,7 @@ A comprehensive Go library providing common utilities and components for buildin
 ### Installation
 
 ```bash
-go get github.com/LerianStudio/lib-commons
+go get github.com/LerianStudio/lib-commons/v2
 ```
 
 ## API Reference

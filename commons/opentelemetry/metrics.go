@@ -4,7 +4,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/LerianStudio/lib-commons/commons/log"
+	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"go.opentelemetry.io/otel/metric"
 )
 
