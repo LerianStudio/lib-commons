@@ -1,3 +1,5 @@
+## [1.19.0-beta.9](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.8...v1.19.0-beta.9) (2025-07-30)
+
 ## [1.19.0-beta.8](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.7...v1.19.0-beta.8) (2025-07-29)
 
 ## [1.19.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.6...v1.19.0-beta.7) (2025-07-29)
