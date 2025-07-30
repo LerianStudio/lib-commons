@@ -17,7 +17,7 @@ func TestDefaultSensitiveFields(t *testing.T) {
 	expectedFields := []string{
 		"password", "token", "secret", "key", "authorization",
 		"auth", "credential", "credentials", "apikey", "api_key",
-		"access_token", "refresh_token", "private_key", "privatekey",
+		"access_token", "accesstoken", "refresh_token", "refreshtoken", "private_key", "privatekey",
 	}
 
 	for _, expectedField := range expectedFields {
@@ -208,7 +208,7 @@ func TestConsistencyBetweenSliceAndMap(t *testing.T) {
 
 func TestDefaultFieldsAreExpected(t *testing.T) {
 	// Test that we have the expected number of fields (this helps catch accidental additions/removals)
-	expectedCount := 21
+	expectedCount := 23
 	actualCount := len(DefaultSensitiveFields())
 	assert.Equal(t, expectedCount, actualCount,
 		"Expected %d default sensitive fields, but found %d. If this is intentional, update the test.",
