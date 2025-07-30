@@ -1,3 +1,37 @@
+## [2.0.0](https://github.com/LerianStudio/lib-commons/compare/v1.18.0...v2.0.0) (2025-07-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* change version and paths to v2
+
+### Features
+
+* **security:** add accesstoken and refreshtoken to sensitive fields list ([9e884c7](https://github.com/LerianStudio/lib-commons/commit/9e884c784e686c15354196fa09526371570f01e1))
+* **security:** add accesstoken and refreshtoken to sensitive fields ([ede9b9b](https://github.com/LerianStudio/lib-commons/commit/ede9b9ba17b7f98ffe53a927d42cfb7b0f867f29))
+* **telemetry:** add metrics factory with fluent API for counter, gauge and histogram metrics ([517352b](https://github.com/LerianStudio/lib-commons/commit/517352b95111de59613d9b2f15429c751302b779))
+* **telemetry:** add request ID to HTTP span attributes ([3c60b29](https://github.com/LerianStudio/lib-commons/commit/3c60b29f9432c012219f0c08b1403594ea54069b))
+* **telemetry:** add telemetry queue propagation ([610c702](https://github.com/LerianStudio/lib-commons/commit/610c702c3f927d08bcd3f5279caf99b75127dfd8))
+* adjust internal keys on redis to use generic one; ([c0e4556](https://github.com/LerianStudio/lib-commons/commit/c0e45566040c9da35043601b8128b3792c43cb61))
+* create a new balance internal key to lock balance on redis; ([715e2e7](https://github.com/LerianStudio/lib-commons/commit/715e2e72b47c681064fd83dcef89c053c1d33d1c))
+* extract logger separator constant and enhance telemetry span attributes ([2f611bb](https://github.com/LerianStudio/lib-commons/commit/2f611bb808f4fb68860b9745490a3ffdf8ba37a9))
+* **security:** implement sensitive field obfuscation for telemetry and logging ([b98bd60](https://github.com/LerianStudio/lib-commons/commit/b98bd604259823c733711ef552d23fb347a86956))
+* Merge pull request [#166](https://github.com/LerianStudio/lib-commons/issues/166) from LerianStudio/feat/add-new-redis-key ([3199765](https://github.com/LerianStudio/lib-commons/commit/3199765d6832d8a068f8e925773ea44acce5291e))
+* Merge pull request [#168](https://github.com/LerianStudio/lib-commons/issues/168) from LerianStudio/feat/COMMONS-redis-balance-key ([2b66484](https://github.com/LerianStudio/lib-commons/commit/2b66484703bb7551fbe5264cc8f20618fe61bd5b))
+* merge pull request [#176](https://github.com/LerianStudio/lib-commons/issues/176) from LerianStudio/develop ([69fd3fa](https://github.com/LerianStudio/lib-commons/commit/69fd3face5ada8718fe290ac951e89720c253980))
+
+
+### Bug Fixes
+
+* Add NormalizeDateTime helper for date offset and time bounds formatting ([838c5f1](https://github.com/LerianStudio/lib-commons/commit/838c5f1940fd06c109ba9480f30781553e80ff45))
+* Merge pull request [#164](https://github.com/LerianStudio/lib-commons/issues/164) from LerianStudio/fix/COMMONS-1111 ([295ca40](https://github.com/LerianStudio/lib-commons/commit/295ca4093e919513bfcf7a0de50108c9e5609eb2))
+* remove commets; ([333fe49](https://github.com/LerianStudio/lib-commons/commit/333fe499e1a8a43654cd6c0f0546e3a1c5279bc9))
+
+
+### Code Refactoring
+
+* update module to v2 ([1c20f97](https://github.com/LerianStudio/lib-commons/commit/1c20f97279dd7ab0c59e447b4e1ffc1595077deb))
+
 ## [2.0.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v1.19.0-beta.11...v2.0.0-beta.1) (2025-07-30)
 
 
