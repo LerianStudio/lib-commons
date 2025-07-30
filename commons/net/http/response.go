@@ -1,7 +1,7 @@
 package http
 
 import (
-	"github.com/LerianStudio/lib-commons/commons"
+	"github.com/LerianStudio/lib-commons/v2/commons"
 	"github.com/gofiber/fiber/v2"
 	"net/http"
 	"strconv"

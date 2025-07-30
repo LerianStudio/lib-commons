@@ -3,7 +3,7 @@ package rabbitmq
 import (
 	"encoding/json"
 	"errors"
-	"github.com/LerianStudio/lib-commons/commons/log"
+	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
 	"io"

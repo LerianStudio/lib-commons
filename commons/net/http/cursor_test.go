@@ -2,7 +2,7 @@ package http
 
 import (
 	"encoding/base64"
-	"github.com/LerianStudio/lib-commons/commons/constants"
+	"github.com/LerianStudio/lib-commons/v2/commons/constants"
 	"github.com/Masterminds/squirrel"
 	"github.com/stretchr/testify/assert"
 	"strings"

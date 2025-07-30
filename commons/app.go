@@ -1,7 +1,7 @@
 package commons
 
 import (
-	"github.com/LerianStudio/lib-commons/commons/log"
+	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"sync"
 )
 

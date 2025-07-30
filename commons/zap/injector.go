@@ -1,7 +1,7 @@
 package zap
 
 import (
-	clog "github.com/LerianStudio/lib-commons/commons/log"
+	clog "github.com/LerianStudio/lib-commons/v2/commons/log"
 	"go.opentelemetry.io/contrib/bridges/otelzap"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"

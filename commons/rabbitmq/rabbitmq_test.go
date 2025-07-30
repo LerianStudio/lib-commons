@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/commons/log"
+	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"github.com/stretchr/testify/assert"
 )
 

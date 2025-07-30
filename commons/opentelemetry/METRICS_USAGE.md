@@ -39,7 +39,7 @@ Distribution of values with configurable buckets (e.g., response times, transact
 ```go
 import (
     "context"
-    "github.com/LerianStudio/lib-commons/commons/opentelemetry"
+    "github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
 )
 
 func basicMetricsExample(telemetry *opentelemetry.Telemetry, ctx context.Context) {

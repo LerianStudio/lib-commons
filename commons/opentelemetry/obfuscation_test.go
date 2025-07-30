@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	cn "github.com/LerianStudio/lib-commons/commons/constants"
+	cn "github.com/LerianStudio/lib-commons/v2/commons/constants"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
