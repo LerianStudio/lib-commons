@@ -33,12 +33,15 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry) fiber.
 			return c.Next()
 		}
 
+		reqId := commons.NewHeaderIDFromContext(c.UserContext())
+
 		tracer := otel.Tracer(tl.LibraryName)
 
 		ctx, span := tracer.Start(opentelemetry.ExtractHTTPContext(c), c.Method()+" "+commons.ReplaceUUIDWithPlaceholder(c.Path()))
 		defer span.End()
 
 		span.SetAttributes(
+			attribute.String("app.request.request_id", reqId),
 			attribute.String("http.method", c.Method()),
 			attribute.String("http.url", c.OriginalURL()),
 			attribute.String("http.route", c.Route().Path),
