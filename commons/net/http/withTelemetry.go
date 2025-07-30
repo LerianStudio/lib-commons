@@ -58,7 +58,13 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry) fiber.
 			return c.Status(http.StatusBadRequest).JSON(err)
 		}
 
-		return c.Next()
+		err = c.Next()
+
+		span.SetAttributes(
+			attribute.Int("http.status_code", c.Response().StatusCode()),
+		)
+
+		return err
 	}
 }
 
