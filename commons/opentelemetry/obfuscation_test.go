@@ -417,3 +417,177 @@ func TestCustomObfuscatorInterface(t *testing.T) {
 func TestObfuscatedValueConstant(t *testing.T) {
 	assert.Equal(t, "***", cn.ObfuscatedValue)
 }
+
+// TestSanitizeUTF8String tests the UTF-8 sanitization helper function
+func TestSanitizeUTF8String(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "valid UTF-8 string",
+			input:    "valid UTF-8 string",
+			expected: "valid UTF-8 string",
+		},
+		{
+			name:     "invalid UTF-8 sequence",
+			input:    "invalid\x80string", // Invalid UTF-8 sequence
+			expected: "invalid�string", // Replaced with Unicode replacement character
+		},
+		{
+			name:     "multiple invalid UTF-8 sequences",
+			input:    "test\xFFvalue\x80end", // Multiple invalid sequences
+			expected: "test�value�end", // Each invalid byte replaced with Unicode replacement character
+		},
+		{
+			name:     "empty string",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "unicode characters (valid)",
+			input:    "测试字符串", // Chinese characters
+			expected: "测试字符串",
+		},
+		{
+			name:     "mixed valid and invalid UTF-8",
+			input:    "测试\x80test字符\xFF", // Valid Chinese + invalid + valid Chinese + invalid
+			expected: "测试�test字符�",
+		},
+		{
+			name:     "only invalid UTF-8",
+			input:    "\x80\xFF\xFE", // Consecutive invalid bytes
+			expected: "�", // Consecutive invalid bytes become single replacement character
+		},
+		{
+			name:     "ASCII with invalid UTF-8",
+			input:    "Hello\x80World", // ASCII + invalid
+			expected: "Hello�World",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := sanitizeUTF8String(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestSetSpanAttributesWithUTF8Sanitization tests the integration of UTF-8 sanitization
+// with the span attribute setting functions
+func TestSetSpanAttributesWithUTF8Sanitization(t *testing.T) {
+	// Create a no-op tracer for testing
+	tracer := noop.NewTracerProvider().Tracer("test")
+	_, span := tracer.Start(context.TODO(), "test-span")
+
+	tests := []struct {
+		name        string
+		key         string
+		valueStruct any
+		expectError bool
+	}{
+		{
+			name: "struct with invalid UTF-8 in JSON output",
+			key:  "test\x80key", // Invalid UTF-8 in key
+			valueStruct: struct {
+				Name string `json:"name"`
+			}{
+				Name: "test\xFFvalue", // This will be in the JSON, but JSON marshaling handles UTF-8
+			},
+			expectError: false,
+		},
+		{
+			name: "valid UTF-8 struct",
+			key:  "valid_key",
+			valueStruct: TestStruct{
+				Username: "测试用户", // Chinese characters
+				Password: "secret123",
+				Email:    "test@example.com",
+			},
+			expectError: false,
+		},
+		{
+			name: "struct that cannot be marshaled",
+			key:  "invalid_struct",
+			valueStruct: struct {
+				Channel chan int
+			}{
+				Channel: make(chan int),
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := SetSpanAttributesFromStructWithObfuscation(&span, tt.key, tt.valueStruct)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// TestUTF8SanitizationWithCustomObfuscator tests UTF-8 sanitization with custom obfuscator
+func TestUTF8SanitizationWithCustomObfuscator(t *testing.T) {
+	// Create a no-op tracer for testing
+	tracer := noop.NewTracerProvider().Tracer("test")
+	_, span := tracer.Start(context.TODO(), "test-span")
+
+	// Create a struct with UTF-8 content
+	testStruct := struct {
+		Name     string `json:"name"`
+		Password string `json:"password"`
+		City     string `json:"city"`
+	}{
+		Name:     "测试用户", // Chinese characters
+		Password: "秘密123",   // Chinese + ASCII
+		City:     "北京",     // Chinese characters
+	}
+
+	// Test with custom obfuscator
+	customObfuscator := NewCustomObfuscator([]string{"password"})
+	err := SetSpanAttributesFromStructWithCustomObfuscation(&span, "user\x80data", testStruct, customObfuscator)
+
+	// Should not error even with invalid UTF-8 in key
+	assert.NoError(t, err)
+}
+
+// BenchmarkSanitizeUTF8String benchmarks the UTF-8 sanitization function
+func BenchmarkSanitizeUTF8String(b *testing.B) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "valid UTF-8",
+			input: "valid UTF-8 string with unicode: 测试",
+		},
+		{
+			name:  "invalid UTF-8",
+			input: "invalid\x80string\xFFwith\xFEmultiple",
+		},
+		{
+			name:  "short valid string",
+			input: "test",
+		},
+		{
+			name:  "short invalid string",
+			input: "\x80",
+		},
+	}
+
+	for _, tt := range tests {
+		b.Run(tt.name, func(b *testing.B) {
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = sanitizeUTF8String(tt.input)
+			}
+		})
+	}
+}

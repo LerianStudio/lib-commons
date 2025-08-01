@@ -3,8 +3,11 @@ package opentelemetry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"net/http"
+	"strings"
+	"unicode/utf8"
 
 	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
@@ -235,8 +238,8 @@ func SetSpanAttributesFromStructWithCustomObfuscation(span *trace.Span, key stri
 	}
 
 	(*span).SetAttributes(attribute.KeyValue{
-		Key:   attribute.Key(key),
-		Value: attribute.StringValue(string(jsonByte)),
+		Key:   attribute.Key(sanitizeUTF8String(key)),
+		Value: attribute.StringValue(sanitizeUTF8String(string(jsonByte))),
 	})
 
 	return nil
@@ -244,6 +247,10 @@ func SetSpanAttributesFromStructWithCustomObfuscation(span *trace.Span, key stri
 
 // HandleSpanError sets the status of the span to error and records the error.
 func HandleSpanError(span *trace.Span, message string, err error) {
+	if err == nil {
+		err = errors.New("nil error")
+	}
+
 	(*span).SetStatus(codes.Error, message+": "+err.Error())
 	(*span).RecordError(err)
 }
@@ -453,4 +460,14 @@ func ExtractTraceContextFromQueueHeaders(baseCtx context.Context, amqpHeaders ma
 
 func (tl *Telemetry) EndTracingSpans(ctx context.Context) {
 	trace.SpanFromContext(ctx).End()
+}
+
+// sanitizeUTF8String validates and sanitizes UTF-8 string.
+// If the string contains invalid UTF-8 characters, they are replaced with the Unicode replacement character (�).
+func sanitizeUTF8String(s string) string {
+	if !utf8.ValidString(s) {
+		return strings.ToValidUTF8(s, "�")
+	}
+
+	return s
 }
