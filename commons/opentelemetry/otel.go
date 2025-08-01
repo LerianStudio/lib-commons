@@ -218,6 +218,23 @@ func (tl *Telemetry) InitializeTelemetry(logger log.Logger) *Telemetry {
 	}
 }
 
+// SetSpanAttributesFromStruct converts a struct to a JSON string and sets it as an attribute on the span.
+func SetSpanAttributesFromStruct(span *trace.Span, key string, valueStruct any) error {
+	jsonByte, err := json.Marshal(valueStruct)
+	if err != nil {
+		return err
+	}
+
+	vStr := string(jsonByte)
+
+	(*span).SetAttributes(attribute.KeyValue{
+		Key:   attribute.Key(key),
+		Value: attribute.StringValue(vStr),
+	})
+
+	return nil
+}
+
 // SetSpanAttributesFromStructWithObfuscation converts a struct to a JSON string,
 // obfuscates sensitive fields using the default obfuscator, and sets it as an attribute on the span.
 func SetSpanAttributesFromStructWithObfuscation(span *trace.Span, key string, valueStruct any) error {
