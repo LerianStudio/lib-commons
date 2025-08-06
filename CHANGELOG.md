@@ -1,3 +1,16 @@
+## [2.2.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v2.1.0...v2.2.0-beta.1) (2025-08-06)
+
+
+### Features
+
+* add new field transaction date to be used to make past transactions; ([fcb4704](https://github.com/LerianStudio/lib-commons/commit/fcb47044c5b11d0da0eb53a75fc31f26ae6f7fb6))
+* merge pull request [#182](https://github.com/LerianStudio/lib-commons/issues/182) from LerianStudio/feat/COMMONS-1155 ([931fdcb](https://github.com/LerianStudio/lib-commons/commit/931fdcb9c5cdeabf1602108db813855162b8e655))
+
+
+### Bug Fixes
+
+*  go get -u ./... && make tidy; ([a18914f](https://github.com/LerianStudio/lib-commons/commit/a18914fd032c639bf06732ccbd0c66eabd89753d))
+
 ## [2.1.0](https://github.com/LerianStudio/lib-commons/compare/v2.0.0...v2.1.0) (2025-08-01)
 
 
