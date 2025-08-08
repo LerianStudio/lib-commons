@@ -207,15 +207,7 @@ func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
-		md, ok := metadata.FromIncomingContext(ctx)
-		if ok {
-			headerID := md.Get(cn.MetadataID)
-			if headerID != nil && !commons.IsNilOrEmpty(&headerID[0]) {
-				ctx = commons.ContextWithHeaderID(ctx, headerID[0])
-			} else {
-				ctx = commons.ContextWithHeaderID(ctx, uuid.New().String())
-			}
-		}
+		ctx = setGRPCRequestHeaderID(ctx)
 
 		mid := buildOpts(opts...)
 		logger := mid.Logger.WithDefaultMessageTemplate(commons.NewHeaderIDFromContext(ctx) + cn.LoggerDefaultSeparator)
@@ -244,6 +236,19 @@ func setRequestHeaderID(c *fiber.Ctx) {
 
 	ctx := commons.ContextWithHeaderID(c.UserContext(), headerID)
 	c.SetUserContext(ctx)
+}
+
+func setGRPCRequestHeaderID(ctx context.Context) context.Context {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if ok {
+		headerID := md.Get(cn.MetadataID)
+		if len(headerID) > 0 && !commons.IsNilOrEmpty(&headerID[0]) {
+			return commons.ContextWithHeaderID(ctx, headerID[0])
+		}
+	}
+
+	// If metadata is not present, or if the header ID is missing or empty, generate a new one.
+	return commons.ContextWithHeaderID(ctx, uuid.New().String())
 }
 
 func getBodyObfuscatedString(c *fiber.Ctx, bodyBytes []byte, fieldsToObfuscate []string) string {

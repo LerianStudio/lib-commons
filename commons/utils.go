@@ -331,10 +331,6 @@ func AccountingRoutesInternalKey(organizationID, ledgerID, key uuid.UUID) string
 // UUIDsToStrings converts a slice of UUIDs to a slice of strings.
 // It's optimized to minimize allocations and iterations.
 func UUIDsToStrings(uuids []uuid.UUID) []string {
-	if len(uuids) == 0 {
-		return []string{}
-	}
-
 	result := make([]string, len(uuids))
 	for i := range uuids {
 		result[i] = uuids[i].String()
