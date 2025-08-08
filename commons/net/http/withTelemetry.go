@@ -33,6 +33,8 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry) fiber.
 			return c.Next()
 		}
 
+		setRequestHeaderID(c)
+
 		reqId := commons.NewHeaderIDFromContext(c.UserContext())
 
 		tracer := otel.Tracer(tl.LibraryName)
@@ -95,8 +97,19 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
+		ctx = setGRPCRequestHeaderID(ctx)
+
+		reqId := commons.NewHeaderIDFromContext(ctx)
+
 		tracer := otel.Tracer(tl.LibraryName)
+
 		ctx, span := tracer.Start(opentelemetry.ExtractGRPCContext(ctx), info.FullMethod)
+		defer span.End()
+
+		span.SetAttributes(
+			attribute.String("app.request.request_id", reqId),
+			attribute.String("grpc.method", info.FullMethod),
+		)
 
 		ctx = commons.ContextWithTracer(ctx, tracer)
 		ctx = commons.ContextWithMetricFactory(ctx, tl.MetricsFactory)

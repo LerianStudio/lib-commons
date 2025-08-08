@@ -3,7 +3,6 @@ package opentelemetry
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"maps"
 	"net/http"
 	"strings"
@@ -235,12 +234,16 @@ func SetSpanAttributesFromStruct(span *trace.Span, key string, valueStruct any) 
 	return nil
 }
 
+// Deprecated: Use SetSpanAttributesFromStruct instead.
+//
 // SetSpanAttributesFromStructWithObfuscation converts a struct to a JSON string,
 // obfuscates sensitive fields using the default obfuscator, and sets it as an attribute on the span.
 func SetSpanAttributesFromStructWithObfuscation(span *trace.Span, key string, valueStruct any) error {
 	return SetSpanAttributesFromStructWithCustomObfuscation(span, key, valueStruct, NewDefaultObfuscator())
 }
 
+// Deprecated: Use SetSpanAttributesFromStruct instead.
+//
 // SetSpanAttributesFromStructWithCustomObfuscation converts a struct to a JSON string,
 // obfuscates sensitive fields using the custom obfuscator provided, and sets it as an attribute on the span.
 func SetSpanAttributesFromStructWithCustomObfuscation(span *trace.Span, key string, valueStruct any, obfuscator FieldObfuscator) error {
@@ -262,14 +265,26 @@ func SetSpanAttributesFromStructWithCustomObfuscation(span *trace.Span, key stri
 	return nil
 }
 
+// HandleSpanBusinessErrorEvent adds a business error event to the span.
+func HandleSpanBusinessErrorEvent(span *trace.Span, eventName string, err error) {
+	if span != nil && err != nil {
+		(*span).AddEvent(eventName, trace.WithAttributes(attribute.String("error", err.Error())))
+	}
+}
+
+// HandleSpanEvent adds an event to the span.
+func HandleSpanEvent(span *trace.Span, eventName string, attributes ...attribute.KeyValue) {
+	if span != nil {
+		(*span).AddEvent(eventName, trace.WithAttributes(attributes...))
+	}
+}
+
 // HandleSpanError sets the status of the span to error and records the error.
 func HandleSpanError(span *trace.Span, message string, err error) {
-	if err == nil {
-		err = errors.New("nil error")
+	if span != nil && err != nil {
+		(*span).SetStatus(codes.Error, message+": "+err.Error())
+		(*span).RecordError(err)
 	}
-
-	(*span).SetStatus(codes.Error, message+": "+err.Error())
-	(*span).RecordError(err)
 }
 
 // InjectHTTPContext modifies HTTP headers for trace propagation in outgoing client requests

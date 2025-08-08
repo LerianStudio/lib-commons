@@ -1,3 +1,32 @@
+## [2.2.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v2.2.0-beta.3...v2.2.0-beta.4) (2025-08-08)
+
+## [2.2.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v2.2.0-beta.2...v2.2.0-beta.3) (2025-08-08)
+
+## [2.2.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v2.2.0-beta.1...v2.2.0-beta.2) (2025-08-08)
+
+
+### Features
+
+* add span events, UUID conversion and configurable log obfuscation ([d92bb13](https://github.com/LerianStudio/lib-commons/commit/d92bb13aabeb0b49b30a4ed9161182d73aab300f))
+
+
+### Bug Fixes
+
+* **otel:** add nil checks and remove unnecessary error handling in span methods ([3f9d468](https://github.com/LerianStudio/lib-commons/commit/3f9d46884dad366520eb1b95a5ee032a2992b959))
+
+## [2.2.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v2.1.0...v2.2.0-beta.1) (2025-08-06)
+
+
+### Features
+
+* add new field transaction date to be used to make past transactions; ([fcb4704](https://github.com/LerianStudio/lib-commons/commit/fcb47044c5b11d0da0eb53a75fc31f26ae6f7fb6))
+* merge pull request [#182](https://github.com/LerianStudio/lib-commons/issues/182) from LerianStudio/feat/COMMONS-1155 ([931fdcb](https://github.com/LerianStudio/lib-commons/commit/931fdcb9c5cdeabf1602108db813855162b8e655))
+
+
+### Bug Fixes
+
+*  go get -u ./... && make tidy; ([a18914f](https://github.com/LerianStudio/lib-commons/commit/a18914fd032c639bf06732ccbd0c66eabd89753d))
+
 ## [2.1.0](https://github.com/LerianStudio/lib-commons/compare/v2.0.0...v2.1.0) (2025-08-01)
 
 
