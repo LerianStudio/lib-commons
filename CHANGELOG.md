@@ -1,3 +1,15 @@
+## [2.2.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v2.2.0-beta.1...v2.2.0-beta.2) (2025-08-08)
+
+
+### Features
+
+* add span events, UUID conversion and configurable log obfuscation ([d92bb13](https://github.com/LerianStudio/lib-commons/commit/d92bb13aabeb0b49b30a4ed9161182d73aab300f))
+
+
+### Bug Fixes
+
+* **otel:** add nil checks and remove unnecessary error handling in span methods ([3f9d468](https://github.com/LerianStudio/lib-commons/commit/3f9d46884dad366520eb1b95a5ee032a2992b959))
+
 ## [2.2.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v2.1.0...v2.2.0-beta.1) (2025-08-06)
 
 
