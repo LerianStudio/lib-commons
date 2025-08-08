@@ -22,14 +22,14 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 	if len(balances) != (len(validate.From) + len(validate.To)) {
 		err := commons.ValidateBusinessError(constant.ErrAccountIneligibility, "ValidateAccounts")
 
-		opentelemetry.HandleSpanError(&spanValidateBalances, "validations.validate_balances_rules", err)
+		opentelemetry.HandleSpanBusinessErrorEvent(&spanValidateBalances, "validations.validate_balances_rules", err)
 
 		return err
 	}
 
 	for _, balance := range balances {
 		if err := validateFromBalances(balance, validate.From, validate.Asset, validate.Pending); err != nil {
-			opentelemetry.HandleSpanError(&spanValidateBalances, "validations.validate_from_balances_", err)
+			opentelemetry.HandleSpanBusinessErrorEvent(&spanValidateBalances, "validations.validate_from_balances_", err)
 
 			logger.Errorf("validations.validate_from_balances_err: %s", err)
 
@@ -37,7 +37,7 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 		}
 
 		if err := validateToBalances(balance, validate.To, validate.Asset); err != nil {
-			opentelemetry.HandleSpanError(&spanValidateBalances, "validations.validate_to_balances_", err)
+			opentelemetry.HandleSpanBusinessErrorEvent(&spanValidateBalances, "validations.validate_to_balances_", err)
 
 			logger.Errorf("validations.validate_to_balances_err: %s", err)
 
