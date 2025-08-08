@@ -242,14 +242,13 @@ func setGRPCRequestHeaderID(ctx context.Context) context.Context {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if ok {
 		headerID := md.Get(cn.MetadataID)
-		if headerID != nil && !commons.IsNilOrEmpty(&headerID[0]) {
+		if len(headerID) > 0 && !commons.IsNilOrEmpty(&headerID[0]) {
 			return commons.ContextWithHeaderID(ctx, headerID[0])
-		} else {
-			return commons.ContextWithHeaderID(ctx, uuid.New().String())
 		}
 	}
 
-	return ctx
+	// If metadata is not present, or if the header ID is missing or empty, generate a new one.
+	return commons.ContextWithHeaderID(ctx, uuid.New().String())
 }
 
 func getBodyObfuscatedString(c *fiber.Ctx, bodyBytes []byte, fieldsToObfuscate []string) string {

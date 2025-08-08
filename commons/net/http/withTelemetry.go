@@ -102,6 +102,7 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 		reqId := commons.NewHeaderIDFromContext(ctx)
 
 		tracer := otel.Tracer(tl.LibraryName)
+
 		ctx, span := tracer.Start(opentelemetry.ExtractGRPCContext(ctx), info.FullMethod)
 		defer span.End()
 

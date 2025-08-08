@@ -313,11 +313,11 @@ func TestSetSpanAttributesFromStructWithObfuscation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var err error
-		if tt.obfuscator == nil || tt.name == "with default obfuscator" {
-			err = SetSpanAttributesFromStructWithObfuscation(&span, "test_data", testStruct)
-		} else {
-			err = SetSpanAttributesFromStructWithCustomObfuscation(&span, "test_data", testStruct, tt.obfuscator)
-		}
+			if tt.obfuscator == nil || tt.name == "with default obfuscator" {
+				err = SetSpanAttributesFromStructWithObfuscation(&span, "test_data", testStruct)
+			} else {
+				err = SetSpanAttributesFromStructWithCustomObfuscation(&span, "test_data", testStruct, tt.obfuscator)
+			}
 
 			if tt.wantError {
 				assert.Error(t, err)
@@ -415,7 +415,7 @@ func TestCustomObfuscatorInterface(t *testing.T) {
 }
 
 func TestObfuscatedValueConstant(t *testing.T) {
-	assert.Equal(t, "***", cn.ObfuscatedValue)
+	assert.Equal(t, "********", cn.ObfuscatedValue)
 }
 
 // TestSanitizeUTF8String tests the UTF-8 sanitization helper function
@@ -433,12 +433,12 @@ func TestSanitizeUTF8String(t *testing.T) {
 		{
 			name:     "invalid UTF-8 sequence",
 			input:    "invalid\x80string", // Invalid UTF-8 sequence
-			expected: "invalid�string", // Replaced with Unicode replacement character
+			expected: "invalid�string",    // Replaced with Unicode replacement character
 		},
 		{
 			name:     "multiple invalid UTF-8 sequences",
 			input:    "test\xFFvalue\x80end", // Multiple invalid sequences
-			expected: "test�value�end", // Each invalid byte replaced with Unicode replacement character
+			expected: "test�value�end",       // Each invalid byte replaced with Unicode replacement character
 		},
 		{
 			name:     "empty string",
@@ -458,7 +458,7 @@ func TestSanitizeUTF8String(t *testing.T) {
 		{
 			name:     "only invalid UTF-8",
 			input:    "\x80\xFF\xFE", // Consecutive invalid bytes
-			expected: "�", // Consecutive invalid bytes become single replacement character
+			expected: "�",            // Consecutive invalid bytes become single replacement character
 		},
 		{
 			name:     "ASCII with invalid UTF-8",
@@ -545,9 +545,9 @@ func TestUTF8SanitizationWithCustomObfuscator(t *testing.T) {
 		Password string `json:"password"`
 		City     string `json:"city"`
 	}{
-		Name:     "测试用户", // Chinese characters
-		Password: "秘密123",   // Chinese + ASCII
-		City:     "北京",     // Chinese characters
+		Name:     "测试用户",  // Chinese characters
+		Password: "秘密123", // Chinese + ASCII
+		City:     "北京",    // Chinese characters
 	}
 
 	// Test with custom obfuscator
