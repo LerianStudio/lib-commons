@@ -235,12 +235,16 @@ func SetSpanAttributesFromStruct(span *trace.Span, key string, valueStruct any) 
 	return nil
 }
 
+// Deprecated: Use SetSpanAttributesFromStruct instead.
+//
 // SetSpanAttributesFromStructWithObfuscation converts a struct to a JSON string,
 // obfuscates sensitive fields using the default obfuscator, and sets it as an attribute on the span.
 func SetSpanAttributesFromStructWithObfuscation(span *trace.Span, key string, valueStruct any) error {
 	return SetSpanAttributesFromStructWithCustomObfuscation(span, key, valueStruct, NewDefaultObfuscator())
 }
 
+// Deprecated: Use SetSpanAttributesFromStruct instead.
+//
 // SetSpanAttributesFromStructWithCustomObfuscation converts a struct to a JSON string,
 // obfuscates sensitive fields using the custom obfuscator provided, and sets it as an attribute on the span.
 func SetSpanAttributesFromStructWithCustomObfuscation(span *trace.Span, key string, valueStruct any, obfuscator FieldObfuscator) error {
