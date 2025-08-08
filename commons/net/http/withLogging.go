@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -65,8 +66,11 @@ func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
 	if c.Request().Header.ContentLength() > 0 {
 		bodyBytes := c.Body()
 
-		// Use shared sensitive fields list for consistent obfuscation across the library
-		body = getBodyObfuscatedString(c, bodyBytes, security.DefaultSensitiveFields())
+		if os.Getenv("LOG_OBFUSCATION_DISABLED") != "true" {
+			body = getBodyObfuscatedString(c, bodyBytes, security.DefaultSensitiveFields())
+		} else {
+			body = string(bodyBytes)
+		}
 	}
 
 	return &RequestInfo{

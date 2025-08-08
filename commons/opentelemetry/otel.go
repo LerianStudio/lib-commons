@@ -262,6 +262,14 @@ func SetSpanAttributesFromStructWithCustomObfuscation(span *trace.Span, key stri
 	return nil
 }
 
+func HandleSpanBusinessErrorEvent(span *trace.Span, eventName string, err error) {
+	(*span).AddEvent(eventName, trace.WithAttributes(attribute.String("error", err.Error())))
+}
+
+func HandleSpanEvent(span *trace.Span, eventName string, attributes ...attribute.KeyValue) {
+	(*span).AddEvent(eventName, trace.WithAttributes(attributes...))
+}
+
 // HandleSpanError sets the status of the span to error and records the error.
 func HandleSpanError(span *trace.Span, message string, err error) {
 	if err == nil {
