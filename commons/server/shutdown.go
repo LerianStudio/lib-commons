@@ -59,11 +59,6 @@ func (sm *ServerManager) WithGRPCServer(server *grpc.Server, address string) *Se
 
 // StartWithGracefulShutdown initializes all configured servers and sets up graceful shutdown.
 func (sm *ServerManager) StartWithGracefulShutdown() {
-	// Initialize telemetry if available
-	if sm.telemetry != nil {
-		sm.telemetry.InitializeTelemetry(sm.logger)
-	}
-
 	// Run everything in a recover block
 	defer func() {
 		if r := recover(); r != nil {

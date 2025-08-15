@@ -209,8 +209,10 @@ func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
 	) (any, error) {
 		ctx = setGRPCRequestHeaderID(ctx)
 
+		_, _, reqId, _ := commons.NewTrackingFromContext(ctx)
+
 		mid := buildOpts(opts...)
-		logger := mid.Logger.WithDefaultMessageTemplate(commons.NewHeaderIDFromContext(ctx) + cn.LoggerDefaultSeparator)
+		logger := mid.Logger.WithDefaultMessageTemplate(reqId + cn.LoggerDefaultSeparator)
 
 		ctx = commons.ContextWithLogger(ctx, logger)
 

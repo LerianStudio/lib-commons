@@ -9,15 +9,34 @@ import (
 	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
 	"github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
 	"github.com/shopspring/decimal"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // ValidateBalancesRules function with some validates in accounts and DSL operations
 func ValidateBalancesRules(ctx context.Context, transaction Transaction, validate Responses, balances []*Balance) error {
-	logger := commons.NewLoggerFromContext(ctx)
-	tracer := commons.NewTracerFromContext(ctx)
+	logger, tracer, reqId, _ := commons.NewTrackingFromContext(ctx)
 
 	_, spanValidateBalances := tracer.Start(ctx, "validations.validate_balances_rules")
 	defer spanValidateBalances.End()
+
+	spanValidateBalances.SetAttributes(
+		attribute.String("app.request.request_id", reqId),
+	)
+
+	err := opentelemetry.SetSpanAttributesFromStruct(&spanValidateBalances, "app.request.payload.transaction", transaction)
+	if err != nil {
+		opentelemetry.HandleSpanError(&spanValidateBalances, "Failed to convert transaction payload to JSON string", err)
+	}
+
+	err = opentelemetry.SetSpanAttributesFromStruct(&spanValidateBalances, "app.request.payload.validate", validate)
+	if err != nil {
+		opentelemetry.HandleSpanError(&spanValidateBalances, "Failed to convert validate payload to JSON string", err)
+	}
+
+	err = opentelemetry.SetSpanAttributesFromStruct(&spanValidateBalances, "app.request.payload.balances", balances)
+	if err != nil {
+		opentelemetry.HandleSpanError(&spanValidateBalances, "Failed to convert balances payload to JSON string", err)
+	}
 
 	if len(balances) != (len(validate.From) + len(validate.To)) {
 		err := commons.ValidateBusinessError(constant.ErrAccountIneligibility, "ValidateAccounts")
