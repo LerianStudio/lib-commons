@@ -10,6 +10,7 @@ import (
 
 	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"github.com/LerianStudio/lib-commons/v2/commons/opentelemetry/metrics"
 	"github.com/gofiber/fiber/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -29,22 +30,27 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-type Telemetry struct {
+type TelemetryConfig struct {
 	LibraryName               string
 	ServiceName               string
 	ServiceVersion            string
 	DeploymentEnv             string
 	CollectorExporterEndpoint string
-	TracerProvider            *sdktrace.TracerProvider
-	MetricProvider            *sdkmetric.MeterProvider
-	LoggerProvider            *sdklog.LoggerProvider
-	MetricsFactory            *MetricsFactory
-	shutdown                  func()
 	EnableTelemetry           bool
+	Logger                    log.Logger
+}
+
+type Telemetry struct {
+	TelemetryConfig
+	TracerProvider *sdktrace.TracerProvider
+	MetricProvider *sdkmetric.MeterProvider
+	LoggerProvider *sdklog.LoggerProvider
+	MetricsFactory *metrics.MetricsFactory
+	shutdown       func()
 }
 
 // NewResource creates a new resource with custom attributes.
-func (tl *Telemetry) newResource() *sdkresource.Resource {
+func (tl *TelemetryConfig) newResource() *sdkresource.Resource {
 	// Create a resource with only our custom attributes to avoid schema URL conflicts
 	r := sdkresource.NewWithAttributes(
 		semconv.SchemaURL,
@@ -59,7 +65,7 @@ func (tl *Telemetry) newResource() *sdkresource.Resource {
 }
 
 // NewLoggerExporter creates a new logger exporter that writes to stdout.
-func (tl *Telemetry) newLoggerExporter(ctx context.Context) (*otlploggrpc.Exporter, error) {
+func (tl *TelemetryConfig) newLoggerExporter(ctx context.Context) (*otlploggrpc.Exporter, error) {
 	exporter, err := otlploggrpc.New(ctx, otlploggrpc.WithEndpoint(tl.CollectorExporterEndpoint), otlploggrpc.WithInsecure())
 	if err != nil {
 		return nil, err
@@ -69,7 +75,7 @@ func (tl *Telemetry) newLoggerExporter(ctx context.Context) (*otlploggrpc.Export
 }
 
 // newMetricExporter creates a new metric exporter that writes to stdout.
-func (tl *Telemetry) newMetricExporter(ctx context.Context) (*otlpmetricgrpc.Exporter, error) {
+func (tl *TelemetryConfig) newMetricExporter(ctx context.Context) (*otlpmetricgrpc.Exporter, error) {
 	exp, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithEndpoint(tl.CollectorExporterEndpoint), otlpmetricgrpc.WithInsecure())
 	if err != nil {
 		return nil, err
@@ -79,7 +85,7 @@ func (tl *Telemetry) newMetricExporter(ctx context.Context) (*otlpmetricgrpc.Exp
 }
 
 // newTracerExporter creates a new tracer exporter that writes to stdout.
-func (tl *Telemetry) newTracerExporter(ctx context.Context) (*otlptrace.Exporter, error) {
+func (tl *TelemetryConfig) newTracerExporter(ctx context.Context) (*otlptrace.Exporter, error) {
 	exporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithEndpoint(tl.CollectorExporterEndpoint), otlptracegrpc.WithInsecure())
 	if err != nil {
 		return nil, err
@@ -88,8 +94,8 @@ func (tl *Telemetry) newTracerExporter(ctx context.Context) (*otlptrace.Exporter
 	return exporter, nil
 }
 
-// NewLoggerProvider creates a new logger provider with stdout exporter and default resource.
-func (tl *Telemetry) newLoggerProvider(rsc *sdkresource.Resource, exp *otlploggrpc.Exporter) *sdklog.LoggerProvider {
+// newLoggerProvider creates a new logger provider with stdout exporter and default resource.
+func (tl *TelemetryConfig) newLoggerProvider(rsc *sdkresource.Resource, exp *otlploggrpc.Exporter) *sdklog.LoggerProvider {
 	bp := sdklog.NewBatchProcessor(exp)
 	lp := sdklog.NewLoggerProvider(sdklog.WithResource(rsc), sdklog.WithProcessor(bp))
 
@@ -97,7 +103,7 @@ func (tl *Telemetry) newLoggerProvider(rsc *sdkresource.Resource, exp *otlploggr
 }
 
 // newMeterProvider creates a new meter provider with stdout exporter and default resource.
-func (tl *Telemetry) newMeterProvider(res *sdkresource.Resource, exp *otlpmetricgrpc.Exporter) *sdkmetric.MeterProvider {
+func (tl *TelemetryConfig) newMeterProvider(res *sdkresource.Resource, exp *otlpmetricgrpc.Exporter) *sdkmetric.MeterProvider {
 	mp := sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
@@ -107,10 +113,11 @@ func (tl *Telemetry) newMeterProvider(res *sdkresource.Resource, exp *otlpmetric
 }
 
 // newTracerProvider creates a new tracer provider with stdout exporter and default resource.
-func (tl *Telemetry) newTracerProvider(rsc *sdkresource.Resource, exp *otlptrace.Exporter) *sdktrace.TracerProvider {
+func (tl *TelemetryConfig) newTracerProvider(rsc *sdkresource.Resource, exp *otlptrace.Exporter) *sdktrace.TracerProvider {
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp),
 		sdktrace.WithResource(rsc),
+		sdktrace.WithSpanProcessor(AttrBagSpanProcessor{}),
 	)
 
 	return tp
@@ -122,98 +129,99 @@ func (tl *Telemetry) ShutdownTelemetry() {
 }
 
 // InitializeTelemetry initializes the telemetry providers and sets them globally. (Logger is being passed as a parameter because it not exists in the global context at this point to be injected)
-func (tl *Telemetry) InitializeTelemetry(logger log.Logger) *Telemetry {
+func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
 	ctx := context.Background()
+	l := cfg.Logger
 
-	if !tl.EnableTelemetry {
-		logger.Warn("Telemetry turned off ⚠️ ")
+	if !cfg.EnableTelemetry {
+		l.Warn("Telemetry turned off ⚠️ ")
 
 		return nil
 	}
 
-	logger.Infof("Initializing telemetry...")
+	l.Infof("Initializing telemetry...")
 
-	r := tl.newResource()
+	r := cfg.newResource()
 
-	tExp, err := tl.newTracerExporter(ctx)
+	tExp, err := cfg.newTracerExporter(ctx)
 	if err != nil {
-		logger.Fatalf("can't initialize tracer exporter: %v", err)
+		l.Fatalf("can't initialize tracer exporter: %v", err)
 	}
 
-	mExp, err := tl.newMetricExporter(ctx)
+	mExp, err := cfg.newMetricExporter(ctx)
 	if err != nil {
-		logger.Fatalf("can't initialize metric exporter: %v", err)
+		l.Fatalf("can't initialize metric exporter: %v", err)
 	}
 
-	lExp, err := tl.newLoggerExporter(ctx)
+	lExp, err := cfg.newLoggerExporter(ctx)
 	if err != nil {
-		logger.Fatalf("can't initialize logger exporter: %v", err)
+		l.Fatalf("can't initialize logger exporter: %v", err)
 	}
 
-	mp := tl.newMeterProvider(r, mExp)
+	mp := cfg.newMeterProvider(r, mExp)
 	otel.SetMeterProvider(mp)
-	tl.MetricProvider = mp
 
 	// Initialize MetricsFactory with the meter from the provider
-	meter := mp.Meter(tl.LibraryName)
-	metricsFactory := NewMetricsFactory(meter, logger)
-	tl.MetricsFactory = metricsFactory
+	meter := mp.Meter(cfg.LibraryName)
+	metricsFactory := metrics.NewMetricsFactory(meter, l)
 
-	tp := tl.newTracerProvider(r, tExp)
+	tp := cfg.newTracerProvider(r, tExp)
 	otel.SetTracerProvider(tp)
-	tl.TracerProvider = tp
 
-	lp := tl.newLoggerProvider(r, lExp)
+	lp := cfg.newLoggerProvider(r, lExp)
 	global.SetLoggerProvider(lp)
 
-	tl.shutdown = func() {
+	shutdownHandler := func() {
 		err := tExp.Shutdown(ctx)
 		if err != nil {
-			logger.Fatalf("can't shutdown tracer exporter: %v", err)
+			l.Fatalf("can't shutdown tracer exporter: %v", err)
 		}
 
 		err = mExp.Shutdown(ctx)
 		if err != nil {
-			logger.Fatalf("can't shutdown metric exporter: %v", err)
+			l.Fatalf("can't shutdown metric exporter: %v", err)
 		}
 
 		err = lExp.Shutdown(ctx)
 		if err != nil {
-			logger.Fatalf("can't shutdown logger exporter: %v", err)
+			l.Fatalf("can't shutdown logger exporter: %v", err)
 		}
 
 		err = mp.Shutdown(ctx)
 		if err != nil {
-			logger.Fatalf("can't shutdown metric provider: %v", err)
+			l.Fatalf("can't shutdown metric provider: %v", err)
 		}
 
 		err = tp.Shutdown(ctx)
 		if err != nil {
-			logger.Fatalf("can't shutdown tracer provider: %v", err)
+			l.Fatalf("can't shutdown tracer provider: %v", err)
 		}
 
 		err = lp.Shutdown(ctx)
 		if err != nil {
-			logger.Fatalf("can't shutdown logger provider: %v", err)
+			l.Fatalf("can't shutdown logger provider: %v", err)
 		}
 	}
 
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
-	logger.Infof("Telemetry initialized ✅ ")
+	l.Infof("Telemetry initialized ✅ ")
 
 	return &Telemetry{
-		LibraryName:               tl.LibraryName,
-		ServiceName:               tl.ServiceName,
-		ServiceVersion:            tl.ServiceVersion,
-		DeploymentEnv:             tl.DeploymentEnv,
-		CollectorExporterEndpoint: tl.CollectorExporterEndpoint,
-		TracerProvider:            tp,
-		MetricProvider:            mp,
-		LoggerProvider:            lp,
-		MetricsFactory:            metricsFactory,
-		shutdown:                  tl.shutdown,
-		EnableTelemetry:           tl.EnableTelemetry,
+		TelemetryConfig: TelemetryConfig{
+			LibraryName:               cfg.LibraryName,
+			ServiceName:               cfg.ServiceName,
+			ServiceVersion:            cfg.ServiceVersion,
+			DeploymentEnv:             cfg.DeploymentEnv,
+			CollectorExporterEndpoint: cfg.CollectorExporterEndpoint,
+			EnableTelemetry:           cfg.EnableTelemetry,
+			Logger:                    l,
+		},
+		TracerProvider: tp,
+		MetricProvider: mp,
+		LoggerProvider: lp,
+		MetricsFactory: metricsFactory,
+		shutdown:       shutdownHandler,
 	}
 }
 

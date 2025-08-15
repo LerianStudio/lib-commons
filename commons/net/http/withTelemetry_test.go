@@ -119,9 +119,11 @@ func TestWithTelemetry(t *testing.T) {
 			var telemetry *opentelemetry.Telemetry
 			if !tt.nilTelemetry {
 				telemetry = &opentelemetry.Telemetry{
-					LibraryName:     "test-library",
-					EnableTelemetry: true,
-					TracerProvider:  tp,
+					TelemetryConfig: opentelemetry.TelemetryConfig{
+						LibraryName:     "test-library",
+						EnableTelemetry: true,
+					},
+					TracerProvider: tp,
 				}
 			}
 
@@ -137,7 +139,13 @@ func TestWithTelemetry(t *testing.T) {
 
 			// Add middleware
 			if !tt.nilTelemetry {
-				app.Use(middleware.WithTelemetry(telemetry))
+				if tt.swaggerPath {
+					// For swagger paths, add them to excluded routes
+					app.Use(middleware.WithTelemetry(telemetry, "/swagger"))
+				} else {
+					// For regular paths, no excluded routes
+					app.Use(middleware.WithTelemetry(telemetry))
+				}
 			}
 
 			// Add test route
@@ -193,6 +201,130 @@ func TestWithTelemetry(t *testing.T) {
 	}
 }
 
+// TestWithTelemetryExcludedRoutes tests the WithTelemetry middleware with excluded routes
+func TestWithTelemetryExcludedRoutes(t *testing.T) {
+	tests := []struct {
+		name           string
+		path           string
+		method         string
+		excludedRoutes []string
+		expectSpan     bool
+	}{
+		{
+			name:           "Route not excluded",
+			path:           "/api/users",
+			method:         "GET",
+			excludedRoutes: []string{"/swagger", "/health"},
+			expectSpan:     true,
+		},
+		{
+			name:           "Route excluded by exact match",
+			path:           "/swagger/api-docs",
+			method:         "GET",
+			excludedRoutes: []string{"/swagger"},
+			expectSpan:     false,
+		},
+		{
+			name:           "Route excluded by partial match",
+			path:           "/health/check",
+			method:         "GET",
+			excludedRoutes: []string{"/health"},
+			expectSpan:     false,
+		},
+		{
+			name:           "Multiple excluded routes",
+			path:           "/metrics/prometheus",
+			method:         "GET",
+			excludedRoutes: []string{"/swagger", "/health", "/metrics"},
+			expectSpan:     false,
+		},
+		{
+			name:           "No excluded routes",
+			path:           "/api/users",
+			method:         "GET",
+			excludedRoutes: []string{},
+			expectSpan:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			
+			// Setup test tracer
+			tp, spanRecorder := setupTestTracer()
+			defer func() {
+				_ = tp.Shutdown(ctx)
+			}()
+			
+			// Replace the global tracer provider for this test
+			oldTracerProvider := otel.GetTracerProvider()
+			otel.SetTracerProvider(tp)
+			defer otel.SetTracerProvider(oldTracerProvider)
+			
+			// Setup telemetry
+			telemetry := &opentelemetry.Telemetry{
+				TelemetryConfig: opentelemetry.TelemetryConfig{
+					LibraryName:     "test-library",
+					EnableTelemetry: true,
+				},
+				TracerProvider: tp,
+			}
+
+			// Create middleware
+			middleware := NewTelemetryMiddleware(telemetry)
+
+			// Create fiber app
+			app := fiber.New()
+
+			// Add middleware with excluded routes
+			app.Use(middleware.WithTelemetry(telemetry, tt.excludedRoutes...))
+
+			// Add test route
+			app.All(tt.path, func(c *fiber.Ctx) error {
+				return c.SendStatus(http.StatusOK)
+			})
+
+			// Create test request
+			req, err := http.NewRequest(tt.method, tt.path, nil)
+			require.NoError(t, err)
+
+			// Execute request
+			resp, err := app.Test(req)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			// Check status code
+			assert.Equal(t, http.StatusOK, resp.StatusCode)
+			
+			// Check spans
+			spans := spanRecorder.Ended()
+			
+			if tt.expectSpan {
+				// Should have created a span
+				require.GreaterOrEqual(t, len(spans), 1, "Expected at least one span to be created")
+				
+				// Check span name
+				expectedSpanName := tt.method + " " + commons.ReplaceUUIDWithPlaceholder(tt.path)
+				spanFound := false
+				for _, span := range spans {
+					if span.Name() == expectedSpanName {
+						spanFound = true
+						break
+					}
+				}
+				assert.True(t, spanFound, "Expected span with name %s not found", expectedSpanName)
+			} else {
+				// Should not have created a span for excluded routes
+				expectedSpanName := tt.method + " " + commons.ReplaceUUIDWithPlaceholder(tt.path)
+				for _, span := range spans {
+					assert.NotEqual(t, expectedSpanName, span.Name(), "Should not have created a span for excluded route")
+				}
+			}
+		})
+	}
+}
+
 // TestEndTracingSpans tests the EndTracingSpans middleware function
 func TestEndTracingSpans(t *testing.T) {
 	tests := []struct {
@@ -230,9 +362,11 @@ func TestEndTracingSpans(t *testing.T) {
 
 			// Create telemetry
 			telemetry := &opentelemetry.Telemetry{
-				LibraryName:     "test-library",
-				EnableTelemetry: true,
-				TracerProvider:  tp,
+				TelemetryConfig: opentelemetry.TelemetryConfig{
+					LibraryName:     "test-library",
+					EnableTelemetry: true,
+				},
+				TracerProvider: tp,
 			}
 
 			// Create middleware

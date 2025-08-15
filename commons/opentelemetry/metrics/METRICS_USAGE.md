@@ -7,6 +7,7 @@ This guide demonstrates how to use the OpenTelemetry MetricsFactory for creating
 - [Overview](#overview)
 - [Metric Types](#metric-types)
 - [Basic Usage](#basic-usage)
+- [Ready-to-Use Convenience Methods](#ready-to-use-convenience-methods)
 - [Financial Transaction Examples](#financial-transaction-examples)
 - [High-Throughput Scenarios](#high-throughput-scenarios)
 - [Error Handling](#error-handling)
@@ -81,6 +82,105 @@ func basicMetricsExample(telemetry *opentelemetry.Telemetry, ctx context.Context
         Record(ctx, 150) // 150ms
 }
 ```
+
+## Ready-to-Use Convenience Methods
+
+The metrics package provides pre-configured convenience methods for common business operations. These methods use predefined metrics with appropriate descriptions and units.
+
+### Account Operations
+
+```go
+import (
+    "context"
+    "github.com/LerianStudio/lib-commons/v2/commons/opentelemetry/metrics"
+    "go.opentelemetry.io/otel/attribute"
+)
+
+func recordAccountCreation(factory *metrics.MetricsFactory, ctx context.Context) {
+    // Simple usage with labels
+    factory.RecordAccountCreated(ctx, map[string]string{
+        "ledger_id":    "ledger-123",
+        "account_type": "checking",
+        "branch":       "main",
+    })
+
+    // With additional OpenTelemetry attributes
+    factory.RecordAccountCreated(ctx, 
+        map[string]string{
+            "ledger_id": "ledger-456",
+            "region":    "us-east-1",
+        },
+        attribute.String("customer_tier", "premium"),
+        attribute.Int("retry_count", 0),
+    )
+}
+```
+
+### Transaction Operations
+
+```go
+func recordTransactionProcessing(factory *metrics.MetricsFactory, ctx context.Context) {
+    // Record successful transaction processing
+    factory.RecordTransactionProcessed(ctx, map[string]string{
+        "ledger_id":        "ledger-123",
+        "transaction_type": "transfer",
+        "status":           "success",
+        "currency":         "USD",
+    })
+
+    // With trace correlation attributes
+    factory.RecordTransactionProcessed(ctx,
+        map[string]string{
+            "ledger_id": "ledger-789",
+            "method":    "instant",
+        },
+        attribute.String("processor", "fast-lane"),
+        attribute.Float64("amount_usd", 150.00),
+    )
+}
+```
+
+### Route Creation Operations
+
+```go
+func recordRouteCreation(factory *metrics.MetricsFactory, ctx context.Context) {
+    // Record transaction route creation
+    factory.RecordTransactionRouteCreated(ctx, map[string]string{
+        "ledger_id":   "ledger-123",
+        "route_type":  "direct",
+        "complexity":  "simple",
+    })
+
+    // Record operation route creation
+    factory.RecordOperationRouteCreated(ctx, map[string]string{
+        "ledger_id":      "ledger-456",
+        "operation_type": "balance_check",
+        "priority":       "high",
+    })
+}
+```
+
+### Pre-configured Metrics Available
+
+The following convenience methods are available with pre-configured metrics:
+
+- **`RecordAccountCreated()`** - Uses `MetricAccountsCreated` counter
+- **`RecordTransactionProcessed()`** - Uses `MetricTransactionsProcessed` counter  
+- **`RecordTransactionRouteCreated()`** - Uses `MetricTransactionRoutesCreated` counter
+- **`RecordOperationRouteCreated()`** - Uses `MetricOperationRoutesCreated` counter
+
+Each method accepts:
+- `ctx context.Context` - Request context
+- `labels map[string]string` - String labels for metric dimensions
+- `attributes ...attribute.KeyValue` - Additional OpenTelemetry attributes (optional)
+
+### Benefits of Convenience Methods
+
+- **Consistent naming**: All metrics follow the `domain.component.action.metric` pattern
+- **Pre-configured**: Description, unit, and metric type already set
+- **Type safety**: No risk of typos in metric names
+- **Fluent API**: Chain with labels and attributes as needed
+- **Performance**: Metrics are lazily initialized and cached
 
 ## Financial Transaction Examples
 

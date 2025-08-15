@@ -1,4 +1,4 @@
-package opentelemetry
+package metrics
 
 import (
 	"context"
@@ -59,6 +59,14 @@ func (c *CounterBuilder) Add(ctx context.Context, value int64) {
 	c.counter.Add(ctx, value, metric.WithAttributes(c.attrs...))
 }
 
+func (c *CounterBuilder) AddOne(ctx context.Context) {
+	if c.counter == nil {
+		return
+	}
+
+	c.Add(ctx, 1)
+}
+
 // GaugeBuilder provides a fluent API for recording gauge metrics with optional labels
 type GaugeBuilder struct {
 	factory *MetricsFactory
@@ -101,19 +109,27 @@ func (g *GaugeBuilder) WithAttributes(attrs ...attribute.KeyValue) *GaugeBuilder
 	return builder
 }
 
-// Record sets the gauge value
+// Record sets the gauge to the provided value.
+//
+// Deprecated: use Set for application code. This method is kept for
+// parity with OpenTelemetry's instrument API (metric.Int64Gauge.Record)
+// to ease portability from raw OTEL usage. It delegates to Set.
 func (g *GaugeBuilder) Record(ctx context.Context, value int64) {
+	g.Set(ctx, value)
+}
+
+// Set sets the current value of a gauge (recommended for application code).
+//
+// This is the primary implementation for recording gauge values and is
+// idiomatic for instantaneous state (e.g., queue length, in-flight operations).
+// It uses only the builder attributes to avoid high-cardinality labels.
+func (g *GaugeBuilder) Set(ctx context.Context, value int64) {
 	if g.gauge == nil {
 		return
 	}
 
 	// Use only the builder attributes (no trace correlation to avoid high cardinality)
 	g.gauge.Record(ctx, value, metric.WithAttributes(g.attrs...))
-}
-
-// Set is an alias for Record for gauge metrics (more intuitive naming)
-func (g *GaugeBuilder) Set(ctx context.Context, value int64) {
-	g.Record(ctx, value)
 }
 
 // HistogramBuilder provides a fluent API for recording histogram metrics with optional labels
