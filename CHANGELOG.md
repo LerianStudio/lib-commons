@@ -1,3 +1,11 @@
+## [2.3.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v2.2.0...v2.3.0-beta.1) (2025-08-18)
+
+
+### Bug Fixes
+
+* **otel:** reorder shutdown sequence to ensure proper telemetry export and add span attributes from request params id ([44fc4c9](https://github.com/LerianStudio/lib-commons/commit/44fc4c996e2f322244965bb31c79e069719a1e1f))
+* **http:** use HasPrefix instead of Contains for route exclusion matching ([9891eac](https://github.com/LerianStudio/lib-commons/commit/9891eacbd75dfce11ba57ebf2a6f38144dc04505))
+
 ## [2.2.0](https://github.com/LerianStudio/lib-commons/compare/v2.1.0...v2.2.0) (2025-08-08)
 
 
