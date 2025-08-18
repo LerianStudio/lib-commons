@@ -11,5 +11,6 @@ func (f *MetricsFactory) WithOrganizationLabels(organizationID string) map[strin
 func (f *MetricsFactory) WithLedgerLabels(organizationID, ledgerID string) map[string]string {
 	labels := f.WithOrganizationLabels(organizationID)
 	labels["ledger_id"] = ledgerID
+
 	return labels
 }
