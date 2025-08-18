@@ -1,3 +1,11 @@
+## [2.3.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.1...v2.3.0-beta.2) (2025-08-18)
+
+
+### Features
+
+* Adding the crypto package of encryption and decryption. ([f309c23](https://github.com/LerianStudio/lib-commons/commit/f309c233404a56ca1bd3f27e7a9a28bd839fac37))
+* Adding the crypto package of encryption and decryption. ([577b746](https://github.com/LerianStudio/lib-commons/commit/577b746c0dfad3dc863027bbe6f5508b194f7578))
+
 ## [2.3.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v2.2.0...v2.3.0-beta.1) (2025-08-18)
 
 
