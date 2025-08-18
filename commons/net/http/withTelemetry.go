@@ -2,7 +2,6 @@ package http
 
 import (
 	"context"
-	"net/http"
 	"strings"
 
 	"github.com/LerianStudio/lib-commons/v2/commons"
@@ -13,8 +12,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 type TelemetryMiddleware struct {
@@ -27,23 +24,29 @@ func NewTelemetryMiddleware(tl *opentelemetry.Telemetry) *TelemetryMiddleware {
 }
 
 // WithTelemetry is a middleware that adds tracing to the context.
-func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry) fiber.Handler {
+func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, excludedRoutes ...string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		if strings.Contains(c.Path(), "swagger") && c.Path() != "/swagger/index.html" {
+		if len(excludedRoutes) > 0 && tm.isRouteExcluded(c, excludedRoutes) {
 			return c.Next()
 		}
 
 		setRequestHeaderID(c)
 
-		reqId := commons.NewHeaderIDFromContext(c.UserContext())
+		ctx := c.UserContext()
+
+		_, _, reqId, _ := commons.NewTrackingFromContext(ctx)
+
+		c.SetUserContext(commons.ContextWithSpanAttributes(ctx,
+			attribute.String("app.request.request_id", reqId),
+		))
 
 		tracer := otel.Tracer(tl.LibraryName)
+		routePathWithMethod := c.Method() + " " + commons.ReplaceUUIDWithPlaceholder(c.Path())
 
-		ctx, span := tracer.Start(opentelemetry.ExtractHTTPContext(c), c.Method()+" "+commons.ReplaceUUIDWithPlaceholder(c.Path()))
+		ctx, span := tracer.Start(opentelemetry.ExtractHTTPContext(c), routePathWithMethod)
 		defer span.End()
 
 		span.SetAttributes(
-			attribute.String("app.request.request_id", reqId),
 			attribute.String("http.method", c.Method()),
 			attribute.String("http.url", c.OriginalURL()),
 			attribute.String("http.route", c.Route().Path),
@@ -60,7 +63,6 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry) fiber.
 		err := tm.collectMetrics(ctx)
 		if err != nil {
 			opentelemetry.HandleSpanError(&span, "Failed to collect metrics", err)
-			return c.Status(http.StatusBadRequest).JSON(err)
 		}
 
 		err = c.Next()
@@ -99,7 +101,7 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 	) (any, error) {
 		ctx = setGRPCRequestHeaderID(ctx)
 
-		reqId := commons.NewHeaderIDFromContext(ctx)
+		_, _, reqId, _ := commons.NewTrackingFromContext(ctx)
 
 		tracer := otel.Tracer(tl.LibraryName)
 
@@ -117,27 +119,9 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 		err := tm.collectMetrics(ctx)
 		if err != nil {
 			opentelemetry.HandleSpanError(&span, "Failed to collect metrics", err)
-
-			jsonStringError, err := commons.StructToJSONString(commons.Response{
-				Code:    "500",
-				Title:   "Internal Server Error",
-				Message: "The server encountered an unexpected error. Please try again later or contact support.",
-				Err:     err,
-			})
-
-			if err != nil {
-				opentelemetry.HandleSpanError(&span, "Failed to marshal error response", err)
-
-				return nil, status.Error(codes.Internal, "Failed to marshal error response")
-			}
-
-			return nil, status.Error(codes.FailedPrecondition, jsonStringError)
 		}
 
 		resp, err := handler(ctx, req)
-		if err != nil {
-			opentelemetry.HandleSpanError(&span, "gRPC request failed", err)
-		}
 
 		return resp, err
 	}
@@ -177,4 +161,14 @@ func (tm *TelemetryMiddleware) collectMetrics(ctx context.Context) error {
 	go commons.GetMemUsage(ctx, memGauge)
 
 	return nil
+}
+
+func (tm *TelemetryMiddleware) isRouteExcluded(c *fiber.Ctx, excludedRoutes []string) bool {
+	for _, route := range excludedRoutes {
+		if strings.HasPrefix(c.Path(), route) {
+			return true
+		}
+	}
+
+	return false
 }

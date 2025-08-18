@@ -13,8 +13,7 @@ import (
 
 // ValidateBalancesRules function with some validates in accounts and DSL operations
 func ValidateBalancesRules(ctx context.Context, transaction Transaction, validate Responses, balances []*Balance) error {
-	logger := commons.NewLoggerFromContext(ctx)
-	tracer := commons.NewTracerFromContext(ctx)
+	logger, tracer, _, _ := commons.NewTrackingFromContext(ctx)
 
 	_, spanValidateBalances := tracer.Start(ctx, "validations.validate_balances_rules")
 	defer spanValidateBalances.End()
