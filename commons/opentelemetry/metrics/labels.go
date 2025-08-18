@@ -9,8 +9,7 @@ func (f *MetricsFactory) WithOrganizationLabels(organizationID string) map[strin
 
 // WithLedgerLabels generates a map of labels with the organization ID and ledger ID
 func (f *MetricsFactory) WithLedgerLabels(organizationID, ledgerID string) map[string]string {
-	return map[string]string{
-		"organization_id": organizationID,
-		"ledger_id":       ledgerID,
-	}
+	labels := f.WithOrganizationLabels(organizationID)
+	labels["ledger_id"] = ledgerID
+	return labels
 }

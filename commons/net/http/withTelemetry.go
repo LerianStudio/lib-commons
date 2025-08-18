@@ -165,7 +165,7 @@ func (tm *TelemetryMiddleware) collectMetrics(ctx context.Context) error {
 
 func (tm *TelemetryMiddleware) isRouteExcluded(c *fiber.Ctx, excludedRoutes []string) bool {
 	for _, route := range excludedRoutes {
-		if strings.Contains(c.Path(), route) {
+		if strings.HasPrefix(c.Path(), route) {
 			return true
 		}
 	}
