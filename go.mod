@@ -4,8 +4,6 @@ go 1.23.2
 
 require (
 	cloud.google.com/go/iam v1.5.2
-	github.com/Azure/go-autorest/logger v0.2.1
-	github.com/LerianStudio/midaz v1.51.0
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/bxcodec/dbresolver/v2 v2.2.0

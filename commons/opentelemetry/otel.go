@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/LerianStudio/lib-commons/v2/commons"
 	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"github.com/LerianStudio/lib-commons/v2/commons/opentelemetry/metrics"
@@ -172,34 +173,37 @@ func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
 	global.SetLoggerProvider(lp)
 
 	shutdownHandler := func() {
-		err := tExp.Shutdown(ctx)
+		// Shutdown providers BEFORE exporters to allow final data export
+		err := mp.Shutdown(ctx)
 		if err != nil {
-			l.Fatalf("can't shutdown tracer exporter: %v", err)
-		}
-
-		err = mExp.Shutdown(ctx)
-		if err != nil {
-			l.Fatalf("can't shutdown metric exporter: %v", err)
-		}
-
-		err = lExp.Shutdown(ctx)
-		if err != nil {
-			l.Fatalf("can't shutdown logger exporter: %v", err)
-		}
-
-		err = mp.Shutdown(ctx)
-		if err != nil {
-			l.Fatalf("can't shutdown metric provider: %v", err)
+			l.Errorf("can't shutdown metric provider: %v", err)
 		}
 
 		err = tp.Shutdown(ctx)
 		if err != nil {
-			l.Fatalf("can't shutdown tracer provider: %v", err)
+			l.Errorf("can't shutdown tracer provider: %v", err)
 		}
 
 		err = lp.Shutdown(ctx)
 		if err != nil {
-			l.Fatalf("can't shutdown logger provider: %v", err)
+			l.Errorf("can't shutdown logger provider: %v", err)
+		}
+
+		// Shutdown exporters AFTER providers complete their final export
+		// Use error logging instead of fatal to prevent shutdown failures
+		err = tExp.Shutdown(ctx)
+		if err != nil {
+			l.Errorf("can't shutdown tracer exporter: %v", err)
+		}
+
+		err = mExp.Shutdown(ctx)
+		if err != nil {
+			l.Errorf("can't shutdown metric exporter: %v", err)
+		}
+
+		err = lExp.Shutdown(ctx)
+		if err != nil {
+			l.Errorf("can't shutdown logger exporter: %v", err)
 		}
 	}
 
@@ -271,6 +275,19 @@ func SetSpanAttributesFromStructWithCustomObfuscation(span *trace.Span, key stri
 	})
 
 	return nil
+}
+
+// SetSpanAttributeForParam sets a span attribute for a Fiber request parameter with consistent naming
+// entityName is a snake_case string used to identify id name, for example the "organization" entity name will result in "app.request.organization_id"
+// otherwise the path parameter "id" in a Fiber request for example "/v1/organizations/:id" will be parsed as "app.request.id"
+func SetSpanAttributeForParam(c *fiber.Ctx, param, value, entityName string) {
+	spanAttrKey := "app.request." + param
+
+	if entityName != "" && param == "id" {
+		spanAttrKey = "app.request." + entityName + "_id"
+	}
+
+	c.SetUserContext(commons.ContextWithSpanAttributes(c.UserContext(), attribute.String(spanAttrKey, value)))
 }
 
 // HandleSpanBusinessErrorEvent adds a business error event to the span.
