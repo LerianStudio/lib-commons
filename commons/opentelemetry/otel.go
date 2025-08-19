@@ -137,7 +137,7 @@ func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
 	if !cfg.EnableTelemetry {
 		l.Warn("Telemetry turned off ⚠️ ")
 
-		return nil
+		return &Telemetry{}
 	}
 
 	l.Infof("Initializing telemetry...")
