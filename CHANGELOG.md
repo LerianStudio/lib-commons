@@ -1,3 +1,10 @@
+## [2.3.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.2...v2.3.0-beta.3) (2025-08-19)
+
+
+### Bug Fixes
+
+* Adjusting instance when telemetry is off. ([68504a7](https://github.com/LerianStudio/lib-commons/commit/68504a7080ce4f437a9f551ae4c259ed7c0daaa6))
+
 ## [2.3.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.1...v2.3.0-beta.2) (2025-08-18)
 
 
