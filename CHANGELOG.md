@@ -1,3 +1,10 @@
+## [2.3.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.3...v2.3.0-beta.4) (2025-08-20)
+
+
+### Features
+
+* add telemetry and logging to transaction validation and gRPC middleware ([0aabecc](https://github.com/LerianStudio/lib-commons/commit/0aabeccb0a7bb2f50dfc3cf9544cfe6b2dcddf91))
+
 ## [2.3.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.2...v2.3.0-beta.3) (2025-08-19)
 
 
