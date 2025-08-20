@@ -12,6 +12,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/status"
 )
 
 type TelemetryMiddleware struct {
@@ -102,16 +103,15 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 		ctx = setGRPCRequestHeaderID(ctx)
 
 		_, _, reqId, _ := commons.NewTrackingFromContext(ctx)
-
 		tracer := otel.Tracer(tl.LibraryName)
 
-		ctx, span := tracer.Start(opentelemetry.ExtractGRPCContext(ctx), info.FullMethod)
-		defer span.End()
-
-		span.SetAttributes(
+		ctx = commons.ContextWithSpanAttributes(ctx,
 			attribute.String("app.request.request_id", reqId),
 			attribute.String("grpc.method", info.FullMethod),
 		)
+
+		ctx, span := tracer.Start(opentelemetry.ExtractGRPCContext(ctx), info.FullMethod)
+		defer span.End()
 
 		ctx = commons.ContextWithTracer(ctx, tracer)
 		ctx = commons.ContextWithMetricFactory(ctx, tl.MetricsFactory)
@@ -122,6 +122,10 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 		}
 
 		resp, err := handler(ctx, req)
+
+		span.SetAttributes(
+			attribute.Int("grpc.status_code", int(status.Code(err))),
+		)
 
 		return resp, err
 	}

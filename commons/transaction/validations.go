@@ -290,11 +290,16 @@ func AppendIfNotExist(slice []string, s []string) []string {
 }
 
 // ValidateSendSourceAndDistribute Validate send and distribute totals
-func ValidateSendSourceAndDistribute(transaction Transaction, transactionType string) (*Responses, error) {
+func ValidateSendSourceAndDistribute(ctx context.Context, transaction Transaction, transactionType string) (*Responses, error) {
 	var (
 		sourcesTotal      decimal.Decimal
 		destinationsTotal decimal.Decimal
 	)
+
+	logger, tracer, _, _ := commons.NewTrackingFromContext(ctx)
+
+	_, span := tracer.Start(ctx, "commons.transaction.ValidateSendSourceAndDistribute")
+	defer span.End()
 
 	sizeFrom := len(transaction.Send.Source.From)
 	sizeTo := len(transaction.Send.Distribute.To)
@@ -339,17 +344,23 @@ func ValidateSendSourceAndDistribute(transaction Transaction, transactionType st
 
 	for i, source := range response.Sources {
 		if _, ok := response.To[ConcatAlias(i, source)]; ok {
+			logger.Errorf("ValidateSendSourceAndDistribute: Ambiguous transaction source and destination")
+
 			return nil, commons.ValidateBusinessError(constant.ErrTransactionAmbiguous, "ValidateSendSourceAndDistribute")
 		}
 	}
 
 	for i, destination := range response.Destinations {
 		if _, ok := response.From[ConcatAlias(i, destination)]; ok {
+			logger.Errorf("ValidateSendSourceAndDistribute: Ambiguous transaction source and destination")
+
 			return nil, commons.ValidateBusinessError(constant.ErrTransactionAmbiguous, "ValidateSendSourceAndDistribute")
 		}
 	}
 
 	if !sourcesTotal.Equal(destinationsTotal) || !destinationsTotal.Equal(response.Total) {
+		logger.Errorf("ValidateSendSourceAndDistribute: Transaction value mismatch")
+
 		return nil, commons.ValidateBusinessError(constant.ErrTransactionValueMismatch, "ValidateSendSourceAndDistribute")
 	}
 
