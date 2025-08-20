@@ -776,7 +776,8 @@ func TestValidateSendSourceAndDistribute(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := ValidateSendSourceAndDistribute(tt.transaction, constant.CREATED)
+			ctx := context.Background()
+			got, err := ValidateSendSourceAndDistribute(ctx, tt.transaction, constant.CREATED)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -904,8 +905,9 @@ func TestValidateTransactionWithPercentageAndRemaining(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
 			// Call ValidateSendSourceAndDistribute to get the responses
-			responses, err := ValidateSendSourceAndDistribute(tt.transaction, constant.CREATED)
+			responses, err := ValidateSendSourceAndDistribute(ctx, tt.transaction, constant.CREATED)
 
 			if tt.expectError {
 				assert.Error(t, err)
