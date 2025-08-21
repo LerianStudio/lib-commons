@@ -142,12 +142,12 @@ func TestCalculateCursor(t *testing.T) {
 	pagination, err = CalculateCursor(false, false, true, firstItemID, lastItemID)
 	assert.NoError(t, err)
 	assert.Empty(t, pagination.Next)
-	assert.Empty(t, pagination.Prev)
+	assert.NotEmpty(t, pagination.Prev)
 
 	pagination, err = CalculateCursor(false, false, false, firstItemID, lastItemID)
 	assert.NoError(t, err)
-	assert.Empty(t, pagination.Next)
-	assert.Empty(t, pagination.Prev)
+	assert.NotEmpty(t, pagination.Next)
+	assert.NotEmpty(t, pagination.Prev)
 }
 
 func TestCursorWithUUIDv7(t *testing.T) {
@@ -400,4 +400,232 @@ func TestCursorPaginationRealWorldScenario(t *testing.T) {
 	assert.Equal(t, expectedSQL, sql)
 	assert.Equal(t, []interface{}{page1Items[len(page1Items)-1].ID}, args)
 	assert.Equal(t, "ASC", order)
+}
+
+func TestLastPageScenario(t *testing.T) {
+	uuids := make([]uuid.UUID, 5)
+	for i := 0; i < 5; i++ {
+		var err error
+		uuids[i], err = uuid.NewV7()
+		require.NoError(t, err)
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	items := make([]string, len(uuids))
+	for i, u := range uuids {
+		items[i] = u.String()
+	}
+
+	limit := 3
+	lastPageItems := items[limit-1:]
+
+	isFirstPage := false
+	hasPagination := false
+	pointsNext := true
+
+	pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, lastPageItems[0], lastPageItems[len(lastPageItems)-1])
+	require.NoError(t, err)
+
+	assert.Empty(t, pagination.Next, "Last page should not have next_cursor")
+	assert.NotEmpty(t, pagination.Prev, "Last page should have prev_cursor")
+
+	decodedPrev, err := DecodeCursor(pagination.Prev)
+	require.NoError(t, err)
+	assert.Equal(t, lastPageItems[0], decodedPrev.ID)
+	assert.False(t, decodedPrev.PointsNext)
+}
+
+func TestNavigationFromSecondPageBackToFirst(t *testing.T) {
+	uuids := make([]uuid.UUID, 5)
+	for i := 0; i < 5; i++ {
+		var err error
+		uuids[i], err = uuid.NewV7()
+		require.NoError(t, err)
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	items := make([]string, len(uuids))
+	for i, u := range uuids {
+		items[i] = u.String()
+	}
+
+	limit := 3
+
+	t.Run("simulate second page", func(t *testing.T) {
+		secondPageItems := items[1 : limit+1]
+
+		isFirstPage := false
+		hasPagination := len(items) > limit
+		pointsNext := true
+
+		pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, secondPageItems[0], secondPageItems[len(secondPageItems)-1])
+		require.NoError(t, err)
+
+		assert.NotEmpty(t, pagination.Next, "Second page should have next_cursor")
+		assert.NotEmpty(t, pagination.Prev, "Second page should have prev_cursor")
+	})
+
+	t.Run("navigate back to first page using prev_cursor", func(t *testing.T) {
+		firstPageItemsFromPrev := items[:limit]
+
+		isFirstPage := true
+		hasPagination := len(items) > limit
+		pointsNext := false
+
+		pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, firstPageItemsFromPrev[0], firstPageItemsFromPrev[len(firstPageItemsFromPrev)-1])
+		require.NoError(t, err)
+
+		assert.NotEmpty(t, pagination.Next, "When returning to first page via prev, should have next_cursor")
+		assert.NotEmpty(t, pagination.Prev, "When returning to first page via prev, should have prev_cursor")
+
+		decodedNext, err := DecodeCursor(pagination.Next)
+		require.NoError(t, err)
+		assert.Equal(t, firstPageItemsFromPrev[len(firstPageItemsFromPrev)-1], decodedNext.ID)
+		assert.True(t, decodedNext.PointsNext)
+	})
+}
+
+func TestCompleteNavigationFlow(t *testing.T) {
+	uuids := make([]uuid.UUID, 7)
+	for i := 0; i < 7; i++ {
+		var err error
+		uuids[i], err = uuid.NewV7()
+		require.NoError(t, err)
+		time.Sleep(1 * time.Millisecond)
+	}
+
+	items := make([]string, len(uuids))
+	for i, u := range uuids {
+		items[i] = u.String()
+	}
+
+	limit := 3
+
+	t.Run("first page - initial load", func(t *testing.T) {
+		firstPageItems := items[:limit]
+
+		isFirstPage := true
+		hasPagination := len(items) > limit
+		pointsNext := true
+
+		pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, firstPageItems[0], firstPageItems[len(firstPageItems)-1])
+		require.NoError(t, err)
+
+		assert.NotEmpty(t, pagination.Next, "First page should have next_cursor")
+		assert.Empty(t, pagination.Prev, "First page should NOT have prev_cursor")
+	})
+
+	t.Run("second page - using next_cursor", func(t *testing.T) {
+		secondPageItems := items[limit : limit*2]
+
+		isFirstPage := false
+		hasPagination := len(items) > limit*2
+		pointsNext := true
+
+		pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, secondPageItems[0], secondPageItems[len(secondPageItems)-1])
+		require.NoError(t, err)
+
+		assert.NotEmpty(t, pagination.Next, "Second page should have next_cursor")
+		assert.NotEmpty(t, pagination.Prev, "Second page should have prev_cursor")
+	})
+
+	t.Run("last page - using next_cursor", func(t *testing.T) {
+		lastPageItems := items[limit*2:]
+
+		isFirstPage := false
+		hasPagination := false
+		pointsNext := true
+
+		pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, lastPageItems[0], lastPageItems[len(lastPageItems)-1])
+		require.NoError(t, err)
+
+		assert.Empty(t, pagination.Next, "Last page should NOT have next_cursor")
+		assert.NotEmpty(t, pagination.Prev, "Last page should have prev_cursor")
+	})
+
+	t.Run("back to second page - using prev_cursor", func(t *testing.T) {
+		secondPageItems := items[limit : limit*2]
+
+		isFirstPage := false
+		hasPagination := len(items) > limit
+		pointsNext := false
+
+		pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, secondPageItems[0], secondPageItems[len(secondPageItems)-1])
+		require.NoError(t, err)
+
+		assert.NotEmpty(t, pagination.Next, "Second page (via prev) should have next_cursor")
+		assert.NotEmpty(t, pagination.Prev, "Second page (via prev) should have prev_cursor")
+	})
+
+	t.Run("back to first page - using prev_cursor", func(t *testing.T) {
+		firstPageItems := items[:limit]
+
+		isFirstPage := true
+		hasPagination := len(items) > limit
+		pointsNext := false
+
+		pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, firstPageItems[0], firstPageItems[len(firstPageItems)-1])
+		require.NoError(t, err)
+
+		assert.NotEmpty(t, pagination.Next, "First page (via prev) should have next_cursor")
+		assert.NotEmpty(t, pagination.Prev, "First page (via prev) should have prev_cursor")
+	})
+}
+
+func TestPaginationEdgeCases(t *testing.T) {
+	t.Run("single page - no pagination needed", func(t *testing.T) {
+		uuid1, err := uuid.NewV7()
+		require.NoError(t, err)
+
+		items := []string{uuid1.String()}
+
+		isFirstPage := true
+		hasPagination := false
+		pointsNext := true
+
+		pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, items[0], items[0])
+		require.NoError(t, err)
+
+		assert.Empty(t, pagination.Next, "Single page should not have next_cursor")
+		assert.Empty(t, pagination.Prev, "Single page should not have prev_cursor")
+	})
+
+	t.Run("exactly two pages", func(t *testing.T) {
+		uuids := make([]uuid.UUID, 4)
+		for i := 0; i < 4; i++ {
+			var err error
+			uuids[i], err = uuid.NewV7()
+			require.NoError(t, err)
+			time.Sleep(1 * time.Millisecond)
+		}
+
+		items := make([]string, len(uuids))
+		for i, u := range uuids {
+			items[i] = u.String()
+		}
+
+		limit := 2
+
+		firstPageItems := items[:limit]
+		isFirstPage := true
+		hasPagination := len(items) > limit
+		pointsNext := true
+
+		pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, firstPageItems[0], firstPageItems[len(firstPageItems)-1])
+		require.NoError(t, err)
+
+		assert.NotEmpty(t, pagination.Next, "First page of two should have next_cursor")
+		assert.Empty(t, pagination.Prev, "First page of two should not have prev_cursor")
+
+		lastPageItems := items[limit:]
+		isFirstPage = false
+		hasPagination = false
+		pointsNext = true
+
+		pagination, err = CalculateCursor(isFirstPage, hasPagination, pointsNext, lastPageItems[0], lastPageItems[len(lastPageItems)-1])
+		require.NoError(t, err)
+
+		assert.Empty(t, pagination.Next, "Last page of two should not have next_cursor")
+		assert.NotEmpty(t, pagination.Prev, "Last page of two should have prev_cursor")
+	})
 }

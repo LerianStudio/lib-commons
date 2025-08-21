@@ -116,38 +116,38 @@ func CalculateCursor(
 ) (CursorPagination, error) {
 	var pagination CursorPagination
 
-	if hasPagination {
-		if pointsNext {
+	if pointsNext {
+		if hasPagination {
 			next := CreateCursor(lastItemID, true)
 			cursorBytes, err := json.Marshal(next)
 			if err != nil {
 				return CursorPagination{}, err
 			}
 			pagination.Next = base64.StdEncoding.EncodeToString(cursorBytes)
-
-			if !isFirstPage {
-				prev := CreateCursor(firstItemID, false)
-				cursorBytes, err := json.Marshal(prev)
-				if err != nil {
-					return CursorPagination{}, err
-				}
-				pagination.Prev = base64.StdEncoding.EncodeToString(cursorBytes)
-			}
-		} else {
-			next := CreateCursor(lastItemID, true)
-			cursorBytesNext, err := json.Marshal(next)
-			if err != nil {
-				return CursorPagination{}, err
-			}
-			pagination.Next = base64.StdEncoding.EncodeToString(cursorBytesNext)
-
-			prev := CreateCursor(firstItemID, false)
-			cursorBytesPrev, err := json.Marshal(prev)
-			if err != nil {
-				return CursorPagination{}, err
-			}
-			pagination.Prev = base64.StdEncoding.EncodeToString(cursorBytesPrev)
 		}
+
+		if !isFirstPage {
+			prev := CreateCursor(firstItemID, false)
+			cursorBytes, err := json.Marshal(prev)
+			if err != nil {
+				return CursorPagination{}, err
+			}
+			pagination.Prev = base64.StdEncoding.EncodeToString(cursorBytes)
+		}
+	} else {
+		next := CreateCursor(lastItemID, true)
+		cursorBytesNext, err := json.Marshal(next)
+		if err != nil {
+			return CursorPagination{}, err
+		}
+		pagination.Next = base64.StdEncoding.EncodeToString(cursorBytesNext)
+
+		prev := CreateCursor(firstItemID, false)
+		cursorBytesPrev, err := json.Marshal(prev)
+		if err != nil {
+			return CursorPagination{}, err
+		}
+		pagination.Prev = base64.StdEncoding.EncodeToString(cursorBytesPrev)
 	}
 
 	return pagination, nil
