@@ -49,6 +49,7 @@ func ApplyCursorPagination(
 	tableAlias ...string,
 ) (squirrel.SelectBuilder, string) {
 	var operator string
+
 	var actualOrder string
 
 	ascOrder := strings.ToUpper(string(constant.Asc))
@@ -79,13 +80,13 @@ func ApplyCursorPagination(
 		}
 
 		whereClause := squirrel.Expr(ID+" "+operator+" ?", decodedCursor.ID)
-		findAll = findAll.Where(whereClause).
-			OrderBy(ID + " " + actualOrder)
+		findAll = findAll.Where(whereClause).OrderBy(ID + " " + actualOrder)
 
 		return findAll.Limit(commons.SafeIntToUint64(limit + 1)), actualOrder
 	}
 
 	findAll = findAll.OrderBy(ID + " " + orderDirection)
+
 	return findAll.Limit(commons.SafeIntToUint64(limit + 1)), orderDirection
 }
 
@@ -119,37 +120,45 @@ func CalculateCursor(
 	if pointsNext {
 		if hasPagination {
 			next := CreateCursor(lastItemID, true)
+
 			cursorBytes, err := json.Marshal(next)
 			if err != nil {
 				return CursorPagination{}, err
 			}
+
 			pagination.Next = base64.StdEncoding.EncodeToString(cursorBytes)
 		}
 
 		if !isFirstPage {
 			prev := CreateCursor(firstItemID, false)
+
 			cursorBytes, err := json.Marshal(prev)
 			if err != nil {
 				return CursorPagination{}, err
 			}
+
 			pagination.Prev = base64.StdEncoding.EncodeToString(cursorBytes)
 		}
 	} else {
 		if hasPagination || isFirstPage {
 			next := CreateCursor(lastItemID, true)
+
 			cursorBytesNext, err := json.Marshal(next)
 			if err != nil {
 				return CursorPagination{}, err
 			}
+
 			pagination.Next = base64.StdEncoding.EncodeToString(cursorBytesNext)
 		}
 
 		if !isFirstPage {
 			prev := CreateCursor(firstItemID, false)
+
 			cursorBytesPrev, err := json.Marshal(prev)
 			if err != nil {
 				return CursorPagination{}, err
 			}
+			
 			pagination.Prev = base64.StdEncoding.EncodeToString(cursorBytesPrev)
 		}
 	}
