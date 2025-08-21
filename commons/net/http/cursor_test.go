@@ -146,7 +146,7 @@ func TestCalculateCursor(t *testing.T) {
 
 	pagination, err = CalculateCursor(false, false, false, firstItemID, lastItemID)
 	assert.NoError(t, err)
-	assert.NotEmpty(t, pagination.Next)
+	assert.Empty(t, pagination.Next)
 	assert.NotEmpty(t, pagination.Prev)
 }
 
@@ -476,7 +476,7 @@ func TestNavigationFromSecondPageBackToFirst(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.NotEmpty(t, pagination.Next, "When returning to first page via prev, should have next_cursor")
-		assert.NotEmpty(t, pagination.Prev, "When returning to first page via prev, should have prev_cursor")
+		assert.Empty(t, pagination.Prev, "When returning to first page via prev, should NOT have prev_cursor - first page never has prev")
 
 		decodedNext, err := DecodeCursor(pagination.Next)
 		require.NoError(t, err)
@@ -568,7 +568,7 @@ func TestCompleteNavigationFlow(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.NotEmpty(t, pagination.Next, "First page (via prev) should have next_cursor")
-		assert.NotEmpty(t, pagination.Prev, "First page (via prev) should have prev_cursor")
+		assert.Empty(t, pagination.Prev, "First page (via prev) should NOT have prev_cursor - first page never has prev")
 	})
 }
 
@@ -627,5 +627,86 @@ func TestPaginationEdgeCases(t *testing.T) {
 
 		assert.Empty(t, pagination.Next, "Last page of two should not have next_cursor")
 		assert.NotEmpty(t, pagination.Prev, "Last page of two should have prev_cursor")
+	})
+}
+
+func TestBugReproduction(t *testing.T) {
+	t.Run("bug: first page shows prev_cursor when coming from page 2", func(t *testing.T) {
+		uuids := make([]uuid.UUID, 3)
+		for i := 0; i < 3; i++ {
+			var err error
+			uuids[i], err = uuid.NewV7()
+			require.NoError(t, err)
+			time.Sleep(1 * time.Millisecond)
+		}
+
+		items := make([]string, len(uuids))
+		for i, u := range uuids {
+			items[i] = u.String()
+		}
+
+		limit := 2
+
+		t.Run("step 1: first page initial load", func(t *testing.T) {
+			firstPageItems := items[:limit]
+			isFirstPage := true
+			hasPagination := len(items) > limit
+			pointsNext := true
+
+			pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, firstPageItems[0], firstPageItems[len(firstPageItems)-1])
+			require.NoError(t, err)
+
+			assert.NotEmpty(t, pagination.Next, "Initial first page should have next_cursor")
+			assert.Empty(t, pagination.Prev, "Initial first page should NOT have prev_cursor")
+		})
+
+		t.Run("step 2: second page using next_cursor", func(t *testing.T) {
+			secondPageItems := items[1:]
+			isFirstPage := false
+			hasPagination := false
+			pointsNext := true
+
+			pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, secondPageItems[0], secondPageItems[len(secondPageItems)-1])
+			require.NoError(t, err)
+
+			assert.Empty(t, pagination.Next, "Second page (last) should not have next_cursor")
+			assert.NotEmpty(t, pagination.Prev, "Second page should have prev_cursor")
+		})
+
+		t.Run("step 3: back to first page using prev_cursor - THE BUG", func(t *testing.T) {
+			firstPageItems := items[:limit]
+			isFirstPage := true
+			hasPagination := len(items) > limit
+			pointsNext := false
+
+			pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, firstPageItems[0], firstPageItems[len(firstPageItems)-1])
+			require.NoError(t, err)
+
+			assert.NotEmpty(t, pagination.Next, "First page (back from prev) should have next_cursor")
+			assert.Empty(t, pagination.Prev, "First page (back from prev) should NOT have prev_cursor - THIS IS THE BUG")
+		})
+	})
+
+	t.Run("bug: infinite loop with same cursor values", func(t *testing.T) {
+		firstItemID := "0198c376-87de-7234-a8da-8e6ec327889d"
+		lastItemID := "0198c376-2a4b-74e5-a25a-2777b1a87ab9"
+
+		isFirstPage := false
+		hasPagination := true
+		pointsNext := false
+
+		pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, firstItemID, lastItemID)
+		require.NoError(t, err)
+
+		if pagination.Next != "" && pagination.Prev != "" {
+			nextCursor, err := DecodeCursor(pagination.Next)
+			require.NoError(t, err)
+			prevCursor, err := DecodeCursor(pagination.Prev)
+			require.NoError(t, err)
+
+			assert.NotEqual(t, nextCursor.ID, prevCursor.ID, "Next and Prev cursors should point to different IDs to avoid infinite loops")
+			assert.True(t, nextCursor.PointsNext, "Next cursor should have PointsNext=true")
+			assert.False(t, prevCursor.PointsNext, "Prev cursor should have PointsNext=false")
+		}
 	})
 }
