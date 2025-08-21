@@ -1,3 +1,18 @@
+## [2.3.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.5...v2.3.0-beta.6) (2025-08-21)
+
+
+### Features
+
+* some adjusts; ([60b206a](https://github.com/LerianStudio/lib-commons/commit/60b206a8bf1c8a299648a5df09aea76191dbea0c))
+
+
+### Bug Fixes
+
+* go.mod and go.sum; ([cda49e7](https://github.com/LerianStudio/lib-commons/commit/cda49e7e7d7a9b5da91155c43bdb9966826a7f4c))
+* make lint ([ec9fc3a](https://github.com/LerianStudio/lib-commons/commit/ec9fc3ac4c39996b2e5ce308032f269380df32ee))
+* **cursor:** resolve first page prev_cursor bug and infinite loop issues; ([b0f8861](https://github.com/LerianStudio/lib-commons/commit/b0f8861c22521b6ec742a365560a439e28b866c4))
+* **cursor:** resolve pagination logic errors and add comprehensive UUID v7 tests ([2d48453](https://github.com/LerianStudio/lib-commons/commit/2d4845332e94b8225e781b267eec9f405519a7f6))
+
 ## [2.3.0-beta.5](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.4...v2.3.0-beta.5) (2025-08-20)
 
 ## [2.3.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.3...v2.3.0-beta.4) (2025-08-20)
