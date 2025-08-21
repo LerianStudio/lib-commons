@@ -15,23 +15,18 @@ type Cursor struct {
 	PointsNext bool   `json:"points_next"`
 }
 
-// CursorPagination entity to store cursor pagination to return to client
 type CursorPagination struct {
 	Next string `json:"next"`
 	Prev string `json:"prev"`
 }
 
-// CreateCursor creates a cursor encode struct.
 func CreateCursor(id string, pointsNext bool) Cursor {
-	cursor := Cursor{
+	return Cursor{
 		ID:         id,
 		PointsNext: pointsNext,
 	}
-
-	return cursor
 }
 
-// DecodeCursor decodes a cursor string.
 func DecodeCursor(cursor string) (Cursor, error) {
 	decodedCursor, err := base64.StdEncoding.DecodeString(cursor)
 	if err != nil {
@@ -39,7 +34,6 @@ func DecodeCursor(cursor string) (Cursor, error) {
 	}
 
 	var cur Cursor
-
 	if err := json.Unmarshal(decodedCursor, &cur); err != nil {
 		return Cursor{}, err
 	}
@@ -47,127 +41,113 @@ func DecodeCursor(cursor string) (Cursor, error) {
 	return cur, nil
 }
 
-// ApplyCursorPagination applies cursor-based pagination to a query.
-func ApplyCursorPagination(findAll squirrel.SelectBuilder, decodedCursor Cursor, orderDirection string, limit int, tableAlias ...string) (squirrel.SelectBuilder, string) {
+func ApplyCursorPagination(
+	findAll squirrel.SelectBuilder,
+	decodedCursor Cursor,
+	orderDirection string,
+	limit int,
+	tableAlias ...string,
+) (squirrel.SelectBuilder, string) {
 	var operator string
-
-	var sortOrder string
+	var actualOrder string
 
 	ascOrder := strings.ToUpper(string(constant.Asc))
 	descOrder := strings.ToUpper(string(constant.Desc))
 
-	ID := "id "
+	ID := "id"
 	if len(tableAlias) > 0 {
 		ID = tableAlias[0] + "." + ID
 	}
 
 	if decodedCursor.ID != "" {
-		pointsNext := decodedCursor.PointsNext
-
-		if pointsNext && orderDirection == ascOrder {
-			operator = ">"
-			sortOrder = ascOrder
+		if decodedCursor.PointsNext {
+			if orderDirection == ascOrder {
+				operator = ">"
+				actualOrder = ascOrder
+			} else {
+				operator = "<"
+				actualOrder = descOrder
+			}
+		} else {
+			if orderDirection == ascOrder {
+				operator = "<"
+				actualOrder = descOrder
+			} else {
+				operator = ">"
+				actualOrder = ascOrder
+			}
 		}
 
-		if pointsNext && orderDirection == descOrder {
-			operator = "<"
-			sortOrder = descOrder
-		}
-
-		if !pointsNext && orderDirection == ascOrder {
-			operator = "<"
-			sortOrder = descOrder
-		}
-
-		if !pointsNext && orderDirection == descOrder {
-			operator = ">"
-			sortOrder = ascOrder
-		}
-
-		whereClause := squirrel.Expr(ID+operator+" ?", decodedCursor.ID)
-
-		// Forward pagination with DESC order
+		whereClause := squirrel.Expr(ID+" "+operator+" ?", decodedCursor.ID)
 		findAll = findAll.Where(whereClause).
-			OrderBy(ID + sortOrder)
+			OrderBy(ID + " " + actualOrder)
 
-		return findAll.Limit(commons.SafeIntToUint64(limit + 1)), orderDirection
+		return findAll.Limit(commons.SafeIntToUint64(limit + 1)), actualOrder
 	}
 
-	// No cursor means this is the first page; use the order as normal
-	findAll = findAll.OrderBy(ID + orderDirection)
-
+	findAll = findAll.OrderBy(ID + " " + orderDirection)
 	return findAll.Limit(commons.SafeIntToUint64(limit + 1)), orderDirection
 }
 
-// PaginateRecords paginates records based on the cursor.
-func PaginateRecords[T any](isFirstPage bool, hasPagination bool, pointsNext bool, items []T, limit int, orderDirection string) []T {
-	paginatedItems := items
-
-	if isFirstPage {
-		if hasPagination {
-			return paginatedItems[:limit]
-		}
-
-		return paginatedItems
+func PaginateRecords[T any](
+	isFirstPage bool,
+	hasPagination bool,
+	pointsNext bool,
+	items []T,
+	limit int,
+	orderUsed string,
+) []T {
+	if !hasPagination {
+		return items
 	}
 
-	if pointsNext {
-		if hasPagination {
-			return paginatedItems[:limit]
-		}
+	paginated := items[:limit]
 
-		return paginatedItems
+	if !pointsNext {
+		return commons.Reverse(paginated)
 	}
 
-	if hasPagination {
-		paginatedItems = paginatedItems[:limit]
-	}
-
-	return commons.Reverse(paginatedItems)
+	return paginated
 }
 
-// CalculateCursor calculates the cursor pagination.
-func CalculateCursor(isFirstPage, hasPagination, pointsNext bool, firstItemID, lastItemID string) (CursorPagination, error) {
-	prevCur := Cursor{}
-	nextCur := Cursor{}
-	pagination := CursorPagination{}
+func CalculateCursor(
+	isFirstPage, hasPagination, pointsNext bool,
+	firstItemID, lastItemID string,
+) (CursorPagination, error) {
+	var pagination CursorPagination
 
-	if isFirstPage {
-		if hasPagination {
-			nextCur = CreateCursor(lastItemID, true)
-		}
-	} else {
+	if hasPagination {
 		if pointsNext {
-			if hasPagination {
-				nextCur = CreateCursor(lastItemID, true)
+			next := CreateCursor(lastItemID, true)
+			cursorBytes, err := json.Marshal(next)
+			if err != nil {
+				return CursorPagination{}, err
 			}
+			pagination.Next = base64.StdEncoding.EncodeToString(cursorBytes)
 
-			prevCur = CreateCursor(firstItemID, false)
+			if !isFirstPage {
+				prev := CreateCursor(firstItemID, false)
+				cursorBytes, err := json.Marshal(prev)
+				if err != nil {
+					return CursorPagination{}, err
+				}
+				pagination.Prev = base64.StdEncoding.EncodeToString(cursorBytes)
+			}
 		} else {
-			nextCur = CreateCursor(lastItemID, true)
-
-			if hasPagination {
-				prevCur = CreateCursor(firstItemID, false)
+			next := CreateCursor(lastItemID, true)
+			cursorBytesNext, err := json.Marshal(next)
+			if err != nil {
+				return CursorPagination{}, err
 			}
+			pagination.Next = base64.StdEncoding.EncodeToString(cursorBytesNext)
+
+			prev := CreateCursor(firstItemID, false)
+			cursorBytesPrev, err := json.Marshal(prev)
+			if err != nil {
+				return CursorPagination{}, err
+			}
+			pagination.Prev = base64.StdEncoding.EncodeToString(cursorBytesPrev)
 		}
-	}
-
-	if !commons.IsNilOrEmpty(&prevCur.ID) {
-		serializedPrevCursor, err := json.Marshal(prevCur)
-		if err != nil {
-			return CursorPagination{}, err
-		}
-
-		pagination.Prev = base64.StdEncoding.EncodeToString(serializedPrevCursor)
-	}
-
-	if !commons.IsNilOrEmpty(&nextCur.ID) {
-		serializedNextCursor, err := json.Marshal(nextCur)
-		if err != nil {
-			return CursorPagination{}, err
-		}
-
-		pagination.Next = base64.StdEncoding.EncodeToString(serializedNextCursor)
 	}
 
 	return pagination, nil
