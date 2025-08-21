@@ -631,7 +631,7 @@ func TestPaginationEdgeCases(t *testing.T) {
 }
 
 func TestBugReproduction(t *testing.T) {
-	t.Run("bug: first page shows prev_cursor when coming from page 2", func(t *testing.T) {
+	t.Run("REAL bug reproduction: repository implementation", func(t *testing.T) {
 		uuids := make([]uuid.UUID, 3)
 		for i := 0; i < 3; i++ {
 			var err error
@@ -647,43 +647,90 @@ func TestBugReproduction(t *testing.T) {
 
 		limit := 2
 
-		t.Run("step 1: first page initial load", func(t *testing.T) {
-			firstPageItems := items[:limit]
-			isFirstPage := true
-			hasPagination := len(items) > limit
-			pointsNext := true
+		t.Run("step 1: first page initial load (cursor empty)", func(t *testing.T) {
+			cursor := ""
+			allResults := append(items[:limit], "dummy_item")
 
-			pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, firstPageItems[0], firstPageItems[len(firstPageItems)-1])
+			isFirstPage := cursor == ""
+			hasPagination := len(allResults) > limit
+			pointsNext := true
+			actualResults := allResults[:limit]
+
+			pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, actualResults[0], actualResults[len(actualResults)-1])
 			require.NoError(t, err)
 
+			t.Logf("First page initial: next=%s, prev=%s", pagination.Next, pagination.Prev)
 			assert.NotEmpty(t, pagination.Next, "Initial first page should have next_cursor")
 			assert.Empty(t, pagination.Prev, "Initial first page should NOT have prev_cursor")
 		})
 
 		t.Run("step 2: second page using next_cursor", func(t *testing.T) {
-			secondPageItems := items[1:]
+			firstPageCursor := CreateCursor(items[1], true)
+			cursorBytes, _ := json.Marshal(firstPageCursor)
+			cursor := base64.StdEncoding.EncodeToString(cursorBytes)
+
+			decodedCursor, _ := DecodeCursor(cursor)
+			allResults := items[1:]
+
 			isFirstPage := false
 			hasPagination := false
-			pointsNext := true
+			pointsNext := decodedCursor.PointsNext
+			actualResults := allResults
 
-			pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, secondPageItems[0], secondPageItems[len(secondPageItems)-1])
+			if len(actualResults) > limit {
+				actualResults = actualResults[:limit]
+			}
+
+			pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, actualResults[0], actualResults[len(actualResults)-1])
 			require.NoError(t, err)
 
+			t.Logf("Second page: next=%s, prev=%s", pagination.Next, pagination.Prev)
 			assert.Empty(t, pagination.Next, "Second page (last) should not have next_cursor")
 			assert.NotEmpty(t, pagination.Prev, "Second page should have prev_cursor")
 		})
 
-		t.Run("step 3: back to first page using prev_cursor - THE BUG", func(t *testing.T) {
+		t.Run("step 3: back to first page using prev_cursor - CORRECT", func(t *testing.T) {
+			prevPageCursor := CreateCursor(items[1], false)
+			cursorBytes, _ := json.Marshal(prevPageCursor)
+			cursor := base64.StdEncoding.EncodeToString(cursorBytes)
+
+			decodedCursor, _ := DecodeCursor(cursor)
 			firstPageItems := items[:limit]
-			isFirstPage := true
+
+			isFirstPage := len(firstPageItems) < limit || firstPageItems[0] == items[0]
 			hasPagination := len(items) > limit
-			pointsNext := false
+			pointsNext := decodedCursor.PointsNext
 
 			pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, firstPageItems[0], firstPageItems[len(firstPageItems)-1])
 			require.NoError(t, err)
 
+			t.Logf("Back to first page: isFirstPage=%v, hasPagination=%v, pointsNext=%v", isFirstPage, hasPagination, pointsNext)
+			t.Logf("Back to first page result: next=%s, prev=%s", pagination.Next, pagination.Prev)
+			
 			assert.NotEmpty(t, pagination.Next, "First page (back from prev) should have next_cursor")
-			assert.Empty(t, pagination.Prev, "First page (back from prev) should NOT have prev_cursor - THIS IS THE BUG")
+			assert.Empty(t, pagination.Prev, "First page (back from prev) should NOT have prev_cursor - CORRECT")
+		})
+
+		t.Run("step 3: back to first page - WRONG IMPLEMENTATION (YOUR BUG)", func(t *testing.T) {
+			prevPageCursor := CreateCursor(items[1], false)
+			cursorBytes, _ := json.Marshal(prevPageCursor)
+			cursor := base64.StdEncoding.EncodeToString(cursorBytes)
+
+			decodedCursor, _ := DecodeCursor(cursor)
+			firstPageItems := items[:limit]
+
+			isFirstPage := false
+			hasPagination := len(items) > limit
+			pointsNext := decodedCursor.PointsNext
+
+			pagination, err := CalculateCursor(isFirstPage, hasPagination, pointsNext, firstPageItems[0], firstPageItems[len(firstPageItems)-1])
+			require.NoError(t, err)
+
+			t.Logf("WRONG: Back to first page: isFirstPage=%v, hasPagination=%v, pointsNext=%v", isFirstPage, hasPagination, pointsNext)
+			t.Logf("WRONG: Back to first page result: next=%s, prev=%s", pagination.Next, pagination.Prev)
+			
+			assert.NotEmpty(t, pagination.Next, "First page should have next_cursor")
+			assert.NotEmpty(t, pagination.Prev, "BUG: First page incorrectly has prev_cursor because isFirstPage=false")
 		})
 	})
 

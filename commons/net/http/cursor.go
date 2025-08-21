@@ -135,7 +135,7 @@ func CalculateCursor(
 			pagination.Prev = base64.StdEncoding.EncodeToString(cursorBytes)
 		}
 	} else {
-		if hasPagination {
+		if hasPagination || isFirstPage {
 			next := CreateCursor(lastItemID, true)
 			cursorBytesNext, err := json.Marshal(next)
 			if err != nil {
