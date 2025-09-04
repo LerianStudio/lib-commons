@@ -49,16 +49,17 @@ func TestValidateBalancesRules(t *testing.T) {
 			validate: Responses{
 				Asset: "USD",
 				From: map[string]Amount{
-					"@account1": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT, TransactionType: constant.CREATED},
+					"0#@account1#default": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT, TransactionType: constant.CREATED},
 				},
 				To: map[string]Amount{
-					"@account2": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT, TransactionType: constant.CREATED},
+					"0#@account2#default": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT, TransactionType: constant.CREATED},
 				},
 			},
 			balances: []*Balance{
 				{
 					ID:             "123",
 					Alias:          "@account1",
+					BalanceKey:     "default",
 					AssetCode:      "USD",
 					Available:      decimal.NewFromInt(200),
 					OnHold:         decimal.NewFromInt(0),
@@ -69,6 +70,7 @@ func TestValidateBalancesRules(t *testing.T) {
 				{
 					ID:             "456",
 					Alias:          "@account2",
+					BalanceKey:     "default",
 					AssetCode:      "USD",
 					Available:      decimal.NewFromInt(50),
 					OnHold:         decimal.NewFromInt(0),
@@ -100,16 +102,17 @@ func TestValidateBalancesRules(t *testing.T) {
 			validate: Responses{
 				Asset: "USD",
 				From: map[string]Amount{
-					"@account1": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT, TransactionType: constant.CREATED},
+					"0#@account1#default": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT, TransactionType: constant.CREATED},
 				},
 				To: map[string]Amount{
-					"@account2": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT, TransactionType: constant.CREATED},
+					"0#@account2#default": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT, TransactionType: constant.CREATED},
 				},
 			},
 			balances: []*Balance{
 				{
 					ID:             "123",
 					Alias:          "@account1",
+					BalanceKey:     "default",
 					AssetCode:      "USD",
 					Available:      decimal.NewFromInt(50), // Insufficient funds
 					OnHold:         decimal.NewFromInt(0),
@@ -120,6 +123,7 @@ func TestValidateBalancesRules(t *testing.T) {
 				{
 					ID:             "456",
 					Alias:          "@account2",
+					BalanceKey:     "default",
 					AssetCode:      "USD",
 					Available:      decimal.NewFromInt(50),
 					OnHold:         decimal.NewFromInt(0),
@@ -136,10 +140,10 @@ func TestValidateBalancesRules(t *testing.T) {
 			transaction: Transaction{},
 			validate: Responses{
 				From: map[string]Amount{
-					"@account1": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT, TransactionType: constant.CREATED},
+					"0#@account1#default": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT, TransactionType: constant.CREATED},
 				},
 				To: map[string]Amount{
-					"@account2": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT, TransactionType: constant.CREATED},
+					"0#@account2#default": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT, TransactionType: constant.CREATED},
 				},
 			},
 			balances:    []*Balance{}, // Empty balances
@@ -183,13 +187,14 @@ func TestValidateFromBalances(t *testing.T) {
 			balance: &Balance{
 				ID:           "123",
 				Alias:        "@account1",
+				BalanceKey:   "default",
 				AssetCode:    "USD",
 				Available:    decimal.NewFromInt(100),
 				AllowSending: true,
 				AccountType:  "internal",
 			},
 			from: map[string]Amount{
-				"@account1": {Value: decimal.NewFromInt(50)},
+				"0#@account1#default": {Value: decimal.NewFromInt(50)},
 			},
 			asset:       "USD",
 			expectError: false,
@@ -199,13 +204,14 @@ func TestValidateFromBalances(t *testing.T) {
 			balance: &Balance{
 				ID:           "123",
 				Alias:        "@account1",
+				BalanceKey:   "default",
 				AssetCode:    "EUR",
 				Available:    decimal.NewFromInt(100),
 				AllowSending: true,
 				AccountType:  "internal",
 			},
 			from: map[string]Amount{
-				"@account1": {Value: decimal.NewFromInt(50)},
+				"0#@account1#default": {Value: decimal.NewFromInt(50)},
 			},
 			asset:       "USD",
 			expectError: true,
@@ -216,13 +222,14 @@ func TestValidateFromBalances(t *testing.T) {
 			balance: &Balance{
 				ID:           "123",
 				Alias:        "@account1",
+				BalanceKey:   "default",
 				AssetCode:    "USD",
 				Available:    decimal.NewFromInt(100),
 				AllowSending: false,
 				AccountType:  "internal",
 			},
 			from: map[string]Amount{
-				"@account1": {Value: decimal.NewFromInt(50)},
+				"0#@account1#default": {Value: decimal.NewFromInt(50)},
 			},
 			asset:       "USD",
 			expectError: true,
@@ -233,13 +240,14 @@ func TestValidateFromBalances(t *testing.T) {
 			balance: &Balance{
 				ID:           "123",
 				Alias:        "@account1",
+				BalanceKey:   "default",
 				AssetCode:    "USD",
 				Available:    decimal.NewFromInt(0),
 				AllowSending: true,
 				AccountType:  "internal",
 			},
 			from: map[string]Amount{
-				"@account1": {Value: decimal.NewFromInt(50)},
+				"0#@account1#default": {Value: decimal.NewFromInt(50)},
 			},
 			asset:       "USD",
 			expectError: true,
@@ -250,13 +258,14 @@ func TestValidateFromBalances(t *testing.T) {
 			balance: &Balance{
 				ID:           "123",
 				Alias:        "@external",
+				BalanceKey:   "default",
 				AssetCode:    "USD",
 				Available:    decimal.NewFromInt(0),
 				AllowSending: true,
 				AccountType:  constant.ExternalAccountType,
 			},
 			from: map[string]Amount{
-				"@external": {Value: decimal.NewFromInt(50)},
+				"0#@external#default": {Value: decimal.NewFromInt(50)},
 			},
 			asset:       "USD",
 			expectError: false,
@@ -298,13 +307,14 @@ func TestValidateToBalances(t *testing.T) {
 			balance: &Balance{
 				ID:             "123",
 				Alias:          "@account1",
+				BalanceKey:     "default",
 				AssetCode:      "USD",
 				Available:      decimal.NewFromInt(100),
 				AllowReceiving: true,
 				AccountType:    "internal",
 			},
 			to: map[string]Amount{
-				"@account1": {Value: decimal.NewFromInt(50)},
+				"0#@account1#default": {Value: decimal.NewFromInt(50)},
 			},
 			asset:       "USD",
 			expectError: false,
@@ -314,13 +324,14 @@ func TestValidateToBalances(t *testing.T) {
 			balance: &Balance{
 				ID:             "123",
 				Alias:          "@account1",
+				BalanceKey:     "default",
 				AssetCode:      "EUR",
 				Available:      decimal.NewFromInt(100),
 				AllowReceiving: true,
 				AccountType:    "internal",
 			},
 			to: map[string]Amount{
-				"@account1": {Value: decimal.NewFromInt(50)},
+				"0#@account1#default": {Value: decimal.NewFromInt(50)},
 			},
 			asset:       "USD",
 			expectError: true,
@@ -331,13 +342,14 @@ func TestValidateToBalances(t *testing.T) {
 			balance: &Balance{
 				ID:             "123",
 				Alias:          "@account1",
+				BalanceKey:     "default",
 				AssetCode:      "USD",
 				Available:      decimal.NewFromInt(100),
 				AllowReceiving: false,
 				AccountType:    "internal",
 			},
 			to: map[string]Amount{
-				"@account1": {Value: decimal.NewFromInt(50)},
+				"0#@account1#default": {Value: decimal.NewFromInt(50)},
 			},
 			asset:       "USD",
 			expectError: true,
@@ -348,13 +360,14 @@ func TestValidateToBalances(t *testing.T) {
 			balance: &Balance{
 				ID:             "123",
 				Alias:          "@external",
+				BalanceKey:     "default",
 				AssetCode:      "USD",
 				Available:      decimal.NewFromInt(100),
 				AllowReceiving: true,
 				AccountType:    constant.ExternalAccountType,
 			},
 			to: map[string]Amount{
-				"@external": {Value: decimal.NewFromInt(50)},
+				"0#@external#default": {Value: decimal.NewFromInt(50)},
 			},
 			asset:       "USD",
 			expectError: true,
@@ -439,6 +452,53 @@ func TestOperateBalances(t *testing.T) {
 				assert.Equal(t, tt.expected.Available.String(), result.Available.String())
 				assert.Equal(t, tt.expected.OnHold.String(), result.OnHold.String())
 			}
+		})
+	}
+}
+
+func TestAliasKey(t *testing.T) {
+	tests := []struct {
+		name       string
+		alias      string
+		balanceKey string
+		want       string
+	}{
+		{
+			name:       "alias with balance key",
+			alias:      "@person1",
+			balanceKey: "savings",
+			want:       "@person1#savings",
+		},
+		{
+			name:       "alias with empty balance key defaults to 'default'",
+			alias:      "@person1",
+			balanceKey: "",
+			want:       "@person1#default",
+		},
+		{
+			name:       "alias with special characters and balance key",
+			alias:      "@external/BRL",
+			balanceKey: "checking",
+			want:       "@external/BRL#checking",
+		},
+		{
+			name:       "empty alias with balance key",
+			alias:      "",
+			balanceKey: "current",
+			want:       "#current",
+		},
+		{
+			name:       "empty alias with empty balance key",
+			alias:      "",
+			balanceKey: "",
+			want:       "#default",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AliasKey(tt.alias, tt.balanceKey)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

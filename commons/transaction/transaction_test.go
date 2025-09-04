@@ -39,19 +39,19 @@ func TestBalance_IsEmpty(t *testing.T) {
 
 func TestFromTo_SplitAlias(t *testing.T) {
 	tests := []struct {
-		name        string
+		name         string
 		accountAlias string
-		want        string
+		want         string
 	}{
 		{
-			name:        "Alias without index",
+			name:         "Alias without index",
 			accountAlias: "@person1",
-			want:        "@person1",
+			want:         "@person1",
 		},
 		{
-			name:        "Alias with index",
+			name:         "Alias with index",
 			accountAlias: "1#@person1",
-			want:        "@person1",
+			want:         "@person1",
 		},
 	}
 
@@ -68,22 +68,32 @@ func TestFromTo_SplitAlias(t *testing.T) {
 
 func TestFromTo_ConcatAlias(t *testing.T) {
 	tests := []struct {
-		name        string
+		name         string
 		accountAlias string
-		index       int
-		want        string
+		balanceKey   string
+		index        int
+		want         string
 	}{
 		{
-			name:        "Concat index with alias",
+			name:         "Concat index with alias and balance key",
 			accountAlias: "@person1",
-			index:       1,
-			want:        "1#@person1",
+			balanceKey:   "savings",
+			index:        1,
+			want:         "1#@person1#savings",
 		},
 		{
-			name:        "Concat index with alias with zero index",
+			name:         "Concat index with alias and empty balance key",
 			accountAlias: "@person2",
-			index:       0,
-			want:        "0#@person2",
+			balanceKey:   "",
+			index:        0,
+			want:         "0#@person2#",
+		},
+		{
+			name:         "Concat index with alias and default balance key",
+			accountAlias: "@person3",
+			balanceKey:   "default",
+			index:        2,
+			want:         "2#@person3#default",
 		},
 	}
 
@@ -91,6 +101,7 @@ func TestFromTo_ConcatAlias(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ft := FromTo{
 				AccountAlias: tt.accountAlias,
+				BalanceKey:   tt.balanceKey,
 			}
 			got := ft.ConcatAlias(tt.index)
 			assert.Equal(t, tt.want, got)
