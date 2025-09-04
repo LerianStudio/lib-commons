@@ -18,7 +18,7 @@ type Balance struct {
 	LedgerID       string          `json:"ledgerId" example:"00000000-0000-0000-0000-000000000000"`
 	AccountID      string          `json:"accountId" example:"00000000-0000-0000-0000-000000000000"`
 	Alias          string          `json:"alias" example:"@person1"`
-	BalanceKey     string          `json:"balanceKey" example:"asset-freeze"`
+	Key            string          `json:"key" example:"asset-freeze"`
 	AssetCode      string          `json:"assetCode" example:"BRL"`
 	Available      decimal.Decimal `json:"available" example:"1500"`
 	OnHold         decimal.Decimal `json:"onHold" example:"500"`
