@@ -49,7 +49,7 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 
 func validateFromBalances(balance *Balance, from map[string]Amount, asset string, pending bool) error {
 	for key := range from {
-		if key == balance.ID || key == balance.Alias {
+		if key == balance.ID || SplitAliasWithKey(key) == AliasKey(balance.Alias, balance.BalanceKey) {
 			if balance.AssetCode != asset {
 				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateFromAccounts")
 			}
@@ -82,7 +82,7 @@ func validateFromBalances(balance *Balance, from map[string]Amount, asset string
 
 func validateToBalances(balance *Balance, to map[string]Amount, asset string) error {
 	for key := range to {
-		if key == balance.ID || key == balance.Alias {
+		if key == balance.ID || SplitAliasWithKey(key) == AliasKey(balance.Alias, balance.BalanceKey) {
 			if balance.AssetCode != asset {
 				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateToAccounts")
 			}
@@ -121,6 +121,15 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 
 		return validate.To[ft.AccountAlias], ba, nil
 	}
+}
+
+// AliasKey function to concatenate alias with balance key
+func AliasKey(alias, balanceKey string) string {
+	if balanceKey == "" {
+		balanceKey = "default"
+	}
+
+	return alias + "#" + balanceKey
 }
 
 // SplitAlias function to split alias with index
@@ -269,7 +278,7 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 			fromTos[i].Amount = &remaining
 		}
 
-		scdt = append(scdt, fromTos[i].SplitAlias())
+		scdt = append(scdt, AliasKey(fromTos[i].SplitAlias(), fromTos[i].BalanceKey))
 	}
 
 	t <- total
