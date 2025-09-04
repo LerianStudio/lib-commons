@@ -59,7 +59,7 @@ func TestValidateBalancesRules(t *testing.T) {
 				{
 					ID:             "123",
 					Alias:          "@account1",
-					BalanceKey:     "default",
+					Key:            "default",
 					AssetCode:      "USD",
 					Available:      decimal.NewFromInt(200),
 					OnHold:         decimal.NewFromInt(0),
@@ -70,7 +70,7 @@ func TestValidateBalancesRules(t *testing.T) {
 				{
 					ID:             "456",
 					Alias:          "@account2",
-					BalanceKey:     "default",
+					Key:            "default",
 					AssetCode:      "USD",
 					Available:      decimal.NewFromInt(50),
 					OnHold:         decimal.NewFromInt(0),
@@ -112,7 +112,7 @@ func TestValidateBalancesRules(t *testing.T) {
 				{
 					ID:             "123",
 					Alias:          "@account1",
-					BalanceKey:     "default",
+					Key:            "default",
 					AssetCode:      "USD",
 					Available:      decimal.NewFromInt(50), // Insufficient funds
 					OnHold:         decimal.NewFromInt(0),
@@ -123,7 +123,7 @@ func TestValidateBalancesRules(t *testing.T) {
 				{
 					ID:             "456",
 					Alias:          "@account2",
-					BalanceKey:     "default",
+					Key:            "default",
 					AssetCode:      "USD",
 					Available:      decimal.NewFromInt(50),
 					OnHold:         decimal.NewFromInt(0),
@@ -187,7 +187,7 @@ func TestValidateFromBalances(t *testing.T) {
 			balance: &Balance{
 				ID:           "123",
 				Alias:        "@account1",
-				BalanceKey:   "default",
+				Key:          "default",
 				AssetCode:    "USD",
 				Available:    decimal.NewFromInt(100),
 				AllowSending: true,
@@ -204,7 +204,7 @@ func TestValidateFromBalances(t *testing.T) {
 			balance: &Balance{
 				ID:           "123",
 				Alias:        "@account1",
-				BalanceKey:   "default",
+				Key:          "default",
 				AssetCode:    "EUR",
 				Available:    decimal.NewFromInt(100),
 				AllowSending: true,
@@ -222,7 +222,7 @@ func TestValidateFromBalances(t *testing.T) {
 			balance: &Balance{
 				ID:           "123",
 				Alias:        "@account1",
-				BalanceKey:   "default",
+				Key:          "default",
 				AssetCode:    "USD",
 				Available:    decimal.NewFromInt(100),
 				AllowSending: false,
@@ -240,7 +240,7 @@ func TestValidateFromBalances(t *testing.T) {
 			balance: &Balance{
 				ID:           "123",
 				Alias:        "@account1",
-				BalanceKey:   "default",
+				Key:          "default",
 				AssetCode:    "USD",
 				Available:    decimal.NewFromInt(0),
 				AllowSending: true,
@@ -258,7 +258,7 @@ func TestValidateFromBalances(t *testing.T) {
 			balance: &Balance{
 				ID:           "123",
 				Alias:        "@external",
-				BalanceKey:   "default",
+				Key:          "default",
 				AssetCode:    "USD",
 				Available:    decimal.NewFromInt(0),
 				AllowSending: true,
@@ -307,7 +307,7 @@ func TestValidateToBalances(t *testing.T) {
 			balance: &Balance{
 				ID:             "123",
 				Alias:          "@account1",
-				BalanceKey:     "default",
+				Key:            "default",
 				AssetCode:      "USD",
 				Available:      decimal.NewFromInt(100),
 				AllowReceiving: true,
@@ -324,7 +324,7 @@ func TestValidateToBalances(t *testing.T) {
 			balance: &Balance{
 				ID:             "123",
 				Alias:          "@account1",
-				BalanceKey:     "default",
+				Key:            "default",
 				AssetCode:      "EUR",
 				Available:      decimal.NewFromInt(100),
 				AllowReceiving: true,
@@ -342,7 +342,7 @@ func TestValidateToBalances(t *testing.T) {
 			balance: &Balance{
 				ID:             "123",
 				Alias:          "@account1",
-				BalanceKey:     "default",
+				Key:            "default",
 				AssetCode:      "USD",
 				Available:      decimal.NewFromInt(100),
 				AllowReceiving: false,
@@ -360,7 +360,7 @@ func TestValidateToBalances(t *testing.T) {
 			balance: &Balance{
 				ID:             "123",
 				Alias:          "@external",
-				BalanceKey:     "default",
+				Key:            "default",
 				AssetCode:      "USD",
 				Available:      decimal.NewFromInt(100),
 				AllowReceiving: true,
