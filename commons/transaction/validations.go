@@ -49,7 +49,8 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 
 func validateFromBalances(balance *Balance, from map[string]Amount, asset string, pending bool) error {
 	for key := range from {
-		if key == balance.ID || SplitAliasWithKey(key) == AliasKey(balance.Alias, balance.Key) {
+		balanceAliasKey := AliasKey(balance.Alias, balance.Key)
+		if key == balance.ID || SplitAliasWithKey(key) == balanceAliasKey {
 			if balance.AssetCode != asset {
 				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateFromAccounts")
 			}
@@ -81,8 +82,9 @@ func validateFromBalances(balance *Balance, from map[string]Amount, asset string
 }
 
 func validateToBalances(balance *Balance, to map[string]Amount, asset string) error {
+	balanceAliasKey := AliasKey(balance.Alias, balance.Key)
 	for key := range to {
-		if key == balance.ID || SplitAliasWithKey(key) == AliasKey(balance.Alias, balance.Key) {
+		if key == balance.ID || SplitAliasWithKey(key) == balanceAliasKey {
 			if balance.AssetCode != asset {
 				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateToAccounts")
 			}
