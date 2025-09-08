@@ -59,19 +59,6 @@ func validateFromBalances(balance *Balance, from map[string]Amount, asset string
 				return commons.ValidateBusinessError(constant.ErrAccountStatusTransactionRestriction, "validateFromAccounts")
 			}
 
-			if (balance.Available.IsZero() || balance.Available.IsNegative()) && balance.AccountType != constant.ExternalAccountType {
-				return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateFromAccounts", balance.Alias)
-			}
-
-			ba, err := OperateBalances(from[key], *balance)
-			if err != nil {
-				return err
-			}
-
-			if ba.Available.IsNegative() && balance.AccountType != constant.ExternalAccountType {
-				return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateBalance", balance.Alias)
-			}
-
 			if pending && balance.AccountType == constant.ExternalAccountType {
 				return commons.ValidateBusinessError(constant.ErrOnHoldExternalAccount, "validateBalance", balance.Alias)
 			}
