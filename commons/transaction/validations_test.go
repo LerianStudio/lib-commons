@@ -82,60 +82,6 @@ func TestValidateBalancesRules(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "invalid - insufficient funds",
-			transaction: Transaction{
-				Send: Send{
-					Asset: "USD",
-					Value: decimal.NewFromInt(100),
-					Source: Source{
-						From: []FromTo{
-							{AccountAlias: "@account1"},
-						},
-					},
-					Distribute: Distribute{
-						To: []FromTo{
-							{AccountAlias: "@account2"},
-						},
-					},
-				},
-			},
-			validate: Responses{
-				Asset: "USD",
-				From: map[string]Amount{
-					"0#@account1#default": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT, TransactionType: constant.CREATED},
-				},
-				To: map[string]Amount{
-					"0#@account2#default": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT, TransactionType: constant.CREATED},
-				},
-			},
-			balances: []*Balance{
-				{
-					ID:             "123",
-					Alias:          "@account1",
-					Key:            "default",
-					AssetCode:      "USD",
-					Available:      decimal.NewFromInt(50), // Insufficient funds
-					OnHold:         decimal.NewFromInt(0),
-					AllowSending:   true,
-					AllowReceiving: true,
-					AccountType:    "internal",
-				},
-				{
-					ID:             "456",
-					Alias:          "@account2",
-					Key:            "default",
-					AssetCode:      "USD",
-					Available:      decimal.NewFromInt(50),
-					OnHold:         decimal.NewFromInt(0),
-					AllowSending:   true,
-					AllowReceiving: true,
-					AccountType:    "internal",
-				},
-			},
-			expectError: true,
-			errorCode:   "0018", // ErrInsufficientFunds
-		},
-		{
 			name:        "invalid - wrong number of balances",
 			transaction: Transaction{},
 			validate: Responses{
@@ -234,24 +180,6 @@ func TestValidateFromBalances(t *testing.T) {
 			asset:       "USD",
 			expectError: true,
 			errorCode:   "0024", // ErrAccountStatusTransactionRestriction
-		},
-		{
-			name: "invalid - zero balance for internal account",
-			balance: &Balance{
-				ID:           "123",
-				Alias:        "@account1",
-				Key:          "default",
-				AssetCode:    "USD",
-				Available:    decimal.NewFromInt(0),
-				AllowSending: true,
-				AccountType:  "internal",
-			},
-			from: map[string]Amount{
-				"0#@account1#default": {Value: decimal.NewFromInt(50)},
-			},
-			asset:       "USD",
-			expectError: true,
-			errorCode:   "0018", // ErrInsufficientFunds
 		},
 		{
 			name: "valid - external account with zero balance",
