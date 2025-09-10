@@ -1,3 +1,10 @@
+## [2.3.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.6...v2.3.0-beta.7) (2025-09-10)
+
+
+### Features
+
+* **transaction:** implement balanceKey support in operations :sparkles: ([38ac489](https://github.com/LerianStudio/lib-commons/commit/38ac489a64c11810bf406d7a2141b4aed3ca6746))
+
 ## [2.3.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.5...v2.3.0-beta.6) (2025-08-21)
 
 
