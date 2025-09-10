@@ -49,26 +49,14 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 
 func validateFromBalances(balance *Balance, from map[string]Amount, asset string, pending bool) error {
 	for key := range from {
-		if key == balance.ID || key == balance.Alias {
+		balanceAliasKey := AliasKey(balance.Alias, balance.Key)
+		if key == balance.ID || SplitAliasWithKey(key) == balanceAliasKey {
 			if balance.AssetCode != asset {
 				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateFromAccounts")
 			}
 
 			if !balance.AllowSending {
 				return commons.ValidateBusinessError(constant.ErrAccountStatusTransactionRestriction, "validateFromAccounts")
-			}
-
-			if (balance.Available.IsZero() || balance.Available.IsNegative()) && balance.AccountType != constant.ExternalAccountType {
-				return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateFromAccounts", balance.Alias)
-			}
-
-			ba, err := OperateBalances(from[key], *balance)
-			if err != nil {
-				return err
-			}
-
-			if ba.Available.IsNegative() && balance.AccountType != constant.ExternalAccountType {
-				return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateBalance", balance.Alias)
 			}
 
 			if pending && balance.AccountType == constant.ExternalAccountType {
@@ -81,8 +69,9 @@ func validateFromBalances(balance *Balance, from map[string]Amount, asset string
 }
 
 func validateToBalances(balance *Balance, to map[string]Amount, asset string) error {
+	balanceAliasKey := AliasKey(balance.Alias, balance.Key)
 	for key := range to {
-		if key == balance.ID || key == balance.Alias {
+		if key == balance.ID || SplitAliasWithKey(key) == balanceAliasKey {
 			if balance.AssetCode != asset {
 				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateToAccounts")
 			}
@@ -121,6 +110,15 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 
 		return validate.To[ft.AccountAlias], ba, nil
 	}
+}
+
+// AliasKey function to concatenate alias with balance key
+func AliasKey(alias, balanceKey string) string {
+	if balanceKey == "" {
+		balanceKey = "default"
+	}
+
+	return alias + "#" + balanceKey
 }
 
 // SplitAlias function to split alias with index
@@ -269,12 +267,15 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 			fromTos[i].Amount = &remaining
 		}
 
-		scdt = append(scdt, fromTos[i].SplitAlias())
+		scdt = append(scdt, AliasKey(fromTos[i].SplitAlias(), fromTos[i].BalanceKey))
 	}
 
 	t <- total
+
 	ft <- fmto
+
 	sd <- scdt
+
 	or <- operationRoute
 }
 
@@ -324,6 +325,7 @@ func ValidateSendSourceAndDistribute(ctx context.Context, transaction Transactio
 	orFrom := make(chan map[string]string, sizeFrom)
 
 	go CalculateTotal(transaction.Send.Source.From, transaction, transactionType, tFrom, ftFrom, sdFrom, orFrom)
+
 	sourcesTotal = <-tFrom
 	response.From = <-ftFrom
 	response.Sources = <-sdFrom
@@ -336,6 +338,7 @@ func ValidateSendSourceAndDistribute(ctx context.Context, transaction Transactio
 	orTo := make(chan map[string]string, sizeTo)
 
 	go CalculateTotal(transaction.Send.Distribute.To, transaction, transactionType, tTo, ftTo, sdTo, orTo)
+
 	destinationsTotal = <-tTo
 	response.To = <-ftTo
 	response.Destinations = <-sdTo

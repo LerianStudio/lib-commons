@@ -18,6 +18,7 @@ type Balance struct {
 	LedgerID       string          `json:"ledgerId" example:"00000000-0000-0000-0000-000000000000"`
 	AccountID      string          `json:"accountId" example:"00000000-0000-0000-0000-000000000000"`
 	Alias          string          `json:"alias" example:"@person1"`
+	Key            string          `json:"key" example:"asset-freeze"`
 	AssetCode      string          `json:"assetCode" example:"BRL"`
 	Available      decimal.Decimal `json:"available" example:"1500"`
 	OnHold         decimal.Decimal `json:"onHold" example:"500"`
@@ -116,6 +117,7 @@ func (r Rate) IsEmpty() bool {
 // @Description FromTo is the struct designed to represent the from/to fields of an operation.
 type FromTo struct {
 	AccountAlias    string         `json:"accountAlias,omitempty" example:"@person1"`
+	BalanceKey      string         `json:"balanceKey,omitempty" example:"asset-freeze"`
 	Amount          *Amount        `json:"amount,omitempty"`
 	Share           *Share         `json:"share,omitempty"`
 	Remaining       string         `json:"remaining,omitempty" example:"remaining"`
@@ -136,9 +138,18 @@ func (ft FromTo) SplitAlias() string {
 	return ft.AccountAlias
 }
 
+// SplitAliasWithKey extracts the substring after the '#' character from the provided alias or returns the alias if '#' is not present.
+func SplitAliasWithKey(alias string) string {
+	if idx := strings.Index(alias, "#"); idx != -1 {
+		return alias[idx+1:]
+	}
+
+	return alias
+}
+
 // ConcatAlias function to concat alias with index.
 func (ft FromTo) ConcatAlias(i int) string {
-	return strconv.Itoa(i) + "#" + ft.AccountAlias
+	return strconv.Itoa(i) + "#" + ft.AccountAlias + "#" + ft.BalanceKey
 }
 
 // Distribute structure for marshaling/unmarshalling JSON.
