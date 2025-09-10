@@ -2,8 +2,6 @@ module github.com/LerianStudio/lib-commons/v2
 
 go 1.25
 
-toolchain go1.25.1
-
 require (
 	cloud.google.com/go/iam v1.5.2
 	github.com/Masterminds/squirrel v1.5.4
