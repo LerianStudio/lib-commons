@@ -271,8 +271,11 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 	}
 
 	t <- total
+
 	ft <- fmto
+
 	sd <- scdt
+
 	or <- operationRoute
 }
 
@@ -322,6 +325,7 @@ func ValidateSendSourceAndDistribute(ctx context.Context, transaction Transactio
 	orFrom := make(chan map[string]string, sizeFrom)
 
 	go CalculateTotal(transaction.Send.Source.From, transaction, transactionType, tFrom, ftFrom, sdFrom, orFrom)
+
 	sourcesTotal = <-tFrom
 	response.From = <-ftFrom
 	response.Sources = <-sdFrom
@@ -334,6 +338,7 @@ func ValidateSendSourceAndDistribute(ctx context.Context, transaction Transactio
 	orTo := make(chan map[string]string, sizeTo)
 
 	go CalculateTotal(transaction.Send.Distribute.To, transaction, transactionType, tTo, ftTo, sdTo, orTo)
+
 	destinationsTotal = <-tTo
 	response.To = <-ftTo
 	response.Destinations = <-sdTo
