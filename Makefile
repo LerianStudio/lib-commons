@@ -25,7 +25,7 @@ cover:
 lint:
 	@echo "$(BLUE)Running linting and performance checks...$(NC)"
 	$(call title1,"STARTING LINT")
-	$(call check_command,golangci-lint,"go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest")
+	$(call check_command,golangci-lint,"go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest")
 	@out=$$(golangci-lint run --fix ./... 2>&1); \
 	out_err=$$?; \
 	perf_out=$$(perfsprint ./... 2>&1); \
