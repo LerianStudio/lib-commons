@@ -62,6 +62,7 @@ func (rc *RabbitMQConnection) Connect() error {
 	return nil
 }
 
+// EnsureChannel ensures that the channel is open and connected.
 func (rc *RabbitMQConnection) EnsureChannel() error {
 	if rc.Connection == nil || rc.Connection.IsClosed() {
 		conn, err := amqp.Dial(rc.ConnectionStringSource)
