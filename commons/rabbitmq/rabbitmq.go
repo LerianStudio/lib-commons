@@ -3,16 +3,18 @@ package rabbitmq
 import (
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
-	"io"
-	"net/http"
 )
 
 // RabbitMQConnection is a hub which deal with rabbitmq connections.
 type RabbitMQConnection struct {
 	ConnectionStringSource string
+	Connection             *amqp.Connection
 	Queue                  string
 	HealthCheckURL         string
 	Host                   string
@@ -53,8 +55,32 @@ func (rc *RabbitMQConnection) Connect() error {
 	rc.Logger.Info("Connected on rabbitmq ✅ \n")
 
 	rc.Connected = true
+	rc.Connection = conn
 
 	rc.Channel = ch
+
+	return nil
+}
+
+func (rc *RabbitMQConnection) EnsureChannel() error {
+	if rc.Connection == nil || rc.Connection.IsClosed() {
+		conn, err := amqp.Dial(rc.ConnectionStringSource)
+		if err != nil {
+			return err
+		}
+
+		rc.Connection = conn
+		rc.Connected = true
+	}
+
+	if rc.Channel == nil || rc.Channel.IsClosed() {
+		ch, err := rc.Connection.Channel()
+		if err != nil {
+			return err
+		}
+
+		rc.Channel = ch
+	}
 
 	return nil
 }
