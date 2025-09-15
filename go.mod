@@ -6,7 +6,7 @@ require (
 	cloud.google.com/go/iam v1.5.2
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/alicebob/miniredis/v2 v2.35.0
-	github.com/bxcodec/dbresolver/v2 v2.2.0
+	github.com/bxcodec/dbresolver/v2 v2.2.1
 	github.com/gofiber/fiber/v2 v2.52.9
 	github.com/golang-migrate/migrate/v4 v4.19.0
 	github.com/google/uuid v1.6.0
