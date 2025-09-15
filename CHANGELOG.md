@@ -1,3 +1,11 @@
+## [2.3.0-beta.8](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.7...v2.3.0-beta.8) (2025-09-15)
+
+
+### Features
+
+* **rabbitmq:** add EnsureChannel method to manage RabbitMQ connection and channel lifecycle :sparkles: ([9e6ebf8](https://github.com/LerianStudio/lib-commons/commit/9e6ebf89c727e52290e83754ed89303557f6f69d))
+* **rabbitmq:** improve error logging in EnsureChannel method for connection and channel failures :sparkles: ([266febc](https://github.com/LerianStudio/lib-commons/commit/266febc427996da526abc7e50c53675b8abe2f18))
+
 ## [2.3.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.6...v2.3.0-beta.7) (2025-09-10)
 
 
