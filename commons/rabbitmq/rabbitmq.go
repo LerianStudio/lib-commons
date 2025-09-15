@@ -67,21 +67,26 @@ func (rc *RabbitMQConnection) EnsureChannel() error {
 	if rc.Connection == nil || rc.Connection.IsClosed() {
 		conn, err := amqp.Dial(rc.ConnectionStringSource)
 		if err != nil {
+			rc.Logger.Errorf("can't connect to rabbitmq: %v", err)
+
 			return err
 		}
 
 		rc.Connection = conn
-		rc.Connected = true
 	}
 
 	if rc.Channel == nil || rc.Channel.IsClosed() {
 		ch, err := rc.Connection.Channel()
 		if err != nil {
+			rc.Logger.Errorf("can't open channel on rabbitmq: %v", err)
+
 			return err
 		}
 
 		rc.Channel = ch
 	}
+
+	rc.Connected = true
 
 	return nil
 }
