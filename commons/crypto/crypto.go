@@ -8,9 +8,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
+	"io"
+
 	libLog "github.com/LerianStudio/lib-commons/v2/commons/log"
 	"go.uber.org/zap"
-	"io"
 )
 
 type Crypto struct {
@@ -71,6 +73,10 @@ func (c *Crypto) Encrypt(plainText *string) (*string, error) {
 		return nil, nil
 	}
 
+	if c.Cipher == nil {
+		return nil, errors.New("cipher not initialized")
+	}
+
 	// Generates random nonce with a size of 12 bytes
 	nonce := make([]byte, c.Cipher.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
@@ -93,6 +99,10 @@ func (c *Crypto) Decrypt(encryptedText *string) (*string, error) {
 		return nil, nil
 	}
 
+	if c.Cipher == nil {
+		return nil, errors.New("cipher not initialized")
+	}
+
 	decodedEncryptedText, err := base64.StdEncoding.DecodeString(*encryptedText)
 	if err != nil {
 		c.Logger.Error("Failed to decode encrypted text", zap.Error(err))
@@ -100,6 +110,12 @@ func (c *Crypto) Decrypt(encryptedText *string) (*string, error) {
 	}
 
 	nonceSize := c.Cipher.NonceSize()
+	if len(decodedEncryptedText) < nonceSize {
+		err := errors.New("ciphertext too short")
+		c.Logger.Error("Failed to decrypt ciphertext", zap.Error(err))
+
+		return nil, err
+	}
 
 	// Separating nonce from ciphertext before decrypting
 	nonce, cipherText := decodedEncryptedText[:nonceSize], decodedEncryptedText[nonceSize:]

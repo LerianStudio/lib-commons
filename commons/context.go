@@ -252,7 +252,7 @@ func ContextWithSpanAttributes(ctx context.Context, kv ...attribute.KeyValue) co
 
 // AttributesFromContext returns a shallow copy of the AttrBag slice, safe to reuse by processors.
 func AttributesFromContext(ctx context.Context) []attribute.KeyValue {
-	if values, ok := ctx.Value(CustomContextKey).(*CustomContextKeyValue); ok && len(values.AttrBag) > 0 {
+	if values, ok := ctx.Value(CustomContextKey).(*CustomContextKeyValue); ok && values != nil && len(values.AttrBag) > 0 {
 		out := make([]attribute.KeyValue, len(values.AttrBag))
 		copy(out, values.AttrBag)
 
