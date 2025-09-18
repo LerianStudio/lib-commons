@@ -1,3 +1,15 @@
+## [2.3.0-beta.10](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.9...v2.3.0-beta.10) (2025-09-18)
+
+
+### Bug Fixes
+
+* add error handling for short ciphertext in Decrypt method :bug: ([bc73d51](https://github.com/LerianStudio/lib-commons/commit/bc73d510bb21e5cc18a450d616746d21fbf85a3d))
+* add nil check for uninitialized cipher in Decrypt method :bug: ([e1934a2](https://github.com/LerianStudio/lib-commons/commit/e1934a26e5e2b6012f3bfdcf4378f70f21ec659a))
+* add nil check for uninitialized cipher in Encrypt method :bug: ([207cae6](https://github.com/LerianStudio/lib-commons/commit/207cae617e34bcf9ece83b61fbfbac308b935b44))
+* ensure nil check for values in AttributesFromContext function :bug: ([38f8c77](https://github.com/LerianStudio/lib-commons/commit/38f8c7725f9e91eff04c79b69983497f9ea5c86c))
+* initialize no-op providers in InitializeTelemetry when telemetry is disabled to prevent nil-pointer panics :bug: ([c40310d](https://github.com/LerianStudio/lib-commons/commit/c40310d90f06952877f815238e33cc382a4eafbd))
+* return TelemetryConfig in InitializeTelemetry when telemetry is disabled :bug: ([62bd90b](https://github.com/LerianStudio/lib-commons/commit/62bd90b525978ea2540746b367775143d39ca922))
+
 ## [2.3.0-beta.9](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.8...v2.3.0-beta.9) (2025-09-18)
 
 ## [2.3.0-beta.8](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.7...v2.3.0-beta.8) (2025-09-15)
