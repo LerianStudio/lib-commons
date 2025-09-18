@@ -137,8 +137,20 @@ func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
 	if !cfg.EnableTelemetry {
 		l.Warn("Telemetry turned off ⚠️ ")
 
+		// Initialize no-op providers to avoid nil-pointer panics when telemetry is disabled
+		mp := sdkmetric.NewMeterProvider()
+		tp := sdktrace.NewTracerProvider()
+		lp := sdklog.NewLoggerProvider()
+
+		// Provide a metrics factory using the no-op meter
+		metricsFactory := metrics.NewMetricsFactory(mp.Meter(cfg.LibraryName), l)
+
 		return &Telemetry{
 			TelemetryConfig: *cfg,
+			TracerProvider:  tp,
+			MetricProvider:  mp,
+			LoggerProvider:  lp,
+			MetricsFactory:  metricsFactory,
 			shutdown:        func() {},
 		}
 	}
