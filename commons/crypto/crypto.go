@@ -99,6 +99,10 @@ func (c *Crypto) Decrypt(encryptedText *string) (*string, error) {
 		return nil, nil
 	}
 
+	if c.Cipher == nil {
+		return nil, errors.New("cipher not initialized")
+	}
+
 	decodedEncryptedText, err := base64.StdEncoding.DecodeString(*encryptedText)
 	if err != nil {
 		c.Logger.Error("Failed to decode encrypted text", zap.Error(err))
