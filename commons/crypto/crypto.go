@@ -8,9 +8,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
+	"io"
+
 	libLog "github.com/LerianStudio/lib-commons/v2/commons/log"
 	"go.uber.org/zap"
-	"io"
 )
 
 type Crypto struct {
@@ -100,6 +102,12 @@ func (c *Crypto) Decrypt(encryptedText *string) (*string, error) {
 	}
 
 	nonceSize := c.Cipher.NonceSize()
+	if len(decodedEncryptedText) < nonceSize {
+		err := errors.New("ciphertext too short")
+		c.Logger.Error("Failed to decrypt ciphertext", zap.Error(err))
+
+		return nil, err
+	}
 
 	// Separating nonce from ciphertext before decrypting
 	nonce, cipherText := decodedEncryptedText[:nonceSize], decodedEncryptedText[nonceSize:]
