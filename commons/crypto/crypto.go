@@ -73,6 +73,10 @@ func (c *Crypto) Encrypt(plainText *string) (*string, error) {
 		return nil, nil
 	}
 
+	if c.Cipher == nil {
+		return nil, errors.New("cipher not initialized")
+	}
+
 	// Generates random nonce with a size of 12 bytes
 	nonce := make([]byte, c.Cipher.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
