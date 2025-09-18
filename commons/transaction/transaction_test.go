@@ -189,6 +189,35 @@ func TestFromTo_ConcatSplitAlias_Compatibility(t *testing.T) {
 	}
 }
 
+func TestFromTo_ConcatSplitAlias_AliasContainsHash(t *testing.T) {
+	ft := FromTo{
+		AccountAlias: "@person#vip",
+		BalanceKey:   "savings",
+	}
+
+	concatenated := ft.ConcatAlias(1)
+	ftWithConcatenated := FromTo{AccountAlias: concatenated}
+	extractedAlias := ftWithConcatenated.SplitAlias()
+
+	// Current behavior (documented): alias gets truncated at '#' due to ambiguous delimiter usage.
+	// This test documents the ambiguity; consider changing serialization or adding escaping.
+	assert.Equal(t, "@person", extractedAlias)
+}
+
+func TestFromTo_ConcatSplitAlias_BalanceKeyContainsHash(t *testing.T) {
+	ft := FromTo{
+		AccountAlias: "@person",
+		BalanceKey:   "sav#ings",
+	}
+
+	concatenated := ft.ConcatAlias(2)
+	ftWithConcatenated := FromTo{AccountAlias: concatenated}
+	extractedAlias := ftWithConcatenated.SplitAlias()
+
+	// Alias should still be extracted correctly regardless of balanceKey content
+	assert.Equal(t, ft.AccountAlias, extractedAlias)
+}
+
 func TestTransaction_IsEmpty(t *testing.T) {
 	tests := []struct {
 		name        string
