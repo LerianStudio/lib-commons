@@ -33,6 +33,7 @@ func (m *ManagerShutdown) SetHandler(handler Handler) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
 	m.handler = handler
 }
 

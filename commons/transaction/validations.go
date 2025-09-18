@@ -13,8 +13,7 @@ import (
 
 // ValidateBalancesRules function with some validates in accounts and DSL operations
 func ValidateBalancesRules(ctx context.Context, transaction Transaction, validate Responses, balances []*Balance) error {
-	logger := commons.NewLoggerFromContext(ctx)
-	tracer := commons.NewTracerFromContext(ctx)
+	logger, tracer, _, _ := commons.NewTrackingFromContext(ctx)
 
 	_, spanValidateBalances := tracer.Start(ctx, "validations.validate_balances_rules")
 	defer spanValidateBalances.End()
@@ -50,26 +49,14 @@ func ValidateBalancesRules(ctx context.Context, transaction Transaction, validat
 
 func validateFromBalances(balance *Balance, from map[string]Amount, asset string, pending bool) error {
 	for key := range from {
-		if key == balance.ID || key == balance.Alias {
+		balanceAliasKey := AliasKey(balance.Alias, balance.Key)
+		if key == balance.ID || SplitAliasWithKey(key) == balanceAliasKey {
 			if balance.AssetCode != asset {
 				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateFromAccounts")
 			}
 
 			if !balance.AllowSending {
 				return commons.ValidateBusinessError(constant.ErrAccountStatusTransactionRestriction, "validateFromAccounts")
-			}
-
-			if (balance.Available.IsZero() || balance.Available.IsNegative()) && balance.AccountType != constant.ExternalAccountType {
-				return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateFromAccounts", balance.Alias)
-			}
-
-			ba, err := OperateBalances(from[key], *balance)
-			if err != nil {
-				return err
-			}
-
-			if ba.Available.IsNegative() && balance.AccountType != constant.ExternalAccountType {
-				return commons.ValidateBusinessError(constant.ErrInsufficientFunds, "validateBalance", balance.Alias)
 			}
 
 			if pending && balance.AccountType == constant.ExternalAccountType {
@@ -82,8 +69,9 @@ func validateFromBalances(balance *Balance, from map[string]Amount, asset string
 }
 
 func validateToBalances(balance *Balance, to map[string]Amount, asset string) error {
+	balanceAliasKey := AliasKey(balance.Alias, balance.Key)
 	for key := range to {
-		if key == balance.ID || key == balance.Alias {
+		if key == balance.ID || SplitAliasWithKey(key) == balanceAliasKey {
 			if balance.AssetCode != asset {
 				return commons.ValidateBusinessError(constant.ErrAssetCodeNotFound, "validateToAccounts")
 			}
@@ -122,6 +110,15 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 
 		return validate.To[ft.AccountAlias], ba, nil
 	}
+}
+
+// AliasKey function to concatenate alias with balance key
+func AliasKey(alias, balanceKey string) string {
+	if balanceKey == "" {
+		balanceKey = "default"
+	}
+
+	return alias + "#" + balanceKey
 }
 
 // SplitAlias function to split alias with index
@@ -270,12 +267,15 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 			fromTos[i].Amount = &remaining
 		}
 
-		scdt = append(scdt, fromTos[i].SplitAlias())
+		scdt = append(scdt, AliasKey(fromTos[i].SplitAlias(), fromTos[i].BalanceKey))
 	}
 
 	t <- total
+
 	ft <- fmto
+
 	sd <- scdt
+
 	or <- operationRoute
 }
 
@@ -291,11 +291,16 @@ func AppendIfNotExist(slice []string, s []string) []string {
 }
 
 // ValidateSendSourceAndDistribute Validate send and distribute totals
-func ValidateSendSourceAndDistribute(transaction Transaction, transactionType string) (*Responses, error) {
+func ValidateSendSourceAndDistribute(ctx context.Context, transaction Transaction, transactionType string) (*Responses, error) {
 	var (
 		sourcesTotal      decimal.Decimal
 		destinationsTotal decimal.Decimal
 	)
+
+	logger, tracer, _, _ := commons.NewTrackingFromContext(ctx)
+
+	_, span := tracer.Start(ctx, "commons.transaction.ValidateSendSourceAndDistribute")
+	defer span.End()
 
 	sizeFrom := len(transaction.Send.Source.From)
 	sizeTo := len(transaction.Send.Distribute.To)
@@ -320,6 +325,7 @@ func ValidateSendSourceAndDistribute(transaction Transaction, transactionType st
 	orFrom := make(chan map[string]string, sizeFrom)
 
 	go CalculateTotal(transaction.Send.Source.From, transaction, transactionType, tFrom, ftFrom, sdFrom, orFrom)
+
 	sourcesTotal = <-tFrom
 	response.From = <-ftFrom
 	response.Sources = <-sdFrom
@@ -332,6 +338,7 @@ func ValidateSendSourceAndDistribute(transaction Transaction, transactionType st
 	orTo := make(chan map[string]string, sizeTo)
 
 	go CalculateTotal(transaction.Send.Distribute.To, transaction, transactionType, tTo, ftTo, sdTo, orTo)
+
 	destinationsTotal = <-tTo
 	response.To = <-ftTo
 	response.Destinations = <-sdTo
@@ -340,17 +347,23 @@ func ValidateSendSourceAndDistribute(transaction Transaction, transactionType st
 
 	for i, source := range response.Sources {
 		if _, ok := response.To[ConcatAlias(i, source)]; ok {
+			logger.Errorf("ValidateSendSourceAndDistribute: Ambiguous transaction source and destination")
+
 			return nil, commons.ValidateBusinessError(constant.ErrTransactionAmbiguous, "ValidateSendSourceAndDistribute")
 		}
 	}
 
 	for i, destination := range response.Destinations {
 		if _, ok := response.From[ConcatAlias(i, destination)]; ok {
+			logger.Errorf("ValidateSendSourceAndDistribute: Ambiguous transaction source and destination")
+
 			return nil, commons.ValidateBusinessError(constant.ErrTransactionAmbiguous, "ValidateSendSourceAndDistribute")
 		}
 	}
 
 	if !sourcesTotal.Equal(destinationsTotal) || !destinationsTotal.Equal(response.Total) {
+		logger.Errorf("ValidateSendSourceAndDistribute: Transaction value mismatch")
+
 		return nil, commons.ValidateBusinessError(constant.ErrTransactionValueMismatch, "ValidateSendSourceAndDistribute")
 	}
 

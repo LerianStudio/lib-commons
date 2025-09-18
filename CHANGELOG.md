@@ -1,3 +1,79 @@
+## [2.3.0-beta.10](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.9...v2.3.0-beta.10) (2025-09-18)
+
+
+### Bug Fixes
+
+* add error handling for short ciphertext in Decrypt method :bug: ([bc73d51](https://github.com/LerianStudio/lib-commons/commit/bc73d510bb21e5cc18a450d616746d21fbf85a3d))
+* add nil check for uninitialized cipher in Decrypt method :bug: ([e1934a2](https://github.com/LerianStudio/lib-commons/commit/e1934a26e5e2b6012f3bfdcf4378f70f21ec659a))
+* add nil check for uninitialized cipher in Encrypt method :bug: ([207cae6](https://github.com/LerianStudio/lib-commons/commit/207cae617e34bcf9ece83b61fbfbac308b935b44))
+* ensure nil check for values in AttributesFromContext function :bug: ([38f8c77](https://github.com/LerianStudio/lib-commons/commit/38f8c7725f9e91eff04c79b69983497f9ea5c86c))
+* initialize no-op providers in InitializeTelemetry when telemetry is disabled to prevent nil-pointer panics :bug: ([c40310d](https://github.com/LerianStudio/lib-commons/commit/c40310d90f06952877f815238e33cc382a4eafbd))
+* return TelemetryConfig in InitializeTelemetry when telemetry is disabled :bug: ([62bd90b](https://github.com/LerianStudio/lib-commons/commit/62bd90b525978ea2540746b367775143d39ca922))
+
+## [2.3.0-beta.9](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.8...v2.3.0-beta.9) (2025-09-18)
+
+## [2.3.0-beta.8](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.7...v2.3.0-beta.8) (2025-09-15)
+
+
+### Features
+
+* **rabbitmq:** add EnsureChannel method to manage RabbitMQ connection and channel lifecycle :sparkles: ([9e6ebf8](https://github.com/LerianStudio/lib-commons/commit/9e6ebf89c727e52290e83754ed89303557f6f69d))
+* **rabbitmq:** improve error logging in EnsureChannel method for connection and channel failures :sparkles: ([266febc](https://github.com/LerianStudio/lib-commons/commit/266febc427996da526abc7e50c53675b8abe2f18))
+
+## [2.3.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.6...v2.3.0-beta.7) (2025-09-10)
+
+
+### Features
+
+* **transaction:** implement balanceKey support in operations :sparkles: ([38ac489](https://github.com/LerianStudio/lib-commons/commit/38ac489a64c11810bf406d7a2141b4aed3ca6746))
+
+## [2.3.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.5...v2.3.0-beta.6) (2025-08-21)
+
+
+### Features
+
+* some adjusts; ([60b206a](https://github.com/LerianStudio/lib-commons/commit/60b206a8bf1c8a299648a5df09aea76191dbea0c))
+
+
+### Bug Fixes
+
+* go.mod and go.sum; ([cda49e7](https://github.com/LerianStudio/lib-commons/commit/cda49e7e7d7a9b5da91155c43bdb9966826a7f4c))
+* make lint ([ec9fc3a](https://github.com/LerianStudio/lib-commons/commit/ec9fc3ac4c39996b2e5ce308032f269380df32ee))
+* **cursor:** resolve first page prev_cursor bug and infinite loop issues; ([b0f8861](https://github.com/LerianStudio/lib-commons/commit/b0f8861c22521b6ec742a365560a439e28b866c4))
+* **cursor:** resolve pagination logic errors and add comprehensive UUID v7 tests ([2d48453](https://github.com/LerianStudio/lib-commons/commit/2d4845332e94b8225e781b267eec9f405519a7f6))
+
+## [2.3.0-beta.5](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.4...v2.3.0-beta.5) (2025-08-20)
+
+## [2.3.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.3...v2.3.0-beta.4) (2025-08-20)
+
+
+### Features
+
+* add telemetry and logging to transaction validation and gRPC middleware ([0aabecc](https://github.com/LerianStudio/lib-commons/commit/0aabeccb0a7bb2f50dfc3cf9544cfe6b2dcddf91))
+
+## [2.3.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.2...v2.3.0-beta.3) (2025-08-19)
+
+
+### Bug Fixes
+
+* Adjusting instance when telemetry is off. ([68504a7](https://github.com/LerianStudio/lib-commons/commit/68504a7080ce4f437a9f551ae4c259ed7c0daaa6))
+
+## [2.3.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v2.3.0-beta.1...v2.3.0-beta.2) (2025-08-18)
+
+
+### Features
+
+* Adding the crypto package of encryption and decryption. ([f309c23](https://github.com/LerianStudio/lib-commons/commit/f309c233404a56ca1bd3f27e7a9a28bd839fac37))
+* Adding the crypto package of encryption and decryption. ([577b746](https://github.com/LerianStudio/lib-commons/commit/577b746c0dfad3dc863027bbe6f5508b194f7578))
+
+## [2.3.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v2.2.0...v2.3.0-beta.1) (2025-08-18)
+
+
+### Bug Fixes
+
+* **otel:** reorder shutdown sequence to ensure proper telemetry export and add span attributes from request params id ([44fc4c9](https://github.com/LerianStudio/lib-commons/commit/44fc4c996e2f322244965bb31c79e069719a1e1f))
+* **http:** use HasPrefix instead of Contains for route exclusion matching ([9891eac](https://github.com/LerianStudio/lib-commons/commit/9891eacbd75dfce11ba57ebf2a6f38144dc04505))
+
 ## [2.2.0](https://github.com/LerianStudio/lib-commons/compare/v2.1.0...v2.2.0) (2025-08-08)
 
 
