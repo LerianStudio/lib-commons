@@ -3,7 +3,7 @@ module github.com/LerianStudio/lib-commons/v2
 go 1.24.0
 
 require (
-	cloud.google.com/go/iam v1.5.2
+	cloud.google.com/go/iam v1.5.3
 	github.com/Masterminds/squirrel v1.5.4
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/bxcodec/dbresolver/v2 v2.2.1
