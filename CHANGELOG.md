@@ -1,3 +1,10 @@
+## [2.4.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v2.3.0...v2.4.0-beta.1) (2025-10-14)
+
+
+### Features
+
+* Adding datasource constants. ([5a04f8a](https://github.com/LerianStudio/lib-commons/commit/5a04f8a5eb139318b7b71c1fef9d966bfd296f50))
+
 ## [2.3.0](https://github.com/LerianStudio/lib-commons/compare/v2.2.0...v2.3.0) (2025-09-18)
 
 
