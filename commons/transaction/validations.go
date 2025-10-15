@@ -138,8 +138,9 @@ func ConcatAlias(i int, alias string) string {
 // OperateBalances Function to sum or sub two balances and Normalize the scale
 func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 	var (
-		total       decimal.Decimal
-		totalOnHold decimal.Decimal
+		total        decimal.Decimal
+		totalOnHold  decimal.Decimal
+		totalVersion int64
 	)
 
 	total = balance.Available
@@ -160,11 +161,17 @@ func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 		total = balance.Available.Sub(amount.Value)
 	case amount.Operation == constant.CREDIT && amount.TransactionType == constant.CREATED:
 		total = balance.Available.Add(amount.Value)
+	default:
+		// For unknown operations, return the original balance without changing the version.
+		return balance, nil
 	}
+
+	totalVersion = balance.Version + 1
 
 	return Balance{
 		Available: total,
 		OnHold:    totalOnHold,
+		Version:   totalVersion,
 	}, nil
 }
 
