@@ -1,3 +1,15 @@
+## [2.4.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.1...v2.4.0-beta.2) (2025-10-15)
+
+
+### Features
+
+* update OperateBalances to include balance versioning :sparkles: ([3a75235](https://github.com/LerianStudio/lib-commons/commit/3a75235256893ea35ea94edfe84789a84b620b2f))
+
+
+### Bug Fixes
+
+* update OperateBalances to handle unknown operations without changing balance version :bug: ([2f4369d](https://github.com/LerianStudio/lib-commons/commit/2f4369d1b73eaaf66bd2b9a430584c2f9a840ac4))
+
 ## [2.4.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v2.3.0...v2.4.0-beta.1) (2025-10-14)
 
 
