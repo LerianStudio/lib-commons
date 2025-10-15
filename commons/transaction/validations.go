@@ -145,7 +145,6 @@ func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 
 	total = balance.Available
 	totalOnHold = balance.OnHold
-	totalVersion = balance.Version + 1
 
 	switch {
 	case amount.Operation == constant.ONHOLD && amount.TransactionType == constant.PENDING:
@@ -162,7 +161,12 @@ func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 		total = balance.Available.Sub(amount.Value)
 	case amount.Operation == constant.CREDIT && amount.TransactionType == constant.CREATED:
 		total = balance.Available.Add(amount.Value)
+	default:
+		// For unknown operations, return the original balance without changing the version.
+		return balance, nil
 	}
+
+	totalVersion = balance.Version + 1
 
 	return Balance{
 		Available: total,
