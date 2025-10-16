@@ -1,3 +1,10 @@
+## [2.4.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.2...v2.4.0-beta.3) (2025-10-16)
+
+
+### Features
+
+* **ratelimit:** add Redis-based rate limiting with global middleware support ([9a976c3](https://github.com/LerianStudio/lib-commons/commit/9a976c3267adc45f77482f68a3e1ebc65c6baa42))
+
 ## [2.4.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.1...v2.4.0-beta.2) (2025-10-15)
 
 
