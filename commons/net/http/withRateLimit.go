@@ -42,7 +42,7 @@ type RateLimitConfig struct {
 
 	// Logger is an optional function for logging rate limit events
 	// If nil, no logging is performed (service can inject its own logger)
-	Logger func(level string, format string, args ...interface{})
+	Logger func(level string, format string, args ...any)
 
 	// OnRateLimitExceeded is an optional callback when rate limit is exceeded
 	// Useful for metrics, alerts, or custom actions
@@ -123,6 +123,7 @@ func RateLimitMiddleware(config RateLimitConfig) fiber.Handler {
 				if config.Logger != nil {
 					config.Logger("warn", "Rate limiter failed open, allowing request")
 				}
+
 				return c.Next()
 			}
 
@@ -130,6 +131,7 @@ func RateLimitMiddleware(config RateLimitConfig) fiber.Handler {
 			if config.Logger != nil {
 				config.Logger("warn", "Rate limiter failed closed, blocking request")
 			}
+
 			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 				"code":    "SERVICE_UNAVAILABLE",
 				"message": "Service temporarily unavailable. Please try again later.",

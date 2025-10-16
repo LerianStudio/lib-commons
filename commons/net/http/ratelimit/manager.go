@@ -181,7 +181,7 @@ type MiddlewareOptions struct {
 	IncludeHeaders bool
 
 	// Logger for rate limit events (optional)
-	Logger func(level, format string, args ...interface{})
+	Logger func(level, format string, args ...any)
 
 	// OnRateLimitExceeded callback (optional)
 	OnRateLimitExceeded func(c *fiber.Ctx, key string, result *Result)

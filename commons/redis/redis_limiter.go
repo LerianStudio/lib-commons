@@ -119,10 +119,12 @@ func (rl *RedisLimiter) Allow(ctx context.Context, key string) (*ratelimit.Resul
 // - Implementing "forgiveness" logic after temporary blocks
 func (rl *RedisLimiter) Reset(ctx context.Context, key string) error {
 	redisKey := rl.buildRedisKey(key)
+
 	err := rl.client.Del(ctx, redisKey).Err()
 	if err != nil {
 		return fmt.Errorf("failed to reset rate limit: %w", err)
 	}
+
 	return nil
 }
 
@@ -139,5 +141,6 @@ func (rl *RedisLimiter) buildRedisKey(key string) string {
 	if rl.config.KeyPrefix == "" {
 		return key
 	}
+
 	return fmt.Sprintf("%s:%s", rl.config.KeyPrefix, key)
 }

@@ -102,6 +102,7 @@ func NewGlobalHandler(cfg *GlobalHandlerConfig, lg log.Logger) *GlobalHandler {
 		if lg != nil {
 			lg.Info("Global rate limiting is disabled")
 		}
+
 		return &GlobalHandler{
 			manager: nil,
 			config:  cfg,
@@ -114,6 +115,7 @@ func NewGlobalHandler(cfg *GlobalHandlerConfig, lg log.Logger) *GlobalHandler {
 		if lg != nil {
 			lg.Error("LimiterFactory is required when rate limiting is enabled")
 		}
+
 		panic("LimiterFactory is required when rate limiting is enabled")
 	}
 
@@ -167,6 +169,7 @@ func (h *GlobalHandler) GlobalMiddleware() fiber.Handler {
 			if h.logger != nil {
 				h.logger.Warn("Rate limiting is disabled")
 			}
+
 			return c.Next()
 		}
 	}
@@ -192,13 +195,13 @@ func (h *GlobalHandler) GetManager() *Manager {
 }
 
 // createLogger creates a logger function adapter for the rate limiter.
-func (h *GlobalHandler) createLogger() func(level, format string, args ...interface{}) {
+func (h *GlobalHandler) createLogger() func(level, format string, args ...any) {
 	if h.logger == nil {
 		// Return no-op logger if none configured
-		return func(level, format string, args ...interface{}) {}
+		return func(level, format string, args ...any) {}
 	}
 
-	return func(level, format string, args ...interface{}) {
+	return func(level, format string, args ...any) {
 		switch level {
 		case "error":
 			h.logger.Errorf(format, args...)
