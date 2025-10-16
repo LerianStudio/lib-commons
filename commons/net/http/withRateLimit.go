@@ -63,7 +63,49 @@ type RateLimitConfig struct {
 //
 // This is a generic implementation suitable for any Fiber-based service.
 func RateLimitMiddleware(config RateLimitConfig) fiber.Handler {
-	// Set defaults
+	applyDefaults(&config)
+
+	return func(c *fiber.Ctx) error {
+		ctx := c.UserContext()
+
+		// Check if path should skip rate limiting
+		if shouldSkipPath(c.Path(), config.SkipPaths) {
+			return c.Next()
+		}
+
+		// Extract rate limit key from request
+		key := config.KeyGenerator(c)
+		if key == "" {
+			// If key generator returns empty, skip rate limiting
+			// This allows conditional rate limiting
+			return c.Next()
+		}
+
+		// Check rate limit
+		result, err := config.Limiter.Allow(ctx, key)
+
+		// Handle rate limiter errors
+		if err != nil {
+			return handleRateLimiterError(c, config, err, key)
+		}
+
+		// Set rate limit headers if enabled
+		if config.IncludeHeaders {
+			setRateLimitHeaders(c, result)
+		}
+
+		// Check if rate limit exceeded
+		if !result.Allowed {
+			return handleRateLimitExceeded(c, config, key, result)
+		}
+
+		// Rate limit check passed, continue processing
+		return c.Next()
+	}
+}
+
+// applyDefaults sets default values for the rate limit configuration.
+func applyDefaults(config *RateLimitConfig) {
 	if config.KeyGenerator == nil {
 		// Default: rate limit by IP address
 		config.KeyGenerator = func(c *fiber.Ctx) string {
@@ -87,88 +129,64 @@ func RateLimitMiddleware(config RateLimitConfig) fiber.Handler {
 	if !config.IncludeHeaders {
 		config.IncludeHeaders = true
 	}
+}
 
-	return func(c *fiber.Ctx) error {
-		ctx := c.UserContext()
+// handleRateLimiterError handles errors from the rate limiter.
+// Behavior depends on the configured FailureMode:
+// - FailOpen: Allow request but log error
+// - FailClosed: Block request with 503 Service Unavailable
+func handleRateLimiterError(c *fiber.Ctx, config RateLimitConfig, err error, key string) error {
+	if config.Logger != nil {
+		config.Logger("error", "Rate limiter error: %v (key: %s, mode: %s)", err, key, config.FailureMode)
+	}
 
-		// Check if path should skip rate limiting
-		if shouldSkipPath(c.Path(), config.SkipPaths) {
-			return c.Next()
+	if config.OnError != nil {
+		config.OnError(c, err)
+	}
+
+	// Behavior depends on failure mode
+	if config.FailureMode == ratelimit.FailOpen {
+		// Fail open: allow request but log error
+		if config.Logger != nil {
+			config.Logger("warn", "Rate limiter failed open, allowing request")
 		}
 
-		// Extract rate limit key from request
-		key := config.KeyGenerator(c)
-		if key == "" {
-			// If key generator returns empty, skip rate limiting
-			// This allows conditional rate limiting
-			return c.Next()
-		}
-
-		// Check rate limit
-		result, err := config.Limiter.Allow(ctx, key)
-
-		// Handle rate limiter errors
-		if err != nil {
-			if config.Logger != nil {
-				config.Logger("error", "Rate limiter error: %v (key: %s, mode: %s)", err, key, config.FailureMode)
-			}
-
-			if config.OnError != nil {
-				config.OnError(c, err)
-			}
-
-			// Behavior depends on failure mode
-			if config.FailureMode == ratelimit.FailOpen {
-				// Fail open: allow request but log error
-				if config.Logger != nil {
-					config.Logger("warn", "Rate limiter failed open, allowing request")
-				}
-
-				return c.Next()
-			}
-
-			// Fail closed: block request with 503 Service Unavailable
-			if config.Logger != nil {
-				config.Logger("warn", "Rate limiter failed closed, blocking request")
-			}
-
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"code":    "SERVICE_UNAVAILABLE",
-				"message": "Service temporarily unavailable. Please try again later.",
-			})
-		}
-
-		// Set rate limit headers if enabled
-		if config.IncludeHeaders {
-			setRateLimitHeaders(c, result)
-		}
-
-		// Check if rate limit exceeded
-		if !result.Allowed {
-			if config.Logger != nil {
-				config.Logger("warn", "Rate limit exceeded for key: %s (limit: %d, remaining: %d)",
-					key, result.Limit, result.Remaining)
-			}
-
-			if config.OnRateLimitExceeded != nil {
-				config.OnRateLimitExceeded(c, key, result)
-			}
-
-			// Set Retry-After header (RFC 6585)
-			retryAfterSeconds := max(int(result.RetryAfter.Seconds()), 1)
-
-			c.Set("Retry-After", fmt.Sprintf("%d", retryAfterSeconds))
-
-			// Return 429 Too Many Requests with generic error structure
-			return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
-				"code":    config.ErrorCode,
-				"message": config.ErrorMessage,
-			})
-		}
-
-		// Rate limit check passed, continue processing
 		return c.Next()
 	}
+
+	// Fail closed: block request with 503 Service Unavailable
+	if config.Logger != nil {
+		config.Logger("warn", "Rate limiter failed closed, blocking request")
+	}
+
+	return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+		"code":    "SERVICE_UNAVAILABLE",
+		"message": "Service temporarily unavailable. Please try again later.",
+	})
+}
+
+// handleRateLimitExceeded handles the case when rate limit is exceeded.
+// Returns 429 Too Many Requests with Retry-After header.
+func handleRateLimitExceeded(c *fiber.Ctx, config RateLimitConfig, key string, result *ratelimit.Result) error {
+	if config.Logger != nil {
+		config.Logger("warn", "Rate limit exceeded for key: %s (limit: %d, remaining: %d)",
+			key, result.Limit, result.Remaining)
+	}
+
+	if config.OnRateLimitExceeded != nil {
+		config.OnRateLimitExceeded(c, key, result)
+	}
+
+	// Set Retry-After header (RFC 6585)
+	retryAfterSeconds := max(int(result.RetryAfter.Seconds()), 1)
+
+	c.Set("Retry-After", fmt.Sprintf("%d", retryAfterSeconds))
+
+	// Return 429 Too Many Requests with generic error structure
+	return c.Status(fiber.StatusTooManyRequests).JSON(fiber.Map{
+		"code":    config.ErrorCode,
+		"message": config.ErrorMessage,
+	})
 }
 
 // setRateLimitHeaders sets standard rate limit headers on the response.
