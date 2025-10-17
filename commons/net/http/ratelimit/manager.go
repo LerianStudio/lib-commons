@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/LerianStudio/lib-commons/v2/commons"
+	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -224,9 +225,12 @@ func createMiddleware(limiter Limiter, keyGen func(*fiber.Ctx) string, opts Midd
 				return c.Next()
 			}
 
+			err := commons.ValidateRateLimitError(constant.ErrServiceUnavailable, "")
+
 			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"code":    "SERVICE_UNAVAILABLE",
-				"message": "Service temporarily unavailable",
+				"code":    err.Code,
+				"title":   err.Title,
+				"message": err.Message,
 			})
 		}
 
@@ -251,12 +255,12 @@ func createMiddleware(limiter Limiter, keyGen func(*fiber.Ctx) string, opts Midd
 
 			c.Set("Retry-After", fmt.Sprintf("%d", retryAfter))
 
-			// Build error response from RateLimitError
-			// TODO: Use the error from lib-commons constants and validateBusinessError as fallback
+			err := commons.ValidateRateLimitError(constant.ErrRateLimitExceeded, "")
+
 			errorResponse := fiber.Map{
-				"code":    "RATE_LIMIT_EXCEEDED",
-				"title":   "Rate Limit Exceeded",
-				"message": "Too many requests. Please try again later.",
+				"code":    err.Code,
+				"title":   err.Title,
+				"message": err.Message,
 			}
 
 			if opts.RateLimitError != nil {
