@@ -1,3 +1,10 @@
+## [2.4.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.3...v2.4.0-beta.4) (2025-10-17)
+
+
+### Features
+
+* add service unavailable error code and standardize rate limit responses ([f65af5a](https://github.com/LerianStudio/lib-commons/commit/f65af5a258b3d7659e3b5afc0854036d8ace14b5))
+
 ## [2.4.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.2...v2.4.0-beta.3) (2025-10-16)
 
 
