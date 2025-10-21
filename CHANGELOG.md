@@ -1,3 +1,17 @@
+## [2.4.0-beta.5](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.4...v2.4.0-beta.5) (2025-10-21)
+
+
+### Features
+
+* **redis:** add RateLimiterLockOptions helper function ([6535d18](https://github.com/LerianStudio/lib-commons/commit/6535d18146a36eaf23584893b7ff4fdef0d6fe61))
+* **redis:** implement distributed locking with RedLock algorithm ([5ee1bdb](https://github.com/LerianStudio/lib-commons/commit/5ee1bdb96af56371309231323f4be7e09c98e6b5))
+
+
+### Bug Fixes
+
+* **redis:** correct benchmark loop and test naming in rate limiter tests ([4622c78](https://github.com/LerianStudio/lib-commons/commit/4622c783412d81408697413d1e70d1ced6c6c3be))
+* **redis:** correct goroutine test assertions in distributed lock tests ([b9e6d70](https://github.com/LerianStudio/lib-commons/commit/b9e6d703de7893cec558bb673632559175e4604f))
+
 ## [2.4.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.3...v2.4.0-beta.4) (2025-10-17)
 
 
