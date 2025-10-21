@@ -90,13 +90,8 @@ func (rl *RedisLimiter) allowWithLock(ctx context.Context, key string) (*ratelim
 
 	lockKey := fmt.Sprintf("lock:ratelimit:%s", key)
 
-	// Use shorter lock options for rate limiting (fast operation)
-	opts := LockOptions{
-		Expiry:      2 * time.Second, // Rate limit checks are fast
-		Tries:       2,               // Quick retry
-		RetryDelay:  100 * time.Millisecond,
-		DriftFactor: 0.01,
-	}
+	// Use optimized lock options for rate limiting (fast operation)
+	opts := RateLimiterLockOptions()
 
 	err := rl.DistributedLocker.WithLockOptions(ctx, lockKey, opts, func() error {
 		// Execute the rate limit check atomically

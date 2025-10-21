@@ -73,6 +73,20 @@ func DefaultLockOptions() LockOptions {
 	}
 }
 
+// RateLimiterLockOptions returns optimized defaults for rate limiter locking.
+// These values are tuned for short, fast operations like rate limiting:
+// - Quick operations (< 100ms)
+// - Fast retry for better throughput
+// - Lower expiry to reduce contention
+func RateLimiterLockOptions() LockOptions {
+	return LockOptions{
+		Expiry:      2 * time.Second,
+		Tries:       2,
+		RetryDelay:  100 * time.Millisecond,
+		DriftFactor: 0.01,
+	}
+}
+
 // NewDistributedLock creates a new distributed lock manager.
 // The lock manager uses the RedLock algorithm for distributed consensus.
 //
