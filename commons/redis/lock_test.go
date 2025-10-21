@@ -366,6 +366,9 @@ func TestDistributedLock_ConcurrentDifferentKeys(t *testing.T) {
 		DriftFactor: 0.01,
 	}
 
+	// Channel to collect errors from goroutines
+	errCh := make(chan error, numKeys*numGoroutinesPerKey)
+
 	for keyIdx := range numKeys {
 		for range numGoroutinesPerKey {
 			wg.Add(1)
@@ -378,12 +381,20 @@ func TestDistributedLock_ConcurrentDifferentKeys(t *testing.T) {
 					time.Sleep(5 * time.Millisecond)
 					return nil
 				})
-				assert.NoError(t, err)
+				if err != nil {
+					errCh <- err
+				}
 			}(keyIdx)
 		}
 	}
 
 	wg.Wait()
+	close(errCh)
+
+	// Assert errors in main goroutine
+	for err := range errCh {
+		assert.NoError(t, err)
+	}
 
 	// Each counter should have been incremented by numGoroutinesPerKey
 	for i, count := range counters {
