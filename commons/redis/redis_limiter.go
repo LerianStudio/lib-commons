@@ -12,9 +12,23 @@ import (
 // RedisLimiter implements distributed rate limiting using Redis.
 // It uses sorted sets with sliding window algorithm for accurate rate limiting.
 // This implementation is production-ready and can handle high-throughput scenarios.
+//
+// Optional Race Condition Protection:
+// By default, RedisLimiter uses Redis pipelines which provide good performance but
+// have a race condition window where concurrent requests can exceed the limit.
+// For strict rate limiting guarantees, set UseLocking to true and provide a
+// DistributedLocker. This adds ~10-50ms latency but ensures atomic operations.
 type RedisLimiter struct {
 	client redis.UniversalClient
 	config ratelimit.Config
+
+	// UseLocking enables distributed locking for atomic rate limit checks.
+	// Default: false (uses faster pipeline-based approach)
+	UseLocking bool
+
+	// DistributedLocker provides the locking mechanism when UseLocking is true.
+	// If UseLocking is true but this is nil, falls back to non-locking behavior.
+	DistributedLocker DistributedLocker
 }
 
 // Factory is a ready-to-use LimiterFactory for creating Redis-backed rate limiters.
@@ -54,7 +68,55 @@ func NewRedisLimiter(client redis.UniversalClient, config ratelimit.Config) *Red
 // - Automatic cleanup of old data
 // - Atomic operations via Redis pipeline
 // - Distributed consistency across multiple service instances
+//
+// Race Condition Protection:
+// If UseLocking is enabled and a DistributedLocker is provided, the entire
+// operation is wrapped in a distributed lock to prevent concurrent requests
+// from exceeding the limit. This adds latency but ensures strict guarantees.
 func (rl *RedisLimiter) Allow(ctx context.Context, key string) (*ratelimit.Result, error) {
+	// If locking is enabled and locker is available, use it
+	if rl.UseLocking && rl.DistributedLocker != nil {
+		return rl.allowWithLock(ctx, key)
+	}
+
+	// Otherwise, use the fast pipeline-based approach
+	return rl.allowWithPipeline(ctx, key)
+}
+
+// allowWithLock performs rate limiting with distributed locking for atomic guarantees.
+// This prevents the race condition where multiple concurrent requests can exceed the limit.
+func (rl *RedisLimiter) allowWithLock(ctx context.Context, key string) (*ratelimit.Result, error) {
+	var result *ratelimit.Result
+	lockKey := fmt.Sprintf("lock:ratelimit:%s", key)
+
+	// Use shorter lock options for rate limiting (fast operation)
+	opts := LockOptions{
+		Expiry:      2 * time.Second, // Rate limit checks are fast
+		Tries:       2,               // Quick retry
+		RetryDelay:  100 * time.Millisecond,
+		DriftFactor: 0.01,
+	}
+
+	err := rl.DistributedLocker.WithLockOptions(ctx, lockKey, opts, func() error {
+		// Execute the rate limit check atomically
+		res, err := rl.allowWithPipeline(ctx, key)
+		if err != nil {
+			return err
+		}
+		result = res
+		return nil
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("rate limit check with lock failed: %w", err)
+	}
+
+	return result, nil
+}
+
+// allowWithPipeline performs rate limiting using Redis pipelines.
+// This is the fast path but has a small race condition window.
+func (rl *RedisLimiter) allowWithPipeline(ctx context.Context, key string) (*ratelimit.Result, error) {
 	now := time.Now()
 	windowStart := now.Add(-rl.config.Window)
 	resetAt := now.Add(rl.config.Window)
@@ -96,10 +158,7 @@ func (rl *RedisLimiter) Allow(ctx context.Context, key string) (*ratelimit.Resul
 	allowed := currentCount < rl.config.Max
 
 	// Calculate remaining requests
-	remaining := rl.config.Max - currentCount - 1
-	if remaining < 0 {
-		remaining = 0
-	}
+	remaining := max(rl.config.Max-currentCount-1, 0)
 
 	result := &ratelimit.Result{
 		Allowed:    allowed,
