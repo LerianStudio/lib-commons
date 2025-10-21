@@ -177,8 +177,8 @@ func TestRedisLimiter_ConcurrentRequests_WithoutLocking(t *testing.T) {
 	t.Logf("Without locking: %d allowed (limit: 10, expected: might exceed due to race)", allowedCount)
 }
 
-// TestRedisLimiter_ConcurrentRequests_WithLocking tests that locking provides better consistency
-func TestRedisLimiter_ConcurrentRequests_WithLocking(t *testing.T) {
+// TestRedisLimiter_SequentialRequests_WithLocking tests that locking works correctly for sequential requests
+func TestRedisLimiter_SequentialRequests_WithLocking(t *testing.T) {
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 
@@ -445,7 +445,8 @@ func BenchmarkRedisLimiter_WithLocking(b *testing.B) {
 
 	ctx := context.Background()
 
-	for i := 0; b.Loop(); i++ {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
 		limiter.Allow(ctx, fmt.Sprintf("user:%d", i%100))
 	}
 }
