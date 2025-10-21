@@ -101,7 +101,6 @@ func ValidateBusinessError(err error, entityType string, args ...any) error {
 			Message:    "External accounts cannot be used for pending transactions in source operations. Please check the accounts and try again.",
 		},
 	}
-
 	if mappedError, found := errorMap[err]; found {
 		return mappedError
 	}
