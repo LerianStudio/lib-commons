@@ -86,7 +86,6 @@ func HandleFiberError(c *fiber.Ctx, err error) error {
 	code := fiber.StatusInternalServerError
 
 	var e *fiber.Error
-
 	if errors.As(err, &e) {
 		code = e.Code
 	}

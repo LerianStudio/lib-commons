@@ -32,8 +32,6 @@ type CustomContextKeyValue struct {
 
 // ---- Logger helpers ----
 
-// Deprecated: use NewTrackingFromContext instead
-//
 // NewLoggerFromContext extract the Logger from "logger" value inside context
 //
 //nolint:ireturn

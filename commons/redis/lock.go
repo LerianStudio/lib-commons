@@ -154,6 +154,7 @@ func (dl *DistributedLock) WithLockOptions(ctx context.Context, lockKey string, 
 	if err := mutex.LockContext(ctx); err != nil {
 		logger.Errorf("Failed to acquire lock %s: %v", lockKey, err)
 		opentelemetry.HandleSpanError(&span, "Failed to acquire lock", err)
+
 		return fmt.Errorf("failed to acquire lock %s: %w", lockKey, err)
 	}
 
@@ -170,13 +171,16 @@ func (dl *DistributedLock) WithLockOptions(ctx context.Context, lockKey string, 
 
 	// Execute the function while holding the lock
 	logger.Debugf("Executing function under lock: %s", lockKey)
+
 	if err := fn(); err != nil {
 		logger.Errorf("Function execution failed under lock %s: %v", lockKey, err)
 		opentelemetry.HandleSpanError(&span, "Function execution failed", err)
+
 		return err
 	}
 
 	logger.Debugf("Function completed successfully under lock: %s", lockKey)
+
 	return nil
 }
 
@@ -213,13 +217,14 @@ func (dl *DistributedLock) TryLock(ctx context.Context, lockKey string) (*redsyn
 	}
 
 	logger.Debugf("Lock acquired: %s", lockKey)
+
 	return mutex, true, nil
 }
 
 // Unlock releases a previously acquired lock.
 // This is only needed if you use TryLock(). WithLock() handles unlocking automatically.
 func (dl *DistributedLock) Unlock(ctx context.Context, mutex *redsync.Mutex) error {
-	logger, _, _, _ := libCommons.NewTrackingFromContext(ctx)
+	logger := libCommons.NewLoggerFromContext(ctx)
 
 	if mutex == nil {
 		return fmt.Errorf("mutex is nil")

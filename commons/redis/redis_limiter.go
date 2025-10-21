@@ -87,6 +87,7 @@ func (rl *RedisLimiter) Allow(ctx context.Context, key string) (*ratelimit.Resul
 // This prevents the race condition where multiple concurrent requests can exceed the limit.
 func (rl *RedisLimiter) allowWithLock(ctx context.Context, key string) (*ratelimit.Result, error) {
 	var result *ratelimit.Result
+
 	lockKey := fmt.Sprintf("lock:ratelimit:%s", key)
 
 	// Use shorter lock options for rate limiting (fast operation)
@@ -103,10 +104,11 @@ func (rl *RedisLimiter) allowWithLock(ctx context.Context, key string) (*ratelim
 		if err != nil {
 			return err
 		}
+
 		result = res
+
 		return nil
 	})
-
 	if err != nil {
 		return nil, fmt.Errorf("rate limit check with lock failed: %w", err)
 	}
