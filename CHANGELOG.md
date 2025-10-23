@@ -1,3 +1,29 @@
+## [3.0.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.5...v3.0.0-beta.1) (2025-10-23)
+
+
+### ⚠ BREAKING CHANGES
+
+* **circuitbreaker:** NewHealthChecker now requires checkTimeout parameter
+- Old: NewHealthChecker(manager, interval, logger)
+- New: NewHealthChecker(manager, interval, checkTimeout, logger)
+
+This provides better configurability and prevents runtime panics from
+invalid parameters.
+
+### Features
+
+* **circuitbreaker:** add validation and configurable timeout for health checker ([63a3ff5](https://github.com/LerianStudio/lib-commons/commit/63a3ff54598cf02159725bbdd2105a8bc91033b6))
+* **circuitbreaker:** implement circuit breaker package with health checks and state management ([3ca0be6](https://github.com/LerianStudio/lib-commons/commit/3ca0be64dda581001b6481400a60c88d75b36f4f))
+
+
+### Bug Fixes
+
+* **context:** add nil parent validation in WithTimeout ([6ad69d0](https://github.com/LerianStudio/lib-commons/commit/6ad69d07f2972d89897cfa78340edc7afafab0b1))
+* **release:** fix changelog release version and update changelog to 2.4.0-beta.6 ([60e9ec4](https://github.com/LerianStudio/lib-commons/commit/60e9ec47c12a3d96f1f41856686df8338e2a0b10))
+* **circuitbreaker:** improve Reset method safety ([e7b5a78](https://github.com/LerianStudio/lib-commons/commit/e7b5a7867f8a9074c3c42053def96f1eae126210))
+* **circuitbreaker:** make DatabaseConfig actually more tolerant ([d084157](https://github.com/LerianStudio/lib-commons/commit/d084157b905411919831126ad9e26875d3634de6))
+* **http:** reconcile health check dependency logic ([a0593a7](https://github.com/LerianStudio/lib-commons/commit/a0593a7306d5bd96a16ddd6279463aa8682a709b))
+
 ## [2.4.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.5...v2.4.0-beta.6) (2025-10-23)
 
 * **circuitbreaker:** NewHealthChecker now requires checkTimeout parameter
