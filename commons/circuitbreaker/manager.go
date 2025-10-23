@@ -160,6 +160,7 @@ func (m *manager) Reset(serviceName string) {
 		if !configExists {
 			m.logger.Warnf("No stored config found for service %s, cannot recreate", serviceName)
 			delete(m.breakers, serviceName)
+
 			return
 		}
 
