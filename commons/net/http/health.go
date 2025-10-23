@@ -136,12 +136,6 @@ func HealthWithDependencies(dependencies ...DependencyCheck) fiber.Handler {
 				status.TotalFailures = cbCounts.TotalFailures
 				status.ConsecutiveFailures = cbCounts.ConsecutiveFailures
 
-				// If circuit breaker is open, service is degraded
-				if cbState == circuitbreaker.StateOpen {
-					overallStatus = constant.DataSourceStatusDegraded
-					httpStatus = fiber.StatusServiceUnavailable
-				}
-
 				// Use circuit breaker's IsHealthy if available
 				status.Healthy = dep.CircuitBreaker.IsHealthy(dep.ServiceName)
 			}
@@ -151,11 +145,13 @@ func HealthWithDependencies(dependencies ...DependencyCheck) fiber.Handler {
 			if dep.HealthCheck != nil {
 				healthy := dep.HealthCheck()
 				status.Healthy = healthy
+			}
 
-				if !healthy {
-					overallStatus = constant.DataSourceStatusDegraded
-					httpStatus = fiber.StatusServiceUnavailable
-				}
+			// Update overall status based on final dependency health
+			// Only after all checks have been evaluated
+			if !status.Healthy {
+				overallStatus = constant.DataSourceStatusDegraded
+				httpStatus = fiber.StatusServiceUnavailable
 			}
 
 			// Store status for this dependency
