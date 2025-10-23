@@ -58,59 +58,22 @@ type DependencyStatus struct {
 // HealthWithDependencies creates a Fiber handler that reports health status
 // based on circuit breaker states and custom health checks.
 //
-// The handler returns:
-//   - HTTP 200 OK with status "available" when all dependencies are healthy
-//   - HTTP 503 Service Unavailable with status "degraded" when any circuit breaker is open
-//     or any custom health check returns false
+// Returns HTTP 200 (status: "available") when all dependencies are healthy,
+// or HTTP 503 (status: "degraded") when any dependency fails.
 //
-// Response format:
-//
-//	{
-//	  "status": "available" | "degraded",
-//	  "dependencies": {
-//	    "dependency-name": {
-//	      "circuit_breaker_state": "closed" | "open" | "half-open",
-//	      "healthy": true | false,
-//	      "requests": 1234,
-//	      "total_successes": 1200,
-//	      "total_failures": 34,
-//	      "consecutive_failures": 0
-//	    }
-//	  }
-//	}
-//
-// Example usage with circuit breaker:
-//
-//	f.Get("/health", commonsHttp.HealthWithDependencies(
-//	    commonsHttp.DependencyCheck{
-//	        Name:           "casdoor",
-//	        CircuitBreaker: cbManager,
-//	        ServiceName:    "casdoor",
-//	        HealthCheck:    func() bool { return casdoorClient.IsHealthy() },
-//	    },
-//	))
-//
-// Example usage with multiple dependencies:
+// Example:
 //
 //	f.Get("/health", commonsHttp.HealthWithDependencies(
 //	    commonsHttp.DependencyCheck{
 //	        Name:           "database",
 //	        CircuitBreaker: cbManager,
 //	        ServiceName:    "postgres",
+//	        HealthCheck:    func() bool { return db.Ping() == nil },
 //	    },
 //	    commonsHttp.DependencyCheck{
 //	        Name:           "cache",
 //	        CircuitBreaker: cbManager,
 //	        ServiceName:    "redis",
-//	    },
-//	))
-//
-// Example usage with custom health check only:
-//
-//	f.Get("/health", commonsHttp.HealthWithDependencies(
-//	    commonsHttp.DependencyCheck{
-//	        Name:        "database",
-//	        HealthCheck: func() bool { return db.Ping() == nil },
 //	    },
 //	))
 func HealthWithDependencies(dependencies ...DependencyCheck) fiber.Handler {
