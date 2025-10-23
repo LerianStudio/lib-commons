@@ -19,9 +19,11 @@ func TestWithTimeout_NoParentDeadline(t *testing.T) {
 	}
 
 	expectedDeadline := time.Now().Add(timeout)
-	// Allow 100ms variance for test execution time
-	if time.Until(deadline) < 4*time.Second || time.Until(deadline) > 6*time.Second {
-		t.Errorf("deadline not within expected range: got %v, expected ~%v", deadline, expectedDeadline)
+	// Allow 200ms variance for test execution time
+	timeUntil := time.Until(deadline)
+	if timeUntil < 4800*time.Millisecond || timeUntil > 5200*time.Millisecond {
+		t.Errorf("deadline not within expected range: got %v (%.2fs remaining), expected ~%v (5s)",
+			deadline, timeUntil.Seconds(), expectedDeadline)
 	}
 }
 
@@ -62,8 +64,9 @@ func TestWithTimeout_ParentDeadlineLonger(t *testing.T) {
 
 	// Should use our timeout (2s)
 	timeUntil := time.Until(deadline)
-	if timeUntil > 3*time.Second || timeUntil < 1*time.Second {
-		t.Errorf("expected deadline to be ~2s from now, got %v", timeUntil)
+	// Allow 200ms variance
+	if timeUntil < 1800*time.Millisecond || timeUntil > 2200*time.Millisecond {
+		t.Errorf("expected deadline to be ~2s from now, got %v (%.2fs)", timeUntil, timeUntil.Seconds())
 	}
 }
 
