@@ -89,6 +89,7 @@ func (cb *circuitBreaker) State() State {
 
 func (cb *circuitBreaker) Counts() Counts {
 	counts := cb.breaker.Counts()
+
 	return Counts{
 		Requests:             counts.Requests,
 		TotalSuccesses:       counts.TotalSuccesses,

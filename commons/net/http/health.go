@@ -151,6 +151,7 @@ func HealthWithDependencies(dependencies ...DependencyCheck) fiber.Handler {
 			if dep.HealthCheck != nil {
 				healthy := dep.HealthCheck()
 				status.Healthy = healthy
+
 				if !healthy {
 					overallStatus = constant.DataSourceStatusDegraded
 					httpStatus = fiber.StatusServiceUnavailable

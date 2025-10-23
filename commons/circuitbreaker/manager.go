@@ -130,6 +130,7 @@ func (m *manager) GetCounts(serviceName string) Counts {
 	}
 
 	counts := breaker.Counts()
+
 	return Counts{
 		Requests:             counts.Requests,
 		TotalSuccesses:       counts.TotalSuccesses,

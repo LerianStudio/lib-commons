@@ -96,15 +96,18 @@ func (hc *healthChecker) performHealthChecks() {
 		}
 
 		unhealthyCount++
+
 		hc.logger.Infof("Attempting to heal service: %s (circuit breaker is open)", serviceName)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := healthCheckFn(ctx)
+
 		cancel()
 
 		if err == nil {
 			hc.logger.Infof("Service %s recovered - resetting circuit breaker", serviceName)
 			hc.manager.Reset(serviceName)
+
 			recoveredCount++
 		} else {
 			hc.logger.Warnf("Service %s still unhealthy: %v - will retry in %v", serviceName, err, hc.interval)
