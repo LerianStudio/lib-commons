@@ -1,7 +1,4 @@
-## [3.0.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.5...v3.0.0-beta.1) (2025-10-23)
-
-
-### ⚠ BREAKING CHANGES
+## [2.4.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.5...v2.4.0-beta.6) (2025-10-23)
 
 * **circuitbreaker:** NewHealthChecker now requires checkTimeout parameter
 - Old: NewHealthChecker(manager, interval, logger)
