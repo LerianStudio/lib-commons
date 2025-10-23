@@ -1,0 +1,91 @@
+package commons
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+func TestWithTimeout_NoParentDeadline(t *testing.T) {
+	parent := context.Background()
+	timeout := 5 * time.Second
+
+	ctx, cancel := WithTimeout(parent, timeout)
+	defer cancel()
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("expected context to have a deadline")
+	}
+
+	expectedDeadline := time.Now().Add(timeout)
+	// Allow 200ms variance for test execution time
+	timeUntil := time.Until(deadline)
+	if timeUntil < 4800*time.Millisecond || timeUntil > 5200*time.Millisecond {
+		t.Errorf("deadline not within expected range: got %v (%.2fs remaining), expected ~%v (5s)",
+			deadline, timeUntil.Seconds(), expectedDeadline)
+	}
+}
+
+func TestWithTimeout_ParentDeadlineShorter(t *testing.T) {
+	// Parent has 2s deadline
+	parent, parentCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer parentCancel()
+
+	// We request 10s, but parent's 2s should win
+	ctx, cancel := WithTimeout(parent, 10*time.Second)
+	defer cancel()
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("expected context to have a deadline")
+	}
+
+	// Should use parent's deadline (2s)
+	timeUntil := time.Until(deadline)
+	if timeUntil > 2*time.Second || timeUntil < 1*time.Second {
+		t.Errorf("expected deadline to be ~2s from now, got %v", timeUntil)
+	}
+}
+
+func TestWithTimeout_ParentDeadlineLonger(t *testing.T) {
+	// Parent has 10s deadline
+	parent, parentCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer parentCancel()
+
+	// We request 2s, our timeout should win
+	ctx, cancel := WithTimeout(parent, 2*time.Second)
+	defer cancel()
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("expected context to have a deadline")
+	}
+
+	// Should use our timeout (2s)
+	timeUntil := time.Until(deadline)
+	// Allow 200ms variance
+	if timeUntil < 1800*time.Millisecond || timeUntil > 2200*time.Millisecond {
+		t.Errorf("expected deadline to be ~2s from now, got %v (%.2fs)", timeUntil, timeUntil.Seconds())
+	}
+}
+
+func TestWithTimeout_CancelWorks(t *testing.T) {
+	parent := context.Background()
+	ctx, cancel := WithTimeout(parent, 5*time.Second)
+
+	// Cancel immediately
+	cancel()
+
+	// Context should be cancelled
+	select {
+	case <-ctx.Done():
+		// Expected
+	case <-time.After(100 * time.Millisecond):
+		t.Error("context was not cancelled")
+	}
+
+	if ctx.Err() != context.Canceled {
+		t.Errorf("expected context.Canceled error, got %v", ctx.Err())
+	}
+}

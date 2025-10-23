@@ -3,6 +3,7 @@ package commons
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"github.com/LerianStudio/lib-commons/v2/commons/opentelemetry/metrics"
@@ -270,4 +271,41 @@ func ReplaceAttributes(ctx context.Context, kv ...attribute.KeyValue) context.Co
 	values.AttrBag = append(values.AttrBag[:0], kv...)
 
 	return context.WithValue(ctx, CustomContextKey, values)
+}
+
+// ---- Deadline Management ----
+
+// WithTimeout creates a context with the specified timeout, but respects
+// any existing deadline in the parent context. If the parent context has
+// a deadline that would expire sooner than the requested timeout, the
+// parent's deadline is used instead.
+//
+// This prevents the common mistake of extending a context's deadline
+// beyond what the caller intended.
+//
+// Example:
+//
+//	// Parent has 5s deadline, we request 10s -> gets 5s
+//	ctx, cancel := commons.WithTimeout(parentCtx, 10*time.Second)
+//	defer cancel()
+func WithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		panic("cannot create context from nil parent")
+	}
+
+	// Check if parent already has a deadline
+	if deadline, ok := parent.Deadline(); ok {
+		// Calculate time until parent deadline
+		timeUntilDeadline := time.Until(deadline)
+
+		// Use the shorter of the two timeouts
+		if timeUntilDeadline < timeout {
+			// Parent deadline is sooner, just return a cancellable context
+			// that respects the parent's deadline
+			return context.WithCancel(parent)
+		}
+	}
+
+	// Either parent has no deadline, or our timeout is shorter
+	return context.WithTimeout(parent, timeout)
 }
