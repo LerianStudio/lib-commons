@@ -52,14 +52,15 @@ func HTTPServiceConfig() Config {
 }
 
 // DatabaseConfig optimized for database connections
-// More tolerant of failures since databases should be stable
+// More tolerant of failures since databases should be stable and temporary
+// network issues shouldn't immediately trip the breaker
 func DatabaseConfig() Config {
 	return Config{
-		MaxRequests:         3,
-		Interval:            2 * time.Minute,
-		Timeout:             30 * time.Second,
-		ConsecutiveFailures: 15,
-		FailureRatio:        0.5,
-		MinRequests:         10,
+		MaxRequests:         5,                // Allow more retry attempts
+		Interval:            3 * time.Minute,  // Longer observation window
+		Timeout:             45 * time.Second, // Longer timeout for complex queries
+		ConsecutiveFailures: 20,               // More tolerant of consecutive failures
+		FailureRatio:        0.6,              // Higher failure threshold
+		MinRequests:         15,               // More samples before tripping
 	}
 }
