@@ -11,23 +11,35 @@ import (
 
 // healthChecker performs periodic health checks and manages circuit breaker recovery
 type healthChecker struct {
-	manager  Manager
-	services map[string]HealthCheckFunc
-	interval time.Duration
-	logger   log.Logger
-	stopChan chan struct{}
-	wg       sync.WaitGroup
-	mu       sync.RWMutex
+	manager      Manager
+	services     map[string]HealthCheckFunc
+	interval     time.Duration
+	checkTimeout time.Duration // Timeout for individual health check operations
+	logger       log.Logger
+	stopChan     chan struct{}
+	wg           sync.WaitGroup
+	mu           sync.RWMutex
 }
 
 // NewHealthChecker creates a new health checker
-func NewHealthChecker(manager Manager, interval time.Duration, logger log.Logger) HealthChecker {
+// interval: how often to run health checks
+// checkTimeout: timeout for each individual health check operation
+func NewHealthChecker(manager Manager, interval, checkTimeout time.Duration, logger log.Logger) HealthChecker {
+	if interval <= 0 {
+		panic("circuitbreaker: health check interval must be positive")
+	}
+
+	if checkTimeout <= 0 {
+		panic("circuitbreaker: health check timeout must be positive")
+	}
+
 	return &healthChecker{
-		manager:  manager,
-		services: make(map[string]HealthCheckFunc),
-		interval: interval,
-		logger:   logger,
-		stopChan: make(chan struct{}),
+		manager:      manager,
+		services:     make(map[string]HealthCheckFunc),
+		interval:     interval,
+		checkTimeout: checkTimeout,
+		logger:       logger,
+		stopChan:     make(chan struct{}),
 	}
 }
 
@@ -99,7 +111,7 @@ func (hc *healthChecker) performHealthChecks() {
 
 		hc.logger.Infof("Attempting to heal service: %s (circuit breaker is open)", serviceName)
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), hc.checkTimeout)
 		err := healthCheckFn(ctx)
 
 		cancel()
