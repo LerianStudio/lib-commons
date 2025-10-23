@@ -10,6 +10,7 @@ import (
 
 type manager struct {
 	breakers map[string]*gobreaker.CircuitBreaker
+	configs  map[string]Config // Store configs for safe reset
 	mu       sync.RWMutex
 	logger   log.Logger
 }
@@ -18,6 +19,7 @@ type manager struct {
 func NewManager(logger log.Logger) Manager {
 	return &manager{
 		breakers: make(map[string]*gobreaker.CircuitBreaker),
+		configs:  make(map[string]Config),
 		logger:   logger,
 	}
 }
@@ -67,6 +69,7 @@ func (m *manager) GetOrCreate(serviceName string, config Config) CircuitBreaker 
 
 	breaker = gobreaker.NewCircuitBreaker(settings)
 	m.breakers[serviceName] = breaker
+	m.configs[serviceName] = config // Store config for safe reset
 
 	m.logger.Infof("Created circuit breaker for service: %s", serviceName)
 
@@ -150,10 +153,44 @@ func (m *manager) Reset(serviceName string) {
 	defer m.mu.Unlock()
 
 	if _, exists := m.breakers[serviceName]; exists {
-		m.logger.Infof("Manually resetting circuit breaker for service: %s", serviceName)
+		m.logger.Infof("Resetting circuit breaker for service: %s", serviceName)
 
-		// Delete the breaker so it will be recreated on next GetOrCreate
-		delete(m.breakers, serviceName)
+		// Get stored config
+		config, configExists := m.configs[serviceName]
+		if !configExists {
+			m.logger.Warnf("No stored config found for service %s, cannot recreate", serviceName)
+			delete(m.breakers, serviceName)
+			return
+		}
+
+		// Recreate circuit breaker with same configuration
+		settings := gobreaker.Settings{
+			Name:        fmt.Sprintf("service-%s", serviceName),
+			MaxRequests: config.MaxRequests,
+			Interval:    config.Interval,
+			Timeout:     config.Timeout,
+			ReadyToTrip: func(counts gobreaker.Counts) bool {
+				failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
+				return counts.ConsecutiveFailures >= config.ConsecutiveFailures ||
+					(counts.Requests >= config.MinRequests && failureRatio >= config.FailureRatio)
+			},
+			OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
+				m.logger.Warnf("Circuit Breaker [%s] state changed: %s -> %s",
+					name, from.String(), to.String())
+
+				switch to {
+				case gobreaker.StateOpen:
+					m.logger.Errorf("Circuit Breaker [%s] OPENED - service is unhealthy, requests will fast-fail", name)
+				case gobreaker.StateHalfOpen:
+					m.logger.Infof("Circuit Breaker [%s] HALF-OPEN - testing service recovery", name)
+				case gobreaker.StateClosed:
+					m.logger.Infof("Circuit Breaker [%s] CLOSED - service is healthy", name)
+				}
+			},
+		}
+
+		breaker := gobreaker.NewCircuitBreaker(settings)
+		m.breakers[serviceName] = breaker
 
 		m.logger.Infof("Circuit breaker reset completed for service: %s", serviceName)
 	}

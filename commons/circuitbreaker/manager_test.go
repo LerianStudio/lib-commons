@@ -129,15 +129,19 @@ func TestCircuitBreaker_Reset(t *testing.T) {
 	// Circuit breaker should be open
 	assert.Equal(t, StateOpen, manager.GetState("test-service"))
 
-	// Reset the circuit breaker
+	// Reset the circuit breaker - it should automatically recreate with same config
 	manager.Reset("test-service")
 
-	// Need to recreate since Reset deletes it
-	manager.GetOrCreate("test-service", config)
-
-	// Circuit breaker should be closed
+	// Circuit breaker should be closed and healthy after reset
 	assert.Equal(t, StateClosed, manager.GetState("test-service"))
 	assert.True(t, manager.IsHealthy("test-service"))
+
+	// Verify it still works after reset
+	result, err := manager.Execute("test-service", func() (any, error) {
+		return "success", nil
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, "success", result)
 }
 
 func TestCircuitBreaker_UnknownService(t *testing.T) {
