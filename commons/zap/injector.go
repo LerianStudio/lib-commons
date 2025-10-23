@@ -1,12 +1,13 @@
 package zap
 
 import (
-	clog "github.com/LerianStudio/lib-commons/v2/commons/log"
+	"log"
+	"os"
+
+	clog "github.com/LerianStudio/lib-commons/v3/commons/log"
 	"go.opentelemetry.io/contrib/bridges/otelzap"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"log"
-	"os"
 )
 
 // InitializeLogger initializes our log layer and returns it

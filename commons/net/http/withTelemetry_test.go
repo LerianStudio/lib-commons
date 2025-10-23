@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v2/commons"
-	"github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v3/commons"
+	"github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,10 +27,10 @@ func setupTestTracer() (*sdktrace.TracerProvider, *tracetest.SpanRecorder) {
 	tracerProvider := sdktrace.NewTracerProvider(
 		sdktrace.WithSpanProcessor(spanRecorder),
 	)
-	
+
 	// Set the global propagator to TraceContext
 	otel.SetTextMapPropagator(propagation.TraceContext{})
-	
+
 	return tracerProvider, spanRecorder
 }
 
@@ -103,18 +103,18 @@ func TestWithTelemetry(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			
+
 			// Setup test tracer
 			tp, spanRecorder := setupTestTracer()
 			defer func() {
 				_ = tp.Shutdown(ctx)
 			}()
-			
+
 			// Replace the global tracer provider for this test
 			oldTracerProvider := otel.GetTracerProvider()
 			otel.SetTracerProvider(tp)
 			defer otel.SetTracerProvider(oldTracerProvider)
-			
+
 			// Setup telemetry
 			var telemetry *opentelemetry.Telemetry
 			if !tt.nilTelemetry {
@@ -169,20 +169,20 @@ func TestWithTelemetry(t *testing.T) {
 
 			// Check status code
 			assert.Equal(t, tt.expectedStatusCode, resp.StatusCode)
-			
+
 			// Check spans
 			spans := spanRecorder.Ended()
-			
+
 			if tt.expectSpan && !tt.nilTelemetry && !tt.swaggerPath {
 				// Should have created a span
 				require.GreaterOrEqual(t, len(spans), 1, "Expected at least one span to be created")
-				
+
 				// Check span name
 				expectedPath := tt.path
 				if strings.Contains(tt.path, "123e4567-e89b-12d3-a456-426614174000") {
 					expectedPath = commons.ReplaceUUIDWithPlaceholder(tt.path)
 				}
-				
+
 				spanFound := false
 				for _, span := range spans {
 					if span.Name() == tt.method+" "+expectedPath {
@@ -250,18 +250,18 @@ func TestWithTelemetryExcludedRoutes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			
+
 			// Setup test tracer
 			tp, spanRecorder := setupTestTracer()
 			defer func() {
 				_ = tp.Shutdown(ctx)
 			}()
-			
+
 			// Replace the global tracer provider for this test
 			oldTracerProvider := otel.GetTracerProvider()
 			otel.SetTracerProvider(tp)
 			defer otel.SetTracerProvider(oldTracerProvider)
-			
+
 			// Setup telemetry
 			telemetry := &opentelemetry.Telemetry{
 				TelemetryConfig: opentelemetry.TelemetryConfig{
@@ -296,14 +296,14 @@ func TestWithTelemetryExcludedRoutes(t *testing.T) {
 
 			// Check status code
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			
+
 			// Check spans
 			spans := spanRecorder.Ended()
-			
+
 			if tt.expectSpan {
 				// Should have created a span
 				require.GreaterOrEqual(t, len(spans), 1, "Expected at least one span to be created")
-				
+
 				// Check span name
 				expectedSpanName := tt.method + " " + commons.ReplaceUUIDWithPlaceholder(tt.path)
 				spanFound := false
@@ -437,32 +437,32 @@ func TestEndTracingSpans(t *testing.T) {
 // TestExtractHTTPContext tests the ExtractHTTPContext function
 func TestExtractHTTPContext(t *testing.T) {
 	ctx := context.Background()
-	
+
 	// Setup test tracer
 	tp, _ := setupTestTracer()
 	defer func() {
 		_ = tp.Shutdown(ctx)
 	}()
-	
+
 	// Replace the global tracer provider for this test
 	oldTracerProvider := otel.GetTracerProvider()
 	otel.SetTracerProvider(tp)
 	defer otel.SetTracerProvider(oldTracerProvider)
-	
+
 	// Create a valid traceparent header
 	traceparent := "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-	
+
 	// Create fiber app
 	app := fiber.New()
-	
+
 	// Add test route
 	app.Get("/test", func(c *fiber.Ctx) error {
 		// Extract context
 		ctx := opentelemetry.ExtractHTTPContext(c)
-		
+
 		// Check if span info was extracted
 		spanCtx := trace.SpanContextFromContext(ctx)
-		
+
 		// If traceparent header is present, span context should be valid
 		if c.Get("traceparent") != "" {
 			assert.True(t, spanCtx.IsValid(), "Span context should be valid with traceparent header")
@@ -471,24 +471,24 @@ func TestExtractHTTPContext(t *testing.T) {
 		} else {
 			assert.False(t, spanCtx.IsValid(), "Span context should not be valid without traceparent header")
 		}
-		
+
 		return c.SendStatus(http.StatusOK)
 	})
-	
+
 	// Test with traceparent header
 	req1, err := http.NewRequest("GET", "/test", nil)
 	require.NoError(t, err)
 	req1.Header.Set("traceparent", traceparent)
-	
+
 	resp1, err := app.Test(req1)
 	require.NoError(t, err)
 	defer resp1.Body.Close()
 	assert.Equal(t, http.StatusOK, resp1.StatusCode)
-	
+
 	// Test without traceparent header
 	req2, err := http.NewRequest("GET", "/test", nil)
 	require.NoError(t, err)
-	
+
 	resp2, err := app.Test(req2)
 	require.NoError(t, err)
 	defer resp2.Body.Close()

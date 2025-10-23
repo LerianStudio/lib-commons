@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/net/http/ratelimit"
+	"github.com/LerianStudio/lib-commons/v3/commons/net/http/ratelimit"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -337,10 +337,10 @@ func TestRedisLimiter_buildRedisKey(t *testing.T) {
 	defer client.Close()
 
 	tests := []struct {
-		name      string
-		config    ratelimit.Config
-		key       string
-		expected  string
+		name     string
+		config   ratelimit.Config
+		key      string
+		expected string
 	}{
 		{
 			name: "key with prefix",

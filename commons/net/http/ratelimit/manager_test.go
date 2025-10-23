@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v2/commons"
+	"github.com/LerianStudio/lib-commons/v3/commons"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 )

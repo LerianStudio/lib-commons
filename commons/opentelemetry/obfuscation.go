@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	cn "github.com/LerianStudio/lib-commons/v2/commons/constants"
-	"github.com/LerianStudio/lib-commons/v2/commons/security"
+	cn "github.com/LerianStudio/lib-commons/v3/commons/constants"
+	"github.com/LerianStudio/lib-commons/v3/commons/security"
 )
 
 // FieldObfuscator defines the interface for obfuscating sensitive fields in structs.

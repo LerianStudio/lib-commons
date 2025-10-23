@@ -3,9 +3,9 @@ package server_test
 import (
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/server"
-	"github.com/stretchr/testify/assert"
+	"github.com/LerianStudio/lib-commons/v3/commons/server"
 	"github.com/gofiber/fiber/v2"
+	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 )
 
@@ -50,10 +50,10 @@ func TestServerManagerWithBothServers(t *testing.T) {
 func TestServerManagerChaining(t *testing.T) {
 	app := fiber.New()
 	grpcServer := grpc.NewServer()
-	
+
 	// Test method chaining
 	sm1 := server.NewServerManager(nil, nil, nil).WithHTTPServer(app, ":8080")
 	sm2 := sm1.WithGRPCServer(grpcServer, ":50051")
-	
+
 	assert.Equal(t, sm1, sm2, "Method chaining should return the same instance")
 }

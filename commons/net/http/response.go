@@ -1,10 +1,11 @@
 package http
 
 import (
-	"github.com/LerianStudio/lib-commons/v2/commons"
-	"github.com/gofiber/fiber/v2"
 	"net/http"
 	"strconv"
+
+	"github.com/LerianStudio/lib-commons/v3/commons"
+	"github.com/gofiber/fiber/v2"
 )
 
 const NotImplementedMessage = "Not implemented yet"

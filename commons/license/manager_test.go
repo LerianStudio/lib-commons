@@ -3,7 +3,7 @@ package license_test
 import (
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/license"
+	"github.com/LerianStudio/lib-commons/v3/commons/license"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -41,7 +41,7 @@ func TestSetHandlerWithNil(t *testing.T) {
 
 func TestDefaultHandler(t *testing.T) {
 	manager := license.New()
-	
+
 	assert.Panics(t, func() {
 		manager.Terminate("default handler test")
 	}, "Default handler should panic")

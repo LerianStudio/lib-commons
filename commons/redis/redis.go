@@ -1,21 +1,22 @@
 package redis
 
 import (
-	iamcredentials "cloud.google.com/go/iam/credentials/apiv1"
-	iamcredentialspb "cloud.google.com/go/iam/credentials/apiv1/credentialspb"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"sync"
+	"time"
+
+	iamcredentials "cloud.google.com/go/iam/credentials/apiv1"
+	iamcredentialspb "cloud.google.com/go/iam/credentials/apiv1/credentialspb"
+	"github.com/LerianStudio/lib-commons/v3/commons/log"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/durationpb"
-	"sync"
-	"time"
 )
 
 // Mode define the Redis connection mode supported

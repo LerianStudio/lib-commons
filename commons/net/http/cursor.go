@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/LerianStudio/lib-commons/v2/commons"
-	"github.com/LerianStudio/lib-commons/v2/commons/constants"
+	"github.com/LerianStudio/lib-commons/v3/commons"
+	constant "github.com/LerianStudio/lib-commons/v3/commons/constants"
 	"github.com/Masterminds/squirrel"
 )
 
@@ -158,7 +158,7 @@ func CalculateCursor(
 			if err != nil {
 				return CursorPagination{}, err
 			}
-			
+
 			pagination.Prev = base64.StdEncoding.EncodeToString(cursorBytesPrev)
 		}
 	}

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/net/http/ratelimit"
+	"github.com/LerianStudio/lib-commons/v3/commons/net/http/ratelimit"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 )
@@ -409,21 +409,21 @@ func TestKeyByIPAndEndpoint(t *testing.T) {
 
 func TestKeyByHeader(t *testing.T) {
 	tests := []struct {
-		name       string
-		headerName string
-		headerValue string
+		name           string
+		headerName     string
+		headerValue    string
 		expectFallback bool
 	}{
 		{
-			name:        "header present",
-			headerName:  "X-API-Key",
-			headerValue: "test-api-key-123",
+			name:           "header present",
+			headerName:     "X-API-Key",
+			headerValue:    "test-api-key-123",
 			expectFallback: false,
 		},
 		{
-			name:        "header missing - fallback to IP",
-			headerName:  "X-API-Key",
-			headerValue: "",
+			name:           "header missing - fallback to IP",
+			headerName:     "X-API-Key",
+			headerValue:    "",
 			expectFallback: true,
 		},
 	}

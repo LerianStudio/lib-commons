@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v2/commons"
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"github.com/LerianStudio/lib-commons/v3/commons"
+	"github.com/LerianStudio/lib-commons/v3/commons/log"
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
 )
@@ -24,7 +24,7 @@ type RedisConnectionGetter interface {
 //
 // For Redis-backed rate limiting, use the pre-built factory:
 //
-//	import "github.com/LerianStudio/lib-commons/v2/commons/redis"
+//	import "github.com/LerianStudio/lib-commons/v3/commons/redis"
 //
 //	LimiterFactory: redis.Factory
 //
@@ -80,8 +80,8 @@ type GlobalHandler struct {
 // Example usage:
 //
 //	import (
-//	    libRedis "github.com/LerianStudio/lib-commons/v2/commons/redis"
-//	    libRateLimit "github.com/LerianStudio/lib-commons/v2/commons/net/http/ratelimit"
+//	    libRedis "github.com/LerianStudio/lib-commons/v3/commons/redis"
+//	    libRateLimit "github.com/LerianStudio/lib-commons/v3/commons/net/http/ratelimit"
 //	)
 //
 //	handler := libRateLimit.NewGlobalHandler(&libRateLimit.GlobalHandlerConfig{

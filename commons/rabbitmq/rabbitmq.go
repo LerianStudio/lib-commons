@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"github.com/LerianStudio/lib-commons/v3/commons/log"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/zap"
 )

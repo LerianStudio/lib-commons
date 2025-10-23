@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/net/http/ratelimit"
+	"github.com/LerianStudio/lib-commons/v3/commons/net/http/ratelimit"
 	"github.com/redis/go-redis/v9"
 )
 

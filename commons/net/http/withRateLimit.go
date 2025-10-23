@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"slices"
 
-	cn "github.com/LerianStudio/lib-commons/v2/commons/constants"
-	"github.com/LerianStudio/lib-commons/v2/commons/net/http/ratelimit"
+	cn "github.com/LerianStudio/lib-commons/v3/commons/constants"
+	"github.com/LerianStudio/lib-commons/v3/commons/net/http/ratelimit"
 	"github.com/gofiber/fiber/v2"
 )
 

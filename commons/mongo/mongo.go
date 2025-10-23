@@ -2,7 +2,8 @@ package mongo
 
 import (
 	"context"
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+
+	"github.com/LerianStudio/lib-commons/v3/commons/log"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.uber.org/zap"

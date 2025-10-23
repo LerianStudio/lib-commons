@@ -15,7 +15,7 @@ This package provides OpenTelemetry integration for the LerianStudio commons lib
 
 ```go
 import (
-    "github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
+    "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
     "go.opentelemetry.io/otel"
 )
 

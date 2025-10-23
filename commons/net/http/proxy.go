@@ -1,10 +1,11 @@
 package http
 
 import (
-	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+
+	constant "github.com/LerianStudio/lib-commons/v3/commons/constants"
 )
 
 // ServeReverseProxy serves a reverse proxy for a given url.

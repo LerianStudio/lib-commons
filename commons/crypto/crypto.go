@@ -11,7 +11,7 @@ import (
 	"errors"
 	"io"
 
-	libLog "github.com/LerianStudio/lib-commons/v2/commons/log"
+	libLog "github.com/LerianStudio/lib-commons/v3/commons/log"
 	"go.uber.org/zap"
 )
 

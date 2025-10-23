@@ -3,7 +3,7 @@ package opentelemetry
 import (
 	"context"
 
-	"github.com/LerianStudio/lib-commons/v2/commons"
+	"github.com/LerianStudio/lib-commons/v3/commons"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 

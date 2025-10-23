@@ -1,8 +1,8 @@
 package http
 
 import (
-	"github.com/LerianStudio/lib-commons/v2/commons/circuitbreaker"
-	"github.com/LerianStudio/lib-commons/v2/commons/constants"
+	"github.com/LerianStudio/lib-commons/v3/commons/circuitbreaker"
+	constant "github.com/LerianStudio/lib-commons/v3/commons/constants"
 	"github.com/gofiber/fiber/v2"
 )
 

@@ -40,7 +40,7 @@ Distribution of values with configurable buckets (e.g., response times, transact
 ```go
 import (
     "context"
-    "github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
+    "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
 )
 
 func basicMetricsExample(telemetry *opentelemetry.Telemetry, ctx context.Context) {
@@ -92,7 +92,7 @@ The metrics package provides pre-configured convenience methods for common busin
 ```go
 import (
     "context"
-    "github.com/LerianStudio/lib-commons/v2/commons/opentelemetry/metrics"
+    "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry/metrics"
     "go.opentelemetry.io/otel/attribute"
 )
 

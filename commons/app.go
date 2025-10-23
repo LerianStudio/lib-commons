@@ -1,8 +1,9 @@
 package commons
 
 import (
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"sync"
+
+	"github.com/LerianStudio/lib-commons/v3/commons/log"
 )
 
 // App represents an application that will run as a deployable component.

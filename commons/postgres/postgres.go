@@ -3,15 +3,16 @@ package postgres
 import (
 	"database/sql"
 	"errors"
-	"go.uber.org/zap"
 	"net/url"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
+
 	// File system migration source. We need to import it to be able to use it as source in migrate.NewWithSourceInstance
 
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"github.com/LerianStudio/lib-commons/v3/commons/log"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"

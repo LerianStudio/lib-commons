@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/LerianStudio/lib-commons/v2/commons"
-	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
+	"github.com/LerianStudio/lib-commons/v3/commons"
+	constant "github.com/LerianStudio/lib-commons/v3/commons/constants"
 	"github.com/gofiber/fiber/v2"
 )
 
