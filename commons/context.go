@@ -289,6 +289,10 @@ func ReplaceAttributes(ctx context.Context, kv ...attribute.KeyValue) context.Co
 //	ctx, cancel := commons.WithTimeout(parentCtx, 10*time.Second)
 //	defer cancel()
 func WithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		panic("cannot create context from nil parent")
+	}
+
 	// Check if parent already has a deadline
 	if deadline, ok := parent.Deadline(); ok {
 		// Calculate time until parent deadline
