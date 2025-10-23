@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 
+	cn "github.com/LerianStudio/lib-commons/v2/commons/constants"
 	"github.com/LerianStudio/lib-commons/v2/commons/net/http/ratelimit"
 	"github.com/gofiber/fiber/v2"
 )
@@ -196,9 +197,9 @@ func handleRateLimitExceeded(c *fiber.Ctx, config RateLimitConfig, key string, r
 // - X-RateLimit-Remaining: Requests remaining in current window
 // - X-RateLimit-Reset: Unix timestamp when the window resets
 func setRateLimitHeaders(c *fiber.Ctx, result *ratelimit.Result) {
-	c.Set("X-RateLimit-Limit", fmt.Sprintf("%d", result.Limit))
-	c.Set("X-RateLimit-Remaining", fmt.Sprintf("%d", result.Remaining))
-	c.Set("X-RateLimit-Reset", fmt.Sprintf("%d", result.ResetAt.Unix()))
+	c.Set(cn.RateLimitLimit, fmt.Sprintf("%d", result.Limit))
+	c.Set(cn.RateLimitRemaining, fmt.Sprintf("%d", result.Remaining))
+	c.Set(cn.RateLimitReset, fmt.Sprintf("%d", result.ResetAt.Unix()))
 }
 
 // shouldSkipPath checks if a path should bypass rate limiting.
