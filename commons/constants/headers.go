@@ -17,4 +17,9 @@ const (
 	Basic               = "Basic"
 	BasicAuth           = "Basic Auth"
 	WWWAuthenticate     = "WWW-Authenticate"
+
+	// Rate Limit Headers
+	RateLimitLimit     = "X-RateLimit-Limit"
+	RateLimitRemaining = "X-RateLimit-Remaining"
+	RateLimitReset     = "X-RateLimit-Reset"
 )
