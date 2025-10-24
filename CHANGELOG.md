@@ -1,3 +1,10 @@
+## [2.4.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.5...v2.4.0-beta.6) (2025-10-24)
+
+
+### Features
+
+* **circuitbreaker:** implement circuit breaker package with health checks and state management ([d93b161](https://github.com/LerianStudio/lib-commons/commit/d93b1610c0cae3be263be4e684afc157c88e93b4))
+
 ## [2.4.0-beta.5](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.4...v2.4.0-beta.5) (2025-10-21)
 
 
