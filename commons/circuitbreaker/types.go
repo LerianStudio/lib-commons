@@ -26,6 +26,9 @@ type Manager interface {
 
 	// Reset resets circuit breaker to closed state
 	Reset(serviceName string)
+
+	// RegisterStateChangeListener registers a listener for circuit breaker state changes
+	RegisterStateChangeListener(listener StateChangeListener)
 }
 
 // CircuitBreaker wraps sony/gobreaker with our interface
@@ -116,3 +119,9 @@ type HealthChecker interface {
 
 // HealthCheckFunc defines a function that checks service health
 type HealthCheckFunc func(ctx context.Context) error
+
+// StateChangeListener is notified when circuit breaker state changes
+type StateChangeListener interface {
+	// OnStateChange is called when a circuit breaker changes state
+	OnStateChange(serviceName string, from State, to State)
+}
