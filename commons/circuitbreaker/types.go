@@ -115,6 +115,9 @@ type HealthChecker interface {
 
 	// GetHealthStatus returns the current health status of all services
 	GetHealthStatus() map[string]string
+
+	// StateChangeListener interface to receive circuit breaker state change notifications
+	StateChangeListener
 }
 
 // HealthCheckFunc defines a function that checks service health
