@@ -1,3 +1,18 @@
+## [2.4.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.6...v2.4.0-beta.7) (2025-10-27)
+
+
+### Features
+
+* **commons:** add SafeIntToUint32 utility with overflow protection and logging ([5a13d45](https://github.com/LerianStudio/lib-commons/commit/5a13d45f0a3cd2fafdb3debf99017bac473083f7))
+* **circuitbreaker:** add state change notifications and immediate health checks ([2532b8b](https://github.com/LerianStudio/lib-commons/commit/2532b8b9605619b8b3a6f0f6e1ec0b3574de5516))
+* **circuitbreaker:** extend HealthChecker interface to include state change notifications ([9087254](https://github.com/LerianStudio/lib-commons/commit/90872540cf2aad78d642596652789747075e71c7))
+
+
+### Bug Fixes
+
+* add nil check for circuit breaker state change listener registration ([55da00b](https://github.com/LerianStudio/lib-commons/commit/55da00b081dcc0251433dcb702b14e98486348cd))
+* add nil logger check and change warn to debug level in SafeIntToUint32 ([a72880c](https://github.com/LerianStudio/lib-commons/commit/a72880ca0525c05cf61802c0f976e7b872f85b51))
+
 ## [2.4.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.5...v2.4.0-beta.6) (2025-10-24)
 
 
