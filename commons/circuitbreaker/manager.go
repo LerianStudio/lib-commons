@@ -186,6 +186,11 @@ func (m *manager) Reset(serviceName string) {
 
 // RegisterStateChangeListener registers a listener for state change notifications
 func (m *manager) RegisterStateChangeListener(listener StateChangeListener) {
+	if listener == nil {
+		m.logger.Warnf("Attempted to register a nil state change listener")
+		return
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
