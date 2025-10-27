@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"
@@ -163,6 +164,25 @@ func SafeUintToInt(val uint) int {
 	}
 
 	return int(val)
+}
+
+// SafeIntToUint32 safely converts int to uint32 with overflow protection.
+// Returns the converted value if in valid range [0, MaxUint32], otherwise returns defaultVal.
+// This prevents G115 (CWE-190) integer overflow vulnerabilities.
+func SafeIntToUint32(value int, defaultVal uint32, logger log.Logger, fieldName string) uint32 {
+	// Check for negative values
+	if value < 0 {
+		logger.Warnf("Invalid %s value %d (negative), using default: %d", fieldName, value, defaultVal)
+		return defaultVal
+	}
+
+	// Check for overflow beyond uint32 max
+	if value > math.MaxUint32 {
+		logger.Warnf("Invalid %s value %d (overflow), using default: %d", fieldName, value, defaultVal)
+		return defaultVal
+	}
+
+	return uint32(value)
 }
 
 // IsUUID Validate if the string pass through is an uuid
