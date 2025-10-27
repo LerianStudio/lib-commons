@@ -11,15 +11,15 @@ import (
 
 // healthChecker performs periodic health checks and manages circuit breaker recovery
 type healthChecker struct {
-	manager         Manager
-	services        map[string]HealthCheckFunc
-	interval        time.Duration
-	checkTimeout    time.Duration // Timeout for individual health check operations
-	logger          log.Logger
-	stopChan        chan struct{}
-	immediateCheck  chan string // Channel to trigger immediate health check for a service
-	wg              sync.WaitGroup
-	mu              sync.RWMutex
+	manager        Manager
+	services       map[string]HealthCheckFunc
+	interval       time.Duration
+	checkTimeout   time.Duration // Timeout for individual health check operations
+	logger         log.Logger
+	stopChan       chan struct{}
+	immediateCheck chan string // Channel to trigger immediate health check for a service
+	wg             sync.WaitGroup
+	mu             sync.RWMutex
 }
 
 // NewHealthChecker creates a new health checker
@@ -194,6 +194,7 @@ func (hc *healthChecker) checkServiceHealth(serviceName string) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), hc.checkTimeout)
 	err := healthCheckFn(ctx)
+
 	cancel()
 
 	if err == nil {

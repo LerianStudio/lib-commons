@@ -188,6 +188,7 @@ func (m *manager) Reset(serviceName string) {
 func (m *manager) RegisterStateChangeListener(listener StateChangeListener) {
 	if listener == nil {
 		m.logger.Warnf("Attempted to register a nil state change listener")
+
 		return
 	}
 
