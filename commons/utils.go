@@ -175,6 +175,7 @@ func SafeIntToUint32(value int, defaultVal uint32, logger log.Logger, fieldName 
 		if logger != nil {
 			logger.Debugf("Invalid %s value %d (negative), using default: %d", fieldName, value, defaultVal)
 		}
+
 		return defaultVal
 	}
 
@@ -183,6 +184,7 @@ func SafeIntToUint32(value int, defaultVal uint32, logger log.Logger, fieldName 
 		if logger != nil {
 			logger.Debugf("Invalid %s value %d (overflow), using default: %d", fieldName, value, defaultVal)
 		}
+
 		return defaultVal
 	}
 
