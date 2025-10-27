@@ -11,14 +11,15 @@ import (
 
 // healthChecker performs periodic health checks and manages circuit breaker recovery
 type healthChecker struct {
-	manager      Manager
-	services     map[string]HealthCheckFunc
-	interval     time.Duration
-	checkTimeout time.Duration // Timeout for individual health check operations
-	logger       log.Logger
-	stopChan     chan struct{}
-	wg           sync.WaitGroup
-	mu           sync.RWMutex
+	manager        Manager
+	services       map[string]HealthCheckFunc
+	interval       time.Duration
+	checkTimeout   time.Duration // Timeout for individual health check operations
+	logger         log.Logger
+	stopChan       chan struct{}
+	immediateCheck chan string // Channel to trigger immediate health check for a service
+	wg             sync.WaitGroup
+	mu             sync.RWMutex
 }
 
 // NewHealthChecker creates a new health checker
@@ -34,12 +35,13 @@ func NewHealthChecker(manager Manager, interval, checkTimeout time.Duration, log
 	}
 
 	return &healthChecker{
-		manager:      manager,
-		services:     make(map[string]HealthCheckFunc),
-		interval:     interval,
-		checkTimeout: checkTimeout,
-		logger:       logger,
-		stopChan:     make(chan struct{}),
+		manager:        manager,
+		services:       make(map[string]HealthCheckFunc),
+		interval:       interval,
+		checkTimeout:   checkTimeout,
+		logger:         logger,
+		stopChan:       make(chan struct{}),
+		immediateCheck: make(chan string, 10), // Buffered channel to avoid blocking
 	}
 }
 
@@ -82,6 +84,10 @@ func (hc *healthChecker) healthCheckLoop() {
 		select {
 		case <-ticker.C:
 			hc.performHealthChecks()
+		case serviceName := <-hc.immediateCheck:
+			// Immediate health check for a specific service
+			hc.logger.Debugf("Triggering immediate health check for service: %s", serviceName)
+			hc.checkServiceHealth(serviceName)
 		case <-hc.stopChan:
 			return
 		}
@@ -146,4 +152,55 @@ func (hc *healthChecker) GetHealthStatus() map[string]string {
 	}
 
 	return status
+}
+
+// OnStateChange implements StateChangeListener interface
+// This is called when a circuit breaker changes state
+func (hc *healthChecker) OnStateChange(serviceName string, from State, to State) {
+	hc.logger.Debugf("Health checker notified of state change for %s: %s -> %s", serviceName, from, to)
+
+	// If circuit just opened, trigger immediate health check
+	if to == StateOpen {
+		hc.logger.Infof("Circuit breaker opened for %s - scheduling immediate health check", serviceName)
+
+		// Non-blocking send to avoid deadlock
+		select {
+		case hc.immediateCheck <- serviceName:
+			hc.logger.Debugf("Immediate health check scheduled for %s", serviceName)
+		default:
+			hc.logger.Warnf("Immediate health check channel full for %s, will check on next interval", serviceName)
+		}
+	}
+}
+
+// checkServiceHealth performs a health check on a specific service
+func (hc *healthChecker) checkServiceHealth(serviceName string) {
+	hc.mu.RLock()
+	healthCheckFn, exists := hc.services[serviceName]
+	hc.mu.RUnlock()
+
+	if !exists {
+		hc.logger.Warnf("No health check function registered for service: %s", serviceName)
+		return
+	}
+
+	// Skip if circuit breaker is already healthy
+	if hc.manager.IsHealthy(serviceName) {
+		hc.logger.Debugf("Service %s is already healthy, skipping check", serviceName)
+		return
+	}
+
+	hc.logger.Infof("Attempting to heal service: %s (circuit breaker is open)", serviceName)
+
+	ctx, cancel := context.WithTimeout(context.Background(), hc.checkTimeout)
+	err := healthCheckFn(ctx)
+
+	cancel()
+
+	if err == nil {
+		hc.logger.Infof("Service %s recovered - resetting circuit breaker", serviceName)
+		hc.manager.Reset(serviceName)
+	} else {
+		hc.logger.Warnf("Service %s still unhealthy: %v - will retry in %v", serviceName, err, hc.interval)
+	}
 }

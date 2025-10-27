@@ -9,18 +9,20 @@ import (
 )
 
 type manager struct {
-	breakers map[string]*gobreaker.CircuitBreaker
-	configs  map[string]Config // Store configs for safe reset
-	mu       sync.RWMutex
-	logger   log.Logger
+	breakers  map[string]*gobreaker.CircuitBreaker
+	configs   map[string]Config // Store configs for safe reset
+	listeners []StateChangeListener
+	mu        sync.RWMutex
+	logger    log.Logger
 }
 
 // NewManager creates a new circuit breaker manager
 func NewManager(logger log.Logger) Manager {
 	return &manager{
-		breakers: make(map[string]*gobreaker.CircuitBreaker),
-		configs:  make(map[string]Config),
-		logger:   logger,
+		breakers:  make(map[string]*gobreaker.CircuitBreaker),
+		configs:   make(map[string]Config),
+		listeners: make([]StateChangeListener, 0),
+		logger:    logger,
 	}
 }
 
@@ -53,17 +55,7 @@ func (m *manager) GetOrCreate(serviceName string, config Config) CircuitBreaker 
 				(counts.Requests >= config.MinRequests && failureRatio >= config.FailureRatio)
 		},
 		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-			m.logger.Warnf("Circuit Breaker [%s] state changed: %s -> %s",
-				name, from.String(), to.String())
-
-			switch to {
-			case gobreaker.StateOpen:
-				m.logger.Errorf("Circuit Breaker [%s] OPENED - service is unhealthy, requests will fast-fail", name)
-			case gobreaker.StateHalfOpen:
-				m.logger.Infof("Circuit Breaker [%s] HALF-OPEN - testing service recovery", name)
-			case gobreaker.StateClosed:
-				m.logger.Infof("Circuit Breaker [%s] CLOSED - service is healthy", name)
-			}
+			m.handleStateChange(serviceName, from, to)
 		},
 	}
 
@@ -145,7 +137,12 @@ func (m *manager) GetCounts(serviceName string) Counts {
 
 func (m *manager) IsHealthy(serviceName string) bool {
 	state := m.GetState(serviceName)
-	return state != StateOpen
+	// Only CLOSED state is considered healthy
+	// OPEN and HALF-OPEN both need health checker intervention
+	isHealthy := state == StateClosed
+	m.logger.Debugf("IsHealthy check: service=%s, state=%s, isHealthy=%v", serviceName, state, isHealthy)
+
+	return isHealthy
 }
 
 func (m *manager) Reset(serviceName string) {
@@ -176,17 +173,7 @@ func (m *manager) Reset(serviceName string) {
 					(counts.Requests >= config.MinRequests && failureRatio >= config.FailureRatio)
 			},
 			OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-				m.logger.Warnf("Circuit Breaker [%s] state changed: %s -> %s",
-					name, from.String(), to.String())
-
-				switch to {
-				case gobreaker.StateOpen:
-					m.logger.Errorf("Circuit Breaker [%s] OPENED - service is unhealthy, requests will fast-fail", name)
-				case gobreaker.StateHalfOpen:
-					m.logger.Infof("Circuit Breaker [%s] HALF-OPEN - testing service recovery", name)
-				case gobreaker.StateClosed:
-					m.logger.Infof("Circuit Breaker [%s] CLOSED - service is healthy", name)
-				}
+				m.handleStateChange(serviceName, from, to)
 			},
 		}
 
@@ -194,5 +181,64 @@ func (m *manager) Reset(serviceName string) {
 		m.breakers[serviceName] = breaker
 
 		m.logger.Infof("Circuit breaker reset completed for service: %s", serviceName)
+	}
+}
+
+// RegisterStateChangeListener registers a listener for state change notifications
+func (m *manager) RegisterStateChangeListener(listener StateChangeListener) {
+	if listener == nil {
+		m.logger.Warnf("Attempted to register a nil state change listener")
+
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.listeners = append(m.listeners, listener)
+	m.logger.Debugf("Registered state change listener (total: %d)", len(m.listeners))
+}
+
+// handleStateChange processes state changes and notifies listeners
+func (m *manager) handleStateChange(serviceName string, from gobreaker.State, to gobreaker.State) {
+	// Log state change
+	m.logger.Warnf("Circuit Breaker [%s] state changed: %s -> %s",
+		serviceName, from.String(), to.String())
+
+	switch to {
+	case gobreaker.StateOpen:
+		m.logger.Errorf("Circuit Breaker [%s] OPENED - service is unhealthy, requests will fast-fail", serviceName)
+	case gobreaker.StateHalfOpen:
+		m.logger.Infof("Circuit Breaker [%s] HALF-OPEN - testing service recovery", serviceName)
+	case gobreaker.StateClosed:
+		m.logger.Infof("Circuit Breaker [%s] CLOSED - service is healthy", serviceName)
+	}
+
+	// Notify listeners
+	fromState := convertGobreakerState(from)
+	toState := convertGobreakerState(to)
+
+	m.mu.RLock()
+	listeners := make([]StateChangeListener, len(m.listeners))
+	copy(listeners, m.listeners)
+	m.mu.RUnlock()
+
+	for _, listener := range listeners {
+		// Notify in goroutine to avoid blocking circuit breaker operations
+		go listener.OnStateChange(serviceName, fromState, toState)
+	}
+}
+
+// convertGobreakerState converts gobreaker.State to our State type
+func convertGobreakerState(state gobreaker.State) State {
+	switch state {
+	case gobreaker.StateClosed:
+		return StateClosed
+	case gobreaker.StateOpen:
+		return StateOpen
+	case gobreaker.StateHalfOpen:
+		return StateHalfOpen
+	default:
+		return StateUnknown
 	}
 }
