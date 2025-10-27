@@ -172,13 +172,17 @@ func SafeUintToInt(val uint) int {
 func SafeIntToUint32(value int, defaultVal uint32, logger log.Logger, fieldName string) uint32 {
 	// Check for negative values
 	if value < 0 {
-		logger.Warnf("Invalid %s value %d (negative), using default: %d", fieldName, value, defaultVal)
+		if logger != nil {
+			logger.Debugf("Invalid %s value %d (negative), using default: %d", fieldName, value, defaultVal)
+		}
 		return defaultVal
 	}
 
 	// Check for overflow beyond uint32 max
 	if value > math.MaxUint32 {
-		logger.Warnf("Invalid %s value %d (overflow), using default: %d", fieldName, value, defaultVal)
+		if logger != nil {
+			logger.Debugf("Invalid %s value %d (overflow), using default: %d", fieldName, value, defaultVal)
+		}
 		return defaultVal
 	}
 
