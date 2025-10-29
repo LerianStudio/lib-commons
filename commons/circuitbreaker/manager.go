@@ -225,7 +225,15 @@ func (m *manager) handleStateChange(serviceName string, from gobreaker.State, to
 
 	for _, listener := range listeners {
 		// Notify in goroutine to avoid blocking circuit breaker operations
-		go listener.OnStateChange(serviceName, fromState, toState)
+		go func(l StateChangeListener) {
+			defer func() {
+				if r := recover(); r != nil {
+					m.logger.Errorf("Circuit breaker state change listener panic for service %s: %v", serviceName, r)
+				}
+			}()
+
+			l.OnStateChange(serviceName, fromState, toState)
+		}(listener)
 	}
 }
 
