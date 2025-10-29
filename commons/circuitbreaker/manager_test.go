@@ -179,3 +179,126 @@ func TestCircuitBreaker_ConfigPresets(t *testing.T) {
 		assert.Greater(t, config.MinRequests, uint32(0))
 	}
 }
+
+func TestCircuitBreaker_StateChangeListenerPanicRecovery(t *testing.T) {
+	logger := &log.NoneLogger{}
+	manager := NewManager(logger)
+
+	config := Config{
+		MaxRequests:         1,
+		Interval:            100 * time.Millisecond,
+		Timeout:             1 * time.Second,
+		ConsecutiveFailures: 2,
+		FailureRatio:        0.5,
+		MinRequests:         2,
+	}
+
+	// Channels to track listener execution
+	panicListenerCalled := make(chan bool, 1)
+	normalListenerCalled := make(chan bool, 1)
+	secondNormalListenerCalled := make(chan bool, 1)
+
+	// Create a listener that panics
+	panicListener := &mockStateChangeListener{
+		onStateChangeFn: func(serviceName string, from State, to State) {
+			panicListenerCalled <- true
+			panic("intentional panic in listener")
+		},
+	}
+
+	// Create normal listeners that should still be called despite the panic
+	normalListener := &mockStateChangeListener{
+		onStateChangeFn: func(serviceName string, from State, to State) {
+			normalListenerCalled <- true
+		},
+	}
+
+	secondNormalListener := &mockStateChangeListener{
+		onStateChangeFn: func(serviceName string, from State, to State) {
+			secondNormalListenerCalled <- true
+		},
+	}
+
+	// Register all listeners
+	manager.RegisterStateChangeListener(panicListener)
+	manager.RegisterStateChangeListener(normalListener)
+	manager.RegisterStateChangeListener(secondNormalListener)
+
+	// Create circuit breaker
+	manager.GetOrCreate("test-service", config)
+
+	// Trigger failures to open circuit breaker and trigger state change
+	for i := 0; i < 3; i++ {
+		_, _ = manager.Execute("test-service", func() (any, error) {
+			return nil, errors.New("service error")
+		})
+	}
+
+	// Wait for all listeners to be called (with timeout)
+	timeout := time.After(2 * time.Second)
+
+	panicCalled := false
+	normalCalled := false
+	secondNormalCalled := false
+
+	for i := 0; i < 3; i++ {
+		select {
+		case <-panicListenerCalled:
+			panicCalled = true
+		case <-normalListenerCalled:
+			normalCalled = true
+		case <-secondNormalListenerCalled:
+			secondNormalCalled = true
+		case <-timeout:
+			t.Fatal("Timeout waiting for listeners to be called")
+		}
+	}
+
+	// Verify all listeners were called despite the panic
+	assert.True(t, panicCalled, "Panic listener should have been called")
+	assert.True(t, normalCalled, "Normal listener should have been called despite panic")
+	assert.True(t, secondNormalCalled, "Second normal listener should have been called despite panic")
+
+	// Verify circuit breaker is still open
+	assert.Equal(t, StateOpen, manager.GetState("test-service"))
+}
+
+func TestCircuitBreaker_NilListenerRegistration(t *testing.T) {
+	logger := &log.NoneLogger{}
+	manager := NewManager(logger)
+
+	// Attempt to register nil listener
+	manager.RegisterStateChangeListener(nil)
+
+	// Should not panic and should handle gracefully
+	config := Config{
+		MaxRequests:         1,
+		Interval:            100 * time.Millisecond,
+		Timeout:             1 * time.Second,
+		ConsecutiveFailures: 2,
+		FailureRatio:        0.5,
+		MinRequests:         2,
+	}
+	manager.GetOrCreate("test-service", config)
+
+	// Trigger a state change to ensure system still works
+	for i := 0; i < 3; i++ {
+		_, _ = manager.Execute("test-service", func() (any, error) {
+			return nil, errors.New("service error")
+		})
+	}
+
+	// Should successfully transition to open state
+	assert.Equal(t, StateOpen, manager.GetState("test-service"))
+}
+
+// mockStateChangeListener is a test helper for mocking state change listeners
+type mockStateChangeListener struct {
+	onStateChangeFn func(serviceName string, from State, to State)
+}
+
+func (m *mockStateChangeListener) OnStateChange(serviceName string, from State, to State) {
+	if m.onStateChangeFn != nil {
+		m.onStateChangeFn(serviceName, from, to)
+	}
+}
