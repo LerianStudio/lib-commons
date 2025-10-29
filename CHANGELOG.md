@@ -1,3 +1,10 @@
+## [2.4.0-beta.8](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.7...v2.4.0-beta.8) (2025-10-29)
+
+
+### Bug Fixes
+
+* add panic recovery to circuit breaker state change listeners ([96fe07e](https://github.com/LerianStudio/lib-commons/commit/96fe07eff47627fde636fbf814b687cdab3ecac7))
+
 ## [2.4.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.6...v2.4.0-beta.7) (2025-10-27)
 
 
