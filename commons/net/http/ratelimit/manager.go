@@ -110,18 +110,31 @@ func (m *Manager) GlobalMiddleware(opts ...MiddlewareOptions) fiber.Handler {
 	}
 
 	if len(opts) > 0 {
-		opt = opts[0]
+		userOpts := opts[0]
+
 		// Preserve default skip paths if not explicitly overridden
-		if len(opt.SkipPaths) == 0 {
+		if len(userOpts.SkipPaths) == 0 {
 			opt.SkipPaths = []string{"/health", "/version"}
+		} else {
+			opt.SkipPaths = userOpts.SkipPaths
 		}
-		// Ensure IncludeHeaders defaults to true
-		if len(opts) > 0 && !opts[0].IncludeHeaders {
-			opt.IncludeHeaders = opts[0].IncludeHeaders
-		}
+
+		// Preserve user's IncludeHeaders setting
+		opt.IncludeHeaders = userOpts.IncludeHeaders
+
+		// Preserve user's FailureMode setting
+		opt.FailureMode = userOpts.FailureMode
+
+		// Preserve user's Logger setting
+		opt.Logger = userOpts.Logger
+
+		// Preserve user's callbacks
+		opt.OnRateLimitExceeded = userOpts.OnRateLimitExceeded
+		opt.OnError = userOpts.OnError
+
 		// Use manager's globalError if not explicitly provided
-		if opt.RateLimitError == nil {
-			opt.RateLimitError = m.globalError
+		if userOpts.RateLimitError != nil {
+			opt.RateLimitError = userOpts.RateLimitError
 		}
 	}
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/LerianStudio/lib-commons/v2/commons"
 	cn "github.com/LerianStudio/lib-commons/v2/commons/constants"
 	"github.com/LerianStudio/lib-commons/v2/commons/net/http/ratelimit"
 	"github.com/gofiber/fiber/v2"
@@ -125,11 +126,6 @@ func applyDefaults(config *RateLimitConfig) {
 	if config.ErrorMessage == "" {
 		config.ErrorMessage = "Too many requests. Please try again later."
 	}
-
-	// Default to including headers
-	if !config.IncludeHeaders {
-		config.IncludeHeaders = true
-	}
 }
 
 // handleRateLimiterError handles errors from the rate limiter.
@@ -160,9 +156,12 @@ func handleRateLimiterError(c *fiber.Ctx, config RateLimitConfig, err error, key
 		config.Logger("warn", "Rate limiter failed closed, blocking request")
 	}
 
+	rateLimitErr := commons.ValidateRateLimitError(cn.ErrServiceUnavailable, "")
+
 	return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-		"code":    "SERVICE_UNAVAILABLE",
-		"message": "Service temporarily unavailable. Please try again later.",
+		"code":    rateLimitErr.Code,
+		"title":   rateLimitErr.Title,
+		"message": rateLimitErr.Message,
 	})
 }
 

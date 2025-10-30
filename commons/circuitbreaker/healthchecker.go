@@ -76,10 +76,8 @@ func (hc *healthChecker) healthCheckLoop() {
 	ticker := time.NewTicker(hc.interval)
 	defer ticker.Stop()
 
-	// Initial check after short delay
-	time.Sleep(5 * time.Second)
-	hc.performHealthChecks()
-
+	// By entering the select loop immediately, the health checker is responsive
+	// to immediate checks from the moment it starts.
 	for {
 		select {
 		case <-ticker.C:

@@ -166,10 +166,6 @@ func NewGlobalHandler(cfg *GlobalHandlerConfig, lg log.Logger) *GlobalHandler {
 func (h *GlobalHandler) GlobalMiddleware() fiber.Handler {
 	if !h.config.Enabled || h.manager == nil {
 		return func(c *fiber.Ctx) error {
-			if h.logger != nil {
-				h.logger.Warn("Rate limiting is disabled")
-			}
-
 			return c.Next()
 		}
 	}
