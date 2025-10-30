@@ -274,7 +274,8 @@ func TestRateLimitMiddleware_DefaultValues(t *testing.T) {
 
 	// Config with minimal settings - should use defaults
 	config := RateLimitConfig{
-		Limiter: limiter,
+		Limiter:        limiter,
+		IncludeHeaders: true, // Explicitly set to test header inclusion
 	}
 
 	app := fiber.New()
@@ -288,7 +289,7 @@ func TestRateLimitMiddleware_DefaultValues(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
-	// Verify default headers are included
+	// Verify headers are included when explicitly enabled
 	assert.NotEmpty(t, resp.Header.Get("X-RateLimit-Limit"))
 }
 

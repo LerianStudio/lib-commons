@@ -2,7 +2,9 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	libCommons "github.com/LerianStudio/lib-commons/v2/commons"
@@ -199,13 +201,15 @@ func (dl *DistributedLock) WithLockOptions(ctx context.Context, lockKey string, 
 }
 
 // TryLock attempts to acquire a lock without retrying.
-// Returns true if lock was acquired, false otherwise.
+// Returns the mutex and true if lock was acquired, false if lock is busy.
+// Returns an error for unexpected failures (network errors, context cancellation, etc.)
 //
 // Use this when you want to skip the operation if the lock is busy:
 //
 //	mutex, acquired, err := lock.TryLock(ctx, "lock:cache:refresh")
 //	if err != nil {
-//	    return err
+//	    // Unexpected error (network, context cancellation, etc.) - should be propagated
+//	    return fmt.Errorf("failed to attempt lock acquisition: %w", err)
 //	}
 //	if !acquired {
 //	    logger.Info("Lock busy, skipping cache refresh")
@@ -226,8 +230,26 @@ func (dl *DistributedLock) TryLock(ctx context.Context, lockKey string) (*redsyn
 	)
 
 	if err := mutex.LockContext(ctx); err != nil {
+		// Check if this is a lock contention error (expected behavior)
+		// redsync returns different error messages for lock contention:
+		// - "lock already taken" when another process holds the lock
+		// - "redsync: failed to acquire lock" as the base error
+		errMsg := err.Error()
+		isLockContention := errors.Is(err, redsync.ErrFailed) ||
+			strings.Contains(errMsg, "lock already taken") ||
+			strings.Contains(errMsg, "failed to acquire lock")
+
+		if isLockContention {
+			logger.Debugf("Could not acquire lock %s as it is already held by another process", lockKey)
+			return nil, false, nil
+		}
+
+		// Any other error (e.g., network, context cancellation) is an actual failure
+		// and should be propagated to the caller.
 		logger.Debugf("Could not acquire lock %s: %v", lockKey, err)
-		return nil, false, nil
+		opentelemetry.HandleSpanError(&span, "Failed to attempt lock acquisition", err)
+
+		return nil, false, fmt.Errorf("failed to attempt lock acquisition for %s: %w", lockKey, err)
 	}
 
 	logger.Debugf("Lock acquired: %s", lockKey)
