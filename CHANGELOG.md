@@ -1,3 +1,10 @@
+## [2.4.0-beta.9](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.8...v2.4.0-beta.9) (2025-10-30)
+
+
+### Features
+
+* improve distributed locking and rate limiting reliability ([79dbad3](https://github.com/LerianStudio/lib-commons/commit/79dbad34e600d27a512c2f99104b91a77e6f0f3e))
+
 ## [2.4.0-beta.8](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.7...v2.4.0-beta.8) (2025-10-29)
 
 
