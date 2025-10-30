@@ -1,3 +1,86 @@
+## [2.4.0-beta.9](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.8...v2.4.0-beta.9) (2025-10-30)
+
+
+### Features
+
+* improve distributed locking and rate limiting reliability ([79dbad3](https://github.com/LerianStudio/lib-commons/commit/79dbad34e600d27a512c2f99104b91a77e6f0f3e))
+
+## [2.4.0-beta.8](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.7...v2.4.0-beta.8) (2025-10-29)
+
+
+### Bug Fixes
+
+* add panic recovery to circuit breaker state change listeners ([96fe07e](https://github.com/LerianStudio/lib-commons/commit/96fe07eff47627fde636fbf814b687cdab3ecac7))
+
+## [2.4.0-beta.7](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.6...v2.4.0-beta.7) (2025-10-27)
+
+
+### Features
+
+* **commons:** add SafeIntToUint32 utility with overflow protection and logging ([5a13d45](https://github.com/LerianStudio/lib-commons/commit/5a13d45f0a3cd2fafdb3debf99017bac473083f7))
+* **circuitbreaker:** add state change notifications and immediate health checks ([2532b8b](https://github.com/LerianStudio/lib-commons/commit/2532b8b9605619b8b3a6f0f6e1ec0b3574de5516))
+* **circuitbreaker:** extend HealthChecker interface to include state change notifications ([9087254](https://github.com/LerianStudio/lib-commons/commit/90872540cf2aad78d642596652789747075e71c7))
+
+
+### Bug Fixes
+
+* add nil check for circuit breaker state change listener registration ([55da00b](https://github.com/LerianStudio/lib-commons/commit/55da00b081dcc0251433dcb702b14e98486348cd))
+* add nil logger check and change warn to debug level in SafeIntToUint32 ([a72880c](https://github.com/LerianStudio/lib-commons/commit/a72880ca0525c05cf61802c0f976e7b872f85b51))
+
+## [2.4.0-beta.6](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.5...v2.4.0-beta.6) (2025-10-24)
+
+
+### Features
+
+* **circuitbreaker:** implement circuit breaker package with health checks and state management ([d93b161](https://github.com/LerianStudio/lib-commons/commit/d93b1610c0cae3be263be4e684afc157c88e93b4))
+
+## [2.4.0-beta.5](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.4...v2.4.0-beta.5) (2025-10-21)
+
+
+### Features
+
+* **redis:** add RateLimiterLockOptions helper function ([6535d18](https://github.com/LerianStudio/lib-commons/commit/6535d18146a36eaf23584893b7ff4fdef0d6fe61))
+* **redis:** implement distributed locking with RedLock algorithm ([5ee1bdb](https://github.com/LerianStudio/lib-commons/commit/5ee1bdb96af56371309231323f4be7e09c98e6b5))
+
+
+### Bug Fixes
+
+* **redis:** correct benchmark loop and test naming in rate limiter tests ([4622c78](https://github.com/LerianStudio/lib-commons/commit/4622c783412d81408697413d1e70d1ced6c6c3be))
+* **redis:** correct goroutine test assertions in distributed lock tests ([b9e6d70](https://github.com/LerianStudio/lib-commons/commit/b9e6d703de7893cec558bb673632559175e4604f))
+
+## [2.4.0-beta.4](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.3...v2.4.0-beta.4) (2025-10-17)
+
+
+### Features
+
+* add service unavailable error code and standardize rate limit responses ([f65af5a](https://github.com/LerianStudio/lib-commons/commit/f65af5a258b3d7659e3b5afc0854036d8ace14b5))
+
+## [2.4.0-beta.3](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.2...v2.4.0-beta.3) (2025-10-16)
+
+
+### Features
+
+* **ratelimit:** add Redis-based rate limiting with global middleware support ([9a976c3](https://github.com/LerianStudio/lib-commons/commit/9a976c3267adc45f77482f68a3e1ebc65c6baa42))
+
+## [2.4.0-beta.2](https://github.com/LerianStudio/lib-commons/compare/v2.4.0-beta.1...v2.4.0-beta.2) (2025-10-15)
+
+
+### Features
+
+* update OperateBalances to include balance versioning :sparkles: ([3a75235](https://github.com/LerianStudio/lib-commons/commit/3a75235256893ea35ea94edfe84789a84b620b2f))
+
+
+### Bug Fixes
+
+* update OperateBalances to handle unknown operations without changing balance version :bug: ([2f4369d](https://github.com/LerianStudio/lib-commons/commit/2f4369d1b73eaaf66bd2b9a430584c2f9a840ac4))
+
+## [2.4.0-beta.1](https://github.com/LerianStudio/lib-commons/compare/v2.3.0...v2.4.0-beta.1) (2025-10-14)
+
+
+### Features
+
+* Adding datasource constants. ([5a04f8a](https://github.com/LerianStudio/lib-commons/commit/5a04f8a5eb139318b7b71c1fef9d966bfd296f50))
+
 ## [2.3.0](https://github.com/LerianStudio/lib-commons/compare/v2.2.0...v2.3.0) (2025-09-18)
 
 
