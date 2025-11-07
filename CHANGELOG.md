@@ -1,3 +1,10 @@
+## [2.5.0](https://github.com/LerianStudio/lib-commons/compare/v2.4.0...v2.5.0) (2025-11-07)
+
+
+### Bug Fixes
+
+* improve SafeIntToUint32 function by using uint64 for overflow checks :bug: ([4340367](https://github.com/LerianStudio/lib-commons/commit/43403675c46dc513cbfa12102929de0387f026cd))
+
 ## [2.4.0](https://github.com/LerianStudio/lib-commons/compare/v2.3.0...v2.4.0) (2025-10-30)
 
 
