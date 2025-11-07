@@ -170,7 +170,6 @@ func SafeUintToInt(val uint) int {
 // Returns the converted value if in valid range [0, MaxUint32], otherwise returns defaultVal.
 // This prevents G115 (CWE-190) integer overflow vulnerabilities.
 func SafeIntToUint32(value int, defaultVal uint32, logger log.Logger, fieldName string) uint32 {
-	// Check for negative values
 	if value < 0 {
 		if logger != nil {
 			logger.Debugf("Invalid %s value %d (negative), using default: %d", fieldName, value, defaultVal)
@@ -179,16 +178,17 @@ func SafeIntToUint32(value int, defaultVal uint32, logger log.Logger, fieldName 
 		return defaultVal
 	}
 
-	// Check for overflow beyond uint32 max
-	if value > math.MaxUint32 {
+	uv := uint64(value)
+
+	if uv > uint64(math.MaxUint32) {
 		if logger != nil {
-			logger.Debugf("Invalid %s value %d (overflow), using default: %d", fieldName, value, defaultVal)
+			logger.Debugf("%s value %d exceeds uint32 max (%d), using default %d", fieldName, value, uint64(math.MaxUint32), defaultVal)
 		}
 
 		return defaultVal
 	}
 
-	return uint32(value)
+	return uint32(uv)
 }
 
 // IsUUID Validate if the string pass through is an uuid
