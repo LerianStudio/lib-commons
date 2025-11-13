@@ -40,6 +40,11 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
+      - name: Sync with remote branch
+        run: |
+          git fetch origin ${{ github.ref_name }}
+          git reset --hard origin/${{ github.ref_name }}
+
       - name: Import GPG key
         uses: crazy-max/ghaction-import-gpg@v6
         id: import_gpg
@@ -52,7 +57,7 @@ jobs:
           git_user_signingkey: true
           git_commit_gpgsign: true
 
-      - name: Install semantic-release exec plugin
+      - name: Install plugin @semantic-release/exec
         run: npm install --save-dev @semantic-release/exec@^6.0.3
 
       - name: Semantic Release
@@ -73,84 +78,21 @@ jobs:
       - name: Create Backmerge PR (main → develop)
         if: github.ref == 'refs/heads/main' && steps.semantic.outputs.new_release_published == 'true'
         run: |
-          # Robust hotfix detection using multiple strategies
-          HOTFIX_DETECTED=false
-          DETECTION_REASON=""
-
-          # Strategy 1: Check for hotfix branches in remote tracking (may fail if branches deleted)
-          HOTFIX_BRANCHES=$(git branch -r --merged HEAD | grep -E 'origin/hotfix/' || true)
-          if [[ -n "$HOTFIX_BRANCHES" ]]; then
-            HOTFIX_DETECTED=true
-            DETECTION_REASON="Remote hotfix branches found: $HOTFIX_BRANCHES"
-          fi
-
-          # Strategy 2: Search recent merge commits for hotfix references
-          if [[ "$HOTFIX_DETECTED" == "false" ]]; then
-            HOTFIX_MERGES=$(git log --merges --oneline -10 --grep="hotfix" || true)
-            if [[ -n "$HOTFIX_MERGES" ]]; then
-              HOTFIX_DETECTED=true
-              DETECTION_REASON="Recent merge commits with hotfix found: $(echo "$HOTFIX_MERGES" | head -1)"
-            fi
-          fi
-
-          # Strategy 3: Check for hotfix-indicating tags on HEAD or recent commits
-          if [[ "$HOTFIX_DETECTED" == "false" ]]; then
-            HOTFIX_TAGS=$(git tag --contains HEAD | grep -E '(hotfix|patch|hf)' || true)
-            if [[ -n "$HOTFIX_TAGS" ]]; then
-              HOTFIX_DETECTED=true
-              DETECTION_REASON="Hotfix-related tags found: $HOTFIX_TAGS"
-            fi
-          fi
-
-          # Strategy 4: Check recent commit messages for hotfix patterns
-          if [[ "$HOTFIX_DETECTED" == "false" ]]; then
-            HOTFIX_COMMITS=$(git log --oneline -5 | grep -iE '(hotfix|emergency|critical|urgent)' || true)
-            if [[ -n "$HOTFIX_COMMITS" ]]; then
-              HOTFIX_DETECTED=true
-              DETECTION_REASON="Recent commits with hotfix patterns: $(echo "$HOTFIX_COMMITS" | head -1)"
-            fi
-          fi
-
-          # Strategy 5: Check if current commit is from a PR with hotfix labels (GitHub API)
-          if [[ "$HOTFIX_DETECTED" == "false" ]] && command -v gh >/dev/null 2>&1; then
-            CURRENT_SHA=$(git rev-parse HEAD)
-            PR_INFO=$(gh pr list --state merged --search "$CURRENT_SHA" --json number,labels,headRefName --limit 1 2>/dev/null || echo "[]")
-            if echo "$PR_INFO" | jq -e '.[0].labels[]? | select(.name | test("hotfix|emergency|critical"; "i"))' >/dev/null 2>&1; then
-              HOTFIX_DETECTED=true
-              DETECTION_REASON="GitHub PR with hotfix labels found for commit $CURRENT_SHA"
-            elif echo "$PR_INFO" | jq -e '.[0].headRefName? | test("hotfix"; "i")' >/dev/null 2>&1; then
-              HOTFIX_DETECTED=true
-              DETECTION_REASON="GitHub PR from hotfix branch found for commit $CURRENT_SHA"
-            fi
-          fi
-
-          if [[ "$HOTFIX_DETECTED" == "true" ]]; then
-            echo "Skipping backmerge: Hotfix release detected"
-            echo "Detection reason: $DETECTION_REASON"
+          # Check if this release came from a hotfix merge
+          LAST_COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+          if [[ "$LAST_COMMIT_MSG" =~ Merge.*hotfix ]]; then
+            echo "Skipping backmerge: Release came from hotfix branch"
             exit 0
           fi
 
-          echo "No hotfix indicators found - proceeding with backmerge"
-
-          # Create PR from main to develop with proper error handling
-          if ! gh pr create \
+          # Create PR from main to develop
+          gh pr create \
             --title "chore(release): Backmerge main → develop after release ${{ steps.semantic.outputs.new_release_version }}" \
             --body "Automated backmerge after release ${{ steps.semantic.outputs.new_release_version }}" \
             --base develop \
             --head main \
             --label "automated" \
-            --label "backmerge"; then
-
-            # Check if PR already exists using robust JSON-based approach
-            if gh pr list --base develop --head main --state open --json number --jq 'length > 0'; then
-              echo "PR already exists from main to develop"
-            else
-              echo "Failed to create PR - this may indicate no changes to merge or a network/auth issue"
-              exit 1
-            fi
-          else
-            echo "Successfully created backmerge PR"
-          fi
+            --label "backmerge" || echo "PR already exists or no changes to merge"
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
