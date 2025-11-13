@@ -15,6 +15,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v2/commons/security"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/attribute"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
@@ -209,10 +210,22 @@ func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
 	) (any, error) {
 		ctx = setGRPCRequestHeaderID(ctx)
 
+		// Prefer request_id from the gRPC request body when available
+		if r, ok := req.(interface{ GetRequestId() string }); ok {
+			if rid := strings.TrimSpace(r.GetRequestId()); rid != "" {
+				// Override correlation id to match the body-provided request_id
+				ctx = commons.ContextWithHeaderID(ctx, rid)
+				// Ensure standardized span attribute is present
+				ctx = commons.ContextWithSpanAttributes(ctx, attribute.String("app.request.request_id", rid))
+			}
+		}
+
 		_, _, reqId, _ := commons.NewTrackingFromContext(ctx)
 
 		mid := buildOpts(opts...)
-		logger := mid.Logger.WithDefaultMessageTemplate(reqId + cn.LoggerDefaultSeparator)
+		logger := mid.Logger.
+			WithFields(cn.HeaderID, reqId).
+			WithDefaultMessageTemplate(reqId + cn.LoggerDefaultSeparator)
 
 		ctx = commons.ContextWithLogger(ctx, logger)
 
