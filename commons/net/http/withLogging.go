@@ -208,16 +208,20 @@ func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
-		ctx = setGRPCRequestHeaderID(ctx)
-
-		// Prefer request_id from the gRPC request body when available
-		if r, ok := req.(interface{ GetRequestId() string }); ok {
-			if rid := strings.TrimSpace(r.GetRequestId()); rid != "" {
-				// Override correlation id to match the body-provided request_id
-				ctx = commons.ContextWithHeaderID(ctx, rid)
-				// Ensure standardized span attribute is present
-				ctx = commons.ContextWithSpanAttributes(ctx, attribute.String("app.request.request_id", rid))
+		// Prefer request_id from the gRPC request body when available and valid.
+		if rid, ok := getValidBodyRequestID(req); ok {
+			// Emit a debug log if overriding a different metadata id
+			if prev := getMetadataID(ctx); prev != "" && prev != rid {
+				mid := buildOpts(opts...)
+				mid.Logger.Debugf("Overriding correlation id from metadata (%s) with body request_id (%s)", prev, rid)
 			}
+			// Override correlation id to match the body-provided, validated UUID request_id
+			ctx = commons.ContextWithHeaderID(ctx, rid)
+			// Ensure standardized span attribute is present
+			ctx = commons.ContextWithSpanAttributes(ctx, attribute.String("app.request.request_id", rid))
+		} else {
+			// Fallback to metadata path only if body is empty/invalid or accessor not present
+			ctx = setGRPCRequestHeaderID(ctx)
 		}
 
 		_, _, reqId, _ := commons.NewTrackingFromContext(ctx)
@@ -337,4 +341,28 @@ func handleMultipartFormBody(c *fiber.Ctx, fieldsToObfuscate []string) string {
 	}
 
 	return updatedBody.Encode()
+}
+
+// getValidBodyRequestID extracts and validates the request_id from the gRPC request body.
+// Returns (id, true) when present and valid UUID; otherwise ("", false).
+func getValidBodyRequestID(req any) (string, bool) {
+	if r, ok := req.(interface{ GetRequestId() string }); ok {
+		if rid := strings.TrimSpace(r.GetRequestId()); rid != "" && commons.IsUUID(rid) {
+			return rid, true
+		}
+	}
+
+	return "", false
+}
+
+// getMetadataID extracts a correlation id from incoming gRPC metadata if present.
+func getMetadataID(ctx context.Context) string {
+	if md, ok := metadata.FromIncomingContext(ctx); ok && md != nil {
+		headerID := md.Get(cn.MetadataID)
+		if len(headerID) > 0 && !commons.IsNilOrEmpty(&headerID[0]) {
+			return headerID[0]
+		}
+	}
+
+	return ""
 }
