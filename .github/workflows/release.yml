@@ -40,11 +40,6 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Sync with remote branch
-        run: |
-          git fetch origin ${{ github.ref_name }}
-          git reset --hard origin/${{ github.ref_name }}
-
       - name: Import GPG key
         uses: crazy-max/ghaction-import-gpg@v6
         id: import_gpg
@@ -57,8 +52,8 @@ jobs:
           git_user_signingkey: true
           git_commit_gpgsign: true
 
-      - name: Install plugin @semantic-release/exec
-        run: npm install --save-dev @semantic-release/exec
+      - name: Install semantic-release exec plugin
+        run: npm install --save-dev @semantic-release/exec@^6.0.3
 
       - name: Semantic Release
         uses: cycjimmy/semantic-release-action@v4
@@ -78,21 +73,39 @@ jobs:
       - name: Create Backmerge PR (main → develop)
         if: github.ref == 'refs/heads/main' && steps.semantic.outputs.new_release_published == 'true'
         run: |
-          # Check if this release came from a hotfix merge
+          # Check if this release came from a hotfix branch using Git metadata
+          # Look for hotfix branches in the commit history of the current HEAD
+          HOTFIX_BRANCHES=$(git branch -r --merged HEAD | grep -E 'origin/hotfix/' || true)
+
+          # Also check if the last merge commit mentions hotfix (as fallback)
           LAST_COMMIT_MSG=$(git log -1 --pretty=format:"%s")
-          if [[ "$LAST_COMMIT_MSG" =~ Merge.*hotfix ]]; then
-            echo "Skipping backmerge: Release came from hotfix branch"
+
+          if [[ -n "$HOTFIX_BRANCHES" ]] || [[ "$LAST_COMMIT_MSG" =~ ^Merge.*hotfix ]]; then
+            echo "Skipping backmerge: Release originated from hotfix branch"
+            echo "Hotfix branches found: $HOTFIX_BRANCHES"
+            echo "Last commit: $LAST_COMMIT_MSG"
             exit 0
           fi
 
-          # Create PR from main to develop
-          gh pr create \
+          # Create PR from main to develop with proper error handling
+          if ! gh pr create \
             --title "chore(release): Backmerge main → develop after release ${{ steps.semantic.outputs.new_release_version }}" \
             --body "Automated backmerge after release ${{ steps.semantic.outputs.new_release_version }}" \
             --base develop \
             --head main \
             --label "automated" \
-            --label "backmerge" || echo "PR already exists or no changes to merge"
+            --label "backmerge"; then
+
+            # Check if PR already exists
+            if gh pr list --base develop --head main --state open | grep -q "main"; then
+              echo "PR already exists from main to develop"
+            else
+              echo "Failed to create PR - this may indicate no changes to merge or a network/auth issue"
+              exit 1
+            fi
+          else
+            echo "Successfully created backmerge PR"
+          fi
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
