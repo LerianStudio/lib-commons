@@ -73,19 +73,64 @@ jobs:
       - name: Create Backmerge PR (main → develop)
         if: github.ref == 'refs/heads/main' && steps.semantic.outputs.new_release_published == 'true'
         run: |
-          # Check if this release came from a hotfix branch using Git metadata
-          # Look for hotfix branches in the commit history of the current HEAD
+          # Robust hotfix detection using multiple strategies
+          HOTFIX_DETECTED=false
+          DETECTION_REASON=""
+
+          # Strategy 1: Check for hotfix branches in remote tracking (may fail if branches deleted)
           HOTFIX_BRANCHES=$(git branch -r --merged HEAD | grep -E 'origin/hotfix/' || true)
+          if [[ -n "$HOTFIX_BRANCHES" ]]; then
+            HOTFIX_DETECTED=true
+            DETECTION_REASON="Remote hotfix branches found: $HOTFIX_BRANCHES"
+          fi
 
-          # Also check if the last merge commit mentions hotfix (as fallback)
-          LAST_COMMIT_MSG=$(git log -1 --pretty=format:"%s")
+          # Strategy 2: Search recent merge commits for hotfix references
+          if [[ "$HOTFIX_DETECTED" == "false" ]]; then
+            HOTFIX_MERGES=$(git log --merges --oneline -10 --grep="hotfix" || true)
+            if [[ -n "$HOTFIX_MERGES" ]]; then
+              HOTFIX_DETECTED=true
+              DETECTION_REASON="Recent merge commits with hotfix found: $(echo "$HOTFIX_MERGES" | head -1)"
+            fi
+          fi
 
-          if [[ -n "$HOTFIX_BRANCHES" ]] || [[ "$LAST_COMMIT_MSG" =~ ^Merge.*hotfix ]]; then
-            echo "Skipping backmerge: Release originated from hotfix branch"
-            echo "Hotfix branches found: $HOTFIX_BRANCHES"
-            echo "Last commit: $LAST_COMMIT_MSG"
+          # Strategy 3: Check for hotfix-indicating tags on HEAD or recent commits
+          if [[ "$HOTFIX_DETECTED" == "false" ]]; then
+            HOTFIX_TAGS=$(git tag --contains HEAD | grep -E '(hotfix|patch|hf)' || true)
+            if [[ -n "$HOTFIX_TAGS" ]]; then
+              HOTFIX_DETECTED=true
+              DETECTION_REASON="Hotfix-related tags found: $HOTFIX_TAGS"
+            fi
+          fi
+
+          # Strategy 4: Check recent commit messages for hotfix patterns
+          if [[ "$HOTFIX_DETECTED" == "false" ]]; then
+            HOTFIX_COMMITS=$(git log --oneline -5 | grep -iE '(hotfix|emergency|critical|urgent)' || true)
+            if [[ -n "$HOTFIX_COMMITS" ]]; then
+              HOTFIX_DETECTED=true
+              DETECTION_REASON="Recent commits with hotfix patterns: $(echo "$HOTFIX_COMMITS" | head -1)"
+            fi
+          fi
+
+          # Strategy 5: Check if current commit is from a PR with hotfix labels (GitHub API)
+          if [[ "$HOTFIX_DETECTED" == "false" ]] && command -v gh >/dev/null 2>&1; then
+            CURRENT_SHA=$(git rev-parse HEAD)
+            PR_INFO=$(gh pr list --state merged --search "$CURRENT_SHA" --json number,labels,headRefName --limit 1 2>/dev/null || echo "[]")
+            if echo "$PR_INFO" | jq -e '.[0].labels[]? | select(.name | test("hotfix|emergency|critical"; "i"))' >/dev/null 2>&1; then
+              HOTFIX_DETECTED=true
+              DETECTION_REASON="GitHub PR with hotfix labels found for commit $CURRENT_SHA"
+            elif echo "$PR_INFO" | jq -e '.[0].headRefName? | test("hotfix"; "i")' >/dev/null 2>&1; then
+              HOTFIX_DETECTED=true
+              DETECTION_REASON="GitHub PR from hotfix branch found for commit $CURRENT_SHA"
+            fi
+          fi
+
+          if [[ "$HOTFIX_DETECTED" == "true" ]]; then
+            echo "Skipping backmerge: Hotfix release detected"
+            echo "Detection reason: $DETECTION_REASON"
             exit 0
           fi
+
+          echo "No hotfix indicators found - proceeding with backmerge"
 
           # Create PR from main to develop with proper error handling
           if ! gh pr create \
@@ -96,8 +141,8 @@ jobs:
             --label "automated" \
             --label "backmerge"; then
 
-            # Check if PR already exists
-            if gh pr list --base develop --head main --state open | grep -q "main"; then
+            # Check if PR already exists using robust JSON-based approach
+            if gh pr list --base develop --head main --state open --json number --jq 'length > 0'; then
               echo "PR already exists from main to develop"
             else
               echo "Failed to create PR - this may indicate no changes to merge or a network/auth issue"
