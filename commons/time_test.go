@@ -123,6 +123,34 @@ func TestNormalizeDateTime(t *testing.T) {
 			endOfDay: true,
 			expected: "2025-01-01 23:59:59",
 		},
+		{
+			name:     "should truncate nanoseconds and detect boundary at 00:00:00 with fractional seconds",
+			date:     time.Date(2024, 1, 15, 0, 0, 0, 123456789, loc),
+			days:     nil,
+			endOfDay: false,
+			expected: "2024-01-15 00:00:00",
+		},
+		{
+			name:     "should truncate nanoseconds and detect boundary at 00:00:00 with fractional seconds - endOfDay true",
+			date:     time.Date(2024, 1, 15, 0, 0, 0, 123456789, loc),
+			days:     nil,
+			endOfDay: true,
+			expected: "2024-01-15 23:59:59",
+		},
+		{
+			name:     "should truncate nanoseconds and detect boundary at 23:59:59 with fractional seconds",
+			date:     time.Date(2024, 1, 15, 23, 59, 59, 123456789, loc),
+			days:     nil,
+			endOfDay: true,
+			expected: "2024-01-15 23:59:59",
+		},
+		{
+			name:     "should truncate nanoseconds and detect boundary at 23:59:59 with fractional seconds - endOfDay false",
+			date:     time.Date(2024, 1, 15, 23, 59, 59, 123456789, loc),
+			days:     nil,
+			endOfDay: false,
+			expected: "2024-01-15 00:00:00",
+		},
 	}
 
 	for _, tt := range tests {

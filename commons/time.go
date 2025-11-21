@@ -38,6 +38,8 @@ func NormalizeDateTime(date time.Time, days *int, endOfDay bool) string {
 		date = date.AddDate(0, 0, *days)
 	}
 
+	date = date.Truncate(time.Second)
+
 	hour, minute, sec := date.Hour(), date.Minute(), date.Second()
 	isNormalized := (hour == 0 && minute == 0 && sec == 0) || (hour == 23 && minute == 59 && sec == 59)
 
