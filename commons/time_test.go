@@ -178,7 +178,7 @@ func TestIsValidDate(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "should return true for valid date with single digit month and day",
+			name:     "should return false for valid date with single digit month and day",
 			date:     "2024-1-5",
 			expected: false,
 		},
