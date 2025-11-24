@@ -713,7 +713,7 @@ func TestIsValidDateTime(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "should return true for valid date time with single digit values",
+			name:     "should return false for date time with single digit values",
 			date:     "2024-1-5 1:2:3",
 			expected: false,
 		},
