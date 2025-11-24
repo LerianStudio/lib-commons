@@ -1,6 +1,7 @@
 package commons
 
 import (
+	"fmt"
 	"time"
 )
 
@@ -52,4 +53,41 @@ func NormalizeDateTime(date time.Time, days *int, endOfDay bool) string {
 	}
 
 	return date.Format("2006-01-02 15:04:05")
+}
+
+// ParseDateTime parses a date string that can be either:
+// - Date only (YYYY-MM-DD): returns time with 00:00:00 for start, 23:59:59 for end
+// - Date and time (ISO 8601 formats like YYYY-MM-DDTHH:MM:SS): returns exact time
+// Returns the parsed time and a boolean indicating if time was specified
+func ParseDateTime(dateStr string, isEndDate bool) (time.Time, bool, error) {
+	formats := []string{
+		time.RFC3339,
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04:05Z",
+		"2006-01-02 15:04:05",
+	}
+
+	for _, format := range formats {
+		if t, err := time.Parse(format, dateStr); err == nil {
+			return t, true, nil
+		}
+	}
+
+	if t, err := time.Parse("2006-01-02", dateStr); err == nil {
+		if isEndDate {
+			t = time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, t.Location())
+		} else {
+			t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+		}
+
+		return t, false, nil
+	}
+
+	return time.Time{}, false, fmt.Errorf("invalid date format: %s", dateStr)
+}
+
+// IsValidDateTime checks if the provided date string is in the format "YYYY-MM-DD HH:MM:SS".
+func IsValidDateTime(date string) bool {
+	_, err := time.Parse("2006-01-02 15:04:05", date)
+	return err == nil
 }
