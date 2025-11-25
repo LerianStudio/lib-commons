@@ -1,9 +1,6 @@
 package commons
 
 import (
-	"fmt"
-	"strings"
-
 	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
 )
 
@@ -18,39 +15,6 @@ type Response struct {
 
 func (e Response) Error() string {
 	return e.Message
-}
-
-// RateLimitError records an error indicating an entity was not found in any case that caused it.
-type RateLimitError struct {
-	EntityType string `json:"entityType,omitempty"`
-	Title      string `json:"title,omitempty"`
-	Message    string `json:"message,omitempty"`
-	Code       string `json:"code,omitempty"`
-	Err        error  `json:"err,omitempty"`
-}
-
-// Error implements the error interface.
-func (e RateLimitError) Error() string {
-	if strings.TrimSpace(e.Code) != "" {
-		return fmt.Sprintf("%s - %s", e.Code, e.Message)
-	}
-
-	return e.Message
-}
-
-// Unwrap implements the error interface introduced in Go 1.13 to unwrap the internal error.
-func (e RateLimitError) Unwrap() error {
-	return e.Err
-}
-
-func ValidateRateLimitError(err error, entityType string) *RateLimitError {
-	return &RateLimitError{
-		EntityType: entityType,
-		Code:       constant.ErrRateLimitExceeded.Error(),
-		Title:      "Rate Limit Exceeded",
-		Message:    "Too many requests. Please try again later.",
-		Err:        err,
-	}
 }
 
 // ValidateBusinessError validates the error and returns the appropriate business error code, title, and message.
