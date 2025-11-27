@@ -11,6 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// Deprecated: use ValidateBalancesRules method from Midaz pkg instead.
 // ValidateBalancesRules function with some validates in accounts and DSL operations
 func ValidateBalancesRules(ctx context.Context, transaction Transaction, validate Responses, balances []*Balance) error {
 	logger, tracer, _, _ := commons.NewTrackingFromContext(ctx)
@@ -89,6 +90,7 @@ func validateToBalances(balance *Balance, to map[string]Amount, asset string) er
 	return nil
 }
 
+// Deprecated: use ValidateFromToOperation method from Midaz pkg instead.
 // ValidateFromToOperation func that validate operate balance
 func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (Amount, Balance, error) {
 	if ft.IsFrom {
@@ -112,6 +114,7 @@ func ValidateFromToOperation(ft FromTo, validate Responses, balance *Balance) (A
 	}
 }
 
+// Deprecated: use AliasKey method from Midaz pkg instead.
 // AliasKey function to concatenate alias with balance key
 func AliasKey(alias, balanceKey string) string {
 	if balanceKey == "" {
@@ -121,6 +124,7 @@ func AliasKey(alias, balanceKey string) string {
 	return alias + "#" + balanceKey
 }
 
+// Deprecated: use SplitAlias method from Midaz pkg instead.
 // SplitAlias function to split alias with index
 func SplitAlias(alias string) string {
 	if strings.Contains(alias, "#") {
@@ -130,11 +134,13 @@ func SplitAlias(alias string) string {
 	return alias
 }
 
+// Deprecated: use ConcatAlias method from Midaz pkg instead.
 // ConcatAlias function to concat alias with index
 func ConcatAlias(i int, alias string) string {
 	return strconv.Itoa(i) + "#" + alias
 }
 
+// Deprecated: use OperateBalances method from Midaz pkg instead.
 // OperateBalances Function to sum or sub two balances and Normalize the scale
 func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 	var (
@@ -175,6 +181,7 @@ func OperateBalances(amount Amount, balance Balance) (Balance, error) {
 	}, nil
 }
 
+// Deprecated: use DetermineOperation method from Midaz pkg instead.
 // DetermineOperation Function to determine the operation
 func DetermineOperation(isPending bool, isFrom bool, transactionType string) string {
 	switch {
@@ -206,6 +213,7 @@ func DetermineOperation(isPending bool, isFrom bool, transactionType string) str
 	}
 }
 
+// Deprecated: use CalculateTotal method from Midaz pkg instead.
 // CalculateTotal Calculate total for sources/destinations based on shares, amounts and remains
 func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType string, t chan decimal.Decimal, ft chan map[string]Amount, sd chan []string, or chan map[string]string) {
 	fmto := make(map[string]Amount)
@@ -286,6 +294,7 @@ func CalculateTotal(fromTos []FromTo, transaction Transaction, transactionType s
 	or <- operationRoute
 }
 
+// Deprecated: use AppendIfNotExist method from Midaz pkg instead.
 // AppendIfNotExist Append if not exist
 func AppendIfNotExist(slice []string, s []string) []string {
 	for _, v := range s {
@@ -297,6 +306,7 @@ func AppendIfNotExist(slice []string, s []string) []string {
 	return slice
 }
 
+// Deprecated: use ValidateSendSourceAndDistribute method from Midaz pkg instead.
 // ValidateSendSourceAndDistribute Validate send and distribute totals
 func ValidateSendSourceAndDistribute(ctx context.Context, transaction Transaction, transactionType string) (*Responses, error) {
 	var (
