@@ -8,6 +8,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// Deprecated: use model from Midaz pkg instead.
 // Balance structure for marshaling/unmarshalling JSON.
 //
 // swagger:model Balance
@@ -32,6 +33,7 @@ type Balance struct {
 	Metadata       map[string]any  `json:"metadata,omitempty"`
 } // @name Balance
 
+// Deprecated: use model from Midaz pkg instead.
 type Responses struct {
 	Total               decimal.Decimal
 	Asset               string
@@ -46,6 +48,7 @@ type Responses struct {
 	OperationRoutesTo   map[string]string
 }
 
+// Deprecated: use model from Midaz pkg instead.
 // Metadata structure for marshaling/unmarshalling JSON.
 //
 // swagger:model Metadata
@@ -55,6 +58,7 @@ type Metadata struct {
 	Value any    `json:"value,omitempty"`
 } // @name Metadata
 
+// Deprecated: use model from Midaz pkg instead.
 // Amount structure for marshaling/unmarshalling JSON.
 //
 // swagger:model Amount
@@ -66,6 +70,7 @@ type Amount struct {
 	TransactionType string          `json:"transactionType,omitempty"`
 } // @name Amount
 
+// Deprecated: use model from Midaz pkg instead.
 // Share structure for marshaling/unmarshalling JSON.
 //
 // swagger:model Share
@@ -75,6 +80,7 @@ type Share struct {
 	PercentageOfPercentage int64 `json:"percentageOfPercentage,omitempty"`
 } // @name Share
 
+// Deprecated: use model from Midaz pkg instead.
 // Send structure for marshaling/unmarshalling JSON.
 //
 // swagger:model Send
@@ -86,6 +92,7 @@ type Send struct {
 	Distribute Distribute      `json:"distribute,omitempty" validate:"required"`
 } // @name Send
 
+// Deprecated: use model from Midaz pkg instead.
 // Source structure for marshaling/unmarshalling JSON.
 //
 // swagger:model Source
@@ -95,6 +102,7 @@ type Source struct {
 	From      []FromTo `json:"from,omitempty" validate:"singletransactiontype,required,dive"`
 } // @name Source
 
+// Deprecated: use model from Midaz pkg instead.
 // Rate structure for marshaling/unmarshalling JSON.
 //
 // swagger:model Rate
@@ -106,11 +114,13 @@ type Rate struct {
 	ExternalID string          `json:"externalId" validate:"uuid,required" example:"00000000-0000-0000-0000-000000000000"`
 } // @name Rate
 
+// Deprecated: use IsEmpty method from Midaz pkg instead.
 // IsEmpty method that set empty or nil in fields
 func (r Rate) IsEmpty() bool {
 	return r.ExternalID == "" && r.From == "" && r.To == "" && r.Value.IsZero()
 }
 
+// Deprecated: use model from Midaz pkg instead.
 // FromTo structure for marshaling/unmarshalling JSON.
 //
 // swagger:model FromTo
@@ -129,6 +139,7 @@ type FromTo struct {
 	Route           string         `json:"route,omitempty" validate:"omitempty,max=250" example:"00000000-0000-0000-0000-000000000000"`
 } // @name FromTo
 
+// Deprecated: use SplitAlias method from Midaz pkg instead.
 // SplitAlias function to split alias with index.
 func (ft FromTo) SplitAlias() string {
 	if strings.Contains(ft.AccountAlias, "#") {
@@ -138,6 +149,7 @@ func (ft FromTo) SplitAlias() string {
 	return ft.AccountAlias
 }
 
+// Deprecated: use SplitAliasWithKey method from Midaz pkg instead.
 // SplitAliasWithKey extracts the substring after the '#' character from the provided alias or returns the alias if '#' is not present.
 func SplitAliasWithKey(alias string) string {
 	if idx := strings.Index(alias, "#"); idx != -1 {
@@ -147,11 +159,13 @@ func SplitAliasWithKey(alias string) string {
 	return alias
 }
 
+// Deprecated: use ConcatAlias method from Midaz pkg instead.
 // ConcatAlias function to concat alias with index.
 func (ft FromTo) ConcatAlias(i int) string {
 	return strconv.Itoa(i) + "#" + ft.AccountAlias + "#" + ft.BalanceKey
 }
 
+// Deprecated: use model from Midaz pkg instead.
 // Distribute structure for marshaling/unmarshalling JSON.
 //
 // swagger:model Distribute
@@ -161,6 +175,7 @@ type Distribute struct {
 	To        []FromTo `json:"to,omitempty" validate:"singletransactiontype,required,dive"`
 } // @name Distribute
 
+// Deprecated: use model from Midaz pkg instead.
 // Transaction structure for marshaling/unmarshalling JSON.
 //
 // swagger:model Transaction
@@ -176,6 +191,7 @@ type Transaction struct {
 	Send                     Send           `json:"send" validate:"required"`
 } // @name Transaction
 
+// Deprecated: use IsEmpty method from Midaz pkg instead.
 // IsEmpty is a func that validate if transaction is Empty.
 func (t Transaction) IsEmpty() bool {
 	return t.Send.Asset == "" && t.Send.Value.IsZero()
