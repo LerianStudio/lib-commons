@@ -56,6 +56,7 @@ func CheckMetadataKeyAndValueLength(limit int, metadata map[string]any) error {
 	return nil
 }
 
+// Deprecated: use ValidateCountryAddress method from Midaz pkg instead.
 // ValidateCountryAddress validate if country in object address contains in countries list using ISO 3166-1 alpha-2
 func ValidateCountryAddress(country string) error {
 	countries := []string{
@@ -82,6 +83,7 @@ func ValidateCountryAddress(country string) error {
 	return nil
 }
 
+// Deprecated: use ValidateAccountType method from Midaz pkg instead.
 // ValidateAccountType validate type values of accounts
 func ValidateAccountType(t string) error {
 	types := []string{"deposit", "savings", "loans", "marketplace", "creditCard"}
@@ -93,6 +95,7 @@ func ValidateAccountType(t string) error {
 	return nil
 }
 
+// Deprecated: use ValidateType method from Midaz pkg instead.
 // ValidateType validate type values of currencies
 func ValidateType(t string) error {
 	types := []string{"crypto", "currency", "commodity", "others"}
@@ -104,6 +107,7 @@ func ValidateType(t string) error {
 	return nil
 }
 
+// Deprecated: use ValidateCode method from Midaz pkg instead.
 func ValidateCode(code string) error {
 	for _, r := range code {
 		if !unicode.IsLetter(r) {
@@ -116,6 +120,7 @@ func ValidateCode(code string) error {
 	return nil
 }
 
+// Deprecated: use ValidateCurrency method from Midaz pkg instead.
 // ValidateCurrency validate if code contains in currencies list using ISO 4217
 func ValidateCurrency(code string) error {
 	currencies := []string{
@@ -304,6 +309,7 @@ func Reverse[T any](s []T) []T {
 	return s
 }
 
+// Deprecated: use GenericInternalKey method from Midaz pkg instead.
 // GenericInternalKey returns a key with the following format to be used on redis cluster:
 // "name:{organizationID:ledgerID:key}"
 func GenericInternalKey(name, organizationID, ledgerID, key string) string {
@@ -322,6 +328,7 @@ func GenericInternalKey(name, organizationID, ledgerID, key string) string {
 	return builder.String()
 }
 
+// Deprecated: use TransactionInternalKey method from Midaz pkg instead.
 // TransactionInternalKey returns a key with the following format to be used on redis cluster:
 // "transaction:{organizationID:ledgerID:key}"
 func TransactionInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
@@ -330,6 +337,7 @@ func TransactionInternalKey(organizationID, ledgerID uuid.UUID, key string) stri
 	return transaction
 }
 
+// Deprecated: use IdempotencyInternalKey method from Midaz pkg instead.
 // IdempotencyInternalKey returns a key with the following format to be used on redis cluster:
 // "idempotency:{organizationID:ledgerID:key}"
 func IdempotencyInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
@@ -338,6 +346,7 @@ func IdempotencyInternalKey(organizationID, ledgerID uuid.UUID, key string) stri
 	return idempotency
 }
 
+// Deprecated: use BalanceInternalKey method from Midaz pkg instead.
 // BalanceInternalKey returns a key with the following format to be used on redis cluster:
 // "balance:{organizationID:ledgerID:key}"
 func BalanceInternalKey(organizationID, ledgerID, key string) string {
@@ -346,6 +355,7 @@ func BalanceInternalKey(organizationID, ledgerID, key string) string {
 	return balance
 }
 
+// Deprecated: use AccountingRoutesInternalKey method from Midaz pkg instead.
 // AccountingRoutesInternalKey returns a key with the following format to be used on redis cluster:
 // "accounting_routes:{organizationID:ledgerID:key}"
 func AccountingRoutesInternalKey(organizationID, ledgerID, key uuid.UUID) string {
