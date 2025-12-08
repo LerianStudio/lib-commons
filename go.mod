@@ -8,7 +8,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.35.0
 	github.com/bxcodec/dbresolver/v2 v2.2.1
 	github.com/go-redsync/redsync/v4 v4.14.0
-	github.com/gofiber/fiber/v2 v2.52.9
+	github.com/gofiber/fiber/v2 v2.52.10
 	github.com/golang-migrate/migrate/v4 v4.19.0
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.6
