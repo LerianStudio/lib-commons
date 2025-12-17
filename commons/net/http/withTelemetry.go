@@ -110,7 +110,7 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 			attribute.String("grpc.method", info.FullMethod),
 		)
 
-		ctx, span := tracer.Start(opentelemetry.ExtractGRPCContext(ctx), info.FullMethod)
+		ctx, span := tracer.Start(opentelemetry.ExtractGRPCContext(ctx), info.FullMethod, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
 		ctx = commons.ContextWithTracer(ctx, tracer)
