@@ -44,7 +44,7 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, exclud
 		tracer := otel.Tracer(tl.LibraryName)
 		routePathWithMethod := c.Method() + " " + commons.ReplaceUUIDWithPlaceholder(c.Path())
 
-		ctx, span := tracer.Start(opentelemetry.ExtractHTTPContext(c), routePathWithMethod)
+		ctx, span := tracer.Start(opentelemetry.ExtractHTTPContext(c), routePathWithMethod, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
 		span.SetAttributes(
