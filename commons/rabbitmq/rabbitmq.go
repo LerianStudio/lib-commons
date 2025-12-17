@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sync"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -13,6 +14,7 @@ import (
 
 // RabbitMQConnection is a hub which deal with rabbitmq connections.
 type RabbitMQConnection struct {
+	mu                     sync.Mutex // protects connection and channel operations
 	ConnectionStringSource string
 	Connection             *amqp.Connection
 	Queue                  string
@@ -28,6 +30,9 @@ type RabbitMQConnection struct {
 
 // Connect keeps a singleton connection with rabbitmq.
 func (rc *RabbitMQConnection) Connect() error {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+
 	rc.Logger.Info("Connecting on rabbitmq...")
 
 	conn, err := amqp.Dial(rc.ConnectionStringSource)
@@ -39,12 +44,14 @@ func (rc *RabbitMQConnection) Connect() error {
 
 	ch, err := conn.Channel()
 	if err != nil {
+		conn.Close() // cleanup connection if channel creation fails
 		rc.Logger.Fatal("failed to open channel on rabbitmq", zap.Error(err))
 
 		return err
 	}
 
 	if ch == nil || !rc.HealthCheck() {
+		conn.Close() // cleanup connection if health check fails
 		rc.Connected = false
 		err = errors.New("can't connect rabbitmq")
 		rc.Logger.Fatalf("RabbitMQ.HealthCheck: %v", zap.Error(err))
@@ -64,6 +71,11 @@ func (rc *RabbitMQConnection) Connect() error {
 
 // EnsureChannel ensures that the channel is open and connected.
 func (rc *RabbitMQConnection) EnsureChannel() error {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+
+	newConnection := false
+
 	if rc.Connection == nil || rc.Connection.IsClosed() {
 		conn, err := amqp.Dial(rc.ConnectionStringSource)
 		if err != nil {
@@ -73,11 +85,18 @@ func (rc *RabbitMQConnection) EnsureChannel() error {
 		}
 
 		rc.Connection = conn
+		newConnection = true
 	}
 
 	if rc.Channel == nil || rc.Channel.IsClosed() {
 		ch, err := rc.Connection.Channel()
 		if err != nil {
+			// cleanup connection if we just created it and channel creation fails
+			if newConnection {
+				rc.Connection.Close()
+				rc.Connection = nil
+			}
+
 			rc.Logger.Errorf("can't open channel on rabbitmq: %v", err)
 
 			return err
