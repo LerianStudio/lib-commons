@@ -1,3 +1,12 @@
+## [2.3.1](https://github.com/LerianStudio/lib-commons/compare/v2.3.0...v2.3.1) (2025-12-18)
+
+
+### Bug Fixes
+
+* **rabbitmq:** add mutex for thread-safe connection and channel management :bug: ([bcf16d7](https://github.com/LerianStudio/lib-commons/commit/bcf16d7a60ae7a6276d87053e639d7455366e21f))
+* **releaserc:** change fix release type from minor to patch :bug: ([2a9fd50](https://github.com/LerianStudio/lib-commons/commit/2a9fd503cbc6e9f477e27965529292108eea9f36))
+* **releaserc:** update hotfix branch configuration to specify version and channel :bug: ([18c9d8d](https://github.com/LerianStudio/lib-commons/commit/18c9d8d04e17571fdfb524a046f46d780441e935))
+
 ## [2.3.0](https://github.com/LerianStudio/lib-commons/compare/v2.2.0...v2.3.0) (2025-09-18)
 
 
