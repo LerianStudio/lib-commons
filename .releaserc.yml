@@ -62,5 +62,6 @@ branches:
   - main
   - name: develop
     prerelease: "beta"
-  - name: hotfix/*
-    prerelease: "hf"
+  - name: hotfix/v2.3.1
+    range: 2.3.x
+    channel: 2.3.x
