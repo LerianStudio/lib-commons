@@ -14,7 +14,7 @@ plugins:
             { "type": "chore", "release": "patch" },
             { "type": "ci", "release": "patch" },
             { "type": "test", "release": "patch" },
-            { "type": "fix", "release": "minor" },
+            { "type": "fix", "release": "patch" },
             { "type": "refactor", "release": "minor" },
             { "type": "docs", "release": "patch" },
             { "breaking": true, "release": "major" }
