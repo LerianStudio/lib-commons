@@ -21,7 +21,7 @@ This document defines the coding standards, architecture patterns, and developme
 
 ### Package Structure
 
-```
+```text
 lib-commons/
 ├── commons/                    # All library packages
 │   ├── {package}/              # Feature package
