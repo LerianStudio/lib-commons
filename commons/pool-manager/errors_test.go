@@ -2,6 +2,7 @@ package poolmanager
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -107,11 +108,18 @@ func TestTenantErrors_ErrorWrapping(t *testing.T) {
 			// Verify the base error exists
 			require.NotNil(t, tt.baseErr)
 
-			// Wrap the error
-			wrappedErr := errors.New("outer: " + tt.baseErr.Error())
+			// Wrap the error using fmt.Errorf with %w verb
+			wrappedErr := fmt.Errorf(tt.wrapMessage, tt.baseErr)
 
-			// Verify we can still identify the original error type
-			assert.Contains(t, wrappedErr.Error(), tt.baseErr.Error())
+			// Verify we can unwrap and identify the original error
+			assert.True(t, errors.Is(wrappedErr, tt.baseErr), "wrapped error should match base error via errors.Is")
+
+			// Verify errors.Unwrap returns the base error
+			unwrappedErr := errors.Unwrap(wrappedErr)
+			assert.Equal(t, tt.baseErr, unwrappedErr, "errors.Unwrap should return the base error")
+
+			// Verify the wrapped error message contains context
+			assert.Contains(t, wrappedErr.Error(), tt.baseErr.Error(), "wrapped error should contain base error message")
 		})
 	}
 }
