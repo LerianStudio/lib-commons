@@ -326,7 +326,7 @@ func (r *resolverImpl) fetchConfig(ctx context.Context, url string) (*TenantConf
 	case http.StatusOK:
 		// Continue to decode response
 	case http.StatusNotFound:
-		return nil, fmt.Errorf("tenant not found")
+		return nil, fmt.Errorf("tenant not found: %w", ErrTenantNotFound)
 	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable:
 		return nil, fmt.Errorf("server error: status %d", resp.StatusCode)
 	default:

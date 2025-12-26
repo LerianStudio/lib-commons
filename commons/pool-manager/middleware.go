@@ -251,7 +251,7 @@ func (m *middlewareImpl) classifyResolverError(err error, tenantID string) (*Ten
 	}
 
 	// Tenant not found
-	if strings.Contains(err.Error(), "not found") {
+	if errors.Is(err, ErrTenantNotFound) {
 		if m.logger != nil {
 			m.logger.Warnf("Tenant not found: %s", tenantID)
 		}
