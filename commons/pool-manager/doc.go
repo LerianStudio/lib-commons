@@ -13,5 +13,5 @@ const (
 	PackageName = "tenants"
 
 	// TenantContextKey is the key used to store and retrieve tenant ID from context.
-	TenantContextKey = "tenant_id"
+	TenantContextKey = "tenantId"
 )

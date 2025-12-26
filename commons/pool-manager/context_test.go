@@ -15,7 +15,7 @@ import (
 // TestContextKey_Constants tests that context key constants are defined correctly.
 func TestContextKey_Constants(t *testing.T) {
 	t.Run("Should have correct context key values", func(t *testing.T) {
-		assert.Equal(t, ContextKey("tenant_id"), TenantIDContextKey)
+		assert.Equal(t, ContextKey("tenantId"), TenantIDContextKey)
 		assert.Equal(t, ContextKey("tenant_config"), TenantConfigContextKey)
 		assert.Equal(t, ContextKey("tenant_pg"), TenantPGContextKey)
 		assert.Equal(t, ContextKey("tenant_mongo"), TenantMongoContextKey)

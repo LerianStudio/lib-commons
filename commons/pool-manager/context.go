@@ -18,7 +18,7 @@ type ContextKey string
 // while the actual context operations should use the helper functions.
 const (
 	// TenantIDContextKey is the key for storing tenant ID in context.
-	TenantIDContextKey ContextKey = "tenant_id"
+	TenantIDContextKey ContextKey = "tenantId"
 
 	// TenantConfigContextKey is the key for storing tenant configuration in context.
 	TenantConfigContextKey ContextKey = "tenant_config"
