@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -159,11 +160,11 @@ func (r *resolverImpl) Resolve(ctx context.Context, tenantID string) (*TenantCon
 		r.logger.Infof("Cache miss for tenant %s, fetching from service", tenantID)
 	}
 
-	// Build request URL
-	url := fmt.Sprintf("%s/tenants/%s/config", r.serviceURL, tenantID)
+	// Build request URL with URL-encoded path parameter to handle special characters safely
+	requestURL := fmt.Sprintf("%s/tenants/%s/config", r.serviceURL, url.PathEscape(tenantID))
 
 	// Fetch from service
-	config, err := r.fetchConfig(ctx, url)
+	config, err := r.fetchConfig(ctx, requestURL)
 	if err != nil {
 		if r.logger != nil {
 			r.logger.Errorf("Failed to resolve tenant %s: %v", tenantID, err)
@@ -209,10 +210,14 @@ func (r *resolverImpl) ResolveWithService(ctx context.Context, tenantID, service
 	}
 
 	// Build request URL with service query parameter
-	url := fmt.Sprintf("%s/tenants/%s/config?service=%s", r.serviceURL, tenantID, serviceName)
+	// URL-encode path and query parameters to handle special characters safely
+	requestURL := fmt.Sprintf("%s/tenants/%s/config?service=%s",
+		r.serviceURL,
+		url.PathEscape(tenantID),
+		url.QueryEscape(serviceName))
 
 	// Fetch from service
-	config, err := r.fetchConfig(ctx, url)
+	config, err := r.fetchConfig(ctx, requestURL)
 	if err != nil {
 		if r.logger != nil {
 			r.logger.Errorf("Failed to resolve tenant %s service %s: %v", tenantID, serviceName, err)
