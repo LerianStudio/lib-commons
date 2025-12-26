@@ -342,7 +342,7 @@ func (pm *postgresPoolManagerImpl) getConnectionDatabaseMode(ctx context.Context
 	defer pm.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if entry, exists := pm.tenantConns[poolKey]; exists && entry.conn != nil && entry.conn.Connected {
+	if entry, exists = pm.tenantConns[poolKey]; exists && entry != nil && entry.conn != nil && entry.conn.Connected {
 		entry.updateLastUsed()
 		return entry.conn.GetDB()
 	}
@@ -449,7 +449,8 @@ func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(ctx context.Context, 
 	defer pm.mu.Unlock()
 
 	// Check if shared connection exists for this DSN
-	if entry, exists := pm.sharedConns[dsn]; exists && entry.conn != nil && entry.conn.Connected {
+	var exists bool
+	if entry, exists = pm.sharedConns[dsn]; exists && entry != nil && entry.conn != nil && entry.conn.Connected {
 		// Map this tenant to the shared connection
 		pm.tenantToSharedConn[poolKey] = dsn
 		entry.updateLastUsed()
