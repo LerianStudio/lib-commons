@@ -270,7 +270,7 @@ func (m *middlewareImpl) classifyResolverError(err error, tenantID string) (*Ten
 // injectTenantContextAndPools sets tenant context values and injects database connections.
 func (m *middlewareImpl) injectTenantContextAndPools(ctx context.Context, tenantID string, tenantConfig *TenantConfig) context.Context {
 	// Set tenant ID and config in context
-	ctx = context.WithValue(ctx, TenantContextKey, tenantID)
+	ctx = context.WithValue(ctx, TenantIDContextKey, tenantID)
 	ctx = context.WithValue(ctx, tenantConfigContextKey, tenantConfig)
 
 	// Inject database configurations if available
@@ -387,8 +387,8 @@ func GetTenantID(ctx context.Context) string {
 		return ""
 	}
 
-	// First check with string key (as used in doc.go)
-	if value := ctx.Value(TenantContextKey); value != nil {
+	// Check with typed context key
+	if value := ctx.Value(TenantIDContextKey); value != nil {
 		if tenantID, ok := value.(string); ok {
 			return tenantID
 		}

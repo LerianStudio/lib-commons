@@ -252,7 +252,7 @@ func WithTenantID(ctx context.Context, tenantID string) context.Context {
 		ctx = context.Background()
 	}
 
-	return context.WithValue(ctx, TenantContextKey, tenantID)
+	return context.WithValue(ctx, TenantIDContextKey, tenantID)
 }
 
 // WithTenantConfig returns a new context with the tenant configuration set.
