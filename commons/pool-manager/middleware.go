@@ -137,141 +137,201 @@ func (m *middlewareImpl) Handler() fiber.Handler {
 			return c.Next()
 		}
 
-		// Extract JWT from Authorization header
-		authHeader := c.Get("Authorization")
-		if authHeader == "" {
-			if m.logger != nil {
-				m.logger.Warnf("Missing authorization header for path %s", path)
-			}
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "missing authorization header",
-			})
-		}
-
-		// Validate Bearer token format
-		if !strings.HasPrefix(authHeader, "Bearer ") {
-			if m.logger != nil {
-				m.logger.Warnf("Invalid authorization header format for path %s", path)
-			}
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-				"error": "invalid authorization header format",
-			})
-		}
-
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-
-		// Extract tenant ID from JWT
-		tenantID, err := m.extractor.ExtractFromJWT(token)
+		// Step 1: Extract and validate token from Authorization header
+		token, err := m.extractAndValidateToken(c)
 		if err != nil {
-			if m.logger != nil {
-				m.logger.Warnf("Failed to extract tenant ID from token: %v", err)
-			}
+			return err // Already returns proper fiber response
+		}
+
+		// Step 2: Extract tenant ID from JWT token
+		tenantID, err := m.extractTenantIDFromToken(token, path)
+		if err != nil {
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "failed to extract tenant ID from token",
 			})
 		}
 
-		if m.logger != nil {
-			m.logger.Infof("Extracted tenant ID %s for path %s", tenantID, path)
-		}
-
-		// Resolve tenant configuration from Tenant Service
-		tenantConfig, err := m.resolver.ResolveWithService(c.UserContext(), tenantID, m.config.ApplicationName)
-		if err != nil {
-			// Check if it's a connection error (service unavailable)
-			if isConnectionError(err) {
-				if m.logger != nil {
-					m.logger.Errorf("Tenant service unavailable for tenant %s: %v", tenantID, err)
-				}
-				return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-					"error": "tenant service unavailable",
-				})
-			}
-
-			// Tenant not found
-			if strings.Contains(err.Error(), "not found") {
-				if m.logger != nil {
-					m.logger.Warnf("Tenant not found: %s", tenantID)
-				}
-				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-					"error": "tenant not found",
-				})
-			}
-
-			// Other errors (server errors, etc.)
-			if m.logger != nil {
-				m.logger.Errorf("Failed to resolve tenant configuration for %s: %v", tenantID, err)
-			}
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-				"error": "failed to resolve tenant configuration",
+		// Step 3: Resolve and validate tenant configuration
+		tenantConfig, statusCode, errMsg := m.resolveAndValidateTenant(c.UserContext(), tenantID, path)
+		if tenantConfig == nil {
+			return c.Status(statusCode).JSON(fiber.Map{
+				"error": errMsg,
 			})
 		}
 
-		// Validate tenant status
-		if !isActiveTenant(tenantConfig.Status) {
-			if m.logger != nil {
-				m.logger.Warnf("Tenant %s is not active (status: %s)", tenantID, tenantConfig.Status)
-			}
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
-				"error": "tenant is not active",
-			})
-		}
+		// Step 4: Inject tenant context and pool connections
+		ctx := m.injectTenantContextAndPools(c.UserContext(), tenantID, tenantConfig)
 
-		if m.logger != nil {
-			m.logger.Infof("Resolved tenant %s (isolation: %s) for path %s", tenantID, tenantConfig.IsolationMode, path)
-		}
-
-		// Inject tenant information into context
-		ctx := c.UserContext()
-		ctx = context.WithValue(ctx, TenantContextKey, tenantID)
-		ctx = context.WithValue(ctx, tenantConfigContextKey, tenantConfig)
-
-		// Inject database configurations if available
-		if m.config.ApplicationName != "" {
-			if dbServices, ok := tenantConfig.Databases[m.config.ApplicationName]; ok {
-				// Always inject config for backward compatibility
-				if dbServices.PostgreSQL != nil {
-					ctx = context.WithValue(ctx, tenantPostgreSQLContextKey, dbServices.PostgreSQL)
-				}
-				if dbServices.MongoDB != nil {
-					ctx = context.WithValue(ctx, tenantMongoDBContextKey, dbServices.MongoDB)
-				}
-
-				// If pool managers are configured, inject actual connections
-				// This allows handlers to use GetTenantPGConnection() or GetTenantMongoDatabase()
-				if m.pgPoolMgr != nil && dbServices.PostgreSQL != nil {
-					pgConn, err := m.pgPoolMgr.GetConnection(ctx, tenantID, m.config.ApplicationName)
-					if err != nil {
-						// Log error but don't fail the request - config is still available
-						// Handlers can fall back to using config directly
-						if m.logger != nil {
-							m.logger.Warnf("Failed to get PostgreSQL connection for tenant %s: %v", tenantID, err)
-						}
-					} else {
-						ctx = context.WithValue(ctx, tenantPGConnectionContextKey, pgConn)
-					}
-				}
-
-				if m.mongoPoolMgr != nil && dbServices.MongoDB != nil {
-					mongoDb, err := m.mongoPoolMgr.GetDatabase(ctx, tenantID, m.config.ApplicationName)
-					if err != nil {
-						// Log error but don't fail the request - config is still available
-						// Handlers can fall back to using config directly
-						if m.logger != nil {
-							m.logger.Warnf("Failed to get MongoDB database for tenant %s: %v", tenantID, err)
-						}
-					} else {
-						ctx = context.WithValue(ctx, tenantMongoDBContextKeyConn, mongoDb)
-					}
-				}
-			}
-		}
-
-		// Set the updated context
+		// Set the updated context and proceed
 		c.SetUserContext(ctx)
 
 		return c.Next()
 	}
+}
+
+// extractAndValidateToken reads and validates the Authorization header.
+// Returns the raw token string or a fiber error response.
+func (m *middlewareImpl) extractAndValidateToken(c *fiber.Ctx) (string, error) {
+	authHeader := c.Get("Authorization")
+	if authHeader == "" {
+		if m.logger != nil {
+			m.logger.Warnf("Missing authorization header for path %s", c.Path())
+		}
+
+		return "", c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "missing authorization header",
+		})
+	}
+
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		if m.logger != nil {
+			m.logger.Warnf("Invalid authorization header format for path %s", c.Path())
+		}
+
+		return "", c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"error": "invalid authorization header format",
+		})
+	}
+
+	return strings.TrimPrefix(authHeader, "Bearer "), nil
+}
+
+// extractTenantIDFromToken extracts the tenant ID from a JWT token.
+// Returns the tenant ID or an error.
+func (m *middlewareImpl) extractTenantIDFromToken(token, path string) (string, error) {
+	tenantID, err := m.extractor.ExtractFromJWT(token)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warnf("Failed to extract tenant ID from token: %v", err)
+		}
+
+		return "", err
+	}
+
+	if m.logger != nil {
+		m.logger.Infof("Extracted tenant ID %s for path %s", tenantID, path)
+	}
+
+	return tenantID, nil
+}
+
+// resolveAndValidateTenant resolves the tenant configuration and validates its status.
+// Returns the tenant config, or (nil, statusCode, errorMessage) if validation fails.
+func (m *middlewareImpl) resolveAndValidateTenant(ctx context.Context, tenantID, path string) (*TenantConfig, int, string) {
+	tenantConfig, err := m.resolver.ResolveWithService(ctx, tenantID, m.config.ApplicationName)
+	if err != nil {
+		return m.classifyResolverError(err, tenantID)
+	}
+
+	// Validate tenant status
+	if !isActiveTenant(tenantConfig.Status) {
+		if m.logger != nil {
+			m.logger.Warnf("Tenant %s is not active (status: %s)", tenantID, tenantConfig.Status)
+		}
+
+		return nil, fiber.StatusForbidden, "tenant is not active"
+	}
+
+	if m.logger != nil {
+		m.logger.Infof("Resolved tenant %s (isolation: %s) for path %s", tenantID, tenantConfig.IsolationMode, path)
+	}
+
+	return tenantConfig, 0, ""
+}
+
+// classifyResolverError classifies resolver errors and returns appropriate HTTP status and message.
+func (m *middlewareImpl) classifyResolverError(err error, tenantID string) (*TenantConfig, int, string) {
+	// Connection error (service unavailable)
+	if isConnectionError(err) {
+		if m.logger != nil {
+			m.logger.Errorf("Tenant service unavailable for tenant %s: %v", tenantID, err)
+		}
+
+		return nil, fiber.StatusServiceUnavailable, "tenant service unavailable"
+	}
+
+	// Tenant not found
+	if strings.Contains(err.Error(), "not found") {
+		if m.logger != nil {
+			m.logger.Warnf("Tenant not found: %s", tenantID)
+		}
+
+		return nil, fiber.StatusForbidden, "tenant not found"
+	}
+
+	// Other errors
+	if m.logger != nil {
+		m.logger.Errorf("Failed to resolve tenant configuration for %s: %v", tenantID, err)
+	}
+
+	return nil, fiber.StatusServiceUnavailable, "failed to resolve tenant configuration"
+}
+
+// injectTenantContextAndPools sets tenant context values and injects database connections.
+func (m *middlewareImpl) injectTenantContextAndPools(ctx context.Context, tenantID string, tenantConfig *TenantConfig) context.Context {
+	// Set tenant ID and config in context
+	ctx = context.WithValue(ctx, TenantContextKey, tenantID)
+	ctx = context.WithValue(ctx, tenantConfigContextKey, tenantConfig)
+
+	// Inject database configurations if available
+	if m.config.ApplicationName == "" {
+		return ctx
+	}
+
+	dbServices, ok := tenantConfig.Databases[m.config.ApplicationName]
+	if !ok {
+		return ctx
+	}
+
+	// Inject PostgreSQL config and connection
+	if dbServices.PostgreSQL != nil {
+		ctx = context.WithValue(ctx, tenantPostgreSQLContextKey, dbServices.PostgreSQL)
+		ctx = m.injectPostgresConnection(ctx, tenantID)
+	}
+
+	// Inject MongoDB config and connection
+	if dbServices.MongoDB != nil {
+		ctx = context.WithValue(ctx, tenantMongoDBContextKey, dbServices.MongoDB)
+		ctx = m.injectMongoConnection(ctx, tenantID)
+	}
+
+	return ctx
+}
+
+// injectPostgresConnection attempts to get a PostgreSQL connection from the pool manager.
+func (m *middlewareImpl) injectPostgresConnection(ctx context.Context, tenantID string) context.Context {
+	if m.pgPoolMgr == nil {
+		return ctx
+	}
+
+	pgConn, err := m.pgPoolMgr.GetConnection(ctx, tenantID, m.config.ApplicationName)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warnf("Failed to get PostgreSQL connection for tenant %s: %v", tenantID, err)
+		}
+
+		return ctx
+	}
+
+	return context.WithValue(ctx, tenantPGConnectionContextKey, pgConn)
+}
+
+// injectMongoConnection attempts to get a MongoDB database from the pool manager.
+func (m *middlewareImpl) injectMongoConnection(ctx context.Context, tenantID string) context.Context {
+	if m.mongoPoolMgr == nil {
+		return ctx
+	}
+
+	mongoDb, err := m.mongoPoolMgr.GetDatabase(ctx, tenantID, m.config.ApplicationName)
+	if err != nil {
+		if m.logger != nil {
+			m.logger.Warnf("Failed to get MongoDB database for tenant %s: %v", tenantID, err)
+		}
+
+		return ctx
+	}
+
+	return context.WithValue(ctx, tenantMongoDBContextKeyConn, mongoDb)
 }
 
 // shouldSkipPath checks if the given path should bypass tenant validation.
