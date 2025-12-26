@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	libLog "github.com/LerianStudio/lib-commons/v2/commons/log"
 )
 
 // TenantConfig holds the complete configuration for a tenant.
@@ -87,6 +89,7 @@ type resolverImpl struct {
 	cacheTTL   time.Duration
 	cache      map[string]*cacheEntry
 	mu         sync.RWMutex
+	logger     libLog.Logger
 }
 
 // ResolverOption is a function that configures a Resolver.
@@ -114,6 +117,13 @@ func WithAPIKey(apiKey string) ResolverOption {
 	}
 }
 
+// WithResolverLogger sets the logger for the resolver.
+func WithResolverLogger(logger libLog.Logger) ResolverOption {
+	return func(r *resolverImpl) {
+		r.logger = logger
+	}
+}
+
 // NewResolver creates a new Resolver with the given service URL and options.
 func NewResolver(serviceURL string, opts ...ResolverOption) Resolver {
 	r := &resolverImpl{
@@ -138,7 +148,15 @@ func (r *resolverImpl) Resolve(ctx context.Context, tenantID string) (*TenantCon
 
 	// Check cache first
 	if config := r.getFromCache(tenantID); config != nil {
+		if r.logger != nil {
+			r.logger.Infof("Cache hit for tenant %s", tenantID)
+		}
+
 		return config, nil
+	}
+
+	if r.logger != nil {
+		r.logger.Infof("Cache miss for tenant %s, fetching from service", tenantID)
 	}
 
 	// Build request URL
@@ -147,11 +165,19 @@ func (r *resolverImpl) Resolve(ctx context.Context, tenantID string) (*TenantCon
 	// Fetch from service
 	config, err := r.fetchConfig(ctx, url)
 	if err != nil {
+		if r.logger != nil {
+			r.logger.Errorf("Failed to resolve tenant %s: %v", tenantID, err)
+		}
+
 		return nil, err
 	}
 
 	// Store in cache
 	r.setInCache(tenantID, config)
+
+	if r.logger != nil {
+		r.logger.Infof("Successfully resolved tenant %s (isolation: %s)", tenantID, config.IsolationMode)
+	}
 
 	return config, nil
 }
@@ -171,7 +197,15 @@ func (r *resolverImpl) ResolveWithService(ctx context.Context, tenantID, service
 
 	// Check cache first
 	if config := r.getFromCache(cacheKey); config != nil {
+		if r.logger != nil {
+			r.logger.Infof("Cache hit for tenant %s service %s", tenantID, serviceName)
+		}
+
 		return config, nil
+	}
+
+	if r.logger != nil {
+		r.logger.Infof("Cache miss for tenant %s service %s, fetching from service", tenantID, serviceName)
 	}
 
 	// Build request URL with service query parameter
@@ -180,11 +214,19 @@ func (r *resolverImpl) ResolveWithService(ctx context.Context, tenantID, service
 	// Fetch from service
 	config, err := r.fetchConfig(ctx, url)
 	if err != nil {
+		if r.logger != nil {
+			r.logger.Errorf("Failed to resolve tenant %s service %s: %v", tenantID, serviceName, err)
+		}
+
 		return nil, err
 	}
 
 	// Store in cache
 	r.setInCache(cacheKey, config)
+
+	if r.logger != nil {
+		r.logger.Infof("Successfully resolved tenant %s service %s (isolation: %s)", tenantID, serviceName, config.IsolationMode)
+	}
 
 	return config, nil
 }
@@ -204,6 +246,10 @@ func (r *resolverImpl) InvalidateCache(tenantID string) {
 			delete(r.cache, key)
 		}
 	}
+
+	if r.logger != nil {
+		r.logger.Infof("Invalidated cache for tenant %s", tenantID)
+	}
 }
 
 // InvalidateCacheAll removes all cached tenant configurations.
@@ -211,6 +257,10 @@ func (r *resolverImpl) InvalidateCacheAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.cache = make(map[string]*cacheEntry)
+
+	if r.logger != nil {
+		r.logger.Info("Invalidated all cached tenant configurations")
+	}
 }
 
 // getFromCache retrieves a tenant configuration from the cache if it exists and is not expired.

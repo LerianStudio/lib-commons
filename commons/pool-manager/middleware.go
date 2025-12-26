@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	libLog "github.com/LerianStudio/lib-commons/v2/commons/log"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -68,6 +69,13 @@ func WithMongoPoolManager(mongoPoolMgr MongoPoolManager) MiddlewareOption {
 	}
 }
 
+// WithMiddlewareLogger sets the logger for the middleware.
+func WithMiddlewareLogger(logger libLog.Logger) MiddlewareOption {
+	return func(m *middlewareImpl) {
+		m.logger = logger
+	}
+}
+
 // middlewareImpl is the default implementation of the Middleware interface.
 type middlewareImpl struct {
 	config       *Config
@@ -76,6 +84,7 @@ type middlewareImpl struct {
 	skipPaths    []string
 	pgPoolMgr    PostgresPoolManager // Optional: when set, injects actual PG connections
 	mongoPoolMgr MongoPoolManager    // Optional: when set, injects actual MongoDB connections
+	logger       libLog.Logger       // Optional: when set, enables logging
 }
 
 // NewMiddleware creates a new tenant middleware instance.
@@ -131,6 +140,9 @@ func (m *middlewareImpl) Handler() fiber.Handler {
 		// Extract JWT from Authorization header
 		authHeader := c.Get("Authorization")
 		if authHeader == "" {
+			if m.logger != nil {
+				m.logger.Warnf("Missing authorization header for path %s", path)
+			}
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "missing authorization header",
 			})
@@ -138,6 +150,9 @@ func (m *middlewareImpl) Handler() fiber.Handler {
 
 		// Validate Bearer token format
 		if !strings.HasPrefix(authHeader, "Bearer ") {
+			if m.logger != nil {
+				m.logger.Warnf("Invalid authorization header format for path %s", path)
+			}
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "invalid authorization header format",
 			})
@@ -148,9 +163,16 @@ func (m *middlewareImpl) Handler() fiber.Handler {
 		// Extract tenant ID from JWT
 		tenantID, err := m.extractor.ExtractFromJWT(token)
 		if err != nil {
+			if m.logger != nil {
+				m.logger.Warnf("Failed to extract tenant ID from token: %v", err)
+			}
 			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
 				"error": "failed to extract tenant ID from token",
 			})
+		}
+
+		if m.logger != nil {
+			m.logger.Infof("Extracted tenant ID %s for path %s", tenantID, path)
 		}
 
 		// Resolve tenant configuration from Tenant Service
@@ -158,6 +180,9 @@ func (m *middlewareImpl) Handler() fiber.Handler {
 		if err != nil {
 			// Check if it's a connection error (service unavailable)
 			if isConnectionError(err) {
+				if m.logger != nil {
+					m.logger.Errorf("Tenant service unavailable for tenant %s: %v", tenantID, err)
+				}
 				return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 					"error": "tenant service unavailable",
 				})
@@ -165,12 +190,18 @@ func (m *middlewareImpl) Handler() fiber.Handler {
 
 			// Tenant not found
 			if strings.Contains(err.Error(), "not found") {
+				if m.logger != nil {
+					m.logger.Warnf("Tenant not found: %s", tenantID)
+				}
 				return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 					"error": "tenant not found",
 				})
 			}
 
 			// Other errors (server errors, etc.)
+			if m.logger != nil {
+				m.logger.Errorf("Failed to resolve tenant configuration for %s: %v", tenantID, err)
+			}
 			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
 				"error": "failed to resolve tenant configuration",
 			})
@@ -178,9 +209,16 @@ func (m *middlewareImpl) Handler() fiber.Handler {
 
 		// Validate tenant status
 		if !isActiveTenant(tenantConfig.Status) {
+			if m.logger != nil {
+				m.logger.Warnf("Tenant %s is not active (status: %s)", tenantID, tenantConfig.Status)
+			}
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 				"error": "tenant is not active",
 			})
+		}
+
+		if m.logger != nil {
+			m.logger.Infof("Resolved tenant %s (isolation: %s) for path %s", tenantID, tenantConfig.IsolationMode, path)
 		}
 
 		// Inject tenant information into context
@@ -206,6 +244,9 @@ func (m *middlewareImpl) Handler() fiber.Handler {
 					if err != nil {
 						// Log error but don't fail the request - config is still available
 						// Handlers can fall back to using config directly
+						if m.logger != nil {
+							m.logger.Warnf("Failed to get PostgreSQL connection for tenant %s: %v", tenantID, err)
+						}
 					} else {
 						ctx = context.WithValue(ctx, tenantPGConnectionContextKey, pgConn)
 					}
@@ -216,6 +257,9 @@ func (m *middlewareImpl) Handler() fiber.Handler {
 					if err != nil {
 						// Log error but don't fail the request - config is still available
 						// Handlers can fall back to using config directly
+						if m.logger != nil {
+							m.logger.Warnf("Failed to get MongoDB database for tenant %s: %v", tenantID, err)
+						}
 					} else {
 						ctx = context.WithValue(ctx, tenantMongoDBContextKeyConn, mongoDb)
 					}

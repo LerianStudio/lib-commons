@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	libLog "github.com/LerianStudio/lib-commons/v2/commons/log"
 	libRedis "github.com/LerianStudio/lib-commons/v2/commons/redis"
 	"github.com/redis/go-redis/v9"
 )
@@ -50,6 +51,7 @@ type tenantValkeyClient struct {
 	client   redis.Cmdable
 	tenantID string
 	prefix   string
+	logger   libLog.Logger
 }
 
 // NewTenantValkeyClient creates a new tenant-aware Valkey/Redis client.
@@ -79,6 +81,31 @@ func NewTenantValkeyClient(client redis.Cmdable, tenantID string) TenantValkeyCl
 	}
 }
 
+// NewTenantValkeyClientWithLogger creates a new tenant-aware Valkey/Redis client with logging support.
+// Returns nil if client is nil or tenantID is empty.
+//
+// Example:
+//
+//	client := NewTenantValkeyClientWithLogger(redisClient, "org-123", logger)
+//	client.Set(ctx, "user:1", "data", 0)
+//	// Stored as: tenant:org-123#user:1
+func NewTenantValkeyClientWithLogger(client redis.Cmdable, tenantID string, logger libLog.Logger) TenantValkeyClient {
+	if client == nil {
+		return nil
+	}
+
+	if tenantID == "" {
+		return nil
+	}
+
+	return &tenantValkeyClient{
+		client:   client,
+		tenantID: tenantID,
+		prefix:   fmt.Sprintf("tenant:%s#", tenantID),
+		logger:   logger,
+	}
+}
+
 // Get retrieves the value of a key within the tenant's namespace.
 func (c *tenantValkeyClient) Get(ctx context.Context, key string) (string, error) {
 	if ctx == nil {
@@ -87,7 +114,19 @@ func (c *tenantValkeyClient) Get(ctx context.Context, key string) (string, error
 
 	prefixedKey := c.prefixKey(key)
 
-	return c.client.Get(ctx, prefixedKey).Result()
+	result, err := c.client.Get(ctx, prefixedKey).Result()
+	if err != nil {
+		if c.logger != nil && err != redis.Nil {
+			c.logger.Warnf("Valkey Get failed for tenant %s key %s: %v", c.tenantID, key, err)
+		}
+		return "", err
+	}
+
+	if c.logger != nil {
+		c.logger.Infof("Valkey Get for tenant %s key %s", c.tenantID, key)
+	}
+
+	return result, nil
 }
 
 // Set stores a value for a key within the tenant's namespace.
@@ -98,7 +137,19 @@ func (c *tenantValkeyClient) Set(ctx context.Context, key string, value interfac
 
 	prefixedKey := c.prefixKey(key)
 
-	return c.client.Set(ctx, prefixedKey, value, ttl).Err()
+	err := c.client.Set(ctx, prefixedKey, value, ttl).Err()
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Errorf("Valkey Set failed for tenant %s key %s: %v", c.tenantID, key, err)
+		}
+		return err
+	}
+
+	if c.logger != nil {
+		c.logger.Infof("Valkey Set for tenant %s key %s (ttl: %v)", c.tenantID, key, ttl)
+	}
+
+	return nil
 }
 
 // Del removes one or more keys from the tenant's namespace.
@@ -116,7 +167,19 @@ func (c *tenantValkeyClient) Del(ctx context.Context, keys ...string) (int64, er
 		prefixedKeys[i] = c.prefixKey(key)
 	}
 
-	return c.client.Del(ctx, prefixedKeys...).Result()
+	result, err := c.client.Del(ctx, prefixedKeys...).Result()
+	if err != nil {
+		if c.logger != nil {
+			c.logger.Errorf("Valkey Del failed for tenant %s keys %v: %v", c.tenantID, keys, err)
+		}
+		return 0, err
+	}
+
+	if c.logger != nil {
+		c.logger.Infof("Valkey Del for tenant %s keys %v (deleted: %d)", c.tenantID, keys, result)
+	}
+
+	return result, nil
 }
 
 // Keys returns all keys matching the pattern within the tenant's namespace.

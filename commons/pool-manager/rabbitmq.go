@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	libLog "github.com/LerianStudio/lib-commons/v2/commons/log"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -43,6 +44,7 @@ type TenantRabbitMQPublisher interface {
 type tenantRabbitMQPublisher struct {
 	channel  AMQPChannel
 	tenantID string
+	logger   libLog.Logger
 }
 
 // NewTenantRabbitMQPublisher creates a new tenant-aware RabbitMQ publisher.
@@ -74,6 +76,32 @@ func NewTenantRabbitMQPublisher(channel AMQPChannel, tenantID string) TenantRabb
 	}
 }
 
+// NewTenantRabbitMQPublisherWithLogger creates a new tenant-aware RabbitMQ publisher with logging support.
+// Returns nil if channel is nil or tenantID is empty/whitespace.
+//
+// Example:
+//
+//	publisher := NewTenantRabbitMQPublisherWithLogger(channel, "org-123", logger)
+//	publisher.Publish(ctx, "exchange", "routing.key", amqp.Publishing{
+//	    Body: []byte(`{"event": "user.created"}`),
+//	})
+//	// Message will have header: X-Tenant-ID: org-123
+func NewTenantRabbitMQPublisherWithLogger(channel AMQPChannel, tenantID string, logger libLog.Logger) TenantRabbitMQPublisher {
+	if channel == nil {
+		return nil
+	}
+
+	if strings.TrimSpace(tenantID) == "" {
+		return nil
+	}
+
+	return &tenantRabbitMQPublisher{
+		channel:  channel,
+		tenantID: tenantID,
+		logger:   logger,
+	}
+}
+
 // Publish sends a message to the specified exchange with the given routing key.
 // The X-Tenant-ID header is automatically injected into the message headers.
 // If the message already has headers, the tenant header is added to the existing map.
@@ -92,7 +120,19 @@ func (p *tenantRabbitMQPublisher) Publish(ctx context.Context, exchange, routing
 	// Inject tenant ID header (overwrites any existing value)
 	msg.Headers[TenantIDHeader] = p.tenantID
 
-	return p.channel.PublishWithContext(ctx, exchange, routingKey, false, false, msg)
+	err := p.channel.PublishWithContext(ctx, exchange, routingKey, false, false, msg)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Errorf("RabbitMQ Publish failed for tenant %s exchange %s routing key %s: %v", p.tenantID, exchange, routingKey, err)
+		}
+		return err
+	}
+
+	if p.logger != nil {
+		p.logger.Infof("RabbitMQ Publish for tenant %s exchange %s routing key %s", p.tenantID, exchange, routingKey)
+	}
+
+	return nil
 }
 
 // GetTenantID returns the tenant identifier associated with this publisher.
