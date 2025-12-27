@@ -51,6 +51,7 @@ func (m *manager) GetOrCreate(serviceName string, config Config) CircuitBreaker 
 		Timeout:     config.Timeout,
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
 			failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
+
 			return counts.ConsecutiveFailures >= config.ConsecutiveFailures ||
 				(counts.Requests >= config.MinRequests && failureRatio >= config.FailureRatio)
 		},
@@ -169,6 +170,7 @@ func (m *manager) Reset(serviceName string) {
 			Timeout:     config.Timeout,
 			ReadyToTrip: func(counts gobreaker.Counts) bool {
 				failureRatio := float64(counts.TotalFailures) / float64(counts.Requests)
+
 				return counts.ConsecutiveFailures >= config.ConsecutiveFailures ||
 					(counts.Requests >= config.MinRequests && failureRatio >= config.FailureRatio)
 			},
