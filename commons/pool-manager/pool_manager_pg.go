@@ -293,8 +293,8 @@ func (pm *postgresPoolManagerImpl) GetConnection(ctx context.Context, tenantID, 
 		return nil, fmt.Errorf("context error: %w", ctx.Err())
 	}
 
-	// Resolve tenant configuration
-	config, err := pm.resolver.Resolve(ctx, tenantID)
+	// Resolve tenant configuration with service filter to get database credentials
+	config, err := pm.resolver.ResolveWithService(ctx, tenantID, applicationName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve tenant config: %w", err)
 	}
