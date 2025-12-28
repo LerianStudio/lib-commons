@@ -11,7 +11,7 @@ package poolmanager
 const (
 	// PackageName is the name of this package, used for logging and identification.
 	PackageName = "tenants"
-
-	// TenantContextKey is the key used to store and retrieve tenant ID from context.
-	TenantContextKey = "tenantId"
 )
+
+// Note: Tenant context keys are defined in context.go as typed ContextKey constants.
+// Use TenantIDContextKey for storing/retrieving tenant ID from context.

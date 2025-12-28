@@ -12,8 +12,8 @@ func TestPackage_Exists(t *testing.T) {
 
 	// Verify package-level constants are defined
 	t.Run("package constants should be defined", func(t *testing.T) {
-		// TenantContextKey should be exported
-		assert.NotEmpty(t, TenantContextKey, "TenantContextKey should be defined and non-empty")
+		// TenantIDContextKey should be exported (typed ContextKey)
+		assert.NotEmpty(t, TenantIDContextKey, "TenantIDContextKey should be defined and non-empty")
 	})
 }
 

@@ -710,7 +710,7 @@ func TestGetTenantID(t *testing.T) {
 	})
 
 	t.Run("Should return tenant ID from context", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), TenantContextKey, "tenant-123")
+		ctx := context.WithValue(context.Background(), TenantIDContextKey, "tenant-123")
 		tenantID := GetTenantID(ctx)
 		assert.Equal(t, "tenant-123", tenantID)
 	})

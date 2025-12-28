@@ -18,7 +18,7 @@ type Extractor interface {
 	ExtractFromJWT(token string) (string, error)
 
 	// ExtractFromContext extracts the tenant ID from the context.
-	// It looks for the TenantContextKey in the context and returns its value.
+	// It looks for the TenantIDContextKey in the context and returns its value.
 	// Returns an error if the context is nil or the tenant ID is missing/invalid.
 	ExtractFromContext(ctx context.Context) (string, error)
 }
@@ -136,7 +136,7 @@ func (e *extractorImpl) ExtractFromContext(ctx context.Context) (string, error) 
 	}
 
 	// Get the tenant ID from context
-	value := ctx.Value(TenantContextKey)
+	value := ctx.Value(TenantIDContextKey)
 	if value == nil {
 		if e.logger != nil {
 			e.logger.Warn("ExtractFromContext: tenant context key missing")

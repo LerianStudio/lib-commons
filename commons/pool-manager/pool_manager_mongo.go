@@ -432,7 +432,7 @@ func (pm *mongoPoolManagerImpl) getClientDatabaseMode(ctx context.Context, tenan
 	defer pm.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if entry, exists := pm.tenantConns[connKey]; exists && entry.conn != nil && entry.conn.Connected {
+	if entry, exists = pm.tenantConns[connKey]; exists && entry != nil && entry.conn != nil && entry.conn.Connected {
 		entry.updateLastUsed()
 		return entry.conn.GetDB(ctx)
 	}
@@ -504,7 +504,8 @@ func (pm *mongoPoolManagerImpl) getClientSchemaMode(ctx context.Context, tenantI
 	defer pm.mu.Unlock()
 
 	// Check if shared connection exists for this URI
-	if entry, exists := pm.sharedConns[mongoConfig.URI]; exists && entry.conn != nil && entry.conn.Connected {
+	var exists bool
+	if entry, exists = pm.sharedConns[mongoConfig.URI]; exists && entry != nil && entry.conn != nil && entry.conn.Connected {
 		// Map this tenant to the shared connection
 		pm.tenantToSharedConn[connKey] = mongoConfig.URI
 		entry.updateLastUsed()

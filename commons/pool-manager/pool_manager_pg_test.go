@@ -1042,7 +1042,7 @@ func TestPostgresPoolManager_BuildDSN(t *testing.T) {
 				Password: "testpass",
 				SSLMode:  "require",
 			},
-			expected: "host=db.example.com port=5432 user=testuser password=testpass dbname=testdb sslmode=require",
+			expected: "postgres://testuser:testpass@db.example.com:5432/testdb?sslmode=require",
 		},
 		{
 			name: "Should default to disable sslmode when empty",
@@ -1054,7 +1054,31 @@ func TestPostgresPoolManager_BuildDSN(t *testing.T) {
 				Password: "pass",
 				SSLMode:  "",
 			},
-			expected: "host=localhost port=5432 user=user password=pass dbname=test sslmode=disable",
+			expected: "postgres://user:pass@localhost:5432/test?sslmode=disable",
+		},
+		{
+			name: "Should URL-encode special characters in password",
+			config: &PostgreSQLConfig{
+				Host:     "localhost",
+				Port:     5432,
+				Database: "test",
+				Username: "user",
+				Password: "pass@word#123",
+				SSLMode:  "disable",
+			},
+			expected: "postgres://user:pass%40word%23123@localhost:5432/test?sslmode=disable",
+		},
+		{
+			name: "Should URL-encode special characters in username",
+			config: &PostgreSQLConfig{
+				Host:     "localhost",
+				Port:     5432,
+				Database: "test",
+				Username: "user@domain",
+				Password: "pass",
+				SSLMode:  "disable",
+			},
+			expected: "postgres://user%40domain:pass@localhost:5432/test?sslmode=disable",
 		},
 	}
 
@@ -1092,12 +1116,22 @@ func TestPostgresPoolManager_SanitizeDSNForKey(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "Should extract host port and dbname",
+			name:     "Should extract host port and dbname from URI format",
+			dsn:      "postgres://testuser:secret@db.example.com:5432/testdb?sslmode=require",
+			expected: "db.example.com_5432_testdb",
+		},
+		{
+			name:     "Should handle URI with encoded password",
+			dsn:      "postgres://user:pass%40word@localhost:5432/db?sslmode=disable",
+			expected: "localhost_5432_db",
+		},
+		{
+			name:     "Should extract host port and dbname from legacy format",
 			dsn:      "host=db.example.com port=5432 user=testuser password=secret dbname=testdb sslmode=require",
 			expected: "host=db.example.com_port=5432_dbname=testdb",
 		},
 		{
-			name:     "Should handle minimal DSN",
+			name:     "Should handle minimal legacy DSN",
 			dsn:      "host=localhost port=5432 dbname=db",
 			expected: "host=localhost_port=5432_dbname=db",
 		},

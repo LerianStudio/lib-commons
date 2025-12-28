@@ -3,6 +3,7 @@ package poolmanager
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -341,7 +342,7 @@ func (pm *postgresPoolManagerImpl) getConnectionDatabaseMode(ctx context.Context
 	defer pm.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if entry, exists := pm.tenantConns[poolKey]; exists && entry.conn != nil && entry.conn.Connected {
+	if entry, exists = pm.tenantConns[poolKey]; exists && entry != nil && entry.conn != nil && entry.conn.Connected {
 		entry.updateLastUsed()
 		return entry.conn.GetDB()
 	}
@@ -448,7 +449,8 @@ func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(ctx context.Context, 
 	defer pm.mu.Unlock()
 
 	// Check if shared connection exists for this DSN
-	if entry, exists := pm.sharedConns[dsn]; exists && entry.conn != nil && entry.conn.Connected {
+	var exists bool
+	if entry, exists = pm.sharedConns[dsn]; exists && entry != nil && entry.conn != nil && entry.conn.Connected {
 		// Map this tenant to the shared connection
 		pm.tenantToSharedConn[poolKey] = dsn
 		entry.updateLastUsed()
@@ -879,19 +881,24 @@ func (pm *postgresPoolManagerImpl) evictLRUConn() error {
 	return nil
 }
 
-// buildDSN constructs a PostgreSQL connection string from configuration.
+// buildDSN constructs a PostgreSQL connection URI from configuration.
+// Uses URL-encoded username and password to handle special characters safely.
 func (pm *postgresPoolManagerImpl) buildDSN(cfg *PostgreSQLConfig) string {
 	sslMode := cfg.SSLMode
 	if sslMode == "" {
 		sslMode = "disable"
 	}
 
+	// URL-encode username and password to handle special characters
+	encodedUser := url.QueryEscape(cfg.Username)
+	encodedPass := url.QueryEscape(cfg.Password)
+
 	return fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		"postgres://%s:%s@%s:%d/%s?sslmode=%s",
+		encodedUser,
+		encodedPass,
 		cfg.Host,
 		cfg.Port,
-		cfg.Username,
-		cfg.Password,
 		cfg.Database,
 		sslMode,
 	)
@@ -903,9 +910,22 @@ func (pm *postgresPoolManagerImpl) makePoolKey(tenantID, appName string) string 
 }
 
 // sanitizeDSNForKey removes sensitive information from DSN for use as a map key identifier.
+// Supports both URI format (postgres://user:pass@host:port/db) and key=value format.
 func (pm *postgresPoolManagerImpl) sanitizeDSNForKey(dsn string) string {
+	// Handle URI format: postgres://user:pass@host:port/db?sslmode=...
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "invalid_dsn"
+		}
+
+		return fmt.Sprintf("%s_%s_%s", u.Hostname(), u.Port(), strings.TrimPrefix(u.Path, "/"))
+	}
+
+	// Handle legacy key=value format
 	parts := strings.Fields(dsn)
 	var sanitized []string
+
 	for _, part := range parts {
 		if strings.HasPrefix(part, "host=") ||
 			strings.HasPrefix(part, "port=") ||
@@ -913,13 +933,39 @@ func (pm *postgresPoolManagerImpl) sanitizeDSNForKey(dsn string) string {
 			sanitized = append(sanitized, part)
 		}
 	}
+
 	return strings.Join(sanitized, "_")
 }
 
 // sanitizeDSNForLog removes sensitive information from DSN for logging.
+// Supports both URI format (postgres://user:pass@host:port/db) and key=value format.
 func (pm *postgresPoolManagerImpl) sanitizeDSNForLog(dsn string) string {
+	// Handle URI format: postgres://user:pass@host:port/db?sslmode=...
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "invalid_dsn"
+		}
+
+		// Rebuild URI without password
+		sanitized := fmt.Sprintf("%s://%s:***@%s%s",
+			u.Scheme,
+			u.User.Username(),
+			u.Host,
+			u.Path,
+		)
+
+		if u.RawQuery != "" {
+			sanitized += "?" + u.RawQuery
+		}
+
+		return sanitized
+	}
+
+	// Handle legacy key=value format
 	parts := strings.Fields(dsn)
 	var sanitized []string
+
 	for _, part := range parts {
 		if strings.HasPrefix(part, "password=") {
 			sanitized = append(sanitized, "password=***")
@@ -927,6 +973,7 @@ func (pm *postgresPoolManagerImpl) sanitizeDSNForLog(dsn string) string {
 			sanitized = append(sanitized, part)
 		}
 	}
+
 	return strings.Join(sanitized, " ")
 }
 

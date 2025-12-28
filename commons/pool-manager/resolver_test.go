@@ -97,7 +97,7 @@ func TestResolver_Resolve(t *testing.T) {
 			name:     "Should resolve tenant config successfully",
 			tenantID: "tenant-123",
 			serverResponse: func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, "/tenants/tenant-123/config", r.URL.Path)
+				assert.Equal(t, "/tenants/tenant-123/settings", r.URL.Path)
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(TenantConfig{
@@ -199,7 +199,7 @@ func TestResolver_ResolveWithService(t *testing.T) {
 			tenantID:    "tenant-123",
 			serviceName: "midaz",
 			serverResponse: func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, "/tenants/tenant-123/config", r.URL.Path)
+				assert.Equal(t, "/tenants/tenant-123/settings", r.URL.Path)
 				assert.Equal(t, "midaz", r.URL.Query().Get("service"))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusOK)
@@ -348,7 +348,7 @@ func TestResolver_Cache(t *testing.T) {
 			callCount++
 			// Extract tenant ID from URL path
 			tenantID := r.URL.Path[len("/tenants/"):]
-			tenantID = tenantID[:len(tenantID)-len("/config")]
+			tenantID = tenantID[:len(tenantID)-len("/settings")]
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(TenantConfig{
@@ -423,7 +423,7 @@ func TestResolver_InvalidateCache(t *testing.T) {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			callCount++
 			tenantID := r.URL.Path[len("/tenants/"):]
-			tenantID = tenantID[:len(tenantID)-len("/config")]
+			tenantID = tenantID[:len(tenantID)-len("/settings")]
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(TenantConfig{
@@ -568,7 +568,7 @@ func TestResolver_ConcurrentAccess(t *testing.T) {
 			// Small delay to increase chance of race conditions
 			time.Sleep(10 * time.Millisecond)
 			tenantID := r.URL.Path[len("/tenants/"):]
-			tenantID = tenantID[:len(tenantID)-len("/config")]
+			tenantID = tenantID[:len(tenantID)-len("/settings")]
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(TenantConfig{
@@ -671,6 +671,7 @@ func TestTenantConfig_Types(t *testing.T) {
 	t.Run("Should marshal and unmarshal TenantConfig correctly", func(t *testing.T) {
 		original := TenantConfig{
 			ID:            "tenant-123",
+			TenantSlug:    "acme-corp",
 			TenantName:    "Test Tenant",
 			Status:        "active",
 			IsolationMode: "dedicated",
@@ -711,6 +712,7 @@ func TestTenantConfig_Types(t *testing.T) {
 
 		// Verify
 		assert.Equal(t, original.ID, decoded.ID)
+		assert.Equal(t, original.TenantSlug, decoded.TenantSlug)
 		assert.Equal(t, original.TenantName, decoded.TenantName)
 		assert.Equal(t, original.Status, decoded.Status)
 		assert.Equal(t, original.IsolationMode, decoded.IsolationMode)

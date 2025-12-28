@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 // This structure matches the response from the Tenant Service API.
 type TenantConfig struct {
 	ID            string                      `json:"_id"`
+	TenantSlug    string                      `json:"tenant_slug"`
 	TenantName    string                      `json:"tenant_name"`
 	Status        string                      `json:"status"`
 	IsolationMode string                      `json:"isolation_mode"`
@@ -159,11 +161,11 @@ func (r *resolverImpl) Resolve(ctx context.Context, tenantID string) (*TenantCon
 		r.logger.Infof("Cache miss for tenant %s, fetching from service", tenantID)
 	}
 
-	// Build request URL
-	url := fmt.Sprintf("%s/tenants/%s/config", r.serviceURL, tenantID)
+	// Build request URL with URL-encoded path parameter to handle special characters safely
+	requestURL := fmt.Sprintf("%s/tenants/%s/settings", r.serviceURL, url.PathEscape(tenantID))
 
 	// Fetch from service
-	config, err := r.fetchConfig(ctx, url)
+	config, err := r.fetchConfig(ctx, requestURL)
 	if err != nil {
 		if r.logger != nil {
 			r.logger.Errorf("Failed to resolve tenant %s: %v", tenantID, err)
@@ -209,10 +211,14 @@ func (r *resolverImpl) ResolveWithService(ctx context.Context, tenantID, service
 	}
 
 	// Build request URL with service query parameter
-	url := fmt.Sprintf("%s/tenants/%s/config?service=%s", r.serviceURL, tenantID, serviceName)
+	// URL-encode path and query parameters to handle special characters safely
+	requestURL := fmt.Sprintf("%s/tenants/%s/settings?service=%s",
+		r.serviceURL,
+		url.PathEscape(tenantID),
+		url.QueryEscape(serviceName))
 
 	// Fetch from service
-	config, err := r.fetchConfig(ctx, url)
+	config, err := r.fetchConfig(ctx, requestURL)
 	if err != nil {
 		if r.logger != nil {
 			r.logger.Errorf("Failed to resolve tenant %s service %s: %v", tenantID, serviceName, err)
@@ -321,7 +327,7 @@ func (r *resolverImpl) fetchConfig(ctx context.Context, url string) (*TenantConf
 	case http.StatusOK:
 		// Continue to decode response
 	case http.StatusNotFound:
-		return nil, fmt.Errorf("tenant not found")
+		return nil, fmt.Errorf("tenant not found: %w", ErrTenantNotFound)
 	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable:
 		return nil, fmt.Errorf("server error: status %d", resp.StatusCode)
 	default:

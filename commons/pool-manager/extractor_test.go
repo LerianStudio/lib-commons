@@ -225,7 +225,7 @@ func TestExtractor_ExtractFromContext(t *testing.T) {
 			name:     "Should extract tenant from context",
 			claimKey: "owner",
 			setupCtx: func() context.Context {
-				return context.WithValue(context.Background(), TenantContextKey, "tenant-from-context")
+				return context.WithValue(context.Background(), TenantIDContextKey, "tenant-from-context")
 			},
 			wantTenant: "tenant-from-context",
 			wantErr:    false,
@@ -234,7 +234,7 @@ func TestExtractor_ExtractFromContext(t *testing.T) {
 			name:     "Should extract UUID tenant from context",
 			claimKey: "owner",
 			setupCtx: func() context.Context {
-				return context.WithValue(context.Background(), TenantContextKey, "550e8400-e29b-41d4-a716-446655440000")
+				return context.WithValue(context.Background(), TenantIDContextKey, "550e8400-e29b-41d4-a716-446655440000")
 			},
 			wantTenant: "550e8400-e29b-41d4-a716-446655440000",
 			wantErr:    false,
@@ -263,7 +263,7 @@ func TestExtractor_ExtractFromContext(t *testing.T) {
 			name:     "Should return error when tenant value is not a string",
 			claimKey: "owner",
 			setupCtx: func() context.Context {
-				return context.WithValue(context.Background(), TenantContextKey, 12345)
+				return context.WithValue(context.Background(), TenantIDContextKey, 12345)
 			},
 			wantTenant:  "",
 			wantErr:     true,
@@ -273,7 +273,7 @@ func TestExtractor_ExtractFromContext(t *testing.T) {
 			name:     "Should return error when tenant value is empty string",
 			claimKey: "owner",
 			setupCtx: func() context.Context {
-				return context.WithValue(context.Background(), TenantContextKey, "")
+				return context.WithValue(context.Background(), TenantIDContextKey, "")
 			},
 			wantTenant:  "",
 			wantErr:     true,

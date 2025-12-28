@@ -119,6 +119,7 @@ func TestWithTenantConfig(t *testing.T) {
 	t.Run("Should set tenant config in context", func(t *testing.T) {
 		expected := &TenantConfig{
 			ID:         "tenant-123",
+			TenantSlug: "acme-corp",
 			TenantName: "Test Tenant",
 			Status:     "active",
 		}
@@ -337,6 +338,7 @@ func TestWithAllTenantContext(t *testing.T) {
 		tenantID := "tenant-123"
 		tenantConfig := &TenantConfig{
 			ID:         "tenant-123",
+			TenantSlug: "acme-corp",
 			TenantName: "Test Tenant",
 			Status:     "active",
 		}
@@ -458,6 +460,7 @@ func TestGetTenantConfigFromFiber(t *testing.T) {
 
 		expected := &TenantConfig{
 			ID:         "tenant-123",
+			TenantSlug: "acme-corp",
 			TenantName: "Test Tenant",
 			Status:     "active",
 		}
@@ -634,7 +637,7 @@ func TestContextIntegration(t *testing.T) {
 	t.Run("Should work with middleware-set context values", func(t *testing.T) {
 		// Simulate middleware setting context using internal keys
 		ctx := context.Background()
-		ctx = context.WithValue(ctx, TenantContextKey, "tenant-from-middleware")
+		ctx = context.WithValue(ctx, TenantIDContextKey, "tenant-from-middleware")
 
 		// WithTenantPG should work alongside middleware-set values
 		pgConfig := &PostgreSQLConfig{Host: "localhost"}
@@ -682,8 +685,8 @@ func TestIsMultiTenantContext(t *testing.T) {
 		assert.True(t, result)
 	})
 
-	t.Run("Should return true when tenant ID is set via TenantContextKey", func(t *testing.T) {
-		ctx := context.WithValue(context.Background(), TenantContextKey, "tenant-456")
+	t.Run("Should return true when tenant ID is set via TenantIDContextKey", func(t *testing.T) {
+		ctx := context.WithValue(context.Background(), TenantIDContextKey, "tenant-456")
 		result := IsMultiTenantContext(ctx)
 		assert.True(t, result)
 	})
