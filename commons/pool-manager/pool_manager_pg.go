@@ -311,20 +311,21 @@ func (pm *postgresPoolManagerImpl) GetConnection(ctx context.Context, tenantID, 
 	}
 
 	pgConfig := dbServices.PostgreSQL
+	pgReplicaConfig := dbServices.PostgreSQLReplica
 
 	// Route based on isolation mode
 	switch config.IsolationMode {
 	case "database":
-		return pm.getConnectionDatabaseMode(ctx, tenantID, applicationName, pgConfig)
+		return pm.getConnectionDatabaseMode(ctx, tenantID, applicationName, pgConfig, pgReplicaConfig)
 	case "schema":
-		return pm.getConnectionSchemaMode(ctx, tenantID, applicationName, pgConfig)
+		return pm.getConnectionSchemaMode(ctx, tenantID, applicationName, pgConfig, pgReplicaConfig)
 	default:
 		return nil, fmt.Errorf("unsupported isolation mode: %s", config.IsolationMode)
 	}
 }
 
 // getConnectionDatabaseMode returns a connection from a dedicated PostgresConnection per tenant.
-func (pm *postgresPoolManagerImpl) getConnectionDatabaseMode(ctx context.Context, tenantID, appName string, pgConfig *PostgreSQLConfig) (dbresolver.DB, error) {
+func (pm *postgresPoolManagerImpl) getConnectionDatabaseMode(ctx context.Context, tenantID, appName string, pgConfig, pgReplicaConfig *PostgreSQLConfig) (dbresolver.DB, error) {
 	poolKey := pm.makePoolKey(tenantID, appName)
 
 	// Check if connection exists
@@ -357,9 +358,14 @@ func (pm *postgresPoolManagerImpl) getConnectionDatabaseMode(ctx context.Context
 
 	// Build connection strings
 	primaryDSN := pm.buildDSN(pgConfig)
-	// For tenant connections, we use the same DSN for primary and replica
-	// unless the tenant config specifies separate replica settings
+	// Use replica config if available, otherwise fallback to primary
 	replicaDSN := primaryDSN
+	if pgReplicaConfig != nil {
+		replicaDSN = pm.buildDSN(pgReplicaConfig)
+		if pm.logger != nil {
+			pm.logger.Infof("Using separate replica connection for tenant %s", tenantID)
+		}
+	}
 
 	// Create new PostgresConnection
 	pgConn := &libPostgres.PostgresConnection{
@@ -402,9 +408,13 @@ func (pm *postgresPoolManagerImpl) getConnectionDatabaseMode(ctx context.Context
 
 // getConnectionSchemaMode returns the default connection for schema mode.
 // The caller is responsible for executing SET search_path.
-func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(ctx context.Context, tenantID, appName string, pgConfig *PostgreSQLConfig) (dbresolver.DB, error) {
+func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(ctx context.Context, tenantID, appName string, pgConfig, pgReplicaConfig *PostgreSQLConfig) (dbresolver.DB, error) {
 	poolKey := pm.makePoolKey(tenantID, appName)
-	dsn := pm.buildDSN(pgConfig)
+	primaryDSN := pm.buildDSN(pgConfig)
+	replicaDSN := primaryDSN
+	if pgReplicaConfig != nil {
+		replicaDSN = pm.buildDSN(pgReplicaConfig)
+	}
 
 	// Check if we already have mapping to shared connection
 	pm.mu.RLock()
@@ -426,9 +436,9 @@ func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(ctx context.Context, 
 
 	// Check if shared connection exists for this DSN
 	var exists bool
-	if entry, exists = pm.sharedConns[dsn]; exists && entry != nil && entry.conn != nil && entry.conn.Connected {
+	if entry, exists = pm.sharedConns[primaryDSN]; exists && entry != nil && entry.conn != nil && entry.conn.Connected {
 		// Map this tenant to the shared connection
-		pm.tenantToSharedConn[poolKey] = dsn
+		pm.tenantToSharedConn[poolKey] = primaryDSN
 		entry.updateLastUsed()
 		return entry.conn.GetDB()
 	}
@@ -442,8 +452,8 @@ func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(ctx context.Context, 
 
 	// Create new shared PostgresConnection
 	pgConn := &libPostgres.PostgresConnection{
-		ConnectionStringPrimary: dsn,
-		ConnectionStringReplica: dsn,
+		ConnectionStringPrimary: primaryDSN,
+		ConnectionStringReplica: replicaDSN,
 		PrimaryDBName:           pgConfig.Database,
 		ReplicaDBName:           pgConfig.Database,
 		MaxOpenConnections:      pm.connConfig.MaxOpenConnections,
@@ -463,7 +473,7 @@ func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(ctx context.Context, 
 
 	// Store shared connection
 	now := time.Now()
-	pm.sharedConns[dsn] = &poolEntry{
+	pm.sharedConns[primaryDSN] = &poolEntry{
 		conn:          pgConn,
 		tenantID:      "", // Shared connections don't belong to a single tenant
 		appName:       appName,
@@ -473,7 +483,7 @@ func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(ctx context.Context, 
 	}
 
 	// Map tenant to shared connection
-	pm.tenantToSharedConn[poolKey] = dsn
+	pm.tenantToSharedConn[poolKey] = primaryDSN
 
 	if pm.logger != nil {
 		pm.logger.Infof("Created new shared connection for application %s (schema mode)", appName)

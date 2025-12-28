@@ -28,8 +28,9 @@ type TenantConfig struct {
 
 // DatabaseServices holds database configurations for a service.
 type DatabaseServices struct {
-	PostgreSQL *PostgreSQLConfig `json:"postgresql,omitempty"`
-	MongoDB    *MongoDBConfig    `json:"mongodb,omitempty"`
+	PostgreSQL        *PostgreSQLConfig `json:"postgresql,omitempty"`
+	PostgreSQLReplica *PostgreSQLConfig `json:"postgresql_replica,omitempty"`
+	MongoDB           *MongoDBConfig    `json:"mongodb,omitempty"`
 }
 
 // PostgreSQLConfig holds PostgreSQL connection configuration.
