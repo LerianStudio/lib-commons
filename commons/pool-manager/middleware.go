@@ -171,6 +171,7 @@ func (m *middlewareImpl) Handler() fiber.Handler {
 
 // extractAndValidateToken reads and validates the Authorization header.
 // Returns the raw token string or a fiber error response.
+// Accepts both "Bearer <token>" and "<token>" formats.
 func (m *middlewareImpl) extractAndValidateToken(c *fiber.Ctx) (string, error) {
 	authHeader := c.Get("Authorization")
 	if authHeader == "" {
@@ -183,17 +184,13 @@ func (m *middlewareImpl) extractAndValidateToken(c *fiber.Ctx) (string, error) {
 		})
 	}
 
-	if !strings.HasPrefix(authHeader, "Bearer ") {
-		if m.logger != nil {
-			m.logger.Warnf("Invalid authorization header format for path %s", c.Path())
-		}
-
-		return "", c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "invalid authorization header format",
-		})
+	// Accept both "Bearer <token>" and "<token>" formats
+	token := authHeader
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
 	}
 
-	return strings.TrimPrefix(authHeader, "Bearer "), nil
+	return token, nil
 }
 
 // extractTenantIDFromToken extracts the tenant ID from a JWT token.
