@@ -94,12 +94,13 @@ func (e *extractorImpl) ExtractFromJWT(token string) (string, error) {
 	}
 
 	// Extract the tenant ID from the configured claim key
-	claimValue, ok := claims[e.claimKey]
-	if !ok {
+	// Support dot notation for nested claims (e.g., "properties.tenantId")
+	claimValue, err := e.getNestedClaim(claims, e.claimKey)
+	if err != nil {
 		if e.logger != nil {
-			e.logger.Warnf("ExtractFromJWT: claim not found: %s", e.claimKey)
+			e.logger.Warnf("ExtractFromJWT: %v", err)
 		}
-		return "", fmt.Errorf("claim not found: %s", e.claimKey)
+		return "", err
 	}
 
 	// Ensure the claim value is a string
@@ -124,6 +125,30 @@ func (e *extractorImpl) ExtractFromJWT(token string) (string, error) {
 	}
 
 	return tenantID, nil
+}
+
+// getNestedClaim retrieves a claim value supporting dot notation for nested paths.
+// For example, "properties.tenantId" will navigate claims["properties"]["tenantId"].
+func (e *extractorImpl) getNestedClaim(claims map[string]any, claimKey string) (any, error) {
+	keys := strings.Split(claimKey, ".")
+
+	var current any = claims
+	for i, key := range keys {
+		currentMap, ok := current.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("claim path %s: expected object at %s, got %T",
+				claimKey, strings.Join(keys[:i], "."), current)
+		}
+
+		value, exists := currentMap[key]
+		if !exists {
+			return nil, fmt.Errorf("claim not found: %s", claimKey)
+		}
+
+		current = value
+	}
+
+	return current, nil
 }
 
 // ExtractFromContext extracts the tenant ID from the context.

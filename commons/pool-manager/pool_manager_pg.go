@@ -369,7 +369,7 @@ func (pm *postgresPoolManagerImpl) getConnectionDatabaseMode(ctx context.Context
 		ReplicaDBName:           pgConfig.Database,
 		MaxOpenConnections:      pm.connConfig.MaxOpenConnections,
 		MaxIdleConnections:      pm.connConfig.MaxIdleConnections,
-		MigrationsPath:          "", // No migrations for tenant connections
+		Component:               appName,
 	}
 
 	// Set logger if available
@@ -377,8 +377,8 @@ func (pm *postgresPoolManagerImpl) getConnectionDatabaseMode(ctx context.Context
 		pgConn.Logger = pm.logger
 	}
 
-	// Connect (without migrations for tenant databases)
-	if err := pm.connectWithoutMigrations(pgConn); err != nil {
+	// Connect to tenant database (migrations will run based on Component path)
+	if err := pgConn.Connect(); err != nil {
 		return nil, fmt.Errorf("failed to connect to tenant database: %w", err)
 	}
 
@@ -398,30 +398,6 @@ func (pm *postgresPoolManagerImpl) getConnectionDatabaseMode(ctx context.Context
 	}
 
 	return pgConn.GetDB()
-}
-
-// connectWithoutMigrations connects to the database without running migrations.
-// This is used for tenant connections where migrations are managed by the Tenant Service.
-func (pm *postgresPoolManagerImpl) connectWithoutMigrations(pgConn *libPostgres.PostgresConnection) error {
-	// We need to connect without calling the full Connect() method
-	// which attempts to run migrations. Instead, we create the connection directly.
-	// The PostgresConnection.Connect() includes migration logic, so we replicate
-	// just the connection part here.
-
-	// For tenant connections, we'll use the standard Connect but with an empty migrations path
-	// The Connect method handles missing migrations gracefully
-	err := pgConn.Connect()
-	if err != nil {
-		return err
-	}
-
-	// Double-check that the connection was actually established
-	// The Connect method may return nil even if connection failed (uses Fatal logging)
-	if pgConn.ConnectionDB == nil {
-		return fmt.Errorf("connection failed: database connection is nil after Connect()")
-	}
-
-	return nil
 }
 
 // getConnectionSchemaMode returns the default connection for schema mode.
@@ -472,7 +448,7 @@ func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(ctx context.Context, 
 		ReplicaDBName:           pgConfig.Database,
 		MaxOpenConnections:      pm.connConfig.MaxOpenConnections,
 		MaxIdleConnections:      pm.connConfig.MaxIdleConnections,
-		MigrationsPath:          "", // No migrations for schema mode connections
+		Component:               appName,
 	}
 
 	// Set logger if available
@@ -480,8 +456,8 @@ func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(ctx context.Context, 
 		pgConn.Logger = pm.logger
 	}
 
-	// Connect (without migrations)
-	if err := pm.connectWithoutMigrations(pgConn); err != nil {
+	// Connect to shared database (migrations will run based on Component path)
+	if err := pgConn.Connect(); err != nil {
 		return nil, fmt.Errorf("failed to connect to shared database: %w", err)
 	}
 
