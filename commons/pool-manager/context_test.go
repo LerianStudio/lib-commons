@@ -119,6 +119,7 @@ func TestWithTenantConfig(t *testing.T) {
 	t.Run("Should set tenant config in context", func(t *testing.T) {
 		expected := &TenantConfig{
 			ID:         "tenant-123",
+			TenantSlug: "acme-corp",
 			TenantName: "Test Tenant",
 			Status:     "active",
 		}
@@ -337,6 +338,7 @@ func TestWithAllTenantContext(t *testing.T) {
 		tenantID := "tenant-123"
 		tenantConfig := &TenantConfig{
 			ID:         "tenant-123",
+			TenantSlug: "acme-corp",
 			TenantName: "Test Tenant",
 			Status:     "active",
 		}
@@ -458,6 +460,7 @@ func TestGetTenantConfigFromFiber(t *testing.T) {
 
 		expected := &TenantConfig{
 			ID:         "tenant-123",
+			TenantSlug: "acme-corp",
 			TenantName: "Test Tenant",
 			Status:     "active",
 		}

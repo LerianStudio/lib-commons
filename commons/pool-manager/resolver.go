@@ -17,6 +17,7 @@ import (
 // This structure matches the response from the Tenant Service API.
 type TenantConfig struct {
 	ID            string                      `json:"_id"`
+	TenantSlug    string                      `json:"tenant_slug"`
 	TenantName    string                      `json:"tenant_name"`
 	Status        string                      `json:"status"`
 	IsolationMode string                      `json:"isolation_mode"`
@@ -161,7 +162,7 @@ func (r *resolverImpl) Resolve(ctx context.Context, tenantID string) (*TenantCon
 	}
 
 	// Build request URL with URL-encoded path parameter to handle special characters safely
-	requestURL := fmt.Sprintf("%s/tenants/%s/config", r.serviceURL, url.PathEscape(tenantID))
+	requestURL := fmt.Sprintf("%s/tenants/%s/settings", r.serviceURL, url.PathEscape(tenantID))
 
 	// Fetch from service
 	config, err := r.fetchConfig(ctx, requestURL)
@@ -211,7 +212,7 @@ func (r *resolverImpl) ResolveWithService(ctx context.Context, tenantID, service
 
 	// Build request URL with service query parameter
 	// URL-encode path and query parameters to handle special characters safely
-	requestURL := fmt.Sprintf("%s/tenants/%s/config?service=%s",
+	requestURL := fmt.Sprintf("%s/tenants/%s/settings?service=%s",
 		r.serviceURL,
 		url.PathEscape(tenantID),
 		url.QueryEscape(serviceName))
