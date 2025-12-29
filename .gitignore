@@ -3,3 +3,5 @@ CLAUDE.md
 .DS_Store
 coverage.out
 coverage.html
+.claude/
+.mcp.json
