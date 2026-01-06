@@ -101,10 +101,9 @@ go get github.com/LerianStudio/lib-commons/v2
 
 | Method                                  | Description                       |
 | --------------------------------------- | --------------------------------- |
-| `MongoConnection.Connect()`           | Establishes connection to MongoDB |
-| `MongoConnection.GetClient()`         | Returns the MongoDB client        |
-| `MongoConnection.GetDatabase()`       | Returns the MongoDB database      |
-| `MongoConnection.GetCollection(name)` | Returns a MongoDB collection      |
+| `MongoConnection.Connect(ctx)`       | Establishes connection to MongoDB |
+| `MongoConnection.GetDB(ctx)`         | Returns the MongoDB client        |
+| `MongoConnection.EnsureIndexes(ctx, collection, index)` | Ensures an index exists (idempotent). If the collection does not exist, MongoDB will create it automatically during index creation. |
 
 #### Redis (`commons/redis`)
 

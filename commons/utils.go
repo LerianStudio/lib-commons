@@ -37,6 +37,7 @@ func CheckMetadataKeyAndValueLength(limit int, metadata map[string]any) error {
 		}
 
 		var value string
+
 		switch t := v.(type) {
 		case int:
 			value = strconv.Itoa(t)
