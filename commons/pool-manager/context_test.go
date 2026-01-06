@@ -35,6 +35,7 @@ func TestDBType_Constants(t *testing.T) {
 // TestGetDBFromContext tests the GetDBFromContext function.
 func TestGetDBFromContext(t *testing.T) {
 	t.Run("Should return nil when context is nil", func(t *testing.T) {
+		//nolint:staticcheck // SA1012: Testing nil context handling intentionally
 		result := GetDBFromContext(nil, DBTypePostgreSQL)
 		assert.Nil(t, result)
 	})
@@ -99,6 +100,7 @@ func TestWithTenantID(t *testing.T) {
 	})
 
 	t.Run("Should create context from nil", func(t *testing.T) {
+		//nolint:staticcheck // SA1012: Testing nil context handling intentionally
 		ctx := WithTenantID(nil, "tenant-123")
 		require.NotNil(t, ctx)
 
@@ -131,6 +133,7 @@ func TestWithTenantConfig(t *testing.T) {
 
 	t.Run("Should create context from nil", func(t *testing.T) {
 		expected := &TenantConfig{ID: "tenant-123"}
+		//nolint:staticcheck // SA1012: Testing nil context handling intentionally
 		ctx := WithTenantConfig(nil, expected)
 		require.NotNil(t, ctx)
 
@@ -165,6 +168,7 @@ func TestWithTenantPG(t *testing.T) {
 
 	t.Run("Should create context from nil", func(t *testing.T) {
 		expected := &PostgreSQLConfig{Host: "localhost"}
+		//nolint:staticcheck // SA1012: Testing nil context handling intentionally
 		ctx := WithTenantPG(nil, expected)
 		require.NotNil(t, ctx)
 
@@ -195,6 +199,7 @@ func TestWithTenantMongo(t *testing.T) {
 
 	t.Run("Should create context from nil", func(t *testing.T) {
 		expected := &MongoDBConfig{URI: "mongodb://localhost"}
+		//nolint:staticcheck // SA1012: Testing nil context handling intentionally
 		ctx := WithTenantMongo(nil, expected)
 		require.NotNil(t, ctx)
 
@@ -226,6 +231,7 @@ func TestWithTenantValkey(t *testing.T) {
 
 	t.Run("Should create context from nil", func(t *testing.T) {
 		expected := &ValkeyConfig{Addresses: []string{"localhost:6379"}}
+		//nolint:staticcheck // SA1012: Testing nil context handling intentionally
 		ctx := WithTenantValkey(nil, expected)
 		require.NotNil(t, ctx)
 
@@ -255,6 +261,7 @@ func TestWithTenantRabbitMQ(t *testing.T) {
 
 	t.Run("Should create context from nil", func(t *testing.T) {
 		expected := &RabbitMQConfig{URL: "amqp://localhost:5672"}
+		//nolint:staticcheck // SA1012: Testing nil context handling intentionally
 		ctx := WithTenantRabbitMQ(nil, expected)
 		require.NotNil(t, ctx)
 
@@ -273,6 +280,7 @@ func TestWithTenantRabbitMQ(t *testing.T) {
 // TestGetTenantValkey tests the GetTenantValkey function.
 func TestGetTenantValkey(t *testing.T) {
 	t.Run("Should return nil when context is nil", func(t *testing.T) {
+		//nolint:staticcheck // SA1012: Testing nil context handling intentionally
 		config := GetTenantValkey(nil)
 		assert.Nil(t, config)
 	})
@@ -305,6 +313,7 @@ func TestGetTenantValkey(t *testing.T) {
 // TestGetTenantRabbitMQ tests the GetTenantRabbitMQ function.
 func TestGetTenantRabbitMQ(t *testing.T) {
 	t.Run("Should return nil when context is nil", func(t *testing.T) {
+		//nolint:staticcheck // SA1012: Testing nil context handling intentionally
 		config := GetTenantRabbitMQ(nil)
 		assert.Nil(t, config)
 	})
@@ -377,6 +386,7 @@ func TestWithAllTenantContext(t *testing.T) {
 	})
 
 	t.Run("Should create context from nil", func(t *testing.T) {
+		//nolint:staticcheck // SA1012: Testing nil context handling intentionally
 		ctx := WithAllTenantContext(nil, "tenant-123", nil, nil, nil, nil, nil)
 		require.NotNil(t, ctx)
 
@@ -729,6 +739,7 @@ func TestGetDBForTenant(t *testing.T) {
 	})
 
 	t.Run("Should return error when context is nil and no default connection", func(t *testing.T) {
+		//nolint:staticcheck // SA1012: Testing nil context handling intentionally
 		db, err := GetDBForTenant(nil, nil)
 		assert.Nil(t, db)
 		assert.ErrorIs(t, err, ErrNoConnectionAvailable)
@@ -770,6 +781,7 @@ func TestGetMongoDatabaseForTenant(t *testing.T) {
 	})
 
 	t.Run("Should return error when context is nil and no default connection", func(t *testing.T) {
+		//nolint:staticcheck // SA1012: Testing nil context handling intentionally
 		db, err := GetMongoDatabaseForTenant(nil, nil)
 		assert.Nil(t, db)
 		assert.ErrorIs(t, err, ErrNoConnectionAvailable)
