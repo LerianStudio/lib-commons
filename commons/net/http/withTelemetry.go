@@ -44,7 +44,7 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, exclud
 		tracer := otel.Tracer(tl.LibraryName)
 		routePathWithMethod := c.Method() + " " + commons.ReplaceUUIDWithPlaceholder(c.Path())
 
-		ctx, span := tracer.Start(opentelemetry.ExtractHTTPContext(c), routePathWithMethod)
+		ctx, span := tracer.Start(opentelemetry.ExtractHTTPContext(c), routePathWithMethod, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
 		span.SetAttributes(
@@ -110,7 +110,7 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 			attribute.String("grpc.method", info.FullMethod),
 		)
 
-		ctx, span := tracer.Start(opentelemetry.ExtractGRPCContext(ctx), info.FullMethod)
+		ctx, span := tracer.Start(opentelemetry.ExtractGRPCContext(ctx), info.FullMethod, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
 		ctx = commons.ContextWithTracer(ctx, tracer)
