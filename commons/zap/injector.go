@@ -1,21 +1,25 @@
 package zap
 
 import (
+	"fmt"
+	"os"
+	"strings"
+
 	clog "github.com/LerianStudio/lib-commons/v2/commons/log"
 	"go.opentelemetry.io/contrib/bridges/otelzap"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"log"
-	"os"
 )
 
-// InitializeLogger initializes our log layer and returns it
+// InitializeLogger initializes our log layer and returns it.
+// Returns an error if the logger cannot be initialized.
 //
 //nolint:ireturn
-func InitializeLogger() clog.Logger {
+func InitializeLogger() (clog.Logger, error) {
 	var zapCfg zap.Config
 
-	if os.Getenv("ENV_NAME") == "production" {
+	envName := strings.ToLower(os.Getenv("ENV_NAME"))
+	if envName == "production" || envName == "prod" {
 		zapCfg = zap.NewProductionConfig()
 		zapCfg.EncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
 		zapCfg.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
@@ -27,13 +31,9 @@ func InitializeLogger() clog.Logger {
 
 	if val, ok := os.LookupEnv("LOG_LEVEL"); ok {
 		var lvl zapcore.Level
-		if err := lvl.Set(val); err != nil {
-			log.Printf("Invalid LOG_LEVEL, fallback to InfoLevel: %v", err)
-
-			lvl = zapcore.InfoLevel
+		if err := lvl.Set(val); err == nil {
+			zapCfg.Level = zap.NewAtomicLevelAt(lvl)
 		}
-
-		zapCfg.Level = zap.NewAtomicLevelAt(lvl)
 	}
 
 	zapCfg.DisableStacktrace = true
@@ -42,7 +42,7 @@ func InitializeLogger() clog.Logger {
 		return zapcore.NewTee(core, otelzap.NewCore(os.Getenv("OTEL_LIBRARY_NAME")))
 	}))
 	if err != nil {
-		log.Fatalf("can't initialize zap logger: %v", err)
+		return nil, fmt.Errorf("failed to initialize zap logger: %w", err)
 	}
 
 	sugarLogger := logger.Sugar()
@@ -52,5 +52,15 @@ func InitializeLogger() clog.Logger {
 
 	return &ZapWithTraceLogger{
 		Logger: sugarLogger,
+	}, nil
+}
+
+// MustInitializeLogger initializes the logger and panics if it fails.
+// Deprecated: Use InitializeLogger instead for graceful error handling.
+func MustInitializeLogger() clog.Logger {
+	logger, err := InitializeLogger()
+	if err != nil {
+		panic(err)
 	}
+	return logger
 }
