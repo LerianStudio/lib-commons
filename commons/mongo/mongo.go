@@ -32,7 +32,7 @@ func (mc *MongoConnection) Connect(ctx context.Context) error {
 
 	noSQLDB, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
-		mc.Logger.Fatal("failed to open connect to mongodb", zap.Error(err))
+		mc.Logger.Error("failed to open connect to mongodb", zap.Error(err))
 		return err
 	}
 
@@ -66,15 +66,14 @@ func (mc *MongoConnection) GetDB(ctx context.Context) (*mongo.Client, error) {
 }
 
 // EnsureIndexes guarantees an index exists for a given collection.
-// Idempotent.
+// Idempotent. Returns error if connection or index creation fails.
 func (mc *MongoConnection) EnsureIndexes(ctx context.Context, collection string, index mongo.IndexModel) error {
 	mc.Logger.Debugf("Ensuring indexes for collection: collection=%s", collection)
 
 	client, err := mc.GetDB(ctx)
 	if err != nil {
 		mc.Logger.Warnf("Failed to get database connection for index creation: %v", err)
-
-		return nil
+		return err
 	}
 
 	db := client.Database(mc.Database)
@@ -85,16 +84,10 @@ func (mc *MongoConnection) EnsureIndexes(ctx context.Context, collection string,
 
 	mc.Logger.Debugf("Ensuring index: collection=%s, fields=%s", collection, fields)
 
-	// Note: createIndexes is idempotent; when indexes already exist with same definition,
-	// the server returns ok:1 (no error).
-	// Also: if the collection does not exist yet, this operation will create it automatically.
-	// Create the collection explicitly only if you need to set collection options
-	// (e.g., validation rules, default collation, time-series, capped/clustered).
 	_, err = coll.Indexes().CreateOne(ctx, index)
 	if err != nil {
 		mc.Logger.Warnf("Failed to ensure index: collection=%s, fields=%s, err=%v", collection, fields, err)
-
-		return nil
+		return err
 	}
 
 	mc.Logger.Infof("Index successfully ensured: collection=%s, fields=%s \n", collection, fields)

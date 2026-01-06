@@ -204,11 +204,16 @@ func IsUUID(s string) bool {
 	return err == nil
 }
 
-// GenerateUUIDv7 generate a new uuid v7 using google/uuid package and return it. If an error occurs, it will return the error.
-func GenerateUUIDv7() uuid.UUID {
-	u := uuid.Must(uuid.NewV7())
+// GenerateUUIDv7 generates a new UUID v7 using google/uuid package.
+// Returns the UUID and any error that occurred during generation.
+func GenerateUUIDv7() (uuid.UUID, error) {
+	return uuid.NewV7()
+}
 
-	return u
+// MustGenerateUUIDv7 generates a new UUID v7 and panics if it fails.
+// Deprecated: Use GenerateUUIDv7 instead for graceful error handling.
+func MustGenerateUUIDv7() uuid.UUID {
+	return uuid.Must(uuid.NewV7())
 }
 
 // StructToJSONString convert a struct to json string
@@ -221,8 +226,13 @@ func StructToJSONString(s any) (string, error) {
 	return string(jsonByte), nil
 }
 
-// MergeMaps Following the JSON Merge Patch
+// MergeMaps Following the JSON Merge Patch.
+// If target is nil, a new map is created.
 func MergeMaps(source, target map[string]any) map[string]any {
+	if target == nil {
+		target = make(map[string]any)
+	}
+
 	for key, value := range source {
 		if value != nil {
 			target[key] = value

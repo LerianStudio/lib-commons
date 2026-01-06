@@ -40,8 +40,8 @@ func (pc *PostgresConnection) Connect() error {
 
 	dbPrimary, err := sql.Open("pgx", pc.ConnectionStringPrimary)
 	if err != nil {
-		pc.Logger.Fatal("failed to open connect to primary database", zap.Error(err))
-		return nil
+		pc.Logger.Error("failed to open connect to primary database", zap.Error(err))
+		return err
 	}
 
 	dbPrimary.SetMaxOpenConns(pc.MaxOpenConnections)
@@ -50,8 +50,8 @@ func (pc *PostgresConnection) Connect() error {
 
 	dbReadOnlyReplica, err := sql.Open("pgx", pc.ConnectionStringReplica)
 	if err != nil {
-		pc.Logger.Fatal("failed to open connect to replica database", zap.Error(err))
-		return nil
+		pc.Logger.Error("failed to open connect to replica database", zap.Error(err))
+		return err
 	}
 
 	dbReadOnlyReplica.SetMaxOpenConns(pc.MaxOpenConnections)
@@ -70,9 +70,7 @@ func (pc *PostgresConnection) Connect() error {
 
 	primaryURL, err := url.Parse(filepath.ToSlash(migrationsPath))
 	if err != nil {
-		pc.Logger.Fatal("failed parse url",
-			zap.Error(err))
-
+		pc.Logger.Error("failed parse url", zap.Error(err))
 		return err
 	}
 
@@ -84,17 +82,25 @@ func (pc *PostgresConnection) Connect() error {
 		SchemaName:            "public",
 	})
 	if err != nil {
-		pc.Logger.Fatalf("failed to open connect to database %v", zap.Error(err))
-		return nil
+		pc.Logger.Error("failed to open connect to database", zap.Error(err))
+		return err
 	}
 
 	m, err := migrate.NewWithDatabaseInstance(primaryURL.String(), pc.PrimaryDBName, primaryDriver)
 	if err != nil {
-		pc.Logger.Fatal("failed to get migrations",
-			zap.Error(err))
-
+		pc.Logger.Error("failed to get migrations", zap.Error(err))
 		return err
 	}
+
+	defer func() {
+		srcErr, dbErr := m.Close()
+		if srcErr != nil {
+			pc.Logger.Warn("failed to close migration source", zap.Error(srcErr))
+		}
+		if dbErr != nil {
+			pc.Logger.Warn("failed to close migration database", zap.Error(dbErr))
+		}
+	}()
 
 	if err := m.Up(); err != nil {
 		if errors.Is(err, migrate.ErrNoChange) {
