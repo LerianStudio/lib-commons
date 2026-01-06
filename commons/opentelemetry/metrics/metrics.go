@@ -61,8 +61,9 @@ var (
 )
 
 // Default histogram bucket configurations for different metric types.
-// Note: These are float64 for OpenTelemetry compatibility, but values are integers
-// since Int64Histogram is used. For sub-second latencies, consider using Float64Histogram.
+// Note: These are float64 for OpenTelemetry compatibility, but values represent
+// milliseconds since Int64Histogram is used. For sub-millisecond precision,
+// consider using Float64Histogram with values in seconds.
 var (
 	// DefaultLatencyBuckets for latency measurements (in milliseconds for Int64Histogram)
 	DefaultLatencyBuckets = []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000}

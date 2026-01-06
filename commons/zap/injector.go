@@ -56,6 +56,8 @@ func InitializeLogger() (clog.Logger, error) {
 }
 
 // MustInitializeLogger initializes the logger and panics if it fails.
+// WARNING: This function terminates the process on failure. Callers should
+// migrate to InitializeLogger() which returns errors for graceful handling.
 // Deprecated: Use InitializeLogger instead for graceful error handling.
 func MustInitializeLogger() clog.Logger {
 	logger, err := InitializeLogger()

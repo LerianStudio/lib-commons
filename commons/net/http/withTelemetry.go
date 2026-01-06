@@ -21,7 +21,7 @@ import (
 )
 
 var (
-	metricsCollectorOnce     sync.Once
+	metricsCollectorOnce     = &sync.Once{}
 	metricsCollectorShutdown chan struct{}
 	metricsCollectorMu       sync.Mutex
 	metricsCollectorStarted  bool
@@ -215,6 +215,7 @@ func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
 
 // StopMetricsCollector stops the background metrics collector goroutine.
 // Should be called during application shutdown for graceful cleanup.
+// After calling this function, the collector can be restarted by new requests.
 func StopMetricsCollector() {
 	metricsCollectorMu.Lock()
 	defer metricsCollectorMu.Unlock()
@@ -222,6 +223,7 @@ func StopMetricsCollector() {
 	if metricsCollectorStarted && metricsCollectorShutdown != nil {
 		close(metricsCollectorShutdown)
 		metricsCollectorStarted = false
+		metricsCollectorOnce = &sync.Once{}
 	}
 }
 

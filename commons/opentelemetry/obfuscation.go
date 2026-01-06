@@ -49,8 +49,22 @@ func NewCustomObfuscator(sensitiveFields []string) *DefaultObfuscator {
 }
 
 // ShouldObfuscate returns true if the field name is in the sensitive fields list.
+// Uses both exact match and substring matching to catch variations like
+// "user_password", "api-key", etc., consistent with security.IsSensitiveField.
 func (o *DefaultObfuscator) ShouldObfuscate(fieldName string) bool {
-	return o.sensitiveFields[strings.ToLower(fieldName)]
+	lowerField := strings.ToLower(fieldName)
+
+	if o.sensitiveFields[lowerField] {
+		return true
+	}
+
+	for field := range o.sensitiveFields {
+		if strings.Contains(lowerField, field) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // GetObfuscatedValue returns the obfuscated value.

@@ -37,8 +37,7 @@ func (rc *RabbitMQConnection) Connect() error {
 
 	conn, err := amqp.Dial(rc.ConnectionStringSource)
 	if err != nil {
-		rc.Logger.Fatal("failed to connect on rabbitmq", zap.Error(err))
-
+		rc.Logger.Error("failed to connect on rabbitmq", zap.Error(err))
 		return err
 	}
 
@@ -48,8 +47,7 @@ func (rc *RabbitMQConnection) Connect() error {
 			rc.Logger.Warn("failed to close connection during cleanup", zap.Error(closeErr))
 		}
 
-		rc.Logger.Fatal("failed to open channel on rabbitmq", zap.Error(err))
-
+		rc.Logger.Error("failed to open channel on rabbitmq", zap.Error(err))
 		return err
 	}
 
@@ -60,8 +58,7 @@ func (rc *RabbitMQConnection) Connect() error {
 
 		rc.Connected = false
 		err = errors.New("can't connect rabbitmq")
-		rc.Logger.Fatalf("RabbitMQ.HealthCheck: %v", zap.Error(err))
-
+		rc.Logger.Errorf("RabbitMQ.HealthCheck: %v", zap.Error(err))
 		return err
 	}
 
