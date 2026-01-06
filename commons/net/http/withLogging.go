@@ -96,6 +96,7 @@ func (r *RequestInfo) CLFString() string {
 		"-",
 		r.Username,
 		r.Protocol,
+		r.Date.Format("[02/Jan/2006:15:04:05 -0700]"),
 		`"` + r.Method + " " + r.URI + `"`,
 		strconv.Itoa(r.Status),
 		strconv.Itoa(r.Size),
@@ -177,26 +178,23 @@ func WithHTTPLogging(opts ...LogMiddlewareOption) fiber.Handler {
 			cn.HeaderID, info.TraceID,
 		).WithDefaultMessageTemplate(headerID + cn.LoggerDefaultSeparator)
 
+		ctx := commons.ContextWithLogger(c.UserContext(), logger)
+		c.SetUserContext(ctx)
+
+		err := c.Next()
+
 		rw := ResponseMetricsWrapper{
 			Context:    c,
-			StatusCode: 200,
-			Size:       0,
+			StatusCode: c.Response().StatusCode(),
+			Size:       len(c.Response().Body()),
 			Body:       "",
 		}
 
-		logger.Info(info.debugRequestString())
-
-		ctx := commons.ContextWithLogger(c.UserContext(), logger)
-
-		c.SetUserContext(ctx)
-
 		info.FinishRequestInfo(&rw)
 
-		if err := c.Next(); err != nil {
-			return err
-		}
+		logger.Info(info.CLFString())
 
-		return nil
+		return err
 	}
 }
 
@@ -294,11 +292,7 @@ func handleJSONBody(bodyBytes []byte, fieldsToObfuscate []string) string {
 		return string(bodyBytes)
 	}
 
-	for _, field := range fieldsToObfuscate {
-		if _, exists := bodyData[field]; exists {
-			bodyData[field] = cn.ObfuscatedValue
-		}
-	}
+	obfuscateMapRecursively(bodyData, fieldsToObfuscate)
 
 	updatedBody, err := json.Marshal(bodyData)
 	if err != nil {
@@ -306,6 +300,41 @@ func handleJSONBody(bodyBytes []byte, fieldsToObfuscate []string) string {
 	}
 
 	return string(updatedBody)
+}
+
+func obfuscateMapRecursively(data map[string]any, fieldsToObfuscate []string) {
+	for key, value := range data {
+		lowerKey := strings.ToLower(key)
+
+		for _, field := range fieldsToObfuscate {
+			if strings.Contains(lowerKey, strings.ToLower(field)) {
+				data[key] = cn.ObfuscatedValue
+				break
+			}
+		}
+
+		if data[key] == cn.ObfuscatedValue {
+			continue
+		}
+
+		switch v := value.(type) {
+		case map[string]any:
+			obfuscateMapRecursively(v, fieldsToObfuscate)
+		case []any:
+			obfuscateSliceRecursively(v, fieldsToObfuscate)
+		}
+	}
+}
+
+func obfuscateSliceRecursively(data []any, fieldsToObfuscate []string) {
+	for _, item := range data {
+		switch v := item.(type) {
+		case map[string]any:
+			obfuscateMapRecursively(v, fieldsToObfuscate)
+		case []any:
+			obfuscateSliceRecursively(v, fieldsToObfuscate)
+		}
+	}
 }
 
 func handleURLFormBody(c *fiber.Ctx, fieldsToObfuscate []string) string {

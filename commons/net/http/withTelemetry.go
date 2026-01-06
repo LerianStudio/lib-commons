@@ -2,10 +2,15 @@ package http
 
 import (
 	"context"
+	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/v2/commons"
+	cn "github.com/LerianStudio/lib-commons/v2/commons/constants"
 	"github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v2/commons/security"
 	"github.com/gofiber/fiber/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -13,6 +18,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
+)
+
+var (
+	metricsCollectorOnce     sync.Once
+	metricsCollectorShutdown chan struct{}
+	metricsCollectorMu       sync.Mutex
+	metricsCollectorStarted  bool
 )
 
 type TelemetryMiddleware struct {
@@ -49,7 +61,7 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, exclud
 
 		span.SetAttributes(
 			attribute.String("http.method", c.Method()),
-			attribute.String("http.url", c.OriginalURL()),
+			attribute.String("http.url", sanitizeURL(c.OriginalURL())),
 			attribute.String("http.route", c.Route().Path),
 			attribute.String("http.scheme", c.Protocol()),
 			attribute.String("http.host", c.Hostname()),
@@ -149,22 +161,68 @@ func (tm *TelemetryMiddleware) EndTracingSpansInterceptor() grpc.UnaryServerInte
 	}
 }
 
-func (tm *TelemetryMiddleware) collectMetrics(ctx context.Context) error {
-	cpuGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.cpu.usage", metric.WithUnit("percentage"))
-	if err != nil {
-		return err
+func (tm *TelemetryMiddleware) collectMetrics(_ context.Context) error {
+	return tm.ensureMetricsCollector()
+}
+
+func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
+	metricsCollectorMu.Lock()
+	defer metricsCollectorMu.Unlock()
+
+	if metricsCollectorStarted {
+		return nil
 	}
 
-	go commons.GetCPUUsage(ctx, cpuGauge)
+	var initErr error
 
-	memGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.mem.usage", metric.WithUnit("percentage"))
-	if err != nil {
-		return err
+	metricsCollectorOnce.Do(func() {
+		cpuGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.cpu.usage", metric.WithUnit("percentage"))
+		if err != nil {
+			initErr = err
+			return
+		}
+
+		memGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.mem.usage", metric.WithUnit("percentage"))
+		if err != nil {
+			initErr = err
+			return
+		}
+
+		metricsCollectorShutdown = make(chan struct{})
+		ticker := time.NewTicker(5 * time.Second)
+
+		go func() {
+			commons.GetCPUUsage(context.Background(), cpuGauge)
+			commons.GetMemUsage(context.Background(), memGauge)
+
+			for {
+				select {
+				case <-metricsCollectorShutdown:
+					ticker.Stop()
+					return
+				case <-ticker.C:
+					commons.GetCPUUsage(context.Background(), cpuGauge)
+					commons.GetMemUsage(context.Background(), memGauge)
+				}
+			}
+		}()
+
+		metricsCollectorStarted = true
+	})
+
+	return initErr
+}
+
+// StopMetricsCollector stops the background metrics collector goroutine.
+// Should be called during application shutdown for graceful cleanup.
+func StopMetricsCollector() {
+	metricsCollectorMu.Lock()
+	defer metricsCollectorMu.Unlock()
+
+	if metricsCollectorStarted && metricsCollectorShutdown != nil {
+		close(metricsCollectorShutdown)
+		metricsCollectorStarted = false
 	}
-
-	go commons.GetMemUsage(ctx, memGauge)
-
-	return nil
 }
 
 func (tm *TelemetryMiddleware) isRouteExcluded(c *fiber.Ctx, excludedRoutes []string) bool {
@@ -175,4 +233,35 @@ func (tm *TelemetryMiddleware) isRouteExcluded(c *fiber.Ctx, excludedRoutes []st
 	}
 
 	return false
+}
+
+// sanitizeURL removes or obfuscates sensitive query parameters from URLs
+// to prevent exposing tokens, API keys, and other sensitive data in telemetry.
+func sanitizeURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+
+	if parsed.RawQuery == "" {
+		return rawURL
+	}
+
+	query := parsed.Query()
+	modified := false
+
+	for key := range query {
+		if security.IsSensitiveField(key) {
+			query.Set(key, cn.ObfuscatedValue)
+			modified = true
+		}
+	}
+
+	if !modified {
+		return rawURL
+	}
+
+	parsed.RawQuery = query.Encode()
+
+	return parsed.String()
 }

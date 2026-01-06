@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -58,10 +60,12 @@ var (
 	}
 )
 
-// Default histogram bucket configurations for different metric types
+// Default histogram bucket configurations for different metric types.
+// Note: These are float64 for OpenTelemetry compatibility, but values are integers
+// since Int64Histogram is used. For sub-second latencies, consider using Float64Histogram.
 var (
-	// DefaultLatencyBuckets for latency measurements (in seconds)
-	DefaultLatencyBuckets = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
+	// DefaultLatencyBuckets for latency measurements (in milliseconds for Int64Histogram)
+	DefaultLatencyBuckets = []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000}
 
 	// DefaultAccountBuckets for account creation counts
 	DefaultAccountBuckets = []float64{1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000}
@@ -104,15 +108,7 @@ func (f *MetricsFactory) Gauge(m Metric) *GaugeBuilder {
 func (f *MetricsFactory) Histogram(m Metric) *HistogramBuilder {
 	// Set default buckets if not provided
 	if m.Buckets == nil {
-		if containsSubstring(m.Name, "latency", "duration", "time") {
-			m.Buckets = DefaultLatencyBuckets
-		} else if containsSubstring(m.Name, "account") {
-			m.Buckets = DefaultAccountBuckets
-		} else if containsSubstring(m.Name, "transaction") {
-			m.Buckets = DefaultTransactionBuckets
-		} else {
-			m.Buckets = DefaultLatencyBuckets // Default fallback
-		}
+		m.Buckets = selectDefaultBuckets(m.Name)
 	}
 
 	histogram := f.getOrCreateHistogram(m)
@@ -122,6 +118,33 @@ func (f *MetricsFactory) Histogram(m Metric) *HistogramBuilder {
 		histogram: histogram,
 		name:      m.Name,
 	}
+}
+
+// selectDefaultBuckets chooses default buckets based on metric name.
+// Uses exact match first, then checks for substrings in a deterministic order.
+func selectDefaultBuckets(name string) []float64 {
+	nameL := strings.ToLower(name)
+
+	// Check substrings in deterministic priority order
+	// More specific patterns first, general patterns last
+	patterns := []struct {
+		substr  string
+		buckets []float64
+	}{
+		{"latency", DefaultLatencyBuckets},
+		{"duration", DefaultLatencyBuckets},
+		{"time", DefaultLatencyBuckets},
+		{"account", DefaultAccountBuckets},
+		{"transaction", DefaultTransactionBuckets},
+	}
+
+	for _, p := range patterns {
+		if strings.Contains(nameL, p.substr) {
+			return p.buckets
+		}
+	}
+
+	return DefaultLatencyBuckets
 }
 
 // getOrCreateCounter lazily creates or retrieves an existing counter
@@ -178,9 +201,13 @@ func (f *MetricsFactory) getOrCreateGauge(m Metric) metric.Int64Gauge {
 	return gauge
 }
 
-// getOrCreateHistogram lazily creates or retrieves an existing histogram
+// getOrCreateHistogram lazily creates or retrieves an existing histogram.
+// Uses a composite key (name + buckets hash) to ensure different bucket configs
+// result in different histograms.
 func (f *MetricsFactory) getOrCreateHistogram(m Metric) metric.Int64Histogram {
-	if histogram, exists := f.histograms.Load(m.Name); exists {
+	cacheKey := histogramCacheKey(m.Name, m.Buckets)
+
+	if histogram, exists := f.histograms.Load(cacheKey); exists {
 		return histogram.(metric.Int64Histogram)
 	}
 
@@ -197,7 +224,7 @@ func (f *MetricsFactory) getOrCreateHistogram(m Metric) metric.Int64Histogram {
 	}
 
 	// Store in sync.Map for future use
-	if actual, loaded := f.histograms.LoadOrStore(m.Name, histogram); loaded {
+	if actual, loaded := f.histograms.LoadOrStore(cacheKey, histogram); loaded {
 		// Another goroutine created it first, use that one
 		return actual.(metric.Int64Histogram)
 	}
@@ -205,16 +232,17 @@ func (f *MetricsFactory) getOrCreateHistogram(m Metric) metric.Int64Histogram {
 	return histogram
 }
 
-// containsSubstring checks if name contains any of the given substrings (case-insensitive)
-func containsSubstring(name string, substrings ...string) bool {
-	nameL := strings.ToLower(name)
-	for _, substr := range substrings {
-		if strings.Contains(nameL, strings.ToLower(substr)) {
-			return true
-		}
+// histogramCacheKey generates a unique cache key based on name and bucket configuration.
+func histogramCacheKey(name string, buckets []float64) string {
+	if len(buckets) == 0 {
+		return name
 	}
 
-	return false
+	sortedBuckets := make([]float64, len(buckets))
+	copy(sortedBuckets, buckets)
+	sort.Float64s(sortedBuckets)
+
+	return fmt.Sprintf("%s:%v", name, sortedBuckets)
 }
 
 func (f *MetricsFactory) addCounterOptions(m Metric) []metric.Int64CounterOption {
