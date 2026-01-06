@@ -110,15 +110,6 @@ func (r *RequestInfo) String() string {
 	return r.CLFString()
 }
 
-func (r *RequestInfo) debugRequestString() string {
-	return strings.Join([]string{
-		r.CLFString(),
-		r.Referer,
-		r.UserAgent,
-		r.Body,
-	}, " ")
-}
-
 // FinishRequestInfo calculates the duration of RequestInfo automatically using time.Now()
 // It also set StatusCode and Size of RequestInfo passed by ResponseMetricsWrapper.
 func (r *RequestInfo) FinishRequestInfo(rw *ResponseMetricsWrapper) {

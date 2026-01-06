@@ -222,6 +222,7 @@ func StopMetricsCollector() {
 
 	if metricsCollectorStarted && metricsCollectorShutdown != nil {
 		close(metricsCollectorShutdown)
+
 		metricsCollectorStarted = false
 		metricsCollectorOnce = &sync.Once{}
 	}
@@ -255,6 +256,7 @@ func sanitizeURL(rawURL string) string {
 	for key := range query {
 		if security.IsSensitiveField(key) {
 			query.Set(key, cn.ObfuscatedValue)
+
 			modified = true
 		}
 	}

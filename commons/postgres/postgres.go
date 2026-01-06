@@ -97,6 +97,7 @@ func (pc *PostgresConnection) Connect() error {
 		if srcErr != nil {
 			pc.Logger.Warn("failed to close migration source", zap.Error(srcErr))
 		}
+
 		if dbErr != nil {
 			pc.Logger.Warn("failed to close migration database", zap.Error(dbErr))
 		}

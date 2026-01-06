@@ -48,6 +48,7 @@ func (rc *RabbitMQConnection) Connect() error {
 		}
 
 		rc.Logger.Error("failed to open channel on rabbitmq", zap.Error(err))
+
 		return err
 	}
 
@@ -59,6 +60,7 @@ func (rc *RabbitMQConnection) Connect() error {
 		rc.Connected = false
 		err = errors.New("can't connect rabbitmq")
 		rc.Logger.Errorf("RabbitMQ.HealthCheck: %v", zap.Error(err))
+
 		return err
 	}
 
