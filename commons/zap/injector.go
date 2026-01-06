@@ -31,7 +31,9 @@ func InitializeLogger() (clog.Logger, error) {
 
 	if val, ok := os.LookupEnv("LOG_LEVEL"); ok {
 		var lvl zapcore.Level
-		if err := lvl.Set(val); err == nil {
+		if err := lvl.Set(val); err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: invalid LOG_LEVEL value %q: %v (using default level)\n", val, err)
+		} else {
 			zapCfg.Level = zap.NewAtomicLevelAt(lvl)
 		}
 	}

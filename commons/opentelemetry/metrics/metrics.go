@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -127,16 +128,16 @@ func selectDefaultBuckets(name string) []float64 {
 	nameL := strings.ToLower(name)
 
 	// Check substrings in deterministic priority order
-	// More specific patterns first, general patterns last
+	// Domain-specific patterns first, general time patterns last
 	patterns := []struct {
 		substr  string
 		buckets []float64
 	}{
+		{"account", DefaultAccountBuckets},
+		{"transaction", DefaultTransactionBuckets},
 		{"latency", DefaultLatencyBuckets},
 		{"duration", DefaultLatencyBuckets},
 		{"time", DefaultLatencyBuckets},
-		{"account", DefaultAccountBuckets},
-		{"transaction", DefaultTransactionBuckets},
 	}
 
 	for _, p := range patterns {
@@ -243,7 +244,12 @@ func histogramCacheKey(name string, buckets []float64) string {
 	copy(sortedBuckets, buckets)
 	sort.Float64s(sortedBuckets)
 
-	return fmt.Sprintf("%s:%v", name, sortedBuckets)
+	bucketStrings := make([]string, len(sortedBuckets))
+	for i, b := range sortedBuckets {
+		bucketStrings[i] = strconv.FormatFloat(b, 'g', -1, 64)
+	}
+
+	return fmt.Sprintf("%s:%s", name, strings.Join(bucketStrings, ","))
 }
 
 func (f *MetricsFactory) addCounterOptions(m Metric) []metric.Int64CounterOption {

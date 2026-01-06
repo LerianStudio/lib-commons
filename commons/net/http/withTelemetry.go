@@ -25,6 +25,7 @@ var (
 	metricsCollectorShutdown chan struct{}
 	metricsCollectorMu       sync.Mutex
 	metricsCollectorStarted  bool
+	metricsCollectorInitErr  error
 )
 
 type TelemetryMiddleware struct {
@@ -173,18 +174,20 @@ func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
 		return nil
 	}
 
-	var initErr error
+	if metricsCollectorInitErr != nil {
+		return metricsCollectorInitErr
+	}
 
 	metricsCollectorOnce.Do(func() {
 		cpuGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.cpu.usage", metric.WithUnit("percentage"))
 		if err != nil {
-			initErr = err
+			metricsCollectorInitErr = err
 			return
 		}
 
 		memGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.mem.usage", metric.WithUnit("percentage"))
 		if err != nil {
-			initErr = err
+			metricsCollectorInitErr = err
 			return
 		}
 
@@ -210,7 +213,7 @@ func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
 		metricsCollectorStarted = true
 	})
 
-	return initErr
+	return metricsCollectorInitErr
 }
 
 // StopMetricsCollector stops the background metrics collector goroutine.
@@ -225,6 +228,7 @@ func StopMetricsCollector() {
 
 		metricsCollectorStarted = false
 		metricsCollectorOnce = &sync.Once{}
+		metricsCollectorInitErr = nil
 	}
 }
 

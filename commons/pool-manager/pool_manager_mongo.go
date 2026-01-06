@@ -781,7 +781,9 @@ func (pm *mongoPoolManagerImpl) cleanupIdleTenantConns(ctx context.Context, thre
 			continue
 		}
 
-		_ = pm.disconnectEntry(ctx, entry)
+		if err := pm.disconnectEntry(ctx, entry); err != nil && pm.logger != nil {
+			pm.logger.Warnf("Failed to disconnect idle tenant MongoDB connection %s: %v", key, err)
+		}
 
 		delete(pm.tenantConns, key)
 
@@ -803,7 +805,9 @@ func (pm *mongoPoolManagerImpl) cleanupIdleSharedConns(ctx context.Context, thre
 			continue
 		}
 
-		_ = pm.disconnectEntry(ctx, entry)
+		if err := pm.disconnectEntry(ctx, entry); err != nil && pm.logger != nil {
+			pm.logger.Warnf("Failed to disconnect idle shared MongoDB connection %s: %v", pm.sanitizeURIForLog(uri), err)
+		}
 
 		delete(pm.sharedConns, uri)
 

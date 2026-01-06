@@ -9,8 +9,7 @@ import (
 )
 
 func TestInitializeLogger(t *testing.T) {
-	os.Setenv("ENV_NAME", "production")
-	defer os.Unsetenv("ENV_NAME")
+	t.Setenv("ENV_NAME", "production")
 
 	logger, err := InitializeLogger()
 	require.NoError(t, err)

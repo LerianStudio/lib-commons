@@ -843,7 +843,9 @@ func (pm *postgresPoolManagerImpl) cleanupIdleTenantConns(threshold time.Time) {
 	for key, entry := range pm.tenantConns {
 		if entry.getLastUsed().Before(threshold) {
 			if entry.conn != nil && entry.conn.ConnectionDB != nil {
-				_ = (*entry.conn.ConnectionDB).Close()
+				if err := (*entry.conn.ConnectionDB).Close(); err != nil && pm.logger != nil {
+					pm.logger.Warnf("Failed to close idle tenant PostgreSQL connection %s: %v", key, err)
+				}
 			}
 
 			delete(pm.tenantConns, key)
@@ -868,7 +870,9 @@ func (pm *postgresPoolManagerImpl) cleanupIdleSharedConns(threshold time.Time) {
 		}
 
 		if entry.conn != nil && entry.conn.ConnectionDB != nil {
-			_ = (*entry.conn.ConnectionDB).Close()
+			if err := (*entry.conn.ConnectionDB).Close(); err != nil && pm.logger != nil {
+				pm.logger.Warnf("Failed to close idle shared PostgreSQL connection %s: %v", pm.sanitizeDSNForLog(dsn), err)
+			}
 		}
 
 		delete(pm.sharedConns, dsn)
