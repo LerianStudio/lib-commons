@@ -204,16 +204,11 @@ func IsUUID(s string) bool {
 	return err == nil
 }
 
-// GenerateUUIDv7 generates a new UUID v7 using google/uuid package.
-// Returns the UUID and any error that occurred during generation.
-func GenerateUUIDv7() (uuid.UUID, error) {
-	return uuid.NewV7()
-}
+// GenerateUUIDv7 generate a new uuid v7 using google/uuid package and return it. If an error occurs, it will return the error.
+func GenerateUUIDv7() uuid.UUID {
+	u := uuid.Must(uuid.NewV7())
 
-// MustGenerateUUIDv7 generates a new UUID v7 and panics if it fails.
-// Deprecated: Use GenerateUUIDv7 instead for graceful error handling.
-func MustGenerateUUIDv7() uuid.UUID {
-	return uuid.Must(uuid.NewV7())
+	return u
 }
 
 // StructToJSONString convert a struct to json string
