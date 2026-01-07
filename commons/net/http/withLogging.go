@@ -20,6 +20,10 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+// maxObfuscationDepth limits recursion depth when obfuscating nested JSON structures
+// to prevent stack overflow on deeply nested or malicious payloads.
+const maxObfuscationDepth = 32
+
 // RequestInfo is a struct design to store http access log data.
 type RequestInfo struct {
 	Method        string
@@ -68,7 +72,7 @@ func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
 		bodyBytes := c.Body()
 
 		if os.Getenv("LOG_OBFUSCATION_DISABLED") != "true" {
-			body = getBodyObfuscatedString(c, bodyBytes, security.DefaultSensitiveFields())
+			body = getBodyObfuscatedString(c, bodyBytes)
 		} else {
 			body = string(bodyBytes)
 		}
@@ -259,13 +263,13 @@ func setGRPCRequestHeaderID(ctx context.Context) context.Context {
 	return commons.ContextWithHeaderID(ctx, uuid.New().String())
 }
 
-func getBodyObfuscatedString(c *fiber.Ctx, bodyBytes []byte, fieldsToObfuscate []string) string {
+func getBodyObfuscatedString(c *fiber.Ctx, bodyBytes []byte) string {
 	contentType := c.Get("Content-Type")
 
 	var obfuscatedBody string
 
 	if strings.Contains(contentType, "application/json") {
-		obfuscatedBody = handleJSONBody(bodyBytes, fieldsToObfuscate)
+		obfuscatedBody = handleJSONBody(bodyBytes)
 	} else if strings.Contains(contentType, "application/x-www-form-urlencoded") ||
 		strings.Contains(contentType, "multipart/form-data") {
 		obfuscatedBody = handleFormBody(c)
@@ -276,13 +280,13 @@ func getBodyObfuscatedString(c *fiber.Ctx, bodyBytes []byte, fieldsToObfuscate [
 	return obfuscatedBody
 }
 
-func handleJSONBody(bodyBytes []byte, fieldsToObfuscate []string) string {
+func handleJSONBody(bodyBytes []byte) string {
 	var bodyData map[string]any
 	if err := json.Unmarshal(bodyBytes, &bodyData); err != nil {
 		return string(bodyBytes)
 	}
 
-	obfuscateMapRecursively(bodyData, fieldsToObfuscate)
+	obfuscateMapRecursively(bodyData, 0)
 
 	updatedBody, err := json.Marshal(bodyData)
 	if err != nil {
@@ -292,7 +296,11 @@ func handleJSONBody(bodyBytes []byte, fieldsToObfuscate []string) string {
 	return string(updatedBody)
 }
 
-func obfuscateMapRecursively(data map[string]any, _ []string) {
+func obfuscateMapRecursively(data map[string]any, depth int) {
+	if depth >= maxObfuscationDepth {
+		return
+	}
+
 	for key, value := range data {
 		if security.IsSensitiveField(key) {
 			data[key] = cn.ObfuscatedValue
@@ -301,20 +309,24 @@ func obfuscateMapRecursively(data map[string]any, _ []string) {
 
 		switch v := value.(type) {
 		case map[string]any:
-			obfuscateMapRecursively(v, nil)
+			obfuscateMapRecursively(v, depth+1)
 		case []any:
-			obfuscateSliceRecursively(v, nil)
+			obfuscateSliceRecursively(v, depth+1)
 		}
 	}
 }
 
-func obfuscateSliceRecursively(data []any, _ []string) {
+func obfuscateSliceRecursively(data []any, depth int) {
+	if depth >= maxObfuscationDepth {
+		return
+	}
+
 	for _, item := range data {
 		switch v := item.(type) {
 		case map[string]any:
-			obfuscateMapRecursively(v, nil)
+			obfuscateMapRecursively(v, depth+1)
 		case []any:
-			obfuscateSliceRecursively(v, nil)
+			obfuscateSliceRecursively(v, depth+1)
 		}
 	}
 }
