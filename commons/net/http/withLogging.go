@@ -270,9 +270,10 @@ func getBodyObfuscatedString(c *fiber.Ctx, bodyBytes []byte) string {
 
 	if strings.Contains(contentType, "application/json") {
 		obfuscatedBody = handleJSONBody(bodyBytes)
-	} else if strings.Contains(contentType, "application/x-www-form-urlencoded") ||
-		strings.Contains(contentType, "multipart/form-data") {
-		obfuscatedBody = handleFormBody(c)
+	} else if strings.Contains(contentType, "application/x-www-form-urlencoded") {
+		obfuscatedBody = handleURLEncodedBody(bodyBytes)
+	} else if strings.Contains(contentType, "multipart/form-data") {
+		obfuscatedBody = handleMultipartBody(c)
 	} else {
 		obfuscatedBody = string(bodyBytes)
 	}
@@ -331,10 +332,10 @@ func obfuscateSliceRecursively(data []any, depth int) {
 	}
 }
 
-func handleFormBody(c *fiber.Ctx) string {
-	formData, err := url.ParseQuery(string(c.Body()))
+func handleURLEncodedBody(bodyBytes []byte) string {
+	formData, err := url.ParseQuery(string(bodyBytes))
 	if err != nil {
-		return string(c.Body())
+		return string(bodyBytes)
 	}
 
 	updatedBody := url.Values{}
@@ -352,6 +353,37 @@ func handleFormBody(c *fiber.Ctx) string {
 	}
 
 	return updatedBody.Encode()
+}
+
+func handleMultipartBody(c *fiber.Ctx) string {
+	form, err := c.MultipartForm()
+	if err != nil {
+		return string(c.Body())
+	}
+
+	result := url.Values{}
+
+	for key, values := range form.Value {
+		if security.IsSensitiveField(key) {
+			for range values {
+				result.Add(key, cn.ObfuscatedValue)
+			}
+		} else {
+			for _, value := range values {
+				result.Add(key, value)
+			}
+		}
+	}
+
+	for key := range form.File {
+		if security.IsSensitiveField(key) {
+			result.Add(key, cn.ObfuscatedValue)
+		} else {
+			result.Add(key, "[file]")
+		}
+	}
+
+	return result.Encode()
 }
 
 // getValidBodyRequestID extracts and validates the request_id from the gRPC request body.
