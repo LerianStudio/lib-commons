@@ -332,14 +332,22 @@ func obfuscateSliceRecursively(data []any, depth int) {
 }
 
 func handleFormBody(c *fiber.Ctx) string {
-	formData := c.AllParams()
+	formData, err := url.ParseQuery(string(c.Body()))
+	if err != nil {
+		return string(c.Body())
+	}
+
 	updatedBody := url.Values{}
 
-	for key, value := range formData {
+	for key, values := range formData {
 		if security.IsSensitiveField(key) {
-			updatedBody.Set(key, cn.ObfuscatedValue)
+			for range values {
+				updatedBody.Add(key, cn.ObfuscatedValue)
+			}
 		} else {
-			updatedBody.Set(key, value)
+			for _, value := range values {
+				updatedBody.Add(key, value)
+			}
 		}
 	}
 
