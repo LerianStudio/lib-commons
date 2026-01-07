@@ -20,6 +20,10 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+// maxObfuscationDepth limits recursion depth when obfuscating nested JSON structures
+// to prevent stack overflow on deeply nested or malicious payloads.
+const maxObfuscationDepth = 32
+
 // RequestInfo is a struct design to store http access log data.
 type RequestInfo struct {
 	Method        string
@@ -68,7 +72,7 @@ func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
 		bodyBytes := c.Body()
 
 		if os.Getenv("LOG_OBFUSCATION_DISABLED") != "true" {
-			body = getBodyObfuscatedString(c, bodyBytes, security.DefaultSensitiveFields())
+			body = getBodyObfuscatedString(c, bodyBytes)
 		} else {
 			body = string(bodyBytes)
 		}
@@ -96,6 +100,7 @@ func (r *RequestInfo) CLFString() string {
 		"-",
 		r.Username,
 		r.Protocol,
+		r.Date.Format("[02/Jan/2006:15:04:05 -0700]"),
 		`"` + r.Method + " " + r.URI + `"`,
 		strconv.Itoa(r.Status),
 		strconv.Itoa(r.Size),
@@ -107,15 +112,6 @@ func (r *RequestInfo) CLFString() string {
 // String implements fmt.Stringer interface and produces a log entry using RequestInfo.CLFExtendedString.
 func (r *RequestInfo) String() string {
 	return r.CLFString()
-}
-
-func (r *RequestInfo) debugRequestString() string {
-	return strings.Join([]string{
-		r.CLFString(),
-		r.Referer,
-		r.UserAgent,
-		r.Body,
-	}, " ")
 }
 
 // FinishRequestInfo calculates the duration of RequestInfo automatically using time.Now()
@@ -177,26 +173,23 @@ func WithHTTPLogging(opts ...LogMiddlewareOption) fiber.Handler {
 			cn.HeaderID, info.TraceID,
 		).WithDefaultMessageTemplate(headerID + cn.LoggerDefaultSeparator)
 
+		ctx := commons.ContextWithLogger(c.UserContext(), logger)
+		c.SetUserContext(ctx)
+
+		err := c.Next()
+
 		rw := ResponseMetricsWrapper{
 			Context:    c,
-			StatusCode: 200,
-			Size:       0,
+			StatusCode: c.Response().StatusCode(),
+			Size:       len(c.Response().Body()),
 			Body:       "",
 		}
 
-		logger.Info(info.debugRequestString())
-
-		ctx := commons.ContextWithLogger(c.UserContext(), logger)
-
-		c.SetUserContext(ctx)
-
 		info.FinishRequestInfo(&rw)
 
-		if err := c.Next(); err != nil {
-			return err
-		}
+		logger.Info(info.CLFString())
 
-		return nil
+		return err
 	}
 }
 
@@ -270,17 +263,17 @@ func setGRPCRequestHeaderID(ctx context.Context) context.Context {
 	return commons.ContextWithHeaderID(ctx, uuid.New().String())
 }
 
-func getBodyObfuscatedString(c *fiber.Ctx, bodyBytes []byte, fieldsToObfuscate []string) string {
+func getBodyObfuscatedString(c *fiber.Ctx, bodyBytes []byte) string {
 	contentType := c.Get("Content-Type")
 
 	var obfuscatedBody string
 
 	if strings.Contains(contentType, "application/json") {
-		obfuscatedBody = handleJSONBody(bodyBytes, fieldsToObfuscate)
+		obfuscatedBody = handleJSONBody(bodyBytes)
 	} else if strings.Contains(contentType, "application/x-www-form-urlencoded") {
-		obfuscatedBody = handleURLFormBody(c, fieldsToObfuscate)
+		obfuscatedBody = handleURLEncodedBody(bodyBytes)
 	} else if strings.Contains(contentType, "multipart/form-data") {
-		obfuscatedBody = handleMultipartFormBody(c, fieldsToObfuscate)
+		obfuscatedBody = handleMultipartBody(c)
 	} else {
 		obfuscatedBody = string(bodyBytes)
 	}
@@ -288,17 +281,13 @@ func getBodyObfuscatedString(c *fiber.Ctx, bodyBytes []byte, fieldsToObfuscate [
 	return obfuscatedBody
 }
 
-func handleJSONBody(bodyBytes []byte, fieldsToObfuscate []string) string {
+func handleJSONBody(bodyBytes []byte) string {
 	var bodyData map[string]any
 	if err := json.Unmarshal(bodyBytes, &bodyData); err != nil {
 		return string(bodyBytes)
 	}
 
-	for _, field := range fieldsToObfuscate {
-		if _, exists := bodyData[field]; exists {
-			bodyData[field] = cn.ObfuscatedValue
-		}
-	}
+	obfuscateMapRecursively(bodyData, 0)
 
 	updatedBody, err := json.Marshal(bodyData)
 	if err != nil {
@@ -308,39 +297,93 @@ func handleJSONBody(bodyBytes []byte, fieldsToObfuscate []string) string {
 	return string(updatedBody)
 }
 
-func handleURLFormBody(c *fiber.Ctx, fieldsToObfuscate []string) string {
-	formData := c.AllParams()
+func obfuscateMapRecursively(data map[string]any, depth int) {
+	if depth >= maxObfuscationDepth {
+		return
+	}
 
-	for _, field := range fieldsToObfuscate {
-		if value := c.FormValue(field); value != "" {
-			formData[field] = cn.ObfuscatedValue
+	for key, value := range data {
+		if security.IsSensitiveField(key) {
+			data[key] = cn.ObfuscatedValue
+			continue
 		}
+
+		switch v := value.(type) {
+		case map[string]any:
+			obfuscateMapRecursively(v, depth+1)
+		case []any:
+			obfuscateSliceRecursively(v, depth+1)
+		}
+	}
+}
+
+func obfuscateSliceRecursively(data []any, depth int) {
+	if depth >= maxObfuscationDepth {
+		return
+	}
+
+	for _, item := range data {
+		switch v := item.(type) {
+		case map[string]any:
+			obfuscateMapRecursively(v, depth+1)
+		case []any:
+			obfuscateSliceRecursively(v, depth+1)
+		}
+	}
+}
+
+func handleURLEncodedBody(bodyBytes []byte) string {
+	formData, err := url.ParseQuery(string(bodyBytes))
+	if err != nil {
+		return string(bodyBytes)
 	}
 
 	updatedBody := url.Values{}
 
-	for key, value := range formData {
-		updatedBody.Set(key, value)
+	for key, values := range formData {
+		if security.IsSensitiveField(key) {
+			for range values {
+				updatedBody.Add(key, cn.ObfuscatedValue)
+			}
+		} else {
+			for _, value := range values {
+				updatedBody.Add(key, value)
+			}
+		}
 	}
 
 	return updatedBody.Encode()
 }
 
-func handleMultipartFormBody(c *fiber.Ctx, fieldsToObfuscate []string) string {
-	formData := c.AllParams()
-	updatedBody := url.Values{}
+func handleMultipartBody(c *fiber.Ctx) string {
+	form, err := c.MultipartForm()
+	if err != nil {
+		return string(c.Body())
+	}
 
-	for _, field := range fieldsToObfuscate {
-		if _, exists := formData[field]; exists {
-			formData[field] = cn.ObfuscatedValue
+	result := url.Values{}
+
+	for key, values := range form.Value {
+		if security.IsSensitiveField(key) {
+			for range values {
+				result.Add(key, cn.ObfuscatedValue)
+			}
+		} else {
+			for _, value := range values {
+				result.Add(key, value)
+			}
 		}
 	}
 
-	for key, value := range formData {
-		updatedBody.Set(key, value)
+	for key := range form.File {
+		if security.IsSensitiveField(key) {
+			result.Add(key, cn.ObfuscatedValue)
+		} else {
+			result.Add(key, "[file]")
+		}
 	}
 
-	return updatedBody.Encode()
+	return result.Encode()
 }
 
 // getValidBodyRequestID extracts and validates the request_id from the gRPC request body.

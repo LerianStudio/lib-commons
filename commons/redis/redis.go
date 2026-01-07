@@ -191,7 +191,7 @@ func (rc *RedisConnection) retrieveToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	opts := option.WithCredentialsJSON(credentials)
+	opts := option.WithCredentialsJSON(credentials) //nolint:staticcheck // SA1019: No alternative available yet
 
 	client, err := iamcredentials.NewIamCredentialsClient(ctx, opts)
 	if err != nil {

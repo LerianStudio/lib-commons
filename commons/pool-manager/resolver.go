@@ -262,6 +262,7 @@ func (r *resolverImpl) InvalidateCache(tenantID string) {
 func (r *resolverImpl) InvalidateCacheAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	r.cache = make(map[string]*cacheEntry)
 
 	if r.logger != nil {
@@ -299,14 +300,15 @@ func (r *resolverImpl) setInCache(key string, config *TenantConfig) {
 }
 
 // fetchConfig makes an HTTP request to the Tenant Service and returns the configuration.
-func (r *resolverImpl) fetchConfig(ctx context.Context, url string) (*TenantConfig, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (r *resolverImpl) fetchConfig(ctx context.Context, configURL string) (*TenantConfig, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, configURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	// Set headers
 	req.Header.Set("Accept", "application/json")
+
 	if r.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+r.apiKey)
 	}
@@ -318,6 +320,7 @@ func (r *resolverImpl) fetchConfig(ctx context.Context, url string) (*TenantConf
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("request failed: %w", ctx.Err())
 		}
+
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()

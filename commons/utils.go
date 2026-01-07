@@ -221,8 +221,13 @@ func StructToJSONString(s any) (string, error) {
 	return string(jsonByte), nil
 }
 
-// MergeMaps Following the JSON Merge Patch
+// MergeMaps Following the JSON Merge Patch.
+// If target is nil, a new map is created.
 func MergeMaps(source, target map[string]any) map[string]any {
+	if target == nil {
+		target = make(map[string]any)
+	}
+
 	for key, value := range source {
 		if value != nil {
 			target[key] = value

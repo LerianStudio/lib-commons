@@ -65,7 +65,7 @@ const (
 //	    config := pgConfig.(*PostgreSQLConfig)
 //	    // Use config...
 //	}
-func GetDBFromContext(ctx context.Context, dbType DBType) interface{} {
+func GetDBFromContext(ctx context.Context, dbType DBType) any {
 	if ctx == nil {
 		return nil
 	}

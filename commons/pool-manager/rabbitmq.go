@@ -125,6 +125,7 @@ func (p *tenantRabbitMQPublisher) Publish(ctx context.Context, exchange, routing
 		if p.logger != nil {
 			p.logger.Errorf("RabbitMQ Publish failed for tenant %s exchange %s routing key %s: %v", p.tenantID, exchange, routingKey, err)
 		}
+
 		return err
 	}
 
