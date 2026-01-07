@@ -1,9 +1,8 @@
 package zap
 
 import (
-	"fmt"
+	"log"
 	"os"
-	"strings"
 
 	clog "github.com/LerianStudio/lib-commons/v2/commons/log"
 	"go.opentelemetry.io/contrib/bridges/otelzap"
@@ -11,15 +10,13 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-// InitializeLogger initializes our log layer and returns it.
-// Returns an error if the logger cannot be initialized.
+// InitializeLogger initializes our log layer and returns it
 //
 //nolint:ireturn
-func InitializeLogger() (clog.Logger, error) {
+func InitializeLogger() clog.Logger {
 	var zapCfg zap.Config
 
-	envName := strings.ToLower(os.Getenv("ENV_NAME"))
-	if envName == "production" || envName == "prod" {
+	if os.Getenv("ENV_NAME") == "production" {
 		zapCfg = zap.NewProductionConfig()
 		zapCfg.EncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
 		zapCfg.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
@@ -32,10 +29,12 @@ func InitializeLogger() (clog.Logger, error) {
 	if val, ok := os.LookupEnv("LOG_LEVEL"); ok {
 		var lvl zapcore.Level
 		if err := lvl.Set(val); err != nil {
-			fmt.Fprintf(os.Stderr, "WARNING: invalid LOG_LEVEL value %q: %v (using default level)\n", val, err)
-		} else {
-			zapCfg.Level = zap.NewAtomicLevelAt(lvl)
+			log.Printf("Invalid LOG_LEVEL, fallback to InfoLevel: %v", err)
+
+			lvl = zapcore.InfoLevel
 		}
+
+		zapCfg.Level = zap.NewAtomicLevelAt(lvl)
 	}
 
 	zapCfg.DisableStacktrace = true
@@ -44,7 +43,7 @@ func InitializeLogger() (clog.Logger, error) {
 		return zapcore.NewTee(core, otelzap.NewCore(os.Getenv("OTEL_LIBRARY_NAME")))
 	}))
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize zap logger: %w", err)
+		log.Fatalf("can't initialize zap logger: %v", err)
 	}
 
 	sugarLogger := logger.Sugar()
@@ -54,18 +53,5 @@ func InitializeLogger() (clog.Logger, error) {
 
 	return &ZapWithTraceLogger{
 		Logger: sugarLogger,
-	}, nil
-}
-
-// MustInitializeLogger initializes the logger and panics if it fails.
-// WARNING: This function terminates the process on failure. Callers should
-// migrate to InitializeLogger() which returns errors for graceful handling.
-// Deprecated: Use InitializeLogger instead for graceful error handling.
-func MustInitializeLogger() clog.Logger {
-	logger, err := InitializeLogger()
-	if err != nil {
-		panic(err)
 	}
-
-	return logger
 }
