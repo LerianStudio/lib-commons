@@ -251,8 +251,6 @@ func StopMetricsCollector() {
 		close(metricsCollectorShutdown)
 
 		metricsCollectorStarted = false
-		// Reset sync.Once to allow collector restart after stop.
-		// Safe because mutex is held during this operation.
 		metricsCollectorOnce = &sync.Once{}
 		metricsCollectorInitErr = nil
 	}

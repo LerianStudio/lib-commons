@@ -434,6 +434,62 @@ func TestEndTracingSpans(t *testing.T) {
 	}
 }
 
+// TestGetMetricsCollectionInterval tests the getMetricsCollectionInterval function
+func TestGetMetricsCollectionInterval(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string
+		expected time.Duration
+	}{
+		{
+			name:     "default when not set",
+			envValue: "",
+			expected: DefaultMetricsCollectionInterval,
+		},
+		{
+			name:     "valid duration in seconds",
+			envValue: "10s",
+			expected: 10 * time.Second,
+		},
+		{
+			name:     "valid duration in milliseconds",
+			envValue: "500ms",
+			expected: 500 * time.Millisecond,
+		},
+		{
+			name:     "valid duration in minutes",
+			envValue: "1m",
+			expected: 1 * time.Minute,
+		},
+		{
+			name:     "invalid format falls back to default",
+			envValue: "invalid",
+			expected: DefaultMetricsCollectionInterval,
+		},
+		{
+			name:     "zero value falls back to default",
+			envValue: "0s",
+			expected: DefaultMetricsCollectionInterval,
+		},
+		{
+			name:     "negative value falls back to default",
+			envValue: "-5s",
+			expected: DefaultMetricsCollectionInterval,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.envValue != "" {
+				t.Setenv("METRICS_COLLECTION_INTERVAL", tt.envValue)
+			}
+
+			result := getMetricsCollectionInterval()
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 // TestExtractHTTPContext tests the ExtractHTTPContext function
 func TestExtractHTTPContext(t *testing.T) {
 	ctx := context.Background()
