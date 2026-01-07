@@ -84,6 +84,11 @@ func (mc *MongoConnection) EnsureIndexes(ctx context.Context, collection string,
 
 	mc.Logger.Debugf("Ensuring index: collection=%s, fields=%s", collection, fields)
 
+	// Note: createIndexes is idempotent; when indexes already exist with same definition,
+	// the server returns ok:1 (no error).
+	// Also: if the collection does not exist yet, this operation will create it automatically.
+	// Create the collection explicitly only if you need to set collection options
+	// (e.g., validation rules, default collation, time-series, capped/clustered).
 	_, err = coll.Indexes().CreateOne(ctx, index)
 	if err != nil {
 		mc.Logger.Warnf("Failed to ensure index: collection=%s, fields=%s, err=%v", collection, fields, err)
