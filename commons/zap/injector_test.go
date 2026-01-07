@@ -17,8 +17,7 @@ func TestInitializeLogger(t *testing.T) {
 }
 
 func TestInitializeLogger_Development(t *testing.T) {
-	os.Setenv("ENV_NAME", "development")
-	defer os.Unsetenv("ENV_NAME")
+	t.Setenv("ENV_NAME", "development")
 
 	logger, err := InitializeLogger()
 	require.NoError(t, err)
@@ -41,8 +40,7 @@ func TestInitializeLogger_ProductionCaseInsensitive(t *testing.T) {
 }
 
 func TestMustInitializeLogger(t *testing.T) {
-	os.Setenv("ENV_NAME", "production")
-	defer os.Unsetenv("ENV_NAME")
+	t.Setenv("ENV_NAME", "production")
 
 	assert.NotPanics(t, func() {
 		logger := MustInitializeLogger()
