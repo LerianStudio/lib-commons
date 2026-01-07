@@ -51,8 +51,19 @@ func (l *Launcher) Add(appName string, a App) *Launcher {
 }
 
 // Run every application registered before with Run method.
-// Returns an error if Logger is nil.
-func (l *Launcher) Run() error {
+// Maintains backward compatibility - logs error internally if Logger is nil.
+// For explicit error handling, use RunWithError instead.
+func (l *Launcher) Run() {
+	if err := l.RunWithError(); err != nil {
+		if l.Logger != nil {
+			l.Logger.Errorf("Launcher error: %v", err)
+		}
+	}
+}
+
+// RunWithError runs all applications and returns an error if Logger is nil.
+// Use this method when you need explicit error handling for launcher initialization.
+func (l *Launcher) RunWithError() error {
 	if l.Logger == nil {
 		return ErrLoggerNil
 	}

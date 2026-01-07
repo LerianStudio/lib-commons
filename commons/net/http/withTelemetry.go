@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,10 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 )
+
+// DefaultMetricsCollectionInterval is the default interval for collecting system metrics.
+// Can be overridden via METRICS_COLLECTION_INTERVAL environment variable.
+const DefaultMetricsCollectionInterval = 5 * time.Second
 
 var (
 	metricsCollectorOnce     = &sync.Once{}
@@ -166,6 +171,20 @@ func (tm *TelemetryMiddleware) collectMetrics(_ context.Context) error {
 	return tm.ensureMetricsCollector()
 }
 
+// getMetricsCollectionInterval returns the metrics collection interval.
+// Can be configured via METRICS_COLLECTION_INTERVAL environment variable.
+// Accepts Go duration format (e.g., "10s", "1m", "500ms").
+// Falls back to DefaultMetricsCollectionInterval if not set or invalid.
+func getMetricsCollectionInterval() time.Duration {
+	if envInterval := os.Getenv("METRICS_COLLECTION_INTERVAL"); envInterval != "" {
+		if parsed, err := time.ParseDuration(envInterval); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+
+	return DefaultMetricsCollectionInterval
+}
+
 func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
 	metricsCollectorMu.Lock()
 	defer metricsCollectorMu.Unlock()
@@ -192,7 +211,7 @@ func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
 		}
 
 		metricsCollectorShutdown = make(chan struct{})
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(getMetricsCollectionInterval())
 
 		go func() {
 			commons.GetCPUUsage(context.Background(), cpuGauge)
@@ -219,6 +238,11 @@ func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
 // StopMetricsCollector stops the background metrics collector goroutine.
 // Should be called during application shutdown for graceful cleanup.
 // After calling this function, the collector can be restarted by new requests.
+//
+// Implementation note: This function intentionally resets sync.Once to a new instance
+// to allow the collector to be restarted after being stopped. This is an unusual but
+// intentional pattern - the mutex ensures thread-safety during the reset operation,
+// preventing race conditions between Stop and subsequent Start calls.
 func StopMetricsCollector() {
 	metricsCollectorMu.Lock()
 	defer metricsCollectorMu.Unlock()
@@ -227,6 +251,8 @@ func StopMetricsCollector() {
 		close(metricsCollectorShutdown)
 
 		metricsCollectorStarted = false
+		// Reset sync.Once to allow collector restart after stop.
+		// Safe because mutex is held during this operation.
 		metricsCollectorOnce = &sync.Once{}
 		metricsCollectorInitErr = nil
 	}

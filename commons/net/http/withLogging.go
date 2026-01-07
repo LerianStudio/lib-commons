@@ -293,71 +293,58 @@ func handleJSONBody(bodyBytes []byte, fieldsToObfuscate []string) string {
 	return string(updatedBody)
 }
 
-func obfuscateMapRecursively(data map[string]any, fieldsToObfuscate []string) {
+func obfuscateMapRecursively(data map[string]any, _ []string) {
 	for key, value := range data {
-		lowerKey := strings.ToLower(key)
-
-		for _, field := range fieldsToObfuscate {
-			if strings.Contains(lowerKey, strings.ToLower(field)) {
-				data[key] = cn.ObfuscatedValue
-				break
-			}
-		}
-
-		if data[key] == cn.ObfuscatedValue {
+		if security.IsSensitiveField(key) {
+			data[key] = cn.ObfuscatedValue
 			continue
 		}
 
 		switch v := value.(type) {
 		case map[string]any:
-			obfuscateMapRecursively(v, fieldsToObfuscate)
+			obfuscateMapRecursively(v, nil)
 		case []any:
-			obfuscateSliceRecursively(v, fieldsToObfuscate)
+			obfuscateSliceRecursively(v, nil)
 		}
 	}
 }
 
-func obfuscateSliceRecursively(data []any, fieldsToObfuscate []string) {
+func obfuscateSliceRecursively(data []any, _ []string) {
 	for _, item := range data {
 		switch v := item.(type) {
 		case map[string]any:
-			obfuscateMapRecursively(v, fieldsToObfuscate)
+			obfuscateMapRecursively(v, nil)
 		case []any:
-			obfuscateSliceRecursively(v, fieldsToObfuscate)
+			obfuscateSliceRecursively(v, nil)
 		}
 	}
 }
 
-func handleURLFormBody(c *fiber.Ctx, fieldsToObfuscate []string) string {
+func handleURLFormBody(c *fiber.Ctx, _ []string) string {
 	formData := c.AllParams()
-
-	for _, field := range fieldsToObfuscate {
-		if value := c.FormValue(field); value != "" {
-			formData[field] = cn.ObfuscatedValue
-		}
-	}
-
 	updatedBody := url.Values{}
 
 	for key, value := range formData {
-		updatedBody.Set(key, value)
+		if security.IsSensitiveField(key) {
+			updatedBody.Set(key, cn.ObfuscatedValue)
+		} else {
+			updatedBody.Set(key, value)
+		}
 	}
 
 	return updatedBody.Encode()
 }
 
-func handleMultipartFormBody(c *fiber.Ctx, fieldsToObfuscate []string) string {
+func handleMultipartFormBody(c *fiber.Ctx, _ []string) string {
 	formData := c.AllParams()
 	updatedBody := url.Values{}
 
-	for _, field := range fieldsToObfuscate {
-		if _, exists := formData[field]; exists {
-			formData[field] = cn.ObfuscatedValue
-		}
-	}
-
 	for key, value := range formData {
-		updatedBody.Set(key, value)
+		if security.IsSensitiveField(key) {
+			updatedBody.Set(key, cn.ObfuscatedValue)
+		} else {
+			updatedBody.Set(key, value)
+		}
 	}
 
 	return updatedBody.Encode()
