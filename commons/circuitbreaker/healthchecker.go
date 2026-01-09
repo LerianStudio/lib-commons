@@ -2,11 +2,19 @@ package circuitbreaker
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"sync"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
+)
+
+var (
+	// ErrInvalidHealthCheckInterval indicates that the health check interval must be positive
+	ErrInvalidHealthCheckInterval = errors.New("circuitbreaker: health check interval must be positive")
+	// ErrInvalidHealthCheckTimeout indicates that the health check timeout must be positive
+	ErrInvalidHealthCheckTimeout = errors.New("circuitbreaker: health check timeout must be positive")
 )
 
 // healthChecker performs periodic health checks and manages circuit breaker recovery
@@ -22,16 +30,17 @@ type healthChecker struct {
 	mu             sync.RWMutex
 }
 
-// NewHealthChecker creates a new health checker
+// NewHealthCheckerWithValidation creates a new health checker with validation.
+// Returns an error if interval or checkTimeout are not positive.
 // interval: how often to run health checks
 // checkTimeout: timeout for each individual health check operation
-func NewHealthChecker(manager Manager, interval, checkTimeout time.Duration, logger log.Logger) HealthChecker {
+func NewHealthCheckerWithValidation(manager Manager, interval, checkTimeout time.Duration, logger log.Logger) (HealthChecker, error) {
 	if interval <= 0 {
-		panic("circuitbreaker: health check interval must be positive")
+		return nil, ErrInvalidHealthCheckInterval
 	}
 
 	if checkTimeout <= 0 {
-		panic("circuitbreaker: health check timeout must be positive")
+		return nil, ErrInvalidHealthCheckTimeout
 	}
 
 	return &healthChecker{
@@ -41,8 +50,21 @@ func NewHealthChecker(manager Manager, interval, checkTimeout time.Duration, log
 		checkTimeout:   checkTimeout,
 		logger:         logger,
 		stopChan:       make(chan struct{}),
-		immediateCheck: make(chan string, 10), // Buffered channel to avoid blocking
+		immediateCheck: make(chan string, 10),
+	}, nil
+}
+
+// Deprecated: Use NewHealthCheckerWithValidation instead for proper error handling.
+// NewHealthChecker creates a new health checker.
+// interval: how often to run health checks
+// checkTimeout: timeout for each individual health check operation
+func NewHealthChecker(manager Manager, interval, checkTimeout time.Duration, logger log.Logger) HealthChecker {
+	hc, err := NewHealthCheckerWithValidation(manager, interval, checkTimeout, logger)
+	if err != nil {
+		panic(err.Error())
 	}
+
+	return hc
 }
 
 // Register adds a service to health check

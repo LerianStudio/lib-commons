@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -13,6 +14,9 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"google.golang.org/grpc"
 )
+
+// ErrNoServersConfigured indicates no servers were configured for the manager
+var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServer() or WithGRPCServer()")
 
 // ServerManager handles the graceful shutdown of multiple server types.
 // It can manage HTTP servers, gRPC servers, or both simultaneously.
@@ -57,8 +61,44 @@ func (sm *ServerManager) WithGRPCServer(server *grpc.Server, address string) *Se
 	return sm
 }
 
+func (sm *ServerManager) validateConfiguration() error {
+	total := 0
+	if sm.httpServer != nil {
+		total++
+	}
+
+	if sm.grpcServer != nil {
+		total++
+	}
+
+	if total == 0 {
+		return ErrNoServersConfigured
+	}
+
+	return nil
+}
+
+// StartWithGracefulShutdownWithError validates configuration before starting servers.
+// Returns an error if no servers are configured instead of calling Fatal.
+func (sm *ServerManager) StartWithGracefulShutdownWithError() error {
+	if err := sm.validateConfiguration(); err != nil {
+		return err
+	}
+
+	sm.StartWithGracefulShutdown()
+
+	return nil
+}
+
 // StartWithGracefulShutdown initializes all configured servers and sets up graceful shutdown.
+// It will call Fatal if no servers are configured (backward compatible behavior).
+// Use StartWithGracefulShutdownWithError() for proper error handling instead.
 func (sm *ServerManager) StartWithGracefulShutdown() {
+	if err := sm.validateConfiguration(); err != nil {
+		sm.logger.Fatal(err.Error())
+		return
+	}
+
 	// Run everything in a recover block
 	defer func() {
 		if r := recover(); r != nil {
@@ -83,23 +123,11 @@ func (sm *ServerManager) StartWithGracefulShutdown() {
 }
 
 // startServers starts all configured servers in separate goroutines.
+// Note: Validation is performed by validateConfiguration() before this method is called.
+// Callers using StartWithGracefulShutdown() directly will still get Fatal behavior for backward compatibility,
+// while StartWithGracefulShutdownWithError() validates first and returns an error.
 func (sm *ServerManager) startServers() {
 	started := 0
-	total := 0
-
-	// Count total servers to start
-	if sm.httpServer != nil {
-		total++
-	}
-
-	if sm.grpcServer != nil {
-		total++
-	}
-
-	if total == 0 {
-		sm.logger.Fatal("No servers configured. Use WithHTTPServer() or WithGRPCServer() to configure servers.")
-		return
-	}
 
 	// Start HTTP server if configured
 	if sm.httpServer != nil {
