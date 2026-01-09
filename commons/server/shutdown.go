@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -13,6 +14,9 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"google.golang.org/grpc"
 )
+
+// ErrNoServersConfigured indicates no servers were configured for the manager
+var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServer() or WithGRPCServer()")
 
 // ServerManager handles the graceful shutdown of multiple server types.
 // It can manage HTTP servers, gRPC servers, or both simultaneously.
@@ -55,6 +59,35 @@ func (sm *ServerManager) WithGRPCServer(server *grpc.Server, address string) *Se
 	sm.grpcAddress = address
 
 	return sm
+}
+
+func (sm *ServerManager) validateConfiguration() error {
+	total := 0
+	if sm.httpServer != nil {
+		total++
+	}
+
+	if sm.grpcServer != nil {
+		total++
+	}
+
+	if total == 0 {
+		return ErrNoServersConfigured
+	}
+
+	return nil
+}
+
+// StartWithGracefulShutdownWithError validates configuration before starting servers.
+// Returns an error if no servers are configured instead of calling Fatal.
+func (sm *ServerManager) StartWithGracefulShutdownWithError() error {
+	if err := sm.validateConfiguration(); err != nil {
+		return err
+	}
+
+	sm.StartWithGracefulShutdown()
+
+	return nil
 }
 
 // StartWithGracefulShutdown initializes all configured servers and sets up graceful shutdown.

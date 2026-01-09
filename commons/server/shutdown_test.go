@@ -1,11 +1,12 @@
 package server_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/server"
-	"github.com/stretchr/testify/assert"
 	"github.com/gofiber/fiber/v2"
+	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 )
 
@@ -50,10 +51,24 @@ func TestServerManagerWithBothServers(t *testing.T) {
 func TestServerManagerChaining(t *testing.T) {
 	app := fiber.New()
 	grpcServer := grpc.NewServer()
-	
+
 	// Test method chaining
 	sm1 := server.NewServerManager(nil, nil, nil).WithHTTPServer(app, ":8080")
 	sm2 := sm1.WithGRPCServer(grpcServer, ":50051")
-	
+
 	assert.Equal(t, sm1, sm2, "Method chaining should return the same instance")
+}
+
+func TestStartWithGracefulShutdownWithError_NoServers(t *testing.T) {
+	sm := server.NewServerManager(nil, nil, nil)
+
+	err := sm.StartWithGracefulShutdownWithError()
+
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, server.ErrNoServersConfigured))
+}
+
+func TestErrNoServersConfigured(t *testing.T) {
+	assert.NotNil(t, server.ErrNoServersConfigured)
+	assert.Contains(t, server.ErrNoServersConfigured.Error(), "no servers configured")
 }
