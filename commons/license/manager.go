@@ -1,6 +1,17 @@
 package license
 
-import "sync"
+import (
+	"errors"
+	"fmt"
+	"sync"
+)
+
+var (
+	// ErrLicenseValidationFailed represents a license validation failure
+	ErrLicenseValidationFailed = errors.New("license validation failed")
+	// ErrManagerNotInitialized indicates the manager was used without proper initialization
+	ErrManagerNotInitialized = errors.New("license.ManagerShutdown used without initialization: use license.New() to create an instance")
+)
 
 // Handler defines the function signature for termination handlers
 type Handler func(reason string)
@@ -9,6 +20,12 @@ type Handler func(reason string)
 // It triggers a panic which will be caught by the graceful shutdown handler
 func DefaultHandler(reason string) {
 	panic("LICENSE VALIDATION FAILED: " + reason)
+}
+
+// DefaultHandlerWithError returns an error instead of panicking.
+// Use this when you want to handle license failures gracefully.
+func DefaultHandlerWithError(reason string) error {
+	return fmt.Errorf("%w: %s", ErrLicenseValidationFailed, reason)
 }
 
 // ManagerShutdown handles termination behavior
@@ -45,8 +62,14 @@ func (m *ManagerShutdown) Terminate(reason string) {
 	m.mu.RUnlock()
 
 	if handler == nil {
-		panic("license.ManagerShutdown used without initialization. Use license.New() to create an instance.")
+		panic(ErrManagerNotInitialized.Error())
 	}
 
 	handler(reason)
+}
+
+// TerminateWithError returns an error instead of invoking the termination handler.
+// Use this when you want to check license validity without triggering shutdown.
+func (m *ManagerShutdown) TerminateWithError(reason string) error {
+	return fmt.Errorf("%w: %s", ErrLicenseValidationFailed, reason)
 }
