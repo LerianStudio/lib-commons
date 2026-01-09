@@ -283,6 +283,13 @@ func ReplaceAttributes(ctx context.Context, kv ...attribute.KeyValue) context.Co
 // any existing deadline in the parent context. Returns an error if parent is nil.
 //
 // This is the safe alternative to WithTimeout that returns an error instead of panicking.
+// The "Safe" suffix is used here (instead of "WithError") because the function signature
+// returns three values (context, cancel, error) rather than wrapping an existing function.
+// Use WithTimeout for backward-compatible panic behavior.
+//
+// Note: When the parent's deadline is shorter than the requested timeout, this function
+// returns a cancellable context that inherits the parent's deadline rather than creating
+// a new deadline. The returned context's Deadline() will return the parent's deadline.
 func WithTimeoutSafe(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc, error) {
 	if parent == nil {
 		return nil, func() {}, ErrNilParentContext

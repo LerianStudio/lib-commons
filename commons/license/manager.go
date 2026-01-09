@@ -70,6 +70,12 @@ func (m *ManagerShutdown) Terminate(reason string) {
 
 // TerminateWithError returns an error instead of invoking the termination handler.
 // Use this when you want to check license validity without triggering shutdown.
+//
+// Note: This method intentionally does NOT invoke the custom handler set via SetHandler().
+// It always returns ErrLicenseValidationFailed wrapped with the reason, regardless of
+// manager initialization state. This differs from Terminate() which requires initialization
+// and invokes the configured handler. Use Terminate() for actual shutdown behavior,
+// and TerminateWithError() for validation checks that should return errors.
 func (m *ManagerShutdown) TerminateWithError(reason string) error {
 	return fmt.Errorf("%w: %s", ErrLicenseValidationFailed, reason)
 }

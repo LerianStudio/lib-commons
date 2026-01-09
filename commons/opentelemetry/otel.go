@@ -3,6 +3,7 @@ package opentelemetry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/http"
@@ -30,6 +31,13 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
+)
+
+var (
+	// ErrNilTelemetryConfig indicates that nil config was provided to InitializeTelemetryWithError
+	ErrNilTelemetryConfig = errors.New("telemetry config cannot be nil")
+	// ErrNilTelemetryLogger indicates that config.Logger is nil
+	ErrNilTelemetryLogger = errors.New("telemetry config logger cannot be nil")
 )
 
 type TelemetryConfig struct {
@@ -133,6 +141,14 @@ func (tl *Telemetry) ShutdownTelemetry() {
 // InitializeTelemetryWithError initializes the telemetry providers and sets them globally.
 // Returns an error instead of calling Fatalf on failure.
 func InitializeTelemetryWithError(cfg *TelemetryConfig) (*Telemetry, error) {
+	if cfg == nil {
+		return nil, ErrNilTelemetryConfig
+	}
+
+	if cfg.Logger == nil {
+		return nil, ErrNilTelemetryLogger
+	}
+
 	ctx := context.Background()
 	l := cfg.Logger
 

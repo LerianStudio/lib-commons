@@ -178,3 +178,57 @@ func TestWithTimeoutSafe_CancelWorks(t *testing.T) {
 		t.Errorf("expected context.Canceled error, got %v", ctx.Err())
 	}
 }
+
+func TestWithTimeout_PanicOnNilParent(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for nil parent")
+		}
+	}()
+
+	WithTimeout(nil, 5*time.Second)
+}
+
+func TestWithTimeoutSafe_ZeroTimeout(t *testing.T) {
+	parent := context.Background()
+	ctx, cancel, err := WithTimeoutSafe(parent, 0)
+	defer cancel()
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ctx == nil {
+		t.Fatal("expected non-nil context")
+	}
+
+	// Zero timeout should create an already-expired context
+	select {
+	case <-ctx.Done():
+		// Expected - context should be done immediately or very soon
+	case <-time.After(100 * time.Millisecond):
+		t.Error("expected context to be done with zero timeout")
+	}
+}
+
+func TestWithTimeoutSafe_NegativeTimeout(t *testing.T) {
+	parent := context.Background()
+	ctx, cancel, err := WithTimeoutSafe(parent, -1*time.Second)
+	defer cancel()
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if ctx == nil {
+		t.Fatal("expected non-nil context")
+	}
+
+	// Negative timeout should create an already-expired context
+	select {
+	case <-ctx.Done():
+		// Expected - context should be done immediately
+	case <-time.After(100 * time.Millisecond):
+		t.Error("expected context to be done with negative timeout")
+	}
+}
