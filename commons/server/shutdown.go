@@ -195,12 +195,16 @@ func (sm *ServerManager) logErrorf(format string, args ...any) {
 	}
 }
 
-// logFatal safely logs a fatal message if logger is available, otherwise prints to stdout
+// logFatal logs a fatal message and terminates the process.
+// If logger is available, uses logger.Fatal (which calls os.Exit(1) internally).
+// If logger is nil, prints to stdout and calls os.Exit(1) explicitly.
+// This ensures consistent termination behavior regardless of logger availability.
 func (sm *ServerManager) logFatal(msg string) {
 	if sm.logger != nil {
 		sm.logger.Fatal(msg)
 	} else {
 		fmt.Println(msg)
+		os.Exit(1)
 	}
 }
 
