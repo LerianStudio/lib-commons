@@ -70,6 +70,12 @@ func (sm *ServerManager) WithShutdownChannel(ch <-chan struct{}) *ServerManager 
 	return sm
 }
 
+// ServersStarted returns a channel that is closed when all servers have started.
+// This is useful for tests to wait for server startup before triggering shutdown.
+func (sm *ServerManager) ServersStarted() <-chan struct{} {
+	return sm.serversStarted
+}
+
 func (sm *ServerManager) validateConfiguration() error {
 	if sm.httpServer == nil && sm.grpcServer == nil {
 		return ErrNoServersConfigured
@@ -104,12 +110,13 @@ func (sm *ServerManager) StartWithGracefulShutdownWithError() error {
 }
 
 // StartWithGracefulShutdown initializes all configured servers and sets up graceful shutdown.
-// It will call Fatal if no servers are configured (backward compatible behavior).
-// Use StartWithGracefulShutdownWithError() for proper error handling instead.
+// It terminates the process with os.Exit(1) if no servers are configured (backward compatible behavior).
+// Note: On configuration error, logFatal always terminates the process regardless of logger availability.
+// Use StartWithGracefulShutdownWithError() for proper error handling without process termination.
 func (sm *ServerManager) StartWithGracefulShutdown() {
 	if err := sm.initServers(); err != nil {
+		// logFatal exits the process via os.Exit(1); code below is unreachable on error
 		sm.logFatal(err.Error())
-		return
 	}
 
 	// Run everything in a recover block
@@ -195,17 +202,17 @@ func (sm *ServerManager) logErrorf(format string, args ...any) {
 	}
 }
 
-// logFatal logs a fatal message and terminates the process.
-// If logger is available, uses logger.Fatal (which calls os.Exit(1) internally).
-// If logger is nil, prints to stdout and calls os.Exit(1) explicitly.
-// This ensures consistent termination behavior regardless of logger availability.
+// logFatal logs a fatal message and terminates the process with os.Exit(1).
+// Uses Error level for logging to avoid relying on logger implementations
+// that may or may not call os.Exit(1) in their Fatal method.
 func (sm *ServerManager) logFatal(msg string) {
 	if sm.logger != nil {
-		sm.logger.Fatal(msg)
+		sm.logger.Error(msg)
 	} else {
 		fmt.Println(msg)
-		os.Exit(1)
 	}
+
+	os.Exit(1)
 }
 
 // handleShutdown sets up signal handling and executes the shutdown sequence

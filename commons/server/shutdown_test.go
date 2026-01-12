@@ -88,6 +88,12 @@ func TestStartWithGracefulShutdownWithError_HTTPServer_Success(t *testing.T) {
 		done <- sm.StartWithGracefulShutdownWithError()
 	}()
 
+	select {
+	case <-sm.ServersStarted():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Test timed out waiting for servers to start")
+	}
+
 	close(shutdownChan)
 
 	select {
@@ -111,6 +117,12 @@ func TestStartWithGracefulShutdownWithError_GRPCServer_Success(t *testing.T) {
 	go func() {
 		done <- sm.StartWithGracefulShutdownWithError()
 	}()
+
+	select {
+	case <-sm.ServersStarted():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Test timed out waiting for servers to start")
+	}
 
 	close(shutdownChan)
 
@@ -137,6 +149,12 @@ func TestStartWithGracefulShutdownWithError_BothServers_Success(t *testing.T) {
 	go func() {
 		done <- sm.StartWithGracefulShutdownWithError()
 	}()
+
+	select {
+	case <-sm.ServersStarted():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Test timed out waiting for servers to start")
+	}
 
 	close(shutdownChan)
 

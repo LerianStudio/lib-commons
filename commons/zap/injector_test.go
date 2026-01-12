@@ -19,6 +19,8 @@ package zap
 // without modifying the production code to accept external configuration.
 
 import (
+	"bytes"
+	"log"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -62,9 +64,16 @@ func TestInitializeLoggerWithError_InvalidLogLevel(t *testing.T) {
 	t.Setenv("ENV_NAME", "production")
 	t.Setenv("LOG_LEVEL", "invalid_level")
 
+	var buf bytes.Buffer
+	originalOutput := log.Writer()
+	log.SetOutput(&buf)
+
+	defer log.SetOutput(originalOutput)
+
 	logger, err := InitializeLoggerWithError()
 
-	// Invalid log level falls back to InfoLevel - this is by design
 	assert.NoError(t, err)
 	assert.NotNil(t, logger)
+	assert.Contains(t, buf.String(), "Invalid LOG_LEVEL")
+	assert.Contains(t, buf.String(), "fallback to InfoLevel")
 }
