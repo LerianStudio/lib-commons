@@ -119,6 +119,7 @@ func (c *tenantValkeyClient) Get(ctx context.Context, key string) (string, error
 		if c.logger != nil && err != redis.Nil {
 			c.logger.Warnf("Valkey Get failed for tenant %s key %s: %v", c.tenantID, key, err)
 		}
+
 		return "", err
 	}
 
@@ -142,6 +143,7 @@ func (c *tenantValkeyClient) Set(ctx context.Context, key string, value any, ttl
 		if c.logger != nil {
 			c.logger.Errorf("Valkey Set failed for tenant %s key %s: %v", c.tenantID, key, err)
 		}
+
 		return err
 	}
 
@@ -172,6 +174,7 @@ func (c *tenantValkeyClient) Del(ctx context.Context, keys ...string) (int64, er
 		if c.logger != nil {
 			c.logger.Errorf("Valkey Del failed for tenant %s keys %v: %v", c.tenantID, keys, err)
 		}
+
 		return 0, err
 	}
 

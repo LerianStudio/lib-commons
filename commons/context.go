@@ -305,6 +305,7 @@ func WithTimeoutSafe(parent context.Context, timeout time.Duration) (context.Con
 	}
 
 	ctx, cancel := context.WithTimeout(parent, timeout)
+
 	return ctx, cancel, nil
 }
 

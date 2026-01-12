@@ -68,6 +68,7 @@ func (td *TenantDatabase) Collection(name string, opts ...*options.CollectionOpt
 	if td.db == nil {
 		return nil
 	}
+
 	return td.db.Collection(prefixedName, opts...)
 }
 
@@ -76,6 +77,7 @@ func (td *TenantDatabase) getPrefixedName(name string) string {
 	if td.collectionPrefix == "" {
 		return name
 	}
+
 	return td.collectionPrefix + name
 }
 
@@ -140,12 +142,14 @@ type mongoConnEntry struct {
 func (e *mongoConnEntry) updateLastUsed() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	e.lastUsedAt = time.Now()
 }
 
 func (e *mongoConnEntry) getLastUsed() time.Time {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
+
 	return e.lastUsedAt
 }
 
@@ -272,12 +276,15 @@ func NewMongoPoolManagerWithConfig(cfg MongoPoolManagerConfig) (MongoPoolManager
 	if cfg.MaxConnections <= 0 {
 		cfg.MaxConnections = 100
 	}
+
 	if cfg.IdleTimeout <= 0 {
 		cfg.IdleTimeout = 30 * time.Minute
 	}
+
 	if cfg.CleanupInterval <= 0 {
 		cfg.CleanupInterval = 5 * time.Minute
 	}
+
 	if cfg.MaxPoolSize <= 0 {
 		cfg.MaxPoolSize = 100
 	}
@@ -386,6 +393,7 @@ func (pm *mongoPoolManagerImpl) GetDatabase(ctx context.Context, tenantID, appli
 
 	// Get or create client based on isolation mode
 	var client *mongo.Client
+
 	var collectionPrefix string
 
 	switch config.IsolationMode {
@@ -488,14 +496,18 @@ func (pm *mongoPoolManagerImpl) getClientSchemaMode(ctx context.Context, tenantI
 	// Check if we already have mapping to shared connection
 	pm.mu.RLock()
 	sharedURI, mapped := pm.tenantToSharedConn[connKey]
+
 	var entry *mongoConnEntry
+
 	if mapped {
 		entry = pm.sharedConns[sharedURI]
 	}
+
 	pm.mu.RUnlock()
 
 	if entry != nil && entry.conn != nil && entry.conn.Connected {
 		entry.updateLastUsed()
+
 		return entry.conn.GetDB(ctx)
 	}
 
@@ -505,10 +517,13 @@ func (pm *mongoPoolManagerImpl) getClientSchemaMode(ctx context.Context, tenantI
 
 	// Check if shared connection exists for this URI
 	var exists bool
+
 	if entry, exists = pm.sharedConns[mongoConfig.URI]; exists && entry != nil && entry.conn != nil && entry.conn.Connected {
 		// Map this tenant to the shared connection
 		pm.tenantToSharedConn[connKey] = mongoConfig.URI
+
 		entry.updateLastUsed()
+
 		return entry.conn.GetDB(ctx)
 	}
 
@@ -580,10 +595,13 @@ func (pm *mongoPoolManagerImpl) CloseClient(tenantID, applicationName string) er
 				return fmt.Errorf("failed to disconnect client: %w", err)
 			}
 		}
+
 		delete(pm.tenantConns, connKey)
+
 		if pm.logger != nil {
 			pm.logger.Infof("Closed tenant MongoDB connection for %s", connKey)
 		}
+
 		return nil
 	}
 
@@ -595,6 +613,7 @@ func (pm *mongoPoolManagerImpl) CloseClient(tenantID, applicationName string) er
 
 		// Check if any other tenants are using this shared connection
 		stillInUse := false
+
 		for _, uri := range pm.tenantToSharedConn {
 			if uri == sharedURI {
 				stillInUse = true
@@ -610,12 +629,15 @@ func (pm *mongoPoolManagerImpl) CloseClient(tenantID, applicationName string) er
 						return fmt.Errorf("failed to disconnect shared client: %w", err)
 					}
 				}
+
 				delete(pm.sharedConns, sharedURI)
+
 				if pm.logger != nil {
 					pm.logger.Infof("Closed shared MongoDB connection %s", pm.sanitizeURIForLog(sharedURI))
 				}
 			}
 		}
+
 		return nil
 	}
 
@@ -650,6 +672,7 @@ func (pm *mongoPoolManagerImpl) CloseAll(ctx context.Context) error {
 			}
 		}
 	}
+
 	pm.tenantConns = make(map[string]*mongoConnEntry)
 
 	// Close all shared connections
@@ -660,6 +683,7 @@ func (pm *mongoPoolManagerImpl) CloseAll(ctx context.Context) error {
 			}
 		}
 	}
+
 	pm.sharedConns = make(map[string]*mongoConnEntry)
 	pm.tenantToSharedConn = make(map[string]string)
 
@@ -733,6 +757,7 @@ func (pm *mongoPoolManagerImpl) doCleanup() {
 
 	now := time.Now()
 	threshold := now.Add(-pm.idleTimeout)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -742,7 +767,9 @@ func (pm *mongoPoolManagerImpl) doCleanup() {
 			if entry.conn != nil && entry.conn.DB != nil {
 				_ = entry.conn.DB.Disconnect(ctx) // Ignore errors during cleanup
 			}
+
 			delete(pm.tenantConns, key)
+
 			if pm.logger != nil {
 				pm.logger.Infof("Cleaned up idle tenant MongoDB connection: %s", key)
 			}
@@ -754,6 +781,7 @@ func (pm *mongoPoolManagerImpl) doCleanup() {
 		if entry.getLastUsed().Before(threshold) {
 			// Check if any tenant is still mapped to this connection
 			stillInUse := false
+
 			for _, mappedURI := range pm.tenantToSharedConn {
 				if mappedURI == uri {
 					stillInUse = true
@@ -765,7 +793,9 @@ func (pm *mongoPoolManagerImpl) doCleanup() {
 				if entry.conn != nil && entry.conn.DB != nil {
 					_ = entry.conn.DB.Disconnect(ctx)
 				}
+
 				delete(pm.sharedConns, uri)
+
 				if pm.logger != nil {
 					pm.logger.Infof("Cleaned up idle shared MongoDB connection: %s", pm.sanitizeURIForLog(uri))
 				}
@@ -778,7 +808,9 @@ func (pm *mongoPoolManagerImpl) doCleanup() {
 // Must be called with pm.mu held.
 func (pm *mongoPoolManagerImpl) evictLRUConn(ctx context.Context) error {
 	var oldestKey string
+
 	var oldestTime time.Time
+
 	var isShared bool
 
 	// Find LRU in tenant connections
@@ -814,6 +846,7 @@ func (pm *mongoPoolManagerImpl) evictLRUConn(ctx context.Context) error {
 		if entry.conn != nil && entry.conn.DB != nil {
 			_ = entry.conn.DB.Disconnect(disconnectCtx)
 		}
+
 		delete(pm.sharedConns, oldestKey)
 
 		// Remove all tenant mappings to this URI
@@ -827,6 +860,7 @@ func (pm *mongoPoolManagerImpl) evictLRUConn(ctx context.Context) error {
 		if entry.conn != nil && entry.conn.DB != nil {
 			_ = entry.conn.DB.Disconnect(disconnectCtx)
 		}
+
 		delete(pm.tenantConns, oldestKey)
 	}
 
@@ -877,6 +911,7 @@ func generateCollectionPrefix(tenantID string) string {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' {
 			return r
 		}
+
 		return '_'
 	}, tenantID)
 

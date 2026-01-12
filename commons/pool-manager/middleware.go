@@ -341,6 +341,7 @@ func (m *middlewareImpl) shouldSkipPath(path string) bool {
 			return true
 		}
 	}
+
 	return false
 }
 

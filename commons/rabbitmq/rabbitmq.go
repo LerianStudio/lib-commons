@@ -49,6 +49,7 @@ func (rc *RabbitMQConnection) Connect() error {
 		}
 
 		rc.Logger.Error("failed to open channel on rabbitmq", zap.Error(err))
+
 		return fmt.Errorf("failed to open channel on rabbitmq: %w", err)
 	}
 
