@@ -78,14 +78,27 @@ func (sm *ServerManager) validateConfiguration() error {
 	return nil
 }
 
-// StartWithGracefulShutdownWithError validates configuration before starting servers.
-// Returns an error if no servers are configured instead of calling Fatal.
-func (sm *ServerManager) StartWithGracefulShutdownWithError() error {
+// initServers validates configuration and starts servers without blocking.
+// Returns an error if validation fails. Does not call Fatal.
+func (sm *ServerManager) initServers() error {
 	if err := sm.validateConfiguration(); err != nil {
 		return err
 	}
 
-	sm.StartWithGracefulShutdown()
+	sm.startServers()
+
+	return nil
+}
+
+// StartWithGracefulShutdownWithError validates configuration and starts servers.
+// Returns an error if no servers are configured instead of calling Fatal.
+// Blocks until shutdown signal is received or shutdown channel is closed.
+func (sm *ServerManager) StartWithGracefulShutdownWithError() error {
+	if err := sm.initServers(); err != nil {
+		return err
+	}
+
+	sm.handleShutdown()
 
 	return nil
 }
@@ -94,7 +107,7 @@ func (sm *ServerManager) StartWithGracefulShutdownWithError() error {
 // It will call Fatal if no servers are configured (backward compatible behavior).
 // Use StartWithGracefulShutdownWithError() for proper error handling instead.
 func (sm *ServerManager) StartWithGracefulShutdown() {
-	if err := sm.validateConfiguration(); err != nil {
+	if err := sm.initServers(); err != nil {
 		sm.logFatal(err.Error())
 		return
 	}
@@ -105,7 +118,6 @@ func (sm *ServerManager) StartWithGracefulShutdown() {
 			if sm.logger != nil {
 				sm.logger.Errorf("Fatal error (panic): %v", r)
 			} else {
-				// Fallback to standard log if logger is nil
 				fmt.Printf("Fatal error (panic): %v\n", r)
 			}
 
@@ -115,10 +127,6 @@ func (sm *ServerManager) StartWithGracefulShutdown() {
 		}
 	}()
 
-	// Start configured servers
-	sm.startServers()
-
-	// Handle graceful shutdown
 	sm.handleShutdown()
 }
 
