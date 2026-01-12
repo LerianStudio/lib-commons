@@ -177,6 +177,9 @@ type mongoPoolManagerImpl struct {
 	// cleanup goroutine control
 	cleanupStop chan struct{}
 	cleanupDone chan struct{}
+
+	// ctx is the context for the cleanup goroutine lifecycle
+	ctx context.Context
 }
 
 // MongoPoolManagerOption is a function that configures a MongoPoolManager.
@@ -232,6 +235,17 @@ func WithMongoMaxPoolSize(size uint64) MongoPoolManagerOption {
 	return func(pm *mongoPoolManagerImpl) {
 		if size > 0 {
 			pm.maxPoolSize = size
+		}
+	}
+}
+
+// WithMongoContext sets the context for the pool manager lifecycle.
+// When the context is cancelled, the cleanup goroutine will stop.
+// If not set, the cleanup goroutine will only stop when CloseAll is called.
+func WithMongoContext(ctx context.Context) MongoPoolManagerOption {
+	return func(pm *mongoPoolManagerImpl) {
+		if ctx != nil {
+			pm.ctx = ctx
 		}
 	}
 }
@@ -734,6 +748,7 @@ func (pm *mongoPoolManagerImpl) Stats() map[string]MongoPoolStats {
 }
 
 // cleanupIdleConns runs in the background and closes idle connections.
+// It respects both the cleanupStop channel and the context cancellation.
 func (pm *mongoPoolManagerImpl) cleanupIdleConns() {
 	defer close(pm.cleanupDone)
 
@@ -744,10 +759,22 @@ func (pm *mongoPoolManagerImpl) cleanupIdleConns() {
 		select {
 		case <-pm.cleanupStop:
 			return
+		case <-pm.getContextDone():
+			return
 		case <-ticker.C:
 			pm.doCleanup()
 		}
 	}
+}
+
+// getContextDone returns the Done channel from the context, or a nil channel if no context is set.
+// A nil channel blocks forever, which is the desired behavior when no context is provided.
+func (pm *mongoPoolManagerImpl) getContextDone() <-chan struct{} {
+	if pm.ctx != nil {
+		return pm.ctx.Done()
+	}
+
+	return nil
 }
 
 // doCleanup performs the actual cleanup of idle connections.
