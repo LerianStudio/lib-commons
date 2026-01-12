@@ -262,7 +262,7 @@ func InitializeTelemetryWithError(cfg *TelemetryConfig) (*Telemetry, error) {
 func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
 	telemetry, err := InitializeTelemetryWithError(cfg)
 	if err != nil {
-		if cfg == nil || errors.Is(err, ErrNilTelemetryConfig) {
+		if cfg == nil || cfg.Logger == nil || errors.Is(err, ErrNilTelemetryConfig) || errors.Is(err, ErrNilTelemetryLogger) {
 			stdlog.Fatalf("%v", err)
 		}
 

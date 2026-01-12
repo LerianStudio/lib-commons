@@ -3,6 +3,7 @@ package server_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/server"
 	"github.com/gofiber/fiber/v2"
@@ -89,8 +90,12 @@ func TestStartWithGracefulShutdownWithError_HTTPServer_Success(t *testing.T) {
 
 	close(shutdownChan)
 
-	err := <-done
-	assert.NoError(t, err, "StartWithGracefulShutdownWithError should complete without error")
+	select {
+	case err := <-done:
+		assert.NoError(t, err, "StartWithGracefulShutdownWithError should complete without error")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Test timed out waiting for StartWithGracefulShutdownWithError to complete")
+	}
 }
 
 func TestStartWithGracefulShutdownWithError_GRPCServer_Success(t *testing.T) {

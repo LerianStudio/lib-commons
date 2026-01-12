@@ -21,7 +21,7 @@ type TenantValkeyClient interface {
 
 	// Set stores a value for a key within the tenant's namespace.
 	// If ttl is 0, the key has no expiration.
-	Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error
+	Set(ctx context.Context, key string, value any, ttl time.Duration) error
 
 	// Del removes one or more keys from the tenant's namespace.
 	// Returns the number of keys that were removed.
@@ -130,7 +130,7 @@ func (c *tenantValkeyClient) Get(ctx context.Context, key string) (string, error
 }
 
 // Set stores a value for a key within the tenant's namespace.
-func (c *tenantValkeyClient) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+func (c *tenantValkeyClient) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
 	if ctx == nil {
 		return fmt.Errorf("context cannot be nil")
 	}

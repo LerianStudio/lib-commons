@@ -324,7 +324,7 @@ func (pm *postgresPoolManagerImpl) GetConnection(ctx context.Context, tenantID, 
 }
 
 // getConnectionDatabaseMode returns a connection from a dedicated PostgresConnection per tenant.
-func (pm *postgresPoolManagerImpl) getConnectionDatabaseMode(ctx context.Context, tenantID, appName string, pgConfig *PostgreSQLConfig) (dbresolver.DB, error) {
+func (pm *postgresPoolManagerImpl) getConnectionDatabaseMode(_ context.Context, tenantID, appName string, pgConfig *PostgreSQLConfig) (dbresolver.DB, error) {
 	poolKey := pm.makePoolKey(tenantID, appName)
 
 	// Check if connection exists
@@ -426,7 +426,7 @@ func (pm *postgresPoolManagerImpl) connectWithoutMigrations(pgConn *libPostgres.
 
 // getConnectionSchemaMode returns the default connection for schema mode.
 // The caller is responsible for executing SET search_path.
-func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(ctx context.Context, tenantID, appName string, pgConfig *PostgreSQLConfig) (dbresolver.DB, error) {
+func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(_ context.Context, tenantID, appName string, pgConfig *PostgreSQLConfig) (dbresolver.DB, error) {
 	poolKey := pm.makePoolKey(tenantID, appName)
 	dsn := pm.buildDSN(pgConfig)
 

@@ -299,8 +299,8 @@ func (r *resolverImpl) setInCache(key string, config *TenantConfig) {
 }
 
 // fetchConfig makes an HTTP request to the Tenant Service and returns the configuration.
-func (r *resolverImpl) fetchConfig(ctx context.Context, url string) (*TenantConfig, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (r *resolverImpl) fetchConfig(ctx context.Context, configURL string) (*TenantConfig, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, configURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}

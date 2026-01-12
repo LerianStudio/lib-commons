@@ -373,11 +373,8 @@ func isConnectionError(err error) bool {
 
 	// Check for wrapped errors
 	var netErr interface{ Timeout() bool }
-	if errors.As(err, &netErr) {
-		return true
-	}
 
-	return false
+	return errors.As(err, &netErr)
 }
 
 // GetTenantID retrieves the tenant ID from the context.

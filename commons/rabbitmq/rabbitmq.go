@@ -59,7 +59,7 @@ func (rc *RabbitMQConnection) Connect() error {
 
 		rc.Connected = false
 		err = errors.New("can't connect rabbitmq")
-		rc.Logger.Errorf("RabbitMQ.HealthCheck failed", zap.Error(err))
+		rc.Logger.Error("RabbitMQ.HealthCheck failed", zap.Error(err))
 
 		return fmt.Errorf("rabbitmq health check failed: %w", err)
 	}

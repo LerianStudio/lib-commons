@@ -846,13 +846,8 @@ func (pm *mongoPoolManagerImpl) makeConnKey(tenantID, appName string) string {
 func (pm *mongoPoolManagerImpl) sanitizeURIForKey(uri string) string {
 	// Simple sanitization - extract host and database from URI
 	// This is for display purposes in stats only
-	sanitized := uri
-	if strings.HasPrefix(sanitized, "mongodb://") {
-		sanitized = strings.TrimPrefix(sanitized, "mongodb://")
-	}
-	if strings.HasPrefix(sanitized, "mongodb+srv://") {
-		sanitized = strings.TrimPrefix(sanitized, "mongodb+srv://")
-	}
+	sanitized := strings.TrimPrefix(uri, "mongodb://")
+	sanitized = strings.TrimPrefix(sanitized, "mongodb+srv://")
 
 	// Remove credentials if present (user:pass@)
 	if idx := strings.Index(sanitized, "@"); idx != -1 {
