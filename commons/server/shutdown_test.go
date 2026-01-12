@@ -73,32 +73,71 @@ func TestErrNoServersConfigured(t *testing.T) {
 	assert.Contains(t, server.ErrNoServersConfigured.Error(), "no servers configured")
 }
 
-func TestStartWithGracefulShutdownWithError_ValidationPasses_HTTPServer(t *testing.T) {
-	// Note: This test validates that configuration with an HTTP server passes validation.
-	// We test the validation logic WITHOUT actually starting the server because:
-	// 1. Starting the server blocks on signal handling
-	// 2. The logger requirement would cause issues in tests
-	//
-	// Instead, we verify the error is NOT ErrNoServersConfigured.
+func TestStartWithGracefulShutdownWithError_HTTPServer_Success(t *testing.T) {
 	app := fiber.New()
+	shutdownChan := make(chan struct{})
 
-	// Create manager with HTTP server but without starting
 	sm := server.NewServerManager(nil, nil, nil).
-		WithHTTPServer(app, ":0")
+		WithHTTPServer(app, ":0").
+		WithShutdownChannel(shutdownChan)
 
-	// The only validation error possible is ErrNoServersConfigured
-	// Since we have a server configured, this should not be the error
-	// Note: We cannot call StartWithGracefulShutdownWithError because it requires a logger
-	// This test documents the validation behavior
-	assert.NotNil(t, sm, "ServerManager should be created with HTTP server")
+	done := make(chan error, 1)
+
+	go func() {
+		done <- sm.StartWithGracefulShutdownWithError()
+	}()
+
+	close(shutdownChan)
+
+	err := <-done
+	assert.NoError(t, err, "StartWithGracefulShutdownWithError should complete without error")
 }
 
-func TestStartWithGracefulShutdownWithError_ValidationPasses_GRPCServer(t *testing.T) {
-	// Test that gRPC server configuration creates a valid manager
+func TestStartWithGracefulShutdownWithError_GRPCServer_Success(t *testing.T) {
 	grpcServer := grpc.NewServer()
+	shutdownChan := make(chan struct{})
 
 	sm := server.NewServerManager(nil, nil, nil).
-		WithGRPCServer(grpcServer, ":0")
+		WithGRPCServer(grpcServer, ":0").
+		WithShutdownChannel(shutdownChan)
 
-	assert.NotNil(t, sm, "ServerManager should be created with gRPC server")
+	done := make(chan error, 1)
+
+	go func() {
+		done <- sm.StartWithGracefulShutdownWithError()
+	}()
+
+	close(shutdownChan)
+
+	err := <-done
+	assert.NoError(t, err, "StartWithGracefulShutdownWithError should complete without error")
+}
+
+func TestStartWithGracefulShutdownWithError_BothServers_Success(t *testing.T) {
+	app := fiber.New()
+	grpcServer := grpc.NewServer()
+	shutdownChan := make(chan struct{})
+
+	sm := server.NewServerManager(nil, nil, nil).
+		WithHTTPServer(app, ":0").
+		WithGRPCServer(grpcServer, ":0").
+		WithShutdownChannel(shutdownChan)
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- sm.StartWithGracefulShutdownWithError()
+	}()
+
+	close(shutdownChan)
+
+	err := <-done
+	assert.NoError(t, err, "StartWithGracefulShutdownWithError should complete without error")
+}
+
+func TestWithShutdownChannel(t *testing.T) {
+	shutdownChan := make(chan struct{})
+	sm := server.NewServerManager(nil, nil, nil).
+		WithShutdownChannel(shutdownChan)
+	assert.NotNil(t, sm, "WithShutdownChannel should return a non-nil instance")
 }

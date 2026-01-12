@@ -29,6 +29,7 @@ type ServerManager struct {
 	httpAddress    string
 	grpcAddress    string
 	serversStarted chan struct{}
+	shutdownChan   <-chan struct{}
 }
 
 // NewServerManager creates a new instance of ServerManager.
@@ -61,17 +62,16 @@ func (sm *ServerManager) WithGRPCServer(server *grpc.Server, address string) *Se
 	return sm
 }
 
+// WithShutdownChannel configures a custom shutdown channel for the ServerManager.
+// This allows tests to trigger shutdown deterministically instead of relying on OS signals.
+func (sm *ServerManager) WithShutdownChannel(ch <-chan struct{}) *ServerManager {
+	sm.shutdownChan = ch
+
+	return sm
+}
+
 func (sm *ServerManager) validateConfiguration() error {
-	total := 0
-	if sm.httpServer != nil {
-		total++
-	}
-
-	if sm.grpcServer != nil {
-		total++
-	}
-
-	if total == 0 {
+	if sm.httpServer == nil && sm.grpcServer == nil {
 		return ErrNoServersConfigured
 	}
 
@@ -95,7 +95,7 @@ func (sm *ServerManager) StartWithGracefulShutdownWithError() error {
 // Use StartWithGracefulShutdownWithError() for proper error handling instead.
 func (sm *ServerManager) StartWithGracefulShutdown() {
 	if err := sm.validateConfiguration(); err != nil {
-		sm.logger.Fatal(err.Error())
+		sm.logFatal(err.Error())
 		return
 	}
 
@@ -132,12 +132,10 @@ func (sm *ServerManager) startServers() {
 	// Start HTTP server if configured
 	if sm.httpServer != nil {
 		go func() {
-			sm.logger.Infof("Starting HTTP server on %s", sm.httpAddress)
+			sm.logInfof("Starting HTTP server on %s", sm.httpAddress)
 
 			if err := sm.httpServer.Listen(sm.httpAddress); err != nil {
-				// During normal shutdown, Listen() will return an error
-				// We only want to log unexpected errors
-				sm.logger.Errorf("HTTP server error: %v", err)
+				sm.logErrorf("HTTP server error: %v", err)
 			}
 		}()
 
@@ -147,25 +145,23 @@ func (sm *ServerManager) startServers() {
 	// Start gRPC server if configured
 	if sm.grpcServer != nil {
 		go func() {
-			sm.logger.Infof("Starting gRPC server on %s", sm.grpcAddress)
+			sm.logInfof("Starting gRPC server on %s", sm.grpcAddress)
 
 			listener, err := net.Listen("tcp", sm.grpcAddress)
 			if err != nil {
-				sm.logger.Errorf("Failed to listen on gRPC address: %v", err)
+				sm.logErrorf("Failed to listen on gRPC address: %v", err)
 				return
 			}
 
 			if err := sm.grpcServer.Serve(listener); err != nil {
-				// During normal shutdown, Serve() will return an error
-				// We only want to log unexpected errors
-				sm.logger.Errorf("gRPC server error: %v", err)
+				sm.logErrorf("gRPC server error: %v", err)
 			}
 		}()
 
 		started++
 	}
 
-	sm.logger.Infof("Started %d server(s)", started)
+	sm.logInfof("Started %d server(s)", started)
 
 	close(sm.serversStarted)
 }
@@ -177,6 +173,13 @@ func (sm *ServerManager) logInfo(msg string) {
 	}
 }
 
+// logInfof safely logs a formatted info message if logger is available
+func (sm *ServerManager) logInfof(format string, args ...any) {
+	if sm.logger != nil {
+		sm.logger.Infof(format, args...)
+	}
+}
+
 // logErrorf safely logs an error message if logger is available
 func (sm *ServerManager) logErrorf(format string, args ...any) {
 	if sm.logger != nil {
@@ -184,18 +187,28 @@ func (sm *ServerManager) logErrorf(format string, args ...any) {
 	}
 }
 
-// handleShutdown sets up signal handling and executes the shutdown sequence
-// when a termination signal is received.
-func (sm *ServerManager) handleShutdown() {
-	// Create channel for shutdown signals
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+// logFatal safely logs a fatal message if logger is available, otherwise prints to stdout
+func (sm *ServerManager) logFatal(msg string) {
+	if sm.logger != nil {
+		sm.logger.Fatal(msg)
+	} else {
+		fmt.Println(msg)
+	}
+}
 
-	// Block until we receive a signal
-	<-c
+// handleShutdown sets up signal handling and executes the shutdown sequence
+// when a termination signal is received or when the shutdown channel is closed.
+func (sm *ServerManager) handleShutdown() {
+	if sm.shutdownChan != nil {
+		<-sm.shutdownChan
+	} else {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+		<-c
+	}
+
 	sm.logInfo("Gracefully shutting down all servers...")
 
-	// Execute shutdown sequence
 	sm.executeShutdown()
 }
 
