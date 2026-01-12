@@ -292,7 +292,7 @@ func ReplaceAttributes(ctx context.Context, kv ...attribute.KeyValue) context.Co
 // a new deadline. The returned context's Deadline() will return the parent's deadline.
 func WithTimeoutSafe(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc, error) {
 	if parent == nil {
-		return nil, func() {}, ErrNilParentContext
+		return nil, nil, ErrNilParentContext
 	}
 
 	if deadline, ok := parent.Deadline(); ok {
