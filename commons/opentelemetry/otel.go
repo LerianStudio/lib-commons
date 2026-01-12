@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	stdlog "log"
 	"maps"
 	"net/http"
 	"strings"
@@ -261,6 +262,10 @@ func InitializeTelemetryWithError(cfg *TelemetryConfig) (*Telemetry, error) {
 func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
 	telemetry, err := InitializeTelemetryWithError(cfg)
 	if err != nil {
+		if cfg == nil || errors.Is(err, ErrNilTelemetryConfig) {
+			stdlog.Fatalf("%v", err)
+		}
+
 		cfg.Logger.Fatalf("%v", err)
 	}
 
