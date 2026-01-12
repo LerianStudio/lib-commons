@@ -1,22 +1,19 @@
 package zap
 
 import (
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
 
 func TestInitializeLogger(t *testing.T) {
-	os.Setenv("ENV_NAME", "production")
-	defer os.Unsetenv("ENV_NAME")
+	t.Setenv("ENV_NAME", "production")
 	logger := InitializeLogger()
 	assert.NotNil(t, logger)
 }
 
 func TestInitializeLoggerWithError_Success(t *testing.T) {
-	os.Setenv("ENV_NAME", "production")
-	defer os.Unsetenv("ENV_NAME")
+	t.Setenv("ENV_NAME", "production")
 
 	logger, err := InitializeLoggerWithError()
 
@@ -25,8 +22,7 @@ func TestInitializeLoggerWithError_Success(t *testing.T) {
 }
 
 func TestInitializeLoggerWithError_Development(t *testing.T) {
-	os.Setenv("ENV_NAME", "development")
-	defer os.Unsetenv("ENV_NAME")
+	t.Setenv("ENV_NAME", "development")
 
 	logger, err := InitializeLoggerWithError()
 
@@ -35,12 +31,8 @@ func TestInitializeLoggerWithError_Development(t *testing.T) {
 }
 
 func TestInitializeLoggerWithError_CustomLogLevel(t *testing.T) {
-	os.Setenv("ENV_NAME", "production")
-	os.Setenv("LOG_LEVEL", "warn")
-	defer func() {
-		os.Unsetenv("ENV_NAME")
-		os.Unsetenv("LOG_LEVEL")
-	}()
+	t.Setenv("ENV_NAME", "production")
+	t.Setenv("LOG_LEVEL", "warn")
 
 	logger, err := InitializeLoggerWithError()
 
@@ -49,12 +41,8 @@ func TestInitializeLoggerWithError_CustomLogLevel(t *testing.T) {
 }
 
 func TestInitializeLoggerWithError_InvalidLogLevel(t *testing.T) {
-	os.Setenv("ENV_NAME", "production")
-	os.Setenv("LOG_LEVEL", "invalid_level")
-	defer func() {
-		os.Unsetenv("ENV_NAME")
-		os.Unsetenv("LOG_LEVEL")
-	}()
+	t.Setenv("ENV_NAME", "production")
+	t.Setenv("LOG_LEVEL", "invalid_level")
 
 	logger, err := InitializeLoggerWithError()
 
@@ -70,8 +58,9 @@ func TestInitializeLoggerWithError_InvalidLogLevel(t *testing.T) {
 // call is very unlikely to fail. The following test documents this behavior
 // and verifies that the function handles the error path correctly when Build fails.
 //
-// The error path IS covered in the implementation:
-//   - Line 47-48: if err != nil { return nil, fmt.Errorf("can't initialize zap logger: %w", err) }
+// The error path IS covered in InitializeLoggerWithError (injector.go):
+// When zap.Build() fails, the function returns a wrapped error via
+// fmt.Errorf("can't initialize zap logger: %w", err)
 //
 // To trigger an actual error in Build(), one would need to:
 //   - Provide an invalid output path (not possible with current implementation)
@@ -92,7 +81,6 @@ func TestInitializeLoggerWithError_ErrorPathDocumentation(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, logger)
 
-	// The error path (lines 47-48 in injector.go) wraps errors with:
-	// fmt.Errorf("can't initialize zap logger: %w", err)
+	// InitializeLoggerWithError wraps errors with fmt.Errorf("can't initialize zap logger: %w", err)
 	// This ensures proper error chaining for callers using errors.Is() or errors.As()
 }
