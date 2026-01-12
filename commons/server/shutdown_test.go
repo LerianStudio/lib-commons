@@ -114,8 +114,12 @@ func TestStartWithGracefulShutdownWithError_GRPCServer_Success(t *testing.T) {
 
 	close(shutdownChan)
 
-	err := <-done
-	assert.NoError(t, err, "StartWithGracefulShutdownWithError should complete without error")
+	select {
+	case err := <-done:
+		assert.NoError(t, err, "StartWithGracefulShutdownWithError should complete without error")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Test timed out waiting for StartWithGracefulShutdownWithError to complete")
+	}
 }
 
 func TestStartWithGracefulShutdownWithError_BothServers_Success(t *testing.T) {
@@ -136,8 +140,12 @@ func TestStartWithGracefulShutdownWithError_BothServers_Success(t *testing.T) {
 
 	close(shutdownChan)
 
-	err := <-done
-	assert.NoError(t, err, "StartWithGracefulShutdownWithError should complete without error")
+	select {
+	case err := <-done:
+		assert.NoError(t, err, "StartWithGracefulShutdownWithError should complete without error")
+	case <-time.After(5 * time.Second):
+		t.Fatal("Test timed out waiting for StartWithGracefulShutdownWithError to complete")
+	}
 }
 
 func TestWithShutdownChannel(t *testing.T) {
