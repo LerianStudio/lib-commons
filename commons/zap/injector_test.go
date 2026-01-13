@@ -60,6 +60,8 @@ func TestInitializeLoggerWithError_CustomLogLevel(t *testing.T) {
 	assert.NotNil(t, logger)
 }
 
+// This test must not call t.Parallel() because it mutates the global log.Writer
+// via log.SetOutput(&buf) and relies on the defer to restore originalOutput.
 func TestInitializeLoggerWithError_InvalidLogLevel(t *testing.T) {
 	t.Setenv("ENV_NAME", "production")
 	t.Setenv("LOG_LEVEL", "invalid_level")

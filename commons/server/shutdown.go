@@ -70,8 +70,9 @@ func (sm *ServerManager) WithShutdownChannel(ch <-chan struct{}) *ServerManager 
 	return sm
 }
 
-// ServersStarted returns a channel that is closed when all servers have started.
-// This is useful for tests to wait for server startup before triggering shutdown.
+// ServersStarted returns a channel that is closed when server goroutines have been launched.
+// Note: This signals that goroutines were spawned, not that sockets are bound and ready to accept connections.
+// This is useful for tests to coordinate shutdown timing after server launch.
 func (sm *ServerManager) ServersStarted() <-chan struct{} {
 	return sm.serversStarted
 }
@@ -176,8 +177,9 @@ func (sm *ServerManager) startServers() {
 		started++
 	}
 
-	sm.logInfof("Started %d server(s)", started)
+	sm.logInfof("Launched %d server goroutine(s)", started)
 
+	// Signal that server goroutines have been launched (not that sockets are bound).
 	close(sm.serversStarted)
 }
 
