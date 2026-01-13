@@ -2,6 +2,8 @@ package redis
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -432,4 +434,132 @@ func TestRedisWithTLSConfig(t *testing.T) {
 			assert.True(t, redisConn.UseTLS)
 		})
 	}
+}
+
+func TestRedisConnection_ConcurrentAccess(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("Failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	logger := &log.GoLogger{Level: log.InfoLevel}
+
+	t.Run("concurrent GetClient calls return same instance", func(t *testing.T) {
+		rc := &RedisConnection{
+			Mode:    ModeStandalone,
+			Address: []string{mr.Addr()},
+			Logger:  logger,
+		}
+
+		const goroutines = 100
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+
+		errs := make(chan error, goroutines)
+		clients := make(chan interface{}, goroutines)
+
+		for i := 0; i < goroutines; i++ {
+			go func() {
+				defer wg.Done()
+				client, err := rc.GetClient(context.Background())
+				if err != nil {
+					errs <- err
+					return
+				}
+				if client == nil {
+					errs <- errors.New("client is nil")
+					return
+				}
+				clients <- client
+			}()
+		}
+
+		wg.Wait()
+		close(errs)
+		close(clients)
+
+		for err := range errs {
+			t.Errorf("concurrent GetClient error: %v", err)
+		}
+
+		assert.True(t, rc.Connected)
+		assert.NotNil(t, rc.Client)
+
+		var firstClient interface{}
+		for client := range clients {
+			if firstClient == nil {
+				firstClient = client
+			} else {
+				assert.Same(t, firstClient, client, "all goroutines should get same client instance")
+			}
+		}
+	})
+
+	t.Run("concurrent Connect calls", func(t *testing.T) {
+		rc := &RedisConnection{
+			Mode:    ModeStandalone,
+			Address: []string{mr.Addr()},
+			Logger:  logger,
+		}
+
+		const goroutines = 100
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+
+		errs := make(chan error, goroutines)
+
+		for i := 0; i < goroutines; i++ {
+			go func() {
+				defer wg.Done()
+				if err := rc.Connect(context.Background()); err != nil {
+					errs <- err
+				}
+			}()
+		}
+
+		wg.Wait()
+		close(errs)
+
+		for err := range errs {
+			t.Errorf("concurrent Connect error: %v", err)
+		}
+
+		assert.True(t, rc.Connected)
+		assert.NotNil(t, rc.Client)
+	})
+
+	t.Run("concurrent GetClient with connection failure", func(t *testing.T) {
+		rc := &RedisConnection{
+			Mode:        ModeStandalone,
+			Address:     []string{"127.0.0.1:1"},
+			Logger:      logger,
+			DialTimeout: 100 * time.Millisecond,
+		}
+
+		const goroutines = 10
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+
+		var errCount int
+		var mu sync.Mutex
+
+		for i := 0; i < goroutines; i++ {
+			go func() {
+				defer wg.Done()
+				_, err := rc.GetClient(context.Background())
+				if err != nil {
+					mu.Lock()
+					errCount++
+					mu.Unlock()
+				}
+			}()
+		}
+
+		wg.Wait()
+
+		assert.Equal(t, goroutines, errCount, "all goroutines should receive an error")
+		assert.False(t, rc.Connected)
+		assert.Nil(t, rc.Client)
+	})
 }

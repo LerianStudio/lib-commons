@@ -65,6 +65,13 @@ type RedisConnection struct {
 
 // Connect initializes a Redis connection
 func (rc *RedisConnection) Connect(ctx context.Context) error {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+
+	return rc.connectLocked(ctx)
+}
+
+func (rc *RedisConnection) connectLocked(ctx context.Context) error {
 	rc.Logger.Info("Connecting to Redis/Valkey...")
 
 	rc.InitVariables()
@@ -125,7 +132,7 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 	rc.Client = rdb
 	rc.Connected = true
 
-	switch rc.Client.(type) {
+	switch rdb.(type) {
 	case *redis.ClusterClient:
 		rc.Logger.Info("Connected to Redis/Valkey in CLUSTER mode ✅ \n")
 	case *redis.Client:
@@ -141,11 +148,27 @@ func (rc *RedisConnection) Connect(ctx context.Context) error {
 
 // GetClient always returns a pointer to a Redis client
 func (rc *RedisConnection) GetClient(ctx context.Context) (redis.UniversalClient, error) {
-	if rc.Client == nil {
-		if err := rc.Connect(ctx); err != nil {
-			rc.Logger.Infof("Get client connect error %v", zap.Error(err))
-			return nil, err
-		}
+	rc.mu.RLock()
+
+	if rc.Client != nil {
+		client := rc.Client
+		rc.mu.RUnlock()
+
+		return client, nil
+	}
+
+	rc.mu.RUnlock()
+
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+
+	if rc.Client != nil {
+		return rc.Client, nil
+	}
+
+	if err := rc.connectLocked(ctx); err != nil {
+		rc.Logger.Infof("Get client connect error %v", zap.Error(err))
+		return nil, err
 	}
 
 	return rc.Client, nil
@@ -153,8 +176,21 @@ func (rc *RedisConnection) GetClient(ctx context.Context) (redis.UniversalClient
 
 // Close closes the Redis connection
 func (rc *RedisConnection) Close() error {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+
+	return rc.closeLocked()
+}
+
+// closeLocked closes the Redis connection without acquiring the lock.
+// Caller must hold rc.mu write lock.
+func (rc *RedisConnection) closeLocked() error {
 	if rc.Client != nil {
-		return rc.Client.Close()
+		err := rc.Client.Close()
+		rc.Client = nil
+		rc.Connected = false
+
+		return err
 	}
 
 	return nil
@@ -237,9 +273,9 @@ func (rc *RedisConnection) refreshTokenLoop(ctx context.Context) {
 					rc.lastRefreshInstant = time.Now()
 					rc.Logger.Info("IAM token refreshed...")
 
-					_ = rc.Close()
+					_ = rc.closeLocked()
 
-					_ = rc.Connect(ctx)
+					_ = rc.connectLocked(ctx)
 				}
 
 				rc.mu.Unlock()
