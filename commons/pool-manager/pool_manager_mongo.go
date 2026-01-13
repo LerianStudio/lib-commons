@@ -592,6 +592,47 @@ func (pm *mongoPoolManagerImpl) GetDefaultConnection() *libMongo.MongoConnection
 	return pm.defaultConn
 }
 
+// closeTenantConn closes a tenant connection and removes it from the map.
+func (pm *mongoPoolManagerImpl) closeTenantConn(ctx context.Context, connKey string, entry *mongoConnEntry) error {
+	if err := pm.disconnectMongoConn(ctx, entry); err != nil {
+		return fmt.Errorf("failed to disconnect client: %w", err)
+	}
+
+	delete(pm.tenantConns, connKey)
+
+	if pm.logger != nil {
+		pm.logger.Infof("Closed tenant MongoDB connection for %s", connKey)
+	}
+
+	return nil
+}
+
+// closeSharedConnIfUnused removes mapping and closes shared connection if no longer used.
+func (pm *mongoPoolManagerImpl) closeSharedConnIfUnused(ctx context.Context, connKey, sharedURI string) error {
+	delete(pm.tenantToSharedConn, connKey)
+
+	if pm.isSharedConnInUse(sharedURI) {
+		return nil
+	}
+
+	entry, exists := pm.sharedConns[sharedURI]
+	if !exists {
+		return nil
+	}
+
+	if err := pm.disconnectMongoConn(ctx, entry); err != nil {
+		return fmt.Errorf("failed to disconnect shared client: %w", err)
+	}
+
+	delete(pm.sharedConns, sharedURI)
+
+	if pm.logger != nil {
+		pm.logger.Infof("Closed shared MongoDB connection %s", pm.sanitizeURIForLog(sharedURI))
+	}
+
+	return nil
+}
+
 // CloseClient closes the MongoDB client for a specific tenant and application.
 func (pm *mongoPoolManagerImpl) CloseClient(tenantID, applicationName string) error {
 	connKey := pm.makeConnKey(tenantID, applicationName)
@@ -602,57 +643,12 @@ func (pm *mongoPoolManagerImpl) CloseClient(tenantID, applicationName string) er
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Check tenant connections (database mode)
 	if entry, exists := pm.tenantConns[connKey]; exists {
-		if entry.conn != nil && entry.conn.DB != nil {
-			if err := entry.conn.DB.Disconnect(ctx); err != nil {
-				return fmt.Errorf("failed to disconnect client: %w", err)
-			}
-		}
-
-		delete(pm.tenantConns, connKey)
-
-		if pm.logger != nil {
-			pm.logger.Infof("Closed tenant MongoDB connection for %s", connKey)
-		}
-
-		return nil
+		return pm.closeTenantConn(ctx, connKey, entry)
 	}
 
-	// Check if mapped to shared connection (schema mode)
 	if sharedURI, mapped := pm.tenantToSharedConn[connKey]; mapped {
-		// Just remove the mapping, don't close shared connection
-		// (other tenants might be using it)
-		delete(pm.tenantToSharedConn, connKey)
-
-		// Check if any other tenants are using this shared connection
-		stillInUse := false
-
-		for _, uri := range pm.tenantToSharedConn {
-			if uri == sharedURI {
-				stillInUse = true
-				break
-			}
-		}
-
-		// If no one else is using it, close the shared connection
-		if !stillInUse {
-			if entry, exists := pm.sharedConns[sharedURI]; exists {
-				if entry.conn != nil && entry.conn.DB != nil {
-					if err := entry.conn.DB.Disconnect(ctx); err != nil {
-						return fmt.Errorf("failed to disconnect shared client: %w", err)
-					}
-				}
-
-				delete(pm.sharedConns, sharedURI)
-
-				if pm.logger != nil {
-					pm.logger.Infof("Closed shared MongoDB connection %s", pm.sanitizeURIForLog(sharedURI))
-				}
-			}
-		}
-
-		return nil
+		return pm.closeSharedConnIfUnused(ctx, connKey, sharedURI)
 	}
 
 	return fmt.Errorf("client not found for tenant %s and application %s", tenantID, applicationName)
@@ -777,24 +773,11 @@ func (pm *mongoPoolManagerImpl) getContextDone() <-chan struct{} {
 	return nil
 }
 
-// doCleanup performs the actual cleanup of idle connections.
-func (pm *mongoPoolManagerImpl) doCleanup() {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-
-	now := time.Now()
-	threshold := now.Add(-pm.idleTimeout)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Cleanup idle tenant connections
+// cleanupIdleTenantConns removes idle tenant connections.
+func (pm *mongoPoolManagerImpl) cleanupIdleTenantConns(ctx context.Context, threshold time.Time) {
 	for key, entry := range pm.tenantConns {
 		if entry.getLastUsed().Before(threshold) {
-			if entry.conn != nil && entry.conn.DB != nil {
-				_ = entry.conn.DB.Disconnect(ctx) // Ignore errors during cleanup
-			}
-
+			_ = pm.disconnectMongoConn(ctx, entry)
 			delete(pm.tenantConns, key)
 
 			if pm.logger != nil {
@@ -802,33 +785,36 @@ func (pm *mongoPoolManagerImpl) doCleanup() {
 			}
 		}
 	}
+}
 
-	// Cleanup idle shared connections (only if no tenants are using them)
+// cleanupIdleSharedConns removes idle shared connections that are no longer in use.
+func (pm *mongoPoolManagerImpl) cleanupIdleSharedConns(ctx context.Context, threshold time.Time) {
 	for uri, entry := range pm.sharedConns {
-		if entry.getLastUsed().Before(threshold) {
-			// Check if any tenant is still mapped to this connection
-			stillInUse := false
+		if !entry.getLastUsed().Before(threshold) || pm.isSharedConnInUse(uri) {
+			continue
+		}
 
-			for _, mappedURI := range pm.tenantToSharedConn {
-				if mappedURI == uri {
-					stillInUse = true
-					break
-				}
-			}
+		_ = pm.disconnectMongoConn(ctx, entry)
+		delete(pm.sharedConns, uri)
 
-			if !stillInUse {
-				if entry.conn != nil && entry.conn.DB != nil {
-					_ = entry.conn.DB.Disconnect(ctx)
-				}
-
-				delete(pm.sharedConns, uri)
-
-				if pm.logger != nil {
-					pm.logger.Infof("Cleaned up idle shared MongoDB connection: %s", pm.sanitizeURIForLog(uri))
-				}
-			}
+		if pm.logger != nil {
+			pm.logger.Infof("Cleaned up idle shared MongoDB connection: %s", pm.sanitizeURIForLog(uri))
 		}
 	}
+}
+
+// doCleanup performs the actual cleanup of idle connections.
+func (pm *mongoPoolManagerImpl) doCleanup() {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	threshold := time.Now().Add(-pm.idleTimeout)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pm.cleanupIdleTenantConns(ctx, threshold)
+	pm.cleanupIdleSharedConns(ctx, threshold)
 }
 
 // evictLRUConn evicts the least recently used connection to make room for a new one.
@@ -893,6 +879,26 @@ func (pm *mongoPoolManagerImpl) evictLRUConn(ctx context.Context) error {
 
 	if pm.logger != nil {
 		pm.logger.Infof("Evicted LRU MongoDB connection: %s", oldestKey)
+	}
+
+	return nil
+}
+
+// isSharedConnInUse checks if any tenant is still mapped to the given shared URI.
+func (pm *mongoPoolManagerImpl) isSharedConnInUse(sharedURI string) bool {
+	for _, uri := range pm.tenantToSharedConn {
+		if uri == sharedURI {
+			return true
+		}
+	}
+
+	return false
+}
+
+// disconnectMongoConn disconnects a MongoDB connection if it exists.
+func (pm *mongoPoolManagerImpl) disconnectMongoConn(ctx context.Context, entry *mongoConnEntry) error {
+	if entry.conn != nil && entry.conn.DB != nil {
+		return entry.conn.DB.Disconnect(ctx)
 	}
 
 	return nil
