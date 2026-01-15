@@ -3,6 +3,7 @@ package rabbitmq
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sync"
@@ -37,9 +38,8 @@ func (rc *RabbitMQConnection) Connect() error {
 
 	conn, err := amqp.Dial(rc.ConnectionStringSource)
 	if err != nil {
-		rc.Logger.Fatal("failed to connect on rabbitmq", zap.Error(err))
-
-		return err
+		rc.Logger.Error("failed to connect on rabbitmq", zap.Error(err))
+		return fmt.Errorf("failed to connect to rabbitmq: %w", err)
 	}
 
 	ch, err := conn.Channel()
@@ -48,9 +48,9 @@ func (rc *RabbitMQConnection) Connect() error {
 			rc.Logger.Warn("failed to close connection during cleanup", zap.Error(closeErr))
 		}
 
-		rc.Logger.Fatal("failed to open channel on rabbitmq", zap.Error(err))
+		rc.Logger.Error("failed to open channel on rabbitmq", zap.Error(err))
 
-		return err
+		return fmt.Errorf("failed to open channel on rabbitmq: %w", err)
 	}
 
 	if ch == nil || !rc.HealthCheck() {
@@ -60,9 +60,9 @@ func (rc *RabbitMQConnection) Connect() error {
 
 		rc.Connected = false
 		err = errors.New("can't connect rabbitmq")
-		rc.Logger.Fatalf("RabbitMQ.HealthCheck: %v", zap.Error(err))
+		rc.Logger.Error("RabbitMQ.HealthCheck failed", zap.Error(err))
 
-		return err
+		return fmt.Errorf("rabbitmq health check failed: %w", err)
 	}
 
 	rc.Logger.Info("Connected on rabbitmq ✅ \n")

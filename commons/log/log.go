@@ -202,15 +202,16 @@ func (l *GoLogger) Fatalln(args ...any) {
 //nolint:ireturn
 func (l *GoLogger) WithFields(fields ...any) Logger {
 	return &GoLogger{
-		Level:  l.Level,
-		fields: fields,
+		Level:                  l.Level,
+		fields:                 fields,
+		defaultMessageTemplate: l.defaultMessageTemplate,
 	}
 }
 
 func (l *GoLogger) WithDefaultMessageTemplate(message string) Logger {
-	l.defaultMessageTemplate = message
-
 	return &GoLogger{
+		Level:                  l.Level,
+		fields:                 l.fields,
 		defaultMessageTemplate: message,
 	}
 }

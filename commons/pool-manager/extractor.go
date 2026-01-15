@@ -63,6 +63,7 @@ func (e *extractorImpl) ExtractFromJWT(token string) (string, error) {
 		if e.logger != nil {
 			e.logger.Warn("ExtractFromJWT: empty token provided")
 		}
+
 		return "", fmt.Errorf("empty token provided")
 	}
 
@@ -72,6 +73,7 @@ func (e *extractorImpl) ExtractFromJWT(token string) (string, error) {
 		if e.logger != nil {
 			e.logger.Warnf("ExtractFromJWT: invalid JWT format, expected 3 parts, got %d", len(parts))
 		}
+
 		return "", fmt.Errorf("invalid JWT format: expected 3 parts, got %d", len(parts))
 	}
 
@@ -81,6 +83,7 @@ func (e *extractorImpl) ExtractFromJWT(token string) (string, error) {
 		if e.logger != nil {
 			e.logger.Warnf("ExtractFromJWT: failed to decode payload: %v", err)
 		}
+
 		return "", fmt.Errorf("failed to decode payload: %w", err)
 	}
 
@@ -90,6 +93,7 @@ func (e *extractorImpl) ExtractFromJWT(token string) (string, error) {
 		if e.logger != nil {
 			e.logger.Warnf("ExtractFromJWT: failed to parse claims: %v", err)
 		}
+
 		return "", fmt.Errorf("failed to parse claims: %w", err)
 	}
 
@@ -99,6 +103,7 @@ func (e *extractorImpl) ExtractFromJWT(token string) (string, error) {
 		if e.logger != nil {
 			e.logger.Warnf("ExtractFromJWT: claim not found: %s", e.claimKey)
 		}
+
 		return "", fmt.Errorf("claim not found: %s", e.claimKey)
 	}
 
@@ -108,6 +113,7 @@ func (e *extractorImpl) ExtractFromJWT(token string) (string, error) {
 		if e.logger != nil {
 			e.logger.Warnf("ExtractFromJWT: claim %s is not a string: got %T", e.claimKey, claimValue)
 		}
+
 		return "", fmt.Errorf("claim %s is not a string: got %T", e.claimKey, claimValue)
 	}
 
@@ -116,6 +122,7 @@ func (e *extractorImpl) ExtractFromJWT(token string) (string, error) {
 		if e.logger != nil {
 			e.logger.Warn("ExtractFromJWT: tenant ID is empty")
 		}
+
 		return "", fmt.Errorf("tenant ID is empty")
 	}
 
@@ -132,6 +139,7 @@ func (e *extractorImpl) ExtractFromContext(ctx context.Context) (string, error) 
 		if e.logger != nil {
 			e.logger.Warn("ExtractFromContext: nil context provided")
 		}
+
 		return "", fmt.Errorf("nil context provided")
 	}
 
@@ -141,6 +149,7 @@ func (e *extractorImpl) ExtractFromContext(ctx context.Context) (string, error) 
 		if e.logger != nil {
 			e.logger.Warn("ExtractFromContext: tenant context key missing")
 		}
+
 		return "", ErrTenantContextMissing
 	}
 
@@ -150,6 +159,7 @@ func (e *extractorImpl) ExtractFromContext(ctx context.Context) (string, error) 
 		if e.logger != nil {
 			e.logger.Warnf("ExtractFromContext: tenant ID is not a string: got %T", value)
 		}
+
 		return "", fmt.Errorf("tenant ID in context is not a string: got %T", value)
 	}
 
@@ -158,6 +168,7 @@ func (e *extractorImpl) ExtractFromContext(ctx context.Context) (string, error) 
 		if e.logger != nil {
 			e.logger.Warn("ExtractFromContext: tenant ID is empty")
 		}
+
 		return "", fmt.Errorf("tenant ID is empty")
 	}
 

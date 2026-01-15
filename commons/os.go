@@ -128,7 +128,8 @@ func SetConfigFromEnvVars(s any) error {
 	return nil
 }
 
-// EnsureConfigFromEnvVars ensures that an interface will be settled using SetConfigFromEnvVars anyway.
+// Deprecated: Use SetConfigFromEnvVars instead for proper error handling.
+// EnsureConfigFromEnvVars panics on error. Prefer SetConfigFromEnvVars for graceful error handling.
 func EnsureConfigFromEnvVars(s any) any {
 	if err := SetConfigFromEnvVars(s); err != nil {
 		panic(err)

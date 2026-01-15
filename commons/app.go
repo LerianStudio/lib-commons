@@ -1,9 +1,14 @@
 package commons
 
 import (
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"errors"
 	"sync"
+
+	"github.com/LerianStudio/lib-commons/v2/commons/log"
 )
+
+// ErrLoggerNil is returned when the Logger is nil and cannot proceed.
+var ErrLoggerNil = errors.New("logger is nil")
 
 // App represents an application that will run as a deployable component.
 // It's an entrypoint at main.go.
@@ -46,7 +51,23 @@ func (l *Launcher) Add(appName string, a App) *Launcher {
 }
 
 // Run every application registered before with Run method.
+// Maintains backward compatibility - logs error internally if Logger is nil.
+// For explicit error handling, use RunWithError instead.
 func (l *Launcher) Run() {
+	if err := l.RunWithError(); err != nil {
+		if l.Logger != nil {
+			l.Logger.Errorf("Launcher error: %v", err)
+		}
+	}
+}
+
+// RunWithError runs all applications and returns an error if Logger is nil.
+// Use this method when you need explicit error handling for launcher initialization.
+func (l *Launcher) RunWithError() error {
+	if l.Logger == nil {
+		return ErrLoggerNil
+	}
+
 	count := len(l.apps)
 	l.wg.Add(count)
 
@@ -54,6 +75,8 @@ func (l *Launcher) Run() {
 
 	for name, app := range l.apps {
 		go func(name string, app App) {
+			defer l.wg.Done()
+
 			l.Logger.Info("--")
 			l.Logger.Infof("Launcher: App \u001b[33m(%s)\u001b[0m starting\n", name)
 
@@ -62,8 +85,6 @@ func (l *Launcher) Run() {
 				l.Logger.Infof("\u001b[31m%s\u001b[0m", err)
 			}
 
-			l.wg.Done()
-
 			l.Logger.Infof("Launcher: App (%s) finished\n", name)
 		}(name, app)
 	}
@@ -71,6 +92,8 @@ func (l *Launcher) Run() {
 	l.wg.Wait()
 
 	l.Logger.Info("Launcher: Terminated")
+
+	return nil
 }
 
 // NewLauncher create an instance of Launch.

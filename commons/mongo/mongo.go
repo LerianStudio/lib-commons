@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -35,15 +36,13 @@ func (mc *MongoConnection) Connect(ctx context.Context) error {
 
 	noSQLDB, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
-		mc.Logger.Fatal("failed to open connect to mongodb", zap.Error(err))
-		return err
+		mc.Logger.Error("failed to open connect to mongodb", zap.Error(err))
+		return fmt.Errorf("failed to connect to mongodb: %w", err)
 	}
 
 	if err := noSQLDB.Ping(ctx, nil); err != nil {
-		mc.Logger.Infof("MongoDBConnection.Ping %v",
-			zap.Error(err))
-
-		return err
+		mc.Logger.Error("MongoDBConnection.Ping failed", zap.Error(err))
+		return fmt.Errorf("failed to ping mongodb: %w", err)
 	}
 
 	mc.Logger.Info("Connected to mongodb ✅ \n")
@@ -69,15 +68,14 @@ func (mc *MongoConnection) GetDB(ctx context.Context) (*mongo.Client, error) {
 }
 
 // EnsureIndexes guarantees an index exists for a given collection.
-// Idempotent.
+// Idempotent. Returns error if connection or index creation fails.
 func (mc *MongoConnection) EnsureIndexes(ctx context.Context, collection string, index mongo.IndexModel) error {
 	mc.Logger.Debugf("Ensuring indexes for collection: collection=%s", collection)
 
 	client, err := mc.GetDB(ctx)
 	if err != nil {
 		mc.Logger.Warnf("Failed to get database connection for index creation: %v", err)
-
-		return nil
+		return err
 	}
 
 	db := client.Database(mc.Database)
@@ -96,8 +94,7 @@ func (mc *MongoConnection) EnsureIndexes(ctx context.Context, collection string,
 	_, err = coll.Indexes().CreateOne(ctx, index)
 	if err != nil {
 		mc.Logger.Warnf("Failed to ensure index: collection=%s, fields=%s, err=%v", collection, fields, err)
-
-		return nil
+		return err
 	}
 
 	mc.Logger.Infof("Index successfully ensured: collection=%s, fields=%s \n", collection, fields)

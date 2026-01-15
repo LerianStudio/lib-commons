@@ -1519,3 +1519,93 @@ func TestMongoPoolManager_GetDatabase_ContextCancellation(t *testing.T) {
 		assert.Contains(t, err.Error(), "context")
 	})
 }
+
+// TestMongoPoolManager_WithContext tests the WithMongoContext option.
+func TestMongoPoolManager_WithContext(t *testing.T) {
+	t.Run("Should stop cleanup goroutine when context is cancelled", func(t *testing.T) {
+		resolver := newMockResolver()
+		ctx, cancel := context.WithCancel(context.Background())
+
+		pm := NewMongoPoolManager(resolver,
+			WithMongoContext(ctx),
+			WithMongoCleanupInterval(10*time.Millisecond),
+			WithMongoLogger(&mockLogger{}),
+		).(*mongoPoolManagerImpl)
+
+		// Cancel the context
+		cancel()
+
+		// Wait a bit for the goroutine to stop
+		time.Sleep(50 * time.Millisecond)
+
+		// Check that cleanupDone is closed (goroutine stopped)
+		select {
+		case <-pm.cleanupDone:
+			// Expected: goroutine stopped
+		case <-time.After(100 * time.Millisecond):
+			t.Error("Cleanup goroutine did not stop after context cancellation")
+		}
+	})
+
+	t.Run("Should continue cleanup when no context is set", func(t *testing.T) {
+		resolver := newMockResolver()
+
+		pm := NewMongoPoolManager(resolver,
+			WithMongoCleanupInterval(10*time.Millisecond),
+			WithMongoLogger(&mockLogger{}),
+		).(*mongoPoolManagerImpl)
+
+		// cleanupDone should NOT be closed since no context was cancelled
+		select {
+		case <-pm.cleanupDone:
+			t.Error("Cleanup goroutine stopped unexpectedly")
+		case <-time.After(50 * time.Millisecond):
+			// Expected: goroutine still running
+		}
+
+		// Clean up
+		_ = pm.CloseAll(context.Background())
+	})
+
+	t.Run("Should ignore nil context in WithMongoContext option", func(t *testing.T) {
+		resolver := newMockResolver()
+
+		pm := NewMongoPoolManager(resolver,
+			WithMongoContext(nil),
+			WithMongoCleanupInterval(10*time.Millisecond),
+			WithMongoLogger(&mockLogger{}),
+		).(*mongoPoolManagerImpl)
+
+		assert.Nil(t, pm.ctx, "Context should remain nil when nil is passed")
+
+		_ = pm.CloseAll(context.Background())
+	})
+}
+
+// TestMongoPoolManager_GetContextDone tests the getContextDone method.
+func TestMongoPoolManager_GetContextDone(t *testing.T) {
+	t.Run("Should return nil channel when no context is set", func(t *testing.T) {
+		resolver := newMockResolver()
+		pm := NewMongoPoolManager(resolver, WithMongoLogger(&mockLogger{})).(*mongoPoolManagerImpl)
+		defer func() { _ = pm.CloseAll(context.Background()) }()
+
+		done := pm.getContextDone()
+		assert.Nil(t, done, "Should return nil channel when no context is set")
+	})
+
+	t.Run("Should return context Done channel when context is set", func(t *testing.T) {
+		resolver := newMockResolver()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		pm := NewMongoPoolManager(resolver,
+			WithMongoContext(ctx),
+			WithMongoLogger(&mockLogger{}),
+		).(*mongoPoolManagerImpl)
+		defer func() { _ = pm.CloseAll(context.Background()) }()
+
+		done := pm.getContextDone()
+		assert.NotNil(t, done, "Should return non-nil channel when context is set")
+		assert.Equal(t, ctx.Done(), done, "Should return the context's Done channel")
+	})
+}
