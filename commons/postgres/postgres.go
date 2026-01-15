@@ -48,6 +48,7 @@ func (pc *PostgresConnection) Connect() error {
 	dbPrimary.SetMaxOpenConns(pc.MaxOpenConnections)
 	dbPrimary.SetMaxIdleConns(pc.MaxIdleConnections)
 	dbPrimary.SetConnMaxLifetime(time.Minute * 30)
+	dbPrimary.SetConnMaxIdleTime(5 * time.Minute)
 
 	dbReadOnlyReplica, err := sql.Open("pgx", pc.ConnectionStringReplica)
 	if err != nil {
@@ -58,6 +59,7 @@ func (pc *PostgresConnection) Connect() error {
 	dbReadOnlyReplica.SetMaxOpenConns(pc.MaxOpenConnections)
 	dbReadOnlyReplica.SetMaxIdleConns(pc.MaxIdleConnections)
 	dbReadOnlyReplica.SetConnMaxLifetime(time.Minute * 30)
+	dbReadOnlyReplica.SetConnMaxIdleTime(5 * time.Minute)
 
 	connectionDB := dbresolver.New(
 		dbresolver.WithPrimaryDBs(dbPrimary),

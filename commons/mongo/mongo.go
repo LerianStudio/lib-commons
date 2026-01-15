@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"go.mongodb.org/mongo-driver/bson"
@@ -29,7 +30,9 @@ func (mc *MongoConnection) Connect(ctx context.Context) error {
 	clientOptions := options.
 		Client().
 		ApplyURI(mc.ConnectionStringSource).
-		SetMaxPoolSize(mc.MaxPoolSize)
+		SetMaxPoolSize(mc.MaxPoolSize).
+		SetServerSelectionTimeout(5 * time.Second).
+		SetHeartbeatInterval(10 * time.Second)
 
 	noSQLDB, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
