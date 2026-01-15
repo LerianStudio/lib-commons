@@ -856,6 +856,7 @@ func (pm *mongoPoolManagerImpl) evictLRUConn(ctx context.Context) error {
 	// Evict the LRU connection
 	if isShared {
 		entry := pm.sharedConns[oldestKey]
+
 		if entry.conn != nil && entry.conn.DB != nil {
 			_ = entry.conn.DB.Disconnect(disconnectCtx)
 		}
@@ -870,6 +871,7 @@ func (pm *mongoPoolManagerImpl) evictLRUConn(ctx context.Context) error {
 		}
 	} else {
 		entry := pm.tenantConns[oldestKey]
+
 		if entry.conn != nil && entry.conn.DB != nil {
 			_ = entry.conn.DB.Disconnect(disconnectCtx)
 		}

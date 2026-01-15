@@ -2,10 +2,16 @@ package http
 
 import (
 	"context"
+	"net/url"
+	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/v2/commons"
+	cn "github.com/LerianStudio/lib-commons/v2/commons/constants"
 	"github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v2/commons/security"
 	"github.com/gofiber/fiber/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -13,6 +19,18 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
+)
+
+// DefaultMetricsCollectionInterval is the default interval for collecting system metrics.
+// Can be overridden via METRICS_COLLECTION_INTERVAL environment variable.
+const DefaultMetricsCollectionInterval = 5 * time.Second
+
+var (
+	metricsCollectorOnce     = &sync.Once{}
+	metricsCollectorShutdown chan struct{}
+	metricsCollectorMu       sync.Mutex
+	metricsCollectorStarted  bool
+	metricsCollectorInitErr  error
 )
 
 type TelemetryMiddleware struct {
@@ -49,7 +67,7 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, exclud
 
 		span.SetAttributes(
 			attribute.String("http.method", c.Method()),
-			attribute.String("http.url", c.OriginalURL()),
+			attribute.String("http.url", sanitizeURL(c.OriginalURL())),
 			attribute.String("http.route", c.Route().Path),
 			attribute.String("http.scheme", c.Protocol()),
 			attribute.String("http.host", c.Hostname()),
@@ -149,22 +167,93 @@ func (tm *TelemetryMiddleware) EndTracingSpansInterceptor() grpc.UnaryServerInte
 	}
 }
 
-func (tm *TelemetryMiddleware) collectMetrics(ctx context.Context) error {
-	cpuGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.cpu.usage", metric.WithUnit("percentage"))
-	if err != nil {
-		return err
+func (tm *TelemetryMiddleware) collectMetrics(_ context.Context) error {
+	return tm.ensureMetricsCollector()
+}
+
+// getMetricsCollectionInterval returns the metrics collection interval.
+// Can be configured via METRICS_COLLECTION_INTERVAL environment variable.
+// Accepts Go duration format (e.g., "10s", "1m", "500ms").
+// Falls back to DefaultMetricsCollectionInterval if not set or invalid.
+func getMetricsCollectionInterval() time.Duration {
+	if envInterval := os.Getenv("METRICS_COLLECTION_INTERVAL"); envInterval != "" {
+		if parsed, err := time.ParseDuration(envInterval); err == nil && parsed > 0 {
+			return parsed
+		}
 	}
 
-	go commons.GetCPUUsage(ctx, cpuGauge)
+	return DefaultMetricsCollectionInterval
+}
 
-	memGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.mem.usage", metric.WithUnit("percentage"))
-	if err != nil {
-		return err
+func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
+	metricsCollectorMu.Lock()
+	defer metricsCollectorMu.Unlock()
+
+	if metricsCollectorStarted {
+		return nil
 	}
 
-	go commons.GetMemUsage(ctx, memGauge)
+	if metricsCollectorInitErr != nil {
+		return metricsCollectorInitErr
+	}
 
-	return nil
+	metricsCollectorOnce.Do(func() {
+		cpuGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.cpu.usage", metric.WithUnit("percentage"))
+		if err != nil {
+			metricsCollectorInitErr = err
+			return
+		}
+
+		memGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.mem.usage", metric.WithUnit("percentage"))
+		if err != nil {
+			metricsCollectorInitErr = err
+			return
+		}
+
+		metricsCollectorShutdown = make(chan struct{})
+		ticker := time.NewTicker(getMetricsCollectionInterval())
+
+		go func() {
+			commons.GetCPUUsage(context.Background(), cpuGauge)
+			commons.GetMemUsage(context.Background(), memGauge)
+
+			for {
+				select {
+				case <-metricsCollectorShutdown:
+					ticker.Stop()
+					return
+				case <-ticker.C:
+					commons.GetCPUUsage(context.Background(), cpuGauge)
+					commons.GetMemUsage(context.Background(), memGauge)
+				}
+			}
+		}()
+
+		metricsCollectorStarted = true
+	})
+
+	return metricsCollectorInitErr
+}
+
+// StopMetricsCollector stops the background metrics collector goroutine.
+// Should be called during application shutdown for graceful cleanup.
+// After calling this function, the collector can be restarted by new requests.
+//
+// Implementation note: This function intentionally resets sync.Once to a new instance
+// to allow the collector to be restarted after being stopped. This is an unusual but
+// intentional pattern - the mutex ensures thread-safety during the reset operation,
+// preventing race conditions between Stop and subsequent Start calls.
+func StopMetricsCollector() {
+	metricsCollectorMu.Lock()
+	defer metricsCollectorMu.Unlock()
+
+	if metricsCollectorStarted && metricsCollectorShutdown != nil {
+		close(metricsCollectorShutdown)
+
+		metricsCollectorStarted = false
+		metricsCollectorOnce = &sync.Once{}
+		metricsCollectorInitErr = nil
+	}
 }
 
 func (tm *TelemetryMiddleware) isRouteExcluded(c *fiber.Ctx, excludedRoutes []string) bool {
@@ -175,4 +264,36 @@ func (tm *TelemetryMiddleware) isRouteExcluded(c *fiber.Ctx, excludedRoutes []st
 	}
 
 	return false
+}
+
+// sanitizeURL removes or obfuscates sensitive query parameters from URLs
+// to prevent exposing tokens, API keys, and other sensitive data in telemetry.
+func sanitizeURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+
+	if parsed.RawQuery == "" {
+		return rawURL
+	}
+
+	query := parsed.Query()
+	modified := false
+
+	for key := range query {
+		if security.IsSensitiveField(key) {
+			query.Set(key, cn.ObfuscatedValue)
+
+			modified = true
+		}
+	}
+
+	if !modified {
+		return rawURL
+	}
+
+	parsed.RawQuery = query.Encode()
+
+	return parsed.String()
 }

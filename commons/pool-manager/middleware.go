@@ -372,7 +372,6 @@ func isConnectionError(err error) bool {
 		}
 	}
 
-	// Check for wrapped errors
 	var netErr interface{ Timeout() bool }
 
 	return errors.As(err, &netErr)

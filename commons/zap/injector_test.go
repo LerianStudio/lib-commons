@@ -28,6 +28,7 @@ import (
 
 func TestInitializeLogger(t *testing.T) {
 	t.Setenv("ENV_NAME", "production")
+
 	logger := InitializeLogger()
 	assert.NotNil(t, logger)
 }

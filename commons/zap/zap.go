@@ -106,7 +106,8 @@ func (l *ZapWithTraceLogger) WithFields(fields ...any) log.Logger {
 	newLogger := l.Logger.With(fields...)
 
 	return &ZapWithTraceLogger{
-		Logger: newLogger,
+		Logger:                 newLogger,
+		defaultMessageTemplate: l.defaultMessageTemplate,
 	}
 }
 
@@ -125,11 +126,10 @@ func (l *ZapWithTraceLogger) Sync() error {
 }
 
 // WithDefaultMessageTemplate sets the default message template for the logger.
+// Returns a new logger instance without mutating the original.
 //
 //nolint:ireturn
 func (l *ZapWithTraceLogger) WithDefaultMessageTemplate(message string) log.Logger {
-	l.defaultMessageTemplate = message
-
 	return &ZapWithTraceLogger{
 		Logger:                 l.Logger,
 		defaultMessageTemplate: message,

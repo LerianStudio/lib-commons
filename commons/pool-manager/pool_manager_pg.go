@@ -635,7 +635,6 @@ func (pm *postgresPoolManagerImpl) closeTenantConnsWithPrefix(prefix string) []s
 			if err := pm.closePgConn(entry); err != nil {
 				errs = append(errs, fmt.Sprintf("failed to close connection %s: %v", key, err))
 			}
-
 			delete(pm.tenantConns, key)
 		}
 	}
@@ -643,7 +642,7 @@ func (pm *postgresPoolManagerImpl) closeTenantConnsWithPrefix(prefix string) []s
 	return errs
 }
 
-// closeSharedConnsForTenant removes shared mappings for tenant and closes unused shared connections.
+// closeSharedConnsForTenant closes shared connections for a tenant prefix and returns errors.
 func (pm *postgresPoolManagerImpl) closeSharedConnsForTenant(prefix string) []string {
 	var errs []string
 
