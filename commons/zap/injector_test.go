@@ -1,14 +1,14 @@
 package zap
 
 import (
-	"github.com/stretchr/testify/assert"
-	"os"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestInitializeLogger(t *testing.T) {
-	os.Setenv("ENV_NAME", "production")
-	defer os.Unsetenv("ENV_NAME")
+	t.Setenv("ENV_NAME", "production")
+
 	logger := InitializeLogger()
 	assert.NotNil(t, logger)
 }
