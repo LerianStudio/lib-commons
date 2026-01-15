@@ -275,7 +275,11 @@ func (rc *RedisConnection) refreshTokenLoop(ctx context.Context) {
 
 					_ = rc.closeLocked()
 
-					_ = rc.connectLocked(ctx)
+					if connErr := rc.connectLocked(ctx); connErr != nil {
+						rc.errLastSeen = connErr
+						rc.Connected = false
+						rc.Logger.Errorf("failed to reconnect after IAM token refresh: %v", zap.Error(connErr))
+					}
 				}
 
 				rc.mu.Unlock()
