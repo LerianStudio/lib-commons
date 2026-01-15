@@ -1,21 +1,23 @@
 package redis
 
 import (
-	iamcredentials "cloud.google.com/go/iam/credentials/apiv1"
-	iamcredentialspb "cloud.google.com/go/iam/credentials/apiv1/credentialspb"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"sync"
+	"time"
+
+	iamcredentials "cloud.google.com/go/iam/credentials/apiv1"
+	iamcredentialspb "cloud.google.com/go/iam/credentials/apiv1/credentialspb"
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
+	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/durationpb"
-	"sync"
-	"time"
 )
 
 // Mode define the Redis connection mode supported
@@ -184,16 +186,19 @@ func (rc *RedisConnection) BuildTLSConfig() (*tls.Config, error) {
 
 // retrieveToken generates a new GCP IAM token
 func (rc *RedisConnection) retrieveToken(ctx context.Context) (string, error) {
-	credentials, err := base64.StdEncoding.DecodeString(rc.GoogleApplicationCredentials)
+	credentialsJSON, err := base64.StdEncoding.DecodeString(rc.GoogleApplicationCredentials)
 	if err != nil {
 		rc.Logger.Infof("Base64 credentials error to decode error: %v", zap.Error(err))
 
 		return "", err
 	}
 
-	opts := option.WithCredentialsJSON(credentials) //nolint:staticcheck // SA1019: No alternative available yet
+	creds, err := google.CredentialsFromJSON(ctx, credentialsJSON)
+	if err != nil {
+		return "", fmt.Errorf("parsing credentials JSON: %w", err)
+	}
 
-	client, err := iamcredentials.NewIamCredentialsClient(ctx, opts)
+	client, err := iamcredentials.NewIamCredentialsClient(ctx, option.WithCredentials(creds))
 	if err != nil {
 		return "", fmt.Errorf("creating IAM credentials client: %w", err)
 	}

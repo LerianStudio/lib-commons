@@ -144,6 +144,9 @@ type postgresPoolManagerImpl struct {
 	// cleanup goroutine control
 	cleanupStop chan struct{}
 	cleanupDone chan struct{}
+
+	// ctx is the context for the cleanup goroutine lifecycle
+	ctx context.Context
 }
 
 // PoolManagerOption is a function that configures a PostgresPoolManager.
@@ -202,6 +205,17 @@ func WithConnectionConfig(config ConnectionConfig) PoolManagerOption {
 
 		if config.MaxIdleConnections > 0 {
 			pm.connConfig.MaxIdleConnections = config.MaxIdleConnections
+		}
+	}
+}
+
+// WithContext sets the context for the pool manager lifecycle.
+// When the context is cancelled, the cleanup goroutine will stop.
+// If not set, the cleanup goroutine will only stop when CloseAll is called.
+func WithContext(ctx context.Context) PoolManagerOption {
+	return func(pm *postgresPoolManagerImpl) {
+		if ctx != nil {
+			pm.ctx = ctx
 		}
 	}
 }
@@ -442,6 +456,7 @@ func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(_ context.Context, te
 	sharedDSN, mapped := pm.tenantToSharedConn[poolKey]
 
 	var entry *poolEntry
+
 	if mapped {
 		entry = pm.sharedConns[sharedDSN]
 	}
@@ -450,6 +465,7 @@ func (pm *postgresPoolManagerImpl) getConnectionSchemaMode(_ context.Context, te
 
 	if entry != nil && entry.conn != nil && entry.conn.Connected {
 		entry.updateLastUsed()
+
 		return entry.conn.GetDB()
 	}
 
@@ -551,31 +567,9 @@ func (pm *postgresPoolManagerImpl) GetDefaultConnection() (dbresolver.DB, error)
 	return pm.defaultConn.GetDB()
 }
 
-// isSharedConnInUse checks if a shared DSN is still in use by any tenant.
-// Must be called with pm.mu held.
-func (pm *postgresPoolManagerImpl) isSharedConnInUse(sharedDSN string) bool {
-	for _, dsn := range pm.tenantToSharedConn {
-		if dsn == sharedDSN {
-			return true
-		}
-	}
-
-	return false
-}
-
-// disconnectPoolEntry closes the connection in the pool entry if it exists.
-func (pm *postgresPoolManagerImpl) disconnectPoolEntry(entry *poolEntry) error {
-	if entry.conn != nil && entry.conn.ConnectionDB != nil {
-		return (*entry.conn.ConnectionDB).Close()
-	}
-
-	return nil
-}
-
-// closeTenantPoolConn closes a tenant pool connection (database mode).
-// Must be called with pm.mu held.
-func (pm *postgresPoolManagerImpl) closeTenantPoolConn(poolKey string, entry *poolEntry) error {
-	if err := pm.disconnectPoolEntry(entry); err != nil {
+// closeTenantPool closes a tenant connection and removes it from the map.
+func (pm *postgresPoolManagerImpl) closeTenantPool(poolKey string, entry *poolEntry) error {
+	if err := pm.closePgConn(entry); err != nil {
 		return fmt.Errorf("failed to close connection: %w", err)
 	}
 
@@ -588,9 +582,10 @@ func (pm *postgresPoolManagerImpl) closeTenantPoolConn(poolKey string, entry *po
 	return nil
 }
 
-// closeSharedPoolConnIfUnused closes a shared connection if no tenants are using it.
-// Must be called with pm.mu held.
-func (pm *postgresPoolManagerImpl) closeSharedPoolConnIfUnused(sharedDSN string) error {
+// closeSharedPoolIfUnused removes mapping and closes shared connection if no longer used.
+func (pm *postgresPoolManagerImpl) closeSharedPoolIfUnused(poolKey, sharedDSN string) error {
+	delete(pm.tenantToSharedConn, poolKey)
+
 	if pm.isSharedConnInUse(sharedDSN) {
 		return nil
 	}
@@ -600,7 +595,7 @@ func (pm *postgresPoolManagerImpl) closeSharedPoolConnIfUnused(sharedDSN string)
 		return nil
 	}
 
-	if err := pm.disconnectPoolEntry(entry); err != nil {
+	if err := pm.closePgConn(entry); err != nil {
 		return fmt.Errorf("failed to close shared connection: %w", err)
 	}
 
@@ -620,48 +615,36 @@ func (pm *postgresPoolManagerImpl) ClosePool(tenantID, applicationName string) e
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	// Check tenant connections (database mode)
 	if entry, exists := pm.tenantConns[poolKey]; exists {
-		return pm.closeTenantPoolConn(poolKey, entry)
+		return pm.closeTenantPool(poolKey, entry)
 	}
 
-	// Check if mapped to shared connection (schema mode)
 	if sharedDSN, mapped := pm.tenantToSharedConn[poolKey]; mapped {
-		delete(pm.tenantToSharedConn, poolKey)
-
-		if err := pm.closeSharedPoolConnIfUnused(sharedDSN); err != nil {
-			return err
-		}
-
-		return nil
+		return pm.closeSharedPoolIfUnused(poolKey, sharedDSN)
 	}
 
 	return fmt.Errorf("pool not found for tenant %s and application %s", tenantID, applicationName)
 }
 
-// closeTenantConnsForPrefix closes all tenant connections matching the prefix.
-// Must be called with pm.mu held.
-func (pm *postgresPoolManagerImpl) closeTenantConnsForPrefix(prefix string) []string {
+// closeTenantConnsWithPrefix closes all tenant connections matching the prefix and returns errors.
+func (pm *postgresPoolManagerImpl) closeTenantConnsWithPrefix(prefix string) []string {
 	var errs []string
 
 	for key, entry := range pm.tenantConns {
-		if !strings.HasPrefix(key, prefix) {
-			continue
-		}
+		if strings.HasPrefix(key, prefix) {
+			if err := pm.closePgConn(entry); err != nil {
+				errs = append(errs, fmt.Sprintf("failed to close connection %s: %v", key, err))
+			}
 
-		if err := pm.disconnectPoolEntry(entry); err != nil {
-			errs = append(errs, fmt.Sprintf("failed to close connection %s: %v", key, err))
+			delete(pm.tenantConns, key)
 		}
-
-		delete(pm.tenantConns, key)
 	}
 
 	return errs
 }
 
-// closeSharedConnsForPrefix closes shared connections for mappings matching the prefix.
-// Must be called with pm.mu held.
-func (pm *postgresPoolManagerImpl) closeSharedConnsForPrefix(prefix string) []string {
+// closeSharedConnsForTenant closes shared connections for a tenant prefix and returns errors.
+func (pm *postgresPoolManagerImpl) closeSharedConnsForTenant(prefix string) []string {
 	var errs []string
 
 	for key, sharedDSN := range pm.tenantToSharedConn {
@@ -680,7 +663,7 @@ func (pm *postgresPoolManagerImpl) closeSharedConnsForPrefix(prefix string) []st
 			continue
 		}
 
-		if err := pm.disconnectPoolEntry(entry); err != nil {
+		if err := pm.closePgConn(entry); err != nil {
 			errs = append(errs, fmt.Sprintf("failed to close shared connection: %v", err))
 		}
 
@@ -697,10 +680,8 @@ func (pm *postgresPoolManagerImpl) CloseTenant(tenantID string) error {
 
 	prefix := tenantID + ":"
 
-	var errs []string
-
-	errs = append(errs, pm.closeTenantConnsForPrefix(prefix)...)
-	errs = append(errs, pm.closeSharedConnsForPrefix(prefix)...)
+	errs := pm.closeTenantConnsWithPrefix(prefix)
+	errs = append(errs, pm.closeSharedConnsForTenant(prefix)...)
 
 	if pm.logger != nil {
 		pm.logger.Infof("Closed all connections for tenant %s", tenantID)
@@ -821,6 +802,7 @@ func (pm *postgresPoolManagerImpl) Stats() map[string]PoolStats {
 }
 
 // cleanupIdleConns runs in the background and closes idle connections.
+// It respects both the cleanupStop channel and the context cancellation.
 func (pm *postgresPoolManagerImpl) cleanupIdleConns() {
 	defer close(pm.cleanupDone)
 
@@ -831,23 +813,29 @@ func (pm *postgresPoolManagerImpl) cleanupIdleConns() {
 		select {
 		case <-pm.cleanupStop:
 			return
+		case <-pm.getContextDone():
+			return
 		case <-ticker.C:
 			pm.doCleanup()
 		}
 	}
 }
 
-// cleanupIdleTenantConns cleans up idle tenant connections.
-// Must be called with pm.mu held.
-func (pm *postgresPoolManagerImpl) cleanupIdleTenantConns(threshold time.Time) {
+// getContextDone returns the Done channel from the context, or a nil channel if no context is set.
+// A nil channel blocks forever, which is the desired behavior when no context is provided.
+func (pm *postgresPoolManagerImpl) getContextDone() <-chan struct{} {
+	if pm.ctx != nil {
+		return pm.ctx.Done()
+	}
+
+	return nil
+}
+
+// cleanupIdleTenantPools removes idle tenant connections.
+func (pm *postgresPoolManagerImpl) cleanupIdleTenantPools(threshold time.Time) {
 	for key, entry := range pm.tenantConns {
 		if entry.getLastUsed().Before(threshold) {
-			if entry.conn != nil && entry.conn.ConnectionDB != nil {
-				if err := (*entry.conn.ConnectionDB).Close(); err != nil && pm.logger != nil {
-					pm.logger.Warnf("Failed to close idle tenant PostgreSQL connection %s: %v", key, err)
-				}
-			}
-
+			_ = pm.closePgConn(entry)
 			delete(pm.tenantConns, key)
 
 			if pm.logger != nil {
@@ -857,24 +845,14 @@ func (pm *postgresPoolManagerImpl) cleanupIdleTenantConns(threshold time.Time) {
 	}
 }
 
-// cleanupIdleSharedConns cleans up idle shared connections that are no longer in use.
-// Must be called with pm.mu held.
-func (pm *postgresPoolManagerImpl) cleanupIdleSharedConns(threshold time.Time) {
+// cleanupIdleSharedPools removes idle shared connections that are no longer in use.
+func (pm *postgresPoolManagerImpl) cleanupIdleSharedPools(threshold time.Time) {
 	for dsn, entry := range pm.sharedConns {
-		if !entry.getLastUsed().Before(threshold) {
+		if !entry.getLastUsed().Before(threshold) || pm.isSharedConnInUse(dsn) {
 			continue
 		}
 
-		if pm.isSharedConnInUse(dsn) {
-			continue
-		}
-
-		if entry.conn != nil && entry.conn.ConnectionDB != nil {
-			if err := (*entry.conn.ConnectionDB).Close(); err != nil && pm.logger != nil {
-				pm.logger.Warnf("Failed to close idle shared PostgreSQL connection %s: %v", pm.sanitizeDSNForLog(dsn), err)
-			}
-		}
-
+		_ = pm.closePgConn(entry)
 		delete(pm.sharedConns, dsn)
 
 		if pm.logger != nil {
@@ -890,8 +868,8 @@ func (pm *postgresPoolManagerImpl) doCleanup() {
 
 	threshold := time.Now().Add(-pm.idleTimeout)
 
-	pm.cleanupIdleTenantConns(threshold)
-	pm.cleanupIdleSharedConns(threshold)
+	pm.cleanupIdleTenantPools(threshold)
+	pm.cleanupIdleSharedPools(threshold)
 }
 
 // evictLRUConn evicts the least recently used connection to make room for a new one.
@@ -984,6 +962,26 @@ func (pm *postgresPoolManagerImpl) buildDSN(cfg *PostgreSQLConfig) string {
 // makePoolKey creates a unique key for a tenant/application combination.
 func (pm *postgresPoolManagerImpl) makePoolKey(tenantID, appName string) string {
 	return tenantID + ":" + appName
+}
+
+// isSharedConnInUse checks if any tenant is still mapped to the given shared DSN.
+func (pm *postgresPoolManagerImpl) isSharedConnInUse(sharedDSN string) bool {
+	for _, dsn := range pm.tenantToSharedConn {
+		if dsn == sharedDSN {
+			return true
+		}
+	}
+
+	return false
+}
+
+// closePgConn closes a Postgres connection if it exists.
+func (pm *postgresPoolManagerImpl) closePgConn(entry *poolEntry) error {
+	if entry.conn != nil && entry.conn.ConnectionDB != nil {
+		return (*entry.conn.ConnectionDB).Close()
+	}
+
+	return nil
 }
 
 // sanitizeDSNForKey removes sensitive information from DSN for use as a map key identifier.

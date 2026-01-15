@@ -2,6 +2,7 @@ package commons
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -12,6 +13,9 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// ErrNilParentContext indicates that a nil parent context was provided
+var ErrNilParentContext = errors.New("cannot create context from nil parent")
 
 // ---- Context container ----
 
@@ -274,6 +278,36 @@ func ReplaceAttributes(ctx context.Context, kv ...attribute.KeyValue) context.Co
 }
 
 // ---- Deadline Management ----
+
+// WithTimeoutSafe creates a context with the specified timeout, but respects
+// any existing deadline in the parent context. Returns an error if parent is nil.
+//
+// This is the safe alternative to WithTimeout that returns an error instead of panicking.
+// The "Safe" suffix is used here (instead of "WithError") because the function signature
+// returns three values (context, cancel, error) rather than wrapping an existing function.
+// Use WithTimeout for backward-compatible panic behavior.
+//
+// Note: When the parent's deadline is shorter than the requested timeout, this function
+// returns a cancellable context that inherits the parent's deadline rather than creating
+// a new deadline. The returned context's Deadline() will return the parent's deadline.
+func WithTimeoutSafe(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc, error) {
+	if parent == nil {
+		return nil, nil, ErrNilParentContext
+	}
+
+	if deadline, ok := parent.Deadline(); ok {
+		timeUntilDeadline := time.Until(deadline)
+
+		if timeUntilDeadline < timeout {
+			ctx, cancel := context.WithCancel(parent)
+			return ctx, cancel, nil
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(parent, timeout)
+
+	return ctx, cancel, nil
+}
 
 // WithTimeout creates a context with the specified timeout, but respects
 // any existing deadline in the parent context. If the parent context has

@@ -2,6 +2,7 @@ package mongo
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
@@ -32,15 +33,13 @@ func (mc *MongoConnection) Connect(ctx context.Context) error {
 
 	noSQLDB, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
-		mc.Logger.Fatal("failed to open connect to mongodb", zap.Error(err))
-		return err
+		mc.Logger.Error("failed to open connect to mongodb", zap.Error(err))
+		return fmt.Errorf("failed to connect to mongodb: %w", err)
 	}
 
 	if err := noSQLDB.Ping(ctx, nil); err != nil {
-		mc.Logger.Infof("MongoDBConnection.Ping %v",
-			zap.Error(err))
-
-		return err
+		mc.Logger.Error("MongoDBConnection.Ping failed", zap.Error(err))
+		return fmt.Errorf("failed to ping mongodb: %w", err)
 	}
 
 	mc.Logger.Info("Connected to mongodb ✅ \n")
