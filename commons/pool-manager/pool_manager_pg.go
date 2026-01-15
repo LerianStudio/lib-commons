@@ -635,6 +635,7 @@ func (pm *postgresPoolManagerImpl) closeTenantConnsWithPrefix(prefix string) []s
 			if err := pm.closePgConn(entry); err != nil {
 				errs = append(errs, fmt.Sprintf("failed to close connection %s: %v", key, err))
 			}
+
 			delete(pm.tenantConns, key)
 		}
 	}
