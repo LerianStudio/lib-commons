@@ -64,7 +64,6 @@ func ContextWithLogger(ctx context.Context, logger log.Logger) context.Context {
 // ---- Tracer helpers ----
 
 // Deprecated: use NewTrackingFromContext instead
-//
 // NewTracerFromContext returns a new tracer from the context.
 //
 //nolint:ireturn
