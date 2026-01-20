@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
@@ -24,6 +26,7 @@ type RabbitMQConnection struct {
 	Port                   string
 	User                   string
 	Pass                   string
+	VHost                  string
 	Channel                *amqp.Channel
 	Logger                 log.Logger
 	Connected              bool
@@ -135,9 +138,9 @@ func (rc *RabbitMQConnection) GetNewConnect() (*amqp.Channel, error) {
 
 // HealthCheck rabbitmq when the server is started
 func (rc *RabbitMQConnection) HealthCheck() bool {
-	url := rc.HealthCheckURL + "/api/health/checks/alarms"
+	healthURL := rc.HealthCheckURL + "/api/health/checks/alarms"
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, healthURL, nil)
 	if err != nil {
 		rc.Logger.Errorf("failed to make GET request before client do: %v", err.Error())
 
@@ -180,4 +183,26 @@ func (rc *RabbitMQConnection) HealthCheck() bool {
 	rc.Logger.Error("rabbitmq unhealthy...")
 
 	return false
+}
+
+// BuildRabbitMQConnectionString constructs an AMQP connection string.
+// If vhost is empty, the default vhost "/" is used (no path in URL).
+// Special characters in user, password, and vhost are URL-encoded automatically.
+func BuildRabbitMQConnectionString(protocol, user, pass, host, port, vhost string) string {
+	encodedUser := url.QueryEscape(user)
+	encodedUser = strings.ReplaceAll(encodedUser, "+", "%20")
+
+	encodedPass := url.QueryEscape(pass)
+	encodedPass = strings.ReplaceAll(encodedPass, "+", "%20")
+
+	baseURL := fmt.Sprintf("%s://%s:%s@%s:%s", protocol, encodedUser, encodedPass, host, port)
+
+	if vhost == "" {
+		return baseURL
+	}
+
+	encodedVHost := url.QueryEscape(vhost)
+	encodedVHost = strings.ReplaceAll(encodedVHost, "+", "%20")
+
+	return fmt.Sprintf("%s/%s", baseURL, encodedVHost)
 }
