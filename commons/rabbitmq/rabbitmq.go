@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -196,12 +197,15 @@ func BuildRabbitMQConnectionString(protocol, user, pass, host, port, vhost strin
 	}
 
 	if port != "" {
-		u.Host = host + ":" + port
+		u.Host = net.JoinHostPort(host, port)
 	} else {
 		u.Host = host
 	}
 
 	if vhost != "" {
+		// Use QueryEscape instead of PathEscape because RabbitMQ vhost names may contain '/'
+		// which must be percent-encoded as %2F. QueryEscape encodes '/' while PathEscape does not.
+		// The subsequent ReplaceAll converts query-style space encoding (+) to path-style (%20).
 		escapedVHost := url.QueryEscape(vhost)
 		escapedVHost = strings.ReplaceAll(escapedVHost, "+", "%20")
 		u.Path = "/" + vhost
