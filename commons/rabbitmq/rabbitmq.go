@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
@@ -24,6 +27,7 @@ type RabbitMQConnection struct {
 	Port                   string
 	User                   string
 	Pass                   string
+	VHost                  string
 	Channel                *amqp.Channel
 	Logger                 log.Logger
 	Connected              bool
@@ -135,9 +139,9 @@ func (rc *RabbitMQConnection) GetNewConnect() (*amqp.Channel, error) {
 
 // HealthCheck rabbitmq when the server is started
 func (rc *RabbitMQConnection) HealthCheck() bool {
-	url := rc.HealthCheckURL + "/api/health/checks/alarms"
+	healthURL := rc.HealthCheckURL + "/api/health/checks/alarms"
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, healthURL, nil)
 	if err != nil {
 		rc.Logger.Errorf("failed to make GET request before client do: %v", err.Error())
 
@@ -180,4 +184,38 @@ func (rc *RabbitMQConnection) HealthCheck() bool {
 	rc.Logger.Error("rabbitmq unhealthy...")
 
 	return false
+}
+
+// BuildRabbitMQConnectionString constructs an AMQP connection string.
+// If vhost is empty, the default vhost "/" is used (no path in URL).
+// Special characters in user, password, and vhost are URL-encoded automatically.
+// Supports IPv6 hosts (e.g., "[::1]").
+func BuildRabbitMQConnectionString(protocol, user, pass, host, port, vhost string) string {
+	u := &url.URL{
+		Scheme: protocol,
+		User:   url.UserPassword(user, pass),
+	}
+
+	if port != "" {
+		u.Host = net.JoinHostPort(host, port)
+	} else {
+		// Bracket bare IPv6 addresses to avoid malformed URLs (e.g., amqp://user:pass@::1)
+		if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+			u.Host = "[" + host + "]"
+		} else {
+			u.Host = host
+		}
+	}
+
+	if vhost != "" {
+		// Use QueryEscape instead of PathEscape because RabbitMQ vhost names may contain '/'
+		// which must be percent-encoded as %2F. QueryEscape encodes '/' while PathEscape does not.
+		// The subsequent ReplaceAll converts query-style space encoding (+) to path-style (%20).
+		escapedVHost := url.QueryEscape(vhost)
+		escapedVHost = strings.ReplaceAll(escapedVHost, "+", "%20")
+		u.Path = "/" + vhost
+		u.RawPath = "/" + escapedVHost
+	}
+
+	return u.String()
 }
