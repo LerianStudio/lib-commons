@@ -188,21 +188,25 @@ func (rc *RabbitMQConnection) HealthCheck() bool {
 // BuildRabbitMQConnectionString constructs an AMQP connection string.
 // If vhost is empty, the default vhost "/" is used (no path in URL).
 // Special characters in user, password, and vhost are URL-encoded automatically.
+// Supports IPv6 hosts (e.g., "[::1]").
 func BuildRabbitMQConnectionString(protocol, user, pass, host, port, vhost string) string {
-	encodedUser := url.QueryEscape(user)
-	encodedUser = strings.ReplaceAll(encodedUser, "+", "%20")
-
-	encodedPass := url.QueryEscape(pass)
-	encodedPass = strings.ReplaceAll(encodedPass, "+", "%20")
-
-	baseURL := fmt.Sprintf("%s://%s:%s@%s:%s", protocol, encodedUser, encodedPass, host, port)
-
-	if vhost == "" {
-		return baseURL
+	u := &url.URL{
+		Scheme: protocol,
+		User:   url.UserPassword(user, pass),
 	}
 
-	encodedVHost := url.QueryEscape(vhost)
-	encodedVHost = strings.ReplaceAll(encodedVHost, "+", "%20")
+	if port != "" {
+		u.Host = host + ":" + port
+	} else {
+		u.Host = host
+	}
 
-	return fmt.Sprintf("%s/%s", baseURL, encodedVHost)
+	if vhost != "" {
+		escapedVHost := url.QueryEscape(vhost)
+		escapedVHost = strings.ReplaceAll(escapedVHost, "+", "%20")
+		u.Path = "/" + vhost
+		u.RawPath = "/" + escapedVHost
+	}
+
+	return u.String()
 }
