@@ -199,7 +199,12 @@ func BuildRabbitMQConnectionString(protocol, user, pass, host, port, vhost strin
 	if port != "" {
 		u.Host = net.JoinHostPort(host, port)
 	} else {
-		u.Host = host
+		// Bracket bare IPv6 addresses to avoid malformed URLs (e.g., amqp://user:pass@::1)
+		if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+			u.Host = "[" + host + "]"
+		} else {
+			u.Host = host
+		}
 	}
 
 	if vhost != "" {
