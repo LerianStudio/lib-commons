@@ -106,7 +106,9 @@ func TestWithTimeoutSafe_NilParent(t *testing.T) {
 		t.Errorf("expected ErrNilParentContext, got %v", err)
 	}
 
-	cancel()
+	if cancel != nil {
+		t.Error("expected nil cancel function")
+	}
 }
 
 func TestWithTimeoutSafe_Success(t *testing.T) {
