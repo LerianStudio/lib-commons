@@ -43,7 +43,7 @@ func BuildConnectionString(scheme, user, password, host, port, parameters string
 	}
 
 	if logger != nil {
-		logMaskedConnectionString(logger, scheme, hostPart, parameters)
+		logMaskedConnectionString(logger, scheme, hostPart, parameters, credentialsPart != "")
 	}
 
 	return connectionString
@@ -54,10 +54,7 @@ func buildCredentialsPart(user, password string) string {
 		return ""
 	}
 
-	encodedUser := url.QueryEscape(user)
-	encodedPassword := url.QueryEscape(password)
-
-	return fmt.Sprintf("%s:%s", encodedUser, encodedPassword)
+	return url.UserPassword(user, password).String()
 }
 
 func buildHostPart(scheme, host, port string) string {
@@ -72,8 +69,15 @@ func buildHostPart(scheme, host, port string) string {
 	return host
 }
 
-func logMaskedConnectionString(logger log.Logger, scheme, hostPart, parameters string) {
-	maskedConnStr := fmt.Sprintf("%s://<credentials>@%s/", scheme, hostPart)
+func logMaskedConnectionString(logger log.Logger, scheme, hostPart, parameters string, hasCredentials bool) {
+	var maskedConnStr string
+
+	if hasCredentials {
+		maskedConnStr = fmt.Sprintf("%s://<credentials>@%s/", scheme, hostPart)
+	} else {
+		maskedConnStr = fmt.Sprintf("%s://%s/", scheme, hostPart)
+	}
+
 	if parameters != "" {
 		maskedConnStr += "?" + parameters
 	}
