@@ -32,6 +32,7 @@ type PostgresConnection struct {
 	Logger                  log.Logger
 	MaxOpenConnections      int
 	MaxIdleConnections      int
+	SkipMigrations          bool // Skip running migrations on connect (for dynamic tenant connections)
 }
 
 // Connect keeps a singleton connection with postgres.
@@ -63,48 +64,53 @@ func (pc *PostgresConnection) Connect() error {
 		dbresolver.WithReplicaDBs(dbReadOnlyReplica),
 		dbresolver.WithLoadBalancer(dbresolver.RoundRobinLB))
 
-	migrationsPath, err := pc.getMigrationsPath()
-	if err != nil {
-		return err
-	}
-
-	primaryURL, err := url.Parse(filepath.ToSlash(migrationsPath))
-	if err != nil {
-		pc.Logger.Fatal("failed parse url",
-			zap.Error(err))
-
-		return err
-	}
-
-	primaryURL.Scheme = "file"
-
-	primaryDriver, err := postgres.WithInstance(dbPrimary, &postgres.Config{
-		MultiStatementEnabled: true,
-		DatabaseName:          pc.PrimaryDBName,
-		SchemaName:            "public",
-	})
-	if err != nil {
-		pc.Logger.Fatalf("failed to open connect to database %v", zap.Error(err))
-		return nil
-	}
-
-	m, err := migrate.NewWithDatabaseInstance(primaryURL.String(), pc.PrimaryDBName, primaryDriver)
-	if err != nil {
-		pc.Logger.Fatal("failed to get migrations",
-			zap.Error(err))
-
-		return err
-	}
-
-	if err := m.Up(); err != nil {
-		if errors.Is(err, migrate.ErrNoChange) {
-			pc.Logger.Info("No new migrations found. Skipping...")
-		} else if strings.Contains(err.Error(), "file does not exist") {
-			pc.Logger.Warn("No migration files found. Skipping migration step...")
-		} else {
-			pc.Logger.Error("Migration failed", zap.Error(err))
+	// Run migrations unless explicitly skipped (e.g., for dynamic tenant connections)
+	if !pc.SkipMigrations {
+		migrationsPath, err := pc.getMigrationsPath()
+		if err != nil {
 			return err
 		}
+
+		primaryURL, err := url.Parse(filepath.ToSlash(migrationsPath))
+		if err != nil {
+			pc.Logger.Fatal("failed parse url",
+				zap.Error(err))
+
+			return err
+		}
+
+		primaryURL.Scheme = "file"
+
+		primaryDriver, err := postgres.WithInstance(dbPrimary, &postgres.Config{
+			MultiStatementEnabled: true,
+			DatabaseName:          pc.PrimaryDBName,
+			SchemaName:            "public",
+		})
+		if err != nil {
+			pc.Logger.Fatalf("failed to open connect to database %v", zap.Error(err))
+			return nil
+		}
+
+		m, err := migrate.NewWithDatabaseInstance(primaryURL.String(), pc.PrimaryDBName, primaryDriver)
+		if err != nil {
+			pc.Logger.Fatal("failed to get migrations",
+				zap.Error(err))
+
+			return err
+		}
+
+		if err := m.Up(); err != nil {
+			if errors.Is(err, migrate.ErrNoChange) {
+				pc.Logger.Info("No new migrations found. Skipping...")
+			} else if strings.Contains(err.Error(), "file does not exist") {
+				pc.Logger.Warn("No migration files found. Skipping migration step...")
+			} else {
+				pc.Logger.Error("Migration failed", zap.Error(err))
+				return err
+			}
+		}
+	} else {
+		pc.Logger.Info("Skipping migrations (SkipMigrations=true)")
 	}
 
 	if err := connectionDB.Ping(); err != nil {

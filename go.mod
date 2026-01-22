@@ -9,6 +9,7 @@ require (
 	github.com/bxcodec/dbresolver/v2 v2.2.1
 	github.com/go-redsync/redsync/v4 v4.15.0
 	github.com/gofiber/fiber/v2 v2.52.10
+	github.com/golang-jwt/jwt/v5 v5.3.0
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.8.0
@@ -20,7 +21,7 @@ require (
 	github.com/shopspring/decimal v1.4.0
 	github.com/sony/gobreaker v1.0.0
 	github.com/stretchr/testify v1.11.1
-	go.mongodb.org/mongo-driver v1.17.6
+	go.mongodb.org/mongo-driver v1.17.7
 	go.opentelemetry.io/contrib/bridges/otelzap v0.14.0
 	go.opentelemetry.io/otel v1.39.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.15.0
@@ -75,7 +76,6 @@ require (
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect

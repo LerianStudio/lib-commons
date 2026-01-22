@@ -1,41 +1,54 @@
 package poolmanager
 
-import "errors"
-
-// Tenant-related errors for consistent error handling across services.
-var (
-	// ErrTenantNotFound indicates that the requested tenant does not exist.
-	ErrTenantNotFound = errors.New("tenant not found")
-
-	// ErrTenantAlreadyExists indicates that a tenant with the given identifier already exists.
-	ErrTenantAlreadyExists = errors.New("tenant already exists")
-
-	// ErrInvalidTenantID indicates that the provided tenant ID is invalid or malformed.
-	ErrInvalidTenantID = errors.New("invalid tenant ID")
-
-	// ErrTenantContextMissing indicates that tenant context is required but not present.
-	ErrTenantContextMissing = errors.New("tenant context missing")
-
-	// ErrTenantInactive indicates that the tenant exists but is in an inactive state.
-	ErrTenantInactive = errors.New("tenant is inactive")
-
-	// ErrTenantSuspended indicates that the tenant has been suspended.
-	ErrTenantSuspended = errors.New("tenant is suspended")
-
-	// ErrTenantDeleted indicates that the tenant has been deleted.
-	ErrTenantDeleted = errors.New("tenant is deleted")
-
-	// ErrCrossTenantAccess indicates an attempt to access resources belonging to another tenant.
-	ErrCrossTenantAccess = errors.New("cross-tenant access denied")
-
-	// ErrTenantIsolationViolation indicates a breach of tenant isolation boundaries.
-	ErrTenantIsolationViolation = errors.New("tenant isolation violation")
-
-	// ErrTenantConnectionRequired is returned when multi-tenant mode is enabled
-	// but no tenant connection was found in context. This is a critical error
-	// that prevents data from being written to the wrong database.
-	ErrTenantConnectionRequired = errors.New("tenant connection required but not found in context")
-
-	// ErrNoConnectionAvailable is returned when no database connection is available.
-	ErrNoConnectionAvailable = errors.New("no database connection available")
+import (
+	"errors"
+	"strings"
 )
+
+// ErrTenantNotFound is returned when the tenant is not found in Pool Manager.
+var ErrTenantNotFound = errors.New("tenant not found")
+
+// ErrServiceNotConfigured is returned when the service is not configured for the tenant.
+var ErrServiceNotConfigured = errors.New("service not configured for tenant")
+
+// ErrModuleNotConfigured is returned when the module is not configured for the service.
+var ErrModuleNotConfigured = errors.New("module not configured for service")
+
+// ErrConnectionNotFound is returned when no connection exists for the tenant.
+var ErrConnectionNotFound = errors.New("connection not found for tenant")
+
+// ErrPoolClosed is returned when attempting to use a closed pool.
+var ErrPoolClosed = errors.New("tenant connection pool is closed")
+
+// ErrTenantContextRequired is returned when multi-tenant mode is enabled but no tenant context is found.
+// This error indicates that a request attempted to access the database without proper tenant identification.
+var ErrTenantContextRequired = errors.New("tenant context required: multi-tenant mode is enabled but no tenant ID was found in context")
+
+// ErrTenantNotProvisioned is returned when the tenant database schema has not been initialized.
+// This typically happens when migrations have not been run on the tenant's database.
+// PostgreSQL error code 42P01 (undefined_table) indicates this condition.
+var ErrTenantNotProvisioned = errors.New("tenant database not provisioned: schema has not been initialized")
+
+// IsTenantNotProvisionedError checks if the error indicates an unprovisioned tenant database.
+// PostgreSQL returns SQLSTATE 42P01 (undefined_table) when a relation (table) does not exist.
+// This typically occurs when migrations have not been run on the tenant database.
+func IsTenantNotProvisionedError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+
+	// Check for PostgreSQL error code 42P01 (undefined_table)
+	// This is the standard SQLSTATE for "relation does not exist"
+	if strings.Contains(errStr, "42P01") {
+		return true
+	}
+
+	// Also check for the common error message pattern
+	if strings.Contains(errStr, "relation") && strings.Contains(errStr, "does not exist") {
+		return true
+	}
+
+	return false
+}
