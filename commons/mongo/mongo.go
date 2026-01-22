@@ -71,6 +71,11 @@ func (mc *MongoConnection) GetDB(ctx context.Context) (*mongo.Client, error) {
 	return mc.DB, nil
 }
 
+// GetDatabaseName returns the database name for this connection.
+func (mc *MongoConnection) GetDatabaseName() string {
+	return mc.Database
+}
+
 // EnsureIndexes guarantees an index exists for a given collection.
 // Idempotent. Returns error if connection or index creation fails.
 func (mc *MongoConnection) EnsureIndexes(ctx context.Context, collection string, index mongo.IndexModel) error {
