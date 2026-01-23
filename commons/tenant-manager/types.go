@@ -29,6 +29,20 @@ type MongoDBConfig struct {
 	MaxPoolSize      uint64 `json:"maxPoolSize,omitempty"`
 }
 
+// RabbitMQConfig holds RabbitMQ connection configuration for tenant vhosts.
+type RabbitMQConfig struct {
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	VHost    string `json:"vhost"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// MessagingConfig holds messaging configuration for a tenant.
+type MessagingConfig struct {
+	RabbitMQ *RabbitMQConfig `json:"rabbitmq,omitempty"`
+}
+
 // ServiceDatabaseConfig holds database configurations for a service (ledger, audit, etc.).
 // It contains a map of module names to their database configurations.
 type ServiceDatabaseConfig struct {
@@ -50,6 +64,7 @@ type TenantConfig struct {
 	Status        string                           `json:"status,omitempty"`
 	IsolationMode string                           `json:"isolationMode,omitempty"`
 	Databases     map[string]ServiceDatabaseConfig `json:"databases,omitempty"`
+	Messaging     *MessagingConfig                 `json:"messaging,omitempty"`
 	CreatedAt     time.Time                        `json:"createdAt,omitempty"`
 	UpdatedAt     time.Time                        `json:"updatedAt,omitempty"`
 }
@@ -126,4 +141,18 @@ func (tc *TenantConfig) IsSchemaMode() bool {
 // This is the default mode when IsolationMode is empty or explicitly set to "isolated" or "database".
 func (tc *TenantConfig) IsIsolatedMode() bool {
 	return tc.IsolationMode == "" || tc.IsolationMode == "isolated" || tc.IsolationMode == "database"
+}
+
+// GetRabbitMQConfig returns the RabbitMQ config for the tenant.
+// Returns nil if messaging or RabbitMQ is not configured.
+func (tc *TenantConfig) GetRabbitMQConfig() *RabbitMQConfig {
+	if tc.Messaging == nil {
+		return nil
+	}
+	return tc.Messaging.RabbitMQ
+}
+
+// HasRabbitMQ returns true if the tenant has RabbitMQ configured.
+func (tc *TenantConfig) HasRabbitMQ() bool {
+	return tc.GetRabbitMQConfig() != nil
 }

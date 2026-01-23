@@ -108,3 +108,25 @@ func TestMongoPool_GetDatabaseForTenant_NoTenantID(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "tenant ID is required")
 }
+
+func TestContextWithOnboardingMongo(t *testing.T) {
+	t.Run("returns error when no database in context", func(t *testing.T) {
+		ctx := context.Background()
+
+		db, err := GetOnboardingMongoForTenant(ctx)
+
+		assert.Nil(t, db)
+		assert.ErrorIs(t, err, ErrTenantContextRequired)
+	})
+}
+
+func TestContextWithTransactionMongo(t *testing.T) {
+	t.Run("returns error when no database in context", func(t *testing.T) {
+		ctx := context.Background()
+
+		db, err := GetTransactionMongoForTenant(ctx)
+
+		assert.Nil(t, db)
+		assert.ErrorIs(t, err, ErrTenantContextRequired)
+	})
+}

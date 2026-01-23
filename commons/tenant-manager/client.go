@@ -127,3 +127,71 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 
 	return &config, nil
 }
+
+// TenantSummary represents a minimal tenant information for listing.
+type TenantSummary struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
+
+// GetActiveTenantsByService fetches active tenants for a service from Tenant Manager.
+// This is used as a fallback when Redis cache is unavailable.
+// The API endpoint is: GET {baseURL}/tenants/active?service={service}
+func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) ([]*TenantSummary, error) {
+	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_active_tenants")
+	defer span.End()
+
+	// Build the URL with service query parameter
+	url := fmt.Sprintf("%s/tenants/active?service=%s", c.baseURL, service)
+
+	logger.Infof("Fetching active tenants: service=%s", service)
+
+	// Create request with context
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		logger.Errorf("Failed to create request: %v", err)
+		libOpentelemetry.HandleSpanError(&span, "Failed to create HTTP request", err)
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	// Execute request
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		logger.Errorf("Failed to execute request: %v", err)
+		libOpentelemetry.HandleSpanError(&span, "HTTP request failed", err)
+		return nil, fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Errorf("Failed to read response body: %v", err)
+		libOpentelemetry.HandleSpanError(&span, "Failed to read response body", err)
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// Check response status
+	if resp.StatusCode != http.StatusOK {
+		logger.Errorf("Tenant Manager returned error: status=%d, body=%s", resp.StatusCode, string(body))
+		libOpentelemetry.HandleSpanError(&span, "Tenant Manager returned error", fmt.Errorf("status %d", resp.StatusCode))
+		return nil, fmt.Errorf("tenant manager returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse response
+	var tenants []*TenantSummary
+	if err := json.Unmarshal(body, &tenants); err != nil {
+		logger.Errorf("Failed to parse response: %v", err)
+		libOpentelemetry.HandleSpanError(&span, "Failed to parse response", err)
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	logger.Infof("Successfully fetched %d active tenants for service=%s", len(tenants), service)
+
+	return tenants, nil
+}
