@@ -18,12 +18,15 @@ type PostgreSQLConfig struct {
 
 // MongoDBConfig holds MongoDB connection configuration.
 type MongoDBConfig struct {
-	Host     string `json:"host,omitempty"`
-	Port     int    `json:"port,omitempty"`
-	Database string `json:"database"`
-	Username string `json:"username,omitempty"`
-	Password string `json:"password,omitempty"`
-	URI      string `json:"uri,omitempty"`
+	Host             string `json:"host,omitempty"`
+	Port             int    `json:"port,omitempty"`
+	Database         string `json:"database"`
+	Username         string `json:"username,omitempty"`
+	Password         string `json:"password,omitempty"`
+	URI              string `json:"uri,omitempty"`
+	AuthSource       string `json:"authSource,omitempty"`
+	DirectConnection bool   `json:"directConnection,omitempty"`
+	MaxPoolSize      uint64 `json:"maxPoolSize,omitempty"`
 }
 
 // ServiceDatabaseConfig holds database configurations for a service (ledger, audit, etc.).
@@ -120,7 +123,7 @@ func (tc *TenantConfig) IsSchemaMode() bool {
 }
 
 // IsIsolatedMode returns true if the tenant has a dedicated database (isolated mode).
-// This is the default mode when IsolationMode is empty or explicitly set to "isolated".
+// This is the default mode when IsolationMode is empty or explicitly set to "isolated" or "database".
 func (tc *TenantConfig) IsIsolatedMode() bool {
-	return tc.IsolationMode == "" || tc.IsolationMode == "isolated"
+	return tc.IsolationMode == "" || tc.IsolationMode == "isolated" || tc.IsolationMode == "database"
 }

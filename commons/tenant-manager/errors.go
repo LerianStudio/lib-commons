@@ -20,9 +20,10 @@ var ErrConnectionNotFound = errors.New("connection not found for tenant")
 // ErrPoolClosed is returned when attempting to use a closed pool.
 var ErrPoolClosed = errors.New("tenant connection pool is closed")
 
-// ErrTenantContextRequired is returned when multi-tenant mode is enabled but no tenant context is found.
+// ErrTenantContextRequired is returned when no tenant context is found for a database operation.
 // This error indicates that a request attempted to access the database without proper tenant identification.
-var ErrTenantContextRequired = errors.New("tenant context required: multi-tenant mode is enabled but no tenant ID was found in context")
+// The tenant connection must be set in context via middleware before database operations.
+var ErrTenantContextRequired = errors.New("tenant context required: no tenant database connection found in context")
 
 // ErrTenantNotProvisioned is returned when the tenant database schema has not been initialized.
 // This typically happens when migrations have not been run on the tenant's database.

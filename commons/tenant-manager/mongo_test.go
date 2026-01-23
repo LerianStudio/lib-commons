@@ -95,6 +95,16 @@ func TestGetMongoForTenant(t *testing.T) {
 		db, err := GetMongoForTenant(ctx)
 
 		assert.Nil(t, db)
-		assert.ErrorIs(t, err, ErrConnectionNotFound)
+		assert.ErrorIs(t, err, ErrTenantContextRequired)
 	})
+}
+
+func TestMongoPool_GetDatabaseForTenant_NoTenantID(t *testing.T) {
+	client := &Client{baseURL: "http://localhost:8080"}
+	pool := NewMongoPool(client, "ledger")
+
+	_, err := pool.GetDatabaseForTenant(context.Background(), "")
+
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "tenant ID is required")
 }

@@ -283,6 +283,11 @@ func TestTenantConfig_IsIsolatedMode(t *testing.T) {
 			expected:      true,
 		},
 		{
+			name:          "returns true when isolation mode is database",
+			isolationMode: "database",
+			expected:      true,
+		},
+		{
 			name:          "returns true when isolation mode is empty (default)",
 			isolationMode: "",
 			expected:      true,
