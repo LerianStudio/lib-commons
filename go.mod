@@ -5,7 +5,7 @@ go 1.24.0
 require (
 	cloud.google.com/go/iam v1.5.3
 	github.com/Masterminds/squirrel v1.5.4
-	github.com/alicebob/miniredis/v2 v2.35.0
+	github.com/alicebob/miniredis/v2 v2.36.1
 	github.com/bxcodec/dbresolver/v2 v2.2.1
 	github.com/go-redsync/redsync/v4 v4.15.0
 	github.com/gofiber/fiber/v2 v2.52.10
