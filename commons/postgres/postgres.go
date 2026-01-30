@@ -39,6 +39,16 @@ type PostgresConnection struct {
 	MultiStatementEnabled *bool
 }
 
+// resolveMultiStatementEnabled returns the resolved value of MultiStatementEnabled.
+// Returns true if MultiStatementEnabled is nil (backward compatible default),
+// otherwise returns the dereferenced value.
+func (pc *PostgresConnection) resolveMultiStatementEnabled() bool {
+	if pc.MultiStatementEnabled != nil {
+		return *pc.MultiStatementEnabled
+	}
+	return true
+}
+
 // Connect keeps a singleton connection with postgres.
 func (pc *PostgresConnection) Connect() error {
 	pc.Logger.Info("Connecting to primary and replica databases...")
@@ -83,14 +93,8 @@ func (pc *PostgresConnection) Connect() error {
 
 	primaryURL.Scheme = "file"
 
-	// Resolve MultiStatementEnabled with default true for backward compatibility
-	multiStmtEnabled := true
-	if pc.MultiStatementEnabled != nil {
-		multiStmtEnabled = *pc.MultiStatementEnabled
-	}
-
 	primaryDriver, err := postgres.WithInstance(dbPrimary, &postgres.Config{
-		MultiStatementEnabled: multiStmtEnabled,
+		MultiStatementEnabled: pc.resolveMultiStatementEnabled(),
 		DatabaseName:          pc.PrimaryDBName,
 		SchemaName:            "public",
 	})

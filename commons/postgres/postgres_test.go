@@ -47,13 +47,8 @@ func TestPostgresConnection_MultiStatementEnabled_Nil_DefaultsToTrue(t *testing.
 	// Verify the field is nil
 	assert.Nil(t, pc.MultiStatementEnabled, "MultiStatementEnabled should be nil by default")
 
-	// Verify default resolution logic (simulating what Connect() does)
-	multiStmtEnabled := true
-	if pc.MultiStatementEnabled != nil {
-		multiStmtEnabled = *pc.MultiStatementEnabled
-	}
-
-	assert.True(t, multiStmtEnabled, "nil MultiStatementEnabled should resolve to true")
+	// Verify default resolution logic (using helper method from Connect())
+	assert.True(t, pc.resolveMultiStatementEnabled(), "nil MultiStatementEnabled should resolve to true")
 }
 
 func TestPostgresConnection_MultiStatementEnabled_ExplicitTrue(t *testing.T) {
@@ -74,13 +69,8 @@ func TestPostgresConnection_MultiStatementEnabled_ExplicitTrue(t *testing.T) {
 	assert.NotNil(t, pc.MultiStatementEnabled, "MultiStatementEnabled should not be nil")
 	assert.True(t, *pc.MultiStatementEnabled, "MultiStatementEnabled should be true")
 
-	// Verify resolution logic
-	multiStmtEnabled := true
-	if pc.MultiStatementEnabled != nil {
-		multiStmtEnabled = *pc.MultiStatementEnabled
-	}
-
-	assert.True(t, multiStmtEnabled, "explicit true should resolve to true")
+	// Verify resolution logic (using helper method from Connect())
+	assert.True(t, pc.resolveMultiStatementEnabled(), "explicit true should resolve to true")
 }
 
 func TestPostgresConnection_MultiStatementEnabled_ExplicitFalse(t *testing.T) {
@@ -101,13 +91,8 @@ func TestPostgresConnection_MultiStatementEnabled_ExplicitFalse(t *testing.T) {
 	assert.NotNil(t, pc.MultiStatementEnabled, "MultiStatementEnabled should not be nil")
 	assert.False(t, *pc.MultiStatementEnabled, "MultiStatementEnabled should be false")
 
-	// Verify resolution logic
-	multiStmtEnabled := true
-	if pc.MultiStatementEnabled != nil {
-		multiStmtEnabled = *pc.MultiStatementEnabled
-	}
-
-	assert.False(t, multiStmtEnabled, "explicit false should resolve to false")
+	// Verify resolution logic (using helper method from Connect())
+	assert.False(t, pc.resolveMultiStatementEnabled(), "explicit false should resolve to false")
 }
 
 func TestPostgresConnection_MultiStatementEnabled_AllCases(t *testing.T) {
@@ -140,7 +125,6 @@ func TestPostgresConnection_MultiStatementEnabled_AllCases(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt // capture range variable
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -155,13 +139,8 @@ func TestPostgresConnection_MultiStatementEnabled_AllCases(t *testing.T) {
 				MultiStatementEnabled:   tt.multiStatementEnabled,
 			}
 
-			// Simulate the resolution logic from Connect()
-			multiStmtEnabled := true
-			if pc.MultiStatementEnabled != nil {
-				multiStmtEnabled = *pc.MultiStatementEnabled
-			}
-
-			assert.Equal(t, tt.expectedResolved, multiStmtEnabled, tt.description)
+			// Use the same resolution logic as Connect()
+			assert.Equal(t, tt.expectedResolved, pc.resolveMultiStatementEnabled(), tt.description)
 		})
 	}
 }
