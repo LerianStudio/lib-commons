@@ -46,6 +46,7 @@ func (pc *PostgresConnection) resolveMultiStatementEnabled() bool {
 	if pc.MultiStatementEnabled != nil {
 		return *pc.MultiStatementEnabled
 	}
+
 	return true
 }
 
