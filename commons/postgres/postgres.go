@@ -33,6 +33,10 @@ type PostgresConnection struct {
 	Logger                  log.Logger
 	MaxOpenConnections      int
 	MaxIdleConnections      int
+	// MultiStatementEnabled controls whether migrations run with multi-statement mode.
+	// When nil, defaults to true for backward compatibility.
+	// Use pointers.Bool(true) or pointers.Bool(false) to set explicitly.
+	MultiStatementEnabled *bool
 }
 
 // Connect keeps a singleton connection with postgres.
@@ -79,8 +83,14 @@ func (pc *PostgresConnection) Connect() error {
 
 	primaryURL.Scheme = "file"
 
+	// Resolve MultiStatementEnabled with default true for backward compatibility
+	multiStmtEnabled := true
+	if pc.MultiStatementEnabled != nil {
+		multiStmtEnabled = *pc.MultiStatementEnabled
+	}
+
 	primaryDriver, err := postgres.WithInstance(dbPrimary, &postgres.Config{
-		MultiStatementEnabled: true,
+		MultiStatementEnabled: multiStmtEnabled,
 		DatabaseName:          pc.PrimaryDBName,
 		SchemaName:            "public",
 	})
