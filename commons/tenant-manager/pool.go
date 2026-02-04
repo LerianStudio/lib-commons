@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
 	"sync"
 
 	libCommons "github.com/LerianStudio/lib-commons/v2/commons"
@@ -23,13 +22,6 @@ const (
 	IsolationModeSchema = "schema"
 )
 
-// SchemaNameFromTenantID generates a PostgreSQL schema name from a tenant ID.
-// The schema name format is: tenant_{uuid_with_underscores}
-// Example: tenant ID "550e8400-e29b-41d4-a716-446655440000" becomes "tenant_550e8400_e29b_41d4_a716_446655440000"
-func SchemaNameFromTenantID(tenantID string) string {
-	return "tenant_" + strings.ReplaceAll(tenantID, "-", "_")
-}
-
 // Pool manages database connections per tenant.
 // It fetches credentials from Tenant Manager and caches connections.
 type Pool struct {
@@ -42,11 +34,9 @@ type Pool struct {
 	connections map[string]*libPostgres.PostgresConnection
 	closed      bool
 
-	// Connection settings
 	maxOpenConns int
 	maxIdleConns int
 
-	// Default connection for single-tenant mode fallback
 	defaultConn *libPostgres.PostgresConnection
 }
 
@@ -111,14 +101,12 @@ func (p *Pool) GetConnection(ctx context.Context, tenantID string) (*libPostgres
 		return nil, ErrPoolClosed
 	}
 
-	// Check if connection exists
 	if conn, ok := p.connections[tenantID]; ok {
 		p.mu.RUnlock()
 		return conn, nil
 	}
 	p.mu.RUnlock()
 
-	// Create new connection
 	return p.createConnection(ctx, tenantID)
 }
 
@@ -131,7 +119,6 @@ func (p *Pool) createConnection(ctx context.Context, tenantID string) (*libPostg
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Double-check after acquiring lock
 	if conn, ok := p.connections[tenantID]; ok {
 		return conn, nil
 	}
@@ -148,24 +135,30 @@ func (p *Pool) createConnection(ctx context.Context, tenantID string) (*libPostg
 		return nil, fmt.Errorf("failed to get tenant config: %w", err)
 	}
 
-	// Get PostgreSQL config
 	pgConfig := config.GetPostgreSQLConfig(p.service, p.module)
 	if pgConfig == nil {
 		logger.Errorf("no PostgreSQL config for tenant %s service %s module %s", tenantID, p.service, p.module)
 		return nil, ErrServiceNotConfigured
 	}
 
-	// Build connection string
-	connStr := buildConnectionString(pgConfig)
+	primaryConnStr := buildConnectionString(pgConfig)
 
-	// Create PostgresConnection
-	// In multi-tenant mode: skip migrations (tenant databases should be provisioned separately)
-	// In single-tenant mode: run migrations automatically
+	// Check for replica configuration; fall back to primary if not available
+	replicaConnStr := primaryConnStr
+	replicaDBName := pgConfig.Database
+
+	pgReplicaConfig := config.GetPostgreSQLReplicaConfig(p.service, p.module)
+	if pgReplicaConfig != nil {
+		replicaConnStr = buildConnectionString(pgReplicaConfig)
+		replicaDBName = pgReplicaConfig.Database
+		logger.Infof("using separate replica connection for tenant %s (replica host: %s)", tenantID, pgReplicaConfig.Host)
+	}
+
 	conn := &libPostgres.PostgresConnection{
-		ConnectionStringPrimary: connStr,
-		ConnectionStringReplica: connStr,
+		ConnectionStringPrimary: primaryConnStr,
+		ConnectionStringReplica: replicaConnStr,
 		PrimaryDBName:           pgConfig.Database,
-		ReplicaDBName:           pgConfig.Database,
+		ReplicaDBName:           replicaDBName,
 		MaxOpenConnections:      p.maxOpenConns,
 		MaxIdleConnections:      p.maxIdleConns,
 		SkipMigrations:          p.IsMultiTenant(),
@@ -175,56 +168,26 @@ func (p *Pool) createConnection(ctx context.Context, tenantID string) (*libPostg
 		conn.Logger = p.logger
 	}
 
-	// Connect
+	if config.IsSchemaMode() && pgConfig.Schema == "" {
+		logger.Errorf("schema mode requires schema in config for tenant %s", tenantID)
+		return nil, fmt.Errorf("schema mode requires schema in config for tenant %s", tenantID)
+	}
+
 	if err := conn.Connect(); err != nil {
 		logger.Errorf("failed to connect to tenant database: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "failed to connect", err)
 		return nil, fmt.Errorf("failed to connect to tenant database: %w", err)
 	}
 
-	// For schema mode, set the search_path to the tenant's schema
-	if config.IsSchemaMode() {
-		schemaName := SchemaNameFromTenantID(tenantID)
-		if err := p.setSearchPath(ctx, conn, schemaName); err != nil {
-			logger.Errorf("failed to set search_path for tenant %s: %v", tenantID, err)
-			libOpentelemetry.HandleSpanError(&span, "failed to set search_path", err)
-			// Close the connection since it's not properly configured
-			if conn.ConnectionDB != nil {
-				(*conn.ConnectionDB).Close()
-			}
-			return nil, fmt.Errorf("failed to set search_path for schema mode: %w", err)
-		}
-		logger.Infof("set search_path to schema %s for tenant %s (schema mode)", schemaName, tenantID)
+	if pgConfig.Schema != "" {
+		logger.Infof("connection configured with search_path=%s for tenant %s (mode: %s)", pgConfig.Schema, tenantID, config.IsolationMode)
 	}
 
-	// Cache connection
 	p.connections[tenantID] = conn
 
 	logger.Infof("created connection for tenant %s (mode: %s)", tenantID, config.IsolationMode)
 
 	return conn, nil
-}
-
-// setSearchPath sets the search_path for a PostgreSQL connection to the tenant's schema.
-// This is used for schema-mode multi-tenancy where all tenants share the same database
-// but have isolated schemas.
-func (p *Pool) setSearchPath(ctx context.Context, conn *libPostgres.PostgresConnection, schemaName string) error {
-	if conn.ConnectionDB == nil {
-		return fmt.Errorf("connection not established")
-	}
-
-	db := *conn.ConnectionDB
-
-	// Use quoted identifier to prevent SQL injection and handle special characters
-	// The schema name format is already controlled (tenant_{uuid_with_underscores})
-	query := fmt.Sprintf(`SET search_path TO "%s", public`, schemaName)
-
-	_, err := db.ExecContext(ctx, query)
-	if err != nil {
-		return fmt.Errorf("failed to execute SET search_path: %w", err)
-	}
-
-	return nil
 }
 
 // GetDB returns a dbresolver.DB for the tenant.
@@ -301,17 +264,22 @@ type PoolStats struct {
 	Closed           bool     `json:"closed"`
 }
 
-// buildConnectionString builds a PostgreSQL connection string.
 func buildConnectionString(cfg *PostgreSQLConfig) string {
 	sslmode := cfg.SSLMode
 	if sslmode == "" {
 		sslmode = "disable"
 	}
 
-	return fmt.Sprintf(
+	connStr := fmt.Sprintf(
 		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
 		cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database, sslmode,
 	)
+
+	if cfg.Schema != "" {
+		connStr += fmt.Sprintf(" options=-csearch_path=%s", cfg.Schema)
+	}
+
+	return connStr
 }
 
 // TenantConnectionPool is an alias for Pool for backward compatibility.
