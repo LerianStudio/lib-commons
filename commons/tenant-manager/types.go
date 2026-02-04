@@ -51,8 +51,9 @@ type ServiceDatabaseConfig struct {
 
 // DatabaseConfig holds database configurations for a module (onboarding, transaction, etc.).
 type DatabaseConfig struct {
-	PostgreSQL *PostgreSQLConfig `json:"postgresql,omitempty"`
-	MongoDB    *MongoDBConfig    `json:"mongodb,omitempty"`
+	PostgreSQL        *PostgreSQLConfig `json:"postgresql,omitempty"`
+	PostgreSQLReplica *PostgreSQLConfig `json:"postgresqlReplica,omitempty"`
+	MongoDB           *MongoDBConfig    `json:"mongodb,omitempty"`
 }
 
 // TenantConfig represents the tenant configuration from Tenant Manager.
@@ -94,6 +95,38 @@ func (tc *TenantConfig) GetPostgreSQLConfig(service, module string) *PostgreSQLC
 	for _, db := range svc.Services {
 		if db.PostgreSQL != nil {
 			return db.PostgreSQL
+		}
+	}
+
+	return nil
+}
+
+// GetPostgreSQLReplicaConfig returns the PostgreSQL replica config for a service and module.
+// service: e.g., "ledger", "audit"
+// module: e.g., "onboarding", "transaction"
+// If module is empty, returns the first PostgreSQL replica config found for the service.
+// Returns nil if no replica is configured (callers should fall back to primary).
+func (tc *TenantConfig) GetPostgreSQLReplicaConfig(service, module string) *PostgreSQLConfig {
+	if tc.Databases == nil {
+		return nil
+	}
+
+	svc, ok := tc.Databases[service]
+	if !ok || svc.Services == nil {
+		return nil
+	}
+
+	if module != "" {
+		if db, ok := svc.Services[module]; ok {
+			return db.PostgreSQLReplica
+		}
+		return nil
+	}
+
+	// Return first PostgreSQL replica config found for the service
+	for _, db := range svc.Services {
+		if db.PostgreSQLReplica != nil {
+			return db.PostgreSQLReplica
 		}
 	}
 
