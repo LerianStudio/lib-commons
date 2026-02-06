@@ -181,7 +181,7 @@ check-envs:
 	$(call print_title,Checking git hooks and environment files for security issues)
 	$(MAKE) check-hooks
 	@echo "Checking for exposed secrets in environment files..."
-	@if grep -r "SECRET.*=" --include=".env" .; then \
+	@if grep -rq "SECRET.*=" --include=".env" .; then \
 		echo "$(RED)Warning: Secrets found in environment files. Make sure these are not committed to the repository.$(NC)"; \
 		exit 1; \
 	else \
@@ -209,8 +209,12 @@ sec:
 	fi
 	@if find . -name "*.go" -type f | grep -q .; then \
 		echo "Running security checks on all packages..."; \
-		gosec ./...; \
-		echo "$(GREEN)$(BOLD)[ok]$(NC) Security checks completed$(GREEN) ✔️$(NC)"; \
+		if gosec ./...; then \
+			echo "$(GREEN)$(BOLD)[ok]$(NC) Security checks completed$(GREEN) ✔️$(NC)"; \
+		else \
+			echo -e "\n$(BOLD)$(RED)Security issues found by gosec. Please address them before proceeding.$(NC)\n"; \
+			exit 1; \
+		fi; \
 	else \
 		echo "No Go files found, skipping security checks"; \
 	fi
@@ -223,5 +227,5 @@ sec:
 goreleaser:
 	$(call print_title,Creating release snapshot with goreleaser)
 	$(call check_command,goreleaser,"go install github.com/goreleaser/goreleaser@latest")
-	goreleaser release --snapshot --skip-publish --rm-dist
+	goreleaser release --snapshot --skip-publish --clean
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) Release snapshot created successfully$(GREEN) ✔️$(NC)"
