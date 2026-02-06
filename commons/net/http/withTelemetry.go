@@ -2,16 +2,20 @@ package http
 
 import (
 	"context"
+	"net/url"
 	"strings"
 
 	"github.com/LerianStudio/lib-commons/v2/commons"
+	cn "github.com/LerianStudio/lib-commons/v2/commons/constants"
 	"github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v2/commons/security"
 	"github.com/gofiber/fiber/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -44,7 +48,12 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, exclud
 		tracer := otel.Tracer(tl.LibraryName)
 		routePathWithMethod := c.Method() + " " + commons.ReplaceUUIDWithPlaceholder(c.Path())
 
-		ctx, span := tracer.Start(opentelemetry.ExtractHTTPContext(c), routePathWithMethod)
+		traceCtx := ctx
+		if commons.IsInternalLerianService(c.Get(cn.HeaderUserAgent)) {
+			traceCtx = opentelemetry.ExtractHTTPContext(c)
+		}
+
+		ctx, span := tracer.Start(traceCtx, routePathWithMethod, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
 		span.SetAttributes(
@@ -110,7 +119,12 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 			attribute.String("grpc.method", info.FullMethod),
 		)
 
-		ctx, span := tracer.Start(opentelemetry.ExtractGRPCContext(ctx), info.FullMethod)
+		traceCtx := ctx
+		if commons.IsInternalLerianService(getGRPCUserAgent(ctx)) {
+			traceCtx = opentelemetry.ExtractGRPCContext(ctx)
+		}
+
+		ctx, span := tracer.Start(traceCtx, info.FullMethod, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
 		ctx = commons.ContextWithTracer(ctx, tracer)
@@ -175,4 +189,52 @@ func (tm *TelemetryMiddleware) isRouteExcluded(c *fiber.Ctx, excludedRoutes []st
 	}
 
 	return false
+}
+
+// sanitizeURL removes or obfuscates sensitive query parameters from URLs
+// to prevent exposing tokens, API keys, and other sensitive data in telemetry.
+func sanitizeURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+
+	if parsed.RawQuery == "" {
+		return rawURL
+	}
+
+	query := parsed.Query()
+	modified := false
+
+	for key := range query {
+		if security.IsSensitiveField(key) {
+			query.Set(key, cn.ObfuscatedValue)
+
+			modified = true
+		}
+	}
+
+	if !modified {
+		return rawURL
+	}
+
+	parsed.RawQuery = query.Encode()
+
+	return parsed.String()
+}
+
+// getGRPCUserAgent extracts the User-Agent from incoming gRPC metadata.
+// Returns empty string if the metadata is not present or doesn't contain user-agent.
+func getGRPCUserAgent(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok || md == nil {
+		return ""
+	}
+
+	userAgents := md.Get("user-agent")
+	if len(userAgents) == 0 {
+		return ""
+	}
+
+	return userAgents[0]
 }
