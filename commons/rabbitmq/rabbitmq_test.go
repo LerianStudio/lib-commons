@@ -1,17 +1,16 @@
 package rabbitmq
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"github.com/stretchr/testify/assert"
 )
-
-// Mock for amqp.Channel
-type mockAMQPChannel struct{}
 
 // mockRabbitMQConnection extends RabbitMQConnection to allow mocking for tests
 type mockRabbitMQConnection struct {
@@ -251,4 +250,237 @@ func TestRabbitMQConnection_HealthCheck_Authentication(t *testing.T) {
 
 	isHealthy = goodAuthConn.HealthCheck()
 	assert.True(t, isHealthy, "HealthCheck should return true with valid credentials")
+}
+
+func TestBuildRabbitMQConnectionString(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol string
+		user     string
+		pass     string
+		host     string
+		port     string
+		vhost    string
+		expected string
+	}{
+		{
+			name:     "empty vhost - backward compatibility",
+			protocol: "amqp",
+			user:     "guest",
+			pass:     "guest",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "",
+			expected: "amqp://guest:guest@localhost:5672",
+		},
+		{
+			name:     "custom vhost - production",
+			protocol: "amqp",
+			user:     "admin",
+			pass:     "secret",
+			host:     "rabbitmq.example.com",
+			port:     "5672",
+			vhost:    "production",
+			expected: "amqp://admin:secret@rabbitmq.example.com:5672/production",
+		},
+		{
+			name:     "custom vhost - staging",
+			protocol: "amqps",
+			user:     "user",
+			pass:     "pass",
+			host:     "secure.rabbitmq.io",
+			port:     "5671",
+			vhost:    "staging",
+			expected: "amqps://user:pass@secure.rabbitmq.io:5671/staging",
+		},
+		{
+			name:     "root vhost explicit - URL encoded as %2F",
+			protocol: "amqp",
+			user:     "guest",
+			pass:     "guest",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "/",
+			expected: "amqp://guest:guest@localhost:5672/%2F",
+		},
+		{
+			name:     "vhost with special characters - spaces",
+			protocol: "amqp",
+			user:     "guest",
+			pass:     "guest",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "my vhost",
+			expected: "amqp://guest:guest@localhost:5672/my%20vhost",
+		},
+		{
+			name:     "vhost with special characters - slashes",
+			protocol: "amqp",
+			user:     "guest",
+			pass:     "guest",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "env/prod/region1",
+			expected: "amqp://guest:guest@localhost:5672/env%2Fprod%2Fregion1",
+		},
+		{
+			name:     "vhost with special characters - hash and ampersand",
+			protocol: "amqp",
+			user:     "guest",
+			pass:     "guest",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "test#1&2",
+			expected: "amqp://guest:guest@localhost:5672/test%231%262",
+		},
+		{
+			name:     "password with special characters",
+			protocol: "amqp",
+			user:     "admin",
+			pass:     "p@ss:word/123",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "production",
+			expected: "amqp://admin:p%40ss%3Aword%2F123@localhost:5672/production",
+		},
+		{
+			name:     "username with special characters",
+			protocol: "amqp",
+			user:     "admin@domain:user",
+			pass:     "secret",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "production",
+			expected: "amqp://admin%40domain%3Auser:secret@localhost:5672/production",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := BuildRabbitMQConnectionString(tt.protocol, tt.user, tt.pass, tt.host, tt.port, tt.vhost)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestEnsureChannelWithContext_ReturnsErrorOnCancelledContext verifies that
+// EnsureChannelWithContext respects context cancellation.
+func TestEnsureChannelWithContext_ReturnsErrorOnCancelledContext(t *testing.T) {
+	logger := &log.GoLogger{Level: log.InfoLevel}
+
+	conn := &RabbitMQConnection{
+		ConnectionStringSource: "amqp://guest:guest@localhost:5999", // Unreachable
+		Logger:                 logger,
+	}
+
+	// Create already cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := conn.EnsureChannelWithContext(ctx)
+
+	// Should return context.Canceled error
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestEnsureChannelWithContext_ReturnsErrorOnDeadlineExceeded(t *testing.T) {
+	logger := &log.GoLogger{Level: log.InfoLevel}
+
+	conn := &RabbitMQConnection{
+		ConnectionStringSource: "amqp://guest:guest@localhost:5999", // Unreachable
+		Logger:                 logger,
+	}
+
+	// Create context with very short deadline that's already expired
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	defer cancel()
+	time.Sleep(10 * time.Millisecond) // Let deadline expire
+
+	err := conn.EnsureChannelWithContext(ctx)
+
+	// Should return context.DeadlineExceeded error
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestEnsureChannelWithContext_TimeoutDuringDial(t *testing.T) {
+	logger := &log.GoLogger{Level: log.InfoLevel}
+
+	conn := &RabbitMQConnection{
+		// Use a non-routable IP to ensure connection hangs (doesn't immediately fail)
+		ConnectionStringSource: "amqp://guest:guest@10.255.255.1:5672",
+		Logger:                 logger,
+	}
+
+	// Use short timeout - this should NOT take 30 seconds
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := conn.EnsureChannelWithContext(ctx)
+	elapsed := time.Since(start)
+
+	// Should fail with context deadline exceeded or i/o timeout
+	assert.Error(t, err)
+
+	// Should complete within reasonable time (not 30 seconds)
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"EnsureChannelWithContext should respect context timeout, took %v", elapsed)
+}
+
+func TestEnsureChannelWithContext_UsesConnectionTimeoutField(t *testing.T) {
+	logger := &log.GoLogger{Level: log.InfoLevel}
+
+	conn := &RabbitMQConnection{
+		// Use non-routable IP to ensure connection hangs
+		ConnectionStringSource: "amqp://guest:guest@10.255.255.1:5672",
+		Logger:                 logger,
+		ConnectionTimeout:      50 * time.Millisecond, // Short custom timeout
+	}
+
+	// Use context without deadline - should use ConnectionTimeout field
+	ctx := context.Background()
+
+	start := time.Now()
+	err := conn.EnsureChannelWithContext(ctx)
+	elapsed := time.Since(start)
+
+	// Should fail with connection error
+	assert.Error(t, err)
+
+	// Should complete around ConnectionTimeout duration (with some buffer)
+	assert.Less(t, elapsed, 200*time.Millisecond,
+		"Should respect ConnectionTimeout field, took %v", elapsed)
+	assert.Greater(t, elapsed, 40*time.Millisecond,
+		"Should take at least ConnectionTimeout duration, took %v", elapsed)
+}
+
+func TestEnsureChannelWithContext_ChecksContextAfterLockAcquisition(t *testing.T) {
+	logger := &log.GoLogger{Level: log.InfoLevel}
+
+	conn := &RabbitMQConnection{
+		// Use non-routable IP so connection hangs until context is cancelled
+		ConnectionStringSource: "amqp://guest:guest@10.255.255.1:5672",
+		Logger:                 logger,
+	}
+
+	// Create context that we'll cancel after a short delay
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Start goroutine that cancels context after a tiny delay
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+
+	// Call should detect cancellation and return quickly
+	start := time.Now()
+	err := conn.EnsureChannelWithContext(ctx)
+	elapsed := time.Since(start)
+
+	// Should return an error (context.Canceled or connection error)
+	assert.Error(t, err)
+
+	// Should complete quickly due to context cancellation (not 30 seconds)
+	assert.Less(t, elapsed, 200*time.Millisecond,
+		"Should detect context cancellation quickly, took %v", elapsed)
 }
