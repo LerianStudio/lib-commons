@@ -118,6 +118,10 @@ func (rc *RabbitMQConnection) EnsureChannel() error {
 				rc.Connection = nil
 			}
 
+			// Reset stale state so GetNewConnect triggers reconnection
+			rc.Connected = false
+			rc.Channel = nil
+
 			rc.Logger.Error("failed to open channel on rabbitmq", zap.Error(err))
 
 			return fmt.Errorf("failed to open channel on rabbitmq: %w", err)
@@ -188,6 +192,10 @@ func (rc *RabbitMQConnection) EnsureChannelWithContext(ctx context.Context) erro
 
 				rc.Connection = nil
 			}
+
+			// Reset stale state so GetNewConnect triggers reconnection
+			rc.Connected = false
+			rc.Channel = nil
 
 			rc.Logger.Error("failed to open channel on rabbitmq", zap.Error(err))
 
