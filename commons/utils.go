@@ -7,6 +7,7 @@ import (
 	"math"
 	"os/exec"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -363,4 +364,10 @@ func UUIDsToStrings(uuids []uuid.UUID) []string {
 	}
 
 	return result
+}
+
+func IsInternalLerianService(userAgent string) bool {
+	pattern := regexp.MustCompile(`^[\w-]+/[\d.]+\s+LerianStudio$`)
+
+	return pattern.MatchString(userAgent)
 }
