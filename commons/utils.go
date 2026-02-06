@@ -25,6 +25,8 @@ const beginningKey = "{"
 const keySeparator = ":"
 const endKey = "}"
 
+var internalServicePattern = regexp.MustCompile(`^[\w-]+/[\d.]+\s+LerianStudio$`)
+
 // Contains checks if an item is in a slice. This function uses type parameters to work with any slice type.
 func Contains[T comparable](slice []T, item T) bool {
 	return slices.Contains(slice, item)
@@ -367,7 +369,5 @@ func UUIDsToStrings(uuids []uuid.UUID) []string {
 }
 
 func IsInternalLerianService(userAgent string) bool {
-	pattern := regexp.MustCompile(`^[\w-]+/[\d.]+\s+LerianStudio$`)
-
-	return pattern.MatchString(userAgent)
+	return internalServicePattern.MatchString(userAgent)
 }
