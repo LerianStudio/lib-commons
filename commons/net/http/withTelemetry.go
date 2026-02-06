@@ -63,7 +63,7 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, exclud
 		tracer := otel.Tracer(tl.LibraryName)
 		routePathWithMethod := c.Method() + " " + commons.ReplaceUUIDWithPlaceholder(c.Path())
 
-		traceCtx := ctx
+		traceCtx := c.UserContext()
 		if commons.IsInternalLerianService(c.Get(cn.HeaderUserAgent)) {
 			traceCtx = opentelemetry.ExtractHTTPContext(c)
 		}
