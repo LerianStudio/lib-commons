@@ -216,7 +216,7 @@ func (rc *RabbitMQConnection) EnsureChannelWithContext(ctx context.Context) erro
 func (rc *RabbitMQConnection) dialWithContext(ctx context.Context) (*amqp.Connection, error) {
 	// Determine timeout from context deadline or default
 	timeout := rc.ConnectionTimeout
-	if timeout == 0 {
+	if timeout <= 0 {
 		timeout = DefaultConnectionTimeout
 	}
 
