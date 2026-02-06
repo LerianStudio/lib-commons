@@ -13,6 +13,10 @@ define print_title
 	@echo "------------------------------------------"
 endef
 
+# Include test targets
+MK_DIR := $(abspath mk)
+include $(MK_DIR)/tests.mk
+
 #-------------------------------------------------------
 # Help Command
 #-------------------------------------------------------
@@ -26,10 +30,27 @@ help:
 	@echo ""
 	@echo "Core Commands:"
 	@echo "  make help                        - Display this help message"
-	@echo "  make test                        - Run tests on all packages"
+	@echo "  make test                        - Run all tests"
 	@echo "  make build                       - Build all packages"
 	@echo "  make clean                       - Clean all build artifacts"
 	@echo "  make cover                       - Run test coverage"
+	@echo ""
+	@echo ""
+	@echo "Test Suite Commands:"
+	@echo "  make test-unit                   - Run unit tests"
+	@echo "  make test-integration            - Run integration tests with testcontainers (RUN=<test>, LOW_RESOURCE=1)"
+	@echo "  make test-all                    - Run all tests (unit + integration)"
+	@echo ""
+	@echo ""
+	@echo "Coverage Commands:"
+	@echo "  make coverage-unit               - Run unit tests with coverage report (PKG=./path, uses .ignorecoverunit)"
+	@echo "  make coverage-integration        - Run integration tests with coverage report (PKG=./path)"
+	@echo "  make coverage                    - Run all coverage targets (unit + integration)"
+	@echo "  make cover-html                  - Generate HTML coverage reports"
+	@echo ""
+	@echo ""
+	@echo "Test Tooling:"
+	@echo "  make tools                       - Install test tools (gotestsum)"
 	@echo ""
 	@echo ""
 	@echo "Code Quality Commands:"
@@ -38,6 +59,7 @@ help:
 	@echo "  make tidy                        - Clean dependencies"
 	@echo "  make check-tests                 - Verify test coverage for packages"
 	@echo "  make sec                         - Run security checks using gosec"
+	@echo "  make sec SARIF=1                 - Run security checks with SARIF output"
 	@echo ""
 	@echo ""
 	@echo "Git Hook Commands:"
@@ -55,12 +77,6 @@ help:
 # Core Commands
 #-------------------------------------------------------
 
-.PHONY: test
-test:
-	$(call print_title,Running tests on all packages)
-	$(call check_command,go,"Install Go from https://golang.org/doc/install")
-	go test -v ./...
-	@echo "$(GREEN)$(BOLD)[ok]$(NC) All tests passed$(GREEN) ✔️$(NC)"
 
 .PHONY: build
 build:
@@ -72,23 +88,9 @@ build:
 .PHONY: clean
 clean:
 	$(call print_title,Cleaning build artifacts)
-	@rm -rf ./bin ./dist coverage.out coverage.html
+	@rm -rf ./bin ./dist ./reports coverage.out coverage.html
 	@go clean -cache -testcache
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) All build artifacts cleaned$(GREEN) ✔️$(NC)"
-
-.PHONY: cover
-cover:
-	$(call print_title,Generating test coverage report)
-	$(call check_command,go,"Install Go from https://golang.org/doc/install")
-	@sh ./scripts/coverage.sh
-	@go tool cover -html=coverage.out -o coverage.html
-	@echo ""
-	@echo "Coverage Summary:"
-	@echo "----------------------------------------"
-	@go tool cover -func=coverage.out | grep total | awk '{print "Total coverage: " $$3}'
-	@echo "----------------------------------------"
-	@echo "Open coverage.html in your browser to view detailed coverage report"
-	@echo "$(GREEN)$(BOLD)[ok]$(NC) Coverage report generated successfully$(GREEN) ✔️$(NC)"
 
 #-------------------------------------------------------
 # Code Quality Commands
@@ -200,6 +202,10 @@ tidy:
 	go mod tidy
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) Dependencies cleaned successfully$(GREEN) ✔️$(NC)"
 
+# SARIF output for GitHub Security tab integration (optional)
+# Usage: make sec SARIF=1
+SARIF ?= 0
+
 .PHONY: sec
 sec:
 	$(call print_title,Running security checks using gosec)
@@ -207,13 +213,24 @@ sec:
 		echo "Installing gosec..."; \
 		go install github.com/securego/gosec/v2/cmd/gosec@latest; \
 	fi
-	@if find . -name "*.go" -type f | grep -q .; then \
+	@if find . -name "*.go" -type f -not -path './vendor/*' | grep -q .; then \
 		echo "Running security checks on all packages..."; \
-		if gosec ./...; then \
-			echo "$(GREEN)$(BOLD)[ok]$(NC) Security checks completed$(GREEN) ✔️$(NC)"; \
+		if [ "$(SARIF)" = "1" ]; then \
+			echo "Generating SARIF output: gosec-report.sarif"; \
+			if gosec -fmt sarif -out gosec-report.sarif ./...; then \
+				echo "$(GREEN)$(BOLD)[ok]$(NC) SARIF report generated: gosec-report.sarif$(GREEN) ✔️$(NC)"; \
+			else \
+				echo -e "\n$(BOLD)$(RED)Security issues found by gosec. Please address them before proceeding.$(NC)\n"; \
+				echo "SARIF report with details: gosec-report.sarif"; \
+				exit 1; \
+			fi; \
 		else \
-			echo -e "\n$(BOLD)$(RED)Security issues found by gosec. Please address them before proceeding.$(NC)\n"; \
-			exit 1; \
+			if gosec ./...; then \
+				echo "$(GREEN)$(BOLD)[ok]$(NC) Security checks completed$(GREEN) ✔️$(NC)"; \
+			else \
+				echo -e "\n$(BOLD)$(RED)Security issues found by gosec. Please address them before proceeding.$(NC)\n"; \
+				exit 1; \
+			fi; \
 		fi; \
 	else \
 		echo "No Go files found, skipping security checks"; \
