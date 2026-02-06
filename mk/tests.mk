@@ -187,21 +187,6 @@ test-all:
 # Coverage Commands
 #-------------------------------------------------------
 
-# Legacy cover command (for backward compatibility)
-.PHONY: cover
-cover:
-	$(call print_title,Generating test coverage report)
-	$(call check_command,go,"Install Go from https://golang.org/doc/install")
-	@sh ./scripts/coverage.sh
-	@go tool cover -html=$(TEST_REPORTS_DIR)/coverage.out -o $(TEST_REPORTS_DIR)/coverage.html
-	@echo ""
-	@echo "Coverage Summary:"
-	@echo "----------------------------------------"
-	@go tool cover -func=$(TEST_REPORTS_DIR)/coverage.out | grep total | awk '{print "Total coverage: " $$3}'
-	@echo "----------------------------------------"
-	@echo "Open $(TEST_REPORTS_DIR)/coverage.html in your browser to view detailed coverage report"
-	@echo "$(GREEN)$(BOLD)[ok]$(NC) Coverage report generated successfully$(GREEN) ✔️$(NC)"
-
 # Unit tests with coverage (uses covermode=atomic)
 # Supports PKG parameter to filter packages (e.g., PKG=./commons/...)
 # Supports .ignorecoverunit file to exclude patterns from coverage stats
@@ -310,24 +295,3 @@ coverage:
 	$(MAKE) coverage-unit
 	$(MAKE) coverage-integration
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) All coverage reports generated$(GREEN) ✔️$(NC)"
-
-# Generate HTML coverage report
-.PHONY: cover-html
-cover-html:
-	$(call print_title,Generating HTML coverage report)
-	@if [ -f "$(TEST_REPORTS_DIR)/unit_coverage.out" ]; then \
-	  echo "Generating HTML report for unit tests..."; \
-	  go tool cover -html=$(TEST_REPORTS_DIR)/unit_coverage.out -o $(TEST_REPORTS_DIR)/unit_coverage.html; \
-	  echo "Unit coverage HTML: $(TEST_REPORTS_DIR)/unit_coverage.html"; \
-	fi
-	@if [ -f "$(TEST_REPORTS_DIR)/integration_coverage.out" ]; then \
-	  echo "Generating HTML report for integration tests..."; \
-	  go tool cover -html=$(TEST_REPORTS_DIR)/integration_coverage.out -o $(TEST_REPORTS_DIR)/integration_coverage.html; \
-	  echo "Integration coverage HTML: $(TEST_REPORTS_DIR)/integration_coverage.html"; \
-	fi
-	@if [ -f "$(TEST_REPORTS_DIR)/coverage.out" ]; then \
-	  echo "Generating HTML report for combined coverage..."; \
-	  go tool cover -html=$(TEST_REPORTS_DIR)/coverage.out -o $(TEST_REPORTS_DIR)/coverage.html; \
-	  echo "Combined coverage HTML: $(TEST_REPORTS_DIR)/coverage.html"; \
-	fi
-	@echo "$(GREEN)$(BOLD)[ok]$(NC) HTML coverage reports generated$(GREEN) ✔️$(NC)"
