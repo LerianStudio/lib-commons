@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -62,7 +63,12 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, exclud
 		tracer := otel.Tracer(tl.LibraryName)
 		routePathWithMethod := c.Method() + " " + commons.ReplaceUUIDWithPlaceholder(c.Path())
 
-		ctx, span := tracer.Start(opentelemetry.ExtractHTTPContext(c), routePathWithMethod, trace.WithSpanKind(trace.SpanKindServer))
+		traceCtx := c.UserContext()
+		if commons.IsInternalLerianService(c.Get(cn.HeaderUserAgent)) {
+			traceCtx = opentelemetry.ExtractHTTPContext(c)
+		}
+
+		ctx, span := tracer.Start(traceCtx, routePathWithMethod, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
 		span.SetAttributes(
@@ -128,7 +134,12 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 			attribute.String("grpc.method", info.FullMethod),
 		)
 
-		ctx, span := tracer.Start(opentelemetry.ExtractGRPCContext(ctx), info.FullMethod, trace.WithSpanKind(trace.SpanKindServer))
+		traceCtx := ctx
+		if commons.IsInternalLerianService(getGRPCUserAgent(ctx)) {
+			traceCtx = opentelemetry.ExtractGRPCContext(ctx)
+		}
+
+		ctx, span := tracer.Start(traceCtx, info.FullMethod, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
 		ctx = commons.ContextWithTracer(ctx, tracer)
@@ -296,4 +307,20 @@ func sanitizeURL(rawURL string) string {
 	parsed.RawQuery = query.Encode()
 
 	return parsed.String()
+}
+
+// getGRPCUserAgent extracts the User-Agent from incoming gRPC metadata.
+// Returns empty string if the metadata is not present or doesn't contain user-agent.
+func getGRPCUserAgent(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok || md == nil {
+		return ""
+	}
+
+	userAgents := md.Get("user-agent")
+	if len(userAgents) == 0 {
+		return ""
+	}
+
+	return userAgents[0]
 }
