@@ -216,12 +216,6 @@ func (sm *ServerManager) executeShutdown() {
 		}
 	}
 
-	// Shutdown license background refresh if available
-	if sm.licenseClient != nil {
-		sm.logInfo("Shutting down license background refresh...")
-		sm.licenseClient.Terminate("shutdown")
-	}
-
 	sm.logInfo("Graceful shutdown completed")
 }
 
@@ -304,12 +298,6 @@ func (gs *GracefulShutdown) executeShutdown() {
 		if err := gs.logger.Sync(); err != nil {
 			gs.logger.Errorf("Failed to sync logger: %v", err)
 		}
-	}
-
-	// Shutdown license background refresh if available
-	if gs.licenseClient != nil {
-		gs.logger.Info("Shutting down license background refresh...")
-		gs.licenseClient.Terminate("shutdown")
 	}
 
 	gs.logger.Info("Graceful shutdown completed")

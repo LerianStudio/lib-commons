@@ -1,14 +1,21 @@
 package license
 
-import "sync"
+import (
+	"fmt"
+	"os"
+	"sync"
+)
 
 // Handler defines the function signature for termination handlers
 type Handler func(reason string)
 
-// DefaultHandler is the default termination behavior
-// It triggers a panic which will be caught by the graceful shutdown handler
+// DefaultHandler is the default termination behavior.
+// It logs the failure reason to stderr and terminates the process with exit code 1.
+// This ensures the application cannot continue running with an invalid license,
+// even when a recovery middleware is present that would catch panics.
 func DefaultHandler(reason string) {
-	panic("LICENSE VALIDATION FAILED: " + reason)
+	fmt.Fprintf(os.Stderr, "LICENSE VALIDATION FAILED: %s\n", reason)
+	os.Exit(1)
 }
 
 // ManagerShutdown handles termination behavior
