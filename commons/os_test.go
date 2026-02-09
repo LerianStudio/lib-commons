@@ -22,7 +22,8 @@ func TestGetenvOrDefault_WithDefault(t *testing.T) {
 	key := "TEST_GETENV_OR_DEFAULT_MISSING"
 	expected := "default-value"
 
-	// Ensure the key is not set
+	// Register cleanup, then unset
+	t.Setenv(key, "")
 	os.Unsetenv(key)
 
 	result := GetenvOrDefault(key, expected)
@@ -85,6 +86,7 @@ func TestGetenvBoolOrDefault_InvalidValue(t *testing.T) {
 func TestGetenvBoolOrDefault_MissingKey(t *testing.T) {
 	key := "TEST_GETENV_BOOL_MISSING"
 
+	t.Setenv(key, "")
 	os.Unsetenv(key)
 
 	result := GetenvBoolOrDefault(key, true)
@@ -125,6 +127,7 @@ func TestGetenvIntOrDefault_InvalidValue(t *testing.T) {
 func TestGetenvIntOrDefault_MissingKey(t *testing.T) {
 	key := "TEST_GETENV_INT_MISSING"
 
+	t.Setenv(key, "")
 	os.Unsetenv(key)
 
 	result := GetenvIntOrDefault(key, 99)
@@ -169,6 +172,7 @@ func TestSetConfigFromEnvVars_MissingEnvVars(t *testing.T) {
 		Field string `env:"TEST_MISSING_FIELD_XYZ"`
 	}
 
+	t.Setenv("TEST_MISSING_FIELD_XYZ", "")
 	os.Unsetenv("TEST_MISSING_FIELD_XYZ")
 
 	config := &Config{}

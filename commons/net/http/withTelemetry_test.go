@@ -484,6 +484,8 @@ func TestGetMetricsCollectionInterval(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.envValue != "" {
 				t.Setenv("METRICS_COLLECTION_INTERVAL", tt.envValue)
+			} else {
+				t.Setenv("METRICS_COLLECTION_INTERVAL", "")
 			}
 
 			result := getMetricsCollectionInterval()

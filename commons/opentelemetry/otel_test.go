@@ -6,6 +6,7 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInitializeTelemetryWithError_TelemetryDisabled(t *testing.T) {
@@ -89,12 +90,14 @@ func TestInitializeTelemetryWithError_EnabledWithLazyConnection(t *testing.T) {
 	telemetry, err := InitializeTelemetryWithError(cfg)
 
 	// With gRPC lazy connection, this should succeed
-	assert.NoError(t, err)
-	assert.NotNil(t, telemetry)
+	require.NoError(t, err)
+	require.NotNil(t, telemetry)
 	assert.NotNil(t, telemetry.TracerProvider)
 	assert.NotNil(t, telemetry.MetricProvider)
 	assert.NotNil(t, telemetry.LoggerProvider)
 
 	// Clean up
-	telemetry.ShutdownTelemetry()
+	t.Cleanup(func() {
+		telemetry.ShutdownTelemetry()
+	})
 }
