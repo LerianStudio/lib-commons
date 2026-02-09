@@ -54,8 +54,11 @@ func (m *ManagerShutdown) SetHandler(handler Handler) {
 	m.handler = handler
 }
 
-// Terminate invokes the termination handler
-// This will trigger the application to gracefully shut down
+// Terminate invokes the termination handler.
+// This will trigger the application to gracefully shut down.
+//
+// Note: This method panics if the manager was not initialized with New().
+// Use TerminateSafe() if you need to handle the uninitialized case gracefully.
 func (m *ManagerShutdown) Terminate(reason string) {
 	m.mu.RLock()
 	handler := m.handler
@@ -78,4 +81,25 @@ func (m *ManagerShutdown) Terminate(reason string) {
 // and TerminateWithError() for validation checks that should return errors.
 func (m *ManagerShutdown) TerminateWithError(reason string) error {
 	return fmt.Errorf("%w: %s", ErrLicenseValidationFailed, reason)
+}
+
+// TerminateSafe invokes the termination handler and returns an error if the manager
+// was not properly initialized. This is the safe alternative to Terminate that
+// returns an error instead of panicking when the handler is nil.
+//
+// Use this method when you need to handle the uninitialized manager case gracefully.
+// For normal shutdown behavior where panic on uninitialized manager is acceptable,
+// use Terminate() instead.
+func (m *ManagerShutdown) TerminateSafe(reason string) error {
+	m.mu.RLock()
+	handler := m.handler
+	m.mu.RUnlock()
+
+	if handler == nil {
+		return ErrManagerNotInitialized
+	}
+
+	handler(reason)
+
+	return nil
 }
