@@ -362,7 +362,7 @@ func handleURLEncodedBody(bodyBytes []byte) string {
 func handleMultipartBody(c *fiber.Ctx) string {
 	form, err := c.MultipartForm()
 	if err != nil {
-		return string(c.Body())
+		return "[multipart/form-data]"
 	}
 
 	result := url.Values{}
