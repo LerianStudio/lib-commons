@@ -1,18 +1,21 @@
 package zap
 
 import (
+	"fmt"
+	"log"
+	"os"
+
 	clog "github.com/LerianStudio/lib-commons/v2/commons/log"
 	"go.opentelemetry.io/contrib/bridges/otelzap"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"log"
-	"os"
 )
 
-// InitializeLogger initializes our log layer and returns it
+// InitializeLoggerWithError initializes our log layer and returns it with error handling.
+// Returns an error instead of calling log.Fatalf on failure.
 //
 //nolint:ireturn
-func InitializeLogger() clog.Logger {
+func InitializeLoggerWithError() (clog.Logger, error) {
 	var zapCfg zap.Config
 
 	if os.Getenv("ENV_NAME") == "production" {
@@ -42,7 +45,7 @@ func InitializeLogger() clog.Logger {
 		return zapcore.NewTee(core, otelzap.NewCore(os.Getenv("OTEL_LIBRARY_NAME")))
 	}))
 	if err != nil {
-		log.Fatalf("can't initialize zap logger: %v", err)
+		return nil, fmt.Errorf("can't initialize zap logger: %w", err)
 	}
 
 	sugarLogger := logger.Sugar()
@@ -52,5 +55,18 @@ func InitializeLogger() clog.Logger {
 
 	return &ZapWithTraceLogger{
 		Logger: sugarLogger,
+	}, nil
+}
+
+// Deprecated: Use InitializeLoggerWithError for proper error handling.
+// InitializeLogger initializes our log layer and returns it.
+//
+//nolint:ireturn
+func InitializeLogger() clog.Logger {
+	logger, err := InitializeLoggerWithError()
+	if err != nil {
+		log.Fatalf("%v", err)
 	}
+
+	return logger
 }

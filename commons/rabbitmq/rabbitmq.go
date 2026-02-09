@@ -3,8 +3,12 @@ package rabbitmq
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
@@ -23,6 +27,7 @@ type RabbitMQConnection struct {
 	Port                   string
 	User                   string
 	Pass                   string
+	VHost                  string
 	Channel                *amqp.Channel
 	Logger                 log.Logger
 	Connected              bool
@@ -37,9 +42,8 @@ func (rc *RabbitMQConnection) Connect() error {
 
 	conn, err := amqp.Dial(rc.ConnectionStringSource)
 	if err != nil {
-		rc.Logger.Fatal("failed to connect on rabbitmq", zap.Error(err))
-
-		return err
+		rc.Logger.Error("failed to connect on rabbitmq", zap.Error(err))
+		return fmt.Errorf("failed to connect to rabbitmq: %w", err)
 	}
 
 	ch, err := conn.Channel()
@@ -48,9 +52,9 @@ func (rc *RabbitMQConnection) Connect() error {
 			rc.Logger.Warn("failed to close connection during cleanup", zap.Error(closeErr))
 		}
 
-		rc.Logger.Fatal("failed to open channel on rabbitmq", zap.Error(err))
+		rc.Logger.Error("failed to open channel on rabbitmq", zap.Error(err))
 
-		return err
+		return fmt.Errorf("failed to open channel on rabbitmq: %w", err)
 	}
 
 	if ch == nil || !rc.HealthCheck() {
@@ -60,9 +64,9 @@ func (rc *RabbitMQConnection) Connect() error {
 
 		rc.Connected = false
 		err = errors.New("can't connect rabbitmq")
-		rc.Logger.Fatalf("RabbitMQ.HealthCheck: %v", zap.Error(err))
+		rc.Logger.Error("RabbitMQ.HealthCheck failed", zap.Error(err))
 
-		return err
+		return fmt.Errorf("rabbitmq health check failed: %w", err)
 	}
 
 	rc.Logger.Info("Connected on rabbitmq ✅ \n")
@@ -135,9 +139,9 @@ func (rc *RabbitMQConnection) GetNewConnect() (*amqp.Channel, error) {
 
 // HealthCheck rabbitmq when the server is started
 func (rc *RabbitMQConnection) HealthCheck() bool {
-	url := rc.HealthCheckURL + "/api/health/checks/alarms"
+	healthURL := rc.HealthCheckURL + "/api/health/checks/alarms"
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, healthURL, nil)
 	if err != nil {
 		rc.Logger.Errorf("failed to make GET request before client do: %v", err.Error())
 
@@ -180,4 +184,38 @@ func (rc *RabbitMQConnection) HealthCheck() bool {
 	rc.Logger.Error("rabbitmq unhealthy...")
 
 	return false
+}
+
+// BuildRabbitMQConnectionString constructs an AMQP connection string.
+// If vhost is empty, the default vhost "/" is used (no path in URL).
+// Special characters in user, password, and vhost are URL-encoded automatically.
+// Supports IPv6 hosts (e.g., "[::1]").
+func BuildRabbitMQConnectionString(protocol, user, pass, host, port, vhost string) string {
+	u := &url.URL{
+		Scheme: protocol,
+		User:   url.UserPassword(user, pass),
+	}
+
+	if port != "" {
+		u.Host = net.JoinHostPort(host, port)
+	} else {
+		// Bracket bare IPv6 addresses to avoid malformed URLs (e.g., amqp://user:pass@::1)
+		if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+			u.Host = "[" + host + "]"
+		} else {
+			u.Host = host
+		}
+	}
+
+	if vhost != "" {
+		// Use QueryEscape instead of PathEscape because RabbitMQ vhost names may contain '/'
+		// which must be percent-encoded as %2F. QueryEscape encodes '/' while PathEscape does not.
+		// The subsequent ReplaceAll converts query-style space encoding (+) to path-style (%20).
+		escapedVHost := url.QueryEscape(vhost)
+		escapedVHost = strings.ReplaceAll(escapedVHost, "+", "%20")
+		u.Path = "/" + vhost
+		u.RawPath = "/" + escapedVHost
+	}
+
+	return u.String()
 }

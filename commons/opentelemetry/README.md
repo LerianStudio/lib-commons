@@ -212,8 +212,8 @@ Standalone utility function that obfuscates a struct and returns the result. Can
 #### `NewDefaultObfuscator() *DefaultObfuscator`
 Creates an obfuscator with predefined common sensitive field names.
 
-#### `NewCustomObfuscator(sensitiveFields []string) *DefaultObfuscator`
-Creates an obfuscator with custom sensitive field names. Field matching is case-insensitive.
+#### `NewCustomObfuscator(sensitiveFields []string) *CustomObfuscator`
+Creates an obfuscator with custom sensitive field names. Field matching is case-insensitive and uses exact matching (not word-boundary matching like `DefaultObfuscator`).
 
 ### Interface
 

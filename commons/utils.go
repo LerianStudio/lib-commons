@@ -7,6 +7,7 @@ import (
 	"math"
 	"os/exec"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +24,8 @@ import (
 const beginningKey = "{"
 const keySeparator = ":"
 const endKey = "}"
+
+var internalServicePattern = regexp.MustCompile(`^[\w-]+/[\d.]+\s+LerianStudio$`)
 
 // Contains checks if an item is in a slice. This function uses type parameters to work with any slice type.
 func Contains[T comparable](slice []T, item T) bool {
@@ -221,8 +224,13 @@ func StructToJSONString(s any) (string, error) {
 	return string(jsonByte), nil
 }
 
-// MergeMaps Following the JSON Merge Patch
+// MergeMaps Following the JSON Merge Patch.
+// If target is nil, a new map is created.
 func MergeMaps(source, target map[string]any) map[string]any {
+	if target == nil {
+		target = make(map[string]any)
+	}
+
 	for key, value := range source {
 		if value != nil {
 			target[key] = value
@@ -374,4 +382,8 @@ func UUIDsToStrings(uuids []uuid.UUID) []string {
 	}
 
 	return result
+}
+
+func IsInternalLerianService(userAgent string) bool {
+	return internalServicePattern.MatchString(userAgent)
 }

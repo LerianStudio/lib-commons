@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -14,6 +15,9 @@ import (
 	"google.golang.org/grpc"
 )
 
+// ErrNoServersConfigured indicates no servers were configured for the manager
+var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServer() or WithGRPCServer()")
+
 // ServerManager handles the graceful shutdown of multiple server types.
 // It can manage HTTP servers, gRPC servers, or both simultaneously.
 type ServerManager struct {
@@ -25,6 +29,7 @@ type ServerManager struct {
 	httpAddress    string
 	grpcAddress    string
 	serversStarted chan struct{}
+	shutdownChan   <-chan struct{}
 }
 
 // NewServerManager creates a new instance of ServerManager.
@@ -57,15 +62,70 @@ func (sm *ServerManager) WithGRPCServer(server *grpc.Server, address string) *Se
 	return sm
 }
 
+// WithShutdownChannel configures a custom shutdown channel for the ServerManager.
+// This allows tests to trigger shutdown deterministically instead of relying on OS signals.
+func (sm *ServerManager) WithShutdownChannel(ch <-chan struct{}) *ServerManager {
+	sm.shutdownChan = ch
+
+	return sm
+}
+
+// ServersStarted returns a channel that is closed when server goroutines have been launched.
+// Note: This signals that goroutines were spawned, not that sockets are bound and ready to accept connections.
+// This is useful for tests to coordinate shutdown timing after server launch.
+func (sm *ServerManager) ServersStarted() <-chan struct{} {
+	return sm.serversStarted
+}
+
+func (sm *ServerManager) validateConfiguration() error {
+	if sm.httpServer == nil && sm.grpcServer == nil {
+		return ErrNoServersConfigured
+	}
+
+	return nil
+}
+
+// initServers validates configuration and starts servers without blocking.
+// Returns an error if validation fails. Does not call Fatal.
+func (sm *ServerManager) initServers() error {
+	if err := sm.validateConfiguration(); err != nil {
+		return err
+	}
+
+	sm.startServers()
+
+	return nil
+}
+
+// StartWithGracefulShutdownWithError validates configuration and starts servers.
+// Returns an error if no servers are configured instead of calling Fatal.
+// Blocks until shutdown signal is received or shutdown channel is closed.
+func (sm *ServerManager) StartWithGracefulShutdownWithError() error {
+	if err := sm.initServers(); err != nil {
+		return err
+	}
+
+	sm.handleShutdown()
+
+	return nil
+}
+
 // StartWithGracefulShutdown initializes all configured servers and sets up graceful shutdown.
+// It terminates the process with os.Exit(1) if no servers are configured (backward compatible behavior).
+// Note: On configuration error, logFatal always terminates the process regardless of logger availability.
+// Use StartWithGracefulShutdownWithError() for proper error handling without process termination.
 func (sm *ServerManager) StartWithGracefulShutdown() {
+	if err := sm.initServers(); err != nil {
+		// logFatal exits the process via os.Exit(1); code below is unreachable on error
+		sm.logFatal(err.Error())
+	}
+
 	// Run everything in a recover block
 	defer func() {
 		if r := recover(); r != nil {
 			if sm.logger != nil {
 				sm.logger.Errorf("Fatal error (panic): %v", r)
 			} else {
-				// Fallback to standard log if logger is nil
 				fmt.Printf("Fatal error (panic): %v\n", r)
 			}
 
@@ -75,41 +135,23 @@ func (sm *ServerManager) StartWithGracefulShutdown() {
 		}
 	}()
 
-	// Start configured servers
-	sm.startServers()
-
-	// Handle graceful shutdown
 	sm.handleShutdown()
 }
 
 // startServers starts all configured servers in separate goroutines.
+// Note: Validation is performed by validateConfiguration() before this method is called.
+// Callers using StartWithGracefulShutdown() directly will still get Fatal behavior for backward compatibility,
+// while StartWithGracefulShutdownWithError() validates first and returns an error.
 func (sm *ServerManager) startServers() {
 	started := 0
-	total := 0
-
-	// Count total servers to start
-	if sm.httpServer != nil {
-		total++
-	}
-
-	if sm.grpcServer != nil {
-		total++
-	}
-
-	if total == 0 {
-		sm.logger.Fatal("No servers configured. Use WithHTTPServer() or WithGRPCServer() to configure servers.")
-		return
-	}
 
 	// Start HTTP server if configured
 	if sm.httpServer != nil {
 		go func() {
-			sm.logger.Infof("Starting HTTP server on %s", sm.httpAddress)
+			sm.logInfof("Starting HTTP server on %s", sm.httpAddress)
 
 			if err := sm.httpServer.Listen(sm.httpAddress); err != nil {
-				// During normal shutdown, Listen() will return an error
-				// We only want to log unexpected errors
-				sm.logger.Errorf("HTTP server error: %v", err)
+				sm.logErrorf("HTTP server error: %v", err)
 			}
 		}()
 
@@ -119,26 +161,25 @@ func (sm *ServerManager) startServers() {
 	// Start gRPC server if configured
 	if sm.grpcServer != nil {
 		go func() {
-			sm.logger.Infof("Starting gRPC server on %s", sm.grpcAddress)
+			sm.logInfof("Starting gRPC server on %s", sm.grpcAddress)
 
 			listener, err := net.Listen("tcp", sm.grpcAddress)
 			if err != nil {
-				sm.logger.Errorf("Failed to listen on gRPC address: %v", err)
+				sm.logErrorf("Failed to listen on gRPC address: %v", err)
 				return
 			}
 
 			if err := sm.grpcServer.Serve(listener); err != nil {
-				// During normal shutdown, Serve() will return an error
-				// We only want to log unexpected errors
-				sm.logger.Errorf("gRPC server error: %v", err)
+				sm.logErrorf("gRPC server error: %v", err)
 			}
 		}()
 
 		started++
 	}
 
-	sm.logger.Infof("Started %d server(s)", started)
+	sm.logInfof("Launched %d server goroutine(s)", started)
 
+	// Signal that server goroutines have been launched (not that sockets are bound).
 	close(sm.serversStarted)
 }
 
@@ -149,6 +190,13 @@ func (sm *ServerManager) logInfo(msg string) {
 	}
 }
 
+// logInfof safely logs a formatted info message if logger is available
+func (sm *ServerManager) logInfof(format string, args ...any) {
+	if sm.logger != nil {
+		sm.logger.Infof(format, args...)
+	}
+}
+
 // logErrorf safely logs an error message if logger is available
 func (sm *ServerManager) logErrorf(format string, args ...any) {
 	if sm.logger != nil {
@@ -156,18 +204,32 @@ func (sm *ServerManager) logErrorf(format string, args ...any) {
 	}
 }
 
-// handleShutdown sets up signal handling and executes the shutdown sequence
-// when a termination signal is received.
-func (sm *ServerManager) handleShutdown() {
-	// Create channel for shutdown signals
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+// logFatal logs a fatal message and terminates the process with os.Exit(1).
+// Uses Error level for logging to avoid relying on logger implementations
+// that may or may not call os.Exit(1) in their Fatal method.
+func (sm *ServerManager) logFatal(msg string) {
+	if sm.logger != nil {
+		sm.logger.Error(msg)
+	} else {
+		fmt.Println(msg)
+	}
 
-	// Block until we receive a signal
-	<-c
+	os.Exit(1)
+}
+
+// handleShutdown sets up signal handling and executes the shutdown sequence
+// when a termination signal is received or when the shutdown channel is closed.
+func (sm *ServerManager) handleShutdown() {
+	if sm.shutdownChan != nil {
+		<-sm.shutdownChan
+	} else {
+		c := make(chan os.Signal, 1)
+		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+		<-c
+	}
+
 	sm.logInfo("Gracefully shutting down all servers...")
 
-	// Execute shutdown sequence
 	sm.executeShutdown()
 }
 
