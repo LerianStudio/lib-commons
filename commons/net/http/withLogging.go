@@ -24,6 +24,10 @@ import (
 // to prevent stack overflow on deeply nested or malicious payloads.
 const maxObfuscationDepth = 32
 
+// logObfuscationDisabled caches the LOG_OBFUSCATION_DISABLED env var at init time
+// to avoid repeated syscalls on every request.
+var logObfuscationDisabled = os.Getenv("LOG_OBFUSCATION_DISABLED") == "true"
+
 // RequestInfo is a struct design to store http access log data.
 type RequestInfo struct {
 	Method        string
@@ -71,7 +75,7 @@ func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
 	if c.Request().Header.ContentLength() > 0 {
 		bodyBytes := c.Body()
 
-		if os.Getenv("LOG_OBFUSCATION_DISABLED") != "true" {
+		if !logObfuscationDisabled {
 			body = getBodyObfuscatedString(c, bodyBytes)
 		} else {
 			body = string(bodyBytes)

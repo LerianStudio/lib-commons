@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/license"
@@ -26,10 +27,11 @@ type ServerManager struct {
 	licenseClient  *license.ManagerShutdown
 	telemetry      *opentelemetry.Telemetry
 	logger         log.Logger
-	httpAddress    string
-	grpcAddress    string
-	serversStarted chan struct{}
-	shutdownChan   <-chan struct{}
+	httpAddress        string
+	grpcAddress        string
+	serversStarted     chan struct{}
+	serversStartedOnce sync.Once
+	shutdownChan       <-chan struct{}
 }
 
 // NewServerManager creates a new instance of ServerManager.
@@ -180,7 +182,9 @@ func (sm *ServerManager) startServers() {
 	sm.logInfof("Launched %d server goroutine(s)", started)
 
 	// Signal that server goroutines have been launched (not that sockets are bound).
-	close(sm.serversStarted)
+	sm.serversStartedOnce.Do(func() {
+		close(sm.serversStarted)
+	})
 }
 
 // logInfo safely logs an info message if logger is available
