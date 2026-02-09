@@ -1,7 +1,10 @@
 package license_test
 
 import (
+	"bytes"
 	"errors"
+	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/license"
@@ -41,11 +44,33 @@ func TestSetHandlerWithNil(t *testing.T) {
 }
 
 func TestDefaultHandler(t *testing.T) {
-	manager := license.New()
-
-	assert.Panics(t, func() {
+	// DefaultHandler calls os.Exit(1), so we test it in a subprocess
+	if os.Getenv("TEST_DEFAULT_HANDLER_EXIT") == "1" {
+		manager := license.New()
 		manager.Terminate("default handler test")
-	}, "Default handler should panic")
+
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestDefaultHandler")
+	cmd.Env = append(os.Environ(), "TEST_DEFAULT_HANDLER_EXIT=1")
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	// Verify process exited with non-zero code
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		assert.Equal(t, 1, exitErr.ExitCode(), "Expected exit code 1")
+	} else {
+		t.Fatal("Expected process to exit with code 1")
+	}
+
+	// Verify error message was printed to stderr
+	assert.Contains(t, stderr.String(), "LICENSE VALIDATION FAILED")
+	assert.Contains(t, stderr.String(), "default handler test")
 }
 
 func TestDefaultHandlerWithError(t *testing.T) {
@@ -139,12 +164,29 @@ func TestTerminateSafe_UninitializedManager(t *testing.T) {
 }
 
 func TestTerminateSafe_WithDefaultHandler(t *testing.T) {
-	manager := license.New()
-
-	// Note: This will panic because DefaultHandler panics.
-	// TerminateSafe invokes the handler before returning nil,
-	// so the panic comes from the handler during TerminateSafe execution.
-	assert.Panics(t, func() {
+	// DefaultHandler calls os.Exit(1), so we test it in a subprocess
+	if os.Getenv("TEST_TERMINATE_SAFE_DEFAULT_EXIT") == "1" {
+		manager := license.New()
 		_ = manager.TerminateSafe("test")
-	}, "Default handler should still panic when invoked via TerminateSafe")
+
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=TestTerminateSafe_WithDefaultHandler")
+	cmd.Env = append(os.Environ(), "TEST_TERMINATE_SAFE_DEFAULT_EXIT=1")
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	// Verify process exited with non-zero code
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		assert.Equal(t, 1, exitErr.ExitCode(), "Expected exit code 1")
+	} else {
+		t.Fatal("Expected process to exit with code 1")
+	}
+
+	assert.Contains(t, stderr.String(), "LICENSE VALIDATION FAILED")
 }
