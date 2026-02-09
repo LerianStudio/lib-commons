@@ -182,6 +182,13 @@ func (rc *RabbitMQConnection) EnsureChannelWithContext(ctx context.Context) erro
 	}
 
 	if rc.Channel == nil || rc.Channel.IsClosed() {
+		// Check context before Channel() which doesn't accept context parameter
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		ch, err := rc.Connection.Channel()
 		if err != nil {
 			// cleanup connection if we just created it and channel creation fails

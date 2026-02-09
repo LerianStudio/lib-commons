@@ -484,3 +484,45 @@ func TestEnsureChannelWithContext_ChecksContextAfterLockAcquisition(t *testing.T
 	assert.Less(t, elapsed, 200*time.Millisecond,
 		"Should detect context cancellation quickly, took %v", elapsed)
 }
+
+// TestEnsureChannelWithContext_ChecksContextBeforeChannelCreation verifies that
+// context is checked before calling Channel() when connection already exists.
+// This test requires a real RabbitMQ connection to fully exercise the code path
+// where connection exists but channel needs to be created.
+func TestEnsureChannelWithContext_ChecksContextBeforeChannelCreation(t *testing.T) {
+	t.Run("context_canceled_before_channel_with_nil_connection", func(t *testing.T) {
+		// This test verifies that a pre-canceled context returns immediately
+		// even when the connection would need to be established first.
+		// The context check before Channel() provides defense-in-depth for cases
+		// where an existing connection is reused but context was canceled.
+		logger := &log.GoLogger{Level: log.InfoLevel}
+
+		conn := &RabbitMQConnection{
+			ConnectionStringSource: "amqp://guest:guest@localhost:5672",
+			Logger:                 logger,
+		}
+
+		// Pre-cancel context
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := conn.EnsureChannelWithContext(ctx)
+
+		// Should return context.Canceled from the first check (before lock)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("integration_test_with_real_connection", func(t *testing.T) {
+		// Skip in unit tests - this would require a real RabbitMQ instance
+		// to establish a connection, then cancel context before Channel() call.
+		//
+		// To fully test the context check before Channel():
+		// 1. Establish a real connection to RabbitMQ
+		// 2. Set rc.Connection to the valid connection
+		// 3. Ensure rc.Channel is nil (needs channel creation)
+		// 4. Cancel context
+		// 5. Call EnsureChannelWithContext
+		// 6. Verify it returns context.Canceled without calling Channel()
+		t.Skip("Requires integration testing with a real RabbitMQ instance")
+	})
+}
