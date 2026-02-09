@@ -229,7 +229,7 @@ func (rc *RedisConnection) retrieveToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 
-	creds, err := google.CredentialsFromJSON(ctx, credentialsJSON)
+	creds, err := google.CredentialsFromJSONWithType(ctx, credentialsJSON, google.ServiceAccount)
 	if err != nil {
 		return "", fmt.Errorf("parsing credentials JSON: %w", err)
 	}
