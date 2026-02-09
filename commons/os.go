@@ -1,6 +1,7 @@
 package commons
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -9,8 +10,10 @@ import (
 	"sync"
 
 	"github.com/joho/godotenv"
-	"github.com/pkg/errors"
 )
+
+// ErrNotPointer indicates that a non-pointer value was passed where a pointer was required.
+var ErrNotPointer = errors.New("argument must be a pointer")
 
 // GetenvOrDefault encapsulate built-in os.Getenv behavior but if key is not present it returns the defaultValue.
 func GetenvOrDefault(key string, defaultValue string) string {
@@ -101,7 +104,7 @@ func SetConfigFromEnvVars(s any) error {
 
 	t := v.Type()
 	if t.Kind() != reflect.Ptr {
-		return errors.New("s must be an pointer")
+		return ErrNotPointer
 	}
 
 	e := t.Elem()

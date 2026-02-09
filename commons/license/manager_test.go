@@ -114,3 +114,37 @@ func TestTerminateWithError_EmptyReason(t *testing.T) {
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, license.ErrLicenseValidationFailed))
 }
+
+func TestTerminateSafe_Success(t *testing.T) {
+	manager := license.New()
+	handlerCalled := false
+	testHandler := func(reason string) {
+		handlerCalled = true
+	}
+
+	manager.SetHandler(testHandler)
+	err := manager.TerminateSafe("test")
+
+	assert.NoError(t, err)
+	assert.True(t, handlerCalled, "Handler should be called")
+}
+
+func TestTerminateSafe_UninitializedManager(t *testing.T) {
+	var manager license.ManagerShutdown
+
+	err := manager.TerminateSafe("test reason")
+
+	assert.Error(t, err)
+	assert.True(t, errors.Is(err, license.ErrManagerNotInitialized))
+}
+
+func TestTerminateSafe_WithDefaultHandler(t *testing.T) {
+	manager := license.New()
+
+	// Note: This will panic because DefaultHandler panics.
+	// TerminateSafe returns nil error before invoking the handler,
+	// so the panic comes from the handler itself, not TerminateSafe.
+	assert.Panics(t, func() {
+		_ = manager.TerminateSafe("test")
+	}, "Default handler should still panic when invoked via TerminateSafe")
+}

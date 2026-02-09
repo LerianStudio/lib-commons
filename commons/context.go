@@ -308,6 +308,9 @@ func WithTimeoutSafe(parent context.Context, timeout time.Duration) (context.Con
 	return ctx, cancel, nil
 }
 
+// Deprecated: Use WithTimeoutSafe instead for proper error handling.
+// WithTimeout panics on nil parent. Prefer WithTimeoutSafe for graceful error handling.
+//
 // WithTimeout creates a context with the specified timeout, but respects
 // any existing deadline in the parent context. If the parent context has
 // a deadline that would expire sooner than the requested timeout, the
