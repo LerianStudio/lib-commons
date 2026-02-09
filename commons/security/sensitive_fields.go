@@ -73,16 +73,25 @@ var tokenSplitRegex = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 func normalizeFieldName(fieldName string) string {
 	var b strings.Builder
 
-	var prev rune
+	runes := []rune(fieldName)
 
-	for i, r := range fieldName {
-		if i > 0 && unicode.IsUpper(r) && (unicode.IsLower(prev) || unicode.IsDigit(prev)) {
-			b.WriteByte('_')
+	for i, r := range runes {
+		if i > 0 {
+			prev := runes[i-1]
+
+			var next rune
+			if i+1 < len(runes) {
+				next = runes[i+1]
+			}
+
+			if unicode.IsUpper(r) &&
+				(unicode.IsLower(prev) || unicode.IsDigit(prev) ||
+					(unicode.IsUpper(prev) && next != 0 && unicode.IsLower(next))) {
+				b.WriteByte('_')
+			}
 		}
 
 		b.WriteRune(r)
-
-		prev = r
 	}
 
 	return strings.ToLower(b.String())
