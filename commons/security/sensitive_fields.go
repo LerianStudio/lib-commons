@@ -1,6 +1,7 @@
 package security
 
 import (
+	"maps"
 	"regexp"
 	"strings"
 	"sync"
@@ -42,9 +43,10 @@ func DefaultSensitiveFields() []string {
 	return defaultSensitiveFields
 }
 
-// DefaultSensitiveFieldsMap provides a cached map version of DefaultSensitiveFields
-// for efficient lookup operations. All field names are lowercase for
-// case-insensitive matching. The map is initialized only once.
+// DefaultSensitiveFieldsMap provides a map version of DefaultSensitiveFields
+// for lookup operations. All field names are lowercase for
+// case-insensitive matching. The underlying cache is initialized only once;
+// each call returns a shallow clone so callers cannot mutate shared state.
 func DefaultSensitiveFieldsMap() map[string]bool {
 	sensitiveFieldsMapOnce.Do(func() {
 		sensitiveFieldsMap = make(map[string]bool, len(defaultSensitiveFields))
@@ -53,7 +55,10 @@ func DefaultSensitiveFieldsMap() map[string]bool {
 		}
 	})
 
-	return sensitiveFieldsMap
+	clone := make(map[string]bool, len(sensitiveFieldsMap))
+	maps.Copy(clone, sensitiveFieldsMap)
+
+	return clone
 }
 
 // shortSensitiveTokens contains tokens that are too short or generic for
