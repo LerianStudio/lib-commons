@@ -41,6 +41,11 @@ func (mc *MongoConnection) Connect(ctx context.Context) error {
 
 	if err := noSQLDB.Ping(ctx, nil); err != nil {
 		mc.Logger.Errorf("MongoDBConnection.Ping failed: %v", err)
+
+		if disconnectErr := noSQLDB.Disconnect(ctx); disconnectErr != nil {
+			mc.Logger.Errorf("failed to disconnect after ping failure: %v", disconnectErr)
+		}
+
 		return fmt.Errorf("failed to ping mongodb: %w", err)
 	}
 
