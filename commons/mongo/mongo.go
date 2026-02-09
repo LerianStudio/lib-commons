@@ -10,7 +10,6 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.uber.org/zap"
 )
 
 // MongoConnection is a hub which deal with mongodb connections.
@@ -36,12 +35,12 @@ func (mc *MongoConnection) Connect(ctx context.Context) error {
 
 	noSQLDB, err := mongo.Connect(ctx, clientOptions)
 	if err != nil {
-		mc.Logger.Error("failed to open connect to mongodb", zap.Error(err))
+		mc.Logger.Errorf("failed to open connect to mongodb: %v", err)
 		return fmt.Errorf("failed to connect to mongodb: %w", err)
 	}
 
 	if err := noSQLDB.Ping(ctx, nil); err != nil {
-		mc.Logger.Error("MongoDBConnection.Ping failed", zap.Error(err))
+		mc.Logger.Errorf("MongoDBConnection.Ping failed: %v", err)
 		return fmt.Errorf("failed to ping mongodb: %w", err)
 	}
 
@@ -75,7 +74,7 @@ func (mc *MongoConnection) EnsureIndexes(ctx context.Context, collection string,
 	client, err := mc.GetDB(ctx)
 	if err != nil {
 		mc.Logger.Warnf("Failed to get database connection for index creation: %v", err)
-		return err
+		return fmt.Errorf("failed to get database connection for index creation: %w", err)
 	}
 
 	db := client.Database(mc.Database)
@@ -94,7 +93,7 @@ func (mc *MongoConnection) EnsureIndexes(ctx context.Context, collection string,
 	_, err = coll.Indexes().CreateOne(ctx, index)
 	if err != nil {
 		mc.Logger.Warnf("Failed to ensure index: collection=%s, fields=%s, err=%v", collection, fields, err)
-		return err
+		return fmt.Errorf("failed to ensure index on collection %s: %w", collection, err)
 	}
 
 	mc.Logger.Infof("Index successfully ensured: collection=%s, fields=%s \n", collection, fields)

@@ -191,9 +191,9 @@ func (rc *RabbitMQConnection) HealthCheck() bool {
 // Special characters in user, password, and vhost are URL-encoded automatically.
 // Supports IPv6 hosts (e.g., "[::1]").
 func BuildRabbitMQConnectionString(protocol, user, pass, host, port, vhost string) string {
-	u := &url.URL{
-		Scheme: protocol,
-		User:   url.UserPassword(user, pass),
+	u := &url.URL{Scheme: protocol}
+	if user != "" || pass != "" {
+		u.User = url.UserPassword(user, pass)
 	}
 
 	if port != "" {

@@ -142,8 +142,8 @@ func TestTerminateSafe_WithDefaultHandler(t *testing.T) {
 	manager := license.New()
 
 	// Note: This will panic because DefaultHandler panics.
-	// TerminateSafe returns nil error before invoking the handler,
-	// so the panic comes from the handler itself, not TerminateSafe.
+	// TerminateSafe invokes the handler before returning nil,
+	// so the panic comes from the handler during TerminateSafe execution.
 	assert.Panics(t, func() {
 		_ = manager.TerminateSafe("test")
 	}, "Default handler should still panic when invoked via TerminateSafe")

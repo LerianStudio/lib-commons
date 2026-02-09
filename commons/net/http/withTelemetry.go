@@ -205,7 +205,9 @@ func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
 	}
 
 	if metricsCollectorInitErr != nil {
-		return metricsCollectorInitErr
+		// Reset to allow retry after transient init failures
+		metricsCollectorOnce = &sync.Once{}
+		metricsCollectorInitErr = nil
 	}
 
 	metricsCollectorOnce.Do(func() {

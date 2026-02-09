@@ -278,7 +278,9 @@ func (rc *RedisConnection) refreshTokenLoop(ctx context.Context) {
 					rc.lastRefreshInstant = time.Now()
 					rc.Logger.Info("IAM token refreshed...")
 
-					_ = rc.closeLocked()
+					if closeErr := rc.closeLocked(); closeErr != nil {
+						rc.Logger.Infof("warning: close before reconnect failed: %v", closeErr)
+					}
 
 					if connErr := rc.connectLocked(ctx); connErr != nil {
 						rc.errLastSeen = connErr

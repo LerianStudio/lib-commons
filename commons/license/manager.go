@@ -65,7 +65,7 @@ func (m *ManagerShutdown) Terminate(reason string) {
 	m.mu.RUnlock()
 
 	if handler == nil {
-		panic(ErrManagerNotInitialized.Error())
+		panic(ErrManagerNotInitialized)
 	}
 
 	handler(reason)
