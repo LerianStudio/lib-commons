@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 var defaultSensitiveFields = []string{
@@ -65,18 +66,49 @@ var shortSensitiveTokens = map[string]bool{
 // tokenSplitRegex splits field names by non-alphanumeric characters.
 var tokenSplitRegex = regexp.MustCompile(`[^a-zA-Z0-9]+`)
 
+// normalizeFieldName converts camelCase and PascalCase field names into
+// underscore-delimited lowercase tokens. For example, "sessionToken" becomes
+// "session_token" and "APIKey" becomes "api_key". This ensures that sensitive
+// field detection works for camelCase naming conventions.
+func normalizeFieldName(fieldName string) string {
+	var b strings.Builder
+
+	var prev rune
+
+	for i, r := range fieldName {
+		if i > 0 && unicode.IsUpper(r) && (unicode.IsLower(prev) || unicode.IsDigit(prev)) {
+			b.WriteByte('_')
+		}
+
+		b.WriteRune(r)
+
+		prev = r
+	}
+
+	return strings.ToLower(b.String())
+}
+
 // IsSensitiveField checks if a field name is considered sensitive based on
-// the default sensitive fields list. The check is case-insensitive.
+// the default sensitive fields list. The check is case-insensitive and handles
+// camelCase field names by normalizing them to underscore-delimited tokens.
 // Short tokens (like "key", "auth") use exact token matching to avoid false
 // positives, while longer patterns use word-boundary matching.
 func IsSensitiveField(fieldName string) bool {
 	lowerField := strings.ToLower(fieldName)
 
+	// Check exact match with lowercase
 	if DefaultSensitiveFieldsMap()[lowerField] {
 		return true
 	}
 
-	tokens := tokenSplitRegex.Split(lowerField, -1)
+	// Also check with camelCase normalization (e.g., "sessionToken" -> "session_token")
+	normalized := normalizeFieldName(fieldName)
+	if normalized != lowerField && DefaultSensitiveFieldsMap()[normalized] {
+		return true
+	}
+
+	// Merge tokens from both representations for token matching
+	tokens := tokenSplitRegex.Split(normalized, -1)
 
 	for _, sensitive := range defaultSensitiveFields {
 		if shortSensitiveTokens[sensitive] {
@@ -86,7 +118,11 @@ func IsSensitiveField(fieldName string) bool {
 				}
 			}
 		} else {
-			if matchesWordBoundary(lowerField, sensitive) {
+			if matchesWordBoundary(normalized, sensitive) {
+				return true
+			}
+
+			if normalized != lowerField && matchesWordBoundary(lowerField, sensitive) {
 				return true
 			}
 		}
