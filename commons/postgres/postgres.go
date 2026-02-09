@@ -40,7 +40,7 @@ func (pc *PostgresConnection) Connect() error {
 
 	dbPrimary, err := sql.Open("pgx", pc.ConnectionStringPrimary)
 	if err != nil {
-		pc.Logger.Errorf("failed to open connect to primary database: %v", err)
+		pc.Logger.Errorf("failed to connect to primary database: %v", err)
 		return fmt.Errorf("failed to connect to primary database: %w", err)
 	}
 
@@ -51,7 +51,7 @@ func (pc *PostgresConnection) Connect() error {
 
 	dbReadOnlyReplica, err := sql.Open("pgx", pc.ConnectionStringReplica)
 	if err != nil {
-		pc.Logger.Errorf("failed to open connect to replica database: %v", err)
+		pc.Logger.Errorf("failed to connect to replica database: %v", err)
 		return fmt.Errorf("failed to connect to replica database: %w", err)
 	}
 
@@ -72,7 +72,7 @@ func (pc *PostgresConnection) Connect() error {
 
 	primaryURL, err := url.Parse(filepath.ToSlash(migrationsPath))
 	if err != nil {
-		pc.Logger.Errorf("failed parse url: %v", err)
+		pc.Logger.Errorf("failed to parse migrations url: %v", err)
 		return fmt.Errorf("failed to parse migrations url: %w", err)
 	}
 
@@ -84,7 +84,7 @@ func (pc *PostgresConnection) Connect() error {
 		SchemaName:            "public",
 	})
 	if err != nil {
-		pc.Logger.Errorf("failed to open connect to database: %v", err)
+		pc.Logger.Errorf("failed to create postgres driver instance: %v", err)
 		return fmt.Errorf("failed to create postgres driver instance: %w", err)
 	}
 
