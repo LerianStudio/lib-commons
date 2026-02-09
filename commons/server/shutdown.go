@@ -90,6 +90,10 @@ func (sm *ServerManager) validateConfiguration() error {
 // initServers validates configuration and starts servers without blocking.
 // Returns an error if validation fails. Does not call Fatal.
 func (sm *ServerManager) initServers() error {
+	if sm.serversStarted == nil {
+		sm.serversStarted = make(chan struct{})
+	}
+
 	if err := sm.validateConfiguration(); err != nil {
 		return err
 	}
