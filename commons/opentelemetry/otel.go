@@ -3,6 +3,9 @@ package opentelemetry
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	stdlog "log"
 	"maps"
 	"net/http"
 	"strings"
@@ -29,6 +32,13 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
+)
+
+var (
+	// ErrNilTelemetryConfig indicates that nil config was provided to InitializeTelemetryWithError
+	ErrNilTelemetryConfig = errors.New("telemetry config cannot be nil")
+	// ErrNilTelemetryLogger indicates that config.Logger is nil
+	ErrNilTelemetryLogger = errors.New("telemetry config logger cannot be nil")
 )
 
 type TelemetryConfig struct {
@@ -129,20 +139,27 @@ func (tl *Telemetry) ShutdownTelemetry() {
 	tl.shutdown()
 }
 
-// InitializeTelemetry initializes the telemetry providers and sets them globally. (Logger is being passed as a parameter because it not exists in the global context at this point to be injected)
-func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
+// InitializeTelemetryWithError initializes the telemetry providers and sets them globally.
+// Returns an error instead of calling Fatalf on failure.
+func InitializeTelemetryWithError(cfg *TelemetryConfig) (*Telemetry, error) {
+	if cfg == nil {
+		return nil, ErrNilTelemetryConfig
+	}
+
+	if cfg.Logger == nil {
+		return nil, ErrNilTelemetryLogger
+	}
+
 	ctx := context.Background()
 	l := cfg.Logger
 
 	if !cfg.EnableTelemetry {
 		l.Warn("Telemetry turned off ⚠️ ")
 
-		// Initialize no-op providers to avoid nil-pointer panics when telemetry is disabled
 		mp := sdkmetric.NewMeterProvider()
 		tp := sdktrace.NewTracerProvider()
 		lp := sdklog.NewLoggerProvider()
 
-		// Provide a metrics factory using the no-op meter
 		metricsFactory := metrics.NewMetricsFactory(mp.Meter(cfg.LibraryName), l)
 
 		return &Telemetry{
@@ -152,7 +169,7 @@ func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
 			LoggerProvider:  lp,
 			MetricsFactory:  metricsFactory,
 			shutdown:        func() {},
-		}
+		}, nil
 	}
 
 	l.Infof("Initializing telemetry...")
@@ -161,23 +178,22 @@ func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
 
 	tExp, err := cfg.newTracerExporter(ctx)
 	if err != nil {
-		l.Fatalf("can't initialize tracer exporter: %v", err)
+		return nil, fmt.Errorf("can't initialize tracer exporter: %w", err)
 	}
 
 	mExp, err := cfg.newMetricExporter(ctx)
 	if err != nil {
-		l.Fatalf("can't initialize metric exporter: %v", err)
+		return nil, fmt.Errorf("can't initialize metric exporter: %w", err)
 	}
 
 	lExp, err := cfg.newLoggerExporter(ctx)
 	if err != nil {
-		l.Fatalf("can't initialize logger exporter: %v", err)
+		return nil, fmt.Errorf("can't initialize logger exporter: %w", err)
 	}
 
 	mp := cfg.newMeterProvider(r, mExp)
 	otel.SetMeterProvider(mp)
 
-	// Initialize MetricsFactory with the meter from the provider
 	meter := mp.Meter(cfg.LibraryName)
 	metricsFactory := metrics.NewMetricsFactory(meter, l)
 
@@ -188,7 +204,6 @@ func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
 	global.SetLoggerProvider(lp)
 
 	shutdownHandler := func() {
-		// Shutdown providers BEFORE exporters to allow final data export
 		err := mp.Shutdown(ctx)
 		if err != nil {
 			l.Errorf("can't shutdown metric provider: %v", err)
@@ -204,8 +219,6 @@ func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
 			l.Errorf("can't shutdown logger provider: %v", err)
 		}
 
-		// Shutdown exporters AFTER providers complete their final export
-		// Use error logging instead of fatal to prevent shutdown failures
 		err = tExp.Shutdown(ctx)
 		if err != nil {
 			l.Errorf("can't shutdown tracer exporter: %v", err)
@@ -241,7 +254,22 @@ func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
 		LoggerProvider: lp,
 		MetricsFactory: metricsFactory,
 		shutdown:       shutdownHandler,
+	}, nil
+}
+
+// Deprecated: Use InitializeTelemetryWithError for proper error handling.
+// InitializeTelemetry initializes the telemetry providers and sets them globally.
+func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
+	telemetry, err := InitializeTelemetryWithError(cfg)
+	if err != nil {
+		if cfg == nil || cfg.Logger == nil || errors.Is(err, ErrNilTelemetryConfig) || errors.Is(err, ErrNilTelemetryLogger) {
+			stdlog.Fatalf("%v", err)
+		}
+
+		cfg.Logger.Fatalf("%v", err)
 	}
+
+	return telemetry
 }
 
 // SetSpanAttributesFromStruct converts a struct to a JSON string and sets it as an attribute on the span.

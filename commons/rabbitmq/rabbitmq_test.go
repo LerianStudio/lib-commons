@@ -252,3 +252,114 @@ func TestRabbitMQConnection_HealthCheck_Authentication(t *testing.T) {
 	isHealthy = goodAuthConn.HealthCheck()
 	assert.True(t, isHealthy, "HealthCheck should return true with valid credentials")
 }
+
+func TestBuildRabbitMQConnectionString(t *testing.T) {
+	tests := []struct {
+		name     string
+		protocol string
+		user     string
+		pass     string
+		host     string
+		port     string
+		vhost    string
+		expected string
+	}{
+		{
+			name:     "empty vhost - backward compatibility",
+			protocol: "amqp",
+			user:     "guest",
+			pass:     "guest",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "",
+			expected: "amqp://guest:guest@localhost:5672",
+		},
+		{
+			name:     "custom vhost - production",
+			protocol: "amqp",
+			user:     "admin",
+			pass:     "secret",
+			host:     "rabbitmq.example.com",
+			port:     "5672",
+			vhost:    "production",
+			expected: "amqp://admin:secret@rabbitmq.example.com:5672/production",
+		},
+		{
+			name:     "custom vhost - staging",
+			protocol: "amqps",
+			user:     "user",
+			pass:     "pass",
+			host:     "secure.rabbitmq.io",
+			port:     "5671",
+			vhost:    "staging",
+			expected: "amqps://user:pass@secure.rabbitmq.io:5671/staging",
+		},
+		{
+			name:     "root vhost explicit - URL encoded as %2F",
+			protocol: "amqp",
+			user:     "guest",
+			pass:     "guest",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "/",
+			expected: "amqp://guest:guest@localhost:5672/%2F",
+		},
+		{
+			name:     "vhost with special characters - spaces",
+			protocol: "amqp",
+			user:     "guest",
+			pass:     "guest",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "my vhost",
+			expected: "amqp://guest:guest@localhost:5672/my%20vhost",
+		},
+		{
+			name:     "vhost with special characters - slashes",
+			protocol: "amqp",
+			user:     "guest",
+			pass:     "guest",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "env/prod/region1",
+			expected: "amqp://guest:guest@localhost:5672/env%2Fprod%2Fregion1",
+		},
+		{
+			name:     "vhost with special characters - hash and ampersand",
+			protocol: "amqp",
+			user:     "guest",
+			pass:     "guest",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "test#1&2",
+			expected: "amqp://guest:guest@localhost:5672/test%231%262",
+		},
+		{
+			name:     "password with special characters",
+			protocol: "amqp",
+			user:     "admin",
+			pass:     "p@ss:word/123",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "production",
+			expected: "amqp://admin:p%40ss%3Aword%2F123@localhost:5672/production",
+		},
+		{
+			name:     "username with special characters",
+			protocol: "amqp",
+			user:     "admin@domain:user",
+			pass:     "secret",
+			host:     "localhost",
+			port:     "5672",
+			vhost:    "production",
+			expected: "amqp://admin%40domain%3Auser:secret@localhost:5672/production",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := BuildRabbitMQConnectionString(tt.protocol, tt.user, tt.pass, tt.host, tt.port, tt.vhost)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}

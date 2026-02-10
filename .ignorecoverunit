@@ -1,0 +1,6 @@
+# Coverage exclusion patterns for unit tests
+# Lines starting with # are comments
+# Use * as wildcard for path matching
+
+# Auto-generated mocks
+*_mock.go

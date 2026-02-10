@@ -3,7 +3,7 @@ package postgres
 import (
 	"database/sql"
 	"errors"
-	"go.uber.org/zap"
+	"fmt"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -40,23 +40,25 @@ func (pc *PostgresConnection) Connect() error {
 
 	dbPrimary, err := sql.Open("pgx", pc.ConnectionStringPrimary)
 	if err != nil {
-		pc.Logger.Fatal("failed to open connect to primary database", zap.Error(err))
-		return nil
+		pc.Logger.Errorf("failed to connect to primary database: %v", err)
+		return fmt.Errorf("failed to connect to primary database: %w", err)
 	}
 
 	dbPrimary.SetMaxOpenConns(pc.MaxOpenConnections)
 	dbPrimary.SetMaxIdleConns(pc.MaxIdleConnections)
 	dbPrimary.SetConnMaxLifetime(time.Minute * 30)
+	dbPrimary.SetConnMaxIdleTime(5 * time.Minute)
 
 	dbReadOnlyReplica, err := sql.Open("pgx", pc.ConnectionStringReplica)
 	if err != nil {
-		pc.Logger.Fatal("failed to open connect to replica database", zap.Error(err))
-		return nil
+		pc.Logger.Errorf("failed to connect to replica database: %v", err)
+		return fmt.Errorf("failed to connect to replica database: %w", err)
 	}
 
 	dbReadOnlyReplica.SetMaxOpenConns(pc.MaxOpenConnections)
 	dbReadOnlyReplica.SetMaxIdleConns(pc.MaxIdleConnections)
 	dbReadOnlyReplica.SetConnMaxLifetime(time.Minute * 30)
+	dbReadOnlyReplica.SetConnMaxIdleTime(5 * time.Minute)
 
 	connectionDB := dbresolver.New(
 		dbresolver.WithPrimaryDBs(dbPrimary),
@@ -70,10 +72,8 @@ func (pc *PostgresConnection) Connect() error {
 
 	primaryURL, err := url.Parse(filepath.ToSlash(migrationsPath))
 	if err != nil {
-		pc.Logger.Fatal("failed parse url",
-			zap.Error(err))
-
-		return err
+		pc.Logger.Errorf("failed to parse migrations url: %v", err)
+		return fmt.Errorf("failed to parse migrations url: %w", err)
 	}
 
 	primaryURL.Scheme = "file"
@@ -84,16 +84,14 @@ func (pc *PostgresConnection) Connect() error {
 		SchemaName:            "public",
 	})
 	if err != nil {
-		pc.Logger.Fatalf("failed to open connect to database %v", zap.Error(err))
-		return nil
+		pc.Logger.Errorf("failed to create postgres driver instance: %v", err)
+		return fmt.Errorf("failed to create postgres driver instance: %w", err)
 	}
 
 	m, err := migrate.NewWithDatabaseInstance(primaryURL.String(), pc.PrimaryDBName, primaryDriver)
 	if err != nil {
-		pc.Logger.Fatal("failed to get migrations",
-			zap.Error(err))
-
-		return err
+		pc.Logger.Errorf("failed to get migrations: %v", err)
+		return fmt.Errorf("failed to create migration instance: %w", err)
 	}
 
 	if err := m.Up(); err != nil {
@@ -102,16 +100,14 @@ func (pc *PostgresConnection) Connect() error {
 		} else if strings.Contains(err.Error(), "file does not exist") {
 			pc.Logger.Warn("No migration files found. Skipping migration step...")
 		} else {
-			pc.Logger.Error("Migration failed", zap.Error(err))
-			return err
+			pc.Logger.Errorf("Migration failed: %v", err)
+			return fmt.Errorf("migration failed: %w", err)
 		}
 	}
 
 	if err := connectionDB.Ping(); err != nil {
-		pc.Logger.Infof("PostgresConnection.Ping %v",
-			zap.Error(err))
-
-		return err
+		pc.Logger.Errorf("PostgresConnection.Ping failed: %v", err)
+		return fmt.Errorf("failed to ping database: %w", err)
 	}
 
 	pc.Connected = true
@@ -142,7 +138,7 @@ func (pc *PostgresConnection) getMigrationsPath() (string, error) {
 
 	calculatedPath, err := filepath.Abs(filepath.Join("components", pc.Component, "migrations"))
 	if err != nil {
-		pc.Logger.Error("failed to get migration filepath", zap.Error(err))
+		pc.Logger.Errorf("failed to get migration filepath: %v", err)
 
 		return "", err
 	}

@@ -402,24 +402,21 @@ func TestGoLogger_WithDefaultMessageTemplate(t *testing.T) {
 	defer log.SetOutput(log.Writer())
 
 	logger := &GoLogger{Level: InfoLevel}
-	
-	// Test with default message template - Note: current implementation doesn't use template
+
+	// Test with default message template - should preserve Level
 	buf.Reset()
 	loggerWithTemplate := logger.WithDefaultMessageTemplate("Template: ")
-	// The WithDefaultMessageTemplate doesn't preserve Level, so it won't log at Info level
 	loggerWithTemplate.Info("test message")
-	
+
 	output := buf.String()
-	// Current implementation doesn't use the template and doesn't preserve level
-	// So nothing will be logged (default level is 0, which is higher than InfoLevel)
-	assert.Empty(t, output)
-	
-	// Verify original logger is not modified
+	// WithDefaultMessageTemplate preserves Level, so it should log
+	assert.Contains(t, output, "test message")
+
+	// Verify original logger is not modified (immutability)
 	buf.Reset()
 	logger.Info("original message")
 	output = buf.String()
 	assert.Contains(t, output, "original message")
-	assert.NotContains(t, output, "Template:")
 }
 
 func TestGoLogger_Sync(t *testing.T) {
