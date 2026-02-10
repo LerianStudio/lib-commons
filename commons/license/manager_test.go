@@ -43,6 +43,34 @@ func TestSetHandlerWithNil(t *testing.T) {
 	assert.True(t, handlerCalled, "Original handler should still be called when nil is passed")
 }
 
+// runSubprocessTest runs the named test in a subprocess with the given env var set to "1".
+// It asserts the process exits with code 1 and stderr contains "LICENSE VALIDATION FAILED"
+// plus any additional expected messages.
+func runSubprocessTest(t *testing.T, testName, envVar string, expectedMessages ...string) {
+	t.Helper()
+
+	cmd := exec.Command(os.Args[0], "-test.run="+testName)
+	cmd.Env = append(os.Environ(), envVar+"=1")
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		assert.Equal(t, 1, exitErr.ExitCode(), "Expected exit code 1")
+	} else {
+		t.Fatal("Expected process to exit with code 1")
+	}
+
+	assert.Contains(t, stderr.String(), "LICENSE VALIDATION FAILED")
+
+	for _, msg := range expectedMessages {
+		assert.Contains(t, stderr.String(), msg)
+	}
+}
+
 func TestDefaultHandler(t *testing.T) {
 	// DefaultHandler calls os.Exit(1), so we test it in a subprocess
 	if os.Getenv("TEST_DEFAULT_HANDLER_EXIT") == "1" {
@@ -52,25 +80,7 @@ func TestDefaultHandler(t *testing.T) {
 		return
 	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=TestDefaultHandler")
-	cmd.Env = append(os.Environ(), "TEST_DEFAULT_HANDLER_EXIT=1")
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-
-	// Verify process exited with non-zero code
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		assert.Equal(t, 1, exitErr.ExitCode(), "Expected exit code 1")
-	} else {
-		t.Fatal("Expected process to exit with code 1")
-	}
-
-	// Verify error message was printed to stderr
-	assert.Contains(t, stderr.String(), "LICENSE VALIDATION FAILED")
-	assert.Contains(t, stderr.String(), "default handler test")
+	runSubprocessTest(t, "TestDefaultHandler", "TEST_DEFAULT_HANDLER_EXIT", "default handler test")
 }
 
 func TestDefaultHandlerWithError(t *testing.T) {
@@ -172,21 +182,5 @@ func TestTerminateSafe_WithDefaultHandler(t *testing.T) {
 		return
 	}
 
-	cmd := exec.Command(os.Args[0], "-test.run=TestTerminateSafe_WithDefaultHandler")
-	cmd.Env = append(os.Environ(), "TEST_TERMINATE_SAFE_DEFAULT_EXIT=1")
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-
-	// Verify process exited with non-zero code
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		assert.Equal(t, 1, exitErr.ExitCode(), "Expected exit code 1")
-	} else {
-		t.Fatal("Expected process to exit with code 1")
-	}
-
-	assert.Contains(t, stderr.String(), "LICENSE VALIDATION FAILED")
+	runSubprocessTest(t, "TestTerminateSafe_WithDefaultHandler", "TEST_TERMINATE_SAFE_DEFAULT_EXIT")
 }
