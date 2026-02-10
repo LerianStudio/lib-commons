@@ -1,7 +1,15 @@
 .idea/*
 CLAUDE.md
 .DS_Store
-coverage.out
-coverage.html
 .claude/
 .mcp.json
+
+# Test reports and coverage
+reports/
+coverage.out
+coverage.html
+*_coverage.out
+*_coverage.html
+
+# Security scan reports
+gosec-report.sarif
