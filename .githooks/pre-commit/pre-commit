@@ -1,13 +1,18 @@
 #!/bin/bash
 
-source "$PWD"/pkg/shell/colors.sh
-source "$PWD"/pkg/shell/ascii.sh
+REPO_ROOT=$(git rev-parse --show-toplevel)
+source "$REPO_ROOT"/commons/shell/colors.sh 2>/dev/null || true
 
 branch=$(git rev-parse --abbrev-ref HEAD)
 
 if [[ $branch == "main" || $branch == "develop" || $branch == release/* ]]; then
-  echo "${bold}You can't commit directly to protected branches"
+  echo "${bold:-}You can't commit directly to protected branches${normal:-}"
   exit 1
+fi
+
+# Check license headers in source files
+if [ -x "$REPO_ROOT/scripts/check-license-header.sh" ]; then
+    "$REPO_ROOT/scripts/check-license-header.sh" || exit 1
 fi
 
 commit_msg_type_regex='feature|fix|refactor|style|test|docs|build'
