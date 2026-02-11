@@ -20,7 +20,7 @@ import (
 
 // DefaultConnectionTimeout is the default timeout for establishing RabbitMQ connections
 // when ConnectionTimeout field is not set.
-const DefaultConnectionTimeout = 30 * time.Second
+const DefaultConnectionTimeout = 15 * time.Second
 
 // RabbitMQConnection is a hub which deal with rabbitmq connections.
 type RabbitMQConnection struct {
@@ -37,7 +37,7 @@ type RabbitMQConnection struct {
 	Channel                *amqp.Channel
 	Logger                 log.Logger
 	Connected              bool
-	ConnectionTimeout      time.Duration // timeout for establishing connection. Zero value uses default of 30s.
+	ConnectionTimeout      time.Duration // timeout for establishing connection. Zero value uses default of 15s.
 }
 
 // Connect keeps a singleton connection with rabbitmq.
@@ -141,7 +141,7 @@ func (rc *RabbitMQConnection) EnsureChannel() error {
 //
 // The effective connection timeout is the minimum of:
 //   - The remaining time until context deadline (if context has a deadline)
-//   - ConnectionTimeout field value (defaults to 30s if zero)
+//   - ConnectionTimeout field value (defaults to 15s if zero)
 //
 // Usage:
 //
@@ -219,7 +219,7 @@ func (rc *RabbitMQConnection) EnsureChannelWithContext(ctx context.Context) erro
 
 // dialWithContext creates an AMQP connection with context awareness.
 // It extracts the deadline from context and uses it as connection timeout.
-// If context has no deadline, uses ConnectionTimeout field (default 30s).
+// If context has no deadline, uses ConnectionTimeout field (default 15s).
 func (rc *RabbitMQConnection) dialWithContext(ctx context.Context) (*amqp.Connection, error) {
 	// Determine timeout from context deadline or default
 	timeout := rc.ConnectionTimeout
