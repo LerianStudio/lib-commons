@@ -6,39 +6,23 @@ import (
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"github.com/LerianStudio/lib-commons/v2/commons/pointers"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 )
-
-// mockLogger implements log.Logger interface for testing
-type mockLogger struct{}
-
-func (l *mockLogger) Debug(args ...any)                                 {}
-func (l *mockLogger) Debugf(format string, args ...any)                 {}
-func (l *mockLogger) Debugln(args ...any)                               {}
-func (l *mockLogger) Info(args ...any)                                  {}
-func (l *mockLogger) Infof(format string, args ...any)                  {}
-func (l *mockLogger) Infoln(args ...any)                                {}
-func (l *mockLogger) Warn(args ...any)                                  {}
-func (l *mockLogger) Warnf(format string, args ...any)                  {}
-func (l *mockLogger) Warnln(args ...any)                                {}
-func (l *mockLogger) Error(args ...any)                                 {}
-func (l *mockLogger) Errorf(format string, args ...any)                 {}
-func (l *mockLogger) Errorln(args ...any)                               {}
-func (l *mockLogger) Fatal(args ...any)                                 {}
-func (l *mockLogger) Fatalf(format string, args ...any)                 {}
-func (l *mockLogger) Fatalln(args ...any)                               {}
-func (l *mockLogger) WithFields(fields ...any) log.Logger               { return l }
-func (l *mockLogger) WithDefaultMessageTemplate(msg string) log.Logger  { return l }
-func (l *mockLogger) Sync() error                                       { return nil }
 
 func TestPostgresConnection_MultiStatementEnabled_Nil_DefaultsToTrue(t *testing.T) {
 	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockLogger := log.NewMockLogger(ctrl)
 
 	pc := &PostgresConnection{
 		ConnectionStringPrimary: "postgres://user:pass@localhost:5432/testdb",
 		ConnectionStringReplica: "postgres://user:pass@localhost:5432/testdb",
 		PrimaryDBName:           "testdb",
 		ReplicaDBName:           "testdb",
-		Logger:                  &mockLogger{},
+		Logger:                  mockLogger,
 		MaxOpenConnections:      10,
 		MaxIdleConnections:      5,
 		MultiStatementEnabled:   nil, // explicitly nil to test default
@@ -54,12 +38,17 @@ func TestPostgresConnection_MultiStatementEnabled_Nil_DefaultsToTrue(t *testing.
 func TestPostgresConnection_MultiStatementEnabled_ExplicitTrue(t *testing.T) {
 	t.Parallel()
 
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockLogger := log.NewMockLogger(ctrl)
+
 	pc := &PostgresConnection{
 		ConnectionStringPrimary: "postgres://user:pass@localhost:5432/testdb",
 		ConnectionStringReplica: "postgres://user:pass@localhost:5432/testdb",
 		PrimaryDBName:           "testdb",
 		ReplicaDBName:           "testdb",
-		Logger:                  &mockLogger{},
+		Logger:                  mockLogger,
 		MaxOpenConnections:      10,
 		MaxIdleConnections:      5,
 		MultiStatementEnabled:   pointers.Bool(true), // explicitly true
@@ -76,12 +65,17 @@ func TestPostgresConnection_MultiStatementEnabled_ExplicitTrue(t *testing.T) {
 func TestPostgresConnection_MultiStatementEnabled_ExplicitFalse(t *testing.T) {
 	t.Parallel()
 
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockLogger := log.NewMockLogger(ctrl)
+
 	pc := &PostgresConnection{
 		ConnectionStringPrimary: "postgres://user:pass@localhost:5432/testdb",
 		ConnectionStringReplica: "postgres://user:pass@localhost:5432/testdb",
 		PrimaryDBName:           "testdb",
 		ReplicaDBName:           "testdb",
-		Logger:                  &mockLogger{},
+		Logger:                  mockLogger,
 		MaxOpenConnections:      10,
 		MaxIdleConnections:      5,
 		MultiStatementEnabled:   pointers.Bool(false), // explicitly false
@@ -128,12 +122,17 @@ func TestPostgresConnection_MultiStatementEnabled_AllCases(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			ctrl := gomock.NewController(t)
+			t.Cleanup(ctrl.Finish)
+
+			mockLogger := log.NewMockLogger(ctrl)
+
 			pc := &PostgresConnection{
 				ConnectionStringPrimary: "postgres://user:pass@localhost:5432/testdb",
 				ConnectionStringReplica: "postgres://user:pass@localhost:5432/testdb",
 				PrimaryDBName:           "testdb",
 				ReplicaDBName:           "testdb",
-				Logger:                  &mockLogger{},
+				Logger:                  mockLogger,
 				MaxOpenConnections:      10,
 				MaxIdleConnections:      5,
 				MultiStatementEnabled:   tt.multiStatementEnabled,
