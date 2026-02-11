@@ -27,5 +27,5 @@ func ServeReverseProxy(target string, res http.ResponseWriter, req *http.Request
 	req.Header.Set(constant.HeaderForwardedHost, req.Header.Get(constant.HeaderHost))
 	req.Host = targetURL.Host
 
-	proxy.ServeHTTP(res, req)
+	proxy.ServeHTTP(res, req) //#nosec G704 -- target URL is application-configured, not user input
 }

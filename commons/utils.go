@@ -253,7 +253,7 @@ type SyscmdI interface {
 type Syscmd struct{}
 
 func (r *Syscmd) ExecCmd(name string, arg ...string) ([]byte, error) {
-	return exec.Command(name, arg...).Output()
+	return exec.Command(name, arg...).Output() //#nosec G204 -- Generic command wrapper; caller responsible for safe usage
 }
 
 // GetCPUUsage get the current CPU usage
