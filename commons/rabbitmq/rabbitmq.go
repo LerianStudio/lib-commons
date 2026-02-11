@@ -30,7 +30,7 @@ type RabbitMQConnection struct {
 	Host                   string
 	Port                   string
 	User                   string
-	Pass                   string
+	Pass                   string //#nosec G117 -- Credential field required for RabbitMQ connection config
 	VHost                  string
 	Channel                *amqp.Channel
 	Logger                 log.Logger
@@ -156,7 +156,7 @@ func (rc *RabbitMQConnection) HealthCheck() bool {
 
 	client := &http.Client{}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //#nosec G704 -- HealthCheckURL is operator-configured, not user input
 	if err != nil {
 		rc.Logger.Errorf("failed to make GET request after client do: %v", err.Error())
 

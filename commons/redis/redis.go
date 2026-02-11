@@ -42,7 +42,7 @@ type RedisConnection struct {
 	Address                      []string
 	DB                           int
 	MasterName                   string
-	Password                     string
+	Password                     string //#nosec G117 -- Credential field required for Redis connection config
 	Protocol                     int
 	UseTLS                       bool
 	Logger                       log.Logger
