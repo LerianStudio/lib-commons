@@ -32,7 +32,18 @@ type PostgresConnection struct {
 	Logger                  log.Logger
 	MaxOpenConnections      int
 	MaxIdleConnections      int
-	SkipMigrations          bool // Skip running migrations on connect (for dynamic tenant connections)
+	SkipMigrations          bool  // Skip running migrations on connect (for dynamic tenant connections)
+	MultiStatementEnabled   *bool // Enable multi-statement migrations. Defaults to true when nil.
+}
+
+// resolveMultiStatementEnabled returns the configured MultiStatementEnabled value,
+// defaulting to true when the field is nil (backward-compatible behavior).
+func (pc *PostgresConnection) resolveMultiStatementEnabled() bool {
+	if pc.MultiStatementEnabled == nil {
+		return true
+	}
+
+	return *pc.MultiStatementEnabled
 }
 
 // Connect keeps a singleton connection with postgres.
@@ -82,7 +93,7 @@ func (pc *PostgresConnection) Connect() error {
 		primaryURL.Scheme = "file"
 
 		primaryDriver, err := postgres.WithInstance(dbPrimary, &postgres.Config{
-			MultiStatementEnabled: true,
+			MultiStatementEnabled: pc.resolveMultiStatementEnabled(),
 			DatabaseName:          pc.PrimaryDBName,
 			SchemaName:            "public",
 		})
