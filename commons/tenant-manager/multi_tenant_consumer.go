@@ -36,9 +36,9 @@ type MultiTenantConfig struct {
 	// Default: 10
 	PrefetchCount int
 
-	// TenantManagerURL is the fallback HTTP endpoint to fetch tenants if Redis cache misses.
+	// MultiTenantURL is the fallback HTTP endpoint to fetch tenants if Redis cache misses.
 	// Format: http://tenant-manager:4003
-	TenantManagerURL string
+	MultiTenantURL string
 
 	// Service is the service name to filter tenants by.
 	// This is passed to tenant-manager when fetching tenant list.
@@ -101,8 +101,8 @@ func NewMultiTenantConsumer(
 	}
 
 	// Create Tenant Manager client for fallback if URL is configured
-	if config.TenantManagerURL != "" {
-		consumer.pmClient = NewClient(config.TenantManagerURL, logger)
+	if config.MultiTenantURL != "" {
+		consumer.pmClient = NewClient(config.MultiTenantURL, logger)
 	}
 
 	return consumer
