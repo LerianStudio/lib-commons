@@ -11,12 +11,6 @@ var ErrTenantNotFound = errors.New("tenant not found")
 // ErrServiceNotConfigured is returned when the service is not configured for the tenant.
 var ErrServiceNotConfigured = errors.New("service not configured for tenant")
 
-// ErrModuleNotConfigured is returned when the module is not configured for the service.
-var ErrModuleNotConfigured = errors.New("module not configured for service")
-
-// ErrConnectionNotFound is returned when no connection exists for the tenant.
-var ErrConnectionNotFound = errors.New("connection not found for tenant")
-
 // ErrManagerClosed is returned when attempting to use a closed connection manager.
 var ErrManagerClosed = errors.New("tenant connection manager is closed")
 

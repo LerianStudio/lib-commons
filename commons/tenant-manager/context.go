@@ -45,11 +45,6 @@ func GetTenantID(ctx context.Context) string {
 	return GetTenantIDFromContext(ctx)
 }
 
-// HasTenantContext returns true if the context has tenant information.
-func HasTenantContext(ctx context.Context) bool {
-	return GetTenantIDFromContext(ctx) != ""
-}
-
 // ContextWithTenantID stores the tenant ID in the context.
 // Alias for SetTenantIDInContext for compatibility with middleware.
 func ContextWithTenantID(ctx context.Context, tenantID string) context.Context {

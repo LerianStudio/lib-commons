@@ -27,20 +27,6 @@ func TestGetTenantIDFromContext_NotSet(t *testing.T) {
 	assert.Equal(t, "", id)
 }
 
-func TestHasTenantContext(t *testing.T) {
-	t.Run("returns true when tenant ID is set", func(t *testing.T) {
-		ctx := SetTenantIDInContext(context.Background(), "tenant-123")
-
-		assert.True(t, HasTenantContext(ctx))
-	})
-
-	t.Run("returns false when tenant ID is not set", func(t *testing.T) {
-		ctx := context.Background()
-
-		assert.False(t, HasTenantContext(ctx))
-	})
-}
-
 func TestContextWithTenantID(t *testing.T) {
 	ctx := context.Background()
 

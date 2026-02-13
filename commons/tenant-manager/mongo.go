@@ -13,16 +13,6 @@ import (
 // Context key for MongoDB
 const tenantMongoKey contextKey = "tenantMongo"
 
-// Module-specific MongoDB connection keys for multi-tenant unified mode.
-// These keys allow each module to have its own MongoDB connection in context,
-// solving the issue where in-process calls between modules would get the wrong connection.
-const (
-	// tenantOnboardingMongoKey is the context key for storing the onboarding module's MongoDB connection.
-	tenantOnboardingMongoKey contextKey = "tenantOnboardingMongo"
-	// tenantTransactionMongoKey is the context key for storing the transaction module's MongoDB connection.
-	tenantTransactionMongoKey contextKey = "tenantTransactionMongo"
-)
-
 // DefaultMongoMaxConnections is the default max connections for MongoDB.
 const DefaultMongoMaxConnections uint64 = 100
 
@@ -292,40 +282,3 @@ func GetMongoForTenant(ctx context.Context) (*mongo.Database, error) {
 	return nil, ErrTenantContextRequired
 }
 
-// ContextWithOnboardingMongo stores the onboarding module's MongoDB connection in context.
-// This is used in multi-tenant unified mode where multiple modules run in the same process
-// and each module needs its own MongoDB connection.
-func ContextWithOnboardingMongo(ctx context.Context, db *mongo.Database) context.Context {
-	return context.WithValue(ctx, tenantOnboardingMongoKey, db)
-}
-
-// ContextWithTransactionMongo stores the transaction module's MongoDB connection in context.
-// This is used in multi-tenant unified mode where multiple modules run in the same process
-// and each module needs its own MongoDB connection.
-func ContextWithTransactionMongo(ctx context.Context, db *mongo.Database) context.Context {
-	return context.WithValue(ctx, tenantTransactionMongoKey, db)
-}
-
-// GetOnboardingMongoForTenant returns the onboarding MongoDB connection from context.
-// Returns ErrTenantContextRequired if not found.
-// This function does NOT fallback to the generic tenantMongoKey - it strictly returns
-// only the module-specific connection. This ensures proper isolation in multi-tenant unified mode.
-func GetOnboardingMongoForTenant(ctx context.Context) (*mongo.Database, error) {
-	if db, ok := ctx.Value(tenantOnboardingMongoKey).(*mongo.Database); ok && db != nil {
-		return db, nil
-	}
-
-	return nil, ErrTenantContextRequired
-}
-
-// GetTransactionMongoForTenant returns the transaction MongoDB connection from context.
-// Returns ErrTenantContextRequired if not found.
-// This function does NOT fallback to the generic tenantMongoKey - it strictly returns
-// only the module-specific connection. This ensures proper isolation in multi-tenant unified mode.
-func GetTransactionMongoForTenant(ctx context.Context) (*mongo.Database, error) {
-	if db, ok := ctx.Value(tenantTransactionMongoKey).(*mongo.Database); ok && db != nil {
-		return db, nil
-	}
-
-	return nil, ErrTenantContextRequired
-}

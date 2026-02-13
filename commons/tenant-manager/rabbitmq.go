@@ -11,9 +11,6 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// Context key for RabbitMQ
-const tenantRabbitMQKey contextKey = "tenantRabbitMQ"
-
 // RabbitMQManager manages RabbitMQ connections per tenant.
 // Each tenant has a dedicated vhost, user, and credentials stored in Tenant Manager.
 type RabbitMQManager struct {
@@ -234,31 +231,6 @@ type RabbitMQStats struct {
 func buildRabbitMQURI(cfg *RabbitMQConfig) string {
 	return fmt.Sprintf("amqp://%s:%s@%s:%d/%s",
 		cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.VHost)
-}
-
-// ContextWithTenantRabbitMQ stores the RabbitMQ channel in the context.
-func ContextWithTenantRabbitMQ(ctx context.Context, ch *amqp.Channel) context.Context {
-	return context.WithValue(ctx, tenantRabbitMQKey, ch)
-}
-
-// GetRabbitMQFromContext retrieves the RabbitMQ channel from the context.
-// Returns nil if not found.
-func GetRabbitMQFromContext(ctx context.Context) *amqp.Channel {
-	if ch, ok := ctx.Value(tenantRabbitMQKey).(*amqp.Channel); ok {
-		return ch
-	}
-	return nil
-}
-
-// GetRabbitMQForTenant returns the RabbitMQ channel for the current tenant from context.
-// If no tenant connection is found in context, returns ErrTenantContextRequired.
-// This function ALWAYS requires tenant context - there is no fallback to default connections.
-func GetRabbitMQForTenant(ctx context.Context) (*amqp.Channel, error) {
-	if ch := GetRabbitMQFromContext(ctx); ch != nil {
-		return ch, nil
-	}
-
-	return nil, ErrTenantContextRequired
 }
 
 // IsMultiTenant returns true if the manager is configured with a Tenant Manager client.
