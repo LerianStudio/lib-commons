@@ -1,7 +1,14 @@
+// Copyright (c) 2026 Lerian Studio. All rights reserved.
+// Use of this source code is governed by the Elastic License 2.0
+// that can be found in the LICENSE file.
+
 package license_test
 
 import (
+	"bytes"
 	"errors"
+	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/license"
@@ -40,12 +47,44 @@ func TestSetHandlerWithNil(t *testing.T) {
 	assert.True(t, handlerCalled, "Original handler should still be called when nil is passed")
 }
 
-func TestDefaultHandler(t *testing.T) {
-	manager := license.New()
+// runSubprocessTest runs the named test in a subprocess with the given env var set to "1".
+// It asserts the process exits with code 1 and stderr contains "LICENSE VALIDATION FAILED"
+// plus any additional expected messages.
+func runSubprocessTest(t *testing.T, testName, envVar string, expectedMessages ...string) {
+	t.Helper()
 
-	assert.Panics(t, func() {
+	cmd := exec.Command(os.Args[0], "-test.run="+testName)
+	cmd.Env = append(os.Environ(), envVar+"=1")
+
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		assert.Equal(t, 1, exitErr.ExitCode(), "Expected exit code 1")
+	} else {
+		t.Fatal("Expected process to exit with code 1")
+	}
+
+	assert.Contains(t, stderr.String(), "LICENSE VALIDATION FAILED")
+
+	for _, msg := range expectedMessages {
+		assert.Contains(t, stderr.String(), msg)
+	}
+}
+
+func TestDefaultHandler(t *testing.T) {
+	// DefaultHandler calls os.Exit(1), so we test it in a subprocess
+	if os.Getenv("TEST_DEFAULT_HANDLER_EXIT") == "1" {
+		manager := license.New()
 		manager.Terminate("default handler test")
-	}, "Default handler should panic")
+
+		return
+	}
+
+	runSubprocessTest(t, "TestDefaultHandler", "TEST_DEFAULT_HANDLER_EXIT", "default handler test")
 }
 
 func TestDefaultHandlerWithError(t *testing.T) {
@@ -139,12 +178,13 @@ func TestTerminateSafe_UninitializedManager(t *testing.T) {
 }
 
 func TestTerminateSafe_WithDefaultHandler(t *testing.T) {
-	manager := license.New()
-
-	// Note: This will panic because DefaultHandler panics.
-	// TerminateSafe invokes the handler before returning nil,
-	// so the panic comes from the handler during TerminateSafe execution.
-	assert.Panics(t, func() {
+	// DefaultHandler calls os.Exit(1), so we test it in a subprocess
+	if os.Getenv("TEST_TERMINATE_SAFE_DEFAULT_EXIT") == "1" {
+		manager := license.New()
 		_ = manager.TerminateSafe("test")
-	}, "Default handler should still panic when invoked via TerminateSafe")
+
+		return
+	}
+
+	runSubprocessTest(t, "TestTerminateSafe_WithDefaultHandler", "TEST_TERMINATE_SAFE_DEFAULT_EXIT")
 }
