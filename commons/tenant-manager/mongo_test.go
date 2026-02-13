@@ -7,35 +7,35 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestNewMongoPool(t *testing.T) {
-	t.Run("creates pool with client and service", func(t *testing.T) {
+func TestNewMongoManager(t *testing.T) {
+	t.Run("creates manager with client and service", func(t *testing.T) {
 		client := &Client{baseURL: "http://localhost:8080"}
-		pool := NewMongoPool(client, "ledger")
+		manager := NewMongoManager(client, "ledger")
 
-		assert.NotNil(t, pool)
-		assert.Equal(t, "ledger", pool.service)
-		assert.NotNil(t, pool.pools)
+		assert.NotNil(t, manager)
+		assert.Equal(t, "ledger", manager.service)
+		assert.NotNil(t, manager.connections)
 	})
 }
 
-func TestMongoPool_GetClient_NoTenantID(t *testing.T) {
+func TestMongoManager_GetClient_NoTenantID(t *testing.T) {
 	client := &Client{baseURL: "http://localhost:8080"}
-	pool := NewMongoPool(client, "ledger")
+	manager := NewMongoManager(client, "ledger")
 
-	_, err := pool.GetClient(context.Background(), "")
+	_, err := manager.GetClient(context.Background(), "")
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "tenant ID is required")
 }
 
-func TestMongoPool_GetClient_PoolClosed(t *testing.T) {
+func TestMongoManager_GetClient_ManagerClosed(t *testing.T) {
 	client := &Client{baseURL: "http://localhost:8080"}
-	pool := NewMongoPool(client, "ledger")
-	pool.Close(context.Background())
+	manager := NewMongoManager(client, "ledger")
+	manager.Close(context.Background())
 
-	_, err := pool.GetClient(context.Background(), "tenant-123")
+	_, err := manager.GetClient(context.Background(), "tenant-123")
 
-	assert.ErrorIs(t, err, ErrPoolClosed)
+	assert.ErrorIs(t, err, ErrManagerClosed)
 }
 
 func TestBuildMongoURI(t *testing.T) {
@@ -99,11 +99,11 @@ func TestGetMongoForTenant(t *testing.T) {
 	})
 }
 
-func TestMongoPool_GetDatabaseForTenant_NoTenantID(t *testing.T) {
+func TestMongoManager_GetDatabaseForTenant_NoTenantID(t *testing.T) {
 	client := &Client{baseURL: "http://localhost:8080"}
-	pool := NewMongoPool(client, "ledger")
+	manager := NewMongoManager(client, "ledger")
 
-	_, err := pool.GetDatabaseForTenant(context.Background(), "")
+	_, err := manager.GetDatabaseForTenant(context.Background(), "")
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "tenant ID is required")

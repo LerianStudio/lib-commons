@@ -5,7 +5,7 @@
 //   - Tenant context key for request-scoped tenant identification
 //   - Standard tenant-related errors for consistent error handling
 //   - Tenant isolation utilities to prevent cross-tenant data access
-//   - Connection pool management for PostgreSQL and MongoDB
+//   - Connection management for PostgreSQL, MongoDB, and RabbitMQ
 package tenantmanager
 
 const (

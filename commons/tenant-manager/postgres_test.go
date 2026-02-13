@@ -8,46 +8,46 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewPool(t *testing.T) {
-	t.Run("creates pool with client and service", func(t *testing.T) {
+func TestNewPostgresManager(t *testing.T) {
+	t.Run("creates manager with client and service", func(t *testing.T) {
 		client := &Client{baseURL: "http://localhost:8080"}
-		pool := NewPool(client, "ledger")
+		manager := NewPostgresManager(client, "ledger")
 
-		assert.NotNil(t, pool)
-		assert.Equal(t, "ledger", pool.service)
-		assert.NotNil(t, pool.connections)
+		assert.NotNil(t, manager)
+		assert.Equal(t, "ledger", manager.service)
+		assert.NotNil(t, manager.connections)
 	})
 }
 
-func TestPool_GetConnection_NoTenantID(t *testing.T) {
+func TestPostgresManager_GetConnection_NoTenantID(t *testing.T) {
 	client := &Client{baseURL: "http://localhost:8080"}
-	pool := NewPool(client, "ledger")
+	manager := NewPostgresManager(client, "ledger")
 
-	_, err := pool.GetConnection(context.Background(), "")
+	_, err := manager.GetConnection(context.Background(), "")
 
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "tenant ID is required")
 }
 
-func TestPool_Close(t *testing.T) {
+func TestPostgresManager_Close(t *testing.T) {
 	client := &Client{baseURL: "http://localhost:8080"}
-	pool := NewPool(client, "ledger")
+	manager := NewPostgresManager(client, "ledger")
 
-	err := pool.Close()
+	err := manager.Close()
 
 	assert.NoError(t, err)
-	assert.True(t, pool.closed)
+	assert.True(t, manager.closed)
 }
 
-func TestPool_GetConnection_PoolClosed(t *testing.T) {
+func TestPostgresManager_GetConnection_ManagerClosed(t *testing.T) {
 	client := &Client{baseURL: "http://localhost:8080"}
-	pool := NewPool(client, "ledger")
-	pool.Close()
+	manager := NewPostgresManager(client, "ledger")
+	manager.Close()
 
-	_, err := pool.GetConnection(context.Background(), "tenant-123")
+	_, err := manager.GetConnection(context.Background(), "tenant-123")
 
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrPoolClosed)
+	assert.ErrorIs(t, err, ErrManagerClosed)
 }
 
 func TestIsolationModeConstants(t *testing.T) {

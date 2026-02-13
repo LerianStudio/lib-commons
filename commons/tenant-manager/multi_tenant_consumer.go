@@ -57,7 +57,7 @@ func DefaultMultiTenantConfig() MultiTenantConfig {
 // MultiTenantConsumer manages message consumption across multiple tenant vhosts.
 // It dynamically discovers tenants from Redis cache and spawns consumer goroutines.
 type MultiTenantConsumer struct {
-	pool        *RabbitMQPool
+	rabbitmq    *RabbitMQManager
 	redisClient redis.UniversalClient
 	pmClient    *Client // Tenant Manager client for fallback
 	handlers    map[string]HandlerFunc
@@ -70,12 +70,12 @@ type MultiTenantConsumer struct {
 
 // NewMultiTenantConsumer creates a new MultiTenantConsumer.
 // Parameters:
-//   - pool: RabbitMQ connection pool for tenant vhosts
+//   - rabbitmq: RabbitMQ connection manager for tenant vhosts
 //   - redisClient: Redis client for tenant cache access
 //   - config: Consumer configuration
 //   - logger: Logger for operational logging
 func NewMultiTenantConsumer(
-	pool *RabbitMQPool,
+	rabbitmq *RabbitMQManager,
 	redisClient redis.UniversalClient,
 	config MultiTenantConfig,
 	logger libLog.Logger,
@@ -92,7 +92,7 @@ func NewMultiTenantConsumer(
 	}
 
 	consumer := &MultiTenantConsumer{
-		pool:        pool,
+		rabbitmq:    rabbitmq,
 		redisClient: redisClient,
 		handlers:    make(map[string]HandlerFunc),
 		tenants:     make(map[string]context.CancelFunc),
@@ -330,7 +330,7 @@ func (c *MultiTenantConsumer) consumeQueue(
 		}
 
 		// Get channel for this tenant's vhost
-		ch, err := c.pool.GetChannel(ctx, tenantID)
+		ch, err := c.rabbitmq.GetChannel(ctx, tenantID)
 		if err != nil {
 			logger.Warnf("failed to get channel, retrying in 5s: %v", err)
 			select {

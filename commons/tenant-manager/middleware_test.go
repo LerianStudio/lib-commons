@@ -7,112 +7,112 @@ import (
 )
 
 func TestNewTenantMiddleware(t *testing.T) {
-	t.Run("creates disabled middleware when no pools are configured", func(t *testing.T) {
+	t.Run("creates disabled middleware when no managers are configured", func(t *testing.T) {
 		middleware := NewTenantMiddleware()
 
 		assert.NotNil(t, middleware)
 		assert.False(t, middleware.Enabled())
-		assert.Nil(t, middleware.pool)
-		assert.Nil(t, middleware.mongoPool)
+		assert.Nil(t, middleware.postgres)
+		assert.Nil(t, middleware.mongo)
 	})
 
 	t.Run("creates enabled middleware with PostgreSQL only", func(t *testing.T) {
 		client := &Client{baseURL: "http://localhost:8080"}
-		pool := NewPool(client, "ledger")
+		pgManager := NewPostgresManager(client, "ledger")
 
-		middleware := NewTenantMiddleware(WithPostgresPool(pool))
+		middleware := NewTenantMiddleware(WithPostgresManager(pgManager))
 
 		assert.NotNil(t, middleware)
 		assert.True(t, middleware.Enabled())
-		assert.Equal(t, pool, middleware.pool)
-		assert.Nil(t, middleware.mongoPool)
+		assert.Equal(t, pgManager, middleware.postgres)
+		assert.Nil(t, middleware.mongo)
 	})
 
 	t.Run("creates enabled middleware with MongoDB only", func(t *testing.T) {
 		client := &Client{baseURL: "http://localhost:8080"}
-		mongoPool := NewMongoPool(client, "ledger")
+		mongoManager := NewMongoManager(client, "ledger")
 
-		middleware := NewTenantMiddleware(WithMongoPool(mongoPool))
+		middleware := NewTenantMiddleware(WithMongoManager(mongoManager))
 
 		assert.NotNil(t, middleware)
 		assert.True(t, middleware.Enabled())
-		assert.Nil(t, middleware.pool)
-		assert.Equal(t, mongoPool, middleware.mongoPool)
+		assert.Nil(t, middleware.postgres)
+		assert.Equal(t, mongoManager, middleware.mongo)
 	})
 
-	t.Run("creates middleware with both PostgreSQL and MongoDB pools", func(t *testing.T) {
+	t.Run("creates middleware with both PostgreSQL and MongoDB managers", func(t *testing.T) {
 		client := &Client{baseURL: "http://localhost:8080"}
-		pgPool := NewPool(client, "ledger")
-		mongoPool := NewMongoPool(client, "ledger")
+		pgManager := NewPostgresManager(client, "ledger")
+		mongoManager := NewMongoManager(client, "ledger")
 
 		middleware := NewTenantMiddleware(
-			WithPostgresPool(pgPool),
-			WithMongoPool(mongoPool),
+			WithPostgresManager(pgManager),
+			WithMongoManager(mongoManager),
 		)
 
 		assert.NotNil(t, middleware)
 		assert.True(t, middleware.Enabled())
-		assert.Equal(t, pgPool, middleware.pool)
-		assert.Equal(t, mongoPool, middleware.mongoPool)
+		assert.Equal(t, pgManager, middleware.postgres)
+		assert.Equal(t, mongoManager, middleware.mongo)
 	})
 }
 
-func TestWithPostgresPool(t *testing.T) {
-	t.Run("sets postgres pool on middleware", func(t *testing.T) {
+func TestWithPostgresManager(t *testing.T) {
+	t.Run("sets postgres manager on middleware", func(t *testing.T) {
 		client := &Client{baseURL: "http://localhost:8080"}
-		pgPool := NewPool(client, "ledger")
+		pgManager := NewPostgresManager(client, "ledger")
 
 		middleware := NewTenantMiddleware()
-		assert.Nil(t, middleware.pool)
+		assert.Nil(t, middleware.postgres)
 		assert.False(t, middleware.Enabled())
 
 		// Apply option manually
-		opt := WithPostgresPool(pgPool)
+		opt := WithPostgresManager(pgManager)
 		opt(middleware)
 
-		assert.Equal(t, pgPool, middleware.pool)
+		assert.Equal(t, pgManager, middleware.postgres)
 		assert.True(t, middleware.Enabled())
 	})
 
-	t.Run("enables middleware when postgres pool is set", func(t *testing.T) {
+	t.Run("enables middleware when postgres manager is set", func(t *testing.T) {
 		client := &Client{baseURL: "http://localhost:8080"}
-		pgPool := NewPool(client, "ledger")
+		pgManager := NewPostgresManager(client, "ledger")
 
 		middleware := &TenantMiddleware{}
 		assert.False(t, middleware.enabled)
 
-		opt := WithPostgresPool(pgPool)
+		opt := WithPostgresManager(pgManager)
 		opt(middleware)
 
 		assert.True(t, middleware.enabled)
 	})
 }
 
-func TestWithMongoPool(t *testing.T) {
-	t.Run("sets mongo pool on middleware", func(t *testing.T) {
+func TestWithMongoManager(t *testing.T) {
+	t.Run("sets mongo manager on middleware", func(t *testing.T) {
 		client := &Client{baseURL: "http://localhost:8080"}
-		mongoPool := NewMongoPool(client, "ledger")
+		mongoManager := NewMongoManager(client, "ledger")
 
 		middleware := NewTenantMiddleware()
-		assert.Nil(t, middleware.mongoPool)
+		assert.Nil(t, middleware.mongo)
 		assert.False(t, middleware.Enabled())
 
 		// Apply option manually
-		opt := WithMongoPool(mongoPool)
+		opt := WithMongoManager(mongoManager)
 		opt(middleware)
 
-		assert.Equal(t, mongoPool, middleware.mongoPool)
+		assert.Equal(t, mongoManager, middleware.mongo)
 		assert.True(t, middleware.Enabled())
 	})
 
-	t.Run("enables middleware when mongo pool is set", func(t *testing.T) {
+	t.Run("enables middleware when mongo manager is set", func(t *testing.T) {
 		client := &Client{baseURL: "http://localhost:8080"}
-		mongoPool := NewMongoPool(client, "ledger")
+		mongoManager := NewMongoManager(client, "ledger")
 
 		middleware := &TenantMiddleware{}
 		assert.False(t, middleware.enabled)
 
-		opt := WithMongoPool(mongoPool)
+		opt := WithMongoManager(mongoManager)
 		opt(middleware)
 
 		assert.True(t, middleware.enabled)
@@ -120,35 +120,35 @@ func TestWithMongoPool(t *testing.T) {
 }
 
 func TestTenantMiddleware_Enabled(t *testing.T) {
-	t.Run("returns false when no pools are configured", func(t *testing.T) {
+	t.Run("returns false when no managers are configured", func(t *testing.T) {
 		middleware := NewTenantMiddleware()
 		assert.False(t, middleware.Enabled())
 	})
 
-	t.Run("returns true when only PostgreSQL pool is set", func(t *testing.T) {
+	t.Run("returns true when only PostgreSQL manager is set", func(t *testing.T) {
 		client := &Client{baseURL: "http://localhost:8080"}
-		pool := NewPool(client, "ledger")
+		pgManager := NewPostgresManager(client, "ledger")
 
-		middleware := NewTenantMiddleware(WithPostgresPool(pool))
+		middleware := NewTenantMiddleware(WithPostgresManager(pgManager))
 		assert.True(t, middleware.Enabled())
 	})
 
-	t.Run("returns true when only MongoDB pool is set", func(t *testing.T) {
+	t.Run("returns true when only MongoDB manager is set", func(t *testing.T) {
 		client := &Client{baseURL: "http://localhost:8080"}
-		mongoPool := NewMongoPool(client, "ledger")
+		mongoManager := NewMongoManager(client, "ledger")
 
-		middleware := NewTenantMiddleware(WithMongoPool(mongoPool))
+		middleware := NewTenantMiddleware(WithMongoManager(mongoManager))
 		assert.True(t, middleware.Enabled())
 	})
 
-	t.Run("returns true when both pools are set", func(t *testing.T) {
+	t.Run("returns true when both managers are set", func(t *testing.T) {
 		client := &Client{baseURL: "http://localhost:8080"}
-		pgPool := NewPool(client, "ledger")
-		mongoPool := NewMongoPool(client, "ledger")
+		pgManager := NewPostgresManager(client, "ledger")
+		mongoManager := NewMongoManager(client, "ledger")
 
 		middleware := NewTenantMiddleware(
-			WithPostgresPool(pgPool),
-			WithMongoPool(mongoPool),
+			WithPostgresManager(pgManager),
+			WithMongoManager(mongoManager),
 		)
 		assert.True(t, middleware.Enabled())
 	})

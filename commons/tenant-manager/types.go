@@ -1,6 +1,6 @@
 // Package tenantmanager provides multi-tenant database connection management.
 // It fetches tenant-specific database credentials from Tenant Manager service
-// and manages connection pools per tenant.
+// and manages connections per tenant.
 package tenantmanager
 
 import "time"

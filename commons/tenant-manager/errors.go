@@ -17,8 +17,8 @@ var ErrModuleNotConfigured = errors.New("module not configured for service")
 // ErrConnectionNotFound is returned when no connection exists for the tenant.
 var ErrConnectionNotFound = errors.New("connection not found for tenant")
 
-// ErrPoolClosed is returned when attempting to use a closed pool.
-var ErrPoolClosed = errors.New("tenant connection pool is closed")
+// ErrManagerClosed is returned when attempting to use a closed connection manager.
+var ErrManagerClosed = errors.New("tenant connection manager is closed")
 
 // ErrTenantContextRequired is returned when no tenant context is found for a database operation.
 // This error indicates that a request attempted to access the database without proper tenant identification.

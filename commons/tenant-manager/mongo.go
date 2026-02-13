@@ -23,44 +23,44 @@ const (
 	tenantTransactionMongoKey contextKey = "tenantTransactionMongo"
 )
 
-// DefaultMongoMaxPoolSize is the default max pool size for MongoDB connections.
-const DefaultMongoMaxPoolSize uint64 = 100
+// DefaultMongoMaxConnections is the default max connections for MongoDB.
+const DefaultMongoMaxConnections uint64 = 100
 
-// MongoPool manages MongoDB connections per tenant.
-type MongoPool struct {
+// MongoManager manages MongoDB connections per tenant.
+type MongoManager struct {
 	client  *Client
 	service string
 	module  string
 	logger  log.Logger
 
-	mu     sync.RWMutex
-	pools  map[string]*mongolib.MongoConnection
-	closed bool
+	mu          sync.RWMutex
+	connections map[string]*mongolib.MongoConnection
+	closed      bool
 }
 
-// MongoPoolOption configures a MongoPool.
-type MongoPoolOption func(*MongoPool)
+// MongoOption configures a MongoManager.
+type MongoOption func(*MongoManager)
 
-// WithMongoModule sets the module name for the MongoDB pool.
-func WithMongoModule(module string) MongoPoolOption {
-	return func(p *MongoPool) {
+// WithMongoModule sets the module name for the MongoDB manager.
+func WithMongoModule(module string) MongoOption {
+	return func(p *MongoManager) {
 		p.module = module
 	}
 }
 
-// WithMongoLogger sets the logger for the MongoDB pool.
-func WithMongoLogger(logger log.Logger) MongoPoolOption {
-	return func(p *MongoPool) {
+// WithMongoLogger sets the logger for the MongoDB manager.
+func WithMongoLogger(logger log.Logger) MongoOption {
+	return func(p *MongoManager) {
 		p.logger = logger
 	}
 }
 
-// NewMongoPool creates a new MongoDB connection pool.
-func NewMongoPool(client *Client, service string, opts ...MongoPoolOption) *MongoPool {
-	p := &MongoPool{
-		client:  client,
-		service: service,
-		pools:   make(map[string]*mongolib.MongoConnection),
+// NewMongoManager creates a new MongoDB connection manager.
+func NewMongoManager(client *Client, service string, opts ...MongoOption) *MongoManager {
+	p := &MongoManager{
+		client:      client,
+		service:     service,
+		connections: make(map[string]*mongolib.MongoConnection),
 	}
 
 	for _, opt := range opts {
@@ -71,7 +71,7 @@ func NewMongoPool(client *Client, service string, opts ...MongoPoolOption) *Mong
 }
 
 // GetClient returns a MongoDB client for the tenant.
-func (p *MongoPool) GetClient(ctx context.Context, tenantID string) (*mongo.Client, error) {
+func (p *MongoManager) GetClient(ctx context.Context, tenantID string) (*mongo.Client, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant ID is required")
 	}
@@ -79,10 +79,10 @@ func (p *MongoPool) GetClient(ctx context.Context, tenantID string) (*mongo.Clie
 	p.mu.RLock()
 	if p.closed {
 		p.mu.RUnlock()
-		return nil, ErrPoolClosed
+		return nil, ErrManagerClosed
 	}
 
-	if conn, ok := p.pools[tenantID]; ok {
+	if conn, ok := p.connections[tenantID]; ok {
 		p.mu.RUnlock()
 		return conn.DB, nil
 	}
@@ -92,17 +92,17 @@ func (p *MongoPool) GetClient(ctx context.Context, tenantID string) (*mongo.Clie
 }
 
 // createClient fetches config from Tenant Manager and creates a MongoDB client.
-func (p *MongoPool) createClient(ctx context.Context, tenantID string) (*mongo.Client, error) {
+func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mongo.Client, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	// Double-check after acquiring lock
-	if conn, ok := p.pools[tenantID]; ok {
+	if conn, ok := p.connections[tenantID]; ok {
 		return conn.DB, nil
 	}
 
 	if p.closed {
-		return nil, ErrPoolClosed
+		return nil, ErrManagerClosed
 	}
 
 	// Fetch tenant config from Tenant Manager
@@ -120,10 +120,10 @@ func (p *MongoPool) createClient(ctx context.Context, tenantID string) (*mongo.C
 	// Build connection URI
 	uri := buildMongoURI(mongoConfig)
 
-	// Determine max pool size
-	maxPoolSize := DefaultMongoMaxPoolSize
+	// Determine max connections
+	maxConnections := DefaultMongoMaxConnections
 	if mongoConfig.MaxPoolSize > 0 {
-		maxPoolSize = mongoConfig.MaxPoolSize
+		maxConnections = mongoConfig.MaxPoolSize
 	}
 
 	// Create MongoConnection using lib-commons/commons/mongo pattern
@@ -131,7 +131,7 @@ func (p *MongoPool) createClient(ctx context.Context, tenantID string) (*mongo.C
 		ConnectionStringSource: uri,
 		Database:               mongoConfig.Database,
 		Logger:                 p.logger,
-		MaxPoolSize:            maxPoolSize,
+		MaxPoolSize:            maxConnections,
 	}
 
 	// Connect to MongoDB (handles client creation and ping internally)
@@ -140,13 +140,13 @@ func (p *MongoPool) createClient(ctx context.Context, tenantID string) (*mongo.C
 	}
 
 	// Cache connection
-	p.pools[tenantID] = conn
+	p.connections[tenantID] = conn
 
 	return conn.DB, nil
 }
 
 // GetDatabase returns a MongoDB database for the tenant.
-func (p *MongoPool) GetDatabase(ctx context.Context, tenantID, database string) (*mongo.Database, error) {
+func (p *MongoManager) GetDatabase(ctx context.Context, tenantID, database string) (*mongo.Database, error) {
 	client, err := p.GetClient(ctx, tenantID)
 	if err != nil {
 		return nil, err
@@ -158,7 +158,7 @@ func (p *MongoPool) GetDatabase(ctx context.Context, tenantID, database string) 
 // GetDatabaseForTenant returns the MongoDB database for a tenant by fetching the config
 // and resolving the database name automatically. This is useful when you only have the
 // tenant ID and don't know the database name in advance.
-func (p *MongoPool) GetDatabaseForTenant(ctx context.Context, tenantID string) (*mongo.Database, error) {
+func (p *MongoManager) GetDatabaseForTenant(ctx context.Context, tenantID string) (*mongo.Database, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant ID is required")
 	}
@@ -179,31 +179,31 @@ func (p *MongoPool) GetDatabaseForTenant(ctx context.Context, tenantID string) (
 }
 
 // Close closes all MongoDB connections.
-func (p *MongoPool) Close(ctx context.Context) error {
+func (p *MongoManager) Close(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.closed = true
 
 	var lastErr error
-	for tenantID, conn := range p.pools {
+	for tenantID, conn := range p.connections {
 		if conn.DB != nil {
 			if err := conn.DB.Disconnect(ctx); err != nil {
 				lastErr = err
 			}
 		}
-		delete(p.pools, tenantID)
+		delete(p.connections, tenantID)
 	}
 
 	return lastErr
 }
 
 // CloseClient closes the MongoDB client for a specific tenant.
-func (p *MongoPool) CloseClient(ctx context.Context, tenantID string) error {
+func (p *MongoManager) CloseClient(ctx context.Context, tenantID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	conn, ok := p.pools[tenantID]
+	conn, ok := p.connections[tenantID]
 	if !ok {
 		return nil
 	}
@@ -212,7 +212,7 @@ func (p *MongoPool) CloseClient(ctx context.Context, tenantID string) error {
 	if conn.DB != nil {
 		err = conn.DB.Disconnect(ctx)
 	}
-	delete(p.pools, tenantID)
+	delete(p.connections, tenantID)
 
 	return err
 }

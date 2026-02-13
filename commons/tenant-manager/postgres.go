@@ -22,9 +22,9 @@ const (
 	IsolationModeSchema = "schema"
 )
 
-// Pool manages database connections per tenant.
+// PostgresManager manages PostgreSQL database connections per tenant.
 // It fetches credentials from Tenant Manager and caches connections.
-type Pool struct {
+type PostgresManager struct {
 	client  *Client
 	service string
 	module  string
@@ -40,40 +40,40 @@ type Pool struct {
 	defaultConn *libPostgres.PostgresConnection
 }
 
-// PoolOption configures a Pool.
-type PoolOption func(*Pool)
+// PostgresOption configures a PostgresManager.
+type PostgresOption func(*PostgresManager)
 
-// WithPoolLogger sets the logger for the pool.
-func WithPoolLogger(logger libLog.Logger) PoolOption {
-	return func(p *Pool) {
+// WithPostgresLogger sets the logger for the PostgresManager.
+func WithPostgresLogger(logger libLog.Logger) PostgresOption {
+	return func(p *PostgresManager) {
 		p.logger = logger
 	}
 }
 
 // WithMaxOpenConns sets max open connections per tenant.
-func WithMaxOpenConns(n int) PoolOption {
-	return func(p *Pool) {
+func WithMaxOpenConns(n int) PostgresOption {
+	return func(p *PostgresManager) {
 		p.maxOpenConns = n
 	}
 }
 
 // WithMaxIdleConns sets max idle connections per tenant.
-func WithMaxIdleConns(n int) PoolOption {
-	return func(p *Pool) {
+func WithMaxIdleConns(n int) PostgresOption {
+	return func(p *PostgresManager) {
 		p.maxIdleConns = n
 	}
 }
 
-// WithModule sets the module name for the pool (e.g., "onboarding", "transaction").
-func WithModule(module string) PoolOption {
-	return func(p *Pool) {
+// WithModule sets the module name for the PostgresManager (e.g., "onboarding", "transaction").
+func WithModule(module string) PostgresOption {
+	return func(p *PostgresManager) {
 		p.module = module
 	}
 }
 
-// NewPool creates a new connection pool.
-func NewPool(client *Client, service string, opts ...PoolOption) *Pool {
-	p := &Pool{
+// NewPostgresManager creates a new PostgreSQL connection manager.
+func NewPostgresManager(client *Client, service string, opts ...PostgresOption) *PostgresManager {
+	p := &PostgresManager{
 		client:       client,
 		service:      service,
 		connections:  make(map[string]*libPostgres.PostgresConnection),
@@ -90,7 +90,7 @@ func NewPool(client *Client, service string, opts ...PoolOption) *Pool {
 
 // GetConnection returns a database connection for the tenant.
 // Creates a new connection if one doesn't exist.
-func (p *Pool) GetConnection(ctx context.Context, tenantID string) (*libPostgres.PostgresConnection, error) {
+func (p *PostgresManager) GetConnection(ctx context.Context, tenantID string) (*libPostgres.PostgresConnection, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant ID is required")
 	}
@@ -98,7 +98,7 @@ func (p *Pool) GetConnection(ctx context.Context, tenantID string) (*libPostgres
 	p.mu.RLock()
 	if p.closed {
 		p.mu.RUnlock()
-		return nil, ErrPoolClosed
+		return nil, ErrManagerClosed
 	}
 
 	if conn, ok := p.connections[tenantID]; ok {
@@ -111,9 +111,9 @@ func (p *Pool) GetConnection(ctx context.Context, tenantID string) (*libPostgres
 }
 
 // createConnection fetches config from Tenant Manager and creates a connection.
-func (p *Pool) createConnection(ctx context.Context, tenantID string) (*libPostgres.PostgresConnection, error) {
+func (p *PostgresManager) createConnection(ctx context.Context, tenantID string) (*libPostgres.PostgresConnection, error) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-	ctx, span := tracer.Start(ctx, "pool.create_connection")
+	ctx, span := tracer.Start(ctx, "postgres.create_connection")
 	defer span.End()
 
 	p.mu.Lock()
@@ -124,7 +124,7 @@ func (p *Pool) createConnection(ctx context.Context, tenantID string) (*libPostg
 	}
 
 	if p.closed {
-		return nil, ErrPoolClosed
+		return nil, ErrManagerClosed
 	}
 
 	// Fetch tenant config from Tenant Manager
@@ -191,7 +191,7 @@ func (p *Pool) createConnection(ctx context.Context, tenantID string) (*libPostg
 }
 
 // GetDB returns a dbresolver.DB for the tenant.
-func (p *Pool) GetDB(ctx context.Context, tenantID string) (dbresolver.DB, error) {
+func (p *PostgresManager) GetDB(ctx context.Context, tenantID string) (dbresolver.DB, error) {
 	conn, err := p.GetConnection(ctx, tenantID)
 	if err != nil {
 		return nil, err
@@ -200,8 +200,8 @@ func (p *Pool) GetDB(ctx context.Context, tenantID string) (dbresolver.DB, error
 	return conn.GetDB()
 }
 
-// Close closes all connections and marks the pool as closed.
-func (p *Pool) Close() error {
+// Close closes all connections and marks the manager as closed.
+func (p *PostgresManager) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -221,7 +221,7 @@ func (p *Pool) Close() error {
 }
 
 // CloseConnection closes the connection for a specific tenant.
-func (p *Pool) CloseConnection(tenantID string) error {
+func (p *PostgresManager) CloseConnection(tenantID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -240,8 +240,8 @@ func (p *Pool) CloseConnection(tenantID string) error {
 	return err
 }
 
-// Stats returns pool statistics.
-func (p *Pool) Stats() PoolStats {
+// Stats returns connection statistics.
+func (p *PostgresManager) Stats() PostgresStats {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -250,15 +250,15 @@ func (p *Pool) Stats() PoolStats {
 		tenantIDs = append(tenantIDs, id)
 	}
 
-	return PoolStats{
+	return PostgresStats{
 		TotalConnections: len(p.connections),
 		TenantIDs:        tenantIDs,
 		Closed:           p.closed,
 	}
 }
 
-// PoolStats contains statistics for the pool.
-type PoolStats struct {
+// PostgresStats contains statistics for the PostgresManager.
+type PostgresStats struct {
 	TotalConnections int      `json:"totalConnections"`
 	TenantIDs        []string `json:"tenantIds"`
 	Closed           bool     `json:"closed"`
@@ -282,17 +282,17 @@ func buildConnectionString(cfg *PostgreSQLConfig) string {
 	return connStr
 }
 
-// TenantConnectionPool is an alias for Pool for backward compatibility.
-type TenantConnectionPool = Pool
+// TenantConnectionManager is an alias for PostgresManager for backward compatibility.
+type TenantConnectionManager = PostgresManager
 
-// NewTenantConnectionPool is an alias for NewPool for backward compatibility.
-func NewTenantConnectionPool(client *Client, service, module string, logger libLog.Logger) *Pool {
-	return NewPool(client, service, WithPoolLogger(logger), WithModule(module))
+// NewTenantConnectionManager is an alias for NewPostgresManager for backward compatibility.
+func NewTenantConnectionManager(client *Client, service, module string, logger libLog.Logger) *PostgresManager {
+	return NewPostgresManager(client, service, WithPostgresLogger(logger), WithModule(module))
 }
 
-// WithConnectionLimits sets the connection limits for the pool.
-// Returns the pool for method chaining.
-func (p *Pool) WithConnectionLimits(maxOpen, maxIdle int) *Pool {
+// WithConnectionLimits sets the connection limits for the manager.
+// Returns the manager for method chaining.
+func (p *PostgresManager) WithConnectionLimits(maxOpen, maxIdle int) *PostgresManager {
 	p.maxOpenConns = maxOpen
 	p.maxIdleConns = maxIdle
 	return p
@@ -300,19 +300,19 @@ func (p *Pool) WithConnectionLimits(maxOpen, maxIdle int) *Pool {
 
 // WithDefaultConnection sets a default connection to use when no tenant context is available.
 // This enables backward compatibility with single-tenant deployments.
-// Returns the pool for method chaining.
-func (p *Pool) WithDefaultConnection(conn *libPostgres.PostgresConnection) *Pool {
+// Returns the manager for method chaining.
+func (p *PostgresManager) WithDefaultConnection(conn *libPostgres.PostgresConnection) *PostgresManager {
 	p.defaultConn = conn
 	return p
 }
 
 // GetDefaultConnection returns the default connection configured for single-tenant mode.
-func (p *Pool) GetDefaultConnection() *libPostgres.PostgresConnection {
+func (p *PostgresManager) GetDefaultConnection() *libPostgres.PostgresConnection {
 	return p.defaultConn
 }
 
-// IsMultiTenant returns true if the pool is configured with a Tenant Manager client.
-func (p *Pool) IsMultiTenant() bool {
+// IsMultiTenant returns true if the manager is configured with a Tenant Manager client.
+func (p *PostgresManager) IsMultiTenant() bool {
 	return p.client != nil
 }
 
@@ -322,10 +322,10 @@ func buildDSN(cfg *PostgreSQLConfig) string {
 }
 
 // CreateDirectConnection creates a direct database connection from config.
-// Useful when you have config but don't need full pool management.
+// Useful when you have config but don't need full connection management.
 func CreateDirectConnection(ctx context.Context, cfg *PostgreSQLConfig) (*sql.DB, error) {
 	connStr := buildConnectionString(cfg)
-	
+
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open connection: %w", err)

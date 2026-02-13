@@ -15,48 +15,48 @@ import (
 // It stores the connection in context for downstream handlers and repositories.
 // Supports PostgreSQL only, MongoDB only, or both databases.
 type TenantMiddleware struct {
-	pool      *Pool      // PostgreSQL pool (optional)
-	mongoPool *MongoPool // MongoDB pool (optional)
-	enabled   bool
+	postgres *PostgresManager // PostgreSQL manager (optional)
+	mongo    *MongoManager    // MongoDB manager (optional)
+	enabled  bool
 }
 
 // TenantMiddlewareOption configures a TenantMiddleware.
 type TenantMiddlewareOption func(*TenantMiddleware)
 
-// WithPostgresPool sets the PostgreSQL pool for the tenant middleware.
+// WithPostgresManager sets the PostgreSQL manager for the tenant middleware.
 // When configured, the middleware will resolve PostgreSQL connections for tenants.
-func WithPostgresPool(pool *Pool) TenantMiddlewareOption {
+func WithPostgresManager(postgres *PostgresManager) TenantMiddlewareOption {
 	return func(m *TenantMiddleware) {
-		m.pool = pool
-		m.enabled = m.pool != nil || m.mongoPool != nil
+		m.postgres = postgres
+		m.enabled = m.postgres != nil || m.mongo != nil
 	}
 }
 
-// WithMongoPool sets the MongoDB pool for the tenant middleware.
+// WithMongoManager sets the MongoDB manager for the tenant middleware.
 // When configured, the middleware will resolve MongoDB connections for tenants.
-func WithMongoPool(mongoPool *MongoPool) TenantMiddlewareOption {
+func WithMongoManager(mongo *MongoManager) TenantMiddlewareOption {
 	return func(m *TenantMiddleware) {
-		m.mongoPool = mongoPool
-		m.enabled = m.pool != nil || m.mongoPool != nil
+		m.mongo = mongo
+		m.enabled = m.postgres != nil || m.mongo != nil
 	}
 }
 
 // NewTenantMiddleware creates a new TenantMiddleware with the given options.
-// Use WithPostgresPool and/or WithMongoPool to configure which databases to use.
-// The middleware is enabled if at least one pool is configured.
+// Use WithPostgresManager and/or WithMongoManager to configure which databases to use.
+// The middleware is enabled if at least one manager is configured.
 //
 // Usage examples:
 //
 //	// PostgreSQL only
-//	mid := tenantmanager.NewTenantMiddleware(tenantmanager.WithPostgresPool(pgPool))
+//	mid := tenantmanager.NewTenantMiddleware(tenantmanager.WithPostgresManager(pgManager))
 //
 //	// MongoDB only
-//	mid := tenantmanager.NewTenantMiddleware(tenantmanager.WithMongoPool(mongoPool))
+//	mid := tenantmanager.NewTenantMiddleware(tenantmanager.WithMongoManager(mongoManager))
 //
 //	// Both PostgreSQL and MongoDB
 //	mid := tenantmanager.NewTenantMiddleware(
-//	    tenantmanager.WithPostgresPool(pgPool),
-//	    tenantmanager.WithMongoPool(mongoPool),
+//	    tenantmanager.WithPostgresManager(pgManager),
+//	    tenantmanager.WithMongoManager(mongoManager),
 //	)
 func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 	m := &TenantMiddleware{}
@@ -65,8 +65,8 @@ func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 		opt(m)
 	}
 
-	// Enable if any pool is configured
-	m.enabled = m.pool != nil || m.mongoPool != nil
+	// Enable if any manager is configured
+	m.enabled = m.postgres != nil || m.mongo != nil
 
 	return m
 }
@@ -77,7 +77,7 @@ func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 //
 // Usage in routes.go:
 //
-//	tenantMid := tenantmanager.NewTenantMiddleware(tenantPool)
+//	tenantMid := tenantmanager.NewTenantMiddleware(tenantmanager.WithPostgresManager(pgManager))
 //	f.Use(tenantMid.WithTenantDB)
 func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	// If middleware is disabled, pass through
@@ -131,9 +131,9 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	// Store tenant ID in context
 	ctx = ContextWithTenantID(ctx, tenantID)
 
-	// Handle PostgreSQL if pool is configured
-	if m.pool != nil {
-		conn, err := m.pool.GetConnection(ctx, tenantID)
+	// Handle PostgreSQL if manager is configured
+	if m.postgres != nil {
+		conn, err := m.postgres.GetConnection(ctx, tenantID)
 		if err != nil {
 			logger.Errorf("failed to get tenant PostgreSQL connection: %v", err)
 			libOpentelemetry.HandleSpanError(&span, "failed to get tenant PostgreSQL connection", err)
@@ -152,9 +152,9 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		ctx = ContextWithTenantPGConnection(ctx, db)
 	}
 
-	// Handle MongoDB if pool is configured
-	if m.mongoPool != nil {
-		mongoDB, err := m.mongoPool.GetDatabaseForTenant(ctx, tenantID)
+	// Handle MongoDB if manager is configured
+	if m.mongo != nil {
+		mongoDB, err := m.mongo.GetDatabaseForTenant(ctx, tenantID)
 		if err != nil {
 			logger.Errorf("failed to get tenant MongoDB connection: %v", err)
 			libOpentelemetry.HandleSpanError(&span, "failed to get tenant MongoDB connection", err)
