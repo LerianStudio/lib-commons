@@ -15,14 +15,6 @@ const (
 	// tenantPGConnectionKey is the context key for storing the resolved dbresolver.DB connection.
 	tenantPGConnectionKey contextKey = "tenantPGConnection"
 
-	// Module-specific PostgreSQL connection keys for multi-tenant unified mode.
-	// These keys allow each module to have its own database connection in context,
-	// solving the issue where in-process calls between modules would get the wrong connection.
-
-	// tenantOnboardingPGConnectionKey is the context key for storing the onboarding module's PostgreSQL connection.
-	tenantOnboardingPGConnectionKey contextKey = "tenantOnboardingPGConnection"
-	// tenantTransactionPGConnectionKey is the context key for storing the transaction module's PostgreSQL connection.
-	tenantTransactionPGConnectionKey contextKey = "tenantTransactionPGConnection"
 )
 
 // SetTenantIDInContext stores the tenant ID in the context.
@@ -77,40 +69,49 @@ func GetPostgresForTenant(ctx context.Context) (dbresolver.DB, error) {
 	return nil, ErrTenantContextRequired
 }
 
-// ContextWithOnboardingPGConnection stores the onboarding module's PostgreSQL connection in context.
-// This is used in multi-tenant unified mode where multiple modules run in the same process
-// and each module needs its own database connection.
+// moduleContextKey generates a dynamic context key for a given module name.
+// This allows any module to store its own PostgreSQL connection in context
+// without requiring changes to lib-commons.
+func moduleContextKey(moduleName string) contextKey {
+	return contextKey("tenantPGConnection:" + moduleName)
+}
+
+// ContextWithModulePGConnection stores a module-specific PostgreSQL connection in context.
+// moduleName identifies the module (e.g., "onboarding", "transaction").
+// This is used in multi-module processes where each module needs its own database connection
+// in context to avoid cross-module conflicts.
+func ContextWithModulePGConnection(ctx context.Context, moduleName string, db dbresolver.DB) context.Context {
+	return context.WithValue(ctx, moduleContextKey(moduleName), db)
+}
+
+// GetModulePostgresForTenant returns the module-specific PostgreSQL connection from context.
+// moduleName identifies the module (e.g., "onboarding", "transaction").
+// Returns ErrTenantContextRequired if no connection is found for the given module.
+// This function does NOT fallback to the generic tenantPGConnectionKey.
+func GetModulePostgresForTenant(ctx context.Context, moduleName string) (dbresolver.DB, error) {
+	if db, ok := ctx.Value(moduleContextKey(moduleName)).(dbresolver.DB); ok && db != nil {
+		return db, nil
+	}
+
+	return nil, ErrTenantContextRequired
+}
+
+// Deprecated: Use ContextWithModulePGConnection(ctx, "onboarding", db) instead.
 func ContextWithOnboardingPGConnection(ctx context.Context, db dbresolver.DB) context.Context {
-	return context.WithValue(ctx, tenantOnboardingPGConnectionKey, db)
+	return ContextWithModulePGConnection(ctx, "onboarding", db)
 }
 
-// ContextWithTransactionPGConnection stores the transaction module's PostgreSQL connection in context.
-// This is used in multi-tenant unified mode where multiple modules run in the same process
-// and each module needs its own database connection.
+// Deprecated: Use ContextWithModulePGConnection(ctx, "transaction", db) instead.
 func ContextWithTransactionPGConnection(ctx context.Context, db dbresolver.DB) context.Context {
-	return context.WithValue(ctx, tenantTransactionPGConnectionKey, db)
+	return ContextWithModulePGConnection(ctx, "transaction", db)
 }
 
-// GetOnboardingPostgresForTenant returns the onboarding PostgreSQL connection from context.
-// Returns ErrTenantContextRequired if not found.
-// This function does NOT fallback to the generic tenantPGConnectionKey - it strictly returns
-// only the module-specific connection. This ensures proper isolation in multi-tenant unified mode.
+// Deprecated: Use GetModulePostgresForTenant(ctx, "onboarding") instead.
 func GetOnboardingPostgresForTenant(ctx context.Context) (dbresolver.DB, error) {
-	if db, ok := ctx.Value(tenantOnboardingPGConnectionKey).(dbresolver.DB); ok && db != nil {
-		return db, nil
-	}
-
-	return nil, ErrTenantContextRequired
+	return GetModulePostgresForTenant(ctx, "onboarding")
 }
 
-// GetTransactionPostgresForTenant returns the transaction PostgreSQL connection from context.
-// Returns ErrTenantContextRequired if not found.
-// This function does NOT fallback to the generic tenantPGConnectionKey - it strictly returns
-// only the module-specific connection. This ensures proper isolation in multi-tenant unified mode.
+// Deprecated: Use GetModulePostgresForTenant(ctx, "transaction") instead.
 func GetTransactionPostgresForTenant(ctx context.Context) (dbresolver.DB, error) {
-	if db, ok := ctx.Value(tenantTransactionPGConnectionKey).(dbresolver.DB); ok && db != nil {
-		return db, nil
-	}
-
-	return nil, ErrTenantContextRequired
+	return GetModulePostgresForTenant(ctx, "transaction")
 }
