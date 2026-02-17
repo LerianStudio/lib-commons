@@ -24,6 +24,7 @@ const (
 
 // PostgresManager manages PostgreSQL database connections per tenant.
 // It fetches credentials from Tenant Manager and caches connections.
+// Credentials are provided directly by the tenant-manager settings endpoint.
 type PostgresManager struct {
 	client  *Client
 	service string
@@ -276,7 +277,7 @@ func buildConnectionString(cfg *PostgreSQLConfig) string {
 	)
 
 	if cfg.Schema != "" {
-		connStr += fmt.Sprintf(" options=-csearch_path=%s", cfg.Schema)
+		connStr += fmt.Sprintf(" options=-csearch_path=\"%s\"", cfg.Schema)
 	}
 
 	return connStr
