@@ -54,19 +54,19 @@ type mockDB struct {
 // Ensure mockDB implements dbresolver.DB interface.
 var _ dbresolver.DB = (*mockDB)(nil)
 
-func (m *mockDB) Begin() (dbresolver.Tx, error)                                        { return nil, nil }
+func (m *mockDB) Begin() (dbresolver.Tx, error) { return nil, nil }
 func (m *mockDB) BeginTx(ctx context.Context, opts *sql.TxOptions) (dbresolver.Tx, error) {
 	return nil, nil
 }
-func (m *mockDB) Close() error                                             { return nil }
-func (m *mockDB) Conn(ctx context.Context) (dbresolver.Conn, error)        { return nil, nil }
-func (m *mockDB) Driver() driver.Driver                                    { return nil }
+func (m *mockDB) Close() error                                               { return nil }
+func (m *mockDB) Conn(ctx context.Context) (dbresolver.Conn, error)          { return nil, nil }
+func (m *mockDB) Driver() driver.Driver                                      { return nil }
 func (m *mockDB) Exec(query string, args ...interface{}) (sql.Result, error) { return nil, nil }
 func (m *mockDB) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
 	return nil, nil
 }
-func (m *mockDB) Ping() error                  { return nil }
-func (m *mockDB) PingContext(ctx context.Context) error { return nil }
+func (m *mockDB) Ping() error                                   { return nil }
+func (m *mockDB) PingContext(ctx context.Context) error         { return nil }
 func (m *mockDB) Prepare(query string) (dbresolver.Stmt, error) { return nil, nil }
 func (m *mockDB) PrepareContext(ctx context.Context, query string) (dbresolver.Stmt, error) {
 	return nil, nil

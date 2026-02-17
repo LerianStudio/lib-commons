@@ -7,23 +7,19 @@ import (
 )
 
 func TestTenantConfig_GetPostgreSQLConfig(t *testing.T) {
-	t.Run("returns config for specific service and module", func(t *testing.T) {
+	t.Run("returns config for specific module", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							PostgreSQL: &PostgreSQLConfig{
-								Host: "onboarding-db.example.com",
-								Port: 5432,
-							},
-						},
-						"transaction": {
-							PostgreSQL: &PostgreSQLConfig{
-								Host: "transaction-db.example.com",
-								Port: 5432,
-							},
-						},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					PostgreSQL: &PostgreSQLConfig{
+						Host: "onboarding-db.example.com",
+						Port: 5432,
+					},
+				},
+				"transaction": {
+					PostgreSQL: &PostgreSQLConfig{
+						Host: "transaction-db.example.com",
+						Port: 5432,
 					},
 				},
 			},
@@ -40,33 +36,11 @@ func TestTenantConfig_GetPostgreSQLConfig(t *testing.T) {
 		assert.Equal(t, "transaction-db.example.com", pg.Host)
 	})
 
-	t.Run("returns nil for unknown service", func(t *testing.T) {
-		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							PostgreSQL: &PostgreSQLConfig{Host: "localhost"},
-						},
-					},
-				},
-			},
-		}
-
-		pg := config.GetPostgreSQLConfig("unknown", "onboarding")
-
-		assert.Nil(t, pg)
-	})
-
 	t.Run("returns nil for unknown module", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							PostgreSQL: &PostgreSQLConfig{Host: "localhost"},
-						},
-					},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					PostgreSQL: &PostgreSQLConfig{Host: "localhost"},
 				},
 			},
 		}
@@ -78,13 +52,9 @@ func TestTenantConfig_GetPostgreSQLConfig(t *testing.T) {
 
 	t.Run("returns first config when module is empty", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							PostgreSQL: &PostgreSQLConfig{Host: "localhost"},
-						},
-					},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					PostgreSQL: &PostgreSQLConfig{Host: "localhost"},
 				},
 			},
 		}
@@ -103,45 +73,50 @@ func TestTenantConfig_GetPostgreSQLConfig(t *testing.T) {
 		assert.Nil(t, pg)
 	})
 
-	t.Run("returns nil when services is nil", func(t *testing.T) {
+	t.Run("service parameter is ignored in flat format", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					PostgreSQL: &PostgreSQLConfig{Host: "localhost"},
+				},
 			},
 		}
 
-		pg := config.GetPostgreSQLConfig("ledger", "onboarding")
+		// Different service names should all find the same module
+		pg1 := config.GetPostgreSQLConfig("ledger", "onboarding")
+		pg2 := config.GetPostgreSQLConfig("audit", "onboarding")
+		pg3 := config.GetPostgreSQLConfig("", "onboarding")
 
-		assert.Nil(t, pg)
+		assert.NotNil(t, pg1)
+		assert.NotNil(t, pg2)
+		assert.NotNil(t, pg3)
+		assert.Equal(t, pg1, pg2)
+		assert.Equal(t, pg2, pg3)
 	})
 }
 
 func TestTenantConfig_GetPostgreSQLReplicaConfig(t *testing.T) {
-	t.Run("returns replica config for specific service and module", func(t *testing.T) {
+	t.Run("returns replica config for specific module", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							PostgreSQL: &PostgreSQLConfig{
-								Host: "primary-db.example.com",
-								Port: 5432,
-							},
-							PostgreSQLReplica: &PostgreSQLConfig{
-								Host: "replica-db.example.com",
-								Port: 5433,
-							},
-						},
-						"transaction": {
-							PostgreSQL: &PostgreSQLConfig{
-								Host: "transaction-primary.example.com",
-								Port: 5432,
-							},
-							PostgreSQLReplica: &PostgreSQLConfig{
-								Host: "transaction-replica.example.com",
-								Port: 5433,
-							},
-						},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					PostgreSQL: &PostgreSQLConfig{
+						Host: "primary-db.example.com",
+						Port: 5432,
+					},
+					PostgreSQLReplica: &PostgreSQLConfig{
+						Host: "replica-db.example.com",
+						Port: 5433,
+					},
+				},
+				"transaction": {
+					PostgreSQL: &PostgreSQLConfig{
+						Host: "transaction-primary.example.com",
+						Port: 5432,
+					},
+					PostgreSQLReplica: &PostgreSQLConfig{
+						Host: "transaction-replica.example.com",
+						Port: 5433,
 					},
 				},
 			},
@@ -161,17 +136,13 @@ func TestTenantConfig_GetPostgreSQLReplicaConfig(t *testing.T) {
 
 	t.Run("returns nil when replica not configured", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							PostgreSQL: &PostgreSQLConfig{
-								Host: "primary-db.example.com",
-								Port: 5432,
-							},
-							// No PostgreSQLReplica configured
-						},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					PostgreSQL: &PostgreSQLConfig{
+						Host: "primary-db.example.com",
+						Port: 5432,
 					},
+					// No PostgreSQLReplica configured
 				},
 			},
 		}
@@ -181,33 +152,11 @@ func TestTenantConfig_GetPostgreSQLReplicaConfig(t *testing.T) {
 		assert.Nil(t, replica)
 	})
 
-	t.Run("returns nil for unknown service", func(t *testing.T) {
-		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							PostgreSQLReplica: &PostgreSQLConfig{Host: "replica.example.com"},
-						},
-					},
-				},
-			},
-		}
-
-		replica := config.GetPostgreSQLReplicaConfig("unknown", "onboarding")
-
-		assert.Nil(t, replica)
-	})
-
 	t.Run("returns nil for unknown module", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							PostgreSQLReplica: &PostgreSQLConfig{Host: "replica.example.com"},
-						},
-					},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					PostgreSQLReplica: &PostgreSQLConfig{Host: "replica.example.com"},
 				},
 			},
 		}
@@ -219,13 +168,9 @@ func TestTenantConfig_GetPostgreSQLReplicaConfig(t *testing.T) {
 
 	t.Run("returns first replica config when module is empty", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							PostgreSQLReplica: &PostgreSQLConfig{Host: "replica.example.com"},
-						},
-					},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					PostgreSQLReplica: &PostgreSQLConfig{Host: "replica.example.com"},
 				},
 			},
 		}
@@ -243,40 +188,24 @@ func TestTenantConfig_GetPostgreSQLReplicaConfig(t *testing.T) {
 
 		assert.Nil(t, replica)
 	})
-
-	t.Run("returns nil when services is nil", func(t *testing.T) {
-		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {},
-			},
-		}
-
-		replica := config.GetPostgreSQLReplicaConfig("ledger", "onboarding")
-
-		assert.Nil(t, replica)
-	})
 }
 
 func TestTenantConfig_GetMongoDBConfig(t *testing.T) {
-	t.Run("returns config for specific service and module", func(t *testing.T) {
+	t.Run("returns config for specific module", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							MongoDB: &MongoDBConfig{
-								Host:     "onboarding-mongo.example.com",
-								Port:     27017,
-								Database: "onboarding_db",
-							},
-						},
-						"transaction": {
-							MongoDB: &MongoDBConfig{
-								Host:     "transaction-mongo.example.com",
-								Port:     27017,
-								Database: "transaction_db",
-							},
-						},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					MongoDB: &MongoDBConfig{
+						Host:     "onboarding-mongo.example.com",
+						Port:     27017,
+						Database: "onboarding_db",
+					},
+				},
+				"transaction": {
+					MongoDB: &MongoDBConfig{
+						Host:     "transaction-mongo.example.com",
+						Port:     27017,
+						Database: "transaction_db",
 					},
 				},
 			},
@@ -295,33 +224,11 @@ func TestTenantConfig_GetMongoDBConfig(t *testing.T) {
 		assert.Equal(t, "transaction_db", mongo.Database)
 	})
 
-	t.Run("returns nil for unknown service", func(t *testing.T) {
-		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							MongoDB: &MongoDBConfig{Host: "localhost"},
-						},
-					},
-				},
-			},
-		}
-
-		mongo := config.GetMongoDBConfig("unknown", "onboarding")
-
-		assert.Nil(t, mongo)
-	})
-
 	t.Run("returns nil for unknown module", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							MongoDB: &MongoDBConfig{Host: "localhost"},
-						},
-					},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					MongoDB: &MongoDBConfig{Host: "localhost"},
 				},
 			},
 		}
@@ -333,13 +240,9 @@ func TestTenantConfig_GetMongoDBConfig(t *testing.T) {
 
 	t.Run("returns first config when module is empty", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							MongoDB: &MongoDBConfig{Host: "localhost", Database: "test_db"},
-						},
-					},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					MongoDB: &MongoDBConfig{Host: "localhost", Database: "test_db"},
 				},
 			},
 		}
@@ -352,18 +255,6 @@ func TestTenantConfig_GetMongoDBConfig(t *testing.T) {
 
 	t.Run("returns nil when databases is nil", func(t *testing.T) {
 		config := &TenantConfig{}
-
-		mongo := config.GetMongoDBConfig("ledger", "onboarding")
-
-		assert.Nil(t, mongo)
-	})
-
-	t.Run("returns nil when services is nil", func(t *testing.T) {
-		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {},
-			},
-		}
 
 		mongo := config.GetMongoDBConfig("ledger", "onboarding")
 

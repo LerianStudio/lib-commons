@@ -66,27 +66,22 @@ func TestClient_GetTenantConfig(t *testing.T) {
 			Service:       "ledger",
 			Status:        "active",
 			IsolationMode: "database",
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							PostgreSQL: &PostgreSQLConfig{
-								Host:     "localhost",
-								Port:     5432,
-								Database: "test_db",
-								Username: "user",
-								Password: "pass",
-								SSLMode:  "disable",
-							},
-						},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					PostgreSQL: &PostgreSQLConfig{
+						Host:     "localhost",
+						Port:     5432,
+						Database: "test_db",
+						Username: "user",
+						Password: "pass",
+						SSLMode:  "disable",
 					},
 				},
 			},
 		}
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.Equal(t, "/tenants/tenant-123/settings", r.URL.Path)
-			assert.Equal(t, "ledger", r.URL.Query().Get("service"))
+			assert.Equal(t, "/tenants/tenant-123/services/ledger/settings", r.URL.Path)
 
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(config)

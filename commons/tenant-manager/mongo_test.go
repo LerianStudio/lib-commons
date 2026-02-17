@@ -108,4 +108,3 @@ func TestMongoManager_GetDatabaseForTenant_NoTenantID(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "tenant ID is required")
 }
-

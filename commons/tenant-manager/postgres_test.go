@@ -152,20 +152,16 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 
 	t.Run("fallback to primary when replica not configured", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							PostgreSQL: &PostgreSQLConfig{
-								Host:     "primary-host",
-								Port:     5432,
-								Username: "user",
-								Password: "pass",
-								Database: "testdb",
-							},
-							// No PostgreSQLReplica configured
-						},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					PostgreSQL: &PostgreSQLConfig{
+						Host:     "primary-host",
+						Port:     5432,
+						Username: "user",
+						Password: "pass",
+						Database: "testdb",
 					},
+					// No PostgreSQLReplica configured
 				},
 			},
 		}
@@ -189,25 +185,21 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 
 	t.Run("uses replica config when available", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							PostgreSQL: &PostgreSQLConfig{
-								Host:     "primary-host",
-								Port:     5432,
-								Username: "user",
-								Password: "pass",
-								Database: "testdb",
-							},
-							PostgreSQLReplica: &PostgreSQLConfig{
-								Host:     "replica-host",
-								Port:     5433,
-								Username: "user",
-								Password: "pass",
-								Database: "testdb",
-							},
-						},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					PostgreSQL: &PostgreSQLConfig{
+						Host:     "primary-host",
+						Port:     5432,
+						Username: "user",
+						Password: "pass",
+						Database: "testdb",
+					},
+					PostgreSQLReplica: &PostgreSQLConfig{
+						Host:     "replica-host",
+						Port:     5433,
+						Username: "user",
+						Password: "pass",
+						Database: "testdb",
 					},
 				},
 			},
@@ -233,25 +225,21 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 
 	t.Run("handles replica with different database name", func(t *testing.T) {
 		config := &TenantConfig{
-			Databases: map[string]ServiceDatabaseConfig{
-				"ledger": {
-					Services: map[string]DatabaseConfig{
-						"onboarding": {
-							PostgreSQL: &PostgreSQLConfig{
-								Host:     "primary-host",
-								Port:     5432,
-								Username: "user",
-								Password: "pass",
-								Database: "primary_db",
-							},
-							PostgreSQLReplica: &PostgreSQLConfig{
-								Host:     "replica-host",
-								Port:     5433,
-								Username: "user",
-								Password: "pass",
-								Database: "replica_db",
-							},
-						},
+			Databases: map[string]DatabaseConfig{
+				"onboarding": {
+					PostgreSQL: &PostgreSQLConfig{
+						Host:     "primary-host",
+						Port:     5432,
+						Username: "user",
+						Password: "pass",
+						Database: "primary_db",
+					},
+					PostgreSQLReplica: &PostgreSQLConfig{
+						Host:     "replica-host",
+						Port:     5433,
+						Username: "user",
+						Password: "pass",
+						Database: "replica_db",
 					},
 				},
 			},
