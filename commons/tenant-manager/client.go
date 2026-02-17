@@ -62,15 +62,15 @@ func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) *Clie
 }
 
 // GetTenantConfig fetches tenant configuration from the Tenant Manager API.
-// The API endpoint is: GET {baseURL}/tenants/{tenantID}/settings?service={service}
+// The API endpoint is: GET {baseURL}/tenants/{tenantID}/services/{service}/settings
 // Returns the fully resolved tenant configuration with database credentials.
 func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) (*TenantConfig, error) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_tenant_config")
 	defer span.End()
 
-	// Build the URL with service query parameter
-	url := fmt.Sprintf("%s/tenants/%s/settings?service=%s", c.baseURL, tenantID, service)
+	// Build the URL with service as path parameter
+	url := fmt.Sprintf("%s/tenants/%s/services/%s/settings", c.baseURL, tenantID, service)
 
 	logger.Infof("Fetching tenant config: tenantID=%s, service=%s", tenantID, service)
 

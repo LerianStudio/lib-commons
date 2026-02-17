@@ -14,7 +14,6 @@ const (
 	tenantIDKey contextKey = "tenantID"
 	// tenantPGConnectionKey is the context key for storing the resolved dbresolver.DB connection.
 	tenantPGConnectionKey contextKey = "tenantPGConnection"
-
 )
 
 // SetTenantIDInContext stores the tenant ID in the context.

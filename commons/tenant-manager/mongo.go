@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"sync"
 
+	libCommons "github.com/LerianStudio/lib-commons/v2/commons"
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	mongolib "github.com/LerianStudio/lib-commons/v2/commons/mongo"
+	libOpentelemetry "github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
@@ -17,6 +19,7 @@ const tenantMongoKey contextKey = "tenantMongo"
 const DefaultMongoMaxConnections uint64 = 100
 
 // MongoManager manages MongoDB connections per tenant.
+// Credentials are provided directly by the tenant-manager settings endpoint.
 type MongoManager struct {
 	client  *Client
 	service string
@@ -83,6 +86,10 @@ func (p *MongoManager) GetClient(ctx context.Context, tenantID string) (*mongo.C
 
 // createClient fetches config from Tenant Manager and creates a MongoDB client.
 func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mongo.Client, error) {
+	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	ctx, span := tracer.Start(ctx, "mongo.create_client")
+	defer span.End()
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -98,12 +105,17 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 	// Fetch tenant config from Tenant Manager
 	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
 	if err != nil {
+		logger.Errorf("failed to get tenant config: %v", err)
+		libOpentelemetry.HandleSpanError(&span, "failed to get tenant config", err)
+
 		return nil, fmt.Errorf("failed to get tenant config: %w", err)
 	}
 
 	// Get MongoDB config
 	mongoConfig := config.GetMongoDBConfig(p.service, p.module)
 	if mongoConfig == nil {
+		logger.Errorf("no MongoDB config for tenant %s service %s module %s", tenantID, p.service, p.module)
+
 		return nil, ErrServiceNotConfigured
 	}
 
@@ -281,4 +293,3 @@ func GetMongoForTenant(ctx context.Context) (*mongo.Database, error) {
 
 	return nil, ErrTenantContextRequired
 }
-
