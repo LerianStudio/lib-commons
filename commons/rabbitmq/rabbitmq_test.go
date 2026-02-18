@@ -1,17 +1,20 @@
+// Copyright (c) 2026 Lerian Studio. All rights reserved.
+// Use of this source code is governed by the Elastic License 2.0
+// that can be found in the LICENSE file.
+
 package rabbitmq
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"github.com/stretchr/testify/assert"
 )
-
-// Mock for amqp.Channel
-type mockAMQPChannel struct{}
 
 // mockRabbitMQConnection extends RabbitMQConnection to allow mocking for tests
 type mockRabbitMQConnection struct {
@@ -362,4 +365,168 @@ func TestBuildRabbitMQConnectionString(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// TestEnsureChannelWithContext_ReturnsErrorOnCancelledContext verifies that
+// EnsureChannelWithContext respects context cancellation.
+func TestEnsureChannelWithContext_ReturnsErrorOnCancelledContext(t *testing.T) {
+	logger := &log.GoLogger{Level: log.InfoLevel}
+
+	conn := &RabbitMQConnection{
+		ConnectionStringSource: "amqp://guest:guest@localhost:5999", // Unreachable
+		Logger:                 logger,
+	}
+
+	// Create already cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := conn.EnsureChannelWithContext(ctx)
+
+	// Should return context.Canceled error
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestEnsureChannelWithContext_ReturnsErrorOnDeadlineExceeded(t *testing.T) {
+	logger := &log.GoLogger{Level: log.InfoLevel}
+
+	conn := &RabbitMQConnection{
+		ConnectionStringSource: "amqp://guest:guest@localhost:5999", // Unreachable
+		Logger:                 logger,
+	}
+
+	// Create context with very short deadline that's already expired
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
+	defer cancel()
+	time.Sleep(10 * time.Millisecond) // Let deadline expire
+
+	err := conn.EnsureChannelWithContext(ctx)
+
+	// Should return context.DeadlineExceeded error
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func TestEnsureChannelWithContext_TimeoutDuringDial(t *testing.T) {
+	logger := &log.GoLogger{Level: log.InfoLevel}
+
+	conn := &RabbitMQConnection{
+		// Use a non-routable IP to ensure connection hangs (doesn't immediately fail)
+		ConnectionStringSource: "amqp://guest:guest@10.255.255.1:5672",
+		Logger:                 logger,
+	}
+
+	// Use short timeout - this should NOT take 30 seconds
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := conn.EnsureChannelWithContext(ctx)
+	elapsed := time.Since(start)
+
+	// Should fail with context deadline exceeded or i/o timeout
+	assert.Error(t, err)
+
+	// Should complete within reasonable time (not 30 seconds)
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"EnsureChannelWithContext should respect context timeout, took %v", elapsed)
+}
+
+func TestEnsureChannelWithContext_UsesConnectionTimeoutField(t *testing.T) {
+	logger := &log.GoLogger{Level: log.InfoLevel}
+
+	conn := &RabbitMQConnection{
+		// Use non-routable IP to ensure connection hangs
+		ConnectionStringSource: "amqp://guest:guest@10.255.255.1:5672",
+		Logger:                 logger,
+		ConnectionTimeout:      50 * time.Millisecond, // Short custom timeout
+	}
+
+	// Use context without deadline - should use ConnectionTimeout field
+	ctx := context.Background()
+
+	start := time.Now()
+	err := conn.EnsureChannelWithContext(ctx)
+	elapsed := time.Since(start)
+
+	// Should fail with connection error
+	assert.Error(t, err)
+
+	// Should complete around ConnectionTimeout duration (with some buffer)
+	assert.Less(t, elapsed, 200*time.Millisecond,
+		"Should respect ConnectionTimeout field, took %v", elapsed)
+	assert.Greater(t, elapsed, 40*time.Millisecond,
+		"Should take at least ConnectionTimeout duration, took %v", elapsed)
+}
+
+func TestEnsureChannelWithContext_ChecksContextAfterLockAcquisition(t *testing.T) {
+	logger := &log.GoLogger{Level: log.InfoLevel}
+
+	conn := &RabbitMQConnection{
+		// Use non-routable IP so connection hangs until context is cancelled
+		ConnectionStringSource: "amqp://guest:guest@10.255.255.1:5672",
+		Logger:                 logger,
+	}
+
+	// Create context that we'll cancel after a short delay
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Start goroutine that cancels context after a tiny delay
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+
+	// Call should detect cancellation and return quickly
+	start := time.Now()
+	err := conn.EnsureChannelWithContext(ctx)
+	elapsed := time.Since(start)
+
+	// Should return an error (context.Canceled or connection error)
+	assert.Error(t, err)
+
+	// Should complete quickly due to context cancellation (not 30 seconds)
+	assert.Less(t, elapsed, 200*time.Millisecond,
+		"Should detect context cancellation quickly, took %v", elapsed)
+}
+
+// TestEnsureChannelWithContext_ChecksContextBeforeChannelCreation verifies that
+// context is checked before calling Channel() when connection already exists.
+// This test requires a real RabbitMQ connection to fully exercise the code path
+// where connection exists but channel needs to be created.
+func TestEnsureChannelWithContext_ChecksContextBeforeChannelCreation(t *testing.T) {
+	t.Run("context_canceled_before_channel_with_nil_connection", func(t *testing.T) {
+		// This test verifies that a pre-canceled context returns immediately
+		// even when the connection would need to be established first.
+		// The context check before Channel() provides defense-in-depth for cases
+		// where an existing connection is reused but context was canceled.
+		logger := &log.GoLogger{Level: log.InfoLevel}
+
+		conn := &RabbitMQConnection{
+			ConnectionStringSource: "amqp://guest:guest@localhost:5672",
+			Logger:                 logger,
+		}
+
+		// Pre-cancel context
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := conn.EnsureChannelWithContext(ctx)
+
+		// Should return context.Canceled from the first check (before lock)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("integration_test_with_real_connection", func(t *testing.T) {
+		// Skip in unit tests - this would require a real RabbitMQ instance
+		// to establish a connection, then cancel context before Channel() call.
+		//
+		// To fully test the context check before Channel():
+		// 1. Establish a real connection to RabbitMQ
+		// 2. Set rc.Connection to the valid connection
+		// 3. Ensure rc.Channel is nil (needs channel creation)
+		// 4. Cancel context
+		// 5. Call EnsureChannelWithContext
+		// 6. Verify it returns context.Canceled without calling Channel()
+		t.Skip("Requires integration testing with a real RabbitMQ instance")
+	})
 }

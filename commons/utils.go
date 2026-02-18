@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Lerian Studio. All rights reserved.
+// Use of this source code is governed by the Elastic License 2.0
+// that can be found in the LICENSE file.
+
 package commons
 
 import (
@@ -249,7 +253,7 @@ type SyscmdI interface {
 type Syscmd struct{}
 
 func (r *Syscmd) ExecCmd(name string, arg ...string) ([]byte, error) {
-	return exec.Command(name, arg...).Output()
+	return exec.Command(name, arg...).Output() //#nosec G204 -- Generic command wrapper; caller responsible for safe usage
 }
 
 // GetCPUUsage get the current CPU usage

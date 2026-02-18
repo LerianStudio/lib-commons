@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Lerian Studio. All rights reserved.
+// Use of this source code is governed by the Elastic License 2.0
+// that can be found in the LICENSE file.
+
 package http
 
 import (
@@ -23,5 +27,5 @@ func ServeReverseProxy(target string, res http.ResponseWriter, req *http.Request
 	req.Header.Set(constant.HeaderForwardedHost, req.Header.Get(constant.HeaderHost))
 	req.Host = targetURL.Host
 
-	proxy.ServeHTTP(res, req)
+	proxy.ServeHTTP(res, req) //#nosec G704 -- target URL is application-configured, not user input
 }
