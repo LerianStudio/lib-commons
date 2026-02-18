@@ -129,6 +129,24 @@ go get github.com/LerianStudio/lib-commons/v2
 | `RabbitMQConnection.Publish(exchange, routingKey, body)`    | Publishes a message                |
 | `RabbitMQConnection.Consume(queue, consumer)`               | Consumes messages from a queue     |
 
+### Multi-Tenant
+
+#### Tenant Manager (`commons/tenant-manager`)
+
+| Method                                                  | Description                                                    |
+| ------------------------------------------------------- | -------------------------------------------------------------- |
+| `NewMultiTenantConsumer(rabbitmq, redis, config, log)` | Creates a new multi-tenant consumer in lazy mode               |
+| `MultiTenantConsumer.Register(queue, handler)`         | Registers a message handler for a queue                        |
+| `MultiTenantConsumer.Run(ctx)`                         | Discovers tenants (lazy, non-blocking) and starts sync loop    |
+| `MultiTenantConsumer.EnsureConsumerStarted(ctx, id)`   | Spawns consumer on-demand with double-check locking            |
+| `MultiTenantConsumer.Stats()`                          | Returns enhanced stats (ConnectionMode, Known, Pending, etc.)  |
+| `MultiTenantConsumer.IsDegraded(tenantID)`             | Returns true if tenant has 3+ consecutive connection failures  |
+| `MultiTenantConsumer.Close()`                          | Stops all consumers and marks consumer as closed               |
+| `SetTenantIDInContext(ctx, tenantID)`                  | Stores tenant ID in context                                    |
+| `GetTenantIDFromContext(ctx)`                          | Retrieves tenant ID from context                               |
+| `GetPostgresForTenant(ctx)`                            | Returns PostgreSQL connection for current tenant               |
+| `GetModulePostgresForTenant(ctx, module)`              | Returns module-specific PostgreSQL connection from context      |
+
 ### Observability
 
 #### Logging (`commons/log`)

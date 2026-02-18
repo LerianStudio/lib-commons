@@ -55,6 +55,22 @@ func TestNewClient(t *testing.T) {
 
 		assert.Equal(t, customClient, client.httpClient)
 	})
+
+	t.Run("WithHTTPClient_nil_preserves_default", func(t *testing.T) {
+		client := NewClient("http://localhost:8080", &mockLogger{}, WithHTTPClient(nil))
+
+		assert.NotNil(t, client.httpClient, "nil HTTPClient should be ignored, default preserved")
+		assert.Equal(t, 30*time.Second, client.httpClient.Timeout)
+	})
+
+	t.Run("WithTimeout_after_nil_HTTPClient_does_not_panic", func(t *testing.T) {
+		assert.NotPanics(t, func() {
+			NewClient("http://localhost:8080", &mockLogger{},
+				WithHTTPClient(nil),
+				WithTimeout(45*time.Second),
+			)
+		})
+	})
 }
 
 func TestClient_GetTenantConfig(t *testing.T) {
@@ -84,7 +100,7 @@ func TestClient_GetTenantConfig(t *testing.T) {
 			assert.Equal(t, "/tenants/tenant-123/services/ledger/settings", r.URL.Path)
 
 			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(config)
+			require.NoError(t, json.NewEncoder(w).Encode(config))
 		}))
 		defer server.Close()
 
