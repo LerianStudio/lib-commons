@@ -1,9 +1,4 @@
-## [3.0.0](https://github.com/LerianStudio/lib-commons/compare/v2.5.0...v3.0.0) (2026-02-17)
-
-### BREAKING CHANGES
-
-* **tenant-manager:** `MultiTenantConsumerStats` struct now includes additional fields (`ConnectionMode`, `KnownTenants`, `KnownTenantIDs`, `PendingTenants`, `PendingTenantIDs`, `DegradedTenants`). Code that unmarshals or structurally compares this type may need updates.
-* **tenant-manager:** `MultiTenantConsumer.Run()` now operates in lazy mode only. Consumers are no longer started during `Run()` or `syncTenants()`. Use `EnsureConsumerStarted()` to spawn consumers on-demand.
+## [2.6.0](https://github.com/LerianStudio/lib-commons/compare/v2.5.0...v2.6.0) (2026-02-17)
 
 ### Features
 
