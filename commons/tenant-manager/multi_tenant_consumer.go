@@ -18,6 +18,12 @@ import (
 // maxTenantIDLength is the maximum allowed length for a tenant ID.
 const maxTenantIDLength = 256
 
+// absentSyncsBeforeRemoval is the number of consecutive syncs a tenant can be
+// missing from the fetched list before it is removed from knownTenants and
+// any active consumer is stopped. Prevents transient incomplete fetches from
+// purging tenants immediately.
+const absentSyncsBeforeRemoval = 3
+
 // validTenantIDPattern enforces a character whitelist for tenant IDs.
 // Only alphanumeric characters, hyphens, and underscores are allowed.
 var validTenantIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
@@ -63,21 +69,62 @@ type MultiTenantConfig struct {
 	// When set together with Service, the Redis key becomes:
 	// "tenant-manager:tenants:active:{Environment}:{Service}"
 	Environment string
+
+	// DiscoveryTimeout is the maximum time allowed for the initial tenant discovery
+	// (fetching tenant IDs at startup). If zero, 500ms is used. Increase this for
+	// high-latency or loaded environments where Redis or the tenant-manager API
+	// may respond slowly; discovery is best-effort and the sync loop will retry.
+	// Default: 500ms
+	DiscoveryTimeout time.Duration
 }
 
 // DefaultMultiTenantConfig returns a MultiTenantConfig with sensible defaults.
 func DefaultMultiTenantConfig() MultiTenantConfig {
 	return MultiTenantConfig{
-		SyncInterval:    30 * time.Second,
-		WorkersPerQueue: 1,
-		PrefetchCount:   10,
+		SyncInterval:      30 * time.Second,
+		WorkersPerQueue:   1,
+		PrefetchCount:     10,
+		DiscoveryTimeout: 500 * time.Millisecond,
 	}
 }
 
 // retryStateEntry holds per-tenant retry state for connection failure resilience.
 type retryStateEntry struct {
+	mu         sync.Mutex
 	retryCount int
 	degraded   bool
+}
+
+// reset clears retry counters and degraded flag. Must be called with no other goroutine
+// holding the entry's mutex (e.g. after Load from sync.Map).
+func (e *retryStateEntry) reset() {
+	e.mu.Lock()
+	e.retryCount = 0
+	e.degraded = false
+	e.mu.Unlock()
+}
+
+// isDegraded returns whether the tenant is marked degraded.
+func (e *retryStateEntry) isDegraded() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.degraded
+}
+
+// incRetryAndMaybeMarkDegraded increments retry count, optionally marks degraded if count >= max,
+// and returns the backoff delay and current retry count. justMarkedDegraded is true only when
+// the entry was not degraded and is now marked degraded by this call.
+func (e *retryStateEntry) incRetryAndMaybeMarkDegraded(maxBeforeDegraded int) (delay time.Duration, retryCount int, justMarkedDegraded bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delay = backoffDelay(e.retryCount)
+	e.retryCount++
+	prev := e.degraded
+	if e.retryCount >= maxBeforeDegraded {
+		e.degraded = true
+	}
+	justMarkedDegraded = !prev && e.degraded
+	return delay, e.retryCount, justMarkedDegraded
 }
 
 // MultiTenantConsumerOption configures a MultiTenantConsumer.
@@ -109,7 +156,10 @@ type MultiTenantConsumer struct {
 	handlers     map[string]HandlerFunc
 	tenants      map[string]context.CancelFunc // Active tenant goroutines
 	knownTenants map[string]bool               // Discovered tenants (lazy mode: populated without starting consumers)
-	config       MultiTenantConfig
+	// tenantAbsenceCount tracks consecutive syncs each tenant was missing from the fetched list.
+	// Used to avoid removing tenants on a single transient incomplete fetch.
+	tenantAbsenceCount map[string]int
+	config             MultiTenantConfig
 	mu           sync.RWMutex
 	logger       libLog.Logger
 	closed       bool
@@ -165,13 +215,14 @@ func NewMultiTenantConsumer(
 	}
 
 	consumer := &MultiTenantConsumer{
-		rabbitmq:     rabbitmq,
-		redisClient:  redisClient,
-		handlers:     make(map[string]HandlerFunc),
-		tenants:      make(map[string]context.CancelFunc),
-		knownTenants: make(map[string]bool),
-		config:       config,
-		logger:       logger,
+		rabbitmq:           rabbitmq,
+		redisClient:        redisClient,
+		handlers:           make(map[string]HandlerFunc),
+		tenants:            make(map[string]context.CancelFunc),
+		knownTenants:       make(map[string]bool),
+		tenantAbsenceCount: make(map[string]int),
+		config:             config,
+		logger:             logger,
 	}
 
 	// Apply optional configurations
@@ -236,7 +287,10 @@ func (c *MultiTenantConsumer) discoverTenants(ctx context.Context) {
 
 	// Apply a short timeout to prevent blocking startup when infrastructure is down.
 	// Discovery is best-effort; the background sync loop will retry periodically.
-	discoveryTimeout := 500 * time.Millisecond
+	discoveryTimeout := c.config.DiscoveryTimeout
+	if discoveryTimeout == 0 {
+		discoveryTimeout = 500 * time.Millisecond
+	}
 	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 
@@ -298,11 +352,13 @@ func (c *MultiTenantConsumer) runSyncIteration(ctx context.Context) {
 // syncTenants fetches tenant IDs and updates the known tenant registry.
 // In lazy mode, new tenants are added to knownTenants but consumers are NOT started.
 // Consumer spawning is deferred to on-demand triggers (e.g., ensureConsumerStarted).
-// Removed tenants are cleaned from knownTenants and any active consumers are stopped.
-// Error handling behavior: if fetchTenantIDs fails, syncTenants returns the error
-// immediately without modifying the current tenant state. This ensures that a transient
-// Redis/API failure does not remove existing consumers. The caller (runSyncIteration)
-// logs the failure and continues retrying on the next sync interval.
+// Tenants missing from the fetched list are retained in knownTenants for up to
+// absentSyncsBeforeRemoval consecutive syncs; only after that threshold are they
+// removed from knownTenants and any active consumers stopped. This avoids purging
+// tenants on a single transient incomplete fetch.
+// Error handling: if fetchTenantIDs fails, syncTenants returns the error immediately
+// without modifying the current tenant state. The caller (runSyncIteration) logs
+// the failure and continues retrying on the next sync interval.
 func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.sync_tenants")
@@ -340,26 +396,43 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 		return fmt.Errorf("consumer is closed")
 	}
 
-	// Update knownTenants with discovered tenant IDs
-	// This rebuilds the map each sync to reflect the current state
-	c.knownTenants = make(map[string]bool, len(currentTenants))
-	for id := range currentTenants {
-		c.knownTenants[id] = true
+	// Snapshot previous known tenants so we can retain those missing briefly from the fetch.
+	previousKnown := make(map[string]bool, len(c.knownTenants))
+	for id := range c.knownTenants {
+		previousKnown[id] = true
 	}
+
+	// Build new knownTenants: all currently fetched plus any previously known that are
+	// missing for fewer than absentSyncsBeforeRemoval consecutive syncs.
+	newKnown := make(map[string]bool, len(currentTenants)+len(previousKnown))
+	var removedTenants []string
+
+	for id := range currentTenants {
+		newKnown[id] = true
+		c.tenantAbsenceCount[id] = 0
+	}
+	for id := range previousKnown {
+		if currentTenants[id] {
+			continue
+		}
+		abs := c.tenantAbsenceCount[id] + 1
+		c.tenantAbsenceCount[id] = abs
+		if abs < absentSyncsBeforeRemoval {
+			newKnown[id] = true
+		} else {
+			delete(c.tenantAbsenceCount, id)
+			if _, running := c.tenants[id]; running {
+				removedTenants = append(removedTenants, id)
+			}
+		}
+	}
+	c.knownTenants = newKnown
 
 	// Identify NEW tenants (in current list but not running)
 	var newTenants []string
 	for _, tenantID := range validTenantIDs {
 		if _, exists := c.tenants[tenantID]; !exists {
 			newTenants = append(newTenants, tenantID)
-		}
-	}
-
-	// Identify REMOVED tenants (running but not in current list)
-	var removedTenants []string
-	for tenantID := range c.tenants {
-		if !currentTenants[tenantID] {
-			removedTenants = append(removedTenants, tenantID)
 		}
 	}
 
@@ -622,16 +695,12 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 	// Get channel for this tenant's vhost
 	ch, err := c.rabbitmq.GetChannel(connCtx, tenantID)
 	if err != nil {
-		delay := backoffDelay(state.retryCount)
-		state.retryCount++
-
-		if state.retryCount >= maxRetryBeforeDegraded && !state.degraded {
-			state.degraded = true
-			logger.Warnf("tenant %s marked as degraded after %d consecutive failures", tenantID, state.retryCount)
+		delay, retryCount, justMarkedDegraded := state.incRetryAndMaybeMarkDegraded(maxRetryBeforeDegraded)
+		if justMarkedDegraded {
+			logger.Warnf("tenant %s marked as degraded after %d consecutive failures", tenantID, retryCount)
 		}
-
 		logger.Warnf("failed to get channel for tenant %s, retrying in %s (attempt %d): %v",
-			tenantID, delay, state.retryCount, err)
+			tenantID, delay, retryCount, err)
 		libOpentelemetry.HandleSpanError(&span, "failed to get channel", err)
 
 		select {
@@ -644,16 +713,12 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 
 	// Set QoS
 	if err := ch.Qos(c.config.PrefetchCount, 0, false); err != nil {
-		delay := backoffDelay(state.retryCount)
-		state.retryCount++
-
-		if state.retryCount >= maxRetryBeforeDegraded && !state.degraded {
-			state.degraded = true
-			logger.Warnf("tenant %s marked as degraded after %d consecutive failures", tenantID, state.retryCount)
+		delay, retryCount, justMarkedDegraded := state.incRetryAndMaybeMarkDegraded(maxRetryBeforeDegraded)
+		if justMarkedDegraded {
+			logger.Warnf("tenant %s marked as degraded after %d consecutive failures", tenantID, retryCount)
 		}
-
 		logger.Warnf("failed to set QoS for tenant %s, retrying in %s (attempt %d): %v",
-			tenantID, delay, state.retryCount, err)
+			tenantID, delay, retryCount, err)
 		libOpentelemetry.HandleSpanError(&span, "failed to set QoS", err)
 
 		select {
@@ -675,16 +740,12 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 		nil,   // args
 	)
 	if err != nil {
-		delay := backoffDelay(state.retryCount)
-		state.retryCount++
-
-		if state.retryCount >= maxRetryBeforeDegraded && !state.degraded {
-			state.degraded = true
-			logger.Warnf("tenant %s marked as degraded after %d consecutive failures", tenantID, state.retryCount)
+		delay, retryCount, justMarkedDegraded := state.incRetryAndMaybeMarkDegraded(maxRetryBeforeDegraded)
+		if justMarkedDegraded {
+			logger.Warnf("tenant %s marked as degraded after %d consecutive failures", tenantID, retryCount)
 		}
-
 		logger.Warnf("failed to start consuming for tenant %s, retrying in %s (attempt %d): %v",
-			tenantID, delay, state.retryCount, err)
+			tenantID, delay, retryCount, err)
 		libOpentelemetry.HandleSpanError(&span, "failed to start consuming", err)
 
 		select {
@@ -811,7 +872,15 @@ func (c *MultiTenantConsumer) getRetryState(tenantID string) *retryStateEntry {
 }
 
 // resetRetryState resets the retry counter and degraded flag for a tenant after a successful connection.
+// It reuses the existing entry when present (reset in place) to avoid allocation churn; only stores
+// a new entry when the tenant has no entry yet.
 func (c *MultiTenantConsumer) resetRetryState(tenantID string) {
+	if entry, ok := c.retryState.Load(tenantID); ok {
+		if state, ok := entry.(*retryStateEntry); ok {
+			state.reset()
+			return
+		}
+	}
 	c.retryState.Store(tenantID, &retryStateEntry{})
 }
 
@@ -884,7 +953,7 @@ func (c *MultiTenantConsumer) IsDegraded(tenantID string) bool {
 		return false
 	}
 
-	return state.degraded
+	return state.isDegraded()
 }
 
 // isValidTenantID validates a tenant ID against security constraints.
@@ -913,6 +982,7 @@ func (c *MultiTenantConsumer) Close() error {
 	// Clear the maps
 	c.tenants = make(map[string]context.CancelFunc)
 	c.knownTenants = make(map[string]bool)
+	c.tenantAbsenceCount = make(map[string]int)
 
 	c.logger.Info("multi-tenant consumer closed")
 	return nil
@@ -949,7 +1019,7 @@ func (c *MultiTenantConsumer) Stats() MultiTenantConsumerStats {
 	// Collect degraded tenants from retry state
 	degradedTenantIDs := make([]string, 0)
 	c.retryState.Range(func(key, value any) bool {
-		if entry, ok := value.(*retryStateEntry); ok && entry.degraded {
+		if entry, ok := value.(*retryStateEntry); ok && entry.isDegraded() {
 			degradedTenantIDs = append(degradedTenantIDs, key.(string))
 		}
 		return true

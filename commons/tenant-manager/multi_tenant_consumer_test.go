@@ -788,16 +788,18 @@ func TestMultiTenantConsumer_DefaultMultiTenantConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name             string
-		expectedSync     time.Duration
-		expectedWorkers  int
-		expectedPrefetch int
+		name                 string
+		expectedSync         time.Duration
+		expectedWorkers      int
+		expectedPrefetch     int
+		expectedDiscoveryTO  time.Duration
 	}{
 		{
-			name:             "returns_default_values",
-			expectedSync:     30 * time.Second,
-			expectedWorkers:  1,
-			expectedPrefetch: 10,
+			name:                 "returns_default_values",
+			expectedSync:         30 * time.Second,
+			expectedWorkers:      1,
+			expectedPrefetch:     10,
+			expectedDiscoveryTO: 500 * time.Millisecond,
 		},
 	}
 
@@ -814,6 +816,8 @@ func TestMultiTenantConsumer_DefaultMultiTenantConfig(t *testing.T) {
 				"default WorkersPerQueue should be %d", tt.expectedWorkers)
 			assert.Equal(t, tt.expectedPrefetch, config.PrefetchCount,
 				"default PrefetchCount should be %d", tt.expectedPrefetch)
+			assert.Equal(t, tt.expectedDiscoveryTO, config.DiscoveryTimeout,
+				"default DiscoveryTimeout should be %s", tt.expectedDiscoveryTO)
 			assert.Empty(t, config.MultiTenantURL, "default MultiTenantURL should be empty")
 			assert.Empty(t, config.Service, "default Service should be empty")
 		})
@@ -1059,16 +1063,19 @@ func TestMultiTenantConsumer_SyncTenants_RemovesTenants(t *testing.T) {
 				mr.SAdd(testActiveTenantsKey, id)
 			}
 
-			// Run syncTenants to trigger removal detection
-			err := consumer.syncTenants(ctx)
-			assert.NoError(t, err, "syncTenants should not return error")
+			// Run syncTenants absentSyncsBeforeRemoval times so retained tenants
+			// exceed the absence threshold and are actually removed.
+			for i := 0; i < absentSyncsBeforeRemoval; i++ {
+				err := consumer.syncTenants(ctx)
+				assert.NoError(t, err, "syncTenants should not return error")
+			}
 
 			consumer.mu.RLock()
 			afterSyncCount := len(consumer.knownTenants)
 			consumer.mu.RUnlock()
 
 			assert.Equal(t, tt.expectedKnownAfterSync, afterSyncCount,
-				"after sync, knownTenants should reflect updated tenant list")
+				"after %d syncs, knownTenants should reflect updated tenant list", absentSyncsBeforeRemoval)
 		})
 	}
 }
@@ -1238,9 +1245,12 @@ func TestMultiTenantConsumer_SyncTenants_RemovalCleansKnownTenants(t *testing.T)
 				mr.SAdd(testActiveTenantsKey, id)
 			}
 
-			// Second sync should detect removals
-			err = consumer.syncTenants(ctx)
-			require.NoError(t, err, "second syncTenants should succeed")
+			// Run sync absentSyncsBeforeRemoval times so retained tenants exceed
+			// the absence threshold and are cleaned from knownTenants.
+			for i := 0; i < absentSyncsBeforeRemoval; i++ {
+				err = consumer.syncTenants(ctx)
+				require.NoError(t, err, "syncTenants should succeed")
+			}
 
 			consumer.mu.RLock()
 			afterRemovalKnown := len(consumer.knownTenants)
@@ -1255,14 +1265,14 @@ func TestMultiTenantConsumer_SyncTenants_RemovalCleansKnownTenants(t *testing.T)
 				}
 				if !isRemaining {
 					assert.False(t, consumer.knownTenants[id],
-						"removed tenant %q must be cleaned from knownTenants", id)
+						"removed tenant %q must be cleaned from knownTenants after %d absences", id, absentSyncsBeforeRemoval)
 				}
 			}
 			consumer.mu.RUnlock()
 
 			assert.Equal(t, tt.expectedKnownAfterRemoval, afterRemovalKnown,
-				"after removal, knownTenants should have %d entries, got %d",
-				tt.expectedKnownAfterRemoval, afterRemovalKnown)
+				"after %d absences, knownTenants should have %d entries, got %d",
+				absentSyncsBeforeRemoval, tt.expectedKnownAfterRemoval, afterRemovalKnown)
 		})
 	}
 }
@@ -2760,9 +2770,11 @@ func TestMultiTenantConsumer_SyncTenants_ClosesConnectionsOnRemoval(t *testing.T
 				mr.SAdd(testActiveTenantsKey, id)
 			}
 
-			// Run sync - should detect removals and close connections
-			err = consumer.syncTenants(ctx)
-			require.NoError(t, err, "second syncTenants should succeed")
+			// Run sync absentSyncsBeforeRemoval times so removals are confirmed and connections closed
+			for i := 0; i < absentSyncsBeforeRemoval; i++ {
+				err = consumer.syncTenants(ctx)
+				require.NoError(t, err, "syncTenants should succeed")
+			}
 
 			// Verify removed tenants are gone from tenants map
 			consumer.mu.RLock()

@@ -84,9 +84,8 @@ func (pc *PostgresConnection) Connect() error {
 
 		primaryURL, err := url.Parse(filepath.ToSlash(migrationsPath))
 		if err != nil {
-			pc.Logger.Fatal("failed parse url",
+			pc.Logger.Error("failed parse url",
 				zap.Error(err))
-
 			return err
 		}
 
@@ -104,9 +103,7 @@ func (pc *PostgresConnection) Connect() error {
 
 		m, err := migrate.NewWithDatabaseInstance(primaryURL.String(), pc.PrimaryDBName, primaryDriver)
 		if err != nil {
-			pc.Logger.Fatal("failed to get migrations",
-				zap.Error(err))
-
+			pc.Logger.Error("failed to get migrations", zap.Error(err))
 			return err
 		}
 

@@ -157,14 +157,31 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 	defer span.End()
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
-	// Double-check after acquiring lock
+	// Double-check after acquiring lock: re-validate cached connection before returning
 	if conn, ok := p.connections[tenantID]; ok {
-		return conn.DB, nil
+		cached := conn
+		p.mu.Unlock()
+
+		if cached.DB != nil {
+			pingCtx, cancel := context.WithTimeout(ctx, mongoPingTimeout)
+			pingErr := cached.DB.Ping(pingCtx, nil)
+			cancel()
+			if pingErr == nil {
+				return cached.DB, nil
+			}
+			if p.logger != nil {
+				p.logger.Warnf("cached mongo connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr)
+			}
+		}
+
+		p.mu.Lock()
+		delete(p.connections, tenantID)
+		// fall through to create a fresh client
 	}
 
 	if p.closed {
+		p.mu.Unlock()
 		return nil, ErrManagerClosed
 	}
 
@@ -177,13 +194,13 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 		if errors.As(err, &suspErr) {
 			logger.Warnf("tenant service is %s: tenantID=%s", suspErr.Status, tenantID)
 			libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant service suspended", err)
-
+			p.mu.Unlock()
 			return nil, err
 		}
 
 		logger.Errorf("failed to get tenant config: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "failed to get tenant config", err)
-
+		p.mu.Unlock()
 		return nil, fmt.Errorf("failed to get tenant config: %w", err)
 	}
 
@@ -191,7 +208,7 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 	mongoConfig := config.GetMongoDBConfig(p.service, p.module)
 	if mongoConfig == nil {
 		logger.Errorf("no MongoDB config for tenant %s service %s module %s", tenantID, p.service, p.module)
-
+		p.mu.Unlock()
 		return nil, ErrServiceNotConfigured
 	}
 
@@ -222,6 +239,7 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 
 	// Connect to MongoDB (handles client creation and ping internally)
 	if err := conn.Connect(ctx); err != nil {
+		p.mu.Unlock()
 		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
 
@@ -232,6 +250,7 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 	p.connections[tenantID] = conn
 	p.lastAccessed[tenantID] = time.Now()
 
+	p.mu.Unlock()
 	return conn.DB, nil
 }
 
