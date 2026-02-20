@@ -1,3 +1,16 @@
+## [2.6.0](https://github.com/LerianStudio/lib-commons/compare/v2.5.0...v2.6.0) (2026-02-17)
+
+### Features
+
+* **tenant-manager:** add lazy mode lifecycle - Run() discovers tenants without starting consumers for <1s startup ([T-001])
+* **tenant-manager:** add on-demand consumer spawning via EnsureConsumerStarted with double-check locking ([T-002])
+* **tenant-manager:** add enhanced Stats() API with ConnectionMode, KnownTenants, PendingTenants, DegradedTenants ([T-003])
+* **tenant-manager:** add exponential backoff (5s, 10s, 20s, 40s) with per-tenant retry state for connection failures ([T-004])
+* **tenant-manager:** add degraded tenant detection after 3 consecutive failures via IsDegraded() ([T-004])
+* **tenant-manager:** add Prometheus-compatible metric name constants for observability ([T-003])
+* **tenant-manager:** add structured log events with tenant_id context for all operations ([T-003])
+* **tenant-manager:** adapt syncTenants to lazy mode - populates knownTenants without starting consumers ([T-005])
+
 ## [2.5.0](https://github.com/LerianStudio/lib-commons/compare/v2.4.0...v2.5.0) (2025-11-07)
 
 

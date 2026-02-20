@@ -1,13 +1,9 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package postgres
 
 import (
 	"database/sql"
 	"errors"
-	"fmt"
+	"go.uber.org/zap"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -36,21 +32,18 @@ type PostgresConnection struct {
 	Logger                  log.Logger
 	MaxOpenConnections      int
 	MaxIdleConnections      int
-	// MultiStatementEnabled controls whether migrations run with multi-statement mode.
-	// When nil, defaults to true for backward compatibility.
-	// Use pointers.Bool(true) or pointers.Bool(false) to set explicitly.
-	MultiStatementEnabled *bool
+	SkipMigrations          bool  // Skip running migrations on connect (for dynamic tenant connections)
+	MultiStatementEnabled   *bool // Enable multi-statement migrations. Defaults to true when nil.
 }
 
-// resolveMultiStatementEnabled returns the resolved value of MultiStatementEnabled.
-// Returns true if MultiStatementEnabled is nil (backward compatible default),
-// otherwise returns the dereferenced value.
+// resolveMultiStatementEnabled returns the configured MultiStatementEnabled value,
+// defaulting to true when the field is nil (backward-compatible behavior).
 func (pc *PostgresConnection) resolveMultiStatementEnabled() bool {
-	if pc.MultiStatementEnabled != nil {
-		return *pc.MultiStatementEnabled
+	if pc.MultiStatementEnabled == nil {
+		return true
 	}
 
-	return true
+	return *pc.MultiStatementEnabled
 }
 
 // Connect keeps a singleton connection with postgres.
@@ -59,74 +52,81 @@ func (pc *PostgresConnection) Connect() error {
 
 	dbPrimary, err := sql.Open("pgx", pc.ConnectionStringPrimary)
 	if err != nil {
-		pc.Logger.Errorf("failed to connect to primary database: %v", err)
-		return fmt.Errorf("failed to connect to primary database: %w", err)
+		pc.Logger.Error("failed to open connect to primary database", zap.Error(err))
+		return err
 	}
 
 	dbPrimary.SetMaxOpenConns(pc.MaxOpenConnections)
 	dbPrimary.SetMaxIdleConns(pc.MaxIdleConnections)
 	dbPrimary.SetConnMaxLifetime(time.Minute * 30)
-	dbPrimary.SetConnMaxIdleTime(5 * time.Minute)
 
 	dbReadOnlyReplica, err := sql.Open("pgx", pc.ConnectionStringReplica)
 	if err != nil {
-		pc.Logger.Errorf("failed to connect to replica database: %v", err)
-		return fmt.Errorf("failed to connect to replica database: %w", err)
+		pc.Logger.Error("failed to open connect to replica database", zap.Error(err))
+		return err
 	}
 
 	dbReadOnlyReplica.SetMaxOpenConns(pc.MaxOpenConnections)
 	dbReadOnlyReplica.SetMaxIdleConns(pc.MaxIdleConnections)
 	dbReadOnlyReplica.SetConnMaxLifetime(time.Minute * 30)
-	dbReadOnlyReplica.SetConnMaxIdleTime(5 * time.Minute)
 
 	connectionDB := dbresolver.New(
 		dbresolver.WithPrimaryDBs(dbPrimary),
 		dbresolver.WithReplicaDBs(dbReadOnlyReplica),
 		dbresolver.WithLoadBalancer(dbresolver.RoundRobinLB))
 
-	migrationsPath, err := pc.getMigrationsPath()
-	if err != nil {
-		return err
-	}
-
-	primaryURL, err := url.Parse(filepath.ToSlash(migrationsPath))
-	if err != nil {
-		pc.Logger.Errorf("failed to parse migrations url: %v", err)
-		return fmt.Errorf("failed to parse migrations url: %w", err)
-	}
-
-	primaryURL.Scheme = "file"
-
-	primaryDriver, err := postgres.WithInstance(dbPrimary, &postgres.Config{
-		MultiStatementEnabled: pc.resolveMultiStatementEnabled(),
-		DatabaseName:          pc.PrimaryDBName,
-		SchemaName:            "public",
-	})
-	if err != nil {
-		pc.Logger.Errorf("failed to create postgres driver instance: %v", err)
-		return fmt.Errorf("failed to create postgres driver instance: %w", err)
-	}
-
-	m, err := migrate.NewWithDatabaseInstance(primaryURL.String(), pc.PrimaryDBName, primaryDriver)
-	if err != nil {
-		pc.Logger.Errorf("failed to get migrations: %v", err)
-		return fmt.Errorf("failed to create migration instance: %w", err)
-	}
-
-	if err := m.Up(); err != nil {
-		if errors.Is(err, migrate.ErrNoChange) {
-			pc.Logger.Info("No new migrations found. Skipping...")
-		} else if strings.Contains(err.Error(), "file does not exist") {
-			pc.Logger.Warn("No migration files found. Skipping migration step...")
-		} else {
-			pc.Logger.Errorf("Migration failed: %v", err)
-			return fmt.Errorf("migration failed: %w", err)
+	// Run migrations unless explicitly skipped (e.g., for dynamic tenant connections)
+	if !pc.SkipMigrations {
+		migrationsPath, err := pc.getMigrationsPath()
+		if err != nil {
+			return err
 		}
+
+		primaryURL, err := url.Parse(filepath.ToSlash(migrationsPath))
+		if err != nil {
+			pc.Logger.Error("failed parse url",
+				zap.Error(err))
+
+			return err
+		}
+
+		primaryURL.Scheme = "file"
+
+		primaryDriver, err := postgres.WithInstance(dbPrimary, &postgres.Config{
+			MultiStatementEnabled: pc.resolveMultiStatementEnabled(),
+			DatabaseName:          pc.PrimaryDBName,
+			SchemaName:            "public",
+		})
+		if err != nil {
+			pc.Logger.Error("failed to open connect to database", zap.Error(err))
+			return err
+		}
+
+		m, err := migrate.NewWithDatabaseInstance(primaryURL.String(), pc.PrimaryDBName, primaryDriver)
+		if err != nil {
+			pc.Logger.Error("failed to get migrations", zap.Error(err))
+			return err
+		}
+
+		if err := m.Up(); err != nil {
+			if errors.Is(err, migrate.ErrNoChange) {
+				pc.Logger.Info("No new migrations found. Skipping...")
+			} else if strings.Contains(err.Error(), "file does not exist") {
+				pc.Logger.Warn("No migration files found. Skipping migration step...")
+			} else {
+				pc.Logger.Error("Migration failed", zap.Error(err))
+				return err
+			}
+		}
+	} else {
+		pc.Logger.Info("Skipping migrations (SkipMigrations=true)")
 	}
 
 	if err := connectionDB.Ping(); err != nil {
-		pc.Logger.Errorf("PostgresConnection.Ping failed: %v", err)
-		return fmt.Errorf("failed to ping database: %w", err)
+		pc.Logger.Infof("PostgresConnection.Ping %v",
+			zap.Error(err))
+
+		return err
 	}
 
 	pc.Connected = true
@@ -157,7 +157,7 @@ func (pc *PostgresConnection) getMigrationsPath() (string, error) {
 
 	calculatedPath, err := filepath.Abs(filepath.Join("components", pc.Component, "migrations"))
 	if err != nil {
-		pc.Logger.Errorf("failed to get migration filepath: %v", err)
+		pc.Logger.Error("failed to get migration filepath", zap.Error(err))
 
 		return "", err
 	}
