@@ -88,6 +88,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	}
 
 	ctx := c.UserContext()
+
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -103,7 +104,8 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		logger.Errorf("no authorization token - multi-tenant mode requires JWT with tenantId")
 		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "missing authorization token",
 			errors.New("authorization token is required"))
-		return unauthorizedError(c, "MISSING_TOKEN", "Unauthorized", "Authorization token is required")
+
+		return unauthorizedError(c, "MISSING_TOKEN", "Authorization token is required")
 	}
 
 	// Parse JWT token (unverified - lib-auth already validated it)
@@ -111,7 +113,8 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	if err != nil {
 		logger.Errorf("failed to parse JWT token: %v", err)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "failed to parse token", err)
-		return unauthorizedError(c, "INVALID_TOKEN", "Unauthorized", "Failed to parse authorization token")
+
+		return unauthorizedError(c, "INVALID_TOKEN", "Failed to parse authorization token")
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
@@ -119,7 +122,8 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		logger.Errorf("JWT claims are not in expected format")
 		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "invalid claims format",
 			errors.New("JWT claims are not in expected format"))
-		return unauthorizedError(c, "INVALID_TOKEN", "Unauthorized", "JWT claims are not in expected format")
+
+		return unauthorizedError(c, "INVALID_TOKEN", "JWT claims are not in expected format")
 	}
 
 	// Extract tenantId from claims
@@ -128,7 +132,8 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		logger.Errorf("no tenantId in JWT - multi-tenant mode requires tenantId claim")
 		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "missing tenantId in JWT",
 			errors.New("tenantId is required in JWT token"))
-		return unauthorizedError(c, "MISSING_TENANT", "Unauthorized", "tenantId is required in JWT token")
+
+		return unauthorizedError(c, "MISSING_TENANT", "tenantId is required in JWT token")
 	}
 
 	logger.Infof("tenant context resolved: tenantID=%s", tenantID)
@@ -151,6 +156,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 
 			logger.Errorf("failed to get tenant PostgreSQL connection: %v", err)
 			libOpentelemetry.HandleSpanError(&span, "failed to get tenant PostgreSQL connection", err)
+
 			return internalServerError(c, "TENANT_DB_ERROR", "Failed to resolve tenant database", err.Error())
 		}
 
@@ -159,6 +165,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		if err != nil {
 			logger.Errorf("failed to get database from PostgreSQL connection: %v", err)
 			libOpentelemetry.HandleSpanError(&span, "failed to get database from PostgreSQL connection", err)
+
 			return internalServerError(c, "TENANT_DB_ERROR", "Failed to get tenant database connection", err.Error())
 		}
 
@@ -181,8 +188,10 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 
 			logger.Errorf("failed to get tenant MongoDB connection: %v", err)
 			libOpentelemetry.HandleSpanError(&span, "failed to get tenant MongoDB connection", err)
+
 			return internalServerError(c, "TENANT_MONGO_ERROR", "Failed to resolve tenant MongoDB database", err.Error())
 		}
+
 		ctx = ContextWithTenantMongo(ctx, mongoDB)
 	}
 
@@ -201,6 +210,7 @@ func extractTokenFromHeader(c *fiber.Ctx) string {
 	}
 
 	// Only accept "Bearer " scheme; reject other schemes (e.g., "Basic ")
+
 	if strings.HasPrefix(authHeader, "Bearer ") {
 		return strings.TrimPrefix(authHeader, "Bearer ")
 	}
@@ -228,10 +238,10 @@ func internalServerError(c *fiber.Ctx, code, title, message string) error {
 }
 
 // unauthorizedError sends an HTTP 401 Unauthorized response.
-func unauthorizedError(c *fiber.Ctx, code, title, message string) error {
+func unauthorizedError(c *fiber.Ctx, code, message string) error {
 	return c.Status(http.StatusUnauthorized).JSON(fiber.Map{
 		"code":    code,
-		"title":   title,
+		"title":   "Unauthorized",
 		"message": message,
 	})
 }

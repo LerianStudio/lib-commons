@@ -86,6 +86,7 @@ func (pc *PostgresConnection) Connect() error {
 		if err != nil {
 			pc.Logger.Error("failed parse url",
 				zap.Error(err))
+
 			return err
 		}
 

@@ -57,9 +57,9 @@ func WithRabbitMQLogger(logger log.Logger) RabbitMQOption {
 // that have been idle longer than the idle timeout are eligible for eviction. If all
 // connections are active (used within the idle timeout), the pool grows beyond this limit.
 // A value of 0 (default) means unlimited.
-func WithRabbitMQMaxTenantPools(max int) RabbitMQOption {
+func WithRabbitMQMaxTenantPools(maxSize int) RabbitMQOption {
 	return func(p *RabbitMQManager) {
-		p.maxConnections = max
+		p.maxConnections = maxSize
 	}
 }
 
@@ -75,7 +75,7 @@ func WithRabbitMQIdleTimeout(d time.Duration) RabbitMQOption {
 }
 
 // Deprecated: Use WithRabbitMQMaxTenantPools instead.
-func WithRabbitMQMaxConnections(max int) RabbitMQOption { return WithRabbitMQMaxTenantPools(max) }
+func WithRabbitMQMaxConnections(maxSize int) RabbitMQOption { return WithRabbitMQMaxTenantPools(maxSize) }
 
 // NewRabbitMQManager creates a new RabbitMQ connection manager.
 // Parameters:
@@ -105,6 +105,7 @@ func (p *RabbitMQManager) GetConnection(ctx context.Context, tenantID string) (*
 	}
 
 	p.mu.RLock()
+
 	if p.closed {
 		p.mu.RUnlock()
 		return nil, ErrManagerClosed
@@ -129,6 +130,7 @@ func (p *RabbitMQManager) GetConnection(ctx context.Context, tenantID string) (*
 // createConnection fetches config from Tenant Manager and creates a RabbitMQ connection.
 func (p *RabbitMQManager) createConnection(ctx context.Context, tenantID string) (*amqp.Connection, error) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
 	ctx, span := tracer.Start(ctx, "rabbitmq.create_connection")
 	defer span.End()
 
@@ -153,6 +155,7 @@ func (p *RabbitMQManager) createConnection(ctx context.Context, tenantID string)
 	if err != nil {
 		logger.Errorf("failed to get tenant config: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "failed to get tenant config", err)
+
 		return nil, fmt.Errorf("failed to get tenant config: %w", err)
 	}
 
@@ -161,6 +164,7 @@ func (p *RabbitMQManager) createConnection(ctx context.Context, tenantID string)
 	if rabbitConfig == nil {
 		logger.Errorf("RabbitMQ not configured for tenant: %s", tenantID)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "RabbitMQ not configured", nil)
+
 		return nil, ErrServiceNotConfigured
 	}
 
@@ -174,6 +178,7 @@ func (p *RabbitMQManager) createConnection(ctx context.Context, tenantID string)
 	if err != nil {
 		logger.Errorf("failed to connect to RabbitMQ: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "failed to connect to RabbitMQ", err)
+
 		return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
 	}
 
@@ -208,6 +213,7 @@ func (p *RabbitMQManager) evictLRU(logger log.Logger) {
 
 	// Find the oldest connection that has been idle longer than the timeout
 	var oldestID string
+
 	var oldestTime time.Time
 
 	for id, t := range p.lastAccessed {
@@ -271,6 +277,7 @@ func (p *RabbitMQManager) Close() error {
 	p.closed = true
 
 	var errs []error
+
 	for tenantID, conn := range p.connections {
 		if conn != nil && !conn.IsClosed() {
 			if err := conn.Close(); err != nil {
@@ -316,6 +323,7 @@ func (p *RabbitMQManager) Stats() RabbitMQStats {
 
 	for id, conn := range p.connections {
 		tenantIDs = append(tenantIDs, id)
+
 		if conn != nil && !conn.IsClosed() {
 			activeConnections++
 		}

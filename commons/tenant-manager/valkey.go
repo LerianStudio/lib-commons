@@ -18,6 +18,7 @@ func GetKey(tenantID, key string) string {
 	if tenantID == "" {
 		return key
 	}
+
 	return fmt.Sprintf("%s:%s:%s", TenantKeyPrefix, tenantID, key)
 }
 
@@ -34,6 +35,7 @@ func GetPattern(tenantID, pattern string) string {
 	if tenantID == "" {
 		return pattern
 	}
+
 	return fmt.Sprintf("%s:%s:%s", TenantKeyPrefix, tenantID, pattern)
 }
 
@@ -50,6 +52,8 @@ func StripTenantPrefix(tenantID, prefixedKey string) string {
 	if tenantID == "" {
 		return prefixedKey
 	}
+
 	prefix := fmt.Sprintf("%s:%s:", TenantKeyPrefix, tenantID)
+
 	return strings.TrimPrefix(prefixedKey, prefix)
 }

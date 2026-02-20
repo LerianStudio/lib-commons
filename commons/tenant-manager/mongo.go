@@ -68,9 +68,9 @@ func WithMongoLogger(logger log.Logger) MongoOption {
 // that have been idle longer than the idle timeout are eligible for eviction. If all
 // connections are active (used within the idle timeout), the pool grows beyond this limit.
 // A value of 0 (default) means unlimited.
-func WithMongoMaxTenantPools(max int) MongoOption {
+func WithMongoMaxTenantPools(maxSize int) MongoOption {
 	return func(p *MongoManager) {
-		p.maxConnections = max
+		p.maxConnections = maxSize
 	}
 }
 
@@ -86,7 +86,7 @@ func WithMongoIdleTimeout(d time.Duration) MongoOption {
 }
 
 // Deprecated: Use WithMongoMaxTenantPools instead.
-func WithMongoMaxConnections(max int) MongoOption { return WithMongoMaxTenantPools(max) }
+func WithMongoMaxConnections(maxSize int) MongoOption { return WithMongoMaxTenantPools(maxSize) }
 
 // NewMongoManager creates a new MongoDB connection manager.
 func NewMongoManager(client *Client, service string, opts ...MongoOption) *MongoManager {
@@ -114,6 +114,7 @@ func (p *MongoManager) GetClient(ctx context.Context, tenantID string) (*mongo.C
 	}
 
 	p.mu.RLock()
+
 	if p.closed {
 		p.mu.RUnlock()
 		return nil, ErrManagerClosed
@@ -132,7 +133,7 @@ func (p *MongoManager) GetClient(ctx context.Context, tenantID string) (*mongo.C
 					p.logger.Warnf("cached mongo connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr)
 				}
 
-				p.CloseClient(ctx, tenantID)
+				_ = p.CloseClient(ctx, tenantID)
 
 				// Fall through to create a new client with fresh credentials
 				return p.createClient(ctx, tenantID)
@@ -155,6 +156,7 @@ func (p *MongoManager) GetClient(ctx context.Context, tenantID string) (*mongo.C
 // createClient fetches config from Tenant Manager and creates a MongoDB client.
 func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mongo.Client, error) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
 	ctx, span := tracer.Start(ctx, "mongo.create_client")
 	defer span.End()
 
@@ -168,10 +170,13 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 		if cached.DB != nil {
 			pingCtx, cancel := context.WithTimeout(ctx, mongoPingTimeout)
 			pingErr := cached.DB.Ping(pingCtx, nil)
+
 			cancel()
+
 			if pingErr == nil {
 				return cached.DB, nil
 			}
+
 			if p.logger != nil {
 				p.logger.Warnf("cached mongo connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr)
 			}
@@ -196,13 +201,16 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 		if errors.As(err, &suspErr) {
 			logger.Warnf("tenant service is %s: tenantID=%s", suspErr.Status, tenantID)
 			libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant service suspended", err)
+
 			p.mu.Unlock()
+
 			return nil, err
 		}
 
 		logger.Errorf("failed to get tenant config: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "failed to get tenant config", err)
 		p.mu.Unlock()
+
 		return nil, fmt.Errorf("failed to get tenant config: %w", err)
 	}
 
@@ -210,7 +218,9 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 	mongoConfig := config.GetMongoDBConfig(p.service, p.module)
 	if mongoConfig == nil {
 		logger.Errorf("no MongoDB config for tenant %s service %s module %s", tenantID, p.service, p.module)
+
 		p.mu.Unlock()
+
 		return nil, ErrServiceNotConfigured
 	}
 
@@ -244,12 +254,14 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 		logger.Errorf("failed to connect to MongoDB for tenant %s: %v", tenantID, err)
 		libOpentelemetry.HandleSpanError(&span, "failed to connect to MongoDB", err)
 		p.mu.Unlock()
+
 		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
 
 	logger.Infof("MongoDB connection created for tenant %s (database: %s)", tenantID, mongoConfig.Database)
 
 	// Evict least recently used connection if pool is full
+
 	p.evictLRU(ctx, logger)
 
 	// Cache connection
@@ -257,6 +269,7 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 	p.lastAccessed[tenantID] = time.Now()
 
 	p.mu.Unlock()
+
 	return conn.DB, nil
 }
 
@@ -279,6 +292,7 @@ func (p *MongoManager) evictLRU(ctx context.Context, logger log.Logger) {
 
 	// Find the oldest connection that has been idle longer than the timeout
 	var oldestID string
+
 	var oldestTime time.Time
 
 	for id, t := range p.lastAccessed {
@@ -302,7 +316,7 @@ func (p *MongoManager) evictLRU(ctx context.Context, logger log.Logger) {
 	// Evict the idle connection
 	if conn, ok := p.connections[oldestID]; ok {
 		if conn.DB != nil {
-			conn.DB.Disconnect(ctx)
+			_ = conn.DB.Disconnect(ctx)
 		}
 
 		delete(p.connections, oldestID)
@@ -407,6 +421,7 @@ func (p *MongoManager) Close(ctx context.Context) error {
 	p.closed = true
 
 	var errs []error
+
 	for tenantID, conn := range p.connections {
 		if conn.DB != nil {
 			if err := conn.DB.Disconnect(ctx); err != nil {
@@ -432,6 +447,7 @@ func (p *MongoManager) CloseClient(ctx context.Context, tenantID string) error {
 	}
 
 	var err error
+
 	if conn.DB != nil {
 		err = conn.DB.Disconnect(ctx)
 	}
@@ -492,6 +508,7 @@ func GetMongoFromContext(ctx context.Context) *mongo.Database {
 	if db, ok := ctx.Value(tenantMongoKey).(*mongo.Database); ok {
 		return db
 	}
+
 	return nil
 }
 

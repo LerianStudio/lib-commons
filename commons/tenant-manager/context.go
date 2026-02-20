@@ -27,6 +27,7 @@ func GetTenantIDFromContext(ctx context.Context) string {
 	if id, ok := ctx.Value(tenantIDKey).(string); ok {
 		return id
 	}
+
 	return ""
 }
 
@@ -54,6 +55,7 @@ func GetTenantPGConnectionFromContext(ctx context.Context) dbresolver.DB {
 	if db, ok := ctx.Value(tenantPGConnectionKey).(dbresolver.DB); ok {
 		return db
 	}
+
 	return nil
 }
 

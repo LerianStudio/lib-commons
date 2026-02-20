@@ -108,6 +108,7 @@ func (e *retryStateEntry) reset() {
 func (e *retryStateEntry) isDegraded() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	return e.degraded
 }
 
@@ -117,13 +118,17 @@ func (e *retryStateEntry) isDegraded() bool {
 func (e *retryStateEntry) incRetryAndMaybeMarkDegraded(maxBeforeDegraded int) (delay time.Duration, retryCount int, justMarkedDegraded bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
 	delay = backoffDelay(e.retryCount)
 	e.retryCount++
+
 	prev := e.degraded
 	if e.retryCount >= maxBeforeDegraded {
 		e.degraded = true
 	}
+
 	justMarkedDegraded = !prev && e.degraded
+
 	return delay, e.retryCount, justMarkedDegraded
 }
 
@@ -203,6 +208,7 @@ func NewMultiTenantConsumer(
 	if rabbitmq == nil {
 		panic("tenantmanager.NewMultiTenantConsumer: rabbitmq must not be nil")
 	}
+
 	if redisClient == nil {
 		panic("tenantmanager.NewMultiTenantConsumer: redisClient must not be nil")
 	}
@@ -216,9 +222,11 @@ func NewMultiTenantConsumer(
 	if config.SyncInterval == 0 {
 		config.SyncInterval = 30 * time.Second
 	}
+
 	if config.WorkersPerQueue == 0 {
 		config.WorkersPerQueue = 1
 	}
+
 	if config.PrefetchCount == 0 {
 		config.PrefetchCount = 10
 	}
@@ -256,6 +264,7 @@ func NewMultiTenantConsumer(
 func (c *MultiTenantConsumer) Register(queueName string, handler HandlerFunc) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	c.handlers[queueName] = handler
 	c.logger.Infof("registered handler for queue: %s", queueName)
 }
@@ -265,6 +274,7 @@ func (c *MultiTenantConsumer) Register(queueName string, handler HandlerFunc) {
 // background polling. Returns nil even on discovery failure (soft failure).
 func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.run")
 	defer span.End()
 
@@ -295,6 +305,7 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 // A short timeout is applied to avoid blocking startup on unresponsive infrastructure.
 func (c *MultiTenantConsumer) discoverTenants(ctx context.Context) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.discover_tenants")
 	defer span.End()
 
@@ -304,6 +315,7 @@ func (c *MultiTenantConsumer) discoverTenants(ctx context.Context) {
 	if discoveryTimeout == 0 {
 		discoveryTimeout = 500 * time.Millisecond
 	}
+
 	discoveryCtx, cancel := context.WithTimeout(ctx, discoveryTimeout)
 	defer cancel()
 
@@ -328,7 +340,7 @@ func (c *MultiTenantConsumer) discoverTenants(ctx context.Context) {
 // runSyncLoop periodically syncs the tenant list.
 // Each iteration creates its own span to avoid accumulating events on a long-lived span.
 func (c *MultiTenantConsumer) runSyncLoop(ctx context.Context) {
-	logger, _, _, _ := libCommons.NewTrackingFromContext(ctx)
+	logger, _, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
 
 	ticker := time.NewTicker(c.config.SyncInterval)
 	defer ticker.Stop()
@@ -349,6 +361,7 @@ func (c *MultiTenantConsumer) runSyncLoop(ctx context.Context) {
 // runSyncIteration executes a single sync iteration with its own span.
 func (c *MultiTenantConsumer) runSyncIteration(ctx context.Context) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.sync_iteration")
 	defer span.End()
 
@@ -374,6 +387,7 @@ func (c *MultiTenantConsumer) runSyncIteration(ctx context.Context) {
 // the failure and continues retrying on the next sync interval.
 func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.sync_tenants")
 	defer span.End()
 
@@ -382,10 +396,12 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 	if err != nil {
 		logger.Errorf("failed to fetch tenant IDs: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "failed to fetch tenant IDs", err)
+
 		return fmt.Errorf("failed to fetch tenant IDs: %w", err)
 	}
 
 	// Validate tenant IDs before processing
+
 	validTenantIDs := make([]string, 0, len(tenantIDs))
 
 	for _, id := range tenantIDs {
@@ -397,12 +413,14 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 	}
 
 	// Create a set of current tenant IDs for quick lookup
+
 	currentTenants := make(map[string]bool, len(validTenantIDs))
 	for _, id := range validTenantIDs {
 		currentTenants[id] = true
 	}
 
 	c.mu.Lock()
+
 	defer c.mu.Unlock()
 
 	if c.closed {
@@ -418,31 +436,39 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 	// Build new knownTenants: all currently fetched plus any previously known that are
 	// missing for fewer than absentSyncsBeforeRemoval consecutive syncs.
 	newKnown := make(map[string]bool, len(currentTenants)+len(previousKnown))
+
 	var removedTenants []string
 
 	for id := range currentTenants {
 		newKnown[id] = true
 		c.tenantAbsenceCount[id] = 0
 	}
+
 	for id := range previousKnown {
 		if currentTenants[id] {
 			continue
 		}
+
 		abs := c.tenantAbsenceCount[id] + 1
+
 		c.tenantAbsenceCount[id] = abs
 		if abs < absentSyncsBeforeRemoval {
 			newKnown[id] = true
 		} else {
 			delete(c.tenantAbsenceCount, id)
+
 			if _, running := c.tenants[id]; running {
 				removedTenants = append(removedTenants, id)
 			}
 		}
 	}
+
 	c.knownTenants = newKnown
 
 	// Identify NEW tenants (in current list but not running)
+
 	var newTenants []string
+
 	for _, tenantID := range validTenantIDs {
 		if _, exists := c.tenants[tenantID]; !exists {
 			newTenants = append(newTenants, tenantID)
@@ -450,8 +476,29 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 	}
 
 	// Stop removed tenants and close their database connections
+	c.stopRemovedTenants(ctx, removedTenants, logger)
+
+	// Lazy mode: new tenants are recorded in knownTenants (already done above)
+	// but consumers are NOT started here. Consumer spawning is deferred to
+	// on-demand triggers (e.g., ensureConsumerStarted in T-002).
+	if len(newTenants) > 0 {
+		logger.Infof("discovered %d new tenants (lazy mode, consumers deferred): %v",
+			len(newTenants), newTenants)
+	}
+
+	logger.Infof("sync complete: %d known, %d active, %d discovered, %d removed",
+		len(c.knownTenants), len(c.tenants), len(newTenants), len(removedTenants))
+
+	return nil
+}
+
+// stopRemovedTenants cancels consumer goroutines and closes database connections for
+// tenants that have been removed from the known tenant registry.
+// Caller MUST hold c.mu write lock.
+func (c *MultiTenantConsumer) stopRemovedTenants(ctx context.Context, removedTenants []string, logger libLog.Logger) {
 	for _, tenantID := range removedTenants {
 		logger.Infof("stopping consumer for removed tenant: %s", tenantID)
+
 		if cancel, ok := c.tenants[tenantID]; ok {
 			cancel()
 			delete(c.tenants, tenantID)
@@ -476,19 +523,6 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 			}
 		}
 	}
-
-	// Lazy mode: new tenants are recorded in knownTenants (already done above)
-	// but consumers are NOT started here. Consumer spawning is deferred to
-	// on-demand triggers (e.g., ensureConsumerStarted in T-002).
-	if len(newTenants) > 0 {
-		logger.Infof("discovered %d new tenants (lazy mode, consumers deferred): %v",
-			len(newTenants), newTenants)
-	}
-
-	logger.Infof("sync complete: %d known, %d active, %d discovered, %d removed",
-		len(c.knownTenants), len(c.tenants), len(newTenants), len(removedTenants))
-
-	return nil
 }
 
 // revalidateConnectionSettings fetches current settings from the Tenant Manager
@@ -513,15 +547,18 @@ func (c *MultiTenantConsumer) revalidateConnectionSettings(ctx context.Context) 
 	}
 
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.revalidate_connection_settings")
 	defer span.End()
 
 	// Snapshot current tenant IDs under lock to avoid holding the lock during HTTP calls
 	c.mu.RLock()
+
 	tenantIDs := make([]string, 0, len(c.tenants))
 	for tenantID := range c.tenants {
 		tenantIDs = append(tenantIDs, tenantID)
 	}
+
 	c.mu.RUnlock()
 
 	if len(tenantIDs) == 0 {
@@ -556,6 +593,7 @@ func (c *MultiTenantConsumer) revalidateConnectionSettings(ctx context.Context) 
 // fetchTenantIDs gets tenant IDs from Redis cache, falling back to Tenant Manager API.
 func (c *MultiTenantConsumer) fetchTenantIDs(ctx context.Context) ([]string, error) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.fetch_tenant_ids")
 	defer span.End()
 
@@ -577,6 +615,7 @@ func (c *MultiTenantConsumer) fetchTenantIDs(ctx context.Context) ([]string, err
 	// Fallback to Tenant Manager API
 	if c.pmClient != nil && c.config.Service != "" {
 		logger.Info("falling back to Tenant Manager API for tenant list")
+
 		tenants, apiErr := c.pmClient.GetActiveTenantsByService(ctx, c.config.Service)
 		if apiErr != nil {
 			logger.Errorf("Tenant Manager API fallback failed: %v", apiErr)
@@ -585,6 +624,7 @@ func (c *MultiTenantConsumer) fetchTenantIDs(ctx context.Context) ([]string, err
 			if err != nil {
 				return nil, err
 			}
+
 			return nil, apiErr
 		}
 
@@ -593,7 +633,9 @@ func (c *MultiTenantConsumer) fetchTenantIDs(ctx context.Context) ([]string, err
 		for i, t := range tenants {
 			ids[i] = t.ID
 		}
+
 		logger.Infof("fetched %d tenant IDs from Tenant Manager API", len(ids))
+
 		return ids, nil
 	}
 
@@ -601,6 +643,7 @@ func (c *MultiTenantConsumer) fetchTenantIDs(ctx context.Context) ([]string, err
 	if err != nil {
 		return nil, err
 	}
+
 	return []string{}, nil
 }
 
@@ -608,6 +651,7 @@ func (c *MultiTenantConsumer) fetchTenantIDs(ctx context.Context) ([]string, err
 // MUST be called with c.mu held.
 func (c *MultiTenantConsumer) startTenantConsumer(parentCtx context.Context, tenantID string) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(parentCtx)
+
 	parentCtx, span := tracer.Start(parentCtx, "consumer.multi_tenant_consumer.start_tenant_consumer")
 	defer span.End()
 
@@ -629,6 +673,7 @@ func (c *MultiTenantConsumer) consumeForTenant(ctx context.Context, tenantID str
 	ctx = SetTenantIDInContext(ctx, tenantID)
 
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.consume_for_tenant")
 	defer span.End()
 
@@ -637,10 +682,12 @@ func (c *MultiTenantConsumer) consumeForTenant(ctx context.Context, tenantID str
 
 	// Get all registered handlers (read-only, no lock needed after initial registration)
 	c.mu.RLock()
+
 	handlers := make(map[string]HandlerFunc, len(c.handlers))
 	for queue, handler := range c.handlers {
 		handlers[queue] = handler
 	}
+
 	c.mu.RUnlock()
 
 	// Consume from each registered queue
@@ -661,12 +708,13 @@ func (c *MultiTenantConsumer) consumeQueue(
 	tenantID string,
 	queueName string,
 	handler HandlerFunc,
-	logger libLog.Logger,
+	_ libLog.Logger,
 ) {
-	ctxLogger, _, _, _ := libCommons.NewTrackingFromContext(ctx)
-	logger = ctxLogger.WithFields("tenant_id", tenantID, "queue", queueName)
+	ctxLogger, _, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
+	logger := ctxLogger.WithFields("tenant_id", tenantID, "queue", queueName)
 
 	// Guard against nil RabbitMQ manager (e.g., during lazy mode testing)
+
 	if c.rabbitmq == nil {
 		logger.Warn("RabbitMQ manager is nil, cannot consume from queue")
 		return
@@ -699,7 +747,8 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 	handler HandlerFunc,
 	logger libLog.Logger,
 ) bool {
-	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
+
 	connCtx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.consume_connection")
 	defer span.End()
 
@@ -712,6 +761,7 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 		if justMarkedDegraded {
 			logger.Warnf("tenant %s marked as degraded after %d consecutive failures", tenantID, retryCount)
 		}
+
 		logger.Warnf("failed to get channel for tenant %s, retrying in %s (attempt %d): %v",
 			tenantID, delay, retryCount, err)
 		libOpentelemetry.HandleSpanError(&span, "failed to get channel", err)
@@ -725,12 +775,15 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 	}
 
 	// Set QoS
+
 	if err := ch.Qos(c.config.PrefetchCount, 0, false); err != nil {
 		ch.Close() // Close channel to prevent leak
+
 		delay, retryCount, justMarkedDegraded := state.incRetryAndMaybeMarkDegraded(maxRetryBeforeDegraded)
 		if justMarkedDegraded {
 			logger.Warnf("tenant %s marked as degraded after %d consecutive failures", tenantID, retryCount)
 		}
+
 		logger.Warnf("failed to set QoS for tenant %s, retrying in %s (attempt %d): %v",
 			tenantID, delay, retryCount, err)
 		libOpentelemetry.HandleSpanError(&span, "failed to set QoS", err)
@@ -744,6 +797,7 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 	}
 
 	// Start consuming
+
 	msgs, err := ch.Consume(
 		queueName,
 		"",    // consumer tag
@@ -755,10 +809,12 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 	)
 	if err != nil {
 		ch.Close() // Close channel to prevent leak
+
 		delay, retryCount, justMarkedDegraded := state.incRetryAndMaybeMarkDegraded(maxRetryBeforeDegraded)
 		if justMarkedDegraded {
 			logger.Warnf("tenant %s marked as degraded after %d consecutive failures", tenantID, retryCount)
 		}
+
 		logger.Warnf("failed to start consuming for tenant %s, retrying in %s (attempt %d): %v",
 			tenantID, delay, retryCount, err)
 		libOpentelemetry.HandleSpanError(&span, "failed to start consuming", err)
@@ -795,10 +851,10 @@ func (c *MultiTenantConsumer) processMessages(
 	handler HandlerFunc,
 	msgs <-chan amqp.Delivery,
 	notifyClose <-chan *amqp.Error,
-	logger libLog.Logger,
+	_ libLog.Logger,
 ) {
-	ctxLogger, _, _, _ := libCommons.NewTrackingFromContext(ctx)
-	logger = ctxLogger.WithFields("tenant_id", tenantID, "queue", queueName)
+	ctxLogger, _, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
+	logger := ctxLogger.WithFields("tenant_id", tenantID, "queue", queueName)
 
 	for {
 		select {
@@ -808,6 +864,7 @@ func (c *MultiTenantConsumer) processMessages(
 			if err != nil {
 				logger.Warnf("channel closed with error: %v", err)
 			}
+
 			return
 		case msg, ok := <-msgs:
 			if !ok {
@@ -829,7 +886,7 @@ func (c *MultiTenantConsumer) handleMessage(
 	msg amqp.Delivery,
 	logger libLog.Logger,
 ) {
-	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
 
 	// Process message with tenant context
 	msgCtx := SetTenantIDInContext(ctx, tenantID)
@@ -896,6 +953,7 @@ func (c *MultiTenantConsumer) resetRetryState(tenantID string) {
 			return
 		}
 	}
+
 	c.retryState.Store(tenantID, &retryStateEntry{})
 }
 
@@ -905,11 +963,14 @@ func (c *MultiTenantConsumer) resetRetryState(tenantID string) {
 // This is the primary entry point for on-demand consumer creation in lazy mode.
 func (c *MultiTenantConsumer) ensureConsumerStarted(ctx context.Context, tenantID string) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.ensure_consumer_started")
 	defer span.End()
 
 	// Fast path: check if consumer is already active (read lock only)
+
 	c.mu.RLock()
+
 	_, exists := c.tenants[tenantID]
 	closed := c.closed
 	c.mu.RUnlock()
@@ -926,6 +987,7 @@ func (c *MultiTenantConsumer) ensureConsumerStarted(ctx context.Context, tenantI
 	defer tenantMu.Unlock()
 
 	// Double-check under per-tenant lock
+
 	c.mu.RLock()
 	_, exists = c.tenants[tenantID]
 	closed = c.closed
@@ -995,11 +1057,13 @@ func (c *MultiTenantConsumer) Close() error {
 	}
 
 	// Clear the maps
+
 	c.tenants = make(map[string]context.CancelFunc)
 	c.knownTenants = make(map[string]bool)
 	c.tenantAbsenceCount = make(map[string]int)
 
 	c.logger.Info("multi-tenant consumer closed")
+
 	return nil
 }
 
@@ -1024,7 +1088,9 @@ func (c *MultiTenantConsumer) Stats() MultiTenantConsumerStats {
 	}
 
 	// Compute pending tenants (known but not yet active)
+
 	pendingTenantIDs := make([]string, 0)
+
 	for id := range c.knownTenants {
 		if _, active := c.tenants[id]; !active {
 			pendingTenantIDs = append(pendingTenantIDs, id)
@@ -1033,10 +1099,12 @@ func (c *MultiTenantConsumer) Stats() MultiTenantConsumerStats {
 
 	// Collect degraded tenants from retry state
 	degradedTenantIDs := make([]string, 0)
+
 	c.retryState.Range(func(key, value any) bool {
 		if entry, ok := value.(*retryStateEntry); ok && entry.isDegraded() {
 			degradedTenantIDs = append(degradedTenantIDs, key.(string))
 		}
+
 		return true
 	})
 

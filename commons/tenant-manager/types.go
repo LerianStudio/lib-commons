@@ -15,7 +15,7 @@ type PostgreSQLConfig struct {
 	Port     int    `json:"port"`
 	Database string `json:"database"`
 	Username string `json:"username"`
-	Password string `json:"password"`
+	Password string `json:"password"` //nolint:gosec // G101 - This is a DTO field for tenant database credentials, not a hardcoded secret
 	Schema   string `json:"schema,omitempty"`
 	SSLMode  string `json:"sslmode,omitempty"`
 }
@@ -27,7 +27,7 @@ type MongoDBConfig struct {
 	Port             int    `json:"port,omitempty"`
 	Database         string `json:"database"`
 	Username         string `json:"username,omitempty"`
-	Password         string `json:"password,omitempty"`
+	Password         string `json:"password,omitempty"` //nolint:gosec // G101 - This is a DTO field for tenant database credentials, not a hardcoded secret
 	URI              string `json:"uri,omitempty"`
 	AuthSource       string `json:"authSource,omitempty"`
 	DirectConnection bool   `json:"directConnection,omitempty"`
@@ -40,7 +40,7 @@ type RabbitMQConfig struct {
 	Port     int    `json:"port"`
 	VHost    string `json:"vhost"`
 	Username string `json:"username"`
-	Password string `json:"password"`
+	Password string `json:"password"` //nolint:gosec // G101 - This is a DTO field for tenant RabbitMQ credentials, not a hardcoded secret
 }
 
 // MessagingConfig holds messaging configuration for a tenant.
@@ -91,7 +91,9 @@ func sortedDatabaseKeys(databases map[string]DatabaseConfig) []string {
 	for k := range databases {
 		keys = append(keys, k)
 	}
+
 	sort.Strings(keys)
+
 	return keys
 }
 
@@ -109,6 +111,7 @@ func (tc *TenantConfig) GetPostgreSQLConfig(service, module string) *PostgreSQLC
 		if db, ok := tc.Databases[module]; ok {
 			return db.PostgreSQL
 		}
+
 		return nil
 	}
 
@@ -138,6 +141,7 @@ func (tc *TenantConfig) GetPostgreSQLReplicaConfig(service, module string) *Post
 		if db, ok := tc.Databases[module]; ok {
 			return db.PostgreSQLReplica
 		}
+
 		return nil
 	}
 
@@ -166,6 +170,7 @@ func (tc *TenantConfig) GetMongoDBConfig(service, module string) *MongoDBConfig 
 		if db, ok := tc.Databases[module]; ok {
 			return db.MongoDB
 		}
+
 		return nil
 	}
 
@@ -198,6 +203,7 @@ func (tc *TenantConfig) GetRabbitMQConfig() *RabbitMQConfig {
 	if tc.Messaging == nil {
 		return nil
 	}
+
 	return tc.Messaging.RabbitMQ
 }
 

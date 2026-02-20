@@ -97,9 +97,9 @@ func WithModule(module string) PostgresOption {
 // that have been idle longer than the idle timeout are eligible for eviction. If all
 // connections are active (used within the idle timeout), the pool grows beyond this limit.
 // A value of 0 (default) means unlimited.
-func WithMaxTenantPools(max int) PostgresOption {
+func WithMaxTenantPools(maxSize int) PostgresOption {
 	return func(p *PostgresManager) {
-		p.maxConnections = max
+		p.maxConnections = maxSize
 	}
 }
 
@@ -116,7 +116,7 @@ func WithIdleTimeout(d time.Duration) PostgresOption {
 }
 
 // Deprecated: Use WithMaxTenantPools instead.
-func WithMaxConnections(max int) PostgresOption { return WithMaxTenantPools(max) }
+func WithMaxConnections(maxSize int) PostgresOption { return WithMaxTenantPools(maxSize) }
 
 // NewPostgresManager creates a new PostgreSQL connection manager.
 func NewPostgresManager(client *Client, service string, opts ...PostgresOption) *PostgresManager {
@@ -147,6 +147,7 @@ func (p *PostgresManager) GetConnection(ctx context.Context, tenantID string) (*
 	}
 
 	p.mu.RLock()
+
 	if p.closed {
 		p.mu.RUnlock()
 		return nil, ErrManagerClosed
@@ -165,7 +166,7 @@ func (p *PostgresManager) GetConnection(ctx context.Context, tenantID string) (*
 					p.logger.Warnf("cached postgres connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr)
 				}
 
-				p.CloseConnection(tenantID)
+				_ = p.CloseConnection(tenantID)
 
 				// Fall through to create a new connection with fresh credentials
 				return p.createConnection(ctx, tenantID)
@@ -188,6 +189,7 @@ func (p *PostgresManager) GetConnection(ctx context.Context, tenantID string) (*
 // createConnection fetches config from Tenant Manager and creates a connection.
 func (p *PostgresManager) createConnection(ctx context.Context, tenantID string) (*libPostgres.PostgresConnection, error) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
 	ctx, span := tracer.Start(ctx, "postgres.create_connection")
 	defer span.End()
 
@@ -240,35 +242,8 @@ func (p *PostgresManager) createConnection(ctx context.Context, tenantID string)
 		logger.Infof("using separate replica connection for tenant %s (replica host: %s)", tenantID, pgReplicaConfig.Host)
 	}
 
-	// Start with global defaults for connection pool settings
-	maxOpen := p.maxOpenConns
-	maxIdle := p.maxIdleConns
-
-	// Apply per-module connection pool settings from Tenant Manager (overrides global defaults).
-	// First check module-level settings (new format), then fall back to top-level settings (legacy).
-	var connSettings *ConnectionSettings
-	if p.module != "" {
-		if db, ok := config.Databases[p.module]; ok && db.ConnectionSettings != nil {
-			connSettings = db.ConnectionSettings
-		}
-	}
-
-	// Fall back to top-level ConnectionSettings for backward compatibility with older data
-	if connSettings == nil && config.ConnectionSettings != nil {
-		connSettings = config.ConnectionSettings
-	}
-
-	if connSettings != nil {
-		if connSettings.MaxOpenConns > 0 {
-			maxOpen = connSettings.MaxOpenConns
-			logger.Infof("applying per-module maxOpenConns=%d for tenant %s module %s (global default: %d)", maxOpen, tenantID, p.module, p.maxOpenConns)
-		}
-
-		if connSettings.MaxIdleConns > 0 {
-			maxIdle = connSettings.MaxIdleConns
-			logger.Infof("applying per-module maxIdleConns=%d for tenant %s module %s (global default: %d)", maxIdle, tenantID, p.module, p.maxIdleConns)
-		}
-	}
+	// Resolve connection pool settings (module-level overrides global defaults)
+	maxOpen, maxIdle := p.resolveConnectionPoolSettings(config, tenantID, logger)
 
 	conn := &libPostgres.PostgresConnection{
 		ConnectionStringPrimary: primaryConnStr,
@@ -292,6 +267,7 @@ func (p *PostgresManager) createConnection(ctx context.Context, tenantID string)
 	if err := conn.Connect(); err != nil {
 		logger.Errorf("failed to connect to tenant database: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "failed to connect", err)
+
 		return nil, fmt.Errorf("failed to connect to tenant database: %w", err)
 	}
 
@@ -308,6 +284,43 @@ func (p *PostgresManager) createConnection(ctx context.Context, tenantID string)
 	logger.Infof("created connection for tenant %s (mode: %s)", tenantID, config.IsolationMode)
 
 	return conn, nil
+}
+
+// resolveConnectionPoolSettings determines the effective maxOpen and maxIdle connection
+// settings for a tenant. It checks module-level settings first (new format), then falls
+// back to top-level settings (legacy), and finally uses global defaults.
+func (p *PostgresManager) resolveConnectionPoolSettings(config *TenantConfig, tenantID string, logger libLog.Logger) (maxOpen, maxIdle int) {
+	maxOpen = p.maxOpenConns
+	maxIdle = p.maxIdleConns
+
+	// Apply per-module connection pool settings from Tenant Manager (overrides global defaults).
+	// First check module-level settings (new format), then fall back to top-level settings (legacy).
+	var connSettings *ConnectionSettings
+
+	if p.module != "" {
+		if db, ok := config.Databases[p.module]; ok && db.ConnectionSettings != nil {
+			connSettings = db.ConnectionSettings
+		}
+	}
+
+	// Fall back to top-level ConnectionSettings for backward compatibility with older data
+	if connSettings == nil && config.ConnectionSettings != nil {
+		connSettings = config.ConnectionSettings
+	}
+
+	if connSettings != nil {
+		if connSettings.MaxOpenConns > 0 {
+			maxOpen = connSettings.MaxOpenConns
+			logger.Infof("applying per-module maxOpenConns=%d for tenant %s module %s (global default: %d)", maxOpen, tenantID, p.module, p.maxOpenConns)
+		}
+
+		if connSettings.MaxIdleConns > 0 {
+			maxIdle = connSettings.MaxIdleConns
+			logger.Infof("applying per-module maxIdleConns=%d for tenant %s module %s (global default: %d)", maxIdle, tenantID, p.module, p.maxIdleConns)
+		}
+	}
+
+	return maxOpen, maxIdle
 }
 
 // evictLRU removes the least recently used idle connection when the pool reaches the
@@ -329,6 +342,7 @@ func (p *PostgresManager) evictLRU(logger libLog.Logger) {
 
 	// Find the oldest connection that has been idle longer than the timeout
 	var oldestID string
+
 	var oldestTime time.Time
 
 	for id, t := range p.lastAccessed {
@@ -382,6 +396,7 @@ func (p *PostgresManager) Close() error {
 	p.closed = true
 
 	var errs []error
+
 	for tenantID, conn := range p.connections {
 		if conn.ConnectionDB != nil {
 			if err := (*conn.ConnectionDB).Close(); err != nil {
@@ -532,6 +547,7 @@ func NewTenantConnectionManager(client *Client, service, module string, logger l
 func (p *PostgresManager) WithConnectionLimits(maxOpen, maxIdle int) *PostgresManager {
 	p.maxOpenConns = maxOpen
 	p.maxIdleConns = maxIdle
+
 	return p
 }
 
@@ -551,11 +567,6 @@ func (p *PostgresManager) GetDefaultConnection() *libPostgres.PostgresConnection
 // IsMultiTenant returns true if the manager is configured with a Tenant Manager client.
 func (p *PostgresManager) IsMultiTenant() bool {
 	return p.client != nil
-}
-
-// buildDSN builds a PostgreSQL DSN (alias for backward compatibility).
-func buildDSN(cfg *PostgreSQLConfig) string {
-	return buildConnectionString(cfg)
 }
 
 // CreateDirectConnection creates a direct database connection from config.

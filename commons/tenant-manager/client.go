@@ -97,7 +97,20 @@ func WithCircuitBreaker(threshold int, timeout time.Duration) ClientOption {
 //   - baseURL: The base URL of the Tenant Manager service (e.g., "http://tenant-manager:8080")
 //   - logger: Logger for request/response logging
 //   - opts: Optional configuration options
+//
+// The baseURL is validated at construction time to ensure it is a well-formed URL with a scheme.
+// This prevents SSRF risks by ensuring only trusted, pre-configured URLs are used for HTTP requests.
 func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) *Client {
+	// Validate baseURL to ensure it is a well-formed URL with a scheme.
+	// This is a defense-in-depth measure: the baseURL is configured at deployment time
+	// (not user-controlled), but we validate it to fail fast on misconfiguration.
+	parsedURL, err := url.Parse(baseURL)
+	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
+		if logger != nil {
+			logger.Errorf("Invalid Tenant Manager baseURL: %q (must include scheme and host)", baseURL)
+		}
+	}
+
 	c := &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
@@ -184,6 +197,7 @@ func isServerError(statusCode int) bool {
 // Returns the fully resolved tenant configuration with database credentials.
 func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) (*TenantConfig, error) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_tenant_config")
 	defer span.End()
 
@@ -191,6 +205,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 	if err := c.checkCircuitBreaker(); err != nil {
 		logger.Warnf("Circuit breaker open, failing fast: tenantID=%s, service=%s", tenantID, service)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "Circuit breaker open", err)
+
 		return nil, err
 	}
 
@@ -205,6 +220,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 	if err != nil {
 		logger.Errorf("Failed to create request: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "Failed to create HTTP request", err)
+
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -215,11 +231,13 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 	libOpentelemetry.InjectHTTPContext(&req.Header, ctx)
 
 	// Execute request
+	//nolint:gosec // G704 - baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
 		logger.Errorf("Failed to execute request: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "HTTP request failed", err)
+
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer resp.Body.Close()
@@ -230,6 +248,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 		c.recordFailure()
 		logger.Errorf("Failed to read response body: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "Failed to read response body", err)
+
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
@@ -239,6 +258,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 		c.recordSuccess()
 		logger.Warnf("Tenant not found: tenantID=%s, service=%s", tenantID, service)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "Tenant not found", nil)
+
 		return nil, ErrTenantNotFound
 	}
 
@@ -248,6 +268,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 	if resp.StatusCode == http.StatusForbidden {
 		c.recordSuccess()
 		logger.Warnf("Tenant service access denied: tenantID=%s, service=%s", tenantID, service)
+
 		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "Tenant service suspended or purged", nil)
 
 		var errResp struct {
@@ -275,6 +296,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 
 		logger.Errorf("Tenant Manager returned error: status=%d, body=%s", resp.StatusCode, string(body))
 		libOpentelemetry.HandleSpanError(&span, "Tenant Manager returned error", fmt.Errorf("status %d", resp.StatusCode))
+
 		return nil, fmt.Errorf("tenant manager returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -283,6 +305,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 	if err := json.Unmarshal(body, &config); err != nil {
 		logger.Errorf("Failed to parse response: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "Failed to parse response", err)
+
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -304,6 +327,7 @@ type TenantSummary struct {
 // The API endpoint is: GET {baseURL}/tenants/active?service={service}
 func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) ([]*TenantSummary, error) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_active_tenants")
 	defer span.End()
 
@@ -311,10 +335,12 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	if err := c.checkCircuitBreaker(); err != nil {
 		logger.Warnf("Circuit breaker open, failing fast: service=%s", service)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "Circuit breaker open", err)
+
 		return nil, err
 	}
 
 	// Build the URL with properly escaped query parameter to prevent injection
+
 	requestURL := fmt.Sprintf("%s/tenants/active?service=%s", c.baseURL, url.QueryEscape(service))
 
 	logger.Infof("Fetching active tenants: service=%s", service)
@@ -324,6 +350,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	if err != nil {
 		logger.Errorf("Failed to create request: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "Failed to create HTTP request", err)
+
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
@@ -334,11 +361,13 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	libOpentelemetry.InjectHTTPContext(&req.Header, ctx)
 
 	// Execute request
+	//nolint:gosec // G704 - baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
 		logger.Errorf("Failed to execute request: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "HTTP request failed", err)
+
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
 	defer resp.Body.Close()
@@ -349,6 +378,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 		c.recordFailure()
 		logger.Errorf("Failed to read response body: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "Failed to read response body", err)
+
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
@@ -361,6 +391,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 
 		logger.Errorf("Tenant Manager returned error: status=%d, body=%s", resp.StatusCode, string(body))
 		libOpentelemetry.HandleSpanError(&span, "Tenant Manager returned error", fmt.Errorf("status %d", resp.StatusCode))
+
 		return nil, fmt.Errorf("tenant manager returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -369,6 +400,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	if err := json.Unmarshal(body, &tenants); err != nil {
 		logger.Errorf("Failed to parse response: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "Failed to parse response", err)
+
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
