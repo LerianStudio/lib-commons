@@ -123,7 +123,7 @@ func TestBuildConnectionString(t *testing.T) {
 				Database: "testdb",
 				SSLMode:  "disable",
 			},
-			expected: "host=localhost port=5432 user=user password=pass dbname=testdb sslmode=disable",
+			expected: "host=localhost port=5432 user=user password='pass' dbname=testdb sslmode=disable",
 		},
 		{
 			name: "builds connection string with schema in options",
@@ -136,7 +136,7 @@ func TestBuildConnectionString(t *testing.T) {
 				SSLMode:  "disable",
 				Schema:   "tenant_abc",
 			},
-			expected: "host=localhost port=5432 user=user password=pass dbname=testdb sslmode=disable options=-csearch_path=\"tenant_abc\"",
+			expected: "host=localhost port=5432 user=user password='pass' dbname=testdb sslmode=disable options=-csearch_path=\"tenant_abc\"",
 		},
 		{
 			name: "defaults sslmode to disable when empty",
@@ -147,7 +147,7 @@ func TestBuildConnectionString(t *testing.T) {
 				Password: "pass",
 				Database: "testdb",
 			},
-			expected: "host=localhost port=5432 user=user password=pass dbname=testdb sslmode=disable",
+			expected: "host=localhost port=5432 user=user password='pass' dbname=testdb sslmode=disable",
 		},
 		{
 			name: "uses provided sslmode",
@@ -159,7 +159,7 @@ func TestBuildConnectionString(t *testing.T) {
 				Database: "testdb",
 				SSLMode:  "require",
 			},
-			expected: "host=localhost port=5432 user=user password=pass dbname=testdb sslmode=require",
+			expected: "host=localhost port=5432 user=user password='pass' dbname=testdb sslmode=require",
 		},
 	}
 

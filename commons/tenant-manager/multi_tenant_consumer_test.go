@@ -109,6 +109,27 @@ func setupMiniredis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) 
 	return mr, client
 }
 
+// dummyRabbitMQManager returns a minimal non-nil *RabbitMQManager for tests that
+// do not exercise RabbitMQ connections. Required because NewMultiTenantConsumer
+// validates that rabbitmq is non-nil. A dummy Client is attached so that
+// consumer goroutines spawned by ensureConsumerStarted do not panic on nil
+// dereference; they will receive connection errors instead.
+func dummyRabbitMQManager() *RabbitMQManager {
+	dummyClient := NewClient("http://127.0.0.1:0", &mockLogger{})
+	return NewRabbitMQManager(dummyClient, "test-service")
+}
+
+// dummyRedisClient returns a miniredis-backed Redis client for tests that need a
+// non-nil redisClient but do not exercise Redis. The caller does not need to
+// close the returned client; it is registered for cleanup via t.Cleanup.
+func dummyRedisClient(t *testing.T) redis.UniversalClient {
+	t.Helper()
+
+	_, client := setupMiniredis(t)
+
+	return client
+}
+
 // setupTenantManagerAPIServer creates an httptest server that returns active tenants.
 func setupTenantManagerAPIServer(t *testing.T, tenants []*TenantSummary) *httptest.Server {
 	t.Helper()
@@ -280,12 +301,9 @@ func TestMultiTenantConsumer_Run_LazyMode(t *testing.T) {
 				Service:         "test-service",
 			}
 
-			// Create RabbitMQ manager (nil is fine - we should not connect during Run)
-			var rabbitmqManager *RabbitMQManager
-
 			// Create the consumer
 			consumer := NewMultiTenantConsumer(
-				rabbitmqManager,
+				dummyRabbitMQManager(),
 				redisClient,
 				config,
 				&mockLogger{},
@@ -362,7 +380,7 @@ func TestMultiTenantConsumer_Run_SignatureUnchanged(t *testing.T) {
 			var fn func(ctx context.Context) error
 
 			_, redisClient := setupMiniredis(t)
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -411,7 +429,7 @@ func TestMultiTenantConsumer_DiscoverTenants_ReuseFetchTenantIDs(t *testing.T) {
 				mr.SAdd(noServiceKey, id)
 			}
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -473,7 +491,7 @@ func TestMultiTenantConsumer_Run_StartupLog(t *testing.T) {
 			logger := &capturingLogger{}
 
 			consumer := NewMultiTenantConsumer(
-				nil,
+				dummyRabbitMQManager(),
 				redisClient,
 				config,
 				logger,
@@ -530,7 +548,7 @@ func TestMultiTenantConsumer_Run_BackgroundSyncStarts(t *testing.T) {
 			}
 
 			consumer := NewMultiTenantConsumer(
-				nil,
+				dummyRabbitMQManager(),
 				redisClient,
 				config,
 				&mockLogger{},
@@ -615,7 +633,7 @@ func TestMultiTenantConsumer_Run_ReadinessWithinDeadline(t *testing.T) {
 				Service:         "test-service",
 			}
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, config, &mockLogger{})
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, &mockLogger{})
 
 			ctx, cancel := context.WithTimeout(context.Background(), readinessDeadline)
 			defer cancel()
@@ -675,7 +693,7 @@ func TestMultiTenantConsumer_Run_StartupTimeVariance(t *testing.T) {
 				Service:         "test-service",
 			}
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, config, &mockLogger{})
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, &mockLogger{})
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -759,7 +777,7 @@ func TestMultiTenantConsumer_DiscoveryFailure_LogsWarning(t *testing.T) {
 			}
 
 			logger := &capturingLogger{}
-			consumer := NewMultiTenantConsumer(nil, redisClient, config, logger)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, logger)
 
 			// Set the capturing logger in context so NewTrackingFromContext returns it
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -876,7 +894,7 @@ func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 
 			_, redisClient := setupMiniredis(t)
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, tt.config, &mockLogger{})
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, tt.config, &mockLogger{})
 
 			assert.NotNil(t, consumer, "consumer must not be nil")
 			assert.Equal(t, tt.expectedSync, consumer.config.SyncInterval)
@@ -934,7 +952,7 @@ func TestMultiTenantConsumer_Stats(t *testing.T) {
 
 			_, redisClient := setupMiniredis(t)
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -979,7 +997,7 @@ func TestMultiTenantConsumer_Close(t *testing.T) {
 
 			_, redisClient := setupMiniredis(t)
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -1039,7 +1057,7 @@ func TestMultiTenantConsumer_SyncTenants_RemovesTenants(t *testing.T) {
 				mr.SAdd(testActiveTenantsKey, id)
 			}
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -1132,7 +1150,7 @@ func TestMultiTenantConsumer_SyncTenants_LazyMode(t *testing.T) {
 				mr.SAdd(testActiveTenantsKey, id)
 			}
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -1219,7 +1237,7 @@ func TestMultiTenantConsumer_SyncTenants_RemovalCleansKnownTenants(t *testing.T)
 				mr.SAdd(testActiveTenantsKey, id)
 			}
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -1301,7 +1319,7 @@ func TestMultiTenantConsumer_SyncTenants_SyncLoopContinuesOnError(t *testing.T) 
 			// Populate tenants
 			mr.SAdd(testActiveTenantsKey, "tenant-001")
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    100 * time.Millisecond,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -1355,7 +1373,7 @@ func TestMultiTenantConsumer_SyncTenants_ClosedConsumer(t *testing.T) {
 			mr, redisClient := setupMiniredis(t)
 			mr.SAdd(testActiveTenantsKey, "tenant-001")
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -1448,7 +1466,7 @@ func TestMultiTenantConsumer_FetchTenantIDs(t *testing.T) {
 				Service:         "test-service",
 			}
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, config, &mockLogger{})
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, &mockLogger{})
 
 			ids, err := consumer.fetchTenantIDs(context.Background())
 
@@ -1499,7 +1517,7 @@ func TestMultiTenantConsumer_Register(t *testing.T) {
 
 			_, redisClient := setupMiniredis(t)
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -1542,7 +1560,7 @@ func TestMultiTenantConsumer_NilLogger(t *testing.T) {
 			_, redisClient := setupMiniredis(t)
 
 			assert.NotPanics(t, func() {
-				consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+				consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 					SyncInterval:    30 * time.Second,
 					WorkersPerQueue: 1,
 					PrefetchCount:   10,
@@ -1640,7 +1658,7 @@ func TestMultiTenantConsumer_SyncTenants_FiltersInvalidIDs(t *testing.T) {
 				mr.SAdd(testActiveTenantsKey, id)
 			}
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -1704,7 +1722,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_SpawnsExactlyOnce(t *testing.
 
 			_, redisClient := setupMiniredis(t)
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -1778,7 +1796,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_NoopWhenActive(t *testing.T) 
 
 			_, redisClient := setupMiniredis(t)
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -1840,7 +1858,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_SkipsWhenClosed(t *testing.T)
 
 			_, redisClient := setupMiniredis(t)
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -1891,7 +1909,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_MultipleTenants(t *testing.T)
 
 			_, redisClient := setupMiniredis(t)
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -1958,7 +1976,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_PublicAPI(t *testing.T) {
 
 			_, redisClient := setupMiniredis(t)
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -2073,7 +2091,7 @@ func TestMultiTenantConsumer_RetryState(t *testing.T) {
 
 			_, redisClient := setupMiniredis(t)
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -2117,7 +2135,7 @@ func TestMultiTenantConsumer_RetryStateIsolation(t *testing.T) {
 
 			_, redisClient := setupMiniredis(t)
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -2217,7 +2235,7 @@ func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 				mr.SAdd(testActiveTenantsKey, id)
 			}
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -2358,7 +2376,7 @@ func TestMultiTenantConsumer_StructuredLogEvents(t *testing.T) {
 
 			logger := &capturingLogger{}
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -2443,7 +2461,7 @@ func BenchmarkMultiTenantConsumer_Run_Startup(b *testing.B) {
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				consumer := NewMultiTenantConsumer(nil, redisClient, config, &mockLogger{})
+				consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, &mockLogger{})
 
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				err := consumer.Run(ctx)
@@ -2583,7 +2601,7 @@ func TestMultiTenantConsumer_FetchTenantIDs_EnvironmentAwareKey(t *testing.T) {
 				Service:         tt.service,
 			}
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, config, &mockLogger{})
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, &mockLogger{})
 
 			ids, err := consumer.fetchTenantIDs(context.Background())
 			assert.NoError(t, err, "fetchTenantIDs should not return error")
@@ -2658,7 +2676,7 @@ func TestMultiTenantConsumer_WithOptions(t *testing.T) {
 				opts = append(opts, WithConsumerMongoManager(mongoManager))
 			}
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, MultiTenantConfig{
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
@@ -2739,7 +2757,7 @@ func TestMultiTenantConsumer_SyncTenants_ClosesConnectionsOnRemoval(t *testing.T
 				connections: make(map[string]*mongolib.MongoConnection),
 			}
 
-			consumer := NewMultiTenantConsumer(nil, redisClient, config, logger,
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, logger,
 				WithConsumerPostgresManager(pgManager),
 				WithConsumerMongoManager(mongoManager),
 			)
@@ -2839,7 +2857,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 			SyncInterval: 30 * time.Second,
 		}
 
-		consumer := NewMultiTenantConsumer(nil, nil, config, logger,
+		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), dummyRedisClient(t), config, logger,
 			WithConsumerPostgresManager(pgManager),
 		)
 		consumer.pmClient = tmClient
@@ -2872,7 +2890,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 			SyncInterval: 30 * time.Second,
 		}
 
-		consumer := NewMultiTenantConsumer(nil, nil, config, logger)
+		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), dummyRedisClient(t), config, logger)
 
 		ctx := context.Background()
 		ctx = libCommons.ContextWithLogger(ctx, logger)
@@ -2895,7 +2913,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 			SyncInterval: 30 * time.Second,
 		}
 
-		consumer := NewMultiTenantConsumer(nil, nil, config, logger,
+		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), dummyRedisClient(t), config, logger,
 			WithConsumerPostgresManager(pgManager),
 		)
 		// Explicitly ensure no pmClient
@@ -2928,7 +2946,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 			SyncInterval: 30 * time.Second,
 		}
 
-		consumer := NewMultiTenantConsumer(nil, nil, config, logger,
+		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), dummyRedisClient(t), config, logger,
 			WithConsumerPostgresManager(pgManager),
 		)
 		consumer.pmClient = tmClient
@@ -2990,7 +3008,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 			SyncInterval: 30 * time.Second,
 		}
 
-		consumer := NewMultiTenantConsumer(nil, nil, config, logger,
+		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), dummyRedisClient(t), config, logger,
 			WithConsumerPostgresManager(pgManager),
 		)
 		consumer.pmClient = tmClient

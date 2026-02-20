@@ -1,9 +1,16 @@
 package tenantmanager
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNewTenantMiddleware(t *testing.T) {
@@ -151,5 +158,131 @@ func TestTenantMiddleware_Enabled(t *testing.T) {
 			WithMongoManager(mongoManager),
 		)
 		assert.True(t, middleware.Enabled())
+	})
+}
+
+// buildTestJWT constructs a minimal unsigned JWT token string from the given claims.
+// The token is not cryptographically signed (signature is empty), which is acceptable
+// because the middleware uses ParseUnverified (lib-auth already validated the token).
+func buildTestJWT(claims map[string]any) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none","typ":"JWT"}`))
+
+	payload, _ := json.Marshal(claims)
+	encodedPayload := base64.RawURLEncoding.EncodeToString(payload)
+
+	return header + "." + encodedPayload + "."
+}
+
+func TestTenantMiddleware_WithTenantDB(t *testing.T) {
+	t.Run("no Authorization header returns 401", func(t *testing.T) {
+		client := &Client{baseURL: "http://localhost:8080"}
+		pgManager := NewPostgresManager(client, "ledger")
+
+		middleware := NewTenantMiddleware(WithPostgresManager(pgManager))
+
+		app := fiber.New()
+		app.Use(middleware.WithTenantDB)
+		app.Get("/test", func(c *fiber.Ctx) error {
+			return c.SendString("ok")
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		resp, err := app.Test(req, -1)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(body), "MISSING_TOKEN")
+	})
+
+	t.Run("malformed JWT returns 401", func(t *testing.T) {
+		client := &Client{baseURL: "http://localhost:8080"}
+		mongoManager := NewMongoManager(client, "ledger")
+
+		middleware := NewTenantMiddleware(WithMongoManager(mongoManager))
+
+		app := fiber.New()
+		app.Use(middleware.WithTenantDB)
+		app.Get("/test", func(c *fiber.Ctx) error {
+			return c.SendString("ok")
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req.Header.Set("Authorization", "Bearer not-a-valid-jwt")
+		resp, err := app.Test(req, -1)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(body), "INVALID_TOKEN")
+	})
+
+	t.Run("valid JWT missing tenantId claim returns 401", func(t *testing.T) {
+		client := &Client{baseURL: "http://localhost:8080"}
+		pgManager := NewPostgresManager(client, "ledger")
+
+		middleware := NewTenantMiddleware(WithPostgresManager(pgManager))
+
+		token := buildTestJWT(map[string]any{
+			"sub":   "user-123",
+			"email": "test@example.com",
+		})
+
+		app := fiber.New()
+		app.Use(middleware.WithTenantDB)
+		app.Get("/test", func(c *fiber.Ctx) error {
+			return c.SendString("ok")
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := app.Test(req, -1)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(body), "MISSING_TENANT")
+	})
+
+	t.Run("valid JWT with tenantId calls next handler", func(t *testing.T) {
+		// Create an enabled middleware with no real managers configured.
+		// Both postgres and mongo pointers remain nil, so the middleware skips
+		// DB resolution and proceeds to c.Next() after JWT parsing.
+		middleware := &TenantMiddleware{enabled: true}
+
+		token := buildTestJWT(map[string]any{
+			"sub":      "user-123",
+			"tenantId": "tenant-abc",
+		})
+
+		var capturedTenantID string
+		nextCalled := false
+
+		app := fiber.New()
+		app.Use(middleware.WithTenantDB)
+		app.Get("/test", func(c *fiber.Ctx) error {
+			nextCalled = true
+			capturedTenantID = GetTenantIDFromContext(c.UserContext())
+			return c.SendString("ok")
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := app.Test(req, -1)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.True(t, nextCalled, "next handler should have been called")
+		assert.Equal(t, "tenant-abc", capturedTenantID, "tenantId should be injected in context")
 	})
 }

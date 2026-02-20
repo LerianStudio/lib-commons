@@ -131,6 +131,65 @@ func TestBuildMongoURI(t *testing.T) {
 
 		assert.Equal(t, "mongodb://localhost:27017/testdb", uri)
 	})
+
+	t.Run("URL-encodes special characters in credentials", func(t *testing.T) {
+		tests := []struct {
+			name             string
+			username         string
+			password         string
+			expectedUser     string
+			expectedPassword string
+		}{
+			{
+				name:             "at sign in password",
+				username:         "admin",
+				password:         "p@ss",
+				expectedUser:     "admin",
+				expectedPassword: "p%40ss",
+			},
+			{
+				name:             "colon in password",
+				username:         "admin",
+				password:         "p:ss",
+				expectedUser:     "admin",
+				expectedPassword: "p%3Ass",
+			},
+			{
+				name:             "slash in password",
+				username:         "admin",
+				password:         "p/ss",
+				expectedUser:     "admin",
+				expectedPassword: "p%2Fss",
+			},
+			{
+				name:             "special characters in both username and password",
+				username:         "user@domain",
+				password:         "p@ss:w/rd",
+				expectedUser:     "user%40domain",
+				expectedPassword: "p%40ss%3Aw%2Frd",
+			},
+		}
+
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				cfg := &MongoDBConfig{
+					Host:     "localhost",
+					Port:     27017,
+					Database: "testdb",
+					Username: tt.username,
+					Password: tt.password,
+				}
+
+				uri := buildMongoURI(cfg)
+
+				expectedURI := fmt.Sprintf("mongodb://%s:%s@localhost:27017/testdb",
+					tt.expectedUser, tt.expectedPassword)
+				assert.Equal(t, expectedURI, uri)
+				assert.Contains(t, uri, tt.expectedUser)
+				assert.Contains(t, uri, tt.expectedPassword)
+			})
+		}
+	})
 }
 
 func TestContextWithTenantMongo(t *testing.T) {

@@ -14,26 +14,53 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// mockLogger is a no-op implementation of libLog.Logger for unit tests.
+// It discards all log output, allowing tests to focus on business logic.
 type mockLogger struct{}
 
-func (m *mockLogger) Info(args ...any)                                  {}
-func (m *mockLogger) Infof(format string, args ...any)                  {}
-func (m *mockLogger) Infoln(args ...any)                                {}
-func (m *mockLogger) Error(args ...any)                                 {}
-func (m *mockLogger) Errorf(format string, args ...any)                 {}
-func (m *mockLogger) Errorln(args ...any)                               {}
-func (m *mockLogger) Warn(args ...any)                                  {}
-func (m *mockLogger) Warnf(format string, args ...any)                  {}
-func (m *mockLogger) Warnln(args ...any)                                {}
-func (m *mockLogger) Debug(args ...any)                                 {}
-func (m *mockLogger) Debugf(format string, args ...any)                 {}
-func (m *mockLogger) Debugln(args ...any)                               {}
-func (m *mockLogger) Fatal(args ...any)                                 {}
-func (m *mockLogger) Fatalf(format string, args ...any)                 {}
-func (m *mockLogger) Fatalln(args ...any)                               {}
-func (m *mockLogger) WithFields(fields ...any) libLog.Logger            { return m }
-func (m *mockLogger) WithDefaultMessageTemplate(s string) libLog.Logger { return m }
+func (m *mockLogger) Info(_ ...any)                                  {}
+func (m *mockLogger) Infof(_ string, _ ...any)                       {}
+func (m *mockLogger) Infoln(_ ...any)                                {}
+func (m *mockLogger) Error(_ ...any)                                 {}
+func (m *mockLogger) Errorf(_ string, _ ...any)                      {}
+func (m *mockLogger) Errorln(_ ...any)                               {}
+func (m *mockLogger) Warn(_ ...any)                                  {}
+func (m *mockLogger) Warnf(_ string, _ ...any)                       {}
+func (m *mockLogger) Warnln(_ ...any)                                {}
+func (m *mockLogger) Debug(_ ...any)                                 {}
+func (m *mockLogger) Debugf(_ string, _ ...any)                      {}
+func (m *mockLogger) Debugln(_ ...any)                               {}
+func (m *mockLogger) Fatal(_ ...any)                                 {}
+func (m *mockLogger) Fatalf(_ string, _ ...any)                      {}
+func (m *mockLogger) Fatalln(_ ...any)                               {}
+func (m *mockLogger) WithFields(_ ...any) libLog.Logger              { return m }
+func (m *mockLogger) WithDefaultMessageTemplate(_ string) libLog.Logger { return m }
 func (m *mockLogger) Sync() error                                       { return nil }
+
+// newTestTenantConfig returns a fully populated TenantConfig for test assertions.
+// Callers can override fields after construction for specific test scenarios.
+func newTestTenantConfig() TenantConfig {
+	return TenantConfig{
+		ID:            "tenant-123",
+		TenantSlug:    "test-tenant",
+		TenantName:    "Test Tenant",
+		Service:       "ledger",
+		Status:        "active",
+		IsolationMode: "database",
+		Databases: map[string]DatabaseConfig{
+			"onboarding": {
+				PostgreSQL: &PostgreSQLConfig{
+					Host:     "localhost",
+					Port:     5432,
+					Database: "test_db",
+					Username: "user",
+					Password: "pass",
+					SSLMode:  "disable",
+				},
+			},
+		},
+	}
+}
 
 func TestNewClient(t *testing.T) {
 	t.Run("creates client with defaults", func(t *testing.T) {
@@ -76,26 +103,7 @@ func TestNewClient(t *testing.T) {
 
 func TestClient_GetTenantConfig(t *testing.T) {
 	t.Run("successful response", func(t *testing.T) {
-		config := TenantConfig{
-			ID:            "tenant-123",
-			TenantSlug:    "test-tenant",
-			TenantName:    "Test Tenant",
-			Service:       "ledger",
-			Status:        "active",
-			IsolationMode: "database",
-			Databases: map[string]DatabaseConfig{
-				"onboarding": {
-					PostgreSQL: &PostgreSQLConfig{
-						Host:     "localhost",
-						Port:     5432,
-						Database: "test_db",
-						Username: "user",
-						Password: "pass",
-						SSLMode:  "disable",
-					},
-				},
-			},
-		}
+		config := newTestTenantConfig()
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			assert.Equal(t, "/tenants/tenant-123/services/ledger/settings", r.URL.Path)
