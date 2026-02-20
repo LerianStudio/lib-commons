@@ -366,7 +366,7 @@ func (p *PostgresManager) evictLRU(logger libLog.Logger) {
 	// Evict the idle connection
 	if conn, ok := p.connections[oldestID]; ok {
 		if conn.ConnectionDB != nil {
-			(*conn.ConnectionDB).Close()
+			_ = (*conn.ConnectionDB).Close()
 		}
 
 		delete(p.connections, oldestID)
@@ -580,7 +580,7 @@ func CreateDirectConnection(ctx context.Context, cfg *PostgreSQLConfig) (*sql.DB
 	}
 
 	if err := db.PingContext(ctx); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 

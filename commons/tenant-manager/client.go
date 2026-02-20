@@ -231,7 +231,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 	libOpentelemetry.InjectHTTPContext(&req.Header, ctx)
 
 	// Execute request
-	//nolint:gosec // G704 - baseURL is validated at construction time and not user-controlled
+	// #nosec G704 -- baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
@@ -361,7 +361,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	libOpentelemetry.InjectHTTPContext(&req.Header, ctx)
 
 	// Execute request
-	//nolint:gosec // G704 - baseURL is validated at construction time and not user-controlled
+	// #nosec G704 -- baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()

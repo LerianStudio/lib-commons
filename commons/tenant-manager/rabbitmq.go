@@ -237,7 +237,7 @@ func (p *RabbitMQManager) evictLRU(logger log.Logger) {
 	// Evict the idle connection
 	if conn, ok := p.connections[oldestID]; ok {
 		if conn != nil && !conn.IsClosed() {
-			conn.Close()
+			_ = conn.Close()
 		}
 
 		delete(p.connections, oldestID)

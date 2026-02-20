@@ -777,7 +777,7 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 	// Set QoS
 
 	if err := ch.Qos(c.config.PrefetchCount, 0, false); err != nil {
-		ch.Close() // Close channel to prevent leak
+		_ = ch.Close() // Close channel to prevent leak
 
 		delay, retryCount, justMarkedDegraded := state.incRetryAndMaybeMarkDegraded(maxRetryBeforeDegraded)
 		if justMarkedDegraded {
@@ -808,7 +808,7 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 		nil,   // args
 	)
 	if err != nil {
-		ch.Close() // Close channel to prevent leak
+		_ = ch.Close() // Close channel to prevent leak
 
 		delay, retryCount, justMarkedDegraded := state.incRetryAndMaybeMarkDegraded(maxRetryBeforeDegraded)
 		if justMarkedDegraded {
