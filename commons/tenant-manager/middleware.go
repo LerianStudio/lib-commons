@@ -101,7 +101,8 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	accessToken := extractTokenFromHeader(c)
 	if accessToken == "" {
 		logger.Errorf("no authorization token - multi-tenant mode requires JWT with tenantId")
-		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "missing authorization token", nil)
+		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "missing authorization token",
+			errors.New("authorization token is required"))
 		return unauthorizedError(c, "MISSING_TOKEN", "Unauthorized", "Authorization token is required")
 	}
 
@@ -116,7 +117,8 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
 		logger.Errorf("JWT claims are not in expected format")
-		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "invalid claims format", nil)
+		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "invalid claims format",
+			errors.New("JWT claims are not in expected format"))
 		return unauthorizedError(c, "INVALID_TOKEN", "Unauthorized", "JWT claims are not in expected format")
 	}
 
@@ -124,7 +126,8 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	tenantID, _ := claims["tenantId"].(string)
 	if tenantID == "" {
 		logger.Errorf("no tenantId in JWT - multi-tenant mode requires tenantId claim")
-		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "missing tenantId in JWT", nil)
+		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "missing tenantId in JWT",
+			errors.New("tenantId is required in JWT token"))
 		return unauthorizedError(c, "MISSING_TENANT", "Unauthorized", "tenantId is required in JWT token")
 	}
 
@@ -190,18 +193,19 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 }
 
 // extractTokenFromHeader extracts the Bearer token from the Authorization header.
+// Only the "Bearer " scheme is accepted. Other schemes (e.g., "Basic ") return empty string.
 func extractTokenFromHeader(c *fiber.Ctx) string {
 	authHeader := c.Get("Authorization")
 	if authHeader == "" {
 		return ""
 	}
 
-	// Check if it's a Bearer token
+	// Only accept "Bearer " scheme; reject other schemes (e.g., "Basic ")
 	if strings.HasPrefix(authHeader, "Bearer ") {
 		return strings.TrimPrefix(authHeader, "Bearer ")
 	}
 
-	return authHeader
+	return ""
 }
 
 // forbiddenError sends an HTTP 403 Forbidden response.

@@ -186,11 +186,13 @@ type MultiTenantConsumer struct {
 
 // NewMultiTenantConsumer creates a new MultiTenantConsumer.
 // Parameters:
-//   - rabbitmq: RabbitMQ connection manager for tenant vhosts
-//   - redisClient: Redis client for tenant cache access
+//   - rabbitmq: RabbitMQ connection manager for tenant vhosts (must not be nil)
+//   - redisClient: Redis client for tenant cache access (must not be nil)
 //   - config: Consumer configuration
 //   - logger: Logger for operational logging
 //   - opts: Optional configuration options (e.g., WithConsumerPostgresManager, WithConsumerMongoManager)
+//
+// Panics if rabbitmq or redisClient is nil, as they are required for core functionality.
 func NewMultiTenantConsumer(
 	rabbitmq *RabbitMQManager,
 	redisClient redis.UniversalClient,
@@ -198,6 +200,13 @@ func NewMultiTenantConsumer(
 	logger libLog.Logger,
 	opts ...MultiTenantConsumerOption,
 ) *MultiTenantConsumer {
+	if rabbitmq == nil {
+		panic("tenantmanager.NewMultiTenantConsumer: rabbitmq must not be nil")
+	}
+	if redisClient == nil {
+		panic("tenantmanager.NewMultiTenantConsumer: redisClient must not be nil")
+	}
+
 	// Guard against nil logger to prevent panics downstream
 	if logger == nil {
 		logger = &libLog.NoneLogger{}
@@ -240,6 +249,10 @@ func NewMultiTenantConsumer(
 
 // Register adds a queue handler for all tenant vhosts.
 // The handler will be invoked for messages from the specified queue in each tenant's vhost.
+//
+// Handlers should be registered before calling Run(). Handlers registered after Run()
+// has been called will only take effect for tenants whose consumers are spawned after
+// the registration; already-running tenant consumers will NOT pick up the new handler.
 func (c *MultiTenantConsumer) Register(queueName string, handler HandlerFunc) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -713,6 +726,7 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 
 	// Set QoS
 	if err := ch.Qos(c.config.PrefetchCount, 0, false); err != nil {
+		ch.Close() // Close channel to prevent leak
 		delay, retryCount, justMarkedDegraded := state.incRetryAndMaybeMarkDegraded(maxRetryBeforeDegraded)
 		if justMarkedDegraded {
 			logger.Warnf("tenant %s marked as degraded after %d consecutive failures", tenantID, retryCount)
@@ -740,6 +754,7 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 		nil,   // args
 	)
 	if err != nil {
+		ch.Close() // Close channel to prevent leak
 		delay, retryCount, justMarkedDegraded := state.incRetryAndMaybeMarkDegraded(maxRetryBeforeDegraded)
 		if justMarkedDegraded {
 			logger.Warnf("tenant %s marked as degraded after %d consecutive failures", tenantID, retryCount)
@@ -829,7 +844,7 @@ func (c *MultiTenantConsumer) handleMessage(
 	if err := handler(msgCtx, msg); err != nil {
 		logger.Errorf("handler error for queue %s: %v", queueName, err)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "handler error", err)
-		// Nack with requeue
+
 		if nackErr := msg.Nack(false, true); nackErr != nil {
 			logger.Errorf("failed to nack message: %v", nackErr)
 		}

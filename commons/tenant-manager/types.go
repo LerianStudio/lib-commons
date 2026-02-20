@@ -3,7 +3,10 @@
 // and manages connections per tenant.
 package tenantmanager
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // PostgreSQLConfig holds PostgreSQL connection configuration.
 // Credentials are provided directly by the tenant-manager settings endpoint.
@@ -49,9 +52,9 @@ type MessagingConfig struct {
 // In the flat format returned by tenant-manager, the Databases map is keyed by module name
 // directly (e.g., "onboarding", "transaction"), without an intermediate service wrapper.
 type DatabaseConfig struct {
-	PostgreSQL         *PostgreSQLConfig  `json:"postgresql,omitempty"`
-	PostgreSQLReplica  *PostgreSQLConfig  `json:"postgresqlReplica,omitempty"`
-	MongoDB            *MongoDBConfig     `json:"mongodb,omitempty"`
+	PostgreSQL         *PostgreSQLConfig   `json:"postgresql,omitempty"`
+	PostgreSQLReplica  *PostgreSQLConfig   `json:"postgresqlReplica,omitempty"`
+	MongoDB            *MongoDBConfig      `json:"mongodb,omitempty"`
 	ConnectionSettings *ConnectionSettings `json:"connectionSettings,omitempty"`
 }
 
@@ -81,9 +84,20 @@ type TenantConfig struct {
 	UpdatedAt          time.Time                 `json:"updatedAt,omitempty"`
 }
 
+// sortedDatabaseKeys returns the keys of the Databases map in sorted order.
+// This ensures deterministic behavior when module is empty.
+func sortedDatabaseKeys(databases map[string]DatabaseConfig) []string {
+	keys := make([]string, 0, len(databases))
+	for k := range databases {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 // GetPostgreSQLConfig returns the PostgreSQL config for a module.
 // module: e.g., "onboarding", "transaction"
-// If module is empty, returns the first PostgreSQL config found.
+// If module is empty, returns the first PostgreSQL config found (sorted by key for determinism).
 // The service parameter is accepted for backward compatibility but is ignored
 // since the flat format returned by tenant-manager keys databases by module directly.
 func (tc *TenantConfig) GetPostgreSQLConfig(service, module string) *PostgreSQLConfig {
@@ -98,9 +112,10 @@ func (tc *TenantConfig) GetPostgreSQLConfig(service, module string) *PostgreSQLC
 		return nil
 	}
 
-	// Return first PostgreSQL config found
-	for _, db := range tc.Databases {
-		if db.PostgreSQL != nil {
+	// Return first PostgreSQL config found (deterministic: sorted by key)
+	keys := sortedDatabaseKeys(tc.Databases)
+	for _, key := range keys {
+		if db := tc.Databases[key]; db.PostgreSQL != nil {
 			return db.PostgreSQL
 		}
 	}
@@ -110,7 +125,7 @@ func (tc *TenantConfig) GetPostgreSQLConfig(service, module string) *PostgreSQLC
 
 // GetPostgreSQLReplicaConfig returns the PostgreSQL replica config for a module.
 // module: e.g., "onboarding", "transaction"
-// If module is empty, returns the first PostgreSQL replica config found.
+// If module is empty, returns the first PostgreSQL replica config found (sorted by key for determinism).
 // Returns nil if no replica is configured (callers should fall back to primary).
 // The service parameter is accepted for backward compatibility but is ignored
 // since the flat format returned by tenant-manager keys databases by module directly.
@@ -126,9 +141,10 @@ func (tc *TenantConfig) GetPostgreSQLReplicaConfig(service, module string) *Post
 		return nil
 	}
 
-	// Return first PostgreSQL replica config found
-	for _, db := range tc.Databases {
-		if db.PostgreSQLReplica != nil {
+	// Return first PostgreSQL replica config found (deterministic: sorted by key)
+	keys := sortedDatabaseKeys(tc.Databases)
+	for _, key := range keys {
+		if db := tc.Databases[key]; db.PostgreSQLReplica != nil {
 			return db.PostgreSQLReplica
 		}
 	}
@@ -138,7 +154,7 @@ func (tc *TenantConfig) GetPostgreSQLReplicaConfig(service, module string) *Post
 
 // GetMongoDBConfig returns the MongoDB config for a module.
 // module: e.g., "onboarding", "transaction"
-// If module is empty, returns the first MongoDB config found.
+// If module is empty, returns the first MongoDB config found (sorted by key for determinism).
 // The service parameter is accepted for backward compatibility but is ignored
 // since the flat format returned by tenant-manager keys databases by module directly.
 func (tc *TenantConfig) GetMongoDBConfig(service, module string) *MongoDBConfig {
@@ -153,9 +169,10 @@ func (tc *TenantConfig) GetMongoDBConfig(service, module string) *MongoDBConfig 
 		return nil
 	}
 
-	// Return first MongoDB config found
-	for _, db := range tc.Databases {
-		if db.MongoDB != nil {
+	// Return first MongoDB config found (deterministic: sorted by key)
+	keys := sortedDatabaseKeys(tc.Databases)
+	for _, key := range keys {
+		if db := tc.Databases[key]; db.MongoDB != nil {
 			return db.MongoDB
 		}
 	}

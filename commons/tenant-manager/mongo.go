@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -239,9 +241,13 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 
 	// Connect to MongoDB (handles client creation and ping internally)
 	if err := conn.Connect(ctx); err != nil {
+		logger.Errorf("failed to connect to MongoDB for tenant %s: %v", tenantID, err)
+		libOpentelemetry.HandleSpanError(&span, "failed to connect to MongoDB", err)
 		p.mu.Unlock()
 		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
+
+	logger.Infof("MongoDB connection created for tenant %s (database: %s)", tenantID, mongoConfig.Database)
 
 	// Evict least recently used connection if pool is full
 	p.evictLRU(ctx, logger)
@@ -357,12 +363,22 @@ func (p *MongoManager) GetDatabase(ctx context.Context, tenantID, database strin
 // GetDatabaseForTenant returns the MongoDB database for a tenant by fetching the config
 // and resolving the database name automatically. This is useful when you only have the
 // tenant ID and don't know the database name in advance.
+// It fetches the config once and reuses it, avoiding a redundant GetTenantConfig call
+// inside GetClient/createClient.
 func (p *MongoManager) GetDatabaseForTenant(ctx context.Context, tenantID string) (*mongo.Database, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant ID is required")
 	}
 
-	// Fetch tenant config from Tenant Manager
+	// GetClient handles config fetching internally, so we only need
+	// the config here to resolve the database name.
+	client, err := p.GetClient(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Fetch tenant config to resolve the database name.
+	// GetClient already cached the connection, so this is just for the DB name.
 	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
 	if err != nil {
 		// Propagate TenantSuspendedError directly so the middleware can
@@ -380,7 +396,7 @@ func (p *MongoManager) GetDatabaseForTenant(ctx context.Context, tenantID string
 		return nil, ErrServiceNotConfigured
 	}
 
-	return p.GetDatabase(ctx, tenantID, mongoConfig.Database)
+	return client.Database(mongoConfig.Database), nil
 }
 
 // Close closes all MongoDB connections.
@@ -390,11 +406,11 @@ func (p *MongoManager) Close(ctx context.Context) error {
 
 	p.closed = true
 
-	var lastErr error
+	var errs []error
 	for tenantID, conn := range p.connections {
 		if conn.DB != nil {
 			if err := conn.DB.Disconnect(ctx); err != nil {
-				lastErr = err
+				errs = append(errs, err)
 			}
 		}
 
@@ -402,7 +418,7 @@ func (p *MongoManager) Close(ctx context.Context) error {
 		delete(p.lastAccessed, tenantID)
 	}
 
-	return lastErr
+	return errors.Join(errs...)
 }
 
 // CloseClient closes the MongoDB client for a specific tenant.
@@ -447,10 +463,11 @@ func buildMongoURI(cfg *MongoDBConfig) string {
 
 	if cfg.Username != "" && cfg.Password != "" {
 		uri := fmt.Sprintf("mongodb://%s:%s@%s:%d/%s",
-			cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database)
+			url.QueryEscape(cfg.Username), url.QueryEscape(cfg.Password),
+			cfg.Host, cfg.Port, cfg.Database)
 
 		if len(params) > 0 {
-			uri += "?" + joinParams(params)
+			uri += "?" + strings.Join(params, "&")
 		}
 
 		return uri
@@ -458,22 +475,10 @@ func buildMongoURI(cfg *MongoDBConfig) string {
 
 	uri := fmt.Sprintf("mongodb://%s:%d/%s", cfg.Host, cfg.Port, cfg.Database)
 	if len(params) > 0 {
-		uri += "?" + joinParams(params)
+		uri += "?" + strings.Join(params, "&")
 	}
 
 	return uri
-}
-
-// joinParams joins URI parameters with &
-func joinParams(params []string) string {
-	result := ""
-	for i, p := range params {
-		if i > 0 {
-			result += "&"
-		}
-		result += p
-	}
-	return result
 }
 
 // ContextWithTenantMongo stores the MongoDB database in the context.

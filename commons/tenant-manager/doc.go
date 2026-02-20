@@ -47,7 +47,8 @@
 package tenantmanager
 
 const (
-	// PackageName is the name of this package, used for logging and identification.
+	// PackageName is a logical namespace used in log messages and metric labels.
+	// It is not the Go package name (which is "tenantmanager").
 	PackageName = "tenants"
 )
 

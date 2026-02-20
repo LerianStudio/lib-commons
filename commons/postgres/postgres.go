@@ -52,8 +52,8 @@ func (pc *PostgresConnection) Connect() error {
 
 	dbPrimary, err := sql.Open("pgx", pc.ConnectionStringPrimary)
 	if err != nil {
-		pc.Logger.Fatal("failed to open connect to primary database", zap.Error(err))
-		return nil
+		pc.Logger.Error("failed to open connect to primary database", zap.Error(err))
+		return err
 	}
 
 	dbPrimary.SetMaxOpenConns(pc.MaxOpenConnections)
@@ -62,8 +62,8 @@ func (pc *PostgresConnection) Connect() error {
 
 	dbReadOnlyReplica, err := sql.Open("pgx", pc.ConnectionStringReplica)
 	if err != nil {
-		pc.Logger.Fatal("failed to open connect to replica database", zap.Error(err))
-		return nil
+		pc.Logger.Error("failed to open connect to replica database", zap.Error(err))
+		return err
 	}
 
 	dbReadOnlyReplica.SetMaxOpenConns(pc.MaxOpenConnections)
@@ -97,8 +97,8 @@ func (pc *PostgresConnection) Connect() error {
 			SchemaName:            "public",
 		})
 		if err != nil {
-			pc.Logger.Fatalf("failed to open connect to database %v", zap.Error(err))
-			return nil
+			pc.Logger.Error("failed to open connect to database", zap.Error(err))
+			return err
 		}
 
 		m, err := migrate.NewWithDatabaseInstance(primaryURL.String(), pc.PrimaryDBName, primaryDriver)

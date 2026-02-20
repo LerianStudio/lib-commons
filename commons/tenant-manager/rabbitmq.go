@@ -2,7 +2,9 @@ package tenantmanager
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/url"
 	"sync"
 	"time"
 
@@ -243,6 +245,10 @@ func (p *RabbitMQManager) evictLRU(logger log.Logger) {
 
 // GetChannel returns a RabbitMQ channel for the tenant.
 // Creates a new connection if one doesn't exist.
+//
+// Channel ownership: The caller is responsible for closing the returned channel
+// when it is no longer needed. Failing to close channels will leak resources
+// on both the client and the RabbitMQ server.
 func (p *RabbitMQManager) GetChannel(ctx context.Context, tenantID string) (*amqp.Channel, error) {
 	conn, err := p.GetConnection(ctx, tenantID)
 	if err != nil {
@@ -264,11 +270,11 @@ func (p *RabbitMQManager) Close() error {
 
 	p.closed = true
 
-	var lastErr error
+	var errs []error
 	for tenantID, conn := range p.connections {
 		if conn != nil && !conn.IsClosed() {
 			if err := conn.Close(); err != nil {
-				lastErr = err
+				errs = append(errs, err)
 			}
 		}
 
@@ -276,7 +282,7 @@ func (p *RabbitMQManager) Close() error {
 		delete(p.lastAccessed, tenantID)
 	}
 
-	return lastErr
+	return errors.Join(errs...)
 }
 
 // CloseConnection closes the RabbitMQ connection for a specific tenant.
@@ -334,9 +340,11 @@ type RabbitMQStats struct {
 }
 
 // buildRabbitMQURI builds RabbitMQ connection URI from config.
+// Credentials are URL-encoded to handle special characters (e.g., @, :, /).
 func buildRabbitMQURI(cfg *RabbitMQConfig) string {
 	return fmt.Sprintf("amqp://%s:%s@%s:%d/%s",
-		cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.VHost)
+		url.QueryEscape(cfg.Username), url.QueryEscape(cfg.Password),
+		cfg.Host, cfg.Port, cfg.VHost)
 }
 
 // IsMultiTenant returns true if the manager is configured with a Tenant Manager client.

@@ -60,11 +60,17 @@ func IsTenantSuspendedError(err error) bool {
 }
 
 // IsTenantNotProvisionedError checks if the error indicates an unprovisioned tenant database.
-// PostgreSQL returns SQLSTATE 42P01 (undefined_table) when a relation (table) does not exist.
+// It first checks the error chain using errors.Is for the sentinel ErrTenantNotProvisioned,
+// then falls back to string matching for PostgreSQL SQLSTATE 42P01 (undefined_table).
 // This typically occurs when migrations have not been run on the tenant database.
 func IsTenantNotProvisionedError(err error) bool {
 	if err == nil {
 		return false
+	}
+
+	// Prefer errors.Is for wrapped sentinel errors
+	if errors.Is(err, ErrTenantNotProvisioned) {
+		return true
 	}
 
 	errStr := err.Error()

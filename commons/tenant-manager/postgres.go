@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -380,11 +381,11 @@ func (p *PostgresManager) Close() error {
 
 	p.closed = true
 
-	var lastErr error
+	var errs []error
 	for tenantID, conn := range p.connections {
 		if conn.ConnectionDB != nil {
 			if err := (*conn.ConnectionDB).Close(); err != nil {
-				lastErr = err
+				errs = append(errs, err)
 			}
 		}
 
@@ -392,7 +393,7 @@ func (p *PostgresManager) Close() error {
 		delete(p.lastAccessed, tenantID)
 	}
 
-	return lastErr
+	return errors.Join(errs...)
 }
 
 // CloseConnection closes the connection for a specific tenant.
@@ -448,9 +449,16 @@ func buildConnectionString(cfg *PostgreSQLConfig) string {
 		sslmode = "disable"
 	}
 
+	// Escape backslashes and single quotes in the password to prevent
+	// injection in the key=value connection string format.
+	escapedPassword := strings.NewReplacer(
+		`\`, `\\`,
+		`'`, `\'`,
+	).Replace(cfg.Password)
+
 	connStr := fmt.Sprintf(
-		"host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		cfg.Host, cfg.Port, cfg.Username, cfg.Password, cfg.Database, sslmode,
+		"host=%s port=%d user=%s password='%s' dbname=%s sslmode=%s",
+		cfg.Host, cfg.Port, cfg.Username, escapedPassword, cfg.Database, sslmode,
 	)
 
 	if cfg.Schema != "" {
