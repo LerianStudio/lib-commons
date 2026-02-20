@@ -16,7 +16,7 @@ import (
 
 	iamcredentials "cloud.google.com/go/iam/credentials/apiv1"
 	iamcredentialspb "cloud.google.com/go/iam/credentials/apiv1/credentialspb"
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"github.com/LerianStudio/lib-commons/v3/commons/log"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"golang.org/x/oauth2/google"

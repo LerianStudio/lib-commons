@@ -3,8 +3,8 @@ package postgres
 import (
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
-	"github.com/LerianStudio/lib-commons/v2/commons/pointers"
+	"github.com/LerianStudio/lib-commons/v3/commons/log"
+	"github.com/LerianStudio/lib-commons/v3/commons/pointers"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
 )

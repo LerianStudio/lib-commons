@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	libPostgres "github.com/LerianStudio/lib-commons/v2/commons/postgres"
+	libPostgres "github.com/LerianStudio/lib-commons/v3/commons/postgres"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

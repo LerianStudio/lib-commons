@@ -7,8 +7,8 @@ package http
 import (
 	"crypto/subtle"
 	"encoding/base64"
-	"github.com/LerianStudio/lib-commons/v2/commons"
-	"github.com/LerianStudio/lib-commons/v2/commons/constants"
+	"github.com/LerianStudio/lib-commons/v3/commons"
+	"github.com/LerianStudio/lib-commons/v3/commons/constants"
 	"net/http"
 	"strings"
 

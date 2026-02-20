@@ -18,7 +18,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"github.com/LerianStudio/lib-commons/v3/commons/log"
 	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"

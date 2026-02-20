@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	libCommons "github.com/LerianStudio/lib-commons/v2/commons"
-	libLog "github.com/LerianStudio/lib-commons/v2/commons/log"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
-	libPostgres "github.com/LerianStudio/lib-commons/v2/commons/postgres"
+	libCommons "github.com/LerianStudio/lib-commons/v3/commons"
+	libLog "github.com/LerianStudio/lib-commons/v3/commons/log"
+	libOpentelemetry "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
+	libPostgres "github.com/LerianStudio/lib-commons/v3/commons/postgres"
 	"github.com/bxcodec/dbresolver/v2"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )

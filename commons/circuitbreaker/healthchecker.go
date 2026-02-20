@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"github.com/LerianStudio/lib-commons/v3/commons/log"
 )
 
 var (

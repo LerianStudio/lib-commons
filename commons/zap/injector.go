@@ -9,7 +9,7 @@ import (
 	"log"
 	"os"
 
-	clog "github.com/LerianStudio/lib-commons/v2/commons/log"
+	clog "github.com/LerianStudio/lib-commons/v3/commons/log"
 	"go.opentelemetry.io/contrib/bridges/otelzap"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"

@@ -8,7 +8,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"github.com/LerianStudio/lib-commons/v3/commons/log"
 )
 
 // ErrLoggerNil is returned when the Logger is nil and cannot proceed.

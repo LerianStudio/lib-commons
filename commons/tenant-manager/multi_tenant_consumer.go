@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	libCommons "github.com/LerianStudio/lib-commons/v2/commons"
-	libLog "github.com/LerianStudio/lib-commons/v2/commons/log"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
+	libCommons "github.com/LerianStudio/lib-commons/v3/commons"
+	libLog "github.com/LerianStudio/lib-commons/v3/commons/log"
+	libOpentelemetry "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
 )
