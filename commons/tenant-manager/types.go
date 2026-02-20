@@ -15,7 +15,7 @@ type PostgreSQLConfig struct {
 	Port     int    `json:"port"`
 	Database string `json:"database"`
 	Username string `json:"username"`
-	Password string `json:"password"`
+	Password string `json:"password"` // #nosec G117
 	Schema   string `json:"schema,omitempty"`
 	SSLMode  string `json:"sslmode,omitempty"`
 }
@@ -27,7 +27,7 @@ type MongoDBConfig struct {
 	Port             int    `json:"port,omitempty"`
 	Database         string `json:"database"`
 	Username         string `json:"username,omitempty"`
-	Password         string `json:"password,omitempty"`
+	Password         string `json:"password,omitempty"` // #nosec G117
 	URI              string `json:"uri,omitempty"`
 	AuthSource       string `json:"authSource,omitempty"`
 	DirectConnection bool   `json:"directConnection,omitempty"`
@@ -40,7 +40,7 @@ type RabbitMQConfig struct {
 	Port     int    `json:"port"`
 	VHost    string `json:"vhost"`
 	Username string `json:"username"`
-	Password string `json:"password"`
+	Password string `json:"password"` // #nosec G117
 }
 
 // MessagingConfig holds messaging configuration for a tenant.
