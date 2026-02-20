@@ -2,8 +2,10 @@ package tenantmanager
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	libCommons "github.com/LerianStudio/lib-commons/v2/commons"
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
@@ -11,6 +13,9 @@ import (
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
 	"go.mongodb.org/mongo-driver/mongo"
 )
+
+// mongoPingTimeout is the maximum duration for MongoDB connection health check pings.
+const mongoPingTimeout = 3 * time.Second
 
 // Context key for MongoDB
 const tenantMongoKey contextKey = "tenantMongo"
@@ -20,15 +25,23 @@ const DefaultMongoMaxConnections uint64 = 100
 
 // MongoManager manages MongoDB connections per tenant.
 // Credentials are provided directly by the tenant-manager settings endpoint.
+// When maxConnections is set (> 0), the manager uses LRU eviction with an idle
+// timeout as a soft limit. Connections idle longer than the timeout are eligible
+// for eviction when the pool exceeds maxConnections. If all connections are active
+// (used within the idle timeout), the pool grows beyond the soft limit and
+// naturally shrinks back as tenants become idle.
 type MongoManager struct {
 	client  *Client
 	service string
 	module  string
 	logger  log.Logger
 
-	mu          sync.RWMutex
-	connections map[string]*mongolib.MongoConnection
-	closed      bool
+	mu             sync.RWMutex
+	connections    map[string]*mongolib.MongoConnection
+	closed         bool
+	maxConnections int                  // soft limit for pool size (0 = unlimited)
+	idleTimeout    time.Duration        // how long before a connection is eligible for eviction
+	lastAccessed   map[string]time.Time // LRU tracking per tenant
 }
 
 // MongoOption configures a MongoManager.
@@ -48,12 +61,38 @@ func WithMongoLogger(logger log.Logger) MongoOption {
 	}
 }
 
+// WithMongoMaxTenantPools sets the soft limit for the number of tenant connections in the pool.
+// When the pool reaches this limit and a new tenant needs a connection, only connections
+// that have been idle longer than the idle timeout are eligible for eviction. If all
+// connections are active (used within the idle timeout), the pool grows beyond this limit.
+// A value of 0 (default) means unlimited.
+func WithMongoMaxTenantPools(max int) MongoOption {
+	return func(p *MongoManager) {
+		p.maxConnections = max
+	}
+}
+
+// WithMongoIdleTimeout sets the duration after which an unused tenant connection becomes
+// eligible for eviction. Only connections idle longer than this duration will be evicted
+// when the pool exceeds the soft limit (maxConnections). If all connections are active
+// (used within the idle timeout), the pool is allowed to grow beyond the soft limit.
+// Default: 5 minutes.
+func WithMongoIdleTimeout(d time.Duration) MongoOption {
+	return func(p *MongoManager) {
+		p.idleTimeout = d
+	}
+}
+
+// Deprecated: Use WithMongoMaxTenantPools instead.
+func WithMongoMaxConnections(max int) MongoOption { return WithMongoMaxTenantPools(max) }
+
 // NewMongoManager creates a new MongoDB connection manager.
 func NewMongoManager(client *Client, service string, opts ...MongoOption) *MongoManager {
 	p := &MongoManager{
-		client:      client,
-		service:     service,
-		connections: make(map[string]*mongolib.MongoConnection),
+		client:       client,
+		service:      service,
+		connections:  make(map[string]*mongolib.MongoConnection),
+		lastAccessed: make(map[string]time.Time),
 	}
 
 	for _, opt := range opts {
@@ -64,6 +103,9 @@ func NewMongoManager(client *Client, service string, opts ...MongoOption) *Mongo
 }
 
 // GetClient returns a MongoDB client for the tenant.
+// If a cached client fails a health check (e.g., due to credential rotation
+// after a tenant purge+re-associate), the stale client is evicted and a new
+// one is created with fresh credentials from the Tenant Manager.
 func (p *MongoManager) GetClient(ctx context.Context, tenantID string) (*mongo.Client, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant ID is required")
@@ -77,8 +119,32 @@ func (p *MongoManager) GetClient(ctx context.Context, tenantID string) (*mongo.C
 
 	if conn, ok := p.connections[tenantID]; ok {
 		p.mu.RUnlock()
+
+		// Validate cached connection is still healthy (e.g., credentials may have changed)
+		if conn.DB != nil {
+			pingCtx, cancel := context.WithTimeout(ctx, mongoPingTimeout)
+			defer cancel()
+
+			if pingErr := conn.DB.Ping(pingCtx, nil); pingErr != nil {
+				if p.logger != nil {
+					p.logger.Warnf("cached mongo connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr)
+				}
+
+				p.CloseClient(ctx, tenantID)
+
+				// Fall through to create a new client with fresh credentials
+				return p.createClient(ctx, tenantID)
+			}
+		}
+
+		// Update LRU tracking on cache hit
+		p.mu.Lock()
+		p.lastAccessed[tenantID] = time.Now()
+		p.mu.Unlock()
+
 		return conn.DB, nil
 	}
+
 	p.mu.RUnlock()
 
 	return p.createClient(ctx, tenantID)
@@ -105,6 +171,16 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 	// Fetch tenant config from Tenant Manager
 	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
 	if err != nil {
+		// Propagate TenantSuspendedError directly so callers (e.g., middleware)
+		// can detect suspended/purged tenants without unwrapping generic messages.
+		var suspErr *TenantSuspendedError
+		if errors.As(err, &suspErr) {
+			logger.Warnf("tenant service is %s: tenantID=%s", suspErr.Status, tenantID)
+			libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant service suspended", err)
+
+			return nil, err
+		}
+
 		logger.Errorf("failed to get tenant config: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "failed to get tenant config", err)
 
@@ -122,10 +198,18 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 	// Build connection URI
 	uri := buildMongoURI(mongoConfig)
 
-	// Determine max connections
+	// Determine max connections (start with global default, then per-config, then per-tenant override)
 	maxConnections := DefaultMongoMaxConnections
 	if mongoConfig.MaxPoolSize > 0 {
 		maxConnections = mongoConfig.MaxPoolSize
+	}
+
+	// Apply per-tenant connection pool settings from Tenant Manager (overrides all defaults)
+	if config.ConnectionSettings != nil {
+		if config.ConnectionSettings.MaxOpenConns > 0 {
+			maxConnections = uint64(config.ConnectionSettings.MaxOpenConns)
+			logger.Infof("applying per-tenant maxPoolSize=%d for tenant %s (mongo)", maxConnections, tenantID)
+		}
 	}
 
 	// Create MongoConnection using lib-commons/commons/mongo pattern
@@ -141,10 +225,104 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
 
+	// Evict least recently used connection if pool is full
+	p.evictLRU(ctx, logger)
+
 	// Cache connection
 	p.connections[tenantID] = conn
+	p.lastAccessed[tenantID] = time.Now()
 
 	return conn.DB, nil
+}
+
+// evictLRU removes the least recently used idle connection when the pool reaches the
+// soft limit. Only connections that have been idle longer than the idle timeout are
+// eligible for eviction. If all connections are active (used within the idle timeout),
+// the pool is allowed to grow beyond the soft limit.
+// Caller MUST hold p.mu write lock.
+func (p *MongoManager) evictLRU(ctx context.Context, logger log.Logger) {
+	if p.maxConnections <= 0 || len(p.connections) < p.maxConnections {
+		return
+	}
+
+	now := time.Now()
+
+	idleTimeout := p.idleTimeout
+	if idleTimeout == 0 {
+		idleTimeout = defaultIdleTimeout
+	}
+
+	// Find the oldest connection that has been idle longer than the timeout
+	var oldestID string
+	var oldestTime time.Time
+
+	for id, t := range p.lastAccessed {
+		idleDuration := now.Sub(t)
+		if idleDuration < idleTimeout {
+			continue // still active, skip
+		}
+
+		if oldestID == "" || t.Before(oldestTime) {
+			oldestID = id
+			oldestTime = t
+		}
+	}
+
+	if oldestID == "" {
+		// All connections are active (used within idle timeout)
+		// Allow pool to grow beyond soft limit
+		return
+	}
+
+	// Evict the idle connection
+	if conn, ok := p.connections[oldestID]; ok {
+		if conn.DB != nil {
+			conn.DB.Disconnect(ctx)
+		}
+
+		delete(p.connections, oldestID)
+		delete(p.lastAccessed, oldestID)
+
+		if logger != nil {
+			logger.Infof("LRU evicted idle mongo connection for tenant %s (idle for %s)", oldestID, now.Sub(oldestTime))
+		}
+	}
+}
+
+// ApplyConnectionSettings checks if connection pool settings have changed for the
+// given tenant. Unlike PostgreSQL, the MongoDB Go driver does not support changing
+// pool size (maxPoolSize) after client creation. If settings differ, a warning is
+// logged indicating that changes will take effect on the next connection recreation
+// (e.g., after eviction or health check failure).
+func (p *MongoManager) ApplyConnectionSettings(tenantID string, config *TenantConfig) {
+	p.mu.RLock()
+	_, ok := p.connections[tenantID]
+	p.mu.RUnlock()
+
+	if !ok {
+		return // no cached connection, settings will be applied on creation
+	}
+
+	// Check if connection settings exist in the config
+	var hasSettings bool
+
+	if config.ConnectionSettings != nil && config.ConnectionSettings.MaxOpenConns > 0 {
+		hasSettings = true
+	}
+
+	if config.Databases != nil && p.module != "" {
+		if db, ok := config.Databases[p.module]; ok && db.ConnectionSettings != nil {
+			if db.ConnectionSettings.MaxOpenConns > 0 {
+				hasSettings = true
+			}
+		}
+	}
+
+	if hasSettings && p.logger != nil {
+		p.logger.Warnf("MongoDB connection settings changed for tenant %s, "+
+			"but MongoDB driver does not support pool resize after creation. "+
+			"Changes will take effect on next connection recreation.", tenantID)
+	}
 }
 
 // GetDatabase returns a MongoDB database for the tenant.
@@ -168,6 +346,12 @@ func (p *MongoManager) GetDatabaseForTenant(ctx context.Context, tenantID string
 	// Fetch tenant config from Tenant Manager
 	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
 	if err != nil {
+		// Propagate TenantSuspendedError directly so the middleware can
+		// return a specific 403 response instead of a generic 503.
+		if IsTenantSuspendedError(err) {
+			return nil, err
+		}
+
 		return nil, fmt.Errorf("failed to get tenant config: %w", err)
 	}
 
@@ -194,7 +378,9 @@ func (p *MongoManager) Close(ctx context.Context) error {
 				lastErr = err
 			}
 		}
+
 		delete(p.connections, tenantID)
+		delete(p.lastAccessed, tenantID)
 	}
 
 	return lastErr
@@ -214,7 +400,9 @@ func (p *MongoManager) CloseClient(ctx context.Context, tenantID string) error {
 	if conn.DB != nil {
 		err = conn.DB.Disconnect(ctx)
 	}
+
 	delete(p.connections, tenantID)
+	delete(p.lastAccessed, tenantID)
 
 	return err
 }

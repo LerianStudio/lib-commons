@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	libCommons "github.com/LerianStudio/lib-commons/v2/commons"
 	"github.com/LerianStudio/lib-commons/v2/commons/log"
@@ -13,15 +14,23 @@ import (
 
 // RabbitMQManager manages RabbitMQ connections per tenant.
 // Each tenant has a dedicated vhost, user, and credentials stored in Tenant Manager.
+// When maxConnections is set (> 0), the manager uses LRU eviction with an idle
+// timeout as a soft limit. Connections idle longer than the timeout are eligible
+// for eviction when the pool exceeds maxConnections. If all connections are active
+// (used within the idle timeout), the pool grows beyond the soft limit and
+// naturally shrinks back as tenants become idle.
 type RabbitMQManager struct {
 	client  *Client
 	service string
 	module  string
 	logger  log.Logger
 
-	mu          sync.RWMutex
-	connections map[string]*amqp.Connection
-	closed      bool
+	mu             sync.RWMutex
+	connections    map[string]*amqp.Connection
+	closed         bool
+	maxConnections int                  // soft limit for pool size (0 = unlimited)
+	idleTimeout    time.Duration        // how long before a connection is eligible for eviction
+	lastAccessed   map[string]time.Time // LRU tracking per tenant
 }
 
 // RabbitMQOption configures a RabbitMQManager.
@@ -41,6 +50,31 @@ func WithRabbitMQLogger(logger log.Logger) RabbitMQOption {
 	}
 }
 
+// WithRabbitMQMaxTenantPools sets the soft limit for the number of tenant connections in the pool.
+// When the pool reaches this limit and a new tenant needs a connection, only connections
+// that have been idle longer than the idle timeout are eligible for eviction. If all
+// connections are active (used within the idle timeout), the pool grows beyond this limit.
+// A value of 0 (default) means unlimited.
+func WithRabbitMQMaxTenantPools(max int) RabbitMQOption {
+	return func(p *RabbitMQManager) {
+		p.maxConnections = max
+	}
+}
+
+// WithRabbitMQIdleTimeout sets the duration after which an unused tenant connection becomes
+// eligible for eviction. Only connections idle longer than this duration will be evicted
+// when the pool exceeds the soft limit (maxConnections). If all connections are active
+// (used within the idle timeout), the pool is allowed to grow beyond the soft limit.
+// Default: 5 minutes.
+func WithRabbitMQIdleTimeout(d time.Duration) RabbitMQOption {
+	return func(p *RabbitMQManager) {
+		p.idleTimeout = d
+	}
+}
+
+// Deprecated: Use WithRabbitMQMaxTenantPools instead.
+func WithRabbitMQMaxConnections(max int) RabbitMQOption { return WithRabbitMQMaxTenantPools(max) }
+
 // NewRabbitMQManager creates a new RabbitMQ connection manager.
 // Parameters:
 //   - client: The Tenant Manager client for fetching tenant configurations
@@ -48,9 +82,10 @@ func WithRabbitMQLogger(logger log.Logger) RabbitMQOption {
 //   - opts: Optional configuration options
 func NewRabbitMQManager(client *Client, service string, opts ...RabbitMQOption) *RabbitMQManager {
 	p := &RabbitMQManager{
-		client:      client,
-		service:     service,
-		connections: make(map[string]*amqp.Connection),
+		client:       client,
+		service:      service,
+		connections:  make(map[string]*amqp.Connection),
+		lastAccessed: make(map[string]time.Time),
 	}
 
 	for _, opt := range opts {
@@ -75,8 +110,15 @@ func (p *RabbitMQManager) GetConnection(ctx context.Context, tenantID string) (*
 
 	if conn, ok := p.connections[tenantID]; ok && !conn.IsClosed() {
 		p.mu.RUnlock()
+
+		// Update LRU tracking on cache hit
+		p.mu.Lock()
+		p.lastAccessed[tenantID] = time.Now()
+		p.mu.Unlock()
+
 		return conn, nil
 	}
+
 	p.mu.RUnlock()
 
 	return p.createConnection(ctx, tenantID)
@@ -133,12 +175,70 @@ func (p *RabbitMQManager) createConnection(ctx context.Context, tenantID string)
 		return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
 	}
 
+	// Evict least recently used connection if pool is full
+	p.evictLRU(logger)
+
 	// Cache connection
 	p.connections[tenantID] = conn
+	p.lastAccessed[tenantID] = time.Now()
 
 	logger.Infof("RabbitMQ connection created: tenant=%s, vhost=%s", tenantID, rabbitConfig.VHost)
 
 	return conn, nil
+}
+
+// evictLRU removes the least recently used idle connection when the pool reaches the
+// soft limit. Only connections that have been idle longer than the idle timeout are
+// eligible for eviction. If all connections are active (used within the idle timeout),
+// the pool is allowed to grow beyond the soft limit.
+// Caller MUST hold p.mu write lock.
+func (p *RabbitMQManager) evictLRU(logger log.Logger) {
+	if p.maxConnections <= 0 || len(p.connections) < p.maxConnections {
+		return
+	}
+
+	now := time.Now()
+
+	idleTimeout := p.idleTimeout
+	if idleTimeout == 0 {
+		idleTimeout = defaultIdleTimeout
+	}
+
+	// Find the oldest connection that has been idle longer than the timeout
+	var oldestID string
+	var oldestTime time.Time
+
+	for id, t := range p.lastAccessed {
+		idleDuration := now.Sub(t)
+		if idleDuration < idleTimeout {
+			continue // still active, skip
+		}
+
+		if oldestID == "" || t.Before(oldestTime) {
+			oldestID = id
+			oldestTime = t
+		}
+	}
+
+	if oldestID == "" {
+		// All connections are active (used within idle timeout)
+		// Allow pool to grow beyond soft limit
+		return
+	}
+
+	// Evict the idle connection
+	if conn, ok := p.connections[oldestID]; ok {
+		if conn != nil && !conn.IsClosed() {
+			conn.Close()
+		}
+
+		delete(p.connections, oldestID)
+		delete(p.lastAccessed, oldestID)
+
+		if logger != nil {
+			logger.Infof("LRU evicted idle rabbitmq connection for tenant %s (idle for %s)", oldestID, now.Sub(oldestTime))
+		}
+	}
 }
 
 // GetChannel returns a RabbitMQ channel for the tenant.
@@ -171,7 +271,9 @@ func (p *RabbitMQManager) Close() error {
 				lastErr = err
 			}
 		}
+
 		delete(p.connections, tenantID)
+		delete(p.lastAccessed, tenantID)
 	}
 
 	return lastErr
@@ -191,7 +293,9 @@ func (p *RabbitMQManager) CloseConnection(tenantID string) error {
 	if conn != nil && !conn.IsClosed() {
 		err = conn.Close()
 	}
+
 	delete(p.connections, tenantID)
+	delete(p.lastAccessed, tenantID)
 
 	return err
 }
@@ -213,6 +317,7 @@ func (p *RabbitMQManager) Stats() RabbitMQStats {
 
 	return RabbitMQStats{
 		TotalConnections:  len(p.connections),
+		MaxConnections:    p.maxConnections,
 		ActiveConnections: activeConnections,
 		TenantIDs:         tenantIDs,
 		Closed:            p.closed,
@@ -222,6 +327,7 @@ func (p *RabbitMQManager) Stats() RabbitMQStats {
 // RabbitMQStats contains statistics for the RabbitMQ manager.
 type RabbitMQStats struct {
 	TotalConnections  int      `json:"totalConnections"`
+	MaxConnections    int      `json:"maxConnections"`
 	ActiveConnections int      `json:"activeConnections"`
 	TenantIDs         []string `json:"tenantIds"`
 	Closed            bool     `json:"closed"`

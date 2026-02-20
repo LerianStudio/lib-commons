@@ -2,6 +2,8 @@ package tenantmanager
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -135,6 +137,15 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	if m.postgres != nil {
 		conn, err := m.postgres.GetConnection(ctx, tenantID)
 		if err != nil {
+			var suspErr *TenantSuspendedError
+			if errors.As(err, &suspErr) {
+				logger.Warnf("tenant service is %s: tenantID=%s", suspErr.Status, tenantID)
+				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant service suspended", err)
+
+				return forbiddenError(c, "0131", "Service Suspended",
+					fmt.Sprintf("tenant service is %s", suspErr.Status))
+			}
+
 			logger.Errorf("failed to get tenant PostgreSQL connection: %v", err)
 			libOpentelemetry.HandleSpanError(&span, "failed to get tenant PostgreSQL connection", err)
 			return internalServerError(c, "TENANT_DB_ERROR", "Failed to resolve tenant database", err.Error())
@@ -156,6 +167,15 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	if m.mongo != nil {
 		mongoDB, err := m.mongo.GetDatabaseForTenant(ctx, tenantID)
 		if err != nil {
+			var suspErr *TenantSuspendedError
+			if errors.As(err, &suspErr) {
+				logger.Warnf("tenant service is %s: tenantID=%s", suspErr.Status, tenantID)
+				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant service suspended", err)
+
+				return forbiddenError(c, "0131", "Service Suspended",
+					fmt.Sprintf("tenant service is %s", suspErr.Status))
+			}
+
 			logger.Errorf("failed to get tenant MongoDB connection: %v", err)
 			libOpentelemetry.HandleSpanError(&span, "failed to get tenant MongoDB connection", err)
 			return internalServerError(c, "TENANT_MONGO_ERROR", "Failed to resolve tenant MongoDB database", err.Error())
@@ -182,6 +202,16 @@ func extractTokenFromHeader(c *fiber.Ctx) string {
 	}
 
 	return authHeader
+}
+
+// forbiddenError sends an HTTP 403 Forbidden response.
+// Used when the tenant-service association exists but is not active (suspended or purged).
+func forbiddenError(c *fiber.Ctx, code, title, message string) error {
+	return c.Status(http.StatusForbidden).JSON(fiber.Map{
+		"code":    code,
+		"title":   title,
+		"message": message,
+	})
 }
 
 // internalServerError sends an HTTP 500 Internal Server Error response.

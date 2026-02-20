@@ -1,9 +1,11 @@
 package tenantmanager
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTenantConfig_GetPostgreSQLConfig(t *testing.T) {
@@ -347,4 +349,97 @@ func TestTenantConfig_IsIsolatedMode(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestTenantConfig_ConnectionSettings(t *testing.T) {
+	t.Run("deserializes connectionSettings from JSON", func(t *testing.T) {
+		jsonData := `{
+			"id": "cfg-123",
+			"tenantSlug": "acme",
+			"isolationMode": "schema",
+			"connectionSettings": {
+				"maxOpenConns": 20,
+				"maxIdleConns": 10
+			},
+			"databases": {
+				"onboarding": {
+					"postgresql": {
+						"host": "localhost",
+						"port": 5432,
+						"database": "testdb",
+						"username": "user",
+						"password": "pass"
+					}
+				}
+			}
+		}`
+
+		var config TenantConfig
+		err := json.Unmarshal([]byte(jsonData), &config)
+
+		require.NoError(t, err)
+		require.NotNil(t, config.ConnectionSettings)
+		assert.Equal(t, 20, config.ConnectionSettings.MaxOpenConns)
+		assert.Equal(t, 10, config.ConnectionSettings.MaxIdleConns)
+	})
+
+	t.Run("connectionSettings is nil when not present in JSON", func(t *testing.T) {
+		jsonData := `{
+			"id": "cfg-123",
+			"tenantSlug": "acme",
+			"isolationMode": "schema",
+			"databases": {
+				"onboarding": {
+					"postgresql": {
+						"host": "localhost",
+						"port": 5432,
+						"database": "testdb",
+						"username": "user",
+						"password": "pass"
+					}
+				}
+			}
+		}`
+
+		var config TenantConfig
+		err := json.Unmarshal([]byte(jsonData), &config)
+
+		require.NoError(t, err)
+		assert.Nil(t, config.ConnectionSettings)
+	})
+
+	t.Run("connectionSettings with zero values deserializes correctly", func(t *testing.T) {
+		jsonData := `{
+			"id": "cfg-123",
+			"connectionSettings": {
+				"maxOpenConns": 0,
+				"maxIdleConns": 0
+			}
+		}`
+
+		var config TenantConfig
+		err := json.Unmarshal([]byte(jsonData), &config)
+
+		require.NoError(t, err)
+		require.NotNil(t, config.ConnectionSettings)
+		assert.Equal(t, 0, config.ConnectionSettings.MaxOpenConns)
+		assert.Equal(t, 0, config.ConnectionSettings.MaxIdleConns)
+	})
+
+	t.Run("connectionSettings with partial values deserializes correctly", func(t *testing.T) {
+		jsonData := `{
+			"id": "cfg-123",
+			"connectionSettings": {
+				"maxOpenConns": 30
+			}
+		}`
+
+		var config TenantConfig
+		err := json.Unmarshal([]byte(jsonData), &config)
+
+		require.NoError(t, err)
+		require.NotNil(t, config.ConnectionSettings)
+		assert.Equal(t, 30, config.ConnectionSettings.MaxOpenConns)
+		assert.Equal(t, 0, config.ConnectionSettings.MaxIdleConns)
+	})
 }

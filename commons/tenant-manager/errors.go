@@ -2,6 +2,7 @@ package tenantmanager
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -23,6 +24,40 @@ var ErrTenantContextRequired = errors.New("tenant context required: no tenant da
 // This typically happens when migrations have not been run on the tenant's database.
 // PostgreSQL error code 42P01 (undefined_table) indicates this condition.
 var ErrTenantNotProvisioned = errors.New("tenant database not provisioned: schema has not been initialized")
+
+// ErrCircuitBreakerOpen is returned when the circuit breaker is in the open state,
+// indicating the Tenant Manager service is temporarily unavailable.
+// Callers should retry after the circuit breaker timeout elapses.
+var ErrCircuitBreakerOpen = errors.New("tenant manager circuit breaker is open: service temporarily unavailable")
+
+// IsCircuitBreakerOpenError checks whether err (or any error in its chain) is ErrCircuitBreakerOpen.
+func IsCircuitBreakerOpenError(err error) bool {
+	return errors.Is(err, ErrCircuitBreakerOpen)
+}
+
+// TenantSuspendedError is returned when the tenant-service association exists but is not active
+// (e.g., suspended or purged). This allows callers to distinguish between "not found" and
+// "access denied due to status" scenarios.
+type TenantSuspendedError struct {
+	TenantID string // The tenant identifier that was requested
+	Status   string // The current status (e.g., "suspended", "purged")
+	Message  string // Human-readable error message from the server
+}
+
+// Error implements the error interface.
+func (e *TenantSuspendedError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+
+	return fmt.Sprintf("tenant service is %s for tenant %s", e.Status, e.TenantID)
+}
+
+// IsTenantSuspendedError checks whether err (or any error in its chain) is a *TenantSuspendedError.
+func IsTenantSuspendedError(err error) bool {
+	var target *TenantSuspendedError
+	return errors.As(err, &target)
+}
 
 // IsTenantNotProvisionedError checks if the error indicates an unprovisioned tenant database.
 // PostgreSQL returns SQLSTATE 42P01 (undefined_table) when a relation (table) does not exist.

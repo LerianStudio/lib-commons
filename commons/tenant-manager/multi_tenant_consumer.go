@@ -22,9 +22,12 @@ const maxTenantIDLength = 256
 // Only alphanumeric characters, hyphens, and underscores are allowed.
 var validTenantIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
-// ActiveTenantsKey is the Redis SET key for storing active tenant IDs.
-// This key is managed by tenant-manager and read by consumers.
-const ActiveTenantsKey = "tenant-manager:tenants:active"
+// buildActiveTenantsKey returns an environment+service segmented Redis key for active tenants.
+// The key format is always: "tenant-manager:tenants:active:{env}:{service}"
+// The caller is responsible for providing valid env and service values.
+func buildActiveTenantsKey(env, service string) string {
+	return fmt.Sprintf("tenant-manager:tenants:active:%s:%s", env, service)
+}
 
 // HandlerFunc is a function that processes messages from a queue.
 // The context contains the tenant ID via SetTenantIDInContext.
@@ -54,6 +57,12 @@ type MultiTenantConfig struct {
 	// Service is the service name to filter tenants by.
 	// This is passed to tenant-manager when fetching tenant list.
 	Service string
+
+	// Environment is the deployment environment (e.g., "staging", "production").
+	// Used to build environment-segmented Redis cache keys for active tenants.
+	// When set together with Service, the Redis key becomes:
+	// "tenant-manager:tenants:active:{Environment}:{Service}"
+	Environment string
 }
 
 // DefaultMultiTenantConfig returns a MultiTenantConfig with sensible defaults.
@@ -69,6 +78,23 @@ func DefaultMultiTenantConfig() MultiTenantConfig {
 type retryStateEntry struct {
 	retryCount int
 	degraded   bool
+}
+
+// MultiTenantConsumerOption configures a MultiTenantConsumer.
+type MultiTenantConsumerOption func(*MultiTenantConsumer)
+
+// WithConsumerPostgresManager sets the PostgresManager on the consumer.
+// When set, database connections for removed tenants are automatically closed
+// during tenant synchronization.
+func WithConsumerPostgresManager(p *PostgresManager) MultiTenantConsumerOption {
+	return func(c *MultiTenantConsumer) { c.postgres = p }
+}
+
+// WithConsumerMongoManager sets the MongoManager on the consumer.
+// When set, MongoDB connections for removed tenants are automatically closed
+// during tenant synchronization.
+func WithConsumerMongoManager(m *MongoManager) MultiTenantConsumerOption {
+	return func(c *MultiTenantConsumer) { c.mongo = m }
 }
 
 // MultiTenantConsumer manages message consumption across multiple tenant vhosts.
@@ -88,6 +114,14 @@ type MultiTenantConsumer struct {
 	logger       libLog.Logger
 	closed       bool
 
+	// postgres manages PostgreSQL connections per tenant.
+	// When set, connections are closed automatically when a tenant is removed.
+	postgres *PostgresManager
+
+	// mongo manages MongoDB connections per tenant.
+	// When set, connections are closed automatically when a tenant is removed.
+	mongo *MongoManager
+
 	// consumerLocks provides per-tenant mutexes for double-check locking in ensureConsumerStarted.
 	// Key: tenantID, Value: *sync.Mutex
 	consumerLocks sync.Map
@@ -106,11 +140,13 @@ type MultiTenantConsumer struct {
 //   - redisClient: Redis client for tenant cache access
 //   - config: Consumer configuration
 //   - logger: Logger for operational logging
+//   - opts: Optional configuration options (e.g., WithConsumerPostgresManager, WithConsumerMongoManager)
 func NewMultiTenantConsumer(
 	rabbitmq *RabbitMQManager,
 	redisClient redis.UniversalClient,
 	config MultiTenantConfig,
 	logger libLog.Logger,
+	opts ...MultiTenantConsumerOption,
 ) *MultiTenantConsumer {
 	// Guard against nil logger to prevent panics downstream
 	if logger == nil {
@@ -136,6 +172,11 @@ func NewMultiTenantConsumer(
 		knownTenants: make(map[string]bool),
 		config:       config,
 		logger:       logger,
+	}
+
+	// Apply optional configurations
+	for _, opt := range opts {
+		opt(consumer)
 	}
 
 	// Create Tenant Manager client for fallback if URL is configured
@@ -248,6 +289,10 @@ func (c *MultiTenantConsumer) runSyncIteration(ctx context.Context) {
 		logger.Warnf("tenant sync failed (continuing): %v", err)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant sync failed (continuing)", err)
 	}
+
+	// Revalidate connection settings for active tenants.
+	// This runs outside syncTenants to avoid holding c.mu during HTTP calls.
+	c.revalidateConnectionSettings(ctx)
 }
 
 // syncTenants fetches tenant IDs and updates the known tenant registry.
@@ -318,12 +363,31 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 		}
 	}
 
-	// Stop removed tenants
+	// Stop removed tenants and close their database connections
 	for _, tenantID := range removedTenants {
 		logger.Infof("stopping consumer for removed tenant: %s", tenantID)
 		if cancel, ok := c.tenants[tenantID]; ok {
 			cancel()
 			delete(c.tenants, tenantID)
+		}
+
+		// Close database connections for removed tenant
+		if c.rabbitmq != nil {
+			if err := c.rabbitmq.CloseConnection(tenantID); err != nil {
+				logger.Warnf("failed to close RabbitMQ connection for tenant %s: %v", tenantID, err)
+			}
+		}
+
+		if c.postgres != nil {
+			if err := c.postgres.CloseConnection(tenantID); err != nil {
+				logger.Warnf("failed to close PostgreSQL connection for tenant %s: %v", tenantID, err)
+			}
+		}
+
+		if c.mongo != nil {
+			if err := c.mongo.CloseClient(ctx, tenantID); err != nil {
+				logger.Warnf("failed to close MongoDB connection for tenant %s: %v", tenantID, err)
+			}
 		}
 	}
 
@@ -341,14 +405,79 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 	return nil
 }
 
+// revalidateConnectionSettings fetches current settings from the Tenant Manager
+// for each active tenant and applies any changed connection pool settings to
+// existing PostgreSQL and MongoDB connections.
+//
+// For PostgreSQL, SetMaxOpenConns/SetMaxIdleConns are thread-safe and take effect
+// immediately for new connections from the pool without recreating the connection.
+// For MongoDB, the driver does not support pool resize after creation, so a warning
+// is logged and changes take effect on the next connection recreation.
+//
+// This method is called after syncTenants in each sync iteration. Errors fetching
+// config for individual tenants are logged and skipped (will retry next cycle).
+// If the Tenant Manager is down, the circuit breaker handles fast-fail.
+func (c *MultiTenantConsumer) revalidateConnectionSettings(ctx context.Context) {
+	if c.postgres == nil && c.mongo == nil {
+		return
+	}
+
+	if c.pmClient == nil || c.config.Service == "" {
+		return
+	}
+
+	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.revalidate_connection_settings")
+	defer span.End()
+
+	// Snapshot current tenant IDs under lock to avoid holding the lock during HTTP calls
+	c.mu.RLock()
+	tenantIDs := make([]string, 0, len(c.tenants))
+	for tenantID := range c.tenants {
+		tenantIDs = append(tenantIDs, tenantID)
+	}
+	c.mu.RUnlock()
+
+	if len(tenantIDs) == 0 {
+		return
+	}
+
+	var revalidated int
+
+	for _, tenantID := range tenantIDs {
+		config, err := c.pmClient.GetTenantConfig(ctx, tenantID, c.config.Service)
+		if err != nil {
+			logger.Warnf("failed to fetch config for tenant %s during settings revalidation: %v", tenantID, err)
+			continue // skip on error, will retry next cycle
+		}
+
+		if c.postgres != nil {
+			c.postgres.ApplyConnectionSettings(tenantID, config)
+		}
+
+		if c.mongo != nil {
+			c.mongo.ApplyConnectionSettings(tenantID, config)
+		}
+
+		revalidated++
+	}
+
+	if revalidated > 0 {
+		logger.Infof("revalidated connection settings for %d/%d active tenants", revalidated, len(tenantIDs))
+	}
+}
+
 // fetchTenantIDs gets tenant IDs from Redis cache, falling back to Tenant Manager API.
 func (c *MultiTenantConsumer) fetchTenantIDs(ctx context.Context) ([]string, error) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.fetch_tenant_ids")
 	defer span.End()
 
+	// Build environment+service segmented Redis key
+	cacheKey := buildActiveTenantsKey(c.config.Environment, c.config.Service)
+
 	// Try Redis cache first
-	tenantIDs, err := c.redisClient.SMembers(ctx, ActiveTenantsKey).Result()
+	tenantIDs, err := c.redisClient.SMembers(ctx, cacheKey).Result()
 	if err == nil && len(tenantIDs) > 0 {
 		logger.Infof("fetched %d tenant IDs from cache", len(tenantIDs))
 		return tenantIDs, nil

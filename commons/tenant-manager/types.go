@@ -49,25 +49,36 @@ type MessagingConfig struct {
 // In the flat format returned by tenant-manager, the Databases map is keyed by module name
 // directly (e.g., "onboarding", "transaction"), without an intermediate service wrapper.
 type DatabaseConfig struct {
-	PostgreSQL        *PostgreSQLConfig `json:"postgresql,omitempty"`
-	PostgreSQLReplica *PostgreSQLConfig `json:"postgresqlReplica,omitempty"`
-	MongoDB           *MongoDBConfig    `json:"mongodb,omitempty"`
+	PostgreSQL         *PostgreSQLConfig  `json:"postgresql,omitempty"`
+	PostgreSQLReplica  *PostgreSQLConfig  `json:"postgresqlReplica,omitempty"`
+	MongoDB            *MongoDBConfig     `json:"mongodb,omitempty"`
+	ConnectionSettings *ConnectionSettings `json:"connectionSettings,omitempty"`
+}
+
+// ConnectionSettings holds per-tenant database connection pool settings.
+// When present in the tenant config response, these values override the global
+// defaults configured on the PostgresManager or MongoManager.
+// If nil (e.g., for older associations without settings), global defaults apply.
+type ConnectionSettings struct {
+	MaxOpenConns int `json:"maxOpenConns"`
+	MaxIdleConns int `json:"maxIdleConns"`
 }
 
 // TenantConfig represents the tenant configuration from Tenant Manager.
 // The Databases map is keyed by module name (e.g., "onboarding", "transaction").
 // This matches the flat format returned by the tenant-manager /settings endpoint.
 type TenantConfig struct {
-	ID            string                    `json:"id"`
-	TenantSlug    string                    `json:"tenantSlug"`
-	TenantName    string                    `json:"tenantName,omitempty"`
-	Service       string                    `json:"service,omitempty"`
-	Status        string                    `json:"status,omitempty"`
-	IsolationMode string                    `json:"isolationMode,omitempty"`
-	Databases     map[string]DatabaseConfig `json:"databases,omitempty"`
-	Messaging     *MessagingConfig          `json:"messaging,omitempty"`
-	CreatedAt     time.Time                 `json:"createdAt,omitempty"`
-	UpdatedAt     time.Time                 `json:"updatedAt,omitempty"`
+	ID                 string                    `json:"id"`
+	TenantSlug         string                    `json:"tenantSlug"`
+	TenantName         string                    `json:"tenantName,omitempty"`
+	Service            string                    `json:"service,omitempty"`
+	Status             string                    `json:"status,omitempty"`
+	IsolationMode      string                    `json:"isolationMode,omitempty"`
+	Databases          map[string]DatabaseConfig `json:"databases,omitempty"`
+	Messaging          *MessagingConfig          `json:"messaging,omitempty"`
+	ConnectionSettings *ConnectionSettings       `json:"connectionSettings,omitempty"`
+	CreatedAt          time.Time                 `json:"createdAt,omitempty"`
+	UpdatedAt          time.Time                 `json:"updatedAt,omitempty"`
 }
 
 // GetPostgreSQLConfig returns the PostgreSQL config for a module.
