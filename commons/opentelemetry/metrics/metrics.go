@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"github.com/LerianStudio/lib-commons/v3/commons/log"
 	"go.opentelemetry.io/otel/metric"
 )
 

@@ -11,7 +11,7 @@ import (
 	"os/exec"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/license"
+	"github.com/LerianStudio/lib-commons/v3/commons/license"
 	"github.com/stretchr/testify/assert"
 )
 

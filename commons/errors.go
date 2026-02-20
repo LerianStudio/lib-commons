@@ -5,7 +5,7 @@
 package commons
 
 import (
-	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
+	constant "github.com/LerianStudio/lib-commons/v3/commons/constants"
 )
 
 // Response represents a business error with code, title, and message.

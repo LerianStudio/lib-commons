@@ -5,7 +5,7 @@
 package http
 
 import (
-	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
+	constant "github.com/LerianStudio/lib-commons/v3/commons/constants"
 	"net/http"
 	"net/http/httputil"
 	"net/url"

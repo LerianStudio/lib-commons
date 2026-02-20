@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/constants"
+	"github.com/LerianStudio/lib-commons/v3/commons/constants"
 	"github.com/Masterminds/squirrel"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"

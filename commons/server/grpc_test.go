@@ -7,7 +7,7 @@ package server_test
 import (
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/server"
+	"github.com/LerianStudio/lib-commons/v3/commons/server"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 )
