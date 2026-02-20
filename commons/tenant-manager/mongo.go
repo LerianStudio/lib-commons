@@ -165,6 +165,7 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 	// Double-check after acquiring lock: re-validate cached connection before returning
 	if conn, ok := p.connections[tenantID]; ok {
 		cached := conn
+
 		p.mu.Unlock()
 
 		if cached.DB != nil {
