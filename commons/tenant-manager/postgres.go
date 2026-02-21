@@ -39,6 +39,14 @@ const (
 	IsolationModeSchema = "schema"
 )
 
+// defaultMaxOpenConns is the default maximum number of open connections per tenant
+// database pool when no explicit value is provided via WithMaxOpenConns.
+const defaultMaxOpenConns = 25
+
+// defaultMaxIdleConns is the default maximum number of idle connections per tenant
+// database pool when no explicit value is provided via WithMaxIdleConns.
+const defaultMaxIdleConns = 5
+
 // defaultIdleTimeout is the default duration before a tenant connection becomes
 // eligible for eviction. Connections accessed within this window are considered
 // active and will not be evicted, allowing the pool to grow beyond maxConnections.
@@ -151,8 +159,8 @@ func NewPostgresManager(client *Client, service string, opts ...PostgresOption) 
 		lastAccessed:          make(map[string]time.Time),
 		lastSettingsCheck:     make(map[string]time.Time),
 		settingsCheckInterval: defaultSettingsCheckInterval,
-		maxOpenConns:          25,
-		maxIdleConns:          5,
+		maxOpenConns:          defaultMaxOpenConns,
+		maxIdleConns:          defaultMaxIdleConns,
 	}
 
 	for _, opt := range opts {
