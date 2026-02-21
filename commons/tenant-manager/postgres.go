@@ -39,13 +39,15 @@ const (
 	IsolationModeSchema = "schema"
 )
 
-// defaultMaxOpenConns is the default maximum number of open connections per tenant
-// database pool when no explicit value is provided via WithMaxOpenConns.
-const defaultMaxOpenConns = 25
+// fallbackMaxOpenConns is the fallback maximum number of open connections per tenant
+// database pool, used only when the Tenant Manager API is unreachable. Under normal
+// operation, the /settings endpoint provides the authoritative connection settings.
+const fallbackMaxOpenConns = 25
 
-// defaultMaxIdleConns is the default maximum number of idle connections per tenant
-// database pool when no explicit value is provided via WithMaxIdleConns.
-const defaultMaxIdleConns = 5
+// fallbackMaxIdleConns is the fallback maximum number of idle connections per tenant
+// database pool, used only when the Tenant Manager API is unreachable. Under normal
+// operation, the /settings endpoint provides the authoritative connection settings.
+const fallbackMaxIdleConns = 5
 
 // defaultIdleTimeout is the default duration before a tenant connection becomes
 // eligible for eviction. Connections accessed within this window are considered
@@ -159,8 +161,8 @@ func NewPostgresManager(client *Client, service string, opts ...PostgresOption) 
 		lastAccessed:          make(map[string]time.Time),
 		lastSettingsCheck:     make(map[string]time.Time),
 		settingsCheckInterval: defaultSettingsCheckInterval,
-		maxOpenConns:          defaultMaxOpenConns,
-		maxIdleConns:          defaultMaxIdleConns,
+		maxOpenConns:          fallbackMaxOpenConns,
+		maxIdleConns:          fallbackMaxIdleConns,
 	}
 
 	for _, opt := range opts {
