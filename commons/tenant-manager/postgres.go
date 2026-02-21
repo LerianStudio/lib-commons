@@ -21,6 +21,16 @@ import (
 // Kept short to avoid blocking requests when a cached connection is stale.
 const pingTimeout = 3 * time.Second
 
+// defaultSettingsCheckInterval is the default interval between periodic
+// connection pool settings revalidation checks. When a cached connection is
+// returned by GetConnection and this interval has elapsed since the last check,
+// fresh config is fetched from the Tenant Manager asynchronously.
+const defaultSettingsCheckInterval = 30 * time.Second
+
+// settingsRevalidationTimeout is the maximum duration for the HTTP call
+// to the Tenant Manager during async settings revalidation.
+const settingsRevalidationTimeout = 5 * time.Second
+
 // IsolationMode constants define the tenant isolation strategies.
 const (
 	// IsolationModeIsolated indicates each tenant has a dedicated database.
@@ -57,6 +67,9 @@ type PostgresManager struct {
 	maxConnections int                  // soft limit for pool size (0 = unlimited)
 	idleTimeout    time.Duration        // how long before a connection is eligible for eviction
 	lastAccessed   map[string]time.Time // LRU tracking per tenant
+
+	lastSettingsCheck      map[string]time.Time // tracks per-tenant last settings revalidation time
+	settingsCheckInterval  time.Duration        // configurable interval between settings revalidation checks
 
 	defaultConn *libPostgres.PostgresConnection
 }
@@ -103,6 +116,17 @@ func WithMaxTenantPools(maxSize int) PostgresOption {
 	}
 }
 
+// WithSettingsCheckInterval sets the interval between periodic connection pool settings
+// revalidation checks. When GetConnection returns a cached connection and this interval
+// has elapsed since the last check for that tenant, fresh config is fetched from the
+// Tenant Manager asynchronously and pool settings are updated without recreating the connection.
+// Default: 30 seconds (defaultSettingsCheckInterval).
+func WithSettingsCheckInterval(d time.Duration) PostgresOption {
+	return func(p *PostgresManager) {
+		p.settingsCheckInterval = d
+	}
+}
+
 // WithIdleTimeout sets the duration after which an unused tenant connection becomes
 // eligible for eviction. Only connections idle longer than this duration will be
 // evicted when the pool exceeds the soft limit (maxConnections). If all connections
@@ -121,12 +145,14 @@ func WithMaxConnections(maxSize int) PostgresOption { return WithMaxTenantPools(
 // NewPostgresManager creates a new PostgreSQL connection manager.
 func NewPostgresManager(client *Client, service string, opts ...PostgresOption) *PostgresManager {
 	p := &PostgresManager{
-		client:       client,
-		service:      service,
-		connections:  make(map[string]*libPostgres.PostgresConnection),
-		lastAccessed: make(map[string]time.Time),
-		maxOpenConns: 25,
-		maxIdleConns: 5,
+		client:                client,
+		service:               service,
+		connections:           make(map[string]*libPostgres.PostgresConnection),
+		lastAccessed:          make(map[string]time.Time),
+		lastSettingsCheck:     make(map[string]time.Time),
+		settingsCheckInterval: defaultSettingsCheckInterval,
+		maxOpenConns:          25,
+		maxIdleConns:          5,
 	}
 
 	for _, opt := range opts {
@@ -173,10 +199,24 @@ func (p *PostgresManager) GetConnection(ctx context.Context, tenantID string) (*
 			}
 		}
 
-		// Update LRU tracking on cache hit
+		// Update LRU tracking on cache hit and check if settings revalidation is due
+		now := time.Now()
+
 		p.mu.Lock()
-		p.lastAccessed[tenantID] = time.Now()
+		p.lastAccessed[tenantID] = now
+
+		shouldRevalidate := p.client != nil && time.Since(p.lastSettingsCheck[tenantID]) > p.settingsCheckInterval
+		if shouldRevalidate {
+			// Update timestamp BEFORE spawning goroutine to prevent multiple
+			// concurrent revalidation checks for the same tenant.
+			p.lastSettingsCheck[tenantID] = now
+		}
+
 		p.mu.Unlock()
+
+		if shouldRevalidate {
+			go p.revalidateSettings(tenantID)
+		}
 
 		return conn, nil
 	}
@@ -184,6 +224,36 @@ func (p *PostgresManager) GetConnection(ctx context.Context, tenantID string) (*
 	p.mu.RUnlock()
 
 	return p.createConnection(ctx, tenantID)
+}
+
+// revalidateSettings fetches fresh config from the Tenant Manager and applies
+// updated connection pool settings to the cached connection for the given tenant.
+// This runs asynchronously (in a goroutine) and must never block GetConnection.
+// If the fetch fails, a warning is logged but the connection remains usable.
+func (p *PostgresManager) revalidateSettings(tenantID string) {
+	// Guard: recover from any panic to avoid crashing the process.
+	// This goroutine runs asynchronously and must never bring down the service.
+	defer func() {
+		if r := recover(); r != nil {
+			if p.logger != nil {
+				p.logger.Warnf("recovered from panic during settings revalidation for tenant %s: %v", tenantID, r)
+			}
+		}
+	}()
+
+	revalidateCtx, cancel := context.WithTimeout(context.Background(), settingsRevalidationTimeout)
+	defer cancel()
+
+	config, err := p.client.GetTenantConfig(revalidateCtx, tenantID, p.service)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warnf("failed to revalidate connection settings for tenant %s: %v", tenantID, err)
+		}
+
+		return
+	}
+
+	p.ApplyConnectionSettings(tenantID, config)
 }
 
 // createConnection fetches config from Tenant Manager and creates a connection.
@@ -406,6 +476,7 @@ func (p *PostgresManager) Close() error {
 
 		delete(p.connections, tenantID)
 		delete(p.lastAccessed, tenantID)
+		delete(p.lastSettingsCheck, tenantID)
 	}
 
 	return errors.Join(errs...)
@@ -428,6 +499,7 @@ func (p *PostgresManager) CloseConnection(tenantID string) error {
 
 	delete(p.connections, tenantID)
 	delete(p.lastAccessed, tenantID)
+	delete(p.lastSettingsCheck, tenantID)
 
 	return err
 }
@@ -521,6 +593,11 @@ func (p *PostgresManager) ApplyConnectionSettings(tenantID string, config *Tenan
 
 	if connSettings == nil {
 		return // no settings to apply
+	}
+
+	if p.logger != nil {
+		p.logger.Infof("applying connection settings for tenant %s module %s: maxOpenConns=%d, maxIdleConns=%d",
+			tenantID, p.module, connSettings.MaxOpenConns, connSettings.MaxIdleConns)
 	}
 
 	db := *conn.ConnectionDB

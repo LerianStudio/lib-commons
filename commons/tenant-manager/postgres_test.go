@@ -754,6 +754,313 @@ type trackingDB struct {
 func (t *trackingDB) SetMaxOpenConns(n int) { t.maxOpenConns = n }
 func (t *trackingDB) SetMaxIdleConns(n int) { t.maxIdleConns = n }
 
+func TestPostgresManager_WithSettingsCheckInterval_Option(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		interval         time.Duration
+		expectedInterval time.Duration
+	}{
+		{
+			name:             "sets custom settings check interval",
+			interval:         1 * time.Minute,
+			expectedInterval: 1 * time.Minute,
+		},
+		{
+			name:             "sets short settings check interval",
+			interval:         5 * time.Second,
+			expectedInterval: 5 * time.Second,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &Client{baseURL: "http://localhost:8080"}
+			manager := NewPostgresManager(client, "ledger",
+				WithSettingsCheckInterval(tt.interval),
+			)
+
+			assert.Equal(t, tt.expectedInterval, manager.settingsCheckInterval)
+		})
+	}
+}
+
+func TestPostgresManager_DefaultSettingsCheckInterval(t *testing.T) {
+	t.Parallel()
+
+	client := &Client{baseURL: "http://localhost:8080"}
+	manager := NewPostgresManager(client, "ledger")
+
+	assert.Equal(t, defaultSettingsCheckInterval, manager.settingsCheckInterval,
+		"default settings check interval should be set from named constant")
+	assert.NotNil(t, manager.lastSettingsCheck,
+		"lastSettingsCheck map should be initialized")
+}
+
+func TestPostgresManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
+	t.Parallel()
+
+	// Set up a mock Tenant Manager that returns updated connection settings
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Return config with updated connection settings (maxOpenConns changed to 50)
+		w.Write([]byte(`{
+			"id": "tenant-123",
+			"tenantSlug": "test-tenant",
+			"databases": {
+				"onboarding": {
+					"postgresql": {"host": "localhost", "port": 5432, "database": "testdb", "username": "user", "password": "pass"},
+					"connectionSettings": {"maxOpenConns": 50, "maxIdleConns": 15}
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	tmClient := NewClient(server.URL, &mockLogger{})
+	manager := NewPostgresManager(tmClient, "ledger",
+		WithPostgresLogger(&mockLogger{}),
+		WithModule("onboarding"),
+		// Use a very short interval so the test triggers revalidation immediately
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	// Pre-populate cache with a healthy connection and an old settings check time
+	tDB := &trackingDB{}
+	var db dbresolver.DB = tDB
+
+	cachedConn := &libPostgres.PostgresConnection{
+		ConnectionDB: &db,
+	}
+	manager.connections["tenant-123"] = cachedConn
+	manager.lastAccessed["tenant-123"] = time.Now()
+	// Set lastSettingsCheck to a time well in the past so revalidation triggers
+	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+
+	// Call GetConnection - should return cached conn AND trigger async revalidation
+	conn, err := manager.GetConnection(context.Background(), "tenant-123")
+
+	require.NoError(t, err)
+	assert.Equal(t, cachedConn, conn, "should return the cached connection")
+
+	// Wait for the async goroutine to complete
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify that the Tenant Manager was called to fetch fresh config
+	assert.Greater(t, callCount, 0, "should have fetched fresh config from Tenant Manager")
+
+	// Verify that ApplyConnectionSettings was called with the new values
+	assert.Equal(t, 50, tDB.maxOpenConns, "maxOpenConns should be updated to 50")
+	assert.Equal(t, 15, tDB.maxIdleConns, "maxIdleConns should be updated to 15")
+}
+
+func TestPostgresManager_GetConnection_DoesNotRevalidateBeforeInterval(t *testing.T) {
+	t.Parallel()
+
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "tenant-123",
+			"tenantSlug": "test-tenant",
+			"databases": {
+				"onboarding": {
+					"connectionSettings": {"maxOpenConns": 50, "maxIdleConns": 15}
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	tmClient := NewClient(server.URL, &mockLogger{})
+	manager := NewPostgresManager(tmClient, "ledger",
+		WithPostgresLogger(&mockLogger{}),
+		WithModule("onboarding"),
+		// Use a very long interval so revalidation does NOT trigger
+		WithSettingsCheckInterval(1*time.Hour),
+	)
+
+	// Pre-populate cache with a healthy connection and a recent settings check time
+	tDB := &trackingDB{}
+	var db dbresolver.DB = tDB
+
+	cachedConn := &libPostgres.PostgresConnection{
+		ConnectionDB: &db,
+	}
+	manager.connections["tenant-123"] = cachedConn
+	manager.lastAccessed["tenant-123"] = time.Now()
+	// Set lastSettingsCheck to now - should NOT trigger revalidation
+	manager.lastSettingsCheck["tenant-123"] = time.Now()
+
+	// Call GetConnection - should return cached conn without revalidation
+	conn, err := manager.GetConnection(context.Background(), "tenant-123")
+
+	require.NoError(t, err)
+	assert.Equal(t, cachedConn, conn)
+
+	// Wait to ensure no async goroutine fires
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify that Tenant Manager was NOT called
+	assert.Equal(t, 0, callCount, "should NOT have fetched config - interval not elapsed")
+
+	// Verify that connection settings were NOT changed
+	assert.Equal(t, 0, tDB.maxOpenConns, "maxOpenConns should NOT be changed")
+	assert.Equal(t, 0, tDB.maxIdleConns, "maxIdleConns should NOT be changed")
+}
+
+func TestPostgresManager_GetConnection_FailedRevalidationDoesNotBreakConnection(t *testing.T) {
+	t.Parallel()
+
+	// Set up a mock Tenant Manager that returns 500 (simulates unavailability)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	tmClient := NewClient(server.URL, &mockLogger{})
+	manager := NewPostgresManager(tmClient, "ledger",
+		WithPostgresLogger(&mockLogger{}),
+		WithModule("onboarding"),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	// Pre-populate cache with a healthy connection
+	tDB := &trackingDB{}
+	var db dbresolver.DB = tDB
+
+	cachedConn := &libPostgres.PostgresConnection{
+		ConnectionDB: &db,
+	}
+	manager.connections["tenant-123"] = cachedConn
+	manager.lastAccessed["tenant-123"] = time.Now()
+	// Set lastSettingsCheck to the past so revalidation triggers
+	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+
+	// Call GetConnection - should return cached conn even though revalidation will fail
+	conn, err := manager.GetConnection(context.Background(), "tenant-123")
+
+	require.NoError(t, err, "GetConnection should NOT fail when revalidation fails")
+	assert.Equal(t, cachedConn, conn, "should still return the cached connection")
+
+	// Wait for the async goroutine to complete (and fail)
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify that connection settings were NOT changed (fetch failed)
+	assert.Equal(t, 0, tDB.maxOpenConns, "maxOpenConns should NOT be changed on failed revalidation")
+	assert.Equal(t, 0, tDB.maxIdleConns, "maxIdleConns should NOT be changed on failed revalidation")
+}
+
+func TestPostgresManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
+	t.Parallel()
+
+	client := &Client{baseURL: "http://localhost:8080"}
+	manager := NewPostgresManager(client, "ledger",
+		WithPostgresLogger(&mockLogger{}),
+	)
+
+	// Pre-populate cache
+	healthyDB := &pingableDB{pingErr: nil}
+	var db dbresolver.DB = healthyDB
+
+	manager.connections["tenant-123"] = &libPostgres.PostgresConnection{
+		ConnectionDB: &db,
+	}
+	manager.lastAccessed["tenant-123"] = time.Now()
+	manager.lastSettingsCheck["tenant-123"] = time.Now()
+
+	// Close the specific tenant connection
+	err := manager.CloseConnection("tenant-123")
+
+	require.NoError(t, err)
+
+	manager.mu.RLock()
+	_, connExists := manager.connections["tenant-123"]
+	_, accessExists := manager.lastAccessed["tenant-123"]
+	_, settingsCheckExists := manager.lastSettingsCheck["tenant-123"]
+	manager.mu.RUnlock()
+
+	assert.False(t, connExists, "connection should be removed after CloseConnection")
+	assert.False(t, accessExists, "lastAccessed should be removed after CloseConnection")
+	assert.False(t, settingsCheckExists, "lastSettingsCheck should be removed after CloseConnection")
+}
+
+func TestPostgresManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
+	t.Parallel()
+
+	client := &Client{baseURL: "http://localhost:8080"}
+	manager := NewPostgresManager(client, "ledger",
+		WithPostgresLogger(&mockLogger{}),
+	)
+
+	// Pre-populate cache with multiple tenants
+	for _, id := range []string{"tenant-1", "tenant-2"} {
+		db := &pingableDB{}
+		var dbIface dbresolver.DB = db
+
+		manager.connections[id] = &libPostgres.PostgresConnection{
+			ConnectionDB: &dbIface,
+		}
+		manager.lastAccessed[id] = time.Now()
+		manager.lastSettingsCheck[id] = time.Now()
+	}
+
+	err := manager.Close()
+
+	require.NoError(t, err)
+
+	assert.Empty(t, manager.connections, "all connections should be removed after Close")
+	assert.Empty(t, manager.lastAccessed, "all lastAccessed should be removed after Close")
+	assert.Empty(t, manager.lastSettingsCheck, "all lastSettingsCheck should be removed after Close")
+}
+
+func TestPostgresManager_ApplyConnectionSettings_LogsValues(t *testing.T) {
+	t.Parallel()
+
+	client := &Client{baseURL: "http://localhost:8080"}
+
+	// Use a capturing logger to verify that ApplyConnectionSettings logs when it applies values
+	capLogger := &capturingLogger{}
+	manager := NewPostgresManager(client, "ledger",
+		WithModule("onboarding"),
+		WithPostgresLogger(capLogger),
+	)
+
+	tDB := &trackingDB{}
+	var db dbresolver.DB = tDB
+
+	manager.connections["tenant-123"] = &libPostgres.PostgresConnection{
+		ConnectionDB: &db,
+	}
+
+	config := &TenantConfig{
+		Databases: map[string]DatabaseConfig{
+			"onboarding": {
+				ConnectionSettings: &ConnectionSettings{
+					MaxOpenConns: 30,
+					MaxIdleConns: 10,
+				},
+			},
+		},
+	}
+
+	manager.ApplyConnectionSettings("tenant-123", config)
+
+	assert.Equal(t, 30, tDB.maxOpenConns)
+	assert.Equal(t, 10, tDB.maxIdleConns)
+	assert.True(t, capLogger.containsSubstring("applying connection settings"),
+		"ApplyConnectionSettings should log when applying values")
+}
+
 func TestPostgresManager_ApplyConnectionSettings(t *testing.T) {
 	t.Parallel()
 
