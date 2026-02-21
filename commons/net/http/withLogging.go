@@ -186,10 +186,18 @@ func WithHTTPLogging(opts ...LogMiddlewareOption) fiber.Handler {
 
 		err := c.Next()
 
+		// Check if the response is a body stream (e.g., SSE).
+		// Reading Body() on a streaming response materializes the entire stream
+		// into memory, breaking incremental event delivery.
+		var responseSize int
+		if !c.Response().IsBodyStream() {
+			responseSize = len(c.Response().Body())
+		}
+
 		rw := ResponseMetricsWrapper{
 			Context:    c,
 			StatusCode: c.Response().StatusCode(),
-			Size:       len(c.Response().Body()),
+			Size:       responseSize,
 			Body:       "",
 		}
 
