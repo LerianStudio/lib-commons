@@ -78,8 +78,8 @@ type PostgresManager struct {
 	idleTimeout    time.Duration        // how long before a connection is eligible for eviction
 	lastAccessed   map[string]time.Time // LRU tracking per tenant
 
-	lastSettingsCheck      map[string]time.Time // tracks per-tenant last settings revalidation time
-	settingsCheckInterval  time.Duration        // configurable interval between settings revalidation checks
+	lastSettingsCheck     map[string]time.Time // tracks per-tenant last settings revalidation time
+	settingsCheckInterval time.Duration        // configurable interval between settings revalidation checks
 
 	defaultConn *libPostgres.PostgresConnection
 }
@@ -130,10 +130,17 @@ func WithMaxTenantPools(maxSize int) PostgresOption {
 // revalidation checks. When GetConnection returns a cached connection and this interval
 // has elapsed since the last check for that tenant, fresh config is fetched from the
 // Tenant Manager asynchronously and pool settings are updated without recreating the connection.
+//
+// If d <= 0, revalidation is DISABLED (settingsCheckInterval is set to 0).
+// When disabled, no async revalidation checks are performed on cache hits.
 // Default: 30 seconds (defaultSettingsCheckInterval).
 func WithSettingsCheckInterval(d time.Duration) PostgresOption {
 	return func(p *PostgresManager) {
-		p.settingsCheckInterval = d
+		if d <= 0 {
+			p.settingsCheckInterval = 0
+		} else {
+			p.settingsCheckInterval = d
+		}
 	}
 }
 
@@ -215,7 +222,8 @@ func (p *PostgresManager) GetConnection(ctx context.Context, tenantID string) (*
 		p.mu.Lock()
 		p.lastAccessed[tenantID] = now
 
-		shouldRevalidate := p.client != nil && time.Since(p.lastSettingsCheck[tenantID]) > p.settingsCheckInterval
+		// Only revalidate if settingsCheckInterval > 0 (means revalidation is enabled)
+		shouldRevalidate := p.client != nil && p.settingsCheckInterval > 0 && time.Since(p.lastSettingsCheck[tenantID]) > p.settingsCheckInterval
 		if shouldRevalidate {
 			// Update timestamp BEFORE spawning goroutine to prevent multiple
 			// concurrent revalidation checks for the same tenant.
