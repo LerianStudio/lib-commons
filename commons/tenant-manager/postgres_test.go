@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -745,14 +746,18 @@ func TestPostgresManager_Stats_IncludesMaxConnections(t *testing.T) {
 }
 
 // trackingDB extends pingableDB to track SetMaxOpenConns/SetMaxIdleConns calls.
+// Fields use int32 with atomic operations to avoid data races when written
+// by async goroutines (revalidateSettings) and read by test assertions.
 type trackingDB struct {
 	pingableDB
-	maxOpenConns int
-	maxIdleConns int
+	maxOpenConns int32
+	maxIdleConns int32
 }
 
-func (t *trackingDB) SetMaxOpenConns(n int) { t.maxOpenConns = n }
-func (t *trackingDB) SetMaxIdleConns(n int) { t.maxIdleConns = n }
+func (t *trackingDB) SetMaxOpenConns(n int) { atomic.StoreInt32(&t.maxOpenConns, int32(n)) }
+func (t *trackingDB) SetMaxIdleConns(n int) { atomic.StoreInt32(&t.maxIdleConns, int32(n)) }
+func (t *trackingDB) MaxOpenConns() int32   { return atomic.LoadInt32(&t.maxOpenConns) }
+func (t *trackingDB) MaxIdleConns() int32   { return atomic.LoadInt32(&t.maxIdleConns) }
 
 func TestPostgresManager_WithSettingsCheckInterval_Option(t *testing.T) {
 	t.Parallel()
@@ -805,9 +810,9 @@ func TestPostgresManager_GetConnection_RevalidatesSettingsAfterInterval(t *testi
 	t.Parallel()
 
 	// Set up a mock Tenant Manager that returns updated connection settings
-	callCount := 0
+	var callCount int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		callCount++
+		atomic.AddInt32(&callCount, 1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		// Return config with updated connection settings (maxOpenConns changed to 50)
@@ -854,19 +859,19 @@ func TestPostgresManager_GetConnection_RevalidatesSettingsAfterInterval(t *testi
 	time.Sleep(200 * time.Millisecond)
 
 	// Verify that the Tenant Manager was called to fetch fresh config
-	assert.Greater(t, callCount, 0, "should have fetched fresh config from Tenant Manager")
+	assert.Greater(t, atomic.LoadInt32(&callCount), int32(0), "should have fetched fresh config from Tenant Manager")
 
 	// Verify that ApplyConnectionSettings was called with the new values
-	assert.Equal(t, 50, tDB.maxOpenConns, "maxOpenConns should be updated to 50")
-	assert.Equal(t, 15, tDB.maxIdleConns, "maxIdleConns should be updated to 15")
+	assert.Equal(t, int32(50), tDB.MaxOpenConns(), "maxOpenConns should be updated to 50")
+	assert.Equal(t, int32(15), tDB.MaxIdleConns(), "maxIdleConns should be updated to 15")
 }
 
 func TestPostgresManager_GetConnection_DoesNotRevalidateBeforeInterval(t *testing.T) {
 	t.Parallel()
 
-	callCount := 0
+	var callCount int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		callCount++
+		atomic.AddInt32(&callCount, 1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{
@@ -911,11 +916,11 @@ func TestPostgresManager_GetConnection_DoesNotRevalidateBeforeInterval(t *testin
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify that Tenant Manager was NOT called
-	assert.Equal(t, 0, callCount, "should NOT have fetched config - interval not elapsed")
+	assert.Equal(t, int32(0), atomic.LoadInt32(&callCount), "should NOT have fetched config - interval not elapsed")
 
 	// Verify that connection settings were NOT changed
-	assert.Equal(t, 0, tDB.maxOpenConns, "maxOpenConns should NOT be changed")
-	assert.Equal(t, 0, tDB.maxIdleConns, "maxIdleConns should NOT be changed")
+	assert.Equal(t, int32(0), tDB.MaxOpenConns(), "maxOpenConns should NOT be changed")
+	assert.Equal(t, int32(0), tDB.MaxIdleConns(), "maxIdleConns should NOT be changed")
 }
 
 func TestPostgresManager_GetConnection_FailedRevalidationDoesNotBreakConnection(t *testing.T) {
@@ -956,8 +961,8 @@ func TestPostgresManager_GetConnection_FailedRevalidationDoesNotBreakConnection(
 	time.Sleep(200 * time.Millisecond)
 
 	// Verify that connection settings were NOT changed (fetch failed)
-	assert.Equal(t, 0, tDB.maxOpenConns, "maxOpenConns should NOT be changed on failed revalidation")
-	assert.Equal(t, 0, tDB.maxIdleConns, "maxIdleConns should NOT be changed on failed revalidation")
+	assert.Equal(t, int32(0), tDB.MaxOpenConns(), "maxOpenConns should NOT be changed on failed revalidation")
+	assert.Equal(t, int32(0), tDB.MaxIdleConns(), "maxIdleConns should NOT be changed on failed revalidation")
 }
 
 func TestPostgresManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
@@ -1055,8 +1060,8 @@ func TestPostgresManager_ApplyConnectionSettings_LogsValues(t *testing.T) {
 
 	manager.ApplyConnectionSettings("tenant-123", config)
 
-	assert.Equal(t, 30, tDB.maxOpenConns)
-	assert.Equal(t, 10, tDB.maxIdleConns)
+	assert.Equal(t, int32(30), tDB.MaxOpenConns())
+	assert.Equal(t, int32(10), tDB.MaxIdleConns())
 	assert.True(t, capLogger.containsSubstring("applying connection settings"),
 		"ApplyConnectionSettings should log when applying values")
 }
@@ -1206,14 +1211,14 @@ func TestPostgresManager_ApplyConnectionSettings(t *testing.T) {
 			manager.ApplyConnectionSettings("tenant-123", tt.config)
 
 			if tt.expectNoChange {
-				assert.Equal(t, 0, tDB.maxOpenConns,
+				assert.Equal(t, int32(0), tDB.MaxOpenConns(),
 					"maxOpenConns should not be changed")
-				assert.Equal(t, 0, tDB.maxIdleConns,
+				assert.Equal(t, int32(0), tDB.MaxIdleConns(),
 					"maxIdleConns should not be changed")
 			} else {
-				assert.Equal(t, tt.expectMaxOpen, tDB.maxOpenConns,
+				assert.Equal(t, int32(tt.expectMaxOpen), tDB.MaxOpenConns(),
 					"maxOpenConns mismatch")
-				assert.Equal(t, tt.expectMaxIdle, tDB.maxIdleConns,
+				assert.Equal(t, int32(tt.expectMaxIdle), tDB.MaxIdleConns(),
 					"maxIdleConns mismatch")
 			}
 		})
