@@ -451,6 +451,7 @@ func (p *PostgresManager) evictLRU(logger libLog.Logger) {
 
 		delete(p.connections, oldestID)
 		delete(p.lastAccessed, oldestID)
+		delete(p.lastSettingsCheck, oldestID)
 
 		if logger != nil {
 			logger.Infof("LRU evicted idle postgres connection for tenant %s (idle for %s)", oldestID, now.Sub(oldestTime))
