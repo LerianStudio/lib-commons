@@ -228,18 +228,12 @@ func (p *MongoManager) createClient(ctx context.Context, tenantID string) (*mong
 	// Build connection URI
 	uri := buildMongoURI(mongoConfig)
 
-	// Determine max connections (start with global default, then per-config, then per-tenant override)
+	// Determine max connections: global default, optionally overridden by MongoDBConfig.MaxPoolSize.
+	// Per-tenant ConnectionSettings are NOT applied for MongoDB because the Go driver does not
+	// support changing maxPoolSize after client creation. Per-tenant pool sizing is PostgreSQL-only.
 	maxConnections := DefaultMongoMaxConnections
 	if mongoConfig.MaxPoolSize > 0 {
 		maxConnections = mongoConfig.MaxPoolSize
-	}
-
-	// Apply per-tenant connection pool settings from Tenant Manager (overrides all defaults)
-	if config.ConnectionSettings != nil {
-		if config.ConnectionSettings.MaxOpenConns > 0 {
-			maxConnections = uint64(config.ConnectionSettings.MaxOpenConns)
-			logger.Infof("applying per-tenant maxPoolSize=%d for tenant %s (mongo)", maxConnections, tenantID)
-		}
 	}
 
 	// Create MongoConnection using lib-commons/commons/mongo pattern
@@ -329,40 +323,13 @@ func (p *MongoManager) evictLRU(ctx context.Context, logger log.Logger) {
 	}
 }
 
-// ApplyConnectionSettings checks if connection pool settings have changed for the
-// given tenant. Unlike PostgreSQL, the MongoDB Go driver does not support changing
-// pool size (maxPoolSize) after client creation. If settings differ, a warning is
-// logged indicating that changes will take effect on the next connection recreation
-// (e.g., after eviction or health check failure).
+// ApplyConnectionSettings is a no-op for MongoDB. The MongoDB Go driver does not
+// support changing maxPoolSize after client creation. All MongoDB connections use
+// the global default pool size (DefaultMongoMaxConnections or MongoDBConfig.MaxPoolSize).
+// Per-tenant pool sizing is only supported for PostgreSQL via SetMaxOpenConns.
 func (p *MongoManager) ApplyConnectionSettings(tenantID string, config *TenantConfig) {
-	p.mu.RLock()
-	_, ok := p.connections[tenantID]
-	p.mu.RUnlock()
-
-	if !ok {
-		return // no cached connection, settings will be applied on creation
-	}
-
-	// Check if connection settings exist in the config
-	var hasSettings bool
-
-	if config.ConnectionSettings != nil && config.ConnectionSettings.MaxOpenConns > 0 {
-		hasSettings = true
-	}
-
-	if config.Databases != nil && p.module != "" {
-		if db, ok := config.Databases[p.module]; ok && db.ConnectionSettings != nil {
-			if db.ConnectionSettings.MaxOpenConns > 0 {
-				hasSettings = true
-			}
-		}
-	}
-
-	if hasSettings && p.logger != nil {
-		p.logger.Warnf("MongoDB connection settings changed for tenant %s, "+
-			"but MongoDB driver does not support pool resize after creation. "+
-			"Changes will take effect on next connection recreation.", tenantID)
-	}
+	// No-op: MongoDB driver does not support runtime pool resize.
+	// Pool size is determined at connection creation time and remains fixed.
 }
 
 // GetDatabase returns a MongoDB database for the tenant.

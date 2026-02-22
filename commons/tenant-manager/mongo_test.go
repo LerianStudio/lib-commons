@@ -598,10 +598,9 @@ func TestMongoManager_ApplyConnectionSettings(t *testing.T) {
 		module        string
 		config        *TenantConfig
 		hasCachedConn bool
-		expectWarning bool
 	}{
 		{
-			name:   "logs warning when top-level settings exist",
+			name:   "no-op with top-level connection settings and cached connection",
 			module: "onboarding",
 			config: &TenantConfig{
 				ConnectionSettings: &ConnectionSettings{
@@ -609,10 +608,9 @@ func TestMongoManager_ApplyConnectionSettings(t *testing.T) {
 				},
 			},
 			hasCachedConn: true,
-			expectWarning: true,
 		},
 		{
-			name:   "logs warning when module-level settings exist",
+			name:   "no-op with module-level connection settings and cached connection",
 			module: "onboarding",
 			config: &TenantConfig{
 				Databases: map[string]DatabaseConfig{
@@ -624,17 +622,15 @@ func TestMongoManager_ApplyConnectionSettings(t *testing.T) {
 				},
 			},
 			hasCachedConn: true,
-			expectWarning: true,
 		},
 		{
-			name:          "no warning when no cached connection",
+			name:          "no-op with connection settings but no cached connection",
 			module:        "onboarding",
 			config:        &TenantConfig{ConnectionSettings: &ConnectionSettings{MaxOpenConns: 30}},
 			hasCachedConn: false,
-			expectWarning: false,
 		},
 		{
-			name:   "no warning when config has no connection settings",
+			name:   "no-op with config that has no connection settings",
 			module: "onboarding",
 			config: &TenantConfig{
 				Databases: map[string]DatabaseConfig{
@@ -644,7 +640,6 @@ func TestMongoManager_ApplyConnectionSettings(t *testing.T) {
 				},
 			},
 			hasCachedConn: true,
-			expectWarning: false,
 		},
 	}
 
@@ -664,15 +659,13 @@ func TestMongoManager_ApplyConnectionSettings(t *testing.T) {
 				manager.connections["tenant-123"] = &mongolib.MongoConnection{DB: nil}
 			}
 
+			// ApplyConnectionSettings is a no-op for MongoDB.
+			// The MongoDB driver does not support runtime pool resize.
+			// Verify it does not panic and produces no log output.
 			manager.ApplyConnectionSettings("tenant-123", tt.config)
 
-			if tt.expectWarning {
-				assert.True(t, logger.containsSubstring("MongoDB connection settings changed"),
-					"expected warning about MongoDB pool resize limitation")
-			} else {
-				assert.False(t, logger.containsSubstring("MongoDB connection settings changed"),
-					"should not log warning when no settings change is applicable")
-			}
+			assert.Empty(t, logger.messages,
+				"ApplyConnectionSettings should be a no-op and produce no log output")
 		})
 	}
 }
