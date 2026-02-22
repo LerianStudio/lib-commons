@@ -39,14 +39,17 @@ const (
 	IsolationModeSchema = "schema"
 )
 
-// fallbackMaxOpenConns is the fallback maximum number of open connections per tenant
-// database pool, used only when the Tenant Manager API is unreachable. Under normal
-// operation, the /settings endpoint provides the authoritative connection settings.
+// fallbackMaxOpenConns is the default maximum number of open connections per tenant
+// database pool. Used when per-tenant connectionSettings are absent from the Tenant
+// Manager /settings response (i.e., the tenant has no explicit pool configuration),
+// or when no Tenant Manager client is configured. Can be overridden per-manager via
+// WithMaxOpenConns.
 const fallbackMaxOpenConns = 25
 
-// fallbackMaxIdleConns is the fallback maximum number of idle connections per tenant
-// database pool, used only when the Tenant Manager API is unreachable. Under normal
-// operation, the /settings endpoint provides the authoritative connection settings.
+// fallbackMaxIdleConns is the default maximum number of idle connections per tenant
+// database pool. Used when per-tenant connectionSettings are absent from the Tenant
+// Manager /settings response, or when no Tenant Manager client is configured.
+// Can be overridden per-manager via WithMaxIdleConns.
 const fallbackMaxIdleConns = 5
 
 // defaultIdleTimeout is the default duration before a tenant connection becomes
