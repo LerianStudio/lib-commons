@@ -9,7 +9,7 @@ require (
 	github.com/bxcodec/dbresolver/v2 v2.2.1
 	github.com/go-redsync/redsync/v4 v4.15.0
 	github.com/gofiber/fiber/v2 v2.52.11
-	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.8.0
