@@ -10,8 +10,9 @@ import (
 )
 
 // GetObjectStorageKey returns a tenant-prefixed object storage key: "{tenantID}/{key}".
-// If tenantID is empty, returns the key unchanged (single-tenant mode).
-// Leading slashes are stripped from the key to ensure clean path construction.
+// If tenantID is empty, returns the key with leading slashes stripped (normalized).
+// Leading slashes are always stripped from the key to ensure clean path construction,
+// regardless of whether tenantID is present.
 func GetObjectStorageKey(tenantID, key string) string {
 	key = strings.TrimLeft(key, "/")
 
@@ -26,7 +27,9 @@ func GetObjectStorageKey(tenantID, key string) string {
 // using the tenantID from context.
 //
 // In multi-tenant mode (tenantID in context): "{tenantId}/{key}"
-// In single-tenant mode (no tenant in context): "{key}" (unchanged)
+// In single-tenant mode (no tenant in context): "{key}" (normalized, leading slashes stripped)
+//
+// If ctx is nil, behaves as single-tenant mode (no prefix).
 //
 // Usage:
 //
@@ -35,7 +38,12 @@ func GetObjectStorageKey(tenantID, key string) string {
 //	// Single-tenant: "reports/templateID/reportID.html"
 //	storage.Upload(ctx, key, reader, contentType)
 func GetObjectStorageKeyForTenant(ctx context.Context, key string) string {
+	if ctx == nil {
+		return GetObjectStorageKey("", key)
+	}
+
 	tenantID := GetTenantIDFromContext(ctx)
+
 	return GetObjectStorageKey(tenantID, key)
 }
 

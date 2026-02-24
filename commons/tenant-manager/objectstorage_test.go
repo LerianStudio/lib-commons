@@ -142,6 +142,15 @@ func TestGetObjectStorageKeyForTenant(t *testing.T) {
 	}
 }
 
+func TestGetObjectStorageKeyForTenant_NilContext(t *testing.T) {
+	t.Parallel()
+
+	// Must not panic with nil context — behaves as single-tenant
+	result := GetObjectStorageKeyForTenant(nil, "reports/templateID/reportID.html")
+
+	assert.Equal(t, "reports/templateID/reportID.html", result)
+}
+
 func TestGetObjectStorageKeyForTenant_UsesSameTenantID(t *testing.T) {
 	t.Parallel()
 
