@@ -610,6 +610,7 @@ func (c *MultiTenantConsumer) evictSuspendedTenant(ctx context.Context, tenantID
 	logger.Warnf("tenant %s service suspended, stopping consumer and closing connections", tenantID)
 
 	c.mu.Lock()
+
 	if cancel, ok := c.tenants[tenantID]; ok {
 		cancel()
 		delete(c.tenants, tenantID)
