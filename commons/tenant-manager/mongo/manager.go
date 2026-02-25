@@ -148,7 +148,9 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Cl
 					p.logger.Warnf("cached mongo connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr)
 				}
 
-				_ = p.CloseConnection(ctx, tenantID)
+				if closeErr := p.CloseConnection(ctx, tenantID); closeErr != nil && p.logger != nil {
+					p.logger.Warnf("failed to close stale mongo connection for tenant %s: %v", tenantID, closeErr)
+				}
 
 				// Fall through to create a new client with fresh credentials
 				return p.createConnection(ctx, tenantID)
@@ -332,7 +334,9 @@ func (p *Manager) evictLRU(ctx context.Context, logger log.Logger) {
 	// Evict the idle connection
 	if conn, ok := p.connections[oldestID]; ok {
 		if conn.DB != nil {
-			_ = conn.DB.Disconnect(ctx)
+			if discErr := conn.DB.Disconnect(ctx); discErr != nil && logger != nil {
+				logger.Warnf("failed to disconnect evicted mongo connection for tenant %s: %v", oldestID, discErr)
+			}
 		}
 
 		delete(p.connections, oldestID)
