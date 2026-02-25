@@ -278,6 +278,19 @@ func (p *Manager) revalidateSettings(tenantID string) {
 
 	config, err := p.client.GetTenantConfig(revalidateCtx, tenantID, p.service)
 	if err != nil {
+		// If tenant service was suspended/purged, evict the cached connection immediately.
+		// The next request for this tenant will call createConnection, which fetches fresh
+		// config from the Tenant Manager and receives the 403 error directly.
+		if core.IsTenantSuspendedError(err) {
+			if p.logger != nil {
+				p.logger.Warnf("tenant %s service suspended, evicting cached connection", tenantID)
+			}
+
+			_ = p.CloseConnection(context.Background(), tenantID)
+
+			return
+		}
+
 		if p.logger != nil {
 			p.logger.Warnf("failed to revalidate connection settings for tenant %s: %v", tenantID, err)
 		}

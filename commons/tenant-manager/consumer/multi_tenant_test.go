@@ -2963,3 +2963,137 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 			"should log warning about fetch failure")
 	})
 }
+
+// TestMultiTenantConsumer_RevalidateSettings_StopsSuspendedTenant verifies that
+// revalidateConnectionSettings stops the consumer and removes the tenant from
+// knownTenants and tenants maps when the Tenant Manager returns 403 (suspended/purged).
+func TestMultiTenantConsumer_RevalidateSettings_StopsSuspendedTenant(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		responseBody       string
+		suspendedTenantID  string
+		healthyTenantID    string
+		expectLogSubstring string
+	}{
+		{
+			name:               "stops_suspended_tenant_and_keeps_healthy_tenant",
+			responseBody:       `{"code":"TS-SUSPENDED","error":"service suspended","status":"suspended"}`,
+			suspendedTenantID:  "tenant-suspended",
+			healthyTenantID:    "tenant-healthy",
+			expectLogSubstring: "tenant tenant-suspended service suspended, stopping consumer and closing connections",
+		},
+		{
+			name:               "stops_purged_tenant_and_keeps_healthy_tenant",
+			responseBody:       `{"code":"TS-SUSPENDED","error":"service purged","status":"purged"}`,
+			suspendedTenantID:  "tenant-purged",
+			healthyTenantID:    "tenant-healthy",
+			expectLogSubstring: "service suspended, stopping consumer and closing connections",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Set up a mock Tenant Manager that returns 403 for the suspended tenant
+			// and 200 with valid config for the healthy tenant
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+
+				if strings.Contains(r.URL.Path, tt.suspendedTenantID) {
+					w.WriteHeader(http.StatusForbidden)
+					w.Write([]byte(tt.responseBody))
+
+					return
+				}
+
+				// Return valid config for healthy tenant
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(`{
+					"id": "` + tt.healthyTenantID + `",
+					"tenantSlug": "healthy",
+					"databases": {
+						"onboarding": {
+							"connectionSettings": {
+								"maxOpenConns": 25,
+								"maxIdleConns": 5
+							}
+						}
+					}
+				}`))
+			}))
+			defer server.Close()
+
+			logger := testutil.NewCapturingLogger()
+			tmClient := client.NewClient(server.URL, logger)
+			pgManager := tmpostgres.NewManager(tmClient, "ledger",
+				tmpostgres.WithModule("onboarding"),
+				tmpostgres.WithLogger(logger),
+			)
+
+			config := MultiTenantConfig{
+				Service:      "ledger",
+				SyncInterval: 30 * time.Second,
+			}
+
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), dummyRedisClient(t), config, logger,
+				WithPostgresManager(pgManager),
+			)
+			consumer.pmClient = tmClient
+
+			// Simulate active tenants with cancel functions
+			consumer.mu.Lock()
+			suspendedCanceled := false
+			_, cancelSuspended := context.WithCancel(context.Background())
+			wrappedCancel := func() {
+				suspendedCanceled = true
+				cancelSuspended()
+			}
+			_, cancelHealthy := context.WithCancel(context.Background())
+			consumer.tenants[tt.suspendedTenantID] = wrappedCancel
+			consumer.tenants[tt.healthyTenantID] = cancelHealthy
+			consumer.knownTenants[tt.suspendedTenantID] = true
+			consumer.knownTenants[tt.healthyTenantID] = true
+			consumer.mu.Unlock()
+
+			ctx := context.Background()
+			ctx = libCommons.ContextWithLogger(ctx, logger)
+
+			// Trigger revalidation
+			consumer.revalidateConnectionSettings(ctx)
+
+			// Verify the suspended tenant was removed from tenants map
+			consumer.mu.RLock()
+			_, suspendedInTenants := consumer.tenants[tt.suspendedTenantID]
+			_, suspendedInKnown := consumer.knownTenants[tt.suspendedTenantID]
+			_, healthyInTenants := consumer.tenants[tt.healthyTenantID]
+			_, healthyInKnown := consumer.knownTenants[tt.healthyTenantID]
+			consumer.mu.RUnlock()
+
+			assert.False(t, suspendedInTenants,
+				"suspended tenant should be removed from tenants map")
+			assert.False(t, suspendedInKnown,
+				"suspended tenant should be removed from knownTenants map")
+			assert.True(t, suspendedCanceled,
+				"suspended tenant's context cancel should have been called")
+
+			// Verify the healthy tenant is still active
+			assert.True(t, healthyInTenants,
+				"healthy tenant should still be in tenants map")
+			assert.True(t, healthyInKnown,
+				"healthy tenant should still be in knownTenants map")
+
+			// Verify the appropriate log message was produced
+			assert.True(t, logger.ContainsSubstring(tt.expectLogSubstring),
+				"expected log message containing %q, got: %v",
+				tt.expectLogSubstring, logger.GetMessages())
+
+			// Verify that the healthy tenant was still revalidated
+			assert.True(t, logger.ContainsSubstring("revalidated connection settings for 1/"),
+				"should log revalidation summary for the healthy tenant")
+		})
+	}
+}

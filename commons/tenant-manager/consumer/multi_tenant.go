@@ -575,7 +575,14 @@ func (c *MultiTenantConsumer) revalidateConnectionSettings(ctx context.Context) 
 	for _, tenantID := range tenantIDs {
 		config, err := c.pmClient.GetTenantConfig(ctx, tenantID, c.config.Service)
 		if err != nil {
+			// If tenant service was suspended/purged, stop consumer and close connections
+			if core.IsTenantSuspendedError(err) {
+				c.evictSuspendedTenant(ctx, tenantID, logger)
+				continue
+			}
+
 			logger.Warnf("failed to fetch config for tenant %s during settings revalidation: %v", tenantID, err)
+
 			continue // skip on error, will retry next cycle
 		}
 
@@ -592,6 +599,37 @@ func (c *MultiTenantConsumer) revalidateConnectionSettings(ctx context.Context) 
 
 	if revalidated > 0 {
 		logger.Infof("revalidated connection settings for %d/%d active tenants", revalidated, len(tenantIDs))
+	}
+}
+
+// evictSuspendedTenant stops the consumer and closes all database connections for a
+// tenant whose service was suspended or purged by the Tenant Manager. The tenant is
+// removed from both tenants and knownTenants maps so it will not be restarted by the
+// sync loop. The next request for this tenant will receive the 403 error directly.
+func (c *MultiTenantConsumer) evictSuspendedTenant(ctx context.Context, tenantID string, logger libLog.Logger) {
+	logger.Warnf("tenant %s service suspended, stopping consumer and closing connections", tenantID)
+
+	c.mu.Lock()
+
+	if cancel, ok := c.tenants[tenantID]; ok {
+		cancel()
+		delete(c.tenants, tenantID)
+	}
+
+	delete(c.knownTenants, tenantID)
+	c.mu.Unlock()
+
+	// Close database connections for suspended tenant
+	if c.postgres != nil {
+		_ = c.postgres.CloseConnection(ctx, tenantID)
+	}
+
+	if c.mongo != nil {
+		_ = c.mongo.CloseConnection(ctx, tenantID)
+	}
+
+	if c.rabbitmq != nil {
+		_ = c.rabbitmq.CloseConnection(ctx, tenantID)
 	}
 }
 

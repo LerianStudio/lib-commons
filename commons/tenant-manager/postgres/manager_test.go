@@ -1437,3 +1437,97 @@ func TestManager_Stats_ActiveConnections(t *testing.T) {
 	assert.Equal(t, 3, stats.ActiveConnections,
 		"ActiveConnections should equal TotalConnections for postgres")
 }
+
+func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		responseStatus     int
+		responseBody       string
+		expectEviction     bool
+		expectLogSubstring string
+	}{
+		{
+			name:               "evicts_cached_connection_when_tenant_is_suspended",
+			responseStatus:     http.StatusForbidden,
+			responseBody:       `{"code":"TS-SUSPENDED","error":"service suspended","status":"suspended"}`,
+			expectEviction:     true,
+			expectLogSubstring: "tenant tenant-suspended service suspended, evicting cached connection",
+		},
+		{
+			name:               "evicts_cached_connection_when_tenant_is_purged",
+			responseStatus:     http.StatusForbidden,
+			responseBody:       `{"code":"TS-SUSPENDED","error":"service purged","status":"purged"}`,
+			expectEviction:     true,
+			expectLogSubstring: "tenant tenant-suspended service suspended, evicting cached connection",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Set up a mock Tenant Manager that returns 403 with TenantSuspendedError body
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.responseStatus)
+				w.Write([]byte(tt.responseBody))
+			}))
+			defer server.Close()
+
+			capLogger := testutil.NewCapturingLogger()
+			tmClient := client.NewClient(server.URL, capLogger)
+			manager := NewManager(tmClient, "ledger",
+				WithLogger(capLogger),
+				WithSettingsCheckInterval(1*time.Millisecond),
+			)
+
+			// Pre-populate a cached connection for the tenant
+			mockDB := &pingableDB{}
+			var dbIface dbresolver.DB = mockDB
+
+			manager.connections["tenant-suspended"] = &libPostgres.PostgresConnection{
+				ConnectionDB: &dbIface,
+			}
+			manager.lastAccessed["tenant-suspended"] = time.Now()
+			manager.lastSettingsCheck["tenant-suspended"] = time.Now()
+
+			// Verify the connection exists before revalidation
+			statsBefore := manager.Stats()
+			assert.Equal(t, 1, statsBefore.TotalConnections,
+				"should have 1 connection before revalidation")
+
+			// Trigger revalidateSettings directly
+			manager.revalidateSettings("tenant-suspended")
+
+			if tt.expectEviction {
+				// Verify the connection was evicted
+				statsAfter := manager.Stats()
+				assert.Equal(t, 0, statsAfter.TotalConnections,
+					"connection should be evicted after suspended tenant detected")
+
+				// Verify the DB was closed
+				assert.True(t, mockDB.closed,
+					"cached connection's DB should have been closed")
+
+				// Verify lastAccessed and lastSettingsCheck were cleaned up
+				manager.mu.RLock()
+				_, accessExists := manager.lastAccessed["tenant-suspended"]
+				_, settingsExists := manager.lastSettingsCheck["tenant-suspended"]
+				manager.mu.RUnlock()
+
+				assert.False(t, accessExists,
+					"lastAccessed should be removed for evicted tenant")
+				assert.False(t, settingsExists,
+					"lastSettingsCheck should be removed for evicted tenant")
+			}
+
+			// Verify the appropriate log message was produced
+			assert.True(t, capLogger.ContainsSubstring(tt.expectLogSubstring),
+				"expected log message containing %q, got: %v",
+				tt.expectLogSubstring, capLogger.GetMessages())
+		})
+	}
+}
