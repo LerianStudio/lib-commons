@@ -124,6 +124,7 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Con
 		if _, still := p.connections[tenantID]; still {
 			p.lastAccessed[tenantID] = time.Now()
 		}
+
 		p.mu.Unlock()
 
 		return conn, nil
