@@ -357,17 +357,19 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*libPo
 		return nil, core.ErrServiceNotConfigured
 	}
 
-	primaryConnStr := buildConnectionString(pgConfig)
+	primaryConnStr, err := buildConnectionString(pgConfig)
+	if err != nil {
+		logger.Errorf("invalid connection string for tenant %s: %v", tenantID, err)
+		libOpentelemetry.HandleSpanError(&span, "invalid connection string", err)
 
-	// Check for replica configuration; fall back to primary if not available
-	replicaConnStr := primaryConnStr
-	replicaDBName := pgConfig.Database
+		return nil, fmt.Errorf("invalid connection string for tenant %s: %w", tenantID, err)
+	}
 
-	pgReplicaConfig := config.GetPostgreSQLReplicaConfig(p.service, p.module)
-	if pgReplicaConfig != nil {
-		replicaConnStr = buildConnectionString(pgReplicaConfig)
-		replicaDBName = pgReplicaConfig.Database
-		logger.Infof("using separate replica connection for tenant %s (replica host: %s)", tenantID, pgReplicaConfig.Host)
+	// Resolve replica: use dedicated replica config if available, otherwise fall back to primary
+	replicaConnStr, replicaDBName, err := p.resolveReplicaConnection(config, pgConfig, primaryConnStr, tenantID, logger)
+	if err != nil {
+		libOpentelemetry.HandleSpanError(&span, "invalid replica connection string", err)
+		return nil, fmt.Errorf("invalid replica connection string for tenant %s: %w", tenantID, err)
 	}
 
 	// Resolve connection pool settings (module-level overrides global defaults)
@@ -412,6 +414,32 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*libPo
 	logger.Infof("created connection for tenant %s (mode: %s)", tenantID, config.IsolationMode)
 
 	return conn, nil
+}
+
+// resolveReplicaConnection resolves the replica connection string and database name.
+// If a dedicated replica config exists for the service/module, it builds a separate
+// connection string; otherwise it falls back to the primary connection string and database.
+func (p *Manager) resolveReplicaConnection(
+	config *core.TenantConfig,
+	pgConfig *core.PostgreSQLConfig,
+	primaryConnStr string,
+	tenantID string,
+	logger libLog.Logger,
+) (connStr string, dbName string, err error) {
+	pgReplicaConfig := config.GetPostgreSQLReplicaConfig(p.service, p.module)
+	if pgReplicaConfig == nil {
+		return primaryConnStr, pgConfig.Database, nil
+	}
+
+	replicaConnStr, buildErr := buildConnectionString(pgReplicaConfig)
+	if buildErr != nil {
+		logger.Errorf("invalid replica connection string for tenant %s: %v", tenantID, buildErr)
+		return "", "", buildErr
+	}
+
+	logger.Infof("using separate replica connection for tenant %s (replica host: %s)", tenantID, pgReplicaConfig.Host)
+
+	return replicaConnStr, pgReplicaConfig.Database, nil
 }
 
 // resolveConnectionPoolSettings determines the effective maxOpen and maxIdle connection
@@ -603,7 +631,7 @@ func (p *Manager) Stats() Stats {
 // in the options=-csearch_path= connection string parameter.
 var validSchemaPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-func buildConnectionString(cfg *core.PostgreSQLConfig) string {
+func buildConnectionString(cfg *core.PostgreSQLConfig) (string, error) {
 	sslmode := cfg.SSLMode
 	if sslmode == "" {
 		sslmode = "disable"
@@ -622,12 +650,14 @@ func buildConnectionString(cfg *core.PostgreSQLConfig) string {
 	)
 
 	if cfg.Schema != "" {
-		if validSchemaPattern.MatchString(cfg.Schema) {
-			connStr += fmt.Sprintf(` options=-csearch_path="%s"`, cfg.Schema)
+		if !validSchemaPattern.MatchString(cfg.Schema) {
+			return "", fmt.Errorf("invalid schema name %q: must match %s", cfg.Schema, validSchemaPattern.String())
 		}
+
+		connStr += fmt.Sprintf(` options=-csearch_path="%s"`, cfg.Schema)
 	}
 
-	return connStr
+	return connStr, nil
 }
 
 // ApplyConnectionSettings applies updated connection pool settings to an existing
@@ -716,7 +746,10 @@ func (p *Manager) IsMultiTenant() bool {
 // CreateDirectConnection creates a direct database connection from config.
 // Useful when you have config but don't need full connection management.
 func CreateDirectConnection(ctx context.Context, cfg *core.PostgreSQLConfig) (*sql.DB, error) {
-	connStr := buildConnectionString(cfg)
+	connStr, err := buildConnectionString(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("invalid connection config: %w", err)
+	}
 
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {

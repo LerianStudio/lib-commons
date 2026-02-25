@@ -367,13 +367,16 @@ type Stats struct {
 }
 
 // buildRabbitMQURI builds RabbitMQ connection URI from config.
-// Credentials and vhost are URL-encoded to handle special characters (e.g., @, :, /).
+// Credentials and vhost are percent-encoded to handle special characters (e.g., @, :, /).
+// Uses QueryEscape with '+' replaced by '%20' because QueryEscape encodes spaces as '+'
+// which is only valid in query strings, not in userinfo or path segments of a URI.
 func buildRabbitMQURI(cfg *core.RabbitMQConfig) string {
-	escapedVHost := url.QueryEscape(cfg.VHost)
-	escapedVHost = strings.ReplaceAll(escapedVHost, "+", "%20")
+	escapedUsername := strings.ReplaceAll(url.QueryEscape(cfg.Username), "+", "%20")
+	escapedPassword := strings.ReplaceAll(url.QueryEscape(cfg.Password), "+", "%20")
+	escapedVHost := strings.ReplaceAll(url.QueryEscape(cfg.VHost), "+", "%20")
 
 	return fmt.Sprintf("amqp://%s:%s@%s:%d/%s",
-		url.QueryEscape(cfg.Username), url.QueryEscape(cfg.Password),
+		escapedUsername, escapedPassword,
 		cfg.Host, cfg.Port, escapedVHost)
 }
 

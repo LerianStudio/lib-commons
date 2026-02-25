@@ -183,8 +183,56 @@ func TestBuildConnectionString(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := buildConnectionString(tt.cfg)
+			result, err := buildConnectionString(tt.cfg)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestBuildConnectionString_InvalidSchema(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema string
+	}{
+		{
+			name:   "rejects schema with SQL injection attempt",
+			schema: "public; DROP TABLE users--",
+		},
+		{
+			name:   "rejects schema with spaces",
+			schema: "my schema",
+		},
+		{
+			name:   "rejects schema with special characters",
+			schema: "tenant-abc",
+		},
+		{
+			name:   "rejects schema starting with a digit",
+			schema: "1tenant",
+		},
+		{
+			name:   "rejects schema with double quotes",
+			schema: `"public"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &core.PostgreSQLConfig{
+				Host:     "localhost",
+				Port:     5432,
+				Username: "user",
+				Password: "pass",
+				Database: "testdb",
+				Schema:   tt.schema,
+			}
+
+			result, err := buildConnectionString(cfg)
+
+			require.Error(t, err)
+			assert.Empty(t, result)
+			assert.Contains(t, err.Error(), "invalid schema name")
 		})
 	}
 }
@@ -208,8 +256,10 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 			SSLMode:  "disable",
 		}
 
-		primaryConnStr := buildConnectionString(primaryConfig)
-		replicaConnStr := buildConnectionString(replicaConfig)
+		primaryConnStr, err := buildConnectionString(primaryConfig)
+		require.NoError(t, err)
+		replicaConnStr, err := buildConnectionString(replicaConfig)
+		require.NoError(t, err)
 
 		assert.Contains(t, primaryConnStr, "host=primary-host")
 		assert.Contains(t, primaryConnStr, "port=5432")
@@ -241,11 +291,14 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 		assert.Nil(t, pgReplicaConfig)
 
 		// When replica is nil, system should use primary connection string
-		primaryConnStr := buildConnectionString(pgConfig)
+		primaryConnStr, err := buildConnectionString(pgConfig)
+		require.NoError(t, err)
 
 		replicaConnStr := primaryConnStr
 		if pgReplicaConfig != nil {
-			replicaConnStr = buildConnectionString(pgReplicaConfig)
+			var replicaErr error
+			replicaConnStr, replicaErr = buildConnectionString(pgReplicaConfig)
+			require.NoError(t, replicaErr)
 		}
 
 		assert.Equal(t, primaryConnStr, replicaConnStr)
@@ -279,11 +332,14 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 		assert.NotNil(t, pgConfig)
 		assert.NotNil(t, pgReplicaConfig)
 
-		primaryConnStr := buildConnectionString(pgConfig)
+		primaryConnStr, err := buildConnectionString(pgConfig)
+		require.NoError(t, err)
 
 		replicaConnStr := primaryConnStr
 		if pgReplicaConfig != nil {
-			replicaConnStr = buildConnectionString(pgReplicaConfig)
+			var replicaErr error
+			replicaConnStr, replicaErr = buildConnectionString(pgReplicaConfig)
+			require.NoError(t, replicaErr)
 		}
 
 		assert.NotEqual(t, primaryConnStr, replicaConnStr)
