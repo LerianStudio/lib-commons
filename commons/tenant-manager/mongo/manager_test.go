@@ -457,7 +457,7 @@ func TestManager_ApplyConnectionSettings(t *testing.T) {
 			// Verify it does not panic and produces no log output.
 			manager.ApplyConnectionSettings("tenant-123", tt.config)
 
-			assert.Empty(t, logger.Messages,
+			assert.Empty(t, logger.GetMessages(),
 				"ApplyConnectionSettings should be a no-op and produce no log output")
 		})
 	}

@@ -44,16 +44,18 @@ func NewMockLogger() log.Logger {
 
 // CapturingLogger implements log.Logger and captures log messages for assertion.
 // This enables verifying log output content in tests (e.g., connection_mode=lazy).
+// Messages are private to prevent unsafe concurrent access; use GetMessages() or
+// ContainsSubstring() for thread-safe reads.
 type CapturingLogger struct {
 	mu       sync.Mutex
-	Messages []string
+	messages []string
 }
 
 func (cl *CapturingLogger) record(msg string) {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 
-	cl.Messages = append(cl.Messages, msg)
+	cl.messages = append(cl.messages, msg)
 }
 
 // GetMessages returns a thread-safe copy of all captured messages.
@@ -61,8 +63,8 @@ func (cl *CapturingLogger) GetMessages() []string {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 
-	copied := make([]string, len(cl.Messages))
-	copy(copied, cl.Messages)
+	copied := make([]string, len(cl.messages))
+	copy(copied, cl.messages)
 
 	return copied
 }
@@ -72,7 +74,7 @@ func (cl *CapturingLogger) ContainsSubstring(sub string) bool {
 	cl.mu.Lock()
 	defer cl.mu.Unlock()
 
-	for _, msg := range cl.Messages {
+	for _, msg := range cl.messages {
 		if strings.Contains(msg, sub) {
 			return true
 		}
@@ -81,22 +83,28 @@ func (cl *CapturingLogger) ContainsSubstring(sub string) bool {
 	return false
 }
 
-func (cl *CapturingLogger) Info(args ...any)                  { cl.record(fmt.Sprint(args...)) }
-func (cl *CapturingLogger) Infof(format string, args ...any)  { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *CapturingLogger) Infoln(args ...any)                { cl.record(fmt.Sprintln(args...)) }
-func (cl *CapturingLogger) Error(args ...any)                 { cl.record(fmt.Sprint(args...)) }
-func (cl *CapturingLogger) Errorf(format string, args ...any) { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *CapturingLogger) Errorln(args ...any)               { cl.record(fmt.Sprintln(args...)) }
-func (cl *CapturingLogger) Warn(args ...any)                  { cl.record(fmt.Sprint(args...)) }
-func (cl *CapturingLogger) Warnf(format string, args ...any)  { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *CapturingLogger) Warnln(args ...any)                { cl.record(fmt.Sprintln(args...)) }
-func (cl *CapturingLogger) Debug(args ...any)                 { cl.record(fmt.Sprint(args...)) }
-func (cl *CapturingLogger) Debugf(format string, args ...any) { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *CapturingLogger) Debugln(args ...any)               { cl.record(fmt.Sprintln(args...)) }
-func (cl *CapturingLogger) Fatal(args ...any)                 { cl.record(fmt.Sprint(args...)) }
-func (cl *CapturingLogger) Fatalf(format string, args ...any) { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *CapturingLogger) Fatalln(args ...any)               { cl.record(fmt.Sprintln(args...)) }
-func (cl *CapturingLogger) WithFields(_ ...any) log.Logger    { return cl }
+func (cl *CapturingLogger) Info(args ...any)                 { cl.record(fmt.Sprint(args...)) }
+func (cl *CapturingLogger) Infof(format string, args ...any) { cl.record(fmt.Sprintf(format, args...)) }
+func (cl *CapturingLogger) Infoln(args ...any)               { cl.record(fmt.Sprintln(args...)) }
+func (cl *CapturingLogger) Error(args ...any)                { cl.record(fmt.Sprint(args...)) }
+func (cl *CapturingLogger) Errorf(format string, args ...any) {
+	cl.record(fmt.Sprintf(format, args...))
+}
+func (cl *CapturingLogger) Errorln(args ...any)              { cl.record(fmt.Sprintln(args...)) }
+func (cl *CapturingLogger) Warn(args ...any)                 { cl.record(fmt.Sprint(args...)) }
+func (cl *CapturingLogger) Warnf(format string, args ...any) { cl.record(fmt.Sprintf(format, args...)) }
+func (cl *CapturingLogger) Warnln(args ...any)               { cl.record(fmt.Sprintln(args...)) }
+func (cl *CapturingLogger) Debug(args ...any)                { cl.record(fmt.Sprint(args...)) }
+func (cl *CapturingLogger) Debugf(format string, args ...any) {
+	cl.record(fmt.Sprintf(format, args...))
+}
+func (cl *CapturingLogger) Debugln(args ...any) { cl.record(fmt.Sprintln(args...)) }
+func (cl *CapturingLogger) Fatal(args ...any)   { cl.record(fmt.Sprint(args...)) }
+func (cl *CapturingLogger) Fatalf(format string, args ...any) {
+	cl.record(fmt.Sprintf(format, args...))
+}
+func (cl *CapturingLogger) Fatalln(args ...any)            { cl.record(fmt.Sprintln(args...)) }
+func (cl *CapturingLogger) WithFields(_ ...any) log.Logger { return cl }
 func (cl *CapturingLogger) WithDefaultMessageTemplate(_ string) log.Logger {
 	return cl
 }
