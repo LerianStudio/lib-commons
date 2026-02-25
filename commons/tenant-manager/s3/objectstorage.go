@@ -2,11 +2,13 @@
 // Use of this source code is governed by the Elastic License 2.0
 // that can be found in the LICENSE file.
 
-package tenantmanager
+package s3
 
 import (
 	"context"
 	"strings"
+
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
 )
 
 // GetObjectStorageKey returns a tenant-prefixed object storage key: "{tenantID}/{key}".
@@ -19,6 +21,8 @@ func GetObjectStorageKey(tenantID, key string) string {
 	if tenantID == "" {
 		return key
 	}
+
+	tenantID = strings.Trim(tenantID, "/")
 
 	return tenantID + "/" + key
 }
@@ -33,7 +37,7 @@ func GetObjectStorageKey(tenantID, key string) string {
 //
 // Usage:
 //
-//	key := tenantmanager.GetObjectStorageKeyForTenant(ctx, "reports/templateID/reportID.html")
+//	key := s3.GetObjectStorageKeyForTenant(ctx, "reports/templateID/reportID.html")
 //	// Multi-tenant: "org_01ABC.../reports/templateID/reportID.html"
 //	// Single-tenant: "reports/templateID/reportID.html"
 //	storage.Upload(ctx, key, reader, contentType)
@@ -42,7 +46,7 @@ func GetObjectStorageKeyForTenant(ctx context.Context, key string) string {
 		return GetObjectStorageKey("", key)
 	}
 
-	tenantID := GetTenantIDFromContext(ctx)
+	tenantID := core.GetTenantIDFromContext(ctx)
 
 	return GetObjectStorageKey(tenantID, key)
 }
@@ -55,6 +59,7 @@ func StripObjectStoragePrefix(tenantID, prefixedKey string) string {
 		return prefixedKey
 	}
 
+	tenantID = strings.Trim(tenantID, "/")
 	prefix := tenantID + "/"
 
 	return strings.TrimPrefix(prefixedKey, prefix)

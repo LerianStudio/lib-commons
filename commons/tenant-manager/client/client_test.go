@@ -1,4 +1,4 @@
-package tenantmanager
+package client
 
 import (
 	"context"
@@ -9,47 +9,36 @@ import (
 	"testing"
 	"time"
 
-	libLog "github.com/LerianStudio/lib-commons/v3/commons/log"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// mockLogger is a no-op implementation of libLog.Logger for unit tests.
-// It discards all log output, allowing tests to focus on business logic.
-type mockLogger struct{}
-
-func (m *mockLogger) Info(_ ...any)                                  {}
-func (m *mockLogger) Infof(_ string, _ ...any)                       {}
-func (m *mockLogger) Infoln(_ ...any)                                {}
-func (m *mockLogger) Error(_ ...any)                                 {}
-func (m *mockLogger) Errorf(_ string, _ ...any)                      {}
-func (m *mockLogger) Errorln(_ ...any)                               {}
-func (m *mockLogger) Warn(_ ...any)                                  {}
-func (m *mockLogger) Warnf(_ string, _ ...any)                       {}
-func (m *mockLogger) Warnln(_ ...any)                                {}
-func (m *mockLogger) Debug(_ ...any)                                 {}
-func (m *mockLogger) Debugf(_ string, _ ...any)                      {}
-func (m *mockLogger) Debugln(_ ...any)                               {}
-func (m *mockLogger) Fatal(_ ...any)                                 {}
-func (m *mockLogger) Fatalf(_ string, _ ...any)                      {}
-func (m *mockLogger) Fatalln(_ ...any)                               {}
-func (m *mockLogger) WithFields(_ ...any) libLog.Logger              { return m }
-func (m *mockLogger) WithDefaultMessageTemplate(_ string) libLog.Logger { return m }
-func (m *mockLogger) Sync() error                                       { return nil }
+// newMinimalTenantConfig returns a TenantConfig with only essential fields set.
+// Used by circuit breaker tests that do not inspect database configuration.
+func newMinimalTenantConfig() core.TenantConfig {
+	return core.TenantConfig{
+		ID:         "tenant-123",
+		TenantSlug: "test-tenant",
+		Service:    "ledger",
+		Status:     "active",
+	}
+}
 
 // newTestTenantConfig returns a fully populated TenantConfig for test assertions.
 // Callers can override fields after construction for specific test scenarios.
-func newTestTenantConfig() TenantConfig {
-	return TenantConfig{
+func newTestTenantConfig() core.TenantConfig {
+	return core.TenantConfig{
 		ID:            "tenant-123",
 		TenantSlug:    "test-tenant",
 		TenantName:    "Test Tenant",
 		Service:       "ledger",
 		Status:        "active",
 		IsolationMode: "database",
-		Databases: map[string]DatabaseConfig{
+		Databases: map[string]core.DatabaseConfig{
 			"onboarding": {
-				PostgreSQL: &PostgreSQLConfig{
+				PostgreSQL: &core.PostgreSQLConfig{
 					Host:     "localhost",
 					Port:     5432,
 					Database: "test_db",
@@ -64,7 +53,7 @@ func newTestTenantConfig() TenantConfig {
 
 func TestNewClient(t *testing.T) {
 	t.Run("creates client with defaults", func(t *testing.T) {
-		client := NewClient("http://localhost:8080", &mockLogger{})
+		client := NewClient("http://localhost:8080", testutil.NewMockLogger())
 
 		assert.NotNil(t, client)
 		assert.Equal(t, "http://localhost:8080", client.baseURL)
@@ -72,20 +61,20 @@ func TestNewClient(t *testing.T) {
 	})
 
 	t.Run("creates client with custom timeout", func(t *testing.T) {
-		client := NewClient("http://localhost:8080", &mockLogger{}, WithTimeout(60*time.Second))
+		client := NewClient("http://localhost:8080", testutil.NewMockLogger(), WithTimeout(60*time.Second))
 
 		assert.Equal(t, 60*time.Second, client.httpClient.Timeout)
 	})
 
 	t.Run("creates client with custom http client", func(t *testing.T) {
 		customClient := &http.Client{Timeout: 10 * time.Second}
-		client := NewClient("http://localhost:8080", &mockLogger{}, WithHTTPClient(customClient))
+		client := NewClient("http://localhost:8080", testutil.NewMockLogger(), WithHTTPClient(customClient))
 
 		assert.Equal(t, customClient, client.httpClient)
 	})
 
 	t.Run("WithHTTPClient_nil_preserves_default", func(t *testing.T) {
-		client := NewClient("http://localhost:8080", &mockLogger{}, WithHTTPClient(nil))
+		client := NewClient("http://localhost:8080", testutil.NewMockLogger(), WithHTTPClient(nil))
 
 		assert.NotNil(t, client.httpClient, "nil HTTPClient should be ignored, default preserved")
 		assert.Equal(t, 30*time.Second, client.httpClient.Timeout)
@@ -93,7 +82,7 @@ func TestNewClient(t *testing.T) {
 
 	t.Run("WithTimeout_after_nil_HTTPClient_does_not_panic", func(t *testing.T) {
 		assert.NotPanics(t, func() {
-			NewClient("http://localhost:8080", &mockLogger{},
+			NewClient("http://localhost:8080", testutil.NewMockLogger(),
 				WithHTTPClient(nil),
 				WithTimeout(45*time.Second),
 			)
@@ -113,7 +102,7 @@ func TestClient_GetTenantConfig(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := NewClient(server.URL, &mockLogger{})
+		client := NewClient(server.URL, testutil.NewMockLogger())
 		ctx := context.Background()
 
 		result, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
@@ -132,13 +121,13 @@ func TestClient_GetTenantConfig(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := NewClient(server.URL, &mockLogger{})
+		client := NewClient(server.URL, testutil.NewMockLogger())
 		ctx := context.Background()
 
 		result, err := client.GetTenantConfig(ctx, "non-existent", "ledger")
 
 		assert.Nil(t, result)
-		assert.ErrorIs(t, err, ErrTenantNotFound)
+		assert.ErrorIs(t, err, core.ErrTenantNotFound)
 	})
 
 	t.Run("server error", func(t *testing.T) {
@@ -148,7 +137,7 @@ func TestClient_GetTenantConfig(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := NewClient(server.URL, &mockLogger{})
+		client := NewClient(server.URL, testutil.NewMockLogger())
 		ctx := context.Background()
 
 		result, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
@@ -170,16 +159,16 @@ func TestClient_GetTenantConfig(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := NewClient(server.URL, &mockLogger{})
+		client := NewClient(server.URL, testutil.NewMockLogger())
 		ctx := context.Background()
 
 		result, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 
 		assert.Nil(t, result)
 		require.Error(t, err)
-		assert.True(t, IsTenantSuspendedError(err))
+		assert.True(t, core.IsTenantSuspendedError(err))
 
-		var suspErr *TenantSuspendedError
+		var suspErr *core.TenantSuspendedError
 		require.ErrorAs(t, err, &suspErr)
 		assert.Equal(t, "tenant-123", suspErr.TenantID)
 		assert.Equal(t, "suspended", suspErr.Status)
@@ -198,7 +187,7 @@ func TestClient_GetTenantConfig(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := NewClient(server.URL, &mockLogger{})
+		client := NewClient(server.URL, testutil.NewMockLogger())
 		ctx := context.Background()
 
 		result, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
@@ -206,7 +195,7 @@ func TestClient_GetTenantConfig(t *testing.T) {
 		assert.Nil(t, result)
 		require.Error(t, err)
 
-		var suspErr *TenantSuspendedError
+		var suspErr *core.TenantSuspendedError
 		require.ErrorAs(t, err, &suspErr)
 		assert.Equal(t, "purged", suspErr.Status)
 	})
@@ -218,14 +207,14 @@ func TestClient_GetTenantConfig(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := NewClient(server.URL, &mockLogger{})
+		client := NewClient(server.URL, testutil.NewMockLogger())
 		ctx := context.Background()
 
 		result, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 
 		assert.Nil(t, result)
 		require.Error(t, err)
-		assert.False(t, IsTenantSuspendedError(err))
+		assert.False(t, core.IsTenantSuspendedError(err))
 		assert.Contains(t, err.Error(), "access denied")
 	})
 
@@ -240,21 +229,21 @@ func TestClient_GetTenantConfig(t *testing.T) {
 		}))
 		defer server.Close()
 
-		client := NewClient(server.URL, &mockLogger{})
+		client := NewClient(server.URL, testutil.NewMockLogger())
 		ctx := context.Background()
 
 		result, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 
 		assert.Nil(t, result)
 		require.Error(t, err)
-		assert.False(t, IsTenantSuspendedError(err))
+		assert.False(t, core.IsTenantSuspendedError(err))
 		assert.Contains(t, err.Error(), "access denied")
 	})
 }
 
 func TestNewClient_WithCircuitBreaker(t *testing.T) {
 	t.Run("creates client with circuit breaker option", func(t *testing.T) {
-		client := NewClient("http://localhost:8080", &mockLogger{},
+		client := NewClient("http://localhost:8080", testutil.NewMockLogger(),
 			WithCircuitBreaker(5, 30*time.Second),
 		)
 
@@ -265,7 +254,7 @@ func TestNewClient_WithCircuitBreaker(t *testing.T) {
 	})
 
 	t.Run("default client has circuit breaker disabled", func(t *testing.T) {
-		client := NewClient("http://localhost:8080", &mockLogger{})
+		client := NewClient("http://localhost:8080", testutil.NewMockLogger())
 
 		assert.Equal(t, 0, client.cbThreshold)
 		assert.Equal(t, time.Duration(0), client.cbTimeout)
@@ -273,12 +262,7 @@ func TestNewClient_WithCircuitBreaker(t *testing.T) {
 }
 
 func TestClient_CircuitBreaker_StaysClosedOnSuccess(t *testing.T) {
-	config := TenantConfig{
-		ID:         "tenant-123",
-		TenantSlug: "test-tenant",
-		Service:    "ledger",
-		Status:     "active",
-	}
+	config := newMinimalTenantConfig()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -286,7 +270,7 @@ func TestClient_CircuitBreaker_StaysClosedOnSuccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(server.URL, &mockLogger{}, WithCircuitBreaker(3, 30*time.Second))
+	client := NewClient(server.URL, testutil.NewMockLogger(), WithCircuitBreaker(3, 30*time.Second))
 	ctx := context.Background()
 
 	// Multiple successful requests should keep circuit breaker closed
@@ -308,14 +292,14 @@ func TestClient_CircuitBreaker_OpensAfterThresholdFailures(t *testing.T) {
 	defer server.Close()
 
 	threshold := 3
-	client := NewClient(server.URL, &mockLogger{}, WithCircuitBreaker(threshold, 30*time.Second))
+	client := NewClient(server.URL, testutil.NewMockLogger(), WithCircuitBreaker(threshold, 30*time.Second))
 	ctx := context.Background()
 
 	// Send threshold number of requests that trigger server errors
 	for i := 0; i < threshold; i++ {
 		_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 		require.Error(t, err)
-		assert.NotErrorIs(t, err, ErrCircuitBreakerOpen, "should not be circuit breaker error yet on failure %d", i+1)
+		assert.NotErrorIs(t, err, core.ErrCircuitBreakerOpen, "should not be circuit breaker error yet on failure %d", i+1)
 	}
 
 	// Circuit breaker should now be open
@@ -334,7 +318,7 @@ func TestClient_CircuitBreaker_ReturnsErrCircuitBreakerOpenWhenOpen(t *testing.T
 	defer server.Close()
 
 	threshold := 2
-	client := NewClient(server.URL, &mockLogger{}, WithCircuitBreaker(threshold, 30*time.Second))
+	client := NewClient(server.URL, testutil.NewMockLogger(), WithCircuitBreaker(threshold, 30*time.Second))
 	ctx := context.Background()
 
 	// Trigger circuit breaker to open
@@ -350,7 +334,7 @@ func TestClient_CircuitBreaker_ReturnsErrCircuitBreakerOpenWhenOpen(t *testing.T
 	for i := 0; i < 5; i++ {
 		_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrCircuitBreakerOpen)
+		assert.ErrorIs(t, err, core.ErrCircuitBreakerOpen)
 	}
 
 	// No additional requests should have reached the server
@@ -366,7 +350,7 @@ func TestClient_CircuitBreaker_TransitionsToHalfOpenAfterTimeout(t *testing.T) {
 
 	threshold := 2
 	cbTimeout := 50 * time.Millisecond
-	client := NewClient(server.URL, &mockLogger{}, WithCircuitBreaker(threshold, cbTimeout))
+	client := NewClient(server.URL, testutil.NewMockLogger(), WithCircuitBreaker(threshold, cbTimeout))
 	ctx := context.Background()
 
 	// Trigger circuit breaker to open
@@ -383,18 +367,13 @@ func TestClient_CircuitBreaker_TransitionsToHalfOpenAfterTimeout(t *testing.T) {
 	// It will fail (server still returns 500), but the request should reach the server
 	_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 	require.Error(t, err)
-	assert.NotErrorIs(t, err, ErrCircuitBreakerOpen, "request should pass through in half-open state")
+	assert.NotErrorIs(t, err, core.ErrCircuitBreakerOpen, "request should pass through in half-open state")
 }
 
 func TestClient_CircuitBreaker_ClosesOnSuccessfulHalfOpenRequest(t *testing.T) {
 	var shouldSucceed atomic.Bool
 
-	config := TenantConfig{
-		ID:         "tenant-123",
-		TenantSlug: "test-tenant",
-		Service:    "ledger",
-		Status:     "active",
-	}
+	config := newMinimalTenantConfig()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if shouldSucceed.Load() {
@@ -410,7 +389,7 @@ func TestClient_CircuitBreaker_ClosesOnSuccessfulHalfOpenRequest(t *testing.T) {
 
 	threshold := 2
 	cbTimeout := 50 * time.Millisecond
-	client := NewClient(server.URL, &mockLogger{}, WithCircuitBreaker(threshold, cbTimeout))
+	client := NewClient(server.URL, testutil.NewMockLogger(), WithCircuitBreaker(threshold, cbTimeout))
 	ctx := context.Background()
 
 	// Trigger circuit breaker to open
@@ -439,14 +418,14 @@ func TestClient_CircuitBreaker_404DoesNotCountAsFailure(t *testing.T) {
 	defer server.Close()
 
 	threshold := 3
-	client := NewClient(server.URL, &mockLogger{}, WithCircuitBreaker(threshold, 30*time.Second))
+	client := NewClient(server.URL, testutil.NewMockLogger(), WithCircuitBreaker(threshold, 30*time.Second))
 	ctx := context.Background()
 
 	// Multiple 404s should NOT trigger the circuit breaker
 	for i := 0; i < threshold+2; i++ {
 		_, err := client.GetTenantConfig(ctx, "non-existent", "ledger")
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrTenantNotFound)
+		assert.ErrorIs(t, err, core.ErrTenantNotFound)
 	}
 
 	assert.Equal(t, cbClosed, client.cbState, "404 responses should not open the circuit breaker")
@@ -466,14 +445,14 @@ func TestClient_CircuitBreaker_403DoesNotCountAsFailure(t *testing.T) {
 	defer server.Close()
 
 	threshold := 3
-	client := NewClient(server.URL, &mockLogger{}, WithCircuitBreaker(threshold, 30*time.Second))
+	client := NewClient(server.URL, testutil.NewMockLogger(), WithCircuitBreaker(threshold, 30*time.Second))
 	ctx := context.Background()
 
 	// Multiple 403s should NOT trigger the circuit breaker
 	for i := 0; i < threshold+2; i++ {
 		_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 		require.Error(t, err)
-		assert.True(t, IsTenantSuspendedError(err))
+		assert.True(t, core.IsTenantSuspendedError(err))
 	}
 
 	assert.Equal(t, cbClosed, client.cbState, "403 responses should not open the circuit breaker")
@@ -488,7 +467,7 @@ func TestClient_CircuitBreaker_400DoesNotCountAsFailure(t *testing.T) {
 	defer server.Close()
 
 	threshold := 3
-	client := NewClient(server.URL, &mockLogger{}, WithCircuitBreaker(threshold, 30*time.Second))
+	client := NewClient(server.URL, testutil.NewMockLogger(), WithCircuitBreaker(threshold, 30*time.Second))
 	ctx := context.Background()
 
 	// Multiple 400s should NOT trigger the circuit breaker
@@ -510,14 +489,14 @@ func TestClient_CircuitBreaker_DisabledByDefault(t *testing.T) {
 	defer server.Close()
 
 	// No WithCircuitBreaker option - threshold is 0, circuit breaker disabled
-	client := NewClient(server.URL, &mockLogger{})
+	client := NewClient(server.URL, testutil.NewMockLogger())
 	ctx := context.Background()
 
 	// Even after many failures, requests should still go through
 	for i := 0; i < 10; i++ {
 		_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 		require.Error(t, err)
-		assert.NotErrorIs(t, err, ErrCircuitBreakerOpen)
+		assert.NotErrorIs(t, err, core.ErrCircuitBreakerOpen)
 		assert.Contains(t, err.Error(), "500")
 	}
 
@@ -534,7 +513,7 @@ func TestClient_CircuitBreaker_GetActiveTenantsByService(t *testing.T) {
 		defer server.Close()
 
 		threshold := 2
-		client := NewClient(server.URL, &mockLogger{}, WithCircuitBreaker(threshold, 30*time.Second))
+		client := NewClient(server.URL, testutil.NewMockLogger(), WithCircuitBreaker(threshold, 30*time.Second))
 		ctx := context.Background()
 
 		// Trigger circuit breaker via GetActiveTenantsByService
@@ -548,7 +527,7 @@ func TestClient_CircuitBreaker_GetActiveTenantsByService(t *testing.T) {
 		// Should fail fast
 		_, err := client.GetActiveTenantsByService(ctx, "ledger")
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrCircuitBreakerOpen)
+		assert.ErrorIs(t, err, core.ErrCircuitBreakerOpen)
 	})
 
 	t.Run("shared state with GetTenantConfig", func(t *testing.T) {
@@ -559,7 +538,7 @@ func TestClient_CircuitBreaker_GetActiveTenantsByService(t *testing.T) {
 		defer server.Close()
 
 		threshold := 3
-		client := NewClient(server.URL, &mockLogger{}, WithCircuitBreaker(threshold, 30*time.Second))
+		client := NewClient(server.URL, testutil.NewMockLogger(), WithCircuitBreaker(threshold, 30*time.Second))
 		ctx := context.Background()
 
 		// Mix failures from both methods - they share the same circuit breaker
@@ -571,16 +550,16 @@ func TestClient_CircuitBreaker_GetActiveTenantsByService(t *testing.T) {
 
 		// Both methods should fail fast
 		_, err := client.GetTenantConfig(ctx, "t3", "ledger")
-		assert.ErrorIs(t, err, ErrCircuitBreakerOpen)
+		assert.ErrorIs(t, err, core.ErrCircuitBreakerOpen)
 
 		_, err = client.GetActiveTenantsByService(ctx, "ledger")
-		assert.ErrorIs(t, err, ErrCircuitBreakerOpen)
+		assert.ErrorIs(t, err, core.ErrCircuitBreakerOpen)
 	})
 }
 
 func TestClient_CircuitBreaker_NetworkErrorCountsAsFailure(t *testing.T) {
 	// Use a URL that will definitely fail to connect
-	client := NewClient("http://127.0.0.1:1", &mockLogger{},
+	client := NewClient("http://127.0.0.1:1", testutil.NewMockLogger(),
 		WithCircuitBreaker(2, 30*time.Second),
 		WithTimeout(100*time.Millisecond),
 	)
@@ -597,18 +576,13 @@ func TestClient_CircuitBreaker_NetworkErrorCountsAsFailure(t *testing.T) {
 	// Should fail fast now
 	_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrCircuitBreakerOpen)
+	assert.ErrorIs(t, err, core.ErrCircuitBreakerOpen)
 }
 
 func TestClient_CircuitBreaker_SuccessResetsAfterPartialFailures(t *testing.T) {
 	var requestCount atomic.Int32
 
-	config := TenantConfig{
-		ID:         "tenant-123",
-		TenantSlug: "test-tenant",
-		Service:    "ledger",
-		Status:     "active",
-	}
+	config := newMinimalTenantConfig()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		count := requestCount.Add(1)
@@ -625,7 +599,7 @@ func TestClient_CircuitBreaker_SuccessResetsAfterPartialFailures(t *testing.T) {
 	defer server.Close()
 
 	threshold := 3
-	client := NewClient(server.URL, &mockLogger{}, WithCircuitBreaker(threshold, 30*time.Second))
+	client := NewClient(server.URL, testutil.NewMockLogger(), WithCircuitBreaker(threshold, 30*time.Second))
 	ctx := context.Background()
 
 	// 2 failures (below threshold)
@@ -675,13 +649,13 @@ func TestIsCircuitBreakerOpenError(t *testing.T) {
 		expected bool
 	}{
 		{"nil error returns false", nil, false},
-		{"ErrCircuitBreakerOpen returns true", ErrCircuitBreakerOpen, true},
-		{"other error returns false", ErrTenantNotFound, false},
+		{"ErrCircuitBreakerOpen returns true", core.ErrCircuitBreakerOpen, true},
+		{"other error returns false", core.ErrTenantNotFound, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, IsCircuitBreakerOpenError(tt.err))
+			assert.Equal(t, tt.expected, core.IsCircuitBreakerOpenError(tt.err))
 		})
 	}
 }

@@ -1,9 +1,10 @@
-package tenantmanager
+package core
 
 import (
 	"context"
 
 	"github.com/bxcodec/dbresolver/v2"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // Context key types for storing tenant information
@@ -14,6 +15,8 @@ const (
 	tenantIDKey contextKey = "tenantID"
 	// tenantPGConnectionKey is the context key for storing the resolved dbresolver.DB connection.
 	tenantPGConnectionKey contextKey = "tenantPGConnection"
+	// tenantMongoKey is the context key for storing the tenant MongoDB database.
+	tenantMongoKey contextKey = "tenantMongo"
 )
 
 // SetTenantIDInContext stores the tenant ID in the context.
@@ -97,22 +100,28 @@ func GetModulePostgresForTenant(ctx context.Context, moduleName string) (dbresol
 	return nil, ErrTenantContextRequired
 }
 
-// Deprecated: Use ContextWithModulePGConnection(ctx, "onboarding", db) instead.
-func ContextWithOnboardingPGConnection(ctx context.Context, db dbresolver.DB) context.Context {
-	return ContextWithModulePGConnection(ctx, "onboarding", db)
+// ContextWithTenantMongo stores the MongoDB database in the context.
+func ContextWithTenantMongo(ctx context.Context, db *mongo.Database) context.Context {
+	return context.WithValue(ctx, tenantMongoKey, db)
 }
 
-// Deprecated: Use ContextWithModulePGConnection(ctx, "transaction", db) instead.
-func ContextWithTransactionPGConnection(ctx context.Context, db dbresolver.DB) context.Context {
-	return ContextWithModulePGConnection(ctx, "transaction", db)
+// GetMongoFromContext retrieves the MongoDB database from the context.
+// Returns nil if not found.
+func GetMongoFromContext(ctx context.Context) *mongo.Database {
+	if db, ok := ctx.Value(tenantMongoKey).(*mongo.Database); ok {
+		return db
+	}
+
+	return nil
 }
 
-// Deprecated: Use GetModulePostgresForTenant(ctx, "onboarding") instead.
-func GetOnboardingPostgresForTenant(ctx context.Context) (dbresolver.DB, error) {
-	return GetModulePostgresForTenant(ctx, "onboarding")
-}
+// GetMongoForTenant returns the MongoDB database for the current tenant from context.
+// If no tenant connection is found in context, returns ErrTenantContextRequired.
+// This function ALWAYS requires tenant context - there is no fallback to default connections.
+func GetMongoForTenant(ctx context.Context) (*mongo.Database, error) {
+	if db := GetMongoFromContext(ctx); db != nil {
+		return db, nil
+	}
 
-// Deprecated: Use GetModulePostgresForTenant(ctx, "transaction") instead.
-func GetTransactionPostgresForTenant(ctx context.Context) (dbresolver.DB, error) {
-	return GetModulePostgresForTenant(ctx, "transaction")
+	return nil, ErrTenantContextRequired
 }

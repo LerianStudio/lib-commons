@@ -1,4 +1,4 @@
-package tenantmanager
+package postgres
 
 import (
 	"context"
@@ -12,6 +12,9 @@ import (
 	"time"
 
 	libPostgres "github.com/LerianStudio/lib-commons/v3/commons/postgres"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/internal/testutil"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,10 +62,24 @@ func (m *pingableDB) PrimaryDBs() []*sql.DB              { return nil }
 func (m *pingableDB) ReplicaDBs() []*sql.DB              { return nil }
 func (m *pingableDB) Stats() sql.DBStats                 { return sql.DBStats{} }
 
-func TestNewPostgresManager(t *testing.T) {
+// trackingDB extends pingableDB to track SetMaxOpenConns/SetMaxIdleConns calls.
+// Fields use int32 with atomic operations to avoid data races when written
+// by async goroutines (revalidateSettings) and read by test assertions.
+type trackingDB struct {
+	pingableDB
+	maxOpenConns int32
+	maxIdleConns int32
+}
+
+func (t *trackingDB) SetMaxOpenConns(n int) { atomic.StoreInt32(&t.maxOpenConns, int32(n)) }
+func (t *trackingDB) SetMaxIdleConns(n int) { atomic.StoreInt32(&t.maxIdleConns, int32(n)) }
+func (t *trackingDB) MaxOpenConns() int32   { return atomic.LoadInt32(&t.maxOpenConns) }
+func (t *trackingDB) MaxIdleConns() int32   { return atomic.LoadInt32(&t.maxIdleConns) }
+
+func TestNewManager(t *testing.T) {
 	t.Run("creates manager with client and service", func(t *testing.T) {
-		client := &Client{baseURL: "http://localhost:8080"}
-		manager := NewPostgresManager(client, "ledger")
+		c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+		manager := NewManager(c, "ledger")
 
 		assert.NotNil(t, manager)
 		assert.Equal(t, "ledger", manager.service)
@@ -70,9 +87,9 @@ func TestNewPostgresManager(t *testing.T) {
 	})
 }
 
-func TestPostgresManager_GetConnection_NoTenantID(t *testing.T) {
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewPostgresManager(client, "ledger")
+func TestManager_GetConnection_NoTenantID(t *testing.T) {
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+	manager := NewManager(c, "ledger")
 
 	_, err := manager.GetConnection(context.Background(), "")
 
@@ -80,25 +97,25 @@ func TestPostgresManager_GetConnection_NoTenantID(t *testing.T) {
 	assert.Contains(t, err.Error(), "tenant ID is required")
 }
 
-func TestPostgresManager_Close(t *testing.T) {
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewPostgresManager(client, "ledger")
+func TestManager_Close(t *testing.T) {
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+	manager := NewManager(c, "ledger")
 
-	err := manager.Close()
+	err := manager.Close(context.Background())
 
 	assert.NoError(t, err)
 	assert.True(t, manager.closed)
 }
 
-func TestPostgresManager_GetConnection_ManagerClosed(t *testing.T) {
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewPostgresManager(client, "ledger")
-	manager.Close()
+func TestManager_GetConnection_ManagerClosed(t *testing.T) {
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+	manager := NewManager(c, "ledger")
+	manager.Close(context.Background())
 
 	_, err := manager.GetConnection(context.Background(), "tenant-123")
 
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrManagerClosed)
+	assert.ErrorIs(t, err, core.ErrManagerClosed)
 }
 
 func TestIsolationModeConstants(t *testing.T) {
@@ -111,12 +128,12 @@ func TestIsolationModeConstants(t *testing.T) {
 func TestBuildConnectionString(t *testing.T) {
 	tests := []struct {
 		name     string
-		cfg      *PostgreSQLConfig
+		cfg      *core.PostgreSQLConfig
 		expected string
 	}{
 		{
 			name: "builds connection string without schema",
-			cfg: &PostgreSQLConfig{
+			cfg: &core.PostgreSQLConfig{
 				Host:     "localhost",
 				Port:     5432,
 				Username: "user",
@@ -128,7 +145,7 @@ func TestBuildConnectionString(t *testing.T) {
 		},
 		{
 			name: "builds connection string with schema in options",
-			cfg: &PostgreSQLConfig{
+			cfg: &core.PostgreSQLConfig{
 				Host:     "localhost",
 				Port:     5432,
 				Username: "user",
@@ -141,7 +158,7 @@ func TestBuildConnectionString(t *testing.T) {
 		},
 		{
 			name: "defaults sslmode to disable when empty",
-			cfg: &PostgreSQLConfig{
+			cfg: &core.PostgreSQLConfig{
 				Host:     "localhost",
 				Port:     5432,
 				Username: "user",
@@ -152,7 +169,7 @@ func TestBuildConnectionString(t *testing.T) {
 		},
 		{
 			name: "uses provided sslmode",
-			cfg: &PostgreSQLConfig{
+			cfg: &core.PostgreSQLConfig{
 				Host:     "localhost",
 				Port:     5432,
 				Username: "user",
@@ -166,15 +183,63 @@ func TestBuildConnectionString(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := buildConnectionString(tt.cfg)
+			result, err := buildConnectionString(tt.cfg)
+			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestBuildConnectionString_InvalidSchema(t *testing.T) {
+	tests := []struct {
+		name   string
+		schema string
+	}{
+		{
+			name:   "rejects schema with SQL injection attempt",
+			schema: "public; DROP TABLE users--",
+		},
+		{
+			name:   "rejects schema with spaces",
+			schema: "my schema",
+		},
+		{
+			name:   "rejects schema with special characters",
+			schema: "tenant-abc",
+		},
+		{
+			name:   "rejects schema starting with a digit",
+			schema: "1tenant",
+		},
+		{
+			name:   "rejects schema with double quotes",
+			schema: `"public"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &core.PostgreSQLConfig{
+				Host:     "localhost",
+				Port:     5432,
+				Username: "user",
+				Password: "pass",
+				Database: "testdb",
+				Schema:   tt.schema,
+			}
+
+			result, err := buildConnectionString(cfg)
+
+			require.Error(t, err)
+			assert.Empty(t, result)
+			assert.Contains(t, err.Error(), "invalid schema name")
 		})
 	}
 }
 
 func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 	t.Run("builds separate connection strings for primary and replica", func(t *testing.T) {
-		primaryConfig := &PostgreSQLConfig{
+		primaryConfig := &core.PostgreSQLConfig{
 			Host:     "primary-host",
 			Port:     5432,
 			Username: "user",
@@ -182,7 +247,7 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 			Database: "testdb",
 			SSLMode:  "disable",
 		}
-		replicaConfig := &PostgreSQLConfig{
+		replicaConfig := &core.PostgreSQLConfig{
 			Host:     "replica-host",
 			Port:     5433,
 			Username: "user",
@@ -191,8 +256,10 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 			SSLMode:  "disable",
 		}
 
-		primaryConnStr := buildConnectionString(primaryConfig)
-		replicaConnStr := buildConnectionString(replicaConfig)
+		primaryConnStr, err := buildConnectionString(primaryConfig)
+		require.NoError(t, err)
+		replicaConnStr, err := buildConnectionString(replicaConfig)
+		require.NoError(t, err)
 
 		assert.Contains(t, primaryConnStr, "host=primary-host")
 		assert.Contains(t, primaryConnStr, "port=5432")
@@ -202,10 +269,10 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 	})
 
 	t.Run("fallback to primary when replica not configured", func(t *testing.T) {
-		config := &TenantConfig{
-			Databases: map[string]DatabaseConfig{
+		config := &core.TenantConfig{
+			Databases: map[string]core.DatabaseConfig{
 				"onboarding": {
-					PostgreSQL: &PostgreSQLConfig{
+					PostgreSQL: &core.PostgreSQLConfig{
 						Host:     "primary-host",
 						Port:     5432,
 						Username: "user",
@@ -224,28 +291,31 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 		assert.Nil(t, pgReplicaConfig)
 
 		// When replica is nil, system should use primary connection string
-		primaryConnStr := buildConnectionString(pgConfig)
+		primaryConnStr, err := buildConnectionString(pgConfig)
+		require.NoError(t, err)
 
 		replicaConnStr := primaryConnStr
 		if pgReplicaConfig != nil {
-			replicaConnStr = buildConnectionString(pgReplicaConfig)
+			var replicaErr error
+			replicaConnStr, replicaErr = buildConnectionString(pgReplicaConfig)
+			require.NoError(t, replicaErr)
 		}
 
 		assert.Equal(t, primaryConnStr, replicaConnStr)
 	})
 
 	t.Run("uses replica config when available", func(t *testing.T) {
-		config := &TenantConfig{
-			Databases: map[string]DatabaseConfig{
+		config := &core.TenantConfig{
+			Databases: map[string]core.DatabaseConfig{
 				"onboarding": {
-					PostgreSQL: &PostgreSQLConfig{
+					PostgreSQL: &core.PostgreSQLConfig{
 						Host:     "primary-host",
 						Port:     5432,
 						Username: "user",
 						Password: "pass",
 						Database: "testdb",
 					},
-					PostgreSQLReplica: &PostgreSQLConfig{
+					PostgreSQLReplica: &core.PostgreSQLConfig{
 						Host:     "replica-host",
 						Port:     5433,
 						Username: "user",
@@ -262,11 +332,14 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 		assert.NotNil(t, pgConfig)
 		assert.NotNil(t, pgReplicaConfig)
 
-		primaryConnStr := buildConnectionString(pgConfig)
+		primaryConnStr, err := buildConnectionString(pgConfig)
+		require.NoError(t, err)
 
 		replicaConnStr := primaryConnStr
 		if pgReplicaConfig != nil {
-			replicaConnStr = buildConnectionString(pgReplicaConfig)
+			var replicaErr error
+			replicaConnStr, replicaErr = buildConnectionString(pgReplicaConfig)
+			require.NoError(t, replicaErr)
 		}
 
 		assert.NotEqual(t, primaryConnStr, replicaConnStr)
@@ -275,17 +348,17 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 	})
 
 	t.Run("handles replica with different database name", func(t *testing.T) {
-		config := &TenantConfig{
-			Databases: map[string]DatabaseConfig{
+		config := &core.TenantConfig{
+			Databases: map[string]core.DatabaseConfig{
 				"onboarding": {
-					PostgreSQL: &PostgreSQLConfig{
+					PostgreSQL: &core.PostgreSQLConfig{
 						Host:     "primary-host",
 						Port:     5432,
 						Username: "user",
 						Password: "pass",
 						Database: "primary_db",
 					},
-					PostgreSQLReplica: &PostgreSQLConfig{
+					PostgreSQLReplica: &core.PostgreSQLConfig{
 						Host:     "replica-host",
 						Port:     5433,
 						Username: "user",
@@ -304,10 +377,10 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 	})
 }
 
-func TestPostgresManager_GetConnection_HealthyCache(t *testing.T) {
+func TestManager_GetConnection_HealthyCache(t *testing.T) {
 	t.Run("returns cached connection when ping succeeds", func(t *testing.T) {
-		client := &Client{baseURL: "http://localhost:8080"}
-		manager := NewPostgresManager(client, "ledger")
+		c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+		manager := NewManager(c, "ledger")
 
 		// Pre-populate cache with a healthy connection
 		healthyDB := &pingableDB{pingErr: nil}
@@ -325,7 +398,7 @@ func TestPostgresManager_GetConnection_HealthyCache(t *testing.T) {
 	})
 }
 
-func TestPostgresManager_GetConnection_UnhealthyCacheEvicts(t *testing.T) {
+func TestManager_GetConnection_UnhealthyCacheEvicts(t *testing.T) {
 	t.Run("evicts cached connection when ping fails", func(t *testing.T) {
 		// Set up a mock Tenant Manager that returns 500 to simulate unavailability
 		// after eviction. The key assertion is that the stale connection is evicted.
@@ -334,8 +407,8 @@ func TestPostgresManager_GetConnection_UnhealthyCacheEvicts(t *testing.T) {
 		}))
 		defer server.Close()
 
-		tmClient := NewClient(server.URL, &mockLogger{})
-		manager := NewPostgresManager(tmClient, "ledger", WithPostgresLogger(&mockLogger{}))
+		tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
+		manager := NewManager(tmClient, "ledger", WithLogger(testutil.NewMockLogger()))
 
 		// Pre-populate cache with an unhealthy connection (simulates auth failure after credential rotation)
 		unhealthyDB := &pingableDB{pingErr: errors.New("FATAL: password authentication failed (SQLSTATE 28P01)")}
@@ -364,7 +437,7 @@ func TestPostgresManager_GetConnection_UnhealthyCacheEvicts(t *testing.T) {
 	})
 }
 
-func TestPostgresManager_GetConnection_SuspendedTenant(t *testing.T) {
+func TestManager_GetConnection_SuspendedTenant(t *testing.T) {
 	t.Run("propagates TenantSuspendedError from client", func(t *testing.T) {
 		// Set up a mock Tenant Manager that returns 403 Forbidden for suspended tenants
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -374,25 +447,25 @@ func TestPostgresManager_GetConnection_SuspendedTenant(t *testing.T) {
 		}))
 		defer server.Close()
 
-		tmClient := NewClient(server.URL, &mockLogger{})
-		manager := NewPostgresManager(tmClient, "ledger", WithPostgresLogger(&mockLogger{}))
+		tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
+		manager := NewManager(tmClient, "ledger", WithLogger(testutil.NewMockLogger()))
 
 		_, err := manager.GetConnection(context.Background(), "tenant-123")
 
 		require.Error(t, err)
-		assert.True(t, IsTenantSuspendedError(err), "expected TenantSuspendedError, got: %T", err)
+		assert.True(t, core.IsTenantSuspendedError(err), "expected TenantSuspendedError, got: %T", err)
 
-		var suspErr *TenantSuspendedError
+		var suspErr *core.TenantSuspendedError
 		require.ErrorAs(t, err, &suspErr)
 		assert.Equal(t, "suspended", suspErr.Status)
 		assert.Equal(t, "tenant-123", suspErr.TenantID)
 	})
 }
 
-func TestPostgresManager_GetConnection_NilConnectionDB(t *testing.T) {
+func TestManager_GetConnection_NilConnectionDB(t *testing.T) {
 	t.Run("returns cached connection when ConnectionDB is nil without ping", func(t *testing.T) {
-		client := &Client{baseURL: "http://localhost:8080"}
-		manager := NewPostgresManager(client, "ledger")
+		c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+		manager := NewManager(c, "ledger")
 
 		// Pre-populate cache with a connection that has nil ConnectionDB
 		cachedConn := &libPostgres.PostgresConnection{
@@ -407,7 +480,7 @@ func TestPostgresManager_GetConnection_NilConnectionDB(t *testing.T) {
 	})
 }
 
-func TestPostgresManager_EvictLRU(t *testing.T) {
+func TestManager_EvictLRU(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -482,16 +555,16 @@ func TestPostgresManager_EvictLRU(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			opts := []PostgresOption{
-				WithPostgresLogger(&mockLogger{}),
+			opts := []Option{
+				WithLogger(testutil.NewMockLogger()),
 				WithMaxTenantPools(tt.maxConnections),
 			}
 			if tt.idleTimeout > 0 {
 				opts = append(opts, WithIdleTimeout(tt.idleTimeout))
 			}
 
-			client := &Client{baseURL: "http://localhost:8080"}
-			manager := NewPostgresManager(client, "ledger", opts...)
+			c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+			manager := NewManager(c, "ledger", opts...)
 
 			// Pre-populate pool with connections
 			if tt.preloadCount >= 1 {
@@ -528,7 +601,7 @@ func TestPostgresManager_EvictLRU(t *testing.T) {
 
 			// Call evictLRU (caller must hold write lock)
 			manager.mu.Lock()
-			manager.evictLRU(&mockLogger{})
+			manager.evictLRU(context.Background(), testutil.NewMockLogger())
 			manager.mu.Unlock()
 
 			// Verify pool size
@@ -550,12 +623,12 @@ func TestPostgresManager_EvictLRU(t *testing.T) {
 	}
 }
 
-func TestPostgresManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
+func TestManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 	t.Parallel()
 
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewPostgresManager(client, "ledger",
-		WithPostgresLogger(&mockLogger{}),
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+	manager := NewManager(c, "ledger",
+		WithLogger(testutil.NewMockLogger()),
 		WithMaxTenantPools(2),
 		WithIdleTimeout(5*time.Minute),
 	)
@@ -573,7 +646,7 @@ func TestPostgresManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 
 	// Try to evict - should not evict because all connections are active
 	manager.mu.Lock()
-	manager.evictLRU(&mockLogger{})
+	manager.evictLRU(context.Background(), testutil.NewMockLogger())
 	manager.mu.Unlock()
 
 	// Pool should remain at 2 (no eviction occurred)
@@ -593,7 +666,7 @@ func TestPostgresManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 		"pool should grow beyond soft limit when all connections are active")
 }
 
-func TestPostgresManager_WithIdleTimeout_Option(t *testing.T) {
+func TestManager_WithIdleTimeout_Option(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -618,8 +691,8 @@ func TestPostgresManager_WithIdleTimeout_Option(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client := &Client{baseURL: "http://localhost:8080"}
-			manager := NewPostgresManager(client, "ledger",
+			c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+			manager := NewManager(c, "ledger",
 				WithIdleTimeout(tt.idleTimeout),
 			)
 
@@ -628,12 +701,12 @@ func TestPostgresManager_WithIdleTimeout_Option(t *testing.T) {
 	}
 }
 
-func TestPostgresManager_LRU_LastAccessedUpdatedOnCacheHit(t *testing.T) {
+func TestManager_LRU_LastAccessedUpdatedOnCacheHit(t *testing.T) {
 	t.Parallel()
 
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewPostgresManager(client, "ledger",
-		WithPostgresLogger(&mockLogger{}),
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+	manager := NewManager(c, "ledger",
+		WithLogger(testutil.NewMockLogger()),
 		WithMaxTenantPools(5),
 	)
 
@@ -665,12 +738,12 @@ func TestPostgresManager_LRU_LastAccessedUpdatedOnCacheHit(t *testing.T) {
 		initialTime, updatedTime)
 }
 
-func TestPostgresManager_CloseConnection_CleansUpLastAccessed(t *testing.T) {
+func TestManager_CloseConnection_CleansUpLastAccessed(t *testing.T) {
 	t.Parallel()
 
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewPostgresManager(client, "ledger",
-		WithPostgresLogger(&mockLogger{}),
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+	manager := NewManager(c, "ledger",
+		WithLogger(testutil.NewMockLogger()),
 	)
 
 	// Pre-populate cache
@@ -683,7 +756,7 @@ func TestPostgresManager_CloseConnection_CleansUpLastAccessed(t *testing.T) {
 	manager.lastAccessed["tenant-123"] = time.Now()
 
 	// Close the specific tenant connection
-	err := manager.CloseConnection("tenant-123")
+	err := manager.CloseConnection(context.Background(), "tenant-123")
 
 	require.NoError(t, err)
 
@@ -696,7 +769,7 @@ func TestPostgresManager_CloseConnection_CleansUpLastAccessed(t *testing.T) {
 	assert.False(t, accessExists, "lastAccessed should be removed after CloseConnection")
 }
 
-func TestPostgresManager_WithMaxTenantPools_Option(t *testing.T) {
+func TestManager_WithMaxTenantPools_Option(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -721,8 +794,8 @@ func TestPostgresManager_WithMaxTenantPools_Option(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client := &Client{baseURL: "http://localhost:8080"}
-			manager := NewPostgresManager(client, "ledger",
+			c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+			manager := NewManager(c, "ledger",
 				WithMaxTenantPools(tt.maxConnections),
 			)
 
@@ -731,11 +804,11 @@ func TestPostgresManager_WithMaxTenantPools_Option(t *testing.T) {
 	}
 }
 
-func TestPostgresManager_Stats_IncludesMaxConnections(t *testing.T) {
+func TestManager_Stats_IncludesMaxConnections(t *testing.T) {
 	t.Parallel()
 
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewPostgresManager(client, "ledger",
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+	manager := NewManager(c, "ledger",
 		WithMaxTenantPools(50),
 	)
 
@@ -743,23 +816,10 @@ func TestPostgresManager_Stats_IncludesMaxConnections(t *testing.T) {
 
 	assert.Equal(t, 50, stats.MaxConnections)
 	assert.Equal(t, 0, stats.TotalConnections)
+	assert.Equal(t, 0, stats.ActiveConnections)
 }
 
-// trackingDB extends pingableDB to track SetMaxOpenConns/SetMaxIdleConns calls.
-// Fields use int32 with atomic operations to avoid data races when written
-// by async goroutines (revalidateSettings) and read by test assertions.
-type trackingDB struct {
-	pingableDB
-	maxOpenConns int32
-	maxIdleConns int32
-}
-
-func (t *trackingDB) SetMaxOpenConns(n int) { atomic.StoreInt32(&t.maxOpenConns, int32(n)) }
-func (t *trackingDB) SetMaxIdleConns(n int) { atomic.StoreInt32(&t.maxIdleConns, int32(n)) }
-func (t *trackingDB) MaxOpenConns() int32   { return atomic.LoadInt32(&t.maxOpenConns) }
-func (t *trackingDB) MaxIdleConns() int32   { return atomic.LoadInt32(&t.maxIdleConns) }
-
-func TestPostgresManager_WithSettingsCheckInterval_Option(t *testing.T) {
+func TestManager_WithSettingsCheckInterval_Option(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -794,8 +854,8 @@ func TestPostgresManager_WithSettingsCheckInterval_Option(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client := &Client{baseURL: "http://localhost:8080"}
-			manager := NewPostgresManager(client, "ledger",
+			c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+			manager := NewManager(c, "ledger",
 				WithSettingsCheckInterval(tt.interval),
 			)
 
@@ -804,11 +864,11 @@ func TestPostgresManager_WithSettingsCheckInterval_Option(t *testing.T) {
 	}
 }
 
-func TestPostgresManager_DefaultSettingsCheckInterval(t *testing.T) {
+func TestManager_DefaultSettingsCheckInterval(t *testing.T) {
 	t.Parallel()
 
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewPostgresManager(client, "ledger")
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+	manager := NewManager(c, "ledger")
 
 	assert.Equal(t, defaultSettingsCheckInterval, manager.settingsCheckInterval,
 		"default settings check interval should be set from named constant")
@@ -816,7 +876,7 @@ func TestPostgresManager_DefaultSettingsCheckInterval(t *testing.T) {
 		"lastSettingsCheck map should be initialized")
 }
 
-func TestPostgresManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
+func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 	t.Parallel()
 
 	// Set up a mock Tenant Manager that returns updated connection settings
@@ -839,9 +899,9 @@ func TestPostgresManager_GetConnection_RevalidatesSettingsAfterInterval(t *testi
 	}))
 	defer server.Close()
 
-	tmClient := NewClient(server.URL, &mockLogger{})
-	manager := NewPostgresManager(tmClient, "ledger",
-		WithPostgresLogger(&mockLogger{}),
+	tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		// Use a very short interval so the test triggers revalidation immediately
 		WithSettingsCheckInterval(1*time.Millisecond),
@@ -876,7 +936,7 @@ func TestPostgresManager_GetConnection_RevalidatesSettingsAfterInterval(t *testi
 	assert.Equal(t, int32(15), tDB.MaxIdleConns(), "maxIdleConns should be updated to 15")
 }
 
-func TestPostgresManager_GetConnection_DoesNotRevalidateBeforeInterval(t *testing.T) {
+func TestManager_GetConnection_DoesNotRevalidateBeforeInterval(t *testing.T) {
 	t.Parallel()
 
 	var callCount int32
@@ -896,9 +956,9 @@ func TestPostgresManager_GetConnection_DoesNotRevalidateBeforeInterval(t *testin
 	}))
 	defer server.Close()
 
-	tmClient := NewClient(server.URL, &mockLogger{})
-	manager := NewPostgresManager(tmClient, "ledger",
-		WithPostgresLogger(&mockLogger{}),
+	tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		// Use a very long interval so revalidation does NOT trigger
 		WithSettingsCheckInterval(1*time.Hour),
@@ -933,7 +993,7 @@ func TestPostgresManager_GetConnection_DoesNotRevalidateBeforeInterval(t *testin
 	assert.Equal(t, int32(0), tDB.MaxIdleConns(), "maxIdleConns should NOT be changed")
 }
 
-func TestPostgresManager_GetConnection_FailedRevalidationDoesNotBreakConnection(t *testing.T) {
+func TestManager_GetConnection_FailedRevalidationDoesNotBreakConnection(t *testing.T) {
 	t.Parallel()
 
 	// Set up a mock Tenant Manager that returns 500 (simulates unavailability)
@@ -942,9 +1002,9 @@ func TestPostgresManager_GetConnection_FailedRevalidationDoesNotBreakConnection(
 	}))
 	defer server.Close()
 
-	tmClient := NewClient(server.URL, &mockLogger{})
-	manager := NewPostgresManager(tmClient, "ledger",
-		WithPostgresLogger(&mockLogger{}),
+	tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		WithSettingsCheckInterval(1*time.Millisecond),
 	)
@@ -975,12 +1035,12 @@ func TestPostgresManager_GetConnection_FailedRevalidationDoesNotBreakConnection(
 	assert.Equal(t, int32(0), tDB.MaxIdleConns(), "maxIdleConns should NOT be changed on failed revalidation")
 }
 
-func TestPostgresManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
+func TestManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
 	t.Parallel()
 
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewPostgresManager(client, "ledger",
-		WithPostgresLogger(&mockLogger{}),
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+	manager := NewManager(c, "ledger",
+		WithLogger(testutil.NewMockLogger()),
 	)
 
 	// Pre-populate cache
@@ -994,7 +1054,7 @@ func TestPostgresManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T)
 	manager.lastSettingsCheck["tenant-123"] = time.Now()
 
 	// Close the specific tenant connection
-	err := manager.CloseConnection("tenant-123")
+	err := manager.CloseConnection(context.Background(), "tenant-123")
 
 	require.NoError(t, err)
 
@@ -1009,12 +1069,12 @@ func TestPostgresManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T)
 	assert.False(t, settingsCheckExists, "lastSettingsCheck should be removed after CloseConnection")
 }
 
-func TestPostgresManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
+func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
 	t.Parallel()
 
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewPostgresManager(client, "ledger",
-		WithPostgresLogger(&mockLogger{}),
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+	manager := NewManager(c, "ledger",
+		WithLogger(testutil.NewMockLogger()),
 	)
 
 	// Pre-populate cache with multiple tenants
@@ -1029,7 +1089,7 @@ func TestPostgresManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
 		manager.lastSettingsCheck[id] = time.Now()
 	}
 
-	err := manager.Close()
+	err := manager.Close(context.Background())
 
 	require.NoError(t, err)
 
@@ -1038,16 +1098,16 @@ func TestPostgresManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
 	assert.Empty(t, manager.lastSettingsCheck, "all lastSettingsCheck should be removed after Close")
 }
 
-func TestPostgresManager_ApplyConnectionSettings_LogsValues(t *testing.T) {
+func TestManager_ApplyConnectionSettings_LogsValues(t *testing.T) {
 	t.Parallel()
 
-	client := &Client{baseURL: "http://localhost:8080"}
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 
 	// Use a capturing logger to verify that ApplyConnectionSettings logs when it applies values
-	capLogger := &capturingLogger{}
-	manager := NewPostgresManager(client, "ledger",
+	capLogger := testutil.NewCapturingLogger()
+	manager := NewManager(c, "ledger",
 		WithModule("onboarding"),
-		WithPostgresLogger(capLogger),
+		WithLogger(capLogger),
 	)
 
 	tDB := &trackingDB{}
@@ -1057,10 +1117,10 @@ func TestPostgresManager_ApplyConnectionSettings_LogsValues(t *testing.T) {
 		ConnectionDB: &db,
 	}
 
-	config := &TenantConfig{
-		Databases: map[string]DatabaseConfig{
+	config := &core.TenantConfig{
+		Databases: map[string]core.DatabaseConfig{
 			"onboarding": {
-				ConnectionSettings: &ConnectionSettings{
+				ConnectionSettings: &core.ConnectionSettings{
 					MaxOpenConns: 30,
 					MaxIdleConns: 10,
 				},
@@ -1072,11 +1132,11 @@ func TestPostgresManager_ApplyConnectionSettings_LogsValues(t *testing.T) {
 
 	assert.Equal(t, int32(30), tDB.MaxOpenConns())
 	assert.Equal(t, int32(10), tDB.MaxIdleConns())
-	assert.True(t, capLogger.containsSubstring("applying connection settings"),
+	assert.True(t, capLogger.ContainsSubstring("applying connection settings"),
 		"ApplyConnectionSettings should log when applying values")
 }
 
-func TestPostgresManager_GetConnection_DisabledRevalidation_WithZero(t *testing.T) {
+func TestManager_GetConnection_DisabledRevalidation_WithZero(t *testing.T) {
 	t.Parallel()
 
 	var callCount int32
@@ -1097,9 +1157,9 @@ func TestPostgresManager_GetConnection_DisabledRevalidation_WithZero(t *testing.
 	}))
 	defer server.Close()
 
-	tmClient := NewClient(server.URL, &mockLogger{})
-	manager := NewPostgresManager(tmClient, "ledger",
-		WithPostgresLogger(&mockLogger{}),
+	tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		// Disable revalidation with zero duration
 		WithSettingsCheckInterval(0),
@@ -1136,7 +1196,7 @@ func TestPostgresManager_GetConnection_DisabledRevalidation_WithZero(t *testing.
 	assert.Equal(t, int32(0), tDB.MaxIdleConns(), "maxIdleConns should NOT be changed")
 }
 
-func TestPostgresManager_GetConnection_DisabledRevalidation_WithNegative(t *testing.T) {
+func TestManager_GetConnection_DisabledRevalidation_WithNegative(t *testing.T) {
 	t.Parallel()
 
 	var callCount int32
@@ -1157,9 +1217,9 @@ func TestPostgresManager_GetConnection_DisabledRevalidation_WithNegative(t *test
 	}))
 	defer server.Close()
 
-	tmClient := NewClient(server.URL, &mockLogger{})
-	manager := NewPostgresManager(tmClient, "payment",
-		WithPostgresLogger(&mockLogger{}),
+	tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
+	manager := NewManager(tmClient, "payment",
+		WithLogger(testutil.NewMockLogger()),
 		WithModule("payment"),
 		// Disable revalidation with negative duration
 		WithSettingsCheckInterval(-5*time.Second),
@@ -1194,13 +1254,13 @@ func TestPostgresManager_GetConnection_DisabledRevalidation_WithNegative(t *test
 	assert.Equal(t, int32(0), tDB.MaxIdleConns(), "maxIdleConns should NOT be changed")
 }
 
-func TestPostgresManager_ApplyConnectionSettings(t *testing.T) {
+func TestManager_ApplyConnectionSettings(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name            string
 		module          string
-		config          *TenantConfig
+		config          *core.TenantConfig
 		hasCachedConn   bool
 		hasConnectionDB bool
 		expectMaxOpen   int
@@ -1210,10 +1270,10 @@ func TestPostgresManager_ApplyConnectionSettings(t *testing.T) {
 		{
 			name:   "applies module-level settings",
 			module: "onboarding",
-			config: &TenantConfig{
-				Databases: map[string]DatabaseConfig{
+			config: &core.TenantConfig{
+				Databases: map[string]core.DatabaseConfig{
 					"onboarding": {
-						ConnectionSettings: &ConnectionSettings{
+						ConnectionSettings: &core.ConnectionSettings{
 							MaxOpenConns: 30,
 							MaxIdleConns: 10,
 						},
@@ -1228,8 +1288,8 @@ func TestPostgresManager_ApplyConnectionSettings(t *testing.T) {
 		{
 			name:   "applies top-level settings as fallback",
 			module: "onboarding",
-			config: &TenantConfig{
-				ConnectionSettings: &ConnectionSettings{
+			config: &core.TenantConfig{
+				ConnectionSettings: &core.ConnectionSettings{
 					MaxOpenConns: 20,
 					MaxIdleConns: 8,
 				},
@@ -1242,16 +1302,16 @@ func TestPostgresManager_ApplyConnectionSettings(t *testing.T) {
 		{
 			name:   "module-level takes precedence over top-level",
 			module: "onboarding",
-			config: &TenantConfig{
-				Databases: map[string]DatabaseConfig{
+			config: &core.TenantConfig{
+				Databases: map[string]core.DatabaseConfig{
 					"onboarding": {
-						ConnectionSettings: &ConnectionSettings{
+						ConnectionSettings: &core.ConnectionSettings{
 							MaxOpenConns: 50,
 							MaxIdleConns: 15,
 						},
 					},
 				},
-				ConnectionSettings: &ConnectionSettings{
+				ConnectionSettings: &core.ConnectionSettings{
 					MaxOpenConns: 20,
 					MaxIdleConns: 8,
 				},
@@ -1264,15 +1324,15 @@ func TestPostgresManager_ApplyConnectionSettings(t *testing.T) {
 		{
 			name:           "no-op when no cached connection exists",
 			module:         "onboarding",
-			config:         &TenantConfig{},
+			config:         &core.TenantConfig{},
 			hasCachedConn:  false,
 			expectNoChange: true,
 		},
 		{
 			name:   "no-op when ConnectionDB is nil",
 			module: "onboarding",
-			config: &TenantConfig{
-				ConnectionSettings: &ConnectionSettings{
+			config: &core.TenantConfig{
+				ConnectionSettings: &core.ConnectionSettings{
 					MaxOpenConns: 30,
 				},
 			},
@@ -1283,10 +1343,10 @@ func TestPostgresManager_ApplyConnectionSettings(t *testing.T) {
 		{
 			name:   "no-op when config has no connection settings",
 			module: "onboarding",
-			config: &TenantConfig{
-				Databases: map[string]DatabaseConfig{
+			config: &core.TenantConfig{
+				Databases: map[string]core.DatabaseConfig{
 					"onboarding": {
-						PostgreSQL: &PostgreSQLConfig{Host: "localhost"},
+						PostgreSQL: &core.PostgreSQLConfig{Host: "localhost"},
 					},
 				},
 			},
@@ -1297,10 +1357,10 @@ func TestPostgresManager_ApplyConnectionSettings(t *testing.T) {
 		{
 			name:   "applies only maxOpenConns when maxIdleConns is zero",
 			module: "onboarding",
-			config: &TenantConfig{
-				Databases: map[string]DatabaseConfig{
+			config: &core.TenantConfig{
+				Databases: map[string]core.DatabaseConfig{
 					"onboarding": {
-						ConnectionSettings: &ConnectionSettings{
+						ConnectionSettings: &core.ConnectionSettings{
 							MaxOpenConns: 40,
 							MaxIdleConns: 0,
 						},
@@ -1319,10 +1379,10 @@ func TestPostgresManager_ApplyConnectionSettings(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client := &Client{baseURL: "http://localhost:8080"}
-			manager := NewPostgresManager(client, "ledger",
+			c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+			manager := NewManager(c, "ledger",
 				WithModule(tt.module),
-				WithPostgresLogger(&mockLogger{}),
+				WithLogger(testutil.NewMockLogger()),
 			)
 
 			tDB := &trackingDB{}
@@ -1351,4 +1411,29 @@ func TestPostgresManager_ApplyConnectionSettings(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestManager_Stats_ActiveConnections(t *testing.T) {
+	t.Parallel()
+
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+	manager := NewManager(c, "ledger")
+
+	// Pre-populate with connections and mark them as recently accessed
+	now := time.Now()
+	for _, id := range []string{"tenant-1", "tenant-2", "tenant-3"} {
+		db := &pingableDB{}
+		var dbIface dbresolver.DB = db
+
+		manager.connections[id] = &libPostgres.PostgresConnection{
+			ConnectionDB: &dbIface,
+		}
+		manager.lastAccessed[id] = now
+	}
+
+	stats := manager.Stats()
+
+	assert.Equal(t, 3, stats.TotalConnections)
+	assert.Equal(t, 3, stats.ActiveConnections,
+		"ActiveConnections should equal TotalConnections for postgres")
 }

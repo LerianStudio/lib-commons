@@ -1,4 +1,4 @@
-package tenantmanager
+package middleware
 
 import (
 	"context"
@@ -9,6 +9,9 @@ import (
 
 	libCommons "github.com/LerianStudio/lib-commons/v3/commons"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
+	tmmongo "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/mongo"
+	tmpostgres "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/postgres"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -17,8 +20,8 @@ import (
 // It stores the connection in context for downstream handlers and repositories.
 // Supports PostgreSQL only, MongoDB only, or both databases.
 type TenantMiddleware struct {
-	postgres *PostgresManager // PostgreSQL manager (optional)
-	mongo    *MongoManager    // MongoDB manager (optional)
+	postgres *tmpostgres.Manager // PostgreSQL manager (optional)
+	mongo    *tmmongo.Manager    // MongoDB manager (optional)
 	enabled  bool
 }
 
@@ -27,7 +30,7 @@ type TenantMiddlewareOption func(*TenantMiddleware)
 
 // WithPostgresManager sets the PostgreSQL manager for the tenant middleware.
 // When configured, the middleware will resolve PostgreSQL connections for tenants.
-func WithPostgresManager(postgres *PostgresManager) TenantMiddlewareOption {
+func WithPostgresManager(postgres *tmpostgres.Manager) TenantMiddlewareOption {
 	return func(m *TenantMiddleware) {
 		m.postgres = postgres
 		m.enabled = m.postgres != nil || m.mongo != nil
@@ -36,7 +39,7 @@ func WithPostgresManager(postgres *PostgresManager) TenantMiddlewareOption {
 
 // WithMongoManager sets the MongoDB manager for the tenant middleware.
 // When configured, the middleware will resolve MongoDB connections for tenants.
-func WithMongoManager(mongo *MongoManager) TenantMiddlewareOption {
+func WithMongoManager(mongo *tmmongo.Manager) TenantMiddlewareOption {
 	return func(m *TenantMiddleware) {
 		m.mongo = mongo
 		m.enabled = m.postgres != nil || m.mongo != nil
@@ -50,15 +53,15 @@ func WithMongoManager(mongo *MongoManager) TenantMiddlewareOption {
 // Usage examples:
 //
 //	// PostgreSQL only
-//	mid := tenantmanager.NewTenantMiddleware(tenantmanager.WithPostgresManager(pgManager))
+//	mid := middleware.NewTenantMiddleware(middleware.WithPostgresManager(pgManager))
 //
 //	// MongoDB only
-//	mid := tenantmanager.NewTenantMiddleware(tenantmanager.WithMongoManager(mongoManager))
+//	mid := middleware.NewTenantMiddleware(middleware.WithMongoManager(mongoManager))
 //
 //	// Both PostgreSQL and MongoDB
-//	mid := tenantmanager.NewTenantMiddleware(
-//	    tenantmanager.WithPostgresManager(pgManager),
-//	    tenantmanager.WithMongoManager(mongoManager),
+//	mid := middleware.NewTenantMiddleware(
+//	    middleware.WithPostgresManager(pgManager),
+//	    middleware.WithMongoManager(mongoManager),
 //	)
 func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 	m := &TenantMiddleware{}
@@ -79,7 +82,7 @@ func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 //
 // Usage in routes.go:
 //
-//	tenantMid := tenantmanager.NewTenantMiddleware(tenantmanager.WithPostgresManager(pgManager))
+//	tenantMid := middleware.NewTenantMiddleware(middleware.WithPostgresManager(pgManager))
 //	f.Use(tenantMid.WithTenantDB)
 func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	// If middleware is disabled, pass through
@@ -139,13 +142,13 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	logger.Infof("tenant context resolved: tenantID=%s", tenantID)
 
 	// Store tenant ID in context
-	ctx = ContextWithTenantID(ctx, tenantID)
+	ctx = core.ContextWithTenantID(ctx, tenantID)
 
 	// Handle PostgreSQL if manager is configured
 	if m.postgres != nil {
 		conn, err := m.postgres.GetConnection(ctx, tenantID)
 		if err != nil {
-			var suspErr *TenantSuspendedError
+			var suspErr *core.TenantSuspendedError
 			if errors.As(err, &suspErr) {
 				logger.Warnf("tenant service is %s: tenantID=%s", suspErr.Status, tenantID)
 				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant service suspended", err)
@@ -170,14 +173,14 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		}
 
 		// Store PostgreSQL connection in context
-		ctx = ContextWithTenantPGConnection(ctx, db)
+		ctx = core.ContextWithTenantPGConnection(ctx, db)
 	}
 
 	// Handle MongoDB if manager is configured
 	if m.mongo != nil {
 		mongoDB, err := m.mongo.GetDatabaseForTenant(ctx, tenantID)
 		if err != nil {
-			var suspErr *TenantSuspendedError
+			var suspErr *core.TenantSuspendedError
 			if errors.As(err, &suspErr) {
 				logger.Warnf("tenant service is %s: tenantID=%s", suspErr.Status, tenantID)
 				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant service suspended", err)
@@ -192,7 +195,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 			return internalServerError(c, "TENANT_MONGO_ERROR", "Failed to resolve tenant MongoDB database", err.Error())
 		}
 
-		ctx = ContextWithTenantMongo(ctx, mongoDB)
+		ctx = core.ContextWithTenantMongo(ctx, mongoDB)
 	}
 
 	// Update Fiber context

@@ -1,6 +1,6 @@
-// Package tenantmanager provides a client for interacting with the Tenant Manager service.
+// Package client provides an HTTP client for interacting with the Tenant Manager service.
 // It handles tenant-specific database connection retrieval for multi-tenant architectures.
-package tenantmanager
+package client
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	libCommons "github.com/LerianStudio/lib-commons/v3/commons"
 	libLog "github.com/LerianStudio/lib-commons/v3/commons/log"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
 )
 
 // maxResponseBodySize is the maximum allowed response body size (10 MB).
@@ -32,6 +33,13 @@ const (
 	// cbHalfOpen allows a single test request through to probe whether the service has recovered.
 	cbHalfOpen
 )
+
+// TenantSummary represents a minimal tenant information for listing.
+type TenantSummary struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Status string `json:"status"`
+}
 
 // Client is an HTTP client for the Tenant Manager service.
 // It fetches tenant-specific database configurations from the Tenant Manager API.
@@ -145,7 +153,7 @@ func (c *Client) checkCircuitBreaker() error {
 			return nil
 		}
 
-		return ErrCircuitBreakerOpen
+		return core.ErrCircuitBreakerOpen
 	default:
 		return nil
 	}
@@ -195,7 +203,7 @@ func isServerError(statusCode int) bool {
 // GetTenantConfig fetches tenant configuration from the Tenant Manager API.
 // The API endpoint is: GET {baseURL}/tenants/{tenantID}/services/{service}/settings
 // Returns the fully resolved tenant configuration with database credentials.
-func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) (*TenantConfig, error) {
+func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) (*core.TenantConfig, error) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_tenant_config")
@@ -259,7 +267,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 		logger.Warnf("Tenant not found: tenantID=%s, service=%s", tenantID, service)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "Tenant not found", nil)
 
-		return nil, ErrTenantNotFound
+		return nil, core.ErrTenantNotFound
 	}
 
 	// 403 Forbidden indicates the tenant-service association exists but is not active
@@ -278,7 +286,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 		}
 
 		if jsonErr := json.Unmarshal(body, &errResp); jsonErr == nil && errResp.Status != "" {
-			return nil, &TenantSuspendedError{
+			return nil, &core.TenantSuspendedError{
 				TenantID: tenantID,
 				Status:   errResp.Status,
 				Message:  errResp.Error,
@@ -301,7 +309,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 	}
 
 	// Parse response
-	var config TenantConfig
+	var config core.TenantConfig
 	if err := json.Unmarshal(body, &config); err != nil {
 		logger.Errorf("Failed to parse response: %v", err)
 		libOpentelemetry.HandleSpanError(&span, "Failed to parse response", err)
@@ -313,13 +321,6 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 	logger.Infof("Successfully fetched tenant config: tenantID=%s, slug=%s", tenantID, config.TenantSlug)
 
 	return &config, nil
-}
-
-// TenantSummary represents a minimal tenant information for listing.
-type TenantSummary struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
 }
 
 // GetActiveTenantsByService fetches active tenants for a service from Tenant Manager.

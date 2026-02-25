@@ -1,4 +1,4 @@
-package tenantmanager
+package core
 
 import (
 	"errors"

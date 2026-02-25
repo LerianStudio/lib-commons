@@ -1,9 +1,10 @@
-package tenantmanager
+package s3
 
 import (
 	"context"
 	"testing"
 
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -132,7 +133,7 @@ func TestGetObjectStorageKeyForTenant(t *testing.T) {
 
 			ctx := context.Background()
 			if tt.tenantID != "" {
-				ctx = SetTenantIDInContext(ctx, tt.tenantID)
+				ctx = core.SetTenantIDInContext(ctx, tt.tenantID)
 			}
 
 			result := GetObjectStorageKeyForTenant(ctx, tt.key)
@@ -145,7 +146,6 @@ func TestGetObjectStorageKeyForTenant(t *testing.T) {
 func TestGetObjectStorageKeyForTenant_NilContext(t *testing.T) {
 	t.Parallel()
 
-	// Must not panic with nil context — behaves as single-tenant
 	result := GetObjectStorageKeyForTenant(nil, "reports/templateID/reportID.html")
 
 	assert.Equal(t, "reports/templateID/reportID.html", result)
@@ -157,10 +157,9 @@ func TestGetObjectStorageKeyForTenant_UsesSameTenantID(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "org_consistency_check"
 
-	ctx = SetTenantIDInContext(ctx, tenantID)
+	ctx = core.SetTenantIDInContext(ctx, tenantID)
 
-	// Verify that GetObjectStorageKeyForTenant uses the same tenantID as GetTenantID
-	extractedID := GetTenantID(ctx)
+	extractedID := core.GetTenantID(ctx)
 	result := GetObjectStorageKeyForTenant(ctx, "test-key")
 
 	assert.Equal(t, tenantID, extractedID)
