@@ -56,6 +56,7 @@ type Manager struct {
 
 	mu             sync.RWMutex
 	connections    map[string]*mongolib.MongoConnection
+	databaseNames  map[string]string    // tenantID -> database name (cached from createConnection)
 	closed         bool
 	maxConnections int                  // soft limit for pool size (0 = unlimited)
 	idleTimeout    time.Duration        // how long before a connection is eligible for eviction
@@ -104,10 +105,11 @@ func WithIdleTimeout(d time.Duration) Option {
 // NewManager creates a new MongoDB connection manager.
 func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 	p := &Manager{
-		client:       c,
-		service:      service,
-		connections:  make(map[string]*mongolib.MongoConnection),
-		lastAccessed: make(map[string]time.Time),
+		client:        c,
+		service:       service,
+		connections:   make(map[string]*mongolib.MongoConnection),
+		databaseNames: make(map[string]string),
+		lastAccessed:  make(map[string]time.Time),
 	}
 
 	for _, opt := range opts {
@@ -198,6 +200,7 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*mongo
 
 		p.mu.Lock()
 		delete(p.connections, tenantID)
+		delete(p.databaseNames, tenantID)
 		// fall through to create a fresh client
 	}
 
@@ -272,8 +275,9 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*mongo
 
 	p.evictLRU(ctx, logger)
 
-	// Cache connection
+	// Cache connection and database name for GetDatabaseForTenant lookups
 	p.connections[tenantID] = conn
+	p.databaseNames[tenantID] = mongoConfig.Database
 	p.lastAccessed[tenantID] = time.Now()
 
 	p.mu.Unlock()
@@ -328,6 +332,7 @@ func (p *Manager) evictLRU(ctx context.Context, logger log.Logger) {
 		}
 
 		delete(p.connections, oldestID)
+		delete(p.databaseNames, oldestID)
 		delete(p.lastAccessed, oldestID)
 
 		if logger != nil {
@@ -355,25 +360,33 @@ func (p *Manager) GetDatabase(ctx context.Context, tenantID, database string) (*
 	return mongoClient.Database(database), nil
 }
 
-// GetDatabaseForTenant returns the MongoDB database for a tenant by fetching the config
-// and resolving the database name automatically. This is useful when you only have the
-// tenant ID and don't know the database name in advance.
-// It fetches the config once and reuses it, avoiding a redundant GetTenantConfig call
-// inside GetConnection/createConnection.
+// GetDatabaseForTenant returns the MongoDB database for a tenant by resolving
+// the database name from the cached mapping populated during createConnection.
+// This avoids a redundant HTTP call to the Tenant Manager since the database
+// name is already known from the initial connection setup.
 func (p *Manager) GetDatabaseForTenant(ctx context.Context, tenantID string) (*mongo.Database, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant ID is required")
 	}
 
-	// GetConnection handles config fetching internally, so we only need
-	// the config here to resolve the database name.
+	// GetConnection handles config fetching and caches both the connection
+	// and the database name (in p.databaseNames).
 	mongoClient, err := p.GetConnection(ctx, tenantID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Fetch tenant config to resolve the database name.
-	// GetConnection already cached the connection, so this is just for the DB name.
+	// Look up the database name cached during createConnection.
+	p.mu.RLock()
+	dbName, ok := p.databaseNames[tenantID]
+	p.mu.RUnlock()
+
+	if ok {
+		return mongoClient.Database(dbName), nil
+	}
+
+	// Fallback: database name not cached (e.g., connection was pre-populated
+	// outside createConnection). Fetch config as a last resort.
 	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
 	if err != nil {
 		// Propagate TenantSuspendedError directly so the middleware can
@@ -385,11 +398,15 @@ func (p *Manager) GetDatabaseForTenant(ctx context.Context, tenantID string) (*m
 		return nil, fmt.Errorf("failed to get tenant config: %w", err)
 	}
 
-	// Get MongoDB config which has the database name
 	mongoConfig := config.GetMongoDBConfig(p.service, p.module)
 	if mongoConfig == nil {
 		return nil, core.ErrServiceNotConfigured
 	}
+
+	// Cache for future calls
+	p.mu.Lock()
+	p.databaseNames[tenantID] = mongoConfig.Database
+	p.mu.Unlock()
 
 	return mongoClient.Database(mongoConfig.Database), nil
 }
@@ -411,6 +428,7 @@ func (p *Manager) Close(ctx context.Context) error {
 		}
 
 		delete(p.connections, tenantID)
+		delete(p.databaseNames, tenantID)
 		delete(p.lastAccessed, tenantID)
 	}
 
@@ -434,6 +452,7 @@ func (p *Manager) CloseConnection(ctx context.Context, tenantID string) error {
 	}
 
 	delete(p.connections, tenantID)
+	delete(p.databaseNames, tenantID)
 	delete(p.lastAccessed, tenantID)
 
 	return err

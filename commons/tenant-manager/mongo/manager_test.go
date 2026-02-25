@@ -3,80 +3,16 @@ package mongo
 import (
 	"context"
 	"fmt"
-	"strings"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v3/commons/log"
 	mongolib "github.com/LerianStudio/lib-commons/v3/commons/mongo"
 	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// mockLogger is a no-op implementation of log.Logger for unit tests.
-// It discards all log output, allowing tests to focus on business logic.
-type mockLogger struct{}
-
-func (m *mockLogger) Info(_ ...any)                                  {}
-func (m *mockLogger) Infof(_ string, _ ...any)                       {}
-func (m *mockLogger) Infoln(_ ...any)                                {}
-func (m *mockLogger) Error(_ ...any)                                 {}
-func (m *mockLogger) Errorf(_ string, _ ...any)                      {}
-func (m *mockLogger) Errorln(_ ...any)                               {}
-func (m *mockLogger) Warn(_ ...any)                                  {}
-func (m *mockLogger) Warnf(_ string, _ ...any)                       {}
-func (m *mockLogger) Warnln(_ ...any)                                {}
-func (m *mockLogger) Debug(_ ...any)                                 {}
-func (m *mockLogger) Debugf(_ string, _ ...any)                      {}
-func (m *mockLogger) Debugln(_ ...any)                               {}
-func (m *mockLogger) Fatal(_ ...any)                                 {}
-func (m *mockLogger) Fatalf(_ string, _ ...any)                      {}
-func (m *mockLogger) Fatalln(_ ...any)                               {}
-func (m *mockLogger) WithFields(_ ...any) log.Logger                 { return m }
-func (m *mockLogger) WithDefaultMessageTemplate(_ string) log.Logger { return m }
-func (m *mockLogger) Sync() error                                    { return nil }
-
-// capturingLogger implements log.Logger and captures log messages for assertion.
-type capturingLogger struct {
-	mu       sync.Mutex
-	messages []string
-}
-
-func (cl *capturingLogger) record(msg string)                                    { cl.mu.Lock(); cl.messages = append(cl.messages, msg); cl.mu.Unlock() }
-func (cl *capturingLogger) Info(args ...any)                                     { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Infof(f string, a ...any)                             { cl.record(fmt.Sprintf(f, a...)) }
-func (cl *capturingLogger) Infoln(args ...any)                                   { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) Error(args ...any)                                    { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Errorf(f string, a ...any)                            { cl.record(fmt.Sprintf(f, a...)) }
-func (cl *capturingLogger) Errorln(args ...any)                                  { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) Warn(args ...any)                                     { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Warnf(f string, a ...any)                             { cl.record(fmt.Sprintf(f, a...)) }
-func (cl *capturingLogger) Warnln(args ...any)                                   { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) Debug(args ...any)                                    { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Debugf(f string, a ...any)                            { cl.record(fmt.Sprintf(f, a...)) }
-func (cl *capturingLogger) Debugln(args ...any)                                  { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) Fatal(args ...any)                                    { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Fatalf(f string, a ...any)                            { cl.record(fmt.Sprintf(f, a...)) }
-func (cl *capturingLogger) Fatalln(args ...any)                                  { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) WithFields(_ ...any) log.Logger                       { return cl }
-func (cl *capturingLogger) WithDefaultMessageTemplate(_ string) log.Logger       { return cl }
-func (cl *capturingLogger) Sync() error                                          { return nil }
-
-func (cl *capturingLogger) containsSubstring(sub string) bool {
-	cl.mu.Lock()
-	defer cl.mu.Unlock()
-
-	for _, msg := range cl.messages {
-		if strings.Contains(msg, sub) {
-			return true
-		}
-	}
-
-	return false
-}
 
 func TestNewManager(t *testing.T) {
 	t.Run("creates manager with client and service", func(t *testing.T) {
@@ -234,7 +170,7 @@ func TestManager_EvictLRU(t *testing.T) {
 			t.Parallel()
 
 			opts := []Option{
-				WithLogger(&mockLogger{}),
+				WithLogger(testutil.NewMockLogger()),
 				WithMaxTenantPools(tt.maxConnections),
 			}
 			if tt.idleTimeout > 0 {
@@ -264,7 +200,7 @@ func TestManager_EvictLRU(t *testing.T) {
 
 			// Call evictLRU (caller must hold write lock)
 			manager.mu.Lock()
-			manager.evictLRU(context.Background(), &mockLogger{})
+			manager.evictLRU(context.Background(), testutil.NewMockLogger())
 			manager.mu.Unlock()
 
 			// Verify pool size
@@ -291,7 +227,7 @@ func TestManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 
 	c := &client.Client{}
 	manager := NewManager(c, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 		WithMaxTenantPools(2),
 		WithIdleTimeout(5*time.Minute),
 	)
@@ -304,7 +240,7 @@ func TestManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 
 	// Try to evict - should not evict because all connections are active
 	manager.mu.Lock()
-	manager.evictLRU(context.Background(), &mockLogger{})
+	manager.evictLRU(context.Background(), testutil.NewMockLogger())
 	manager.mu.Unlock()
 
 	// Pool should remain at 2 (no eviction occurred)
@@ -359,7 +295,7 @@ func TestManager_LRU_LastAccessedUpdatedOnCacheHit(t *testing.T) {
 
 	c := &client.Client{}
 	manager := NewManager(c, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 		WithMaxTenantPools(5),
 	)
 
@@ -391,7 +327,7 @@ func TestManager_CloseConnection_CleansUpLastAccessed(t *testing.T) {
 
 	c := &client.Client{}
 	manager := NewManager(c, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 	)
 
 	// Pre-populate cache with a connection that has nil DB
@@ -505,7 +441,7 @@ func TestManager_ApplyConnectionSettings(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			logger := &capturingLogger{}
+			logger := testutil.NewCapturingLogger()
 			c := &client.Client{}
 			manager := NewManager(c, "ledger",
 				WithModule(tt.module),
@@ -521,7 +457,7 @@ func TestManager_ApplyConnectionSettings(t *testing.T) {
 			// Verify it does not panic and produces no log output.
 			manager.ApplyConnectionSettings("tenant-123", tt.config)
 
-			assert.Empty(t, logger.messages,
+			assert.Empty(t, logger.Messages,
 				"ApplyConnectionSettings should be a no-op and produce no log output")
 		})
 	}

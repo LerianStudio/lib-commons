@@ -17,6 +17,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// newTestManagers creates a postgres and mongo Manager backed by a test client.
+// Centralises the repeated client.NewClient + NewManager boilerplate so each
+// sub-test only declares what is unique to its scenario.
+func newTestManagers() (*tmpostgres.Manager, *tmmongo.Manager) {
+	c := client.NewClient("http://localhost:8080", nil)
+	return tmpostgres.NewManager(c, "ledger"), tmmongo.NewManager(c, "ledger")
+}
+
 func TestNewTenantMiddleware(t *testing.T) {
 	t.Run("creates disabled middleware when no managers are configured", func(t *testing.T) {
 		middleware := NewTenantMiddleware()
@@ -28,8 +36,7 @@ func TestNewTenantMiddleware(t *testing.T) {
 	})
 
 	t.Run("creates enabled middleware with PostgreSQL only", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", nil)
-		pgManager := tmpostgres.NewManager(c, "ledger")
+		pgManager, _ := newTestManagers()
 
 		middleware := NewTenantMiddleware(WithPostgresManager(pgManager))
 
@@ -40,8 +47,7 @@ func TestNewTenantMiddleware(t *testing.T) {
 	})
 
 	t.Run("creates enabled middleware with MongoDB only", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", nil)
-		mongoManager := tmmongo.NewManager(c, "ledger")
+		_, mongoManager := newTestManagers()
 
 		middleware := NewTenantMiddleware(WithMongoManager(mongoManager))
 
@@ -52,9 +58,7 @@ func TestNewTenantMiddleware(t *testing.T) {
 	})
 
 	t.Run("creates middleware with both PostgreSQL and MongoDB managers", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", nil)
-		pgManager := tmpostgres.NewManager(c, "ledger")
-		mongoManager := tmmongo.NewManager(c, "ledger")
+		pgManager, mongoManager := newTestManagers()
 
 		middleware := NewTenantMiddleware(
 			WithPostgresManager(pgManager),
@@ -70,8 +74,7 @@ func TestNewTenantMiddleware(t *testing.T) {
 
 func TestWithPostgresManager(t *testing.T) {
 	t.Run("sets postgres manager on middleware", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", nil)
-		pgManager := tmpostgres.NewManager(c, "ledger")
+		pgManager, _ := newTestManagers()
 
 		middleware := NewTenantMiddleware()
 		assert.Nil(t, middleware.postgres)
@@ -86,8 +89,7 @@ func TestWithPostgresManager(t *testing.T) {
 	})
 
 	t.Run("enables middleware when postgres manager is set", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", nil)
-		pgManager := tmpostgres.NewManager(c, "ledger")
+		pgManager, _ := newTestManagers()
 
 		middleware := &TenantMiddleware{}
 		assert.False(t, middleware.enabled)
@@ -101,8 +103,7 @@ func TestWithPostgresManager(t *testing.T) {
 
 func TestWithMongoManager(t *testing.T) {
 	t.Run("sets mongo manager on middleware", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", nil)
-		mongoManager := tmmongo.NewManager(c, "ledger")
+		_, mongoManager := newTestManagers()
 
 		middleware := NewTenantMiddleware()
 		assert.Nil(t, middleware.mongo)
@@ -117,8 +118,7 @@ func TestWithMongoManager(t *testing.T) {
 	})
 
 	t.Run("enables middleware when mongo manager is set", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", nil)
-		mongoManager := tmmongo.NewManager(c, "ledger")
+		_, mongoManager := newTestManagers()
 
 		middleware := &TenantMiddleware{}
 		assert.False(t, middleware.enabled)
@@ -137,25 +137,21 @@ func TestTenantMiddleware_Enabled(t *testing.T) {
 	})
 
 	t.Run("returns true when only PostgreSQL manager is set", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", nil)
-		pgManager := tmpostgres.NewManager(c, "ledger")
+		pgManager, _ := newTestManagers()
 
 		middleware := NewTenantMiddleware(WithPostgresManager(pgManager))
 		assert.True(t, middleware.Enabled())
 	})
 
 	t.Run("returns true when only MongoDB manager is set", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", nil)
-		mongoManager := tmmongo.NewManager(c, "ledger")
+		_, mongoManager := newTestManagers()
 
 		middleware := NewTenantMiddleware(WithMongoManager(mongoManager))
 		assert.True(t, middleware.Enabled())
 	})
 
 	t.Run("returns true when both managers are set", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", nil)
-		pgManager := tmpostgres.NewManager(c, "ledger")
-		mongoManager := tmmongo.NewManager(c, "ledger")
+		pgManager, mongoManager := newTestManagers()
 
 		middleware := NewTenantMiddleware(
 			WithPostgresManager(pgManager),
@@ -179,8 +175,7 @@ func buildTestJWT(claims map[string]any) string {
 
 func TestTenantMiddleware_WithTenantDB(t *testing.T) {
 	t.Run("no Authorization header returns 401", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", nil)
-		pgManager := tmpostgres.NewManager(c, "ledger")
+		pgManager, _ := newTestManagers()
 
 		middleware := NewTenantMiddleware(WithPostgresManager(pgManager))
 
@@ -203,8 +198,7 @@ func TestTenantMiddleware_WithTenantDB(t *testing.T) {
 	})
 
 	t.Run("malformed JWT returns 401", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", nil)
-		mongoManager := tmmongo.NewManager(c, "ledger")
+		_, mongoManager := newTestManagers()
 
 		middleware := NewTenantMiddleware(WithMongoManager(mongoManager))
 
@@ -228,8 +222,7 @@ func TestTenantMiddleware_WithTenantDB(t *testing.T) {
 	})
 
 	t.Run("valid JWT missing tenantId claim returns 401", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", nil)
-		pgManager := tmpostgres.NewManager(c, "ledger")
+		pgManager, _ := newTestManagers()
 
 		middleware := NewTenantMiddleware(WithPostgresManager(pgManager))
 

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -297,8 +298,30 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*libPo
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	// Double-check after acquiring lock: validate health of cached connection
+	// found by a concurrent goroutine before returning it.
 	if conn, ok := p.connections[tenantID]; ok {
-		return conn, nil
+		if conn.ConnectionDB != nil {
+			pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+			pingErr := (*conn.ConnectionDB).PingContext(pingCtx)
+
+			cancel()
+
+			if pingErr == nil {
+				return conn, nil
+			}
+
+			// Unhealthy - evict and continue to create fresh connection
+			logger.Warnf("cached postgres connection unhealthy for tenant %s after lock, reconnecting: %v", tenantID, pingErr)
+
+			_ = (*conn.ConnectionDB).Close()
+
+			delete(p.connections, tenantID)
+			delete(p.lastAccessed, tenantID)
+			delete(p.lastSettingsCheck, tenantID)
+		} else {
+			return conn, nil
+		}
 	}
 
 	if p.closed {
@@ -548,14 +571,33 @@ func (p *Manager) Stats() Stats {
 
 	totalConns := len(p.connections)
 
+	now := time.Now()
+
+	idleTimeout := p.idleTimeout
+	if idleTimeout == 0 {
+		idleTimeout = defaultIdleTimeout
+	}
+
+	activeCount := 0
+
+	for id := range p.connections {
+		if t, ok := p.lastAccessed[id]; ok && now.Sub(t) <= idleTimeout {
+			activeCount++
+		}
+	}
+
 	return Stats{
 		TotalConnections:  totalConns,
-		ActiveConnections: totalConns,
+		ActiveConnections: activeCount,
 		MaxConnections:    p.maxConnections,
 		TenantIDs:         tenantIDs,
 		Closed:            p.closed,
 	}
 }
+
+// validSchemaPattern validates PostgreSQL schema names to prevent injection
+// in the options=-csearch_path= connection string parameter.
+var validSchemaPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 func buildConnectionString(cfg *core.PostgreSQLConfig) string {
 	sslmode := cfg.SSLMode
@@ -576,7 +618,9 @@ func buildConnectionString(cfg *core.PostgreSQLConfig) string {
 	)
 
 	if cfg.Schema != "" {
-		connStr += fmt.Sprintf(" options=-csearch_path=\"%s\"", cfg.Schema)
+		if validSchemaPattern.MatchString(cfg.Schema) {
+			connStr += fmt.Sprintf(` options=-csearch_path="%s"`, cfg.Schema)
+		}
 	}
 
 	return connStr

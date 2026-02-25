@@ -22,6 +22,8 @@ func GetObjectStorageKey(tenantID, key string) string {
 		return key
 	}
 
+	tenantID = strings.Trim(tenantID, "/")
+
 	return tenantID + "/" + key
 }
 
@@ -57,6 +59,7 @@ func StripObjectStoragePrefix(tenantID, prefixedKey string) string {
 		return prefixedKey
 	}
 
+	tenantID = strings.Trim(tenantID, "/")
 	prefix := tenantID + "/"
 
 	return strings.TrimPrefix(prefixedKey, prefix)

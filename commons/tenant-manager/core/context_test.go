@@ -209,7 +209,7 @@ func TestGetMongoForTenant(t *testing.T) {
 		assert.ErrorIs(t, err, ErrTenantContextRequired)
 	})
 
-	t.Run("returns database when present in context", func(t *testing.T) {
+	t.Run("returns ErrTenantContextRequired for nil db in context", func(t *testing.T) {
 		ctx := context.Background()
 
 		// Use ContextWithTenantMongo with a nil *mongo.Database to test the path

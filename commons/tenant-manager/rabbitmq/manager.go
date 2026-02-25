@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -119,7 +120,10 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Con
 
 		// Update LRU tracking on cache hit
 		p.mu.Lock()
-		p.lastAccessed[tenantID] = time.Now()
+		// Re-check connection still exists (may have been evicted between locks)
+		if _, still := p.connections[tenantID]; still {
+			p.lastAccessed[tenantID] = time.Now()
+		}
 		p.mu.Unlock()
 
 		return conn, nil
@@ -358,11 +362,14 @@ type Stats struct {
 }
 
 // buildRabbitMQURI builds RabbitMQ connection URI from config.
-// Credentials are URL-encoded to handle special characters (e.g., @, :, /).
+// Credentials and vhost are URL-encoded to handle special characters (e.g., @, :, /).
 func buildRabbitMQURI(cfg *core.RabbitMQConfig) string {
+	escapedVHost := url.QueryEscape(cfg.VHost)
+	escapedVHost = strings.ReplaceAll(escapedVHost, "+", "%20")
+
 	return fmt.Sprintf("amqp://%s:%s@%s:%d/%s",
 		url.QueryEscape(cfg.Username), url.QueryEscape(cfg.Password),
-		cfg.Host, cfg.Port, cfg.VHost)
+		cfg.Host, cfg.Port, escapedVHost)
 }
 
 // IsMultiTenant returns true if the manager is configured with a Tenant Manager client.

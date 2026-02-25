@@ -5,39 +5,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v3/commons/log"
 	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// mockLogger is a no-op implementation of log.Logger for unit tests.
-//
-//nolint:unused
-type mockLogger struct{}
-
-func (m *mockLogger) Info(_ ...any)                                    {}
-func (m *mockLogger) Infof(_ string, _ ...any)                         {}
-func (m *mockLogger) Infoln(_ ...any)                                  {}
-func (m *mockLogger) Error(_ ...any)                                   {}
-func (m *mockLogger) Errorf(_ string, _ ...any)                        {}
-func (m *mockLogger) Errorln(_ ...any)                                 {}
-func (m *mockLogger) Warn(_ ...any)                                    {}
-func (m *mockLogger) Warnf(_ string, _ ...any)                         {}
-func (m *mockLogger) Warnln(_ ...any)                                  {}
-func (m *mockLogger) Debug(_ ...any)                                   {}
-func (m *mockLogger) Debugf(_ string, _ ...any)                        {}
-func (m *mockLogger) Debugln(_ ...any)                                 {}
-func (m *mockLogger) Fatal(_ ...any)                                   {}
-func (m *mockLogger) Fatalf(_ string, _ ...any)                        {}
-func (m *mockLogger) Fatalln(_ ...any)                                 {}
-func (m *mockLogger) WithFields(_ ...any) log.Logger                   { return m }
-func (m *mockLogger) WithDefaultMessageTemplate(_ string) log.Logger   { return m }
-func (m *mockLogger) Sync() error                                      { return nil }
-
 func newTestClient() *client.Client {
-	return client.NewClient("http://localhost:8080", &mockLogger{})
+	return client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 }
 
 func TestNewManager(t *testing.T) {
@@ -125,7 +101,7 @@ func TestManager_EvictLRU(t *testing.T) {
 			t.Parallel()
 
 			opts := []Option{
-				WithLogger(&mockLogger{}),
+				WithLogger(testutil.NewMockLogger()),
 				WithMaxTenantPools(tt.maxConnections),
 			}
 			if tt.idleTimeout > 0 {
@@ -157,7 +133,7 @@ func TestManager_EvictLRU(t *testing.T) {
 
 			// Call evictLRU (caller must hold write lock)
 			manager.mu.Lock()
-			manager.evictLRU(&mockLogger{})
+			manager.evictLRU(testutil.NewMockLogger())
 			manager.mu.Unlock()
 
 			// Verify pool size
@@ -184,7 +160,7 @@ func TestManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 
 	c := newTestClient()
 	manager := NewManager(c, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 		WithMaxTenantPools(2),
 		WithIdleTimeout(5*time.Minute),
 	)
@@ -197,7 +173,7 @@ func TestManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 
 	// Try to evict - should not evict because all connections are active
 	manager.mu.Lock()
-	manager.evictLRU(&mockLogger{})
+	manager.evictLRU(testutil.NewMockLogger())
 	manager.mu.Unlock()
 
 	// Pool should remain at 2 (no eviction occurred)
@@ -252,7 +228,7 @@ func TestManager_CloseConnection_CleansUpLastAccessed(t *testing.T) {
 
 	c := newTestClient()
 	manager := NewManager(c, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 	)
 
 	// Pre-populate cache with a nil connection (avoids needing real AMQP)
@@ -327,7 +303,7 @@ func TestManager_Close_CleansUpLastAccessed(t *testing.T) {
 
 	c := newTestClient()
 	manager := NewManager(c, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 	)
 
 	// Pre-populate cache with nil connections
@@ -372,7 +348,7 @@ func TestBuildRabbitMQURI(t *testing.T) {
 				Password: "secret",
 				VHost:    "/",
 			},
-			expected: "amqp://admin:secret@rabbitmq.internal:5673//",
+			expected: "amqp://admin:secret@rabbitmq.internal:5673/%2F",
 		},
 	}
 

@@ -12,8 +12,8 @@ import (
 	"time"
 
 	libCommons "github.com/LerianStudio/lib-commons/v3/commons"
-	libLog "github.com/LerianStudio/lib-commons/v3/commons/log"
 	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/internal/testutil"
 	tmmongo "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/postgres"
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/rabbitmq"
@@ -23,86 +23,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// mockLogger is a no-op implementation of libLog.Logger for unit tests.
-// It discards all log output, allowing tests to focus on business logic.
-type mockLogger struct{}
-
-func (m *mockLogger) Info(_ ...any)                                    {}
-func (m *mockLogger) Infof(_ string, _ ...any)                         {}
-func (m *mockLogger) Infoln(_ ...any)                                  {}
-func (m *mockLogger) Error(_ ...any)                                   {}
-func (m *mockLogger) Errorf(_ string, _ ...any)                        {}
-func (m *mockLogger) Errorln(_ ...any)                                 {}
-func (m *mockLogger) Warn(_ ...any)                                    {}
-func (m *mockLogger) Warnf(_ string, _ ...any)                         {}
-func (m *mockLogger) Warnln(_ ...any)                                  {}
-func (m *mockLogger) Debug(_ ...any)                                   {}
-func (m *mockLogger) Debugf(_ string, _ ...any)                        {}
-func (m *mockLogger) Debugln(_ ...any)                                 {}
-func (m *mockLogger) Fatal(_ ...any)                                   {}
-func (m *mockLogger) Fatalf(_ string, _ ...any)                        {}
-func (m *mockLogger) Fatalln(_ ...any)                                 {}
-func (m *mockLogger) WithFields(_ ...any) libLog.Logger                { return m }
-func (m *mockLogger) WithDefaultMessageTemplate(_ string) libLog.Logger { return m }
-func (m *mockLogger) Sync() error                                       { return nil }
-
-// capturingLogger implements libLog.Logger and captures log messages for assertion.
-// This enables verifying log output content (e.g., connection_mode=lazy in AC-T3).
-type capturingLogger struct {
-	mu       sync.Mutex
-	messages []string
-}
-
-func (cl *capturingLogger) record(msg string) {
-	cl.mu.Lock()
-	defer cl.mu.Unlock()
-	cl.messages = append(cl.messages, msg)
-}
-
-func (cl *capturingLogger) getMessages() []string {
-	cl.mu.Lock()
-	defer cl.mu.Unlock()
-	copied := make([]string, len(cl.messages))
-	copy(copied, cl.messages)
-	return copied
-}
-
-func (cl *capturingLogger) containsSubstring(sub string) bool {
-	cl.mu.Lock()
-	defer cl.mu.Unlock()
-	for _, msg := range cl.messages {
-		if strings.Contains(msg, sub) {
-			return true
-		}
-	}
-	return false
-}
-
-func (cl *capturingLogger) Info(args ...any)                 { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Infof(format string, args ...any) { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *capturingLogger) Infoln(args ...any)               { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) Error(args ...any)                { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Errorf(format string, args ...any) {
-	cl.record(fmt.Sprintf(format, args...))
-}
-func (cl *capturingLogger) Errorln(args ...any)              { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) Warn(args ...any)                 { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Warnf(format string, args ...any) { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *capturingLogger) Warnln(args ...any)               { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) Debug(args ...any)                { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Debugf(format string, args ...any) {
-	cl.record(fmt.Sprintf(format, args...))
-}
-func (cl *capturingLogger) Debugln(args ...any) { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) Fatal(args ...any)   { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Fatalf(format string, args ...any) {
-	cl.record(fmt.Sprintf(format, args...))
-}
-func (cl *capturingLogger) Fatalln(args ...any)                               { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) WithFields(fields ...any) libLog.Logger            { return cl }
-func (cl *capturingLogger) WithDefaultMessageTemplate(s string) libLog.Logger { return cl }
-func (cl *capturingLogger) Sync() error                                       { return nil }
 
 // generateTenantIDs creates a slice of N tenant IDs for testing.
 func generateTenantIDs(n int) []string {
@@ -139,7 +59,7 @@ func setupMiniredis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) 
 // consumer goroutines spawned by ensureConsumerStarted do not panic on nil
 // dereference; they will receive connection errors instead.
 func dummyRabbitMQManager() *tmrabbitmq.Manager {
-	dummyClient := client.NewClient("http://127.0.0.1:0", &mockLogger{})
+	dummyClient := client.NewClient("http://127.0.0.1:0", testutil.NewMockLogger())
 	return tmrabbitmq.NewManager(dummyClient, "test-service")
 }
 
@@ -330,7 +250,7 @@ func TestMultiTenantConsumer_Run_LazyMode(t *testing.T) {
 				dummyRabbitMQManager(),
 				redisClient,
 				config,
-				&mockLogger{},
+				testutil.NewMockLogger(),
 			)
 
 			// Register a handler (to verify it is NOT consumed from during Run)
@@ -408,7 +328,7 @@ func TestMultiTenantConsumer_Run_SignatureUnchanged(t *testing.T) {
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			fn = consumer.Run
 			assert.NotNil(t, fn, "Run method must exist and match expected signature")
@@ -457,7 +377,7 @@ func TestMultiTenantConsumer_DiscoverTenants_ReuseFetchTenantIDs(t *testing.T) {
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			ctx := context.Background()
 
@@ -512,7 +432,7 @@ func TestMultiTenantConsumer_Run_StartupLog(t *testing.T) {
 				Service:         "test-service",
 			}
 
-			logger := &capturingLogger{}
+			logger := testutil.NewCapturingLogger()
 
 			consumer := NewMultiTenantConsumer(
 				dummyRabbitMQManager(),
@@ -530,9 +450,9 @@ func TestMultiTenantConsumer_Run_StartupLog(t *testing.T) {
 			assert.NoError(t, err, "Run() should return nil in lazy mode")
 
 			// Verify the startup log contains connection_mode=lazy
-			assert.True(t, logger.containsSubstring(tt.expectedLogPart),
+			assert.True(t, logger.ContainsSubstring(tt.expectedLogPart),
 				"startup log must contain %q, got messages: %v",
-				tt.expectedLogPart, logger.getMessages())
+				tt.expectedLogPart, logger.GetMessages())
 
 			cancel()
 			consumer.Close()
@@ -575,7 +495,7 @@ func TestMultiTenantConsumer_Run_BackgroundSyncStarts(t *testing.T) {
 				dummyRabbitMQManager(),
 				redisClient,
 				config,
-				&mockLogger{},
+				testutil.NewMockLogger(),
 			)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -657,7 +577,7 @@ func TestMultiTenantConsumer_Run_ReadinessWithinDeadline(t *testing.T) {
 				Service:         "test-service",
 			}
 
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, &mockLogger{})
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, testutil.NewMockLogger())
 
 			ctx, cancel := context.WithTimeout(context.Background(), readinessDeadline)
 			defer cancel()
@@ -717,7 +637,7 @@ func TestMultiTenantConsumer_Run_StartupTimeVariance(t *testing.T) {
 				Service:         "test-service",
 			}
 
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, &mockLogger{})
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, testutil.NewMockLogger())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -800,7 +720,7 @@ func TestMultiTenantConsumer_DiscoveryFailure_LogsWarning(t *testing.T) {
 				Service:         "test-service",
 			}
 
-			logger := &capturingLogger{}
+			logger := testutil.NewCapturingLogger()
 			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, logger)
 
 			// Set the capturing logger in context so NewTrackingFromContext returns it
@@ -814,9 +734,9 @@ func TestMultiTenantConsumer_DiscoveryFailure_LogsWarning(t *testing.T) {
 			assert.NoError(t, err, "Run() must return nil on discovery failure (soft failure)")
 
 			// Warning log must contain discovery failure message
-			assert.True(t, logger.containsSubstring(tt.expectedLogPart),
+			assert.True(t, logger.ContainsSubstring(tt.expectedLogPart),
 				"discovery failure must log warning containing %q, got: %v",
-				tt.expectedLogPart, logger.getMessages())
+				tt.expectedLogPart, logger.GetMessages())
 
 			cancel()
 			consumer.Close()
@@ -918,7 +838,7 @@ func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 
 			_, redisClient := setupMiniredis(t)
 
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, tt.config, &mockLogger{})
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, tt.config, testutil.NewMockLogger())
 
 			assert.NotNil(t, consumer, "consumer must not be nil")
 			assert.Equal(t, tt.expectedSync, consumer.config.SyncInterval)
@@ -980,7 +900,7 @@ func TestMultiTenantConsumer_Stats(t *testing.T) {
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			for _, q := range tt.registerQueues {
 				consumer.Register(q, func(ctx context.Context, delivery amqp.Delivery) error {
@@ -1025,7 +945,7 @@ func TestMultiTenantConsumer_Close(t *testing.T) {
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			// First close
 			err := consumer.Close()
@@ -1086,7 +1006,7 @@ func TestMultiTenantConsumer_SyncTenants_RemovesTenants(t *testing.T) {
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
 				Service:         "test-service",
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			ctx := context.Background()
 
@@ -1179,7 +1099,7 @@ func TestMultiTenantConsumer_SyncTenants_LazyMode(t *testing.T) {
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
 				Service:         "test-service",
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			// Register a handler so startTenantConsumer would have something to consume
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
@@ -1266,7 +1186,7 @@ func TestMultiTenantConsumer_SyncTenants_RemovalCleansKnownTenants(t *testing.T)
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
 				Service:         "test-service",
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			ctx := context.Background()
 
@@ -1348,7 +1268,7 @@ func TestMultiTenantConsumer_SyncTenants_SyncLoopContinuesOnError(t *testing.T) 
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
 				Service:         "test-service",
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -1402,7 +1322,7 @@ func TestMultiTenantConsumer_SyncTenants_ClosedConsumer(t *testing.T) {
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
 				Service:         "test-service",
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			// Close consumer first
 			consumer.Close()
@@ -1490,7 +1410,7 @@ func TestMultiTenantConsumer_FetchTenantIDs(t *testing.T) {
 				Service:         "test-service",
 			}
 
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, &mockLogger{})
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, testutil.NewMockLogger())
 
 			ids, err := consumer.fetchTenantIDs(context.Background())
 
@@ -1545,7 +1465,7 @@ func TestMultiTenantConsumer_Register(t *testing.T) {
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			for _, q := range tt.queueNames {
 				consumer.Register(q, func(ctx context.Context, delivery amqp.Delivery) error {
@@ -1687,7 +1607,7 @@ func TestMultiTenantConsumer_SyncTenants_FiltersInvalidIDs(t *testing.T) {
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
 				Service:         "test-service",
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			ctx := context.Background()
 			err := consumer.syncTenants(ctx)
@@ -1750,7 +1670,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_SpawnsExactlyOnce(t *testing.
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			// Register a handler so startTenantConsumer has something to work with
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
@@ -1824,7 +1744,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_NoopWhenActive(t *testing.T) 
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
 				return nil
@@ -1886,7 +1806,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_SkipsWhenClosed(t *testing.T)
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
 				return nil
@@ -1937,7 +1857,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_MultipleTenants(t *testing.T)
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
 				return nil
@@ -2004,7 +1924,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_PublicAPI(t *testing.T) {
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
 				return nil
@@ -2119,7 +2039,7 @@ func TestMultiTenantConsumer_RetryState(t *testing.T) {
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			state := consumer.getRetryState(tt.tenantID)
 
@@ -2163,7 +2083,7 @@ func TestMultiTenantConsumer_RetryStateIsolation(t *testing.T) {
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			// Tenant A: 5 failures (degraded)
 			stateA := consumer.getRetryState("tenant-a")
@@ -2264,7 +2184,7 @@ func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
 				Service:         "test-service",
-			}, &mockLogger{})
+			}, testutil.NewMockLogger())
 
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
 				return nil
@@ -2398,7 +2318,7 @@ func TestMultiTenantConsumer_StructuredLogEvents(t *testing.T) {
 			mr, redisClient := setupMiniredis(t)
 			mr.SAdd(testActiveTenantsKey, "tenant-log-test")
 
-			logger := &capturingLogger{}
+			logger := testutil.NewCapturingLogger()
 
 			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
@@ -2431,9 +2351,9 @@ func TestMultiTenantConsumer_StructuredLogEvents(t *testing.T) {
 				})
 			}
 
-			assert.True(t, logger.containsSubstring(tt.expectedLogPart),
+			assert.True(t, logger.ContainsSubstring(tt.expectedLogPart),
 				"operation %q should produce log containing %q, got: %v",
-				tt.operation, tt.expectedLogPart, logger.getMessages())
+				tt.operation, tt.expectedLogPart, logger.GetMessages())
 
 			cancel()
 			consumer.Close()
@@ -2485,7 +2405,7 @@ func BenchmarkMultiTenantConsumer_Run_Startup(b *testing.B) {
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, &mockLogger{})
+				consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, testutil.NewMockLogger())
 
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				err := consumer.Run(ctx)
@@ -2625,7 +2545,7 @@ func TestMultiTenantConsumer_FetchTenantIDs_EnvironmentAwareKey(t *testing.T) {
 				Service:         tt.service,
 			}
 
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, &mockLogger{})
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, testutil.NewMockLogger())
 
 			ids, err := consumer.fetchTenantIDs(context.Background())
 			assert.NoError(t, err, "fetchTenantIDs should not return error")
@@ -2704,7 +2624,7 @@ func TestMultiTenantConsumer_WithOptions(t *testing.T) {
 				SyncInterval:    30 * time.Second,
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
-			}, &mockLogger{}, opts...)
+			}, testutil.NewMockLogger(), opts...)
 
 			if tt.expectPostgres {
 				assert.NotNil(t, consumer.postgres, "postgres manager should be set")
@@ -2766,7 +2686,7 @@ func TestMultiTenantConsumer_SyncTenants_ClosesConnectionsOnRemoval(t *testing.T
 			mr, redisClient := setupMiniredis(t)
 
 			// Use a capturing logger to verify close log messages
-			logger := &capturingLogger{}
+			logger := testutil.NewCapturingLogger()
 
 			config := MultiTenantConfig{
 				SyncInterval:    30 * time.Second,
@@ -2829,7 +2749,7 @@ func TestMultiTenantConsumer_SyncTenants_ClosesConnectionsOnRemoval(t *testing.T
 
 			// Verify log messages contain removal information for each removed tenant
 			for _, id := range tt.removedTenants {
-				assert.True(t, logger.containsSubstring("stopping consumer for removed tenant: "+id),
+				assert.True(t, logger.ContainsSubstring("stopping consumer for removed tenant: "+id),
 					"should log stopping consumer for removed tenant %q", id)
 			}
 		})
@@ -2847,7 +2767,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 	t.Run("skips_when_no_managers_configured", func(t *testing.T) {
 		t.Parallel()
 
-		logger := &capturingLogger{}
+		logger := testutil.NewCapturingLogger()
 		config := MultiTenantConfig{
 			Service:      "ledger",
 			SyncInterval: 30 * time.Second,
@@ -2861,14 +2781,14 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 		// Should return immediately without logging
 		consumer.revalidateConnectionSettings(ctx)
 
-		assert.False(t, logger.containsSubstring("revalidated connection settings"),
+		assert.False(t, logger.ContainsSubstring("revalidated connection settings"),
 			"should not log revalidation when no managers are configured")
 	})
 
 	t.Run("skips_when_no_pmClient_configured", func(t *testing.T) {
 		t.Parallel()
 
-		logger := &capturingLogger{}
+		logger := testutil.NewCapturingLogger()
 		pgManager := tmpostgres.NewManager(nil, "ledger")
 
 		config := MultiTenantConfig{
@@ -2887,7 +2807,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 
 		consumer.revalidateConnectionSettings(ctx)
 
-		assert.False(t, logger.containsSubstring("revalidated connection settings"),
+		assert.False(t, logger.ContainsSubstring("revalidated connection settings"),
 			"should not log revalidation when pmClient is nil")
 	})
 
@@ -2900,7 +2820,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 		}))
 		defer server.Close()
 
-		logger := &capturingLogger{}
+		logger := testutil.NewCapturingLogger()
 		tmClient := client.NewClient(server.URL, logger)
 		pgManager := tmpostgres.NewManager(tmClient, "ledger")
 
@@ -2919,7 +2839,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 
 		consumer.revalidateConnectionSettings(ctx)
 
-		assert.False(t, logger.containsSubstring("revalidated connection settings"),
+		assert.False(t, logger.ContainsSubstring("revalidated connection settings"),
 			"should not log revalidation when no active tenants")
 	})
 
@@ -2945,7 +2865,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 		}))
 		defer server.Close()
 
-		logger := &capturingLogger{}
+		logger := testutil.NewCapturingLogger()
 		tmClient := client.NewClient(server.URL, logger)
 
 		pgManager := tmpostgres.NewManager(tmClient, "ledger",
@@ -2977,7 +2897,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 		// ApplyConnectionSettings was called but since there is no actual connection
 		// in the pgManager's internal map, it is effectively a no-op for the settings.
 		// We verify that revalidation was attempted by checking the log message.
-		assert.True(t, logger.containsSubstring("revalidated connection settings"),
+		assert.True(t, logger.ContainsSubstring("revalidated connection settings"),
 			"should log revalidation summary")
 	})
 
@@ -3008,7 +2928,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 		}))
 		defer server.Close()
 
-		logger := &capturingLogger{}
+		logger := testutil.NewCapturingLogger()
 		tmClient := client.NewClient(server.URL, logger)
 		pgManager := tmpostgres.NewManager(tmClient, "ledger",
 			tmpostgres.WithModule("onboarding"),
@@ -3039,7 +2959,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 		consumer.revalidateConnectionSettings(ctx)
 
 		// Should log warning about failed tenant
-		assert.True(t, logger.containsSubstring("failed to fetch config for tenant tenant-fail"),
+		assert.True(t, logger.ContainsSubstring("failed to fetch config for tenant tenant-fail"),
 			"should log warning about fetch failure")
 	})
 }

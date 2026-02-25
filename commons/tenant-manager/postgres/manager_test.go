@@ -5,90 +5,20 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	libLog "github.com/LerianStudio/lib-commons/v3/commons/log"
 	libPostgres "github.com/LerianStudio/lib-commons/v3/commons/postgres"
 	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/internal/testutil"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// mockLogger is a no-op implementation of libLog.Logger for unit tests.
-// It discards all log output, allowing tests to focus on business logic.
-type mockLogger struct{}
-
-func (m *mockLogger) Info(_ ...any)                                    {}
-func (m *mockLogger) Infof(_ string, _ ...any)                         {}
-func (m *mockLogger) Infoln(_ ...any)                                  {}
-func (m *mockLogger) Error(_ ...any)                                   {}
-func (m *mockLogger) Errorf(_ string, _ ...any)                        {}
-func (m *mockLogger) Errorln(_ ...any)                                 {}
-func (m *mockLogger) Warn(_ ...any)                                    {}
-func (m *mockLogger) Warnf(_ string, _ ...any)                         {}
-func (m *mockLogger) Warnln(_ ...any)                                  {}
-func (m *mockLogger) Debug(_ ...any)                                   {}
-func (m *mockLogger) Debugf(_ string, _ ...any)                        {}
-func (m *mockLogger) Debugln(_ ...any)                                 {}
-func (m *mockLogger) Fatal(_ ...any)                                   {}
-func (m *mockLogger) Fatalf(_ string, _ ...any)                        {}
-func (m *mockLogger) Fatalln(_ ...any)                                 {}
-func (m *mockLogger) WithFields(_ ...any) libLog.Logger                { return m }
-func (m *mockLogger) WithDefaultMessageTemplate(_ string) libLog.Logger { return m }
-func (m *mockLogger) Sync() error                                       { return nil }
-
-// capturingLogger captures log messages for test assertions.
-type capturingLogger struct {
-	mu       sync.Mutex
-	messages []string
-}
-
-func (cl *capturingLogger) record(msg string) {
-	cl.mu.Lock()
-	defer cl.mu.Unlock()
-	cl.messages = append(cl.messages, msg)
-}
-
-func (cl *capturingLogger) containsSubstring(sub string) bool {
-	cl.mu.Lock()
-	defer cl.mu.Unlock()
-
-	for _, msg := range cl.messages {
-		if strings.Contains(msg, sub) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func (cl *capturingLogger) Info(args ...any)                  { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Infof(format string, args ...any)  { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *capturingLogger) Infoln(args ...any)                { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) Error(args ...any)                 { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Errorf(format string, args ...any) { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *capturingLogger) Errorln(args ...any)               { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) Warn(args ...any)                  { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Warnf(format string, args ...any)  { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *capturingLogger) Warnln(args ...any)                { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) Debug(args ...any)                 { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Debugf(format string, args ...any) { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *capturingLogger) Debugln(args ...any)               { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) Fatal(args ...any)                 { cl.record(fmt.Sprint(args...)) }
-func (cl *capturingLogger) Fatalf(format string, args ...any) { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *capturingLogger) Fatalln(args ...any)               { cl.record(fmt.Sprintln(args...)) }
-func (cl *capturingLogger) WithFields(_ ...any) libLog.Logger                { return cl }
-func (cl *capturingLogger) WithDefaultMessageTemplate(_ string) libLog.Logger { return cl }
-func (cl *capturingLogger) Sync() error                                       { return nil }
 
 // pingableDB implements dbresolver.DB with configurable PingContext behavior
 // for testing connection health check logic.
@@ -148,7 +78,7 @@ func (t *trackingDB) MaxIdleConns() int32   { return atomic.LoadInt32(&t.maxIdle
 
 func TestNewManager(t *testing.T) {
 	t.Run("creates manager with client and service", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", &mockLogger{})
+		c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 		manager := NewManager(c, "ledger")
 
 		assert.NotNil(t, manager)
@@ -158,7 +88,7 @@ func TestNewManager(t *testing.T) {
 }
 
 func TestManager_GetConnection_NoTenantID(t *testing.T) {
-	c := client.NewClient("http://localhost:8080", &mockLogger{})
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 	manager := NewManager(c, "ledger")
 
 	_, err := manager.GetConnection(context.Background(), "")
@@ -168,7 +98,7 @@ func TestManager_GetConnection_NoTenantID(t *testing.T) {
 }
 
 func TestManager_Close(t *testing.T) {
-	c := client.NewClient("http://localhost:8080", &mockLogger{})
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 	manager := NewManager(c, "ledger")
 
 	err := manager.Close(context.Background())
@@ -178,7 +108,7 @@ func TestManager_Close(t *testing.T) {
 }
 
 func TestManager_GetConnection_ManagerClosed(t *testing.T) {
-	c := client.NewClient("http://localhost:8080", &mockLogger{})
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 	manager := NewManager(c, "ledger")
 	manager.Close(context.Background())
 
@@ -393,7 +323,7 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 
 func TestManager_GetConnection_HealthyCache(t *testing.T) {
 	t.Run("returns cached connection when ping succeeds", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", &mockLogger{})
+		c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 		manager := NewManager(c, "ledger")
 
 		// Pre-populate cache with a healthy connection
@@ -421,8 +351,8 @@ func TestManager_GetConnection_UnhealthyCacheEvicts(t *testing.T) {
 		}))
 		defer server.Close()
 
-		tmClient := client.NewClient(server.URL, &mockLogger{})
-		manager := NewManager(tmClient, "ledger", WithLogger(&mockLogger{}))
+		tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
+		manager := NewManager(tmClient, "ledger", WithLogger(testutil.NewMockLogger()))
 
 		// Pre-populate cache with an unhealthy connection (simulates auth failure after credential rotation)
 		unhealthyDB := &pingableDB{pingErr: errors.New("FATAL: password authentication failed (SQLSTATE 28P01)")}
@@ -461,8 +391,8 @@ func TestManager_GetConnection_SuspendedTenant(t *testing.T) {
 		}))
 		defer server.Close()
 
-		tmClient := client.NewClient(server.URL, &mockLogger{})
-		manager := NewManager(tmClient, "ledger", WithLogger(&mockLogger{}))
+		tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
+		manager := NewManager(tmClient, "ledger", WithLogger(testutil.NewMockLogger()))
 
 		_, err := manager.GetConnection(context.Background(), "tenant-123")
 
@@ -478,7 +408,7 @@ func TestManager_GetConnection_SuspendedTenant(t *testing.T) {
 
 func TestManager_GetConnection_NilConnectionDB(t *testing.T) {
 	t.Run("returns cached connection when ConnectionDB is nil without ping", func(t *testing.T) {
-		c := client.NewClient("http://localhost:8080", &mockLogger{})
+		c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 		manager := NewManager(c, "ledger")
 
 		// Pre-populate cache with a connection that has nil ConnectionDB
@@ -570,14 +500,14 @@ func TestManager_EvictLRU(t *testing.T) {
 			t.Parallel()
 
 			opts := []Option{
-				WithLogger(&mockLogger{}),
+				WithLogger(testutil.NewMockLogger()),
 				WithMaxTenantPools(tt.maxConnections),
 			}
 			if tt.idleTimeout > 0 {
 				opts = append(opts, WithIdleTimeout(tt.idleTimeout))
 			}
 
-			c := client.NewClient("http://localhost:8080", &mockLogger{})
+			c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 			manager := NewManager(c, "ledger", opts...)
 
 			// Pre-populate pool with connections
@@ -615,7 +545,7 @@ func TestManager_EvictLRU(t *testing.T) {
 
 			// Call evictLRU (caller must hold write lock)
 			manager.mu.Lock()
-			manager.evictLRU(context.Background(), &mockLogger{})
+			manager.evictLRU(context.Background(), testutil.NewMockLogger())
 			manager.mu.Unlock()
 
 			// Verify pool size
@@ -640,9 +570,9 @@ func TestManager_EvictLRU(t *testing.T) {
 func TestManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 	t.Parallel()
 
-	c := client.NewClient("http://localhost:8080", &mockLogger{})
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 	manager := NewManager(c, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 		WithMaxTenantPools(2),
 		WithIdleTimeout(5*time.Minute),
 	)
@@ -660,7 +590,7 @@ func TestManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 
 	// Try to evict - should not evict because all connections are active
 	manager.mu.Lock()
-	manager.evictLRU(context.Background(), &mockLogger{})
+	manager.evictLRU(context.Background(), testutil.NewMockLogger())
 	manager.mu.Unlock()
 
 	// Pool should remain at 2 (no eviction occurred)
@@ -705,7 +635,7 @@ func TestManager_WithIdleTimeout_Option(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			c := client.NewClient("http://localhost:8080", &mockLogger{})
+			c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 			manager := NewManager(c, "ledger",
 				WithIdleTimeout(tt.idleTimeout),
 			)
@@ -718,9 +648,9 @@ func TestManager_WithIdleTimeout_Option(t *testing.T) {
 func TestManager_LRU_LastAccessedUpdatedOnCacheHit(t *testing.T) {
 	t.Parallel()
 
-	c := client.NewClient("http://localhost:8080", &mockLogger{})
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 	manager := NewManager(c, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 		WithMaxTenantPools(5),
 	)
 
@@ -755,9 +685,9 @@ func TestManager_LRU_LastAccessedUpdatedOnCacheHit(t *testing.T) {
 func TestManager_CloseConnection_CleansUpLastAccessed(t *testing.T) {
 	t.Parallel()
 
-	c := client.NewClient("http://localhost:8080", &mockLogger{})
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 	manager := NewManager(c, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 	)
 
 	// Pre-populate cache
@@ -808,7 +738,7 @@ func TestManager_WithMaxTenantPools_Option(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			c := client.NewClient("http://localhost:8080", &mockLogger{})
+			c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 			manager := NewManager(c, "ledger",
 				WithMaxTenantPools(tt.maxConnections),
 			)
@@ -821,7 +751,7 @@ func TestManager_WithMaxTenantPools_Option(t *testing.T) {
 func TestManager_Stats_IncludesMaxConnections(t *testing.T) {
 	t.Parallel()
 
-	c := client.NewClient("http://localhost:8080", &mockLogger{})
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 	manager := NewManager(c, "ledger",
 		WithMaxTenantPools(50),
 	)
@@ -868,7 +798,7 @@ func TestManager_WithSettingsCheckInterval_Option(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			c := client.NewClient("http://localhost:8080", &mockLogger{})
+			c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 			manager := NewManager(c, "ledger",
 				WithSettingsCheckInterval(tt.interval),
 			)
@@ -881,7 +811,7 @@ func TestManager_WithSettingsCheckInterval_Option(t *testing.T) {
 func TestManager_DefaultSettingsCheckInterval(t *testing.T) {
 	t.Parallel()
 
-	c := client.NewClient("http://localhost:8080", &mockLogger{})
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 	manager := NewManager(c, "ledger")
 
 	assert.Equal(t, defaultSettingsCheckInterval, manager.settingsCheckInterval,
@@ -913,9 +843,9 @@ func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmClient := client.NewClient(server.URL, &mockLogger{})
+	tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
 	manager := NewManager(tmClient, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		// Use a very short interval so the test triggers revalidation immediately
 		WithSettingsCheckInterval(1*time.Millisecond),
@@ -970,9 +900,9 @@ func TestManager_GetConnection_DoesNotRevalidateBeforeInterval(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmClient := client.NewClient(server.URL, &mockLogger{})
+	tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
 	manager := NewManager(tmClient, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		// Use a very long interval so revalidation does NOT trigger
 		WithSettingsCheckInterval(1*time.Hour),
@@ -1016,9 +946,9 @@ func TestManager_GetConnection_FailedRevalidationDoesNotBreakConnection(t *testi
 	}))
 	defer server.Close()
 
-	tmClient := client.NewClient(server.URL, &mockLogger{})
+	tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
 	manager := NewManager(tmClient, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		WithSettingsCheckInterval(1*time.Millisecond),
 	)
@@ -1052,9 +982,9 @@ func TestManager_GetConnection_FailedRevalidationDoesNotBreakConnection(t *testi
 func TestManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
 	t.Parallel()
 
-	c := client.NewClient("http://localhost:8080", &mockLogger{})
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 	manager := NewManager(c, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 	)
 
 	// Pre-populate cache
@@ -1086,9 +1016,9 @@ func TestManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
 func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
 	t.Parallel()
 
-	c := client.NewClient("http://localhost:8080", &mockLogger{})
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 	manager := NewManager(c, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 	)
 
 	// Pre-populate cache with multiple tenants
@@ -1115,10 +1045,10 @@ func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
 func TestManager_ApplyConnectionSettings_LogsValues(t *testing.T) {
 	t.Parallel()
 
-	c := client.NewClient("http://localhost:8080", &mockLogger{})
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 
 	// Use a capturing logger to verify that ApplyConnectionSettings logs when it applies values
-	capLogger := &capturingLogger{}
+	capLogger := testutil.NewCapturingLogger()
 	manager := NewManager(c, "ledger",
 		WithModule("onboarding"),
 		WithLogger(capLogger),
@@ -1146,7 +1076,7 @@ func TestManager_ApplyConnectionSettings_LogsValues(t *testing.T) {
 
 	assert.Equal(t, int32(30), tDB.MaxOpenConns())
 	assert.Equal(t, int32(10), tDB.MaxIdleConns())
-	assert.True(t, capLogger.containsSubstring("applying connection settings"),
+	assert.True(t, capLogger.ContainsSubstring("applying connection settings"),
 		"ApplyConnectionSettings should log when applying values")
 }
 
@@ -1171,9 +1101,9 @@ func TestManager_GetConnection_DisabledRevalidation_WithZero(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmClient := client.NewClient(server.URL, &mockLogger{})
+	tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
 	manager := NewManager(tmClient, "ledger",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		// Disable revalidation with zero duration
 		WithSettingsCheckInterval(0),
@@ -1231,9 +1161,9 @@ func TestManager_GetConnection_DisabledRevalidation_WithNegative(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmClient := client.NewClient(server.URL, &mockLogger{})
+	tmClient := client.NewClient(server.URL, testutil.NewMockLogger())
 	manager := NewManager(tmClient, "payment",
-		WithLogger(&mockLogger{}),
+		WithLogger(testutil.NewMockLogger()),
 		WithModule("payment"),
 		// Disable revalidation with negative duration
 		WithSettingsCheckInterval(-5*time.Second),
@@ -1393,10 +1323,10 @@ func TestManager_ApplyConnectionSettings(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			c := client.NewClient("http://localhost:8080", &mockLogger{})
+			c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 			manager := NewManager(c, "ledger",
 				WithModule(tt.module),
-				WithLogger(&mockLogger{}),
+				WithLogger(testutil.NewMockLogger()),
 			)
 
 			tDB := &trackingDB{}
@@ -1430,10 +1360,11 @@ func TestManager_ApplyConnectionSettings(t *testing.T) {
 func TestManager_Stats_ActiveConnections(t *testing.T) {
 	t.Parallel()
 
-	c := client.NewClient("http://localhost:8080", &mockLogger{})
+	c := client.NewClient("http://localhost:8080", testutil.NewMockLogger())
 	manager := NewManager(c, "ledger")
 
-	// Pre-populate with connections
+	// Pre-populate with connections and mark them as recently accessed
+	now := time.Now()
 	for _, id := range []string{"tenant-1", "tenant-2", "tenant-3"} {
 		db := &pingableDB{}
 		var dbIface dbresolver.DB = db
@@ -1441,6 +1372,7 @@ func TestManager_Stats_ActiveConnections(t *testing.T) {
 		manager.connections[id] = &libPostgres.PostgresConnection{
 			ConnectionDB: &dbIface,
 		}
+		manager.lastAccessed[id] = now
 	}
 
 	stats := manager.Stats()
