@@ -189,9 +189,20 @@ func TestModuleConnectionIsolationGeneric(t *testing.T) {
 	})
 }
 
-func TestContextWithTenantMongo(t *testing.T) {
+func TestGetMongoFromContext(t *testing.T) {
 	t.Run("returns nil when no mongo in context", func(t *testing.T) {
 		ctx := context.Background()
+
+		db := GetMongoFromContext(ctx)
+
+		assert.Nil(t, db)
+	})
+
+	t.Run("returns nil for nil mongo database stored in context", func(t *testing.T) {
+		ctx := context.Background()
+
+		var nilDB *mongo.Database
+		ctx = ContextWithTenantMongo(ctx, nilDB)
 
 		db := GetMongoFromContext(ctx)
 
