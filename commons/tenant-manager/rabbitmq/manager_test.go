@@ -1,17 +1,49 @@
-package tenantmanager
+package rabbitmq
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v3/commons/log"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestNewRabbitMQManager(t *testing.T) {
+// mockLogger is a no-op implementation of log.Logger for unit tests.
+//
+//nolint:unused
+type mockLogger struct{}
+
+func (m *mockLogger) Info(_ ...any)                                    {}
+func (m *mockLogger) Infof(_ string, _ ...any)                         {}
+func (m *mockLogger) Infoln(_ ...any)                                  {}
+func (m *mockLogger) Error(_ ...any)                                   {}
+func (m *mockLogger) Errorf(_ string, _ ...any)                        {}
+func (m *mockLogger) Errorln(_ ...any)                                 {}
+func (m *mockLogger) Warn(_ ...any)                                    {}
+func (m *mockLogger) Warnf(_ string, _ ...any)                         {}
+func (m *mockLogger) Warnln(_ ...any)                                  {}
+func (m *mockLogger) Debug(_ ...any)                                   {}
+func (m *mockLogger) Debugf(_ string, _ ...any)                        {}
+func (m *mockLogger) Debugln(_ ...any)                                 {}
+func (m *mockLogger) Fatal(_ ...any)                                   {}
+func (m *mockLogger) Fatalf(_ string, _ ...any)                        {}
+func (m *mockLogger) Fatalln(_ ...any)                                 {}
+func (m *mockLogger) WithFields(_ ...any) log.Logger                   { return m }
+func (m *mockLogger) WithDefaultMessageTemplate(_ string) log.Logger   { return m }
+func (m *mockLogger) Sync() error                                      { return nil }
+
+func newTestClient() *client.Client {
+	return client.NewClient("http://localhost:8080", &mockLogger{})
+}
+
+func TestNewManager(t *testing.T) {
 	t.Run("creates manager with client and service", func(t *testing.T) {
-		client := &Client{baseURL: "http://localhost:8080"}
-		manager := NewRabbitMQManager(client, "ledger")
+		c := newTestClient()
+		manager := NewManager(c, "ledger")
 
 		assert.NotNil(t, manager)
 		assert.Equal(t, "ledger", manager.service)
@@ -20,7 +52,7 @@ func TestNewRabbitMQManager(t *testing.T) {
 	})
 }
 
-func TestRabbitMQManager_EvictLRU(t *testing.T) {
+func TestManager_EvictLRU(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -92,16 +124,16 @@ func TestRabbitMQManager_EvictLRU(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			opts := []RabbitMQOption{
-				WithRabbitMQLogger(&mockLogger{}),
-				WithRabbitMQMaxTenantPools(tt.maxConnections),
+			opts := []Option{
+				WithLogger(&mockLogger{}),
+				WithMaxTenantPools(tt.maxConnections),
 			}
 			if tt.idleTimeout > 0 {
-				opts = append(opts, WithRabbitMQIdleTimeout(tt.idleTimeout))
+				opts = append(opts, WithIdleTimeout(tt.idleTimeout))
 			}
 
-			client := &Client{baseURL: "http://localhost:8080"}
-			manager := NewRabbitMQManager(client, "ledger", opts...)
+			c := newTestClient()
+			manager := NewManager(c, "ledger", opts...)
 
 			// Pre-populate pool with nil connections (cannot create real amqp.Connection in unit test)
 			// evictLRU checks conn != nil && !conn.IsClosed() before closing,
@@ -147,14 +179,14 @@ func TestRabbitMQManager_EvictLRU(t *testing.T) {
 	}
 }
 
-func TestRabbitMQManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
+func TestManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 	t.Parallel()
 
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewRabbitMQManager(client, "ledger",
-		WithRabbitMQLogger(&mockLogger{}),
-		WithRabbitMQMaxTenantPools(2),
-		WithRabbitMQIdleTimeout(5*time.Minute),
+	c := newTestClient()
+	manager := NewManager(c, "ledger",
+		WithLogger(&mockLogger{}),
+		WithMaxTenantPools(2),
+		WithIdleTimeout(5*time.Minute),
 	)
 
 	// Pre-populate with 2 nil connections, both accessed recently (within idle timeout)
@@ -180,7 +212,7 @@ func TestRabbitMQManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 		"pool should grow beyond soft limit when all connections are active")
 }
 
-func TestRabbitMQManager_WithRabbitMQIdleTimeout_Option(t *testing.T) {
+func TestManager_WithIdleTimeout_Option(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -205,9 +237,9 @@ func TestRabbitMQManager_WithRabbitMQIdleTimeout_Option(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client := &Client{baseURL: "http://localhost:8080"}
-			manager := NewRabbitMQManager(client, "ledger",
-				WithRabbitMQIdleTimeout(tt.idleTimeout),
+			c := newTestClient()
+			manager := NewManager(c, "ledger",
+				WithIdleTimeout(tt.idleTimeout),
 			)
 
 			assert.Equal(t, tt.expectedTimeout, manager.idleTimeout)
@@ -215,12 +247,12 @@ func TestRabbitMQManager_WithRabbitMQIdleTimeout_Option(t *testing.T) {
 	}
 }
 
-func TestRabbitMQManager_CloseConnection_CleansUpLastAccessed(t *testing.T) {
+func TestManager_CloseConnection_CleansUpLastAccessed(t *testing.T) {
 	t.Parallel()
 
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewRabbitMQManager(client, "ledger",
-		WithRabbitMQLogger(&mockLogger{}),
+	c := newTestClient()
+	manager := NewManager(c, "ledger",
+		WithLogger(&mockLogger{}),
 	)
 
 	// Pre-populate cache with a nil connection (avoids needing real AMQP)
@@ -228,7 +260,7 @@ func TestRabbitMQManager_CloseConnection_CleansUpLastAccessed(t *testing.T) {
 	manager.lastAccessed["tenant-123"] = time.Now()
 
 	// Close the specific tenant connection
-	err := manager.CloseConnection("tenant-123")
+	err := manager.CloseConnection(context.Background(), "tenant-123")
 
 	require.NoError(t, err)
 
@@ -241,7 +273,7 @@ func TestRabbitMQManager_CloseConnection_CleansUpLastAccessed(t *testing.T) {
 	assert.False(t, accessExists, "lastAccessed should be removed after CloseConnection")
 }
 
-func TestRabbitMQManager_WithRabbitMQMaxTenantPools_Option(t *testing.T) {
+func TestManager_WithMaxTenantPools_Option(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -266,9 +298,9 @@ func TestRabbitMQManager_WithRabbitMQMaxTenantPools_Option(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client := &Client{baseURL: "http://localhost:8080"}
-			manager := NewRabbitMQManager(client, "ledger",
-				WithRabbitMQMaxTenantPools(tt.maxConnections),
+			c := newTestClient()
+			manager := NewManager(c, "ledger",
+				WithMaxTenantPools(tt.maxConnections),
 			)
 
 			assert.Equal(t, tt.expectedMax, manager.maxConnections)
@@ -276,12 +308,12 @@ func TestRabbitMQManager_WithRabbitMQMaxTenantPools_Option(t *testing.T) {
 	}
 }
 
-func TestRabbitMQManager_Stats_IncludesMaxConnections(t *testing.T) {
+func TestManager_Stats_IncludesMaxConnections(t *testing.T) {
 	t.Parallel()
 
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewRabbitMQManager(client, "ledger",
-		WithRabbitMQMaxTenantPools(50),
+	c := newTestClient()
+	manager := NewManager(c, "ledger",
+		WithMaxTenantPools(50),
 	)
 
 	stats := manager.Stats()
@@ -290,12 +322,12 @@ func TestRabbitMQManager_Stats_IncludesMaxConnections(t *testing.T) {
 	assert.Equal(t, 0, stats.TotalConnections)
 }
 
-func TestRabbitMQManager_Close_CleansUpLastAccessed(t *testing.T) {
+func TestManager_Close_CleansUpLastAccessed(t *testing.T) {
 	t.Parallel()
 
-	client := &Client{baseURL: "http://localhost:8080"}
-	manager := NewRabbitMQManager(client, "ledger",
-		WithRabbitMQLogger(&mockLogger{}),
+	c := newTestClient()
+	manager := NewManager(c, "ledger",
+		WithLogger(&mockLogger{}),
 	)
 
 	// Pre-populate cache with nil connections
@@ -304,7 +336,7 @@ func TestRabbitMQManager_Close_CleansUpLastAccessed(t *testing.T) {
 	manager.connections["tenant-2"] = nil
 	manager.lastAccessed["tenant-2"] = time.Now()
 
-	err := manager.Close()
+	err := manager.Close(context.Background())
 
 	require.NoError(t, err)
 	assert.True(t, manager.closed)
@@ -317,12 +349,12 @@ func TestBuildRabbitMQURI(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		cfg      *RabbitMQConfig
+		cfg      *core.RabbitMQConfig
 		expected string
 	}{
 		{
 			name: "builds URI with all fields",
-			cfg: &RabbitMQConfig{
+			cfg: &core.RabbitMQConfig{
 				Host:     "localhost",
 				Port:     5672,
 				Username: "guest",
@@ -333,7 +365,7 @@ func TestBuildRabbitMQURI(t *testing.T) {
 		},
 		{
 			name: "builds URI with custom port",
-			cfg: &RabbitMQConfig{
+			cfg: &core.RabbitMQConfig{
 				Host:     "rabbitmq.internal",
 				Port:     5673,
 				Username: "admin",
@@ -353,4 +385,16 @@ func TestBuildRabbitMQURI(t *testing.T) {
 			assert.Equal(t, tt.expected, uri)
 		})
 	}
+}
+
+func TestManager_ApplyConnectionSettings_IsNoOp(t *testing.T) {
+	t.Parallel()
+
+	c := newTestClient()
+	manager := NewManager(c, "ledger")
+
+	// Should not panic or error - it's a no-op
+	manager.ApplyConnectionSettings("tenant-123", &core.TenantConfig{
+		ID: "tenant-123",
+	})
 }

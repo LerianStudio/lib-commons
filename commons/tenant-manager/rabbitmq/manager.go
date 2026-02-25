@@ -1,4 +1,4 @@
-package tenantmanager
+package rabbitmq
 
 import (
 	"context"
@@ -11,18 +11,24 @@ import (
 	libCommons "github.com/LerianStudio/lib-commons/v3/commons"
 	"github.com/LerianStudio/lib-commons/v3/commons/log"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// RabbitMQManager manages RabbitMQ connections per tenant.
+// defaultIdleTimeout is the default duration before a tenant connection becomes
+// eligible for eviction when the pool exceeds the soft limit.
+const defaultIdleTimeout = 5 * time.Minute
+
+// Manager manages RabbitMQ connections per tenant.
 // Each tenant has a dedicated vhost, user, and credentials stored in Tenant Manager.
 // When maxConnections is set (> 0), the manager uses LRU eviction with an idle
 // timeout as a soft limit. Connections idle longer than the timeout are eligible
 // for eviction when the pool exceeds maxConnections. If all connections are active
 // (used within the idle timeout), the pool grows beyond the soft limit and
 // naturally shrinks back as tenants become idle.
-type RabbitMQManager struct {
-	client  *Client
+type Manager struct {
+	client  *client.Client
 	service string
 	module  string
 	logger  log.Logger
@@ -35,56 +41,53 @@ type RabbitMQManager struct {
 	lastAccessed   map[string]time.Time // LRU tracking per tenant
 }
 
-// RabbitMQOption configures a RabbitMQManager.
-type RabbitMQOption func(*RabbitMQManager)
+// Option configures a Manager.
+type Option func(*Manager)
 
-// WithRabbitMQModule sets the module name for the RabbitMQ manager.
-func WithRabbitMQModule(module string) RabbitMQOption {
-	return func(p *RabbitMQManager) {
+// WithModule sets the module name for the RabbitMQ manager.
+func WithModule(module string) Option {
+	return func(p *Manager) {
 		p.module = module
 	}
 }
 
-// WithRabbitMQLogger sets the logger for the RabbitMQ manager.
-func WithRabbitMQLogger(logger log.Logger) RabbitMQOption {
-	return func(p *RabbitMQManager) {
+// WithLogger sets the logger for the RabbitMQ manager.
+func WithLogger(logger log.Logger) Option {
+	return func(p *Manager) {
 		p.logger = logger
 	}
 }
 
-// WithRabbitMQMaxTenantPools sets the soft limit for the number of tenant connections in the pool.
+// WithMaxTenantPools sets the soft limit for the number of tenant connections in the pool.
 // When the pool reaches this limit and a new tenant needs a connection, only connections
 // that have been idle longer than the idle timeout are eligible for eviction. If all
 // connections are active (used within the idle timeout), the pool grows beyond this limit.
 // A value of 0 (default) means unlimited.
-func WithRabbitMQMaxTenantPools(maxSize int) RabbitMQOption {
-	return func(p *RabbitMQManager) {
+func WithMaxTenantPools(maxSize int) Option {
+	return func(p *Manager) {
 		p.maxConnections = maxSize
 	}
 }
 
-// WithRabbitMQIdleTimeout sets the duration after which an unused tenant connection becomes
+// WithIdleTimeout sets the duration after which an unused tenant connection becomes
 // eligible for eviction. Only connections idle longer than this duration will be evicted
 // when the pool exceeds the soft limit (maxConnections). If all connections are active
 // (used within the idle timeout), the pool is allowed to grow beyond the soft limit.
 // Default: 5 minutes.
-func WithRabbitMQIdleTimeout(d time.Duration) RabbitMQOption {
-	return func(p *RabbitMQManager) {
+func WithIdleTimeout(d time.Duration) Option {
+	return func(p *Manager) {
 		p.idleTimeout = d
 	}
 }
 
-// Deprecated: Use WithRabbitMQMaxTenantPools instead.
-func WithRabbitMQMaxConnections(maxSize int) RabbitMQOption { return WithRabbitMQMaxTenantPools(maxSize) }
-
-// NewRabbitMQManager creates a new RabbitMQ connection manager.
+// NewManager creates a new RabbitMQ connection manager.
 // Parameters:
-//   - client: The Tenant Manager client for fetching tenant configurations
+//   - c: The Tenant Manager client for fetching tenant configurations
 //   - service: The service name (e.g., "ledger")
 //   - opts: Optional configuration options
-func NewRabbitMQManager(client *Client, service string, opts ...RabbitMQOption) *RabbitMQManager {
-	p := &RabbitMQManager{
-		client:       client,
+func NewManager(c *client.Client, service string, opts ...Option) *Manager {
+	p := &Manager{
+		client:       c,
 		service:      service,
 		connections:  make(map[string]*amqp.Connection),
 		lastAccessed: make(map[string]time.Time),
@@ -99,7 +102,7 @@ func NewRabbitMQManager(client *Client, service string, opts ...RabbitMQOption) 
 
 // GetConnection returns a RabbitMQ connection for the tenant.
 // Creates a new connection if one doesn't exist or the existing one is closed.
-func (p *RabbitMQManager) GetConnection(ctx context.Context, tenantID string) (*amqp.Connection, error) {
+func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Connection, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant ID is required")
 	}
@@ -108,7 +111,7 @@ func (p *RabbitMQManager) GetConnection(ctx context.Context, tenantID string) (*
 
 	if p.closed {
 		p.mu.RUnlock()
-		return nil, ErrManagerClosed
+		return nil, core.ErrManagerClosed
 	}
 
 	if conn, ok := p.connections[tenantID]; ok && !conn.IsClosed() {
@@ -128,7 +131,7 @@ func (p *RabbitMQManager) GetConnection(ctx context.Context, tenantID string) (*
 }
 
 // createConnection fetches config from Tenant Manager and creates a RabbitMQ connection.
-func (p *RabbitMQManager) createConnection(ctx context.Context, tenantID string) (*amqp.Connection, error) {
+func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.Connection, error) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "rabbitmq.create_connection")
@@ -147,7 +150,7 @@ func (p *RabbitMQManager) createConnection(ctx context.Context, tenantID string)
 	}
 
 	if p.closed {
-		return nil, ErrManagerClosed
+		return nil, core.ErrManagerClosed
 	}
 
 	// Fetch tenant config from Tenant Manager
@@ -165,7 +168,7 @@ func (p *RabbitMQManager) createConnection(ctx context.Context, tenantID string)
 		logger.Errorf("RabbitMQ not configured for tenant: %s", tenantID)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "RabbitMQ not configured", nil)
 
-		return nil, ErrServiceNotConfigured
+		return nil, core.ErrServiceNotConfigured
 	}
 
 	// Build connection URI with tenant's vhost
@@ -199,7 +202,7 @@ func (p *RabbitMQManager) createConnection(ctx context.Context, tenantID string)
 // eligible for eviction. If all connections are active (used within the idle timeout),
 // the pool is allowed to grow beyond the soft limit.
 // Caller MUST hold p.mu write lock.
-func (p *RabbitMQManager) evictLRU(logger log.Logger) {
+func (p *Manager) evictLRU(logger log.Logger) {
 	if p.maxConnections <= 0 || len(p.connections) < p.maxConnections {
 		return
 	}
@@ -255,7 +258,7 @@ func (p *RabbitMQManager) evictLRU(logger log.Logger) {
 // Channel ownership: The caller is responsible for closing the returned channel
 // when it is no longer needed. Failing to close channels will leak resources
 // on both the client and the RabbitMQ server.
-func (p *RabbitMQManager) GetChannel(ctx context.Context, tenantID string) (*amqp.Channel, error) {
+func (p *Manager) GetChannel(ctx context.Context, tenantID string) (*amqp.Channel, error) {
 	conn, err := p.GetConnection(ctx, tenantID)
 	if err != nil {
 		return nil, err
@@ -270,7 +273,7 @@ func (p *RabbitMQManager) GetChannel(ctx context.Context, tenantID string) (*amq
 }
 
 // Close closes all RabbitMQ connections.
-func (p *RabbitMQManager) Close() error {
+func (p *Manager) Close(_ context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -293,7 +296,7 @@ func (p *RabbitMQManager) Close() error {
 }
 
 // CloseConnection closes the RabbitMQ connection for a specific tenant.
-func (p *RabbitMQManager) CloseConnection(tenantID string) error {
+func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -313,8 +316,15 @@ func (p *RabbitMQManager) CloseConnection(tenantID string) error {
 	return err
 }
 
+// ApplyConnectionSettings is a no-op for RabbitMQ connections.
+// RabbitMQ does not support dynamic connection pool settings like databases do.
+// This method exists to satisfy a common manager interface.
+func (p *Manager) ApplyConnectionSettings(_ string, _ *core.TenantConfig) {
+	// no-op: RabbitMQ connections do not have adjustable pool settings.
+}
+
 // Stats returns connection statistics.
-func (p *RabbitMQManager) Stats() RabbitMQStats {
+func (p *Manager) Stats() Stats {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -329,7 +339,7 @@ func (p *RabbitMQManager) Stats() RabbitMQStats {
 		}
 	}
 
-	return RabbitMQStats{
+	return Stats{
 		TotalConnections:  len(p.connections),
 		MaxConnections:    p.maxConnections,
 		ActiveConnections: activeConnections,
@@ -338,8 +348,8 @@ func (p *RabbitMQManager) Stats() RabbitMQStats {
 	}
 }
 
-// RabbitMQStats contains statistics for the RabbitMQ manager.
-type RabbitMQStats struct {
+// Stats contains statistics for the RabbitMQ manager.
+type Stats struct {
 	TotalConnections  int      `json:"totalConnections"`
 	MaxConnections    int      `json:"maxConnections"`
 	ActiveConnections int      `json:"activeConnections"`
@@ -349,13 +359,13 @@ type RabbitMQStats struct {
 
 // buildRabbitMQURI builds RabbitMQ connection URI from config.
 // Credentials are URL-encoded to handle special characters (e.g., @, :, /).
-func buildRabbitMQURI(cfg *RabbitMQConfig) string {
+func buildRabbitMQURI(cfg *core.RabbitMQConfig) string {
 	return fmt.Sprintf("amqp://%s:%s@%s:%d/%s",
 		url.QueryEscape(cfg.Username), url.QueryEscape(cfg.Password),
 		cfg.Host, cfg.Port, cfg.VHost)
 }
 
 // IsMultiTenant returns true if the manager is configured with a Tenant Manager client.
-func (p *RabbitMQManager) IsMultiTenant() bool {
+func (p *Manager) IsMultiTenant() bool {
 	return p.client != nil
 }

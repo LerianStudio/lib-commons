@@ -1,4 +1,4 @@
-package tenantmanager
+package client
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	libLog "github.com/LerianStudio/lib-commons/v3/commons/log"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,17 +40,17 @@ func (m *mockLogger) Sync() error                                       { return
 
 // newTestTenantConfig returns a fully populated TenantConfig for test assertions.
 // Callers can override fields after construction for specific test scenarios.
-func newTestTenantConfig() TenantConfig {
-	return TenantConfig{
+func newTestTenantConfig() core.TenantConfig {
+	return core.TenantConfig{
 		ID:            "tenant-123",
 		TenantSlug:    "test-tenant",
 		TenantName:    "Test Tenant",
 		Service:       "ledger",
 		Status:        "active",
 		IsolationMode: "database",
-		Databases: map[string]DatabaseConfig{
+		Databases: map[string]core.DatabaseConfig{
 			"onboarding": {
-				PostgreSQL: &PostgreSQLConfig{
+				PostgreSQL: &core.PostgreSQLConfig{
 					Host:     "localhost",
 					Port:     5432,
 					Database: "test_db",
@@ -138,7 +139,7 @@ func TestClient_GetTenantConfig(t *testing.T) {
 		result, err := client.GetTenantConfig(ctx, "non-existent", "ledger")
 
 		assert.Nil(t, result)
-		assert.ErrorIs(t, err, ErrTenantNotFound)
+		assert.ErrorIs(t, err, core.ErrTenantNotFound)
 	})
 
 	t.Run("server error", func(t *testing.T) {
@@ -177,9 +178,9 @@ func TestClient_GetTenantConfig(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.Error(t, err)
-		assert.True(t, IsTenantSuspendedError(err))
+		assert.True(t, core.IsTenantSuspendedError(err))
 
-		var suspErr *TenantSuspendedError
+		var suspErr *core.TenantSuspendedError
 		require.ErrorAs(t, err, &suspErr)
 		assert.Equal(t, "tenant-123", suspErr.TenantID)
 		assert.Equal(t, "suspended", suspErr.Status)
@@ -206,7 +207,7 @@ func TestClient_GetTenantConfig(t *testing.T) {
 		assert.Nil(t, result)
 		require.Error(t, err)
 
-		var suspErr *TenantSuspendedError
+		var suspErr *core.TenantSuspendedError
 		require.ErrorAs(t, err, &suspErr)
 		assert.Equal(t, "purged", suspErr.Status)
 	})
@@ -225,7 +226,7 @@ func TestClient_GetTenantConfig(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.Error(t, err)
-		assert.False(t, IsTenantSuspendedError(err))
+		assert.False(t, core.IsTenantSuspendedError(err))
 		assert.Contains(t, err.Error(), "access denied")
 	})
 
@@ -247,7 +248,7 @@ func TestClient_GetTenantConfig(t *testing.T) {
 
 		assert.Nil(t, result)
 		require.Error(t, err)
-		assert.False(t, IsTenantSuspendedError(err))
+		assert.False(t, core.IsTenantSuspendedError(err))
 		assert.Contains(t, err.Error(), "access denied")
 	})
 }
@@ -273,7 +274,7 @@ func TestNewClient_WithCircuitBreaker(t *testing.T) {
 }
 
 func TestClient_CircuitBreaker_StaysClosedOnSuccess(t *testing.T) {
-	config := TenantConfig{
+	config := core.TenantConfig{
 		ID:         "tenant-123",
 		TenantSlug: "test-tenant",
 		Service:    "ledger",
@@ -315,7 +316,7 @@ func TestClient_CircuitBreaker_OpensAfterThresholdFailures(t *testing.T) {
 	for i := 0; i < threshold; i++ {
 		_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 		require.Error(t, err)
-		assert.NotErrorIs(t, err, ErrCircuitBreakerOpen, "should not be circuit breaker error yet on failure %d", i+1)
+		assert.NotErrorIs(t, err, core.ErrCircuitBreakerOpen, "should not be circuit breaker error yet on failure %d", i+1)
 	}
 
 	// Circuit breaker should now be open
@@ -350,7 +351,7 @@ func TestClient_CircuitBreaker_ReturnsErrCircuitBreakerOpenWhenOpen(t *testing.T
 	for i := 0; i < 5; i++ {
 		_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrCircuitBreakerOpen)
+		assert.ErrorIs(t, err, core.ErrCircuitBreakerOpen)
 	}
 
 	// No additional requests should have reached the server
@@ -383,13 +384,13 @@ func TestClient_CircuitBreaker_TransitionsToHalfOpenAfterTimeout(t *testing.T) {
 	// It will fail (server still returns 500), but the request should reach the server
 	_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 	require.Error(t, err)
-	assert.NotErrorIs(t, err, ErrCircuitBreakerOpen, "request should pass through in half-open state")
+	assert.NotErrorIs(t, err, core.ErrCircuitBreakerOpen, "request should pass through in half-open state")
 }
 
 func TestClient_CircuitBreaker_ClosesOnSuccessfulHalfOpenRequest(t *testing.T) {
 	var shouldSucceed atomic.Bool
 
-	config := TenantConfig{
+	config := core.TenantConfig{
 		ID:         "tenant-123",
 		TenantSlug: "test-tenant",
 		Service:    "ledger",
@@ -446,7 +447,7 @@ func TestClient_CircuitBreaker_404DoesNotCountAsFailure(t *testing.T) {
 	for i := 0; i < threshold+2; i++ {
 		_, err := client.GetTenantConfig(ctx, "non-existent", "ledger")
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrTenantNotFound)
+		assert.ErrorIs(t, err, core.ErrTenantNotFound)
 	}
 
 	assert.Equal(t, cbClosed, client.cbState, "404 responses should not open the circuit breaker")
@@ -473,7 +474,7 @@ func TestClient_CircuitBreaker_403DoesNotCountAsFailure(t *testing.T) {
 	for i := 0; i < threshold+2; i++ {
 		_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 		require.Error(t, err)
-		assert.True(t, IsTenantSuspendedError(err))
+		assert.True(t, core.IsTenantSuspendedError(err))
 	}
 
 	assert.Equal(t, cbClosed, client.cbState, "403 responses should not open the circuit breaker")
@@ -517,7 +518,7 @@ func TestClient_CircuitBreaker_DisabledByDefault(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 		require.Error(t, err)
-		assert.NotErrorIs(t, err, ErrCircuitBreakerOpen)
+		assert.NotErrorIs(t, err, core.ErrCircuitBreakerOpen)
 		assert.Contains(t, err.Error(), "500")
 	}
 
@@ -548,7 +549,7 @@ func TestClient_CircuitBreaker_GetActiveTenantsByService(t *testing.T) {
 		// Should fail fast
 		_, err := client.GetActiveTenantsByService(ctx, "ledger")
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrCircuitBreakerOpen)
+		assert.ErrorIs(t, err, core.ErrCircuitBreakerOpen)
 	})
 
 	t.Run("shared state with GetTenantConfig", func(t *testing.T) {
@@ -571,10 +572,10 @@ func TestClient_CircuitBreaker_GetActiveTenantsByService(t *testing.T) {
 
 		// Both methods should fail fast
 		_, err := client.GetTenantConfig(ctx, "t3", "ledger")
-		assert.ErrorIs(t, err, ErrCircuitBreakerOpen)
+		assert.ErrorIs(t, err, core.ErrCircuitBreakerOpen)
 
 		_, err = client.GetActiveTenantsByService(ctx, "ledger")
-		assert.ErrorIs(t, err, ErrCircuitBreakerOpen)
+		assert.ErrorIs(t, err, core.ErrCircuitBreakerOpen)
 	})
 }
 
@@ -597,13 +598,13 @@ func TestClient_CircuitBreaker_NetworkErrorCountsAsFailure(t *testing.T) {
 	// Should fail fast now
 	_, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrCircuitBreakerOpen)
+	assert.ErrorIs(t, err, core.ErrCircuitBreakerOpen)
 }
 
 func TestClient_CircuitBreaker_SuccessResetsAfterPartialFailures(t *testing.T) {
 	var requestCount atomic.Int32
 
-	config := TenantConfig{
+	config := core.TenantConfig{
 		ID:         "tenant-123",
 		TenantSlug: "test-tenant",
 		Service:    "ledger",
@@ -675,13 +676,13 @@ func TestIsCircuitBreakerOpenError(t *testing.T) {
 		expected bool
 	}{
 		{"nil error returns false", nil, false},
-		{"ErrCircuitBreakerOpen returns true", ErrCircuitBreakerOpen, true},
-		{"other error returns false", ErrTenantNotFound, false},
+		{"ErrCircuitBreakerOpen returns true", core.ErrCircuitBreakerOpen, true},
+		{"other error returns false", core.ErrTenantNotFound, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.expected, IsCircuitBreakerOpenError(tt.err))
+			assert.Equal(t, tt.expected, core.IsCircuitBreakerOpenError(tt.err))
 		})
 	}
 }

@@ -1,5 +1,5 @@
-// Package tenantmanager provides multi-tenant database and message queue connection management.
-package tenantmanager
+// Package consumer provides multi-tenant message queue consumption management.
+package consumer
 
 import (
 	"context"
@@ -11,6 +11,11 @@ import (
 	libCommons "github.com/LerianStudio/lib-commons/v3/commons"
 	libLog "github.com/LerianStudio/lib-commons/v3/commons/log"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
+	tmmongo "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/mongo"
+	tmpostgres "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/postgres"
+	tmrabbitmq "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/rabbitmq"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
 )
@@ -36,7 +41,7 @@ func buildActiveTenantsKey(env, service string) string {
 }
 
 // HandlerFunc is a function that processes messages from a queue.
-// The context contains the tenant ID via SetTenantIDInContext.
+// The context contains the tenant ID via core.SetTenantIDInContext.
 type HandlerFunc func(ctx context.Context, delivery amqp.Delivery) error
 
 // MultiTenantConfig holds configuration for the MultiTenantConsumer.
@@ -81,9 +86,9 @@ type MultiTenantConfig struct {
 // DefaultMultiTenantConfig returns a MultiTenantConfig with sensible defaults.
 func DefaultMultiTenantConfig() MultiTenantConfig {
 	return MultiTenantConfig{
-		SyncInterval:      30 * time.Second,
-		WorkersPerQueue:   1,
-		PrefetchCount:     10,
+		SyncInterval:     30 * time.Second,
+		WorkersPerQueue:  1,
+		PrefetchCount:    10,
 		DiscoveryTimeout: 500 * time.Millisecond,
 	}
 }
@@ -132,20 +137,20 @@ func (e *retryStateEntry) incRetryAndMaybeMarkDegraded(maxBeforeDegraded int) (d
 	return delay, e.retryCount, justMarkedDegraded
 }
 
-// MultiTenantConsumerOption configures a MultiTenantConsumer.
-type MultiTenantConsumerOption func(*MultiTenantConsumer)
+// Option configures a MultiTenantConsumer.
+type Option func(*MultiTenantConsumer)
 
-// WithConsumerPostgresManager sets the PostgresManager on the consumer.
+// WithPostgresManager sets the postgres Manager on the consumer.
 // When set, database connections for removed tenants are automatically closed
 // during tenant synchronization.
-func WithConsumerPostgresManager(p *PostgresManager) MultiTenantConsumerOption {
+func WithPostgresManager(p *tmpostgres.Manager) Option {
 	return func(c *MultiTenantConsumer) { c.postgres = p }
 }
 
-// WithConsumerMongoManager sets the MongoManager on the consumer.
+// WithMongoManager sets the mongo Manager on the consumer.
 // When set, MongoDB connections for removed tenants are automatically closed
 // during tenant synchronization.
-func WithConsumerMongoManager(m *MongoManager) MultiTenantConsumerOption {
+func WithMongoManager(m *tmmongo.Manager) Option {
 	return func(c *MultiTenantConsumer) { c.mongo = m }
 }
 
@@ -155,9 +160,9 @@ func WithConsumerMongoManager(m *MongoManager) MultiTenantConsumerOption {
 // Consumers are spawned on-demand via ensureConsumerStarted() when the first message
 // or external trigger arrives for a tenant.
 type MultiTenantConsumer struct {
-	rabbitmq     *RabbitMQManager
+	rabbitmq     *tmrabbitmq.Manager
 	redisClient  redis.UniversalClient
-	pmClient     *Client // Tenant Manager client for fallback
+	pmClient     *client.Client // Tenant Manager client for fallback
 	handlers     map[string]HandlerFunc
 	tenants      map[string]context.CancelFunc // Active tenant goroutines
 	knownTenants map[string]bool               // Discovered tenants (lazy mode: populated without starting consumers)
@@ -165,17 +170,17 @@ type MultiTenantConsumer struct {
 	// Used to avoid removing tenants on a single transient incomplete fetch.
 	tenantAbsenceCount map[string]int
 	config             MultiTenantConfig
-	mu           sync.RWMutex
-	logger       libLog.Logger
-	closed       bool
+	mu                 sync.RWMutex
+	logger             libLog.Logger
+	closed             bool
 
 	// postgres manages PostgreSQL connections per tenant.
 	// When set, connections are closed automatically when a tenant is removed.
-	postgres *PostgresManager
+	postgres *tmpostgres.Manager
 
 	// mongo manages MongoDB connections per tenant.
 	// When set, connections are closed automatically when a tenant is removed.
-	mongo *MongoManager
+	mongo *tmmongo.Manager
 
 	// consumerLocks provides per-tenant mutexes for double-check locking in ensureConsumerStarted.
 	// Key: tenantID, Value: *sync.Mutex
@@ -195,22 +200,22 @@ type MultiTenantConsumer struct {
 //   - redisClient: Redis client for tenant cache access (must not be nil)
 //   - config: Consumer configuration
 //   - logger: Logger for operational logging
-//   - opts: Optional configuration options (e.g., WithConsumerPostgresManager, WithConsumerMongoManager)
+//   - opts: Optional configuration options (e.g., WithPostgresManager, WithMongoManager)
 //
 // Panics if rabbitmq or redisClient is nil, as they are required for core functionality.
 func NewMultiTenantConsumer(
-	rabbitmq *RabbitMQManager,
+	rabbitmq *tmrabbitmq.Manager,
 	redisClient redis.UniversalClient,
 	config MultiTenantConfig,
 	logger libLog.Logger,
-	opts ...MultiTenantConsumerOption,
+	opts ...Option,
 ) *MultiTenantConsumer {
 	if rabbitmq == nil {
-		panic("tenantmanager.NewMultiTenantConsumer: rabbitmq must not be nil")
+		panic("consumer.NewMultiTenantConsumer: rabbitmq must not be nil")
 	}
 
 	if redisClient == nil {
-		panic("tenantmanager.NewMultiTenantConsumer: redisClient must not be nil")
+		panic("consumer.NewMultiTenantConsumer: redisClient must not be nil")
 	}
 
 	// Guard against nil logger to prevent panics downstream
@@ -249,7 +254,7 @@ func NewMultiTenantConsumer(
 
 	// Create Tenant Manager client for fallback if URL is configured
 	if config.MultiTenantURL != "" {
-		consumer.pmClient = NewClient(config.MultiTenantURL, logger)
+		consumer.pmClient = client.NewClient(config.MultiTenantURL, logger)
 	}
 
 	return consumer
@@ -506,19 +511,19 @@ func (c *MultiTenantConsumer) stopRemovedTenants(ctx context.Context, removedTen
 
 		// Close database connections for removed tenant
 		if c.rabbitmq != nil {
-			if err := c.rabbitmq.CloseConnection(tenantID); err != nil {
+			if err := c.rabbitmq.CloseConnection(ctx, tenantID); err != nil {
 				logger.Warnf("failed to close RabbitMQ connection for tenant %s: %v", tenantID, err)
 			}
 		}
 
 		if c.postgres != nil {
-			if err := c.postgres.CloseConnection(tenantID); err != nil {
+			if err := c.postgres.CloseConnection(ctx, tenantID); err != nil {
 				logger.Warnf("failed to close PostgreSQL connection for tenant %s: %v", tenantID, err)
 			}
 		}
 
 		if c.mongo != nil {
-			if err := c.mongo.CloseClient(ctx, tenantID); err != nil {
+			if err := c.mongo.CloseConnection(ctx, tenantID); err != nil {
 				logger.Warnf("failed to close MongoDB connection for tenant %s: %v", tenantID, err)
 			}
 		}
@@ -670,7 +675,7 @@ func (c *MultiTenantConsumer) startTenantConsumer(parentCtx context.Context, ten
 // consumeForTenant runs the consumer loop for a single tenant.
 func (c *MultiTenantConsumer) consumeForTenant(ctx context.Context, tenantID string) {
 	// Set tenantID in context for handlers
-	ctx = SetTenantIDInContext(ctx, tenantID)
+	ctx = core.SetTenantIDInContext(ctx, tenantID)
 
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 
@@ -889,7 +894,7 @@ func (c *MultiTenantConsumer) handleMessage(
 	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
 
 	// Process message with tenant context
-	msgCtx := SetTenantIDInContext(ctx, tenantID)
+	msgCtx := core.SetTenantIDInContext(ctx, tenantID)
 
 	// Extract trace context from message headers
 	msgCtx = libOpentelemetry.ExtractTraceContextFromQueueHeaders(msgCtx, msg.Headers)
@@ -1068,7 +1073,7 @@ func (c *MultiTenantConsumer) Close() error {
 }
 
 // Stats returns statistics about the consumer including lazy mode metadata.
-func (c *MultiTenantConsumer) Stats() MultiTenantConsumerStats {
+func (c *MultiTenantConsumer) Stats() Stats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -1108,7 +1113,7 @@ func (c *MultiTenantConsumer) Stats() MultiTenantConsumerStats {
 		return true
 	})
 
-	return MultiTenantConsumerStats{
+	return Stats{
 		ActiveTenants:    len(c.tenants),
 		TenantIDs:        tenantIDs,
 		RegisteredQueues: queueNames,
@@ -1122,8 +1127,8 @@ func (c *MultiTenantConsumer) Stats() MultiTenantConsumerStats {
 	}
 }
 
-// MultiTenantConsumerStats holds statistics for the consumer.
-type MultiTenantConsumerStats struct {
+// Stats holds statistics for the consumer.
+type Stats struct {
 	ActiveTenants    int      `json:"activeTenants"`
 	TenantIDs        []string `json:"tenantIds"`
 	RegisteredQueues []string `json:"registeredQueues"`

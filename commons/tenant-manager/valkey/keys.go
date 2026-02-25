@@ -2,12 +2,14 @@
 // Use of this source code is governed by the Elastic License 2.0
 // that can be found in the LICENSE file.
 
-package tenantmanager
+package valkey
 
 import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
 )
 
 const TenantKeyPrefix = "tenant"
@@ -25,7 +27,7 @@ func GetKey(tenantID, key string) string {
 // GetKeyFromContext returns tenant-prefixed key using tenantID from context.
 // If no tenantID in context, returns the key unchanged.
 func GetKeyFromContext(ctx context.Context, key string) string {
-	tenantID := GetTenantIDFromContext(ctx)
+	tenantID := core.GetTenantIDFromContext(ctx)
 	return GetKey(tenantID, key)
 }
 
@@ -42,7 +44,7 @@ func GetPattern(tenantID, pattern string) string {
 // GetPatternFromContext returns pattern using tenantID from context.
 // If no tenantID in context, returns the pattern unchanged.
 func GetPatternFromContext(ctx context.Context, pattern string) string {
-	tenantID := GetTenantIDFromContext(ctx)
+	tenantID := core.GetTenantIDFromContext(ctx)
 	return GetPattern(tenantID, pattern)
 }
 
