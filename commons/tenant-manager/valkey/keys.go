@@ -26,8 +26,14 @@ func GetKey(tenantID, key string) string {
 
 // GetKeyFromContext returns tenant-prefixed key using tenantID from context.
 // If no tenantID in context, returns the key unchanged.
+// If ctx is nil, returns the key unchanged (no tenant prefix).
 func GetKeyFromContext(ctx context.Context, key string) string {
+	if ctx == nil {
+		return GetKey("", key)
+	}
+
 	tenantID := core.GetTenantIDFromContext(ctx)
+
 	return GetKey(tenantID, key)
 }
 
@@ -43,8 +49,14 @@ func GetPattern(tenantID, pattern string) string {
 
 // GetPatternFromContext returns pattern using tenantID from context.
 // If no tenantID in context, returns the pattern unchanged.
+// If ctx is nil, returns the pattern unchanged (no tenant prefix).
 func GetPatternFromContext(ctx context.Context, pattern string) string {
+	if ctx == nil {
+		return GetPattern("", pattern)
+	}
+
 	tenantID := core.GetTenantIDFromContext(ctx)
+
 	return GetPattern(tenantID, pattern)
 }
 

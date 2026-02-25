@@ -137,6 +137,10 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Con
 
 // createConnection fetches config from Tenant Manager and creates a RabbitMQ connection.
 func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.Connection, error) {
+	if p.client == nil {
+		return nil, fmt.Errorf("tenant manager client is required for multi-tenant connections")
+	}
+
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "rabbitmq.create_connection")

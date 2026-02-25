@@ -170,6 +170,10 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Cl
 
 // createConnection fetches config from Tenant Manager and creates a MongoDB client.
 func (p *Manager) createConnection(ctx context.Context, tenantID string) (*mongo.Client, error) {
+	if p.client == nil {
+		return nil, fmt.Errorf("tenant manager client is required for multi-tenant connections")
+	}
+
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "mongo.create_connection")
@@ -387,6 +391,10 @@ func (p *Manager) GetDatabaseForTenant(ctx context.Context, tenantID string) (*m
 
 	// Fallback: database name not cached (e.g., connection was pre-populated
 	// outside createConnection). Fetch config as a last resort.
+	if p.client == nil {
+		return nil, fmt.Errorf("tenant manager client is required for multi-tenant connections")
+	}
+
 	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
 	if err != nil {
 		// Propagate TenantSuspendedError directly so the middleware can

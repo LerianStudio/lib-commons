@@ -224,7 +224,7 @@ func NewMultiTenantConsumer(
 	}
 
 	// Apply defaults
-	if config.SyncInterval == 0 {
+	if config.SyncInterval <= 0 {
 		config.SyncInterval = 30 * time.Second
 	}
 

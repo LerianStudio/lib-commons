@@ -290,6 +290,10 @@ func (p *Manager) revalidateSettings(tenantID string) {
 
 // createConnection fetches config from Tenant Manager and creates a connection.
 func (p *Manager) createConnection(ctx context.Context, tenantID string) (*libPostgres.PostgresConnection, error) {
+	if p.client == nil {
+		return nil, fmt.Errorf("tenant manager client is required for multi-tenant connections")
+	}
+
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.create_connection")
