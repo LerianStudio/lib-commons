@@ -51,6 +51,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
+	smithy "github.com/aws/smithy-go"
 )
 
 // Sentinel errors for M2M credential operations.
@@ -69,6 +71,9 @@ var (
 
 	// ErrM2MInvalidInput is returned when required input parameters are missing.
 	ErrM2MInvalidInput = errors.New("invalid input")
+
+	// ErrM2MInvalidCredentials is returned when retrieved credentials are incomplete (missing required fields).
+	ErrM2MInvalidCredentials = errors.New("incomplete M2M credentials")
 )
 
 // M2MCredentials holds credentials retrieved from the Secret Vault.
@@ -151,6 +156,24 @@ func GetM2MCredentials(ctx context.Context, client SecretsManagerClient, env, te
 		return nil, fmt.Errorf("%w: path=%s: %v", ErrM2MUnmarshalFailed, secretPath, err)
 	}
 
+	// Validate required credential fields
+	var missing []string
+	if creds.ClientID == "" {
+		missing = append(missing, "clientId")
+	}
+
+	if creds.ClientSecret == "" {
+		missing = append(missing, "clientSecret")
+	}
+
+	if creds.TokenURL == "" {
+		missing = append(missing, "tokenUrl")
+	}
+
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("%w: path=%s: missing fields: %s", ErrM2MInvalidCredentials, secretPath, strings.Join(missing, ", "))
+	}
+
 	return &creds, nil
 }
 
@@ -172,17 +195,18 @@ func buildM2MSecretPath(env, tenantOrgID, applicationName, targetService string)
 
 // classifyAWSError maps AWS SDK errors to domain-specific sentinel errors.
 func classifyAWSError(err error, secretPath string) error {
-	errMsg := err.Error()
-
-	switch {
-	case strings.Contains(errMsg, "ResourceNotFoundException"):
+	var notFoundErr *smtypes.ResourceNotFoundException
+	if errors.As(err, &notFoundErr) {
 		return fmt.Errorf("%w at path: %s", ErrM2MCredentialsNotFound, secretPath)
-
-	case strings.Contains(errMsg, "AccessDeniedException"),
-		strings.Contains(errMsg, "ExpiredTokenException"):
-		return fmt.Errorf("%w: %v", ErrM2MVaultAccessDenied, err)
-
-	default:
-		return fmt.Errorf("%w: path=%s: %v", ErrM2MRetrievalFailed, secretPath, err)
 	}
+
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.ErrorCode() {
+		case "AccessDeniedException", "ExpiredTokenException":
+			return fmt.Errorf("%w: %v", ErrM2MVaultAccessDenied, err)
+		}
+	}
+
+	return fmt.Errorf("%w: path=%s: %v", ErrM2MRetrievalFailed, secretPath, err)
 }

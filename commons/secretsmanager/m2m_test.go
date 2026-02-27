@@ -13,6 +13,8 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
+	smithy "github.com/aws/smithy-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,7 +46,9 @@ func (m *mockSecretsManagerClient) GetSecretValue(
 		}, nil
 	}
 
-	return nil, fmt.Errorf("ResourceNotFoundException: Secrets Manager can't find the specified secret. path=%s", secretPath)
+	return nil, &smtypes.ResourceNotFoundException{
+		Message: aws.String(fmt.Sprintf("Secrets Manager can't find the specified secret. path=%s", secretPath)),
+	}
 }
 
 // ============================================================================
@@ -177,24 +181,24 @@ func TestGetM2MCredentials_InvalidJSON(t *testing.T) {
 	secretPath := "tenants/staging/org_01ABC/plugin-pix/m2m/ledger/credentials"
 
 	tests := []struct {
-		name          string
-		secretValue   string
-		expectedError string
+		name        string
+		secretValue string
+		expectedErr error
 	}{
 		{
-			name:          "malformed JSON",
-			secretValue:   `{invalid-json`,
-			expectedError: "failed to unmarshal M2M credentials",
+			name:        "malformed JSON",
+			secretValue: `{invalid-json`,
+			expectedErr: ErrM2MUnmarshalFailed,
 		},
 		{
-			name:          "empty string",
-			secretValue:   ``,
-			expectedError: "failed to unmarshal M2M credentials",
+			name:        "empty string",
+			secretValue: ``,
+			expectedErr: ErrM2MUnmarshalFailed,
 		},
 		{
-			name:          "plain text instead of JSON",
-			secretValue:   `not-json-at-all`,
-			expectedError: "failed to unmarshal M2M credentials",
+			name:        "plain text instead of JSON",
+			secretValue: `not-json-at-all`,
+			expectedErr: ErrM2MUnmarshalFailed,
 		},
 	}
 
@@ -214,9 +218,61 @@ func TestGetM2MCredentials_InvalidJSON(t *testing.T) {
 			creds, err := GetM2MCredentials(context.Background(), mock, "staging", "org_01ABC", "plugin-pix", "ledger")
 
 			// Assert
-			require.Error(t, err)
+			require.ErrorIs(t, err, tt.expectedErr)
 			assert.Nil(t, creds)
-			assert.Contains(t, err.Error(), tt.expectedError)
+		})
+	}
+}
+
+// ============================================================================
+// Test: GetM2MCredentials - incomplete credentials (missing required fields)
+// ============================================================================
+
+func TestGetM2MCredentials_IncompleteCredentials(t *testing.T) {
+	t.Parallel()
+
+	secretPath := "tenants/staging/org_01ABC/plugin-pix/m2m/ledger/credentials"
+
+	tests := []struct {
+		name        string
+		secretValue string
+		expectedErr error
+	}{
+		{
+			name:        "empty JSON object - all fields missing",
+			secretValue: `{}`,
+			expectedErr: ErrM2MInvalidCredentials,
+		},
+		{
+			name:        "only clientId present",
+			secretValue: `{"clientId":"id1"}`,
+			expectedErr: ErrM2MInvalidCredentials,
+		},
+		{
+			name:        "only tokenUrl missing",
+			secretValue: `{"clientId":"id1","clientSecret":"sec1"}`,
+			expectedErr: ErrM2MInvalidCredentials,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mock := &mockSecretsManagerClient{
+				secrets: map[string]string{
+					secretPath: tt.secretValue,
+				},
+				errors: map[string]error{},
+			}
+
+			// Act
+			creds, err := GetM2MCredentials(context.Background(), mock, "staging", "org_01ABC", "plugin-pix", "ledger")
+
+			// Assert
+			require.ErrorIs(t, err, tt.expectedErr)
+			assert.Nil(t, creds)
 		})
 	}
 }
@@ -234,7 +290,7 @@ func TestGetM2MCredentials_SecretNotFound(t *testing.T) {
 		tenantOrgID     string
 		applicationName string
 		targetService   string
-		expectedError   string
+		expectedErr     error
 	}{
 		{
 			name:            "secret does not exist in vault",
@@ -242,7 +298,7 @@ func TestGetM2MCredentials_SecretNotFound(t *testing.T) {
 			tenantOrgID:     "org_nonexistent",
 			applicationName: "plugin-pix",
 			targetService:   "ledger",
-			expectedError:   "M2M credentials not found at path",
+			expectedErr:     ErrM2MCredentialsNotFound,
 		},
 		{
 			name:            "different tenant not provisioned",
@@ -250,7 +306,7 @@ func TestGetM2MCredentials_SecretNotFound(t *testing.T) {
 			tenantOrgID:     "org_notprovisioned",
 			applicationName: "plugin-auth",
 			targetService:   "midaz",
-			expectedError:   "M2M credentials not found at path",
+			expectedErr:     ErrM2MCredentialsNotFound,
 		},
 	}
 
@@ -268,9 +324,8 @@ func TestGetM2MCredentials_SecretNotFound(t *testing.T) {
 			creds, err := GetM2MCredentials(context.Background(), mock, tt.env, tt.tenantOrgID, tt.applicationName, tt.targetService)
 
 			// Assert
-			require.Error(t, err)
+			require.ErrorIs(t, err, tt.expectedErr)
 			assert.Nil(t, creds)
-			assert.Contains(t, err.Error(), tt.expectedError)
 		})
 	}
 }
@@ -285,24 +340,30 @@ func TestGetM2MCredentials_AWSCredentialsMissing(t *testing.T) {
 	secretPath := "tenants/staging/org_01ABC/plugin-pix/m2m/ledger/credentials"
 
 	tests := []struct {
-		name          string
-		awsError      error
-		expectedError string
+		name        string
+		awsError    error
+		expectedErr error
 	}{
 		{
-			name:          "access denied - missing IAM permissions",
-			awsError:      fmt.Errorf("AccessDeniedException: User is not authorized to access this resource"),
-			expectedError: "vault access denied",
+			name: "access denied - missing IAM permissions",
+			awsError: &smithy.GenericAPIError{
+				Code:    "AccessDeniedException",
+				Message: "User is not authorized to access this resource",
+			},
+			expectedErr: ErrM2MVaultAccessDenied,
 		},
 		{
-			name:          "credentials expired",
-			awsError:      fmt.Errorf("ExpiredTokenException: The security token included in the request is expired"),
-			expectedError: "vault access denied",
+			name: "credentials expired",
+			awsError: &smithy.GenericAPIError{
+				Code:    "ExpiredTokenException",
+				Message: "The security token included in the request is expired",
+			},
+			expectedErr: ErrM2MVaultAccessDenied,
 		},
 		{
-			name:          "generic AWS error",
-			awsError:      fmt.Errorf("InternalServiceError: service unavailable"),
-			expectedError: "failed to retrieve M2M credentials",
+			name:        "generic AWS error",
+			awsError:    fmt.Errorf("InternalServiceError: service unavailable"),
+			expectedErr: ErrM2MRetrievalFailed,
 		},
 	}
 
@@ -322,9 +383,8 @@ func TestGetM2MCredentials_AWSCredentialsMissing(t *testing.T) {
 			creds, err := GetM2MCredentials(context.Background(), mock, "staging", "org_01ABC", "plugin-pix", "ledger")
 
 			// Assert
-			require.Error(t, err)
+			require.ErrorIs(t, err, tt.expectedErr)
 			assert.Nil(t, creds)
-			assert.Contains(t, err.Error(), tt.expectedError)
 		})
 	}
 }
@@ -347,7 +407,7 @@ func TestGetM2MCredentials_InputValidation(t *testing.T) {
 		tenantOrgID     string
 		applicationName string
 		targetService   string
-		expectedError   string
+		expectedErr     error
 	}{
 		{
 			name:            "empty tenantOrgID",
@@ -355,7 +415,7 @@ func TestGetM2MCredentials_InputValidation(t *testing.T) {
 			tenantOrgID:     "",
 			applicationName: "plugin-pix",
 			targetService:   "ledger",
-			expectedError:   "tenantOrgID is required",
+			expectedErr:     ErrM2MInvalidInput,
 		},
 		{
 			name:            "empty applicationName",
@@ -363,7 +423,7 @@ func TestGetM2MCredentials_InputValidation(t *testing.T) {
 			tenantOrgID:     "org_01ABC",
 			applicationName: "",
 			targetService:   "ledger",
-			expectedError:   "applicationName is required",
+			expectedErr:     ErrM2MInvalidInput,
 		},
 		{
 			name:            "empty targetService",
@@ -371,7 +431,7 @@ func TestGetM2MCredentials_InputValidation(t *testing.T) {
 			tenantOrgID:     "org_01ABC",
 			applicationName: "plugin-pix",
 			targetService:   "",
-			expectedError:   "targetService is required",
+			expectedErr:     ErrM2MInvalidInput,
 		},
 	}
 
@@ -384,9 +444,8 @@ func TestGetM2MCredentials_InputValidation(t *testing.T) {
 			creds, err := GetM2MCredentials(context.Background(), mock, tt.env, tt.tenantOrgID, tt.applicationName, tt.targetService)
 
 			// Assert
-			require.Error(t, err)
+			require.ErrorIs(t, err, tt.expectedErr)
 			assert.Nil(t, creds)
-			assert.Contains(t, err.Error(), tt.expectedError)
 		})
 	}
 }
@@ -405,9 +464,8 @@ func TestGetM2MCredentials_NilClient(t *testing.T) {
 		creds, err := GetM2MCredentials(context.Background(), nil, "staging", "org_01ABC", "plugin-pix", "ledger")
 
 		// Assert
-		require.Error(t, err)
+		require.ErrorIs(t, err, ErrM2MInvalidInput)
 		assert.Nil(t, creds)
-		assert.Contains(t, err.Error(), "client is required")
 	})
 }
 
