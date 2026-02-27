@@ -247,7 +247,7 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*libPostg
 		p.mu.Unlock()
 
 		if shouldRevalidate {
-			go p.revalidateSettings(tenantID)
+			go p.revalidateSettings(tenantID) //#nosec G118 -- intentional: revalidateSettings creates its own timeout context; must not use request-scoped context as this outlives the request
 		}
 
 		return conn, nil

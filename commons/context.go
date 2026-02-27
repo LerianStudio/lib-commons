@@ -302,12 +302,12 @@ func WithTimeoutSafe(parent context.Context, timeout time.Duration) (context.Con
 		timeUntilDeadline := time.Until(deadline)
 
 		if timeUntilDeadline < timeout {
-			ctx, cancel := context.WithCancel(parent)
+			ctx, cancel := context.WithCancel(parent) //#nosec G118 -- cancel is returned to caller
 			return ctx, cancel, nil
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout) //#nosec G118 -- cancel is returned to caller
 
 	return ctx, cancel, nil
 }
@@ -342,10 +342,10 @@ func WithTimeout(parent context.Context, timeout time.Duration) (context.Context
 		if timeUntilDeadline < timeout {
 			// Parent deadline is sooner, just return a cancellable context
 			// that respects the parent's deadline
-			return context.WithCancel(parent)
+			return context.WithCancel(parent) //#nosec G118 -- cancel is returned to caller
 		}
 	}
 
 	// Either parent has no deadline, or our timeout is shorter
-	return context.WithTimeout(parent, timeout)
+	return context.WithTimeout(parent, timeout) //#nosec G118 -- cancel is returned to caller
 }
