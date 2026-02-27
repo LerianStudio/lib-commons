@@ -699,7 +699,7 @@ func (c *MultiTenantConsumer) startTenantConsumer(parentCtx context.Context, ten
 	defer span.End()
 
 	// Create a cancellable context for this tenant
-	tenantCtx, cancel := context.WithCancel(parentCtx)
+	tenantCtx, cancel := context.WithCancel(parentCtx) //#nosec G118 -- cancel stored in c.tenants[tenantID] and called when tenant consumer is stopped
 
 	// Store the cancel function (caller holds lock)
 	c.tenants[tenantID] = cancel
