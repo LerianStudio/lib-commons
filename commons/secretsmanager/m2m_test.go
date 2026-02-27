@@ -116,7 +116,6 @@ func TestGetM2MCredentials_ValidJSON(t *testing.T) {
 	validCreds := M2MCredentials{
 		ClientID:     "plg_01KHVKQQP6D2N4RDJK0ADEKQX1",
 		ClientSecret: "sec_super-secret-value",
-		TokenURL:     "https://casdoor.example.com/api/login/oauth/access_token",
 	}
 
 	credsJSON, err := json.Marshal(validCreds)
@@ -139,7 +138,6 @@ func TestGetM2MCredentials_ValidJSON(t *testing.T) {
 		targetService    string
 		expectedClientID string
 		expectedSecret   string
-		expectedTokenURL string
 	}{
 		{
 			name:             "deserializes all fields correctly",
@@ -149,7 +147,6 @@ func TestGetM2MCredentials_ValidJSON(t *testing.T) {
 			targetService:    "ledger",
 			expectedClientID: "plg_01KHVKQQP6D2N4RDJK0ADEKQX1",
 			expectedSecret:   "sec_super-secret-value",
-			expectedTokenURL: "https://casdoor.example.com/api/login/oauth/access_token",
 		},
 	}
 
@@ -166,7 +163,6 @@ func TestGetM2MCredentials_ValidJSON(t *testing.T) {
 			require.NotNil(t, creds)
 			assert.Equal(t, tt.expectedClientID, creds.ClientID)
 			assert.Equal(t, tt.expectedSecret, creds.ClientSecret)
-			assert.Equal(t, tt.expectedTokenURL, creds.TokenURL)
 		})
 	}
 }
@@ -249,8 +245,8 @@ func TestGetM2MCredentials_IncompleteCredentials(t *testing.T) {
 			expectedErr: ErrM2MInvalidCredentials,
 		},
 		{
-			name:        "only tokenUrl missing",
-			secretValue: `{"clientId":"id1","clientSecret":"sec1"}`,
+			name:        "only clientSecret missing",
+			secretValue: `{"clientId":"id1"}`,
 			expectedErr: ErrM2MInvalidCredentials,
 		},
 	}
@@ -479,7 +475,6 @@ func TestGetM2MCredentials_ConcurrentSafety(t *testing.T) {
 	validCreds := M2MCredentials{
 		ClientID:     "plg_concurrent_test",
 		ClientSecret: "sec_concurrent_secret",
-		TokenURL:     "https://casdoor.example.com/api/login/oauth/access_token",
 	}
 
 	credsJSON, err := json.Marshal(validCreds)
@@ -545,11 +540,10 @@ func TestM2MCredentials_JSONTags(t *testing.T) {
 	}{
 		{
 			name: "standard camelCase JSON fields",
-			json: `{"clientId":"id1","clientSecret":"sec1","tokenUrl":"https://example.com/token"}`,
+			json: `{"clientId":"id1","clientSecret":"sec1"}`,
 			expected: M2MCredentials{
 				ClientID:     "id1",
 				ClientSecret: "sec1",
-				TokenURL:     "https://example.com/token",
 			},
 		},
 		{
@@ -558,7 +552,6 @@ func TestM2MCredentials_JSONTags(t *testing.T) {
 			expected: M2MCredentials{
 				ClientID:     "id2",
 				ClientSecret: "sec2",
-				TokenURL:     "https://example.com/token",
 			},
 		},
 		{

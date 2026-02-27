@@ -33,7 +33,7 @@
 //	}
 //
 //	// Use credentials to obtain an access token via client_credentials grant
-//	// POST creds.TokenURL with grant_type=client_credentials
+//	// Post to the token endpoint with grant_type=client_credentials
 //	// Authorization: Basic(creds.ClientID, creds.ClientSecret)
 //
 // # Thread Safety
@@ -82,7 +82,6 @@ var (
 type M2MCredentials struct {
 	ClientID     string `json:"clientId"`
 	ClientSecret string `json:"clientSecret"`
-	TokenURL     string `json:"tokenUrl"`
 }
 
 // SecretsManagerClient abstracts AWS Secrets Manager operations.
@@ -164,10 +163,6 @@ func GetM2MCredentials(ctx context.Context, client SecretsManagerClient, env, te
 
 	if creds.ClientSecret == "" {
 		missing = append(missing, "clientSecret")
-	}
-
-	if creds.TokenURL == "" {
-		missing = append(missing, "tokenUrl")
 	}
 
 	if len(missing) > 0 {
