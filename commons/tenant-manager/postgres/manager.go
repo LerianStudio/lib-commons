@@ -89,6 +89,11 @@ type Manager struct {
 	lastSettingsCheck     map[string]time.Time // tracks per-tenant last settings revalidation time
 	settingsCheckInterval time.Duration        // configurable interval between settings revalidation checks
 
+	// revalidateWG tracks in-flight revalidatePoolSettings goroutines so Close()
+	// can wait for them to finish before returning. Without this, goroutines
+	// spawned by GetConnection may access Manager state after Close() returns.
+	revalidateWG sync.WaitGroup
+
 	defaultConn *libPostgres.PostgresConnection
 }
 
@@ -247,7 +252,12 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*libPostg
 		p.mu.Unlock()
 
 		if shouldRevalidate {
-			go p.revalidateSettings(tenantID) //#nosec G118 -- intentional: revalidateSettings creates its own timeout context; must not use request-scoped context as this outlives the request
+			p.revalidateWG.Add(1)
+
+			go func() {
+				defer p.revalidateWG.Done()
+				p.revalidatePoolSettings(tenantID)
+			}() //#nosec G118 -- intentional: revalidatePoolSettings creates its own timeout context; must not use request-scoped context as this outlives the request
 		}
 
 		return conn, nil
@@ -258,11 +268,11 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*libPostg
 	return p.createConnection(ctx, tenantID)
 }
 
-// revalidateSettings fetches fresh config from the Tenant Manager and applies
+// revalidatePoolSettings fetches fresh config from the Tenant Manager and applies
 // updated connection pool settings to the cached connection for the given tenant.
 // This runs asynchronously (in a goroutine) and must never block GetConnection.
 // If the fetch fails, a warning is logged but the connection remains usable.
-func (p *Manager) revalidateSettings(tenantID string) {
+func (p *Manager) revalidatePoolSettings(tenantID string) {
 	// Guard: recover from any panic to avoid crashing the process.
 	// This goroutine runs asynchronously and must never bring down the service.
 	defer func() {
@@ -559,9 +569,11 @@ func (p *Manager) GetDB(ctx context.Context, tenantID string) (dbresolver.DB, er
 }
 
 // Close closes all connections and marks the manager as closed.
+// It waits for any in-flight revalidatePoolSettings goroutines to finish
+// before returning, preventing goroutine leaks and use-after-close races.
 func (p *Manager) Close(_ context.Context) error {
+	// Phase 1: Under lock, mark closed and close all connections.
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	p.closed = true
 
@@ -578,6 +590,13 @@ func (p *Manager) Close(_ context.Context) error {
 		delete(p.lastAccessed, tenantID)
 		delete(p.lastSettingsCheck, tenantID)
 	}
+
+	p.mu.Unlock()
+
+	// Phase 2: Wait for in-flight revalidatePoolSettings goroutines OUTSIDE the lock.
+	// revalidatePoolSettings acquires p.mu internally (via CloseConnection and
+	// ApplyConnectionSettings), so waiting with the lock held would deadlock.
+	p.revalidateWG.Wait()
 
 	return errors.Join(errs...)
 }
