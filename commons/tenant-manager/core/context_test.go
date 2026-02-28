@@ -36,14 +36,59 @@ func TestContextWithTenantID(t *testing.T) {
 	assert.Equal(t, "tenant-456", GetTenantIDFromContext(ctx))
 }
 
-func TestGetPostgresForTenant(t *testing.T) {
-	t.Run("returns error when no connection in context", func(t *testing.T) {
-		ctx := context.Background()
+// mockPostgresFallback implements PostgresFallback for testing.
+type mockPostgresFallback struct {
+	db  dbresolver.DB
+	err error
+}
 
-		db, err := GetPostgresForTenant(ctx)
+func (m *mockPostgresFallback) GetDB() (dbresolver.DB, error) {
+	return m.db, m.err
+}
+
+// mockMongoFallback implements MongoFallback for testing.
+type mockMongoFallback struct {
+	client *mongo.Client
+	err    error
+}
+
+func (m *mockMongoFallback) GetDB(_ context.Context) (*mongo.Client, error) {
+	return m.client, m.err
+}
+
+func TestResolvePostgres(t *testing.T) {
+	t.Run("returns tenant DB from context when present", func(t *testing.T) {
+		ctx := context.Background()
+		tenantConn := &mockDB{name: "tenant-db"}
+		fallbackConn := &mockDB{name: "fallback-db"}
+		fallback := &mockPostgresFallback{db: fallbackConn}
+
+		ctx = ContextWithTenantPGConnection(ctx, tenantConn)
+		db, err := ResolvePostgres(ctx, fallback)
+
+		assert.NoError(t, err)
+		assert.Equal(t, tenantConn, db)
+	})
+
+	t.Run("falls back to static connection when no tenant in context", func(t *testing.T) {
+		ctx := context.Background()
+		fallbackConn := &mockDB{name: "fallback-db"}
+		fallback := &mockPostgresFallback{db: fallbackConn}
+
+		db, err := ResolvePostgres(ctx, fallback)
+
+		assert.NoError(t, err)
+		assert.Equal(t, fallbackConn, db)
+	})
+
+	t.Run("returns fallback error when fallback fails", func(t *testing.T) {
+		ctx := context.Background()
+		fallback := &mockPostgresFallback{err: assert.AnError}
+
+		db, err := ResolvePostgres(ctx, fallback)
 
 		assert.Nil(t, db)
-		assert.ErrorIs(t, err, ErrTenantContextRequired)
+		assert.Error(t, err)
 	})
 }
 
@@ -92,55 +137,70 @@ func TestContextWithModulePGConnection(t *testing.T) {
 	t.Run("stores and retrieves module connection", func(t *testing.T) {
 		ctx := context.Background()
 		mockConn := &mockDB{name: "module-db"}
+		fallback := &mockPostgresFallback{db: &mockDB{name: "fallback-db"}}
 
 		ctx = ContextWithModulePGConnection(ctx, "onboarding", mockConn)
-		db, err := GetModulePostgresForTenant(ctx, "onboarding")
+		db, err := ResolveModuleDB(ctx, "onboarding", fallback)
 
 		assert.NoError(t, err)
 		assert.Equal(t, mockConn, db)
 	})
 }
 
-func TestGetModulePostgresForTenant(t *testing.T) {
-	t.Run("returns error when no connection in context", func(t *testing.T) {
+func TestResolveModuleDB(t *testing.T) {
+	t.Run("returns module DB from context when present", func(t *testing.T) {
 		ctx := context.Background()
+		moduleConn := &mockDB{name: "module-db"}
+		fallback := &mockPostgresFallback{db: &mockDB{name: "fallback-db"}}
 
-		db, err := GetModulePostgresForTenant(ctx, "onboarding")
+		ctx = ContextWithModulePGConnection(ctx, "onboarding", moduleConn)
+		db, err := ResolveModuleDB(ctx, "onboarding", fallback)
 
-		assert.Nil(t, db)
-		assert.ErrorIs(t, err, ErrTenantContextRequired)
+		assert.NoError(t, err)
+		assert.Equal(t, moduleConn, db)
 	})
 
-	t.Run("does not fallback to generic connection", func(t *testing.T) {
+	t.Run("falls back to static connection when module not in context", func(t *testing.T) {
 		ctx := context.Background()
-		genericConn := &mockDB{name: "generic-db"}
+		fallbackConn := &mockDB{name: "fallback-db"}
+		fallback := &mockPostgresFallback{db: fallbackConn}
 
-		ctx = ContextWithTenantPGConnection(ctx, genericConn)
+		db, err := ResolveModuleDB(ctx, "onboarding", fallback)
 
-		db, err := GetModulePostgresForTenant(ctx, "onboarding")
-
-		assert.Nil(t, db)
-		assert.ErrorIs(t, err, ErrTenantContextRequired)
+		assert.NoError(t, err)
+		assert.Equal(t, fallbackConn, db)
 	})
 
-	t.Run("does not fallback to other module connection", func(t *testing.T) {
+	t.Run("does not cross modules", func(t *testing.T) {
 		ctx := context.Background()
 		txnConn := &mockDB{name: "transaction-db"}
+		fallbackConn := &mockDB{name: "fallback-db"}
+		fallback := &mockPostgresFallback{db: fallbackConn}
 
 		ctx = ContextWithModulePGConnection(ctx, "transaction", txnConn)
+		db, err := ResolveModuleDB(ctx, "onboarding", fallback)
 
-		db, err := GetModulePostgresForTenant(ctx, "onboarding")
+		assert.NoError(t, err)
+		assert.Equal(t, fallbackConn, db)
+	})
+
+	t.Run("returns fallback error when fallback fails", func(t *testing.T) {
+		ctx := context.Background()
+		fallback := &mockPostgresFallback{err: assert.AnError}
+
+		db, err := ResolveModuleDB(ctx, "onboarding", fallback)
 
 		assert.Nil(t, db)
-		assert.ErrorIs(t, err, ErrTenantContextRequired)
+		assert.Error(t, err)
 	})
 
 	t.Run("works with arbitrary module names", func(t *testing.T) {
 		ctx := context.Background()
 		reportingConn := &mockDB{name: "reporting-db"}
+		fallback := &mockPostgresFallback{db: &mockDB{name: "fallback-db"}}
 
 		ctx = ContextWithModulePGConnection(ctx, "reporting", reportingConn)
-		db, err := GetModulePostgresForTenant(ctx, "reporting")
+		db, err := ResolveModuleDB(ctx, "reporting", fallback)
 
 		assert.NoError(t, err)
 		assert.Equal(t, reportingConn, db)
@@ -153,14 +213,15 @@ func TestModuleConnectionIsolationGeneric(t *testing.T) {
 		onbConn := &mockDB{name: "onboarding-db"}
 		txnConn := &mockDB{name: "transaction-db"}
 		rptConn := &mockDB{name: "reporting-db"}
+		fallback := &mockPostgresFallback{db: &mockDB{name: "fallback-db"}}
 
 		ctx = ContextWithModulePGConnection(ctx, "onboarding", onbConn)
 		ctx = ContextWithModulePGConnection(ctx, "transaction", txnConn)
 		ctx = ContextWithModulePGConnection(ctx, "reporting", rptConn)
 
-		onbDB, onbErr := GetModulePostgresForTenant(ctx, "onboarding")
-		txnDB, txnErr := GetModulePostgresForTenant(ctx, "transaction")
-		rptDB, rptErr := GetModulePostgresForTenant(ctx, "reporting")
+		onbDB, onbErr := ResolveModuleDB(ctx, "onboarding", fallback)
+		txnDB, txnErr := ResolveModuleDB(ctx, "transaction", fallback)
+		rptDB, rptErr := ResolveModuleDB(ctx, "reporting", fallback)
 
 		assert.NoError(t, onbErr)
 		assert.NoError(t, txnErr)
@@ -174,12 +235,13 @@ func TestModuleConnectionIsolationGeneric(t *testing.T) {
 		ctx := context.Background()
 		genericConn := &mockDB{name: "generic-db"}
 		moduleConn := &mockDB{name: "module-db"}
+		fallback := &mockPostgresFallback{db: &mockDB{name: "fallback-db"}}
 
 		ctx = ContextWithTenantPGConnection(ctx, genericConn)
 		ctx = ContextWithModulePGConnection(ctx, "mymodule", moduleConn)
 
-		genDB, genErr := GetPostgresForTenant(ctx)
-		modDB, modErr := GetModulePostgresForTenant(ctx, "mymodule")
+		genDB, genErr := ResolvePostgres(ctx, fallback)
+		modDB, modErr := ResolveModuleDB(ctx, "mymodule", fallback)
 
 		assert.NoError(t, genErr)
 		assert.NoError(t, modErr)
@@ -210,32 +272,39 @@ func TestGetMongoFromContext(t *testing.T) {
 	})
 }
 
-func TestGetMongoForTenant(t *testing.T) {
-	t.Run("returns error when no connection in context", func(t *testing.T) {
+func TestResolveMongo(t *testing.T) {
+	t.Run("returns tenant mongo DB from context when present", func(t *testing.T) {
 		ctx := context.Background()
+		tenantDB := &mongo.Database{}
+		fallback := &mockMongoFallback{err: assert.AnError}
 
-		db, err := GetMongoForTenant(ctx)
+		ctx = ContextWithTenantMongo(ctx, tenantDB)
+		db, err := ResolveMongo(ctx, fallback, "testdb")
 
-		assert.Nil(t, db)
-		assert.ErrorIs(t, err, ErrTenantContextRequired)
+		assert.NoError(t, err)
+		assert.Equal(t, tenantDB, db)
 	})
 
-	t.Run("returns ErrTenantContextRequired for nil db in context", func(t *testing.T) {
+	t.Run("falls back to static connection when no tenant in context", func(t *testing.T) {
 		ctx := context.Background()
+		fallback := &mockMongoFallback{err: assert.AnError}
 
-		// Use ContextWithTenantMongo with a nil *mongo.Database to test the path
-		// (We cannot create a real *mongo.Database without a live client,
-		// but we can test the nil path and the type assertion path.)
+		db, err := ResolveMongo(ctx, fallback, "testdb")
+
+		assert.Nil(t, db)
+		assert.Error(t, err)
+	})
+
+	t.Run("falls back when nil mongo stored in context", func(t *testing.T) {
+		ctx := context.Background()
+		fallback := &mockMongoFallback{err: assert.AnError}
+
 		var nilDB *mongo.Database
 		ctx = ContextWithTenantMongo(ctx, nilDB)
 
-		// nil *mongo.Database stored in context: type assertion succeeds but value is nil
-		db := GetMongoFromContext(ctx)
-		assert.Nil(t, db)
+		db, err := ResolveMongo(ctx, fallback, "testdb")
 
-		// GetMongoForTenant should return error for nil db
-		result, err := GetMongoForTenant(ctx)
-		assert.Nil(t, result)
-		assert.ErrorIs(t, err, ErrTenantContextRequired)
+		assert.Nil(t, db)
+		assert.Error(t, err)
 	})
 }
