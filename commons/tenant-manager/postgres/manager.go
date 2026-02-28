@@ -256,6 +256,7 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*libPostg
 
 			go func() {
 				defer p.revalidateWG.Done()
+
 				p.revalidatePoolSettings(tenantID)
 			}() //#nosec G118 -- intentional: revalidatePoolSettings creates its own timeout context; must not use request-scoped context as this outlives the request
 		}
