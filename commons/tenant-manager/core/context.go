@@ -20,6 +20,13 @@ type MongoFallback interface {
 	GetDB(ctx context.Context) (*mongo.Client, error)
 }
 
+// MultiTenantChecker is implemented by managers that know whether they are
+// running in multi-tenant mode. The postgres, mongo and rabbitmq managers
+// already satisfy this interface via their IsMultiTenant() method.
+type MultiTenantChecker interface {
+	IsMultiTenant() bool
+}
+
 // Context key types for storing tenant information
 type contextKey string
 
@@ -77,9 +84,15 @@ func GetTenantPGConnectionFromContext(ctx context.Context) dbresolver.DB {
 
 // ResolvePostgres returns the PostgreSQL connection from context (multi-tenant)
 // or falls back to the static connection (single-tenant).
+// When the fallback implements MultiTenantChecker and reports multi-tenant mode,
+// the function returns ErrTenantContextRequired instead of falling back silently.
 func ResolvePostgres(ctx context.Context, fallback PostgresFallback) (dbresolver.DB, error) {
 	if db := GetTenantPGConnectionFromContext(ctx); db != nil {
 		return db, nil
+	}
+
+	if checker, ok := fallback.(MultiTenantChecker); ok && checker.IsMultiTenant() {
+		return nil, ErrTenantContextRequired
 	}
 
 	return fallback.GetDB()
@@ -103,9 +116,15 @@ func ContextWithModulePGConnection(ctx context.Context, moduleName string, db db
 // ResolveModuleDB returns the module-specific PostgreSQL connection from context (multi-tenant)
 // or falls back to the static connection (single-tenant).
 // moduleName identifies the module (e.g., "onboarding", "transaction").
+// When the fallback implements MultiTenantChecker and reports multi-tenant mode,
+// the function returns ErrTenantContextRequired instead of falling back silently.
 func ResolveModuleDB(ctx context.Context, moduleName string, fallback PostgresFallback) (dbresolver.DB, error) {
 	if db, ok := ctx.Value(moduleContextKey(moduleName)).(dbresolver.DB); ok && db != nil {
 		return db, nil
+	}
+
+	if checker, ok := fallback.(MultiTenantChecker); ok && checker.IsMultiTenant() {
+		return nil, ErrTenantContextRequired
 	}
 
 	return fallback.GetDB()
@@ -128,9 +147,15 @@ func GetMongoFromContext(ctx context.Context) *mongo.Database {
 
 // ResolveMongo returns the MongoDB database from context (multi-tenant)
 // or falls back to the static connection (single-tenant).
+// When the fallback implements MultiTenantChecker and reports multi-tenant mode,
+// the function returns ErrTenantContextRequired instead of falling back silently.
 func ResolveMongo(ctx context.Context, fallback MongoFallback, dbName string) (*mongo.Database, error) {
 	if db, ok := ctx.Value(tenantMongoKey).(*mongo.Database); ok && db != nil {
 		return db, nil
+	}
+
+	if checker, ok := fallback.(MultiTenantChecker); ok && checker.IsMultiTenant() {
+		return nil, ErrTenantContextRequired
 	}
 
 	client, err := fallback.GetDB(ctx)
