@@ -192,6 +192,11 @@ type MultiTenantConsumer struct {
 
 	// parentCtx is the context passed to Run(), stored for use by ensureConsumerStarted.
 	parentCtx context.Context
+
+	// syncLoopCancel cancels the context used by the sync loop goroutine.
+	// Stored in Run() and called in Close() to ensure the sync loop stops
+	// even when the original context (e.g., context.Background()) is never cancelled.
+	syncLoopCancel context.CancelFunc
 }
 
 // NewMultiTenantConsumer creates a new MultiTenantConsumer.
@@ -298,7 +303,12 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 		knownCount)
 
 	// Background polling - ASYNC
-	go c.runSyncLoop(ctx)
+	// Create a derived context so Close() can stop the sync loop even when
+	// the caller passes a never-cancelled context (e.g., context.Background()).
+	syncCtx, syncCancel := context.WithCancel(ctx) //#nosec G118 -- cancel is stored in c.syncLoopCancel and called by Close()
+	c.syncLoopCancel = syncCancel
+
+	go c.syncActiveTenants(syncCtx)
 
 	return nil
 }
@@ -342,9 +352,9 @@ func (c *MultiTenantConsumer) discoverTenants(ctx context.Context) {
 	logger.Infof("discovered %d tenants (lazy mode, no consumers started)", len(tenantIDs))
 }
 
-// runSyncLoop periodically syncs the tenant list.
+// syncActiveTenants periodically syncs the tenant list.
 // Each iteration creates its own span to avoid accumulating events on a long-lived span.
-func (c *MultiTenantConsumer) runSyncLoop(ctx context.Context) {
+func (c *MultiTenantConsumer) syncActiveTenants(ctx context.Context) {
 	logger, _, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
 
 	ticker := time.NewTicker(c.config.SyncInterval)
@@ -707,11 +717,11 @@ func (c *MultiTenantConsumer) startTenantConsumer(parentCtx context.Context, ten
 	logger.Infof("starting consumer for tenant: %s", tenantID)
 
 	// Spawn consumer goroutine
-	go c.consumeForTenant(tenantCtx, tenantID)
+	go c.superviseTenantQueues(tenantCtx, tenantID)
 }
 
-// consumeForTenant runs the consumer loop for a single tenant.
-func (c *MultiTenantConsumer) consumeForTenant(ctx context.Context, tenantID string) {
+// superviseTenantQueues runs the consumer loop for a single tenant.
+func (c *MultiTenantConsumer) superviseTenantQueues(ctx context.Context, tenantID string) {
 	// Set tenantID in context for handlers
 	ctx = core.SetTenantIDInContext(ctx, tenantID)
 
@@ -735,7 +745,7 @@ func (c *MultiTenantConsumer) consumeForTenant(ctx context.Context, tenantID str
 
 	// Consume from each registered queue
 	for queueName, handler := range handlers {
-		go c.consumeQueue(ctx, tenantID, queueName, handler, logger)
+		go c.consumeTenantQueue(ctx, tenantID, queueName, handler, logger)
 	}
 
 	// Wait for context cancellation
@@ -743,10 +753,10 @@ func (c *MultiTenantConsumer) consumeForTenant(ctx context.Context, tenantID str
 	logger.Info("consumer stopped for tenant")
 }
 
-// consumeQueue consumes messages from a specific queue for a tenant.
+// consumeTenantQueue consumes messages from a specific queue for a tenant.
 // Each connection attempt creates a short-lived span to avoid accumulating events
 // on a long-lived span that would grow unbounded over the consumer's lifetime.
-func (c *MultiTenantConsumer) consumeQueue(
+func (c *MultiTenantConsumer) consumeTenantQueue(
 	ctx context.Context,
 	tenantID string,
 	queueName string,
@@ -1092,6 +1102,12 @@ func (c *MultiTenantConsumer) Close() error {
 	defer c.mu.Unlock()
 
 	c.closed = true
+
+	// Cancel the sync loop context first, so the background polling goroutine
+	// stops before we tear down individual tenant consumers.
+	if c.syncLoopCancel != nil {
+		c.syncLoopCancel()
+	}
 
 	// Cancel all tenant contexts
 	for tenantID, cancel := range c.tenants {

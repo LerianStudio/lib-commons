@@ -460,7 +460,7 @@ func TestMultiTenantConsumer_Run_StartupLog(t *testing.T) {
 	}
 }
 
-// TestMultiTenantConsumer_Run_BackgroundSyncStarts verifies that runSyncLoop
+// TestMultiTenantConsumer_Run_BackgroundSyncStarts verifies that syncActiveTenants
 // is started in the background after Run() returns.
 // Covers: AC-T4
 func TestMultiTenantConsumer_Run_BackgroundSyncStarts(t *testing.T) {
@@ -517,7 +517,7 @@ func TestMultiTenantConsumer_Run_BackgroundSyncStarts(t *testing.T) {
 			consumer.mu.RUnlock()
 
 			assert.Equal(t, tt.expectedCount, knownCount,
-				"background runSyncLoop should discover tenants added after Run(), found %d", knownCount)
+				"background syncActiveTenants should discover tenants added after Run(), found %d", knownCount)
 
 			cancel()
 			consumer.Close()

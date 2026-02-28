@@ -64,7 +64,7 @@ func (m *pingableDB) Stats() sql.DBStats                 { return sql.DBStats{} 
 
 // trackingDB extends pingableDB to track SetMaxOpenConns/SetMaxIdleConns calls.
 // Fields use int32 with atomic operations to avoid data races when written
-// by async goroutines (revalidateSettings) and read by test assertions.
+// by async goroutines (revalidatePoolSettings) and read by test assertions.
 type trackingDB struct {
 	pingableDB
 	maxOpenConns int32
@@ -1499,8 +1499,8 @@ func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
 			assert.Equal(t, 1, statsBefore.TotalConnections,
 				"should have 1 connection before revalidation")
 
-			// Trigger revalidateSettings directly
-			manager.revalidateSettings("tenant-suspended")
+			// Trigger revalidatePoolSettings directly
+			manager.revalidatePoolSettings("tenant-suspended")
 
 			if tt.expectEviction {
 				// Verify the connection was evicted
