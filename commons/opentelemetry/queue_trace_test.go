@@ -67,7 +67,7 @@ func TestQueueTraceContextPropagation(t *testing.T) {
 
 func TestQueueTraceContextWithNilHeaders(t *testing.T) {
 	ctx := context.Background()
-	
+
 	// Test extraction with nil headers
 	extractedCtx := ExtractQueueTraceContext(ctx, nil)
 	if extractedCtx != ctx {

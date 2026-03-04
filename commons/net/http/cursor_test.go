@@ -710,7 +710,7 @@ func TestBugReproduction(t *testing.T) {
 
 			t.Logf("Back to first page: isFirstPage=%v, hasPagination=%v, pointsNext=%v", isFirstPage, hasPagination, pointsNext)
 			t.Logf("Back to first page result: next=%s, prev=%s", pagination.Next, pagination.Prev)
-			
+
 			assert.NotEmpty(t, pagination.Next, "First page (back from prev) should have next_cursor")
 			assert.Empty(t, pagination.Prev, "First page (back from prev) should NOT have prev_cursor - CORRECT")
 		})
@@ -732,7 +732,7 @@ func TestBugReproduction(t *testing.T) {
 
 			t.Logf("WRONG: Back to first page: isFirstPage=%v, hasPagination=%v, pointsNext=%v", isFirstPage, hasPagination, pointsNext)
 			t.Logf("WRONG: Back to first page result: next=%s, prev=%s", pagination.Next, pagination.Prev)
-			
+
 			assert.NotEmpty(t, pagination.Next, "First page should have next_cursor")
 			assert.NotEmpty(t, pagination.Prev, "BUG: First page incorrectly has prev_cursor because isFirstPage=false")
 		})

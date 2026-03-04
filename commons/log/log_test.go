@@ -90,7 +90,7 @@ func TestParseLevel(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			level, err := ParseLevel(tt.input)
-			
+
 			if tt.expectError {
 				assert.Error(t, err)
 			} else {
@@ -103,46 +103,46 @@ func TestParseLevel(t *testing.T) {
 
 func TestGoLogger_IsLevelEnabled(t *testing.T) {
 	tests := []struct {
-		name         string
-		loggerLevel  LogLevel
-		checkLevel   LogLevel
-		expected     bool
+		name        string
+		loggerLevel LogLevel
+		checkLevel  LogLevel
+		expected    bool
 	}{
 		{
-			name:         "debug logger - check debug",
-			loggerLevel:  DebugLevel,
-			checkLevel:   DebugLevel,
-			expected:     true,
+			name:        "debug logger - check debug",
+			loggerLevel: DebugLevel,
+			checkLevel:  DebugLevel,
+			expected:    true,
 		},
 		{
-			name:         "debug logger - check info",
-			loggerLevel:  DebugLevel,
-			checkLevel:   InfoLevel,
-			expected:     true,
+			name:        "debug logger - check info",
+			loggerLevel: DebugLevel,
+			checkLevel:  InfoLevel,
+			expected:    true,
 		},
 		{
-			name:         "info logger - check debug",
-			loggerLevel:  InfoLevel,
-			checkLevel:   DebugLevel,
-			expected:     false,
+			name:        "info logger - check debug",
+			loggerLevel: InfoLevel,
+			checkLevel:  DebugLevel,
+			expected:    false,
 		},
 		{
-			name:         "info logger - check info",
-			loggerLevel:  InfoLevel,
-			checkLevel:   InfoLevel,
-			expected:     true,
+			name:        "info logger - check info",
+			loggerLevel: InfoLevel,
+			checkLevel:  InfoLevel,
+			expected:    true,
 		},
 		{
-			name:         "error logger - check warn",
-			loggerLevel:  ErrorLevel,
-			checkLevel:   WarnLevel,
-			expected:     false,
+			name:        "error logger - check warn",
+			loggerLevel: ErrorLevel,
+			checkLevel:  WarnLevel,
+			expected:    false,
 		},
 		{
-			name:         "error logger - check error",
-			loggerLevel:  ErrorLevel,
-			checkLevel:   ErrorLevel,
-			expected:     true,
+			name:        "error logger - check error",
+			loggerLevel: ErrorLevel,
+			checkLevel:  ErrorLevel,
+			expected:    true,
 		},
 	}
 
@@ -161,28 +161,28 @@ func TestGoLogger_Info(t *testing.T) {
 	defer log.SetOutput(log.Writer()) // Reset to default
 
 	tests := []struct {
-		name          string
-		loggerLevel   LogLevel
-		message       string
-		expectLogged  bool
+		name         string
+		loggerLevel  LogLevel
+		message      string
+		expectLogged bool
 	}{
 		{
-			name:          "info level - log info",
-			loggerLevel:   InfoLevel,
-			message:       "test info message",
-			expectLogged:  true,
+			name:         "info level - log info",
+			loggerLevel:  InfoLevel,
+			message:      "test info message",
+			expectLogged: true,
 		},
 		{
-			name:          "warn level - log info",
-			loggerLevel:   WarnLevel,
-			message:       "test info message",
-			expectLogged:  false,
+			name:         "warn level - log info",
+			loggerLevel:  WarnLevel,
+			message:      "test info message",
+			expectLogged: false,
 		},
 		{
-			name:          "debug level - log info",
-			loggerLevel:   DebugLevel,
-			message:       "test info message",
-			expectLogged:  true,
+			name:         "debug level - log info",
+			loggerLevel:  DebugLevel,
+			message:      "test info message",
+			expectLogged: true,
 		},
 	}
 
@@ -190,9 +190,9 @@ func TestGoLogger_Info(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			buf.Reset()
 			logger := &GoLogger{Level: tt.loggerLevel}
-			
+
 			logger.Info(tt.message)
-			
+
 			output := buf.String()
 			if tt.expectLogged {
 				assert.Contains(t, output, tt.message)
@@ -209,10 +209,10 @@ func TestGoLogger_Infof(t *testing.T) {
 	defer log.SetOutput(log.Writer())
 
 	logger := &GoLogger{Level: InfoLevel}
-	
+
 	buf.Reset()
 	logger.Infof("test %s message %d", "formatted", 123)
-	
+
 	output := buf.String()
 	assert.Contains(t, output, "test formatted message 123")
 }
@@ -223,10 +223,10 @@ func TestGoLogger_Infoln(t *testing.T) {
 	defer log.SetOutput(log.Writer())
 
 	logger := &GoLogger{Level: InfoLevel}
-	
+
 	buf.Reset()
 	logger.Infoln("test", "info", "line")
-	
+
 	output := buf.String()
 	assert.Contains(t, output, "test info line")
 }
@@ -237,28 +237,28 @@ func TestGoLogger_Error(t *testing.T) {
 	defer log.SetOutput(log.Writer())
 
 	tests := []struct {
-		name          string
-		loggerLevel   LogLevel
-		message       string
-		expectLogged  bool
+		name         string
+		loggerLevel  LogLevel
+		message      string
+		expectLogged bool
 	}{
 		{
-			name:          "error level - log error",
-			loggerLevel:   ErrorLevel,
-			message:       "test error message",
-			expectLogged:  true,
+			name:         "error level - log error",
+			loggerLevel:  ErrorLevel,
+			message:      "test error message",
+			expectLogged: true,
 		},
 		{
-			name:          "fatal level - log error",
-			loggerLevel:   FatalLevel,
-			message:       "test error message",
-			expectLogged:  false,
+			name:         "fatal level - log error",
+			loggerLevel:  FatalLevel,
+			message:      "test error message",
+			expectLogged: false,
 		},
 		{
-			name:          "debug level - log error",
-			loggerLevel:   DebugLevel,
-			message:       "test error message",
-			expectLogged:  true,
+			name:         "debug level - log error",
+			loggerLevel:  DebugLevel,
+			message:      "test error message",
+			expectLogged: true,
 		},
 	}
 
@@ -266,9 +266,9 @@ func TestGoLogger_Error(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			buf.Reset()
 			logger := &GoLogger{Level: tt.loggerLevel}
-			
+
 			logger.Error(tt.message)
-			
+
 			output := buf.String()
 			if tt.expectLogged {
 				assert.Contains(t, output, tt.message)
@@ -285,28 +285,28 @@ func TestGoLogger_Warn(t *testing.T) {
 	defer log.SetOutput(log.Writer())
 
 	tests := []struct {
-		name          string
-		loggerLevel   LogLevel
-		message       string
-		expectLogged  bool
+		name         string
+		loggerLevel  LogLevel
+		message      string
+		expectLogged bool
 	}{
 		{
-			name:          "warn level - log warn",
-			loggerLevel:   WarnLevel,
-			message:       "test warn message",
-			expectLogged:  true,
+			name:         "warn level - log warn",
+			loggerLevel:  WarnLevel,
+			message:      "test warn message",
+			expectLogged: true,
 		},
 		{
-			name:          "error level - log warn",
-			loggerLevel:   ErrorLevel,
-			message:       "test warn message",
-			expectLogged:  false,
+			name:         "error level - log warn",
+			loggerLevel:  ErrorLevel,
+			message:      "test warn message",
+			expectLogged: false,
 		},
 		{
-			name:          "info level - log warn",
-			loggerLevel:   InfoLevel,
-			message:       "test warn message",
-			expectLogged:  true,
+			name:         "info level - log warn",
+			loggerLevel:  InfoLevel,
+			message:      "test warn message",
+			expectLogged: true,
 		},
 	}
 
@@ -314,9 +314,9 @@ func TestGoLogger_Warn(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			buf.Reset()
 			logger := &GoLogger{Level: tt.loggerLevel}
-			
+
 			logger.Warn(tt.message)
-			
+
 			output := buf.String()
 			if tt.expectLogged {
 				assert.Contains(t, output, tt.message)
@@ -333,22 +333,22 @@ func TestGoLogger_Debug(t *testing.T) {
 	defer log.SetOutput(log.Writer())
 
 	tests := []struct {
-		name          string
-		loggerLevel   LogLevel
-		message       string
-		expectLogged  bool
+		name         string
+		loggerLevel  LogLevel
+		message      string
+		expectLogged bool
 	}{
 		{
-			name:          "debug level - log debug",
-			loggerLevel:   DebugLevel,
-			message:       "test debug message",
-			expectLogged:  true,
+			name:         "debug level - log debug",
+			loggerLevel:  DebugLevel,
+			message:      "test debug message",
+			expectLogged: true,
 		},
 		{
-			name:          "info level - log debug",
-			loggerLevel:   InfoLevel,
-			message:       "test debug message",
-			expectLogged:  false,
+			name:         "info level - log debug",
+			loggerLevel:  InfoLevel,
+			message:      "test debug message",
+			expectLogged: false,
 		},
 	}
 
@@ -356,9 +356,9 @@ func TestGoLogger_Debug(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			buf.Reset()
 			logger := &GoLogger{Level: tt.loggerLevel}
-			
+
 			logger.Debug(tt.message)
-			
+
 			output := buf.String()
 			if tt.expectLogged {
 				assert.Contains(t, output, tt.message)
@@ -375,12 +375,12 @@ func TestGoLogger_WithFields(t *testing.T) {
 	defer log.SetOutput(log.Writer())
 
 	logger := &GoLogger{Level: InfoLevel}
-	
+
 	// Test with fields - Note: current implementation doesn't actually use fields
 	buf.Reset()
 	loggerWithFields := logger.WithFields("key1", "value1", "key2", 123)
 	loggerWithFields.Info("test message")
-	
+
 	output := buf.String()
 	assert.Contains(t, output, "test message")
 	// Current implementation doesn't include fields in output
@@ -389,13 +389,13 @@ func TestGoLogger_WithFields(t *testing.T) {
 	// assert.Contains(t, output, "value1")
 	// assert.Contains(t, output, "key2")
 	// assert.Contains(t, output, "123")
-	
+
 	// Verify original logger is not modified
 	buf.Reset()
 	logger.Info("original logger")
 	output = buf.String()
 	assert.Contains(t, output, "original logger")
-	
+
 	// Verify WithFields returns a new logger instance
 	assert.NotEqual(t, logger, loggerWithFields)
 }
@@ -435,17 +435,17 @@ func TestGoLogger_FormattedMethods(t *testing.T) {
 	defer log.SetOutput(log.Writer())
 
 	logger := &GoLogger{Level: DebugLevel}
-	
+
 	// Test Errorf
 	buf.Reset()
 	logger.Errorf("error: %s %d", "test", 42)
 	assert.Contains(t, buf.String(), "error: test 42")
-	
+
 	// Test Warnf
 	buf.Reset()
 	logger.Warnf("warning: %s %d", "test", 42)
 	assert.Contains(t, buf.String(), "warning: test 42")
-	
+
 	// Test Debugf
 	buf.Reset()
 	logger.Debugf("debug: %s %d", "test", 42)
@@ -458,17 +458,17 @@ func TestGoLogger_LineMethods(t *testing.T) {
 	defer log.SetOutput(log.Writer())
 
 	logger := &GoLogger{Level: DebugLevel}
-	
+
 	// Test Errorln
 	buf.Reset()
 	logger.Errorln("error", "line", "test")
 	assert.Contains(t, buf.String(), "error line test")
-	
+
 	// Test Warnln
 	buf.Reset()
 	logger.Warnln("warn", "line", "test")
 	assert.Contains(t, buf.String(), "warn line test")
-	
+
 	// Test Debugln
 	buf.Reset()
 	logger.Debugln("debug", "line", "test")
@@ -478,38 +478,38 @@ func TestGoLogger_LineMethods(t *testing.T) {
 func TestNoneLogger(t *testing.T) {
 	// NoneLogger should not panic and should return itself for chaining methods
 	logger := &NoneLogger{}
-	
+
 	// Test all methods don't panic
 	assert.NotPanics(t, func() {
 		logger.Info("test")
 		logger.Infof("test %s", "format")
 		logger.Infoln("test", "line")
-		
+
 		logger.Error("test")
 		logger.Errorf("test %s", "format")
 		logger.Errorln("test", "line")
-		
+
 		logger.Warn("test")
 		logger.Warnf("test %s", "format")
 		logger.Warnln("test", "line")
-		
+
 		logger.Debug("test")
 		logger.Debugf("test %s", "format")
 		logger.Debugln("test", "line")
-		
+
 		logger.Fatal("test")
 		logger.Fatalf("test %s", "format")
 		logger.Fatalln("test", "line")
 	})
-	
+
 	// Test WithFields returns itself
 	result := logger.WithFields("key", "value")
 	assert.Equal(t, logger, result)
-	
+
 	// Test WithDefaultMessageTemplate returns itself
 	result = logger.WithDefaultMessageTemplate("template")
 	assert.Equal(t, logger, result)
-	
+
 	// Test Sync returns nil
 	err := logger.Sync()
 	assert.NoError(t, err)
@@ -522,7 +522,7 @@ func TestGoLogger_ComplexScenarios(t *testing.T) {
 
 	// Test chaining methods
 	logger := &GoLogger{Level: InfoLevel}
-	
+
 	// Note: Current implementation has issues with chaining
 	// WithDefaultMessageTemplate doesn't preserve Level
 	buf.Reset()
@@ -530,7 +530,7 @@ func TestGoLogger_ComplexScenarios(t *testing.T) {
 	loggerWithFields := logger.WithFields("request_id", "123", "user_id", "456")
 	// Since WithDefaultMessageTemplate doesn't preserve level, we can't chain it
 	loggerWithFields.Info("API: request processed")
-	
+
 	output := buf.String()
 	// Current implementation doesn't use fields or template
 	assert.Contains(t, output, "API: request processed")
@@ -539,7 +539,7 @@ func TestGoLogger_ComplexScenarios(t *testing.T) {
 	// assert.Contains(t, output, "123")
 	// assert.Contains(t, output, "user_id")
 	// assert.Contains(t, output, "456")
-	
+
 	// Test multiple arguments
 	buf.Reset()
 	logger.Info("multiple", "arguments", 123, true, 45.67)
@@ -579,7 +579,7 @@ func TestLogLevel_String(t *testing.T) {
 // We just ensure they exist and are callable
 func TestGoLogger_FatalMethods(t *testing.T) {
 	logger := &GoLogger{Level: FatalLevel}
-	
+
 	// Just verify the methods exist and are callable
 	// We can't actually call them because they would exit the test
 	assert.NotNil(t, logger.Fatal)
@@ -593,24 +593,24 @@ func TestGoLogger_EdgeCases(t *testing.T) {
 	defer log.SetOutput(log.Writer())
 
 	logger := &GoLogger{Level: InfoLevel}
-	
+
 	// Test with nil arguments
 	buf.Reset()
 	logger.Info(nil)
 	assert.Contains(t, buf.String(), "<nil>")
-	
+
 	// Test with empty string
 	buf.Reset()
 	logger.Info("")
 	// Empty string still produces output with timestamp
 	assert.NotEmpty(t, buf.String())
-	
+
 	// Test with special characters
 	buf.Reset()
 	logger.Info("special chars: \n\t\r")
 	output := buf.String()
 	assert.Contains(t, output, "special chars:")
-	
+
 	// Test format with wrong number of arguments
 	buf.Reset()
 	logger.Infof("format %s", "only one arg")

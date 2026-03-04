@@ -15,13 +15,13 @@ import (
 func TestGracefulShutdownWithGRPCServer(t *testing.T) {
 	// Create a new gRPC server for testing
 	grpcServer := grpc.NewServer()
-	
+
 	// Create a graceful shutdown handler with the gRPC server
 	gs := server.NewGracefulShutdown(nil, grpcServer, nil, nil, nil)
-	
+
 	// Assert that the graceful shutdown handler was created successfully
 	assert.NotNil(t, gs, "NewGracefulShutdown should return a non-nil instance with gRPC server")
-	
+
 	// Test that we can create the shutdown handler without panicking
 	// We don't test the actual signal handling as that would require OS signals
 	assert.NotPanics(t, func() {
@@ -32,9 +32,9 @@ func TestGracefulShutdownWithGRPCServer(t *testing.T) {
 
 func TestServerManagerWithGRPCServer(t *testing.T) {
 	grpcServer := grpc.NewServer()
-	
+
 	sm := server.NewServerManager(nil, nil, nil).
 		WithGRPCServer(grpcServer, ":50051")
-	
+
 	assert.NotNil(t, sm, "ServerManager with gRPC server should not be nil")
 }

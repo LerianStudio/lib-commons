@@ -26,11 +26,11 @@ var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServ
 // ServerManager handles the graceful shutdown of multiple server types.
 // It can manage HTTP servers, gRPC servers, or both simultaneously.
 type ServerManager struct {
-	httpServer     *fiber.App
-	grpcServer     *grpc.Server
-	licenseClient  *license.ManagerShutdown
-	telemetry      *opentelemetry.Telemetry
-	logger         log.Logger
+	httpServer         *fiber.App
+	grpcServer         *grpc.Server
+	licenseClient      *license.ManagerShutdown
+	telemetry          *opentelemetry.Telemetry
+	logger             log.Logger
 	httpAddress        string
 	grpcAddress        string
 	serversStarted     chan struct{}

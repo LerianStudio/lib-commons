@@ -56,7 +56,7 @@ type Manager struct {
 
 	mu             sync.RWMutex
 	connections    map[string]*mongolib.MongoConnection
-	databaseNames  map[string]string    // tenantID -> database name (cached from createConnection)
+	databaseNames  map[string]string // tenantID -> database name (cached from createConnection)
 	closed         bool
 	maxConnections int                  // soft limit for pool size (0 = unlimited)
 	idleTimeout    time.Duration        // how long before a connection is eligible for eviction

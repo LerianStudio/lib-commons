@@ -22,7 +22,7 @@ func TestMultiTenantConsumer_Run_CloseStopsSyncLoop(t *testing.T) {
 		dummyRabbitMQManager(),
 		redisClient,
 		MultiTenantConfig{
-			SyncInterval: 100 * time.Millisecond,
+			SyncInterval:  100 * time.Millisecond,
 			PrefetchCount: 10,
 			Service:       testServiceName,
 		},
@@ -67,7 +67,7 @@ func TestMultiTenantConsumer_Run_CancelAndCloseNoLeak(t *testing.T) {
 		dummyRabbitMQManager(),
 		redisClient,
 		MultiTenantConfig{
-			SyncInterval: 100 * time.Millisecond,
+			SyncInterval:  100 * time.Millisecond,
 			PrefetchCount: 10,
 			Service:       testServiceName,
 		},

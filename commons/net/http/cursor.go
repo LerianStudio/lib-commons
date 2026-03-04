@@ -162,7 +162,7 @@ func CalculateCursor(
 			if err != nil {
 				return CursorPagination{}, err
 			}
-			
+
 			pagination.Prev = base64.StdEncoding.EncodeToString(cursorBytesPrev)
 		}
 	}
