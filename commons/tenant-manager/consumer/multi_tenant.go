@@ -3,6 +3,7 @@ package consumer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"sync"
@@ -591,6 +592,13 @@ func (c *MultiTenantConsumer) revalidateConnectionSettings(ctx context.Context) 
 		if err != nil {
 			// If tenant service was suspended/purged, stop consumer and close connections
 			if core.IsTenantSuspendedError(err) {
+				c.evictSuspendedTenant(ctx, tenantID, logger)
+				continue
+			}
+
+			// If tenant was deleted (404), stop consumer and close connections
+			if errors.Is(err, core.ErrTenantNotFound) {
+				logger.Infof("tenant %s not found during revalidation, evicting consumer", tenantID)
 				c.evictSuspendedTenant(ctx, tenantID, logger)
 				continue
 			}
