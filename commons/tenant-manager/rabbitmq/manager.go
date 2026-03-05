@@ -165,10 +165,10 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 	// Fetch tenant config from Tenant Manager
 	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
 	if err != nil {
-		logger.Errorf("failed to get tenant config: %v", err)
+		logger.Errorf("failed to get tenant config: tenantID=%s, service=%s, error=%v", tenantID, p.service, err)
 		libOpentelemetry.HandleSpanError(&span, "failed to get tenant config", err)
 
-		return nil, fmt.Errorf("failed to get tenant config: %w", err)
+		return nil, fmt.Errorf("failed to get tenant config for tenant %s: %w", tenantID, err)
 	}
 
 	// Get RabbitMQ config
@@ -188,7 +188,7 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 	// Create connection
 	conn, err := amqp.Dial(uri)
 	if err != nil {
-		logger.Errorf("failed to connect to RabbitMQ: %v", err)
+		logger.Errorf("failed to connect to RabbitMQ: tenantID=%s, vhost=%s, error=%v", tenantID, rabbitConfig.VHost, err)
 		libOpentelemetry.HandleSpanError(&span, "failed to connect to RabbitMQ", err)
 
 		return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
