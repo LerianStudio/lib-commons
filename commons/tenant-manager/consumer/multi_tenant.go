@@ -537,6 +537,10 @@ func (c *MultiTenantConsumer) stopRemovedTenants(ctx context.Context, removedTen
 				logger.Warnf("failed to close MongoDB connection for tenant %s: %v", tenantID, err)
 			}
 		}
+
+		// Clean up per-tenant sync.Map entries
+		c.consumerLocks.Delete(tenantID)
+		c.retryState.Delete(tenantID)
 	}
 }
 
@@ -627,7 +631,12 @@ func (c *MultiTenantConsumer) evictSuspendedTenant(ctx context.Context, tenantID
 	}
 
 	delete(c.knownTenants, tenantID)
+	delete(c.tenantAbsenceCount, tenantID)
 	c.mu.Unlock()
+
+	// Clean up per-tenant sync.Map entries
+	c.consumerLocks.Delete(tenantID)
+	c.retryState.Delete(tenantID)
 
 	// Close database connections for suspended tenant
 	if c.postgres != nil {
@@ -1120,6 +1129,17 @@ func (c *MultiTenantConsumer) Close() error {
 	c.tenants = make(map[string]context.CancelFunc)
 	c.knownTenants = make(map[string]bool)
 	c.tenantAbsenceCount = make(map[string]int)
+
+	// Clean up sync.Map entries
+	c.consumerLocks.Range(func(key, _ any) bool {
+		c.consumerLocks.Delete(key)
+		return true
+	})
+
+	c.retryState.Range(func(key, _ any) bool {
+		c.retryState.Delete(key)
+		return true
+	})
 
 	c.logger.Info("multi-tenant consumer closed")
 
