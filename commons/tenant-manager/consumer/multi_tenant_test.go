@@ -947,6 +947,12 @@ func TestMultiTenantConsumer_Close(t *testing.T) {
 				PrefetchCount:   10,
 			}, testutil.NewMockLogger())
 
+			// Pre-populate sync.Map entries to verify they are cleaned on Close
+			consumer.consumerLocks.Store("tenant-x", &sync.Mutex{})
+			consumer.consumerLocks.Store("tenant-y", &sync.Mutex{})
+			consumer.retryState.Store("tenant-x", &retryStateEntry{})
+			consumer.retryState.Store("tenant-y", &retryStateEntry{})
+
 			// First close
 			err := consumer.Close()
 			assert.NoError(t, err, "Close() should not return error")
@@ -956,6 +962,21 @@ func TestMultiTenantConsumer_Close(t *testing.T) {
 			assert.Empty(t, consumer.tenants, "tenants map should be cleared after Close()")
 			assert.Empty(t, consumer.knownTenants, "knownTenants map should be cleared after Close()")
 			consumer.mu.RUnlock()
+
+			// Verify sync.Map entries are cleaned
+			lockCount := 0
+			consumer.consumerLocks.Range(func(_, _ any) bool {
+				lockCount++
+				return true
+			})
+			assert.Equal(t, 0, lockCount, "consumerLocks should be empty after Close()")
+
+			retryCount := 0
+			consumer.retryState.Range(func(_, _ any) bool {
+				retryCount++
+				return true
+			})
+			assert.Equal(t, 0, retryCount, "retryState should be empty after Close()")
 
 			if tt.name == "close_is_idempotent_on_double_call" {
 				// Second close should not panic
@@ -1019,6 +1040,19 @@ func TestMultiTenantConsumer_SyncTenants_RemovesTenants(t *testing.T) {
 			assert.Equal(t, len(tt.initialTenants), initialCount,
 				"initial discovery should find all tenants")
 
+			// Pre-populate consumerLocks, retryState, and active consumers for
+			// all initial tenants to verify they are cleaned up when tenants are removed.
+			// Active consumers (c.tenants) are required because stopRemovedTenants only
+			// processes tenants that have a running consumer.
+			consumer.mu.Lock()
+			for _, id := range tt.initialTenants {
+				consumer.consumerLocks.Store(id, &sync.Mutex{})
+				consumer.retryState.Store(id, &retryStateEntry{})
+				_, cancel := context.WithCancel(ctx)
+				consumer.tenants[id] = cancel
+			}
+			consumer.mu.Unlock()
+
 			// Update Redis to reflect post-sync state (remove some tenants)
 			mr.Del(testActiveTenantsKey)
 			for _, id := range tt.postSyncTenants {
@@ -1038,6 +1072,26 @@ func TestMultiTenantConsumer_SyncTenants_RemovesTenants(t *testing.T) {
 
 			assert.Equal(t, tt.expectedKnownAfterSync, afterSyncCount,
 				"after %d syncs, knownTenants should reflect updated tenant list", absentSyncsBeforeRemoval)
+
+			// Verify consumerLocks and retryState are cleaned for removed tenants
+			removedSet := make(map[string]bool, len(tt.initialTenants))
+			for _, id := range tt.initialTenants {
+				removedSet[id] = true
+			}
+
+			for _, id := range tt.postSyncTenants {
+				delete(removedSet, id)
+			}
+
+			for id := range removedSet {
+				_, lockExists := consumer.consumerLocks.Load(id)
+				assert.False(t, lockExists,
+					"consumerLocks should be cleaned for removed tenant %q", id)
+
+				_, retryExists := consumer.retryState.Load(id)
+				assert.False(t, retryExists,
+					"retryState should be cleaned for removed tenant %q", id)
+			}
 		})
 	}
 }
@@ -3044,6 +3098,13 @@ func TestMultiTenantConsumer_RevalidateSettings_StopsSuspendedTenant(t *testing.
 			)
 			consumer.pmClient = tmClient
 
+			// Pre-populate per-tenant sync.Map entries for the suspended tenant
+			// to verify they are cleaned up during eviction.
+			consumer.consumerLocks.Store(tt.suspendedTenantID, &sync.Mutex{})
+			consumer.retryState.Store(tt.suspendedTenantID, &retryStateEntry{})
+			consumer.consumerLocks.Store(tt.healthyTenantID, &sync.Mutex{})
+			consumer.retryState.Store(tt.healthyTenantID, &retryStateEntry{})
+
 			// Simulate active tenants with cancel functions
 			consumer.mu.Lock()
 			suspendedCanceled := false
@@ -3057,6 +3118,8 @@ func TestMultiTenantConsumer_RevalidateSettings_StopsSuspendedTenant(t *testing.
 			consumer.tenants[tt.healthyTenantID] = cancelHealthy
 			consumer.knownTenants[tt.suspendedTenantID] = true
 			consumer.knownTenants[tt.healthyTenantID] = true
+			// Pre-populate tenantAbsenceCount for the suspended tenant
+			consumer.tenantAbsenceCount[tt.suspendedTenantID] = 1
 			consumer.mu.Unlock()
 
 			ctx := context.Background()
@@ -3094,6 +3157,31 @@ func TestMultiTenantConsumer_RevalidateSettings_StopsSuspendedTenant(t *testing.
 			// Verify that the healthy tenant was still revalidated
 			assert.True(t, logger.ContainsSubstring("revalidated connection settings for 1/"),
 				"should log revalidation summary for the healthy tenant")
+
+			// Verify sync.Map entries are cleaned for the suspended tenant
+			_, lockExists := consumer.consumerLocks.Load(tt.suspendedTenantID)
+			assert.False(t, lockExists,
+				"consumerLocks should be cleaned for suspended tenant %q", tt.suspendedTenantID)
+
+			_, retryExists := consumer.retryState.Load(tt.suspendedTenantID)
+			assert.False(t, retryExists,
+				"retryState should be cleaned for suspended tenant %q", tt.suspendedTenantID)
+
+			// Verify tenantAbsenceCount is cleaned for the suspended tenant
+			consumer.mu.RLock()
+			_, absenceExists := consumer.tenantAbsenceCount[tt.suspendedTenantID]
+			consumer.mu.RUnlock()
+			assert.False(t, absenceExists,
+				"tenantAbsenceCount should be cleaned for suspended tenant %q", tt.suspendedTenantID)
+
+			// Verify healthy tenant's sync.Map entries are NOT cleaned
+			_, healthyLockExists := consumer.consumerLocks.Load(tt.healthyTenantID)
+			assert.True(t, healthyLockExists,
+				"consumerLocks should still exist for healthy tenant %q", tt.healthyTenantID)
+
+			_, healthyRetryExists := consumer.retryState.Load(tt.healthyTenantID)
+			assert.True(t, healthyRetryExists,
+				"retryState should still exist for healthy tenant %q", tt.healthyTenantID)
 		})
 	}
 }
