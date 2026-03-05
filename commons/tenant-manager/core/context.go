@@ -130,6 +130,47 @@ func ResolveModuleDB(ctx context.Context, moduleName string, fallback PostgresFa
 	return fallback.GetDB()
 }
 
+// moduleMongoContextKey generates a dynamic context key for a given module's MongoDB database.
+// This allows any module to store its own MongoDB database in context
+// without requiring changes to lib-commons.
+func moduleMongoContextKey(moduleName string) contextKey {
+	return contextKey("tenantMongo:" + moduleName)
+}
+
+// ContextWithModuleMongo stores a module-specific MongoDB database in context.
+// moduleName identifies the module (e.g., "onboarding", "transaction").
+// This is used in multi-module processes where each module needs its own MongoDB database
+// in context to avoid cross-module conflicts.
+func ContextWithModuleMongo(ctx context.Context, moduleName string, db *mongo.Database) context.Context {
+	return context.WithValue(ctx, moduleMongoContextKey(moduleName), db)
+}
+
+// ResolveModuleMongo returns the module-specific MongoDB database from context (multi-tenant)
+// or falls back to the static connection (single-tenant).
+// moduleName identifies the module (e.g., "onboarding", "transaction").
+// Unlike ResolveMongo (which uses a global key), this function always requires the module name
+// and resolves from a module-scoped context key — ensuring correct isolation between modules.
+// NO fallback to the global tenantMongo key — the module MUST be explicitly provided.
+func ResolveModuleMongo(ctx context.Context, moduleName string, fallback MongoFallback, dbName string) (*mongo.Database, error) {
+	// Try module-scoped key — the ONLY multi-tenant path
+	if db, ok := ctx.Value(moduleMongoContextKey(moduleName)).(*mongo.Database); ok && db != nil {
+		return db, nil
+	}
+
+	// If multi-tenant mode, fail — module key is mandatory
+	if checker, ok := fallback.(MultiTenantChecker); ok && checker.IsMultiTenant() {
+		return nil, ErrTenantContextRequired
+	}
+
+	// Single-tenant fallback
+	client, err := fallback.GetDB(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.Database(strings.ToLower(dbName)), nil
+}
+
 // ContextWithTenantMongo stores the MongoDB database in the context.
 func ContextWithTenantMongo(ctx context.Context, db *mongo.Database) context.Context {
 	return context.WithValue(ctx, tenantMongoKey, db)

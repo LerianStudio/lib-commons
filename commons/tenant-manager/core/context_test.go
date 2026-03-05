@@ -485,3 +485,194 @@ func TestResolveMongo(t *testing.T) {
 		assert.Error(t, err)
 	})
 }
+
+func TestContextWithModuleMongo(t *testing.T) {
+	t.Run("stores and retrieves module-specific MongoDB database", func(t *testing.T) {
+		ctx := context.Background()
+		moduleDB := &mongo.Database{}
+
+		ctx = ContextWithModuleMongo(ctx, "onboarding", moduleDB)
+
+		// Verify it can be retrieved via the module-scoped key
+		db, ok := ctx.Value(moduleMongoContextKey("onboarding")).(*mongo.Database)
+
+		assert.True(t, ok)
+		assert.Equal(t, moduleDB, db)
+	})
+
+	t.Run("does not affect global tenantMongo key", func(t *testing.T) {
+		ctx := context.Background()
+		moduleDB := &mongo.Database{}
+
+		ctx = ContextWithModuleMongo(ctx, "onboarding", moduleDB)
+
+		// The global key should remain nil
+		globalDB := GetMongoFromContext(ctx)
+
+		assert.Nil(t, globalDB)
+	})
+}
+
+func TestResolveModuleMongo(t *testing.T) {
+	t.Run("returns module MongoDB from context when present", func(t *testing.T) {
+		ctx := context.Background()
+		moduleDB := &mongo.Database{}
+		fallback := &mockMongoFallback{err: assert.AnError}
+
+		ctx = ContextWithModuleMongo(ctx, "onboarding", moduleDB)
+		db, err := ResolveModuleMongo(ctx, "onboarding", fallback, "testdb")
+
+		assert.NoError(t, err)
+		assert.Equal(t, moduleDB, db)
+	})
+
+	t.Run("falls back to static connection in single-tenant mode", func(t *testing.T) {
+		ctx := context.Background()
+		fallback := &mockMongoFallback{err: assert.AnError}
+
+		db, err := ResolveModuleMongo(ctx, "onboarding", fallback, "testdb")
+
+		assert.Nil(t, db)
+		assert.Error(t, err)
+	})
+
+	t.Run("returns ErrTenantContextRequired when multi-tenant and no module key in context", func(t *testing.T) {
+		ctx := context.Background()
+		fallback := &mockMultiTenantMongoFallback{
+			mockMongoFallback: mockMongoFallback{client: &mongo.Client{}},
+			multiTenant:       true,
+		}
+
+		db, err := ResolveModuleMongo(ctx, "onboarding", fallback, "testdb")
+
+		assert.Nil(t, db)
+		assert.ErrorIs(t, err, ErrTenantContextRequired)
+	})
+
+	t.Run("does not fall back to global tenantMongo key in multi-tenant mode", func(t *testing.T) {
+		ctx := context.Background()
+		globalDB := &mongo.Database{}
+		fallback := &mockMultiTenantMongoFallback{
+			mockMongoFallback: mockMongoFallback{client: &mongo.Client{}},
+			multiTenant:       true,
+		}
+
+		// Set global key but NOT module-scoped key
+		ctx = ContextWithTenantMongo(ctx, globalDB)
+		db, err := ResolveModuleMongo(ctx, "onboarding", fallback, "testdb")
+
+		assert.Nil(t, db)
+		assert.ErrorIs(t, err, ErrTenantContextRequired)
+	})
+
+	t.Run("returns context connection when multi-tenant and module key present", func(t *testing.T) {
+		ctx := context.Background()
+		moduleDB := &mongo.Database{}
+		fallback := &mockMultiTenantMongoFallback{
+			mockMongoFallback: mockMongoFallback{client: &mongo.Client{}},
+			multiTenant:       true,
+		}
+
+		ctx = ContextWithModuleMongo(ctx, "onboarding", moduleDB)
+		db, err := ResolveModuleMongo(ctx, "onboarding", fallback, "testdb")
+
+		assert.NoError(t, err)
+		assert.Equal(t, moduleDB, db)
+	})
+
+	t.Run("falls back normally when multi-tenant is false", func(t *testing.T) {
+		ctx := context.Background()
+		fallback := &mockMultiTenantMongoFallback{
+			mockMongoFallback: mockMongoFallback{err: assert.AnError},
+			multiTenant:       false,
+		}
+
+		db, err := ResolveModuleMongo(ctx, "onboarding", fallback, "testdb")
+
+		assert.Nil(t, db)
+		assert.Error(t, err)
+	})
+
+	t.Run("falls back normally when fallback does not implement MultiTenantChecker", func(t *testing.T) {
+		ctx := context.Background()
+		fallback := &mockMongoFallback{err: assert.AnError}
+
+		db, err := ResolveModuleMongo(ctx, "onboarding", fallback, "testdb")
+
+		assert.Nil(t, db)
+		assert.Error(t, err)
+	})
+
+	t.Run("falls back when nil mongo stored in module context", func(t *testing.T) {
+		ctx := context.Background()
+		fallback := &mockMongoFallback{err: assert.AnError}
+
+		var nilDB *mongo.Database
+		ctx = ContextWithModuleMongo(ctx, "onboarding", nilDB)
+
+		db, err := ResolveModuleMongo(ctx, "onboarding", fallback, "testdb")
+
+		assert.Nil(t, db)
+		assert.Error(t, err)
+	})
+}
+
+func TestModuleMongoIsolation(t *testing.T) {
+	t.Run("two modules have different databases and each resolves its own", func(t *testing.T) {
+		ctx := context.Background()
+		onbDB := &mongo.Database{}
+		txnDB := &mongo.Database{}
+		fallback := &mockMultiTenantMongoFallback{
+			mockMongoFallback: mockMongoFallback{client: &mongo.Client{}},
+			multiTenant:       true,
+		}
+
+		ctx = ContextWithModuleMongo(ctx, "onboarding", onbDB)
+		ctx = ContextWithModuleMongo(ctx, "transaction", txnDB)
+
+		resolvedOnb, onbErr := ResolveModuleMongo(ctx, "onboarding", fallback, "testdb")
+		resolvedTxn, txnErr := ResolveModuleMongo(ctx, "transaction", fallback, "testdb")
+
+		assert.NoError(t, onbErr)
+		assert.NoError(t, txnErr)
+		assert.Same(t, onbDB, resolvedOnb)
+		assert.Same(t, txnDB, resolvedTxn)
+		assert.NotSame(t, resolvedOnb, resolvedTxn)
+	})
+
+	t.Run("module mongo connections are independent of global mongo connection", func(t *testing.T) {
+		ctx := context.Background()
+		globalDB := &mongo.Database{}
+		moduleDB := &mongo.Database{}
+		fallback := &mockMongoFallback{err: assert.AnError}
+
+		ctx = ContextWithTenantMongo(ctx, globalDB)
+		ctx = ContextWithModuleMongo(ctx, "mymodule", moduleDB)
+
+		genDB, genErr := ResolveMongo(ctx, fallback, "testdb")
+		modDB, modErr := ResolveModuleMongo(ctx, "mymodule", fallback, "testdb")
+
+		assert.NoError(t, genErr)
+		assert.NoError(t, modErr)
+		assert.Same(t, globalDB, genDB)
+		assert.Same(t, moduleDB, modDB)
+		assert.NotSame(t, genDB, modDB)
+	})
+
+	t.Run("requesting wrong module returns error in multi-tenant mode", func(t *testing.T) {
+		ctx := context.Background()
+		onbDB := &mongo.Database{}
+		fallback := &mockMultiTenantMongoFallback{
+			mockMongoFallback: mockMongoFallback{client: &mongo.Client{}},
+			multiTenant:       true,
+		}
+
+		ctx = ContextWithModuleMongo(ctx, "onboarding", onbDB)
+
+		// Request a different module that was not set
+		db, err := ResolveModuleMongo(ctx, "transaction", fallback, "testdb")
+
+		assert.Nil(t, db)
+		assert.ErrorIs(t, err, ErrTenantContextRequired)
+	})
+}
