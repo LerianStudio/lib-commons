@@ -365,6 +365,16 @@ func (m *MultiPoolMiddleware) resolveCrossModuleConnections(
 		}
 
 		ctx = core.ContextWithModulePGConnection(ctx, route.module, db)
+
+		if route.mongoPool != nil {
+			mongoDB, mongoErr := route.mongoPool.GetDatabaseForTenant(ctx, tenantID)
+			if mongoErr != nil {
+				logger.Warnf("cross-module MongoDB resolution failed: module=%s, tenantID=%s, error=%v",
+					route.module, tenantID, mongoErr)
+			} else {
+				ctx = core.ContextWithModuleMongo(ctx, route.module, mongoDB)
+			}
+		}
 	}
 
 	// Also resolve default route if it differs from matched
@@ -387,6 +397,16 @@ func (m *MultiPoolMiddleware) resolveCrossModuleConnections(
 		}
 
 		ctx = core.ContextWithModulePGConnection(ctx, m.defaultRoute.module, db)
+
+		if m.defaultRoute.mongoPool != nil {
+			mongoDB, mongoErr := m.defaultRoute.mongoPool.GetDatabaseForTenant(ctx, tenantID)
+			if mongoErr != nil {
+				logger.Warnf("cross-module MongoDB resolution failed: module=%s, tenantID=%s, error=%v",
+					m.defaultRoute.module, tenantID, mongoErr)
+			} else {
+				ctx = core.ContextWithModuleMongo(ctx, m.defaultRoute.module, mongoDB)
+			}
+		}
 	}
 
 	return ctx
@@ -410,7 +430,8 @@ func (m *MultiPoolMiddleware) resolveMongoConnection(
 		return ctx, err
 	}
 
-	ctx = core.ContextWithTenantMongo(ctx, mongoDB)
+	ctx = core.ContextWithModuleMongo(ctx, route.module, mongoDB)
+	ctx = core.ContextWithTenantMongo(ctx, mongoDB) // backward compatibility for consumers not yet using ResolveModuleMongo
 
 	return ctx, nil
 }
