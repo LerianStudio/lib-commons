@@ -15,12 +15,22 @@ import (
 	libCommons "github.com/LerianStudio/lib-commons/v3/commons"
 	libLog "github.com/LerianStudio/lib-commons/v3/commons/log"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/cache"
 	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
 )
 
 // maxResponseBodySize is the maximum allowed response body size (10 MB).
 // This prevents unbounded memory allocation from malicious or malformed responses.
 const maxResponseBodySize = 10 * 1024 * 1024
+
+// defaultCacheTTL is the default time-to-live for cached tenant config entries.
+// Entries expire after this duration, triggering a fresh HTTP fetch on the next access.
+const defaultCacheTTL = 1 * time.Hour
+
+// cacheKeyPrefix is the prefix used for tenant config cache keys.
+// The full key format is "tenant-settings:{tenantOrgID}:{service}", matching
+// the key format used by the tenant-manager Redis cache for debugging clarity.
+const cacheKeyPrefix = "tenant-settings"
 
 // cbState represents the circuit breaker state.
 type cbState int
@@ -45,10 +55,18 @@ type TenantSummary struct {
 // It fetches tenant-specific database configurations from the Tenant Manager API.
 // An optional circuit breaker can be enabled via WithCircuitBreaker to fail fast
 // when the Tenant Manager service is unresponsive.
+//
+// By default, Client creates an in-memory cache to avoid repeated HTTP roundtrips
+// for tenant config lookups. The cache can be customized via WithCache or disabled
+// by providing a no-op implementation.
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	logger     libLog.Logger
+
+	// Cache for tenant config responses. Defaults to InMemoryCache if not set via WithCache.
+	cache    cache.ConfigCache
+	cacheTTL time.Duration
 
 	// Circuit breaker fields. When cbThreshold is 0, the circuit breaker is disabled (default).
 	cbMu          sync.Mutex
@@ -57,6 +75,22 @@ type Client struct {
 	cbState       cbState
 	cbThreshold   int           // consecutive failures before opening (0 = disabled)
 	cbTimeout     time.Duration // how long to stay open before transitioning to half-open
+}
+
+// getConfigOpts holds options for a single GetTenantConfig call.
+type getConfigOpts struct {
+	skipCache bool
+}
+
+// GetConfigOption is a functional option for individual GetTenantConfig calls.
+type GetConfigOption func(*getConfigOpts)
+
+// WithSkipCache forces GetTenantConfig to bypass the cache and fetch directly
+// from the Tenant Manager API. The response is still written back to the cache.
+func WithSkipCache() GetConfigOption {
+	return func(o *getConfigOpts) {
+		o.skipCache = true
+	}
 }
 
 // ClientOption is a functional option for configuring the Client.
@@ -100,6 +134,25 @@ func WithCircuitBreaker(threshold int, timeout time.Duration) ClientOption {
 	}
 }
 
+// WithCache sets a custom cache implementation (e.g., a Redis-backed cache for
+// distributed caching across replicas). If not called, the client creates an
+// InMemoryCache automatically in NewClient.
+func WithCache(cc cache.ConfigCache) ClientOption {
+	return func(c *Client) {
+		if cc != nil {
+			c.cache = cc
+		}
+	}
+}
+
+// WithCacheTTL sets the TTL for cached tenant config entries.
+// Default: 1 hour. A TTL of zero or negative disables expiration.
+func WithCacheTTL(ttl time.Duration) ClientOption {
+	return func(c *Client) {
+		c.cacheTTL = ttl
+	}
+}
+
 // NewClient creates a new Tenant Manager client.
 // Parameters:
 //   - baseURL: The base URL of the Tenant Manager service (e.g., "http://tenant-manager:8080")
@@ -124,11 +177,19 @@ func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) *Clie
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		logger: logger,
+		logger:   logger,
+		cacheTTL: defaultCacheTTL,
 	}
 
 	for _, opt := range opts {
 		opt(c)
+	}
+
+	// Create default in-memory cache if none was provided via WithCache.
+	// This ensures every client benefits from caching without requiring
+	// additional configuration or infrastructure dependencies.
+	if c.cache == nil {
+		c.cache = cache.NewInMemoryCache()
 	}
 
 	return c
@@ -203,11 +264,39 @@ func isServerError(statusCode int) bool {
 // GetTenantConfig fetches tenant configuration from the Tenant Manager API.
 // The API endpoint is: GET {baseURL}/tenants/{tenantID}/services/{service}/settings
 // Returns the fully resolved tenant configuration with database credentials.
-func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) (*core.TenantConfig, error) {
+//
+// By default, results are served from the in-memory cache when available.
+// Use WithSkipCache() to bypass the cache and force a fresh HTTP fetch.
+// Only successful (200 OK) responses are cached; errors are never cached.
+func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, opts ...GetConfigOption) (*core.TenantConfig, error) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_tenant_config")
 	defer span.End()
+
+	// Apply per-call options
+	callOpts := &getConfigOpts{}
+	for _, opt := range opts {
+		opt(callOpts)
+	}
+
+	// Build cache key matching the tenant-manager Redis key format for debugging clarity
+	cacheKey := fmt.Sprintf("%s:%s:%s", cacheKeyPrefix, tenantID, service)
+
+	// Try cache first (unless explicitly skipped)
+	if !callOpts.skipCache {
+		if cached, cacheErr := c.cache.Get(ctx, cacheKey); cacheErr == nil {
+			var config core.TenantConfig
+			if jsonErr := json.Unmarshal([]byte(cached), &config); jsonErr == nil {
+				logger.Debugf("Cache hit for tenant config: tenantID=%s, service=%s", tenantID, service)
+
+				return &config, nil
+			}
+
+			// Invalid cached data: log and fall through to HTTP
+			logger.Warnf("Invalid cached tenant config (will refetch): tenantID=%s, service=%s", tenantID, service)
+		}
+	}
 
 	// Check circuit breaker before making the HTTP request
 	if err := c.checkCircuitBreaker(); err != nil {
@@ -318,9 +407,40 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string) 
 	}
 
 	c.recordSuccess()
+
+	// Cache the successful response. Marshal errors are non-fatal (cache miss next time).
+	if configJSON, marshalErr := json.Marshal(&config); marshalErr == nil {
+		_ = c.cache.Set(ctx, cacheKey, string(configJSON), c.cacheTTL)
+	}
+
 	logger.Infof("Successfully fetched tenant config: tenantID=%s, slug=%s", tenantID, config.TenantSlug)
 
 	return &config, nil
+}
+
+// InvalidateConfig removes the cached tenant config for the given tenant and service.
+// This should be called when a config change event is received (e.g., via RabbitMQ)
+// to ensure the next GetTenantConfig call fetches fresh data from the API.
+func (c *Client) InvalidateConfig(ctx context.Context, tenantID, service string) error {
+	cacheKey := fmt.Sprintf("%s:%s:%s", cacheKeyPrefix, tenantID, service)
+
+	return c.cache.Del(ctx, cacheKey)
+}
+
+// Close releases resources held by the client, including stopping the background
+// cleanup goroutine of the default InMemoryCache. If the cache implementation does
+// not implement io.Closer, Close is a no-op.
+// Close should be called when the client is no longer needed to prevent goroutine leaks.
+func (c *Client) Close() error {
+	type closer interface {
+		Close() error
+	}
+
+	if cc, ok := c.cache.(closer); ok {
+		return cc.Close()
+	}
+
+	return nil
 }
 
 // GetActiveTenantsByService fetches active tenants for a service from Tenant Manager.

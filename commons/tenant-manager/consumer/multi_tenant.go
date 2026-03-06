@@ -1149,6 +1149,12 @@ func (c *MultiTenantConsumer) Close() error {
 		return true
 	})
 
+	// Close the Tenant Manager client to release its cache resources
+	// (e.g., stop the InMemoryCache background cleanup goroutine).
+	if c.pmClient != nil {
+		_ = c.pmClient.Close()
+	}
+
 	c.logger.Info("multi-tenant consumer closed")
 
 	return nil
