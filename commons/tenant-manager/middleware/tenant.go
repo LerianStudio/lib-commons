@@ -157,6 +157,30 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 					fmt.Sprintf("tenant service is %s", suspErr.Status))
 			}
 
+			if errors.Is(err, core.ErrTenantNotFound) {
+				logger.Warnf("tenant not found: tenantID=%s", tenantID)
+				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant not found", err)
+
+				return notFoundError(c, "TENANT_NOT_FOUND", "Tenant Not Found",
+					fmt.Sprintf("tenant not found: %s", tenantID))
+			}
+
+			if errors.Is(err, core.ErrServiceNotConfigured) {
+				logger.Warnf("service not configured for tenant: tenantID=%s", tenantID)
+				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "service not configured", err)
+
+				return unprocessableError(c, "SERVICE_NOT_CONFIGURED", "Service Not Configured",
+					fmt.Sprintf("service not configured for tenant: %s", tenantID))
+			}
+
+			if core.IsTenantNotProvisionedError(err) {
+				logger.Warnf("tenant database not provisioned: tenantID=%s", tenantID)
+				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant not provisioned", err)
+
+				return unprocessableError(c, "TENANT_NOT_PROVISIONED", "Tenant Not Provisioned",
+					fmt.Sprintf("tenant database not provisioned: %s", tenantID))
+			}
+
 			logger.Errorf("failed to get tenant PostgreSQL connection: %v", err)
 			libOpentelemetry.HandleSpanError(&span, "failed to get tenant PostgreSQL connection", err)
 
@@ -187,6 +211,30 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 
 				return forbiddenError(c, "0131", "Service Suspended",
 					fmt.Sprintf("tenant service is %s", suspErr.Status))
+			}
+
+			if errors.Is(err, core.ErrTenantNotFound) {
+				logger.Warnf("tenant not found: tenantID=%s", tenantID)
+				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant not found", err)
+
+				return notFoundError(c, "TENANT_NOT_FOUND", "Tenant Not Found",
+					fmt.Sprintf("tenant not found: %s", tenantID))
+			}
+
+			if errors.Is(err, core.ErrServiceNotConfigured) {
+				logger.Warnf("service not configured for tenant: tenantID=%s", tenantID)
+				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "service not configured", err)
+
+				return unprocessableError(c, "SERVICE_NOT_CONFIGURED", "Service Not Configured",
+					fmt.Sprintf("service not configured for tenant: %s", tenantID))
+			}
+
+			if core.IsTenantNotProvisionedError(err) {
+				logger.Warnf("tenant database not provisioned: tenantID=%s", tenantID)
+				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant not provisioned", err)
+
+				return unprocessableError(c, "TENANT_NOT_PROVISIONED", "Tenant Not Provisioned",
+					fmt.Sprintf("tenant database not provisioned: %s", tenantID))
 			}
 
 			logger.Errorf("failed to get tenant MongoDB connection: %v", err)
@@ -245,6 +293,27 @@ func unauthorizedError(c *fiber.Ctx, code, message string) error {
 	return c.Status(http.StatusUnauthorized).JSON(fiber.Map{
 		"code":    code,
 		"title":   "Unauthorized",
+		"message": message,
+	})
+}
+
+// notFoundError sends an HTTP 404 Not Found response.
+// Used when the tenant is not found in Tenant Manager.
+func notFoundError(c *fiber.Ctx, code, title, message string) error {
+	return c.Status(http.StatusNotFound).JSON(fiber.Map{
+		"code":    code,
+		"title":   title,
+		"message": message,
+	})
+}
+
+// unprocessableError sends an HTTP 422 Unprocessable Entity response.
+// Used when the request is valid but cannot be processed due to tenant state
+// (e.g., service not configured, database not provisioned).
+func unprocessableError(c *fiber.Ctx, code, title, message string) error {
+	return c.Status(http.StatusUnprocessableEntity).JSON(fiber.Map{
+		"code":    code,
+		"title":   title,
 		"message": message,
 	})
 }

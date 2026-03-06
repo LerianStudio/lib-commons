@@ -3,6 +3,8 @@ package middleware
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -282,4 +284,199 @@ func TestTenantMiddleware_WithTenantDB(t *testing.T) {
 		assert.True(t, nextCalled, "next handler should have been called")
 		assert.Equal(t, "tenant-abc", capturedTenantID, "tenantId should be injected in context")
 	})
+}
+
+func TestTenantMiddleware_ErrorResponses(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		handler      func(c *fiber.Ctx) error
+		expectedCode int
+		expectedBody string
+	}{
+		{
+			name: "notFoundError returns 404 with TENANT_NOT_FOUND",
+			handler: func(c *fiber.Ctx) error {
+				return notFoundError(c, "TENANT_NOT_FOUND", "Tenant Not Found",
+					"tenant not found: tenant-123")
+			},
+			expectedCode: http.StatusNotFound,
+			expectedBody: "TENANT_NOT_FOUND",
+		},
+		{
+			name: "unprocessableError returns 422 with SERVICE_NOT_CONFIGURED",
+			handler: func(c *fiber.Ctx) error {
+				return unprocessableError(c, "SERVICE_NOT_CONFIGURED", "Service Not Configured",
+					"service not configured for tenant: tenant-123")
+			},
+			expectedCode: http.StatusUnprocessableEntity,
+			expectedBody: "SERVICE_NOT_CONFIGURED",
+		},
+		{
+			name: "unprocessableError returns 422 with TENANT_NOT_PROVISIONED",
+			handler: func(c *fiber.Ctx) error {
+				return unprocessableError(c, "TENANT_NOT_PROVISIONED", "Tenant Not Provisioned",
+					"tenant database not provisioned: tenant-123")
+			},
+			expectedCode: http.StatusUnprocessableEntity,
+			expectedBody: "TENANT_NOT_PROVISIONED",
+		},
+		{
+			name: "forbiddenError returns 403 for suspended tenant",
+			handler: func(c *fiber.Ctx) error {
+				return forbiddenError(c, "0131", "Service Suspended",
+					"tenant service is suspended")
+			},
+			expectedCode: http.StatusForbidden,
+			expectedBody: "Service Suspended",
+		},
+		{
+			name: "internalServerError returns 500 for unknown errors",
+			handler: func(c *fiber.Ctx) error {
+				return internalServerError(c, "TENANT_DB_ERROR", "Failed to resolve tenant database",
+					"unexpected error")
+			},
+			expectedCode: http.StatusInternalServerError,
+			expectedBody: "TENANT_DB_ERROR",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app := fiber.New()
+			app.Get("/test", tt.handler)
+
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+
+			resp, err := app.Test(req, -1)
+			require.NoError(t, err)
+
+			defer resp.Body.Close()
+
+			assert.Equal(t, tt.expectedCode, resp.StatusCode)
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			assert.Contains(t, string(body), tt.expectedBody)
+		})
+	}
+}
+
+func TestTenantMiddleware_ErrorTypeDetection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		err          error
+		expectedCode int
+		expectedBody string
+	}{
+		{
+			name:         "ErrTenantNotFound produces 404",
+			err:          core.ErrTenantNotFound,
+			expectedCode: http.StatusNotFound,
+			expectedBody: "TENANT_NOT_FOUND",
+		},
+		{
+			name:         "wrapped ErrTenantNotFound produces 404",
+			err:          fmt.Errorf("pg connection failed: %w", core.ErrTenantNotFound),
+			expectedCode: http.StatusNotFound,
+			expectedBody: "TENANT_NOT_FOUND",
+		},
+		{
+			name:         "ErrServiceNotConfigured produces 422",
+			err:          core.ErrServiceNotConfigured,
+			expectedCode: http.StatusUnprocessableEntity,
+			expectedBody: "SERVICE_NOT_CONFIGURED",
+		},
+		{
+			name:         "wrapped ErrServiceNotConfigured produces 422",
+			err:          fmt.Errorf("lookup failed: %w", core.ErrServiceNotConfigured),
+			expectedCode: http.StatusUnprocessableEntity,
+			expectedBody: "SERVICE_NOT_CONFIGURED",
+		},
+		{
+			name:         "ErrTenantNotProvisioned produces 422",
+			err:          core.ErrTenantNotProvisioned,
+			expectedCode: http.StatusUnprocessableEntity,
+			expectedBody: "TENANT_NOT_PROVISIONED",
+		},
+		{
+			name:         "42P01 PostgreSQL error produces 422",
+			err:          errors.New("ERROR: relation \"organization\" does not exist (SQLSTATE 42P01)"),
+			expectedCode: http.StatusUnprocessableEntity,
+			expectedBody: "TENANT_NOT_PROVISIONED",
+		},
+		{
+			name:         "TenantSuspendedError produces 403",
+			err:          &core.TenantSuspendedError{TenantID: "t1", Status: "suspended"},
+			expectedCode: http.StatusForbidden,
+			expectedBody: "Service Suspended",
+		},
+		{
+			name:         "generic error produces 500",
+			err:          errors.New("something unexpected"),
+			expectedCode: http.StatusInternalServerError,
+			expectedBody: "TENANT_DB_ERROR",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			app := fiber.New()
+			app.Get("/test", func(c *fiber.Ctx) error {
+				// Simulate the error classification logic from WithTenantDB
+				return classifyConnectionError(c, tt.err, "tenant-123")
+			})
+
+			req := httptest.NewRequest(http.MethodGet, "/test", nil)
+
+			resp, err := app.Test(req, -1)
+			require.NoError(t, err)
+
+			defer resp.Body.Close()
+
+			assert.Equal(t, tt.expectedCode, resp.StatusCode)
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			assert.Contains(t, string(body), tt.expectedBody)
+		})
+	}
+}
+
+// classifyConnectionError replicates the error classification logic from
+// WithTenantDB's PostgreSQL/MongoDB error blocks. This function is used
+// exclusively in tests to validate error-to-HTTP-status mapping without
+// requiring a real database manager.
+func classifyConnectionError(c *fiber.Ctx, err error, tenantID string) error {
+	var suspErr *core.TenantSuspendedError
+	if errors.As(err, &suspErr) {
+		return forbiddenError(c, "0131", "Service Suspended",
+			fmt.Sprintf("tenant service is %s", suspErr.Status))
+	}
+
+	if errors.Is(err, core.ErrTenantNotFound) {
+		return notFoundError(c, "TENANT_NOT_FOUND", "Tenant Not Found",
+			fmt.Sprintf("tenant not found: %s", tenantID))
+	}
+
+	if errors.Is(err, core.ErrServiceNotConfigured) {
+		return unprocessableError(c, "SERVICE_NOT_CONFIGURED", "Service Not Configured",
+			fmt.Sprintf("service not configured for tenant: %s", tenantID))
+	}
+
+	if core.IsTenantNotProvisionedError(err) {
+		return unprocessableError(c, "TENANT_NOT_PROVISIONED", "Tenant Not Provisioned",
+			fmt.Sprintf("tenant database not provisioned: %s", tenantID))
+	}
+
+	return internalServerError(c, "TENANT_DB_ERROR", "Failed to resolve tenant database", err.Error())
 }
