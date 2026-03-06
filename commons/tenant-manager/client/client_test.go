@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	tmcache "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/cache"
 	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/internal/testutil"
 	"github.com/stretchr/testify/assert"
@@ -658,4 +659,263 @@ func TestIsCircuitBreakerOpenError(t *testing.T) {
 			assert.Equal(t, tt.expected, core.IsCircuitBreakerOpenError(tt.err))
 		})
 	}
+}
+
+// --- Cache integration tests ---
+
+func TestNewClient_DefaultCache(t *testing.T) {
+	t.Run("creates InMemoryCache by default", func(t *testing.T) {
+		c := NewClient("http://localhost:8080", testutil.NewMockLogger())
+
+		assert.NotNil(t, c.cache, "cache should be initialized by default")
+		assert.Equal(t, defaultCacheTTL, c.cacheTTL)
+	})
+
+	t.Run("respects WithCache option", func(t *testing.T) {
+		customCache := tmcache.NewInMemoryCache()
+		defer func() { require.NoError(t, customCache.Close()) }()
+
+		c := NewClient("http://localhost:8080", testutil.NewMockLogger(), WithCache(customCache))
+
+		assert.Equal(t, customCache, c.cache, "custom cache should be used")
+	})
+
+	t.Run("WithCache nil preserves default", func(t *testing.T) {
+		c := NewClient("http://localhost:8080", testutil.NewMockLogger(), WithCache(nil))
+
+		assert.NotNil(t, c.cache, "nil cache should create default InMemoryCache")
+	})
+
+	t.Run("respects WithCacheTTL option", func(t *testing.T) {
+		customTTL := 30 * time.Minute
+		c := NewClient("http://localhost:8080", testutil.NewMockLogger(), WithCacheTTL(customTTL))
+
+		assert.Equal(t, customTTL, c.cacheTTL)
+	})
+}
+
+func TestClient_Cache_HitReturnsCachedConfig(t *testing.T) {
+	var requestCount atomic.Int32
+
+	config := newTestTenantConfig()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(config))
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, testutil.NewMockLogger())
+	ctx := context.Background()
+
+	// First call: cache miss, hits HTTP
+	result1, err := c.GetTenantConfig(ctx, "tenant-123", "ledger")
+	require.NoError(t, err)
+	assert.Equal(t, "tenant-123", result1.ID)
+	assert.Equal(t, int32(1), requestCount.Load(), "first call should hit the server")
+
+	// Second call: cache hit, no HTTP
+	result2, err := c.GetTenantConfig(ctx, "tenant-123", "ledger")
+	require.NoError(t, err)
+	assert.Equal(t, "tenant-123", result2.ID)
+	assert.Equal(t, "test-tenant", result2.TenantSlug)
+	assert.Equal(t, int32(1), requestCount.Load(), "second call should be served from cache")
+}
+
+func TestClient_Cache_MissFallsBackToHTTP(t *testing.T) {
+	var requestCount atomic.Int32
+
+	config := newTestTenantConfig()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(config))
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, testutil.NewMockLogger())
+	ctx := context.Background()
+
+	// Each call with different tenant IDs should hit the server
+	_, err := c.GetTenantConfig(ctx, "tenant-A", "ledger")
+	require.NoError(t, err)
+
+	_, err = c.GetTenantConfig(ctx, "tenant-B", "ledger")
+	require.NoError(t, err)
+
+	assert.Equal(t, int32(2), requestCount.Load(), "different tenants should cause separate HTTP calls")
+}
+
+func TestClient_Cache_SkipCacheOption(t *testing.T) {
+	var requestCount atomic.Int32
+
+	config := newTestTenantConfig()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(config))
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, testutil.NewMockLogger())
+	ctx := context.Background()
+
+	// First call populates cache
+	_, err := c.GetTenantConfig(ctx, "tenant-123", "ledger")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), requestCount.Load())
+
+	// Second call with WithSkipCache should hit server again
+	result, err := c.GetTenantConfig(ctx, "tenant-123", "ledger", WithSkipCache())
+	require.NoError(t, err)
+	assert.Equal(t, "tenant-123", result.ID)
+	assert.Equal(t, int32(2), requestCount.Load(), "WithSkipCache should bypass cache")
+
+	// Third call without skip should still hit cache (refreshed by second call)
+	_, err = c.GetTenantConfig(ctx, "tenant-123", "ledger")
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), requestCount.Load(), "cache should be refreshed from skip-cache call")
+}
+
+func TestClient_Cache_ErrorsNotCached(t *testing.T) {
+	var requestCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, testutil.NewMockLogger())
+	ctx := context.Background()
+
+	// Multiple calls returning errors should always hit the server
+	for i := 0; i < 3; i++ {
+		_, err := c.GetTenantConfig(ctx, "missing-tenant", "ledger")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, core.ErrTenantNotFound)
+	}
+
+	assert.Equal(t, int32(3), requestCount.Load(), "error responses should not be cached")
+}
+
+func TestClient_Cache_ServerErrorsNotCached(t *testing.T) {
+	var requestCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("internal error"))
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, testutil.NewMockLogger())
+	ctx := context.Background()
+
+	// 5xx errors should not be cached
+	for i := 0; i < 3; i++ {
+		_, err := c.GetTenantConfig(ctx, "tenant-123", "ledger")
+		require.Error(t, err)
+	}
+
+	assert.Equal(t, int32(3), requestCount.Load(), "server error responses should not be cached")
+}
+
+func TestClient_Cache_SuspendedErrorsNotCached(t *testing.T) {
+	var requestCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		require.NoError(t, json.NewEncoder(w).Encode(map[string]string{
+			"code":   "TS-SUSPENDED",
+			"error":  "service ledger is suspended for this tenant",
+			"status": "suspended",
+		}))
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, testutil.NewMockLogger())
+	ctx := context.Background()
+
+	// 403 suspended errors should not be cached
+	for i := 0; i < 3; i++ {
+		_, err := c.GetTenantConfig(ctx, "tenant-123", "ledger")
+		require.Error(t, err)
+		assert.True(t, core.IsTenantSuspendedError(err))
+	}
+
+	assert.Equal(t, int32(3), requestCount.Load(), "suspended error responses should not be cached")
+}
+
+func TestClient_InvalidateConfig(t *testing.T) {
+	var requestCount atomic.Int32
+
+	config := newTestTenantConfig()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(config))
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, testutil.NewMockLogger())
+	ctx := context.Background()
+
+	// First call: populates cache
+	_, err := c.GetTenantConfig(ctx, "tenant-123", "ledger")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), requestCount.Load())
+
+	// Second call: served from cache
+	_, err = c.GetTenantConfig(ctx, "tenant-123", "ledger")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), requestCount.Load())
+
+	// Invalidate the cache entry
+	err = c.InvalidateConfig(ctx, "tenant-123", "ledger")
+	require.NoError(t, err)
+
+	// Third call: cache miss, hits HTTP again
+	_, err = c.GetTenantConfig(ctx, "tenant-123", "ledger")
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), requestCount.Load(), "after invalidation should hit the server again")
+}
+
+func TestClient_Cache_DifferentKeysPerTenantService(t *testing.T) {
+	var requestCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount.Add(1)
+		// Return different config based on URL path
+		config := newMinimalTenantConfig()
+		config.Service = r.URL.Query().Get("service")
+
+		w.Header().Set("Content-Type", "application/json")
+		require.NoError(t, json.NewEncoder(w).Encode(config))
+	}))
+	defer server.Close()
+
+	c := NewClient(server.URL, testutil.NewMockLogger())
+	ctx := context.Background()
+
+	// Same tenant, different services should have separate cache entries
+	_, err := c.GetTenantConfig(ctx, "tenant-123", "ledger")
+	require.NoError(t, err)
+
+	_, err = c.GetTenantConfig(ctx, "tenant-123", "transaction")
+	require.NoError(t, err)
+
+	assert.Equal(t, int32(2), requestCount.Load(), "different services should be cached separately")
+
+	// Repeat calls should be served from cache
+	_, _ = c.GetTenantConfig(ctx, "tenant-123", "ledger")
+	_, _ = c.GetTenantConfig(ctx, "tenant-123", "transaction")
+
+	assert.Equal(t, int32(2), requestCount.Load(), "repeated calls should hit cache")
 }

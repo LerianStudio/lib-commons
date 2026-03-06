@@ -52,6 +52,10 @@ func TestMultiTenantConsumer_Run_CloseStopsSyncLoop(t *testing.T) {
 		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2/server.(*Server).servePeer"),
 		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2.(*Miniredis).handleClient"),
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
+		// The dummyRabbitMQManager creates a client.Client whose InMemoryCache has a
+		// background cleanup goroutine. The RabbitMQ Manager does not expose a Close
+		// method, so this goroutine is expected to outlive the consumer Close.
+		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
 	)
 }
 
@@ -98,5 +102,9 @@ func TestMultiTenantConsumer_Run_CancelAndCloseNoLeak(t *testing.T) {
 		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2/server.(*Server).servePeer"),
 		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2.(*Miniredis).handleClient"),
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
+		// The dummyRabbitMQManager creates a client.Client whose InMemoryCache has a
+		// background cleanup goroutine. The RabbitMQ Manager does not expose a Close
+		// method, so this goroutine is expected to outlive the consumer Close.
+		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
 	)
 }

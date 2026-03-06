@@ -92,6 +92,11 @@ func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
 		t.Fatalf("Close() returned unexpected error: %v", closeErr)
 	}
 
+	// Close the Tenant Manager client to stop the InMemoryCache cleanup goroutine.
+	if closeErr := tmClient.Close(); closeErr != nil {
+		t.Fatalf("tmClient.Close() returned unexpected error: %v", closeErr)
+	}
+
 	// If Close() properly waited, no goroutines should be leaked.
 	goleak.VerifyNone(t,
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
