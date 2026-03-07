@@ -14,6 +14,7 @@ import (
 	tmpostgres "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/postgres"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // TenantMiddleware extracts tenantId from JWT token and resolves the database connection.
@@ -143,6 +144,12 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 
 	// Store tenant ID in context
 	ctx = core.ContextWithTenantID(ctx, tenantID)
+
+	// Set tenant.id as span attribute on the middleware span and in the AttrBag
+	// so ALL child spans (downstream DB queries, HTTP calls, etc.) inherit it
+	// via the AttrBagSpanProcessor.
+	span.SetAttributes(attribute.String("tenant.id", tenantID))
+	ctx = libCommons.ContextWithSpanAttributes(ctx, attribute.String("tenant.id", tenantID))
 
 	// Handle PostgreSQL if manager is configured
 	if m.postgres != nil {

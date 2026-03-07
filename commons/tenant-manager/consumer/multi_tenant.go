@@ -19,6 +19,7 @@ import (
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/rabbitmq"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 // maxTenantIDLength is the maximum allowed length for a tenant ID.
@@ -742,10 +743,17 @@ func (c *MultiTenantConsumer) superviseTenantQueues(ctx context.Context, tenantI
 	// Set tenantID in context for handlers
 	ctx = core.SetTenantIDInContext(ctx, tenantID)
 
+	// Set tenant.id as span attribute in the AttrBag so ALL child spans
+	// (queue consumers, message handlers, DB queries) inherit it
+	// via the AttrBagSpanProcessor.
+	ctx = libCommons.ContextWithSpanAttributes(ctx, attribute.String("tenant.id", tenantID))
+
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.consume_for_tenant")
 	defer span.End()
+
+	span.SetAttributes(attribute.String("tenant.id", tenantID))
 
 	logger = logger.WithFields("tenant_id", tenantID)
 	logger.Info("consumer started for tenant")
@@ -967,6 +975,9 @@ func (c *MultiTenantConsumer) handleMessage(
 	// Create a per-message span
 	msgCtx, span := tracer.Start(msgCtx, "consumer.multi_tenant_consumer.handle_message")
 	defer span.End()
+
+	// Set tenant.id on the message span for trace filtering by tenant in observability tools
+	span.SetAttributes(attribute.String("tenant.id", tenantID))
 
 	if err := handler(msgCtx, msg); err != nil {
 		logger.Errorf("handler error for queue %s: %v", queueName, err)
