@@ -74,7 +74,7 @@ func WithContext(ctx context.Context) (*Group, context.Context) {
 // Go starts a new goroutine in the Group. The first non-nil error returned
 // by a goroutine is recorded and triggers cancellation of the group context.
 // Callers must not mutate shared state without synchronization.
-// Returns ErrNilGroup if called on a nil *Group.
+// If called on a nil *Group, Go is a no-op.
 func (grp *Group) Go(fn func() error) {
 	if grp == nil {
 		return

@@ -76,20 +76,24 @@
 //
 // The package includes predicate functions for common domain validations:
 //
-//	// Numeric predicates
-//	assert.Positive(n int64) bool        // n > 0
-//	assert.NonNegative(n int64) bool     // n >= 0
-//	assert.NotZero(n int64) bool         // n != 0
-//	assert.InRange(n, min, max int64) bool // min <= n <= max
+//	// Numeric predicates (int64)
+//	assert.Positive(n int64) bool                    // n > 0
+//	assert.NonNegative(n int64) bool                 // n >= 0
+//	assert.NotZero(n int64) bool                     // n != 0
+//	assert.InRange(n, minVal, maxVal int64) bool     // minVal <= n <= maxVal
+//
+//	// Numeric predicates (int)
+//	assert.PositiveInt(n int) bool                   // n > 0
+//	assert.InRangeInt(n, minVal, maxVal int) bool    // minVal <= n <= maxVal
 //
 //	// String predicates
-//	assert.ValidUUID(s string) bool      // valid UUID format
+//	assert.ValidUUID(s string) bool                  // valid UUID format
 //
 //	// Financial predicates (using shopspring/decimal)
-//	assert.ValidAmount(d decimal.Decimal) bool    // exponent in [-18, 18]
-//	assert.ValidScale(scale int) bool             // scale in [0, 18]
-//	assert.PositiveDecimal(d decimal.Decimal) bool    // d > 0
-//	assert.NonNegativeDecimal(d decimal.Decimal) bool // d >= 0
+//	assert.ValidAmount(amount decimal.Decimal) bool        // exponent in [-18, 18]
+//	assert.ValidScale(scale int) bool                      // scale in [0, 18]
+//	assert.PositiveDecimal(amount decimal.Decimal) bool    // amount > 0
+//	assert.NonNegativeDecimal(amount decimal.Decimal) bool // amount >= 0
 //
 // Use predicates with Asserter:
 //
@@ -156,7 +160,7 @@
 // Failed assertions emit telemetry signals:
 //
 //  1. Metrics: Records assertion_failed_total with component/operation/assertion labels.
-//     Initialize with InitAssertionMetrics(metricsFactory).
+//     Initialize with InitAssertionMetrics(factory).
 //
 //  2. Tracing: Records assertion.failed span events (with stack traces in non-prod).
 //     Automatically uses the span from the context.
