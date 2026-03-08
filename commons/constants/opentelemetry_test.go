@@ -5,6 +5,7 @@ package constant
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -59,6 +60,26 @@ func TestSanitizeMetricLabel(t *testing.T) {
 				"result length must never exceed MaxMetricLabelLength")
 		})
 	}
+}
+
+func TestSanitizeMetricLabel_MultibyteSafety(t *testing.T) {
+	t.Parallel()
+
+	// Each emoji is 4 bytes but 1 rune. A 65-emoji string should truncate
+	// to 64 runes without splitting a codepoint.
+	emojis := strings.Repeat("\U0001F600", MaxMetricLabelLength+1) // 65 emojis
+	got := SanitizeMetricLabel(emojis)
+
+	assert.True(t, utf8.ValidString(got), "truncated string must be valid UTF-8")
+	assert.Equal(t, MaxMetricLabelLength, utf8.RuneCountInString(got),
+		"truncated string must have exactly MaxMetricLabelLength runes")
+
+	// Mixed multibyte: CJK characters (3 bytes each)
+	cjk := strings.Repeat("\u4e16", MaxMetricLabelLength+5) // 69 CJK chars
+	got = SanitizeMetricLabel(cjk)
+
+	assert.True(t, utf8.ValidString(got), "CJK truncated string must be valid UTF-8")
+	assert.Equal(t, MaxMetricLabelLength, utf8.RuneCountInString(got))
 }
 
 func TestMaxMetricLabelLength_Value(t *testing.T) {

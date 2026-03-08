@@ -55,11 +55,18 @@ const (
 	EventPanicRecovered = "panic.recovered"
 )
 
-// SanitizeMetricLabel truncates a label value to MaxMetricLabelLength
+// SanitizeMetricLabel truncates a label value to MaxMetricLabelLength runes
 // to prevent metric cardinality explosion in OTEL backends.
+// Truncation is rune-aware to avoid splitting multibyte UTF-8 characters.
 func SanitizeMetricLabel(value string) string {
-	if len(value) > MaxMetricLabelLength {
-		return value[:MaxMetricLabelLength]
+	if len(value) <= MaxMetricLabelLength {
+		// Fast path: if byte length is within limit, rune length is too.
+		return value
+	}
+
+	runes := []rune(value)
+	if len(runes) > MaxMetricLabelLength {
+		return string(runes[:MaxMetricLabelLength])
 	}
 
 	return value
