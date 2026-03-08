@@ -101,7 +101,7 @@ tools-gotestsum:
 help:
 	@echo ""
 	@echo ""
-	@echo "Lib-Uncommons Project Management Commands"
+	@echo "Lib-Commons Project Management Commands"
 	@echo ""
 	@echo ""
 	@echo "Core Commands:"
