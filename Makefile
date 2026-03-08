@@ -45,9 +45,11 @@ LOW_RESOURCE ?= 0
 
 # Computed flags for low-resource mode
 ifeq ($(LOW_RESOURCE),1)
+  LOW_RES_P_FLAG := -p 1
   LOW_RES_PARALLEL_FLAG := -parallel 1
   LOW_RES_RACE_FLAG :=
 else
+  LOW_RES_P_FLAG :=
   LOW_RES_PARALLEL_FLAG :=
   LOW_RES_RACE_FLAG := -race
 endif
@@ -176,19 +178,19 @@ test:
 	@set -e; mkdir -p $(TEST_REPORTS_DIR); \
 	if [ -n "$(GOTESTSUM)" ]; then \
 	  echo "Running tests with gotestsum"; \
-	  gotestsum --format testname -- -tags=unit -v $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) ./... || { \
+	  gotestsum --format testname -- -tags=unit -v $(LOW_RES_P_FLAG) $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) ./... || { \
 	    if [ "$(RETRY_ON_FAIL)" = "1" ]; then \
 	      echo "Retrying tests once..."; \
-	      gotestsum --format testname -- -tags=unit -v $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) ./...; \
+	      gotestsum --format testname -- -tags=unit -v $(LOW_RES_P_FLAG) $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) ./...; \
 	    else \
 	      exit 1; \
 	    fi; \
 	  }; \
 	else \
-	  go test -tags=unit -v $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) ./... || { \
+	  go test -tags=unit -v $(LOW_RES_P_FLAG) $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) ./... || { \
 	    if [ "$(RETRY_ON_FAIL)" = "1" ]; then \
 	      echo "Retrying tests once..."; \
-	      go test -tags=unit -v $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) ./...; \
+	      go test -tags=unit -v $(LOW_RES_P_FLAG) $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) ./...; \
 	    else \
 	      exit 1; \
 	    fi; \
@@ -212,19 +214,19 @@ test-unit:
 	else \
 	  if [ -n "$(GOTESTSUM)" ]; then \
 	    echo "Running unit tests with gotestsum"; \
-	    gotestsum --format testname -- -tags=unit -v $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) $$pkgs || { \
+	    gotestsum --format testname -- -tags=unit -v $(LOW_RES_P_FLAG) $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) $$pkgs || { \
 	      if [ "$(RETRY_ON_FAIL)" = "1" ]; then \
 	        echo "Retrying unit tests once..."; \
-	        gotestsum --format testname -- -tags=unit -v $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) $$pkgs; \
+	        gotestsum --format testname -- -tags=unit -v $(LOW_RES_P_FLAG) $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) $$pkgs; \
 	      else \
 	        exit 1; \
 	      fi; \
 	    }; \
 	  else \
-	    go test -tags=unit -v $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) $$pkgs || { \
+	    go test -tags=unit -v $(LOW_RES_P_FLAG) $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) $$pkgs || { \
 	      if [ "$(RETRY_ON_FAIL)" = "1" ]; then \
 	        echo "Retrying unit tests once..."; \
-	        go test -tags=unit -v $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) $$pkgs; \
+	        go test -tags=unit -v $(LOW_RES_P_FLAG) $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) $$pkgs; \
 	      else \
 	        exit 1; \
 	      fi; \
@@ -329,19 +331,19 @@ coverage-unit:
 	  echo "Packages: $$pkgs"; \
 	  if [ -n "$(GOTESTSUM)" ]; then \
 	    echo "Running unit tests with gotestsum (coverage enabled)"; \
-	    gotestsum --format testname -- -tags=unit -v $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) -covermode=atomic -coverprofile=$(TEST_REPORTS_DIR)/unit_coverage.out $$pkgs || { \
+	    gotestsum --format testname -- -tags=unit -v $(LOW_RES_P_FLAG) $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) -covermode=atomic -coverprofile=$(TEST_REPORTS_DIR)/unit_coverage.out $$pkgs || { \
 	      if [ "$(RETRY_ON_FAIL)" = "1" ]; then \
 	        echo "Retrying unit tests once..."; \
-	        gotestsum --format testname -- -tags=unit -v $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) -covermode=atomic -coverprofile=$(TEST_REPORTS_DIR)/unit_coverage.out $$pkgs; \
+	        gotestsum --format testname -- -tags=unit -v $(LOW_RES_P_FLAG) $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) -covermode=atomic -coverprofile=$(TEST_REPORTS_DIR)/unit_coverage.out $$pkgs; \
 	      else \
 	        exit 1; \
 	      fi; \
 	    }; \
 	  else \
-	    go test -tags=unit -v $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) -covermode=atomic -coverprofile=$(TEST_REPORTS_DIR)/unit_coverage.out $$pkgs || { \
+	    go test -tags=unit -v $(LOW_RES_P_FLAG) $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) -covermode=atomic -coverprofile=$(TEST_REPORTS_DIR)/unit_coverage.out $$pkgs || { \
 	      if [ "$(RETRY_ON_FAIL)" = "1" ]; then \
 	        echo "Retrying unit tests once..."; \
-	        go test -tags=unit -v $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) -covermode=atomic -coverprofile=$(TEST_REPORTS_DIR)/unit_coverage.out $$pkgs; \
+	        go test -tags=unit -v $(LOW_RES_P_FLAG) $(LOW_RES_RACE_FLAG) $(LOW_RES_PARALLEL_FLAG) -count=1 $(GO_TEST_LDFLAGS) -covermode=atomic -coverprofile=$(TEST_REPORTS_DIR)/unit_coverage.out $$pkgs; \
 	      else \
 	        exit 1; \
 	      fi; \
@@ -503,9 +505,16 @@ setup-git-hooks:
 		echo "No .githooks directory found, skipping"; \
 		exit 0; \
 	fi
-	@find .githooks -maxdepth 1 -type f -exec cp {} .git/hooks/ \;
-	@find .githooks -maxdepth 1 -type f -exec basename {} \; | while read f; do \
-		chmod +x ".git/hooks/$$f"; \
+	@for hook_dir in .githooks/*/; do \
+		if [ -d "$$hook_dir" ]; then \
+			for FILE in "$$hook_dir"*; do \
+				if [ -f "$$FILE" ]; then \
+					hook_name=$$(basename "$$FILE"); \
+					cp "$$FILE" ".git/hooks/$$hook_name"; \
+					chmod +x ".git/hooks/$$hook_name"; \
+				fi; \
+			done; \
+		fi; \
 	done
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) All hooks installed and updated$(GREEN) ✔️$(NC)"
 

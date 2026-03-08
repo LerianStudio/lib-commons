@@ -1,6 +1,6 @@
 version: 2
 
-# lib-uncommons is a Go library (no binary to build).
+# lib-commons/v4 is a Go library (no binary to build).
 # GoReleaser is used only for changelog generation and GitHub release creation.
 
 builds:
