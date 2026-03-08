@@ -91,7 +91,7 @@ func ExponentialWithJitter(base time.Duration, attempt int) time.Duration {
 
 // WaitContext sleeps for the specified duration but respects context cancellation.
 // Returns nil if the sleep completes, or an error if the context is cancelled.
-// Returns immediately (nil) for zero or negative durations.
+// Returns the context error for zero or negative durations if the context is already cancelled.
 // A nil context is normalized to context.Background().
 func WaitContext(ctx context.Context, duration time.Duration) error {
 	if ctx == nil {
@@ -99,7 +99,7 @@ func WaitContext(ctx context.Context, duration time.Duration) error {
 	}
 
 	if duration <= 0 {
-		return nil
+		return ctx.Err()
 	}
 
 	timer := time.NewTimer(duration)

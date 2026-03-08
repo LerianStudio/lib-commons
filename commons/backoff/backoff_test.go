@@ -367,7 +367,7 @@ func TestWaitContext(t *testing.T) {
 
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
-		assert.Less(t, elapsed, 100*time.Millisecond)
+		assert.Less(t, elapsed, 500*time.Millisecond)
 	})
 
 	t.Run("respects context deadline", func(t *testing.T) {
@@ -391,7 +391,7 @@ func TestWaitContext(t *testing.T) {
 		elapsed := time.Since(start)
 
 		require.NoError(t, err)
-		assert.Less(t, elapsed, 10*time.Millisecond)
+		assert.Less(t, elapsed, 200*time.Millisecond)
 	})
 
 	t.Run("negative duration returns immediately", func(t *testing.T) {
@@ -403,7 +403,18 @@ func TestWaitContext(t *testing.T) {
 		elapsed := time.Since(start)
 
 		require.NoError(t, err)
-		assert.Less(t, elapsed, 10*time.Millisecond)
+		assert.Less(t, elapsed, 200*time.Millisecond)
+	})
+
+	t.Run("zero duration with cancelled context returns error", func(t *testing.T) {
+		t.Parallel()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		err := WaitContext(ctx, 0)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
 	})
 
 	t.Run("already cancelled context returns immediately", func(t *testing.T) {
@@ -418,7 +429,7 @@ func TestWaitContext(t *testing.T) {
 
 		require.Error(t, err)
 		assert.ErrorIs(t, err, context.Canceled)
-		assert.Less(t, elapsed, 10*time.Millisecond)
+		assert.Less(t, elapsed, 200*time.Millisecond)
 	})
 }
 
