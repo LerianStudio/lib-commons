@@ -277,9 +277,9 @@ func TestInMemoryCache_EvictExpired(t *testing.T) {
 
 func TestCacheEntry_IsExpired(t *testing.T) {
 	tests := []struct {
-		name      string
-		entry     cacheEntry
-		wantExpd  bool
+		name     string
+		entry    cacheEntry
+		wantExpd bool
 	}{
 		{
 			name:     "zero expiresAt never expires",

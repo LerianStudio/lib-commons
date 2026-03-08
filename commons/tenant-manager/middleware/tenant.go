@@ -3,15 +3,16 @@ package middleware
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
-	"strings"
 
-	libCommons "github.com/LerianStudio/lib-commons/v3/commons"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
-	tmmongo "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/mongo"
-	tmpostgres "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/postgres"
+	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
+	liblog "github.com/LerianStudio/lib-commons/v4/commons/log"
+	libHTTP "github.com/LerianStudio/lib-commons/v4/commons/net/http"
+	libOpentelemetry "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
+	tmmongo "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/mongo"
+	tmpostgres "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/postgres"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -96,35 +97,48 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		ctx = context.Background()
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	logger := logcompat.New(baseLogger)
 
 	ctx, span := tracer.Start(ctx, "middleware.tenant.resolve_db")
 	defer span.End()
 
 	// Extract JWT token from Authorization header
-	accessToken := extractTokenFromHeader(c)
+	accessToken := libHTTP.ExtractTokenFromHeader(c)
 	if accessToken == "" {
-		logger.Errorf("no authorization token - multi-tenant mode requires JWT with tenantId")
-		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "missing authorization token",
-			errors.New("authorization token is required"))
+		logger.ErrorCtx(ctx, "no authorization token - multi-tenant mode requires JWT with tenantId")
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "missing authorization token",
+			core.ErrAuthorizationTokenRequired)
 
 		return unauthorizedError(c, "MISSING_TOKEN", "Authorization token is required")
 	}
 
-	// Parse JWT token (unverified - lib-auth already validated it)
+	if !hasUpstreamAuthAssertion(c) {
+		logger.ErrorCtx(ctx, "missing upstream auth assertion; refusing ParseUnverified token path")
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "missing upstream auth assertion", core.ErrAuthorizationTokenRequired)
+
+		return unauthorizedError(c, "UNAUTHORIZED", "Unauthorized")
+	}
+
+	// Parse JWT token without signature verification.
+	//
+	// SECURITY CONTRACT (defense-in-depth): this code path is only valid when upstream
+	// lib-auth middleware has already validated signature/issuer/audience and asserted
+	// identity into server-side request context (Fiber locals, e.g. c.Locals("user_id")).
+	// hasUpstreamAuthAssertion() enforces that contract and fails closed when missing.
 	token, _, err := new(jwt.Parser).ParseUnverified(accessToken, jwt.MapClaims{})
 	if err != nil {
-		logger.Errorf("failed to parse JWT token: %v", err)
-		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "failed to parse token", err)
+		logger.Base().Log(ctx, liblog.LevelError, "failed to parse JWT token", liblog.Err(err))
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "failed to parse token", err)
 
 		return unauthorizedError(c, "INVALID_TOKEN", "Failed to parse authorization token")
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		logger.Errorf("JWT claims are not in expected format")
-		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "invalid claims format",
-			errors.New("JWT claims are not in expected format"))
+		logger.ErrorCtx(ctx, "JWT claims are not in expected format")
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "invalid claims format",
+			core.ErrInvalidTenantClaims)
 
 		return unauthorizedError(c, "INVALID_TOKEN", "JWT claims are not in expected format")
 	}
@@ -132,14 +146,24 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	// Extract tenantId from claims
 	tenantID, _ := claims["tenantId"].(string)
 	if tenantID == "" {
-		logger.Errorf("no tenantId in JWT - multi-tenant mode requires tenantId claim")
-		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "missing tenantId in JWT",
-			errors.New("tenantId is required in JWT token"))
+		logger.ErrorCtx(ctx, "no tenantId in JWT - multi-tenant mode requires tenantId claim")
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "missing tenantId in JWT",
+			core.ErrMissingTenantIDClaim)
 
 		return unauthorizedError(c, "MISSING_TENANT", "tenantId is required in JWT token")
 	}
 
-	logger.Infof("tenant context resolved: tenantID=%s", tenantID)
+	if !core.IsValidTenantID(tenantID) {
+		logger.Base().Log(ctx, liblog.LevelError, "invalid tenantId format in JWT",
+			liblog.String("tenant_id", tenantID))
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "invalid tenantId format",
+			core.ErrInvalidTenantClaims)
+
+		return unauthorizedError(c, "INVALID_TENANT", "tenantId has invalid format")
+	}
+
+	logger.Base().Log(ctx, liblog.LevelInfo, "tenant context resolved",
+		liblog.String("tenant_id", tenantID))
 
 	// Store tenant ID in context
 	ctx = core.ContextWithTenantID(ctx, tenantID)
@@ -148,52 +172,19 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	if m.postgres != nil {
 		conn, err := m.postgres.GetConnection(ctx, tenantID)
 		if err != nil {
-			var suspErr *core.TenantSuspendedError
-			if errors.As(err, &suspErr) {
-				logger.Warnf("tenant service is %s: tenantID=%s", suspErr.Status, tenantID)
-				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant service suspended", err)
+			logger.Base().Log(ctx, liblog.LevelError, "failed to get tenant PostgreSQL connection", liblog.Err(err))
+			libOpentelemetry.HandleSpanError(span, "failed to get tenant PostgreSQL connection", err)
 
-				return forbiddenError(c, "0131", "Service Suspended",
-					fmt.Sprintf("tenant service is %s", suspErr.Status))
-			}
-
-			if errors.Is(err, core.ErrTenantNotFound) {
-				logger.Warnf("tenant not found: tenantID=%s", tenantID)
-				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant not found", err)
-
-				return notFoundError(c, "TENANT_NOT_FOUND", "Tenant Not Found",
-					fmt.Sprintf("tenant not found: %s", tenantID))
-			}
-
-			if errors.Is(err, core.ErrServiceNotConfigured) {
-				logger.Warnf("service not configured for tenant: tenantID=%s", tenantID)
-				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "service not configured", err)
-
-				return unprocessableError(c, "SERVICE_NOT_CONFIGURED", "Service Not Configured",
-					fmt.Sprintf("service not configured for tenant: %s", tenantID))
-			}
-
-			if core.IsTenantNotProvisionedError(err) {
-				logger.Warnf("tenant database not provisioned: tenantID=%s", tenantID)
-				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant not provisioned", err)
-
-				return unprocessableError(c, "TENANT_NOT_PROVISIONED", "Tenant Not Provisioned",
-					fmt.Sprintf("tenant database not provisioned: %s", tenantID))
-			}
-
-			logger.Errorf("failed to get tenant PostgreSQL connection: %v", err)
-			libOpentelemetry.HandleSpanError(&span, "failed to get tenant PostgreSQL connection", err)
-
-			return internalServerError(c, "TENANT_DB_ERROR", "Failed to resolve tenant database", err.Error())
+			return mapDomainErrorToHTTP(c, err, tenantID)
 		}
 
 		// Get the database connection from PostgresConnection
 		db, err := conn.GetDB()
 		if err != nil {
-			logger.Errorf("failed to get database from PostgreSQL connection: %v", err)
-			libOpentelemetry.HandleSpanError(&span, "failed to get database from PostgreSQL connection", err)
+			logger.Base().Log(ctx, liblog.LevelError, "failed to get database from PostgreSQL connection", liblog.Err(err))
+			libOpentelemetry.HandleSpanError(span, "failed to get database from PostgreSQL connection", err)
 
-			return internalServerError(c, "TENANT_DB_ERROR", "Failed to get tenant database connection", err.Error())
+			return internalServerError(c, "TENANT_DB_ERROR", "Failed to get tenant database connection")
 		}
 
 		// Store PostgreSQL connection in context
@@ -204,43 +195,10 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	if m.mongo != nil {
 		mongoDB, err := m.mongo.GetDatabaseForTenant(ctx, tenantID)
 		if err != nil {
-			var suspErr *core.TenantSuspendedError
-			if errors.As(err, &suspErr) {
-				logger.Warnf("tenant service is %s: tenantID=%s", suspErr.Status, tenantID)
-				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant service suspended", err)
+			logger.Base().Log(ctx, liblog.LevelError, "failed to get tenant MongoDB connection", liblog.Err(err))
+			libOpentelemetry.HandleSpanError(span, "failed to get tenant MongoDB connection", err)
 
-				return forbiddenError(c, "0131", "Service Suspended",
-					fmt.Sprintf("tenant service is %s", suspErr.Status))
-			}
-
-			if errors.Is(err, core.ErrTenantNotFound) {
-				logger.Warnf("tenant not found: tenantID=%s", tenantID)
-				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant not found", err)
-
-				return notFoundError(c, "TENANT_NOT_FOUND", "Tenant Not Found",
-					fmt.Sprintf("tenant not found: %s", tenantID))
-			}
-
-			if errors.Is(err, core.ErrServiceNotConfigured) {
-				logger.Warnf("service not configured for tenant: tenantID=%s", tenantID)
-				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "service not configured", err)
-
-				return unprocessableError(c, "SERVICE_NOT_CONFIGURED", "Service Not Configured",
-					fmt.Sprintf("service not configured for tenant: %s", tenantID))
-			}
-
-			if core.IsTenantNotProvisionedError(err) {
-				logger.Warnf("tenant database not provisioned: tenantID=%s", tenantID)
-				libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "tenant not provisioned", err)
-
-				return unprocessableError(c, "TENANT_NOT_PROVISIONED", "Tenant Not Provisioned",
-					fmt.Sprintf("tenant database not provisioned: %s", tenantID))
-			}
-
-			logger.Errorf("failed to get tenant MongoDB connection: %v", err)
-			libOpentelemetry.HandleSpanError(&span, "failed to get tenant MongoDB connection", err)
-
-			return internalServerError(c, "TENANT_MONGO_ERROR", "Failed to resolve tenant MongoDB database", err.Error())
+			return mapDomainErrorToHTTP(c, err, tenantID)
 		}
 
 		ctx = core.ContextWithTenantMongo(ctx, mongoDB)
@@ -252,21 +210,84 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	return c.Next()
 }
 
-// extractTokenFromHeader extracts the Bearer token from the Authorization header.
-// Only the "Bearer " scheme is accepted. Other schemes (e.g., "Basic ") return empty string.
-func extractTokenFromHeader(c *fiber.Ctx) string {
-	authHeader := c.Get("Authorization")
-	if authHeader == "" {
-		return ""
+// hasUpstreamAuthAssertion verifies that upstream auth middleware has run
+// by checking the server-side local value. HTTP headers are NOT checked
+// as they are spoofable by clients.
+func hasUpstreamAuthAssertion(c *fiber.Ctx) bool {
+	if c == nil {
+		return false
 	}
 
-	// Only accept "Bearer " scheme; reject other schemes (e.g., "Basic ")
-
-	if strings.HasPrefix(authHeader, "Bearer ") {
-		return strings.TrimPrefix(authHeader, "Bearer ")
+	if userID, ok := c.Locals("user_id").(string); ok && userID != "" {
+		return true
 	}
 
-	return ""
+	return false
+}
+
+// mapDomainErrorToHTTP is a centralized error-to-HTTP mapping function shared by
+// both TenantMiddleware and MultiPoolMiddleware to ensure consistent status codes
+// for the same domain errors.
+func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
+	// Missing token or JWT errors -> 401
+	if errors.Is(err, core.ErrAuthorizationTokenRequired) ||
+		errors.Is(err, core.ErrInvalidAuthorizationToken) ||
+		errors.Is(err, core.ErrInvalidTenantClaims) ||
+		errors.Is(err, core.ErrMissingTenantIDClaim) {
+		return unauthorizedError(c, "UNAUTHORIZED", "Unauthorized")
+	}
+
+	// Tenant not found -> 404
+	if errors.Is(err, core.ErrTenantNotFound) {
+		return c.Status(http.StatusNotFound).JSON(fiber.Map{
+			"code":    "TENANT_NOT_FOUND",
+			"title":   "Tenant Not Found",
+			"message": "tenant not found: " + tenantID,
+		})
+	}
+
+	// Tenant suspended/purged -> 403
+	var suspErr *core.TenantSuspendedError
+	if errors.As(err, &suspErr) {
+		return forbiddenError(c, "0131", "Service Suspended",
+			"tenant service is "+suspErr.Status)
+	}
+
+	// Generic access denied (403 without parsed status) -> 403
+	if errors.Is(err, core.ErrTenantServiceAccessDenied) {
+		return forbiddenError(c, "0131", "Access Denied",
+			"tenant service access denied")
+	}
+
+	// Manager closed or service not configured -> 503
+	if errors.Is(err, core.ErrManagerClosed) || errors.Is(err, core.ErrServiceNotConfigured) {
+		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
+			"code":    "SERVICE_UNAVAILABLE",
+			"title":   "Service Unavailable",
+			"message": "Service temporarily unavailable",
+		})
+	}
+
+	// Circuit breaker open -> 503
+	if errors.Is(err, core.ErrCircuitBreakerOpen) {
+		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
+			"code":    "SERVICE_UNAVAILABLE",
+			"title":   "Service Unavailable",
+			"message": "Service temporarily unavailable",
+		})
+	}
+
+	// Connection errors -> 503
+	if errors.Is(err, core.ErrConnectionFailed) {
+		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
+			"code":    "SERVICE_UNAVAILABLE",
+			"title":   "Service Unavailable",
+			"message": "Failed to resolve tenant database",
+		})
+	}
+
+	// Default -> 500
+	return internalServerError(c, "TENANT_DB_ERROR", "Failed to resolve tenant database")
 }
 
 // forbiddenError sends an HTTP 403 Forbidden response.
@@ -280,11 +301,11 @@ func forbiddenError(c *fiber.Ctx, code, title, message string) error {
 }
 
 // internalServerError sends an HTTP 500 Internal Server Error response.
-func internalServerError(c *fiber.Ctx, code, title, message string) error {
+func internalServerError(c *fiber.Ctx, code, title string) error {
 	return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
 		"code":    code,
 		"title":   title,
-		"message": message,
+		"message": "Internal server error",
 	})
 }
 
@@ -293,27 +314,6 @@ func unauthorizedError(c *fiber.Ctx, code, message string) error {
 	return c.Status(http.StatusUnauthorized).JSON(fiber.Map{
 		"code":    code,
 		"title":   "Unauthorized",
-		"message": message,
-	})
-}
-
-// notFoundError sends an HTTP 404 Not Found response.
-// Used when the tenant is not found in Tenant Manager.
-func notFoundError(c *fiber.Ctx, code, title, message string) error {
-	return c.Status(http.StatusNotFound).JSON(fiber.Map{
-		"code":    code,
-		"title":   title,
-		"message": message,
-	})
-}
-
-// unprocessableError sends an HTTP 422 Unprocessable Entity response.
-// Used when the request is valid but cannot be processed due to tenant state
-// (e.g., service not configured, database not provisioned).
-func unprocessableError(c *fiber.Ctx, code, title, message string) error {
-	return c.Status(http.StatusUnprocessableEntity).JSON(fiber.Map{
-		"code":    code,
-		"title":   title,
 		"message": message,
 	})
 }
