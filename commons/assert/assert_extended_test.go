@@ -464,6 +464,14 @@ func TestIsNil_UntypedNil(t *testing.T) {
 	require.True(t, isNil(nil))
 }
 
+func TestIsNil_TypedNilPointer(t *testing.T) {
+	t.Parallel()
+
+	var p *int
+	// A typed-nil pointer stored in an interface{} should be detected as nil.
+	require.True(t, isNil(p), "typed nil pointer should be nil")
+}
+
 func TestIsNil_NonNilInt(t *testing.T) {
 	t.Parallel()
 	require.False(t, isNil(42))

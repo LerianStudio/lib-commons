@@ -377,4 +377,17 @@ func TestLogger(t *testing.T) {
 		assert.NotNil(t, l)
 		assert.IsType(t, &libLog.NopLogger{}, l)
 	})
+
+	t.Run("returns NopLogger for typed-nil Logger", func(t *testing.T) {
+		t.Parallel()
+
+		// Simulate a typed-nil: interface holds (*NopLogger)(nil).
+		// This exercises the isNilInterface reflection path.
+		var nilLogger *libLog.NopLogger
+		c := &Crypto{Logger: nilLogger}
+		l := c.logger()
+
+		assert.NotNil(t, l)
+		assert.IsType(t, &libLog.NopLogger{}, l)
+	})
 }

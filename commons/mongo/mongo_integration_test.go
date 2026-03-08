@@ -29,7 +29,8 @@ const (
 func setupMongoContainer(t *testing.T) (string, func()) {
 	t.Helper()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
 
 	container, err := tcmongo.Run(ctx,
 		"mongo:7",
@@ -44,7 +45,10 @@ func setupMongoContainer(t *testing.T) (string, func()) {
 	require.NoError(t, err)
 
 	return endpoint, func() {
-		require.NoError(t, container.Terminate(ctx))
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer closeCancel()
+
+		require.NoError(t, container.Terminate(closeCtx))
 	}
 }
 
@@ -52,7 +56,8 @@ func setupMongoContainer(t *testing.T) (string, func()) {
 func newIntegrationClient(t *testing.T, uri string) *Client {
 	t.Helper()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	client, err := NewClient(ctx, Config{
 		URI:      uri,
@@ -72,7 +77,8 @@ func TestIntegration_Mongo_ConnectAndPing(t *testing.T) {
 	uri, cleanup := setupMongoContainer(t)
 	t.Cleanup(cleanup)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	client := newIntegrationClient(t, uri)
 	defer func() { require.NoError(t, client.Close(ctx)) }()
@@ -86,7 +92,8 @@ func TestIntegration_Mongo_DatabaseAccess(t *testing.T) {
 	uri, cleanup := setupMongoContainer(t)
 	t.Cleanup(cleanup)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	client := newIntegrationClient(t, uri)
 	defer func() { require.NoError(t, client.Close(ctx)) }()
@@ -121,7 +128,8 @@ func TestIntegration_Mongo_EnsureIndexes(t *testing.T) {
 	uri, cleanup := setupMongoContainer(t)
 	t.Cleanup(cleanup)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	client := newIntegrationClient(t, uri)
 	defer func() { require.NoError(t, client.Close(ctx)) }()
@@ -191,7 +199,8 @@ func TestIntegration_Mongo_ResolveClient(t *testing.T) {
 	uri, cleanup := setupMongoContainer(t)
 	t.Cleanup(cleanup)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	client := newIntegrationClient(t, uri)
 	defer func() {
@@ -224,7 +233,8 @@ func TestIntegration_Mongo_ConcurrentPing(t *testing.T) {
 	uri, cleanup := setupMongoContainer(t)
 	t.Cleanup(cleanup)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	client := newIntegrationClient(t, uri)
 	defer func() { require.NoError(t, client.Close(ctx)) }()

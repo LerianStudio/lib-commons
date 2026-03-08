@@ -876,6 +876,26 @@ func TestNormalizeConfig(t *testing.T) {
 		cfg := normalizeConfig(Config{MaxPoolSize: maxMaxPoolSize})
 		assert.EqualValues(t, maxMaxPoolSize, cfg.MaxPoolSize)
 	})
+
+	t.Run("trims_whitespace_from_URI_and_Database", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := normalizeConfig(Config{
+			URI:      "  mongodb://localhost:27017  ",
+			Database: "  mydb  ",
+		})
+		assert.Equal(t, "mongodb://localhost:27017", cfg.URI)
+		assert.Equal(t, "mydb", cfg.Database)
+	})
+
+	t.Run("trims_whitespace_from_TLS_CACertBase64", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := normalizeConfig(Config{
+			TLS: &TLSConfig{CACertBase64: "  dGVzdA==  "},
+		})
+		assert.Equal(t, "dGVzdA==", cfg.TLS.CACertBase64)
+	})
 }
 
 func TestNormalizeTLSDefaults(t *testing.T) {
@@ -926,6 +946,7 @@ func TestBuildTLSConfig(t *testing.T) {
 
 		_, err := buildTLSConfig(TLSConfig{CACertBase64: "not-valid-base64!!!"})
 		assert.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidConfig)
 		assert.Contains(t, err.Error(), "decoding CA cert")
 	})
 
@@ -1025,5 +1046,9 @@ func TestIsTLSImplied(t *testing.T) {
 	assert.True(t, isTLSImplied("mongodb+srv://cluster.mongodb.net"))
 	assert.True(t, isTLSImplied("mongodb://host:27017/?tls=true"))
 	assert.True(t, isTLSImplied("mongodb://host:27017/?ssl=true"))
+	assert.True(t, isTLSImplied("mongodb://host:27017/?tls=true&appName=myapp"))
+	assert.True(t, isTLSImplied("mongodb://host:27017/?TLS=True"))
 	assert.False(t, isTLSImplied("mongodb://localhost:27017"))
+	assert.False(t, isTLSImplied("mongodb://localhost:27017/?tls=false"))
+	assert.False(t, isTLSImplied("mongodb://localhost:27017/?appName=notls%3Dtrue"))
 }
