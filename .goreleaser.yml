@@ -1,42 +1,10 @@
 version: 2
 
+# lib-uncommons is a Go library (no binary to build).
+# GoReleaser is used only for changelog generation and GitHub release creation.
+
 builds:
-  - id: "auth"
-    env:
-      - CGO_ENABLED=0
-    main: ./cmd
-    binary: auth
-
-    goos:
-      - linux
-      - windows
-      - darwin
-      - freebsd
-
-    goarch:
-      - "386"
-      - amd64
-      - arm
-      - ppc64
-
-    goarm:
-      - "7"
-
-archives:
-  - format: zip
-
-nfpms:
-  - id: packages
-    license: Apache-2.0 license
-    maintainer: Lerian Studio Technologies <https://github.com/LerianStudio/>
-    package_name: auth
-    homepage: https://github.com/LerianStudio/auth
-    bindir: /usr/local/bin
-    formats:
-      - apk
-      - deb
-      - rpm
-      - archlinux
+  - skip: true
 
 changelog:
   sort: asc
