@@ -1,46 +1,61 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package redis
 
 import (
 	"context"
-
-	"github.com/go-redsync/redsync/v4"
 )
 
-// DistributedLocker provides an interface for distributed locking operations.
+// LockHandle represents an acquired distributed lock.
+// It is obtained from TryLock and must be released via its Unlock method.
+//
+// Example usage:
+//
+//	handle, acquired, err := locker.TryLock(ctx, "lock:resource:123")
+//	if err != nil {
+//	    return err
+//	}
+//	if !acquired {
+//	    return nil // lock busy, skip
+//	}
+//	defer handle.Unlock(ctx)
+//	// ... critical section ...
+type LockHandle interface {
+	// Unlock releases the distributed lock.
+	Unlock(ctx context.Context) error
+}
+
+// LockManager provides an interface for distributed locking operations.
 // This interface allows for easy mocking in tests without requiring a real Redis instance.
 //
 // Example test implementation:
 //
-//	type MockDistributedLock struct{}
+//	type MockLockManager struct{}
 //
-//	func (m *MockDistributedLock) WithLock(ctx context.Context, lockKey string, fn func() error) error {
+//	func (m *MockLockManager) WithLock(ctx context.Context, lockKey string, fn func(context.Context) error) error {
 //	    // In tests, just execute the function without actual locking
-//	    return fn()
+//	    return fn(ctx)
 //	}
 //
-//	func (m *MockDistributedLock) WithLockOptions(ctx context.Context, lockKey string, opts LockOptions, fn func() error) error {
-//	    return fn()
+//	func (m *MockLockManager) WithLockOptions(ctx context.Context, lockKey string, opts LockOptions, fn func(context.Context) error) error {
+//	    return fn(ctx)
 //	}
-type DistributedLocker interface {
+//
+//	func (m *MockLockManager) TryLock(ctx context.Context, lockKey string) (LockHandle, bool, error) {
+//	    return &mockHandle{}, true, nil
+//	}
+type LockManager interface {
 	// WithLock executes a function while holding a distributed lock with default options.
 	// The lock is automatically released when the function returns.
-	WithLock(ctx context.Context, lockKey string, fn func() error) error
+	WithLock(ctx context.Context, lockKey string, fn func(context.Context) error) error
 
 	// WithLockOptions executes a function while holding a distributed lock with custom options.
 	// Use this for fine-grained control over lock behavior.
-	WithLockOptions(ctx context.Context, lockKey string, opts LockOptions, fn func() error) error
+	WithLockOptions(ctx context.Context, lockKey string, opts LockOptions, fn func(context.Context) error) error
 
 	// TryLock attempts to acquire a lock without retrying.
-	// Returns the mutex and true if lock was acquired, nil and false otherwise.
-	TryLock(ctx context.Context, lockKey string) (*redsync.Mutex, bool, error)
-
-	// Unlock releases a previously acquired lock (used with TryLock).
-	Unlock(ctx context.Context, mutex *redsync.Mutex) error
+	// Returns the handle and true if lock was acquired, nil and false otherwise.
+	// Use LockHandle.Unlock to release the lock when done.
+	TryLock(ctx context.Context, lockKey string) (LockHandle, bool, error)
 }
 
-// Ensure DistributedLock implements DistributedLocker interface at compile time
-var _ DistributedLocker = (*DistributedLock)(nil)
+// Ensure RedisLockManager implements LockManager interface at compile time.
+var _ LockManager = (*RedisLockManager)(nil)
