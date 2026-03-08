@@ -28,7 +28,8 @@
 //	_ = a.That(ctx, email != "", "email is required") // Use validation errors
 //
 //	// DON'T: I/O that can fail
-//	_ = a.NoError(ctx, file.Read(), "file must read") // Use proper error handling
+//	// _, err := file.Read(buf)
+//	// _ = a.NoError(ctx, err, "file must read") // Use proper error handling
 //
 // # Core Assertion Methods
 //

@@ -12,19 +12,19 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/metric/noop"
-	"go.opentelemetry.io/otel/sdk/trace"
 	tracesdk "go.opentelemetry.io/otel/sdk/trace"
 
 	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
 	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry/metrics"
 )
 
-func newTestMetricsFactory() *metrics.MetricsFactory {
+func newTestMetricsFactory(t *testing.T) *metrics.MetricsFactory {
+	t.Helper()
+
 	meter := noop.NewMeterProvider().Meter("test")
 	factory, err := metrics.NewMetricsFactory(meter, &libLog.NopLogger{})
-	if err != nil {
-		panic("newTestMetricsFactory: " + err.Error())
-	}
+	require.NoError(t, err, "newTestMetricsFactory failed")
+
 	return factory
 }
 
@@ -240,7 +240,7 @@ func TestInitAssertionMetrics_ValidFactory(t *testing.T) {
 	ResetAssertionMetrics()
 	defer ResetAssertionMetrics()
 
-	factory := newTestMetricsFactory()
+	factory := newTestMetricsFactory(t)
 	InitAssertionMetrics(factory)
 
 	am := GetAssertionMetrics()
@@ -253,8 +253,8 @@ func TestInitAssertionMetrics_DoubleInit_NoOverwrite(t *testing.T) {
 	ResetAssertionMetrics()
 	defer ResetAssertionMetrics()
 
-	factory1 := newTestMetricsFactory()
-	factory2 := newTestMetricsFactory()
+	factory1 := newTestMetricsFactory(t)
+	factory2 := newTestMetricsFactory(t)
 
 	InitAssertionMetrics(factory1)
 	InitAssertionMetrics(factory2)
@@ -266,7 +266,7 @@ func TestInitAssertionMetrics_DoubleInit_NoOverwrite(t *testing.T) {
 
 func TestResetAssertionMetrics(t *testing.T) {
 	// Not parallel - modifies global state.
-	factory := newTestMetricsFactory()
+	factory := newTestMetricsFactory(t)
 	InitAssertionMetrics(factory)
 
 	ResetAssertionMetrics()
@@ -296,7 +296,7 @@ func TestRecordAssertionFailed_WithFactory(t *testing.T) {
 	ResetAssertionMetrics()
 	defer ResetAssertionMetrics()
 
-	factory := newTestMetricsFactory()
+	factory := newTestMetricsFactory(t)
 	InitAssertionMetrics(factory)
 
 	am := GetAssertionMetrics()
@@ -321,7 +321,7 @@ func TestRecordAssertionMetric_WithMetrics(t *testing.T) {
 	ResetAssertionMetrics()
 	defer ResetAssertionMetrics()
 
-	factory := newTestMetricsFactory()
+	factory := newTestMetricsFactory(t)
 	InitAssertionMetrics(factory)
 
 	// Should not panic.
@@ -353,7 +353,7 @@ func TestRecordAssertionToSpan_WithRecordingSpan(t *testing.T) {
 func TestRecordAssertionToSpan_WithStack(t *testing.T) {
 	t.Parallel()
 
-	tp := trace.NewTracerProvider()
+	tp := tracesdk.NewTracerProvider()
 	tracer := tp.Tracer("test")
 	ctx, span := tracer.Start(context.Background(), "test-span")
 	defer span.End()
@@ -365,7 +365,7 @@ func TestRecordAssertionToSpan_WithStack(t *testing.T) {
 func TestRecordAssertionToSpan_EmptyComponentAndOperation(t *testing.T) {
 	t.Parallel()
 
-	tp := trace.NewTracerProvider()
+	tp := tracesdk.NewTracerProvider()
 	tracer := tp.Tracer("test")
 	ctx, span := tracer.Start(context.Background(), "test-span")
 	defer span.End()

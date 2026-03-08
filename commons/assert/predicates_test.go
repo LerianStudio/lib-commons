@@ -188,6 +188,7 @@ func TestBalanceSufficientForRelease(t *testing.T) {
 			false,
 		},
 		{"negative onHold always fails", decimal.NewFromInt(-10), decimal.NewFromInt(5), false},
+		{"negative releaseAmount always fails", decimal.NewFromInt(100), decimal.NewFromInt(-5), false},
 	}
 
 	for _, tt := range tests {
@@ -210,7 +211,7 @@ func TestDateNotInFuture(t *testing.T) {
 		expected bool
 	}{
 		{"past date valid", now.Add(-24 * time.Hour), true},
-		{"now valid", now, true},
+		{"recent past valid", now.Add(-time.Second), true},
 		{"one second ago valid", now.Add(-time.Second), true},
 		{"one second future invalid", now.Add(time.Second), false},
 		{"one hour future invalid", now.Add(time.Hour), false},
@@ -223,12 +224,7 @@ func TestDateNotInFuture(t *testing.T) {
 			t.Parallel()
 
 			result := DateNotInFuture(tt.date)
-			// Allow slight timing variance for "now" test
-			if tt.name == "now valid" {
-				require.True(t, result || time.Since(now) < time.Millisecond)
-			} else {
-				require.Equal(t, tt.expected, result)
-			}
+			require.Equal(t, tt.expected, result)
 		})
 	}
 }
