@@ -58,9 +58,9 @@ var executionMetric = metrics.Metric{
 }
 
 // NewManager creates a new circuit breaker manager.
-// Returns an error if logger is nil.
+// Returns an error if logger is nil (including typed-nil interface values).
 func NewManager(logger log.Logger, opts ...ManagerOption) (Manager, error) {
-	if logger == nil {
+	if isNilLogger(logger) {
 		return nil, ErrNilLogger
 	}
 
@@ -232,13 +232,13 @@ func (m *manager) GetCounts(serviceName string) Counts {
 	}
 }
 
-// IsHealthy reports whether the service breaker is not open.
+// IsHealthy reports whether the service breaker is in a healthy state.
 // Both Closed and HalfOpen states are considered healthy: Closed allows all traffic,
 // and HalfOpen allows limited probe traffic for recovery verification.
-// Only the Open state (which rejects all requests) is considered unhealthy.
+// Open (rejecting all requests) and Unknown (unregistered breaker) are considered unhealthy.
 func (m *manager) IsHealthy(serviceName string) bool {
 	state := m.GetState(serviceName)
-	// Closed and HalfOpen are healthy; only Open is unhealthy.
+	// Closed and HalfOpen are healthy; Open and Unknown are unhealthy.
 	// HalfOpen is healthy because it allows probe traffic for recovery.
 	isHealthy := state != StateOpen && state != StateUnknown
 	m.logger.Log(context.Background(), log.LevelDebug, "health check result", log.String("service", serviceName), log.String("state", string(state)), log.Bool("healthy", isHealthy))
@@ -285,6 +285,26 @@ func (m *manager) RegisterStateChangeListener(listener StateChangeListener) {
 
 	m.listeners = append(m.listeners, listener)
 	m.logger.Log(context.Background(), log.LevelDebug, "registered state change listener", log.Int("total", len(m.listeners)))
+}
+
+// isNilLogger checks for both untyped nil and typed nil log.Logger values.
+// Mirrors the isNilListener pattern to prevent panics from typed-nil loggers.
+func isNilLogger(logger log.Logger) bool {
+	if logger == nil {
+		return true
+	}
+
+	v := reflect.ValueOf(logger)
+	if !v.IsValid() {
+		return true
+	}
+
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func, reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 // isNilListener checks for both untyped nil and typed nil interface values.
