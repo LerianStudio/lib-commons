@@ -1,6 +1,7 @@
 package jwt
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -185,6 +186,8 @@ func verifySignature(parts []string, alg string, secret []byte) error {
 }
 
 // parseClaims decodes and unmarshals the JWT payload part into a MapClaims map.
+// Uses json.Decoder with UseNumber() to preserve numeric fidelity for time
+// claims (iat, exp, nbf) instead of converting them to float64.
 func parseClaims(payloadPart string) (MapClaims, error) {
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(payloadPart)
 	if err != nil {
@@ -192,7 +195,11 @@ func parseClaims(payloadPart string) (MapClaims, error) {
 	}
 
 	var claims MapClaims
-	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+
+	dec := json.NewDecoder(bytes.NewReader(payloadBytes))
+	dec.UseNumber()
+
+	if err := dec.Decode(&claims); err != nil {
 		return nil, fmt.Errorf("unmarshal payload: %w", ErrInvalidToken)
 	}
 

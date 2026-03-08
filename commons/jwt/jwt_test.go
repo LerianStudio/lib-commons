@@ -166,7 +166,11 @@ func TestParse_ClaimsCorrectlyParsed(t *testing.T) {
 	assert.True(t, token.SignatureValid)
 	assert.Equal(t, "550e8400-e29b-41d4-a716-446655440000", token.Claims["tenant_id"])
 	assert.Equal(t, "user-42", token.Claims["sub"])
-	assert.InEpsilon(t, float64(9999999999), token.Claims["exp"], 0.001)
+
+	// With UseNumber(), numeric claims are json.Number, not float64.
+	expNum, ok := token.Claims["exp"].(json.Number)
+	require.True(t, ok, "exp claim should be json.Number after UseNumber() decoding")
+	assert.Equal(t, "9999999999", expNum.String())
 }
 
 func TestParse_OversizedToken_ReturnsError(t *testing.T) {
