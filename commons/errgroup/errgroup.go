@@ -22,23 +22,35 @@ var (
 // The first error returned by any goroutine cancels the group's context
 // and is returned by Wait. Subsequent errors are discarded.
 type Group struct {
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	errOnce sync.Once
-	err     error
-	logger  libLog.Logger
+	ctx      context.Context
+	cancel   context.CancelFunc
+	wg       sync.WaitGroup
+	errOnce  sync.Once
+	err      error
+	loggerMu sync.RWMutex
+	logger   libLog.Logger
 }
 
 // SetLogger sets an optional logger for panic recovery observability.
 // When set, panics recovered in goroutines will be logged before the
-// error is propagated via Wait.
+// error is propagated via Wait. Safe for concurrent use.
 func (grp *Group) SetLogger(logger libLog.Logger) {
 	if grp == nil {
 		return
 	}
 
+	grp.loggerMu.Lock()
 	grp.logger = logger
+	grp.loggerMu.Unlock()
+}
+
+// getLogger returns the current logger in a concurrency-safe manner.
+func (grp *Group) getLogger() libLog.Logger {
+	grp.loggerMu.RLock()
+	l := grp.logger
+	grp.loggerMu.RUnlock()
+
+	return l
 }
 
 // effectiveCtx returns the group's context, falling back to context.Background()
@@ -71,7 +83,7 @@ func (grp *Group) Go(fn func() error) {
 	grp.wg.Go(func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				runtime.HandlePanicValue(grp.effectiveCtx(), grp.logger, recovered, "errgroup", "group.Go")
+				runtime.HandlePanicValue(grp.effectiveCtx(), grp.getLogger(), recovered, "errgroup", "group.Go")
 
 				grp.errOnce.Do(func() {
 					grp.err = fmt.Errorf("%w: %v", ErrPanicRecovered, recovered)

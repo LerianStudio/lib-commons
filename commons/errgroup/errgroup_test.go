@@ -52,15 +52,19 @@ func TestWithContext_MultipleErrors_ReturnsFirst(t *testing.T) {
 	group, _ := errgroup.WithContext(context.Background())
 
 	started := make(chan struct{})
+	firstDone := make(chan struct{})
 
 	group.Go(func() error {
 		<-started
+		close(firstDone)
+
 		return firstErr
 	})
 
 	group.Go(func() error {
 		<-started
-		time.Sleep(50 * time.Millisecond)
+		<-firstDone // Wait for first goroutine to signal before returning
+
 		return errors.New("second error")
 	})
 
