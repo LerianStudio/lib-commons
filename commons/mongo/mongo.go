@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	neturl "net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -264,7 +265,7 @@ func (c *Client) connectLocked(ctx context.Context) error {
 	if c.cfg.TLS != nil {
 		tlsCfg, err := buildTLSConfig(*c.cfg.TLS)
 		if err != nil {
-			return fmt.Errorf("%w: TLS configuration: %w", ErrConnect, err)
+			return fmt.Errorf("%w: TLS configuration: %w", ErrInvalidConfig, err)
 		}
 
 		clientOptions.SetTLSConfig(tlsCfg)
@@ -603,14 +604,18 @@ func (c *Client) logAtLevel(ctx context.Context, level log.Level, message string
 	c.cfg.Logger.Log(ctx, level, message, fields...)
 }
 
-// normalizeConfig applies safe defaults and clamps to a Config.
+// normalizeConfig applies safe defaults, trims whitespace, and clamps to a Config.
 func normalizeConfig(cfg Config) Config {
+	cfg.URI = strings.TrimSpace(cfg.URI)
+	cfg.Database = strings.TrimSpace(cfg.Database)
+
 	if cfg.MaxPoolSize > maxMaxPoolSize {
 		cfg.MaxPoolSize = maxMaxPoolSize
 	}
 
 	if cfg.TLS != nil {
 		tlsCopy := *cfg.TLS
+		tlsCopy.CACertBase64 = strings.TrimSpace(tlsCopy.CACertBase64)
 		cfg.TLS = &tlsCopy
 	}
 
@@ -638,7 +643,7 @@ func normalizeTLSDefaults(tlsCfg *TLSConfig) {
 func buildTLSConfig(cfg TLSConfig) (*tls.Config, error) {
 	caCert, err := base64.StdEncoding.DecodeString(cfg.CACertBase64)
 	if err != nil {
-		return nil, fmt.Errorf("decoding CA cert: %w", err)
+		return nil, configError(fmt.Sprintf("decoding CA cert: %v", err))
 	}
 
 	caCertPool := x509.NewCertPool()
@@ -663,10 +668,29 @@ func buildTLSConfig(cfg TLSConfig) (*tls.Config, error) {
 }
 
 // isTLSImplied returns true if the URI scheme or query parameters indicate TLS.
+// Uses proper URI parsing to avoid false positives from substring matching
+// (e.g. credentials or unrelated params containing "tls=true").
 func isTLSImplied(uri string) bool {
-	return strings.HasPrefix(uri, "mongodb+srv://") ||
-		strings.Contains(uri, "tls=true") ||
-		strings.Contains(uri, "ssl=true")
+	if strings.HasPrefix(strings.ToLower(uri), "mongodb+srv://") {
+		return true
+	}
+
+	parsed, err := neturl.Parse(uri)
+	if err != nil {
+		return false
+	}
+
+	for key, values := range parsed.Query() {
+		if strings.EqualFold(key, "tls") || strings.EqualFold(key, "ssl") {
+			for _, value := range values {
+				if strings.EqualFold(value, "true") {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
 }
 
 // SanitizedError wraps a driver error with a credential-free message.
