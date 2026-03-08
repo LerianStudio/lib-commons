@@ -118,8 +118,9 @@ func buildURL(scheme, host, port, username, password, database string, query url
 // characters. The mongo driver validates the full URI downstream via
 // connstring.Parse.
 func buildHost(host, port string) string {
-	// Detect raw IPv6 literal (contains ":" but is not already bracketed).
-	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+	// Detect raw IPv6 literal: must contain at least two colons to distinguish
+	// from a simple "host:port" pair. Already-bracketed addresses are left untouched.
+	if strings.Count(host, ":") >= 2 && !strings.HasPrefix(host, "[") {
 		host = "[" + host + "]"
 	}
 

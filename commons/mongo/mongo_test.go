@@ -903,12 +903,14 @@ func TestNormalizeTLSDefaults(t *testing.T) {
 		assert.Equal(t, uint16(tls.VersionTLS13), cfg.MinVersion)
 	})
 
-	t.Run("clamps_insecure_version", func(t *testing.T) {
+	t.Run("preserves_explicit_insecure_version", func(t *testing.T) {
 		t.Parallel()
 
+		// normalizeTLSDefaults only sets defaults for unspecified (zero) values.
+		// Explicit versions are preserved for downstream validation in buildTLSConfig.
 		cfg := &TLSConfig{MinVersion: tls.VersionTLS10}
 		normalizeTLSDefaults(cfg)
-		assert.Equal(t, uint16(tls.VersionTLS12), cfg.MinVersion)
+		assert.Equal(t, uint16(tls.VersionTLS10), cfg.MinVersion)
 	})
 }
 

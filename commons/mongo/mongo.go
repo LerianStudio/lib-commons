@@ -454,7 +454,8 @@ func (c *Client) Ping(ctx context.Context) error {
 	}
 
 	if err := c.deps.ping(ctx, client); err != nil {
-		pingErr := fmt.Errorf("%w: %w", ErrPing, err)
+		sanitized := sanitizeDriverError(err)
+		pingErr := fmt.Errorf("%w: %w", ErrPing, sanitized)
 		libOpentelemetry.HandleSpanError(span, "Mongo ping failed", pingErr)
 
 		return pingErr
@@ -493,9 +494,10 @@ func (c *Client) Close(ctx context.Context) error {
 	c.client = nil
 
 	if err != nil {
-		c.log(ctx, "mongo disconnect failed", log.Err(err))
+		sanitized := sanitizeDriverError(err)
+		c.log(ctx, "mongo disconnect failed", log.Err(sanitized))
 
-		disconnectErr := fmt.Errorf("%w: %w", ErrDisconnect, err)
+		disconnectErr := fmt.Errorf("%w: %w", ErrDisconnect, sanitized)
 		libOpentelemetry.HandleSpanError(span, "Failed to disconnect from mongo", disconnectErr)
 
 		return disconnectErr
@@ -617,13 +619,15 @@ func normalizeConfig(cfg Config) Config {
 	return cfg
 }
 
-// normalizeTLSDefaults enforces a minimum TLS version of 1.2.
+// normalizeTLSDefaults sets MinVersion to TLS 1.2 when unspecified (zero).
+// Explicit versions are preserved so downstream validation in buildTLSConfig
+// can reject disallowed values rather than silently overwriting them.
 func normalizeTLSDefaults(tlsCfg *TLSConfig) {
 	if tlsCfg == nil {
 		return
 	}
 
-	if tlsCfg.MinVersion < tls.VersionTLS12 {
+	if tlsCfg.MinVersion == 0 {
 		tlsCfg.MinVersion = tls.VersionTLS12
 	}
 }

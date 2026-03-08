@@ -160,17 +160,26 @@ func TestIntegration_Mongo_EnsureIndexes(t *testing.T) {
 	require.GreaterOrEqual(t, len(indexes), 2, "expected at least the _id index + email index")
 
 	// Find the email index by inspecting the "key" document.
+	// The driver may return bson.M or bson.D depending on version/context.
 	found := false
 
 	for _, idx := range indexes {
-		keyDoc, ok := idx["key"].(bson.M)
-		if !ok {
-			continue
+		switch keyDoc := idx["key"].(type) {
+		case bson.M:
+			if _, hasEmail := keyDoc["email"]; hasEmail {
+				found = true
+			}
+		case bson.D:
+			for _, elem := range keyDoc {
+				if elem.Key == "email" {
+					found = true
+
+					break
+				}
+			}
 		}
 
-		if _, hasEmail := keyDoc["email"]; hasEmail {
-			found = true
-
+		if found {
 			break
 		}
 	}
