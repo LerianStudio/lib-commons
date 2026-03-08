@@ -152,28 +152,28 @@ func TestEncrypt(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		initCipher  bool
-		input       *string
-		expectNil   bool
-		expectErr   bool
-		errContains string
+		name       string
+		initCipher bool
+		input      *string
+		expectNil  bool
+		expectErr  bool
+		sentinel   error
 	}{
 		{
-			name:        "nil input returns error",
-			initCipher:  true,
-			input:       nil,
-			expectNil:   true,
-			expectErr:   true,
-			errContains: "nil input",
+			name:       "nil input returns error",
+			initCipher: true,
+			input:      nil,
+			expectNil:  true,
+			expectErr:  true,
+			sentinel:   ErrNilInput,
 		},
 		{
-			name:        "uninitialized cipher returns error",
-			initCipher:  false,
-			input:       ptr("hello"),
-			expectNil:   true,
-			expectErr:   true,
-			errContains: "cipher not initialized",
+			name:       "uninitialized cipher returns error",
+			initCipher: false,
+			input:      ptr("hello"),
+			expectNil:  true,
+			expectErr:  true,
+			sentinel:   ErrCipherNotInitialized,
 		},
 		{
 			name:       "successful encryption",
@@ -207,8 +207,8 @@ func TestEncrypt(t *testing.T) {
 
 			if tt.expectErr {
 				assert.Error(t, err)
-				if tt.errContains != "" {
-					assert.ErrorContains(t, err, tt.errContains)
+				if tt.sentinel != nil {
+					assert.ErrorIs(t, err, tt.sentinel)
 				}
 			} else {
 				assert.NoError(t, err)
@@ -231,28 +231,28 @@ func TestDecrypt(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		initCipher  bool
-		input       *string
-		expectNil   bool
-		expectErr   bool
-		errContains string
+		name       string
+		initCipher bool
+		input      *string
+		expectNil  bool
+		expectErr  bool
+		sentinel   error
 	}{
 		{
-			name:        "nil input returns error",
-			initCipher:  true,
-			input:       nil,
-			expectNil:   true,
-			expectErr:   true,
-			errContains: "nil input",
+			name:       "nil input returns error",
+			initCipher: true,
+			input:      nil,
+			expectNil:  true,
+			expectErr:  true,
+			sentinel:   ErrNilInput,
 		},
 		{
-			name:        "uninitialized cipher returns error",
-			initCipher:  false,
-			input:       ptr("c29tZXRoaW5n"),
-			expectNil:   true,
-			expectErr:   true,
-			errContains: "cipher not initialized",
+			name:       "uninitialized cipher returns error",
+			initCipher: false,
+			input:      ptr("c29tZXRoaW5n"),
+			expectNil:  true,
+			expectErr:  true,
+			sentinel:   ErrCipherNotInitialized,
 		},
 		{
 			name:       "invalid base64 input",
@@ -262,12 +262,12 @@ func TestDecrypt(t *testing.T) {
 			expectErr:  true,
 		},
 		{
-			name:        "ciphertext too short",
-			initCipher:  true,
-			input:       ptr(base64.StdEncoding.EncodeToString([]byte("short"))),
-			expectNil:   true,
-			expectErr:   true,
-			errContains: "ciphertext too short",
+			name:       "ciphertext too short",
+			initCipher: true,
+			input:      ptr(base64.StdEncoding.EncodeToString([]byte("short"))),
+			expectNil:  true,
+			expectErr:  true,
+			sentinel:   ErrCiphertextTooShort,
 		},
 	}
 
@@ -287,8 +287,8 @@ func TestDecrypt(t *testing.T) {
 
 			if tt.expectErr {
 				assert.Error(t, err)
-				if tt.errContains != "" {
-					assert.ErrorContains(t, err, tt.errContains)
+				if tt.sentinel != nil {
+					assert.ErrorIs(t, err, tt.sentinel)
 				}
 			} else {
 				assert.NoError(t, err)

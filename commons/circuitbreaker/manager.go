@@ -288,14 +288,23 @@ func (m *manager) RegisterStateChangeListener(listener StateChangeListener) {
 }
 
 // isNilListener checks for both untyped nil and typed nil interface values.
+// Handles all nilable kinds: pointers, slices, maps, channels, funcs, and interfaces.
 func isNilListener(listener StateChangeListener) bool {
 	if listener == nil {
 		return true
 	}
 
 	v := reflect.ValueOf(listener)
+	if !v.IsValid() {
+		return true
+	}
 
-	return v.Kind() == reflect.Ptr && v.IsNil()
+	switch v.Kind() {
+	case reflect.Ptr, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func, reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
+	}
 }
 
 // handleStateChange processes state changes and notifies listeners

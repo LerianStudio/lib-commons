@@ -64,8 +64,9 @@ func (c *Crypto) GoString() string {
 }
 
 // logger returns the configured Logger, falling back to a NopLogger if nil.
+// Uses isNilInterface to detect typed nils (e.g. (*MyLogger)(nil)).
 func (c *Crypto) logger() libLog.Logger {
-	if c == nil || c.Logger == nil {
+	if c == nil || isNilInterface(c.Logger) {
 		return libLog.NewNop()
 	}
 
