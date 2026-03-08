@@ -1,13 +1,21 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package http
 
 import (
-	"github.com/LerianStudio/lib-commons/v3/commons/circuitbreaker"
-	"github.com/LerianStudio/lib-commons/v3/commons/constants"
+	"errors"
+
+	"github.com/LerianStudio/lib-commons/v4/commons/circuitbreaker"
+	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
 	"github.com/gofiber/fiber/v2"
+)
+
+var (
+	// ErrEmptyDependencyName indicates a DependencyCheck was registered with an empty Name.
+	ErrEmptyDependencyName = errors.New("dependency name must not be empty")
+	// ErrDuplicateDependencyName indicates two DependencyChecks share the same Name.
+	ErrDuplicateDependencyName = errors.New("duplicate dependency name")
+	// ErrCBWithoutServiceName indicates a CircuitBreaker was provided without a ServiceName.
+	ErrCBWithoutServiceName = errors.New("CircuitBreaker provided without ServiceName")
 )
 
 // DependencyCheck represents a health check configuration for a single dependency.
@@ -81,7 +89,44 @@ type DependencyStatus struct {
 //	    },
 //	))
 func HealthWithDependencies(dependencies ...DependencyCheck) fiber.Handler {
+	// Validate dependency names at registration time (2.21).
+	// Errors here are configuration bugs, so we capture them and return
+	// 503 on every request to make misconfiguration visible immediately.
+	seen := make(map[string]struct{}, len(dependencies))
+
+	var configErr error
+
+	for _, dep := range dependencies {
+		if dep.Name == "" {
+			configErr = ErrEmptyDependencyName
+
+			break
+		}
+
+		if _, exists := seen[dep.Name]; exists {
+			configErr = ErrDuplicateDependencyName
+
+			break
+		}
+
+		seen[dep.Name] = struct{}{}
+
+		// 2.6/2.8: CircuitBreaker provided without ServiceName is a misconfiguration.
+		if !nilcheck.Interface(dep.CircuitBreaker) && dep.ServiceName == "" {
+			configErr = ErrCBWithoutServiceName
+
+			break
+		}
+	}
+
 	return func(c *fiber.Ctx) error {
+		if configErr != nil {
+			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+				"status": constant.DataSourceStatusDegraded,
+				"error":  configErr.Error(),
+			})
+		}
+
 		overallStatus := constant.DataSourceStatusAvailable
 		httpStatus := fiber.StatusOK
 
@@ -92,8 +137,10 @@ func HealthWithDependencies(dependencies ...DependencyCheck) fiber.Handler {
 				Healthy: true, // Default to healthy unless proven otherwise
 			}
 
-			// Check circuit breaker state if provided
-			if dep.CircuitBreaker != nil && dep.ServiceName != "" {
+			// Check circuit breaker state if provided.
+			// Uses typed-nil-safe check (2.13) so a concrete nil manager
+			// does not sneak past the interface-nil gate.
+			if !nilcheck.Interface(dep.CircuitBreaker) && dep.ServiceName != "" {
 				cbState := dep.CircuitBreaker.GetState(dep.ServiceName)
 				cbCounts := dep.CircuitBreaker.GetCounts(dep.ServiceName)
 
@@ -107,11 +154,14 @@ func HealthWithDependencies(dependencies ...DependencyCheck) fiber.Handler {
 				status.Healthy = dep.CircuitBreaker.IsHealthy(dep.ServiceName)
 			}
 
-			// Run custom health check if provided
-			// This overrides the circuit breaker health status if both are provided
+			// Run custom health check if provided.
+			// When both CircuitBreaker and HealthCheck are configured, both must
+			// report healthy (AND semantics) to prevent silently bypassing
+			// circuit breaker protection.
 			if dep.HealthCheck != nil {
-				healthy := dep.HealthCheck()
-				status.Healthy = healthy
+				if !dep.HealthCheck() {
+					status.Healthy = false
+				}
 			}
 
 			// Update overall status based on final dependency health
@@ -131,14 +181,3 @@ func HealthWithDependencies(dependencies ...DependencyCheck) fiber.Handler {
 		})
 	}
 }
-
-// HealthSimple is an alias for the existing Ping function for backward compatibility.
-// Use this when you don't need detailed dependency health checks.
-//
-// Returns:
-//   - HTTP 200 OK with "healthy" text response
-//
-// Example usage:
-//
-//	f.Get("/health", commonsHttp.HealthSimple)
-var HealthSimple = Ping
