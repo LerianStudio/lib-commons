@@ -1,76 +1,149 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package zap
 
 import (
+	"errors"
 	"fmt"
-	"log"
 	"os"
+	"strings"
 
-	clog "github.com/LerianStudio/lib-commons/v3/commons/log"
 	"go.opentelemetry.io/contrib/bridges/otelzap"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
-// InitializeLoggerWithError initializes our log layer and returns it with error handling.
-// Returns an error instead of calling log.Fatalf on failure.
+const (
+	callerSkipFrames = 1
+	encodingConsole  = "console"
+)
+
+// Environment controls the baseline logger profile.
+type Environment string
+
+const (
+	// EnvironmentProduction enables production-safe logging defaults.
+	EnvironmentProduction Environment = "production"
+	// EnvironmentStaging enables staging-safe logging defaults.
+	EnvironmentStaging Environment = "staging"
+	// EnvironmentUAT enables UAT-safe logging defaults.
+	EnvironmentUAT Environment = "uat"
+	// EnvironmentDevelopment enables verbose development logging defaults.
+	EnvironmentDevelopment Environment = "development"
+	// EnvironmentLocal enables verbose local-development logging defaults.
+	EnvironmentLocal Environment = "local"
+)
+
+// Config contains all required logger initialization inputs.
+type Config struct {
+	Environment     Environment
+	Level           string
+	OTelLibraryName string
+}
+
+func (c Config) validate() error {
+	if c.OTelLibraryName == "" {
+		return errors.New("OTelLibraryName is required")
+	}
+
+	switch c.Environment {
+	case EnvironmentProduction, EnvironmentStaging, EnvironmentUAT, EnvironmentDevelopment, EnvironmentLocal:
+		return nil
+	default:
+		return fmt.Errorf("invalid environment %q", c.Environment)
+	}
+}
+
+// New creates a structured logger from the given configuration.
 //
-//nolint:ireturn
-func InitializeLoggerWithError() (clog.Logger, error) {
-	var zapCfg zap.Config
-
-	if os.Getenv("ENV_NAME") == "production" {
-		zapCfg = zap.NewProductionConfig()
-		zapCfg.EncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
-		zapCfg.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
-	} else {
-		zapCfg = zap.NewDevelopmentConfig()
-		zapCfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-		zapCfg.Level = zap.NewAtomicLevelAt(zapcore.DebugLevel)
+// The returned Logger implements log.Logger and stores the runtime-adjustable
+// level handle internally. Use Logger.Level() to access it.
+func New(cfg Config) (*Logger, error) {
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("invalid zap config: %w", err)
 	}
 
-	if val, ok := os.LookupEnv("LOG_LEVEL"); ok {
-		var lvl zapcore.Level
-		if err := lvl.Set(val); err != nil {
-			log.Printf("Invalid LOG_LEVEL, fallback to InfoLevel: %v", err)
+	baseConfig := buildConfigByEnvironment(cfg.Environment)
 
-			lvl = zapcore.InfoLevel
-		}
-
-		zapCfg.Level = zap.NewAtomicLevelAt(lvl)
-	}
-
-	zapCfg.DisableStacktrace = true
-
-	logger, err := zapCfg.Build(zap.AddCallerSkip(2), zap.WrapCore(func(core zapcore.Core) zapcore.Core {
-		return zapcore.NewTee(core, otelzap.NewCore(os.Getenv("OTEL_LIBRARY_NAME")))
-	}))
+	level, err := resolveLevel(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("can't initialize zap logger: %w", err)
+		return nil, err
 	}
 
-	sugarLogger := logger.Sugar()
+	baseConfig.Level = level
+	baseConfig.DisableStacktrace = true
 
-	sugarLogger.Infof("Log level is (%v)", zapCfg.Level)
-	sugarLogger.Infof("Logger is (%T) \n", sugarLogger)
+	coreOptions := []zap.Option{
+		zap.AddCallerSkip(callerSkipFrames),
+		zap.WrapCore(func(core zapcore.Core) zapcore.Core {
+			return zapcore.NewTee(core, otelzap.NewCore(cfg.OTelLibraryName))
+		}),
+	}
 
-	return &ZapWithTraceLogger{
-		Logger: sugarLogger,
+	built, err := baseConfig.Build(coreOptions...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build logger: %w", err)
+	}
+
+	return &Logger{
+		logger:          built,
+		atomicLevel:     level,
+		consoleEncoding: baseConfig.Encoding == encodingConsole,
 	}, nil
 }
 
-// Deprecated: Use InitializeLoggerWithError for proper error handling.
-// InitializeLogger initializes our log layer and returns it.
-//
-//nolint:ireturn
-func InitializeLogger() clog.Logger {
-	logger, err := InitializeLoggerWithError()
-	if err != nil {
-		log.Fatalf("%v", err)
+func resolveLevel(cfg Config) (zap.AtomicLevel, error) {
+	levelStr := cfg.Level
+	if strings.TrimSpace(levelStr) == "" {
+		levelStr = strings.TrimSpace(os.Getenv("LOG_LEVEL"))
 	}
 
-	return logger
+	if levelStr != "" {
+		var parsed zapcore.Level
+		if err := parsed.Set(levelStr); err != nil {
+			return zap.AtomicLevel{}, fmt.Errorf("invalid level %q: %w", levelStr, err)
+		}
+
+		return zap.NewAtomicLevelAt(parsed), nil
+	}
+
+	if cfg.Environment == EnvironmentDevelopment || cfg.Environment == EnvironmentLocal {
+		return zap.NewAtomicLevelAt(zapcore.DebugLevel), nil
+	}
+
+	return zap.NewAtomicLevelAt(zapcore.InfoLevel), nil
+}
+
+func buildConfigByEnvironment(environment Environment) zap.Config {
+	encoding := resolveEncoding(environment)
+
+	if environment == EnvironmentDevelopment || environment == EnvironmentLocal {
+		cfg := zap.NewDevelopmentConfig()
+		cfg.Encoding = encoding
+		cfg.EncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+
+		if encoding == encodingConsole {
+			cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+		}
+
+		return cfg
+	}
+
+	cfg := zap.NewProductionConfig()
+	cfg.Encoding = encoding
+	cfg.EncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+
+	return cfg
+}
+
+func resolveEncoding(environment Environment) string {
+	if enc := strings.TrimSpace(os.Getenv("LOG_ENCODING")); enc != "" {
+		if enc == "json" || enc == encodingConsole {
+			return enc
+		}
+	}
+
+	if environment == EnvironmentDevelopment || environment == EnvironmentLocal {
+		return encodingConsole
+	}
+
+	return "json"
 }

@@ -1,266 +1,207 @@
 # lib-commons
 
-A comprehensive Go library providing common utilities and components for building robust microservices and applications in the Lerian Studio ecosystem.
+`lib-commons` is Lerian's shared Go toolkit for service primitives, connectors, observability, and runtime safety.
 
-## Overview
+The current major API surface is **v4**. If you are migrating from older `lib-commons` or `lib-uncommons` code, see `MIGRATION_MAP.md`.
 
-`lib-commons` is a utility library that provides a collection of reusable components and helpers for Go applications. It includes standardized implementations for database connections, message queuing, logging, context management, error handling, transaction processing, and more.
+---
 
-## Features
+**Migrating from older packages?**  
+Use `MIGRATION_MAP.md` as the canonical map for renamed, redesigned, or removed APIs in the unified `lib-commons` line.
 
-### Core Components
+---
 
-- **App Management**: Framework for managing application lifecycle and runtime (`app.go`)
-- **Context Utilities**: Enhanced context management with support for logging, tracing, and header IDs (`context.go`)
-- **Error Handling**: Standardized business error handling and responses (`errors.go`)
+## Requirements
 
-### Database Connectors
+- Go `1.25.7` or newer
 
-- **PostgreSQL**: Connection management, migrations, and utilities for PostgreSQL databases
-- **MongoDB**: Connection management and utilities for MongoDB
-- **Redis**: Client implementation and utilities for Redis
-
-### Messaging
-
-- **RabbitMQ**: Client implementation and utilities for RabbitMQ
-
-### Observability
-
-- **Logging**: Pluggable logging interface with multiple implementations
-- **Logging Obfuscation**: Dynamic environment variable to obfuscate specific fields from the request payload logging
-  - `SECURE_LOG_FIELDS=password,apiKey`
-- **OpenTelemetry**: Integrated tracing, metrics, and logs through OpenTelemetry
-- **Zap**: Integration with Uber's Zap logging library
-
-### Utilities
-
-- **String Utilities**: Common string manipulation functions
-- **Type Conversion**: Safe type conversion utilities
-- **Time Helpers**: Date and time manipulation functions
-- **OS Utilities**: Operating system related utilities
-- **Pointer Utilities**: Helper functions for pointer type operations
-- **Transaction Processing**: Utilities for financial transaction processing and validation
-
-## Getting Started
-
-### Prerequisites
-
-- Go 1.23.2 or higher
-
-### Installation
+## Installation
 
 ```bash
-go get github.com/LerianStudio/lib-commons/v2
+go get github.com/LerianStudio/lib-commons/v4
 ```
 
-## API Reference
+## What is in this library
 
-### Core Components
+### Core (`commons`)
 
-#### Application Management (`commons`)
+- `app.go`: `Launcher` for concurrent app lifecycle management with `NewLauncher(opts...)` and `RunApp` options
+- `context.go`: request-scoped logger/tracer/metrics/header-id tracking via `ContextWith*` helpers, safe timeout with `WithTimeoutSafe`, span attribute propagation
+- `errors.go`: standardized business error mapping with `ValidateBusinessError`
+- `utils.go`: UUID generation (`GenerateUUIDv7` returns error), struct-to-JSON, map merging, CPU/memory metrics, internal service detection
+- `stringUtils.go`: accent removal, case conversion, UUID placeholder replacement, SHA-256 hashing, server address validation
+- `time.go`: date/time validation, range checking, parsing with end-of-day support
+- `os.go`: environment variable helpers (`GetenvOrDefault`, `GetenvBoolOrDefault`, `GetenvIntOrDefault`), struct population from env tags via `SetConfigFromEnvVars`
+- `commons/constants`: shared constants for datasource status, errors, headers, metadata, pagination, transactions, OTEL attributes, obfuscation values, and `SanitizeMetricLabel` utility
 
-| Method                             | Description                                              |
-| ---------------------------------- | -------------------------------------------------------- |
-| `NewLauncher(...LauncherOption)` | Creates a new application launcher with provided options |
-| `WithLogger(logger)`             | LauncherOption that adds a logger to the launcher        |
-| `RunApp(name, app)`              | LauncherOption that registers an application to run      |
-| `Launcher.Add(appName, app)`     | Registers an application to run                          |
-| `Launcher.Run()`                 | Runs all registered applications in goroutines.          |
+### Observability and logging
 
-#### Context Utilities (`commons`)
+- `commons/opentelemetry`: telemetry bootstrap (`NewTelemetry`), propagation (HTTP/gRPC/queue), span helpers, redaction (`Redactor` with `RedactionRule` patterns), struct-to-attribute conversion
+- `commons/opentelemetry/metrics`: fluent metrics factory (`NewMetricsFactory`, `NewNopFactory`) with Counter/Gauge/Histogram builders, explicit error returns, convenience recorders for accounts/transactions
+- `commons/log`: v2 logging interface (`Logger` with `Log`/`With`/`WithGroup`/`Enabled`/`Sync`), typed `Field` constructors (`String`, `Int`, `Bool`, `Err`, `Any`), `GoLogger` with CWE-117 log-injection prevention, sanitizer (`SafeError`, `SanitizeExternalResponse`)
+- `commons/zap`: zap adapter for `commons/log` with OTEL bridge, `Config`-based construction via `New()`, direct zap convenience methods (`Debug`/`Info`/`Warn`/`Error`), underlying access via `Raw()` and `Level()`
 
-| Method                                 | Description                     |
-| -------------------------------------- | ------------------------------- |
-| `ContextWithLogger(ctx, logger)`     | Returns a context with logger   |
-| `NewLoggerFromContext(ctx)`          | Extracts logger from context    |
-| `ContextWithTracer(ctx, tracer)`     | Returns a context with tracer   |
-| `NewTracerFromContext(ctx)`          | Extracts tracer from context    |
-| `ContextWithHeaderID(ctx, headerID)` | Returns a context with headerID |
-| `NewHeaderIDFromContext(ctx)`        | Extracts headerID from context  |
+### Data and messaging connectors
 
-#### Error Handling (`commons`)
+- `commons/postgres`: `Config`-based constructor (`New`), `Resolver(ctx)` for dbresolver access, `Primary()` for raw `*sql.DB`, `NewMigrator` for schema migrations, backoff-based lazy-connect
+- `commons/mongo`: `Config`-based client with functional options (`NewClient`), URI builder (`BuildURI`), `Client(ctx)`/`ResolveClient(ctx)` for access, `EnsureIndexes` (variadic), TLS support, credential clearing
+- `commons/redis`: topology-based `Config` (standalone/sentinel/cluster), GCP IAM auth with token refresh, distributed locking via `LockManager` interface (`NewRedisLockManager`, `LockHandle`), `SetPackageLogger` for diagnostics, TLS defaults to a TLS1.2 minimum floor with `AllowLegacyMinVersion` as an explicit temporary compatibility override
+- `commons/rabbitmq`: connection/channel/health helpers for AMQP with `*Context()` variants, `HealthCheck() (bool, error)`, `Close()`/`CloseContext()`, confirmable publisher with broker acks and auto-recovery, DLQ topology utilities, and health-check hardening (`AllowInsecureHealthCheck`, `HealthCheckAllowedHosts`, `RequireHealthCheckAllowedHosts`)
 
-| Method                                              | Description                                                                  |
-| --------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `ValidateBusinessError(err, entityType, ...args)` | Maps domain errors to business responses with appropriate codes and messages |
-| `Response.Error()`                                | Returns the error message from a Response                                    |
+### HTTP and server utilities
 
-### Database Connectors
+- `commons/net/http`: Fiber HTTP helpers -- response (`Respond`/`RespondStatus`/`RespondError`/`RenderError`), health (`Ping`/`HealthWithDependencies`), SSRF-protected reverse proxy (`ServeReverseProxy` with `ReverseProxyPolicy`), pagination (offset/opaque cursor/timestamp cursor/sort cursor), validation (`ParseBodyAndValidate`/`ValidateStruct`/`ValidateSortDirection`/`ValidateLimit`), context/ownership (`ParseAndVerifyTenantScopedID`/`ParseAndVerifyResourceScopedID`), middleware (`WithHTTPLogging`/`WithGrpcLogging`/`WithCORS`/`WithBasicAuth`/`NewTelemetryMiddleware`), `FiberErrorHandler`
+- `commons/net/http/ratelimit`: Redis-backed rate limit storage (`NewRedisStorage`) with `WithRedisStorageLogger` option
+- `commons/server`: `ServerManager`-based graceful shutdown with `WithHTTPServer`/`WithGRPCServer`/`WithShutdownChannel`/`WithShutdownTimeout`/`WithShutdownHook`, `StartWithGracefulShutdown()`/`StartWithGracefulShutdownWithError()`, `ServersStarted()` for test coordination
 
-#### PostgreSQL (`commons/postgres`)
+### Resilience and safety
 
-| Method                                        | Description                                              |
-| --------------------------------------------- | -------------------------------------------------------- |
-| `PostgresConnection.Connect()`              | Establishes connection to PostgreSQL primary and replica |
-| `PostgresConnection.GetDB()`                | Returns the database connection                          |
-| `PostgresConnection.MigrateUp(sourceDir)`   | Runs database migrations                                 |
-| `PostgresConnection.MigrateDown(sourceDir)` | Reverts database migrations                              |
-| `GetPagination(page, pageSize)`             | Gets pagination parameters for SQL queries               |
+- `commons/circuitbreaker`: `Manager` interface with error-returning constructors (`NewManager`), config validation, preset configs (`DefaultConfig`/`AggressiveConfig`/`ConservativeConfig`/`HTTPServiceConfig`/`DatabaseConfig`), health checker (`NewHealthCheckerWithValidation`), metrics via `WithMetricsFactory`
+- `commons/backoff`: exponential backoff with jitter (`ExponentialWithJitter`) and context-aware sleep (`WaitContext`)
+- `commons/errgroup`: error-group concurrency with panic recovery (`WithContext`, `Go`, `Wait`), configurable logger via `SetLogger`
+- `commons/runtime`: panic recovery (`RecoverAndLog`/`RecoverAndCrash`/`RecoverWithPolicy` with `*WithContext` variants), safe goroutines (`SafeGo`/`SafeGoWithContext`/`SafeGoWithContextAndComponent`), panic metrics (`InitPanicMetrics`), span recording (`RecordPanicToSpan`), error reporter (`SetErrorReporter`/`GetErrorReporter`), production mode (`SetProductionMode`/`IsProductionMode`)
+- `commons/assert`: production-safe assertions (`New` + `That`/`NotNil`/`NotEmpty`/`NoError`/`Never`/`Halt`), assertion metrics (`InitAssertionMetrics`), domain predicates (`Positive`/`ValidUUID`/`ValidAmount`/`DebitsEqualCredits`/`TransactionCanTransitionTo`/`BalanceSufficientForRelease` and more)
+- `commons/safe`: panic-safe math (`Divide`/`DivideRound`/`Percentage` on `decimal.Decimal`, `DivideFloat64`), regex with caching (`Compile`/`MatchString`/`FindString`), slices (`First`/`Last`/`At` with `*OrDefault` variants)
+- `commons/security`: sensitive field detection (`IsSensitiveField`), default field lists (`DefaultSensitiveFields`/`DefaultSensitiveFieldsMap`)
 
-#### MongoDB (`commons/mongo`)
+### Domain and support packages
 
-| Method                                  | Description                       |
-| --------------------------------------- | --------------------------------- |
-| `MongoConnection.Connect(ctx)`       | Establishes connection to MongoDB |
-| `MongoConnection.GetDB(ctx)`         | Returns the MongoDB client        |
-| `MongoConnection.EnsureIndexes(ctx, collection, index)` | Ensures an index exists (idempotent). If the collection does not exist, MongoDB will create it automatically during index creation. |
+- `commons/transaction`: intent-based transaction planning (`BuildIntentPlan`), balance eligibility validation (`ValidateBalanceEligibility`), posting flow (`ApplyPosting`), operation resolution (`ResolveOperation`), typed domain errors (`NewDomainError`)
+- `commons/outbox`: transactional outbox contracts, dispatcher, sanitizer, and PostgreSQL adapters for schema-per-tenant or column-per-tenant models (schema resolver requires tenant context by default; column migration uses composite key `(tenant_id, id)`)
+- `commons/crypto`: hashing (`GenerateHash`) and symmetric encryption (`InitializeCipher`/`Encrypt`/`Decrypt`) with credential-safe `fmt` output (`String()`/`GoString()` redact secrets)
+- `commons/jwt`: HS256/384/512 JWT signing (`Sign`), signature verification (`Parse`), combined signature + time-claim validation (`ParseAndValidate`), standalone time-claim validation (`ValidateTimeClaims`/`ValidateTimeClaimsAt`)
+- `commons/license`: license validation with functional options (`New(opts...)`, `WithLogger`), handler management (`SetHandler`), termination (`Terminate`/`TerminateWithError`/`TerminateSafe`)
+- `commons/pointers`: pointer conversion helpers (`String`, `Bool`, `Time`, `Int`, `Int64`, `Float64`)
+- `commons/cron`: cron expression parser (`Parse`) and scheduler (`Schedule.Next`)
+- `commons/secretsmanager`: AWS Secrets Manager M2M credential retrieval via `GetM2MCredentials`, typed retrieval errors, and the `SecretsManagerClient` test seam
 
-#### Redis (`commons/redis`)
+### Multi-tenant packages
 
-| Method                                               | Description                     |
-| ---------------------------------------------------- | ------------------------------- |
-| `RedisConnection.Connect()`                        | Establishes connection to Redis |
-| `RedisConnection.GetClient()`                      | Returns the Redis client        |
-| `RedisConnection.Set(ctx, key, value, expiration)` | Sets a key-value pair in Redis  |
-| `RedisConnection.Get(ctx, key)`                    | Gets a value from Redis by key  |
-| `RedisConnection.Del(ctx, keys...)`                | Deletes keys from Redis         |
+- `commons/tenant-manager/core`: shared tenant types, context helpers (`ContextWithTenantID`, `GetTenantIDFromContext`), and tenant-manager error contracts
+- `commons/tenant-manager/cache`: exported tenant-config cache contract (`ConfigCache`), `ErrCacheMiss`, and in-memory cache implementation used by the HTTP client
+- `commons/tenant-manager/client`: Tenant Manager HTTP client with circuit breaker, cache options (`WithCache`, `WithCacheTTL`, `WithSkipCache`), cache invalidation, and response hardening
+- `commons/tenant-manager/consumer`: dynamic multi-tenant queue consumer lifecycle management with tenant discovery, sync, retry, and per-tenant handlers
+- `commons/tenant-manager/middleware`: Fiber middleware for tenant extraction, upstream auth assertion checks, and tenant-scoped DB resolution
+- `commons/tenant-manager/postgres`: tenant-scoped PostgreSQL connection manager with LRU eviction, async settings revalidation, and pool controls
+- `commons/tenant-manager/mongo`: tenant-scoped MongoDB connection manager with LRU eviction and idle-timeout controls
+- `commons/tenant-manager/rabbitmq`: tenant-scoped RabbitMQ connection manager with soft connection-pool limits and eviction
+- `commons/tenant-manager/s3`: tenant-prefixed S3/object-storage key helpers with delimiter validation
+- `commons/tenant-manager/valkey`: tenant-prefixed Redis/Valkey key and pattern helpers with delimiter validation
 
-### Messaging
+### Build and shell
 
-#### RabbitMQ (`commons/rabbitmq`)
+- `commons/shell/`: Makefile include helpers (`makefile_colors.mk`, `makefile_utils.mk`), shell scripts (`colors.sh`, `ascii.sh`), ASCII art (`logo.txt`)
 
-| Method                                                        | Description                        |
-| ------------------------------------------------------------- | ---------------------------------- |
-| `RabbitMQConnection.Connect()`                              | Establishes connection to RabbitMQ |
-| `RabbitMQConnection.GetChannel()`                           | Returns a RabbitMQ channel         |
-| `RabbitMQConnection.DeclareQueue(name)`                     | Declares a queue                   |
-| `RabbitMQConnection.DeclareExchange(name, kind)`            | Declares an exchange               |
-| `RabbitMQConnection.QueueBind(queue, exchange, routingKey)` | Binds a queue to an exchange       |
-| `RabbitMQConnection.Publish(exchange, routingKey, body)`    | Publishes a message                |
-| `RabbitMQConnection.Consume(queue, consumer)`               | Consumes messages from a queue     |
+## Minimal v4 usage
 
-### Multi-Tenant
+```go
+import (
+    "context"
 
-#### Tenant Manager (`commons/tenant-manager`)
+    "github.com/LerianStudio/lib-commons/v4/commons/log"
+    "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
+)
 
-| Method                                                  | Description                                                    |
-| ------------------------------------------------------- | -------------------------------------------------------------- |
-| `NewMultiTenantConsumer(rabbitmq, redis, config, log)` | Creates a new multi-tenant consumer in lazy mode               |
-| `MultiTenantConsumer.Register(queue, handler)`         | Registers a message handler for a queue                        |
-| `MultiTenantConsumer.Run(ctx)`                         | Discovers tenants (lazy, non-blocking) and starts sync loop    |
-| `MultiTenantConsumer.EnsureConsumerStarted(ctx, id)`   | Spawns consumer on-demand with double-check locking            |
-| `MultiTenantConsumer.Stats()`                          | Returns enhanced stats (ConnectionMode, Known, Pending, etc.)  |
-| `MultiTenantConsumer.IsDegraded(tenantID)`             | Returns true if tenant has 3+ consecutive connection failures  |
-| `MultiTenantConsumer.Close()`                          | Stops all consumers and marks consumer as closed               |
-| `SetTenantIDInContext(ctx, tenantID)`                  | Stores tenant ID in context                                    |
-| `GetTenantIDFromContext(ctx)`                          | Retrieves tenant ID from context                               |
-| `GetPostgresForTenant(ctx)`                            | Returns PostgreSQL connection for current tenant               |
-| `GetModulePostgresForTenant(ctx, module)`              | Returns module-specific PostgreSQL connection from context      |
+func bootstrap() error {
+    logger := log.NewNop()
 
-### Observability
+    tl, err := opentelemetry.NewTelemetry(opentelemetry.TelemetryConfig{
+        LibraryName:               "my-service",
+        ServiceName:               "my-service-api",
+        ServiceVersion:            "2.0.0",
+        DeploymentEnv:             "local",
+        CollectorExporterEndpoint: "localhost:4317",
+        EnableTelemetry:           false, // Set to true when collector is available
+        InsecureExporter:          true,
+        Logger:                    logger,
+    })
+    if err != nil {
+        return err
+    }
+    defer tl.ShutdownTelemetry()
 
-#### Logging (`commons/log`)
+    tl.ApplyGlobals()
 
-| Method                                  | Description                                    |
-| --------------------------------------- | ---------------------------------------------- |
-| `Info(args...)`                       | Logs info level message                        |
-| `Infof(format, args...)`              | Logs formatted info level message              |
-| `Error(args...)`                      | Logs error level message                       |
-| `Errorf(format, args...)`             | Logs formatted error level message             |
-| `Warn(args...)`                       | Logs warning level message                     |
-| `Warnf(format, args...)`              | Logs formatted warning level message           |
-| `Debug(args...)`                      | Logs debug level message                       |
-| `Debugf(format, args...)`             | Logs formatted debug level message             |
-| `Fatal(args...)`                      | Logs fatal level message and exits             |
-| `Fatalf(format, args...)`             | Logs formatted fatal level message and exits   |
-| `WithFields(fields...)`               | Returns a logger with additional fields        |
-| `WithDefaultMessageTemplate(message)` | Returns a logger with default message template |
-| `Sync()`                              | Flushes any buffered log entries               |
+    _ = context.Background()
 
-#### Zap Integration (`commons/zap`)
+    return nil
+}
+```
 
-| Method                                     | Description                                 |
-| ------------------------------------------ | ------------------------------------------- |
-| `NewZapLogger(config)`                   | Creates a new Zap logger                    |
-| `ZapLoggerAdapter.Info(args...)`         | Logs info level message using Zap           |
-| `ZapLoggerAdapter.Error(args...)`        | Logs error level message using Zap          |
-| `ZapLoggerAdapter.WithFields(fields...)` | Returns a Zap logger with additional fields |
+## Environment Variables
 
-#### OpenTelemetry (`commons/opentelemetry`)
+The following environment variables are recognized by lib-commons:
 
-| Method                                    | Description                                                     |
-| ----------------------------------------- | --------------------------------------------------------------- |
-| `Telemetry.InitializeTelemetry(logger)` | Initializes OpenTelemetry with trace, metric, and log providers |
-| `Telemetry.ShutdownTelemetry()`         | Shuts down OpenTelemetry providers                              |
-| `Telemetry.GetTracer()`                 | Returns a tracer from the provider                              |
-| `Telemetry.GetMeter()`                  | Returns a meter from the provider                               |
-| `Telemetry.GetLogger()`                 | Returns a logger from the provider                              |
-| `Telemetry.StartSpan(ctx, name)`        | Starts a new trace span                                         |
-| `Telemetry.EndSpan(span, err)`          | Ends a trace span with optional error                           |
+| Variable | Type | Default | Package | Description |
+| :--- | :--- | :--- | :--- | :--- |
+| `VERSION` | `string` | `"NO-VERSION"` | `commons` | Application version, printed at startup by `InitLocalEnvConfig` |
+| `ENV_NAME` | `string` | `"local"` | `commons` | Environment name; when `"local"`, a `.env` file is loaded automatically |
+| `ENV` | `string` | _(none)_ | `commons/assert` | When set to `"production"`, stack traces are omitted from assertion failures |
+| `GO_ENV` | `string` | _(none)_ | `commons/assert` | Fallback production check (same behavior as `ENV`) |
+| `LOG_LEVEL` | `string` | `"debug"` (dev/local) / `"info"` (other) | `commons/zap` | Log level override (`debug`, `info`, `warn`, `error`); `Config.Level` takes precedence if set |
+| `LOG_ENCODING` | `string` | `"console"` (dev/local) / `"json"` (other) | `commons/zap` | Log output format: `"json"` for structured JSON, `"console"` for human-readable colored output |
+| `LOG_OBFUSCATION_DISABLED` | `bool` | `false` | `commons/net/http` | Set to `"true"` to disable sensitive-field obfuscation in HTTP access logs (**not recommended in production**) |
+| `METRICS_COLLECTION_INTERVAL` | `duration` | `"5s"` | `commons/net/http` | Background system-metrics collection interval (Go duration format, e.g. `"10s"`, `"1m"`) |
+| `ACCESS_CONTROL_ALLOW_CREDENTIALS` | `bool` | `"false"` | `commons/net/http` | CORS `Access-Control-Allow-Credentials` header value |
+| `ACCESS_CONTROL_ALLOW_ORIGIN` | `string` | `"*"` | `commons/net/http` | CORS `Access-Control-Allow-Origin` header value |
+| `ACCESS_CONTROL_ALLOW_METHODS` | `string` | `"POST, GET, OPTIONS, PUT, DELETE, PATCH"` | `commons/net/http` | CORS `Access-Control-Allow-Methods` header value |
+| `ACCESS_CONTROL_ALLOW_HEADERS` | `string` | `"Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization"` | `commons/net/http` | CORS `Access-Control-Allow-Headers` header value |
+| `ACCESS_CONTROL_EXPOSE_HEADERS` | `string` | `""` | `commons/net/http` | CORS `Access-Control-Expose-Headers` header value |
 
-### Utilities
+Additionally, `commons.SetConfigFromEnvVars` populates any struct using `env:"VAR_NAME"` field tags, supporting `string`, `bool`, and integer types. Consuming applications define their own variable names through these tags.
 
-#### String Utilities (`commons`)
+## Development commands
 
-| Method                                  | Description                              |
-| --------------------------------------- | ---------------------------------------- |
-| `IsNilOrEmpty(s)`                     | Checks if string pointer is nil or empty |
-| `TruncateString(s, maxLen)`           | Truncates string to maximum length       |
-| `MaskEmail(email)`                    | Masks email address for privacy          |
-| `MaskLastDigits(value, digitsToShow)` | Masks all but last digits of a string    |
-| `StringToObject(s, obj)`              | Converts JSON string to object           |
-| `ObjectToString(obj)`                 | Converts object to JSON string           |
+### Core
 
-#### OS Utilities (`commons`)
+- `make build` -- build all packages
+- `make clean` -- clean build artifacts and caches
+- `make tidy` -- clean dependencies (`go mod tidy`)
+- `make format` -- format code with gofmt
+- `make help` -- display all available commands
 
-| Method                    | Description                                  |
-| ------------------------- | -------------------------------------------- |
-| `GetEnv(key, fallback)` | Gets environment variable with fallback      |
-| `MustGetEnv(key)`       | Gets required environment variable or panics |
-| `LoadEnvFile(file)`     | Loads environment variables from file        |
-| `GetMemUsage()`         | Gets current memory usage statistics         |
-| `GetCPUUsage()`         | Gets current CPU usage statistics            |
+### Testing
 
-#### Time Utilities (`commons`)
+- `make test` -- run unit tests (uses gotestsum if available)
+- `make test-unit` -- run unit tests excluding integration
+- `make test-integration` -- run integration tests with testcontainers (requires Docker)
+- `make test-all` -- run all tests (unit + integration)
 
-| Method                         | Description                          |
-| ------------------------------ | ------------------------------------ |
-| `FormatTime(t, layout)`      | Formats time according to layout     |
-| `ParseTime(s, layout)`       | Parses time from string using layout |
-| `GetCurrentTime()`           | Gets current time in UTC             |
-| `TimeBetween(t, start, end)` | Checks if time is between two times  |
+### Coverage
 
-#### Pointer Utilities (`commons/pointers`)
+- `make coverage-unit` -- unit tests with coverage report (respects `.ignorecoverunit`)
+- `make coverage-integration` -- integration tests with coverage
+- `make coverage` -- run all coverage targets
 
-| Method               | Description                                            |
-| -------------------- | ------------------------------------------------------ |
-| `ToString(s)`      | Creates string pointer from string                     |
-| `ToInt(i)`         | Creates int pointer from int                           |
-| `ToBool(b)`        | Creates bool pointer from bool                         |
-| `FromStringPtr(s)` | Gets string from string pointer with safe nil handling |
-| `FromIntPtr(i)`    | Gets int from int pointer with safe nil handling       |
-| `FromBoolPtr(b)`   | Gets bool from bool pointer with safe nil handling     |
+### Code quality
 
-#### Transaction Processing (`commons/transaction`)
+- `make lint` -- run lint checks (read-only)
+- `make lint-fix` -- auto-fix lint issues
+- `make sec` -- run security checks using gosec (`make sec SARIF=1` for SARIF output)
+- `make check-tests` -- verify test coverage for packages
 
-| Method                                | Description                                            |
-| ------------------------------------- | ------------------------------------------------------ |
-| `ValidateTransactionRequest(req)`   | Validates transaction request against business rules   |
-| `ValidateAccountBalances(accounts)` | Validates account balances for transaction processing  |
-| `ValidateAssetCode(code)`           | Validates asset code existence and status              |
-| `ValidateAccountStatuses(accounts)` | Validates account statuses for transaction eligibility |
+### Test flags
 
-#### Shell Utilities (`commons/shell`)
+- `LOW_RESOURCE=1` -- reduces parallelism and disables race detector for constrained machines
+- `RETRY_ON_FAIL=1` -- retries failed tests once
+- `RUN=<pattern>` -- filter integration tests by name pattern
+- `PKG=<path>` -- filter to specific package(s)
 
-| Method                                          | Description                               |
-| ----------------------------------------------- | ----------------------------------------- |
-| `ExecuteCommand(command)`                     | Executes shell command and returns output |
-| `ExecuteCommandWithTimeout(command, timeout)` | Executes shell command with timeout       |
-| `ExecuteCommandInBackground(command)`         | Executes shell command in background      |
+### Git hooks
 
-#### Network Utilities (`commons/net`)
+- `make setup-git-hooks` -- install and configure git hooks
+- `make check-hooks` -- verify git hooks installation
+- `make check-envs` -- check hooks + environment file security
 
-| Method                     | Description                            |
-| -------------------------- | -------------------------------------- |
-| `ValidateURL(url)`       | Validates URL format and accessibility |
-| `GetLocalIP()`           | Gets local IP address                  |
-| `IsPortOpen(host, port)` | Checks if port is open on host         |
-| `GetFreePort()`          | Gets a free port on local machine      |
+### Tooling and release
 
-## Contributing
+- `make tools` -- install test tools (gotestsum)
+- `make goreleaser` -- create release snapshot
 
-Please read the contributing guidelines before submitting pull requests.
+## Project Rules
+
+For coding standards, architecture patterns, testing requirements, and development guidelines, see [`docs/PROJECT_RULES.md`](docs/PROJECT_RULES.md).
 
 ## License
 
-This project is licensed under the terms found in the LICENSE file in the root directory.
+This project is licensed under the terms in `LICENSE`.

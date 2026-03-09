@@ -9,17 +9,15 @@ import (
 	"sync"
 	"time"
 
-	libCommons "github.com/LerianStudio/lib-commons/v3/commons"
-	"github.com/LerianStudio/lib-commons/v3/commons/log"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
+	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
+	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	libOpentelemetry "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/eviction"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
-
-// defaultIdleTimeout is the default duration before a tenant connection becomes
-// eligible for eviction when the pool exceeds the soft limit.
-const defaultIdleTimeout = 5 * time.Minute
 
 // Manager manages RabbitMQ connections per tenant.
 // Each tenant has a dedicated vhost, user, and credentials stored in Tenant Manager.
@@ -32,7 +30,7 @@ type Manager struct {
 	client  *client.Client
 	service string
 	module  string
-	logger  log.Logger
+	logger  *logcompat.Logger
 
 	mu             sync.RWMutex
 	connections    map[string]*amqp.Connection
@@ -40,6 +38,7 @@ type Manager struct {
 	maxConnections int                  // soft limit for pool size (0 = unlimited)
 	idleTimeout    time.Duration        // how long before a connection is eligible for eviction
 	lastAccessed   map[string]time.Time // LRU tracking per tenant
+	useTLS         bool                 // use amqps:// scheme instead of amqp://
 }
 
 // Option configures a Manager.
@@ -55,7 +54,7 @@ func WithModule(module string) Option {
 // WithLogger sets the logger for the RabbitMQ manager.
 func WithLogger(logger log.Logger) Option {
 	return func(p *Manager) {
-		p.logger = logger
+		p.logger = logcompat.New(logger)
 	}
 }
 
@@ -81,6 +80,15 @@ func WithIdleTimeout(d time.Duration) Option {
 	}
 }
 
+// WithTLS enables TLS connections (amqps:// scheme) instead of the default
+// plaintext amqp://. Use this for production deployments where RabbitMQ is
+// configured with TLS certificates.
+func WithTLS() Option {
+	return func(p *Manager) {
+		p.useTLS = true
+	}
+}
+
 // NewManager creates a new RabbitMQ connection manager.
 // Parameters:
 //   - c: The Tenant Manager client for fetching tenant configurations
@@ -90,6 +98,7 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 	p := &Manager{
 		client:       c,
 		service:      service,
+		logger:       logcompat.New(nil),
 		connections:  make(map[string]*amqp.Connection),
 		lastAccessed: make(map[string]time.Time),
 	}
@@ -104,8 +113,12 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 // GetConnection returns a RabbitMQ connection for the tenant.
 // Creates a new connection if one doesn't exist or the existing one is closed.
 func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Connection, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	if tenantID == "" {
-		return nil, fmt.Errorf("tenant ID is required")
+		return nil, errors.New("tenant ID is required")
 	}
 
 	p.mu.RLock()
@@ -120,14 +133,20 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Con
 
 		// Update LRU tracking on cache hit
 		p.mu.Lock()
-		// Re-check connection still exists (may have been evicted between locks)
-		if _, still := p.connections[tenantID]; still {
+		// Re-read connection from map (may have been evicted and closed between locks)
+		if refreshedConn, still := p.connections[tenantID]; still && !refreshedConn.IsClosed() {
 			p.lastAccessed[tenantID] = time.Now()
+			p.mu.Unlock()
+
+			return refreshedConn, nil
 		}
 
 		p.mu.Unlock()
 
-		return conn, nil
+		// Connection was evicted between RUnlock and Lock; create a new one
+		_ = conn // original reference is now potentially stale; discard it
+
+		return p.createConnection(ctx, tenantID)
 	}
 
 	p.mu.RUnlock()
@@ -136,12 +155,19 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Con
 }
 
 // createConnection fetches config from Tenant Manager and creates a RabbitMQ connection.
+//
+// Network I/O (GetTenantConfig, amqp.Dial) is performed outside the mutex to
+// avoid blocking other goroutines on slow network calls. The pattern is:
+//  1. Under lock: double-check cache, check closed state
+//  2. Outside lock: fetch config and dial
+//  3. Re-acquire lock: evict LRU, cache new connection (with race-loss handling)
 func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.Connection, error) {
 	if p.client == nil {
-		return nil, fmt.Errorf("tenant manager client is required for multi-tenant connections")
+		return nil, errors.New("tenant manager client is required for multi-tenant connections")
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	logger := logcompat.New(baseLogger)
 
 	ctx, span := tracer.Start(ctx, "rabbitmq.create_connection")
 	defer span.End()
@@ -150,56 +176,85 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 		logger = p.logger
 	}
 
+	// Step 1: Under lock — double-check if connection exists or manager is closed.
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
-	// Double-check after acquiring lock
 	if conn, ok := p.connections[tenantID]; ok && !conn.IsClosed() {
+		p.mu.Unlock()
 		return conn, nil
 	}
 
 	if p.closed {
+		p.mu.Unlock()
 		return nil, core.ErrManagerClosed
 	}
 
-	// Fetch tenant config from Tenant Manager
+	p.mu.Unlock()
+
+	// Step 2: Outside lock — perform network I/O (HTTP call + TCP dial).
 	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
 	if err != nil {
-		logger.Errorf("failed to get tenant config: tenantID=%s, service=%s, error=%v", tenantID, p.service, err)
-		libOpentelemetry.HandleSpanError(&span, "failed to get tenant config", err)
+		logger.Errorf("failed to get tenant config: %v", err)
+		libOpentelemetry.HandleSpanError(span, "failed to get tenant config", err)
 
-		return nil, fmt.Errorf("failed to get tenant config for tenant %s: %w", tenantID, err)
+		return nil, fmt.Errorf("failed to get tenant config: %w", err)
 	}
 
-	// Get RabbitMQ config
 	rabbitConfig := config.GetRabbitMQConfig()
 	if rabbitConfig == nil {
 		logger.Errorf("RabbitMQ not configured for tenant: %s", tenantID)
-		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "RabbitMQ not configured", nil)
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "RabbitMQ not configured", core.ErrServiceNotConfigured)
 
 		return nil, core.ErrServiceNotConfigured
 	}
 
-	// Build connection URI with tenant's vhost
-	uri := buildRabbitMQURI(rabbitConfig)
+	uri := buildRabbitMQURI(rabbitConfig, p.useTLS)
 
 	logger.Infof("connecting to RabbitMQ vhost: tenant=%s, vhost=%s", tenantID, rabbitConfig.VHost)
 
-	// Create connection
 	conn, err := amqp.Dial(uri)
 	if err != nil {
-		logger.Errorf("failed to connect to RabbitMQ: tenantID=%s, vhost=%s, error=%v", tenantID, rabbitConfig.VHost, err)
-		libOpentelemetry.HandleSpanError(&span, "failed to connect to RabbitMQ", err)
+		logger.Errorf("failed to connect to RabbitMQ: %v", err)
+		libOpentelemetry.HandleSpanError(span, "failed to connect to RabbitMQ", err)
 
 		return nil, fmt.Errorf("failed to connect to RabbitMQ: %w", err)
 	}
 
-	// Evict least recently used connection if pool is full
-	p.evictLRU(logger)
+	// Step 3: Re-acquire lock — evict LRU, cache connection (with race-loss check).
+	p.mu.Lock()
 
-	// Cache connection
+	// If manager was closed while we were dialing, discard the new connection.
+	if p.closed {
+		p.mu.Unlock()
+
+		if closeErr := conn.Close(); closeErr != nil {
+			logger.Errorf("failed to close RabbitMQ connection on closed manager: %v", closeErr)
+		}
+
+		return nil, core.ErrManagerClosed
+	}
+
+	// If another goroutine cached a connection for this tenant while we were
+	// dialing, use the cached one and discard ours.
+	if cached, ok := p.connections[tenantID]; ok && !cached.IsClosed() {
+		p.lastAccessed[tenantID] = time.Now()
+		p.mu.Unlock()
+
+		if closeErr := conn.Close(); closeErr != nil {
+			logger.Errorf("failed to close excess RabbitMQ connection for tenant %s: %v", tenantID, closeErr)
+		}
+
+		return cached, nil
+	}
+
+	// Evict least recently used connection if pool is full
+	p.evictLRU(logger.Base())
+
+	// Cache our new connection
 	p.connections[tenantID] = conn
 	p.lastAccessed[tenantID] = time.Now()
+
+	p.mu.Unlock()
 
 	logger.Infof("RabbitMQ connection created: tenant=%s, vhost=%s", tenantID, rabbitConfig.VHost)
 
@@ -212,52 +267,26 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 // the pool is allowed to grow beyond the soft limit.
 // Caller MUST hold p.mu write lock.
 func (p *Manager) evictLRU(logger log.Logger) {
-	if p.maxConnections <= 0 || len(p.connections) < p.maxConnections {
+	candidateID, shouldEvict := eviction.FindLRUEvictionCandidate(
+		len(p.connections), p.maxConnections, p.lastAccessed, p.idleTimeout, logger,
+	)
+	if !shouldEvict {
 		return
 	}
 
-	now := time.Now()
-
-	idleTimeout := p.idleTimeout
-	if idleTimeout == 0 {
-		idleTimeout = defaultIdleTimeout
-	}
-
-	// Find the oldest connection that has been idle longer than the timeout
-	var oldestID string
-
-	var oldestTime time.Time
-
-	for id, t := range p.lastAccessed {
-		idleDuration := now.Sub(t)
-		if idleDuration < idleTimeout {
-			continue // still active, skip
-		}
-
-		if oldestID == "" || t.Before(oldestTime) {
-			oldestID = id
-			oldestTime = t
-		}
-	}
-
-	if oldestID == "" {
-		// All connections are active (used within idle timeout)
-		// Allow pool to grow beyond soft limit
-		return
-	}
-
-	// Evict the idle connection
-	if conn, ok := p.connections[oldestID]; ok {
+	// Manager-specific cleanup: close the AMQP connection and remove from maps.
+	if conn, ok := p.connections[candidateID]; ok {
 		if conn != nil && !conn.IsClosed() {
-			_ = conn.Close()
+			if err := conn.Close(); err != nil && logger != nil {
+				logger.Log(context.Background(), log.LevelWarn, "failed to close evicted rabbitmq connection",
+					log.String("tenant_id", candidateID),
+					log.Err(err),
+				)
+			}
 		}
 
-		delete(p.connections, oldestID)
-		delete(p.lastAccessed, oldestID)
-
-		if logger != nil {
-			logger.Infof("LRU evicted idle rabbitmq connection for tenant %s (idle for %s)", oldestID, now.Sub(oldestTime))
-		}
+		delete(p.connections, candidateID)
+		delete(p.lastAccessed, candidateID)
 	}
 }
 
@@ -333,6 +362,12 @@ func (p *Manager) ApplyConnectionSettings(_ string, _ *core.TenantConfig) {
 }
 
 // Stats returns connection statistics.
+//
+// ActiveConnections counts connections that are not closed.
+// Unlike Postgres/Mongo which use recency-based idle timeout to determine
+// whether a connection is "active", RabbitMQ checks actual connection liveness
+// because AMQP connections are long-lived and do not have a meaningful
+// "last accessed" recency signal for activity classification.
 func (p *Manager) Stats() Stats {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -370,13 +405,19 @@ type Stats struct {
 // Credentials and vhost are percent-encoded to handle special characters (e.g., @, :, /).
 // Uses QueryEscape with '+' replaced by '%20' because QueryEscape encodes spaces as '+'
 // which is only valid in query strings, not in userinfo or path segments of a URI.
-func buildRabbitMQURI(cfg *core.RabbitMQConfig) string {
+// When useTLS is true, the amqps:// scheme is used instead of amqp://.
+func buildRabbitMQURI(cfg *core.RabbitMQConfig, useTLS bool) string {
 	escapedUsername := strings.ReplaceAll(url.QueryEscape(cfg.Username), "+", "%20")
 	escapedPassword := strings.ReplaceAll(url.QueryEscape(cfg.Password), "+", "%20")
 	escapedVHost := strings.ReplaceAll(url.QueryEscape(cfg.VHost), "+", "%20")
 
-	return fmt.Sprintf("amqp://%s:%s@%s:%d/%s",
-		escapedUsername, escapedPassword,
+	scheme := "amqp"
+	if useTLS {
+		scheme = "amqps"
+	}
+
+	return fmt.Sprintf("%s://%s:%s@%s:%d/%s",
+		scheme, escapedUsername, escapedPassword,
 		cfg.Host, cfg.Port, escapedVHost)
 }
 

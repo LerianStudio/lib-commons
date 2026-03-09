@@ -44,9 +44,12 @@ package secretsmanager
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -74,14 +77,69 @@ var (
 
 	// ErrM2MInvalidCredentials is returned when retrieved credentials are incomplete (missing required fields).
 	ErrM2MInvalidCredentials = errors.New("incomplete M2M credentials")
+
+	// ErrM2MBinarySecretNotSupported is returned when the secret is stored as binary data rather than a string.
+	ErrM2MBinarySecretNotSupported = errors.New("binary secrets are not supported for M2M credentials")
+
+	// ErrM2MInvalidPathSegment is returned when a path segment contains path traversal characters.
+	ErrM2MInvalidPathSegment = errors.New("invalid path segment")
 )
+
+// validatePathSegment checks that a path segment is safe for use in secret paths.
+// It rejects segments containing path traversal characters (/, .., \) and
+// trims leading/trailing whitespace.
+func validatePathSegment(name, value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", fmt.Errorf("%w: %s is required", ErrM2MInvalidInput, name)
+	}
+
+	if strings.Contains(trimmed, "/") || strings.Contains(trimmed, "\\") || strings.Contains(trimmed, "..") {
+		return "", fmt.Errorf("%w: %s contains path traversal characters", ErrM2MInvalidPathSegment, name)
+	}
+
+	return trimmed, nil
+}
+
+// redactPath returns a safe representation of a secret path for error messages.
+// It includes only the last path segment and a truncated hash of the full path.
+func redactPath(secretPath string) string {
+	parts := strings.Split(secretPath, "/")
+	lastSegment := parts[len(parts)-1]
+
+	h := sha256.Sum256([]byte(secretPath))
+	shortHash := hex.EncodeToString(h[:4]) // 8 hex chars
+
+	return fmt.Sprintf(".../%s [%s]", lastSegment, shortHash)
+}
+
+// isNilInterface returns true if the interface value is nil or holds a typed nil.
+func isNilInterface(i any) bool {
+	if i == nil {
+		return true
+	}
+
+	v := reflect.ValueOf(i)
+
+	return v.Kind() == reflect.Ptr && v.IsNil()
+}
 
 // M2MCredentials holds credentials retrieved from the Secret Vault.
 // These credentials are used for OAuth2 client_credentials grant
 // to authenticate plugins with product services.
 type M2MCredentials struct {
 	ClientID     string `json:"clientId"`
-	ClientSecret string `json:"clientSecret"`
+	ClientSecret string `json:"clientSecret"` // #nosec G117 -- secret payload is intentionally deserialized from AWS Secrets Manager and redacted by String/GoString
+}
+
+// String redacts secret material from formatted output.
+func (c M2MCredentials) String() string {
+	return fmt.Sprintf("M2MCredentials{ClientID:%q, ClientSecret:REDACTED}", c.ClientID)
+}
+
+// GoString redacts secret material from Go-syntax formatted output.
+func (c M2MCredentials) GoString() string {
+	return c.String()
 }
 
 // SecretsManagerClient abstracts AWS Secrets Manager operations.
@@ -113,25 +171,38 @@ type SecretsManagerClient interface {
 //
 // Safe for concurrent use (no shared mutable state).
 func GetM2MCredentials(ctx context.Context, client SecretsManagerClient, env, tenantOrgID, applicationName, targetService string) (*M2MCredentials, error) {
-	// Validate inputs
-	if client == nil {
+	// Validate inputs - check for typed-nil client using reflect
+	if isNilInterface(client) {
 		return nil, fmt.Errorf("%w: client is required", ErrM2MInvalidInput)
 	}
 
-	if tenantOrgID == "" {
-		return nil, fmt.Errorf("%w: tenantOrgID is required", ErrM2MInvalidInput)
+	// Validate and sanitize path segments (trims whitespace, rejects traversal chars)
+	cleanTenantOrgID, err := validatePathSegment("tenantOrgID", tenantOrgID)
+	if err != nil {
+		return nil, err
 	}
 
-	if applicationName == "" {
-		return nil, fmt.Errorf("%w: applicationName is required", ErrM2MInvalidInput)
+	cleanAppName, err := validatePathSegment("applicationName", applicationName)
+	if err != nil {
+		return nil, err
 	}
 
-	if targetService == "" {
-		return nil, fmt.Errorf("%w: targetService is required", ErrM2MInvalidInput)
+	cleanTargetService, err := validatePathSegment("targetService", targetService)
+	if err != nil {
+		return nil, err
+	}
+
+	// env is optional (empty for backward compat) but must be safe if provided
+	cleanEnv := strings.TrimSpace(env)
+	if cleanEnv != "" {
+		if strings.Contains(cleanEnv, "/") || strings.Contains(cleanEnv, "\\") || strings.Contains(cleanEnv, "..") {
+			return nil, fmt.Errorf("%w: env contains path traversal characters", ErrM2MInvalidPathSegment)
+		}
 	}
 
 	// Build the secret path
-	secretPath := buildM2MSecretPath(env, tenantOrgID, applicationName, targetService)
+	secretPath := buildM2MSecretPath(cleanEnv, cleanTenantOrgID, cleanAppName, cleanTargetService)
+	redacted := redactPath(secretPath)
 
 	// Fetch the secret from AWS Secrets Manager
 	input := &secretsmanager.GetSecretValueInput{
@@ -143,16 +214,15 @@ func GetM2MCredentials(ctx context.Context, client SecretsManagerClient, env, te
 		return nil, classifyAWSError(err, secretPath)
 	}
 
-	// Extract the secret string
-	var secretValue string
-	if output != nil && output.SecretString != nil {
-		secretValue = *output.SecretString
+	// Check for binary secret FIRST (before attempting JSON unmarshal)
+	if output == nil || output.SecretString == nil {
+		return nil, fmt.Errorf("%w: secret at %s is binary or nil", ErrM2MBinarySecretNotSupported, redacted)
 	}
 
 	// Unmarshal the JSON credentials
 	var creds M2MCredentials
-	if err := json.Unmarshal([]byte(secretValue), &creds); err != nil {
-		return nil, fmt.Errorf("%w: path=%s: %v", ErrM2MUnmarshalFailed, secretPath, err)
+	if err := json.Unmarshal([]byte(*output.SecretString), &creds); err != nil {
+		return nil, fmt.Errorf("%w: secret at %s: %w", ErrM2MUnmarshalFailed, redacted, err)
 	}
 
 	// Validate required credential fields
@@ -166,7 +236,7 @@ func GetM2MCredentials(ctx context.Context, client SecretsManagerClient, env, te
 	}
 
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("%w: path=%s: missing fields: %s", ErrM2MInvalidCredentials, secretPath, strings.Join(missing, ", "))
+		return nil, fmt.Errorf("%w: secret at %s: missing fields: %s", ErrM2MInvalidCredentials, redacted, strings.Join(missing, ", "))
 	}
 
 	return &creds, nil
@@ -189,19 +259,22 @@ func buildM2MSecretPath(env, tenantOrgID, applicationName, targetService string)
 }
 
 // classifyAWSError maps AWS SDK errors to domain-specific sentinel errors.
+// Secret paths are redacted in returned errors to prevent information leakage.
 func classifyAWSError(err error, secretPath string) error {
+	redacted := redactPath(secretPath)
+
 	var notFoundErr *smtypes.ResourceNotFoundException
 	if errors.As(err, &notFoundErr) {
-		return fmt.Errorf("%w at path: %s", ErrM2MCredentialsNotFound, secretPath)
+		return fmt.Errorf("%w at %s", ErrM2MCredentialsNotFound, redacted)
 	}
 
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.ErrorCode() {
 		case "AccessDeniedException", "ExpiredTokenException":
-			return fmt.Errorf("%w: %v", ErrM2MVaultAccessDenied, err)
+			return fmt.Errorf("%w: %w", ErrM2MVaultAccessDenied, err)
 		}
 	}
 
-	return fmt.Errorf("%w: path=%s: %v", ErrM2MRetrievalFailed, secretPath, err)
+	return fmt.Errorf("%w: %s: %w", ErrM2MRetrievalFailed, redacted, err)
 }

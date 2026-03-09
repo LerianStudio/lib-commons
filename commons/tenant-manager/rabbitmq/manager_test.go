@@ -5,20 +5,25 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func newTestClient() *client.Client {
-	return client.NewClient("http://localhost:8080", testutil.NewMockLogger())
+func mustNewTestClient(t *testing.T) *client.Client {
+	t.Helper()
+
+	c, err := client.NewClient("http://localhost:8080", testutil.NewMockLogger(), client.WithAllowInsecureHTTP())
+	require.NoError(t, err)
+
+	return c
 }
 
 func TestNewManager(t *testing.T) {
 	t.Run("creates manager with client and service", func(t *testing.T) {
-		c := newTestClient()
+		c := mustNewTestClient(t)
 		manager := NewManager(c, "ledger")
 
 		assert.NotNil(t, manager)
@@ -108,7 +113,7 @@ func TestManager_EvictLRU(t *testing.T) {
 				opts = append(opts, WithIdleTimeout(tt.idleTimeout))
 			}
 
-			c := newTestClient()
+			c := mustNewTestClient(t)
 			manager := NewManager(c, "ledger", opts...)
 
 			// Pre-populate pool with nil connections (cannot create real amqp.Connection in unit test)
@@ -158,7 +163,7 @@ func TestManager_EvictLRU(t *testing.T) {
 func TestManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 	t.Parallel()
 
-	c := newTestClient()
+	c := mustNewTestClient(t)
 	manager := NewManager(c, "ledger",
 		WithLogger(testutil.NewMockLogger()),
 		WithMaxTenantPools(2),
@@ -213,7 +218,7 @@ func TestManager_WithIdleTimeout_Option(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			c := newTestClient()
+			c := mustNewTestClient(t)
 			manager := NewManager(c, "ledger",
 				WithIdleTimeout(tt.idleTimeout),
 			)
@@ -226,7 +231,7 @@ func TestManager_WithIdleTimeout_Option(t *testing.T) {
 func TestManager_CloseConnection_CleansUpLastAccessed(t *testing.T) {
 	t.Parallel()
 
-	c := newTestClient()
+	c := mustNewTestClient(t)
 	manager := NewManager(c, "ledger",
 		WithLogger(testutil.NewMockLogger()),
 	)
@@ -274,7 +279,7 @@ func TestManager_WithMaxTenantPools_Option(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			c := newTestClient()
+			c := mustNewTestClient(t)
 			manager := NewManager(c, "ledger",
 				WithMaxTenantPools(tt.maxConnections),
 			)
@@ -287,7 +292,7 @@ func TestManager_WithMaxTenantPools_Option(t *testing.T) {
 func TestManager_Stats_IncludesMaxConnections(t *testing.T) {
 	t.Parallel()
 
-	c := newTestClient()
+	c := mustNewTestClient(t)
 	manager := NewManager(c, "ledger",
 		WithMaxTenantPools(50),
 	)
@@ -301,7 +306,7 @@ func TestManager_Stats_IncludesMaxConnections(t *testing.T) {
 func TestManager_Close_CleansUpLastAccessed(t *testing.T) {
 	t.Parallel()
 
-	c := newTestClient()
+	c := mustNewTestClient(t)
 	manager := NewManager(c, "ledger",
 		WithLogger(testutil.NewMockLogger()),
 	)
@@ -357,7 +362,7 @@ func TestBuildRabbitMQURI(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			uri := buildRabbitMQURI(tt.cfg)
+			uri := buildRabbitMQURI(tt.cfg, false)
 			assert.Equal(t, tt.expected, uri)
 		})
 	}
@@ -366,7 +371,7 @@ func TestBuildRabbitMQURI(t *testing.T) {
 func TestManager_ApplyConnectionSettings_IsNoOp(t *testing.T) {
 	t.Parallel()
 
-	c := newTestClient()
+	c := mustNewTestClient(t)
 	manager := NewManager(c, "ledger")
 
 	// Should not panic or error - it's a no-op

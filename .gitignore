@@ -1,5 +1,4 @@
 .idea/*
-CLAUDE.md
 .DS_Store
 .claude/
 .mcp.json
@@ -13,3 +12,7 @@ coverage.html
 
 # Security scan reports
 gosec-report.sarif
+
+docs/codereview/
+.codegraph/
+vendor/

@@ -6,10 +6,9 @@ import (
 	"testing"
 	"time"
 
-	mongolib "github.com/LerianStudio/lib-commons/v3/commons/mongo"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -38,7 +37,7 @@ func TestManager_GetConnection_NoTenantID(t *testing.T) {
 func TestManager_GetConnection_ManagerClosed(t *testing.T) {
 	c := &client.Client{}
 	manager := NewManager(c, "ledger")
-	manager.Close(context.Background())
+	require.NoError(t, manager.Close(context.Background()))
 
 	_, err := manager.GetConnection(context.Background(), "tenant-123")
 
@@ -57,19 +56,20 @@ func TestManager_GetDatabaseForTenant_NoTenantID(t *testing.T) {
 
 func TestManager_GetConnection_NilDBCachedConnection(t *testing.T) {
 	t.Run("returns nil client when cached connection has nil DB", func(t *testing.T) {
-		c := &client.Client{}
-		manager := NewManager(c, "ledger")
+		manager := NewManager(nil, "ledger")
 
 		// Pre-populate cache with a connection that has nil DB
-		cachedConn := &mongolib.MongoConnection{
+		cachedConn := &MongoConnection{
 			DB: nil,
 		}
 		manager.connections["tenant-123"] = cachedConn
 
-		// Should return nil without attempting ping (nil DB skips health check)
+		// Nil cached DB now triggers a reconnect path. With nil tenant-manager
+		// client configured, this should return a deterministic error instead of panic.
 		result, err := manager.GetConnection(context.Background(), "tenant-123")
 
-		assert.NoError(t, err)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "tenant manager client is required")
 		assert.Nil(t, result)
 	})
 }
@@ -80,7 +80,7 @@ func TestManager_CloseConnection_EvictsFromCache(t *testing.T) {
 		manager := NewManager(c, "ledger")
 
 		// Pre-populate cache with a connection that has nil DB (to avoid disconnect errors)
-		cachedConn := &mongolib.MongoConnection{
+		cachedConn := &MongoConnection{
 			DB: nil,
 		}
 		manager.connections["tenant-123"] = cachedConn
@@ -182,19 +182,19 @@ func TestManager_EvictLRU(t *testing.T) {
 
 			// Pre-populate pool with connections (nil DB to avoid real MongoDB)
 			if tt.preloadCount >= 1 {
-				manager.connections["tenant-old"] = &mongolib.MongoConnection{DB: nil}
+				manager.connections["tenant-old"] = &MongoConnection{DB: nil}
 				manager.lastAccessed["tenant-old"] = time.Now().Add(-tt.oldTenantAge)
 			}
 
 			if tt.preloadCount >= 2 {
-				manager.connections["tenant-new"] = &mongolib.MongoConnection{DB: nil}
+				manager.connections["tenant-new"] = &MongoConnection{DB: nil}
 				manager.lastAccessed["tenant-new"] = time.Now().Add(-tt.newTenantAge)
 			}
 
 			// For unlimited test, add more connections
 			for i := 2; i < tt.preloadCount; i++ {
 				id := "tenant-extra-" + time.Now().Add(time.Duration(i)*time.Second).Format("150405")
-				manager.connections[id] = &mongolib.MongoConnection{DB: nil}
+				manager.connections[id] = &MongoConnection{DB: nil}
 				manager.lastAccessed[id] = time.Now().Add(-time.Duration(i) * time.Minute)
 			}
 
@@ -234,7 +234,7 @@ func TestManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 
 	// Pre-populate with 2 connections, both accessed recently (within idle timeout)
 	for _, id := range []string{"tenant-1", "tenant-2"} {
-		manager.connections[id] = &mongolib.MongoConnection{DB: nil}
+		manager.connections[id] = &MongoConnection{DB: nil}
 		manager.lastAccessed[id] = time.Now().Add(-1 * time.Minute)
 	}
 
@@ -248,7 +248,7 @@ func TestManager_PoolGrowsBeyondSoftLimit_WhenAllActive(t *testing.T) {
 		"pool should not shrink when all connections are active")
 
 	// Simulate adding a third connection (pool grows beyond soft limit)
-	manager.connections["tenant-3"] = &mongolib.MongoConnection{DB: nil}
+	manager.connections["tenant-3"] = &MongoConnection{DB: nil}
 	manager.lastAccessed["tenant-3"] = time.Now()
 
 	assert.Equal(t, 3, len(manager.connections),
@@ -299,26 +299,28 @@ func TestManager_LRU_LastAccessedUpdatedOnCacheHit(t *testing.T) {
 		WithMaxTenantPools(5),
 	)
 
-	// Pre-populate cache with a connection that has nil DB (skips health check)
-	cachedConn := &mongolib.MongoConnection{DB: nil}
+	// Pre-populate cache with a connection that has nil DB.
+	cachedConn := &MongoConnection{DB: nil}
 
 	initialTime := time.Now().Add(-5 * time.Minute)
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = initialTime
 
-	// Access the connection (cache hit)
+	// Accessing the connection now follows the reconnect path for nil DB.
 	result, err := manager.GetConnection(context.Background(), "tenant-123")
 
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to get tenant config")
 	assert.Nil(t, result, "nil DB should return nil client")
 
-	// Verify lastAccessed was updated to a more recent time
+	// Verify lastAccessed entry was evicted because reconnect path removes stale cache entry.
 	manager.mu.RLock()
-	updatedTime := manager.lastAccessed["tenant-123"]
+	updatedTime, exists := manager.lastAccessed["tenant-123"]
 	manager.mu.RUnlock()
 
-	assert.True(t, updatedTime.After(initialTime),
-		"lastAccessed should be updated after cache hit: initial=%v, updated=%v",
+	assert.False(t, exists, "lastAccessed entry should be removed on reconnect path")
+	assert.True(t, updatedTime.IsZero(),
+		"lastAccessed should be zero value when entry is removed: initial=%v, updated=%v",
 		initialTime, updatedTime)
 }
 
@@ -331,7 +333,7 @@ func TestManager_CloseConnection_CleansUpLastAccessed(t *testing.T) {
 	)
 
 	// Pre-populate cache with a connection that has nil DB
-	manager.connections["tenant-123"] = &mongolib.MongoConnection{DB: nil}
+	manager.connections["tenant-123"] = &MongoConnection{DB: nil}
 	manager.lastAccessed["tenant-123"] = time.Now()
 
 	// Close the specific tenant client
@@ -449,7 +451,7 @@ func TestManager_ApplyConnectionSettings(t *testing.T) {
 			)
 
 			if tt.hasCachedConn {
-				manager.connections["tenant-123"] = &mongolib.MongoConnection{DB: nil}
+				manager.connections["tenant-123"] = &MongoConnection{DB: nil}
 			}
 
 			// ApplyConnectionSettings is a no-op for MongoDB.
@@ -464,14 +466,71 @@ func TestManager_ApplyConnectionSettings(t *testing.T) {
 }
 
 func TestBuildMongoURI(t *testing.T) {
+	t.Run("rejects empty host when URI not provided", func(t *testing.T) {
+		cfg := &core.MongoDBConfig{
+			Port:     27017,
+			Database: "testdb",
+		}
+
+		_, err := buildMongoURI(cfg, nil)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "mongo host is required")
+	})
+
+	t.Run("rejects zero port when URI not provided", func(t *testing.T) {
+		cfg := &core.MongoDBConfig{
+			Host:     "localhost",
+			Database: "testdb",
+		}
+
+		_, err := buildMongoURI(cfg, nil)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "mongo port is required")
+	})
+
+	t.Run("rejects both empty host and zero port when URI not provided", func(t *testing.T) {
+		cfg := &core.MongoDBConfig{
+			Database: "testdb",
+		}
+
+		_, err := buildMongoURI(cfg, nil)
+
+		require.Error(t, err)
+		// Host is checked first
+		assert.Contains(t, err.Error(), "mongo host is required")
+	})
+
+	t.Run("allows empty host and port when URI is provided", func(t *testing.T) {
+		cfg := &core.MongoDBConfig{
+			URI: "mongodb://custom-uri",
+		}
+
+		uri, err := buildMongoURI(cfg, nil)
+
+		require.NoError(t, err)
+		assert.Equal(t, "mongodb://custom-uri", uri)
+	})
+
 	t.Run("returns URI when provided", func(t *testing.T) {
 		cfg := &core.MongoDBConfig{
 			URI: "mongodb://custom-uri",
 		}
 
-		uri := buildMongoURI(cfg)
+		uri, err := buildMongoURI(cfg, nil)
 
+		require.NoError(t, err)
 		assert.Equal(t, "mongodb://custom-uri", uri)
+	})
+
+	t.Run("rejects unsupported URI scheme", func(t *testing.T) {
+		cfg := &core.MongoDBConfig{URI: "http://example.com"}
+
+		_, err := buildMongoURI(cfg, nil)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid mongo URI scheme")
 	})
 
 	t.Run("builds URI with credentials", func(t *testing.T) {
@@ -483,8 +542,9 @@ func TestBuildMongoURI(t *testing.T) {
 			Password: "pass",
 		}
 
-		uri := buildMongoURI(cfg)
+		uri, err := buildMongoURI(cfg, nil)
 
+		require.NoError(t, err)
 		assert.Equal(t, "mongodb://user:pass@localhost:27017/testdb", uri)
 	})
 
@@ -495,8 +555,9 @@ func TestBuildMongoURI(t *testing.T) {
 			Database: "testdb",
 		}
 
-		uri := buildMongoURI(cfg)
+		uri, err := buildMongoURI(cfg, nil)
 
+		require.NoError(t, err)
 		assert.Equal(t, "mongodb://localhost:27017/testdb", uri)
 	})
 
@@ -548,7 +609,8 @@ func TestBuildMongoURI(t *testing.T) {
 					Password: tt.password,
 				}
 
-				uri := buildMongoURI(cfg)
+				uri, err := buildMongoURI(cfg, nil)
+				require.NoError(t, err)
 
 				expectedURI := fmt.Sprintf("mongodb://%s:%s@localhost:27017/testdb",
 					tt.expectedUser, tt.expectedPassword)
@@ -586,11 +648,11 @@ func TestManager_Stats(t *testing.T) {
 		)
 
 		// Add an active connection (accessed recently)
-		manager.connections["tenant-active"] = &mongolib.MongoConnection{DB: nil}
+		manager.connections["tenant-active"] = &MongoConnection{DB: nil}
 		manager.lastAccessed["tenant-active"] = time.Now().Add(-1 * time.Minute)
 
 		// Add an idle connection (accessed long ago)
-		manager.connections["tenant-idle"] = &mongolib.MongoConnection{DB: nil}
+		manager.connections["tenant-idle"] = &MongoConnection{DB: nil}
 		manager.lastAccessed["tenant-idle"] = time.Now().Add(-10 * time.Minute)
 
 		stats := manager.Stats()
@@ -606,7 +668,7 @@ func TestManager_Stats(t *testing.T) {
 		c := &client.Client{}
 		manager := NewManager(c, "ledger")
 
-		manager.Close(context.Background())
+		require.NoError(t, manager.Close(context.Background()))
 
 		stats := manager.Stats()
 

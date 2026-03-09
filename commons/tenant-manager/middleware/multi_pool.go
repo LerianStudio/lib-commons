@@ -6,18 +6,17 @@ package middleware
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 
-	libCommons "github.com/LerianStudio/lib-commons/v3/commons"
-	"github.com/LerianStudio/lib-commons/v3/commons/log"
-	libHTTP "github.com/LerianStudio/lib-commons/v3/commons/net/http"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
-	tmmongo "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/mongo"
-	tmpostgres "github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/postgres"
+	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
+	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	libHTTP "github.com/LerianStudio/lib-commons/v4/commons/net/http"
+	libOpentelemetry "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
+	tmmongo "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/mongo"
+	tmpostgres "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/postgres"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"go.opentelemetry.io/otel/trace"
@@ -58,7 +57,7 @@ type MultiPoolMiddleware struct {
 	consumerTrigger ConsumerTrigger
 	crossModule     bool
 	errorMapper     ErrorMapper
-	logger          log.Logger
+	logger          *logcompat.Logger
 	enabled         bool
 }
 
@@ -129,12 +128,12 @@ func WithErrorMapper(fn ErrorMapper) MultiPoolOption {
 // When not set, the middleware extracts the logger from request context.
 func WithMultiPoolLogger(l log.Logger) MultiPoolOption {
 	return func(m *MultiPoolMiddleware) {
-		m.logger = l
+		m.logger = logcompat.New(l)
 	}
 }
 
 // NewMultiPoolMiddleware creates a new MultiPoolMiddleware with the given options.
-// The middleware is enabled if at least one route has a PG pool with
+// The middleware is enabled if at least one route has a PG or Mongo pool with
 // IsMultiTenant() == true.
 func NewMultiPoolMiddleware(opts ...MultiPoolOption) *MultiPoolMiddleware {
 	m := &MultiPoolMiddleware{}
@@ -143,17 +142,21 @@ func NewMultiPoolMiddleware(opts ...MultiPoolOption) *MultiPoolMiddleware {
 		opt(m)
 	}
 
-	// Enable if at least one route has a multi-tenant PG pool
+	// Enable if at least one route has a multi-tenant PG or Mongo pool
 	for _, route := range m.routes {
-		if route.pgPool != nil && route.pgPool.IsMultiTenant() {
+		if (route.pgPool != nil && route.pgPool.IsMultiTenant()) ||
+			(route.mongoPool != nil && route.mongoPool.IsMultiTenant()) {
 			m.enabled = true
 
 			break
 		}
 	}
 
-	if !m.enabled && m.defaultRoute != nil && m.defaultRoute.pgPool != nil && m.defaultRoute.pgPool.IsMultiTenant() {
-		m.enabled = true
+	if !m.enabled && m.defaultRoute != nil {
+		if (m.defaultRoute.pgPool != nil && m.defaultRoute.pgPool.IsMultiTenant()) ||
+			(m.defaultRoute.mongoPool != nil && m.defaultRoute.mongoPool.IsMultiTenant()) {
+			m.enabled = true
+		}
 	}
 
 	return m
@@ -174,18 +177,19 @@ func (m *MultiPoolMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		return c.Next()
 	}
 
-	// Step 3: Multi-tenant check
-	if route.pgPool == nil || !route.pgPool.IsMultiTenant() {
+	// Step 3: Multi-tenant check — skip only if neither pool is multi-tenant
+	pgEnabled := route.pgPool != nil && route.pgPool.IsMultiTenant()
+	mongoEnabled := route.mongoPool != nil && route.mongoPool.IsMultiTenant()
+
+	if !pgEnabled && !mongoEnabled {
 		return c.Next()
 	}
 
 	// Step 4: Extract context + telemetry
-	ctx := libOpentelemetry.ExtractHTTPContext(c)
-	if ctx == nil {
-		ctx = context.Background()
-	}
+	ctx := m.initializeTracingContext(c)
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	logger := logcompat.New(baseLogger)
 
 	ctx, span := tracer.Start(ctx, "middleware.multi_pool.with_tenant_db")
 	defer span.End()
@@ -193,60 +197,102 @@ func (m *MultiPoolMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	// Step 5: Extract tenant ID from JWT
 	tenantID, err := m.extractTenantID(c)
 	if err != nil {
-		logger.Errorf("failed to extract tenant ID: %v", err)
-		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "failed to extract tenant ID", err)
+		logger.ErrorCtx(ctx, fmt.Sprintf("failed to extract tenant ID: %v", err))
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "failed to extract tenant ID", err)
 
-		if m.errorMapper != nil {
-			return m.errorMapper(c, err, "")
-		}
-
-		return unauthorizedError(c, "MISSING_TOKEN", err.Error())
+		return m.handleTenantDBError(c, err, "")
 	}
 
-	logger.Infof("multi-pool tenant resolved: tenantID=%s, module=%s, path=%s",
+	logger.InfofCtx(ctx, "multi-pool tenant resolved: tenantID=%s, module=%s, path=%s",
 		tenantID, route.module, c.Path())
 
 	// Step 6: Set tenant ID in context
 	ctx = core.ContextWithTenantID(ctx, tenantID)
 
-	// Step 7: Consumer trigger
+	// Step 7: Resolve database connections BEFORE triggering consumer.
+	// This ensures the tenant is actually resolvable (not suspended/purged)
+	// before we start consuming messages for it.
+	ctx, err = m.resolveAllConnections(ctx, route, tenantID, pgEnabled, mongoEnabled, logger, span)
+	if err != nil {
+		return m.handleTenantDBError(c, err, tenantID)
+	}
+
+	// Step 8: Trigger consumer AFTER successful resolution.
+	// Only trigger for tenants whose connections are confirmed resolvable.
 	if m.consumerTrigger != nil {
 		m.consumerTrigger.EnsureConsumerStarted(ctx, tenantID)
 	}
 
-	// Step 8: Resolve PG connection for matched route
-	ctx, err = m.resolvePGConnection(ctx, route, tenantID, logger, &span)
-	if err != nil {
-		if m.errorMapper != nil {
-			return m.errorMapper(c, err, tenantID)
-		}
+	// Step 9: Update context
+	c.SetUserContext(ctx)
 
-		return m.mapDefaultError(c, err, tenantID)
+	logger.InfofCtx(ctx, "multi-pool connections injected: tenantID=%s, module=%s", tenantID, route.module)
+
+	return c.Next()
+}
+
+// initializeTracingContext extracts HTTP trace context from the Fiber request,
+// falling back to a background context if neither source provides one.
+func (m *MultiPoolMiddleware) initializeTracingContext(c *fiber.Ctx) context.Context {
+	baseCtx := c.UserContext()
+	if baseCtx == nil {
+		baseCtx = context.Background()
 	}
 
-	// Step 9: Cross-module injection
+	ctx := libOpentelemetry.ExtractHTTPContext(baseCtx, c)
+	if ctx == nil {
+		ctx = baseCtx
+	}
+
+	return ctx
+}
+
+// handleTenantDBError dispatches the error through the custom error mapper if
+// configured, otherwise falls back to the default error mapping. For empty
+// tenantID (auth errors), it returns a generic 401 when no mapper is set.
+func (m *MultiPoolMiddleware) handleTenantDBError(c *fiber.Ctx, err error, tenantID string) error {
+	if m.errorMapper != nil {
+		return m.errorMapper(c, err, tenantID)
+	}
+
+	if tenantID == "" {
+		return unauthorizedError(c, "UNAUTHORIZED", "Unauthorized")
+	}
+
+	return m.mapDefaultError(c, err, tenantID)
+}
+
+// resolveAllConnections resolves PG, cross-module, and Mongo connections for the
+// matched route and tenant. It returns the enriched context or the first error.
+func (m *MultiPoolMiddleware) resolveAllConnections(
+	ctx context.Context,
+	route *PoolRoute,
+	tenantID string,
+	pgEnabled, mongoEnabled bool,
+	logger *logcompat.Logger,
+	span trace.Span,
+) (context.Context, error) {
+	var err error
+
+	if pgEnabled {
+		ctx, err = m.resolvePGConnection(ctx, route, tenantID, logger, span)
+		if err != nil {
+			return ctx, err
+		}
+	}
+
 	if m.crossModule {
 		ctx = m.resolveCrossModuleConnections(ctx, route, tenantID, logger)
 	}
 
-	// Step 10: Resolve Mongo connection
-	if route.mongoPool != nil {
-		ctx, err = m.resolveMongoConnection(ctx, route, tenantID, logger, &span)
+	if mongoEnabled {
+		ctx, err = m.resolveMongoConnection(ctx, route, tenantID, logger, span)
 		if err != nil {
-			if m.errorMapper != nil {
-				return m.errorMapper(c, err, tenantID)
-			}
-
-			return m.mapDefaultError(c, err, tenantID)
+			return ctx, err
 		}
 	}
 
-	// Step 11: Update context
-	c.SetUserContext(ctx)
-
-	logger.Infof("multi-pool connections injected: tenantID=%s, module=%s", tenantID, route.module)
-
-	return c.Next()
+	return ctx, nil
 }
 
 // matchRoute finds the PoolRoute whose paths match the request path.
@@ -255,7 +301,7 @@ func (m *MultiPoolMiddleware) WithTenantDB(c *fiber.Ctx) error {
 func (m *MultiPoolMiddleware) matchRoute(path string) *PoolRoute {
 	for _, route := range m.routes {
 		for _, prefix := range route.paths {
-			if strings.HasPrefix(path, prefix) {
+			if path == prefix || strings.HasPrefix(path, prefix+"/") {
 				return route
 			}
 		}
@@ -268,7 +314,7 @@ func (m *MultiPoolMiddleware) matchRoute(path string) *PoolRoute {
 // path prefix. Public paths bypass all tenant resolution logic.
 func (m *MultiPoolMiddleware) isPublicPath(path string) bool {
 	for _, prefix := range m.publicPaths {
-		if strings.HasPrefix(path, prefix) {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
 			return true
 		}
 	}
@@ -277,27 +323,39 @@ func (m *MultiPoolMiddleware) isPublicPath(path string) bool {
 }
 
 // extractTenantID extracts the tenant ID from the JWT token in the
-// Authorization header. It uses ParseUnverified because lib-auth has
-// already validated the token upstream.
+// Authorization header.
+//
+// SECURITY CONTRACT (defense-in-depth): token signature MUST be validated by
+// upstream lib-auth middleware before this function is called. This function
+// only parses claims after hasUpstreamAuthAssertion() confirms auth middleware
+// assertions are present in server-side request context (Fiber locals).
 func (m *MultiPoolMiddleware) extractTenantID(c *fiber.Ctx) (string, error) {
 	accessToken := libHTTP.ExtractTokenFromHeader(c)
 	if accessToken == "" {
-		return "", errors.New("authorization token is required")
+		return "", core.ErrAuthorizationTokenRequired
+	}
+
+	if !hasUpstreamAuthAssertion(c) {
+		return "", core.ErrAuthorizationTokenRequired
 	}
 
 	token, _, err := new(jwt.Parser).ParseUnverified(accessToken, jwt.MapClaims{})
 	if err != nil {
-		return "", fmt.Errorf("failed to parse authorization token: %w", err)
+		return "", fmt.Errorf("%w: %w", core.ErrInvalidAuthorizationToken, err)
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
-		return "", errors.New("JWT claims are not in expected format")
+		return "", core.ErrInvalidTenantClaims
 	}
 
 	tenantID, _ := claims["tenantId"].(string)
 	if tenantID == "" {
-		return "", errors.New("tenantId is required in JWT token")
+		return "", core.ErrMissingTenantIDClaim
+	}
+
+	if !core.IsValidTenantID(tenantID) {
+		return "", core.ErrInvalidTenantClaims
 	}
 
 	return tenantID, nil
@@ -309,25 +367,23 @@ func (m *MultiPoolMiddleware) resolvePGConnection(
 	ctx context.Context,
 	route *PoolRoute,
 	tenantID string,
-	logger log.Logger,
-	span *trace.Span,
+	logger *logcompat.Logger,
+	span trace.Span,
 ) (context.Context, error) {
 	conn, err := route.pgPool.GetConnection(ctx, tenantID)
 	if err != nil {
-		logger.Errorf("failed to get tenant PostgreSQL connection: module=%s, tenantID=%s, error=%v",
-			route.module, tenantID, err)
+		logger.ErrorCtx(ctx, fmt.Sprintf("failed to get tenant PostgreSQL connection: module=%s, tenantID=%s, error=%v", route.module, tenantID, err))
 		libOpentelemetry.HandleSpanError(span, "failed to get tenant PostgreSQL connection", err)
 
-		return ctx, err
+		return ctx, fmt.Errorf("%w: %w", core.ErrConnectionFailed, err)
 	}
 
 	db, err := conn.GetDB()
 	if err != nil {
-		logger.Errorf("failed to get database from PostgreSQL connection: module=%s, tenantID=%s, error=%v",
-			route.module, tenantID, err)
+		logger.ErrorCtx(ctx, fmt.Sprintf("failed to get database from PostgreSQL connection: module=%s, tenantID=%s, error=%v", route.module, tenantID, err))
 		libOpentelemetry.HandleSpanError(span, "failed to get database from PostgreSQL connection", err)
 
-		return ctx, err
+		return ctx, fmt.Errorf("%w: %w", core.ErrConnectionFailed, err)
 	}
 
 	ctx = core.ContextWithModulePGConnection(ctx, route.module, db)
@@ -341,75 +397,71 @@ func (m *MultiPoolMiddleware) resolveCrossModuleConnections(
 	ctx context.Context,
 	matchedRoute *PoolRoute,
 	tenantID string,
-	logger log.Logger,
+	logger *logcompat.Logger,
 ) context.Context {
 	for _, route := range m.routes {
 		if route == matchedRoute || route.pgPool == nil || !route.pgPool.IsMultiTenant() {
 			continue
 		}
 
-		conn, err := route.pgPool.GetConnection(ctx, tenantID)
-		if err != nil {
-			logger.Warnf("cross-module PG resolution failed: module=%s, tenantID=%s, error=%v",
-				route.module, tenantID, err)
-
-			continue
-		}
-
-		db, err := conn.GetDB()
-		if err != nil {
-			logger.Warnf("cross-module PG GetDB failed: module=%s, tenantID=%s, error=%v",
-				route.module, tenantID, err)
-
-			continue
-		}
-
-		ctx = core.ContextWithModulePGConnection(ctx, route.module, db)
-
-		if route.mongoPool != nil {
-			mongoDB, mongoErr := route.mongoPool.GetDatabaseForTenant(ctx, tenantID)
-			if mongoErr != nil {
-				logger.Warnf("cross-module MongoDB resolution failed: module=%s, tenantID=%s, error=%v",
-					route.module, tenantID, mongoErr)
-			} else {
-				ctx = core.ContextWithModuleMongo(ctx, route.module, mongoDB)
-			}
-		}
+		ctx = m.resolveAndInjectCrossModule(ctx, route, tenantID, logger) //nolint:fatcontext // intentional accumulation of per-module connections into ctx across iterations
 	}
 
 	// Also resolve default route if it differs from matched
 	if m.defaultRoute != nil && m.defaultRoute != matchedRoute &&
 		m.defaultRoute.pgPool != nil && m.defaultRoute.pgPool.IsMultiTenant() {
-		conn, err := m.defaultRoute.pgPool.GetConnection(ctx, tenantID)
-		if err != nil {
-			logger.Warnf("cross-module PG resolution failed: module=%s, tenantID=%s, error=%v",
-				m.defaultRoute.module, tenantID, err)
-
-			return ctx
-		}
-
-		db, err := conn.GetDB()
-		if err != nil {
-			logger.Warnf("cross-module PG GetDB failed: module=%s, tenantID=%s, error=%v",
-				m.defaultRoute.module, tenantID, err)
-
-			return ctx
-		}
-
-		ctx = core.ContextWithModulePGConnection(ctx, m.defaultRoute.module, db)
-
-		if m.defaultRoute.mongoPool != nil {
-			mongoDB, mongoErr := m.defaultRoute.mongoPool.GetDatabaseForTenant(ctx, tenantID)
-			if mongoErr != nil {
-				logger.Warnf("cross-module MongoDB resolution failed: module=%s, tenantID=%s, error=%v",
-					m.defaultRoute.module, tenantID, mongoErr)
-			} else {
-				ctx = core.ContextWithModuleMongo(ctx, m.defaultRoute.module, mongoDB)
-			}
-		}
+		ctx = m.resolveAndInjectCrossModule(ctx, m.defaultRoute, tenantID, logger)
 	}
 
 	return ctx
+}
+
+// crossModuleErrorKey is a context key for storing cross-module resolution errors.
+type crossModuleErrorKey struct{}
+
+// ContextWithCrossModuleError stores a cross-module resolution error in context
+// so downstream handlers can inspect it if needed.
+func ContextWithCrossModuleError(ctx context.Context, err error) context.Context {
+	return context.WithValue(ctx, crossModuleErrorKey{}, err)
+}
+
+// CrossModuleErrorFromContext retrieves the cross-module resolution error, if any.
+func CrossModuleErrorFromContext(ctx context.Context) error {
+	if err, ok := ctx.Value(crossModuleErrorKey{}).(error); ok {
+		return err
+	}
+
+	return nil
+}
+
+// resolveAndInjectCrossModule resolves a single cross-module PG connection and
+// injects it into the context. Errors are logged and stored in context for
+// downstream visibility, but do not block the request.
+func (m *MultiPoolMiddleware) resolveAndInjectCrossModule(
+	ctx context.Context,
+	route *PoolRoute,
+	tenantID string,
+	logger *logcompat.Logger,
+) context.Context {
+	conn, err := route.pgPool.GetConnection(ctx, tenantID)
+	if err != nil {
+		logger.WarnfCtx(ctx, "cross-module PG resolution failed: module=%s, tenantID=%s, error=%v",
+			route.module, tenantID, err)
+
+		return ContextWithCrossModuleError(ctx,
+			fmt.Errorf("cross-module PG resolution failed for module %s: %w", route.module, err))
+	}
+
+	db, err := conn.GetDB()
+	if err != nil {
+		logger.WarnfCtx(ctx, "cross-module PG GetDB failed: module=%s, tenantID=%s, error=%v",
+			route.module, tenantID, err)
+
+		return ContextWithCrossModuleError(ctx,
+			fmt.Errorf("cross-module PG GetDB failed for module %s: %w", route.module, err))
+	}
+
+	return core.ContextWithModulePGConnection(ctx, route.module, db)
 }
 
 // resolveMongoConnection resolves the MongoDB database for the given route
@@ -418,74 +470,30 @@ func (m *MultiPoolMiddleware) resolveMongoConnection(
 	ctx context.Context,
 	route *PoolRoute,
 	tenantID string,
-	logger log.Logger,
-	span *trace.Span,
+	logger *logcompat.Logger,
+	span trace.Span,
 ) (context.Context, error) {
 	mongoDB, err := route.mongoPool.GetDatabaseForTenant(ctx, tenantID)
 	if err != nil {
-		logger.Errorf("failed to get tenant MongoDB connection: module=%s, tenantID=%s, error=%v",
-			route.module, tenantID, err)
+		logger.ErrorCtx(ctx, fmt.Sprintf("failed to get tenant MongoDB connection: module=%s, tenantID=%s, error=%v", route.module, tenantID, err))
 		libOpentelemetry.HandleSpanError(span, "failed to get tenant MongoDB connection", err)
 
-		return ctx, err
+		return ctx, fmt.Errorf("%w: %w", core.ErrConnectionFailed, err)
 	}
 
-	ctx = core.ContextWithModuleMongo(ctx, route.module, mongoDB)
-	ctx = core.ContextWithTenantMongo(ctx, mongoDB) // backward compatibility for consumers not yet using ResolveModuleMongo
+	ctx = core.ContextWithTenantMongo(ctx, mongoDB)
 
 	return ctx, nil
 }
 
-// mapDefaultError converts tenant-manager errors into appropriate HTTP responses.
-// It follows the same response format as the existing TenantMiddleware.
+// mapDefaultError delegates to the centralized mapDomainErrorToHTTP function
+// to ensure consistent error-to-HTTP mapping across all middleware types.
 func (m *MultiPoolMiddleware) mapDefaultError(c *fiber.Ctx, err error, tenantID string) error {
-	// Missing token or JWT errors -> 401
-	if strings.Contains(err.Error(), "authorization token") ||
-		strings.Contains(err.Error(), "parse") ||
-		strings.Contains(err.Error(), "tenantId") {
-		return unauthorizedError(c, "UNAUTHORIZED", err.Error())
-	}
-
-	// Tenant not found -> 404
-	if errors.Is(err, core.ErrTenantNotFound) {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{
-			"code":    "TENANT_NOT_FOUND",
-			"title":   "Tenant Not Found",
-			"message": fmt.Sprintf("tenant not found: %s", tenantID),
-		})
-	}
-
-	// Tenant suspended -> 403
-	var suspErr *core.TenantSuspendedError
-	if errors.As(err, &suspErr) {
-		return forbiddenError(c, "0131", "Service Suspended",
-			fmt.Sprintf("tenant service is %s", suspErr.Status))
-	}
-
-	// Manager closed or service not configured -> 503
-	if errors.Is(err, core.ErrManagerClosed) || errors.Is(err, core.ErrServiceNotConfigured) {
-		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
-			"code":    "SERVICE_UNAVAILABLE",
-			"title":   "Service Unavailable",
-			"message": err.Error(),
-		})
-	}
-
-	// Connection errors -> 503
-	if strings.Contains(err.Error(), "connection") {
-		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
-			"code":    "SERVICE_UNAVAILABLE",
-			"title":   "Service Unavailable",
-			"message": fmt.Sprintf("failed to resolve tenant database: %s", err.Error()),
-		})
-	}
-
-	// Default -> 500
-	return internalServerError(c, "TENANT_DB_ERROR", "Failed to resolve tenant database", err.Error())
+	return mapDomainErrorToHTTP(c, err, tenantID)
 }
 
 // Enabled returns whether the middleware is enabled.
-// The middleware is enabled when at least one route has a multi-tenant PG pool.
+// The middleware is enabled when at least one route has a multi-tenant PG or Mongo pool.
 func (m *MultiPoolMiddleware) Enabled() bool {
 	return m.enabled
 }

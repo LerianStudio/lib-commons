@@ -1,22 +1,19 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package http
 
 import (
 	"context"
 	"encoding/json"
+	stdlog "log"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v3/commons"
-	cn "github.com/LerianStudio/lib-commons/v3/commons/constants"
-	"github.com/LerianStudio/lib-commons/v3/commons/log"
-	"github.com/LerianStudio/lib-commons/v3/commons/security"
+	"github.com/LerianStudio/lib-commons/v4/commons"
+	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v4/commons/security"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
@@ -31,6 +28,12 @@ const maxObfuscationDepth = 32
 // logObfuscationDisabled caches the LOG_OBFUSCATION_DISABLED env var at init time
 // to avoid repeated syscalls on every request.
 var logObfuscationDisabled = os.Getenv("LOG_OBFUSCATION_DISABLED") == "true"
+
+func init() {
+	if logObfuscationDisabled {
+		stdlog.Println("[WARN] LOG_OBFUSCATION_DISABLED is set to true. Sensitive data may appear in logs. Ensure this is not enabled in production.")
+	}
+}
 
 // RequestInfo is a struct design to store http access log data.
 type RequestInfo struct {
@@ -49,17 +52,23 @@ type RequestInfo struct {
 	Body          string
 }
 
-// ResponseMetricsWrapper is a Wrapper responsible for collect the response data such as status code and size
-// It implements built-in ResponseWriter interface.
+// ResponseMetricsWrapper is a Wrapper responsible for collecting the response data such as status code and size.
 type ResponseMetricsWrapper struct {
 	Context    *fiber.Ctx
 	StatusCode int
 	Size       int
-	Body       string
 }
 
 // NewRequestInfo creates an instance of RequestInfo.
-func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
+// The obfuscationDisabled parameter controls whether sensitive fields in the
+// request body are obfuscated. Pass the middleware's effective setting (which
+// combines the global LOG_OBFUSCATION_DISABLED env var with per-middleware
+// overrides via WithObfuscationDisabled) to honour per-middleware configuration.
+func NewRequestInfo(c *fiber.Ctx, obfuscationDisabled bool) *RequestInfo {
+	if c == nil {
+		return &RequestInfo{Date: time.Now().UTC()}
+	}
+
 	username, referer := "-", "-"
 	rawURL := string(c.Request().URI().FullURI())
 
@@ -70,8 +79,8 @@ func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
 		}
 	}
 
-	if c.Get("Referer") != "" {
-		referer = c.Get("Referer")
+	if c.Get(cn.HeaderReferer) != "" {
+		referer = sanitizeReferer(c.Get(cn.HeaderReferer))
 	}
 
 	body := ""
@@ -79,7 +88,7 @@ func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
 	if c.Request().Header.ContentLength() > 0 {
 		bodyBytes := c.Body()
 
-		if !logObfuscationDisabled {
+		if !obfuscationDisabled {
 			body = getBodyObfuscatedString(c, bodyBytes)
 		} else {
 			body = string(bodyBytes)
@@ -89,7 +98,7 @@ func NewRequestInfo(c *fiber.Ctx) *RequestInfo {
 	return &RequestInfo{
 		TraceID:       c.Get(cn.HeaderID),
 		Method:        c.Method(),
-		URI:           c.OriginalURL(),
+		URI:           sanitizeURL(c.OriginalURL()),
 		Username:      username,
 		Referer:       referer,
 		UserAgent:     c.Get(cn.HeaderUserAgent),
@@ -125,13 +134,19 @@ func (r *RequestInfo) String() string {
 // FinishRequestInfo calculates the duration of RequestInfo automatically using time.Now()
 // It also set StatusCode and Size of RequestInfo passed by ResponseMetricsWrapper.
 func (r *RequestInfo) FinishRequestInfo(rw *ResponseMetricsWrapper) {
+	if rw == nil {
+		return
+	}
+
 	r.Duration = time.Now().UTC().Sub(r.Date)
 	r.Status = rw.StatusCode
 	r.Size = rw.Size
 }
 
+// logMiddleware holds the logger and configuration used by HTTP and gRPC logging middleware.
 type logMiddleware struct {
-	Logger log.Logger
+	Logger              log.Logger
+	ObfuscationDisabled bool
 }
 
 // LogMiddlewareOption represents the log middleware function as an implementation.
@@ -140,14 +155,26 @@ type LogMiddlewareOption func(l *logMiddleware)
 // WithCustomLogger is a functional option for logMiddleware.
 func WithCustomLogger(logger log.Logger) LogMiddlewareOption {
 	return func(l *logMiddleware) {
-		l.Logger = logger
+		if logger != nil {
+			l.Logger = logger
+		}
+	}
+}
+
+// WithObfuscationDisabled is a functional option that disables log body obfuscation.
+// This is primarily intended for testing and local development.
+// In production, use the LOG_OBFUSCATION_DISABLED environment variable.
+func WithObfuscationDisabled(disabled bool) LogMiddlewareOption {
+	return func(l *logMiddleware) {
+		l.ObfuscationDisabled = disabled
 	}
 }
 
 // buildOpts creates an instance of logMiddleware with options.
 func buildOpts(opts ...LogMiddlewareOption) *logMiddleware {
 	mid := &logMiddleware{
-		Logger: &log.GoLogger{},
+		Logger:              &log.GoLogger{},
+		ObfuscationDisabled: logObfuscationDisabled,
 	}
 
 	for _, opt := range opts {
@@ -172,38 +199,29 @@ func WithHTTPLogging(opts ...LogMiddlewareOption) fiber.Handler {
 
 		setRequestHeaderID(c)
 
-		info := NewRequestInfo(c)
+		mid := buildOpts(opts...)
+
+		info := NewRequestInfo(c, mid.ObfuscationDisabled)
 
 		headerID := c.Get(cn.HeaderID)
-
-		mid := buildOpts(opts...)
-		logger := mid.Logger.WithFields(
-			cn.HeaderID, info.TraceID,
-		).WithDefaultMessageTemplate(headerID + cn.LoggerDefaultSeparator)
+		logger := mid.Logger.
+			With(log.String(cn.HeaderID, info.TraceID)).
+			With(log.String("message_prefix", headerID+cn.LoggerDefaultSeparator))
 
 		ctx := commons.ContextWithLogger(c.UserContext(), logger)
 		c.SetUserContext(ctx)
 
 		err := c.Next()
 
-		// Check if the response is a body stream (e.g., SSE).
-		// Reading Body() on a streaming response materializes the entire stream
-		// into memory, breaking incremental event delivery.
-		var responseSize int
-		if !c.Response().IsBodyStream() {
-			responseSize = len(c.Response().Body())
-		}
-
 		rw := ResponseMetricsWrapper{
 			Context:    c,
 			StatusCode: c.Response().StatusCode(),
-			Size:       responseSize,
-			Body:       "",
+			Size:       len(c.Response().Body()),
 		}
 
 		info.FinishRequestInfo(&rw)
 
-		logger.Info(info.CLFString())
+		logger.Log(c.UserContext(), log.LevelInfo, info.CLFString())
 
 		return err
 	}
@@ -222,7 +240,10 @@ func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
 			// Emit a debug log if overriding a different metadata id
 			if prev := getMetadataID(ctx); prev != "" && prev != rid {
 				mid := buildOpts(opts...)
-				mid.Logger.Debugf("Overriding correlation id from metadata (%s) with body request_id (%s)", prev, rid)
+				mid.Logger.Log(ctx, log.LevelDebug, "Overriding correlation id from metadata with body request_id",
+					log.String("metadata_id", prev),
+					log.String("body_request_id", rid),
+				)
 			}
 			// Override correlation id to match the body-provided, validated UUID request_id
 			ctx = commons.ContextWithHeaderID(ctx, rid)
@@ -237,8 +258,8 @@ func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
 
 		mid := buildOpts(opts...)
 		logger := mid.Logger.
-			WithFields(cn.HeaderID, reqId).
-			WithDefaultMessageTemplate(reqId + cn.LoggerDefaultSeparator)
+			With(log.String(cn.HeaderID, reqId)).
+			With(log.String("message_prefix", reqId+cn.LoggerDefaultSeparator))
 
 		ctx = commons.ContextWithLogger(ctx, logger)
 
@@ -246,26 +267,41 @@ func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
 		resp, err := handler(ctx, req)
 		duration := time.Since(start)
 
-		logger.Infof("gRPC method: %s, Duration: %s, Error: %v", info.FullMethod, duration, err)
+		fields := []log.Field{
+			log.String("method", info.FullMethod),
+			log.String("duration", duration.String()),
+		}
+		if err != nil {
+			fields = append(fields, log.Err(err))
+		}
+
+		logger.Log(ctx, log.LevelInfo, "gRPC request finished", fields...)
 
 		return resp, err
 	}
 }
 
+// setRequestHeaderID ensures the Fiber request carries a unique correlation ID header.
+// The effective ID is always echoed back on the response so that callers can
+// correlate their request regardless of whether the ID was client-supplied or
+// server-generated.
 func setRequestHeaderID(c *fiber.Ctx) {
 	headerID := c.Get(cn.HeaderID)
 
 	if commons.IsNilOrEmpty(&headerID) {
 		headerID = uuid.New().String()
-		c.Set(cn.HeaderID, headerID)
 		c.Request().Header.Set(cn.HeaderID, headerID)
-		c.Response().Header.Set(cn.HeaderID, headerID)
 	}
+
+	// Always echo the effective correlation ID on the response (2.22).
+	c.Set(cn.HeaderID, headerID)
+	c.Response().Header.Set(cn.HeaderID, headerID)
 
 	ctx := commons.ContextWithHeaderID(c.UserContext(), headerID)
 	c.SetUserContext(ctx)
 }
 
+// setGRPCRequestHeaderID extracts or generates a correlation ID from gRPC metadata.
 func setGRPCRequestHeaderID(ctx context.Context) context.Context {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if ok {
@@ -279,31 +315,42 @@ func setGRPCRequestHeaderID(ctx context.Context) context.Context {
 	return commons.ContextWithHeaderID(ctx, uuid.New().String())
 }
 
+// getBodyObfuscatedString returns the request body with sensitive fields obfuscated.
 func getBodyObfuscatedString(c *fiber.Ctx, bodyBytes []byte) string {
-	contentType := c.Get("Content-Type")
+	contentType := c.Get(cn.HeaderContentType)
 
 	var obfuscatedBody string
 
-	if strings.Contains(contentType, "application/json") {
+	switch {
+	case strings.Contains(contentType, "application/json"):
 		obfuscatedBody = handleJSONBody(bodyBytes)
-	} else if strings.Contains(contentType, "application/x-www-form-urlencoded") {
+	case strings.Contains(contentType, "application/x-www-form-urlencoded"):
 		obfuscatedBody = handleURLEncodedBody(bodyBytes)
-	} else if strings.Contains(contentType, "multipart/form-data") {
+	case strings.Contains(contentType, "multipart/form-data"):
 		obfuscatedBody = handleMultipartBody(c)
-	} else {
+	default:
 		obfuscatedBody = string(bodyBytes)
 	}
 
 	return obfuscatedBody
 }
 
+// handleJSONBody obfuscates sensitive fields in a JSON request body.
+// Handles both top-level objects and arrays.
 func handleJSONBody(bodyBytes []byte) string {
-	var bodyData map[string]any
+	var bodyData any
 	if err := json.Unmarshal(bodyBytes, &bodyData); err != nil {
 		return string(bodyBytes)
 	}
 
-	obfuscateMapRecursively(bodyData, 0)
+	switch v := bodyData.(type) {
+	case map[string]any:
+		obfuscateMapRecursively(v, 0)
+	case []any:
+		obfuscateSliceRecursively(v, 0)
+	default:
+		return string(bodyBytes)
+	}
 
 	updatedBody, err := json.Marshal(bodyData)
 	if err != nil {
@@ -313,6 +360,7 @@ func handleJSONBody(bodyBytes []byte) string {
 	return string(updatedBody)
 }
 
+// obfuscateMapRecursively replaces sensitive map values up to maxObfuscationDepth levels.
 func obfuscateMapRecursively(data map[string]any, depth int) {
 	if depth >= maxObfuscationDepth {
 		return
@@ -333,6 +381,7 @@ func obfuscateMapRecursively(data map[string]any, depth int) {
 	}
 }
 
+// obfuscateSliceRecursively walks slice elements and obfuscates nested sensitive fields.
 func obfuscateSliceRecursively(data []any, depth int) {
 	if depth >= maxObfuscationDepth {
 		return
@@ -348,6 +397,7 @@ func obfuscateSliceRecursively(data []any, depth int) {
 	}
 }
 
+// handleURLEncodedBody obfuscates sensitive fields in a URL-encoded request body.
 func handleURLEncodedBody(bodyBytes []byte) string {
 	formData, err := url.ParseQuery(string(bodyBytes))
 	if err != nil {
@@ -371,6 +421,7 @@ func handleURLEncodedBody(bodyBytes []byte) string {
 	return updatedBody.Encode()
 }
 
+// handleMultipartBody obfuscates sensitive fields in a multipart/form-data request body.
 func handleMultipartBody(c *fiber.Ctx) string {
 	form, err := c.MultipartForm()
 	if err != nil {
@@ -400,6 +451,22 @@ func handleMultipartBody(c *fiber.Ctx) string {
 	}
 
 	return result.Encode()
+}
+
+// sanitizeReferer strips query parameters and userinfo from a Referer header value
+// before it is written into logs, preventing credential/token leakage.
+func sanitizeReferer(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "-"
+	}
+
+	// Strip userinfo (credentials) and query string (may contain tokens).
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+
+	return parsed.String()
 }
 
 // getValidBodyRequestID extracts and validates the request_id from the gRPC request body.

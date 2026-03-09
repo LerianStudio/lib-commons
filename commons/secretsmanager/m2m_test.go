@@ -7,6 +7,7 @@ package secretsmanager
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -18,6 +19,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// mockBinarySecretsManagerClient returns a nil SecretString to simulate binary secrets.
+type mockBinarySecretsManagerClient struct{}
+
+func (m *mockBinarySecretsManagerClient) GetSecretValue(
+	_ context.Context,
+	_ *secretsmanager.GetSecretValueInput,
+	_ ...func(*secretsmanager.Options),
+) (*secretsmanager.GetSecretValueOutput, error) {
+	return &secretsmanager.GetSecretValueOutput{
+		SecretBinary: []byte{0x01, 0x02, 0x03},
+		SecretString: nil,
+	}, nil
+}
 
 // mockSecretsManagerClient implements SecretsManagerClient for testing.
 type mockSecretsManagerClient struct {
@@ -31,7 +46,7 @@ func (m *mockSecretsManagerClient) GetSecretValue(
 	optFns ...func(*secretsmanager.Options),
 ) (*secretsmanager.GetSecretValueOutput, error) {
 	if params.SecretId == nil {
-		return nil, fmt.Errorf("InvalidParameterException: secret ID is required")
+		return nil, errors.New("InvalidParameterException: secret ID is required")
 	}
 
 	secretPath := *params.SecretId
@@ -47,7 +62,7 @@ func (m *mockSecretsManagerClient) GetSecretValue(
 	}
 
 	return nil, &smtypes.ResourceNotFoundException{
-		Message: aws.String(fmt.Sprintf("Secrets Manager can't find the specified secret. path=%s", secretPath)),
+		Message: aws.String("Secrets Manager can't find the specified secret. path=" + secretPath),
 	}
 }
 
@@ -358,7 +373,7 @@ func TestGetM2MCredentials_AWSCredentialsMissing(t *testing.T) {
 		},
 		{
 			name:        "generic AWS error",
-			awsError:    fmt.Errorf("InternalServiceError: service unavailable"),
+			awsError:    errors.New("InternalServiceError: service unavailable"),
 			expectedErr: ErrM2MRetrievalFailed,
 		},
 	}
@@ -571,6 +586,243 @@ func TestM2MCredentials_JSONTags(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, creds)
+		})
+	}
+}
+
+func TestM2MCredentials_StringRedactsSecret(t *testing.T) {
+	t.Parallel()
+
+	creds := M2MCredentials{
+		ClientID:     "client-visible-id",
+		ClientSecret: "sec_super-secret-value",
+	}
+
+	formatted := fmt.Sprintf("%v", creds)
+	goFormatted := fmt.Sprintf("%#v", creds)
+
+	assert.Contains(t, formatted, "ClientSecret:REDACTED")
+	assert.Contains(t, goFormatted, "ClientSecret:REDACTED")
+	assert.NotContains(t, formatted, creds.ClientSecret)
+	assert.NotContains(t, goFormatted, creds.ClientSecret)
+	assert.Contains(t, formatted, creds.ClientID)
+	assert.Contains(t, goFormatted, creds.ClientID)
+}
+
+// ============================================================================
+// Test: Path traversal prevention
+// ============================================================================
+
+func TestGetM2MCredentials_PathTraversal(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockSecretsManagerClient{
+		secrets: map[string]string{},
+		errors:  map[string]error{},
+	}
+
+	tests := []struct {
+		name            string
+		env             string
+		tenantOrgID     string
+		applicationName string
+		targetService   string
+		expectedErr     error
+	}{
+		{
+			name:            "tenantOrgID with slash",
+			env:             "staging",
+			tenantOrgID:     "org/../admin",
+			applicationName: "plugin-pix",
+			targetService:   "ledger",
+			expectedErr:     ErrM2MInvalidPathSegment,
+		},
+		{
+			name:            "applicationName with backslash",
+			env:             "staging",
+			tenantOrgID:     "org_01ABC",
+			applicationName: "plugin\\pix",
+			targetService:   "ledger",
+			expectedErr:     ErrM2MInvalidPathSegment,
+		},
+		{
+			name:            "targetService with dot-dot",
+			env:             "staging",
+			tenantOrgID:     "org_01ABC",
+			applicationName: "plugin-pix",
+			targetService:   "..secret",
+			expectedErr:     ErrM2MInvalidPathSegment,
+		},
+		{
+			name:            "env with slash",
+			env:             "staging/../../admin",
+			tenantOrgID:     "org_01ABC",
+			applicationName: "plugin-pix",
+			targetService:   "ledger",
+			expectedErr:     ErrM2MInvalidPathSegment,
+		},
+		{
+			name:            "whitespace-only tenantOrgID",
+			env:             "staging",
+			tenantOrgID:     "   ",
+			applicationName: "plugin-pix",
+			targetService:   "ledger",
+			expectedErr:     ErrM2MInvalidInput,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			creds, err := GetM2MCredentials(context.Background(), mock, tt.env, tt.tenantOrgID, tt.applicationName, tt.targetService)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tt.expectedErr)
+			assert.Nil(t, creds)
+		})
+	}
+}
+
+// ============================================================================
+// Test: Binary secret detection
+// ============================================================================
+
+func TestGetM2MCredentials_BinarySecret(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockBinarySecretsManagerClient{}
+
+	creds, err := GetM2MCredentials(context.Background(), mock, "staging", "org_01ABC", "plugin-pix", "ledger")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrM2MBinarySecretNotSupported)
+	assert.Nil(t, creds)
+}
+
+// ============================================================================
+// Test: Error path redaction
+// ============================================================================
+
+func TestGetM2MCredentials_ErrorsDoNotLeakFullPath(t *testing.T) {
+	t.Parallel()
+
+	mock := &mockSecretsManagerClient{
+		secrets: map[string]string{},
+		errors:  map[string]error{},
+	}
+
+	// Secret not found → error should contain redacted path, not full path
+	_, err := GetM2MCredentials(context.Background(), mock, "staging", "org_01ABC", "plugin-pix", "ledger")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrM2MCredentialsNotFound)
+	// Full path should not appear in the error
+	assert.NotContains(t, err.Error(), "tenants/staging/org_01ABC/plugin-pix/m2m/ledger/credentials")
+	// Redacted path should contain the last segment
+	assert.Contains(t, err.Error(), "credentials")
+}
+
+// ============================================================================
+// Test: Typed-nil client detection
+// ============================================================================
+
+func TestGetM2MCredentials_TypedNilClient(t *testing.T) {
+	t.Parallel()
+
+	// A typed-nil interface value should be caught.
+	var typedNil *mockSecretsManagerClient
+
+	creds, err := GetM2MCredentials(context.Background(), typedNil, "staging", "org_01ABC", "plugin-pix", "ledger")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrM2MInvalidInput)
+	assert.Nil(t, creds)
+}
+
+// ============================================================================
+// Test: Whitespace trimming in segments
+// ============================================================================
+
+func TestGetM2MCredentials_WhitespaceTrimming(t *testing.T) {
+	t.Parallel()
+
+	validCreds := M2MCredentials{
+		ClientID:     "plg_trimmed",
+		ClientSecret: "sec_trimmed",
+	}
+
+	credsJSON, err := json.Marshal(validCreds)
+	require.NoError(t, err)
+
+	// The trimmed path should be used
+	secretPath := "tenants/staging/org_01ABC/plugin-pix/m2m/ledger/credentials"
+
+	mock := &mockSecretsManagerClient{
+		secrets: map[string]string{
+			secretPath: string(credsJSON),
+		},
+		errors: map[string]error{},
+	}
+
+	// Segments with leading/trailing whitespace should be trimmed
+	creds, err := GetM2MCredentials(context.Background(), mock, " staging ", " org_01ABC ", " plugin-pix ", " ledger ")
+	require.NoError(t, err)
+	require.NotNil(t, creds)
+	assert.Equal(t, "plg_trimmed", creds.ClientID)
+}
+
+// ============================================================================
+// Test: redactPath helper
+// ============================================================================
+
+func TestRedactPath(t *testing.T) {
+	t.Parallel()
+
+	result := redactPath("tenants/staging/org_01ABC/plugin-pix/m2m/ledger/credentials")
+
+	// Should contain the last segment
+	assert.Contains(t, result, "credentials")
+	// Should NOT contain the full path
+	assert.NotContains(t, result, "tenants/staging")
+	// Should contain a hash marker
+	assert.Contains(t, result, "[")
+	assert.Contains(t, result, "]")
+}
+
+// ============================================================================
+// Test: validatePathSegment helper
+// ============================================================================
+
+func TestValidatePathSegment(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		value       string
+		expectErr   bool
+		expectedErr error
+		expected    string
+	}{
+		{name: "valid segment", value: "org_01ABC", expectErr: false, expected: "org_01ABC"},
+		{name: "trimmed segment", value: "  org_01ABC  ", expectErr: false, expected: "org_01ABC"},
+		{name: "empty", value: "", expectErr: true, expectedErr: ErrM2MInvalidInput},
+		{name: "whitespace only", value: "   ", expectErr: true, expectedErr: ErrM2MInvalidInput},
+		{name: "contains slash", value: "org/admin", expectErr: true, expectedErr: ErrM2MInvalidPathSegment},
+		{name: "contains backslash", value: "org\\admin", expectErr: true, expectedErr: ErrM2MInvalidPathSegment},
+		{name: "contains dot-dot", value: "..admin", expectErr: true, expectedErr: ErrM2MInvalidPathSegment},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := validatePathSegment("test", tt.value)
+			if tt.expectErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.expectedErr)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.expected, result)
+			}
 		})
 	}
 }

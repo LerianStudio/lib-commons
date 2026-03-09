@@ -2,52 +2,45 @@ package core
 
 import (
 	"context"
-	"strings"
 
 	"github.com/bxcodec/dbresolver/v2"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-// PostgresFallback abstracts the static PostgreSQL connection used as fallback
-// when no tenant-specific connection is found in context.
-type PostgresFallback interface {
-	GetDB() (dbresolver.DB, error)
+// nonNilContext returns ctx if non-nil, otherwise context.Background().
+// This guards every exported setter/getter against nil-context panics.
+func nonNilContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+
+	return ctx
 }
 
-// MongoFallback abstracts the static MongoDB connection used as fallback
-// when no tenant-specific connection is found in context.
-type MongoFallback interface {
-	GetDB(ctx context.Context) (*mongo.Client, error)
+// Context key types for storing tenant information.
+// Use unexported struct keys to avoid collisions across packages.
+type contextKey struct {
+	name string
 }
 
-// MultiTenantChecker is implemented by managers that know whether they are
-// running in multi-tenant mode. The postgres, mongo and rabbitmq managers
-// already satisfy this interface via their IsMultiTenant() method.
-type MultiTenantChecker interface {
-	IsMultiTenant() bool
-}
-
-// Context key types for storing tenant information
-type contextKey string
-
-const (
+var (
 	// tenantIDKey is the context key for storing the tenant ID.
-	tenantIDKey contextKey = "tenantID"
+	tenantIDKey = contextKey{name: "tenantID"}
 	// tenantPGConnectionKey is the context key for storing the resolved dbresolver.DB connection.
-	tenantPGConnectionKey contextKey = "tenantPGConnection"
+	tenantPGConnectionKey = contextKey{name: "tenantPGConnection"}
 	// tenantMongoKey is the context key for storing the tenant MongoDB database.
-	tenantMongoKey contextKey = "tenantMongo"
+	tenantMongoKey = contextKey{name: "tenantMongo"}
 )
 
 // SetTenantIDInContext stores the tenant ID in the context.
 func SetTenantIDInContext(ctx context.Context, tenantID string) context.Context {
-	return context.WithValue(ctx, tenantIDKey, tenantID)
+	return context.WithValue(nonNilContext(ctx), tenantIDKey, tenantID)
 }
 
 // GetTenantIDFromContext retrieves the tenant ID from the context.
 // Returns empty string if not found.
 func GetTenantIDFromContext(ctx context.Context) string {
-	if id, ok := ctx.Value(tenantIDKey).(string); ok {
+	if id, ok := nonNilContext(ctx).Value(tenantIDKey).(string); ok {
 		return id
 	}
 
@@ -69,40 +62,35 @@ func ContextWithTenantID(ctx context.Context, tenantID string) context.Context {
 // ContextWithTenantPGConnection stores the resolved dbresolver.DB connection in the context.
 // This is used by the middleware to store the tenant-specific database connection.
 func ContextWithTenantPGConnection(ctx context.Context, db dbresolver.DB) context.Context {
-	return context.WithValue(ctx, tenantPGConnectionKey, db)
+	return context.WithValue(nonNilContext(ctx), tenantPGConnectionKey, db)
 }
 
 // GetTenantPGConnectionFromContext retrieves the resolved dbresolver.DB from the context.
 // Returns nil if not found.
 func GetTenantPGConnectionFromContext(ctx context.Context) dbresolver.DB {
-	if db, ok := ctx.Value(tenantPGConnectionKey).(dbresolver.DB); ok {
+	if db, ok := nonNilContext(ctx).Value(tenantPGConnectionKey).(dbresolver.DB); ok {
 		return db
 	}
 
 	return nil
 }
 
-// ResolvePostgres returns the PostgreSQL connection from context (multi-tenant)
-// or falls back to the static connection (single-tenant).
-// When the fallback implements MultiTenantChecker and reports multi-tenant mode,
-// the function returns ErrTenantContextRequired instead of falling back silently.
-func ResolvePostgres(ctx context.Context, fallback PostgresFallback) (dbresolver.DB, error) {
-	if db := GetTenantPGConnectionFromContext(ctx); db != nil {
-		return db, nil
+// GetPostgresForTenant returns the PostgreSQL database connection for the current tenant from context.
+// If no tenant connection is found in context, returns ErrTenantContextRequired.
+// This function ALWAYS requires tenant context - there is no fallback to default connections.
+func GetPostgresForTenant(ctx context.Context) (dbresolver.DB, error) {
+	if tenantDB := GetTenantPGConnectionFromContext(ctx); tenantDB != nil {
+		return tenantDB, nil
 	}
 
-	if checker, ok := fallback.(MultiTenantChecker); ok && checker.IsMultiTenant() {
-		return nil, ErrTenantContextRequired
-	}
-
-	return fallback.GetDB()
+	return nil, ErrTenantContextRequired
 }
 
 // moduleContextKey generates a dynamic context key for a given module name.
 // This allows any module to store its own PostgreSQL connection in context
 // without requiring changes to lib-commons.
 func moduleContextKey(moduleName string) contextKey {
-	return contextKey("tenantPGConnection:" + moduleName)
+	return contextKey{name: "tenantPGConnection:" + moduleName}
 }
 
 // ContextWithModulePGConnection stores a module-specific PostgreSQL connection in context.
@@ -110,99 +98,43 @@ func moduleContextKey(moduleName string) contextKey {
 // This is used in multi-module processes where each module needs its own database connection
 // in context to avoid cross-module conflicts.
 func ContextWithModulePGConnection(ctx context.Context, moduleName string, db dbresolver.DB) context.Context {
-	return context.WithValue(ctx, moduleContextKey(moduleName), db)
+	return context.WithValue(nonNilContext(ctx), moduleContextKey(moduleName), db)
 }
 
-// ResolveModuleDB returns the module-specific PostgreSQL connection from context (multi-tenant)
-// or falls back to the static connection (single-tenant).
+// GetModulePostgresForTenant returns the module-specific PostgreSQL connection from context.
 // moduleName identifies the module (e.g., "onboarding", "transaction").
-// When the fallback implements MultiTenantChecker and reports multi-tenant mode,
-// the function returns ErrTenantContextRequired instead of falling back silently.
-func ResolveModuleDB(ctx context.Context, moduleName string, fallback PostgresFallback) (dbresolver.DB, error) {
-	if db, ok := ctx.Value(moduleContextKey(moduleName)).(dbresolver.DB); ok && db != nil {
+// Returns ErrTenantContextRequired if no connection is found for the given module.
+// This function does NOT fallback to the generic tenantPGConnectionKey.
+func GetModulePostgresForTenant(ctx context.Context, moduleName string) (dbresolver.DB, error) {
+	if db, ok := nonNilContext(ctx).Value(moduleContextKey(moduleName)).(dbresolver.DB); ok && db != nil {
 		return db, nil
 	}
 
-	if checker, ok := fallback.(MultiTenantChecker); ok && checker.IsMultiTenant() {
-		return nil, ErrTenantContextRequired
-	}
-
-	return fallback.GetDB()
-}
-
-// moduleMongoContextKey generates a dynamic context key for a given module's MongoDB database.
-// This allows any module to store its own MongoDB database in context
-// without requiring changes to lib-commons.
-func moduleMongoContextKey(moduleName string) contextKey {
-	return contextKey("tenantMongo:" + moduleName)
-}
-
-// ContextWithModuleMongo stores a module-specific MongoDB database in context.
-// moduleName identifies the module (e.g., "onboarding", "transaction").
-// This is used in multi-module processes where each module needs its own MongoDB database
-// in context to avoid cross-module conflicts.
-func ContextWithModuleMongo(ctx context.Context, moduleName string, db *mongo.Database) context.Context {
-	return context.WithValue(ctx, moduleMongoContextKey(moduleName), db)
-}
-
-// ResolveModuleMongo returns the module-specific MongoDB database from context (multi-tenant)
-// or falls back to the static connection (single-tenant).
-// moduleName identifies the module (e.g., "onboarding", "transaction").
-// Unlike ResolveMongo (which uses a global key), this function always requires the module name
-// and resolves from a module-scoped context key — ensuring correct isolation between modules.
-// NO fallback to the global tenantMongo key — the module MUST be explicitly provided.
-func ResolveModuleMongo(ctx context.Context, moduleName string, fallback MongoFallback, dbName string) (*mongo.Database, error) {
-	// Try module-scoped key — the ONLY multi-tenant path
-	if db, ok := ctx.Value(moduleMongoContextKey(moduleName)).(*mongo.Database); ok && db != nil {
-		return db, nil
-	}
-
-	// If multi-tenant mode, fail — module key is mandatory
-	if checker, ok := fallback.(MultiTenantChecker); ok && checker.IsMultiTenant() {
-		return nil, ErrTenantContextRequired
-	}
-
-	// Single-tenant fallback
-	client, err := fallback.GetDB(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return client.Database(strings.ToLower(dbName)), nil
+	return nil, ErrTenantContextRequired
 }
 
 // ContextWithTenantMongo stores the MongoDB database in the context.
 func ContextWithTenantMongo(ctx context.Context, db *mongo.Database) context.Context {
-	return context.WithValue(ctx, tenantMongoKey, db)
+	return context.WithValue(nonNilContext(ctx), tenantMongoKey, db)
 }
 
 // GetMongoFromContext retrieves the MongoDB database from the context.
 // Returns nil if not found.
 func GetMongoFromContext(ctx context.Context) *mongo.Database {
-	if db, ok := ctx.Value(tenantMongoKey).(*mongo.Database); ok {
+	if db, ok := nonNilContext(ctx).Value(tenantMongoKey).(*mongo.Database); ok {
 		return db
 	}
 
 	return nil
 }
 
-// ResolveMongo returns the MongoDB database from context (multi-tenant)
-// or falls back to the static connection (single-tenant).
-// When the fallback implements MultiTenantChecker and reports multi-tenant mode,
-// the function returns ErrTenantContextRequired instead of falling back silently.
-func ResolveMongo(ctx context.Context, fallback MongoFallback, dbName string) (*mongo.Database, error) {
-	if db, ok := ctx.Value(tenantMongoKey).(*mongo.Database); ok && db != nil {
+// GetMongoForTenant returns the MongoDB database for the current tenant from context.
+// If no tenant connection is found in context, returns ErrTenantContextRequired.
+// This function ALWAYS requires tenant context - there is no fallback to default connections.
+func GetMongoForTenant(ctx context.Context) (*mongo.Database, error) {
+	if db := GetMongoFromContext(ctx); db != nil {
 		return db, nil
 	}
 
-	if checker, ok := fallback.(MultiTenantChecker); ok && checker.IsMultiTenant() {
-		return nil, ErrTenantContextRequired
-	}
-
-	client, err := fallback.GetDB(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	return client.Database(strings.ToLower(dbName)), nil
+	return nil, ErrTenantContextRequired
 }

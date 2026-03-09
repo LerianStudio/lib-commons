@@ -3,6 +3,7 @@ run:
   tests: false
 linters:
   enable:
+    # --- Existing linters ---
     - bodyclose
     - depguard
     - dogsled
@@ -20,18 +21,56 @@ linters:
     - reassign
     - revive
     - staticcheck
-    - thelper
-    - tparallel
     - unconvert
     - unparam
     - usestdlibvars
     - wastedassign
     - wsl_v5
+
+    # --- Tier 1: Safety & Correctness ---
+    - errorlint        # type assertions on errors, missing %w
+    - exhaustive       # non-exhaustive enum switches
+    - fatcontext       # context growing in loop
+    - forcetypeassert  # unchecked type assertions (sync.Map etc.)
+    - gosec            # security issues (math/rand for jitter etc.)
+    - nilnil           # return nil, nil ambiguity
+    - noctx            # net.Listen/exec.Command without context
+
+    # --- Tier 2: Code Quality & Modernization ---
+    - goconst          # repeated string literals
+    - gocritic         # if-else→switch, deprecated comments
+    - inamedparam      # unnamed interface params
+    - intrange         # integer range loops
+    - mirror           # allocation savings (bytes.Equal etc.)
+    - modernize        # Go modernization suggestions
+    - perfsprint       # fmt.Errorf→errors.New where applicable
+
+    # --- Tier 3: Zero-Issue Guards ---
+    - asasalint                  # variadic any argument passing
+    - copyloopvar                # loop variable capture prevention
+    - durationcheck              # time.Duration math bugs
+    - exptostd                   # x/exp to stdlib migration
+    - gocheckcompilerdirectives  # malformed //go: comments
+    - makezero                   # make with non-zero length passed to append
+    - musttag                    # struct tag validation for marshaling
+    - nilnesserr                 # subtle nil error patterns
+    - recvcheck                  # receiver consistency
+    - rowserrcheck               # SQL rows.Err() checks
+    - spancheck                  # OTEL span lifecycle
+    - sqlclosecheck              # SQL resource close
+    - testifylint                # testify assertion patterns
+
   settings:
-    wsl_v5:
-      allow-first-in-block: true
-      allow-whole-block: false
-      branch-max-lines: 2
+    # --- New settings ---
+    exhaustive:
+      default-signifies-exhaustive: true
+
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+      ignore-tests: true
+
+    # --- Existing settings (unchanged) ---
     depguard:
       rules:
         main:
@@ -60,6 +99,11 @@ linters:
         - name: use-any
           severity: warning
           disabled: false
+    wsl_v5:
+      allow-first-in-block: true
+      allow-whole-block: false
+      branch-max-lines: 2
+
   exclusions:
     generated: lax
     rules:

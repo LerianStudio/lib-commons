@@ -7,39 +7,18 @@
 package testutil
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
 
-	"github.com/LerianStudio/lib-commons/v3/commons/log"
+	"github.com/LerianStudio/lib-commons/v4/commons/log"
 )
 
-// MockLogger is a no-op implementation of log.Logger for unit tests.
-// It discards all log output, allowing tests to focus on business logic.
-type MockLogger struct{}
-
-func (m *MockLogger) Info(_ ...any)                                  {}
-func (m *MockLogger) Infof(_ string, _ ...any)                       {}
-func (m *MockLogger) Infoln(_ ...any)                                {}
-func (m *MockLogger) Error(_ ...any)                                 {}
-func (m *MockLogger) Errorf(_ string, _ ...any)                      {}
-func (m *MockLogger) Errorln(_ ...any)                               {}
-func (m *MockLogger) Warn(_ ...any)                                  {}
-func (m *MockLogger) Warnf(_ string, _ ...any)                       {}
-func (m *MockLogger) Warnln(_ ...any)                                {}
-func (m *MockLogger) Debug(_ ...any)                                 {}
-func (m *MockLogger) Debugf(_ string, _ ...any)                      {}
-func (m *MockLogger) Debugln(_ ...any)                               {}
-func (m *MockLogger) Fatal(_ ...any)                                 {}
-func (m *MockLogger) Fatalf(_ string, _ ...any)                      {}
-func (m *MockLogger) Fatalln(_ ...any)                               {}
-func (m *MockLogger) WithFields(_ ...any) log.Logger                 { return m }
-func (m *MockLogger) WithDefaultMessageTemplate(_ string) log.Logger { return m }
-func (m *MockLogger) Sync() error                                    { return nil }
-
-// NewMockLogger returns a new no-op MockLogger that satisfies log.Logger.
+// NewMockLogger returns a no-op logger that satisfies log.Logger.
+// It delegates to log.NewNop() to avoid duplicating the standard no-op implementation.
 func NewMockLogger() log.Logger {
-	return &MockLogger{}
+	return log.NewNop()
 }
 
 // CapturingLogger implements log.Logger and captures log messages for assertion.
@@ -83,32 +62,24 @@ func (cl *CapturingLogger) ContainsSubstring(sub string) bool {
 	return false
 }
 
-func (cl *CapturingLogger) Info(args ...any)                 { cl.record(fmt.Sprint(args...)) }
-func (cl *CapturingLogger) Infof(format string, args ...any) { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *CapturingLogger) Infoln(args ...any)               { cl.record(fmt.Sprintln(args...)) }
-func (cl *CapturingLogger) Error(args ...any)                { cl.record(fmt.Sprint(args...)) }
-func (cl *CapturingLogger) Errorf(format string, args ...any) {
-	cl.record(fmt.Sprintf(format, args...))
+func (cl *CapturingLogger) Log(_ context.Context, _ log.Level, msg string, fields ...log.Field) {
+	if len(fields) == 0 {
+		cl.record(msg)
+
+		return
+	}
+
+	parts := make([]string, 0, len(fields))
+	for _, field := range fields {
+		parts = append(parts, fmt.Sprintf("%s=%v", field.Key, field.Value))
+	}
+
+	cl.record(fmt.Sprintf("%s %s", msg, strings.Join(parts, " ")))
 }
-func (cl *CapturingLogger) Errorln(args ...any)              { cl.record(fmt.Sprintln(args...)) }
-func (cl *CapturingLogger) Warn(args ...any)                 { cl.record(fmt.Sprint(args...)) }
-func (cl *CapturingLogger) Warnf(format string, args ...any) { cl.record(fmt.Sprintf(format, args...)) }
-func (cl *CapturingLogger) Warnln(args ...any)               { cl.record(fmt.Sprintln(args...)) }
-func (cl *CapturingLogger) Debug(args ...any)                { cl.record(fmt.Sprint(args...)) }
-func (cl *CapturingLogger) Debugf(format string, args ...any) {
-	cl.record(fmt.Sprintf(format, args...))
-}
-func (cl *CapturingLogger) Debugln(args ...any) { cl.record(fmt.Sprintln(args...)) }
-func (cl *CapturingLogger) Fatal(args ...any)   { cl.record(fmt.Sprint(args...)) }
-func (cl *CapturingLogger) Fatalf(format string, args ...any) {
-	cl.record(fmt.Sprintf(format, args...))
-}
-func (cl *CapturingLogger) Fatalln(args ...any)            { cl.record(fmt.Sprintln(args...)) }
-func (cl *CapturingLogger) WithFields(_ ...any) log.Logger { return cl }
-func (cl *CapturingLogger) WithDefaultMessageTemplate(_ string) log.Logger {
-	return cl
-}
-func (cl *CapturingLogger) Sync() error { return nil }
+func (cl *CapturingLogger) With(_ ...log.Field) log.Logger { return cl }
+func (cl *CapturingLogger) WithGroup(_ string) log.Logger  { return cl }
+func (cl *CapturingLogger) Enabled(_ log.Level) bool       { return true }
+func (cl *CapturingLogger) Sync(_ context.Context) error   { return nil }
 
 // NewCapturingLogger returns a new CapturingLogger that records all log messages.
 func NewCapturingLogger() *CapturingLogger {

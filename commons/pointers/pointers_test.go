@@ -1,6 +1,4 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
+//go:build unit
 
 package pointers
 
@@ -38,6 +36,14 @@ func TestInt64(t *testing.T) {
 	result := Int64(num)
 	if *result != num {
 		t.Errorf("Int64() = %v, want %v", *result, num)
+	}
+}
+
+func TestFloat64(t *testing.T) {
+	f := 3.14
+	result := Float64(f)
+	if *result != f {
+		t.Errorf("Float64() = %v, want %v", *result, f)
 	}
 }
 

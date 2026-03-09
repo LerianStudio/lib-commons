@@ -1,24 +1,24 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package opentelemetry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	stdlog "log"
 	"maps"
 	"net/http"
+	"reflect"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
-	"github.com/LerianStudio/lib-commons/v3/commons"
-	constant "github.com/LerianStudio/lib-commons/v3/commons/constants"
-	"github.com/LerianStudio/lib-commons/v3/commons/log"
-	"github.com/LerianStudio/lib-commons/v3/commons/opentelemetry/metrics"
+	"github.com/LerianStudio/lib-commons/v4/commons"
+	"github.com/LerianStudio/lib-commons/v4/commons/assert"
+	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry/metrics"
+	"github.com/LerianStudio/lib-commons/v4/commons/security"
 	"github.com/gofiber/fiber/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -28,6 +28,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/log/global"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -38,13 +39,27 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
-var (
-	// ErrNilTelemetryConfig indicates that nil config was provided to InitializeTelemetryWithError
-	ErrNilTelemetryConfig = errors.New("telemetry config cannot be nil")
-	// ErrNilTelemetryLogger indicates that config.Logger is nil
-	ErrNilTelemetryLogger = errors.New("telemetry config logger cannot be nil")
+const (
+	maxSpanAttributeStringLength = 4096
+	maxAttributeDepth            = 32
+	maxAttributeCount            = 128
+	defaultAttrPrefix            = "value"
 )
 
+var (
+	// ErrNilTelemetryLogger is returned when telemetry config has no logger.
+	ErrNilTelemetryLogger = errors.New("telemetry config logger cannot be nil")
+	// ErrEmptyEndpoint is returned when telemetry is enabled without exporter endpoint.
+	ErrEmptyEndpoint = errors.New("collector exporter endpoint cannot be empty when telemetry is enabled")
+	// ErrNilTelemetry is returned when a telemetry method receives a nil receiver.
+	ErrNilTelemetry = errors.New("telemetry instance is nil")
+	// ErrNilShutdown is returned when telemetry shutdown handlers are unavailable.
+	ErrNilShutdown = errors.New("telemetry shutdown function is nil")
+	// ErrNilProvider is returned when ApplyGlobals is called with nil providers.
+	ErrNilProvider = errors.New("telemetry providers must not be nil when applying globals")
+)
+
+// TelemetryConfig configures tracing, metrics, logging, and propagation behavior.
 type TelemetryConfig struct {
 	LibraryName               string
 	ServiceName               string
@@ -52,22 +67,234 @@ type TelemetryConfig struct {
 	DeploymentEnv             string
 	CollectorExporterEndpoint string
 	EnableTelemetry           bool
+	InsecureExporter          bool
 	Logger                    log.Logger
+	Propagator                propagation.TextMapPropagator
+	Redactor                  *Redactor
 }
 
+// Telemetry holds configured OpenTelemetry providers and lifecycle handlers.
 type Telemetry struct {
 	TelemetryConfig
 	TracerProvider *sdktrace.TracerProvider
-	MetricProvider *sdkmetric.MeterProvider
+	MeterProvider  *sdkmetric.MeterProvider
 	LoggerProvider *sdklog.LoggerProvider
 	MetricsFactory *metrics.MetricsFactory
 	shutdown       func()
+	shutdownCtx    func(context.Context) error
 }
 
-// NewResource creates a new resource with custom attributes.
+// NewTelemetry builds telemetry providers and exporters from configuration.
+func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
+	if cfg.Logger == nil {
+		return nil, ErrNilTelemetryLogger
+	}
+
+	if cfg.Propagator == nil {
+		cfg.Propagator = propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
+	}
+
+	if cfg.Redactor == nil {
+		cfg.Redactor = NewDefaultRedactor()
+	}
+
+	if cfg.EnableTelemetry && strings.TrimSpace(cfg.CollectorExporterEndpoint) == "" {
+		return nil, ErrEmptyEndpoint
+	}
+
+	ctx := context.Background()
+
+	if !cfg.EnableTelemetry {
+		cfg.Logger.Log(ctx, log.LevelWarn, "Telemetry disabled")
+
+		mp := sdkmetric.NewMeterProvider()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(RedactingAttrBagSpanProcessor{Redactor: cfg.Redactor}))
+		lp := sdklog.NewLoggerProvider()
+
+		metricsFactory, err := metrics.NewMetricsFactory(mp.Meter(cfg.LibraryName), cfg.Logger)
+		if err != nil {
+			return nil, err
+		}
+
+		return &Telemetry{
+			TelemetryConfig: cfg,
+			TracerProvider:  tp,
+			MeterProvider:   mp,
+			LoggerProvider:  lp,
+			MetricsFactory:  metricsFactory,
+			shutdown:        func() {},
+			shutdownCtx:     func(context.Context) error { return nil },
+		}, nil
+	}
+
+	if cfg.InsecureExporter && cfg.DeploymentEnv != "" &&
+		cfg.DeploymentEnv != "development" && cfg.DeploymentEnv != "local" {
+		cfg.Logger.Log(ctx, log.LevelWarn,
+			"InsecureExporter is enabled in non-development environment",
+			log.String("environment", cfg.DeploymentEnv))
+	}
+
+	r := cfg.newResource()
+
+	// Track all allocated resources for rollback if a later step fails.
+	var cleanups []shutdownable
+
+	tExp, err := cfg.newTracerExporter(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("can't initialize tracer exporter: %w", err)
+	}
+
+	cleanups = append(cleanups, tExp)
+
+	mExp, err := cfg.newMetricExporter(ctx)
+	if err != nil {
+		shutdownAll(ctx, cleanups)
+
+		return nil, fmt.Errorf("can't initialize metric exporter: %w", err)
+	}
+
+	cleanups = append(cleanups, mExp)
+
+	lExp, err := cfg.newLoggerExporter(ctx)
+	if err != nil {
+		shutdownAll(ctx, cleanups)
+
+		return nil, fmt.Errorf("can't initialize logger exporter: %w", err)
+	}
+
+	cleanups = append(cleanups, lExp)
+
+	mp := cfg.newMeterProvider(r, mExp)
+	cleanups = append(cleanups, mp)
+
+	tp := cfg.newTracerProvider(r, tExp)
+	cleanups = append(cleanups, tp)
+
+	lp := cfg.newLoggerProvider(r, lExp)
+	cleanups = append(cleanups, lp)
+
+	metricsFactory, err := metrics.NewMetricsFactory(mp.Meter(cfg.LibraryName), cfg.Logger)
+	if err != nil {
+		shutdownAll(ctx, cleanups)
+
+		return nil, err
+	}
+
+	shutdown, shutdownCtx := buildShutdownHandlers(cfg.Logger, mp, tp, lp, tExp, mExp, lExp)
+
+	return &Telemetry{
+		TelemetryConfig: cfg,
+		TracerProvider:  tp,
+		MeterProvider:   mp,
+		LoggerProvider:  lp,
+		MetricsFactory:  metricsFactory,
+		shutdown:        shutdown,
+		shutdownCtx:     shutdownCtx,
+	}, nil
+}
+
+// shutdownAll performs best-effort shutdown of all allocated components.
+// Used during NewTelemetry to roll back partial allocations on failure.
+func shutdownAll(ctx context.Context, components []shutdownable) {
+	for _, c := range components {
+		if isNilShutdownable(c) {
+			continue
+		}
+
+		_ = c.Shutdown(ctx)
+	}
+}
+
+// ApplyGlobals sets this instance as the process-global OTEL providers/propagator.
+// Returns an error if any required provider is nil.
+func (tl *Telemetry) ApplyGlobals() error {
+	if tl == nil {
+		return ErrNilTelemetry
+	}
+
+	if tl.TracerProvider == nil || tl.MeterProvider == nil || tl.Propagator == nil {
+		return ErrNilProvider
+	}
+
+	otel.SetTracerProvider(tl.TracerProvider)
+	otel.SetMeterProvider(tl.MeterProvider)
+
+	if tl.LoggerProvider != nil {
+		global.SetLoggerProvider(tl.LoggerProvider)
+	}
+
+	otel.SetTextMapPropagator(tl.Propagator)
+
+	return nil
+}
+
+// Tracer returns a tracer from this telemetry instance.
+func (tl *Telemetry) Tracer(name string) (trace.Tracer, error) {
+	if tl == nil || tl.TracerProvider == nil {
+		// Logger is intentionally nil: nil/incomplete Telemetry means no reliable logger available.
+		asserter := assert.New(context.Background(), nil, "opentelemetry", "Tracer")
+		_ = asserter.NoError(context.Background(), ErrNilTelemetry, "telemetry tracer provider is nil")
+
+		return nil, ErrNilTelemetry
+	}
+
+	return tl.TracerProvider.Tracer(name), nil
+}
+
+// Meter returns a meter from this telemetry instance.
+func (tl *Telemetry) Meter(name string) (metric.Meter, error) {
+	if tl == nil || tl.MeterProvider == nil {
+		// Logger is intentionally nil: nil/incomplete Telemetry means no reliable logger available.
+		asserter := assert.New(context.Background(), nil, "opentelemetry", "Meter")
+		_ = asserter.NoError(context.Background(), ErrNilTelemetry, "telemetry meter provider is nil")
+
+		return nil, ErrNilTelemetry
+	}
+
+	return tl.MeterProvider.Meter(name), nil
+}
+
+// ShutdownTelemetry shuts down telemetry components using background context.
+func (tl *Telemetry) ShutdownTelemetry() {
+	if tl == nil {
+		return
+	}
+
+	if err := tl.ShutdownTelemetryWithContext(context.Background()); err != nil {
+		asserter := assert.New(context.Background(), tl.Logger, "opentelemetry", "ShutdownTelemetry")
+		_ = asserter.NoError(context.Background(), err, "telemetry shutdown failed")
+
+		return
+	}
+}
+
+// ShutdownTelemetryWithContext shuts down telemetry components with caller context.
+func (tl *Telemetry) ShutdownTelemetryWithContext(ctx context.Context) error {
+	if tl == nil {
+		// Logger is intentionally nil: nil receiver means no Telemetry instance to extract logger from.
+		asserter := assert.New(context.Background(), nil, "opentelemetry", "ShutdownTelemetryWithContext")
+		_ = asserter.NoError(context.Background(), ErrNilTelemetry, "cannot shutdown nil telemetry")
+
+		return ErrNilTelemetry
+	}
+
+	if tl.shutdownCtx != nil {
+		return tl.shutdownCtx(ctx)
+	}
+
+	if tl.shutdown != nil {
+		tl.shutdown()
+		return nil
+	}
+
+	asserter := assert.New(context.Background(), tl.Logger, "opentelemetry", "ShutdownTelemetryWithContext")
+	_ = asserter.NoError(context.Background(), ErrNilShutdown, "cannot shutdown telemetry without configured shutdown function")
+
+	return ErrNilShutdown
+}
+
 func (tl *TelemetryConfig) newResource() *sdkresource.Resource {
-	// Create a resource with only our custom attributes to avoid schema URL conflicts
-	r := sdkresource.NewWithAttributes(
+	return sdkresource.NewWithAttributes(
 		semconv.SchemaURL,
 		semconv.ServiceName(tl.ServiceName),
 		semconv.ServiceVersion(tl.ServiceVersion),
@@ -75,379 +302,456 @@ func (tl *TelemetryConfig) newResource() *sdkresource.Resource {
 		semconv.TelemetrySDKName(constant.TelemetrySDKName),
 		semconv.TelemetrySDKLanguageGo,
 	)
-
-	return r
 }
 
-// NewLoggerExporter creates a new logger exporter that writes to stdout.
 func (tl *TelemetryConfig) newLoggerExporter(ctx context.Context) (*otlploggrpc.Exporter, error) {
-	exporter, err := otlploggrpc.New(ctx, otlploggrpc.WithEndpoint(tl.CollectorExporterEndpoint), otlploggrpc.WithInsecure())
-	if err != nil {
-		return nil, err
+	opts := []otlploggrpc.Option{otlploggrpc.WithEndpoint(tl.CollectorExporterEndpoint)}
+	if tl.InsecureExporter {
+		opts = append(opts, otlploggrpc.WithInsecure())
 	}
 
-	return exporter, nil
+	return otlploggrpc.New(ctx, opts...)
 }
 
-// newMetricExporter creates a new metric exporter that writes to stdout.
 func (tl *TelemetryConfig) newMetricExporter(ctx context.Context) (*otlpmetricgrpc.Exporter, error) {
-	exp, err := otlpmetricgrpc.New(ctx, otlpmetricgrpc.WithEndpoint(tl.CollectorExporterEndpoint), otlpmetricgrpc.WithInsecure())
-	if err != nil {
-		return nil, err
+	opts := []otlpmetricgrpc.Option{otlpmetricgrpc.WithEndpoint(tl.CollectorExporterEndpoint)}
+	if tl.InsecureExporter {
+		opts = append(opts, otlpmetricgrpc.WithInsecure())
 	}
 
-	return exp, nil
+	return otlpmetricgrpc.New(ctx, opts...)
 }
 
-// newTracerExporter creates a new tracer exporter that writes to stdout.
 func (tl *TelemetryConfig) newTracerExporter(ctx context.Context) (*otlptrace.Exporter, error) {
-	exporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithEndpoint(tl.CollectorExporterEndpoint), otlptracegrpc.WithInsecure())
-	if err != nil {
-		return nil, err
+	opts := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(tl.CollectorExporterEndpoint)}
+	if tl.InsecureExporter {
+		opts = append(opts, otlptracegrpc.WithInsecure())
 	}
 
-	return exporter, nil
+	return otlptracegrpc.New(ctx, opts...)
 }
 
-// newLoggerProvider creates a new logger provider with stdout exporter and default resource.
 func (tl *TelemetryConfig) newLoggerProvider(rsc *sdkresource.Resource, exp *otlploggrpc.Exporter) *sdklog.LoggerProvider {
 	bp := sdklog.NewBatchProcessor(exp)
-	lp := sdklog.NewLoggerProvider(sdklog.WithResource(rsc), sdklog.WithProcessor(bp))
-
-	return lp
+	return sdklog.NewLoggerProvider(sdklog.WithResource(rsc), sdklog.WithProcessor(bp))
 }
 
-// newMeterProvider creates a new meter provider with stdout exporter and default resource.
 func (tl *TelemetryConfig) newMeterProvider(res *sdkresource.Resource, exp *otlpmetricgrpc.Exporter) *sdkmetric.MeterProvider {
-	mp := sdkmetric.NewMeterProvider(
+	return sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res),
 		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
 	)
-
-	return mp
 }
 
-// newTracerProvider creates a new tracer provider with stdout exporter and default resource.
 func (tl *TelemetryConfig) newTracerProvider(rsc *sdkresource.Resource, exp *otlptrace.Exporter) *sdktrace.TracerProvider {
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exp),
+	return sdktrace.NewTracerProvider(
 		sdktrace.WithResource(rsc),
-		sdktrace.WithSpanProcessor(AttrBagSpanProcessor{}),
+		sdktrace.WithSpanProcessor(RedactingAttrBagSpanProcessor{Redactor: tl.Redactor}),
+		sdktrace.WithBatcher(exp),
 	)
-
-	return tp
 }
 
-// ShutdownTelemetry shuts down the telemetry providers and exporters.
-func (tl *Telemetry) ShutdownTelemetry() {
-	tl.shutdown()
+type shutdownable interface {
+	Shutdown(ctx context.Context) error
 }
 
-// InitializeTelemetryWithError initializes the telemetry providers and sets them globally.
-// Returns an error instead of calling Fatalf on failure.
-func InitializeTelemetryWithError(cfg *TelemetryConfig) (*Telemetry, error) {
-	if cfg == nil {
-		return nil, ErrNilTelemetryConfig
+// isNilShutdownable checks for both untyped nil and interface-wrapped typed nil
+// (e.g., a concrete pointer that is nil but stored in a shutdownable interface).
+func isNilShutdownable(s shutdownable) bool {
+	if s == nil {
+		return true
 	}
 
-	if cfg.Logger == nil {
-		return nil, ErrNilTelemetryLogger
-	}
+	v := reflect.ValueOf(s)
 
-	ctx := context.Background()
-	l := cfg.Logger
-
-	if !cfg.EnableTelemetry {
-		l.Warn("Telemetry turned off ⚠️ ")
-
-		mp := sdkmetric.NewMeterProvider()
-		tp := sdktrace.NewTracerProvider()
-		lp := sdklog.NewLoggerProvider()
-
-		metricsFactory := metrics.NewMetricsFactory(mp.Meter(cfg.LibraryName), l)
-
-		return &Telemetry{
-			TelemetryConfig: *cfg,
-			TracerProvider:  tp,
-			MetricProvider:  mp,
-			LoggerProvider:  lp,
-			MetricsFactory:  metricsFactory,
-			shutdown:        func() {},
-		}, nil
-	}
-
-	l.Infof("Initializing telemetry...")
-
-	r := cfg.newResource()
-
-	tExp, err := cfg.newTracerExporter(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("can't initialize tracer exporter: %w", err)
-	}
-
-	mExp, err := cfg.newMetricExporter(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("can't initialize metric exporter: %w", err)
-	}
-
-	lExp, err := cfg.newLoggerExporter(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("can't initialize logger exporter: %w", err)
-	}
-
-	mp := cfg.newMeterProvider(r, mExp)
-	otel.SetMeterProvider(mp)
-
-	meter := mp.Meter(cfg.LibraryName)
-	metricsFactory := metrics.NewMetricsFactory(meter, l)
-
-	tp := cfg.newTracerProvider(r, tExp)
-	otel.SetTracerProvider(tp)
-
-	lp := cfg.newLoggerProvider(r, lExp)
-	global.SetLoggerProvider(lp)
-
-	shutdownHandler := func() {
-		err := mp.Shutdown(ctx)
-		if err != nil {
-			l.Errorf("can't shutdown metric provider: %v", err)
-		}
-
-		err = tp.Shutdown(ctx)
-		if err != nil {
-			l.Errorf("can't shutdown tracer provider: %v", err)
-		}
-
-		err = lp.Shutdown(ctx)
-		if err != nil {
-			l.Errorf("can't shutdown logger provider: %v", err)
-		}
-
-		err = tExp.Shutdown(ctx)
-		if err != nil {
-			l.Errorf("can't shutdown tracer exporter: %v", err)
-		}
-
-		err = mExp.Shutdown(ctx)
-		if err != nil {
-			l.Errorf("can't shutdown metric exporter: %v", err)
-		}
-
-		err = lExp.Shutdown(ctx)
-		if err != nil {
-			l.Errorf("can't shutdown logger exporter: %v", err)
-		}
-	}
-
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
-
-	l.Infof("Telemetry initialized ✅ ")
-
-	return &Telemetry{
-		TelemetryConfig: TelemetryConfig{
-			LibraryName:               cfg.LibraryName,
-			ServiceName:               cfg.ServiceName,
-			ServiceVersion:            cfg.ServiceVersion,
-			DeploymentEnv:             cfg.DeploymentEnv,
-			CollectorExporterEndpoint: cfg.CollectorExporterEndpoint,
-			EnableTelemetry:           cfg.EnableTelemetry,
-			Logger:                    l,
-		},
-		TracerProvider: tp,
-		MetricProvider: mp,
-		LoggerProvider: lp,
-		MetricsFactory: metricsFactory,
-		shutdown:       shutdownHandler,
-	}, nil
+	return v.Kind() == reflect.Ptr && v.IsNil()
 }
 
-// Deprecated: Use InitializeTelemetryWithError for proper error handling.
-// InitializeTelemetry initializes the telemetry providers and sets them globally.
-func InitializeTelemetry(cfg *TelemetryConfig) *Telemetry {
-	telemetry, err := InitializeTelemetryWithError(cfg)
-	if err != nil {
-		if cfg == nil || cfg.Logger == nil || errors.Is(err, ErrNilTelemetryConfig) || errors.Is(err, ErrNilTelemetryLogger) {
-			stdlog.Fatalf("%v", err)
-		}
+func buildShutdownHandlers(l log.Logger, components ...shutdownable) (func(), func(context.Context) error) {
+	shutdown := func() {
+		ctx := context.Background()
 
-		cfg.Logger.Fatalf("%v", err)
+		for _, c := range components {
+			if isNilShutdownable(c) {
+				continue
+			}
+
+			if err := c.Shutdown(ctx); err != nil {
+				l.Log(ctx, log.LevelError, "telemetry shutdown error", log.Err(err))
+			}
+		}
 	}
 
-	return telemetry
+	shutdownCtx := func(ctx context.Context) error {
+		var errs []error
+
+		for _, c := range components {
+			if isNilShutdownable(c) {
+				continue
+			}
+
+			if err := c.Shutdown(ctx); err != nil {
+				errs = append(errs, err)
+			}
+		}
+
+		return errors.Join(errs...)
+	}
+
+	return shutdown, shutdownCtx
 }
 
-// SetSpanAttributesFromStruct converts a struct to a JSON string and sets it as an attribute on the span.
-func SetSpanAttributesFromStruct(span *trace.Span, key string, valueStruct any) error {
-	jsonByte, err := json.Marshal(valueStruct)
+// isNilSpan checks for both untyped nil and interface-wrapped typed nil values.
+// trace.Span is an interface, so a concrete pointer that is nil but stored in
+// a trace.Span variable would pass a simple `span == nil` check.
+func isNilSpan(span trace.Span) bool {
+	if span == nil {
+		return true
+	}
+
+	v := reflect.ValueOf(span)
+
+	return v.Kind() == reflect.Ptr && v.IsNil()
+}
+
+// maxSpanErrorLength is the maximum length for error messages written to span status/events.
+const maxSpanErrorLength = 1024
+
+// sanitizeSpanMessage sanitizes an error message for span output:
+// - Truncates to a safe maximum length
+// - Strips common sensitive-looking patterns (bearer tokens, passwords in URLs)
+func sanitizeSpanMessage(msg string) string {
+	// Strip common sensitive patterns
+	for _, pattern := range []struct{ prefix, replacement string }{
+		{"Bearer ", "Bearer [REDACTED]"},
+		{"Basic ", "Basic [REDACTED]"},
+	} {
+		if idx := strings.Index(msg, pattern.prefix); idx >= 0 {
+			end := idx + len(pattern.prefix)
+			// Find the end of the token (next space or end of string)
+			tokenEnd := strings.IndexByte(msg[end:], ' ')
+			if tokenEnd < 0 {
+				msg = msg[:idx] + pattern.replacement
+			} else {
+				msg = msg[:idx] + pattern.replacement + msg[end+tokenEnd:]
+			}
+		}
+	}
+
+	if len(msg) > maxSpanErrorLength {
+		msg = msg[:maxSpanErrorLength]
+		// Ensure valid UTF-8 after truncation
+		if !utf8.ValidString(msg) {
+			msg = strings.ToValidUTF8(msg, "")
+		}
+	}
+
+	return msg
+}
+
+// HandleSpanBusinessErrorEvent records a business-error event on a span.
+func HandleSpanBusinessErrorEvent(span trace.Span, eventName string, err error) {
+	if isNilSpan(span) || err == nil {
+		return
+	}
+
+	span.AddEvent(eventName, trace.WithAttributes(attribute.String("error", sanitizeSpanMessage(err.Error()))))
+}
+
+// HandleSpanEvent records a generic event with optional attributes on a span.
+func HandleSpanEvent(span trace.Span, eventName string, attributes ...attribute.KeyValue) {
+	if isNilSpan(span) {
+		return
+	}
+
+	span.AddEvent(eventName, trace.WithAttributes(attributes...))
+}
+
+// HandleSpanError marks a span as failed and records the error.
+func HandleSpanError(span trace.Span, message string, err error) {
+	if isNilSpan(span) || err == nil {
+		return
+	}
+
+	// Build status message: avoid malformed ": <err>" when message is empty
+	statusMsg := sanitizeSpanMessage(err.Error())
+	if message != "" {
+		statusMsg = message + ": " + statusMsg
+	}
+
+	span.SetStatus(codes.Error, statusMsg)
+	span.RecordError(err)
+}
+
+// SetSpanAttributesFromValue flattens a value and sets resulting attributes on a span.
+func SetSpanAttributesFromValue(span trace.Span, prefix string, value any, redactor *Redactor) error {
+	if isNilSpan(span) {
+		return nil
+	}
+
+	attrs, err := BuildAttributesFromValue(prefix, value, redactor)
 	if err != nil {
 		return err
 	}
 
-	vStr := string(jsonByte)
-
-	(*span).SetAttributes(attribute.KeyValue{
-		Key:   attribute.Key(key),
-		Value: attribute.StringValue(vStr),
-	})
+	if len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
 
 	return nil
 }
 
-// Deprecated: Use SetSpanAttributesFromStruct instead.
-//
-// SetSpanAttributesFromStructWithObfuscation converts a struct to a JSON string,
-// obfuscates sensitive fields using the default obfuscator, and sets it as an attribute on the span.
-func SetSpanAttributesFromStructWithObfuscation(span *trace.Span, key string, valueStruct any) error {
-	return SetSpanAttributesFromStructWithCustomObfuscation(span, key, valueStruct, NewDefaultObfuscator())
-}
-
-// Deprecated: Use SetSpanAttributesFromStruct instead.
-//
-// SetSpanAttributesFromStructWithCustomObfuscation converts a struct to a JSON string,
-// obfuscates sensitive fields using the custom obfuscator provided, and sets it as an attribute on the span.
-func SetSpanAttributesFromStructWithCustomObfuscation(span *trace.Span, key string, valueStruct any, obfuscator FieldObfuscator) error {
-	processedStruct, err := ObfuscateStruct(valueStruct, obfuscator)
-	if err != nil {
-		return err
+// BuildAttributesFromValue flattens a value into OTEL attributes with optional redaction.
+func BuildAttributesFromValue(prefix string, value any, redactor *Redactor) ([]attribute.KeyValue, error) {
+	if value == nil {
+		return nil, nil
 	}
 
-	jsonByte, err := json.Marshal(processedStruct)
-	if err != nil {
-		return err
+	processed := value
+
+	if redactor != nil {
+		var err error
+
+		processed, err = ObfuscateStruct(value, redactor)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	(*span).SetAttributes(attribute.KeyValue{
-		Key:   attribute.Key(sanitizeUTF8String(key)),
-		Value: attribute.StringValue(sanitizeUTF8String(string(jsonByte))),
-	})
+	b, err := json.Marshal(processed)
+	if err != nil {
+		return nil, err
+	}
 
-	return nil
+	// Use json.NewDecoder with UseNumber() to preserve numeric precision.
+	// This avoids float64 rounding for large integers (e.g., financial amounts).
+	var decoded any
+
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+
+	if err := dec.Decode(&decoded); err != nil {
+		return nil, err
+	}
+
+	// Use fallback prefix for top-level scalars/slices to avoid empty keys.
+	effectivePrefix := sanitizeUTF8String(prefix)
+	if effectivePrefix == "" {
+		switch decoded.(type) {
+		case map[string]any:
+			// Maps expand their own keys; empty prefix is fine.
+		case []any:
+			effectivePrefix = "item"
+		default:
+			effectivePrefix = defaultAttrPrefix
+		}
+	}
+
+	attrs := make([]attribute.KeyValue, 0, 16)
+	flattenAttributes(&attrs, effectivePrefix, decoded, 0)
+
+	return attrs, nil
 }
 
-// SetSpanAttributeForParam sets a span attribute for a Fiber request parameter with consistent naming
-// entityName is a snake_case string used to identify id name, for example the "organization" entity name will result in "app.request.organization_id"
-// otherwise the path parameter "id" in a Fiber request for example "/v1/organizations/:id" will be parsed as "app.request.id"
+func flattenAttributes(attrs *[]attribute.KeyValue, prefix string, value any, depth int) {
+	if depth >= maxAttributeDepth {
+		return
+	}
+
+	if len(*attrs) >= maxAttributeCount {
+		return
+	}
+
+	switch v := value.(type) {
+	case map[string]any:
+		flattenMap(attrs, prefix, v, depth)
+	case []any:
+		flattenSlice(attrs, prefix, v, depth)
+	case string:
+		s := truncateUTF8(sanitizeUTF8String(v), maxSpanAttributeStringLength)
+		*attrs = append(*attrs, attribute.String(resolveKey(prefix, defaultAttrPrefix), s))
+	case float64:
+		*attrs = append(*attrs, attribute.Float64(resolveKey(prefix, defaultAttrPrefix), v))
+	case bool:
+		*attrs = append(*attrs, attribute.Bool(resolveKey(prefix, defaultAttrPrefix), v))
+	case json.Number:
+		flattenJSONNumber(attrs, prefix, v)
+	case nil:
+		return
+	default:
+		*attrs = append(*attrs, attribute.String(resolveKey(prefix, defaultAttrPrefix), sanitizeUTF8String(fmt.Sprint(v))))
+	}
+}
+
+// resolveKey returns prefix if non-empty, otherwise falls back to fallback.
+func resolveKey(prefix, fallback string) string {
+	if prefix == "" {
+		return fallback
+	}
+
+	return prefix
+}
+
+func flattenMap(attrs *[]attribute.KeyValue, prefix string, m map[string]any, depth int) {
+	for key, child := range m {
+		next := sanitizeUTF8String(key)
+		if prefix != "" {
+			next = prefix + "." + next
+		}
+
+		flattenAttributes(attrs, next, child, depth+1)
+	}
+}
+
+func flattenSlice(attrs *[]attribute.KeyValue, prefix string, s []any, depth int) {
+	idxKey := resolveKey(prefix, "item")
+	for i, child := range s {
+		next := idxKey + "." + strconv.Itoa(i)
+		flattenAttributes(attrs, next, child, depth+1)
+	}
+}
+
+func flattenJSONNumber(attrs *[]attribute.KeyValue, prefix string, v json.Number) {
+	key := resolveKey(prefix, defaultAttrPrefix)
+
+	// Try Int64 first for precision, fall back to Float64
+	if i, err := v.Int64(); err == nil {
+		*attrs = append(*attrs, attribute.Int64(key, i))
+	} else if f, err := v.Float64(); err == nil {
+		*attrs = append(*attrs, attribute.Float64(key, f))
+	} else {
+		*attrs = append(*attrs, attribute.String(key, string(v)))
+	}
+}
+
+// truncateUTF8 truncates a string to at most maxBytes, ensuring the result is valid UTF-8.
+// If the byte-slice cut lands in the middle of a multi-byte rune, incomplete trailing bytes
+// are trimmed so the result is always valid.
+func truncateUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+
+	s = s[:maxBytes]
+
+	// If the truncation produced invalid UTF-8, trim the trailing incomplete rune
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+
+	return s
+}
+
+// SetSpanAttributeForParam adds a request parameter attribute to the current context bag.
+// Sensitive parameter names (as determined by security.IsSensitiveField) are masked.
 func SetSpanAttributeForParam(c *fiber.Ctx, param, value, entityName string) {
-	spanAttrKey := "app.request." + param
+	if c == nil {
+		return
+	}
 
+	spanAttrKey := "app.request." + param
 	if entityName != "" && param == "id" {
 		spanAttrKey = "app.request." + entityName + "_id"
 	}
 
-	c.SetUserContext(commons.ContextWithSpanAttributes(c.UserContext(), attribute.String(spanAttrKey, value)))
-}
-
-// HandleSpanBusinessErrorEvent adds a business error event to the span.
-func HandleSpanBusinessErrorEvent(span *trace.Span, eventName string, err error) {
-	if span != nil && err != nil {
-		(*span).AddEvent(eventName, trace.WithAttributes(attribute.String("error", err.Error())))
+	// Mask value if the parameter name is considered sensitive
+	attrValue := value
+	if security.IsSensitiveField(param) {
+		attrValue = "[REDACTED]"
 	}
+
+	c.SetUserContext(commons.ContextWithSpanAttributes(c.UserContext(), attribute.String(spanAttrKey, attrValue)))
 }
 
-// HandleSpanEvent adds an event to the span.
-func HandleSpanEvent(span *trace.Span, eventName string, attributes ...attribute.KeyValue) {
-	if span != nil {
-		(*span).AddEvent(eventName, trace.WithAttributes(attributes...))
+// InjectTraceContext injects trace context into a generic text map carrier.
+func InjectTraceContext(ctx context.Context, carrier propagation.TextMapCarrier) {
+	if carrier == nil {
+		return
 	}
-}
 
-// HandleSpanError sets the status of the span to error and records the error.
-func HandleSpanError(span *trace.Span, message string, err error) {
-	if span != nil && err != nil {
-		(*span).SetStatus(codes.Error, message+": "+err.Error())
-		(*span).RecordError(err)
-	}
-}
-
-// InjectHTTPContext modifies HTTP headers for trace propagation in outgoing client requests
-func InjectHTTPContext(headers *http.Header, ctx context.Context) {
-	carrier := propagation.HeaderCarrier{}
 	otel.GetTextMapPropagator().Inject(ctx, carrier)
-
-	for k, v := range carrier {
-		if len(v) > 0 {
-			headers.Set(k, v[0])
-		}
-	}
 }
 
-// ExtractHTTPContext extracts OpenTelemetry trace context from incoming HTTP headers
-// and injects it into the context. It works with Fiber's HTTP context.
-func ExtractHTTPContext(c *fiber.Ctx) context.Context {
-	// Create a carrier from the HTTP headers
-	carrier := propagation.HeaderCarrier{}
+// ExtractTraceContext extracts trace context from a generic text map carrier.
+func ExtractTraceContext(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
+	if carrier == nil {
+		return ctx
+	}
 
-	// Extract headers that might contain trace information
+	return otel.GetTextMapPropagator().Extract(ctx, carrier)
+}
+
+// InjectHTTPContext injects trace headers into HTTP headers.
+func InjectHTTPContext(ctx context.Context, headers http.Header) {
+	if headers == nil {
+		return
+	}
+
+	InjectTraceContext(ctx, propagation.HeaderCarrier(headers))
+}
+
+// ExtractHTTPContext extracts trace headers from a Fiber request.
+func ExtractHTTPContext(ctx context.Context, c *fiber.Ctx) context.Context {
+	if c == nil {
+		return ctx
+	}
+
+	carrier := propagation.HeaderCarrier{}
 	for key, value := range c.Request().Header.All() {
 		carrier.Set(string(key), string(value))
 	}
 
-	// Extract the trace context
-	return otel.GetTextMapPropagator().Extract(c.UserContext(), carrier)
+	return ExtractTraceContext(ctx, carrier)
 }
 
-// InjectGRPCContext injects OpenTelemetry trace context into outgoing gRPC metadata.
-// It normalizes W3C trace headers to lowercase for gRPC compatibility.
-func InjectGRPCContext(ctx context.Context) context.Context {
-	md, _ := metadata.FromOutgoingContext(ctx)
+// InjectGRPCContext injects trace context into gRPC metadata.
+func InjectGRPCContext(ctx context.Context, md metadata.MD) metadata.MD {
 	if md == nil {
 		md = metadata.New(nil)
 	}
 
-	// Returns the canonical format of the MIME header key s.
-	// The canonicalization converts the first letter and any letter
-	// following a hyphen to upper case; the rest are converted to lowercase.
-	// For example, the canonical key for "accept-encoding" is "Accept-Encoding".
-	// MIME header keys are assumed to be ASCII only.
-	// If s contains a space or invalid header field bytes, it is
-	// returned without modifications.
-	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(md))
+	InjectTraceContext(ctx, propagation.HeaderCarrier(md))
 
-	if traceparentValues, exists := md["Traceparent"]; exists && len(traceparentValues) > 0 {
+	if traceparentValues, exists := md[constant.HeaderTraceparentPascal]; exists && len(traceparentValues) > 0 {
 		md[constant.MetadataTraceparent] = traceparentValues
-		delete(md, "Traceparent")
+		delete(md, constant.HeaderTraceparentPascal)
 	}
 
-	if tracestateValues, exists := md["Tracestate"]; exists && len(tracestateValues) > 0 {
+	if tracestateValues, exists := md[constant.HeaderTracestatePascal]; exists && len(tracestateValues) > 0 {
 		md[constant.MetadataTracestate] = tracestateValues
-		delete(md, "Tracestate")
+		delete(md, constant.HeaderTracestatePascal)
 	}
 
-	return metadata.NewOutgoingContext(ctx, md)
+	return md
 }
 
-// ExtractGRPCContext extracts OpenTelemetry trace context from incoming gRPC metadata
-// and injects it into the context. It handles case normalization for W3C trace headers.
-func ExtractGRPCContext(ctx context.Context) context.Context {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok || md == nil {
+// ExtractGRPCContext extracts trace context from gRPC metadata.
+func ExtractGRPCContext(ctx context.Context, md metadata.MD) context.Context {
+	if md == nil {
 		return ctx
 	}
 
 	mdCopy := md.Copy()
 
 	if traceparentValues, exists := mdCopy[constant.MetadataTraceparent]; exists && len(traceparentValues) > 0 {
-		mdCopy["Traceparent"] = traceparentValues
+		mdCopy[constant.HeaderTraceparentPascal] = traceparentValues
 		delete(mdCopy, constant.MetadataTraceparent)
 	}
 
 	if tracestateValues, exists := mdCopy[constant.MetadataTracestate]; exists && len(tracestateValues) > 0 {
-		mdCopy["Tracestate"] = tracestateValues
+		mdCopy[constant.HeaderTracestatePascal] = tracestateValues
 		delete(mdCopy, constant.MetadataTracestate)
 	}
 
-	return otel.GetTextMapPropagator().Extract(ctx, propagation.HeaderCarrier(mdCopy))
+	return ExtractTraceContext(ctx, propagation.HeaderCarrier(mdCopy))
 }
 
-// InjectQueueTraceContext injects OpenTelemetry trace context into RabbitMQ headers
-// for distributed tracing across queue messages. Returns a map of headers to be
-// added to the RabbitMQ message headers.
+// InjectQueueTraceContext serializes trace context to string headers for queues.
 func InjectQueueTraceContext(ctx context.Context) map[string]string {
 	carrier := propagation.HeaderCarrier{}
-	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	InjectTraceContext(ctx, carrier)
 
-	headers := make(map[string]string)
-
+	headers := make(map[string]string, len(carrier))
 	for k, v := range carrier {
 		if len(v) > 0 {
 			headers[k] = v[0]
@@ -457,9 +761,7 @@ func InjectQueueTraceContext(ctx context.Context) map[string]string {
 	return headers
 }
 
-// ExtractQueueTraceContext extracts OpenTelemetry trace context from RabbitMQ headers
-// and returns a new context with the extracted trace information. This enables
-// distributed tracing continuity across queue message boundaries.
+// ExtractQueueTraceContext extracts trace context from queue string headers.
 func ExtractQueueTraceContext(ctx context.Context, headers map[string]string) context.Context {
 	if headers == nil {
 		return ctx
@@ -470,52 +772,14 @@ func ExtractQueueTraceContext(ctx context.Context, headers map[string]string) co
 		carrier.Set(k, v)
 	}
 
-	return otel.GetTextMapPropagator().Extract(ctx, carrier)
+	return ExtractTraceContext(ctx, carrier)
 }
 
-// GetTraceIDFromContext extracts the trace ID from the current span context
-// Returns empty string if no active span or trace ID is found
-func GetTraceIDFromContext(ctx context.Context) string {
-	span := trace.SpanFromContext(ctx)
-	if span == nil {
-		return ""
-	}
-
-	spanContext := span.SpanContext()
-
-	if !spanContext.IsValid() {
-		return ""
-	}
-
-	return spanContext.TraceID().String()
-}
-
-// GetTraceStateFromContext extracts the trace state from the current span context
-// Returns empty string if no active span or trace state is found
-func GetTraceStateFromContext(ctx context.Context) string {
-	span := trace.SpanFromContext(ctx)
-	if span == nil {
-		return ""
-	}
-
-	spanContext := span.SpanContext()
-
-	if !spanContext.IsValid() {
-		return ""
-	}
-
-	return spanContext.TraceState().String()
-}
-
-// PrepareQueueHeaders prepares RabbitMQ headers with trace context injection
-// following W3C trace context standards. Returns a map suitable for amqp.Table.
+// PrepareQueueHeaders merges base headers with propagated trace headers.
 func PrepareQueueHeaders(ctx context.Context, baseHeaders map[string]any) map[string]any {
 	headers := make(map[string]any)
-
-	// Copy base headers first
 	maps.Copy(headers, baseHeaders)
 
-	// Inject trace context using W3C standards
 	traceHeaders := InjectQueueTraceContext(ctx)
 	for k, v := range traceHeaders {
 		headers[k] = v
@@ -524,28 +788,28 @@ func PrepareQueueHeaders(ctx context.Context, baseHeaders map[string]any) map[st
 	return headers
 }
 
-// InjectTraceHeadersIntoQueue adds OpenTelemetry trace headers to existing RabbitMQ headers
-// following W3C trace context standards. Modifies the headers map in place.
+// InjectTraceHeadersIntoQueue injects propagated trace headers into a mutable map.
 func InjectTraceHeadersIntoQueue(ctx context.Context, headers *map[string]any) {
 	if headers == nil {
 		return
 	}
 
-	// Inject trace context using W3C standards
+	if *headers == nil {
+		*headers = make(map[string]any)
+	}
+
 	traceHeaders := InjectQueueTraceContext(ctx)
 	for k, v := range traceHeaders {
 		(*headers)[k] = v
 	}
 }
 
-// ExtractTraceContextFromQueueHeaders extracts OpenTelemetry trace context from RabbitMQ amqp.Table headers
-// and returns a new context with the extracted trace information. Handles type conversion automatically.
+// ExtractTraceContextFromQueueHeaders extracts trace context from AMQP-style headers.
 func ExtractTraceContextFromQueueHeaders(baseCtx context.Context, amqpHeaders map[string]any) context.Context {
 	if len(amqpHeaders) == 0 {
 		return baseCtx
 	}
 
-	// Convert amqp.Table headers to map[string]string for trace extraction
 	traceHeaders := make(map[string]string)
 
 	for k, v := range amqpHeaders {
@@ -558,16 +822,33 @@ func ExtractTraceContextFromQueueHeaders(baseCtx context.Context, amqpHeaders ma
 		return baseCtx
 	}
 
-	// Extract trace context using existing function
 	return ExtractQueueTraceContext(baseCtx, traceHeaders)
 }
 
-func (tl *Telemetry) EndTracingSpans(ctx context.Context) {
-	trace.SpanFromContext(ctx).End()
+// GetTraceIDFromContext returns the current span trace ID, or empty if unavailable.
+func GetTraceIDFromContext(ctx context.Context) string {
+	span := trace.SpanFromContext(ctx)
+
+	sc := span.SpanContext()
+	if !sc.IsValid() {
+		return ""
+	}
+
+	return sc.TraceID().String()
 }
 
-// sanitizeUTF8String validates and sanitizes UTF-8 string.
-// If the string contains invalid UTF-8 characters, they are replaced with the Unicode replacement character (�).
+// GetTraceStateFromContext returns the current span tracestate, or empty if unavailable.
+func GetTraceStateFromContext(ctx context.Context) string {
+	span := trace.SpanFromContext(ctx)
+
+	sc := span.SpanContext()
+	if !sc.IsValid() {
+		return ""
+	}
+
+	return sc.TraceState().String()
+}
+
 func sanitizeUTF8String(s string) string {
 	if !utf8.ValidString(s) {
 		return strings.ToValidUTF8(s, "�")

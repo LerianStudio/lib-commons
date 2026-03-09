@@ -3,14 +3,48 @@ package core
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 )
+
+// ErrNilHandlerFunc is returned when a nil HandlerFunc is registered.
+var ErrNilHandlerFunc = errors.New("handler function must not be nil")
+
+// ErrNilCache is returned when a typed-nil cache implementation is provided.
+var ErrNilCache = errors.New("cache implementation must not be nil (received typed-nil interface)")
+
+// ErrNilConfig is returned when a required configuration pointer is nil.
+var ErrNilConfig = errors.New("configuration must not be nil")
+
+// ErrInsecureHTTP is returned when an HTTP URL is used without explicit opt-in.
+var ErrInsecureHTTP = errors.New("insecure HTTP is not allowed; use HTTPS or enable WithAllowInsecureHTTP()")
+
+// IsNilInterface reports whether v is a nil interface value or an interface
+// wrapping a nil pointer (typed-nil). This is necessary because Go interfaces
+// with a nil concrete value are not == nil.
+func IsNilInterface(v any) bool {
+	if v == nil {
+		return true
+	}
+
+	rv := reflect.ValueOf(v)
+	switch rv.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Chan, reflect.Func, reflect.Interface:
+		return rv.IsNil()
+	default:
+		return false
+	}
+}
 
 // ErrTenantNotFound is returned when the tenant is not found in Tenant Manager.
 var ErrTenantNotFound = errors.New("tenant not found")
 
 // ErrServiceNotConfigured is returned when the service is not configured for the tenant.
 var ErrServiceNotConfigured = errors.New("service not configured for tenant")
+
+// ErrTenantServiceAccessDenied is returned when the tenant-service association exists
+// but is not active (e.g., suspended or purged), resulting in an HTTP 403 from the Tenant Manager.
+var ErrTenantServiceAccessDenied = errors.New("tenant service access denied")
 
 // ErrManagerClosed is returned when attempting to use a closed connection manager.
 var ErrManagerClosed = errors.New("tenant connection manager is closed")
@@ -30,6 +64,21 @@ var ErrTenantNotProvisioned = errors.New("tenant database not provisioned: schem
 // Callers should retry after the circuit breaker timeout elapses.
 var ErrCircuitBreakerOpen = errors.New("tenant manager circuit breaker is open: service temporarily unavailable")
 
+// ErrAuthorizationTokenRequired is returned when the Authorization header is missing.
+var ErrAuthorizationTokenRequired = errors.New("authorization token is required")
+
+// ErrInvalidAuthorizationToken is returned when the JWT token cannot be parsed.
+var ErrInvalidAuthorizationToken = errors.New("invalid authorization token")
+
+// ErrInvalidTenantClaims is returned when JWT claims are malformed.
+var ErrInvalidTenantClaims = errors.New("invalid tenant claims")
+
+// ErrMissingTenantIDClaim is returned when JWT does not include tenantId.
+var ErrMissingTenantIDClaim = errors.New("tenantId claim is required")
+
+// ErrConnectionFailed is returned when tenant DB connection resolution fails.
+var ErrConnectionFailed = errors.New("tenant connection failed")
+
 // IsCircuitBreakerOpenError checks whether err (or any error in its chain) is ErrCircuitBreakerOpen.
 func IsCircuitBreakerOpenError(err error) bool {
 	return errors.Is(err, ErrCircuitBreakerOpen)
@@ -46,6 +95,10 @@ type TenantSuspendedError struct {
 
 // Error implements the error interface.
 func (e *TenantSuspendedError) Error() string {
+	if e == nil {
+		return "tenant service is unavailable"
+	}
+
 	if e.Message != "" {
 		return e.Message
 	}
@@ -57,6 +110,18 @@ func (e *TenantSuspendedError) Error() string {
 func IsTenantSuspendedError(err error) bool {
 	var target *TenantSuspendedError
 	return errors.As(err, &target)
+}
+
+// IsTenantPurgedError checks whether err (or any error in its chain) is a
+// *TenantSuspendedError whose Status is "purged". This allows callers to
+// distinguish purged tenants from suspended ones for eviction decisions.
+func IsTenantPurgedError(err error) bool {
+	var target *TenantSuspendedError
+	if errors.As(err, &target) {
+		return target.Status == "purged"
+	}
+
+	return false
 }
 
 // IsTenantNotProvisionedError checks if the error indicates an unprovisioned tenant database.
