@@ -329,16 +329,13 @@ func isNilListener(listener StateChangeListener) bool {
 
 // handleStateChange processes state changes and notifies listeners
 func (m *manager) handleStateChange(serviceName string, from gobreaker.State, to gobreaker.State) {
-	// Log state change
-	m.logger.Log(context.Background(), log.LevelWarn, "circuit breaker state changed", log.String("service", serviceName), log.String("from", from.String()), log.String("to", to.String()))
-
 	switch to {
 	case gobreaker.StateOpen:
-		m.logger.Log(context.Background(), log.LevelError, "circuit breaker OPENED, requests will fast-fail", log.String("service", serviceName))
+		m.logger.Log(context.Background(), log.LevelError, "circuit breaker OPENED, requests will fast-fail", log.String("service", serviceName), log.String("from", from.String()))
 	case gobreaker.StateHalfOpen:
-		m.logger.Log(context.Background(), log.LevelInfo, "circuit breaker HALF-OPEN, testing service recovery", log.String("service", serviceName))
+		m.logger.Log(context.Background(), log.LevelInfo, "circuit breaker HALF-OPEN, testing service recovery", log.String("service", serviceName), log.String("from", from.String()))
 	case gobreaker.StateClosed:
-		m.logger.Log(context.Background(), log.LevelInfo, "circuit breaker CLOSED, service is healthy", log.String("service", serviceName))
+		m.logger.Log(context.Background(), log.LevelInfo, "circuit breaker CLOSED, service is healthy", log.String("service", serviceName), log.String("from", from.String()))
 	}
 
 	// Record state transition metric
