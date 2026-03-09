@@ -163,7 +163,7 @@ build:
 .PHONY: clean
 clean:
 	$(call print_title,Cleaning build artifacts)
-	@rm -rf ./bin ./dist ./reports coverage.out coverage.html gosec-report.sarif
+	@rm -rf ./bin ./dist $(TEST_REPORTS_DIR) coverage.out coverage.html gosec-report.sarif
 	@go clean -cache -testcache
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) All build artifacts cleaned$(GREEN) ✔️$(NC)"
 
@@ -253,7 +253,7 @@ test-integration:
 	  pkgs=$$(go list $(PKG) 2>/dev/null | tr '\n' ' '); \
 	else \
 	  echo "Finding packages with *_integration_test.go files..."; \
-	  dirs=$$(find . -name '*_integration_test.go' -not -path './vendor/*' 2>/dev/null | xargs -n1 dirname 2>/dev/null | sort -u | tr '\n' ' '); \
+	  dirs=$$(find . -name '*_integration_test.go' -not -path './vendor/*' -exec dirname {} \; 2>/dev/null | sort -u | tr '\n' ' '); \
 	  pkgs=$$(if [ -n "$$dirs" ]; then go list $$dirs 2>/dev/null | tr '\n' ' '; fi); \
 	fi; \
 	if [ -z "$$pkgs" ]; then \
@@ -265,7 +265,7 @@ test-integration:
 	    echo "LOW_RESOURCE mode: -parallel=1, race detector disabled"; \
 	  fi; \
 	  if [ -n "$(GOTESTSUM)" ]; then \
-	    echo "Running testcontainers integration tests with gotestsum"; \
+	    echo "Running integration tests with gotestsum"; \
 	    gotestsum --format testname -- \
 	      -tags=integration -v $(LOW_RES_RACE_FLAG) -count=1 -timeout 600s $(GO_TEST_LDFLAGS) \
 	      -p 1 $(LOW_RES_PARALLEL_FLAG) \
@@ -378,7 +378,7 @@ coverage-integration:
 	  pkgs=$$(go list $(PKG) 2>/dev/null | tr '\n' ' '); \
 	else \
 	  echo "Finding packages with *_integration_test.go files..."; \
-	  dirs=$$(find . -name '*_integration_test.go' -not -path './vendor/*' 2>/dev/null | xargs -n1 dirname 2>/dev/null | sort -u | tr '\n' ' '); \
+	  dirs=$$(find . -name '*_integration_test.go' -not -path './vendor/*' -exec dirname {} \; 2>/dev/null | sort -u | tr '\n' ' '); \
 	  pkgs=$$(if [ -n "$$dirs" ]; then go list $$dirs 2>/dev/null | tr '\n' ' '; fi); \
 	fi; \
 	if [ -z "$$pkgs" ]; then \
@@ -501,17 +501,19 @@ check-tests:
 .PHONY: setup-git-hooks
 setup-git-hooks:
 	$(call print_title,Installing and configuring git hooks)
-	@if [ ! -d .githooks ]; then \
+	@hooks_dir=$$(git rev-parse --git-path hooks); \
+	if [ ! -d .githooks ]; then \
 		echo "No .githooks directory found, skipping"; \
 		exit 0; \
-	fi
-	@for hook_dir in .githooks/*/; do \
+	fi; \
+	mkdir -p "$$hooks_dir"; \
+	for hook_dir in .githooks/*/; do \
 		if [ -d "$$hook_dir" ]; then \
 			for FILE in "$$hook_dir"*; do \
 				if [ -f "$$FILE" ]; then \
 					hook_name=$$(basename "$$FILE"); \
-					cp "$$FILE" ".git/hooks/$$hook_name"; \
-					chmod +x ".git/hooks/$$hook_name"; \
+					cp "$$FILE" "$$hooks_dir/$$hook_name"; \
+					chmod +x "$$hooks_dir/$$hook_name"; \
 				fi; \
 			done; \
 		fi; \
@@ -521,14 +523,15 @@ setup-git-hooks:
 .PHONY: check-hooks
 check-hooks:
 	$(call print_title,Verifying git hooks installation status)
-	@err=0; \
+	@hooks_dir=$$(git rev-parse --git-path hooks); \
+	err=0; \
 	for hook_dir in .githooks/*; do \
 		if [ -d "$$hook_dir" ]; then \
 			for FILE in "$$hook_dir"/*; do \
 				if [ -f "$$FILE" ]; then \
 					f=$$(basename -- $$hook_dir)/$$(basename -- $$FILE); \
 					hook_name=$$(basename -- $$FILE); \
-					FILE2=.git/hooks/$$hook_name; \
+					FILE2=$$hooks_dir/$$hook_name; \
 					if [ -f "$$FILE2" ]; then \
 						if cmp -s "$$FILE" "$$FILE2"; then \
 							echo "$(GREEN)$(BOLD)[ok]$(NC) Hook file $$f installed and updated$(GREEN) ✔️$(NC)"; \
@@ -558,11 +561,13 @@ check-envs:
 	@echo "Checking for exposed secrets in environment files..."
 	@found=0; \
 	for pattern in '.env' '.env.*' '*.env'; do \
-		files=$$(find . -name "$$pattern" -not -path './vendor/*' -not -path './.git/*' 2>/dev/null); \
+		files=$$(find . -name "$$pattern" \
+			-not -name '*.example' -not -name '*.sample' -not -name '*.template' \
+			-not -path './vendor/*' -not -path './.git/*' 2>/dev/null); \
 		if [ -n "$$files" ]; then \
-			if echo "$$files" | xargs grep -iqE '(SECRET|PASSWORD|TOKEN|API_KEY|PRIVATE_KEY|CREDENTIAL|AWS_ACCESS_KEY|DB_PASS).*=' 2>/dev/null; then \
+			if echo "$$files" | xargs grep -iqE '^[[:space:]]*(export[[:space:]]+)?[A-Z0-9_]*(SECRET|PASSWORD|TOKEN|API_KEY|PRIVATE_KEY|CREDENTIAL|AWS_ACCESS_KEY|DB_PASS)[A-Z0-9_]*=[[:space:]]*[^#[:space:]]' 2>/dev/null; then \
 				echo "$(RED)Warning: Potential secrets found in environment files:$(NC)"; \
-				echo "$$files" | xargs grep -ilE '(SECRET|PASSWORD|TOKEN|API_KEY|PRIVATE_KEY|CREDENTIAL|AWS_ACCESS_KEY|DB_PASS).*=' 2>/dev/null; \
+				echo "$$files" | xargs grep -ilE '^[[:space:]]*(export[[:space:]]+)?[A-Z0-9_]*(SECRET|PASSWORD|TOKEN|API_KEY|PRIVATE_KEY|CREDENTIAL|AWS_ACCESS_KEY|DB_PASS)[A-Z0-9_]*=[[:space:]]*[^#[:space:]]' 2>/dev/null; \
 				found=1; \
 			fi; \
 		fi; \
