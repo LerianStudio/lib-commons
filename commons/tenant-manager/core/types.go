@@ -79,8 +79,8 @@ type TenantConfig struct {
 	Databases          map[string]DatabaseConfig `json:"databases,omitempty"`
 	Messaging          *MessagingConfig          `json:"messaging,omitempty"`
 	ConnectionSettings *ConnectionSettings       `json:"connectionSettings,omitempty"`
-	CreatedAt          time.Time                 `json:"createdAt,omitempty"`
-	UpdatedAt          time.Time                 `json:"updatedAt,omitempty"`
+	CreatedAt          time.Time                 `json:"createdAt,omitzero"`
+	UpdatedAt          time.Time                 `json:"updatedAt,omitzero"`
 }
 
 // sortedDatabaseKeys returns the keys of the Databases map in sorted order.
@@ -102,6 +102,10 @@ func sortedDatabaseKeys(databases map[string]DatabaseConfig) []string {
 // The service parameter is accepted for backward compatibility but is ignored
 // since the flat format returned by tenant-manager keys databases by module directly.
 func (tc *TenantConfig) GetPostgreSQLConfig(service, module string) *PostgreSQLConfig {
+	if tc == nil {
+		return nil
+	}
+
 	if tc.Databases == nil {
 		return nil
 	}
@@ -132,6 +136,10 @@ func (tc *TenantConfig) GetPostgreSQLConfig(service, module string) *PostgreSQLC
 // The service parameter is accepted for backward compatibility but is ignored
 // since the flat format returned by tenant-manager keys databases by module directly.
 func (tc *TenantConfig) GetPostgreSQLReplicaConfig(service, module string) *PostgreSQLConfig {
+	if tc == nil {
+		return nil
+	}
+
 	if tc.Databases == nil {
 		return nil
 	}
@@ -161,6 +169,10 @@ func (tc *TenantConfig) GetPostgreSQLReplicaConfig(service, module string) *Post
 // The service parameter is accepted for backward compatibility but is ignored
 // since the flat format returned by tenant-manager keys databases by module directly.
 func (tc *TenantConfig) GetMongoDBConfig(service, module string) *MongoDBConfig {
+	if tc == nil {
+		return nil
+	}
+
 	if tc.Databases == nil {
 		return nil
 	}
@@ -187,18 +199,30 @@ func (tc *TenantConfig) GetMongoDBConfig(service, module string) *MongoDBConfig 
 // IsSchemaMode returns true if the tenant is configured for schema-based isolation.
 // In schema mode, all tenants share the same database but have separate schemas.
 func (tc *TenantConfig) IsSchemaMode() bool {
+	if tc == nil {
+		return false
+	}
+
 	return tc.IsolationMode == "schema"
 }
 
 // IsIsolatedMode returns true if the tenant has a dedicated database (isolated mode).
 // This is the default mode when IsolationMode is empty or explicitly set to "isolated" or "database".
 func (tc *TenantConfig) IsIsolatedMode() bool {
+	if tc == nil {
+		return false
+	}
+
 	return tc.IsolationMode == "" || tc.IsolationMode == "isolated" || tc.IsolationMode == "database"
 }
 
 // GetRabbitMQConfig returns the RabbitMQ config for the tenant.
 // Returns nil if messaging or RabbitMQ is not configured.
 func (tc *TenantConfig) GetRabbitMQConfig() *RabbitMQConfig {
+	if tc == nil {
+		return nil
+	}
+
 	if tc.Messaging == nil {
 		return nil
 	}
@@ -208,5 +232,9 @@ func (tc *TenantConfig) GetRabbitMQConfig() *RabbitMQConfig {
 
 // HasRabbitMQ returns true if the tenant has RabbitMQ configured.
 func (tc *TenantConfig) HasRabbitMQ() bool {
+	if tc == nil {
+		return false
+	}
+
 	return tc.GetRabbitMQConfig() != nil
 }

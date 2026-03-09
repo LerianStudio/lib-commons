@@ -5,7 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
+	"github.com/stretchr/testify/assert"
 	"go.uber.org/goleak"
 )
 
@@ -18,11 +19,11 @@ func TestMultiTenantConsumer_Run_CloseStopsSyncLoop(t *testing.T) {
 	// Populate Redis so fetchTenantIDs succeeds during discovery
 	mr.SAdd(testActiveTenantsKey, "tenant-001")
 
-	consumer := NewMultiTenantConsumer(
+	consumer := mustNewConsumer(t,
 		dummyRabbitMQManager(),
 		redisClient,
 		MultiTenantConfig{
-			SyncInterval: 100 * time.Millisecond,
+			SyncInterval:  100 * time.Millisecond,
 			PrefetchCount: 10,
 			Service:       testServiceName,
 		},
@@ -37,25 +38,24 @@ func TestMultiTenantConsumer_Run_CloseStopsSyncLoop(t *testing.T) {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
 
-	// Let the sync loop goroutine start and run at least one tick.
-	time.Sleep(250 * time.Millisecond)
+	assert.Eventually(t, func() bool {
+		return consumer.Stats().KnownTenants > 0
+	}, time.Second, 20*time.Millisecond)
 
 	// Close without cancelling ctx — this must stop the sync loop.
 	if closeErr := consumer.Close(); closeErr != nil {
 		t.Fatalf("Close() returned unexpected error: %v", closeErr)
 	}
 
-	// Give goroutines time to wind down.
-	time.Sleep(200 * time.Millisecond)
+	assert.Eventually(t, func() bool {
+		return consumer.Stats().Closed && consumer.Stats().ActiveTenants == 0
+	}, time.Second, 20*time.Millisecond)
 
 	goleak.VerifyNone(t,
 		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2/server.(*Server).servePeer"),
 		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2.(*Miniredis).handleClient"),
+		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
-		// The dummyRabbitMQManager creates a client.Client whose InMemoryCache has a
-		// background cleanup goroutine. The RabbitMQ Manager does not expose a Close
-		// method, so this goroutine is expected to outlive the consumer Close.
-		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
 	)
 }
 
@@ -67,11 +67,11 @@ func TestMultiTenantConsumer_Run_CancelAndCloseNoLeak(t *testing.T) {
 	// Populate Redis so fetchTenantIDs succeeds during discovery
 	mr.SAdd(testActiveTenantsKey, "tenant-001")
 
-	consumer := NewMultiTenantConsumer(
+	consumer := mustNewConsumer(t,
 		dummyRabbitMQManager(),
 		redisClient,
 		MultiTenantConfig{
-			SyncInterval: 100 * time.Millisecond,
+			SyncInterval:  100 * time.Millisecond,
 			PrefetchCount: 10,
 			Service:       testServiceName,
 		},
@@ -85,8 +85,9 @@ func TestMultiTenantConsumer_Run_CancelAndCloseNoLeak(t *testing.T) {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
 
-	// Let the sync loop goroutine start.
-	time.Sleep(250 * time.Millisecond)
+	assert.Eventually(t, func() bool {
+		return consumer.Stats().KnownTenants > 0
+	}, time.Second, 20*time.Millisecond)
 
 	// Normal cleanup: cancel context first, then Close.
 	cancel()
@@ -95,16 +96,14 @@ func TestMultiTenantConsumer_Run_CancelAndCloseNoLeak(t *testing.T) {
 		t.Fatalf("Close() returned unexpected error: %v", closeErr)
 	}
 
-	// Give goroutines time to wind down.
-	time.Sleep(200 * time.Millisecond)
+	assert.Eventually(t, func() bool {
+		return consumer.Stats().Closed && consumer.Stats().ActiveTenants == 0
+	}, time.Second, 20*time.Millisecond)
 
 	goleak.VerifyNone(t,
 		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2/server.(*Server).servePeer"),
 		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2.(*Miniredis).handleClient"),
+		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
-		// The dummyRabbitMQManager creates a client.Client whose InMemoryCache has a
-		// background cleanup goroutine. The RabbitMQ Manager does not expose a Close
-		// method, so this goroutine is expected to outlive the consumer Close.
-		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
 	)
 }

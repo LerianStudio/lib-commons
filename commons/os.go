@@ -1,7 +1,3 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package commons
 
 import (
@@ -29,30 +25,42 @@ func GetenvOrDefault(key string, defaultValue string) string {
 	return str
 }
 
-// GetenvBoolOrDefault returns the value of os.Getenv(key string) value as bool or defaultValue if error
-// Is the environment variable (key) is not defined, it returns the given defaultValue
-// If the environment variable (key) is not a valid bool format, it returns the given defaultValue
+// GetenvBoolOrDefault returns the value of os.Getenv(key string) value as bool or defaultValue if error.
+// If the environment variable (key) is not defined, it returns the given defaultValue.
+// If the environment variable (key) is not a valid bool format, it returns the given defaultValue.
 // If any error occurring during bool parse, it returns the given defaultValue.
+// A warning is printed to stderr when a non-empty value fails to parse, providing
+// visibility into misconfigured environment variables.
 func GetenvBoolOrDefault(key string, defaultValue bool) bool {
 	str := os.Getenv(key)
 
 	val, err := strconv.ParseBool(str)
 	if err != nil {
+		if str != "" {
+			fmt.Fprintf(os.Stderr, "WARN: env var %s=%q is not a valid bool, using default %v\n", key, str, defaultValue)
+		}
+
 		return defaultValue
 	}
 
 	return val
 }
 
-// GetenvIntOrDefault returns the value of os.Getenv(key string) value as int or defaultValue if error
-// If the environment variable (key) is not defined, it returns the given defaultValue
-// If the environment variable (key) is not a valid int format, it returns the given defaultValue
+// GetenvIntOrDefault returns the value of os.Getenv(key string) value as int or defaultValue if error.
+// If the environment variable (key) is not defined, it returns the given defaultValue.
+// If the environment variable (key) is not a valid int format, it returns the given defaultValue.
 // If any error occurring during int parse, it returns the given defaultValue.
+// A warning is printed to stderr when a non-empty value fails to parse, providing
+// visibility into misconfigured environment variables.
 func GetenvIntOrDefault(key string, defaultValue int64) int64 {
 	str := os.Getenv(key)
 
 	val, err := strconv.ParseInt(str, 10, 64)
 	if err != nil {
+		if str != "" {
+			fmt.Fprintf(os.Stderr, "WARN: env var %s=%q is not a valid int, using default %v\n", key, str, defaultValue)
+		}
+
 		return defaultValue
 	}
 
@@ -70,19 +78,20 @@ var (
 	localEnvConfigOnce sync.Once
 )
 
-// InitLocalEnvConfig load a .env file to set up local environment vars
+// InitLocalEnvConfig load a .env file to set up local environment vars.
 // It's called once per application process.
+// Version and environment are always logged in a plain startup banner format.
 func InitLocalEnvConfig() *LocalEnvConfig {
 	version := GetenvOrDefault("VERSION", "NO-VERSION")
 	envName := GetenvOrDefault("ENV_NAME", "local")
 
-	fmt.Printf("VERSION: \u001B[31m%s\u001B[0m\n", version)
-	fmt.Printf("ENVIRONMENT NAME: \u001B[31m(%s)\u001B[0m\n", envName)
+	fmt.Printf("VERSION: %s\n\n", version)
+	fmt.Printf("ENVIRONMENT NAME: %s\n\n", envName)
 
 	if envName == "local" {
 		localEnvConfigOnce.Do(func() {
 			if err := godotenv.Load(); err != nil {
-				fmt.Println("Skipping \u001B[31m.env\u001B[0m file, using env", envName)
+				fmt.Printf("Skipping .env file; using environment: %s\n", envName)
 
 				localEnvConfig = &LocalEnvConfig{
 					Initialized: false,
@@ -97,13 +106,29 @@ func InitLocalEnvConfig() *LocalEnvConfig {
 		})
 	}
 
+	// Always return a non-nil config with safe defaults so callers never
+	// need to nil-check. Non-local environments get Initialized=false.
+	if localEnvConfig == nil {
+		return &LocalEnvConfig{Initialized: false}
+	}
+
 	return localEnvConfig
 }
 
-// SetConfigFromEnvVars builds a struct by setting it fields values using the "var" tag
-// Constraints: s any - must be an initialized pointer
+// ErrNilConfig indicates that a nil configuration value was passed to SetConfigFromEnvVars.
+var ErrNilConfig = errors.New("config must not be nil")
+
+// ErrNotStruct indicates that the pointer target is not a struct.
+var ErrNotStruct = errors.New("pointer must reference a struct")
+
+// SetConfigFromEnvVars builds a struct by setting its field values using the "env" tag.
+// Constraints: s must be a non-nil pointer to an initialized struct.
 // Supported types: String, Boolean, Int, Int8, Int16, Int32 and Int64.
 func SetConfigFromEnvVars(s any) error {
+	if s == nil {
+		return ErrNilConfig
+	}
+
 	v := reflect.ValueOf(s)
 
 	t := v.Type()
@@ -111,8 +136,18 @@ func SetConfigFromEnvVars(s any) error {
 		return ErrNotPointer
 	}
 
+	// Guard against typed-nil pointers (e.g. (*MyStruct)(nil)).
+	if v.IsNil() {
+		return ErrNilConfig
+	}
+
+	// The pointer must reference a struct.
+	if t.Elem().Kind() != reflect.Struct {
+		return ErrNotStruct
+	}
+
 	e := t.Elem()
-	for i := 0; i < e.NumField(); i++ {
+	for i := range e.NumField() {
 		f := e.Field(i)
 		if tag, ok := f.Tag.Lookup("env"); ok {
 			values := strings.Split(tag, ",")
@@ -133,14 +168,4 @@ func SetConfigFromEnvVars(s any) error {
 	}
 
 	return nil
-}
-
-// Deprecated: Use SetConfigFromEnvVars instead for proper error handling.
-// EnsureConfigFromEnvVars panics on error. Prefer SetConfigFromEnvVars for graceful error handling.
-func EnsureConfigFromEnvVars(s any) any {
-	if err := SetConfigFromEnvVars(s); err != nil {
-		panic(err)
-	}
-
-	return s
 }

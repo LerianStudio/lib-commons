@@ -1,11 +1,12 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package commons
 
 import (
-	constant "github.com/LerianStudio/lib-commons/v3/commons/constants"
+	"errors"
+	"fmt"
+	"strings"
+
+	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	"github.com/LerianStudio/lib-commons/v4/commons/security"
 )
 
 // Response represents a business error with code, title, and message.
@@ -17,6 +18,7 @@ type Response struct {
 	Err        error  `json:"err,omitempty"`
 }
 
+// Error returns the business-facing message and satisfies the error interface.
 func (e Response) Error() string {
 	return e.Message
 }
@@ -69,9 +71,51 @@ func ValidateBusinessError(err error, entityType string, args ...any) error {
 			Message:    "External accounts cannot be used for pending transactions in source operations. Please check the accounts and try again.",
 		},
 	}
-	if mappedError, found := errorMap[err]; found {
-		return mappedError
+	// Use errors.Is to match wrapped sentinels instead of exact map identity.
+	for sentinel, mappedError := range errorMap {
+		if !errors.Is(err, sentinel) {
+			continue
+		}
+
+		var response Response
+		if !errors.As(mappedError, &response) {
+			return mappedError
+		}
+
+		if len(args) > 0 {
+			parts := make([]string, 0, len(args))
+
+			for _, arg := range args {
+				s := fmt.Sprint(arg)
+				// Redact arguments that look like sensitive fields (credentials, PII)
+				// to prevent leaking them to external API consumers.
+				if looksLikeSensitiveArg(s) {
+					continue
+				}
+
+				parts = append(parts, s)
+			}
+
+			if len(parts) > 0 {
+				response.Message = fmt.Sprintf("%s (%s)", response.Message, strings.Join(parts, ", "))
+			}
+		}
+
+		return response
 	}
 
 	return err
+}
+
+// looksLikeSensitiveArg checks whether a stringified argument contains a key=value
+// pair where the key is a known sensitive field name.
+func looksLikeSensitiveArg(s string) bool {
+	if idx := strings.IndexByte(s, '='); idx > 0 {
+		key := s[:idx]
+		if security.IsSensitiveField(key) {
+			return true
+		}
+	}
+
+	return false
 }

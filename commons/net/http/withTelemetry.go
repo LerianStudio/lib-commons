@@ -1,25 +1,23 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package http
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v3/commons"
-	cn "github.com/LerianStudio/lib-commons/v3/commons/constants"
-	"github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v3/commons/security"
+	"github.com/LerianStudio/lib-commons/v4/commons"
+	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v4/commons/runtime"
+	"github.com/LerianStudio/lib-commons/v4/commons/security"
 	"github.com/gofiber/fiber/v2"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -30,6 +28,7 @@ import (
 // Can be overridden via METRICS_COLLECTION_INTERVAL environment variable.
 const DefaultMetricsCollectionInterval = 5 * time.Second
 
+// Metrics collector singleton state.
 var (
 	metricsCollectorOnce     = &sync.Once{}
 	metricsCollectorShutdown chan struct{}
@@ -38,6 +37,16 @@ var (
 	metricsCollectorInitErr  error
 )
 
+// telemetryRuntimeLogger returns the runtime logger from the telemetry middleware, or nil.
+func telemetryRuntimeLogger(tm *TelemetryMiddleware) runtime.Logger {
+	if tm == nil || tm.Telemetry == nil {
+		return nil
+	}
+
+	return tm.Telemetry.Logger
+}
+
+// TelemetryMiddleware wraps HTTP and gRPC handlers with tracing and metrics setup.
 type TelemetryMiddleware struct {
 	Telemetry *opentelemetry.Telemetry
 }
@@ -50,7 +59,16 @@ func NewTelemetryMiddleware(tl *opentelemetry.Telemetry) *TelemetryMiddleware {
 // WithTelemetry is a middleware that adds tracing to the context.
 func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, excludedRoutes ...string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		if len(excludedRoutes) > 0 && tm.isRouteExcluded(c, excludedRoutes) {
+		effectiveTelemetry := tl
+		if effectiveTelemetry == nil && tm != nil {
+			effectiveTelemetry = tm.Telemetry
+		}
+
+		if effectiveTelemetry == nil {
+			return c.Next()
+		}
+
+		if len(excludedRoutes) > 0 && isRouteExcludedFromList(c, excludedRoutes) {
 			return c.Next()
 		}
 
@@ -64,41 +82,50 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, exclud
 			attribute.String("app.request.request_id", reqId),
 		))
 
-		tracer := otel.Tracer(tl.LibraryName)
+		if effectiveTelemetry.TracerProvider == nil {
+			return c.Next()
+		}
+
+		tracer := effectiveTelemetry.TracerProvider.Tracer(effectiveTelemetry.LibraryName)
 		routePathWithMethod := c.Method() + " " + commons.ReplaceUUIDWithPlaceholder(c.Path())
 
 		traceCtx := c.UserContext()
 		if commons.IsInternalLerianService(c.Get(cn.HeaderUserAgent)) {
-			traceCtx = opentelemetry.ExtractHTTPContext(c)
+			traceCtx = opentelemetry.ExtractHTTPContext(traceCtx, c)
 		}
 
 		ctx, span := tracer.Start(traceCtx, routePathWithMethod, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
-		span.SetAttributes(
-			attribute.String("http.method", c.Method()),
-			attribute.String("http.url", sanitizeURL(c.OriginalURL())),
-			attribute.String("http.route", c.Route().Path),
-			attribute.String("http.scheme", c.Protocol()),
-			attribute.String("http.host", c.Hostname()),
-			attribute.String("http.user_agent", c.Get("User-Agent")),
-		)
-
 		ctx = commons.ContextWithTracer(ctx, tracer)
-		ctx = commons.ContextWithMetricFactory(ctx, tl.MetricsFactory)
+		ctx = commons.ContextWithMetricFactory(ctx, effectiveTelemetry.MetricsFactory)
 
 		c.SetUserContext(ctx)
 
 		err := tm.collectMetrics(ctx)
 		if err != nil {
-			opentelemetry.HandleSpanError(&span, "Failed to collect metrics", err)
+			opentelemetry.HandleSpanError(span, "Failed to collect metrics", err)
 		}
 
 		err = c.Next()
 
+		statusCode := c.Response().StatusCode()
 		span.SetAttributes(
-			attribute.Int("http.status_code", c.Response().StatusCode()),
+			attribute.String("http.request.method", c.Method()),
+			// url.path holds the concrete request path (sanitized). Use http.route for the low-cardinality template.
+			attribute.String("url.path", sanitizeURL(c.OriginalURL())),
+			attribute.String("http.route", c.Route().Path),
+			attribute.String("url.scheme", c.Protocol()),
+			attribute.String("server.address", c.Hostname()),
+			attribute.String("user_agent.original", c.Get(cn.HeaderUserAgent)),
+			attribute.Int("http.response.status_code", statusCode),
 		)
+
+		if err != nil {
+			opentelemetry.HandleSpanError(span, "handler error", err)
+		} else if statusCode >= 500 {
+			span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", statusCode))
+		}
 
 		return err
 	}
@@ -113,9 +140,7 @@ func (tm *TelemetryMiddleware) EndTracingSpans(c *fiber.Ctx) error {
 
 	err := c.Next()
 
-	go func() {
-		trace.SpanFromContext(ctx).End()
-	}()
+	trace.SpanFromContext(ctx).End()
 
 	return err
 }
@@ -128,37 +153,63 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
+		effectiveTelemetry := tl
+		if effectiveTelemetry == nil && tm != nil {
+			effectiveTelemetry = tm.Telemetry
+		}
+
+		if effectiveTelemetry == nil {
+			return handler(ctx, req)
+		}
+
 		ctx = setGRPCRequestHeaderID(ctx)
 
 		_, _, reqId, _ := commons.NewTrackingFromContext(ctx)
-		tracer := otel.Tracer(tl.LibraryName)
+
+		if effectiveTelemetry.TracerProvider == nil {
+			return handler(ctx, req)
+		}
+
+		tracer := effectiveTelemetry.TracerProvider.Tracer(effectiveTelemetry.LibraryName)
+
+		methodName := "unknown"
+		if info != nil {
+			methodName = info.FullMethod
+		}
 
 		ctx = commons.ContextWithSpanAttributes(ctx,
 			attribute.String("app.request.request_id", reqId),
-			attribute.String("grpc.method", info.FullMethod),
+			attribute.String("grpc.method", methodName),
 		)
 
 		traceCtx := ctx
 		if commons.IsInternalLerianService(getGRPCUserAgent(ctx)) {
-			traceCtx = opentelemetry.ExtractGRPCContext(ctx)
+			md, _ := metadata.FromIncomingContext(ctx)
+			traceCtx = opentelemetry.ExtractGRPCContext(ctx, md)
 		}
 
-		ctx, span := tracer.Start(traceCtx, info.FullMethod, trace.WithSpanKind(trace.SpanKindServer))
+		ctx, span := tracer.Start(traceCtx, methodName, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
 		ctx = commons.ContextWithTracer(ctx, tracer)
-		ctx = commons.ContextWithMetricFactory(ctx, tl.MetricsFactory)
+		ctx = commons.ContextWithMetricFactory(ctx, effectiveTelemetry.MetricsFactory)
 
 		err := tm.collectMetrics(ctx)
 		if err != nil {
-			opentelemetry.HandleSpanError(&span, "Failed to collect metrics", err)
+			opentelemetry.HandleSpanError(span, "Failed to collect metrics", err)
 		}
 
 		resp, err := handler(ctx, req)
 
+		grpcStatusCode := status.Code(err)
 		span.SetAttributes(
-			attribute.Int("grpc.status_code", int(status.Code(err))),
+			attribute.String("rpc.method", methodName),
+			attribute.Int("rpc.grpc.status_code", int(grpcStatusCode)),
 		)
+
+		if err != nil {
+			opentelemetry.HandleSpanError(span, "gRPC handler error", err)
+		}
 
 		return resp, err
 	}
@@ -174,14 +225,13 @@ func (tm *TelemetryMiddleware) EndTracingSpansInterceptor() grpc.UnaryServerInte
 	) (any, error) {
 		resp, err := handler(ctx, req)
 
-		go func() {
-			trace.SpanFromContext(ctx).End()
-		}()
+		trace.SpanFromContext(ctx).End()
 
 		return resp, err
 	}
 }
 
+// collectMetrics ensures the background metrics collector goroutine is running.
 func (tm *TelemetryMiddleware) collectMetrics(_ context.Context) error {
 	return tm.ensureMetricsCollector()
 }
@@ -200,7 +250,16 @@ func getMetricsCollectionInterval() time.Duration {
 	return DefaultMetricsCollectionInterval
 }
 
+// ensureMetricsCollector lazily starts the background metrics collector singleton.
 func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
+	if tm == nil || tm.Telemetry == nil {
+		return nil
+	}
+
+	if tm.Telemetry.MeterProvider == nil {
+		return nil
+	}
+
 	metricsCollectorMu.Lock()
 	defer metricsCollectorMu.Unlock()
 
@@ -215,36 +274,37 @@ func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
 	}
 
 	metricsCollectorOnce.Do(func() {
-		cpuGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.cpu.usage", metric.WithUnit("percentage"))
-		if err != nil {
-			metricsCollectorInitErr = err
-			return
-		}
-
-		memGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.mem.usage", metric.WithUnit("percentage"))
-		if err != nil {
-			metricsCollectorInitErr = err
+		factory := tm.Telemetry.MetricsFactory
+		if factory == nil {
+			metricsCollectorInitErr = errors.New("telemetry MetricsFactory is nil, cannot start system metrics collector")
 			return
 		}
 
 		metricsCollectorShutdown = make(chan struct{})
 		ticker := time.NewTicker(getMetricsCollectionInterval())
 
-		go func() {
-			commons.GetCPUUsage(context.Background(), cpuGauge)
-			commons.GetMemUsage(context.Background(), memGauge)
+		runtime.SafeGoWithContextAndComponent(
+			context.Background(),
+			telemetryRuntimeLogger(tm),
+			"http",
+			"metrics_collector",
+			runtime.KeepRunning,
+			func(_ context.Context) {
+				commons.GetCPUUsage(context.Background(), factory)
+				commons.GetMemUsage(context.Background(), factory)
 
-			for {
-				select {
-				case <-metricsCollectorShutdown:
-					ticker.Stop()
-					return
-				case <-ticker.C:
-					commons.GetCPUUsage(context.Background(), cpuGauge)
-					commons.GetMemUsage(context.Background(), memGauge)
+				for {
+					select {
+					case <-metricsCollectorShutdown:
+						ticker.Stop()
+						return
+					case <-ticker.C:
+						commons.GetCPUUsage(context.Background(), factory)
+						commons.GetMemUsage(context.Background(), factory)
+					}
 				}
-			}
-		}()
+			},
+		)
 
 		metricsCollectorStarted = true
 	})
@@ -273,7 +333,10 @@ func StopMetricsCollector() {
 	}
 }
 
-func (tm *TelemetryMiddleware) isRouteExcluded(c *fiber.Ctx, excludedRoutes []string) bool {
+// isRouteExcludedFromList reports whether the request path matches any excluded route prefix.
+// This standalone function is used to evaluate route exclusions independently of whether
+// the TelemetryMiddleware receiver is nil.
+func isRouteExcludedFromList(c *fiber.Ctx, excludedRoutes []string) bool {
 	for _, route := range excludedRoutes {
 		if strings.HasPrefix(c.Path(), route) {
 			return true
@@ -323,7 +386,7 @@ func getGRPCUserAgent(ctx context.Context) string {
 		return ""
 	}
 
-	userAgents := md.Get("user-agent")
+	userAgents := md.Get(strings.ToLower(cn.HeaderUserAgent))
 	if len(userAgents) == 0 {
 		return ""
 	}

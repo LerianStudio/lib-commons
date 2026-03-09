@@ -325,39 +325,40 @@ func TestTenantConfig_GetMongoDBConfig(t *testing.T) {
 
 func TestTenantConfig_IsSchemaMode(t *testing.T) {
 	tests := []struct {
-		name          string
-		isolationMode string
-		expected      bool
+		name     string
+		config   *TenantConfig
+		expected bool
 	}{
 		{
-			name:          "returns true when isolation mode is schema",
-			isolationMode: "schema",
-			expected:      true,
+			name:     "returns true when isolation mode is schema",
+			config:   &TenantConfig{IsolationMode: "schema"},
+			expected: true,
 		},
 		{
-			name:          "returns false when isolation mode is isolated",
-			isolationMode: "isolated",
-			expected:      false,
+			name:     "returns false when isolation mode is isolated",
+			config:   &TenantConfig{IsolationMode: "isolated"},
+			expected: false,
 		},
 		{
-			name:          "returns false when isolation mode is empty",
-			isolationMode: "",
-			expected:      false,
+			name:     "returns false when isolation mode is empty",
+			config:   &TenantConfig{IsolationMode: ""},
+			expected: false,
 		},
 		{
-			name:          "returns false when isolation mode is unknown",
-			isolationMode: "unknown",
-			expected:      false,
+			name:     "returns false when isolation mode is unknown",
+			config:   &TenantConfig{IsolationMode: "unknown"},
+			expected: false,
+		},
+		{
+			name:     "returns false for nil receiver",
+			config:   nil,
+			expected: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config := &TenantConfig{
-				IsolationMode: tt.isolationMode,
-			}
-
-			result := config.IsSchemaMode()
+			result := tt.config.IsSchemaMode()
 
 			assert.Equal(t, tt.expected, result)
 		})
@@ -366,44 +367,146 @@ func TestTenantConfig_IsSchemaMode(t *testing.T) {
 
 func TestTenantConfig_IsIsolatedMode(t *testing.T) {
 	tests := []struct {
-		name          string
-		isolationMode string
-		expected      bool
+		name     string
+		config   *TenantConfig
+		expected bool
 	}{
 		{
-			name:          "returns true when isolation mode is isolated",
-			isolationMode: "isolated",
-			expected:      true,
+			name:     "returns true when isolation mode is isolated",
+			config:   &TenantConfig{IsolationMode: "isolated"},
+			expected: true,
 		},
 		{
-			name:          "returns true when isolation mode is database",
-			isolationMode: "database",
-			expected:      true,
+			name:     "returns true when isolation mode is database",
+			config:   &TenantConfig{IsolationMode: "database"},
+			expected: true,
 		},
 		{
-			name:          "returns true when isolation mode is empty (default)",
-			isolationMode: "",
-			expected:      true,
+			name:     "returns true when isolation mode is empty (default)",
+			config:   &TenantConfig{IsolationMode: ""},
+			expected: true,
 		},
 		{
-			name:          "returns false when isolation mode is schema",
-			isolationMode: "schema",
-			expected:      false,
+			name:     "returns false when isolation mode is schema",
+			config:   &TenantConfig{IsolationMode: "schema"},
+			expected: false,
 		},
 		{
-			name:          "returns false when isolation mode is unknown",
-			isolationMode: "unknown",
-			expected:      false,
+			name:     "returns false when isolation mode is unknown",
+			config:   &TenantConfig{IsolationMode: "unknown"},
+			expected: false,
+		},
+		{
+			name:     "returns false for nil receiver",
+			config:   nil,
+			expected: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config := &TenantConfig{
-				IsolationMode: tt.isolationMode,
+			result := tt.config.IsIsolatedMode()
+
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestTenantConfig_GetRabbitMQConfig(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        *TenantConfig
+		expectNil     bool
+		expectedVHost string
+	}{
+		{
+			name:      "returns nil for nil receiver",
+			config:    nil,
+			expectNil: true,
+		},
+		{
+			name:      "returns nil when messaging is nil",
+			config:    &TenantConfig{},
+			expectNil: true,
+		},
+		{
+			name: "returns nil when rabbitmq is nil in messaging",
+			config: &TenantConfig{
+				Messaging: &MessagingConfig{},
+			},
+			expectNil: true,
+		},
+		{
+			name: "returns config when rabbitmq is set",
+			config: &TenantConfig{
+				Messaging: &MessagingConfig{
+					RabbitMQ: &RabbitMQConfig{
+						Host:  "rabbitmq.example.com",
+						Port:  5672,
+						VHost: "tenant-vhost",
+					},
+				},
+			},
+			expectedVHost: "tenant-vhost",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.config.GetRabbitMQConfig()
+
+			if tt.expectNil {
+				assert.Nil(t, result)
+				return
 			}
 
-			result := config.IsIsolatedMode()
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expectedVHost, result.VHost)
+		})
+	}
+}
+
+func TestTenantConfig_HasRabbitMQ(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *TenantConfig
+		expected bool
+	}{
+		{
+			name:     "returns false for nil receiver",
+			config:   nil,
+			expected: false,
+		},
+		{
+			name:     "returns false when messaging is nil",
+			config:   &TenantConfig{},
+			expected: false,
+		},
+		{
+			name: "returns false when rabbitmq is nil in messaging",
+			config: &TenantConfig{
+				Messaging: &MessagingConfig{},
+			},
+			expected: false,
+		},
+		{
+			name: "returns true when rabbitmq is configured",
+			config: &TenantConfig{
+				Messaging: &MessagingConfig{
+					RabbitMQ: &RabbitMQConfig{
+						Host:  "rabbitmq.example.com",
+						Port:  5672,
+						VHost: "tenant-vhost",
+					},
+				},
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.config.HasRabbitMQ()
 
 			assert.Equal(t, tt.expected, result)
 		})

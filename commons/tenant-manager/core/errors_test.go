@@ -39,6 +39,21 @@ func TestTenantSuspendedError(t *testing.T) {
 	})
 }
 
+func TestTenantSuspendedError_NilReceiver(t *testing.T) {
+	var err *TenantSuspendedError
+
+	assert.Equal(t, "tenant service is unavailable", err.Error())
+}
+
+func TestErrTenantServiceAccessDenied(t *testing.T) {
+	assert.Error(t, ErrTenantServiceAccessDenied)
+	assert.Equal(t, "tenant service access denied", ErrTenantServiceAccessDenied.Error())
+
+	// Verify errors.Is works with wrapped errors
+	wrapped := fmt.Errorf("wrap: %w", ErrTenantServiceAccessDenied)
+	assert.ErrorIs(t, wrapped, ErrTenantServiceAccessDenied)
+}
+
 func TestIsTenantSuspendedError(t *testing.T) {
 	tests := []struct {
 		name     string

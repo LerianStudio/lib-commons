@@ -1,12 +1,12 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package constant
 
 const (
-	MetadataID            = "metadata_id"
-	MetadataTraceparent   = "traceparent"
-	MetadataTracestate    = "tracestate"
+	// MetadataID is the metadata key that carries the request context identifier.
+	MetadataID = "metadata_id"
+	// MetadataTraceparent is the metadata key for W3C traceparent.
+	MetadataTraceparent = "traceparent"
+	// MetadataTracestate is the metadata key for W3C tracestate.
+	MetadataTracestate = "tracestate"
+	// MetadataAuthorization is the metadata key for authorization propagation.
 	MetadataAuthorization = "authorization"
 )

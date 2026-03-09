@@ -11,12 +11,14 @@ import (
 	"net/url"
 	"sync"
 	"time"
+	"unicode/utf8"
 
-	libCommons "github.com/LerianStudio/lib-commons/v3/commons"
-	libLog "github.com/LerianStudio/lib-commons/v3/commons/log"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v3/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/cache"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
+	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
+	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
+	libOpentelemetry "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // maxResponseBodySize is the maximum allowed response body size (10 MB).
@@ -24,12 +26,9 @@ import (
 const maxResponseBodySize = 10 * 1024 * 1024
 
 // defaultCacheTTL is the default time-to-live for cached tenant config entries.
-// Entries expire after this duration, triggering a fresh HTTP fetch on the next access.
 const defaultCacheTTL = 1 * time.Hour
 
-// cacheKeyPrefix is the prefix used for tenant config cache keys.
-// The full key format is "tenant-settings:{tenantOrgID}:{service}", matching
-// the key format used by the tenant-manager Redis cache for debugging clarity.
+// cacheKeyPrefix matches the tenant-manager key format for debugging clarity.
 const cacheKeyPrefix = "tenant-settings"
 
 // cbState represents the circuit breaker state.
@@ -55,18 +54,17 @@ type TenantSummary struct {
 // It fetches tenant-specific database configurations from the Tenant Manager API.
 // An optional circuit breaker can be enabled via WithCircuitBreaker to fail fast
 // when the Tenant Manager service is unresponsive.
-//
-// By default, Client creates an in-memory cache to avoid repeated HTTP roundtrips
-// for tenant config lookups. The cache can be customized via WithCache or disabled
-// by providing a no-op implementation.
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
 	logger     libLog.Logger
+	cache      cache.ConfigCache
+	cacheTTL   time.Duration
 
-	// Cache for tenant config responses. Defaults to InMemoryCache if not set via WithCache.
-	cache    cache.ConfigCache
-	cacheTTL time.Duration
+	// allowInsecureHTTP permits http:// URLs when set to true.
+	// By default, only https:// URLs are accepted unless explicitly opted in
+	// via WithAllowInsecureHTTP().
+	allowInsecureHTTP bool
 
 	// Circuit breaker fields. When cbThreshold is 0, the circuit breaker is disabled (default).
 	cbMu          sync.Mutex
@@ -85,8 +83,7 @@ type getConfigOpts struct {
 // GetConfigOption is a functional option for individual GetTenantConfig calls.
 type GetConfigOption func(*getConfigOpts)
 
-// WithSkipCache forces GetTenantConfig to bypass the cache and fetch directly
-// from the Tenant Manager API. The response is still written back to the cache.
+// WithSkipCache forces GetTenantConfig to bypass the cache and fetch directly.
 func WithSkipCache() GetConfigOption {
 	return func(o *getConfigOpts) {
 		o.skipCache = true
@@ -134,9 +131,9 @@ func WithCircuitBreaker(threshold int, timeout time.Duration) ClientOption {
 	}
 }
 
-// WithCache sets a custom cache implementation (e.g., a Redis-backed cache for
-// distributed caching across replicas). If not called, the client creates an
-// InMemoryCache automatically in NewClient.
+// WithCache sets a custom cache implementation for tenant config responses.
+// Returns an error during NewClient if the cache is a typed-nil interface
+// (e.g., (*InMemoryCache)(nil)), since that would cause nil-pointer panics.
 func WithCache(cc cache.ConfigCache) ClientOption {
 	return func(c *Client) {
 		if cc != nil {
@@ -145,31 +142,56 @@ func WithCache(cc cache.ConfigCache) ClientOption {
 	}
 }
 
+// withCacheValidated is the internal validation that runs during NewClient
+// after all options are applied. It detects typed-nil caches.
+func withCacheValidated(c *Client) error {
+	if c.cache != nil && core.IsNilInterface(c.cache) {
+		return fmt.Errorf("client.NewClient: %w", core.ErrNilCache)
+	}
+
+	return nil
+}
+
 // WithCacheTTL sets the TTL for cached tenant config entries.
-// Default: 1 hour. A TTL of zero or negative disables expiration.
 func WithCacheTTL(ttl time.Duration) ClientOption {
 	return func(c *Client) {
 		c.cacheTTL = ttl
 	}
 }
 
+// WithAllowInsecureHTTP permits the use of http:// (plaintext) URLs for the
+// Tenant Manager base URL. By default, only https:// is accepted. Use this
+// option only for local development or testing environments.
+func WithAllowInsecureHTTP() ClientOption {
+	return func(c *Client) {
+		c.allowInsecureHTTP = true
+	}
+}
+
 // NewClient creates a new Tenant Manager client.
 // Parameters:
-//   - baseURL: The base URL of the Tenant Manager service (e.g., "http://tenant-manager:8080")
+//   - baseURL: The base URL of the Tenant Manager service (e.g., "https://tenant-manager:8080")
 //   - logger: Logger for request/response logging
 //   - opts: Optional configuration options
 //
 // The baseURL is validated at construction time to ensure it is a well-formed URL with a scheme.
 // This prevents SSRF risks by ensuring only trusted, pre-configured URLs are used for HTTP requests.
-func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) *Client {
+// By default, only https:// URLs are accepted. Use WithAllowInsecureHTTP() to permit http://.
+func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) (*Client, error) {
+	if logger == nil {
+		logger = libLog.NewNop()
+	}
+
 	// Validate baseURL to ensure it is a well-formed URL with a scheme.
 	// This is a defense-in-depth measure: the baseURL is configured at deployment time
 	// (not user-controlled), but we validate it to fail fast on misconfiguration.
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		if logger != nil {
-			logger.Errorf("Invalid Tenant Manager baseURL: %q (must include scheme and host)", baseURL)
-		}
+		logger.Log(context.Background(), libLog.LevelError, "invalid tenant manager baseURL",
+			libLog.String("base_url", baseURL),
+		)
+
+		return nil, fmt.Errorf("invalid tenant manager baseURL: %q", baseURL)
 	}
 
 	c := &Client{
@@ -185,14 +207,21 @@ func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) *Clie
 		opt(c)
 	}
 
-	// Create default in-memory cache if none was provided via WithCache.
-	// This ensures every client benefits from caching without requiring
-	// additional configuration or infrastructure dependencies.
+	// Enforce HTTPS by default. Allow http:// only with explicit opt-in.
+	if parsedURL.Scheme == "http" && !c.allowInsecureHTTP {
+		return nil, fmt.Errorf("client.NewClient: %w: got %q", core.ErrInsecureHTTP, baseURL)
+	}
+
+	// Validate that the cache is not a typed-nil interface.
+	if err := withCacheValidated(c); err != nil {
+		return nil, err
+	}
+
 	if c.cache == nil {
 		c.cache = cache.NewInMemoryCache()
 	}
 
-	return c
+	return c, nil
 }
 
 // checkCircuitBreaker checks if the circuit breaker allows a request to proceed.
@@ -261,47 +290,162 @@ func isServerError(statusCode int) bool {
 	return statusCode >= http.StatusInternalServerError
 }
 
+// truncateBody returns the body as a string, truncated to maxLen bytes with a
+// "...(truncated)" suffix if the body exceeds maxLen. This prevents large
+// response bodies from being logged or included in error messages.
+// The truncation point is adjusted to the last valid UTF-8 rune boundary
+// to avoid splitting multi-byte characters.
+func truncateBody(body []byte, maxLen int) string {
+	if len(body) <= maxLen {
+		return string(body)
+	}
+
+	// Find the last valid rune boundary at or before maxLen to avoid
+	// splitting multi-byte UTF-8 sequences.
+	truncated := body[:maxLen]
+	for len(truncated) > 0 && !utf8.Valid(truncated) {
+		truncated = truncated[:len(truncated)-1]
+	}
+
+	return string(truncated) + "...(truncated)"
+}
+
+func (c *Client) getCachedTenantConfig(ctx context.Context, cacheKey, tenantID, service string) (*core.TenantConfig, bool) {
+	if c.cache == nil {
+		return nil, false
+	}
+
+	cached, err := c.cache.Get(ctx, cacheKey)
+	if err != nil {
+		return nil, false
+	}
+
+	var config core.TenantConfig
+	if jsonErr := json.Unmarshal([]byte(cached), &config); jsonErr == nil {
+		c.logger.Log(ctx, libLog.LevelDebug, "tenant config cache hit",
+			libLog.String("tenant_id", tenantID),
+			libLog.String("service", service),
+		)
+
+		return &config, true
+	}
+
+	// Malformed cache entry: evict before refetching to prevent repeated
+	// deserialization failures on the same corrupt data.
+	c.logger.Log(ctx, libLog.LevelWarn, "invalid tenant config cache entry; evicting before refetch",
+		libLog.String("tenant_id", tenantID),
+		libLog.String("service", service),
+	)
+
+	_ = c.cache.Del(ctx, cacheKey)
+
+	return nil, false
+}
+
+func (c *Client) handleGetTenantConfigStatus(
+	ctx context.Context,
+	span trace.Span,
+	tenantID, service string,
+	statusCode int,
+	body []byte,
+) error {
+	switch statusCode {
+	case http.StatusOK:
+		return nil
+	case http.StatusNotFound:
+		c.recordSuccess()
+		c.logger.Log(ctx, libLog.LevelWarn, "tenant not found",
+			libLog.String("tenant_id", tenantID),
+			libLog.String("service", service),
+		)
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Tenant not found", core.ErrTenantNotFound)
+
+		return core.ErrTenantNotFound
+	case http.StatusForbidden:
+		c.recordSuccess()
+		c.logger.Log(ctx, libLog.LevelWarn, "tenant service access denied",
+			libLog.String("tenant_id", tenantID),
+			libLog.String("service", service),
+		)
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Tenant service suspended or purged", core.ErrTenantServiceAccessDenied)
+
+		// All 403 responses wrap ErrTenantServiceAccessDenied so callers can
+		// use errors.Is(err, core.ErrTenantServiceAccessDenied) reliably.
+		// When the JSON body includes a status field, we enrich the error
+		// with a TenantSuspendedError for more specific handling.
+		var errResp struct {
+			Code   string `json:"code"`
+			Error  string `json:"error"`
+			Status string `json:"status"`
+		}
+
+		if jsonErr := json.Unmarshal(body, &errResp); jsonErr == nil && errResp.Status != "" {
+			return fmt.Errorf("%w: %w", core.ErrTenantServiceAccessDenied, &core.TenantSuspendedError{
+				TenantID: tenantID,
+				Status:   errResp.Status,
+				Message:  errResp.Error,
+			})
+		}
+
+		// Non-JSON or missing status: still wrap ErrTenantServiceAccessDenied
+		return fmt.Errorf("tenant %s: %w", tenantID, core.ErrTenantServiceAccessDenied)
+	default:
+		if isServerError(statusCode) {
+			c.recordFailure()
+		}
+
+		c.logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
+			libLog.Int("status", statusCode),
+			libLog.String("body", truncateBody(body, 512)),
+		)
+		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", statusCode))
+
+		return fmt.Errorf("tenant manager returned status %d for tenant %s", statusCode, tenantID)
+	}
+}
+
+func (c *Client) cacheTenantConfig(ctx context.Context, cacheKey string, config *core.TenantConfig) {
+	if c.cache == nil {
+		return
+	}
+
+	if configJSON, marshalErr := json.Marshal(config); marshalErr == nil {
+		_ = c.cache.Set(ctx, cacheKey, string(configJSON), c.cacheTTL)
+	}
+}
+
 // GetTenantConfig fetches tenant configuration from the Tenant Manager API.
-// The API endpoint is: GET {baseURL}/tenants/{tenantID}/services/{service}/settings
-// Returns the fully resolved tenant configuration with database credentials.
-//
-// By default, results are served from the in-memory cache when available.
-// Use WithSkipCache() to bypass the cache and force a fresh HTTP fetch.
-// Only successful (200 OK) responses are cached; errors are never cached.
+// The API endpoint is: GET {baseURL}/tenants/{tenantID}/services/{service}/settings.
+// Successful responses are cached unless WithSkipCache is used.
 func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, opts ...GetConfigOption) (*core.TenantConfig, error) {
+	if c.httpClient == nil {
+		c.httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_tenant_config")
 	defer span.End()
 
-	// Apply per-call options
 	callOpts := &getConfigOpts{}
 	for _, opt := range opts {
 		opt(callOpts)
 	}
 
-	// Build cache key matching the tenant-manager Redis key format for debugging clarity
 	cacheKey := fmt.Sprintf("%s:%s:%s", cacheKeyPrefix, tenantID, service)
-
-	// Try cache first (unless explicitly skipped)
 	if !callOpts.skipCache {
-		if cached, cacheErr := c.cache.Get(ctx, cacheKey); cacheErr == nil {
-			var config core.TenantConfig
-			if jsonErr := json.Unmarshal([]byte(cached), &config); jsonErr == nil {
-				logger.Debugf("Cache hit for tenant config: tenantID=%s, service=%s", tenantID, service)
-
-				return &config, nil
-			}
-
-			// Invalid cached data: log and fall through to HTTP
-			logger.Warnf("Invalid cached tenant config (will refetch): tenantID=%s, service=%s", tenantID, service)
+		if cachedConfig, ok := c.getCachedTenantConfig(ctx, cacheKey, tenantID, service); ok {
+			return cachedConfig, nil
 		}
 	}
 
 	// Check circuit breaker before making the HTTP request
 	if err := c.checkCircuitBreaker(); err != nil {
-		logger.Warnf("Circuit breaker open, failing fast: tenantID=%s, service=%s", tenantID, service)
-		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "Circuit breaker open", err)
+		logger.Log(ctx, libLog.LevelWarn, "circuit breaker open, failing fast",
+			libLog.String("tenant_id", tenantID),
+			libLog.String("service", service),
+		)
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Circuit breaker open", err)
 
 		return nil, err
 	}
@@ -310,13 +454,16 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	requestURL := fmt.Sprintf("%s/tenants/%s/services/%s/settings",
 		c.baseURL, url.PathEscape(tenantID), url.PathEscape(service))
 
-	logger.Infof("Fetching tenant config: tenantID=%s, service=%s", tenantID, service)
+	logger.Log(ctx, libLog.LevelInfo, "fetching tenant config",
+		libLog.String("tenant_id", tenantID),
+		libLog.String("service", service),
+	)
 
 	// Create request with context
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		logger.Errorf("Failed to create request: %v", err)
-		libOpentelemetry.HandleSpanError(&span, "Failed to create HTTP request", err)
+		logger.Log(ctx, libLog.LevelError, "failed to create request", libLog.Err(err))
+		libOpentelemetry.HandleSpanError(span, "Failed to create HTTP request", err)
 
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -325,15 +472,15 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	req.Header.Set("Accept", "application/json")
 
 	// Inject trace context into outgoing HTTP headers for distributed tracing
-	libOpentelemetry.InjectHTTPContext(&req.Header, ctx)
+	libOpentelemetry.InjectHTTPContext(ctx, req.Header)
 
 	// Execute request
 	// #nosec G704 -- baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
-		logger.Errorf("Failed to execute request: %v", err)
-		libOpentelemetry.HandleSpanError(&span, "HTTP request failed", err)
+		logger.Log(ctx, libLog.LevelError, "failed to execute request", libLog.Err(err))
+		libOpentelemetry.HandleSpanError(span, "HTTP request failed", err)
 
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
@@ -343,94 +490,50 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		c.recordFailure()
-		logger.Errorf("Failed to read response body: %v", err)
-		libOpentelemetry.HandleSpanError(&span, "Failed to read response body", err)
+		logger.Log(ctx, libLog.LevelError, "failed to read response body", libLog.Err(err))
+		libOpentelemetry.HandleSpanError(span, "Failed to read response body", err)
 
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	// Check response status
 	// 404 and 403 are valid business responses - do NOT count as circuit breaker failures
-	if resp.StatusCode == http.StatusNotFound {
-		c.recordSuccess()
-		logger.Warnf("Tenant not found: tenantID=%s, service=%s", tenantID, service)
-		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "Tenant not found", nil)
-
-		return nil, core.ErrTenantNotFound
-	}
-
-	// 403 Forbidden indicates the tenant-service association exists but is not active
-	// (e.g., suspended or purged). Parse the structured error response to provide
-	// a specific error type that callers can handle distinctly from "not found".
-	if resp.StatusCode == http.StatusForbidden {
-		c.recordSuccess()
-		logger.Warnf("Tenant service access denied: tenantID=%s, service=%s", tenantID, service)
-
-		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "Tenant service suspended or purged", nil)
-
-		var errResp struct {
-			Code   string `json:"code"`
-			Error  string `json:"error"`
-			Status string `json:"status"`
-		}
-
-		if jsonErr := json.Unmarshal(body, &errResp); jsonErr == nil && errResp.Status != "" {
-			return nil, &core.TenantSuspendedError{
-				TenantID: tenantID,
-				Status:   errResp.Status,
-				Message:  errResp.Error,
-			}
-		}
-
-		return nil, fmt.Errorf("tenant service access denied: %s", string(body))
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		// Only record failure for server errors (5xx), not client errors (4xx)
-		if isServerError(resp.StatusCode) {
-			c.recordFailure()
-		}
-
-		logger.Errorf("Tenant Manager returned error: status=%d, body=%s", resp.StatusCode, string(body))
-		libOpentelemetry.HandleSpanError(&span, "Tenant Manager returned error", fmt.Errorf("status %d", resp.StatusCode))
-
-		return nil, fmt.Errorf("tenant manager returned status %d: %s", resp.StatusCode, string(body))
+	if err := c.handleGetTenantConfigStatus(ctx, span, tenantID, service, resp.StatusCode, body); err != nil {
+		return nil, err
 	}
 
 	// Parse response
 	var config core.TenantConfig
 	if err := json.Unmarshal(body, &config); err != nil {
-		logger.Errorf("Failed to parse response: %v", err)
-		libOpentelemetry.HandleSpanError(&span, "Failed to parse response", err)
+		logger.Log(ctx, libLog.LevelError, "failed to parse response", libLog.Err(err))
+		libOpentelemetry.HandleSpanError(span, "Failed to parse response", err)
 
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	c.recordSuccess()
+	logger.Log(ctx, libLog.LevelInfo, "successfully fetched tenant config",
+		libLog.String("tenant_id", tenantID),
+		libLog.String("slug", config.TenantSlug),
+	)
 
-	// Cache the successful response. Marshal errors are non-fatal (cache miss next time).
-	if configJSON, marshalErr := json.Marshal(&config); marshalErr == nil {
-		_ = c.cache.Set(ctx, cacheKey, string(configJSON), c.cacheTTL)
-	}
-
-	logger.Infof("Successfully fetched tenant config: tenantID=%s, slug=%s", tenantID, config.TenantSlug)
+	c.cacheTenantConfig(ctx, cacheKey, &config)
 
 	return &config, nil
 }
 
 // InvalidateConfig removes the cached tenant config for the given tenant and service.
-// This should be called when a config change event is received (e.g., via RabbitMQ)
-// to ensure the next GetTenantConfig call fetches fresh data from the API.
 func (c *Client) InvalidateConfig(ctx context.Context, tenantID, service string) error {
+	if c.cache == nil {
+		return nil
+	}
+
 	cacheKey := fmt.Sprintf("%s:%s:%s", cacheKeyPrefix, tenantID, service)
 
 	return c.cache.Del(ctx, cacheKey)
 }
 
-// Close releases resources held by the client, including stopping the background
-// cleanup goroutine of the default InMemoryCache. If the cache implementation does
-// not implement io.Closer, Close is a no-op.
-// Close should be called when the client is no longer needed to prevent goroutine leaks.
+// Close releases any resources held by the cache implementation.
 func (c *Client) Close() error {
 	type closer interface {
 		Close() error
@@ -447,6 +550,10 @@ func (c *Client) Close() error {
 // This is used as a fallback when Redis cache is unavailable.
 // The API endpoint is: GET {baseURL}/tenants/active?service={service}
 func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) ([]*TenantSummary, error) {
+	if c.httpClient == nil {
+		c.httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_active_tenants")
@@ -454,8 +561,8 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 
 	// Check circuit breaker before making the HTTP request
 	if err := c.checkCircuitBreaker(); err != nil {
-		logger.Warnf("Circuit breaker open, failing fast: service=%s", service)
-		libOpentelemetry.HandleSpanBusinessErrorEvent(&span, "Circuit breaker open", err)
+		logger.Log(ctx, libLog.LevelWarn, "circuit breaker open, failing fast", libLog.String("service", service))
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Circuit breaker open", err)
 
 		return nil, err
 	}
@@ -464,13 +571,13 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 
 	requestURL := fmt.Sprintf("%s/tenants/active?service=%s", c.baseURL, url.QueryEscape(service))
 
-	logger.Infof("Fetching active tenants: service=%s", service)
+	logger.Log(ctx, libLog.LevelInfo, "fetching active tenants", libLog.String("service", service))
 
 	// Create request with context
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		logger.Errorf("Failed to create request: %v", err)
-		libOpentelemetry.HandleSpanError(&span, "Failed to create HTTP request", err)
+		logger.Log(ctx, libLog.LevelError, "failed to create request", libLog.Err(err))
+		libOpentelemetry.HandleSpanError(span, "Failed to create HTTP request", err)
 
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -479,15 +586,15 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	req.Header.Set("Accept", "application/json")
 
 	// Inject trace context into outgoing HTTP headers for distributed tracing
-	libOpentelemetry.InjectHTTPContext(&req.Header, ctx)
+	libOpentelemetry.InjectHTTPContext(ctx, req.Header)
 
 	// Execute request
 	// #nosec G704 -- baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
-		logger.Errorf("Failed to execute request: %v", err)
-		libOpentelemetry.HandleSpanError(&span, "HTTP request failed", err)
+		logger.Log(ctx, libLog.LevelError, "failed to execute request", libLog.Err(err))
+		libOpentelemetry.HandleSpanError(span, "HTTP request failed", err)
 
 		return nil, fmt.Errorf("failed to execute request: %w", err)
 	}
@@ -497,8 +604,8 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		c.recordFailure()
-		logger.Errorf("Failed to read response body: %v", err)
-		libOpentelemetry.HandleSpanError(&span, "Failed to read response body", err)
+		logger.Log(ctx, libLog.LevelError, "failed to read response body", libLog.Err(err))
+		libOpentelemetry.HandleSpanError(span, "Failed to read response body", err)
 
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -510,23 +617,29 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 			c.recordFailure()
 		}
 
-		logger.Errorf("Tenant Manager returned error: status=%d, body=%s", resp.StatusCode, string(body))
-		libOpentelemetry.HandleSpanError(&span, "Tenant Manager returned error", fmt.Errorf("status %d", resp.StatusCode))
+		logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
+			libLog.Int("status", resp.StatusCode),
+			libLog.String("body", truncateBody(body, 512)),
+		)
+		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", resp.StatusCode))
 
-		return nil, fmt.Errorf("tenant manager returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("tenant manager returned status %d for service %s", resp.StatusCode, service)
 	}
 
 	// Parse response
 	var tenants []*TenantSummary
 	if err := json.Unmarshal(body, &tenants); err != nil {
-		logger.Errorf("Failed to parse response: %v", err)
-		libOpentelemetry.HandleSpanError(&span, "Failed to parse response", err)
+		logger.Log(ctx, libLog.LevelError, "failed to parse response", libLog.Err(err))
+		libOpentelemetry.HandleSpanError(span, "Failed to parse response", err)
 
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	c.recordSuccess()
-	logger.Infof("Successfully fetched %d active tenants for service=%s", len(tenants), service)
+	logger.Log(ctx, libLog.LevelInfo, "successfully fetched active tenants",
+		libLog.Int("count", len(tenants)),
+		libLog.String("service", service),
+	)
 
 	return tenants, nil
 }

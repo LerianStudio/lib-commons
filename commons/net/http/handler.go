@@ -1,33 +1,32 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package http
 
 import (
+	"context"
 	"errors"
-	"log"
-	"net/http"
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v3/commons"
+	"github.com/LerianStudio/lib-commons/v4/commons"
+	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
+	libOpentelemetry "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
 	"github.com/gofiber/fiber/v2"
 	"go.opentelemetry.io/otel/trace"
 )
 
 // Ping returns HTTP Status 200 with response "pong".
 func Ping(c *fiber.Ctx) error {
-	if err := c.SendString("healthy"); err != nil {
-		log.Print(err.Error())
-	}
-
-	return nil
+	return c.SendString("pong")
 }
 
-// Version returns HTTP Status 200 with given version.
+// Version returns HTTP Status 200 with the service version from the VERSION
+// environment variable (defaults to "0.0.0").
+//
+// NOTE: This endpoint intentionally exposes the build version. Callers that
+// need to restrict visibility should gate this route behind authentication
+// or omit it from public-facing routers.
 func Version(c *fiber.Ctx) error {
-	return OK(c, fiber.Map{
+	return Respond(c, fiber.StatusOK, fiber.Map{
 		"version":     commons.GetenvOrDefault("VERSION", "0.0.0"),
 		"requestDate": time.Now().UTC(),
 	})
@@ -45,10 +44,10 @@ func Welcome(service string, description string) fiber.Handler {
 
 // NotImplementedEndpoint returns HTTP 501 with not implemented message.
 func NotImplementedEndpoint(c *fiber.Ctx) error {
-	return c.Status(fiber.StatusNotImplemented).JSON(fiber.Map{"error": "Not implemented yet"})
+	return RespondError(c, fiber.StatusNotImplemented, "not_implemented", "Not implemented yet")
 }
 
-// File servers a specific file.
+// File serves a specific file.
 func File(filePath string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		return c.SendFile(filePath)
@@ -56,7 +55,9 @@ func File(filePath string) fiber.Handler {
 }
 
 // ExtractTokenFromHeader extracts the authentication token from the Authorization header.
-// It handles both "Bearer TOKEN" format and raw token format.
+// It accepts strictly "Bearer <token>" format (single space separator, exactly two fields).
+// For non-Bearer schemes, or when the header contains only a raw token with no scheme
+// prefix, the entire trimmed header value is returned as-is.
 func ExtractTokenFromHeader(c *fiber.Ctx) string {
 	authHeader := c.Get(fiber.HeaderAuthorization)
 
@@ -64,46 +65,59 @@ func ExtractTokenFromHeader(c *fiber.Ctx) string {
 		return ""
 	}
 
-	splitToken := strings.Split(authHeader, " ")
+	fields := strings.Fields(authHeader)
 
-	if len(splitToken) > 1 && strings.EqualFold(splitToken[0], "bearer") {
-		return strings.TrimSpace(splitToken[1])
+	// Exactly "Bearer <token>" — two whitespace-separated fields.
+	if len(fields) == 2 && strings.EqualFold(fields[0], cn.Bearer) {
+		return fields[1]
 	}
 
-	if len(splitToken) > 0 {
-		return strings.TrimSpace(splitToken[0])
+	// Reject malformed Bearer with extra fields (e.g. "Bearer tok en").
+	if len(fields) > 2 && strings.EqualFold(fields[0], cn.Bearer) {
+		return ""
+	}
+
+	// Single raw token (no scheme prefix).
+	if len(fields) == 1 {
+		return fields[0]
 	}
 
 	return ""
 }
 
-// HandleFiberError handles errors for Fiber, properly unwrapping errors to check for fiber.Error
-func HandleFiberError(c *fiber.Ctx, err error) error {
+// FiberErrorHandler is the canonical Fiber error handler.
+// It uses the structured logger from the request context so that error
+// details pass through the sanitization pipeline instead of going to
+// plain stdlib log.Printf.
+func FiberErrorHandler(c *fiber.Ctx, err error) error {
 	// Safely end spans if user context exists
 	ctx := c.UserContext()
 	if ctx != nil {
-		// End the span immediately instead of in a goroutine to ensure prompt completion
-		trace.SpanFromContext(ctx).End()
+		span := trace.SpanFromContext(ctx)
+		libOpentelemetry.HandleSpanError(span, "handler error", err)
+		span.End()
 	}
 
-	// Default error handling
-	code := fiber.StatusInternalServerError
-
-	var e *fiber.Error
-	if errors.As(err, &e) {
-		code = e.Code
-	}
-
-	if code == fiber.StatusInternalServerError {
-		// Log the actual error for debugging purposes.
-		log.Printf("handler error on %s %s: %v", c.Method(), c.Path(), err)
-
-		return c.Status(code).JSON(fiber.Map{
-			"error": http.StatusText(code),
+	var fe *fiber.Error
+	if errors.As(err, &fe) {
+		return RenderError(c, ErrorResponse{
+			Code:    fe.Code,
+			Title:   cn.DefaultErrorTitle,
+			Message: fe.Message,
 		})
 	}
 
-	return c.Status(code).JSON(fiber.Map{
-		"error": err.Error(),
-	})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	logger := commons.NewLoggerFromContext(ctx)
+	logger.Log(ctx, libLog.LevelError,
+		"handler error",
+		libLog.String("method", c.Method()),
+		libLog.String("path", c.Path()),
+		libLog.Err(err),
+	)
+
+	return RenderError(c, err)
 }

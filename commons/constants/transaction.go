@@ -1,20 +1,28 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package constant
 
 const (
+	// DefaultExternalAccountAliasPrefix prefixes aliases for external accounts.
 	DefaultExternalAccountAliasPrefix = "@external/"
-	ExternalAccountType               = "external"
+	// ExternalAccountType identifies external accounts.
+	ExternalAccountType = "external"
 
-	DEBIT   = "DEBIT"
-	CREDIT  = "CREDIT"
-	ONHOLD  = "ON_HOLD"
+	// DEBIT identifies debit operations.
+	DEBIT = "DEBIT"
+	// CREDIT identifies credit operations.
+	CREDIT = "CREDIT"
+	// ONHOLD identifies hold operations.
+	ONHOLD = "ON_HOLD"
+	// RELEASE identifies release operations.
 	RELEASE = "RELEASE"
 
-	CREATED  = "CREATED"
+	// CREATED identifies transaction intents created but not yet approved.
+	CREATED = "CREATED"
+	// APPROVED identifies transaction intents approved for processing.
 	APPROVED = "APPROVED"
-	PENDING  = "PENDING"
+	// PENDING identifies transaction intents currently being processed.
+	PENDING = "PENDING"
+	// CANCELED identifies transaction intents canceled or rolled back.
 	CANCELED = "CANCELED"
+	// NOTED identifies transaction intents that have been noted/acknowledged.
+	NOTED = "NOTED"
 )

@@ -1,14 +1,17 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
+//go:build unit
 
 package commons
 
 import (
+	"bytes"
+	"io"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestGetenvOrDefault_WithValue(t *testing.T) {
@@ -186,28 +189,91 @@ func TestSetConfigFromEnvVars_MissingEnvVars(t *testing.T) {
 	assert.Empty(t, config.Field, "missing env var should result in zero value")
 }
 
-func TestEnsureConfigFromEnvVars_Success(t *testing.T) {
-	type Config struct {
-		Field string `env:"TEST_ENSURE_FIELD"`
-	}
+func TestSetConfigFromEnvVars_NilInterface(t *testing.T) {
+	err := SetConfigFromEnvVars(nil)
 
-	t.Setenv("TEST_ENSURE_FIELD", "value")
-
-	config := &Config{}
-	result := EnsureConfigFromEnvVars(config)
-
-	assert.NotNil(t, result)
-	assert.Equal(t, "value", config.Field)
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrNilConfig)
 }
 
-func TestEnsureConfigFromEnvVars_PanicOnNonPointer(t *testing.T) {
+func TestSetConfigFromEnvVars_TypedNilPointer(t *testing.T) {
 	type Config struct {
 		Field string `env:"TEST_FIELD"`
 	}
 
-	config := Config{}
+	var config *Config // typed nil
 
-	assert.Panics(t, func() {
-		EnsureConfigFromEnvVars(config)
-	}, "EnsureConfigFromEnvVars should panic on non-pointer")
+	err := SetConfigFromEnvVars(config)
+
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrNilConfig)
+}
+
+func TestSetConfigFromEnvVars_PointerToNonStruct(t *testing.T) {
+	s := "not a struct"
+
+	err := SetConfigFromEnvVars(&s)
+
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrNotStruct)
+}
+
+func TestInitLocalEnvConfig_NonLocalReturnsNonNil(t *testing.T) {
+	t.Setenv("VERSION", "1.0.0")
+	t.Setenv("ENV_NAME", "production")
+
+	// Reset the once guard so we can test fresh.
+	localEnvConfig = nil
+	localEnvConfigOnce = sync.Once{}
+
+	result := InitLocalEnvConfig()
+
+	require.NotNil(t, result, "InitLocalEnvConfig must return non-nil even for non-local env")
+	assert.False(t, result.Initialized)
+}
+
+func TestInitLocalEnvConfigPrintsVersionAndEnvironment(t *testing.T) {
+	t.Setenv("VERSION", "NO-VERSION")
+	t.Setenv("ENV_NAME", "development")
+
+	localEnvConfig = nil
+	localEnvConfigOnce = sync.Once{}
+
+	stdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create pipe: %v", err)
+	}
+
+	os.Stdout = writer
+
+	var output bytes.Buffer
+	copyDone := make(chan struct{})
+	copyErrCh := make(chan error, 1)
+	go func() {
+		_, copyErr := io.Copy(&output, reader)
+		copyErrCh <- copyErr
+		close(copyDone)
+	}()
+
+	defer func() {
+		require.NoError(t, reader.Close())
+		os.Stdout = stdout
+	}()
+
+	InitLocalEnvConfig()
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close pipe writer: %v", err)
+	}
+
+	<-copyDone
+	require.NoError(t, <-copyErrCh)
+
+	result := output.String()
+
+	want := "VERSION: NO-VERSION\n\nENVIRONMENT NAME: development\n\n"
+	if !strings.Contains(result, want) {
+		t.Fatalf("unexpected output. got: %q", result)
+	}
 }

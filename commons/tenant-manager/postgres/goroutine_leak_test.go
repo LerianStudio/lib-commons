@@ -8,10 +8,9 @@ import (
 	"testing"
 	"time"
 
-	libPostgres "github.com/LerianStudio/lib-commons/v3/commons/postgres"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v3/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
 	"github.com/bxcodec/dbresolver/v2"
 	"go.uber.org/goleak"
 )
@@ -60,7 +59,10 @@ func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmClient := client.NewClient(server.URL, logger)
+	tmClient, err := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP())
+	if err != nil {
+		t.Fatalf("NewClient() returned unexpected error: %v", err)
+	}
 
 	manager := NewManager(tmClient, "test-service",
 		WithLogger(logger),
@@ -72,7 +74,7 @@ func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
 	dummyDB := &pingableDB{pingErr: nil}
 	var db dbresolver.DB = dummyDB
 
-	manager.connections["tenant-slow"] = &libPostgres.PostgresConnection{
+	manager.connections["tenant-slow"] = &PostgresConnection{
 		ConnectionDB: &db,
 	}
 	manager.lastAccessed["tenant-slow"] = time.Now()
@@ -81,7 +83,7 @@ func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
 
 	// GetConnection will hit cache, see that settingsCheckInterval has elapsed,
 	// and spawn a revalidatePoolSettings goroutine that blocks for 500ms on the server.
-	_, err := manager.GetConnection(context.Background(), "tenant-slow")
+	_, err = manager.GetConnection(context.Background(), "tenant-slow")
 	if err != nil {
 		t.Fatalf("GetConnection() returned unexpected error: %v", err)
 	}
@@ -92,13 +94,9 @@ func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
 		t.Fatalf("Close() returned unexpected error: %v", closeErr)
 	}
 
-	// Close the Tenant Manager client to stop the InMemoryCache cleanup goroutine.
-	if closeErr := tmClient.Close(); closeErr != nil {
-		t.Fatalf("tmClient.Close() returned unexpected error: %v", closeErr)
-	}
-
 	// If Close() properly waited, no goroutines should be leaked.
 	goleak.VerifyNone(t,
+		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),

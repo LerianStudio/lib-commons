@@ -3,7 +3,7 @@
 # to be included in all component Makefiles
 
 # ANSI color codes
-BLUE := \033[36m
+BLUE := \033[34m
 NC := \033[0m
 BOLD := \033[1m
 RED := \033[31m
