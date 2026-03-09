@@ -696,12 +696,21 @@ func isTLSImplied(uri string) bool {
 // SanitizedError wraps a driver error with a credential-free message.
 // Error() returns only the sanitized text. This prevents URI/auth details
 // from leaking through error messages into logs or upstream callers.
+// Unwrap() preserves the original error chain so callers can still use
+// errors.Is/As to match context.Canceled, context.DeadlineExceeded, or
+// driver sentinels.
 type SanitizedError struct {
 	// Message is the credential-free error description.
 	Message string
+	// cause is the original unwrapped error for errors.Is/As compatibility.
+	cause error
 }
 
 func (e *SanitizedError) Error() string { return e.Message }
+
+// Unwrap returns the original error, preserving the error chain for
+// errors.Is and errors.As matching.
+func (e *SanitizedError) Unwrap() error { return e.cause }
 
 // sanitizeDriverError wraps a raw MongoDB driver error in a SanitizedError
 // that strips potential URI and authentication details from the message.
@@ -714,7 +723,7 @@ func sanitizeDriverError(err error) error {
 	msg = uriCredentialsPattern.ReplaceAllString(msg, "://***@")
 	msg = uriPasswordParamPattern.ReplaceAllString(msg, "${1}***")
 
-	return &SanitizedError{Message: msg}
+	return &SanitizedError{Message: msg, cause: err}
 }
 
 // uriCredentialsPattern matches "://user:pass@" in connection strings.
