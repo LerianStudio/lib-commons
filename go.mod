@@ -4,7 +4,7 @@ go 1.25.7
 
 require (
 	cloud.google.com/go/iam v1.5.3
-	github.com/alicebob/miniredis/v2 v2.36.1
+	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/aws/aws-sdk-go-v2 v1.41.3
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.3
 	github.com/aws/smithy-go v1.24.2
