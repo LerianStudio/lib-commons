@@ -45,7 +45,7 @@ require (
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/oauth2 v0.35.0
-	golang.org/x/sync v0.19.0
+	golang.org/x/sync v0.20.0
 	golang.org/x/text v0.34.0
 	google.golang.org/api v0.269.0
 	google.golang.org/grpc v1.79.2
