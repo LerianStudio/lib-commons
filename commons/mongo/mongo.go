@@ -99,10 +99,6 @@ func (cfg Config) validate() error {
 		return ErrEmptyDatabaseName
 	}
 
-	if cfg.TLS != nil && strings.TrimSpace(cfg.TLS.CACertBase64) == "" {
-		return configError("TLS CA cert is required when TLS is configured")
-	}
-
 	return nil
 }
 
@@ -123,6 +119,7 @@ var connectionFailuresMetric = metrics.Metric{
 type Client struct {
 	mu             sync.RWMutex
 	client         *mongo.Client
+	closed         bool // terminal flag; set by Close(), prevents reconnection
 	databaseName   string
 	cfg            Config
 	metricsFactory *metrics.MetricsFactory
@@ -224,6 +221,10 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.closed {
+		return ErrClientClosed
+	}
 
 	if c.client != nil {
 		return nil
@@ -344,8 +345,13 @@ func (c *Client) ResolveClient(ctx context.Context) (*mongo.Client, error) {
 
 	// Fast path: already connected (read-lock only).
 	c.mu.RLock()
+	closed := c.closed
 	client := c.client
 	c.mu.RUnlock()
+
+	if closed {
+		return nil, ErrClientClosed
+	}
 
 	if client != nil {
 		return client, nil
@@ -354,6 +360,10 @@ func (c *Client) ResolveClient(ctx context.Context) (*mongo.Client, error) {
 	// Slow path: acquire write lock and double-check before connecting.
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.closed {
+		return nil, ErrClientClosed
+	}
 
 	if c.client != nil {
 		return c.client, nil
@@ -486,6 +496,8 @@ func (c *Client) Close(ctx context.Context) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	c.closed = true
 
 	if c.client == nil {
 		return nil
@@ -638,30 +650,37 @@ func normalizeTLSDefaults(tlsCfg *TLSConfig) {
 }
 
 // buildTLSConfig creates a *tls.Config from a TLSConfig.
+// When CACertBase64 is provided, it is decoded and used as the root CA pool.
+// When CACertBase64 is empty, the system root CA pool is used (RootCAs = nil).
 // MinVersion defaults to TLS 1.2. If cfg.MinVersion is set, it must be
 // tls.VersionTLS12 or tls.VersionTLS13; any other value returns ErrInvalidConfig.
 func buildTLSConfig(cfg TLSConfig) (*tls.Config, error) {
-	caCert, err := base64.StdEncoding.DecodeString(cfg.CACertBase64)
-	if err != nil {
-		return nil, configError(fmt.Sprintf("decoding CA cert: %v", err))
-	}
-
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM(caCert) {
-		return nil, fmt.Errorf("adding CA cert to pool failed: %w", ErrInvalidConfig)
-	}
-
 	if cfg.MinVersion != 0 && cfg.MinVersion != tls.VersionTLS12 && cfg.MinVersion != tls.VersionTLS13 {
 		return nil, fmt.Errorf("%w: unsupported TLS MinVersion %#x (must be tls.VersionTLS12 or tls.VersionTLS13)", ErrInvalidConfig, cfg.MinVersion)
 	}
 
 	tlsConfig := &tls.Config{
-		RootCAs:    caCertPool,
 		MinVersion: tls.VersionTLS12,
 	}
 
 	if cfg.MinVersion == tls.VersionTLS13 {
 		tlsConfig.MinVersion = tls.VersionTLS13
+	}
+
+	// When CACertBase64 is provided, build a custom root CA pool.
+	// When empty, RootCAs remains nil and Go uses the system root CA pool.
+	if strings.TrimSpace(cfg.CACertBase64) != "" {
+		caCert, err := base64.StdEncoding.DecodeString(cfg.CACertBase64)
+		if err != nil {
+			return nil, configError(fmt.Sprintf("decoding CA cert: %v", err))
+		}
+
+		caCertPool := x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("adding CA cert to pool failed: %w", ErrInvalidConfig)
+		}
+
+		tlsConfig.RootCAs = caCertPool
 	}
 
 	return tlsConfig, nil

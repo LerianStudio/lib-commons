@@ -495,6 +495,47 @@ func TestClient_Close(t *testing.T) {
 		require.NoError(t, client.Close(context.Background()))
 		assert.EqualValues(t, 1, disconnectCalls.Load())
 	})
+
+	t.Run("connect_after_close_returns_error", func(t *testing.T) {
+		t.Parallel()
+
+		client := newTestClient(t, nil)
+		require.NoError(t, client.Close(context.Background()))
+
+		err := client.Connect(context.Background())
+		assert.ErrorIs(t, err, ErrClientClosed, "Connect after Close must return ErrClientClosed")
+	})
+
+	t.Run("resolve_client_after_close_returns_error", func(t *testing.T) {
+		t.Parallel()
+
+		client := newTestClient(t, nil)
+		require.NoError(t, client.Close(context.Background()))
+
+		mc, err := client.ResolveClient(context.Background())
+		assert.Nil(t, mc)
+		assert.ErrorIs(t, err, ErrClientClosed, "ResolveClient after Close must return ErrClientClosed")
+	})
+
+	t.Run("close_prevents_reconnection_via_resolve", func(t *testing.T) {
+		t.Parallel()
+
+		var connectCalls atomic.Int32
+		deps := successDeps()
+		deps.connect = func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+			connectCalls.Add(1)
+			return &mongo.Client{}, nil
+		}
+
+		client := newTestClient(t, &deps)
+		initialConnects := connectCalls.Load()
+
+		require.NoError(t, client.Close(context.Background()))
+
+		_, err := client.ResolveClient(context.Background())
+		assert.ErrorIs(t, err, ErrClientClosed)
+		assert.EqualValues(t, initialConnects, connectCalls.Load(), "no reconnection attempt after Close")
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1015,17 +1056,60 @@ func TestBuildTLSConfig(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, uint16(tls.VersionTLS12), cfg.MinVersion)
 	})
+
+	t.Run("empty_ca_cert_uses_system_roots", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, err := buildTLSConfig(TLSConfig{
+			CACertBase64: "",
+			MinVersion:   tls.VersionTLS12,
+		})
+		require.NoError(t, err)
+		assert.Nil(t, cfg.RootCAs, "empty CACertBase64 should leave RootCAs nil (system roots)")
+		assert.Equal(t, uint16(tls.VersionTLS12), cfg.MinVersion)
+	})
+
+	t.Run("empty_ca_cert_with_tls13", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, err := buildTLSConfig(TLSConfig{
+			CACertBase64: "",
+			MinVersion:   tls.VersionTLS13,
+		})
+		require.NoError(t, err)
+		assert.Nil(t, cfg.RootCAs, "empty CACertBase64 should leave RootCAs nil (system roots)")
+		assert.Equal(t, uint16(tls.VersionTLS13), cfg.MinVersion)
+	})
+
+	t.Run("whitespace_only_ca_cert_uses_system_roots", func(t *testing.T) {
+		t.Parallel()
+
+		cfg, err := buildTLSConfig(TLSConfig{
+			CACertBase64: "   ",
+			MinVersion:   tls.VersionTLS12,
+		})
+		require.NoError(t, err)
+		assert.Nil(t, cfg.RootCAs, "whitespace-only CACertBase64 should use system roots")
+	})
 }
 
 func TestConfig_Validate_TLS(t *testing.T) {
 	t.Parallel()
 
-	t.Run("tls_requires_ca_cert", func(t *testing.T) {
+	t.Run("tls_without_ca_cert_passes_validation", func(t *testing.T) {
 		t.Parallel()
 
 		cfg := Config{URI: "mongodb://localhost", Database: "db", TLS: &TLSConfig{}}
 		err := cfg.validate()
-		assert.ErrorIs(t, err, ErrInvalidConfig)
+		assert.NoError(t, err, "TLS without CACertBase64 should pass validation (uses system roots)")
+	})
+
+	t.Run("tls_with_min_version_only_passes", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := Config{URI: "mongodb://localhost", Database: "db", TLS: &TLSConfig{MinVersion: tls.VersionTLS13}}
+		err := cfg.validate()
+		assert.NoError(t, err, "TLS with only MinVersion should pass validation")
 	})
 
 	t.Run("tls_with_valid_cert_passes", func(t *testing.T) {
