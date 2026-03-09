@@ -124,7 +124,7 @@
 //	func CreateAccount(ctx context.Context, name string) (*Account, error) {
 //	    a := assert.New(ctx, logger, "account", "create")
 //	    acc := &Account{ID: uuid.New(), Name: name}
-//	    if err := a.NotNil(ctx, acc.ID, "created account must have ID"); err != nil {
+//	    if err := a.NotEmpty(ctx, acc.ID.String(), "created account must have ID"); err != nil {
 //	        return nil, err
 //	    }
 //	    return acc, nil

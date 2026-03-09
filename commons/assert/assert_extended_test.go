@@ -492,6 +492,7 @@ func TestIsNil_NonNilStruct(t *testing.T) {
 // --- shouldIncludeStack Tests ---
 
 func TestShouldIncludeStack_NonProduction(t *testing.T) {
+	// Not parallel - uses t.Setenv and depends on runtime global state.
 	t.Setenv("ENV", "development")
 	t.Setenv("GO_ENV", "")
 
@@ -499,6 +500,7 @@ func TestShouldIncludeStack_NonProduction(t *testing.T) {
 }
 
 func TestShouldIncludeStack_ProductionENV(t *testing.T) {
+	// Not parallel - uses t.Setenv and depends on runtime global state.
 	t.Setenv("ENV", "production")
 	t.Setenv("GO_ENV", "")
 
@@ -506,6 +508,7 @@ func TestShouldIncludeStack_ProductionENV(t *testing.T) {
 }
 
 func TestShouldIncludeStack_ProductionGOENV(t *testing.T) {
+	// Not parallel - uses t.Setenv and depends on runtime global state.
 	t.Setenv("ENV", "")
 	t.Setenv("GO_ENV", "production")
 
@@ -513,6 +516,7 @@ func TestShouldIncludeStack_ProductionGOENV(t *testing.T) {
 }
 
 func TestShouldIncludeStack_ProductionCaseInsensitive(t *testing.T) {
+	// Not parallel - uses t.Setenv and depends on runtime global state.
 	t.Setenv("ENV", "Production")
 	t.Setenv("GO_ENV", "")
 
