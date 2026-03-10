@@ -79,6 +79,14 @@ type MultiTenantConfig struct {
 	// may respond slowly; discovery is best-effort and the sync loop will retry.
 	// Default: 500ms
 	DiscoveryTimeout time.Duration
+
+	// EagerStart controls whether consumers are started immediately for all
+	// discovered tenants at startup and during sync. When true (default),
+	// Run() bootstraps consumers for all known tenants and syncTenants()
+	// auto-starts consumers for newly discovered tenants. When false (lazy mode),
+	// consumers are only started on demand via EnsureConsumerStarted().
+	// Default: true
+	EagerStart bool
 }
 
 // DefaultMultiTenantConfig returns a MultiTenantConfig with sensible defaults.
@@ -87,6 +95,7 @@ func DefaultMultiTenantConfig() MultiTenantConfig {
 		SyncInterval:     30 * time.Second,
 		PrefetchCount:    10,
 		DiscoveryTimeout: 500 * time.Millisecond,
+		EagerStart:       true,
 	}
 }
 
@@ -298,6 +307,12 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
+	// Fall back to constructor logger when context has no logger attached
+	// (e.g., context.Background()). This prevents silent log loss.
+	if c.logger != nil {
+		logger = c.logger
+	}
+
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.run")
 	defer span.End()
 
@@ -307,6 +322,11 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	c.parentCtx = ctx
 	c.mu.Unlock()
 
+	connectionMode := "lazy"
+	if c.config.EagerStart {
+		connectionMode = "eager"
+	}
+
 	// Discover tenants without blocking (soft failure - does not start consumers)
 	c.discoverTenants(ctx)
 
@@ -315,8 +335,13 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	knownCount := len(c.knownTenants)
 	c.mu.RUnlock()
 
-	logger.InfofCtx(ctx, "starting multi-tenant consumer, connection_mode=lazy, known_tenants=%d",
-		knownCount)
+	logger.InfofCtx(ctx, "starting multi-tenant consumer, connection_mode=%s, known_tenants=%d",
+		connectionMode, knownCount)
+
+	// Eager mode: start consumers for all discovered tenants immediately
+	if c.config.EagerStart && knownCount > 0 {
+		c.eagerStartKnownTenants(ctx)
+	}
 
 	// Background polling - ASYNC
 	// Create a derived context so Close() can stop the sync loop even when
@@ -329,6 +354,23 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	return nil
 }
 
+// eagerStartKnownTenants starts consumers for all known tenants.
+// Called during Run() when EagerStart is true and tenants were discovered.
+func (c *MultiTenantConsumer) eagerStartKnownTenants(ctx context.Context) {
+	c.mu.RLock()
+	tenantIDs := make([]string, 0, len(c.knownTenants))
+	for id := range c.knownTenants {
+		tenantIDs = append(tenantIDs, id)
+	}
+	c.mu.RUnlock()
+
+	c.logger.InfofCtx(ctx, "eager start: bootstrapping consumers for %d tenants", len(tenantIDs))
+
+	for _, tenantID := range tenantIDs {
+		c.ensureConsumerStarted(ctx, tenantID)
+	}
+}
+
 // discoverTenants fetches tenant IDs and populates knownTenants without starting consumers.
 // This is the lazy mode discovery step: it records which tenants exist but defers consumer
 // creation to background sync or on-demand triggers. Failures are logged as warnings
@@ -337,6 +379,10 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 func (c *MultiTenantConsumer) discoverTenants(ctx context.Context) {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
+
+	if c.logger != nil {
+		logger = c.logger
+	}
 
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.discover_tenants")
 	defer span.End()
@@ -375,6 +421,10 @@ func (c *MultiTenantConsumer) syncActiveTenants(ctx context.Context) {
 	baseLogger, _, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
 	logger := logcompat.New(baseLogger)
 
+	if c.logger != nil {
+		logger = c.logger
+	}
+
 	ticker := time.NewTicker(c.config.SyncInterval)
 	defer ticker.Stop()
 
@@ -395,6 +445,10 @@ func (c *MultiTenantConsumer) syncActiveTenants(ctx context.Context) {
 func (c *MultiTenantConsumer) runSyncIteration(ctx context.Context) {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
+
+	if c.logger != nil {
+		logger = c.logger
+	}
 
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.sync_iteration")
 	defer span.End()
@@ -422,6 +476,10 @@ func (c *MultiTenantConsumer) runSyncIteration(ctx context.Context) {
 func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
+
+	if c.logger != nil {
+		logger = c.logger
+	}
 
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.sync_tenants")
 	defer span.End()
@@ -461,12 +519,25 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 	// but consumers are NOT started here. Consumer spawning is deferred to
 	// on-demand triggers (e.g., ensureConsumerStarted in T-002).
 	if len(newTenants) > 0 {
-		logger.InfofCtx(ctx, "discovered %d new tenants (lazy mode, consumers deferred): %v",
-			len(newTenants), newTenants)
+		if c.config.EagerStart {
+			logger.InfofCtx(ctx, "discovered %d new tenants (eager mode, starting consumers): %v",
+				len(newTenants), newTenants)
+		} else {
+			logger.InfofCtx(ctx, "discovered %d new tenants (lazy mode, consumers deferred): %v",
+				len(newTenants), newTenants)
+		}
 	}
 
 	logger.InfofCtx(ctx, "sync complete: %d known, %d active, %d discovered, %d removed",
 		knownCount, activeCount, len(newTenants), len(removedTenants))
+
+	// Eager mode: start consumers for newly discovered tenants.
+	// ensureConsumerStarted is called outside the lock (already unlocked above).
+	if c.config.EagerStart && len(newTenants) > 0 {
+		for _, tenantID := range newTenants {
+			c.ensureConsumerStarted(ctx, tenantID)
+		}
+	}
 
 	return nil
 }
