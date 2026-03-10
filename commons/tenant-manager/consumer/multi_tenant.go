@@ -360,10 +360,12 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 // Called during Run() when EagerStart is true and tenants were discovered.
 func (c *MultiTenantConsumer) eagerStartKnownTenants(ctx context.Context) {
 	c.mu.RLock()
+
 	tenantIDs := make([]string, 0, len(c.knownTenants))
 	for id := range c.knownTenants {
 		tenantIDs = append(tenantIDs, id)
 	}
+
 	c.mu.RUnlock()
 
 	c.logger.InfofCtx(ctx, "eager start: bootstrapping consumers for %d tenants", len(tenantIDs))
