@@ -300,9 +300,11 @@ func (c *MultiTenantConsumer) Register(queueName string, handler HandlerFunc) er
 	return nil
 }
 
-// Run starts the multi-tenant consumer in lazy mode.
-// It discovers tenants without starting consumers (non-blocking) and starts
-// background polling. Returns nil even on discovery failure (soft failure).
+// Run starts the multi-tenant consumer.
+// It discovers tenants (non-blocking, soft failure) and starts background polling.
+// When EagerStart is true (default), consumers are started immediately for all
+// discovered tenants. When false, consumers are deferred to on-demand triggers.
+// Returns nil even on discovery failure (soft failure).
 func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
@@ -515,9 +517,6 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 	// Close database connections for removed tenants outside the lock (network I/O).
 	c.closeRemovedTenantConnections(ctx, removedTenants, logger)
 
-	// Lazy mode: new tenants are recorded in knownTenants (already done above)
-	// but consumers are NOT started here. Consumer spawning is deferred to
-	// on-demand triggers (e.g., ensureConsumerStarted in T-002).
 	if len(newTenants) > 0 {
 		if c.config.EagerStart {
 			logger.InfofCtx(ctx, "discovered %d new tenants (eager mode, starting consumers): %v",
