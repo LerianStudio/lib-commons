@@ -754,6 +754,119 @@ func TestIsServerError(t *testing.T) {
 	}
 }
 
+func TestWithServiceAPIKey(t *testing.T) {
+	t.Run("sets serviceAPIKey on client", func(t *testing.T) {
+		client := mustNewClient(t, "http://localhost:8080",
+			WithServiceAPIKey("my-secret-key"),
+		)
+
+		assert.Equal(t, "my-secret-key", client.serviceAPIKey)
+	})
+
+	t.Run("default client has empty serviceAPIKey", func(t *testing.T) {
+		client := mustNewClient(t, "http://localhost:8080")
+
+		assert.Empty(t, client.serviceAPIKey)
+	})
+
+	t.Run("empty string is preserved", func(t *testing.T) {
+		client := mustNewClient(t, "http://localhost:8080",
+			WithServiceAPIKey(""),
+		)
+
+		assert.Empty(t, client.serviceAPIKey)
+	})
+}
+
+func TestClient_GetTenantConfig_APIKeyHeader(t *testing.T) {
+	t.Run("sends X-API-Key header when serviceAPIKey is set", func(t *testing.T) {
+		config := newMinimalTenantConfig()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "my-secret-key", r.Header.Get("X-API-Key"))
+
+			w.Header().Set("Content-Type", "application/json")
+			require.NoError(t, json.NewEncoder(w).Encode(config))
+		}))
+		defer server.Close()
+
+		client := mustNewClient(t, server.URL, WithServiceAPIKey("my-secret-key"))
+		ctx := context.Background()
+
+		result, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
+
+		require.NoError(t, err)
+		assert.Equal(t, "tenant-123", result.ID)
+	})
+
+	t.Run("omits X-API-Key header when serviceAPIKey is empty", func(t *testing.T) {
+		config := newMinimalTenantConfig()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Empty(t, r.Header.Get("X-API-Key"), "X-API-Key header should not be present")
+
+			w.Header().Set("Content-Type", "application/json")
+			require.NoError(t, json.NewEncoder(w).Encode(config))
+		}))
+		defer server.Close()
+
+		client := mustNewClient(t, server.URL)
+		ctx := context.Background()
+
+		result, err := client.GetTenantConfig(ctx, "tenant-123", "ledger")
+
+		require.NoError(t, err)
+		assert.Equal(t, "tenant-123", result.ID)
+	})
+}
+
+func TestClient_GetActiveTenantsByService_APIKeyHeader(t *testing.T) {
+	t.Run("sends X-API-Key header when serviceAPIKey is set", func(t *testing.T) {
+		tenants := []*TenantSummary{
+			{ID: "tenant-1", Name: "Acme Corp", Status: "active"},
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "my-secret-key", r.Header.Get("X-API-Key"))
+
+			w.Header().Set("Content-Type", "application/json")
+			require.NoError(t, json.NewEncoder(w).Encode(tenants))
+		}))
+		defer server.Close()
+
+		client := mustNewClient(t, server.URL, WithServiceAPIKey("my-secret-key"))
+		ctx := context.Background()
+
+		result, err := client.GetActiveTenantsByService(ctx, "ledger")
+
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+		assert.Equal(t, "tenant-1", result[0].ID)
+	})
+
+	t.Run("omits X-API-Key header when serviceAPIKey is empty", func(t *testing.T) {
+		tenants := []*TenantSummary{
+			{ID: "tenant-1", Name: "Acme Corp", Status: "active"},
+		}
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Empty(t, r.Header.Get("X-API-Key"), "X-API-Key header should not be present")
+
+			w.Header().Set("Content-Type", "application/json")
+			require.NoError(t, json.NewEncoder(w).Encode(tenants))
+		}))
+		defer server.Close()
+
+		client := mustNewClient(t, server.URL)
+		ctx := context.Background()
+
+		result, err := client.GetActiveTenantsByService(ctx, "ledger")
+
+		require.NoError(t, err)
+		require.Len(t, result, 1)
+	})
+}
+
 func TestIsCircuitBreakerOpenError(t *testing.T) {
 	tests := []struct {
 		name     string
