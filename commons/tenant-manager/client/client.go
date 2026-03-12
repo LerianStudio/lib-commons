@@ -55,11 +55,12 @@ type TenantSummary struct {
 // An optional circuit breaker can be enabled via WithCircuitBreaker to fail fast
 // when the Tenant Manager service is unresponsive.
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
-	logger     libLog.Logger
-	cache      cache.ConfigCache
-	cacheTTL   time.Duration
+	baseURL       string
+	httpClient    *http.Client
+	logger        libLog.Logger
+	serviceAPIKey string // API key for X-API-Key header (empty = no header sent)
+	cache         cache.ConfigCache
+	cacheTTL      time.Duration
 
 	// allowInsecureHTTP permits http:// URLs when set to true.
 	// By default, only https:// URLs are accepted unless explicitly opted in
@@ -165,6 +166,17 @@ func WithCacheTTL(ttl time.Duration) ClientOption {
 func WithAllowInsecureHTTP() ClientOption {
 	return func(c *Client) {
 		c.allowInsecureHTTP = true
+	}
+}
+
+// WithServiceAPIKey sets the API key sent as X-API-Key header on all HTTP
+// requests to the Tenant Manager. When empty (default), no X-API-Key header
+// is sent, preserving backward compatibility with deployments that do not
+// require API key authentication. Typically sourced from the
+// MULTI_TENANT_SERVICE_API_KEY environment variable.
+func WithServiceAPIKey(key string) ClientOption {
+	return func(c *Client) {
+		c.serviceAPIKey = key
 	}
 }
 
@@ -471,6 +483,10 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
+	if c.serviceAPIKey != "" {
+		req.Header.Set("X-API-Key", c.serviceAPIKey)
+	}
+
 	// Inject trace context into outgoing HTTP headers for distributed tracing
 	libOpentelemetry.InjectHTTPContext(ctx, req.Header)
 
@@ -584,6 +600,10 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+
+	if c.serviceAPIKey != "" {
+		req.Header.Set("X-API-Key", c.serviceAPIKey)
+	}
 
 	// Inject trace context into outgoing HTTP headers for distributed tracing
 	libOpentelemetry.InjectHTTPContext(ctx, req.Header)
