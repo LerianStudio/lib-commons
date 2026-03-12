@@ -80,11 +80,11 @@ type MultiTenantConfig struct {
 	// Default: 500ms
 	DiscoveryTimeout time.Duration
 
-	// EagerStart controls whether consumers are started automatically when new tenants
-	// are discovered. When true (default), syncTenants() and Run() will call
-	// ensureConsumerStarted() for each discovered tenant, starting consumer goroutines
-	// immediately. When false, consumers are only started on-demand via the public
-	// EnsureConsumerStarted() API (lazy mode).
+	// EagerStart controls whether consumers are started immediately for all
+	// discovered tenants at startup and during sync. When true (default),
+	// Run() bootstraps consumers for all known tenants and syncTenants()
+	// auto-starts consumers for newly discovered tenants. When false (lazy mode),
+	// consumers are only started on demand via EnsureConsumerStarted().
 	// Default: true
 	EagerStart bool
 }
@@ -360,12 +360,10 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 // Called during Run() when EagerStart is true and tenants were discovered.
 func (c *MultiTenantConsumer) eagerStartKnownTenants(ctx context.Context) {
 	c.mu.RLock()
-
 	tenantIDs := make([]string, 0, len(c.knownTenants))
 	for id := range c.knownTenants {
 		tenantIDs = append(tenantIDs, id)
 	}
-
 	c.mu.RUnlock()
 
 	c.logger.InfofCtx(ctx, "eager start: bootstrapping consumers for %d tenants", len(tenantIDs))
