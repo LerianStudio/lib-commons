@@ -58,7 +58,7 @@ type Client struct {
 	baseURL       string
 	httpClient    *http.Client
 	logger        libLog.Logger
-	serviceAPIKey string // API key for X-API-Key header (required, validated at construction)
+	serviceAPIKey string
 	cache         cache.ConfigCache
 	cacheTTL      time.Duration
 
