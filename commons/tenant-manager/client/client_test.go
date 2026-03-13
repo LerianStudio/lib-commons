@@ -55,7 +55,8 @@ func mustNewClient(t *testing.T, baseURL string, opts ...ClientOption) *Client {
 	t.Helper()
 
 	// Tests use httptest servers which are http://, so allow insecure by default.
-	allOpts := append([]ClientOption{WithAllowInsecureHTTP()}, opts...)
+	// A default test API key is provided so tests that don't care about API key auth still pass.
+	allOpts := append([]ClientOption{WithAllowInsecureHTTP(), WithServiceAPIKey("test-api-key")}, opts...)
 
 	c, err := NewClient(baseURL, testutil.NewMockLogger(), allOpts...)
 	require.NoError(t, err)
@@ -96,6 +97,7 @@ func TestNewClient(t *testing.T) {
 		assert.NotPanics(t, func() {
 			_, _ = NewClient("http://localhost:8080", testutil.NewMockLogger(),
 				WithAllowInsecureHTTP(),
+				WithServiceAPIKey("test-key"),
 				WithHTTPClient(nil),
 				WithTimeout(45*time.Second),
 			)
@@ -103,13 +105,17 @@ func TestNewClient(t *testing.T) {
 	})
 
 	t.Run("rejects http URL without WithAllowInsecureHTTP", func(t *testing.T) {
-		_, err := NewClient("http://localhost:8080", testutil.NewMockLogger())
+		_, err := NewClient("http://localhost:8080", testutil.NewMockLogger(),
+			WithServiceAPIKey("test-key"),
+		)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, core.ErrInsecureHTTP)
 	})
 
 	t.Run("accepts https URL by default", func(t *testing.T) {
-		c, err := NewClient("https://localhost:8080", testutil.NewMockLogger())
+		c, err := NewClient("https://localhost:8080", testutil.NewMockLogger(),
+			WithServiceAPIKey("test-key"),
+		)
 		require.NoError(t, err)
 		assert.NotNil(t, c)
 	})
@@ -763,18 +769,33 @@ func TestWithServiceAPIKey(t *testing.T) {
 		assert.Equal(t, "my-secret-key", client.serviceAPIKey)
 	})
 
-	t.Run("default client has empty serviceAPIKey", func(t *testing.T) {
-		client := mustNewClient(t, "http://localhost:8080")
+	t.Run("missing WithServiceAPIKey returns error", func(t *testing.T) {
+		_, err := NewClient("http://localhost:8080", testutil.NewMockLogger(),
+			WithAllowInsecureHTTP(),
+		)
 
-		assert.Empty(t, client.serviceAPIKey)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, core.ErrServiceAPIKeyRequired)
 	})
 
-	t.Run("empty string is preserved", func(t *testing.T) {
-		client := mustNewClient(t, "http://localhost:8080",
+	t.Run("empty string returns error", func(t *testing.T) {
+		_, err := NewClient("http://localhost:8080", testutil.NewMockLogger(),
+			WithAllowInsecureHTTP(),
 			WithServiceAPIKey(""),
 		)
 
-		assert.Empty(t, client.serviceAPIKey)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, core.ErrServiceAPIKeyRequired)
+	})
+
+	t.Run("valid key succeeds", func(t *testing.T) {
+		c, err := NewClient("http://localhost:8080", testutil.NewMockLogger(),
+			WithAllowInsecureHTTP(),
+			WithServiceAPIKey("valid-key"),
+		)
+
+		require.NoError(t, err)
+		assert.Equal(t, "valid-key", c.serviceAPIKey)
 	})
 }
 
@@ -799,11 +820,12 @@ func TestClient_GetTenantConfig_APIKeyHeader(t *testing.T) {
 		assert.Equal(t, "tenant-123", result.ID)
 	})
 
-	t.Run("omits X-API-Key header when serviceAPIKey is empty", func(t *testing.T) {
+	t.Run("sends default test API key from mustNewClient", func(t *testing.T) {
 		config := newMinimalTenantConfig()
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.Empty(t, r.Header.Get("X-API-Key"), "X-API-Key header should not be present")
+			assert.Equal(t, "test-api-key", r.Header.Get("X-API-Key"),
+				"mustNewClient provides a default test API key")
 
 			w.Header().Set("Content-Type", "application/json")
 			require.NoError(t, json.NewEncoder(w).Encode(config))
@@ -844,13 +866,14 @@ func TestClient_GetActiveTenantsByService_APIKeyHeader(t *testing.T) {
 		assert.Equal(t, "tenant-1", result[0].ID)
 	})
 
-	t.Run("omits X-API-Key header when serviceAPIKey is empty", func(t *testing.T) {
+	t.Run("sends default test API key from mustNewClient", func(t *testing.T) {
 		tenants := []*TenantSummary{
 			{ID: "tenant-1", Name: "Acme Corp", Status: "active"},
 		}
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.Empty(t, r.Header.Get("X-API-Key"), "X-API-Key header should not be present")
+			assert.Equal(t, "test-api-key", r.Header.Get("X-API-Key"),
+				"mustNewClient provides a default test API key")
 
 			w.Header().Set("Content-Type", "application/json")
 			require.NoError(t, json.NewEncoder(w).Encode(tenants))

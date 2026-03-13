@@ -59,7 +59,7 @@ func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
 	}))
 	defer server.Close()
 
-	tmClient, err := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP())
+	tmClient, err := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 	if err != nil {
 		t.Fatalf("NewClient() returned unexpected error: %v", err)
 	}

@@ -15,7 +15,7 @@ import (
 func mustNewTestClient(t *testing.T) *client.Client {
 	t.Helper()
 
-	c, err := client.NewClient("http://localhost:8080", testutil.NewMockLogger(), client.WithAllowInsecureHTTP())
+	c, err := client.NewClient("http://localhost:8080", testutil.NewMockLogger(), client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 	require.NoError(t, err)
 
 	return c

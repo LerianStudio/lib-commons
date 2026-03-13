@@ -22,7 +22,7 @@ import (
 // sub-test only declares what is unique to its scenario.
 func newTestManagers(t testing.TB) (*tmpostgres.Manager, *tmmongo.Manager) {
 	t.Helper()
-	c, err := client.NewClient("http://localhost:8080", nil, client.WithAllowInsecureHTTP())
+	c, err := client.NewClient("http://localhost:8080", nil, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 	require.NoError(t, err)
 	return tmpostgres.NewManager(c, "ledger"), tmmongo.NewManager(c, "ledger")
 }

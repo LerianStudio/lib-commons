@@ -24,7 +24,7 @@ import (
 // Tests use httptest servers (http://), so WithAllowInsecureHTTP is applied.
 func mustNewTestClient(t testing.TB, baseURL string) *client.Client {
 	t.Helper()
-	c, err := client.NewClient(baseURL, testutil.NewMockLogger(), client.WithAllowInsecureHTTP())
+	c, err := client.NewClient(baseURL, testutil.NewMockLogger(), client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 	require.NoError(t, err)
 	return c
 }
@@ -1482,7 +1482,7 @@ func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
 			defer server.Close()
 
 			capLogger := testutil.NewCapturingLogger()
-			tmClient, err := client.NewClient(server.URL, capLogger, client.WithAllowInsecureHTTP())
+			tmClient, err := client.NewClient(server.URL, capLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 			require.NoError(t, err)
 			manager := NewManager(tmClient, "ledger",
 				WithLogger(capLogger),

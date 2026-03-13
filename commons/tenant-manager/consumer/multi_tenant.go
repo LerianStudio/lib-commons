@@ -63,6 +63,11 @@ type MultiTenantConfig struct {
 	// Format: http://tenant-manager:4003
 	MultiTenantURL string
 
+	// ServiceAPIKey is the API key sent as X-API-Key header on HTTP requests to the
+	// Tenant Manager. Required when MultiTenantURL is set. Typically sourced from
+	// the MULTI_TENANT_SERVICE_API_KEY environment variable.
+	ServiceAPIKey string
+
 	// Service is the service name to filter tenants by.
 	// This is passed to tenant-manager when fetching tenant list.
 	Service string
@@ -261,7 +266,9 @@ func NewMultiTenantConsumerWithError(
 
 	// Create Tenant Manager client for fallback if URL is configured
 	if config.MultiTenantURL != "" {
-		pmClient, err := client.NewClient(config.MultiTenantURL, consumer.logger.Base())
+		pmClient, err := client.NewClient(config.MultiTenantURL, consumer.logger.Base(),
+			client.WithServiceAPIKey(config.ServiceAPIKey),
+		)
 		if err != nil {
 			return nil, fmt.Errorf("consumer.NewMultiTenantConsumerWithError: invalid MultiTenantURL: %w", err)
 		}

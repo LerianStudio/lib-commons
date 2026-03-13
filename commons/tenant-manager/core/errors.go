@@ -19,6 +19,9 @@ var ErrNilConfig = errors.New("configuration must not be nil")
 // ErrInsecureHTTP is returned when an HTTP URL is used without explicit opt-in.
 var ErrInsecureHTTP = errors.New("insecure HTTP is not allowed; use HTTPS or enable WithAllowInsecureHTTP()")
 
+// ErrServiceAPIKeyRequired is returned when NewClient is called without a non-empty service API key.
+var ErrServiceAPIKeyRequired = errors.New("service API key is required: use WithServiceAPIKey() with a non-empty key")
+
 // IsNilInterface reports whether v is a nil interface value or an interface
 // wrapping a nil pointer (typed-nil). This is necessary because Go interfaces
 // with a nil concrete value are not == nil.
