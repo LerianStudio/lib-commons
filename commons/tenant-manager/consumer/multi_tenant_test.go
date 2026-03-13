@@ -97,7 +97,7 @@ func setupMiniredis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) 
 // consumer goroutines spawned by ensureConsumerStarted do not panic on nil
 // dereference; they will receive connection errors instead.
 func dummyRabbitMQManager() *tmrabbitmq.Manager {
-	dummyClient, err := client.NewClient("http://127.0.0.1:0", testutil.NewMockLogger(), client.WithAllowInsecureHTTP())
+	dummyClient, err := client.NewClient("http://127.0.0.1:0", testutil.NewMockLogger(), client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 	if err != nil {
 		panic(fmt.Sprintf("dummyRabbitMQManager: failed to create client: %v", err))
 	}
@@ -297,7 +297,7 @@ func TestMultiTenantConsumer_Run_LazyMode(t *testing.T) {
 
 			// Manually create pmClient for http:// test URLs (bypasses HTTPS enforcement in constructor)
 			if apiURL != "" {
-				pmClient, pmErr := client.NewClient(apiURL, mockLogger, client.WithAllowInsecureHTTP())
+				pmClient, pmErr := client.NewClient(apiURL, mockLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 				require.NoError(t, pmErr)
 				consumer.pmClient = pmClient
 				consumer.config.Service = "test-service"
@@ -630,7 +630,7 @@ func TestMultiTenantConsumer_Run_ReadinessWithinDeadline(t *testing.T) {
 			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, mockLogger)
 
 			if apiURL != "" {
-				pmClient, pmErr := client.NewClient(apiURL, mockLogger, client.WithAllowInsecureHTTP())
+				pmClient, pmErr := client.NewClient(apiURL, mockLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 				require.NoError(t, pmErr)
 				consumer.pmClient = pmClient
 			}
@@ -696,7 +696,7 @@ func TestMultiTenantConsumer_Run_StartupTimeVariance(t *testing.T) {
 			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, mockLogger)
 
 			if apiURL != "" {
-				pmClient, pmErr := client.NewClient(apiURL, mockLogger, client.WithAllowInsecureHTTP())
+				pmClient, pmErr := client.NewClient(apiURL, mockLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 				require.NoError(t, pmErr)
 				consumer.pmClient = pmClient
 			}
@@ -785,7 +785,7 @@ func TestMultiTenantConsumer_DiscoveryFailure_LogsWarning(t *testing.T) {
 			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, logger)
 
 			if apiURL != "" {
-				pmClient, pmErr := client.NewClient(apiURL, logger, client.WithAllowInsecureHTTP())
+				pmClient, pmErr := client.NewClient(apiURL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 				require.NoError(t, pmErr)
 				consumer.pmClient = pmClient
 			}
@@ -889,7 +889,8 @@ func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 		{
 			name: "creates_pmClient_when_URL_configured",
 			config: MultiTenantConfig{
-				MultiTenantURL: "https://tenant-manager:4003",
+				MultiTenantURL:  "https://tenant-manager:4003",
+				ServiceAPIKey: "test-key",
 			},
 			expectedSync:     30 * time.Second,
 			expectedWorkers:  0, // WorkersPerQueue is deprecated, default is 0
@@ -1518,7 +1519,7 @@ func TestMultiTenantConsumer_FetchTenantIDs(t *testing.T) {
 			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, mockLogger)
 
 			if apiURL != "" {
-				pmClient, pmErr := client.NewClient(apiURL, mockLogger, client.WithAllowInsecureHTTP())
+				pmClient, pmErr := client.NewClient(apiURL, mockLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 				require.NoError(t, pmErr)
 				consumer.pmClient = pmClient
 			}
@@ -2958,7 +2959,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 		defer server.Close()
 
 		logger := testutil.NewCapturingLogger()
-		tmClient, tmErr := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP())
+		tmClient, tmErr := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 		require.NoError(t, tmErr)
 
 		pgManager := tmpostgres.NewManager(tmClient, "ledger")
@@ -3005,7 +3006,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 		defer server.Close()
 
 		logger := testutil.NewCapturingLogger()
-		tmClient, tmErr := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP())
+		tmClient, tmErr := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 		require.NoError(t, tmErr)
 
 		pgManager := tmpostgres.NewManager(tmClient, "ledger",
@@ -3069,7 +3070,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 		defer server.Close()
 
 		logger := testutil.NewCapturingLogger()
-		tmClient, tmErr := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP())
+		tmClient, tmErr := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 		require.NoError(t, tmErr)
 
 		pgManager := tmpostgres.NewManager(tmClient, "ledger",
@@ -3170,7 +3171,7 @@ func TestMultiTenantConsumer_RevalidateSettings_StopsSuspendedTenant(t *testing.
 			defer server.Close()
 
 			logger := testutil.NewCapturingLogger()
-			tmClient, tmErr := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP())
+			tmClient, tmErr := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 			require.NoError(t, tmErr)
 
 			pgManager := tmpostgres.NewManager(tmClient, "ledger",

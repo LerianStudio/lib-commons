@@ -26,7 +26,7 @@ import (
 // client that has a non-nil client (so IsMultiTenant() returns true).
 func newMultiPoolTestManagers(t testing.TB, url string) (*tmpostgres.Manager, *tmmongo.Manager) {
 	t.Helper()
-	c, err := client.NewClient(url, nil, client.WithAllowInsecureHTTP())
+	c, err := client.NewClient(url, nil, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 	require.NoError(t, err)
 	return tmpostgres.NewManager(c, "ledger"), tmmongo.NewManager(c, "ledger")
 }

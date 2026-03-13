@@ -58,7 +58,7 @@ type Client struct {
 	baseURL       string
 	httpClient    *http.Client
 	logger        libLog.Logger
-	serviceAPIKey string // API key for X-API-Key header (empty = no header sent)
+	serviceAPIKey string // API key for X-API-Key header (required, validated at construction)
 	cache         cache.ConfigCache
 	cacheTTL      time.Duration
 
@@ -170,10 +170,9 @@ func WithAllowInsecureHTTP() ClientOption {
 }
 
 // WithServiceAPIKey sets the API key sent as X-API-Key header on all HTTP
-// requests to the Tenant Manager. When empty (default), no X-API-Key header
-// is sent, preserving backward compatibility with deployments that do not
-// require API key authentication. Typically sourced from the
-// MULTI_TENANT_SERVICE_API_KEY environment variable.
+// requests to the Tenant Manager. The key MUST be non-empty; NewClient returns
+// an error if no key is provided or the key is empty. Typically sourced from
+// the MULTI_TENANT_SERVICE_API_KEY environment variable.
 func WithServiceAPIKey(key string) ClientOption {
 	return func(c *Client) {
 		c.serviceAPIKey = key
@@ -222,6 +221,11 @@ func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) (*Cli
 	// Enforce HTTPS by default. Allow http:// only with explicit opt-in.
 	if parsedURL.Scheme == "http" && !c.allowInsecureHTTP {
 		return nil, fmt.Errorf("client.NewClient: %w: got %q", core.ErrInsecureHTTP, baseURL)
+	}
+
+	// Validate that a non-empty service API key was provided.
+	if c.serviceAPIKey == "" {
+		return nil, fmt.Errorf("client.NewClient: %w", core.ErrServiceAPIKeyRequired)
 	}
 
 	// Validate that the cache is not a typed-nil interface.
