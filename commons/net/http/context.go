@@ -1,16 +1,12 @@
 package http
 
 import (
-	"context"
 	"errors"
-	"fmt"
 	"sync"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
+	"context"
+
 	"github.com/gofiber/fiber/v2"
-	"github.com/google/uuid"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // TenantExtractor extracts tenant ID string from a request context.
@@ -33,6 +29,8 @@ var ErrInvalidIDLocation = errors.New("invalid id location")
 var (
 	ErrMissingContextID    = errors.New("context ID is required")
 	ErrInvalidContextID    = errors.New("context ID must be a valid UUID")
+	ErrMissingResourceID   = errors.New("resource ID is required")
+	ErrInvalidResourceID   = errors.New("resource ID must be a valid UUID")
 	ErrTenantIDNotFound    = errors.New("tenant ID not found in request context")
 	ErrTenantExtractorNil  = errors.New("tenant extractor is not configured")
 	ErrInvalidTenantID     = errors.New("invalid tenant ID format")
@@ -115,142 +113,13 @@ func RegisterResourceErrors(mapping ResourceErrorMapping) {
 	// Detect duplicate registrations by comparing error sentinel pointers.
 	for _, existing := range resourceErrorRegistry {
 		if errors.Is(existing.NotFoundErr, mapping.NotFoundErr) && errors.Is(existing.AccessDeniedErr, mapping.AccessDeniedErr) {
-			return // Already registered, skip duplicate
+			return
 		}
 	}
 
 	resourceErrorRegistry = append(resourceErrorRegistry, mapping)
 }
 
-// TenantOwnershipVerifier validates ownership using tenant and resource IDs.
-type TenantOwnershipVerifier func(ctx context.Context, tenantID, resourceID uuid.UUID) error
-
-// ResourceOwnershipVerifier validates ownership using resource ID only.
-type ResourceOwnershipVerifier func(ctx context.Context, resourceID uuid.UUID) error
-
-// ParseAndVerifyTenantScopedID extracts and validates tenant + resource IDs.
-func ParseAndVerifyTenantScopedID(
-	fiberCtx *fiber.Ctx,
-	idName string,
-	location IDLocation,
-	verifier TenantOwnershipVerifier,
-	tenantExtractor TenantExtractor,
-	missingErr error,
-	invalidErr error,
-	accessErr error,
-) (uuid.UUID, uuid.UUID, error) {
-	if fiberCtx == nil {
-		return uuid.Nil, uuid.Nil, ErrContextNotFound
-	}
-
-	if verifier == nil {
-		return uuid.Nil, uuid.Nil, ErrVerifierNotConfigured
-	}
-
-	resourceID, ctx, tenantID, err := parseTenantAndResourceID(
-		fiberCtx,
-		idName,
-		location,
-		tenantExtractor,
-		missingErr,
-		invalidErr,
-	)
-	if err != nil {
-		return uuid.Nil, uuid.Nil, err
-	}
-
-	if err := verifier(ctx, tenantID, resourceID); err != nil {
-		return uuid.Nil, uuid.Nil, classifyOwnershipError(err, accessErr)
-	}
-
-	return resourceID, tenantID, nil
-}
-
-// ParseAndVerifyResourceScopedID extracts and validates tenant + resource IDs,
-// then verifies resource ownership where tenant is implicit in the verifier.
-func ParseAndVerifyResourceScopedID(
-	fiberCtx *fiber.Ctx,
-	idName string,
-	location IDLocation,
-	verifier ResourceOwnershipVerifier,
-	tenantExtractor TenantExtractor,
-	missingErr error,
-	invalidErr error,
-	accessErr error,
-	verificationLabel string,
-) (uuid.UUID, uuid.UUID, error) {
-	if fiberCtx == nil {
-		return uuid.Nil, uuid.Nil, ErrContextNotFound
-	}
-
-	if verifier == nil {
-		return uuid.Nil, uuid.Nil, ErrVerifierNotConfigured
-	}
-
-	resourceID, ctx, tenantID, err := parseTenantAndResourceID(
-		fiberCtx,
-		idName,
-		location,
-		tenantExtractor,
-		missingErr,
-		invalidErr,
-	)
-	if err != nil {
-		return uuid.Nil, uuid.Nil, err
-	}
-
-	if err := verifier(ctx, resourceID); err != nil {
-		return uuid.Nil, uuid.Nil, classifyResourceOwnershipError(verificationLabel, err, accessErr)
-	}
-
-	return resourceID, tenantID, nil
-}
-
-// parseTenantAndResourceID extracts and validates both tenant and resource UUIDs
-// from the Fiber request context, returning them along with the Go context.
-func parseTenantAndResourceID(
-	fiberCtx *fiber.Ctx,
-	idName string,
-	location IDLocation,
-	tenantExtractor TenantExtractor,
-	missingErr error,
-	invalidErr error,
-) (uuid.UUID, context.Context, uuid.UUID, error) {
-	ctx := fiberCtx.UserContext()
-
-	if tenantExtractor == nil {
-		return uuid.Nil, ctx, uuid.Nil, ErrTenantExtractorNil
-	}
-
-	resourceIDStr, err := getIDValue(fiberCtx, idName, location)
-	if err != nil {
-		return uuid.Nil, ctx, uuid.Nil, err
-	}
-
-	if resourceIDStr == "" {
-		return uuid.Nil, ctx, uuid.Nil, missingErr
-	}
-
-	resourceID, err := uuid.Parse(resourceIDStr)
-	if err != nil {
-		return uuid.Nil, ctx, uuid.Nil, fmt.Errorf("%w: %s", invalidErr, resourceIDStr)
-	}
-
-	tenantIDStr := tenantExtractor(ctx)
-	if tenantIDStr == "" {
-		return uuid.Nil, ctx, uuid.Nil, ErrTenantIDNotFound
-	}
-
-	tenantID, err := uuid.Parse(tenantIDStr)
-	if err != nil {
-		return uuid.Nil, ctx, uuid.Nil, fmt.Errorf("%w: %w", ErrInvalidTenantID, err)
-	}
-
-	return resourceID, ctx, tenantID, nil
-}
-
-// getIDValue retrieves the raw ID string from the Fiber context using the
-// specified location (path parameter or query string).
 func getIDValue(fiberCtx *fiber.Ctx, idName string, location IDLocation) (string, error) {
 	if fiberCtx == nil {
 		return "", ErrContextNotFound
@@ -264,106 +133,4 @@ func getIDValue(fiberCtx *fiber.Ctx, idName string, location IDLocation) (string
 	default:
 		return "", ErrInvalidIDLocation
 	}
-}
-
-// classifyOwnershipError maps a verifier error to the appropriate sentinel,
-// substituting accessErr when a custom access-denied error is provided.
-func classifyOwnershipError(err, accessErr error) error {
-	switch {
-	case errors.Is(err, ErrContextNotFound):
-		return ErrContextNotFound
-	case errors.Is(err, ErrContextNotOwned):
-		if accessErr != nil {
-			return accessErr
-		}
-
-		return ErrContextNotOwned
-	case errors.Is(err, ErrContextNotActive):
-		return ErrContextNotActive
-	case errors.Is(err, ErrContextAccessDenied):
-		if accessErr != nil {
-			return accessErr
-		}
-
-		return ErrContextAccessDenied
-	default:
-		return fmt.Errorf("%w: %w", ErrContextLookupFailed, err)
-	}
-}
-
-// classifyResourceOwnershipError maps a resource-scoped verifier error to the
-// appropriate sentinel using the global resource error registry.
-// This allows consuming services to register their own domain-specific error
-// mappings without modifying the shared library.
-func classifyResourceOwnershipError(label string, err, accessErr error) error {
-	registryMu.RLock()
-
-	registry := make([]ResourceErrorMapping, len(resourceErrorRegistry))
-	copy(registry, resourceErrorRegistry)
-	registryMu.RUnlock()
-
-	for _, mapping := range registry {
-		if mapping.NotFoundErr != nil && errors.Is(err, mapping.NotFoundErr) {
-			return err
-		}
-
-		if mapping.AccessDeniedErr != nil && errors.Is(err, mapping.AccessDeniedErr) {
-			if accessErr != nil {
-				return accessErr
-			}
-
-			return err
-		}
-	}
-
-	return fmt.Errorf("%s %w: %w", label, ErrLookupFailed, err)
-}
-
-// isNilSpan reports whether span is nil, including typed-nil interface values
-// where a concrete nil pointer is stored in a trace.Span interface.
-// This prevents panics when calling methods on a typed-nil span.
-func isNilSpan(span trace.Span) bool {
-	return nilcheck.Interface(span)
-}
-
-// SetHandlerSpanAttributes adds tenant_id and context_id attributes to a trace span.
-func SetHandlerSpanAttributes(span trace.Span, tenantID, contextID uuid.UUID) {
-	if isNilSpan(span) {
-		return
-	}
-
-	span.SetAttributes(attribute.String("tenant.id", tenantID.String()))
-
-	if contextID != uuid.Nil {
-		span.SetAttributes(attribute.String("context.id", contextID.String()))
-	}
-}
-
-// SetTenantSpanAttribute adds tenant_id attribute to a trace span.
-func SetTenantSpanAttribute(span trace.Span, tenantID uuid.UUID) {
-	if isNilSpan(span) {
-		return
-	}
-
-	span.SetAttributes(attribute.String("tenant.id", tenantID.String()))
-}
-
-// SetExceptionSpanAttributes adds tenant_id and exception_id attributes to a trace span.
-func SetExceptionSpanAttributes(span trace.Span, tenantID, exceptionID uuid.UUID) {
-	if isNilSpan(span) {
-		return
-	}
-
-	span.SetAttributes(attribute.String("tenant.id", tenantID.String()))
-	span.SetAttributes(attribute.String("exception.id", exceptionID.String()))
-}
-
-// SetDisputeSpanAttributes adds tenant_id and dispute_id attributes to a trace span.
-func SetDisputeSpanAttributes(span trace.Span, tenantID, disputeID uuid.UUID) {
-	if isNilSpan(span) {
-		return
-	}
-
-	span.SetAttributes(attribute.String("tenant.id", tenantID.String()))
-	span.SetAttributes(attribute.String("dispute.id", disputeID.String()))
 }
