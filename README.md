@@ -2,7 +2,7 @@
 
 `lib-commons` is Lerian's shared Go toolkit for service primitives, connectors, observability, and runtime safety.
 
-The current major API surface is **v4**. If you are migrating from older `lib-commons` or `lib-uncommons` code, see `MIGRATION_MAP.md`.
+The current major API surface is **v4**. If you are migrating from older `lib-commons` code, see `MIGRATION_MAP.md`.
 
 ---
 
@@ -155,6 +155,7 @@ Additionally, `commons.SetConfigFromEnvVars` populates any struct using `env:"VA
 ### Core
 
 - `make build` -- build all packages
+- `make ci` -- run the local fix + verify pipeline (`lint-fix`, `format`, `tidy`, `check-tests`, `sec`, `vet`, `test-unit`, `test-integration`)
 - `make clean` -- clean build artifacts and caches
 - `make tidy` -- clean dependencies (`go mod tidy`)
 - `make format` -- format code with gofmt
@@ -177,6 +178,7 @@ Additionally, `commons.SetConfigFromEnvVars` populates any struct using `env:"VA
 
 - `make lint` -- run lint checks (read-only)
 - `make lint-fix` -- auto-fix lint issues
+- `make vet` -- run `go vet` on all packages
 - `make sec` -- run security checks using gosec (`make sec SARIF=1` for SARIF output)
 - `make check-tests` -- verify test coverage for packages
 

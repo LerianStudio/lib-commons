@@ -439,6 +439,7 @@ safeValue := redactor.Redact(sensitiveField)
 ### Testing Commands
 
 ```bash
+make ci                    # Local fix + verify pipeline
 make test                  # Run unit tests (with -tags=unit)
 make test-unit             # Run unit tests (excluding integration)
 make test-integration      # Run integration tests with testcontainers (requires Docker)
@@ -465,6 +466,7 @@ make lint-fix              # Run linters with auto-fix
 make format                # Format code
 make tidy                  # Clean dependencies
 make check-tests           # Verify test coverage for packages
+make vet                   # Run go vet on all packages
 make sec                   # Security scan with gosec
 make sec SARIF=1           # Security scan with SARIF output
 make build                 # Build all packages
