@@ -124,7 +124,7 @@ func TestRenderError_NilError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	// RenderError(c, nil) returns nil, so no response body is written -> Fiber defaults to 200
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -149,7 +149,7 @@ func TestRenderError_CodeBoundaryAt100(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, 100, resp.StatusCode)
 }
@@ -169,7 +169,7 @@ func TestRenderError_CodeBoundaryAt599(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, 599, resp.StatusCode)
 }
@@ -189,7 +189,7 @@ func TestRenderError_CodeAt99FallsBackTo500(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 }
@@ -209,7 +209,7 @@ func TestRenderError_CodeAt600FallsBackTo500(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 }
@@ -233,7 +233,7 @@ func TestRenderError_EmptyTitleAndMessageDefaultsBoth(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 
@@ -267,7 +267,7 @@ func TestRenderError_ResponseHasExactlyThreeFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
@@ -326,7 +326,7 @@ func TestRenderError_WorksForAllHTTPMethods(t *testing.T) {
 			req := httptest.NewRequest(method, "/test", nil)
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer func() { _ = resp.Body.Close() }()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
 		})
@@ -351,7 +351,7 @@ func TestRenderError_FiberErrorDefaultMessage(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusGatewayTimeout, resp.StatusCode)
 
@@ -382,7 +382,7 @@ func TestRenderError_ReturnsJSON(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	contentType := resp.Header.Get("Content-Type")
 	assert.Contains(t, contentType, "application/json")
@@ -422,7 +422,7 @@ func TestRenderError_UnusualValidCodes(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer func() { _ = resp.Body.Close() }()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			// Valid HTTP codes between 100-599 should be used as-is
 			assert.Equal(t, tt.code, resp.StatusCode)

@@ -8,16 +8,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v4/commons"
 	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
+	otelmetrics "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry/metrics"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -169,7 +172,7 @@ func TestWithTelemetry(t *testing.T) {
 			// Execute request
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			// Check status code
 			assert.Equal(t, tt.expectedStatusCode, resp.StatusCode)
@@ -296,7 +299,7 @@ func TestWithTelemetryExcludedRoutes(t *testing.T) {
 			// Execute request
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			// Check status code
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -408,7 +411,7 @@ func TestEndTracingSpans(t *testing.T) {
 			req := httptest.NewRequest("GET", "/test", nil)
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			// Verify error propagation via status code
 			if tt.handlerErr != nil {
@@ -436,6 +439,51 @@ func TestEndTracingSpans(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEndTracingSpans_CallsNextWithoutInitialContext(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	middleware := &TelemetryMiddleware{}
+	handlerCalled := false
+
+	app.Get("/test", middleware.EndTracingSpans, func(c *fiber.Ctx) error {
+		handlerCalled = true
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/test", nil))
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	assert.True(t, handlerCalled)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
+func TestEndTracingSpans_EndsFinalContextSpan(t *testing.T) {
+	t.Parallel()
+
+	tp, spanRecorder := setupTestTracer()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	app := fiber.New()
+	middleware := &TelemetryMiddleware{}
+
+	app.Get("/test", middleware.EndTracingSpans, func(c *fiber.Ctx) error {
+		ctx, _ := tp.Tracer("test").Start(context.Background(), "handler-span")
+		c.SetUserContext(ctx)
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/test", nil))
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	assert.Eventually(t, func() bool {
+		return len(spanRecorder.Ended()) == 1
+	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, "handler-span", spanRecorder.Ended()[0].Name())
 }
 
 // TestGetMetricsCollectionInterval tests the getMetricsCollectionInterval function
@@ -496,6 +544,67 @@ func TestGetMetricsCollectionInterval(t *testing.T) {
 	}
 }
 
+func resetMetricsCollectorState() {
+	metricsCollectorMu.Lock()
+	defer metricsCollectorMu.Unlock()
+
+	if metricsCollectorStarted && metricsCollectorShutdown != nil {
+		close(metricsCollectorShutdown)
+	}
+
+	metricsCollectorShutdown = nil
+	metricsCollectorStarted = false
+	metricsCollectorOnce = &sync.Once{}
+	metricsCollectorInitErr = nil
+}
+
+func TestEnsureMetricsCollector_ReturnsErrorWhenMetricsFactoryNil(t *testing.T) {
+	t.Parallel()
+	resetMetricsCollectorState()
+	t.Cleanup(resetMetricsCollectorState)
+
+	middleware := &TelemetryMiddleware{Telemetry: &opentelemetry.Telemetry{
+		TelemetryConfig: opentelemetry.TelemetryConfig{LibraryName: "test-library", EnableTelemetry: true},
+		MeterProvider:   sdkmetric.NewMeterProvider(),
+	}}
+
+	err := middleware.ensureMetricsCollector()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MetricsFactory is nil")
+	assert.False(t, metricsCollectorStarted)
+}
+
+func TestEnsureMetricsCollector_NoMeterProviderReturnsNil(t *testing.T) {
+	t.Parallel()
+	resetMetricsCollectorState()
+	t.Cleanup(resetMetricsCollectorState)
+
+	middleware := &TelemetryMiddleware{Telemetry: &opentelemetry.Telemetry{}}
+	require.NoError(t, middleware.ensureMetricsCollector())
+	assert.False(t, metricsCollectorStarted)
+}
+
+func TestStopMetricsCollector_AllowsRestart(t *testing.T) {
+	t.Parallel()
+	resetMetricsCollectorState()
+	t.Cleanup(resetMetricsCollectorState)
+
+	middleware := &TelemetryMiddleware{Telemetry: &opentelemetry.Telemetry{
+		TelemetryConfig: opentelemetry.TelemetryConfig{LibraryName: "test-library", EnableTelemetry: true},
+		MeterProvider:   sdkmetric.NewMeterProvider(),
+		MetricsFactory:  otelmetrics.NewNopFactory(),
+	}}
+
+	require.NoError(t, middleware.ensureMetricsCollector())
+	assert.True(t, metricsCollectorStarted)
+
+	StopMetricsCollector()
+	assert.False(t, metricsCollectorStarted)
+
+	require.NoError(t, middleware.ensureMetricsCollector())
+	assert.True(t, metricsCollectorStarted)
+}
+
 // TestExtractHTTPContext tests the ExtractHTTPContext function
 func TestExtractHTTPContext(t *testing.T) {
 	ctx := context.Background()
@@ -544,7 +653,7 @@ func TestExtractHTTPContext(t *testing.T) {
 
 	resp1, err := app.Test(req1)
 	require.NoError(t, err)
-	defer resp1.Body.Close()
+	defer func() { require.NoError(t, resp1.Body.Close()) }()
 	assert.Equal(t, http.StatusOK, resp1.StatusCode)
 
 	// Test without traceparent header
@@ -553,7 +662,7 @@ func TestExtractHTTPContext(t *testing.T) {
 
 	resp2, err := app.Test(req2)
 	require.NoError(t, err)
-	defer resp2.Body.Close()
+	defer func() { require.NoError(t, resp2.Body.Close()) }()
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 }
 
@@ -663,7 +772,7 @@ func TestWithTelemetryConditionalTracePropagation(t *testing.T) {
 			// Execute request
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			// Check status code
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -805,6 +914,14 @@ func TestSanitizeURL_InvalidURL_ReturnedAsIs(t *testing.T) {
 	invalidURL := "://missing-scheme"
 	result := sanitizeURL(invalidURL)
 	assert.Equal(t, invalidURL, result)
+}
+
+func TestSanitizeURL_InvalidURLWithSensitiveQuery_RedactsFallback(t *testing.T) {
+	t.Parallel()
+
+	result := sanitizeURL("://missing-scheme?token=secret123")
+	assert.NotContains(t, result, "secret123")
+	assert.Contains(t, result, "?redacted")
 }
 
 func TestSanitizeURL_EmptyQueryReturnsOriginal(t *testing.T) {

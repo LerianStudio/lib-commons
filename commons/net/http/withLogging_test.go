@@ -71,6 +71,43 @@ func TestNewRequestInfo_WithReferer(t *testing.T) {
 	assert.Equal(t, "https://example.com", info.Referer)
 }
 
+func TestSanitizeReferer_StripsCredentialsQueryAndFragment(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "https://example.com/path", sanitizeReferer("https://user:pass@example.com/path?token=123#frag"))
+}
+
+func TestSanitizeReferer_InvalidValueFallsBackToDash(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "-", sanitizeReferer("://bad-url"))
+}
+
+func TestNewRequestInfo_SanitizesUserAgentControlCharacters(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	var info *RequestInfo
+
+	app.Get("/", func(c *fiber.Ctx) error {
+		info = NewRequestInfo(c, false)
+		return c.SendStatus(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(cn.HeaderUserAgent, "good-agent\r\nforged")
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	require.NotNil(t, info)
+	assert.NotContains(t, info.UserAgent, "\r")
+	assert.NotContains(t, info.UserAgent, "\n")
+	assert.Contains(t, info.UserAgent, "good-agent")
+	assert.Contains(t, info.UserAgent, "forged")
+}
+
 // ---------------------------------------------------------------------------
 // CLFString
 // ---------------------------------------------------------------------------
@@ -99,6 +136,35 @@ func TestCLFString(t *testing.T) {
 	assert.Contains(t, clf, "200")
 	assert.Contains(t, clf, "1024")
 	assert.Contains(t, clf, "curl/7.68.0")
+}
+
+func TestCLFString_DoesNotIncludeControlCharactersFromUserAgent(t *testing.T) {
+	t.Parallel()
+
+	info := &RequestInfo{
+		RemoteAddress: "192.168.1.1",
+		Username:      "admin",
+		Protocol:      "http",
+		Date:          time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC),
+		Method:        "POST",
+		URI:           "/api/v1/resource",
+		Status:        200,
+		Size:          1024,
+		Referer:       "-",
+		UserAgent:     "curl/7.68.0\r\nforged\x00",
+	}
+
+	clf := info.CLFString()
+	assert.NotContains(t, clf, "\r")
+	assert.NotContains(t, clf, "\n")
+	assert.NotContains(t, clf, "\x00")
+	assert.Contains(t, clf, "curl/7.68.0forged")
+}
+
+func TestSanitizeLogValue_RemovesNullByte(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "abcdef", sanitizeLogValue("abc\x00def"))
 }
 
 func TestStringImplementsStringer(t *testing.T) {
@@ -167,6 +233,40 @@ func TestWithCustomLogger_NilDoesNotOverride(t *testing.T) {
 	mid := buildOpts(WithCustomLogger(nil))
 	assert.NotNil(t, mid.Logger)
 	assert.IsType(t, &log.GoLogger{}, mid.Logger)
+}
+
+func TestWithCustomLogger_TypedNilDoesNotOverride(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *mockLogger
+	mid := buildOpts(WithCustomLogger(typedNil))
+	assert.NotNil(t, mid.Logger)
+	assert.IsType(t, &log.GoLogger{}, mid.Logger)
+}
+
+func TestWithHTTPLogging_TypedNilCustomLoggerFallsBackToDefault(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *mockLogger
+	app := fiber.New()
+	app.Use(WithHTTPLogging(WithCustomLogger(typedNil)))
+	app.Get("/test", func(c *fiber.Ctx) error {
+		return c.SendStatus(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestNormalizeRequestID_TrimsWhitespaceAndControlCharacters(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "trace-123", normalizeRequestID(" \r\ntrace-123\x00 "))
+	assert.Empty(t, normalizeRequestID(" \r\n\x00 "))
 }
 
 // ---------------------------------------------------------------------------
@@ -262,6 +362,25 @@ func TestWithHTTPLogging_SetsHeaderID(t *testing.T) {
 	assert.NotEmpty(t, headerID)
 }
 
+func TestWithHTTPLogging_NormalizesIncomingHeaderID(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	app.Use(WithHTTPLogging())
+	app.Get("/test", func(c *fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set(cn.HeaderID, "  trace-123  ")
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "trace-123", resp.Header.Get(cn.HeaderID))
+}
+
 func TestWithHTTPLogging_SkipsSwagger(t *testing.T) {
 	t.Parallel()
 
@@ -282,21 +401,75 @@ func TestWithHTTPLogging_SkipsSwagger(t *testing.T) {
 func TestWithHTTPLogging_PostWithJSONBody(t *testing.T) {
 	t.Parallel()
 
+	logger := newCaptureLogger()
 	app := fiber.New()
-	app.Use(WithHTTPLogging())
+	app.Use(WithHTTPLogging(WithCustomLogger(logger)))
 	app.Post("/api", func(c *fiber.Ctx) error {
 		return c.SendStatus(http.StatusCreated)
 	})
 
 	body := strings.NewReader(`{"username":"admin","password":"secret"}`)
-	req := httptest.NewRequest(http.MethodPost, "/api", body)
+	req := httptest.NewRequest(http.MethodPost, "/api?token=abc123", body)
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Referer", "https://user:pass@example.com/path?token=abc123#frag")
+	req.Header.Set(cn.HeaderUserAgent, "good-agent\r\nforged")
 
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
+
+	entries := logger.entries()
+	require.Len(t, entries, 1)
+	assert.Equal(t, log.LevelInfo, entries[0].level)
+	assert.NotContains(t, entries[0].msg, "secret")
+	assert.NotContains(t, entries[0].msg, "abc123")
+	assert.NotContains(t, entries[0].msg, "\r")
+	assert.NotContains(t, entries[0].msg, "\n")
+	assert.Contains(t, entries[0].msg, "https://example.com/path")
+}
+
+func TestGetBodyObfuscatedString_DispatchesByContentType(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	var got string
+
+	app.Post("/api", func(c *fiber.Ctx) error {
+		got = getBodyObfuscatedString(c, c.Body())
+		return c.SendStatus(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/api", strings.NewReader(`{"password":"secret"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	assert.NotContains(t, got, "secret")
+	assert.Contains(t, got, cn.ObfuscatedValue)
+}
+
+func TestGetBodyObfuscatedString_UnknownContentTypeReturnsRawBody(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	var got string
+
+	app.Post("/api", func(c *fiber.Ctx) error {
+		got = getBodyObfuscatedString(c, c.Body())
+		return c.SendStatus(http.StatusOK)
+	})
+
+	body := "plain text body"
+	req := httptest.NewRequest(http.MethodPost, "/api", strings.NewReader(body))
+	req.Header.Set("Content-Type", "text/plain")
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	assert.Equal(t, body, got)
 }
 
 // ---------------------------------------------------------------------------

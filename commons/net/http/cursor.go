@@ -20,7 +20,7 @@ const (
 // ErrInvalidCursorDirection indicates an invalid next/prev cursor direction.
 var ErrInvalidCursorDirection = errors.New("invalid cursor direction")
 
-// Cursor is the only cursor contract for keyset navigation in v2.
+// Cursor is the cursor contract for keyset navigation.
 type Cursor struct {
 	ID        string `json:"id"`
 	Direction string `json:"direction"`
