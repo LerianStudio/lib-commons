@@ -517,6 +517,35 @@ func TestClient_Close(t *testing.T) {
 		assert.ErrorIs(t, err, ErrClientClosed, "ResolveClient after Close must return ErrClientClosed")
 	})
 
+	t.Run("resolve_client_reconnects_when_cached_client_is_absent", func(t *testing.T) {
+		t.Parallel()
+
+		initialClient := &mongo.Client{}
+		reconnectedClient := &mongo.Client{}
+		var connectCalls atomic.Int32
+
+		deps := successDeps()
+		deps.connect = func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+			if connectCalls.Add(1) == 1 {
+				return initialClient, nil
+			}
+
+			return reconnectedClient, nil
+		}
+
+		client := newTestClient(t, &deps)
+		assert.EqualValues(t, 1, connectCalls.Load())
+
+		client.mu.Lock()
+		client.client = nil
+		client.mu.Unlock()
+
+		resolved, err := client.ResolveClient(context.Background())
+		require.NoError(t, err)
+		assert.Same(t, reconnectedClient, resolved)
+		assert.EqualValues(t, 2, connectCalls.Load())
+	})
+
 	t.Run("close_prevents_reconnection_via_resolve", func(t *testing.T) {
 		t.Parallel()
 
