@@ -889,8 +889,8 @@ func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 		{
 			name: "creates_pmClient_when_URL_configured",
 			config: MultiTenantConfig{
-				MultiTenantURL:  "https://tenant-manager:4003",
-				ServiceAPIKey: "test-key",
+				MultiTenantURL: "https://tenant-manager:4003",
+				ServiceAPIKey:  "test-key",
 			},
 			expectedSync:     30 * time.Second,
 			expectedWorkers:  0, // WorkersPerQueue is deprecated, default is 0

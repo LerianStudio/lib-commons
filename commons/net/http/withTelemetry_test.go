@@ -550,6 +550,7 @@ func resetMetricsCollectorState() {
 
 	if metricsCollectorStarted && metricsCollectorShutdown != nil {
 		close(metricsCollectorShutdown)
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	metricsCollectorShutdown = nil
@@ -559,7 +560,6 @@ func resetMetricsCollectorState() {
 }
 
 func TestEnsureMetricsCollector_ReturnsErrorWhenMetricsFactoryNil(t *testing.T) {
-	t.Parallel()
 	resetMetricsCollectorState()
 	t.Cleanup(resetMetricsCollectorState)
 
@@ -575,7 +575,6 @@ func TestEnsureMetricsCollector_ReturnsErrorWhenMetricsFactoryNil(t *testing.T) 
 }
 
 func TestEnsureMetricsCollector_NoMeterProviderReturnsNil(t *testing.T) {
-	t.Parallel()
 	resetMetricsCollectorState()
 	t.Cleanup(resetMetricsCollectorState)
 
@@ -585,7 +584,6 @@ func TestEnsureMetricsCollector_NoMeterProviderReturnsNil(t *testing.T) {
 }
 
 func TestStopMetricsCollector_AllowsRestart(t *testing.T) {
-	t.Parallel()
 	resetMetricsCollectorState()
 	t.Cleanup(resetMetricsCollectorState)
 

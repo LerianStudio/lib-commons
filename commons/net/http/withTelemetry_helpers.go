@@ -58,8 +58,8 @@ func sanitizeURL(rawURL string) string {
 
 func sanitizeMalformedURL(rawURL string) string {
 	sanitized := sanitizeLogValue(rawURL)
-	if idx := strings.IndexByte(sanitized, '?'); idx >= 0 {
-		return sanitized[:idx] + "?redacted"
+	if before, _, ok := strings.Cut(sanitized, "?"); ok {
+		return before + "?redacted"
 	}
 
 	return sanitized
