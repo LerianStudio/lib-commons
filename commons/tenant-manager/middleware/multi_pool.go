@@ -325,17 +325,12 @@ func (m *MultiPoolMiddleware) isPublicPath(path string) bool {
 // extractTenantID extracts the tenant ID from the JWT token in the
 // Authorization header.
 //
-// SECURITY CONTRACT (defense-in-depth): token signature MUST be validated by
-// upstream lib-auth middleware before this function is called. This function
-// only parses claims after hasUpstreamAuthAssertion() confirms auth middleware
-// assertions are present in server-side request context (Fiber locals).
+// Token signature/authorization is validated by upstream lib-auth middleware
+// before this function is called. Middleware ordering is the enforcement mechanism.
+// See: https://github.com/LerianStudio/lib-commons/issues/345
 func (m *MultiPoolMiddleware) extractTenantID(c *fiber.Ctx) (string, error) {
 	accessToken := libHTTP.ExtractTokenFromHeader(c)
 	if accessToken == "" {
-		return "", core.ErrAuthorizationTokenRequired
-	}
-
-	if !hasUpstreamAuthAssertion(c) {
 		return "", core.ErrAuthorizationTokenRequired
 	}
 

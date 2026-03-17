@@ -113,19 +113,13 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		return unauthorizedError(c, "MISSING_TOKEN", "Authorization token is required")
 	}
 
-	if !hasUpstreamAuthAssertion(c) {
-		logger.ErrorCtx(ctx, "missing upstream auth assertion; refusing ParseUnverified token path")
-		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "missing upstream auth assertion", core.ErrAuthorizationTokenRequired)
-
-		return unauthorizedError(c, "UNAUTHORIZED", "Unauthorized")
-	}
-
 	// Parse JWT token without signature verification.
 	//
-	// SECURITY CONTRACT (defense-in-depth): this code path is only valid when upstream
-	// lib-auth middleware has already validated signature/issuer/audience and asserted
-	// identity into server-side request context (Fiber locals, e.g. c.Locals("user_id")).
-	// hasUpstreamAuthAssertion() enforces that contract and fails closed when missing.
+	// Token signature/authorization is validated by upstream lib-auth middleware
+	// (Authorize chain) before this middleware runs. Middleware ordering is the
+	// enforcement mechanism — hasUpstreamAuthAssertion was removed because lib-auth
+	// does not set Fiber locals after authorization, making the assertion unreliable.
+	// See: https://github.com/LerianStudio/lib-commons/issues/345
 	token, _, err := new(jwt.Parser).ParseUnverified(accessToken, jwt.MapClaims{})
 	if err != nil {
 		logger.Base().Log(ctx, liblog.LevelError, "failed to parse JWT token", liblog.Err(err))
@@ -208,21 +202,6 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	c.SetUserContext(ctx)
 
 	return c.Next()
-}
-
-// hasUpstreamAuthAssertion verifies that upstream auth middleware has run
-// by checking the server-side local value. HTTP headers are NOT checked
-// as they are spoofable by clients.
-func hasUpstreamAuthAssertion(c *fiber.Ctx) bool {
-	if c == nil {
-		return false
-	}
-
-	if userID, ok := c.Locals("user_id").(string); ok && userID != "" {
-		return true
-	}
-
-	return false
 }
 
 // mapDomainErrorToHTTP is a centralized error-to-HTTP mapping function shared by
