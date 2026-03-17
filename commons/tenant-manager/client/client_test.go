@@ -175,7 +175,7 @@ func TestClient_GetTenantConfig(t *testing.T) {
 		config := newTestTenantConfig()
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.Equal(t, "/tenants/tenant-123/services/ledger/settings", r.URL.Path)
+			assert.Equal(t, "/v1/tenants/tenant-123/services/ledger/connections", r.URL.Path)
 
 			w.Header().Set("Content-Type", "application/json")
 			require.NoError(t, json.NewEncoder(w).Encode(config))
@@ -599,7 +599,7 @@ func TestClient_GetActiveTenantsByService_Success(t *testing.T) {
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/tenants/active", r.URL.Path)
+		assert.Equal(t, "/v1/tenants/active", r.URL.Path)
 		assert.Equal(t, "ledger", r.URL.Query().Get("service"))
 
 		w.Header().Set("Content-Type", "application/json")
@@ -887,6 +887,13 @@ func TestClient_GetActiveTenantsByService_APIKeyHeader(t *testing.T) {
 
 		require.NoError(t, err)
 		require.Len(t, result, 1)
+	})
+}
+
+func TestCacheKeyPrefix(t *testing.T) {
+	t.Run("uses tenant-connections prefix", func(t *testing.T) {
+		assert.Equal(t, "tenant-connections", cacheKeyPrefix,
+			"cacheKeyPrefix must match the renamed /connections endpoint")
 	})
 }
 

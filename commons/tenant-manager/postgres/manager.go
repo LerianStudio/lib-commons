@@ -49,14 +49,14 @@ const (
 
 // fallbackMaxOpenConns is the default maximum number of open connections per tenant
 // database pool. Used when per-tenant connectionSettings are absent from the Tenant
-// Manager /settings response (i.e., the tenant has no explicit pool configuration),
+// Manager /connections response (i.e., the tenant has no explicit pool configuration),
 // or when no Tenant Manager client is configured. Can be overridden per-manager via
 // WithMaxOpenConns.
 const fallbackMaxOpenConns = 25
 
 // fallbackMaxIdleConns is the default maximum number of idle connections per tenant
 // database pool. Used when per-tenant connectionSettings are absent from the Tenant
-// Manager /settings response, or when no Tenant Manager client is configured.
+// Manager /connections response, or when no Tenant Manager client is configured.
 // Can be overridden per-manager via WithMaxIdleConns.
 const fallbackMaxIdleConns = 5
 
