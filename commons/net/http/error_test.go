@@ -31,7 +31,7 @@ func TestRespondError_HappyPath(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
 
@@ -82,7 +82,7 @@ func TestRespondError_AllStatusCodes(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer func() { _ = resp.Body.Close() }()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			assert.Equal(t, tc.status, resp.StatusCode)
 
@@ -110,7 +110,7 @@ func TestRespondError_NoLegacyField(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
@@ -132,7 +132,7 @@ func TestRespondError_JSONStructureExactlyThreeFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
@@ -161,7 +161,7 @@ func TestRespondError_EmptyTitleAndMessage(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
 
@@ -190,7 +190,7 @@ func TestRespondError_LongMessage(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
@@ -211,7 +211,7 @@ func TestRespondError_ContentTypeIsJSON(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
 }
@@ -300,7 +300,7 @@ func TestRenderError_ErrorResponseWithValidCodes(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer func() { _ = resp.Body.Close() }()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			assert.Equal(t, tc.wantCode, resp.StatusCode)
 
@@ -338,7 +338,7 @@ func TestRenderError_MultipleGenericErrorsSanitized(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer func() { _ = resp.Body.Close() }()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 
@@ -374,7 +374,7 @@ func TestRenderError_WrappedErrorResponseConflict(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, 409, resp.StatusCode)
 
@@ -400,7 +400,7 @@ func TestRenderError_WrappedFiberErrorForbidden(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, 403, resp.StatusCode)
 
@@ -429,7 +429,7 @@ func TestFiberErrorHandler_FiberErrorNotFound(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
 
@@ -456,7 +456,7 @@ func TestFiberErrorHandler_GenericError(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 
@@ -490,7 +490,7 @@ func TestFiberErrorHandler_FiberErrorWithVariousStatusCodes(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer func() { _ = resp.Body.Close() }()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			assert.Equal(t, code, resp.StatusCode)
 
@@ -522,7 +522,7 @@ func TestFiberErrorHandler_ErrorResponseType(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
@@ -546,7 +546,7 @@ func TestFiberErrorHandler_RouteNotFound(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/does-not-exist", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusNotFound, resp.StatusCode)
 
@@ -572,7 +572,7 @@ func TestFiberErrorHandler_MethodNotAllowed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	// Fiber sends 404 by default unless MethodNotAllowed is enabled.
 	assert.True(t, resp.StatusCode == 404 || resp.StatusCode == 405)
@@ -593,7 +593,7 @@ func TestRespond_ValidPayload(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
@@ -631,7 +631,7 @@ func TestRespond_InvalidStatusDefaultsTo500(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer func() { _ = resp.Body.Close() }()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 		})
@@ -665,7 +665,7 @@ func TestRespond_BoundaryStatusCodes(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/test", nil)
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer func() { _ = resp.Body.Close() }()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			assert.Equal(t, tc.wantStatus, resp.StatusCode)
 		})
@@ -683,7 +683,7 @@ func TestRespondStatus_ValidStatus(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusNoContent, resp.StatusCode)
 }
@@ -699,7 +699,7 @@ func TestRespondStatus_InvalidStatusDefaultsTo500(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusInternalServerError, resp.StatusCode)
 }
@@ -715,7 +715,7 @@ func TestRespond_NilPayload(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
@@ -744,7 +744,7 @@ func TestExtractTokenFromHeader_BearerToken(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer my-jwt-token-123")
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, "my-jwt-token-123", token)
 }
@@ -765,12 +765,12 @@ func TestExtractTokenFromHeader_BearerCaseInsensitive(t *testing.T) {
 	req.Header.Set("Authorization", "BEARER my-jwt-token-123")
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, "my-jwt-token-123", token)
 }
 
-func TestExtractTokenFromHeader_RawToken(t *testing.T) {
+func TestExtractTokenFromHeader_RawTokenPreserved(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
@@ -786,9 +786,51 @@ func TestExtractTokenFromHeader_RawToken(t *testing.T) {
 	req.Header.Set("Authorization", "raw-token-no-bearer-prefix")
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, "raw-token-no-bearer-prefix", token)
+}
+
+func TestExtractTokenFromHeader_BearerWithoutTokenRejected(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+
+	var token string
+
+	app.Get("/test", func(c *fiber.Ctx) error {
+		token = ExtractTokenFromHeader(c)
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer")
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	assert.Empty(t, token)
+}
+
+func TestExtractTokenFromHeader_BearerWithExtraFieldsRejected(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+
+	var token string
+
+	app.Get("/test", func(c *fiber.Ctx) error {
+		token = ExtractTokenFromHeader(c)
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer token extra")
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	assert.Empty(t, token)
 }
 
 func TestExtractTokenFromHeader_EmptyHeader(t *testing.T) {
@@ -806,7 +848,7 @@ func TestExtractTokenFromHeader_EmptyHeader(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Empty(t, token)
 }
@@ -827,7 +869,7 @@ func TestExtractTokenFromHeader_BearerWithExtraSpaces(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer   my-token  ")
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	// strings.Fields collapses whitespace, so "Bearer   my-token  " => ["Bearer", "my-token"].
 	// The token is correctly extracted regardless of extra whitespace.
@@ -850,9 +892,30 @@ func TestExtractTokenFromHeader_BearerLowercase(t *testing.T) {
 	req.Header.Set("Authorization", "bearer my-token-lowercase")
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, "my-token-lowercase", token)
+}
+
+func TestExtractTokenFromHeader_NonBearerMultiPartReturnsEmpty(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+
+	var token string
+
+	app.Get("/test", func(c *fiber.Ctx) error {
+		token = ExtractTokenFromHeader(c)
+		return c.SendStatus(fiber.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Basic abc123")
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	assert.Empty(t, token)
 }
 
 // ---------------------------------------------------------------------------
@@ -868,7 +931,7 @@ func TestPing(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
@@ -886,7 +949,7 @@ func TestVersion(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/version", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 
@@ -908,7 +971,7 @@ func TestNotImplementedEndpoint(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusNotImplemented, resp.StatusCode)
 
@@ -930,7 +993,7 @@ func TestWelcome(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
+	defer func() { require.NoError(t, resp.Body.Close()) }()
 
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
 

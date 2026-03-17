@@ -151,15 +151,21 @@ func TestWithCORS_WithLoggerOption(t *testing.T) {
 
 	// The logger should have received at least the wildcard warning
 	assert.True(t, logger.logCalled, "expected the logger to be called with wildcard warning")
+	assert.Equal(t, libLog.LevelWarn, logger.lastLevel)
+	assert.Contains(t, logger.lastMessage, "AllowOrigins is set to wildcard")
 }
 
 // testCORSLogger is a test logger that records whether Log was called.
 type testCORSLogger struct {
-	logCalled bool
+	logCalled   bool
+	lastLevel   libLog.Level
+	lastMessage string
 }
 
-func (l *testCORSLogger) Log(_ context.Context, _ libLog.Level, _ string, _ ...libLog.Field) {
+func (l *testCORSLogger) Log(_ context.Context, level libLog.Level, msg string, _ ...libLog.Field) {
 	l.logCalled = true
+	l.lastLevel = level
+	l.lastMessage = msg
 }
 func (l *testCORSLogger) With(_ ...libLog.Field) libLog.Logger { return l }
 func (l *testCORSLogger) WithGroup(string) libLog.Logger       { return l }

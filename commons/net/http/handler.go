@@ -16,6 +16,10 @@ import (
 
 // Ping returns HTTP Status 200 with response "pong".
 func Ping(c *fiber.Ctx) error {
+	if c == nil {
+		return ErrContextNotFound
+	}
+
 	return c.SendString("pong")
 }
 
@@ -35,6 +39,10 @@ func Version(c *fiber.Ctx) error {
 // Welcome returns HTTP Status 200 with service info.
 func Welcome(service string, description string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		if c == nil {
+			return ErrContextNotFound
+		}
+
 		return c.JSON(fiber.Map{
 			"service":     service,
 			"description": description,
@@ -50,35 +58,43 @@ func NotImplementedEndpoint(c *fiber.Ctx) error {
 // File serves a specific file.
 func File(filePath string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
+		if c == nil {
+			return ErrContextNotFound
+		}
+
 		return c.SendFile(filePath)
 	}
 }
 
-// ExtractTokenFromHeader extracts the authentication token from the Authorization header.
-// It accepts strictly "Bearer <token>" format (single space separator, exactly two fields).
-// For non-Bearer schemes, or when the header contains only a raw token with no scheme
-// prefix, the entire trimmed header value is returned as-is.
+// ExtractTokenFromHeader extracts a token from the Authorization header.
+// It accepts `Bearer <token>` case-insensitively and also preserves the
+// legacy raw-token form when the header contains a single token with no scheme.
+// Malformed Bearer values and non-Bearer multi-part values return an empty string.
 func ExtractTokenFromHeader(c *fiber.Ctx) string {
-	authHeader := c.Get(fiber.HeaderAuthorization)
+	if c == nil {
+		return ""
+	}
 
+	authHeader := strings.TrimSpace(c.Get(fiber.HeaderAuthorization))
 	if authHeader == "" {
 		return ""
 	}
 
 	fields := strings.Fields(authHeader)
 
-	// Exactly "Bearer <token>" — two whitespace-separated fields.
 	if len(fields) == 2 && strings.EqualFold(fields[0], cn.Bearer) {
 		return fields[1]
 	}
 
-	// Reject malformed Bearer with extra fields (e.g. "Bearer tok en").
 	if len(fields) > 2 && strings.EqualFold(fields[0], cn.Bearer) {
 		return ""
 	}
 
-	// Single raw token (no scheme prefix).
 	if len(fields) == 1 {
+		if strings.EqualFold(fields[0], cn.Bearer) {
+			return ""
+		}
+
 		return fields[0]
 	}
 
@@ -90,6 +106,14 @@ func ExtractTokenFromHeader(c *fiber.Ctx) string {
 // details pass through the sanitization pipeline instead of going to
 // plain stdlib log.Printf.
 func FiberErrorHandler(c *fiber.Ctx, err error) error {
+	if c == nil {
+		if err != nil {
+			return err
+		}
+
+		return ErrContextNotFound
+	}
+
 	// Safely end spans if user context exists
 	ctx := c.UserContext()
 	if ctx != nil {

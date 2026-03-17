@@ -204,27 +204,25 @@ func TestIntegration_Mongo_ResolveClient(t *testing.T) {
 
 	client := newIntegrationClient(t, uri)
 	defer func() {
-		// ResolveClient may have reconnected, so Close should still work.
-		_ = client.Close(ctx)
+		require.NoError(t, client.Close(ctx))
 	}()
 
-	// Confirm the client is alive before closing.
+	// Confirm the client is alive before simulating a dropped connection.
 	err := client.Ping(ctx)
 	require.NoError(t, err)
 
-	// Close the internal connection — subsequent Client() calls should fail.
-	err = client.Close(ctx)
-	require.NoError(t, err)
-
-	_, err = client.Client(ctx)
-	require.ErrorIs(t, err, ErrClientClosed, "Client() on a closed connection should return ErrClientClosed")
-
-	// ResolveClient should transparently reconnect via lazy-connect.
+	// ResolveClient should return the active connected driver client when the
+	// wrapper is healthy. The branch where the cached client is absent is covered
+	// in unit tests because it requires synthetic internal state manipulation.
 	driverClient, err := client.ResolveClient(ctx)
 	require.NoError(t, err)
 	require.NotNil(t, driverClient)
 
-	// Verify the reconnected client is functional.
+	currentClient, err := client.Client(ctx)
+	require.NoError(t, err)
+	assert.Same(t, currentClient, driverClient)
+
+	// Verify the resolved client is functional against the live container.
 	err = client.Ping(ctx)
 	require.NoError(t, err)
 }

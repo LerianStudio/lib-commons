@@ -3,6 +3,7 @@ package http
 import (
 	"errors"
 	"fmt"
+	"mime"
 	"strings"
 	"sync"
 
@@ -222,15 +223,25 @@ func toSnakeCase(s string) string {
 
 // ParseBodyAndValidate parses the request body into the given struct and validates it.
 // Returns a bad request error if parsing or validation fails.
-// Rejects requests with non-JSON Content-Type headers to provide clear error messages.
+// Rejects requests with explicit non-JSON Content-Type headers to provide clear
+// error messages while preserving existing parser behavior when the header is absent.
 func ParseBodyAndValidate(fiberCtx *fiber.Ctx, payload any) error {
 	if fiberCtx == nil {
 		return ErrContextNotFound
 	}
 
-	ct := fiberCtx.Get(fiber.HeaderContentType)
-	if ct != "" && !strings.HasPrefix(ct, fiber.MIMEApplicationJSON) {
-		return ErrUnsupportedContentType
+	ct := strings.TrimSpace(fiberCtx.Get(fiber.HeaderContentType))
+	if ct != "" {
+		mediaType, _, err := mime.ParseMediaType(ct)
+		if err != nil {
+			mediaType = strings.TrimSpace(strings.SplitN(ct, ";", 2)[0])
+		}
+
+		if !strings.EqualFold(mediaType, fiber.MIMEApplicationJSON) {
+			return ErrUnsupportedContentType
+		}
+
+		fiberCtx.Request().Header.SetContentType(fiber.MIMEApplicationJSON)
 	}
 
 	if err := fiberCtx.BodyParser(payload); err != nil {

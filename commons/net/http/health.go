@@ -73,6 +73,10 @@ type DependencyStatus struct {
 // Returns HTTP 200 (status: "available") when all dependencies are healthy,
 // or HTTP 503 (status: "degraded") when any dependency fails.
 //
+// Security note: this response includes dependency names and health metadata.
+// Prefer `Ping` for public liveness probes, and keep
+// `HealthWithDependencies` on internal or authenticated routes.
+//
 // Example:
 //
 //	f.Get("/health", commonsHttp.HealthWithDependencies(
@@ -120,8 +124,12 @@ func HealthWithDependencies(dependencies ...DependencyCheck) fiber.Handler {
 	}
 
 	return func(c *fiber.Ctx) error {
+		if c == nil {
+			return ErrContextNotFound
+		}
+
 		if configErr != nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			return Respond(c, fiber.StatusServiceUnavailable, fiber.Map{
 				"status": constant.DataSourceStatusDegraded,
 				"error":  configErr.Error(),
 			})

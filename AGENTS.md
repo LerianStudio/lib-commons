@@ -7,11 +7,11 @@ This file provides repository-specific guidance for coding agents working on `li
 - Module: `github.com/LerianStudio/lib-commons/v4`
 - Language: Go
 - Go version: `1.25.7` (see `go.mod`)
-- Current API generation: v4 (unified from the former `lib-uncommons` baseline)
+- Current API generation: v4
 
 ## Primary objective for changes
 
-- Preserve v2 public API contracts unless a task explicitly asks for breaking changes.
+- Preserve v4 public API contracts unless a task explicitly asks for breaking changes.
 - Prefer explicit error returns over panic paths in production code.
 - Keep behavior nil-safe and concurrency-safe by default.
 
@@ -191,11 +191,13 @@ Build and shell:
 - `make test-unit` -- run unit tests excluding integration
 - `make test-integration` -- run integration tests with testcontainers (requires Docker)
 - `make test-all` -- run all tests (unit + integration)
+- `make ci` -- run the local fix + verify pipeline (`lint-fix`, `format`, `tidy`, `check-tests`, `sec`, `vet`, `test-unit`, `test-integration`)
 - `make lint` -- run lint checks (read-only)
 - `make lint-fix` -- auto-fix lint issues
 - `make build` -- build all packages
 - `make format` -- format code with gofmt
 - `make tidy` -- clean dependencies
+- `make vet` -- run `go vet` on all packages
 - `make sec` -- run security checks using gosec (`SARIF=1` for SARIF output)
 - `make clean` -- clean build artifacts
 

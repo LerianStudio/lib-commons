@@ -107,6 +107,7 @@ help:
 	@echo "Core Commands:"
 	@echo "  make help                        - Display this help message"
 	@echo "  make test                        - Run unit tests (without integration)"
+	@echo "  make ci                          - Run the local fix + verify pipeline"
 	@echo "  make build                       - Build all packages"
 	@echo "  make clean                       - Clean all build artifacts"
 	@echo ""
@@ -133,6 +134,7 @@ help:
 	@echo "  make format                      - Format code in all packages"
 	@echo "  make tidy                        - Clean dependencies"
 	@echo "  make check-tests                 - Verify test coverage for packages"
+	@echo "  make vet                         - Run go vet on all packages"
 	@echo "  make sec                         - Run security checks using gosec"
 	@echo "  make sec SARIF=1                 - Run security checks with SARIF output"
 	@echo ""
@@ -166,6 +168,20 @@ clean:
 	@rm -rf ./bin ./dist $(TEST_REPORTS_DIR) coverage.out coverage.html gosec-report.sarif
 	@go clean -cache -testcache
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) All build artifacts cleaned$(GREEN) ✔️$(NC)"
+
+.PHONY: ci
+ci:
+	$(call print_title,Running local CI preflight pipeline)
+	@printf "This target normalizes the worktree before verification.\n"
+	$(MAKE) lint-fix
+	$(MAKE) format
+	$(MAKE) tidy
+	$(MAKE) check-tests
+	$(MAKE) sec
+	$(MAKE) vet
+	$(MAKE) test-unit
+	$(MAKE) test-integration
+	@echo "$(GREEN)$(BOLD)[ok]$(NC) Local CI pipeline completed successfully$(GREEN) ✔️$(NC)"
 
 #-------------------------------------------------------
 # Core Test Commands
@@ -493,6 +509,13 @@ check-tests:
 		go test -cover ./...; \
 	fi
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) Test coverage verification completed$(GREEN) ✔️$(NC)"
+
+.PHONY: vet
+vet:
+	$(call print_title,Running go vet on all packages)
+	$(call check_command,go,"Install Go from https://golang.org/doc/install")
+	go vet ./...
+	@echo "$(GREEN)$(BOLD)[ok]$(NC) go vet completed successfully$(GREEN) ✔️$(NC)"
 
 #-------------------------------------------------------
 # Git Hook Commands

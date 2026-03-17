@@ -1010,7 +1010,7 @@ func TestClassifyOwnershipError_UnknownErrorPreservesOriginal(t *testing.T) {
 	originalErr := errors.New("network timeout")
 	err := classifyOwnershipError(originalErr, nil)
 	assert.ErrorIs(t, err, ErrContextLookupFailed)
-	assert.Contains(t, err.Error(), "network timeout")
+	assert.ErrorIs(t, err, originalErr)
 }
 
 // ---------------------------------------------------------------------------
@@ -1229,6 +1229,17 @@ func TestSetHandlerSpanAttributes_NilSpan(t *testing.T) {
 	SetHandlerSpanAttributes(nil, uuid.New(), uuid.New())
 }
 
+func TestSetHandlerSpanAttributes_TypedNilSpan(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *mockSpan
+	var span trace.Span = typedNil
+
+	assert.NotPanics(t, func() {
+		SetHandlerSpanAttributes(span, uuid.New(), uuid.New())
+	})
+}
+
 // ---------------------------------------------------------------------------
 // SetTenantSpanAttribute
 // ---------------------------------------------------------------------------
@@ -1251,6 +1262,17 @@ func TestSetTenantSpanAttribute_NilSpan(t *testing.T) {
 
 	// Should not panic.
 	SetTenantSpanAttribute(nil, uuid.New())
+}
+
+func TestSetTenantSpanAttribute_TypedNilSpan(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *mockSpan
+	var span trace.Span = typedNil
+
+	assert.NotPanics(t, func() {
+		SetTenantSpanAttribute(span, uuid.New())
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1282,6 +1304,17 @@ func TestSetExceptionSpanAttributes_NilSpan(t *testing.T) {
 	SetExceptionSpanAttributes(nil, uuid.New(), uuid.New())
 }
 
+func TestSetExceptionSpanAttributes_TypedNilSpan(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *mockSpan
+	var span trace.Span = typedNil
+
+	assert.NotPanics(t, func() {
+		SetExceptionSpanAttributes(span, uuid.New(), uuid.New())
+	})
+}
+
 // ---------------------------------------------------------------------------
 // SetDisputeSpanAttributes
 // ---------------------------------------------------------------------------
@@ -1311,6 +1344,17 @@ func TestSetDisputeSpanAttributes_NilSpan(t *testing.T) {
 	SetDisputeSpanAttributes(nil, uuid.New(), uuid.New())
 }
 
+func TestSetDisputeSpanAttributes_TypedNilSpan(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *mockSpan
+	var span trace.Span = typedNil
+
+	assert.NotPanics(t, func() {
+		SetDisputeSpanAttributes(span, uuid.New(), uuid.New())
+	})
+}
+
 // ---------------------------------------------------------------------------
 // IDLocation constants
 // ---------------------------------------------------------------------------
@@ -1334,6 +1378,8 @@ func TestSentinelErrorIdentity(t *testing.T) {
 		ErrInvalidIDLocation,
 		ErrMissingContextID,
 		ErrInvalidContextID,
+		ErrMissingResourceID,
+		ErrInvalidResourceID,
 		ErrTenantIDNotFound,
 		ErrTenantExtractorNil,
 		ErrInvalidTenantID,
