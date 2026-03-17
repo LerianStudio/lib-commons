@@ -29,7 +29,7 @@ const maxResponseBodySize = 10 * 1024 * 1024
 const defaultCacheTTL = 1 * time.Hour
 
 // cacheKeyPrefix matches the tenant-manager key format for debugging clarity.
-const cacheKeyPrefix = "tenant-settings"
+const cacheKeyPrefix = "tenant-connections"
 
 // cbState represents the circuit breaker state.
 type cbState int
@@ -431,7 +431,7 @@ func (c *Client) cacheTenantConfig(ctx context.Context, cacheKey string, config 
 }
 
 // GetTenantConfig fetches tenant configuration from the Tenant Manager API.
-// The API endpoint is: GET {baseURL}/tenants/{tenantID}/services/{service}/settings.
+// The API endpoint is: GET {baseURL}/tenants/{tenantID}/services/{service}/connections.
 // Successful responses are cached unless WithSkipCache is used.
 func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, opts ...GetConfigOption) (*core.TenantConfig, error) {
 	if c.httpClient == nil {
@@ -467,7 +467,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	}
 
 	// Build the URL with properly escaped path parameters to prevent path traversal
-	requestURL := fmt.Sprintf("%s/tenants/%s/services/%s/settings",
+	requestURL := fmt.Sprintf("%s/tenants/%s/services/%s/connections",
 		c.baseURL, url.PathEscape(tenantID), url.PathEscape(service))
 
 	logger.Log(ctx, libLog.LevelInfo, "fetching tenant config",
