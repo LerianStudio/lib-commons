@@ -431,7 +431,7 @@ func (c *Client) cacheTenantConfig(ctx context.Context, cacheKey string, config 
 }
 
 // GetTenantConfig fetches tenant configuration from the Tenant Manager API.
-// The API endpoint is: GET {baseURL}/tenants/{tenantID}/services/{service}/connections.
+// The API endpoint is: GET {baseURL}/v1/tenants/{tenantID}/services/{service}/connections.
 // Successful responses are cached unless WithSkipCache is used.
 func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, opts ...GetConfigOption) (*core.TenantConfig, error) {
 	if c.httpClient == nil {
@@ -467,7 +467,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	}
 
 	// Build the URL with properly escaped path parameters to prevent path traversal
-	requestURL := fmt.Sprintf("%s/tenants/%s/services/%s/connections",
+	requestURL := fmt.Sprintf("%s/v1/tenants/%s/services/%s/connections",
 		c.baseURL, url.PathEscape(tenantID), url.PathEscape(service))
 
 	logger.Log(ctx, libLog.LevelInfo, "fetching tenant config",
@@ -568,7 +568,7 @@ func (c *Client) Close() error {
 
 // GetActiveTenantsByService fetches active tenants for a service from Tenant Manager.
 // This is used as a fallback when Redis cache is unavailable.
-// The API endpoint is: GET {baseURL}/tenants/active?service={service}
+// The API endpoint is: GET {baseURL}/v1/tenants/active?service={service}
 func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) ([]*TenantSummary, error) {
 	if c.httpClient == nil {
 		c.httpClient = &http.Client{Timeout: 30 * time.Second}
@@ -589,7 +589,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 
 	// Build the URL with properly escaped query parameter to prevent injection
 
-	requestURL := fmt.Sprintf("%s/tenants/active?service=%s", c.baseURL, url.QueryEscape(service))
+	requestURL := fmt.Sprintf("%s/v1/tenants/active?service=%s", c.baseURL, url.QueryEscape(service))
 
 	logger.Log(ctx, libLog.LevelInfo, "fetching active tenants", libLog.String("service", service))
 

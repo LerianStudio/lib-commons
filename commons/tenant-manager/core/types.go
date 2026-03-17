@@ -68,7 +68,7 @@ type ConnectionSettings struct {
 
 // TenantConfig represents the tenant configuration from Tenant Manager.
 // The Databases map is keyed by module name (e.g., "onboarding", "transaction").
-// This matches the flat format returned by the tenant-manager /settings endpoint.
+// This matches the flat format returned by the tenant-manager /v1/.../connections endpoint.
 type TenantConfig struct {
 	ID                 string                    `json:"id"`
 	TenantSlug         string                    `json:"tenantSlug"`
