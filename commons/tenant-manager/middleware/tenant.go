@@ -114,12 +114,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	}
 
 	// Parse JWT token without signature verification.
-	//
-	// Token signature/authorization is validated by upstream lib-auth middleware
-	// (Authorize chain) before this middleware runs. Middleware ordering is the
-	// enforcement mechanism — hasUpstreamAuthAssertion was removed because lib-auth
-	// does not set Fiber locals after authorization, making the assertion unreliable.
-	// See: https://github.com/LerianStudio/lib-commons/issues/345
+	// Token signature is validated by upstream auth middleware before this point.
 	token, _, err := new(jwt.Parser).ParseUnverified(accessToken, jwt.MapClaims{})
 	if err != nil {
 		logger.Base().Log(ctx, liblog.LevelError, "failed to parse JWT token", liblog.Err(err))
