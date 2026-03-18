@@ -47,7 +47,24 @@ func BuildURI(cfg URIConfig) (string, error) {
 		return "", err
 	}
 
-	uri := buildURL(scheme, host, port, username, cfg.Password, database, cfg.Query)
+	// Default authSource to "admin" when a database is specified in the path
+	// but authSource is not explicitly set. Without this, the MongoDB driver
+	// uses the path database as authSource, which breaks backward compatibility
+	// for deployments where the user was created in the "admin" database
+	// (the common default). Callers that need a different authSource can set
+	// it explicitly in cfg.Query.
+	query := cfg.Query
+	if database != "" && username != "" {
+		if query == nil || !query.Has("authSource") {
+			if query == nil {
+				query = url.Values{}
+			}
+
+			query.Set("authSource", "admin")
+		}
+	}
+
+	uri := buildURL(scheme, host, port, username, cfg.Password, database, query)
 
 	return uri.String(), nil
 }
