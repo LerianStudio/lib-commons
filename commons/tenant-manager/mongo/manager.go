@@ -740,9 +740,15 @@ func buildMongoURI(cfg *core.MongoDBConfig, logger *logcompat.Logger) (string, e
 	// Build query parameters using url.Values for safe encoding.
 	query := url.Values{}
 
-	// Add authSource only if explicitly configured in secrets.
+	// Default authSource to "admin" when a database is in the URI path and
+	// credentials are present but no explicit authSource is configured.
+	// Without this, the MongoDB driver uses the path database as authSource,
+	// which breaks deployments where the user was created in "admin" (the
+	// common default). Explicit authSource from tenant config takes precedence.
 	if cfg.AuthSource != "" {
 		query.Set("authSource", cfg.AuthSource)
+	} else if cfg.Database != "" && cfg.Username != "" {
+		query.Set("authSource", "admin")
 	}
 
 	// Add directConnection for single-node replica sets where the server's

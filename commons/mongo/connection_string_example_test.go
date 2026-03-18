@@ -28,5 +28,5 @@ func ExampleBuildURI() {
 
 	// Output:
 	// true
-	// mongodb://app:EXAMPLE_DO_NOT_USE@db.internal:27017/ledger?replicaSet=rs0
+	// mongodb://app:EXAMPLE_DO_NOT_USE@db.internal:27017/ledger?authSource=admin&replicaSet=rs0
 }

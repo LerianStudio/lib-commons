@@ -545,7 +545,7 @@ func TestBuildMongoURI(t *testing.T) {
 		uri, err := buildMongoURI(cfg, nil)
 
 		require.NoError(t, err)
-		assert.Equal(t, "mongodb://user:pass@localhost:27017/testdb", uri)
+		assert.Equal(t, "mongodb://user:pass@localhost:27017/testdb?authSource=admin", uri)
 	})
 
 	t.Run("builds URI without credentials", func(t *testing.T) {
@@ -559,6 +559,51 @@ func TestBuildMongoURI(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Equal(t, "mongodb://localhost:27017/testdb", uri)
+	})
+
+	t.Run("defaults authSource to admin with database and credentials", func(t *testing.T) {
+		cfg := &core.MongoDBConfig{
+			Host:     "mongo.example.com",
+			Port:     27017,
+			Database: "tenantdb",
+			Username: "appuser",
+			Password: "secret",
+		}
+
+		uri, err := buildMongoURI(cfg, nil)
+
+		require.NoError(t, err)
+		assert.Contains(t, uri, "authSource=admin")
+	})
+
+	t.Run("explicit authSource overrides default", func(t *testing.T) {
+		cfg := &core.MongoDBConfig{
+			Host:       "mongo.example.com",
+			Port:       27017,
+			Database:   "tenantdb",
+			Username:   "appuser",
+			Password:   "secret",
+			AuthSource: "customauth",
+		}
+
+		uri, err := buildMongoURI(cfg, nil)
+
+		require.NoError(t, err)
+		assert.Contains(t, uri, "authSource=customauth")
+		assert.NotContains(t, uri, "authSource=admin")
+	})
+
+	t.Run("no authSource without credentials", func(t *testing.T) {
+		cfg := &core.MongoDBConfig{
+			Host:     "mongo.example.com",
+			Port:     27017,
+			Database: "tenantdb",
+		}
+
+		uri, err := buildMongoURI(cfg, nil)
+
+		require.NoError(t, err)
+		assert.NotContains(t, uri, "authSource")
 	})
 
 	t.Run("URL-encodes special characters in credentials", func(t *testing.T) {
@@ -612,7 +657,7 @@ func TestBuildMongoURI(t *testing.T) {
 				uri, err := buildMongoURI(cfg, nil)
 				require.NoError(t, err)
 
-				expectedURI := fmt.Sprintf("mongodb://%s:%s@localhost:27017/testdb",
+				expectedURI := fmt.Sprintf("mongodb://%s:%s@localhost:27017/testdb?authSource=admin",
 					tt.expectedUser, tt.expectedPassword)
 				assert.Equal(t, expectedURI, uri)
 				assert.Contains(t, uri, tt.expectedUser)
