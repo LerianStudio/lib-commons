@@ -693,43 +693,66 @@ func (p *Manager) IsMultiTenant() bool {
 // escaped according to RFC 3986. This prevents injection of URI control
 // characters through tenant-supplied configuration values.
 func buildMongoURI(cfg *core.MongoDBConfig, logger *logcompat.Logger) (string, error) {
-	if cfg.URI == "" && cfg.Host == "" {
-		return "", errors.New("mongo host is required when URI is not provided")
-	}
-
-	if cfg.URI == "" && cfg.Port == 0 {
-		return "", errors.New("mongo port is required when URI is not provided")
-	}
-
 	if cfg.URI != "" {
-		parsed, err := url.Parse(cfg.URI)
-		if err != nil {
-			return "", fmt.Errorf("invalid mongo URI: %w", err)
-		}
-
-		if parsed.Scheme != "mongodb" && parsed.Scheme != "mongodb+srv" {
-			return "", fmt.Errorf("invalid mongo URI scheme %q", parsed.Scheme)
-		}
-
-		if logger != nil {
-			logger.Warn("using raw mongodb URI from tenant configuration")
-		}
-
-		return cfg.URI, nil
+		return validateAndReturnRawURI(cfg.URI, logger)
 	}
 
+	if err := validateMongoHostPort(cfg); err != nil {
+		return "", err
+	}
+
+	u := buildMongoBaseURL(cfg)
+	query := buildMongoQueryParams(cfg)
+
+	if len(query) > 0 {
+		u.RawQuery = query.Encode()
+	}
+
+	return u.String(), nil
+}
+
+// validateAndReturnRawURI validates and returns a raw MongoDB URI when provided directly.
+func validateAndReturnRawURI(uri string, logger *logcompat.Logger) (string, error) {
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		return "", fmt.Errorf("invalid mongo URI: %w", err)
+	}
+
+	if parsed.Scheme != "mongodb" && parsed.Scheme != "mongodb+srv" {
+		return "", fmt.Errorf("invalid mongo URI scheme %q", parsed.Scheme)
+	}
+
+	if logger != nil {
+		logger.Warn("using raw mongodb URI from tenant configuration")
+	}
+
+	return uri, nil
+}
+
+// validateMongoHostPort validates that host and port are present when no URI is provided.
+func validateMongoHostPort(cfg *core.MongoDBConfig) error {
+	if cfg.Host == "" {
+		return errors.New("mongo host is required when URI is not provided")
+	}
+
+	if cfg.Port == 0 {
+		return errors.New("mongo port is required when URI is not provided")
+	}
+
+	return nil
+}
+
+// buildMongoBaseURL constructs the base MongoDB URL with scheme, host, credentials, and database path.
+func buildMongoBaseURL(cfg *core.MongoDBConfig) *url.URL {
 	u := &url.URL{
 		Scheme: "mongodb",
 		Host:   cfg.Host + ":" + strconv.Itoa(cfg.Port),
 	}
 
-	// Set credentials via url.UserPassword which encodes per RFC 3986 userinfo rules.
 	if cfg.Username != "" && cfg.Password != "" {
 		u.User = url.UserPassword(cfg.Username, cfg.Password)
 	}
 
-	// Set database path with proper escaping. RawPath ensures url.URL.String()
-	// uses our pre-escaped value, avoiding double-encoding of special characters.
 	if cfg.Database != "" {
 		u.Path = "/" + cfg.Database
 		u.RawPath = "/" + url.PathEscape(cfg.Database)
@@ -737,29 +760,25 @@ func buildMongoURI(cfg *core.MongoDBConfig, logger *logcompat.Logger) (string, e
 		u.Path = "/"
 	}
 
-	// Build query parameters using url.Values for safe encoding.
+	return u
+}
+
+// buildMongoQueryParams builds the query parameters for the MongoDB URI.
+// Defaults authSource to "admin" when database and credentials are present
+// but no explicit authSource is configured, preserving backward compatibility
+// with deployments where users are created in the "admin" database.
+func buildMongoQueryParams(cfg *core.MongoDBConfig) url.Values {
 	query := url.Values{}
 
-	// Default authSource to "admin" when a database is in the URI path and
-	// credentials are present but no explicit authSource is configured.
-	// Without this, the MongoDB driver uses the path database as authSource,
-	// which breaks deployments where the user was created in "admin" (the
-	// common default). Explicit authSource from tenant config takes precedence.
 	if cfg.AuthSource != "" {
 		query.Set("authSource", cfg.AuthSource)
 	} else if cfg.Database != "" && cfg.Username != "" {
 		query.Set("authSource", "admin")
 	}
 
-	// Add directConnection for single-node replica sets where the server's
-	// self-reported hostname may differ from the connection hostname.
 	if cfg.DirectConnection {
 		query.Set("directConnection", "true")
 	}
 
-	if len(query) > 0 {
-		u.RawQuery = query.Encode()
-	}
-
-	return u.String(), nil
+	return query
 }
