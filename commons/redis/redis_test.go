@@ -759,7 +759,7 @@ func TestBuildUniversalOptionsLocked_Topologies(t *testing.T) {
 		assert.Equal(t, []string{mr.Addr(), "127.0.0.1:7001"}, opts.Addrs)
 	})
 
-	t.Run("static password auth without username", func(t *testing.T) {
+	t.Run("static password auth", func(t *testing.T) {
 		cfg, err := normalizeConfig(Config{
 			Topology: Topology{Standalone: &StandaloneTopology{Address: mr.Addr()}},
 			Auth:     Auth{StaticPassword: &StaticPasswordAuth{Password: "secret"}},
@@ -769,24 +769,6 @@ func TestBuildUniversalOptionsLocked_Topologies(t *testing.T) {
 		c := &Client{cfg: cfg, logger: cfg.Logger}
 		opts, err := c.buildUniversalOptionsLocked()
 		require.NoError(t, err)
-		assert.Equal(t, "secret", opts.Password)
-		assert.Empty(t, opts.Username, "username must be empty when not provided")
-	})
-
-	t.Run("static password auth with username", func(t *testing.T) {
-		cfg, err := normalizeConfig(Config{
-			Topology: Topology{Standalone: &StandaloneTopology{Address: mr.Addr()}},
-			Auth: Auth{StaticPassword: &StaticPasswordAuth{
-				Username: "acl-user",
-				Password: "secret",
-			}},
-		})
-		require.NoError(t, err)
-
-		c := &Client{cfg: cfg, logger: cfg.Logger}
-		opts, err := c.buildUniversalOptionsLocked()
-		require.NoError(t, err)
-		assert.Equal(t, "acl-user", opts.Username, "username must be set when provided")
 		assert.Equal(t, "secret", opts.Password)
 	})
 
@@ -1081,47 +1063,14 @@ func TestValidateConfig_RefreshEveryEqualsTokenLifetime(t *testing.T) {
 }
 
 func TestStaticPasswordAuth_StringRedactsPassword(t *testing.T) {
-	tests := []struct {
-		name     string
-		auth     StaticPasswordAuth
-		contains []string
-		excludes []string
-	}{
-		{
-			name:     "password only",
-			auth:     StaticPasswordAuth{Password: "super-secret-password"},
-			contains: []string{"REDACTED"},
-			excludes: []string{"super-secret-password"},
-		},
-		{
-			name:     "username and password",
-			auth:     StaticPasswordAuth{Username: "acl-user", Password: "super-secret-password"},
-			contains: []string{"REDACTED", "acl-user"},
-			excludes: []string{"super-secret-password"},
-		},
-	}
+	auth := StaticPasswordAuth{Password: "super-secret-password"}
+	s := auth.String()
+	assert.Contains(t, s, "REDACTED")
+	assert.NotContains(t, s, "super-secret-password")
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			s := tt.auth.String()
-			for _, c := range tt.contains {
-				assert.Contains(t, s, c)
-			}
-
-			for _, e := range tt.excludes {
-				assert.NotContains(t, s, e)
-			}
-
-			gs := tt.auth.GoString()
-			for _, c := range tt.contains {
-				assert.Contains(t, gs, c)
-			}
-
-			for _, e := range tt.excludes {
-				assert.NotContains(t, gs, e)
-			}
-		})
-	}
+	gs := auth.GoString()
+	assert.Contains(t, gs, "REDACTED")
+	assert.NotContains(t, gs, "super-secret-password")
 }
 
 func TestGCPIAMAuth_StringRedactsCredentials(t *testing.T) {
