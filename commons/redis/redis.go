@@ -129,13 +129,18 @@ type Auth struct {
 	GCPIAM         *GCPIAMAuth
 }
 
-// StaticPasswordAuth authenticates using a static password.
+// StaticPasswordAuth authenticates using a static username/password pair.
+// Username is optional and only required for Redis ACL-based authentication
+// (e.g., AWS Valkey with IAM-generated credentials).
 type StaticPasswordAuth struct {
+	Username string
 	Password string // #nosec G117 -- field is redacted via String() and GoString() methods
 }
 
 // String returns a redacted representation to prevent accidental credential logging.
-func (StaticPasswordAuth) String() string { return "StaticPasswordAuth{Password:REDACTED}" }
+func (a StaticPasswordAuth) String() string {
+	return fmt.Sprintf("StaticPasswordAuth{Username:%s, Password:REDACTED}", a.Username)
+}
 
 // GoString returns a redacted representation for fmt %#v.
 func (a StaticPasswordAuth) GoString() string { return a.String() }
@@ -541,6 +546,10 @@ func (c *Client) buildUniversalOptionsLocked() (*redis.UniversalOptions, error) 
 	}
 
 	if c.cfg.Auth.StaticPassword != nil {
+		if c.cfg.Auth.StaticPassword.Username != "" {
+			opts.Username = c.cfg.Auth.StaticPassword.Username
+		}
+
 		opts.Password = c.cfg.Auth.StaticPassword.Password
 	}
 
