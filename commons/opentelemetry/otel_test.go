@@ -93,6 +93,75 @@ func TestNewTelemetry_DefaultPropagatorAndRedactor(t *testing.T) {
 }
 
 // ===========================================================================
+// 1b. Endpoint normalization
+// ===========================================================================
+
+func TestNewTelemetry_EndpointNormalization(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		endpoint         string
+		wantEndpoint     string
+		wantInsecure     bool
+		insecureOverride bool // initial InsecureExporter value
+	}{
+		{
+			name:         "http scheme stripped and insecure inferred",
+			endpoint:     "http://otel-collector:4317",
+			wantEndpoint: "otel-collector:4317",
+			wantInsecure: true,
+		},
+		{
+			name:         "https scheme stripped and insecure stays false",
+			endpoint:     "https://otel-collector:4317",
+			wantEndpoint: "otel-collector:4317",
+			wantInsecure: false,
+		},
+		{
+			name:         "no scheme defaults to insecure",
+			endpoint:     "otel-collector:4317",
+			wantEndpoint: "otel-collector:4317",
+			wantInsecure: true,
+		},
+		{
+			name:             "https with explicit insecure override preserved",
+			endpoint:         "https://otel-collector:4317",
+			insecureOverride: true,
+			wantEndpoint:     "otel-collector:4317",
+			wantInsecure:     true,
+		},
+		{
+			name:         "http with trailing slash",
+			endpoint:     "http://otel-collector:4317/",
+			wantEndpoint: "otel-collector:4317/",
+			wantInsecure: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Use telemetry disabled so we don't need a real collector.
+			tl, err := NewTelemetry(TelemetryConfig{
+				LibraryName:               "test-lib",
+				EnableTelemetry:            false,
+				CollectorExporterEndpoint:  tt.endpoint,
+				InsecureExporter:           tt.insecureOverride,
+				Logger:                     log.NewNop(),
+			})
+			require.NoError(t, err)
+			require.NotNil(t, tl)
+			assert.Equal(t, tt.wantEndpoint, tl.CollectorExporterEndpoint,
+				"endpoint should be normalized")
+			assert.Equal(t, tt.wantInsecure, tl.InsecureExporter,
+				"InsecureExporter should be inferred from scheme")
+		})
+	}
+}
+
+// ===========================================================================
 // 2. Telemetry methods on nil receiver
 // ===========================================================================
 

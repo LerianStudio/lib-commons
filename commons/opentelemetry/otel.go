@@ -98,6 +98,22 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 		cfg.Redactor = NewDefaultRedactor()
 	}
 
+	// Normalize endpoint: strip URL scheme and infer security mode.
+	// gRPC WithEndpoint() expects host:port, not a full URL.
+	// Consumers commonly pass OTEL_EXPORTER_OTLP_ENDPOINT as "http://host:4317".
+	if ep := strings.TrimSpace(cfg.CollectorExporterEndpoint); ep != "" {
+		switch {
+		case strings.HasPrefix(ep, "http://"):
+			cfg.CollectorExporterEndpoint = strings.TrimPrefix(ep, "http://")
+			cfg.InsecureExporter = true
+		case strings.HasPrefix(ep, "https://"):
+			cfg.CollectorExporterEndpoint = strings.TrimPrefix(ep, "https://")
+		default:
+			// No scheme — assume insecure (common in k8s internal comms).
+			cfg.InsecureExporter = true
+		}
+	}
+
 	if cfg.EnableTelemetry && strings.TrimSpace(cfg.CollectorExporterEndpoint) == "" {
 		return nil, ErrEmptyEndpoint
 	}
