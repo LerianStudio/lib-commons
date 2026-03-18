@@ -49,7 +49,10 @@ func TestBuildURI_SuccessCases(t *testing.T) {
 			Query:    query,
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "mongodb+srv://user:secret@cluster.mongodb.net/banking?retryWrites=true&w=majority", uri)
+		assert.Contains(t, uri, "mongodb+srv://user:secret@cluster.mongodb.net/banking?")
+		assert.Contains(t, uri, "authSource=admin")
+		assert.Contains(t, uri, "retryWrites=true")
+		assert.Contains(t, uri, "w=majority")
 	})
 
 	t.Run("without credentials defaults to root path", func(t *testing.T) {
@@ -76,6 +79,69 @@ func TestBuildURI_SuccessCases(t *testing.T) {
 		require.NoError(t, err)
 		// Uses url.User (not url.UserPassword) so no trailing colon before @.
 		assert.Equal(t, "mongodb://readonly@localhost:27017/", uri)
+	})
+
+	t.Run("default authSource=admin when database and credentials set", func(t *testing.T) {
+		t.Parallel()
+
+		uri, err := BuildURI(URIConfig{
+			Scheme:   "mongodb",
+			Username: "appuser",
+			Password: "secret",
+			Host:     "localhost",
+			Port:     "27017",
+			Database: "midaz",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "mongodb://appuser:secret@localhost:27017/midaz?authSource=admin", uri)
+	})
+
+	t.Run("explicit authSource not overridden", func(t *testing.T) {
+		t.Parallel()
+
+		query := url.Values{}
+		query.Set("authSource", "myauthdb")
+
+		uri, err := BuildURI(URIConfig{
+			Scheme:   "mongodb",
+			Username: "appuser",
+			Password: "secret",
+			Host:     "localhost",
+			Port:     "27017",
+			Database: "midaz",
+			Query:    query,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "mongodb://appuser:secret@localhost:27017/midaz?authSource=myauthdb", uri)
+	})
+
+	t.Run("no authSource added without database in path", func(t *testing.T) {
+		t.Parallel()
+
+		uri, err := BuildURI(URIConfig{
+			Scheme:   "mongodb",
+			Username: "appuser",
+			Password: "secret",
+			Host:     "localhost",
+			Port:     "27017",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "mongodb://appuser:secret@localhost:27017/", uri)
+		assert.NotContains(t, uri, "authSource")
+	})
+
+	t.Run("no authSource added without credentials", func(t *testing.T) {
+		t.Parallel()
+
+		uri, err := BuildURI(URIConfig{
+			Scheme:   "mongodb",
+			Host:     "localhost",
+			Port:     "27017",
+			Database: "midaz",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "mongodb://localhost:27017/midaz", uri)
+		assert.NotContains(t, uri, "authSource")
 	})
 }
 
