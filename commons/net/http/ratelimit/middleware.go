@@ -45,6 +45,11 @@ const (
 	// maxReasonableTierMax is the threshold above which a configuration warning is logged.
 	maxReasonableTierMax = 100_000
 
+	// invalidWindowTitle is the error title returned when a tier has a zero or sub-millisecond window.
+	invalidWindowTitle = "misconfigured_rate_limiter"
+	// invalidWindowMessage is the error message returned when a tier has a zero or sub-millisecond window.
+	invalidWindowMessage = "rate limiter tier window is zero; contact the service operator"
+
 	// luaIncrExpire is an atomic Lua script that increments the counter, sets expiry on the
 	// first request in a window, and returns both the current count and the remaining TTL in
 	// milliseconds. Executed atomically by Redis — no other command can interleave, eliminating
@@ -140,11 +145,16 @@ type RateLimiter struct {
 //
 // A nil RateLimiter is safe to use: WithRateLimit returns a pass-through handler.
 func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
+	timeoutMS := commons.GetenvIntOrDefault("RATE_LIMIT_REDIS_TIMEOUT_MS", fallbackRedisTimeoutMS)
+	if timeoutMS <= 0 {
+		timeoutMS = fallbackRedisTimeoutMS
+	}
+
 	rl := &RateLimiter{
 		logger:       log.NewNop(),
 		identityFunc: IdentityFromIP(),
 		failOpen:     true,
-		redisTimeout: time.Duration(commons.GetenvIntOrDefault("RATE_LIMIT_REDIS_TIMEOUT_MS", fallbackRedisTimeoutMS)) * time.Millisecond,
+		redisTimeout: time.Duration(timeoutMS) * time.Millisecond,
 	}
 
 	for _, opt := range opts {
@@ -176,6 +186,22 @@ func (rl *RateLimiter) WithRateLimit(tier Tier) fiber.Handler {
 	if rl == nil {
 		return func(c *fiber.Ctx) error {
 			return c.Next()
+		}
+	}
+
+	if tier.Window <= 0 || tier.Window.Milliseconds() == 0 {
+		rl.logger.Log(context.Background(), log.LevelError,
+			"rate limit tier has invalid window; all requests will be rejected",
+			log.String("tier", tier.Name),
+			log.Int("max", tier.Max),
+		)
+
+		return func(c *fiber.Ctx) error {
+			return chttp.Respond(c, http.StatusInternalServerError, chttp.ErrorResponse{
+				Code:    http.StatusInternalServerError,
+				Title:   invalidWindowTitle,
+				Message: invalidWindowMessage,
+			})
 		}
 	}
 
@@ -219,7 +245,28 @@ func (rl *RateLimiter) WithDynamicRateLimit(fn TierFunc) fiber.Handler {
 	}
 
 	return func(c *fiber.Ctx) error {
-		return rl.check(c, fn(c))
+		tier := fn(c)
+
+		if tier.Window <= 0 || tier.Window.Milliseconds() == 0 {
+			ctx := c.UserContext()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+
+			rl.logger.Log(ctx, log.LevelError,
+				"rate limit tier has invalid window; request rejected",
+				log.String("tier", tier.Name),
+				log.Int("max", tier.Max),
+			)
+
+			return chttp.Respond(c, http.StatusInternalServerError, chttp.ErrorResponse{
+				Code:    http.StatusInternalServerError,
+				Title:   invalidWindowTitle,
+				Message: invalidWindowMessage,
+			})
+		}
+
+		return rl.check(c, tier)
 	}
 }
 

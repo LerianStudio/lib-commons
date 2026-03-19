@@ -589,13 +589,13 @@ func TestIdentityFromHeader(t *testing.T) {
 			name:       "header present",
 			header:     "X-User-ID",
 			headerVal:  "user-123",
-			wantPrefix: "user-123",
+			wantPrefix: "hdr:user-123",
 		},
 		{
 			name:       "header absent falls back to IP",
 			header:     "X-User-ID",
 			headerVal:  "",
-			wantPrefix: "", // will be an IP, just check non-empty
+			wantPrefix: "", // will be "ip:<encoded-ip>", just check non-empty
 		},
 	}
 
@@ -654,8 +654,8 @@ func TestIdentityFromIPAndHeader(t *testing.T) {
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 
-		// Should contain IP#tenant-abc pattern (# separator avoids ambiguity with IPv6 colons)
-		assert.Contains(t, string(body), "#tenant-abc")
+		// Should contain the URL-encoded, prefixed form of the tenant header.
+		assert.Contains(t, string(body), "hdr:tenant-abc")
 	})
 
 	t.Run("without header", func(t *testing.T) {
@@ -907,9 +907,7 @@ func TestNew_RateLimitEnabledEnv(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if tt.envVal != "" {
-				t.Setenv("RATE_LIMIT_ENABLED", tt.envVal)
-			}
+			t.Setenv("RATE_LIMIT_ENABLED", tt.envVal)
 
 			mr := miniredis.RunT(t)
 			conn := newTestMiddlewareRedisConnection(t, mr)
@@ -1241,9 +1239,9 @@ func TestIdentityFromIPAndHeader_IPv6_WithoutHeader(t *testing.T) {
 
 	identity := string(body)
 
-	// The old assertion was NotContains(":"), which would have failed here because IPv6
-	// addresses contain colons. The correct check is that no tenant value is present.
-	assert.Equal(t, "2001:db8::1", identity)
+	// With URL encoding, the IPv6 address becomes "2001%3Adb8%3A%3A1" and the identity
+	// is prefixed with "ip:". No tenant header is present so there is no ":hdr:" segment.
+	assert.Equal(t, "ip:2001%3Adb8%3A%3A1", identity)
 	assert.NotContains(t, identity, "tenant-abc")
 }
 
@@ -1271,8 +1269,9 @@ func TestIdentityFromIPAndHeader_IPv6_WithHeader(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 
-	// Combined identity: "<ipv6>#<tenant>" (# separator avoids ambiguity with IPv6 colons)
-	assert.Equal(t, "2001:db8::1#tenant-abc", string(body))
+	// Combined identity: "ip:<encoded-ipv6>:hdr:<tenant>" — colons in the IPv6 address
+	// are URL-encoded to %3A so they cannot be confused with the structural separators.
+	assert.Equal(t, "ip:2001%3Adb8%3A%3A1:hdr:tenant-abc", string(body))
 }
 
 func TestMiddleware_IPv6_RateLimiting(t *testing.T) {
@@ -1312,7 +1311,9 @@ func TestMiddleware_IPv6_RateLimiting(t *testing.T) {
 
 	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
 
-	// Verify the Redis key embeds the IPv6 address.
+	// IdentityFromIP() returns the raw IP without encoding, so the Redis key embeds
+	// the IPv6 address as-is. URL encoding only applies to IdentityFromHeader and
+	// IdentityFromIPAndHeader.
 	keys := mr.Keys()
 	require.Len(t, keys, 1)
 	assert.Contains(t, keys[0], "2001:db8::1")
@@ -1363,6 +1364,90 @@ func TestMiddleware_IPv6_Isolation(t *testing.T) {
 
 // TestWithRateLimit_HighTierWarning verifies that configuring a tier with Max above
 // maxReasonableTierMax causes a warning to be logged at setup time (not per request).
+func TestWithRateLimit_ZeroWindow(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newTestMiddlewareRedisConnection(t, mr)
+	rl := New(conn)
+	require.NotNil(t, rl)
+
+	// A zero window rounds down to PEXPIRE 0, immediately expiring all keys.
+	// The middleware must reject all requests rather than silently bypassing the limit.
+	zeroTier := Tier{Name: "bad-window", Max: 100, Window: 0}
+	handler := rl.WithRateLimit(zeroTier)
+	app := newTestApp(handler)
+
+	resp := doRequest(t, app)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
+func TestWithRateLimit_SubMillisecondWindow(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newTestMiddlewareRedisConnection(t, mr)
+	rl := New(conn)
+	require.NotNil(t, rl)
+
+	// A window smaller than 1ms truncates to 0 when converted via .Milliseconds() — also invalid.
+	subMsTier := Tier{Name: "subms-window", Max: 100, Window: 999 * time.Microsecond}
+	handler := rl.WithRateLimit(subMsTier)
+	app := newTestApp(handler)
+
+	resp := doRequest(t, app)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
+func TestWithDynamicRateLimit_ZeroWindow(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newTestMiddlewareRedisConnection(t, mr)
+	rl := New(conn)
+	require.NotNil(t, rl)
+
+	// TierFunc returns a zero-window tier on every request — must be rejected per request.
+	handler := rl.WithDynamicRateLimit(func(_ *fiber.Ctx) Tier {
+		return Tier{Name: "dynamic-bad-window", Max: 100, Window: 0}
+	})
+	app := newTestApp(handler)
+
+	resp := doRequest(t, app)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
+func TestNew_RedisTimeoutNonPositiveEnv(t *testing.T) {
+	tests := []struct {
+		name   string
+		envVal string
+	}{
+		{name: "zero", envVal: "0"},
+		{name: "negative", envVal: "-100"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("RATE_LIMIT_REDIS_TIMEOUT_MS", tt.envVal)
+
+			mr := miniredis.RunT(t)
+			conn := newTestMiddlewareRedisConnection(t, mr)
+
+			rl := New(conn)
+			require.NotNil(t, rl)
+
+			assert.Equal(t, 500*time.Millisecond, rl.redisTimeout,
+				"non-positive env value should clamp to fallback timeout")
+		})
+	}
+}
+
 func TestWithRateLimit_HighTierWarning(t *testing.T) {
 	t.Parallel()
 

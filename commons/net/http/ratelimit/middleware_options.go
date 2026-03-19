@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"net/url"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
@@ -71,29 +72,34 @@ func IdentityFromIP() IdentityFunc {
 }
 
 // IdentityFromHeader returns an IdentityFunc that extracts the value of the given
-// HTTP header. If the header is empty, it falls back to the client IP address.
+// HTTP header, returned as "hdr:<url-encoded-value>". If the header is empty, it falls
+// back to the client IP address encoded as "ip:<url-encoded-ip>". The type prefix
+// prevents a header value that happens to equal an IP address from colliding with the
+// IP-based fallback identity.
 func IdentityFromHeader(header string) IdentityFunc {
 	return func(c *fiber.Ctx) string {
 		if val := c.Get(header); val != "" {
-			return val
+			return "hdr:" + url.QueryEscape(val)
 		}
 
-		return c.IP()
+		return "ip:" + url.QueryEscape(c.IP())
 	}
 }
 
 // IdentityFromIPAndHeader returns an IdentityFunc that combines the client IP address
-// with the value of the given HTTP header. The resulting identity has the form "ip#headerValue".
-// The # separator is used instead of : to avoid ambiguity with IPv6 addresses, which
-// contain colons (e.g. "2001:db8::1"). If the header is empty, only the IP address is used.
+// with the value of the given HTTP header. The resulting identity has the form
+// "ip:<encodedIP>:hdr:<encodedHeaderValue>". Both components are URL-encoded so that
+// IPv6 colons (encoded as %3A) cannot be confused with the structural colons used as
+// field separators. If the header is empty, only the encoded IP is returned:
+// "ip:<encodedIP>".
 func IdentityFromIPAndHeader(header string) IdentityFunc {
 	return func(c *fiber.Ctx) string {
-		ip := c.IP()
+		encodedIP := url.QueryEscape(c.IP())
 		if val := c.Get(header); val != "" {
-			return ip + "#" + val
+			return "ip:" + encodedIP + ":hdr:" + url.QueryEscape(val)
 		}
 
-		return ip
+		return "ip:" + encodedIP
 	}
 }
 
