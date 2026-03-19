@@ -767,6 +767,11 @@ func buildMongoBaseURL(cfg *core.MongoDBConfig) *url.URL {
 // Defaults authSource to "admin" when database and credentials are present
 // but no explicit authSource is configured, preserving backward compatibility
 // with deployments where users are created in the "admin" database.
+//
+// When TLS is enabled in the config, the corresponding query parameters are added:
+//   - tls=true enables TLS on the connection
+//   - tlsCAFile, tlsCertificateKeyFile point to CA and client certificate files
+//   - tlsInsecure=true skips server certificate verification (not for production)
 func buildMongoQueryParams(cfg *core.MongoDBConfig) url.Values {
 	query := url.Values{}
 
@@ -778,6 +783,30 @@ func buildMongoQueryParams(cfg *core.MongoDBConfig) url.Values {
 
 	if cfg.DirectConnection {
 		query.Set("directConnection", "true")
+	}
+
+	if cfg.TLS {
+		query.Set("tls", "true")
+
+		if cfg.TLSCAFile != "" {
+			query.Set("tlsCAFile", cfg.TLSCAFile)
+		}
+
+		if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
+			// MongoDB driver uses a single PEM file containing both the client
+			// certificate and the private key via the tlsCertificateKeyFile option.
+			// When only one is provided, we use it directly since it may be a combined PEM.
+			certKeyFile := cfg.TLSCertFile
+			if certKeyFile == "" {
+				certKeyFile = cfg.TLSKeyFile
+			}
+
+			query.Set("tlsCertificateKeyFile", certKeyFile)
+		}
+
+		if cfg.TLSSkipVerify {
+			query.Set("tlsInsecure", "true")
+		}
 	}
 
 	return query

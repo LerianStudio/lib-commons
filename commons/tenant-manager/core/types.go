@@ -10,13 +10,16 @@ import (
 // PostgreSQLConfig holds PostgreSQL connection configuration.
 // Credentials are provided directly by the tenant-manager settings endpoint.
 type PostgreSQLConfig struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Database string `json:"database"`
-	Username string `json:"username"`
-	Password string `json:"password"` // #nosec G117
-	Schema   string `json:"schema,omitempty"`
-	SSLMode  string `json:"sslmode,omitempty"`
+	Host        string `json:"host"`
+	Port        int    `json:"port"`
+	Database    string `json:"database"`
+	Username    string `json:"username"`
+	Password    string `json:"password"` // #nosec G117
+	Schema      string `json:"schema,omitempty"`
+	SSLMode     string `json:"sslmode,omitempty"`
+	SSLRootCert string `json:"sslrootcert,omitempty"` // path to CA certificate file
+	SSLCert     string `json:"sslcert,omitempty"`     // path to client certificate file
+	SSLKey      string `json:"sslkey,omitempty"`      // path to client private key file
 }
 
 // MongoDBConfig holds MongoDB connection configuration.
@@ -31,15 +34,22 @@ type MongoDBConfig struct {
 	AuthSource       string `json:"authSource,omitempty"`
 	DirectConnection bool   `json:"directConnection,omitempty"`
 	MaxPoolSize      uint64 `json:"maxPoolSize,omitempty"`
+	TLS              bool   `json:"tls,omitempty"`
+	TLSCAFile        string `json:"tlsCAFile,omitempty"`     // path to CA certificate file
+	TLSCertFile      string `json:"tlsCertFile,omitempty"`   // path to client certificate file
+	TLSKeyFile       string `json:"tlsKeyFile,omitempty"`    // path to client private key file
+	TLSSkipVerify    bool   `json:"tlsSkipVerify,omitempty"` // skip server certificate verification
 }
 
 // RabbitMQConfig holds RabbitMQ connection configuration for tenant vhosts.
 type RabbitMQConfig struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	VHost    string `json:"vhost"`
-	Username string `json:"username"`
-	Password string `json:"password"` // #nosec G117
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	VHost     string `json:"vhost"`
+	Username  string `json:"username"`
+	Password  string `json:"password"`            // #nosec G117
+	TLS       *bool  `json:"tls,omitempty"`       // enable TLS (amqps://); nil = use global default
+	TLSCAFile string `json:"tlsCAFile,omitempty"` // path to CA certificate file for custom CAs
 }
 
 // MessagingConfig holds messaging configuration for a tenant.

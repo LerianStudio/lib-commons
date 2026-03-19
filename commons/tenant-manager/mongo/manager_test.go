@@ -722,6 +722,159 @@ func TestManager_Stats(t *testing.T) {
 	})
 }
 
+func TestBuildMongoURI_TLS(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		cfg      *core.MongoDBConfig
+		contains []string
+		excludes []string
+	}{
+		{
+			name: "adds tls=true when TLS is enabled",
+			cfg: &core.MongoDBConfig{
+				Host:     "localhost",
+				Port:     27017,
+				Database: "testdb",
+				TLS:      true,
+			},
+			contains: []string{"tls=true"},
+		},
+		{
+			name: "does not add tls param when TLS is disabled",
+			cfg: &core.MongoDBConfig{
+				Host:     "localhost",
+				Port:     27017,
+				Database: "testdb",
+				TLS:      false,
+			},
+			excludes: []string{"tls="},
+		},
+		{
+			name: "adds tlsCAFile when TLS is enabled with CA file",
+			cfg: &core.MongoDBConfig{
+				Host:      "localhost",
+				Port:      27017,
+				Database:  "testdb",
+				TLS:       true,
+				TLSCAFile: "/etc/ssl/ca.pem",
+			},
+			contains: []string{"tls=true", "tlsCAFile=%2Fetc%2Fssl%2Fca.pem"},
+		},
+		{
+			name: "adds tlsCertificateKeyFile when TLS is enabled with cert file",
+			cfg: &core.MongoDBConfig{
+				Host:        "localhost",
+				Port:        27017,
+				Database:    "testdb",
+				TLS:         true,
+				TLSCertFile: "/etc/ssl/client.pem",
+			},
+			contains: []string{"tls=true", "tlsCertificateKeyFile=%2Fetc%2Fssl%2Fclient.pem"},
+		},
+		{
+			name: "uses key file as tlsCertificateKeyFile when cert file is empty",
+			cfg: &core.MongoDBConfig{
+				Host:       "localhost",
+				Port:       27017,
+				Database:   "testdb",
+				TLS:        true,
+				TLSKeyFile: "/etc/ssl/client-key.pem",
+			},
+			contains: []string{"tls=true", "tlsCertificateKeyFile=%2Fetc%2Fssl%2Fclient-key.pem"},
+		},
+		{
+			name: "prefers cert file over key file for tlsCertificateKeyFile",
+			cfg: &core.MongoDBConfig{
+				Host:        "localhost",
+				Port:        27017,
+				Database:    "testdb",
+				TLS:         true,
+				TLSCertFile: "/etc/ssl/client-combined.pem",
+				TLSKeyFile:  "/etc/ssl/client-key.pem",
+			},
+			contains: []string{"tlsCertificateKeyFile=%2Fetc%2Fssl%2Fclient-combined.pem"},
+			excludes: []string{"client-key.pem"},
+		},
+		{
+			name: "adds tlsInsecure when TLS skip verify is enabled",
+			cfg: &core.MongoDBConfig{
+				Host:          "localhost",
+				Port:          27017,
+				Database:      "testdb",
+				TLS:           true,
+				TLSSkipVerify: true,
+			},
+			contains: []string{"tls=true", "tlsInsecure=true"},
+		},
+		{
+			name: "does not add tlsInsecure when skip verify is false",
+			cfg: &core.MongoDBConfig{
+				Host:          "localhost",
+				Port:          27017,
+				Database:      "testdb",
+				TLS:           true,
+				TLSSkipVerify: false,
+			},
+			contains: []string{"tls=true"},
+			excludes: []string{"tlsInsecure"},
+		},
+		{
+			name: "does not add TLS params when TLS is disabled even with files set",
+			cfg: &core.MongoDBConfig{
+				Host:        "localhost",
+				Port:        27017,
+				Database:    "testdb",
+				TLS:         false,
+				TLSCAFile:   "/etc/ssl/ca.pem",
+				TLSCertFile: "/etc/ssl/client.pem",
+			},
+			excludes: []string{"tls=", "tlsCAFile", "tlsCertificateKeyFile"},
+		},
+		{
+			name: "full TLS config with all options",
+			cfg: &core.MongoDBConfig{
+				Host:          "mongo.prod.internal",
+				Port:          27017,
+				Database:      "tenantdb",
+				Username:      "appuser",
+				Password:      "secret",
+				TLS:           true,
+				TLSCAFile:     "/etc/ssl/ca.pem",
+				TLSCertFile:   "/etc/ssl/client.pem",
+				TLSSkipVerify: false,
+			},
+			contains: []string{
+				"tls=true",
+				"tlsCAFile=%2Fetc%2Fssl%2Fca.pem",
+				"tlsCertificateKeyFile=%2Fetc%2Fssl%2Fclient.pem",
+				"authSource=admin",
+			},
+			excludes: []string{"tlsInsecure"},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			uri, err := buildMongoURI(tt.cfg, nil)
+
+			require.NoError(t, err)
+
+			for _, s := range tt.contains {
+				assert.Contains(t, uri, s, "URI should contain %q", s)
+			}
+
+			for _, s := range tt.excludes {
+				assert.NotContains(t, uri, s, "URI should NOT contain %q", s)
+			}
+		})
+	}
+}
+
 func TestManager_IsMultiTenant(t *testing.T) {
 	t.Parallel()
 

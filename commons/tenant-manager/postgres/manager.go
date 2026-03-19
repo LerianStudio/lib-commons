@@ -852,6 +852,18 @@ func buildConnectionString(cfg *core.PostgreSQLConfig) (string, error) {
 	values := url.Values{}
 	values.Set("sslmode", sslmode)
 
+	if cfg.SSLRootCert != "" {
+		values.Set("sslrootcert", cfg.SSLRootCert)
+	}
+
+	if cfg.SSLCert != "" {
+		values.Set("sslcert", cfg.SSLCert)
+	}
+
+	if cfg.SSLKey != "" {
+		values.Set("sslkey", cfg.SSLKey)
+	}
+
 	if cfg.Schema != "" {
 		if !validSchemaPattern.MatchString(cfg.Schema) {
 			return "", fmt.Errorf("invalid schema name %q: must match %s", cfg.Schema, validSchemaPattern.String())
