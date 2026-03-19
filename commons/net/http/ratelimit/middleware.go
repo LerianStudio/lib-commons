@@ -2,6 +2,8 @@ package ratelimit
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -59,6 +61,14 @@ local pttl = redis.call('PTTL', KEYS[1])
 return {count, pttl}
 `
 )
+
+// hashKey returns the first 16 hex characters of the SHA-256 hash of key (64-bit prefix).
+// Used in logs and traces instead of the raw key to avoid leaking client identifiers
+// (IP addresses, tenant IDs) and to keep telemetry cardinality low.
+func hashKey(key string) string {
+	h := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(h[:8])
+}
 
 // Tier defines a rate limiting level with its own limits and window.
 type Tier struct {
@@ -229,22 +239,23 @@ func (rl *RateLimiter) check(c *fiber.Ctx, tier Tier) error {
 
 	identity := rl.identityFunc(c)
 	key := rl.buildKey(tier, identity)
+	keyHash := hashKey(key)
 
 	span.SetAttributes(
 		attribute.String("ratelimit.tier", tier.Name),
-		attribute.String("ratelimit.key", key),
+		attribute.String("ratelimit.key_hash", keyHash),
 	)
 
 	count, ttl, err := rl.incrementCounter(ctx, key, tier)
 	if err != nil {
-		return rl.handleRedisError(c, ctx, span, tier, key, err)
+		return rl.handleRedisError(c, ctx, span, tier, keyHash, err)
 	}
 
 	allowed := count <= int64(tier.Max)
 	span.SetAttributes(attribute.Bool("ratelimit.allowed", allowed))
 
 	if !allowed {
-		return rl.handleLimitExceeded(c, ctx, span, tier, key, ttl)
+		return rl.handleLimitExceeded(c, ctx, span, tier, keyHash, ttl)
 	}
 
 	remaining := max(int64(tier.Max)-count, 0)
@@ -283,21 +294,21 @@ func (rl *RateLimiter) incrementCounter(ctx context.Context, key string, tier Ti
 
 	vals, err := client.Eval(timeoutCtx, luaIncrExpire, []string{key}, tier.Window.Milliseconds()).Slice()
 	if err != nil {
-		return 0, 0, fmt.Errorf("redis eval failed for key %s: %w", key, err)
+		return 0, 0, fmt.Errorf("redis eval failed for tier %s: %w", tier.Name, err)
 	}
 
 	if len(vals) < 2 {
-		return 0, 0, fmt.Errorf("unexpected lua result length %d for key %s", len(vals), key)
+		return 0, 0, fmt.Errorf("unexpected lua result length %d for tier %s", len(vals), tier.Name)
 	}
 
 	count, ok := vals[0].(int64)
 	if !ok {
-		return 0, 0, fmt.Errorf("unexpected lua result type %T for count at key %s", vals[0], key)
+		return 0, 0, fmt.Errorf("unexpected lua result type %T for count (tier %s)", vals[0], tier.Name)
 	}
 
 	ttlMs, ok := vals[1].(int64)
 	if !ok {
-		return 0, 0, fmt.Errorf("unexpected lua result type %T for ttl at key %s", vals[1], key)
+		return 0, 0, fmt.Errorf("unexpected lua result type %T for ttl (tier %s)", vals[1], tier.Name)
 	}
 
 	// Guard against -1 (no expiry) or -2 (key not found) from PTTL; fall back to full window.
@@ -314,12 +325,12 @@ func (rl *RateLimiter) handleRedisError(
 	ctx context.Context,
 	span trace.Span,
 	tier Tier,
-	key string,
+	keyHash string,
 	err error,
 ) error {
 	rl.logger.Log(ctx, log.LevelWarn, "rate limiter redis error",
 		log.String("tier", tier.Name),
-		log.String("key", key),
+		log.String("key_hash", keyHash),
 		log.Err(err),
 	)
 
@@ -344,12 +355,12 @@ func (rl *RateLimiter) handleLimitExceeded(
 	ctx context.Context,
 	span trace.Span,
 	tier Tier,
-	key string,
+	keyHash string,
 	ttl time.Duration,
 ) error {
 	rl.logger.Log(ctx, log.LevelWarn, "rate limit exceeded",
 		log.String("tier", tier.Name),
-		log.String("key", key),
+		log.String("key_hash", keyHash),
 		log.Int("max", tier.Max),
 	)
 
