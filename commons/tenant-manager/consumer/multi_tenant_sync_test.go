@@ -21,7 +21,6 @@ func TestMultiTenantConsumer_SyncTenants_EagerModeStartsNewTenant(t *testing.T) 
 		WorkersPerQueue: 1,
 		PrefetchCount:   10,
 		Service:         testServiceName,
-		EagerStart:      true,
 	}, testutil.NewMockLogger())
 	defer func() { require.NoError(t, consumer.Close()) }()
 

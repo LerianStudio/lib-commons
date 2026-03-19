@@ -22,14 +22,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// ConsumerTrigger triggers on-demand consumer spawning for lazy mode.
-// Implementations should ensure idempotent behavior: calling EnsureConsumerStarted
-// multiple times for the same tenantID must be safe and return quickly after the
-// first invocation.
-type ConsumerTrigger interface {
-	EnsureConsumerStarted(ctx context.Context, tenantID string)
-}
-
 // ErrorMapper converts tenant-manager errors into Fiber HTTP responses.
 // If nil, the default error mapping is used.
 type ErrorMapper func(c *fiber.Ctx, err error, tenantID string) error
@@ -49,16 +41,15 @@ type MultiPoolOption func(*MultiPoolMiddleware)
 
 // MultiPoolMiddleware routes requests to module-specific tenant pools
 // based on URL path matching. It handles JWT extraction, pool resolution,
-// connection injection, error mapping, and consumer triggering.
+// connection injection, and error mapping.
 type MultiPoolMiddleware struct {
-	routes          []*PoolRoute
-	defaultRoute    *PoolRoute
-	publicPaths     []string
-	consumerTrigger ConsumerTrigger
-	crossModule     bool
-	errorMapper     ErrorMapper
-	logger          *logcompat.Logger
-	enabled         bool
+	routes       []*PoolRoute
+	defaultRoute *PoolRoute
+	publicPaths  []string
+	crossModule  bool
+	errorMapper  ErrorMapper
+	logger       *logcompat.Logger
+	enabled      bool
 }
 
 // WithRoute registers a path-based route mapping URL prefixes to a module's
@@ -94,15 +85,6 @@ func WithDefaultRoute(module string, pgPool *tmpostgres.Manager, mongoPool *tmmo
 func WithPublicPaths(paths ...string) MultiPoolOption {
 	return func(m *MultiPoolMiddleware) {
 		m.publicPaths = append(m.publicPaths, paths...)
-	}
-}
-
-// WithConsumerTrigger sets a ConsumerTrigger that is invoked after tenant ID
-// extraction. This enables lazy consumer spawning in multi-tenant messaging
-// architectures.
-func WithConsumerTrigger(ct ConsumerTrigger) MultiPoolOption {
-	return func(m *MultiPoolMiddleware) {
-		m.consumerTrigger = ct
 	}
 }
 
@@ -221,13 +203,7 @@ func (m *MultiPoolMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		return m.handleTenantDBError(c, err, tenantID)
 	}
 
-	// Step 8: Trigger consumer AFTER successful resolution.
-	// Only trigger for tenants whose connections are confirmed resolvable.
-	if m.consumerTrigger != nil {
-		m.consumerTrigger.EnsureConsumerStarted(ctx, tenantID)
-	}
-
-	// Step 9: Update context
+	// Step 8: Update context
 	c.SetUserContext(ctx)
 
 	logger.InfofCtx(ctx, "multi-pool connections injected: tenantID=%s, module=%s", tenantID, route.module)

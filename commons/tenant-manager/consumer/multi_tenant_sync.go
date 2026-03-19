@@ -26,7 +26,7 @@ func buildActiveTenantsKey(env, service string) string {
 }
 
 // eagerStartKnownTenants starts consumers for all known tenants.
-// Called during Run() when EagerStart is true and tenants were discovered.
+// Called during Run() and when new tenants are discovered during sync.
 func (c *MultiTenantConsumer) eagerStartKnownTenants(ctx context.Context) {
 	c.mu.RLock()
 
@@ -45,8 +45,8 @@ func (c *MultiTenantConsumer) eagerStartKnownTenants(ctx context.Context) {
 }
 
 // discoverTenants fetches tenant IDs and populates knownTenants without starting consumers.
-// This is the lazy mode discovery step: it records which tenants exist but defers consumer
-// creation to background sync or on-demand triggers. Failures are logged as warnings
+// This is the initial discovery step at startup. Actual consumer spawning is handled by
+// eagerStartKnownTenants() after discovery completes. Failures are logged as warnings
 // (soft failure) and do not propagate errors to the caller.
 // A short timeout is applied to avoid blocking startup on unresponsive infrastructure.
 func (c *MultiTenantConsumer) discoverTenants(ctx context.Context) {
@@ -85,7 +85,7 @@ func (c *MultiTenantConsumer) discoverTenants(ctx context.Context) {
 		c.knownTenants[id] = true
 	}
 
-	logger.InfofCtx(ctx, "discovered %d tenants (lazy mode, no consumers started)", len(tenantIDs))
+	logger.InfofCtx(ctx, "discovered %d tenants", len(tenantIDs))
 }
 
 // syncActiveTenants periodically syncs the tenant list.
@@ -137,8 +137,7 @@ func (c *MultiTenantConsumer) runSyncIteration(ctx context.Context) {
 }
 
 // syncTenants fetches tenant IDs and updates the known tenant registry.
-// In lazy mode, new tenants are added to knownTenants but consumers are NOT started.
-// Consumer spawning is deferred to on-demand triggers (e.g., ensureConsumerStarted).
+// New tenants are added to knownTenants and consumers are started immediately.
 // Tenants missing from the fetched list are retained in knownTenants for up to
 // absentSyncsBeforeRemoval consecutive syncs; only after that threshold are they
 // removed from knownTenants and any active consumers stopped. This avoids purging
@@ -190,24 +189,17 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 	c.closeRemovedTenantConnections(ctx, removedTenants, logger)
 
 	if len(newTenants) > 0 {
-		if c.config.EagerStart {
-			logger.InfofCtx(ctx, "discovered %d new tenants (eager mode, starting consumers): %v",
-				len(newTenants), newTenants)
-		} else {
-			logger.InfofCtx(ctx, "discovered %d new tenants (lazy mode, consumers deferred): %v",
-				len(newTenants), newTenants)
-		}
+		logger.InfofCtx(ctx, "discovered %d new tenants (starting consumers): %v",
+			len(newTenants), newTenants)
 	}
 
 	logger.InfofCtx(ctx, "sync complete: %d known, %d active, %d discovered, %d removed",
 		knownCount, activeCount, len(newTenants), len(removedTenants))
 
-	// Eager mode: start consumers for newly discovered tenants.
+	// Start consumers for newly discovered tenants.
 	// ensureConsumerStarted is called outside the lock (already unlocked above).
-	if c.config.EagerStart && len(newTenants) > 0 {
-		for _, tenantID := range newTenants {
-			c.ensureConsumerStarted(ctx, tenantID)
-		}
+	for _, tenantID := range newTenants {
+		c.ensureConsumerStarted(ctx, tenantID)
 	}
 
 	return nil

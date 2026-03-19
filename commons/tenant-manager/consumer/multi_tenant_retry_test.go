@@ -80,7 +80,7 @@ func TestMultiTenantConsumer_RetryStateIsolation(t *testing.T) {
 }
 
 // TestMultiTenantConsumer_Stats_Enhanced verifies the enhanced Stats() API
-// returns ConnectionMode, KnownTenants, PendingTenants, and DegradedTenants.
+// returns KnownTenants, PendingTenants, and DegradedTenants.
 func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 	t.Parallel()
 
@@ -89,18 +89,15 @@ func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 		redisTenantIDs        []string
 		startConsumerForIDs   []string
 		degradeTenantIDs      []string
-		eagerStart            bool
 		expectedKnown         int
 		expectedActive        int
 		expectedPending       int
 		expectedDegradedCount int
-		expectedConnMode      string
 	}{
-		{name: "all_tenants_pending_in_lazy_mode", redisTenantIDs: []string{"tenant-a", "tenant-b", "tenant-c"}, expectedKnown: 3, expectedActive: 0, expectedPending: 3, expectedDegradedCount: 0, expectedConnMode: "lazy"},
-		{name: "mix_of_active_and_pending", redisTenantIDs: []string{"tenant-a", "tenant-b", "tenant-c"}, startConsumerForIDs: []string{"tenant-a"}, expectedKnown: 3, expectedActive: 1, expectedPending: 2, expectedDegradedCount: 0, expectedConnMode: "lazy"},
-		{name: "degraded_tenant_appears_in_stats", redisTenantIDs: []string{"tenant-a", "tenant-b"}, degradeTenantIDs: []string{"tenant-b"}, expectedKnown: 2, expectedActive: 0, expectedPending: 2, expectedDegradedCount: 1, expectedConnMode: "lazy"},
-		{name: "empty_consumer_returns_zero_stats", expectedKnown: 0, expectedActive: 0, expectedPending: 0, expectedDegradedCount: 0, expectedConnMode: "lazy"},
-		{name: "eager_mode_reports_connection_mode", redisTenantIDs: []string{"tenant-a"}, eagerStart: true, expectedKnown: 1, expectedActive: 0, expectedPending: 1, expectedDegradedCount: 0, expectedConnMode: "eager"},
+		{name: "all_tenants_pending", redisTenantIDs: []string{"tenant-a", "tenant-b", "tenant-c"}, expectedKnown: 3, expectedActive: 0, expectedPending: 3, expectedDegradedCount: 0},
+		{name: "mix_of_active_and_pending", redisTenantIDs: []string{"tenant-a", "tenant-b", "tenant-c"}, startConsumerForIDs: []string{"tenant-a"}, expectedKnown: 3, expectedActive: 1, expectedPending: 2, expectedDegradedCount: 0},
+		{name: "degraded_tenant_appears_in_stats", redisTenantIDs: []string{"tenant-a", "tenant-b"}, degradeTenantIDs: []string{"tenant-b"}, expectedKnown: 2, expectedActive: 0, expectedPending: 2, expectedDegradedCount: 1},
+		{name: "empty_consumer_returns_zero_stats", expectedKnown: 0, expectedActive: 0, expectedPending: 0, expectedDegradedCount: 0},
 	}
 
 	for _, tt := range tests {
@@ -119,7 +116,6 @@ func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 				WorkersPerQueue: 1,
 				PrefetchCount:   10,
 				Service:         testServiceName,
-				EagerStart:      tt.eagerStart,
 			}, testutil.NewMockLogger())
 
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
@@ -144,7 +140,6 @@ func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 
 			stats := consumer.Stats()
 
-			assert.Equal(t, tt.expectedConnMode, stats.ConnectionMode)
 			assert.Equal(t, tt.expectedKnown, stats.KnownTenants)
 			assert.Equal(t, tt.expectedActive, stats.ActiveTenants)
 			assert.Equal(t, tt.expectedPending, stats.PendingTenants)

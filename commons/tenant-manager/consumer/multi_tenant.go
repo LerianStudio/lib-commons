@@ -75,12 +75,9 @@ type MultiTenantConfig struct {
 	// Default: false
 	AllowInsecureHTTP bool
 
-	// EagerStart controls whether consumers are started immediately for all
-	// discovered tenants at startup and during sync. When true (default),
-	// Run() bootstraps consumers for all known tenants and syncTenants()
-	// auto-starts consumers for newly discovered tenants. When false (lazy mode),
-	// consumers are only started on demand via EnsureConsumerStarted().
-	// Default: true
+	// Deprecated: EagerStart is ignored. Consumers are always started eagerly.
+	// This field is retained only for backward compatibility with existing configs;
+	// setting it has no effect. It will be removed in a future major version.
 	EagerStart bool
 }
 
@@ -90,7 +87,6 @@ func DefaultMultiTenantConfig() MultiTenantConfig {
 		SyncInterval:     30 * time.Second,
 		PrefetchCount:    10,
 		DiscoveryTimeout: 500 * time.Millisecond,
-		EagerStart:       true,
 	}
 }
 
@@ -113,16 +109,15 @@ func WithMongoManager(m *tmmongo.Manager) Option {
 
 // MultiTenantConsumer manages message consumption across multiple tenant vhosts.
 // It dynamically discovers tenants from Redis cache and spawns consumer goroutines.
-// In lazy mode, Run() populates knownTenants without starting consumers immediately.
-// Consumers are spawned on-demand via ensureConsumerStarted() when the first message
-// or external trigger arrives for a tenant.
+// Run() discovers tenants and eagerly starts consumers for all known tenants.
+// New tenants discovered during background sync are also started immediately.
 type MultiTenantConsumer struct {
 	rabbitmq     *tmrabbitmq.Manager
 	redisClient  redis.UniversalClient
 	pmClient     *client.Client // Tenant Manager client for fallback
 	handlers     map[string]HandlerFunc
 	tenants      map[string]context.CancelFunc // Active tenant goroutines
-	knownTenants map[string]bool               // Discovered tenants (lazy mode: populated without starting consumers)
+	knownTenants map[string]bool               // Discovered tenants (populated by discovery and sync)
 	// tenantAbsenceCount tracks consecutive syncs each tenant was missing from the fetched list.
 	// Used to avoid removing tenants on a single transient incomplete fetch.
 	tenantAbsenceCount map[string]int
@@ -260,9 +255,8 @@ func (c *MultiTenantConsumer) Register(queueName string, handler HandlerFunc) er
 }
 
 // Run starts the multi-tenant consumer.
-// It discovers tenants (non-blocking, soft failure) and starts background polling.
-// When EagerStart is true (default), consumers are started immediately for all
-// discovered tenants. When false, consumers are deferred to on-demand triggers.
+// It discovers tenants (non-blocking, soft failure), eagerly starts consumers
+// for all discovered tenants, and starts background polling for new tenants.
 // Returns nil even on discovery failure (soft failure).
 func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
@@ -283,11 +277,6 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	c.parentCtx = ctx
 	c.mu.Unlock()
 
-	connectionMode := "lazy"
-	if c.config.EagerStart {
-		connectionMode = "eager"
-	}
-
 	// Discover tenants without blocking (soft failure - does not start consumers)
 	c.discoverTenants(ctx)
 
@@ -296,11 +285,11 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	knownCount := len(c.knownTenants)
 	c.mu.RUnlock()
 
-	logger.InfofCtx(ctx, "starting multi-tenant consumer, connection_mode=%s, known_tenants=%d",
-		connectionMode, knownCount)
+	logger.InfofCtx(ctx, "starting multi-tenant consumer, connection_mode=eager, known_tenants=%d",
+		knownCount)
 
-	// Eager mode: start consumers for all discovered tenants immediately
-	if c.config.EagerStart && knownCount > 0 {
+	// Eager start: start consumers for all discovered tenants immediately
+	if knownCount > 0 {
 		c.eagerStartKnownTenants(ctx)
 	}
 
@@ -360,7 +349,6 @@ type Stats struct {
 	TenantIDs        []string `json:"tenantIds"`
 	RegisteredQueues []string `json:"registeredQueues"`
 	Closed           bool     `json:"closed"`
-	ConnectionMode   string   `json:"connectionMode"`
 	KnownTenants     int      `json:"knownTenants"`
 	KnownTenantIDs   []string `json:"knownTenantIds"`
 	PendingTenants   int      `json:"pendingTenants"`

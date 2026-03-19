@@ -396,7 +396,6 @@ func (c *MultiTenantConsumer) resetRetryState(tenantID string) {
 // ensureConsumerStarted ensures a consumer is running for the given tenant.
 // It uses double-check locking with a per-tenant mutex to guarantee exactly-once
 // consumer spawning under concurrent access.
-// This is the primary entry point for on-demand consumer creation in lazy mode.
 //
 // Consumers are only started for tenants that are known (resolved via discovery or
 // sync). Unknown tenants are rejected to prevent starting consumers for tenants
@@ -465,13 +464,6 @@ func (c *MultiTenantConsumer) ensureConsumerStarted(ctx context.Context, tenantI
 	c.mu.Lock()
 	c.startTenantConsumer(startCtx, tenantID)
 	c.mu.Unlock()
-}
-
-// EnsureConsumerStarted is the public API for triggering on-demand consumer spawning.
-// It is safe for concurrent use by multiple goroutines.
-// If the consumer for the given tenant is already running, this is a no-op.
-func (c *MultiTenantConsumer) EnsureConsumerStarted(ctx context.Context, tenantID string) {
-	c.ensureConsumerStarted(ctx, tenantID)
 }
 
 // IsDegraded returns true if the given tenant is currently in a degraded state
