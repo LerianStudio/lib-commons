@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	liblog "github.com/LerianStudio/lib-commons/v4/commons/log"
+	tmlog "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/log"
 )
 
 type Logger struct {
@@ -16,7 +17,7 @@ func New(logger liblog.Logger) *Logger {
 		logger = liblog.NewNop()
 	}
 
-	return &Logger{base: logger}
+	return &Logger{base: tmlog.NewTenantAwareLogger(logger)}
 }
 
 func (l *Logger) WithFields(kv ...any) *Logger {
