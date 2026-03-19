@@ -14,13 +14,13 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// Ping returns HTTP Status 200 with response "pong".
+// Ping returns HTTP Status 200 with response "healthy".
 func Ping(c *fiber.Ctx) error {
 	if c == nil {
 		return ErrContextNotFound
 	}
 
-	return c.SendString("pong")
+	return c.SendString("healthy")
 }
 
 // Version returns HTTP Status 200 with the service version from the VERSION
