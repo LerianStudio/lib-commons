@@ -83,13 +83,14 @@ func IdentityFromHeader(header string) IdentityFunc {
 }
 
 // IdentityFromIPAndHeader returns an IdentityFunc that combines the client IP address
-// with the value of the given HTTP header. The resulting identity has the form "ip:headerValue".
-// If the header is empty, only the IP address is used.
+// with the value of the given HTTP header. The resulting identity has the form "ip#headerValue".
+// The # separator is used instead of : to avoid ambiguity with IPv6 addresses, which
+// contain colons (e.g. "2001:db8::1"). If the header is empty, only the IP address is used.
 func IdentityFromIPAndHeader(header string) IdentityFunc {
 	return func(c *fiber.Ctx) string {
 		ip := c.IP()
 		if val := c.Get(header); val != "" {
-			return ip + ":" + val
+			return ip + "#" + val
 		}
 
 		return ip

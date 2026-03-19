@@ -654,8 +654,8 @@ func TestIdentityFromIPAndHeader(t *testing.T) {
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
 
-		// Should contain IP:tenant-abc pattern
-		assert.Contains(t, string(body), ":tenant-abc")
+		// Should contain IP#tenant-abc pattern (# separator avoids ambiguity with IPv6 colons)
+		assert.Contains(t, string(body), "#tenant-abc")
 	})
 
 	t.Run("without header", func(t *testing.T) {
@@ -1072,6 +1072,28 @@ func TestMethodTierSelector_ReadMethods(t *testing.T) {
 	}
 }
 
+func TestWithDynamicRateLimit_NilTierFunc(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newTestMiddlewareRedisConnection(t, mr)
+
+	// Non-nil receiver with nil TierFunc should return a pass-through handler,
+	// not panic. This differs from the nil-receiver test below.
+	rl := New(conn)
+	require.NotNil(t, rl)
+
+	handler := rl.WithDynamicRateLimit(nil)
+	app := newTestApp(handler)
+
+	resp := doRequest(t, app)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	// No rate-limit headers should be set — the request passed through without counting.
+	assert.Empty(t, resp.Header.Get("X-RateLimit-Limit"))
+}
+
 func TestWithDynamicRateLimit_NilRateLimiter(t *testing.T) {
 	t.Parallel()
 
@@ -1249,8 +1271,8 @@ func TestIdentityFromIPAndHeader_IPv6_WithHeader(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 
-	// Combined identity: "<ipv6>:<tenant>"
-	assert.Equal(t, "2001:db8::1:tenant-abc", string(body))
+	// Combined identity: "<ipv6>#<tenant>" (# separator avoids ambiguity with IPv6 colons)
+	assert.Equal(t, "2001:db8::1#tenant-abc", string(body))
 }
 
 func TestMiddleware_IPv6_RateLimiting(t *testing.T) {
