@@ -135,8 +135,12 @@ func WithMultiPoolLogger(l log.Logger) MultiPoolOption {
 // NewMultiPoolMiddleware creates a new MultiPoolMiddleware with the given options.
 // The middleware is enabled if at least one route has a PG or Mongo pool with
 // IsMultiTenant() == true.
+// By default, health probe paths (/healthz, /readyz, /livez, /health) are public
+// and bypass JWT extraction. Additional paths can be added via WithPublicPaths().
 func NewMultiPoolMiddleware(opts ...MultiPoolOption) *MultiPoolMiddleware {
-	m := &MultiPoolMiddleware{}
+	m := &MultiPoolMiddleware{
+		publicPaths: []string{"/healthz", "/readyz", "/livez", "/health"},
+	}
 
 	for _, opt := range opts {
 		opt(m)

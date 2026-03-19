@@ -81,7 +81,7 @@ func TestNewMultiPoolMiddleware(t *testing.T) {
 		assert.False(t, mid.Enabled())
 		assert.Empty(t, mid.routes)
 		assert.Nil(t, mid.defaultRoute)
-		assert.Empty(t, mid.publicPaths)
+		assert.Equal(t, []string{"/healthz", "/readyz", "/livez", "/health"}, mid.publicPaths)
 		assert.Nil(t, mid.consumerTrigger)
 		assert.False(t, mid.crossModule)
 		assert.Nil(t, mid.errorMapper)
@@ -153,7 +153,7 @@ func TestNewMultiPoolMiddleware(t *testing.T) {
 		assert.True(t, mid.Enabled())
 		assert.Len(t, mid.routes, 2)
 		assert.NotNil(t, mid.defaultRoute)
-		assert.Equal(t, []string{"/health", "/ready"}, mid.publicPaths)
+		assert.Equal(t, []string{"/healthz", "/readyz", "/livez", "/health", "/health", "/ready"}, mid.publicPaths)
 		assert.NotNil(t, mid.consumerTrigger)
 		assert.True(t, mid.crossModule)
 		assert.NotNil(t, mid.errorMapper)
@@ -1088,4 +1088,109 @@ func TestWithMultiPoolLogger(t *testing.T) {
 	opt(mid)
 
 	assert.NotNil(t, mid.logger)
+}
+
+func TestMultiPoolMiddleware_DefaultHealthProbePaths(t *testing.T) {
+	t.Parallel()
+
+	pgPool, _ := newMultiPoolTestManagers(t, "http://localhost:8080")
+
+	mid := NewMultiPoolMiddleware(
+		WithRoute([]string{"/v1/transactions"}, "transaction", pgPool, nil),
+	)
+
+	tests := []struct {
+		name         string
+		path         string
+		expectBypass bool
+	}{
+		{
+			name:         "healthz bypasses auth",
+			path:         "/healthz",
+			expectBypass: true,
+		},
+		{
+			name:         "readyz bypasses auth",
+			path:         "/readyz",
+			expectBypass: true,
+		},
+		{
+			name:         "livez bypasses auth",
+			path:         "/livez",
+			expectBypass: true,
+		},
+		{
+			name:         "health bypasses auth",
+			path:         "/health",
+			expectBypass: true,
+		},
+		{
+			name:         "health sub-path bypasses auth",
+			path:         "/health/live",
+			expectBypass: true,
+		},
+		{
+			name:         "regular path requires auth",
+			path:         "/v1/transactions",
+			expectBypass: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			nextCalled := false
+
+			app := fiber.New()
+			app.Use(mid.WithTenantDB)
+			app.Get(tt.path, func(c *fiber.Ctx) error {
+				nextCalled = true
+				return c.SendString("ok")
+			})
+
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			resp, err := app.Test(req, -1)
+			require.NoError(t, err)
+			defer resp.Body.Close()
+
+			if tt.expectBypass {
+				assert.Equal(t, http.StatusOK, resp.StatusCode)
+				assert.True(t, nextCalled, "health probe path should bypass auth")
+			} else {
+				assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+				assert.False(t, nextCalled, "regular path should require auth")
+			}
+		})
+	}
+}
+
+func TestMultiPoolMiddleware_WithPublicPaths_AppendsToDefaults(t *testing.T) {
+	t.Parallel()
+
+	pgPool, _ := newMultiPoolTestManagers(t, "http://localhost:8080")
+
+	mid := NewMultiPoolMiddleware(
+		WithRoute([]string{"/v1/transactions"}, "transaction", pgPool, nil),
+		WithPublicPaths("/metrics", "/version"),
+	)
+
+	assert.Equal(t, []string{"/healthz", "/readyz", "/livez", "/health", "/metrics", "/version"}, mid.publicPaths)
+
+	nextCalled := false
+
+	app := fiber.New()
+	app.Use(mid.WithTenantDB)
+	app.Get("/metrics", func(c *fiber.Ctx) error {
+		nextCalled = true
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.True(t, nextCalled, "custom public path should bypass auth")
 }
