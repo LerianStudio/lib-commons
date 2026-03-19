@@ -5,9 +5,12 @@ package mongo
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -21,6 +24,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/eviction"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -76,12 +80,26 @@ type MongoConnection struct {
 	MaxPoolSize            uint64
 	DB                     *mongo.Client
 
+	// tlsConfig, when non-nil, is applied to the mongo client options via
+	// SetTLSConfig. This is used when separate TLS certificate and key files
+	// are provided (tls.LoadX509KeyPair), since the MongoDB URI parameter
+	// tlsCertificateKeyFile only accepts a single combined PEM file.
+	tlsConfig *tls.Config
+
 	client *mongolib.Client
 }
 
 func (c *MongoConnection) Connect(ctx context.Context) error {
 	if c == nil {
 		return errors.New("mongo connection is nil")
+	}
+
+	// When a custom TLS config is required (e.g., separate cert+key files loaded
+	// via tls.LoadX509KeyPair), connect directly via the mongo driver so we can
+	// call SetTLSConfig on the client options. The mongolib.NewClient path does
+	// not expose this capability.
+	if c.tlsConfig != nil {
+		return c.connectWithTLS(ctx)
 	}
 
 	mongoTenantClient, err := mongolib.NewClient(ctx, mongolib.Config{
@@ -100,6 +118,28 @@ func (c *MongoConnection) Connect(ctx context.Context) error {
 	}
 
 	c.client = mongoTenantClient
+	c.DB = mongoClient
+
+	return nil
+}
+
+// connectWithTLS creates a MongoDB client using the raw driver, applying the
+// custom TLS configuration via SetTLSConfig. This path is used when separate
+// certificate and key files are provided (not a combined PEM).
+func (c *MongoConnection) connectWithTLS(ctx context.Context) error {
+	clientOptions := options.Client().ApplyURI(c.ConnectionStringSource)
+
+	if c.MaxPoolSize > 0 {
+		clientOptions.SetMaxPoolSize(c.MaxPoolSize)
+	}
+
+	clientOptions.SetTLSConfig(c.tlsConfig)
+
+	mongoClient, err := mongo.Connect(ctx, clientOptions)
+	if err != nil {
+		return fmt.Errorf("mongo connect with TLS failed: %w", err)
+	}
+
 	c.DB = mongoClient
 
 	return nil
@@ -386,6 +426,21 @@ func (p *Manager) buildAndCacheNewConnection(
 		Database:               mongoConfig.Database,
 		Logger:                 p.logger.Base(),
 		MaxPoolSize:            maxConnections,
+	}
+
+	// When separate TLS certificate and key files are provided, load the
+	// X.509 key pair and build a *tls.Config for the connection. The URI
+	// does not include tlsCertificateKeyFile in this case (see buildMongoQueryParams).
+	if hasSeparateCertAndKey(mongoConfig) {
+		tlsCfg, tlsErr := buildTLSConfigFromFiles(mongoConfig)
+		if tlsErr != nil {
+			logger.ErrorfCtx(ctx, "failed to build TLS config for tenant %s: %v", tenantID, tlsErr)
+			libOpentelemetry.HandleSpanError(span, "failed to build TLS config", tlsErr)
+
+			return nil, fmt.Errorf("failed to build TLS config: %w", tlsErr)
+		}
+
+		conn.tlsConfig = tlsCfg
 	}
 
 	if err := conn.Connect(ctx); err != nil {
@@ -763,10 +818,62 @@ func buildMongoBaseURL(cfg *core.MongoDBConfig) *url.URL {
 	return u
 }
 
+// hasSeparateCertAndKey returns true when TLS is enabled and the config provides
+// distinct certificate and key files (not a single combined PEM).
+func hasSeparateCertAndKey(cfg *core.MongoDBConfig) bool {
+	return cfg.TLS && cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" && cfg.TLSCertFile != cfg.TLSKeyFile
+}
+
+// buildTLSConfigFromFiles creates a *tls.Config by loading the X.509 key pair
+// from separate certificate and private-key files. When a CA file is provided
+// it is added to the root CA pool. When TLSSkipVerify is true, both certificate
+// chain validation and hostname verification are skipped.
+func buildTLSConfigFromFiles(cfg *core.MongoDBConfig) (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load TLS certificate key pair: %w", err)
+	}
+
+	tlsCfg := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	}
+
+	if cfg.TLSCAFile != "" {
+		caCert, readErr := os.ReadFile(cfg.TLSCAFile)
+		if readErr != nil {
+			return nil, fmt.Errorf("failed to read CA certificate file: %w", readErr)
+		}
+
+		caPool := x509.NewCertPool()
+		if !caPool.AppendCertsFromPEM(caCert) {
+			return nil, fmt.Errorf("failed to parse CA certificate from %s", cfg.TLSCAFile)
+		}
+
+		tlsCfg.RootCAs = caPool
+	}
+
+	if cfg.TLSSkipVerify {
+		tlsCfg.InsecureSkipVerify = true //#nosec G402 -- controlled by explicit config flag
+	}
+
+	return tlsCfg, nil
+}
+
 // buildMongoQueryParams builds the query parameters for the MongoDB URI.
 // Defaults authSource to "admin" when database and credentials are present
 // but no explicit authSource is configured, preserving backward compatibility
 // with deployments where users are created in the "admin" database.
+//
+// When TLS is enabled in the config, the corresponding query parameters are added:
+//   - tls=true enables TLS on the connection
+//   - tlsCAFile points to the CA certificate (only added when cert+key are NOT separate files)
+//   - tlsCertificateKeyFile points to a combined PEM file (only when a single file is provided)
+//   - tlsInsecure=true skips server certificate verification (not for production)
+//
+// When both TLSCertFile and TLSKeyFile are provided as distinct files, they are
+// NOT added to the URI; instead, buildTLSConfigFromFiles is used to load the
+// X.509 key pair and the resulting *tls.Config is applied via SetTLSConfig.
 func buildMongoQueryParams(cfg *core.MongoDBConfig) url.Values {
 	query := url.Values{}
 
@@ -778,6 +885,38 @@ func buildMongoQueryParams(cfg *core.MongoDBConfig) url.Values {
 
 	if cfg.DirectConnection {
 		query.Set("directConnection", "true")
+	}
+
+	if cfg.TLS {
+		query.Set("tls", "true")
+
+		// When separate cert+key files are provided, TLS configuration is
+		// handled via tls.LoadX509KeyPair + SetTLSConfig (not URI params).
+		// CA, client cert, and insecure settings are all set programmatically
+		// in that case, so we skip adding them to the URI entirely.
+		if hasSeparateCertAndKey(cfg) {
+			return query
+		}
+
+		if cfg.TLSCAFile != "" {
+			query.Set("tlsCAFile", cfg.TLSCAFile)
+		}
+
+		if cfg.TLSCertFile != "" || cfg.TLSKeyFile != "" {
+			// MongoDB driver uses a single PEM file containing both the client
+			// certificate and the private key via the tlsCertificateKeyFile option.
+			// When only one is provided, we use it directly since it may be a combined PEM.
+			certKeyFile := cfg.TLSCertFile
+			if certKeyFile == "" {
+				certKeyFile = cfg.TLSKeyFile
+			}
+
+			query.Set("tlsCertificateKeyFile", certKeyFile)
+		}
+
+		if cfg.TLSSkipVerify {
+			query.Set("tlsInsecure", "true")
+		}
 	}
 
 	return query

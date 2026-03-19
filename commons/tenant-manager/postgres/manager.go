@@ -841,6 +841,14 @@ func buildConnectionString(cfg *core.PostgreSQLConfig) (string, error) {
 		sslmode = "disable"
 	}
 
+	// Reject contradictory configuration: SSL is disabled but certificate
+	// paths are provided. This likely indicates a misconfiguration that would
+	// silently ignore the supplied certificates.
+	if sslmode == "disable" && (cfg.SSLRootCert != "" || cfg.SSLCert != "" || cfg.SSLKey != "") {
+		return "", fmt.Errorf("sslmode is %q but SSL certificate parameters are set (sslrootcert=%q, sslcert=%q, sslkey=%q); "+
+			"either remove the certificate paths or use a TLS-enabled sslmode", sslmode, cfg.SSLRootCert, cfg.SSLCert, cfg.SSLKey)
+	}
+
 	connURL := &url.URL{
 		Scheme: "postgres",
 		Host:   fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
@@ -853,6 +861,18 @@ func buildConnectionString(cfg *core.PostgreSQLConfig) (string, error) {
 
 	values := url.Values{}
 	values.Set("sslmode", sslmode)
+
+	if cfg.SSLRootCert != "" {
+		values.Set("sslrootcert", cfg.SSLRootCert)
+	}
+
+	if cfg.SSLCert != "" {
+		values.Set("sslcert", cfg.SSLCert)
+	}
+
+	if cfg.SSLKey != "" {
+		values.Set("sslkey", cfg.SSLKey)
+	}
 
 	if cfg.Schema != "" {
 		if !validSchemaPattern.MatchString(cfg.Schema) {

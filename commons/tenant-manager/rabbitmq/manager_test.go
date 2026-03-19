@@ -2,6 +2,7 @@ package rabbitmq
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -331,6 +332,7 @@ func TestBuildRabbitMQURI(t *testing.T) {
 	tests := []struct {
 		name     string
 		cfg      *core.RabbitMQConfig
+		useTLS   bool
 		expected string
 	}{
 		{
@@ -342,6 +344,7 @@ func TestBuildRabbitMQURI(t *testing.T) {
 				Password: "guest",
 				VHost:    "tenant-abc",
 			},
+			useTLS:   false,
 			expected: "amqp://guest:guest@localhost:5672/tenant-abc",
 		},
 		{
@@ -353,7 +356,20 @@ func TestBuildRabbitMQURI(t *testing.T) {
 				Password: "secret",
 				VHost:    "/",
 			},
+			useTLS:   false,
 			expected: "amqp://admin:secret@rabbitmq.internal:5673/%2F",
+		},
+		{
+			name: "builds TLS URI with amqps scheme",
+			cfg: &core.RabbitMQConfig{
+				Host:     "rabbitmq.prod.internal",
+				Port:     5671,
+				Username: "admin",
+				Password: "secret",
+				VHost:    "tenant-xyz",
+			},
+			useTLS:   true,
+			expected: "amqps://admin:secret@rabbitmq.prod.internal:5671/tenant-xyz",
 		},
 	}
 
@@ -362,10 +378,123 @@ func TestBuildRabbitMQURI(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			uri := buildRabbitMQURI(tt.cfg, false)
+			uri := buildRabbitMQURI(tt.cfg, tt.useTLS)
 			assert.Equal(t, tt.expected, uri)
 		})
 	}
+}
+
+func TestManager_ResolveTLS(t *testing.T) {
+	t.Parallel()
+
+	boolPtr := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name      string
+		globalTLS bool
+		tenantTLS *bool
+		expected  bool
+	}{
+		{
+			name:      "uses global TLS when tenant TLS is nil",
+			globalTLS: true,
+			tenantTLS: nil,
+			expected:  true,
+		},
+		{
+			name:      "uses global false when tenant TLS is nil",
+			globalTLS: false,
+			tenantTLS: nil,
+			expected:  false,
+		},
+		{
+			name:      "per-tenant true overrides global false",
+			globalTLS: false,
+			tenantTLS: boolPtr(true),
+			expected:  true,
+		},
+		{
+			name:      "per-tenant false overrides global true",
+			globalTLS: true,
+			tenantTLS: boolPtr(false),
+			expected:  false,
+		},
+		{
+			name:      "per-tenant true with global true",
+			globalTLS: true,
+			tenantTLS: boolPtr(true),
+			expected:  true,
+		},
+		{
+			name:      "per-tenant false with global false",
+			globalTLS: false,
+			tenantTLS: boolPtr(false),
+			expected:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := mustNewTestClient(t)
+
+			var opts []Option
+			if tt.globalTLS {
+				opts = append(opts, WithTLS())
+			}
+
+			manager := NewManager(c, "ledger", opts...)
+
+			cfg := &core.RabbitMQConfig{
+				Host:     "localhost",
+				Port:     5672,
+				Username: "guest",
+				Password: "guest",
+				VHost:    "test",
+				TLS:      tt.tenantTLS,
+			}
+
+			result := manager.resolveTLS(cfg)
+
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestManager_DialRabbitMQ_InvalidCAFile(t *testing.T) {
+	t.Parallel()
+
+	c := mustNewTestClient(t)
+	manager := NewManager(c, "ledger")
+
+	// Attempt to dial with a non-existent CA file
+	_, err := manager.dialRabbitMQ("amqps://guest:guest@localhost:5671/test", true, "/nonexistent/ca.pem")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to read TLS CA file")
+}
+
+func TestManager_DialRabbitMQ_InvalidCACert(t *testing.T) {
+	t.Parallel()
+
+	// Create a temp file with invalid PEM content
+	tmpFile, err := os.CreateTemp("", "invalid-ca-*.pem")
+	require.NoError(t, err)
+	defer os.Remove(tmpFile.Name())
+
+	_, err = tmpFile.WriteString("this is not a valid PEM certificate")
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
+
+	c := mustNewTestClient(t)
+	manager := NewManager(c, "ledger")
+
+	_, err = manager.dialRabbitMQ("amqps://guest:guest@localhost:5671/test", true, tmpFile.Name())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to parse CA certificate")
 }
 
 func TestManager_ApplyConnectionSettings_IsNoOp(t *testing.T) {

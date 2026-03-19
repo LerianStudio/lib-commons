@@ -2,9 +2,12 @@ package rabbitmq
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -208,11 +211,13 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 		return nil, core.ErrServiceNotConfigured
 	}
 
-	uri := buildRabbitMQURI(rabbitConfig, p.useTLS)
+	// Resolve TLS: per-tenant config takes precedence over global WithTLS() setting.
+	useTLS := p.resolveTLS(rabbitConfig)
+	uri := buildRabbitMQURI(rabbitConfig, useTLS)
 
-	logger.Infof("connecting to RabbitMQ vhost: tenant=%s, vhost=%s", tenantID, rabbitConfig.VHost)
+	logger.Infof("connecting to RabbitMQ vhost: tenant=%s, vhost=%s, tls=%v", tenantID, rabbitConfig.VHost, useTLS)
 
-	conn, err := amqp.Dial(uri)
+	conn, err := p.dialRabbitMQ(uri, useTLS, rabbitConfig.TLSCAFile)
 	if err != nil {
 		logger.Errorf("failed to connect to RabbitMQ: %v", err)
 		libOpentelemetry.HandleSpanError(span, "failed to connect to RabbitMQ", err)
@@ -399,6 +404,45 @@ type Stats struct {
 	ActiveConnections int      `json:"activeConnections"`
 	TenantIDs         []string `json:"tenantIds"`
 	Closed            bool     `json:"closed"`
+}
+
+// resolveTLS determines whether TLS should be used for a tenant connection.
+// Per-tenant TLS configuration (RabbitMQConfig.TLS) takes precedence over the
+// global WithTLS() setting. When the per-tenant value is nil (not configured),
+// the global useTLS flag is used as a fallback.
+func (p *Manager) resolveTLS(cfg *core.RabbitMQConfig) bool {
+	if cfg.TLS != nil {
+		return *cfg.TLS
+	}
+
+	return p.useTLS
+}
+
+// dialRabbitMQ connects to RabbitMQ, using TLS when enabled.
+// When a custom CA file is specified, it is loaded into the TLS config's RootCAs
+// to allow verification against private certificate authorities.
+func (p *Manager) dialRabbitMQ(uri string, useTLS bool, tlsCAFile string) (*amqp.Connection, error) {
+	if !useTLS || tlsCAFile == "" {
+		return amqp.Dial(uri)
+	}
+
+	// Load custom CA certificate for TLS verification.
+	caCert, err := os.ReadFile(tlsCAFile) // #nosec G304 -- path from tenant config
+	if err != nil {
+		return nil, fmt.Errorf("failed to read TLS CA file %q: %w", tlsCAFile, err)
+	}
+
+	certPool := x509.NewCertPool()
+	if !certPool.AppendCertsFromPEM(caCert) {
+		return nil, fmt.Errorf("failed to parse CA certificate from %q", tlsCAFile)
+	}
+
+	tlsCfg := &tls.Config{
+		RootCAs:    certPool,
+		MinVersion: tls.VersionTLS12,
+	}
+
+	return amqp.DialTLS(uri, tlsCfg)
 }
 
 // buildRabbitMQURI builds RabbitMQ connection URI from config.

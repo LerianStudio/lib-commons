@@ -2,7 +2,16 @@ package mongo
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
+	"math/big"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -722,6 +731,171 @@ func TestManager_Stats(t *testing.T) {
 	})
 }
 
+func TestBuildMongoURI_TLS(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		cfg      *core.MongoDBConfig
+		contains []string
+		excludes []string
+	}{
+		{
+			name: "adds tls=true when TLS is enabled",
+			cfg: &core.MongoDBConfig{
+				Host:     "localhost",
+				Port:     27017,
+				Database: "testdb",
+				TLS:      true,
+			},
+			contains: []string{"tls=true"},
+		},
+		{
+			name: "does not add tls param when TLS is disabled",
+			cfg: &core.MongoDBConfig{
+				Host:     "localhost",
+				Port:     27017,
+				Database: "testdb",
+				TLS:      false,
+			},
+			excludes: []string{"tls="},
+		},
+		{
+			name: "adds tlsCAFile when TLS is enabled with CA file",
+			cfg: &core.MongoDBConfig{
+				Host:      "localhost",
+				Port:      27017,
+				Database:  "testdb",
+				TLS:       true,
+				TLSCAFile: "/etc/ssl/ca.pem",
+			},
+			contains: []string{"tls=true", "tlsCAFile=%2Fetc%2Fssl%2Fca.pem"},
+		},
+		{
+			name: "adds tlsCertificateKeyFile when TLS is enabled with cert file",
+			cfg: &core.MongoDBConfig{
+				Host:        "localhost",
+				Port:        27017,
+				Database:    "testdb",
+				TLS:         true,
+				TLSCertFile: "/etc/ssl/client.pem",
+			},
+			contains: []string{"tls=true", "tlsCertificateKeyFile=%2Fetc%2Fssl%2Fclient.pem"},
+		},
+		{
+			name: "uses key file as tlsCertificateKeyFile when cert file is empty",
+			cfg: &core.MongoDBConfig{
+				Host:       "localhost",
+				Port:       27017,
+				Database:   "testdb",
+				TLS:        true,
+				TLSKeyFile: "/etc/ssl/client-key.pem",
+			},
+			contains: []string{"tls=true", "tlsCertificateKeyFile=%2Fetc%2Fssl%2Fclient-key.pem"},
+		},
+		{
+			name: "omits tlsCertificateKeyFile when cert and key are separate files",
+			cfg: &core.MongoDBConfig{
+				Host:        "localhost",
+				Port:        27017,
+				Database:    "testdb",
+				TLS:         true,
+				TLSCertFile: "/etc/ssl/client-cert.pem",
+				TLSKeyFile:  "/etc/ssl/client-key.pem",
+			},
+			contains: []string{"tls=true"},
+			excludes: []string{"tlsCertificateKeyFile", "tlsCAFile", "tlsInsecure"},
+		},
+		{
+			name: "uses tlsCertificateKeyFile when cert and key point to the same combined PEM",
+			cfg: &core.MongoDBConfig{
+				Host:        "localhost",
+				Port:        27017,
+				Database:    "testdb",
+				TLS:         true,
+				TLSCertFile: "/etc/ssl/client-combined.pem",
+				TLSKeyFile:  "/etc/ssl/client-combined.pem",
+			},
+			contains: []string{"tlsCertificateKeyFile=%2Fetc%2Fssl%2Fclient-combined.pem"},
+		},
+		{
+			name: "adds tlsInsecure when TLS skip verify is enabled",
+			cfg: &core.MongoDBConfig{
+				Host:          "localhost",
+				Port:          27017,
+				Database:      "testdb",
+				TLS:           true,
+				TLSSkipVerify: true,
+			},
+			contains: []string{"tls=true", "tlsInsecure=true"},
+		},
+		{
+			name: "does not add tlsInsecure when skip verify is false",
+			cfg: &core.MongoDBConfig{
+				Host:          "localhost",
+				Port:          27017,
+				Database:      "testdb",
+				TLS:           true,
+				TLSSkipVerify: false,
+			},
+			contains: []string{"tls=true"},
+			excludes: []string{"tlsInsecure"},
+		},
+		{
+			name: "does not add TLS params when TLS is disabled even with files set",
+			cfg: &core.MongoDBConfig{
+				Host:        "localhost",
+				Port:        27017,
+				Database:    "testdb",
+				TLS:         false,
+				TLSCAFile:   "/etc/ssl/ca.pem",
+				TLSCertFile: "/etc/ssl/client.pem",
+			},
+			excludes: []string{"tls=", "tlsCAFile", "tlsCertificateKeyFile"},
+		},
+		{
+			name: "full TLS config with all options",
+			cfg: &core.MongoDBConfig{
+				Host:          "mongo.prod.internal",
+				Port:          27017,
+				Database:      "tenantdb",
+				Username:      "appuser",
+				Password:      "secret",
+				TLS:           true,
+				TLSCAFile:     "/etc/ssl/ca.pem",
+				TLSCertFile:   "/etc/ssl/client.pem",
+				TLSSkipVerify: false,
+			},
+			contains: []string{
+				"tls=true",
+				"tlsCAFile=%2Fetc%2Fssl%2Fca.pem",
+				"tlsCertificateKeyFile=%2Fetc%2Fssl%2Fclient.pem",
+				"authSource=admin",
+			},
+			excludes: []string{"tlsInsecure"},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			uri, err := buildMongoURI(tt.cfg, nil)
+
+			require.NoError(t, err)
+
+			for _, s := range tt.contains {
+				assert.Contains(t, uri, s, "URI should contain %q", s)
+			}
+
+			for _, s := range tt.excludes {
+				assert.NotContains(t, uri, s, "URI should NOT contain %q", s)
+			}
+		})
+	}
+}
+
 func TestManager_IsMultiTenant(t *testing.T) {
 	t.Parallel()
 
@@ -736,5 +910,216 @@ func TestManager_IsMultiTenant(t *testing.T) {
 		manager := NewManager(nil, "ledger")
 
 		assert.False(t, manager.IsMultiTenant())
+	})
+}
+
+func TestHasSeparateCertAndKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		cfg      *core.MongoDBConfig
+		expected bool
+	}{
+		{
+			name:     "true when TLS enabled with distinct cert and key files",
+			cfg:      &core.MongoDBConfig{TLS: true, TLSCertFile: "/cert.pem", TLSKeyFile: "/key.pem"},
+			expected: true,
+		},
+		{
+			name:     "false when TLS disabled",
+			cfg:      &core.MongoDBConfig{TLS: false, TLSCertFile: "/cert.pem", TLSKeyFile: "/key.pem"},
+			expected: false,
+		},
+		{
+			name:     "false when cert and key are the same file (combined PEM)",
+			cfg:      &core.MongoDBConfig{TLS: true, TLSCertFile: "/combined.pem", TLSKeyFile: "/combined.pem"},
+			expected: false,
+		},
+		{
+			name:     "false when only cert file is set",
+			cfg:      &core.MongoDBConfig{TLS: true, TLSCertFile: "/cert.pem"},
+			expected: false,
+		},
+		{
+			name:     "false when only key file is set",
+			cfg:      &core.MongoDBConfig{TLS: true, TLSKeyFile: "/key.pem"},
+			expected: false,
+		},
+		{
+			name:     "false when neither is set",
+			cfg:      &core.MongoDBConfig{TLS: true},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.expected, hasSeparateCertAndKey(tt.cfg))
+		})
+	}
+}
+
+// generateTestCertAndKey creates a self-signed certificate and private key in
+// the given directory. Returns the paths to the cert and key files.
+func generateTestCertAndKey(t *testing.T, dir string) (certPath, keyPath string) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now().Add(-1 * time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	certPath = filepath.Join(dir, "cert.pem")
+	certFile, err := os.Create(certPath)
+	require.NoError(t, err)
+	require.NoError(t, pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: certDER}))
+	require.NoError(t, certFile.Close())
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+
+	keyPath = filepath.Join(dir, "key.pem")
+	keyFile, err := os.Create(keyPath)
+	require.NoError(t, err)
+	require.NoError(t, pem.Encode(keyFile, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
+	require.NoError(t, keyFile.Close())
+
+	return certPath, keyPath
+}
+
+func TestBuildTLSConfigFromFiles(t *testing.T) {
+	t.Parallel()
+
+	t.Run("loads separate cert and key files successfully", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		certPath, keyPath := generateTestCertAndKey(t, dir)
+
+		cfg := &core.MongoDBConfig{
+			TLS:         true,
+			TLSCertFile: certPath,
+			TLSKeyFile:  keyPath,
+		}
+
+		tlsCfg, err := buildTLSConfigFromFiles(cfg)
+
+		require.NoError(t, err)
+		require.NotNil(t, tlsCfg)
+		assert.Len(t, tlsCfg.Certificates, 1, "should have loaded one certificate")
+		assert.Nil(t, tlsCfg.RootCAs, "should not have RootCAs when no CA file is set")
+		assert.False(t, tlsCfg.InsecureSkipVerify, "should not skip verify by default")
+	})
+
+	t.Run("loads CA file into RootCAs", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		certPath, keyPath := generateTestCertAndKey(t, dir)
+
+		// Write a self-signed CA cert (same cert, for test purposes)
+		caPath := filepath.Join(dir, "ca.pem")
+		certData, err := os.ReadFile(certPath)
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(caPath, certData, 0o600))
+
+		cfg := &core.MongoDBConfig{
+			TLS:         true,
+			TLSCertFile: certPath,
+			TLSKeyFile:  keyPath,
+			TLSCAFile:   caPath,
+		}
+
+		tlsCfg, err := buildTLSConfigFromFiles(cfg)
+
+		require.NoError(t, err)
+		require.NotNil(t, tlsCfg)
+		assert.NotNil(t, tlsCfg.RootCAs, "should have RootCAs when CA file is set")
+	})
+
+	t.Run("sets InsecureSkipVerify when TLSSkipVerify is true", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		certPath, keyPath := generateTestCertAndKey(t, dir)
+
+		cfg := &core.MongoDBConfig{
+			TLS:           true,
+			TLSCertFile:   certPath,
+			TLSKeyFile:    keyPath,
+			TLSSkipVerify: true,
+		}
+
+		tlsCfg, err := buildTLSConfigFromFiles(cfg)
+
+		require.NoError(t, err)
+		assert.True(t, tlsCfg.InsecureSkipVerify, "should skip verify when TLSSkipVerify is true")
+	})
+
+	t.Run("returns error for invalid cert file", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := &core.MongoDBConfig{
+			TLS:         true,
+			TLSCertFile: "/nonexistent/cert.pem",
+			TLSKeyFile:  "/nonexistent/key.pem",
+		}
+
+		_, err := buildTLSConfigFromFiles(cfg)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to load TLS certificate key pair")
+	})
+
+	t.Run("returns error for invalid CA file", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		certPath, keyPath := generateTestCertAndKey(t, dir)
+
+		cfg := &core.MongoDBConfig{
+			TLS:         true,
+			TLSCertFile: certPath,
+			TLSKeyFile:  keyPath,
+			TLSCAFile:   "/nonexistent/ca.pem",
+		}
+
+		_, err := buildTLSConfigFromFiles(cfg)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to read CA certificate file")
+	})
+
+	t.Run("returns error for unparseable CA PEM", func(t *testing.T) {
+		t.Parallel()
+
+		dir := t.TempDir()
+		certPath, keyPath := generateTestCertAndKey(t, dir)
+
+		badCAPath := filepath.Join(dir, "bad-ca.pem")
+		require.NoError(t, os.WriteFile(badCAPath, []byte("not a PEM"), 0o600))
+
+		cfg := &core.MongoDBConfig{
+			TLS:         true,
+			TLSCertFile: certPath,
+			TLSKeyFile:  keyPath,
+			TLSCAFile:   badCAPath,
+		}
+
+		_, err := buildTLSConfigFromFiles(cfg)
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to parse CA certificate")
 	})
 }

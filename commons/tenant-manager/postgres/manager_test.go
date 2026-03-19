@@ -199,6 +199,206 @@ func TestBuildConnectionString(t *testing.T) {
 	}
 }
 
+func TestBuildConnectionString_SSLCertificates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		cfg      *core.PostgreSQLConfig
+		contains []string
+		excludes []string
+	}{
+		{
+			name: "adds sslrootcert when SSLRootCert is set",
+			cfg: &core.PostgreSQLConfig{
+				Host:        "localhost",
+				Port:        5432,
+				Username:    "user",
+				Password:    "pass",
+				Database:    "testdb",
+				SSLMode:     "verify-full",
+				SSLRootCert: "/etc/ssl/ca.pem",
+			},
+			contains: []string{"sslmode=verify-full", "sslrootcert=%2Fetc%2Fssl%2Fca.pem"},
+		},
+		{
+			name: "adds sslcert and sslkey when both are set",
+			cfg: &core.PostgreSQLConfig{
+				Host:        "localhost",
+				Port:        5432,
+				Username:    "user",
+				Password:    "pass",
+				Database:    "testdb",
+				SSLMode:     "verify-full",
+				SSLRootCert: "/etc/ssl/ca.pem",
+				SSLCert:     "/etc/ssl/client-cert.pem",
+				SSLKey:      "/etc/ssl/client-key.pem",
+			},
+			contains: []string{
+				"sslmode=verify-full",
+				"sslrootcert=%2Fetc%2Fssl%2Fca.pem",
+				"sslcert=%2Fetc%2Fssl%2Fclient-cert.pem",
+				"sslkey=%2Fetc%2Fssl%2Fclient-key.pem",
+			},
+		},
+		{
+			name: "does not add ssl cert params when not set",
+			cfg: &core.PostgreSQLConfig{
+				Host:     "localhost",
+				Port:     5432,
+				Username: "user",
+				Password: "pass",
+				Database: "testdb",
+				SSLMode:  "require",
+			},
+			contains: []string{"sslmode=require"},
+			excludes: []string{"sslrootcert", "sslcert=", "sslkey="},
+		},
+		{
+			name: "adds only sslrootcert without client certs",
+			cfg: &core.PostgreSQLConfig{
+				Host:        "localhost",
+				Port:        5432,
+				Username:    "user",
+				Password:    "pass",
+				Database:    "testdb",
+				SSLMode:     "verify-ca",
+				SSLRootCert: "/etc/ssl/ca.pem",
+			},
+			contains: []string{"sslmode=verify-ca", "sslrootcert=%2Fetc%2Fssl%2Fca.pem"},
+			excludes: []string{"sslcert=", "sslkey="},
+		},
+		{
+			name: "ssl cert params work with schema mode",
+			cfg: &core.PostgreSQLConfig{
+				Host:        "localhost",
+				Port:        5432,
+				Username:    "user",
+				Password:    "pass",
+				Database:    "testdb",
+				SSLMode:     "verify-full",
+				SSLRootCert: "/etc/ssl/ca.pem",
+				Schema:      "tenant_abc",
+			},
+			contains: []string{
+				"sslmode=verify-full",
+				"sslrootcert=%2Fetc%2Fssl%2Fca.pem",
+				"options=-csearch_path%3Dtenant_abc",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := buildConnectionString(tt.cfg)
+
+			require.NoError(t, err)
+
+			for _, s := range tt.contains {
+				assert.Contains(t, result, s, "connection string should contain %q", s)
+			}
+
+			for _, s := range tt.excludes {
+				assert.NotContains(t, result, s, "connection string should NOT contain %q", s)
+			}
+		})
+	}
+}
+
+func TestBuildConnectionString_SSLModeDisableWithCerts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  *core.PostgreSQLConfig
+	}{
+		{
+			name: "rejects sslmode=disable with SSLRootCert set",
+			cfg: &core.PostgreSQLConfig{
+				Host:        "localhost",
+				Port:        5432,
+				Username:    "user",
+				Password:    "pass",
+				Database:    "testdb",
+				SSLMode:     "disable",
+				SSLRootCert: "/etc/ssl/ca.pem",
+			},
+		},
+		{
+			name: "rejects sslmode=disable with SSLCert set",
+			cfg: &core.PostgreSQLConfig{
+				Host:     "localhost",
+				Port:     5432,
+				Username: "user",
+				Password: "pass",
+				Database: "testdb",
+				SSLMode:  "disable",
+				SSLCert:  "/etc/ssl/client-cert.pem",
+			},
+		},
+		{
+			name: "rejects sslmode=disable with SSLKey set",
+			cfg: &core.PostgreSQLConfig{
+				Host:     "localhost",
+				Port:     5432,
+				Username: "user",
+				Password: "pass",
+				Database: "testdb",
+				SSLMode:  "disable",
+				SSLKey:   "/etc/ssl/client-key.pem",
+			},
+		},
+		{
+			name: "rejects sslmode=disable with all SSL cert fields set",
+			cfg: &core.PostgreSQLConfig{
+				Host:        "localhost",
+				Port:        5432,
+				Username:    "user",
+				Password:    "pass",
+				Database:    "testdb",
+				SSLMode:     "disable",
+				SSLRootCert: "/etc/ssl/ca.pem",
+				SSLCert:     "/etc/ssl/client-cert.pem",
+				SSLKey:      "/etc/ssl/client-key.pem",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := buildConnectionString(tt.cfg)
+
+			require.Error(t, err)
+			assert.Empty(t, result)
+			assert.Contains(t, err.Error(), "sslmode is \"disable\" but SSL certificate parameters are set")
+		})
+	}
+
+	t.Run("allows sslmode=disable without cert fields", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := &core.PostgreSQLConfig{
+			Host:     "localhost",
+			Port:     5432,
+			Username: "user",
+			Password: "pass",
+			Database: "testdb",
+			SSLMode:  "disable",
+		}
+
+		result, err := buildConnectionString(cfg)
+
+		require.NoError(t, err)
+		assert.Contains(t, result, "sslmode=disable")
+	})
+}
+
 func TestBuildConnectionString_InvalidSchema(t *testing.T) {
 	tests := []struct {
 		name   string
