@@ -142,8 +142,8 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 	}
 
 	if commons.GetenvOrDefault("RATE_LIMIT_ENABLED", "true") == "false" {
-		rl.logger.Log(context.Background(), log.LevelWarn,
-			"rate limiter disabled via RATE_LIMIT_ENABLED=false")
+		rl.logger.Log(context.Background(), log.LevelInfo,
+			"rate limiter disabled via RATE_LIMIT_ENABLED=false; all requests will pass through")
 
 		return nil
 	}
