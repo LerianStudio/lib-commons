@@ -1269,9 +1269,9 @@ func TestIdentityFromIPAndHeader_IPv6_WithHeader(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 
-	// Combined identity: "ip:<encoded-ipv6>:hdr:<tenant>" — colons in the IPv6 address
-	// are URL-encoded to %3A so they cannot be confused with the structural separators.
-	assert.Equal(t, "ip:2001%3Adb8%3A%3A1:hdr:tenant-abc", string(body))
+	// Combined identity: "ip:<encoded-ipv6>#hdr:<tenant>" — # is the inter-component
+	// separator; IPv6 colons are URL-encoded to %3A so they can't be confused with it.
+	assert.Equal(t, "ip:2001%3Adb8%3A%3A1#hdr:tenant-abc", string(body))
 }
 
 func TestMiddleware_IPv6_RateLimiting(t *testing.T) {

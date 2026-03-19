@@ -88,15 +88,15 @@ func IdentityFromHeader(header string) IdentityFunc {
 
 // IdentityFromIPAndHeader returns an IdentityFunc that combines the client IP address
 // with the value of the given HTTP header. The resulting identity has the form
-// "ip:<encodedIP>:hdr:<encodedHeaderValue>". Both components are URL-encoded so that
-// IPv6 colons (encoded as %3A) cannot be confused with the structural colons used as
-// field separators. If the header is empty, only the encoded IP is returned:
-// "ip:<encodedIP>".
+// "ip:<encodedIP>#hdr:<encodedHeaderValue>". Both components are URL-encoded so that
+// IPv6 colons (encoded as %3A) and '#' characters (encoded as %23) cannot appear as
+// raw values, making '#' an unambiguous inter-component separator. If the header is
+// empty, only the encoded IP is returned: "ip:<encodedIP>".
 func IdentityFromIPAndHeader(header string) IdentityFunc {
 	return func(c *fiber.Ctx) string {
 		encodedIP := url.QueryEscape(c.IP())
 		if val := c.Get(header); val != "" {
-			return "ip:" + encodedIP + ":hdr:" + url.QueryEscape(val)
+			return "ip:" + encodedIP + "#hdr:" + url.QueryEscape(val)
 		}
 
 		return "ip:" + encodedIP
