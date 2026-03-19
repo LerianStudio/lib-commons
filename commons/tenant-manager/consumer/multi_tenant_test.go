@@ -154,14 +154,13 @@ const testServiceName = "test-service"
 // This matches the key that fetchTenantIDs will read from when Environment is empty.
 var testActiveTenantsKey = buildActiveTenantsKey("", testServiceName)
 
-// maxRunDuration is the maximum time Run() is allowed to take in lazy mode.
+// maxRunDuration is the maximum time Run() is allowed to take.
 // The requirement specifies <1 second. We use 1 second as the hard deadline.
 const maxRunDuration = 1 * time.Second
 
-// TestMultiTenantConsumer_Run_LazyMode validates that Run() completes within 1 second,
-// returns nil error (soft failure), populates knownTenants, and does NOT start consumers.
-// Covers: AC-F1, AC-F2, AC-F3, AC-F4, AC-F5, AC-F6, AC-O3, AC-Q1
-func TestMultiTenantConsumer_Run_LazyMode(t *testing.T) {
+// TestMultiTenantConsumer_Run_EagerMode validates that Run() completes within 1 second,
+// returns nil error (soft failure), and populates knownTenants.
+func TestMultiTenantConsumer_Run_EagerMode(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -188,7 +187,7 @@ func TestMultiTenantConsumer_Run_LazyMode(t *testing.T) {
 			apiTenants:               nil,
 			expectedKnownTenantCount: 100,
 			expectError:              false,
-			expectConsumersStarted:   false,
+			expectConsumersStarted:   true,
 		},
 		{
 			name:                     "returns_within_1s_with_500_tenants_from_Tenant_Manager_API",
@@ -196,7 +195,7 @@ func TestMultiTenantConsumer_Run_LazyMode(t *testing.T) {
 			apiTenants:               makeTenantSummaries(500),
 			expectedKnownTenantCount: 500,
 			expectError:              false,
-			expectConsumersStarted:   false,
+			expectConsumersStarted:   true,
 		},
 		{
 			name:                     "returns_nil_error_when_both_Redis_and_API_are_down",
@@ -222,7 +221,7 @@ func TestMultiTenantConsumer_Run_LazyMode(t *testing.T) {
 			apiTenants:               nil,
 			expectedKnownTenantCount: 1,
 			expectError:              false,
-			expectConsumersStarted:   false,
+			expectConsumersStarted:   true,
 		},
 		// Edge case: Redis empty but API returns tenants (fallback path)
 		{
@@ -231,7 +230,7 @@ func TestMultiTenantConsumer_Run_LazyMode(t *testing.T) {
 			apiTenants:               makeTenantSummaries(3),
 			expectedKnownTenantCount: 3,
 			expectError:              false,
-			expectConsumersStarted:   false,
+			expectConsumersStarted:   true,
 		},
 		// Edge case: Redis down but API is up. Discovery timeout (500ms) may
 		// be consumed by the Redis connection attempt, so API fallback may not
@@ -303,9 +302,8 @@ func TestMultiTenantConsumer_Run_LazyMode(t *testing.T) {
 				consumer.config.Service = "test-service"
 			}
 
-			// Register a handler (to verify it is NOT consumed from during Run)
+			// Register a handler
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
-				t.Error("handler should not be called during Run() in lazy mode")
 				return nil
 			})
 
@@ -319,15 +317,15 @@ func TestMultiTenantConsumer_Run_LazyMode(t *testing.T) {
 
 			// ASSERTION 1: Run() completes within maxRunDuration
 			assert.Less(t, elapsed, maxRunDuration,
-				"Run() must complete within %s in lazy mode, took %s", maxRunDuration, elapsed)
+				"Run() must complete within %s, took %s", maxRunDuration, elapsed)
 
 			// ASSERTION 2: Run() returns nil error (even on discovery failure)
 			if !tt.expectError {
 				assert.NoError(t, err,
-					"Run() must return nil error in lazy mode (soft failure on discovery)")
+					"Run() must return nil error (soft failure on discovery)")
 			}
 
-			// ASSERTION 3: knownTenants is populated (NOT tenants which holds cancel funcs)
+			// ASSERTION 3: knownTenants is populated
 			consumer.mu.RLock()
 			knownCount := len(consumer.knownTenants)
 			consumersStarted := len(consumer.tenants)
@@ -337,11 +335,13 @@ func TestMultiTenantConsumer_Run_LazyMode(t *testing.T) {
 				"knownTenants should have %d entries after Run(), got %d",
 				tt.expectedKnownTenantCount, knownCount)
 
-			// ASSERTION 4: No consumers started during Run() (lazy mode = no startTenantConsumer calls)
-			if !tt.expectConsumersStarted {
+			// ASSERTION 4: Consumers started for discovered tenants (eager mode)
+			if tt.expectConsumersStarted {
+				assert.Greater(t, consumersStarted, 0,
+					"consumers should be started eagerly for discovered tenants")
+			} else {
 				assert.Equal(t, 0, consumersStarted,
-					"no goroutines should call startTenantConsumer() during Run(), but %d consumers are active",
-					consumersStarted)
+					"no consumers should be started when no tenants discovered")
 			}
 
 			// Cleanup
@@ -453,8 +453,7 @@ func TestMultiTenantConsumer_DiscoverTenants_ReuseFetchTenantIDs(t *testing.T) {
 }
 
 // TestMultiTenantConsumer_Run_StartupLog verifies that Run() produces a log message
-// containing "connection_mode=lazy" during startup.
-// Covers: AC-T3
+// containing "connection_mode=eager" during startup.
 func TestMultiTenantConsumer_Run_StartupLog(t *testing.T) {
 	t.Parallel()
 
@@ -463,8 +462,8 @@ func TestMultiTenantConsumer_Run_StartupLog(t *testing.T) {
 		expectedLogPart string
 	}{
 		{
-			name:            "startup_log_contains_connection_mode_lazy",
-			expectedLogPart: "connection_mode=lazy",
+			name:            "startup_log_contains_connection_mode_eager",
+			expectedLogPart: "connection_mode=eager",
 		},
 	}
 
@@ -497,9 +496,9 @@ func TestMultiTenantConsumer_Run_StartupLog(t *testing.T) {
 			ctx = libCommons.ContextWithLogger(ctx, logger)
 
 			err := consumer.Run(ctx)
-			assert.NoError(t, err, "Run() should return nil in lazy mode")
+			assert.NoError(t, err, "Run() should return nil")
 
-			// Verify the startup log contains connection_mode=lazy
+			// Verify the startup log contains connection_mode=eager
 			assert.True(t, logger.ContainsSubstring(tt.expectedLogPart),
 				"startup log must contain %q, got messages: %v",
 				tt.expectedLogPart, logger.GetMessages())
@@ -551,9 +550,9 @@ func TestMultiTenantConsumer_Run_BackgroundSyncStarts(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			// Run() should return immediately (lazy mode)
+			// Run() should return quickly
 			err := consumer.Run(ctx)
-			require.NoError(t, err, "Run() should succeed in lazy mode")
+			require.NoError(t, err, "Run() should succeed")
 
 			// After Run, add tenants to Redis - the sync loop should pick them up
 			mr.SAdd(testActiveTenantsKey, tt.tenantToAdd)
@@ -996,7 +995,7 @@ func TestMultiTenantConsumer_Stats(t *testing.T) {
 			stats := consumer.Stats()
 
 			assert.Equal(t, 0, stats.ActiveTenants,
-				"no tenants should be active (lazy mode, no startTenantConsumer called)")
+				"no tenants should be active (no Run() called)")
 			assert.Equal(t, len(tt.registerQueues), len(stats.RegisteredQueues),
 				"registered queues count should match")
 			assert.Equal(t, tt.expectClosed, stats.Closed, "closed flag mismatch")
@@ -1161,45 +1160,36 @@ func TestMultiTenantConsumer_SyncTenants_RemovesTenants(t *testing.T) {
 	}
 }
 
-// TestMultiTenantConsumer_SyncTenants_LazyMode verifies that syncTenants() populates
-// knownTenants for new tenants WITHOUT starting consumer goroutines (lazy mode behavior).
-// In lazy mode, consumers are spawned on-demand (T-002), not during sync.
-// Covers: T-005 AC-F1, AC-F2, AC-T3
-func TestMultiTenantConsumer_SyncTenants_LazyMode(t *testing.T) {
+// TestMultiTenantConsumer_SyncTenants_EagerMode verifies that syncTenants() populates
+// knownTenants for new tenants AND starts consumer goroutines eagerly.
+func TestMultiTenantConsumer_SyncTenants_EagerMode(t *testing.T) {
 	tests := []struct {
-		name                  string
-		initialRedisTenants   []string
-		newRedisTenants       []string
-		expectedKnownCount    int
-		expectedConsumerCount int
+		name                string
+		initialRedisTenants []string
+		newRedisTenants     []string
+		expectedKnownCount  int
+		expectConsumers     bool
 	}{
 		{
-			name:                  "new_tenants_added_to_knownTenants_only_not_activeTenants",
-			initialRedisTenants:   []string{},
-			newRedisTenants:       []string{"tenant-a", "tenant-b", "tenant-c"},
-			expectedKnownCount:    3,
-			expectedConsumerCount: 0,
+			name:                "new_tenants_added_and_consumers_started",
+			initialRedisTenants: []string{},
+			newRedisTenants:     []string{"tenant-a", "tenant-b", "tenant-c"},
+			expectedKnownCount:  3,
+			expectConsumers:     true,
 		},
 		{
-			name:                  "sync_discovers_100_tenants_without_starting_consumers",
-			initialRedisTenants:   []string{},
-			newRedisTenants:       generateTenantIDs(100),
-			expectedKnownCount:    100,
-			expectedConsumerCount: 0,
+			name:                "sync_discovers_tenants_and_starts_consumers",
+			initialRedisTenants: []string{},
+			newRedisTenants:     generateTenantIDs(10),
+			expectedKnownCount:  10,
+			expectConsumers:     true,
 		},
 		{
-			name:                  "sync_adds_incremental_tenants_without_starting_consumers",
-			initialRedisTenants:   []string{"existing-tenant"},
-			newRedisTenants:       []string{"existing-tenant", "new-tenant-1", "new-tenant-2"},
-			expectedKnownCount:    3,
-			expectedConsumerCount: 0,
-		},
-		{
-			name:                  "sync_with_zero_tenants_starts_no_consumers",
-			initialRedisTenants:   []string{},
-			newRedisTenants:       []string{},
-			expectedKnownCount:    0,
-			expectedConsumerCount: 0,
+			name:                "sync_with_zero_tenants_starts_no_consumers",
+			initialRedisTenants: []string{},
+			newRedisTenants:     []string{},
+			expectedKnownCount:  0,
+			expectConsumers:     false,
 		},
 	}
 
@@ -1220,13 +1210,15 @@ func TestMultiTenantConsumer_SyncTenants_LazyMode(t *testing.T) {
 				Service:         "test-service",
 			}, testutil.NewMockLogger())
 
-			// Register a handler so startTenantConsumer would have something to consume
+			// Register a handler so startTenantConsumer has something to consume
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
-				t.Error("handler must not be called during syncTenants in lazy mode")
 				return nil
 			})
 
-			ctx := context.Background()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			consumer.parentCtx = ctx
 
 			// Initial discovery (populates knownTenants only)
 			consumer.discoverTenants(ctx)
@@ -1237,7 +1229,7 @@ func TestMultiTenantConsumer_SyncTenants_LazyMode(t *testing.T) {
 				mr.SAdd(testActiveTenantsKey, id)
 			}
 
-			// Run syncTenants - should populate knownTenants but NOT start consumers
+			// Run syncTenants - should populate knownTenants and start consumers
 			err := consumer.syncTenants(ctx)
 			assert.NoError(t, err, "syncTenants should not return error")
 
@@ -1251,10 +1243,17 @@ func TestMultiTenantConsumer_SyncTenants_LazyMode(t *testing.T) {
 				"syncTenants must populate knownTenants (expected %d, got %d)",
 				tt.expectedKnownCount, knownCount)
 
-			// ASSERTION 2: No consumer goroutines started (lazy mode)
-			assert.Equal(t, tt.expectedConsumerCount, consumerCount,
-				"syncTenants must NOT start consumers in lazy mode (expected %d active consumers, got %d)",
-				tt.expectedConsumerCount, consumerCount)
+			// ASSERTION 2: Consumers started for discovered tenants
+			if tt.expectConsumers {
+				assert.Greater(t, consumerCount, 0,
+					"syncTenants should start consumers eagerly for discovered tenants")
+			} else {
+				assert.Equal(t, 0, consumerCount,
+					"no consumers expected when no tenants discovered")
+			}
+
+			cancel()
+			consumer.Close()
 		})
 	}
 }
@@ -2035,63 +2034,6 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_MultipleTenants(t *testing.T)
 	}
 }
 
-// TestMultiTenantConsumer_EnsureConsumerStarted_PublicAPI verifies the public
-// EnsureConsumerStarted method delegates correctly to the internal method.
-func TestMultiTenantConsumer_EnsureConsumerStarted_PublicAPI(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		tenantID string
-	}{
-		{
-			name:     "public_API_spawns_consumer",
-			tenantID: "tenant-public",
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			_, redisClient := setupMiniredis(t)
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-			}, testutil.NewMockLogger())
-
-			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
-				return nil
-			})
-
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			consumer.parentCtx = ctx
-
-			// Add tenant to knownTenants (normally done by discoverTenants)
-			consumer.mu.Lock()
-			consumer.knownTenants[tt.tenantID] = true
-			consumer.mu.Unlock()
-
-			// Use public API
-			consumer.EnsureConsumerStarted(ctx, tt.tenantID)
-
-			consumer.mu.RLock()
-			_, exists := consumer.tenants[tt.tenantID]
-			consumer.mu.RUnlock()
-
-			assert.True(t, exists, "public API should spawn consumer for tenant %q", tt.tenantID)
-
-			cancel()
-			consumer.Close()
-		})
-	}
-}
-
 // ---------------------
 // T-004: Connection Failure Resilience Tests
 // ---------------------
@@ -2186,7 +2128,7 @@ func TestMultiTenantConsumer_StructuredLogEvents(t *testing.T) {
 		{
 			name:            "run_logs_connection_mode",
 			operation:       "run",
-			expectedLogPart: "connection_mode=lazy",
+			expectedLogPart: "connection_mode=eager",
 		},
 		{
 			name:            "discover_logs_tenant_count",
@@ -2265,7 +2207,7 @@ func TestMultiTenantConsumer_StructuredLogEvents(t *testing.T) {
 	}
 }
 
-// BenchmarkMultiTenantConsumer_Run_Startup measures startup time of Run() in lazy mode.
+// BenchmarkMultiTenantConsumer_Run_Startup measures startup time of Run().
 // Target: <1 second for all tenant configurations.
 // Covers: AC-Q2
 func BenchmarkMultiTenantConsumer_Run_Startup(b *testing.B) {

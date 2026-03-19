@@ -1,6 +1,6 @@
 package consumer
 
-// Stats returns statistics about the consumer including lazy mode metadata.
+// Stats returns statistics about the consumer.
 func (c *MultiTenantConsumer) Stats() Stats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -50,19 +50,10 @@ func (c *MultiTenantConsumer) Stats() Stats {
 		TenantIDs:        tenantIDs,
 		RegisteredQueues: queueNames,
 		Closed:           c.closed,
-		ConnectionMode:   connectionMode(c.config.EagerStart),
 		KnownTenants:     len(c.knownTenants),
 		KnownTenantIDs:   knownTenantIDs,
 		PendingTenants:   len(pendingTenantIDs),
 		PendingTenantIDs: pendingTenantIDs,
 		DegradedTenants:  degradedTenantIDs,
 	}
-}
-
-func connectionMode(eagerStart bool) string {
-	if eagerStart {
-		return "eager"
-	}
-
-	return "lazy"
 }

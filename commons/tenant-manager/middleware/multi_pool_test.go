@@ -5,12 +5,10 @@
 package middleware
 
 import (
-	"context"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
@@ -37,38 +35,6 @@ func newSingleTenantManagers() (*tmpostgres.Manager, *tmmongo.Manager) {
 	return tmpostgres.NewManager(nil, "ledger"), tmmongo.NewManager(nil, "ledger")
 }
 
-// mockConsumerTrigger implements ConsumerTrigger for testing.
-type mockConsumerTrigger struct {
-	mu        sync.Mutex
-	called    bool
-	tenantIDs []string
-}
-
-func (m *mockConsumerTrigger) EnsureConsumerStarted(_ context.Context, tenantID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.called = true
-	m.tenantIDs = append(m.tenantIDs, tenantID)
-}
-
-func (m *mockConsumerTrigger) wasCalled() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	return m.called
-}
-
-func (m *mockConsumerTrigger) getCalledTenantIDs() []string {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	result := make([]string, len(m.tenantIDs))
-	copy(result, m.tenantIDs)
-
-	return result
-}
-
 func TestNewMultiPoolMiddleware(t *testing.T) {
 	t.Parallel()
 
@@ -82,7 +48,6 @@ func TestNewMultiPoolMiddleware(t *testing.T) {
 		assert.Empty(t, mid.routes)
 		assert.Nil(t, mid.defaultRoute)
 		assert.Equal(t, []string{"/healthz", "/readyz", "/livez", "/health"}, mid.publicPaths)
-		assert.Nil(t, mid.consumerTrigger)
 		assert.False(t, mid.crossModule)
 		assert.Nil(t, mid.errorMapper)
 		assert.Nil(t, mid.logger)
@@ -137,7 +102,6 @@ func TestNewMultiPoolMiddleware(t *testing.T) {
 		t.Parallel()
 
 		pgPool, mongoPool := newMultiPoolTestManagers(t, "http://localhost:8080")
-		trigger := &mockConsumerTrigger{}
 		mapper := func(_ *fiber.Ctx, _ error, _ string) error { return nil }
 
 		mid := NewMultiPoolMiddleware(
@@ -145,7 +109,6 @@ func TestNewMultiPoolMiddleware(t *testing.T) {
 			WithRoute([]string{"/v1/accounts"}, "account", pgPool, nil),
 			WithDefaultRoute("ledger", pgPool, mongoPool),
 			WithPublicPaths("/health", "/ready"),
-			WithConsumerTrigger(trigger),
 			WithCrossModuleInjection(),
 			WithErrorMapper(mapper),
 		)
@@ -154,7 +117,6 @@ func TestNewMultiPoolMiddleware(t *testing.T) {
 		assert.Len(t, mid.routes, 2)
 		assert.NotNil(t, mid.defaultRoute)
 		assert.Equal(t, []string{"/healthz", "/readyz", "/livez", "/health", "/health", "/ready"}, mid.publicPaths)
-		assert.NotNil(t, mid.consumerTrigger)
 		assert.True(t, mid.crossModule)
 		assert.NotNil(t, mid.errorMapper)
 	})
@@ -605,55 +567,6 @@ func TestMultiPoolMiddleware_WithTenantDB_ErrorMapperDelegation(t *testing.T) {
 	assert.Contains(t, string(body), "CUSTOM_ERROR")
 }
 
-func TestMultiPoolMiddleware_WithTenantDB_ConsumerTrigger(t *testing.T) {
-	t.Parallel()
-
-	// Create a mock Tenant Manager server that returns 404 (tenant not found).
-	// The important assertion is that the consumer trigger was called BEFORE
-	// the PG connection resolution attempt.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":"not found"}`))
-	}))
-	defer server.Close()
-
-	pgPool, _ := newMultiPoolTestManagers(t, server.URL)
-	trigger := &mockConsumerTrigger{}
-
-	mid := NewMultiPoolMiddleware(
-		WithRoute([]string{"/v1/transactions"}, "transaction", pgPool, nil),
-		WithConsumerTrigger(trigger),
-	)
-
-	token := buildTestJWT(t, map[string]any{
-		"sub":      "user-123",
-		"tenantId": "tenant-abc",
-	})
-
-	app := fiber.New()
-	app.Use(simulateAuthMiddleware("user-123"))
-	app.Use(mid.WithTenantDB)
-	app.Get("/v1/transactions", func(c *fiber.Ctx) error {
-		return c.SendString("ok")
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/transactions", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-
-	resp, err := app.Test(req, -1)
-	require.NoError(t, err)
-
-	defer resp.Body.Close()
-
-	// The PG connection will fail (mock returns 404). The consumer trigger is
-	// invoked AFTER successful PG resolution to prevent starting consumers for
-	// suspended/unresolvable tenants (finding 3.5/3.7). Since PG resolution
-	// failed here, the trigger should NOT have been called.
-	assert.False(t, trigger.wasCalled(),
-		"consumer trigger should NOT be called when PG resolution fails")
-	assert.Empty(t, trigger.getCalledTenantIDs())
-}
-
 func TestMultiPoolMiddleware_WithTenantDB_DefaultRouteMatching(t *testing.T) {
 	t.Parallel()
 
@@ -1036,18 +949,6 @@ func TestWithPublicPaths(t *testing.T) {
 	opt2(mid)
 
 	assert.Equal(t, []string{"/health", "/ready", "/version"}, mid.publicPaths)
-}
-
-func TestWithConsumerTrigger(t *testing.T) {
-	t.Parallel()
-
-	trigger := &mockConsumerTrigger{}
-
-	mid := &MultiPoolMiddleware{}
-	opt := WithConsumerTrigger(trigger)
-	opt(mid)
-
-	assert.NotNil(t, mid.consumerTrigger)
 }
 
 func TestWithCrossModuleInjection(t *testing.T) {
