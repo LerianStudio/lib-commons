@@ -849,6 +849,7 @@ func TestMultiTenantConsumer_DefaultMultiTenantConfig(t *testing.T) {
 				"default DiscoveryTimeout should be %s", tt.expectedDiscoveryTO)
 			assert.Empty(t, config.MultiTenantURL, "default MultiTenantURL should be empty")
 			assert.Empty(t, config.Service, "default Service should be empty")
+			assert.False(t, config.AllowInsecureHTTP, "default AllowInsecureHTTP should be false")
 		})
 	}
 }
@@ -894,6 +895,18 @@ func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 			},
 			expectedSync:     30 * time.Second,
 			expectedWorkers:  0, // WorkersPerQueue is deprecated, default is 0
+			expectedPrefetch: 10,
+			expectPMClient:   true,
+		},
+		{
+			name: "creates_pmClient_with_http_URL_when_AllowInsecureHTTP_set",
+			config: MultiTenantConfig{
+				MultiTenantURL:    "http://tenant-manager.namespace.svc.cluster.local:4003",
+				ServiceAPIKey:     "test-key",
+				AllowInsecureHTTP: true,
+			},
+			expectedSync:     30 * time.Second,
+			expectedWorkers:  0,
 			expectedPrefetch: 10,
 			expectPMClient:   true,
 		},
@@ -3014,6 +3027,76 @@ func TestMultiTenantConsumer_RevalidateSettings_StopsSuspendedTenant(t *testing.
 			_, healthyRetryExists := consumer.retryState.Load(tt.healthyTenantID)
 			assert.True(t, healthyRetryExists,
 				"retryState should still exist for healthy tenant %q", tt.healthyTenantID)
+		})
+	}
+}
+
+// TestMultiTenantConsumer_AllowInsecureHTTP verifies that the AllowInsecureHTTP
+// config field controls whether http:// MultiTenantURLs are accepted by the constructor.
+func TestMultiTenantConsumer_AllowInsecureHTTP(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		config      MultiTenantConfig
+		expectError bool
+		errContains string
+	}{
+		{
+			name: "rejects_http_URL_when_AllowInsecureHTTP_is_false",
+			config: MultiTenantConfig{
+				MultiTenantURL: "http://tenant-manager.namespace.svc.cluster.local:4003",
+				ServiceAPIKey:  "test-key",
+			},
+			expectError: true,
+			errContains: "insecure HTTP",
+		},
+		{
+			name: "accepts_http_URL_when_AllowInsecureHTTP_is_true",
+			config: MultiTenantConfig{
+				MultiTenantURL:    "http://tenant-manager.namespace.svc.cluster.local:4003",
+				ServiceAPIKey:     "test-key",
+				AllowInsecureHTTP: true,
+			},
+			expectError: false,
+		},
+		{
+			name: "accepts_https_URL_regardless_of_AllowInsecureHTTP",
+			config: MultiTenantConfig{
+				MultiTenantURL: "https://tenant-manager.dev.example.com",
+				ServiceAPIKey:  "test-key",
+			},
+			expectError: false,
+		},
+		{
+			name: "no_error_when_MultiTenantURL_is_empty",
+			config: MultiTenantConfig{
+				MultiTenantURL: "",
+			},
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			redisClient := dummyRedisClient(t)
+			consumer, err := NewMultiTenantConsumerWithError(
+				dummyRabbitMQManager(), redisClient, tt.config, testutil.NewMockLogger(),
+			)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				assert.Nil(t, consumer)
+			} else {
+				require.NoError(t, err)
+				assert.NotNil(t, consumer)
+				if consumer != nil {
+					_ = consumer.Close()
+				}
+			}
 		})
 	}
 }

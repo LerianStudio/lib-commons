@@ -68,6 +68,13 @@ type MultiTenantConfig struct {
 	// Default: 500ms
 	DiscoveryTimeout time.Duration
 
+	// AllowInsecureHTTP permits the use of http:// (plaintext) URLs for the
+	// MultiTenantURL. By default, only https:// is accepted by the underlying
+	// client. Set this to true for in-cluster Kubernetes service URLs that use
+	// plain HTTP (e.g., http://tenant-manager.namespace.svc.cluster.local:4003).
+	// Default: false
+	AllowInsecureHTTP bool
+
 	// EagerStart controls whether consumers are started immediately for all
 	// discovered tenants at startup and during sync. When true (default),
 	// Run() bootstraps consumers for all known tenants and syncTenants()
@@ -205,9 +212,15 @@ func NewMultiTenantConsumerWithError(
 
 	// Create Tenant Manager client for fallback if URL is configured
 	if config.MultiTenantURL != "" {
-		pmClient, err := client.NewClient(config.MultiTenantURL, consumer.logger.Base(),
+		clientOpts := []client.ClientOption{
 			client.WithServiceAPIKey(config.ServiceAPIKey),
-		)
+		}
+
+		if config.AllowInsecureHTTP {
+			clientOpts = append(clientOpts, client.WithAllowInsecureHTTP())
+		}
+
+		pmClient, err := client.NewClient(config.MultiTenantURL, consumer.logger.Base(), clientOpts...)
 		if err != nil {
 			return nil, fmt.Errorf("consumer.NewMultiTenantConsumerWithError: invalid MultiTenantURL: %w", err)
 		}
