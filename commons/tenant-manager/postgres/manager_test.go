@@ -166,7 +166,7 @@ func TestBuildConnectionString(t *testing.T) {
 			expected: "postgres://user:pass@localhost:5432/testdb?options=-csearch_path%3Dtenant_abc&sslmode=disable",
 		},
 		{
-			name: "defaults sslmode to require when empty",
+			name: "defaults sslmode to disable when empty",
 			cfg: &core.PostgreSQLConfig{
 				Host:     "localhost",
 				Port:     5432,
@@ -174,7 +174,7 @@ func TestBuildConnectionString(t *testing.T) {
 				Password: "pass",
 				Database: "testdb",
 			},
-			expected: "postgres://user:pass@localhost:5432/testdb?sslmode=require",
+			expected: "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
 		},
 		{
 			name: "uses provided sslmode",

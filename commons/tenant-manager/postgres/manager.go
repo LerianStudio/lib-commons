@@ -836,7 +836,9 @@ func buildConnectionString(cfg *core.PostgreSQLConfig) (string, error) {
 
 	sslmode := cfg.SSLMode
 	if sslmode == "" {
-		sslmode = "require"
+		// Default is "disable" for local development compatibility.
+		// Production deployments should set SSLMode explicitly in PostgreSQLConfig.
+		sslmode = "disable"
 	}
 
 	connURL := &url.URL{
