@@ -35,10 +35,13 @@ type MongoDBConfig struct {
 	DirectConnection bool   `json:"directConnection,omitempty"`
 	MaxPoolSize      uint64 `json:"maxPoolSize,omitempty"`
 	TLS              bool   `json:"tls,omitempty"`
-	TLSCAFile        string `json:"tlsCAFile,omitempty"`     // path to CA certificate file
-	TLSCertFile      string `json:"tlsCertFile,omitempty"`   // path to client certificate file
-	TLSKeyFile       string `json:"tlsKeyFile,omitempty"`    // path to client private key file
-	TLSSkipVerify    bool   `json:"tlsSkipVerify,omitempty"` // skip server certificate verification
+	TLSCAFile        string `json:"tlsCAFile,omitempty"`   // path to CA certificate file
+	TLSCertFile      string `json:"tlsCertFile,omitempty"` // path to client certificate file
+	TLSKeyFile       string `json:"tlsKeyFile,omitempty"`  // path to client private key file
+	// TLSSkipVerify disables both certificate-chain validation and hostname
+	// verification (maps to MongoDB tlsInsecure). Use only in trusted environments;
+	// enabling this flag significantly increases the risk of man-in-the-middle attacks.
+	TLSSkipVerify bool `json:"tlsSkipVerify,omitempty"`
 }
 
 // RabbitMQConfig holds RabbitMQ connection configuration for tenant vhosts.

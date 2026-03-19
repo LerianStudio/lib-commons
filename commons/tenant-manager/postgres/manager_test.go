@@ -308,6 +308,97 @@ func TestBuildConnectionString_SSLCertificates(t *testing.T) {
 	}
 }
 
+func TestBuildConnectionString_SSLModeDisableWithCerts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  *core.PostgreSQLConfig
+	}{
+		{
+			name: "rejects sslmode=disable with SSLRootCert set",
+			cfg: &core.PostgreSQLConfig{
+				Host:        "localhost",
+				Port:        5432,
+				Username:    "user",
+				Password:    "pass",
+				Database:    "testdb",
+				SSLMode:     "disable",
+				SSLRootCert: "/etc/ssl/ca.pem",
+			},
+		},
+		{
+			name: "rejects sslmode=disable with SSLCert set",
+			cfg: &core.PostgreSQLConfig{
+				Host:     "localhost",
+				Port:     5432,
+				Username: "user",
+				Password: "pass",
+				Database: "testdb",
+				SSLMode:  "disable",
+				SSLCert:  "/etc/ssl/client-cert.pem",
+			},
+		},
+		{
+			name: "rejects sslmode=disable with SSLKey set",
+			cfg: &core.PostgreSQLConfig{
+				Host:     "localhost",
+				Port:     5432,
+				Username: "user",
+				Password: "pass",
+				Database: "testdb",
+				SSLMode:  "disable",
+				SSLKey:   "/etc/ssl/client-key.pem",
+			},
+		},
+		{
+			name: "rejects sslmode=disable with all SSL cert fields set",
+			cfg: &core.PostgreSQLConfig{
+				Host:        "localhost",
+				Port:        5432,
+				Username:    "user",
+				Password:    "pass",
+				Database:    "testdb",
+				SSLMode:     "disable",
+				SSLRootCert: "/etc/ssl/ca.pem",
+				SSLCert:     "/etc/ssl/client-cert.pem",
+				SSLKey:      "/etc/ssl/client-key.pem",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			result, err := buildConnectionString(tt.cfg)
+
+			require.Error(t, err)
+			assert.Empty(t, result)
+			assert.Contains(t, err.Error(), "sslmode is \"disable\" but SSL certificate parameters are set")
+		})
+	}
+
+	t.Run("allows sslmode=disable without cert fields", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := &core.PostgreSQLConfig{
+			Host:     "localhost",
+			Port:     5432,
+			Username: "user",
+			Password: "pass",
+			Database: "testdb",
+			SSLMode:  "disable",
+		}
+
+		result, err := buildConnectionString(cfg)
+
+		require.NoError(t, err)
+		assert.Contains(t, result, "sslmode=disable")
+	})
+}
+
 func TestBuildConnectionString_InvalidSchema(t *testing.T) {
 	tests := []struct {
 		name   string
