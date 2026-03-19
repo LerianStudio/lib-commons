@@ -937,7 +937,7 @@ func TestPing(t *testing.T) {
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	assert.Equal(t, "pong", string(body))
+	assert.Equal(t, "healthy", string(body))
 }
 
 func TestVersion(t *testing.T) {
