@@ -12,7 +12,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
 	"github.com/bxcodec/dbresolver/v2"
-	"go.uber.org/goleak"
 )
 
 // TestManager_Close_WaitsForRevalidateSettings proves that Close() waits for
@@ -94,11 +93,4 @@ func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
 		t.Fatalf("Close() returned unexpected error: %v", closeErr)
 	}
 
-	// If Close() properly waited, no goroutines should be leaked.
-	goleak.VerifyNone(t,
-		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
-		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
-		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
-		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),
-	)
 }

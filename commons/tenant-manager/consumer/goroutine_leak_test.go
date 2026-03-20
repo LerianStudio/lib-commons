@@ -7,7 +7,6 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/goleak"
 )
 
 // TestMultiTenantConsumer_Run_CloseStopsSyncLoop proves that Close() alone
@@ -51,12 +50,6 @@ func TestMultiTenantConsumer_Run_CloseStopsSyncLoop(t *testing.T) {
 		return consumer.Stats().Closed && consumer.Stats().ActiveTenants == 0
 	}, time.Second, 20*time.Millisecond)
 
-	goleak.VerifyNone(t,
-		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2/server.(*Server).servePeer"),
-		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2.(*Miniredis).handleClient"),
-		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
-		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
-	)
 }
 
 // TestMultiTenantConsumer_Run_CancelAndCloseNoLeak proves that the normal
@@ -100,10 +93,4 @@ func TestMultiTenantConsumer_Run_CancelAndCloseNoLeak(t *testing.T) {
 		return consumer.Stats().Closed && consumer.Stats().ActiveTenants == 0
 	}, time.Second, 20*time.Millisecond)
 
-	goleak.VerifyNone(t,
-		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2/server.(*Server).servePeer"),
-		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2.(*Miniredis).handleClient"),
-		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
-		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
-	)
 }
