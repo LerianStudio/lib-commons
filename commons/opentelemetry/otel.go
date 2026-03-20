@@ -38,6 +38,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -86,12 +87,18 @@ type Telemetry struct {
 	shutdownCtx    func(context.Context) error
 }
 
-// NewTelemetry builds telemetry providers and exporters from configuration.
-func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
-	if cfg.Logger == nil {
-		return nil, ErrNilTelemetryLogger
-	}
+// setNoopGlobalProviders replaces the global OTel providers with no-op
+// implementations so that SDK background goroutines (gRPC exporters, batch
+// processors) are never started when telemetry is intentionally disabled or
+// misconfigured. This must be called before returning any error from NewTelemetry.
+func setNoopGlobalProviders() {
+	otel.SetTracerProvider(tracenoop.NewTracerProvider())
+	otel.SetMeterProvider(metricnoop.NewMeterProvider())
+	global.SetLoggerProvider(noop.NewLoggerProvider())
+}
 
+// applyConfigDefaults fills in zero-value fields and normalizes the endpoint.
+func applyConfigDefaults(cfg *TelemetryConfig) {
 	if cfg.Propagator == nil {
 		cfg.Propagator = propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
 	}
@@ -115,39 +122,53 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 			cfg.InsecureExporter = true
 		}
 	}
+}
+
+// buildDisabledTelemetry returns a no-op Telemetry when telemetry is turned off.
+func buildDisabledTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
+	ctx := context.Background()
+
+	cfg.Logger.Log(ctx, log.LevelWarn, "Telemetry disabled")
+
+	mp := sdkmetric.NewMeterProvider()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(RedactingAttrBagSpanProcessor{Redactor: cfg.Redactor}))
+	lp := sdklog.NewLoggerProvider()
+
+	metricsFactory, err := metrics.NewMetricsFactory(mp.Meter(cfg.LibraryName), cfg.Logger)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Telemetry{
+		TelemetryConfig: cfg,
+		TracerProvider:  tp,
+		MeterProvider:   mp,
+		LoggerProvider:  lp,
+		MetricsFactory:  metricsFactory,
+		shutdown:        func() {},
+		shutdownCtx:     func(context.Context) error { return nil },
+	}, nil
+}
+
+// NewTelemetry builds telemetry providers and exporters from configuration.
+func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
+	if cfg.Logger == nil {
+		return nil, ErrNilTelemetryLogger
+	}
+
+	applyConfigDefaults(&cfg)
 
 	if cfg.EnableTelemetry && strings.TrimSpace(cfg.CollectorExporterEndpoint) == "" {
-		otel.SetTracerProvider(trace.NewNoopTracerProvider())
-		otel.SetMeterProvider(metricnoop.NewMeterProvider())
-		global.SetLoggerProvider(noop.NewLoggerProvider())
+		setNoopGlobalProviders()
 
 		return nil, ErrEmptyEndpoint
 	}
 
-	ctx := context.Background()
-
 	if !cfg.EnableTelemetry {
-		cfg.Logger.Log(ctx, log.LevelWarn, "Telemetry disabled")
-
-		mp := sdkmetric.NewMeterProvider()
-		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(RedactingAttrBagSpanProcessor{Redactor: cfg.Redactor}))
-		lp := sdklog.NewLoggerProvider()
-
-		metricsFactory, err := metrics.NewMetricsFactory(mp.Meter(cfg.LibraryName), cfg.Logger)
-		if err != nil {
-			return nil, err
-		}
-
-		return &Telemetry{
-			TelemetryConfig: cfg,
-			TracerProvider:  tp,
-			MeterProvider:   mp,
-			LoggerProvider:  lp,
-			MetricsFactory:  metricsFactory,
-			shutdown:        func() {},
-			shutdownCtx:     func(context.Context) error { return nil },
-		}, nil
+		return buildDisabledTelemetry(cfg)
 	}
+
+	ctx := context.Background()
 
 	if cfg.InsecureExporter && cfg.DeploymentEnv != "" &&
 		cfg.DeploymentEnv != "development" && cfg.DeploymentEnv != "local" {
