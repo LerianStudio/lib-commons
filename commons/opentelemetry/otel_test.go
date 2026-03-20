@@ -40,10 +40,15 @@ func TestNewTelemetry_EnabledEmptyEndpoint(t *testing.T) {
 
 	tl, err := NewTelemetry(TelemetryConfig{
 		EnableTelemetry: true,
+		LibraryName:     "test-lib",
 		Logger:          log.NewNop(),
 	})
 	require.ErrorIs(t, err, ErrEmptyEndpoint)
-	assert.Nil(t, tl)
+	require.NotNil(t, tl, "must return noop Telemetry to prevent goroutine leaks")
+	assert.NotNil(t, tl.TracerProvider)
+	assert.NotNil(t, tl.MeterProvider)
+	assert.NotNil(t, tl.LoggerProvider)
+	assert.NotNil(t, tl.MetricsFactory)
 }
 
 func TestNewTelemetry_EnabledWhitespaceEndpoint(t *testing.T) {
@@ -52,10 +57,40 @@ func TestNewTelemetry_EnabledWhitespaceEndpoint(t *testing.T) {
 	tl, err := NewTelemetry(TelemetryConfig{
 		EnableTelemetry:           true,
 		CollectorExporterEndpoint: "   ",
+		LibraryName:               "test-lib",
 		Logger:                    log.NewNop(),
 	})
 	require.ErrorIs(t, err, ErrEmptyEndpoint)
-	assert.Nil(t, tl)
+	require.NotNil(t, tl, "must return noop Telemetry to prevent goroutine leaks")
+	assert.NotNil(t, tl.TracerProvider)
+	assert.NotNil(t, tl.MeterProvider)
+	assert.NotNil(t, tl.LoggerProvider)
+	assert.NotNil(t, tl.MetricsFactory)
+}
+
+func TestNewTelemetry_EnabledEmptyEndpoint_SetsGlobalNoopProviders(t *testing.T) {
+	// Not parallel: mutates global OTEL providers.
+	prevTP := otel.GetTracerProvider()
+	prevMP := otel.GetMeterProvider()
+	t.Cleanup(func() {
+		otel.SetTracerProvider(prevTP)
+		otel.SetMeterProvider(prevMP)
+	})
+
+	tl, err := NewTelemetry(TelemetryConfig{
+		EnableTelemetry: true,
+		LibraryName:     "test-lib",
+		Logger:          log.NewNop(),
+	})
+	require.ErrorIs(t, err, ErrEmptyEndpoint)
+	require.NotNil(t, tl)
+
+	// Verify that noop providers were installed as globals, preventing
+	// downstream libraries from spawning real gRPC exporters.
+	assert.Same(t, tl.TracerProvider, otel.GetTracerProvider(),
+		"global tracer provider must be the noop instance")
+	assert.Same(t, tl.MeterProvider, otel.GetMeterProvider(),
+		"global meter provider must be the noop instance")
 }
 
 func TestNewTelemetry_DisabledReturnsNoopProviders(t *testing.T) {
