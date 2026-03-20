@@ -175,7 +175,7 @@ func TestClient_GetTenantConfig(t *testing.T) {
 		config := newTestTenantConfig()
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			assert.Equal(t, "/v1/tenants/tenant-123/services/ledger/connections", r.URL.Path)
+			assert.Equal(t, "/v1/tenants/tenant-123/associations/ledger/connections", r.URL.Path)
 
 			w.Header().Set("Content-Type", "application/json")
 			require.NoError(t, json.NewEncoder(w).Encode(config))
