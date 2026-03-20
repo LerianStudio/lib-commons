@@ -99,7 +99,19 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 	}
 
 	if cfg.EnableTelemetry && strings.TrimSpace(cfg.CollectorExporterEndpoint) == "" {
-		return nil, ErrEmptyEndpoint
+		cfg.Logger.Log(context.Background(), log.LevelWarn,
+			"Telemetry enabled but collector endpoint is empty; falling back to noop providers")
+
+		tl, noopErr := newNoopTelemetry(cfg)
+		if noopErr != nil {
+			return nil, noopErr
+		}
+
+		// Set noop providers as globals so downstream libraries (e.g. otelfiber)
+		// do not create real gRPC exporters that leak background goroutines.
+		_ = tl.ApplyGlobals()
+
+		return tl, ErrEmptyEndpoint
 	}
 
 	ctx := context.Background()
@@ -107,24 +119,12 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 	if !cfg.EnableTelemetry {
 		cfg.Logger.Log(ctx, log.LevelWarn, "Telemetry disabled")
 
-		mp := sdkmetric.NewMeterProvider()
-		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(RedactingAttrBagSpanProcessor{Redactor: cfg.Redactor}))
-		lp := sdklog.NewLoggerProvider()
-
-		metricsFactory, err := metrics.NewMetricsFactory(mp.Meter(cfg.LibraryName), cfg.Logger)
+		tl, err := newNoopTelemetry(cfg)
 		if err != nil {
 			return nil, err
 		}
 
-		return &Telemetry{
-			TelemetryConfig: cfg,
-			TracerProvider:  tp,
-			MeterProvider:   mp,
-			LoggerProvider:  lp,
-			MetricsFactory:  metricsFactory,
-			shutdown:        func() {},
-			shutdownCtx:     func(context.Context) error { return nil },
-		}, nil
+		return tl, nil
 	}
 
 	if cfg.InsecureExporter && cfg.DeploymentEnv != "" &&
@@ -190,6 +190,30 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 		MetricsFactory:  metricsFactory,
 		shutdown:        shutdown,
 		shutdownCtx:     shutdownCtx,
+	}, nil
+}
+
+// newNoopTelemetry creates a Telemetry instance with no-op providers (no exporters).
+// This is used when telemetry is disabled or when the collector endpoint is empty,
+// ensuring global OTEL providers are safe no-ops that do not leak goroutines.
+func newNoopTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
+	mp := sdkmetric.NewMeterProvider()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(RedactingAttrBagSpanProcessor{Redactor: cfg.Redactor}))
+	lp := sdklog.NewLoggerProvider()
+
+	metricsFactory, err := metrics.NewMetricsFactory(mp.Meter(cfg.LibraryName), cfg.Logger)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Telemetry{
+		TelemetryConfig: cfg,
+		TracerProvider:  tp,
+		MeterProvider:   mp,
+		LoggerProvider:  lp,
+		MetricsFactory:  metricsFactory,
+		shutdown:        func() {},
+		shutdownCtx:     func(context.Context) error { return nil },
 	}, nil
 }
 
