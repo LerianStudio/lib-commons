@@ -1736,3 +1736,88 @@ func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
 		})
 	}
 }
+
+func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
+	t.Parallel()
+
+	// This test verifies that revalidatePoolSettings uses WithSkipCache()
+	// to bypass the client's in-memory cache. Without it, a cached "active"
+	// response would hide a subsequent 403 (suspended/purged) from tenant-manager.
+	//
+	// Setup: The httptest server returns 200 (active) on the first request
+	// and 403 (suspended) on all subsequent requests. We first call
+	// GetTenantConfig directly to populate the client cache, then trigger
+	// revalidatePoolSettings. If WithSkipCache is working, the revalidation
+	// hits the server (gets 403) and evicts the connection. If the cache
+	// were used, it would return the stale 200 and the connection would
+	// remain.
+	var requestCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count := requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+
+		if count == 1 {
+			// First request: return active config (populates client cache)
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{
+				"id": "tenant-cache-test",
+				"tenantSlug": "cached-tenant",
+				"service": "ledger",
+				"status": "active",
+				"databases": {
+					"onboarding": {
+						"postgresql": {"host": "localhost", "port": 5432, "database": "testdb", "username": "user", "password": "pass"}
+					}
+				}
+			}`))
+
+			return
+		}
+
+		// Subsequent requests: return 403 (tenant suspended)
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"code":"TS-SUSPENDED","error":"service suspended","status":"suspended"}`))
+	}))
+	defer server.Close()
+
+	capLogger := testutil.NewCapturingLogger()
+	tmClient, err := client.NewClient(server.URL, capLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+	require.NoError(t, err)
+
+	// Populate the client cache by calling GetTenantConfig directly
+	cfg, err := tmClient.GetTenantConfig(context.Background(), "tenant-cache-test", "ledger")
+	require.NoError(t, err)
+	assert.Equal(t, "tenant-cache-test", cfg.ID)
+	assert.Equal(t, int32(1), requestCount.Load(), "should have made exactly 1 HTTP request")
+
+	// Create a manager with a cached connection for this tenant
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(capLogger),
+		WithModule("onboarding"),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	mockDB := &pingableDB{}
+	var dbIface dbresolver.DB = mockDB
+
+	manager.connections["tenant-cache-test"] = &PostgresConnection{ConnectionDB: &dbIface}
+	manager.lastAccessed["tenant-cache-test"] = time.Now()
+	manager.lastSettingsCheck["tenant-cache-test"] = time.Now()
+
+	// Trigger revalidatePoolSettings -- should bypass cache and hit the server
+	manager.revalidatePoolSettings("tenant-cache-test")
+
+	// Verify a second HTTP request was made (cache was bypassed)
+	assert.Equal(t, int32(2), requestCount.Load(),
+		"revalidatePoolSettings should bypass client cache and make a fresh HTTP request")
+
+	// Verify the connection was evicted (server returned 403)
+	statsAfter := manager.Stats()
+	assert.Equal(t, 0, statsAfter.TotalConnections,
+		"connection should be evicted after revalidation detected suspended tenant via cache bypass")
+
+	// Verify the DB was closed
+	assert.True(t, mockDB.closed,
+		"cached connection's DB should have been closed on eviction")
+}
