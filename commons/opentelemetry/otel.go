@@ -98,36 +98,10 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 		cfg.Redactor = NewDefaultRedactor()
 	}
 
-	// Normalize endpoint: strip URL scheme and infer security mode.
-	// gRPC WithEndpoint() expects host:port, not a full URL.
-	// Consumers commonly pass OTEL_EXPORTER_OTLP_ENDPOINT as "http://host:4317".
-	if ep := strings.TrimSpace(cfg.CollectorExporterEndpoint); ep != "" {
-		switch {
-		case strings.HasPrefix(ep, "http://"):
-			cfg.CollectorExporterEndpoint = strings.TrimPrefix(ep, "http://")
-			cfg.InsecureExporter = true
-		case strings.HasPrefix(ep, "https://"):
-			cfg.CollectorExporterEndpoint = strings.TrimPrefix(ep, "https://")
-		default:
-			// No scheme — assume insecure (common in k8s internal comms).
-			cfg.InsecureExporter = true
-		}
-	}
+	normalizeEndpoint(&cfg)
 
 	if cfg.EnableTelemetry && strings.TrimSpace(cfg.CollectorExporterEndpoint) == "" {
-		cfg.Logger.Log(context.Background(), log.LevelWarn,
-			"Telemetry enabled but collector endpoint is empty; falling back to noop providers")
-
-		tl, noopErr := newNoopTelemetry(cfg)
-		if noopErr != nil {
-			return nil, noopErr
-		}
-
-		// Set noop providers as globals so downstream libraries (e.g. otelfiber)
-		// do not create real gRPC exporters that leak background goroutines.
-		_ = tl.ApplyGlobals()
-
-		return tl, ErrEmptyEndpoint
+		return handleEmptyEndpoint(cfg)
 	}
 
 	ctx := context.Background()
@@ -135,12 +109,7 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 	if !cfg.EnableTelemetry {
 		cfg.Logger.Log(ctx, log.LevelWarn, "Telemetry disabled")
 
-		tl, err := newNoopTelemetry(cfg)
-		if err != nil {
-			return nil, err
-		}
-
-		return tl, nil
+		return newNoopTelemetry(cfg)
 	}
 
 	if cfg.InsecureExporter && cfg.DeploymentEnv != "" &&
@@ -150,6 +119,51 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 			log.String("environment", cfg.DeploymentEnv))
 	}
 
+	return initExporters(ctx, cfg)
+}
+
+// normalizeEndpoint strips URL scheme from the collector endpoint and infers security mode.
+// gRPC WithEndpoint() expects host:port, not a full URL.
+// Consumers commonly pass OTEL_EXPORTER_OTLP_ENDPOINT as "http://host:4317".
+func normalizeEndpoint(cfg *TelemetryConfig) {
+	ep := strings.TrimSpace(cfg.CollectorExporterEndpoint)
+	if ep == "" {
+		return
+	}
+
+	switch {
+	case strings.HasPrefix(ep, "http://"):
+		cfg.CollectorExporterEndpoint = strings.TrimPrefix(ep, "http://")
+		cfg.InsecureExporter = true
+	case strings.HasPrefix(ep, "https://"):
+		cfg.CollectorExporterEndpoint = strings.TrimPrefix(ep, "https://")
+	default:
+		// No scheme — assume insecure (common in k8s internal comms).
+		cfg.InsecureExporter = true
+	}
+}
+
+// handleEmptyEndpoint handles the case where telemetry is enabled but the collector
+// endpoint is empty, returning noop providers installed as globals.
+func handleEmptyEndpoint(cfg TelemetryConfig) (*Telemetry, error) {
+	cfg.Logger.Log(context.Background(), log.LevelWarn,
+		"Telemetry enabled but collector endpoint is empty; falling back to noop providers")
+
+	tl, noopErr := newNoopTelemetry(cfg)
+	if noopErr != nil {
+		return nil, noopErr
+	}
+
+	// Set noop providers as globals so downstream libraries (e.g. otelfiber)
+	// do not create real gRPC exporters that leak background goroutines.
+	_ = tl.ApplyGlobals()
+
+	return tl, ErrEmptyEndpoint
+}
+
+// initExporters creates OTLP exporters, providers, and a metrics factory,
+// rolling back partial allocations on failure.
+func initExporters(ctx context.Context, cfg TelemetryConfig) (*Telemetry, error) {
 	r := cfg.newResource()
 
 	// Track all allocated resources for rollback if a later step fails.
