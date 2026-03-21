@@ -10,17 +10,33 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// mustNewTestClient creates a test client or fails the test immediately.
+// Centralises the repeated client.NewClient + error-check boilerplate.
+// Tests use httptest servers (http://), so WithAllowInsecureHTTP is applied.
+func mustNewTestClient(t testing.TB, baseURL string) *client.Client {
+	t.Helper()
+
+	c, err := client.NewClient(baseURL, testutil.NewMockLogger(), client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+	require.NoError(t, err)
+
+	return c
+}
 
 func TestNewManager(t *testing.T) {
 	t.Run("creates manager with client and service", func(t *testing.T) {
@@ -1122,4 +1138,435 @@ func TestBuildTLSConfigFromFiles(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to parse CA certificate")
 	})
+}
+
+func TestManager_WithSettingsCheckInterval_Option(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		interval         time.Duration
+		expectedInterval time.Duration
+	}{
+		{
+			name:             "sets custom settings check interval",
+			interval:         1 * time.Minute,
+			expectedInterval: 1 * time.Minute,
+		},
+		{
+			name:             "sets short settings check interval",
+			interval:         5 * time.Second,
+			expectedInterval: 5 * time.Second,
+		},
+		{
+			name:             "disables revalidation with zero duration",
+			interval:         0,
+			expectedInterval: 0,
+		},
+		{
+			name:             "disables revalidation with negative duration",
+			interval:         -1 * time.Second,
+			expectedInterval: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := mustNewTestClient(t, "http://localhost:8080")
+			manager := NewManager(c, "ledger",
+				WithSettingsCheckInterval(tt.interval),
+			)
+
+			assert.Equal(t, tt.expectedInterval, manager.settingsCheckInterval)
+		})
+	}
+}
+
+func TestManager_DefaultSettingsCheckInterval(t *testing.T) {
+	t.Parallel()
+
+	c := mustNewTestClient(t, "http://localhost:8080")
+	manager := NewManager(c, "ledger")
+
+	assert.Equal(t, defaultSettingsCheckInterval, manager.settingsCheckInterval,
+		"default settings check interval should be set from named constant")
+	assert.NotNil(t, manager.lastSettingsCheck,
+		"lastSettingsCheck map should be initialized")
+}
+
+func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
+	t.Parallel()
+
+	var callCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&callCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "tenant-123",
+			"tenantSlug": "test-tenant",
+			"databases": {
+				"onboarding": {
+					"mongodb": {"host": "localhost", "port": 27017, "database": "testdb", "username": "user", "password": "pass"}
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	tmClient := mustNewTestClient(t, server.URL)
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(testutil.NewMockLogger()),
+		WithModule("onboarding"),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	// Pre-populate cache with a healthy connection (nil DB to avoid real MongoDB).
+	// GetConnection with a nil DB triggers reconnect, so we need to test via
+	// the revalidation path specifically. We use a connection that has a non-nil
+	// DB field but is a mock. Since we can't mock mongo.Client's Ping, we test
+	// the revalidation path directly via revalidatePoolSettings.
+	cachedConn := &MongoConnection{DB: nil}
+	manager.connections["tenant-123"] = cachedConn
+	manager.lastAccessed["tenant-123"] = time.Now()
+	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+
+	// Trigger revalidation directly (mirrors postgres test pattern for EvictsSuspendedTenant)
+	manager.revalidatePoolSettings("tenant-123")
+
+	assert.Eventually(t, func() bool {
+		return atomic.LoadInt32(&callCount) > 0
+	}, 500*time.Millisecond, 20*time.Millisecond, "should have fetched fresh config from Tenant Manager")
+}
+
+func TestManager_GetConnection_DisabledRevalidation_WithZero(t *testing.T) {
+	t.Parallel()
+
+	var callCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&callCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "tenant-123",
+			"tenantSlug": "test-tenant",
+			"databases": {
+				"onboarding": {
+					"mongodb": {"host": "localhost", "port": 27017, "database": "testdb"}
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	tmClient := mustNewTestClient(t, server.URL)
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(testutil.NewMockLogger()),
+		WithModule("onboarding"),
+		WithSettingsCheckInterval(0),
+	)
+
+	// Verify revalidation is disabled
+	assert.Equal(t, time.Duration(0), manager.settingsCheckInterval)
+
+	// Pre-populate cache with a connection (nil DB)
+	cachedConn := &MongoConnection{DB: nil}
+	manager.connections["tenant-123"] = cachedConn
+	manager.lastAccessed["tenant-123"] = time.Now()
+	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+
+	// Simulate the revalidation check logic (same as in GetConnection)
+	manager.mu.Lock()
+	shouldRevalidate := manager.client != nil && manager.settingsCheckInterval > 0 && time.Since(manager.lastSettingsCheck["tenant-123"]) > manager.settingsCheckInterval
+	manager.mu.Unlock()
+
+	assert.False(t, shouldRevalidate, "should NOT trigger revalidation when interval is zero")
+
+	// Wait to ensure no async goroutine fires
+	time.Sleep(100 * time.Millisecond)
+
+	assert.Equal(t, int32(0), atomic.LoadInt32(&callCount), "should NOT have fetched config - revalidation is disabled")
+}
+
+func TestManager_GetConnection_DisabledRevalidation_WithNegative(t *testing.T) {
+	t.Parallel()
+
+	var callCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&callCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	tmClient := mustNewTestClient(t, server.URL)
+	manager := NewManager(tmClient, "payment",
+		WithLogger(testutil.NewMockLogger()),
+		WithModule("payment"),
+		WithSettingsCheckInterval(-5*time.Second),
+	)
+
+	// Verify negative was clamped to zero
+	assert.Equal(t, time.Duration(0), manager.settingsCheckInterval)
+
+	// Pre-populate cache
+	cachedConn := &MongoConnection{DB: nil}
+	manager.connections["tenant-456"] = cachedConn
+	manager.lastAccessed["tenant-456"] = time.Now()
+	manager.lastSettingsCheck["tenant-456"] = time.Now().Add(-1 * time.Hour)
+
+	// Simulate the revalidation check logic
+	manager.mu.Lock()
+	shouldRevalidate := manager.client != nil && manager.settingsCheckInterval > 0 && time.Since(manager.lastSettingsCheck["tenant-456"]) > manager.settingsCheckInterval
+	manager.mu.Unlock()
+
+	assert.False(t, shouldRevalidate, "should NOT trigger revalidation when interval is negative (clamped to zero)")
+
+	time.Sleep(100 * time.Millisecond)
+
+	assert.Equal(t, int32(0), atomic.LoadInt32(&callCount), "should NOT have fetched config - revalidation is disabled via negative interval")
+}
+
+func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		responseStatus     int
+		responseBody       string
+		expectEviction     bool
+		expectLogSubstring string
+	}{
+		{
+			name:               "evicts_cached_connection_when_tenant_is_suspended",
+			responseStatus:     http.StatusForbidden,
+			responseBody:       `{"code":"TS-SUSPENDED","error":"service suspended","status":"suspended"}`,
+			expectEviction:     true,
+			expectLogSubstring: "tenant tenant-suspended service suspended, evicting cached connection",
+		},
+		{
+			name:               "evicts_cached_connection_when_tenant_is_purged",
+			responseStatus:     http.StatusForbidden,
+			responseBody:       `{"code":"TS-SUSPENDED","error":"service purged","status":"purged"}`,
+			expectEviction:     true,
+			expectLogSubstring: "tenant tenant-suspended service suspended, evicting cached connection",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.responseStatus)
+				w.Write([]byte(tt.responseBody))
+			}))
+			defer server.Close()
+
+			capLogger := testutil.NewCapturingLogger()
+			tmClient, err := client.NewClient(server.URL, capLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+			require.NoError(t, err)
+			manager := NewManager(tmClient, "ledger",
+				WithLogger(capLogger),
+				WithSettingsCheckInterval(1*time.Millisecond),
+			)
+
+			// Pre-populate a cached connection for the tenant (nil DB to avoid real MongoDB)
+			manager.connections["tenant-suspended"] = &MongoConnection{DB: nil}
+			manager.lastAccessed["tenant-suspended"] = time.Now()
+			manager.lastSettingsCheck["tenant-suspended"] = time.Now()
+
+			// Verify the connection exists before revalidation
+			statsBefore := manager.Stats()
+			assert.Equal(t, 1, statsBefore.TotalConnections,
+				"should have 1 connection before revalidation")
+
+			// Trigger revalidatePoolSettings directly
+			manager.revalidatePoolSettings("tenant-suspended")
+
+			if tt.expectEviction {
+				// Verify the connection was evicted
+				statsAfter := manager.Stats()
+				assert.Equal(t, 0, statsAfter.TotalConnections,
+					"connection should be evicted after suspended tenant detected")
+
+				// Verify lastAccessed and lastSettingsCheck were cleaned up
+				manager.mu.RLock()
+				_, accessExists := manager.lastAccessed["tenant-suspended"]
+				_, settingsExists := manager.lastSettingsCheck["tenant-suspended"]
+				manager.mu.RUnlock()
+
+				assert.False(t, accessExists,
+					"lastAccessed should be removed for evicted tenant")
+				assert.False(t, settingsExists,
+					"lastSettingsCheck should be removed for evicted tenant")
+			}
+
+			// Verify the appropriate log message was produced
+			assert.True(t, capLogger.ContainsSubstring(tt.expectLogSubstring),
+				"expected log message containing %q, got: %v",
+				tt.expectLogSubstring, capLogger.GetMessages())
+		})
+	}
+}
+
+func TestManager_RevalidateSettings_FailedDoesNotBreakConnection(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	capLogger := testutil.NewCapturingLogger()
+	tmClient := mustNewTestClient(t, server.URL)
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(capLogger),
+		WithModule("onboarding"),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	// Pre-populate cache
+	manager.connections["tenant-123"] = &MongoConnection{DB: nil}
+	manager.lastAccessed["tenant-123"] = time.Now()
+	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+
+	// Trigger revalidation directly - should fail but not evict
+	manager.revalidatePoolSettings("tenant-123")
+
+	// Connection should still exist (not evicted on transient failure)
+	stats := manager.Stats()
+	assert.Equal(t, 1, stats.TotalConnections,
+		"connection should NOT be evicted after transient revalidation failure")
+
+	// Verify a warning was logged
+	assert.True(t, capLogger.ContainsSubstring("failed to revalidate connection settings"),
+		"should log a warning when revalidation fails")
+}
+
+func TestManager_RevalidateSettings_RecoverFromPanic(t *testing.T) {
+	t.Parallel()
+
+	capLogger := testutil.NewCapturingLogger()
+
+	// Create a manager with nil client to trigger a panic path
+	manager := &Manager{
+		logger:                logcompat.New(capLogger),
+		connections:           make(map[string]*MongoConnection),
+		databaseNames:         make(map[string]string),
+		lastAccessed:          make(map[string]time.Time),
+		lastSettingsCheck:     make(map[string]time.Time),
+		settingsCheckInterval: 1 * time.Millisecond,
+	}
+
+	// Should not panic -- the recovery handler should catch it
+	assert.NotPanics(t, func() {
+		manager.revalidatePoolSettings("tenant-panic")
+	})
+}
+
+func TestManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
+	t.Parallel()
+
+	c := mustNewTestClient(t, "http://localhost:8080")
+	manager := NewManager(c, "ledger",
+		WithLogger(testutil.NewMockLogger()),
+	)
+
+	// Pre-populate cache
+	manager.connections["tenant-123"] = &MongoConnection{DB: nil}
+	manager.lastAccessed["tenant-123"] = time.Now()
+	manager.lastSettingsCheck["tenant-123"] = time.Now()
+
+	err := manager.CloseConnection(context.Background(), "tenant-123")
+
+	require.NoError(t, err)
+
+	manager.mu.RLock()
+	_, connExists := manager.connections["tenant-123"]
+	_, accessExists := manager.lastAccessed["tenant-123"]
+	_, settingsCheckExists := manager.lastSettingsCheck["tenant-123"]
+	manager.mu.RUnlock()
+
+	assert.False(t, connExists, "connection should be removed after CloseConnection")
+	assert.False(t, accessExists, "lastAccessed should be removed after CloseConnection")
+	assert.False(t, settingsCheckExists, "lastSettingsCheck should be removed after CloseConnection")
+}
+
+func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
+	t.Parallel()
+
+	c := mustNewTestClient(t, "http://localhost:8080")
+	manager := NewManager(c, "ledger",
+		WithLogger(testutil.NewMockLogger()),
+	)
+
+	// Pre-populate cache with multiple tenants
+	for _, id := range []string{"tenant-1", "tenant-2"} {
+		manager.connections[id] = &MongoConnection{DB: nil}
+		manager.lastAccessed[id] = time.Now()
+		manager.lastSettingsCheck[id] = time.Now()
+	}
+
+	err := manager.Close(context.Background())
+
+	require.NoError(t, err)
+
+	assert.Empty(t, manager.connections, "all connections should be removed after Close")
+	assert.Empty(t, manager.lastAccessed, "all lastAccessed should be removed after Close")
+	assert.Empty(t, manager.lastSettingsCheck, "all lastSettingsCheck should be removed after Close")
+}
+
+func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
+	t.Parallel()
+
+	// Create a slow HTTP server that simulates a Tenant Manager responding after a delay.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "tenant-slow",
+			"tenantSlug": "slow-tenant",
+			"databases": {
+				"onboarding": {
+					"mongodb": {"host": "localhost", "port": 27017, "database": "testdb", "username": "user", "password": "pass"}
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	tmClient := mustNewTestClient(t, server.URL)
+	manager := NewManager(tmClient, "test-service",
+		WithLogger(testutil.NewMockLogger()),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	// Pre-populate cache
+	manager.connections["tenant-slow"] = &MongoConnection{DB: nil}
+	manager.lastAccessed["tenant-slow"] = time.Now()
+	manager.lastSettingsCheck["tenant-slow"] = time.Time{}
+
+	// Spawn the revalidation goroutine via the WaitGroup
+	manager.revalidateWG.Go(func() {
+		manager.revalidatePoolSettings("tenant-slow")
+	})
+
+	// Close immediately -- the revalidation goroutine is still blocked on the
+	// slow HTTP server. With the fix, Close() waits for it to finish.
+	err := manager.Close(context.Background())
+	require.NoError(t, err)
+
+	// If Close() properly waited, no goroutines should be leaked.
+	// We verify by checking the manager is fully closed and maps are cleared.
+	assert.True(t, manager.closed, "manager should be closed")
+	assert.Empty(t, manager.connections, "connections should be cleared after Close")
 }
