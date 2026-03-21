@@ -1,226 +1,116 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package log
 
 import (
+	"context"
 	"fmt"
-	"log"
 	"strings"
 )
 
-// Logger is the pkg interface for log implementation.
+// Logger is the package interface for v2 logging.
 //
 //go:generate mockgen --destination=log_mock.go --package=log . Logger
 type Logger interface {
-	Info(args ...any)
-	Infof(format string, args ...any)
-	Infoln(args ...any)
-
-	Error(args ...any)
-	Errorf(format string, args ...any)
-	Errorln(args ...any)
-
-	Warn(args ...any)
-	Warnf(format string, args ...any)
-	Warnln(args ...any)
-
-	Debug(args ...any)
-	Debugf(format string, args ...any)
-	Debugln(args ...any)
-
-	Fatal(args ...any)
-	Fatalf(format string, args ...any)
-	Fatalln(args ...any)
-
-	WithFields(fields ...any) Logger
-
-	WithDefaultMessageTemplate(message string) Logger
-
-	Sync() error
+	Log(ctx context.Context, level Level, msg string, fields ...Field)
+	With(fields ...Field) Logger
+	WithGroup(name string) Logger
+	Enabled(level Level) bool
+	Sync(ctx context.Context) error
 }
 
-// LogLevel represents the level of log system (fatal, error, warn, info and debug).
-type LogLevel int8
+// Level represents the severity of a log entry.
+//
+// Lower numeric values indicate higher severity (LevelError=0 is most severe,
+// LevelDebug=3 is least). This is inverted from slog/zap conventions where
+// higher numeric values mean higher severity.
+//
+// The GoLogger.Enabled comparison uses l.Level >= level, which works because
+// the logger's Level acts as a verbosity ceiling: a logger at LevelInfo (2)
+// emits Error (0), Warn (1), and Info (2) messages, but suppresses Debug (3).
+type Level uint8
 
-// These are the different log levels. You can set the logging level to log.
+// Level constants define log severity. Lower numeric values indicate higher
+// severity. Setting a logger's Level to a given constant enables that level
+// and all levels with lower numeric values (i.e., higher severity).
+//
+//	LevelError (0) -- only errors
+//	LevelWarn  (1) -- errors + warnings
+//	LevelInfo  (2) -- errors + warnings + info
+//	LevelDebug (3) -- everything
 const (
-	// PanicLevel level, highest level of severity. Logs and then calls panic with the
-	// message passed to Debug, Info, ...
-	PanicLevel LogLevel = iota
-	// FatalLevel level. Logs and then calls `logger.Exit(1)`. It will exit even if the
-	// logging level is set to Panic.
-	FatalLevel
-	// ErrorLevel level. Logs. Used for errors that should definitely be noted.
-	// Commonly used for hooks to send errors to an error tracking service.
-	ErrorLevel
-	// WarnLevel level. Non-critical entries that deserve eyes.
-	WarnLevel
-	// InfoLevel level. General operational entries about what's going on inside the
-	// application.
-	InfoLevel
-	// DebugLevel level. Usually only enabled when debugging. Very verbose logging.
-	DebugLevel
+	LevelError Level = iota
+	LevelWarn
+	LevelInfo
+	LevelDebug
 )
 
-// ParseLevel takes a string level and returns a LogLevel constant.
-func ParseLevel(lvl string) (LogLevel, error) {
-	switch strings.ToLower(lvl) {
-	case "fatal":
-		return FatalLevel, nil
-	case "error":
-		return ErrorLevel, nil
-	case "warn", "warning":
-		return WarnLevel, nil
-	case "info":
-		return InfoLevel, nil
+// LevelUnknown represents an invalid or unrecognized log level.
+// Returned by ParseLevel on error to distinguish from LevelError (the zero value).
+const LevelUnknown Level = 255
+
+// String returns the string representation of a log level.
+func (level Level) String() string {
+	switch level {
+	case LevelDebug:
+		return "debug"
+	case LevelInfo:
+		return "info"
+	case LevelWarn:
+		return "warn"
+	case LevelError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
+// ParseLevel takes a string level and returns a Level constant.
+// Leading and trailing whitespace is trimmed before matching.
+func ParseLevel(lvl string) (Level, error) {
+	switch strings.ToLower(strings.TrimSpace(lvl)) {
 	case "debug":
-		return DebugLevel, nil
+		return LevelDebug, nil
+	case "info":
+		return LevelInfo, nil
+	case "warn", "warning":
+		return LevelWarn, nil
+	case "error":
+		return LevelError, nil
 	}
 
-	var l LogLevel
-
-	return l, fmt.Errorf("not a valid LogLevel: %q", lvl)
+	return LevelUnknown, fmt.Errorf("not a valid Level: %q", lvl)
 }
 
-// GoLogger is the Go built-in (log) implementation of Logger interface.
-type GoLogger struct {
-	fields                 []any
-	Level                  LogLevel
-	defaultMessageTemplate string
+// Field is a strongly-typed key/value attribute attached to a log event.
+type Field struct {
+	Key   string
+	Value any
 }
 
-// IsLevelEnabled checks if the given level is enabled.
-func (l *GoLogger) IsLevelEnabled(level LogLevel) bool {
-	return l.Level >= level
-}
-
-// Info implements Info Logger interface function.
-func (l *GoLogger) Info(args ...any) {
-	if l.IsLevelEnabled(InfoLevel) {
-		log.Print(args...)
-	}
-}
-
-// Infof implements Infof Logger interface function.
-func (l *GoLogger) Infof(format string, args ...any) {
-	if l.IsLevelEnabled(InfoLevel) {
-		log.Printf(format, args...)
-	}
-}
-
-// Infoln implements Infoln Logger interface function.
-func (l *GoLogger) Infoln(args ...any) {
-	if l.IsLevelEnabled(InfoLevel) {
-		log.Println(args...)
-	}
-}
-
-// Error implements Error Logger interface function.
-func (l *GoLogger) Error(args ...any) {
-	if l.IsLevelEnabled(ErrorLevel) {
-		log.Print(args...)
-	}
-}
-
-// Errorf implements Errorf Logger interface function.
-func (l *GoLogger) Errorf(format string, args ...any) {
-	if l.IsLevelEnabled(ErrorLevel) {
-		log.Printf(format, args...)
-	}
-}
-
-// Errorln implements Errorln Logger interface function.
-func (l *GoLogger) Errorln(args ...any) {
-	if l.IsLevelEnabled(ErrorLevel) {
-		log.Println(args...)
-	}
-}
-
-// Warn implements Warn Logger interface function.
-func (l *GoLogger) Warn(args ...any) {
-	if l.IsLevelEnabled(WarnLevel) {
-		log.Print(args...)
-	}
-}
-
-// Warnf implements Warnf Logger interface function.
-func (l *GoLogger) Warnf(format string, args ...any) {
-	if l.IsLevelEnabled(WarnLevel) {
-		log.Printf(format, args...)
-	}
-}
-
-// Warnln implements Warnln Logger interface function.
-func (l *GoLogger) Warnln(args ...any) {
-	if l.IsLevelEnabled(WarnLevel) {
-		log.Println(args...)
-	}
-}
-
-// Debug implements Debug Logger interface function.
-func (l *GoLogger) Debug(args ...any) {
-	if l.IsLevelEnabled(DebugLevel) {
-		log.Print(args...)
-	}
-}
-
-// Debugf implements Debugf Logger interface function.
-func (l *GoLogger) Debugf(format string, args ...any) {
-	if l.IsLevelEnabled(DebugLevel) {
-		log.Printf(format, args...)
-	}
-}
-
-// Debugln implements Debugln Logger interface function.
-func (l *GoLogger) Debugln(args ...any) {
-	if l.IsLevelEnabled(DebugLevel) {
-		log.Println(args...)
-	}
-}
-
-// Fatal implements Fatal Logger interface function.
-func (l *GoLogger) Fatal(args ...any) {
-	if l.IsLevelEnabled(FatalLevel) {
-		log.Print(args...)
-	}
-}
-
-// Fatalf implements Fatalf Logger interface function.
-func (l *GoLogger) Fatalf(format string, args ...any) {
-	if l.IsLevelEnabled(FatalLevel) {
-		log.Printf(format, args...)
-	}
-}
-
-// Fatalln implements Fatalln Logger interface function.
-func (l *GoLogger) Fatalln(args ...any) {
-	if l.IsLevelEnabled(FatalLevel) {
-		log.Println(args...)
-	}
-}
-
-// WithFields implements WithFields Logger interface function
+// Any creates a field with an arbitrary value.
 //
-//nolint:ireturn
-func (l *GoLogger) WithFields(fields ...any) Logger {
-	return &GoLogger{
-		Level:                  l.Level,
-		fields:                 fields,
-		defaultMessageTemplate: l.defaultMessageTemplate,
-	}
+// WARNING: prefer typed constructors (String, Int, Bool, Err) to avoid
+// accidentally logging sensitive data (passwords, tokens, PII). If using
+// Any, ensure the value is sanitized or non-sensitive.
+func Any(key string, value any) Field {
+	return Field{Key: key, Value: value}
 }
 
-func (l *GoLogger) WithDefaultMessageTemplate(message string) Logger {
-	return &GoLogger{
-		Level:                  l.Level,
-		fields:                 l.fields,
-		defaultMessageTemplate: message,
-	}
+// String creates a string field.
+func String(key, value string) Field {
+	return Field{Key: key, Value: value}
 }
 
-// Sync implements Sync Logger interface function.
-//
-//nolint:ireturn
-func (l *GoLogger) Sync() error { return nil }
+// Int creates an integer field.
+func Int(key string, value int) Field {
+	return Field{Key: key, Value: value}
+}
+
+// Bool creates a boolean field.
+func Bool(key string, value bool) Field {
+	return Field{Key: key, Value: value}
+}
+
+// Err creates the conventional `error` field.
+func Err(err error) Field {
+	return Field{Key: "error", Value: err}
+}

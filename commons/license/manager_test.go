@@ -1,17 +1,12 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
+//go:build unit
 
 package license_test
 
 import (
-	"bytes"
 	"errors"
-	"os"
-	"os/exec"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/license"
+	"github.com/LerianStudio/lib-commons/v4/commons/license"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -47,44 +42,12 @@ func TestSetHandlerWithNil(t *testing.T) {
 	assert.True(t, handlerCalled, "Original handler should still be called when nil is passed")
 }
 
-// runSubprocessTest runs the named test in a subprocess with the given env var set to "1".
-// It asserts the process exits with code 1 and stderr contains "LICENSE VALIDATION FAILED"
-// plus any additional expected messages.
-func runSubprocessTest(t *testing.T, testName, envVar string, expectedMessages ...string) {
-	t.Helper()
-
-	cmd := exec.Command(os.Args[0], "-test.run="+testName)
-	cmd.Env = append(os.Environ(), envVar+"=1")
-
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		assert.Equal(t, 1, exitErr.ExitCode(), "Expected exit code 1")
-	} else {
-		t.Fatal("Expected process to exit with code 1")
-	}
-
-	assert.Contains(t, stderr.String(), "LICENSE VALIDATION FAILED")
-
-	for _, msg := range expectedMessages {
-		assert.Contains(t, stderr.String(), msg)
-	}
-}
-
 func TestDefaultHandler(t *testing.T) {
-	// DefaultHandler calls os.Exit(1), so we test it in a subprocess
-	if os.Getenv("TEST_DEFAULT_HANDLER_EXIT") == "1" {
-		manager := license.New()
+	manager := license.New()
+
+	assert.NotPanics(t, func() {
 		manager.Terminate("default handler test")
-
-		return
-	}
-
-	runSubprocessTest(t, "TestDefaultHandler", "TEST_DEFAULT_HANDLER_EXIT", "default handler test")
+	}, "Default handler should not panic")
 }
 
 func TestDefaultHandlerWithError(t *testing.T) {
@@ -128,14 +91,13 @@ func TestTerminateWithError_UninitializedManager(t *testing.T) {
 	assert.Contains(t, err.Error(), "test reason")
 }
 
-func TestTerminate_UninitializedManagerPanics(t *testing.T) {
-	// Terminate requires a handler to be set. On a zero-value manager,
-	// the handler is nil, causing a panic with ErrManagerNotInitialized.
+func TestTerminate_UninitializedManagerDoesNotPanic(t *testing.T) {
+	// Terminate on zero-value manager should fail safely without panic.
 	var manager license.ManagerShutdown
 
-	assert.Panics(t, func() {
+	assert.NotPanics(t, func() {
 		manager.Terminate("test reason")
-	}, "Terminate on uninitialized manager should panic")
+	}, "Terminate on uninitialized manager should not panic")
 }
 
 func TestDefaultHandlerWithError_EmptyReason(t *testing.T) {
@@ -178,13 +140,49 @@ func TestTerminateSafe_UninitializedManager(t *testing.T) {
 }
 
 func TestTerminateSafe_WithDefaultHandler(t *testing.T) {
-	// DefaultHandler calls os.Exit(1), so we test it in a subprocess
-	if os.Getenv("TEST_TERMINATE_SAFE_DEFAULT_EXIT") == "1" {
-		manager := license.New()
-		_ = manager.TerminateSafe("test")
+	manager := license.New()
 
-		return
+	err := manager.TerminateSafe("test")
+	assert.NoError(t, err)
+}
+
+func TestNew_NilOptionSkipped(t *testing.T) {
+	t.Parallel()
+
+	// Nil options in the variadic list should be silently skipped.
+	assert.NotPanics(t, func() {
+		manager := license.New(nil, nil)
+		assert.NotNil(t, manager)
+	})
+}
+
+func TestNew_NilOptionMixedWithValid(t *testing.T) {
+	t.Parallel()
+
+	handlerCalled := false
+	customHandler := func(reason string) {
+		handlerCalled = true
 	}
 
-	runSubprocessTest(t, "TestTerminateSafe_WithDefaultHandler", "TEST_TERMINATE_SAFE_DEFAULT_EXIT")
+	// Mix nil options with valid options.
+	manager := license.New(nil, license.WithLogger(nil), nil)
+	assert.NotNil(t, manager)
+
+	manager.SetHandler(customHandler)
+	manager.Terminate("test")
+	assert.True(t, handlerCalled)
+}
+
+func TestWithFailClosed(t *testing.T) {
+	t.Parallel()
+
+	// WithFailClosed should set the handler to TerminateSafe behavior.
+	manager := license.New(license.WithFailClosed())
+
+	// TerminateSafe returns nil when handler is non-nil (it invokes handler then returns nil).
+	// The WithFailClosed handler itself calls TerminateSafe internally.
+	// Since the manager IS initialized (New was called), the handler should not return errors.
+	assert.NotPanics(t, func() {
+		manager.Terminate("fail-closed test")
+	})
 }

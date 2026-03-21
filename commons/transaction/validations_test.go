@@ -1,944 +1,1681 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
+//go:build unit
 
 package transaction
 
 import (
-	"context"
+	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v2/commons"
-	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
 	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
-	"go.opentelemetry.io/otel"
+	"github.com/stretchr/testify/require"
 )
 
-func TestValidateBalancesRules(t *testing.T) {
-	// Create a context with logger and tracer
-	ctx := context.Background()
-	logger := &log.GoLogger{Level: log.InfoLevel}
-	ctx = commons.ContextWithLogger(ctx, logger)
-	tracer := otel.Tracer("test")
-	ctx = commons.ContextWithTracer(ctx, tracer)
+// ---------------------------------------------------------------------------
+// Helper functions
+// ---------------------------------------------------------------------------
+
+// decPtr returns a pointer to a decimal value parsed from a string.
+func decPtr(t *testing.T, s string) *decimal.Decimal {
+	t.Helper()
+	d, err := decimal.NewFromString(s)
+	require.NoError(t, err, "decPtr: invalid decimal string %q", s)
+	return &d
+}
+
+// intDecPtr returns a pointer to a decimal created from an int64.
+func intDecPtr(v int64) *decimal.Decimal {
+	d := decimal.NewFromInt(v)
+	return &d
+}
+
+// assertDomainError extracts a DomainError from err, verifies the error code,
+// and returns it for additional assertions.
+func assertDomainError(t *testing.T, err error, expectedCode ErrorCode) DomainError {
+	t.Helper()
+
+	require.Error(t, err)
+
+	var domainErr DomainError
+	require.True(t, errors.As(err, &domainErr), "expected DomainError, got %T: %v", err, err)
+	assert.Equal(t, expectedCode, domainErr.Code)
+
+	return domainErr
+}
+
+// simplePlan creates a valid IntentPlan with the given asset, total, and
+// single source/destination postings using the provided status.
+func simplePlan(asset string, total decimal.Decimal, status TransactionStatus) IntentPlan {
+	op := OperationDebit
+	dstOp := OperationCredit
+
+	return IntentPlan{
+		Asset: asset,
+		Total: total,
+		Sources: []Posting{{
+			Target:    LedgerTarget{AccountID: "src-acc", BalanceID: "src-bal"},
+			Asset:     asset,
+			Amount:    total,
+			Operation: op,
+			Status:    status,
+		}},
+		Destinations: []Posting{{
+			Target:    LedgerTarget{AccountID: "dst-acc", BalanceID: "dst-bal"},
+			Asset:     asset,
+			Amount:    total,
+			Operation: dstOp,
+			Status:    status,
+		}},
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DomainError type tests
+// ---------------------------------------------------------------------------
+
+func TestDomainError_ErrorString(t *testing.T) {
+	t.Parallel()
+
+	t.Run("with field", func(t *testing.T) {
+		t.Parallel()
+
+		de := DomainError{Code: ErrorInvalidInput, Field: "total", Message: "must be positive"}
+		assert.Equal(t, "1001: must be positive (total)", de.Error())
+	})
+
+	t.Run("without field", func(t *testing.T) {
+		t.Parallel()
+
+		de := DomainError{Code: ErrorInsufficientFunds, Message: "not enough funds"}
+		assert.Equal(t, "0018: not enough funds", de.Error())
+	})
+}
+
+func TestNewDomainError_Implements_error(t *testing.T) {
+	t.Parallel()
+
+	err := NewDomainError(ErrorInvalidInput, "field", "message")
+	require.Error(t, err)
+
+	var de DomainError
+	require.True(t, errors.As(err, &de))
+	assert.Equal(t, ErrorInvalidInput, de.Code)
+	assert.Equal(t, "field", de.Field)
+	assert.Equal(t, "message", de.Message)
+}
+
+// ---------------------------------------------------------------------------
+// LedgerTarget.validate
+// ---------------------------------------------------------------------------
+
+func TestLedgerTarget_Validate(t *testing.T) {
+	t.Parallel()
 
 	tests := []struct {
-		name        string
-		transaction Transaction
-		validate    Responses
-		balances    []*Balance
-		expectError bool
-		errorCode   string
+		name      string
+		target    LedgerTarget
+		expectErr bool
+		field     string
+	}{
+		{name: "valid", target: LedgerTarget{AccountID: "a", BalanceID: "b"}, expectErr: false},
+		{name: "empty accountId", target: LedgerTarget{AccountID: "", BalanceID: "b"}, expectErr: true, field: "t.accountId"},
+		{name: "whitespace accountId", target: LedgerTarget{AccountID: "   ", BalanceID: "b"}, expectErr: true, field: "t.accountId"},
+		{name: "empty balanceId", target: LedgerTarget{AccountID: "a", BalanceID: ""}, expectErr: true, field: "t.balanceId"},
+		{name: "whitespace balanceId", target: LedgerTarget{AccountID: "a", BalanceID: "  "}, expectErr: true, field: "t.balanceId"},
+		{name: "both empty", target: LedgerTarget{}, expectErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.target.validate("t")
+			if tt.expectErr {
+				require.Error(t, err)
+				assertDomainError(t, err, ErrorInvalidInput)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BuildIntentPlan -- Input validation
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan(t *testing.T) {
+	amount30 := decimal.NewFromInt(30)
+	share50 := decimal.NewFromInt(50)
+
+	input := TransactionIntentInput{
+		Asset:   "USD",
+		Total:   decimal.NewFromInt(100),
+		Pending: false,
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "acc-1", BalanceID: "bal-1"}, Amount: &amount30},
+			{Target: LedgerTarget{AccountID: "acc-2", BalanceID: "bal-2"}, Remainder: true},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "acc-3", BalanceID: "bal-3"}, Share: &share50},
+			{Target: LedgerTarget{AccountID: "acc-4", BalanceID: "bal-4"}, Share: &share50},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusCreated)
+	assert.NoError(t, err)
+	assert.Equal(t, decimal.NewFromInt(100), plan.Total)
+	assert.Equal(t, "USD", plan.Asset)
+	assert.Len(t, plan.Sources, 2)
+	assert.Len(t, plan.Destinations, 2)
+	assert.Equal(t, decimal.NewFromInt(30), plan.Sources[0].Amount)
+	assert.Equal(t, decimal.NewFromInt(70), plan.Sources[1].Amount)
+	assert.Equal(t, OperationDebit, plan.Sources[0].Operation)
+	assert.Equal(t, OperationCredit, plan.Destinations[0].Operation)
+}
+
+func TestBuildIntentPlan_EmptyAsset(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(100)
+
+	for _, asset := range []string{"", "  ", "   "} {
+		input := TransactionIntentInput{
+			Asset: asset,
+			Total: decimal.NewFromInt(100),
+			Sources: []Allocation{
+				{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &amount},
+			},
+			Destinations: []Allocation{
+				{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+			},
+		}
+
+		_, err := BuildIntentPlan(input, StatusCreated)
+		de := assertDomainError(t, err, ErrorInvalidInput)
+		assert.Equal(t, "asset", de.Field)
+	}
+}
+
+func TestBuildIntentPlan_ZeroTotal(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(0)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.Zero,
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &amount},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Equal(t, "total", de.Field)
+}
+
+func TestBuildIntentPlan_NegativeTotal(t *testing.T) {
+	t.Parallel()
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(-50),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Remainder: true},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Remainder: true},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Equal(t, "total", de.Field)
+}
+
+func TestBuildIntentPlan_EmptySources(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset:   "USD",
+		Total:   decimal.NewFromInt(100),
+		Sources: []Allocation{},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Equal(t, "sources", de.Field)
+}
+
+func TestBuildIntentPlan_EmptyDestinations(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &amount},
+		},
+		Destinations: []Allocation{},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Equal(t, "destinations", de.Field)
+}
+
+func TestBuildIntentPlan_NilSources(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset:   "USD",
+		Total:   decimal.NewFromInt(100),
+		Sources: nil,
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Equal(t, "sources", de.Field)
+}
+
+// ---------------------------------------------------------------------------
+// Self-referencing (source == destination balance)
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_RejectsAmbiguousSourceDestination(t *testing.T) {
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset:   "USD",
+		Total:   decimal.NewFromInt(100),
+		Pending: false,
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "acc-1", BalanceID: "shared"}, Amount: &amount},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "acc-2", BalanceID: "shared"}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	assert.Error(t, err)
+	var domainErr DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, ErrorTransactionAmbiguous, domainErr.Code)
+}
+
+func TestBuildIntentPlan_SelfReferencing_DifferentAccounts(t *testing.T) {
+	t.Parallel()
+
+	// Even if account IDs differ, same balance ID triggers ambiguity.
+	amount := decimal.NewFromInt(50)
+
+	input := TransactionIntentInput{
+		Asset: "BRL",
+		Total: decimal.NewFromInt(50),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "account-A", BalanceID: "shared-balance"}, Amount: &amount},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "account-B", BalanceID: "shared-balance"}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorTransactionAmbiguous)
+	assert.Equal(t, "destinations", de.Field)
+}
+
+// ---------------------------------------------------------------------------
+// Value mismatch
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_RejectsValueMismatch(t *testing.T) {
+	amount90 := decimal.NewFromInt(90)
+	amount100 := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset:   "USD",
+		Total:   decimal.NewFromInt(100),
+		Pending: false,
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "acc-1", BalanceID: "bal-1"}, Amount: &amount90},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "acc-2", BalanceID: "bal-2"}, Amount: &amount100},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	assert.Error(t, err)
+	var domainErr DomainError
+	assert.ErrorAs(t, err, &domainErr)
+	assert.Equal(t, ErrorTransactionValueMismatch, domainErr.Code)
+}
+
+func TestBuildIntentPlan_SourceTotalDoesNotMatchTransaction(t *testing.T) {
+	t.Parallel()
+
+	amount60 := decimal.NewFromInt(60)
+	amount100 := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b1"}, Amount: &amount60},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d1"}, Amount: &amount100},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	assertDomainError(t, err, ErrorTransactionValueMismatch)
+}
+
+// ---------------------------------------------------------------------------
+// Allocation strategy validation
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_NoStrategy(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			// No Amount, Share, or Remainder
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Contains(t, de.Message, "exactly one strategy")
+}
+
+func TestBuildIntentPlan_MultipleStrategies(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(50)
+	share := decimal.NewFromInt(50)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{
+				Target:    LedgerTarget{AccountID: "a", BalanceID: "b"},
+				Amount:    &amount,
+				Share:     &share,
+				Remainder: false,
+			},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Contains(t, de.Message, "exactly one strategy")
+}
+
+func TestBuildIntentPlan_AmountAndRemainder(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(50)
+
+	input := TransactionIntentInput{
+		Asset: "EUR",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{
+				Target:    LedgerTarget{AccountID: "a", BalanceID: "b"},
+				Amount:    &amount,
+				Remainder: true,
+			},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Remainder: true},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	assertDomainError(t, err, ErrorInvalidInput)
+}
+
+func TestBuildIntentPlan_DuplicateRemainder(t *testing.T) {
+	t.Parallel()
+
+	input := TransactionIntentInput{
+		Asset: "BRL",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a1", BalanceID: "b1"}, Remainder: true},
+			{Target: LedgerTarget{AccountID: "a2", BalanceID: "b2"}, Remainder: true},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Remainder: true},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Contains(t, de.Message, "only one remainder")
+}
+
+// ---------------------------------------------------------------------------
+// Zero and negative amount allocations
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_ZeroAmountAllocation(t *testing.T) {
+	t.Parallel()
+
+	zero := decimal.Zero
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &zero},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Contains(t, de.Message, "amount must be greater than zero")
+}
+
+func TestBuildIntentPlan_NegativeAmountAllocation(t *testing.T) {
+	t.Parallel()
+
+	neg := decimal.NewFromInt(-10)
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &neg},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Contains(t, de.Field, "amount")
+}
+
+// ---------------------------------------------------------------------------
+// Share validation
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_ShareZero(t *testing.T) {
+	t.Parallel()
+
+	zero := decimal.Zero
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Share: &zero},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Contains(t, de.Field, "share")
+}
+
+func TestBuildIntentPlan_ShareNegative(t *testing.T) {
+	t.Parallel()
+
+	neg := decimal.NewFromInt(-10)
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Share: &neg},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	assertDomainError(t, err, ErrorInvalidInput)
+}
+
+func TestBuildIntentPlan_ShareOver100(t *testing.T) {
+	t.Parallel()
+
+	over := decimal.NewFromInt(101)
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Share: &over},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	assertDomainError(t, err, ErrorInvalidInput)
+}
+
+func TestBuildIntentPlan_ShareExactly100(t *testing.T) {
+	t.Parallel()
+
+	share100 := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(500),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Share: &share100},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Share: &share100},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusCreated)
+	require.NoError(t, err)
+	assert.True(t, plan.Sources[0].Amount.Equal(decimal.NewFromInt(500)))
+	assert.True(t, plan.Destinations[0].Amount.Equal(decimal.NewFromInt(500)))
+}
+
+// ---------------------------------------------------------------------------
+// Remainder edge cases
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_RemainderIsEntireAmount(t *testing.T) {
+	t.Parallel()
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(250),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Remainder: true},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Remainder: true},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusCreated)
+	require.NoError(t, err)
+	assert.True(t, plan.Sources[0].Amount.Equal(decimal.NewFromInt(250)))
+	assert.True(t, plan.Destinations[0].Amount.Equal(decimal.NewFromInt(250)))
+}
+
+func TestBuildIntentPlan_RemainderBecomeZeroOrNegative(t *testing.T) {
+	t.Parallel()
+
+	// Allocating 100 via amount and having remainder when total is 100 leaves zero remainder.
+	amount := decimal.NewFromInt(100)
+	dstAmt := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a1", BalanceID: "b1"}, Amount: &amount},
+			{Target: LedgerTarget{AccountID: "a2", BalanceID: "b2"}, Remainder: true},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &dstAmt},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	assertDomainError(t, err, ErrorTransactionValueMismatch)
+}
+
+func TestBuildIntentPlan_RemainderNegative_OverAllocated(t *testing.T) {
+	t.Parallel()
+
+	// Allocating more than total leaves a negative remainder.
+	amount := decimal.NewFromInt(120)
+	dstAmt := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a1", BalanceID: "b1"}, Amount: &amount},
+			{Target: LedgerTarget{AccountID: "a2", BalanceID: "b2"}, Remainder: true},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &dstAmt},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	assertDomainError(t, err, ErrorTransactionValueMismatch)
+}
+
+// ---------------------------------------------------------------------------
+// Decimal precision edge cases
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_HighPrecisionDecimals(t *testing.T) {
+	t.Parallel()
+
+	// 0.001 precision
+	amt := decPtr(t, "0.001")
+
+	input := TransactionIntentInput{
+		Asset: "BTC",
+		Total: *decPtr(t, "0.001"),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: amt},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: amt},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusCreated)
+	require.NoError(t, err)
+	assert.True(t, plan.Total.Equal(*decPtr(t, "0.001")))
+}
+
+func TestBuildIntentPlan_VeryLargeAmount(t *testing.T) {
+	t.Parallel()
+
+	amt := decPtr(t, "999999999999.99")
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: *decPtr(t, "999999999999.99"),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: amt},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: amt},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusCreated)
+	require.NoError(t, err)
+	assert.True(t, plan.Sources[0].Amount.Equal(*decPtr(t, "999999999999.99")))
+}
+
+func TestBuildIntentPlan_ManyDecimalPlaces(t *testing.T) {
+	t.Parallel()
+
+	// 18 decimal places - crypto-level precision
+	amt := decPtr(t, "0.000000000000000001")
+
+	input := TransactionIntentInput{
+		Asset: "ETH",
+		Total: *decPtr(t, "0.000000000000000001"),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: amt},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: amt},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusCreated)
+	require.NoError(t, err)
+	assert.True(t, plan.Sources[0].Amount.Equal(*decPtr(t, "0.000000000000000001")))
+}
+
+func TestBuildIntentPlan_ShareProducesDecimalAmount(t *testing.T) {
+	t.Parallel()
+
+	// 33.33% of 100 = 33.33; remainder picks up the rest.
+	share := *decPtr(t, "33.33")
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a1", BalanceID: "b1"}, Share: &share},
+			{Target: LedgerTarget{AccountID: "a2", BalanceID: "b2"}, Share: &share},
+			{Target: LedgerTarget{AccountID: "a3", BalanceID: "b3"}, Remainder: true},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Remainder: true},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusCreated)
+	require.NoError(t, err)
+
+	// Verify total coverage
+	srcTotal := decimal.Zero
+	for _, s := range plan.Sources {
+		srcTotal = srcTotal.Add(s.Amount)
+	}
+
+	assert.True(t, srcTotal.Equal(decimal.NewFromInt(100)),
+		"source total should be exactly 100, got %s", srcTotal)
+}
+
+// ---------------------------------------------------------------------------
+// Single source to multiple destinations
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_SingleSourceMultipleDestinations(t *testing.T) {
+	t.Parallel()
+
+	total := decimal.NewFromInt(300)
+	srcAmt := decimal.NewFromInt(300)
+	dstAmt := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: total,
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &srcAmt},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c1", BalanceID: "d1"}, Amount: &dstAmt},
+			{Target: LedgerTarget{AccountID: "c2", BalanceID: "d2"}, Amount: &dstAmt},
+			{Target: LedgerTarget{AccountID: "c3", BalanceID: "d3"}, Amount: &dstAmt},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusCreated)
+	require.NoError(t, err)
+	assert.Len(t, plan.Sources, 1)
+	assert.Len(t, plan.Destinations, 3)
+
+	for _, dst := range plan.Destinations {
+		assert.True(t, dst.Amount.Equal(decimal.NewFromInt(100)))
+		assert.Equal(t, OperationCredit, dst.Operation)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Multiple sources to single destination
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_MultipleSourcesSingleDestination(t *testing.T) {
+	t.Parallel()
+
+	total := decimal.NewFromInt(300)
+	srcAmt := decimal.NewFromInt(100)
+	dstAmt := decimal.NewFromInt(300)
+
+	input := TransactionIntentInput{
+		Asset: "BRL",
+		Total: total,
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a1", BalanceID: "b1"}, Amount: &srcAmt},
+			{Target: LedgerTarget{AccountID: "a2", BalanceID: "b2"}, Amount: &srcAmt},
+			{Target: LedgerTarget{AccountID: "a3", BalanceID: "b3"}, Amount: &srcAmt},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &dstAmt},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusCreated)
+	require.NoError(t, err)
+	assert.Len(t, plan.Sources, 3)
+	assert.Len(t, plan.Destinations, 1)
+
+	for _, src := range plan.Sources {
+		assert.True(t, src.Amount.Equal(decimal.NewFromInt(100)))
+		assert.Equal(t, OperationDebit, src.Operation)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Allocation target validation
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_SourceMissingAccountID(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "", BalanceID: "b"}, Amount: &amount},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Contains(t, de.Field, "accountId")
+}
+
+func TestBuildIntentPlan_DestinationMissingBalanceID(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &amount},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: ""}, Amount: &amount},
+		},
+	}
+
+	_, err := BuildIntentPlan(input, StatusCreated)
+	de := assertDomainError(t, err, ErrorInvalidInput)
+	assert.Contains(t, de.Field, "balanceId")
+}
+
+// ---------------------------------------------------------------------------
+// Valid minimum and complex plans
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_MinimumValidTransaction(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(1)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(1),
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &amount},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusCreated)
+	require.NoError(t, err)
+	assert.Equal(t, "USD", plan.Asset)
+	assert.True(t, plan.Total.Equal(decimal.NewFromInt(1)))
+	assert.Len(t, plan.Sources, 1)
+	assert.Len(t, plan.Destinations, 1)
+	assert.False(t, plan.Pending)
+}
+
+func TestBuildIntentPlan_ComplexMultiPartyTransaction(t *testing.T) {
+	t.Parallel()
+
+	total := decimal.NewFromInt(1000)
+	share60 := decimal.NewFromInt(60)
+	share40 := decimal.NewFromInt(40)
+	amount200 := decimal.NewFromInt(200)
+	share30 := decimal.NewFromInt(30)
+
+	input := TransactionIntentInput{
+		Asset:   "BRL",
+		Total:   total,
+		Pending: false,
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "src1", BalanceID: "bal-src1"}, Share: &share60},
+			{Target: LedgerTarget{AccountID: "src2", BalanceID: "bal-src2"}, Share: &share40},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "dst1", BalanceID: "bal-dst1"}, Amount: &amount200},
+			{Target: LedgerTarget{AccountID: "dst2", BalanceID: "bal-dst2"}, Share: &share30},
+			{Target: LedgerTarget{AccountID: "dst3", BalanceID: "bal-dst3"}, Remainder: true},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusCreated)
+	require.NoError(t, err)
+
+	// Verify source amounts: 60% of 1000 = 600, 40% of 1000 = 400
+	assert.True(t, plan.Sources[0].Amount.Equal(decimal.NewFromInt(600)))
+	assert.True(t, plan.Sources[1].Amount.Equal(decimal.NewFromInt(400)))
+
+	// Verify destination amounts: 200, 30% of 1000=300, remainder=500
+	assert.True(t, plan.Destinations[0].Amount.Equal(decimal.NewFromInt(200)))
+	assert.True(t, plan.Destinations[1].Amount.Equal(decimal.NewFromInt(300)))
+	assert.True(t, plan.Destinations[2].Amount.Equal(decimal.NewFromInt(500)))
+
+	// All operations
+	for _, s := range plan.Sources {
+		assert.Equal(t, OperationDebit, s.Operation)
+		assert.Equal(t, StatusCreated, s.Status)
+		assert.Equal(t, "BRL", s.Asset)
+	}
+
+	for _, d := range plan.Destinations {
+		assert.Equal(t, OperationCredit, d.Operation)
+		assert.Equal(t, StatusCreated, d.Status)
+		assert.Equal(t, "BRL", d.Asset)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Pending transaction plan
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_PendingTransaction(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(75)
+
+	input := TransactionIntentInput{
+		Asset:   "USD",
+		Total:   decimal.NewFromInt(75),
+		Pending: true,
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &amount},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusPending)
+	require.NoError(t, err)
+	assert.True(t, plan.Pending)
+
+	// Pending source = ON_HOLD, pending destination = CREDIT
+	assert.Equal(t, OperationOnHold, plan.Sources[0].Operation)
+	assert.Equal(t, OperationCredit, plan.Destinations[0].Operation)
+}
+
+// ---------------------------------------------------------------------------
+// Route propagation
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_RoutePropagation(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Allocation{
+			{
+				Target: LedgerTarget{AccountID: "a", BalanceID: "b"},
+				Amount: &amount,
+				Route:  "wire-transfer",
+			},
+		},
+		Destinations: []Allocation{
+			{
+				Target: LedgerTarget{AccountID: "c", BalanceID: "d"},
+				Amount: &amount,
+				Route:  "ach",
+			},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusCreated)
+	require.NoError(t, err)
+	assert.Equal(t, "wire-transfer", plan.Sources[0].Route)
+	assert.Equal(t, "ach", plan.Destinations[0].Route)
+}
+
+// ---------------------------------------------------------------------------
+// Invalid status for non-pending
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_InvalidStatusForNonPending(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset:   "USD",
+		Total:   decimal.NewFromInt(100),
+		Pending: false,
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &amount},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	// Non-pending only supports StatusCreated.
+	_, err := BuildIntentPlan(input, StatusApproved)
+	assertDomainError(t, err, ErrorInvalidStateTransition)
+}
+
+func TestBuildIntentPlan_InvalidStatusForPending(t *testing.T) {
+	t.Parallel()
+
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset:   "USD",
+		Total:   decimal.NewFromInt(100),
+		Pending: true,
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "a", BalanceID: "b"}, Amount: &amount},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "c", BalanceID: "d"}, Amount: &amount},
+		},
+	}
+
+	// Pending only supports PENDING, APPROVED, or CANCELED.
+	_, err := BuildIntentPlan(input, StatusCreated)
+	assertDomainError(t, err, ErrorInvalidStateTransition)
+}
+
+// ---------------------------------------------------------------------------
+// Stress test: many allocations
+// ---------------------------------------------------------------------------
+
+func TestBuildIntentPlan_ManyAllocations(t *testing.T) {
+	t.Parallel()
+
+	count := 50
+	share := decimal.NewFromInt(2) // 2% each = 100%
+	total := decimal.NewFromInt(10000)
+
+	sources := make([]Allocation, count)
+	dests := make([]Allocation, count)
+
+	for i := 0; i < count; i++ {
+		s := share
+		sources[i] = Allocation{
+			Target: LedgerTarget{
+				AccountID: "src-acc-" + strings.Repeat("x", 3),
+				BalanceID: "src-bal-" + string(rune('A'+i%26)) + string(rune('0'+i/26)),
+			},
+			Share: &s,
+		}
+
+		d := share
+		dests[i] = Allocation{
+			Target: LedgerTarget{
+				AccountID: "dst-acc-" + strings.Repeat("y", 3),
+				BalanceID: "dst-bal-" + string(rune('A'+i%26)) + string(rune('0'+i/26)),
+			},
+			Share: &d,
+		}
+	}
+
+	input := TransactionIntentInput{
+		Asset:        "USD",
+		Total:        total,
+		Sources:      sources,
+		Destinations: dests,
+	}
+
+	plan, err := BuildIntentPlan(input, StatusCreated)
+	require.NoError(t, err)
+	assert.Len(t, plan.Sources, count)
+	assert.Len(t, plan.Destinations, count)
+
+	// Verify total sums
+	srcSum := decimal.Zero
+	for _, s := range plan.Sources {
+		srcSum = srcSum.Add(s.Amount)
+	}
+
+	assert.True(t, srcSum.Equal(total), "expected source sum %s, got %s", total, srcSum)
+}
+
+// ---------------------------------------------------------------------------
+// ValidateBalanceEligibility
+// ---------------------------------------------------------------------------
+
+func TestValidateBalanceEligibility(t *testing.T) {
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset:   "USD",
+		Total:   amount,
+		Pending: true,
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "source-account", BalanceID: "source-balance"}, Amount: &amount},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "destination-account", BalanceID: "destination-balance"}, Amount: &amount},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusPending)
+	assert.NoError(t, err)
+
+	balances := map[string]Balance{
+		"source-balance": {
+			ID:             "source-balance",
+			AccountID:      "source-account",
+			Asset:          "USD",
+			Available:      decimal.NewFromInt(300),
+			OnHold:         decimal.NewFromInt(0),
+			AllowSending:   true,
+			AllowReceiving: true,
+			AccountType:    AccountTypeInternal,
+		},
+		"destination-balance": {
+			ID:             "destination-balance",
+			AccountID:      "destination-account",
+			Asset:          "USD",
+			Available:      decimal.NewFromInt(0),
+			OnHold:         decimal.NewFromInt(0),
+			AllowSending:   true,
+			AllowReceiving: true,
+			AccountType:    AccountTypeExternal,
+		},
+	}
+
+	err = ValidateBalanceEligibility(plan, balances)
+	assert.NoError(t, err)
+}
+
+func TestValidateBalanceEligibility_EmptyBalanceCatalog(t *testing.T) {
+	t.Parallel()
+
+	plan := simplePlan("USD", decimal.NewFromInt(100), StatusCreated)
+	err := ValidateBalanceEligibility(plan, map[string]Balance{})
+	de := assertDomainError(t, err, ErrorAccountIneligibility)
+	assert.Equal(t, "balances", de.Field)
+}
+
+func TestValidateBalanceEligibility_NilBalanceCatalog(t *testing.T) {
+	t.Parallel()
+
+	plan := simplePlan("USD", decimal.NewFromInt(100), StatusCreated)
+	err := ValidateBalanceEligibility(plan, nil)
+	de := assertDomainError(t, err, ErrorAccountIneligibility)
+	assert.Equal(t, "balances", de.Field)
+}
+
+func TestValidateBalanceEligibility_Errors(t *testing.T) {
+	amount := decimal.NewFromInt(100)
+
+	input := TransactionIntentInput{
+		Asset:   "USD",
+		Total:   amount,
+		Pending: true,
+		Sources: []Allocation{
+			{Target: LedgerTarget{AccountID: "source-account", BalanceID: "source-balance"}, Amount: &amount},
+		},
+		Destinations: []Allocation{
+			{Target: LedgerTarget{AccountID: "destination-account", BalanceID: "destination-balance"}, Amount: &amount},
+		},
+	}
+
+	plan, err := BuildIntentPlan(input, StatusPending)
+	assert.NoError(t, err)
+
+	tests := []struct {
+		name      string
+		balances  map[string]Balance
+		errorCode ErrorCode
+		field     string
 	}{
 		{
-			name: "valid balances - simple transfer",
-			transaction: Transaction{
-				Send: Send{
-					Asset: "USD",
-					Value: decimal.NewFromInt(100),
-					Source: Source{
-						From: []FromTo{
-							{AccountAlias: "@account1"},
-						},
-					},
-					Distribute: Distribute{
-						To: []FromTo{
-							{AccountAlias: "@account2"},
-						},
-					},
+			name: "missing source balance",
+			balances: map[string]Balance{
+				"destination-balance": {
+					ID:             "destination-balance",
+					AccountID:      "destination-account",
+					Asset:          "USD",
+					AllowReceiving: true,
 				},
 			},
-			validate: Responses{
-				Asset: "USD",
-				From: map[string]Amount{
-					"0#@account1#default": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT, TransactionType: constant.CREATED},
-				},
-				To: map[string]Amount{
-					"0#@account2#default": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT, TransactionType: constant.CREATED},
-				},
-			},
-			balances: []*Balance{
-				{
-					ID:             "123",
-					Alias:          "@account1",
-					Key:            "default",
-					AssetCode:      "USD",
-					Available:      decimal.NewFromInt(200),
-					OnHold:         decimal.NewFromInt(0),
+			errorCode: ErrorAccountIneligibility,
+			field:     "sources",
+		},
+		{
+			name: "source asset mismatch",
+			balances: map[string]Balance{
+				"source-balance": {
+					ID:             "source-balance",
+					AccountID:      "source-account",
+					Asset:          "EUR",
+					Available:      decimal.NewFromInt(300),
 					AllowSending:   true,
 					AllowReceiving: true,
-					AccountType:    "internal",
+					AccountType:    AccountTypeInternal,
 				},
-				{
-					ID:             "456",
-					Alias:          "@account2",
-					Key:            "default",
-					AssetCode:      "USD",
+				"destination-balance": {
+					ID:             "destination-balance",
+					AccountID:      "destination-account",
+					Asset:          "USD",
+					AllowSending:   true,
+					AllowReceiving: true,
+					AccountType:    AccountTypeInternal,
+				},
+			},
+			errorCode: ErrorAssetCodeNotFound,
+			field:     "sources",
+		},
+		{
+			name: "source cannot send",
+			balances: map[string]Balance{
+				"source-balance": {
+					ID:             "source-balance",
+					AccountID:      "source-account",
+					Asset:          "USD",
+					Available:      decimal.NewFromInt(300),
+					AllowSending:   false,
+					AllowReceiving: true,
+					AccountType:    AccountTypeInternal,
+				},
+				"destination-balance": {
+					ID:             "destination-balance",
+					AccountID:      "destination-account",
+					Asset:          "USD",
+					AllowSending:   true,
+					AllowReceiving: true,
+					AccountType:    AccountTypeInternal,
+				},
+			},
+			errorCode: ErrorAccountStatusTransactionRestriction,
+			field:     "sources",
+		},
+		{
+			name: "pending source cannot be external",
+			balances: map[string]Balance{
+				"source-balance": {
+					ID:             "source-balance",
+					AccountID:      "source-account",
+					Asset:          "USD",
+					Available:      decimal.NewFromInt(300),
+					AllowSending:   true,
+					AllowReceiving: true,
+					AccountType:    AccountTypeExternal,
+				},
+				"destination-balance": {
+					ID:             "destination-balance",
+					AccountID:      "destination-account",
+					Asset:          "USD",
+					AllowSending:   true,
+					AllowReceiving: true,
+					AccountType:    AccountTypeInternal,
+				},
+			},
+			errorCode: ErrorOnHoldExternalAccount,
+			field:     "sources",
+		},
+		{
+			name: "missing destination balance",
+			balances: map[string]Balance{
+				"source-balance": {
+					ID:             "source-balance",
+					AccountID:      "source-account",
+					Asset:          "USD",
+					Available:      decimal.NewFromInt(300),
+					AllowSending:   true,
+					AllowReceiving: true,
+					AccountType:    AccountTypeInternal,
+				},
+			},
+			errorCode: ErrorAccountIneligibility,
+			field:     "destinations",
+		},
+		{
+			name: "destination asset mismatch",
+			balances: map[string]Balance{
+				"source-balance": {
+					ID:             "source-balance",
+					AccountID:      "source-account",
+					Asset:          "USD",
+					Available:      decimal.NewFromInt(300),
+					AllowSending:   true,
+					AllowReceiving: true,
+					AccountType:    AccountTypeInternal,
+				},
+				"destination-balance": {
+					ID:             "destination-balance",
+					AccountID:      "destination-account",
+					Asset:          "GBP",
+					AllowSending:   true,
+					AllowReceiving: true,
+					AccountType:    AccountTypeInternal,
+				},
+			},
+			errorCode: ErrorAssetCodeNotFound,
+			field:     "destinations",
+		},
+		{
+			name: "destination cannot receive",
+			balances: map[string]Balance{
+				"source-balance": {
+					ID:             "source-balance",
+					AccountID:      "source-account",
+					Asset:          "USD",
+					Available:      decimal.NewFromInt(300),
+					AllowSending:   true,
+					AllowReceiving: true,
+					AccountType:    AccountTypeInternal,
+				},
+				"destination-balance": {
+					ID:             "destination-balance",
+					AccountID:      "destination-account",
+					Asset:          "USD",
+					AllowSending:   true,
+					AllowReceiving: false,
+					AccountType:    AccountTypeInternal,
+				},
+			},
+			errorCode: ErrorAccountStatusTransactionRestriction,
+			field:     "destinations",
+		},
+		{
+			name: "external destination with positive available",
+			balances: map[string]Balance{
+				"source-balance": {
+					ID:             "source-balance",
+					AccountID:      "source-account",
+					Asset:          "USD",
+					Available:      decimal.NewFromInt(300),
+					AllowSending:   true,
+					AllowReceiving: true,
+					AccountType:    AccountTypeInternal,
+				},
+				"destination-balance": {
+					ID:             "destination-balance",
+					AccountID:      "destination-account",
+					Asset:          "USD",
 					Available:      decimal.NewFromInt(50),
-					OnHold:         decimal.NewFromInt(0),
 					AllowSending:   true,
 					AllowReceiving: true,
-					AccountType:    "internal",
+					AccountType:    AccountTypeExternal,
 				},
 			},
-			expectError: false,
+			errorCode: ErrorInsufficientFunds,
+			field:     "destinations",
 		},
 		{
-			name:        "invalid - wrong number of balances",
-			transaction: Transaction{},
-			validate: Responses{
-				From: map[string]Amount{
-					"0#@account1#default": {Value: decimal.NewFromInt(100), Operation: constant.DEBIT, TransactionType: constant.CREATED},
+			name: "source insufficient funds",
+			balances: map[string]Balance{
+				"source-balance": {
+					ID:             "source-balance",
+					AccountID:      "source-account",
+					Asset:          "USD",
+					Available:      decimal.NewFromInt(50),
+					AllowSending:   true,
+					AllowReceiving: true,
+					AccountType:    AccountTypeInternal,
 				},
-				To: map[string]Amount{
-					"0#@account2#default": {Value: decimal.NewFromInt(100), Operation: constant.CREDIT, TransactionType: constant.CREATED},
+				"destination-balance": {
+					ID:             "destination-balance",
+					AccountID:      "destination-account",
+					Asset:          "USD",
+					Available:      decimal.Zero,
+					AllowSending:   true,
+					AllowReceiving: true,
+					AccountType:    AccountTypeExternal,
 				},
 			},
-			balances:    []*Balance{}, // Empty balances
-			expectError: true,
-			errorCode:   "0019", // ErrAccountIneligibility
+			errorCode: ErrorInsufficientFunds,
+			field:     "sources",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateBalancesRules(ctx, tt.transaction, tt.validate, tt.balances)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorCode != "" {
-					// Check if the error is a Response type and contains the error code
-					if respErr, ok := err.(commons.Response); ok {
-						assert.Equal(t, tt.errorCode, respErr.Code)
-					} else {
-						assert.Contains(t, err.Error(), tt.errorCode)
-					}
-				}
-			} else {
-				assert.NoError(t, err)
-			}
+			err := ValidateBalanceEligibility(plan, tt.balances)
+			de := assertDomainError(t, err, tt.errorCode)
+			assert.Equal(t, tt.field, de.Field)
 		})
 	}
 }
 
-func TestValidateFromBalances(t *testing.T) {
-	tests := []struct {
-		name        string
-		balance     *Balance
-		from        map[string]Amount
-		asset       string
-		expectError bool
-		errorCode   string
-	}{
-		{
-			name: "valid from balance",
-			balance: &Balance{
-				ID:           "123",
-				Alias:        "@account1",
-				Key:          "default",
-				AssetCode:    "USD",
-				Available:    decimal.NewFromInt(100),
-				AllowSending: true,
-				AccountType:  "internal",
-			},
-			from: map[string]Amount{
-				"0#@account1#default": {Value: decimal.NewFromInt(50)},
-			},
-			asset:       "USD",
-			expectError: false,
+func TestValidateBalanceEligibility_NonPending_ExternalSourceAllowed(t *testing.T) {
+	t.Parallel()
+
+	// When not pending, external sources ARE allowed (only pending + external is prohibited).
+	plan := IntentPlan{
+		Asset: "USD",
+		Total: decimal.NewFromInt(100),
+		Sources: []Posting{{
+			Target:    LedgerTarget{AccountID: "src-acc", BalanceID: "src-bal"},
+			Asset:     "USD",
+			Amount:    decimal.NewFromInt(100),
+			Operation: OperationDebit,
+			Status:    StatusCreated,
+		}},
+		Destinations: []Posting{{
+			Target:    LedgerTarget{AccountID: "dst-acc", BalanceID: "dst-bal"},
+			Asset:     "USD",
+			Amount:    decimal.NewFromInt(100),
+			Operation: OperationCredit,
+			Status:    StatusCreated,
+		}},
+		Pending: false,
+	}
+
+	balances := map[string]Balance{
+		"src-bal": {
+			ID:           "src-bal",
+			AccountID:    "src-acc",
+			Asset:        "USD",
+			Available:    decimal.NewFromInt(500),
+			AllowSending: true,
+			AccountType:  AccountTypeExternal,
 		},
-		{
-			name: "invalid - wrong asset code",
-			balance: &Balance{
-				ID:           "123",
-				Alias:        "@account1",
-				Key:          "default",
-				AssetCode:    "EUR",
-				Available:    decimal.NewFromInt(100),
-				AllowSending: true,
-				AccountType:  "internal",
-			},
-			from: map[string]Amount{
-				"0#@account1#default": {Value: decimal.NewFromInt(50)},
-			},
-			asset:       "USD",
-			expectError: true,
-			errorCode:   "0034", // ErrAssetCodeNotFound
-		},
-		{
-			name: "invalid - sending not allowed",
-			balance: &Balance{
-				ID:           "123",
-				Alias:        "@account1",
-				Key:          "default",
-				AssetCode:    "USD",
-				Available:    decimal.NewFromInt(100),
-				AllowSending: false,
-				AccountType:  "internal",
-			},
-			from: map[string]Amount{
-				"0#@account1#default": {Value: decimal.NewFromInt(50)},
-			},
-			asset:       "USD",
-			expectError: true,
-			errorCode:   "0024", // ErrAccountStatusTransactionRestriction
-		},
-		{
-			name: "valid - external account with zero balance",
-			balance: &Balance{
-				ID:           "123",
-				Alias:        "@external",
-				Key:          "default",
-				AssetCode:    "USD",
-				Available:    decimal.NewFromInt(0),
-				AllowSending: true,
-				AccountType:  constant.ExternalAccountType,
-			},
-			from: map[string]Amount{
-				"0#@external#default": {Value: decimal.NewFromInt(50)},
-			},
-			asset:       "USD",
-			expectError: false,
+		"dst-bal": {
+			ID:             "dst-bal",
+			AccountID:      "dst-acc",
+			Asset:          "USD",
+			Available:      decimal.Zero,
+			AllowReceiving: true,
+			AccountType:    AccountTypeInternal,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateFromBalances(tt.balance, tt.from, tt.asset, false)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorCode != "" {
-					// Check if the error is a Response type and contains the error code
-					if respErr, ok := err.(commons.Response); ok {
-						assert.Equal(t, tt.errorCode, respErr.Code)
-					} else {
-						assert.Contains(t, err.Error(), tt.errorCode)
-					}
-				}
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
+	err := ValidateBalanceEligibility(plan, balances)
+	require.NoError(t, err)
 }
 
-func TestValidateToBalances(t *testing.T) {
-	tests := []struct {
-		name        string
-		balance     *Balance
-		to          map[string]Amount
-		asset       string
-		expectError bool
-		errorCode   string
-	}{
-		{
-			name: "valid to balance",
-			balance: &Balance{
-				ID:             "123",
-				Alias:          "@account1",
-				Key:            "default",
-				AssetCode:      "USD",
-				Available:      decimal.NewFromInt(100),
-				AllowReceiving: true,
-				AccountType:    "internal",
-			},
-			to: map[string]Amount{
-				"0#@account1#default": {Value: decimal.NewFromInt(50)},
-			},
-			asset:       "USD",
-			expectError: false,
+func TestValidateBalanceEligibility_ExternalDestinationWithZeroAvailable(t *testing.T) {
+	t.Parallel()
+
+	// External destination with zero available should pass.
+	plan := IntentPlan{
+		Asset: "USD",
+		Total: decimal.NewFromInt(50),
+		Sources: []Posting{{
+			Target:    LedgerTarget{AccountID: "src-acc", BalanceID: "src-bal"},
+			Asset:     "USD",
+			Amount:    decimal.NewFromInt(50),
+			Operation: OperationDebit,
+			Status:    StatusCreated,
+		}},
+		Destinations: []Posting{{
+			Target:    LedgerTarget{AccountID: "dst-acc", BalanceID: "dst-bal"},
+			Asset:     "USD",
+			Amount:    decimal.NewFromInt(50),
+			Operation: OperationCredit,
+			Status:    StatusCreated,
+		}},
+	}
+
+	balances := map[string]Balance{
+		"src-bal": {
+			ID:           "src-bal",
+			AccountID:    "src-acc",
+			Asset:        "USD",
+			Available:    decimal.NewFromInt(200),
+			AllowSending: true,
+			AccountType:  AccountTypeInternal,
 		},
-		{
-			name: "invalid - wrong asset code",
-			balance: &Balance{
-				ID:             "123",
-				Alias:          "@account1",
-				Key:            "default",
-				AssetCode:      "EUR",
-				Available:      decimal.NewFromInt(100),
-				AllowReceiving: true,
-				AccountType:    "internal",
-			},
-			to: map[string]Amount{
-				"0#@account1#default": {Value: decimal.NewFromInt(50)},
-			},
-			asset:       "USD",
-			expectError: true,
-			errorCode:   "0034", // ErrAssetCodeNotFound
-		},
-		{
-			name: "invalid - receiving not allowed",
-			balance: &Balance{
-				ID:             "123",
-				Alias:          "@account1",
-				Key:            "default",
-				AssetCode:      "USD",
-				Available:      decimal.NewFromInt(100),
-				AllowReceiving: false,
-				AccountType:    "internal",
-			},
-			to: map[string]Amount{
-				"0#@account1#default": {Value: decimal.NewFromInt(50)},
-			},
-			asset:       "USD",
-			expectError: true,
-			errorCode:   "0024", // ErrAccountStatusTransactionRestriction
-		},
-		{
-			name: "invalid - external account with positive balance",
-			balance: &Balance{
-				ID:             "123",
-				Alias:          "@external",
-				Key:            "default",
-				AssetCode:      "USD",
-				Available:      decimal.NewFromInt(100),
-				AllowReceiving: true,
-				AccountType:    constant.ExternalAccountType,
-			},
-			to: map[string]Amount{
-				"0#@external#default": {Value: decimal.NewFromInt(50)},
-			},
-			asset:       "USD",
-			expectError: true,
-			errorCode:   "0018", // ErrInsufficientFunds
+		"dst-bal": {
+			ID:             "dst-bal",
+			AccountID:      "dst-acc",
+			Asset:          "USD",
+			Available:      decimal.Zero,
+			AllowReceiving: true,
+			AccountType:    AccountTypeExternal,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateToBalances(tt.balance, tt.to, tt.asset)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorCode != "" {
-					// Check if the error is a Response type and contains the error code
-					if respErr, ok := err.(commons.Response); ok {
-						assert.Equal(t, tt.errorCode, respErr.Code)
-					} else {
-						assert.Contains(t, err.Error(), tt.errorCode)
-					}
-				}
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
+	err := ValidateBalanceEligibility(plan, balances)
+	require.NoError(t, err)
 }
 
-func TestOperateBalances(t *testing.T) {
-	tests := []struct {
-		name        string
-		amount      Amount
-		balance     Balance
-		operation   string
-		expected    Balance
-		expectError bool
-	}{
-		{
-			name: "debit operation",
-			amount: Amount{
-				Value:           decimal.NewFromInt(50),
-				Operation:       constant.DEBIT,
-				TransactionType: constant.CREATED,
-			},
-			balance: Balance{
-				Available: decimal.NewFromInt(100),
-				OnHold:    decimal.NewFromInt(10),
-			},
-			expected: Balance{
-				Available: decimal.NewFromInt(50), // 100 - 50 = 50
-				OnHold:    decimal.NewFromInt(10),
-			},
-			expectError: false,
+func TestValidateBalanceEligibility_ExternalDestinationNegativeAvailable(t *testing.T) {
+	t.Parallel()
+
+	// External destination with negative available should now fail (!IsZero returns true for negative).
+	plan := IntentPlan{
+		Asset: "USD",
+		Total: decimal.NewFromInt(50),
+		Sources: []Posting{{
+			Target:    LedgerTarget{AccountID: "src-acc", BalanceID: "src-bal"},
+			Asset:     "USD",
+			Amount:    decimal.NewFromInt(50),
+			Operation: OperationDebit,
+			Status:    StatusCreated,
+		}},
+		Destinations: []Posting{{
+			Target:    LedgerTarget{AccountID: "dst-acc", BalanceID: "dst-bal"},
+			Asset:     "USD",
+			Amount:    decimal.NewFromInt(50),
+			Operation: OperationCredit,
+			Status:    StatusCreated,
+		}},
+	}
+
+	balances := map[string]Balance{
+		"src-bal": {
+			ID:           "src-bal",
+			AccountID:    "src-acc",
+			Asset:        "USD",
+			Available:    decimal.NewFromInt(200),
+			AllowSending: true,
+			AccountType:  AccountTypeInternal,
 		},
-		{
-			name: "credit operation",
-			amount: Amount{
-				Value:           decimal.NewFromInt(50),
-				Operation:       constant.CREDIT,
-				TransactionType: constant.CREATED,
-			},
-			balance: Balance{
-				Available: decimal.NewFromInt(100),
-				OnHold:    decimal.NewFromInt(10),
-			},
-			expected: Balance{
-				Available: decimal.NewFromInt(150), // 100 + 50 = 150
-				OnHold:    decimal.NewFromInt(10),
-			},
-			expectError: false,
+		"dst-bal": {
+			ID:             "dst-bal",
+			AccountID:      "dst-acc",
+			Asset:          "USD",
+			Available:      decimal.NewFromInt(-10),
+			AllowReceiving: true,
+			AccountType:    AccountTypeExternal,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result, err := OperateBalances(tt.amount, tt.balance)
-
-			if tt.expectError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-				assert.Equal(t, tt.expected.Available.String(), result.Available.String())
-				assert.Equal(t, tt.expected.OnHold.String(), result.OnHold.String())
-			}
-		})
-	}
+	err := ValidateBalanceEligibility(plan, balances)
+	de := assertDomainError(t, err, ErrorDataCorruption)
+	assert.Equal(t, "balance", de.Field)
 }
 
-func TestAliasKey(t *testing.T) {
-	tests := []struct {
-		name       string
-		alias      string
-		balanceKey string
-		want       string
-	}{
-		{
-			name:       "alias with balance key",
-			alias:      "@person1",
-			balanceKey: "savings",
-			want:       "@person1#savings",
-		},
-		{
-			name:       "alias with empty balance key defaults to 'default'",
-			alias:      "@person1",
-			balanceKey: "",
-			want:       "@person1#default",
-		},
-		{
-			name:       "alias with special characters and balance key",
-			alias:      "@external/BRL",
-			balanceKey: "checking",
-			want:       "@external/BRL#checking",
-		},
-		{
-			name:       "empty alias with balance key",
-			alias:      "",
-			balanceKey: "current",
-			want:       "#current",
-		},
-		{
-			name:       "empty alias with empty balance key",
-			alias:      "",
-			balanceKey: "",
-			want:       "#default",
-		},
+// ---------------------------------------------------------------------------
+// Serialization round-trip (IntentPlan)
+// ---------------------------------------------------------------------------
+
+func TestIntentPlan_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := IntentPlan{
+		Asset:   "BRL",
+		Total:   *decPtr(t, "1234.56"),
+		Pending: true,
+		Sources: []Posting{{
+			Target:    LedgerTarget{AccountID: "a", BalanceID: "b"},
+			Asset:     "BRL",
+			Amount:    *decPtr(t, "1234.56"),
+			Operation: OperationOnHold,
+			Status:    StatusPending,
+			Route:     "pix",
+		}},
+		Destinations: []Posting{{
+			Target:    LedgerTarget{AccountID: "c", BalanceID: "d"},
+			Asset:     "BRL",
+			Amount:    *decPtr(t, "1234.56"),
+			Operation: OperationCredit,
+			Status:    StatusPending,
+		}},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := AliasKey(tt.alias, tt.balanceKey)
-			assert.Equal(t, tt.want, got)
-		})
-	}
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
+
+	var restored IntentPlan
+	err = json.Unmarshal(data, &restored)
+	require.NoError(t, err)
+
+	assert.Equal(t, original.Asset, restored.Asset)
+	assert.True(t, original.Total.Equal(restored.Total))
+	assert.Equal(t, original.Pending, restored.Pending)
+	assert.Len(t, restored.Sources, 1)
+	assert.Len(t, restored.Destinations, 1)
+	assert.True(t, original.Sources[0].Amount.Equal(restored.Sources[0].Amount))
+	assert.Equal(t, original.Sources[0].Operation, restored.Sources[0].Operation)
+	assert.Equal(t, original.Sources[0].Route, restored.Sources[0].Route)
 }
 
-func TestSplitAlias(t *testing.T) {
-	tests := []struct {
-		name  string
-		alias string
-		want  string
-	}{
-		{
-			name:  "alias without index",
-			alias: "@person1",
-			want:  "@person1",
-		},
-		{
-			name:  "alias with index",
-			alias: "1#@person1",
-			want:  "@person1",
-		},
-		{
-			name:  "alias with zero index",
-			alias: "0#@person1",
-			want:  "@person1",
-		},
+func TestBalance_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	original := Balance{
+		ID:             "bal-123",
+		OrganizationID: "org-1",
+		LedgerID:       "led-1",
+		AccountID:      "acc-1",
+		Asset:          "BTC",
+		Available:      *decPtr(t, "0.00123456"),
+		OnHold:         *decPtr(t, "0.00000001"),
+		Version:        42,
+		AccountType:    AccountTypeInternal,
+		AllowSending:   true,
+		AllowReceiving: true,
+		Metadata:       map[string]any{"key": "value"},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := SplitAlias(tt.alias)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
+	data, err := json.Marshal(original)
+	require.NoError(t, err)
 
-func TestConcatAlias(t *testing.T) {
-	tests := []struct {
-		name  string
-		index int
-		alias string
-		want  string
-	}{
-		{
-			name:  "concat with positive index",
-			index: 1,
-			alias: "@person1",
-			want:  "1#@person1",
-		},
-		{
-			name:  "concat with zero index",
-			index: 0,
-			alias: "@person2",
-			want:  "0#@person2",
-		},
-		{
-			name:  "concat with large index",
-			index: 999,
-			alias: "@person3",
-			want:  "999#@person3",
-		},
-	}
+	var restored Balance
+	err = json.Unmarshal(data, &restored)
+	require.NoError(t, err)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ConcatAlias(tt.index, tt.alias)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestAppendIfNotExist(t *testing.T) {
-	tests := []struct {
-		name  string
-		slice []string
-		s     []string
-		want  []string
-	}{
-		{
-			name:  "append new elements",
-			slice: []string{"a", "b"},
-			s:     []string{"c", "d"},
-			want:  []string{"a", "b", "c", "d"},
-		},
-		{
-			name:  "skip existing elements",
-			slice: []string{"a", "b"},
-			s:     []string{"b", "c"},
-			want:  []string{"a", "b", "c"},
-		},
-		{
-			name:  "all elements exist",
-			slice: []string{"a", "b", "c"},
-			s:     []string{"a", "b"},
-			want:  []string{"a", "b", "c"},
-		},
-		{
-			name:  "empty initial slice",
-			slice: []string{},
-			s:     []string{"a", "b"},
-			want:  []string{"a", "b"},
-		},
-		{
-			name:  "empty append slice",
-			slice: []string{"a", "b"},
-			s:     []string{},
-			want:  []string{"a", "b"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := AppendIfNotExist(tt.slice, tt.s)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
-func TestValidateSendSourceAndDistribute(t *testing.T) {
-	tests := []struct {
-		name        string
-		transaction Transaction
-		want        *Responses
-		expectError bool
-		errorCode   string
-	}{
-		{
-			name: "valid - simple source and distribute",
-			transaction: Transaction{
-				Send: Send{
-					Asset: "USD",
-					Value: decimal.NewFromInt(100),
-					Source: Source{
-						From: []FromTo{
-							{
-								AccountAlias: "@account1",
-								Amount: &Amount{
-									Asset: "USD",
-									Value: decimal.NewFromInt(100),
-								},
-							},
-						},
-					},
-					Distribute: Distribute{
-						To: []FromTo{
-							{
-								AccountAlias: "@account2",
-								Amount: &Amount{
-									Asset: "USD",
-									Value: decimal.NewFromInt(100),
-								},
-							},
-						},
-					},
-				},
-			},
-			expectError: false, // Now expects success after fixing CalculateTotal
-		},
-		{
-			name: "valid - multiple sources and distributes",
-			transaction: Transaction{
-				Send: Send{
-					Asset: "USD",
-					Value: decimal.NewFromInt(100),
-					Source: Source{
-						From: []FromTo{
-							{
-								AccountAlias: "@account1",
-								Amount: &Amount{
-									Asset: "USD",
-									Value: decimal.NewFromInt(50),
-								},
-							},
-							{
-								AccountAlias: "@account2",
-								Amount: &Amount{
-									Asset: "USD",
-									Value: decimal.NewFromInt(50),
-								},
-							},
-						},
-					},
-					Distribute: Distribute{
-						To: []FromTo{
-							{
-								AccountAlias: "@account3",
-								Amount: &Amount{
-									Asset: "USD",
-									Value: decimal.NewFromInt(60),
-								},
-							},
-							{
-								AccountAlias: "@account4",
-								Amount: &Amount{
-									Asset: "USD",
-									Value: decimal.NewFromInt(40),
-								},
-							},
-						},
-					},
-				},
-			},
-			expectError: false, // Now expects success after fixing CalculateTotal
-		},
-		{
-			name: "valid transaction with shares",
-			transaction: Transaction{
-				Send: Send{
-					Asset: "USD",
-					Value: decimal.NewFromInt(100),
-					Source: Source{
-						From: []FromTo{
-							{
-								AccountAlias: "@account1",
-								Share: &Share{
-									Percentage: 60,
-								},
-							},
-							{
-								AccountAlias: "@account2",
-								Share: &Share{
-									Percentage: 40,
-								},
-							},
-						},
-					},
-					Distribute: Distribute{
-						To: []FromTo{
-							{
-								AccountAlias: "@account3",
-								Share: &Share{
-									Percentage: 100,
-								},
-							},
-						},
-					},
-				},
-			},
-			want: &Responses{
-				Asset: "USD",
-				From: map[string]Amount{
-					"@account1": {Value: decimal.NewFromInt(60)},
-					"@account2": {Value: decimal.NewFromInt(40)},
-				},
-				To: map[string]Amount{
-					"@account3": {Value: decimal.NewFromInt(100)},
-				},
-			},
-			expectError: false,
-		},
-		{
-			name: "valid transaction with remains",
-			transaction: Transaction{
-				Send: Send{
-					Asset: "USD",
-					Value: decimal.NewFromInt(100),
-					Source: Source{
-						From: []FromTo{
-							{
-								AccountAlias: "@account1",
-								Share: &Share{
-									Percentage: 50,
-								},
-								IsFrom: true,
-							},
-							{
-								AccountAlias: "@account2",
-								Remaining:    "remaining",
-								IsFrom:       true,
-							},
-						},
-					},
-					Distribute: Distribute{
-						To: []FromTo{
-							{
-								AccountAlias: "@account3",
-								Remaining:    "remaining",
-							},
-						},
-					},
-				},
-			},
-			want: &Responses{
-				Asset: "USD",
-				From: map[string]Amount{
-					"@account1": {Value: decimal.NewFromInt(50)},
-					"@account2": {Value: decimal.NewFromInt(50)},
-				},
-				To: map[string]Amount{
-					"@account3": {Value: decimal.NewFromInt(100)},
-				},
-			},
-			expectError: false,
-		},
-		{
-			name: "invalid - total mismatch",
-			transaction: Transaction{
-				Send: Send{
-					Asset: "USD",
-					Value: decimal.NewFromInt(100),
-					Source: Source{
-						From: []FromTo{
-							{
-								AccountAlias: "@account1",
-								Amount: &Amount{
-									Asset: "USD",
-									Value: decimal.NewFromInt(60),
-								},
-							},
-							{
-								AccountAlias: "@account2",
-								Amount: &Amount{
-									Asset: "USD",
-									Value: decimal.NewFromInt(30), // Total is 90, not 100
-								},
-							},
-						},
-					},
-					Distribute: Distribute{
-						To: []FromTo{
-							{
-								AccountAlias: "@account3",
-								Amount: &Amount{
-									Asset: "USD",
-									Value: decimal.NewFromInt(100),
-								},
-							},
-						},
-					},
-				},
-			},
-			expectError: true,
-			errorCode:   "0073", // ErrTransactionValueMismatch
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			got, err := ValidateSendSourceAndDistribute(ctx, tt.transaction, constant.CREATED)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorCode != "" {
-					// Check if the error is a Response type and contains the error code
-					if respErr, ok := err.(commons.Response); ok {
-						assert.Equal(t, tt.errorCode, respErr.Code)
-					} else {
-						assert.Contains(t, err.Error(), tt.errorCode)
-					}
-				}
-			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, got)
-				if tt.want != nil && got != nil {
-					assert.Equal(t, tt.want.Asset, got.Asset)
-					assert.Equal(t, len(tt.want.From), len(got.From))
-					assert.Equal(t, len(tt.want.To), len(got.To))
-				}
-			}
-		})
-	}
-}
-
-func TestValidateTransactionWithPercentageAndRemaining(t *testing.T) {
-	tests := []struct {
-		name        string
-		transaction Transaction
-		expectError bool
-		errorCode   string
-	}{
-		{
-			name: "valid transaction with percentage and remaining",
-			transaction: Transaction{
-				ChartOfAccountsGroupName: "PAG_CONTAS_CODE_1",
-				Description:              "description for the transaction person1 to person2 value of 100 reais",
-				Metadata: map[string]interface{}{
-					"depositType": "PIX",
-					"valor":       "100.00",
-				},
-				Pending: false,
-				Route:   "00000000-0000-0000-0000-000000000000",
-				Send: Send{
-					Asset: "BRL",
-					Value: decimal.NewFromFloat(100.00),
-					Source: Source{
-						From: []FromTo{
-							{
-								AccountAlias: "@external/BRL",
-								Remaining:    "remaining",
-								Description:  "Loan payment 1",
-								Route:        "00000000-0000-0000-0000-000000000000",
-								Metadata: map[string]interface{}{
-									"1":   "m",
-									"Cpf": "43049498x",
-								},
-							},
-						},
-					},
-					Distribute: Distribute{
-						To: []FromTo{
-							{
-								AccountAlias: "@mcgregor_0",
-								Share: &Share{
-									Percentage: 50,
-								},
-								Route: "00000000-0000-0000-0000-000000000000",
-								Metadata: map[string]interface{}{
-									"mensagem": "tks",
-								},
-							},
-							{
-								AccountAlias: "@mcgregor_1",
-								Share: &Share{
-									Percentage: 50,
-								},
-								Description: "regression test",
-								Metadata: map[string]interface{}{
-									"key": "value",
-								},
-							},
-						},
-					},
-				},
-			},
-			expectError: false,
-		},
-		{
-			name: "transaction with value mismatch",
-			transaction: Transaction{
-				ChartOfAccountsGroupName: "PAG_CONTAS_CODE_1",
-				Description:              "transaction with value mismatch",
-				Pending:                  false,
-				Send: Send{
-					Asset: "BRL",
-					Value: decimal.NewFromFloat(100.00),
-					Source: Source{
-						From: []FromTo{
-							{
-								AccountAlias: "@external/BRL",
-								Amount: &Amount{
-									Asset: "BRL",
-									// Source amount doesn't match transaction value
-									Value: decimal.NewFromFloat(90.00),
-								},
-							},
-						},
-					},
-					Distribute: Distribute{
-						To: []FromTo{
-							{
-								AccountAlias: "@mcgregor_0",
-								Share: &Share{
-									Percentage: 100,
-								},
-							},
-						},
-					},
-				},
-			},
-			expectError: true,
-			errorCode:   "0073", // ErrTransactionValueMismatch
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			// Call ValidateSendSourceAndDistribute to get the responses
-			responses, err := ValidateSendSourceAndDistribute(ctx, tt.transaction, constant.CREATED)
-
-			if tt.expectError {
-				assert.Error(t, err)
-				if tt.errorCode != "" {
-					errMsg := err.Error()
-					assert.Contains(t, errMsg, tt.errorCode, "Error should contain the expected error code")
-				}
-				return
-			}
-
-			assert.NoError(t, err)
-			assert.NotNil(t, responses)
-
-			// For successful case, validate response structure
-			assert.Equal(t, tt.transaction.Send.Value, responses.Total)
-			assert.Equal(t, tt.transaction.Send.Asset, responses.Asset)
-
-			// Verify the source account is included in the response
-			fromKey := "@external/BRL"
-			_, exists := responses.From[fromKey]
-			assert.True(t, exists, "From account should exist: %s", fromKey)
-
-			// Verify the destination accounts are included in the response
-			toKey1 := "@mcgregor_0"
-			_, exists = responses.To[toKey1]
-			assert.True(t, exists, "To account should exist: %s", toKey1)
-
-			toKey2 := "@mcgregor_1"
-			_, exists = responses.To[toKey2]
-			assert.True(t, exists, "To account should exist: %s", toKey2)
-
-			// Verify total amount is correctly distributed
-			var total decimal.Decimal
-			for _, amount := range responses.To {
-				total = total.Add(amount.Value)
-			}
-			assert.True(t, responses.Total.Equal(total),
-				"Total amount (%s) should equal sum of destination amounts (%s)",
-				responses.Total.String(), total.String())
-		})
-	}
+	assert.Equal(t, original.ID, restored.ID)
+	assert.Equal(t, original.OrganizationID, restored.OrganizationID)
+	assert.True(t, original.Available.Equal(restored.Available))
+	assert.True(t, original.OnHold.Equal(restored.OnHold))
+	assert.Equal(t, original.Version, restored.Version)
+	assert.Equal(t, original.AccountType, restored.AccountType)
+	assert.Equal(t, "value", restored.Metadata["key"])
 }

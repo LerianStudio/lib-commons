@@ -1,17 +1,14 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package commons
 
 import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
-	"github.com/LerianStudio/lib-commons/v2/commons/opentelemetry/metrics"
+	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry/metrics"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -25,6 +22,7 @@ var ErrNilParentContext = errors.New("cannot create context from nil parent")
 
 type customContextKey string
 
+// CustomContextKey is the context key used to store CustomContextKeyValue.
 var CustomContextKey = customContextKey("custom_context")
 
 // CustomContextKeyValue holds all request-scoped facilities we attach to context.
@@ -41,25 +39,51 @@ type CustomContextKeyValue struct {
 
 // ---- Logger helpers ----
 
-// NewLoggerFromContext extract the Logger from "logger" value inside context
+// NewLoggerFromContext extract the Logger from "logger" value inside context.
+// A nil ctx is normalized to context.Background() so callers never trigger a nil-pointer dereference.
 //
 //nolint:ireturn
 func NewLoggerFromContext(ctx context.Context) log.Logger {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	if customContext, ok := ctx.Value(CustomContextKey).(*CustomContextKeyValue); ok &&
 		customContext.Logger != nil {
 		return customContext.Logger
 	}
 
-	return &log.NoneLogger{}
+	return &log.NopLogger{}
+}
+
+// cloneContextValues returns a shallow copy of the CustomContextKeyValue from ctx.
+// This prevents concurrent mutation of a shared struct when multiple goroutines
+// derive child contexts from the same parent.
+// The AttrBag slice is deep-copied to avoid aliasing the underlying array.
+func cloneContextValues(ctx context.Context) *CustomContextKeyValue {
+	existing, _ := ctx.Value(CustomContextKey).(*CustomContextKeyValue)
+
+	clone := &CustomContextKeyValue{}
+	if existing != nil {
+		*clone = *existing
+
+		// Deep-copy the slice to avoid aliasing the backing array.
+		if len(existing.AttrBag) > 0 {
+			clone.AttrBag = make([]attribute.KeyValue, len(existing.AttrBag))
+			copy(clone.AttrBag, existing.AttrBag)
+		}
+	}
+
+	return clone
 }
 
 // ContextWithLogger returns a context within a Logger in "logger" value.
 func ContextWithLogger(ctx context.Context, logger log.Logger) context.Context {
-	values, _ := ctx.Value(CustomContextKey).(*CustomContextKeyValue)
-	if values == nil {
-		values = &CustomContextKeyValue{}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
+	values := cloneContextValues(ctx)
 	values.Logger = logger
 
 	return context.WithValue(ctx, CustomContextKey, values)
@@ -67,26 +91,13 @@ func ContextWithLogger(ctx context.Context, logger log.Logger) context.Context {
 
 // ---- Tracer helpers ----
 
-// Deprecated: use NewTrackingFromContext instead
-// NewTracerFromContext returns a new tracer from the context.
-//
-//nolint:ireturn
-func NewTracerFromContext(ctx context.Context) trace.Tracer {
-	if customContext, ok := ctx.Value(CustomContextKey).(*CustomContextKeyValue); ok &&
-		customContext.Tracer != nil {
-		return customContext.Tracer
-	}
-
-	return otel.Tracer("default")
-}
-
 // ContextWithTracer returns a context within a trace.Tracer in "tracer" value.
 func ContextWithTracer(ctx context.Context, tracer trace.Tracer) context.Context {
-	values, _ := ctx.Value(CustomContextKey).(*CustomContextKeyValue)
-	if values == nil {
-		values = &CustomContextKeyValue{}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
+	values := cloneContextValues(ctx)
 	values.Tracer = tracer
 
 	return context.WithValue(ctx, CustomContextKey, values)
@@ -94,27 +105,13 @@ func ContextWithTracer(ctx context.Context, tracer trace.Tracer) context.Context
 
 // ---- Metrics helpers ----
 
-// Deprecated: use NewTrackingFromContext instead
-//
-// NewMetricFactoryFromContext returns a new metric factory from the context.
-//
-//nolint:ireturn
-func NewMetricFactoryFromContext(ctx context.Context) *metrics.MetricsFactory {
-	if customContext, ok := ctx.Value(CustomContextKey).(*CustomContextKeyValue); ok &&
-		customContext.MetricFactory != nil {
-		return customContext.MetricFactory
-	}
-
-	return metrics.NewMetricsFactory(otel.GetMeterProvider().Meter("default"), &log.NoneLogger{})
-}
-
 // ContextWithMetricFactory returns a context within a MetricsFactory in "metricFactory" value.
 func ContextWithMetricFactory(ctx context.Context, metricFactory *metrics.MetricsFactory) context.Context {
-	values, _ := ctx.Value(CustomContextKey).(*CustomContextKeyValue)
-	if values == nil {
-		values = &CustomContextKeyValue{}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
+	values := cloneContextValues(ctx)
 	values.MetricFactory = metricFactory
 
 	return context.WithValue(ctx, CustomContextKey, values)
@@ -124,30 +121,14 @@ func ContextWithMetricFactory(ctx context.Context, metricFactory *metrics.Metric
 
 // ContextWithHeaderID returns a context within a HeaderID in "headerID" value.
 func ContextWithHeaderID(ctx context.Context, headerID string) context.Context {
-	values, _ := ctx.Value(CustomContextKey).(*CustomContextKeyValue)
-	if values == nil {
-		values = &CustomContextKeyValue{}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
+	values := cloneContextValues(ctx)
 	values.HeaderID = headerID
 
 	return context.WithValue(ctx, CustomContextKey, values)
-}
-
-// Deprecated: use NewTrackingFromContext instead
-//
-// NewHeaderIDFromContext returns a HeaderID from the context.
-func NewHeaderIDFromContext(ctx context.Context) string {
-	customContext, ok := ctx.Value(CustomContextKey).(*CustomContextKeyValue)
-	if !ok {
-		return uuid.New().String()
-	}
-
-	if customContext != nil && strings.TrimSpace(customContext.HeaderID) != "" {
-		return customContext.HeaderID
-	}
-
-	return uuid.New().String()
 }
 
 // ---- Tracking bundle (convenience) ----
@@ -166,7 +147,12 @@ type TrackingComponents struct {
 //
 //nolint:ireturn
 func NewTrackingFromContext(ctx context.Context) (log.Logger, trace.Tracer, string, *metrics.MetricsFactory) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	components := extractTrackingComponents(ctx)
+
 	return components.Logger, components.Tracer, components.HeaderID, components.MetricFactory
 }
 
@@ -192,7 +178,7 @@ func resolveLogger(logger log.Logger) log.Logger {
 		return logger
 	}
 
-	return &log.NoneLogger{} // Null Object Pattern - always functional
+	return &log.NopLogger{} // Null Object Pattern - always functional
 }
 
 // resolveTracer ensures a valid tracer is always available using OpenTelemetry best practices.
@@ -207,6 +193,11 @@ func resolveTracer(tracer trace.Tracer) trace.Tracer {
 
 // resolveHeaderID implements the correlation ID pattern with UUID fallback.
 // Ensures every request has a unique identifier for distributed tracing.
+//
+// IMPORTANT: When no HeaderID is present in context, a new UUID is generated on
+// every call to NewTrackingFromContext. Ingress middleware (HTTP/gRPC) MUST persist
+// the generated ID back into context via ContextWithHeaderID so that downstream
+// extractions within the same request return a stable correlation ID.
 func resolveHeaderID(headerID string) string {
 	if trimmed := strings.TrimSpace(headerID); trimmed != "" {
 		return trimmed
@@ -215,24 +206,46 @@ func resolveHeaderID(headerID string) string {
 	return uuid.New().String() // Generate unique correlation ID
 }
 
+var (
+	defaultFactoryOnce sync.Once
+	defaultFactory     *metrics.MetricsFactory
+)
+
+func getDefaultMetricsFactory() *metrics.MetricsFactory {
+	defaultFactoryOnce.Do(func() {
+		meter := otel.GetMeterProvider().Meter("commons.default")
+
+		f, err := metrics.NewMetricsFactory(meter, &log.NopLogger{})
+		if err != nil {
+			defaultFactory = metrics.NewNopFactory()
+			return
+		}
+
+		defaultFactory = f
+	})
+
+	return defaultFactory
+}
+
 // resolveMetricFactory ensures a valid metrics factory is always available following the fail-safe pattern.
-// Provides a default factory when none exists, maintaining consistency with logger and tracer resolution.
+// Provides a cached default factory when none exists, initialized once via sync.Once.
+// Never returns nil: if factory creation fails, it falls back to a no-op factory.
 func resolveMetricFactory(factory *metrics.MetricsFactory) *metrics.MetricsFactory {
 	if factory != nil {
 		return factory
 	}
 
-	return metrics.NewMetricsFactory(otel.GetMeterProvider().Meter("commons.default"), &log.NoneLogger{})
+	return getDefaultMetricsFactory()
 }
 
 // newDefaultTrackingComponents creates a complete set of default components.
 // Used when context extraction fails entirely - ensures system remains operational.
 func newDefaultTrackingComponents() TrackingComponents {
 	return TrackingComponents{
-		Logger:        &log.NoneLogger{},
+		Logger:        &log.NopLogger{},
 		Tracer:        otel.Tracer("commons.default"),
 		HeaderID:      uuid.New().String(),
-		MetricFactory: metrics.NewMetricsFactory(otel.GetMeterProvider().Meter("commons.default"), &log.NoneLogger{}),
+		MetricFactory: resolveMetricFactory(nil),
 	}
 }
 
@@ -242,15 +255,16 @@ func newDefaultTrackingComponents() TrackingComponents {
 // Call this once at the ingress (HTTP/gRPC middleware) and avoid per-layer duplication.
 // Example keys: tenant.id, enduser.id, request.route, region, plan.
 func ContextWithSpanAttributes(ctx context.Context, kv ...attribute.KeyValue) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	if len(kv) == 0 {
 		return ctx
 	}
 
-	values, _ := ctx.Value(CustomContextKey).(*CustomContextKeyValue)
-	if values == nil {
-		values = &CustomContextKeyValue{}
-	}
-	// Append (preserve order; low-cost).
+	values := cloneContextValues(ctx)
+	// Append to the cloned (independent) slice.
 	values.AttrBag = append(values.AttrBag, kv...)
 
 	return context.WithValue(ctx, CustomContextKey, values)
@@ -258,6 +272,10 @@ func ContextWithSpanAttributes(ctx context.Context, kv ...attribute.KeyValue) co
 
 // AttributesFromContext returns a shallow copy of the AttrBag slice, safe to reuse by processors.
 func AttributesFromContext(ctx context.Context) []attribute.KeyValue {
+	if ctx == nil {
+		return nil
+	}
+
 	if values, ok := ctx.Value(CustomContextKey).(*CustomContextKeyValue); ok && values != nil && len(values.AttrBag) > 0 {
 		out := make([]attribute.KeyValue, len(values.AttrBag))
 		copy(out, values.AttrBag)
@@ -270,12 +288,14 @@ func AttributesFromContext(ctx context.Context) []attribute.KeyValue {
 
 // ReplaceAttributes resets the current AttrBag with a new set (rarely needed; provided for completeness).
 func ReplaceAttributes(ctx context.Context, kv ...attribute.KeyValue) context.Context {
-	values, _ := ctx.Value(CustomContextKey).(*CustomContextKeyValue)
-	if values == nil {
-		values = &CustomContextKeyValue{}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
-	values.AttrBag = append(values.AttrBag[:0], kv...)
+	values := cloneContextValues(ctx)
+	// Replace with a fresh slice -- the clone already has an independent copy.
+	values.AttrBag = make([]attribute.KeyValue, len(kv))
+	copy(values.AttrBag, kv)
 
 	return context.WithValue(ctx, CustomContextKey, values)
 }
@@ -285,10 +305,7 @@ func ReplaceAttributes(ctx context.Context, kv ...attribute.KeyValue) context.Co
 // WithTimeoutSafe creates a context with the specified timeout, but respects
 // any existing deadline in the parent context. Returns an error if parent is nil.
 //
-// This is the safe alternative to WithTimeout that returns an error instead of panicking.
-// The "Safe" suffix is used here (instead of "WithError") because the function signature
-// returns three values (context, cancel, error) rather than wrapping an existing function.
-// Use WithTimeout for backward-compatible panic behavior.
+// The function returns three values (context, cancel, error) for explicit nil-parent error handling.
 //
 // Note: When the parent's deadline is shorter than the requested timeout, this function
 // returns a cancellable context that inherits the parent's deadline rather than creating
@@ -302,50 +319,12 @@ func WithTimeoutSafe(parent context.Context, timeout time.Duration) (context.Con
 		timeUntilDeadline := time.Until(deadline)
 
 		if timeUntilDeadline < timeout {
-			ctx, cancel := context.WithCancel(parent)
+			ctx, cancel := context.WithCancel(parent) // #nosec G118 -- cancel is intentionally returned to the caller for lifecycle management
 			return ctx, cancel, nil
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(parent, timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout) // #nosec G118 -- cancel is intentionally returned to the caller for lifecycle management
 
 	return ctx, cancel, nil
-}
-
-// Deprecated: Use WithTimeoutSafe instead for proper error handling.
-// WithTimeout panics on nil parent. Prefer WithTimeoutSafe for graceful error handling.
-//
-// WithTimeout creates a context with the specified timeout, but respects
-// any existing deadline in the parent context. If the parent context has
-// a deadline that would expire sooner than the requested timeout, the
-// parent's deadline is used instead.
-//
-// This prevents the common mistake of extending a context's deadline
-// beyond what the caller intended.
-//
-// Example:
-//
-//	// Parent has 5s deadline, we request 10s -> gets 5s
-//	ctx, cancel := commons.WithTimeout(parentCtx, 10*time.Second)
-//	defer cancel()
-func WithTimeout(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
-	if parent == nil {
-		panic("cannot create context from nil parent")
-	}
-
-	// Check if parent already has a deadline
-	if deadline, ok := parent.Deadline(); ok {
-		// Calculate time until parent deadline
-		timeUntilDeadline := time.Until(deadline)
-
-		// Use the shorter of the two timeouts
-		if timeUntilDeadline < timeout {
-			// Parent deadline is sooner, just return a cancellable context
-			// that respects the parent's deadline
-			return context.WithCancel(parent)
-		}
-	}
-
-	// Either parent has no deadline, or our timeout is shorter
-	return context.WithTimeout(parent, timeout)
 }

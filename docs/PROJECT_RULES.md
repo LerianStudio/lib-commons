@@ -1,6 +1,6 @@
 # Project Rules - lib-commons
 
-This document defines the coding standards, architecture patterns, and development guidelines for the `lib-commons` library.
+This document defines the coding standards, architecture patterns, and development guidelines for the unified `lib-commons` library.
 
 ## Table of Contents
 
@@ -23,17 +23,43 @@ This document defines the coding standards, architecture patterns, and developme
 
 ```text
 lib-commons/
-├── commons/                    # All library packages
-│   ├── {package}/              # Feature package
-│   │   ├── {package}.go        # Main implementation
-│   │   ├── {package}_test.go   # Unit tests
-│   │   └── doc.go              # Package documentation (optional)
-│   ├── context.go              # Root-level utilities
-│   ├── errors.go               # Error definitions
-│   └── utils.go                # Utility functions
-├── docs/                       # Documentation
-├── scripts/                    # Build/test scripts
-└── go.mod                      # Module definition
+├── commons/                      # All library packages
+│   ├── assert/                     # Production-safe assertions with telemetry
+│   ├── backoff/                    # Exponential backoff with jitter
+│   ├── circuitbreaker/             # Circuit breaker manager and health checker
+│   ├── constants/                  # Shared constants (headers, errors, pagination)
+│   ├── cron/                       # Cron expression parsing and scheduling
+│   ├── crypto/                     # Hashing and symmetric encryption
+│   ├── errgroup/                   # Goroutine coordination with panic recovery
+│   ├── jwt/                        # HMAC-based JWT signing and verification
+│   ├── license/                    # License validation and enforcement
+│   ├── log/                        # Logging abstraction (Logger interface)
+│   ├── mongo/                      # MongoDB connector
+│   ├── net/http/                   # Fiber-oriented HTTP helpers and middleware
+│   │   └── ratelimit/              # Redis-backed rate limit storage
+│   ├── opentelemetry/              # Telemetry bootstrap, propagation, redaction
+│   │   └── metrics/                # Metric factory and fluent builders
+│   ├── pointers/                   # Pointer conversion helpers
+│   ├── postgres/                   # PostgreSQL connector with migrations
+│   ├── rabbitmq/                   # RabbitMQ connector
+│   ├── redis/                      # Redis connector (standalone/sentinel/cluster)
+│   ├── runtime/                    # Panic recovery, metrics, safe goroutine wrappers
+│   ├── safe/                       # Panic-free math/regex/slice operations
+│   ├── security/                   # Sensitive field detection and handling
+│   ├── server/                     # Graceful shutdown and lifecycle (ServerManager)
+│   ├── shell/                      # Makefile includes and shell utilities
+│   ├── transaction/                # Typed transaction validation/posting primitives
+│   ├── zap/                        # Zap logging adapter
+│   ├── app.go                      # Application bootstrap helpers
+│   ├── context.go                  # Context utilities
+│   ├── errors.go                   # Error definitions
+│   ├── os.go                       # OS utilities
+│   ├── stringUtils.go              # String utilities
+│   ├── time.go                     # Time utilities
+│   └── utils.go                    # General utility functions
+├── docs/                           # Documentation
+├── reports/                        # Test and coverage reports
+└── go.mod                          # Module definition (v4)
 ```
 
 ### Package Design Principles
@@ -42,17 +68,19 @@ lib-commons/
 2. **Minimal Dependencies**: Packages should minimize external dependencies
 3. **Interface-Driven**: Define interfaces for testability and flexibility
 4. **Zero Business Logic**: This is a utility library - no domain/business logic
+5. **Nil-Safe and Concurrency-Safe**: Keep behavior safe by default
+6. **Explicit Error Returns**: Prefer error returns over panic paths
 
 ### Naming Conventions
 
 | Type | Convention | Example |
 |------|------------|---------|
-| Package | lowercase, single word preferred | `postgres`, `redis`, `poolmanager` |
-| Files | snake_case matching content | `pool_manager_pg.go` |
-| Public Functions | PascalCase, descriptive | `NewPostgresConnection` |
+| Package | lowercase, single word preferred | `postgres`, `redis`, `circuitbreaker` |
+| Files | snake_case or camelCase matching content | `pool_manager_pg.go`, `stringUtils.go` |
+| Public Functions | PascalCase, descriptive | `NewClient`, `ServeReverseProxy` |
 | Private Functions | camelCase | `validateConfig` |
-| Interfaces | -er suffix or descriptive | `Logger`, `ConnectionPool` |
-| Constants | PascalCase or UPPER_SNAKE_CASE | `DefaultTimeout`, `MAX_RETRIES` |
+| Interfaces | -er suffix or descriptive | `Logger`, `Manager`, `LockManager` |
+| Constants | PascalCase | `DefaultTimeout`, `LevelInfo` |
 
 ---
 
@@ -60,8 +88,24 @@ lib-commons/
 
 ### Go Version
 
-- **Minimum**: Go 1.24.0
+- **Minimum**: Go 1.25.7
 - Keep `go.mod` updated with latest stable Go version
+- Module path: `github.com/LerianStudio/lib-commons/v4`
+
+### Build Tags
+
+- Unit test files **MUST** have `//go:build unit` as the first line
+- Integration test files **MUST** have `//go:build integration` as the first line
+
+```go
+//go:build unit
+
+package mypackage
+
+import "testing"
+
+func TestMyFunc(t *testing.T) { ... }
+```
 
 ### Imports Organization
 
@@ -77,7 +121,7 @@ import (
     "go.uber.org/zap"
 
     // Internal packages
-    "github.com/LerianStudio/lib-commons/v2/commons/log"
+    "github.com/LerianStudio/lib-commons/v4/commons/log"
 )
 ```
 
@@ -188,7 +232,17 @@ result, _ := doSomething()
 
 - **Minimum Coverage**: 80% for new packages
 - **Critical Paths**: 100% coverage for error handling paths
-- **Run Coverage**: `make cover`
+- **Run Coverage**: `make coverage-unit` or `make coverage-integration`
+- **Coverage Exclusions**: Defined in `.ignorecoverunit` (e.g., `*_mock.go`)
+
+### Build Tags
+
+All test files **MUST** include the appropriate build tag as the first line:
+
+| Type | Build Tag | Example |
+|------|-----------|---------|
+| Unit Tests | `//go:build unit` | All `_test.go` files |
+| Integration Tests | `//go:build integration` | All `_integration_test.go` files |
 
 ### Test File Naming
 
@@ -196,7 +250,15 @@ result, _ := doSomething()
 |------|---------|---------|
 | Unit Tests | `{file}_test.go` | `config_test.go` |
 | Integration | `{file}_integration_test.go` | `postgres_integration_test.go` |
-| Benchmarks | In `_test.go` files | `BenchmarkXxx` |
+| Examples | `{feature}_example_test.go` | `cursor_example_test.go` |
+| Benchmarks | In `_test.go` or `benchmark_test.go` | `BenchmarkXxx` |
+
+### Integration Test Conventions
+
+- Test function names **MUST** start with `TestIntegration_` (e.g., `TestIntegration_MyFeature_Works`)
+- Integration tests use `testcontainers-go` to spin up ephemeral containers
+- Docker is required to run integration tests
+- Integration tests run sequentially (`-p=1`) to avoid Docker container conflicts
 
 ### Test Patterns
 
@@ -241,6 +303,7 @@ func TestConfig_Validate(t *testing.T) {
 - Use `go.uber.org/mock` for interface mocking
 - Define interfaces at point of use for testability
 - Prefer dependency injection over global state
+- Mock files follow the `{type}_mock.go` pattern
 
 ---
 
@@ -275,6 +338,11 @@ func (c *Client) Connect(ctx context.Context) error {
 - Update `README.md` API Reference when adding public APIs
 - Include usage examples for new packages
 
+### Migration Awareness
+
+- If a task touches renamed/removed v1 symbols, update `MIGRATION_MAP.md`
+- If a task changes package-level behavior or API expectations, update `README.md`
+
 ---
 
 ## Dependencies
@@ -283,18 +351,22 @@ func (c *Client) Connect(ctx context.Context) error {
 
 | Category | Allowed Packages |
 |----------|-----------------|
-| Database | `pgx/v5`, `mongo-driver`, `go-redis/v9` |
+| Database | `pgx/v5`, `mongo-driver`, `go-redis/v9`, `dbresolver/v2`, `golang-migrate/v4` |
 | Messaging | `amqp091-go` |
+| HTTP | `gofiber/fiber/v2` |
 | Logging | `zap`, internal `log` package |
-| Testing | `testify`, `gomock`, `miniredis` |
-| Observability | `opentelemetry/*` |
-| Utilities | `google/uuid`, `shopspring/decimal` |
+| Testing | `testify`, `go.uber.org/mock`, `miniredis/v2` |
+| Observability | `opentelemetry/*`, `otelzap` |
+| Utilities | `google/uuid`, `shopspring/decimal`, `go-playground/validator/v10` |
+| Resilience | `sony/gobreaker`, `go-redsync/v4` |
+| Security | `golang.org/x/oauth2`, `google.golang.org/api` |
+| System | `shirou/gopsutil`, `joho/godotenv` |
 
 ### Forbidden Dependencies
 
-- `io/ioutil` - Deprecated, use `io` and `os`
+- `io/ioutil` - Deprecated, use `io` and `os` (enforced by `depguard` linter)
 - Direct database drivers without connection pooling
-- Logging packages other than `zap` (use internal wrapper)
+- Logging packages other than `zap` (use internal `log` wrapper)
 
 ### Adding Dependencies
 
@@ -310,24 +382,32 @@ func (c *Client) Connect(ctx context.Context) error {
 ### Credential Handling
 
 1. **Never hardcode credentials** - Use environment variables
-2. **Never log credentials** - Use obfuscation for sensitive fields
+2. **Never log credentials** - Use the `Redactor` for sensitive fields
 3. **Mask in errors** - Never include credentials in error messages
 
 ```go
-// Good - mask DSN
-func MaskDSN(dsn string) string {
-    return regexp.MustCompile(`password=[^\s]+`).ReplaceAllString(dsn, "password=***")
-}
-
-// Bad - exposes password
-log.Errorf("failed to connect: %s", dsn)
+// Use the built-in Redactor for sensitive data
+redactor := opentelemetry.NewDefaultRedactor()
+safeValue := redactor.Redact(sensitiveField)
 ```
+
+### Sensitive Field Detection
+
+- Use `commons/security` for sensitive field detection and handling
+- Use `commons/opentelemetry.Redactor` with `RedactionRule` patterns
+- Constructors: `NewDefaultRedactor()` and `NewRedactor(rules, mask)`
 
 ### Input Validation
 
 1. Validate all external inputs
 2. Use parameterized queries - never string concatenation
 3. Sanitize user-provided identifiers
+4. Use `go-playground/validator/v10` for struct validation
+
+### Log Injection Prevention
+
+- Use `commons/log/sanitizer.go` for log-injection prevention
+- Never interpolate untrusted input into log messages without sanitization
 
 ### Environment Variables
 
@@ -343,7 +423,12 @@ log.Errorf("failed to connect: %s", dsn)
 
 - **Tool**: `golangci-lint` v2
 - **Config**: `.golangci.yml`
-- **Run**: `make lint`
+- **Run**: `make lint` (read-only check) or `make lint-fix` (auto-fix)
+- **Performance**: Optional `perfsprint` checks (install separately)
+
+### Enabled Linters
+
+`bodyclose`, `depguard`, `dogsled`, `dupword`, `errchkjson`, `gocognit`, `gocyclo`, `loggercheck`, `misspell`, `nakedret`, `nilerr`, `nolintlint`, `prealloc`, `predeclared`, `reassign`, `revive`, `staticcheck`, `thelper`, `tparallel`, `unconvert`, `unparam`, `usestdlibvars`, `wastedassign`, `wsl_v5`
 
 ### Formatting
 
@@ -354,12 +439,38 @@ log.Errorf("failed to connect: %s", dsn)
 ### Testing Commands
 
 ```bash
-make test      # Run all tests
-make cover     # Generate coverage report
-make lint      # Run linters
-make format    # Format code
-make sec       # Security scan with gosec
-make tidy      # Clean up go.mod
+make ci                    # Local fix + verify pipeline
+make test                  # Run unit tests (with -tags=unit)
+make test-unit             # Run unit tests (excluding integration)
+make test-integration      # Run integration tests with testcontainers (requires Docker)
+make test-all              # Run all tests (unit + integration)
+make coverage-unit         # Unit tests with coverage report
+make coverage-integration  # Integration tests with coverage report
+make coverage              # All coverage targets
+```
+
+### Testing Options
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| `RUN` | Specific test name pattern | `make test-integration RUN=TestIntegration_MyFeature` |
+| `PKG` | Specific package to test | `make test-integration PKG=./commons/postgres/...` |
+| `LOW_RESOURCE` | Low-resource mode (no race, -p=1) | `make test LOW_RESOURCE=1` |
+| `RETRY_ON_FAIL` | Retry failed tests once | `make test RETRY_ON_FAIL=1` |
+
+### Code Quality Commands
+
+```bash
+make lint                  # Run linters (read-only)
+make lint-fix              # Run linters with auto-fix
+make format                # Format code
+make tidy                  # Clean dependencies
+make check-tests           # Verify test coverage for packages
+make vet                   # Run go vet on all packages
+make sec                   # Security scan with gosec
+make sec SARIF=1           # Security scan with SARIF output
+make build                 # Build all packages
+make clean                 # Clean all build artifacts
 ```
 
 ### Git Hooks
@@ -367,6 +478,7 @@ make tidy      # Clean up go.mod
 - Pre-commit hooks available in `.githooks/`
 - Setup: `make setup-git-hooks`
 - Verify: `make check-hooks`
+- Environment check: `make check-envs`
 
 ### CI/CD
 
@@ -377,6 +489,35 @@ make tidy      # Clean up go.mod
 
 ---
 
+## API Invariants
+
+Key v2 API contracts that must be preserved:
+
+| Package | Invariant |
+|---------|-----------|
+| `opentelemetry` | `NewTelemetry(...)` for init; `ApplyGlobals()` opt-in for global providers |
+| `log` | `Logger` 5-method interface: `Log`, `With`, `WithGroup`, `Enabled`, `Sync` |
+| `log` | Level constants: `LevelError`, `LevelWarn`, `LevelInfo`, `LevelDebug` |
+| `log` | Field constructors: `String()`, `Int()`, `Bool()`, `Err()` |
+| `zap` | `zap.New(cfg Config)` constructor; `Logger.Raw()` for underlying access |
+| `net/http` | `Respond`, `RespondStatus`, `RespondError`, `RenderError`, `FiberErrorHandler` |
+| `net/http` | `ServeReverseProxy(target, policy, res, req)` with `ReverseProxyPolicy` |
+| `server` | `ServerManager` exclusively (no `GracefulShutdown`) |
+| `circuitbreaker` | `NewManager(logger) (Manager, error)`; `GetOrCreate` returns `(CircuitBreaker, error)` |
+| `assert` | `assert.New(ctx, logger, component, operation)` returns errors, no panics |
+| `safe` | Explicit error returns for division, slice access, regex operations |
+| `jwt` | `jwt.Parse()` / `jwt.Sign()` with `AlgHS256`, `AlgHS384`, `AlgHS512` |
+| `backoff` | `ExponentialWithJitter()` and `WaitContext()` |
+| `redis` | `New(ctx, cfg)` with topology-based `Config` (standalone/sentinel/cluster) |
+| `redis` | `NewRedisLockManager()` and `LockManager` interface |
+| `postgres` | `New(cfg Config)`; `Resolver(ctx)` (not `GetDB()`); `NewMigrator(cfg)` |
+| `mongo` | `NewClient(ctx, cfg, opts...)` constructor |
+| `transaction` | `BuildIntentPlan()` + `ValidateBalanceEligibility()` + `ApplyPosting()` |
+| `rabbitmq` | `*Context()` variants for lifecycle; `HealthCheck()` returns `(bool, error)` |
+| `opentelemetry` | `Redactor` with `RedactionRule`; `NewDefaultRedactor()` / `NewRedactor(rules, mask)` |
+
+---
+
 ## Checklist
 
 Before submitting code:
@@ -384,8 +525,12 @@ Before submitting code:
 - [ ] Code follows naming conventions
 - [ ] All public APIs are documented
 - [ ] Tests achieve 80%+ coverage
+- [ ] Test files have correct build tag (`//go:build unit` or `//go:build integration`)
 - [ ] No panics - all errors handled
 - [ ] No hardcoded credentials
 - [ ] `make lint` passes
 - [ ] `make test` passes
+- [ ] `make build` passes
 - [ ] Dependencies are justified
+- [ ] `MIGRATION_MAP.md` updated if v1 symbols changed
+- [ ] `README.md` updated if public API changed

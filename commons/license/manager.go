@@ -1,14 +1,13 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package license
 
 import (
+	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sync"
+
+	"github.com/LerianStudio/lib-commons/v4/commons/assert"
+	"github.com/LerianStudio/lib-commons/v4/commons/log"
 )
 
 var (
@@ -21,13 +20,56 @@ var (
 // Handler defines the function signature for termination handlers
 type Handler func(reason string)
 
+// ManagerOption is a functional option for configuring ManagerShutdown.
+type ManagerOption func(*ManagerShutdown)
+
+// WithLogger provides a structured logger for assertion and validation logging.
+func WithLogger(l log.Logger) ManagerOption {
+	return func(m *ManagerShutdown) {
+		if l != nil {
+			m.Logger = l
+		}
+	}
+}
+
+// WithFailClosed configures the manager to record an assertion failure AND
+// log the reason at error level, providing a fail-closed posture where
+// license validation failures produce observable signals (assertion events
+// + error logs) rather than being silently swallowed.
+//
+// Callers that need an actual process exit should combine this with
+// SetHandler to provide their own os.Exit or signal-based shutdown.
+//
+// Contrast with the default fail-open behavior where validation failures are
+// only recorded as assertion events.
+func WithFailClosed() ManagerOption {
+	return func(m *ManagerShutdown) {
+		m.handler = func(reason string) {
+			// Record assertion event (same as DefaultHandler)
+			asserter := assert.New(context.Background(), m.Logger, "license", "FailClosed")
+			_ = asserter.Never(context.Background(), "LICENSE VALIDATION FAILED (fail-closed)", "reason", reason)
+
+			// Also log at error level if logger is available
+			if m.Logger != nil {
+				m.Logger.Log(context.Background(), log.LevelError, "license validation failed (fail-closed mode)",
+					log.String("reason", reason),
+				)
+			}
+		}
+	}
+}
+
 // DefaultHandler is the default termination behavior.
-// It logs the failure reason to stderr and terminates the process with exit code 1.
-// This ensures the application cannot continue running with an invalid license,
-// even when a recovery middleware is present that would catch panics.
+// It records an assertion failure without panicking.
+//
+// NOTE: This intentionally implements a fail-open policy: license validation
+// failures are recorded as assertion events but do NOT terminate the process.
+// This design choice avoids unexpected shutdowns in environments where the
+// license server is unreachable. To enforce a fail-closed policy, use
+// WithFailClosed() when constructing the manager.
 func DefaultHandler(reason string) {
-	fmt.Fprintf(os.Stderr, "LICENSE VALIDATION FAILED: %s\n", reason)
-	os.Exit(1)
+	asserter := assert.New(context.Background(), nil, "license", "DefaultHandler")
+	_ = asserter.Never(context.Background(), "LICENSE VALIDATION FAILED", "reason", reason)
 }
 
 // DefaultHandlerWithError returns an error instead of panicking.
@@ -39,20 +81,31 @@ func DefaultHandlerWithError(reason string) error {
 // ManagerShutdown handles termination behavior
 type ManagerShutdown struct {
 	handler Handler
+	Logger  log.Logger
 	mu      sync.RWMutex
 }
 
-// New creates a new termination manager with the default handler
-func New() *ManagerShutdown {
-	return &ManagerShutdown{
+// New creates a new termination manager with the default handler.
+// Options can be provided to configure the manager (e.g., WithLogger).
+// Nil options in the variadic list are silently skipped.
+func New(opts ...ManagerOption) *ManagerShutdown {
+	m := &ManagerShutdown{
 		handler: DefaultHandler,
 	}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt(m)
+		}
+	}
+
+	return m
 }
 
 // SetHandler updates the termination handler
 // This should be called during application startup, before any validation occurs
 func (m *ManagerShutdown) SetHandler(handler Handler) {
-	if handler == nil {
+	if m == nil || handler == nil {
 		return
 	}
 
@@ -65,15 +118,30 @@ func (m *ManagerShutdown) SetHandler(handler Handler) {
 // Terminate invokes the termination handler.
 // This will trigger the application to gracefully shut down.
 //
-// Note: This method panics if the manager was not initialized with New().
-// Use TerminateSafe() if you need to handle the uninitialized case gracefully.
+// Note: This method no longer panics if the manager was not initialized with New().
+// In that case it records an assertion failure and returns.
 func (m *ManagerShutdown) Terminate(reason string) {
+	if m == nil {
+		// nil receiver: no logger available, nil is legitimate here.
+		asserter := assert.New(context.Background(), nil, "license", "Terminate")
+		_ = asserter.Never(context.Background(), "license.ManagerShutdown is nil")
+
+		return
+	}
+
 	m.mu.RLock()
 	handler := m.handler
+	logger := m.Logger
 	m.mu.RUnlock()
 
 	if handler == nil {
-		panic(ErrManagerNotInitialized)
+		asserter := assert.New(context.Background(), logger, "license", "Terminate")
+		_ = asserter.NoError(context.Background(), ErrManagerNotInitialized,
+			"license terminate called without initialization",
+			"reason", reason,
+		)
+
+		return
 	}
 
 	handler(reason)
@@ -83,27 +151,50 @@ func (m *ManagerShutdown) Terminate(reason string) {
 // Use this when you want to check license validity without triggering shutdown.
 //
 // Note: This method intentionally does NOT invoke the custom handler set via SetHandler().
-// It always returns ErrLicenseValidationFailed wrapped with the reason, regardless of
-// manager initialization state. This differs from Terminate() which requires initialization
-// and invokes the configured handler. Use Terminate() for actual shutdown behavior,
+// It always returns ErrLicenseValidationFailed wrapped with the reason when the
+// manager is properly initialized. Use Terminate() for actual shutdown behavior,
 // and TerminateWithError() for validation checks that should return errors.
+//
+// Nil receiver: returns ErrManagerNotInitialized (not ErrLicenseValidationFailed)
+// to distinguish between "license failed" and "manager not created".
 func (m *ManagerShutdown) TerminateWithError(reason string) error {
+	if m == nil {
+		return ErrManagerNotInitialized
+	}
+
+	if m.Logger != nil {
+		m.Logger.Log(context.Background(), log.LevelWarn, "license validation failed",
+			log.String("reason", reason),
+		)
+	}
+
 	return fmt.Errorf("%w: %s", ErrLicenseValidationFailed, reason)
 }
 
 // TerminateSafe invokes the termination handler and returns an error if the manager
 // was not properly initialized. This is the safe alternative to Terminate that
-// returns an error instead of panicking when the handler is nil.
+// returns an explicit error when the handler is nil.
 //
 // Use this method when you need to handle the uninitialized manager case gracefully.
-// For normal shutdown behavior where panic on uninitialized manager is acceptable,
+// For normal shutdown behavior where assertion-based handling is acceptable,
 // use Terminate() instead.
 func (m *ManagerShutdown) TerminateSafe(reason string) error {
+	if m == nil {
+		return ErrManagerNotInitialized
+	}
+
 	m.mu.RLock()
 	handler := m.handler
+	logger := m.Logger
 	m.mu.RUnlock()
 
 	if handler == nil {
+		if logger != nil {
+			logger.Log(context.Background(), log.LevelWarn, "license terminate called without initialization",
+				log.String("reason", reason),
+			)
+		}
+
 		return ErrManagerNotInitialized
 	}
 

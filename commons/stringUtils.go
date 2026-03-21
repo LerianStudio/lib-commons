@@ -1,21 +1,21 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package commons
 
 import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
-	"golang.org/x/text/runes"
-	"golang.org/x/text/transform"
-	"golang.org/x/text/unicode/norm"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
 	"unicode"
+
+	"golang.org/x/text/runes"
+	"golang.org/x/text/transform"
+	"golang.org/x/text/unicode/norm"
 )
+
+var uuidPattern = regexp.MustCompile(`[0-9a-fA-F-]{36}`)
 
 // RemoveAccents removes accents of a given word and returns it
 func RemoveAccents(word string) (string, error) {
@@ -60,7 +60,7 @@ func CamelToSnakeCase(str string) string {
 
 			buffer.WriteRune(unicode.ToLower(character))
 		} else {
-			buffer.WriteString(string(character))
+			buffer.WriteRune(character)
 		}
 	}
 
@@ -135,26 +135,28 @@ func RegexIgnoreAccents(regex string) string {
 		"C": "C",
 		"Ç": "C",
 	}
-	s := ""
+
+	var b strings.Builder
+	b.Grow(len(regex) * 2) // Pre-allocate: rough estimate, builder will grow if needed
 
 	for _, ch := range regex {
 		c := string(ch)
 		if v1, found := m2[c]; found {
 			if v2, found2 := m1[v1]; found2 {
-				s += v2
+				b.WriteString(v2)
 				continue
 			}
 		}
 
-		s += string(ch)
+		b.WriteRune(ch)
 	}
 
-	return s
+	return b.String()
 }
 
 // RemoveChars from a string
 func RemoveChars(str string, chars map[string]bool) string {
-	s := ""
+	var b strings.Builder
 
 	for _, ch := range str {
 		c := string(ch)
@@ -162,23 +164,33 @@ func RemoveChars(str string, chars map[string]bool) string {
 			continue
 		}
 
-		s += string(ch)
+		b.WriteRune(ch)
 	}
 
-	return s
+	return b.String()
 }
 
 // ReplaceUUIDWithPlaceholder replaces UUIDs with a placeholder in a given path string.
 func ReplaceUUIDWithPlaceholder(path string) string {
-	re := regexp.MustCompile(`[0-9a-fA-F-]{36}`)
-
-	return re.ReplaceAllString(path, ":id")
+	return uuidPattern.ReplaceAllString(path, ":id")
 }
 
-// ValidateServerAddress checks if the value matches the pattern <some-address>:<some-port> and returns the value if it does.
+// ValidateServerAddress checks if the value is a valid host:port address.
+// It accepts IPv4 ("host:port"), IPv6 ("[::1]:port"), and hostname forms.
+// The port must be numeric and in the range [1, 65535].
+// Returns the original value when valid, or "" when invalid.
 func ValidateServerAddress(value string) string {
-	matched, _ := regexp.MatchString(`^[^:]+:\d+$`, value)
-	if !matched {
+	host, portStr, err := net.SplitHostPort(value)
+	if err != nil {
+		return ""
+	}
+
+	if host == "" {
+		return ""
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
 		return ""
 	}
 
@@ -191,11 +203,18 @@ func HashSHA256(input string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// StringToInt func that convert string to int.
+// StringToInt converts a string to an int, returning 100 on failure.
+//
+// Deprecated: Use StringToIntOrDefault for explicit default values.
 func StringToInt(s string) int {
+	return StringToIntOrDefault(s, 100)
+}
+
+// StringToIntOrDefault converts a string to an int, returning defaultVal on parse failure.
+func StringToIntOrDefault(s string, defaultVal int) int {
 	i, err := strconv.Atoi(s)
 	if err != nil {
-		return 100
+		return defaultVal
 	}
 
 	return i

@@ -1,152 +1,296 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package zap
 
 import (
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	logpkg "github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v4/commons/runtime"
+	"github.com/LerianStudio/lib-commons/v4/commons/security"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
-// ZapWithTraceLogger is a wrapper of otelzap.SugaredLogger.
+// Field is a typed structured logging field (zap alias kept for convenience methods).
+type Field = zap.Field
+
+// Logger is a strict structured logger that implements log.Logger.
 //
-// It implements Logger interface.
-// The shutdown function is used to close the logger provider.
-type ZapWithTraceLogger struct {
-	Logger                 *zap.SugaredLogger
-	defaultMessageTemplate string
+// It intentionally does not expose printf/line/fatal helpers.
+type Logger struct {
+	logger      *zap.Logger
+	atomicLevel zap.AtomicLevel
+	// consoleEncoding is true when the logger uses console encoding.
+	// When true, messages are sanitized to prevent CWE-117 log injection,
+	// since console encoding does not inherently escape control characters
+	// the way JSON encoding does.
+	consoleEncoding bool
 }
 
-// logWithHydration is a helper method to log messages with hydrated arguments using the default message template.
-func (l *ZapWithTraceLogger) logWithHydration(logFunc func(...any), args ...any) {
-	logFunc(hydrateArgs(l.defaultMessageTemplate, args)...)
+// Compile-time assertion: *Logger implements logpkg.Logger.
+var _ logpkg.Logger = (*Logger)(nil)
+
+func (l *Logger) must() *zap.Logger {
+	if l == nil || l.logger == nil {
+		return zap.NewNop()
+	}
+
+	return l.logger
 }
 
-// logfWithHydration is a helper method to log formatted messages with hydrated arguments using the default message template.
-func (l *ZapWithTraceLogger) logfWithHydration(logFunc func(string, ...any), format string, args ...any) {
-	logFunc(l.defaultMessageTemplate+format, args...)
-}
+// ---------------------------------------------------------------------------
+// log.Logger interface methods
+// ---------------------------------------------------------------------------
 
-// Info implements Info Logger interface function.
-func (l *ZapWithTraceLogger) Info(args ...any) {
-	l.logWithHydration(l.Logger.Info, args...)
-}
-
-// Infof implements Infof Logger interface function.
-func (l *ZapWithTraceLogger) Infof(format string, args ...any) {
-	l.logfWithHydration(l.Logger.Infof, format, args...)
-}
-
-// Infoln implements Infoln Logger interface function.
-func (l *ZapWithTraceLogger) Infoln(args ...any) {
-	l.logWithHydration(l.Logger.Infoln, args...)
-}
-
-// Error implements Error Logger interface function.
-func (l *ZapWithTraceLogger) Error(args ...any) {
-	l.logWithHydration(l.Logger.Error, args...)
-}
-
-// Errorf implements Errorf Logger interface function.
-func (l *ZapWithTraceLogger) Errorf(format string, args ...any) {
-	l.logfWithHydration(l.Logger.Errorf, format, args...)
-}
-
-// Errorln implements Errorln Logger interface function.
-func (l *ZapWithTraceLogger) Errorln(args ...any) {
-	l.logWithHydration(l.Logger.Errorln, args...)
-}
-
-// Warn implements Warn Logger interface function.
-func (l *ZapWithTraceLogger) Warn(args ...any) {
-	l.logWithHydration(l.Logger.Warn, args...)
-}
-
-// Warnf implements Warnf Logger interface function.
-func (l *ZapWithTraceLogger) Warnf(format string, args ...any) {
-	l.logfWithHydration(l.Logger.Warnf, format, args...)
-}
-
-// Warnln implements Warnln Logger interface function.
-func (l *ZapWithTraceLogger) Warnln(args ...any) {
-	l.logWithHydration(l.Logger.Warnln, args...)
-}
-
-// Debug implements Debug Logger interface function.
-func (l *ZapWithTraceLogger) Debug(args ...any) {
-	l.logWithHydration(l.Logger.Debug, args...)
-}
-
-// Debugf implements Debugf Logger interface function.
-func (l *ZapWithTraceLogger) Debugf(format string, args ...any) {
-	l.logfWithHydration(l.Logger.Debugf, format, args...)
-}
-
-// Debugln implements Debugln Logger interface function.
-func (l *ZapWithTraceLogger) Debugln(args ...any) {
-	l.logWithHydration(l.Logger.Debugln, args...)
-}
-
-// Fatal implements Fatal Logger interface function.
-func (l *ZapWithTraceLogger) Fatal(args ...any) {
-	l.logWithHydration(l.Logger.Fatal, args...)
-}
-
-// Fatalf implements Fatalf Logger interface function.
-func (l *ZapWithTraceLogger) Fatalf(format string, args ...any) {
-	l.logfWithHydration(l.Logger.Fatalf, format, args...)
-}
-
-// Fatalln implements Fatalln Logger interface function.
-func (l *ZapWithTraceLogger) Fatalln(args ...any) {
-	l.logWithHydration(l.Logger.Fatalln, args...)
-}
-
-// WithFields adds structured context to the logger. It returns a new logger and leaves the original unchanged.
+// Log implements log.Logger. It dispatches to the appropriate zap level.
+// If ctx carries an active OpenTelemetry span, trace_id and span_id are
+// automatically appended so logs correlate with distributed traces.
 //
-//nolint:ireturn
-func (l *ZapWithTraceLogger) WithFields(fields ...any) log.Logger {
-	newLogger := l.Logger.With(fields...)
+// Unknown levels are treated as LevelInfo (consistent with GoLogger policy).
+func (l *Logger) Log(ctx context.Context, level logpkg.Level, msg string, fields ...logpkg.Field) {
+	zapFields := logFieldsToZap(fields)
 
-	return &ZapWithTraceLogger{
-		Logger:                 newLogger,
-		defaultMessageTemplate: l.defaultMessageTemplate,
+	if ctx != nil {
+		if sc := trace.SpanFromContext(ctx).SpanContext(); sc.IsValid() {
+			zapFields = append(zapFields,
+				zap.String("trace_id", sc.TraceID().String()),
+				zap.String("span_id", sc.SpanID().String()),
+			)
+		}
+	}
+
+	// Sanitize message for console encoding (CWE-117 prevention).
+	// JSON encoding handles this via its built-in escaping.
+	safeMsg := l.sanitizeConsoleMsg(msg)
+
+	switch level {
+	case logpkg.LevelDebug:
+		l.must().Debug(safeMsg, zapFields...)
+	case logpkg.LevelInfo:
+		l.must().Info(safeMsg, zapFields...)
+	case logpkg.LevelWarn:
+		l.must().Warn(safeMsg, zapFields...)
+	case logpkg.LevelError:
+		l.must().Error(safeMsg, zapFields...)
+	default:
+		// Unknown level policy: treat as Info. This is consistent across both
+		// GoLogger and zap backends. See log.Level documentation.
+		l.must().Info(safeMsg, zapFields...)
 	}
 }
 
-// Sync implements Sync Logger interface function.
-//
-// Sync calls the underlying Core's Sync method, flushing any buffered log entries as well as closing the logger provider used by open telemetry. Applications should take care to call Sync before exiting.
+// With returns a child logger with additional structured fields.
 //
 //nolint:ireturn
-func (l *ZapWithTraceLogger) Sync() error {
-	err := l.Logger.Sync()
-	if err != nil {
+func (l *Logger) With(fields ...logpkg.Field) logpkg.Logger {
+	if l == nil {
+		return &Logger{logger: zap.NewNop()}
+	}
+
+	return &Logger{
+		logger:          l.must().With(logFieldsToZap(fields)...),
+		atomicLevel:     l.atomicLevel,
+		consoleEncoding: l.consoleEncoding,
+	}
+}
+
+// WithGroup returns a child logger that nests subsequent fields under a namespace.
+// Empty group names are silently ignored, consistent with GoLogger behavior.
+//
+//nolint:ireturn
+func (l *Logger) WithGroup(name string) logpkg.Logger {
+	if l == nil {
+		return &Logger{logger: zap.NewNop()}
+	}
+
+	if name == "" {
+		return l
+	}
+
+	return &Logger{
+		logger:          l.must().With(zap.Namespace(name)),
+		atomicLevel:     l.atomicLevel,
+		consoleEncoding: l.consoleEncoding,
+	}
+}
+
+// Enabled reports whether the logger would emit a log at the given level.
+func (l *Logger) Enabled(level logpkg.Level) bool {
+	return l.must().Core().Enabled(logLevelToZap(level))
+}
+
+// Sync flushes buffered logs, respecting context cancellation.
+func (l *Logger) Sync(ctx context.Context) error {
+	if ctx == nil {
+		return l.must().Sync()
+	}
+
+	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	return nil
-}
+	done := make(chan error, 1)
 
-// WithDefaultMessageTemplate sets the default message template for the logger.
-// Returns a new logger instance without mutating the original.
-//
-//nolint:ireturn
-func (l *ZapWithTraceLogger) WithDefaultMessageTemplate(message string) log.Logger {
-	return &ZapWithTraceLogger{
-		Logger:                 l.Logger,
-		defaultMessageTemplate: message,
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				runtime.HandlePanicValue(ctx, nil, r, "zap", "sync")
+
+				done <- fmt.Errorf("panic during logger sync: %v", r)
+			}
+		}()
+
+		done <- l.must().Sync()
+	}()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-done:
+		return err
 	}
 }
 
-func hydrateArgs(defaultTemplateMsg string, args []any) []any {
-	argsHydration := make([]any, len(args)+1)
-	argsHydration[0] = defaultTemplateMsg
+// ---------------------------------------------------------------------------
+// Convenience methods (direct zap.Field access for performance-sensitive code)
+// ---------------------------------------------------------------------------
 
-	for i, arg := range args {
-		argsHydration[i+1] = arg
+// WithZapFields returns a child logger with additional zap.Field values.
+// Use this when working directly with zap fields for performance.
+func (l *Logger) WithZapFields(fields ...Field) *Logger {
+	if l == nil {
+		return &Logger{logger: zap.NewNop()}
 	}
 
-	return argsHydration
+	return &Logger{
+		logger:          l.must().With(fields...),
+		atomicLevel:     l.atomicLevel,
+		consoleEncoding: l.consoleEncoding,
+	}
+}
+
+// Debug logs a message with debug severity.
+func (l *Logger) Debug(message string, fields ...Field) {
+	l.must().Debug(message, fields...)
+}
+
+// Info logs a message with info severity.
+func (l *Logger) Info(message string, fields ...Field) {
+	l.must().Info(message, fields...)
+}
+
+// Warn logs a message with warn severity.
+func (l *Logger) Warn(message string, fields ...Field) {
+	l.must().Warn(message, fields...)
+}
+
+// Error logs a message with error severity.
+func (l *Logger) Error(message string, fields ...Field) {
+	l.must().Error(message, fields...)
+}
+
+// Raw returns the underlying zap logger.
+func (l *Logger) Raw() *zap.Logger {
+	return l.must()
+}
+
+// Level returns the runtime-adjustable level handle for this logger.
+// On a nil receiver, a default AtomicLevel (info) is returned.
+func (l *Logger) Level() zap.AtomicLevel {
+	if l == nil {
+		return zap.NewAtomicLevel()
+	}
+
+	return l.atomicLevel
+}
+
+// Any creates a field with any value.
+func Any(key string, value any) Field {
+	return zap.Any(key, value)
+}
+
+// String creates a string field.
+func String(key, value string) Field {
+	return zap.String(key, value)
+}
+
+// Int creates an int field.
+func Int(key string, value int) Field {
+	return zap.Int(key, value)
+}
+
+// Bool creates a bool field.
+func Bool(key string, value bool) Field {
+	return zap.Bool(key, value)
+}
+
+// Duration creates a duration field.
+func Duration(key string, value time.Duration) Field {
+	return zap.Duration(key, value)
+}
+
+// ErrorField creates an error field.
+func ErrorField(err error) Field {
+	return zap.Error(err)
+}
+
+// ---------------------------------------------------------------------------
+// Internal conversion helpers
+// ---------------------------------------------------------------------------
+
+// logLevelToZap converts a log.Level to a zapcore.Level.
+func logLevelToZap(level logpkg.Level) zapcore.Level {
+	switch level {
+	case logpkg.LevelDebug:
+		return zapcore.DebugLevel
+	case logpkg.LevelInfo:
+		return zapcore.InfoLevel
+	case logpkg.LevelWarn:
+		return zapcore.WarnLevel
+	case logpkg.LevelError:
+		return zapcore.ErrorLevel
+	default:
+		return zapcore.InfoLevel
+	}
+}
+
+// redactedValue is the placeholder used for sensitive field values in log output.
+const redactedValue = "[REDACTED]"
+
+// consoleControlCharReplacer neutralizes control characters that can split log
+// lines or forge entries in console-encoded output (CWE-117). JSON encoding
+// handles this automatically via its escaping rules.
+var consoleControlCharReplacer = strings.NewReplacer(
+	"\n", `\n`,
+	"\r", `\r`,
+	"\t", `\t`,
+	"\x00", `\0`,
+)
+
+// sanitizeConsoleMsg escapes control characters in a message string
+// when the logger is configured with console encoding.
+func (l *Logger) sanitizeConsoleMsg(msg string) string {
+	if l != nil && l.consoleEncoding {
+		return consoleControlCharReplacer.Replace(msg)
+	}
+
+	return msg
+}
+
+// logFieldsToZap converts log.Field values to zap.Field values.
+// Sensitive field keys (matched via security.IsSensitiveField) are redacted.
+func logFieldsToZap(fields []logpkg.Field) []zap.Field {
+	zapFields := make([]zap.Field, len(fields))
+	for i, f := range fields {
+		if security.IsSensitiveField(f.Key) {
+			zapFields[i] = zap.String(f.Key, redactedValue)
+		} else {
+			zapFields[i] = zap.Any(f.Key, f.Value)
+		}
+	}
+
+	return zapFields
 }

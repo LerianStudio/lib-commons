@@ -1,25 +1,16 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package http
 
 import (
 	"context"
-	"net/url"
-	"os"
-	"strings"
-	"sync"
+	"fmt"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v2/commons"
-	cn "github.com/LerianStudio/lib-commons/v2/commons/constants"
-	"github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v2/commons/security"
+	"github.com/LerianStudio/lib-commons/v4/commons"
+	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
 	"github.com/gofiber/fiber/v2"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -30,14 +21,7 @@ import (
 // Can be overridden via METRICS_COLLECTION_INTERVAL environment variable.
 const DefaultMetricsCollectionInterval = 5 * time.Second
 
-var (
-	metricsCollectorOnce     = &sync.Once{}
-	metricsCollectorShutdown chan struct{}
-	metricsCollectorMu       sync.Mutex
-	metricsCollectorStarted  bool
-	metricsCollectorInitErr  error
-)
-
+// TelemetryMiddleware wraps HTTP and gRPC handlers with tracing and metrics setup.
 type TelemetryMiddleware struct {
 	Telemetry *opentelemetry.Telemetry
 }
@@ -50,55 +34,73 @@ func NewTelemetryMiddleware(tl *opentelemetry.Telemetry) *TelemetryMiddleware {
 // WithTelemetry is a middleware that adds tracing to the context.
 func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, excludedRoutes ...string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		if len(excludedRoutes) > 0 && tm.isRouteExcluded(c, excludedRoutes) {
+		effectiveTelemetry := tl
+		if effectiveTelemetry == nil && tm != nil {
+			effectiveTelemetry = tm.Telemetry
+		}
+
+		if effectiveTelemetry == nil {
+			return c.Next()
+		}
+
+		if len(excludedRoutes) > 0 && isRouteExcludedFromList(c, excludedRoutes) {
 			return c.Next()
 		}
 
 		setRequestHeaderID(c)
 
 		ctx := c.UserContext()
-
 		_, _, reqId, _ := commons.NewTrackingFromContext(ctx)
 
 		c.SetUserContext(commons.ContextWithSpanAttributes(ctx,
 			attribute.String("app.request.request_id", reqId),
 		))
 
-		tracer := otel.Tracer(tl.LibraryName)
+		if effectiveTelemetry.TracerProvider == nil {
+			return c.Next()
+		}
+
+		tracer := effectiveTelemetry.TracerProvider.Tracer(effectiveTelemetry.LibraryName)
 		routePathWithMethod := c.Method() + " " + commons.ReplaceUUIDWithPlaceholder(c.Path())
 
 		traceCtx := c.UserContext()
+		// Compatibility note: trace extraction currently trusts the internal-service
+		// User-Agent heuristic. This is an interoperability hint, not an authenticated
+		// trust boundary, and is preserved to avoid changing existing caller behavior.
 		if commons.IsInternalLerianService(c.Get(cn.HeaderUserAgent)) {
-			traceCtx = opentelemetry.ExtractHTTPContext(c)
+			traceCtx = opentelemetry.ExtractHTTPContext(traceCtx, c)
 		}
 
 		ctx, span := tracer.Start(traceCtx, routePathWithMethod, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
-		span.SetAttributes(
-			attribute.String("http.method", c.Method()),
-			attribute.String("http.url", sanitizeURL(c.OriginalURL())),
-			attribute.String("http.route", c.Route().Path),
-			attribute.String("http.scheme", c.Protocol()),
-			attribute.String("http.host", c.Hostname()),
-			attribute.String("http.user_agent", c.Get("User-Agent")),
-		)
-
 		ctx = commons.ContextWithTracer(ctx, tracer)
-		ctx = commons.ContextWithMetricFactory(ctx, tl.MetricsFactory)
-
+		ctx = commons.ContextWithMetricFactory(ctx, effectiveTelemetry.MetricsFactory)
 		c.SetUserContext(ctx)
 
 		err := tm.collectMetrics(ctx)
 		if err != nil {
-			opentelemetry.HandleSpanError(&span, "Failed to collect metrics", err)
+			opentelemetry.HandleSpanError(span, "Failed to collect metrics", err)
 		}
 
 		err = c.Next()
 
+		statusCode := c.Response().StatusCode()
 		span.SetAttributes(
-			attribute.Int("http.status_code", c.Response().StatusCode()),
+			attribute.String("http.request.method", c.Method()),
+			attribute.String("url.path", sanitizeURL(c.OriginalURL())),
+			attribute.String("http.route", c.Route().Path),
+			attribute.String("url.scheme", c.Protocol()),
+			attribute.String("server.address", c.Hostname()),
+			attribute.String("user_agent.original", c.Get(cn.HeaderUserAgent)),
+			attribute.Int("http.response.status_code", statusCode),
 		)
+
+		if err != nil {
+			opentelemetry.HandleSpanError(span, "handler error", err)
+		} else if statusCode >= 500 {
+			span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", statusCode))
+		}
 
 		return err
 	}
@@ -106,16 +108,21 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, exclud
 
 // EndTracingSpans is a middleware that ends the tracing spans.
 func (tm *TelemetryMiddleware) EndTracingSpans(c *fiber.Ctx) error {
-	ctx := c.UserContext()
-	if ctx == nil {
-		return nil
+	if c == nil {
+		return ErrContextNotFound
 	}
 
+	originalCtx := c.UserContext()
 	err := c.Next()
 
-	go func() {
-		trace.SpanFromContext(ctx).End()
-	}()
+	endCtx := c.UserContext()
+	if endCtx == nil {
+		endCtx = originalCtx
+	}
+
+	if endCtx != nil {
+		trace.SpanFromContext(endCtx).End()
+	}
 
 	return err
 }
@@ -128,37 +135,67 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
-		ctx = setGRPCRequestHeaderID(ctx)
+		ctx = normalizeGRPCContext(ctx)
 
-		_, _, reqId, _ := commons.NewTrackingFromContext(ctx)
-		tracer := otel.Tracer(tl.LibraryName)
+		effectiveTelemetry := tl
+		if effectiveTelemetry == nil && tm != nil {
+			effectiveTelemetry = tm.Telemetry
+		}
+
+		if effectiveTelemetry == nil {
+			return handler(ctx, req)
+		}
+
+		requestID := resolveGRPCRequestID(ctx, req)
+		ctx = commons.ContextWithHeaderID(ctx, requestID)
+
+		if effectiveTelemetry.TracerProvider == nil {
+			return handler(ctx, req)
+		}
+
+		tracer := effectiveTelemetry.TracerProvider.Tracer(effectiveTelemetry.LibraryName)
+
+		methodName := "unknown"
+		if info != nil {
+			methodName = info.FullMethod
+		}
 
 		ctx = commons.ContextWithSpanAttributes(ctx,
-			attribute.String("app.request.request_id", reqId),
-			attribute.String("grpc.method", info.FullMethod),
+			attribute.String("app.request.request_id", requestID),
+			attribute.String("grpc.method", methodName),
 		)
 
 		traceCtx := ctx
+		// Compatibility note: trace extraction currently trusts the internal-service
+		// User-Agent heuristic. This is an interoperability hint, not an authenticated
+		// trust boundary, and is preserved to avoid changing existing caller behavior.
 		if commons.IsInternalLerianService(getGRPCUserAgent(ctx)) {
-			traceCtx = opentelemetry.ExtractGRPCContext(ctx)
+			md, _ := metadata.FromIncomingContext(ctx)
+			traceCtx = opentelemetry.ExtractGRPCContext(ctx, md)
 		}
 
-		ctx, span := tracer.Start(traceCtx, info.FullMethod, trace.WithSpanKind(trace.SpanKindServer))
+		ctx, span := tracer.Start(traceCtx, methodName, trace.WithSpanKind(trace.SpanKindServer))
 		defer span.End()
 
 		ctx = commons.ContextWithTracer(ctx, tracer)
-		ctx = commons.ContextWithMetricFactory(ctx, tl.MetricsFactory)
+		ctx = commons.ContextWithMetricFactory(ctx, effectiveTelemetry.MetricsFactory)
 
 		err := tm.collectMetrics(ctx)
 		if err != nil {
-			opentelemetry.HandleSpanError(&span, "Failed to collect metrics", err)
+			opentelemetry.HandleSpanError(span, "Failed to collect metrics", err)
 		}
 
 		resp, err := handler(ctx, req)
 
+		grpcStatusCode := status.Code(err)
 		span.SetAttributes(
-			attribute.Int("grpc.status_code", int(status.Code(err))),
+			attribute.String("rpc.method", methodName),
+			attribute.Int("rpc.grpc.status_code", int(grpcStatusCode)),
 		)
+
+		if err != nil {
+			opentelemetry.HandleSpanError(span, "gRPC handler error", err)
+		}
 
 		return resp, err
 	}
@@ -173,160 +210,8 @@ func (tm *TelemetryMiddleware) EndTracingSpansInterceptor() grpc.UnaryServerInte
 		handler grpc.UnaryHandler,
 	) (any, error) {
 		resp, err := handler(ctx, req)
-
-		go func() {
-			trace.SpanFromContext(ctx).End()
-		}()
+		trace.SpanFromContext(ctx).End()
 
 		return resp, err
 	}
-}
-
-func (tm *TelemetryMiddleware) collectMetrics(_ context.Context) error {
-	return tm.ensureMetricsCollector()
-}
-
-// getMetricsCollectionInterval returns the metrics collection interval.
-// Can be configured via METRICS_COLLECTION_INTERVAL environment variable.
-// Accepts Go duration format (e.g., "10s", "1m", "500ms").
-// Falls back to DefaultMetricsCollectionInterval if not set or invalid.
-func getMetricsCollectionInterval() time.Duration {
-	if envInterval := os.Getenv("METRICS_COLLECTION_INTERVAL"); envInterval != "" {
-		if parsed, err := time.ParseDuration(envInterval); err == nil && parsed > 0 {
-			return parsed
-		}
-	}
-
-	return DefaultMetricsCollectionInterval
-}
-
-func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
-	metricsCollectorMu.Lock()
-	defer metricsCollectorMu.Unlock()
-
-	if metricsCollectorStarted {
-		return nil
-	}
-
-	if metricsCollectorInitErr != nil {
-		// Reset to allow retry after transient init failures
-		metricsCollectorOnce = &sync.Once{}
-		metricsCollectorInitErr = nil
-	}
-
-	metricsCollectorOnce.Do(func() {
-		cpuGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.cpu.usage", metric.WithUnit("percentage"))
-		if err != nil {
-			metricsCollectorInitErr = err
-			return
-		}
-
-		memGauge, err := otel.Meter(tm.Telemetry.ServiceName).Int64Gauge("system.mem.usage", metric.WithUnit("percentage"))
-		if err != nil {
-			metricsCollectorInitErr = err
-			return
-		}
-
-		metricsCollectorShutdown = make(chan struct{})
-		ticker := time.NewTicker(getMetricsCollectionInterval())
-
-		go func() {
-			commons.GetCPUUsage(context.Background(), cpuGauge)
-			commons.GetMemUsage(context.Background(), memGauge)
-
-			for {
-				select {
-				case <-metricsCollectorShutdown:
-					ticker.Stop()
-					return
-				case <-ticker.C:
-					commons.GetCPUUsage(context.Background(), cpuGauge)
-					commons.GetMemUsage(context.Background(), memGauge)
-				}
-			}
-		}()
-
-		metricsCollectorStarted = true
-	})
-
-	return metricsCollectorInitErr
-}
-
-// StopMetricsCollector stops the background metrics collector goroutine.
-// Should be called during application shutdown for graceful cleanup.
-// After calling this function, the collector can be restarted by new requests.
-//
-// Implementation note: This function intentionally resets sync.Once to a new instance
-// to allow the collector to be restarted after being stopped. This is an unusual but
-// intentional pattern - the mutex ensures thread-safety during the reset operation,
-// preventing race conditions between Stop and subsequent Start calls.
-func StopMetricsCollector() {
-	metricsCollectorMu.Lock()
-	defer metricsCollectorMu.Unlock()
-
-	if metricsCollectorStarted && metricsCollectorShutdown != nil {
-		close(metricsCollectorShutdown)
-
-		metricsCollectorStarted = false
-		metricsCollectorOnce = &sync.Once{}
-		metricsCollectorInitErr = nil
-	}
-}
-
-func (tm *TelemetryMiddleware) isRouteExcluded(c *fiber.Ctx, excludedRoutes []string) bool {
-	for _, route := range excludedRoutes {
-		if strings.HasPrefix(c.Path(), route) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// sanitizeURL removes or obfuscates sensitive query parameters from URLs
-// to prevent exposing tokens, API keys, and other sensitive data in telemetry.
-func sanitizeURL(rawURL string) string {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return rawURL
-	}
-
-	if parsed.RawQuery == "" {
-		return rawURL
-	}
-
-	query := parsed.Query()
-	modified := false
-
-	for key := range query {
-		if security.IsSensitiveField(key) {
-			query.Set(key, cn.ObfuscatedValue)
-
-			modified = true
-		}
-	}
-
-	if !modified {
-		return rawURL
-	}
-
-	parsed.RawQuery = query.Encode()
-
-	return parsed.String()
-}
-
-// getGRPCUserAgent extracts the User-Agent from incoming gRPC metadata.
-// Returns empty string if the metadata is not present or doesn't contain user-agent.
-func getGRPCUserAgent(ctx context.Context) string {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok || md == nil {
-		return ""
-	}
-
-	userAgents := md.Get("user-agent")
-	if len(userAgents) == 0 {
-		return ""
-	}
-
-	return userAgents[0]
 }

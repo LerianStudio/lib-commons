@@ -1,7 +1,3 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package metrics
 
 import (
@@ -10,9 +6,16 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-func (f *MetricsFactory) RecordOperationRouteCreated(ctx context.Context, organizationID, ledgerID string, attributes ...attribute.KeyValue) {
-	f.Counter(MetricOperationRoutesCreated).
-		WithLabels(f.WithLedgerLabels(organizationID, ledgerID)).
-		WithAttributes(attributes...).
-		AddOne(ctx)
+// RecordOperationRouteCreated increments the operation-route-created counter.
+func (f *MetricsFactory) RecordOperationRouteCreated(ctx context.Context, attributes ...attribute.KeyValue) error {
+	if f == nil {
+		return ErrNilFactory
+	}
+
+	b, err := f.Counter(MetricOperationRoutesCreated)
+	if err != nil {
+		return err
+	}
+
+	return b.WithAttributes(attributes...).AddOne(ctx)
 }

@@ -1,14 +1,13 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
+//go:build unit
 
 package commons
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
-	constant "github.com/LerianStudio/lib-commons/v2/commons/constants"
+	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -156,10 +155,33 @@ func TestValidateBusinessError(t *testing.T) {
 }
 
 func TestValidateBusinessError_WithArgs(t *testing.T) {
-	// Test that ValidateBusinessError accepts variadic args (even if not used currently)
-	result := ValidateBusinessError(constant.ErrAccountIneligibility, "account", "arg1", "arg2")
+	result := ValidateBusinessError(constant.ErrAccountIneligibility, "account", "alias=@account1", "balance=default")
 
 	response, ok := result.(Response)
 	assert.True(t, ok)
 	assert.Equal(t, "account", response.EntityType)
+	assert.Contains(t, response.Message, "alias=@account1")
+	assert.Contains(t, response.Message, "balance=default")
+}
+
+func TestValidateBusinessError_WrappedSentinel(t *testing.T) {
+	// Wrap a known sentinel error — errors.Is should still match.
+	wrapped := fmt.Errorf("context info: %w", constant.ErrInsufficientFunds)
+	result := ValidateBusinessError(wrapped, "transaction")
+
+	response, ok := result.(Response)
+	assert.True(t, ok, "wrapped sentinel should be matched via errors.Is")
+	assert.Equal(t, "transaction", response.EntityType)
+	assert.Equal(t, constant.ErrInsufficientFunds.Error(), response.Code)
+	assert.Contains(t, response.Message, "insufficient funds")
+}
+
+func TestValidateBusinessError_SensitiveArgRedacted(t *testing.T) {
+	// Args with sensitive-looking keys (password=...) should be redacted.
+	result := ValidateBusinessError(constant.ErrAccountIneligibility, "account", "password=secret123", "alias=@acc1")
+
+	response, ok := result.(Response)
+	assert.True(t, ok)
+	assert.NotContains(t, response.Message, "secret123", "sensitive args must not appear in message")
+	assert.Contains(t, response.Message, "alias=@acc1", "non-sensitive args should appear")
 }

@@ -1,33 +1,24 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
-
 package commons
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"math"
 	"os/exec"
 	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
-	"strings"
 	"time"
-	"unicode"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry/metrics"
 	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"
-	"go.opentelemetry.io/otel/metric"
 )
-
-const beginningKey = "{"
-const keySeparator = ":"
-const endKey = "}"
 
 var internalServicePattern = regexp.MustCompile(`^[\w-]+/[\d.]+\s+LerianStudio$`)
 
@@ -40,12 +31,14 @@ func Contains[T comparable](slice []T, item T) bool {
 func CheckMetadataKeyAndValueLength(limit int, metadata map[string]any) error {
 	for k, v := range metadata {
 		if len(k) > limit {
-			return errors.New("0050")
+			return cn.ErrMetadataKeyLengthExceeded
 		}
 
 		var value string
 
 		switch t := v.(type) {
+		case nil:
+			continue // nil values are valid, skip length check
 		case int:
 			value = strconv.Itoa(t)
 		case float64:
@@ -54,103 +47,23 @@ func CheckMetadataKeyAndValueLength(limit int, metadata map[string]any) error {
 			value = t
 		case bool:
 			value = strconv.FormatBool(t)
+		default:
+			value = fmt.Sprintf("%v", t) // convert unknown types to string for length check
 		}
 
 		if len(value) > limit {
-			return errors.New("0051")
+			return cn.ErrMetadataValueLengthExceeded
 		}
 	}
 
 	return nil
 }
 
-// Deprecated: use ValidateCountryAddress method from Midaz pkg instead.
-// ValidateCountryAddress validate if country in object address contains in countries list using ISO 3166-1 alpha-2
-func ValidateCountryAddress(country string) error {
-	countries := []string{
-		"AD", "AE", "AF", "AG", "AI", "AL", "AM", "AO", "AQ", "AR", "AS", "AT", "AU", "AW", "AX", "AZ",
-		"BA", "BB", "BD", "BE", "BF", "BG", "BH", "BI", "BJ", "BL", "BM", "BN", "BO", "BQ", "BR", "BS", "BT", "BV", "BW",
-		"BY", "BZ", "CA", "CC", "CD", "CF", "CG", "CH", "CI", "CK", "CL", "CM", "CN", "CO", "CR", "CU", "CV", "CW", "CX",
-		"CY", "CZ", "DE", "DJ", "DK", "DM", "DO", "DZ", "EC", "EE", "EG", "EH", "ER", "ES", "ET", "FI", "FJ", "FK", "FM",
-		"FO", "FR", "GA", "GB", "GD", "GE", "GF", "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GR", "GS", "GT", "GU",
-		"GW", "GY", "HK", "HM", "HN", "HR", "HT", "HU", "ID", "IE", "IL", "IM", "IN", "IO", "IQ", "IR", "IS", "IT", "JE",
-		"JM", "JO", "JP", "KE", "KG", "KH", "KI", "KM", "KN", "KP", "KR", "KW", "KY", "KZ", "LA", "LB", "LC", "LI", "LK",
-		"LR", "LS", "LT", "LU", "LV", "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML", "MM", "MN", "MO", "MP",
-		"MQ", "MR", "MS", "MT", "MU", "MV", "MW", "MX", "MY", "MZ", "NA", "NC", "NE", "NF", "NG", "NI", "NL", "NO", "NP",
-		"NR", "NU", "NZ", "OM", "PA", "PE", "PF", "PG", "PH", "PK", "PL", "PM", "PN", "PR", "PS", "PT", "PW", "PY", "QA",
-		"RE", "RO", "RS", "RU", "RW", "SA", "SB", "SC", "SD", "SE", "SG", "SH", "SI", "SJ", "SK", "SL", "SM", "SN", "SO",
-		"SR", "SS", "ST", "SV", "SX", "SY", "SZ", "TC", "TD", "TF", "TG", "TH", "TJ", "TK", "TL", "TM", "TN", "TO", "TR",
-		"TT", "TV", "TW", "TZ", "UA", "UG", "UM", "US", "UY", "UZ", "VA", "VC", "VE", "VG", "VI", "VN", "VU", "WF", "WS",
-		"YE", "YT", "ZA", "ZM", "ZW",
-	}
-
-	if !slices.Contains(countries, country) {
-		return errors.New("0032")
-	}
-
-	return nil
-}
-
-// Deprecated: use ValidateAccountType method from Midaz pkg instead.
-// ValidateAccountType validate type values of accounts
-func ValidateAccountType(t string) error {
-	types := []string{"deposit", "savings", "loans", "marketplace", "creditCard"}
-
-	if !slices.Contains(types, t) {
-		return errors.New("0066")
-	}
-
-	return nil
-}
-
-// Deprecated: use ValidateType method from Midaz pkg instead.
-// ValidateType validate type values of currencies
-func ValidateType(t string) error {
-	types := []string{"crypto", "currency", "commodity", "others"}
-
-	if !slices.Contains(types, t) {
-		return errors.New("0040")
-	}
-
-	return nil
-}
-
-// Deprecated: use ValidateCode method from Midaz pkg instead.
-func ValidateCode(code string) error {
-	for _, r := range code {
-		if !unicode.IsLetter(r) {
-			return errors.New("0033")
-		} else if !unicode.IsUpper(r) {
-			return errors.New("0004")
-		}
-	}
-
-	return nil
-}
-
-// Deprecated: use ValidateCurrency method from Midaz pkg instead.
-// ValidateCurrency validate if code contains in currencies list using ISO 4217
-func ValidateCurrency(code string) error {
-	currencies := []string{
-		"AED", "AFN", "ALL", "AMD", "ANG", "AOA", "ARS", "AUD", "AWG", "AZN", "BAM", "BBD", "BDT", "BGN", "BHD", "BIF", "BMD", "BND", "BOB",
-		"BOV", "BRL", "BSD", "BTN", "BWP", "BYN", "BZD", "CAD", "CDF", "CHE", "CHF", "CHW", "CLF", "CLP", "CNY", "COP", "COU", "CRC", "CUC",
-		"CUP", "CVE", "CZK", "DJF", "DKK", "DOP", "DZD", "EGP", "ERN", "ETB", "EUR", "FJD", "FKP", "GBP", "GEL", "GHS", "GIP", "GMD", "GNF",
-		"GTQ", "GYD", "HKD", "HNL", "HTG", "HUF", "IDR", "ILS", "INR", "IQD", "IRR", "ISK", "JMD", "JOD", "JPY", "KES", "KGS", "KHR", "KMF",
-		"KPW", "KRW", "KWD", "KYD", "KZT", "LAK", "LBP", "LKR", "LRD", "LSL", "LYD", "MAD", "MDL", "MGA", "MKD", "MMK", "MNT", "MOP", "MRU",
-		"MUR", "MVR", "MWK", "MXN", "MXV", "MYR", "MZN", "NAD", "NGN", "NIO", "NOK", "NPR", "NZD", "OMR", "PAB", "PEN", "PGK", "PHP", "PKR",
-		"PLN", "PYG", "QAR", "RON", "RSD", "RUB", "RWF", "SAR", "SBD", "SCR", "SDG", "SEK", "SGD", "SHP", "SLE", "SOS", "SRD", "SSP", "STN",
-		"SVC", "SYP", "SZL", "THB", "TJS", "TMT", "TND", "TOP", "TRY", "TTD", "TWD", "TZS", "UAH", "UGX", "USD", "USN", "UYI", "UYU", "UZS",
-		"VED", "VEF", "VND", "VUV", "WST", "XAF", "XCD", "XDR", "XOF", "XPF", "XSU", "XUA", "YER", "ZAR", "ZMW", "ZWL",
-	}
-
-	if !slices.Contains(currencies, code) {
-		return errors.New("0005")
-	}
-
-	return nil
-}
-
-// SafeIntToUint64 safe mode to converter int to uint64
+// SafeIntToUint64 converts int to uint64 with safety clamping.
+// Negative values are mapped to 1 (not 0) because this function is typically
+// used where the result serves as a divisor or count, and zero would cause
+// a division-by-zero panic. Using 1 as the safe minimum preserves
+// arithmetic safety while signaling an unexpected input.
 func SafeIntToUint64(val int) uint64 {
 	if val < 0 {
 		return uint64(1)
@@ -185,7 +98,14 @@ func SafeUintToInt(val uint) int {
 func SafeIntToUint32(value int, defaultVal uint32, logger log.Logger, fieldName string) uint32 {
 	if value < 0 {
 		if logger != nil {
-			logger.Debugf("Invalid %s value %d (negative), using default: %d", fieldName, value, defaultVal)
+			logger.Log(
+				context.Background(),
+				log.LevelDebug,
+				"invalid uint32 source value, using default",
+				log.String("field_name", fieldName),
+				log.Int("value", value),
+				log.Int("default", int(defaultVal)),
+			)
 		}
 
 		return defaultVal
@@ -195,7 +115,15 @@ func SafeIntToUint32(value int, defaultVal uint32, logger log.Logger, fieldName 
 
 	if uv > uint64(math.MaxUint32) {
 		if logger != nil {
-			logger.Debugf("%s value %d exceeds uint32 max (%d), using default %d", fieldName, value, uint64(math.MaxUint32), defaultVal)
+			logger.Log(
+				context.Background(),
+				log.LevelDebug,
+				"uint32 source value exceeds max, using default",
+				log.String("field_name", fieldName),
+				log.Int("value", value),
+				log.Any("max", uint64(math.MaxUint32)),
+				log.Int("default", int(defaultVal)),
+			)
 		}
 
 		return defaultVal
@@ -211,18 +139,17 @@ func IsUUID(s string) bool {
 	return err == nil
 }
 
-// GenerateUUIDv7 generate a new uuid v7 using google/uuid package and return it. If an error occurs, it will return the error.
-func GenerateUUIDv7() uuid.UUID {
-	u := uuid.Must(uuid.NewV7())
-
-	return u
+// GenerateUUIDv7 generates a new UUID v7 using the google/uuid package.
+// Returns the generated UUID or an error if crypto/rand fails.
+func GenerateUUIDv7() (uuid.UUID, error) {
+	return uuid.NewV7()
 }
 
 // StructToJSONString convert a struct to json string
 func StructToJSONString(s any) (string, error) {
 	jsonByte, err := json.Marshal(s)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("struct to JSON: %w", err)
 	}
 
 	return string(jsonByte), nil
@@ -246,23 +173,32 @@ func MergeMaps(source, target map[string]any) map[string]any {
 	return target
 }
 
+// SyscmdI abstracts command execution for testing and composition.
 type SyscmdI interface {
-	ExecCmd(name string, arg ...string) ([]byte, error)
+	ExecCmd(ctx context.Context, name string, arg ...string) ([]byte, error)
 }
 
+// Syscmd is the default SyscmdI implementation backed by os/exec.
 type Syscmd struct{}
 
-func (r *Syscmd) ExecCmd(name string, arg ...string) ([]byte, error) {
-	return exec.Command(name, arg...).Output() //#nosec G204 -- Generic command wrapper; caller responsible for safe usage
+// ExecCmd runs a command and returns its stdout bytes.
+func (r *Syscmd) ExecCmd(ctx context.Context, name string, arg ...string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// #nosec G204 -- arguments are passed directly to exec.CommandContext (no shell interpretation); callers are responsible for input validation
+	return exec.CommandContext(ctx, name, arg...).Output()
 }
 
-// GetCPUUsage get the current CPU usage
-func GetCPUUsage(ctx context.Context, cpuGauge metric.Int64Gauge) {
+// GetCPUUsage reads the current CPU usage and records it through the MetricsFactory gauge.
+// If factory is nil, the reading is performed but metric recording is skipped.
+func GetCPUUsage(ctx context.Context, factory *metrics.MetricsFactory) {
 	logger := NewLoggerFromContext(ctx)
 
 	out, err := cpu.Percent(100*time.Millisecond, false)
 	if err != nil {
-		logger.Warnf("Errot to get cpu use: %v", err)
+		logger.Log(ctx, log.LevelWarn, "error getting CPU usage", log.Err(err))
 	}
 
 	var percentageCPU int64 = 0
@@ -270,23 +206,38 @@ func GetCPUUsage(ctx context.Context, cpuGauge metric.Int64Gauge) {
 		percentageCPU = int64(out[0])
 	}
 
-	cpuGauge.Record(ctx, percentageCPU)
+	if factory == nil {
+		logger.Log(ctx, log.LevelWarn, "metrics factory is nil, skipping CPU usage recording")
+		return
+	}
+
+	if err := factory.RecordSystemCPUUsage(ctx, percentageCPU); err != nil {
+		logger.Log(ctx, log.LevelWarn, "error recording CPU gauge", log.Err(err))
+	}
 }
 
-// GetMemUsage get the current memory usage
-func GetMemUsage(ctx context.Context, memGauge metric.Int64Gauge) {
+// GetMemUsage reads the current memory usage and records it through the MetricsFactory gauge.
+// If factory is nil, the reading is performed but metric recording is skipped.
+func GetMemUsage(ctx context.Context, factory *metrics.MetricsFactory) {
 	logger := NewLoggerFromContext(ctx)
 
 	var percentageMem int64 = 0
 
 	out, err := mem.VirtualMemory()
 	if err != nil {
-		logger.Warnf("Error to get info memory: %v", err)
+		logger.Log(ctx, log.LevelWarn, "error getting memory info", log.Err(err))
 	} else {
 		percentageMem = int64(out.UsedPercent)
 	}
 
-	memGauge.Record(ctx, percentageMem)
+	if factory == nil {
+		logger.Log(ctx, log.LevelWarn, "metrics factory is nil, skipping memory usage recording")
+		return
+	}
+
+	if err := factory.RecordSystemMemUsage(ctx, percentageMem); err != nil {
+		logger.Log(ctx, log.LevelWarn, "error recording memory gauge", log.Err(err))
+	}
 }
 
 // GetMapNumKinds get the map of numeric kinds to use in validations and conversions.
@@ -322,61 +273,6 @@ func Reverse[T any](s []T) []T {
 	return s
 }
 
-// Deprecated: use GenericInternalKey method from Midaz pkg instead.
-// GenericInternalKey returns a key with the following format to be used on redis cluster:
-// "name:{organizationID:ledgerID:key}"
-func GenericInternalKey(name, organizationID, ledgerID, key string) string {
-	var builder strings.Builder
-
-	builder.WriteString(name)
-	builder.WriteString(keySeparator)
-	builder.WriteString(beginningKey)
-	builder.WriteString(organizationID)
-	builder.WriteString(keySeparator)
-	builder.WriteString(ledgerID)
-	builder.WriteString(keySeparator)
-	builder.WriteString(key)
-	builder.WriteString(endKey)
-
-	return builder.String()
-}
-
-// Deprecated: use TransactionInternalKey method from Midaz pkg instead.
-// TransactionInternalKey returns a key with the following format to be used on redis cluster:
-// "transaction:{organizationID:ledgerID:key}"
-func TransactionInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
-	transaction := GenericInternalKey("transaction", organizationID.String(), ledgerID.String(), key)
-
-	return transaction
-}
-
-// Deprecated: use IdempotencyInternalKey method from Midaz pkg instead.
-// IdempotencyInternalKey returns a key with the following format to be used on redis cluster:
-// "idempotency:{organizationID:ledgerID:key}"
-func IdempotencyInternalKey(organizationID, ledgerID uuid.UUID, key string) string {
-	idempotency := GenericInternalKey("idempotency", organizationID.String(), ledgerID.String(), key)
-
-	return idempotency
-}
-
-// Deprecated: use BalanceInternalKey method from Midaz pkg instead.
-// BalanceInternalKey returns a key with the following format to be used on redis cluster:
-// "balance:{organizationID:ledgerID:key}"
-func BalanceInternalKey(organizationID, ledgerID, key string) string {
-	balance := GenericInternalKey("balance", organizationID, ledgerID, key)
-
-	return balance
-}
-
-// Deprecated: use AccountingRoutesInternalKey method from Midaz pkg instead.
-// AccountingRoutesInternalKey returns a key with the following format to be used on redis cluster:
-// "accounting_routes:{organizationID:ledgerID:key}"
-func AccountingRoutesInternalKey(organizationID, ledgerID, key uuid.UUID) string {
-	accountingRoutes := GenericInternalKey("accounting_routes", organizationID.String(), ledgerID.String(), key.String())
-
-	return accountingRoutes
-}
-
 // UUIDsToStrings converts a slice of UUIDs to a slice of strings.
 // It's optimized to minimize allocations and iterations.
 func UUIDsToStrings(uuids []uuid.UUID) []string {
@@ -388,6 +284,7 @@ func UUIDsToStrings(uuids []uuid.UUID) []string {
 	return result
 }
 
+// IsInternalLerianService reports whether a user-agent belongs to a Lerian internal service.
 func IsInternalLerianService(userAgent string) bool {
 	return internalServicePattern.MatchString(userAgent)
 }

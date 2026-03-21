@@ -1,6 +1,4 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
+//go:build unit
 
 package http
 
@@ -10,16 +8,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v2/commons"
-	"github.com/LerianStudio/lib-commons/v2/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v4/commons"
+	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
+	otelmetrics "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry/metrics"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
@@ -33,10 +34,10 @@ func setupTestTracer() (*sdktrace.TracerProvider, *tracetest.SpanRecorder) {
 	tracerProvider := sdktrace.NewTracerProvider(
 		sdktrace.WithSpanProcessor(spanRecorder),
 	)
-	
+
 	// Set the global propagator to TraceContext
 	otel.SetTextMapPropagator(propagation.TraceContext{})
-	
+
 	return tracerProvider, spanRecorder
 }
 
@@ -109,18 +110,18 @@ func TestWithTelemetry(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			
+
 			// Setup test tracer
 			tp, spanRecorder := setupTestTracer()
 			defer func() {
 				_ = tp.Shutdown(ctx)
 			}()
-			
+
 			// Replace the global tracer provider for this test
 			oldTracerProvider := otel.GetTracerProvider()
 			otel.SetTracerProvider(tp)
 			defer otel.SetTracerProvider(oldTracerProvider)
-			
+
 			// Setup telemetry
 			var telemetry *opentelemetry.Telemetry
 			if !tt.nilTelemetry {
@@ -171,24 +172,24 @@ func TestWithTelemetry(t *testing.T) {
 			// Execute request
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			// Check status code
 			assert.Equal(t, tt.expectedStatusCode, resp.StatusCode)
-			
+
 			// Check spans
 			spans := spanRecorder.Ended()
-			
+
 			if tt.expectSpan && !tt.nilTelemetry && !tt.swaggerPath {
 				// Should have created a span
 				require.GreaterOrEqual(t, len(spans), 1, "Expected at least one span to be created")
-				
+
 				// Check span name
 				expectedPath := tt.path
 				if strings.Contains(tt.path, "123e4567-e89b-12d3-a456-426614174000") {
 					expectedPath = commons.ReplaceUUIDWithPlaceholder(tt.path)
 				}
-				
+
 				spanFound := false
 				for _, span := range spans {
 					if span.Name() == tt.method+" "+expectedPath {
@@ -256,18 +257,18 @@ func TestWithTelemetryExcludedRoutes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			
+
 			// Setup test tracer
 			tp, spanRecorder := setupTestTracer()
 			defer func() {
 				_ = tp.Shutdown(ctx)
 			}()
-			
+
 			// Replace the global tracer provider for this test
 			oldTracerProvider := otel.GetTracerProvider()
 			otel.SetTracerProvider(tp)
 			defer otel.SetTracerProvider(oldTracerProvider)
-			
+
 			// Setup telemetry
 			telemetry := &opentelemetry.Telemetry{
 				TelemetryConfig: opentelemetry.TelemetryConfig{
@@ -298,18 +299,18 @@ func TestWithTelemetryExcludedRoutes(t *testing.T) {
 			// Execute request
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			// Check status code
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
-			
+
 			// Check spans
 			spans := spanRecorder.Ended()
-			
+
 			if tt.expectSpan {
 				// Should have created a span
 				require.GreaterOrEqual(t, len(spans), 1, "Expected at least one span to be created")
-				
+
 				// Check span name
 				expectedSpanName := tt.method + " " + commons.ReplaceUUIDWithPlaceholder(tt.path)
 				spanFound := false
@@ -410,7 +411,7 @@ func TestEndTracingSpans(t *testing.T) {
 			req := httptest.NewRequest("GET", "/test", nil)
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			// Verify error propagation via status code
 			if tt.handlerErr != nil {
@@ -438,6 +439,51 @@ func TestEndTracingSpans(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEndTracingSpans_CallsNextWithoutInitialContext(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	middleware := &TelemetryMiddleware{}
+	handlerCalled := false
+
+	app.Get("/test", middleware.EndTracingSpans, func(c *fiber.Ctx) error {
+		handlerCalled = true
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/test", nil))
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	assert.True(t, handlerCalled)
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
+func TestEndTracingSpans_EndsFinalContextSpan(t *testing.T) {
+	t.Parallel()
+
+	tp, spanRecorder := setupTestTracer()
+	defer func() { _ = tp.Shutdown(context.Background()) }()
+
+	app := fiber.New()
+	middleware := &TelemetryMiddleware{}
+
+	app.Get("/test", middleware.EndTracingSpans, func(c *fiber.Ctx) error {
+		ctx, _ := tp.Tracer("test").Start(context.Background(), "handler-span")
+		c.SetUserContext(ctx)
+		return c.SendStatus(http.StatusNoContent)
+	})
+
+	resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/test", nil))
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	assert.Eventually(t, func() bool {
+		return len(spanRecorder.Ended()) == 1
+	}, time.Second, 10*time.Millisecond)
+	assert.Equal(t, "handler-span", spanRecorder.Ended()[0].Name())
 }
 
 // TestGetMetricsCollectionInterval tests the getMetricsCollectionInterval function
@@ -498,6 +544,65 @@ func TestGetMetricsCollectionInterval(t *testing.T) {
 	}
 }
 
+func resetMetricsCollectorState() {
+	metricsCollectorMu.Lock()
+	defer metricsCollectorMu.Unlock()
+
+	if metricsCollectorStarted && metricsCollectorShutdown != nil {
+		close(metricsCollectorShutdown)
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	metricsCollectorShutdown = nil
+	metricsCollectorStarted = false
+	metricsCollectorOnce = &sync.Once{}
+	metricsCollectorInitErr = nil
+}
+
+func TestEnsureMetricsCollector_ReturnsErrorWhenMetricsFactoryNil(t *testing.T) {
+	resetMetricsCollectorState()
+	t.Cleanup(resetMetricsCollectorState)
+
+	middleware := &TelemetryMiddleware{Telemetry: &opentelemetry.Telemetry{
+		TelemetryConfig: opentelemetry.TelemetryConfig{LibraryName: "test-library", EnableTelemetry: true},
+		MeterProvider:   sdkmetric.NewMeterProvider(),
+	}}
+
+	err := middleware.ensureMetricsCollector()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MetricsFactory is nil")
+	assert.False(t, metricsCollectorStarted)
+}
+
+func TestEnsureMetricsCollector_NoMeterProviderReturnsNil(t *testing.T) {
+	resetMetricsCollectorState()
+	t.Cleanup(resetMetricsCollectorState)
+
+	middleware := &TelemetryMiddleware{Telemetry: &opentelemetry.Telemetry{}}
+	require.NoError(t, middleware.ensureMetricsCollector())
+	assert.False(t, metricsCollectorStarted)
+}
+
+func TestStopMetricsCollector_AllowsRestart(t *testing.T) {
+	resetMetricsCollectorState()
+	t.Cleanup(resetMetricsCollectorState)
+
+	middleware := &TelemetryMiddleware{Telemetry: &opentelemetry.Telemetry{
+		TelemetryConfig: opentelemetry.TelemetryConfig{LibraryName: "test-library", EnableTelemetry: true},
+		MeterProvider:   sdkmetric.NewMeterProvider(),
+		MetricsFactory:  otelmetrics.NewNopFactory(),
+	}}
+
+	require.NoError(t, middleware.ensureMetricsCollector())
+	assert.True(t, metricsCollectorStarted)
+
+	StopMetricsCollector()
+	assert.False(t, metricsCollectorStarted)
+
+	require.NoError(t, middleware.ensureMetricsCollector())
+	assert.True(t, metricsCollectorStarted)
+}
+
 // TestExtractHTTPContext tests the ExtractHTTPContext function
 func TestExtractHTTPContext(t *testing.T) {
 	ctx := context.Background()
@@ -522,7 +627,7 @@ func TestExtractHTTPContext(t *testing.T) {
 	// Add test route
 	app.Get("/test", func(c *fiber.Ctx) error {
 		// Extract context
-		ctx := opentelemetry.ExtractHTTPContext(c)
+		ctx := opentelemetry.ExtractHTTPContext(c.UserContext(), c)
 
 		// Check if span info was extracted
 		spanCtx := trace.SpanContextFromContext(ctx)
@@ -546,7 +651,7 @@ func TestExtractHTTPContext(t *testing.T) {
 
 	resp1, err := app.Test(req1)
 	require.NoError(t, err)
-	defer resp1.Body.Close()
+	defer func() { require.NoError(t, resp1.Body.Close()) }()
 	assert.Equal(t, http.StatusOK, resp1.StatusCode)
 
 	// Test without traceparent header
@@ -555,18 +660,18 @@ func TestExtractHTTPContext(t *testing.T) {
 
 	resp2, err := app.Test(req2)
 	require.NoError(t, err)
-	defer resp2.Body.Close()
+	defer func() { require.NoError(t, resp2.Body.Close()) }()
 	assert.Equal(t, http.StatusOK, resp2.StatusCode)
 }
 
 // TestWithTelemetryConditionalTracePropagation tests the conditional trace propagation based on UserAgent
 func TestWithTelemetryConditionalTracePropagation(t *testing.T) {
 	tests := []struct {
-		name               string
-		userAgent          string
-		traceparent        string
+		name                 string
+		userAgent            string
+		traceparent          string
 		shouldPropagateTrace bool
-		description        string
+		description          string
 	}{
 		{
 			name:                 "Internal Lerian service - should propagate trace",
@@ -665,7 +770,7 @@ func TestWithTelemetryConditionalTracePropagation(t *testing.T) {
 			// Execute request
 			resp, err := app.Test(req)
 			require.NoError(t, err)
-			defer resp.Body.Close()
+			defer func() { require.NoError(t, resp.Body.Close()) }()
 
 			// Check status code
 			assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -695,10 +800,10 @@ func TestWithTelemetryConditionalTracePropagation(t *testing.T) {
 // TestGetGRPCUserAgent tests the getGRPCUserAgent helper function
 func TestGetGRPCUserAgent(t *testing.T) {
 	tests := []struct {
-		name           string
-		setupMetadata  func() context.Context
-		expectedUA     string
-		description    string
+		name          string
+		setupMetadata func() context.Context
+		expectedUA    string
+		description   string
 	}{
 		{
 			name: "Valid user-agent in metadata",
@@ -756,6 +861,80 @@ func TestGetGRPCUserAgent(t *testing.T) {
 			assert.Equal(t, tt.expectedUA, result, tt.description)
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// sanitizeURL tests
+// ---------------------------------------------------------------------------
+
+func TestSanitizeURL_NoQueryParams(t *testing.T) {
+	t.Parallel()
+
+	result := sanitizeURL("https://example.com/api/v1/users")
+	assert.Equal(t, "https://example.com/api/v1/users", result)
+}
+
+func TestSanitizeURL_NoSensitiveParams(t *testing.T) {
+	t.Parallel()
+
+	result := sanitizeURL("https://example.com/api?page=1&limit=20")
+	assert.Equal(t, "https://example.com/api?page=1&limit=20", result)
+}
+
+func TestSanitizeURL_SensitiveTokenParam(t *testing.T) {
+	t.Parallel()
+
+	result := sanitizeURL("https://example.com/callback?token=secret123&state=abc")
+	assert.NotContains(t, result, "secret123")
+	assert.Contains(t, result, "state=abc")
+}
+
+func TestSanitizeURL_SensitivePasswordParam(t *testing.T) {
+	t.Parallel()
+
+	result := sanitizeURL("https://example.com/auth?password=hunter2&username=admin")
+	assert.NotContains(t, result, "hunter2")
+	assert.Contains(t, result, "username=admin")
+}
+
+func TestSanitizeURL_SensitiveAPIKeyParam(t *testing.T) {
+	t.Parallel()
+
+	result := sanitizeURL("https://example.com/api?api_key=my-secret-key&format=json")
+	assert.NotContains(t, result, "my-secret-key")
+	assert.Contains(t, result, "format=json")
+}
+
+func TestSanitizeURL_InvalidURL_ReturnedAsIs(t *testing.T) {
+	t.Parallel()
+
+	// A URL that cannot be parsed should be returned as-is
+	invalidURL := "://missing-scheme"
+	result := sanitizeURL(invalidURL)
+	assert.Equal(t, invalidURL, result)
+}
+
+func TestSanitizeURL_InvalidURLWithSensitiveQuery_RedactsFallback(t *testing.T) {
+	t.Parallel()
+
+	result := sanitizeURL("://missing-scheme?token=secret123")
+	assert.NotContains(t, result, "secret123")
+	assert.Contains(t, result, "?redacted")
+}
+
+func TestSanitizeURL_EmptyQueryReturnsOriginal(t *testing.T) {
+	t.Parallel()
+
+	original := "https://example.com/path"
+	result := sanitizeURL(original)
+	assert.Equal(t, original, result)
+}
+
+func TestSanitizeURL_RelativePath(t *testing.T) {
+	t.Parallel()
+
+	result := sanitizeURL("/api/v1/users?token=abc123")
+	assert.NotContains(t, result, "abc123")
 }
 
 // TestWithTelemetryInterceptorConditionalTracePropagation tests conditional trace propagation in gRPC interceptor

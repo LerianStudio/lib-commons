@@ -1,24 +1,27 @@
-// Copyright (c) 2026 Lerian Studio. All rights reserved.
-// Use of this source code is governed by the Elastic License 2.0
-// that can be found in the LICENSE file.
+//go:build unit
 
 package circuitbreaker
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v2/commons/log"
+	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/sony/gobreaker"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCircuitBreaker_InitialState(t *testing.T) {
-	logger := &log.NoneLogger{}
-	manager := NewManager(logger)
+	logger := &log.NopLogger{}
+	manager, err := NewManager(logger)
+	require.NoError(t, err)
 
 	config := DefaultConfig()
-	manager.GetOrCreate("test-service", config)
+	_, err = manager.GetOrCreate("test-service", config)
+	assert.NoError(t, err)
 
 	// Circuit breaker should start in closed state
 	assert.Equal(t, StateClosed, manager.GetState("test-service"))
@@ -26,8 +29,9 @@ func TestCircuitBreaker_InitialState(t *testing.T) {
 }
 
 func TestCircuitBreaker_OpenState(t *testing.T) {
-	logger := &log.NoneLogger{}
-	manager := NewManager(logger)
+	logger := &log.NopLogger{}
+	manager, err := NewManager(logger)
+	require.NoError(t, err)
 
 	config := Config{
 		MaxRequests:         1,
@@ -38,7 +42,8 @@ func TestCircuitBreaker_OpenState(t *testing.T) {
 		MinRequests:         2,
 	}
 
-	manager.GetOrCreate("test-service", config)
+	_, err = manager.GetOrCreate("test-service", config)
+	assert.NoError(t, err)
 
 	// Trigger failures to open circuit breaker
 	for i := 0; i < 5; i++ {
@@ -54,7 +59,7 @@ func TestCircuitBreaker_OpenState(t *testing.T) {
 
 	// Requests should fast-fail
 	start := time.Now()
-	_, err := manager.Execute("test-service", func() (any, error) {
+	_, err = manager.Execute("test-service", func() (any, error) {
 		time.Sleep(5 * time.Second) // This should not execute
 		return nil, nil
 	})
@@ -66,11 +71,13 @@ func TestCircuitBreaker_OpenState(t *testing.T) {
 }
 
 func TestCircuitBreaker_SuccessfulExecution(t *testing.T) {
-	logger := &log.NoneLogger{}
-	manager := NewManager(logger)
+	logger := &log.NopLogger{}
+	manager, err := NewManager(logger)
+	require.NoError(t, err)
 
 	config := DefaultConfig()
-	manager.GetOrCreate("test-service", config)
+	_, err = manager.GetOrCreate("test-service", config)
+	assert.NoError(t, err)
 
 	result, err := manager.Execute("test-service", func() (any, error) {
 		return "success", nil
@@ -82,24 +89,28 @@ func TestCircuitBreaker_SuccessfulExecution(t *testing.T) {
 }
 
 func TestCircuitBreaker_GetCounts(t *testing.T) {
-	logger := &log.NoneLogger{}
-	manager := NewManager(logger)
+	logger := &log.NopLogger{}
+	manager, err := NewManager(logger)
+	require.NoError(t, err)
 
 	config := DefaultConfig()
-	manager.GetOrCreate("test-service", config)
+	_, err = manager.GetOrCreate("test-service", config)
+	assert.NoError(t, err)
 
 	// Execute some requests
 	for i := 0; i < 5; i++ {
-		_, _ = manager.Execute("test-service", func() (any, error) {
+		_, err = manager.Execute("test-service", func() (any, error) {
 			return "success", nil
 		})
+		require.NoError(t, err)
 	}
 
 	// Trigger some failures
 	for i := 0; i < 3; i++ {
-		_, _ = manager.Execute("test-service", func() (any, error) {
+		_, err = manager.Execute("test-service", func() (any, error) {
 			return nil, errors.New("failure")
 		})
+		require.Error(t, err)
 	}
 
 	counts := manager.GetCounts("test-service")
@@ -109,8 +120,9 @@ func TestCircuitBreaker_GetCounts(t *testing.T) {
 }
 
 func TestCircuitBreaker_Reset(t *testing.T) {
-	logger := &log.NoneLogger{}
-	manager := NewManager(logger)
+	logger := &log.NopLogger{}
+	manager, err := NewManager(logger)
+	require.NoError(t, err)
 
 	config := Config{
 		MaxRequests:         1,
@@ -121,13 +133,15 @@ func TestCircuitBreaker_Reset(t *testing.T) {
 		MinRequests:         2,
 	}
 
-	manager.GetOrCreate("test-service", config)
+	_, err = manager.GetOrCreate("test-service", config)
+	assert.NoError(t, err)
 
 	// Trigger failures to open circuit breaker
 	for i := 0; i < 5; i++ {
-		_, _ = manager.Execute("test-service", func() (any, error) {
+		_, err = manager.Execute("test-service", func() (any, error) {
 			return nil, errors.New("service error")
 		})
+		require.Error(t, err)
 	}
 
 	// Circuit breaker should be open
@@ -149,14 +163,15 @@ func TestCircuitBreaker_Reset(t *testing.T) {
 }
 
 func TestCircuitBreaker_UnknownService(t *testing.T) {
-	logger := &log.NoneLogger{}
-	manager := NewManager(logger)
+	logger := &log.NopLogger{}
+	manager, err := NewManager(logger)
+	require.NoError(t, err)
 
 	// Query non-existent service
 	assert.Equal(t, StateUnknown, manager.GetState("non-existent"))
 
 	// Execute on non-existent service should fail
-	_, err := manager.Execute("non-existent", func() (any, error) {
+	_, err = manager.Execute("non-existent", func() (any, error) {
 		return "success", nil
 	})
 
@@ -185,8 +200,9 @@ func TestCircuitBreaker_ConfigPresets(t *testing.T) {
 }
 
 func TestCircuitBreaker_StateChangeListenerPanicRecovery(t *testing.T) {
-	logger := &log.NoneLogger{}
-	manager := NewManager(logger)
+	logger := &log.NopLogger{}
+	manager, err := NewManager(logger)
+	require.NoError(t, err)
 
 	config := Config{
 		MaxRequests:         1,
@@ -229,13 +245,15 @@ func TestCircuitBreaker_StateChangeListenerPanicRecovery(t *testing.T) {
 	manager.RegisterStateChangeListener(secondNormalListener)
 
 	// Create circuit breaker
-	manager.GetOrCreate("test-service", config)
+	_, err = manager.GetOrCreate("test-service", config)
+	assert.NoError(t, err)
 
 	// Trigger failures to open circuit breaker and trigger state change
 	for i := 0; i < 3; i++ {
-		_, _ = manager.Execute("test-service", func() (any, error) {
+		_, err = manager.Execute("test-service", func() (any, error) {
 			return nil, errors.New("service error")
 		})
+		require.Error(t, err)
 	}
 
 	// Wait for all listeners to be called (with timeout)
@@ -268,8 +286,9 @@ func TestCircuitBreaker_StateChangeListenerPanicRecovery(t *testing.T) {
 }
 
 func TestCircuitBreaker_NilListenerRegistration(t *testing.T) {
-	logger := &log.NoneLogger{}
-	manager := NewManager(logger)
+	logger := &log.NopLogger{}
+	manager, err := NewManager(logger)
+	require.NoError(t, err)
 
 	// Attempt to register nil listener
 	manager.RegisterStateChangeListener(nil)
@@ -283,13 +302,15 @@ func TestCircuitBreaker_NilListenerRegistration(t *testing.T) {
 		FailureRatio:        0.5,
 		MinRequests:         2,
 	}
-	manager.GetOrCreate("test-service", config)
+	_, err = manager.GetOrCreate("test-service", config)
+	assert.NoError(t, err)
 
 	// Trigger a state change to ensure system still works
 	for i := 0; i < 3; i++ {
-		_, _ = manager.Execute("test-service", func() (any, error) {
+		_, err = manager.Execute("test-service", func() (any, error) {
 			return nil, errors.New("service error")
 		})
+		require.Error(t, err)
 	}
 
 	// Should successfully transition to open state
@@ -301,8 +322,209 @@ type mockStateChangeListener struct {
 	onStateChangeFn func(serviceName string, from State, to State)
 }
 
-func (m *mockStateChangeListener) OnStateChange(serviceName string, from State, to State) {
+func (m *mockStateChangeListener) OnStateChange(_ context.Context, serviceName string, from State, to State) {
 	if m.onStateChangeFn != nil {
 		m.onStateChangeFn(serviceName, from, to)
 	}
+}
+
+func TestNewManager_NilLogger(t *testing.T) {
+	m, err := NewManager(nil)
+	assert.Nil(t, m)
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrNilLogger)
+}
+
+func TestGetOrCreate_InvalidConfig(t *testing.T) {
+	logger := &log.NopLogger{}
+	m, err := NewManager(logger)
+	require.NoError(t, err)
+
+	// Both trip conditions zero → invalid
+	invalidCfg := Config{
+		ConsecutiveFailures: 0,
+		MinRequests:         0,
+	}
+
+	cb, err := m.GetOrCreate("bad-config-service", invalidCfg)
+	assert.Nil(t, cb)
+	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidConfig)
+}
+
+func TestGetOrCreate_ReturnExistingBreaker(t *testing.T) {
+	logger := &log.NopLogger{}
+	m, err := NewManager(logger)
+	require.NoError(t, err)
+
+	cfg := DefaultConfig()
+
+	cb1, err := m.GetOrCreate("my-service", cfg)
+	require.NoError(t, err)
+
+	cb2, err := m.GetOrCreate("my-service", cfg)
+	require.NoError(t, err)
+
+	// Both should return a valid breaker in the same state
+	assert.Equal(t, cb1.State(), cb2.State())
+}
+
+func TestExecute_OpenStateRejection(t *testing.T) {
+	logger := &log.NopLogger{}
+	m, err := NewManager(logger)
+	require.NoError(t, err)
+
+	cfg := Config{
+		MaxRequests:         1,
+		Interval:            100 * time.Millisecond,
+		Timeout:             200 * time.Millisecond,
+		ConsecutiveFailures: 2,
+		FailureRatio:        0.5,
+		MinRequests:         2,
+	}
+
+	_, err = m.GetOrCreate("svc", cfg)
+	require.NoError(t, err)
+
+	// Trip the breaker open by sending consecutive failures
+	for i := 0; i < 3; i++ {
+		_, _ = m.Execute("svc", func() (any, error) {
+			return nil, errors.New("fail")
+		})
+	}
+	assert.Equal(t, StateOpen, m.GetState("svc"))
+
+	// Poll until the breaker transitions to half-open (timeout is 200ms)
+	require.Eventually(t, func() bool {
+		return m.GetState("svc") == StateHalfOpen
+	}, 2*time.Second, 10*time.Millisecond, "breaker should transition to half-open after timeout")
+
+	// MaxRequests=1, so the first call in half-open is the probe.
+	// Make it fail so the breaker re-opens.
+	_, _ = m.Execute("svc", func() (any, error) {
+		return nil, errors.New("still failing")
+	})
+
+	// Poll again until the breaker transitions back to half-open
+	require.Eventually(t, func() bool {
+		return m.GetState("svc") == StateHalfOpen
+	}, 2*time.Second, 10*time.Millisecond, "breaker should transition to half-open after second timeout")
+
+	// In half-open the probe call (first) is allowed; make it fail to re-open
+	_, err = m.Execute("svc", func() (any, error) {
+		return nil, errors.New("probe fail")
+	})
+	// After the probe fails in half-open, breaker re-opens.
+	// The next call should be rejected with an open-state error.
+	_, err = m.Execute("svc", func() (any, error) {
+		return nil, nil
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "currently unavailable")
+}
+
+func TestGetCounts_NonExistentService(t *testing.T) {
+	logger := &log.NopLogger{}
+	m, err := NewManager(logger)
+	require.NoError(t, err)
+
+	counts := m.GetCounts("does-not-exist")
+	assert.Equal(t, Counts{}, counts)
+}
+
+func TestIsHealthy_NonExistentService(t *testing.T) {
+	logger := &log.NopLogger{}
+	m, err := NewManager(logger)
+	require.NoError(t, err)
+
+	// StateUnknown != StateClosed → not healthy
+	assert.False(t, m.IsHealthy("no-such-service"))
+}
+
+func TestReset_NonExistentService(t *testing.T) {
+	logger := &log.NopLogger{}
+	m, err := NewManager(logger)
+	require.NoError(t, err)
+
+	// Should be a no-op, not panic
+	assert.NotPanics(t, func() {
+		m.Reset("non-existent-service")
+	})
+}
+
+func TestCircuitBreaker_Wrapper_Execute(t *testing.T) {
+	logger := &log.NopLogger{}
+	m, err := NewManager(logger)
+	require.NoError(t, err)
+
+	cfg := DefaultConfig()
+	cb, err := m.GetOrCreate("wrapper-test", cfg)
+	require.NoError(t, err)
+
+	// Test Execute through the CircuitBreaker interface
+	result, err := cb.Execute(func() (any, error) {
+		return 42, nil
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, 42, result)
+
+	// Test State
+	assert.Equal(t, StateClosed, cb.State())
+
+	// Test Counts
+	counts := cb.Counts()
+	assert.Equal(t, uint32(1), counts.Requests)
+	assert.Equal(t, uint32(1), counts.TotalSuccesses)
+}
+
+func TestReadyToTrip_ConsecutiveFailures(t *testing.T) {
+	cfg := Config{
+		ConsecutiveFailures: 3,
+		MinRequests:         0,
+	}
+
+	tripFn := readyToTrip(cfg)
+
+	// Below threshold
+	assert.False(t, tripFn(gobreaker.Counts{ConsecutiveFailures: 2}))
+
+	// At threshold
+	assert.True(t, tripFn(gobreaker.Counts{ConsecutiveFailures: 3}))
+
+	// Above threshold
+	assert.True(t, tripFn(gobreaker.Counts{ConsecutiveFailures: 5}))
+}
+
+func TestReadyToTrip_FailureRatio(t *testing.T) {
+	cfg := Config{
+		ConsecutiveFailures: 0,
+		MinRequests:         4,
+		FailureRatio:        0.5,
+	}
+
+	tripFn := readyToTrip(cfg)
+
+	// Not enough requests
+	assert.False(t, tripFn(gobreaker.Counts{Requests: 3, TotalFailures: 3}))
+
+	// Enough requests, below ratio
+	assert.False(t, tripFn(gobreaker.Counts{Requests: 4, TotalFailures: 1}))
+
+	// Enough requests, at ratio
+	assert.True(t, tripFn(gobreaker.Counts{Requests: 4, TotalFailures: 2}))
+
+	// Enough requests, above ratio
+	assert.True(t, tripFn(gobreaker.Counts{Requests: 4, TotalFailures: 3}))
+}
+
+func TestReadyToTrip_NeitherConditionMet(t *testing.T) {
+	cfg := Config{
+		ConsecutiveFailures: 0,
+		MinRequests:         0,
+	}
+
+	tripFn := readyToTrip(cfg)
+
+	// Both conditions disabled → never trips
+	assert.False(t, tripFn(gobreaker.Counts{Requests: 100, TotalFailures: 100, ConsecutiveFailures: 100}))
 }
