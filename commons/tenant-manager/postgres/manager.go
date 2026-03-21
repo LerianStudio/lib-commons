@@ -378,7 +378,7 @@ func (p *Manager) revalidatePoolSettings(tenantID string) {
 	revalidateCtx, cancel := context.WithTimeout(context.Background(), settingsRevalidationTimeout)
 	defer cancel()
 
-	config, err := p.client.GetTenantConfig(revalidateCtx, tenantID, p.service)
+	config, err := p.client.GetTenantConfig(revalidateCtx, tenantID, p.service, client.WithSkipCache())
 	if err != nil {
 		// If tenant service was suspended/purged, evict the cached connection immediately.
 		// The next request for this tenant will call createConnection, which fetches fresh
