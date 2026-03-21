@@ -7,9 +7,12 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,7 +27,105 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.uber.org/goleak"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m,
+		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
+		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
+		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
+		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),
+	)
+}
+
+func startFakeMongoServer(t *testing.T) (*mongo.Client, func()) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	go func() {
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+
+			go serveFakeMongoConn(conn)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	addr := ln.Addr().String()
+
+	mongoClient, err := mongo.Connect(ctx, options.Client().
+		ApplyURI(fmt.Sprintf("mongodb://%s/?directConnection=true", addr)).
+		SetServerSelectionTimeout(2*time.Second))
+	require.NoError(t, err)
+
+	require.NoError(t, mongoClient.Ping(ctx, nil))
+
+	cleanup := func() {
+		_ = mongoClient.Disconnect(context.Background())
+		ln.Close()
+	}
+
+	return mongoClient, cleanup
+}
+
+func serveFakeMongoConn(conn net.Conn) {
+	defer conn.Close()
+
+	for {
+		header := make([]byte, 16)
+		if _, err := io.ReadFull(conn, header); err != nil {
+			return
+		}
+
+		msgLen := int(binary.LittleEndian.Uint32(header[0:4]))
+		reqID := binary.LittleEndian.Uint32(header[4:8])
+
+		body := make([]byte, msgLen-16)
+		if _, err := io.ReadFull(conn, body); err != nil {
+			return
+		}
+
+		resp := bson.D{
+			{Key: "ismaster", Value: true},
+			{Key: "ok", Value: 1.0},
+			{Key: "maxWireVersion", Value: int32(21)},
+			{Key: "minWireVersion", Value: int32(0)},
+			{Key: "maxBsonObjectSize", Value: int32(16777216)},
+			{Key: "maxMessageSizeBytes", Value: int32(48000000)},
+			{Key: "maxWriteBatchSize", Value: int32(100000)},
+			{Key: "localTime", Value: time.Now()},
+			{Key: "connectionId", Value: int32(1)},
+		}
+
+		respBytes, _ := bson.Marshal(resp)
+
+		var payload []byte
+		payload = append(payload, 0, 0, 0, 0)
+		payload = append(payload, 0)
+		payload = append(payload, respBytes...)
+
+		totalLen := uint32(16 + len(payload))
+		respHeader := make([]byte, 16)
+		binary.LittleEndian.PutUint32(respHeader[0:4], totalLen)
+		binary.LittleEndian.PutUint32(respHeader[4:8], reqID+1)
+		binary.LittleEndian.PutUint32(respHeader[8:12], reqID)
+		binary.LittleEndian.PutUint32(respHeader[12:16], 2013)
+
+		_, _ = conn.Write(respHeader)
+		_, _ = conn.Write(payload)
+	}
+}
 
 // mustNewTestClient creates a test client or fails the test immediately.
 // Centralises the repeated client.NewClient + error-check boilerplate.
@@ -1217,6 +1318,9 @@ func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 	}))
 	defer server.Close()
 
+	fakeDB, cleanupFake := startFakeMongoServer(t)
+	defer cleanupFake()
+
 	tmClient := mustNewTestClient(t, server.URL)
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(testutil.NewMockLogger()),
@@ -1224,22 +1328,27 @@ func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 		WithSettingsCheckInterval(1*time.Millisecond),
 	)
 
-	// Pre-populate cache with a healthy connection (nil DB to avoid real MongoDB).
-	// GetConnection with a nil DB triggers reconnect, so we need to test via
-	// the revalidation path specifically. We use a connection that has a non-nil
-	// DB field but is a mock. Since we can't mock mongo.Client's Ping, we test
-	// the revalidation path directly via revalidatePoolSettings.
-	cachedConn := &MongoConnection{DB: nil}
+	cachedConn := &MongoConnection{DB: fakeDB}
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = time.Now()
 	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
 
-	// Trigger revalidation directly (mirrors postgres test pattern for EvictsSuspendedTenant)
-	manager.revalidatePoolSettings("tenant-123")
+	db, err := manager.GetConnection(context.Background(), "tenant-123")
+	require.NoError(t, err)
+	assert.Equal(t, fakeDB, db)
 
 	assert.Eventually(t, func() bool {
 		return atomic.LoadInt32(&callCount) > 0
-	}, 500*time.Millisecond, 20*time.Millisecond, "should have fetched fresh config from Tenant Manager")
+	}, 500*time.Millisecond, 10*time.Millisecond, "should have fetched fresh config from Tenant Manager")
+
+	manager.mu.RLock()
+	lastCheck := manager.lastSettingsCheck["tenant-123"]
+	manager.mu.RUnlock()
+
+	assert.False(t, lastCheck.IsZero(), "lastSettingsCheck should have been updated")
+
+	manager.revalidateWG.Wait()
+	require.NoError(t, manager.Close(context.Background()))
 }
 
 func TestManager_GetConnection_DisabledRevalidation_WithZero(t *testing.T) {
@@ -1262,6 +1371,9 @@ func TestManager_GetConnection_DisabledRevalidation_WithZero(t *testing.T) {
 	}))
 	defer server.Close()
 
+	fakeDB, cleanupFake := startFakeMongoServer(t)
+	defer cleanupFake()
+
 	tmClient := mustNewTestClient(t, server.URL)
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(testutil.NewMockLogger()),
@@ -1269,26 +1381,22 @@ func TestManager_GetConnection_DisabledRevalidation_WithZero(t *testing.T) {
 		WithSettingsCheckInterval(0),
 	)
 
-	// Verify revalidation is disabled
 	assert.Equal(t, time.Duration(0), manager.settingsCheckInterval)
 
-	// Pre-populate cache with a connection (nil DB)
-	cachedConn := &MongoConnection{DB: nil}
+	cachedConn := &MongoConnection{DB: fakeDB}
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = time.Now()
 	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
 
-	// Simulate the revalidation check logic (same as in GetConnection)
-	manager.mu.Lock()
-	shouldRevalidate := manager.client != nil && manager.settingsCheckInterval > 0 && time.Since(manager.lastSettingsCheck["tenant-123"]) > manager.settingsCheckInterval
-	manager.mu.Unlock()
+	db, err := manager.GetConnection(context.Background(), "tenant-123")
+	require.NoError(t, err)
+	assert.Equal(t, fakeDB, db)
 
-	assert.False(t, shouldRevalidate, "should NOT trigger revalidation when interval is zero")
-
-	// Wait to ensure no async goroutine fires
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	assert.Equal(t, int32(0), atomic.LoadInt32(&callCount), "should NOT have fetched config - revalidation is disabled")
+
+	require.NoError(t, manager.Close(context.Background()))
 }
 
 func TestManager_GetConnection_DisabledRevalidation_WithNegative(t *testing.T) {
@@ -1303,6 +1411,9 @@ func TestManager_GetConnection_DisabledRevalidation_WithNegative(t *testing.T) {
 	}))
 	defer server.Close()
 
+	fakeDB, cleanupFake := startFakeMongoServer(t)
+	defer cleanupFake()
+
 	tmClient := mustNewTestClient(t, server.URL)
 	manager := NewManager(tmClient, "payment",
 		WithLogger(testutil.NewMockLogger()),
@@ -1310,25 +1421,22 @@ func TestManager_GetConnection_DisabledRevalidation_WithNegative(t *testing.T) {
 		WithSettingsCheckInterval(-5*time.Second),
 	)
 
-	// Verify negative was clamped to zero
 	assert.Equal(t, time.Duration(0), manager.settingsCheckInterval)
 
-	// Pre-populate cache
-	cachedConn := &MongoConnection{DB: nil}
+	cachedConn := &MongoConnection{DB: fakeDB}
 	manager.connections["tenant-456"] = cachedConn
 	manager.lastAccessed["tenant-456"] = time.Now()
 	manager.lastSettingsCheck["tenant-456"] = time.Now().Add(-1 * time.Hour)
 
-	// Simulate the revalidation check logic
-	manager.mu.Lock()
-	shouldRevalidate := manager.client != nil && manager.settingsCheckInterval > 0 && time.Since(manager.lastSettingsCheck["tenant-456"]) > manager.settingsCheckInterval
-	manager.mu.Unlock()
+	db, err := manager.GetConnection(context.Background(), "tenant-456")
+	require.NoError(t, err)
+	assert.Equal(t, fakeDB, db)
 
-	assert.False(t, shouldRevalidate, "should NOT trigger revalidation when interval is negative (clamped to zero)")
-
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
 	assert.Equal(t, int32(0), atomic.LoadInt32(&callCount), "should NOT have fetched config - revalidation is disabled via negative interval")
+
+	require.NoError(t, manager.Close(context.Background()))
 }
 
 func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
@@ -1526,7 +1634,6 @@ func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
 func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
 	t.Parallel()
 
-	// Create a slow HTTP server that simulates a Tenant Manager responding after a delay.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		time.Sleep(300 * time.Millisecond)
 
@@ -1544,29 +1651,26 @@ func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
 	}))
 	defer server.Close()
 
+	fakeDB, cleanupFake := startFakeMongoServer(t)
+	defer cleanupFake()
+
 	tmClient := mustNewTestClient(t, server.URL)
 	manager := NewManager(tmClient, "test-service",
 		WithLogger(testutil.NewMockLogger()),
 		WithSettingsCheckInterval(1*time.Millisecond),
 	)
 
-	// Pre-populate cache
-	manager.connections["tenant-slow"] = &MongoConnection{DB: nil}
+	cachedConn := &MongoConnection{DB: fakeDB}
+	manager.connections["tenant-slow"] = cachedConn
 	manager.lastAccessed["tenant-slow"] = time.Now()
 	manager.lastSettingsCheck["tenant-slow"] = time.Time{}
 
-	// Spawn the revalidation goroutine via the WaitGroup
-	manager.revalidateWG.Go(func() {
-		manager.revalidatePoolSettings("tenant-slow")
-	})
-
-	// Close immediately -- the revalidation goroutine is still blocked on the
-	// slow HTTP server. With the fix, Close() waits for it to finish.
-	err := manager.Close(context.Background())
+	_, err := manager.GetConnection(context.Background(), "tenant-slow")
 	require.NoError(t, err)
 
-	// If Close() properly waited, no goroutines should be leaked.
-	// We verify by checking the manager is fully closed and maps are cleared.
+	err = manager.Close(context.Background())
+	require.NoError(t, err)
+
 	assert.True(t, manager.closed, "manager should be closed")
 	assert.Empty(t, manager.connections, "connections should be cleared after Close")
 }

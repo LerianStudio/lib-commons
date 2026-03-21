@@ -241,7 +241,7 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 // If a cached client fails a health check (e.g., due to credential rotation
 // after a tenant purge+re-associate), the stale client is evicted and a new
 // one is created with fresh credentials from the Tenant Manager.
-func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Client, error) {
+func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Client, error) { //nolint:gocognit // complexity from connection lifecycle (ping, revalidate, evict) is inherent
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -288,23 +288,23 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Cl
 			now := time.Now()
 
 			p.mu.Lock()
-			if _, stillExists := p.connections[tenantID]; stillExists {
+			if current, stillExists := p.connections[tenantID]; stillExists && current == conn {
 				p.lastAccessed[tenantID] = now
 
-				// Only revalidate if settingsCheckInterval > 0 (means revalidation is enabled)
 				shouldRevalidate := p.client != nil && p.settingsCheckInterval > 0 && time.Since(p.lastSettingsCheck[tenantID]) > p.settingsCheckInterval
 				if shouldRevalidate {
-					// Update timestamp BEFORE spawning goroutine to prevent multiple
-					// concurrent revalidation checks for the same tenant.
 					p.lastSettingsCheck[tenantID] = now
+					p.revalidateWG.Add(1)
 				}
 
 				p.mu.Unlock()
 
 				if shouldRevalidate {
-					p.revalidateWG.Go(func() { //#nosec G118 -- intentional: revalidatePoolSettings creates its own timeout context; must not use request-scoped context as this outlives the request
+					go func() { //#nosec G118 -- intentional: revalidatePoolSettings creates its own timeout context; must not use request-scoped context as this outlives the request
+						defer p.revalidateWG.Done()
+
 						p.revalidatePoolSettings(tenantID)
-					})
+					}()
 				}
 
 				return conn.DB, nil
@@ -356,7 +356,10 @@ func (p *Manager) revalidatePoolSettings(tenantID string) {
 				p.logger.Warnf("tenant %s service suspended, evicting cached connection", tenantID)
 			}
 
-			_ = p.CloseConnection(context.Background(), tenantID)
+			evictCtx, evictCancel := context.WithTimeout(context.Background(), settingsRevalidationTimeout)
+			defer evictCancel()
+
+			_ = p.CloseConnection(evictCtx, tenantID)
 
 			return
 		}
