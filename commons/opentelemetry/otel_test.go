@@ -4,6 +4,7 @@ package opentelemetry
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -193,6 +194,89 @@ func TestNewTelemetry_EndpointNormalization(t *testing.T) {
 			assert.Equal(t, tt.wantInsecure, tl.InsecureExporter,
 				"InsecureExporter should be inferred from scheme")
 		})
+	}
+}
+
+// ===========================================================================
+// 1c. Endpoint environment variable normalization
+// ===========================================================================
+
+func TestNormalizeEndpointEnvVars(t *testing.T) {
+	envKeys := []string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+	}
+
+	tests := []struct {
+		name     string
+		value    string
+		set      bool
+		expected string
+	}{
+		{
+			name:     "bare host:port gets http scheme",
+			value:    "10.10.0.202:4317",
+			set:      true,
+			expected: "http://10.10.0.202:4317",
+		},
+		{
+			name:     "hostname:port gets http scheme",
+			value:    "otel-collector:4317",
+			set:      true,
+			expected: "http://otel-collector:4317",
+		},
+		{
+			name:     "http scheme preserved",
+			value:    "http://otel-collector:4317",
+			set:      true,
+			expected: "http://otel-collector:4317",
+		},
+		{
+			name:     "https scheme preserved",
+			value:    "https://otel-collector:4317",
+			set:      true,
+			expected: "https://otel-collector:4317",
+		},
+		{
+			name:     "whitespace trimmed before adding scheme",
+			value:    "  10.10.0.202:4317  ",
+			set:      true,
+			expected: "http://10.10.0.202:4317",
+		},
+		{
+			name:     "empty value skipped",
+			value:    "",
+			set:      true,
+			expected: "",
+		},
+		{
+			name:     "whitespace-only value skipped",
+			value:    "   ",
+			set:      true,
+			expected: "   ",
+		},
+		{
+			name:     "unset env var skipped",
+			value:    "",
+			set:      false,
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		for _, key := range envKeys {
+			t.Run(tt.name+"/"+key, func(t *testing.T) {
+				if tt.set {
+					t.Setenv(key, tt.value)
+				}
+
+				normalizeEndpointEnvVars()
+
+				got := os.Getenv(key)
+				assert.Equal(t, tt.expected, got)
+			})
+		}
 	}
 }
 
