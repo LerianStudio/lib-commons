@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -99,6 +100,7 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 	}
 
 	normalizeEndpoint(&cfg)
+	normalizeEndpointEnvVars()
 
 	if cfg.EnableTelemetry && strings.TrimSpace(cfg.CollectorExporterEndpoint) == "" {
 		return handleEmptyEndpoint(cfg)
@@ -140,6 +142,25 @@ func normalizeEndpoint(cfg *TelemetryConfig) {
 	default:
 		// No scheme — assume insecure (common in k8s internal comms).
 		cfg.InsecureExporter = true
+	}
+}
+
+// normalizeEndpointEnvVars ensures OTEL exporter endpoint environment variables
+// contain a URL scheme. The OTEL SDK's envconfig reads these via url.Parse(),
+// which fails on bare "host:port" values. Adding "http://" prevents noisy
+// "parse url" errors from the SDK's internal logger.
+func normalizeEndpointEnvVars() {
+	for _, key := range []string{
+		"OTEL_EXPORTER_OTLP_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+	} {
+		v := strings.TrimSpace(os.Getenv(key))
+		if v == "" || strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
+			continue
+		}
+
+		_ = os.Setenv(key, "http://"+v)
 	}
 }
 
