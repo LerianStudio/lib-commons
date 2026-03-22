@@ -119,6 +119,7 @@ func buildConfigByEnvironment(environment Environment) zap.Config {
 		cfg := zap.NewDevelopmentConfig()
 		cfg.Encoding = encoding
 		cfg.EncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+		cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 
 		if encoding == encodingConsole {
 			cfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
@@ -130,6 +131,7 @@ func buildConfigByEnvironment(environment Environment) zap.Config {
 	cfg := zap.NewProductionConfig()
 	cfg.Encoding = encoding
 	cfg.EncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
+	cfg.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 
 	return cfg
 }
