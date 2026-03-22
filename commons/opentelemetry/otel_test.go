@@ -182,10 +182,10 @@ func TestNewTelemetry_EndpointNormalization(t *testing.T) {
 			// Use telemetry disabled so we don't need a real collector.
 			tl, err := NewTelemetry(TelemetryConfig{
 				LibraryName:               "test-lib",
-				EnableTelemetry:            false,
-				CollectorExporterEndpoint:  tt.endpoint,
-				InsecureExporter:           tt.insecureOverride,
-				Logger:                     log.NewNop(),
+				EnableTelemetry:           false,
+				CollectorExporterEndpoint: tt.endpoint,
+				InsecureExporter:          tt.insecureOverride,
+				Logger:                    log.NewNop(),
 			})
 			require.NoError(t, err)
 			require.NotNil(t, tl)
