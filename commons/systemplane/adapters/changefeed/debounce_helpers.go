@@ -60,10 +60,7 @@ func (ds *debounceState) resetTimer() {
 		}
 	}
 
-	delay := time.Until(nextDueAt)
-	if delay < 0 {
-		delay = 0
-	}
+	delay := max(time.Until(nextDueAt), 0)
 
 	if ds.timer == nil {
 		ds.timer = time.NewTimer(delay)

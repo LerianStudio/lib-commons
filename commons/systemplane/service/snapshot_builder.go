@@ -149,10 +149,7 @@ func (builder *SnapshotBuilder) buildTenantSettings(ctx context.Context, tenantI
 
 	applyOverrides(effective, tenantResult.Entries, "tenant-override")
 
-	effectiveRevision := globalResult.Revision
-	if tenantResult.Revision > effectiveRevision {
-		effectiveRevision = tenantResult.Revision
-	}
+	effectiveRevision := max(tenantResult.Revision, globalResult.Revision)
 
 	setRevision(effective, effectiveRevision)
 

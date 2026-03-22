@@ -460,7 +460,7 @@ func TestConcurrentPuts(t *testing.T, factory Factory) {
 
 	wg.Add(goroutines)
 
-	for i := 0; i < goroutines; i++ {
+	for i := range goroutines {
 		value := i
 
 		runtime.SafeGo(nil, "storetest.concurrent_put", runtime.KeepRunning, func() {
@@ -702,7 +702,7 @@ func TestHistoryPagination(t *testing.T, factory Factory) {
 	require.Len(t, all, historyEntriesCount)
 
 	// Verify newest-first ordering.
-	for i := 0; i < len(all)-1; i++ {
+	for i := range len(all) - 1 {
 		assert.GreaterOrEqual(t, all[i].Revision.Uint64(), all[i+1].Revision.Uint64(),
 			"history must be newest-first")
 	}

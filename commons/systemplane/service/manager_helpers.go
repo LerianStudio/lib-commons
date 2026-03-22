@@ -4,6 +4,7 @@ package service
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/domain"
@@ -234,11 +235,5 @@ func maskRedactedValue(value any) any {
 }
 
 func scopeAllowed(allowed []domain.Scope, target domain.Scope) bool {
-	for _, scope := range allowed {
-		if scope == target {
-			return true
-		}
-	}
-
-	return false
+	return slices.Contains(allowed, target)
 }

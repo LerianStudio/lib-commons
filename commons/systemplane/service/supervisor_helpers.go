@@ -21,7 +21,7 @@ type resourceAdopter interface {
 }
 
 type rollbackDiscarder interface {
-	Discard(context.Context) error
+	Discard(ctx context.Context) error
 }
 
 func discardFailedCandidate(ctx context.Context, candidate domain.RuntimeBundle, strategy BuildStrategy) {
@@ -53,10 +53,10 @@ func discardFailedCandidate(ctx context.Context, candidate domain.RuntimeBundle,
 }
 
 func startSupervisorSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
-	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
-	ctx, span := tracer.Start(ctx, "systemplane.supervisor."+operation)
+	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)           //nolint:dogsled
+	ctx, span := tracer.Start(ctx, "systemplane.supervisor."+operation) //nolint:spancheck // Caller owns the returned span lifecycle.
 
-	return ctx, span
+	return ctx, span //nolint:spancheck // Caller owns the returned span lifecycle.
 }
 
 func (supervisor *defaultSupervisor) isStopped() bool {
