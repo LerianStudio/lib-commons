@@ -83,7 +83,7 @@ func New(ctx context.Context, cfg *bootstrap.PostgresBootstrapConfig, secrets *b
 	}
 
 	codec, err := secretcodec.New(secretsMasterKey(secrets), secretsKeys(secrets))
-	if err != nil {
+	if err != nil && !errors.Is(err, secretcodec.ErrNoSecretKeys) {
 		return nil, nil, nil, fmt.Errorf("postgres store: init secret codec: %w", err)
 	}
 

@@ -27,6 +27,8 @@ const (
 )
 
 var (
+	// ErrNoSecretKeys indicates no secret keys were configured, so no codec was created.
+	ErrNoSecretKeys = errors.New("systemplane secret codec: no secret keys configured")
 	// ErrMasterKeyRequired indicates the codec was configured without a master key.
 	ErrMasterKeyRequired = errors.New("systemplane secret codec: master key is required")
 	// ErrWeakMasterKey indicates the provided master key does not meet size requirements.
@@ -53,7 +55,7 @@ type envelope struct {
 // New constructs a codec when secret keys are configured.
 func New(masterKey string, secretKeys []string) (*Codec, error) {
 	if len(secretKeys) == 0 {
-		return nil, nil
+		return nil, ErrNoSecretKeys
 	}
 
 	if strings.TrimSpace(masterKey) == "" {
