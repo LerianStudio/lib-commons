@@ -4,6 +4,7 @@ go 1.25.7
 
 require (
 	cloud.google.com/go/iam v1.5.3
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/aws/aws-sdk-go-v2 v1.41.3
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.3
@@ -29,6 +30,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.41.0
 	go.mongodb.org/mongo-driver v1.17.9
+	go.mongodb.org/mongo-driver/v2 v2.3.0
 	go.opentelemetry.io/contrib/bridges/otelzap v0.17.0
 	go.opentelemetry.io/otel v1.42.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.18.0
