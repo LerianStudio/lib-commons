@@ -436,4 +436,3 @@ func TestServer_RetryAfter_CeilingDivision(t *testing.T) {
 	assert.Equal(t, "1", resp.Header.Get("Retry-After"),
 		"Retry-After should be 1 (ceiling of sub-second TTL), not 0")
 }
-

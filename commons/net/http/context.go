@@ -1,10 +1,9 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"sync"
-
-	"context"
 
 	"github.com/gofiber/fiber/v2"
 )
