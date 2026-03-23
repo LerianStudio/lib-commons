@@ -327,9 +327,9 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Cl
 }
 
 // revalidatePoolSettings fetches fresh config from the Tenant Manager and detects
-// whether the tenant has been suspended or purged. For MongoDB, the driver does not
-// support changing pool size after client creation, so this method only checks for
-// tenant status changes and evicts the cached connection if the tenant is suspended.
+// whether the tenant has been suspended or purged. It also detects connection-level
+// config changes (host, port, database, credentials, TLS settings) and triggers a
+// graceful reconnection when they differ from the cached connection.
 // This runs asynchronously (in a goroutine) and must never block GetConnection.
 // If the fetch fails, a warning is logged but the connection remains usable.
 func (p *Manager) revalidatePoolSettings(tenantID string) {
@@ -346,7 +346,7 @@ func (p *Manager) revalidatePoolSettings(tenantID string) {
 	revalidateCtx, cancel := context.WithTimeout(context.Background(), settingsRevalidationTimeout)
 	defer cancel()
 
-	_, err := p.client.GetTenantConfig(revalidateCtx, tenantID, p.service, client.WithSkipCache())
+	config, err := p.client.GetTenantConfig(revalidateCtx, tenantID, p.service, client.WithSkipCache())
 	if err != nil {
 		// If tenant service was suspended/purged, evict the cached connection immediately.
 		// The next request for this tenant will call createConnection, which fetches fresh
@@ -371,7 +371,128 @@ func (p *Manager) revalidatePoolSettings(tenantID string) {
 		return
 	}
 
+	// Detect connection-level config changes and trigger graceful reconnection.
+	if p.detectAndReconnectMongo(revalidateCtx, tenantID, config) {
+		return // reconnection handled; skip no-op ApplyConnectionSettings
+	}
+
 	p.ApplyConnectionSettings(tenantID, nil)
+}
+
+// detectAndReconnectMongo compares the fresh MongoDB config against the cached
+// connection URI and triggers a graceful reconnection if connection-level fields
+// have changed (host, port, database, username, password, authSource, TLS settings).
+// Returns true if a reconnection was attempted (regardless of success), false if
+// no config change was detected.
+//
+// The reconnection is graceful: the new connection is established first, and the
+// old one is replaced and closed only after the new one is ready. If the new
+// connection fails, the old one is kept to avoid breaking existing tenants.
+func (p *Manager) detectAndReconnectMongo(ctx context.Context, tenantID string, config *core.TenantConfig) bool {
+	mongoConfig := config.GetMongoDBConfig(p.service, p.module)
+	if mongoConfig == nil {
+		return false
+	}
+
+	freshURI, err := buildMongoURI(mongoConfig, p.logger)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warnf("config change detection: invalid MongoDB URI for tenant %s: %v", tenantID, err)
+		}
+
+		return false
+	}
+
+	changed := p.hasMongoConfigChanged(tenantID, freshURI)
+	if !changed {
+		return false
+	}
+
+	// Config changed — attempt graceful reconnection.
+	if p.logger != nil {
+		p.logger.Infof("tenant %s MongoDB config changed, reconnecting", tenantID)
+	}
+
+	return p.reconnectMongo(ctx, tenantID, mongoConfig, freshURI)
+}
+
+// hasMongoConfigChanged reads the cached connection URI under read lock
+// and returns true if it differs from freshURI.
+func (p *Manager) hasMongoConfigChanged(tenantID, freshURI string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	conn, ok := p.connections[tenantID]
+	if !ok || conn == nil {
+		return false
+	}
+
+	return conn.ConnectionStringSource != freshURI
+}
+
+// reconnectMongo builds a new connection from the fresh config and replaces
+// the cached one. If the new connection fails, the old one is kept.
+// Returns true to indicate a reconnection was attempted.
+func (p *Manager) reconnectMongo(ctx context.Context, tenantID string, mongoConfig *core.MongoDBConfig, freshURI string) bool {
+	maxConnections := DefaultMaxConnections
+	if mongoConfig.MaxPoolSize > 0 {
+		maxConnections = mongoConfig.MaxPoolSize
+	}
+
+	newConn := &MongoConnection{
+		ConnectionStringSource: freshURI,
+		Database:               mongoConfig.Database,
+		Logger:                 p.logger.Base(),
+		MaxPoolSize:            maxConnections,
+	}
+
+	// Apply TLS config if separate cert+key files are provided.
+	if hasSeparateCertAndKey(mongoConfig) {
+		tlsCfg, tlsErr := buildTLSConfigFromFiles(mongoConfig)
+		if tlsErr != nil {
+			if p.logger != nil {
+				p.logger.Warnf("config change: failed to build TLS config for tenant %s, keeping old connection: %v", tenantID, tlsErr)
+			}
+
+			return true
+		}
+
+		newConn.tlsConfig = tlsCfg
+	}
+
+	if err := newConn.Connect(ctx); err != nil {
+		if p.logger != nil {
+			p.logger.Warnf("config change: failed to connect to new MongoDB for tenant %s, keeping old connection: %v", tenantID, err)
+		}
+
+		return true
+	}
+
+	// Replace the cached connection under write lock and disconnect the old one.
+	p.mu.Lock()
+
+	oldConn := p.connections[tenantID]
+	p.connections[tenantID] = newConn
+	p.databaseNames[tenantID] = mongoConfig.Database
+	p.lastAccessed[tenantID] = time.Now()
+
+	p.mu.Unlock()
+
+	// Disconnect the old connection after releasing the lock.
+	if oldConn != nil && oldConn.DB != nil {
+		discCtx, discCancel := context.WithTimeout(ctx, mongoPingTimeout)
+		if discErr := oldConn.DB.Disconnect(discCtx); discErr != nil && p.logger != nil {
+			p.logger.Warnf("config change: failed to disconnect old MongoDB for tenant %s: %v", tenantID, discErr)
+		}
+
+		discCancel()
+	}
+
+	if p.logger != nil {
+		p.logger.Infof("tenant %s MongoDB connection replaced with updated config", tenantID)
+	}
+
+	return true
 }
 
 // createConnection fetches config from Tenant Manager and creates a MongoDB client.

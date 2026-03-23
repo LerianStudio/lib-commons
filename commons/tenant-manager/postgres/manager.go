@@ -362,6 +362,9 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*Postgres
 
 // revalidatePoolSettings fetches fresh config from the Tenant Manager and applies
 // updated connection pool settings to the cached connection for the given tenant.
+// It also detects connection-level config changes (host, port, database, credentials,
+// schema, sslmode) and triggers a graceful reconnection when they differ from the
+// cached connection string.
 // This runs asynchronously (in a goroutine) and must never block GetConnection.
 // If the fetch fails, a warning is logged but the connection remains usable.
 func (p *Manager) revalidatePoolSettings(tenantID string) {
@@ -400,7 +403,130 @@ func (p *Manager) revalidatePoolSettings(tenantID string) {
 		return
 	}
 
+	// Detect connection-level config changes (host, port, credentials, etc.)
+	// and trigger a graceful reconnection when they differ from the cached connection.
+	if p.detectAndReconnectPostgres(revalidateCtx, tenantID, config) {
+		return // reconnection handled; skip pool-settings-only path
+	}
+
 	p.ApplyConnectionSettings(tenantID, config)
+}
+
+// detectAndReconnectPostgres compares the fresh PostgreSQL config against the
+// cached connection string and triggers a graceful reconnection if connection-level
+// fields have changed (host, port, database, username, password, schema, sslmode).
+// Returns true if a reconnection was attempted (regardless of success), false if
+// no config change was detected.
+//
+// The reconnection is graceful: the new connection is established first, and the
+// old one is replaced and closed only after the new one is ready. If the new
+// connection fails, the old one is kept to avoid breaking existing tenants.
+func (p *Manager) detectAndReconnectPostgres(ctx context.Context, tenantID string, config *core.TenantConfig) bool {
+	pgConfig := config.GetPostgreSQLConfig(p.service, p.module)
+	if pgConfig == nil {
+		return false
+	}
+
+	freshConnStr, err := buildConnectionString(pgConfig)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warnf("config change detection: invalid connection string for tenant %s: %v", tenantID, err)
+		}
+
+		return false
+	}
+
+	changed := p.hasPostgresConfigChanged(tenantID, freshConnStr)
+	if !changed {
+		return false
+	}
+
+	// Config changed — attempt graceful reconnection.
+	if p.logger != nil {
+		p.logger.Infof("tenant %s PostgreSQL config changed, reconnecting", tenantID)
+	}
+
+	return p.reconnectPostgres(ctx, tenantID, config, pgConfig, freshConnStr)
+}
+
+// hasPostgresConfigChanged reads the cached connection string under read lock
+// and returns true if it differs from freshConnStr.
+func (p *Manager) hasPostgresConfigChanged(tenantID, freshConnStr string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	conn, ok := p.connections[tenantID]
+	if !ok || conn == nil {
+		return false
+	}
+
+	return conn.ConnectionStringPrimary != freshConnStr
+}
+
+// reconnectPostgres builds a new connection from the fresh config and replaces
+// the cached one. If the new connection fails, the old one is kept.
+// Returns true to indicate a reconnection was attempted.
+func (p *Manager) reconnectPostgres(
+	ctx context.Context,
+	tenantID string,
+	config *core.TenantConfig,
+	pgConfig *core.PostgreSQLConfig,
+	freshConnStr string,
+) bool {
+	replicaConnStr, replicaDBName, replicaErr := p.resolveReplicaConnection(config, pgConfig, freshConnStr, tenantID, p.logger)
+	if replicaErr != nil {
+		if p.logger != nil {
+			p.logger.Warnf("config change: invalid replica connection for tenant %s, keeping old connection: %v", tenantID, replicaErr)
+		}
+
+		return true
+	}
+
+	maxOpen, maxIdle := p.resolveConnectionPoolSettings(config, tenantID, p.logger)
+
+	newConn := &PostgresConnection{
+		ConnectionStringPrimary: freshConnStr,
+		ConnectionStringReplica: replicaConnStr,
+		PrimaryDBName:           pgConfig.Database,
+		ReplicaDBName:           replicaDBName,
+		MaxOpenConnections:      maxOpen,
+		MaxIdleConnections:      maxIdle,
+		SkipMigrations:          p.IsMultiTenant(),
+	}
+
+	if p.logger != nil {
+		newConn.Logger = p.logger.Base()
+	}
+
+	if err := newConn.Connect(ctx); err != nil {
+		if p.logger != nil {
+			p.logger.Warnf("config change: failed to connect to new PostgreSQL for tenant %s, keeping old connection: %v", tenantID, err)
+		}
+
+		return true
+	}
+
+	// Replace the cached connection under write lock and close the old one.
+	p.mu.Lock()
+
+	oldConn := p.connections[tenantID]
+	p.connections[tenantID] = newConn
+	p.lastAccessed[tenantID] = time.Now()
+
+	p.mu.Unlock()
+
+	// Close the old connection after releasing the lock.
+	if oldConn != nil && oldConn.ConnectionDB != nil {
+		if closeErr := (*oldConn.ConnectionDB).Close(); closeErr != nil && p.logger != nil {
+			p.logger.Warnf("config change: failed to close old PostgreSQL connection for tenant %s: %v", tenantID, closeErr)
+		}
+	}
+
+	if p.logger != nil {
+		p.logger.Infof("tenant %s PostgreSQL connection replaced with updated config", tenantID)
+	}
+
+	return true
 }
 
 // createConnection fetches config from Tenant Manager and creates a connection.

@@ -22,6 +22,16 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+// defaultSettingsCheckInterval is the default interval between periodic
+// connection settings revalidation checks. When a cached connection is
+// returned by GetConnection and this interval has elapsed since the last check,
+// fresh config is fetched from the Tenant Manager asynchronously.
+const defaultSettingsCheckInterval = 30 * time.Second
+
+// settingsRevalidationTimeout is the maximum duration for the HTTP call
+// to the Tenant Manager during async settings revalidation.
+const settingsRevalidationTimeout = 5 * time.Second
+
 // Manager manages RabbitMQ connections per tenant.
 // Each tenant has a dedicated vhost, user, and credentials stored in Tenant Manager.
 // When maxConnections is set (> 0), the manager uses LRU eviction with an idle
@@ -37,11 +47,20 @@ type Manager struct {
 
 	mu             sync.RWMutex
 	connections    map[string]*amqp.Connection
+	cachedURIs     map[string]string // tenantID -> last known connection URI (for change detection)
 	closed         bool
 	maxConnections int                  // soft limit for pool size (0 = unlimited)
 	idleTimeout    time.Duration        // how long before a connection is eligible for eviction
 	lastAccessed   map[string]time.Time // LRU tracking per tenant
 	useTLS         bool                 // use amqps:// scheme instead of amqp://
+
+	lastSettingsCheck     map[string]time.Time // tracks per-tenant last settings revalidation time
+	settingsCheckInterval time.Duration        // configurable interval between settings revalidation checks
+
+	// revalidateWG tracks in-flight revalidatePoolSettings goroutines so Close()
+	// can wait for them to finish before returning. Without this, goroutines
+	// spawned by GetConnection may access Manager state after Close() returns.
+	revalidateWG sync.WaitGroup
 }
 
 // Option configures a Manager.
@@ -83,6 +102,20 @@ func WithIdleTimeout(d time.Duration) Option {
 	}
 }
 
+// WithSettingsCheckInterval sets the interval between periodic connection settings
+// revalidation checks. When GetConnection returns a cached connection and this interval
+// has elapsed since the last check for that tenant, fresh config is fetched from the
+// Tenant Manager asynchronously to detect suspended tenants and config changes.
+//
+// If d <= 0, revalidation is DISABLED (settingsCheckInterval is set to 0).
+// When disabled, no async revalidation checks are performed on cache hits.
+// Default: 30 seconds (defaultSettingsCheckInterval).
+func WithSettingsCheckInterval(d time.Duration) Option {
+	return func(p *Manager) {
+		p.settingsCheckInterval = max(d, 0)
+	}
+}
+
 // WithTLS enables TLS connections (amqps:// scheme) instead of the default
 // plaintext amqp://. Use this for production deployments where RabbitMQ is
 // configured with TLS certificates.
@@ -99,11 +132,14 @@ func WithTLS() Option {
 //   - opts: Optional configuration options
 func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 	p := &Manager{
-		client:       c,
-		service:      service,
-		logger:       logcompat.New(nil),
-		connections:  make(map[string]*amqp.Connection),
-		lastAccessed: make(map[string]time.Time),
+		client:                c,
+		service:               service,
+		logger:                logcompat.New(nil),
+		connections:           make(map[string]*amqp.Connection),
+		cachedURIs:            make(map[string]string),
+		lastAccessed:          make(map[string]time.Time),
+		lastSettingsCheck:     make(map[string]time.Time),
+		settingsCheckInterval: defaultSettingsCheckInterval,
 	}
 
 	for _, opt := range opts {
@@ -134,12 +170,32 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Con
 	if conn, ok := p.connections[tenantID]; ok && !conn.IsClosed() {
 		p.mu.RUnlock()
 
-		// Update LRU tracking on cache hit
+		// Update LRU tracking on cache hit and check if settings revalidation is due
+		now := time.Now()
+
 		p.mu.Lock()
 		// Re-read connection from map (may have been evicted and closed between locks)
 		if refreshedConn, still := p.connections[tenantID]; still && !refreshedConn.IsClosed() {
-			p.lastAccessed[tenantID] = time.Now()
+			p.lastAccessed[tenantID] = now
+
+			// Only revalidate if settingsCheckInterval > 0 (means revalidation is enabled)
+			shouldRevalidate := p.client != nil && p.settingsCheckInterval > 0 && time.Since(p.lastSettingsCheck[tenantID]) > p.settingsCheckInterval
+			if shouldRevalidate {
+				// Update timestamp BEFORE spawning goroutine to prevent multiple
+				// concurrent revalidation checks for the same tenant.
+				p.lastSettingsCheck[tenantID] = now
+				p.revalidateWG.Add(1)
+			}
+
 			p.mu.Unlock()
+
+			if shouldRevalidate {
+				go func() { //#nosec G118 -- intentional: revalidatePoolSettings creates its own timeout context; must not use request-scoped context as this outlives the request
+					defer p.revalidateWG.Done()
+
+					p.revalidatePoolSettings(tenantID)
+				}()
+			}
 
 			return refreshedConn, nil
 		}
@@ -255,8 +311,9 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 	// Evict least recently used connection if pool is full
 	p.evictLRU(logger.Base())
 
-	// Cache our new connection
+	// Cache our new connection and its URI for config change detection
 	p.connections[tenantID] = conn
+	p.cachedURIs[tenantID] = uri
 	p.lastAccessed[tenantID] = time.Now()
 
 	p.mu.Unlock()
@@ -291,7 +348,9 @@ func (p *Manager) evictLRU(logger log.Logger) {
 		}
 
 		delete(p.connections, candidateID)
+		delete(p.cachedURIs, candidateID)
 		delete(p.lastAccessed, candidateID)
+		delete(p.lastSettingsCheck, candidateID)
 	}
 }
 
@@ -316,9 +375,11 @@ func (p *Manager) GetChannel(ctx context.Context, tenantID string) (*amqp.Channe
 }
 
 // Close closes all RabbitMQ connections.
+// It waits for any in-flight revalidatePoolSettings goroutines to finish
+// before returning, preventing goroutine leaks and use-after-close races.
 func (p *Manager) Close(_ context.Context) error {
+	// Phase 1: Under lock, mark closed and close all connections.
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	p.closed = true
 
@@ -332,8 +393,17 @@ func (p *Manager) Close(_ context.Context) error {
 		}
 
 		delete(p.connections, tenantID)
+		delete(p.cachedURIs, tenantID)
 		delete(p.lastAccessed, tenantID)
+		delete(p.lastSettingsCheck, tenantID)
 	}
+
+	p.mu.Unlock()
+
+	// Phase 2: Wait for in-flight revalidatePoolSettings goroutines OUTSIDE the lock.
+	// revalidatePoolSettings acquires p.mu internally (via CloseConnection),
+	// so waiting with the lock held would deadlock.
+	p.revalidateWG.Wait()
 
 	return errors.Join(errs...)
 }
@@ -354,7 +424,9 @@ func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 	}
 
 	delete(p.connections, tenantID)
+	delete(p.cachedURIs, tenantID)
 	delete(p.lastAccessed, tenantID)
+	delete(p.lastSettingsCheck, tenantID)
 
 	return err
 }
@@ -364,6 +436,116 @@ func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 // This method exists to satisfy a common manager interface.
 func (p *Manager) ApplyConnectionSettings(_ string, _ *core.TenantConfig) {
 	// no-op: RabbitMQ connections do not have adjustable pool settings.
+}
+
+// revalidatePoolSettings fetches fresh config from the Tenant Manager and detects
+// whether the tenant has been suspended or purged. It also detects connection-level
+// config changes (host, port, vhost, credentials, TLS settings) and triggers a
+// graceful reconnection when they differ from the cached connection.
+// This runs asynchronously (in a goroutine) and must never block GetConnection.
+// If the fetch fails, a warning is logged but the connection remains usable.
+func (p *Manager) revalidatePoolSettings(tenantID string) {
+	// Guard: recover from any panic to avoid crashing the process.
+	// This goroutine runs asynchronously and must never bring down the service.
+	defer func() {
+		if r := recover(); r != nil {
+			if p.logger != nil {
+				p.logger.Warnf("recovered from panic during settings revalidation for tenant %s: %v", tenantID, r)
+			}
+		}
+	}()
+
+	revalidateCtx, cancel := context.WithTimeout(context.Background(), settingsRevalidationTimeout)
+	defer cancel()
+
+	config, err := p.client.GetTenantConfig(revalidateCtx, tenantID, p.service, client.WithSkipCache())
+	if err != nil {
+		if core.IsTenantSuspendedError(err) {
+			if p.logger != nil {
+				p.logger.Warnf("tenant %s service suspended, evicting cached connection", tenantID)
+			}
+
+			_ = p.CloseConnection(context.Background(), tenantID)
+
+			return
+		}
+
+		if p.logger != nil {
+			p.logger.Warnf("failed to revalidate connection settings for tenant %s: %v", tenantID, err)
+		}
+
+		return
+	}
+
+	// Detect connection-level config changes and trigger graceful reconnection.
+	p.detectAndReconnectRabbitMQ(tenantID, config)
+}
+
+// detectAndReconnectRabbitMQ compares the fresh RabbitMQ config against the cached
+// connection URI and triggers a graceful reconnection if connection-level fields
+// have changed (host, port, vhost, username, password, TLS settings).
+//
+// The reconnection is graceful: the new connection is established first, and the
+// old one is replaced and closed only after the new one is ready. If the new
+// connection fails, the old one is kept to avoid breaking existing tenants.
+func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.TenantConfig) {
+	rabbitConfig := config.GetRabbitMQConfig()
+	if rabbitConfig == nil {
+		return
+	}
+
+	useTLS := p.resolveTLS(rabbitConfig)
+	freshURI := buildRabbitMQURI(rabbitConfig, useTLS)
+
+	// Read the cached URI under read lock.
+	p.mu.RLock()
+	cachedURI, hasCachedURI := p.cachedURIs[tenantID]
+
+	if !hasCachedURI {
+		p.mu.RUnlock()
+		return
+	}
+
+	p.mu.RUnlock()
+
+	if cachedURI == freshURI {
+		return // no connection-level change
+	}
+
+	// Config changed — attempt graceful reconnection.
+	if p.logger != nil {
+		p.logger.Infof("tenant %s RabbitMQ config changed, reconnecting", tenantID)
+	}
+
+	newConn, err := p.dialRabbitMQ(freshURI, useTLS, rabbitConfig.TLSCAFile)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warnf("config change: failed to connect to new RabbitMQ for tenant %s, keeping old connection: %v", tenantID, err)
+		}
+
+		return
+	}
+
+	// Replace the cached connection under write lock and close the old one.
+	p.mu.Lock()
+
+	oldConn := p.connections[tenantID]
+	p.connections[tenantID] = newConn
+	p.cachedURIs[tenantID] = freshURI
+	p.lastAccessed[tenantID] = time.Now()
+
+	p.mu.Unlock()
+
+	// Close the old connection after releasing the lock.
+	if oldConn != nil && !oldConn.IsClosed() {
+		if closeErr := oldConn.Close(); closeErr != nil && p.logger != nil {
+			p.logger.Warnf("config change: failed to close old RabbitMQ connection for tenant %s: %v", tenantID, closeErr)
+		}
+	}
+
+	if p.logger != nil {
+		p.logger.Infof("tenant %s RabbitMQ connection replaced with updated config", tenantID)
+	}
 }
 
 // Stats returns connection statistics.
