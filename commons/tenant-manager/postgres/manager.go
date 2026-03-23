@@ -436,7 +436,17 @@ func (p *Manager) detectAndReconnectPostgres(ctx context.Context, tenantID strin
 		return false
 	}
 
-	changed := p.hasPostgresConfigChanged(tenantID, freshConnStr)
+	// Also resolve the fresh replica DSN for comparison. When no dedicated
+	// replica is configured, the replica DSN defaults to the primary (matching
+	// the behavior of resolveReplicaConnection used during createConnection).
+	freshReplicaConnStr := freshConnStr // default: same as primary
+	if pgReplicaConfig := config.GetPostgreSQLReplicaConfig(p.service, p.module); pgReplicaConfig != nil {
+		if replicaStr, buildErr := buildConnectionString(pgReplicaConfig); buildErr == nil {
+			freshReplicaConnStr = replicaStr
+		}
+	}
+
+	changed := p.hasPostgresConfigChanged(tenantID, freshConnStr, freshReplicaConnStr)
 	if !changed {
 		return false
 	}
@@ -449,9 +459,9 @@ func (p *Manager) detectAndReconnectPostgres(ctx context.Context, tenantID strin
 	return p.reconnectPostgres(ctx, tenantID, config, pgConfig, freshConnStr)
 }
 
-// hasPostgresConfigChanged reads the cached connection string under read lock
-// and returns true if it differs from freshConnStr.
-func (p *Manager) hasPostgresConfigChanged(tenantID, freshConnStr string) bool {
+// hasPostgresConfigChanged reads the cached connection strings under read lock
+// and returns true if either the primary or replica DSN differs from the fresh values.
+func (p *Manager) hasPostgresConfigChanged(tenantID, freshPrimaryConnStr, freshReplicaConnStr string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -460,7 +470,28 @@ func (p *Manager) hasPostgresConfigChanged(tenantID, freshConnStr string) bool {
 		return false
 	}
 
-	return conn.ConnectionStringPrimary != freshConnStr
+	if conn.ConnectionStringPrimary != freshPrimaryConnStr {
+		return true
+	}
+
+	// Compare replica DSN. When the cached replica is empty (connection was set
+	// up without an explicit replica) or equals the primary (default behavior of
+	// resolveReplicaConnection), normalize both sides to the primary for comparison.
+	cachedReplica := conn.ConnectionStringReplica
+	if cachedReplica == "" || cachedReplica == conn.ConnectionStringPrimary {
+		cachedReplica = freshPrimaryConnStr
+	}
+
+	freshReplica := freshReplicaConnStr
+	if freshReplica == "" || freshReplica == freshPrimaryConnStr {
+		freshReplica = freshPrimaryConnStr
+	}
+
+	if cachedReplica != freshReplica {
+		return true
+	}
+
+	return false
 }
 
 // reconnectPostgres builds a new connection from the fresh config and replaces
@@ -508,6 +539,33 @@ func (p *Manager) reconnectPostgres(
 
 	// Replace the cached connection under write lock and close the old one.
 	p.mu.Lock()
+
+	// Re-check after acquiring the lock: the manager may have been closed or
+	// the tenant evicted while we were dialing. If so, discard the new
+	// connection to avoid resurrecting a removed/closed tenant entry.
+	if p.closed {
+		p.mu.Unlock()
+
+		if newConn.ConnectionDB != nil {
+			if closeErr := (*newConn.ConnectionDB).Close(); closeErr != nil && p.logger != nil {
+				p.logger.Warnf("config change: failed to close new PostgreSQL connection for tenant %s after manager closed: %v", tenantID, closeErr)
+			}
+		}
+
+		return true
+	}
+
+	if _, stillExists := p.connections[tenantID]; !stillExists {
+		p.mu.Unlock()
+
+		if newConn.ConnectionDB != nil {
+			if closeErr := (*newConn.ConnectionDB).Close(); closeErr != nil && p.logger != nil {
+				p.logger.Warnf("config change: failed to close new PostgreSQL connection for tenant %s after eviction: %v", tenantID, closeErr)
+			}
+		}
+
+		return true
+	}
 
 	oldConn := p.connections[tenantID]
 	p.connections[tenantID] = newConn

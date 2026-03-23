@@ -311,9 +311,15 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 	// Evict least recently used connection if pool is full
 	p.evictLRU(logger.Base())
 
-	// Cache our new connection and its URI for config change detection
+	// Cache our new connection and its URI for config change detection.
+	// Include TLSCAFile in the cached key so CA file changes trigger reconnection.
+	cachedKey := uri
+	if rabbitConfig.TLSCAFile != "" {
+		cachedKey += "|ca=" + rabbitConfig.TLSCAFile
+	}
+
 	p.connections[tenantID] = conn
-	p.cachedURIs[tenantID] = uri
+	p.cachedURIs[tenantID] = cachedKey
 	p.lastAccessed[tenantID] = time.Now()
 
 	p.mu.Unlock()
@@ -508,7 +514,17 @@ func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.Tenan
 
 	p.mu.RUnlock()
 
-	if cachedURI == freshURI {
+	// The URI covers host, port, vhost, credentials, and TLS scheme. The TLS CA
+	// file path is not part of the URI, so we compare it separately by appending
+	// a sentinel to the cached key. This way, a CA file change triggers reconnection.
+	freshKey := freshURI
+	if rabbitConfig.TLSCAFile != "" {
+		freshKey += "|ca=" + rabbitConfig.TLSCAFile
+	}
+
+	cachedKey := cachedURI
+
+	if cachedKey == freshKey {
 		return // no connection-level change
 	}
 
@@ -529,9 +545,32 @@ func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.Tenan
 	// Replace the cached connection under write lock and close the old one.
 	p.mu.Lock()
 
+	// Re-check after acquiring the lock: the manager may have been closed or
+	// the tenant evicted while we were dialing. If so, discard the new
+	// connection to avoid resurrecting a removed/closed tenant entry.
+	if p.closed {
+		p.mu.Unlock()
+
+		if closeErr := newConn.Close(); closeErr != nil && p.logger != nil {
+			p.logger.Warnf("config change: failed to close new RabbitMQ connection for tenant %s after manager closed: %v", tenantID, closeErr)
+		}
+
+		return
+	}
+
+	if _, stillExists := p.connections[tenantID]; !stillExists {
+		p.mu.Unlock()
+
+		if closeErr := newConn.Close(); closeErr != nil && p.logger != nil {
+			p.logger.Warnf("config change: failed to close new RabbitMQ connection for tenant %s after eviction: %v", tenantID, closeErr)
+		}
+
+		return
+	}
+
 	oldConn := p.connections[tenantID]
 	p.connections[tenantID] = newConn
-	p.cachedURIs[tenantID] = freshURI
+	p.cachedURIs[tenantID] = freshKey
 	p.lastAccessed[tenantID] = time.Now()
 
 	p.mu.Unlock()

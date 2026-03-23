@@ -403,7 +403,7 @@ func (p *Manager) detectAndReconnectMongo(ctx context.Context, tenantID string, 
 		return false
 	}
 
-	changed := p.hasMongoConfigChanged(tenantID, freshURI)
+	changed := p.hasMongoConfigChanged(tenantID, freshURI, mongoConfig)
 	if !changed {
 		return false
 	}
@@ -416,9 +416,13 @@ func (p *Manager) detectAndReconnectMongo(ctx context.Context, tenantID string, 
 	return p.reconnectMongo(ctx, tenantID, mongoConfig, freshURI)
 }
 
-// hasMongoConfigChanged reads the cached connection URI under read lock
-// and returns true if it differs from freshURI.
-func (p *Manager) hasMongoConfigChanged(tenantID, freshURI string) bool {
+// hasMongoConfigChanged reads the cached connection under read lock and returns
+// true if any connection-level field differs from the fresh config. This covers:
+//   - URI (host, port, credentials, authSource, TLS params)
+//   - Database name
+//   - MaxPoolSize
+//   - TLS config presence (separate cert+key files)
+func (p *Manager) hasMongoConfigChanged(tenantID, freshURI string, freshConfig *core.MongoDBConfig) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
@@ -427,7 +431,43 @@ func (p *Manager) hasMongoConfigChanged(tenantID, freshURI string) bool {
 		return false
 	}
 
-	return conn.ConnectionStringSource != freshURI
+	// URI covers host, port, credentials, authSource, and inline TLS params.
+	if conn.ConnectionStringSource != freshURI {
+		return true
+	}
+
+	// Database name may change independently of the URI (e.g., tenant migrated
+	// to a different database on the same cluster).
+	if cachedDB, hasCachedDB := p.databaseNames[tenantID]; hasCachedDB && cachedDB != freshConfig.Database {
+		return true
+	}
+
+	// MaxPoolSize change requires a new client (MongoDB driver does not support
+	// runtime pool resize). Normalize both to the effective value: 0 means the
+	// default was used at creation time.
+	freshMaxPool := freshConfig.MaxPoolSize
+	if freshMaxPool == 0 {
+		freshMaxPool = DefaultMaxConnections
+	}
+
+	cachedMaxPool := conn.MaxPoolSize
+	if cachedMaxPool == 0 {
+		cachedMaxPool = DefaultMaxConnections
+	}
+
+	if cachedMaxPool != freshMaxPool {
+		return true
+	}
+
+	// Detect TLS config changes: separate cert+key files toggled on/off.
+	hasFreshSeparateTLS := hasSeparateCertAndKey(freshConfig)
+	hasCachedSeparateTLS := conn.tlsConfig != nil
+
+	if hasFreshSeparateTLS != hasCachedSeparateTLS {
+		return true
+	}
+
+	return false
 }
 
 // reconnectMongo builds a new connection from the fresh config and replaces
@@ -470,6 +510,35 @@ func (p *Manager) reconnectMongo(ctx context.Context, tenantID string, mongoConf
 
 	// Replace the cached connection under write lock and disconnect the old one.
 	p.mu.Lock()
+
+	// Re-check after acquiring the lock: the manager may have been closed or
+	// the tenant evicted while we were dialing. If so, discard the new
+	// connection to avoid resurrecting a removed/closed tenant entry.
+	if p.closed {
+		p.mu.Unlock()
+
+		discCtx, discCancel := context.WithTimeout(ctx, mongoPingTimeout)
+		if discErr := newConn.DB.Disconnect(discCtx); discErr != nil && p.logger != nil {
+			p.logger.Warnf("config change: failed to disconnect new MongoDB for tenant %s after manager closed: %v", tenantID, discErr)
+		}
+
+		discCancel()
+
+		return true
+	}
+
+	if _, stillExists := p.connections[tenantID]; !stillExists {
+		p.mu.Unlock()
+
+		discCtx, discCancel := context.WithTimeout(ctx, mongoPingTimeout)
+		if discErr := newConn.DB.Disconnect(discCtx); discErr != nil && p.logger != nil {
+			p.logger.Warnf("config change: failed to disconnect new MongoDB for tenant %s after eviction: %v", tenantID, discErr)
+		}
+
+		discCancel()
+
+		return true
+	}
 
 	oldConn := p.connections[tenantID]
 	p.connections[tenantID] = newConn
