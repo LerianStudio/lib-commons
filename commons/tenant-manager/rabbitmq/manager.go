@@ -522,9 +522,7 @@ func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.Tenan
 		freshKey += "|ca=" + rabbitConfig.TLSCAFile
 	}
 
-	cachedKey := cachedURI
-
-	if cachedKey == freshKey {
+	if cachedURI == freshKey {
 		return // no connection-level change
 	}
 
@@ -543,30 +541,44 @@ func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.Tenan
 	}
 
 	// Replace the cached connection under write lock and close the old one.
+	if !p.canStoreRabbitMQConnection(tenantID, newConn) {
+		return
+	}
+
+	p.swapRabbitMQConnection(tenantID, newConn, freshKey)
+}
+
+// canStoreRabbitMQConnection acquires the write lock and checks whether the
+// manager is still open and the tenant still exists. If not, it discards
+// newConn and returns false.
+// Caller must NOT hold p.mu.
+func (p *Manager) canStoreRabbitMQConnection(tenantID string, newConn *amqp.Connection) bool {
 	p.mu.Lock()
 
-	// Re-check after acquiring the lock: the manager may have been closed or
-	// the tenant evicted while we were dialing. If so, discard the new
-	// connection to avoid resurrecting a removed/closed tenant entry.
 	if p.closed {
 		p.mu.Unlock()
+		p.closeRabbitMQConn(newConn, "config change: failed to close new RabbitMQ connection for tenant %s after manager closed", tenantID)
 
-		if closeErr := newConn.Close(); closeErr != nil && p.logger != nil {
-			p.logger.Warnf("config change: failed to close new RabbitMQ connection for tenant %s after manager closed: %v", tenantID, closeErr)
-		}
-
-		return
+		return false
 	}
 
 	if _, stillExists := p.connections[tenantID]; !stillExists {
 		p.mu.Unlock()
+		p.closeRabbitMQConn(newConn, "config change: failed to close new RabbitMQ connection for tenant %s after eviction", tenantID)
 
-		if closeErr := newConn.Close(); closeErr != nil && p.logger != nil {
-			p.logger.Warnf("config change: failed to close new RabbitMQ connection for tenant %s after eviction: %v", tenantID, closeErr)
-		}
-
-		return
+		return false
 	}
+
+	p.mu.Unlock()
+
+	return true
+}
+
+// swapRabbitMQConnection replaces the cached connection with newConn under
+// write lock and closes the old connection after releasing the lock.
+// Caller must NOT hold p.mu.
+func (p *Manager) swapRabbitMQConnection(tenantID string, newConn *amqp.Connection, freshKey string) {
+	p.mu.Lock()
 
 	oldConn := p.connections[tenantID]
 	p.connections[tenantID] = newConn
@@ -576,14 +588,21 @@ func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.Tenan
 	p.mu.Unlock()
 
 	// Close the old connection after releasing the lock.
-	if oldConn != nil && !oldConn.IsClosed() {
-		if closeErr := oldConn.Close(); closeErr != nil && p.logger != nil {
-			p.logger.Warnf("config change: failed to close old RabbitMQ connection for tenant %s: %v", tenantID, closeErr)
-		}
-	}
+	p.closeRabbitMQConn(oldConn, "config change: failed to close old RabbitMQ connection for tenant %s", tenantID)
 
 	if p.logger != nil {
 		p.logger.Infof("tenant %s RabbitMQ connection replaced with updated config", tenantID)
+	}
+}
+
+// closeRabbitMQConn closes an AMQP connection and logs a warning on failure.
+func (p *Manager) closeRabbitMQConn(conn *amqp.Connection, msgFmt string, tenantID string) {
+	if conn == nil || conn.IsClosed() {
+		return
+	}
+
+	if closeErr := conn.Close(); closeErr != nil && p.logger != nil {
+		p.logger.Warnf(msgFmt+": %v", tenantID, closeErr)
 	}
 }
 

@@ -463,11 +463,7 @@ func (p *Manager) hasMongoConfigChanged(tenantID, freshURI string, freshConfig *
 	hasFreshSeparateTLS := hasSeparateCertAndKey(freshConfig)
 	hasCachedSeparateTLS := conn.tlsConfig != nil
 
-	if hasFreshSeparateTLS != hasCachedSeparateTLS {
-		return true
-	}
-
-	return false
+	return hasFreshSeparateTLS != hasCachedSeparateTLS
 }
 
 // reconnectMongo builds a new connection from the fresh config and replaces
@@ -509,40 +505,50 @@ func (p *Manager) reconnectMongo(ctx context.Context, tenantID string, mongoConf
 	}
 
 	// Replace the cached connection under write lock and disconnect the old one.
+	if !p.canStoreMongoConnection(ctx, tenantID, newConn) {
+		return true
+	}
+
+	p.swapMongoConnection(ctx, tenantID, newConn, mongoConfig.Database)
+
+	return true
+}
+
+// canStoreMongoConnection acquires the write lock and checks whether the
+// manager is still open and the tenant still exists. If not, it discards
+// newConn and returns false.
+// Caller must NOT hold p.mu.
+func (p *Manager) canStoreMongoConnection(ctx context.Context, tenantID string, newConn *MongoConnection) bool {
 	p.mu.Lock()
 
-	// Re-check after acquiring the lock: the manager may have been closed or
-	// the tenant evicted while we were dialing. If so, discard the new
-	// connection to avoid resurrecting a removed/closed tenant entry.
 	if p.closed {
 		p.mu.Unlock()
+		p.disconnectMongo(ctx, newConn, "config change: failed to disconnect new MongoDB for tenant %s after manager closed", tenantID)
 
-		discCtx, discCancel := context.WithTimeout(ctx, mongoPingTimeout)
-		if discErr := newConn.DB.Disconnect(discCtx); discErr != nil && p.logger != nil {
-			p.logger.Warnf("config change: failed to disconnect new MongoDB for tenant %s after manager closed: %v", tenantID, discErr)
-		}
-
-		discCancel()
-
-		return true
+		return false
 	}
 
 	if _, stillExists := p.connections[tenantID]; !stillExists {
 		p.mu.Unlock()
+		p.disconnectMongo(ctx, newConn, "config change: failed to disconnect new MongoDB for tenant %s after eviction", tenantID)
 
-		discCtx, discCancel := context.WithTimeout(ctx, mongoPingTimeout)
-		if discErr := newConn.DB.Disconnect(discCtx); discErr != nil && p.logger != nil {
-			p.logger.Warnf("config change: failed to disconnect new MongoDB for tenant %s after eviction: %v", tenantID, discErr)
-		}
-
-		discCancel()
-
-		return true
+		return false
 	}
+
+	p.mu.Unlock()
+
+	return true
+}
+
+// swapMongoConnection replaces the cached connection with newConn under write
+// lock and disconnects the old connection after releasing the lock.
+// Caller must NOT hold p.mu.
+func (p *Manager) swapMongoConnection(ctx context.Context, tenantID string, newConn *MongoConnection, database string) {
+	p.mu.Lock()
 
 	oldConn := p.connections[tenantID]
 	p.connections[tenantID] = newConn
-	p.databaseNames[tenantID] = mongoConfig.Database
+	p.databaseNames[tenantID] = database
 	p.lastAccessed[tenantID] = time.Now()
 
 	p.mu.Unlock()
@@ -560,8 +566,16 @@ func (p *Manager) reconnectMongo(ctx context.Context, tenantID string, mongoConf
 	if p.logger != nil {
 		p.logger.Infof("tenant %s MongoDB connection replaced with updated config", tenantID)
 	}
+}
 
-	return true
+// disconnectMongo disconnects a MongoDB connection and logs a warning on failure.
+func (p *Manager) disconnectMongo(ctx context.Context, conn *MongoConnection, msgFmt string, tenantID string) {
+	discCtx, discCancel := context.WithTimeout(ctx, mongoPingTimeout)
+	if discErr := conn.DB.Disconnect(discCtx); discErr != nil && p.logger != nil {
+		p.logger.Warnf(msgFmt+": %v", tenantID, discErr)
+	}
+
+	discCancel()
 }
 
 // createConnection fetches config from Tenant Manager and creates a MongoDB client.

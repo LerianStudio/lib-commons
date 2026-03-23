@@ -440,6 +440,7 @@ func (p *Manager) detectAndReconnectPostgres(ctx context.Context, tenantID strin
 	// replica is configured, the replica DSN defaults to the primary (matching
 	// the behavior of resolveReplicaConnection used during createConnection).
 	freshReplicaConnStr := freshConnStr // default: same as primary
+
 	if pgReplicaConfig := config.GetPostgreSQLReplicaConfig(p.service, p.module); pgReplicaConfig != nil {
 		if replicaStr, buildErr := buildConnectionString(pgReplicaConfig); buildErr == nil {
 			freshReplicaConnStr = replicaStr
@@ -538,34 +539,46 @@ func (p *Manager) reconnectPostgres(
 	}
 
 	// Replace the cached connection under write lock and close the old one.
+	if !p.canStorePostgresConnection(tenantID, newConn) {
+		return true
+	}
+
+	p.swapPostgresConnection(tenantID, newConn)
+
+	return true
+}
+
+// canStorePostgresConnection acquires the write lock and checks whether the
+// manager is still open and the tenant still exists. If not, it discards
+// newConn and returns false.
+// Caller must NOT hold p.mu.
+func (p *Manager) canStorePostgresConnection(tenantID string, newConn *PostgresConnection) bool {
 	p.mu.Lock()
 
-	// Re-check after acquiring the lock: the manager may have been closed or
-	// the tenant evicted while we were dialing. If so, discard the new
-	// connection to avoid resurrecting a removed/closed tenant entry.
 	if p.closed {
 		p.mu.Unlock()
+		p.closePostgresConn(newConn, "config change: failed to close new PostgreSQL connection for tenant %s after manager closed", tenantID)
 
-		if newConn.ConnectionDB != nil {
-			if closeErr := (*newConn.ConnectionDB).Close(); closeErr != nil && p.logger != nil {
-				p.logger.Warnf("config change: failed to close new PostgreSQL connection for tenant %s after manager closed: %v", tenantID, closeErr)
-			}
-		}
-
-		return true
+		return false
 	}
 
 	if _, stillExists := p.connections[tenantID]; !stillExists {
 		p.mu.Unlock()
+		p.closePostgresConn(newConn, "config change: failed to close new PostgreSQL connection for tenant %s after eviction", tenantID)
 
-		if newConn.ConnectionDB != nil {
-			if closeErr := (*newConn.ConnectionDB).Close(); closeErr != nil && p.logger != nil {
-				p.logger.Warnf("config change: failed to close new PostgreSQL connection for tenant %s after eviction: %v", tenantID, closeErr)
-			}
-		}
-
-		return true
+		return false
 	}
+
+	p.mu.Unlock()
+
+	return true
+}
+
+// swapPostgresConnection replaces the cached connection with newConn under
+// write lock and closes the old connection after releasing the lock.
+// Caller must NOT hold p.mu.
+func (p *Manager) swapPostgresConnection(tenantID string, newConn *PostgresConnection) {
+	p.mu.Lock()
 
 	oldConn := p.connections[tenantID]
 	p.connections[tenantID] = newConn
@@ -574,17 +587,22 @@ func (p *Manager) reconnectPostgres(
 	p.mu.Unlock()
 
 	// Close the old connection after releasing the lock.
-	if oldConn != nil && oldConn.ConnectionDB != nil {
-		if closeErr := (*oldConn.ConnectionDB).Close(); closeErr != nil && p.logger != nil {
-			p.logger.Warnf("config change: failed to close old PostgreSQL connection for tenant %s: %v", tenantID, closeErr)
-		}
-	}
+	p.closePostgresConn(oldConn, "config change: failed to close old PostgreSQL connection for tenant %s", tenantID)
 
 	if p.logger != nil {
 		p.logger.Infof("tenant %s PostgreSQL connection replaced with updated config", tenantID)
 	}
+}
 
-	return true
+// closePostgresConn closes a PostgreSQL connection and logs a warning on failure.
+func (p *Manager) closePostgresConn(conn *PostgresConnection, msgFmt string, tenantID string) {
+	if conn == nil || conn.ConnectionDB == nil {
+		return
+	}
+
+	if closeErr := (*conn.ConnectionDB).Close(); closeErr != nil && p.logger != nil {
+		p.logger.Warnf(msgFmt+": %v", tenantID, closeErr)
+	}
 }
 
 // createConnection fetches config from Tenant Manager and creates a connection.
