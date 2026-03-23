@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -1114,12 +1115,16 @@ func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 		WithSettingsCheckInterval(1*time.Millisecond),
 	)
 
-	// Pre-populate cache with a healthy connection and an old settings check time
+	// Pre-populate cache with a healthy connection and an old settings check time.
+	// The ConnectionStringPrimary must match the fresh config so that
+	// detectAndReconnectPostgres sees no config change and falls through
+	// to ApplyConnectionSettings (the pool-settings-only path).
 	tDB := &trackingDB{}
 	var db dbresolver.DB = tDB
 
 	cachedConn := &PostgresConnection{
-		ConnectionDB: &db,
+		ConnectionStringPrimary: "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
+		ConnectionDB:            &db,
 	}
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = time.Now()
@@ -1820,4 +1825,248 @@ func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
 	// Verify the DB was closed
 	assert.True(t, mockDB.closed,
 		"cached connection's DB should have been closed on eviction")
+}
+
+func TestManager_RevalidateSettings_DetectsConfigChange(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		cachedConnStr     string
+		freshHost         string
+		freshPort         int
+		freshDB           string
+		freshUser         string
+		freshPass         string
+		expectReconnect   bool
+		expectLogContains string
+	}{
+		{
+			name:              "reconnects when host changes",
+			cachedConnStr:     "postgres://user:pass@oldhost:5432/testdb?sslmode=disable",
+			freshHost:         "newhost",
+			freshPort:         5432,
+			freshDB:           "testdb",
+			freshUser:         "user",
+			freshPass:         "pass",
+			expectReconnect:   true,
+			expectLogContains: "PostgreSQL config changed",
+		},
+		{
+			name:              "reconnects when port changes",
+			cachedConnStr:     "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
+			freshHost:         "localhost",
+			freshPort:         5433,
+			freshDB:           "testdb",
+			freshUser:         "user",
+			freshPass:         "pass",
+			expectReconnect:   true,
+			expectLogContains: "PostgreSQL config changed",
+		},
+		{
+			name:              "reconnects when database changes",
+			cachedConnStr:     "postgres://user:pass@localhost:5432/olddb?sslmode=disable",
+			freshHost:         "localhost",
+			freshPort:         5432,
+			freshDB:           "newdb",
+			freshUser:         "user",
+			freshPass:         "pass",
+			expectReconnect:   true,
+			expectLogContains: "PostgreSQL config changed",
+		},
+		{
+			name:              "reconnects when username changes",
+			cachedConnStr:     "postgres://olduser:pass@localhost:5432/testdb?sslmode=disable",
+			freshHost:         "localhost",
+			freshPort:         5432,
+			freshDB:           "testdb",
+			freshUser:         "newuser",
+			freshPass:         "pass",
+			expectReconnect:   true,
+			expectLogContains: "PostgreSQL config changed",
+		},
+		{
+			name:              "reconnects when password changes",
+			cachedConnStr:     "postgres://user:oldpass@localhost:5432/testdb?sslmode=disable",
+			freshHost:         "localhost",
+			freshPort:         5432,
+			freshDB:           "testdb",
+			freshUser:         "user",
+			freshPass:         "newpass",
+			expectReconnect:   true,
+			expectLogContains: "PostgreSQL config changed",
+		},
+		{
+			name:              "no reconnect when config is identical",
+			cachedConnStr:     "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
+			freshHost:         "localhost",
+			freshPort:         5432,
+			freshDB:           "testdb",
+			freshUser:         "user",
+			freshPass:         "pass",
+			expectReconnect:   false,
+			expectLogContains: "",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(fmt.Sprintf(`{
+					"id": "tenant-cfg",
+					"tenantSlug": "config-test",
+					"databases": {
+						"onboarding": {
+							"postgresql": {"host": %q, "port": %d, "database": %q, "username": %q, "password": %q}
+						}
+					}
+				}`, tt.freshHost, tt.freshPort, tt.freshDB, tt.freshUser, tt.freshPass)))
+			}))
+			defer server.Close()
+
+			capLogger := testutil.NewCapturingLogger()
+			tmClient := mustNewTestClient(t, server.URL)
+			manager := NewManager(tmClient, "ledger",
+				WithLogger(capLogger),
+				WithModule("onboarding"),
+				WithSettingsCheckInterval(1*time.Millisecond),
+			)
+
+			mockDB := &pingableDB{}
+			var dbIface dbresolver.DB = mockDB
+
+			manager.connections["tenant-cfg"] = &PostgresConnection{
+				ConnectionStringPrimary: tt.cachedConnStr,
+				ConnectionDB:            &dbIface,
+			}
+			manager.lastAccessed["tenant-cfg"] = time.Now()
+			manager.lastSettingsCheck["tenant-cfg"] = time.Now()
+
+			// Trigger revalidation directly
+			manager.revalidatePoolSettings("tenant-cfg")
+
+			if tt.expectReconnect {
+				// The reconnection will fail (no real DB) but the old conn should
+				// be kept. Verify the log message was produced.
+				assert.True(t, capLogger.ContainsSubstring(tt.expectLogContains),
+					"expected log containing %q, got: %v", tt.expectLogContains, capLogger.GetMessages())
+
+				// Old connection should still exist (reconnection fails gracefully)
+				stats := manager.Stats()
+				assert.Equal(t, 1, stats.TotalConnections,
+					"old connection should be kept when reconnection fails")
+			} else {
+				// No config change => no reconnect log
+				assert.False(t, capLogger.ContainsSubstring("config changed"),
+					"should NOT log config change when config is identical")
+			}
+		})
+	}
+}
+
+func TestManager_RevalidateSettings_ConfigChangeKeepsOldConnOnFailure(t *testing.T) {
+	t.Parallel()
+
+	// Mock server returns a config with a different host (config change detected)
+	// but the new host is unreachable. The old connection should be kept.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "tenant-fail",
+			"tenantSlug": "fail-test",
+			"databases": {
+				"onboarding": {
+					"postgresql": {"host": "unreachable-host", "port": 5432, "database": "testdb", "username": "user", "password": "pass"}
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	capLogger := testutil.NewCapturingLogger()
+	tmClient := mustNewTestClient(t, server.URL)
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(capLogger),
+		WithModule("onboarding"),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	mockDB := &pingableDB{}
+	var dbIface dbresolver.DB = mockDB
+
+	manager.connections["tenant-fail"] = &PostgresConnection{
+		ConnectionStringPrimary: "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
+		ConnectionDB:            &dbIface,
+	}
+	manager.lastAccessed["tenant-fail"] = time.Now()
+	manager.lastSettingsCheck["tenant-fail"] = time.Now()
+
+	// Trigger revalidation directly
+	manager.revalidatePoolSettings("tenant-fail")
+
+	// Old connection should still exist (graceful: don't break existing tenants)
+	stats := manager.Stats()
+	assert.Equal(t, 1, stats.TotalConnections,
+		"old connection should be kept when reconnection to new host fails")
+
+	// Verify the failure was logged
+	assert.True(t, capLogger.ContainsSubstring("keeping old connection"),
+		"should log that old connection is being kept on failure")
+}
+
+func TestManager_RevalidateSettings_NoReconnectWhenConfigSame(t *testing.T) {
+	t.Parallel()
+
+	// Mock server returns the SAME config as the cached connection
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "tenant-same",
+			"tenantSlug": "same-test",
+			"databases": {
+				"onboarding": {
+					"postgresql": {"host": "localhost", "port": 5432, "database": "testdb", "username": "user", "password": "pass"},
+					"connectionSettings": {"maxOpenConns": 30, "maxIdleConns": 10}
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	capLogger := testutil.NewCapturingLogger()
+	tmClient := mustNewTestClient(t, server.URL)
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(capLogger),
+		WithModule("onboarding"),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	tDB := &trackingDB{}
+	var dbIface dbresolver.DB = tDB
+
+	manager.connections["tenant-same"] = &PostgresConnection{
+		ConnectionStringPrimary: "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
+		ConnectionDB:            &dbIface,
+	}
+	manager.lastAccessed["tenant-same"] = time.Now()
+	manager.lastSettingsCheck["tenant-same"] = time.Now()
+
+	// Trigger revalidation directly
+	manager.revalidatePoolSettings("tenant-same")
+
+	// Should NOT log any config change
+	assert.False(t, capLogger.ContainsSubstring("config changed"),
+		"should NOT log config change when config is identical")
+
+	// Pool settings should still be applied (ApplyConnectionSettings path)
+	assert.Eventually(t, func() bool {
+		return tDB.MaxOpenConns() == int32(30) && tDB.MaxIdleConns() == int32(10)
+	}, 500*time.Millisecond, 20*time.Millisecond, "pool settings should be applied even without config change")
 }

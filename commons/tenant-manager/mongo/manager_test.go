@@ -1719,6 +1719,247 @@ func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
 	assert.Empty(t, manager.lastSettingsCheck, "all lastSettingsCheck should be removed after Close")
 }
 
+func TestManager_RevalidateSettings_DetectsConfigChange(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		cachedURI         string
+		freshHost         string
+		freshPort         int
+		freshDB           string
+		freshUser         string
+		freshPass         string
+		expectReconnect   bool
+		expectLogContains string
+	}{
+		{
+			name:              "reconnects when host changes",
+			cachedURI:         "mongodb://user:pass@oldhost:27017/testdb?authSource=admin",
+			freshHost:         "newhost",
+			freshPort:         27017,
+			freshDB:           "testdb",
+			freshUser:         "user",
+			freshPass:         "pass",
+			expectReconnect:   true,
+			expectLogContains: "MongoDB config changed",
+		},
+		{
+			name:              "reconnects when port changes",
+			cachedURI:         "mongodb://user:pass@localhost:27017/testdb?authSource=admin",
+			freshHost:         "localhost",
+			freshPort:         27018,
+			freshDB:           "testdb",
+			freshUser:         "user",
+			freshPass:         "pass",
+			expectReconnect:   true,
+			expectLogContains: "MongoDB config changed",
+		},
+		{
+			name:              "reconnects when database changes",
+			cachedURI:         "mongodb://user:pass@localhost:27017/olddb?authSource=admin",
+			freshHost:         "localhost",
+			freshPort:         27017,
+			freshDB:           "newdb",
+			freshUser:         "user",
+			freshPass:         "pass",
+			expectReconnect:   true,
+			expectLogContains: "MongoDB config changed",
+		},
+		{
+			name:              "reconnects when username changes",
+			cachedURI:         "mongodb://olduser:pass@localhost:27017/testdb?authSource=admin",
+			freshHost:         "localhost",
+			freshPort:         27017,
+			freshDB:           "testdb",
+			freshUser:         "newuser",
+			freshPass:         "pass",
+			expectReconnect:   true,
+			expectLogContains: "MongoDB config changed",
+		},
+		{
+			name:              "reconnects when password changes",
+			cachedURI:         "mongodb://user:oldpass@localhost:27017/testdb?authSource=admin",
+			freshHost:         "localhost",
+			freshPort:         27017,
+			freshDB:           "testdb",
+			freshUser:         "user",
+			freshPass:         "newpass",
+			expectReconnect:   true,
+			expectLogContains: "MongoDB config changed",
+		},
+		{
+			name:              "no reconnect when config is identical",
+			cachedURI:         "mongodb://user:pass@localhost:27017/testdb?authSource=admin",
+			freshHost:         "localhost",
+			freshPort:         27017,
+			freshDB:           "testdb",
+			freshUser:         "user",
+			freshPass:         "pass",
+			expectReconnect:   false,
+			expectLogContains: "",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(fmt.Sprintf(`{
+					"id": "tenant-cfg",
+					"tenantSlug": "config-test",
+					"databases": {
+						"onboarding": {
+							"mongodb": {"host": %q, "port": %d, "database": %q, "username": %q, "password": %q}
+						}
+					}
+				}`, tt.freshHost, tt.freshPort, tt.freshDB, tt.freshUser, tt.freshPass)))
+			}))
+			defer server.Close()
+
+			capLogger := testutil.NewCapturingLogger()
+			tmClient := mustNewTestClient(t, server.URL)
+			manager := NewManager(tmClient, "ledger",
+				WithLogger(capLogger),
+				WithModule("onboarding"),
+				WithSettingsCheckInterval(1*time.Millisecond),
+			)
+
+			manager.connections["tenant-cfg"] = &MongoConnection{
+				ConnectionStringSource: tt.cachedURI,
+				DB:                     nil, // nil DB avoids real connection
+			}
+			manager.lastAccessed["tenant-cfg"] = time.Now()
+			manager.lastSettingsCheck["tenant-cfg"] = time.Now()
+
+			// Trigger revalidation directly
+			manager.revalidatePoolSettings("tenant-cfg")
+
+			if tt.expectReconnect {
+				// The reconnection will fail (no real MongoDB) but the old conn
+				// should be kept. Verify the log message was produced.
+				assert.True(t, capLogger.ContainsSubstring(tt.expectLogContains),
+					"expected log containing %q, got: %v", tt.expectLogContains, capLogger.GetMessages())
+
+				// Old connection should still exist (reconnection fails gracefully)
+				stats := manager.Stats()
+				assert.Equal(t, 1, stats.TotalConnections,
+					"old connection should be kept when reconnection fails")
+			} else {
+				// No config change => no reconnect log
+				assert.False(t, capLogger.ContainsSubstring("config changed"),
+					"should NOT log config change when config is identical")
+			}
+		})
+	}
+}
+
+func TestManager_RevalidateSettings_ConfigChangeKeepsOldConnOnFailure(t *testing.T) {
+	t.Parallel()
+
+	// Mock server returns a config with a different host (unreachable)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "tenant-fail",
+			"tenantSlug": "fail-test",
+			"databases": {
+				"onboarding": {
+					"mongodb": {"host": "unreachable-host", "port": 27017, "database": "testdb", "username": "user", "password": "pass"}
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	capLogger := testutil.NewCapturingLogger()
+	tmClient := mustNewTestClient(t, server.URL)
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(capLogger),
+		WithModule("onboarding"),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	manager.connections["tenant-fail"] = &MongoConnection{
+		ConnectionStringSource: "mongodb://user:pass@localhost:27017/testdb?authSource=admin",
+		DB:                     nil,
+	}
+	manager.lastAccessed["tenant-fail"] = time.Now()
+	manager.lastSettingsCheck["tenant-fail"] = time.Now()
+
+	// Trigger revalidation directly
+	manager.revalidatePoolSettings("tenant-fail")
+
+	// Old connection should still exist (graceful: don't break existing tenants)
+	stats := manager.Stats()
+	assert.Equal(t, 1, stats.TotalConnections,
+		"old connection should be kept when reconnection to new host fails")
+
+	// Verify the failure was logged
+	assert.True(t, capLogger.ContainsSubstring("keeping old connection"),
+		"should log that old connection is being kept on failure")
+}
+
+func TestManager_RevalidateSettings_NoReconnectWhenConfigSame(t *testing.T) {
+	t.Parallel()
+
+	fakeDB, cleanupFake := startFakeMongoServer(t)
+	defer cleanupFake()
+
+	// Build the URI that matches the fake server's config
+	matchingURI := "mongodb://user:pass@localhost:27017/testdb?authSource=admin"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "tenant-same",
+			"tenantSlug": "same-test",
+			"databases": {
+				"onboarding": {
+					"mongodb": {"host": "localhost", "port": 27017, "database": "testdb", "username": "user", "password": "pass"}
+				}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	capLogger := testutil.NewCapturingLogger()
+	tmClient := mustNewTestClient(t, server.URL)
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(capLogger),
+		WithModule("onboarding"),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	manager.connections["tenant-same"] = &MongoConnection{
+		ConnectionStringSource: matchingURI,
+		DB:                     fakeDB,
+	}
+	manager.lastAccessed["tenant-same"] = time.Now()
+	manager.lastSettingsCheck["tenant-same"] = time.Now()
+
+	// Trigger revalidation directly
+	manager.revalidatePoolSettings("tenant-same")
+
+	// Should NOT log any config change
+	assert.False(t, capLogger.ContainsSubstring("config changed"),
+		"should NOT log config change when config is identical")
+
+	// Connection should still exist unchanged
+	stats := manager.Stats()
+	assert.Equal(t, 1, stats.TotalConnections,
+		"connection should remain when config is unchanged")
+
+	manager.revalidateWG.Wait()
+	require.NoError(t, manager.Close(context.Background()))
+}
+
 func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
 	t.Parallel()
 
