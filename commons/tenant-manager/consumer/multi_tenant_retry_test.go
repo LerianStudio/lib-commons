@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
@@ -39,13 +40,8 @@ func TestMultiTenantConsumer_RetryState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, redisClient := setupMiniredis(t)
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-			}, testutil.NewMockLogger())
+			server := setupTenantManagerAPIServer(t, nil)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 
 			state := consumer.getRetryState(tt.tenantID)
 			applyRetryFailures(state, tt.incrementRetries)
@@ -64,13 +60,8 @@ func TestMultiTenantConsumer_RetryState(t *testing.T) {
 func TestMultiTenantConsumer_RetryStateIsolation(t *testing.T) {
 	t.Parallel()
 
-	_, redisClient := setupMiniredis(t)
-
-	consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-		SyncInterval:    30 * time.Second,
-		WorkersPerQueue: 1,
-		PrefetchCount:   10,
-	}, testutil.NewMockLogger())
+	server := setupTenantManagerAPIServer(t, nil)
+	consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 
 	applyRetryFailures(consumer.getRetryState("tenant-a"), 5)
 	_ = consumer.getRetryState("tenant-b")
@@ -86,7 +77,7 @@ func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 
 	tests := []struct {
 		name                  string
-		redisTenantIDs        []string
+		apiTenants            []*client.TenantSummary
 		startConsumerForIDs   []string
 		degradeTenantIDs      []string
 		expectedKnown         int
@@ -94,10 +85,10 @@ func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 		expectedPending       int
 		expectedDegradedCount int
 	}{
-		{name: "all_tenants_pending", redisTenantIDs: []string{"tenant-a", "tenant-b", "tenant-c"}, expectedKnown: 3, expectedActive: 0, expectedPending: 3, expectedDegradedCount: 0},
-		{name: "mix_of_active_and_pending", redisTenantIDs: []string{"tenant-a", "tenant-b", "tenant-c"}, startConsumerForIDs: []string{"tenant-a"}, expectedKnown: 3, expectedActive: 1, expectedPending: 2, expectedDegradedCount: 0},
-		{name: "degraded_tenant_appears_in_stats", redisTenantIDs: []string{"tenant-a", "tenant-b"}, degradeTenantIDs: []string{"tenant-b"}, expectedKnown: 2, expectedActive: 0, expectedPending: 2, expectedDegradedCount: 1},
-		{name: "empty_consumer_returns_zero_stats", expectedKnown: 0, expectedActive: 0, expectedPending: 0, expectedDegradedCount: 0},
+		{name: "all_tenants_pending", apiTenants: makeTenantSummaries(3), expectedKnown: 3, expectedActive: 0, expectedPending: 3, expectedDegradedCount: 0},
+		{name: "mix_of_active_and_pending", apiTenants: makeTenantSummaries(3), startConsumerForIDs: []string{"tenant-0000"}, expectedKnown: 3, expectedActive: 1, expectedPending: 2, expectedDegradedCount: 0},
+		{name: "degraded_tenant_appears_in_stats", apiTenants: makeTenantSummaries(2), degradeTenantIDs: []string{"tenant-0001"}, expectedKnown: 2, expectedActive: 0, expectedPending: 2, expectedDegradedCount: 1},
+		{name: "empty_consumer_returns_zero_stats", apiTenants: []*client.TenantSummary{}, expectedKnown: 0, expectedActive: 0, expectedPending: 0, expectedDegradedCount: 0},
 	}
 
 	for _, tt := range tests {
@@ -105,18 +96,9 @@ func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			mr, redisClient := setupMiniredis(t)
-
-			for _, id := range tt.redisTenantIDs {
-				mr.SAdd(testActiveTenantsKey, id)
-			}
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         testServiceName,
-			}, testutil.NewMockLogger())
+			server := setupTenantManagerAPIServer(t, tt.apiTenants)
+			config := newTestConfig(server.URL)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, testutil.NewMockLogger())
 
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
 				return nil

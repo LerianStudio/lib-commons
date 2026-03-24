@@ -2,9 +2,14 @@ package consumer
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,22 +18,37 @@ import (
 func TestMultiTenantConsumer_SyncTenants_EagerModeStartsNewTenant(t *testing.T) {
 	t.Parallel()
 
-	mr, redisClient := setupMiniredis(t)
-	mr.SAdd(testActiveTenantsKey, "tenant-a")
+	var mu sync.Mutex
+	currentTenants := []*client.TenantSummary{
+		{ID: "tenant-a", Name: "A", Status: "active"},
+	}
 
-	consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-		SyncInterval:    30 * time.Second,
-		WorkersPerQueue: 1,
-		PrefetchCount:   10,
-		Service:         testServiceName,
-	}, testutil.NewMockLogger())
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		tenants := currentTenants
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(tenants); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	config := newTestConfig(server.URL)
+	consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, testutil.NewMockLogger())
 	defer func() { require.NoError(t, consumer.Close()) }()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	consumer.discoverTenants(ctx)
-	mr.SAdd(testActiveTenantsKey, "tenant-b")
+
+	// Add tenant-b to API response
+	mu.Lock()
+	currentTenants = append(currentTenants, &client.TenantSummary{
+		ID: "tenant-b", Name: "B", Status: "active",
+	})
+	mu.Unlock()
 
 	err := consumer.syncTenants(ctx)
 	require.NoError(t, err)

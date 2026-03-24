@@ -48,6 +48,14 @@ func (cl *CapturingLogger) GetMessages() []string {
 	return copied
 }
 
+// Clear resets the captured messages, useful for testing multi-phase log assertions.
+func (cl *CapturingLogger) Clear() {
+	cl.mu.Lock()
+	defer cl.mu.Unlock()
+
+	cl.messages = nil
+}
+
 // ContainsSubstring returns true if any captured message contains the given substring.
 func (cl *CapturingLogger) ContainsSubstring(sub string) bool {
 	cl.mu.Lock()
