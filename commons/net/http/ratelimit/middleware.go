@@ -50,6 +50,13 @@ const (
 	// invalidWindowMessage is the error message returned when a tier has a zero or sub-millisecond window.
 	invalidWindowMessage = "rate limiter tier window is zero; contact the service operator"
 
+	// policyBlockedTitle is the error title returned when strict-tier enforcement
+	// requires rate limiting but the limiter cannot be safely enabled.
+	policyBlockedTitle = "security_policy_violation"
+	// policyBlockedMessage is the default error message returned when the rate
+	// limiter is fail-closed by security policy.
+	policyBlockedMessage = "rate limiting is mandatory in strict tier"
+
 	// luaIncrExpire is an atomic Lua script that increments the counter, sets expiry on the
 	// first request in a window, and returns both the current count and the remaining TTL in
 	// milliseconds. Executed atomically by Redis — no other command can interleave, eliminating
@@ -130,18 +137,23 @@ func RelaxedTier() Tier {
 //
 // A nil RateLimiter is safe to use: WithRateLimit returns a pass-through handler.
 type RateLimiter struct {
-	conn         *libRedis.Client
-	logger       log.Logger
-	keyPrefix    string
-	identityFunc IdentityFunc
-	failOpen     bool
-	onLimited    func(c *fiber.Ctx, tier Tier)
-	redisTimeout time.Duration
+	conn          *libRedis.Client
+	logger        log.Logger
+	keyPrefix     string
+	identityFunc  IdentityFunc
+	failOpen      bool
+	policyBlocked bool
+	policyMessage string
+	onLimited     func(c *fiber.Ctx, tier Tier)
+	redisTimeout  time.Duration
 }
 
-// New creates a RateLimiter. Returns nil when:
+// New creates a RateLimiter. In permissive or warn-only modes, it returns nil when:
 //   - conn is nil
 //   - RATE_LIMIT_ENABLED environment variable is set to "false"
+//
+// In strict enforced mode, it falls back to a non-nil fail-closed limiter when
+// rate limiting is mandatory but cannot be safely enabled.
 //
 // A nil RateLimiter is safe to use: WithRateLimit returns a pass-through handler.
 func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
@@ -161,7 +173,37 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 		opt(rl)
 	}
 
-	if commons.GetenvOrDefault("RATE_LIMIT_ENABLED", "true") == "false" {
+	strictTier := commons.CurrentTier() == commons.TierStrict
+	enforcementEnabled := commons.IsSecurityEnforcementEnabled()
+
+	// Security policy: in strict enforced mode, fail-open is coerced to fail-closed
+	// unless an explicit override is present.
+	if strictTier && rl.failOpen {
+		result := commons.CheckSecurityRule(commons.RuleRateLimitFailOpen, true)
+		if err := commons.EnforceSecurityRule(context.Background(), rl.logger, "ratelimit", result); err != nil {
+			rl.logger.Log(context.Background(), log.LevelError, err.Error())
+			rl.failOpen = false
+		}
+	}
+
+	rateLimitDisabled := commons.GetenvOrDefault("RATE_LIMIT_ENABLED", "true") == "false"
+	if rateLimitDisabled {
+		if strictTier {
+			// commons.CheckSecurityRule + commons.EnforceSecurityRule already respect
+			// the enforcement mode for the rateLimitDisabled/strictTier path, so we
+			// do not branch on enforcementEnabled here. The Redis-nil path below
+			// checks enforcementEnabled explicitly because it must choose between
+			// returning nil and newPolicyBlockedLimiter(policyBlockedMessage).
+			result := commons.CheckSecurityRule(commons.RuleRateLimitDisabled, true)
+			if err := commons.EnforceSecurityRule(context.Background(), rl.logger, "ratelimit", result); err != nil {
+				logPolicyBlockedStartup(rl.logger,
+					"CRITICAL: rate limiter fail-closed is active; all requests will be rejected with 503 until RATE_LIMIT_ENABLED is restored or an override is configured")
+				rl.logger.Log(context.Background(), log.LevelError, err.Error())
+
+				return newPolicyBlockedLimiter(rl.logger, policyBlockedMessage)
+			}
+		}
+
 		rl.logger.Log(context.Background(), log.LevelInfo,
 			"rate limiter disabled via RATE_LIMIT_ENABLED=false; all requests will pass through")
 
@@ -171,6 +213,13 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 	if conn == nil {
 		asserter := assert.New(context.Background(), rl.logger, "http.ratelimit", "New")
 		_ = asserter.Never(context.Background(), "redis connection is nil; rate limiter disabled")
+
+		if strictTier && enforcementEnabled {
+			logPolicyBlockedStartup(rl.logger,
+				"CRITICAL: rate limiter fail-closed is active; all requests will be rejected with 503 until Redis is configured")
+
+			return newPolicyBlockedLimiter(rl.logger, policyBlockedMessage)
+		}
 
 		return nil
 	}
@@ -187,6 +236,10 @@ func (rl *RateLimiter) WithRateLimit(tier Tier) fiber.Handler {
 		return func(c *fiber.Ctx) error {
 			return c.Next()
 		}
+	}
+
+	if rl.policyBlocked {
+		return rl.blockedHandler()
 	}
 
 	if tier.Window <= 0 || tier.Window.Milliseconds() == 0 {
@@ -242,6 +295,10 @@ func (rl *RateLimiter) WithDynamicRateLimit(fn TierFunc) fiber.Handler {
 		return func(c *fiber.Ctx) error {
 			return c.Next()
 		}
+	}
+
+	if rl.policyBlocked {
+		return rl.blockedHandler()
 	}
 
 	return func(c *fiber.Ctx) error {
@@ -392,6 +449,44 @@ func (rl *RateLimiter) handleRedisError(
 		Title:   serviceUnavailableTitle,
 		Message: serviceUnavailableMessage,
 	})
+}
+
+func newPolicyBlockedLimiter(logger log.Logger, message string) *RateLimiter {
+	if message == "" {
+		message = policyBlockedMessage
+	}
+
+	return &RateLimiter{
+		logger:        logger,
+		identityFunc:  IdentityFromIP(),
+		failOpen:      false,
+		policyBlocked: true,
+		policyMessage: message,
+		redisTimeout:  time.Duration(fallbackRedisTimeoutMS) * time.Millisecond,
+	}
+}
+
+func logPolicyBlockedStartup(logger log.Logger, message string) {
+	if message == "" {
+		return
+	}
+
+	logger.Log(context.Background(), log.LevelError, message)
+}
+
+func (rl *RateLimiter) blockedHandler() fiber.Handler {
+	message := rl.policyMessage
+	if message == "" {
+		message = policyBlockedMessage
+	}
+
+	return func(c *fiber.Ctx) error {
+		return chttp.Respond(c, http.StatusServiceUnavailable, chttp.ErrorResponse{
+			Code:    http.StatusServiceUnavailable,
+			Title:   policyBlockedTitle,
+			Message: message,
+		})
+	}
 }
 
 // handleLimitExceeded handles the case when the rate limit has been exceeded.

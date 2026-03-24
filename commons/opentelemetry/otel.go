@@ -114,11 +114,27 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 		return newNoopTelemetry(cfg)
 	}
 
-	if cfg.InsecureExporter && cfg.DeploymentEnv != "" &&
-		cfg.DeploymentEnv != "development" && cfg.DeploymentEnv != "local" {
+	normalizedDeploymentEnv := strings.ToLower(strings.TrimSpace(cfg.DeploymentEnv))
+	if cfg.InsecureExporter && normalizedDeploymentEnv != "" &&
+		normalizedDeploymentEnv != "development" && normalizedDeploymentEnv != "local" {
 		cfg.Logger.Log(ctx, log.LevelWarn,
 			"InsecureExporter is enabled in non-development environment",
-			log.String("environment", cfg.DeploymentEnv))
+			log.String("environment", normalizedDeploymentEnv))
+	}
+
+	policyEnv := commons.CurrentEnvironment()
+	if normalizedDeploymentEnv != "" {
+		policyEnv = commons.Environment(normalizedDeploymentEnv)
+	}
+
+	// Security policy: insecure OTEL exporter enforcement in strict tier.
+	// Note: InsecureExporter may have been inferred by normalizeEndpoint (http:// or bare host:port).
+	if commons.EffectiveSecurityTier(policyEnv) == commons.TierStrict {
+		result := commons.CheckSecurityRule(commons.RuleOTELInsecureExporter, cfg.InsecureExporter)
+		if err := commons.EnforceSecurityRuleForEnvironment(ctx, cfg.Logger, "otel", policyEnv, result); err != nil {
+			return nil, fmt.Errorf("otel new: insecure exporter detected (use https:// endpoint or set %s=\"reason\"): %w",
+				commons.EnvAllowInsecureOTEL, err)
+		}
 	}
 
 	return initExporters(ctx, cfg)

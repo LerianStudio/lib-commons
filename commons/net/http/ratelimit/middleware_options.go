@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
 	"github.com/gofiber/fiber/v2"
 )
@@ -19,7 +20,7 @@ type Option func(*RateLimiter)
 // When not provided, a no-op logger is used.
 func WithLogger(l log.Logger) Option {
 	return func(rl *RateLimiter) {
-		if l != nil {
+		if !nilcheck.Interface(l) {
 			rl.logger = l
 		}
 	}

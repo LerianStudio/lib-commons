@@ -9,15 +9,33 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v4/commons"
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func unsetEnvVar(t *testing.T, key string) {
+	t.Helper()
+
+	original, present := os.LookupEnv(key)
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() {
+		if present {
+			require.NoError(t, os.Setenv(key, original))
+			return
+		}
+
+		require.NoError(t, os.Unsetenv(key))
+	})
+}
 
 func TestRabbitMQConnection_Connect(t *testing.T) {
 	t.Parallel()
@@ -281,6 +299,80 @@ func TestRabbitMQConnection_Connect(t *testing.T) {
 			_ = conn.Connect()
 		})
 	})
+}
+
+func TestRabbitMQConnection_ConnectContext_StrictTierBlocksPlaintextBeforeDial(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityTier, "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
+
+	var dialerCalls atomic.Int32
+	conn := &RabbitMQConnection{
+		ConnectionStringSource: "amqp://guest:guest@localhost:5672",
+		Logger:                 log.NewNop(),
+		dialer: func(string) (*amqp.Connection, error) {
+			dialerCalls.Add(1)
+			return nil, errors.New("dial should not be called")
+		},
+	}
+
+	err := conn.ConnectContext(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+	assert.EqualValues(t, 0, dialerCalls.Load())
+}
+
+func TestRabbitMQConnection_EnsureChannelContext_StrictTierBlocksPlaintextBeforeDial(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityTier, "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
+
+	var dialerCalls atomic.Int32
+	conn := &RabbitMQConnection{
+		ConnectionStringSource: "amqp://guest:guest@localhost:5672",
+		Logger:                 log.NewNop(),
+		dialerContext: func(context.Context, string) (*amqp.Connection, error) {
+			dialerCalls.Add(1)
+			return nil, errors.New("dial should not be called")
+		},
+	}
+
+	err := conn.EnsureChannelContext(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+	assert.EqualValues(t, 0, dialerCalls.Load())
+}
+
+func TestRabbitMQConnection_EnsureChannelContext_StrictTierOverrideAllowsDial(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityTier, "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	t.Setenv(commons.EnvAllowInsecureTLS, "edge proxy terminates TLS")
+
+	var dialerCalls atomic.Int32
+	conn := &RabbitMQConnection{
+		ConnectionStringSource: "amqp://guest:guest@localhost:5672",
+		Logger:                 log.NewNop(),
+		dialerContext: func(context.Context, string) (*amqp.Connection, error) {
+			dialerCalls.Add(1)
+			return &amqp.Connection{}, nil
+		},
+		channelFactoryContext: func(context.Context, *amqp.Connection) (*amqp.Channel, error) {
+			return &amqp.Channel{}, nil
+		},
+	}
+
+	err := conn.EnsureChannelContext(context.Background())
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, dialerCalls.Load())
 }
 
 func TestRabbitMQConnection_EnsureChannel(t *testing.T) {
