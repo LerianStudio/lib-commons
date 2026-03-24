@@ -22,6 +22,21 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+func unsetEnvVar(t *testing.T, key string) {
+	t.Helper()
+
+	original, present := os.LookupEnv(key)
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() {
+		if present {
+			require.NoError(t, os.Setenv(key, original))
+			return
+		}
+
+		require.NoError(t, os.Unsetenv(key))
+	})
+}
+
 // ===========================================================================
 // 1. NewTelemetry validation
 // ===========================================================================
@@ -133,7 +148,9 @@ func TestNewTelemetry_DeploymentEnvControlsSecurityPolicy(t *testing.T) {
 		t.Setenv("ENV_NAME", commons.Local.String())
 		t.Setenv("ENV", "")
 		t.Setenv("GO_ENV", "")
+		t.Setenv(commons.EnvSecurityTier, "")
 		t.Setenv(commons.EnvSecurityEnforcement, "true")
+		unsetEnvVar(t, commons.EnvAllowInsecureOTEL)
 
 		tl, err := NewTelemetry(TelemetryConfig{
 			LibraryName:               "test-lib",
@@ -151,7 +168,9 @@ func TestNewTelemetry_DeploymentEnvControlsSecurityPolicy(t *testing.T) {
 		t.Setenv("ENV_NAME", commons.Production.String())
 		t.Setenv("ENV", "")
 		t.Setenv("GO_ENV", "")
+		t.Setenv(commons.EnvSecurityTier, "")
 		t.Setenv(commons.EnvSecurityEnforcement, "true")
+		unsetEnvVar(t, commons.EnvAllowInsecureOTEL)
 
 		tl, err := NewTelemetry(TelemetryConfig{
 			LibraryName:               "test-lib",

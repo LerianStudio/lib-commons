@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -35,6 +36,21 @@ func withDeps(deps clientDeps) Option {
 	return func(current *clientDeps) {
 		*current = deps
 	}
+}
+
+func unsetEnvVar(t *testing.T, key string) {
+	t.Helper()
+
+	original, present := os.LookupEnv(key)
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() {
+		if present {
+			require.NoError(t, os.Setenv(key, original))
+			return
+		}
+
+		require.NoError(t, os.Unsetenv(key))
+	})
 }
 
 func baseConfig() Config {
@@ -847,7 +863,9 @@ func TestNewClient_StrictTierBlocksPlaintextBeforeConnect(t *testing.T) {
 	t.Setenv("ENV_NAME", commons.Production.String())
 	t.Setenv("ENV", "")
 	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityTier, "")
 	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
 
 	var connectCalls atomic.Int32
 	deps := clientDeps{
@@ -873,6 +891,7 @@ func TestNewClient_StrictTierOverrideAllowsPlaintext(t *testing.T) {
 	t.Setenv("ENV_NAME", commons.Production.String())
 	t.Setenv("ENV", "")
 	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityTier, "")
 	t.Setenv(commons.EnvSecurityEnforcement, "true")
 	t.Setenv(commons.EnvAllowInsecureTLS, "service mesh terminates TLS")
 

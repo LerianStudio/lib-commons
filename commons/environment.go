@@ -90,10 +90,10 @@ func (e Environment) String() string {
 	return string(e)
 }
 
-// ErrEnvironmentAlreadySet is returned by Set when the environment has already been configured.
-var ErrEnvironmentAlreadySet = errors.New("environment: already set; call Set() only once during startup")
+// ErrEnvironmentAlreadySet is returned by SetEnvironment when the environment has already been configured.
+var ErrEnvironmentAlreadySet = errors.New("environment: already set; call SetEnvironment() only once during startup")
 
-// ErrInvalidEnvironment is returned by Set when the environment value is not recognized.
+// ErrInvalidEnvironment is returned by SetEnvironment when the environment value is not recognized.
 var ErrInvalidEnvironment = errors.New("environment: invalid value; must be one of: production, staging, uat, development, local")
 
 var (

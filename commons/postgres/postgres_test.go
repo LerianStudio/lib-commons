@@ -22,6 +22,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func unsetEnvVar(t *testing.T, key string) {
+	t.Helper()
+
+	original, present := os.LookupEnv(key)
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() {
+		if present {
+			require.NoError(t, os.Setenv(key, original))
+			return
+		}
+
+		require.NoError(t, os.Unsetenv(key))
+	})
+}
+
 type fakeResolver struct {
 	pingErr   error
 	closeErr  error
@@ -1518,7 +1533,9 @@ func TestNew_StrictTierTLSEnforcement(t *testing.T) {
 		t.Setenv("ENV_NAME", commons.Production.String())
 		t.Setenv("ENV", "")
 		t.Setenv("GO_ENV", "")
+		t.Setenv(commons.EnvSecurityTier, "")
 		t.Setenv(commons.EnvSecurityEnforcement, "true")
+		unsetEnvVar(t, commons.EnvAllowInsecureTLS)
 
 		for _, dsn := range []string{
 			"postgres://host/db?sslmode=disable",
@@ -1539,6 +1556,7 @@ func TestNew_StrictTierTLSEnforcement(t *testing.T) {
 		t.Setenv("ENV_NAME", commons.Production.String())
 		t.Setenv("ENV", "")
 		t.Setenv("GO_ENV", "")
+		t.Setenv(commons.EnvSecurityTier, "")
 		t.Setenv(commons.EnvSecurityEnforcement, "true")
 
 		for _, dsn := range []string{
@@ -1574,6 +1592,82 @@ func TestMigratorUpContextAlreadyCancelled(t *testing.T) {
 	err = m.Up(ctx)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestMigratorUpStrictTierBlocksPlaintextBeforeOpen(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityTier, "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
+
+	openCalled := false
+	withPatchedDependencies(
+		t,
+		func(_, _ string) (*sql.DB, error) {
+			openCalled = true
+			return testDB(t), nil
+		},
+		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) {
+			return nil, nil
+		},
+		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error {
+			return nil
+		},
+	)
+
+	m, err := NewMigrator(MigrationConfig{
+		PrimaryDSN:     "postgres://localhost/db?sslmode=disable",
+		DatabaseName:   "ledger",
+		MigrationsPath: "/migrations",
+		Logger:         log.NewNop(),
+	})
+	require.NoError(t, err)
+
+	err = m.Up(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+	assert.False(t, openCalled)
+}
+
+func TestMigratorUpStrictTierAllowsSecureDSN(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityTier, "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
+
+	openCalled := false
+	migrateCalled := false
+	withPatchedDependencies(
+		t,
+		func(_, _ string) (*sql.DB, error) {
+			openCalled = true
+			return testDB(t), nil
+		},
+		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) {
+			return nil, nil
+		},
+		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error {
+			migrateCalled = true
+			return nil
+		},
+	)
+
+	m, err := NewMigrator(MigrationConfig{
+		PrimaryDSN:     "postgres://localhost/db?sslmode=require",
+		DatabaseName:   "ledger",
+		MigrationsPath: "/migrations",
+		Logger:         log.NewNop(),
+	})
+	require.NoError(t, err)
+
+	err = m.Up(context.Background())
+	require.NoError(t, err)
+	assert.True(t, openCalled)
+	assert.True(t, migrateCalled)
 }
 
 // ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -25,6 +26,21 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func unsetEnvVar(t *testing.T, key string) {
+	t.Helper()
+
+	original, present := os.LookupEnv(key)
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() {
+		if present {
+			require.NoError(t, os.Setenv(key, original))
+			return
+		}
+
+		require.NoError(t, os.Unsetenv(key))
+	})
+}
 
 type recordingLogger struct {
 	mu       sync.Mutex
@@ -191,13 +207,15 @@ func TestClient_New_StrictTierBlocksPlaintextBeforeDial(t *testing.T) {
 	t.Setenv("ENV_NAME", commons.Production.String())
 	t.Setenv("ENV", "")
 	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityTier, "")
 	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
 
 	client, err := New(context.Background(), Config{
 		Topology: Topology{
 			Standalone: &StandaloneTopology{Address: "127.0.0.1:1"},
 		},
-		Logger: &log.NopLogger{},
+		Logger: log.NewNop(),
 	})
 
 	assert.Nil(t, client)
@@ -209,6 +227,7 @@ func TestClient_New_StrictTierOverrideAllowsPlaintext(t *testing.T) {
 	t.Setenv("ENV_NAME", commons.Production.String())
 	t.Setenv("ENV", "")
 	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityTier, "")
 	t.Setenv(commons.EnvSecurityEnforcement, "true")
 	t.Setenv(commons.EnvAllowInsecureTLS, "private trusted network")
 

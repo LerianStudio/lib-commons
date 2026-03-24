@@ -215,6 +215,17 @@ func dsnSSLMode(dsn string) string {
 	return ""
 }
 
+func enforceTLSPolicy(ctx context.Context, logger log.Logger, label, dsn string) error {
+	if commons.CurrentTier() != commons.TierStrict || strings.TrimSpace(dsn) == "" {
+		return nil
+	}
+
+	tlsDisabled := !dsnRequiresTLS(dsn)
+	result := commons.CheckSecurityRule(commons.RuleTLSRequired, tlsDisabled)
+
+	return commons.EnforceSecurityRule(ctx, logger, "postgres-"+label, result)
+}
+
 // warnInsecureDSN logs a warning if the DSN does not guarantee TLS.
 // This is advisory -- development environments commonly use sslmode=disable.
 func warnInsecureDSN(ctx context.Context, logger log.Logger, dsn, label string) {
@@ -266,21 +277,12 @@ func New(cfg Config) (*Client, error) {
 	// Security policy: TLS enforcement in strict tier (production).
 	// Check both primary and replica DSNs — data from an unencrypted replica
 	// is equally sensitive.
-	if commons.CurrentTier() == commons.TierStrict {
-		for _, dsn := range []struct{ label, value string }{
-			{"primary", cfg.PrimaryDSN},
-			{"replica", cfg.ReplicaDSN},
-		} {
-			if dsn.value == "" {
-				continue
-			}
-
-			tlsDisabled := !dsnRequiresTLS(dsn.value)
-
-			result := commons.CheckSecurityRule(commons.RuleTLSRequired, tlsDisabled)
-			if err := commons.EnforceSecurityRule(context.Background(), cfg.Logger, "postgres-"+dsn.label, result); err != nil {
-				return nil, fmt.Errorf("postgres new: %w", err)
-			}
+	for _, dsn := range []struct{ label, value string }{
+		{"primary", cfg.PrimaryDSN},
+		{"replica", cfg.ReplicaDSN},
+	} {
+		if err := enforceTLSPolicy(context.Background(), cfg.Logger, dsn.label, dsn.value); err != nil {
+			return nil, fmt.Errorf("postgres new: %w", err)
 		}
 	}
 
@@ -682,6 +684,12 @@ func (m *Migrator) Up(ctx context.Context) error {
 		libOpentelemetry.HandleSpanError(span, "Context already done before migration", err)
 
 		return fmt.Errorf("postgres migrate_up: context already done: %w", err)
+	}
+
+	if err := enforceTLSPolicy(ctx, m.cfg.Logger, "primary", m.cfg.PrimaryDSN); err != nil {
+		libOpentelemetry.HandleSpanError(span, "Migration TLS policy blocked connection", err)
+
+		return fmt.Errorf("postgres migrate_up: %w", err)
 	}
 
 	db, err := dbOpenFn("pgx", m.cfg.PrimaryDSN)

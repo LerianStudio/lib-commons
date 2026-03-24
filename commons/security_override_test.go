@@ -5,6 +5,7 @@ package commons
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -20,6 +21,21 @@ type securityLogEntry struct {
 	level  log.Level
 	msg    string
 	fields []log.Field
+}
+
+func unsetEnvForTest(t *testing.T, key string) {
+	t.Helper()
+
+	original, present := os.LookupEnv(key)
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() {
+		if present {
+			require.NoError(t, os.Setenv(key, original))
+			return
+		}
+
+		require.NoError(t, os.Unsetenv(key))
+	})
 }
 
 func (s *securityLoggerSpy) Log(_ context.Context, level log.Level, msg string, fields ...log.Field) {
@@ -53,8 +69,7 @@ func TestReadSecurityOverride_Present(t *testing.T) {
 }
 
 func TestReadSecurityOverride_Absent(t *testing.T) {
-	// Ensure the env var is not set.
-	t.Setenv(EnvAllowInsecureTLS, "")
+	unsetEnvForTest(t, EnvAllowInsecureTLS)
 
 	override := ReadSecurityOverride(RuleTLSRequired)
 	if override != nil {
@@ -66,8 +81,12 @@ func TestReadSecurityOverride_WhitespaceOnly(t *testing.T) {
 	t.Setenv(EnvAllowInsecureTLS, "   ")
 
 	override := ReadSecurityOverride(RuleTLSRequired)
-	if override != nil {
-		t.Errorf("ReadSecurityOverride returned %+v for whitespace-only value, expected nil", override)
+	if override == nil {
+		t.Fatal("ReadSecurityOverride returned nil for whitespace-only value, expected override with empty reason")
+	}
+
+	if override.Reason != "" {
+		t.Errorf("override.Reason = %q, want empty string", override.Reason)
 	}
 }
 
@@ -107,7 +126,7 @@ func TestCheckSecurityRule_ViolatedWithOverride(t *testing.T) {
 }
 
 func TestCheckSecurityRule_ViolatedWithoutOverride(t *testing.T) {
-	t.Setenv(EnvAllowInsecureTLS, "")
+	unsetEnvForTest(t, EnvAllowInsecureTLS)
 
 	result := CheckSecurityRule(RuleTLSRequired, true)
 	if !result.Violated {
@@ -172,7 +191,7 @@ func TestIsSecurityEnforcementEnabled(t *testing.T) {
 
 func TestEnforceSecurityRule_PermissiveNeverErrors(t *testing.T) {
 	SetEnvironmentForTest(t, Local) // Permissive tier
-	t.Setenv(EnvAllowInsecureTLS, "")
+	unsetEnvForTest(t, EnvAllowInsecureTLS)
 	t.Setenv(EnvSecurityEnforcement, "true") // Even with enforcement ON
 
 	result := CheckSecurityRule(RuleTLSRequired, true)
@@ -184,7 +203,7 @@ func TestEnforceSecurityRule_PermissiveNeverErrors(t *testing.T) {
 
 func TestEnforceSecurityRule_ModerateWarnOnly(t *testing.T) {
 	SetEnvironmentForTest(t, Staging) // Moderate tier
-	t.Setenv(EnvAllowInsecureTLS, "")
+	unsetEnvForTest(t, EnvAllowInsecureTLS)
 	t.Setenv(EnvSecurityEnforcement, "") // Phase 2: enforcement OFF
 
 	result := CheckSecurityRule(RuleTLSRequired, true)
@@ -196,7 +215,7 @@ func TestEnforceSecurityRule_ModerateWarnOnly(t *testing.T) {
 
 func TestEnforceSecurityRule_StrictWarnOnlyDoesNotError(t *testing.T) {
 	SetEnvironmentForTest(t, Production)
-	t.Setenv(EnvAllowInsecureTLS, "")
+	unsetEnvForTest(t, EnvAllowInsecureTLS)
 	t.Setenv(EnvSecurityEnforcement, "false")
 
 	result := CheckSecurityRule(RuleTLSRequired, true)
@@ -208,7 +227,7 @@ func TestEnforceSecurityRule_StrictWarnOnlyDoesNotError(t *testing.T) {
 
 func TestEnforceSecurityRule_ModerateEnforcedErrors(t *testing.T) {
 	SetEnvironmentForTest(t, Staging) // Moderate tier
-	t.Setenv(EnvAllowInsecureTLS, "")
+	unsetEnvForTest(t, EnvAllowInsecureTLS)
 	t.Setenv(EnvSecurityEnforcement, "true") // Phase 3: enforcement ON
 
 	result := CheckSecurityRule(RuleTLSRequired, true)
@@ -259,7 +278,7 @@ func TestEnforceSecurityRule_NotViolated(t *testing.T) {
 
 func TestEnforceSecurityRule_StrictEnforcedErrors(t *testing.T) {
 	SetEnvironmentForTest(t, Production)     // Strict tier
-	t.Setenv(EnvAllowInsecureTLS, "")        // No override
+	unsetEnvForTest(t, EnvAllowInsecureTLS)  // No override
 	t.Setenv(EnvSecurityEnforcement, "true") // Phase 3: enforcement ON
 
 	result := CheckSecurityRule(RuleTLSRequired, true)
@@ -275,13 +294,15 @@ func TestEnforceSecurityRule_StrictEnforcedErrors(t *testing.T) {
 
 func TestEnforceSecurityRule_UsesSecurityTierOverride(t *testing.T) {
 	SetEnvironmentForTest(t, Local)
+	// Clear cached global environment state so the t.Setenv values below drive
+	// fresh detection instead of the SetEnvironmentForTest override.
 	resetEnvironment()
 
 	t.Setenv("ENV_NAME", Staging.String())
 	t.Setenv("ENV", "")
 	t.Setenv("GO_ENV", "")
 	t.Setenv(EnvSecurityTier, TierStrict.String())
-	t.Setenv(EnvAllowInsecureTLS, "")
+	unsetEnvForTest(t, EnvAllowInsecureTLS)
 	t.Setenv(EnvSecurityEnforcement, "true")
 
 	spy := &securityLoggerSpy{}
@@ -313,10 +334,12 @@ func TestEnforceSecurityRule_UsesSecurityTierOverride(t *testing.T) {
 
 func TestEnforceSecurityRuleForEnvironment_UsesSecurityTierOverride(t *testing.T) {
 	SetEnvironmentForTest(t, Local)
+	// Clear cached global environment state so SECURITY_TIER is resolved from the
+	// process environment rather than the earlier test helper override.
 	resetEnvironment()
 
 	t.Setenv(EnvSecurityTier, TierStrict.String())
-	t.Setenv(EnvAllowInsecureTLS, "")
+	unsetEnvForTest(t, EnvAllowInsecureTLS)
 	t.Setenv(EnvSecurityEnforcement, "true")
 
 	spy := &securityLoggerSpy{}
@@ -337,6 +360,17 @@ func TestEnforceSecurityRuleForEnvironment_UsesSecurityTierOverride(t *testing.T
 	if fieldsByKey["environment"] != Staging.String() {
 		t.Fatalf("environment = %v, want %v", fieldsByKey["environment"], Staging.String())
 	}
+}
+
+func TestEnforceSecurityRule_EmptyEnvOverrideReasonInStrictTier(t *testing.T) {
+	SetEnvironmentForTest(t, Production)
+	t.Setenv(EnvAllowInsecureTLS, "   ")
+	t.Setenv(EnvSecurityEnforcement, "true")
+
+	result := CheckSecurityRule(RuleTLSRequired, true)
+	err := EnforceSecurityRule(context.Background(), nil, "postgres", result)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrOverrideReasonRequired)
 }
 
 func TestEnforceSecurityRule_EmptyReasonInModerate(t *testing.T) {
@@ -397,7 +431,7 @@ func TestEnforceSecurityRule_RedactsOverrideReasonInLogs(t *testing.T) {
 
 func TestEnforceSecurityRule_TypedNilLoggerDoesNotPanic(t *testing.T) {
 	SetEnvironmentForTest(t, Production)
-	t.Setenv(EnvAllowInsecureTLS, "")
+	unsetEnvForTest(t, EnvAllowInsecureTLS)
 	t.Setenv(EnvSecurityEnforcement, "true")
 
 	var typedNil *securityLoggerSpy

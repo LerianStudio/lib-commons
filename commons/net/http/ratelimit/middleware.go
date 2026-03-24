@@ -189,6 +189,11 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 	rateLimitDisabled := commons.GetenvOrDefault("RATE_LIMIT_ENABLED", "true") == "false"
 	if rateLimitDisabled {
 		if strictTier {
+			// commons.CheckSecurityRule + commons.EnforceSecurityRule already respect
+			// the enforcement mode for the rateLimitDisabled/strictTier path, so we
+			// do not branch on enforcementEnabled here. The Redis-nil path below
+			// checks enforcementEnabled explicitly because it must choose between
+			// returning nil and newPolicyBlockedLimiter(policyBlockedMessage).
 			result := commons.CheckSecurityRule(commons.RuleRateLimitDisabled, true)
 			if err := commons.EnforceSecurityRule(context.Background(), rl.logger, "ratelimit", result); err != nil {
 				logPolicyBlockedStartup(rl.logger,

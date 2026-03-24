@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
@@ -90,17 +91,19 @@ type SecurityCheckResult struct {
 }
 
 // ReadSecurityOverride reads the ALLOW_* env var for the given rule and returns
-// a SecurityOverride if the env var is set and non-empty, or nil if absent/empty.
+// a SecurityOverride if the env var is present, or nil if absent.
 func ReadSecurityOverride(rule string) *SecurityOverride {
 	envVar, ok := envVarForRule[rule]
 	if !ok {
 		return nil
 	}
 
-	reason := strings.TrimSpace(GetenvOrDefault(envVar, ""))
-	if reason == "" {
+	raw, present := os.LookupEnv(envVar)
+	if !present {
 		return nil
 	}
+
+	reason := strings.TrimSpace(raw)
 
 	return &SecurityOverride{
 		Rule:   rule,

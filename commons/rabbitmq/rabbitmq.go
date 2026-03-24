@@ -238,6 +238,17 @@ func (rc *RabbitMQConnection) currentConnectState() (connectSnapshot, bool, erro
 	return rc.snapshotConnectState(), rc.isFullyConnected(), nil
 }
 
+func (rc *RabbitMQConnection) enforceTLSBeforeDial(ctx context.Context, logger log.Logger, connStr string) error {
+	if commons.CurrentTier() != commons.TierStrict {
+		return nil
+	}
+
+	isPlaintext := !strings.HasPrefix(strings.ToLower(connStr), "amqps://")
+	result := commons.CheckSecurityRule(commons.RuleTLSRequired, isPlaintext)
+
+	return commons.EnforceSecurityRule(ctx, logger, "rabbitmq", result)
+}
+
 // ConnectContext keeps a singleton connection with rabbitmq.
 func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 	if rc == nil {
@@ -266,14 +277,8 @@ func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 		return fmt.Errorf("rabbitmq connect: %w", err)
 	}
 
-	// Security policy: TLS enforcement in strict tier (production).
-	if commons.CurrentTier() == commons.TierStrict {
-		isPlaintext := !strings.HasPrefix(strings.ToLower(policySnap.connStr), "amqps://")
-
-		result := commons.CheckSecurityRule(commons.RuleTLSRequired, isPlaintext)
-		if err := commons.EnforceSecurityRule(ctx, policySnap.logger, "rabbitmq", result); err != nil {
-			return fmt.Errorf("rabbitmq connect: %w", err)
-		}
+	if err := rc.enforceTLSBeforeDial(ctx, policySnap.logger, policySnap.connStr); err != nil {
+		return fmt.Errorf("rabbitmq connect: %w", err)
 	}
 
 	snap, fullyConnected, err := rc.currentConnectState()
@@ -453,6 +458,12 @@ func (rc *RabbitMQConnection) EnsureChannelContext(ctx context.Context) error {
 
 	if !snap.needChannel {
 		return nil
+	}
+
+	if snap.needConnection {
+		if err := rc.enforceTLSBeforeDial(ctx, snap.logger, snap.connStr); err != nil {
+			return fmt.Errorf("rabbitmq ensure channel: %w", err)
+		}
 	}
 
 	var conn *amqp.Connection

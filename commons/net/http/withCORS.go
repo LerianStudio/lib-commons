@@ -90,7 +90,10 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 		result := commons.CheckSecurityRule(commons.RuleCORSWildcardOrigin, isWildcard)
 		if err := commons.EnforceSecurityRule(context.Background(), cfg.logger, "cors", result); err != nil {
 			// Cannot return error from fiber.Handler factory — apply a deny-all fallback instead.
-			cfg.logger.Log(context.Background(), libLog.LevelError, err.Error())
+			cfg.logger.Log(context.Background(), libLog.LevelError,
+				"CORS security rule enforcement failed, applying deny-all fallback",
+				libLog.Err(err),
+			)
 
 			denyAllOrigins = true
 			origins = ""

@@ -81,6 +81,7 @@ func TestEnvironment_IsValid(t *testing.T) {
 
 func TestSetEnvironment_HappyPath(t *testing.T) {
 	SetEnvironmentForTest(t, Local) // reset via cleanup
+	t.Setenv(EnvSecurityTier, "")
 
 	resetEnvironment()
 
@@ -319,6 +320,7 @@ func TestSetEnvironmentForTest(t *testing.T) {
 
 	t.Run("subtest_overrides", func(t *testing.T) {
 		SetEnvironmentForTest(t, Production)
+		t.Setenv(EnvSecurityTier, "")
 
 		if got := CurrentEnvironment(); got != Production {
 			t.Errorf("inside subtest: CurrentEnvironment() = %q, want %q", got, Production)

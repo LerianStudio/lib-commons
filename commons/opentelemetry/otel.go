@@ -114,16 +114,17 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 		return newNoopTelemetry(cfg)
 	}
 
-	if cfg.InsecureExporter && cfg.DeploymentEnv != "" &&
-		cfg.DeploymentEnv != "development" && cfg.DeploymentEnv != "local" {
+	normalizedDeploymentEnv := strings.ToLower(strings.TrimSpace(cfg.DeploymentEnv))
+	if cfg.InsecureExporter && normalizedDeploymentEnv != "" &&
+		normalizedDeploymentEnv != "development" && normalizedDeploymentEnv != "local" {
 		cfg.Logger.Log(ctx, log.LevelWarn,
 			"InsecureExporter is enabled in non-development environment",
-			log.String("environment", cfg.DeploymentEnv))
+			log.String("environment", normalizedDeploymentEnv))
 	}
 
 	policyEnv := commons.CurrentEnvironment()
-	if deploymentEnv := strings.TrimSpace(cfg.DeploymentEnv); deploymentEnv != "" {
-		policyEnv = commons.Environment(strings.ToLower(deploymentEnv))
+	if normalizedDeploymentEnv != "" {
+		policyEnv = commons.Environment(normalizedDeploymentEnv)
 	}
 
 	// Security policy: insecure OTEL exporter enforcement in strict tier.

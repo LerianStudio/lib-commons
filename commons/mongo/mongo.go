@@ -18,6 +18,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/assert"
 	"github.com/LerianStudio/lib-commons/v4/commons/backoff"
 	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry/metrics"
@@ -632,7 +633,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.URI = strings.TrimSpace(cfg.URI)
 	cfg.Database = strings.TrimSpace(cfg.Database)
 
-	if cfg.Logger == nil {
+	if nilcheck.Interface(cfg.Logger) {
 		cfg.Logger = log.NewNop()
 	}
 
