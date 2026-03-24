@@ -25,9 +25,9 @@ require (
 	github.com/sony/gobreaker v1.0.0
 	github.com/stretchr/testify v1.11.1
 	github.com/testcontainers/testcontainers-go v0.41.0
-	github.com/testcontainers/testcontainers-go/modules/mongodb v0.40.0
-	github.com/testcontainers/testcontainers-go/modules/postgres v0.40.0
-	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.40.0
+	github.com/testcontainers/testcontainers-go/modules/mongodb v0.41.0
+	github.com/testcontainers/testcontainers-go/modules/postgres v0.41.0
+	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.41.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.41.0
 	go.mongodb.org/mongo-driver v1.17.9
 	go.mongodb.org/mongo-driver/v2 v2.5.0
