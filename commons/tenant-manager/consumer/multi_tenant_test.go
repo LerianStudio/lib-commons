@@ -423,7 +423,9 @@ func TestMultiTenantConsumer_Run_BackgroundSyncStarts(t *testing.T) {
 				tenants := currentTenants
 				mu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(tenants)
+				if err := json.NewEncoder(w).Encode(tenants); err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+				}
 			}))
 			t.Cleanup(server.Close)
 
@@ -915,7 +917,9 @@ func TestMultiTenantConsumer_SyncTenants_RemovesTenants(t *testing.T) {
 				tenants := currentTenants
 				mu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(tenants)
+				if err := json.NewEncoder(w).Encode(tenants); err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+				}
 			}))
 			t.Cleanup(server.Close)
 
@@ -1005,7 +1009,9 @@ func TestMultiTenantConsumer_SyncTenants_EagerMode(t *testing.T) {
 				tenants := currentTenants
 				mu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(tenants)
+				if err := json.NewEncoder(w).Encode(tenants); err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+				}
 			}))
 			t.Cleanup(server.Close)
 
@@ -1115,7 +1121,9 @@ func TestMultiTenantConsumer_SyncTenants_RemovalCleansKnownTenants(t *testing.T)
 				tenants := currentTenants
 				mu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(tenants)
+				if err := json.NewEncoder(w).Encode(tenants); err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+				}
 			}))
 			t.Cleanup(server.Close)
 
@@ -1192,7 +1200,10 @@ func TestMultiTenantConsumer_SyncTenants_APIFailureKeepsCurrentState(t *testing.
 				if count == 1 {
 					// First call: return tenants
 					w.Header().Set("Content-Type", "application/json")
-					json.NewEncoder(w).Encode(makeTenantSummaries(3))
+					if err := json.NewEncoder(w).Encode(makeTenantSummaries(3)); err != nil {
+						w.WriteHeader(http.StatusInternalServerError)
+					}
+
 					return
 				}
 				// Subsequent calls: fail
@@ -1982,7 +1993,9 @@ func BenchmarkMultiTenantConsumer_Run_Startup(b *testing.B) {
 			tenants := makeTenantSummaries(bm.tenantCount)
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(tenants)
+				if err := json.NewEncoder(w).Encode(tenants); err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+				}
 			}))
 			defer server.Close()
 
@@ -2147,7 +2160,9 @@ func TestMultiTenantConsumer_SyncTenants_ClosesConnectionsOnRemoval(t *testing.T
 				tenants := currentTenants
 				mu.Unlock()
 				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(tenants)
+				if err := json.NewEncoder(w).Encode(tenants); err != nil {
+					w.WriteHeader(http.StatusInternalServerError)
+				}
 			}))
 			t.Cleanup(server.Close)
 
@@ -2601,7 +2616,9 @@ func TestMultiTenantConsumer_SyncTenants_EmptyAPIRemovesAllTenants(t *testing.T)
 		tenants := currentTenants
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(tenants)
+		if err := json.NewEncoder(w).Encode(tenants); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
 	}))
 	t.Cleanup(server.Close)
 

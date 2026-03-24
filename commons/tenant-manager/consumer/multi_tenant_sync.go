@@ -161,6 +161,7 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 
 	// Find removed (in knownTenants but not in currentSet)
 	var removed []string
+
 	for id := range c.knownTenants {
 		if !currentSet[id] {
 			removed = append(removed, id)
@@ -169,6 +170,7 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 
 	// Find added (in currentSet but not in knownTenants)
 	var added []string
+
 	for _, id := range validTenantIDs {
 		if !c.knownTenants[id] {
 			added = append(added, id)

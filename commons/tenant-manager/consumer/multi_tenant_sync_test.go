@@ -28,7 +28,9 @@ func TestMultiTenantConsumer_SyncTenants_EagerModeStartsNewTenant(t *testing.T) 
 		tenants := currentTenants
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(tenants)
+		if err := json.NewEncoder(w).Encode(tenants); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
 	}))
 	t.Cleanup(server.Close)
 
