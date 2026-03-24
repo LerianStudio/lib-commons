@@ -57,6 +57,37 @@ func (s *warnSpy) hasWarn(substr string) bool {
 	return false
 }
 
+type errorSpy struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (s *errorSpy) Log(_ context.Context, level libLog.Level, msg string, _ ...libLog.Field) {
+	if level == libLog.LevelError {
+		s.mu.Lock()
+		s.msgs = append(s.msgs, msg)
+		s.mu.Unlock()
+	}
+}
+
+func (s *errorSpy) With(_ ...libLog.Field) libLog.Logger { return s }
+func (s *errorSpy) WithGroup(_ string) libLog.Logger     { return s }
+func (s *errorSpy) Enabled(_ libLog.Level) bool          { return true }
+func (s *errorSpy) Sync(_ context.Context) error         { return nil }
+
+func (s *errorSpy) hasError(substr string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, m := range s.msgs {
+		if strings.Contains(m, substr) {
+			return true
+		}
+	}
+
+	return false
+}
+
 func newTestMiddlewareRedisConnection(t *testing.T, mr *miniredis.Miniredis) *libRedis.Client {
 	t.Helper()
 
@@ -950,9 +981,11 @@ func TestNew_StrictEnforcedDisabledRateLimitFailsClosed(t *testing.T) {
 	t.Setenv(commons.EnvSecurityEnforcement, "true")
 	t.Setenv("RATE_LIMIT_ENABLED", "false")
 
-	rl := New(nil)
+	spy := &errorSpy{}
+	rl := New(nil, WithLogger(spy))
 	require.NotNil(t, rl)
 	assert.True(t, rl.policyBlocked)
+	assert.True(t, spy.hasError("CRITICAL: rate limiter fail-closed is active; all requests will be rejected with 503 until RATE_LIMIT_ENABLED is restored or an override is configured"))
 
 	app := newTestApp(rl.WithRateLimit(DefaultTier()))
 	resp := doRequest(t, app)
@@ -966,6 +999,25 @@ func TestNew_StrictEnforcedDisabledRateLimitFailsClosed(t *testing.T) {
 	require.NoError(t, json.Unmarshal(body, &errResp))
 	assert.Equal(t, policyBlockedTitle, errResp.Title)
 	assert.Equal(t, policyBlockedMessage, errResp.Message)
+}
+
+func TestNew_StrictEnforcedNilRedisLogsCriticalStartupBlock(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+
+	spy := &errorSpy{}
+	rl := New(nil, WithLogger(spy))
+	require.NotNil(t, rl)
+	assert.True(t, rl.policyBlocked)
+	assert.True(t, spy.hasError("CRITICAL: rate limiter fail-closed is active; all requests will be rejected with 503 until Redis is configured"))
+
+	app := newTestApp(rl.WithRateLimit(DefaultTier()))
+	resp := doRequest(t, app)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
 func TestNew_StrictEnforcedDisabledRateLimitOverridePassesThrough(t *testing.T) {

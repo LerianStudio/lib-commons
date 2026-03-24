@@ -191,7 +191,10 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 		if strictTier {
 			result := commons.CheckSecurityRule(commons.RuleRateLimitDisabled, true)
 			if err := commons.EnforceSecurityRule(context.Background(), rl.logger, "ratelimit", result); err != nil {
+				logPolicyBlockedStartup(rl.logger,
+					"CRITICAL: rate limiter fail-closed is active; all requests will be rejected with 503 until RATE_LIMIT_ENABLED is restored or an override is configured")
 				rl.logger.Log(context.Background(), log.LevelError, err.Error())
+
 				return newPolicyBlockedLimiter(rl.logger, policyBlockedMessage)
 			}
 		}
@@ -207,8 +210,8 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 		_ = asserter.Never(context.Background(), "redis connection is nil; rate limiter disabled")
 
 		if strictTier && enforcementEnabled {
-			rl.logger.Log(context.Background(), log.LevelError,
-				"rate limiter unavailable in strict tier; blocking requests until a redis connection is configured")
+			logPolicyBlockedStartup(rl.logger,
+				"CRITICAL: rate limiter fail-closed is active; all requests will be rejected with 503 until Redis is configured")
 
 			return newPolicyBlockedLimiter(rl.logger, policyBlockedMessage)
 		}
@@ -456,6 +459,14 @@ func newPolicyBlockedLimiter(logger log.Logger, message string) *RateLimiter {
 		policyMessage: message,
 		redisTimeout:  time.Duration(fallbackRedisTimeoutMS) * time.Millisecond,
 	}
+}
+
+func logPolicyBlockedStartup(logger log.Logger, message string) {
+	if message == "" {
+		return
+	}
+
+	logger.Log(context.Background(), log.LevelError, message)
 }
 
 func (rl *RateLimiter) blockedHandler() fiber.Handler {

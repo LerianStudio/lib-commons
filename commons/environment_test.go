@@ -232,6 +232,85 @@ func TestCurrentEnvironment_FallsBackToDetect(t *testing.T) {
 	}
 }
 
+func TestCurrentEnvironment_InvalidatesCacheWhenEnvVarsChange(t *testing.T) {
+	SetEnvironmentForTest(t, Local)
+	resetEnvironment()
+
+	t.Setenv("ENV_NAME", "staging")
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+
+	if got := CurrentEnvironment(); got != Staging {
+		t.Fatalf("CurrentEnvironment() = %q, want %q", got, Staging)
+	}
+
+	t.Setenv("ENV_NAME", "production")
+
+	if got := CurrentEnvironment(); got != Production {
+		t.Fatalf("CurrentEnvironment() after env change = %q, want %q", got, Production)
+	}
+}
+
+func TestCurrentTier_UsesSecurityTierOverride(t *testing.T) {
+	SetEnvironmentForTest(t, Local)
+	resetEnvironment()
+
+	t.Setenv("ENV_NAME", Staging.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(EnvSecurityTier, TierStrict.String())
+
+	if got := CurrentEnvironment(); got != Staging {
+		t.Fatalf("CurrentEnvironment() = %q, want %q", got, Staging)
+	}
+
+	if tier := CurrentTier(); tier != TierStrict {
+		t.Fatalf("CurrentTier() = %v, want %v", tier, TierStrict)
+	}
+
+	if tier := EffectiveSecurityTier(Staging); tier != TierStrict {
+		t.Fatalf("EffectiveSecurityTier(Staging) = %v, want %v", tier, TierStrict)
+	}
+}
+
+func TestCurrentTier_InvalidOverrideFailsSafeToStrict(t *testing.T) {
+	SetEnvironmentForTest(t, Local)
+	resetEnvironment()
+
+	t.Setenv("ENV_NAME", Local.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(EnvSecurityTier, "definitely-not-a-tier")
+
+	if tier := CurrentTier(); tier != TierStrict {
+		t.Fatalf("CurrentTier() with invalid SECURITY_TIER = %v, want %v", tier, TierStrict)
+	}
+}
+
+func TestCurrentTier_InvalidatesOverrideCacheWhenEnvVarChanges(t *testing.T) {
+	SetEnvironmentForTest(t, Local)
+	resetEnvironment()
+
+	t.Setenv("ENV_NAME", Staging.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(EnvSecurityTier, TierStrict.String())
+
+	if tier := CurrentTier(); tier != TierStrict {
+		t.Fatalf("CurrentTier() = %v, want %v", tier, TierStrict)
+	}
+
+	t.Setenv(EnvSecurityTier, TierModerate.String())
+	if tier := CurrentTier(); tier != TierModerate {
+		t.Fatalf("CurrentTier() after SECURITY_TIER change = %v, want %v", tier, TierModerate)
+	}
+
+	t.Setenv(EnvSecurityTier, "")
+	if tier := CurrentTier(); tier != TierModerate {
+		t.Fatalf("CurrentTier() after clearing SECURITY_TIER = %v, want %v", tier, TierModerate)
+	}
+}
+
 func TestSetEnvironmentForTest(t *testing.T) {
 	// Verify that SetEnvironmentForTest properly restores state.
 	resetEnvironment()

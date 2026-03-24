@@ -100,7 +100,34 @@ var (
 	currentEnv Environment
 	envMu      sync.RWMutex
 	envSet     bool
+
+	detectedEnvCache          detectedEnvironmentStateCache
+	detectedTierOverrideCache tierOverrideStateCache
 )
+
+// EnvSecurityTier optionally overrides the security posture derived from the
+// deployment environment. Supported values are: permissive, moderate, strict.
+// Invalid non-empty values fail safe to strict.
+const EnvSecurityTier = "SECURITY_TIER"
+
+type environmentInputs struct {
+	envName string
+	env     string
+	goEnv   string
+}
+
+type detectedEnvironmentStateCache struct {
+	inputs environmentInputs
+	env    Environment
+	valid  bool
+}
+
+type tierOverrideStateCache struct {
+	raw     string
+	tier    SecurityTier
+	present bool
+	valid   bool
+}
 
 // DetectEnvironment reads ENV_NAME, then ENV, then GO_ENV (in priority order)
 // and returns the corresponding Environment. If no environment variable is set,
@@ -109,24 +136,7 @@ var (
 // This function does NOT call Set() — it only reads and returns.
 // Use it to inspect the environment before committing.
 func DetectEnvironment() Environment {
-	for _, key := range []string{"ENV_NAME", "ENV", "GO_ENV"} {
-		raw := strings.TrimSpace(os.Getenv(key))
-		if raw == "" {
-			continue
-		}
-
-		env := Environment(strings.ToLower(raw))
-		if env.IsValid() {
-			return env
-		}
-
-		// A non-empty but unrecognized value is treated as strict via
-		// Environment.SecurityTier() to fail safe instead of silently falling back
-		// to a permissive local environment.
-		return env
-	}
-
-	return Local
+	return detectEnvironmentFromInputs(readEnvironmentInputs())
 }
 
 // SetEnvironment configures the canonical environment for the process.
@@ -149,27 +159,155 @@ func SetEnvironment(env Environment) error {
 
 	currentEnv = env
 	envSet = true
+	detectedEnvCache = detectedEnvironmentStateCache{}
 
 	return nil
 }
 
 // CurrentEnvironment returns the configured environment.
-// If SetEnvironment has not been called, it falls back to DetectEnvironment.
+// If SetEnvironment has not been called, it falls back to DetectEnvironment and
+// memoizes the last detected result for the current env var inputs.
 func CurrentEnvironment() Environment {
 	envMu.RLock()
-	defer envMu.RUnlock()
+
+	if envSet {
+		env := currentEnv
+
+		envMu.RUnlock()
+
+		return env
+	}
+
+	cached := detectedEnvCache
+
+	envMu.RUnlock()
+
+	inputs := readEnvironmentInputs()
+	if cached.valid && cached.inputs == inputs {
+		return cached.env
+	}
+
+	detected := detectEnvironmentFromInputs(inputs)
+
+	envMu.Lock()
+	defer envMu.Unlock()
 
 	if envSet {
 		return currentEnv
 	}
 
-	// Not explicitly set — detect from env vars.
-	// This is intentionally NOT cached so env var changes before Set() are visible.
-	return DetectEnvironment()
+	detectedEnvCache = detectedEnvironmentStateCache{
+		inputs: inputs,
+		env:    detected,
+		valid:  true,
+	}
+
+	return detected
 }
 
-// CurrentTier returns the SecurityTier for the current environment.
-// Convenience wrapper around CurrentEnvironment().SecurityTier().
+// EffectiveSecurityTier returns the security tier for env after applying the
+// optional SECURITY_TIER override.
+func EffectiveSecurityTier(env Environment) SecurityTier {
+	if tier, ok := currentSecurityTierOverride(); ok {
+		return tier
+	}
+
+	return env.SecurityTier()
+}
+
+// CurrentTier returns the SecurityTier for the current process, applying the
+// optional SECURITY_TIER override when present.
 func CurrentTier() SecurityTier {
-	return CurrentEnvironment().SecurityTier()
+	return EffectiveSecurityTier(CurrentEnvironment())
+}
+
+func readEnvironmentInputs() environmentInputs {
+	return environmentInputs{
+		envName: os.Getenv("ENV_NAME"),
+		env:     os.Getenv("ENV"),
+		goEnv:   os.Getenv("GO_ENV"),
+	}
+}
+
+func detectEnvironmentFromInputs(inputs environmentInputs) Environment {
+	for _, raw := range []string{inputs.envName, inputs.env, inputs.goEnv} {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+
+		env := Environment(strings.ToLower(trimmed))
+		if env.IsValid() {
+			return env
+		}
+
+		// A non-empty but unrecognized value is treated as strict via
+		// Environment.SecurityTier() to fail safe instead of silently falling back
+		// to a permissive local environment.
+		return env
+	}
+
+	return Local
+}
+
+func parseSecurityTierOverride(raw string) (SecurityTier, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	if trimmed == "" {
+		return 0, false
+	}
+
+	switch trimmed {
+	case TierPermissive.String():
+		return TierPermissive, true
+	case TierModerate.String():
+		return TierModerate, true
+	case TierStrict.String():
+		return TierStrict, true
+	default:
+		return TierStrict, true
+	}
+}
+
+func currentSecurityTierOverride() (SecurityTier, bool) {
+	raw := os.Getenv(EnvSecurityTier)
+
+	envMu.RLock()
+
+	if detectedTierOverrideCache.valid && detectedTierOverrideCache.raw == raw {
+		tier := detectedTierOverrideCache.tier
+		present := detectedTierOverrideCache.present
+
+		envMu.RUnlock()
+
+		return tier, present
+	}
+
+	envMu.RUnlock()
+
+	tier, present := parseSecurityTierOverride(raw)
+
+	envMu.Lock()
+	detectedTierOverrideCache = tierOverrideStateCache{
+		raw:     raw,
+		tier:    tier,
+		present: present,
+		valid:   true,
+	}
+	envMu.Unlock()
+
+	return tier, present
+}
+
+func currentSecurityContext() (Environment, SecurityTier, string) {
+	env := CurrentEnvironment()
+
+	return securityContextForEnvironment(env)
+}
+
+func securityContextForEnvironment(env Environment) (Environment, SecurityTier, string) {
+	if tier, ok := currentSecurityTierOverride(); ok {
+		return env, tier, EnvSecurityTier
+	}
+
+	return env, env.SecurityTier(), ""
 }

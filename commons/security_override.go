@@ -143,22 +143,44 @@ func CheckSecurityRule(rule string, violated bool) SecurityCheckResult {
 // When an override is present with a valid reason, the log is emitted but
 // no error is returned (the override suppresses the error).
 func EnforceSecurityRule(ctx context.Context, logger log.Logger, component string, result SecurityCheckResult) error {
-	return enforceSecurityRule(ctx, logger, component, CurrentEnvironment(), result)
+	env, tier, tierSource := currentSecurityContext()
+
+	return enforceSecurityRule(ctx, logger, component, env, tier, tierSource, result)
 }
 
 // EnforceSecurityRuleForEnvironment processes a SecurityCheckResult using the
-// provided environment instead of the ambient process environment.
+// provided environment instead of the ambient process environment for
+// environment classification. If SECURITY_TIER is set, that process-wide tier
+// override still applies.
 func EnforceSecurityRuleForEnvironment(ctx context.Context, logger log.Logger, component string, env Environment, result SecurityCheckResult) error {
-	return enforceSecurityRule(ctx, logger, component, env, result)
+	_, tier, tierSource := securityContextForEnvironment(env)
+
+	return enforceSecurityRule(ctx, logger, component, env, tier, tierSource, result)
 }
 
-func enforceSecurityRule(ctx context.Context, logger log.Logger, component string, env Environment, result SecurityCheckResult) error {
+func enforceSecurityRule(
+	ctx context.Context,
+	logger log.Logger,
+	component string,
+	env Environment,
+	tier SecurityTier,
+	tierSource string,
+	result SecurityCheckResult,
+) error {
 	if !result.Violated {
 		return nil
 	}
 
 	logger = normalizeSecurityLogger(logger)
-	tier := env.SecurityTier()
+
+	fields := []log.Field{
+		log.String("component", component),
+		log.String("environment", env.String()),
+		log.String("tier", tier.String()),
+	}
+	if tierSource != "" {
+		fields = append(fields, log.String("tier_source", tierSource))
+	}
 
 	// Override present — log it and allow through.
 	if result.Override != nil {
@@ -169,27 +191,27 @@ func enforceSecurityRule(ctx context.Context, logger log.Logger, component strin
 		}
 
 		level := overrideLogLevel(tier)
-		logger.Log(ctx, level,
-			"security override active",
+
+		overrideFields := append([]log.Field{}, fields...)
+		overrideFields = append(overrideFields,
 			log.String("rule", result.Override.Rule),
 			log.Bool("reason_present", strings.TrimSpace(result.Override.Reason) != ""),
 			log.String("source", result.Override.Source),
-			log.String("component", component),
-			log.String("tier", tier.String()),
 		)
+		logger.Log(ctx, level, "security override active", overrideFields...)
 
 		return nil // override suppresses the error
 	}
 
 	// No override — this is a real violation.
 	level := violationLogLevel(tier)
-	logger.Log(ctx, level,
-		"security policy violation",
+
+	violationFields := append([]log.Field{}, fields...)
+	violationFields = append(violationFields,
 		log.String("rule", result.Rule),
-		log.String("component", component),
-		log.String("tier", tier.String()),
 		log.String("override_env_var", result.EnvVar),
 	)
+	logger.Log(ctx, level, "security policy violation", violationFields...)
 
 	// In permissive tier, violations are just warnings.
 	if tier == TierPermissive {
@@ -201,8 +223,13 @@ func enforceSecurityRule(ctx context.Context, logger log.Logger, component strin
 		return nil // Phase 2: warn only
 	}
 
+	contextLabel := env.String()
+	if tierSource != "" {
+		contextLabel = fmt.Sprintf("%s; overridden by %s", contextLabel, tierSource)
+	}
+
 	return fmt.Errorf("%w: %s not met in %s tier (%s); set %s=\"reason\" to override",
-		ErrSecurityViolation, result.Rule, tier, env, result.EnvVar)
+		ErrSecurityViolation, result.Rule, tier, contextLabel, result.EnvVar)
 }
 
 func normalizeSecurityLogger(logger log.Logger) log.Logger {

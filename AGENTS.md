@@ -244,3 +244,4 @@ Build and shell:
 - Keep docs factual and code-backed.
 - Avoid speculative roadmap text.
 - Prefer concise package-level examples that compile with current API names.
+- When adding, removing, or changing any environment variable consumed by lib-commons, update `.env.reference` in the same change.

@@ -216,6 +216,28 @@ func (rc *RabbitMQConnection) snapshotConnectState() connectSnapshot {
 	}
 }
 
+func (rc *RabbitMQConnection) prepareConnectSnapshot() (connectSnapshot, error) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+
+	if err := rc.applyDefaults(); err != nil {
+		return connectSnapshot{}, err
+	}
+
+	return rc.snapshotConnectState(), nil
+}
+
+func (rc *RabbitMQConnection) currentConnectState() (connectSnapshot, bool, error) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+
+	if err := rc.applyDefaults(); err != nil {
+		return connectSnapshot{}, false, err
+	}
+
+	return rc.snapshotConnectState(), rc.isFullyConnected(), nil
+}
+
 // ConnectContext keeps a singleton connection with rabbitmq.
 func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 	if rc == nil {
@@ -237,11 +259,8 @@ func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemRabbitMQ))
 
-	rc.mu.Lock()
-
-	if err := rc.applyDefaults(); err != nil {
-		rc.mu.Unlock()
-
+	policySnap, err := rc.prepareConnectSnapshot()
+	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "Failed to apply defaults", err)
 
 		return fmt.Errorf("rabbitmq connect: %w", err)
@@ -249,26 +268,26 @@ func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 
 	// Security policy: TLS enforcement in strict tier (production).
 	if commons.CurrentTier() == commons.TierStrict {
-		isPlaintext := !strings.HasPrefix(strings.ToLower(rc.ConnectionStringSource), "amqps://")
+		isPlaintext := !strings.HasPrefix(strings.ToLower(policySnap.connStr), "amqps://")
 
 		result := commons.CheckSecurityRule(commons.RuleTLSRequired, isPlaintext)
-		if err := commons.EnforceSecurityRule(ctx, rc.logger(), "rabbitmq", result); err != nil {
-			rc.mu.Unlock()
-
+		if err := commons.EnforceSecurityRule(ctx, policySnap.logger, "rabbitmq", result); err != nil {
 			return fmt.Errorf("rabbitmq connect: %w", err)
 		}
 	}
 
-	// Fast-path: if already connected with an open connection and channel,
-	// return immediately without creating a new connection.
-	if rc.isFullyConnected() {
-		rc.mu.Unlock()
+	snap, fullyConnected, err := rc.currentConnectState()
+	if err != nil {
+		libOpentelemetry.HandleSpanError(span, "Failed to refresh connect state", err)
 
-		return nil
+		return fmt.Errorf("rabbitmq connect: %w", err)
 	}
 
-	snap := rc.snapshotConnectState()
-	rc.mu.Unlock()
+	// Fast-path: if already connected with an open connection and channel,
+	// return immediately without creating a new connection.
+	if fullyConnected {
+		return nil
+	}
 
 	snap.logger.Log(ctx, log.LevelInfo, "connecting to rabbitmq")
 

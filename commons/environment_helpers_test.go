@@ -28,12 +28,15 @@ func SetEnvironmentForTest(t *testing.T, env Environment) {
 	envMu.RLock()
 	prevEnv := currentEnv
 	prevSet := envSet
+	prevDetectedEnvCache := detectedEnvCache
+	prevDetectedTierOverrideCache := detectedTierOverrideCache
 	envMu.RUnlock()
 
 	// Apply the test environment.
 	envMu.Lock()
 	currentEnv = env
 	envSet = true
+	detectedEnvCache = detectedEnvironmentStateCache{}
 	envMu.Unlock()
 
 	// Restore on cleanup.
@@ -41,6 +44,8 @@ func SetEnvironmentForTest(t *testing.T, env Environment) {
 		envMu.Lock()
 		currentEnv = prevEnv
 		envSet = prevSet
+		detectedEnvCache = prevDetectedEnvCache
+		detectedTierOverrideCache = prevDetectedTierOverrideCache
 		envMu.Unlock()
 	})
 }
@@ -51,4 +56,6 @@ func resetEnvironment() {
 
 	currentEnv = ""
 	envSet = false
+	detectedEnvCache = detectedEnvironmentStateCache{}
+	detectedTierOverrideCache = tierOverrideStateCache{}
 }

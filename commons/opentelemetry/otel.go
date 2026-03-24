@@ -128,7 +128,7 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 
 	// Security policy: insecure OTEL exporter enforcement in strict tier.
 	// Note: InsecureExporter may have been inferred by normalizeEndpoint (http:// or bare host:port).
-	if policyEnv.SecurityTier() == commons.TierStrict {
+	if commons.EffectiveSecurityTier(policyEnv) == commons.TierStrict {
 		result := commons.CheckSecurityRule(commons.RuleOTELInsecureExporter, cfg.InsecureExporter)
 		if err := commons.EnforceSecurityRuleForEnvironment(ctx, cfg.Logger, "otel", policyEnv, result); err != nil {
 			return nil, fmt.Errorf("otel new: insecure exporter detected (use https:// endpoint or set %s=\"reason\"): %w",

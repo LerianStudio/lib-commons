@@ -5,6 +5,7 @@ package commons
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
@@ -269,6 +270,72 @@ func TestEnforceSecurityRule_StrictEnforcedErrors(t *testing.T) {
 
 	if !errors.Is(err, ErrSecurityViolation) {
 		t.Errorf("expected ErrSecurityViolation, got: %v", err)
+	}
+}
+
+func TestEnforceSecurityRule_UsesSecurityTierOverride(t *testing.T) {
+	SetEnvironmentForTest(t, Local)
+	resetEnvironment()
+
+	t.Setenv("ENV_NAME", Staging.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(EnvSecurityTier, TierStrict.String())
+	t.Setenv(EnvAllowInsecureTLS, "")
+	t.Setenv(EnvSecurityEnforcement, "true")
+
+	spy := &securityLoggerSpy{}
+	result := CheckSecurityRule(RuleTLSRequired, true)
+	err := EnforceSecurityRule(context.Background(), spy, "postgres", result)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrSecurityViolation)
+	require.Len(t, spy.entries, 1)
+
+	if !strings.Contains(err.Error(), "strict tier (staging; overridden by SECURITY_TIER)") {
+		t.Fatalf("error = %q, want strict tier override context", err)
+	}
+
+	fieldsByKey := map[string]any{}
+	for _, field := range spy.entries[0].fields {
+		fieldsByKey[field.Key] = field.Value
+	}
+
+	if fieldsByKey["tier"] != TierStrict.String() {
+		t.Fatalf("tier = %v, want %v", fieldsByKey["tier"], TierStrict.String())
+	}
+	if fieldsByKey["environment"] != Staging.String() {
+		t.Fatalf("environment = %v, want %v", fieldsByKey["environment"], Staging.String())
+	}
+	if fieldsByKey["tier_source"] != EnvSecurityTier {
+		t.Fatalf("tier_source = %v, want %v", fieldsByKey["tier_source"], EnvSecurityTier)
+	}
+}
+
+func TestEnforceSecurityRuleForEnvironment_UsesSecurityTierOverride(t *testing.T) {
+	SetEnvironmentForTest(t, Local)
+	resetEnvironment()
+
+	t.Setenv(EnvSecurityTier, TierStrict.String())
+	t.Setenv(EnvAllowInsecureTLS, "")
+	t.Setenv(EnvSecurityEnforcement, "true")
+
+	spy := &securityLoggerSpy{}
+	result := CheckSecurityRule(RuleTLSRequired, true)
+	err := EnforceSecurityRuleForEnvironment(context.Background(), spy, "otel", Staging, result)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrSecurityViolation)
+	require.Len(t, spy.entries, 1)
+
+	fieldsByKey := map[string]any{}
+	for _, field := range spy.entries[0].fields {
+		fieldsByKey[field.Key] = field.Value
+	}
+
+	if fieldsByKey["tier"] != TierStrict.String() {
+		t.Fatalf("tier = %v, want %v", fieldsByKey["tier"], TierStrict.String())
+	}
+	if fieldsByKey["environment"] != Staging.String() {
+		t.Fatalf("environment = %v, want %v", fieldsByKey["environment"], Staging.String())
 	}
 }
 
