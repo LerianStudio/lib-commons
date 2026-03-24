@@ -9,7 +9,6 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
-	"github.com/redis/go-redis/v9"
 
 	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
 	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
@@ -42,13 +41,14 @@ type MultiTenantConfig struct {
 	// Default: 10
 	PrefetchCount int
 
-	// MultiTenantURL is the fallback HTTP endpoint to fetch tenants if Redis cache misses.
+	// MultiTenantURL is the HTTP endpoint of the tenant-manager API (required).
+	// The API is the single source of truth for tenant discovery.
 	// Format: http://tenant-manager:4003
 	MultiTenantURL string
 
 	// ServiceAPIKey is the API key sent as X-API-Key header on HTTP requests to the
-	// Tenant Manager. Required when MultiTenantURL is set. Typically sourced from
-	// the MULTI_TENANT_SERVICE_API_KEY environment variable.
+	// Tenant Manager. Required. Typically sourced from the
+	// MULTI_TENANT_SERVICE_API_KEY environment variable.
 	ServiceAPIKey string
 
 	// Service is the service name to filter tenants by.
@@ -56,14 +56,13 @@ type MultiTenantConfig struct {
 	Service string
 
 	// Environment is the deployment environment (e.g., "staging", "production").
-	// Used to build environment-segmented Redis cache keys for active tenants.
-	// When set together with Service, the Redis key becomes:
-	// "tenant-manager:tenants:active:{Environment}:{Service}"
+	// Retained for backward compatibility but no longer used for Redis key
+	// construction. Tenant discovery uses the tenant-manager API exclusively.
 	Environment string
 
 	// DiscoveryTimeout is the maximum time allowed for the initial tenant discovery
 	// (fetching tenant IDs at startup). If zero, 500ms is used. Increase this for
-	// high-latency or loaded environments where Redis or the tenant-manager API
+	// high-latency or loaded environments where the tenant-manager API
 	// may respond slowly; discovery is best-effort and the sync loop will retry.
 	// Default: 500ms
 	DiscoveryTimeout time.Duration
@@ -108,23 +107,19 @@ func WithMongoManager(m *tmmongo.Manager) Option {
 }
 
 // MultiTenantConsumer manages message consumption across multiple tenant vhosts.
-// It dynamically discovers tenants from Redis cache and spawns consumer goroutines.
+// It dynamically discovers tenants via the tenant-manager API and spawns consumer goroutines.
 // Run() discovers tenants and eagerly starts consumers for all known tenants.
 // New tenants discovered during background sync are also started immediately.
 type MultiTenantConsumer struct {
 	rabbitmq     *tmrabbitmq.Manager
-	redisClient  redis.UniversalClient
-	pmClient     *client.Client // Tenant Manager client for fallback
+	pmClient     *client.Client // Tenant Manager HTTP API client (primary source of truth)
 	handlers     map[string]HandlerFunc
 	tenants      map[string]context.CancelFunc // Active tenant goroutines
 	knownTenants map[string]bool               // Discovered tenants (populated by discovery and sync)
-	// tenantAbsenceCount tracks consecutive syncs each tenant was missing from the fetched list.
-	// Used to avoid removing tenants on a single transient incomplete fetch.
-	tenantAbsenceCount map[string]int
-	config             MultiTenantConfig
-	mu                 sync.RWMutex
-	logger             *logcompat.Logger
-	closed             bool
+	config       MultiTenantConfig
+	mu           sync.RWMutex
+	logger       *logcompat.Logger
+	closed       bool
 
 	// postgres manages PostgreSQL connections per tenant.
 	// When set, connections are closed automatically when a tenant is removed.
@@ -154,15 +149,15 @@ type MultiTenantConsumer struct {
 // NewMultiTenantConsumerWithError creates a new MultiTenantConsumer.
 // Parameters:
 //   - rabbitmq: RabbitMQ connection manager for tenant vhosts (must not be nil)
-//   - redisClient: Redis client for tenant cache access (must not be nil)
-//   - config: Consumer configuration
+//   - config: Consumer configuration (MultiTenantURL and Service are required)
 //   - logger: Logger for operational logging
 //   - opts: Optional configuration options (e.g., WithPostgresManager, WithMongoManager)
 //
-// Returns an error if rabbitmq or redisClient is nil, as they are required for core functionality.
+// The tenant-manager HTTP API is the single source of truth for tenant discovery.
+// MultiTenantURL and Service must be set in config.
+// Returns an error if rabbitmq is nil or if MultiTenantURL/Service are not configured.
 func NewMultiTenantConsumerWithError(
 	rabbitmq *tmrabbitmq.Manager,
-	redisClient redis.UniversalClient,
 	config MultiTenantConfig,
 	logger libLog.Logger,
 	opts ...Option,
@@ -171,8 +166,12 @@ func NewMultiTenantConsumerWithError(
 		return nil, errors.New("consumer.NewMultiTenantConsumerWithError: rabbitmq must not be nil")
 	}
 
-	if redisClient == nil {
-		return nil, errors.New("consumer.NewMultiTenantConsumerWithError: redisClient must not be nil")
+	if config.MultiTenantURL == "" {
+		return nil, errors.New("consumer.NewMultiTenantConsumerWithError: MultiTenantURL must not be empty (tenant-manager API is required)")
+	}
+
+	if config.Service == "" {
+		return nil, errors.New("consumer.NewMultiTenantConsumerWithError: Service must not be empty")
 	}
 
 	// Guard against nil logger to prevent panics downstream
@@ -190,14 +189,12 @@ func NewMultiTenantConsumerWithError(
 	}
 
 	consumer := &MultiTenantConsumer{
-		rabbitmq:           rabbitmq,
-		redisClient:        redisClient,
-		handlers:           make(map[string]HandlerFunc),
-		tenants:            make(map[string]context.CancelFunc),
-		knownTenants:       make(map[string]bool),
-		tenantAbsenceCount: make(map[string]int),
-		config:             config,
-		logger:             logcompat.New(logger),
+		rabbitmq:     rabbitmq,
+		handlers:     make(map[string]HandlerFunc),
+		tenants:      make(map[string]context.CancelFunc),
+		knownTenants: make(map[string]bool),
+		config:       config,
+		logger:       logcompat.New(logger),
 	}
 
 	// Apply optional configurations
@@ -205,23 +202,21 @@ func NewMultiTenantConsumerWithError(
 		opt(consumer)
 	}
 
-	// Create Tenant Manager client for fallback if URL is configured
-	if config.MultiTenantURL != "" {
-		clientOpts := []client.ClientOption{
-			client.WithServiceAPIKey(config.ServiceAPIKey),
-		}
-
-		if config.AllowInsecureHTTP {
-			clientOpts = append(clientOpts, client.WithAllowInsecureHTTP())
-		}
-
-		pmClient, err := client.NewClient(config.MultiTenantURL, consumer.logger.Base(), clientOpts...)
-		if err != nil {
-			return nil, fmt.Errorf("consumer.NewMultiTenantConsumerWithError: invalid MultiTenantURL: %w", err)
-		}
-
-		consumer.pmClient = pmClient
+	// Create Tenant Manager HTTP API client (required — single source of truth)
+	clientOpts := []client.ClientOption{
+		client.WithServiceAPIKey(config.ServiceAPIKey),
 	}
+
+	if config.AllowInsecureHTTP {
+		clientOpts = append(clientOpts, client.WithAllowInsecureHTTP())
+	}
+
+	pmClient, err := client.NewClient(config.MultiTenantURL, consumer.logger.Base(), clientOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("consumer.NewMultiTenantConsumerWithError: invalid MultiTenantURL: %w", err)
+	}
+
+	consumer.pmClient = pmClient
 
 	if config.WorkersPerQueue > 0 {
 		consumer.logger.Base().Log(context.Background(), libLog.LevelWarn,
@@ -305,7 +300,7 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 }
 
 // Close stops all consumer goroutines and marks the consumer as closed.
-// It also closes the fallback pmClient to prevent goroutine leaks from its
+// It also closes the pmClient to prevent goroutine leaks from its
 // InMemoryCache cleanup loop.
 func (c *MultiTenantConsumer) Close() error {
 	c.mu.Lock()
@@ -329,12 +324,11 @@ func (c *MultiTenantConsumer) Close() error {
 
 	c.tenants = make(map[string]context.CancelFunc)
 	c.knownTenants = make(map[string]bool)
-	c.tenantAbsenceCount = make(map[string]int)
 
-	// Close fallback pmClient to release its InMemoryCache cleanup goroutine.
+	// Close pmClient to release its InMemoryCache cleanup goroutine.
 	if c.pmClient != nil {
 		if err := c.pmClient.Close(); err != nil {
-			c.logger.Warnf("failed to close fallback tenant manager client: %v", err)
+			c.logger.Warnf("failed to close tenant manager client: %v", err)
 		}
 	}
 

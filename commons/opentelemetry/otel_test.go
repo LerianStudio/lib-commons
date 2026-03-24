@@ -22,6 +22,21 @@ import (
 	"google.golang.org/grpc/metadata"
 )
 
+func unsetEnvVar(t *testing.T, key string) {
+	t.Helper()
+
+	original, present := os.LookupEnv(key)
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() {
+		if present {
+			require.NoError(t, os.Setenv(key, original))
+			return
+		}
+
+		require.NoError(t, os.Unsetenv(key))
+	})
+}
+
 // ===========================================================================
 // 1. NewTelemetry validation
 // ===========================================================================
@@ -126,6 +141,49 @@ func TestNewTelemetry_DefaultPropagatorAndRedactor(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, tl.Propagator, "default propagator should be set")
 	assert.NotNil(t, tl.Redactor, "default redactor should be set")
+}
+
+func TestNewTelemetry_DeploymentEnvControlsSecurityPolicy(t *testing.T) {
+	t.Run("explicit production env blocks insecure exporter even when ambient env is permissive", func(t *testing.T) {
+		t.Setenv("ENV_NAME", commons.Local.String())
+		t.Setenv("ENV", "")
+		t.Setenv("GO_ENV", "")
+		t.Setenv(commons.EnvSecurityTier, "")
+		t.Setenv(commons.EnvSecurityEnforcement, "true")
+		unsetEnvVar(t, commons.EnvAllowInsecureOTEL)
+
+		tl, err := NewTelemetry(TelemetryConfig{
+			LibraryName:               "test-lib",
+			EnableTelemetry:           true,
+			DeploymentEnv:             "production",
+			CollectorExporterEndpoint: "http://collector:4317",
+			Logger:                    log.NewNop(),
+		})
+		require.Error(t, err)
+		assert.Nil(t, tl)
+		assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+	})
+
+	t.Run("explicit local env allows insecure exporter even when ambient env is strict", func(t *testing.T) {
+		t.Setenv("ENV_NAME", commons.Production.String())
+		t.Setenv("ENV", "")
+		t.Setenv("GO_ENV", "")
+		t.Setenv(commons.EnvSecurityTier, "")
+		t.Setenv(commons.EnvSecurityEnforcement, "true")
+		unsetEnvVar(t, commons.EnvAllowInsecureOTEL)
+
+		tl, err := NewTelemetry(TelemetryConfig{
+			LibraryName:               "test-lib",
+			EnableTelemetry:           true,
+			DeploymentEnv:             "local",
+			CollectorExporterEndpoint: "http://collector:4317",
+			Logger:                    log.NewNop(),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, tl)
+		require.NotNil(t, tl.shutdownCtx)
+		require.Error(t, tl.ShutdownTelemetryWithContext(context.Background()))
+	})
 }
 
 // ===========================================================================

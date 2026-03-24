@@ -14,19 +14,13 @@ import (
 // (without cancelling the original context) stops the sync loop goroutine.
 // This prevents goroutine leaks when callers pass context.Background().
 func TestMultiTenantConsumer_Run_CloseStopsSyncLoop(t *testing.T) {
-	mr, redisClient := setupMiniredis(t)
-
-	// Populate Redis so fetchTenantIDs succeeds during discovery
-	mr.SAdd(testActiveTenantsKey, "tenant-001")
+	server := setupTenantManagerAPIServer(t, makeTenantSummaries(1))
+	config := newTestConfig(server.URL)
+	config.SyncInterval = 100 * time.Millisecond
 
 	consumer := mustNewConsumer(t,
 		dummyRabbitMQManager(),
-		redisClient,
-		MultiTenantConfig{
-			SyncInterval:  100 * time.Millisecond,
-			PrefetchCount: 10,
-			Service:       testServiceName,
-		},
+		config,
 		testutil.NewMockLogger(),
 	)
 
@@ -52,29 +46,23 @@ func TestMultiTenantConsumer_Run_CloseStopsSyncLoop(t *testing.T) {
 	}, time.Second, 20*time.Millisecond)
 
 	goleak.VerifyNone(t,
-		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2/server.(*Server).servePeer"),
-		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2.(*Miniredis).handleClient"),
 		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
+		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
+		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),
 	)
 }
 
 // TestMultiTenantConsumer_Run_CancelAndCloseNoLeak proves that the normal
 // cleanup path (cancel context + Close) also leaves no leaked goroutines.
 func TestMultiTenantConsumer_Run_CancelAndCloseNoLeak(t *testing.T) {
-	mr, redisClient := setupMiniredis(t)
-
-	// Populate Redis so fetchTenantIDs succeeds during discovery
-	mr.SAdd(testActiveTenantsKey, "tenant-001")
+	server := setupTenantManagerAPIServer(t, makeTenantSummaries(1))
+	config := newTestConfig(server.URL)
+	config.SyncInterval = 100 * time.Millisecond
 
 	consumer := mustNewConsumer(t,
 		dummyRabbitMQManager(),
-		redisClient,
-		MultiTenantConfig{
-			SyncInterval:  100 * time.Millisecond,
-			PrefetchCount: 10,
-			Service:       testServiceName,
-		},
+		config,
 		testutil.NewMockLogger(),
 	)
 
@@ -101,9 +89,9 @@ func TestMultiTenantConsumer_Run_CancelAndCloseNoLeak(t *testing.T) {
 	}, time.Second, 20*time.Millisecond)
 
 	goleak.VerifyNone(t,
-		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2/server.(*Server).servePeer"),
-		goleak.IgnoreTopFunction("github.com/alicebob/miniredis/v2.(*Miniredis).handleClient"),
 		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
+		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
+		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),
 	)
 }

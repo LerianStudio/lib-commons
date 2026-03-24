@@ -2,13 +2,19 @@ package rabbitmq
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -507,4 +513,561 @@ func TestManager_ApplyConnectionSettings_IsNoOp(t *testing.T) {
 	manager.ApplyConnectionSettings("tenant-123", &core.TenantConfig{
 		ID: "tenant-123",
 	})
+}
+
+func TestManager_WithSettingsCheckInterval_Option(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		interval time.Duration
+		expected time.Duration
+	}{
+		{
+			name:     "sets custom interval",
+			interval: 1 * time.Minute,
+			expected: 1 * time.Minute,
+		},
+		{
+			name:     "zero disables revalidation",
+			interval: 0,
+			expected: 0,
+		},
+		{
+			name:     "negative disables revalidation",
+			interval: -5 * time.Second,
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := mustNewTestClient(t)
+			manager := NewManager(c, "ledger",
+				WithSettingsCheckInterval(tt.interval),
+			)
+
+			assert.Equal(t, tt.expected, manager.settingsCheckInterval)
+		})
+	}
+}
+
+func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
+	t.Parallel()
+
+	var callCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&callCount, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "tenant-123",
+			"tenantSlug": "test-tenant",
+			"messaging": {
+				"rabbitmq": {"host": "localhost", "port": 5672, "vhost": "tenant-abc", "username": "guest", "password": "guest"}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	tmClient, err := client.NewClient(server.URL, testutil.NewMockLogger(), client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+	require.NoError(t, err)
+
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(testutil.NewMockLogger()),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	// Pre-populate cache with a nil connection (avoids needing real AMQP)
+	// and matching URI so no reconnect is triggered
+	cachedURI := "amqp://guest:guest@localhost:5672/tenant-abc"
+	manager.connections["tenant-123"] = nil
+	manager.cachedURIs["tenant-123"] = cachedURI
+	manager.lastAccessed["tenant-123"] = time.Now()
+	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+
+	// GetConnection will skip the nil connection because IsClosed() will panic
+	// on nil. We need to test the revalidation path indirectly.
+	// Instead, call revalidatePoolSettings directly.
+	manager.revalidatePoolSettings("tenant-123")
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&callCount),
+		"should have fetched fresh config from Tenant Manager")
+}
+
+func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		responseStatus     int
+		responseBody       string
+		expectEviction     bool
+		expectLogSubstring string
+	}{
+		{
+			name:               "evicts_cached_connection_when_tenant_is_suspended",
+			responseStatus:     http.StatusForbidden,
+			responseBody:       `{"code":"TS-SUSPENDED","error":"service suspended","status":"suspended"}`,
+			expectEviction:     true,
+			expectLogSubstring: "tenant tenant-suspended service suspended, evicting cached connection",
+		},
+		{
+			name:               "evicts_cached_connection_when_tenant_is_purged",
+			responseStatus:     http.StatusForbidden,
+			responseBody:       `{"code":"TS-SUSPENDED","error":"service purged","status":"purged"}`,
+			expectEviction:     true,
+			expectLogSubstring: "tenant tenant-suspended service suspended, evicting cached connection",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.responseStatus)
+				w.Write([]byte(tt.responseBody))
+			}))
+			defer server.Close()
+
+			capLogger := testutil.NewCapturingLogger()
+			tmClient, err := client.NewClient(server.URL, capLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+			require.NoError(t, err)
+			manager := NewManager(tmClient, "ledger",
+				WithLogger(capLogger),
+				WithSettingsCheckInterval(1*time.Millisecond),
+			)
+
+			// Pre-populate a cached connection
+			manager.connections["tenant-suspended"] = nil
+			manager.cachedURIs["tenant-suspended"] = "amqp://guest:guest@localhost:5672/tenant-suspended"
+			manager.lastAccessed["tenant-suspended"] = time.Now()
+			manager.lastSettingsCheck["tenant-suspended"] = time.Now()
+
+			// Trigger revalidatePoolSettings directly
+			manager.revalidatePoolSettings("tenant-suspended")
+
+			if tt.expectEviction {
+				stats := manager.Stats()
+				assert.Equal(t, 0, stats.TotalConnections,
+					"connection should be evicted after suspended tenant detected")
+
+				// Verify cachedURIs was cleaned up
+				manager.mu.RLock()
+				_, uriExists := manager.cachedURIs["tenant-suspended"]
+				_, accessExists := manager.lastAccessed["tenant-suspended"]
+				_, settingsExists := manager.lastSettingsCheck["tenant-suspended"]
+				manager.mu.RUnlock()
+
+				assert.False(t, uriExists, "cachedURIs should be removed for evicted tenant")
+				assert.False(t, accessExists, "lastAccessed should be removed for evicted tenant")
+				assert.False(t, settingsExists, "lastSettingsCheck should be removed for evicted tenant")
+			}
+
+			assert.True(t, capLogger.ContainsSubstring(tt.expectLogSubstring),
+				"expected log message containing %q, got: %v",
+				tt.expectLogSubstring, capLogger.GetMessages())
+		})
+	}
+}
+
+func TestManager_RevalidateSettings_FailedDoesNotBreakConnection(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	capLogger := testutil.NewCapturingLogger()
+	tmClient, err := client.NewClient(server.URL, capLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+	require.NoError(t, err)
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(capLogger),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	manager.connections["tenant-123"] = nil
+	manager.cachedURIs["tenant-123"] = "amqp://guest:guest@localhost:5672/test"
+	manager.lastAccessed["tenant-123"] = time.Now()
+	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+
+	// Trigger revalidation directly - should fail but not evict
+	manager.revalidatePoolSettings("tenant-123")
+
+	stats := manager.Stats()
+	assert.Equal(t, 1, stats.TotalConnections,
+		"connection should NOT be evicted after transient revalidation failure")
+
+	assert.True(t, capLogger.ContainsSubstring("failed to revalidate connection settings"),
+		"should log a warning when revalidation fails")
+}
+
+func TestManager_RevalidateSettings_RecoverFromPanic(t *testing.T) {
+	t.Parallel()
+
+	capLogger := testutil.NewCapturingLogger()
+
+	// Create a manager with nil client to trigger a panic path
+	manager := &Manager{
+		logger:                logcompat.New(capLogger),
+		connections:           make(map[string]*amqp.Connection),
+		cachedURIs:            make(map[string]string),
+		lastAccessed:          make(map[string]time.Time),
+		lastSettingsCheck:     make(map[string]time.Time),
+		settingsCheckInterval: 1 * time.Millisecond,
+	}
+
+	// Should not panic -- the recovery handler should catch it
+	assert.NotPanics(t, func() {
+		manager.revalidatePoolSettings("tenant-panic")
+	})
+}
+
+func TestManager_RevalidateSettings_DetectsConfigChange(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		cachedURI         string
+		freshHost         string
+		freshPort         int
+		freshVHost        string
+		freshUser         string
+		freshPass         string
+		expectReconnect   bool
+		expectLogContains string
+	}{
+		{
+			name:              "reconnects when host changes",
+			cachedURI:         "amqp://guest:guest@oldhost:5672/tenant-abc",
+			freshHost:         "newhost",
+			freshPort:         5672,
+			freshVHost:        "tenant-abc",
+			freshUser:         "guest",
+			freshPass:         "guest",
+			expectReconnect:   true,
+			expectLogContains: "RabbitMQ config changed",
+		},
+		{
+			name:              "reconnects when port changes",
+			cachedURI:         "amqp://guest:guest@localhost:5672/tenant-abc",
+			freshHost:         "localhost",
+			freshPort:         5673,
+			freshVHost:        "tenant-abc",
+			freshUser:         "guest",
+			freshPass:         "guest",
+			expectReconnect:   true,
+			expectLogContains: "RabbitMQ config changed",
+		},
+		{
+			name:              "reconnects when vhost changes",
+			cachedURI:         "amqp://guest:guest@localhost:5672/old-vhost",
+			freshHost:         "localhost",
+			freshPort:         5672,
+			freshVHost:        "new-vhost",
+			freshUser:         "guest",
+			freshPass:         "guest",
+			expectReconnect:   true,
+			expectLogContains: "RabbitMQ config changed",
+		},
+		{
+			name:              "reconnects when username changes",
+			cachedURI:         "amqp://olduser:guest@localhost:5672/tenant-abc",
+			freshHost:         "localhost",
+			freshPort:         5672,
+			freshVHost:        "tenant-abc",
+			freshUser:         "newuser",
+			freshPass:         "guest",
+			expectReconnect:   true,
+			expectLogContains: "RabbitMQ config changed",
+		},
+		{
+			name:              "reconnects when password changes",
+			cachedURI:         "amqp://guest:oldpass@localhost:5672/tenant-abc",
+			freshHost:         "localhost",
+			freshPort:         5672,
+			freshVHost:        "tenant-abc",
+			freshUser:         "guest",
+			freshPass:         "newpass",
+			expectReconnect:   true,
+			expectLogContains: "RabbitMQ config changed",
+		},
+		{
+			name:              "no reconnect when config is identical",
+			cachedURI:         "amqp://guest:guest@localhost:5672/tenant-abc",
+			freshHost:         "localhost",
+			freshPort:         5672,
+			freshVHost:        "tenant-abc",
+			freshUser:         "guest",
+			freshPass:         "guest",
+			expectReconnect:   false,
+			expectLogContains: "",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(fmt.Sprintf(`{
+					"id": "tenant-cfg",
+					"tenantSlug": "config-test",
+					"messaging": {
+						"rabbitmq": {"host": %q, "port": %d, "vhost": %q, "username": %q, "password": %q}
+					}
+				}`, tt.freshHost, tt.freshPort, tt.freshVHost, tt.freshUser, tt.freshPass)))
+			}))
+			defer server.Close()
+
+			capLogger := testutil.NewCapturingLogger()
+			tmClient, tmErr := client.NewClient(server.URL, capLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+			require.NoError(t, tmErr)
+
+			manager := NewManager(tmClient, "ledger",
+				WithLogger(capLogger),
+				WithSettingsCheckInterval(1*time.Millisecond),
+			)
+
+			manager.connections["tenant-cfg"] = nil
+			manager.cachedURIs["tenant-cfg"] = tt.cachedURI
+			manager.lastAccessed["tenant-cfg"] = time.Now()
+			manager.lastSettingsCheck["tenant-cfg"] = time.Now()
+
+			// Trigger revalidation directly
+			manager.revalidatePoolSettings("tenant-cfg")
+
+			if tt.expectReconnect {
+				// The reconnection will fail (no real RabbitMQ) but the old conn
+				// should be kept. Verify the log message was produced.
+				assert.True(t, capLogger.ContainsSubstring(tt.expectLogContains),
+					"expected log containing %q, got: %v", tt.expectLogContains, capLogger.GetMessages())
+
+				// Old connection should still exist (reconnection fails gracefully)
+				stats := manager.Stats()
+				assert.Equal(t, 1, stats.TotalConnections,
+					"old connection should be kept when reconnection fails")
+			} else {
+				assert.False(t, capLogger.ContainsSubstring("config changed"),
+					"should NOT log config change when config is identical")
+			}
+		})
+	}
+}
+
+func TestManager_RevalidateSettings_ConfigChangeKeepsOldConnOnFailure(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "tenant-fail",
+			"tenantSlug": "fail-test",
+			"messaging": {
+				"rabbitmq": {"host": "unreachable-host", "port": 5672, "vhost": "tenant-fail", "username": "guest", "password": "guest"}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	capLogger := testutil.NewCapturingLogger()
+	tmClient, err := client.NewClient(server.URL, capLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+	require.NoError(t, err)
+
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(capLogger),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	manager.connections["tenant-fail"] = nil
+	manager.cachedURIs["tenant-fail"] = "amqp://guest:guest@localhost:5672/old-vhost"
+	manager.lastAccessed["tenant-fail"] = time.Now()
+	manager.lastSettingsCheck["tenant-fail"] = time.Now()
+
+	manager.revalidatePoolSettings("tenant-fail")
+
+	stats := manager.Stats()
+	assert.Equal(t, 1, stats.TotalConnections,
+		"old connection should be kept when reconnection to new host fails")
+
+	assert.True(t, capLogger.ContainsSubstring("keeping old connection"),
+		"should log that old connection is being kept on failure")
+}
+
+func TestManager_RevalidateSettings_NoReconnectWhenConfigSame(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{
+			"id": "tenant-same",
+			"tenantSlug": "same-test",
+			"messaging": {
+				"rabbitmq": {"host": "localhost", "port": 5672, "vhost": "tenant-abc", "username": "guest", "password": "guest"}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	capLogger := testutil.NewCapturingLogger()
+	tmClient, err := client.NewClient(server.URL, capLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+	require.NoError(t, err)
+
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(capLogger),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	matchingURI := "amqp://guest:guest@localhost:5672/tenant-abc"
+	manager.connections["tenant-same"] = nil
+	manager.cachedURIs["tenant-same"] = matchingURI
+	manager.lastAccessed["tenant-same"] = time.Now()
+	manager.lastSettingsCheck["tenant-same"] = time.Now()
+
+	manager.revalidatePoolSettings("tenant-same")
+
+	// Should NOT log any config change
+	assert.False(t, capLogger.ContainsSubstring("config changed"),
+		"should NOT log config change when config is identical")
+
+	stats := manager.Stats()
+	assert.Equal(t, 1, stats.TotalConnections,
+		"connection should remain when config is unchanged")
+}
+
+func TestManager_CloseConnection_CleansUpCachedURIs(t *testing.T) {
+	t.Parallel()
+
+	c := mustNewTestClient(t)
+	manager := NewManager(c, "ledger",
+		WithLogger(testutil.NewMockLogger()),
+	)
+
+	manager.connections["tenant-123"] = nil
+	manager.cachedURIs["tenant-123"] = "amqp://guest:guest@localhost:5672/test"
+	manager.lastAccessed["tenant-123"] = time.Now()
+	manager.lastSettingsCheck["tenant-123"] = time.Now()
+
+	err := manager.CloseConnection(context.Background(), "tenant-123")
+	require.NoError(t, err)
+
+	manager.mu.RLock()
+	_, connExists := manager.connections["tenant-123"]
+	_, uriExists := manager.cachedURIs["tenant-123"]
+	_, accessExists := manager.lastAccessed["tenant-123"]
+	_, settingsExists := manager.lastSettingsCheck["tenant-123"]
+	manager.mu.RUnlock()
+
+	assert.False(t, connExists, "connection should be removed after CloseConnection")
+	assert.False(t, uriExists, "cachedURIs should be removed after CloseConnection")
+	assert.False(t, accessExists, "lastAccessed should be removed after CloseConnection")
+	assert.False(t, settingsExists, "lastSettingsCheck should be removed after CloseConnection")
+}
+
+func TestManager_Close_CleansUpCachedURIs(t *testing.T) {
+	t.Parallel()
+
+	c := mustNewTestClient(t)
+	manager := NewManager(c, "ledger",
+		WithLogger(testutil.NewMockLogger()),
+	)
+
+	for _, id := range []string{"tenant-1", "tenant-2"} {
+		manager.connections[id] = nil
+		manager.cachedURIs[id] = "amqp://guest:guest@localhost:5672/" + id
+		manager.lastAccessed[id] = time.Now()
+		manager.lastSettingsCheck[id] = time.Now()
+	}
+
+	err := manager.Close(context.Background())
+
+	require.NoError(t, err)
+	assert.True(t, manager.closed)
+	assert.Empty(t, manager.connections, "all connections should be removed after Close")
+	assert.Empty(t, manager.cachedURIs, "all cachedURIs should be removed after Close")
+	assert.Empty(t, manager.lastAccessed, "all lastAccessed should be removed after Close")
+	assert.Empty(t, manager.lastSettingsCheck, "all lastSettingsCheck should be removed after Close")
+}
+
+func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
+	t.Parallel()
+
+	var requestCount atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		count := requestCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+
+		if count == 1 {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{
+				"id": "tenant-cache-test",
+				"tenantSlug": "cached-tenant",
+				"service": "ledger",
+				"status": "active",
+				"messaging": {
+					"rabbitmq": {"host": "localhost", "port": 5672, "vhost": "tenant-cache-test", "username": "guest", "password": "guest"}
+				}
+			}`))
+
+			return
+		}
+
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"code":"TS-SUSPENDED","error":"service suspended","status":"suspended"}`))
+	}))
+	defer server.Close()
+
+	capLogger := testutil.NewCapturingLogger()
+	tmClient, err := client.NewClient(server.URL, capLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+	require.NoError(t, err)
+
+	// Populate the client cache
+	cfg, err := tmClient.GetTenantConfig(context.Background(), "tenant-cache-test", "ledger")
+	require.NoError(t, err)
+	assert.Equal(t, "tenant-cache-test", cfg.ID)
+	assert.Equal(t, int32(1), requestCount.Load())
+
+	manager := NewManager(tmClient, "ledger",
+		WithLogger(capLogger),
+		WithSettingsCheckInterval(1*time.Millisecond),
+	)
+
+	manager.connections["tenant-cache-test"] = nil
+	manager.cachedURIs["tenant-cache-test"] = "amqp://guest:guest@localhost:5672/tenant-cache-test"
+	manager.lastAccessed["tenant-cache-test"] = time.Now()
+	manager.lastSettingsCheck["tenant-cache-test"] = time.Now()
+
+	manager.revalidatePoolSettings("tenant-cache-test")
+
+	assert.Equal(t, int32(2), requestCount.Load(),
+		"revalidatePoolSettings should bypass client cache and make a fresh HTTP request")
+
+	statsAfter := manager.Stats()
+	assert.Equal(t, 0, statsAfter.TotalConnections,
+		"connection should be evicted after revalidation detected suspended tenant via cache bypass")
+}
+
+func TestManager_NewManager_DefaultSettingsCheckInterval(t *testing.T) {
+	t.Parallel()
+
+	c := mustNewTestClient(t)
+	manager := NewManager(c, "ledger")
+
+	assert.Equal(t, defaultSettingsCheckInterval, manager.settingsCheckInterval,
+		"settingsCheckInterval should default to defaultSettingsCheckInterval")
+	assert.NotNil(t, manager.cachedURIs, "cachedURIs map should be initialized")
+	assert.NotNil(t, manager.lastSettingsCheck, "lastSettingsCheck map should be initialized")
 }

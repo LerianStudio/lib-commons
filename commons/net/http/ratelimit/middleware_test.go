@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v4/commons"
 	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
 	chttp "github.com/LerianStudio/lib-commons/v4/commons/net/http"
 	libRedis "github.com/LerianStudio/lib-commons/v4/commons/redis"
@@ -44,6 +45,37 @@ func (s *warnSpy) Enabled(_ libLog.Level) bool          { return true }
 func (s *warnSpy) Sync(_ context.Context) error         { return nil }
 
 func (s *warnSpy) hasWarn(substr string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for _, m := range s.msgs {
+		if strings.Contains(m, substr) {
+			return true
+		}
+	}
+
+	return false
+}
+
+type errorSpy struct {
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (s *errorSpy) Log(_ context.Context, level libLog.Level, msg string, _ ...libLog.Field) {
+	if level == libLog.LevelError {
+		s.mu.Lock()
+		s.msgs = append(s.msgs, msg)
+		s.mu.Unlock()
+	}
+}
+
+func (s *errorSpy) With(_ ...libLog.Field) libLog.Logger { return s }
+func (s *errorSpy) WithGroup(_ string) libLog.Logger     { return s }
+func (s *errorSpy) Enabled(_ libLog.Level) bool          { return true }
+func (s *errorSpy) Sync(_ context.Context) error         { return nil }
+
+func (s *errorSpy) hasError(substr string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -935,6 +967,119 @@ func TestNew_RateLimitDisabled_PassThrough(t *testing.T) {
 	// nil receiver should return pass-through handler
 	handler := rl.WithRateLimit(DefaultTier())
 	app := newTestApp(handler)
+
+	resp := doRequest(t, app)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestNew_StrictEnforcedDisabledRateLimitFailsClosed(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	t.Setenv("RATE_LIMIT_ENABLED", "false")
+
+	spy := &errorSpy{}
+	rl := New(nil, WithLogger(spy))
+	require.NotNil(t, rl)
+	assert.True(t, rl.policyBlocked)
+	assert.True(t, spy.hasError("CRITICAL: rate limiter fail-closed is active; all requests will be rejected with 503 until RATE_LIMIT_ENABLED is restored or an override is configured"))
+
+	app := newTestApp(rl.WithRateLimit(DefaultTier()))
+	resp := doRequest(t, app)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	var errResp chttp.ErrorResponse
+	require.NoError(t, json.Unmarshal(body, &errResp))
+	assert.Equal(t, policyBlockedTitle, errResp.Title)
+	assert.Equal(t, policyBlockedMessage, errResp.Message)
+}
+
+func TestNew_StrictEnforcedNilRedisLogsCriticalStartupBlock(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+
+	spy := &errorSpy{}
+	rl := New(nil, WithLogger(spy))
+	require.NotNil(t, rl)
+	assert.True(t, rl.policyBlocked)
+	assert.True(t, spy.hasError("CRITICAL: rate limiter fail-closed is active; all requests will be rejected with 503 until Redis is configured"))
+
+	app := newTestApp(rl.WithRateLimit(DefaultTier()))
+	resp := doRequest(t, app)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+func TestNew_StrictEnforcedDisabledRateLimitOverridePassesThrough(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	t.Setenv(commons.EnvAllowRateLimitDisabled, "private network exception")
+	t.Setenv("RATE_LIMIT_ENABLED", "false")
+
+	rl := New(nil)
+	require.Nil(t, rl)
+
+	app := newTestApp(rl.WithRateLimit(DefaultTier()))
+	resp := doRequest(t, app)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestNew_StrictEnforcedFailOpenForcedClosed(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	t.Setenv(commons.EnvAllowInsecureTLS, "unit test redis server")
+
+	mr := miniredis.RunT(t)
+	conn := newTestMiddlewareRedisConnection(t, mr)
+	require.NotNil(t, conn)
+
+	rl := New(conn, WithFailOpen(true))
+	require.NotNil(t, rl)
+	assert.False(t, rl.failOpen)
+
+	app := newTestApp(rl.WithRateLimit(Tier{Name: "strict-fail-open", Max: 10, Window: 60 * time.Second}))
+	mr.Close()
+
+	resp := doRequest(t, app)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+}
+
+func TestNew_StrictEnforcedFailOpenOverridePreservesBehavior(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	t.Setenv(commons.EnvAllowRateLimitFailOpen, "edge cache owns availability")
+	t.Setenv(commons.EnvAllowInsecureTLS, "unit test redis server")
+
+	mr := miniredis.RunT(t)
+	conn := newTestMiddlewareRedisConnection(t, mr)
+	require.NotNil(t, conn)
+
+	rl := New(conn, WithFailOpen(true))
+	require.NotNil(t, rl)
+	assert.True(t, rl.failOpen)
+
+	app := newTestApp(rl.WithRateLimit(Tier{Name: "strict-override", Max: 10, Window: 60 * time.Second}))
+	mr.Close()
 
 	resp := doRequest(t, app)
 	defer resp.Body.Close()

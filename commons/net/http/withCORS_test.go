@@ -9,6 +9,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/LerianStudio/lib-commons/v4/commons"
 	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
 	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
 	"github.com/gofiber/fiber/v2"
@@ -194,4 +195,57 @@ func TestWithCORS_InvalidAllowCredentialsFallsBackToDefault(t *testing.T) {
 
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 	require.Equal(t, "", resp.Header.Get(fiber.HeaderAccessControlAllowCredentials))
+}
+
+func TestWithCORS_StrictEnforcedWildcardFallsBackToDenyAll(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	t.Setenv("ACCESS_CONTROL_ALLOW_ORIGIN", "*")
+	t.Setenv("ACCESS_CONTROL_ALLOW_CREDENTIALS", "true")
+
+	app := fiber.New()
+	app.Use(WithCORS())
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendStatus(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodOptions, "/", nil)
+	req.Header.Set(fiber.HeaderOrigin, "https://example.com")
+	req.Header.Set(fiber.HeaderAccessControlRequestMethod, http.MethodGet)
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	assert.Empty(t, resp.Header.Get(fiber.HeaderAccessControlAllowOrigin))
+	assert.Empty(t, resp.Header.Get(fiber.HeaderAccessControlAllowCredentials))
+}
+
+func TestWithCORS_StrictEnforcedOverrideAllowsWildcard(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	t.Setenv(commons.EnvAllowCORSWildcard, "trusted gateway owns enforcement")
+	t.Setenv("ACCESS_CONTROL_ALLOW_ORIGIN", "*")
+
+	app := fiber.New()
+	app.Use(WithCORS())
+	app.Get("/", func(c *fiber.Ctx) error {
+		return c.SendStatus(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodOptions, "/", nil)
+	req.Header.Set(fiber.HeaderOrigin, "https://example.com")
+	req.Header.Set(fiber.HeaderAccessControlRequestMethod, http.MethodGet)
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	assert.Equal(t, "*", resp.Header.Get(fiber.HeaderAccessControlAllowOrigin))
 }

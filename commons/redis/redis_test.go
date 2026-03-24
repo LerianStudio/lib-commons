@@ -14,16 +14,33 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v4/commons"
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func unsetEnvVar(t *testing.T, key string) {
+	t.Helper()
+
+	original, present := os.LookupEnv(key)
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() {
+		if present {
+			require.NoError(t, os.Setenv(key, original))
+			return
+		}
+
+		require.NoError(t, os.Unsetenv(key))
+	})
+}
 
 type recordingLogger struct {
 	mu       sync.Mutex
@@ -184,6 +201,43 @@ func TestClient_New_InvalidConfig(t *testing.T) {
 			assert.Contains(t, err.Error(), test.errText)
 		})
 	}
+}
+
+func TestClient_New_StrictTierBlocksPlaintextBeforeDial(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityTier, "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
+
+	client, err := New(context.Background(), Config{
+		Topology: Topology{
+			Standalone: &StandaloneTopology{Address: "127.0.0.1:1"},
+		},
+		Logger: log.NewNop(),
+	})
+
+	assert.Nil(t, client)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+}
+
+func TestClient_New_StrictTierOverrideAllowsPlaintext(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityTier, "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	t.Setenv(commons.EnvAllowInsecureTLS, "private trusted network")
+
+	mr := miniredis.RunT(t)
+	client, err := New(context.Background(), newStandaloneConfig(mr.Addr()))
+	require.NoError(t, err)
+	require.NotNil(t, client)
+	t.Cleanup(func() {
+		require.NoError(t, client.Close())
+	})
 }
 
 func TestBuildTLSConfig(t *testing.T) {

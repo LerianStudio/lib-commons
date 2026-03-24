@@ -13,11 +13,13 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v4/commons"
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,6 +36,21 @@ func withDeps(deps clientDeps) Option {
 	return func(current *clientDeps) {
 		*current = deps
 	}
+}
+
+func unsetEnvVar(t *testing.T, key string) {
+	t.Helper()
+
+	original, present := os.LookupEnv(key)
+	require.NoError(t, os.Unsetenv(key))
+	t.Cleanup(func() {
+		if present {
+			require.NoError(t, os.Setenv(key, original))
+			return
+		}
+
+		require.NoError(t, os.Unsetenv(key))
+	})
 }
 
 func baseConfig() Config {
@@ -840,6 +857,61 @@ func TestClient_LogsNonTLSWarning(t *testing.T) {
 	}
 
 	assert.True(t, found, "expected non-TLS warning in log messages, got: %v", spy.messages)
+}
+
+func TestNewClient_StrictTierBlocksPlaintextBeforeConnect(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityTier, "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
+
+	var connectCalls atomic.Int32
+	deps := clientDeps{
+		connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+			connectCalls.Add(1)
+			return &mongo.Client{}, nil
+		},
+		ping:       func(context.Context, *mongo.Client) error { return nil },
+		disconnect: func(context.Context, *mongo.Client) error { return nil },
+		createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+			return nil
+		},
+	}
+
+	client, err := NewClient(context.Background(), baseConfig(), withDeps(deps))
+	assert.Nil(t, client)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+	assert.EqualValues(t, 0, connectCalls.Load())
+}
+
+func TestNewClient_StrictTierOverrideAllowsPlaintext(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityTier, "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+	t.Setenv(commons.EnvAllowInsecureTLS, "service mesh terminates TLS")
+
+	var connectCalls atomic.Int32
+	deps := clientDeps{
+		connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+			connectCalls.Add(1)
+			return &mongo.Client{}, nil
+		},
+		ping:       func(context.Context, *mongo.Client) error { return nil },
+		disconnect: func(context.Context, *mongo.Client) error { return nil },
+		createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+			return nil
+		},
+	}
+
+	client, err := NewClient(context.Background(), baseConfig(), withDeps(deps))
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+	assert.EqualValues(t, 1, connectCalls.Load())
 }
 
 func newTestClientWithLogger(t *testing.T, overrides *clientDeps, logger log.Logger) *Client {

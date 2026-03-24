@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	commons "github.com/LerianStudio/lib-commons/v4/commons"
 	"github.com/LerianStudio/lib-commons/v4/commons/assert"
 	"github.com/LerianStudio/lib-commons/v4/commons/backoff"
 	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
@@ -215,6 +216,28 @@ func (rc *RabbitMQConnection) snapshotConnectState() connectSnapshot {
 	}
 }
 
+func (rc *RabbitMQConnection) currentConnectState() (connectSnapshot, bool, error) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+
+	if err := rc.applyDefaults(); err != nil {
+		return connectSnapshot{}, false, err
+	}
+
+	return rc.snapshotConnectState(), rc.isFullyConnected(), nil
+}
+
+func (rc *RabbitMQConnection) enforceTLSBeforeDial(ctx context.Context, logger log.Logger, connStr string) error {
+	if commons.CurrentTier() != commons.TierStrict {
+		return nil
+	}
+
+	isPlaintext := !strings.HasPrefix(strings.ToLower(connStr), "amqps://")
+	result := commons.CheckSecurityRule(commons.RuleTLSRequired, isPlaintext)
+
+	return commons.EnforceSecurityRule(ctx, logger, "rabbitmq", result)
+}
+
 // ConnectContext keeps a singleton connection with rabbitmq.
 func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 	if rc == nil {
@@ -236,26 +259,22 @@ func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemRabbitMQ))
 
-	rc.mu.Lock()
+	snap, fullyConnected, err := rc.currentConnectState()
+	if err != nil {
+		libOpentelemetry.HandleSpanError(span, "Failed to prepare connect state", err)
 
-	if err := rc.applyDefaults(); err != nil {
-		rc.mu.Unlock()
+		return fmt.Errorf("rabbitmq connect: %w", err)
+	}
 
-		libOpentelemetry.HandleSpanError(span, "Failed to apply defaults", err)
-
+	if err := rc.enforceTLSBeforeDial(ctx, snap.logger, snap.connStr); err != nil {
 		return fmt.Errorf("rabbitmq connect: %w", err)
 	}
 
 	// Fast-path: if already connected with an open connection and channel,
 	// return immediately without creating a new connection.
-	if rc.isFullyConnected() {
-		rc.mu.Unlock()
-
+	if fullyConnected {
 		return nil
 	}
-
-	snap := rc.snapshotConnectState()
-	rc.mu.Unlock()
 
 	snap.logger.Log(ctx, log.LevelInfo, "connecting to rabbitmq")
 
@@ -421,6 +440,12 @@ func (rc *RabbitMQConnection) EnsureChannelContext(ctx context.Context) error {
 
 	if !snap.needChannel {
 		return nil
+	}
+
+	if snap.needConnection {
+		if err := rc.enforceTLSBeforeDial(ctx, snap.logger, snap.connStr); err != nil {
+			return fmt.Errorf("rabbitmq ensure channel: %w", err)
+		}
 	}
 
 	var conn *amqp.Connection
