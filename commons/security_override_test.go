@@ -38,6 +38,11 @@ func unsetEnvForTest(t *testing.T, key string) {
 	})
 }
 
+func clearTierOverrideForTest(t *testing.T) {
+	t.Helper()
+	t.Setenv(EnvSecurityTier, "")
+}
+
 func (s *securityLoggerSpy) Log(_ context.Context, level log.Level, msg string, fields ...log.Field) {
 	s.entries = append(s.entries, securityLogEntry{level: level, msg: msg, fields: append([]log.Field(nil), fields...)})
 }
@@ -191,6 +196,7 @@ func TestIsSecurityEnforcementEnabled(t *testing.T) {
 
 func TestEnforceSecurityRule_PermissiveNeverErrors(t *testing.T) {
 	SetEnvironmentForTest(t, Local) // Permissive tier
+	clearTierOverrideForTest(t)
 	unsetEnvForTest(t, EnvAllowInsecureTLS)
 	t.Setenv(EnvSecurityEnforcement, "true") // Even with enforcement ON
 
@@ -203,6 +209,7 @@ func TestEnforceSecurityRule_PermissiveNeverErrors(t *testing.T) {
 
 func TestEnforceSecurityRule_ModerateWarnOnly(t *testing.T) {
 	SetEnvironmentForTest(t, Staging) // Moderate tier
+	clearTierOverrideForTest(t)
 	unsetEnvForTest(t, EnvAllowInsecureTLS)
 	t.Setenv(EnvSecurityEnforcement, "") // Phase 2: enforcement OFF
 
@@ -215,6 +222,7 @@ func TestEnforceSecurityRule_ModerateWarnOnly(t *testing.T) {
 
 func TestEnforceSecurityRule_StrictWarnOnlyDoesNotError(t *testing.T) {
 	SetEnvironmentForTest(t, Production)
+	clearTierOverrideForTest(t)
 	unsetEnvForTest(t, EnvAllowInsecureTLS)
 	t.Setenv(EnvSecurityEnforcement, "false")
 
@@ -227,6 +235,7 @@ func TestEnforceSecurityRule_StrictWarnOnlyDoesNotError(t *testing.T) {
 
 func TestEnforceSecurityRule_ModerateEnforcedErrors(t *testing.T) {
 	SetEnvironmentForTest(t, Staging) // Moderate tier
+	clearTierOverrideForTest(t)
 	unsetEnvForTest(t, EnvAllowInsecureTLS)
 	t.Setenv(EnvSecurityEnforcement, "true") // Phase 3: enforcement ON
 
@@ -243,6 +252,7 @@ func TestEnforceSecurityRule_ModerateEnforcedErrors(t *testing.T) {
 
 func TestEnforceSecurityRule_StrictWithOverride(t *testing.T) {
 	SetEnvironmentForTest(t, Production) // Strict tier
+	clearTierOverrideForTest(t)
 	t.Setenv(EnvAllowInsecureTLS, "Istio mTLS handles encryption")
 	t.Setenv(EnvSecurityEnforcement, "true")
 
@@ -255,6 +265,7 @@ func TestEnforceSecurityRule_StrictWithOverride(t *testing.T) {
 
 func TestEnforceSecurityRule_ModerateWithOverride(t *testing.T) {
 	SetEnvironmentForTest(t, Staging)
+	clearTierOverrideForTest(t)
 	t.Setenv(EnvAllowInsecureTLS, "mesh handles encryption")
 	t.Setenv(EnvSecurityEnforcement, "true")
 
@@ -267,6 +278,7 @@ func TestEnforceSecurityRule_ModerateWithOverride(t *testing.T) {
 
 func TestEnforceSecurityRule_NotViolated(t *testing.T) {
 	SetEnvironmentForTest(t, Production)
+	clearTierOverrideForTest(t)
 	t.Setenv(EnvSecurityEnforcement, "true")
 
 	result := CheckSecurityRule(RuleTLSRequired, false)
@@ -277,7 +289,8 @@ func TestEnforceSecurityRule_NotViolated(t *testing.T) {
 }
 
 func TestEnforceSecurityRule_StrictEnforcedErrors(t *testing.T) {
-	SetEnvironmentForTest(t, Production)     // Strict tier
+	SetEnvironmentForTest(t, Production) // Strict tier
+	clearTierOverrideForTest(t)
 	unsetEnvForTest(t, EnvAllowInsecureTLS)  // No override
 	t.Setenv(EnvSecurityEnforcement, "true") // Phase 3: enforcement ON
 
@@ -364,6 +377,7 @@ func TestEnforceSecurityRuleForEnvironment_UsesSecurityTierOverride(t *testing.T
 
 func TestEnforceSecurityRule_EmptyEnvOverrideReasonInStrictTier(t *testing.T) {
 	SetEnvironmentForTest(t, Production)
+	clearTierOverrideForTest(t)
 	t.Setenv(EnvAllowInsecureTLS, "   ")
 	t.Setenv(EnvSecurityEnforcement, "true")
 
@@ -375,6 +389,7 @@ func TestEnforceSecurityRule_EmptyEnvOverrideReasonInStrictTier(t *testing.T) {
 
 func TestEnforceSecurityRule_EmptyReasonInModerate(t *testing.T) {
 	SetEnvironmentForTest(t, Staging) // Moderate tier
+	clearTierOverrideForTest(t)
 
 	result := SecurityCheckResult{
 		Rule:     RuleTLSRequired,
@@ -395,6 +410,7 @@ func TestEnforceSecurityRule_EmptyReasonInModerate(t *testing.T) {
 
 func TestEnforceSecurityRule_RedactsOverrideReasonInLogs(t *testing.T) {
 	SetEnvironmentForTest(t, Production)
+	clearTierOverrideForTest(t)
 	t.Setenv(EnvSecurityEnforcement, "true")
 
 	spy := &securityLoggerSpy{}
@@ -431,6 +447,7 @@ func TestEnforceSecurityRule_RedactsOverrideReasonInLogs(t *testing.T) {
 
 func TestEnforceSecurityRule_TypedNilLoggerDoesNotPanic(t *testing.T) {
 	SetEnvironmentForTest(t, Production)
+	clearTierOverrideForTest(t)
 	unsetEnvForTest(t, EnvAllowInsecureTLS)
 	t.Setenv(EnvSecurityEnforcement, "true")
 

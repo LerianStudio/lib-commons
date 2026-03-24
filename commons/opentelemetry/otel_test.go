@@ -182,7 +182,7 @@ func TestNewTelemetry_DeploymentEnvControlsSecurityPolicy(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, tl)
 		require.NotNil(t, tl.shutdownCtx)
-		_ = tl.ShutdownTelemetryWithContext(context.Background())
+		require.Error(t, tl.ShutdownTelemetryWithContext(context.Background()))
 	})
 }
 

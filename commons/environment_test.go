@@ -176,17 +176,15 @@ func TestDetectEnvironment_Priority(t *testing.T) {
 }
 
 func TestDetectEnvironment_CaseInsensitive(t *testing.T) {
-	orig := os.Getenv("ENV_NAME")
-	t.Cleanup(func() { os.Setenv("ENV_NAME", orig) })
-	os.Setenv("ENV", "")
-	os.Setenv("GO_ENV", "")
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
 
-	os.Setenv("ENV_NAME", "PRODUCTION")
+	t.Setenv("ENV_NAME", "PRODUCTION")
 	if got := DetectEnvironment(); got != Production {
 		t.Errorf("DetectEnvironment() with ENV_NAME=PRODUCTION = %q, want %q", got, Production)
 	}
 
-	os.Setenv("ENV_NAME", "Staging")
+	t.Setenv("ENV_NAME", "Staging")
 	if got := DetectEnvironment(); got != Staging {
 		t.Errorf("DetectEnvironment() with ENV_NAME=Staging = %q, want %q", got, Staging)
 	}

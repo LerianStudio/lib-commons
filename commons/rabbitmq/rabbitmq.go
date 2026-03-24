@@ -216,17 +216,6 @@ func (rc *RabbitMQConnection) snapshotConnectState() connectSnapshot {
 	}
 }
 
-func (rc *RabbitMQConnection) prepareConnectSnapshot() (connectSnapshot, error) {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-
-	if err := rc.applyDefaults(); err != nil {
-		return connectSnapshot{}, err
-	}
-
-	return rc.snapshotConnectState(), nil
-}
-
 func (rc *RabbitMQConnection) currentConnectState() (connectSnapshot, bool, error) {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
@@ -270,21 +259,14 @@ func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemRabbitMQ))
 
-	policySnap, err := rc.prepareConnectSnapshot()
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "Failed to apply defaults", err)
-
-		return fmt.Errorf("rabbitmq connect: %w", err)
-	}
-
-	if err := rc.enforceTLSBeforeDial(ctx, policySnap.logger, policySnap.connStr); err != nil {
-		return fmt.Errorf("rabbitmq connect: %w", err)
-	}
-
 	snap, fullyConnected, err := rc.currentConnectState()
 	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "Failed to refresh connect state", err)
+		libOpentelemetry.HandleSpanError(span, "Failed to prepare connect state", err)
 
+		return fmt.Errorf("rabbitmq connect: %w", err)
+	}
+
+	if err := rc.enforceTLSBeforeDial(ctx, snap.logger, snap.connStr); err != nil {
 		return fmt.Errorf("rabbitmq connect: %w", err)
 	}
 

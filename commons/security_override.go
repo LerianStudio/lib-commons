@@ -49,8 +49,8 @@ var (
 	// ErrSecurityViolation is returned when a security rule is violated and no override is present.
 	ErrSecurityViolation = errors.New("security policy violation")
 
-	// ErrOverrideReasonRequired is returned when an override env var is set but its value is empty.
-	ErrOverrideReasonRequired = errors.New("security override reason is required (env var value must not be empty)")
+	// ErrOverrideReasonRequired is returned when an override is present but its reason is empty.
+	ErrOverrideReasonRequired = errors.New("security override reason is required")
 )
 
 // envVarForRule maps rule names to their corresponding ALLOW_* env var.
