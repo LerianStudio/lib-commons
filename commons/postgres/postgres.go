@@ -16,6 +16,7 @@ import (
 
 	// File system migration source. We need to import it to be able to use it as source in migrate.NewWithSourceInstance
 
+	commons "github.com/LerianStudio/lib-commons/v4/commons"
 	"github.com/LerianStudio/lib-commons/v4/commons/assert"
 	"github.com/LerianStudio/lib-commons/v4/commons/backoff"
 	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
@@ -184,16 +185,46 @@ func validateDSN(dsn string) error {
 	return nil
 }
 
-// warnInsecureDSN logs a warning if the DSN explicitly disables TLS.
+func dsnRequiresTLS(dsn string) bool {
+	mode := strings.ToLower(strings.TrimSpace(dsnSSLMode(dsn)))
+	return mode == "require" || mode == "verify-ca" || mode == "verify-full"
+}
+
+func dsnSSLMode(dsn string) string {
+	trimmed := strings.TrimSpace(dsn)
+
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "postgres://") || strings.HasPrefix(lower, "postgresql://") {
+		parsed, err := url.Parse(trimmed)
+		if err != nil {
+			return ""
+		}
+
+		return strings.Trim(parsed.Query().Get("sslmode"), " '\"")
+	}
+
+	for field := range strings.FieldsSeq(trimmed) {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok || !strings.EqualFold(key, "sslmode") {
+			continue
+		}
+
+		return strings.Trim(value, " '\"")
+	}
+
+	return ""
+}
+
+// warnInsecureDSN logs a warning if the DSN does not guarantee TLS.
 // This is advisory -- development environments commonly use sslmode=disable.
 func warnInsecureDSN(ctx context.Context, logger log.Logger, dsn, label string) {
 	if logger == nil || !logger.Enabled(log.LevelWarn) {
 		return
 	}
 
-	if strings.Contains(strings.ToLower(dsn), "sslmode=disable") {
+	if !dsnRequiresTLS(dsn) {
 		logger.Log(ctx, log.LevelWarn,
-			"TLS disabled in database connection; production deployments should use sslmode=require or stronger",
+			"TLS is not guaranteed in database connection; production deployments should use sslmode=require or stronger",
 			log.String("dsn_label", label),
 		)
 	}
@@ -230,6 +261,27 @@ func New(cfg Config) (*Client, error) {
 
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("postgres new: %w", err)
+	}
+
+	// Security policy: TLS enforcement in strict tier (production).
+	// Check both primary and replica DSNs — data from an unencrypted replica
+	// is equally sensitive.
+	if commons.CurrentTier() == commons.TierStrict {
+		for _, dsn := range []struct{ label, value string }{
+			{"primary", cfg.PrimaryDSN},
+			{"replica", cfg.ReplicaDSN},
+		} {
+			if dsn.value == "" {
+				continue
+			}
+
+			tlsDisabled := !dsnRequiresTLS(dsn.value)
+
+			result := commons.CheckSecurityRule(commons.RuleTLSRequired, tlsDisabled)
+			if err := commons.EnforceSecurityRule(context.Background(), cfg.Logger, "postgres-"+dsn.label, result); err != nil {
+				return nil, fmt.Errorf("postgres new: %w", err)
+			}
+		}
 	}
 
 	return &Client{cfg: cfg, metricsFactory: cfg.MetricsFactory}, nil

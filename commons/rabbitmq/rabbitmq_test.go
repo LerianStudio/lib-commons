@@ -14,9 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v4/commons"
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRabbitMQConnection_Connect(t *testing.T) {
@@ -281,6 +283,28 @@ func TestRabbitMQConnection_Connect(t *testing.T) {
 			_ = conn.Connect()
 		})
 	})
+}
+
+func TestRabbitMQConnection_ConnectContext_StrictTierBlocksPlaintextBeforeDial(t *testing.T) {
+	t.Setenv("ENV_NAME", commons.Production.String())
+	t.Setenv("ENV", "")
+	t.Setenv("GO_ENV", "")
+	t.Setenv(commons.EnvSecurityEnforcement, "true")
+
+	var dialerCalls atomic.Int32
+	conn := &RabbitMQConnection{
+		ConnectionStringSource: "amqp://guest:guest@localhost:5672",
+		Logger:                 &log.NopLogger{},
+		dialer: func(string) (*amqp.Connection, error) {
+			dialerCalls.Add(1)
+			return nil, errors.New("dial should not be called")
+		},
+	}
+
+	err := conn.ConnectContext(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+	assert.EqualValues(t, 0, dialerCalls.Load())
 }
 
 func TestRabbitMQConnection_EnsureChannel(t *testing.T) {

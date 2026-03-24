@@ -128,6 +128,45 @@ func TestNewTelemetry_DefaultPropagatorAndRedactor(t *testing.T) {
 	assert.NotNil(t, tl.Redactor, "default redactor should be set")
 }
 
+func TestNewTelemetry_DeploymentEnvControlsSecurityPolicy(t *testing.T) {
+	t.Run("explicit production env blocks insecure exporter even when ambient env is permissive", func(t *testing.T) {
+		t.Setenv("ENV_NAME", commons.Local.String())
+		t.Setenv("ENV", "")
+		t.Setenv("GO_ENV", "")
+		t.Setenv(commons.EnvSecurityEnforcement, "true")
+
+		tl, err := NewTelemetry(TelemetryConfig{
+			LibraryName:               "test-lib",
+			EnableTelemetry:           true,
+			DeploymentEnv:             "production",
+			CollectorExporterEndpoint: "http://collector:4317",
+			Logger:                    log.NewNop(),
+		})
+		require.Error(t, err)
+		assert.Nil(t, tl)
+		assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+	})
+
+	t.Run("explicit local env allows insecure exporter even when ambient env is strict", func(t *testing.T) {
+		t.Setenv("ENV_NAME", commons.Production.String())
+		t.Setenv("ENV", "")
+		t.Setenv("GO_ENV", "")
+		t.Setenv(commons.EnvSecurityEnforcement, "true")
+
+		tl, err := NewTelemetry(TelemetryConfig{
+			LibraryName:               "test-lib",
+			EnableTelemetry:           true,
+			DeploymentEnv:             "local",
+			CollectorExporterEndpoint: "http://collector:4317",
+			Logger:                    log.NewNop(),
+		})
+		require.NoError(t, err)
+		require.NotNil(t, tl)
+		require.NotNil(t, tl.shutdownCtx)
+		_ = tl.ShutdownTelemetryWithContext(context.Background())
+	})
+}
+
 // ===========================================================================
 // 1b. Endpoint normalization
 // ===========================================================================

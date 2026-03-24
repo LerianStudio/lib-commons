@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	commons "github.com/LerianStudio/lib-commons/v4/commons"
 	"github.com/LerianStudio/lib-commons/v4/commons/assert"
 	"github.com/LerianStudio/lib-commons/v4/commons/backoff"
 	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
@@ -244,6 +245,18 @@ func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 		libOpentelemetry.HandleSpanError(span, "Failed to apply defaults", err)
 
 		return fmt.Errorf("rabbitmq connect: %w", err)
+	}
+
+	// Security policy: TLS enforcement in strict tier (production).
+	if commons.CurrentTier() == commons.TierStrict {
+		isPlaintext := !strings.HasPrefix(strings.ToLower(rc.ConnectionStringSource), "amqps://")
+
+		result := commons.CheckSecurityRule(commons.RuleTLSRequired, isPlaintext)
+		if err := commons.EnforceSecurityRule(ctx, rc.logger(), "rabbitmq", result); err != nil {
+			rc.mu.Unlock()
+
+			return fmt.Errorf("rabbitmq connect: %w", err)
+		}
 	}
 
 	// Fast-path: if already connected with an open connection and channel,

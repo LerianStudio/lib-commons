@@ -121,6 +121,21 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 			log.String("environment", cfg.DeploymentEnv))
 	}
 
+	policyEnv := commons.CurrentEnvironment()
+	if deploymentEnv := strings.TrimSpace(cfg.DeploymentEnv); deploymentEnv != "" {
+		policyEnv = commons.Environment(strings.ToLower(deploymentEnv))
+	}
+
+	// Security policy: insecure OTEL exporter enforcement in strict tier.
+	// Note: InsecureExporter may have been inferred by normalizeEndpoint (http:// or bare host:port).
+	if policyEnv.SecurityTier() == commons.TierStrict {
+		result := commons.CheckSecurityRule(commons.RuleOTELInsecureExporter, cfg.InsecureExporter)
+		if err := commons.EnforceSecurityRuleForEnvironment(ctx, cfg.Logger, "otel", policyEnv, result); err != nil {
+			return nil, fmt.Errorf("otel new: insecure exporter detected (use https:// endpoint or set %s=\"reason\"): %w",
+				commons.EnvAllowInsecureOTEL, err)
+		}
+	}
+
 	return initExporters(ctx, cfg)
 }
 

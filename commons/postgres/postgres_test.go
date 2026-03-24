@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v4/commons"
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/golang-migrate/migrate/v4"
@@ -1482,6 +1483,74 @@ func TestWarnInsecureDSN(t *testing.T) {
 		t.Parallel()
 
 		warnInsecureDSN(context.Background(), log.NewNop(), "postgres://host/db?sslmode=disable", "primary")
+	})
+}
+
+func TestDSNRequiresTLS(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		dsn  string
+		want bool
+	}{
+		{name: "url require", dsn: "postgres://host/db?sslmode=require", want: true},
+		{name: "url verify full", dsn: "postgres://host/db?sslmode=verify-full", want: true},
+		{name: "url disable", dsn: "postgres://host/db?sslmode=disable", want: false},
+		{name: "url prefer", dsn: "postgres://host/db?sslmode=prefer", want: false},
+		{name: "url allow", dsn: "postgres://host/db?sslmode=allow", want: false},
+		{name: "url missing mode", dsn: "postgres://host/db", want: false},
+		{name: "keyword require", dsn: "host=localhost dbname=ledger sslmode=require", want: true},
+		{name: "keyword prefer", dsn: "host=localhost dbname=ledger sslmode=prefer", want: false},
+		{name: "keyword missing mode", dsn: "host=localhost dbname=ledger", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, dsnRequiresTLS(tt.dsn))
+		})
+	}
+}
+
+func TestNew_StrictTierTLSEnforcement(t *testing.T) {
+	t.Run("blocks downgrade capable sslmodes", func(t *testing.T) {
+		t.Setenv("ENV_NAME", commons.Production.String())
+		t.Setenv("ENV", "")
+		t.Setenv("GO_ENV", "")
+		t.Setenv(commons.EnvSecurityEnforcement, "true")
+
+		for _, dsn := range []string{
+			"postgres://host/db?sslmode=disable",
+			"postgres://host/db?sslmode=prefer",
+			"postgres://host/db?sslmode=allow",
+			"postgres://host/db",
+			"host=localhost dbname=ledger",
+		} {
+			cfg := Config{PrimaryDSN: dsn, ReplicaDSN: dsn}
+			client, err := New(cfg)
+			assert.Nil(t, client)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+		}
+	})
+
+	t.Run("allows require and stronger modes", func(t *testing.T) {
+		t.Setenv("ENV_NAME", commons.Production.String())
+		t.Setenv("ENV", "")
+		t.Setenv("GO_ENV", "")
+		t.Setenv(commons.EnvSecurityEnforcement, "true")
+
+		for _, dsn := range []string{
+			"postgres://host/db?sslmode=require",
+			"postgres://host/db?sslmode=verify-ca",
+			"postgres://host/db?sslmode=verify-full",
+			"host=localhost dbname=ledger sslmode=require",
+		} {
+			client, err := New(Config{PrimaryDSN: dsn, ReplicaDSN: dsn})
+			require.NoError(t, err)
+			assert.NotNil(t, client)
+		}
 	})
 }
 

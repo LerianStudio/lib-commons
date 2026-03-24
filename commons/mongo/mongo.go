@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	commons "github.com/LerianStudio/lib-commons/v4/commons"
 	"github.com/LerianStudio/lib-commons/v4/commons/assert"
 	"github.com/LerianStudio/lib-commons/v4/commons/backoff"
 	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
@@ -272,6 +273,16 @@ func (c *Client) connectLocked(ctx context.Context) error {
 		clientOptions.SetTLSConfig(tlsCfg)
 	}
 
+	// Security policy: TLS enforcement in strict tier (production).
+	// Check BEFORE connecting to avoid sending credentials over plaintext.
+	tlsDisabled := c.cfg.TLS == nil && !isTLSImplied(c.uri)
+	if commons.CurrentTier() == commons.TierStrict {
+		result := commons.CheckSecurityRule(commons.RuleTLSRequired, tlsDisabled)
+		if err := commons.EnforceSecurityRule(ctx, c.cfg.Logger, "mongo", result); err != nil {
+			return fmt.Errorf("mongo connect: %w", err)
+		}
+	}
+
 	mongoClient, err := c.deps.connect(ctx, clientOptions)
 	if err != nil {
 		sanitized := sanitizeDriverError(err)
@@ -297,7 +308,7 @@ func (c *Client) connectLocked(ctx context.Context) error {
 
 	c.client = mongoClient
 
-	if c.cfg.TLS == nil && !isTLSImplied(c.uri) {
+	if tlsDisabled {
 		c.logAtLevel(ctx, log.LevelWarn, "mongo connection established without TLS; "+
 			"consider configuring TLS for production use")
 	}
@@ -620,6 +631,10 @@ func (c *Client) logAtLevel(ctx context.Context, level log.Level, message string
 func normalizeConfig(cfg Config) Config {
 	cfg.URI = strings.TrimSpace(cfg.URI)
 	cfg.Database = strings.TrimSpace(cfg.Database)
+
+	if cfg.Logger == nil {
+		cfg.Logger = log.NewNop()
+	}
 
 	if cfg.MaxPoolSize > maxMaxPoolSize {
 		cfg.MaxPoolSize = maxMaxPoolSize

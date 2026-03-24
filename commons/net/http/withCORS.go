@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/LerianStudio/lib-commons/v4/commons"
+	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
 	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -34,7 +35,7 @@ type corsConfig struct {
 // When not provided, warnings are logged via stdlib log.
 func WithCORSLogger(logger libLog.Logger) CORSOption {
 	return func(c *corsConfig) {
-		if logger != nil {
+		if !nilcheck.Interface(logger) {
 			c.logger = logger
 		}
 	}
@@ -53,7 +54,7 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 	}
 
 	// Default to GoLogger so CORS warnings are always emitted, even without explicit logger.
-	if cfg.logger == nil {
+	if nilcheck.Interface(cfg.logger) {
 		cfg.logger = &libLog.GoLogger{Level: libLog.LevelWarn}
 	}
 
@@ -80,13 +81,48 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 		)
 	}
 
-	return cors.New(cors.Config{
+	// Security policy: CORS wildcard origin enforcement in moderate+ tiers.
+	denyAllOrigins := false
+
+	if commons.CurrentTier() >= commons.TierModerate {
+		isWildcard := origins == "*" || origins == ""
+
+		result := commons.CheckSecurityRule(commons.RuleCORSWildcardOrigin, isWildcard)
+		if err := commons.EnforceSecurityRule(context.Background(), cfg.logger, "cors", result); err != nil {
+			// Cannot return error from fiber.Handler factory — apply a deny-all fallback instead.
+			cfg.logger.Log(context.Background(), libLog.LevelError, err.Error())
+
+			denyAllOrigins = true
+			origins = ""
+			allowCredentials = false
+
+			cfg.logger.Log(context.Background(), libLog.LevelWarn,
+				"CORS: enforcement active — origins restricted to none; "+
+					"set ACCESS_CONTROL_ALLOW_ORIGIN to specific trusted origins")
+		}
+	}
+
+	// Guard: prevent Fiber panic on wildcard + credentials (forbidden by CORS spec).
+	if origins == "*" && allowCredentials {
+		cfg.logger.Log(context.Background(), libLog.LevelWarn,
+			"CORS: AllowOrigins=* with AllowCredentials=true is forbidden by CORS spec "+
+				"and causes Fiber panic; forcing AllowCredentials=false")
+
+		allowCredentials = false
+	}
+
+	config := cors.Config{
 		AllowOrigins:     origins,
 		AllowMethods:     commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_METHODS", defaultAccessControlAllowMethods),
 		AllowHeaders:     commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_HEADERS", defaultAccessControlAllowHeaders),
 		ExposeHeaders:    commons.GetenvOrDefault("ACCESS_CONTROL_EXPOSE_HEADERS", defaultAccessControlExposeHeaders),
 		AllowCredentials: allowCredentials,
-	})
+	}
+	if denyAllOrigins {
+		config.AllowOriginsFunc = func(string) bool { return false }
+	}
+
+	return cors.New(config)
 }
 
 // AllowFullOptionsWithCORS set r.Use(WithCORS) and allow every request to use OPTION method.

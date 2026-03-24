@@ -10,6 +10,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"maps"
 )
 
 //go:embed spec.json
@@ -89,9 +90,7 @@ func mergeObjectField(field string, dst, src map[string]json.RawMessage) error {
 		}
 	}
 
-	for key, value := range srcMap {
-		dstMap[key] = value
-	}
+	maps.Copy(dstMap, srcMap)
 
 	merged, err := json.Marshal(dstMap)
 	if err != nil {
@@ -117,7 +116,7 @@ func mergeTags(dst, src map[string]json.RawMessage) error {
 		return fmt.Errorf("swagger merge: unmarshal src tags: %w", err)
 	}
 
-	var dstArr []json.RawMessage
+	dstArr := make([]json.RawMessage, 0, len(srcArr))
 
 	if dstTags, ok := dst["tags"]; ok {
 		if err := json.Unmarshal(dstTags, &dstArr); err != nil {

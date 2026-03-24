@@ -14,6 +14,7 @@ import (
 
 	iamcredentials "cloud.google.com/go/iam/credentials/apiv1"
 	iamcredentialspb "cloud.google.com/go/iam/credentials/apiv1/credentialspb"
+	commons "github.com/LerianStudio/lib-commons/v4/commons"
 	"github.com/LerianStudio/lib-commons/v4/commons/assert"
 	"github.com/LerianStudio/lib-commons/v4/commons/backoff"
 	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
@@ -451,6 +452,15 @@ func (c *Client) connectClientLocked(ctx context.Context) error {
 		return fmt.Errorf("redis connect: build options: %w", err)
 	}
 
+	// Security policy: TLS enforcement in strict tier (production).
+	tlsDisabled := c.cfg.TLS == nil
+	if commons.CurrentTier() == commons.TierStrict {
+		result := commons.CheckSecurityRule(commons.RuleTLSRequired, tlsDisabled)
+		if err := commons.EnforceSecurityRule(ctx, c.logger, "redis", result); err != nil {
+			return fmt.Errorf("redis connect: %w", err)
+		}
+	}
+
 	rdb := redis.NewUniversalClient(opts)
 	if _, err := rdb.Ping(ctx).Result(); err != nil {
 		_ = rdb.Close()
@@ -485,7 +495,7 @@ func (c *Client) connectClientLocked(ctx context.Context) error {
 		c.logger.Log(ctx, log.LevelWarn, "connected to Redis/Valkey in unknown mode")
 	}
 
-	if c.cfg.TLS == nil {
+	if tlsDisabled {
 		c.logger.Log(ctx, log.LevelWarn, "redis connection established without TLS; consider configuring TLS for production use")
 	}
 
