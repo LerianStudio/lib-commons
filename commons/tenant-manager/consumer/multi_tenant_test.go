@@ -19,9 +19,7 @@ import (
 	tmmongo "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/postgres"
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/rabbitmq"
-	"github.com/alicebob/miniredis/v2"
 	amqp "github.com/rabbitmq/amqp091-go"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -30,12 +28,11 @@ import (
 // that panics on error. This keeps test code concise while preserving the v4 constructor signature.
 func NewMultiTenantConsumer(
 	rabbitmq *tmrabbitmq.Manager,
-	redisClient redis.UniversalClient,
 	config MultiTenantConfig,
 	logger libLog.Logger,
 	opts ...Option,
 ) *MultiTenantConsumer {
-	c, err := NewMultiTenantConsumerWithError(rabbitmq, redisClient, config, logger, opts...)
+	c, err := NewMultiTenantConsumerWithError(rabbitmq, config, logger, opts...)
 	if err != nil {
 		panic(fmt.Sprintf("NewMultiTenantConsumer (test helper): %v", err))
 	}
@@ -47,14 +44,13 @@ func NewMultiTenantConsumer(
 func mustNewConsumer(
 	t *testing.T,
 	rabbitmq *tmrabbitmq.Manager,
-	redisClient redis.UniversalClient,
 	config MultiTenantConfig,
 	logger libLog.Logger,
 	opts ...Option,
 ) *MultiTenantConsumer {
 	t.Helper()
 
-	c, err := NewMultiTenantConsumerWithError(rabbitmq, redisClient, config, logger, opts...)
+	c, err := NewMultiTenantConsumerWithError(rabbitmq, config, logger, opts...)
 	if err != nil {
 		t.Fatalf("mustNewConsumer: %v", err)
 	}
@@ -72,25 +68,6 @@ func generateTenantIDs(n int) []string {
 	return ids
 }
 
-// setupMiniredis creates a miniredis instance and returns it with a go-redis client.
-func setupMiniredis(t *testing.T) (*miniredis.Miniredis, redis.UniversalClient) {
-	t.Helper()
-
-	mr, err := miniredis.Run()
-	require.NoError(t, err, "failed to start miniredis")
-
-	redisClient := redis.NewClient(&redis.Options{
-		Addr: mr.Addr(),
-	})
-
-	t.Cleanup(func() {
-		redisClient.Close()
-		mr.Close()
-	})
-
-	return mr, redisClient
-}
-
 // dummyRabbitMQManager returns a minimal non-nil *tmrabbitmq.Manager for tests that
 // do not exercise RabbitMQ connections. Required because NewMultiTenantConsumer
 // validates that rabbitmq is non-nil. A dummy Client is attached so that
@@ -103,17 +80,6 @@ func dummyRabbitMQManager() *tmrabbitmq.Manager {
 	}
 
 	return tmrabbitmq.NewManager(dummyClient, "test-service")
-}
-
-// dummyRedisClient returns a miniredis-backed Redis client for tests that need a
-// non-nil redisClient but do not exercise Redis. The caller does not need to
-// close the returned client; it is registered for cleanup via t.Cleanup.
-func dummyRedisClient(t *testing.T) redis.UniversalClient {
-	t.Helper()
-
-	_, redisClient := setupMiniredis(t)
-
-	return redisClient
 }
 
 // setupTenantManagerAPIServer creates an httptest server that returns active tenants.
@@ -150,13 +116,21 @@ func makeTenantSummaries(n int) []*client.TenantSummary {
 // testServiceName is the service name used by most tests.
 const testServiceName = "test-service"
 
-// testActiveTenantsKey is the Redis key used by tests with Service="test-service" and no Environment.
-// This matches the key that fetchTenantIDs will read from when Environment is empty.
-var testActiveTenantsKey = buildActiveTenantsKey("", testServiceName)
-
 // maxRunDuration is the maximum time Run() is allowed to take.
 // The requirement specifies <1 second. We use 1 second as the hard deadline.
 const maxRunDuration = 1 * time.Second
+
+// newTestConfig creates a MultiTenantConfig pointing at the given API server URL.
+func newTestConfig(apiURL string) MultiTenantConfig {
+	return MultiTenantConfig{
+		SyncInterval:      30 * time.Second,
+		PrefetchCount:     10,
+		Service:           testServiceName,
+		MultiTenantURL:    apiURL,
+		ServiceAPIKey:     "test-key",
+		AllowInsecureHTTP: true,
+	}
+}
 
 // TestMultiTenantConsumer_Run_EagerMode validates that Run() completes within 1 second,
 // returns nil error (soft failure), and populates knownTenants.
@@ -165,86 +139,55 @@ func TestMultiTenantConsumer_Run_EagerMode(t *testing.T) {
 
 	tests := []struct {
 		name                     string
-		redisTenantIDs           []string
 		apiTenants               []*client.TenantSummary
 		apiServerDown            bool
-		redisDown                bool
 		expectedKnownTenantCount int
 		expectError              bool
 		expectConsumersStarted   bool
 	}{
 		{
 			name:                     "returns_within_1s_with_0_tenants_configured",
-			redisTenantIDs:           []string{},
-			apiTenants:               nil,
+			apiTenants:               []*client.TenantSummary{},
 			expectedKnownTenantCount: 0,
 			expectError:              false,
 			expectConsumersStarted:   false,
 		},
 		{
-			name:                     "returns_within_1s_with_100_tenants_in_Redis_cache",
-			redisTenantIDs:           generateTenantIDs(100),
-			apiTenants:               nil,
+			name:                     "returns_within_1s_with_100_tenants_from_API",
+			apiTenants:               makeTenantSummaries(100),
 			expectedKnownTenantCount: 100,
 			expectError:              false,
 			expectConsumersStarted:   true,
 		},
 		{
-			name:                     "returns_within_1s_with_500_tenants_from_Tenant_Manager_API",
-			redisTenantIDs:           []string{},
+			name:                     "returns_within_1s_with_500_tenants_from_API",
 			apiTenants:               makeTenantSummaries(500),
 			expectedKnownTenantCount: 500,
 			expectError:              false,
 			expectConsumersStarted:   true,
 		},
 		{
-			name:                     "returns_nil_error_when_both_Redis_and_API_are_down",
-			redisTenantIDs:           nil,
-			redisDown:                true,
+			name:                     "returns_nil_error_when_API_is_down",
 			apiServerDown:            true,
 			expectedKnownTenantCount: 0,
 			expectError:              false,
 			expectConsumersStarted:   false,
 		},
+		// Edge case: single tenant
 		{
-			name:                     "returns_nil_error_when_API_server_is_down",
-			redisTenantIDs:           []string{},
-			apiServerDown:            true,
-			expectedKnownTenantCount: 0,
-			expectError:              false,
-			expectConsumersStarted:   false,
-		},
-		// Edge case: single tenant in Redis
-		{
-			name:                     "returns_within_1s_with_1_tenant_in_Redis_cache",
-			redisTenantIDs:           []string{"single-tenant"},
-			apiTenants:               nil,
+			name:                     "returns_within_1s_with_1_tenant_from_API",
+			apiTenants:               makeTenantSummaries(1),
 			expectedKnownTenantCount: 1,
 			expectError:              false,
 			expectConsumersStarted:   true,
 		},
-		// Edge case: Redis empty but API returns tenants (fallback path)
+		// Edge case: 3 tenants
 		{
-			name:                     "falls_back_to_API_when_Redis_cache_is_empty",
-			redisTenantIDs:           []string{},
+			name:                     "returns_within_1s_with_3_tenants_from_API",
 			apiTenants:               makeTenantSummaries(3),
 			expectedKnownTenantCount: 3,
 			expectError:              false,
 			expectConsumersStarted:   true,
-		},
-		// Edge case: Redis down but API is up. Discovery timeout (500ms) may
-		// be consumed by the Redis connection attempt, so API fallback may not
-		// complete in time. In this case, discoverTenants treats it as soft failure
-		// and the background sync loop will retry. We expect 0 tenants known at startup.
-		{
-			name:                     "returns_nil_error_when_Redis_down_and_API_configured",
-			redisTenantIDs:           nil,
-			redisDown:                true,
-			apiServerDown:            false,
-			apiTenants:               makeTenantSummaries(5),
-			expectedKnownTenantCount: 0,
-			expectError:              false,
-			expectConsumersStarted:   false,
 		},
 	}
 
@@ -253,54 +196,17 @@ func TestMultiTenantConsumer_Run_EagerMode(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Setup miniredis
-			mr, redisClient := setupMiniredis(t)
-
-			// Populate Redis SET with tenant IDs (if provided and Redis is up)
-			if !tt.redisDown && len(tt.redisTenantIDs) > 0 {
-				for _, id := range tt.redisTenantIDs {
-					mr.SAdd(testActiveTenantsKey, id)
-				}
-			}
-
-			// If Redis should be down, close it
-			if tt.redisDown {
-				mr.Close()
-			}
-
-			// Setup Tenant Manager API server and pmClient
 			var apiURL string
-			if !tt.apiServerDown && tt.apiTenants != nil {
+			if !tt.apiServerDown {
 				server := setupTenantManagerAPIServer(t, tt.apiTenants)
 				apiURL = server.URL
-			} else if tt.apiServerDown {
+			} else {
 				apiURL = "http://127.0.0.1:0" // unreachable port
 			}
 
-			// Create consumer config (MultiTenantURL left empty; pmClient set manually below)
-			config := MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}
-
-			// Create the consumer
+			config := newTestConfig(apiURL)
 			mockLogger := testutil.NewMockLogger()
-			consumer := NewMultiTenantConsumer(
-				dummyRabbitMQManager(),
-				redisClient,
-				config,
-				mockLogger,
-			)
-
-			// Manually create pmClient for http:// test URLs (bypasses HTTPS enforcement in constructor)
-			if apiURL != "" {
-				pmClient, pmErr := client.NewClient(apiURL, mockLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
-				require.NoError(t, pmErr)
-				consumer.pmClient = pmClient
-				consumer.config.Service = "test-service"
-			}
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, mockLogger)
 
 			// Register a handler
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
@@ -373,12 +279,8 @@ func TestMultiTenantConsumer_Run_SignatureUnchanged(t *testing.T) {
 			// If the signature changes, this assignment will fail to compile.
 			var fn func(ctx context.Context) error
 
-			_, redisClient := setupMiniredis(t)
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-			}, testutil.NewMockLogger())
+			server := setupTenantManagerAPIServer(t, nil)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 
 			fn = consumer.Run
 			assert.NotNil(t, fn, "Run method must exist and match expected signature")
@@ -388,25 +290,29 @@ func TestMultiTenantConsumer_Run_SignatureUnchanged(t *testing.T) {
 
 // TestMultiTenantConsumer_DiscoverTenants_ReuseFetchTenantIDs verifies that
 // discoverTenants() delegates to fetchTenantIDs() internally by confirming that
-// tenant IDs sourced from Redis (via fetchTenantIDs) end up in knownTenants.
+// tenant IDs sourced from API (via fetchTenantIDs) end up in knownTenants.
 // Covers: AC-T2
 func TestMultiTenantConsumer_DiscoverTenants_ReuseFetchTenantIDs(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		redisTenantIDs []string
-		expectedCount  int
+		name          string
+		apiTenants    []*client.TenantSummary
+		expectedCount int
 	}{
 		{
-			name:           "discovers_tenants_from_Redis_via_fetchTenantIDs",
-			redisTenantIDs: []string{"tenant-a", "tenant-b", "tenant-c"},
-			expectedCount:  3,
+			name: "discovers_tenants_from_API_via_fetchTenantIDs",
+			apiTenants: []*client.TenantSummary{
+				{ID: "tenant-a", Name: "A", Status: "active"},
+				{ID: "tenant-b", Name: "B", Status: "active"},
+				{ID: "tenant-c", Name: "C", Status: "active"},
+			},
+			expectedCount: 3,
 		},
 		{
-			name:           "discovers_zero_tenants_when_Redis_is_empty",
-			redisTenantIDs: []string{},
-			expectedCount:  0,
+			name:          "discovers_zero_tenants_when_API_returns_empty",
+			apiTenants:    []*client.TenantSummary{},
+			expectedCount: 0,
 		},
 	}
 
@@ -415,19 +321,9 @@ func TestMultiTenantConsumer_DiscoverTenants_ReuseFetchTenantIDs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			mr, redisClient := setupMiniredis(t)
-
-			// This test uses no Service or Environment, so the key has empty segments
-			noServiceKey := buildActiveTenantsKey("", "")
-			for _, id := range tt.redisTenantIDs {
-				mr.SAdd(noServiceKey, id)
-			}
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-			}, testutil.NewMockLogger())
+			server := setupTenantManagerAPIServer(t, tt.apiTenants)
+			config := newTestConfig(server.URL)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, testutil.NewMockLogger())
 
 			ctx := context.Background()
 
@@ -443,9 +339,9 @@ func TestMultiTenantConsumer_DiscoverTenants_ReuseFetchTenantIDs(t *testing.T) {
 
 			// Verify each tenant ID is present in knownTenants
 			consumer.mu.RLock()
-			for _, id := range tt.redisTenantIDs {
-				assert.True(t, consumer.knownTenants[id],
-					"tenant %q should be in knownTenants after discovery", id)
+			for _, ts := range tt.apiTenants {
+				assert.True(t, consumer.knownTenants[ts.ID],
+					"tenant %q should be in knownTenants after discovery", ts.ID)
 			}
 			consumer.mu.RUnlock()
 		})
@@ -472,23 +368,10 @@ func TestMultiTenantConsumer_Run_StartupLog(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, redisClient := setupMiniredis(t)
-
-			config := MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}
-
+			server := setupTenantManagerAPIServer(t, nil)
+			config := newTestConfig(server.URL)
 			logger := testutil.NewCapturingLogger()
-
-			consumer := NewMultiTenantConsumer(
-				dummyRabbitMQManager(),
-				redisClient,
-				config,
-				logger,
-			)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, logger)
 
 			// Set the capturing logger in context so NewTrackingFromContext returns it
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -531,21 +414,23 @@ func TestMultiTenantConsumer_Run_BackgroundSyncStarts(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			mr, redisClient := setupMiniredis(t)
+			// Start with empty API response, then switch to include the new tenant
+			var mu sync.Mutex
+			currentTenants := []*client.TenantSummary{}
 
-			config := MultiTenantConfig{
-				SyncInterval:    tt.syncInterval,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				tenants := currentTenants
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(tenants)
+			}))
+			t.Cleanup(server.Close)
 
-			consumer := NewMultiTenantConsumer(
-				dummyRabbitMQManager(),
-				redisClient,
-				config,
-				testutil.NewMockLogger(),
-			)
+			config := newTestConfig(server.URL)
+			config.SyncInterval = tt.syncInterval
+
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, testutil.NewMockLogger())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -554,8 +439,12 @@ func TestMultiTenantConsumer_Run_BackgroundSyncStarts(t *testing.T) {
 			err := consumer.Run(ctx)
 			require.NoError(t, err, "Run() should succeed")
 
-			// After Run, add tenants to Redis - the sync loop should pick them up
-			mr.SAdd(testActiveTenantsKey, tt.tenantToAdd)
+			// After Run, update API to return the new tenant - the sync loop should pick it up
+			mu.Lock()
+			currentTenants = []*client.TenantSummary{
+				{ID: tt.tenantToAdd, Name: "New Tenant", Status: "active"},
+			}
+			mu.Unlock()
 
 			// Wait for at least one sync cycle to complete
 			time.Sleep(3 * tt.syncInterval)
@@ -583,17 +472,16 @@ func TestMultiTenantConsumer_Run_ReadinessWithinDeadline(t *testing.T) {
 	const readinessDeadline = 5 * time.Second
 
 	tests := []struct {
-		name           string
-		redisTenantIDs []string
-		apiTenants     []*client.TenantSummary
+		name       string
+		apiTenants []*client.TenantSummary
 	}{
 		{
-			name:           "ready_within_5s_with_0_tenants",
-			redisTenantIDs: []string{},
+			name:       "ready_within_5s_with_0_tenants",
+			apiTenants: []*client.TenantSummary{},
 		},
 		{
-			name:           "ready_within_5s_with_100_tenants",
-			redisTenantIDs: generateTenantIDs(100),
+			name:       "ready_within_5s_with_100_tenants",
+			apiTenants: makeTenantSummaries(100),
 		},
 		{
 			name:       "ready_within_5s_with_500_tenants_via_API",
@@ -606,33 +494,10 @@ func TestMultiTenantConsumer_Run_ReadinessWithinDeadline(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			mr, redisClient := setupMiniredis(t)
-
-			for _, id := range tt.redisTenantIDs {
-				mr.SAdd(testActiveTenantsKey, id)
-			}
-
-			var apiURL string
-			if tt.apiTenants != nil {
-				server := setupTenantManagerAPIServer(t, tt.apiTenants)
-				apiURL = server.URL
-			}
-
+			server := setupTenantManagerAPIServer(t, tt.apiTenants)
+			config := newTestConfig(server.URL)
 			mockLogger := testutil.NewMockLogger()
-			config := MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, mockLogger)
-
-			if apiURL != "" {
-				pmClient, pmErr := client.NewClient(apiURL, mockLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
-				require.NoError(t, pmErr)
-				consumer.pmClient = pmClient
-			}
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, mockLogger)
 
 			ctx, cancel := context.WithTimeout(context.Background(), readinessDeadline)
 			defer cancel()
@@ -658,12 +523,11 @@ func TestMultiTenantConsumer_Run_StartupTimeVariance(t *testing.T) {
 	// Not parallel: measures timing across sequential runs
 
 	tests := []struct {
-		name           string
-		redisTenantIDs []string
-		apiTenants     []*client.TenantSummary
+		name       string
+		apiTenants []*client.TenantSummary
 	}{
-		{name: "0_tenants", redisTenantIDs: []string{}},
-		{name: "100_tenants", redisTenantIDs: generateTenantIDs(100)},
+		{name: "0_tenants", apiTenants: []*client.TenantSummary{}},
+		{name: "100_tenants", apiTenants: makeTenantSummaries(100)},
 		{name: "500_tenants_via_API", apiTenants: makeTenantSummaries(500)},
 	}
 
@@ -672,33 +536,10 @@ func TestMultiTenantConsumer_Run_StartupTimeVariance(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			mr, redisClient := setupMiniredis(t)
-
-			for _, id := range tt.redisTenantIDs {
-				mr.SAdd(testActiveTenantsKey, id)
-			}
-
-			var apiURL string
-			if tt.apiTenants != nil {
-				server := setupTenantManagerAPIServer(t, tt.apiTenants)
-				apiURL = server.URL
-			}
-
+			server := setupTenantManagerAPIServer(t, tt.apiTenants)
+			config := newTestConfig(server.URL)
 			mockLogger := testutil.NewMockLogger()
-			config := MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, mockLogger)
-
-			if apiURL != "" {
-				pmClient, pmErr := client.NewClient(apiURL, mockLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
-				require.NoError(t, pmErr)
-				consumer.pmClient = pmClient
-			}
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, mockLogger)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -745,13 +586,11 @@ func TestMultiTenantConsumer_DiscoveryFailure_LogsWarning(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		redisDown       bool
 		apiDown         bool
 		expectedLogPart string
 	}{
 		{
-			name:            "logs_warning_when_Redis_and_API_both_fail",
-			redisDown:       true,
+			name:            "logs_warning_when_API_fails",
 			apiDown:         true,
 			expectedLogPart: "tenant discovery failed",
 		},
@@ -762,32 +601,10 @@ func TestMultiTenantConsumer_DiscoveryFailure_LogsWarning(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			mr, redisClient := setupMiniredis(t)
-
-			if tt.redisDown {
-				mr.Close()
-			}
-
-			var apiURL string
-			if tt.apiDown {
-				apiURL = "http://127.0.0.1:0"
-			}
-
-			config := MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}
-
+			apiURL := "http://127.0.0.1:0" // unreachable port
+			config := newTestConfig(apiURL)
 			logger := testutil.NewCapturingLogger()
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, logger)
-
-			if apiURL != "" {
-				pmClient, pmErr := client.NewClient(apiURL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
-				require.NoError(t, pmErr)
-				consumer.pmClient = pmClient
-			}
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, logger)
 
 			// Set the capturing logger in context so NewTrackingFromContext returns it
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -853,8 +670,8 @@ func TestMultiTenantConsumer_DefaultMultiTenantConfig(t *testing.T) {
 	}
 }
 
-// TestMultiTenantConsumer_NewWithZeroConfig verifies that NewMultiTenantConsumer
-// applies defaults when config fields are zero-valued.
+// TestMultiTenantConsumer_NewWithZeroConfig verifies that NewMultiTenantConsumerWithError
+// validates required fields.
 func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 	t.Parallel()
 
@@ -862,38 +679,50 @@ func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 		name             string
 		config           MultiTenantConfig
 		expectedSync     time.Duration
-		expectedWorkers  int
 		expectedPrefetch int
 		expectPMClient   bool
+		expectError      bool
+		errContains      string
 	}{
 		{
-			name:             "applies_defaults_for_all_zero_fields",
-			config:           MultiTenantConfig{},
-			expectedSync:     30 * time.Second,
-			expectedWorkers:  0, // WorkersPerQueue is deprecated, default is 0
-			expectedPrefetch: 10,
-			expectPMClient:   false,
+			name:        "rejects_empty_MultiTenantURL",
+			config:      MultiTenantConfig{},
+			expectError: true,
+			errContains: "MultiTenantURL must not be empty",
+		},
+		{
+			name: "rejects_empty_Service",
+			config: MultiTenantConfig{
+				MultiTenantURL:    "http://tenant-manager:4003",
+				AllowInsecureHTTP: true,
+			},
+			expectError: true,
+			errContains: "Service must not be empty",
 		},
 		{
 			name: "preserves_explicit_values",
 			config: MultiTenantConfig{
-				SyncInterval:    60 * time.Second,
-				WorkersPerQueue: 5,
-				PrefetchCount:   20,
+				SyncInterval:      60 * time.Second,
+				WorkersPerQueue:   5,
+				PrefetchCount:     20,
+				MultiTenantURL:    "http://tenant-manager:4003",
+				ServiceAPIKey:     "test-key",
+				Service:           "ledger",
+				AllowInsecureHTTP: true,
 			},
 			expectedSync:     60 * time.Second,
-			expectedWorkers:  5,
 			expectedPrefetch: 20,
-			expectPMClient:   false,
+			expectPMClient:   true,
 		},
 		{
 			name: "creates_pmClient_when_URL_configured",
 			config: MultiTenantConfig{
-				MultiTenantURL: "https://tenant-manager:4003",
-				ServiceAPIKey:  "test-key",
+				MultiTenantURL:    "https://tenant-manager:4003",
+				ServiceAPIKey:     "test-key",
+				Service:           "ledger",
+				AllowInsecureHTTP: false,
 			},
 			expectedSync:     30 * time.Second,
-			expectedWorkers:  0, // WorkersPerQueue is deprecated, default is 0
 			expectedPrefetch: 10,
 			expectPMClient:   true,
 		},
@@ -902,10 +731,10 @@ func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 			config: MultiTenantConfig{
 				MultiTenantURL:    "http://tenant-manager.namespace.svc.cluster.local:4003",
 				ServiceAPIKey:     "test-key",
+				Service:           "ledger",
 				AllowInsecureHTTP: true,
 			},
 			expectedSync:     30 * time.Second,
-			expectedWorkers:  0,
 			expectedPrefetch: 10,
 			expectPMClient:   true,
 		},
@@ -916,13 +745,18 @@ func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, redisClient := setupMiniredis(t)
+			consumer, err := NewMultiTenantConsumerWithError(dummyRabbitMQManager(), tt.config, testutil.NewMockLogger())
 
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, tt.config, testutil.NewMockLogger())
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				assert.Nil(t, consumer)
+				return
+			}
 
+			require.NoError(t, err)
 			assert.NotNil(t, consumer, "consumer must not be nil")
 			assert.Equal(t, tt.expectedSync, consumer.config.SyncInterval)
-			assert.Equal(t, tt.expectedWorkers, consumer.config.WorkersPerQueue)
 			assert.Equal(t, tt.expectedPrefetch, consumer.config.PrefetchCount)
 			assert.NotNil(t, consumer.handlers, "handlers map must be initialized")
 			assert.NotNil(t, consumer.tenants, "tenants map must be initialized")
@@ -931,10 +765,9 @@ func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 			if tt.expectPMClient {
 				assert.NotNil(t, consumer.pmClient,
 					"pmClient should be created when MultiTenantURL is configured")
-			} else {
-				assert.Nil(t, consumer.pmClient,
-					"pmClient should be nil when MultiTenantURL is empty")
 			}
+
+			_ = consumer.Close()
 		})
 	}
 }
@@ -974,13 +807,8 @@ func TestMultiTenantConsumer_Stats(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, redisClient := setupMiniredis(t)
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-			}, testutil.NewMockLogger())
+			server := setupTenantManagerAPIServer(t, nil)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 
 			for _, q := range tt.registerQueues {
 				consumer.Register(q, func(ctx context.Context, delivery amqp.Delivery) error {
@@ -1019,13 +847,8 @@ func TestMultiTenantConsumer_Close(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, redisClient := setupMiniredis(t)
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-			}, testutil.NewMockLogger())
+			server := setupTenantManagerAPIServer(t, nil)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 
 			// Pre-populate sync.Map entries to verify they are cleaned on Close
 			consumer.consumerLocks.Store("tenant-x", &sync.Mutex{})
@@ -1044,7 +867,7 @@ func TestMultiTenantConsumer_Close(t *testing.T) {
 			consumer.mu.RUnlock()
 
 			// Note: sync.Map entries (consumerLocks, retryState) are NOT cleared by Close().
-			// Close() clears regular maps (tenants, knownTenants, tenantAbsenceCount) only.
+			// Close() clears regular maps (tenants, knownTenants) only.
 			// sync.Map entries are cleaned lazily during syncTenants / eviction.
 
 			if tt.name == "close_is_idempotent_on_double_call" {
@@ -1057,26 +880,26 @@ func TestMultiTenantConsumer_Close(t *testing.T) {
 }
 
 // TestMultiTenantConsumer_SyncTenants_RemovesTenants verifies that syncTenants()
-// removes tenants that are no longer in the Redis cache.
+// removes tenants that are no longer in the API response immediately (no grace period).
 func TestMultiTenantConsumer_SyncTenants_RemovesTenants(t *testing.T) {
 	// Not parallel: relies on internal state manipulation
 
 	tests := []struct {
 		name                   string
-		initialTenants         []string
-		postSyncTenants        []string
+		initialTenants         []*client.TenantSummary
+		postSyncTenants        []*client.TenantSummary
 		expectedKnownAfterSync int
 	}{
 		{
-			name:                   "removes_tenants_no_longer_in_cache",
-			initialTenants:         []string{"tenant-a", "tenant-b", "tenant-c"},
-			postSyncTenants:        []string{"tenant-a"},
+			name:                   "removes_tenants_no_longer_in_API",
+			initialTenants:         makeTenantSummaries(3),
+			postSyncTenants:        makeTenantSummaries(1),
 			expectedKnownAfterSync: 1,
 		},
 		{
 			name:                   "handles_all_tenants_removed",
-			initialTenants:         []string{"tenant-a", "tenant-b"},
-			postSyncTenants:        []string{},
+			initialTenants:         makeTenantSummaries(2),
+			postSyncTenants:        []*client.TenantSummary{},
 			expectedKnownAfterSync: 0,
 		},
 	}
@@ -1084,20 +907,20 @@ func TestMultiTenantConsumer_SyncTenants_RemovesTenants(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			mr, redisClient := setupMiniredis(t)
+			var mu sync.Mutex
+			currentTenants := tt.initialTenants
 
-			// Populate initial tenants
-			for _, id := range tt.initialTenants {
-				mr.SAdd(testActiveTenantsKey, id)
-			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				tenants := currentTenants
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(tenants)
+			}))
+			t.Cleanup(server.Close)
 
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}, testutil.NewMockLogger())
-
+			config := newTestConfig(server.URL)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, testutil.NewMockLogger())
 			ctx := context.Background()
 
 			// Initial discovery
@@ -1109,53 +932,31 @@ func TestMultiTenantConsumer_SyncTenants_RemovesTenants(t *testing.T) {
 			assert.Equal(t, len(tt.initialTenants), initialCount,
 				"initial discovery should find all tenants")
 
-			// Pre-populate consumerLocks, retryState, and active consumers for
-			// all initial tenants to verify they are cleaned up when tenants are removed.
-			// Active consumers (c.tenants) are required because stopRemovedTenants only
-			// processes tenants that have a running consumer.
+			// Pre-populate active consumers for initial tenants
 			consumer.mu.Lock()
-			for _, id := range tt.initialTenants {
-				consumer.consumerLocks.Store(id, &sync.Mutex{})
-				consumer.retryState.Store(id, &retryStateEntry{})
+			for _, ts := range tt.initialTenants {
+				consumer.consumerLocks.Store(ts.ID, &sync.Mutex{})
+				consumer.retryState.Store(ts.ID, &retryStateEntry{})
 				_, cancel := context.WithCancel(ctx)
-				consumer.tenants[id] = cancel
+				consumer.tenants[ts.ID] = cancel
 			}
 			consumer.mu.Unlock()
 
-			// Update Redis to reflect post-sync state (remove some tenants)
-			mr.Del(testActiveTenantsKey)
-			for _, id := range tt.postSyncTenants {
-				mr.SAdd(testActiveTenantsKey, id)
-			}
+			// Update API to reflect post-sync state
+			mu.Lock()
+			currentTenants = tt.postSyncTenants
+			mu.Unlock()
 
-			// Run syncTenants absentSyncsBeforeRemoval times so retained tenants
-			// exceed the absence threshold and are actually removed.
-			for i := 0; i < absentSyncsBeforeRemoval; i++ {
-				err := consumer.syncTenants(ctx)
-				assert.NoError(t, err, "syncTenants should not return error")
-			}
+			// Single sync removes immediately (no grace period)
+			err := consumer.syncTenants(ctx)
+			assert.NoError(t, err, "syncTenants should not return error")
 
 			consumer.mu.RLock()
 			afterSyncCount := len(consumer.knownTenants)
 			consumer.mu.RUnlock()
 
 			assert.Equal(t, tt.expectedKnownAfterSync, afterSyncCount,
-				"after %d syncs, knownTenants should reflect updated tenant list", absentSyncsBeforeRemoval)
-
-			// Verify consumerLocks and retryState are cleaned for removed tenants
-			removedSet := make(map[string]bool, len(tt.initialTenants))
-			for _, id := range tt.initialTenants {
-				removedSet[id] = true
-			}
-
-			for _, id := range tt.postSyncTenants {
-				delete(removedSet, id)
-			}
-
-			// Note: sync.Map entries (consumerLocks, retryState) are NOT cleaned by
-			// syncTenants/cancelRemovedTenantConsumers. They are cleaned lazily.
-			// Only regular maps (tenants, knownTenants) are reconciled during sync.
-			_ = removedSet
+				"after single sync, knownTenants should reflect updated API response")
 		})
 	}
 }
@@ -1164,51 +965,52 @@ func TestMultiTenantConsumer_SyncTenants_RemovesTenants(t *testing.T) {
 // knownTenants for new tenants AND starts consumer goroutines eagerly.
 func TestMultiTenantConsumer_SyncTenants_EagerMode(t *testing.T) {
 	tests := []struct {
-		name                string
-		initialRedisTenants []string
-		newRedisTenants     []string
-		expectedKnownCount  int
-		expectConsumers     bool
+		name               string
+		initialAPITenants  []*client.TenantSummary
+		newAPITenants      []*client.TenantSummary
+		expectedKnownCount int
+		expectConsumers    bool
 	}{
 		{
-			name:                "new_tenants_added_and_consumers_started",
-			initialRedisTenants: []string{},
-			newRedisTenants:     []string{"tenant-a", "tenant-b", "tenant-c"},
-			expectedKnownCount:  3,
-			expectConsumers:     true,
+			name:               "new_tenants_added_and_consumers_started",
+			initialAPITenants:  []*client.TenantSummary{},
+			newAPITenants:      makeTenantSummaries(3),
+			expectedKnownCount: 3,
+			expectConsumers:    true,
 		},
 		{
-			name:                "sync_discovers_tenants_and_starts_consumers",
-			initialRedisTenants: []string{},
-			newRedisTenants:     generateTenantIDs(10),
-			expectedKnownCount:  10,
-			expectConsumers:     true,
+			name:               "sync_discovers_tenants_and_starts_consumers",
+			initialAPITenants:  []*client.TenantSummary{},
+			newAPITenants:      makeTenantSummaries(10),
+			expectedKnownCount: 10,
+			expectConsumers:    true,
 		},
 		{
-			name:                "sync_with_zero_tenants_starts_no_consumers",
-			initialRedisTenants: []string{},
-			newRedisTenants:     []string{},
-			expectedKnownCount:  0,
-			expectConsumers:     false,
+			name:               "sync_with_zero_tenants_starts_no_consumers",
+			initialAPITenants:  []*client.TenantSummary{},
+			newAPITenants:      []*client.TenantSummary{},
+			expectedKnownCount: 0,
+			expectConsumers:    false,
 		},
 	}
 
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			mr, redisClient := setupMiniredis(t)
+			var mu sync.Mutex
+			currentTenants := tt.initialAPITenants
 
-			// Populate initial tenants
-			for _, id := range tt.initialRedisTenants {
-				mr.SAdd(testActiveTenantsKey, id)
-			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				tenants := currentTenants
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(tenants)
+			}))
+			t.Cleanup(server.Close)
 
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}, testutil.NewMockLogger())
+			config := newTestConfig(server.URL)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, testutil.NewMockLogger())
 
 			// Register a handler so startTenantConsumer has something to consume
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
@@ -1223,11 +1025,10 @@ func TestMultiTenantConsumer_SyncTenants_EagerMode(t *testing.T) {
 			// Initial discovery (populates knownTenants only)
 			consumer.discoverTenants(ctx)
 
-			// Update Redis with new tenants
-			mr.Del(testActiveTenantsKey)
-			for _, id := range tt.newRedisTenants {
-				mr.SAdd(testActiveTenantsKey, id)
-			}
+			// Update API with new tenants
+			mu.Lock()
+			currentTenants = tt.newAPITenants
+			mu.Unlock()
 
 			// Run syncTenants - should populate knownTenants and start consumers
 			err := consumer.syncTenants(ctx)
@@ -1259,32 +1060,46 @@ func TestMultiTenantConsumer_SyncTenants_EagerMode(t *testing.T) {
 }
 
 // TestMultiTenantConsumer_SyncTenants_RemovalCleansKnownTenants verifies that when
-// a tenant is removed from Redis, syncTenants() cleans it from knownTenants and
-// cancels any active consumer for that tenant.
+// a tenant is removed from API, syncTenants() cleans it from knownTenants immediately.
 // Covers: T-005 AC-F3, AC-F4
 func TestMultiTenantConsumer_SyncTenants_RemovalCleansKnownTenants(t *testing.T) {
 	tests := []struct {
 		name                      string
-		initialTenants            []string
-		remainingTenants          []string
+		initialTenants            []*client.TenantSummary
+		remainingTenants          []*client.TenantSummary
 		expectedKnownAfterRemoval int
 	}{
 		{
-			name:                      "removed_tenant_cleaned_from_knownTenants",
-			initialTenants:            []string{"tenant-a", "tenant-b", "tenant-c"},
-			remainingTenants:          []string{"tenant-a"},
+			name: "removed_tenant_cleaned_from_knownTenants",
+			initialTenants: []*client.TenantSummary{
+				{ID: "tenant-a", Name: "A", Status: "active"},
+				{ID: "tenant-b", Name: "B", Status: "active"},
+				{ID: "tenant-c", Name: "C", Status: "active"},
+			},
+			remainingTenants: []*client.TenantSummary{
+				{ID: "tenant-a", Name: "A", Status: "active"},
+			},
 			expectedKnownAfterRemoval: 1,
 		},
 		{
-			name:                      "all_tenants_removed_cleans_knownTenants",
-			initialTenants:            []string{"tenant-a", "tenant-b"},
-			remainingTenants:          []string{},
+			name: "all_tenants_removed_cleans_knownTenants",
+			initialTenants: []*client.TenantSummary{
+				{ID: "tenant-a", Name: "A", Status: "active"},
+				{ID: "tenant-b", Name: "B", Status: "active"},
+			},
+			remainingTenants:          []*client.TenantSummary{},
 			expectedKnownAfterRemoval: 0,
 		},
 		{
-			name:                      "no_tenants_removed_keeps_all_in_knownTenants",
-			initialTenants:            []string{"tenant-a", "tenant-b"},
-			remainingTenants:          []string{"tenant-a", "tenant-b"},
+			name: "no_tenants_removed_keeps_all_in_knownTenants",
+			initialTenants: []*client.TenantSummary{
+				{ID: "tenant-a", Name: "A", Status: "active"},
+				{ID: "tenant-b", Name: "B", Status: "active"},
+			},
+			remainingTenants: []*client.TenantSummary{
+				{ID: "tenant-a", Name: "A", Status: "active"},
+				{ID: "tenant-b", Name: "B", Status: "active"},
+			},
 			expectedKnownAfterRemoval: 2,
 		},
 	}
@@ -1292,19 +1107,20 @@ func TestMultiTenantConsumer_SyncTenants_RemovalCleansKnownTenants(t *testing.T)
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			mr, redisClient := setupMiniredis(t)
+			var mu sync.Mutex
+			currentTenants := tt.initialTenants
 
-			// Populate initial tenants
-			for _, id := range tt.initialTenants {
-				mr.SAdd(testActiveTenantsKey, id)
-			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				tenants := currentTenants
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(tenants)
+			}))
+			t.Cleanup(server.Close)
 
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}, testutil.NewMockLogger())
+			config := newTestConfig(server.URL)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, testutil.NewMockLogger())
 
 			ctx := context.Background()
 
@@ -1319,74 +1135,73 @@ func TestMultiTenantConsumer_SyncTenants_RemovalCleansKnownTenants(t *testing.T)
 			assert.Equal(t, len(tt.initialTenants), initialKnown,
 				"initial sync should discover all tenants")
 
-			// Remove tenants from Redis
-			mr.Del(testActiveTenantsKey)
-			for _, id := range tt.remainingTenants {
-				mr.SAdd(testActiveTenantsKey, id)
-			}
+			// Update API to remaining tenants
+			mu.Lock()
+			currentTenants = tt.remainingTenants
+			mu.Unlock()
 
-			// Run sync absentSyncsBeforeRemoval times so retained tenants exceed
-			// the absence threshold and are cleaned from knownTenants.
-			for i := 0; i < absentSyncsBeforeRemoval; i++ {
-				err = consumer.syncTenants(ctx)
-				require.NoError(t, err, "syncTenants should succeed")
-			}
+			// Single sync removes immediately (no grace period, API is source of truth)
+			err = consumer.syncTenants(ctx)
+			require.NoError(t, err, "syncTenants should succeed")
 
 			consumer.mu.RLock()
 			afterRemovalKnown := len(consumer.knownTenants)
 			// Verify removed tenants are NOT in knownTenants
-			for _, id := range tt.initialTenants {
-				isRemaining := false
-				for _, remaining := range tt.remainingTenants {
-					if id == remaining {
-						isRemaining = true
-						break
-					}
-				}
-				if !isRemaining {
-					assert.False(t, consumer.knownTenants[id],
-						"removed tenant %q must be cleaned from knownTenants after %d absences", id, absentSyncsBeforeRemoval)
+			remainingSet := make(map[string]bool)
+			for _, ts := range tt.remainingTenants {
+				remainingSet[ts.ID] = true
+			}
+			for _, ts := range tt.initialTenants {
+				if !remainingSet[ts.ID] {
+					assert.False(t, consumer.knownTenants[ts.ID],
+						"removed tenant %q must be cleaned from knownTenants immediately", ts.ID)
 				}
 			}
 			consumer.mu.RUnlock()
 
 			assert.Equal(t, tt.expectedKnownAfterRemoval, afterRemovalKnown,
-				"after %d absences, knownTenants should have %d entries, got %d",
-				absentSyncsBeforeRemoval, tt.expectedKnownAfterRemoval, afterRemovalKnown)
+				"after sync, knownTenants should have %d entries, got %d",
+				tt.expectedKnownAfterRemoval, afterRemovalKnown)
 		})
 	}
 }
 
-// TestMultiTenantConsumer_SyncTenants_SyncLoopContinuesOnError verifies that the
-// sync loop continues operating when individual sync iterations fail.
-// Covers: T-005 AC-O3
-func TestMultiTenantConsumer_SyncTenants_SyncLoopContinuesOnError(t *testing.T) {
+// TestMultiTenantConsumer_SyncTenants_APIFailureKeepsCurrentState verifies that the
+// sync keeps current state when the API fails (no removals on failure).
+func TestMultiTenantConsumer_SyncTenants_APIFailureKeepsCurrentState(t *testing.T) {
 	tests := []struct {
-		name              string
-		breakRedisOnFirst bool
-		restoreBefore     int // restore Redis before this sync iteration
+		name string
 	}{
 		{
-			name:              "continues_after_transient_error",
-			breakRedisOnFirst: true,
-			restoreBefore:     2,
+			name: "keeps_current_state_on_API_failure",
 		},
 	}
 
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			mr, redisClient := setupMiniredis(t)
+			callCount := 0
+			var mu sync.Mutex
 
-			// Populate tenants
-			mr.SAdd(testActiveTenantsKey, "tenant-001")
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				callCount++
+				count := callCount
+				mu.Unlock()
 
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    100 * time.Millisecond,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}, testutil.NewMockLogger())
+				if count == 1 {
+					// First call: return tenants
+					w.Header().Set("Content-Type", "application/json")
+					json.NewEncoder(w).Encode(makeTenantSummaries(3))
+					return
+				}
+				// Subsequent calls: fail
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			t.Cleanup(server.Close)
+
+			config := newTestConfig(server.URL)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, testutil.NewMockLogger())
 
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -1395,17 +1210,23 @@ func TestMultiTenantConsumer_SyncTenants_SyncLoopContinuesOnError(t *testing.T) 
 			err := consumer.syncTenants(ctx)
 			assert.NoError(t, err, "first syncTenants should succeed")
 
-			// Break Redis
-			mr.Close()
+			consumer.mu.RLock()
+			knownAfterFirst := len(consumer.knownTenants)
+			consumer.mu.RUnlock()
+			assert.Equal(t, 3, knownAfterFirst, "first sync should populate 3 tenants")
 
-			// Second sync should fail but not crash
+			// Second sync fails but keeps current state
 			err = consumer.syncTenants(ctx)
-			assert.Error(t, err, "syncTenants should return error when Redis is down")
+			assert.NoError(t, err, "syncTenants should return nil on API failure (keeps current state)")
 
-			// Verify consumer still functional (not panicked)
+			// Verify consumer still functional and tenants preserved
 			consumer.mu.RLock()
 			assert.False(t, consumer.closed, "consumer should not be closed after sync error")
+			knownAfterError := len(consumer.knownTenants)
 			consumer.mu.RUnlock()
+
+			assert.Equal(t, 3, knownAfterError,
+				"tenants should be preserved after API failure")
 
 			consumer.Close()
 		})
@@ -1432,15 +1253,9 @@ func TestMultiTenantConsumer_SyncTenants_ClosedConsumer(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			mr, redisClient := setupMiniredis(t)
-			mr.SAdd(testActiveTenantsKey, "tenant-001")
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}, testutil.NewMockLogger())
+			server := setupTenantManagerAPIServer(t, makeTenantSummaries(1))
+			config := newTestConfig(server.URL)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, testutil.NewMockLogger())
 
 			// Close consumer first
 			consumer.Close()
@@ -1459,39 +1274,34 @@ func TestMultiTenantConsumer_FetchTenantIDs(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		redisTenantIDs []string
-		apiTenants     []*client.TenantSummary
-		redisDown      bool
-		apiDown        bool
-		expectError    bool
-		expectedCount  int
-		errContains    string
+		name          string
+		apiTenants    []*client.TenantSummary
+		apiDown       bool
+		expectError   bool
+		expectedCount int
 	}{
 		{
-			name:           "returns_tenants_from_Redis_cache",
-			redisTenantIDs: []string{"t1", "t2", "t3"},
-			expectedCount:  3,
+			name:          "returns_tenants_from_API",
+			apiTenants:    makeTenantSummaries(3),
+			expectedCount: 3,
 		},
 		{
-			name:           "returns_empty_list_when_no_tenants",
-			redisTenantIDs: []string{},
-			expectedCount:  0,
+			name:          "returns_empty_list_when_no_tenants",
+			apiTenants:    []*client.TenantSummary{},
+			expectedCount: 0,
 		},
 		{
-			name:          "falls_back_to_API_when_Redis_is_empty",
+			name:          "returns_tenants_from_API_2",
 			apiTenants:    makeTenantSummaries(2),
 			expectedCount: 2,
 		},
 		{
-			name:        "returns_error_when_both_Redis_and_API_fail",
-			redisDown:   true,
+			name:        "returns_error_when_API_is_down",
 			apiDown:     true,
 			expectError: true,
 		},
 		{
-			name:          "returns_tenants_from_API_when_Redis_fails",
-			redisDown:     true,
+			name:          "returns_4_tenants_from_API",
 			apiTenants:    makeTenantSummaries(4),
 			expectedCount: 4,
 		},
@@ -1502,47 +1312,21 @@ func TestMultiTenantConsumer_FetchTenantIDs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			mr, redisClient := setupMiniredis(t)
-
-			if !tt.redisDown {
-				for _, id := range tt.redisTenantIDs {
-					mr.SAdd(testActiveTenantsKey, id)
-				}
-			} else {
-				mr.Close()
-			}
-
 			var apiURL string
-			if tt.apiTenants != nil && !tt.apiDown {
+			if !tt.apiDown {
 				server := setupTenantManagerAPIServer(t, tt.apiTenants)
 				apiURL = server.URL
-			} else if tt.apiDown {
+			} else {
 				apiURL = "http://127.0.0.1:0"
 			}
 
-			mockLogger := testutil.NewMockLogger()
-			config := MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, mockLogger)
-
-			if apiURL != "" {
-				pmClient, pmErr := client.NewClient(apiURL, mockLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
-				require.NoError(t, pmErr)
-				consumer.pmClient = pmClient
-			}
+			config := newTestConfig(apiURL)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, testutil.NewMockLogger())
 
 			ids, err := consumer.fetchTenantIDs(context.Background())
 
 			if tt.expectError {
 				assert.Error(t, err, "fetchTenantIDs should return error")
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
 			} else {
 				assert.NoError(t, err, "fetchTenantIDs should not return error")
 				assert.Len(t, ids, tt.expectedCount,
@@ -1583,13 +1367,8 @@ func TestMultiTenantConsumer_Register(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, redisClient := setupMiniredis(t)
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-			}, testutil.NewMockLogger())
+			server := setupTenantManagerAPIServer(t, nil)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 
 			for _, q := range tt.queueNames {
 				consumer.Register(q, func(ctx context.Context, delivery amqp.Delivery) error {
@@ -1607,7 +1386,7 @@ func TestMultiTenantConsumer_Register(t *testing.T) {
 	}
 }
 
-// TestMultiTenantConsumer_NilLogger verifies that NewMultiTenantConsumer does not panic
+// TestMultiTenantConsumer_NilLogger verifies that NewMultiTenantConsumerWithError does not panic
 // when a nil logger is provided and defaults to NoneLogger.
 func TestMultiTenantConsumer_NilLogger(t *testing.T) {
 	t.Parallel()
@@ -1625,14 +1404,10 @@ func TestMultiTenantConsumer_NilLogger(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, redisClient := setupMiniredis(t)
+			server := setupTenantManagerAPIServer(t, nil)
 
 			assert.NotPanics(t, func() {
-				consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-					SyncInterval:    30 * time.Second,
-					WorkersPerQueue: 1,
-					PrefetchCount:   10,
-				}, nil) // nil logger
+				consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), nil) // nil logger
 
 				assert.NotNil(t, consumer, "consumer must not be nil even with nil logger")
 
@@ -1692,27 +1467,43 @@ func TestIsValidTenantID(t *testing.T) {
 func TestMultiTenantConsumer_SyncTenants_FiltersInvalidIDs(t *testing.T) {
 	tests := []struct {
 		name             string
-		redisTenantIDs   []string
+		apiTenants       []*client.TenantSummary
 		expectedKnownIDs int
 	}{
 		{
-			name:             "filters_out_path_traversal_attempts",
-			redisTenantIDs:   []string{"valid-tenant", "../../etc/passwd", "also-valid"},
+			name: "filters_out_path_traversal_attempts",
+			apiTenants: []*client.TenantSummary{
+				{ID: "valid-tenant", Name: "Valid", Status: "active"},
+				{ID: "../../etc/passwd", Name: "Invalid", Status: "active"},
+				{ID: "also-valid", Name: "Also Valid", Status: "active"},
+			},
 			expectedKnownIDs: 2,
 		},
 		{
-			name:             "filters_out_empty_strings",
-			redisTenantIDs:   []string{"valid-tenant", "", "another-valid"},
+			name: "filters_out_empty_strings",
+			apiTenants: []*client.TenantSummary{
+				{ID: "valid-tenant", Name: "Valid", Status: "active"},
+				{ID: "", Name: "Empty", Status: "active"},
+				{ID: "another-valid", Name: "Another", Status: "active"},
+			},
 			expectedKnownIDs: 2,
 		},
 		{
-			name:             "all_valid_tenants_pass",
-			redisTenantIDs:   []string{"tenant-a", "tenant-b", "tenant-c"},
+			name: "all_valid_tenants_pass",
+			apiTenants: []*client.TenantSummary{
+				{ID: "tenant-a", Name: "A", Status: "active"},
+				{ID: "tenant-b", Name: "B", Status: "active"},
+				{ID: "tenant-c", Name: "C", Status: "active"},
+			},
 			expectedKnownIDs: 3,
 		},
 		{
-			name:             "all_invalid_tenants_filtered",
-			redisTenantIDs:   []string{"../etc", "tenant with spaces", ""},
+			name: "all_invalid_tenants_filtered",
+			apiTenants: []*client.TenantSummary{
+				{ID: "../etc", Name: "Bad1", Status: "active"},
+				{ID: "tenant with spaces", Name: "Bad2", Status: "active"},
+				{ID: "", Name: "Bad3", Status: "active"},
+			},
 			expectedKnownIDs: 0,
 		},
 	}
@@ -1720,18 +1511,9 @@ func TestMultiTenantConsumer_SyncTenants_FiltersInvalidIDs(t *testing.T) {
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			mr, redisClient := setupMiniredis(t)
-
-			for _, id := range tt.redisTenantIDs {
-				mr.SAdd(testActiveTenantsKey, id)
-			}
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}, testutil.NewMockLogger())
+			server := setupTenantManagerAPIServer(t, tt.apiTenants)
+			config := newTestConfig(server.URL)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, testutil.NewMockLogger())
 
 			ctx := context.Background()
 			err := consumer.syncTenants(ctx)
@@ -1788,13 +1570,8 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_SpawnsExactlyOnce(t *testing.
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, redisClient := setupMiniredis(t)
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-			}, testutil.NewMockLogger())
+			server := setupTenantManagerAPIServer(t, nil)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 
 			// Register a handler so startTenantConsumer has something to work with
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
@@ -1862,13 +1639,8 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_NoopWhenActive(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, redisClient := setupMiniredis(t)
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-			}, testutil.NewMockLogger())
+			server := setupTenantManagerAPIServer(t, nil)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
 				return nil
@@ -1929,13 +1701,8 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_SkipsWhenClosed(t *testing.T)
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, redisClient := setupMiniredis(t)
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-			}, testutil.NewMockLogger())
+			server := setupTenantManagerAPIServer(t, nil)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
 				return nil
@@ -1980,13 +1747,8 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_MultipleTenants(t *testing.T)
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, redisClient := setupMiniredis(t)
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-			}, testutil.NewMockLogger())
+			server := setupTenantManagerAPIServer(t, nil)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
 				return nil
@@ -2141,9 +1903,9 @@ func TestMultiTenantConsumer_StructuredLogEvents(t *testing.T) {
 			expectedLogPart: "on-demand consumer start",
 		},
 		{
-			name:            "sync_logs_summary",
+			name:            "sync_logs_tenant_added",
 			operation:       "sync",
-			expectedLogPart: "sync complete",
+			expectedLogPart: "tenant added",
 		},
 		{
 			name:            "register_logs_queue",
@@ -2157,17 +1919,12 @@ func TestMultiTenantConsumer_StructuredLogEvents(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			mr, redisClient := setupMiniredis(t)
-			mr.SAdd(testActiveTenantsKey, "tenant-log-test")
-
+			server := setupTenantManagerAPIServer(t, []*client.TenantSummary{
+				{ID: "tenant-log-test", Name: "Test", Status: "active"},
+			})
+			config := newTestConfig(server.URL)
 			logger := testutil.NewCapturingLogger()
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         "test-service",
-			}, logger)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, logger)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -2214,44 +1971,33 @@ func BenchmarkMultiTenantConsumer_Run_Startup(b *testing.B) {
 	benchmarks := []struct {
 		name        string
 		tenantCount int
-		useRedis    bool
 	}{
-		{name: "0_tenants", tenantCount: 0, useRedis: true},
-		{name: "100_tenants_Redis", tenantCount: 100, useRedis: true},
-		{name: "500_tenants_Redis", tenantCount: 500, useRedis: true},
+		{name: "0_tenants", tenantCount: 0},
+		{name: "100_tenants", tenantCount: 100},
+		{name: "500_tenants", tenantCount: 500},
 	}
 
 	for _, bm := range benchmarks {
 		b.Run(bm.name, func(b *testing.B) {
-			mr, err := miniredis.Run()
-			require.NoError(b, err)
-			defer mr.Close()
-
-			redisClient := redis.NewClient(&redis.Options{
-				Addr: mr.Addr(),
-			})
-			defer redisClient.Close()
-
-			benchService := "bench-service"
-			benchKey := buildActiveTenantsKey("", benchService)
-
-			if bm.useRedis && bm.tenantCount > 0 {
-				ids := generateTenantIDs(bm.tenantCount)
-				for _, id := range ids {
-					mr.SAdd(benchKey, id)
-				}
-			}
+			tenants := makeTenantSummaries(bm.tenantCount)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(tenants)
+			}))
+			defer server.Close()
 
 			config := MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         benchService,
+				SyncInterval:      30 * time.Second,
+				PrefetchCount:     10,
+				Service:           "bench-service",
+				MultiTenantURL:    server.URL,
+				ServiceAPIKey:     "test-key",
+				AllowInsecureHTTP: true,
 			}
 
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, testutil.NewMockLogger())
+				consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, testutil.NewMockLogger())
 
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				err := consumer.Run(ctx)
@@ -2261,143 +2007,6 @@ func BenchmarkMultiTenantConsumer_Run_Startup(b *testing.B) {
 				cancel()
 				consumer.Close()
 			}
-		})
-	}
-}
-
-// ---------------------
-// Environment-Aware Cache Key Tests
-// ---------------------
-
-// TestBuildActiveTenantsKey verifies environment+service segmented Redis key construction.
-func TestBuildActiveTenantsKey(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		env      string
-		service  string
-		expected string
-	}{
-		{
-			name:     "env_and_service_produces_segmented_key",
-			env:      "staging",
-			service:  "ledger",
-			expected: "tenant-manager:tenants:active:staging:ledger",
-		},
-		{
-			name:     "production_env_with_service",
-			env:      "production",
-			service:  "transaction",
-			expected: "tenant-manager:tenants:active:production:transaction",
-		},
-		{
-			name:     "only_service_produces_key_with_empty_env",
-			env:      "",
-			service:  "ledger",
-			expected: "tenant-manager:tenants:active::ledger",
-		},
-		{
-			name:     "neither_env_nor_service_produces_key_with_empty_segments",
-			env:      "",
-			service:  "",
-			expected: "tenant-manager:tenants:active::",
-		},
-		{
-			name:     "env_without_service_produces_key_with_empty_service",
-			env:      "staging",
-			service:  "",
-			expected: "tenant-manager:tenants:active:staging:",
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			result := buildActiveTenantsKey(tt.env, tt.service)
-			assert.Equal(t, tt.expected, result,
-				"buildActiveTenantsKey(%q, %q) = %q, want %q",
-				tt.env, tt.service, result, tt.expected)
-		})
-	}
-}
-
-// TestMultiTenantConsumer_FetchTenantIDs_EnvironmentAwareKey verifies that
-// fetchTenantIDs reads from the environment+service segmented Redis key.
-func TestMultiTenantConsumer_FetchTenantIDs_EnvironmentAwareKey(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		env           string
-		service       string
-		redisKey      string
-		redisTenants  []string
-		expectedCount int
-	}{
-		{
-			name:          "reads_from_env_service_segmented_key",
-			env:           "staging",
-			service:       "ledger",
-			redisKey:      "tenant-manager:tenants:active:staging:ledger",
-			redisTenants:  []string{"tenant-a", "tenant-b"},
-			expectedCount: 2,
-		},
-		{
-			name:          "reads_from_key_with_empty_env",
-			env:           "",
-			service:       "transaction",
-			redisKey:      "tenant-manager:tenants:active::transaction",
-			redisTenants:  []string{"tenant-x"},
-			expectedCount: 1,
-		},
-		{
-			name:          "reads_from_key_with_empty_env_and_service",
-			env:           "",
-			service:       "",
-			redisKey:      "tenant-manager:tenants:active::",
-			redisTenants:  []string{"tenant-1", "tenant-2", "tenant-3"},
-			expectedCount: 3,
-		},
-		{
-			name:          "does_not_read_from_wrong_key",
-			env:           "staging",
-			service:       "ledger",
-			redisKey:      "tenant-manager:tenants:active::", // Wrong key - empty segments instead of segmented
-			redisTenants:  []string{"tenant-a"},
-			expectedCount: 0, // Should NOT find tenants
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			mr, redisClient := setupMiniredis(t)
-
-			// Write tenants to the specified Redis key
-			for _, id := range tt.redisTenants {
-				mr.SAdd(tt.redisKey, id)
-			}
-
-			config := MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Environment:     tt.env,
-				Service:         tt.service,
-			}
-
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, testutil.NewMockLogger())
-
-			ids, err := consumer.fetchTenantIDs(context.Background())
-			assert.NoError(t, err, "fetchTenantIDs should not return error")
-			assert.Len(t, ids, tt.expectedCount,
-				"expected %d tenant IDs from key %q, got %d",
-				tt.expectedCount, tt.redisKey, len(ids))
 		})
 	}
 }
@@ -2452,8 +2061,6 @@ func TestMultiTenantConsumer_WithOptions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, redisClient := setupMiniredis(t)
-
 			var opts []Option
 
 			if tt.withPostgres {
@@ -2466,11 +2073,8 @@ func TestMultiTenantConsumer_WithOptions(t *testing.T) {
 				opts = append(opts, WithMongoManager(mongoManager))
 			}
 
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-			}, testutil.NewMockLogger(), opts...)
+			server := setupTenantManagerAPIServer(t, nil)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger(), opts...)
 
 			if tt.expectPostgres {
 				assert.NotNil(t, consumer.postgres, "postgres manager should be set")
@@ -2502,60 +2106,63 @@ func TestMultiTenantConsumer_DefaultMultiTenantConfig_IncludesEnvironment(t *tes
 
 // TestMultiTenantConsumer_SyncTenants_ClosesConnectionsOnRemoval verifies that
 // when a tenant is removed during sync, its database connections are closed.
-// Note: Uses NewManager constructors from sub-packages since we cannot access
-// unexported fields (connections map) from the consumer package. CloseConnection
-// returns nil for unknown tenants, so the test verifies log messages instead.
 func TestMultiTenantConsumer_SyncTenants_ClosesConnectionsOnRemoval(t *testing.T) {
 	tests := []struct {
 		name             string
-		initialTenants   []string
-		remainingTenants []string
-		removedTenants   []string
+		initialTenants   []*client.TenantSummary
+		remainingTenants []*client.TenantSummary
+		removedTenantIDs []string
 	}{
 		{
-			name:             "closes_connections_for_single_removed_tenant",
-			initialTenants:   []string{"tenant-a", "tenant-b"},
-			remainingTenants: []string{"tenant-a"},
-			removedTenants:   []string{"tenant-b"},
+			name: "closes_connections_for_single_removed_tenant",
+			initialTenants: []*client.TenantSummary{
+				{ID: "tenant-a", Name: "A", Status: "active"},
+				{ID: "tenant-b", Name: "B", Status: "active"},
+			},
+			remainingTenants: []*client.TenantSummary{
+				{ID: "tenant-a", Name: "A", Status: "active"},
+			},
+			removedTenantIDs: []string{"tenant-b"},
 		},
 		{
-			name:             "closes_connections_for_all_removed_tenants",
-			initialTenants:   []string{"tenant-a", "tenant-b", "tenant-c"},
-			remainingTenants: []string{},
-			removedTenants:   []string{"tenant-a", "tenant-b", "tenant-c"},
+			name: "closes_connections_for_all_removed_tenants",
+			initialTenants: []*client.TenantSummary{
+				{ID: "tenant-a", Name: "A", Status: "active"},
+				{ID: "tenant-b", Name: "B", Status: "active"},
+				{ID: "tenant-c", Name: "C", Status: "active"},
+			},
+			remainingTenants: []*client.TenantSummary{},
+			removedTenantIDs: []string{"tenant-a", "tenant-b", "tenant-c"},
 		},
 	}
 
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			mr, redisClient := setupMiniredis(t)
+			var mu sync.Mutex
+			currentTenants := tt.initialTenants
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				tenants := currentTenants
+				mu.Unlock()
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(tenants)
+			}))
+			t.Cleanup(server.Close)
 
 			// Use a capturing logger to verify close log messages
 			logger := testutil.NewCapturingLogger()
+			config := newTestConfig(server.URL)
 
-			config := MultiTenantConfig{
-				SyncInterval:    30 * time.Second,
-				WorkersPerQueue: 1,
-				PrefetchCount:   10,
-				Service:         testServiceName,
-			}
-
-			// Create managers using sub-package constructors.
-			// CloseConnection returns nil for tenants not in the connections map,
-			// so we verify behavior through log messages.
+			// Create managers
 			pgManager := tmpostgres.NewManager(nil, "test-service")
 			mongoManager := tmmongo.NewManager(nil, "test-service")
 
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), redisClient, config, logger,
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, logger,
 				WithPostgresManager(pgManager),
 				WithMongoManager(mongoManager),
 			)
-
-			// Populate initial tenants in Redis
-			for _, id := range tt.initialTenants {
-				mr.SAdd(testActiveTenantsKey, id)
-			}
 
 			ctx := context.Background()
 			ctx = libCommons.ContextWithLogger(ctx, logger)
@@ -2566,27 +2173,24 @@ func TestMultiTenantConsumer_SyncTenants_ClosesConnectionsOnRemoval(t *testing.T
 
 			// Simulate active consumers for all tenants (so removal code path is triggered)
 			consumer.mu.Lock()
-			for _, id := range tt.initialTenants {
+			for _, ts := range tt.initialTenants {
 				_, cancel := context.WithCancel(ctx)
-				consumer.tenants[id] = cancel
+				consumer.tenants[ts.ID] = cancel
 			}
 			consumer.mu.Unlock()
 
-			// Update Redis to remaining tenants only
-			mr.Del(testActiveTenantsKey)
-			for _, id := range tt.remainingTenants {
-				mr.SAdd(testActiveTenantsKey, id)
-			}
+			// Update API to remaining tenants only
+			mu.Lock()
+			currentTenants = tt.remainingTenants
+			mu.Unlock()
 
-			// Run sync absentSyncsBeforeRemoval times so removals are confirmed and connections closed
-			for i := 0; i < absentSyncsBeforeRemoval; i++ {
-				err = consumer.syncTenants(ctx)
-				require.NoError(t, err, "syncTenants should succeed")
-			}
+			// Single sync removes immediately
+			err = consumer.syncTenants(ctx)
+			require.NoError(t, err, "syncTenants should succeed")
 
 			// Verify removed tenants are gone from tenants map
 			consumer.mu.RLock()
-			for _, id := range tt.removedTenants {
+			for _, id := range tt.removedTenantIDs {
 				_, exists := consumer.tenants[id]
 				assert.False(t, exists,
 					"removed tenant %q should not be in tenants map", id)
@@ -2594,7 +2198,7 @@ func TestMultiTenantConsumer_SyncTenants_ClosesConnectionsOnRemoval(t *testing.T
 			consumer.mu.RUnlock()
 
 			// Verify log messages contain removal information for each removed tenant
-			for _, id := range tt.removedTenants {
+			for _, id := range tt.removedTenantIDs {
 				assert.True(t, logger.ContainsSubstring("closing connections for removed tenant: "+id),
 					"should log closing connections for removed tenant %q", id)
 			}
@@ -2603,10 +2207,6 @@ func TestMultiTenantConsumer_SyncTenants_ClosesConnectionsOnRemoval(t *testing.T
 }
 
 // TestMultiTenantConsumer_RevalidateConnectionSettings tests revalidation behavior.
-// Note: Tests that require injecting connections into the postgres/mongo manager's
-// internal connections map (applies_settings_to_active_tenants, continues_on_individual_tenant_error)
-// are tested in the postgres sub-package's own test file since they need access to
-// unexported fields. Here we test the consumer-level skip conditions.
 func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 	t.Parallel()
 
@@ -2614,12 +2214,11 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 		t.Parallel()
 
 		logger := testutil.NewCapturingLogger()
-		config := MultiTenantConfig{
-			Service:      "ledger",
-			SyncInterval: 30 * time.Second,
-		}
+		server := setupTenantManagerAPIServer(t, nil)
+		config := newTestConfig(server.URL)
+		config.Service = "ledger"
 
-		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), dummyRedisClient(t), config, logger)
+		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, logger)
 
 		ctx := context.Background()
 		ctx = libCommons.ContextWithLogger(ctx, logger)
@@ -2631,53 +2230,26 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 			"should not log revalidation when no managers are configured")
 	})
 
-	t.Run("skips_when_no_pmClient_configured", func(t *testing.T) {
-		t.Parallel()
-
-		logger := testutil.NewCapturingLogger()
-		pgManager := tmpostgres.NewManager(nil, "ledger")
-
-		config := MultiTenantConfig{
-			Service:      "ledger",
-			SyncInterval: 30 * time.Second,
-		}
-
-		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), dummyRedisClient(t), config, logger,
-			WithPostgresManager(pgManager),
-		)
-		// Explicitly ensure no pmClient
-		consumer.pmClient = nil
-
-		ctx := context.Background()
-		ctx = libCommons.ContextWithLogger(ctx, logger)
-
-		consumer.revalidateConnectionSettings(ctx)
-
-		assert.False(t, logger.ContainsSubstring("revalidated connection settings"),
-			"should not log revalidation when pmClient is nil")
-	})
-
 	t.Run("skips_when_no_active_tenants", func(t *testing.T) {
 		t.Parallel()
 
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			t.Error("should not call Tenant Manager when no active tenants")
 			w.WriteHeader(http.StatusOK)
 		}))
-		defer server.Close()
+		defer apiServer.Close()
 
 		logger := testutil.NewCapturingLogger()
-		tmClient, tmErr := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+		tmClient, tmErr := client.NewClient(apiServer.URL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 		require.NoError(t, tmErr)
 
 		pgManager := tmpostgres.NewManager(tmClient, "ledger")
 
-		config := MultiTenantConfig{
-			Service:      "ledger",
-			SyncInterval: 30 * time.Second,
-		}
+		server := setupTenantManagerAPIServer(t, nil)
+		config := newTestConfig(server.URL)
+		config.Service = "ledger"
 
-		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), dummyRedisClient(t), config, logger,
+		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, logger,
 			WithPostgresManager(pgManager),
 		)
 		consumer.pmClient = tmClient
@@ -2695,7 +2267,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 		t.Parallel()
 
 		// Set up a mock Tenant Manager that returns config with connection settings
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		revalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			resp := `{
 				"id": "tenant-abc",
@@ -2711,10 +2283,10 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 			}`
 			w.Write([]byte(resp))
 		}))
-		defer server.Close()
+		defer revalServer.Close()
 
 		logger := testutil.NewCapturingLogger()
-		tmClient, tmErr := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+		tmClient, tmErr := client.NewClient(revalServer.URL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 		require.NoError(t, tmErr)
 
 		pgManager := tmpostgres.NewManager(tmClient, "ledger",
@@ -2722,12 +2294,11 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 			tmpostgres.WithLogger(logger),
 		)
 
-		config := MultiTenantConfig{
-			Service:      "ledger",
-			SyncInterval: 30 * time.Second,
-		}
+		apiServer := setupTenantManagerAPIServer(t, nil)
+		config := newTestConfig(apiServer.URL)
+		config.Service = "ledger"
 
-		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), dummyRedisClient(t), config, logger,
+		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, logger,
 			WithPostgresManager(pgManager),
 		)
 		consumer.pmClient = tmClient
@@ -2743,9 +2314,6 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 
 		consumer.revalidateConnectionSettings(ctx)
 
-		// ApplyConnectionSettings was called but since there is no actual connection
-		// in the pgManager's internal map, it is effectively a no-op for the settings.
-		// We verify that revalidation was attempted by checking the log message.
 		assert.True(t, logger.ContainsSubstring("revalidated connection settings"),
 			"should log revalidation summary")
 	})
@@ -2754,7 +2322,7 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 		t.Parallel()
 
 		callCount := 0
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		revalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			callCount++
 			if strings.Contains(r.URL.Path, "tenant-fail") {
 				w.WriteHeader(http.StatusInternalServerError)
@@ -2775,10 +2343,10 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 			}`
 			w.Write([]byte(resp))
 		}))
-		defer server.Close()
+		defer revalServer.Close()
 
 		logger := testutil.NewCapturingLogger()
-		tmClient, tmErr := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+		tmClient, tmErr := client.NewClient(revalServer.URL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 		require.NoError(t, tmErr)
 
 		pgManager := tmpostgres.NewManager(tmClient, "ledger",
@@ -2786,12 +2354,11 @@ func TestMultiTenantConsumer_RevalidateConnectionSettings(t *testing.T) {
 			tmpostgres.WithLogger(logger),
 		)
 
-		config := MultiTenantConfig{
-			Service:      "ledger",
-			SyncInterval: 30 * time.Second,
-		}
+		apiServer := setupTenantManagerAPIServer(t, nil)
+		config := newTestConfig(apiServer.URL)
+		config.Service = "ledger"
 
-		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), dummyRedisClient(t), config, logger,
+		consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, logger,
 			WithPostgresManager(pgManager),
 		)
 		consumer.pmClient = tmClient
@@ -2851,7 +2418,7 @@ func TestMultiTenantConsumer_RevalidateSettings_StopsSuspendedTenant(t *testing.
 
 			// Set up a mock Tenant Manager that returns 403 for the suspended tenant
 			// and 200 with valid config for the healthy tenant
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			revalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 
 				if strings.Contains(r.URL.Path, tt.suspendedTenantID) {
@@ -2876,10 +2443,10 @@ func TestMultiTenantConsumer_RevalidateSettings_StopsSuspendedTenant(t *testing.
 					}
 				}`))
 			}))
-			defer server.Close()
+			defer revalServer.Close()
 
 			logger := testutil.NewCapturingLogger()
-			tmClient, tmErr := client.NewClient(server.URL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+			tmClient, tmErr := client.NewClient(revalServer.URL, logger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
 			require.NoError(t, tmErr)
 
 			pgManager := tmpostgres.NewManager(tmClient, "ledger",
@@ -2887,18 +2454,16 @@ func TestMultiTenantConsumer_RevalidateSettings_StopsSuspendedTenant(t *testing.
 				tmpostgres.WithLogger(logger),
 			)
 
-			config := MultiTenantConfig{
-				Service:      "ledger",
-				SyncInterval: 30 * time.Second,
-			}
+			apiServer := setupTenantManagerAPIServer(t, nil)
+			config := newTestConfig(apiServer.URL)
+			config.Service = "ledger"
 
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), dummyRedisClient(t), config, logger,
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, logger,
 				WithPostgresManager(pgManager),
 			)
 			consumer.pmClient = tmClient
 
-			// Pre-populate per-tenant sync.Map entries for the suspended tenant
-			// to verify they are cleaned up during eviction.
+			// Pre-populate per-tenant sync.Map entries
 			consumer.consumerLocks.Store(tt.suspendedTenantID, &sync.Mutex{})
 			consumer.retryState.Store(tt.suspendedTenantID, &retryStateEntry{})
 			consumer.consumerLocks.Store(tt.healthyTenantID, &sync.Mutex{})
@@ -2917,8 +2482,6 @@ func TestMultiTenantConsumer_RevalidateSettings_StopsSuspendedTenant(t *testing.
 			consumer.tenants[tt.healthyTenantID] = cancelHealthy
 			consumer.knownTenants[tt.suspendedTenantID] = true
 			consumer.knownTenants[tt.healthyTenantID] = true
-			// Pre-populate tenantAbsenceCount for the suspended tenant
-			consumer.tenantAbsenceCount[tt.suspendedTenantID] = 1
 			consumer.mu.Unlock()
 
 			ctx := context.Background()
@@ -2956,19 +2519,6 @@ func TestMultiTenantConsumer_RevalidateSettings_StopsSuspendedTenant(t *testing.
 			// Verify that the healthy tenant was still revalidated
 			assert.True(t, logger.ContainsSubstring("revalidated connection settings for 1/"),
 				"should log revalidation summary for the healthy tenant")
-
-			// Note: evictSuspendedTenant does NOT clean sync.Map entries (consumerLocks, retryState)
-			// or tenantAbsenceCount. It only cleans regular maps (tenants, knownTenants).
-			// sync.Map entries persist until overwritten or garbage collected.
-
-			// Verify healthy tenant's sync.Map entries are NOT affected
-			_, healthyLockExists := consumer.consumerLocks.Load(tt.healthyTenantID)
-			assert.True(t, healthyLockExists,
-				"consumerLocks should still exist for healthy tenant %q", tt.healthyTenantID)
-
-			_, healthyRetryExists := consumer.retryState.Load(tt.healthyTenantID)
-			assert.True(t, healthyRetryExists,
-				"retryState should still exist for healthy tenant %q", tt.healthyTenantID)
 		})
 	}
 }
@@ -2989,6 +2539,7 @@ func TestMultiTenantConsumer_AllowInsecureHTTP(t *testing.T) {
 			config: MultiTenantConfig{
 				MultiTenantURL: "http://tenant-manager.namespace.svc.cluster.local:4003",
 				ServiceAPIKey:  "test-key",
+				Service:        "ledger",
 			},
 			expectError: true,
 			errContains: "insecure HTTP",
@@ -2998,6 +2549,7 @@ func TestMultiTenantConsumer_AllowInsecureHTTP(t *testing.T) {
 			config: MultiTenantConfig{
 				MultiTenantURL:    "http://tenant-manager.namespace.svc.cluster.local:4003",
 				ServiceAPIKey:     "test-key",
+				Service:           "ledger",
 				AllowInsecureHTTP: true,
 			},
 			expectError: false,
@@ -3007,13 +2559,7 @@ func TestMultiTenantConsumer_AllowInsecureHTTP(t *testing.T) {
 			config: MultiTenantConfig{
 				MultiTenantURL: "https://tenant-manager.dev.example.com",
 				ServiceAPIKey:  "test-key",
-			},
-			expectError: false,
-		},
-		{
-			name: "no_error_when_MultiTenantURL_is_empty",
-			config: MultiTenantConfig{
-				MultiTenantURL: "",
+				Service:        "ledger",
 			},
 			expectError: false,
 		},
@@ -3023,9 +2569,8 @@ func TestMultiTenantConsumer_AllowInsecureHTTP(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			redisClient := dummyRedisClient(t)
 			consumer, err := NewMultiTenantConsumerWithError(
-				dummyRabbitMQManager(), redisClient, tt.config, testutil.NewMockLogger(),
+				dummyRabbitMQManager(), tt.config, testutil.NewMockLogger(),
 			)
 
 			if tt.expectError {
@@ -3041,4 +2586,82 @@ func TestMultiTenantConsumer_AllowInsecureHTTP(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMultiTenantConsumer_SyncTenants_EmptyAPIRemovesAllTenants verifies that
+// when the API returns an empty list, all existing tenants are removed.
+func TestMultiTenantConsumer_SyncTenants_EmptyAPIRemovesAllTenants(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+	currentTenants := makeTenantSummaries(3)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		tenants := currentTenants
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tenants)
+	}))
+	t.Cleanup(server.Close)
+
+	config := newTestConfig(server.URL)
+	logger := testutil.NewCapturingLogger()
+	consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, logger)
+
+	ctx := context.Background()
+	ctx = libCommons.ContextWithLogger(ctx, logger)
+
+	// First sync populates
+	err := consumer.syncTenants(ctx)
+	require.NoError(t, err)
+
+	consumer.mu.RLock()
+	assert.Equal(t, 3, len(consumer.knownTenants), "should have 3 tenants after first sync")
+	consumer.mu.RUnlock()
+
+	// Update API to return empty
+	mu.Lock()
+	currentTenants = []*client.TenantSummary{}
+	mu.Unlock()
+
+	// Second sync removes all
+	err = consumer.syncTenants(ctx)
+	require.NoError(t, err)
+
+	consumer.mu.RLock()
+	assert.Equal(t, 0, len(consumer.knownTenants), "should have 0 tenants after empty API response")
+	consumer.mu.RUnlock()
+}
+
+// TestMultiTenantConsumer_SyncTenants_LogOnlyOnChanges verifies that sync does NOT
+// produce any summary log when nothing changed.
+func TestMultiTenantConsumer_SyncTenants_LogOnlyOnChanges(t *testing.T) {
+	t.Parallel()
+
+	server := setupTenantManagerAPIServer(t, makeTenantSummaries(2))
+	config := newTestConfig(server.URL)
+	logger := testutil.NewCapturingLogger()
+	consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, logger)
+
+	ctx := context.Background()
+	ctx = libCommons.ContextWithLogger(ctx, logger)
+
+	// First sync discovers tenants
+	err := consumer.syncTenants(ctx)
+	require.NoError(t, err)
+
+	// Clear captured logs
+	logger.Clear()
+
+	// Second sync with same tenants should produce no "tenant added" or "tenant removed" logs
+	err = consumer.syncTenants(ctx)
+	require.NoError(t, err)
+
+	assert.False(t, logger.ContainsSubstring("tenant added"),
+		"should NOT log 'tenant added' when nothing changed")
+	assert.False(t, logger.ContainsSubstring("tenant removed"),
+		"should NOT log 'tenant removed' when nothing changed")
+	assert.False(t, logger.ContainsSubstring("sync complete"),
+		"should NOT log 'sync complete' summary")
 }

@@ -12,19 +12,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
 )
 
-// absentSyncsBeforeRemoval is the number of consecutive syncs a tenant can be
-// missing from the fetched list before it is removed from knownTenants and
-// any active consumer is stopped. Prevents transient incomplete fetches from
-// purging tenants immediately.
-const absentSyncsBeforeRemoval = 3
-
-// buildActiveTenantsKey returns an environment+service segmented Redis key for active tenants.
-// The key format is always: "tenant-manager:tenants:active:{env}:{service}"
-// The caller is responsible for providing valid env and service values.
-func buildActiveTenantsKey(env, service string) string {
-	return fmt.Sprintf("tenant-manager:tenants:active:%s:%s", env, service)
-}
-
 // eagerStartKnownTenants starts consumers for all known tenants.
 // Called during Run() and when new tenants are discovered during sync.
 func (c *MultiTenantConsumer) eagerStartKnownTenants(ctx context.Context) {
@@ -136,15 +123,12 @@ func (c *MultiTenantConsumer) runSyncIteration(ctx context.Context) {
 	c.revalidateConnectionSettings(ctx)
 }
 
-// syncTenants fetches tenant IDs and updates the known tenant registry.
-// New tenants are added to knownTenants and consumers are started immediately.
-// Tenants missing from the fetched list are retained in knownTenants for up to
-// absentSyncsBeforeRemoval consecutive syncs; only after that threshold are they
-// removed from knownTenants and any active consumers stopped. This avoids purging
-// tenants on a single transient incomplete fetch.
-// Error handling: if fetchTenantIDs fails, syncTenants returns the error immediately
-// without modifying the current tenant state. The caller (runSyncIteration) logs
-// the failure and continues retrying on the next sync interval.
+// syncTenants fetches tenant IDs from the tenant-manager API and updates the
+// known tenant registry. New tenants are added and consumers started immediately.
+// Tenants not in the API response are removed immediately -- the API is the
+// single source of truth, so no grace period is needed.
+// If fetchTenantIDs fails, syncTenants keeps the current state unchanged and
+// returns nil (the caller logs the failure and retries on the next interval).
 func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
@@ -156,16 +140,17 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.sync_tenants")
 	defer span.End()
 
-	// Fetch tenant IDs from Redis cache
+	// Fetch tenant IDs from tenant-manager API
 	tenantIDs, err := c.fetchTenantIDs(ctx)
 	if err != nil {
-		logger.ErrorfCtx(ctx, "failed to fetch tenant IDs: %v", err)
-		libOpentelemetry.HandleSpanError(span, "failed to fetch tenant IDs", err)
+		// API failed -- keep current state, don't remove anyone
+		logger.WarnfCtx(ctx, "tenant sync failed (keeping current state): %v", err)
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "tenant sync failed (keeping current state)", err)
 
-		return fmt.Errorf("failed to fetch tenant IDs: %w", err)
+		return nil
 	}
 
-	validTenantIDs, currentTenants := c.filterValidTenantIDs(ctx, tenantIDs, logger)
+	validTenantIDs, currentSet := c.filterValidTenantIDs(ctx, tenantIDs, logger)
 
 	c.mu.Lock()
 
@@ -174,31 +159,48 @@ func (c *MultiTenantConsumer) syncTenants(ctx context.Context) error {
 		return errors.New("consumer is closed")
 	}
 
-	previousKnown := c.snapshotKnownTenantsLocked()
-	removedTenants := c.reconcileTenantPresence(previousKnown, currentTenants)
-	newTenants := c.identifyNewTenants(validTenantIDs, previousKnown)
-	c.cancelRemovedTenantConsumers(removedTenants)
+	// Find removed (in knownTenants but not in currentSet)
+	var removed []string
+	for id := range c.knownTenants {
+		if !currentSet[id] {
+			removed = append(removed, id)
+		}
+	}
 
-	// Capture stats under lock for the final log line.
-	knownCount := len(c.knownTenants)
-	activeCount := len(c.tenants)
+	// Find added (in currentSet but not in knownTenants)
+	var added []string
+	for _, id := range validTenantIDs {
+		if !c.knownTenants[id] {
+			added = append(added, id)
+		}
+	}
+
+	// Update knownTenants to match API response exactly
+	c.knownTenants = make(map[string]bool, len(currentSet))
+	for id := range currentSet {
+		c.knownTenants[id] = true
+	}
+
+	// Remove tenants no longer in API response
+	c.cancelRemovedTenantConsumers(removed)
 
 	c.mu.Unlock()
 
 	// Close database connections for removed tenants outside the lock (network I/O).
-	c.closeRemovedTenantConnections(ctx, removedTenants, logger)
+	c.closeRemovedTenantConnections(ctx, removed, logger)
 
-	if len(newTenants) > 0 {
-		logger.InfofCtx(ctx, "discovered %d new tenants (starting consumers): %v",
-			len(newTenants), newTenants)
+	// Log only changes
+	for _, id := range added {
+		logger.InfofCtx(ctx, "tenant added tenant=%s service=%s", id, c.config.Service)
 	}
 
-	logger.InfofCtx(ctx, "sync complete: %d known, %d active, %d discovered, %d removed",
-		knownCount, activeCount, len(newTenants), len(removedTenants))
+	for _, id := range removed {
+		logger.InfofCtx(ctx, "tenant removed tenant=%s service=%s", id, c.config.Service)
+	}
 
 	// Start consumers for newly discovered tenants.
 	// ensureConsumerStarted is called outside the lock (already unlocked above).
-	for _, tenantID := range newTenants {
+	for _, tenantID := range added {
 		c.ensureConsumerStarted(ctx, tenantID)
 	}
 
@@ -228,80 +230,6 @@ func (c *MultiTenantConsumer) filterValidTenantIDs(
 	}
 
 	return validTenantIDs, currentTenants
-}
-
-// snapshotKnownTenantsLocked copies the current known-tenants set.
-// MUST be called with c.mu held.
-func (c *MultiTenantConsumer) snapshotKnownTenantsLocked() map[string]bool {
-	previousKnown := make(map[string]bool, len(c.knownTenants))
-	for id := range c.knownTenants {
-		previousKnown[id] = true
-	}
-
-	return previousKnown
-}
-
-// reconcileTenantPresence updates knownTenants by merging the current fetch with
-// previously known tenants, applying the absence-count threshold. It returns the
-// list of tenant IDs that exceeded the threshold and should be removed.
-// MUST be called with c.mu held.
-func (c *MultiTenantConsumer) reconcileTenantPresence(previousKnown, currentTenants map[string]bool) []string {
-	newKnown := make(map[string]bool, len(currentTenants)+len(previousKnown))
-
-	var removedTenants []string
-
-	for id := range currentTenants {
-		newKnown[id] = true
-		c.tenantAbsenceCount[id] = 0
-	}
-
-	for id := range previousKnown {
-		if currentTenants[id] {
-			continue
-		}
-
-		abs := c.tenantAbsenceCount[id] + 1
-
-		c.tenantAbsenceCount[id] = abs
-		if abs < absentSyncsBeforeRemoval {
-			newKnown[id] = true
-		} else {
-			delete(c.tenantAbsenceCount, id)
-
-			if _, running := c.tenants[id]; running {
-				removedTenants = append(removedTenants, id)
-			}
-		}
-	}
-
-	c.knownTenants = newKnown
-
-	return removedTenants
-}
-
-// identifyNewTenants returns tenant IDs from the valid list that are neither
-// already running nor present in the pre-sync known-tenants snapshot.
-// This prevents logging lazy-known tenants as "new" on every sync iteration
-// while still correctly surfacing tenants first discovered in the current sync.
-// MUST be called with c.mu held.
-func (c *MultiTenantConsumer) identifyNewTenants(validTenantIDs []string, previousKnown map[string]bool) []string {
-	var newTenants []string
-
-	for _, tenantID := range validTenantIDs {
-		if _, running := c.tenants[tenantID]; running {
-			continue
-		}
-
-		// Only report as "new" if not already in the pre-sync known set.
-		// Tenants that are known but not yet active are "pending", not "new".
-		if previousKnown[tenantID] {
-			continue
-		}
-
-		newTenants = append(newTenants, tenantID)
-	}
-
-	return newTenants
 }
 
 // cancelRemovedTenantConsumers cancels goroutines and removes tenants from internal maps.
@@ -344,64 +272,25 @@ func (c *MultiTenantConsumer) closeRemovedTenantConnections(ctx context.Context,
 	}
 }
 
-// fetchTenantIDs gets tenant IDs from Redis cache, falling back to Tenant Manager API.
+// fetchTenantIDs gets tenant IDs from the tenant-manager API.
 func (c *MultiTenantConsumer) fetchTenantIDs(ctx context.Context) ([]string, error) {
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-	logger := logcompat.New(baseLogger)
+	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
 
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.fetch_tenant_ids")
 	defer span.End()
 
-	// Build environment+service segmented Redis key
-	cacheKey := buildActiveTenantsKey(c.config.Environment, c.config.Service)
-
-	// Try Redis cache first
-	tenantIDs, err := c.redisClient.SMembers(ctx, cacheKey).Result()
-	if err == nil && len(tenantIDs) > 0 {
-		logger.InfofCtx(ctx, "fetched %d tenant IDs from cache", len(tenantIDs))
-		return tenantIDs, nil
-	}
-
+	tenants, err := c.pmClient.GetActiveTenantsByService(ctx, c.config.Service)
 	if err != nil {
-		logger.WarnfCtx(ctx, "Redis cache fetch failed: %v", err)
-		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Redis cache fetch failed", err)
+		libOpentelemetry.HandleSpanError(span, "failed to fetch active tenants from tenant-manager", err)
+		return nil, fmt.Errorf("failed to fetch active tenants from tenant-manager: %w", err)
 	}
 
-	// Fallback to Tenant Manager API
-	if c.pmClient != nil && c.config.Service != "" {
-		logger.InfoCtx(ctx, "falling back to Tenant Manager API for tenant list")
-
-		tenants, apiErr := c.pmClient.GetActiveTenantsByService(ctx, c.config.Service)
-		if apiErr != nil {
-			logger.ErrorfCtx(ctx, "Tenant Manager API fallback failed: %v", apiErr)
-			libOpentelemetry.HandleSpanError(span, "Tenant Manager API fallback failed", apiErr)
-			// Return Redis error if API also fails
-			if err != nil {
-				return nil, err
-			}
-
-			return nil, apiErr
-		}
-
-		// Extract IDs from tenant summaries
-		ids := make([]string, 0, len(tenants))
-		for _, t := range tenants {
-			if t == nil {
-				continue
-			}
-
+	ids := make([]string, 0, len(tenants))
+	for _, t := range tenants {
+		if t != nil {
 			ids = append(ids, t.ID)
 		}
-
-		logger.InfofCtx(ctx, "fetched %d tenant IDs from Tenant Manager API", len(ids))
-
-		return ids, nil
 	}
 
-	// No tenants available
-	if err != nil {
-		return nil, err
-	}
-
-	return []string{}, nil
+	return ids, nil
 }
