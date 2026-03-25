@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Lerian Studio. All rights reserved.
+// Use of this source code is governed by the Elastic License 2.0
+// that can be found in the LICENSE file.
+
 package consumer
 
 import (
@@ -174,7 +178,7 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 		if core.IsTenantSuspendedError(err) || core.IsTenantPurgedError(err) {
 			logger.WarnfCtx(ctx, "tenant %s is suspended/purged, stopping consumer: %v", tenantID, err)
 			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "tenant suspended/purged, stopping consumer", err)
-			c.closeTenantConnections(ctx, tenantID, logger)
+			c.dispatcher.RemoveTenant(ctx, tenantID)
 
 			return false
 		}
@@ -397,8 +401,8 @@ func (c *MultiTenantConsumer) resetRetryState(tenantID string) {
 // It uses double-check locking with a per-tenant mutex to guarantee exactly-once
 // consumer spawning under concurrent access.
 //
-// Unknown tenants trigger a lazy-load via loadTenant. Additionally, tenants with
-// expired cache entries are re-loaded to keep configuration fresh.
+// Unknown tenants trigger a lazy-load via the shared TenantLoader. Additionally,
+// tenants with expired cache entries are re-loaded to keep configuration fresh.
 func (c *MultiTenantConsumer) ensureConsumerStarted(ctx context.Context, tenantID string) {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
@@ -426,32 +430,39 @@ func (c *MultiTenantConsumer) ensureConsumerStarted(ctx context.Context, tenantI
 
 			logger.InfofCtx(ctx, "cache expired for tenant %s, re-loading from API", tenantID)
 
-			if err := c.loadTenant(ctx, tenantID); err != nil {
+			if _, err := c.loader.LoadTenant(ctx, tenantID); err != nil {
 				logger.WarnfCtx(ctx, "TTL refresh failed for tenant %s: %v", tenantID, err)
 				libOpentelemetry.HandleSpanBusinessErrorEvent(span, "TTL refresh failed", err)
 			}
 
-			// loadTenant already called ensureConsumerStarted after re-caching,
-			// so the consumer was started (or was already active). Return to avoid
-			// duplicate work.
-			return
+			// The re-load already triggered via loader; the slow path below
+			// will proceed to start the consumer if needed. Fall through.
 		}
 	}
 
 	if !known {
-		// Lazy-load unknown tenants from the API.
-		// loadTenant caches the config, marks the tenant as known, and
-		// calls ensureConsumerStarted internally to start the consumer.
+		// Lazy-load unknown tenants from the API via the shared TenantLoader.
 		logger.InfofCtx(ctx, "lazy-loading unknown tenant %s", tenantID)
 
-		if err := c.loadTenant(ctx, tenantID); err != nil {
+		if _, err := c.loader.LoadTenant(ctx, tenantID); err != nil {
 			logger.WarnfCtx(ctx, "lazy-load failed for tenant %s: %v", tenantID, err)
 			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "lazy-load failed", err)
+
+			// Tenant is not valid, nothing to start.
+			return
 		}
 
-		// Whether loadTenant succeeded or failed, return here.
-		// On success: loadTenant already started the consumer.
-		// On failure: tenant is not valid, nothing to start.
+		// LoadTenant cached the config; mark as known and fall through
+		// to the slow path to start the consumer.
+		c.mu.Lock()
+		c.knownTenants[tenantID] = true
+		c.mu.Unlock()
+	}
+
+	// HTTP-only mode: tenant is cached but no consumer goroutine needed.
+	// When RabbitMQ is not configured, the consumer operates in HTTP-only mode
+	// where it manages the tenant cache and events but does not consume from queues.
+	if c.rabbitmq == nil {
 		return
 	}
 

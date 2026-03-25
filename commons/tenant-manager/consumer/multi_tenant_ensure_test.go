@@ -11,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -29,12 +27,8 @@ func newEnsureTestConsumer(
 ) *MultiTenantConsumer {
 	t.Helper()
 
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rc.Close() })
-
 	config := newTestConfig(apiURL)
-	consumer, err := NewMultiTenantConsumerWithError(dummyRabbitMQManager(), rc, config, testutil.NewMockLogger())
+	consumer, err := NewMultiTenantConsumerWithError(config, testutil.NewMockLogger(), WithRabbitMQ(dummyRabbitMQManager()))
 	require.NoError(t, err)
 
 	// Simulate Run() having set parentCtx.
@@ -62,12 +56,12 @@ func TestEnsureConsumerStarted_UnknownTenant_LazyLoads(t *testing.T) {
 	ctx := context.Background()
 
 	// Tenant is NOT in knownTenants -- ensureConsumerStarted
-	// should trigger a lazy-load via loadTenant instead of rejecting.
+	// should trigger a lazy-load via TenantLoader instead of rejecting.
 	consumer.ensureConsumerStarted(ctx, tenantID)
 
-	// Verify: loadTenant was called (HTTP request made to API)
+	// Verify: TenantLoader was called (HTTP request made to API)
 	assert.Equal(t, int64(1), requestCount.Load(),
-		"ensureConsumerStarted should call loadTenant (1 HTTP request)")
+		"ensureConsumerStarted should call TenantLoader (1 HTTP request)")
 
 	// Verify: tenant is now known
 	consumer.mu.RLock()
@@ -80,7 +74,7 @@ func TestEnsureConsumerStarted_UnknownTenant_LazyLoads(t *testing.T) {
 	assert.True(t, cached, "tenant should be in cache after lazy-load")
 
 	if cached && entry != nil {
-		assert.Equal(t, tenantID, entry.config.ID, "cached config ID should match")
+		assert.Equal(t, tenantID, entry.Config.ID, "cached config ID should match")
 	}
 }
 
@@ -160,7 +154,7 @@ func TestEnsureConsumerStarted_ExpiredTenant_Reloads(t *testing.T) {
 	entry, cached := consumer.cache.Get(tenantID)
 	assert.True(t, cached, "tenant should be re-cached after TTL refresh")
 	require.NotNil(t, entry, "cache entry should not be nil")
-	assert.Equal(t, tenantID, entry.config.ID, "re-cached config should have correct ID")
+	assert.Equal(t, tenantID, entry.Config.ID, "re-cached config should have correct ID")
 }
 
 func TestEnsureConsumerStarted_KnownTenant_NoLazyLoad(t *testing.T) {

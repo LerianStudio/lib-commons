@@ -2,23 +2,21 @@
 // Use of this source code is governed by the Elastic License 2.0
 // that can be found in the LICENSE file.
 
-package consumer
+package event
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/event"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
 )
 
 // handleTenantCreated is a no-op: new tenants are lazy-loaded on first request.
-func (c *MultiTenantConsumer) handleTenantCreated(
+func (d *EventDispatcher) handleTenantCreated(
 	ctx context.Context,
-	evt event.TenantLifecycleEvent,
+	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
 	logger.InfofCtx(ctx, "tenant.created received tenant=%s: no-op (lazy-load on first request)", evt.TenantID)
@@ -26,14 +24,14 @@ func (c *MultiTenantConsumer) handleTenantCreated(
 }
 
 // handleTenantActivated touches the TTL for a cached tenant, keeping it fresh.
-func (c *MultiTenantConsumer) handleTenantActivated(
+func (d *EventDispatcher) handleTenantActivated(
 	ctx context.Context,
-	evt event.TenantLifecycleEvent,
+	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
-	ttl := c.resolveCacheTTL()
+	ttl := d.resolveCacheTTL()
 
-	touched := c.cache.Touch(evt.TenantID, ttl)
+	touched := d.cache.Touch(evt.TenantID, ttl)
 	if touched {
 		logger.InfofCtx(ctx, "tenant.activated: refreshed TTL for tenant=%s", evt.TenantID)
 	} else {
@@ -44,38 +42,38 @@ func (c *MultiTenantConsumer) handleTenantActivated(
 }
 
 // handleTenantSuspended removes the tenant from cache and closes all pools.
-func (c *MultiTenantConsumer) handleTenantSuspended(
+func (d *EventDispatcher) handleTenantSuspended(
 	ctx context.Context,
-	evt event.TenantLifecycleEvent,
+	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
 	logger.InfofCtx(ctx, "tenant.suspended: evicting tenant=%s", evt.TenantID)
-	c.closeTenantConnections(ctx, evt.TenantID, logger)
+	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
 }
 
 // handleTenantDeleted removes the tenant from cache and closes all pools.
-func (c *MultiTenantConsumer) handleTenantDeleted(
+func (d *EventDispatcher) handleTenantDeleted(
 	ctx context.Context,
-	evt event.TenantLifecycleEvent,
+	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
 	logger.InfofCtx(ctx, "tenant.deleted: evicting tenant=%s", evt.TenantID)
-	c.closeTenantConnections(ctx, evt.TenantID, logger)
+	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
 }
 
 // handleTenantUpdated touches the TTL for a cached tenant.
-func (c *MultiTenantConsumer) handleTenantUpdated(
+func (d *EventDispatcher) handleTenantUpdated(
 	ctx context.Context,
-	evt event.TenantLifecycleEvent,
+	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
-	ttl := c.resolveCacheTTL()
+	ttl := d.resolveCacheTTL()
 
-	touched := c.cache.Touch(evt.TenantID, ttl)
+	touched := d.cache.Touch(evt.TenantID, ttl)
 	if touched {
 		logger.InfofCtx(ctx, "tenant.updated: refreshed TTL for tenant=%s", evt.TenantID)
 	} else {
@@ -86,14 +84,14 @@ func (c *MultiTenantConsumer) handleTenantUpdated(
 }
 
 // handleServiceAssociated adds the tenant to cache with a minimal config built
-// from the event payload, marks it as known, and starts a consumer goroutine.
+// from the event payload and invokes the onTenantAdded callback.
 // Actual DB connections are created lazily when the first request arrives.
-func (c *MultiTenantConsumer) handleServiceAssociated(
+func (d *EventDispatcher) handleServiceAssociated(
 	ctx context.Context,
-	evt event.TenantLifecycleEvent,
+	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
-	var payload event.ServiceAssociatedPayload
+	var payload ServiceAssociatedPayload
 	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
 		return fmt.Errorf("handleServiceAssociated: unmarshal payload: %w", err)
 	}
@@ -117,35 +115,8 @@ func (c *MultiTenantConsumer) handleServiceAssociated(
 		}
 	}
 
-	// Populate Databases from secret_paths (modules with their secret paths).
-	// secret_paths carry paths to Secrets Manager, not actual credentials.
-	// The connection manager resolves credentials lazily via pmClient.GetTenantConfig().
-	// We store the module entry so the config is not nil when checked.
-	if len(payload.SecretPaths) > 0 {
-		config.Databases = make(map[string]core.DatabaseConfig, len(payload.SecretPaths))
-
-		for module, paths := range payload.SecretPaths {
-			dbConfig := core.DatabaseConfig{}
-
-			if pgRW, ok := paths["postgresql_rw"]; ok {
-				dbConfig.PostgreSQL = &core.PostgreSQLConfig{
-					Host: pgRW, // placeholder: secret path, resolved later
-				}
-			}
-
-			if pgRO, ok := paths["postgresql_ro"]; ok {
-				dbConfig.PostgreSQLReplica = &core.PostgreSQLConfig{
-					Host: pgRO, // placeholder: secret path, resolved later
-				}
-			}
-
-			if _, ok := paths["mongodb"]; ok {
-				dbConfig.MongoDB = &core.MongoDBConfig{}
-			}
-
-			config.Databases[module] = dbConfig
-		}
-	}
+	// Populate Databases from secret_paths
+	config.Databases = buildDatabasesFromSecretPaths(payload.SecretPaths)
 
 	// Populate Messaging from payload
 	if payload.MessagingConfig != nil && payload.MessagingConfig.RabbitMQSecretPath != "" {
@@ -157,69 +128,68 @@ func (c *MultiTenantConsumer) handleServiceAssociated(
 		}
 	}
 
-	ttl := c.resolveCacheTTL()
-	c.cache.Set(evt.TenantID, config, ttl)
+	ttl := d.resolveCacheTTL()
+	d.cache.Set(evt.TenantID, config, ttl)
 
-	c.mu.Lock()
-	c.knownTenants[evt.TenantID] = true
-	c.mu.Unlock()
-
-	c.ensureConsumerStarted(ctx, evt.TenantID)
+	// Notify consumer to start goroutine
+	if d.onTenantAdded != nil {
+		d.onTenantAdded(ctx, evt.TenantID)
+	}
 
 	return nil
 }
 
 // handleServiceDisassociated removes the tenant from cache and closes all pools.
-func (c *MultiTenantConsumer) handleServiceDisassociated(
+func (d *EventDispatcher) handleServiceDisassociated(
 	ctx context.Context,
-	evt event.TenantLifecycleEvent,
+	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
 	logger.InfofCtx(ctx, "tenant.service.disassociated: evicting tenant=%s", evt.TenantID)
-	c.closeTenantConnections(ctx, evt.TenantID, logger)
+	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
 }
 
 // handleServiceSuspended removes the tenant from cache and closes all pools.
-func (c *MultiTenantConsumer) handleServiceSuspended(
+func (d *EventDispatcher) handleServiceSuspended(
 	ctx context.Context,
-	evt event.TenantLifecycleEvent,
+	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
 	logger.InfofCtx(ctx, "tenant.service.suspended: evicting tenant=%s", evt.TenantID)
-	c.closeTenantConnections(ctx, evt.TenantID, logger)
+	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
 }
 
 // handleServicePurged removes the tenant from cache and closes all pools.
-func (c *MultiTenantConsumer) handleServicePurged(
+func (d *EventDispatcher) handleServicePurged(
 	ctx context.Context,
-	evt event.TenantLifecycleEvent,
+	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
 	logger.InfofCtx(ctx, "tenant.service.purged: evicting tenant=%s", evt.TenantID)
-	c.closeTenantConnections(ctx, evt.TenantID, logger)
+	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
 }
 
-// handleServiceReactivated re-adds the tenant to cache and starts a consumer.
+// handleServiceReactivated re-adds the tenant to cache and invokes the onTenantAdded callback.
 // A random jitter (0-5s) is applied before rebuilding to prevent thundering herd.
-func (c *MultiTenantConsumer) handleServiceReactivated(
+func (d *EventDispatcher) handleServiceReactivated(
 	ctx context.Context,
-	evt event.TenantLifecycleEvent,
+	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
-	var payload event.ServiceReactivatedPayload
+	var payload ServiceReactivatedPayload
 	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
 		return fmt.Errorf("handleServiceReactivated: unmarshal payload: %w", err)
 	}
 
 	logger.InfofCtx(ctx, "tenant.service.reactivated: re-adding tenant=%s with jitter", evt.TenantID)
 
-	c.applyJitter(ctx)
+	d.applyJitter(ctx)
 
 	// Build TenantConfig from payload with connection settings and databases
 	config := &core.TenantConfig{
@@ -237,41 +207,16 @@ func (c *MultiTenantConsumer) handleServiceReactivated(
 		}
 	}
 
-	// Populate Databases from secret_paths (same pattern as handleServiceAssociated)
-	if len(payload.SecretPaths) > 0 {
-		config.Databases = make(map[string]core.DatabaseConfig, len(payload.SecretPaths))
+	// Populate Databases from secret_paths
+	config.Databases = buildDatabasesFromSecretPaths(payload.SecretPaths)
 
-		for module, paths := range payload.SecretPaths {
-			dbConfig := core.DatabaseConfig{}
+	ttl := d.resolveCacheTTL()
+	d.cache.Set(evt.TenantID, config, ttl)
 
-			if pgRW, ok := paths["postgresql_rw"]; ok {
-				dbConfig.PostgreSQL = &core.PostgreSQLConfig{
-					Host: pgRW,
-				}
-			}
-
-			if pgRO, ok := paths["postgresql_ro"]; ok {
-				dbConfig.PostgreSQLReplica = &core.PostgreSQLConfig{
-					Host: pgRO,
-				}
-			}
-
-			if _, ok := paths["mongodb"]; ok {
-				dbConfig.MongoDB = &core.MongoDBConfig{}
-			}
-
-			config.Databases[module] = dbConfig
-		}
+	// Notify consumer to start goroutine
+	if d.onTenantAdded != nil {
+		d.onTenantAdded(ctx, evt.TenantID)
 	}
-
-	ttl := c.resolveCacheTTL()
-	c.cache.Set(evt.TenantID, config, ttl)
-
-	c.mu.Lock()
-	c.knownTenants[evt.TenantID] = true
-	c.mu.Unlock()
-
-	c.ensureConsumerStarted(ctx, evt.TenantID)
 
 	return nil
 }
@@ -281,25 +226,30 @@ func (c *MultiTenantConsumer) handleServiceReactivated(
 // Unlike other events that rely on lazy-load, credential rotation requires
 // immediate reconnection to avoid failed queries between the event and the
 // next inbound request.
-func (c *MultiTenantConsumer) handleCredentialsRotated(
+func (d *EventDispatcher) handleCredentialsRotated(
 	ctx context.Context,
-	evt event.TenantLifecycleEvent,
+	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
 	logger.InfofCtx(ctx, "tenant.credentials.rotated: closing pools for tenant=%s", evt.TenantID)
 
 	// Close existing pools and remove from cache
-	c.closeTenantConnections(ctx, evt.TenantID, logger)
+	d.removeTenant(ctx, evt.TenantID, logger)
 
 	// Apply jitter to prevent thundering herd when multiple pods react simultaneously
-	c.applyJitter(ctx)
+	d.applyJitter(ctx)
 
 	// Eagerly reload tenant config from tenant-manager /connections endpoint.
 	// This fetches new credentials from Secrets Manager and rebuilds pools
 	// immediately, avoiding a window of failed queries.
-	if err := c.loadTenant(ctx, evt.TenantID); err != nil {
+	if _, err := d.loader.LoadTenant(ctx, evt.TenantID); err != nil {
 		logger.WarnfCtx(ctx, "tenant.credentials.rotated: eager reload failed for tenant=%s (will retry on next request): %v", evt.TenantID, err)
 		return nil // non-fatal: next request will trigger lazy-load as fallback
+	}
+
+	// LoadTenant cached the config; notify consumer to start goroutine.
+	if d.onTenantAdded != nil {
+		d.onTenantAdded(ctx, evt.TenantID)
 	}
 
 	logger.InfofCtx(ctx, "tenant.credentials.rotated: tenant=%s reconnected with new credentials", evt.TenantID)
@@ -309,12 +259,12 @@ func (c *MultiTenantConsumer) handleCredentialsRotated(
 
 // handleConnectionsUpdated applies new pool settings from the event payload.
 // If the postgres manager is set, it delegates to ApplyConnectionSettings.
-func (c *MultiTenantConsumer) handleConnectionsUpdated(
+func (d *EventDispatcher) handleConnectionsUpdated(
 	ctx context.Context,
-	evt event.TenantLifecycleEvent,
+	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
-	var payload event.ConnectionsUpdatedPayload
+	var payload ConnectionsUpdatedPayload
 	if err := json.Unmarshal(evt.Payload, &payload); err != nil {
 		return fmt.Errorf("handleConnectionsUpdated: unmarshal payload: %w", err)
 	}
@@ -322,33 +272,10 @@ func (c *MultiTenantConsumer) handleConnectionsUpdated(
 	logger.InfofCtx(ctx, "tenant.connections.updated: tenant=%s module=%s max_open=%d max_idle=%d",
 		evt.TenantID, payload.Module, payload.MaxOpenConns, payload.MaxIdleConns)
 
-	if c.postgres != nil {
-		// Build a TenantConfig with the updated settings for ApplyConnectionSettings
+	if d.postgres != nil {
 		config := buildConfigFromConnectionsPayload(evt.TenantID, payload)
-		c.postgres.ApplyConnectionSettings(evt.TenantID, config)
+		d.postgres.ApplyConnectionSettings(evt.TenantID, config)
 	}
 
 	return nil
-}
-
-// buildConfigFromConnectionsPayload creates a minimal TenantConfig with connection
-// settings from a ConnectionsUpdatedPayload, suitable for ApplyConnectionSettings.
-func buildConfigFromConnectionsPayload(tenantID string, payload event.ConnectionsUpdatedPayload) *core.TenantConfig {
-	return &core.TenantConfig{
-		ID: tenantID,
-		ConnectionSettings: &core.ConnectionSettings{
-			MaxOpenConns:     payload.MaxOpenConns,
-			MaxIdleConns:     payload.MaxIdleConns,
-			StatementTimeout: payload.StatementTimeout,
-		},
-	}
-}
-
-// resolveCacheTTL returns the configured tenant cache TTL or the default.
-func (c *MultiTenantConsumer) resolveCacheTTL() time.Duration {
-	if c.config.TenantCacheTTL > 0 {
-		return c.config.TenantCacheTTL
-	}
-
-	return DefaultTenantCacheTTL
 }

@@ -385,3 +385,24 @@ func TestNewTenantEventListener_UsesLogInterface(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, listener)
 }
+
+// --------------------------------------------------------------------------
+// WithService option
+// --------------------------------------------------------------------------
+
+func TestWithService_SetsServiceName(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	t.Cleanup(func() { client.Close() })
+
+	handler := func(_ context.Context, _ TenantLifecycleEvent) error { return nil }
+
+	listener, err := NewTenantEventListener(client, handler, WithService("my-service"))
+
+	require.NoError(t, err)
+	require.NotNil(t, listener)
+	assert.Equal(t, "my-service", listener.service, "service name should be set via WithService")
+}

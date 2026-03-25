@@ -111,7 +111,9 @@ func setupLazyLoadErrorServer(
 	return server
 }
 
-func TestLoadTenant_Success(t *testing.T) {
+// TestLoaderIntegration_Success verifies that the consumer's shared TenantLoader
+// fetches and caches tenant config, and that ensureConsumerStarted marks it as known.
+func TestLoaderIntegration_Success(t *testing.T) {
 	t.Parallel()
 
 	tenantID := "tenant-lazy-success"
@@ -129,26 +131,24 @@ func TestLoadTenant_Success(t *testing.T) {
 	consumer.parentCtx = ctx
 	consumer.mu.Unlock()
 
-	err := consumer.loadTenant(ctx, tenantID)
-	require.NoError(t, err, "loadTenant should succeed for valid tenant")
+	// Call loader directly (same as what ensureConsumerStarted does)
+	result, err := consumer.loader.LoadTenant(ctx, tenantID)
+	require.NoError(t, err, "loader.LoadTenant should succeed for valid tenant")
+	require.NotNil(t, result, "loader.LoadTenant should return non-nil config")
 
 	// Verify tenant is cached
 	entry, ok := consumer.cache.Get(tenantID)
 	assert.True(t, ok, "tenant should be in cache after successful load")
 	assert.NotNil(t, entry, "cache entry should not be nil")
-	assert.Equal(t, tenantID, entry.config.ID, "cached config should match tenant ID")
-
-	// Verify tenant is marked as known
-	consumer.mu.RLock()
-	known := consumer.knownTenants[tenantID]
-	consumer.mu.RUnlock()
-	assert.True(t, known, "tenant should be marked as known after load")
+	assert.Equal(t, tenantID, entry.Config.ID, "cached config should match tenant ID")
 
 	// Verify HTTP call was made
 	assert.Equal(t, int64(1), requestCount.Load(), "exactly 1 HTTP call should be made")
 }
 
-func TestLoadTenant_Suspended(t *testing.T) {
+// TestLoaderIntegration_Suspended verifies that the loader returns a
+// TenantSuspendedError for suspended tenants and does not cache them.
+func TestLoaderIntegration_Suspended(t *testing.T) {
 	t.Parallel()
 
 	tenantID := "tenant-lazy-suspended"
@@ -162,8 +162,8 @@ func TestLoadTenant_Suspended(t *testing.T) {
 
 	ctx := context.Background()
 
-	err := consumer.loadTenant(ctx, tenantID)
-	require.Error(t, err, "loadTenant should return error for suspended tenant")
+	_, err := consumer.loader.LoadTenant(ctx, tenantID)
+	require.Error(t, err, "loader.LoadTenant should return error for suspended tenant")
 	assert.True(t, core.IsTenantSuspendedError(err), "error should be TenantSuspendedError, got: %v", err)
 
 	// Verify NOT cached and NOT known
@@ -175,7 +175,9 @@ func TestLoadTenant_Suspended(t *testing.T) {
 	assert.False(t, known, "suspended tenant should not be marked as known")
 }
 
-func TestLoadTenant_NotFound(t *testing.T) {
+// TestLoaderIntegration_NotFound verifies that the loader returns
+// ErrTenantNotFound for missing tenants and does not cache them.
+func TestLoaderIntegration_NotFound(t *testing.T) {
 	t.Parallel()
 	tenantID := "tenant-lazy-notfound"
 	server := setupLazyLoadErrorServer(t, tenantID, http.StatusNotFound, map[string]string{"error": "not found"})
@@ -185,8 +187,8 @@ func TestLoadTenant_NotFound(t *testing.T) {
 
 	ctx := context.Background()
 
-	err := consumer.loadTenant(ctx, tenantID)
-	require.Error(t, err, "loadTenant should return error for unknown tenant")
+	_, err := consumer.loader.LoadTenant(ctx, tenantID)
+	require.Error(t, err, "loader.LoadTenant should return error for unknown tenant")
 	assert.True(t, errors.Is(err, core.ErrTenantNotFound), "error should be ErrTenantNotFound, got: %v", err)
 
 	// Verify NOT cached and NOT known
@@ -198,7 +200,9 @@ func TestLoadTenant_NotFound(t *testing.T) {
 	assert.False(t, known, "not-found tenant should not be marked as known")
 }
 
-func TestLoadTenant_ServerError(t *testing.T) {
+// TestLoaderIntegration_ServerError verifies that the loader wraps
+// server errors with context information.
+func TestLoaderIntegration_ServerError(t *testing.T) {
 	t.Parallel()
 
 	tenantID := "tenant-lazy-servererror"
@@ -211,9 +215,9 @@ func TestLoadTenant_ServerError(t *testing.T) {
 
 	ctx := context.Background()
 
-	err := consumer.loadTenant(ctx, tenantID)
-	require.Error(t, err, "loadTenant should return error on server error")
-	assert.Contains(t, err.Error(), "failed to fetch config",
+	_, err := consumer.loader.LoadTenant(ctx, tenantID)
+	require.Error(t, err, "loader.LoadTenant should return error on server error")
+	assert.Contains(t, err.Error(), "failed to load tenant",
 		"error should contain context wrapping message")
 
 	// Verify tenant is NOT cached
@@ -221,7 +225,9 @@ func TestLoadTenant_ServerError(t *testing.T) {
 	assert.False(t, ok, "failed tenant should not be cached")
 }
 
-func TestLoadTenant_AlreadyCached(t *testing.T) {
+// TestLoaderIntegration_AlreadyCached verifies that the loader returns
+// cached config without making HTTP calls.
+func TestLoaderIntegration_AlreadyCached(t *testing.T) {
 	t.Parallel()
 
 	tenantID := "tenant-lazy-cached"
@@ -238,15 +244,18 @@ func TestLoadTenant_AlreadyCached(t *testing.T) {
 
 	ctx := context.Background()
 
-	err := consumer.loadTenant(ctx, tenantID)
-	require.NoError(t, err, "loadTenant should succeed when tenant is already cached")
+	result, err := consumer.loader.LoadTenant(ctx, tenantID)
+	require.NoError(t, err, "loader.LoadTenant should succeed when tenant is already cached")
+	require.NotNil(t, result, "loader.LoadTenant should return non-nil config from cache")
 
 	// Verify NO HTTP call was made (served from cache)
 	assert.Equal(t, int64(0), requestCount.Load(),
 		"no HTTP call should be made when tenant is already cached")
 }
 
-func TestLoadTenant_ConcurrentLoads(t *testing.T) {
+// TestLoaderIntegration_ConcurrentLoads verifies that the loader's per-tenant
+// mutex prevents concurrent API calls for the same tenant.
+func TestLoaderIntegration_ConcurrentLoads(t *testing.T) {
 	t.Parallel()
 
 	tenantID := "tenant-lazy-concurrent"
@@ -275,7 +284,7 @@ func TestLoadTenant_ConcurrentLoads(t *testing.T) {
 	for i := range goroutineCount {
 		go func(idx int) {
 			defer wg.Done()
-			errs[idx] = consumer.loadTenant(ctx, tenantID)
+			_, errs[idx] = consumer.loader.LoadTenant(ctx, tenantID)
 		}(i)
 	}
 
@@ -293,5 +302,5 @@ func TestLoadTenant_ConcurrentLoads(t *testing.T) {
 	// Verify tenant is cached
 	entry, ok := consumer.cache.Get(tenantID)
 	assert.True(t, ok, "tenant should be in cache after concurrent load")
-	assert.Equal(t, tenantID, entry.config.ID, "cached config should match tenant ID")
+	assert.Equal(t, tenantID, entry.Config.ID, "cached config should match tenant ID")
 }

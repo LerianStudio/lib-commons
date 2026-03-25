@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Lerian Studio. All rights reserved.
+// Use of this source code is governed by the Elastic License 2.0
+// that can be found in the LICENSE file.
+
 // Package consumer provides multi-tenant message queue consumption management.
 package consumer
 
@@ -9,7 +13,6 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
-	"github.com/redis/go-redis/v9"
 
 	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
 	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
@@ -20,6 +23,7 @@ import (
 	tmmongo "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/postgres"
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/rabbitmq"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/tenantcache"
 )
 
 // HandlerFunc is a function that processes messages from a queue.
@@ -118,9 +122,26 @@ func WithMongoManager(m *tmmongo.Manager) Option {
 	return func(c *MultiTenantConsumer) { c.mongo = m }
 }
 
+// WithRabbitMQ sets the RabbitMQ Manager on the consumer.
+// When set, the consumer can register queue handlers and spawn per-tenant
+// consumer goroutines. When not set (HTTP-only mode), the consumer still
+// manages the tenant cache and events but Register() returns an error and
+// ensureConsumerStarted skips goroutine spawning.
+func WithRabbitMQ(r *tmrabbitmq.Manager) Option {
+	return func(c *MultiTenantConsumer) { c.rabbitmq = r }
+}
+
+// WithEventDispatcher injects an externally-created EventDispatcher.
+// When set, the consumer uses this dispatcher instead of building one internally.
+// The dispatcher handles cache operations, infrastructure teardown, and notifies
+// the consumer via callbacks (onTenantAdded/onTenantRemoved).
+func WithEventDispatcher(d *event.EventDispatcher) Option {
+	return func(c *MultiTenantConsumer) { c.dispatcher = d }
+}
+
 // MultiTenantConsumer manages message consumption across multiple tenant vhosts.
-// It subscribes to tenant lifecycle events via Redis Pub/Sub and starts consumer
-// goroutines lazily on first request or event.
+// It receives tenant lifecycle events via an externally-managed EventDispatcher
+// and starts consumer goroutines lazily on first request or event.
 type MultiTenantConsumer struct {
 	rabbitmq     *tmrabbitmq.Manager
 	pmClient     *client.Client // Tenant Manager HTTP API client (primary source of truth)
@@ -144,11 +165,9 @@ type MultiTenantConsumer struct {
 	// Key: tenantID, Value: *sync.Mutex
 	consumerLocks sync.Map
 
-	// lazyLoadLocks provides per-tenant mutexes for lazy-load serialisation.
-	// Separate from consumerLocks to avoid deadlock: loadTenant holds a lazyLoadLock
-	// and then calls ensureConsumerStarted which acquires a consumerLock.
-	// Key: tenantID, Value: *sync.Mutex
-	lazyLoadLocks sync.Map
+	// loader fetches and caches tenant configurations from the tenant-manager API.
+	// It manages its own per-tenant mutexes to prevent concurrent API calls.
+	loader *tenantcache.TenantLoader
 
 	// retryState holds per-tenant retry counters for connection failure resilience.
 	// Key: tenantID, Value: *retryStateEntry
@@ -158,48 +177,35 @@ type MultiTenantConsumer struct {
 	parentCtx context.Context
 
 	// cache is the process-local tenant config cache with TTL-based eviction.
-	// Used by loadTenant to avoid redundant API calls for recently-loaded tenants.
-	cache *tenantCache
+	// Used by the TenantLoader to avoid redundant API calls for recently-loaded tenants.
+	cache *tenantcache.TenantCache
 
-	// redisClient is the Redis client for Pub/Sub event subscription (required).
-	redisClient redis.UniversalClient
-
-	// eventListener subscribes to tenant lifecycle events via Redis Pub/Sub.
-	// Created in Run().
-	eventListener *event.TenantEventListener
+	// dispatcher handles lifecycle events (cache, infra teardown, callbacks).
+	// Injected via WithEventDispatcher or built internally by the constructor.
+	// The consumer hooks into it via callbacks to manage knownTenants and
+	// tenant goroutines.
+	dispatcher *event.EventDispatcher
 }
 
 // NewMultiTenantConsumerWithError creates a new MultiTenantConsumer.
 // Parameters:
-//   - rabbitmq: RabbitMQ connection manager for tenant vhosts (must not be nil)
-//   - redisClient: Redis client for event-driven tenant discovery (must not be nil)
 //   - config: Consumer configuration (MultiTenantURL and Service are required)
 //   - logger: Logger for operational logging
-//   - opts: Optional configuration options (e.g., WithPostgresManager, WithMongoManager)
+//   - opts: Optional configuration options (e.g., WithRabbitMQ, WithPostgresManager,
+//     WithMongoManager, WithEventDispatcher)
+//
+// RabbitMQ is optional. When provided via WithRabbitMQ(), the consumer can register
+// queue handlers and spawn per-tenant consumer goroutines. When not set (HTTP-only
+// mode), Register() returns an error and ensureConsumerStarted skips goroutine spawning.
 //
 // The tenant-manager HTTP API is the single source of truth for tenant discovery.
 // MultiTenantURL and Service must be set in config.
-// Returns an error if rabbitmq or redisClient is nil, or if MultiTenantURL/Service are not configured.
+// Returns an error if MultiTenantURL/Service are not configured.
 func NewMultiTenantConsumerWithError(
-	rabbitmq *tmrabbitmq.Manager,
-	redisClient redis.UniversalClient,
 	config MultiTenantConfig,
 	logger libLog.Logger,
 	opts ...Option,
 ) (*MultiTenantConsumer, error) {
-	if rabbitmq == nil {
-		return nil, errors.New("consumer.NewMultiTenantConsumerWithError: rabbitmq must not be nil")
-	}
-
-	if redisClient == nil {
-		return nil, errors.New("consumer.NewMultiTenantConsumerWithError: redisClient must not be nil")
-	}
-
-	// Reject typed-nil (interface wrapping a nil pointer).
-	if core.IsNilInterface(redisClient) {
-		return nil, errors.New("consumer.NewMultiTenantConsumerWithError: redisClient must not be nil (received typed-nil interface)")
-	}
-
 	if config.MultiTenantURL == "" {
 		return nil, errors.New("consumer.NewMultiTenantConsumerWithError: MultiTenantURL must not be empty (tenant-manager API is required)")
 	}
@@ -227,14 +233,12 @@ func NewMultiTenantConsumerWithError(
 	}
 
 	consumer := &MultiTenantConsumer{
-		rabbitmq:     rabbitmq,
-		redisClient:  redisClient,
 		handlers:     make(map[string]HandlerFunc),
 		tenants:      make(map[string]context.CancelFunc),
 		knownTenants: make(map[string]bool),
 		config:       config,
 		logger:       logcompat.New(logger),
-		cache:        newTenantCache(),
+		cache:        tenantcache.NewTenantCache(),
 	}
 
 	// Apply optional configurations
@@ -262,6 +266,19 @@ func NewMultiTenantConsumerWithError(
 
 	consumer.pmClient = pmClient
 
+	// Create shared TenantLoader for fetch-and-cache operations.
+	cacheTTL := config.TenantCacheTTL
+	if cacheTTL <= 0 {
+		cacheTTL = DefaultTenantCacheTTL
+	}
+
+	consumer.loader = tenantcache.NewTenantLoader(pmClient, consumer.cache, config.Service, cacheTTL, consumer.logger.Base())
+
+	// Only build the dispatcher internally if one was not injected via WithEventDispatcher.
+	if consumer.dispatcher == nil {
+		consumer.dispatcher = consumer.buildEventDispatcher(cacheTTL)
+	}
+
 	if config.WorkersPerQueue > 0 {
 		consumer.logger.Base().Log(context.Background(), libLog.LevelWarn,
 			"WorkersPerQueue is deprecated and has no effect; the field is reserved for future use",
@@ -278,8 +295,14 @@ func NewMultiTenantConsumerWithError(
 // has been called will only take effect for tenants whose consumers are spawned after
 // the registration; already-running tenant consumers will NOT pick up the new handler.
 //
-// Returns an error if handler is nil.
+// Returns an error if handler is nil or if RabbitMQ manager is not set.
+// RabbitMQ is required for queue consumption; use WithRabbitMQ() option when creating
+// the consumer.
 func (c *MultiTenantConsumer) Register(queueName string, handler HandlerFunc) error {
+	if c.rabbitmq == nil {
+		return errors.New("consumer.Register: RabbitMQ manager is required for queue consumption; use WithRabbitMQ() option")
+	}
+
 	if handler == nil {
 		return fmt.Errorf("consumer.Register: queue %q: %w", queueName, core.ErrNilHandlerFunc)
 	}
@@ -294,8 +317,8 @@ func (c *MultiTenantConsumer) Register(queueName string, handler HandlerFunc) er
 }
 
 // Run starts the multi-tenant consumer in event-driven mode.
-// It subscribes to tenant lifecycle events via Redis Pub/Sub and starts with an empty
-// tenant map. Tenants are loaded lazily on first request or event.
+// The event listener is managed externally; Run() stores the parent context
+// and makes the consumer ready to receive events and lazy-load tenants.
 func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
@@ -315,23 +338,7 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	c.parentCtx = ctx
 	c.mu.Unlock()
 
-	logger.InfoCtx(ctx, "starting multi-tenant consumer in event-driven mode")
-
-	listener, err := event.NewTenantEventListener(
-		c.redisClient,
-		c.handleLifecycleEvent,
-		event.WithListenerLogger(c.logger.Base()),
-	)
-	if err != nil {
-		return fmt.Errorf("consumer.Run: failed to create event listener: %w", err)
-	}
-
-	c.eventListener = listener
-	if err := c.eventListener.Start(ctx); err != nil {
-		return fmt.Errorf("consumer.Run: failed to start event listener: %w", err)
-	}
-
-	logger.InfoCtx(ctx, "event-driven consumer ready (empty tenant map, lazy-load on first request)")
+	logger.InfoCtx(ctx, "multi-tenant consumer ready (event-driven, lazy-load on first request)")
 
 	return nil
 }
@@ -339,26 +346,10 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 // Close stops all consumer goroutines and marks the consumer as closed.
 // It also closes the pmClient to prevent goroutine leaks from its
 // InMemoryCache cleanup loop.
+// The event listener is managed externally and is NOT stopped here.
 func (c *MultiTenantConsumer) Close() error {
-	// Snapshot the event listener reference and mark closed under the lock,
-	// then release BEFORE calling Stop(). Stop() waits for the listener
-	// goroutine to finish, and that goroutine may be executing an event
-	// handler that acquires c.mu — holding the lock here would deadlock.
 	c.mu.Lock()
 	c.closed = true
-	listener := c.eventListener
-	c.mu.Unlock()
-
-	// Stop event listener outside the lock to avoid deadlock.
-	if listener != nil {
-		if err := listener.Stop(); err != nil {
-			c.logger.Warnf("failed to stop event listener: %v", err)
-		}
-	}
-
-	// Re-acquire lock for the rest of the cleanup.
-	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	// Cancel all tenant contexts
 	for tenantID, cancel := range c.tenants {
@@ -369,6 +360,7 @@ func (c *MultiTenantConsumer) Close() error {
 	// Clear the maps
 	c.tenants = make(map[string]context.CancelFunc)
 	c.knownTenants = make(map[string]bool)
+	c.mu.Unlock()
 
 	// Close pmClient to release its InMemoryCache cleanup goroutine.
 	if c.pmClient != nil {
@@ -380,6 +372,46 @@ func (c *MultiTenantConsumer) Close() error {
 	c.logger.Info("multi-tenant consumer closed")
 
 	return nil
+}
+
+// buildEventDispatcher creates the EventDispatcher with callbacks that manage
+// the consumer's internal maps (knownTenants, tenants) and goroutines.
+func (c *MultiTenantConsumer) buildEventDispatcher(cacheTTL time.Duration) *event.EventDispatcher {
+	opts := []event.DispatcherOption{
+		event.WithDispatcherLogger(c.logger.Base()),
+		event.WithCacheTTL(cacheTTL),
+		event.WithOnTenantAdded(func(ctx context.Context, tenantID string) {
+			c.mu.Lock()
+			c.knownTenants[tenantID] = true
+			c.mu.Unlock()
+
+			c.ensureConsumerStarted(ctx, tenantID)
+		}),
+		event.WithOnTenantRemoved(func(ctx context.Context, tenantID string) {
+			c.mu.Lock()
+			if cancel, ok := c.tenants[tenantID]; ok {
+				cancel()
+				delete(c.tenants, tenantID)
+			}
+
+			delete(c.knownTenants, tenantID)
+			c.mu.Unlock()
+		}),
+	}
+
+	if c.postgres != nil {
+		opts = append(opts, event.WithPostgres(c.postgres))
+	}
+
+	if c.mongo != nil {
+		opts = append(opts, event.WithMongo(c.mongo))
+	}
+
+	if c.rabbitmq != nil {
+		opts = append(opts, event.WithRabbitMQ(c.rabbitmq))
+	}
+
+	return event.NewEventDispatcher(c.cache, c.loader, c.config.Service, opts...)
 }
 
 // Stats holds statistics for the consumer.
