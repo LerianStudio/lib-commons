@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"sync"
 	"time"
 
 	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
 	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry/metrics"
 	"github.com/LerianStudio/lib-commons/v4/commons/runtime"
@@ -105,25 +105,9 @@ func (m *manager) initMetricCounters() {
 // GetOrCreate returns an existing breaker or creates one for the service.
 // If a breaker already exists for the name with a different config, ErrConfigMismatch is returned.
 func (m *manager) GetOrCreate(serviceName string, config Config) (CircuitBreaker, error) {
-	m.mu.RLock()
-	breaker, exists := m.breakers[serviceName]
-
-	if exists {
-		storedCfg := m.configs[serviceName]
-		m.mu.RUnlock()
-
-		if storedCfg != config {
-			return nil, fmt.Errorf(
-				"%w: service %q already registered with different settings",
-				ErrConfigMismatch,
-				serviceName,
-			)
-		}
-
-		return &circuitBreaker{breaker: breaker}, nil
+	if breaker, exists, err := m.lookupBreaker(serviceName, config); exists || err != nil {
+		return breaker, err
 	}
-
-	m.mu.RUnlock()
 
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("circuit breaker config for service %s: %w", serviceName, err)
@@ -133,22 +117,13 @@ func (m *manager) GetOrCreate(serviceName string, config Config) (CircuitBreaker
 	defer m.mu.Unlock()
 
 	// Double-check after acquiring write lock
-	if breaker, exists = m.breakers[serviceName]; exists {
-		storedCfg := m.configs[serviceName]
-		if storedCfg != config {
-			return nil, fmt.Errorf(
-				"%w: service %q already registered with different settings",
-				ErrConfigMismatch,
-				serviceName,
-			)
-		}
-
-		return &circuitBreaker{breaker: breaker}, nil
+	if breaker, exists, err := m.lookupBreakerLocked(serviceName, config); exists || err != nil {
+		return breaker, err
 	}
 
 	settings := m.buildSettings(serviceName, config)
 
-	breaker = gobreaker.NewCircuitBreaker(settings)
+	breaker := gobreaker.NewCircuitBreaker(settings)
 	m.breakers[serviceName] = breaker
 	m.configs[serviceName] = config
 
@@ -287,44 +262,48 @@ func (m *manager) RegisterStateChangeListener(listener StateChangeListener) {
 	m.logger.Log(context.Background(), log.LevelDebug, "registered state change listener", log.Int("total", len(m.listeners)))
 }
 
+func (m *manager) lookupBreaker(serviceName string, config Config) (CircuitBreaker, bool, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return m.lookupBreakerLocked(serviceName, config)
+}
+
+func (m *manager) lookupBreakerLocked(serviceName string, config Config) (CircuitBreaker, bool, error) {
+	breaker, exists := m.breakers[serviceName]
+	if !exists {
+		return nil, false, nil
+	}
+
+	if err := validateStoredConfig(serviceName, m.configs[serviceName], config); err != nil {
+		return nil, true, err
+	}
+
+	return &circuitBreaker{breaker: breaker}, true, nil
+}
+
+func validateStoredConfig(serviceName string, storedCfg, requestedCfg Config) error {
+	if storedCfg == requestedCfg {
+		return nil
+	}
+
+	return fmt.Errorf(
+		"%w: service %q already registered with different settings",
+		ErrConfigMismatch,
+		serviceName,
+	)
+}
+
 // isNilLogger checks for both untyped nil and typed nil log.Logger values.
 // Mirrors the isNilListener pattern to prevent panics from typed-nil loggers.
 func isNilLogger(logger log.Logger) bool {
-	if logger == nil {
-		return true
-	}
-
-	v := reflect.ValueOf(logger)
-	if !v.IsValid() {
-		return true
-	}
-
-	switch v.Kind() {
-	case reflect.Ptr, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func, reflect.Interface:
-		return v.IsNil()
-	default:
-		return false
-	}
+	return nilcheck.Interface(logger)
 }
 
 // isNilListener checks for both untyped nil and typed nil interface values.
 // Handles all nilable kinds: pointers, slices, maps, channels, funcs, and interfaces.
 func isNilListener(listener StateChangeListener) bool {
-	if listener == nil {
-		return true
-	}
-
-	v := reflect.ValueOf(listener)
-	if !v.IsValid() {
-		return true
-	}
-
-	switch v.Kind() {
-	case reflect.Ptr, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func, reflect.Interface:
-		return v.IsNil()
-	default:
-		return false
-	}
+	return nilcheck.Interface(listener)
 }
 
 // handleStateChange processes state changes and notifies listeners
@@ -415,18 +394,11 @@ func (m *manager) buildSettings(serviceName string, config Config) gobreaker.Set
 // recordStateTransition increments the state transition counter.
 // No-op when metricsFactory is nil.
 func (m *manager) recordStateTransition(serviceName string, from, to State) {
-	if m.stateCounter == nil {
-		return
-	}
-
-	err := m.stateCounter.
-		WithLabels(map[string]string{
-			"service":    constant.SanitizeMetricLabel(serviceName),
-			"from_state": string(from),
-			"to_state":   string(to),
-		}).
-		AddOne(context.Background())
-	if err != nil {
+	if err := recordCounterWithLabels(m.stateCounter, map[string]string{
+		"service":    constant.SanitizeMetricLabel(serviceName),
+		"from_state": string(from),
+		"to_state":   string(to),
+	}); err != nil {
 		m.logger.Log(context.Background(), log.LevelWarn, "failed to record state transition metric", log.Err(err))
 	}
 }
@@ -438,13 +410,18 @@ func (m *manager) recordExecution(serviceName, result string) {
 		return
 	}
 
-	err := m.execCounter.
-		WithLabels(map[string]string{
-			"service": constant.SanitizeMetricLabel(serviceName),
-			"result":  result,
-		}).
-		AddOne(context.Background())
-	if err != nil {
+	if err := recordCounterWithLabels(m.execCounter, map[string]string{
+		"service": constant.SanitizeMetricLabel(serviceName),
+		"result":  result,
+	}); err != nil {
 		m.logger.Log(context.Background(), log.LevelWarn, "failed to record execution metric", log.Err(err))
 	}
+}
+
+func recordCounterWithLabels(counter *metrics.CounterBuilder, labels map[string]string) error {
+	if counter == nil {
+		return nil
+	}
+
+	return counter.WithLabels(labels).AddOne(context.Background())
 }
