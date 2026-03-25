@@ -9,11 +9,13 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/redis/go-redis/v9"
 
 	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
 	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/event"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
 	tmmongo "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/postgres"
@@ -26,8 +28,9 @@ type HandlerFunc func(ctx context.Context, delivery amqp.Delivery) error
 
 // MultiTenantConfig holds configuration for the MultiTenantConsumer.
 type MultiTenantConfig struct {
-	// SyncInterval is the interval between tenant list synchronizations.
-	// Default: 30 seconds
+	// SyncInterval is retained for backward config compatibility only.
+	//
+	// Deprecated: No longer used. Retained for backward config compatibility only.
 	SyncInterval time.Duration
 
 	// WorkersPerQueue is reserved for future use. It is currently not implemented
@@ -60,11 +63,9 @@ type MultiTenantConfig struct {
 	// construction. Tenant discovery uses the tenant-manager API exclusively.
 	Environment string
 
-	// DiscoveryTimeout is the maximum time allowed for the initial tenant discovery
-	// (fetching tenant IDs at startup). If zero, 500ms is used. Increase this for
-	// high-latency or loaded environments where the tenant-manager API
-	// may respond slowly; discovery is best-effort and the sync loop will retry.
-	// Default: 500ms
+	// DiscoveryTimeout is retained for backward config compatibility only.
+	//
+	// Deprecated: No longer used. Retained for backward config compatibility only.
 	DiscoveryTimeout time.Duration
 
 	// AllowInsecureHTTP permits the use of http:// (plaintext) URLs for the
@@ -79,6 +80,11 @@ type MultiTenantConfig struct {
 	// Recommended: match the MULTI_TENANT_CACHE_TTL_SEC env var from the consuming service.
 	CacheTTL time.Duration
 
+	// TenantCacheTTL is the time-to-live for tenant entries in the local cache.
+	// When an entry expires, the next request triggers a fresh lazy-load from tenant-manager.
+	// Default: 12 hours.
+	TenantCacheTTL time.Duration
+
 	// Deprecated: EagerStart is ignored. Consumers are always started eagerly.
 	// This field is retained only for backward compatibility with existing configs;
 	// setting it has no effect. It will be removed in a future major version.
@@ -91,6 +97,7 @@ func DefaultMultiTenantConfig() MultiTenantConfig {
 		SyncInterval:     30 * time.Second,
 		PrefetchCount:    10,
 		DiscoveryTimeout: 500 * time.Millisecond,
+		TenantCacheTTL:   DefaultTenantCacheTTL,
 	}
 }
 
@@ -112,15 +119,14 @@ func WithMongoManager(m *tmmongo.Manager) Option {
 }
 
 // MultiTenantConsumer manages message consumption across multiple tenant vhosts.
-// It dynamically discovers tenants via the tenant-manager API and spawns consumer goroutines.
-// Run() discovers tenants and eagerly starts consumers for all known tenants.
-// New tenants discovered during background sync are also started immediately.
+// It subscribes to tenant lifecycle events via Redis Pub/Sub and starts consumer
+// goroutines lazily on first request or event.
 type MultiTenantConsumer struct {
 	rabbitmq     *tmrabbitmq.Manager
 	pmClient     *client.Client // Tenant Manager HTTP API client (primary source of truth)
 	handlers     map[string]HandlerFunc
 	tenants      map[string]context.CancelFunc // Active tenant goroutines
-	knownTenants map[string]bool               // Discovered tenants (populated by discovery and sync)
+	knownTenants map[string]bool               // Discovered tenants (populated by events and lazy-load)
 	config       MultiTenantConfig
 	mu           sync.RWMutex
 	logger       *logcompat.Logger
@@ -138,6 +144,12 @@ type MultiTenantConsumer struct {
 	// Key: tenantID, Value: *sync.Mutex
 	consumerLocks sync.Map
 
+	// lazyLoadLocks provides per-tenant mutexes for lazy-load serialisation.
+	// Separate from consumerLocks to avoid deadlock: loadTenant holds a lazyLoadLock
+	// and then calls ensureConsumerStarted which acquires a consumerLock.
+	// Key: tenantID, Value: *sync.Mutex
+	lazyLoadLocks sync.Map
+
 	// retryState holds per-tenant retry counters for connection failure resilience.
 	// Key: tenantID, Value: *retryStateEntry
 	retryState sync.Map
@@ -145,30 +157,47 @@ type MultiTenantConsumer struct {
 	// parentCtx is the context passed to Run(), stored for use by ensureConsumerStarted.
 	parentCtx context.Context
 
-	// syncLoopCancel cancels the context used by the sync loop goroutine.
-	// Stored in Run() and called in Close() to ensure the sync loop stops
-	// even when the original context (e.g., context.Background()) is never cancelled.
-	syncLoopCancel context.CancelFunc
+	// cache is the process-local tenant config cache with TTL-based eviction.
+	// Used by loadTenant to avoid redundant API calls for recently-loaded tenants.
+	cache *tenantCache
+
+	// redisClient is the Redis client for Pub/Sub event subscription (required).
+	redisClient redis.UniversalClient
+
+	// eventListener subscribes to tenant lifecycle events via Redis Pub/Sub.
+	// Created in Run().
+	eventListener *event.TenantEventListener
 }
 
 // NewMultiTenantConsumerWithError creates a new MultiTenantConsumer.
 // Parameters:
 //   - rabbitmq: RabbitMQ connection manager for tenant vhosts (must not be nil)
+//   - redisClient: Redis client for event-driven tenant discovery (must not be nil)
 //   - config: Consumer configuration (MultiTenantURL and Service are required)
 //   - logger: Logger for operational logging
 //   - opts: Optional configuration options (e.g., WithPostgresManager, WithMongoManager)
 //
 // The tenant-manager HTTP API is the single source of truth for tenant discovery.
 // MultiTenantURL and Service must be set in config.
-// Returns an error if rabbitmq is nil or if MultiTenantURL/Service are not configured.
+// Returns an error if rabbitmq or redisClient is nil, or if MultiTenantURL/Service are not configured.
 func NewMultiTenantConsumerWithError(
 	rabbitmq *tmrabbitmq.Manager,
+	redisClient redis.UniversalClient,
 	config MultiTenantConfig,
 	logger libLog.Logger,
 	opts ...Option,
 ) (*MultiTenantConsumer, error) {
 	if rabbitmq == nil {
 		return nil, errors.New("consumer.NewMultiTenantConsumerWithError: rabbitmq must not be nil")
+	}
+
+	if redisClient == nil {
+		return nil, errors.New("consumer.NewMultiTenantConsumerWithError: redisClient must not be nil")
+	}
+
+	// Reject typed-nil (interface wrapping a nil pointer).
+	if core.IsNilInterface(redisClient) {
+		return nil, errors.New("consumer.NewMultiTenantConsumerWithError: redisClient must not be nil (received typed-nil interface)")
 	}
 
 	if config.MultiTenantURL == "" {
@@ -199,11 +228,13 @@ func NewMultiTenantConsumerWithError(
 
 	consumer := &MultiTenantConsumer{
 		rabbitmq:     rabbitmq,
+		redisClient:  redisClient,
 		handlers:     make(map[string]HandlerFunc),
 		tenants:      make(map[string]context.CancelFunc),
 		knownTenants: make(map[string]bool),
 		config:       config,
 		logger:       logcompat.New(logger),
+		cache:        newTenantCache(),
 	}
 
 	// Apply optional configurations
@@ -211,7 +242,7 @@ func NewMultiTenantConsumerWithError(
 		opt(consumer)
 	}
 
-	// Create Tenant Manager HTTP API client (required — single source of truth)
+	// Create Tenant Manager HTTP API client (required -- single source of truth)
 	clientOpts := []client.ClientOption{
 		client.WithServiceAPIKey(config.ServiceAPIKey),
 	}
@@ -262,10 +293,9 @@ func (c *MultiTenantConsumer) Register(queueName string, handler HandlerFunc) er
 	return nil
 }
 
-// Run starts the multi-tenant consumer.
-// It discovers tenants (non-blocking, soft failure), eagerly starts consumers
-// for all discovered tenants, and starts background polling for new tenants.
-// Returns nil even on discovery failure (soft failure).
+// Run starts the multi-tenant consumer in event-driven mode.
+// It subscribes to tenant lifecycle events via Redis Pub/Sub and starts with an empty
+// tenant map. Tenants are loaded lazily on first request or event.
 func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
@@ -285,29 +315,23 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	c.parentCtx = ctx
 	c.mu.Unlock()
 
-	// Discover tenants without blocking (soft failure - does not start consumers)
-	c.discoverTenants(ctx)
+	logger.InfoCtx(ctx, "starting multi-tenant consumer in event-driven mode")
 
-	// Capture count under lock to avoid concurrent read race
-	c.mu.RLock()
-	knownCount := len(c.knownTenants)
-	c.mu.RUnlock()
-
-	logger.InfofCtx(ctx, "starting multi-tenant consumer, connection_mode=eager, known_tenants=%d",
-		knownCount)
-
-	// Eager start: start consumers for all discovered tenants immediately
-	if knownCount > 0 {
-		c.eagerStartKnownTenants(ctx)
+	listener, err := event.NewTenantEventListener(
+		c.redisClient,
+		c.handleLifecycleEvent,
+		event.WithListenerLogger(c.logger.Base()),
+	)
+	if err != nil {
+		return fmt.Errorf("consumer.Run: failed to create event listener: %w", err)
 	}
 
-	// Background polling - ASYNC
-	// Create a derived context so Close() can stop the sync loop even when
-	// the caller passes a never-cancelled context (e.g., context.Background()).
-	syncCtx, syncCancel := context.WithCancel(ctx) //#nosec G118 -- cancel is stored in c.syncLoopCancel and called by Close()
-	c.syncLoopCancel = syncCancel
+	c.eventListener = listener
+	if err := c.eventListener.Start(ctx); err != nil {
+		return fmt.Errorf("consumer.Run: failed to start event listener: %w", err)
+	}
 
-	go c.syncActiveTenants(syncCtx)
+	logger.InfoCtx(ctx, "event-driven consumer ready (empty tenant map, lazy-load on first request)")
 
 	return nil
 }
@@ -321,10 +345,11 @@ func (c *MultiTenantConsumer) Close() error {
 
 	c.closed = true
 
-	// Cancel the sync loop context first, so the background polling goroutine
-	// stops before we tear down individual tenant consumers.
-	if c.syncLoopCancel != nil {
-		c.syncLoopCancel()
+	// Stop event listener if running.
+	if c.eventListener != nil {
+		if err := c.eventListener.Stop(); err != nil {
+			c.logger.Warnf("failed to stop event listener: %v", err)
+		}
 	}
 
 	// Cancel all tenant contexts
@@ -334,7 +359,6 @@ func (c *MultiTenantConsumer) Close() error {
 	}
 
 	// Clear the maps
-
 	c.tenants = make(map[string]context.CancelFunc)
 	c.knownTenants = make(map[string]bool)
 
