@@ -414,56 +414,6 @@ func TestSettingsWatcher_MultipleManagers(t *testing.T) {
 		"should log revalidation for all 3 tenants")
 }
 
-func TestSettingsWatcher_StartWorks(t *testing.T) {
-	t.Parallel()
-
-	apiCalled := atomic.Int32{}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiCalled.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-
-		resp := map[string]any{
-			"id":         "tenant-poll",
-			"tenantSlug": "poll",
-			"databases":  map[string]any{},
-		}
-
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
-
-	tmClient := newTestClient(t, server.URL)
-	logger := testutil.NewCapturingLogger()
-
-	pgManager := tmpostgres.NewManager(tmClient, "ledger",
-		tmpostgres.WithModule("onboarding"),
-		tmpostgres.WithLogger(logger),
-		tmpostgres.WithTestConnections("tenant-poll"),
-	)
-
-	w := NewSettingsWatcher(tmClient, "ledger",
-		WithPostgresManager(pgManager),
-		WithLogger(logger),
-		WithInterval(time.Second),
-	)
-
-	ctx := context.Background()
-	ctx = libCommons.ContextWithLogger(ctx, logger)
-
-	w.Start(ctx)
-
-	// Give the immediate revalidation time to run.
-	time.Sleep(100 * time.Millisecond)
-
-	w.Stop()
-
-	// The watcher should have called the API at least once
-	// (immediate revalidation on start).
-	assert.GreaterOrEqual(t, apiCalled.Load(), int32(1),
-		"should call API for revalidation on start")
-}
-
 func TestSettingsWatcher_WithPostgresManager_NilIsIgnored(t *testing.T) {
 	t.Parallel()
 

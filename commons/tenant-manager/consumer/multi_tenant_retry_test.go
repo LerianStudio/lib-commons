@@ -41,7 +41,7 @@ func TestMultiTenantConsumer_RetryState(t *testing.T) {
 			t.Parallel()
 
 			server := setupTenantManagerAPIServer(t, nil)
-			consumer := mustNewConsumer(t, dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 
 			state := consumer.getRetryState(tt.tenantID)
 			applyRetryFailures(state, tt.incrementRetries)
@@ -61,7 +61,7 @@ func TestMultiTenantConsumer_RetryStateIsolation(t *testing.T) {
 	t.Parallel()
 
 	server := setupTenantManagerAPIServer(t, nil)
-	consumer := mustNewConsumer(t, dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
+	consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 
 	applyRetryFailures(consumer.getRetryState("tenant-a"), 5)
 	_ = consumer.getRetryState("tenant-b")
@@ -77,7 +77,7 @@ func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 
 	tests := []struct {
 		name                  string
-		knownTenantIDs        []string
+		apiTenants            []*client.TenantSummary
 		startConsumerForIDs   []string
 		degradeTenantIDs      []string
 		expectedKnown         int
@@ -85,10 +85,10 @@ func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 		expectedPending       int
 		expectedDegradedCount int
 	}{
-		{name: "all_tenants_pending", knownTenantIDs: []string{"t-0", "t-1", "t-2"}, expectedKnown: 3, expectedActive: 0, expectedPending: 3, expectedDegradedCount: 0},
-		{name: "mix_of_active_and_pending", knownTenantIDs: []string{"t-0", "t-1", "t-2"}, startConsumerForIDs: []string{"t-0"}, expectedKnown: 3, expectedActive: 1, expectedPending: 2, expectedDegradedCount: 0},
-		{name: "degraded_tenant_appears_in_stats", knownTenantIDs: []string{"t-0", "t-1"}, degradeTenantIDs: []string{"t-1"}, expectedKnown: 2, expectedActive: 0, expectedPending: 2, expectedDegradedCount: 1},
-		{name: "empty_consumer_returns_zero_stats", knownTenantIDs: []string{}, expectedKnown: 0, expectedActive: 0, expectedPending: 0, expectedDegradedCount: 0},
+		{name: "all_tenants_pending", apiTenants: makeTenantSummaries(3), expectedKnown: 3, expectedActive: 0, expectedPending: 3, expectedDegradedCount: 0},
+		{name: "mix_of_active_and_pending", apiTenants: makeTenantSummaries(3), startConsumerForIDs: []string{"tenant-0000"}, expectedKnown: 3, expectedActive: 1, expectedPending: 2, expectedDegradedCount: 0},
+		{name: "degraded_tenant_appears_in_stats", apiTenants: makeTenantSummaries(2), degradeTenantIDs: []string{"tenant-0001"}, expectedKnown: 2, expectedActive: 0, expectedPending: 2, expectedDegradedCount: 1},
+		{name: "empty_consumer_returns_zero_stats", apiTenants: []*client.TenantSummary{}, expectedKnown: 0, expectedActive: 0, expectedPending: 0, expectedDegradedCount: 0},
 	}
 
 	for _, tt := range tests {
@@ -96,9 +96,9 @@ func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			server := setupTenantManagerAPIServer(t, nil)
+			server := setupTenantManagerAPIServer(t, tt.apiTenants)
 			config := newTestConfig(server.URL)
-			consumer := mustNewConsumer(t, dummyRabbitMQManager(), config, testutil.NewMockLogger())
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, testutil.NewMockLogger())
 
 			consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
 				return nil
@@ -108,13 +108,7 @@ func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 			defer cancel()
 
 			consumer.parentCtx = ctx
-
-			// Pre-populate knownTenants manually
-			consumer.mu.Lock()
-			for _, id := range tt.knownTenantIDs {
-				consumer.knownTenants[id] = true
-			}
-			consumer.mu.Unlock()
+			consumer.discoverTenants(ctx)
 
 			for _, id := range tt.startConsumerForIDs {
 				consumer.mu.Lock()
@@ -136,42 +130,4 @@ func TestMultiTenantConsumer_Stats_Enhanced(t *testing.T) {
 			consumer.Close()
 		})
 	}
-}
-
-// TestMultiTenantConsumer_Stats_Enhanced_WithAPI verifies Stats using tenant summaries from API.
-func TestMultiTenantConsumer_Stats_Enhanced_WithAPI(t *testing.T) {
-	t.Parallel()
-
-	apiTenants := []*client.TenantSummary{
-		{ID: "t-0", Name: "T0", Status: "active"},
-		{ID: "t-1", Name: "T1", Status: "active"},
-		{ID: "t-2", Name: "T2", Status: "active"},
-	}
-
-	server := setupTenantManagerAPIServer(t, apiTenants)
-	config := newTestConfig(server.URL)
-	consumer := mustNewConsumer(t, dummyRabbitMQManager(), config, testutil.NewMockLogger())
-
-	consumer.Register("test-queue", func(ctx context.Context, delivery amqp.Delivery) error {
-		return nil
-	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	consumer.parentCtx = ctx
-
-	// Pre-populate known tenants (simulating event-based discovery)
-	consumer.mu.Lock()
-	for _, ts := range apiTenants {
-		consumer.knownTenants[ts.ID] = true
-	}
-	consumer.mu.Unlock()
-
-	stats := consumer.Stats()
-	assert.Equal(t, 3, stats.KnownTenants)
-	assert.Equal(t, 0, stats.ActiveTenants)
-	assert.Equal(t, 3, stats.PendingTenants)
-
-	consumer.Close()
 }
