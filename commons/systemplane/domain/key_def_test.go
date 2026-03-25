@@ -106,6 +106,67 @@ func TestKeyDef_Validate_InvalidApplyBehavior(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidApplyBehavior)
 }
 
+func TestKeyDef_Validate_InvalidRedactPolicy(t *testing.T) {
+	t.Parallel()
+
+	kd := validKeyDef()
+	kd.RedactPolicy = RedactPolicy("bogus")
+
+	err := kd.Validate()
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidRedactPolicy)
+}
+
+func TestKeyDef_Validate_InvalidEnvVar(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		envVar string
+	}{
+		{name: "lowercase", envVar: "postgres_host"},
+		{name: "dash", envVar: "POSTGRES-HOST"},
+		{name: "leading space", envVar: " POSTGRES_HOST"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			kd := validKeyDef()
+			kd.EnvVar = tt.envVar
+
+			err := kd.Validate()
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidEnvVar)
+		})
+	}
+}
+
+func TestKeyDef_Validate_ValidEnvVar(t *testing.T) {
+	t.Parallel()
+
+	kd := validKeyDef()
+	kd.EnvVar = "POSTGRES_HOST"
+
+	require.NoError(t, kd.Validate())
+}
+
+func TestKeyDef_Validate_SecretMaskRejected(t *testing.T) {
+	t.Parallel()
+
+	kd := validKeyDef()
+	kd.Secret = true
+	kd.RedactPolicy = RedactMask
+
+	err := kd.Validate()
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidRedactPolicy)
+}
+
 func TestKeyDef_Validate_EmptyAllowedScopes(t *testing.T) {
 	t.Parallel()
 
