@@ -991,6 +991,19 @@ func (p *Manager) Close(_ context.Context) error {
 	return errors.Join(errs...)
 }
 
+// ConnectedTenantIDs returns the IDs of all tenants with active connections.
+func (p *Manager) ConnectedTenantIDs() []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	ids := make([]string, 0, len(p.connections))
+	for id := range p.connections {
+		ids = append(ids, id)
+	}
+
+	return ids
+}
+
 // CloseConnection closes the connection for a specific tenant.
 func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 	p.mu.Lock()
