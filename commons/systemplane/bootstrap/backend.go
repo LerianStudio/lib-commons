@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 
 	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/domain"
 	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/ports"
@@ -26,10 +27,56 @@ type BackendResources struct {
 // bootstrap and adapter packages.
 type BackendFactory func(ctx context.Context, cfg *BootstrapConfig) (*BackendResources, error)
 
-// backendFactories maps each supported BackendKind to its constructor.
-// Entries are registered via RegisterBackendFactory at init time by the
-// adapter packages (or by the wiring code that imports them).
-var backendFactories = map[domain.BackendKind]BackendFactory{}
+type backendRegistryState struct {
+	factories  map[domain.BackendKind]BackendFactory
+	initErrors []error
+}
+
+func newBackendRegistryState() *backendRegistryState {
+	return &backendRegistryState{factories: map[domain.BackendKind]BackendFactory{}}
+}
+
+func (s *backendRegistryState) reset() {
+	s.factories = map[domain.BackendKind]BackendFactory{}
+	s.initErrors = nil
+}
+
+func (s *backendRegistryState) recordInitError(err error) {
+	s.initErrors = append(s.initErrors, err)
+}
+
+func (s *backendRegistryState) register(kind domain.BackendKind, factory BackendFactory) error {
+	if !kind.IsValid() {
+		return fmt.Errorf("%w %q", errInvalidBackendKind, kind)
+	}
+
+	if factory == nil {
+		return errNilBackendFactory
+	}
+
+	if _, exists := s.factories[kind]; exists {
+		return fmt.Errorf("%w %q", errBackendAlreadyRegistered, kind)
+	}
+
+	s.factories[kind] = factory
+
+	return nil
+}
+
+func (s *backendRegistryState) factory(kind domain.BackendKind) (BackendFactory, bool) {
+	factory, ok := s.factories[kind]
+
+	return factory, ok
+}
+
+func (s *backendRegistryState) snapshot() (map[domain.BackendKind]BackendFactory, []error) {
+	factories := make(map[domain.BackendKind]BackendFactory, len(s.factories))
+	maps.Copy(factories, s.factories)
+
+	return factories, append([]error(nil), s.initErrors...)
+}
+
+var backendRegistry = newBackendRegistryState()
 
 var (
 	errNilBackendConfig         = errors.New("bootstrap backend: config is nil")
@@ -48,20 +95,14 @@ var (
 // errors. This function exists only for test isolation and must not be called
 // in production code.
 func ResetBackendFactories() {
-	backendFactories = map[domain.BackendKind]BackendFactory{}
-	initErrors = nil
+	backendRegistry.reset()
 }
-
-// initErrors collects errors from backend factory registrations that occur
-// during init(). These are checked lazily in NewBackendFromConfig so that
-// registration failures surface as actionable errors instead of panics.
-var initErrors []error
 
 // RecordInitError appends an error to the package-level init error list.
 // It is intended to be called from init() functions in adapter packages when
 // RegisterBackendFactory fails.
 func RecordInitError(err error) {
-	initErrors = append(initErrors, err)
+	backendRegistry.recordInitError(err)
 }
 
 // RegisterBackendFactory registers a BackendFactory for the given backend kind.
@@ -71,21 +112,7 @@ func RecordInitError(err error) {
 // Registration is single-write per backend kind. Duplicate or nil
 // registrations are rejected to preserve bootstrap integrity.
 func RegisterBackendFactory(kind domain.BackendKind, factory BackendFactory) error {
-	if !kind.IsValid() {
-		return fmt.Errorf("%w %q", errInvalidBackendKind, kind)
-	}
-
-	if factory == nil {
-		return errNilBackendFactory
-	}
-
-	if _, exists := backendFactories[kind]; exists {
-		return fmt.Errorf("%w %q", errBackendAlreadyRegistered, kind)
-	}
-
-	backendFactories[kind] = factory
-
-	return nil
+	return backendRegistry.register(kind, factory)
 }
 
 // NewBackendFromConfig creates the backend family based on the configured
@@ -95,6 +122,7 @@ func RegisterBackendFactory(kind domain.BackendKind, factory BackendFactory) err
 // The caller is responsible for calling Closer.Close when the resources are no
 // longer needed. Callers typically defer res.Closer.Close().
 func NewBackendFromConfig(ctx context.Context, cfg *BootstrapConfig) (*BackendResources, error) {
+	_, initErrors := backendRegistry.snapshot()
 	if len(initErrors) > 0 {
 		return nil, fmt.Errorf("bootstrap backend: init registration errors: %w", errors.Join(initErrors...))
 	}
@@ -109,7 +137,7 @@ func NewBackendFromConfig(ctx context.Context, cfg *BootstrapConfig) (*BackendRe
 		return nil, fmt.Errorf("bootstrap backend: %w", err)
 	}
 
-	factory, ok := backendFactories[cfg.Backend]
+	factory, ok := backendRegistry.factory(cfg.Backend)
 	if !ok {
 		return nil, fmt.Errorf("%w %q (no factory registered)", errUnsupportedBackend, cfg.Backend)
 	}
@@ -119,25 +147,33 @@ func NewBackendFromConfig(ctx context.Context, cfg *BootstrapConfig) (*BackendRe
 		return nil, err
 	}
 
-	if resources == nil {
-		return nil, errNilBackendResources
-	}
-
-	if domain.IsNilValue(resources.Store) {
-		return nil, errNilBackendStore
-	}
-
-	if domain.IsNilValue(resources.History) {
-		return nil, errNilBackendHistoryStore
-	}
-
-	if domain.IsNilValue(resources.ChangeFeed) {
-		return nil, errNilBackendChangeFeed
-	}
-
-	if domain.IsNilValue(resources.Closer) {
-		return nil, errNilBackendCloser
+	if err := validateBackendResources(resources); err != nil {
+		return nil, err
 	}
 
 	return resources, nil
+}
+
+func validateBackendResources(resources *BackendResources) error {
+	if resources == nil {
+		return errNilBackendResources
+	}
+
+	if domain.IsNilValue(resources.Store) {
+		return errNilBackendStore
+	}
+
+	if domain.IsNilValue(resources.History) {
+		return errNilBackendHistoryStore
+	}
+
+	if domain.IsNilValue(resources.ChangeFeed) {
+		return errNilBackendChangeFeed
+	}
+
+	if domain.IsNilValue(resources.Closer) {
+		return errNilBackendCloser
+	}
+
+	return nil
 }
