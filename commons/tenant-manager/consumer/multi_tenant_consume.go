@@ -174,7 +174,7 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 		if core.IsTenantSuspendedError(err) || core.IsTenantPurgedError(err) {
 			logger.WarnfCtx(ctx, "tenant %s is suspended/purged, stopping consumer: %v", tenantID, err)
 			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "tenant suspended/purged, stopping consumer", err)
-			c.evictSuspendedTenant(ctx, tenantID, logger)
+			c.closeTenantConnections(ctx, tenantID, logger)
 
 			return false
 		}
@@ -397,9 +397,8 @@ func (c *MultiTenantConsumer) resetRetryState(tenantID string) {
 // It uses double-check locking with a per-tenant mutex to guarantee exactly-once
 // consumer spawning under concurrent access.
 //
-// Consumers are only started for tenants that are known (resolved via discovery or
-// sync). Unknown tenants are rejected to prevent starting consumers for tenants
-// that have not been validated by the sync loop.
+// Unknown tenants trigger a lazy-load via loadTenant. Additionally, tenants with
+// expired cache entries are re-loaded to keep configuration fresh.
 func (c *MultiTenantConsumer) ensureConsumerStarted(ctx context.Context, tenantID string) {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
@@ -419,11 +418,40 @@ func (c *MultiTenantConsumer) ensureConsumerStarted(ctx context.Context, tenantI
 		return
 	}
 
-	// Reject unknown tenants: they haven't been discovered or validated yet.
-	// The sync loop will add them to knownTenants when they appear.
-	if !known {
-		logger.WarnfCtx(ctx, "rejecting consumer start for unknown tenant: %s (not yet resolved by sync)", tenantID)
+	// Check if cached entry is expired and trigger re-load.
+	// This keeps tenant configuration fresh without requiring a sync loop.
+	if known {
+		if expired, found := c.cache.IsExpired(tenantID); found && expired {
+			c.cache.Delete(tenantID)
 
+			logger.InfofCtx(ctx, "cache expired for tenant %s, re-loading from API", tenantID)
+
+			if err := c.loadTenant(ctx, tenantID); err != nil {
+				logger.WarnfCtx(ctx, "TTL refresh failed for tenant %s: %v", tenantID, err)
+				libOpentelemetry.HandleSpanBusinessErrorEvent(span, "TTL refresh failed", err)
+			}
+
+			// loadTenant already called ensureConsumerStarted after re-caching,
+			// so the consumer was started (or was already active). Return to avoid
+			// duplicate work.
+			return
+		}
+	}
+
+	if !known {
+		// Lazy-load unknown tenants from the API.
+		// loadTenant caches the config, marks the tenant as known, and
+		// calls ensureConsumerStarted internally to start the consumer.
+		logger.InfofCtx(ctx, "lazy-loading unknown tenant %s", tenantID)
+
+		if err := c.loadTenant(ctx, tenantID); err != nil {
+			logger.WarnfCtx(ctx, "lazy-load failed for tenant %s: %v", tenantID, err)
+			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "lazy-load failed", err)
+		}
+
+		// Whether loadTenant succeeded or failed, return here.
+		// On success: loadTenant already started the consumer.
+		// On failure: tenant is not valid, nothing to start.
 		return
 	}
 
