@@ -27,8 +27,8 @@ type Logger interface {
 //	    // ...
 //	}
 func RecoverAndLog(logger Logger, name string) {
-	if r := recover(); r != nil {
-		logPanic(logger, name, r)
+	if recovered := recover(); recovered != nil {
+		processRecoveredPanic(nil, logger, "", name, KeepRunning, false, &recoveredPanic{value: recovered, stack: debug.Stack()})
 	}
 }
 
@@ -48,10 +48,8 @@ func RecoverAndLog(logger Logger, name string) {
 //	    // ...
 //	}
 func RecoverAndLogWithContext(ctx context.Context, logger Logger, component, name string) {
-	if r := recover(); r != nil {
-		stack := debug.Stack()
-		logPanicWithStack(logger, name, r, stack)
-		recordPanicObservability(ctx, r, stack, component, name)
+	if recovered := recover(); recovered != nil {
+		processRecoveredPanic(ctx, logger, component, name, KeepRunning, true, &recoveredPanic{value: recovered, stack: debug.Stack()})
 	}
 }
 
@@ -66,9 +64,8 @@ func RecoverAndLogWithContext(ctx context.Context, logger Logger, component, nam
 //	    // ...
 //	}
 func RecoverAndCrash(logger Logger, name string) {
-	if r := recover(); r != nil {
-		logPanic(logger, name, r)
-		panic(r)
+	if recovered := recover(); recovered != nil {
+		processRecoveredPanic(nil, logger, "", name, CrashProcess, false, &recoveredPanic{value: recovered, stack: debug.Stack()})
 	}
 }
 
@@ -81,11 +78,8 @@ func RecoverAndCrash(logger Logger, name string) {
 //   - component: The service component (e.g., "transaction", "onboarding")
 //   - name: Descriptive name for the goroutine or handler
 func RecoverAndCrashWithContext(ctx context.Context, logger Logger, component, name string) {
-	if r := recover(); r != nil {
-		stack := debug.Stack()
-		logPanicWithStack(logger, name, r, stack)
-		recordPanicObservability(ctx, r, stack, component, name)
-		panic(r)
+	if recovered := recover(); recovered != nil {
+		processRecoveredPanic(ctx, logger, component, name, CrashProcess, true, &recoveredPanic{value: recovered, stack: debug.Stack()})
 	}
 }
 
@@ -103,12 +97,8 @@ func RecoverAndCrashWithContext(ctx context.Context, logger Logger, component, n
 //	    // ...
 //	}
 func RecoverWithPolicy(logger Logger, name string, policy PanicPolicy) {
-	if r := recover(); r != nil {
-		logPanic(logger, name, r)
-
-		if policy == CrashProcess {
-			panic(r)
-		}
+	if recovered := recover(); recovered != nil {
+		processRecoveredPanic(nil, logger, "", name, policy, false, &recoveredPanic{value: recovered, stack: debug.Stack()})
 	}
 }
 
@@ -135,13 +125,7 @@ func RecoverWithPolicyAndContext(
 	policy PanicPolicy,
 ) {
 	if recovered := recover(); recovered != nil {
-		stack := debug.Stack()
-		logPanicWithStack(logger, name, recovered, stack)
-		recordPanicObservability(ctx, recovered, stack, component, name)
-
-		if policy == CrashProcess {
-			panic(recovered)
-		}
+		processRecoveredPanic(ctx, logger, component, name, policy, true, &recoveredPanic{value: recovered, stack: debug.Stack()})
 	}
 }
 

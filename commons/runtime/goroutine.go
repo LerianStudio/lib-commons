@@ -2,8 +2,6 @@ package runtime
 
 import (
 	"context"
-
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
 )
 
 // SafeGo launches a goroutine with panic recovery. If the goroutine panics,
@@ -25,13 +23,7 @@ import (
 //	})
 func SafeGo(logger Logger, name string, policy PanicPolicy, fn func()) {
 	if fn == nil {
-		if logger != nil {
-			logger.Log(context.Background(), log.LevelWarn,
-				"SafeGo called with nil callback, ignoring",
-				log.String("goroutine", name),
-			)
-		}
-
+		warnNilCallback(logger, "SafeGo called with nil callback, ignoring", "", name)
 		return
 	}
 
@@ -74,14 +66,7 @@ func SafeGoWithContextAndComponent(
 	fn func(context.Context),
 ) {
 	if fn == nil {
-		if logger != nil {
-			logger.Log(context.Background(), log.LevelWarn,
-				"SafeGoWithContextAndComponent called with nil callback, ignoring",
-				log.String("component", component),
-				log.String("goroutine", name),
-			)
-		}
-
+		warnNilCallback(logger, "SafeGoWithContextAndComponent called with nil callback, ignoring", component, name)
 		return
 	}
 
