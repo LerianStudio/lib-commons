@@ -339,13 +339,17 @@ func (p *Manager) buildRabbitConnectionSpec(
 
 func (p *Manager) storeOrDiscardRabbitMQConnectionLocked(tenantID string, conn *amqp.Connection) (*amqp.Connection, bool, error) {
 	if p.closed {
+		if closeErr := p.closeRabbitMQConn(conn, "failed to close RabbitMQ connection after manager closed for tenant %s", tenantID); closeErr != nil {
+			p.logger.Warnf("failed to close RabbitMQ connection after manager closed for tenant %s: %v", tenantID, closeErr)
+		}
+
 		return nil, false, core.ErrManagerClosed
 	}
 
 	if cached, ok := p.connections[tenantID]; ok && !cached.IsClosed() {
 		p.lastAccessed[tenantID] = time.Now()
 		if closeErr := p.closeRabbitMQConn(conn, "failed to close excess RabbitMQ connection for tenant %s", tenantID); closeErr != nil {
-			return nil, false, fmt.Errorf("failed to close excess RabbitMQ connection for tenant %s: %w", tenantID, closeErr)
+			p.logger.Warnf("failed to close excess RabbitMQ connection for tenant %s; reusing cached connection: %v", tenantID, closeErr)
 		}
 
 		return cached, true, nil
