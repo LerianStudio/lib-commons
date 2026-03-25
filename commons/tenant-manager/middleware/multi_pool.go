@@ -174,8 +174,8 @@ func (m *MultiPoolMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	// Step 4: Extract context + telemetry
 	ctx := m.initializeTracingContext(c)
 
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-	logger := logcompat.New(baseLogger)
+	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
+	logger := logcompat.FromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "middleware.multi_pool.with_tenant_db")
 	defer span.End()

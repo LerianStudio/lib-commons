@@ -21,8 +21,10 @@ import (
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/configfetch"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/eviction"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/revalidation"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.opentelemetry.io/otel/trace"
@@ -105,6 +107,15 @@ type MongoConnection struct {
 	tlsConfig *tls.Config
 
 	client *mongolib.Client
+}
+
+type mongoConnectionSpec struct {
+	tenantID      string
+	uri           string
+	database      string
+	maxPoolSize   uint64
+	tlsConfig     *tls.Config
+	managerLogger log.Logger
 }
 
 func (c *MongoConnection) Connect(ctx context.Context) error {
@@ -241,7 +252,7 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 // If a cached client fails a health check (e.g., due to credential rotation
 // after a tenant purge+re-associate), the stale client is evicted and a new
 // one is created with fresh credentials from the Tenant Manager.
-func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Client, error) { //nolint:gocognit // complexity from connection lifecycle (ping, revalidate, evict) is inherent
+func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Client, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -269,13 +280,7 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Cl
 			cancel()
 
 			if pingErr != nil {
-				if p.logger != nil {
-					p.logger.WarnCtx(ctx, fmt.Sprintf("cached mongo connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr))
-				}
-
-				if closeErr := p.CloseConnection(ctx, tenantID); closeErr != nil && p.logger != nil {
-					p.logger.WarnCtx(ctx, fmt.Sprintf("failed to close stale mongo connection for tenant %s: %v", tenantID, closeErr))
-				}
+				p.evictUnhealthyConnection(ctx, tenantID, pingErr)
 
 				// Connection was unhealthy and has been evicted; create fresh.
 				return p.createConnection(ctx, tenantID)
@@ -291,12 +296,10 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Cl
 			if current, stillExists := p.connections[tenantID]; stillExists && current == conn {
 				p.lastAccessed[tenantID] = now
 
-				shouldRevalidate := p.client != nil && p.settingsCheckInterval > 0 && time.Since(p.lastSettingsCheck[tenantID]) > p.settingsCheckInterval
+				shouldRevalidate := revalidation.ShouldSchedule(p.lastSettingsCheck, tenantID, now, p.settingsCheckInterval)
 				if shouldRevalidate {
-					p.lastSettingsCheck[tenantID] = now
 					p.revalidateWG.Add(1)
 				}
-
 				p.mu.Unlock()
 
 				if shouldRevalidate {
@@ -335,37 +338,15 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Cl
 func (p *Manager) revalidatePoolSettings(tenantID string) {
 	// Guard: recover from any panic to avoid crashing the process.
 	// This goroutine runs asynchronously and must never bring down the service.
-	defer func() {
-		if r := recover(); r != nil {
-			if p.logger != nil {
-				p.logger.Warnf("recovered from panic during settings revalidation for tenant %s: %v", tenantID, r)
-			}
-		}
-	}()
+	defer revalidation.RecoverPanic(p.logger, tenantID)
 
 	revalidateCtx, cancel := context.WithTimeout(context.Background(), settingsRevalidationTimeout)
 	defer cancel()
 
 	config, err := p.client.GetTenantConfig(revalidateCtx, tenantID, p.service, client.WithSkipCache())
 	if err != nil {
-		// If tenant service was suspended/purged, evict the cached connection immediately.
-		// The next request for this tenant will call createConnection, which fetches fresh
-		// config from the Tenant Manager and receives the 403 error directly.
-		if core.IsTenantSuspendedError(err) {
-			if p.logger != nil {
-				p.logger.Warnf("tenant %s service suspended, evicting cached connection", tenantID)
-			}
-
-			evictCtx, evictCancel := context.WithTimeout(context.Background(), settingsRevalidationTimeout)
-			defer evictCancel()
-
-			_ = p.CloseConnection(evictCtx, tenantID)
-
+		if revalidation.HandleFetchError(p.logger, tenantID, err, p.CloseConnection, settingsRevalidationTimeout) {
 			return
-		}
-
-		if p.logger != nil {
-			p.logger.Warnf("failed to revalidate connection settings for tenant %s: %v", tenantID, err)
 		}
 
 		return
@@ -470,83 +451,47 @@ func (p *Manager) hasMongoConfigChanged(tenantID, freshURI string, freshConfig *
 // the cached one. If the new connection fails, the old one is kept.
 // Returns true to indicate a reconnection was attempted.
 func (p *Manager) reconnectMongo(ctx context.Context, tenantID string, mongoConfig *core.MongoDBConfig, freshURI string) bool {
-	maxConnections := DefaultMaxConnections
-	if mongoConfig.MaxPoolSize > 0 {
-		maxConnections = mongoConfig.MaxPoolSize
+	spec, err := p.buildMongoConnectionSpec(mongoConfig, tenantID, freshURI, p.logger, nil)
+	if err != nil {
+		p.logger.Warnf("config change: failed to build MongoDB connection spec for tenant %s, keeping old connection: %v", tenantID, err)
+
+		return true
 	}
 
-	newConn := &MongoConnection{
-		ConnectionStringSource: freshURI,
-		Database:               mongoConfig.Database,
-		Logger:                 p.logger.Base(),
-		MaxPoolSize:            maxConnections,
-	}
-
-	// Apply TLS config if separate cert+key files are provided.
-	if hasSeparateCertAndKey(mongoConfig) {
-		tlsCfg, tlsErr := buildTLSConfigFromFiles(mongoConfig)
-		if tlsErr != nil {
-			if p.logger != nil {
-				p.logger.Warnf("config change: failed to build TLS config for tenant %s, keeping old connection: %v", tenantID, tlsErr)
-			}
-
-			return true
-		}
-
-		newConn.tlsConfig = tlsCfg
-	}
+	newConn := p.newMongoConnection(spec)
 
 	if err := newConn.Connect(ctx); err != nil {
-		if p.logger != nil {
-			p.logger.Warnf("config change: failed to connect to new MongoDB for tenant %s, keeping old connection: %v", tenantID, err)
-		}
+		p.logger.Warnf("config change: failed to connect to new MongoDB for tenant %s, keeping old connection: %v", tenantID, err)
 
 		return true
 	}
 
-	// Replace the cached connection under write lock and disconnect the old one.
-	if !p.canStoreMongoConnection(ctx, tenantID, newConn) {
-		return true
-	}
-
-	p.swapMongoConnection(ctx, tenantID, newConn, mongoConfig.Database)
+	_ = p.replaceMongoConnection(ctx, tenantID, newConn, spec.database)
 
 	return true
 }
 
-// canStoreMongoConnection acquires the write lock and checks whether the
-// manager is still open and the tenant still exists. If not, it discards
-// newConn and returns false.
+// replaceMongoConnection swaps in a freshly built connection if the manager is
+// still open and the tenant entry still exists. Otherwise it discards the new one.
 // Caller must NOT hold p.mu.
-func (p *Manager) canStoreMongoConnection(ctx context.Context, tenantID string, newConn *MongoConnection) bool {
+func (p *Manager) replaceMongoConnection(ctx context.Context, tenantID string, newConn *MongoConnection, database string) bool {
 	p.mu.Lock()
 
 	if p.closed {
 		p.mu.Unlock()
-		p.disconnectMongo(ctx, newConn, "config change: failed to disconnect new MongoDB for tenant %s after manager closed", tenantID)
+		_ = p.disconnectMongo(ctx, newConn, "config change: failed to disconnect new MongoDB for tenant %s after manager closed", tenantID)
 
 		return false
 	}
 
-	if _, stillExists := p.connections[tenantID]; !stillExists {
+	oldConn, stillExists := p.connections[tenantID]
+	if !stillExists {
 		p.mu.Unlock()
-		p.disconnectMongo(ctx, newConn, "config change: failed to disconnect new MongoDB for tenant %s after eviction", tenantID)
+		_ = p.disconnectMongo(ctx, newConn, "config change: failed to disconnect new MongoDB for tenant %s after eviction", tenantID)
 
 		return false
 	}
 
-	p.mu.Unlock()
-
-	return true
-}
-
-// swapMongoConnection replaces the cached connection with newConn under write
-// lock and disconnects the old connection after releasing the lock.
-// Caller must NOT hold p.mu.
-func (p *Manager) swapMongoConnection(ctx context.Context, tenantID string, newConn *MongoConnection, database string) {
-	p.mu.Lock()
-
-	oldConn := p.connections[tenantID]
 	p.connections[tenantID] = newConn
 	p.databaseNames[tenantID] = database
 	p.lastAccessed[tenantID] = time.Now()
@@ -554,28 +499,30 @@ func (p *Manager) swapMongoConnection(ctx context.Context, tenantID string, newC
 	p.mu.Unlock()
 
 	// Disconnect the old connection after releasing the lock.
-	if oldConn != nil && oldConn.DB != nil {
-		discCtx, discCancel := context.WithTimeout(ctx, mongoPingTimeout)
-		if discErr := oldConn.DB.Disconnect(discCtx); discErr != nil && p.logger != nil {
-			p.logger.Warnf("config change: failed to disconnect old MongoDB for tenant %s: %v", tenantID, discErr)
-		}
+	_ = p.disconnectMongo(ctx, oldConn, "config change: failed to disconnect old MongoDB for tenant %s", tenantID)
 
-		discCancel()
-	}
+	p.logger.Infof("tenant %s MongoDB connection replaced with updated config", tenantID)
 
-	if p.logger != nil {
-		p.logger.Infof("tenant %s MongoDB connection replaced with updated config", tenantID)
-	}
+	return true
 }
 
 // disconnectMongo disconnects a MongoDB connection and logs a warning on failure.
-func (p *Manager) disconnectMongo(ctx context.Context, conn *MongoConnection, msgFmt string, tenantID string) {
+
+func (p *Manager) disconnectMongo(ctx context.Context, conn *MongoConnection, msgFmt string, tenantID string) error {
+	if conn == nil || conn.DB == nil {
+		return nil
+	}
+
 	discCtx, discCancel := context.WithTimeout(ctx, mongoPingTimeout)
-	if discErr := conn.DB.Disconnect(discCtx); discErr != nil && p.logger != nil {
-		p.logger.Warnf(msgFmt+": %v", tenantID, discErr)
+
+	err := conn.DB.Disconnect(discCtx)
+	if err != nil && p.logger != nil && tenantID != "" {
+		p.logger.Warnf(msgFmt+": %v", tenantID, err)
 	}
 
 	discCancel()
+
+	return err
 }
 
 // createConnection fetches config from Tenant Manager and creates a MongoDB client.
@@ -584,8 +531,8 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*mongo
 		return nil, errors.New("tenant manager client is required for multi-tenant connections")
 	}
 
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-	logger := logcompat.New(baseLogger)
+	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
+	logger := logcompat.Prefer(p.logger, logcompat.FromContext(ctx))
 
 	ctx, span := tracer.Start(ctx, "mongo.create_connection")
 	defer span.End()
@@ -675,18 +622,21 @@ func (p *Manager) disconnectUnhealthyConnection(
 	cachedConn *MongoConnection,
 	pingErr error,
 ) {
-	if p.logger != nil {
-		p.logger.WarnCtx(ctx, fmt.Sprintf("cached mongo connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr))
-	}
+	p.logger.WarnCtx(ctx, fmt.Sprintf("cached mongo connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr))
 
-	discCtx, discCancel := context.WithTimeout(ctx, mongoPingTimeout)
-	if discErr := cachedConn.DB.Disconnect(discCtx); discErr != nil && p.logger != nil {
+	if discErr := p.disconnectMongo(ctx, cachedConn, "failed to disconnect unhealthy mongo connection for tenant %s", tenantID); discErr != nil {
 		p.logger.WarnCtx(ctx, fmt.Sprintf("failed to disconnect unhealthy mongo connection for tenant %s: %v", tenantID, discErr))
 	}
 
-	discCancel()
-
 	p.removeStaleCacheEntry(tenantID, cachedConn)
+}
+
+func (p *Manager) evictUnhealthyConnection(ctx context.Context, tenantID string, pingErr error) {
+	p.logger.WarnCtx(ctx, fmt.Sprintf("cached mongo connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr))
+
+	if closeErr := p.CloseConnection(ctx, tenantID); closeErr != nil {
+		p.logger.WarnCtx(ctx, fmt.Sprintf("failed to close stale mongo connection for tenant %s: %v", tenantID, closeErr))
+	}
 }
 
 // removeStaleCacheEntry removes a cache entry only if it still points to the
@@ -696,10 +646,7 @@ func (p *Manager) removeStaleCacheEntry(tenantID string, cachedConn *MongoConnec
 	defer p.mu.Unlock()
 
 	if current, ok := p.connections[tenantID]; ok && current == cachedConn {
-		delete(p.connections, tenantID)
-		delete(p.databaseNames, tenantID)
-		delete(p.lastAccessed, tenantID)
-		delete(p.lastSettingsCheck, tenantID)
+		p.deleteTenantConnectionStateLocked(tenantID)
 	}
 }
 
@@ -716,37 +663,12 @@ func (p *Manager) buildAndCacheNewConnection(
 		return nil, err
 	}
 
-	uri, err := buildMongoURI(mongoConfig, logger)
+	spec, err := p.buildMongoConnectionSpec(mongoConfig, tenantID, "", logger, span)
 	if err != nil {
 		return nil, err
 	}
 
-	maxConnections := DefaultMaxConnections
-	if mongoConfig.MaxPoolSize > 0 {
-		maxConnections = mongoConfig.MaxPoolSize
-	}
-
-	conn := &MongoConnection{
-		ConnectionStringSource: uri,
-		Database:               mongoConfig.Database,
-		Logger:                 p.logger.Base(),
-		MaxPoolSize:            maxConnections,
-	}
-
-	// When separate TLS certificate and key files are provided, load the
-	// X.509 key pair and build a *tls.Config for the connection. The URI
-	// does not include tlsCertificateKeyFile in this case (see buildMongoQueryParams).
-	if hasSeparateCertAndKey(mongoConfig) {
-		tlsCfg, tlsErr := buildTLSConfigFromFiles(mongoConfig)
-		if tlsErr != nil {
-			logger.ErrorfCtx(ctx, "failed to build TLS config for tenant %s: %v", tenantID, tlsErr)
-			libOpentelemetry.HandleSpanError(span, "failed to build TLS config", tlsErr)
-
-			return nil, fmt.Errorf("failed to build TLS config: %w", tlsErr)
-		}
-
-		conn.tlsConfig = tlsCfg
-	}
+	conn := p.newMongoConnection(spec)
 
 	if err := conn.Connect(ctx); err != nil {
 		logger.ErrorfCtx(ctx, "failed to connect to MongoDB for tenant %s: %v", tenantID, err)
@@ -755,9 +677,68 @@ func (p *Manager) buildAndCacheNewConnection(
 		return nil, fmt.Errorf("failed to connect to MongoDB: %w", err)
 	}
 
-	logger.InfofCtx(ctx, "MongoDB connection created for tenant %s (database: %s)", tenantID, mongoConfig.Database)
+	logger.InfofCtx(ctx, "MongoDB connection created for tenant %s (database: %s)", tenantID, spec.database)
 
-	return p.cacheConnection(ctx, tenantID, conn, mongoConfig.Database, logger.Base())
+	return p.cacheConnection(ctx, tenantID, conn, spec.database, logger.Base())
+}
+
+func (p *Manager) buildMongoConnectionSpec(
+	mongoConfig *core.MongoDBConfig,
+	tenantID string,
+	uri string,
+	logger *logcompat.Logger,
+	span trace.Span,
+) (*mongoConnectionSpec, error) {
+	if uri == "" {
+		resolvedURI, err := buildMongoURI(mongoConfig, logger)
+		if err != nil {
+			return nil, err
+		}
+
+		uri = resolvedURI
+	}
+
+	maxConnections := DefaultMaxConnections
+	if mongoConfig.MaxPoolSize > 0 {
+		maxConnections = mongoConfig.MaxPoolSize
+	}
+
+	var tlsCfg *tls.Config
+
+	if hasSeparateCertAndKey(mongoConfig) {
+		resolvedTLS, tlsErr := buildTLSConfigFromFiles(mongoConfig)
+		if tlsErr != nil {
+			logger.ErrorfCtx(context.Background(), "failed to build TLS config for tenant %s: %v", tenantID, tlsErr)
+			libOpentelemetry.HandleSpanError(span, "failed to build TLS config", tlsErr)
+
+			return nil, fmt.Errorf("failed to build TLS config: %w", tlsErr)
+		}
+
+		tlsCfg = resolvedTLS
+	}
+
+	return &mongoConnectionSpec{
+		tenantID:      tenantID,
+		uri:           uri,
+		database:      mongoConfig.Database,
+		maxPoolSize:   maxConnections,
+		tlsConfig:     tlsCfg,
+		managerLogger: p.logger.Base(),
+	}, nil
+}
+
+func (p *Manager) newMongoConnection(spec *mongoConnectionSpec) *MongoConnection {
+	if spec == nil {
+		return nil
+	}
+
+	return &MongoConnection{
+		ConnectionStringSource: spec.uri,
+		Database:               spec.database,
+		Logger:                 spec.managerLogger,
+		MaxPoolSize:            spec.maxPoolSize,
+		tlsConfig:              spec.tlsConfig,
+	}
 }
 
 func (p *Manager) getMongoConfigForTenant(
@@ -766,20 +747,9 @@ func (p *Manager) getMongoConfigForTenant(
 	logger *logcompat.Logger,
 	span trace.Span,
 ) (*core.MongoDBConfig, error) {
-	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
+	config, err := configfetch.TenantConfig(ctx, p.client, tenantID, p.service, logger, span)
 	if err != nil {
-		var suspErr *core.TenantSuspendedError
-		if errors.As(err, &suspErr) {
-			logger.WarnfCtx(ctx, "tenant service is %s: tenantID=%s", suspErr.Status, tenantID)
-			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "tenant service suspended", err)
-
-			return nil, err
-		}
-
-		logger.ErrorfCtx(ctx, "failed to get tenant config: %v", err)
-		libOpentelemetry.HandleSpanError(span, "failed to get tenant config", err)
-
-		return nil, fmt.Errorf("failed to get tenant config: %w", err)
+		return nil, err
 	}
 
 	mongoConfig := config.GetMongoDBConfig(p.service, p.module)
@@ -803,26 +773,22 @@ func (p *Manager) cacheConnection(
 	defer p.mu.Unlock()
 
 	if p.closed {
-		if conn.DB != nil {
-			if discErr := conn.DB.Disconnect(ctx); discErr != nil && p.logger != nil {
-				p.logger.Base().Log(ctx, log.LevelWarn, "failed to disconnect mongo connection on closed manager",
-					log.String("tenant_id", tenantID),
-					log.Err(discErr),
-				)
-			}
+		if discErr := p.disconnectMongo(ctx, conn, "failed to disconnect mongo connection on closed manager for tenant %s", tenantID); discErr != nil {
+			p.logger.Base().Log(ctx, log.LevelWarn, "failed to disconnect mongo connection on closed manager",
+				log.String("tenant_id", tenantID),
+				log.Err(discErr),
+			)
 		}
 
 		return nil, core.ErrManagerClosed
 	}
 
 	if cached, ok := p.connections[tenantID]; ok && cached != nil && cached.DB != nil {
-		if conn.DB != nil {
-			if discErr := conn.DB.Disconnect(ctx); discErr != nil && p.logger != nil {
-				p.logger.Base().Log(ctx, log.LevelWarn, "failed to disconnect excess mongo connection",
-					log.String("tenant_id", tenantID),
-					log.Err(discErr),
-				)
-			}
+		if discErr := p.disconnectMongo(ctx, conn, "failed to disconnect excess mongo connection for tenant %s", tenantID); discErr != nil {
+			p.logger.Base().Log(ctx, log.LevelWarn, "failed to disconnect excess mongo connection",
+				log.String("tenant_id", tenantID),
+				log.Err(discErr),
+			)
 		}
 
 		p.lastAccessed[tenantID] = time.Now()
@@ -854,22 +820,15 @@ func (p *Manager) evictLRU(ctx context.Context, logger log.Logger) {
 
 	// Manager-specific cleanup: disconnect the MongoDB client and remove from all maps.
 	if conn, ok := p.connections[candidateID]; ok {
-		if conn.DB != nil {
-			if discErr := conn.DB.Disconnect(ctx); discErr != nil {
-				if logger != nil {
-					logger.Log(ctx, log.LevelWarn,
-						"failed to disconnect evicted mongo connection",
-						log.String("tenant_id", candidateID),
-						log.String("error", discErr.Error()),
-					)
-				}
-			}
+		if discErr := p.disconnectMongo(ctx, conn, "failed to disconnect evicted mongo connection for tenant %s", candidateID); discErr != nil && logger != nil {
+			logger.Log(ctx, log.LevelWarn,
+				"failed to disconnect evicted mongo connection",
+				log.String("tenant_id", candidateID),
+				log.String("error", discErr.Error()),
+			)
 		}
 
-		delete(p.connections, candidateID)
-		delete(p.databaseNames, candidateID)
-		delete(p.lastAccessed, candidateID)
-		delete(p.lastSettingsCheck, candidateID)
+		p.deleteTenantConnectionStateLocked(candidateID)
 	}
 }
 
@@ -975,10 +934,8 @@ func (p *Manager) Close(ctx context.Context) error {
 	var errs []error
 
 	for _, conn := range snapshot {
-		if conn.DB != nil {
-			if err := conn.DB.Disconnect(ctx); err != nil {
-				errs = append(errs, err)
-			}
+		if err := p.disconnectMongo(ctx, conn, "", ""); err != nil {
+			errs = append(errs, err)
 		}
 	}
 
@@ -1004,19 +961,19 @@ func (p *Manager) CloseConnection(ctx context.Context, tenantID string) error {
 		return nil
 	}
 
-	delete(p.connections, tenantID)
-	delete(p.databaseNames, tenantID)
-	delete(p.lastAccessed, tenantID)
-	delete(p.lastSettingsCheck, tenantID)
+	p.deleteTenantConnectionStateLocked(tenantID)
 
 	p.mu.Unlock()
 
 	// Step 2: Outside lock — disconnect the captured connection.
-	if conn.DB != nil {
-		return conn.DB.Disconnect(ctx)
-	}
+	return p.disconnectMongo(ctx, conn, "", "")
+}
 
-	return nil
+func (p *Manager) deleteTenantConnectionStateLocked(tenantID string) {
+	delete(p.connections, tenantID)
+	delete(p.databaseNames, tenantID)
+	delete(p.lastAccessed, tenantID)
+	delete(p.lastSettingsCheck, tenantID)
 }
 
 // Stats returns connection statistics.

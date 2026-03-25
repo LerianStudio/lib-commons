@@ -17,9 +17,12 @@ import (
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/configfetch"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/eviction"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/revalidation"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // defaultSettingsCheckInterval is the default interval between periodic
@@ -61,6 +64,16 @@ type Manager struct {
 	// can wait for them to finish before returning. Without this, goroutines
 	// spawned by GetConnection may access Manager state after Close() returns.
 	revalidateWG sync.WaitGroup
+}
+
+type rabbitConnectionSpec struct {
+	tenantID      string
+	vhost         string
+	uri           string
+	cacheKey      string
+	useTLS        bool
+	tlsCAFile     string
+	managerLogger log.Logger
 }
 
 // Option configures a Manager.
@@ -178,12 +191,8 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Con
 		if refreshedConn, still := p.connections[tenantID]; still && !refreshedConn.IsClosed() {
 			p.lastAccessed[tenantID] = now
 
-			// Only revalidate if settingsCheckInterval > 0 (means revalidation is enabled)
-			shouldRevalidate := p.client != nil && p.settingsCheckInterval > 0 && time.Since(p.lastSettingsCheck[tenantID]) > p.settingsCheckInterval
+			shouldRevalidate := revalidation.ShouldSchedule(p.lastSettingsCheck, tenantID, now, p.settingsCheckInterval)
 			if shouldRevalidate {
-				// Update timestamp BEFORE spawning goroutine to prevent multiple
-				// concurrent revalidation checks for the same tenant.
-				p.lastSettingsCheck[tenantID] = now
 				p.revalidateWG.Add(1)
 			}
 
@@ -225,15 +234,11 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 		return nil, errors.New("tenant manager client is required for multi-tenant connections")
 	}
 
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-	logger := logcompat.New(baseLogger)
+	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
+	logger := logcompat.Prefer(p.logger, logcompat.FromContext(ctx))
 
 	ctx, span := tracer.Start(ctx, "rabbitmq.create_connection")
 	defer span.End()
-
-	if p.logger != nil {
-		logger = p.logger
-	}
 
 	// Step 1: Under lock — double-check if connection exists or manager is closed.
 	p.mu.Lock()
@@ -250,30 +255,14 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 
 	p.mu.Unlock()
 
-	// Step 2: Outside lock — perform network I/O (HTTP call + TCP dial).
-	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
+	spec, err := p.buildRabbitConnectionSpec(ctx, tenantID, logger, span, nil)
 	if err != nil {
-		logger.Errorf("failed to get tenant config: %v", err)
-		libOpentelemetry.HandleSpanError(span, "failed to get tenant config", err)
-
-		return nil, fmt.Errorf("failed to get tenant config: %w", err)
+		return nil, err
 	}
 
-	rabbitConfig := config.GetRabbitMQConfig()
-	if rabbitConfig == nil {
-		logger.Errorf("RabbitMQ not configured for tenant: %s", tenantID)
-		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "RabbitMQ not configured", core.ErrServiceNotConfigured)
+	logger.Infof("connecting to RabbitMQ vhost: tenant=%s, vhost=%s, tls=%v", tenantID, spec.vhost, spec.useTLS)
 
-		return nil, core.ErrServiceNotConfigured
-	}
-
-	// Resolve TLS: per-tenant config takes precedence over global WithTLS() setting.
-	useTLS := p.resolveTLS(rabbitConfig)
-	uri := buildRabbitMQURI(rabbitConfig, useTLS)
-
-	logger.Infof("connecting to RabbitMQ vhost: tenant=%s, vhost=%s, tls=%v", tenantID, rabbitConfig.VHost, useTLS)
-
-	conn, err := p.dialRabbitMQ(uri, useTLS, rabbitConfig.TLSCAFile)
+	conn, err := p.dialRabbitMQ(spec.uri, spec.useTLS, spec.tlsCAFile)
 	if err != nil {
 		logger.Errorf("failed to connect to RabbitMQ: %v", err)
 		libOpentelemetry.HandleSpanError(span, "failed to connect to RabbitMQ", err)
@@ -284,25 +273,11 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 	// Step 3: Re-acquire lock — evict LRU, cache connection (with race-loss check).
 	p.mu.Lock()
 
-	// If manager was closed while we were dialing, discard the new connection.
-	if p.closed {
+	if cached, reused, err := p.storeOrDiscardRabbitMQConnectionLocked(tenantID, conn); reused || err != nil {
 		p.mu.Unlock()
 
-		if closeErr := conn.Close(); closeErr != nil {
-			logger.Errorf("failed to close RabbitMQ connection on closed manager: %v", closeErr)
-		}
-
-		return nil, core.ErrManagerClosed
-	}
-
-	// If another goroutine cached a connection for this tenant while we were
-	// dialing, use the cached one and discard ours.
-	if cached, ok := p.connections[tenantID]; ok && !cached.IsClosed() {
-		p.lastAccessed[tenantID] = time.Now()
-		p.mu.Unlock()
-
-		if closeErr := conn.Close(); closeErr != nil {
-			logger.Errorf("failed to close excess RabbitMQ connection for tenant %s: %v", tenantID, closeErr)
+		if err != nil {
+			return nil, err
 		}
 
 		return cached, nil
@@ -310,23 +285,73 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 
 	// Evict least recently used connection if pool is full
 	p.evictLRU(logger.Base())
-
-	// Cache our new connection and its URI for config change detection.
-	// Include TLSCAFile in the cached key so CA file changes trigger reconnection.
-	cachedKey := uri
-	if rabbitConfig.TLSCAFile != "" {
-		cachedKey += "|ca=" + rabbitConfig.TLSCAFile
-	}
-
 	p.connections[tenantID] = conn
-	p.cachedURIs[tenantID] = cachedKey
+	p.cachedURIs[tenantID] = spec.cacheKey
 	p.lastAccessed[tenantID] = time.Now()
 
 	p.mu.Unlock()
 
-	logger.Infof("RabbitMQ connection created: tenant=%s, vhost=%s", tenantID, rabbitConfig.VHost)
+	logger.Infof("RabbitMQ connection created: tenant=%s, vhost=%s", tenantID, spec.vhost)
 
 	return conn, nil
+}
+
+func (p *Manager) buildRabbitConnectionSpec(
+	ctx context.Context,
+	tenantID string,
+	logger *logcompat.Logger,
+	span trace.Span,
+	rabbitConfig *core.RabbitMQConfig,
+) (*rabbitConnectionSpec, error) {
+	if rabbitConfig == nil {
+		config, err := configfetch.TenantConfig(ctx, p.client, tenantID, p.service, logger, span)
+		if err != nil {
+			return nil, err
+		}
+
+		rabbitConfig = config.GetRabbitMQConfig()
+		if rabbitConfig == nil {
+			logger.Errorf("RabbitMQ not configured for tenant: %s", tenantID)
+			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "RabbitMQ not configured", core.ErrServiceNotConfigured)
+
+			return nil, core.ErrServiceNotConfigured
+		}
+	}
+
+	useTLS := p.resolveTLS(rabbitConfig)
+	uri := buildRabbitMQURI(rabbitConfig, useTLS)
+
+	cacheKey := uri
+	if rabbitConfig.TLSCAFile != "" {
+		cacheKey += "|ca=" + rabbitConfig.TLSCAFile
+	}
+
+	return &rabbitConnectionSpec{
+		tenantID:      tenantID,
+		vhost:         rabbitConfig.VHost,
+		uri:           uri,
+		cacheKey:      cacheKey,
+		useTLS:        useTLS,
+		tlsCAFile:     rabbitConfig.TLSCAFile,
+		managerLogger: p.logger.Base(),
+	}, nil
+}
+
+func (p *Manager) storeOrDiscardRabbitMQConnectionLocked(tenantID string, conn *amqp.Connection) (*amqp.Connection, bool, error) {
+	if p.closed {
+		return nil, false, core.ErrManagerClosed
+	}
+
+	if cached, ok := p.connections[tenantID]; ok && !cached.IsClosed() {
+		p.lastAccessed[tenantID] = time.Now()
+		if closeErr := p.closeRabbitMQConn(conn, "failed to close excess RabbitMQ connection for tenant %s", tenantID); closeErr != nil {
+			return nil, false, fmt.Errorf("failed to close excess RabbitMQ connection for tenant %s: %w", tenantID, closeErr)
+		}
+
+		return cached, true, nil
+	}
+
+	return nil, false, nil
 }
 
 // evictLRU removes the least recently used idle connection when the pool reaches the
@@ -345,7 +370,7 @@ func (p *Manager) evictLRU(logger log.Logger) {
 	// Manager-specific cleanup: close the AMQP connection and remove from maps.
 	if conn, ok := p.connections[candidateID]; ok {
 		if conn != nil && !conn.IsClosed() {
-			if err := conn.Close(); err != nil && logger != nil {
+			if err := p.closeRabbitMQConn(conn, "failed to close evicted rabbitmq connection for tenant %s", candidateID); err != nil && logger != nil {
 				logger.Log(context.Background(), log.LevelWarn, "failed to close evicted rabbitmq connection",
 					log.String("tenant_id", candidateID),
 					log.Err(err),
@@ -353,10 +378,7 @@ func (p *Manager) evictLRU(logger log.Logger) {
 			}
 		}
 
-		delete(p.connections, candidateID)
-		delete(p.cachedURIs, candidateID)
-		delete(p.lastAccessed, candidateID)
-		delete(p.lastSettingsCheck, candidateID)
+		p.deleteTenantConnectionStateLocked(candidateID)
 	}
 }
 
@@ -393,15 +415,12 @@ func (p *Manager) Close(_ context.Context) error {
 
 	for tenantID, conn := range p.connections {
 		if conn != nil && !conn.IsClosed() {
-			if err := conn.Close(); err != nil {
+			if err := p.closeRabbitMQConn(conn, "", ""); err != nil {
 				errs = append(errs, err)
 			}
 		}
 
-		delete(p.connections, tenantID)
-		delete(p.cachedURIs, tenantID)
-		delete(p.lastAccessed, tenantID)
-		delete(p.lastSettingsCheck, tenantID)
+		p.deleteTenantConnectionStateLocked(tenantID)
 	}
 
 	p.mu.Unlock()
@@ -426,15 +445,19 @@ func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 
 	var err error
 	if conn != nil && !conn.IsClosed() {
-		err = conn.Close()
+		err = p.closeRabbitMQConn(conn, "", "")
 	}
 
+	p.deleteTenantConnectionStateLocked(tenantID)
+
+	return err
+}
+
+func (p *Manager) deleteTenantConnectionStateLocked(tenantID string) {
 	delete(p.connections, tenantID)
 	delete(p.cachedURIs, tenantID)
 	delete(p.lastAccessed, tenantID)
 	delete(p.lastSettingsCheck, tenantID)
-
-	return err
 }
 
 // ApplyConnectionSettings is a no-op for RabbitMQ connections.
@@ -453,31 +476,15 @@ func (p *Manager) ApplyConnectionSettings(_ string, _ *core.TenantConfig) {
 func (p *Manager) revalidatePoolSettings(tenantID string) {
 	// Guard: recover from any panic to avoid crashing the process.
 	// This goroutine runs asynchronously and must never bring down the service.
-	defer func() {
-		if r := recover(); r != nil {
-			if p.logger != nil {
-				p.logger.Warnf("recovered from panic during settings revalidation for tenant %s: %v", tenantID, r)
-			}
-		}
-	}()
+	defer revalidation.RecoverPanic(p.logger, tenantID)
 
 	revalidateCtx, cancel := context.WithTimeout(context.Background(), settingsRevalidationTimeout)
 	defer cancel()
 
 	config, err := p.client.GetTenantConfig(revalidateCtx, tenantID, p.service, client.WithSkipCache())
 	if err != nil {
-		if core.IsTenantSuspendedError(err) {
-			if p.logger != nil {
-				p.logger.Warnf("tenant %s service suspended, evicting cached connection", tenantID)
-			}
-
-			_ = p.CloseConnection(context.Background(), tenantID)
-
+		if revalidation.HandleFetchError(p.logger, tenantID, err, p.CloseConnection, settingsRevalidationTimeout) {
 			return
-		}
-
-		if p.logger != nil {
-			p.logger.Warnf("failed to revalidate connection settings for tenant %s: %v", tenantID, err)
 		}
 
 		return
@@ -500,8 +507,11 @@ func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.Tenan
 		return
 	}
 
-	useTLS := p.resolveTLS(rabbitConfig)
-	freshURI := buildRabbitMQURI(rabbitConfig, useTLS)
+	spec, err := p.buildRabbitConnectionSpec(context.Background(), tenantID, p.logger, nil, rabbitConfig)
+	if err != nil {
+		p.logger.Warnf("config change: failed to build RabbitMQ connection spec for tenant %s: %v", tenantID, err)
+		return
+	}
 
 	// Read the cached URI under read lock.
 	p.mu.RLock()
@@ -517,70 +527,43 @@ func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.Tenan
 	// The URI covers host, port, vhost, credentials, and TLS scheme. The TLS CA
 	// file path is not part of the URI, so we compare it separately by appending
 	// a sentinel to the cached key. This way, a CA file change triggers reconnection.
-	freshKey := freshURI
-	if rabbitConfig.TLSCAFile != "" {
-		freshKey += "|ca=" + rabbitConfig.TLSCAFile
-	}
-
-	if cachedURI == freshKey {
+	if cachedURI == spec.cacheKey {
 		return // no connection-level change
 	}
 
 	// Config changed — attempt graceful reconnection.
-	if p.logger != nil {
-		p.logger.Infof("tenant %s RabbitMQ config changed, reconnecting", tenantID)
-	}
+	p.logger.Infof("tenant %s RabbitMQ config changed, reconnecting", tenantID)
 
-	newConn, err := p.dialRabbitMQ(freshURI, useTLS, rabbitConfig.TLSCAFile)
+	newConn, err := p.dialRabbitMQ(spec.uri, spec.useTLS, spec.tlsCAFile)
 	if err != nil {
-		if p.logger != nil {
-			p.logger.Warnf("config change: failed to connect to new RabbitMQ for tenant %s, keeping old connection: %v", tenantID, err)
-		}
+		p.logger.Warnf("config change: failed to connect to new RabbitMQ for tenant %s, keeping old connection: %v", tenantID, err)
 
 		return
 	}
 
-	// Replace the cached connection under write lock and close the old one.
-	if !p.canStoreRabbitMQConnection(tenantID, newConn) {
-		return
-	}
-
-	p.swapRabbitMQConnection(tenantID, newConn, freshKey)
+	_ = p.replaceRabbitMQConnection(tenantID, newConn, spec.cacheKey)
 }
 
-// canStoreRabbitMQConnection acquires the write lock and checks whether the
-// manager is still open and the tenant still exists. If not, it discards
-// newConn and returns false.
-// Caller must NOT hold p.mu.
-func (p *Manager) canStoreRabbitMQConnection(tenantID string, newConn *amqp.Connection) bool {
+// replaceRabbitMQConnection swaps in a freshly built connection if the manager is
+// still open and the tenant entry still exists. Otherwise it discards the new one.
+func (p *Manager) replaceRabbitMQConnection(tenantID string, newConn *amqp.Connection, freshKey string) bool {
 	p.mu.Lock()
 
 	if p.closed {
 		p.mu.Unlock()
-		p.closeRabbitMQConn(newConn, "config change: failed to close new RabbitMQ connection for tenant %s after manager closed", tenantID)
+		_ = p.closeRabbitMQConn(newConn, "config change: failed to close new RabbitMQ connection for tenant %s after manager closed", tenantID)
 
 		return false
 	}
 
-	if _, stillExists := p.connections[tenantID]; !stillExists {
+	oldConn, stillExists := p.connections[tenantID]
+	if !stillExists {
 		p.mu.Unlock()
-		p.closeRabbitMQConn(newConn, "config change: failed to close new RabbitMQ connection for tenant %s after eviction", tenantID)
+		_ = p.closeRabbitMQConn(newConn, "config change: failed to close new RabbitMQ connection for tenant %s after eviction", tenantID)
 
 		return false
 	}
 
-	p.mu.Unlock()
-
-	return true
-}
-
-// swapRabbitMQConnection replaces the cached connection with newConn under
-// write lock and closes the old connection after releasing the lock.
-// Caller must NOT hold p.mu.
-func (p *Manager) swapRabbitMQConnection(tenantID string, newConn *amqp.Connection, freshKey string) {
-	p.mu.Lock()
-
-	oldConn := p.connections[tenantID]
 	p.connections[tenantID] = newConn
 	p.cachedURIs[tenantID] = freshKey
 	p.lastAccessed[tenantID] = time.Now()
@@ -588,22 +571,28 @@ func (p *Manager) swapRabbitMQConnection(tenantID string, newConn *amqp.Connecti
 	p.mu.Unlock()
 
 	// Close the old connection after releasing the lock.
-	p.closeRabbitMQConn(oldConn, "config change: failed to close old RabbitMQ connection for tenant %s", tenantID)
+	_ = p.closeRabbitMQConn(oldConn, "config change: failed to close old RabbitMQ connection for tenant %s", tenantID)
 
-	if p.logger != nil {
-		p.logger.Infof("tenant %s RabbitMQ connection replaced with updated config", tenantID)
-	}
+	p.logger.Infof("tenant %s RabbitMQ connection replaced with updated config", tenantID)
+
+	return true
 }
 
 // closeRabbitMQConn closes an AMQP connection and logs a warning on failure.
-func (p *Manager) closeRabbitMQConn(conn *amqp.Connection, msgFmt string, tenantID string) {
+func (p *Manager) closeRabbitMQConn(conn *amqp.Connection, msgFmt string, tenantID string) error {
 	if conn == nil || conn.IsClosed() {
-		return
+		return nil
 	}
 
-	if closeErr := conn.Close(); closeErr != nil && p.logger != nil {
-		p.logger.Warnf(msgFmt+": %v", tenantID, closeErr)
+	if closeErr := conn.Close(); closeErr != nil {
+		if p.logger != nil && tenantID != "" {
+			p.logger.Warnf(msgFmt+": %v", tenantID, closeErr)
+		}
+
+		return closeErr
 	}
+
+	return nil
 }
 
 // Stats returns connection statistics.

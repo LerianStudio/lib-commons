@@ -18,8 +18,10 @@ import (
 	libPostgres "github.com/LerianStudio/lib-commons/v4/commons/postgres"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/configfetch"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/eviction"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/revalidation"
 	"github.com/bxcodec/dbresolver/v2"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.opentelemetry.io/otel/trace"
@@ -121,6 +123,20 @@ type PostgresConnection struct {
 	ConnectionDB            *dbresolver.DB `json:"-"`
 
 	client *libPostgres.Client
+}
+
+type postgresConnectionSpec struct {
+	tenantID       string
+	isolationMode  string
+	primaryConnStr string
+	replicaConnStr string
+	primaryDBName  string
+	replicaDBName  string
+	maxOpenConns   int
+	maxIdleConns   int
+	skipMigrations bool
+	schema         string
+	managerLogger  libLog.Logger
 }
 
 func (c *PostgresConnection) Connect(ctx context.Context) error {
@@ -309,14 +325,7 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*Postgres
 			cancel() // Release timer immediately; we no longer need the ping context.
 
 			if pingErr != nil {
-				if p.logger != nil {
-					p.logger.WarnCtx(ctx, fmt.Sprintf("cached postgres connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr))
-				}
-
-				if closeErr := p.CloseConnection(ctx, tenantID); closeErr != nil && p.logger != nil {
-					p.logger.WarnCtx(ctx, fmt.Sprintf("failed to close stale postgres connection for tenant %s: %v", tenantID, closeErr))
-				}
-
+				p.evictUnhealthyConnection(ctx, tenantID, pingErr)
 				// Fall through to create a new connection with fresh credentials
 				return p.createConnection(ctx, tenantID)
 			}
@@ -337,12 +346,7 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*Postgres
 		p.lastAccessed[tenantID] = now
 
 		// Only revalidate if settingsCheckInterval > 0 (means revalidation is enabled)
-		shouldRevalidate := p.client != nil && p.settingsCheckInterval > 0 && time.Since(p.lastSettingsCheck[tenantID]) > p.settingsCheckInterval
-		if shouldRevalidate {
-			// Update timestamp BEFORE spawning goroutine to prevent multiple
-			// concurrent revalidation checks for the same tenant.
-			p.lastSettingsCheck[tenantID] = now
-		}
+		shouldRevalidate := revalidation.ShouldSchedule(p.lastSettingsCheck, tenantID, now, p.settingsCheckInterval)
 
 		p.mu.Unlock()
 
@@ -370,34 +374,15 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*Postgres
 func (p *Manager) revalidatePoolSettings(tenantID string) {
 	// Guard: recover from any panic to avoid crashing the process.
 	// This goroutine runs asynchronously and must never bring down the service.
-	defer func() {
-		if r := recover(); r != nil {
-			if p.logger != nil {
-				p.logger.Warnf("recovered from panic during settings revalidation for tenant %s: %v", tenantID, r)
-			}
-		}
-	}()
+	defer revalidation.RecoverPanic(p.logger, tenantID)
 
 	revalidateCtx, cancel := context.WithTimeout(context.Background(), settingsRevalidationTimeout)
 	defer cancel()
 
 	config, err := p.client.GetTenantConfig(revalidateCtx, tenantID, p.service, client.WithSkipCache())
 	if err != nil {
-		// If tenant service was suspended/purged, evict the cached connection immediately.
-		// The next request for this tenant will call createConnection, which fetches fresh
-		// config from the Tenant Manager and receives the 403 error directly.
-		if core.IsTenantSuspendedError(err) {
-			if p.logger != nil {
-				p.logger.Warnf("tenant %s service suspended, evicting cached connection", tenantID)
-			}
-
-			_ = p.CloseConnection(context.Background(), tenantID)
-
+		if revalidation.HandleFetchError(p.logger, tenantID, err, p.CloseConnection, settingsRevalidationTimeout) {
 			return
-		}
-
-		if p.logger != nil {
-			p.logger.Warnf("failed to revalidate connection settings for tenant %s: %v", tenantID, err)
 		}
 
 		return
@@ -429,9 +414,7 @@ func (p *Manager) detectAndReconnectPostgres(ctx context.Context, tenantID strin
 
 	freshConnStr, err := buildConnectionString(pgConfig)
 	if err != nil {
-		if p.logger != nil {
-			p.logger.Warnf("config change detection: invalid connection string for tenant %s: %v", tenantID, err)
-		}
+		p.logger.Warnf("config change detection: invalid connection string for tenant %s: %v", tenantID, err)
 
 		return false
 	}
@@ -453,9 +436,7 @@ func (p *Manager) detectAndReconnectPostgres(ctx context.Context, tenantID strin
 	}
 
 	// Config changed — attempt graceful reconnection.
-	if p.logger != nil {
-		p.logger.Infof("tenant %s PostgreSQL config changed, reconnecting", tenantID)
-	}
+	p.logger.Infof("tenant %s PostgreSQL config changed, reconnecting", tenantID)
 
 	return p.reconnectPostgres(ctx, tenantID, config, pgConfig, freshConnStr)
 }
@@ -505,104 +486,74 @@ func (p *Manager) reconnectPostgres(
 	pgConfig *core.PostgreSQLConfig,
 	freshConnStr string,
 ) bool {
-	replicaConnStr, replicaDBName, replicaErr := p.resolveReplicaConnection(config, pgConfig, freshConnStr, tenantID, p.logger)
-	if replicaErr != nil {
-		if p.logger != nil {
-			p.logger.Warnf("config change: invalid replica connection for tenant %s, keeping old connection: %v", tenantID, replicaErr)
-		}
+	spec, err := p.buildPostgresConnectionSpec(config, pgConfig, tenantID, freshConnStr, p.logger, nil)
+	if err != nil {
+		p.logger.Warnf("config change: failed to build PostgreSQL connection spec for tenant %s, keeping old connection: %v", tenantID, err)
 
 		return true
 	}
 
-	maxOpen, maxIdle := p.resolveConnectionPoolSettings(config, tenantID, p.logger)
-
-	newConn := &PostgresConnection{
-		ConnectionStringPrimary: freshConnStr,
-		ConnectionStringReplica: replicaConnStr,
-		PrimaryDBName:           pgConfig.Database,
-		ReplicaDBName:           replicaDBName,
-		MaxOpenConnections:      maxOpen,
-		MaxIdleConnections:      maxIdle,
-		SkipMigrations:          p.IsMultiTenant(),
-	}
-
-	if p.logger != nil {
-		newConn.Logger = p.logger.Base()
-	}
+	newConn := p.newPostgresConnection(spec)
 
 	if err := newConn.Connect(ctx); err != nil {
-		if p.logger != nil {
-			p.logger.Warnf("config change: failed to connect to new PostgreSQL for tenant %s, keeping old connection: %v", tenantID, err)
-		}
+		p.logger.Warnf("config change: failed to connect to new PostgreSQL for tenant %s, keeping old connection: %v", tenantID, err)
 
 		return true
 	}
 
-	// Replace the cached connection under write lock and close the old one.
-	if !p.canStorePostgresConnection(tenantID, newConn) {
-		return true
-	}
-
-	p.swapPostgresConnection(tenantID, newConn)
+	_ = p.replacePostgresConnection(tenantID, newConn)
 
 	return true
 }
 
-// canStorePostgresConnection acquires the write lock and checks whether the
-// manager is still open and the tenant still exists. If not, it discards
-// newConn and returns false.
+// replacePostgresConnection swaps in a freshly built connection if the manager is
+// still open and the tenant entry still exists. Otherwise it discards the new one.
 // Caller must NOT hold p.mu.
-func (p *Manager) canStorePostgresConnection(tenantID string, newConn *PostgresConnection) bool {
+func (p *Manager) replacePostgresConnection(tenantID string, newConn *PostgresConnection) bool {
 	p.mu.Lock()
 
 	if p.closed {
 		p.mu.Unlock()
-		p.closePostgresConn(newConn, "config change: failed to close new PostgreSQL connection for tenant %s after manager closed", tenantID)
+		_ = p.closePostgresConn(newConn, "config change: failed to close new PostgreSQL connection for tenant %s after manager closed", tenantID)
 
 		return false
 	}
 
-	if _, stillExists := p.connections[tenantID]; !stillExists {
+	oldConn, stillExists := p.connections[tenantID]
+	if !stillExists {
 		p.mu.Unlock()
-		p.closePostgresConn(newConn, "config change: failed to close new PostgreSQL connection for tenant %s after eviction", tenantID)
+		_ = p.closePostgresConn(newConn, "config change: failed to close new PostgreSQL connection for tenant %s after eviction", tenantID)
 
 		return false
 	}
 
+	p.connections[tenantID] = newConn
+	p.lastAccessed[tenantID] = time.Now()
 	p.mu.Unlock()
+
+	// Close the old connection after releasing the lock.
+	_ = p.closePostgresConn(oldConn, "config change: failed to close old PostgreSQL connection for tenant %s", tenantID)
+
+	p.logger.Infof("tenant %s PostgreSQL connection replaced with updated config", tenantID)
 
 	return true
 }
 
-// swapPostgresConnection replaces the cached connection with newConn under
-// write lock and closes the old connection after releasing the lock.
-// Caller must NOT hold p.mu.
-func (p *Manager) swapPostgresConnection(tenantID string, newConn *PostgresConnection) {
-	p.mu.Lock()
-
-	oldConn := p.connections[tenantID]
-	p.connections[tenantID] = newConn
-	p.lastAccessed[tenantID] = time.Now()
-
-	p.mu.Unlock()
-
-	// Close the old connection after releasing the lock.
-	p.closePostgresConn(oldConn, "config change: failed to close old PostgreSQL connection for tenant %s", tenantID)
-
-	if p.logger != nil {
-		p.logger.Infof("tenant %s PostgreSQL connection replaced with updated config", tenantID)
-	}
-}
-
 // closePostgresConn closes a PostgreSQL connection and logs a warning on failure.
-func (p *Manager) closePostgresConn(conn *PostgresConnection, msgFmt string, tenantID string) {
+func (p *Manager) closePostgresConn(conn *PostgresConnection, msgFmt string, tenantID string) error {
 	if conn == nil || conn.ConnectionDB == nil {
-		return
+		return nil
 	}
 
-	if closeErr := (*conn.ConnectionDB).Close(); closeErr != nil && p.logger != nil {
-		p.logger.Warnf(msgFmt+": %v", tenantID, closeErr)
+	if closeErr := (*conn.ConnectionDB).Close(); closeErr != nil {
+		if p.logger != nil && tenantID != "" {
+			p.logger.Warnf(msgFmt+": %v", tenantID, closeErr)
+		}
+
+		return closeErr
 	}
+
+	return nil
 }
 
 // createConnection fetches config from Tenant Manager and creates a connection.
@@ -611,8 +562,8 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*Postg
 		return nil, errors.New("tenant manager client is required for multi-tenant connections")
 	}
 
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-	logger := logcompat.New(baseLogger)
+	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
+	logger := logcompat.Prefer(p.logger, logcompat.FromContext(ctx))
 
 	ctx, span := tracer.Start(ctx, "postgres.create_connection")
 	defer span.End()
@@ -666,15 +617,20 @@ func (p *Manager) tryReuseOrEvictCachedConnectionLocked(
 		}
 
 		logger.WarnCtx(ctx, fmt.Sprintf("cached postgres connection unhealthy for tenant %s after lock, reconnecting: %v", tenantID, pingErr))
-
-		_ = (*conn.ConnectionDB).Close()
+		_ = p.closePostgresConn(conn, "failed to close stale postgres connection for tenant %s", tenantID)
 	}
 
-	delete(p.connections, tenantID)
-	delete(p.lastAccessed, tenantID)
-	delete(p.lastSettingsCheck, tenantID)
+	p.deleteTenantConnectionStateLocked(tenantID)
 
 	return nil, false
+}
+
+func (p *Manager) evictUnhealthyConnection(ctx context.Context, tenantID string, pingErr error) {
+	p.logger.WarnCtx(ctx, fmt.Sprintf("cached postgres connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr))
+
+	if closeErr := p.CloseConnection(ctx, tenantID); closeErr != nil {
+		p.logger.WarnCtx(ctx, fmt.Sprintf("failed to close stale postgres connection for tenant %s: %v", tenantID, closeErr))
+	}
 }
 
 func (p *Manager) getPostgresConfigForTenant(
@@ -683,20 +639,9 @@ func (p *Manager) getPostgresConfigForTenant(
 	logger *logcompat.Logger,
 	span trace.Span,
 ) (*core.TenantConfig, *core.PostgreSQLConfig, error) {
-	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
+	config, err := configfetch.TenantConfig(ctx, p.client, tenantID, p.service, logger, span)
 	if err != nil {
-		var suspErr *core.TenantSuspendedError
-		if errors.As(err, &suspErr) {
-			logger.WarnCtx(ctx, fmt.Sprintf("tenant service is %s: tenantID=%s", suspErr.Status, tenantID))
-			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "tenant service suspended", err)
-
-			return nil, nil, err
-		}
-
-		logger.ErrorCtx(ctx, fmt.Sprintf("failed to get tenant config: %v", err))
-		libOpentelemetry.HandleSpanError(span, "failed to get tenant config", err)
-
-		return nil, nil, fmt.Errorf("failed to get tenant config: %w", err)
+		return nil, nil, err
 	}
 
 	pgConfig := config.GetPostgreSQLConfig(p.service, p.module)
@@ -717,12 +662,51 @@ func (p *Manager) buildTenantPostgresConnection(
 	logger *logcompat.Logger,
 	span trace.Span,
 ) (*PostgresConnection, error) {
-	primaryConnStr, err := buildConnectionString(pgConfig)
+	spec, err := p.buildPostgresConnectionSpec(config, pgConfig, tenantID, "", logger, span)
 	if err != nil {
-		logger.ErrorCtx(ctx, fmt.Sprintf("invalid connection string for tenant %s: %v", tenantID, err))
-		libOpentelemetry.HandleSpanError(span, "invalid connection string", err)
+		return nil, err
+	}
 
-		return nil, fmt.Errorf("invalid connection string for tenant %s: %w", tenantID, err)
+	if spec.isolationMode == IsolationModeSchema && spec.schema == "" {
+		logger.ErrorCtx(ctx, "schema mode requires schema in config for tenant "+tenantID)
+
+		return nil, fmt.Errorf("schema mode requires schema in config for tenant %s", tenantID)
+	}
+
+	conn := p.newPostgresConnection(spec)
+
+	if err := conn.Connect(ctx); err != nil {
+		logger.ErrorCtx(ctx, fmt.Sprintf("failed to connect to tenant database: %v", err))
+		libOpentelemetry.HandleSpanError(span, "failed to connect", err)
+
+		return nil, fmt.Errorf("failed to connect to tenant database: %w", err)
+	}
+
+	if spec.schema != "" {
+		logger.InfoCtx(ctx, fmt.Sprintf("connection configured with search_path=%s for tenant %s (mode: %s)", spec.schema, tenantID, spec.isolationMode))
+	}
+
+	return conn, nil
+}
+
+func (p *Manager) buildPostgresConnectionSpec(
+	config *core.TenantConfig,
+	pgConfig *core.PostgreSQLConfig,
+	tenantID string,
+	primaryConnStr string,
+	logger *logcompat.Logger,
+	span trace.Span,
+) (*postgresConnectionSpec, error) {
+	if primaryConnStr == "" {
+		resolvedConnStr, err := buildConnectionString(pgConfig)
+		if err != nil {
+			logger.ErrorCtx(context.Background(), fmt.Sprintf("invalid connection string for tenant %s: %v", tenantID, err))
+			libOpentelemetry.HandleSpanError(span, "invalid connection string", err)
+
+			return nil, fmt.Errorf("invalid connection string for tenant %s: %w", tenantID, err)
+		}
+
+		primaryConnStr = resolvedConnStr
 	}
 
 	replicaConnStr, replicaDBName, err := p.resolveReplicaConnection(config, pgConfig, primaryConnStr, tenantID, logger)
@@ -734,38 +718,36 @@ func (p *Manager) buildTenantPostgresConnection(
 
 	maxOpen, maxIdle := p.resolveConnectionPoolSettings(config, tenantID, logger)
 
-	conn := &PostgresConnection{
-		ConnectionStringPrimary: primaryConnStr,
-		ConnectionStringReplica: replicaConnStr,
-		PrimaryDBName:           pgConfig.Database,
-		ReplicaDBName:           replicaDBName,
-		MaxOpenConnections:      maxOpen,
-		MaxIdleConnections:      maxIdle,
-		SkipMigrations:          p.IsMultiTenant(),
+	return &postgresConnectionSpec{
+		tenantID:       tenantID,
+		isolationMode:  config.IsolationMode,
+		primaryConnStr: primaryConnStr,
+		replicaConnStr: replicaConnStr,
+		primaryDBName:  pgConfig.Database,
+		replicaDBName:  replicaDBName,
+		maxOpenConns:   maxOpen,
+		maxIdleConns:   maxIdle,
+		skipMigrations: p.IsMultiTenant(),
+		schema:         pgConfig.Schema,
+		managerLogger:  p.logger.Base(),
+	}, nil
+}
+
+func (p *Manager) newPostgresConnection(spec *postgresConnectionSpec) *PostgresConnection {
+	if spec == nil {
+		return nil
 	}
 
-	if p.logger != nil {
-		conn.Logger = p.logger.Base()
+	return &PostgresConnection{
+		ConnectionStringPrimary: spec.primaryConnStr,
+		ConnectionStringReplica: spec.replicaConnStr,
+		PrimaryDBName:           spec.primaryDBName,
+		ReplicaDBName:           spec.replicaDBName,
+		MaxOpenConnections:      spec.maxOpenConns,
+		MaxIdleConnections:      spec.maxIdleConns,
+		SkipMigrations:          spec.skipMigrations,
+		Logger:                  spec.managerLogger,
 	}
-
-	if config.IsSchemaMode() && pgConfig.Schema == "" {
-		logger.ErrorCtx(ctx, "schema mode requires schema in config for tenant "+tenantID)
-
-		return nil, fmt.Errorf("schema mode requires schema in config for tenant %s", tenantID)
-	}
-
-	if err := conn.Connect(ctx); err != nil {
-		logger.ErrorCtx(ctx, fmt.Sprintf("failed to connect to tenant database: %v", err))
-		libOpentelemetry.HandleSpanError(span, "failed to connect", err)
-
-		return nil, fmt.Errorf("failed to connect to tenant database: %w", err)
-	}
-
-	if pgConfig.Schema != "" {
-		logger.InfoCtx(ctx, fmt.Sprintf("connection configured with search_path=%s for tenant %s (mode: %s)", pgConfig.Schema, tenantID, config.IsolationMode))
-	}
-
-	return conn, nil
 }
 
 func (p *Manager) cacheConnection(
@@ -780,7 +762,7 @@ func (p *Manager) cacheConnection(
 
 	if p.closed {
 		if conn.ConnectionDB != nil {
-			_ = (*conn.ConnectionDB).Close()
+			_ = p.closePostgresConn(conn, "", "")
 		}
 
 		return nil, core.ErrManagerClosed
@@ -788,7 +770,7 @@ func (p *Manager) cacheConnection(
 
 	if cached, ok := p.connections[tenantID]; ok && cached != nil && cached.ConnectionDB != nil {
 		if conn.ConnectionDB != nil {
-			_ = (*conn.ConnectionDB).Close()
+			_ = p.closePostgresConn(conn, "", "")
 		}
 
 		p.lastAccessed[tenantID] = time.Now()
@@ -917,12 +899,10 @@ func (p *Manager) evictLRU(_ context.Context, logger libLog.Logger) {
 	// Manager-specific cleanup: close the postgres connection and remove from all maps.
 	if conn, ok := p.connections[candidateID]; ok {
 		if conn.ConnectionDB != nil {
-			_ = (*conn.ConnectionDB).Close()
+			_ = p.closePostgresConn(conn, "", "")
 		}
 
-		delete(p.connections, candidateID)
-		delete(p.lastAccessed, candidateID)
-		delete(p.lastSettingsCheck, candidateID)
+		p.deleteTenantConnectionStateLocked(candidateID)
 	}
 }
 
@@ -949,14 +929,12 @@ func (p *Manager) Close(_ context.Context) error {
 
 	for tenantID, conn := range p.connections {
 		if conn.ConnectionDB != nil {
-			if err := (*conn.ConnectionDB).Close(); err != nil {
+			if err := p.closePostgresConn(conn, "", ""); err != nil {
 				errs = append(errs, err)
 			}
 		}
 
-		delete(p.connections, tenantID)
-		delete(p.lastAccessed, tenantID)
-		delete(p.lastSettingsCheck, tenantID)
+		p.deleteTenantConnectionStateLocked(tenantID)
 	}
 
 	p.mu.Unlock()
@@ -981,14 +959,18 @@ func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 
 	var err error
 	if conn.ConnectionDB != nil {
-		err = (*conn.ConnectionDB).Close()
+		err = p.closePostgresConn(conn, "", "")
 	}
 
+	p.deleteTenantConnectionStateLocked(tenantID)
+
+	return err
+}
+
+func (p *Manager) deleteTenantConnectionStateLocked(tenantID string) {
 	delete(p.connections, tenantID)
 	delete(p.lastAccessed, tenantID)
 	delete(p.lastSettingsCheck, tenantID)
-
-	return err
 }
 
 // Stats returns connection statistics.

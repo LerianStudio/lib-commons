@@ -63,8 +63,8 @@ func (e *retryStateEntry) incRetryAndMaybeMarkDegraded(maxBeforeDegraded int) (d
 // startTenantConsumer spawns a consumer goroutine for a tenant.
 // MUST be called with c.mu held.
 func (c *MultiTenantConsumer) startTenantConsumer(parentCtx context.Context, tenantID string) {
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(parentCtx)
-	logger := logcompat.New(baseLogger)
+	_, tracer, _, _ := libCommons.NewTrackingFromContext(parentCtx) //nolint:dogsled
+	logger := logcompat.FromContext(parentCtx)
 
 	parentCtx, span := tracer.Start(parentCtx, "consumer.multi_tenant_consumer.start_tenant_consumer")
 	defer span.End()
@@ -86,8 +86,8 @@ func (c *MultiTenantConsumer) superviseTenantQueues(ctx context.Context, tenantI
 	// Set tenantID in context for handlers
 	ctx = core.SetTenantIDInContext(ctx, tenantID)
 
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-	logger := logcompat.New(baseLogger)
+	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
+	logger := logcompat.FromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.consume_for_tenant")
 	defer span.End()
@@ -123,8 +123,7 @@ func (c *MultiTenantConsumer) consumeTenantQueue(
 	handler HandlerFunc,
 	_ *logcompat.Logger,
 ) {
-	baseLogger, _, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
-	logger := logcompat.New(baseLogger).WithFields("tenant_id", tenantID, "queue", queueName)
+	logger := logcompat.FromContext(ctx).WithFields("tenant_id", tenantID, "queue", queueName)
 
 	// Guard against nil RabbitMQ manager (e.g., during lazy mode testing)
 	if c.rabbitmq == nil {

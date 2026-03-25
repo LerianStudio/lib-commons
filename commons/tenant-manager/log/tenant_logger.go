@@ -20,7 +20,7 @@ func (l *TenantAwareLogger) Log(ctx context.Context, level log.Level, msg string
 		ctx = context.Background()
 	}
 
-	if tenantID := tmcore.GetTenantIDFromContext(ctx); tenantID != "" {
+	if tenantID := tmcore.GetTenantID(ctx); tenantID != "" {
 		fields = append(fields, log.String("tenant_id", tenantID))
 	}
 

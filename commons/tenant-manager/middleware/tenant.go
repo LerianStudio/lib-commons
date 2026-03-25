@@ -97,8 +97,8 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		ctx = context.Background()
 	}
 
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-	logger := logcompat.New(baseLogger)
+	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
+	logger := logcompat.Prefer(nil, logcompat.FromContext(ctx))
 
 	ctx, span := tracer.Start(ctx, "middleware.tenant.resolve_db")
 	defer span.End()
