@@ -823,6 +823,32 @@ func TestMultiPoolMiddleware_extractTenantID(t *testing.T) {
 		defer resp.Body.Close()
 	})
 
+	t.Run("returns error when upstream auth assertion is missing", func(t *testing.T) {
+		t.Parallel()
+
+		token := buildTestJWT(t, map[string]any{
+			"sub":      "user-123",
+			"tenantId": "tenant-abc",
+		})
+
+		app := fiber.New()
+		app.Get("/test", func(c *fiber.Ctx) error {
+			_, err := mid.extractTenantID(c)
+			assert.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid authorization token")
+
+			return c.SendString("ok")
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		resp, err := app.Test(req, -1)
+		require.NoError(t, err)
+
+		defer resp.Body.Close()
+	})
+
 	t.Run("returns tenant ID from valid token", func(t *testing.T) {
 		t.Parallel()
 

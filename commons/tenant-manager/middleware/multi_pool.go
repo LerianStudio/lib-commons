@@ -310,6 +310,10 @@ func (m *MultiPoolMiddleware) extractTenantID(c *fiber.Ctx) (string, error) {
 		return "", core.ErrAuthorizationTokenRequired
 	}
 
+	if !hasUpstreamAuthAssertion(c) {
+		return "", core.ErrInvalidAuthorizationToken
+	}
+
 	token, _, err := new(jwt.Parser).ParseUnverified(accessToken, jwt.MapClaims{})
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", core.ErrInvalidAuthorizationToken, err)

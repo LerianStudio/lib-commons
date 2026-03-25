@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 
 	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
 	liblog "github.com/LerianStudio/lib-commons/v4/commons/log"
@@ -111,6 +112,14 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 			core.ErrAuthorizationTokenRequired)
 
 		return unauthorizedError(c, "MISSING_TOKEN", "Authorization token is required")
+	}
+
+	if !hasUpstreamAuthAssertion(c) {
+		logger.ErrorCtx(ctx, "missing upstream auth assertion before tenant middleware")
+		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "missing upstream auth assertion",
+			core.ErrInvalidAuthorizationToken)
+
+		return unauthorizedError(c, "UNAUTHORIZED", "Unauthorized")
 	}
 
 	// Parse JWT token without signature verification.
@@ -290,6 +299,32 @@ func unauthorizedError(c *fiber.Ctx, code, message string) error {
 		"title":   "Unauthorized",
 		"message": message,
 	})
+}
+
+func hasUpstreamAuthAssertion(c *fiber.Ctx) bool {
+	if c == nil {
+		return false
+	}
+
+	if verified, ok := c.Locals("auth_verified").(bool); ok {
+		return verified
+	}
+
+	keys := []string{"user_id", "userID", "user", "claims", "jwt"}
+	for _, key := range keys {
+		value := c.Locals(key)
+		if value == nil {
+			continue
+		}
+
+		if stringValue, ok := value.(string); ok && strings.TrimSpace(stringValue) == "" {
+			continue
+		}
+
+		return true
+	}
+
+	return false
 }
 
 // Enabled returns whether the middleware is enabled.

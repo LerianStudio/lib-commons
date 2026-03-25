@@ -266,6 +266,35 @@ func TestTenantMiddleware_WithTenantDB(t *testing.T) {
 		assert.Contains(t, string(body), "Unauthorized")
 	})
 
+	t.Run("valid JWT without upstream auth assertion returns 401", func(t *testing.T) {
+		pgManager, _ := newTestManagers(t)
+
+		middleware := NewTenantMiddleware(WithPostgresManager(pgManager))
+
+		token := buildTestJWT(t, map[string]any{
+			"sub":      "user-123",
+			"tenantId": "tenant-abc",
+		})
+
+		app := fiber.New()
+		app.Use(middleware.WithTenantDB)
+		app.Get("/test", func(c *fiber.Ctx) error {
+			return c.SendString("ok")
+		})
+
+		req := httptest.NewRequest(http.MethodGet, "/test", nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := app.Test(req, -1)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Contains(t, string(body), "Unauthorized")
+	})
+
 	t.Run("valid JWT with tenantId calls next handler", func(t *testing.T) {
 		// Create an enabled middleware with no real managers configured.
 		// Both postgres and mongo pointers remain nil, so the middleware skips
