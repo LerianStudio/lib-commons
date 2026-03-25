@@ -79,3 +79,18 @@ func TestRedactValue_RedactMaskFallsBackForNonString(t *testing.T) {
 
 	assert.Equal(t, "****", masked)
 }
+
+func TestRedactValue_SecretDefaultsToFullRedaction(t *testing.T) {
+	t.Parallel()
+
+	masked := redactValue(domain.KeyDef{Secret: true}, "amqp://user:pass@host")
+
+	assert.Equal(t, "****", masked)
+}
+
+func TestEffectiveRedactPolicy_NormalizesZeroValue(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, domain.RedactNone, effectiveRedactPolicy(domain.KeyDef{}))
+	assert.Equal(t, domain.RedactFull, effectiveRedactPolicy(domain.KeyDef{Secret: true}))
+}

@@ -212,3 +212,15 @@ func TestBuildSettings_RetainsRawSecretValuesInSnapshot(t *testing.T) {
 	assert.Equal(t, "changeme", settings["db.password"].Value)
 	assert.True(t, settings["db.password"].Redacted)
 }
+
+func TestInitDefaults_ZeroValueRedactPolicyIsNotMarkedRedacted(t *testing.T) {
+	t.Parallel()
+
+	values := initDefaults([]domain.KeyDef{{
+		Key:           "app.name",
+		ValueType:     domain.ValueTypeString,
+		ApplyBehavior: domain.ApplyLiveRead,
+	}})
+
+	assert.False(t, values["app.name"].Redacted)
+}

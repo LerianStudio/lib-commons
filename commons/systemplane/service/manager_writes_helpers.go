@@ -35,7 +35,7 @@ func (manager *defaultManager) previewConfigSnapshot(ctx context.Context, ops []
 		ev := current.Configs[op.Key]
 		ev.Key = def.Key
 		ev.Default = def.DefaultValue
-		ev.Redacted = def.RedactPolicy != domain.RedactNone
+		ev.Redacted = isRedacted(def)
 
 		if op.Reset || domain.IsNilValue(op.Value) {
 			ev.Value = def.DefaultValue

@@ -212,7 +212,7 @@ func initDefaults(defs []domain.KeyDef) map[string]domain.EffectiveValue {
 			Override: nil,
 			Source:   "default",
 			Revision: domain.RevisionZero,
-			Redacted: def.RedactPolicy != domain.RedactNone,
+			Redacted: isRedacted(def),
 		}
 	}
 

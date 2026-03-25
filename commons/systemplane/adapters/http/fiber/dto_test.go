@@ -116,7 +116,7 @@ func TestToEffectiveValueDTO_Redacted(t *testing.T) {
 	// layer are already masked. The DTO preserves them without re-masking.
 	ev := domain.EffectiveValue{
 		Key:      "db.password",
-		Value:    redactedPlaceholder,
+		Value:    "********",
 		Default:  "default-secret",
 		Source:   "env",
 		Redacted: true,
@@ -125,7 +125,7 @@ func TestToEffectiveValueDTO_Redacted(t *testing.T) {
 	dto := toEffectiveValueDTO(ev)
 
 	assert.Equal(t, "db.password", dto.Key)
-	assert.Equal(t, redactedPlaceholder, dto.Value)
+	assert.Equal(t, "********", dto.Value)
 	assert.Equal(t, "default-secret", dto.Default)
 	assert.True(t, dto.Redacted)
 }
@@ -168,6 +168,7 @@ func TestToSchemaResponse(t *testing.T) {
 	entries := []service.SchemaEntry{
 		{
 			Key:              "test.key",
+			EnvVar:           "TEST_KEY",
 			Kind:             domain.KindConfig,
 			AllowedScopes:    []domain.Scope{domain.ScopeGlobal, domain.ScopeTenant},
 			ValueType:        domain.ValueTypeString,
@@ -175,6 +176,7 @@ func TestToSchemaResponse(t *testing.T) {
 			MutableAtRuntime: true,
 			ApplyBehavior:    domain.ApplyLiveRead,
 			Secret:           true,
+			RedactPolicy:     domain.RedactFull,
 			Description:      "A test key",
 			Group:            "test",
 		},
@@ -184,14 +186,31 @@ func TestToSchemaResponse(t *testing.T) {
 
 	require.Len(t, resp.Keys, 1)
 	assert.Equal(t, "test.key", resp.Keys[0].Key)
+	assert.Equal(t, "TEST_KEY", resp.Keys[0].EnvVar)
 	assert.Equal(t, "config", resp.Keys[0].Kind)
 	assert.Equal(t, []string{"global", "tenant"}, resp.Keys[0].AllowedScopes)
 	assert.Equal(t, "string", resp.Keys[0].ValueType)
 	assert.True(t, resp.Keys[0].MutableAtRuntime)
 	assert.Equal(t, "live-read", resp.Keys[0].ApplyBehavior)
 	assert.True(t, resp.Keys[0].Secret)
+	assert.Equal(t, "full", resp.Keys[0].RedactPolicy)
 	assert.Equal(t, "A test key", resp.Keys[0].Description)
 	assert.Equal(t, "test", resp.Keys[0].Group)
+}
+
+func TestToSchemaResponse_DefaultRedactPolicyIsExplicit(t *testing.T) {
+	t.Parallel()
+
+	resp := toSchemaResponse([]service.SchemaEntry{{
+		Key:           "test.key",
+		Kind:          domain.KindConfig,
+		AllowedScopes: []domain.Scope{domain.ScopeGlobal},
+		ValueType:     domain.ValueTypeString,
+		RedactPolicy:  domain.RedactNone,
+	}})
+
+	require.Len(t, resp.Keys, 1)
+	assert.Equal(t, "none", resp.Keys[0].RedactPolicy)
 }
 
 func TestParseHistoryFilter_Defaults(t *testing.T) {

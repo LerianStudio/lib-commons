@@ -52,6 +52,7 @@ type SchemaResponse struct {
 // SchemaEntryDTO represents a single key's metadata in the schema response.
 type SchemaEntryDTO struct {
 	Key              string   `json:"key"`
+	EnvVar           string   `json:"envVar,omitempty"`
 	Kind             string   `json:"kind"`
 	AllowedScopes    []string `json:"allowedScopes"`
 	ValueType        string   `json:"valueType"`
@@ -59,6 +60,7 @@ type SchemaEntryDTO struct {
 	MutableAtRuntime bool     `json:"mutableAtRuntime"`
 	ApplyBehavior    string   `json:"applyBehavior"`
 	Secret           bool     `json:"secret"`
+	RedactPolicy     string   `json:"redactPolicy"`
 	Description      string   `json:"description"`
 	Group            string   `json:"group"`
 }
@@ -108,7 +110,6 @@ type ReloadResponse struct {
 // Conversion helpers.
 
 const (
-	redactedPlaceholder = "********"
 	defaultHistoryLimit = 50
 	maxHistoryLimit     = 100
 	revisionQuoteChar   = "\""
@@ -197,6 +198,7 @@ func toSchemaResponse(entries []service.SchemaEntry) SchemaResponse {
 
 		dtos[i] = SchemaEntryDTO{
 			Key:              entry.Key,
+			EnvVar:           entry.EnvVar,
 			Kind:             string(entry.Kind),
 			AllowedScopes:    scopes,
 			ValueType:        string(entry.ValueType),
@@ -204,6 +206,7 @@ func toSchemaResponse(entries []service.SchemaEntry) SchemaResponse {
 			MutableAtRuntime: entry.MutableAtRuntime,
 			ApplyBehavior:    string(entry.ApplyBehavior),
 			Secret:           entry.Secret,
+			RedactPolicy:     string(entry.RedactPolicy),
 			Description:      entry.Description,
 			Group:            entry.Group,
 		}

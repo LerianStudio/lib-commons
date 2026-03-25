@@ -91,6 +91,23 @@ func TestSpec_ContainsAllDefinitions(t *testing.T) {
 		"spec must contain exactly %d definitions", len(expectedDefinitions))
 }
 
+func TestSpec_SchemaEntryDTOContainsMetadataFields(t *testing.T) {
+	raw := Spec()
+
+	var doc struct {
+		Definitions map[string]struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"definitions"`
+	}
+
+	require.NoError(t, json.Unmarshal(raw, &doc))
+
+	schemaEntry, ok := doc.Definitions["systemplane.SchemaEntryDTO"]
+	require.True(t, ok)
+	assert.Contains(t, schemaEntry.Properties, "envVar")
+	assert.Contains(t, schemaEntry.Properties, "redactPolicy")
+}
+
 func TestMergeInto_EmptyTarget(t *testing.T) {
 	target := []byte(`{"swagger":"2.0","info":{"title":"Test","version":"1.0"},"paths":{}}`)
 

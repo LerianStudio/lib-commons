@@ -47,6 +47,7 @@ type ResolvedSet struct {
 // SchemaEntry describes a single key's metadata for the schema endpoint.
 type SchemaEntry struct {
 	Key              string
+	EnvVar           string
 	Kind             domain.Kind
 	AllowedScopes    []domain.Scope
 	ValueType        domain.ValueType
