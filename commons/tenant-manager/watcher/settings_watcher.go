@@ -10,6 +10,7 @@ package watcher
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
@@ -35,6 +36,7 @@ type SettingsWatcher struct {
 	interval time.Duration
 	managers []*tmpostgres.Manager
 	logger   *logcompat.Logger
+	mu       sync.Mutex
 	cancel   context.CancelFunc
 	done     chan struct{}
 }
@@ -88,9 +90,17 @@ func NewSettingsWatcher(c *client.Client, service string, opts ...Option) *Setti
 
 // Start launches the background revalidation goroutine. It returns immediately.
 // The goroutine runs until Stop is called or the parent context is cancelled.
+// Calling Start on an already-started watcher is a no-op.
 func (w *SettingsWatcher) Start(ctx context.Context) {
 	if len(w.managers) == 0 {
 		return // no-op: nothing to revalidate
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.cancel != nil {
+		return // already started
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
@@ -101,14 +111,25 @@ func (w *SettingsWatcher) Start(ctx context.Context) {
 }
 
 // Stop cancels the background goroutine and waits for it to finish.
+// After Stop returns the watcher can be re-started with Start.
 func (w *SettingsWatcher) Stop() {
-	if w.cancel != nil {
-		w.cancel()
+	w.mu.Lock()
+	cancel := w.cancel
+	done := w.done
+	w.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
 	}
 
-	if w.done != nil {
-		<-w.done
+	if done != nil {
+		<-done
 	}
+
+	w.mu.Lock()
+	w.cancel = nil
+	w.done = nil
+	w.mu.Unlock()
 }
 
 // loop is the background goroutine that periodically revalidates settings.

@@ -73,7 +73,7 @@ func TestSettingsWatcher_NoOpWhenNoManagers(t *testing.T) {
 	assert.False(t, apiCalled.Load(), "should not call API when no managers are configured")
 }
 
-func TestSettingsWatcher_AppliesSettings(t *testing.T) {
+func TestSettingsWatcher_NoAPICallsWhenNoConnections(t *testing.T) {
 	t.Parallel()
 
 	configCalled := atomic.Int32{}
@@ -182,8 +182,9 @@ func TestSettingsWatcher_HandlesAPIErrors(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Return 500 for all tenant config calls
-		if strings.Contains(r.URL.Path, "/connections/") {
+		// Return 500 for all tenant config calls.
+		// The client uses path: /v1/tenants/{id}/associations/{svc}/connections
+		if strings.HasSuffix(r.URL.Path, "/connections") {
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte(`{"error":"internal error"}`))
 			return
@@ -199,6 +200,7 @@ func TestSettingsWatcher_HandlesAPIErrors(t *testing.T) {
 	pgManager := tmpostgres.NewManager(tmClient, "ledger",
 		tmpostgres.WithModule("onboarding"),
 		tmpostgres.WithLogger(logger),
+		tmpostgres.WithTestConnections("tenant-1"),
 	)
 
 	w := NewSettingsWatcher(tmClient, "ledger",
@@ -210,12 +212,11 @@ func TestSettingsWatcher_HandlesAPIErrors(t *testing.T) {
 	ctx := context.Background()
 	ctx = libCommons.ContextWithLogger(ctx, logger)
 
-	// Directly call revalidate — since pgManager has no connections, nothing happens.
-	// This test verifies the watcher doesn't panic on errors.
+	// revalidate should call the API for tenant-1, get 500, and log a warning.
 	w.revalidate(ctx)
 
-	// No connections means no API calls, so no error logs expected.
-	// The test passes if no panic occurred.
+	assert.True(t, logger.ContainsSubstring("failed to fetch config"),
+		"should log warning about API error")
 }
 
 func TestSettingsWatcher_HandlesSuspendedTenant(t *testing.T) {
@@ -224,8 +225,8 @@ func TestSettingsWatcher_HandlesSuspendedTenant(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
-		if strings.Contains(r.URL.Path, "/connections/") {
-			// Return 403 for suspended tenant
+		// Return 403 with suspended status for all tenant config calls.
+		if strings.HasSuffix(r.URL.Path, "/connections") {
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte(`{"code":"TS-SUSPENDED","error":"service suspended","status":"suspended"}`))
 
@@ -242,6 +243,7 @@ func TestSettingsWatcher_HandlesSuspendedTenant(t *testing.T) {
 	pgManager := tmpostgres.NewManager(tmClient, "ledger",
 		tmpostgres.WithModule("onboarding"),
 		tmpostgres.WithLogger(logger),
+		tmpostgres.WithTestConnections("tenant-1"),
 	)
 
 	w := NewSettingsWatcher(tmClient, "ledger",
@@ -252,10 +254,10 @@ func TestSettingsWatcher_HandlesSuspendedTenant(t *testing.T) {
 	ctx := context.Background()
 	ctx = libCommons.ContextWithLogger(ctx, logger)
 
-	// Directly test handleSuspendedTenant — it should log and not panic.
-	w.handleSuspendedTenant(ctx, "tenant-suspended", w.logger)
+	// revalidate calls the API for tenant-1, gets 403 suspended, and triggers handleSuspendedTenant.
+	w.revalidate(ctx)
 
-	assert.True(t, logger.ContainsSubstring("tenant-suspended suspended/purged"),
+	assert.True(t, logger.ContainsSubstring("suspended/purged"),
 		"should log about suspended tenant")
 }
 
