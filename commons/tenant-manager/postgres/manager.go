@@ -1311,3 +1311,18 @@ func CreateDirectConnection(ctx context.Context, cfg *core.PostgreSQLConfig) (*s
 
 	return db, nil
 }
+
+// WithTestConnections pre-populates the connection map with stub entries for the
+// given tenant IDs. Each entry is a minimal PostgresConnection with no real
+// database handle, so ConnectedTenantIDs will include these IDs while
+// ApplyConnectionSettings will safely no-op (no ConnectionDB).
+//
+// This option is intended for testing code that depends on Manager (e.g., the
+// SettingsWatcher) without requiring a real database.
+func WithTestConnections(tenantIDs ...string) Option {
+	return func(p *Manager) {
+		for _, id := range tenantIDs {
+			p.connections[id] = &PostgresConnection{}
+		}
+	}
+}

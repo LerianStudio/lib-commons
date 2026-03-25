@@ -332,3 +332,149 @@ func TestSettingsWatcher_StopWithoutStart(t *testing.T) {
 	// Stop on a watcher that was never started should not panic.
 	w.Stop()
 }
+
+func TestSettingsWatcher_MultipleManagers(t *testing.T) {
+	t.Parallel()
+
+	// Track which tenant IDs the API receives config requests for.
+	requestedTenants := make(chan string, 10)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		// Extract tenant ID from path: /v1/tenants/{tenantID}/associations/{service}/connections
+		parts := strings.Split(r.URL.Path, "/")
+		// Expected: ["", "v1", "tenants", "{tenantID}", "associations", "{service}", "connections"]
+		if len(parts) >= 4 && parts[2] == "tenants" {
+			requestedTenants <- parts[3]
+		}
+
+		resp := map[string]any{
+			"id":         "test",
+			"tenantSlug": "test",
+			"databases":  map[string]any{},
+		}
+
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	tmClient := newTestClient(t, server.URL)
+	logger := testutil.NewCapturingLogger()
+
+	// Create two PG managers simulating onboarding and transaction modules.
+	// tenant-A in onboarding only, tenant-B in transaction only, tenant-C
+	// in both (to verify deduplication).
+	onboardingMgr := tmpostgres.NewManager(tmClient, "ledger",
+		tmpostgres.WithModule("onboarding"),
+		tmpostgres.WithLogger(logger),
+		tmpostgres.WithTestConnections("tenant-A", "tenant-C"),
+	)
+
+	transactionMgr := tmpostgres.NewManager(tmClient, "ledger",
+		tmpostgres.WithModule("transaction"),
+		tmpostgres.WithLogger(logger),
+		tmpostgres.WithTestConnections("tenant-B", "tenant-C"),
+	)
+
+	sw := NewSettingsWatcher(tmClient, "ledger",
+		WithPostgresManager(onboardingMgr),
+		WithPostgresManager(transactionMgr),
+		WithLogger(logger),
+		WithInterval(time.Second), // long interval; we call revalidate directly
+	)
+
+	ctx := context.Background()
+	ctx = libCommons.ContextWithLogger(ctx, logger)
+
+	// Verify both managers are registered.
+	assert.Len(t, sw.managers, 2, "both PG managers should be registered")
+
+	// Verify collectTenantIDs returns deduplicated union.
+	ids := sw.collectTenantIDs()
+	assert.Len(t, ids, 3, "should return 3 unique tenant IDs from both managers")
+	assert.ElementsMatch(t, []string{"tenant-A", "tenant-B", "tenant-C"}, ids)
+
+	// Run revalidate and verify the API is called for each unique tenant.
+	sw.revalidate(ctx)
+
+	// Drain the channel to collect all requested tenant IDs.
+	close(requestedTenants)
+
+	var fetched []string
+	for id := range requestedTenants {
+		fetched = append(fetched, id)
+	}
+
+	assert.Len(t, fetched, 3, "API should be called once per unique tenant")
+	assert.ElementsMatch(t, []string{"tenant-A", "tenant-B", "tenant-C"}, fetched)
+
+	// Verify the revalidation log message mentions all 3 tenants.
+	assert.True(t, logger.ContainsSubstring("revalidated connection settings for 3/3"),
+		"should log revalidation for all 3 tenants")
+}
+
+func TestSettingsWatcher_WithPostgresManager_NilIsIgnored(t *testing.T) {
+	t.Parallel()
+
+	tmClient := newTestClient(t, "http://127.0.0.1:0")
+
+	sw := NewSettingsWatcher(tmClient, "ledger",
+		WithPostgresManager(nil),
+	)
+
+	assert.Empty(t, sw.managers, "nil manager should not be appended")
+}
+
+func TestSettingsWatcher_ImmediateRevalidationOnStart(t *testing.T) {
+	t.Parallel()
+
+	revalidateCalled := atomic.Int32{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		// Match: /v1/tenants/{tenantID}/associations/{service}/connections
+		if strings.HasSuffix(r.URL.Path, "/connections") {
+			revalidateCalled.Add(1)
+		}
+
+		resp := map[string]any{
+			"id":         "tenant-imm",
+			"tenantSlug": "imm",
+			"databases":  map[string]any{},
+		}
+
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	tmClient := newTestClient(t, server.URL)
+	logger := testutil.NewCapturingLogger()
+
+	pgManager := tmpostgres.NewManager(tmClient, "ledger",
+		tmpostgres.WithModule("onboarding"),
+		tmpostgres.WithLogger(logger),
+		tmpostgres.WithTestConnections("tenant-imm"),
+	)
+
+	// Use a very long interval so the ticker does not fire during the test.
+	sw := NewSettingsWatcher(tmClient, "ledger",
+		WithPostgresManager(pgManager),
+		WithLogger(logger),
+		WithInterval(10*time.Second),
+	)
+
+	ctx := context.Background()
+	ctx = libCommons.ContextWithLogger(ctx, logger)
+
+	sw.Start(ctx)
+
+	// Give the goroutine time to run the immediate revalidation.
+	time.Sleep(100 * time.Millisecond)
+
+	sw.Stop()
+
+	assert.GreaterOrEqual(t, revalidateCalled.Load(), int32(1),
+		"revalidate should be called immediately on Start, before first tick")
+}

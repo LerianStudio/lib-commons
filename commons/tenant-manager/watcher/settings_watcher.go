@@ -26,11 +26,14 @@ const defaultInterval = 30 * time.Second
 // SettingsWatcher periodically revalidates PostgreSQL connection pool settings
 // for all connected tenants. It runs independently of the RabbitMQ consumer,
 // so services without RabbitMQ still get settings revalidation.
+//
+// Multiple PostgreSQL managers can be registered (e.g., one per module such as
+// onboarding and transaction). Each manager is revalidated independently.
 type SettingsWatcher struct {
 	client   *client.Client
 	service  string
 	interval time.Duration
-	postgres *tmpostgres.Manager
+	managers []*tmpostgres.Manager
 	logger   *logcompat.Logger
 	cancel   context.CancelFunc
 	done     chan struct{}
@@ -39,9 +42,15 @@ type SettingsWatcher struct {
 // Option configures a SettingsWatcher.
 type Option func(*SettingsWatcher)
 
-// WithPostgresManager sets the PostgreSQL manager for settings revalidation.
+// WithPostgresManager appends a PostgreSQL manager for settings revalidation.
+// Multiple managers can be registered (e.g., one for onboarding and one for
+// transaction). Each will be revalidated independently.
 func WithPostgresManager(p *tmpostgres.Manager) Option {
-	return func(w *SettingsWatcher) { w.postgres = p }
+	return func(w *SettingsWatcher) {
+		if p != nil {
+			w.managers = append(w.managers, p)
+		}
+	}
 }
 
 // WithInterval sets the revalidation interval (minimum 1 second).
@@ -80,7 +89,7 @@ func NewSettingsWatcher(c *client.Client, service string, opts ...Option) *Setti
 // Start launches the background revalidation goroutine. It returns immediately.
 // The goroutine runs until Stop is called or the parent context is cancelled.
 func (w *SettingsWatcher) Start(ctx context.Context) {
-	if w.postgres == nil {
+	if len(w.managers) == 0 {
 		return // no-op: nothing to revalidate
 	}
 
@@ -106,18 +115,22 @@ func (w *SettingsWatcher) Stop() {
 func (w *SettingsWatcher) loop(ctx context.Context) {
 	defer close(w.done)
 
+	w.logger.InfofCtx(ctx, "settings watcher started (interval=%s)", w.interval)
+
+	// Immediate revalidation on startup so settings changed while the
+	// service was down are applied without waiting for the first tick.
+	w.revalidate(ctx)
+
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 
-	w.logger.InfofCtx(ctx, "settings watcher started (interval=%s)", w.interval)
-
 	for {
 		select {
-		case <-ticker.C:
-			w.revalidate(ctx)
 		case <-ctx.Done():
 			w.logger.InfoCtx(ctx, "settings watcher stopped: context cancelled")
 			return
+		case <-ticker.C:
+			w.revalidate(ctx)
 		}
 	}
 }
@@ -155,8 +168,8 @@ func (w *SettingsWatcher) revalidate(ctx context.Context) {
 			continue
 		}
 
-		if w.postgres != nil {
-			w.postgres.ApplyConnectionSettings(tenantID, config)
+		for _, mgr := range w.managers {
+			mgr.ApplyConnectionSettings(tenantID, config)
 		}
 
 		revalidated++
@@ -167,23 +180,37 @@ func (w *SettingsWatcher) revalidate(ctx context.Context) {
 	}
 }
 
-// collectTenantIDs returns the tenant IDs from the PostgreSQL manager.
+// collectTenantIDs returns the deduplicated union of tenant IDs from all
+// registered PostgreSQL managers.
 func (w *SettingsWatcher) collectTenantIDs() []string {
-	if w.postgres == nil {
+	if len(w.managers) == 0 {
 		return nil
 	}
 
-	return w.postgres.ConnectedTenantIDs()
+	seen := make(map[string]struct{})
+
+	for _, mgr := range w.managers {
+		for _, id := range mgr.ConnectedTenantIDs() {
+			seen[id] = struct{}{}
+		}
+	}
+
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+
+	return ids
 }
 
-// handleSuspendedTenant closes the PostgreSQL connection for a tenant that has
-// been suspended or purged. The consumer's sync loop will handle removing the
-// tenant from its own state independently.
+// handleSuspendedTenant closes the PostgreSQL connections for a tenant that has
+// been suspended or purged across all registered managers. The consumer's sync
+// loop will handle removing the tenant from its own state independently.
 func (w *SettingsWatcher) handleSuspendedTenant(ctx context.Context, tenantID string, logger *logcompat.Logger) {
 	logger.WarnfCtx(ctx, "settings watcher: tenant %s suspended/purged, closing connections", tenantID)
 
-	if w.postgres != nil {
-		if err := w.postgres.CloseConnection(ctx, tenantID); err != nil {
+	for _, mgr := range w.managers {
+		if err := mgr.CloseConnection(ctx, tenantID); err != nil {
 			logger.WarnfCtx(ctx, "settings watcher: failed to close PostgreSQL connection for suspended tenant %s: %v", tenantID, err)
 		}
 	}
