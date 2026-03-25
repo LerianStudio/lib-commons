@@ -107,7 +107,7 @@ func compareKeyDef(pd domain.KeyDef, sk SharedKey, matchedByEnv bool) []Mismatch
 		mismatchForString(pd, sk, "MutableAtRuntime", strconv.FormatBool(sk.MutableAtRuntime), strconv.FormatBool(pd.MutableAtRuntime)),
 		mismatchForString(pd, sk, "ValueType", string(sk.ValueType), string(pd.ValueType)),
 		mismatchForString(pd, sk, "Secret", strconv.FormatBool(sk.Secret), strconv.FormatBool(pd.Secret)),
-		mismatchForString(pd, sk, "RedactPolicy", string(sk.RedactPolicy), string(pd.RedactPolicy)),
+		mismatchForString(pd, sk, "RedactPolicy", string(normalizeRedactPolicy(sk.RedactPolicy, sk.Secret)), string(normalizeRedactPolicy(pd.RedactPolicy, pd.Secret))),
 	}
 
 	if matchedByEnv && pd.Key != sk.Key {
@@ -157,4 +157,16 @@ func allowedEnvVars(sk SharedKey) []string {
 
 func containsString(values []string, target string) bool {
 	return slices.Contains(values, target)
+}
+
+func normalizeRedactPolicy(policy domain.RedactPolicy, secret bool) domain.RedactPolicy {
+	if secret {
+		return domain.RedactFull
+	}
+
+	if policy == "" {
+		return domain.RedactNone
+	}
+
+	return policy
 }

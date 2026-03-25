@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestAllowAllAuthorizer_AlwaysNil(t *testing.T) {
+func TestAllowAllAuthorizer_AllowsNonEmptyPermissionWithContext(t *testing.T) {
 	t.Parallel()
 
 	auth := &AllowAllAuthorizer{}
@@ -23,13 +23,30 @@ func TestAllowAllAuthorizer_AlwaysNil(t *testing.T) {
 		"system/configs:read",
 		"admin:delete",
 		"anything-at-all",
-		"",
 	}
 
 	for _, perm := range perms {
 		err := auth.Authorize(context.Background(), perm)
 		assert.NoError(t, err, "permission %q should be allowed", perm)
 	}
+}
+
+func TestAllowAllAuthorizer_FailsClosed(t *testing.T) {
+	t.Parallel()
+
+	auth := &AllowAllAuthorizer{}
+
+	assert.ErrorIs(t, auth.Authorize(nil, "system/configs:read"), domain.ErrPermissionDenied)
+	assert.ErrorIs(t, auth.Authorize(context.Background(), ""), domain.ErrPermissionDenied)
+	assert.ErrorIs(t, auth.Authorize(context.Background(), "   "), domain.ErrPermissionDenied)
+}
+
+func TestAllowAllAuthorizer_TypedNilReceiver_FailsClosed(t *testing.T) {
+	t.Parallel()
+
+	var auth *AllowAllAuthorizer
+
+	assert.ErrorIs(t, auth.Authorize(context.Background(), "system/configs:read"), domain.ErrPermissionDenied)
 }
 
 func TestDelegatingAuthorizer_SplitsCorrectly(t *testing.T) {

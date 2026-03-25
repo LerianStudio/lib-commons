@@ -165,13 +165,31 @@ func TestValidateKeyDefs_SecretMismatch(t *testing.T) {
 }
 
 func TestValidateKeyDefs_RedactPolicyMismatch(t *testing.T) {
-	catalogSlice := []SharedKey{{Key: "auth.client_secret", ValueType: domain.ValueTypeString, ApplyBehavior: domain.ApplyBootstrapOnly, Secret: true, RedactPolicy: domain.RedactFull}}
+	catalogSlice := []SharedKey{{Key: "ui.theme", ValueType: domain.ValueTypeString, ApplyBehavior: domain.ApplyLiveRead, Secret: false, RedactPolicy: domain.RedactNone}}
 	pd := keyDefFromShared(catalogSlice[0])
 	pd.RedactPolicy = domain.RedactMask
 
 	mismatches := ValidateKeyDefs([]domain.KeyDef{pd}, catalogSlice)
 	require.Len(t, mismatches, 1)
 	assert.Equal(t, "RedactPolicy", mismatches[0].Field)
+}
+
+func TestValidateKeyDefs_RedactPolicy_EmptyAndNoneAreEquivalent(t *testing.T) {
+	catalogSlice := []SharedKey{{Key: "redis.host", ValueType: domain.ValueTypeString, ApplyBehavior: domain.ApplyBundleRebuild, MutableAtRuntime: true, Component: "redis", Secret: false, RedactPolicy: domain.RedactNone}}
+	pd := keyDefFromShared(catalogSlice[0])
+	pd.RedactPolicy = ""
+
+	mismatches := ValidateKeyDefs([]domain.KeyDef{pd}, catalogSlice)
+	assert.Empty(t, mismatches)
+}
+
+func TestValidateKeyDefs_RedactPolicy_SecretImpliesFull(t *testing.T) {
+	catalogSlice := []SharedKey{{Key: "auth.client_secret", ValueType: domain.ValueTypeString, ApplyBehavior: domain.ApplyBootstrapOnly, Secret: true, RedactPolicy: domain.RedactFull}}
+	pd := keyDefFromShared(catalogSlice[0])
+	pd.RedactPolicy = ""
+
+	mismatches := ValidateKeyDefs([]domain.KeyDef{pd}, catalogSlice)
+	assert.Empty(t, mismatches)
 }
 
 func TestValidateKeyDefs_ProductOnlyKeys_NotFlagged(t *testing.T) {

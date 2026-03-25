@@ -13,14 +13,16 @@ import (
 // interface. Products wire their existing context-extraction logic (e.g.,
 // auth.GetUserID, auth.GetTenantID) without writing a full struct.
 type FuncIdentityResolver struct {
-	// ActorFunc extracts the actor ID from context. If nil or returns "", DefaultActor is used.
+	// ActorFunc extracts the actor ID from context.
+	// If it returns "", DefaultActor is used when configured; otherwise Actor fails closed.
 	ActorFunc func(ctx context.Context) string
 
-	// TenantFunc extracts the tenant ID from context. If nil or returns "", empty string is returned (not an error).
+	// TenantFunc extracts the tenant ID from context.
+	// It must return a non-empty tenant ID; otherwise TenantID fails closed.
 	TenantFunc func(ctx context.Context) string
 
-	// DefaultActor is the fallback actor ID when ActorFunc is nil or returns "".
-	// Defaults to "anonymous" if empty.
+	// DefaultActor is an explicit fallback actor ID used when ActorFunc is nil or returns "".
+	// If empty, Actor fails closed.
 	DefaultActor string
 }
 
@@ -29,12 +31,14 @@ var _ IdentityResolver = (*FuncIdentityResolver)(nil)
 
 func (r *FuncIdentityResolver) Actor(ctx context.Context) (domain.Actor, error) {
 	if domain.IsNilValue(r) {
-		return domain.Actor{ID: "anonymous"}, nil
+		return domain.Actor{}, domain.ErrPermissionDenied
 	}
 
 	if ctx == nil {
-		ctx = context.Background()
+		return domain.Actor{}, domain.ErrPermissionDenied
 	}
+
+	fallback := strings.TrimSpace(r.DefaultActor)
 
 	id := ""
 	if r.ActorFunc != nil {
@@ -42,9 +46,9 @@ func (r *FuncIdentityResolver) Actor(ctx context.Context) (domain.Actor, error) 
 	}
 
 	if id == "" {
-		id = r.DefaultActor
+		id = fallback
 		if id == "" {
-			id = "anonymous"
+			return domain.Actor{}, domain.ErrPermissionDenied
 		}
 	}
 
@@ -53,12 +57,17 @@ func (r *FuncIdentityResolver) Actor(ctx context.Context) (domain.Actor, error) 
 
 func (r *FuncIdentityResolver) TenantID(ctx context.Context) (string, error) {
 	if domain.IsNilValue(r) || r.TenantFunc == nil {
-		return "", nil
+		return "", domain.ErrPermissionDenied
 	}
 
 	if ctx == nil {
-		ctx = context.Background()
+		return "", domain.ErrPermissionDenied
 	}
 
-	return strings.TrimSpace(r.TenantFunc(ctx)), nil
+	tenantID := strings.TrimSpace(r.TenantFunc(ctx))
+	if tenantID == "" {
+		return "", domain.ErrPermissionDenied
+	}
+
+	return tenantID, nil
 }

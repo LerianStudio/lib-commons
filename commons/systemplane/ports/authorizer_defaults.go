@@ -16,7 +16,15 @@ type AllowAllAuthorizer struct{}
 // Compile-time interface check.
 var _ Authorizer = (*AllowAllAuthorizer)(nil)
 
-func (a *AllowAllAuthorizer) Authorize(_ context.Context, _ string) error {
+func (a *AllowAllAuthorizer) Authorize(ctx context.Context, permission string) error {
+	if domain.IsNilValue(a) {
+		return domain.ErrPermissionDenied
+	}
+
+	if ctx == nil || strings.TrimSpace(permission) == "" {
+		return domain.ErrPermissionDenied
+	}
+
 	return nil
 }
 

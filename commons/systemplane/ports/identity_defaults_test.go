@@ -8,6 +8,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/domain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,50 +34,7 @@ func TestFuncIdentityResolver_HappyPath(t *testing.T) {
 	assert.Equal(t, "tenant-abc", tenant)
 }
 
-func TestFuncIdentityResolver_NilActorFunc(t *testing.T) {
-	t.Parallel()
-
-	resolver := &FuncIdentityResolver{
-		ActorFunc: nil,
-	}
-
-	actor, err := resolver.Actor(context.Background())
-
-	require.NoError(t, err)
-	assert.Equal(t, "anonymous", actor.ID)
-}
-
-func TestFuncIdentityResolver_EmptyActorReturn(t *testing.T) {
-	t.Parallel()
-
-	resolver := &FuncIdentityResolver{
-		ActorFunc: func(_ context.Context) string {
-			return ""
-		},
-	}
-
-	actor, err := resolver.Actor(context.Background())
-
-	require.NoError(t, err)
-	assert.Equal(t, "anonymous", actor.ID)
-}
-
-func TestFuncIdentityResolver_WhitespaceActorReturn(t *testing.T) {
-	t.Parallel()
-
-	resolver := &FuncIdentityResolver{
-		ActorFunc: func(_ context.Context) string {
-			return "   "
-		},
-	}
-
-	actor, err := resolver.Actor(context.Background())
-
-	require.NoError(t, err)
-	assert.Equal(t, "anonymous", actor.ID)
-}
-
-func TestFuncIdentityResolver_CustomDefaultActor(t *testing.T) {
+func TestFuncIdentityResolver_UsesExplicitDefaultActor(t *testing.T) {
 	t.Parallel()
 
 	resolver := &FuncIdentityResolver{
@@ -90,129 +48,117 @@ func TestFuncIdentityResolver_CustomDefaultActor(t *testing.T) {
 	assert.Equal(t, "system-bot", actor.ID)
 }
 
-func TestFuncIdentityResolver_NilTenantFunc(t *testing.T) {
+func TestFuncIdentityResolver_ActorFuncEmpty_UsesExplicitDefaultActor(t *testing.T) {
 	t.Parallel()
 
 	resolver := &FuncIdentityResolver{
-		TenantFunc: nil,
-	}
-
-	tenant, err := resolver.TenantID(context.Background())
-
-	require.NoError(t, err)
-	assert.Equal(t, "", tenant)
-}
-
-func TestFuncIdentityResolver_EmptyTenantReturn(t *testing.T) {
-	t.Parallel()
-
-	resolver := &FuncIdentityResolver{
-		TenantFunc: func(_ context.Context) string {
-			return ""
-		},
-	}
-
-	tenant, err := resolver.TenantID(context.Background())
-
-	require.NoError(t, err)
-	assert.Equal(t, "", tenant)
-}
-
-func TestFuncIdentityResolver_WhitespaceTenantReturn(t *testing.T) {
-	t.Parallel()
-
-	resolver := &FuncIdentityResolver{
-		TenantFunc: func(_ context.Context) string {
+		ActorFunc: func(_ context.Context) string {
 			return "   "
 		},
+		DefaultActor: "service-account",
 	}
 
-	tenant, err := resolver.TenantID(context.Background())
+	actor, err := resolver.Actor(context.Background())
 
 	require.NoError(t, err)
-	assert.Equal(t, "", tenant)
+	assert.Equal(t, "service-account", actor.ID)
 }
 
-func TestFuncIdentityResolver_NeverReturnsError(t *testing.T) {
+func TestFuncIdentityResolver_FailsClosedWithoutIdentity(t *testing.T) {
 	t.Parallel()
 
-	// Exhaustively verify that no combination of inputs produces an error.
-	configs := []struct {
+	tests := []struct {
 		name     string
 		resolver *FuncIdentityResolver
+		ctx      context.Context
 	}{
 		{
-			name:     "zero value",
-			resolver: &FuncIdentityResolver{},
+			name:     "typed nil receiver",
+			resolver: nil,
+			ctx:      context.Background(),
 		},
 		{
-			name: "both funcs set",
+			name: "nil context actor",
 			resolver: &FuncIdentityResolver{
-				ActorFunc:  func(_ context.Context) string { return "u" },
-				TenantFunc: func(_ context.Context) string { return "t" },
+				ActorFunc: func(_ context.Context) string { return "user-42" },
 			},
+			ctx: nil,
 		},
 		{
-			name: "both funcs return empty",
+			name: "actor missing without fallback",
 			resolver: &FuncIdentityResolver{
-				ActorFunc:  func(_ context.Context) string { return "" },
-				TenantFunc: func(_ context.Context) string { return "" },
+				ActorFunc: nil,
 			},
+			ctx: context.Background(),
 		},
 		{
-			name: "custom default with nil funcs",
+			name: "actor empty without fallback",
 			resolver: &FuncIdentityResolver{
-				DefaultActor: "fallback",
+				ActorFunc: func(_ context.Context) string { return "" },
 			},
+			ctx: context.Background(),
 		},
 	}
 
-	for _, cfg := range configs {
-		t.Run(cfg.name, func(t *testing.T) {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, actorErr := cfg.resolver.Actor(context.Background())
-			assert.NoError(t, actorErr)
-
-			_, tenantErr := cfg.resolver.TenantID(context.Background())
-			assert.NoError(t, tenantErr)
+			_, err := tt.resolver.Actor(tt.ctx)
+			require.ErrorIs(t, err, domain.ErrPermissionDenied)
 		})
 	}
 }
 
-func TestFuncIdentityResolver_TypedNilReceiver(t *testing.T) {
+func TestFuncIdentityResolver_TenantID_FailsClosedWithoutTenantIdentity(t *testing.T) {
 	t.Parallel()
 
-	var resolver *FuncIdentityResolver
-
-	actor, err := resolver.Actor(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, "anonymous", actor.ID)
-
-	tenant, err := resolver.TenantID(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, "", tenant)
-}
-
-func TestFuncIdentityResolver_NilContext_UsesBackground(t *testing.T) {
-	t.Parallel()
-
-	resolver := &FuncIdentityResolver{
-		ActorFunc: func(ctx context.Context) string {
-			assert.NotNil(t, ctx)
-			return "user-42"
+	tests := []struct {
+		name     string
+		resolver *FuncIdentityResolver
+		ctx      context.Context
+	}{
+		{
+			name:     "typed nil receiver",
+			resolver: nil,
+			ctx:      context.Background(),
 		},
-		TenantFunc: func(ctx context.Context) string {
-			assert.NotNil(t, ctx)
-			return "tenant-abc"
+		{
+			name: "nil tenant func",
+			resolver: &FuncIdentityResolver{
+				TenantFunc: nil,
+			},
+			ctx: context.Background(),
+		},
+		{
+			name: "nil context",
+			resolver: &FuncIdentityResolver{
+				TenantFunc: func(_ context.Context) string { return "tenant-1" },
+			},
+			ctx: nil,
+		},
+		{
+			name: "empty tenant",
+			resolver: &FuncIdentityResolver{
+				TenantFunc: func(_ context.Context) string { return "" },
+			},
+			ctx: context.Background(),
+		},
+		{
+			name: "whitespace tenant",
+			resolver: &FuncIdentityResolver{
+				TenantFunc: func(_ context.Context) string { return "   " },
+			},
+			ctx: context.Background(),
 		},
 	}
 
-	actor, err := resolver.Actor(nil)
-	require.NoError(t, err)
-	assert.Equal(t, "user-42", actor.ID)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	tenant, err := resolver.TenantID(nil)
-	require.NoError(t, err)
-	assert.Equal(t, "tenant-abc", tenant)
+			_, err := tt.resolver.TenantID(tt.ctx)
+			require.ErrorIs(t, err, domain.ErrPermissionDenied)
+		})
+	}
 }
