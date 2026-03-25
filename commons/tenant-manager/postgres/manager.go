@@ -65,6 +65,16 @@ const defaultMaxAllowedOpenConns = 200
 
 const defaultMaxAllowedIdleConns = 50
 
+// validStatementTimeoutPattern matches PostgreSQL-acceptable statement_timeout values:
+// plain integers (interpreted as milliseconds) or integers followed by a unit suffix.
+// Accepted units: us, ms, s, min, h, d.
+var validStatementTimeoutPattern = regexp.MustCompile(`^[0-9]+\s*(us|ms|s|min|h|d)?$`)
+
+// validStatementTimeout checks whether the value is a valid PostgreSQL statement_timeout.
+func validStatementTimeout(v string) bool {
+	return validStatementTimeoutPattern.MatchString(v)
+}
+
 // defaultIdleTimeout is the default duration before a tenant connection becomes
 // eligible for eviction. Connections accessed within this window are considered
 // active and will not be evicted, allowing the pool to grow beyond maxConnections.
@@ -1157,7 +1167,9 @@ func (p *Manager) ApplyConnectionSettings(tenantID string, config *core.TenantCo
 
 	// Apply statementTimeout via SQL when it changed and is non-empty
 	if newSettings.statementTimeout != "" && (!hasPrev || newSettings.statementTimeout != prev.statementTimeout) {
-		if _, err := db.ExecContext(context.Background(), "SET statement_timeout = '"+newSettings.statementTimeout+"'"); err != nil {
+		if !validStatementTimeout(newSettings.statementTimeout) {
+			compatLogger.Warnf("invalid statement_timeout value %q for tenant %s, skipping", newSettings.statementTimeout, tenantID)
+		} else if _, err := db.ExecContext(context.Background(), "SET statement_timeout = '"+newSettings.statementTimeout+"'"); err != nil {
 			compatLogger.Warnf("failed to set statement_timeout for tenant %s: %v", tenantID, err)
 		}
 	}

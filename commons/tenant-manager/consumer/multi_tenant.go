@@ -179,6 +179,10 @@ func NewMultiTenantConsumerWithError(
 		return nil, errors.New("consumer.NewMultiTenantConsumerWithError: Service must not be empty")
 	}
 
+	if config.CacheTTL < 0 {
+		return nil, fmt.Errorf("consumer.NewMultiTenantConsumerWithError: CacheTTL must be non-negative, got %v", config.CacheTTL)
+	}
+
 	// Guard against nil logger to prevent panics downstream
 	if logger == nil {
 		logger = libLog.NewNop()

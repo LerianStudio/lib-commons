@@ -1905,6 +1905,78 @@ func TestManager_ApplyConnectionSettings_StatementTimeout(t *testing.T) {
 		"should log the statementTimeout change")
 }
 
+func TestValidStatementTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value string
+		valid bool
+	}{
+		{name: "plain_integer_milliseconds", value: "30000", valid: true},
+		{name: "zero", value: "0", valid: true},
+		{name: "with_ms_suffix", value: "500ms", valid: true},
+		{name: "with_s_suffix", value: "30s", valid: true},
+		{name: "with_min_suffix", value: "2min", valid: true},
+		{name: "with_h_suffix", value: "1h", valid: true},
+		{name: "with_d_suffix", value: "7d", valid: true},
+		{name: "with_us_suffix", value: "100us", valid: true},
+		{name: "sql_injection_attempt", value: "'; DROP TABLE users; --", valid: false},
+		{name: "negative_value", value: "-1", valid: false},
+		{name: "empty_string", value: "", valid: false},
+		{name: "letters_only", value: "abc", valid: false},
+		{name: "invalid_unit", value: "30x", valid: false},
+		{name: "special_chars", value: "30; DROP", valid: false},
+		{name: "quoted_value", value: "'30s'", valid: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.valid, validStatementTimeout(tt.value),
+				"validStatementTimeout(%q) = %v, want %v", tt.value, !tt.valid, tt.valid)
+		})
+	}
+}
+
+func TestManager_ApplyConnectionSettings_RejectsInvalidStatementTimeout(t *testing.T) {
+	t.Parallel()
+
+	c := mustNewTestClient(t, "http://localhost:8080")
+	capLogger := testutil.NewCapturingLogger()
+	manager := NewManager(c, "ledger",
+		WithModule("onboarding"),
+		WithLogger(capLogger),
+	)
+
+	tDB := &trackingDB{}
+	var db dbresolver.DB = tDB
+
+	manager.connections["tenant-123"] = &PostgresConnection{
+		ConnectionDB: &db,
+	}
+
+	config := &core.TenantConfig{
+		Databases: map[string]core.DatabaseConfig{
+			"onboarding": {
+				ConnectionSettings: &core.ConnectionSettings{
+					MaxOpenConns:     30,
+					MaxIdleConns:     10,
+					StatementTimeout: "'; DROP TABLE users; --",
+				},
+			},
+		},
+	}
+
+	manager.ApplyConnectionSettings("tenant-123", config)
+
+	queries := tDB.ExecQueries()
+	assert.Empty(t, queries, "should NOT execute SET with invalid statement_timeout value")
+	assert.True(t, capLogger.ContainsSubstring("invalid statement_timeout"),
+		"should log warning about invalid statement_timeout value")
+}
+
 func TestManager_CloseConnection_CleansUpLastAppliedSettings(t *testing.T) {
 	t.Parallel()
 
