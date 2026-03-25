@@ -2,8 +2,6 @@ package middleware
 
 import (
 	"context"
-	"errors"
-	"net/http"
 
 	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
 	liblog "github.com/LerianStudio/lib-commons/v4/commons/log"
@@ -13,6 +11,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
 	tmmongo "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/postgres"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/tenantcache"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -20,9 +19,16 @@ import (
 // TenantMiddleware extracts tenantId from JWT token and resolves the database connection.
 // It stores the connection in context for downstream handlers and repositories.
 // Supports PostgreSQL only, MongoDB only, or both databases.
+//
+// When a TenantCache and TenantLoader are configured, the middleware uses a cache-first
+// strategy: it checks the shared cache before resolving connections. On cache miss or
+// expiry, the loader fetches the tenant config from tenant-manager and caches it.
+// This avoids unnecessary API calls and benefits from event-driven cache updates.
 type TenantMiddleware struct {
-	postgres *tmpostgres.Manager // PostgreSQL manager (optional)
-	mongo    *tmmongo.Manager    // MongoDB manager (optional)
+	postgres *tmpostgres.Manager        // PostgreSQL manager (optional)
+	mongo    *tmmongo.Manager           // MongoDB manager (optional)
+	cache    *tenantcache.TenantCache   // shared tenant config cache (optional)
+	loader   *tenantcache.TenantLoader  // lazy-loads tenant config on cache miss (optional)
 	enabled  bool
 }
 
@@ -44,6 +50,24 @@ func WithMongoManager(mongo *tmmongo.Manager) TenantMiddlewareOption {
 	return func(m *TenantMiddleware) {
 		m.mongo = mongo
 		m.enabled = m.postgres != nil || m.mongo != nil
+	}
+}
+
+// WithTenantCache sets the shared tenant config cache for the middleware.
+// When both cache and loader are configured, the middleware uses a cache-first strategy:
+// on cache hit, it skips the loader; on miss or expiry, it calls the loader to fetch and cache.
+func WithTenantCache(cache *tenantcache.TenantCache) TenantMiddlewareOption {
+	return func(m *TenantMiddleware) {
+		m.cache = cache
+	}
+}
+
+// WithTenantLoader sets the lazy-load tenant loader for the middleware.
+// When both cache and loader are configured, the middleware calls the loader on cache miss
+// to fetch the tenant config from tenant-manager and cache it for subsequent requests.
+func WithTenantLoader(loader *tenantcache.TenantLoader) TenantMiddlewareOption {
+	return func(m *TenantMiddleware) {
+		m.loader = loader
 	}
 }
 
@@ -157,6 +181,15 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	// Store tenant ID in context
 	ctx = core.ContextWithTenantID(ctx, tenantID)
 
+	// Cache-first path: ensure tenant is known before resolving connections.
+	if err := m.ensureTenantCached(ctx, tenantID); err != nil {
+		logger.Base().Log(ctx, liblog.LevelError, "failed to lazy-load tenant config",
+			liblog.String("tenant_id", tenantID), liblog.Err(err))
+		libOpentelemetry.HandleSpanError(span, "failed to lazy-load tenant config", err)
+
+		return mapDomainErrorToHTTP(c, err, tenantID)
+	}
+
 	// Handle PostgreSQL if manager is configured
 	if m.postgres != nil {
 		conn, err := m.postgres.GetConnection(ctx, tenantID)
@@ -199,97 +232,21 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	return c.Next()
 }
 
-// mapDomainErrorToHTTP is a centralized error-to-HTTP mapping function shared by
-// both TenantMiddleware and MultiPoolMiddleware to ensure consistent status codes
-// for the same domain errors.
-func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
-	// Missing token or JWT errors -> 401
-	if errors.Is(err, core.ErrAuthorizationTokenRequired) ||
-		errors.Is(err, core.ErrInvalidAuthorizationToken) ||
-		errors.Is(err, core.ErrInvalidTenantClaims) ||
-		errors.Is(err, core.ErrMissingTenantIDClaim) {
-		return unauthorizedError(c, "UNAUTHORIZED", "Unauthorized")
+// ensureTenantCached checks the shared cache for the tenant. On cache miss or expired entry,
+// it calls the loader to fetch and cache the tenant config from tenant-manager.
+// Returns nil if cache+loader are not configured (no-op for backward compatibility).
+func (m *TenantMiddleware) ensureTenantCached(ctx context.Context, tenantID string) error {
+	if m.cache == nil || m.loader == nil {
+		return nil
 	}
 
-	// Tenant not found -> 404
-	if errors.Is(err, core.ErrTenantNotFound) {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{
-			"code":    "TENANT_NOT_FOUND",
-			"title":   "Tenant Not Found",
-			"message": "tenant not found: " + tenantID,
-		})
+	if _, found := m.cache.Get(tenantID); found {
+		return nil
 	}
 
-	// Tenant suspended/purged -> 403
-	var suspErr *core.TenantSuspendedError
-	if errors.As(err, &suspErr) {
-		return forbiddenError(c, "0131", "Service Suspended",
-			"tenant service is "+suspErr.Status)
-	}
+	_, err := m.loader.LoadTenant(ctx, tenantID)
 
-	// Generic access denied (403 without parsed status) -> 403
-	if errors.Is(err, core.ErrTenantServiceAccessDenied) {
-		return forbiddenError(c, "0131", "Access Denied",
-			"tenant service access denied")
-	}
-
-	// Manager closed or service not configured -> 503
-	if errors.Is(err, core.ErrManagerClosed) || errors.Is(err, core.ErrServiceNotConfigured) {
-		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
-			"code":    "SERVICE_UNAVAILABLE",
-			"title":   "Service Unavailable",
-			"message": "Service temporarily unavailable",
-		})
-	}
-
-	// Circuit breaker open -> 503
-	if errors.Is(err, core.ErrCircuitBreakerOpen) {
-		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
-			"code":    "SERVICE_UNAVAILABLE",
-			"title":   "Service Unavailable",
-			"message": "Service temporarily unavailable",
-		})
-	}
-
-	// Connection errors -> 503
-	if errors.Is(err, core.ErrConnectionFailed) {
-		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
-			"code":    "SERVICE_UNAVAILABLE",
-			"title":   "Service Unavailable",
-			"message": "Failed to resolve tenant database",
-		})
-	}
-
-	// Default -> 500
-	return internalServerError(c, "TENANT_DB_ERROR", "Failed to resolve tenant database")
-}
-
-// forbiddenError sends an HTTP 403 Forbidden response.
-// Used when the tenant-service association exists but is not active (suspended or purged).
-func forbiddenError(c *fiber.Ctx, code, title, message string) error {
-	return c.Status(http.StatusForbidden).JSON(fiber.Map{
-		"code":    code,
-		"title":   title,
-		"message": message,
-	})
-}
-
-// internalServerError sends an HTTP 500 Internal Server Error response.
-func internalServerError(c *fiber.Ctx, code, title string) error {
-	return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
-		"code":    code,
-		"title":   title,
-		"message": "Internal server error",
-	})
-}
-
-// unauthorizedError sends an HTTP 401 Unauthorized response.
-func unauthorizedError(c *fiber.Ctx, code, message string) error {
-	return c.Status(http.StatusUnauthorized).JSON(fiber.Map{
-		"code":    code,
-		"title":   "Unauthorized",
-		"message": message,
-	})
+	return err
 }
 
 // Enabled returns whether the middleware is enabled.

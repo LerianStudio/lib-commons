@@ -8,40 +8,36 @@ import (
 	"context"
 	"testing"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/event"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/tenantcache"
 )
 
 // --------------------------------------------------------------------------
-// Event-driven mode tests
+// Event-driven mode tests (T-004: consumer no longer creates/starts listener)
 // --------------------------------------------------------------------------
 
-func TestRun_EventDrivenMode(t *testing.T) {
+func TestRun_NoListener(t *testing.T) {
 	t.Parallel()
-
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rc.Close() })
 
 	server := setupTenantManagerAPIServer(t, makeTenantSummaries(5))
 	config := newTestConfig(server.URL)
 
-	consumer, err := NewMultiTenantConsumerWithError(dummyRabbitMQManager(), rc, config, testutil.NewMockLogger())
+	consumer, err := NewMultiTenantConsumerWithError(config, testutil.NewMockLogger(), WithRabbitMQ(dummyRabbitMQManager()))
 	require.NoError(t, err)
 
 	ctx := context.Background()
 	err = consumer.Run(ctx)
 	require.NoError(t, err, "Run() should not return error")
 
-	// Event listener must be created and started
+	// Run() must NOT create an eventListener -- it is external now
 	consumer.mu.RLock()
-	hasListener := consumer.eventListener != nil
+	hasParentCtx := consumer.parentCtx != nil
 	consumer.mu.RUnlock()
-	assert.True(t, hasListener, "eventListener should be created")
+	assert.True(t, hasParentCtx, "parentCtx should be set by Run()")
 
 	require.NoError(t, consumer.Close())
 }
@@ -49,15 +45,11 @@ func TestRun_EventDrivenMode(t *testing.T) {
 func TestRun_EventDriven_EmptyTenantMap(t *testing.T) {
 	t.Parallel()
 
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rc.Close() })
-
 	// API has 5 tenants -- but event-driven mode does NOT call discoverTenants
 	server := setupTenantManagerAPIServer(t, makeTenantSummaries(5))
 	config := newTestConfig(server.URL)
 
-	consumer, err := NewMultiTenantConsumerWithError(dummyRabbitMQManager(), rc, config, testutil.NewMockLogger())
+	consumer, err := NewMultiTenantConsumerWithError(config, testutil.NewMockLogger(), WithRabbitMQ(dummyRabbitMQManager()))
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -73,36 +65,73 @@ func TestRun_EventDriven_EmptyTenantMap(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// Close tests
+// Close tests (T-004: Close no longer stops a listener)
 // --------------------------------------------------------------------------
 
-func TestClose_EventDrivenMode(t *testing.T) {
+func TestClose_NoListenerStop(t *testing.T) {
 	t.Parallel()
-
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rc.Close() })
 
 	server := setupTenantManagerAPIServer(t, nil)
 	config := newTestConfig(server.URL)
 
-	consumer, err := NewMultiTenantConsumerWithError(dummyRabbitMQManager(), rc, config, testutil.NewMockLogger())
+	consumer, err := NewMultiTenantConsumerWithError(config, testutil.NewMockLogger(), WithRabbitMQ(dummyRabbitMQManager()))
 	require.NoError(t, err)
 
 	ctx := context.Background()
 	err = consumer.Run(ctx)
 	require.NoError(t, err)
 
-	// Verify listener is running
-	consumer.mu.RLock()
-	hasListener := consumer.eventListener != nil
-	consumer.mu.RUnlock()
-	require.True(t, hasListener, "event listener must be running before Close()")
-
-	// Close should stop the event listener
+	// Close should work cleanly without needing to stop any listener
 	err = consumer.Close()
 	require.NoError(t, err, "Close() should not return error")
 
 	stats := consumer.Stats()
 	assert.True(t, stats.Closed, "consumer should be marked as closed")
+}
+
+// --------------------------------------------------------------------------
+// WithEventDispatcher option test
+// --------------------------------------------------------------------------
+
+func TestWithEventDispatcher_SetsField(t *testing.T) {
+	t.Parallel()
+
+	server := setupTenantManagerAPIServer(t, nil)
+	config := newTestConfig(server.URL)
+
+	cache := tenantcache.NewTenantCache()
+	dispatcher := event.NewEventDispatcher(cache, nil, "test-service")
+
+	consumer, err := NewMultiTenantConsumerWithError(
+		config,
+		testutil.NewMockLogger(),
+		WithRabbitMQ(dummyRabbitMQManager()),
+		WithEventDispatcher(dispatcher),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, dispatcher, consumer.dispatcher, "dispatcher should be set via option")
+
+	require.NoError(t, consumer.Close())
+}
+
+// --------------------------------------------------------------------------
+// Constructor no longer requires redisClient or rabbitmq as positional param
+// --------------------------------------------------------------------------
+
+func TestNewMultiTenantConsumer_NoRedisRequired(t *testing.T) {
+	t.Parallel()
+
+	server := setupTenantManagerAPIServer(t, nil)
+	config := newTestConfig(server.URL)
+
+	// Constructor no longer takes redisClient -- only config, logger, opts
+	consumer, err := NewMultiTenantConsumerWithError(
+		config,
+		testutil.NewMockLogger(),
+		WithRabbitMQ(dummyRabbitMQManager()),
+	)
+	require.NoError(t, err, "constructor should succeed without redisClient")
+	require.NotNil(t, consumer, "consumer should not be nil")
+
+	require.NoError(t, consumer.Close())
 }

@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Lerian Studio. All rights reserved.
+// Use of this source code is governed by the Elastic License 2.0
+// that can be found in the LICENSE file.
+
 package consumer
 
 import (
@@ -18,23 +22,25 @@ import (
 	tmmongo "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/postgres"
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/rabbitmq"
-	"github.com/alicebob/miniredis/v2"
 	amqp "github.com/rabbitmq/amqp091-go"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // NewMultiTenantConsumer is a test convenience wrapper around NewMultiTenantConsumerWithError
-// that panics on error. This keeps test code concise while preserving the v4 constructor signature.
+// that panics on error. It prepends WithRabbitMQ(rabbitmq) to opts when rabbitmq is non-nil,
+// preserving backward compatibility with existing test call sites.
 func NewMultiTenantConsumer(
 	rabbitmq *tmrabbitmq.Manager,
-	redisClient redis.UniversalClient,
 	config MultiTenantConfig,
 	logger libLog.Logger,
 	opts ...Option,
 ) *MultiTenantConsumer {
-	c, err := NewMultiTenantConsumerWithError(rabbitmq, redisClient, config, logger, opts...)
+	if rabbitmq != nil {
+		opts = append([]Option{WithRabbitMQ(rabbitmq)}, opts...)
+	}
+
+	c, err := NewMultiTenantConsumerWithError(config, logger, opts...)
 	if err != nil {
 		panic(fmt.Sprintf("NewMultiTenantConsumer (test helper): %v", err))
 	}
@@ -43,6 +49,7 @@ func NewMultiTenantConsumer(
 }
 
 // mustNewConsumer is an alternative test helper that takes *testing.T and calls t.Fatal on error.
+// It prepends WithRabbitMQ(rabbitmq) to opts when rabbitmq is non-nil.
 func mustNewConsumer(
 	t *testing.T,
 	rabbitmq *tmrabbitmq.Manager,
@@ -52,27 +59,16 @@ func mustNewConsumer(
 ) *MultiTenantConsumer {
 	t.Helper()
 
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rc.Close() })
+	if rabbitmq != nil {
+		opts = append([]Option{WithRabbitMQ(rabbitmq)}, opts...)
+	}
 
-	c, err := NewMultiTenantConsumerWithError(rabbitmq, rc, config, logger, opts...)
+	c, err := NewMultiTenantConsumerWithError(config, logger, opts...)
 	if err != nil {
 		t.Fatalf("mustNewConsumer: %v", err)
 	}
 
 	return c
-}
-
-// testRedisClient creates a miniredis + redis.Client pair for tests.
-func testRedisClient(t *testing.T) redis.UniversalClient {
-	t.Helper()
-
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rc.Close() })
-
-	return rc
 }
 
 // generateTenantIDs creates a slice of N tenant IDs for testing.
@@ -223,8 +219,6 @@ func TestMultiTenantConsumer_DefaultMultiTenantConfig(t *testing.T) {
 func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 	t.Parallel()
 
-	rc := testRedisClient(t)
-
 	tests := []struct {
 		name             string
 		config           MultiTenantConfig
@@ -295,7 +289,7 @@ func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			consumer, err := NewMultiTenantConsumerWithError(dummyRabbitMQManager(), rc, tt.config, testutil.NewMockLogger())
+			consumer, err := NewMultiTenantConsumerWithError(tt.config, testutil.NewMockLogger(), WithRabbitMQ(dummyRabbitMQManager()))
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -322,48 +316,10 @@ func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 	}
 }
 
-// TestMultiTenantConsumer_NewWithNilRedisClient verifies that nil redisClient is rejected.
-func TestMultiTenantConsumer_NewWithNilRedisClient(t *testing.T) {
-	t.Parallel()
-
-	config := MultiTenantConfig{
-		MultiTenantURL:    "http://tenant-manager:4003",
-		ServiceAPIKey:     "test-key",
-		Service:           "ledger",
-		AllowInsecureHTTP: true,
-	}
-
-	consumer, err := NewMultiTenantConsumerWithError(dummyRabbitMQManager(), nil, config, testutil.NewMockLogger())
-	require.Error(t, err, "nil redisClient should be rejected")
-	assert.Nil(t, consumer)
-	assert.Contains(t, err.Error(), "redisClient must not be nil")
-}
-
-// TestMultiTenantConsumer_NewWithTypedNilRedisClient verifies that typed-nil redisClient is rejected.
-func TestMultiTenantConsumer_NewWithTypedNilRedisClient(t *testing.T) {
-	t.Parallel()
-
-	var typedNil *redis.Client
-
-	config := MultiTenantConfig{
-		MultiTenantURL:    "http://tenant-manager:4003",
-		ServiceAPIKey:     "test-key",
-		Service:           "ledger",
-		AllowInsecureHTTP: true,
-	}
-
-	consumer, err := NewMultiTenantConsumerWithError(dummyRabbitMQManager(), typedNil, config, testutil.NewMockLogger())
-	require.Error(t, err, "typed-nil redisClient should be rejected")
-	assert.Nil(t, consumer)
-	assert.Contains(t, err.Error(), "redisClient must not be nil")
-}
-
 // TestMultiTenantConsumer_CacheTTLPropagation verifies that the CacheTTL config field
 // is propagated to the underlying HTTP client via client.WithCacheTTL.
 func TestMultiTenantConsumer_CacheTTLPropagation(t *testing.T) {
 	t.Parallel()
-
-	rc := testRedisClient(t)
 
 	tests := []struct {
 		name     string
@@ -396,7 +352,7 @@ func TestMultiTenantConsumer_CacheTTLPropagation(t *testing.T) {
 				CacheTTL:          tt.cacheTTL,
 			}
 
-			consumer, err := NewMultiTenantConsumerWithError(dummyRabbitMQManager(), rc, config, testutil.NewMockLogger())
+			consumer, err := NewMultiTenantConsumerWithError(config, testutil.NewMockLogger(), WithRabbitMQ(dummyRabbitMQManager()))
 			require.NoError(t, err)
 			assert.NotNil(t, consumer)
 			assert.NotNil(t, consumer.pmClient, "pmClient should be created")
@@ -411,8 +367,6 @@ func TestMultiTenantConsumer_CacheTTLPropagation(t *testing.T) {
 // values are rejected by NewMultiTenantConsumerWithError.
 func TestMultiTenantConsumer_CacheTTL_NegativeRejected(t *testing.T) {
 	t.Parallel()
-
-	rc := testRedisClient(t)
 
 	tests := []struct {
 		name     string
@@ -441,7 +395,7 @@ func TestMultiTenantConsumer_CacheTTL_NegativeRejected(t *testing.T) {
 				CacheTTL:          tt.cacheTTL,
 			}
 
-			consumer, err := NewMultiTenantConsumerWithError(dummyRabbitMQManager(), rc, config, testutil.NewMockLogger())
+			consumer, err := NewMultiTenantConsumerWithError(config, testutil.NewMockLogger(), WithRabbitMQ(dummyRabbitMQManager()))
 			require.Error(t, err)
 			assert.Nil(t, consumer)
 			assert.Contains(t, err.Error(), "CacheTTL must be non-negative")
@@ -621,10 +575,9 @@ func TestMultiTenantConsumer_NilLogger(t *testing.T) {
 			t.Parallel()
 
 			server := setupTenantManagerAPIServer(t, nil)
-			rc := testRedisClient(t)
 
 			assert.NotPanics(t, func() {
-				consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), rc, newTestConfig(server.URL), nil) // nil logger
+				consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), newTestConfig(server.URL), nil) // nil logger
 
 				assert.NotNil(t, consumer, "consumer must not be nil even with nil logger")
 
@@ -1069,8 +1022,7 @@ func TestMultiTenantConsumer_StructuredLogEvents(t *testing.T) {
 			})
 			config := newTestConfig(server.URL)
 			logger := testutil.NewCapturingLogger()
-			rc := testRedisClient(t)
-			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), rc, config, logger)
+			consumer := NewMultiTenantConsumer(dummyRabbitMQManager(), config, logger)
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
@@ -1199,8 +1151,6 @@ func TestMultiTenantConsumer_DefaultMultiTenantConfig_IncludesEnvironment(t *tes
 func TestMultiTenantConsumer_AllowInsecureHTTP(t *testing.T) {
 	t.Parallel()
 
-	rc := testRedisClient(t)
-
 	tests := []struct {
 		name        string
 		config      MultiTenantConfig
@@ -1243,7 +1193,7 @@ func TestMultiTenantConsumer_AllowInsecureHTTP(t *testing.T) {
 			t.Parallel()
 
 			consumer, err := NewMultiTenantConsumerWithError(
-				dummyRabbitMQManager(), rc, tt.config, testutil.NewMockLogger(),
+				tt.config, testutil.NewMockLogger(), WithRabbitMQ(dummyRabbitMQManager()),
 			)
 
 			if tt.expectError {

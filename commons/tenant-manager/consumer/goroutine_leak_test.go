@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Lerian Studio. All rights reserved.
+// Use of this source code is governed by the Elastic License 2.0
+// that can be found in the LICENSE file.
+
 package consumer
 
 import (
@@ -5,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -14,22 +16,17 @@ import (
 	"go.uber.org/goleak"
 )
 
-// TestMultiTenantConsumer_Run_CloseStopsListener proves that Close() alone
-// (without cancelling the original context) stops the event listener goroutine.
+// TestMultiTenantConsumer_Run_CloseStopsConsumers proves that Close() alone
+// (without cancelling the original context) stops all tenant consumers.
 // This prevents goroutine leaks when callers pass context.Background().
-func TestMultiTenantConsumer_Run_CloseStopsListener(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rc.Close() })
-
+func TestMultiTenantConsumer_Run_CloseStopsConsumers(t *testing.T) {
 	server := setupTenantManagerAPIServer(t, makeTenantSummaries(1))
 	config := newTestConfig(server.URL)
 
 	consumer, err := NewMultiTenantConsumerWithError(
-		dummyRabbitMQManager(),
-		rc,
 		config,
 		testutil.NewMockLogger(),
+		WithRabbitMQ(dummyRabbitMQManager()),
 	)
 	require.NoError(t, err)
 
@@ -41,7 +38,7 @@ func TestMultiTenantConsumer_Run_CloseStopsListener(t *testing.T) {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
 
-	// Close without cancelling ctx -- this must stop the event listener.
+	// Close without cancelling ctx -- this must stop all tenant consumers.
 	if closeErr := consumer.Close(); closeErr != nil {
 		t.Fatalf("Close() returned unexpected error: %v", closeErr)
 	}
@@ -61,18 +58,13 @@ func TestMultiTenantConsumer_Run_CloseStopsListener(t *testing.T) {
 // TestMultiTenantConsumer_Run_CancelAndCloseNoLeak proves that the normal
 // cleanup path (cancel context + Close) also leaves no leaked goroutines.
 func TestMultiTenantConsumer_Run_CancelAndCloseNoLeak(t *testing.T) {
-	mr := miniredis.RunT(t)
-	rc := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	t.Cleanup(func() { rc.Close() })
-
 	server := setupTenantManagerAPIServer(t, makeTenantSummaries(1))
 	config := newTestConfig(server.URL)
 
 	consumer, err := NewMultiTenantConsumerWithError(
-		dummyRabbitMQManager(),
-		rc,
 		config,
 		testutil.NewMockLogger(),
+		WithRabbitMQ(dummyRabbitMQManager()),
 	)
 	require.NoError(t, err)
 

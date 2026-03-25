@@ -31,6 +31,13 @@ func WithListenerLogger(logger libLog.Logger) ListenerOption {
 	}
 }
 
+// WithService sets the service name on the listener for logging context.
+func WithService(name string) ListenerOption {
+	return func(l *TenantEventListener) {
+		l.service = name
+	}
+}
+
 // TenantEventListener subscribes to Redis Pub/Sub channels matching the
 // tenant-events pattern and dispatches parsed events to the registered handler.
 // One goroutine per listener instance; this is a transport-layer component
@@ -39,6 +46,7 @@ type TenantEventListener struct {
 	redisClient redis.UniversalClient
 	handler     EventHandler
 	logger      *logcompat.Logger
+	service     string
 	cancel      context.CancelFunc
 	done        chan struct{}
 }
@@ -91,7 +99,11 @@ func (l *TenantEventListener) Start(ctx context.Context) error {
 
 	pubsub := l.redisClient.PSubscribe(ctx, SubscriptionPattern)
 
-	logger.InfofCtx(ctx, "tenant event listener subscribed to pattern: %s", SubscriptionPattern)
+	if l.service != "" {
+		logger.InfofCtx(ctx, "tenant event listener [%s] subscribed to pattern: %s", l.service, SubscriptionPattern)
+	} else {
+		logger.InfofCtx(ctx, "tenant event listener subscribed to pattern: %s", SubscriptionPattern)
+	}
 
 	go l.listen(ctx, pubsub)
 
