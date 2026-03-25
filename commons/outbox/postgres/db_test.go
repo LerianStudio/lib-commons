@@ -8,7 +8,7 @@ import (
 	"errors"
 	"testing"
 
-	libPostgres "github.com/LerianStudio/lib-commons/v4/commons/postgres"
+	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,6 +16,29 @@ type primaryDBProviderFunc func() (*sql.DB, error)
 
 func (fn primaryDBProviderFunc) Primary() (*sql.DB, error) {
 	return fn()
+}
+
+type resolverClientStub struct {
+	resolveFn func(context.Context) error
+	primaryFn func() (*sql.DB, error)
+}
+
+func (s resolverClientStub) Resolver(ctx context.Context) (dbresolver.DB, error) {
+	if s.resolveFn != nil {
+		if err := s.resolveFn(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	return nil, nil
+}
+
+func (s resolverClientStub) Primary() (*sql.DB, error) {
+	if s.primaryFn == nil {
+		return nil, nil
+	}
+
+	return s.primaryFn()
 }
 
 func TestResolvePrimaryDB_NilClient(t *testing.T) {
@@ -26,20 +49,21 @@ func TestResolvePrimaryDB_NilClient(t *testing.T) {
 	require.ErrorIs(t, err, ErrConnectionRequired)
 }
 
-func TestResolvePrimaryDB_PrimaryFailure(t *testing.T) {
+func TestResolvePrimaryDB_ResolverFailure(t *testing.T) {
 	t.Parallel()
 
-	client, err := libPostgres.New(libPostgres.Config{
-		PrimaryDSN: "postgres://localhost:5432/postgres",
-		ReplicaDSN: "postgres://localhost:5432/postgres",
-	})
-	require.NoError(t, err)
+	resolverErr := errors.New("resolver unavailable")
+	client := resolverClientStub{
+		resolveFn: func(_ context.Context) error {
+			return resolverErr
+		},
+	}
 
-	db, err := resolvePrimaryDB(nil, client)
+	db, err := resolvePrimaryDB(context.Background(), client)
 	require.Nil(t, db)
 	require.Error(t, err)
-	require.ErrorContains(t, err, "failed to get database connection")
-	require.True(t, errors.Is(err, libPostgres.ErrNotConnected))
+	require.ErrorContains(t, err, "failed to initialize database resolver")
+	require.ErrorIs(t, err, resolverErr)
 }
 
 func TestResolvePrimaryDB_NilPrimaryDB(t *testing.T) {
@@ -61,4 +85,27 @@ func TestResolvePrimaryDB_ReturnsPrimaryDB(t *testing.T) {
 	}))
 	require.NoError(t, err)
 	require.Same(t, expected, db)
+}
+
+func TestResolvePrimaryDB_ResolverInvokedBeforePrimary(t *testing.T) {
+	t.Parallel()
+
+	calledResolver := false
+	calledPrimary := false
+
+	client := resolverClientStub{
+		resolveFn: func(_ context.Context) error {
+			calledResolver = true
+			return nil
+		},
+		primaryFn: func() (*sql.DB, error) {
+			calledPrimary = true
+			return &sql.DB{}, nil
+		},
+	}
+
+	_, err := resolvePrimaryDB(context.Background(), client)
+	require.NoError(t, err)
+	require.True(t, calledResolver)
+	require.True(t, calledPrimary)
 }
