@@ -1,6 +1,10 @@
 version: "2"
 run:
   tests: false
+  skip-dirs:
+    - docs/codereview
+  skip-files:
+    - docs/codereview/.*\.go
 linters:
   enable:
     # --- Existing linters ---
@@ -156,6 +160,8 @@ linters:
       - path: (.+)\.go$
         text: parameter .* always receives
     paths:
+      - docs/codereview$
+      - docs/codereview/
       - third_party$
       - builtin$
       - examples$
@@ -166,6 +172,8 @@ formatters:
   exclusions:
     generated: lax
     paths:
+      - docs/codereview$
+      - docs/codereview/
       - third_party$
       - builtin$
       - examples$

@@ -224,7 +224,7 @@ test-unit:
 	$(call print_title,Running Go unit tests)
 	$(call check_command,go,"Install Go from https://golang.org/doc/install")
 	@set -e; mkdir -p $(TEST_REPORTS_DIR); \
-	pkgs=$$(go list ./... | grep -v '/tests'); \
+	pkgs=$$(go list ./commons/... | grep -v '/tests'); \
 	if [ -z "$$pkgs" ]; then \
 	  echo "No unit test packages found"; \
 	else \
@@ -266,10 +266,10 @@ test-integration:
 	@set -e; mkdir -p $(TEST_REPORTS_DIR); \
 	if [ -n "$(PKG)" ]; then \
 	  echo "Using specified package: $(PKG)"; \
-	  pkgs=$$(go list $(PKG) 2>/dev/null | tr '\n' ' '); \
+	  pkgs=$$(go list $(PKG) 2>/dev/null | grep -v '/docs/codereview' | tr '\n' ' '); \
 	else \
 	  echo "Finding packages with *_integration_test.go files..."; \
-	  dirs=$$(find . -name '*_integration_test.go' -not -path './vendor/*' -exec dirname {} \; 2>/dev/null | sort -u | tr '\n' ' '); \
+	  dirs=$$(find ./commons -name '*_integration_test.go' -not -path './vendor/*' -exec dirname {} \; 2>/dev/null | sort -u | tr '\n' ' '); \
 	  pkgs=$$(if [ -n "$$dirs" ]; then go list $$dirs 2>/dev/null | tr '\n' ' '; fi); \
 	fi; \
 	if [ -z "$$pkgs" ]; then \
@@ -461,10 +461,10 @@ coverage:
 lint:
 	$(call print_title,Running linters on all packages (read-only))
 	$(call check_command,golangci-lint,"go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)")
-	@out=$$(golangci-lint run ./... 2>&1); \
+	@out=$$(golangci-lint run ./commons/... 2>&1); \
 	out_err=$$?; \
 	if command -v perfsprint >/dev/null 2>&1; then \
-		perf_out=$$(perfsprint ./... 2>&1); \
+		perf_out=$$(perfsprint ./commons/... 2>&1); \
 		perf_err=$$?; \
 	else \
 		perf_out=""; \
@@ -489,7 +489,7 @@ lint:
 lint-fix:
 	$(call print_title,Running linters with auto-fix on all packages)
 	$(call check_command,golangci-lint,"go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)")
-	@golangci-lint run --fix ./...
+	@golangci-lint run --fix ./commons/...
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) Lint auto-fix completed$(GREEN) ✔️$(NC)"
 
 .PHONY: format
@@ -506,7 +506,7 @@ check-tests:
 		sh ./scripts/check-tests.sh; \
 	else \
 		echo "Running basic test coverage check..."; \
-		go test -cover ./...; \
+		go test -cover ./commons/...; \
 	fi
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) Test coverage verification completed$(GREEN) ✔️$(NC)"
 
@@ -514,7 +514,7 @@ check-tests:
 vet:
 	$(call print_title,Running go vet on all packages)
 	$(call check_command,go,"Install Go from https://golang.org/doc/install")
-	go vet ./...
+	go vet ./commons/...
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) go vet completed successfully$(GREEN) ✔️$(NC)"
 
 #-------------------------------------------------------
@@ -625,11 +625,11 @@ sec:
 		echo "Installing gosec..."; \
 		go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION); \
 	fi
-	@if find . -name "*.go" -type f -not -path './vendor/*' | grep -q .; then \
+	@if find ./commons -name "*.go" -type f -not -path './vendor/*' | grep -q .; then \
 		echo "Running security checks on all packages..."; \
 		if [ "$(SARIF)" = "1" ]; then \
 			echo "Generating SARIF output: gosec-report.sarif"; \
-			if gosec -fmt sarif -out gosec-report.sarif ./...; then \
+			if gosec -fmt sarif -out gosec-report.sarif ./commons/...; then \
 				echo "$(GREEN)$(BOLD)[ok]$(NC) SARIF report generated: gosec-report.sarif$(GREEN) ✔️$(NC)"; \
 			else \
 				printf "\n%s%sSecurity issues found by gosec. Please address them before proceeding.%s\n\n" "$(BOLD)" "$(RED)" "$(NC)"; \
@@ -637,7 +637,7 @@ sec:
 				exit 1; \
 			fi; \
 		else \
-			if gosec ./...; then \
+			if gosec ./commons/...; then \
 				echo "$(GREEN)$(BOLD)[ok]$(NC) Security checks completed$(GREEN) ✔️$(NC)"; \
 			else \
 				printf "\n%s%sSecurity issues found by gosec. Please address them before proceeding.%s\n\n" "$(BOLD)" "$(RED)" "$(NC)"; \
