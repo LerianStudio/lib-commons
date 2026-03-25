@@ -7,6 +7,9 @@ package consumer
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -535,27 +538,122 @@ func TestHandleLifecycleEvent_ServiceEvent_FiltersMismatchedService(t *testing.T
 func TestHandleLifecycleEvent_CredentialsRotated(t *testing.T) {
 	t.Parallel()
 
-	consumer := newEventsTestConsumer(t)
-	seedCacheTenant(consumer, "tenant-cred-001")
-	ctx := context.Background()
+	t.Run("eager_reload_succeeds", func(t *testing.T) {
+		t.Parallel()
 
-	payload := event.CredentialsRotatedPayload{
-		ServiceName:    testServiceName,
-		CredentialType: "database",
-		NewSecretPath:  "/secrets/new-path",
-	}
+		// Set up an API server that returns a valid TenantConfig on the /connections endpoint.
+		newConfig := &core.TenantConfig{
+			ID:         "tenant-cred-001",
+			TenantSlug: "acme-rotated",
+			Service:    testServiceName,
+			Status:     "active",
+		}
 
-	evt := event.TenantLifecycleEvent{
-		EventID:   "evt-cred",
-		EventType: event.EventTenantCredentialsRotated,
-		TenantID:  "tenant-cred-001",
-		Payload:   mustMarshalPayload(t, payload),
-	}
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
 
-	err := consumer.handleLifecycleEvent(ctx, evt)
-	require.NoError(t, err, "tenant.credentials.rotated should not return error")
+			// The /connections endpoint is used by GetTenantConfig (loadTenant)
+			if strings.Contains(r.URL.Path, "/connections") {
+				if err := json.NewEncoder(w).Encode(newConfig); err != nil {
+					t.Errorf("failed to encode tenant config response: %v", err)
+				}
 
-	// Verify tenant removed from cache (forces lazy-reload with new credentials)
-	_, ok := consumer.cache.Get("tenant-cred-001")
-	assert.False(t, ok, "tenant.credentials.rotated should remove tenant from cache for lazy-reload")
+				return
+			}
+
+			// Default: return empty tenant list for other endpoints (e.g. tenant sync)
+			if err := json.NewEncoder(w).Encode([]*core.TenantConfig{}); err != nil {
+				t.Errorf("failed to encode empty response: %v", err)
+			}
+		}))
+		t.Cleanup(server.Close)
+
+		consumer := mustNewConsumer(t, dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
+		consumer.mu.Lock()
+		consumer.parentCtx = context.Background()
+		consumer.mu.Unlock()
+		t.Cleanup(func() { consumer.Close() })
+
+		seedCacheTenant(consumer, "tenant-cred-001")
+		ctx := context.Background()
+
+		payload := event.CredentialsRotatedPayload{
+			ServiceName:    testServiceName,
+			CredentialType: "database",
+			NewSecretPath:  "/secrets/new-path",
+		}
+
+		evt := event.TenantLifecycleEvent{
+			EventID:   "evt-cred",
+			EventType: event.EventTenantCredentialsRotated,
+			TenantID:  "tenant-cred-001",
+			Payload:   mustMarshalPayload(t, payload),
+		}
+
+		err := consumer.handleLifecycleEvent(ctx, evt)
+		require.NoError(t, err, "tenant.credentials.rotated should not return error")
+
+		// Verify tenant is back in cache (eager reload via loadTenant fetched new credentials)
+		entry, ok := consumer.cache.Get("tenant-cred-001")
+		assert.True(t, ok, "tenant.credentials.rotated should eagerly reload tenant into cache")
+		require.NotNil(t, entry, "cache entry should not be nil after eager reload")
+		assert.Equal(t, "acme-rotated", entry.config.TenantSlug, "cache should contain the reloaded config")
+
+		// Verify tenant marked as known
+		consumer.mu.RLock()
+		known := consumer.knownTenants["tenant-cred-001"]
+		consumer.mu.RUnlock()
+		assert.True(t, known, "tenant.credentials.rotated should mark tenant as known after reload")
+	})
+
+	t.Run("eager_reload_fails_gracefully", func(t *testing.T) {
+		t.Parallel()
+
+		// Set up an API server that returns 500 on the /connections endpoint,
+		// simulating a temporary failure. The handler should still return nil.
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+
+			if strings.Contains(r.URL.Path, "/connections") {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error":"temporary failure"}`))
+
+				return
+			}
+
+			if err := json.NewEncoder(w).Encode([]*core.TenantConfig{}); err != nil {
+				t.Errorf("failed to encode empty response: %v", err)
+			}
+		}))
+		t.Cleanup(server.Close)
+
+		consumer := mustNewConsumer(t, dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
+		consumer.mu.Lock()
+		consumer.parentCtx = context.Background()
+		consumer.mu.Unlock()
+		t.Cleanup(func() { consumer.Close() })
+
+		seedCacheTenant(consumer, "tenant-cred-002")
+		ctx := context.Background()
+
+		payload := event.CredentialsRotatedPayload{
+			ServiceName:    testServiceName,
+			CredentialType: "database",
+			NewSecretPath:  "/secrets/new-path",
+		}
+
+		evt := event.TenantLifecycleEvent{
+			EventID:   "evt-cred-fail",
+			EventType: event.EventTenantCredentialsRotated,
+			TenantID:  "tenant-cred-002",
+			Payload:   mustMarshalPayload(t, payload),
+		}
+
+		err := consumer.handleLifecycleEvent(ctx, evt)
+		require.NoError(t, err, "tenant.credentials.rotated should return nil even when eager reload fails")
+
+		// Verify tenant is NOT in cache (eager reload failed, fallback to lazy-load on next request)
+		_, ok := consumer.cache.Get("tenant-cred-002")
+		assert.False(t, ok, "tenant should not be in cache when eager reload fails (lazy-load fallback)")
+	})
 }

@@ -276,24 +276,33 @@ func (c *MultiTenantConsumer) handleServiceReactivated(
 	return nil
 }
 
-// handleCredentialsRotated closes existing pools, applies jitter, and deletes
-// the tenant from cache to force a lazy-reload with new credentials on the next request.
+// handleCredentialsRotated closes existing pools, applies jitter, and eagerly
+// reloads tenant config via /connections to reconnect with new credentials.
+// Unlike other events that rely on lazy-load, credential rotation requires
+// immediate reconnection to avoid failed queries between the event and the
+// next inbound request.
 func (c *MultiTenantConsumer) handleCredentialsRotated(
 	ctx context.Context,
 	evt event.TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
-	logger.InfofCtx(ctx, "tenant.credentials.rotated: closing pools for tenant=%s with jitter", evt.TenantID)
+	logger.InfofCtx(ctx, "tenant.credentials.rotated: closing pools for tenant=%s", evt.TenantID)
 
-	// Close existing pools
+	// Close existing pools and remove from cache
 	c.closeTenantConnections(ctx, evt.TenantID, logger)
 
-	// Apply jitter to prevent thundering herd
+	// Apply jitter to prevent thundering herd when multiple pods react simultaneously
 	c.applyJitter(ctx)
 
-	// Cache was already deleted by closeTenantConnections.
-	// Next request will trigger lazy-reload with new credentials.
-	logger.InfofCtx(ctx, "tenant.credentials.rotated: tenant=%s ready for lazy-reload", evt.TenantID)
+	// Eagerly reload tenant config from tenant-manager /connections endpoint.
+	// This fetches new credentials from Secrets Manager and rebuilds pools
+	// immediately, avoiding a window of failed queries.
+	if err := c.loadTenant(ctx, evt.TenantID); err != nil {
+		logger.WarnfCtx(ctx, "tenant.credentials.rotated: eager reload failed for tenant=%s (will retry on next request): %v", evt.TenantID, err)
+		return nil // non-fatal: next request will trigger lazy-load as fallback
+	}
+
+	logger.InfofCtx(ctx, "tenant.credentials.rotated: tenant=%s reconnected with new credentials", evt.TenantID)
 
 	return nil
 }
