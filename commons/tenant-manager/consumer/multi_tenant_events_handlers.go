@@ -100,12 +100,61 @@ func (c *MultiTenantConsumer) handleServiceAssociated(
 
 	logger.InfofCtx(ctx, "tenant.service.associated: adding tenant=%s service=%s", evt.TenantID, payload.ServiceName)
 
-	// Build minimal TenantConfig from payload
+	// Build TenantConfig from payload with connection settings, databases, and messaging
 	config := &core.TenantConfig{
 		ID:            evt.TenantID,
 		TenantSlug:    evt.TenantSlug,
 		Service:       payload.ServiceName,
 		IsolationMode: payload.IsolationMode,
+	}
+
+	// Populate ConnectionSettings from payload
+	if payload.ConnectionSettings != nil {
+		config.ConnectionSettings = &core.ConnectionSettings{
+			MaxOpenConns:     payload.ConnectionSettings.MaxOpenConns,
+			MaxIdleConns:     payload.ConnectionSettings.MaxIdleConns,
+			StatementTimeout: payload.ConnectionSettings.StatementTimeout,
+		}
+	}
+
+	// Populate Databases from secret_paths (modules with their secret paths).
+	// secret_paths carry paths to Secrets Manager, not actual credentials.
+	// The connection manager resolves credentials lazily via pmClient.GetTenantConfig().
+	// We store the module entry so the config is not nil when checked.
+	if len(payload.SecretPaths) > 0 {
+		config.Databases = make(map[string]core.DatabaseConfig, len(payload.SecretPaths))
+
+		for module, paths := range payload.SecretPaths {
+			dbConfig := core.DatabaseConfig{}
+
+			if pgRW, ok := paths["postgresql_rw"]; ok {
+				dbConfig.PostgreSQL = &core.PostgreSQLConfig{
+					Host: pgRW, // placeholder: secret path, resolved later
+				}
+			}
+
+			if pgRO, ok := paths["postgresql_ro"]; ok {
+				dbConfig.PostgreSQLReplica = &core.PostgreSQLConfig{
+					Host: pgRO, // placeholder: secret path, resolved later
+				}
+			}
+
+			if _, ok := paths["mongodb"]; ok {
+				dbConfig.MongoDB = &core.MongoDBConfig{}
+			}
+
+			config.Databases[module] = dbConfig
+		}
+	}
+
+	// Populate Messaging from payload
+	if payload.MessagingConfig != nil && payload.MessagingConfig.RabbitMQSecretPath != "" {
+		config.Messaging = &core.MessagingConfig{
+			RabbitMQ: &core.RabbitMQConfig{
+				// Secret path stored in Host field; actual credentials resolved lazily
+				Host: payload.MessagingConfig.RabbitMQSecretPath,
+			},
+		}
 	}
 
 	ttl := c.resolveCacheTTL()
@@ -172,11 +221,47 @@ func (c *MultiTenantConsumer) handleServiceReactivated(
 
 	c.applyJitter(ctx)
 
-	// Build minimal TenantConfig from payload
+	// Build TenantConfig from payload with connection settings and databases
 	config := &core.TenantConfig{
 		ID:         evt.TenantID,
 		TenantSlug: evt.TenantSlug,
-		Service:    c.config.Service,
+		Service:    payload.ServiceName,
+	}
+
+	// Populate ConnectionSettings from payload
+	if payload.ConnectionSettings != nil {
+		config.ConnectionSettings = &core.ConnectionSettings{
+			MaxOpenConns:     payload.ConnectionSettings.MaxOpenConns,
+			MaxIdleConns:     payload.ConnectionSettings.MaxIdleConns,
+			StatementTimeout: payload.ConnectionSettings.StatementTimeout,
+		}
+	}
+
+	// Populate Databases from secret_paths (same pattern as handleServiceAssociated)
+	if len(payload.SecretPaths) > 0 {
+		config.Databases = make(map[string]core.DatabaseConfig, len(payload.SecretPaths))
+
+		for module, paths := range payload.SecretPaths {
+			dbConfig := core.DatabaseConfig{}
+
+			if pgRW, ok := paths["postgresql_rw"]; ok {
+				dbConfig.PostgreSQL = &core.PostgreSQLConfig{
+					Host: pgRW,
+				}
+			}
+
+			if pgRO, ok := paths["postgresql_ro"]; ok {
+				dbConfig.PostgreSQLReplica = &core.PostgreSQLConfig{
+					Host: pgRO,
+				}
+			}
+
+			if _, ok := paths["mongodb"]; ok {
+				dbConfig.MongoDB = &core.MongoDBConfig{}
+			}
+
+			config.Databases[module] = dbConfig
+		}
 	}
 
 	ttl := c.resolveCacheTTL()
