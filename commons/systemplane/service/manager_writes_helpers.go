@@ -11,6 +11,11 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/ports"
 )
 
+type writePlan struct {
+	target     domain.Target
+	escalation domain.ApplyBehavior
+}
+
 func (manager *defaultManager) previewConfigSnapshot(ctx context.Context, ops []ports.WriteOp) (domain.Snapshot, error) {
 	current := cloneSnapshot(manager.supervisor.Snapshot())
 	if current.BuiltAt.IsZero() || current.Configs == nil {
@@ -54,6 +59,57 @@ func (manager *defaultManager) previewConfigSnapshot(ctx context.Context, ops []
 	current.BuiltAt = time.Now().UTC()
 
 	return current, nil
+}
+
+func (manager *defaultManager) validateConfigOps(ops []ports.WriteOp) error {
+	for _, op := range ops {
+		if err := manager.validateConfigOp(op); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (manager *defaultManager) validateSettingOps(ops []ports.WriteOp, scope domain.Scope) error {
+	for _, op := range ops {
+		if err := manager.validateSettingOp(op, scope); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (manager *defaultManager) buildWritePlan(kind domain.Kind, scope domain.Scope, subjectID string, ops []ports.WriteOp) (writePlan, error) {
+	escalation, _, err := Escalate(manager.registry, ops)
+	if err != nil {
+		return writePlan{}, fmt.Errorf("escalate: %w", err)
+	}
+
+	target, err := domain.NewTarget(kind, scope, subjectID)
+	if err != nil {
+		return writePlan{}, fmt.Errorf("build target: %w", err)
+	}
+
+	return writePlan{target: target, escalation: escalation}, nil
+}
+
+func (manager *defaultManager) persistAndApplyWrite(
+	ctx context.Context,
+	plan writePlan,
+	req PatchRequest,
+) (WriteResult, error) {
+	revision, err := manager.store.Put(ctx, plan.target, req.Ops, req.ExpectedRevision, req.Actor, req.Source)
+	if err != nil {
+		return WriteResult{}, fmt.Errorf("persist patch: %w", err)
+	}
+
+	if err := manager.applyEscalation(ctx, plan.target, plan.escalation); err != nil {
+		return WriteResult{}, fmt.Errorf("apply escalation: %w", err)
+	}
+
+	return WriteResult{Revision: revision}, nil
 }
 
 // PatchSettings validates the mutations, persists them, and applies the

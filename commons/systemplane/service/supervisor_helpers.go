@@ -24,6 +24,14 @@ type rollbackDiscarder interface {
 	Discard(ctx context.Context) error
 }
 
+type reloadBuild struct {
+	snapshot       domain.Snapshot
+	previousSnap   *domain.Snapshot
+	previousBundle domain.RuntimeBundle
+	candidate      domain.RuntimeBundle
+	strategy       BuildStrategy
+}
+
 func discardFailedCandidate(ctx context.Context, candidate domain.RuntimeBundle, strategy BuildStrategy) {
 	if isNilRuntimeBundle(candidate) {
 		return
@@ -108,6 +116,71 @@ func (supervisor *defaultSupervisor) buildBundle(
 	}
 
 	return bundle, BuildStrategyFull, nil
+}
+
+func currentBundle(holder *bundleHolder) domain.RuntimeBundle {
+	if holder == nil {
+		return nil
+	}
+
+	return holder.bundle
+}
+
+func (supervisor *defaultSupervisor) prepareReloadBuild(ctx context.Context, tenantIDs []string) (reloadBuild, error) {
+	snap, err := supervisor.builder.BuildFull(ctx, tenantIDs...)
+	if err != nil {
+		return reloadBuild{}, fmt.Errorf("reload: %w: %w", domain.ErrSnapshotBuildFailed, err)
+	}
+
+	prevSnap := supervisor.snapshot.Load()
+	previousBundle := currentBundle(supervisor.bundle.Load())
+
+	candidate, strategy, err := supervisor.buildBundle(ctx, snap, previousBundle, prevSnap)
+	if err != nil {
+		return reloadBuild{}, fmt.Errorf("reload: %w: %w", domain.ErrBundleBuildFailed, err)
+	}
+
+	return reloadBuild{
+		snapshot:       snap,
+		previousSnap:   prevSnap,
+		previousBundle: previousBundle,
+		candidate:      candidate,
+		strategy:       strategy,
+	}, nil
+}
+
+func (supervisor *defaultSupervisor) reconcileCandidateBundle(ctx context.Context, build reloadBuild) error {
+	for _, reconciler := range supervisor.reconcilers {
+		if err := reconciler.Reconcile(ctx, build.previousBundle, build.candidate, build.snapshot); err != nil {
+			discardFailedCandidate(ctx, build.candidate, build.strategy)
+
+			return fmt.Errorf("reload: %s: %w: %w", reconciler.Name(), domain.ErrReconcileFailed, err)
+		}
+	}
+
+	return nil
+}
+
+func (supervisor *defaultSupervisor) commitReload(ctx context.Context, reason string, build reloadBuild) {
+	supervisor.snapshot.Store(&build.snapshot)
+	supervisor.bundle.Store(&bundleHolder{bundle: build.candidate})
+
+	if adopter, ok := build.candidate.(resourceAdopter); ok && !isNilRuntimeBundle(build.previousBundle) {
+		adopter.AdoptResourcesFrom(build.previousBundle)
+	}
+
+	if supervisor.observer != nil {
+		supervisor.observer(ReloadEvent{
+			Strategy: build.strategy,
+			Reason:   reason,
+			Snapshot: build.snapshot,
+			Bundle:   build.candidate,
+		})
+	}
+
+	if !isNilRuntimeBundle(build.previousBundle) {
+		_ = build.previousBundle.Close(ctx)
+	}
 }
 
 // sortReconcilersByPhase returns a copy of the reconciler slice sorted by
