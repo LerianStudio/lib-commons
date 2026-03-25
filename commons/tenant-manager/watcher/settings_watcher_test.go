@@ -43,7 +43,7 @@ func newTestClient(t *testing.T, url string) *client.Client {
 func TestSettingsWatcher_NoOpWhenNoManagers(t *testing.T) {
 	t.Parallel()
 
-	// A watcher with no postgres/mongo managers should not start a goroutine.
+	// A watcher with no postgres manager should not start a goroutine.
 	apiCalled := atomic.Bool{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
