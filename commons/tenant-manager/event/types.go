@@ -32,7 +32,7 @@ const (
 	EventTenantServiceReactivated   = "tenant.service.reactivated"
 
 	// Credential and connection events.
-	EventTenantCredentialsRotated = "tenant.credentials.rotated" //nolint:gosec // Not a credential, event type constant
+	EventTenantCredentialsRotated = "tenant.credentials.rotated" //#nosec G101 -- event type constant, not a credential
 	EventTenantConnectionsUpdated = "tenant.connections.updated"
 )
 
