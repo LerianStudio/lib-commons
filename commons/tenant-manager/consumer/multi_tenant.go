@@ -277,6 +277,9 @@ func NewMultiTenantConsumerWithError(
 	// Only build the dispatcher internally if one was not injected via WithEventDispatcher.
 	if consumer.dispatcher == nil {
 		consumer.dispatcher = consumer.buildEventDispatcher(cacheTTL)
+	} else {
+		// Wire the injected dispatcher's callbacks to this consumer's state.
+		consumer.wireDispatcherCallbacks()
 	}
 
 	if config.WorkersPerQueue > 0 {
@@ -380,6 +383,12 @@ func (c *MultiTenantConsumer) buildEventDispatcher(cacheTTL time.Duration) *even
 	opts := []event.DispatcherOption{
 		event.WithDispatcherLogger(c.logger.Base()),
 		event.WithCacheTTL(cacheTTL),
+		event.WithTenantOwnershipChecker(func(tenantID string) bool {
+			c.mu.RLock()
+			defer c.mu.RUnlock()
+
+			return c.knownTenants[tenantID]
+		}),
 		event.WithOnTenantAdded(func(ctx context.Context, tenantID string) {
 			c.mu.Lock()
 			c.knownTenants[tenantID] = true

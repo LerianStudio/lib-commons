@@ -69,7 +69,7 @@ func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
 		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
 			"code":    "SERVICE_UNAVAILABLE",
 			"title":   "Service Unavailable",
-			"message": "Failed to resolve tenant database",
+			"message": "Service temporarily unavailable",
 		})
 	}
 

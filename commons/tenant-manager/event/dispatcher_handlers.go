@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
 )
@@ -19,7 +20,9 @@ func (d *EventDispatcher) handleTenantCreated(
 	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
-	logger.InfofCtx(ctx, "tenant.created received tenant=%s: no-op (lazy-load on first request)", evt.TenantID)
+	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.created received: no-op (lazy-load on first request)",
+		libLog.String("tenant_id", evt.TenantID))
+
 	return nil
 }
 
@@ -33,9 +36,11 @@ func (d *EventDispatcher) handleTenantActivated(
 
 	touched := d.cache.Touch(evt.TenantID, ttl)
 	if touched {
-		logger.InfofCtx(ctx, "tenant.activated: refreshed TTL for tenant=%s", evt.TenantID)
+		logger.Base().Log(ctx, libLog.LevelInfo, "tenant.activated: refreshed TTL",
+			libLog.String("tenant_id", evt.TenantID))
 	} else {
-		logger.Debugf("tenant.activated: tenant=%s not in cache, skipping TTL refresh", evt.TenantID)
+		logger.Base().Log(ctx, libLog.LevelDebug, "tenant.activated: tenant not in cache, skipping TTL refresh",
+			libLog.String("tenant_id", evt.TenantID))
 	}
 
 	return nil
@@ -47,19 +52,17 @@ func (d *EventDispatcher) handleTenantSuspended(
 	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
-	logger.InfofCtx(ctx, "tenant.suspended: evicting tenant=%s", evt.TenantID)
+	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.suspended: evicting tenant",
+		libLog.String("tenant_id", evt.TenantID))
 	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
 }
 
 // handleTenantDeleted removes the tenant from cache and closes all pools.
-func (d *EventDispatcher) handleTenantDeleted(
-	ctx context.Context,
-	evt TenantLifecycleEvent,
-	logger *logcompat.Logger,
-) error {
-	logger.InfofCtx(ctx, "tenant.deleted: evicting tenant=%s", evt.TenantID)
+func (d *EventDispatcher) handleTenantDeleted(ctx context.Context, evt TenantLifecycleEvent, logger *logcompat.Logger) error {
+	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.deleted: evicting tenant",
+		libLog.String("tenant_id", evt.TenantID))
 	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
@@ -75,9 +78,11 @@ func (d *EventDispatcher) handleTenantUpdated(
 
 	touched := d.cache.Touch(evt.TenantID, ttl)
 	if touched {
-		logger.InfofCtx(ctx, "tenant.updated: refreshed TTL for tenant=%s", evt.TenantID)
+		logger.Base().Log(ctx, libLog.LevelInfo, "tenant.updated: refreshed TTL",
+			libLog.String("tenant_id", evt.TenantID))
 	} else {
-		logger.Debugf("tenant.updated: tenant=%s not in cache, skipping TTL refresh", evt.TenantID)
+		logger.Base().Log(ctx, libLog.LevelDebug, "tenant.updated: tenant not in cache, skipping TTL refresh",
+			libLog.String("tenant_id", evt.TenantID))
 	}
 
 	return nil
@@ -96,7 +101,9 @@ func (d *EventDispatcher) handleServiceAssociated(
 		return fmt.Errorf("handleServiceAssociated: unmarshal payload: %w", err)
 	}
 
-	logger.InfofCtx(ctx, "tenant.service.associated: adding tenant=%s service=%s", evt.TenantID, payload.ServiceName)
+	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.service.associated: adding tenant",
+		libLog.String("tenant_id", evt.TenantID),
+		libLog.String("service", payload.ServiceName))
 
 	// Build TenantConfig from payload with connection settings, databases, and messaging
 	config := &core.TenantConfig{
@@ -140,36 +147,27 @@ func (d *EventDispatcher) handleServiceAssociated(
 }
 
 // handleServiceDisassociated removes the tenant from cache and closes all pools.
-func (d *EventDispatcher) handleServiceDisassociated(
-	ctx context.Context,
-	evt TenantLifecycleEvent,
-	logger *logcompat.Logger,
-) error {
-	logger.InfofCtx(ctx, "tenant.service.disassociated: evicting tenant=%s", evt.TenantID)
+func (d *EventDispatcher) handleServiceDisassociated(ctx context.Context, evt TenantLifecycleEvent, logger *logcompat.Logger) error {
+	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.service.disassociated: evicting tenant",
+		libLog.String("tenant_id", evt.TenantID))
 	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
 }
 
 // handleServiceSuspended removes the tenant from cache and closes all pools.
-func (d *EventDispatcher) handleServiceSuspended(
-	ctx context.Context,
-	evt TenantLifecycleEvent,
-	logger *logcompat.Logger,
-) error {
-	logger.InfofCtx(ctx, "tenant.service.suspended: evicting tenant=%s", evt.TenantID)
+func (d *EventDispatcher) handleServiceSuspended(ctx context.Context, evt TenantLifecycleEvent, logger *logcompat.Logger) error {
+	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.service.suspended: evicting tenant",
+		libLog.String("tenant_id", evt.TenantID))
 	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
 }
 
 // handleServicePurged removes the tenant from cache and closes all pools.
-func (d *EventDispatcher) handleServicePurged(
-	ctx context.Context,
-	evt TenantLifecycleEvent,
-	logger *logcompat.Logger,
-) error {
-	logger.InfofCtx(ctx, "tenant.service.purged: evicting tenant=%s", evt.TenantID)
+func (d *EventDispatcher) handleServicePurged(ctx context.Context, evt TenantLifecycleEvent, logger *logcompat.Logger) error {
+	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.service.purged: evicting tenant",
+		libLog.String("tenant_id", evt.TenantID))
 	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
@@ -187,7 +185,8 @@ func (d *EventDispatcher) handleServiceReactivated(
 		return fmt.Errorf("handleServiceReactivated: unmarshal payload: %w", err)
 	}
 
-	logger.InfofCtx(ctx, "tenant.service.reactivated: re-adding tenant=%s with jitter", evt.TenantID)
+	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.service.reactivated: re-adding tenant with jitter",
+		libLog.String("tenant_id", evt.TenantID))
 
 	d.applyJitter(ctx)
 
@@ -231,7 +230,8 @@ func (d *EventDispatcher) handleCredentialsRotated(
 	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
-	logger.InfofCtx(ctx, "tenant.credentials.rotated: closing pools for tenant=%s", evt.TenantID)
+	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.credentials.rotated: closing pools",
+		libLog.String("tenant_id", evt.TenantID))
 
 	// Close existing pools and remove from cache
 	d.removeTenant(ctx, evt.TenantID, logger)
@@ -243,7 +243,10 @@ func (d *EventDispatcher) handleCredentialsRotated(
 	// This fetches new credentials from Secrets Manager and rebuilds pools
 	// immediately, avoiding a window of failed queries.
 	if _, err := d.loader.LoadTenant(ctx, evt.TenantID); err != nil {
-		logger.WarnfCtx(ctx, "tenant.credentials.rotated: eager reload failed for tenant=%s (will retry on next request): %v", evt.TenantID, err)
+		logger.Base().Log(ctx, libLog.LevelWarn, "tenant.credentials.rotated: eager reload failed (will retry on next request)",
+			libLog.String("tenant_id", evt.TenantID),
+			libLog.Err(err))
+
 		return nil // non-fatal: next request will trigger lazy-load as fallback
 	}
 
@@ -252,7 +255,8 @@ func (d *EventDispatcher) handleCredentialsRotated(
 		d.onTenantAdded(ctx, evt.TenantID)
 	}
 
-	logger.InfofCtx(ctx, "tenant.credentials.rotated: tenant=%s reconnected with new credentials", evt.TenantID)
+	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.credentials.rotated: reconnected with new credentials",
+		libLog.String("tenant_id", evt.TenantID))
 
 	return nil
 }
@@ -269,8 +273,11 @@ func (d *EventDispatcher) handleConnectionsUpdated(
 		return fmt.Errorf("handleConnectionsUpdated: unmarshal payload: %w", err)
 	}
 
-	logger.InfofCtx(ctx, "tenant.connections.updated: tenant=%s module=%s max_open=%d max_idle=%d",
-		evt.TenantID, payload.Module, payload.MaxOpenConns, payload.MaxIdleConns)
+	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.connections.updated: applying new pool settings",
+		libLog.String("tenant_id", evt.TenantID),
+		libLog.String("module", payload.Module),
+		libLog.Int("max_open_conns", payload.MaxOpenConns),
+		libLog.Int("max_idle_conns", payload.MaxIdleConns))
 
 	if d.postgres != nil {
 		config := buildConfigFromConnectionsPayload(evt.TenantID, payload)

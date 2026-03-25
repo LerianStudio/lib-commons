@@ -45,6 +45,10 @@ type EventDispatcher struct {
 	// Callbacks for consumer coordination.
 	onTenantAdded   func(ctx context.Context, tenantID string)
 	onTenantRemoved func(ctx context.Context, tenantID string)
+
+	// ownsTenant checks if the tenant is owned locally (has been loaded at some point).
+	// When nil, falls back to cache check (existing behavior).
+	ownsTenant func(tenantID string) bool
 }
 
 // DispatcherOption configures an EventDispatcher.
@@ -75,6 +79,14 @@ func WithCacheTTL(ttl time.Duration) DispatcherOption {
 	return func(d *EventDispatcher) { d.cacheTTL = ttl }
 }
 
+// WithTenantOwnershipChecker sets a function that determines whether a tenant is
+// "owned" locally (i.e., has been loaded or is being consumed by this instance).
+// When set, tenant-level event gating uses this instead of cache lookups, which
+// avoids silently dropping events for tenants whose cache entries have expired.
+func WithTenantOwnershipChecker(fn func(tenantID string) bool) DispatcherOption {
+	return func(d *EventDispatcher) { d.ownsTenant = fn }
+}
+
 // WithOnTenantAdded registers a callback invoked when a tenant is added to the cache
 // via service association or reactivation events.
 func WithOnTenantAdded(fn func(ctx context.Context, tenantID string)) DispatcherOption {
@@ -87,6 +99,24 @@ func WithOnTenantRemoved(fn func(ctx context.Context, tenantID string)) Dispatch
 	return func(d *EventDispatcher) { d.onTenantRemoved = fn }
 }
 
+// SetOnTenantAdded replaces the callback invoked when a tenant is added to the cache
+// via service association or reactivation events.
+func (d *EventDispatcher) SetOnTenantAdded(fn func(ctx context.Context, tenantID string)) {
+	d.onTenantAdded = fn
+}
+
+// SetOnTenantRemoved replaces the callback invoked when a tenant is removed from the
+// cache via suspension, deletion, disassociation, or purge events.
+func (d *EventDispatcher) SetOnTenantRemoved(fn func(ctx context.Context, tenantID string)) {
+	d.onTenantRemoved = fn
+}
+
+// Cache returns the dispatcher's internal tenant cache.
+// Returns nil only if the dispatcher was created with a nil cache and no safe default was applied.
+func (d *EventDispatcher) Cache() *tenantcache.TenantCache {
+	return d.cache
+}
+
 // NewEventDispatcher creates an EventDispatcher with the given cache, loader, service name,
 // and optional configuration. The dispatcher is stateless with respect to consumer goroutines;
 // it uses callbacks (onTenantAdded/onTenantRemoved) to coordinate with the consumer.
@@ -96,6 +126,12 @@ func NewEventDispatcher(
 	service string,
 	opts ...DispatcherOption,
 ) *EventDispatcher {
+	// Safe default: prevent nil-pointer panics in cache operations.
+	if cache == nil {
+		cache = tenantcache.NewTenantCache()
+	}
+
+	// loader can be nil (events still work for eviction; lazy-load just won't happen).
 	d := &EventDispatcher{
 		cache:    cache,
 		loader:   loader,
@@ -125,7 +161,10 @@ func (d *EventDispatcher) HandleEvent(ctx context.Context, evt TenantLifecycleEv
 	ctx, span := tracer.Start(ctx, "event.event_dispatcher.handle_event")
 	defer span.End()
 
-	logger.InfofCtx(ctx, "handling event type=%s tenant=%s event_id=%s", evt.EventType, evt.TenantID, evt.EventID)
+	logger.Base().Log(ctx, libLog.LevelInfo, "handling lifecycle event",
+		libLog.String("event_type", evt.EventType),
+		libLog.String("tenant_id", evt.TenantID),
+		libLog.String("event_id", evt.EventID))
 
 	// Service-level events: filter by service name before dispatching.
 	if isServiceScopedEvent(evt.EventType) {
@@ -136,15 +175,21 @@ func (d *EventDispatcher) HandleEvent(ctx context.Context, evt TenantLifecycleEv
 		}
 
 		if !match {
-			logger.Debugf("skipping event type=%s tenant=%s: service mismatch", evt.EventType, evt.TenantID)
+			logger.Base().Log(ctx, libLog.LevelDebug, "skipping event: service mismatch",
+				libLog.String("event_type", evt.EventType),
+				libLog.String("tenant_id", evt.TenantID))
+
 			return nil
 		}
 	}
 
-	// Tenant-level events: only act for tenants already in local cache.
+	// Tenant-level events: only act for tenants already owned locally.
 	if isTenantLevelEvent(evt.EventType) && evt.EventType != EventTenantCreated {
-		if _, ok := d.cache.Get(evt.TenantID); !ok {
-			logger.Debugf("skipping tenant-level event type=%s tenant=%s: not in local cache", evt.EventType, evt.TenantID)
+		if !d.isOwnedLocally(evt.TenantID) {
+			logger.Base().Log(ctx, libLog.LevelDebug, "skipping tenant-level event: tenant not owned locally",
+				libLog.String("event_type", evt.EventType),
+				libLog.String("tenant_id", evt.TenantID))
+
 			return nil
 		}
 	}
@@ -180,7 +225,11 @@ func (d *EventDispatcher) dispatchEvent(ctx context.Context, evt TenantLifecycle
 	case EventTenantConnectionsUpdated:
 		return d.handleConnectionsUpdated(ctx, evt, logger)
 	default:
-		logger.WarnfCtx(ctx, "unknown event type=%s tenant=%s event_id=%s, skipping", evt.EventType, evt.TenantID, evt.EventID)
+		logger.Base().Log(ctx, libLog.LevelWarn, "unknown event type, skipping",
+			libLog.String("event_type", evt.EventType),
+			libLog.String("tenant_id", evt.TenantID),
+			libLog.String("event_id", evt.EventID))
+
 		return nil
 	}
 }

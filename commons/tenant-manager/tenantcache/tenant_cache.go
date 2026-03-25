@@ -144,6 +144,12 @@ func (c *TenantCache) Len() int {
 
 // TenantIDs returns the IDs of all non-expired tenants in the cache.
 // Expired entries are lazily evicted during this call.
+//
+// Note: this method acquires the write lock for the entire iteration to perform
+// lazy eviction (deleting expired entries). For caches with many entries, this
+// may cause contention with concurrent Get/Set operations. An alternative for
+// high-throughput scenarios would be a background janitor goroutine, but the
+// current approach avoids the complexity of additional goroutine lifecycle management.
 func (c *TenantCache) TenantIDs() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

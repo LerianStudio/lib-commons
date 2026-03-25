@@ -102,6 +102,21 @@ func (d *EventDispatcher) removeTenant(ctx context.Context, tenantID string, log
 	}
 }
 
+// isOwnedLocally reports whether the tenant is considered "owned" by this instance.
+// When an ownsTenant checker is set (via WithTenantOwnershipChecker), it delegates
+// to that function. Otherwise it falls back to a cache lookup, which may miss
+// tenants whose cache entries have expired.
+func (d *EventDispatcher) isOwnedLocally(tenantID string) bool {
+	if d.ownsTenant != nil {
+		return d.ownsTenant(tenantID)
+	}
+
+	// Fallback: check cache (may miss expired entries).
+	_, ok := d.cache.Get(tenantID)
+
+	return ok
+}
+
 // resolveCacheTTL returns the configured cache TTL or the default.
 func (d *EventDispatcher) resolveCacheTTL() time.Duration {
 	if d.cacheTTL > 0 {
