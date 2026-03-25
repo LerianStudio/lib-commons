@@ -74,6 +74,11 @@ type MultiTenantConfig struct {
 	// Default: false
 	AllowInsecureHTTP bool
 
+	// CacheTTL is the TTL for the internal tenant config cache used by the consumer's
+	// HTTP client. When zero, the client's default (1 hour) is used.
+	// Recommended: match the MULTI_TENANT_CACHE_TTL_SEC env var from the consuming service.
+	CacheTTL time.Duration
+
 	// Deprecated: EagerStart is ignored. Consumers are always started eagerly.
 	// This field is retained only for backward compatibility with existing configs;
 	// setting it has no effect. It will be removed in a future major version.
@@ -209,6 +214,10 @@ func NewMultiTenantConsumerWithError(
 
 	if config.AllowInsecureHTTP {
 		clientOpts = append(clientOpts, client.WithAllowInsecureHTTP())
+	}
+
+	if config.CacheTTL > 0 {
+		clientOpts = append(clientOpts, client.WithCacheTTL(config.CacheTTL))
 	}
 
 	pmClient, err := client.NewClient(config.MultiTenantURL, consumer.logger.Base(), clientOpts...)

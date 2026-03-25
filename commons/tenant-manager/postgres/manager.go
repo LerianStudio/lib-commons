@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -96,8 +97,9 @@ type Manager struct {
 	idleTimeout         time.Duration        // how long before a connection is eligible for eviction
 	lastAccessed        map[string]time.Time // LRU tracking per tenant
 
-	lastSettingsCheck     map[string]time.Time // tracks per-tenant last settings revalidation time
-	settingsCheckInterval time.Duration        // configurable interval between settings revalidation checks
+	lastSettingsCheck     map[string]time.Time          // tracks per-tenant last settings revalidation time
+	settingsCheckInterval time.Duration                 // configurable interval between settings revalidation checks
+	lastAppliedSettings   map[string]appliedSettings    // tracks previously applied pool settings per tenant for change detection
 
 	// revalidateWG tracks in-flight revalidatePoolSettings goroutines so Close()
 	// can wait for them to finish before returning. Without this, goroutines
@@ -105,6 +107,14 @@ type Manager struct {
 	revalidateWG sync.WaitGroup
 
 	defaultConn *PostgresConnection
+}
+
+// appliedSettings tracks the last-applied pool settings for a tenant so that
+// ApplyConnectionSettings can skip redundant writes and only log actual changes.
+type appliedSettings struct {
+	maxOpenConns     int
+	maxIdleConns     int
+	statementTimeout string
 }
 
 type PostgresConnection struct {
@@ -262,6 +272,7 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 		connections:           make(map[string]*PostgresConnection),
 		lastAccessed:          make(map[string]time.Time),
 		lastSettingsCheck:     make(map[string]time.Time),
+		lastAppliedSettings:   make(map[string]appliedSettings),
 		settingsCheckInterval: defaultSettingsCheckInterval,
 		maxOpenConns:          fallbackMaxOpenConns,
 		maxIdleConns:          fallbackMaxIdleConns,
@@ -957,6 +968,7 @@ func (p *Manager) Close(_ context.Context) error {
 		delete(p.connections, tenantID)
 		delete(p.lastAccessed, tenantID)
 		delete(p.lastSettingsCheck, tenantID)
+		delete(p.lastAppliedSettings, tenantID)
 	}
 
 	p.mu.Unlock()
@@ -987,6 +999,7 @@ func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 	delete(p.connections, tenantID)
 	delete(p.lastAccessed, tenantID)
 	delete(p.lastSettingsCheck, tenantID)
+	delete(p.lastAppliedSettings, tenantID)
 
 	return err
 }
@@ -1094,9 +1107,15 @@ func buildConnectionString(cfg *core.PostgreSQLConfig) (string, error) {
 // This is called during the sync loop to revalidate settings that may have changed
 // in the Tenant Manager (e.g., maxOpenConns adjusted from 10 to 30).
 //
+// Settings are only applied when they differ from the previously applied values,
+// avoiding redundant sql.DB calls and noisy logs every sync cycle.
+//
 // Go's sql.DB.SetMaxOpenConns and SetMaxIdleConns are thread-safe and take effect
 // immediately for new connections from the pool. Existing idle connections above the
 // new limit are closed gradually.
+//
+// When statementTimeout is present and has changed, a SET statement_timeout SQL
+// command is executed on the underlying database connection.
 //
 // For MongoDB, the driver does not support changing pool size after client creation,
 // so this method only applies to PostgreSQL connections.
@@ -1106,39 +1125,103 @@ func (p *Manager) ApplyConnectionSettings(tenantID string, config *core.TenantCo
 	conn, ok := p.connections[tenantID]
 	if !ok || conn == nil || conn.ConnectionDB == nil {
 		p.mu.RUnlock()
+
 		return // no cached connection, settings will be applied on next creation
 	}
 
-	connSettings := p.resolveConnectionSettingsFromConfig(config)
-
-	// Determine effective settings: per-tenant if present, otherwise manager defaults.
-	var maxOpen, maxIdle int
-	if connSettings != nil {
-		maxOpen = connSettings.MaxOpenConns
-		maxIdle = connSettings.MaxIdleConns
-	}
-
-	// Fallback to manager defaults for absent/zero values
-	if maxOpen <= 0 {
-		maxOpen = p.maxOpenConns
-	}
-
-	if maxIdle <= 0 {
-		maxIdle = p.maxIdleConns
-	}
-
+	newSettings := p.resolveEffectiveSettings(config)
 	db := *conn.ConnectionDB
+	prev, hasPrev := p.lastAppliedSettings[tenantID]
 
 	p.mu.RUnlock() // Release before thread-safe sql.DB operations
 
 	compatLogger := logcompat.New(p.logger.Base())
-	maxOpen, maxIdle = p.clampPoolSettings(maxOpen, maxIdle, tenantID, compatLogger)
+	newSettings.maxOpenConns, newSettings.maxIdleConns = p.clampPoolSettings(newSettings.maxOpenConns, newSettings.maxIdleConns, tenantID, compatLogger)
 
-	compatLogger.Infof("applying connection settings for tenant %s module %s: maxOpenConns=%d, maxIdleConns=%d",
-		tenantID, p.module, maxOpen, maxIdle)
+	// Skip if nothing changed (after first apply)
+	if hasPrev && newSettings == prev {
+		return
+	}
 
-	db.SetMaxOpenConns(maxOpen)
-	db.SetMaxIdleConns(maxIdle)
+	// Build a targeted log message listing only the fields that changed.
+	p.logSettingsChanges(compatLogger, tenantID, prev, newSettings, hasPrev)
+
+	// Apply pool settings
+	if !hasPrev || newSettings.maxOpenConns != prev.maxOpenConns {
+		db.SetMaxOpenConns(newSettings.maxOpenConns)
+	}
+
+	if !hasPrev || newSettings.maxIdleConns != prev.maxIdleConns {
+		db.SetMaxIdleConns(newSettings.maxIdleConns)
+	}
+
+	// Apply statementTimeout via SQL when it changed and is non-empty
+	if newSettings.statementTimeout != "" && (!hasPrev || newSettings.statementTimeout != prev.statementTimeout) {
+		if _, err := db.ExecContext(context.Background(), "SET statement_timeout = '"+newSettings.statementTimeout+"'"); err != nil {
+			compatLogger.Warnf("failed to set statement_timeout for tenant %s: %v", tenantID, err)
+		}
+	}
+
+	// Store the new settings under lock
+	p.mu.Lock()
+	p.lastAppliedSettings[tenantID] = newSettings
+	p.mu.Unlock()
+}
+
+// resolveEffectiveSettings determines the effective pool settings for a tenant by
+// checking per-tenant config first, then falling back to manager defaults.
+func (p *Manager) resolveEffectiveSettings(config *core.TenantConfig) appliedSettings {
+	connSettings := p.resolveConnectionSettingsFromConfig(config)
+
+	var s appliedSettings
+
+	if connSettings != nil {
+		s.maxOpenConns = connSettings.MaxOpenConns
+		s.maxIdleConns = connSettings.MaxIdleConns
+		s.statementTimeout = connSettings.StatementTimeout
+	}
+
+	// Fallback to manager defaults for absent/zero values
+	if s.maxOpenConns <= 0 {
+		s.maxOpenConns = p.maxOpenConns
+	}
+
+	if s.maxIdleConns <= 0 {
+		s.maxIdleConns = p.maxIdleConns
+	}
+
+	return s
+}
+
+// logSettingsChanges logs a summary of which connection settings changed for a tenant.
+// When hasPrev is false (first apply), all values are logged. When hasPrev is true,
+// only fields that differ from the previous settings are included.
+func (p *Manager) logSettingsChanges(logger *logcompat.Logger, tenantID string, prev, curr appliedSettings, hasPrev bool) {
+	if !hasPrev {
+		logger.Infof("applying connection settings for tenant %s module %s: maxOpenConns=%d, maxIdleConns=%d, statementTimeout=%s",
+			tenantID, p.module, curr.maxOpenConns, curr.maxIdleConns, curr.statementTimeout)
+
+		return
+	}
+
+	var changes []string
+
+	if curr.maxOpenConns != prev.maxOpenConns {
+		changes = append(changes, fmt.Sprintf("maxOpenConns %d->%d", prev.maxOpenConns, curr.maxOpenConns))
+	}
+
+	if curr.maxIdleConns != prev.maxIdleConns {
+		changes = append(changes, fmt.Sprintf("maxIdleConns %d->%d", prev.maxIdleConns, curr.maxIdleConns))
+	}
+
+	if curr.statementTimeout != prev.statementTimeout {
+		changes = append(changes, fmt.Sprintf("statementTimeout %s->%s", prev.statementTimeout, curr.statementTimeout))
+	}
+
+	if len(changes) > 0 {
+		logger.Infof("connection settings changed for tenant %s module %s: %s",
+			tenantID, p.module, strings.Join(changes, ", "))
+	}
 }
 
 // WithConnectionLimits sets the default per-tenant connection limits.

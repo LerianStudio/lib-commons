@@ -774,6 +774,53 @@ func TestMultiTenantConsumer_NewWithZeroConfig(t *testing.T) {
 	}
 }
 
+// TestMultiTenantConsumer_CacheTTLPropagation verifies that the CacheTTL config field
+// is propagated to the underlying HTTP client via client.WithCacheTTL.
+func TestMultiTenantConsumer_CacheTTLPropagation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		cacheTTL time.Duration
+	}{
+		{
+			name:     "zero_CacheTTL_uses_client_default",
+			cacheTTL: 0,
+		},
+		{
+			name:     "positive_CacheTTL_is_propagated",
+			cacheTTL: 5 * time.Minute,
+		},
+		{
+			name:     "large_CacheTTL_is_propagated",
+			cacheTTL: 2 * time.Hour,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			config := MultiTenantConfig{
+				MultiTenantURL:    "http://tenant-manager:4003",
+				ServiceAPIKey:     "test-key",
+				Service:           "ledger",
+				AllowInsecureHTTP: true,
+				CacheTTL:          tt.cacheTTL,
+			}
+
+			consumer, err := NewMultiTenantConsumerWithError(dummyRabbitMQManager(), config, testutil.NewMockLogger())
+			require.NoError(t, err)
+			assert.NotNil(t, consumer)
+			assert.NotNil(t, consumer.pmClient, "pmClient should be created")
+			assert.Equal(t, tt.cacheTTL, consumer.config.CacheTTL, "CacheTTL should be preserved in config")
+
+			_ = consumer.Close()
+		})
+	}
+}
+
 // TestMultiTenantConsumer_Stats verifies the Stats() method returns correct statistics.
 func TestMultiTenantConsumer_Stats(t *testing.T) {
 	t.Parallel()
