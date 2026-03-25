@@ -16,9 +16,16 @@ import (
 	tmpostgres "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/postgres"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
 
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
+
 // newTestClient creates a tenant-manager client pointing at the given URL.
+// The client is automatically closed when the test finishes to prevent
+// goroutine leaks from the internal InMemoryCache cleanup loop.
 func newTestClient(t *testing.T, url string) *client.Client {
 	t.Helper()
 
@@ -27,6 +34,8 @@ func newTestClient(t *testing.T, url string) *client.Client {
 		client.WithServiceAPIKey("test-key"),
 	)
 	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = c.Close() })
 
 	return c
 }
