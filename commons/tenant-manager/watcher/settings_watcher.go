@@ -1,8 +1,11 @@
 // Package watcher provides a standalone settings revalidation component that
 // periodically fetches connection settings from the Tenant Manager and applies
-// them to active PostgreSQL and MongoDB connections. It runs independently of
-// the RabbitMQ consumer, so services without RabbitMQ still get settings
-// revalidation.
+// them to active PostgreSQL connections. It runs independently of the RabbitMQ
+// consumer, so services without RabbitMQ still get settings revalidation.
+//
+// MongoDB is intentionally excluded: the MongoDB Go driver does not support
+// changing maxPoolSize after client creation, so there are no pool settings to
+// revalidate at runtime.
 package watcher
 
 import (
@@ -14,22 +17,20 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
-	tmmongo "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/postgres"
 )
 
 // defaultInterval is the default revalidation interval.
 const defaultInterval = 30 * time.Second
 
-// SettingsWatcher periodically revalidates connection settings for all
-// connected tenants. It runs independently of the RabbitMQ consumer,
+// SettingsWatcher periodically revalidates PostgreSQL connection pool settings
+// for all connected tenants. It runs independently of the RabbitMQ consumer,
 // so services without RabbitMQ still get settings revalidation.
 type SettingsWatcher struct {
 	client   *client.Client
 	service  string
 	interval time.Duration
 	postgres *tmpostgres.Manager
-	mongo    *tmmongo.Manager
 	logger   *logcompat.Logger
 	cancel   context.CancelFunc
 	done     chan struct{}
@@ -41,11 +42,6 @@ type Option func(*SettingsWatcher)
 // WithPostgresManager sets the PostgreSQL manager for settings revalidation.
 func WithPostgresManager(p *tmpostgres.Manager) Option {
 	return func(w *SettingsWatcher) { w.postgres = p }
-}
-
-// WithMongoManager sets the MongoDB manager for settings revalidation.
-func WithMongoManager(m *tmmongo.Manager) Option {
-	return func(w *SettingsWatcher) { w.mongo = m }
 }
 
 // WithInterval sets the revalidation interval (minimum 1 second).
@@ -84,7 +80,7 @@ func NewSettingsWatcher(c *client.Client, service string, opts ...Option) *Setti
 // Start launches the background revalidation goroutine. It returns immediately.
 // The goroutine runs until Stop is called or the parent context is cancelled.
 func (w *SettingsWatcher) Start(ctx context.Context) {
-	if w.postgres == nil && w.mongo == nil {
+	if w.postgres == nil {
 		return // no-op: nothing to revalidate
 	}
 
@@ -163,10 +159,6 @@ func (w *SettingsWatcher) revalidate(ctx context.Context) {
 			w.postgres.ApplyConnectionSettings(tenantID, config)
 		}
 
-		if w.mongo != nil {
-			w.mongo.ApplyConnectionSettings(tenantID, config)
-		}
-
 		revalidated++
 	}
 
@@ -175,45 +167,24 @@ func (w *SettingsWatcher) revalidate(ctx context.Context) {
 	}
 }
 
-// collectTenantIDs returns the union of tenant IDs from all configured managers.
+// collectTenantIDs returns the tenant IDs from the PostgreSQL manager.
 func (w *SettingsWatcher) collectTenantIDs() []string {
-	seen := make(map[string]struct{})
-
-	if w.postgres != nil {
-		for _, id := range w.postgres.ConnectedTenantIDs() {
-			seen[id] = struct{}{}
-		}
+	if w.postgres == nil {
+		return nil
 	}
 
-	if w.mongo != nil {
-		for _, id := range w.mongo.ConnectedTenantIDs() {
-			seen[id] = struct{}{}
-		}
-	}
-
-	ids := make([]string, 0, len(seen))
-	for id := range seen {
-		ids = append(ids, id)
-	}
-
-	return ids
+	return w.postgres.ConnectedTenantIDs()
 }
 
-// handleSuspendedTenant closes connections in the managers for a tenant
-// that has been suspended or purged. The consumer's sync loop will handle
-// removing the tenant from its own state independently.
+// handleSuspendedTenant closes the PostgreSQL connection for a tenant that has
+// been suspended or purged. The consumer's sync loop will handle removing the
+// tenant from its own state independently.
 func (w *SettingsWatcher) handleSuspendedTenant(ctx context.Context, tenantID string, logger *logcompat.Logger) {
 	logger.WarnfCtx(ctx, "settings watcher: tenant %s suspended/purged, closing connections", tenantID)
 
 	if w.postgres != nil {
 		if err := w.postgres.CloseConnection(ctx, tenantID); err != nil {
 			logger.WarnfCtx(ctx, "settings watcher: failed to close PostgreSQL connection for suspended tenant %s: %v", tenantID, err)
-		}
-	}
-
-	if w.mongo != nil {
-		if err := w.mongo.CloseConnection(ctx, tenantID); err != nil {
-			logger.WarnfCtx(ctx, "settings watcher: failed to close MongoDB connection for suspended tenant %s: %v", tenantID, err)
 		}
 	}
 }
