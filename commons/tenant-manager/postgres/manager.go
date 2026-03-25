@@ -991,6 +991,19 @@ func (p *Manager) Close(_ context.Context) error {
 	return errors.Join(errs...)
 }
 
+// ConnectedTenantIDs returns the IDs of all tenants with active connections.
+func (p *Manager) ConnectedTenantIDs() []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	ids := make([]string, 0, len(p.connections))
+	for id := range p.connections {
+		ids = append(ids, id)
+	}
+
+	return ids
+}
+
 // CloseConnection closes the connection for a specific tenant.
 func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 	p.mu.Lock()
@@ -1297,4 +1310,19 @@ func CreateDirectConnection(ctx context.Context, cfg *core.PostgreSQLConfig) (*s
 	}
 
 	return db, nil
+}
+
+// WithTestConnections pre-populates the connection map with stub entries for the
+// given tenant IDs. Each entry is a minimal PostgresConnection with no real
+// database handle, so ConnectedTenantIDs will include these IDs while
+// ApplyConnectionSettings will safely no-op (no ConnectionDB).
+//
+// This option is intended for testing code that depends on Manager (e.g., the
+// SettingsWatcher) without requiring a real database.
+func WithTestConnections(tenantIDs ...string) Option {
+	return func(p *Manager) {
+		for _, id := range tenantIDs {
+			p.connections[id] = &PostgresConnection{}
+		}
+	}
 }
