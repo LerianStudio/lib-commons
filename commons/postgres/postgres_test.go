@@ -128,7 +128,7 @@ func testDB(t *testing.T) *sql.DB {
 }
 
 // withPatchedDependencies replaces package-level dependency functions for testing.
-// WARNING: Tests using this helper must NOT call t.Parallel() as it mutates global state.
+// WARNING: Tests using this helper must NOT call t.Parallel() as it mutates package defaults used at construction time.
 func withPatchedDependencies(
 	t *testing.T,
 	openFn func(string, string) (*sql.DB, error),
@@ -137,18 +137,21 @@ func withPatchedDependencies(
 ) {
 	t.Helper()
 
-	originalOpen := dbOpenFn
-	originalResolver := createResolverFn
-	originalMigrations := runMigrationsFn
+	originalClientDeps := defaultClientDeps
+	originalMigratorDeps := defaultMigratorDeps
 
-	dbOpenFn = openFn
-	createResolverFn = resolverFn
-	runMigrationsFn = migrateFn
+	defaultClientDeps = clientDeps{
+		openDB:         openFn,
+		createResolver: resolverFn,
+	}
+	defaultMigratorDeps = migratorDeps{
+		openDB:        openFn,
+		runMigrations: migrateFn,
+	}
 
 	t.Cleanup(func() {
-		dbOpenFn = originalOpen
-		createResolverFn = originalResolver
-		runMigrationsFn = originalMigrations
+		defaultClientDeps = originalClientDeps
+		defaultMigratorDeps = originalMigratorDeps
 	})
 }
 
@@ -1372,29 +1375,29 @@ func TestClassifyMigrationError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// createResolverFn panic recovery
+// createResolver panic recovery
 // ---------------------------------------------------------------------------
 
 func TestCreateResolverFnPanicRecovery(t *testing.T) {
 	// dbresolver.New doesn't panic with nil DBs (it wraps them), so we test
 	// the recovery pattern by installing a resolver factory that panics and
 	// verifying buildConnection converts it to an error, not a crash.
-	original := createResolverFn
-	origOpen := dbOpenFn
+	originalClientDeps := defaultClientDeps
 	t.Cleanup(func() {
-		createResolverFn = original
-		dbOpenFn = origOpen
+		defaultClientDeps = originalClientDeps
 	})
 
-	dbOpenFn = func(_, _ string) (*sql.DB, error) { return testDB(t), nil }
-	createResolverFn = func(_ *sql.DB, _ *sql.DB, logger log.Logger) (_ dbresolver.DB, err error) {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				err = fmt.Errorf("failed to create resolver: %v", recovered)
-			}
-		}()
+	defaultClientDeps = clientDeps{
+		openDB: func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
+		createResolver: func(_ *sql.DB, _ *sql.DB, logger log.Logger) (_ dbresolver.DB, err error) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					err = fmt.Errorf("failed to create resolver: %v", recovered)
+				}
+			}()
 
-		panic("dbresolver exploded")
+			panic("dbresolver exploded")
+		},
 	}
 
 	client, err := New(validConfig())

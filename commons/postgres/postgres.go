@@ -59,34 +59,8 @@ var (
 	// Services that intentionally skip migrations can opt in via WithAllowMissingMigrations().
 	ErrMigrationsNotFound = errors.New("migration files not found")
 
-	dbOpenFn = sql.Open
-
-	createResolverFn = func(primaryDB, replicaDB *sql.DB, logger log.Logger) (_ dbresolver.DB, err error) {
-		defer func() {
-			if recovered := recover(); recovered != nil {
-				if logger == nil {
-					logger = log.NewNop()
-				}
-
-				runtime.HandlePanicValue(context.Background(), logger, recovered, "postgres", "create_resolver")
-				err = fmt.Errorf("failed to create resolver: %w", fmt.Errorf("recovered panic: %v", recovered))
-			}
-		}()
-
-		connectionDB := dbresolver.New(
-			dbresolver.WithPrimaryDBs(primaryDB),
-			dbresolver.WithReplicaDBs(replicaDB),
-			dbresolver.WithLoadBalancer(dbresolver.RoundRobinLB),
-		)
-
-		if connectionDB == nil {
-			return nil, errors.New("resolver returned nil connection")
-		}
-
-		return connectionDB, nil
-	}
-
-	runMigrationsFn = runMigrations
+	defaultClientDeps   = newDefaultClientDeps()
+	defaultMigratorDeps = newDefaultMigratorDeps()
 
 	connectionStringCredentialsPattern = regexp.MustCompile(`://[^@\s]+@`)
 	connectionStringPasswordPattern    = regexp.MustCompile(`(?i)(password=)(\S+)`)
@@ -256,6 +230,7 @@ type Client struct {
 	mu             sync.RWMutex
 	cfg            Config
 	metricsFactory *metrics.MetricsFactory
+	deps           clientDeps
 	resolver       dbresolver.DB
 	primary        *sql.DB
 	replica        *sql.DB
@@ -264,6 +239,58 @@ type Client struct {
 	// when the database is down by enforcing exponential backoff between attempts.
 	lastConnectAttempt time.Time
 	connectAttempts    int
+}
+
+type clientDeps struct {
+	openDB         func(string, string) (*sql.DB, error)
+	createResolver func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error)
+}
+
+func newDefaultClientDeps() clientDeps {
+	return clientDeps{
+		openDB: sql.Open,
+		createResolver: func(primaryDB, replicaDB *sql.DB, logger log.Logger) (_ dbresolver.DB, err error) {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					if logger == nil {
+						logger = log.NewNop()
+					}
+
+					runtime.HandlePanicValue(context.Background(), logger, recovered, "postgres", "create_resolver")
+					err = fmt.Errorf("failed to create resolver: %w", fmt.Errorf("recovered panic: %v", recovered))
+				}
+			}()
+
+			connectionDB := dbresolver.New(
+				dbresolver.WithPrimaryDBs(primaryDB),
+				dbresolver.WithReplicaDBs(replicaDB),
+				dbresolver.WithLoadBalancer(dbresolver.RoundRobinLB),
+			)
+
+			if connectionDB == nil {
+				return nil, errors.New("resolver returned nil connection")
+			}
+
+			return connectionDB, nil
+		},
+	}
+}
+
+func (c *Client) resolvedDeps() clientDeps {
+	if c == nil {
+		return defaultClientDeps
+	}
+
+	deps := c.deps
+	if deps.openDB == nil {
+		deps.openDB = defaultClientDeps.openDB
+	}
+
+	if deps.createResolver == nil {
+		deps.createResolver = defaultClientDeps.createResolver
+	}
+
+	return deps
 }
 
 // New creates a postgres client with immutable configuration.
@@ -286,7 +313,7 @@ func New(cfg Config) (*Client, error) {
 		}
 	}
 
-	return &Client{cfg: cfg, metricsFactory: cfg.MetricsFactory}, nil
+	return &Client{cfg: cfg, metricsFactory: cfg.MetricsFactory, deps: defaultClientDeps}, nil
 }
 
 // logAtLevel emits a structured log entry at the specified level.
@@ -387,7 +414,7 @@ func (c *Client) buildConnection(ctx context.Context) (*sql.DB, *sql.DB, dbresol
 		return nil, nil, nil, fmt.Errorf("postgres connect: %w", err)
 	}
 
-	resolver, err := createResolverFn(primary, replica, c.cfg.Logger)
+	resolver, err := c.resolvedDeps().createResolver(primary, replica, c.cfg.Logger)
 	if err != nil {
 		_ = closeDB(primary)
 		_ = closeDB(replica)
@@ -411,7 +438,7 @@ func (c *Client) buildConnection(ctx context.Context) (*sql.DB, *sql.DB, dbresol
 }
 
 func (c *Client) newSQLDB(ctx context.Context, dsn string) (*sql.DB, error) {
-	db, err := dbOpenFn("pgx", dsn)
+	db, err := c.resolvedDeps().openDB("pgx", dsn)
 	if err != nil {
 		sanitized := newSanitizedError(err, "failed to open database")
 		c.logAtLevel(ctx, log.LevelError, "failed to open database", log.Err(sanitized))
@@ -629,7 +656,37 @@ func (c MigrationConfig) validate() error {
 
 // Migrator runs schema migrations explicitly.
 type Migrator struct {
-	cfg MigrationConfig
+	cfg  MigrationConfig
+	deps migratorDeps
+}
+
+type migratorDeps struct {
+	openDB        func(string, string) (*sql.DB, error)
+	runMigrations func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error
+}
+
+func newDefaultMigratorDeps() migratorDeps {
+	return migratorDeps{
+		openDB:        sql.Open,
+		runMigrations: runMigrations,
+	}
+}
+
+func (m *Migrator) resolvedDeps() migratorDeps {
+	if m == nil {
+		return defaultMigratorDeps
+	}
+
+	deps := m.deps
+	if deps.openDB == nil {
+		deps.openDB = defaultMigratorDeps.openDB
+	}
+
+	if deps.runMigrations == nil {
+		deps.runMigrations = defaultMigratorDeps.runMigrations
+	}
+
+	return deps
 }
 
 // NewMigrator creates a migrator with explicit migration config.
@@ -640,7 +697,7 @@ func NewMigrator(cfg MigrationConfig) (*Migrator, error) {
 		return nil, fmt.Errorf("postgres new_migrator: %w", err)
 	}
 
-	return &Migrator{cfg: cfg}, nil
+	return &Migrator{cfg: cfg, deps: defaultMigratorDeps}, nil
 }
 
 func (m *Migrator) logAtLevel(ctx context.Context, level log.Level, msg string, fields ...log.Field) {
@@ -692,7 +749,7 @@ func (m *Migrator) Up(ctx context.Context) error {
 		return fmt.Errorf("postgres migrate_up: %w", err)
 	}
 
-	db, err := dbOpenFn("pgx", m.cfg.PrimaryDSN)
+	db, err := m.resolvedDeps().openDB("pgx", m.cfg.PrimaryDSN)
 	if err != nil {
 		sanitized := newSanitizedError(err, "failed to open migration database")
 		m.logAtLevel(ctx, log.LevelError, "failed to open migration database", log.Err(sanitized))
@@ -712,7 +769,7 @@ func (m *Migrator) Up(ctx context.Context) error {
 		return fmt.Errorf("postgres migrate_up: %w", err)
 	}
 
-	if err := runMigrationsFn(ctx, db, migrationsPath, m.cfg.DatabaseName, m.cfg.AllowMultiStatements, m.cfg.AllowMissingMigrations, m.cfg.Logger); err != nil {
+	if err := m.resolvedDeps().runMigrations(ctx, db, migrationsPath, m.cfg.DatabaseName, m.cfg.AllowMultiStatements, m.cfg.AllowMissingMigrations, m.cfg.Logger); err != nil {
 		libOpentelemetry.HandleSpanError(span, "Migration up failed", err)
 
 		return fmt.Errorf("postgres migrate_up: %w", err)
