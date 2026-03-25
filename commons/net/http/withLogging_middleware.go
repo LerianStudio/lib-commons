@@ -57,10 +57,18 @@ func buildOpts(opts ...LogMiddlewareOption) *logMiddleware {
 	return mid
 }
 
+func requestScopedLogger(base log.Logger, requestID string) log.Logger {
+	return base.
+		With(log.String(cn.HeaderID, requestID)).
+		With(log.String("message_prefix", requestID+cn.LoggerDefaultSeparator))
+}
+
 // WithHTTPLogging is a middleware to log access to http server.
 // It logs access log according to Apache Standard Logs which uses Common Log Format (CLF)
 // Ref: https://httpd.apache.org/docs/trunk/logs.html#common
 func WithHTTPLogging(opts ...LogMiddlewareOption) fiber.Handler {
+	mid := buildOpts(opts...)
+
 	return func(c *fiber.Ctx) error {
 		if c.Path() == "/health" {
 			return c.Next()
@@ -72,13 +80,10 @@ func WithHTTPLogging(opts ...LogMiddlewareOption) fiber.Handler {
 
 		setRequestHeaderID(c)
 
-		mid := buildOpts(opts...)
 		info := NewRequestInfo(c, mid.ObfuscationDisabled)
 
 		headerID := c.Get(cn.HeaderID)
-		logger := mid.Logger.
-			With(log.String(cn.HeaderID, info.TraceID)).
-			With(log.String("message_prefix", headerID+cn.LoggerDefaultSeparator))
+		logger := requestScopedLogger(mid.Logger, headerID)
 
 		ctx := commons.ContextWithLogger(c.UserContext(), logger)
 		c.SetUserContext(ctx)
@@ -100,6 +105,8 @@ func WithHTTPLogging(opts ...LogMiddlewareOption) fiber.Handler {
 
 // WithGrpcLogging is a gRPC unary interceptor to log access to gRPC server.
 func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
+	mid := buildOpts(opts...)
+
 	return func(
 		ctx context.Context,
 		req any,
@@ -111,7 +118,6 @@ func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
 
 		if rid, ok := getValidBodyRequestID(req); ok {
 			if prev := getMetadataID(ctx); prev != "" && prev != rid {
-				mid := buildOpts(opts...)
 				mid.Logger.Log(ctx, log.LevelDebug, "Overriding correlation id from metadata with body request_id",
 					log.String("metadata_id", prev),
 					log.String("body_request_id", rid),
@@ -124,10 +130,7 @@ func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
 
 		_, _, reqId, _ := commons.NewTrackingFromContext(ctx)
 
-		mid := buildOpts(opts...)
-		logger := mid.Logger.
-			With(log.String(cn.HeaderID, reqId)).
-			With(log.String("message_prefix", reqId+cn.LoggerDefaultSeparator))
+		logger := requestScopedLogger(mid.Logger, reqId)
 
 		ctx = commons.ContextWithLogger(ctx, logger)
 
