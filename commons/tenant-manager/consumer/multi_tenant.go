@@ -340,25 +340,17 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 // It also closes the pmClient to prevent goroutine leaks from its
 // InMemoryCache cleanup loop.
 func (c *MultiTenantConsumer) Close() error {
-	// Snapshot the event listener reference and mark closed under the lock,
-	// then release BEFORE calling Stop(). Stop() waits for the listener
-	// goroutine to finish, and that goroutine may be executing an event
-	// handler that acquires c.mu — holding the lock here would deadlock.
 	c.mu.Lock()
-	c.closed = true
-	listener := c.eventListener
-	c.mu.Unlock()
+	defer c.mu.Unlock()
 
-	// Stop event listener outside the lock to avoid deadlock.
-	if listener != nil {
-		if err := listener.Stop(); err != nil {
+	c.closed = true
+
+	// Stop event listener if running.
+	if c.eventListener != nil {
+		if err := c.eventListener.Stop(); err != nil {
 			c.logger.Warnf("failed to stop event listener: %v", err)
 		}
 	}
-
-	// Re-acquire lock for the rest of the cleanup.
-	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	// Cancel all tenant contexts
 	for tenantID, cancel := range c.tenants {
