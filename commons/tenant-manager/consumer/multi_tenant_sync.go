@@ -117,10 +117,6 @@ func (c *MultiTenantConsumer) runSyncIteration(ctx context.Context) {
 		logger.WarnfCtx(ctx, "tenant sync failed (continuing): %v", err)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "tenant sync failed (continuing)", err)
 	}
-
-	// Revalidate connection settings for active tenants.
-	// This runs outside syncTenants to avoid holding c.mu during HTTP calls.
-	c.revalidateConnectionSettings(ctx)
 }
 
 // syncTenants fetches tenant IDs from the tenant-manager API and updates the

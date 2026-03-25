@@ -990,6 +990,19 @@ func (p *Manager) Close(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// ConnectedTenantIDs returns the IDs of all tenants with active connections.
+func (p *Manager) ConnectedTenantIDs() []string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	ids := make([]string, 0, len(p.connections))
+	for id := range p.connections {
+		ids = append(ids, id)
+	}
+
+	return ids
+}
+
 // CloseConnection closes the MongoDB client for a specific tenant.
 //
 // Uses snapshot-then-cleanup to avoid holding the mutex during Disconnect,
