@@ -207,14 +207,28 @@ func TestHandleLifecycleEvent_ServiceAssociated_MatchingService(t *testing.T) {
 
 	payload := event.ServiceAssociatedPayload{
 		ServiceName:   testServiceName,
-		IsolationMode: "database",
+		IsolationMode: "shared",
+		Modules:       []string{"transaction", "onboarding"},
+		SecretPaths: map[string]map[string]string{
+			"transaction": {"postgresql_rw": "path/to/secret/tx-rw", "postgresql_ro": "path/to/secret/tx-ro"},
+			"onboarding":  {"postgresql_rw": "path/to/secret/onb-rw"},
+		},
+		MessagingConfig: &event.MessagingEventConfig{
+			RabbitMQSecretPath: "path/to/rabbitmq/secret",
+		},
+		ConnectionSettings: &event.ConnectionSettingsPayload{
+			MaxOpenConns:     10,
+			MaxIdleConns:     5,
+			StatementTimeout: "30s",
+		},
 	}
 
 	evt := event.TenantLifecycleEvent{
-		EventID:   "evt-007",
-		EventType: event.EventTenantServiceAssociated,
-		TenantID:  "tenant-assoc-001",
-		Payload:   mustMarshalPayload(t, payload),
+		EventID:    "evt-007",
+		EventType:  event.EventTenantServiceAssociated,
+		TenantID:   "tenant-assoc-001",
+		TenantSlug: "acme",
+		Payload:    mustMarshalPayload(t, payload),
 	}
 
 	err := consumer.handleLifecycleEvent(ctx, evt)
@@ -223,7 +237,24 @@ func TestHandleLifecycleEvent_ServiceAssociated_MatchingService(t *testing.T) {
 	// Verify tenant is in cache
 	entry, ok := consumer.cache.Get("tenant-assoc-001")
 	assert.True(t, ok, "tenant.service.associated should add tenant to cache")
-	assert.NotNil(t, entry, "cache entry should not be nil")
+	require.NotNil(t, entry, "cache entry should not be nil")
+
+	// Verify config fields were populated from payload
+	cfg := entry.config
+	require.NotNil(t, cfg, "tenant config should not be nil")
+	assert.Equal(t, "shared", cfg.IsolationMode, "isolation mode should match payload")
+	require.NotNil(t, cfg.ConnectionSettings, "connection settings should be populated")
+	assert.Equal(t, 10, cfg.ConnectionSettings.MaxOpenConns)
+	assert.Equal(t, 5, cfg.ConnectionSettings.MaxIdleConns)
+	assert.Equal(t, "30s", cfg.ConnectionSettings.StatementTimeout)
+	require.NotNil(t, cfg.Databases, "databases map should be populated from secret_paths")
+	require.Len(t, cfg.Databases, 2, "should have two database entries")
+	assert.NotNil(t, cfg.Databases["transaction"].PostgreSQL, "transaction should have postgresql config")
+	assert.NotNil(t, cfg.Databases["transaction"].PostgreSQLReplica, "transaction should have postgresql replica config")
+	assert.NotNil(t, cfg.Databases["onboarding"].PostgreSQL, "onboarding should have postgresql config")
+	require.NotNil(t, cfg.Messaging, "messaging config should be populated")
+	require.NotNil(t, cfg.Messaging.RabbitMQ, "rabbitmq config should be populated")
+	assert.Equal(t, "path/to/rabbitmq/secret", cfg.Messaging.RabbitMQ.Host)
 
 	// Verify tenant marked as known
 	consumer.mu.RLock()
@@ -240,7 +271,7 @@ func TestHandleLifecycleEvent_ServiceAssociated_DifferentService(t *testing.T) {
 
 	payload := event.ServiceAssociatedPayload{
 		ServiceName:   "other-service",
-		IsolationMode: "database",
+		IsolationMode: "shared",
 	}
 
 	evt := event.TenantLifecycleEvent{
@@ -344,15 +375,23 @@ func TestHandleLifecycleEvent_ServiceReactivated(t *testing.T) {
 
 	payload := event.ServiceReactivatedPayload{
 		ServiceName:    testServiceName,
-		PreviousStatus: "suspended",
-		ReProvisioned:  false,
+		PreviousStatus: "purged",
+		ReProvisioned:  true,
+		SecretPaths: map[string]map[string]string{
+			"transaction": {"postgresql_rw": "new/path/tx-rw"},
+		},
+		ConnectionSettings: &event.ConnectionSettingsPayload{
+			MaxOpenConns: 10,
+			MaxIdleConns: 5,
+		},
 	}
 
 	evt := event.TenantLifecycleEvent{
-		EventID:   "evt-012",
-		EventType: event.EventTenantServiceReactivated,
-		TenantID:  "tenant-react-001",
-		Payload:   mustMarshalPayload(t, payload),
+		EventID:    "evt-012",
+		EventType:  event.EventTenantServiceReactivated,
+		TenantID:   "tenant-react-001",
+		TenantSlug: "acme",
+		Payload:    mustMarshalPayload(t, payload),
 	}
 
 	err := consumer.handleLifecycleEvent(ctx, evt)
@@ -361,7 +400,18 @@ func TestHandleLifecycleEvent_ServiceReactivated(t *testing.T) {
 	// Verify tenant is in cache (re-added)
 	entry, ok := consumer.cache.Get("tenant-react-001")
 	assert.True(t, ok, "tenant.service.reactivated should add tenant to cache")
-	assert.NotNil(t, entry, "cache entry should not be nil")
+	require.NotNil(t, entry, "cache entry should not be nil")
+
+	// Verify config fields were populated from payload
+	cfg := entry.config
+	require.NotNil(t, cfg, "tenant config should not be nil")
+	assert.Equal(t, testServiceName, cfg.Service, "service name should match payload")
+	require.NotNil(t, cfg.ConnectionSettings, "connection settings should be populated")
+	assert.Equal(t, 10, cfg.ConnectionSettings.MaxOpenConns)
+	assert.Equal(t, 5, cfg.ConnectionSettings.MaxIdleConns)
+	require.NotNil(t, cfg.Databases, "databases map should be populated from secret_paths")
+	require.Len(t, cfg.Databases, 1, "should have one database entry")
+	assert.NotNil(t, cfg.Databases["transaction"].PostgreSQL, "transaction should have postgresql config")
 
 	// Verify tenant marked as known
 	consumer.mu.RLock()

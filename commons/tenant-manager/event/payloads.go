@@ -8,29 +8,19 @@ package event
 // It contains all information needed for a downstream service to provision
 // database connections, messaging, and secrets for a newly associated tenant.
 type ServiceAssociatedPayload struct {
-	ServiceName        string                    `json:"service_name"`
-	IsolationMode      string                    `json:"isolation_mode"`
-	Modules            map[string]ModuleConfig   `json:"modules,omitempty"`
-	SecretPaths        map[string]string         `json:"secret_paths,omitempty"`
-	MessagingConfig    *MessagingEventConfig     `json:"messaging_config,omitempty"`
-	ConnectionSettings *ConnectionSettingsPayload `json:"connection_settings,omitempty"`
-}
-
-// ModuleConfig describes a single module's database configuration within
-// a ServiceAssociatedPayload.
-type ModuleConfig struct {
-	DatabaseType string `json:"database_type"`
-	DatabaseName string `json:"database_name"`
+	ServiceName        string                       `json:"service_name"`
+	IsolationMode      string                       `json:"isolation_mode"`
+	Modules            []string                     `json:"modules,omitempty"`
+	SecretPaths        map[string]map[string]string `json:"secret_paths,omitempty"`
+	MessagingConfig    *MessagingEventConfig        `json:"messaging_config,omitempty"`
+	ConnectionSettings *ConnectionSettingsPayload   `json:"connection_settings,omitempty"`
 }
 
 // MessagingEventConfig holds messaging configuration for service-level events.
+// The RabbitMQSecretPath points to a Secrets Manager path; actual credentials
+// are resolved lazily by the connection manager.
 type MessagingEventConfig struct {
-	RabbitMQ *RabbitMQEventConfig `json:"rabbitmq,omitempty"`
-}
-
-// RabbitMQEventConfig holds RabbitMQ-specific configuration for service-level events.
-type RabbitMQEventConfig struct {
-	VHost string `json:"vhost"`
+	RabbitMQSecretPath string `json:"rabbitmq_secret_path,omitempty"`
 }
 
 // ConnectionSettingsPayload holds connection pool settings included in event payloads.
@@ -59,11 +49,11 @@ type ServicePurgedPayload struct {
 
 // ServiceReactivatedPayload is the typed payload for EventTenantServiceReactivated events.
 type ServiceReactivatedPayload struct {
-	ServiceName        string                    `json:"service_name"`
-	PreviousStatus     string                    `json:"previous_status"`
-	ReProvisioned      bool                      `json:"re_provisioned"`
-	SecretPaths        map[string]string         `json:"secret_paths,omitempty"`
-	ConnectionSettings *ConnectionSettingsPayload `json:"connection_settings,omitempty"`
+	ServiceName        string                       `json:"service_name"`
+	PreviousStatus     string                       `json:"previous_status"`
+	ReProvisioned      bool                         `json:"re_provisioned"`
+	SecretPaths        map[string]map[string]string `json:"secret_paths,omitempty"`
+	ConnectionSettings *ConnectionSettingsPayload   `json:"connection_settings,omitempty"`
 }
 
 // CredentialsRotatedPayload is the typed payload for EventTenantCredentialsRotated events.

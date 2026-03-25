@@ -178,28 +178,18 @@ func TestServiceAssociatedPayload_JSON(t *testing.T) {
 
 	original := ServiceAssociatedPayload{
 		ServiceName:   "ledger",
-		IsolationMode: "database",
-		Modules: map[string]ModuleConfig{
-			"onboarding": {
-				DatabaseType: "postgresql",
-				DatabaseName: "onboarding_db",
-			},
-			"transaction": {
-				DatabaseType: "postgresql",
-				DatabaseName: "transaction_db",
-			},
-		},
-		SecretPaths: map[string]string{
-			"db_password": "/secrets/tenant/t-123/db",
+		IsolationMode: "shared",
+		Modules:       []string{"transaction", "onboarding"},
+		SecretPaths: map[string]map[string]string{
+			"transaction": {"postgresql_rw": "path/to/secret/tx-rw", "postgresql_ro": "path/to/secret/tx-ro"},
+			"onboarding":  {"postgresql_rw": "path/to/secret/onb-rw"},
 		},
 		MessagingConfig: &MessagingEventConfig{
-			RabbitMQ: &RabbitMQEventConfig{
-				VHost: "tenant-vhost",
-			},
+			RabbitMQSecretPath: "path/to/rabbitmq/secret",
 		},
 		ConnectionSettings: &ConnectionSettingsPayload{
-			MaxOpenConns:     20,
-			MaxIdleConns:     10,
+			MaxOpenConns:     10,
+			MaxIdleConns:     5,
 			StatementTimeout: "30s",
 		},
 	}
@@ -215,18 +205,18 @@ func TestServiceAssociatedPayload_JSON(t *testing.T) {
 	assert.Equal(t, original.ServiceName, decoded.ServiceName)
 	assert.Equal(t, original.IsolationMode, decoded.IsolationMode)
 	require.Len(t, decoded.Modules, 2)
-	assert.Equal(t, "postgresql", decoded.Modules["onboarding"].DatabaseType)
-	assert.Equal(t, "onboarding_db", decoded.Modules["onboarding"].DatabaseName)
-	assert.Equal(t, "postgresql", decoded.Modules["transaction"].DatabaseType)
-	assert.Equal(t, "transaction_db", decoded.Modules["transaction"].DatabaseName)
+	assert.Contains(t, decoded.Modules, "transaction")
+	assert.Contains(t, decoded.Modules, "onboarding")
 	require.NotNil(t, decoded.SecretPaths)
-	assert.Equal(t, "/secrets/tenant/t-123/db", decoded.SecretPaths["db_password"])
+	require.Len(t, decoded.SecretPaths, 2)
+	assert.Equal(t, "path/to/secret/tx-rw", decoded.SecretPaths["transaction"]["postgresql_rw"])
+	assert.Equal(t, "path/to/secret/tx-ro", decoded.SecretPaths["transaction"]["postgresql_ro"])
+	assert.Equal(t, "path/to/secret/onb-rw", decoded.SecretPaths["onboarding"]["postgresql_rw"])
 	require.NotNil(t, decoded.MessagingConfig)
-	require.NotNil(t, decoded.MessagingConfig.RabbitMQ)
-	assert.Equal(t, "tenant-vhost", decoded.MessagingConfig.RabbitMQ.VHost)
+	assert.Equal(t, "path/to/rabbitmq/secret", decoded.MessagingConfig.RabbitMQSecretPath)
 	require.NotNil(t, decoded.ConnectionSettings)
-	assert.Equal(t, 20, decoded.ConnectionSettings.MaxOpenConns)
-	assert.Equal(t, 10, decoded.ConnectionSettings.MaxIdleConns)
+	assert.Equal(t, 10, decoded.ConnectionSettings.MaxOpenConns)
+	assert.Equal(t, 5, decoded.ConnectionSettings.MaxIdleConns)
 	assert.Equal(t, "30s", decoded.ConnectionSettings.StatementTimeout)
 }
 
@@ -293,15 +283,14 @@ func TestServiceReactivatedPayload_JSON(t *testing.T) {
 
 	original := ServiceReactivatedPayload{
 		ServiceName:    "ledger",
-		PreviousStatus: "suspended",
+		PreviousStatus: "purged",
 		ReProvisioned:  true,
-		SecretPaths: map[string]string{
-			"db_password": "/secrets/tenant/t-123/db",
+		SecretPaths: map[string]map[string]string{
+			"transaction": {"postgresql_rw": "new/path/tx-rw"},
 		},
 		ConnectionSettings: &ConnectionSettingsPayload{
-			MaxOpenConns:     25,
-			MaxIdleConns:     12,
-			StatementTimeout: "45s",
+			MaxOpenConns: 10,
+			MaxIdleConns: 5,
 		},
 	}
 
@@ -317,9 +306,11 @@ func TestServiceReactivatedPayload_JSON(t *testing.T) {
 	assert.Equal(t, original.PreviousStatus, decoded.PreviousStatus)
 	assert.Equal(t, original.ReProvisioned, decoded.ReProvisioned)
 	require.NotNil(t, decoded.SecretPaths)
-	assert.Equal(t, "/secrets/tenant/t-123/db", decoded.SecretPaths["db_password"])
+	require.Len(t, decoded.SecretPaths, 1)
+	assert.Equal(t, "new/path/tx-rw", decoded.SecretPaths["transaction"]["postgresql_rw"])
 	require.NotNil(t, decoded.ConnectionSettings)
-	assert.Equal(t, 25, decoded.ConnectionSettings.MaxOpenConns)
+	assert.Equal(t, 10, decoded.ConnectionSettings.MaxOpenConns)
+	assert.Equal(t, 5, decoded.ConnectionSettings.MaxIdleConns)
 }
 
 func TestCredentialsRotatedPayload_JSON(t *testing.T) {
