@@ -187,6 +187,145 @@ func simulateAuthMiddleware(userID string) fiber.Handler {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// hasUpstreamAuthAssertion — indirect tests via WithTenantDB
+// ---------------------------------------------------------------------------
+
+func TestHasUpstreamAuthAssertion_AuthVerifiedTrue(t *testing.T) {
+	t.Parallel()
+
+	// auth_verified=true set in Locals → request proceeds past the auth
+	// assertion check.  We use an enabled middleware with no real managers
+	// so the middleware skips DB resolution and calls c.Next().
+	middleware := &TenantMiddleware{enabled: true}
+
+	token := buildTestJWT(t, map[string]any{
+		"sub":      "user-123",
+		"tenantId": "tenant-abc",
+	})
+
+	nextCalled := false
+
+	app := fiber.New()
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("auth_verified", true)
+		return c.Next()
+	})
+	app.Use(middleware.WithTenantDB)
+	app.Get("/test", func(c *fiber.Ctx) error {
+		nextCalled = true
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.True(t, nextCalled, "handler should be reached when auth_verified=true")
+}
+
+func TestHasUpstreamAuthAssertion_AuthVerifiedFalse(t *testing.T) {
+	t.Parallel()
+
+	// auth_verified=false set in Locals → 401 (treated as not authenticated).
+	middleware := &TenantMiddleware{enabled: true}
+
+	token := buildTestJWT(t, map[string]any{
+		"sub":      "user-123",
+		"tenantId": "tenant-abc",
+	})
+
+	app := fiber.New()
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("auth_verified", false)
+		return c.Next()
+	})
+	app.Use(middleware.WithTenantDB)
+	app.Get("/test", func(c *fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestHasUpstreamAuthAssertion_EmptyUserID(t *testing.T) {
+	t.Parallel()
+
+	// Empty string user_id in Locals → 401 (trimmed to empty, skipped).
+	middleware := &TenantMiddleware{enabled: true}
+
+	token := buildTestJWT(t, map[string]any{
+		"sub":      "user-123",
+		"tenantId": "tenant-abc",
+	})
+
+	app := fiber.New()
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("user_id", "")
+		return c.Next()
+	})
+	app.Use(middleware.WithTenantDB)
+	app.Get("/test", func(c *fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestHasUpstreamAuthAssertion_NonStringClaims(t *testing.T) {
+	t.Parallel()
+
+	// Non-string value (map) in "claims" Locals → proceeds (non-nil,
+	// non-string value is accepted as auth evidence).
+	middleware := &TenantMiddleware{enabled: true}
+
+	token := buildTestJWT(t, map[string]any{
+		"sub":      "user-123",
+		"tenantId": "tenant-abc",
+	})
+
+	nextCalled := false
+
+	app := fiber.New()
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("claims", map[string]any{"role": "admin"})
+		return c.Next()
+	})
+	app.Use(middleware.WithTenantDB)
+	app.Get("/test", func(c *fiber.Ctx) error {
+		nextCalled = true
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.True(t, nextCalled, "handler should be reached when claims contains a non-string map value")
+}
+
 func TestTenantMiddleware_WithTenantDB(t *testing.T) {
 	t.Run("no Authorization header returns 401", func(t *testing.T) {
 		pgManager, _ := newTestManagers(t)

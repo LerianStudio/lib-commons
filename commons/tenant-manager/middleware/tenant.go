@@ -78,12 +78,36 @@ func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 	return m
 }
 
-// WithTenantDB returns a Fiber handler that extracts tenant context and resolves DB connection.
-// It parses the JWT token to get tenantId and fetches the appropriate connection from Tenant Manager.
-// The connection is stored in the request context for use by repositories.
+// WithTenantDB returns a Fiber handler that extracts tenant context and resolves
+// DB connection.  It parses the JWT token to get tenantId and fetches the
+// appropriate connection from Tenant Manager.  The connection is stored in the
+// request context for use by repositories.
+//
+// # Upstream Authentication Requirement (v4 migration)
+//
+// Starting with lib-commons v4, WithTenantDB requires that an upstream
+// authentication middleware has already verified the request before tenant
+// resolution occurs.  The middleware detects this by checking Fiber locals:
+//
+//  1. Preferred: c.Locals("auth_verified", true) — set by the upstream auth
+//     middleware after successful signature verification.
+//  2. Fallback heuristic: any of "user_id", "userID", "user", "claims", or
+//     "jwt" set to a non-empty, non-nil value.
+//
+// If neither signal is found, WithTenantDB returns 401 Unauthorized.
+//
+// Migration from lib-commons v3: add [SetAuthVerified] to your existing auth
+// middleware's success path:
+//
+//	func AuthMiddleware(c *fiber.Ctx) error {
+//	    // ... verify JWT signature ...
+//	    middleware.SetAuthVerified(c)
+//	    return c.Next()
+//	}
 //
 // Usage in routes.go:
 //
+//	f.Use(authMiddleware)   // must run first
 //	tenantMid := middleware.NewTenantMiddleware(middleware.WithPostgresManager(pgManager))
 //	f.Use(tenantMid.WithTenantDB)
 func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
@@ -173,7 +197,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 			logger.Base().Log(ctx, liblog.LevelError, "failed to get tenant PostgreSQL connection", liblog.Err(err))
 			libOpentelemetry.HandleSpanError(span, "failed to get tenant PostgreSQL connection", err)
 
-			return mapDomainErrorToHTTP(c, err, tenantID)
+			return mapDomainErrorToHTTP(c, err)
 		}
 
 		// Get the database connection from PostgresConnection
@@ -196,7 +220,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 			logger.Base().Log(ctx, liblog.LevelError, "failed to get tenant MongoDB connection", liblog.Err(err))
 			libOpentelemetry.HandleSpanError(span, "failed to get tenant MongoDB connection", err)
 
-			return mapDomainErrorToHTTP(c, err, tenantID)
+			return mapDomainErrorToHTTP(c, err)
 		}
 
 		ctx = core.ContextWithTenantMongo(ctx, mongoDB)
@@ -211,7 +235,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 // mapDomainErrorToHTTP is a centralized error-to-HTTP mapping function shared by
 // both TenantMiddleware and MultiPoolMiddleware to ensure consistent status codes
 // for the same domain errors.
-func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
+func mapDomainErrorToHTTP(c *fiber.Ctx, err error) error {
 	// Missing token or JWT errors -> 401
 	if errors.Is(err, core.ErrAuthorizationTokenRequired) ||
 		errors.Is(err, core.ErrInvalidAuthorizationToken) ||
@@ -224,8 +248,8 @@ func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
 	if errors.Is(err, core.ErrTenantNotFound) {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{
 			"code":    "TENANT_NOT_FOUND",
-			"title":   "Tenant Not Found",
-			"message": "tenant not found: " + tenantID,
+			"title":   "Not Found",
+			"message": "The requested tenant was not found",
 		})
 	}
 
@@ -301,6 +325,19 @@ func unauthorizedError(c *fiber.Ctx, code, message string) error {
 	})
 }
 
+// SetAuthVerified marks the Fiber context as having passed upstream
+// authentication.  Call this in your auth middleware after successful JWT
+// signature verification so that [TenantMiddleware.WithTenantDB] and
+// [MultiPoolMiddleware] accept the request.
+//
+// This is the canonical way to satisfy the upstream auth assertion introduced
+// in lib-commons v4.  See the migration notes on [TenantMiddleware.WithTenantDB].
+func SetAuthVerified(c *fiber.Ctx) {
+	if c != nil {
+		c.Locals("auth_verified", true)
+	}
+}
+
 func hasUpstreamAuthAssertion(c *fiber.Ctx) bool {
 	if c == nil {
 		return false
@@ -318,6 +355,12 @@ func hasUpstreamAuthAssertion(c *fiber.Ctx) bool {
 		}
 
 		if stringValue, ok := value.(string); ok && strings.TrimSpace(stringValue) == "" {
+			continue
+		}
+
+		// Reject boolean false stored by upstream middleware that explicitly
+		// signals "authentication was attempted but failed".
+		if boolValue, ok := value.(bool); ok && !boolValue {
 			continue
 		}
 

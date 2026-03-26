@@ -6,6 +6,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -394,13 +395,21 @@ func (m *MultiPoolMiddleware) resolveCrossModuleConnections(
 // crossModuleErrorKey is a context key for storing cross-module resolution errors.
 type crossModuleErrorKey struct{}
 
-// ContextWithCrossModuleError stores a cross-module resolution error in context
-// so downstream handlers can inspect it if needed.
+// ContextWithCrossModuleError accumulates a cross-module resolution error in
+// context.  If an error was already stored, the new error is joined with the
+// existing one via [errors.Join] so that downstream handlers see all failures,
+// not just the last one.
 func ContextWithCrossModuleError(ctx context.Context, err error) context.Context {
+	if prev := CrossModuleErrorFromContext(ctx); prev != nil {
+		err = errors.Join(prev, err)
+	}
+
 	return context.WithValue(ctx, crossModuleErrorKey{}, err)
 }
 
 // CrossModuleErrorFromContext retrieves the cross-module resolution error, if any.
+// When multiple cross-module routes failed, the returned error wraps all of
+// them (via [errors.Join]).
 func CrossModuleErrorFromContext(ctx context.Context) error {
 	if err, ok := ctx.Value(crossModuleErrorKey{}).(error); ok {
 		return err
@@ -463,8 +472,8 @@ func (m *MultiPoolMiddleware) resolveMongoConnection(
 
 // mapDefaultError delegates to the centralized mapDomainErrorToHTTP function
 // to ensure consistent error-to-HTTP mapping across all middleware types.
-func (m *MultiPoolMiddleware) mapDefaultError(c *fiber.Ctx, err error, tenantID string) error {
-	return mapDomainErrorToHTTP(c, err, tenantID)
+func (m *MultiPoolMiddleware) mapDefaultError(c *fiber.Ctx, err error, _ string) error {
+	return mapDomainErrorToHTTP(c, err)
 }
 
 // Enabled returns whether the middleware is enabled.

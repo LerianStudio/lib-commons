@@ -5,6 +5,7 @@
 package middleware
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -1090,6 +1091,24 @@ func TestMultiPoolMiddleware_DefaultHealthProbePaths(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// CrossModuleError context round-trip
+// ---------------------------------------------------------------------------
+
+func TestCrossModuleErrorContext_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	err := errors.New("cross-module failed")
+	ctx := ContextWithCrossModuleError(context.Background(), err)
+	assert.Equal(t, err, CrossModuleErrorFromContext(ctx))
+}
+
+func TestCrossModuleErrorContext_ReturnsNilWhenNotSet(t *testing.T) {
+	t.Parallel()
+
+	assert.Nil(t, CrossModuleErrorFromContext(context.Background()))
 }
 
 func TestMultiPoolMiddleware_WithPublicPaths_AppendsToDefaults(t *testing.T) {
