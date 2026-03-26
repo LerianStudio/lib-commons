@@ -5,6 +5,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"regexp"
 )
 
 // ValueType classifies the data type of a configuration value.
@@ -22,6 +23,14 @@ const (
 
 // ErrInvalidValueType indicates an invalid value type.
 var ErrInvalidValueType = errors.New("invalid value type")
+
+// ErrInvalidRedactPolicy indicates an invalid redact policy.
+var ErrInvalidRedactPolicy = errors.New("invalid redact policy")
+
+// ErrInvalidEnvVar indicates an invalid environment variable name.
+var ErrInvalidEnvVar = errors.New("invalid env var")
+
+var envVarPattern = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
 
 // IsValid reports whether the value type is supported.
 func (vt ValueType) IsValid() bool {
@@ -56,6 +65,18 @@ const (
 	RedactMask RedactPolicy = "mask"
 )
 
+// IsValid reports whether the redact policy is supported.
+// The zero value is treated as valid for backward compatibility and is
+// interpreted the same as RedactNone by the service layer.
+func (rp RedactPolicy) IsValid() bool {
+	switch rp {
+	case "", RedactNone, RedactFull, RedactMask:
+		return true
+	default:
+		return false
+	}
+}
+
 // ValidatorFunc is a custom validation function for a key's value. It returns
 // a non-nil error when the value is invalid.
 type ValidatorFunc func(value any) error
@@ -71,6 +92,7 @@ const ComponentNone = "_none"
 // the key's type, visibility, constraints, and runtime behavior.
 type KeyDef struct {
 	Key              string
+	EnvVar           string
 	Kind             Kind
 	AllowedScopes    []Scope
 	DefaultValue     any
@@ -119,6 +141,18 @@ func (keyDef KeyDef) Validate() error {
 
 	if !keyDef.ValueType.IsValid() {
 		return fmt.Errorf("key def %q value type %q: %w", keyDef.Key, keyDef.ValueType, ErrInvalidValueType)
+	}
+
+	if !keyDef.RedactPolicy.IsValid() {
+		return fmt.Errorf("key def %q redact policy %q: %w", keyDef.Key, keyDef.RedactPolicy, ErrInvalidRedactPolicy)
+	}
+
+	if keyDef.EnvVar != "" && !envVarPattern.MatchString(keyDef.EnvVar) {
+		return fmt.Errorf("key def %q env var %q: %w", keyDef.Key, keyDef.EnvVar, ErrInvalidEnvVar)
+	}
+
+	if keyDef.Secret && keyDef.RedactPolicy == RedactMask {
+		return fmt.Errorf("key def %q redact policy %q: %w", keyDef.Key, keyDef.RedactPolicy, ErrInvalidRedactPolicy)
 	}
 
 	if !keyDef.ApplyBehavior.IsValid() {

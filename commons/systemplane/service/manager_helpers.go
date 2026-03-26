@@ -25,6 +25,7 @@ func buildSchema(reg registry.Registry, kind domain.Kind) []SchemaEntry {
 	for i, def := range defs {
 		entries[i] = SchemaEntry{
 			Key:              def.Key,
+			EnvVar:           def.EnvVar,
 			Kind:             def.Kind,
 			AllowedScopes:    append([]domain.Scope(nil), def.AllowedScopes...),
 			ValueType:        def.ValueType,
@@ -32,7 +33,7 @@ func buildSchema(reg registry.Registry, kind domain.Kind) []SchemaEntry {
 			MutableAtRuntime: def.MutableAtRuntime,
 			ApplyBehavior:    def.ApplyBehavior,
 			Secret:           def.Secret,
-			RedactPolicy:     def.RedactPolicy,
+			RedactPolicy:     effectiveRedactPolicy(def),
 			Description:      def.Description,
 			Group:            def.Group,
 		}
@@ -45,12 +46,15 @@ func cloneSnapshot(snapshot domain.Snapshot) domain.Snapshot {
 	cloned := domain.Snapshot{
 		Configs:        cloneEffectiveValues(snapshot.Configs),
 		GlobalSettings: cloneEffectiveValues(snapshot.GlobalSettings),
-		TenantSettings: make(map[string]map[string]domain.EffectiveValue, len(snapshot.TenantSettings)),
 		Revision:       snapshot.Revision,
 		BuiltAt:        snapshot.BuiltAt,
 	}
-	for tenantID, values := range snapshot.TenantSettings {
-		cloned.TenantSettings[tenantID] = cloneEffectiveValues(values)
+
+	if snapshot.TenantSettings != nil {
+		cloned.TenantSettings = make(map[string]map[string]domain.EffectiveValue, len(snapshot.TenantSettings))
+		for tenantID, values := range snapshot.TenantSettings {
+			cloned.TenantSettings[tenantID] = cloneEffectiveValues(values)
+		}
 	}
 
 	return cloned
@@ -195,23 +199,32 @@ func redactValue(def domain.KeyDef, value any) any {
 		return nil
 	}
 
-	// Secret keys are always redacted regardless of RedactPolicy setting.
-	// This prevents accidental secret leaks when a developer sets Secret=true
-	// but forgets to set RedactPolicy explicitly.
-	if def.Secret {
-		return maskedValuePlaceholder
-	}
-
-	if def.RedactPolicy == "" || def.RedactPolicy == domain.RedactNone {
+	policy := effectiveRedactPolicy(def)
+	if policy == domain.RedactNone {
 		return value
 	}
 
-	if def.RedactPolicy == domain.RedactMask {
+	if policy == domain.RedactMask {
 		return maskRedactedValue(value)
 	}
 
-	// Non-secret keys with an explicit full redact policy are fully hidden.
 	return maskedValuePlaceholder
+}
+
+func effectiveRedactPolicy(def domain.KeyDef) domain.RedactPolicy {
+	if def.Secret {
+		return domain.RedactFull
+	}
+
+	if def.RedactPolicy == "" {
+		return domain.RedactNone
+	}
+
+	return def.RedactPolicy
+}
+
+func isRedacted(def domain.KeyDef) bool {
+	return effectiveRedactPolicy(def) != domain.RedactNone
 }
 
 func maskRedactedValue(value any) any {

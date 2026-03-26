@@ -2,6 +2,12 @@
 
 // Copyright 2025 Lerian Studio.
 
+// Tests in this file mutate the global backendRegistry (backendFactories and
+// initErrors) to inject stubs and simulate error paths.  They must NOT use
+// t.Parallel() at the top level to avoid data races on shared global state.
+// Individual sub-tests that only read from the registry may be safe to
+// parallelize, but the parent test functions are intentionally serial.
+
 package bootstrap
 
 import (
@@ -143,13 +149,12 @@ func TestNewBackendFromConfig_UnsupportedBackend(t *testing.T) {
 func TestNewBackendFromConfig_NoFactoryRegistered(t *testing.T) {
 	// Temporarily remove the postgres factory to simulate an unregistered backend.
 	// Save the original and restore after the test.
-	original, existed := backendFactories[domain.BackendPostgres]
-	delete(backendFactories, domain.BackendPostgres)
+	origFactories, origErrors := backendRegistry.snapshot()
+	delete(backendRegistry.factories, domain.BackendPostgres)
 
 	t.Cleanup(func() {
-		if existed {
-			backendFactories[domain.BackendPostgres] = original
-		}
+		backendRegistry.factories = origFactories
+		backendRegistry.initErrors = origErrors
 	})
 
 	cfg := &BootstrapConfig{
@@ -171,19 +176,16 @@ func TestNewBackendFromConfig_FactoryReturnsError(t *testing.T) {
 	// Register a factory that always fails, for a custom test backend kind.
 	// We use postgres kind here with a stub factory.
 	testKind := domain.BackendPostgres
-	original, existed := backendFactories[testKind]
+	origFactories, origErrors := backendRegistry.snapshot()
 
 	expectedErr := fmt.Errorf("simulated connection failure")
-	backendFactories[testKind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
+	backendRegistry.factories[testKind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 		return nil, expectedErr
 	}
 
 	t.Cleanup(func() {
-		if existed {
-			backendFactories[testKind] = original
-		} else {
-			delete(backendFactories, testKind)
-		}
+		backendRegistry.factories = origFactories
+		backendRegistry.initErrors = origErrors
 	})
 
 	cfg := &BootstrapConfig{
@@ -203,19 +205,16 @@ func TestNewBackendFromConfig_FactoryReturnsError(t *testing.T) {
 func TestNewBackendFromConfig_FactoryReturnsResources(t *testing.T) {
 	// Not parallel: mutates global backendFactories for postgres kind.
 	testKind := domain.BackendPostgres
-	original, existed := backendFactories[testKind]
+	origFactories, origErrors := backendRegistry.snapshot()
 
 	expected := &BackendResources{Store: noopStore{}, History: noopHistoryStore{}, ChangeFeed: noopChangeFeed{}, Closer: noopCloser{}}
-	backendFactories[testKind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
+	backendRegistry.factories[testKind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 		return expected, nil
 	}
 
 	t.Cleanup(func() {
-		if existed {
-			backendFactories[testKind] = original
-		} else {
-			delete(backendFactories, testKind)
-		}
+		backendRegistry.factories = origFactories
+		backendRegistry.initErrors = origErrors
 	})
 
 	cfg := &BootstrapConfig{
@@ -268,18 +267,15 @@ func TestNewBackendFromConfig_FactoryReturnsIncompleteResources(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			testKind := domain.BackendPostgres
-			original, existed := backendFactories[testKind]
+			origFactories, origErrors := backendRegistry.snapshot()
 
-			backendFactories[testKind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
+			backendRegistry.factories[testKind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 				return tc.resources, nil
 			}
 
 			t.Cleanup(func() {
-				if existed {
-					backendFactories[testKind] = original
-				} else {
-					delete(backendFactories, testKind)
-				}
+				backendRegistry.factories = origFactories
+				backendRegistry.initErrors = origErrors
 			})
 
 			cfg := &BootstrapConfig{
@@ -301,21 +297,18 @@ func TestNewBackendFromConfig_FactoryReturnsIncompleteResources(t *testing.T) {
 func TestNewBackendFromConfig_AppliesDefaults(t *testing.T) {
 	// Not parallel: mutates global backendFactories for postgres kind.
 	testKind := domain.BackendPostgres
-	original, existed := backendFactories[testKind]
+	origFactories, origErrors := backendRegistry.snapshot()
 
 	var capturedCfg *BootstrapConfig
 
-	backendFactories[testKind] = func(_ context.Context, cfg *BootstrapConfig) (*BackendResources, error) {
+	backendRegistry.factories[testKind] = func(_ context.Context, cfg *BootstrapConfig) (*BackendResources, error) {
 		capturedCfg = cfg
 		return &BackendResources{Store: noopStore{}, History: noopHistoryStore{}, ChangeFeed: noopChangeFeed{}, Closer: noopCloser{}}, nil
 	}
 
 	t.Cleanup(func() {
-		if existed {
-			backendFactories[testKind] = original
-		} else {
-			delete(backendFactories, testKind)
-		}
+		backendRegistry.factories = origFactories
+		backendRegistry.initErrors = origErrors
 	})
 
 	cfg := &BootstrapConfig{
@@ -339,16 +332,13 @@ func TestNewBackendFromConfig_AppliesDefaults(t *testing.T) {
 
 func TestRegisterBackendFactory_RejectsOverwrite(t *testing.T) {
 	testKind := domain.BackendPostgres
-	original, existed := backendFactories[testKind]
+	origFactories, origErrors := backendRegistry.snapshot()
 
 	t.Cleanup(func() {
-		if existed {
-			backendFactories[testKind] = original
-		} else {
-			delete(backendFactories, testKind)
-		}
+		backendRegistry.factories = origFactories
+		backendRegistry.initErrors = origErrors
 	})
-	delete(backendFactories, testKind)
+	delete(backendRegistry.factories, testKind)
 
 	firstCalled := false
 	secondCalled := false
@@ -366,7 +356,7 @@ func TestRegisterBackendFactory_RejectsOverwrite(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errBackendAlreadyRegistered)
 
-	factory := backendFactories[testKind]
+	factory := backendRegistry.factories[testKind]
 	require.NotNil(t, factory)
 
 	_, _ = factory(context.Background(), nil)
@@ -377,24 +367,21 @@ func TestRegisterBackendFactory_RejectsOverwrite(t *testing.T) {
 
 func TestRegisterBackendFactory_RejectsNilFactory(t *testing.T) {
 	kind := domain.BackendMongoDB
-	original, existed := backendFactories[kind]
-	backendFactories[kind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
+	origFactories, origErrors := backendRegistry.snapshot()
+	backendRegistry.factories[kind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 		return &BackendResources{Store: noopStore{}, History: noopHistoryStore{}, ChangeFeed: noopChangeFeed{}, Closer: noopCloser{}}, nil
 	}
 
 	t.Cleanup(func() {
-		if existed {
-			backendFactories[kind] = original
-		} else {
-			delete(backendFactories, kind)
-		}
+		backendRegistry.factories = origFactories
+		backendRegistry.initErrors = origErrors
 	})
 
 	err := RegisterBackendFactory(kind, nil)
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errNilBackendFactory)
-	_, ok := backendFactories[kind]
+	_, ok := backendRegistry.factories[kind]
 	assert.True(t, ok)
 }
 
@@ -405,34 +392,29 @@ func TestRegisterBackendFactory_RejectsNilFactory(t *testing.T) {
 func TestResetBackendFactories_ClearsRegistrations(t *testing.T) {
 	// Not parallel: mutates global backendFactories.
 	// Save the original state.
-	origFactories := make(map[domain.BackendKind]BackendFactory, len(backendFactories))
-	for k, v := range backendFactories {
-		origFactories[k] = v
-	}
-
-	origErrors := initErrors
+	origFactories, origErrors := backendRegistry.snapshot()
 
 	t.Cleanup(func() {
-		backendFactories = origFactories
-		initErrors = origErrors
+		backendRegistry.factories = origFactories
+		backendRegistry.initErrors = origErrors
 	})
 
 	// Register a factory and record an init error.
-	delete(backendFactories, domain.BackendPostgres)
+	delete(backendRegistry.factories, domain.BackendPostgres)
 	require.NoError(t, RegisterBackendFactory(domain.BackendPostgres, func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 		return &BackendResources{Store: noopStore{}, History: noopHistoryStore{}, ChangeFeed: noopChangeFeed{}, Closer: noopCloser{}}, nil
 	}))
 
 	RecordInitError(fmt.Errorf("simulated init error"))
 
-	assert.Len(t, backendFactories, 1)
-	assert.NotEmpty(t, initErrors)
+	assert.Len(t, backendRegistry.factories, 1)
+	assert.NotEmpty(t, backendRegistry.initErrors)
 
 	// Reset and verify.
 	ResetBackendFactories()
 
-	assert.Empty(t, backendFactories, "ResetBackendFactories should clear all factories")
-	assert.Nil(t, initErrors, "ResetBackendFactories should clear init errors")
+	assert.Empty(t, backendRegistry.factories, "ResetBackendFactories should clear all factories")
+	assert.Nil(t, backendRegistry.initErrors, "ResetBackendFactories should clear init errors")
 }
 
 var _ io.Closer = noopCloser{}

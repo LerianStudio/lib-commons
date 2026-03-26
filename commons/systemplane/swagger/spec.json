@@ -749,6 +749,10 @@
           "type": "string",
           "description": "Configuration or setting key name"
         },
+        "envVar": {
+          "type": "string",
+          "description": "Backing environment variable name when applicable"
+        },
         "kind": {
           "type": "string",
           "description": "Key kind (config or setting)"
@@ -778,6 +782,10 @@
         "secret": {
           "type": "boolean",
           "description": "Whether the value is sensitive and should be redacted in responses"
+        },
+        "redactPolicy": {
+          "type": "string",
+          "description": "Effective redaction policy exposed by the schema"
         },
         "description": {
           "type": "string",

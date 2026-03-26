@@ -24,6 +24,14 @@ type rollbackDiscarder interface {
 	Discard(ctx context.Context) error
 }
 
+type reloadBuild struct {
+	snapshot       domain.Snapshot
+	previousSnap   *domain.Snapshot
+	previousBundle domain.RuntimeBundle
+	candidate      domain.RuntimeBundle
+	strategy       BuildStrategy
+}
+
 func discardFailedCandidate(ctx context.Context, candidate domain.RuntimeBundle, strategy BuildStrategy) {
 	if isNilRuntimeBundle(candidate) {
 		return
@@ -38,18 +46,18 @@ func discardFailedCandidate(ctx context.Context, candidate domain.RuntimeBundle,
 			return
 		}
 
-		_ = discarder.Discard(ctx)
+		_ = discarder.Discard(ctx) // Best-effort rollback cleanup; errors are not actionable here.
 
 		return
 	}
 
 	if discarder, ok := candidate.(rollbackDiscarder); ok {
-		_ = discarder.Discard(ctx)
+		_ = discarder.Discard(ctx) // Best-effort rollback cleanup; errors are not actionable here.
 
 		return
 	}
 
-	_ = candidate.Close(ctx)
+	_ = candidate.Close(ctx) // Best-effort close of failed candidate; caller cannot recover from close errors.
 }
 
 func startSupervisorSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
@@ -96,7 +104,7 @@ func (supervisor *defaultSupervisor) buildBundle(
 		// Discard partially-built candidate to prevent resource leaks.
 		if err != nil && !isNilRuntimeBundle(candidate) {
 			// RuntimeBundle.Close(ctx) is the contract for releasing held resources.
-			_ = candidate.Close(ctx)
+			_ = candidate.Close(ctx) // Best-effort: discard partial candidate to prevent resource leaks.
 		}
 		// Incremental build failed — fall through to full build.
 	}
@@ -110,6 +118,71 @@ func (supervisor *defaultSupervisor) buildBundle(
 	return bundle, BuildStrategyFull, nil
 }
 
+func currentBundle(holder *bundleHolder) domain.RuntimeBundle {
+	if holder == nil {
+		return nil
+	}
+
+	return holder.bundle
+}
+
+func (supervisor *defaultSupervisor) prepareReloadBuild(ctx context.Context, tenantIDs []string) (reloadBuild, error) {
+	snap, err := supervisor.builder.BuildFull(ctx, tenantIDs...)
+	if err != nil {
+		return reloadBuild{}, fmt.Errorf("reload: %w: %w", domain.ErrSnapshotBuildFailed, err)
+	}
+
+	prevSnap := supervisor.snapshot.Load()
+	previousBundle := currentBundle(supervisor.bundle.Load())
+
+	candidate, strategy, err := supervisor.buildBundle(ctx, snap, previousBundle, prevSnap)
+	if err != nil {
+		return reloadBuild{}, fmt.Errorf("reload: %w: %w", domain.ErrBundleBuildFailed, err)
+	}
+
+	return reloadBuild{
+		snapshot:       snap,
+		previousSnap:   prevSnap,
+		previousBundle: previousBundle,
+		candidate:      candidate,
+		strategy:       strategy,
+	}, nil
+}
+
+func (supervisor *defaultSupervisor) reconcileCandidateBundle(ctx context.Context, build reloadBuild) error {
+	for _, reconciler := range supervisor.reconcilers {
+		if err := reconciler.Reconcile(ctx, build.previousBundle, build.candidate, build.snapshot); err != nil {
+			discardFailedCandidate(ctx, build.candidate, build.strategy)
+
+			return fmt.Errorf("reload: %s: %w: %w", reconciler.Name(), domain.ErrReconcileFailed, err)
+		}
+	}
+
+	return nil
+}
+
+func (supervisor *defaultSupervisor) commitReload(ctx context.Context, reason string, build reloadBuild) {
+	supervisor.snapshot.Store(&build.snapshot)
+	supervisor.bundle.Store(&bundleHolder{bundle: build.candidate})
+
+	if adopter, ok := build.candidate.(resourceAdopter); ok && !isNilRuntimeBundle(build.previousBundle) {
+		adopter.AdoptResourcesFrom(build.previousBundle)
+	}
+
+	if supervisor.observer != nil {
+		supervisor.observer(ReloadEvent{
+			Strategy: build.strategy,
+			Reason:   reason,
+			Snapshot: build.snapshot,
+			Bundle:   build.candidate,
+		})
+	}
+
+	if !isNilRuntimeBundle(build.previousBundle) {
+		_ = build.previousBundle.Close(ctx) // Best-effort: previous bundle superseded; close errors are not actionable.
+	}
+}
+
 // sortReconcilersByPhase returns a copy of the reconciler slice sorted by
 // phase in ascending order (StateSync → Validation → SideEffect). Reconcilers
 // within the same phase retain their original relative order (stable sort).
@@ -118,7 +191,16 @@ func sortReconcilersByPhase(reconcilers []ports.BundleReconciler) []ports.Bundle
 	copy(sorted, reconcilers)
 
 	slices.SortStableFunc(sorted, func(a, b ports.BundleReconciler) int {
-		return int(a.Phase()) - int(b.Phase())
+		ap, bp := int(a.Phase()), int(b.Phase())
+		if ap < bp {
+			return -1
+		}
+
+		if ap > bp {
+			return 1
+		}
+
+		return 0
 	})
 
 	return sorted
@@ -134,9 +216,15 @@ func mergeUniqueTenantIDs(base, extra []string) []string {
 
 	seen := make(map[string]struct{}, len(base)+len(extra))
 
+	// Build result from a fresh slice to avoid mutating the caller's base.
+	result := make([]string, 0, len(base)+len(extra))
+
 	for _, id := range base {
 		seen[id] = struct{}{}
+		result = append(result, id)
 	}
+
+	added := false
 
 	for _, id := range extra {
 		if id == "" {
@@ -145,13 +233,20 @@ func mergeUniqueTenantIDs(base, extra []string) []string {
 
 		if _, exists := seen[id]; !exists {
 			seen[id] = struct{}{}
-			base = append(base, id)
+			result = append(result, id)
+			added = true
 		}
 	}
 
-	sort.Strings(base)
+	// If nothing new was added, return the original base to preserve
+	// its nil/empty semantics (callers may check for nil).
+	if !added {
+		return base
+	}
 
-	return base
+	sort.Strings(result)
+
+	return result
 }
 
 func cachedTenantIDs(snapshot *domain.Snapshot) []string {

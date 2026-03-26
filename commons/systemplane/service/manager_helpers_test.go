@@ -52,12 +52,18 @@ func TestCloneSnapshot_DeepClonesNestedRuntimeValues(t *testing.T) {
 	defaultMap["enabled"] = true
 	overrideMap["kind"] = "automatic"
 
-	originalValueMap := snapshot.Configs["feature.flags"].Value.(map[string]any)
-	originalNestedSlice := originalValueMap["nested"].([]any)
-	originalNestedMap := originalNestedSlice[1].(map[string]any)
-	originalDefaultMap := snapshot.Configs["feature.flags"].Default.(map[string]any)
-	originalOverrideSlice := snapshot.Configs["feature.flags"].Override.([]any)
-	originalOverrideMap := originalOverrideSlice[0].(map[string]any)
+	originalValueMap, ok := snapshot.Configs["feature.flags"].Value.(map[string]any)
+	require.True(t, ok, "original Value must be map[string]any")
+	originalNestedSlice, ok := originalValueMap["nested"].([]any)
+	require.True(t, ok, "original nested must be []any")
+	originalNestedMap, ok := originalNestedSlice[1].(map[string]any)
+	require.True(t, ok, "original nested[1] must be map[string]any")
+	originalDefaultMap, ok := snapshot.Configs["feature.flags"].Default.(map[string]any)
+	require.True(t, ok, "original Default must be map[string]any")
+	originalOverrideSlice, ok := snapshot.Configs["feature.flags"].Override.([]any)
+	require.True(t, ok, "original Override must be []any")
+	originalOverrideMap, ok := originalOverrideSlice[0].(map[string]any)
+	require.True(t, ok, "original Override[0] must be map[string]any")
 
 	assert.Equal(t, true, originalNestedMap["beta"])
 	assert.Equal(t, false, originalDefaultMap["enabled"])
@@ -78,4 +84,19 @@ func TestRedactValue_RedactMaskFallsBackForNonString(t *testing.T) {
 	masked := redactValue(domain.KeyDef{RedactPolicy: domain.RedactMask}, map[string]any{"token": "abc"})
 
 	assert.Equal(t, "****", masked)
+}
+
+func TestRedactValue_SecretDefaultsToFullRedaction(t *testing.T) {
+	t.Parallel()
+
+	masked := redactValue(domain.KeyDef{Secret: true}, "amqp://user:pass@host")
+
+	assert.Equal(t, "****", masked)
+}
+
+func TestEffectiveRedactPolicy_NormalizesZeroValue(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, domain.RedactNone, effectiveRedactPolicy(domain.KeyDef{}))
+	assert.Equal(t, domain.RedactFull, effectiveRedactPolicy(domain.KeyDef{Secret: true}))
 }

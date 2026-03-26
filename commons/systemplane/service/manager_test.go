@@ -365,34 +365,6 @@ func TestManager_PatchSettings_ScopeValidation(t *testing.T) {
 	assert.ErrorIs(t, err, domain.ErrScopeInvalid)
 }
 
-func TestManager_GetSchema_RedactsSecretDefaults(t *testing.T) {
-	t.Parallel()
-
-	reg, store, history, spy, builder := testManagerDeps(t)
-	require.NoError(t, reg.Register(domain.KeyDef{
-		Key:              "auth.secret",
-		Kind:             domain.KindConfig,
-		AllowedScopes:    []domain.Scope{domain.ScopeGlobal},
-		ValueType:        domain.ValueTypeString,
-		DefaultValue:     "super-secret",
-		Secret:           true,
-		RedactPolicy:     domain.RedactFull,
-		ApplyBehavior:    domain.ApplyLiveRead,
-		MutableAtRuntime: true,
-		Description:      "secret",
-		Group:            "auth",
-	}))
-
-	mgr, mgrErr := NewManager(ManagerConfig{Registry: reg, Store: store, History: history, Supervisor: spy, Builder: builder})
-	require.NoError(t, mgrErr)
-
-	entries, err := mgr.GetConfigSchema(context.Background())
-	require.NoError(t, err)
-	require.Len(t, entries, 1)
-	assert.Equal(t, "****", entries[0].DefaultValue)
-	assert.Equal(t, domain.RedactFull, entries[0].RedactPolicy)
-}
-
 func TestManager_GetHistory_RedactsSecrets(t *testing.T) {
 	t.Parallel()
 

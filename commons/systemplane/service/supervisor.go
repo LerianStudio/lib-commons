@@ -206,31 +206,13 @@ func (supervisor *defaultSupervisor) Reload(ctx context.Context, reason string, 
 
 	tenantIDs := mergeUniqueTenantIDs(cachedTenantIDs(supervisor.snapshot.Load()), extraTenantIDs)
 
-	snap, err := supervisor.builder.BuildFull(ctx, tenantIDs...)
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "build full snapshot", err)
-		return fmt.Errorf("reload: %w: %w", domain.ErrSnapshotBuildFailed, err)
-	}
-
-	prevSnap := supervisor.snapshot.Load()
-	prevHolder := supervisor.bundle.Load()
-
-	var previousBundle domain.RuntimeBundle
-	if prevHolder != nil {
-		previousBundle = prevHolder.bundle
-	}
-
-	// Try incremental build first if the factory supports it and we have a
-	// previous snapshot+bundle. This reuses unchanged infrastructure components
-	// (Postgres, Redis, etc.) instead of rebuilding everything.
-	// Falls back to full build on failure or when incremental is not available.
-	candidate, strategy, err := supervisor.buildBundle(ctx, snap, previousBundle, prevSnap)
+	build, err := supervisor.prepareReloadBuild(ctx, tenantIDs)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "build runtime bundle", err)
-		return fmt.Errorf("reload: %w: %w", domain.ErrBundleBuildFailed, err)
+		return err
 	}
 
-	if isNilRuntimeBundle(candidate) {
+	if isNilRuntimeBundle(build.candidate) {
 		libOpentelemetry.HandleSpanError(span, "nil runtime bundle", domain.ErrBundleBuildFailed)
 		return fmt.Errorf("reload: %w: nil runtime bundle", domain.ErrBundleBuildFailed)
 	}
@@ -240,34 +222,13 @@ func (supervisor *defaultSupervisor) Reload(ctx context.Context, reason string, 
 	// state corruption when incremental builds nil-out transferred pointers in
 	// the previous bundle — if we stored the candidate first and a reconciler
 	// failed, the "rollback" would restore a gutted previous bundle.
-	for _, reconciler := range supervisor.reconcilers {
-		if err := reconciler.Reconcile(ctx, previousBundle, candidate, snap); err != nil {
-			discardFailedCandidate(ctx, candidate, strategy)
-
-			libOpentelemetry.HandleSpanError(span, "reconcile candidate bundle", err)
-
-			return fmt.Errorf("reload: %s: %w: %w", reconciler.Name(), domain.ErrReconcileFailed, err)
-		}
+	if err := supervisor.reconcileCandidateBundle(ctx, build); err != nil {
+		libOpentelemetry.HandleSpanError(span, "reconcile candidate bundle", err)
+		return err
 	}
 
 	// All reconcilers passed — commit atomically.
-	supervisor.snapshot.Store(&snap)
-	supervisor.bundle.Store(&bundleHolder{bundle: candidate})
-
-	if adopter, ok := candidate.(resourceAdopter); ok && !isNilRuntimeBundle(previousBundle) {
-		adopter.AdoptResourcesFrom(previousBundle)
-	}
-
-	if supervisor.observer != nil {
-		supervisor.observer(ReloadEvent{Strategy: strategy, Reason: reason, Snapshot: snap, Bundle: candidate})
-	}
-
-	// Close previous AFTER commit so transferred components are not torn down
-	// while still referenced by the now-active candidate bundle or by external
-	// runtime delegates that are repointed by the observer.
-	if !isNilRuntimeBundle(previousBundle) {
-		_ = previousBundle.Close(ctx)
-	}
+	supervisor.commitReload(ctx, reason, build)
 
 	return nil
 }

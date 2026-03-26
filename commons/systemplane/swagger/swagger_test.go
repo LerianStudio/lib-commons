@@ -1,3 +1,5 @@
+//go:build unit
+
 // Copyright 2025 Lerian Studio.
 
 package swagger
@@ -89,6 +91,23 @@ func TestSpec_ContainsAllDefinitions(t *testing.T) {
 
 	assert.Len(t, doc.Definitions, len(expectedDefinitions),
 		"spec must contain exactly %d definitions", len(expectedDefinitions))
+}
+
+func TestSpec_SchemaEntryDTOContainsMetadataFields(t *testing.T) {
+	raw := Spec()
+
+	var doc struct {
+		Definitions map[string]struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"definitions"`
+	}
+
+	require.NoError(t, json.Unmarshal(raw, &doc))
+
+	schemaEntry, ok := doc.Definitions["systemplane.SchemaEntryDTO"]
+	require.True(t, ok)
+	assert.Contains(t, schemaEntry.Properties, "envVar")
+	assert.Contains(t, schemaEntry.Properties, "redactPolicy")
 }
 
 func TestMergeInto_EmptyTarget(t *testing.T) {
