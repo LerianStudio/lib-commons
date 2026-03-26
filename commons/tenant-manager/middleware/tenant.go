@@ -25,39 +25,26 @@ import (
 // expiry, the loader fetches the tenant config from tenant-manager and caches it.
 // This avoids unnecessary API calls and benefits from event-driven cache updates.
 //
-// When a module name is configured via WithModule, the middleware stores connections
-// with module-aware context keys (ContextWithPG / ContextWithMB) in addition
-// to the generic keys. This enables multi-module services where cross-module calls
-// need access to connections from different modules simultaneously.
+// Use WithPG and WithMB to register database managers. Without a module name the manager
+// is stored in single-manager mode (backward compatible). With a module name, managers
+// are stored in multi-module mode keyed by module. One middleware, multiple modules,
+// one pass.
 type TenantMiddleware struct {
-	postgres *tmpostgres.Manager        // PostgreSQL manager (optional)
-	mongo    *tmmongo.Manager           // MongoDB manager (optional)
-	cache    *tenantcache.TenantCache   // shared tenant config cache (optional)
-	loader   *tenantcache.TenantLoader  // lazy-loads tenant config on cache miss (optional)
-	module   string                     // module name for module-aware context injection (optional)
-	enabled  bool
+	postgres *tmpostgres.Manager       // PostgreSQL manager (optional, single-manager mode)
+	mongo    *tmmongo.Manager          // MongoDB manager (optional, single-manager mode)
+	cache    *tenantcache.TenantCache  // shared tenant config cache (optional)
+	loader   *tenantcache.TenantLoader // lazy-loads tenant config on cache miss (optional)
+
+	// Multi-module managers keyed by module name.
+	// When populated, these take precedence over the single manager fields.
+	pgModules    map[string]*tmpostgres.Manager // module -> PostgreSQL manager
+	mongoModules map[string]*tmmongo.Manager    // module -> MongoDB manager
+
+	enabled bool
 }
 
 // TenantMiddlewareOption configures a TenantMiddleware.
 type TenantMiddlewareOption func(*TenantMiddleware)
-
-// WithPostgresManager sets the PostgreSQL manager for the tenant middleware.
-// When configured, the middleware will resolve PostgreSQL connections for tenants.
-func WithPostgresManager(postgres *tmpostgres.Manager) TenantMiddlewareOption {
-	return func(m *TenantMiddleware) {
-		m.postgres = postgres
-		m.enabled = m.postgres != nil || m.mongo != nil
-	}
-}
-
-// WithMongoManager sets the MongoDB manager for the tenant middleware.
-// When configured, the middleware will resolve MongoDB connections for tenants.
-func WithMongoManager(mongo *tmmongo.Manager) TenantMiddlewareOption {
-	return func(m *TenantMiddleware) {
-		m.mongo = mongo
-		m.enabled = m.postgres != nil || m.mongo != nil
-	}
-}
 
 // WithTenantCache sets the shared tenant config cache for the middleware.
 // When both cache and loader are configured, the middleware uses a cache-first strategy:
@@ -77,34 +64,29 @@ func WithTenantLoader(loader *tenantcache.TenantLoader) TenantMiddlewareOption {
 	}
 }
 
-// WithModule sets the module name for module-aware context injection.
-// When set, connections are stored with core.ContextWithPG(ctx, module, db)
-// and core.ContextWithMB(ctx, module, db) in addition to the generic
-// core.ContextWithPGConnection and core.ContextWithMongo.
-// This enables multi-module services (e.g., Midaz ledger) where cross-module
-// calls need simultaneous access to connections from different modules.
-func WithModule(module string) TenantMiddlewareOption {
-	return func(m *TenantMiddleware) {
-		m.module = module
-	}
-}
-
 // NewTenantMiddleware creates a new TenantMiddleware with the given options.
-// Use WithPostgresManager and/or WithMongoManager to configure which databases to use.
+// Use WithPG and/or WithMB to configure which databases to use.
 // The middleware is enabled if at least one manager is configured.
 //
 // Usage examples:
 //
-//	// PostgreSQL only
-//	mid := middleware.NewTenantMiddleware(middleware.WithPostgresManager(pgManager))
+//	// PostgreSQL only (single manager, no module)
+//	mid := middleware.NewTenantMiddleware(middleware.WithPG(pgManager))
 //
-//	// MongoDB only
-//	mid := middleware.NewTenantMiddleware(middleware.WithMongoManager(mongoManager))
+//	// MongoDB only (single manager, no module)
+//	mid := middleware.NewTenantMiddleware(middleware.WithMB(mongoManager))
 //
-//	// Both PostgreSQL and MongoDB
+//	// Both PostgreSQL and MongoDB (single manager)
 //	mid := middleware.NewTenantMiddleware(
-//	    middleware.WithPostgresManager(pgManager),
-//	    middleware.WithMongoManager(mongoManager),
+//	    middleware.WithPG(pgManager),
+//	    middleware.WithMB(mongoManager),
+//	)
+//
+//	// Multi-module: separate managers per module
+//	mid := middleware.NewTenantMiddleware(
+//	    middleware.WithPG(onboardingPG, "onboarding"),
+//	    middleware.WithPG(transactionPG, "transaction"),
+//	    middleware.WithMB(onboardingMB, "onboarding"),
 //	)
 func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 	m := &TenantMiddleware{}
@@ -113,8 +95,9 @@ func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 		opt(m)
 	}
 
-	// Enable if any manager is configured
-	m.enabled = m.postgres != nil || m.mongo != nil
+	// Enable if any manager is configured (single or multi-module)
+	m.enabled = m.postgres != nil || m.mongo != nil ||
+		len(m.pgModules) > 0 || len(m.mongoModules) > 0
 
 	return m
 }
@@ -125,7 +108,7 @@ func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 //
 // Usage in routes.go:
 //
-//	tenantMid := middleware.NewTenantMiddleware(middleware.WithPostgresManager(pgManager))
+//	tenantMid := middleware.NewTenantMiddleware(middleware.WithPG(pgManager))
 //	f.Use(tenantMid.WithTenantDB)
 func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	// If middleware is disabled, pass through
@@ -208,50 +191,28 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, err, tenantID)
 	}
 
-	// Handle PostgreSQL if manager is configured
-	if m.postgres != nil {
-		conn, err := m.postgres.GetConnection(ctx, tenantID)
-		if err != nil {
-			logger.Base().Log(ctx, liblog.LevelError, "failed to get tenant PostgreSQL connection", liblog.Err(err))
-			libOpentelemetry.HandleSpanError(span, "failed to get tenant PostgreSQL connection", err)
+	// Resolve PostgreSQL connections.
+	var pgErr error
 
-			return mapDomainErrorToHTTP(c, err, tenantID)
-		}
+	ctx, pgErr = m.resolvePostgres(ctx, tenantID)
+	if pgErr != nil {
+		logger.Base().Log(ctx, liblog.LevelError, "failed to resolve tenant PostgreSQL connection",
+			liblog.String("tenant_id", tenantID), liblog.Err(pgErr))
+		libOpentelemetry.HandleSpanError(span, "failed to resolve tenant PostgreSQL connection", pgErr)
 
-		// Get the database connection from PostgresConnection
-		db, err := conn.GetDB()
-		if err != nil {
-			logger.Base().Log(ctx, liblog.LevelError, "failed to get database from PostgreSQL connection", liblog.Err(err))
-			libOpentelemetry.HandleSpanError(span, "failed to get database from PostgreSQL connection", err)
-
-			return internalServerError(c, "TENANT_DB_ERROR", "Failed to get tenant database connection")
-		}
-
-		// Store PostgreSQL connection in context (generic key, always set for backward compat)
-		ctx = core.ContextWithPGConnection(ctx, db)
-
-		// Store module-specific connection when module is configured
-		if m.module != "" {
-			ctx = core.ContextWithPG(ctx, m.module, db)
-		}
+		return mapDomainErrorToHTTP(c, pgErr, tenantID)
 	}
 
-	// Handle MongoDB if manager is configured
-	if m.mongo != nil {
-		mongoDB, err := m.mongo.GetDatabaseForTenant(ctx, tenantID)
-		if err != nil {
-			logger.Base().Log(ctx, liblog.LevelError, "failed to get tenant MongoDB connection", liblog.Err(err))
-			libOpentelemetry.HandleSpanError(span, "failed to get tenant MongoDB connection", err)
+	// Resolve MongoDB connections.
+	var mongoErr error
 
-			return mapDomainErrorToHTTP(c, err, tenantID)
-		}
+	ctx, mongoErr = m.resolveMongo(ctx, tenantID)
+	if mongoErr != nil {
+		logger.Base().Log(ctx, liblog.LevelError, "failed to resolve tenant MongoDB connection",
+			liblog.String("tenant_id", tenantID), liblog.Err(mongoErr))
+		libOpentelemetry.HandleSpanError(span, "failed to resolve tenant MongoDB connection", mongoErr)
 
-		ctx = core.ContextWithMongo(ctx, mongoDB)
-
-		// Store module-specific database when module is configured
-		if m.module != "" {
-			ctx = core.ContextWithMB(ctx, m.module, mongoDB)
-		}
+		return mapDomainErrorToHTTP(c, mongoErr, tenantID)
 	}
 
 	// Update Fiber context
