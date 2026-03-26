@@ -475,18 +475,18 @@ func TestManager_DialRabbitMQ_InvalidCAFile(t *testing.T) {
 	c := mustNewTestClient(t)
 	manager := NewManager(c, "ledger")
 
-	// Attempt to dial with a non-existent CA file
+	// Attempt to dial with a non-existent CA file outside allowed directories
 	_, err := manager.dialRabbitMQ("amqps://guest:guest@localhost:5671/test", true, "/nonexistent/ca.pem")
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to read TLS CA file")
+	assert.Contains(t, err.Error(), "certificate path")
 }
 
 func TestManager_DialRabbitMQ_InvalidCACert(t *testing.T) {
 	t.Parallel()
 
-	// Create a temp file with invalid PEM content
-	tmpFile, err := os.CreateTemp("", "invalid-ca-*.pem")
+	// Create a temp file with invalid PEM content inside an allowed directory
+	tmpFile, err := os.CreateTemp("/tmp", "invalid-ca-*.pem")
 	require.NoError(t, err)
 	defer os.Remove(tmpFile.Name())
 

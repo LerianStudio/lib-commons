@@ -346,7 +346,7 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*Postgres
 		p.lastAccessed[tenantID] = now
 
 		// Only revalidate if settingsCheckInterval > 0 (means revalidation is enabled)
-		shouldRevalidate := revalidation.ShouldSchedule(p.lastSettingsCheck, tenantID, now, p.settingsCheckInterval)
+		shouldRevalidate := revalidation.ShouldSchedule(p.lastSettingsCheck, tenantID, now, p.settingsCheckInterval, p.client != nil)
 
 		p.mu.Unlock()
 
@@ -709,6 +709,8 @@ func (p *Manager) buildPostgresConnectionSpec(
 		primaryConnStr = resolvedConnStr
 	}
 
+	warnInsecureSSLMode(logger, tenantID, pgConfig)
+
 	replicaConnStr, replicaDBName, err := p.resolveReplicaConnection(config, pgConfig, primaryConnStr, tenantID, logger)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "invalid replica connection string", err)
@@ -919,27 +921,38 @@ func (p *Manager) GetDB(ctx context.Context, tenantID string) (dbresolver.DB, er
 // Close closes all connections and marks the manager as closed.
 // It waits for any in-flight revalidatePoolSettings goroutines to finish
 // before returning, preventing goroutine leaks and use-after-close races.
+//
+// Uses snapshot-then-cleanup to avoid holding the mutex during network I/O
+// (Close calls on sql.DB), which could block other goroutines.
 func (p *Manager) Close(_ context.Context) error {
-	// Phase 1: Under lock, mark closed and close all connections.
+	// Phase 1: Under lock — mark closed, snapshot all connections, clear maps.
 	p.mu.Lock()
-
 	p.closed = true
 
+	snapshot := make([]*PostgresConnection, 0, len(p.connections))
+	for _, conn := range p.connections {
+		snapshot = append(snapshot, conn)
+	}
+
+	// Clear all maps while still under lock.
+	clear(p.connections)
+	clear(p.lastAccessed)
+	clear(p.lastSettingsCheck)
+
+	p.mu.Unlock()
+
+	// Phase 2: Outside lock — close each snapshotted connection.
 	var errs []error
 
-	for tenantID, conn := range p.connections {
-		if conn.ConnectionDB != nil {
+	for _, conn := range snapshot {
+		if conn != nil && conn.ConnectionDB != nil {
 			if err := p.closePostgresConn(conn, "", ""); err != nil {
 				errs = append(errs, err)
 			}
 		}
-
-		p.deleteTenantConnectionStateLocked(tenantID)
 	}
 
-	p.mu.Unlock()
-
-	// Phase 2: Wait for in-flight revalidatePoolSettings goroutines OUTSIDE the lock.
+	// Phase 3: Wait for in-flight revalidatePoolSettings goroutines OUTSIDE the lock.
 	// revalidatePoolSettings acquires p.mu internally (via CloseConnection and
 	// ApplyConnectionSettings), so waiting with the lock held would deadlock.
 	p.revalidateWG.Wait()
@@ -1009,6 +1022,10 @@ func (p *Manager) Stats() Stats {
 	}
 }
 
+// sslModeDisable is the default SSLMode for local development compatibility.
+// Production deployments should set SSLMode explicitly to "require" or stricter.
+const sslModeDisable = "disable"
+
 // validSchemaPattern validates PostgreSQL schema names to prevent injection
 // in the options=-csearch_path= connection string parameter.
 var validSchemaPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
@@ -1020,15 +1037,16 @@ func buildConnectionString(cfg *core.PostgreSQLConfig) (string, error) {
 
 	sslmode := cfg.SSLMode
 	if sslmode == "" {
-		// Default is "disable" for local development compatibility.
+		// Default is sslModeDisable for local development compatibility.
 		// Production deployments should set SSLMode explicitly in PostgreSQLConfig.
-		sslmode = "disable"
+		// See warnInsecureSSLMode for runtime warnings on non-localhost hosts.
+		sslmode = sslModeDisable
 	}
 
 	// Reject contradictory configuration: SSL is disabled but certificate
 	// paths are provided. This likely indicates a misconfiguration that would
 	// silently ignore the supplied certificates.
-	if sslmode == "disable" && (cfg.SSLRootCert != "" || cfg.SSLCert != "" || cfg.SSLKey != "") {
+	if sslmode == sslModeDisable && (cfg.SSLRootCert != "" || cfg.SSLCert != "" || cfg.SSLKey != "") {
 		return "", fmt.Errorf("sslmode is %q but SSL certificate parameters are set (sslrootcert=%q, sslcert=%q, sslkey=%q); "+
 			"either remove the certificate paths or use a TLS-enabled sslmode", sslmode, cfg.SSLRootCert, cfg.SSLCert, cfg.SSLKey)
 	}
@@ -1158,6 +1176,34 @@ func (p *Manager) GetDefaultConnection() *PostgresConnection {
 // IsMultiTenant returns true if the manager is configured with a Tenant Manager client.
 func (p *Manager) IsMultiTenant() bool {
 	return p.client != nil
+}
+
+// warnInsecureSSLMode logs a warning if the resolved SSLMode is "disable" and
+// the host is not localhost. This catches misconfigured production tenants that
+// would otherwise silently connect without encryption.
+func warnInsecureSSLMode(logger *logcompat.Logger, tenantID string, cfg *core.PostgreSQLConfig) {
+	if cfg == nil || logger == nil {
+		return
+	}
+
+	sslmode := cfg.SSLMode
+	if sslmode == "" {
+		sslmode = sslModeDisable
+	}
+
+	if sslmode != sslModeDisable {
+		return
+	}
+
+	host := cfg.Host
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "" {
+		return
+	}
+
+	logger.WarnfCtx(context.Background(),
+		"SECURITY: sslmode=disable for tenant %s connecting to non-localhost host %s — "+
+			"set SSLMode in PostgreSQLConfig to \"require\" or stricter for production",
+		tenantID, host)
 }
 
 // CreateDirectConnection creates a direct database connection from config.

@@ -296,7 +296,7 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Cl
 			if current, stillExists := p.connections[tenantID]; stillExists && current == conn {
 				p.lastAccessed[tenantID] = now
 
-				shouldRevalidate := revalidation.ShouldSchedule(p.lastSettingsCheck, tenantID, now, p.settingsCheckInterval)
+				shouldRevalidate := revalidation.ShouldSchedule(p.lastSettingsCheck, tenantID, now, p.settingsCheckInterval, p.client != nil)
 				if shouldRevalidate {
 					p.revalidateWG.Add(1)
 				}
@@ -706,7 +706,7 @@ func (p *Manager) buildMongoConnectionSpec(
 	var tlsCfg *tls.Config
 
 	if hasSeparateCertAndKey(mongoConfig) {
-		resolvedTLS, tlsErr := buildTLSConfigFromFiles(mongoConfig)
+		resolvedTLS, tlsErr := buildTLSConfigFromFiles(mongoConfig, p.logger.Base(), tenantID)
 		if tlsErr != nil {
 			logger.ErrorfCtx(context.Background(), "failed to build TLS config for tenant %s: %v", tenantID, tlsErr)
 			libOpentelemetry.HandleSpanError(span, "failed to build TLS config", tlsErr)
@@ -1100,7 +1100,17 @@ func hasSeparateCertAndKey(cfg *core.MongoDBConfig) bool {
 // from separate certificate and private-key files. When a CA file is provided
 // it is added to the root CA pool. When TLSSkipVerify is true, both certificate
 // chain validation and hostname verification are skipped.
-func buildTLSConfigFromFiles(cfg *core.MongoDBConfig) (*tls.Config, error) {
+//
+// The logger parameter is used to emit a security warning when TLSSkipVerify is
+// enabled. Passing nil suppresses the warning.
+func buildTLSConfigFromFiles(cfg *core.MongoDBConfig, logger log.Logger, tenantID string) (*tls.Config, error) {
+	// Validate all certificate file paths before reading them.
+	for _, certPath := range []string{cfg.TLSCertFile, cfg.TLSKeyFile, cfg.TLSCAFile} {
+		if err := core.ValidateCertPath(certPath); err != nil {
+			return nil, fmt.Errorf("certificate path validation failed: %w", err)
+		}
+	}
+
 	cert, err := tls.LoadX509KeyPair(cfg.TLSCertFile, cfg.TLSKeyFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load TLS certificate key pair: %w", err)
@@ -1112,7 +1122,7 @@ func buildTLSConfigFromFiles(cfg *core.MongoDBConfig) (*tls.Config, error) {
 	}
 
 	if cfg.TLSCAFile != "" {
-		caCert, readErr := os.ReadFile(cfg.TLSCAFile)
+		caCert, readErr := os.ReadFile(cfg.TLSCAFile) //#nosec G304 -- path validated by ValidateCertPath above
 		if readErr != nil {
 			return nil, fmt.Errorf("failed to read CA certificate file: %w", readErr)
 		}
@@ -1127,6 +1137,12 @@ func buildTLSConfigFromFiles(cfg *core.MongoDBConfig) (*tls.Config, error) {
 
 	if cfg.TLSSkipVerify {
 		tlsCfg.InsecureSkipVerify = true //#nosec G402 -- controlled by explicit config flag
+
+		if logger != nil {
+			logger.Log(context.Background(), log.LevelWarn,
+				fmt.Sprintf("SECURITY: TLS certificate verification disabled for MongoDB connection to tenant %s (TLSSkipVerify=true)", tenantID),
+			)
+		}
 	}
 
 	return tlsCfg, nil

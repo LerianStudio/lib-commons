@@ -191,7 +191,7 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Con
 		if refreshedConn, still := p.connections[tenantID]; still && !refreshedConn.IsClosed() {
 			p.lastAccessed[tenantID] = now
 
-			shouldRevalidate := revalidation.ShouldSchedule(p.lastSettingsCheck, tenantID, now, p.settingsCheckInterval)
+			shouldRevalidate := revalidation.ShouldSchedule(p.lastSettingsCheck, tenantID, now, p.settingsCheckInterval, p.client != nil)
 			if shouldRevalidate {
 				p.revalidateWG.Add(1)
 			}
@@ -659,8 +659,13 @@ func (p *Manager) dialRabbitMQ(uri string, useTLS bool, tlsCAFile string) (*amqp
 		return amqp.Dial(uri)
 	}
 
+	// Validate the CA file path before reading to prevent path-traversal attacks.
+	if err := core.ValidateCertPath(tlsCAFile); err != nil {
+		return nil, fmt.Errorf("TLS CA file path validation failed: %w", err)
+	}
+
 	// Load custom CA certificate for TLS verification.
-	caCert, err := os.ReadFile(tlsCAFile) // #nosec G304 -- path from tenant config
+	caCert, err := os.ReadFile(tlsCAFile) //#nosec G304 -- path validated by ValidateCertPath above
 	if err != nil {
 		return nil, fmt.Errorf("failed to read TLS CA file %q: %w", tlsCAFile, err)
 	}

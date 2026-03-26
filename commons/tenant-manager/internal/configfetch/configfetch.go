@@ -19,6 +19,10 @@ func TenantConfig(
 	logger *logcompat.Logger,
 	span trace.Span,
 ) (*core.TenantConfig, error) {
+	if tmClient == nil {
+		return nil, errors.New("tenant manager client is nil")
+	}
+
 	config, err := tmClient.GetTenantConfig(ctx, tenantID, service)
 	if err == nil {
 		return config, nil
