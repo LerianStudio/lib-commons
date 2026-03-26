@@ -12,9 +12,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
-// mapDomainErrorToHTTP is a centralized error-to-HTTP mapping function shared by
-// both TenantMiddleware and MultiPoolMiddleware to ensure consistent status codes
-// for the same domain errors.
+// mapDomainErrorToHTTP is a centralized error-to-HTTP mapping function used by
+// TenantMiddleware to ensure consistent status codes for domain errors.
 func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
 	// Missing token or JWT errors -> 401
 	if errors.Is(err, core.ErrAuthorizationTokenRequired) ||
