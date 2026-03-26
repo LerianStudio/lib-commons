@@ -406,10 +406,6 @@ func (m *manager) recordStateTransition(serviceName string, from, to State) {
 // recordExecution increments the execution counter.
 // No-op when metricsFactory is nil.
 func (m *manager) recordExecution(serviceName, result string) {
-	if m.execCounter == nil {
-		return
-	}
-
 	if err := recordCounterWithLabels(m.execCounter, map[string]string{
 		"service": constant.SanitizeMetricLabel(serviceName),
 		"result":  result,

@@ -192,7 +192,9 @@ type connectSnapshot struct {
 }
 
 // snapshotConnectState captures connect-time state under the lock.
-// The caller MUST hold rc.mu.
+// The caller MUST hold rc.mu AND must have called applyDefaults() before
+// this method. All deps function fields (dial, openChannel, isConnClosed,
+// closeConnection) must be non-nil.
 func (rc *RabbitMQConnection) snapshotConnectState() connectSnapshot {
 	connStr := rc.ConnectionStringSource
 	healthCheckURL := rc.HealthCheckURL

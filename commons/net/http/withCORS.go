@@ -98,7 +98,10 @@ func readCORSAllowCredentials() bool {
 	return allowCredentials
 }
 
-func isWildcardCORSOrigin(origins string) bool {
+// isUnrestrictedCORSOrigin reports whether origins represents an unrestricted
+// CORS policy. Both the wildcard ("*") and an empty string (no origins
+// configured — equivalent to allowing all) are treated as unrestricted.
+func isUnrestrictedCORSOrigin(origins string) bool {
 	return origins == "*" || origins == ""
 }
 
@@ -107,7 +110,7 @@ func warnCORSConfiguration(cfg *corsRuntimeConfig) {
 		return
 	}
 
-	if isWildcardCORSOrigin(cfg.origins) {
+	if isUnrestrictedCORSOrigin(cfg.origins) {
 		cfg.logger.Log(context.Background(), libLog.LevelWarn,
 			"CORS: AllowOrigins is set to wildcard (*); "+
 				"this allows ANY website to make cross-origin requests to your API; "+
@@ -128,7 +131,7 @@ func enforceCORSRuntimeConfig(cfg *corsRuntimeConfig) {
 		return
 	}
 
-	result := commons.CheckSecurityRule(commons.RuleCORSWildcardOrigin, isWildcardCORSOrigin(cfg.origins))
+	result := commons.CheckSecurityRule(commons.RuleCORSWildcardOrigin, isUnrestrictedCORSOrigin(cfg.origins))
 	if err := commons.EnforceSecurityRule(context.Background(), cfg.logger, "cors", result); err != nil {
 		cfg.logger.Log(context.Background(), libLog.LevelError,
 			"CORS security rule enforcement failed, applying deny-all fallback",

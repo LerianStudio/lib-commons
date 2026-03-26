@@ -129,13 +129,6 @@ func RecoverWithPolicyAndContext(
 	}
 }
 
-// logPanic logs the panic value and stack trace using the provided logger.
-// This is the legacy function that captures stack internally.
-func logPanic(logger Logger, name string, panicValue any) {
-	stack := debug.Stack()
-	logPanicWithStack(logger, name, panicValue, stack)
-}
-
 // logPanicWithStack logs the panic with a pre-captured stack trace.
 // In production mode, panic values are redacted to prevent leaking sensitive data.
 func logPanicWithStack(logger Logger, name string, panicValue any, stack []byte) {

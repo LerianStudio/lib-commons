@@ -58,6 +58,10 @@ func buildOpts(opts ...LogMiddlewareOption) *logMiddleware {
 }
 
 func requestScopedLogger(base log.Logger, requestID string) log.Logger {
+	if nilcheck.Interface(base) {
+		return log.NewNop()
+	}
+
 	return base.
 		With(log.String(cn.HeaderID, requestID)).
 		With(log.String("message_prefix", requestID+cn.LoggerDefaultSeparator))

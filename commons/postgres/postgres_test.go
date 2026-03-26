@@ -1,5 +1,9 @@
 //go:build unit
 
+// Tests in this file that use withPatchedDependencies intentionally omit
+// t.Parallel() because they mutate package-level defaultClientDeps and
+// defaultMigratorDeps.  Adding t.Parallel() to those tests would cause
+// data races.  Use t.Cleanup to restore state after each test.
 package postgres
 
 import (

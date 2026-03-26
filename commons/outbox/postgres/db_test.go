@@ -109,3 +109,27 @@ func TestResolvePrimaryDB_ResolverInvokedBeforePrimary(t *testing.T) {
 	require.True(t, calledResolver)
 	require.True(t, calledPrimary)
 }
+
+func TestResolvePrimaryDB_NilContextUsesBackground(t *testing.T) {
+	t.Parallel()
+
+	expected := &sql.DB{}
+	db, err := resolvePrimaryDB(nil, primaryDBProviderFunc(func() (*sql.DB, error) { //nolint:staticcheck // intentional nil context
+		return expected, nil
+	}))
+	require.NoError(t, err)
+	require.Same(t, expected, db)
+}
+
+func TestResolvePrimaryDB_PrimaryError(t *testing.T) {
+	t.Parallel()
+
+	primaryErr := errors.New("disk on fire")
+	db, err := resolvePrimaryDB(context.Background(), primaryDBProviderFunc(func() (*sql.DB, error) {
+		return nil, primaryErr
+	}))
+	require.Nil(t, db)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "failed to get database connection")
+	require.ErrorIs(t, err, primaryErr)
+}

@@ -23,11 +23,8 @@ func processRecoveredPanic(
 		return
 	}
 
-	if withObservability {
-		logPanicWithStack(logger, name, recovered.value, recovered.stack)
-	} else {
-		logPanic(logger, name, recovered.value)
-	}
+	// Always use the pre-captured stack regardless of observability mode
+	logPanicWithStack(logger, name, recovered.value, recovered.stack)
 
 	if withObservability {
 		recordPanicObservability(ctx, recovered.value, recovered.stack, component, name)
