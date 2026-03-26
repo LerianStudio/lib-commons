@@ -176,7 +176,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		return unauthorizedError(c, "INVALID_TENANT", "tenantId has invalid format")
 	}
 
-	logger.Base().Log(ctx, liblog.LevelInfo, "tenant context resolved",
+	logger.Base().Log(ctx, liblog.LevelDebug, "tenant context resolved",
 		liblog.String("tenant_id", tenantID))
 
 	// Store tenant ID in context
