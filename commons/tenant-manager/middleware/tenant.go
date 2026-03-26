@@ -24,11 +24,17 @@ import (
 // strategy: it checks the shared cache before resolving connections. On cache miss or
 // expiry, the loader fetches the tenant config from tenant-manager and caches it.
 // This avoids unnecessary API calls and benefits from event-driven cache updates.
+//
+// When a module name is configured via WithModule, the middleware stores connections
+// with module-aware context keys (ContextWithPG / ContextWithMB) in addition
+// to the generic keys. This enables multi-module services where cross-module calls
+// need access to connections from different modules simultaneously.
 type TenantMiddleware struct {
 	postgres *tmpostgres.Manager        // PostgreSQL manager (optional)
 	mongo    *tmmongo.Manager           // MongoDB manager (optional)
 	cache    *tenantcache.TenantCache   // shared tenant config cache (optional)
 	loader   *tenantcache.TenantLoader  // lazy-loads tenant config on cache miss (optional)
+	module   string                     // module name for module-aware context injection (optional)
 	enabled  bool
 }
 
@@ -68,6 +74,18 @@ func WithTenantCache(cache *tenantcache.TenantCache) TenantMiddlewareOption {
 func WithTenantLoader(loader *tenantcache.TenantLoader) TenantMiddlewareOption {
 	return func(m *TenantMiddleware) {
 		m.loader = loader
+	}
+}
+
+// WithModule sets the module name for module-aware context injection.
+// When set, connections are stored with core.ContextWithPG(ctx, module, db)
+// and core.ContextWithMB(ctx, module, db) in addition to the generic
+// core.ContextWithPGConnection and core.ContextWithMongo.
+// This enables multi-module services (e.g., Midaz ledger) where cross-module
+// calls need simultaneous access to connections from different modules.
+func WithModule(module string) TenantMiddlewareOption {
+	return func(m *TenantMiddleware) {
+		m.module = module
 	}
 }
 
@@ -209,8 +227,13 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 			return internalServerError(c, "TENANT_DB_ERROR", "Failed to get tenant database connection")
 		}
 
-		// Store PostgreSQL connection in context
+		// Store PostgreSQL connection in context (generic key, always set for backward compat)
 		ctx = core.ContextWithPGConnection(ctx, db)
+
+		// Store module-specific connection when module is configured
+		if m.module != "" {
+			ctx = core.ContextWithPG(ctx, m.module, db)
+		}
 	}
 
 	// Handle MongoDB if manager is configured
@@ -224,6 +247,11 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		}
 
 		ctx = core.ContextWithMongo(ctx, mongoDB)
+
+		// Store module-specific database when module is configured
+		if m.module != "" {
+			ctx = core.ContextWithMB(ctx, m.module, mongoDB)
+		}
 	}
 
 	// Update Fiber context

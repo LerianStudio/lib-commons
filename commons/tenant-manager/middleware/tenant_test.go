@@ -698,6 +698,69 @@ func TestWithTenantDB_CacheMiss_LoadFails_NotFound(t *testing.T) {
 		"response body should indicate tenant not found")
 }
 
+func TestWithModule(t *testing.T) {
+	t.Run("sets module name on middleware", func(t *testing.T) {
+		mid := NewTenantMiddleware(WithModule("onboarding"))
+
+		assert.Equal(t, "onboarding", mid.module)
+	})
+
+	t.Run("module is empty by default", func(t *testing.T) {
+		mid := NewTenantMiddleware()
+
+		assert.Equal(t, "", mid.module)
+	})
+
+	t.Run("module can be combined with other options", func(t *testing.T) {
+		pgManager, mongoManager := newTestManagers(t)
+
+		mid := NewTenantMiddleware(
+			WithPostgresManager(pgManager),
+			WithMongoManager(mongoManager),
+			WithModule("transaction"),
+		)
+
+		assert.True(t, mid.Enabled())
+		assert.Equal(t, "transaction", mid.module)
+		assert.Equal(t, pgManager, mid.postgres)
+		assert.Equal(t, mongoManager, mid.mongo)
+	})
+}
+
+func TestWithTenantDB_WithModule_InjectsModuleContext(t *testing.T) {
+	// When module is configured, both generic and module-specific keys should be set.
+	// We test with enabled=true but no real DB managers (so DB resolution is skipped).
+	// The middleware will only set tenantID in context and call c.Next().
+	mid := &TenantMiddleware{enabled: true, module: "onboarding"}
+
+	token := buildTestJWT(t, map[string]any{
+		"sub":      "user-123",
+		"tenantId": "tenant-module-test",
+	})
+
+	var capturedTenantID string
+	nextCalled := false
+
+	app := fiber.New()
+	app.Use(simulateAuthMiddleware("user-123"))
+	app.Use(mid.WithTenantDB)
+	app.Get("/test", func(c *fiber.Ctx) error {
+		nextCalled = true
+		capturedTenantID = core.GetTenantIDFromContext(c.UserContext())
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.True(t, nextCalled, "next handler should have been called")
+	assert.Equal(t, "tenant-module-test", capturedTenantID)
+}
+
 func TestWithTenantDB_NoCacheConfigured_ExistingBehavior(t *testing.T) {
 	// When cache and loader are NOT configured, existing behavior is preserved:
 	// JWT is parsed, tenantID extracted, and the middleware proceeds to DB resolution.

@@ -111,3 +111,49 @@ func GetMongoForTenant(ctx context.Context) (*mongo.Database, error) {
 
 	return nil, ErrTenantContextRequired
 }
+
+// pgModuleKey is a context key type for module-specific PostgreSQL connections.
+// Each module name produces a distinct key, so connections for different modules
+// (e.g., "onboarding", "transaction") do not collide in the same context.
+type pgModuleKey string
+
+// ContextWithPG stores a module-specific PostgreSQL connection in the context.
+// The module name identifies the database schema (e.g., "onboarding", "transaction").
+// This is used in multi-module services where cross-module calls need access
+// to connections from different modules simultaneously.
+func ContextWithPG(ctx context.Context, module string, db dbresolver.DB) context.Context {
+	return context.WithValue(nonNilContext(ctx), pgModuleKey(module), db)
+}
+
+// GetPG retrieves a module-specific PostgreSQL connection from the context.
+// Returns nil if no connection was stored for the given module.
+func GetPG(ctx context.Context, module string) dbresolver.DB {
+	if db, ok := nonNilContext(ctx).Value(pgModuleKey(module)).(dbresolver.DB); ok {
+		return db
+	}
+
+	return nil
+}
+
+// mongoModuleKey is a context key type for module-specific MongoDB databases.
+// Each module name produces a distinct key, so databases for different modules
+// do not collide in the same context.
+type mongoModuleKey string
+
+// ContextWithMB stores a module-specific MongoDB database in the context.
+// The module name identifies which module's database this is (e.g., "onboarding", "transaction").
+// This is used in multi-module services where cross-module calls need access
+// to databases from different modules simultaneously.
+func ContextWithMB(ctx context.Context, module string, db *mongo.Database) context.Context {
+	return context.WithValue(nonNilContext(ctx), mongoModuleKey(module), db)
+}
+
+// GetMB retrieves a module-specific MongoDB database from the context.
+// Returns nil if no database was stored for the given module.
+func GetMB(ctx context.Context, module string) *mongo.Database {
+	if db, ok := nonNilContext(ctx).Value(mongoModuleKey(module)).(*mongo.Database); ok {
+		return db
+	}
+
+	return nil
+}
