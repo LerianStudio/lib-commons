@@ -88,21 +88,21 @@ func (m *mockDB) PrimaryDBs() []*sql.DB              { return nil }
 func (m *mockDB) ReplicaDBs() []*sql.DB              { return nil }
 func (m *mockDB) Stats() sql.DBStats                 { return sql.DBStats{} }
 
-func TestGetTenantPGConnectionFromContext(t *testing.T) {
+func TestGetPGConnectionFromContext(t *testing.T) {
 	t.Run("returns nil when no PG connection in context", func(t *testing.T) {
 		ctx := context.Background()
 
-		db := GetTenantPGConnectionFromContext(ctx)
+		db := GetPGConnectionFromContext(ctx)
 
 		assert.Nil(t, db)
 	})
 
-	t.Run("returns connection when set via ContextWithTenantPGConnection", func(t *testing.T) {
+	t.Run("returns connection when set via ContextWithPGConnection", func(t *testing.T) {
 		ctx := context.Background()
 		mockConn := &mockDB{name: "tenant-db"}
 
-		ctx = ContextWithTenantPGConnection(ctx, mockConn)
-		db := GetTenantPGConnectionFromContext(ctx)
+		ctx = ContextWithPGConnection(ctx, mockConn)
+		db := GetPGConnectionFromContext(ctx)
 
 		assert.Equal(t, mockConn, db)
 	})
@@ -121,7 +121,7 @@ func TestGetMongoFromContext(t *testing.T) {
 		ctx := context.Background()
 
 		var nilDB *mongo.Database
-		ctx = ContextWithTenantMongo(ctx, nilDB)
+		ctx = ContextWithMongo(ctx, nilDB)
 
 		db := GetMongoFromContext(ctx)
 
@@ -144,27 +144,27 @@ func TestNilContext(t *testing.T) {
 		assert.Equal(t, "", id)
 	})
 
-	t.Run("ContextWithTenantPGConnection with nil context does not panic", func(t *testing.T) {
+	t.Run("ContextWithPGConnection with nil context does not panic", func(t *testing.T) {
 		mockConn := &mockDB{name: "test-db"}
 
 		//nolint:staticcheck // SA1012: intentionally passing nil context to test nil-safety guard
-		ctx := ContextWithTenantPGConnection(nil, mockConn)
+		ctx := ContextWithPGConnection(nil, mockConn)
 
-		assert.Equal(t, mockConn, GetTenantPGConnectionFromContext(ctx))
+		assert.Equal(t, mockConn, GetPGConnectionFromContext(ctx))
 	})
 
-	t.Run("GetTenantPGConnectionFromContext with nil context returns nil", func(t *testing.T) {
+	t.Run("GetPGConnectionFromContext with nil context returns nil", func(t *testing.T) {
 		//nolint:staticcheck // SA1012: intentionally passing nil context to test nil-safety guard
-		db := GetTenantPGConnectionFromContext(nil)
+		db := GetPGConnectionFromContext(nil)
 
 		assert.Nil(t, db)
 	})
 
-	t.Run("ContextWithTenantMongo with nil context does not panic", func(t *testing.T) {
+	t.Run("ContextWithMongo with nil context does not panic", func(t *testing.T) {
 		// We cannot create a real *mongo.Database without a live client,
 		// but we can verify nil context does not panic with a nil DB value.
 		//nolint:staticcheck // SA1012: intentionally passing nil context to test nil-safety guard
-		ctx := ContextWithTenantMongo(nil, nil)
+		ctx := ContextWithMongo(nil, nil)
 
 		assert.NotNil(t, ctx)
 	})
@@ -221,11 +221,11 @@ func TestGetMongoForTenant(t *testing.T) {
 	t.Run("returns ErrTenantContextRequired for nil db in context", func(t *testing.T) {
 		ctx := context.Background()
 
-		// Use ContextWithTenantMongo with a nil *mongo.Database to test the path
+		// Use ContextWithMongo with a nil *mongo.Database to test the path
 		// (We cannot create a real *mongo.Database without a live client,
 		// but we can test the nil path and the type assertion path.)
 		var nilDB *mongo.Database
-		ctx = ContextWithTenantMongo(ctx, nilDB)
+		ctx = ContextWithMongo(ctx, nilDB)
 
 		// nil *mongo.Database stored in context: type assertion succeeds but value is nil
 		db := GetMongoFromContext(ctx)

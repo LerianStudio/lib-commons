@@ -26,10 +26,10 @@ type contextKey struct {
 var (
 	// tenantIDKey is the context key for storing the tenant ID.
 	tenantIDKey = contextKey{name: "tenantID"}
-	// tenantPGConnectionKey is the context key for storing the resolved dbresolver.DB connection.
-	tenantPGConnectionKey = contextKey{name: "tenantPGConnection"}
-	// tenantMongoKey is the context key for storing the tenant MongoDB database.
-	tenantMongoKey = contextKey{name: "tenantMongo"}
+	// pgConnectionKey is the context key for storing the resolved dbresolver.DB connection.
+	pgConnectionKey = contextKey{name: "pgConnection"}
+	// mongoKey is the context key for storing the tenant MongoDB database.
+	mongoKey = contextKey{name: "mongo"}
 )
 
 // SetTenantIDInContext stores the tenant ID in the context.
@@ -59,16 +59,16 @@ func ContextWithTenantID(ctx context.Context, tenantID string) context.Context {
 	return SetTenantIDInContext(ctx, tenantID)
 }
 
-// ContextWithTenantPGConnection stores the resolved dbresolver.DB connection in the context.
+// ContextWithPGConnection stores the resolved dbresolver.DB connection in the context.
 // This is used by the middleware to store the tenant-specific database connection.
-func ContextWithTenantPGConnection(ctx context.Context, db dbresolver.DB) context.Context {
-	return context.WithValue(nonNilContext(ctx), tenantPGConnectionKey, db)
+func ContextWithPGConnection(ctx context.Context, db dbresolver.DB) context.Context {
+	return context.WithValue(nonNilContext(ctx), pgConnectionKey, db)
 }
 
-// GetTenantPGConnectionFromContext retrieves the resolved dbresolver.DB from the context.
+// GetPGConnectionFromContext retrieves the resolved dbresolver.DB from the context.
 // Returns nil if not found.
-func GetTenantPGConnectionFromContext(ctx context.Context) dbresolver.DB {
-	if db, ok := nonNilContext(ctx).Value(tenantPGConnectionKey).(dbresolver.DB); ok {
+func GetPGConnectionFromContext(ctx context.Context) dbresolver.DB {
+	if db, ok := nonNilContext(ctx).Value(pgConnectionKey).(dbresolver.DB); ok {
 		return db
 	}
 
@@ -79,22 +79,22 @@ func GetTenantPGConnectionFromContext(ctx context.Context) dbresolver.DB {
 // If no tenant connection is found in context, returns ErrTenantContextRequired.
 // This function ALWAYS requires tenant context - there is no fallback to default connections.
 func GetPostgresForTenant(ctx context.Context) (dbresolver.DB, error) {
-	if tenantDB := GetTenantPGConnectionFromContext(ctx); tenantDB != nil {
+	if tenantDB := GetPGConnectionFromContext(ctx); tenantDB != nil {
 		return tenantDB, nil
 	}
 
 	return nil, ErrTenantContextRequired
 }
 
-// ContextWithTenantMongo stores the MongoDB database in the context.
-func ContextWithTenantMongo(ctx context.Context, db *mongo.Database) context.Context {
-	return context.WithValue(nonNilContext(ctx), tenantMongoKey, db)
+// ContextWithMongo stores the MongoDB database in the context.
+func ContextWithMongo(ctx context.Context, db *mongo.Database) context.Context {
+	return context.WithValue(nonNilContext(ctx), mongoKey, db)
 }
 
 // GetMongoFromContext retrieves the MongoDB database from the context.
 // Returns nil if not found.
 func GetMongoFromContext(ctx context.Context) *mongo.Database {
-	if db, ok := nonNilContext(ctx).Value(tenantMongoKey).(*mongo.Database); ok {
+	if db, ok := nonNilContext(ctx).Value(mongoKey).(*mongo.Database); ok {
 		return db
 	}
 

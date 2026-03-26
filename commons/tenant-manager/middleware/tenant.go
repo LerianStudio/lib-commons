@@ -210,7 +210,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		}
 
 		// Store PostgreSQL connection in context
-		ctx = core.ContextWithTenantPGConnection(ctx, db)
+		ctx = core.ContextWithPGConnection(ctx, db)
 	}
 
 	// Handle MongoDB if manager is configured
@@ -223,7 +223,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 			return mapDomainErrorToHTTP(c, err, tenantID)
 		}
 
-		ctx = core.ContextWithTenantMongo(ctx, mongoDB)
+		ctx = core.ContextWithMongo(ctx, mongoDB)
 	}
 
 	// Update Fiber context
