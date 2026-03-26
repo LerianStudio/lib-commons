@@ -115,7 +115,11 @@ func TestTenantAwareLogger_OtherMethods(t *testing.T) {
 		logger := NewTenantAwareLogger(mockLogger)
 		result := logger.With(log.String("key", "value"))
 
-		assert.Equal(t, wrappedLogger, result)
+		// With() must return a TenantAwareLogger that wraps the delegated
+		// result, preserving tenant_id injection across the chain.
+		tal, ok := result.(*TenantAwareLogger)
+		assert.True(t, ok, "With() should return *TenantAwareLogger")
+		assert.Equal(t, wrappedLogger, tal.base)
 	})
 
 	t.Run("WithGroup delegates to base logger", func(t *testing.T) {
@@ -127,7 +131,11 @@ func TestTenantAwareLogger_OtherMethods(t *testing.T) {
 		logger := NewTenantAwareLogger(mockLogger)
 		result := logger.WithGroup("group")
 
-		assert.Equal(t, wrappedLogger, result)
+		// WithGroup() must return a TenantAwareLogger that wraps the
+		// delegated result, preserving tenant_id injection.
+		tal, ok := result.(*TenantAwareLogger)
+		assert.True(t, ok, "WithGroup() should return *TenantAwareLogger")
+		assert.Equal(t, wrappedLogger, tal.base)
 	})
 
 	t.Run("Enabled delegates to base logger", func(t *testing.T) {

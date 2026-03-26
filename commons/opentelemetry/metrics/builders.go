@@ -8,6 +8,33 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+func cloneAttributes(attrs []attribute.KeyValue, extra int) []attribute.KeyValue {
+	cloned := make([]attribute.KeyValue, 0, len(attrs)+extra)
+	cloned = append(cloned, attrs...)
+
+	return cloned
+}
+
+func appendLabelAttributes(attrs []attribute.KeyValue, labels map[string]string) []attribute.KeyValue {
+	merged := cloneAttributes(attrs, len(labels))
+	for key, value := range labels {
+		merged = append(merged, attribute.String(key, value))
+	}
+
+	return merged
+}
+
+func appendAttributes(attrs []attribute.KeyValue, extra ...attribute.KeyValue) []attribute.KeyValue {
+	merged := cloneAttributes(attrs, len(extra))
+	merged = append(merged, extra...)
+
+	return merged
+}
+
+func measurementOptions(attrs []attribute.KeyValue) metric.MeasurementOption {
+	return metric.WithAttributes(attrs...)
+}
+
 var (
 	// ErrNilCounter is returned when a counter builder has no instrument.
 	ErrNilCounter = errors.New("counter instrument is nil")
@@ -25,9 +52,7 @@ var (
 
 // CounterBuilder provides a fluent API for recording counter metrics with optional labels
 type CounterBuilder struct {
-	factory *MetricsFactory
 	counter metric.Int64Counter
-	name    string
 	attrs   []attribute.KeyValue
 }
 
@@ -39,16 +64,8 @@ func (c *CounterBuilder) WithLabels(labels map[string]string) *CounterBuilder {
 	}
 
 	builder := &CounterBuilder{
-		factory: c.factory,
 		counter: c.counter,
-		name:    c.name,
-		attrs:   make([]attribute.KeyValue, 0, len(c.attrs)+len(labels)),
-	}
-
-	builder.attrs = append(builder.attrs, c.attrs...)
-
-	for key, value := range labels {
-		builder.attrs = append(builder.attrs, attribute.String(key, value))
+		attrs:   appendLabelAttributes(c.attrs, labels),
 	}
 
 	return builder
@@ -62,15 +79,9 @@ func (c *CounterBuilder) WithAttributes(attrs ...attribute.KeyValue) *CounterBui
 	}
 
 	builder := &CounterBuilder{
-		factory: c.factory,
 		counter: c.counter,
-		name:    c.name,
-		attrs:   make([]attribute.KeyValue, 0, len(c.attrs)+len(attrs)),
+		attrs:   appendAttributes(c.attrs, attrs...),
 	}
-
-	builder.attrs = append(builder.attrs, c.attrs...)
-
-	builder.attrs = append(builder.attrs, attrs...)
 
 	return builder
 }
@@ -90,7 +101,7 @@ func (c *CounterBuilder) Add(ctx context.Context, value int64) error {
 		return ErrNegativeCounterValue
 	}
 
-	c.counter.Add(ctx, value, metric.WithAttributes(c.attrs...))
+	c.counter.Add(ctx, value, measurementOptions(c.attrs))
 
 	return nil
 }
@@ -106,10 +117,8 @@ func (c *CounterBuilder) AddOne(ctx context.Context) error {
 
 // GaugeBuilder provides a fluent API for recording gauge metrics with optional labels
 type GaugeBuilder struct {
-	factory *MetricsFactory
-	gauge   metric.Int64Gauge
-	name    string
-	attrs   []attribute.KeyValue
+	gauge metric.Int64Gauge
+	attrs []attribute.KeyValue
 }
 
 // WithLabels adds labels/attributes to the gauge metric.
@@ -120,16 +129,8 @@ func (g *GaugeBuilder) WithLabels(labels map[string]string) *GaugeBuilder {
 	}
 
 	builder := &GaugeBuilder{
-		factory: g.factory,
-		gauge:   g.gauge,
-		name:    g.name,
-		attrs:   make([]attribute.KeyValue, 0, len(g.attrs)+len(labels)),
-	}
-
-	builder.attrs = append(builder.attrs, g.attrs...)
-
-	for key, value := range labels {
-		builder.attrs = append(builder.attrs, attribute.String(key, value))
+		gauge: g.gauge,
+		attrs: appendLabelAttributes(g.attrs, labels),
 	}
 
 	return builder
@@ -143,15 +144,9 @@ func (g *GaugeBuilder) WithAttributes(attrs ...attribute.KeyValue) *GaugeBuilder
 	}
 
 	builder := &GaugeBuilder{
-		factory: g.factory,
-		gauge:   g.gauge,
-		name:    g.name,
-		attrs:   make([]attribute.KeyValue, 0, len(g.attrs)+len(attrs)),
+		gauge: g.gauge,
+		attrs: appendAttributes(g.attrs, attrs...),
 	}
-
-	builder.attrs = append(builder.attrs, g.attrs...)
-
-	builder.attrs = append(builder.attrs, attrs...)
 
 	return builder
 }
@@ -170,16 +165,14 @@ func (g *GaugeBuilder) Set(ctx context.Context, value int64) error {
 		return ErrNilGauge
 	}
 
-	g.gauge.Record(ctx, value, metric.WithAttributes(g.attrs...))
+	g.gauge.Record(ctx, value, measurementOptions(g.attrs))
 
 	return nil
 }
 
 // HistogramBuilder provides a fluent API for recording histogram metrics with optional labels
 type HistogramBuilder struct {
-	factory   *MetricsFactory
 	histogram metric.Int64Histogram
-	name      string
 	attrs     []attribute.KeyValue
 }
 
@@ -191,16 +184,8 @@ func (h *HistogramBuilder) WithLabels(labels map[string]string) *HistogramBuilde
 	}
 
 	builder := &HistogramBuilder{
-		factory:   h.factory,
 		histogram: h.histogram,
-		name:      h.name,
-		attrs:     make([]attribute.KeyValue, 0, len(h.attrs)+len(labels)),
-	}
-
-	builder.attrs = append(builder.attrs, h.attrs...)
-
-	for key, value := range labels {
-		builder.attrs = append(builder.attrs, attribute.String(key, value))
+		attrs:     appendLabelAttributes(h.attrs, labels),
 	}
 
 	return builder
@@ -214,15 +199,9 @@ func (h *HistogramBuilder) WithAttributes(attrs ...attribute.KeyValue) *Histogra
 	}
 
 	builder := &HistogramBuilder{
-		factory:   h.factory,
 		histogram: h.histogram,
-		name:      h.name,
-		attrs:     make([]attribute.KeyValue, 0, len(h.attrs)+len(attrs)),
+		attrs:     appendAttributes(h.attrs, attrs...),
 	}
-
-	builder.attrs = append(builder.attrs, h.attrs...)
-
-	builder.attrs = append(builder.attrs, attrs...)
 
 	return builder
 }
@@ -237,7 +216,7 @@ func (h *HistogramBuilder) Record(ctx context.Context, value int64) error {
 		return ErrNilHistogram
 	}
 
-	h.histogram.Record(ctx, value, metric.WithAttributes(h.attrs...))
+	h.histogram.Record(ctx, value, measurementOptions(h.attrs))
 
 	return nil
 }

@@ -14,7 +14,7 @@ import (
 
 // mapDomainErrorToHTTP is a centralized error-to-HTTP mapping function used by
 // TenantMiddleware to ensure consistent status codes for domain errors.
-func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
+func mapDomainErrorToHTTP(c *fiber.Ctx, err error) error {
 	// Missing token or JWT errors -> 401
 	if errors.Is(err, core.ErrAuthorizationTokenRequired) ||
 		errors.Is(err, core.ErrInvalidAuthorizationToken) ||
@@ -28,7 +28,7 @@ func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{
 			"code":    "TENANT_NOT_FOUND",
 			"title":   "Tenant Not Found",
-			"message": "tenant not found: " + tenantID,
+			"message": "The requested tenant was not found",
 		})
 	}
 

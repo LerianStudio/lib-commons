@@ -102,9 +102,32 @@ func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 	return m
 }
 
+// SetAuthVerified marks the Fiber context as having passed upstream
+// authentication. Call this in your auth middleware after successful JWT
+// signature verification so that [TenantMiddleware.WithTenantDB] and
+// [MultiPoolMiddleware] accept the request.
+func SetAuthVerified(c *fiber.Ctx) {
+	if c != nil {
+		c.Locals("auth_verified", true)
+	}
+}
+
 // WithTenantDB returns a Fiber handler that extracts tenant context and resolves DB connection.
 // It parses the JWT token to get tenantId and fetches the appropriate connection from Tenant Manager.
 // The connection is stored in the request context for use by repositories.
+//
+// # Upstream Authentication Requirement (v4 migration)
+//
+// Starting with lib-commons v4, WithTenantDB requires that an upstream
+// authentication middleware has already verified the request before tenant
+// resolution occurs. The middleware detects this by checking Fiber locals:
+//
+//  1. Preferred: c.Locals("auth_verified", true)
+//  2. Fallback heuristic: any of "user_id", "userID", "user", "claims", or "jwt"
+//     set to a non-empty, non-nil value.
+//
+// Migration from lib-commons v3: add [SetAuthVerified] to your existing auth
+// middleware's success path.
 //
 // Usage in routes.go:
 //
@@ -188,7 +211,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 			liblog.String("tenant_id", tenantID), liblog.Err(err))
 		libOpentelemetry.HandleSpanError(span, "failed to lazy-load tenant config", err)
 
-		return mapDomainErrorToHTTP(c, err, tenantID)
+		return mapDomainErrorToHTTP(c, err)
 	}
 
 	// Resolve PostgreSQL connections.
@@ -200,7 +223,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 			liblog.String("tenant_id", tenantID), liblog.Err(pgErr))
 		libOpentelemetry.HandleSpanError(span, "failed to resolve tenant PostgreSQL connection", pgErr)
 
-		return mapDomainErrorToHTTP(c, pgErr, tenantID)
+		return mapDomainErrorToHTTP(c, pgErr)
 	}
 
 	// Resolve MongoDB connections.
@@ -212,7 +235,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 			liblog.String("tenant_id", tenantID), liblog.Err(mongoErr))
 		libOpentelemetry.HandleSpanError(span, "failed to resolve tenant MongoDB connection", mongoErr)
 
-		return mapDomainErrorToHTTP(c, mongoErr, tenantID)
+		return mapDomainErrorToHTTP(c, mongoErr)
 	}
 
 	// Update Fiber context

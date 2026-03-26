@@ -222,13 +222,13 @@ func TestRecoverWithPolicyAndContext_NilLogger(t *testing.T) {
 	})
 }
 
-// TestLogPanic_CallsLogPanicWithStack tests that logPanic delegates correctly.
-func TestLogPanic_CallsLogPanicWithStack(t *testing.T) {
+// TestLogPanicWithStack_LogsPanicValue tests that logPanicWithStack logs correctly.
+func TestLogPanicWithStack_LogsPanicValue(t *testing.T) {
 	t.Parallel()
 
 	logger := newTestLogger()
 
-	logPanic(logger, "test-handler", "panic value")
+	logPanicWithStack(logger, "test-handler", "panic value", []byte("fake stack"))
 
 	assert.True(t, logger.wasPanicLogged())
 	assert.NotEmpty(t, logger.errorCalls)

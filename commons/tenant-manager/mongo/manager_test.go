@@ -1130,7 +1130,7 @@ func TestBuildTLSConfigFromFiles(t *testing.T) {
 			TLSKeyFile:  keyPath,
 		}
 
-		tlsCfg, err := buildTLSConfigFromFiles(cfg)
+		tlsCfg, err := buildTLSConfigFromFiles(cfg, nil, "")
 
 		require.NoError(t, err)
 		require.NotNil(t, tlsCfg)
@@ -1158,7 +1158,7 @@ func TestBuildTLSConfigFromFiles(t *testing.T) {
 			TLSCAFile:   caPath,
 		}
 
-		tlsCfg, err := buildTLSConfigFromFiles(cfg)
+		tlsCfg, err := buildTLSConfigFromFiles(cfg, nil, "")
 
 		require.NoError(t, err)
 		require.NotNil(t, tlsCfg)
@@ -1178,7 +1178,7 @@ func TestBuildTLSConfigFromFiles(t *testing.T) {
 			TLSSkipVerify: true,
 		}
 
-		tlsCfg, err := buildTLSConfigFromFiles(cfg)
+		tlsCfg, err := buildTLSConfigFromFiles(cfg, nil, "")
 
 		require.NoError(t, err)
 		assert.True(t, tlsCfg.InsecureSkipVerify, "should skip verify when TLSSkipVerify is true")
@@ -1193,10 +1193,10 @@ func TestBuildTLSConfigFromFiles(t *testing.T) {
 			TLSKeyFile:  "/nonexistent/key.pem",
 		}
 
-		_, err := buildTLSConfigFromFiles(cfg)
+		_, err := buildTLSConfigFromFiles(cfg, nil, "")
 
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to load TLS certificate key pair")
+		assert.Contains(t, err.Error(), "certificate path validation failed")
 	})
 
 	t.Run("returns error for invalid CA file", func(t *testing.T) {
@@ -1212,10 +1212,10 @@ func TestBuildTLSConfigFromFiles(t *testing.T) {
 			TLSCAFile:   "/nonexistent/ca.pem",
 		}
 
-		_, err := buildTLSConfigFromFiles(cfg)
+		_, err := buildTLSConfigFromFiles(cfg, nil, "")
 
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to read CA certificate file")
+		assert.Contains(t, err.Error(), "certificate path validation failed")
 	})
 
 	t.Run("returns error for unparseable CA PEM", func(t *testing.T) {
@@ -1234,7 +1234,7 @@ func TestBuildTLSConfigFromFiles(t *testing.T) {
 			TLSCAFile:   badCAPath,
 		}
 
-		_, err := buildTLSConfigFromFiles(cfg)
+		_, err := buildTLSConfigFromFiles(cfg, nil, "")
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to parse CA certificate")

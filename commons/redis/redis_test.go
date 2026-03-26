@@ -344,13 +344,15 @@ func TestClient_RefreshLoop_DoesNotDuplicateGoroutines(t *testing.T) {
 	client := &Client{
 		cfg:    normalized,
 		logger: normalized.Logger,
-		tokenRetriever: func(ctx context.Context) (string, error) {
-			atomic.AddInt32(&calls, 1)
-			<-ctx.Done()
+		deps: clientDeps{
+			retrieveToken: func(_ *Client, ctx context.Context) (string, error) {
+				atomic.AddInt32(&calls, 1)
+				<-ctx.Done()
 
-			return "", ctx.Err()
+				return "", ctx.Err()
+			},
+			reconnect: func(*Client, context.Context) error { return nil },
 		},
-		reconnectFn: func(context.Context) error { return nil },
 	}
 
 	client.mu.Lock()
@@ -390,14 +392,16 @@ func TestClient_RefreshStatusErrorAndRecovery(t *testing.T) {
 	client := &Client{
 		cfg:    normalized,
 		logger: normalized.Logger,
-		tokenRetriever: func(context.Context) (string, error) {
-			if shouldFail.Load() {
-				return "", firstErr
-			}
+		deps: clientDeps{
+			retrieveToken: func(*Client, context.Context) (string, error) {
+				if shouldFail.Load() {
+					return "", firstErr
+				}
 
-			return "token", nil
+				return "token", nil
+			},
+			reconnect: func(*Client, context.Context) error { return nil },
 		},
-		reconnectFn: func(context.Context) error { return nil },
 	}
 
 	client.mu.Lock()
@@ -441,11 +445,13 @@ func TestClient_RefreshTick_ReconnectFailureReturnsFalse(t *testing.T) {
 		cfg:    normalized,
 		logger: normalized.Logger,
 		token:  "old-token",
-		tokenRetriever: func(context.Context) (string, error) {
-			return "new-token", nil
-		},
-		reconnectFn: func(context.Context) error {
-			return reconnectErr
+		deps: clientDeps{
+			retrieveToken: func(*Client, context.Context) (string, error) {
+				return "new-token", nil
+			},
+			reconnect: func(*Client, context.Context) error {
+				return reconnectErr
+			},
 		},
 		lastRefresh: initialRefresh,
 	}
@@ -562,20 +568,22 @@ func TestClient_ReconnectFailure_IAMRefreshLoopPreservesClient(t *testing.T) {
 		logger:    normalized.Logger,
 		connected: true,
 		token:     "original-working-token",
-		tokenRetriever: func(context.Context) (string, error) {
-			return "new-refreshed-token", nil
-		},
-		reconnectFn: func(ctx context.Context) error {
-			reconnectCalls.Add(1)
+		deps: clientDeps{
+			retrieveToken: func(*Client, context.Context) (string, error) {
+				return "new-refreshed-token", nil
+			},
+			reconnect: func(_ *Client, ctx context.Context) error {
+				reconnectCalls.Add(1)
 
-			// Capture the token at the time of reconnect attempt for verification.
-			tokenAtReconnect.Store("called")
+				// Capture the token at the time of reconnect attempt for verification.
+				tokenAtReconnect.Store("called")
 
-			if reconnectShouldFail.Load() {
-				return reconnectErr
-			}
+				if reconnectShouldFail.Load() {
+					return reconnectErr
+				}
 
-			return nil
+				return nil
+			},
 		},
 	}
 

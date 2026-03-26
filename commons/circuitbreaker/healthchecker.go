@@ -144,12 +144,7 @@ func (hc *healthChecker) healthCheckLoop(ctx context.Context) {
 }
 
 func (hc *healthChecker) performHealthChecks() {
-	hc.mu.RLock()
-	// Create snapshot to avoid holding lock during checks
-	services := make(map[string]HealthCheckFunc, len(hc.services))
-	maps.Copy(services, hc.services)
-
-	hc.mu.RUnlock()
+	services := hc.snapshotServices()
 
 	hc.logger.Log(context.Background(), log.LevelDebug, "performing health checks on registered services")
 
@@ -164,20 +159,8 @@ func (hc *healthChecker) performHealthChecks() {
 
 		unhealthyCount++
 
-		hc.logger.Log(context.Background(), log.LevelInfo, "attempting to heal service", log.String("service", serviceName), log.String("reason", "circuit breaker open"))
-
-		ctx, cancel := context.WithTimeout(context.Background(), hc.checkTimeout)
-		err := healthCheckFn(ctx)
-
-		cancel()
-
-		if err == nil {
-			hc.logger.Log(context.Background(), log.LevelInfo, "service recovered, resetting circuit breaker", log.String("service", serviceName))
-			hc.manager.Reset(serviceName)
-
+		if hc.attemptServiceRecovery(serviceName, healthCheckFn) {
 			recoveredCount++
-		} else {
-			hc.logger.Log(context.Background(), log.LevelWarn, "service still unhealthy", log.String("service", serviceName), log.Err(err), log.String("retry_in", hc.interval.String()))
 		}
 	}
 
@@ -186,6 +169,36 @@ func (hc *healthChecker) performHealthChecks() {
 	} else {
 		hc.logger.Log(context.Background(), log.LevelDebug, "all services healthy")
 	}
+}
+
+func (hc *healthChecker) snapshotServices() map[string]HealthCheckFunc {
+	hc.mu.RLock()
+	defer hc.mu.RUnlock()
+
+	services := make(map[string]HealthCheckFunc, len(hc.services))
+	maps.Copy(services, hc.services)
+
+	return services
+}
+
+func (hc *healthChecker) attemptServiceRecovery(serviceName string, healthCheckFn HealthCheckFunc) bool {
+	hc.logger.Log(context.Background(), log.LevelInfo, "attempting to heal service", log.String("service", serviceName), log.String("reason", "circuit breaker open"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), hc.checkTimeout)
+	err := healthCheckFn(ctx)
+
+	cancel()
+
+	if err == nil {
+		hc.logger.Log(context.Background(), log.LevelInfo, "service recovered, resetting circuit breaker", log.String("service", serviceName))
+		hc.manager.Reset(serviceName)
+
+		return true
+	}
+
+	hc.logger.Log(context.Background(), log.LevelWarn, "service still unhealthy", log.String("service", serviceName), log.Err(err), log.String("retry_in", hc.interval.String()))
+
+	return false
 }
 
 // GetHealthStatus returns the current health status of all services
@@ -241,17 +254,5 @@ func (hc *healthChecker) checkServiceHealth(serviceName string) {
 		return
 	}
 
-	hc.logger.Log(context.Background(), log.LevelInfo, "attempting to heal service", log.String("service", serviceName), log.String("reason", "circuit breaker open"))
-
-	ctx, cancel := context.WithTimeout(context.Background(), hc.checkTimeout)
-	err := healthCheckFn(ctx)
-
-	cancel()
-
-	if err == nil {
-		hc.logger.Log(context.Background(), log.LevelInfo, "service recovered, resetting circuit breaker", log.String("service", serviceName))
-		hc.manager.Reset(serviceName)
-	} else {
-		hc.logger.Log(context.Background(), log.LevelWarn, "service still unhealthy", log.String("service", serviceName), log.Err(err), log.String("retry_in", hc.interval.String()))
-	}
+	hc.attemptServiceRecovery(serviceName, healthCheckFn)
 }

@@ -34,10 +34,7 @@ func NewTelemetryMiddleware(tl *opentelemetry.Telemetry) *TelemetryMiddleware {
 // WithTelemetry is a middleware that adds tracing to the context.
 func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, excludedRoutes ...string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		effectiveTelemetry := tl
-		if effectiveTelemetry == nil && tm != nil {
-			effectiveTelemetry = tm.Telemetry
-		}
+		effectiveTelemetry := resolveEffectiveTelemetry(tm, tl)
 
 		if effectiveTelemetry == nil {
 			return c.Next()
@@ -52,15 +49,13 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, exclud
 		ctx := c.UserContext()
 		_, _, reqId, _ := commons.NewTrackingFromContext(ctx)
 
-		c.SetUserContext(commons.ContextWithSpanAttributes(ctx,
-			attribute.String("app.request.request_id", reqId),
-		))
+		c.SetUserContext(withRequestIDSpanAttribute(ctx, reqId))
 
-		if effectiveTelemetry.TracerProvider == nil {
+		tracer, ok := telemetryTracer(effectiveTelemetry)
+		if !ok {
 			return c.Next()
 		}
 
-		tracer := effectiveTelemetry.TracerProvider.Tracer(effectiveTelemetry.LibraryName)
 		routePathWithMethod := c.Method() + " " + commons.ReplaceUUIDWithPlaceholder(c.Path())
 
 		traceCtx := c.UserContext()
@@ -121,7 +116,7 @@ func (tm *TelemetryMiddleware) EndTracingSpans(c *fiber.Ctx) error {
 	}
 
 	if endCtx != nil {
-		trace.SpanFromContext(endCtx).End()
+		endSpanFromContext(endCtx)
 	}
 
 	return err
@@ -137,10 +132,7 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 	) (any, error) {
 		ctx = normalizeGRPCContext(ctx)
 
-		effectiveTelemetry := tl
-		if effectiveTelemetry == nil && tm != nil {
-			effectiveTelemetry = tm.Telemetry
-		}
+		effectiveTelemetry := resolveEffectiveTelemetry(tm, tl)
 
 		if effectiveTelemetry == nil {
 			return handler(ctx, req)
@@ -149,11 +141,10 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 		requestID := resolveGRPCRequestID(ctx, req)
 		ctx = commons.ContextWithHeaderID(ctx, requestID)
 
-		if effectiveTelemetry.TracerProvider == nil {
+		tracer, ok := telemetryTracer(effectiveTelemetry)
+		if !ok {
 			return handler(ctx, req)
 		}
-
-		tracer := effectiveTelemetry.TracerProvider.Tracer(effectiveTelemetry.LibraryName)
 
 		methodName := "unknown"
 		if info != nil {
@@ -210,7 +201,7 @@ func (tm *TelemetryMiddleware) EndTracingSpansInterceptor() grpc.UnaryServerInte
 		handler grpc.UnaryHandler,
 	) (any, error) {
 		resp, err := handler(ctx, req)
-		trace.SpanFromContext(ctx).End()
+		endSpanFromContext(ctx)
 
 		return resp, err
 	}

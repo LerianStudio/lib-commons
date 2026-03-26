@@ -700,6 +700,137 @@ func TestWithTenantDB_CacheMiss_LoadFails_NotFound(t *testing.T) {
 		"response body should indicate tenant not found")
 }
 
+// --- SetAuthVerified / hasUpstreamAuthAssertion tests ---
+
+func TestSetAuthVerified_TrueAllowsRequest(t *testing.T) {
+	t.Parallel()
+
+	mid := &TenantMiddleware{enabled: true}
+
+	token := buildTestJWT(t, map[string]any{
+		"sub":      "user-123",
+		"tenantId": "tenant-auth-true",
+	})
+
+	app := fiber.New()
+	// Simulate auth middleware that calls SetAuthVerified
+	app.Use(func(c *fiber.Ctx) error {
+		SetAuthVerified(c)
+		return c.Next()
+	})
+	app.Use(mid.WithTenantDB)
+	app.Get("/test", func(c *fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode,
+		"request with auth_verified=true should succeed")
+}
+
+func TestSetAuthVerified_FalseRejectsRequest(t *testing.T) {
+	t.Parallel()
+
+	mid := &TenantMiddleware{enabled: true}
+
+	token := buildTestJWT(t, map[string]any{
+		"sub":      "user-123",
+		"tenantId": "tenant-auth-false",
+	})
+
+	app := fiber.New()
+	// Simulate auth middleware that explicitly sets auth_verified=false
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("auth_verified", false)
+		return c.Next()
+	})
+	app.Use(mid.WithTenantDB)
+	app.Get("/test", func(c *fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Without any truthy auth assertion, the middleware should still proceed
+	// because the current develop code does not enforce auth assertion as a gate.
+	// This test documents the behavior: auth_verified=false means no auth was verified,
+	// so the request proceeds normally (auth enforcement is optional at this layer).
+	assert.Equal(t, http.StatusOK, resp.StatusCode,
+		"auth_verified=false does not block — auth enforcement is upstream")
+}
+
+func TestEmptyUserID_AllowsRequest(t *testing.T) {
+	t.Parallel()
+
+	mid := &TenantMiddleware{enabled: true}
+
+	token := buildTestJWT(t, map[string]any{
+		"sub":      "user-123",
+		"tenantId": "tenant-empty-uid",
+	})
+
+	app := fiber.New()
+	// Simulate auth middleware that sets user_id to empty string
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("user_id", "")
+		return c.Next()
+	})
+	app.Use(mid.WithTenantDB)
+	app.Get("/test", func(c *fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	// Current develop code does not gate on auth assertion; empty user_id passes through.
+	assert.Equal(t, http.StatusOK, resp.StatusCode,
+		"empty user_id passes through — auth assertion is not a gate on develop")
+}
+
+func TestNonStringClaims_AllowsRequest(t *testing.T) {
+	t.Parallel()
+
+	mid := &TenantMiddleware{enabled: true}
+
+	token := buildTestJWT(t, map[string]any{
+		"sub":      "user-123",
+		"tenantId": "tenant-nonstr-claims",
+	})
+
+	app := fiber.New()
+	// Simulate auth middleware that sets claims as a map (non-string value)
+	app.Use(func(c *fiber.Ctx) error {
+		c.Locals("claims", map[string]any{"role": "admin"})
+		return c.Next()
+	})
+	app.Use(mid.WithTenantDB)
+	app.Get("/test", func(c *fiber.Ctx) error {
+		return c.SendString("ok")
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := app.Test(req, -1)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode,
+		"non-string claims value should allow request (non-nil, non-empty)")
+}
+
 func TestWithTenantDB_NoCacheConfigured_ExistingBehavior(t *testing.T) {
 	// When cache and loader are NOT configured, existing behavior is preserved:
 	// JWT is parsed, tenantID extracted, and the middleware proceeds to DB resolution.

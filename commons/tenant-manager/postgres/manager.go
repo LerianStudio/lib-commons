@@ -21,10 +21,14 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/eviction"
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/revalidation"
 	"github.com/bxcodec/dbresolver/v2"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// sslModeDisable is the PostgreSQL sslmode value that disables TLS.
+const sslModeDisable = "disable"
 
 // pingTimeout is the maximum duration for connection health check pings.
 // Kept short to avoid blocking requests when a cached connection is stale.
@@ -107,9 +111,9 @@ type Manager struct {
 	idleTimeout         time.Duration        // how long before a connection is eligible for eviction
 	lastAccessed        map[string]time.Time // LRU tracking per tenant
 
-	lastSettingsCheck     map[string]time.Time          // tracks per-tenant last settings revalidation time
-	settingsCheckInterval time.Duration                 // configurable interval between settings revalidation checks
-	lastAppliedSettings   map[string]appliedSettings    // tracks previously applied pool settings per tenant for change detection
+	lastSettingsCheck     map[string]time.Time       // tracks per-tenant last settings revalidation time
+	settingsCheckInterval time.Duration              // configurable interval between settings revalidation checks
+	lastAppliedSettings   map[string]appliedSettings // tracks previously applied pool settings per tenant for change detection
 
 	// revalidateWG tracks in-flight revalidatePoolSettings goroutines so Close()
 	// can wait for them to finish before returning. Without this, goroutines
@@ -357,13 +361,7 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*Postgres
 
 		p.lastAccessed[tenantID] = now
 
-		// Only revalidate if settingsCheckInterval > 0 (means revalidation is enabled)
-		shouldRevalidate := p.client != nil && p.settingsCheckInterval > 0 && time.Since(p.lastSettingsCheck[tenantID]) > p.settingsCheckInterval
-		if shouldRevalidate {
-			// Update timestamp BEFORE spawning goroutine to prevent multiple
-			// concurrent revalidation checks for the same tenant.
-			p.lastSettingsCheck[tenantID] = now
-		}
+		shouldRevalidate := revalidation.ShouldSchedule(p.lastSettingsCheck, tenantID, now, p.settingsCheckInterval, p.client != nil)
 
 		p.mu.Unlock()
 
@@ -746,6 +744,8 @@ func (p *Manager) buildTenantPostgresConnection(
 		return nil, fmt.Errorf("invalid connection string for tenant %s: %w", tenantID, err)
 	}
 
+	warnInsecureSSLMode(logger, tenantID, pgConfig)
+
 	replicaConnStr, replicaDBName, err := p.resolveReplicaConnection(config, pgConfig, primaryConnStr, tenantID, logger)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "invalid replica connection string", err)
@@ -960,20 +960,19 @@ func (p *Manager) GetDB(ctx context.Context, tenantID string) (dbresolver.DB, er
 // Close closes all connections and marks the manager as closed.
 // It waits for any in-flight revalidatePoolSettings goroutines to finish
 // before returning, preventing goroutine leaks and use-after-close races.
+//
+// Connections are snapshotted under lock and closed outside it so that
+// slow sql.DB.Close calls do not hold the mutex.
 func (p *Manager) Close(_ context.Context) error {
-	// Phase 1: Under lock, mark closed and close all connections.
+	// Phase 1: Under lock, mark closed and snapshot all connections.
 	p.mu.Lock()
 
 	p.closed = true
 
-	var errs []error
+	snapshot := make([]*PostgresConnection, 0, len(p.connections))
 
 	for tenantID, conn := range p.connections {
-		if conn.ConnectionDB != nil {
-			if err := (*conn.ConnectionDB).Close(); err != nil {
-				errs = append(errs, err)
-			}
-		}
+		snapshot = append(snapshot, conn)
 
 		delete(p.connections, tenantID)
 		delete(p.lastAccessed, tenantID)
@@ -983,7 +982,18 @@ func (p *Manager) Close(_ context.Context) error {
 
 	p.mu.Unlock()
 
-	// Phase 2: Wait for in-flight revalidatePoolSettings goroutines OUTSIDE the lock.
+	// Phase 2: Close snapshotted connections outside the lock.
+	var errs []error
+
+	for _, conn := range snapshot {
+		if conn != nil && conn.ConnectionDB != nil {
+			if err := (*conn.ConnectionDB).Close(); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+
+	// Phase 3: Wait for in-flight revalidatePoolSettings goroutines OUTSIDE the lock.
 	// revalidatePoolSettings acquires p.mu internally (via CloseConnection and
 	// ApplyConnectionSettings), so waiting with the lock held would deadlock.
 	p.revalidateWG.Wait()
@@ -1076,13 +1086,13 @@ func buildConnectionString(cfg *core.PostgreSQLConfig) (string, error) {
 	if sslmode == "" {
 		// Default is "disable" for local development compatibility.
 		// Production deployments should set SSLMode explicitly in PostgreSQLConfig.
-		sslmode = "disable"
+		sslmode = sslModeDisable
 	}
 
 	// Reject contradictory configuration: SSL is disabled but certificate
 	// paths are provided. This likely indicates a misconfiguration that would
 	// silently ignore the supplied certificates.
-	if sslmode == "disable" && (cfg.SSLRootCert != "" || cfg.SSLCert != "" || cfg.SSLKey != "") {
+	if sslmode == sslModeDisable && (cfg.SSLRootCert != "" || cfg.SSLCert != "" || cfg.SSLKey != "") {
 		return "", fmt.Errorf("sslmode is %q but SSL certificate parameters are set (sslrootcert=%q, sslcert=%q, sslkey=%q); "+
 			"either remove the certificate paths or use a TLS-enabled sslmode", sslmode, cfg.SSLRootCert, cfg.SSLCert, cfg.SSLKey)
 	}
@@ -1123,6 +1133,34 @@ func buildConnectionString(cfg *core.PostgreSQLConfig) (string, error) {
 	connURL.RawQuery = values.Encode()
 
 	return connURL.String(), nil
+}
+
+// warnInsecureSSLMode logs a security warning when a non-localhost tenant connection
+// uses sslmode=disable. This is a configuration smell: production deployments should
+// always use "require" or stricter TLS modes.
+func warnInsecureSSLMode(logger *logcompat.Logger, tenantID string, cfg *core.PostgreSQLConfig) {
+	if cfg == nil || logger == nil {
+		return
+	}
+
+	sslmode := cfg.SSLMode
+	if sslmode == "" {
+		sslmode = sslModeDisable
+	}
+
+	if sslmode != sslModeDisable {
+		return
+	}
+
+	host := cfg.Host
+	if host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "" {
+		return
+	}
+
+	logger.WarnfCtx(context.Background(),
+		"SECURITY: sslmode=disable for tenant %s connecting to non-localhost host %s — "+
+			"set SSLMode in PostgreSQLConfig to \"require\" or stricter for production",
+		tenantID, host)
 }
 
 // ApplyConnectionSettings applies updated connection pool settings to an existing

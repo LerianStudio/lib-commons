@@ -335,35 +335,44 @@ func (sm *ServerManager) logFatal(msg string) {
 func (sm *ServerManager) handleShutdown() error {
 	sm.ensureRuntimeDefaults()
 
-	var startupErr error
-
-	if sm.shutdownChan != nil {
-		select {
-		case <-sm.shutdownChan:
-		case err := <-sm.startupErrors:
-			sm.logger.Log(context.Background(), log.LevelError, "server startup failed", log.Err(err))
-
-			startupErr = err
-		}
-	} else {
-		c := make(chan os.Signal, 1)
-		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-
-		select {
-		case <-c:
-			signal.Stop(c)
-		case err := <-sm.startupErrors:
-			sm.logger.Log(context.Background(), log.LevelError, "server startup failed", log.Err(err))
-
-			startupErr = err
-		}
-	}
+	startupErr := sm.waitForShutdownTrigger()
 
 	sm.logInfo("Gracefully shutting down all servers...")
 
 	sm.executeShutdown()
 
 	return startupErr
+}
+
+func (sm *ServerManager) waitForShutdownTrigger() error {
+	if sm.shutdownChan != nil {
+		select {
+		case <-sm.shutdownChan:
+			return nil
+		case err := <-sm.startupErrors:
+			return sm.logStartupError(err)
+		}
+	}
+
+	signals := make(chan os.Signal, 1)
+
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+
+	select {
+	case <-signals:
+		return nil
+	case err := <-sm.startupErrors:
+		return sm.logStartupError(err)
+	}
+}
+
+func (sm *ServerManager) logStartupError(err error) error {
+	if err != nil {
+		sm.logger.Log(context.Background(), log.LevelError, "server startup failed", log.Err(err))
+	}
+
+	return err
 }
 
 // executeShutdown performs the actual shutdown operations in the correct order for ServerManager.
@@ -391,50 +400,12 @@ func (sm *ServerManager) executeShutdown() {
 			}
 		}
 
-		// Execute shutdown hooks (best-effort, between HTTP and telemetry shutdown).
-		// Each hook gets its own context with an independent timeout to prevent
-		// one slow hook from consuming the entire budget.
-		for i, hook := range sm.shutdownHooks {
-			hookCtx, hookCancel := context.WithTimeout(context.Background(), sm.shutdownTimeout)
-
-			if err := hook(hookCtx); err != nil {
-				sm.logger.Log(context.Background(), log.LevelError, "shutdown hook failed",
-					log.Int("hook_index", i),
-					log.Err(err),
-				)
-			}
-
-			hookCancel()
-		}
+		sm.runShutdownHooks()
 
 		// Shutdown the gRPC server BEFORE telemetry to allow in-flight RPCs
 		// to complete and emit their final spans/metrics before the telemetry
 		// pipeline is torn down.
-		if sm.grpcServer != nil {
-			sm.logInfo("Shutting down gRPC server...")
-
-			done := make(chan struct{})
-
-			runtime.SafeGoWithContextAndComponent(
-				context.Background(),
-				sm.logger,
-				"server",
-				"grpc_graceful_stop",
-				runtime.KeepRunning,
-				func(_ context.Context) {
-					sm.grpcServer.GracefulStop()
-					close(done)
-				},
-			)
-
-			select {
-			case <-done:
-				sm.logInfo("gRPC server stopped gracefully")
-			case <-time.After(sm.shutdownTimeout):
-				sm.logInfo("gRPC graceful stop timed out, forcing stop...")
-				sm.grpcServer.Stop()
-			}
-		}
+		sm.shutdownGRPCServer()
 
 		// Shutdown telemetry AFTER servers have drained, so final spans/metrics are exported.
 		if sm.telemetry != nil {
@@ -442,21 +413,76 @@ func (sm *ServerManager) executeShutdown() {
 			sm.telemetry.ShutdownTelemetry()
 		}
 
-		// Sync logger if available
-		if sm.logger != nil {
-			sm.logInfo("Syncing logger...")
+		sm.syncLogger()
 
-			if err := sm.logger.Sync(context.Background()); err != nil {
-				sm.logger.Log(context.Background(), log.LevelError, "failed to sync logger", log.Err(err))
-			}
-		}
-
-		// Shutdown license background refresh if available
-		if sm.licenseClient != nil {
-			sm.logInfo("Shutting down license background refresh...")
-			sm.licenseClient.Terminate("shutdown")
-		}
+		sm.shutdownLicense()
 
 		sm.logInfo("Graceful shutdown completed")
 	})
+}
+
+func (sm *ServerManager) runShutdownHooks() {
+	for i, hook := range sm.shutdownHooks {
+		hookCtx, hookCancel := context.WithTimeout(context.Background(), sm.shutdownTimeout)
+
+		if err := hook(hookCtx); err != nil {
+			sm.logger.Log(context.Background(), log.LevelError, "shutdown hook failed",
+				log.Int("hook_index", i),
+				log.Err(err),
+			)
+		}
+
+		hookCancel()
+	}
+}
+
+func (sm *ServerManager) shutdownGRPCServer() {
+	if sm.grpcServer == nil {
+		return
+	}
+
+	sm.logInfo("Shutting down gRPC server...")
+
+	done := make(chan struct{})
+
+	runtime.SafeGoWithContextAndComponent(
+		context.Background(),
+		sm.logger,
+		"server",
+		"grpc_graceful_stop",
+		runtime.KeepRunning,
+		func(_ context.Context) {
+			sm.grpcServer.GracefulStop()
+			close(done)
+		},
+	)
+
+	select {
+	case <-done:
+		sm.logInfo("gRPC server stopped gracefully")
+	case <-time.After(sm.shutdownTimeout):
+		sm.logInfo("gRPC graceful stop timed out, forcing stop...")
+		sm.grpcServer.Stop()
+	}
+}
+
+func (sm *ServerManager) syncLogger() {
+	if sm.logger == nil {
+		return
+	}
+
+	sm.logInfo("Syncing logger...")
+
+	if err := sm.logger.Sync(context.Background()); err != nil {
+		sm.logger.Log(context.Background(), log.LevelError, "failed to sync logger", log.Err(err))
+	}
+}
+
+func (sm *ServerManager) shutdownLicense() {
+	if sm.licenseClient == nil {
+		return
+	}
+
+	sm.logInfo("Shutting down license background refresh...")
+	sm.licenseClient.Terminate("shutdown")
 }
