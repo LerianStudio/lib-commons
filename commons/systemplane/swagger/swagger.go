@@ -103,8 +103,8 @@ func mergeObjectField(field string, dst, src map[string]json.RawMessage) error {
 }
 
 // mergeTags appends systemplane tags to the target's existing tags array.
-// Duplicate detection is not performed — the consumer is expected to start
-// with a spec that does not already contain systemplane tags.
+// Tags are deduplicated by name — if a tag with the same name already exists
+// in the destination, the source tag is skipped.
 func mergeTags(dst, src map[string]json.RawMessage) error {
 	srcTags, ok := src["tags"]
 	if !ok {
@@ -124,7 +124,28 @@ func mergeTags(dst, src map[string]json.RawMessage) error {
 		}
 	}
 
-	dstArr = append(dstArr, srcArr...)
+	// Build a set of existing tag names for deduplication.
+	existing := make(map[string]bool, len(dstArr))
+	for _, raw := range dstArr {
+		var tag struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(raw, &tag) == nil && tag.Name != "" {
+			existing[tag.Name] = true
+		}
+	}
+
+	// Only append tags whose name is not already present.
+	for _, raw := range srcArr {
+		var tag struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(raw, &tag) == nil && existing[tag.Name] {
+			continue
+		}
+
+		dstArr = append(dstArr, raw)
+	}
 
 	merged, err := json.Marshal(dstArr)
 	if err != nil {

@@ -74,7 +74,7 @@ func (a *DelegatingAuthorizer) Authorize(ctx context.Context, permission string)
 	resource = strings.TrimSpace(resource)
 
 	action = strings.TrimSpace(action)
-	if resource == "" || (strings.Contains(permission, sep) && action == "") {
+	if resource == "" || action == "" {
 		return domain.ErrPermissionDenied
 	}
 

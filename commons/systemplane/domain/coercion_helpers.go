@@ -172,7 +172,7 @@ func tryCoerceBool(raw any) (bool, bool) {
 }
 
 func parseCanonicalBoolString(value string) boolStringResult {
-	switch strings.TrimSpace(value) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "true", "1":
 		return boolStringResult{value: true, ok: true}
 	case "false", "0":

@@ -2,6 +2,12 @@
 
 // Copyright 2025 Lerian Studio.
 
+// Tests in this file mutate the global backendRegistry (backendFactories and
+// initErrors) to inject stubs and simulate error paths.  They must NOT use
+// t.Parallel() at the top level to avoid data races on shared global state.
+// Individual sub-tests that only read from the registry may be safe to
+// parallelize, but the parent test functions are intentionally serial.
+
 package bootstrap
 
 import (

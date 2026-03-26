@@ -92,25 +92,18 @@ func TestDelegatingAuthorizer_CustomSeparator(t *testing.T) {
 	assert.Equal(t, "write", gotAction)
 }
 
-func TestDelegatingAuthorizer_NoSeparatorInPermission(t *testing.T) {
+func TestDelegatingAuthorizer_NoSeparatorInPermission_Denied(t *testing.T) {
 	t.Parallel()
 
-	var gotResource, gotAction string
-
 	auth := &DelegatingAuthorizer{
-		CheckPermission: func(_ context.Context, resource, action string) error {
-			gotResource = resource
-			gotAction = action
-
+		CheckPermission: func(_ context.Context, _, _ string) error {
 			return nil
 		},
 	}
 
 	err := auth.Authorize(context.Background(), "admin")
 
-	require.NoError(t, err)
-	assert.Equal(t, "admin", gotResource)
-	assert.Equal(t, "", gotAction)
+	require.ErrorIs(t, err, domain.ErrPermissionDenied)
 }
 
 func TestDelegatingAuthorizer_WhitespaceTrimmed(t *testing.T) {

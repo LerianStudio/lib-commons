@@ -73,9 +73,9 @@ func (cfg *BootstrapConfig) Validate() error {
 		return validatePostgresBootstrap(cfg.Postgres)
 	case domain.BackendMongoDB:
 		return validateMongoBootstrap(cfg.MongoDB)
+	default:
+		return fmt.Errorf("validate: unhandled backend %q", cfg.Backend)
 	}
-
-	return nil
 }
 
 // ApplyDefaults fills in zero-value fields with sensible defaults.

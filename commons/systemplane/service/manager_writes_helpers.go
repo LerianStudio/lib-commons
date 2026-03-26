@@ -112,9 +112,6 @@ func (manager *defaultManager) persistAndApplyWrite(
 	return WriteResult{Revision: revision}, nil
 }
 
-// PatchSettings validates the mutations, persists them, and applies the
-// escalation behavior.
-
 func (manager *defaultManager) validateConfigOp(op ports.WriteOp) error {
 	def, ok := manager.registry.Get(op.Key)
 	if !ok {
@@ -212,9 +209,6 @@ func (manager *defaultManager) applyWithSnapshot(
 
 	return nil
 }
-
-// ApplyChangeSignal applies an externally produced change signal using the
-// signal's escalation behavior or a safe rebuild fallback.
 
 func (manager *defaultManager) buildActiveSnapshot(ctx context.Context, target domain.Target) (domain.Snapshot, error) {
 	current := cloneSnapshot(manager.supervisor.Snapshot())

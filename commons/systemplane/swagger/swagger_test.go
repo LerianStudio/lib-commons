@@ -1,3 +1,5 @@
+//go:build unit
+
 // Copyright 2025 Lerian Studio.
 
 package swagger

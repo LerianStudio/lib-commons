@@ -46,18 +46,18 @@ func discardFailedCandidate(ctx context.Context, candidate domain.RuntimeBundle,
 			return
 		}
 
-		_ = discarder.Discard(ctx)
+		_ = discarder.Discard(ctx) // Best-effort rollback cleanup; errors are not actionable here.
 
 		return
 	}
 
 	if discarder, ok := candidate.(rollbackDiscarder); ok {
-		_ = discarder.Discard(ctx)
+		_ = discarder.Discard(ctx) // Best-effort rollback cleanup; errors are not actionable here.
 
 		return
 	}
 
-	_ = candidate.Close(ctx)
+	_ = candidate.Close(ctx) // Best-effort close of failed candidate; caller cannot recover from close errors.
 }
 
 func startSupervisorSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
@@ -104,7 +104,7 @@ func (supervisor *defaultSupervisor) buildBundle(
 		// Discard partially-built candidate to prevent resource leaks.
 		if err != nil && !isNilRuntimeBundle(candidate) {
 			// RuntimeBundle.Close(ctx) is the contract for releasing held resources.
-			_ = candidate.Close(ctx)
+			_ = candidate.Close(ctx) // Best-effort: discard partial candidate to prevent resource leaks.
 		}
 		// Incremental build failed — fall through to full build.
 	}
@@ -179,7 +179,7 @@ func (supervisor *defaultSupervisor) commitReload(ctx context.Context, reason st
 	}
 
 	if !isNilRuntimeBundle(build.previousBundle) {
-		_ = build.previousBundle.Close(ctx)
+		_ = build.previousBundle.Close(ctx) // Best-effort: previous bundle superseded; close errors are not actionable.
 	}
 }
 
@@ -191,7 +191,16 @@ func sortReconcilersByPhase(reconcilers []ports.BundleReconciler) []ports.Bundle
 	copy(sorted, reconcilers)
 
 	slices.SortStableFunc(sorted, func(a, b ports.BundleReconciler) int {
-		return int(a.Phase()) - int(b.Phase())
+		ap, bp := int(a.Phase()), int(b.Phase())
+		if ap < bp {
+			return -1
+		}
+
+		if ap > bp {
+			return 1
+		}
+
+		return 0
 	})
 
 	return sorted
@@ -207,9 +216,15 @@ func mergeUniqueTenantIDs(base, extra []string) []string {
 
 	seen := make(map[string]struct{}, len(base)+len(extra))
 
+	// Build result from a fresh slice to avoid mutating the caller's base.
+	result := make([]string, 0, len(base)+len(extra))
+
 	for _, id := range base {
 		seen[id] = struct{}{}
+		result = append(result, id)
 	}
+
+	added := false
 
 	for _, id := range extra {
 		if id == "" {
@@ -218,13 +233,20 @@ func mergeUniqueTenantIDs(base, extra []string) []string {
 
 		if _, exists := seen[id]; !exists {
 			seen[id] = struct{}{}
-			base = append(base, id)
+			result = append(result, id)
+			added = true
 		}
 	}
 
-	sort.Strings(base)
+	// If nothing new was added, return the original base to preserve
+	// its nil/empty semantics (callers may check for nil).
+	if !added {
+		return base
+	}
 
-	return base
+	sort.Strings(result)
+
+	return result
 }
 
 func cachedTenantIDs(snapshot *domain.Snapshot) []string {

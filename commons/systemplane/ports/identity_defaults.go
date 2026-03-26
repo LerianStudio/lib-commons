@@ -26,6 +26,9 @@ type FuncIdentityResolver struct {
 	DefaultActor string
 }
 
+// maxActorIDLength bounds the length of an actor ID to prevent abuse.
+const maxActorIDLength = 256
+
 // Compile-time interface check.
 var _ IdentityResolver = (*FuncIdentityResolver)(nil)
 
@@ -50,6 +53,10 @@ func (r *FuncIdentityResolver) Actor(ctx context.Context) (domain.Actor, error) 
 		if id == "" {
 			return domain.Actor{}, domain.ErrPermissionDenied
 		}
+	}
+
+	if len(id) > maxActorIDLength {
+		return domain.Actor{}, domain.ErrPermissionDenied
 	}
 
 	return domain.Actor{ID: id}, nil

@@ -46,12 +46,15 @@ func cloneSnapshot(snapshot domain.Snapshot) domain.Snapshot {
 	cloned := domain.Snapshot{
 		Configs:        cloneEffectiveValues(snapshot.Configs),
 		GlobalSettings: cloneEffectiveValues(snapshot.GlobalSettings),
-		TenantSettings: make(map[string]map[string]domain.EffectiveValue, len(snapshot.TenantSettings)),
 		Revision:       snapshot.Revision,
 		BuiltAt:        snapshot.BuiltAt,
 	}
-	for tenantID, values := range snapshot.TenantSettings {
-		cloned.TenantSettings[tenantID] = cloneEffectiveValues(values)
+
+	if snapshot.TenantSettings != nil {
+		cloned.TenantSettings = make(map[string]map[string]domain.EffectiveValue, len(snapshot.TenantSettings))
+		for tenantID, values := range snapshot.TenantSettings {
+			cloned.TenantSettings[tenantID] = cloneEffectiveValues(values)
+		}
 	}
 
 	return cloned

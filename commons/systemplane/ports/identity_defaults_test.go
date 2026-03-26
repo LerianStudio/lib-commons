@@ -6,6 +6,7 @@ package ports
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/domain"
@@ -62,6 +63,37 @@ func TestFuncIdentityResolver_ActorFuncEmpty_UsesExplicitDefaultActor(t *testing
 
 	require.NoError(t, err)
 	assert.Equal(t, "service-account", actor.ID)
+}
+
+func TestFuncIdentityResolver_ActorID_ExceedsMaxLength_FailsClosed(t *testing.T) {
+	t.Parallel()
+
+	longID := strings.Repeat("a", maxActorIDLength+1)
+
+	resolver := &FuncIdentityResolver{
+		ActorFunc: func(_ context.Context) string {
+			return longID
+		},
+	}
+
+	_, err := resolver.Actor(context.Background())
+	require.ErrorIs(t, err, domain.ErrPermissionDenied)
+}
+
+func TestFuncIdentityResolver_ActorID_ExactMaxLength_Allowed(t *testing.T) {
+	t.Parallel()
+
+	exactID := strings.Repeat("a", maxActorIDLength)
+
+	resolver := &FuncIdentityResolver{
+		ActorFunc: func(_ context.Context) string {
+			return exactID
+		},
+	}
+
+	actor, err := resolver.Actor(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, exactID, actor.ID)
 }
 
 func TestFuncIdentityResolver_FailsClosedWithoutIdentity(t *testing.T) {
