@@ -207,15 +207,7 @@ func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) (*Cli
 
 	c := &Client{
 		baseURL: baseURL,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 10,
-				MaxConnsPerHost:     0,
-				IdleConnTimeout:     90 * time.Second,
-			},
-		},
+		httpClient: newDefaultHTTPClient(),
 		logger:   logger,
 		cacheTTL: defaultCacheTTL,
 	}
@@ -441,7 +433,7 @@ func (c *Client) cacheTenantConfig(ctx context.Context, cacheKey string, config 
 // Successful responses are cached unless WithSkipCache is used.
 func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, opts ...GetConfigOption) (*core.TenantConfig, error) {
 	if c.httpClient == nil {
-		c.httpClient = &http.Client{Timeout: 30 * time.Second}
+		c.httpClient = newDefaultHTTPClient()
 	}
 
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
@@ -577,7 +569,7 @@ func (c *Client) Close() error {
 // The API endpoint is: GET {baseURL}/v1/tenants/active?service={service}
 func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) ([]*TenantSummary, error) {
 	if c.httpClient == nil {
-		c.httpClient = &http.Client{Timeout: 30 * time.Second}
+		c.httpClient = newDefaultHTTPClient()
 	}
 
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
@@ -672,4 +664,21 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	)
 
 	return tenants, nil
+}
+
+// newDefaultHTTPClient creates an HTTP client with a custom transport that
+// explicitly disables HTTP/2. This prevents a known Go stdlib panic in the
+// HTTP/2 hpack encoder when multiple goroutines concurrently use the same
+// HTTP/2 connection (e.g., middleware + async revalidation goroutines).
+func newDefaultHTTPClient() *http.Client {
+	return &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			ForceAttemptHTTP2:   false,
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 10,
+			MaxConnsPerHost:     0,
+			IdleConnTimeout:     90 * time.Second,
+		},
+	}
 }
