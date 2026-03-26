@@ -277,7 +277,8 @@ func (d *EventDispatcher) handleConnectionsUpdated(
 		libLog.String("tenant_id", evt.TenantID),
 		libLog.String("module", payload.Module),
 		libLog.Int("max_open_conns", payload.MaxOpenConns),
-		libLog.Int("max_idle_conns", payload.MaxIdleConns))
+		libLog.Int("max_idle_conns", payload.MaxIdleConns),
+		libLog.String("statement_timeout", payload.StatementTimeout))
 
 	if d.postgres != nil {
 		config := buildConfigFromConnectionsPayload(evt.TenantID, payload)
