@@ -31,36 +31,49 @@ func WithBasicAuth(f BasicAuthFunc, realm string) fiber.Handler {
 	safeRealm := sanitizeBasicAuthRealm(realm)
 
 	return func(c *fiber.Ctx) error {
+		if err := requireFiberContext(c); err != nil {
+			return err
+		}
+
 		if f == nil {
 			return unauthorizedResponse(c, safeRealm)
 		}
 
-		auth := c.Get(constant.Authorization)
-		if auth == "" {
+		username, password, ok := basicAuthCredentials(c.Get(constant.Authorization))
+		if !ok {
 			return unauthorizedResponse(c, safeRealm)
 		}
 
-		parts := strings.SplitN(auth, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], constant.Basic) {
-			return unauthorizedResponse(c, safeRealm)
-		}
-
-		cred, err := base64.StdEncoding.DecodeString(parts[1])
-		if err != nil {
-			return unauthorizedResponse(c, safeRealm)
-		}
-
-		pair := strings.SplitN(string(cred), ":", 2)
-		if len(pair) != 2 {
-			return unauthorizedResponse(c, safeRealm)
-		}
-
-		if f(pair[0], pair[1]) {
+		if f(username, password) {
 			return c.Next()
 		}
 
 		return unauthorizedResponse(c, safeRealm)
 	}
+}
+
+func basicAuthCredentials(authHeader string) (string, string, bool) {
+	auth := strings.TrimSpace(authHeader)
+	if auth == "" {
+		return "", "", false
+	}
+
+	parts := strings.SplitN(auth, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], constant.Basic) {
+		return "", "", false
+	}
+
+	cred, err := base64.StdEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", "", false
+	}
+
+	pair := strings.SplitN(string(cred), ":", 2)
+	if len(pair) != 2 {
+		return "", "", false
+	}
+
+	return pair[0], pair[1], true
 }
 
 // sanitizeBasicAuthRealm strips CR, LF, and double-quote characters from the realm string.

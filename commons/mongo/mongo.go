@@ -135,29 +135,53 @@ type Client struct {
 }
 
 type clientDeps struct {
-	connect     func(context.Context, *options.ClientOptions) (*mongo.Client, error)
-	ping        func(context.Context, *mongo.Client) error
-	disconnect  func(context.Context, *mongo.Client) error
-	createIndex func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error
+	driver mongoDriver
 }
 
 func defaultDeps() clientDeps {
 	return clientDeps{
-		connect: func(ctx context.Context, clientOptions *options.ClientOptions) (*mongo.Client, error) {
-			return mongo.Connect(ctx, clientOptions)
-		},
-		ping: func(ctx context.Context, client *mongo.Client) error {
-			return client.Ping(ctx, nil)
-		},
-		disconnect: func(ctx context.Context, client *mongo.Client) error {
-			return client.Disconnect(ctx)
-		},
-		createIndex: func(ctx context.Context, client *mongo.Client, database, collection string, index mongo.IndexModel) error {
-			_, err := client.Database(database).Collection(collection).Indexes().CreateOne(ctx, index)
-
-			return err
-		},
+		driver: defaultMongoDriver{},
 	}
+}
+
+type mongoDriver interface {
+	Connect(ctx context.Context, clientOptions *options.ClientOptions) (*mongo.Client, error)
+	Ping(ctx context.Context, client *mongo.Client) error
+	Disconnect(ctx context.Context, client *mongo.Client) error
+	CreateIndex(ctx context.Context, client *mongo.Client, database, collection string, index mongo.IndexModel) error
+}
+
+type defaultMongoDriver struct{}
+
+func (defaultMongoDriver) Connect(ctx context.Context, clientOptions *options.ClientOptions) (*mongo.Client, error) {
+	return mongo.Connect(ctx, clientOptions)
+}
+
+func (defaultMongoDriver) Ping(ctx context.Context, client *mongo.Client) error {
+	return client.Ping(ctx, nil)
+}
+
+func (defaultMongoDriver) Disconnect(ctx context.Context, client *mongo.Client) error {
+	return client.Disconnect(ctx)
+}
+
+func (defaultMongoDriver) CreateIndex(ctx context.Context, client *mongo.Client, database, collection string, index mongo.IndexModel) error {
+	_, err := client.Database(database).Collection(collection).Indexes().CreateOne(ctx, index)
+
+	return err
+}
+
+func (c *Client) resolvedDeps() clientDeps {
+	if c == nil {
+		return defaultDeps()
+	}
+
+	deps := c.deps
+	if nilcheck.Interface(deps.driver) {
+		deps.driver = defaultDeps().driver
+	}
+
+	return deps
 }
 
 // NewClient validates config, connects to MongoDB, and returns a ready client.
@@ -185,7 +209,7 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 		opt(&deps)
 	}
 
-	if deps.connect == nil || deps.ping == nil || deps.disconnect == nil || deps.createIndex == nil {
+	if nilcheck.Interface(deps.driver) {
 		return nil, ErrNilDependency
 	}
 
@@ -284,7 +308,7 @@ func (c *Client) connectLocked(ctx context.Context) error {
 		}
 	}
 
-	mongoClient, err := c.deps.connect(ctx, clientOptions)
+	mongoClient, err := c.resolvedDeps().driver.Connect(ctx, clientOptions)
 	if err != nil {
 		sanitized := sanitizeDriverError(err)
 		c.log(ctx, "mongo connect failed", log.Err(sanitized))
@@ -296,8 +320,8 @@ func (c *Client) connectLocked(ctx context.Context) error {
 		return ErrNilMongoClient
 	}
 
-	if err := c.deps.ping(ctx, mongoClient); err != nil {
-		if disconnectErr := c.deps.disconnect(ctx, mongoClient); disconnectErr != nil {
+	if err := c.resolvedDeps().driver.Ping(ctx, mongoClient); err != nil {
+		if disconnectErr := c.resolvedDeps().driver.Disconnect(ctx, mongoClient); disconnectErr != nil {
 			c.log(ctx, "failed to disconnect after ping failure", log.Err(sanitizeDriverError(disconnectErr)))
 		}
 
@@ -476,7 +500,7 @@ func (c *Client) Ping(ctx context.Context) error {
 		return err
 	}
 
-	if err := c.deps.ping(ctx, client); err != nil {
+	if err := c.resolvedDeps().driver.Ping(ctx, client); err != nil {
 		sanitized := sanitizeDriverError(err)
 		pingErr := fmt.Errorf("%w: %w", ErrPing, sanitized)
 		libOpentelemetry.HandleSpanError(span, "Mongo ping failed", pingErr)
@@ -515,7 +539,7 @@ func (c *Client) Close(ctx context.Context) error {
 		return nil
 	}
 
-	err := c.deps.disconnect(ctx, c.client)
+	err := c.resolvedDeps().driver.Disconnect(ctx, c.client)
 	c.client = nil
 
 	if err != nil {
@@ -591,7 +615,7 @@ func (c *Client) EnsureIndexes(ctx context.Context, collection string, indexes .
 
 		c.log(ctx, "ensuring mongo index", log.String("collection", collection), log.String("fields", fields))
 
-		if err := c.deps.createIndex(ctx, client, databaseName, collection, index); err != nil {
+		if err := c.resolvedDeps().driver.CreateIndex(ctx, client, databaseName, collection, index); err != nil {
 			c.logAtLevel(ctx, log.LevelWarn, "failed to create mongo index",
 				log.String("collection", collection),
 				log.String("fields", fields),

@@ -5,11 +5,49 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/LerianStudio/lib-commons/v4/commons"
 	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v4/commons/security"
 	"github.com/gofiber/fiber/v2"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
 )
+
+func resolveEffectiveTelemetry(tm *TelemetryMiddleware, tl *opentelemetry.Telemetry) *opentelemetry.Telemetry {
+	if tl != nil {
+		return tl
+	}
+
+	if tm != nil {
+		return tm.Telemetry
+	}
+
+	return nil
+}
+
+func telemetryTracer(tl *opentelemetry.Telemetry) (trace.Tracer, bool) {
+	if tl == nil || tl.TracerProvider == nil {
+		return nil, false
+	}
+
+	return tl.TracerProvider.Tracer(tl.LibraryName), true
+}
+
+func withRequestIDSpanAttribute(ctx context.Context, requestID string) context.Context {
+	return commons.ContextWithSpanAttributes(ctx,
+		attribute.String("app.request.request_id", requestID),
+	)
+}
+
+func endSpanFromContext(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+
+	trace.SpanFromContext(ctx).End()
+}
 
 // isRouteExcludedFromList reports whether the request path matches any excluded route prefix.
 // This standalone function is used to evaluate route exclusions independently of whether

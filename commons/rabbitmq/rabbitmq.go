@@ -52,6 +52,7 @@ type RabbitMQConnection struct {
 	Logger                 log.Logger
 	MetricsFactory         *metrics.MetricsFactory
 	Connected              bool
+	deps                   rabbitDeps
 
 	dialer                  func(string) (*amqp.Connection, error)
 	dialerContext           func(context.Context, string) (*amqp.Connection, error)
@@ -95,6 +96,16 @@ type RabbitMQConnection struct {
 	// when the broker is down by enforcing exponential backoff between attempts.
 	lastReconnectAttempt time.Time
 	reconnectAttempts    int
+}
+
+type rabbitDeps struct {
+	dial             func(context.Context, string) (*amqp.Connection, error)
+	openChannel      func(context.Context, *amqp.Connection) (*amqp.Channel, error)
+	closeConnection  func(context.Context, *amqp.Connection) error
+	closeChannel     func(context.Context, *amqp.Channel) error
+	isConnClosed     func(*amqp.Connection) bool
+	isChannelClosed  func(*amqp.Channel) bool
+	healthHTTPClient *http.Client
 }
 
 const defaultRabbitMQHealthCheckTimeout = 5 * time.Second
@@ -160,8 +171,8 @@ func (rc *RabbitMQConnection) Connect() error {
 // The caller MUST hold rc.mu.
 func (rc *RabbitMQConnection) isFullyConnected() bool {
 	return rc.Connected &&
-		rc.Connection != nil && !rc.connectionClosedFn(rc.Connection) &&
-		rc.Channel != nil && !rc.channelClosedFn(rc.Channel)
+		rc.Connection != nil && !rc.deps.isConnClosed(rc.Connection) &&
+		rc.Channel != nil && !rc.deps.isChannelClosed(rc.Channel)
 }
 
 // connectSnapshot captures the configuration state needed for dialing and health
@@ -181,7 +192,9 @@ type connectSnapshot struct {
 }
 
 // snapshotConnectState captures connect-time state under the lock.
-// The caller MUST hold rc.mu.
+// The caller MUST hold rc.mu AND must have called applyDefaults() before
+// this method. All deps function fields (dial, openChannel, isConnClosed,
+// closeConnection) must be non-nil.
 func (rc *RabbitMQConnection) snapshotConnectState() connectSnapshot {
 	connStr := rc.ConnectionStringSource
 	healthCheckURL := rc.HealthCheckURL
@@ -207,12 +220,14 @@ func (rc *RabbitMQConnection) snapshotConnectState() connectSnapshot {
 			allowlistConfigured: len(configuredHosts) > 0,
 			requireAllowedHosts: rc.RequireHealthCheckAllowedHosts,
 		},
-		healthClient:       rc.healthHTTPClient,
-		dialer:             rc.dialerContext,
-		channelFactory:     rc.channelFactoryContext,
-		connectionClosedFn: rc.connectionClosedFn,
-		connCloser:         rc.connectionCloser,
-		logger:             rc.logger(),
+		healthClient:       rc.deps.healthHTTPClient,
+		dialer:             rc.deps.dial,
+		channelFactory:     rc.deps.openChannel,
+		connectionClosedFn: rc.deps.isConnClosed,
+		connCloser: func(connection *amqp.Connection) error {
+			return rc.deps.closeConnection(context.Background(), connection)
+		},
+		logger: rc.logger(),
 	}
 }
 
@@ -383,8 +398,8 @@ func (rc *RabbitMQConnection) snapshotEnsureChannelState() (ensureChannelSnapsho
 		return ensureChannelSnapshot{}, fmt.Errorf("rabbitmq ensure channel: %w", err)
 	}
 
-	connectionClosedFn := rc.connectionClosedFn
-	channelClosedFn := rc.channelClosedFn
+	connectionClosedFn := rc.deps.isConnClosed
+	channelClosedFn := rc.deps.isChannelClosed
 	needConnection := rc.Connection == nil || connectionClosedFn(rc.Connection)
 	needChannel := needConnection || rc.Channel == nil || channelClosedFn(rc.Channel)
 
@@ -399,11 +414,13 @@ func (rc *RabbitMQConnection) snapshotEnsureChannelState() (ensureChannelSnapsho
 	}
 
 	return ensureChannelSnapshot{
-		connStr:            rc.ConnectionStringSource,
-		logger:             rc.logger(),
-		dialer:             rc.dialerContext,
-		channelFactory:     rc.channelFactoryContext,
-		connCloser:         rc.connectionCloser,
+		connStr:        rc.ConnectionStringSource,
+		logger:         rc.logger(),
+		dialer:         rc.deps.dial,
+		channelFactory: rc.deps.openChannel,
+		connCloser: func(connection *amqp.Connection) error {
+			return rc.deps.closeConnection(context.Background(), connection)
+		},
 		connectionClosedFn: connectionClosedFn,
 		needConnection:     needConnection,
 		needChannel:        needChannel,
@@ -534,7 +551,7 @@ func (rc *RabbitMQConnection) GetNewConnectContext(ctx context.Context) (*amqp.C
 		return nil, err
 	}
 
-	if rc.Connected && rc.Channel != nil && !rc.channelClosedFn(rc.Channel) {
+	if rc.Connected && rc.Channel != nil && !rc.deps.isChannelClosed(rc.Channel) {
 		ch := rc.Channel
 		rc.mu.Unlock()
 
@@ -609,7 +626,7 @@ func (rc *RabbitMQConnection) HealthCheckContext(ctx context.Context) (bool, err
 		allowlistConfigured: len(configuredHosts) > 0,
 		requireAllowedHosts: rc.RequireHealthCheckAllowedHosts,
 	}
-	client := rc.healthHTTPClient
+	client := rc.deps.healthHTTPClient
 	logger := rc.logger()
 	rc.mu.Unlock()
 
@@ -735,95 +752,121 @@ func (rc *RabbitMQConnection) applyDefaults() error {
 }
 
 func (rc *RabbitMQConnection) applyConnectionDefaults() {
-	if rc.dialer == nil {
-		rc.dialer = amqp.Dial
-	}
-
-	if rc.dialerContext == nil {
-		rc.dialerContext = func(_ context.Context, connectionString string) (*amqp.Connection, error) {
-			return rc.dialer(connectionString)
-		}
-	}
-
-	if rc.connectionCloser == nil {
-		rc.connectionCloser = func(connection *amqp.Connection) error {
-			if connection == nil {
-				return nil
+	if rc.deps.dial == nil {
+		switch {
+		case rc.dialerContext != nil:
+			rc.deps.dial = rc.dialerContext
+		case rc.dialer != nil:
+			rc.deps.dial = func(_ context.Context, connectionString string) (*amqp.Connection, error) {
+				return rc.dialer(connectionString)
 			}
-
-			return connection.Close()
-		}
-	}
-
-	if rc.connectionCloserContext == nil {
-		rc.connectionCloserContext = func(_ context.Context, connection *amqp.Connection) error {
-			return rc.connectionCloser(connection)
-		}
-	}
-
-	if rc.connectionClosedFn == nil {
-		rc.connectionClosedFn = func(connection *amqp.Connection) bool {
-			if connection == nil {
-				return true
+		default:
+			rc.deps.dial = func(_ context.Context, connectionString string) (*amqp.Connection, error) {
+				return amqp.Dial(connectionString)
 			}
+		}
+	}
 
-			return connection.IsClosed()
+	if rc.deps.closeConnection == nil {
+		switch {
+		case rc.connectionCloserContext != nil:
+			rc.deps.closeConnection = rc.connectionCloserContext
+		case rc.connectionCloser != nil:
+			rc.deps.closeConnection = func(_ context.Context, connection *amqp.Connection) error {
+				return rc.connectionCloser(connection)
+			}
+		default:
+			rc.deps.closeConnection = func(_ context.Context, connection *amqp.Connection) error {
+				if connection == nil {
+					return nil
+				}
+
+				return connection.Close()
+			}
+		}
+	}
+
+	if rc.deps.isConnClosed == nil {
+		if rc.connectionClosedFn != nil {
+			rc.deps.isConnClosed = rc.connectionClosedFn
+		} else {
+			rc.deps.isConnClosed = func(connection *amqp.Connection) bool {
+				if connection == nil {
+					return true
+				}
+
+				return connection.IsClosed()
+			}
 		}
 	}
 }
 
 func (rc *RabbitMQConnection) applyChannelDefaults() {
-	if rc.channelFactory == nil {
-		rc.channelFactory = func(connection *amqp.Connection) (*amqp.Channel, error) {
-			if connection == nil {
-				return nil, errors.New("cannot create channel: connection is nil")
+	if rc.deps.openChannel == nil {
+		switch {
+		case rc.channelFactoryContext != nil:
+			rc.deps.openChannel = rc.channelFactoryContext
+		case rc.channelFactory != nil:
+			rc.deps.openChannel = func(_ context.Context, connection *amqp.Connection) (*amqp.Channel, error) {
+				return rc.channelFactory(connection)
 			}
+		default:
+			rc.deps.openChannel = func(_ context.Context, connection *amqp.Connection) (*amqp.Channel, error) {
+				if connection == nil {
+					return nil, errors.New("cannot create channel: connection is nil")
+				}
 
-			return connection.Channel()
-		}
-	}
-
-	if rc.channelFactoryContext == nil {
-		rc.channelFactoryContext = func(_ context.Context, connection *amqp.Connection) (*amqp.Channel, error) {
-			return rc.channelFactory(connection)
-		}
-	}
-
-	if rc.channelClosedFn == nil {
-		rc.channelClosedFn = func(ch *amqp.Channel) bool {
-			if ch == nil {
-				return true
+				return connection.Channel()
 			}
-
-			return ch.IsClosed()
 		}
 	}
 
-	if rc.channelCloser == nil {
-		rc.channelCloser = func(ch *amqp.Channel) error {
-			if ch == nil {
-				return nil
+	if rc.deps.isChannelClosed == nil {
+		if rc.channelClosedFn != nil {
+			rc.deps.isChannelClosed = rc.channelClosedFn
+		} else {
+			rc.deps.isChannelClosed = func(ch *amqp.Channel) bool {
+				if ch == nil {
+					return true
+				}
+
+				return ch.IsClosed()
 			}
-
-			return ch.Close()
 		}
 	}
 
-	if rc.channelCloserContext == nil {
-		rc.channelCloserContext = func(_ context.Context, ch *amqp.Channel) error {
-			return rc.channelCloser(ch)
+	if rc.deps.closeChannel == nil {
+		switch {
+		case rc.channelCloserContext != nil:
+			rc.deps.closeChannel = rc.channelCloserContext
+		case rc.channelCloser != nil:
+			rc.deps.closeChannel = func(_ context.Context, ch *amqp.Channel) error {
+				return rc.channelCloser(ch)
+			}
+		default:
+			rc.deps.closeChannel = func(_ context.Context, ch *amqp.Channel) error {
+				if ch == nil {
+					return nil
+				}
+
+				return ch.Close()
+			}
 		}
 	}
 }
 
 func (rc *RabbitMQConnection) applyHealthDefaults() error {
-	if rc.healthHTTPClient == nil {
-		rc.healthHTTPClient = &http.Client{Timeout: defaultRabbitMQHealthCheckTimeout}
+	if rc.deps.healthHTTPClient == nil {
+		if rc.healthHTTPClient != nil {
+			rc.deps.healthHTTPClient = rc.healthHTTPClient
+		} else {
+			rc.deps.healthHTTPClient = &http.Client{Timeout: defaultRabbitMQHealthCheckTimeout}
 
-		return nil
+			return nil
+		}
 	}
 
-	transport, ok := rc.healthHTTPClient.Transport.(*http.Transport)
+	transport, ok := rc.deps.healthHTTPClient.Transport.(*http.Transport)
 	if !ok || transport.TLSClientConfig == nil {
 		return nil
 	}
@@ -903,8 +946,8 @@ func (rc *RabbitMQConnection) CloseContext(ctx context.Context) error {
 	_ = rc.applyDefaults() // Close must not fail due to TLS config — resources still need cleanup.
 	channel := rc.Channel
 	connection := rc.Connection
-	chCloser := rc.channelCloserContext
-	connCloser := rc.connectionCloserContext
+	chCloser := rc.deps.closeChannel
+	connCloser := rc.deps.closeConnection
 	rc.Connection = nil
 	rc.Channel = nil
 	rc.Connected = false

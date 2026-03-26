@@ -2,7 +2,7 @@ package http
 
 import (
 	"errors"
-	"net/http"
+	stdhttp "net/http"
 
 	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
 	"github.com/gofiber/fiber/v2"
@@ -51,21 +51,22 @@ func RenderError(ctx *fiber.Ctx, err error) error {
 
 // renderErrorResponse normalizes and sends an ErrorResponse with safe defaults.
 func renderErrorResponse(ctx *fiber.Ctx, resp ErrorResponse) error {
-	status := fiber.StatusInternalServerError
-
-	if resp.Code >= http.StatusContinue && resp.Code <= 599 {
-		status = resp.Code
+	built := buildErrorResponse(resp.Code, resp.Title, resp.Message)
+	if built.Title == "" {
+		built.Title = cn.DefaultErrorTitle
 	}
 
-	title := resp.Title
-	if title == "" {
-		title = cn.DefaultErrorTitle
+	if built.Message == "" {
+		built.Message = httpStatusTextOrDefault(built.Code)
 	}
 
-	message := resp.Message
-	if message == "" {
-		message = http.StatusText(status)
+	return Respond(ctx, built.Code, built)
+}
+
+func httpStatusTextOrDefault(status int) string {
+	if text := stdhttp.StatusText(normalizeHTTPStatus(status)); text != "" {
+		return text
 	}
 
-	return RespondError(ctx, status, title, message)
+	return fiber.ErrInternalServerError.Message
 }

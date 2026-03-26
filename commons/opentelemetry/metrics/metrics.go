@@ -121,9 +121,7 @@ func (f *MetricsFactory) Counter(m Metric) (*CounterBuilder, error) {
 	}
 
 	return &CounterBuilder{
-		factory: f,
 		counter: counter,
-		name:    m.Name,
 	}, nil
 }
 
@@ -139,9 +137,7 @@ func (f *MetricsFactory) Gauge(m Metric) (*GaugeBuilder, error) {
 	}
 
 	return &GaugeBuilder{
-		factory: f,
-		gauge:   gauge,
-		name:    m.Name,
+		gauge: gauge,
 	}, nil
 }
 
@@ -162,9 +158,7 @@ func (f *MetricsFactory) Histogram(m Metric) (*HistogramBuilder, error) {
 	}
 
 	return &HistogramBuilder{
-		factory:   f,
 		histogram: histogram,
-		name:      m.Name,
 	}, nil
 }
 

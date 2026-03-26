@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v4/commons"
+	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,10 +33,43 @@ import (
 // Test helpers
 // ---------------------------------------------------------------------------
 
+type mongoDriverFuncs struct {
+	connect     func(context.Context, *options.ClientOptions) (*mongo.Client, error)
+	ping        func(context.Context, *mongo.Client) error
+	disconnect  func(context.Context, *mongo.Client) error
+	createIndex func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error
+}
+
+func (driver mongoDriverFuncs) Connect(ctx context.Context, clientOptions *options.ClientOptions) (*mongo.Client, error) {
+	return driver.connect(ctx, clientOptions)
+}
+
+func (driver mongoDriverFuncs) Ping(ctx context.Context, client *mongo.Client) error {
+	return driver.ping(ctx, client)
+}
+
+func (driver mongoDriverFuncs) Disconnect(ctx context.Context, client *mongo.Client) error {
+	return driver.disconnect(ctx, client)
+}
+
+func (driver mongoDriverFuncs) CreateIndex(ctx context.Context, client *mongo.Client, database, collection string, index mongo.IndexModel) error {
+	return driver.createIndex(ctx, client, database, collection, index)
+}
+
 func withDeps(deps clientDeps) Option {
 	return func(current *clientDeps) {
 		*current = deps
 	}
+}
+
+func mutateDriver(deps *clientDeps, mut func(*mongoDriverFuncs)) {
+	driver, ok := deps.driver.(mongoDriverFuncs)
+	if !ok {
+		driver = mongoDriverFuncs{}
+	}
+
+	mut(&driver)
+	deps.driver = driver
 }
 
 func unsetEnvVar(t *testing.T, key string) {
@@ -64,13 +98,15 @@ func successDeps() clientDeps {
 	fakeClient := &mongo.Client{}
 
 	return clientDeps{
-		connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
-			return fakeClient, nil
-		},
-		ping:       func(context.Context, *mongo.Client) error { return nil },
-		disconnect: func(context.Context, *mongo.Client) error { return nil },
-		createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-			return nil
+		driver: mongoDriverFuncs{
+			connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+				return fakeClient, nil
+			},
+			ping:       func(context.Context, *mongo.Client) error { return nil },
+			disconnect: func(context.Context, *mongo.Client) error { return nil },
+			createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+				return nil
+			},
 		},
 	}
 }
@@ -80,20 +116,8 @@ func newTestClient(t *testing.T, overrides *clientDeps) *Client {
 
 	deps := successDeps()
 	if overrides != nil {
-		if overrides.connect != nil {
-			deps.connect = overrides.connect
-		}
-
-		if overrides.ping != nil {
-			deps.ping = overrides.ping
-		}
-
-		if overrides.disconnect != nil {
-			deps.disconnect = overrides.disconnect
-		}
-
-		if overrides.createIndex != nil {
-			deps.createIndex = overrides.createIndex
+		if !nilcheck.Interface(overrides.driver) {
+			deps.driver = overrides.driver
 		}
 	}
 
@@ -190,13 +214,15 @@ func TestNewClient_ConnectAndPingFailures(t *testing.T) {
 		t.Parallel()
 
 		deps := clientDeps{
-			connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
-				return nil, errors.New("dial failed")
-			},
-			ping:       func(context.Context, *mongo.Client) error { return nil },
-			disconnect: func(context.Context, *mongo.Client) error { return nil },
-			createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-				return nil
+			driver: mongoDriverFuncs{
+				connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+					return nil, errors.New("dial failed")
+				},
+				ping:       func(context.Context, *mongo.Client) error { return nil },
+				disconnect: func(context.Context, *mongo.Client) error { return nil },
+				createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+					return nil
+				},
 			},
 		}
 
@@ -209,13 +235,15 @@ func TestNewClient_ConnectAndPingFailures(t *testing.T) {
 		t.Parallel()
 
 		deps := clientDeps{
-			connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
-				return nil, nil
-			},
-			ping:       func(context.Context, *mongo.Client) error { return nil },
-			disconnect: func(context.Context, *mongo.Client) error { return nil },
-			createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-				return nil
+			driver: mongoDriverFuncs{
+				connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+					return nil, nil
+				},
+				ping:       func(context.Context, *mongo.Client) error { return nil },
+				disconnect: func(context.Context, *mongo.Client) error { return nil },
+				createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+					return nil
+				},
 			},
 		}
 
@@ -231,18 +259,20 @@ func TestNewClient_ConnectAndPingFailures(t *testing.T) {
 		var disconnectCalls atomic.Int32
 
 		deps := clientDeps{
-			connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
-				return fakeClient, nil
-			},
-			ping: func(context.Context, *mongo.Client) error {
-				return errors.New("ping failed")
-			},
-			disconnect: func(context.Context, *mongo.Client) error {
-				disconnectCalls.Add(1)
-				return nil
-			},
-			createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-				return nil
+			driver: mongoDriverFuncs{
+				connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+					return fakeClient, nil
+				},
+				ping: func(context.Context, *mongo.Client) error {
+					return errors.New("ping failed")
+				},
+				disconnect: func(context.Context, *mongo.Client) error {
+					disconnectCalls.Add(1)
+					return nil
+				},
+				createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+					return nil
+				},
 			},
 		}
 
@@ -265,7 +295,7 @@ func TestNewClient_NilOptionIsSkipped(t *testing.T) {
 func TestNewClient_NilDependencyRejected(t *testing.T) {
 	t.Parallel()
 
-	nilConnect := func(d *clientDeps) { d.connect = nil }
+	nilConnect := func(d *clientDeps) { d.driver = nil }
 	_, err := NewClient(context.Background(), baseConfig(), nilConnect)
 	assert.ErrorIs(t, err, ErrNilDependency)
 }
@@ -289,14 +319,16 @@ func TestClient_ConnectIsIdempotent(t *testing.T) {
 	var connectCalls atomic.Int32
 
 	deps := clientDeps{
-		connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
-			connectCalls.Add(1)
-			return fakeClient, nil
-		},
-		ping:       func(context.Context, *mongo.Client) error { return nil },
-		disconnect: func(context.Context, *mongo.Client) error { return nil },
-		createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-			return nil
+		driver: mongoDriverFuncs{
+			connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+				connectCalls.Add(1)
+				return fakeClient, nil
+			},
+			ping:       func(context.Context, *mongo.Client) error { return nil },
+			disconnect: func(context.Context, *mongo.Client) error { return nil },
+			createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+				return nil
+			},
 		},
 	}
 
@@ -338,14 +370,16 @@ func TestClient_Connect_ConfigPropagation(t *testing.T) {
 	cfg.HeartbeatInterval = 7 * time.Second
 
 	deps := clientDeps{
-		connect: func(_ context.Context, opts *options.ClientOptions) (*mongo.Client, error) {
-			capturedOpts = opts
-			return fakeClient, nil
-		},
-		ping:       func(context.Context, *mongo.Client) error { return nil },
-		disconnect: func(context.Context, *mongo.Client) error { return nil },
-		createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-			return nil
+		driver: mongoDriverFuncs{
+			connect: func(_ context.Context, opts *options.ClientOptions) (*mongo.Client, error) {
+				capturedOpts = opts
+				return fakeClient, nil
+			},
+			ping:       func(context.Context, *mongo.Client) error { return nil },
+			disconnect: func(context.Context, *mongo.Client) error { return nil },
+			createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+				return nil
+			},
 		},
 	}
 
@@ -363,13 +397,15 @@ func TestClient_ClientAndDatabase(t *testing.T) {
 
 	fakeClient := &mongo.Client{}
 	deps := clientDeps{
-		connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
-			return fakeClient, nil
-		},
-		ping:       func(context.Context, *mongo.Client) error { return nil },
-		disconnect: func(context.Context, *mongo.Client) error { return nil },
-		createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-			return nil
+		driver: mongoDriverFuncs{
+			connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+				return fakeClient, nil
+			},
+			ping:       func(context.Context, *mongo.Client) error { return nil },
+			disconnect: func(context.Context, *mongo.Client) error { return nil },
+			createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+				return nil
+			},
 		},
 	}
 
@@ -434,13 +470,15 @@ func TestClient_Ping(t *testing.T) {
 
 		var pingCount atomic.Int32
 		deps := successDeps()
-		deps.ping = func(context.Context, *mongo.Client) error {
-			if pingCount.Add(1) == 1 {
-				return nil // first ping (from Connect) succeeds
-			}
+		mutateDriver(&deps, func(driver *mongoDriverFuncs) {
+			driver.ping = func(context.Context, *mongo.Client) error {
+				if pingCount.Add(1) == 1 {
+					return nil // first ping (from Connect) succeeds
+				}
 
-			return errors.New("network timeout")
-		}
+				return errors.New("network timeout")
+			}
+		})
 
 		client := newTestClient(t, &deps)
 
@@ -482,9 +520,11 @@ func TestClient_Close(t *testing.T) {
 		t.Parallel()
 
 		deps := successDeps()
-		deps.disconnect = func(context.Context, *mongo.Client) error {
-			return errors.New("disconnect failed")
-		}
+		mutateDriver(&deps, func(driver *mongoDriverFuncs) {
+			driver.disconnect = func(context.Context, *mongo.Client) error {
+				return errors.New("disconnect failed")
+			}
+		})
 
 		client := newTestClient(t, &deps)
 
@@ -501,10 +541,12 @@ func TestClient_Close(t *testing.T) {
 
 		var disconnectCalls atomic.Int32
 		deps := successDeps()
-		deps.disconnect = func(context.Context, *mongo.Client) error {
-			disconnectCalls.Add(1)
-			return nil
-		}
+		mutateDriver(&deps, func(driver *mongoDriverFuncs) {
+			driver.disconnect = func(context.Context, *mongo.Client) error {
+				disconnectCalls.Add(1)
+				return nil
+			}
+		})
 
 		client := newTestClient(t, &deps)
 
@@ -542,13 +584,15 @@ func TestClient_Close(t *testing.T) {
 		var connectCalls atomic.Int32
 
 		deps := successDeps()
-		deps.connect = func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
-			if connectCalls.Add(1) == 1 {
-				return initialClient, nil
-			}
+		mutateDriver(&deps, func(driver *mongoDriverFuncs) {
+			driver.connect = func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+				if connectCalls.Add(1) == 1 {
+					return initialClient, nil
+				}
 
-			return reconnectedClient, nil
-		}
+				return reconnectedClient, nil
+			}
+		})
 
 		client := newTestClient(t, &deps)
 		assert.EqualValues(t, 1, connectCalls.Load())
@@ -568,10 +612,12 @@ func TestClient_Close(t *testing.T) {
 
 		var connectCalls atomic.Int32
 		deps := successDeps()
-		deps.connect = func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
-			connectCalls.Add(1)
-			return &mongo.Client{}, nil
-		}
+		mutateDriver(&deps, func(driver *mongoDriverFuncs) {
+			driver.connect = func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+				connectCalls.Add(1)
+				return &mongo.Client{}, nil
+			}
+		})
 
 		client := newTestClient(t, &deps)
 		initialConnects := connectCalls.Load()
@@ -630,19 +676,21 @@ func TestClient_EnsureIndexes(t *testing.T) {
 		var createCalls atomic.Int32
 
 		deps := clientDeps{
-			connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
-				return fakeClient, nil
-			},
-			ping:       func(context.Context, *mongo.Client) error { return nil },
-			disconnect: func(context.Context, *mongo.Client) error { return nil },
-			createIndex: func(_ context.Context, client *mongo.Client, database, collection string, index mongo.IndexModel) error {
-				createCalls.Add(1)
-				assert.Same(t, fakeClient, client)
-				assert.Equal(t, "app", database)
-				assert.Equal(t, "users", collection)
-				assert.NotNil(t, index.Keys)
+			driver: mongoDriverFuncs{
+				connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+					return fakeClient, nil
+				},
+				ping:       func(context.Context, *mongo.Client) error { return nil },
+				disconnect: func(context.Context, *mongo.Client) error { return nil },
+				createIndex: func(_ context.Context, client *mongo.Client, database, collection string, index mongo.IndexModel) error {
+					createCalls.Add(1)
+					assert.Same(t, fakeClient, client)
+					assert.Equal(t, "app", database)
+					assert.Equal(t, "users", collection)
+					assert.NotNil(t, index.Keys)
 
-				return nil
+					return nil
+				},
 			},
 		}
 
@@ -663,9 +711,11 @@ func TestClient_EnsureIndexes(t *testing.T) {
 		t.Parallel()
 
 		deps := successDeps()
-		deps.createIndex = func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-			return errors.New("duplicate options")
-		}
+		mutateDriver(&deps, func(driver *mongoDriverFuncs) {
+			driver.createIndex = func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+				return errors.New("duplicate options")
+			}
+		})
 
 		client := newTestClient(t, &deps)
 
@@ -678,10 +728,12 @@ func TestClient_EnsureIndexes(t *testing.T) {
 
 		var createCalls atomic.Int32
 		deps := successDeps()
-		deps.createIndex = func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-			createCalls.Add(1)
-			return errors.New("failed")
-		}
+		mutateDriver(&deps, func(driver *mongoDriverFuncs) {
+			driver.createIndex = func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+				createCalls.Add(1)
+				return errors.New("failed")
+			}
+		})
 
 		client := newTestClient(t, &deps)
 
@@ -700,17 +752,19 @@ func TestClient_EnsureIndexes(t *testing.T) {
 
 		var successCalls, failCalls atomic.Int32
 		deps := successDeps()
-		deps.createIndex = func(_ context.Context, _ *mongo.Client, _, _ string, idx mongo.IndexModel) error {
-			keys := idx.Keys.(bson.D)
-			if keys[0].Key == "b" {
-				failCalls.Add(1)
-				return errors.New("duplicate")
+		mutateDriver(&deps, func(driver *mongoDriverFuncs) {
+			driver.createIndex = func(_ context.Context, _ *mongo.Client, _, _ string, idx mongo.IndexModel) error {
+				keys := idx.Keys.(bson.D)
+				if keys[0].Key == "b" {
+					failCalls.Add(1)
+					return errors.New("duplicate")
+				}
+
+				successCalls.Add(1)
+
+				return nil
 			}
-
-			successCalls.Add(1)
-
-			return nil
-		}
+		})
 
 		client := newTestClient(t, &deps)
 
@@ -729,10 +783,12 @@ func TestClient_EnsureIndexes(t *testing.T) {
 
 		var calls atomic.Int32
 		deps := successDeps()
-		deps.createIndex = func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-			calls.Add(1)
-			return nil
-		}
+		mutateDriver(&deps, func(driver *mongoDriverFuncs) {
+			driver.createIndex = func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+				calls.Add(1)
+				return nil
+			}
+		})
 
 		client := newTestClient(t, &deps)
 
@@ -768,13 +824,15 @@ func TestClient_ConcurrentClientReads(t *testing.T) {
 
 	fakeClient := &mongo.Client{}
 	deps := clientDeps{
-		connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
-			return fakeClient, nil
-		},
-		ping:       func(context.Context, *mongo.Client) error { return nil },
-		disconnect: func(context.Context, *mongo.Client) error { return nil },
-		createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-			return nil
+		driver: mongoDriverFuncs{
+			connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+				return fakeClient, nil
+			},
+			ping:       func(context.Context, *mongo.Client) error { return nil },
+			disconnect: func(context.Context, *mongo.Client) error { return nil },
+			createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+				return nil
+			},
 		},
 	}
 
@@ -815,13 +873,15 @@ func TestClient_LogsOnConnectFailure(t *testing.T) {
 	cfg.Logger = spy
 
 	deps := clientDeps{
-		connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
-			return nil, errors.New("dial failed")
-		},
-		ping:       func(context.Context, *mongo.Client) error { return nil },
-		disconnect: func(context.Context, *mongo.Client) error { return nil },
-		createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-			return nil
+		driver: mongoDriverFuncs{
+			connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+				return nil, errors.New("dial failed")
+			},
+			ping:       func(context.Context, *mongo.Client) error { return nil },
+			disconnect: func(context.Context, *mongo.Client) error { return nil },
+			createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+				return nil
+			},
 		},
 	}
 
@@ -869,14 +929,16 @@ func TestNewClient_StrictTierBlocksPlaintextBeforeConnect(t *testing.T) {
 
 	var connectCalls atomic.Int32
 	deps := clientDeps{
-		connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
-			connectCalls.Add(1)
-			return &mongo.Client{}, nil
-		},
-		ping:       func(context.Context, *mongo.Client) error { return nil },
-		disconnect: func(context.Context, *mongo.Client) error { return nil },
-		createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-			return nil
+		driver: mongoDriverFuncs{
+			connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+				connectCalls.Add(1)
+				return &mongo.Client{}, nil
+			},
+			ping:       func(context.Context, *mongo.Client) error { return nil },
+			disconnect: func(context.Context, *mongo.Client) error { return nil },
+			createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+				return nil
+			},
 		},
 	}
 
@@ -897,14 +959,16 @@ func TestNewClient_StrictTierOverrideAllowsPlaintext(t *testing.T) {
 
 	var connectCalls atomic.Int32
 	deps := clientDeps{
-		connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
-			connectCalls.Add(1)
-			return &mongo.Client{}, nil
-		},
-		ping:       func(context.Context, *mongo.Client) error { return nil },
-		disconnect: func(context.Context, *mongo.Client) error { return nil },
-		createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
-			return nil
+		driver: mongoDriverFuncs{
+			connect: func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+				connectCalls.Add(1)
+				return &mongo.Client{}, nil
+			},
+			ping:       func(context.Context, *mongo.Client) error { return nil },
+			disconnect: func(context.Context, *mongo.Client) error { return nil },
+			createIndex: func(context.Context, *mongo.Client, string, string, mongo.IndexModel) error {
+				return nil
+			},
 		},
 	}
 
@@ -919,20 +983,8 @@ func newTestClientWithLogger(t *testing.T, overrides *clientDeps, logger log.Log
 
 	deps := successDeps()
 	if overrides != nil {
-		if overrides.connect != nil {
-			deps.connect = overrides.connect
-		}
-
-		if overrides.ping != nil {
-			deps.ping = overrides.ping
-		}
-
-		if overrides.disconnect != nil {
-			deps.disconnect = overrides.disconnect
-		}
-
-		if overrides.createIndex != nil {
-			deps.createIndex = overrides.createIndex
+		if !nilcheck.Interface(overrides.driver) {
+			deps.driver = overrides.driver
 		}
 	}
 

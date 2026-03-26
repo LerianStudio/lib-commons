@@ -16,8 +16,8 @@ import (
 
 // Ping returns HTTP Status 200 with response "healthy".
 func Ping(c *fiber.Ctx) error {
-	if c == nil {
-		return ErrContextNotFound
+	if err := requireFiberContext(c); err != nil {
+		return err
 	}
 
 	return c.SendString("healthy")
@@ -30,7 +30,7 @@ func Ping(c *fiber.Ctx) error {
 // need to restrict visibility should gate this route behind authentication
 // or omit it from public-facing routers.
 func Version(c *fiber.Ctx) error {
-	return Respond(c, fiber.StatusOK, fiber.Map{
+	return respondJSONMap(c, fiber.StatusOK, fiber.Map{
 		"version":     commons.GetenvOrDefault("VERSION", "0.0.0"),
 		"requestDate": time.Now().UTC(),
 	})
@@ -39,11 +39,7 @@ func Version(c *fiber.Ctx) error {
 // Welcome returns HTTP Status 200 with service info.
 func Welcome(service string, description string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		if c == nil {
-			return ErrContextNotFound
-		}
-
-		return c.JSON(fiber.Map{
+		return respondJSONMap(c, fiber.StatusOK, fiber.Map{
 			"service":     service,
 			"description": description,
 		})
@@ -58,8 +54,8 @@ func NotImplementedEndpoint(c *fiber.Ctx) error {
 // File serves a specific file.
 func File(filePath string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		if c == nil {
-			return ErrContextNotFound
+		if err := requireFiberContext(c); err != nil {
+			return err
 		}
 
 		return c.SendFile(filePath)
@@ -119,7 +115,6 @@ func FiberErrorHandler(c *fiber.Ctx, err error) error {
 	if ctx != nil {
 		span := trace.SpanFromContext(ctx)
 		libOpentelemetry.HandleSpanError(span, "handler error", err)
-		span.End()
 	}
 
 	var fe *fiber.Error

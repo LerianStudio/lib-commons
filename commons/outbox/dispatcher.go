@@ -33,7 +33,7 @@ type tenantRequirementReporter interface {
 type Dispatcher struct {
 	repo            OutboxRepository
 	handlers        *HandlerRegistry
-	retryClassifier RetryClassifier
+	retryClassifier RetryClassifierFunc
 	logger          libLog.Logger
 	tracer          trace.Tracer
 	cfg             DispatcherConfig
@@ -905,9 +905,9 @@ func (dispatcher *Dispatcher) handlePublishError(
 }
 
 func (dispatcher *Dispatcher) isNonRetryableError(err error) bool {
-	if err == nil || nilcheck.Interface(dispatcher.retryClassifier) {
+	if err == nil || dispatcher.retryClassifier == nil {
 		return false
 	}
 
-	return dispatcher.retryClassifier.IsNonRetryable(err)
+	return dispatcher.retryClassifier(err)
 }

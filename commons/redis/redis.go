@@ -204,6 +204,7 @@ type Client struct {
 	cfg            Config
 	logger         log.Logger
 	metricsFactory *metrics.MetricsFactory
+	deps           clientDeps
 	client         redis.UniversalClient
 	connected      bool
 	token          string
@@ -218,10 +219,41 @@ type Client struct {
 	// when the server is down by enforcing exponential backoff between attempts.
 	lastReconnectAttempt time.Time
 	reconnectAttempts    int
+}
 
-	// test hooks
-	tokenRetriever func(ctx context.Context) (string, error)
-	reconnectFn    func(ctx context.Context) error
+type clientDeps struct {
+	retrieveToken func(*Client, context.Context) (string, error)
+	reconnect     func(*Client, context.Context) error
+}
+
+func defaultClientDeps() clientDeps {
+	return clientDeps{
+		retrieveToken: func(c *Client, ctx context.Context) (string, error) {
+			return c.retrieveTokenDefault(ctx)
+		},
+		reconnect: func(c *Client, ctx context.Context) error {
+			return c.reconnectLocked(ctx)
+		},
+	}
+}
+
+func (c *Client) resolvedDeps() clientDeps {
+	if c == nil {
+		return defaultClientDeps()
+	}
+
+	deps := c.deps
+
+	defaults := defaultClientDeps()
+	if deps.retrieveToken == nil {
+		deps.retrieveToken = defaults.retrieveToken
+	}
+
+	if deps.reconnect == nil {
+		deps.reconnect = defaults.reconnect
+	}
+
+	return deps
 }
 
 // New validates config, connects to Redis, and returns a ready client.
@@ -235,6 +267,7 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 		cfg:            normalized,
 		logger:         normalized.Logger,
 		metricsFactory: normalized.MetricsFactory,
+		deps:           defaultClientDeps(),
 	}
 
 	if err := c.Connect(ctx); err != nil {
@@ -576,8 +609,12 @@ func (c *Client) retrieveToken(ctx context.Context) (string, error) {
 		return "", nilClientAssert(ctx, "retrieveToken")
 	}
 
-	if c.tokenRetriever != nil {
-		return c.tokenRetriever(ctx)
+	return c.resolvedDeps().retrieveToken(c, ctx)
+}
+
+func (c *Client) retrieveTokenDefault(ctx context.Context) (string, error) {
+	if c == nil {
+		return "", nilClientAssert(ctx, "retrieveToken")
 	}
 
 	auth := c.cfg.Auth.GCPIAM
@@ -720,12 +757,7 @@ func (c *Client) applyTokenAndReconnect(ctx context.Context, token string) bool 
 	oldToken := c.token
 	c.token = token
 
-	reconnectFn := c.reconnectFn
-	if reconnectFn == nil {
-		reconnectFn = c.reconnectLocked
-	}
-
-	if err := reconnectFn(ctx); err != nil {
+	if err := c.resolvedDeps().reconnect(c, ctx); err != nil {
 		c.refreshErr = err
 		// Restore old token: reconnect failed, so the new token is useless
 		// and the old client (if any) is still using the previous token.

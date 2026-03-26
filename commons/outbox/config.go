@@ -256,7 +256,7 @@ func WithRetryClassifier(classifier RetryClassifier) DispatcherOption {
 			return
 		}
 
-		dispatcher.retryClassifier = classifier
+		dispatcher.retryClassifier = classifier.IsNonRetryable
 	}
 }
 

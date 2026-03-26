@@ -31,6 +31,16 @@ type corsConfig struct {
 	logger libLog.Logger
 }
 
+type corsRuntimeConfig struct {
+	logger           libLog.Logger
+	origins          string
+	allowMethods     string
+	allowHeaders     string
+	exposeHeaders    string
+	allowCredentials bool
+	denyAllOrigins   bool
+}
+
 // WithCORSLogger provides a structured logger for CORS security warnings.
 // When not provided, warnings are logged via stdlib log.
 func WithCORSLogger(logger libLog.Logger) CORSOption {
@@ -47,26 +57,60 @@ func WithCORSLogger(logger libLog.Logger) CORSOption {
 // WARNING: The default AllowOrigins is "*" (wildcard). For financial services,
 // configure ACCESS_CONTROL_ALLOW_ORIGIN to specific trusted origins.
 func WithCORS(opts ...CORSOption) fiber.Handler {
-	cfg := &corsConfig{}
+	runtimeCfg := buildCORSRuntimeConfig(opts...)
+	warnCORSConfiguration(runtimeCfg)
+	enforceCORSRuntimeConfig(runtimeCfg)
+	guardCORSCredentials(runtimeCfg)
 
+	return cors.New(buildFiberCORSConfig(runtimeCfg))
+}
+
+func buildCORSRuntimeConfig(opts ...CORSOption) *corsRuntimeConfig {
+	config := &corsConfig{}
 	for _, opt := range opts {
-		opt(cfg)
+		opt(config)
 	}
 
-	// Default to GoLogger so CORS warnings are always emitted, even without explicit logger.
-	if nilcheck.Interface(cfg.logger) {
-		cfg.logger = &libLog.GoLogger{Level: libLog.LevelWarn}
+	return &corsRuntimeConfig{
+		logger:           resolveCORSLogger(config),
+		origins:          commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_ORIGIN", defaultAccessControlAllowOrigin),
+		allowMethods:     commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_METHODS", defaultAccessControlAllowMethods),
+		allowHeaders:     commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_HEADERS", defaultAccessControlAllowHeaders),
+		exposeHeaders:    commons.GetenvOrDefault("ACCESS_CONTROL_EXPOSE_HEADERS", defaultAccessControlExposeHeaders),
+		allowCredentials: readCORSAllowCredentials(),
+	}
+}
+
+func resolveCORSLogger(cfg *corsConfig) libLog.Logger {
+	if cfg != nil && !nilcheck.Interface(cfg.logger) {
+		return cfg.logger
 	}
 
+	return &libLog.GoLogger{Level: libLog.LevelWarn}
+}
+
+func readCORSAllowCredentials() bool {
 	allowCredentials := defaultAllowCredentials
-
 	if parsed, err := strconv.ParseBool(commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_CREDENTIALS", "false")); err == nil {
 		allowCredentials = parsed
 	}
 
-	origins := commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_ORIGIN", defaultAccessControlAllowOrigin)
+	return allowCredentials
+}
 
-	if origins == "*" || origins == "" {
+// isUnrestrictedCORSOrigin reports whether origins represents an unrestricted
+// CORS policy. Both the wildcard ("*") and an empty string (no origins
+// configured — equivalent to allowing all) are treated as unrestricted.
+func isUnrestrictedCORSOrigin(origins string) bool {
+	return origins == "*" || origins == ""
+}
+
+func warnCORSConfiguration(cfg *corsRuntimeConfig) {
+	if cfg == nil {
+		return
+	}
+
+	if isUnrestrictedCORSOrigin(cfg.origins) {
 		cfg.logger.Log(context.Background(), libLog.LevelWarn,
 			"CORS: AllowOrigins is set to wildcard (*); "+
 				"this allows ANY website to make cross-origin requests to your API; "+
@@ -74,58 +118,63 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 		)
 	}
 
-	if origins == "*" && allowCredentials {
+	if cfg.origins == "*" && cfg.allowCredentials {
 		cfg.logger.Log(context.Background(), libLog.LevelWarn,
 			"CORS: AllowOrigins=* with AllowCredentials=true is REJECTED by browsers per the CORS spec; "+
 				"credentials will NOT work; configure specific origins via ACCESS_CONTROL_ALLOW_ORIGIN",
 		)
 	}
+}
 
-	// Security policy: CORS wildcard origin enforcement in moderate+ tiers.
-	denyAllOrigins := false
-
-	if commons.CurrentTier() >= commons.TierModerate {
-		isWildcard := origins == "*" || origins == ""
-
-		result := commons.CheckSecurityRule(commons.RuleCORSWildcardOrigin, isWildcard)
-		if err := commons.EnforceSecurityRule(context.Background(), cfg.logger, "cors", result); err != nil {
-			// Cannot return error from fiber.Handler factory — apply a deny-all fallback instead.
-			cfg.logger.Log(context.Background(), libLog.LevelError,
-				"CORS security rule enforcement failed, applying deny-all fallback",
-				libLog.Err(err),
-			)
-
-			denyAllOrigins = true
-			origins = ""
-			allowCredentials = false
-
-			cfg.logger.Log(context.Background(), libLog.LevelWarn,
-				"CORS: enforcement active — origins restricted to none; "+
-					"set ACCESS_CONTROL_ALLOW_ORIGIN to specific trusted origins")
-		}
+func enforceCORSRuntimeConfig(cfg *corsRuntimeConfig) {
+	if cfg == nil || commons.CurrentTier() < commons.TierModerate {
+		return
 	}
 
-	// Guard: prevent Fiber panic on wildcard + credentials (forbidden by CORS spec).
-	if origins == "*" && allowCredentials {
+	result := commons.CheckSecurityRule(commons.RuleCORSWildcardOrigin, isUnrestrictedCORSOrigin(cfg.origins))
+	if err := commons.EnforceSecurityRule(context.Background(), cfg.logger, "cors", result); err != nil {
+		cfg.logger.Log(context.Background(), libLog.LevelError,
+			"CORS security rule enforcement failed, applying deny-all fallback",
+			libLog.Err(err),
+		)
+
+		cfg.denyAllOrigins = true
+		cfg.origins = ""
+		cfg.allowCredentials = false
+
+		cfg.logger.Log(context.Background(), libLog.LevelWarn,
+			"CORS: enforcement active — origins restricted to none; "+
+				"set ACCESS_CONTROL_ALLOW_ORIGIN to specific trusted origins")
+	}
+}
+
+func guardCORSCredentials(cfg *corsRuntimeConfig) {
+	if cfg == nil {
+		return
+	}
+
+	if cfg.origins == "*" && cfg.allowCredentials {
 		cfg.logger.Log(context.Background(), libLog.LevelWarn,
 			"CORS: AllowOrigins=* with AllowCredentials=true is forbidden by CORS spec "+
 				"and causes Fiber panic; forcing AllowCredentials=false")
 
-		allowCredentials = false
+		cfg.allowCredentials = false
 	}
+}
 
+func buildFiberCORSConfig(cfg *corsRuntimeConfig) cors.Config {
 	config := cors.Config{
-		AllowOrigins:     origins,
-		AllowMethods:     commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_METHODS", defaultAccessControlAllowMethods),
-		AllowHeaders:     commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_HEADERS", defaultAccessControlAllowHeaders),
-		ExposeHeaders:    commons.GetenvOrDefault("ACCESS_CONTROL_EXPOSE_HEADERS", defaultAccessControlExposeHeaders),
-		AllowCredentials: allowCredentials,
+		AllowOrigins:     cfg.origins,
+		AllowMethods:     cfg.allowMethods,
+		AllowHeaders:     cfg.allowHeaders,
+		ExposeHeaders:    cfg.exposeHeaders,
+		AllowCredentials: cfg.allowCredentials,
 	}
-	if denyAllOrigins {
+	if cfg.denyAllOrigins {
 		config.AllowOriginsFunc = func(string) bool { return false }
 	}
 
-	return cors.New(config)
+	return config
 }
 
 // AllowFullOptionsWithCORS set r.Use(WithCORS) and allow every request to use OPTION method.

@@ -9,7 +9,6 @@ import (
 	"maps"
 	"net/http"
 	"os"
-	"reflect"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -17,6 +16,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons"
 	"github.com/LerianStudio/lib-commons/v4/commons/assert"
 	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
 	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry/metrics"
 	"github.com/LerianStudio/lib-commons/v4/commons/security"
@@ -91,13 +91,7 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 		return nil, ErrNilTelemetryLogger
 	}
 
-	if cfg.Propagator == nil {
-		cfg.Propagator = propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
-	}
-
-	if cfg.Redactor == nil {
-		cfg.Redactor = NewDefaultRedactor()
-	}
+	applyTelemetryDefaults(&cfg)
 
 	normalizeEndpoint(&cfg)
 	normalizeEndpointEnvVars()
@@ -138,6 +132,20 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 	}
 
 	return initExporters(ctx, cfg)
+}
+
+func applyTelemetryDefaults(cfg *TelemetryConfig) {
+	if cfg == nil {
+		return
+	}
+
+	if cfg.Propagator == nil {
+		cfg.Propagator = propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{})
+	}
+
+	if cfg.Redactor == nil {
+		cfg.Redactor = NewDefaultRedactor()
+	}
 }
 
 // normalizeEndpoint strips URL scheme from the collector endpoint and infers security mode.
@@ -287,13 +295,7 @@ func newNoopTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 // shutdownAll performs best-effort shutdown of all allocated components.
 // Used during NewTelemetry to roll back partial allocations on failure.
 func shutdownAll(ctx context.Context, components []shutdownable) {
-	for _, c := range components {
-		if isNilShutdownable(c) {
-			continue
-		}
-
-		_ = c.Shutdown(ctx)
-	}
+	_ = shutdownComponents(ctx, components)
 }
 
 // ApplyGlobals sets this instance as the process-global OTEL providers/propagator.
@@ -449,42 +451,21 @@ type shutdownable interface {
 // isNilShutdownable checks for both untyped nil and interface-wrapped typed nil
 // (e.g., a concrete pointer that is nil but stored in a shutdownable interface).
 func isNilShutdownable(s shutdownable) bool {
-	if s == nil {
-		return true
-	}
-
-	v := reflect.ValueOf(s)
-
-	return v.Kind() == reflect.Ptr && v.IsNil()
+	return nilcheck.Interface(s)
 }
 
 func buildShutdownHandlers(l log.Logger, components ...shutdownable) (func(), func(context.Context) error) {
 	shutdown := func() {
 		ctx := context.Background()
 
-		for _, c := range components {
-			if isNilShutdownable(c) {
-				continue
-			}
-
-			if err := c.Shutdown(ctx); err != nil {
-				l.Log(ctx, log.LevelError, "telemetry shutdown error", log.Err(err))
-			}
+		errs := shutdownComponents(ctx, components)
+		for _, err := range errs {
+			l.Log(ctx, log.LevelError, "telemetry shutdown error", log.Err(err))
 		}
 	}
 
 	shutdownCtx := func(ctx context.Context) error {
-		var errs []error
-
-		for _, c := range components {
-			if isNilShutdownable(c) {
-				continue
-			}
-
-			if err := c.Shutdown(ctx); err != nil {
-				errs = append(errs, err)
-			}
-		}
+		errs := shutdownComponents(ctx, components)
 
 		return errors.Join(errs...)
 	}
@@ -492,17 +473,27 @@ func buildShutdownHandlers(l log.Logger, components ...shutdownable) (func(), fu
 	return shutdown, shutdownCtx
 }
 
+func shutdownComponents(ctx context.Context, components []shutdownable) []error {
+	var errs []error
+
+	for _, c := range components {
+		if isNilShutdownable(c) {
+			continue
+		}
+
+		if err := c.Shutdown(ctx); err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	return errs
+}
+
 // isNilSpan checks for both untyped nil and interface-wrapped typed nil values.
 // trace.Span is an interface, so a concrete pointer that is nil but stored in
 // a trace.Span variable would pass a simple `span == nil` check.
 func isNilSpan(span trace.Span) bool {
-	if span == nil {
-		return true
-	}
-
-	v := reflect.ValueOf(span)
-
-	return v.Kind() == reflect.Ptr && v.IsNil()
+	return nilcheck.Interface(span)
 }
 
 // maxSpanErrorLength is the maximum length for error messages written to span status/events.
