@@ -209,6 +209,12 @@ func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) (*Cli
 		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				MaxConnsPerHost:     0,
+				IdleConnTimeout:     90 * time.Second,
+			},
 		},
 		logger:   logger,
 		cacheTTL: defaultCacheTTL,
