@@ -11,7 +11,14 @@ type TenantAwareLogger struct {
 	base log.Logger
 }
 
+// NewTenantAwareLogger wraps base so that every Log call automatically
+// injects the tenant_id field from context.  A nil base is replaced with
+// a no-op logger to prevent nil-dereference panics.
 func NewTenantAwareLogger(base log.Logger) *TenantAwareLogger {
+	if base == nil {
+		base = log.NewNop()
+	}
+
 	return &TenantAwareLogger{base: base}
 }
 
@@ -27,12 +34,16 @@ func (l *TenantAwareLogger) Log(ctx context.Context, level log.Level, msg string
 	l.base.Log(ctx, level, msg, fields...)
 }
 
+// With returns a new TenantAwareLogger that carries the additional fields
+// while preserving the tenant_id injection behavior on every Log call.
 func (l *TenantAwareLogger) With(fields ...log.Field) log.Logger {
-	return l.base.With(fields...)
+	return &TenantAwareLogger{base: l.base.With(fields...)}
 }
 
+// WithGroup returns a new TenantAwareLogger scoped under the named group
+// while preserving the tenant_id injection behavior on every Log call.
 func (l *TenantAwareLogger) WithGroup(name string) log.Logger {
-	return l.base.WithGroup(name)
+	return &TenantAwareLogger{base: l.base.WithGroup(name)}
 }
 
 func (l *TenantAwareLogger) Enabled(level log.Level) bool {

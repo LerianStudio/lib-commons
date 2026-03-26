@@ -115,10 +115,6 @@ func (l *Logger) Error(args ...any) {
 	l.logArgs(context.Background(), liblog.LevelError, args...)
 }
 
-func (l *Logger) Debug(args ...any) {
-	l.logArgs(context.Background(), liblog.LevelDebug, args...)
-}
-
 func (l *Logger) Infof(f string, args ...any) {
 	l.logf(context.Background(), liblog.LevelInfo, f, args...)
 }
@@ -129,18 +125,6 @@ func (l *Logger) Warnf(f string, args ...any) {
 
 func (l *Logger) Errorf(f string, args ...any) {
 	l.logf(context.Background(), liblog.LevelError, f, args...)
-}
-
-func (l *Logger) Debugf(f string, args ...any) {
-	l.logf(context.Background(), liblog.LevelDebug, f, args...)
-}
-
-func (l *Logger) Sync() error {
-	if l == nil || l.base == nil {
-		return nil
-	}
-
-	return l.base.Sync(context.Background())
 }
 
 func (l *Logger) Base() liblog.Logger {
