@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Lerian Studio. All rights reserved.
+// Use of this source code is governed by the Elastic License 2.0
+// that can be found in the LICENSE file.
+
 package consumer
 
 import (
@@ -5,38 +9,36 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
 	"go.uber.org/goleak"
 )
 
-// TestMultiTenantConsumer_Run_CloseStopsSyncLoop proves that Close() alone
-// (without cancelling the original context) stops the sync loop goroutine.
+// TestMultiTenantConsumer_Run_CloseStopsConsumers proves that Close() alone
+// (without cancelling the original context) stops all tenant consumers.
 // This prevents goroutine leaks when callers pass context.Background().
-func TestMultiTenantConsumer_Run_CloseStopsSyncLoop(t *testing.T) {
+func TestMultiTenantConsumer_Run_CloseStopsConsumers(t *testing.T) {
 	server := setupTenantManagerAPIServer(t, makeTenantSummaries(1))
 	config := newTestConfig(server.URL)
-	config.SyncInterval = 100 * time.Millisecond
 
-	consumer := mustNewConsumer(t,
-		dummyRabbitMQManager(),
+	consumer, err := NewMultiTenantConsumerWithError(
 		config,
 		testutil.NewMockLogger(),
+		WithRabbitMQ(dummyRabbitMQManager()),
 	)
+	require.NoError(t, err)
 
-	// Use context.Background() — never cancelled, like Midaz does in production.
+	// Use context.Background() -- never cancelled, like Midaz does in production.
 	ctx := context.Background()
 
-	err := consumer.Run(ctx)
+	err = consumer.Run(ctx)
 	if err != nil {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
 
-	assert.Eventually(t, func() bool {
-		return consumer.Stats().KnownTenants > 0
-	}, time.Second, 20*time.Millisecond)
-
-	// Close without cancelling ctx — this must stop the sync loop.
+	// Close without cancelling ctx -- this must stop all tenant consumers.
 	if closeErr := consumer.Close(); closeErr != nil {
 		t.Fatalf("Close() returned unexpected error: %v", closeErr)
 	}
@@ -58,24 +60,20 @@ func TestMultiTenantConsumer_Run_CloseStopsSyncLoop(t *testing.T) {
 func TestMultiTenantConsumer_Run_CancelAndCloseNoLeak(t *testing.T) {
 	server := setupTenantManagerAPIServer(t, makeTenantSummaries(1))
 	config := newTestConfig(server.URL)
-	config.SyncInterval = 100 * time.Millisecond
 
-	consumer := mustNewConsumer(t,
-		dummyRabbitMQManager(),
+	consumer, err := NewMultiTenantConsumerWithError(
 		config,
 		testutil.NewMockLogger(),
+		WithRabbitMQ(dummyRabbitMQManager()),
 	)
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	err := consumer.Run(ctx)
+	err = consumer.Run(ctx)
 	if err != nil {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
-
-	assert.Eventually(t, func() bool {
-		return consumer.Stats().KnownTenants > 0
-	}, time.Second, 20*time.Millisecond)
 
 	// Normal cleanup: cancel context first, then Close.
 	cancel()

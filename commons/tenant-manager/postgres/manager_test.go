@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -72,19 +74,55 @@ func (m *pingableDB) PrimaryDBs() []*sql.DB              { return nil }
 func (m *pingableDB) ReplicaDBs() []*sql.DB              { return nil }
 func (m *pingableDB) Stats() sql.DBStats                 { return sql.DBStats{} }
 
-// trackingDB extends pingableDB to track SetMaxOpenConns/SetMaxIdleConns calls.
+// trackingDB extends pingableDB to track SetMaxOpenConns/SetMaxIdleConns calls
+// and ExecContext queries (e.g., SET statement_timeout).
 // Fields use int32 with atomic operations to avoid data races when written
 // by async goroutines (revalidatePoolSettings) and read by test assertions.
 type trackingDB struct {
 	pingableDB
 	maxOpenConns int32
 	maxIdleConns int32
+	mu           sync.Mutex
+	execQueries  []string
+	execArgs     [][]interface{}
 }
 
 func (t *trackingDB) SetMaxOpenConns(n int) { atomic.StoreInt32(&t.maxOpenConns, int32(n)) }
 func (t *trackingDB) SetMaxIdleConns(n int) { atomic.StoreInt32(&t.maxIdleConns, int32(n)) }
 func (t *trackingDB) MaxOpenConns() int32   { return atomic.LoadInt32(&t.maxOpenConns) }
 func (t *trackingDB) MaxIdleConns() int32   { return atomic.LoadInt32(&t.maxIdleConns) }
+
+func (t *trackingDB) ExecContext(_ context.Context, query string, args ...interface{}) (sql.Result, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.execQueries = append(t.execQueries, query)
+	t.execArgs = append(t.execArgs, args)
+
+	return nil, nil
+}
+
+// ExecQueries returns a thread-safe copy of all executed queries.
+func (t *trackingDB) ExecQueries() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	copied := make([]string, len(t.execQueries))
+	copy(copied, t.execQueries)
+
+	return copied
+}
+
+// ExecArgsList returns a thread-safe copy of all executed query arguments.
+func (t *trackingDB) ExecArgsList() [][]interface{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	copied := make([][]interface{}, len(t.execArgs))
+	copy(copied, t.execArgs)
+
+	return copied
+}
 
 func TestNewManager(t *testing.T) {
 	t.Run("creates manager with client and service", func(t *testing.T) {
@@ -1027,7 +1065,7 @@ func TestManager_Stats_IncludesMaxConnections(t *testing.T) {
 	assert.Equal(t, 0, stats.ActiveConnections)
 }
 
-func TestManager_WithSettingsCheckInterval_Option(t *testing.T) {
+func TestManager_WithConnectionsCheckInterval_Option(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1064,24 +1102,24 @@ func TestManager_WithSettingsCheckInterval_Option(t *testing.T) {
 
 			c := mustNewTestClient(t, "http://localhost:8080")
 			manager := NewManager(c, "ledger",
-				WithSettingsCheckInterval(tt.interval),
+				WithConnectionsCheckInterval(tt.interval),
 			)
 
-			assert.Equal(t, tt.expectedInterval, manager.settingsCheckInterval)
+			assert.Equal(t, tt.expectedInterval, manager.connectionsCheckInterval)
 		})
 	}
 }
 
-func TestManager_DefaultSettingsCheckInterval(t *testing.T) {
+func TestManager_DefaultConnectionsCheckInterval(t *testing.T) {
 	t.Parallel()
 
 	c := mustNewTestClient(t, "http://localhost:8080")
 	manager := NewManager(c, "ledger")
 
-	assert.Equal(t, defaultSettingsCheckInterval, manager.settingsCheckInterval,
+	assert.Equal(t, defaultConnectionsCheckInterval, manager.connectionsCheckInterval,
 		"default settings check interval should be set from named constant")
-	assert.NotNil(t, manager.lastSettingsCheck,
-		"lastSettingsCheck map should be initialized")
+	assert.NotNil(t, manager.lastConnectionsCheck,
+		"lastConnectionsCheck map should be initialized")
 }
 
 func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
@@ -1112,7 +1150,7 @@ func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		// Use a very short interval so the test triggers revalidation immediately
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	// Pre-populate cache with a healthy connection and an old settings check time.
@@ -1128,8 +1166,8 @@ func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 	}
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = time.Now()
-	// Set lastSettingsCheck to a time well in the past so revalidation triggers
-	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+	// Set lastConnectionsCheck to a time well in the past so revalidation triggers
+	manager.lastConnectionsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
 
 	// Call GetConnection - should return cached conn AND trigger async revalidation
 	conn, err := manager.GetConnection(context.Background(), "tenant-123")
@@ -1171,7 +1209,7 @@ func TestManager_GetConnection_DoesNotRevalidateBeforeInterval(t *testing.T) {
 		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		// Use a very long interval so revalidation does NOT trigger
-		WithSettingsCheckInterval(1*time.Hour),
+		WithConnectionsCheckInterval(1*time.Hour),
 	)
 
 	// Pre-populate cache with a healthy connection and a recent settings check time
@@ -1183,8 +1221,8 @@ func TestManager_GetConnection_DoesNotRevalidateBeforeInterval(t *testing.T) {
 	}
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = time.Now()
-	// Set lastSettingsCheck to now - should NOT trigger revalidation
-	manager.lastSettingsCheck["tenant-123"] = time.Now()
+	// Set lastConnectionsCheck to now - should NOT trigger revalidation
+	manager.lastConnectionsCheck["tenant-123"] = time.Now()
 
 	// Call GetConnection - should return cached conn without revalidation
 	conn, err := manager.GetConnection(context.Background(), "tenant-123")
@@ -1214,7 +1252,7 @@ func TestManager_GetConnection_FailedRevalidationDoesNotBreakConnection(t *testi
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	// Pre-populate cache with a healthy connection
@@ -1226,8 +1264,8 @@ func TestManager_GetConnection_FailedRevalidationDoesNotBreakConnection(t *testi
 	}
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = time.Now()
-	// Set lastSettingsCheck to the past so revalidation triggers
-	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+	// Set lastConnectionsCheck to the past so revalidation triggers
+	manager.lastConnectionsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
 
 	// Call GetConnection - should return cached conn even though revalidation will fail
 	conn, err := manager.GetConnection(context.Background(), "tenant-123")
@@ -1243,7 +1281,7 @@ func TestManager_GetConnection_FailedRevalidationDoesNotBreakConnection(t *testi
 	assert.Equal(t, int32(0), tDB.MaxIdleConns(), "maxIdleConns should NOT be changed on failed revalidation")
 }
 
-func TestManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
+func TestManager_CloseConnection_CleansUpLastConnectionsCheck(t *testing.T) {
 	t.Parallel()
 
 	c := mustNewTestClient(t, "http://localhost:8080")
@@ -1259,7 +1297,7 @@ func TestManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
 		ConnectionDB: &db,
 	}
 	manager.lastAccessed["tenant-123"] = time.Now()
-	manager.lastSettingsCheck["tenant-123"] = time.Now()
+	manager.lastConnectionsCheck["tenant-123"] = time.Now()
 
 	// Close the specific tenant connection
 	err := manager.CloseConnection(context.Background(), "tenant-123")
@@ -1269,15 +1307,15 @@ func TestManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
 	manager.mu.RLock()
 	_, connExists := manager.connections["tenant-123"]
 	_, accessExists := manager.lastAccessed["tenant-123"]
-	_, settingsCheckExists := manager.lastSettingsCheck["tenant-123"]
+	_, connectionsCheckExists := manager.lastConnectionsCheck["tenant-123"]
 	manager.mu.RUnlock()
 
 	assert.False(t, connExists, "connection should be removed after CloseConnection")
 	assert.False(t, accessExists, "lastAccessed should be removed after CloseConnection")
-	assert.False(t, settingsCheckExists, "lastSettingsCheck should be removed after CloseConnection")
+	assert.False(t, connectionsCheckExists, "lastConnectionsCheck should be removed after CloseConnection")
 }
 
-func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
+func TestManager_Close_CleansUpLastConnectionsCheck(t *testing.T) {
 	t.Parallel()
 
 	c := mustNewTestClient(t, "http://localhost:8080")
@@ -1294,7 +1332,8 @@ func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
 			ConnectionDB: &dbIface,
 		}
 		manager.lastAccessed[id] = time.Now()
-		manager.lastSettingsCheck[id] = time.Now()
+		manager.lastConnectionsCheck[id] = time.Now()
+		manager.lastAppliedSettings[id] = appliedSettings{maxOpenConns: 25, maxIdleConns: 5}
 	}
 
 	err := manager.Close(context.Background())
@@ -1303,7 +1342,8 @@ func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
 
 	assert.Empty(t, manager.connections, "all connections should be removed after Close")
 	assert.Empty(t, manager.lastAccessed, "all lastAccessed should be removed after Close")
-	assert.Empty(t, manager.lastSettingsCheck, "all lastSettingsCheck should be removed after Close")
+	assert.Empty(t, manager.lastConnectionsCheck, "all lastConnectionsCheck should be removed after Close")
+	assert.Empty(t, manager.lastAppliedSettings, "all lastAppliedSettings should be removed after Close")
 }
 
 func TestManager_ApplyConnectionSettings_LogsValues(t *testing.T) {
@@ -1341,7 +1381,7 @@ func TestManager_ApplyConnectionSettings_LogsValues(t *testing.T) {
 	assert.Equal(t, int32(30), tDB.MaxOpenConns())
 	assert.Equal(t, int32(10), tDB.MaxIdleConns())
 	assert.True(t, capLogger.ContainsSubstring("applying connection settings"),
-		"ApplyConnectionSettings should log when applying values")
+		"ApplyConnectionSettings should log on first apply")
 }
 
 func TestManager_GetConnection_DisabledRevalidation_WithZero(t *testing.T) {
@@ -1370,7 +1410,7 @@ func TestManager_GetConnection_DisabledRevalidation_WithZero(t *testing.T) {
 		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		// Disable revalidation with zero duration
-		WithSettingsCheckInterval(0),
+		WithConnectionsCheckInterval(0),
 	)
 
 	// Pre-populate cache with a healthy connection and an old settings check time
@@ -1382,8 +1422,8 @@ func TestManager_GetConnection_DisabledRevalidation_WithZero(t *testing.T) {
 	}
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = time.Now()
-	// Set lastSettingsCheck to the past - but should NOT trigger revalidation since disabled
-	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+	// Set lastConnectionsCheck to the past - but should NOT trigger revalidation since disabled
+	manager.lastConnectionsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
 
 	// Call GetConnection multiple times - should NOT spawn any goroutines
 	for i := 0; i < 5; i++ {
@@ -1430,7 +1470,7 @@ func TestManager_GetConnection_DisabledRevalidation_WithNegative(t *testing.T) {
 		WithLogger(testutil.NewMockLogger()),
 		WithModule("payment"),
 		// Disable revalidation with negative duration
-		WithSettingsCheckInterval(-5*time.Second),
+		WithConnectionsCheckInterval(-5*time.Second),
 	)
 
 	// Pre-populate cache with a healthy connection
@@ -1442,8 +1482,8 @@ func TestManager_GetConnection_DisabledRevalidation_WithNegative(t *testing.T) {
 	}
 	manager.connections["tenant-456"] = cachedConn
 	manager.lastAccessed["tenant-456"] = time.Now()
-	// Set lastSettingsCheck to the past
-	manager.lastSettingsCheck["tenant-456"] = time.Now().Add(-1 * time.Hour)
+	// Set lastConnectionsCheck to the past
+	manager.lastConnectionsCheck["tenant-456"] = time.Now().Add(-1 * time.Hour)
 
 	// Call GetConnection - should NOT trigger revalidation
 	conn, err := manager.GetConnection(context.Background(), "tenant-456")
@@ -1622,6 +1662,372 @@ func TestManager_ApplyConnectionSettings(t *testing.T) {
 	}
 }
 
+func TestManager_ApplyConnectionSettings_ChangeDetection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                string
+		preApplySettings    *appliedSettings // nil = no previous settings (first apply)
+		config              *core.TenantConfig
+		expectSetMaxOpen    bool
+		expectSetMaxIdle    bool
+		expectLog           bool
+		expectLogSubstring  string
+		noLogSubstring      string
+		expectExecQuery     string // expected SET statement_timeout query (parameterized)
+		expectExecArg       string // expected argument for the SET statement_timeout query
+		expectNoExecQueries bool
+	}{
+		{
+			name:             "first_apply_logs_and_applies_all",
+			preApplySettings: nil,
+			config: &core.TenantConfig{
+				Databases: map[string]core.DatabaseConfig{
+					"onboarding": {
+						ConnectionSettings: &core.ConnectionSettings{
+							MaxOpenConns:     30,
+							MaxIdleConns:     10,
+							StatementTimeout: "5s",
+						},
+					},
+				},
+			},
+			expectSetMaxOpen:   true,
+			expectSetMaxIdle:   true,
+			expectLog:          true,
+			expectLogSubstring: "applying connection settings",
+			expectExecQuery:    "SET statement_timeout = $1",
+			expectExecArg:      "5s",
+		},
+		{
+			name: "no_change_skips_apply_and_log",
+			preApplySettings: &appliedSettings{
+				maxOpenConns:     30,
+				maxIdleConns:     10,
+				statementTimeout: "5s",
+			},
+			config: &core.TenantConfig{
+				Databases: map[string]core.DatabaseConfig{
+					"onboarding": {
+						ConnectionSettings: &core.ConnectionSettings{
+							MaxOpenConns:     30,
+							MaxIdleConns:     10,
+							StatementTimeout: "5s",
+						},
+					},
+				},
+			},
+			expectSetMaxOpen:    false,
+			expectSetMaxIdle:    false,
+			expectLog:           false,
+			expectNoExecQueries: true,
+		},
+		{
+			name: "maxOpenConns_change_logs_delta",
+			preApplySettings: &appliedSettings{
+				maxOpenConns:     30,
+				maxIdleConns:     10,
+				statementTimeout: "5s",
+			},
+			config: &core.TenantConfig{
+				Databases: map[string]core.DatabaseConfig{
+					"onboarding": {
+						ConnectionSettings: &core.ConnectionSettings{
+							MaxOpenConns:     50,
+							MaxIdleConns:     10,
+							StatementTimeout: "5s",
+						},
+					},
+				},
+			},
+			expectSetMaxOpen:    true,
+			expectSetMaxIdle:    false,
+			expectLog:           true,
+			expectLogSubstring:  "maxOpenConns 30->50",
+			noLogSubstring:      "maxIdleConns",
+			expectNoExecQueries: true,
+		},
+		{
+			name: "statementTimeout_change_executes_SET",
+			preApplySettings: &appliedSettings{
+				maxOpenConns:     30,
+				maxIdleConns:     10,
+				statementTimeout: "5s",
+			},
+			config: &core.TenantConfig{
+				Databases: map[string]core.DatabaseConfig{
+					"onboarding": {
+						ConnectionSettings: &core.ConnectionSettings{
+							MaxOpenConns:     30,
+							MaxIdleConns:     10,
+							StatementTimeout: "10s",
+						},
+					},
+				},
+			},
+			expectSetMaxOpen:   false,
+			expectSetMaxIdle:   false,
+			expectLog:          true,
+			expectLogSubstring: "statementTimeout 5s->10s",
+			expectExecQuery:    "SET statement_timeout = $1",
+			expectExecArg:      "10s",
+		},
+		{
+			name: "statementTimeout_empty_skips_exec",
+			preApplySettings: &appliedSettings{
+				maxOpenConns:     30,
+				maxIdleConns:     10,
+				statementTimeout: "",
+			},
+			config: &core.TenantConfig{
+				Databases: map[string]core.DatabaseConfig{
+					"onboarding": {
+						ConnectionSettings: &core.ConnectionSettings{
+							MaxOpenConns: 50,
+							MaxIdleConns: 10,
+						},
+					},
+				},
+			},
+			expectSetMaxOpen:    true,
+			expectSetMaxIdle:    false,
+			expectLog:           true,
+			expectNoExecQueries: true,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			c := mustNewTestClient(t, "http://localhost:8080")
+			capLogger := testutil.NewCapturingLogger()
+			manager := NewManager(c, "ledger",
+				WithModule("onboarding"),
+				WithLogger(capLogger),
+			)
+
+			tDB := &trackingDB{}
+			var db dbresolver.DB = tDB
+
+			manager.connections["tenant-123"] = &PostgresConnection{
+				ConnectionDB: &db,
+			}
+
+			if tt.preApplySettings != nil {
+				manager.lastAppliedSettings["tenant-123"] = *tt.preApplySettings
+			}
+
+			manager.ApplyConnectionSettings("tenant-123", tt.config)
+
+			if tt.expectSetMaxOpen {
+				assert.NotEqual(t, int32(0), tDB.MaxOpenConns(),
+					"maxOpenConns should have been set")
+			}
+
+			if tt.expectSetMaxIdle {
+				assert.NotEqual(t, int32(0), tDB.MaxIdleConns(),
+					"maxIdleConns should have been set")
+			}
+
+			if tt.expectLog {
+				assert.True(t, capLogger.ContainsSubstring(tt.expectLogSubstring),
+					"expected log message containing %q, got: %v", tt.expectLogSubstring, capLogger.GetMessages())
+			} else {
+				// When no log is expected, verify the capturing logger got nothing
+				// (other than potential clamping warnings which we don't trigger here)
+				for _, msg := range capLogger.GetMessages() {
+					assert.False(t, strings.Contains(msg, "applying connection settings") || strings.Contains(msg, "connection settings changed"),
+						"unexpected log message: %s", msg)
+				}
+			}
+
+			if tt.noLogSubstring != "" {
+				assert.False(t, capLogger.ContainsSubstring(tt.noLogSubstring),
+					"log should NOT contain %q, got: %v", tt.noLogSubstring, capLogger.GetMessages())
+			}
+
+			queries := tDB.ExecQueries()
+			if tt.expectNoExecQueries {
+				assert.Empty(t, queries, "no ExecContext queries expected")
+			}
+
+			if tt.expectExecQuery != "" {
+				assert.Contains(t, queries, tt.expectExecQuery,
+					"expected ExecContext query %q", tt.expectExecQuery)
+
+				if tt.expectExecArg != "" {
+					args := tDB.ExecArgsList()
+					require.NotEmpty(t, args, "expected at least one ExecContext call with args")
+					assert.Contains(t, args[len(args)-1], tt.expectExecArg,
+						"expected ExecContext arg %q", tt.expectExecArg)
+				}
+			}
+		})
+	}
+}
+
+func TestManager_ApplyConnectionSettings_StatementTimeout(t *testing.T) {
+	t.Parallel()
+
+	c := mustNewTestClient(t, "http://localhost:8080")
+	capLogger := testutil.NewCapturingLogger()
+	manager := NewManager(c, "ledger",
+		WithModule("onboarding"),
+		WithLogger(capLogger),
+	)
+
+	tDB := &trackingDB{}
+	var db dbresolver.DB = tDB
+
+	manager.connections["tenant-123"] = &PostgresConnection{
+		ConnectionDB: &db,
+	}
+
+	// First apply with statementTimeout
+	config := &core.TenantConfig{
+		Databases: map[string]core.DatabaseConfig{
+			"onboarding": {
+				ConnectionSettings: &core.ConnectionSettings{
+					MaxOpenConns:     30,
+					MaxIdleConns:     10,
+					StatementTimeout: "5s",
+				},
+			},
+		},
+	}
+
+	manager.ApplyConnectionSettings("tenant-123", config)
+
+	queries := tDB.ExecQueries()
+	args := tDB.ExecArgsList()
+	require.Len(t, queries, 1, "should execute SET statement_timeout on first apply")
+	assert.Equal(t, "SET statement_timeout = $1", queries[0])
+	require.Len(t, args, 1)
+	assert.Equal(t, []interface{}{"5s"}, args[0])
+
+	// Second apply with same settings — no ExecContext
+	capLogger.Clear()
+	manager.ApplyConnectionSettings("tenant-123", config)
+
+	assert.Len(t, tDB.ExecQueries(), 1, "should NOT execute SET again when statementTimeout unchanged")
+
+	// Third apply with changed statementTimeout
+	config.Databases["onboarding"] = core.DatabaseConfig{
+		ConnectionSettings: &core.ConnectionSettings{
+			MaxOpenConns:     30,
+			MaxIdleConns:     10,
+			StatementTimeout: "15s",
+		},
+	}
+
+	manager.ApplyConnectionSettings("tenant-123", config)
+
+	queries = tDB.ExecQueries()
+	args = tDB.ExecArgsList()
+	require.Len(t, queries, 2, "should execute SET again when statementTimeout changed")
+	assert.Equal(t, "SET statement_timeout = $1", queries[1])
+	require.Len(t, args, 2)
+	assert.Equal(t, []interface{}{"15s"}, args[1])
+	assert.True(t, capLogger.ContainsSubstring("statementTimeout 5s->15s"),
+		"should log the statementTimeout change")
+}
+
+func TestValidStatementTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value string
+		valid bool
+	}{
+		{name: "plain_integer_milliseconds", value: "30000", valid: true},
+		{name: "zero", value: "0", valid: true},
+		{name: "with_ms_suffix", value: "500ms", valid: true},
+		{name: "with_s_suffix", value: "30s", valid: true},
+		{name: "with_min_suffix", value: "2min", valid: true},
+		{name: "with_h_suffix", value: "1h", valid: true},
+		{name: "with_d_suffix", value: "7d", valid: true},
+		{name: "with_us_suffix", value: "100us", valid: true},
+		{name: "sql_injection_attempt", value: "'; DROP TABLE users; --", valid: false},
+		{name: "negative_value", value: "-1", valid: false},
+		{name: "empty_string", value: "", valid: false},
+		{name: "letters_only", value: "abc", valid: false},
+		{name: "invalid_unit", value: "30x", valid: false},
+		{name: "special_chars", value: "30; DROP", valid: false},
+		{name: "quoted_value", value: "'30s'", valid: false},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.valid, validStatementTimeout(tt.value),
+				"validStatementTimeout(%q) = %v, want %v", tt.value, !tt.valid, tt.valid)
+		})
+	}
+}
+
+func TestManager_ApplyConnectionSettings_RejectsInvalidStatementTimeout(t *testing.T) {
+	t.Parallel()
+
+	c := mustNewTestClient(t, "http://localhost:8080")
+	capLogger := testutil.NewCapturingLogger()
+	manager := NewManager(c, "ledger",
+		WithModule("onboarding"),
+		WithLogger(capLogger),
+	)
+
+	tDB := &trackingDB{}
+	var db dbresolver.DB = tDB
+
+	manager.connections["tenant-123"] = &PostgresConnection{
+		ConnectionDB: &db,
+	}
+
+	config := &core.TenantConfig{
+		Databases: map[string]core.DatabaseConfig{
+			"onboarding": {
+				ConnectionSettings: &core.ConnectionSettings{
+					MaxOpenConns:     30,
+					MaxIdleConns:     10,
+					StatementTimeout: "'; DROP TABLE users; --",
+				},
+			},
+		},
+	}
+
+	manager.ApplyConnectionSettings("tenant-123", config)
+
+	queries := tDB.ExecQueries()
+	assert.Empty(t, queries, "should NOT execute SET with invalid statement_timeout value")
+	assert.True(t, capLogger.ContainsSubstring("invalid statement_timeout"),
+		"should log warning about invalid statement_timeout value")
+}
+
+func TestManager_CloseConnection_CleansUpLastAppliedSettings(t *testing.T) {
+	t.Parallel()
+
+	c := mustNewTestClient(t, "http://localhost:8080")
+	manager := NewManager(c, "ledger",
+		WithLogger(testutil.NewMockLogger()),
+	)
+
+	db := &pingableDB{}
+	var dbIface dbresolver.DB = db
+
+	manager.connections["tenant-123"] = &PostgresConnection{
+		ConnectionDB: &dbIface,
+	}
+	manager.lastAppliedSettings["tenant-123"] = appliedSettings{maxOpenConns: 25, maxIdleConns: 5}
+
+	err := manager.CloseConnection(context.Background(), "tenant-123")
+	require.NoError(t, err)
+
+	assert.Empty(t, manager.lastAppliedSettings, "lastAppliedSettings should be cleaned up after CloseConnection")
+}
+
 func TestManager_Stats_ActiveConnections(t *testing.T) {
 	t.Parallel()
 
@@ -1691,7 +2097,7 @@ func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
 			require.NoError(t, err)
 			manager := NewManager(tmClient, "ledger",
 				WithLogger(capLogger),
-				WithSettingsCheckInterval(1*time.Millisecond),
+				WithConnectionsCheckInterval(1*time.Millisecond),
 			)
 
 			// Pre-populate a cached connection for the tenant
@@ -1702,7 +2108,7 @@ func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
 				ConnectionDB: &dbIface,
 			}
 			manager.lastAccessed["tenant-suspended"] = time.Now()
-			manager.lastSettingsCheck["tenant-suspended"] = time.Now()
+			manager.lastConnectionsCheck["tenant-suspended"] = time.Now()
 
 			// Verify the connection exists before revalidation
 			statsBefore := manager.Stats()
@@ -1722,16 +2128,16 @@ func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
 				assert.True(t, mockDB.closed,
 					"cached connection's DB should have been closed")
 
-				// Verify lastAccessed and lastSettingsCheck were cleaned up
+				// Verify lastAccessed and lastConnectionsCheck were cleaned up
 				manager.mu.RLock()
 				_, accessExists := manager.lastAccessed["tenant-suspended"]
-				_, settingsExists := manager.lastSettingsCheck["tenant-suspended"]
+				_, connectionsCheckExists := manager.lastConnectionsCheck["tenant-suspended"]
 				manager.mu.RUnlock()
 
 				assert.False(t, accessExists,
 					"lastAccessed should be removed for evicted tenant")
-				assert.False(t, settingsExists,
-					"lastSettingsCheck should be removed for evicted tenant")
+				assert.False(t, connectionsCheckExists,
+					"lastConnectionsCheck should be removed for evicted tenant")
 			}
 
 			// Verify the appropriate log message was produced
@@ -1800,7 +2206,7 @@ func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	mockDB := &pingableDB{}
@@ -1808,7 +2214,7 @@ func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
 
 	manager.connections["tenant-cache-test"] = &PostgresConnection{ConnectionDB: &dbIface}
 	manager.lastAccessed["tenant-cache-test"] = time.Now()
-	manager.lastSettingsCheck["tenant-cache-test"] = time.Now()
+	manager.lastConnectionsCheck["tenant-cache-test"] = time.Now()
 
 	// Trigger revalidatePoolSettings -- should bypass cache and hit the server
 	manager.revalidatePoolSettings("tenant-cache-test")
@@ -1934,7 +2340,7 @@ func TestManager_RevalidateSettings_DetectsConfigChange(t *testing.T) {
 			manager := NewManager(tmClient, "ledger",
 				WithLogger(capLogger),
 				WithModule("onboarding"),
-				WithSettingsCheckInterval(1*time.Millisecond),
+				WithConnectionsCheckInterval(1*time.Millisecond),
 			)
 
 			mockDB := &pingableDB{}
@@ -1945,7 +2351,7 @@ func TestManager_RevalidateSettings_DetectsConfigChange(t *testing.T) {
 				ConnectionDB:            &dbIface,
 			}
 			manager.lastAccessed["tenant-cfg"] = time.Now()
-			manager.lastSettingsCheck["tenant-cfg"] = time.Now()
+			manager.lastConnectionsCheck["tenant-cfg"] = time.Now()
 
 			// Trigger revalidation directly
 			manager.revalidatePoolSettings("tenant-cfg")
@@ -1994,7 +2400,7 @@ func TestManager_RevalidateSettings_ConfigChangeKeepsOldConnOnFailure(t *testing
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	mockDB := &pingableDB{}
@@ -2005,7 +2411,7 @@ func TestManager_RevalidateSettings_ConfigChangeKeepsOldConnOnFailure(t *testing
 		ConnectionDB:            &dbIface,
 	}
 	manager.lastAccessed["tenant-fail"] = time.Now()
-	manager.lastSettingsCheck["tenant-fail"] = time.Now()
+	manager.lastConnectionsCheck["tenant-fail"] = time.Now()
 
 	// Trigger revalidation directly
 	manager.revalidatePoolSettings("tenant-fail")
@@ -2045,7 +2451,7 @@ func TestManager_RevalidateSettings_NoReconnectWhenConfigSame(t *testing.T) {
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	tDB := &trackingDB{}
@@ -2056,7 +2462,7 @@ func TestManager_RevalidateSettings_NoReconnectWhenConfigSame(t *testing.T) {
 		ConnectionDB:            &dbIface,
 	}
 	manager.lastAccessed["tenant-same"] = time.Now()
-	manager.lastSettingsCheck["tenant-same"] = time.Now()
+	manager.lastConnectionsCheck["tenant-same"] = time.Now()
 
 	// Trigger revalidation directly
 	manager.revalidatePoolSettings("tenant-same")

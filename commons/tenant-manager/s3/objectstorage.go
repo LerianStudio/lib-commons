@@ -38,7 +38,7 @@ func GetObjectStorageKey(tenantID, key string) (string, error) {
 	return tenantID + "/" + key, nil
 }
 
-// GetObjectStorageKeyForTenant returns a tenant-prefixed object storage key
+// GetS3KeyStorageContext returns a tenant-prefixed object storage key
 // using the tenantID from context.
 //
 // In multi-tenant mode (tenantID in context): "{tenantId}/{key}"
@@ -49,16 +49,16 @@ func GetObjectStorageKey(tenantID, key string) (string, error) {
 //
 // Usage:
 //
-//	key, err := s3.GetObjectStorageKeyForTenant(ctx, "reports/templateID/reportID.html")
+//	key, err := s3.GetS3KeyStorageContext(ctx, "reports/templateID/reportID.html")
 //	// Multi-tenant: "org_01ABC.../reports/templateID/reportID.html"
 //	// Single-tenant: "reports/templateID/reportID.html"
 //	storage.Upload(ctx, key, reader, contentType)
-func GetObjectStorageKeyForTenant(ctx context.Context, key string) (string, error) {
+func GetS3KeyStorageContext(ctx context.Context, key string) (string, error) {
 	if ctx == nil {
 		return GetObjectStorageKey("", key)
 	}
 
-	tenantID := core.GetTenantIDFromContext(ctx)
+	tenantID := core.GetTenantIDContext(ctx)
 
 	return GetObjectStorageKey(tenantID, key)
 }

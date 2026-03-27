@@ -2,8 +2,6 @@ package middleware
 
 import (
 	"context"
-	"errors"
-	"net/http"
 
 	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
 	liblog "github.com/LerianStudio/lib-commons/v4/commons/log"
@@ -13,6 +11,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
 	tmmongo "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/postgres"
+	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/tenantcache"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -20,49 +19,74 @@ import (
 // TenantMiddleware extracts tenantId from JWT token and resolves the database connection.
 // It stores the connection in context for downstream handlers and repositories.
 // Supports PostgreSQL only, MongoDB only, or both databases.
+//
+// When a TenantCache and TenantLoader are configured, the middleware uses a cache-first
+// strategy: it checks the shared cache before resolving connections. On cache miss or
+// expiry, the loader fetches the tenant config from tenant-manager and caches it.
+// This avoids unnecessary API calls and benefits from event-driven cache updates.
+//
+// Use WithPG and WithMB to register database managers. Without a module name the manager
+// is stored in single-manager mode (backward compatible). With a module name, managers
+// are stored in multi-module mode keyed by module. One middleware, multiple modules,
+// one pass.
 type TenantMiddleware struct {
-	postgres *tmpostgres.Manager // PostgreSQL manager (optional)
-	mongo    *tmmongo.Manager    // MongoDB manager (optional)
-	enabled  bool
+	postgres *tmpostgres.Manager       // PostgreSQL manager (optional, single-manager mode)
+	mongo    *tmmongo.Manager          // MongoDB manager (optional, single-manager mode)
+	cache    *tenantcache.TenantCache  // shared tenant config cache (optional)
+	loader   *tenantcache.TenantLoader // lazy-loads tenant config on cache miss (optional)
+
+	// Multi-module managers keyed by module name.
+	// When populated, these take precedence over the single manager fields.
+	pgModules    map[string]*tmpostgres.Manager // module -> PostgreSQL manager
+	mongoModules map[string]*tmmongo.Manager    // module -> MongoDB manager
+
+	enabled bool
 }
 
 // TenantMiddlewareOption configures a TenantMiddleware.
 type TenantMiddlewareOption func(*TenantMiddleware)
 
-// WithPostgresManager sets the PostgreSQL manager for the tenant middleware.
-// When configured, the middleware will resolve PostgreSQL connections for tenants.
-func WithPostgresManager(postgres *tmpostgres.Manager) TenantMiddlewareOption {
+// WithTenantCache sets the shared tenant config cache for the middleware.
+// When both cache and loader are configured, the middleware uses a cache-first strategy:
+// on cache hit, it skips the loader; on miss or expiry, it calls the loader to fetch and cache.
+func WithTenantCache(cache *tenantcache.TenantCache) TenantMiddlewareOption {
 	return func(m *TenantMiddleware) {
-		m.postgres = postgres
-		m.enabled = m.postgres != nil || m.mongo != nil
+		m.cache = cache
 	}
 }
 
-// WithMongoManager sets the MongoDB manager for the tenant middleware.
-// When configured, the middleware will resolve MongoDB connections for tenants.
-func WithMongoManager(mongo *tmmongo.Manager) TenantMiddlewareOption {
+// WithTenantLoader sets the lazy-load tenant loader for the middleware.
+// When both cache and loader are configured, the middleware calls the loader on cache miss
+// to fetch the tenant config from tenant-manager and cache it for subsequent requests.
+func WithTenantLoader(loader *tenantcache.TenantLoader) TenantMiddlewareOption {
 	return func(m *TenantMiddleware) {
-		m.mongo = mongo
-		m.enabled = m.postgres != nil || m.mongo != nil
+		m.loader = loader
 	}
 }
 
 // NewTenantMiddleware creates a new TenantMiddleware with the given options.
-// Use WithPostgresManager and/or WithMongoManager to configure which databases to use.
+// Use WithPG and/or WithMB to configure which databases to use.
 // The middleware is enabled if at least one manager is configured.
 //
 // Usage examples:
 //
-//	// PostgreSQL only
-//	mid := middleware.NewTenantMiddleware(middleware.WithPostgresManager(pgManager))
+//	// PostgreSQL only (single manager, no module)
+//	mid := middleware.NewTenantMiddleware(middleware.WithPG(pgManager))
 //
-//	// MongoDB only
-//	mid := middleware.NewTenantMiddleware(middleware.WithMongoManager(mongoManager))
+//	// MongoDB only (single manager, no module)
+//	mid := middleware.NewTenantMiddleware(middleware.WithMB(mongoManager))
 //
-//	// Both PostgreSQL and MongoDB
+//	// Both PostgreSQL and MongoDB (single manager)
 //	mid := middleware.NewTenantMiddleware(
-//	    middleware.WithPostgresManager(pgManager),
-//	    middleware.WithMongoManager(mongoManager),
+//	    middleware.WithPG(pgManager),
+//	    middleware.WithMB(mongoManager),
+//	)
+//
+//	// Multi-module: separate managers per module
+//	mid := middleware.NewTenantMiddleware(
+//	    middleware.WithPG(onboardingPG, "onboarding"),
+//	    middleware.WithPG(transactionPG, "transaction"),
+//	    middleware.WithMB(onboardingMB, "onboarding"),
 //	)
 func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 	m := &TenantMiddleware{}
@@ -71,8 +95,9 @@ func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 		opt(m)
 	}
 
-	// Enable if any manager is configured
-	m.enabled = m.postgres != nil || m.mongo != nil
+	// Enable if any manager is configured (single or multi-module)
+	m.enabled = m.postgres != nil || m.mongo != nil ||
+		len(m.pgModules) > 0 || len(m.mongoModules) > 0
 
 	return m
 }
@@ -83,7 +108,7 @@ func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 //
 // Usage in routes.go:
 //
-//	tenantMid := middleware.NewTenantMiddleware(middleware.WithPostgresManager(pgManager))
+//	tenantMid := middleware.NewTenantMiddleware(middleware.WithPG(pgManager))
 //	f.Use(tenantMid.WithTenantDB)
 func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	// If middleware is disabled, pass through
@@ -151,46 +176,43 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 		return unauthorizedError(c, "INVALID_TENANT", "tenantId has invalid format")
 	}
 
-	logger.Base().Log(ctx, liblog.LevelInfo, "tenant context resolved",
+	logger.Base().Log(ctx, liblog.LevelDebug, "tenant context resolved",
 		liblog.String("tenant_id", tenantID))
 
 	// Store tenant ID in context
 	ctx = core.ContextWithTenantID(ctx, tenantID)
 
-	// Handle PostgreSQL if manager is configured
-	if m.postgres != nil {
-		conn, err := m.postgres.GetConnection(ctx, tenantID)
-		if err != nil {
-			logger.Base().Log(ctx, liblog.LevelError, "failed to get tenant PostgreSQL connection", liblog.Err(err))
-			libOpentelemetry.HandleSpanError(span, "failed to get tenant PostgreSQL connection", err)
+	// Cache-first path: ensure tenant is known before resolving connections.
+	if err := m.ensureTenantCached(ctx, tenantID); err != nil {
+		logger.Base().Log(ctx, liblog.LevelError, "failed to lazy-load tenant config",
+			liblog.String("tenant_id", tenantID), liblog.Err(err))
+		libOpentelemetry.HandleSpanError(span, "failed to lazy-load tenant config", err)
 
-			return mapDomainErrorToHTTP(c, err, tenantID)
-		}
-
-		// Get the database connection from PostgresConnection
-		db, err := conn.GetDB()
-		if err != nil {
-			logger.Base().Log(ctx, liblog.LevelError, "failed to get database from PostgreSQL connection", liblog.Err(err))
-			libOpentelemetry.HandleSpanError(span, "failed to get database from PostgreSQL connection", err)
-
-			return internalServerError(c, "TENANT_DB_ERROR", "Failed to get tenant database connection")
-		}
-
-		// Store PostgreSQL connection in context
-		ctx = core.ContextWithTenantPGConnection(ctx, db)
+		return mapDomainErrorToHTTP(c, err, tenantID)
 	}
 
-	// Handle MongoDB if manager is configured
-	if m.mongo != nil {
-		mongoDB, err := m.mongo.GetDatabaseForTenant(ctx, tenantID)
-		if err != nil {
-			logger.Base().Log(ctx, liblog.LevelError, "failed to get tenant MongoDB connection", liblog.Err(err))
-			libOpentelemetry.HandleSpanError(span, "failed to get tenant MongoDB connection", err)
+	// Resolve PostgreSQL connections.
+	var pgErr error
 
-			return mapDomainErrorToHTTP(c, err, tenantID)
-		}
+	ctx, pgErr = m.resolvePostgres(ctx, tenantID)
+	if pgErr != nil {
+		logger.Base().Log(ctx, liblog.LevelError, "failed to resolve tenant PostgreSQL connection",
+			liblog.String("tenant_id", tenantID), liblog.Err(pgErr))
+		libOpentelemetry.HandleSpanError(span, "failed to resolve tenant PostgreSQL connection", pgErr)
 
-		ctx = core.ContextWithTenantMongo(ctx, mongoDB)
+		return mapDomainErrorToHTTP(c, pgErr, tenantID)
+	}
+
+	// Resolve MongoDB connections.
+	var mongoErr error
+
+	ctx, mongoErr = m.resolveMongo(ctx, tenantID)
+	if mongoErr != nil {
+		logger.Base().Log(ctx, liblog.LevelError, "failed to resolve tenant MongoDB connection",
+			liblog.String("tenant_id", tenantID), liblog.Err(mongoErr))
+		libOpentelemetry.HandleSpanError(span, "failed to resolve tenant MongoDB connection", mongoErr)
+
+		return mapDomainErrorToHTTP(c, mongoErr, tenantID)
 	}
 
 	// Update Fiber context
@@ -199,97 +221,21 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	return c.Next()
 }
 
-// mapDomainErrorToHTTP is a centralized error-to-HTTP mapping function shared by
-// both TenantMiddleware and MultiPoolMiddleware to ensure consistent status codes
-// for the same domain errors.
-func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
-	// Missing token or JWT errors -> 401
-	if errors.Is(err, core.ErrAuthorizationTokenRequired) ||
-		errors.Is(err, core.ErrInvalidAuthorizationToken) ||
-		errors.Is(err, core.ErrInvalidTenantClaims) ||
-		errors.Is(err, core.ErrMissingTenantIDClaim) {
-		return unauthorizedError(c, "UNAUTHORIZED", "Unauthorized")
+// ensureTenantCached checks the shared cache for the tenant. On cache miss or expired entry,
+// it calls the loader to fetch and cache the tenant config from tenant-manager.
+// Returns nil if cache+loader are not configured (no-op for backward compatibility).
+func (m *TenantMiddleware) ensureTenantCached(ctx context.Context, tenantID string) error {
+	if m.cache == nil || m.loader == nil {
+		return nil
 	}
 
-	// Tenant not found -> 404
-	if errors.Is(err, core.ErrTenantNotFound) {
-		return c.Status(http.StatusNotFound).JSON(fiber.Map{
-			"code":    "TENANT_NOT_FOUND",
-			"title":   "Tenant Not Found",
-			"message": "tenant not found: " + tenantID,
-		})
+	if _, found := m.cache.Get(tenantID); found {
+		return nil
 	}
 
-	// Tenant suspended/purged -> 403
-	var suspErr *core.TenantSuspendedError
-	if errors.As(err, &suspErr) {
-		return forbiddenError(c, "0131", "Service Suspended",
-			"tenant service is "+suspErr.Status)
-	}
+	_, err := m.loader.LoadTenant(ctx, tenantID)
 
-	// Generic access denied (403 without parsed status) -> 403
-	if errors.Is(err, core.ErrTenantServiceAccessDenied) {
-		return forbiddenError(c, "0131", "Access Denied",
-			"tenant service access denied")
-	}
-
-	// Manager closed or service not configured -> 503
-	if errors.Is(err, core.ErrManagerClosed) || errors.Is(err, core.ErrServiceNotConfigured) {
-		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
-			"code":    "SERVICE_UNAVAILABLE",
-			"title":   "Service Unavailable",
-			"message": "Service temporarily unavailable",
-		})
-	}
-
-	// Circuit breaker open -> 503
-	if errors.Is(err, core.ErrCircuitBreakerOpen) {
-		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
-			"code":    "SERVICE_UNAVAILABLE",
-			"title":   "Service Unavailable",
-			"message": "Service temporarily unavailable",
-		})
-	}
-
-	// Connection errors -> 503
-	if errors.Is(err, core.ErrConnectionFailed) {
-		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
-			"code":    "SERVICE_UNAVAILABLE",
-			"title":   "Service Unavailable",
-			"message": "Failed to resolve tenant database",
-		})
-	}
-
-	// Default -> 500
-	return internalServerError(c, "TENANT_DB_ERROR", "Failed to resolve tenant database")
-}
-
-// forbiddenError sends an HTTP 403 Forbidden response.
-// Used when the tenant-service association exists but is not active (suspended or purged).
-func forbiddenError(c *fiber.Ctx, code, title, message string) error {
-	return c.Status(http.StatusForbidden).JSON(fiber.Map{
-		"code":    code,
-		"title":   title,
-		"message": message,
-	})
-}
-
-// internalServerError sends an HTTP 500 Internal Server Error response.
-func internalServerError(c *fiber.Ctx, code, title string) error {
-	return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
-		"code":    code,
-		"title":   title,
-		"message": "Internal server error",
-	})
-}
-
-// unauthorizedError sends an HTTP 401 Unauthorized response.
-func unauthorizedError(c *fiber.Ctx, code, message string) error {
-	return c.Status(http.StatusUnauthorized).JSON(fiber.Map{
-		"code":    code,
-		"title":   "Unauthorized",
-		"message": message,
-	})
+	return err
 }
 
 // Enabled returns whether the middleware is enabled.

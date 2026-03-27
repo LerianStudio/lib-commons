@@ -13,7 +13,7 @@ type tenantIDContextKey string
 
 // TenantIDContextKey stores tenant id used by outbox multi-tenant operations.
 //
-// Deprecated: use tenantmanager/core.ContextWithTenantID and tenantmanager/core.GetTenantIDFromContext.
+// Deprecated: use tenantmanager/core.ContextWithTenantID and tenantmanager/core.GetTenantIDContext.
 // This constant will be removed in v3.0.
 const TenantIDContextKey tenantIDContextKey = "outbox.tenant_id"
 
@@ -82,7 +82,7 @@ func TenantIDFromContext(ctx context.Context) (string, bool) {
 		return "", false
 	}
 
-	tenantID := core.GetTenantIDFromContext(ctx)
+	tenantID := core.GetTenantIDContext(ctx)
 
 	trimmed := strings.TrimSpace(tenantID)
 	if trimmed != "" {

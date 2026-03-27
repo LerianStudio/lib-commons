@@ -26,20 +26,20 @@ type contextKey struct {
 var (
 	// tenantIDKey is the context key for storing the tenant ID.
 	tenantIDKey = contextKey{name: "tenantID"}
-	// tenantPGConnectionKey is the context key for storing the resolved dbresolver.DB connection.
-	tenantPGConnectionKey = contextKey{name: "tenantPGConnection"}
-	// tenantMongoKey is the context key for storing the tenant MongoDB database.
-	tenantMongoKey = contextKey{name: "tenantMongo"}
+	// pgConnectionKey is the context key for storing the resolved dbresolver.DB connection.
+	pgConnectionKey = contextKey{name: "pgConnection"}
+	// mongoKey is the context key for storing the tenant MongoDB database.
+	mongoKey = contextKey{name: "mongo"}
 )
 
-// SetTenantIDInContext stores the tenant ID in the context.
-func SetTenantIDInContext(ctx context.Context, tenantID string) context.Context {
+// ContextWithTenantID stores the tenant ID in the context.
+func ContextWithTenantID(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(nonNilContext(ctx), tenantIDKey, tenantID)
 }
 
-// GetTenantIDFromContext retrieves the tenant ID from the context.
+// GetTenantIDContext retrieves the tenant ID from the context.
 // Returns empty string if not found.
-func GetTenantIDFromContext(ctx context.Context) string {
+func GetTenantIDContext(ctx context.Context) string {
 	if id, ok := nonNilContext(ctx).Value(tenantIDKey).(string); ok {
 		return id
 	}
@@ -47,94 +47,100 @@ func GetTenantIDFromContext(ctx context.Context) string {
 	return ""
 }
 
-// GetTenantID is an alias for GetTenantIDFromContext.
-// Returns the tenant ID from context, or empty string if not found.
-func GetTenantID(ctx context.Context) string {
-	return GetTenantIDFromContext(ctx)
+// pgModuleKey is a context key type for module-specific PostgreSQL connections.
+// Each module name produces a distinct key, so connections for different modules
+// (e.g., "onboarding", "transaction") do not collide in the same context.
+type pgModuleKey string
+
+// ContextWithPG stores a PostgreSQL connection in the context.
+// Without a module argument it sets only the generic connection key.
+// With a module argument it sets only the module-specific key, so
+// module-specific stores do not overwrite the generic key set by
+// a different call (e.g., a different module or the single-manager path).
+//
+// Examples:
+//
+//	ctx = ContextWithPG(ctx, db)                   // generic only
+//	ctx = ContextWithPG(ctx, db, "onboarding")     // module-specific only
+func ContextWithPG(ctx context.Context, db dbresolver.DB, module ...string) context.Context {
+	ctx = nonNilContext(ctx)
+
+	if len(module) > 0 && module[0] != "" {
+		return context.WithValue(ctx, pgModuleKey(module[0]), db)
+	}
+
+	return context.WithValue(ctx, pgConnectionKey, db)
 }
 
-// ContextWithTenantID stores the tenant ID in the context.
-// Alias for SetTenantIDInContext for compatibility with middleware.
-func ContextWithTenantID(ctx context.Context, tenantID string) context.Context {
-	return SetTenantIDInContext(ctx, tenantID)
-}
+// GetPGContext retrieves a PostgreSQL connection from the context.
+// Without a module argument it reads the generic key.
+// With a module argument it reads the module-specific key.
+//
+// Examples:
+//
+//	db := GetPGContext(ctx)                // generic
+//	db := GetPGContext(ctx, "onboarding")  // module-specific
+func GetPGContext(ctx context.Context, module ...string) dbresolver.DB {
+	if len(module) > 0 && module[0] != "" {
+		if db, ok := nonNilContext(ctx).Value(pgModuleKey(module[0])).(dbresolver.DB); ok {
+			return db
+		}
 
-// ContextWithTenantPGConnection stores the resolved dbresolver.DB connection in the context.
-// This is used by the middleware to store the tenant-specific database connection.
-func ContextWithTenantPGConnection(ctx context.Context, db dbresolver.DB) context.Context {
-	return context.WithValue(nonNilContext(ctx), tenantPGConnectionKey, db)
-}
+		return nil
+	}
 
-// GetTenantPGConnectionFromContext retrieves the resolved dbresolver.DB from the context.
-// Returns nil if not found.
-func GetTenantPGConnectionFromContext(ctx context.Context) dbresolver.DB {
-	if db, ok := nonNilContext(ctx).Value(tenantPGConnectionKey).(dbresolver.DB); ok {
+	if db, ok := nonNilContext(ctx).Value(pgConnectionKey).(dbresolver.DB); ok {
 		return db
 	}
 
 	return nil
 }
 
-// GetPostgresForTenant returns the PostgreSQL database connection for the current tenant from context.
-// If no tenant connection is found in context, returns ErrTenantContextRequired.
-// This function ALWAYS requires tenant context - there is no fallback to default connections.
-func GetPostgresForTenant(ctx context.Context) (dbresolver.DB, error) {
-	if tenantDB := GetTenantPGConnectionFromContext(ctx); tenantDB != nil {
-		return tenantDB, nil
+// mongoModuleKey is a context key type for module-specific MongoDB databases.
+// Each module name produces a distinct key, so databases for different modules
+// do not collide in the same context.
+type mongoModuleKey string
+
+// ContextWithMB stores a MongoDB database in the context.
+// Without a module argument it sets only the generic MongoDB key.
+// With a module argument it sets only the module-specific key, so
+// module-specific stores do not overwrite the generic key set by
+// a different call (e.g., a different module or the single-manager path).
+//
+// Examples:
+//
+//	ctx = ContextWithMB(ctx, db)                   // generic only
+//	ctx = ContextWithMB(ctx, db, "onboarding")     // module-specific only
+func ContextWithMB(ctx context.Context, db *mongo.Database, module ...string) context.Context {
+	ctx = nonNilContext(ctx)
+
+	if len(module) > 0 && module[0] != "" {
+		return context.WithValue(ctx, mongoModuleKey(module[0]), db)
 	}
 
-	return nil, ErrTenantContextRequired
+	return context.WithValue(ctx, mongoKey, db)
 }
 
-// moduleContextKey generates a dynamic context key for a given module name.
-// This allows any module to store its own PostgreSQL connection in context
-// without requiring changes to lib-commons.
-func moduleContextKey(moduleName string) contextKey {
-	return contextKey{name: "tenantPGConnection:" + moduleName}
-}
+// GetMBContext retrieves a MongoDB database from the context.
+// Without a module argument it reads the generic key.
+// With a module argument it reads the module-specific key.
+//
+// Examples:
+//
+//	db := GetMBContext(ctx)                // generic
+//	db := GetMBContext(ctx, "onboarding")  // module-specific
+func GetMBContext(ctx context.Context, module ...string) *mongo.Database {
+	if len(module) > 0 && module[0] != "" {
+		if db, ok := nonNilContext(ctx).Value(mongoModuleKey(module[0])).(*mongo.Database); ok {
+			return db
+		}
 
-// ContextWithModulePGConnection stores a module-specific PostgreSQL connection in context.
-// moduleName identifies the module (e.g., "onboarding", "transaction").
-// This is used in multi-module processes where each module needs its own database connection
-// in context to avoid cross-module conflicts.
-func ContextWithModulePGConnection(ctx context.Context, moduleName string, db dbresolver.DB) context.Context {
-	return context.WithValue(nonNilContext(ctx), moduleContextKey(moduleName), db)
-}
-
-// GetModulePostgresForTenant returns the module-specific PostgreSQL connection from context.
-// moduleName identifies the module (e.g., "onboarding", "transaction").
-// Returns ErrTenantContextRequired if no connection is found for the given module.
-// This function does NOT fallback to the generic tenantPGConnectionKey.
-func GetModulePostgresForTenant(ctx context.Context, moduleName string) (dbresolver.DB, error) {
-	if db, ok := nonNilContext(ctx).Value(moduleContextKey(moduleName)).(dbresolver.DB); ok && db != nil {
-		return db, nil
+		return nil
 	}
 
-	return nil, ErrTenantContextRequired
-}
-
-// ContextWithTenantMongo stores the MongoDB database in the context.
-func ContextWithTenantMongo(ctx context.Context, db *mongo.Database) context.Context {
-	return context.WithValue(nonNilContext(ctx), tenantMongoKey, db)
-}
-
-// GetMongoFromContext retrieves the MongoDB database from the context.
-// Returns nil if not found.
-func GetMongoFromContext(ctx context.Context) *mongo.Database {
-	if db, ok := nonNilContext(ctx).Value(tenantMongoKey).(*mongo.Database); ok {
+	if db, ok := nonNilContext(ctx).Value(mongoKey).(*mongo.Database); ok {
 		return db
 	}
 
 	return nil
-}
-
-// GetMongoForTenant returns the MongoDB database for the current tenant from context.
-// If no tenant connection is found in context, returns ErrTenantContextRequired.
-// This function ALWAYS requires tenant context - there is no fallback to default connections.
-func GetMongoForTenant(ctx context.Context) (*mongo.Database, error) {
-	if db := GetMongoFromContext(ctx); db != nil {
-		return db, nil
-	}
-
-	return nil, ErrTenantContextRequired
 }

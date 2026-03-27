@@ -27,7 +27,7 @@ func TestTenantAwareLogger_Log(t *testing.T) {
 			})
 
 		logger := NewTenantAwareLogger(mockLogger)
-		ctx := core.SetTenantIDInContext(context.Background(), "tenant-123")
+		ctx := core.ContextWithTenantID(context.Background(), "tenant-123")
 
 		logger.Log(ctx, log.LevelInfo, "test message", log.String("key", "value"))
 
@@ -71,7 +71,7 @@ func TestTenantAwareLogger_Log(t *testing.T) {
 			})
 
 		logger := NewTenantAwareLogger(mockLogger)
-		ctx := core.SetTenantIDInContext(context.Background(), "tenant-123")
+		ctx := core.ContextWithTenantID(context.Background(), "tenant-123")
 
 		logger.Log(ctx, log.LevelInfo, "test message",
 			log.String("tenant_id", "caller-tenant"),

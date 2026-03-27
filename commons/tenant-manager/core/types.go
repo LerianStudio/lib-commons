@@ -75,8 +75,9 @@ type DatabaseConfig struct {
 // defaults configured on the PostgresManager or MongoManager.
 // If nil (e.g., for older associations without settings), global defaults apply.
 type ConnectionSettings struct {
-	MaxOpenConns int `json:"maxOpenConns"`
-	MaxIdleConns int `json:"maxIdleConns"`
+	MaxOpenConns     int    `json:"maxOpenConns"`
+	MaxIdleConns     int    `json:"maxIdleConns"`
+	StatementTimeout string `json:"statementTimeout,omitempty"`
 }
 
 // TenantConfig represents the tenant configuration from Tenant Manager.

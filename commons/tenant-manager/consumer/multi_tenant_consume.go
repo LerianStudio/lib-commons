@@ -1,3 +1,7 @@
+// Copyright (c) 2026 Lerian Studio. All rights reserved.
+// Use of this source code is governed by the Elastic License 2.0
+// that can be found in the LICENSE file.
+
 package consumer
 
 import (
@@ -84,7 +88,7 @@ func (c *MultiTenantConsumer) startTenantConsumer(parentCtx context.Context, ten
 // superviseTenantQueues runs the consumer loop for a single tenant.
 func (c *MultiTenantConsumer) superviseTenantQueues(ctx context.Context, tenantID string) {
 	// Set tenantID in context for handlers
-	ctx = core.SetTenantIDInContext(ctx, tenantID)
+	ctx = core.ContextWithTenantID(ctx, tenantID)
 
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
@@ -174,7 +178,7 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 		if core.IsTenantSuspendedError(err) || core.IsTenantPurgedError(err) {
 			logger.WarnfCtx(ctx, "tenant %s is suspended/purged, stopping consumer: %v", tenantID, err)
 			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "tenant suspended/purged, stopping consumer", err)
-			c.evictSuspendedTenant(ctx, tenantID, logger)
+			c.dispatcher.RemoveTenant(ctx, tenantID)
 
 			return false
 		}
@@ -309,7 +313,7 @@ func (c *MultiTenantConsumer) handleMessage(
 	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
 
 	// Process message with tenant context
-	msgCtx := core.SetTenantIDInContext(ctx, tenantID)
+	msgCtx := core.ContextWithTenantID(ctx, tenantID)
 
 	// Extract trace context from message headers
 	msgCtx = libOpentelemetry.ExtractTraceContextFromQueueHeaders(msgCtx, msg.Headers)
@@ -393,14 +397,13 @@ func (c *MultiTenantConsumer) resetRetryState(tenantID string) {
 	c.retryState.Store(tenantID, &retryStateEntry{})
 }
 
-// ensureConsumerStarted ensures a consumer is running for the given tenant.
+// EnsureConsumerStarted ensures a consumer is running for the given tenant.
 // It uses double-check locking with a per-tenant mutex to guarantee exactly-once
 // consumer spawning under concurrent access.
 //
-// Consumers are only started for tenants that are known (resolved via discovery or
-// sync). Unknown tenants are rejected to prevent starting consumers for tenants
-// that have not been validated by the sync loop.
-func (c *MultiTenantConsumer) ensureConsumerStarted(ctx context.Context, tenantID string) {
+// Unknown tenants trigger a lazy-load via the shared TenantLoader. Additionally,
+// tenants with expired cache entries are re-loaded to keep configuration fresh.
+func (c *MultiTenantConsumer) EnsureConsumerStarted(ctx context.Context, tenantID string) {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
@@ -419,11 +422,49 @@ func (c *MultiTenantConsumer) ensureConsumerStarted(ctx context.Context, tenantI
 		return
 	}
 
-	// Reject unknown tenants: they haven't been discovered or validated yet.
-	// The sync loop will add them to knownTenants when they appear.
-	if !known {
-		logger.WarnfCtx(ctx, "rejecting consumer start for unknown tenant: %s (not yet resolved by sync)", tenantID)
+	// Check if cached entry is expired and trigger re-load.
+	// This keeps tenant configuration fresh without requiring a sync loop.
+	if known {
+		if expired, found := c.cache.IsExpired(tenantID); found && expired {
+			logger.InfofCtx(ctx, "cache expired for tenant %s, re-loading from API", tenantID)
 
+			if _, err := c.loader.LoadTenant(ctx, tenantID); err != nil {
+				logger.WarnfCtx(ctx, "TTL refresh failed for tenant %s: %v", tenantID, err)
+				libOpentelemetry.HandleSpanBusinessErrorEvent(span, "TTL refresh failed", err)
+
+				// Do NOT delete the stale cache entry on failure -- the expired
+				// entry is still usable as a fallback until the next reload attempt.
+			}
+
+			// LoadTenant's internal Get lazily evicts the expired entry and
+			// Set stores the fresh one, so no explicit Delete is needed here.
+			// The slow path below will proceed to start the consumer if needed.
+		}
+	}
+
+	if !known {
+		// Lazy-load unknown tenants from the API via the shared TenantLoader.
+		logger.InfofCtx(ctx, "lazy-loading unknown tenant %s", tenantID)
+
+		if _, err := c.loader.LoadTenant(ctx, tenantID); err != nil {
+			logger.WarnfCtx(ctx, "lazy-load failed for tenant %s: %v", tenantID, err)
+			libOpentelemetry.HandleSpanBusinessErrorEvent(span, "lazy-load failed", err)
+
+			// Tenant is not valid, nothing to start.
+			return
+		}
+
+		// LoadTenant cached the config; mark as known and fall through
+		// to the slow path to start the consumer.
+		c.mu.Lock()
+		c.knownTenants[tenantID] = true
+		c.mu.Unlock()
+	}
+
+	// HTTP-only mode: tenant is cached but no consumer goroutine needed.
+	// When RabbitMQ is not configured, the consumer operates in HTTP-only mode
+	// where it manages the tenant cache and events but does not consume from queues.
+	if c.rabbitmq == nil {
 		return
 	}
 
@@ -464,6 +505,42 @@ func (c *MultiTenantConsumer) ensureConsumerStarted(ctx context.Context, tenantI
 	c.mu.Lock()
 	c.startTenantConsumer(startCtx, tenantID)
 	c.mu.Unlock()
+}
+
+// StopConsumer stops the consumer goroutine for a specific tenant and removes
+// all associated state (cancel function, known-tenant flag, retry state, and
+// per-tenant lock). This is safe for concurrent use and is a no-op if the
+// tenant does not have a running consumer.
+//
+// Use this method when a tenant is disassociated or deleted to prevent orphaned
+// goroutines from retrying indefinitely.
+func (c *MultiTenantConsumer) StopConsumer(tenantID string) {
+	// Acquire the per-tenant lock to serialize with EnsureConsumerStarted,
+	// preventing a race where Stop and Ensure run concurrently for the same tenant.
+	lockVal, _ := c.consumerLocks.LoadOrStore(tenantID, &sync.Mutex{})
+
+	tenantMu, ok := lockVal.(*sync.Mutex)
+	if !ok {
+		return
+	}
+
+	tenantMu.Lock()
+
+	c.mu.Lock()
+	if cancel, ok := c.tenants[tenantID]; ok {
+		cancel()
+		delete(c.tenants, tenantID)
+	}
+
+	delete(c.knownTenants, tenantID)
+	c.mu.Unlock()
+
+	tenantMu.Unlock()
+
+	// Clean up retry state and per-tenant lock outside the main mutex
+	// (sync.Map operations are independently thread-safe).
+	c.retryState.Delete(tenantID)
+	c.consumerLocks.Delete(tenantID)
 }
 
 // IsDegraded returns true if the given tenant is currently in a degraded state
