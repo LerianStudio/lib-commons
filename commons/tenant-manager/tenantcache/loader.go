@@ -27,12 +27,13 @@ import (
 // consumer) can use it. It does NOT manage consumer goroutines or knownTenants
 // maps -- those are caller responsibilities.
 type TenantLoader struct {
-	pmClient  *client.Client
-	cache     *TenantCache
-	service   string
-	cacheTTL  time.Duration
-	logger    *logcompat.Logger
-	loadLocks sync.Map // per-tenant mutexes (key: tenantID, value: *sync.Mutex)
+	pmClient       *client.Client
+	cache          *TenantCache
+	service        string
+	cacheTTL       time.Duration
+	logger         *logcompat.Logger
+	loadLocks      sync.Map // per-tenant mutexes (key: tenantID, value: *sync.Mutex)
+	onTenantLoaded func(ctx context.Context, tenantID string)
 }
 
 // NewTenantLoader creates a TenantLoader.
@@ -61,6 +62,14 @@ func NewTenantLoader(
 		cacheTTL: cacheTTL,
 		logger:   logcompat.New(logger),
 	}
+}
+
+// SetOnTenantLoaded registers a callback that is invoked after a tenant is
+// successfully lazy-loaded from the tenant-manager API and cached. The callback
+// is NOT called on cache hits -- only on new loads. Passing nil clears the
+// callback. This is safe to call before any LoadTenant call.
+func (l *TenantLoader) SetOnTenantLoaded(fn func(ctx context.Context, tenantID string)) {
+	l.onTenantLoaded = fn
 }
 
 // LoadTenant fetches and caches a tenant's configuration.
@@ -124,6 +133,10 @@ func (l *TenantLoader) LoadTenant(ctx context.Context, tenantID string) (*core.T
 	l.cache.Set(tenantID, config, l.cacheTTL)
 
 	l.logger.InfofCtx(ctx, "lazy-loaded tenant %s for service %s", tenantID, l.service)
+
+	if l.onTenantLoaded != nil {
+		l.onTenantLoaded(ctx, tenantID)
+	}
 
 	return config, nil
 }

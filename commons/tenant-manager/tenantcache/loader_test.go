@@ -284,6 +284,81 @@ func TestLoadTenant_ConcurrentLoads(t *testing.T) {
 	assert.Equal(t, tenantID, entry.Config.ID, "cached config should match tenant ID")
 }
 
+func TestTenantLoader_OnTenantLoaded_CalledAfterSuccess(t *testing.T) {
+	t.Parallel()
+
+	tenantID := "tenant-loader-callback-success"
+	config := newTestTenantConfig(tenantID)
+
+	server := setupLoaderServer(t, tenantID, config, nil)
+
+	pmClient := newTestClient(t, server.URL)
+	cache := NewTenantCache()
+	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, log.NewNop())
+
+	var callbackTenantID string
+	var callbackCalled atomic.Bool
+
+	loader.SetOnTenantLoaded(func(_ context.Context, tid string) {
+		callbackTenantID = tid
+		callbackCalled.Store(true)
+	})
+
+	ctx := context.Background()
+
+	result, err := loader.LoadTenant(ctx, tenantID)
+	require.NoError(t, err, "LoadTenant should succeed")
+	require.NotNil(t, result, "LoadTenant should return non-nil config")
+
+	assert.True(t, callbackCalled.Load(), "onTenantLoaded callback should be called after successful load")
+	assert.Equal(t, tenantID, callbackTenantID, "callback should receive the correct tenant ID")
+}
+
+func TestTenantLoader_OnTenantLoaded_NotCalledOnError(t *testing.T) {
+	t.Parallel()
+
+	tenantID := "tenant-loader-callback-error"
+	server := setupLoaderErrorServer(t, tenantID, http.StatusNotFound, map[string]string{"error": "not found"})
+
+	pmClient := newTestClient(t, server.URL)
+	cache := NewTenantCache()
+	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, log.NewNop())
+
+	var callbackCalled atomic.Bool
+
+	loader.SetOnTenantLoaded(func(_ context.Context, _ string) {
+		callbackCalled.Store(true)
+	})
+
+	ctx := context.Background()
+
+	result, err := loader.LoadTenant(ctx, tenantID)
+	require.Error(t, err, "LoadTenant should return error for unknown tenant")
+	assert.Nil(t, result, "LoadTenant should return nil config for not-found tenant")
+
+	assert.False(t, callbackCalled.Load(), "onTenantLoaded callback should NOT be called when load fails")
+}
+
+func TestTenantLoader_OnTenantLoaded_NotCalledWhenNil(t *testing.T) {
+	t.Parallel()
+
+	tenantID := "tenant-loader-callback-nil"
+	config := newTestTenantConfig(tenantID)
+
+	server := setupLoaderServer(t, tenantID, config, nil)
+
+	pmClient := newTestClient(t, server.URL)
+	cache := NewTenantCache()
+	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, log.NewNop())
+
+	ctx := context.Background()
+
+	result, err := loader.LoadTenant(ctx, tenantID)
+	require.NoError(t, err, "LoadTenant should succeed without panic when callback is nil")
+	require.NotNil(t, result, "LoadTenant should return non-nil config")
+	assert.Equal(t, tenantID, result.ID, "returned config should match tenant ID")
+}
+
 func TestNewTenantLoader_DefaultTTL(t *testing.T) {
 	t.Parallel()
 
