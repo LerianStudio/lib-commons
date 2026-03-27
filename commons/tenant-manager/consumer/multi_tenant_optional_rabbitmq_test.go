@@ -95,7 +95,7 @@ func TestRegister_NoRabbitMQ_ReturnsError(t *testing.T) {
 }
 
 // TestEnsureConsumerStarted_NoRabbitMQ_SkipsGoroutine verifies that
-// ensureConsumerStarted lazy-loads the tenant but does NOT spawn a consumer
+// EnsureConsumerStarted lazy-loads the tenant but does NOT spawn a consumer
 // goroutine when RabbitMQ is not set.
 func TestEnsureConsumerStarted_NoRabbitMQ_SkipsGoroutine(t *testing.T) {
 	t.Parallel()
@@ -122,11 +122,11 @@ func TestEnsureConsumerStarted_NoRabbitMQ_SkipsGoroutine(t *testing.T) {
 	t.Cleanup(func() { consumer.Close() })
 
 	// Trigger lazy-load for unknown tenant
-	consumer.ensureConsumerStarted(ctx, tenantID)
+	consumer.EnsureConsumerStarted(ctx, tenantID)
 
 	// Verify: tenant was lazy-loaded (HTTP request made)
 	assert.Equal(t, int64(1), requestCount.Load(),
-		"ensureConsumerStarted should still lazy-load from API")
+		"EnsureConsumerStarted should still lazy-load from API")
 
 	// Verify: tenant is marked as known
 	consumer.mu.RLock()

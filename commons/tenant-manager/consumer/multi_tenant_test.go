@@ -84,7 +84,7 @@ func generateTenantIDs(n int) []string {
 // dummyRabbitMQManager returns a minimal non-nil *tmrabbitmq.Manager for tests that
 // do not exercise RabbitMQ connections. Required because NewMultiTenantConsumer
 // validates that rabbitmq is non-nil. A dummy Client is attached so that
-// consumer goroutines spawned by ensureConsumerStarted do not panic on nil
+// consumer goroutines spawned by EnsureConsumerStarted do not panic on nil
 // dereference; they will receive connection errors instead.
 func dummyRabbitMQManager() *tmrabbitmq.Manager {
 	dummyClient, err := client.NewClient("http://127.0.0.1:0", testutil.NewMockLogger(), client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
@@ -637,7 +637,7 @@ func TestIsValidTenantID(t *testing.T) {
 // ---------------------
 
 // TestMultiTenantConsumer_EnsureConsumerStarted_SpawnsExactlyOnce verifies that
-// concurrent calls to ensureConsumerStarted for the same tenant spawn exactly one consumer.
+// concurrent calls to EnsureConsumerStarted for the same tenant spawn exactly one consumer.
 func TestMultiTenantConsumer_EnsureConsumerStarted_SpawnsExactlyOnce(t *testing.T) {
 	t.Parallel()
 
@@ -691,17 +691,17 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_SpawnsExactlyOnce(t *testing.
 			consumer.knownTenants[tt.tenantID] = true
 			consumer.mu.Unlock()
 
-			// Also seed in cache so ensureConsumerStarted doesn't trigger lazy-load
+			// Also seed in cache so EnsureConsumerStarted doesn't trigger lazy-load
 			consumer.cache.Set(tt.tenantID, &core.TenantConfig{ID: tt.tenantID}, 1*time.Hour)
 
-			// Launch N concurrent calls to ensureConsumerStarted
+			// Launch N concurrent calls to EnsureConsumerStarted
 			var wg sync.WaitGroup
 			wg.Add(tt.concurrentCalls)
 
 			for i := 0; i < tt.concurrentCalls; i++ {
 				go func() {
 					defer wg.Done()
-					consumer.ensureConsumerStarted(ctx, tt.tenantID)
+					consumer.EnsureConsumerStarted(ctx, tt.tenantID)
 				}()
 			}
 
@@ -725,7 +725,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_SpawnsExactlyOnce(t *testing.
 }
 
 // TestMultiTenantConsumer_EnsureConsumerStarted_NoopWhenActive verifies that
-// ensureConsumerStarted is a no-op when the consumer is already running.
+// EnsureConsumerStarted is a no-op when the consumer is already running.
 func TestMultiTenantConsumer_EnsureConsumerStarted_NoopWhenActive(t *testing.T) {
 	t.Parallel()
 
@@ -765,7 +765,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_NoopWhenActive(t *testing.T) 
 			consumer.cache.Set(tt.tenantID, &core.TenantConfig{ID: tt.tenantID}, 1*time.Hour)
 
 			// First call spawns the consumer
-			consumer.ensureConsumerStarted(ctx, tt.tenantID)
+			consumer.EnsureConsumerStarted(ctx, tt.tenantID)
 
 			consumer.mu.RLock()
 			countAfterFirst := len(consumer.tenants)
@@ -774,7 +774,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_NoopWhenActive(t *testing.T) 
 			assert.Equal(t, 1, countAfterFirst, "first call should spawn 1 consumer")
 
 			// Second call should be a no-op
-			consumer.ensureConsumerStarted(ctx, tt.tenantID)
+			consumer.EnsureConsumerStarted(ctx, tt.tenantID)
 
 			consumer.mu.RLock()
 			countAfterSecond := len(consumer.tenants)
@@ -790,7 +790,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_NoopWhenActive(t *testing.T) 
 }
 
 // TestMultiTenantConsumer_EnsureConsumerStarted_SkipsWhenClosed verifies that
-// ensureConsumerStarted is a no-op when the consumer has been closed.
+// EnsureConsumerStarted is a no-op when the consumer has been closed.
 func TestMultiTenantConsumer_EnsureConsumerStarted_SkipsWhenClosed(t *testing.T) {
 	t.Parallel()
 
@@ -819,11 +819,11 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_SkipsWhenClosed(t *testing.T)
 			ctx := context.Background()
 			consumer.parentCtx = ctx
 
-			// Close before calling ensureConsumerStarted
+			// Close before calling EnsureConsumerStarted
 			consumer.Close()
 
 			// Should be a no-op
-			consumer.ensureConsumerStarted(ctx, tt.tenantID)
+			consumer.EnsureConsumerStarted(ctx, tt.tenantID)
 
 			consumer.mu.RLock()
 			consumerCount := len(consumer.tenants)
@@ -836,7 +836,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_SkipsWhenClosed(t *testing.T)
 }
 
 // TestMultiTenantConsumer_EnsureConsumerStarted_MultipleTenants verifies that
-// ensureConsumerStarted can spawn consumers for different tenants concurrently.
+// EnsureConsumerStarted can spawn consumers for different tenants concurrently.
 func TestMultiTenantConsumer_EnsureConsumerStarted_MultipleTenants(t *testing.T) {
 	t.Parallel()
 
@@ -886,7 +886,7 @@ func TestMultiTenantConsumer_EnsureConsumerStarted_MultipleTenants(t *testing.T)
 			for _, id := range tt.tenantIDs {
 				go func(tenantID string) {
 					defer wg.Done()
-					consumer.ensureConsumerStarted(ctx, tenantID)
+					consumer.EnsureConsumerStarted(ctx, tenantID)
 				}(id)
 			}
 
@@ -1035,12 +1035,12 @@ func TestMultiTenantConsumer_StructuredLogEvents(t *testing.T) {
 				consumer.Register("test-queue", func(ctx context.Context, d amqp.Delivery) error {
 					return nil
 				})
-				// Add tenant to knownTenants so ensureConsumerStarted doesn't trigger lazy-load
+				// Add tenant to knownTenants so EnsureConsumerStarted doesn't trigger lazy-load
 				consumer.mu.Lock()
 				consumer.knownTenants["tenant-log-test"] = true
 				consumer.mu.Unlock()
 				consumer.cache.Set("tenant-log-test", &core.TenantConfig{ID: "tenant-log-test"}, 1*time.Hour)
-				consumer.ensureConsumerStarted(ctx, "tenant-log-test")
+				consumer.EnsureConsumerStarted(ctx, "tenant-log-test")
 			case "register":
 				consumer.Register("test-queue", func(ctx context.Context, d amqp.Delivery) error {
 					return nil

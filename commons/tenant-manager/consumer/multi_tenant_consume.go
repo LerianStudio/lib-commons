@@ -397,13 +397,13 @@ func (c *MultiTenantConsumer) resetRetryState(tenantID string) {
 	c.retryState.Store(tenantID, &retryStateEntry{})
 }
 
-// ensureConsumerStarted ensures a consumer is running for the given tenant.
+// EnsureConsumerStarted ensures a consumer is running for the given tenant.
 // It uses double-check locking with a per-tenant mutex to guarantee exactly-once
 // consumer spawning under concurrent access.
 //
 // Unknown tenants trigger a lazy-load via the shared TenantLoader. Additionally,
 // tenants with expired cache entries are re-loaded to keep configuration fresh.
-func (c *MultiTenantConsumer) ensureConsumerStarted(ctx context.Context, tenantID string) {
+func (c *MultiTenantConsumer) EnsureConsumerStarted(ctx context.Context, tenantID string) {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 

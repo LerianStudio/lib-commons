@@ -70,7 +70,7 @@ func (c *MultiTenantConsumer) wireDispatcherCallbacks() {
 		c.knownTenants[tenantID] = true
 		c.mu.Unlock()
 
-		c.ensureConsumerStarted(ctx, tenantID)
+		c.EnsureConsumerStarted(ctx, tenantID)
 	})
 
 	c.dispatcher.SetOnTenantRemoved(func(ctx context.Context, tenantID string) {

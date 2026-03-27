@@ -112,7 +112,7 @@ func setupLazyLoadErrorServer(
 }
 
 // TestLoaderIntegration_Success verifies that the consumer's shared TenantLoader
-// fetches and caches tenant config, and that ensureConsumerStarted marks it as known.
+// fetches and caches tenant config, and that EnsureConsumerStarted marks it as known.
 func TestLoaderIntegration_Success(t *testing.T) {
 	t.Parallel()
 
@@ -125,13 +125,13 @@ func TestLoaderIntegration_Success(t *testing.T) {
 	consumer := mustNewConsumer(t, dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 	defer consumer.Close()
 
-	// Set parentCtx so ensureConsumerStarted works
+	// Set parentCtx so EnsureConsumerStarted works
 	ctx := context.Background()
 	consumer.mu.Lock()
 	consumer.parentCtx = ctx
 	consumer.mu.Unlock()
 
-	// Call loader directly (same as what ensureConsumerStarted does)
+	// Call loader directly (same as what EnsureConsumerStarted does)
 	result, err := consumer.loader.LoadTenant(ctx, tenantID)
 	require.NoError(t, err, "loader.LoadTenant should succeed for valid tenant")
 	require.NotNil(t, result, "loader.LoadTenant should return non-nil config")
@@ -267,7 +267,7 @@ func TestLoaderIntegration_ConcurrentLoads(t *testing.T) {
 	consumer := mustNewConsumer(t, dummyRabbitMQManager(), newTestConfig(server.URL), testutil.NewMockLogger())
 	defer consumer.Close()
 
-	// Set parentCtx so ensureConsumerStarted works
+	// Set parentCtx so EnsureConsumerStarted works
 	ctx := context.Background()
 	consumer.mu.Lock()
 	consumer.parentCtx = ctx

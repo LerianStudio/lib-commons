@@ -20,7 +20,7 @@ import (
 
 // newEnsureTestConsumer creates a consumer with a mock API server.
 // It does NOT call Run() -- the caller must set parentCtx manually
-// to isolate the ensureConsumerStarted path.
+// to isolate the EnsureConsumerStarted path.
 func newEnsureTestConsumer(
 	t *testing.T,
 	apiURL string,
@@ -55,13 +55,13 @@ func TestEnsureConsumerStarted_UnknownTenant_LazyLoads(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Tenant is NOT in knownTenants -- ensureConsumerStarted
+	// Tenant is NOT in knownTenants -- EnsureConsumerStarted
 	// should trigger a lazy-load via TenantLoader instead of rejecting.
-	consumer.ensureConsumerStarted(ctx, tenantID)
+	consumer.EnsureConsumerStarted(ctx, tenantID)
 
 	// Verify: TenantLoader was called (HTTP request made to API)
 	assert.Equal(t, int64(1), requestCount.Load(),
-		"ensureConsumerStarted should call TenantLoader (1 HTTP request)")
+		"EnsureConsumerStarted should call TenantLoader (1 HTTP request)")
 
 	// Verify: tenant is now known
 	consumer.mu.RLock()
@@ -91,9 +91,9 @@ func TestEnsureConsumerStarted_UnknownTenant_LoadFails(t *testing.T) {
 
 	ctx := context.Background()
 
-	// ensureConsumerStarted should attempt lazy-load but it fails --
+	// EnsureConsumerStarted should attempt lazy-load but it fails --
 	// tenant should NOT be started, NOT be known, NOT be cached.
-	consumer.ensureConsumerStarted(ctx, tenantID)
+	consumer.EnsureConsumerStarted(ctx, tenantID)
 
 	// Verify: tenant is NOT known
 	consumer.mu.RLock()
@@ -142,13 +142,13 @@ func TestEnsureConsumerStarted_ExpiredTenant_Reloads(t *testing.T) {
 
 	ctx := context.Background()
 
-	// ensureConsumerStarted should detect the expired cache entry,
+	// EnsureConsumerStarted should detect the expired cache entry,
 	// delete it, and re-lazy-load from API.
-	consumer.ensureConsumerStarted(ctx, tenantID)
+	consumer.EnsureConsumerStarted(ctx, tenantID)
 
 	// Verify: API was called to refresh the tenant
 	assert.Equal(t, int64(1), requestCount.Load(),
-		"ensureConsumerStarted should re-load expired tenant from API")
+		"EnsureConsumerStarted should re-load expired tenant from API")
 
 	// Verify: tenant is in cache with fresh data
 	entry, cached := consumer.cache.Get(tenantID)
@@ -178,9 +178,9 @@ func TestEnsureConsumerStarted_KnownTenant_NoLazyLoad(t *testing.T) {
 
 	ctx := context.Background()
 
-	// ensureConsumerStarted should see the tenant is known and proceed normally --
+	// EnsureConsumerStarted should see the tenant is known and proceed normally --
 	// no lazy-load call should be made.
-	consumer.ensureConsumerStarted(ctx, tenantID)
+	consumer.EnsureConsumerStarted(ctx, tenantID)
 
 	// Verify: NO HTTP call to API (tenant already known, no lazy-load needed)
 	assert.Equal(t, int64(0), requestCount.Load(),

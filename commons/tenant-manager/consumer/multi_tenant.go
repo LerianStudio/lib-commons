@@ -126,7 +126,7 @@ func WithMongoManager(m *tmmongo.Manager) Option {
 // When set, the consumer can register queue handlers and spawn per-tenant
 // consumer goroutines. When not set (HTTP-only mode), the consumer still
 // manages the tenant cache and events but Register() returns an error and
-// ensureConsumerStarted skips goroutine spawning.
+// EnsureConsumerStarted skips goroutine spawning.
 func WithRabbitMQ(r *tmrabbitmq.Manager) Option {
 	return func(c *MultiTenantConsumer) { c.rabbitmq = r }
 }
@@ -161,7 +161,7 @@ type MultiTenantConsumer struct {
 	// When set, connections are closed automatically when a tenant is removed.
 	mongo *tmmongo.Manager
 
-	// consumerLocks provides per-tenant mutexes for double-check locking in ensureConsumerStarted.
+	// consumerLocks provides per-tenant mutexes for double-check locking in EnsureConsumerStarted.
 	// Key: tenantID, Value: *sync.Mutex
 	consumerLocks sync.Map
 
@@ -173,7 +173,7 @@ type MultiTenantConsumer struct {
 	// Key: tenantID, Value: *retryStateEntry
 	retryState sync.Map
 
-	// parentCtx is the context passed to Run(), stored for use by ensureConsumerStarted.
+	// parentCtx is the context passed to Run(), stored for use by EnsureConsumerStarted.
 	parentCtx context.Context
 
 	// cache is the process-local tenant config cache with TTL-based eviction.
@@ -196,7 +196,7 @@ type MultiTenantConsumer struct {
 //
 // RabbitMQ is optional. When provided via WithRabbitMQ(), the consumer can register
 // queue handlers and spawn per-tenant consumer goroutines. When not set (HTTP-only
-// mode), Register() returns an error and ensureConsumerStarted skips goroutine spawning.
+// mode), Register() returns an error and EnsureConsumerStarted skips goroutine spawning.
 //
 // The tenant-manager HTTP API is the single source of truth for tenant discovery.
 // MultiTenantURL and Service must be set in config.
@@ -335,8 +335,8 @@ func (c *MultiTenantConsumer) Run(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.run")
 	defer span.End()
 
-	// Store parent context for use by ensureConsumerStarted.
-	// Protected by c.mu because ensureConsumerStarted reads it concurrently.
+	// Store parent context for use by EnsureConsumerStarted.
+	// Protected by c.mu because EnsureConsumerStarted reads it concurrently.
 	c.mu.Lock()
 	c.parentCtx = ctx
 	c.mu.Unlock()
@@ -394,7 +394,7 @@ func (c *MultiTenantConsumer) buildEventDispatcher(cacheTTL time.Duration) *even
 			c.knownTenants[tenantID] = true
 			c.mu.Unlock()
 
-			c.ensureConsumerStarted(ctx, tenantID)
+			c.EnsureConsumerStarted(ctx, tenantID)
 		}),
 		event.WithOnTenantRemoved(func(ctx context.Context, tenantID string) {
 			c.mu.Lock()
