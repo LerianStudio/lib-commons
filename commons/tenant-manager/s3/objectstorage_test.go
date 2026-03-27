@@ -124,7 +124,7 @@ func TestGetObjectStorageKey_TrimsLeadingTrailingSlashesFromTenantID(t *testing.
 	assert.Equal(t, "reports/file.html", result)
 }
 
-func TestGetObjectStorageKeyForTenant(t *testing.T) {
+func TestGetS3KeyStorageContext(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -175,7 +175,7 @@ func TestGetObjectStorageKeyForTenant(t *testing.T) {
 				ctx = core.ContextWithTenantID(ctx, tt.tenantID)
 			}
 
-			result, err := GetObjectStorageKeyForTenant(ctx, tt.key)
+			result, err := GetS3KeyStorageContext(ctx, tt.key)
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
@@ -183,16 +183,16 @@ func TestGetObjectStorageKeyForTenant(t *testing.T) {
 	}
 }
 
-func TestGetObjectStorageKeyForTenant_NilContext(t *testing.T) {
+func TestGetS3KeyStorageContext_NilContext(t *testing.T) {
 	t.Parallel()
 
-	result, err := GetObjectStorageKeyForTenant(nil, "reports/templateID/reportID.html")
+	result, err := GetS3KeyStorageContext(nil, "reports/templateID/reportID.html")
 
 	require.NoError(t, err)
 	assert.Equal(t, "reports/templateID/reportID.html", result)
 }
 
-func TestGetObjectStorageKeyForTenant_UsesSameTenantID(t *testing.T) {
+func TestGetS3KeyStorageContext_UsesSameTenantID(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -202,7 +202,7 @@ func TestGetObjectStorageKeyForTenant_UsesSameTenantID(t *testing.T) {
 
 	extractedID := core.GetTenantIDContext(ctx)
 
-	result, err := GetObjectStorageKeyForTenant(ctx, "test-key")
+	result, err := GetS3KeyStorageContext(ctx, "test-key")
 
 	require.NoError(t, err)
 	assert.Equal(t, tenantID, extractedID)
