@@ -27,13 +27,14 @@ import (
 // consumer) can use it. It does NOT manage consumer goroutines or knownTenants
 // maps -- those are caller responsibilities.
 type TenantLoader struct {
-	pmClient       *client.Client
-	cache          *TenantCache
-	service        string
-	cacheTTL       time.Duration
-	logger         *logcompat.Logger
-	loadLocks      sync.Map // per-tenant mutexes (key: tenantID, value: *sync.Mutex)
-	onTenantLoaded func(ctx context.Context, tenantID string)
+	pmClient         *client.Client
+	cache            *TenantCache
+	service          string
+	cacheTTL         time.Duration
+	logger           *logcompat.Logger
+	loadLocks        sync.Map // per-tenant mutexes (key: tenantID, value: *sync.Mutex)
+	onTenantLoaded   func(ctx context.Context, tenantID string)
+	onTenantLoadedMu sync.RWMutex
 }
 
 // NewTenantLoader creates a TenantLoader.
@@ -69,7 +70,9 @@ func NewTenantLoader(
 // is NOT called on cache hits -- only on new loads. Passing nil clears the
 // callback. This is safe to call before any LoadTenant call.
 func (l *TenantLoader) SetOnTenantLoaded(fn func(ctx context.Context, tenantID string)) {
+	l.onTenantLoadedMu.Lock()
 	l.onTenantLoaded = fn
+	l.onTenantLoadedMu.Unlock()
 }
 
 // LoadTenant fetches and caches a tenant's configuration.
@@ -134,8 +137,12 @@ func (l *TenantLoader) LoadTenant(ctx context.Context, tenantID string) (*core.T
 
 	l.logger.InfofCtx(ctx, "lazy-loaded tenant %s for service %s", tenantID, l.service)
 
-	if l.onTenantLoaded != nil {
-		l.onTenantLoaded(ctx, tenantID)
+	l.onTenantLoadedMu.RLock()
+	cb := l.onTenantLoaded
+	l.onTenantLoadedMu.RUnlock()
+
+	if cb != nil {
+		cb(ctx, tenantID)
 	}
 
 	return config, nil

@@ -205,13 +205,13 @@ func TestContextWithPG_and_GetPGContext(t *testing.T) {
 		assert.Equal(t, mockConn, GetPGContext(ctx, "onboarding"))
 	})
 
-	t.Run("module call also sets generic key", func(t *testing.T) {
+	t.Run("module call sets only module key not generic", func(t *testing.T) {
 		ctx := context.Background()
 		mockConn := &mockDB{name: "onboarding-db"}
 
 		ctx = ContextWithPG(ctx, mockConn, "onboarding")
 
-		assert.Equal(t, mockConn, GetPGContext(ctx), "generic key should be set when module is provided")
+		assert.Nil(t, GetPGContext(ctx), "generic key should NOT be set when module is provided")
 		assert.Equal(t, mockConn, GetPGContext(ctx, "onboarding"), "module key should be set")
 	})
 }
@@ -234,11 +234,11 @@ func TestGetPGContext_ModuleIsolation(t *testing.T) {
 
 		// Set generic only (no module)
 		ctx = ContextWithPG(ctx, genericDB)
-		// Set module (overwrites generic with moduleDB)
+		// Set module (does NOT overwrite generic)
 		ctx = ContextWithPG(ctx, moduleDB, "onboarding")
 
-		// Generic key is now moduleDB (last ContextWithPG with module sets both)
-		assert.Equal(t, moduleDB, GetPGContext(ctx), "generic key should reflect last ContextWithPG call")
+		// Generic key should still be genericDB (module call does not overwrite)
+		assert.Equal(t, genericDB, GetPGContext(ctx), "generic key should NOT be overwritten by module call")
 		assert.Equal(t, moduleDB, GetPGContext(ctx, "onboarding"), "module key should be intact")
 	})
 }
@@ -289,13 +289,13 @@ func TestContextWithMB_and_GetMBContext(t *testing.T) {
 		assert.Nil(t, db)
 	})
 
-	t.Run("module call also sets generic key", func(t *testing.T) {
+	t.Run("module call sets only module key not generic", func(t *testing.T) {
 		ctx := context.Background()
 
 		ctx = ContextWithMB(ctx, nil, "onboarding")
 
-		// Both generic and module-specific should return nil (since we stored nil *mongo.Database)
-		assert.Nil(t, GetMBContext(ctx), "generic key should be set (nil DB)")
+		// Generic should return nil because module call does not set generic key
+		assert.Nil(t, GetMBContext(ctx), "generic key should NOT be set when module is provided")
 		assert.Nil(t, GetMBContext(ctx, "onboarding"), "module key should be set (nil DB)")
 	})
 }
@@ -315,7 +315,7 @@ func TestGetMBContext_ModuleIsolation(t *testing.T) {
 
 		// Set generic only (no module)
 		ctx = ContextWithMB(ctx, nil)
-		// Set module (overwrites generic)
+		// Set module (does NOT overwrite generic)
 		ctx = ContextWithMB(ctx, nil, "onboarding")
 
 		// Both paths return nil (since we can't create real *mongo.Database without a live client),

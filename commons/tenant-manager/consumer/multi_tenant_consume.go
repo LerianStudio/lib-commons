@@ -426,17 +426,19 @@ func (c *MultiTenantConsumer) EnsureConsumerStarted(ctx context.Context, tenantI
 	// This keeps tenant configuration fresh without requiring a sync loop.
 	if known {
 		if expired, found := c.cache.IsExpired(tenantID); found && expired {
-			c.cache.Delete(tenantID)
-
 			logger.InfofCtx(ctx, "cache expired for tenant %s, re-loading from API", tenantID)
 
 			if _, err := c.loader.LoadTenant(ctx, tenantID); err != nil {
 				logger.WarnfCtx(ctx, "TTL refresh failed for tenant %s: %v", tenantID, err)
 				libOpentelemetry.HandleSpanBusinessErrorEvent(span, "TTL refresh failed", err)
+
+				// Do NOT delete the stale cache entry on failure -- the expired
+				// entry is still usable as a fallback until the next reload attempt.
 			}
 
-			// The re-load already triggered via loader; the slow path below
-			// will proceed to start the consumer if needed. Fall through.
+			// LoadTenant's internal Get lazily evicts the expired entry and
+			// Set stores the fresh one, so no explicit Delete is needed here.
+			// The slow path below will proceed to start the consumer if needed.
 		}
 	}
 
@@ -513,6 +515,17 @@ func (c *MultiTenantConsumer) EnsureConsumerStarted(ctx context.Context, tenantI
 // Use this method when a tenant is disassociated or deleted to prevent orphaned
 // goroutines from retrying indefinitely.
 func (c *MultiTenantConsumer) StopConsumer(tenantID string) {
+	// Acquire the per-tenant lock to serialize with EnsureConsumerStarted,
+	// preventing a race where Stop and Ensure run concurrently for the same tenant.
+	lockVal, _ := c.consumerLocks.LoadOrStore(tenantID, &sync.Mutex{})
+
+	tenantMu, ok := lockVal.(*sync.Mutex)
+	if !ok {
+		return
+	}
+
+	tenantMu.Lock()
+
 	c.mu.Lock()
 	if cancel, ok := c.tenants[tenantID]; ok {
 		cancel()
@@ -521,6 +534,8 @@ func (c *MultiTenantConsumer) StopConsumer(tenantID string) {
 
 	delete(c.knownTenants, tenantID)
 	c.mu.Unlock()
+
+	tenantMu.Unlock()
 
 	// Clean up retry state and per-tenant lock outside the main mutex
 	// (sync.Map operations are independently thread-safe).

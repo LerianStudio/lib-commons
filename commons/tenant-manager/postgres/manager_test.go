@@ -84,6 +84,7 @@ type trackingDB struct {
 	maxIdleConns int32
 	mu           sync.Mutex
 	execQueries  []string
+	execArgs     [][]interface{}
 }
 
 func (t *trackingDB) SetMaxOpenConns(n int) { atomic.StoreInt32(&t.maxOpenConns, int32(n)) }
@@ -91,11 +92,12 @@ func (t *trackingDB) SetMaxIdleConns(n int) { atomic.StoreInt32(&t.maxIdleConns,
 func (t *trackingDB) MaxOpenConns() int32   { return atomic.LoadInt32(&t.maxOpenConns) }
 func (t *trackingDB) MaxIdleConns() int32   { return atomic.LoadInt32(&t.maxIdleConns) }
 
-func (t *trackingDB) ExecContext(_ context.Context, query string, _ ...interface{}) (sql.Result, error) {
+func (t *trackingDB) ExecContext(_ context.Context, query string, args ...interface{}) (sql.Result, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	t.execQueries = append(t.execQueries, query)
+	t.execArgs = append(t.execArgs, args)
 
 	return nil, nil
 }
@@ -107,6 +109,17 @@ func (t *trackingDB) ExecQueries() []string {
 
 	copied := make([]string, len(t.execQueries))
 	copy(copied, t.execQueries)
+
+	return copied
+}
+
+// ExecArgsList returns a thread-safe copy of all executed query arguments.
+func (t *trackingDB) ExecArgsList() [][]interface{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	copied := make([][]interface{}, len(t.execArgs))
+	copy(copied, t.execArgs)
 
 	return copied
 }
@@ -1661,7 +1674,8 @@ func TestManager_ApplyConnectionSettings_ChangeDetection(t *testing.T) {
 		expectLog           bool
 		expectLogSubstring  string
 		noLogSubstring      string
-		expectExecQuery     string // expected SET statement_timeout query
+		expectExecQuery     string // expected SET statement_timeout query (parameterized)
+		expectExecArg       string // expected argument for the SET statement_timeout query
 		expectNoExecQueries bool
 	}{
 		{
@@ -1682,7 +1696,8 @@ func TestManager_ApplyConnectionSettings_ChangeDetection(t *testing.T) {
 			expectSetMaxIdle:   true,
 			expectLog:          true,
 			expectLogSubstring: "applying connection settings",
-			expectExecQuery:    "SET statement_timeout = '5s'",
+			expectExecQuery:    "SET statement_timeout = $1",
+			expectExecArg:      "5s",
 		},
 		{
 			name: "no_change_skips_apply_and_log",
@@ -1754,7 +1769,8 @@ func TestManager_ApplyConnectionSettings_ChangeDetection(t *testing.T) {
 			expectSetMaxIdle:   false,
 			expectLog:          true,
 			expectLogSubstring: "statementTimeout 5s->10s",
-			expectExecQuery:    "SET statement_timeout = '10s'",
+			expectExecQuery:    "SET statement_timeout = $1",
+			expectExecArg:      "10s",
 		},
 		{
 			name: "statementTimeout_empty_skips_exec",
@@ -1840,6 +1856,13 @@ func TestManager_ApplyConnectionSettings_ChangeDetection(t *testing.T) {
 			if tt.expectExecQuery != "" {
 				assert.Contains(t, queries, tt.expectExecQuery,
 					"expected ExecContext query %q", tt.expectExecQuery)
+
+				if tt.expectExecArg != "" {
+					args := tDB.ExecArgsList()
+					require.NotEmpty(t, args, "expected at least one ExecContext call with args")
+					assert.Contains(t, args[len(args)-1], tt.expectExecArg,
+						"expected ExecContext arg %q", tt.expectExecArg)
+				}
 			}
 		})
 	}
@@ -1878,8 +1901,11 @@ func TestManager_ApplyConnectionSettings_StatementTimeout(t *testing.T) {
 	manager.ApplyConnectionSettings("tenant-123", config)
 
 	queries := tDB.ExecQueries()
+	args := tDB.ExecArgsList()
 	require.Len(t, queries, 1, "should execute SET statement_timeout on first apply")
-	assert.Equal(t, "SET statement_timeout = '5s'", queries[0])
+	assert.Equal(t, "SET statement_timeout = $1", queries[0])
+	require.Len(t, args, 1)
+	assert.Equal(t, []interface{}{"5s"}, args[0])
 
 	// Second apply with same settings — no ExecContext
 	capLogger.Clear()
@@ -1899,8 +1925,11 @@ func TestManager_ApplyConnectionSettings_StatementTimeout(t *testing.T) {
 	manager.ApplyConnectionSettings("tenant-123", config)
 
 	queries = tDB.ExecQueries()
+	args = tDB.ExecArgsList()
 	require.Len(t, queries, 2, "should execute SET again when statementTimeout changed")
-	assert.Equal(t, "SET statement_timeout = '15s'", queries[1])
+	assert.Equal(t, "SET statement_timeout = $1", queries[1])
+	require.Len(t, args, 2)
+	assert.Equal(t, []interface{}{"15s"}, args[1])
 	assert.True(t, capLogger.ContainsSubstring("statementTimeout 5s->15s"),
 		"should log the statementTimeout change")
 }

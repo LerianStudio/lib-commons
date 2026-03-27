@@ -73,15 +73,8 @@ func (c *MultiTenantConsumer) wireDispatcherCallbacks() {
 		c.EnsureConsumerStarted(ctx, tenantID)
 	})
 
-	c.dispatcher.SetOnTenantRemoved(func(ctx context.Context, tenantID string) {
-		c.mu.Lock()
-		if cancel, ok := c.tenants[tenantID]; ok {
-			cancel()
-			delete(c.tenants, tenantID)
-		}
-
-		delete(c.knownTenants, tenantID)
-		c.mu.Unlock()
+	c.dispatcher.SetOnTenantRemoved(func(_ context.Context, tenantID string) {
+		c.StopConsumer(tenantID)
 	})
 
 	// Ensure the consumer uses the same cache as the dispatcher.

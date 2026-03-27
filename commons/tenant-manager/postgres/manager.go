@@ -694,6 +694,7 @@ func (p *Manager) tryReuseOrEvictCachedConnectionLocked(
 	delete(p.connections, tenantID)
 	delete(p.lastAccessed, tenantID)
 	delete(p.lastConnectionsCheck, tenantID)
+	delete(p.lastAppliedSettings, tenantID)
 
 	return nil, false
 }
@@ -944,6 +945,7 @@ func (p *Manager) evictLRU(_ context.Context, logger libLog.Logger) {
 		delete(p.connections, candidateID)
 		delete(p.lastAccessed, candidateID)
 		delete(p.lastConnectionsCheck, candidateID)
+		delete(p.lastAppliedSettings, candidateID)
 	}
 }
 
@@ -1182,7 +1184,7 @@ func (p *Manager) ApplyConnectionSettings(tenantID string, config *core.TenantCo
 	if newSettings.statementTimeout != "" && (!hasPrev || newSettings.statementTimeout != prev.statementTimeout) {
 		if !validStatementTimeout(newSettings.statementTimeout) {
 			compatLogger.Warnf("invalid statement_timeout value %q for tenant %s, skipping", newSettings.statementTimeout, tenantID)
-		} else if _, err := db.ExecContext(context.Background(), "SET statement_timeout = '"+newSettings.statementTimeout+"'"); err != nil {
+		} else if _, err := db.ExecContext(context.Background(), "SET statement_timeout = $1", newSettings.statementTimeout); err != nil {
 			compatLogger.Warnf("failed to set statement_timeout for tenant %s: %v", tenantID, err)
 		}
 	}

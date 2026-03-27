@@ -65,7 +65,8 @@ func ChannelForTenant(tenantID string) string {
 }
 
 // ParseEvent unmarshals raw JSON bytes into a TenantLifecycleEvent.
-// Returns an error if the input is nil, empty, or not valid JSON.
+// Returns an error if the input is nil, empty, not valid JSON, or missing
+// required fields (event_type and tenant_id).
 func ParseEvent(data []byte) (*TenantLifecycleEvent, error) {
 	if len(data) == 0 {
 		return nil, errors.New("event data must not be empty")
@@ -74,6 +75,14 @@ func ParseEvent(data []byte) (*TenantLifecycleEvent, error) {
 	var event TenantLifecycleEvent
 	if err := json.Unmarshal(data, &event); err != nil {
 		return nil, fmt.Errorf("failed to parse tenant lifecycle event: %w", err)
+	}
+
+	if event.EventType == "" {
+		return nil, errors.New("event_type must not be empty")
+	}
+
+	if event.TenantID == "" {
+		return nil, errors.New("tenant_id must not be empty")
 	}
 
 	return &event, nil
