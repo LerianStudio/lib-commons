@@ -1317,8 +1317,8 @@ func CreateDirectConnection(ctx context.Context, cfg *core.PostgreSQLConfig) (*s
 // database handle, so ConnectedTenantIDs will include these IDs while
 // ApplyConnectionSettings will safely no-op (no ConnectionDB).
 //
-// This option is intended for testing code that depends on Manager (e.g., the
-// SettingsWatcher) without requiring a real database.
+// This option is intended for testing code that depends on Manager without
+// requiring a real database.
 func WithTestConnections(tenantIDs ...string) Option {
 	return func(p *Manager) {
 		for _, id := range tenantIDs {
