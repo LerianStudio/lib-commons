@@ -505,6 +505,29 @@ func (c *MultiTenantConsumer) EnsureConsumerStarted(ctx context.Context, tenantI
 	c.mu.Unlock()
 }
 
+// StopConsumer stops the consumer goroutine for a specific tenant and removes
+// all associated state (cancel function, known-tenant flag, retry state, and
+// per-tenant lock). This is safe for concurrent use and is a no-op if the
+// tenant does not have a running consumer.
+//
+// Use this method when a tenant is disassociated or deleted to prevent orphaned
+// goroutines from retrying indefinitely.
+func (c *MultiTenantConsumer) StopConsumer(tenantID string) {
+	c.mu.Lock()
+	if cancel, ok := c.tenants[tenantID]; ok {
+		cancel()
+		delete(c.tenants, tenantID)
+	}
+
+	delete(c.knownTenants, tenantID)
+	c.mu.Unlock()
+
+	// Clean up retry state and per-tenant lock outside the main mutex
+	// (sync.Map operations are independently thread-safe).
+	c.retryState.Delete(tenantID)
+	c.consumerLocks.Delete(tenantID)
+}
+
 // IsDegraded returns true if the given tenant is currently in a degraded state
 // due to repeated connection failures (>= maxRetryBeforeDegraded consecutive failures).
 func (c *MultiTenantConsumer) IsDegraded(tenantID string) bool {
