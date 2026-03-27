@@ -239,9 +239,13 @@ func (d *EventDispatcher) handleCredentialsRotated(
 	// Apply jitter to prevent thundering herd when multiple pods react simultaneously
 	d.applyJitter(ctx)
 
-	// Eagerly reload tenant config from tenant-manager /connections endpoint.
-	// This fetches new credentials from Secrets Manager and rebuilds pools
-	// immediately, avoiding a window of failed queries.
+	if d.loader == nil {
+		logger.Base().Log(ctx, libLog.LevelWarn, "tenant.credentials.rotated: no loader configured, skipping eager reload",
+			libLog.String("tenant_id", evt.TenantID))
+
+		return nil
+	}
+
 	if _, err := d.loader.LoadTenant(ctx, evt.TenantID); err != nil {
 		logger.Base().Log(ctx, libLog.LevelWarn, "tenant.credentials.rotated: eager reload failed (will retry on next request)",
 			libLog.String("tenant_id", evt.TenantID),
