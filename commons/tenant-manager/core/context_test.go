@@ -77,31 +77,31 @@ func (m *mockDB) PrimaryDBs() []*sql.DB              { return nil }
 func (m *mockDB) ReplicaDBs() []*sql.DB              { return nil }
 func (m *mockDB) Stats() sql.DBStats                 { return sql.DBStats{} }
 
-func TestGetPGConnectionContext(t *testing.T) {
+func TestGetPGContext_Generic(t *testing.T) {
 	t.Run("returns nil when no PG connection in context", func(t *testing.T) {
 		ctx := context.Background()
 
-		db := GetPGConnectionContext(ctx)
+		db := GetPGContext(ctx)
 
 		assert.Nil(t, db)
 	})
 
-	t.Run("returns connection when set via ContextWithPGConnection", func(t *testing.T) {
+	t.Run("returns connection when set via ContextWithPG (no module)", func(t *testing.T) {
 		ctx := context.Background()
 		mockConn := &mockDB{name: "tenant-db"}
 
-		ctx = ContextWithPGConnection(ctx, mockConn)
-		db := GetPGConnectionContext(ctx)
+		ctx = ContextWithPG(ctx, mockConn)
+		db := GetPGContext(ctx)
 
 		assert.Equal(t, mockConn, db)
 	})
 }
 
-func TestGetMongoContext(t *testing.T) {
+func TestGetMBContext_Generic(t *testing.T) {
 	t.Run("returns nil when no mongo in context", func(t *testing.T) {
 		ctx := context.Background()
 
-		db := GetMongoContext(ctx)
+		db := GetMBContext(ctx)
 
 		assert.Nil(t, db)
 	})
@@ -110,9 +110,9 @@ func TestGetMongoContext(t *testing.T) {
 		ctx := context.Background()
 
 		var nilDB *mongo.Database
-		ctx = ContextWithMongo(ctx, nilDB)
+		ctx = ContextWithMB(ctx, nilDB)
 
-		db := GetMongoContext(ctx)
+		db := GetMBContext(ctx)
 
 		assert.Nil(t, db)
 	})
@@ -133,34 +133,34 @@ func TestNilContext(t *testing.T) {
 		assert.Equal(t, "", id)
 	})
 
-	t.Run("ContextWithPGConnection with nil context does not panic", func(t *testing.T) {
+	t.Run("ContextWithPG with nil context does not panic (no module)", func(t *testing.T) {
 		mockConn := &mockDB{name: "test-db"}
 
 		//nolint:staticcheck // SA1012: intentionally passing nil context to test nil-safety guard
-		ctx := ContextWithPGConnection(nil, mockConn)
+		ctx := ContextWithPG(nil, mockConn)
 
-		assert.Equal(t, mockConn, GetPGConnectionContext(ctx))
+		assert.Equal(t, mockConn, GetPGContext(ctx))
 	})
 
-	t.Run("GetPGConnectionContext with nil context returns nil", func(t *testing.T) {
+	t.Run("GetPGContext with nil context returns nil (no module)", func(t *testing.T) {
 		//nolint:staticcheck // SA1012: intentionally passing nil context to test nil-safety guard
-		db := GetPGConnectionContext(nil)
+		db := GetPGContext(nil)
 
 		assert.Nil(t, db)
 	})
 
-	t.Run("ContextWithMongo with nil context does not panic", func(t *testing.T) {
+	t.Run("ContextWithMB with nil context does not panic (no module)", func(t *testing.T) {
 		// We cannot create a real *mongo.Database without a live client,
 		// but we can verify nil context does not panic with a nil DB value.
 		//nolint:staticcheck // SA1012: intentionally passing nil context to test nil-safety guard
-		ctx := ContextWithMongo(nil, nil)
+		ctx := ContextWithMB(nil, nil)
 
 		assert.NotNil(t, ctx)
 	})
 
-	t.Run("GetMongoContext with nil context returns nil", func(t *testing.T) {
+	t.Run("GetMBContext with nil context returns nil (no module)", func(t *testing.T) {
 		//nolint:staticcheck // SA1012: intentionally passing nil context to test nil-safety guard
-		db := GetMongoContext(nil)
+		db := GetMBContext(nil)
 
 		assert.Nil(t, db)
 	})
@@ -178,7 +178,7 @@ func TestContextWithPG_and_GetPGContext(t *testing.T) {
 		ctx := context.Background()
 		mockConn := &mockDB{name: "onboarding-db"}
 
-		ctx = ContextWithPG(ctx, "onboarding", mockConn)
+		ctx = ContextWithPG(ctx, mockConn, "onboarding")
 		db := GetPGContext(ctx, "onboarding")
 
 		assert.Equal(t, mockConn, db)
@@ -189,8 +189,8 @@ func TestContextWithPG_and_GetPGContext(t *testing.T) {
 		onboardingDB := &mockDB{name: "onboarding-db"}
 		transactionDB := &mockDB{name: "transaction-db"}
 
-		ctx = ContextWithPG(ctx, "onboarding", onboardingDB)
-		ctx = ContextWithPG(ctx, "transaction", transactionDB)
+		ctx = ContextWithPG(ctx, onboardingDB, "onboarding")
+		ctx = ContextWithPG(ctx, transactionDB, "transaction")
 
 		assert.Equal(t, onboardingDB, GetPGContext(ctx, "onboarding"))
 		assert.Equal(t, transactionDB, GetPGContext(ctx, "transaction"))
@@ -200,9 +200,19 @@ func TestContextWithPG_and_GetPGContext(t *testing.T) {
 		mockConn := &mockDB{name: "test-db"}
 
 		//nolint:staticcheck // SA1012: intentionally passing nil context to test nil-safety guard
-		ctx := ContextWithPG(nil, "onboarding", mockConn)
+		ctx := ContextWithPG(nil, mockConn, "onboarding")
 
 		assert.Equal(t, mockConn, GetPGContext(ctx, "onboarding"))
+	})
+
+	t.Run("module call also sets generic key", func(t *testing.T) {
+		ctx := context.Background()
+		mockConn := &mockDB{name: "onboarding-db"}
+
+		ctx = ContextWithPG(ctx, mockConn, "onboarding")
+
+		assert.Equal(t, mockConn, GetPGContext(ctx), "generic key should be set when module is provided")
+		assert.Equal(t, mockConn, GetPGContext(ctx, "onboarding"), "module key should be set")
 	})
 }
 
@@ -211,21 +221,24 @@ func TestGetPGContext_ModuleIsolation(t *testing.T) {
 		ctx := context.Background()
 		onboardingDB := &mockDB{name: "onboarding-db"}
 
-		ctx = ContextWithPG(ctx, "onboarding", onboardingDB)
+		ctx = ContextWithPG(ctx, onboardingDB, "onboarding")
 
 		assert.Equal(t, onboardingDB, GetPGContext(ctx, "onboarding"))
 		assert.Nil(t, GetPGContext(ctx, "transaction"), "unstored module should return nil")
 	})
 
-	t.Run("module-specific key does not collide with generic PG connection", func(t *testing.T) {
+	t.Run("module-specific key does not collide with separately-set generic PG connection", func(t *testing.T) {
 		ctx := context.Background()
 		genericDB := &mockDB{name: "generic-db"}
 		moduleDB := &mockDB{name: "module-db"}
 
-		ctx = ContextWithPGConnection(ctx, genericDB)
-		ctx = ContextWithPG(ctx, "onboarding", moduleDB)
+		// Set generic only (no module)
+		ctx = ContextWithPG(ctx, genericDB)
+		// Set module (overwrites generic with moduleDB)
+		ctx = ContextWithPG(ctx, moduleDB, "onboarding")
 
-		assert.Equal(t, genericDB, GetPGConnectionContext(ctx), "generic key should be intact")
+		// Generic key is now moduleDB (last ContextWithPG with module sets both)
+		assert.Equal(t, moduleDB, GetPGContext(ctx), "generic key should reflect last ContextWithPG call")
 		assert.Equal(t, moduleDB, GetPGContext(ctx, "onboarding"), "module key should be intact")
 	})
 }
@@ -256,7 +269,7 @@ func TestContextWithMB_and_GetMBContext(t *testing.T) {
 		// We cannot create a real *mongo.Database without a live client,
 		// but we can test the type assertion path with nil.
 		// The important thing is that the context key mechanism works.
-		ctx = ContextWithMB(ctx, "onboarding", nil)
+		ctx = ContextWithMB(ctx, nil, "onboarding")
 		db := GetMBContext(ctx, "onboarding")
 
 		assert.Nil(t, db, "nil mongo.Database stored should return nil")
@@ -264,7 +277,7 @@ func TestContextWithMB_and_GetMBContext(t *testing.T) {
 
 	t.Run("nil context does not panic", func(t *testing.T) {
 		//nolint:staticcheck // SA1012: intentionally passing nil context to test nil-safety guard
-		ctx := ContextWithMB(nil, "onboarding", nil)
+		ctx := ContextWithMB(nil, nil, "onboarding")
 
 		assert.NotNil(t, ctx)
 	})
@@ -275,27 +288,39 @@ func TestContextWithMB_and_GetMBContext(t *testing.T) {
 
 		assert.Nil(t, db)
 	})
+
+	t.Run("module call also sets generic key", func(t *testing.T) {
+		ctx := context.Background()
+
+		ctx = ContextWithMB(ctx, nil, "onboarding")
+
+		// Both generic and module-specific should return nil (since we stored nil *mongo.Database)
+		assert.Nil(t, GetMBContext(ctx), "generic key should be set (nil DB)")
+		assert.Nil(t, GetMBContext(ctx, "onboarding"), "module key should be set (nil DB)")
+	})
 }
 
 func TestGetMBContext_ModuleIsolation(t *testing.T) {
 	t.Run("different modules do not interfere", func(t *testing.T) {
 		ctx := context.Background()
 
-		ctx = ContextWithMB(ctx, "onboarding", nil)
+		ctx = ContextWithMB(ctx, nil, "onboarding")
 
 		assert.Nil(t, GetMBContext(ctx, "onboarding"))
 		assert.Nil(t, GetMBContext(ctx, "transaction"), "unstored module should return nil")
 	})
 
-	t.Run("module-specific key does not collide with generic Mongo connection", func(t *testing.T) {
+	t.Run("module-specific key does not collide with separately-set generic Mongo connection", func(t *testing.T) {
 		ctx := context.Background()
 
-		ctx = ContextWithMongo(ctx, nil)
-		ctx = ContextWithMB(ctx, "onboarding", nil)
+		// Set generic only (no module)
+		ctx = ContextWithMB(ctx, nil)
+		// Set module (overwrites generic)
+		ctx = ContextWithMB(ctx, nil, "onboarding")
 
 		// Both paths return nil (since we can't create real *mongo.Database without a live client),
 		// but the important thing is that neither call panics and context keys don't collide.
-		assert.Nil(t, GetMongoContext(ctx))
+		assert.Nil(t, GetMBContext(ctx))
 		assert.Nil(t, GetMBContext(ctx, "onboarding"))
 	})
 }

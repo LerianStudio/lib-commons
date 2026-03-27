@@ -47,54 +47,48 @@ func GetTenantIDContext(ctx context.Context) string {
 	return ""
 }
 
-// ContextWithPGConnection stores the resolved dbresolver.DB connection in the context.
-// This is used by the middleware to store the tenant-specific database connection.
-func ContextWithPGConnection(ctx context.Context, db dbresolver.DB) context.Context {
-	return context.WithValue(nonNilContext(ctx), pgConnectionKey, db)
-}
-
-// GetPGConnectionContext retrieves the resolved dbresolver.DB from the context.
-// Returns nil if not found.
-func GetPGConnectionContext(ctx context.Context) dbresolver.DB {
-	if db, ok := nonNilContext(ctx).Value(pgConnectionKey).(dbresolver.DB); ok {
-		return db
-	}
-
-	return nil
-}
-
-// ContextWithMongo stores the MongoDB database in the context.
-func ContextWithMongo(ctx context.Context, db *mongo.Database) context.Context {
-	return context.WithValue(nonNilContext(ctx), mongoKey, db)
-}
-
-// GetMongoContext retrieves the MongoDB database from the context.
-// Returns nil if not found.
-func GetMongoContext(ctx context.Context) *mongo.Database {
-	if db, ok := nonNilContext(ctx).Value(mongoKey).(*mongo.Database); ok {
-		return db
-	}
-
-	return nil
-}
-
 // pgModuleKey is a context key type for module-specific PostgreSQL connections.
 // Each module name produces a distinct key, so connections for different modules
 // (e.g., "onboarding", "transaction") do not collide in the same context.
 type pgModuleKey string
 
-// ContextWithPG stores a module-specific PostgreSQL connection in the context.
-// The module name identifies the database schema (e.g., "onboarding", "transaction").
-// This is used in multi-module services where cross-module calls need access
-// to connections from different modules simultaneously.
-func ContextWithPG(ctx context.Context, module string, db dbresolver.DB) context.Context {
-	return context.WithValue(nonNilContext(ctx), pgModuleKey(module), db)
+// ContextWithPG stores a PostgreSQL connection in the context.
+// Without a module argument it sets only the generic connection key.
+// With a module argument it sets BOTH the generic key and the module-specific key,
+// so callers that read by module and callers that read the generic key both work.
+//
+// Examples:
+//
+//	ctx = ContextWithPG(ctx, db)                   // generic only
+//	ctx = ContextWithPG(ctx, db, "onboarding")     // generic + module-specific
+func ContextWithPG(ctx context.Context, db dbresolver.DB, module ...string) context.Context {
+	ctx = context.WithValue(nonNilContext(ctx), pgConnectionKey, db)
+
+	if len(module) > 0 && module[0] != "" {
+		ctx = context.WithValue(ctx, pgModuleKey(module[0]), db)
+	}
+
+	return ctx
 }
 
-// GetPGContext retrieves a module-specific PostgreSQL connection from the context.
-// Returns nil if no connection was stored for the given module.
-func GetPGContext(ctx context.Context, module string) dbresolver.DB {
-	if db, ok := nonNilContext(ctx).Value(pgModuleKey(module)).(dbresolver.DB); ok {
+// GetPGContext retrieves a PostgreSQL connection from the context.
+// Without a module argument it reads the generic key.
+// With a module argument it reads the module-specific key.
+//
+// Examples:
+//
+//	db := GetPGContext(ctx)                // generic
+//	db := GetPGContext(ctx, "onboarding")  // module-specific
+func GetPGContext(ctx context.Context, module ...string) dbresolver.DB {
+	if len(module) > 0 && module[0] != "" {
+		if db, ok := nonNilContext(ctx).Value(pgModuleKey(module[0])).(dbresolver.DB); ok {
+			return db
+		}
+
+		return nil
+	}
+
+	if db, ok := nonNilContext(ctx).Value(pgConnectionKey).(dbresolver.DB); ok {
 		return db
 	}
 
@@ -106,18 +100,43 @@ func GetPGContext(ctx context.Context, module string) dbresolver.DB {
 // do not collide in the same context.
 type mongoModuleKey string
 
-// ContextWithMB stores a module-specific MongoDB database in the context.
-// The module name identifies which module's database this is (e.g., "onboarding", "transaction").
-// This is used in multi-module services where cross-module calls need access
-// to databases from different modules simultaneously.
-func ContextWithMB(ctx context.Context, module string, db *mongo.Database) context.Context {
-	return context.WithValue(nonNilContext(ctx), mongoModuleKey(module), db)
+// ContextWithMB stores a MongoDB database in the context.
+// Without a module argument it sets only the generic MongoDB key.
+// With a module argument it sets BOTH the generic key and the module-specific key,
+// so callers that read by module and callers that read the generic key both work.
+//
+// Examples:
+//
+//	ctx = ContextWithMB(ctx, db)                   // generic only
+//	ctx = ContextWithMB(ctx, db, "onboarding")     // generic + module-specific
+func ContextWithMB(ctx context.Context, db *mongo.Database, module ...string) context.Context {
+	ctx = context.WithValue(nonNilContext(ctx), mongoKey, db)
+
+	if len(module) > 0 && module[0] != "" {
+		ctx = context.WithValue(ctx, mongoModuleKey(module[0]), db)
+	}
+
+	return ctx
 }
 
-// GetMBContext retrieves a module-specific MongoDB database from the context.
-// Returns nil if no database was stored for the given module.
-func GetMBContext(ctx context.Context, module string) *mongo.Database {
-	if db, ok := nonNilContext(ctx).Value(mongoModuleKey(module)).(*mongo.Database); ok {
+// GetMBContext retrieves a MongoDB database from the context.
+// Without a module argument it reads the generic key.
+// With a module argument it reads the module-specific key.
+//
+// Examples:
+//
+//	db := GetMBContext(ctx)                // generic
+//	db := GetMBContext(ctx, "onboarding")  // module-specific
+func GetMBContext(ctx context.Context, module ...string) *mongo.Database {
+	if len(module) > 0 && module[0] != "" {
+		if db, ok := nonNilContext(ctx).Value(mongoModuleKey(module[0])).(*mongo.Database); ok {
+			return db
+		}
+
+		return nil
+	}
+
+	if db, ok := nonNilContext(ctx).Value(mongoKey).(*mongo.Database); ok {
 		return db
 	}
 

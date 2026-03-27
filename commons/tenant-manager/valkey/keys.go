@@ -30,11 +30,11 @@ func GetKey(tenantID, key string) (string, error) {
 	return fmt.Sprintf("%s:%s:%s", TenantKeyPrefix, tenantID, key), nil
 }
 
-// GetKeyFromContext returns tenant-prefixed key using tenantID from context.
+// GetKeyContext returns tenant-prefixed key using tenantID from context.
 // If no tenantID in context, returns the key unchanged.
 // If ctx is nil, returns the key unchanged (no tenant prefix).
 // Returns an error if the tenantID from context contains the delimiter character ":".
-func GetKeyFromContext(ctx context.Context, key string) (string, error) {
+func GetKeyContext(ctx context.Context, key string) (string, error) {
 	if ctx == nil {
 		return GetKey("", key)
 	}
