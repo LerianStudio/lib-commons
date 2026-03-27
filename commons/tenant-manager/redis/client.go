@@ -2,7 +2,8 @@
 // Use of this source code is governed by the Elastic License 2.0
 // that can be found in the LICENSE file.
 
-// Package redis provides a Redis client factory for the tenant event Pub/Sub system.
+// Package redis provides a Redis client factory for the tenant event Pub/Sub system
+// consumed by TenantEventListener.
 package redis
 
 import (
