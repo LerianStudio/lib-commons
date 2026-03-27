@@ -27,7 +27,7 @@ import (
 )
 
 // HandlerFunc is a function that processes messages from a queue.
-// The context contains the tenant ID via core.SetTenantIDInContext.
+// The context contains the tenant ID via core.ContextWithTenantID.
 type HandlerFunc func(ctx context.Context, delivery amqp.Delivery) error
 
 // MultiTenantConfig holds configuration for the MultiTenantConsumer.

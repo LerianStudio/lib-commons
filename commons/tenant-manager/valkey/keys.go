@@ -39,7 +39,7 @@ func GetKeyFromContext(ctx context.Context, key string) (string, error) {
 		return GetKey("", key)
 	}
 
-	tenantID := core.GetTenantIDFromContext(ctx)
+	tenantID := core.GetTenantIDContext(ctx)
 
 	return GetKey(tenantID, key)
 }
@@ -68,7 +68,7 @@ func GetPatternFromContext(ctx context.Context, pattern string) (string, error) 
 		return GetPattern("", pattern)
 	}
 
-	tenantID := core.GetTenantIDFromContext(ctx)
+	tenantID := core.GetTenantIDContext(ctx)
 
 	return GetPattern(tenantID, pattern)
 }

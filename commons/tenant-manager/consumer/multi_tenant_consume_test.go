@@ -49,7 +49,7 @@ func TestMultiTenantConsumer_HandleMessage_AcksSuccessfulMessages(t *testing.T) 
 	msg := amqp.Delivery{Acknowledger: ack, DeliveryTag: 1, Headers: amqp.Table{}}
 
 	consumer.handleMessage(context.Background(), "tenant-ack", "queue-a", func(ctx context.Context, delivery amqp.Delivery) error {
-		seenTenantID = core.GetTenantIDFromContext(ctx)
+		seenTenantID = core.GetTenantIDContext(ctx)
 		return nil
 	}, msg, logger)
 

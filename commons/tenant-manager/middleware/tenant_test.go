@@ -291,7 +291,7 @@ func TestTenantMiddleware_WithTenantDB(t *testing.T) {
 		app.Use(middleware.WithTenantDB)
 		app.Get("/test", func(c *fiber.Ctx) error {
 			nextCalled = true
-			capturedTenantID = core.GetTenantIDFromContext(c.UserContext())
+			capturedTenantID = core.GetTenantIDContext(c.UserContext())
 			return c.SendString("ok")
 		})
 
@@ -482,7 +482,7 @@ func TestWithTenantDB_CacheHit_SkipsLazyLoad(t *testing.T) {
 	app.Use(simulateAuthMiddleware("user-123"))
 	app.Use(mid.WithTenantDB)
 	app.Get("/test", func(c *fiber.Ctx) error {
-		capturedTenantID = core.GetTenantIDFromContext(c.UserContext())
+		capturedTenantID = core.GetTenantIDContext(c.UserContext())
 		return c.SendString("ok")
 	})
 
@@ -531,7 +531,7 @@ func TestWithTenantDB_CacheMiss_LazyLoads(t *testing.T) {
 	app.Use(simulateAuthMiddleware("user-123"))
 	app.Use(mid.WithTenantDB)
 	app.Get("/test", func(c *fiber.Ctx) error {
-		capturedTenantID = core.GetTenantIDFromContext(c.UserContext())
+		capturedTenantID = core.GetTenantIDContext(c.UserContext())
 		return c.SendString("ok")
 	})
 
@@ -586,7 +586,7 @@ func TestWithTenantDB_CacheExpired_LazyLoads(t *testing.T) {
 	app.Use(simulateAuthMiddleware("user-123"))
 	app.Use(mid.WithTenantDB)
 	app.Get("/test", func(c *fiber.Ctx) error {
-		capturedTenantID = core.GetTenantIDFromContext(c.UserContext())
+		capturedTenantID = core.GetTenantIDContext(c.UserContext())
 		return c.SendString("ok")
 	})
 
@@ -719,7 +719,7 @@ func TestWithTenantDB_NoCacheConfigured_ExistingBehavior(t *testing.T) {
 	app.Use(mid.WithTenantDB)
 	app.Get("/test", func(c *fiber.Ctx) error {
 		nextCalled = true
-		capturedTenantID = core.GetTenantIDFromContext(c.UserContext())
+		capturedTenantID = core.GetTenantIDContext(c.UserContext())
 		return c.SendString("ok")
 	})
 
@@ -772,7 +772,7 @@ func TestWithPG_SingleModule(t *testing.T) {
 		app.Use(mid.WithTenantDB)
 		app.Get("/test", func(c *fiber.Ctx) error {
 			nextCalled = true
-			capturedTenantID = core.GetTenantIDFromContext(c.UserContext())
+			capturedTenantID = core.GetTenantIDContext(c.UserContext())
 			return c.SendString("ok")
 		})
 
@@ -827,7 +827,7 @@ func TestWithPG_MultiModule(t *testing.T) {
 		app.Use(mid.WithTenantDB)
 		app.Get("/test", func(c *fiber.Ctx) error {
 			nextCalled = true
-			capturedTenantID = core.GetTenantIDFromContext(c.UserContext())
+			capturedTenantID = core.GetTenantIDContext(c.UserContext())
 			return c.SendString("ok")
 		})
 
@@ -893,7 +893,7 @@ func TestWithMB_MultiModule(t *testing.T) {
 		app.Use(mid.WithTenantDB)
 		app.Get("/test", func(c *fiber.Ctx) error {
 			nextCalled = true
-			capturedTenantID = core.GetTenantIDFromContext(c.UserContext())
+			capturedTenantID = core.GetTenantIDContext(c.UserContext())
 			return c.SendString("ok")
 		})
 

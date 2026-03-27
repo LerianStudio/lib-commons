@@ -172,7 +172,7 @@ func TestGetObjectStorageKeyForTenant(t *testing.T) {
 
 			ctx := context.Background()
 			if tt.tenantID != "" {
-				ctx = core.SetTenantIDInContext(ctx, tt.tenantID)
+				ctx = core.ContextWithTenantID(ctx, tt.tenantID)
 			}
 
 			result, err := GetObjectStorageKeyForTenant(ctx, tt.key)
@@ -198,9 +198,9 @@ func TestGetObjectStorageKeyForTenant_UsesSameTenantID(t *testing.T) {
 	ctx := context.Background()
 	tenantID := "org_consistency_check"
 
-	ctx = core.SetTenantIDInContext(ctx, tenantID)
+	ctx = core.ContextWithTenantID(ctx, tenantID)
 
-	extractedID := core.GetTenantID(ctx)
+	extractedID := core.GetTenantIDContext(ctx)
 
 	result, err := GetObjectStorageKeyForTenant(ctx, "test-key")
 

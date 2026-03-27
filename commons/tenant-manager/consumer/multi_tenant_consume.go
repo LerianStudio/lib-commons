@@ -88,7 +88,7 @@ func (c *MultiTenantConsumer) startTenantConsumer(parentCtx context.Context, ten
 // superviseTenantQueues runs the consumer loop for a single tenant.
 func (c *MultiTenantConsumer) superviseTenantQueues(ctx context.Context, tenantID string) {
 	// Set tenantID in context for handlers
-	ctx = core.SetTenantIDInContext(ctx, tenantID)
+	ctx = core.ContextWithTenantID(ctx, tenantID)
 
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
@@ -313,7 +313,7 @@ func (c *MultiTenantConsumer) handleMessage(
 	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled
 
 	// Process message with tenant context
-	msgCtx := core.SetTenantIDInContext(ctx, tenantID)
+	msgCtx := core.ContextWithTenantID(ctx, tenantID)
 
 	// Extract trace context from message headers
 	msgCtx = libOpentelemetry.ExtractTraceContextFromQueueHeaders(msgCtx, msg.Headers)

@@ -58,7 +58,7 @@ func GetObjectStorageKeyForTenant(ctx context.Context, key string) (string, erro
 		return GetObjectStorageKey("", key)
 	}
 
-	tenantID := core.GetTenantIDFromContext(ctx)
+	tenantID := core.GetTenantIDContext(ctx)
 
 	return GetObjectStorageKey(tenantID, key)
 }

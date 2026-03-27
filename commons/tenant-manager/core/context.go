@@ -32,31 +32,19 @@ var (
 	mongoKey = contextKey{name: "mongo"}
 )
 
-// SetTenantIDInContext stores the tenant ID in the context.
-func SetTenantIDInContext(ctx context.Context, tenantID string) context.Context {
+// ContextWithTenantID stores the tenant ID in the context.
+func ContextWithTenantID(ctx context.Context, tenantID string) context.Context {
 	return context.WithValue(nonNilContext(ctx), tenantIDKey, tenantID)
 }
 
-// GetTenantIDFromContext retrieves the tenant ID from the context.
+// GetTenantIDContext retrieves the tenant ID from the context.
 // Returns empty string if not found.
-func GetTenantIDFromContext(ctx context.Context) string {
+func GetTenantIDContext(ctx context.Context) string {
 	if id, ok := nonNilContext(ctx).Value(tenantIDKey).(string); ok {
 		return id
 	}
 
 	return ""
-}
-
-// GetTenantID is an alias for GetTenantIDFromContext.
-// Returns the tenant ID from context, or empty string if not found.
-func GetTenantID(ctx context.Context) string {
-	return GetTenantIDFromContext(ctx)
-}
-
-// ContextWithTenantID stores the tenant ID in the context.
-// Alias for SetTenantIDInContext for compatibility with middleware.
-func ContextWithTenantID(ctx context.Context, tenantID string) context.Context {
-	return SetTenantIDInContext(ctx, tenantID)
 }
 
 // ContextWithPGConnection stores the resolved dbresolver.DB connection in the context.
@@ -65,9 +53,9 @@ func ContextWithPGConnection(ctx context.Context, db dbresolver.DB) context.Cont
 	return context.WithValue(nonNilContext(ctx), pgConnectionKey, db)
 }
 
-// GetPGConnectionFromContext retrieves the resolved dbresolver.DB from the context.
+// GetPGConnectionContext retrieves the resolved dbresolver.DB from the context.
 // Returns nil if not found.
-func GetPGConnectionFromContext(ctx context.Context) dbresolver.DB {
+func GetPGConnectionContext(ctx context.Context) dbresolver.DB {
 	if db, ok := nonNilContext(ctx).Value(pgConnectionKey).(dbresolver.DB); ok {
 		return db
 	}
@@ -75,41 +63,19 @@ func GetPGConnectionFromContext(ctx context.Context) dbresolver.DB {
 	return nil
 }
 
-// GetPostgresForTenant returns the PostgreSQL database connection for the current tenant from context.
-// If no tenant connection is found in context, returns ErrTenantContextRequired.
-// This function ALWAYS requires tenant context - there is no fallback to default connections.
-func GetPostgresForTenant(ctx context.Context) (dbresolver.DB, error) {
-	if tenantDB := GetPGConnectionFromContext(ctx); tenantDB != nil {
-		return tenantDB, nil
-	}
-
-	return nil, ErrTenantContextRequired
-}
-
 // ContextWithMongo stores the MongoDB database in the context.
 func ContextWithMongo(ctx context.Context, db *mongo.Database) context.Context {
 	return context.WithValue(nonNilContext(ctx), mongoKey, db)
 }
 
-// GetMongoFromContext retrieves the MongoDB database from the context.
+// GetMongoContext retrieves the MongoDB database from the context.
 // Returns nil if not found.
-func GetMongoFromContext(ctx context.Context) *mongo.Database {
+func GetMongoContext(ctx context.Context) *mongo.Database {
 	if db, ok := nonNilContext(ctx).Value(mongoKey).(*mongo.Database); ok {
 		return db
 	}
 
 	return nil
-}
-
-// GetMongoForTenant returns the MongoDB database for the current tenant from context.
-// If no tenant connection is found in context, returns ErrTenantContextRequired.
-// This function ALWAYS requires tenant context - there is no fallback to default connections.
-func GetMongoForTenant(ctx context.Context) (*mongo.Database, error) {
-	if db := GetMongoFromContext(ctx); db != nil {
-		return db, nil
-	}
-
-	return nil, ErrTenantContextRequired
 }
 
 // pgModuleKey is a context key type for module-specific PostgreSQL connections.
@@ -125,9 +91,9 @@ func ContextWithPG(ctx context.Context, module string, db dbresolver.DB) context
 	return context.WithValue(nonNilContext(ctx), pgModuleKey(module), db)
 }
 
-// GetPG retrieves a module-specific PostgreSQL connection from the context.
+// GetPGContext retrieves a module-specific PostgreSQL connection from the context.
 // Returns nil if no connection was stored for the given module.
-func GetPG(ctx context.Context, module string) dbresolver.DB {
+func GetPGContext(ctx context.Context, module string) dbresolver.DB {
 	if db, ok := nonNilContext(ctx).Value(pgModuleKey(module)).(dbresolver.DB); ok {
 		return db
 	}
@@ -148,9 +114,9 @@ func ContextWithMB(ctx context.Context, module string, db *mongo.Database) conte
 	return context.WithValue(nonNilContext(ctx), mongoModuleKey(module), db)
 }
 
-// GetMB retrieves a module-specific MongoDB database from the context.
+// GetMBContext retrieves a module-specific MongoDB database from the context.
 // Returns nil if no database was stored for the given module.
-func GetMB(ctx context.Context, module string) *mongo.Database {
+func GetMBContext(ctx context.Context, module string) *mongo.Database {
 	if db, ok := nonNilContext(ctx).Value(mongoModuleKey(module)).(*mongo.Database); ok {
 		return db
 	}

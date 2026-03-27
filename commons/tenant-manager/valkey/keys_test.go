@@ -66,7 +66,7 @@ func TestGetKey_RejectsDelimiterInTenantID(t *testing.T) {
 func TestGetKeyFromContext(t *testing.T) {
 	t.Parallel()
 
-	ctx := core.SetTenantIDInContext(context.Background(), "tenant-ctx")
+	ctx := core.ContextWithTenantID(context.Background(), "tenant-ctx")
 
 	result, err := GetKeyFromContext(ctx, "orders")
 	require.NoError(t, err)
@@ -106,7 +106,7 @@ func TestGetPattern_RejectsDelimiterInTenantID(t *testing.T) {
 func TestGetPatternFromContext(t *testing.T) {
 	t.Parallel()
 
-	ctx := core.SetTenantIDInContext(context.Background(), "tenant-ctx")
+	ctx := core.ContextWithTenantID(context.Background(), "tenant-ctx")
 
 	result, err := GetPatternFromContext(ctx, "orders:*")
 	require.NoError(t, err)
