@@ -66,7 +66,7 @@ func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
 
 	manager := NewManager(tmClient, "test-service",
 		WithLogger(logger),
-		WithSettingsCheckInterval(1*time.Millisecond), // Trigger revalidation immediately
+		WithConnectionsCheckInterval(1*time.Millisecond), // Trigger revalidation immediately
 	)
 
 	// Pre-populate the connections map with a dummy connection so GetConnection
@@ -78,10 +78,10 @@ func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
 		ConnectionDB: &db,
 	}
 	manager.lastAccessed["tenant-slow"] = time.Now()
-	// Set lastSettingsCheck to zero time so revalidation is triggered immediately
-	manager.lastSettingsCheck["tenant-slow"] = time.Time{}
+	// Set lastConnectionsCheck to zero time so revalidation is triggered immediately
+	manager.lastConnectionsCheck["tenant-slow"] = time.Time{}
 
-	// GetConnection will hit cache, see that settingsCheckInterval has elapsed,
+	// GetConnection will hit cache, see that connectionsCheckInterval has elapsed,
 	// and spawn a revalidatePoolSettings goroutine that blocks for 500ms on the server.
 	_, err = manager.GetConnection(context.Background(), "tenant-slow")
 	if err != nil {

@@ -31,11 +31,11 @@ import (
 // mongoPingTimeout is the maximum duration for MongoDB connection health check pings.
 const mongoPingTimeout = 3 * time.Second
 
-// defaultSettingsCheckInterval is the default interval between periodic
+// defaultConnectionsCheckInterval is the default interval between periodic
 // connection pool settings revalidation checks. When a cached connection is
 // returned by GetConnection and this interval has elapsed since the last check,
 // fresh config is fetched from the Tenant Manager asynchronously.
-const defaultSettingsCheckInterval = 30 * time.Second
+const defaultConnectionsCheckInterval = 30 * time.Second
 
 // settingsRevalidationTimeout is the maximum duration for the HTTP call
 // to the Tenant Manager during async settings revalidation.
@@ -80,8 +80,8 @@ type Manager struct {
 	idleTimeout    time.Duration        // how long before a connection is eligible for eviction
 	lastAccessed   map[string]time.Time // LRU tracking per tenant
 
-	lastSettingsCheck     map[string]time.Time // tracks per-tenant last settings revalidation time
-	settingsCheckInterval time.Duration        // configurable interval between settings revalidation checks
+	lastConnectionsCheck     map[string]time.Time // tracks per-tenant last settings revalidation time
+	connectionsCheckInterval time.Duration        // configurable interval between settings revalidation checks
 
 	// revalidateWG tracks in-flight revalidatePoolSettings goroutines so Close()
 	// can wait for them to finish before returning. Without this, goroutines
@@ -191,18 +191,18 @@ func WithMaxTenantPools(maxSize int) Option {
 	}
 }
 
-// WithSettingsCheckInterval sets the interval between periodic connection pool settings
+// WithConnectionsCheckInterval sets the interval between periodic connection pool settings
 // revalidation checks. When GetConnection returns a cached connection and this interval
 // has elapsed since the last check for that tenant, fresh config is fetched from the
 // Tenant Manager asynchronously. For MongoDB, the driver does not support runtime pool
 // resize, but revalidation detects suspended/purged tenants and evicts their connections.
 //
-// If d <= 0, revalidation is DISABLED (settingsCheckInterval is set to 0).
+// If d <= 0, revalidation is DISABLED (connectionsCheckInterval is set to 0).
 // When disabled, no async revalidation checks are performed on cache hits.
-// Default: 30 seconds (defaultSettingsCheckInterval).
-func WithSettingsCheckInterval(d time.Duration) Option {
+// Default: 30 seconds (defaultConnectionsCheckInterval).
+func WithConnectionsCheckInterval(d time.Duration) Option {
 	return func(p *Manager) {
-		p.settingsCheckInterval = max(d, 0)
+		p.connectionsCheckInterval = max(d, 0)
 	}
 }
 
@@ -226,8 +226,8 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 		connections:           make(map[string]*MongoConnection),
 		databaseNames:         make(map[string]string),
 		lastAccessed:          make(map[string]time.Time),
-		lastSettingsCheck:     make(map[string]time.Time),
-		settingsCheckInterval: defaultSettingsCheckInterval,
+		lastConnectionsCheck:     make(map[string]time.Time),
+		connectionsCheckInterval: defaultConnectionsCheckInterval,
 	}
 
 	for _, opt := range opts {
@@ -291,9 +291,9 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Cl
 			if current, stillExists := p.connections[tenantID]; stillExists && current == conn {
 				p.lastAccessed[tenantID] = now
 
-				shouldRevalidate := p.client != nil && p.settingsCheckInterval > 0 && time.Since(p.lastSettingsCheck[tenantID]) > p.settingsCheckInterval
+				shouldRevalidate := p.client != nil && p.connectionsCheckInterval > 0 && time.Since(p.lastConnectionsCheck[tenantID]) > p.connectionsCheckInterval
 				if shouldRevalidate {
-					p.lastSettingsCheck[tenantID] = now
+					p.lastConnectionsCheck[tenantID] = now
 					p.revalidateWG.Add(1)
 				}
 
@@ -699,7 +699,7 @@ func (p *Manager) removeStaleCacheEntry(tenantID string, cachedConn *MongoConnec
 		delete(p.connections, tenantID)
 		delete(p.databaseNames, tenantID)
 		delete(p.lastAccessed, tenantID)
-		delete(p.lastSettingsCheck, tenantID)
+		delete(p.lastConnectionsCheck, tenantID)
 	}
 }
 
@@ -869,7 +869,7 @@ func (p *Manager) evictLRU(ctx context.Context, logger log.Logger) {
 		delete(p.connections, candidateID)
 		delete(p.databaseNames, candidateID)
 		delete(p.lastAccessed, candidateID)
-		delete(p.lastSettingsCheck, candidateID)
+		delete(p.lastConnectionsCheck, candidateID)
 	}
 }
 
@@ -967,7 +967,7 @@ func (p *Manager) Close(ctx context.Context) error {
 	clear(p.connections)
 	clear(p.databaseNames)
 	clear(p.lastAccessed)
-	clear(p.lastSettingsCheck)
+	clear(p.lastConnectionsCheck)
 
 	p.mu.Unlock()
 
@@ -1007,7 +1007,7 @@ func (p *Manager) CloseConnection(ctx context.Context, tenantID string) error {
 	delete(p.connections, tenantID)
 	delete(p.databaseNames, tenantID)
 	delete(p.lastAccessed, tenantID)
-	delete(p.lastSettingsCheck, tenantID)
+	delete(p.lastConnectionsCheck, tenantID)
 
 	p.mu.Unlock()
 
