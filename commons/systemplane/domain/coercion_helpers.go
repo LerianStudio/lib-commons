@@ -106,6 +106,8 @@ func intFromInt64(value int64) (int, bool) {
 	return int(value), true
 }
 
+// intFromFloat64 converts a float64 to int with overflow/NaN protection.
+// The 1<<63 boundary constant assumes a 64-bit platform (GOARCH=amd64|arm64).
 func intFromFloat64(value float64) (int, bool) {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0, false

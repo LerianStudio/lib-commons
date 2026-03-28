@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
 	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
@@ -32,6 +33,17 @@ type reloadBuild struct {
 	strategy       BuildStrategy
 }
 
+// recordCleanupError records a best-effort cleanup error to the active span.
+// Cleanup failures are not actionable by callers but must not go invisible.
+func recordCleanupError(ctx context.Context, phase string, err error) {
+	span := trace.SpanFromContext(ctx)
+	if span.IsRecording() {
+		span.RecordError(err, trace.WithAttributes(
+			attribute.String("cleanup.phase", phase),
+		))
+	}
+}
+
 func discardFailedCandidate(ctx context.Context, candidate domain.RuntimeBundle, strategy BuildStrategy) {
 	if isNilRuntimeBundle(candidate) {
 		return
@@ -46,18 +58,24 @@ func discardFailedCandidate(ctx context.Context, candidate domain.RuntimeBundle,
 			return
 		}
 
-		_ = discarder.Discard(ctx) // Best-effort rollback cleanup; errors are not actionable here.
+		if err := discarder.Discard(ctx); err != nil {
+			recordCleanupError(ctx, "discard_incremental_candidate", err)
+		}
 
 		return
 	}
 
 	if discarder, ok := candidate.(rollbackDiscarder); ok {
-		_ = discarder.Discard(ctx) // Best-effort rollback cleanup; errors are not actionable here.
+		if err := discarder.Discard(ctx); err != nil {
+			recordCleanupError(ctx, "discard_full_candidate", err)
+		}
 
 		return
 	}
 
-	_ = candidate.Close(ctx) // Best-effort close of failed candidate; caller cannot recover from close errors.
+	if err := candidate.Close(ctx); err != nil {
+		recordCleanupError(ctx, "close_failed_candidate", err)
+	}
 }
 
 func startSupervisorSpan(ctx context.Context, operation string) (context.Context, trace.Span) {
@@ -119,14 +137,6 @@ func (supervisor *defaultSupervisor) buildBundle(
 	return bundle, BuildStrategyFull, nil
 }
 
-func currentBundle(holder *bundleHolder) domain.RuntimeBundle {
-	if holder == nil {
-		return nil
-	}
-
-	return holder.bundle
-}
-
 // prepareReloadBuild builds a new snapshot and candidate bundle for a reload.
 //
 // Concurrency safety: BuildIncremental receives a reference to the live
@@ -134,7 +144,7 @@ func currentBundle(holder *bundleHolder) domain.RuntimeBundle {
 // (read-only) from the previous bundle — it must NOT mutate the previous
 // bundle's internal pointers. The actual resource transfer (nil-ing
 // transferred pointers in previousBundle) happens later in commitReload via
-// AdoptResourcesFrom, which runs AFTER the atomic bundle swap. At that point
+// AdoptResourcesFrom, which runs AFTER the atomic state swap. At that point
 // Current() already returns the new candidate, so concurrent readers never
 // observe the mutation.
 func (supervisor *defaultSupervisor) prepareReloadBuild(ctx context.Context, tenantIDs []string) (reloadBuild, error) {
@@ -143,8 +153,14 @@ func (supervisor *defaultSupervisor) prepareReloadBuild(ctx context.Context, ten
 		return reloadBuild{}, fmt.Errorf("reload: %w: %w", domain.ErrSnapshotBuildFailed, err)
 	}
 
-	prevSnap := supervisor.snapshot.Load()
-	previousBundle := currentBundle(supervisor.bundle.Load())
+	var prevSnap *domain.Snapshot
+
+	var previousBundle domain.RuntimeBundle
+
+	if st := supervisor.state.Load(); st != nil {
+		prevSnap = &st.snapshot
+		previousBundle = st.bundle
+	}
 
 	candidate, strategy, err := supervisor.buildBundle(ctx, snap, previousBundle, prevSnap)
 	if err != nil {
@@ -173,8 +189,10 @@ func (supervisor *defaultSupervisor) reconcileCandidateBundle(ctx context.Contex
 }
 
 func (supervisor *defaultSupervisor) commitReload(ctx context.Context, reason string, build reloadBuild) {
-	supervisor.snapshot.Store(&build.snapshot)
-	supervisor.bundle.Store(&bundleHolder{bundle: build.candidate})
+	supervisor.state.Store(&supervisorState{
+		snapshot: build.snapshot,
+		bundle:   build.candidate,
+	})
 
 	if adopter, ok := build.candidate.(resourceAdopter); ok && !isNilRuntimeBundle(build.previousBundle) {
 		adopter.AdoptResourcesFrom(build.previousBundle)
@@ -190,7 +208,9 @@ func (supervisor *defaultSupervisor) commitReload(ctx context.Context, reason st
 	}
 
 	if !isNilRuntimeBundle(build.previousBundle) {
-		_ = build.previousBundle.Close(ctx) // Best-effort: previous bundle superseded; close errors are not actionable.
+		if err := build.previousBundle.Close(ctx); err != nil {
+			recordCleanupError(ctx, "close_previous_bundle", err)
+		}
 	}
 }
 
