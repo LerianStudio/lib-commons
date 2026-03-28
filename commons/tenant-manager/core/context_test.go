@@ -205,7 +205,6 @@ func TestNilContext(t *testing.T) {
 		assert.Nil(t, db)
 		assert.ErrorIs(t, err, ErrTenantContextRequired)
 	})
-
 }
 
 func TestContextWithPG_and_GetPG(t *testing.T) {

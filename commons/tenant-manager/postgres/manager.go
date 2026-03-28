@@ -107,9 +107,9 @@ type Manager struct {
 	idleTimeout         time.Duration        // how long before a connection is eligible for eviction
 	lastAccessed        map[string]time.Time // LRU tracking per tenant
 
-	lastSettingsCheck     map[string]time.Time          // tracks per-tenant last settings revalidation time
-	settingsCheckInterval time.Duration                 // configurable interval between settings revalidation checks
-	lastAppliedSettings   map[string]appliedSettings    // tracks previously applied pool settings per tenant for change detection
+	lastSettingsCheck     map[string]time.Time       // tracks per-tenant last settings revalidation time
+	settingsCheckInterval time.Duration              // configurable interval between settings revalidation checks
+	lastAppliedSettings   map[string]appliedSettings // tracks previously applied pool settings per tenant for change detection
 
 	// revalidateWG tracks in-flight revalidatePoolSettings goroutines so Close()
 	// can wait for them to finish before returning. Without this, goroutines
