@@ -716,10 +716,10 @@ func TestManager_RevalidateSettings_RecoverFromPanic(t *testing.T) {
 
 	// Create a manager with nil client to trigger a panic path
 	manager := &Manager{
-		logger:                logcompat.New(capLogger),
-		connections:           make(map[string]*amqp.Connection),
-		cachedURIs:            make(map[string]string),
-		lastAccessed:          make(map[string]time.Time),
+		logger:                   logcompat.New(capLogger),
+		connections:              make(map[string]*amqp.Connection),
+		cachedURIs:               make(map[string]string),
+		lastAccessed:             make(map[string]time.Time),
 		lastConnectionsCheck:     make(map[string]time.Time),
 		connectionsCheckInterval: 1 * time.Millisecond,
 	}

@@ -106,7 +106,9 @@ func (manager *defaultManager) persistAndApplyWrite(
 	}
 
 	if err := manager.applyEscalation(ctx, plan.target, plan.escalation); err != nil {
-		return WriteResult{}, fmt.Errorf("apply escalation: %w", err)
+		// Return the persisted revision so callers can reconcile/retry safely
+		// even when the post-write escalation (e.g., reload signal) fails.
+		return WriteResult{Revision: revision}, fmt.Errorf("apply escalation: %w", err)
 	}
 
 	return WriteResult{Revision: revision}, nil

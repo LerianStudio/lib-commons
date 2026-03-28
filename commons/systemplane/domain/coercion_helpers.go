@@ -112,7 +112,11 @@ func intFromFloat64(value float64) (int, bool) {
 	}
 
 	truncated := math.Trunc(value)
-	if truncated > math.MaxInt || truncated < math.MinInt {
+
+	// On 64-bit platforms, float64(math.MaxInt) rounds up to 2^63 which
+	// exceeds MaxInt. Use an exact float64 constant (1<<63) so the >=
+	// comparison catches the boundary alias that `> math.MaxInt` misses.
+	if truncated >= 1<<63 || truncated < math.MinInt {
 		return 0, false
 	}
 
@@ -340,7 +344,10 @@ func scaleDurationFloat64(value float64, unit time.Duration) (time.Duration, boo
 	}
 
 	scaled := value * float64(unit)
-	if math.IsNaN(scaled) || math.IsInf(scaled, 0) || scaled > math.MaxInt64 || scaled < math.MinInt64 {
+
+	// Same 2^63 boundary alias as intFromFloat64: float64(MaxInt64) rounds
+	// up to 2^63 which overflows int64. Use >= 1<<63 for exact rejection.
+	if math.IsNaN(scaled) || math.IsInf(scaled, 0) || scaled >= 1<<63 || scaled < math.MinInt64 {
 		return 0, false
 	}
 

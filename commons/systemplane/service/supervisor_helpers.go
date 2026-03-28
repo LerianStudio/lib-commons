@@ -102,9 +102,10 @@ func (supervisor *defaultSupervisor) buildBundle(
 		}
 
 		// Discard partially-built candidate to prevent resource leaks.
+		// Use the incremental discard path so shared/adopted resources are
+		// released safely rather than double-closed via a plain Close().
 		if err != nil && !isNilRuntimeBundle(candidate) {
-			// RuntimeBundle.Close(ctx) is the contract for releasing held resources.
-			_ = candidate.Close(ctx) // Best-effort: discard partial candidate to prevent resource leaks.
+			discardFailedCandidate(ctx, candidate, BuildStrategyIncremental)
 		}
 		// Incremental build failed — fall through to full build.
 	}
@@ -126,6 +127,16 @@ func currentBundle(holder *bundleHolder) domain.RuntimeBundle {
 	return holder.bundle
 }
 
+// prepareReloadBuild builds a new snapshot and candidate bundle for a reload.
+//
+// Concurrency safety: BuildIncremental receives a reference to the live
+// previousBundle. Its contract is to create a candidate that SHARES resources
+// (read-only) from the previous bundle — it must NOT mutate the previous
+// bundle's internal pointers. The actual resource transfer (nil-ing
+// transferred pointers in previousBundle) happens later in commitReload via
+// AdoptResourcesFrom, which runs AFTER the atomic bundle swap. At that point
+// Current() already returns the new candidate, so concurrent readers never
+// observe the mutation.
 func (supervisor *defaultSupervisor) prepareReloadBuild(ctx context.Context, tenantIDs []string) (reloadBuild, error) {
 	snap, err := supervisor.builder.BuildFull(ctx, tenantIDs...)
 	if err != nil {

@@ -130,6 +130,14 @@ func TestFuncIdentityResolver_FailsClosedWithoutIdentity(t *testing.T) {
 			},
 			ctx: context.Background(),
 		},
+		{
+			name: "whitespace-only default actor",
+			resolver: &FuncIdentityResolver{
+				ActorFunc:    nil,
+				DefaultActor: "   ",
+			},
+			ctx: context.Background(),
+		},
 	}
 
 	for _, tt := range tests {
@@ -180,6 +188,13 @@ func TestFuncIdentityResolver_TenantID_FailsClosedWithoutTenantIdentity(t *testi
 			name: "whitespace tenant",
 			resolver: &FuncIdentityResolver{
 				TenantFunc: func(_ context.Context) string { return "   " },
+			},
+			ctx: context.Background(),
+		},
+		{
+			name: "tenant exceeds max length",
+			resolver: &FuncIdentityResolver{
+				TenantFunc: func(_ context.Context) string { return strings.Repeat("t", maxTenantIDLength+1) },
 			},
 			ctx: context.Background(),
 		},

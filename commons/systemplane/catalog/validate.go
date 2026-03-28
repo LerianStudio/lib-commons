@@ -114,8 +114,13 @@ func compareKeyDef(pd domain.KeyDef, sk SharedKey, matchedByEnv bool) []Mismatch
 		comparisons = append(comparisons, mismatchForString(pd, sk, "Key", sk.Key, pd.Key))
 	}
 
-	if expectedEnvVars := allowedEnvVars(sk); len(expectedEnvVars) > 0 && !containsString(expectedEnvVars, pd.EnvVar) {
-		comparisons = append(comparisons, mismatchForString(pd, sk, "EnvVar", strings.Join(expectedEnvVars, "|"), pd.EnvVar))
+	if expectedEnvVars := allowedEnvVars(sk); len(expectedEnvVars) > 0 {
+		if !containsString(expectedEnvVars, pd.EnvVar) {
+			comparisons = append(comparisons, mismatchForString(pd, sk, "EnvVar", strings.Join(expectedEnvVars, "|"), pd.EnvVar))
+		}
+	} else if pd.EnvVar != "" {
+		// Catalog defines no env vars for this key but product sets one — flag it.
+		comparisons = append(comparisons, mismatchForString(pd, sk, "EnvVar", "", pd.EnvVar))
 	}
 
 	mismatches := make([]Mismatch, 0, len(comparisons))

@@ -191,6 +191,13 @@ func (d *ComponentDiff) allComponentSet() map[string]bool {
 	return set
 }
 
+// effectiveValueChanged reports whether the effective value changed between two
+// snapshots. It uses reflect.DeepEqual on EffectiveValue.Value, which means:
+//   - nil slice != empty slice (both are valid "no items" representations)
+//   - function values are always unequal
+//   - supported types: primitives, string slices, maps — the types produced by
+//     the coercion layer. If other types are stored, callers must normalize
+//     before comparison.
 func effectiveValueChanged(prevVal domain.EffectiveValue, prevOK bool, curVal domain.EffectiveValue, curOK bool) bool {
 	if prevOK != curOK {
 		return true

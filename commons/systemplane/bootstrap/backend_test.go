@@ -55,6 +55,22 @@ type noopCloser struct{}
 
 func (noopCloser) Close() error { return nil }
 
+// withRegistrySnapshot saves the global backendRegistry state and restores it
+// via t.Cleanup so each test starts with a known state.
+func withRegistrySnapshot(t *testing.T) {
+	t.Helper()
+
+	origFactories, origErrors := backendRegistry.snapshot()
+
+	t.Cleanup(func() {
+		backendRegistry.mu.Lock()
+		defer backendRegistry.mu.Unlock()
+
+		backendRegistry.factories = origFactories
+		backendRegistry.initErrors = origErrors
+	})
+}
+
 func TestNewBackendFromConfig_NilConfig(t *testing.T) {
 	res, err := NewBackendFromConfig(context.Background(), nil)
 
@@ -148,14 +164,8 @@ func TestNewBackendFromConfig_UnsupportedBackend(t *testing.T) {
 
 func TestNewBackendFromConfig_NoFactoryRegistered(t *testing.T) {
 	// Temporarily remove the postgres factory to simulate an unregistered backend.
-	// Save the original and restore after the test.
-	origFactories, origErrors := backendRegistry.snapshot()
+	withRegistrySnapshot(t)
 	delete(backendRegistry.factories, domain.BackendPostgres)
-
-	t.Cleanup(func() {
-		backendRegistry.factories = origFactories
-		backendRegistry.initErrors = origErrors
-	})
 
 	cfg := &BootstrapConfig{
 		Backend: domain.BackendPostgres,
@@ -173,20 +183,13 @@ func TestNewBackendFromConfig_NoFactoryRegistered(t *testing.T) {
 
 func TestNewBackendFromConfig_FactoryReturnsError(t *testing.T) {
 	// Not parallel: mutates global backendFactories for postgres kind.
-	// Register a factory that always fails, for a custom test backend kind.
-	// We use postgres kind here with a stub factory.
 	testKind := domain.BackendPostgres
-	origFactories, origErrors := backendRegistry.snapshot()
+	withRegistrySnapshot(t)
 
 	expectedErr := fmt.Errorf("simulated connection failure")
 	backendRegistry.factories[testKind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 		return nil, expectedErr
 	}
-
-	t.Cleanup(func() {
-		backendRegistry.factories = origFactories
-		backendRegistry.initErrors = origErrors
-	})
 
 	cfg := &BootstrapConfig{
 		Backend: testKind,
@@ -205,17 +208,12 @@ func TestNewBackendFromConfig_FactoryReturnsError(t *testing.T) {
 func TestNewBackendFromConfig_FactoryReturnsResources(t *testing.T) {
 	// Not parallel: mutates global backendFactories for postgres kind.
 	testKind := domain.BackendPostgres
-	origFactories, origErrors := backendRegistry.snapshot()
+	withRegistrySnapshot(t)
 
 	expected := &BackendResources{Store: noopStore{}, History: noopHistoryStore{}, ChangeFeed: noopChangeFeed{}, Closer: noopCloser{}}
 	backendRegistry.factories[testKind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 		return expected, nil
 	}
-
-	t.Cleanup(func() {
-		backendRegistry.factories = origFactories
-		backendRegistry.initErrors = origErrors
-	})
 
 	cfg := &BootstrapConfig{
 		Backend: testKind,
@@ -267,16 +265,11 @@ func TestNewBackendFromConfig_FactoryReturnsIncompleteResources(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			testKind := domain.BackendPostgres
-			origFactories, origErrors := backendRegistry.snapshot()
+			withRegistrySnapshot(t)
 
 			backendRegistry.factories[testKind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 				return tc.resources, nil
 			}
-
-			t.Cleanup(func() {
-				backendRegistry.factories = origFactories
-				backendRegistry.initErrors = origErrors
-			})
 
 			cfg := &BootstrapConfig{
 				Backend: testKind,
@@ -297,7 +290,7 @@ func TestNewBackendFromConfig_FactoryReturnsIncompleteResources(t *testing.T) {
 func TestNewBackendFromConfig_AppliesDefaults(t *testing.T) {
 	// Not parallel: mutates global backendFactories for postgres kind.
 	testKind := domain.BackendPostgres
-	origFactories, origErrors := backendRegistry.snapshot()
+	withRegistrySnapshot(t)
 
 	var capturedCfg *BootstrapConfig
 
@@ -305,11 +298,6 @@ func TestNewBackendFromConfig_AppliesDefaults(t *testing.T) {
 		capturedCfg = cfg
 		return &BackendResources{Store: noopStore{}, History: noopHistoryStore{}, ChangeFeed: noopChangeFeed{}, Closer: noopCloser{}}, nil
 	}
-
-	t.Cleanup(func() {
-		backendRegistry.factories = origFactories
-		backendRegistry.initErrors = origErrors
-	})
 
 	cfg := &BootstrapConfig{
 		Backend: testKind,
@@ -332,12 +320,7 @@ func TestNewBackendFromConfig_AppliesDefaults(t *testing.T) {
 
 func TestRegisterBackendFactory_RejectsOverwrite(t *testing.T) {
 	testKind := domain.BackendPostgres
-	origFactories, origErrors := backendRegistry.snapshot()
-
-	t.Cleanup(func() {
-		backendRegistry.factories = origFactories
-		backendRegistry.initErrors = origErrors
-	})
+	withRegistrySnapshot(t)
 	delete(backendRegistry.factories, testKind)
 
 	firstCalled := false
@@ -367,15 +350,10 @@ func TestRegisterBackendFactory_RejectsOverwrite(t *testing.T) {
 
 func TestRegisterBackendFactory_RejectsNilFactory(t *testing.T) {
 	kind := domain.BackendMongoDB
-	origFactories, origErrors := backendRegistry.snapshot()
+	withRegistrySnapshot(t)
 	backendRegistry.factories[kind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 		return &BackendResources{Store: noopStore{}, History: noopHistoryStore{}, ChangeFeed: noopChangeFeed{}, Closer: noopCloser{}}, nil
 	}
-
-	t.Cleanup(func() {
-		backendRegistry.factories = origFactories
-		backendRegistry.initErrors = origErrors
-	})
 
 	err := RegisterBackendFactory(kind, nil)
 
@@ -391,13 +369,7 @@ func TestRegisterBackendFactory_RejectsNilFactory(t *testing.T) {
 
 func TestResetBackendFactories_ClearsRegistrations(t *testing.T) {
 	// Not parallel: mutates global backendFactories.
-	// Save the original state.
-	origFactories, origErrors := backendRegistry.snapshot()
-
-	t.Cleanup(func() {
-		backendRegistry.factories = origFactories
-		backendRegistry.initErrors = origErrors
-	})
+	withRegistrySnapshot(t)
 
 	// Register a factory and record an init error.
 	delete(backendRegistry.factories, domain.BackendPostgres)

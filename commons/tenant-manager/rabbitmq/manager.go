@@ -132,12 +132,12 @@ func WithTLS() Option {
 //   - opts: Optional configuration options
 func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 	p := &Manager{
-		client:                c,
-		service:               service,
-		logger:                logcompat.New(nil),
-		connections:           make(map[string]*amqp.Connection),
-		cachedURIs:            make(map[string]string),
-		lastAccessed:          make(map[string]time.Time),
+		client:                   c,
+		service:                  service,
+		logger:                   logcompat.New(nil),
+		connections:              make(map[string]*amqp.Connection),
+		cachedURIs:               make(map[string]string),
+		lastAccessed:             make(map[string]time.Time),
 		lastConnectionsCheck:     make(map[string]time.Time),
 		connectionsCheckInterval: defaultConnectionsCheckInterval,
 	}

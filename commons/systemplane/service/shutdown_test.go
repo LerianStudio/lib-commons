@@ -98,6 +98,8 @@ func TestShutdownSequence_Execute(t *testing.T) {
 
 			if tt.wantOrder != nil {
 				assert.Equal(t, tt.wantOrder, order)
+			} else {
+				assert.Empty(t, order)
 			}
 
 			if tt.wantErr {

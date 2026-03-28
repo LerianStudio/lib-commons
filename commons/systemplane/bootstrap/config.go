@@ -22,6 +22,7 @@ var (
 	ErrInvalidWatchMode          = errors.New("systemplane: mongodb watch mode must be change_stream or poll")
 	ErrInvalidPollInterval       = errors.New("systemplane: mongodb poll interval must be greater than zero when watch mode is poll")
 	ErrInvalidMongoIdentifier    = errors.New("systemplane: invalid mongodb identifier")
+	ErrUnhandledBackend          = errors.New("systemplane: unhandled backend kind")
 )
 
 // BootstrapConfig holds the initial configuration needed to connect to the
@@ -74,7 +75,7 @@ func (cfg *BootstrapConfig) Validate() error {
 	case domain.BackendMongoDB:
 		return validateMongoBootstrap(cfg.MongoDB)
 	default:
-		return fmt.Errorf("validate: unhandled backend %q", cfg.Backend)
+		return fmt.Errorf("validate: %w: %q", ErrUnhandledBackend, cfg.Backend)
 	}
 }
 

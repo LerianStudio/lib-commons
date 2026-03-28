@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"sync"
 
 	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/domain"
 	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/ports"
@@ -28,6 +29,7 @@ type BackendResources struct {
 type BackendFactory func(ctx context.Context, cfg *BootstrapConfig) (*BackendResources, error)
 
 type backendRegistryState struct {
+	mu         sync.RWMutex
 	factories  map[domain.BackendKind]BackendFactory
 	initErrors []error
 }
@@ -37,11 +39,17 @@ func newBackendRegistryState() *backendRegistryState {
 }
 
 func (s *backendRegistryState) reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.factories = map[domain.BackendKind]BackendFactory{}
 	s.initErrors = nil
 }
 
 func (s *backendRegistryState) recordInitError(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	s.initErrors = append(s.initErrors, err)
 }
 
@@ -54,6 +62,9 @@ func (s *backendRegistryState) register(kind domain.BackendKind, factory Backend
 		return errNilBackendFactory
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if _, exists := s.factories[kind]; exists {
 		return fmt.Errorf("%w %q", errBackendAlreadyRegistered, kind)
 	}
@@ -63,13 +74,10 @@ func (s *backendRegistryState) register(kind domain.BackendKind, factory Backend
 	return nil
 }
 
-func (s *backendRegistryState) factory(kind domain.BackendKind) (BackendFactory, bool) {
-	factory, ok := s.factories[kind]
-
-	return factory, ok
-}
-
 func (s *backendRegistryState) snapshot() (map[domain.BackendKind]BackendFactory, []error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	factories := make(map[domain.BackendKind]BackendFactory, len(s.factories))
 	maps.Copy(factories, s.factories)
 
@@ -122,7 +130,7 @@ func RegisterBackendFactory(kind domain.BackendKind, factory BackendFactory) err
 // The caller is responsible for calling Closer.Close when the resources are no
 // longer needed. Callers typically defer res.Closer.Close().
 func NewBackendFromConfig(ctx context.Context, cfg *BootstrapConfig) (*BackendResources, error) {
-	_, initErrors := backendRegistry.snapshot()
+	factories, initErrors := backendRegistry.snapshot()
 	if len(initErrors) > 0 {
 		return nil, fmt.Errorf("bootstrap backend: init registration errors: %w", errors.Join(initErrors...))
 	}
@@ -137,7 +145,7 @@ func NewBackendFromConfig(ctx context.Context, cfg *BootstrapConfig) (*BackendRe
 		return nil, fmt.Errorf("bootstrap backend: %w", err)
 	}
 
-	factory, ok := backendRegistry.factory(cfg.Backend)
+	factory, ok := factories[cfg.Backend]
 	if !ok {
 		return nil, fmt.Errorf("%w %q (no factory registered)", errUnsupportedBackend, cfg.Backend)
 	}

@@ -222,5 +222,7 @@ func TestInitDefaults_ZeroValueRedactPolicyIsNotMarkedRedacted(t *testing.T) {
 		ApplyBehavior: domain.ApplyLiveRead,
 	}})
 
-	assert.False(t, values["app.name"].Redacted)
+	val, ok := values["app.name"]
+	require.True(t, ok, "expected key \"app.name\" to exist in defaults")
+	assert.False(t, val.Redacted)
 }

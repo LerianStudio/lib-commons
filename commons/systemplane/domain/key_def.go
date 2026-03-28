@@ -151,9 +151,9 @@ func (keyDef KeyDef) Validate() error {
 		return fmt.Errorf("key def %q env var %q: %w", keyDef.Key, keyDef.EnvVar, ErrInvalidEnvVar)
 	}
 
-	if keyDef.Secret && keyDef.RedactPolicy == RedactMask {
-		return fmt.Errorf("key def %q redact policy %q: %w", keyDef.Key, keyDef.RedactPolicy, ErrInvalidRedactPolicy)
-	}
+	// Secret keys are always treated as RedactFull at runtime (see
+	// normalizeRedactPolicy in catalog/validate.go), so any RedactPolicy
+	// declared on a secret key is acceptable — no error needed here.
 
 	if !keyDef.ApplyBehavior.IsValid() {
 		return fmt.Errorf("key def %q apply behavior %q: %w", keyDef.Key, keyDef.ApplyBehavior, ErrInvalidApplyBehavior)

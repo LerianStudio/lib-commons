@@ -30,7 +30,9 @@ func Spec() json.RawMessage {
 // Merge semantics:
 //   - paths: systemplane paths are added; on key conflict systemplane wins.
 //   - definitions: systemplane definitions are added; on key conflict systemplane wins.
-//   - tags: systemplane tags are appended to existing tags.
+//   - tags: systemplane tags are merged with deduplication by tag name. Tags
+//     from the source with a name already present in the destination are
+//     skipped. Duplicate names within the source are also collapsed.
 //
 // The function does not modify the target slice; it returns a new byte slice.
 func MergeInto(target []byte) ([]byte, error) {
@@ -102,9 +104,11 @@ func mergeObjectField(field string, dst, src map[string]json.RawMessage) error {
 	return nil
 }
 
-// mergeTags appends systemplane tags to the target's existing tags array.
-// Tags are deduplicated by name — if a tag with the same name already exists
-// in the destination, the source tag is skipped.
+// mergeTags merges systemplane tags into the target's existing tags array with
+// deduplication by tag name. Tags from the source whose name already exists in
+// the destination are skipped; duplicate names within the source are also
+// collapsed. Tag order from the destination is preserved; new source tags are
+// appended in their original order.
 func mergeTags(dst, src map[string]json.RawMessage) error {
 	srcTags, ok := src["tags"]
 	if !ok {
@@ -135,14 +139,22 @@ func mergeTags(dst, src map[string]json.RawMessage) error {
 		}
 	}
 
-	// Only append tags whose name is not already present.
+	// Only append tags whose name is not already present. Also deduplicate
+	// within srcArr itself by marking each appended name.
 	for _, raw := range srcArr {
 		var tag struct {
 			Name string `json:"name"`
 		}
-		if json.Unmarshal(raw, &tag) == nil && existing[tag.Name] {
+
+		if json.Unmarshal(raw, &tag) != nil {
 			continue
 		}
+
+		if existing[tag.Name] {
+			continue
+		}
+
+		existing[tag.Name] = true
 
 		dstArr = append(dstArr, raw)
 	}

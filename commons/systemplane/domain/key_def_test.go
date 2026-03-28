@@ -154,17 +154,19 @@ func TestKeyDef_Validate_ValidEnvVar(t *testing.T) {
 	require.NoError(t, kd.Validate())
 }
 
-func TestKeyDef_Validate_SecretMaskRejected(t *testing.T) {
+func TestKeyDef_Validate_SecretMaskAccepted(t *testing.T) {
 	t.Parallel()
 
+	// Secret+RedactMask is accepted by Validate (not an error). The runtime
+	// normalizes it to RedactFull via normalizeRedactPolicy in the catalog
+	// and snapshot layers.
 	kd := validKeyDef()
 	kd.Secret = true
 	kd.RedactPolicy = RedactMask
 
 	err := kd.Validate()
 
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidRedactPolicy)
+	require.NoError(t, err)
 }
 
 func TestKeyDef_Validate_EmptyAllowedScopes(t *testing.T) {
