@@ -22,11 +22,11 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
-// defaultSettingsCheckInterval is the default interval between periodic
+// defaultConnectionsCheckInterval is the default interval between periodic
 // connection settings revalidation checks. When a cached connection is
 // returned by GetConnection and this interval has elapsed since the last check,
 // fresh config is fetched from the Tenant Manager asynchronously.
-const defaultSettingsCheckInterval = 30 * time.Second
+const defaultConnectionsCheckInterval = 30 * time.Second
 
 // settingsRevalidationTimeout is the maximum duration for the HTTP call
 // to the Tenant Manager during async settings revalidation.
@@ -54,8 +54,8 @@ type Manager struct {
 	lastAccessed   map[string]time.Time // LRU tracking per tenant
 	useTLS         bool                 // use amqps:// scheme instead of amqp://
 
-	lastSettingsCheck     map[string]time.Time // tracks per-tenant last settings revalidation time
-	settingsCheckInterval time.Duration        // configurable interval between settings revalidation checks
+	lastConnectionsCheck     map[string]time.Time // tracks per-tenant last settings revalidation time
+	connectionsCheckInterval time.Duration        // configurable interval between settings revalidation checks
 
 	// revalidateWG tracks in-flight revalidatePoolSettings goroutines so Close()
 	// can wait for them to finish before returning. Without this, goroutines
@@ -102,17 +102,17 @@ func WithIdleTimeout(d time.Duration) Option {
 	}
 }
 
-// WithSettingsCheckInterval sets the interval between periodic connection settings
+// WithConnectionsCheckInterval sets the interval between periodic connection settings
 // revalidation checks. When GetConnection returns a cached connection and this interval
 // has elapsed since the last check for that tenant, fresh config is fetched from the
 // Tenant Manager asynchronously to detect suspended tenants and config changes.
 //
-// If d <= 0, revalidation is DISABLED (settingsCheckInterval is set to 0).
+// If d <= 0, revalidation is DISABLED (connectionsCheckInterval is set to 0).
 // When disabled, no async revalidation checks are performed on cache hits.
-// Default: 30 seconds (defaultSettingsCheckInterval).
-func WithSettingsCheckInterval(d time.Duration) Option {
+// Default: 30 seconds (defaultConnectionsCheckInterval).
+func WithConnectionsCheckInterval(d time.Duration) Option {
 	return func(p *Manager) {
-		p.settingsCheckInterval = max(d, 0)
+		p.connectionsCheckInterval = max(d, 0)
 	}
 }
 
@@ -138,8 +138,8 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 		connections:           make(map[string]*amqp.Connection),
 		cachedURIs:            make(map[string]string),
 		lastAccessed:          make(map[string]time.Time),
-		lastSettingsCheck:     make(map[string]time.Time),
-		settingsCheckInterval: defaultSettingsCheckInterval,
+		lastConnectionsCheck:     make(map[string]time.Time),
+		connectionsCheckInterval: defaultConnectionsCheckInterval,
 	}
 
 	for _, opt := range opts {
@@ -178,12 +178,12 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Con
 		if refreshedConn, still := p.connections[tenantID]; still && !refreshedConn.IsClosed() {
 			p.lastAccessed[tenantID] = now
 
-			// Only revalidate if settingsCheckInterval > 0 (means revalidation is enabled)
-			shouldRevalidate := p.client != nil && p.settingsCheckInterval > 0 && time.Since(p.lastSettingsCheck[tenantID]) > p.settingsCheckInterval
+			// Only revalidate if connectionsCheckInterval > 0 (means revalidation is enabled)
+			shouldRevalidate := p.client != nil && p.connectionsCheckInterval > 0 && time.Since(p.lastConnectionsCheck[tenantID]) > p.connectionsCheckInterval
 			if shouldRevalidate {
 				// Update timestamp BEFORE spawning goroutine to prevent multiple
 				// concurrent revalidation checks for the same tenant.
-				p.lastSettingsCheck[tenantID] = now
+				p.lastConnectionsCheck[tenantID] = now
 				p.revalidateWG.Add(1)
 			}
 
@@ -356,7 +356,7 @@ func (p *Manager) evictLRU(logger log.Logger) {
 		delete(p.connections, candidateID)
 		delete(p.cachedURIs, candidateID)
 		delete(p.lastAccessed, candidateID)
-		delete(p.lastSettingsCheck, candidateID)
+		delete(p.lastConnectionsCheck, candidateID)
 	}
 }
 
@@ -401,7 +401,7 @@ func (p *Manager) Close(_ context.Context) error {
 		delete(p.connections, tenantID)
 		delete(p.cachedURIs, tenantID)
 		delete(p.lastAccessed, tenantID)
-		delete(p.lastSettingsCheck, tenantID)
+		delete(p.lastConnectionsCheck, tenantID)
 	}
 
 	p.mu.Unlock()
@@ -432,7 +432,7 @@ func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 	delete(p.connections, tenantID)
 	delete(p.cachedURIs, tenantID)
 	delete(p.lastAccessed, tenantID)
-	delete(p.lastSettingsCheck, tenantID)
+	delete(p.lastConnectionsCheck, tenantID)
 
 	return err
 }

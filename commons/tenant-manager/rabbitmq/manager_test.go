@@ -515,7 +515,7 @@ func TestManager_ApplyConnectionSettings_IsNoOp(t *testing.T) {
 	})
 }
 
-func TestManager_WithSettingsCheckInterval_Option(t *testing.T) {
+func TestManager_WithConnectionsCheckInterval_Option(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -547,10 +547,10 @@ func TestManager_WithSettingsCheckInterval_Option(t *testing.T) {
 
 			c := mustNewTestClient(t)
 			manager := NewManager(c, "ledger",
-				WithSettingsCheckInterval(tt.interval),
+				WithConnectionsCheckInterval(tt.interval),
 			)
 
-			assert.Equal(t, tt.expected, manager.settingsCheckInterval)
+			assert.Equal(t, tt.expected, manager.connectionsCheckInterval)
 		})
 	}
 }
@@ -578,7 +578,7 @@ func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(testutil.NewMockLogger()),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	// Pre-populate cache with a nil connection (avoids needing real AMQP)
@@ -587,7 +587,7 @@ func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 	manager.connections["tenant-123"] = nil
 	manager.cachedURIs["tenant-123"] = cachedURI
 	manager.lastAccessed["tenant-123"] = time.Now()
-	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+	manager.lastConnectionsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
 
 	// GetConnection will skip the nil connection because IsClosed() will panic
 	// on nil. We need to test the revalidation path indirectly.
@@ -641,14 +641,14 @@ func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
 			require.NoError(t, err)
 			manager := NewManager(tmClient, "ledger",
 				WithLogger(capLogger),
-				WithSettingsCheckInterval(1*time.Millisecond),
+				WithConnectionsCheckInterval(1*time.Millisecond),
 			)
 
 			// Pre-populate a cached connection
 			manager.connections["tenant-suspended"] = nil
 			manager.cachedURIs["tenant-suspended"] = "amqp://guest:guest@localhost:5672/tenant-suspended"
 			manager.lastAccessed["tenant-suspended"] = time.Now()
-			manager.lastSettingsCheck["tenant-suspended"] = time.Now()
+			manager.lastConnectionsCheck["tenant-suspended"] = time.Now()
 
 			// Trigger revalidatePoolSettings directly
 			manager.revalidatePoolSettings("tenant-suspended")
@@ -662,12 +662,12 @@ func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
 				manager.mu.RLock()
 				_, uriExists := manager.cachedURIs["tenant-suspended"]
 				_, accessExists := manager.lastAccessed["tenant-suspended"]
-				_, settingsExists := manager.lastSettingsCheck["tenant-suspended"]
+				_, connectionsCheckExists := manager.lastConnectionsCheck["tenant-suspended"]
 				manager.mu.RUnlock()
 
 				assert.False(t, uriExists, "cachedURIs should be removed for evicted tenant")
 				assert.False(t, accessExists, "lastAccessed should be removed for evicted tenant")
-				assert.False(t, settingsExists, "lastSettingsCheck should be removed for evicted tenant")
+				assert.False(t, connectionsCheckExists, "lastConnectionsCheck should be removed for evicted tenant")
 			}
 
 			assert.True(t, capLogger.ContainsSubstring(tt.expectLogSubstring),
@@ -690,13 +690,13 @@ func TestManager_RevalidateSettings_FailedDoesNotBreakConnection(t *testing.T) {
 	require.NoError(t, err)
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	manager.connections["tenant-123"] = nil
 	manager.cachedURIs["tenant-123"] = "amqp://guest:guest@localhost:5672/test"
 	manager.lastAccessed["tenant-123"] = time.Now()
-	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+	manager.lastConnectionsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
 
 	// Trigger revalidation directly - should fail but not evict
 	manager.revalidatePoolSettings("tenant-123")
@@ -720,8 +720,8 @@ func TestManager_RevalidateSettings_RecoverFromPanic(t *testing.T) {
 		connections:           make(map[string]*amqp.Connection),
 		cachedURIs:            make(map[string]string),
 		lastAccessed:          make(map[string]time.Time),
-		lastSettingsCheck:     make(map[string]time.Time),
-		settingsCheckInterval: 1 * time.Millisecond,
+		lastConnectionsCheck:     make(map[string]time.Time),
+		connectionsCheckInterval: 1 * time.Millisecond,
 	}
 
 	// Should not panic -- the recovery handler should catch it
@@ -836,13 +836,13 @@ func TestManager_RevalidateSettings_DetectsConfigChange(t *testing.T) {
 
 			manager := NewManager(tmClient, "ledger",
 				WithLogger(capLogger),
-				WithSettingsCheckInterval(1*time.Millisecond),
+				WithConnectionsCheckInterval(1*time.Millisecond),
 			)
 
 			manager.connections["tenant-cfg"] = nil
 			manager.cachedURIs["tenant-cfg"] = tt.cachedURI
 			manager.lastAccessed["tenant-cfg"] = time.Now()
-			manager.lastSettingsCheck["tenant-cfg"] = time.Now()
+			manager.lastConnectionsCheck["tenant-cfg"] = time.Now()
 
 			// Trigger revalidation directly
 			manager.revalidatePoolSettings("tenant-cfg")
@@ -887,13 +887,13 @@ func TestManager_RevalidateSettings_ConfigChangeKeepsOldConnOnFailure(t *testing
 
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	manager.connections["tenant-fail"] = nil
 	manager.cachedURIs["tenant-fail"] = "amqp://guest:guest@localhost:5672/old-vhost"
 	manager.lastAccessed["tenant-fail"] = time.Now()
-	manager.lastSettingsCheck["tenant-fail"] = time.Now()
+	manager.lastConnectionsCheck["tenant-fail"] = time.Now()
 
 	manager.revalidatePoolSettings("tenant-fail")
 
@@ -927,14 +927,14 @@ func TestManager_RevalidateSettings_NoReconnectWhenConfigSame(t *testing.T) {
 
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	matchingURI := "amqp://guest:guest@localhost:5672/tenant-abc"
 	manager.connections["tenant-same"] = nil
 	manager.cachedURIs["tenant-same"] = matchingURI
 	manager.lastAccessed["tenant-same"] = time.Now()
-	manager.lastSettingsCheck["tenant-same"] = time.Now()
+	manager.lastConnectionsCheck["tenant-same"] = time.Now()
 
 	manager.revalidatePoolSettings("tenant-same")
 
@@ -958,7 +958,7 @@ func TestManager_CloseConnection_CleansUpCachedURIs(t *testing.T) {
 	manager.connections["tenant-123"] = nil
 	manager.cachedURIs["tenant-123"] = "amqp://guest:guest@localhost:5672/test"
 	manager.lastAccessed["tenant-123"] = time.Now()
-	manager.lastSettingsCheck["tenant-123"] = time.Now()
+	manager.lastConnectionsCheck["tenant-123"] = time.Now()
 
 	err := manager.CloseConnection(context.Background(), "tenant-123")
 	require.NoError(t, err)
@@ -967,13 +967,13 @@ func TestManager_CloseConnection_CleansUpCachedURIs(t *testing.T) {
 	_, connExists := manager.connections["tenant-123"]
 	_, uriExists := manager.cachedURIs["tenant-123"]
 	_, accessExists := manager.lastAccessed["tenant-123"]
-	_, settingsExists := manager.lastSettingsCheck["tenant-123"]
+	_, connectionsCheckExists := manager.lastConnectionsCheck["tenant-123"]
 	manager.mu.RUnlock()
 
 	assert.False(t, connExists, "connection should be removed after CloseConnection")
 	assert.False(t, uriExists, "cachedURIs should be removed after CloseConnection")
 	assert.False(t, accessExists, "lastAccessed should be removed after CloseConnection")
-	assert.False(t, settingsExists, "lastSettingsCheck should be removed after CloseConnection")
+	assert.False(t, connectionsCheckExists, "lastConnectionsCheck should be removed after CloseConnection")
 }
 
 func TestManager_Close_CleansUpCachedURIs(t *testing.T) {
@@ -988,7 +988,7 @@ func TestManager_Close_CleansUpCachedURIs(t *testing.T) {
 		manager.connections[id] = nil
 		manager.cachedURIs[id] = "amqp://guest:guest@localhost:5672/" + id
 		manager.lastAccessed[id] = time.Now()
-		manager.lastSettingsCheck[id] = time.Now()
+		manager.lastConnectionsCheck[id] = time.Now()
 	}
 
 	err := manager.Close(context.Background())
@@ -998,7 +998,7 @@ func TestManager_Close_CleansUpCachedURIs(t *testing.T) {
 	assert.Empty(t, manager.connections, "all connections should be removed after Close")
 	assert.Empty(t, manager.cachedURIs, "all cachedURIs should be removed after Close")
 	assert.Empty(t, manager.lastAccessed, "all lastAccessed should be removed after Close")
-	assert.Empty(t, manager.lastSettingsCheck, "all lastSettingsCheck should be removed after Close")
+	assert.Empty(t, manager.lastConnectionsCheck, "all lastConnectionsCheck should be removed after Close")
 }
 
 func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
@@ -1042,13 +1042,13 @@ func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
 
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	manager.connections["tenant-cache-test"] = nil
 	manager.cachedURIs["tenant-cache-test"] = "amqp://guest:guest@localhost:5672/tenant-cache-test"
 	manager.lastAccessed["tenant-cache-test"] = time.Now()
-	manager.lastSettingsCheck["tenant-cache-test"] = time.Now()
+	manager.lastConnectionsCheck["tenant-cache-test"] = time.Now()
 
 	manager.revalidatePoolSettings("tenant-cache-test")
 
@@ -1060,14 +1060,14 @@ func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
 		"connection should be evicted after revalidation detected suspended tenant via cache bypass")
 }
 
-func TestManager_NewManager_DefaultSettingsCheckInterval(t *testing.T) {
+func TestManager_NewManager_DefaultConnectionsCheckInterval(t *testing.T) {
 	t.Parallel()
 
 	c := mustNewTestClient(t)
 	manager := NewManager(c, "ledger")
 
-	assert.Equal(t, defaultSettingsCheckInterval, manager.settingsCheckInterval,
-		"settingsCheckInterval should default to defaultSettingsCheckInterval")
+	assert.Equal(t, defaultConnectionsCheckInterval, manager.connectionsCheckInterval,
+		"connectionsCheckInterval should default to defaultConnectionsCheckInterval")
 	assert.NotNil(t, manager.cachedURIs, "cachedURIs map should be initialized")
-	assert.NotNil(t, manager.lastSettingsCheck, "lastSettingsCheck map should be initialized")
+	assert.NotNil(t, manager.lastConnectionsCheck, "lastConnectionsCheck map should be initialized")
 }

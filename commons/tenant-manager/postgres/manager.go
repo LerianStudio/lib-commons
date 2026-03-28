@@ -30,11 +30,11 @@ import (
 // Kept short to avoid blocking requests when a cached connection is stale.
 const pingTimeout = 3 * time.Second
 
-// defaultSettingsCheckInterval is the default interval between periodic
+// defaultConnectionsCheckInterval is the default interval between periodic
 // connection pool settings revalidation checks. When a cached connection is
 // returned by GetConnection and this interval has elapsed since the last check,
 // fresh config is fetched from the Tenant Manager asynchronously.
-const defaultSettingsCheckInterval = 30 * time.Second
+const defaultConnectionsCheckInterval = 30 * time.Second
 
 // settingsRevalidationTimeout is the maximum duration for the HTTP call
 // to the Tenant Manager during async settings revalidation.
@@ -107,9 +107,9 @@ type Manager struct {
 	idleTimeout         time.Duration        // how long before a connection is eligible for eviction
 	lastAccessed        map[string]time.Time // LRU tracking per tenant
 
-	lastSettingsCheck     map[string]time.Time       // tracks per-tenant last settings revalidation time
-	settingsCheckInterval time.Duration              // configurable interval between settings revalidation checks
-	lastAppliedSettings   map[string]appliedSettings // tracks previously applied pool settings per tenant for change detection
+	lastConnectionsCheck     map[string]time.Time       // tracks per-tenant last settings revalidation time
+	connectionsCheckInterval time.Duration              // configurable interval between settings revalidation checks
+	lastAppliedSettings      map[string]appliedSettings // tracks previously applied pool settings per tenant for change detection
 
 	// revalidateWG tracks in-flight revalidatePoolSettings goroutines so Close()
 	// can wait for them to finish before returning. Without this, goroutines
@@ -247,17 +247,17 @@ func WithMaxTenantPools(maxSize int) Option {
 	}
 }
 
-// WithSettingsCheckInterval sets the interval between periodic connection pool settings
+// WithConnectionsCheckInterval sets the interval between periodic connection pool settings
 // revalidation checks. When GetConnection returns a cached connection and this interval
 // has elapsed since the last check for that tenant, fresh config is fetched from the
 // Tenant Manager asynchronously and pool settings are updated without recreating the connection.
 //
-// If d <= 0, revalidation is DISABLED (settingsCheckInterval is set to 0).
+// If d <= 0, revalidation is DISABLED (connectionsCheckInterval is set to 0).
 // When disabled, no async revalidation checks are performed on cache hits.
-// Default: 30 seconds (defaultSettingsCheckInterval).
-func WithSettingsCheckInterval(d time.Duration) Option {
+// Default: 30 seconds (defaultConnectionsCheckInterval).
+func WithConnectionsCheckInterval(d time.Duration) Option {
 	return func(p *Manager) {
-		p.settingsCheckInterval = max(d, 0)
+		p.connectionsCheckInterval = max(d, 0)
 	}
 }
 
@@ -276,18 +276,18 @@ func WithIdleTimeout(d time.Duration) Option {
 // NewManager creates a new PostgreSQL connection manager.
 func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 	p := &Manager{
-		client:                c,
-		service:               service,
-		logger:                logcompat.New(nil),
-		connections:           make(map[string]*PostgresConnection),
-		lastAccessed:          make(map[string]time.Time),
-		lastSettingsCheck:     make(map[string]time.Time),
-		lastAppliedSettings:   make(map[string]appliedSettings),
-		settingsCheckInterval: defaultSettingsCheckInterval,
-		maxOpenConns:          fallbackMaxOpenConns,
-		maxIdleConns:          fallbackMaxIdleConns,
-		maxAllowedOpenConns:   defaultMaxAllowedOpenConns,
-		maxAllowedIdleConns:   defaultMaxAllowedIdleConns,
+		client:                   c,
+		service:                  service,
+		logger:                   logcompat.New(nil),
+		connections:              make(map[string]*PostgresConnection),
+		lastAccessed:             make(map[string]time.Time),
+		lastConnectionsCheck:     make(map[string]time.Time),
+		lastAppliedSettings:      make(map[string]appliedSettings),
+		connectionsCheckInterval: defaultConnectionsCheckInterval,
+		maxOpenConns:             fallbackMaxOpenConns,
+		maxIdleConns:             fallbackMaxIdleConns,
+		maxAllowedOpenConns:      defaultMaxAllowedOpenConns,
+		maxAllowedIdleConns:      defaultMaxAllowedIdleConns,
 	}
 
 	for _, opt := range opts {
@@ -357,12 +357,12 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*Postgres
 
 		p.lastAccessed[tenantID] = now
 
-		// Only revalidate if settingsCheckInterval > 0 (means revalidation is enabled)
-		shouldRevalidate := p.client != nil && p.settingsCheckInterval > 0 && time.Since(p.lastSettingsCheck[tenantID]) > p.settingsCheckInterval
+		// Only revalidate if connectionsCheckInterval > 0 (means revalidation is enabled)
+		shouldRevalidate := p.client != nil && p.connectionsCheckInterval > 0 && time.Since(p.lastConnectionsCheck[tenantID]) > p.connectionsCheckInterval
 		if shouldRevalidate {
 			// Update timestamp BEFORE spawning goroutine to prevent multiple
 			// concurrent revalidation checks for the same tenant.
-			p.lastSettingsCheck[tenantID] = now
+			p.lastConnectionsCheck[tenantID] = now
 		}
 
 		p.mu.Unlock()
@@ -693,7 +693,8 @@ func (p *Manager) tryReuseOrEvictCachedConnectionLocked(
 
 	delete(p.connections, tenantID)
 	delete(p.lastAccessed, tenantID)
-	delete(p.lastSettingsCheck, tenantID)
+	delete(p.lastConnectionsCheck, tenantID)
+	delete(p.lastAppliedSettings, tenantID)
 
 	return nil, false
 }
@@ -943,7 +944,8 @@ func (p *Manager) evictLRU(_ context.Context, logger libLog.Logger) {
 
 		delete(p.connections, candidateID)
 		delete(p.lastAccessed, candidateID)
-		delete(p.lastSettingsCheck, candidateID)
+		delete(p.lastConnectionsCheck, candidateID)
+		delete(p.lastAppliedSettings, candidateID)
 	}
 }
 
@@ -977,7 +979,7 @@ func (p *Manager) Close(_ context.Context) error {
 
 		delete(p.connections, tenantID)
 		delete(p.lastAccessed, tenantID)
-		delete(p.lastSettingsCheck, tenantID)
+		delete(p.lastConnectionsCheck, tenantID)
 		delete(p.lastAppliedSettings, tenantID)
 	}
 
@@ -1021,7 +1023,7 @@ func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 
 	delete(p.connections, tenantID)
 	delete(p.lastAccessed, tenantID)
-	delete(p.lastSettingsCheck, tenantID)
+	delete(p.lastConnectionsCheck, tenantID)
 	delete(p.lastAppliedSettings, tenantID)
 
 	return err
@@ -1182,7 +1184,7 @@ func (p *Manager) ApplyConnectionSettings(tenantID string, config *core.TenantCo
 	if newSettings.statementTimeout != "" && (!hasPrev || newSettings.statementTimeout != prev.statementTimeout) {
 		if !validStatementTimeout(newSettings.statementTimeout) {
 			compatLogger.Warnf("invalid statement_timeout value %q for tenant %s, skipping", newSettings.statementTimeout, tenantID)
-		} else if _, err := db.ExecContext(context.Background(), "SET statement_timeout = '"+newSettings.statementTimeout+"'"); err != nil {
+		} else if _, err := db.ExecContext(context.Background(), "SET statement_timeout = $1", newSettings.statementTimeout); err != nil {
 			compatLogger.Warnf("failed to set statement_timeout for tenant %s: %v", tenantID, err)
 		}
 	}
@@ -1317,8 +1319,8 @@ func CreateDirectConnection(ctx context.Context, cfg *core.PostgreSQLConfig) (*s
 // database handle, so ConnectedTenantIDs will include these IDs while
 // ApplyConnectionSettings will safely no-op (no ConnectionDB).
 //
-// This option is intended for testing code that depends on Manager (e.g., the
-// SettingsWatcher) without requiring a real database.
+// This option is intended for testing code that depends on Manager without
+// requiring a real database.
 func WithTestConnections(tenantIDs ...string) Option {
 	return func(p *Manager) {
 		for _, id := range tenantIDs {

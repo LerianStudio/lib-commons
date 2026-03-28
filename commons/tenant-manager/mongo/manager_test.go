@@ -1241,7 +1241,7 @@ func TestBuildTLSConfigFromFiles(t *testing.T) {
 	})
 }
 
-func TestManager_WithSettingsCheckInterval_Option(t *testing.T) {
+func TestManager_WithConnectionsCheckInterval_Option(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1278,24 +1278,24 @@ func TestManager_WithSettingsCheckInterval_Option(t *testing.T) {
 
 			c := mustNewTestClient(t, "http://localhost:8080")
 			manager := NewManager(c, "ledger",
-				WithSettingsCheckInterval(tt.interval),
+				WithConnectionsCheckInterval(tt.interval),
 			)
 
-			assert.Equal(t, tt.expectedInterval, manager.settingsCheckInterval)
+			assert.Equal(t, tt.expectedInterval, manager.connectionsCheckInterval)
 		})
 	}
 }
 
-func TestManager_DefaultSettingsCheckInterval(t *testing.T) {
+func TestManager_DefaultConnectionsCheckInterval(t *testing.T) {
 	t.Parallel()
 
 	c := mustNewTestClient(t, "http://localhost:8080")
 	manager := NewManager(c, "ledger")
 
-	assert.Equal(t, defaultSettingsCheckInterval, manager.settingsCheckInterval,
+	assert.Equal(t, defaultConnectionsCheckInterval, manager.connectionsCheckInterval,
 		"default settings check interval should be set from named constant")
-	assert.NotNil(t, manager.lastSettingsCheck,
-		"lastSettingsCheck map should be initialized")
+	assert.NotNil(t, manager.lastConnectionsCheck,
+		"lastConnectionsCheck map should be initialized")
 }
 
 func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
@@ -1325,13 +1325,13 @@ func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	cachedConn := &MongoConnection{DB: fakeDB}
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = time.Now()
-	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+	manager.lastConnectionsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
 
 	db, err := manager.GetConnection(context.Background(), "tenant-123")
 	require.NoError(t, err)
@@ -1342,10 +1342,10 @@ func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 	}, 500*time.Millisecond, 10*time.Millisecond, "should have fetched fresh config from Tenant Manager")
 
 	manager.mu.RLock()
-	lastCheck := manager.lastSettingsCheck["tenant-123"]
+	lastCheck := manager.lastConnectionsCheck["tenant-123"]
 	manager.mu.RUnlock()
 
-	assert.False(t, lastCheck.IsZero(), "lastSettingsCheck should have been updated")
+	assert.False(t, lastCheck.IsZero(), "lastConnectionsCheck should have been updated")
 
 	manager.revalidateWG.Wait()
 	require.NoError(t, manager.Close(context.Background()))
@@ -1378,15 +1378,15 @@ func TestManager_GetConnection_DisabledRevalidation_WithZero(t *testing.T) {
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(0),
+		WithConnectionsCheckInterval(0),
 	)
 
-	assert.Equal(t, time.Duration(0), manager.settingsCheckInterval)
+	assert.Equal(t, time.Duration(0), manager.connectionsCheckInterval)
 
 	cachedConn := &MongoConnection{DB: fakeDB}
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = time.Now()
-	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+	manager.lastConnectionsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
 
 	db, err := manager.GetConnection(context.Background(), "tenant-123")
 	require.NoError(t, err)
@@ -1418,15 +1418,15 @@ func TestManager_GetConnection_DisabledRevalidation_WithNegative(t *testing.T) {
 	manager := NewManager(tmClient, "payment",
 		WithLogger(testutil.NewMockLogger()),
 		WithModule("payment"),
-		WithSettingsCheckInterval(-5*time.Second),
+		WithConnectionsCheckInterval(-5*time.Second),
 	)
 
-	assert.Equal(t, time.Duration(0), manager.settingsCheckInterval)
+	assert.Equal(t, time.Duration(0), manager.connectionsCheckInterval)
 
 	cachedConn := &MongoConnection{DB: fakeDB}
 	manager.connections["tenant-456"] = cachedConn
 	manager.lastAccessed["tenant-456"] = time.Now()
-	manager.lastSettingsCheck["tenant-456"] = time.Now().Add(-1 * time.Hour)
+	manager.lastConnectionsCheck["tenant-456"] = time.Now().Add(-1 * time.Hour)
 
 	db, err := manager.GetConnection(context.Background(), "tenant-456")
 	require.NoError(t, err)
@@ -1482,13 +1482,13 @@ func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
 			require.NoError(t, err)
 			manager := NewManager(tmClient, "ledger",
 				WithLogger(capLogger),
-				WithSettingsCheckInterval(1*time.Millisecond),
+				WithConnectionsCheckInterval(1*time.Millisecond),
 			)
 
 			// Pre-populate a cached connection for the tenant (nil DB to avoid real MongoDB)
 			manager.connections["tenant-suspended"] = &MongoConnection{DB: nil}
 			manager.lastAccessed["tenant-suspended"] = time.Now()
-			manager.lastSettingsCheck["tenant-suspended"] = time.Now()
+			manager.lastConnectionsCheck["tenant-suspended"] = time.Now()
 
 			// Verify the connection exists before revalidation
 			statsBefore := manager.Stats()
@@ -1504,16 +1504,16 @@ func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
 				assert.Equal(t, 0, statsAfter.TotalConnections,
 					"connection should be evicted after suspended tenant detected")
 
-				// Verify lastAccessed and lastSettingsCheck were cleaned up
+				// Verify lastAccessed and lastConnectionsCheck were cleaned up
 				manager.mu.RLock()
 				_, accessExists := manager.lastAccessed["tenant-suspended"]
-				_, settingsExists := manager.lastSettingsCheck["tenant-suspended"]
+				_, connectionsCheckExists := manager.lastConnectionsCheck["tenant-suspended"]
 				manager.mu.RUnlock()
 
 				assert.False(t, accessExists,
 					"lastAccessed should be removed for evicted tenant")
-				assert.False(t, settingsExists,
-					"lastSettingsCheck should be removed for evicted tenant")
+				assert.False(t, connectionsCheckExists,
+					"lastConnectionsCheck should be removed for evicted tenant")
 			}
 
 			// Verify the appropriate log message was produced
@@ -1582,13 +1582,13 @@ func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	// Pre-populate a cached connection (nil DB to avoid real MongoDB)
 	manager.connections["tenant-cache-test"] = &MongoConnection{DB: nil}
 	manager.lastAccessed["tenant-cache-test"] = time.Now()
-	manager.lastSettingsCheck["tenant-cache-test"] = time.Now()
+	manager.lastConnectionsCheck["tenant-cache-test"] = time.Now()
 
 	// Trigger revalidatePoolSettings -- should bypass cache and hit the server
 	manager.revalidatePoolSettings("tenant-cache-test")
@@ -1602,14 +1602,14 @@ func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
 	assert.Equal(t, 0, statsAfter.TotalConnections,
 		"connection should be evicted after revalidation detected suspended tenant via cache bypass")
 
-	// Verify lastAccessed and lastSettingsCheck were cleaned up
+	// Verify lastAccessed and lastConnectionsCheck were cleaned up
 	manager.mu.RLock()
 	_, accessExists := manager.lastAccessed["tenant-cache-test"]
-	_, settingsExists := manager.lastSettingsCheck["tenant-cache-test"]
+	_, connectionsCheckExists := manager.lastConnectionsCheck["tenant-cache-test"]
 	manager.mu.RUnlock()
 
 	assert.False(t, accessExists, "lastAccessed should be removed for evicted tenant")
-	assert.False(t, settingsExists, "lastSettingsCheck should be removed for evicted tenant")
+	assert.False(t, connectionsCheckExists, "lastConnectionsCheck should be removed for evicted tenant")
 }
 
 func TestManager_RevalidateSettings_FailedDoesNotBreakConnection(t *testing.T) {
@@ -1625,13 +1625,13 @@ func TestManager_RevalidateSettings_FailedDoesNotBreakConnection(t *testing.T) {
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	// Pre-populate cache
 	manager.connections["tenant-123"] = &MongoConnection{DB: nil}
 	manager.lastAccessed["tenant-123"] = time.Now()
-	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+	manager.lastConnectionsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
 
 	// Trigger revalidation directly - should fail but not evict
 	manager.revalidatePoolSettings("tenant-123")
@@ -1657,8 +1657,8 @@ func TestManager_RevalidateSettings_RecoverFromPanic(t *testing.T) {
 		connections:           make(map[string]*MongoConnection),
 		databaseNames:         make(map[string]string),
 		lastAccessed:          make(map[string]time.Time),
-		lastSettingsCheck:     make(map[string]time.Time),
-		settingsCheckInterval: 1 * time.Millisecond,
+		lastConnectionsCheck:     make(map[string]time.Time),
+		connectionsCheckInterval: 1 * time.Millisecond,
 	}
 
 	// Should not panic -- the recovery handler should catch it
@@ -1667,7 +1667,7 @@ func TestManager_RevalidateSettings_RecoverFromPanic(t *testing.T) {
 	})
 }
 
-func TestManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
+func TestManager_CloseConnection_CleansUpLastConnectionsCheck(t *testing.T) {
 	t.Parallel()
 
 	c := mustNewTestClient(t, "http://localhost:8080")
@@ -1678,7 +1678,7 @@ func TestManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
 	// Pre-populate cache
 	manager.connections["tenant-123"] = &MongoConnection{DB: nil}
 	manager.lastAccessed["tenant-123"] = time.Now()
-	manager.lastSettingsCheck["tenant-123"] = time.Now()
+	manager.lastConnectionsCheck["tenant-123"] = time.Now()
 
 	err := manager.CloseConnection(context.Background(), "tenant-123")
 
@@ -1687,15 +1687,15 @@ func TestManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
 	manager.mu.RLock()
 	_, connExists := manager.connections["tenant-123"]
 	_, accessExists := manager.lastAccessed["tenant-123"]
-	_, settingsCheckExists := manager.lastSettingsCheck["tenant-123"]
+	_, connectionsCheckExists := manager.lastConnectionsCheck["tenant-123"]
 	manager.mu.RUnlock()
 
 	assert.False(t, connExists, "connection should be removed after CloseConnection")
 	assert.False(t, accessExists, "lastAccessed should be removed after CloseConnection")
-	assert.False(t, settingsCheckExists, "lastSettingsCheck should be removed after CloseConnection")
+	assert.False(t, connectionsCheckExists, "lastConnectionsCheck should be removed after CloseConnection")
 }
 
-func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
+func TestManager_Close_CleansUpLastConnectionsCheck(t *testing.T) {
 	t.Parallel()
 
 	c := mustNewTestClient(t, "http://localhost:8080")
@@ -1707,7 +1707,7 @@ func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
 	for _, id := range []string{"tenant-1", "tenant-2"} {
 		manager.connections[id] = &MongoConnection{DB: nil}
 		manager.lastAccessed[id] = time.Now()
-		manager.lastSettingsCheck[id] = time.Now()
+		manager.lastConnectionsCheck[id] = time.Now()
 	}
 
 	err := manager.Close(context.Background())
@@ -1716,7 +1716,7 @@ func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
 
 	assert.Empty(t, manager.connections, "all connections should be removed after Close")
 	assert.Empty(t, manager.lastAccessed, "all lastAccessed should be removed after Close")
-	assert.Empty(t, manager.lastSettingsCheck, "all lastSettingsCheck should be removed after Close")
+	assert.Empty(t, manager.lastConnectionsCheck, "all lastConnectionsCheck should be removed after Close")
 }
 
 func TestManager_RevalidateSettings_DetectsConfigChange(t *testing.T) {
@@ -1826,7 +1826,7 @@ func TestManager_RevalidateSettings_DetectsConfigChange(t *testing.T) {
 			manager := NewManager(tmClient, "ledger",
 				WithLogger(capLogger),
 				WithModule("onboarding"),
-				WithSettingsCheckInterval(1*time.Millisecond),
+				WithConnectionsCheckInterval(1*time.Millisecond),
 			)
 
 			manager.connections["tenant-cfg"] = &MongoConnection{
@@ -1834,7 +1834,7 @@ func TestManager_RevalidateSettings_DetectsConfigChange(t *testing.T) {
 				DB:                     nil, // nil DB avoids real connection
 			}
 			manager.lastAccessed["tenant-cfg"] = time.Now()
-			manager.lastSettingsCheck["tenant-cfg"] = time.Now()
+			manager.lastConnectionsCheck["tenant-cfg"] = time.Now()
 
 			// Trigger revalidation directly
 			manager.revalidatePoolSettings("tenant-cfg")
@@ -1882,7 +1882,7 @@ func TestManager_RevalidateSettings_ConfigChangeKeepsOldConnOnFailure(t *testing
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	manager.connections["tenant-fail"] = &MongoConnection{
@@ -1890,7 +1890,7 @@ func TestManager_RevalidateSettings_ConfigChangeKeepsOldConnOnFailure(t *testing
 		DB:                     nil,
 	}
 	manager.lastAccessed["tenant-fail"] = time.Now()
-	manager.lastSettingsCheck["tenant-fail"] = time.Now()
+	manager.lastConnectionsCheck["tenant-fail"] = time.Now()
 
 	// Trigger revalidation directly
 	manager.revalidatePoolSettings("tenant-fail")
@@ -1934,7 +1934,7 @@ func TestManager_RevalidateSettings_NoReconnectWhenConfigSame(t *testing.T) {
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	manager.connections["tenant-same"] = &MongoConnection{
@@ -1942,7 +1942,7 @@ func TestManager_RevalidateSettings_NoReconnectWhenConfigSame(t *testing.T) {
 		DB:                     fakeDB,
 	}
 	manager.lastAccessed["tenant-same"] = time.Now()
-	manager.lastSettingsCheck["tenant-same"] = time.Now()
+	manager.lastConnectionsCheck["tenant-same"] = time.Now()
 
 	// Trigger revalidation directly
 	manager.revalidatePoolSettings("tenant-same")
@@ -1986,13 +1986,13 @@ func TestManager_Close_WaitsForRevalidateSettings(t *testing.T) {
 	tmClient := mustNewTestClient(t, server.URL)
 	manager := NewManager(tmClient, "test-service",
 		WithLogger(testutil.NewMockLogger()),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	cachedConn := &MongoConnection{DB: fakeDB}
 	manager.connections["tenant-slow"] = cachedConn
 	manager.lastAccessed["tenant-slow"] = time.Now()
-	manager.lastSettingsCheck["tenant-slow"] = time.Time{}
+	manager.lastConnectionsCheck["tenant-slow"] = time.Time{}
 
 	_, err := manager.GetConnection(context.Background(), "tenant-slow")
 	require.NoError(t, err)

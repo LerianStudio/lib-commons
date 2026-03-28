@@ -10,8 +10,7 @@ import (
 )
 
 // WithPG registers a PostgreSQL manager. If module is provided, the connection
-// is stored with a module-specific context key (ContextWithPG) in addition to
-// the generic key (ContextWithPGConnection).
+// is stored with a module-specific context key in addition to the generic key.
 // Multiple calls with different modules register multiple modules.
 //
 // Single manager:  WithPG(pgManager)
@@ -40,8 +39,7 @@ func WithPG(p *tmpostgres.Manager, module ...string) TenantMiddlewareOption {
 }
 
 // WithMB registers a MongoDB manager. If module is provided, the connection
-// is stored with a module-specific context key (ContextWithMB) in addition to
-// the generic key (ContextWithMongo).
+// is stored with a module-specific context key in addition to the generic key.
 // Multiple calls with different modules register multiple modules.
 //
 // Single manager:  WithMB(mongoManager)
@@ -71,14 +69,15 @@ func WithMB(mg *tmmongo.Manager, module ...string) TenantMiddlewareOption {
 
 // resolvePostgres resolves PostgreSQL connections and stores them in context.
 // Multi-module path (pgModules) takes precedence over single-manager path (postgres).
-// The first module resolved also sets the generic ContextWithPGConnection for backward compat.
+// With a module, ContextWithPG sets only the module-specific key; the generic key
+// is only set by the single-manager path (no module argument).
 func (m *TenantMiddleware) resolvePostgres(ctx context.Context, tenantID string) (context.Context, error) {
 	// Multi-module path: iterate all registered modules.
 	if len(m.pgModules) > 0 {
-		firstSet := false
+		localCtx := ctx
 
 		for module, pgMgr := range m.pgModules {
-			conn, err := pgMgr.GetConnection(ctx, tenantID)
+			conn, err := pgMgr.GetConnection(localCtx, tenantID)
 			if err != nil {
 				return ctx, fmt.Errorf("module %s: %w", module, err)
 			}
@@ -88,19 +87,14 @@ func (m *TenantMiddleware) resolvePostgres(ctx context.Context, tenantID string)
 				return ctx, fmt.Errorf("module %s: failed to get database connection: %w", module, err)
 			}
 
-			ctx = core.ContextWithPG(ctx, module, db)
-
-			// Set generic key with first module's connection for backward compat.
-			if !firstSet {
-				ctx = core.ContextWithPGConnection(ctx, db)
-				firstSet = true
-			}
+			// Sets only the module-specific key; generic key is not overwritten.
+			localCtx = core.ContextWithPG(localCtx, db, module) //nolint:fatcontext // intentional: accumulates module-specific keys across iterations
 		}
 
-		return ctx, nil
+		return localCtx, nil
 	}
 
-	// Single-manager path (backward compat).
+	// Single-manager path (backward compat) -- generic key only.
 	if m.postgres != nil {
 		conn, err := m.postgres.GetConnection(ctx, tenantID)
 		if err != nil {
@@ -112,7 +106,7 @@ func (m *TenantMiddleware) resolvePostgres(ctx context.Context, tenantID string)
 			return ctx, fmt.Errorf("failed to get database connection: %w", err)
 		}
 
-		ctx = core.ContextWithPGConnection(ctx, db)
+		return core.ContextWithPG(ctx, db), nil
 	}
 
 	return ctx, nil
@@ -120,38 +114,34 @@ func (m *TenantMiddleware) resolvePostgres(ctx context.Context, tenantID string)
 
 // resolveMongo resolves MongoDB connections and stores them in context.
 // Multi-module path (mongoModules) takes precedence over single-manager path (mongo).
-// The first module resolved also sets the generic ContextWithMongo for backward compat.
+// With a module, ContextWithMB sets only the module-specific key; the generic key
+// is only set by the single-manager path (no module argument).
 func (m *TenantMiddleware) resolveMongo(ctx context.Context, tenantID string) (context.Context, error) {
 	// Multi-module path: iterate all registered modules.
 	if len(m.mongoModules) > 0 {
-		firstSet := false
+		localCtx := ctx
 
 		for module, mgMgr := range m.mongoModules {
-			mongoDB, err := mgMgr.GetDatabaseForTenant(ctx, tenantID)
+			mongoDB, err := mgMgr.GetDatabaseForTenant(localCtx, tenantID)
 			if err != nil {
 				return ctx, fmt.Errorf("module %s: %w", module, err)
 			}
 
-			ctx = core.ContextWithMB(ctx, module, mongoDB)
-
-			// Set generic key with first module's database for backward compat.
-			if !firstSet {
-				ctx = core.ContextWithMongo(ctx, mongoDB)
-				firstSet = true
-			}
+			// Sets only the module-specific key; generic key is not overwritten.
+			localCtx = core.ContextWithMB(localCtx, mongoDB, module) //nolint:fatcontext // intentional: accumulates module-specific keys across iterations
 		}
 
-		return ctx, nil
+		return localCtx, nil
 	}
 
-	// Single-manager path (backward compat).
+	// Single-manager path (backward compat) -- generic key only.
 	if m.mongo != nil {
 		mongoDB, err := m.mongo.GetDatabaseForTenant(ctx, tenantID)
 		if err != nil {
 			return ctx, err
 		}
 
-		ctx = core.ContextWithMongo(ctx, mongoDB)
+		return core.ContextWithMB(ctx, mongoDB), nil
 	}
 
 	return ctx, nil

@@ -70,6 +70,24 @@ func TestParseEvent(t *testing.T) {
 			input:   nil,
 			wantErr: true,
 		},
+		{
+			name: "returns error for missing event_type",
+			input: []byte(`{
+				"event_id": "evt-003",
+				"tenant_id": "t-123",
+				"tenant_slug": "acme"
+			}`),
+			wantErr: true,
+		},
+		{
+			name: "returns error for missing tenant_id",
+			input: []byte(`{
+				"event_id": "evt-004",
+				"event_type": "tenant.created",
+				"tenant_slug": "acme"
+			}`),
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

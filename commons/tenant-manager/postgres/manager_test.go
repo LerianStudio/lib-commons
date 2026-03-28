@@ -84,6 +84,7 @@ type trackingDB struct {
 	maxIdleConns int32
 	mu           sync.Mutex
 	execQueries  []string
+	execArgs     [][]interface{}
 }
 
 func (t *trackingDB) SetMaxOpenConns(n int) { atomic.StoreInt32(&t.maxOpenConns, int32(n)) }
@@ -91,11 +92,12 @@ func (t *trackingDB) SetMaxIdleConns(n int) { atomic.StoreInt32(&t.maxIdleConns,
 func (t *trackingDB) MaxOpenConns() int32   { return atomic.LoadInt32(&t.maxOpenConns) }
 func (t *trackingDB) MaxIdleConns() int32   { return atomic.LoadInt32(&t.maxIdleConns) }
 
-func (t *trackingDB) ExecContext(_ context.Context, query string, _ ...interface{}) (sql.Result, error) {
+func (t *trackingDB) ExecContext(_ context.Context, query string, args ...interface{}) (sql.Result, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	t.execQueries = append(t.execQueries, query)
+	t.execArgs = append(t.execArgs, args)
 
 	return nil, nil
 }
@@ -107,6 +109,17 @@ func (t *trackingDB) ExecQueries() []string {
 
 	copied := make([]string, len(t.execQueries))
 	copy(copied, t.execQueries)
+
+	return copied
+}
+
+// ExecArgsList returns a thread-safe copy of all executed query arguments.
+func (t *trackingDB) ExecArgsList() [][]interface{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	copied := make([][]interface{}, len(t.execArgs))
+	copy(copied, t.execArgs)
 
 	return copied
 }
@@ -1052,7 +1065,7 @@ func TestManager_Stats_IncludesMaxConnections(t *testing.T) {
 	assert.Equal(t, 0, stats.ActiveConnections)
 }
 
-func TestManager_WithSettingsCheckInterval_Option(t *testing.T) {
+func TestManager_WithConnectionsCheckInterval_Option(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1089,24 +1102,24 @@ func TestManager_WithSettingsCheckInterval_Option(t *testing.T) {
 
 			c := mustNewTestClient(t, "http://localhost:8080")
 			manager := NewManager(c, "ledger",
-				WithSettingsCheckInterval(tt.interval),
+				WithConnectionsCheckInterval(tt.interval),
 			)
 
-			assert.Equal(t, tt.expectedInterval, manager.settingsCheckInterval)
+			assert.Equal(t, tt.expectedInterval, manager.connectionsCheckInterval)
 		})
 	}
 }
 
-func TestManager_DefaultSettingsCheckInterval(t *testing.T) {
+func TestManager_DefaultConnectionsCheckInterval(t *testing.T) {
 	t.Parallel()
 
 	c := mustNewTestClient(t, "http://localhost:8080")
 	manager := NewManager(c, "ledger")
 
-	assert.Equal(t, defaultSettingsCheckInterval, manager.settingsCheckInterval,
+	assert.Equal(t, defaultConnectionsCheckInterval, manager.connectionsCheckInterval,
 		"default settings check interval should be set from named constant")
-	assert.NotNil(t, manager.lastSettingsCheck,
-		"lastSettingsCheck map should be initialized")
+	assert.NotNil(t, manager.lastConnectionsCheck,
+		"lastConnectionsCheck map should be initialized")
 }
 
 func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
@@ -1137,7 +1150,7 @@ func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		// Use a very short interval so the test triggers revalidation immediately
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	// Pre-populate cache with a healthy connection and an old settings check time.
@@ -1153,8 +1166,8 @@ func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 	}
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = time.Now()
-	// Set lastSettingsCheck to a time well in the past so revalidation triggers
-	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+	// Set lastConnectionsCheck to a time well in the past so revalidation triggers
+	manager.lastConnectionsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
 
 	// Call GetConnection - should return cached conn AND trigger async revalidation
 	conn, err := manager.GetConnection(context.Background(), "tenant-123")
@@ -1196,7 +1209,7 @@ func TestManager_GetConnection_DoesNotRevalidateBeforeInterval(t *testing.T) {
 		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		// Use a very long interval so revalidation does NOT trigger
-		WithSettingsCheckInterval(1*time.Hour),
+		WithConnectionsCheckInterval(1*time.Hour),
 	)
 
 	// Pre-populate cache with a healthy connection and a recent settings check time
@@ -1208,8 +1221,8 @@ func TestManager_GetConnection_DoesNotRevalidateBeforeInterval(t *testing.T) {
 	}
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = time.Now()
-	// Set lastSettingsCheck to now - should NOT trigger revalidation
-	manager.lastSettingsCheck["tenant-123"] = time.Now()
+	// Set lastConnectionsCheck to now - should NOT trigger revalidation
+	manager.lastConnectionsCheck["tenant-123"] = time.Now()
 
 	// Call GetConnection - should return cached conn without revalidation
 	conn, err := manager.GetConnection(context.Background(), "tenant-123")
@@ -1239,7 +1252,7 @@ func TestManager_GetConnection_FailedRevalidationDoesNotBreakConnection(t *testi
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	// Pre-populate cache with a healthy connection
@@ -1251,8 +1264,8 @@ func TestManager_GetConnection_FailedRevalidationDoesNotBreakConnection(t *testi
 	}
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = time.Now()
-	// Set lastSettingsCheck to the past so revalidation triggers
-	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+	// Set lastConnectionsCheck to the past so revalidation triggers
+	manager.lastConnectionsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
 
 	// Call GetConnection - should return cached conn even though revalidation will fail
 	conn, err := manager.GetConnection(context.Background(), "tenant-123")
@@ -1268,7 +1281,7 @@ func TestManager_GetConnection_FailedRevalidationDoesNotBreakConnection(t *testi
 	assert.Equal(t, int32(0), tDB.MaxIdleConns(), "maxIdleConns should NOT be changed on failed revalidation")
 }
 
-func TestManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
+func TestManager_CloseConnection_CleansUpLastConnectionsCheck(t *testing.T) {
 	t.Parallel()
 
 	c := mustNewTestClient(t, "http://localhost:8080")
@@ -1284,7 +1297,7 @@ func TestManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
 		ConnectionDB: &db,
 	}
 	manager.lastAccessed["tenant-123"] = time.Now()
-	manager.lastSettingsCheck["tenant-123"] = time.Now()
+	manager.lastConnectionsCheck["tenant-123"] = time.Now()
 
 	// Close the specific tenant connection
 	err := manager.CloseConnection(context.Background(), "tenant-123")
@@ -1294,15 +1307,15 @@ func TestManager_CloseConnection_CleansUpLastSettingsCheck(t *testing.T) {
 	manager.mu.RLock()
 	_, connExists := manager.connections["tenant-123"]
 	_, accessExists := manager.lastAccessed["tenant-123"]
-	_, settingsCheckExists := manager.lastSettingsCheck["tenant-123"]
+	_, connectionsCheckExists := manager.lastConnectionsCheck["tenant-123"]
 	manager.mu.RUnlock()
 
 	assert.False(t, connExists, "connection should be removed after CloseConnection")
 	assert.False(t, accessExists, "lastAccessed should be removed after CloseConnection")
-	assert.False(t, settingsCheckExists, "lastSettingsCheck should be removed after CloseConnection")
+	assert.False(t, connectionsCheckExists, "lastConnectionsCheck should be removed after CloseConnection")
 }
 
-func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
+func TestManager_Close_CleansUpLastConnectionsCheck(t *testing.T) {
 	t.Parallel()
 
 	c := mustNewTestClient(t, "http://localhost:8080")
@@ -1319,7 +1332,7 @@ func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
 			ConnectionDB: &dbIface,
 		}
 		manager.lastAccessed[id] = time.Now()
-		manager.lastSettingsCheck[id] = time.Now()
+		manager.lastConnectionsCheck[id] = time.Now()
 		manager.lastAppliedSettings[id] = appliedSettings{maxOpenConns: 25, maxIdleConns: 5}
 	}
 
@@ -1329,7 +1342,7 @@ func TestManager_Close_CleansUpLastSettingsCheck(t *testing.T) {
 
 	assert.Empty(t, manager.connections, "all connections should be removed after Close")
 	assert.Empty(t, manager.lastAccessed, "all lastAccessed should be removed after Close")
-	assert.Empty(t, manager.lastSettingsCheck, "all lastSettingsCheck should be removed after Close")
+	assert.Empty(t, manager.lastConnectionsCheck, "all lastConnectionsCheck should be removed after Close")
 	assert.Empty(t, manager.lastAppliedSettings, "all lastAppliedSettings should be removed after Close")
 }
 
@@ -1397,7 +1410,7 @@ func TestManager_GetConnection_DisabledRevalidation_WithZero(t *testing.T) {
 		WithLogger(testutil.NewMockLogger()),
 		WithModule("onboarding"),
 		// Disable revalidation with zero duration
-		WithSettingsCheckInterval(0),
+		WithConnectionsCheckInterval(0),
 	)
 
 	// Pre-populate cache with a healthy connection and an old settings check time
@@ -1409,8 +1422,8 @@ func TestManager_GetConnection_DisabledRevalidation_WithZero(t *testing.T) {
 	}
 	manager.connections["tenant-123"] = cachedConn
 	manager.lastAccessed["tenant-123"] = time.Now()
-	// Set lastSettingsCheck to the past - but should NOT trigger revalidation since disabled
-	manager.lastSettingsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
+	// Set lastConnectionsCheck to the past - but should NOT trigger revalidation since disabled
+	manager.lastConnectionsCheck["tenant-123"] = time.Now().Add(-1 * time.Hour)
 
 	// Call GetConnection multiple times - should NOT spawn any goroutines
 	for i := 0; i < 5; i++ {
@@ -1457,7 +1470,7 @@ func TestManager_GetConnection_DisabledRevalidation_WithNegative(t *testing.T) {
 		WithLogger(testutil.NewMockLogger()),
 		WithModule("payment"),
 		// Disable revalidation with negative duration
-		WithSettingsCheckInterval(-5*time.Second),
+		WithConnectionsCheckInterval(-5*time.Second),
 	)
 
 	// Pre-populate cache with a healthy connection
@@ -1469,8 +1482,8 @@ func TestManager_GetConnection_DisabledRevalidation_WithNegative(t *testing.T) {
 	}
 	manager.connections["tenant-456"] = cachedConn
 	manager.lastAccessed["tenant-456"] = time.Now()
-	// Set lastSettingsCheck to the past
-	manager.lastSettingsCheck["tenant-456"] = time.Now().Add(-1 * time.Hour)
+	// Set lastConnectionsCheck to the past
+	manager.lastConnectionsCheck["tenant-456"] = time.Now().Add(-1 * time.Hour)
 
 	// Call GetConnection - should NOT trigger revalidation
 	conn, err := manager.GetConnection(context.Background(), "tenant-456")
@@ -1661,7 +1674,8 @@ func TestManager_ApplyConnectionSettings_ChangeDetection(t *testing.T) {
 		expectLog           bool
 		expectLogSubstring  string
 		noLogSubstring      string
-		expectExecQuery     string // expected SET statement_timeout query
+		expectExecQuery     string // expected SET statement_timeout query (parameterized)
+		expectExecArg       string // expected argument for the SET statement_timeout query
 		expectNoExecQueries bool
 	}{
 		{
@@ -1682,7 +1696,8 @@ func TestManager_ApplyConnectionSettings_ChangeDetection(t *testing.T) {
 			expectSetMaxIdle:   true,
 			expectLog:          true,
 			expectLogSubstring: "applying connection settings",
-			expectExecQuery:    "SET statement_timeout = '5s'",
+			expectExecQuery:    "SET statement_timeout = $1",
+			expectExecArg:      "5s",
 		},
 		{
 			name: "no_change_skips_apply_and_log",
@@ -1754,7 +1769,8 @@ func TestManager_ApplyConnectionSettings_ChangeDetection(t *testing.T) {
 			expectSetMaxIdle:   false,
 			expectLog:          true,
 			expectLogSubstring: "statementTimeout 5s->10s",
-			expectExecQuery:    "SET statement_timeout = '10s'",
+			expectExecQuery:    "SET statement_timeout = $1",
+			expectExecArg:      "10s",
 		},
 		{
 			name: "statementTimeout_empty_skips_exec",
@@ -1840,6 +1856,13 @@ func TestManager_ApplyConnectionSettings_ChangeDetection(t *testing.T) {
 			if tt.expectExecQuery != "" {
 				assert.Contains(t, queries, tt.expectExecQuery,
 					"expected ExecContext query %q", tt.expectExecQuery)
+
+				if tt.expectExecArg != "" {
+					args := tDB.ExecArgsList()
+					require.NotEmpty(t, args, "expected at least one ExecContext call with args")
+					assert.Contains(t, args[len(args)-1], tt.expectExecArg,
+						"expected ExecContext arg %q", tt.expectExecArg)
+				}
 			}
 		})
 	}
@@ -1878,8 +1901,11 @@ func TestManager_ApplyConnectionSettings_StatementTimeout(t *testing.T) {
 	manager.ApplyConnectionSettings("tenant-123", config)
 
 	queries := tDB.ExecQueries()
+	args := tDB.ExecArgsList()
 	require.Len(t, queries, 1, "should execute SET statement_timeout on first apply")
-	assert.Equal(t, "SET statement_timeout = '5s'", queries[0])
+	assert.Equal(t, "SET statement_timeout = $1", queries[0])
+	require.Len(t, args, 1)
+	assert.Equal(t, []interface{}{"5s"}, args[0])
 
 	// Second apply with same settings — no ExecContext
 	capLogger.Clear()
@@ -1899,8 +1925,11 @@ func TestManager_ApplyConnectionSettings_StatementTimeout(t *testing.T) {
 	manager.ApplyConnectionSettings("tenant-123", config)
 
 	queries = tDB.ExecQueries()
+	args = tDB.ExecArgsList()
 	require.Len(t, queries, 2, "should execute SET again when statementTimeout changed")
-	assert.Equal(t, "SET statement_timeout = '15s'", queries[1])
+	assert.Equal(t, "SET statement_timeout = $1", queries[1])
+	require.Len(t, args, 2)
+	assert.Equal(t, []interface{}{"15s"}, args[1])
 	assert.True(t, capLogger.ContainsSubstring("statementTimeout 5s->15s"),
 		"should log the statementTimeout change")
 }
@@ -2068,7 +2097,7 @@ func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
 			require.NoError(t, err)
 			manager := NewManager(tmClient, "ledger",
 				WithLogger(capLogger),
-				WithSettingsCheckInterval(1*time.Millisecond),
+				WithConnectionsCheckInterval(1*time.Millisecond),
 			)
 
 			// Pre-populate a cached connection for the tenant
@@ -2079,7 +2108,7 @@ func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
 				ConnectionDB: &dbIface,
 			}
 			manager.lastAccessed["tenant-suspended"] = time.Now()
-			manager.lastSettingsCheck["tenant-suspended"] = time.Now()
+			manager.lastConnectionsCheck["tenant-suspended"] = time.Now()
 
 			// Verify the connection exists before revalidation
 			statsBefore := manager.Stats()
@@ -2099,16 +2128,16 @@ func TestManager_RevalidateSettings_EvictsSuspendedTenant(t *testing.T) {
 				assert.True(t, mockDB.closed,
 					"cached connection's DB should have been closed")
 
-				// Verify lastAccessed and lastSettingsCheck were cleaned up
+				// Verify lastAccessed and lastConnectionsCheck were cleaned up
 				manager.mu.RLock()
 				_, accessExists := manager.lastAccessed["tenant-suspended"]
-				_, settingsExists := manager.lastSettingsCheck["tenant-suspended"]
+				_, connectionsCheckExists := manager.lastConnectionsCheck["tenant-suspended"]
 				manager.mu.RUnlock()
 
 				assert.False(t, accessExists,
 					"lastAccessed should be removed for evicted tenant")
-				assert.False(t, settingsExists,
-					"lastSettingsCheck should be removed for evicted tenant")
+				assert.False(t, connectionsCheckExists,
+					"lastConnectionsCheck should be removed for evicted tenant")
 			}
 
 			// Verify the appropriate log message was produced
@@ -2177,7 +2206,7 @@ func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	mockDB := &pingableDB{}
@@ -2185,7 +2214,7 @@ func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
 
 	manager.connections["tenant-cache-test"] = &PostgresConnection{ConnectionDB: &dbIface}
 	manager.lastAccessed["tenant-cache-test"] = time.Now()
-	manager.lastSettingsCheck["tenant-cache-test"] = time.Now()
+	manager.lastConnectionsCheck["tenant-cache-test"] = time.Now()
 
 	// Trigger revalidatePoolSettings -- should bypass cache and hit the server
 	manager.revalidatePoolSettings("tenant-cache-test")
@@ -2311,7 +2340,7 @@ func TestManager_RevalidateSettings_DetectsConfigChange(t *testing.T) {
 			manager := NewManager(tmClient, "ledger",
 				WithLogger(capLogger),
 				WithModule("onboarding"),
-				WithSettingsCheckInterval(1*time.Millisecond),
+				WithConnectionsCheckInterval(1*time.Millisecond),
 			)
 
 			mockDB := &pingableDB{}
@@ -2322,7 +2351,7 @@ func TestManager_RevalidateSettings_DetectsConfigChange(t *testing.T) {
 				ConnectionDB:            &dbIface,
 			}
 			manager.lastAccessed["tenant-cfg"] = time.Now()
-			manager.lastSettingsCheck["tenant-cfg"] = time.Now()
+			manager.lastConnectionsCheck["tenant-cfg"] = time.Now()
 
 			// Trigger revalidation directly
 			manager.revalidatePoolSettings("tenant-cfg")
@@ -2371,7 +2400,7 @@ func TestManager_RevalidateSettings_ConfigChangeKeepsOldConnOnFailure(t *testing
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	mockDB := &pingableDB{}
@@ -2382,7 +2411,7 @@ func TestManager_RevalidateSettings_ConfigChangeKeepsOldConnOnFailure(t *testing
 		ConnectionDB:            &dbIface,
 	}
 	manager.lastAccessed["tenant-fail"] = time.Now()
-	manager.lastSettingsCheck["tenant-fail"] = time.Now()
+	manager.lastConnectionsCheck["tenant-fail"] = time.Now()
 
 	// Trigger revalidation directly
 	manager.revalidatePoolSettings("tenant-fail")
@@ -2422,7 +2451,7 @@ func TestManager_RevalidateSettings_NoReconnectWhenConfigSame(t *testing.T) {
 	manager := NewManager(tmClient, "ledger",
 		WithLogger(capLogger),
 		WithModule("onboarding"),
-		WithSettingsCheckInterval(1*time.Millisecond),
+		WithConnectionsCheckInterval(1*time.Millisecond),
 	)
 
 	tDB := &trackingDB{}
@@ -2433,7 +2462,7 @@ func TestManager_RevalidateSettings_NoReconnectWhenConfigSame(t *testing.T) {
 		ConnectionDB:            &dbIface,
 	}
 	manager.lastAccessed["tenant-same"] = time.Now()
-	manager.lastSettingsCheck["tenant-same"] = time.Now()
+	manager.lastConnectionsCheck["tenant-same"] = time.Now()
 
 	// Trigger revalidation directly
 	manager.revalidatePoolSettings("tenant-same")

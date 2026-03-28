@@ -55,12 +55,13 @@ type TenantSummary struct {
 // An optional circuit breaker can be enabled via WithCircuitBreaker to fail fast
 // when the Tenant Manager service is unresponsive.
 type Client struct {
-	baseURL       string
-	httpClient    *http.Client
-	logger        libLog.Logger
-	serviceAPIKey string
-	cache         cache.ConfigCache
-	cacheTTL      time.Duration
+	baseURL        string
+	httpClient     *http.Client
+	httpClientOnce sync.Once
+	logger         libLog.Logger
+	serviceAPIKey  string
+	cache          cache.ConfigCache
+	cacheTTL       time.Duration
 
 	// allowInsecureHTTP permits http:// URLs when set to true.
 	// By default, only https:// URLs are accepted unless explicitly opted in
@@ -207,15 +208,7 @@ func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) (*Cli
 
 	c := &Client{
 		baseURL: baseURL,
-		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				MaxIdleConns:        100,
-				MaxIdleConnsPerHost: 10,
-				MaxConnsPerHost:     0,
-				IdleConnTimeout:     90 * time.Second,
-			},
-		},
+		httpClient: newDefaultHTTPClient(),
 		logger:   logger,
 		cacheTTL: defaultCacheTTL,
 	}
@@ -441,7 +434,7 @@ func (c *Client) cacheTenantConfig(ctx context.Context, cacheKey string, config 
 // Successful responses are cached unless WithSkipCache is used.
 func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, opts ...GetConfigOption) (*core.TenantConfig, error) {
 	if c.httpClient == nil {
-		c.httpClient = &http.Client{Timeout: 30 * time.Second}
+		c.httpClientOnce.Do(func() { c.httpClient = newDefaultHTTPClient() })
 	}
 
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
@@ -577,7 +570,7 @@ func (c *Client) Close() error {
 // The API endpoint is: GET {baseURL}/v1/tenants/active?service={service}
 func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) ([]*TenantSummary, error) {
 	if c.httpClient == nil {
-		c.httpClient = &http.Client{Timeout: 30 * time.Second}
+		c.httpClientOnce.Do(func() { c.httpClient = newDefaultHTTPClient() })
 	}
 
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
@@ -672,4 +665,27 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	)
 
 	return tenants, nil
+}
+
+// newDefaultHTTPClient creates an HTTP client by cloning http.DefaultTransport
+// so that Proxy, TLS, DialContext and other platform defaults are preserved.
+// HTTP/2 is explicitly disabled to prevent a known Go stdlib panic in the
+// HTTP/2 hpack encoder when multiple goroutines concurrently use the same
+// HTTP/2 connection (e.g., middleware + async revalidation goroutines).
+func newDefaultHTTPClient() *http.Client {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		base = &http.Transport{}
+	}
+
+	t := base.Clone()
+	t.ForceAttemptHTTP2 = false
+	t.MaxIdleConns = 100
+	t.MaxIdleConnsPerHost = 10
+	t.IdleConnTimeout = 90 * time.Second
+
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: t,
+	}
 }
