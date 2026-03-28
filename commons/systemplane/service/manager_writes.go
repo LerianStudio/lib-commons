@@ -28,10 +28,8 @@ func (manager *defaultManager) PatchConfigs(ctx context.Context, req PatchReques
 		return WriteResult{}, nil
 	}
 
-	for _, op := range req.Ops {
-		if err := manager.validateConfigOp(op); err != nil {
-			return WriteResult{}, err
-		}
+	if err := manager.validateConfigOps(req.Ops); err != nil {
+		return WriteResult{}, err
 	}
 
 	if manager.configWriteValidator != nil {
@@ -47,30 +45,19 @@ func (manager *defaultManager) PatchConfigs(ctx context.Context, req PatchReques
 		}
 	}
 
-	escalation, _, err := Escalate(manager.registry, req.Ops)
+	plan, err := manager.buildWritePlan(domain.KindConfig, domain.ScopeGlobal, "", req.Ops)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "escalate config patch", err)
 		return WriteResult{}, fmt.Errorf("patch configs escalation: %w", err)
 	}
 
-	target, err := domain.NewTarget(domain.KindConfig, domain.ScopeGlobal, "")
+	result, err := manager.persistAndApplyWrite(ctx, plan, req)
 	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "build config target", err)
-		return WriteResult{}, fmt.Errorf("patch configs target: %w", err)
+		libOpentelemetry.HandleSpanError(span, "persist/apply config patch", err)
+		return result, fmt.Errorf("patch configs write: %w", err)
 	}
 
-	revision, err := manager.store.Put(ctx, target, req.Ops, req.ExpectedRevision, req.Actor, req.Source)
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "persist config patch", err)
-		return WriteResult{}, fmt.Errorf("patch configs put: %w", err)
-	}
-
-	if err := manager.applyEscalation(ctx, target, escalation); err != nil {
-		libOpentelemetry.HandleSpanError(span, "apply config escalation", err)
-		return WriteResult{}, fmt.Errorf("patch configs apply: %w", err)
-	}
-
-	return WriteResult{Revision: revision}, nil
+	return result, nil
 }
 
 // PatchSettings validates and persists setting mutations for the provided subject.
@@ -84,36 +71,23 @@ func (manager *defaultManager) PatchSettings(ctx context.Context, subject Subjec
 		return WriteResult{}, nil
 	}
 
-	for _, op := range req.Ops {
-		if err := manager.validateSettingOp(op, subject.Scope); err != nil {
-			return WriteResult{}, err
-		}
+	if err := manager.validateSettingOps(req.Ops, subject.Scope); err != nil {
+		return WriteResult{}, err
 	}
 
-	escalation, _, err := Escalate(manager.registry, req.Ops)
+	plan, err := manager.buildWritePlan(domain.KindSetting, subject.Scope, subject.SubjectID, req.Ops)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "escalate settings patch", err)
 		return WriteResult{}, fmt.Errorf("patch settings escalation: %w", err)
 	}
 
-	target, err := domain.NewTarget(domain.KindSetting, subject.Scope, subject.SubjectID)
+	result, err := manager.persistAndApplyWrite(ctx, plan, req)
 	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "build settings target", err)
-		return WriteResult{}, fmt.Errorf("patch settings target: %w", err)
+		libOpentelemetry.HandleSpanError(span, "persist/apply settings patch", err)
+		return result, fmt.Errorf("patch settings write: %w", err)
 	}
 
-	revision, err := manager.store.Put(ctx, target, req.Ops, req.ExpectedRevision, req.Actor, req.Source)
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "persist settings patch", err)
-		return WriteResult{}, fmt.Errorf("patch settings put: %w", err)
-	}
-
-	if err := manager.applyEscalation(ctx, target, escalation); err != nil {
-		libOpentelemetry.HandleSpanError(span, "apply settings escalation", err)
-		return WriteResult{}, fmt.Errorf("patch settings apply: %w", err)
-	}
-
-	return WriteResult{Revision: revision}, nil
+	return result, nil
 }
 
 // ApplyChangeSignal applies a precomputed runtime escalation from an external source.

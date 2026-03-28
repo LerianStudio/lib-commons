@@ -54,24 +54,14 @@ func (builder *SnapshotBuilder) BuildConfigs(ctx context.Context) (map[string]do
 	defer span.End()
 
 	defs := builder.registry.List(domain.KindConfig)
-	effective := initDefaults(defs)
 
-	target, err := domain.NewTarget(domain.KindConfig, domain.ScopeGlobal, "")
+	effective, revision, err := builder.buildEffectiveValues(ctx, defs, domain.KindConfig, domain.ScopeGlobal, "", "global-override")
 	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "build config target", err)
-		return nil, domain.RevisionZero, fmt.Errorf("build config target: %w", err)
+		libOpentelemetry.HandleSpanError(span, "build configs", err)
+		return nil, domain.RevisionZero, fmt.Errorf("build configs: %w", err)
 	}
 
-	result, err := builder.store.Get(ctx, target)
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "load config overrides", err)
-		return nil, domain.RevisionZero, fmt.Errorf("get config overrides: %w", err)
-	}
-
-	applyOverrides(effective, result.Entries, "global-override")
-	setRevision(effective, result.Revision)
-
-	return effective, result.Revision, nil
+	return effective, revision, nil
 }
 
 // BuildGlobalSettings builds global settings using defaults plus global
@@ -83,24 +73,14 @@ func (builder *SnapshotBuilder) BuildGlobalSettings(ctx context.Context) (map[st
 	defer span.End()
 
 	defs := filterDefsByScope(builder.registry.List(domain.KindSetting), domain.ScopeGlobal)
-	effective := initDefaults(defs)
 
-	target, err := domain.NewTarget(domain.KindSetting, domain.ScopeGlobal, "")
+	effective, revision, err := builder.buildEffectiveValues(ctx, defs, domain.KindSetting, domain.ScopeGlobal, "", "global-override")
 	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "build global settings target", err)
-		return nil, domain.RevisionZero, fmt.Errorf("build global setting target: %w", err)
+		libOpentelemetry.HandleSpanError(span, "build global settings", err)
+		return nil, domain.RevisionZero, fmt.Errorf("build global settings: %w", err)
 	}
 
-	result, err := builder.store.Get(ctx, target)
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "load global setting overrides", err)
-		return nil, domain.RevisionZero, fmt.Errorf("get global setting overrides: %w", err)
-	}
-
-	applyOverrides(effective, result.Entries, "global-override")
-	setRevision(effective, result.Revision)
-
-	return effective, result.Revision, nil
+	return effective, revision, nil
 }
 
 // BuildSettings builds effective settings for the requested subject.
@@ -125,24 +105,14 @@ func (builder *SnapshotBuilder) buildTenantSettings(ctx context.Context, tenantI
 	defs := filterDefsByScope(builder.registry.List(domain.KindSetting), domain.ScopeTenant)
 	effective := initDefaults(defs)
 
-	globalTarget, err := domain.NewTarget(domain.KindSetting, domain.ScopeGlobal, "")
-	if err != nil {
-		return nil, domain.RevisionZero, fmt.Errorf("build global setting target: %w", err)
-	}
-
-	globalResult, err := builder.store.Get(ctx, globalTarget)
+	globalResult, err := builder.readTarget(ctx, domain.KindSetting, domain.ScopeGlobal, "")
 	if err != nil {
 		return nil, domain.RevisionZero, fmt.Errorf("get global setting overrides: %w", err)
 	}
 
 	applyOverrides(effective, globalResult.Entries, "global-override")
 
-	tenantTarget, err := domain.NewTarget(domain.KindSetting, domain.ScopeTenant, tenantID)
-	if err != nil {
-		return nil, domain.RevisionZero, fmt.Errorf("build tenant setting target: %w", err)
-	}
-
-	tenantResult, err := builder.store.Get(ctx, tenantTarget)
+	tenantResult, err := builder.readTarget(ctx, domain.KindSetting, domain.ScopeTenant, tenantID)
 	if err != nil {
 		return nil, domain.RevisionZero, fmt.Errorf("get tenant setting overrides: %w", err)
 	}
@@ -154,6 +124,46 @@ func (builder *SnapshotBuilder) buildTenantSettings(ctx context.Context, tenantI
 	setRevision(effective, effectiveRevision)
 
 	return effective, effectiveRevision, nil
+}
+
+func (builder *SnapshotBuilder) buildEffectiveValues(
+	ctx context.Context,
+	defs []domain.KeyDef,
+	kind domain.Kind,
+	scope domain.Scope,
+	subjectID string,
+	overrideSource string,
+) (map[string]domain.EffectiveValue, domain.Revision, error) {
+	effective := initDefaults(defs)
+
+	result, err := builder.readTarget(ctx, kind, scope, subjectID)
+	if err != nil {
+		return nil, domain.RevisionZero, err
+	}
+
+	applyOverrides(effective, result.Entries, overrideSource)
+	setRevision(effective, result.Revision)
+
+	return effective, result.Revision, nil
+}
+
+func (builder *SnapshotBuilder) readTarget(
+	ctx context.Context,
+	kind domain.Kind,
+	scope domain.Scope,
+	subjectID string,
+) (ports.ReadResult, error) {
+	target, err := domain.NewTarget(kind, scope, subjectID)
+	if err != nil {
+		return ports.ReadResult{}, fmt.Errorf("build target: %w", err)
+	}
+
+	result, err := builder.store.Get(ctx, target)
+	if err != nil {
+		return ports.ReadResult{}, fmt.Errorf("get overrides: %w", err)
+	}
+
+	return result, nil
 }
 
 // BuildFull builds a complete snapshot with configs, global settings, and any
@@ -212,7 +222,7 @@ func initDefaults(defs []domain.KeyDef) map[string]domain.EffectiveValue {
 			Override: nil,
 			Source:   "default",
 			Revision: domain.RevisionZero,
-			Redacted: def.RedactPolicy != domain.RedactNone,
+			Redacted: isRedacted(def),
 		}
 	}
 

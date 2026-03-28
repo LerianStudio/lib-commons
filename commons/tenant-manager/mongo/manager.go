@@ -220,12 +220,12 @@ func WithIdleTimeout(d time.Duration) Option {
 // NewManager creates a new MongoDB connection manager.
 func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 	p := &Manager{
-		client:                c,
-		service:               service,
-		logger:                logcompat.New(nil),
-		connections:           make(map[string]*MongoConnection),
-		databaseNames:         make(map[string]string),
-		lastAccessed:          make(map[string]time.Time),
+		client:                   c,
+		service:                  service,
+		logger:                   logcompat.New(nil),
+		connections:              make(map[string]*MongoConnection),
+		databaseNames:            make(map[string]string),
+		lastAccessed:             make(map[string]time.Time),
 		lastConnectionsCheck:     make(map[string]time.Time),
 		connectionsCheckInterval: defaultConnectionsCheckInterval,
 	}

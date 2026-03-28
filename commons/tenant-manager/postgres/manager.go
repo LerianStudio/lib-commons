@@ -107,9 +107,9 @@ type Manager struct {
 	idleTimeout         time.Duration        // how long before a connection is eligible for eviction
 	lastAccessed        map[string]time.Time // LRU tracking per tenant
 
-	lastConnectionsCheck     map[string]time.Time          // tracks per-tenant last settings revalidation time
-	connectionsCheckInterval time.Duration                 // configurable interval between settings revalidation checks
-	lastAppliedSettings   map[string]appliedSettings    // tracks previously applied pool settings per tenant for change detection
+	lastConnectionsCheck     map[string]time.Time       // tracks per-tenant last settings revalidation time
+	connectionsCheckInterval time.Duration              // configurable interval between settings revalidation checks
+	lastAppliedSettings      map[string]appliedSettings // tracks previously applied pool settings per tenant for change detection
 
 	// revalidateWG tracks in-flight revalidatePoolSettings goroutines so Close()
 	// can wait for them to finish before returning. Without this, goroutines
@@ -276,18 +276,18 @@ func WithIdleTimeout(d time.Duration) Option {
 // NewManager creates a new PostgreSQL connection manager.
 func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 	p := &Manager{
-		client:                c,
-		service:               service,
-		logger:                logcompat.New(nil),
-		connections:           make(map[string]*PostgresConnection),
-		lastAccessed:          make(map[string]time.Time),
+		client:                   c,
+		service:                  service,
+		logger:                   logcompat.New(nil),
+		connections:              make(map[string]*PostgresConnection),
+		lastAccessed:             make(map[string]time.Time),
 		lastConnectionsCheck:     make(map[string]time.Time),
-		lastAppliedSettings:   make(map[string]appliedSettings),
+		lastAppliedSettings:      make(map[string]appliedSettings),
 		connectionsCheckInterval: defaultConnectionsCheckInterval,
-		maxOpenConns:          fallbackMaxOpenConns,
-		maxIdleConns:          fallbackMaxIdleConns,
-		maxAllowedOpenConns:   defaultMaxAllowedOpenConns,
-		maxAllowedIdleConns:   defaultMaxAllowedIdleConns,
+		maxOpenConns:             fallbackMaxOpenConns,
+		maxIdleConns:             fallbackMaxIdleConns,
+		maxAllowedOpenConns:      defaultMaxAllowedOpenConns,
+		maxAllowedIdleConns:      defaultMaxAllowedIdleConns,
 	}
 
 	for _, opt := range opts {

@@ -47,6 +47,7 @@ type ResolvedSet struct {
 // SchemaEntry describes a single key's metadata for the schema endpoint.
 type SchemaEntry struct {
 	Key              string
+	EnvVar           string
 	Kind             domain.Kind
 	AllowedScopes    []domain.Scope
 	ValueType        domain.ValueType
@@ -85,28 +86,36 @@ type ManagerConfig struct {
 	StateSync            func(ctx context.Context, snapshot domain.Snapshot)
 }
 
+func validateManagerConfig(cfg ManagerConfig) error {
+	if domain.IsNilValue(cfg.Registry) {
+		return errManagerRegistryRequired
+	}
+
+	if domain.IsNilValue(cfg.Store) {
+		return errManagerStoreRequired
+	}
+
+	if domain.IsNilValue(cfg.History) {
+		return errManagerHistoryRequired
+	}
+
+	if domain.IsNilValue(cfg.Supervisor) {
+		return errManagerSupervisorRequired
+	}
+
+	if cfg.Builder == nil {
+		return errManagerBuilderRequired
+	}
+
+	return nil
+}
+
 // NewManager creates a new Manager with the supplied dependencies. All
 // dependencies are required; a nil dependency causes a construction-time
 // error rather than a runtime panic on first use.
 func NewManager(cfg ManagerConfig) (Manager, error) {
-	if domain.IsNilValue(cfg.Registry) {
-		return nil, errManagerRegistryRequired
-	}
-
-	if domain.IsNilValue(cfg.Store) {
-		return nil, errManagerStoreRequired
-	}
-
-	if domain.IsNilValue(cfg.History) {
-		return nil, errManagerHistoryRequired
-	}
-
-	if domain.IsNilValue(cfg.Supervisor) {
-		return nil, errManagerSupervisorRequired
-	}
-
-	if cfg.Builder == nil {
-		return nil, errManagerBuilderRequired
+	if err := validateManagerConfig(cfg); err != nil {
+		return nil, err
 	}
 
 	return &defaultManager{

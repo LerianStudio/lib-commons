@@ -30,7 +30,9 @@ func Spec() json.RawMessage {
 // Merge semantics:
 //   - paths: systemplane paths are added; on key conflict systemplane wins.
 //   - definitions: systemplane definitions are added; on key conflict systemplane wins.
-//   - tags: systemplane tags are appended to existing tags.
+//   - tags: systemplane tags are merged with deduplication by tag name. Tags
+//     from the source with a name already present in the destination are
+//     skipped. Duplicate names within the source are also collapsed.
 //
 // The function does not modify the target slice; it returns a new byte slice.
 func MergeInto(target []byte) ([]byte, error) {
@@ -102,9 +104,11 @@ func mergeObjectField(field string, dst, src map[string]json.RawMessage) error {
 	return nil
 }
 
-// mergeTags appends systemplane tags to the target's existing tags array.
-// Duplicate detection is not performed — the consumer is expected to start
-// with a spec that does not already contain systemplane tags.
+// mergeTags merges systemplane tags into the target's existing tags array with
+// deduplication by tag name. Tags from the source whose name already exists in
+// the destination are skipped; duplicate names within the source are also
+// collapsed. Tag order from the destination is preserved; new source tags are
+// appended in their original order.
 func mergeTags(dst, src map[string]json.RawMessage) error {
 	srcTags, ok := src["tags"]
 	if !ok {
@@ -124,7 +128,41 @@ func mergeTags(dst, src map[string]json.RawMessage) error {
 		}
 	}
 
-	dstArr = append(dstArr, srcArr...)
+	// Build a set of existing tag names for deduplication.
+	existing := make(map[string]bool, len(dstArr))
+	for _, raw := range dstArr {
+		var tag struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(raw, &tag) == nil && tag.Name != "" {
+			existing[tag.Name] = true
+		}
+	}
+
+	// Only append tags whose name is not already present. Also deduplicate
+	// within srcArr itself by marking each appended name. Malformed tags
+	// and tags with empty names are rejected to prevent spec corruption.
+	for _, raw := range srcArr {
+		var tag struct {
+			Name string `json:"name"`
+		}
+
+		if err := json.Unmarshal(raw, &tag); err != nil {
+			return fmt.Errorf("swagger merge: unmarshal src tag entry: %w", err)
+		}
+
+		if tag.Name == "" {
+			continue
+		}
+
+		if existing[tag.Name] {
+			continue
+		}
+
+		existing[tag.Name] = true
+
+		dstArr = append(dstArr, raw)
+	}
 
 	merged, err := json.Marshal(dstArr)
 	if err != nil {

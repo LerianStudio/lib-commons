@@ -207,10 +207,10 @@ func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) (*Cli
 	}
 
 	c := &Client{
-		baseURL: baseURL,
+		baseURL:    baseURL,
 		httpClient: newDefaultHTTPClient(),
-		logger:   logger,
-		cacheTTL: defaultCacheTTL,
+		logger:     logger,
+		cacheTTL:   defaultCacheTTL,
 	}
 
 	for _, opt := range opts {

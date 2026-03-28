@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/goleak"
 )
 

@@ -21,24 +21,19 @@ func (manager *defaultManager) GetConfigs(ctx context.Context) (ResolvedSet, err
 	defer span.End()
 
 	snap := manager.supervisor.Snapshot()
-	if snap.BuiltAt.IsZero() || snap.Configs == nil {
-		values, revision, err := manager.builder.BuildConfigs(ctx)
-		if err != nil {
-			libOpentelemetry.HandleSpanError(span, "build configs", err)
-			return ResolvedSet{}, fmt.Errorf("get configs: %w", err)
-		}
-
-		return ResolvedSet{
-			Values:   redactEffectiveValues(manager.registry, values),
-			Revision: revision,
-		}, nil
+	if resolved, ok := manager.resolvedConfigsFromSnapshot(snap); ok {
+		return resolved, nil
 	}
 
-	values := redactEffectiveValues(manager.registry, cloneEffectiveValues(snap.Configs))
+	values, revision, err := manager.builder.BuildConfigs(ctx)
+	if err != nil {
+		libOpentelemetry.HandleSpanError(span, "build configs", err)
+		return ResolvedSet{}, fmt.Errorf("get configs: %w", err)
+	}
 
 	return ResolvedSet{
-		Values:   values,
-		Revision: revisionFromValues(values),
+		Values:   redactEffectiveValues(manager.registry, values),
+		Revision: revision,
 	}, nil
 }
 
@@ -50,12 +45,8 @@ func (manager *defaultManager) GetSettings(ctx context.Context, subject Subject)
 	defer span.End()
 
 	snap := manager.supervisor.Snapshot()
-
-	if !snap.BuiltAt.IsZero() {
-		resolved, ok := manager.cachedSettingsFromSnapshot(snap, subject)
-		if ok {
-			return resolved, nil
-		}
+	if resolved, ok := manager.resolvedSettingsFromSnapshot(snap, subject); ok {
+		return resolved, nil
 	}
 
 	values, revision, err := manager.builder.BuildSettings(ctx, subject)
