@@ -31,6 +31,8 @@ lib-commons/
 │   ├── cron/                       # Cron expression parsing and scheduling
 │   ├── crypto/                     # Hashing and symmetric encryption
 │   ├── errgroup/                   # Goroutine coordination with panic recovery
+│   ├── internal/                   # Internal packages (not part of public API)
+│   │   └── nilcheck/               # Nil interface detection helpers
 │   ├── jwt/                        # HMAC-based JWT signing and verification
 │   ├── license/                    # License validation and enforcement
 │   ├── log/                        # Logging abstraction (Logger interface)
@@ -39,21 +41,49 @@ lib-commons/
 │   │   └── ratelimit/              # Redis-backed rate limit storage
 │   ├── opentelemetry/              # Telemetry bootstrap, propagation, redaction
 │   │   └── metrics/                # Metric factory and fluent builders
+│   ├── outbox/                     # Transactional outbox primitives
+│   │   └── postgres/               # PostgreSQL outbox adapter with migrations
 │   ├── pointers/                   # Pointer conversion helpers
 │   ├── postgres/                   # PostgreSQL connector with migrations
 │   ├── rabbitmq/                   # RabbitMQ connector
 │   ├── redis/                      # Redis connector (standalone/sentinel/cluster)
 │   ├── runtime/                    # Panic recovery, metrics, safe goroutine wrappers
 │   ├── safe/                       # Panic-free math/regex/slice operations
+│   ├── secretsmanager/             # AWS Secrets Manager M2M credential retrieval
 │   ├── security/                   # Sensitive field detection and handling
 │   ├── server/                     # Graceful shutdown and lifecycle (ServerManager)
 │   ├── shell/                      # Makefile includes and shell utilities
+│   ├── systemplane/                # Runtime configuration plane (hot-reloadable settings)
+│   │   ├── adapters/               # Store (postgres, mongodb) and changefeed adapters
+│   │   ├── bootstrap/              # Environment-based config loading
+│   │   ├── domain/                 # Domain types, entries, revisions, snapshots
+│   │   ├── ports/                  # Port interfaces (store, changefeed, history, reconciler)
+│   │   ├── registry/               # Configuration key registry and validation
+│   │   ├── service/                # Service manager, supervisor, escalation
+│   │   └── testutil/               # Test fakes for systemplane contracts
+│   ├── tenant-manager/             # Multi-tenant database-per-tenant isolation
+│   │   ├── cache/                  # In-memory tenant cache with LRU eviction
+│   │   ├── client/                 # HTTP client for tenant-manager API
+│   │   ├── consumer/               # Multi-tenant consumer with lazy loading and retry
+│   │   ├── core/                   # Core types, context, errors, validation
+│   │   ├── event/                  # Event listener, dispatcher, payloads (Redis Pub/Sub)
+│   │   ├── log/                    # Tenant-scoped logger
+│   │   ├── middleware/             # Fiber middleware (TenantMiddleware with WithPG/WithMB)
+│   │   ├── mongo/                  # MongoDB tenant manager
+│   │   ├── postgres/               # PostgreSQL tenant manager
+│   │   ├── rabbitmq/               # RabbitMQ tenant manager
+│   │   ├── redis/                  # Redis tenant client
+│   │   ├── s3/                     # S3 object storage for tenant provisioning scripts
+│   │   ├── tenantcache/            # Tenant cache and loader
+│   │   └── valkey/                 # Valkey/Redis key patterns
 │   ├── transaction/                # Typed transaction validation/posting primitives
 │   ├── zap/                        # Zap logging adapter
 │   ├── app.go                      # Application bootstrap helpers
 │   ├── context.go                  # Context utilities
+│   ├── environment.go              # Environment detection and security tier mapping
 │   ├── errors.go                   # Error definitions
-│   ├── os.go                       # OS utilities
+│   ├── os.go                       # OS utilities and env var helpers
+│   ├── security_override.go        # ALLOW_* security policy override mechanism
 │   ├── stringUtils.go              # String utilities
 │   ├── time.go                     # Time utilities
 │   └── utils.go                    # General utility functions
@@ -351,15 +381,15 @@ func (c *Client) Connect(ctx context.Context) error {
 
 | Category | Allowed Packages |
 |----------|-----------------|
-| Database | `pgx/v5`, `mongo-driver`, `go-redis/v9`, `dbresolver/v2`, `golang-migrate/v4` |
+| Database | `pgx/v5`, `mongo-driver`, `mongo-driver/v2`, `go-redis/v9`, `dbresolver/v2`, `golang-migrate/v4` |
 | Messaging | `amqp091-go` |
 | HTTP | `gofiber/fiber/v2` |
 | Logging | `zap`, internal `log` package |
-| Testing | `testify`, `go.uber.org/mock`, `miniredis/v2` |
-| Observability | `opentelemetry/*`, `otelzap` |
-| Utilities | `google/uuid`, `shopspring/decimal`, `go-playground/validator/v10` |
+| Testing | `testify`, `go.uber.org/mock`, `miniredis/v2`, `testcontainers-go`, `go-sqlmock`, `goleak` |
+| Observability | `opentelemetry/*`, `otelzap`, `grpc`, `protobuf` |
+| Utilities | `google/uuid`, `shopspring/decimal`, `go-playground/validator/v10`, `golang.org/x/sync`, `golang.org/x/text` |
 | Resilience | `sony/gobreaker`, `go-redsync/v4` |
-| Security | `golang.org/x/oauth2`, `google.golang.org/api` |
+| Security | `golang.org/x/oauth2`, `google.golang.org/api`, `golang-jwt/jwt/v5`, `aws-sdk-go-v2` (secretsmanager) |
 | System | `shirou/gopsutil`, `joho/godotenv` |
 
 ### Forbidden Dependencies
@@ -411,7 +441,8 @@ safeValue := redactor.Redact(sensitiveField)
 
 ### Environment Variables
 
-- Use `SECURE_LOG_FIELDS` for field obfuscation
+- Use `LOG_OBFUSCATION_DISABLED` to control HTTP body obfuscation (default: disabled)
+- Sensitive field detection uses `commons/security.IsSensitiveField()` with a hardcoded set
 - Document required environment variables
 - Provide sensible defaults where safe
 
@@ -428,7 +459,17 @@ safeValue := redactor.Redact(sensitiveField)
 
 ### Enabled Linters
 
-`bodyclose`, `depguard`, `dogsled`, `dupword`, `errchkjson`, `gocognit`, `gocyclo`, `loggercheck`, `misspell`, `nakedret`, `nilerr`, `nolintlint`, `prealloc`, `predeclared`, `reassign`, `revive`, `staticcheck`, `thelper`, `tparallel`, `unconvert`, `unparam`, `usestdlibvars`, `wastedassign`, `wsl_v5`
+**Existing linters:**
+`bodyclose`, `depguard`, `dogsled`, `dupword`, `errchkjson`, `gocognit`, `gocyclo`, `loggercheck`, `misspell`, `nakedret`, `nilerr`, `nolintlint`, `prealloc`, `predeclared`, `reassign`, `revive`, `staticcheck`, `unconvert`, `unparam`, `usestdlibvars`, `wastedassign`, `wsl_v5`
+
+**Tier 1 — Safety & Correctness:**
+`errorlint`, `exhaustive`, `fatcontext`, `forcetypeassert`, `gosec`, `nilnil`, `noctx`
+
+**Tier 2 — Code Quality & Modernization:**
+`goconst`, `gocritic`, `inamedparam`, `intrange`, `mirror`, `modernize`, `perfsprint`
+
+**Tier 3 — Zero-Issue Guards:**
+`asasalint`, `copyloopvar`, `durationcheck`, `exptostd`, `gocheckcompilerdirectives`, `makezero`, `musttag`, `nilnesserr`, `recvcheck`, `rowserrcheck`, `spancheck`, `sqlclosecheck`, `testifylint`
 
 ### Formatting
 
@@ -491,7 +532,7 @@ make clean                 # Clean all build artifacts
 
 ## API Invariants
 
-Key v2 API contracts that must be preserved:
+Key v4 API contracts that must be preserved:
 
 | Package | Invariant |
 |---------|-----------|
