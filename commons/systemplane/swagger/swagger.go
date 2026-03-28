@@ -140,13 +140,18 @@ func mergeTags(dst, src map[string]json.RawMessage) error {
 	}
 
 	// Only append tags whose name is not already present. Also deduplicate
-	// within srcArr itself by marking each appended name.
+	// within srcArr itself by marking each appended name. Malformed tags
+	// and tags with empty names are rejected to prevent spec corruption.
 	for _, raw := range srcArr {
 		var tag struct {
 			Name string `json:"name"`
 		}
 
-		if json.Unmarshal(raw, &tag) != nil {
+		if err := json.Unmarshal(raw, &tag); err != nil {
+			return fmt.Errorf("swagger merge: unmarshal src tag entry: %w", err)
+		}
+
+		if tag.Name == "" {
 			continue
 		}
 

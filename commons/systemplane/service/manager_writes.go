@@ -54,7 +54,7 @@ func (manager *defaultManager) PatchConfigs(ctx context.Context, req PatchReques
 	result, err := manager.persistAndApplyWrite(ctx, plan, req)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "persist/apply config patch", err)
-		return WriteResult{}, fmt.Errorf("patch configs write: %w", err)
+		return result, fmt.Errorf("patch configs write: %w", err)
 	}
 
 	return result, nil
@@ -84,7 +84,7 @@ func (manager *defaultManager) PatchSettings(ctx context.Context, subject Subjec
 	result, err := manager.persistAndApplyWrite(ctx, plan, req)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "persist/apply settings patch", err)
-		return WriteResult{}, fmt.Errorf("patch settings write: %w", err)
+		return result, fmt.Errorf("patch settings write: %w", err)
 	}
 
 	return result, nil

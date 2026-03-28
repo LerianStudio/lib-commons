@@ -71,6 +71,23 @@ func withRegistrySnapshot(t *testing.T) {
 	})
 }
 
+// registryDeleteLocked removes a factory from the registry under the mutex,
+// keeping test mutations aligned with the production synchronization contract.
+func registryDeleteLocked(kind domain.BackendKind) {
+	backendRegistry.mu.Lock()
+	defer backendRegistry.mu.Unlock()
+
+	delete(backendRegistry.factories, kind)
+}
+
+// registrySetLocked overwrites a factory in the registry under the mutex.
+func registrySetLocked(kind domain.BackendKind, factory BackendFactory) {
+	backendRegistry.mu.Lock()
+	defer backendRegistry.mu.Unlock()
+
+	backendRegistry.factories[kind] = factory
+}
+
 func TestNewBackendFromConfig_NilConfig(t *testing.T) {
 	res, err := NewBackendFromConfig(context.Background(), nil)
 
@@ -165,7 +182,7 @@ func TestNewBackendFromConfig_UnsupportedBackend(t *testing.T) {
 func TestNewBackendFromConfig_NoFactoryRegistered(t *testing.T) {
 	// Temporarily remove the postgres factory to simulate an unregistered backend.
 	withRegistrySnapshot(t)
-	delete(backendRegistry.factories, domain.BackendPostgres)
+	registryDeleteLocked(domain.BackendPostgres)
 
 	cfg := &BootstrapConfig{
 		Backend: domain.BackendPostgres,
@@ -187,9 +204,9 @@ func TestNewBackendFromConfig_FactoryReturnsError(t *testing.T) {
 	withRegistrySnapshot(t)
 
 	expectedErr := fmt.Errorf("simulated connection failure")
-	backendRegistry.factories[testKind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
+	registrySetLocked(testKind, func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 		return nil, expectedErr
-	}
+	})
 
 	cfg := &BootstrapConfig{
 		Backend: testKind,
@@ -211,9 +228,9 @@ func TestNewBackendFromConfig_FactoryReturnsResources(t *testing.T) {
 	withRegistrySnapshot(t)
 
 	expected := &BackendResources{Store: noopStore{}, History: noopHistoryStore{}, ChangeFeed: noopChangeFeed{}, Closer: noopCloser{}}
-	backendRegistry.factories[testKind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
+	registrySetLocked(testKind, func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 		return expected, nil
-	}
+	})
 
 	cfg := &BootstrapConfig{
 		Backend: testKind,
@@ -267,9 +284,9 @@ func TestNewBackendFromConfig_FactoryReturnsIncompleteResources(t *testing.T) {
 			testKind := domain.BackendPostgres
 			withRegistrySnapshot(t)
 
-			backendRegistry.factories[testKind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
+			registrySetLocked(testKind, func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 				return tc.resources, nil
-			}
+			})
 
 			cfg := &BootstrapConfig{
 				Backend: testKind,
@@ -294,10 +311,10 @@ func TestNewBackendFromConfig_AppliesDefaults(t *testing.T) {
 
 	var capturedCfg *BootstrapConfig
 
-	backendRegistry.factories[testKind] = func(_ context.Context, cfg *BootstrapConfig) (*BackendResources, error) {
+	registrySetLocked(testKind, func(_ context.Context, cfg *BootstrapConfig) (*BackendResources, error) {
 		capturedCfg = cfg
 		return &BackendResources{Store: noopStore{}, History: noopHistoryStore{}, ChangeFeed: noopChangeFeed{}, Closer: noopCloser{}}, nil
-	}
+	})
 
 	cfg := &BootstrapConfig{
 		Backend: testKind,
@@ -321,7 +338,7 @@ func TestNewBackendFromConfig_AppliesDefaults(t *testing.T) {
 func TestRegisterBackendFactory_RejectsOverwrite(t *testing.T) {
 	testKind := domain.BackendPostgres
 	withRegistrySnapshot(t)
-	delete(backendRegistry.factories, testKind)
+	registryDeleteLocked(testKind)
 
 	firstCalled := false
 	secondCalled := false
@@ -351,9 +368,9 @@ func TestRegisterBackendFactory_RejectsOverwrite(t *testing.T) {
 func TestRegisterBackendFactory_RejectsNilFactory(t *testing.T) {
 	kind := domain.BackendMongoDB
 	withRegistrySnapshot(t)
-	backendRegistry.factories[kind] = func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
+	registrySetLocked(kind, func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 		return &BackendResources{Store: noopStore{}, History: noopHistoryStore{}, ChangeFeed: noopChangeFeed{}, Closer: noopCloser{}}, nil
-	}
+	})
 
 	err := RegisterBackendFactory(kind, nil)
 
@@ -361,6 +378,15 @@ func TestRegisterBackendFactory_RejectsNilFactory(t *testing.T) {
 	assert.ErrorIs(t, err, errNilBackendFactory)
 	_, ok := backendRegistry.factories[kind]
 	assert.True(t, ok)
+}
+
+func TestRecordInitError_NilIsIgnored(t *testing.T) {
+	withRegistrySnapshot(t)
+
+	RecordInitError(nil)
+
+	_, initErrors := backendRegistry.snapshot()
+	assert.Empty(t, initErrors, "RecordInitError(nil) must not append to initErrors")
 }
 
 // ---------------------------------------------------------------------------
@@ -372,7 +398,7 @@ func TestResetBackendFactories_ClearsRegistrations(t *testing.T) {
 	withRegistrySnapshot(t)
 
 	// Register a factory and record an init error.
-	delete(backendRegistry.factories, domain.BackendPostgres)
+	registryDeleteLocked(domain.BackendPostgres)
 	require.NoError(t, RegisterBackendFactory(domain.BackendPostgres, func(_ context.Context, _ *BootstrapConfig) (*BackendResources, error) {
 		return &BackendResources{Store: noopStore{}, History: noopHistoryStore{}, ChangeFeed: noopChangeFeed{}, Closer: noopCloser{}}, nil
 	}))

@@ -47,6 +47,10 @@ func (s *backendRegistryState) reset() {
 }
 
 func (s *backendRegistryState) recordInitError(err error) {
+	if domain.IsNilValue(err) {
+		return
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

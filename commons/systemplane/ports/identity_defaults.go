@@ -38,7 +38,7 @@ var _ IdentityResolver = (*FuncIdentityResolver)(nil)
 // Actor resolves the actor identity from ctx. It fails closed with
 // domain.ErrPermissionDenied on nil receiver, nil context, empty/whitespace-only
 // IDs, or IDs exceeding maxActorIDLength. When ActorFunc is nil or returns an
-// empty string, DefaultActor is used as a fallback.
+// empty or whitespace-only string, DefaultActor is used as a fallback.
 func (r *FuncIdentityResolver) Actor(ctx context.Context) (domain.Actor, error) {
 	if domain.IsNilValue(r) {
 		return domain.Actor{}, domain.ErrPermissionDenied

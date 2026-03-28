@@ -112,7 +112,11 @@ func (d *ComponentDiff) AllComponents() []string {
 }
 
 func snapshotIsZeroValue(snapshot domain.Snapshot) bool {
-	return len(snapshot.Configs) == 0 && len(snapshot.GlobalSettings) == 0 && len(snapshot.TenantSettings) == 0
+	return snapshot.Revision == domain.RevisionZero &&
+		snapshot.BuiltAt.IsZero() &&
+		len(snapshot.Configs) == 0 &&
+		len(snapshot.GlobalSettings) == 0 &&
+		len(snapshot.TenantSettings) == 0
 }
 
 func (d *ComponentDiff) markChangedTenantSettings(prev, current map[string]map[string]domain.EffectiveValue, changed map[string]bool) bool {
