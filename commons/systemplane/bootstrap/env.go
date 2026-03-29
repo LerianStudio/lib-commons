@@ -31,6 +31,46 @@ const (
 	EnvMongoPollIntervalSec   = "SYSTEMPLANE_MONGODB_POLL_INTERVAL_SEC"
 )
 
+// EnvSecretMasterKey is the environment variable holding the AES-256 master key
+// for encrypting/decrypting secret configuration values at rest.
+const EnvSecretMasterKey = "SYSTEMPLANE_SECRET_MASTER_KEY"
+
+// LoadFromEnvOrDefault reads SYSTEMPLANE_* environment variables when present,
+// otherwise falls back to a minimal Postgres backend configuration using the
+// provided DSN. This covers the common case where a product embeds systemplane
+// into its existing Postgres database and does not set dedicated SYSTEMPLANE_*
+// env vars.
+//
+// When SYSTEMPLANE_BACKEND is set, this delegates entirely to LoadFromEnv.
+// When it is not set, a BootstrapConfig is constructed with
+// Backend=BackendPostgres and the fallbackDSN as the Postgres DSN.
+// ApplyDefaults and Validate are called in both paths.
+func LoadFromEnvOrDefault(fallbackDSN string) (*BootstrapConfig, error) {
+	if strings.TrimSpace(os.Getenv(EnvBackend)) != "" {
+		return LoadFromEnv()
+	}
+
+	trimmedDSN := strings.TrimSpace(fallbackDSN)
+	if trimmedDSN == "" {
+		return nil, ErrMissingPostgresDSN
+	}
+
+	cfg := &BootstrapConfig{
+		Backend: domain.BackendPostgres,
+		Postgres: &PostgresBootstrapConfig{
+			DSN: trimmedDSN,
+		},
+	}
+
+	cfg.ApplyDefaults()
+
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+
+	return cfg, nil
+}
+
 // LoadFromEnv reads SYSTEMPLANE_* environment variables and returns a validated
 // BootstrapConfig.
 func LoadFromEnv() (*BootstrapConfig, error) {
