@@ -37,7 +37,7 @@ type FailedMessage struct {
 	// handler's configured value and RetryCount to that same value.
 	MaxRetries  int       `json:"max_retries"`
 	CreatedAt   time.Time `json:"created_at"`
-	NextRetryAt time.Time `json:"next_retry_at,omitempty"`
+	NextRetryAt time.Time `json:"next_retry_at,omitzero"`
 	TenantID    string    `json:"tenant_id,omitempty"`
 }
 
@@ -133,11 +133,8 @@ func backoffDuration(retryCount int) time.Duration {
 	const minBackoff = 5 * time.Second
 
 	d := libBackoff.ExponentialWithJitter(30*time.Second, retryCount)
-	if d < minBackoff {
-		d = minBackoff
-	}
 
-	return d
+	return max(d, minBackoff)
 }
 
 // Enqueue adds a failed message to the DLQ. The message's TenantID is
