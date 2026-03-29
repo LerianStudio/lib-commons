@@ -8,48 +8,42 @@ import (
 	"strings"
 )
 
+// cidr4 constructs a static *net.IPNet for an IPv4 CIDR. Using a helper keeps
+// each entry in the table below to a single readable line. All four octets are
+// accepted so future CIDR additions don't require changing the signature.
+//
+//nolint:unparam // d is currently always 0 for these network addresses; kept for generality.
+func cidr4(a, b, c, d byte, ones int) *net.IPNet {
+	return &net.IPNet{
+		IP:   net.IPv4(a, b, c, d).To4(),
+		Mask: net.CIDRMask(ones, 32),
+	}
+}
+
 // cgnatBlock is the CGNAT (Carrier-Grade NAT) range defined by RFC 6598.
 // Cloud providers frequently use this range for internal routing, so it must
 // be blocked to prevent SSRF via addresses like 100.64.0.1.
 //
 //nolint:gochecknoglobals // package-level CIDR block is intentional for SSRF protection
-var cgnatBlock = func() *net.IPNet {
-	_, cidr, _ := net.ParseCIDR("100.64.0.0/10")
-	return cidr
-}()
+var cgnatBlock = cidr4(100, 64, 0, 0, 10)
 
 // additionalBlockedRanges holds CIDR blocks that are not covered by the
 // standard net.IP predicates (IsPrivate, IsLoopback, etc.) but must be
-// blocked to prevent SSRF attacks:
+// blocked to prevent SSRF attacks.
 //
-//   - 0.0.0.0/8       "this network" (RFC 1122 §3.2.1.3)
-//   - 192.0.0.0/24    IETF protocol assignments (RFC 6890)
-//   - 192.0.2.0/24    TEST-NET-1 documentation (RFC 5737)
-//   - 198.18.0.0/15   benchmarking (RFC 2544)
-//   - 198.51.100.0/24 TEST-NET-2 documentation (RFC 5737)
-//   - 203.0.113.0/24  TEST-NET-3 documentation (RFC 5737)
-//   - 240.0.0.0/4     reserved/future use (RFC 1112)
+// All entries are compile-time-constructed net.IPNet literals — no runtime
+// string parsing, no init() required, and typos surface as test failures
+// rather than startup panics.
 //
 //nolint:gochecknoglobals // package-level slice is intentional for SSRF protection
-var additionalBlockedRanges []*net.IPNet
-
-func init() {
-	for _, cidr := range []string{
-		"0.0.0.0/8",
-		"192.0.0.0/24",
-		"192.0.2.0/24",
-		"198.18.0.0/15",
-		"198.51.100.0/24",
-		"203.0.113.0/24",
-		"240.0.0.0/4",
-	} {
-		_, block, err := net.ParseCIDR(cidr)
-		if err != nil {
-			panic("webhook/ssrf: invalid hardcoded CIDR " + cidr + ": " + err.Error())
-		}
-
-		additionalBlockedRanges = append(additionalBlockedRanges, block)
-	}
+var additionalBlockedRanges = []*net.IPNet{
+	cidr4(0, 0, 0, 0, 8),       // 0.0.0.0/8       — "this network" (RFC 1122 §3.2.1.3)
+	cidr4(192, 0, 0, 0, 24),    // 192.0.0.0/24    — IETF protocol assignments (RFC 6890)
+	cidr4(192, 0, 2, 0, 24),    // 192.0.2.0/24    — TEST-NET-1 documentation (RFC 5737)
+	cidr4(198, 18, 0, 0, 15),   // 198.18.0.0/15   — benchmarking (RFC 2544)
+	cidr4(198, 51, 100, 0, 24), // 198.51.100.0/24 — TEST-NET-2 documentation (RFC 5737)
+	cidr4(203, 0, 113, 0, 24),  // 203.0.113.0/24  — TEST-NET-3 documentation (RFC 5737)
+	cidr4(240, 0, 0, 0, 4),     // 240.0.0.0/4     — reserved/future use (RFC 1112)
 }
 
 // resolveAndValidateIP performs a single DNS lookup for the hostname in rawURL,
@@ -136,7 +130,7 @@ func resolveAndValidateIP(ctx context.Context, rawURL string) (pinnedURL string,
 //
 // In addition to the ranges covered by the standard net.IP predicates, this
 // function checks the additionalBlockedRanges slice which covers RFC-defined
-// special-purpose blocks not included in Go's net package (see init above).
+// special-purpose blocks not included in Go's net package.
 func isPrivateIP(ip net.IP) bool {
 	if ip.IsLoopback() ||
 		ip.IsPrivate() ||
