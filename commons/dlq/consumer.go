@@ -391,6 +391,8 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 	// Not yet time to retry — re-enqueue at the back so other messages proceed.
 	if !msg.NextRetryAt.IsZero() && now.Before(msg.NextRetryAt) {
 		if err := c.handler.Enqueue(ctx, msg); err != nil {
+			libOtel.HandleSpanError(span, "dlq message lost on re-enqueue", err)
+
 			c.logger.Log(ctx, libLog.LevelError, "dlq consumer: message lost — failed to re-enqueue not-yet-ready message",
 				libLog.String("source", msg.Source),
 				libLog.Int("retry_count", msg.RetryCount),
@@ -436,6 +438,8 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 		msg.NextRetryAt = time.Now().UTC().Add(backoffDuration(msg.RetryCount))
 
 		if requeueErr := c.handler.Enqueue(ctx, msg); requeueErr != nil {
+			libOtel.HandleSpanError(span, "dlq message lost on re-enqueue", requeueErr)
+
 			c.logger.Log(ctx, libLog.LevelError, "dlq consumer: message lost — failed to re-enqueue after retry failure",
 				libLog.String("source", msg.Source),
 				libLog.Int("retry_count", msg.RetryCount),

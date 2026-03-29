@@ -253,8 +253,8 @@ func (m *Middleware) handleDuplicate(
 }
 
 // saveResult performs post-handler Redis bookkeeping: on success it caches the response
-// body and marks the key as complete atomically via a Redis pipeline; on handler error
-// it deletes both keys so the client can retry with the same idempotency key.
+// body and marks the key as complete in a single round-trip via a Redis pipeline; on
+// handler error it deletes both keys so the client can retry with the same idempotency key.
 func (m *Middleware) saveResult(
 	ctx context.Context,
 	c *fiber.Ctx,

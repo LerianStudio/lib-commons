@@ -83,7 +83,11 @@ func NewManager(certPath, keyPath string) (*Manager, error) {
 // Optional intermediates are DER-encoded intermediate certificates appended after
 // the leaf in the chain. When omitted, the chain contains only the leaf certificate.
 // To preserve a full chain during hot reload, pass the intermediate DER bytes
-// obtained from [LoadFromFilesWithChain].
+// obtained from [LoadFromFilesWithChain], e.g.:
+//
+//	cert, signer, chain, err := LoadFromFilesWithChain(certPath, keyPath)
+//	if err != nil { ... }
+//	if err := m.Rotate(cert, signer, chain[1:]...); err != nil { ... }
 func (m *Manager) Rotate(cert *x509.Certificate, key crypto.Signer, intermediates ...[]byte) error {
 	if m == nil {
 		return ErrNilManager
@@ -121,7 +125,10 @@ func (m *Manager) Rotate(cert *x509.Certificate, key crypto.Signer, intermediate
 	m.cert = cert
 	m.signer = key
 	chain := make([][]byte, 0, 1+len(intermediates))
-	chain = append(chain, cert.Raw)
+
+	leafCopy := make([]byte, len(cert.Raw))
+	copy(leafCopy, cert.Raw)
+	chain = append(chain, leafCopy)
 
 	for _, inter := range intermediates {
 		interCopy := make([]byte, len(inter))
@@ -267,7 +274,11 @@ func LoadFromFiles(certPath, keyPath string) (*x509.Certificate, crypto.Signer, 
 // LoadFromFilesWithChain loads and validates a certificate and private key from
 // PEM files and also returns the full DER-encoded certificate chain (leaf first,
 // then intermediates). Use this when you need to pass intermediates to
-// [Manager.Rotate] for chain-preserving hot reload.
+// [Manager.Rotate] for chain-preserving hot reload:
+//
+//	cert, signer, chain, err := LoadFromFilesWithChain(certPath, keyPath)
+//	if err != nil { ... }
+//	if err := m.Rotate(cert, signer, chain[1:]...); err != nil { ... }
 func LoadFromFilesWithChain(certPath, keyPath string) (*x509.Certificate, crypto.Signer, [][]byte, error) {
 	return loadFromFiles(certPath, keyPath)
 }

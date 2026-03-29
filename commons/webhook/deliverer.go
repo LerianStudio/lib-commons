@@ -578,7 +578,12 @@ func (d *Deliverer) recordMetrics(ctx context.Context, endpointID string, succes
 // (SSRF protection) — without this, Go would try to verify the TLS cert
 // against the IP, which fails for hostname-based certificates.
 func (d *Deliverer) httpsClientForPinnedIP(originalHost string) *http.Client {
-	transport, ok := d.client.Transport.(*http.Transport)
+	baseTransport := d.client.Transport
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport
+	}
+
+	transport, ok := baseTransport.(*http.Transport)
 	if !ok {
 		// Non-standard transport — fall back to the default client and let
 		// the caller's transport handle TLS.
@@ -594,11 +599,10 @@ func (d *Deliverer) httpsClientForPinnedIP(originalHost string) *http.Client {
 
 	pinned.TLSClientConfig.ServerName = originalHost
 
-	return &http.Client{
-		Transport:     pinned,
-		Timeout:       d.client.Timeout,
-		CheckRedirect: d.client.CheckRedirect,
-	}
+	clone := *d.client
+	clone.Transport = pinned
+
+	return &clone
 }
 
 // sanitizeURL strips query parameters from a URL before logging to prevent
