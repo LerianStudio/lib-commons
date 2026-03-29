@@ -477,10 +477,11 @@ func (h *Handler) tenantScopedKeyForTenant(tenantID, source string) string {
 
 // validateKeySegment ensures that a Redis key segment (source or tenantID)
 // does not contain characters that would corrupt key patterns or enable
-// injection into SCAN glob patterns.
+// injection into SCAN glob patterns. Backslash is included because it is
+// the escape character in Redis SCAN patterns.
 func validateKeySegment(name, value string) error {
 	for _, c := range value {
-		if c == ':' || c == '*' || c == '?' || c == '[' || c == ']' {
+		if c == ':' || c == '*' || c == '?' || c == '[' || c == ']' || c == '\\' {
 			return fmt.Errorf("dlq: %s %q contains disallowed character %q", name, value, c)
 		}
 	}

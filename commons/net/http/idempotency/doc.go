@@ -2,9 +2,11 @@
 // backed by Redis.
 //
 // The middleware uses the X-Idempotency request header combined with the tenant ID
-// (from tenant-manager context) to form a composite Redis key, ensuring per-tenant
-// isolation. Duplicate requests receive the original response with the
-// X-Idempotency-Replayed header set to "true".
+// (from tenant-manager context) to form a composite Redis key. When a tenant ID is
+// present, keys are scoped per-tenant to prevent cross-tenant collisions. When no
+// tenant is in context (e.g., non-tenant-scoped routes), keys are still valid but
+// are shared across the global namespace. Duplicate requests receive the original
+// response with the X-Idempotency-Replayed header set to "true".
 //
 // # Quick start
 //

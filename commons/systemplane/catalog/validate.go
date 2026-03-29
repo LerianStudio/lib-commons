@@ -40,8 +40,8 @@ type validateConfig struct {
 	knownDeviations map[string]map[string]bool // key → field → true
 }
 
-// WithIgnoreFields tells ValidateKeyDefs to skip comparison of the given
-// fields for all keys. Common usage: WithIgnoreFields("EnvVar") when the
+// WithIgnoreFields tells ValidateKeyDefsWithOptions to skip comparison of the
+// given fields for all keys. Common usage: WithIgnoreFields("EnvVar") when the
 // product does not set EnvVar on its KeyDefs because values come from the
 // systemplane store rather than environment variables.
 func WithIgnoreFields(fields ...string) ValidateOption {
@@ -52,7 +52,7 @@ func WithIgnoreFields(fields ...string) ValidateOption {
 	}
 }
 
-// WithKnownDeviation tells ValidateKeyDefs to skip a specific
+// WithKnownDeviation tells ValidateKeyDefsWithOptions to skip a specific
 // (catalogKey, field) pair. Use this for intentional, documented deviations
 // such as overriding a key's Component for product-specific ComponentDiff
 // behavior.

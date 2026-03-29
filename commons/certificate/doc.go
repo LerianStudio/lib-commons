@@ -25,9 +25,9 @@
 //
 // # Key formats
 //
-// Private keys are parsed in order: PKCS#8 first, then PKCS#1 fallback.
-// The manager validates that the certificate's public key matches the private key
-// at load time to prevent silent misconfiguration.
+// Private keys are parsed in order: PKCS#8 first, then PKCS#1 (RSA) fallback,
+// then EC (SEC 1) fallback. The manager validates that the certificate's public
+// key matches the private key at load time to prevent silent misconfiguration.
 //
 // # Nil safety
 //

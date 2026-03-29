@@ -43,10 +43,12 @@ func init() {
 		"203.0.113.0/24",
 		"240.0.0.0/4",
 	} {
-		_, block, _ := net.ParseCIDR(cidr)
-		if block != nil {
-			additionalBlockedRanges = append(additionalBlockedRanges, block)
+		_, block, err := net.ParseCIDR(cidr)
+		if err != nil {
+			panic("webhook/ssrf: invalid hardcoded CIDR " + cidr + ": " + err.Error())
 		}
+
+		additionalBlockedRanges = append(additionalBlockedRanges, block)
 	}
 }
 
