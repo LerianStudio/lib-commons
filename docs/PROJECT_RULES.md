@@ -26,10 +26,12 @@ lib-commons/
 ├── commons/                      # All library packages
 │   ├── assert/                     # Production-safe assertions with telemetry
 │   ├── backoff/                    # Exponential backoff with jitter
+│   ├── certificate/                # Thread-safe TLS certificate manager with hot-reload
 │   ├── circuitbreaker/             # Circuit breaker manager and health checker
 │   ├── constants/                  # Shared constants (headers, errors, pagination)
 │   ├── cron/                       # Cron expression parsing and scheduling
 │   ├── crypto/                     # Hashing and symmetric encryption
+│   ├── dlq/                        # Redis-backed dead letter queue with consumer and retry
 │   ├── errgroup/                   # Goroutine coordination with panic recovery
 │   ├── internal/                   # Internal packages (not part of public API)
 │   │   └── nilcheck/               # Nil interface detection helpers
@@ -38,6 +40,7 @@ lib-commons/
 │   ├── log/                        # Logging abstraction (Logger interface)
 │   ├── mongo/                      # MongoDB connector
 │   ├── net/http/                   # Fiber-oriented HTTP helpers and middleware
+│   │   ├── idempotency/            # Fiber idempotency middleware (Redis-backed, tenant-scoped)
 │   │   └── ratelimit/              # Redis-backed rate limit storage
 │   ├── opentelemetry/              # Telemetry bootstrap, propagation, redaction
 │   │   └── metrics/                # Metric factory and fluent builders
@@ -77,6 +80,7 @@ lib-commons/
 │   │   ├── tenantcache/            # Tenant cache and loader
 │   │   └── valkey/                 # Valkey/Redis key patterns
 │   ├── transaction/                # Typed transaction validation/posting primitives
+│   ├── webhook/                    # Webhook delivery with HMAC-SHA256 signing and SSRF protection
 │   ├── zap/                        # Zap logging adapter
 │   ├── app.go                      # Application bootstrap helpers
 │   ├── context.go                  # Context utilities
@@ -556,6 +560,19 @@ Key v4 API contracts that must be preserved:
 | `transaction` | `BuildIntentPlan()` + `ValidateBalanceEligibility()` + `ApplyPosting()` |
 | `rabbitmq` | `*Context()` variants for lifecycle; `HealthCheck()` returns `(bool, error)` |
 | `opentelemetry` | `Redactor` with `RedactionRule`; `NewDefaultRedactor()` / `NewRedactor(rules, mask)` |
+| `certificate` | `NewManager(certPath, keyPath)` — empty paths return unconfigured manager (TLS optional). `Rotate(cert, key)` for zero-downtime hot-reload. `GetCertificateFunc()` for `tls.Config.GetCertificate`. All methods nil-safe. |
+| `certificate` | Private key parsing order: PKCS#8 → PKCS#1 → EC. Key file must have mode 0600 or stricter (enforced at load time). Public key match validated against cert at load and rotate. |
+| `dlq` | `New(conn, keyPrefix, maxRetries, opts...)` returns `*Handler`; `NewConsumer(handler, retryFn, opts...)` returns `(*Consumer, error)`. |
+| `dlq` | `Handler.Enqueue(ctx, msg)`, `Dequeue(ctx, source)`, `QueueLength(ctx, source)`, `ScanQueues(ctx, source)`, `PruneExhaustedMessages(ctx, source, limit)`, `ExtractTenantFromKey(key, source)`. |
+| `dlq` | `Consumer.Run(ctx)` blocks until ctx cancelled or `Stop()` called. `ProcessOnce(ctx)` exported for testing. Tenant isolation via `tmcore.GetTenantIDContext`. |
+| `dlq` | `DLQMetrics` interface: `RecordRetried(ctx, source)`, `RecordExhausted(ctx, source)`. Nil metrics are silently skipped. |
+| `net/http/idempotency` | `New(conn, opts...)` returns `*Middleware` (nil when conn is nil). `(*Middleware).Check()` returns a Fiber handler; nil receiver returns pass-through. |
+| `net/http/idempotency` | Redis key pattern: `<prefix><tenantID>:<idempotencyKey>` with companion response key `…:response`. Default prefix `"idempotency:"`, TTL 7 days, max key length 256. |
+| `net/http/idempotency` | Fail-open on Redis errors. GET/OPTIONS/HEAD requests pass through. Handler error deletes key (client may retry). In-flight duplicate returns 409 Conflict. |
+| `webhook` | `NewDeliverer(lister, opts...)` returns `*Deliverer` (nil when lister is nil). `Deliver(ctx, event)` and `DeliverWithResults(ctx, event)` are the delivery entry points. |
+| `webhook` | SSRF protection: `resolveAndValidateIP` performs a single DNS lookup, validates all resolved IPs against private/loopback/CGNAT/RFC-reserved ranges, and pins the URL to the first IP to eliminate TOCTOU. Redirects are blocked at transport layer. |
+| `webhook` | HMAC-SHA256 signature sent in `X-Webhook-Signature: sha256=HEX` header over raw payload bytes only (timestamp excluded by design). Encrypted secrets use `enc:` prefix and require `WithSecretDecryptor`. |
+| `webhook` | `EndpointLister` interface: `ListActiveEndpoints(ctx) ([]Endpoint, error)`. `DeliveryMetrics` interface: `RecordDelivery(ctx, endpointID, success, statusCode, attempts)`. |
 
 ---
 
