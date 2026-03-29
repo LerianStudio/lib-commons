@@ -3,8 +3,11 @@
 package bootstrap
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"maps"
+	"os"
 	"strings"
 	"time"
 
@@ -41,6 +44,41 @@ type SecretStoreConfig struct {
 	SecretKeys []string
 }
 
+// String implements fmt.Stringer to prevent accidental master key exposure in logs or spans.
+func (s *SecretStoreConfig) String() string {
+	if s == nil {
+		return "<nil>"
+	}
+
+	return "SecretStoreConfig{MasterKey:REDACTED}"
+}
+
+// GoString implements fmt.GoStringer to prevent accidental master key exposure in %#v formatting.
+func (s *SecretStoreConfig) GoString() string {
+	return s.String()
+}
+
+// validate checks that the master key meets minimum size requirements.
+// It accepts either exactly 32 raw bytes or a valid base64-encoded 32-byte value.
+func (s *SecretStoreConfig) validate() error {
+	if s == nil {
+		return nil
+	}
+
+	const masterKeySizeBytes = 32
+
+	if len([]byte(s.MasterKey)) == masterKeySizeBytes {
+		return nil
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(s.MasterKey)
+	if err == nil && len(decoded) == masterKeySizeBytes {
+		return nil
+	}
+
+	return fmt.Errorf("secret master key must be exactly %d raw bytes or a valid base64-encoded %d-byte value", masterKeySizeBytes, masterKeySizeBytes)
+}
+
 // PostgresBootstrapConfig holds PostgreSQL-specific bootstrap settings.
 type PostgresBootstrapConfig struct {
 	DSN            string
@@ -63,10 +101,71 @@ type MongoBootstrapConfig struct {
 	ApplyBehaviors    map[string]domain.ApplyBehavior
 }
 
+// ApplyKeyDefs propagates ApplyBehavior from the given KeyDefs into the
+// bootstrap configuration and auto-configures secret encryption when secret
+// keys are detected and the SYSTEMPLANE_SECRET_MASTER_KEY env var is set.
+//
+// Reading from the environment here is intentional and consistent with the
+// rest of the bootstrap layer (LoadFromEnv, LoadFromEnvOrDefault). Bootstrap
+// is the one place where direct os.Getenv calls are expected: the entire
+// purpose of this layer is to translate process-environment state into typed
+// Go configuration before any backend is created.
+//
+// This is typically called once during service startup, after
+// LoadFromEnvOrDefault and before creating the backend.
+func (cfg *BootstrapConfig) ApplyKeyDefs(defs []domain.KeyDef) {
+	if cfg == nil {
+		return
+	}
+
+	applyBehaviors := make(map[string]domain.ApplyBehavior, len(defs))
+	secretKeys := make([]string, 0)
+
+	for _, def := range defs {
+		applyBehaviors[def.Key] = def.ApplyBehavior
+
+		if def.Secret {
+			secretKeys = append(secretKeys, def.Key)
+		}
+	}
+
+	cfg.ApplyBehaviors = applyBehaviors
+
+	if cfg.Postgres != nil {
+		pgBehaviors := make(map[string]domain.ApplyBehavior, len(applyBehaviors))
+		maps.Copy(pgBehaviors, applyBehaviors)
+
+		cfg.Postgres.ApplyBehaviors = pgBehaviors
+	}
+
+	if cfg.MongoDB != nil {
+		mgBehaviors := make(map[string]domain.ApplyBehavior, len(applyBehaviors))
+		maps.Copy(mgBehaviors, applyBehaviors)
+
+		cfg.MongoDB.ApplyBehaviors = mgBehaviors
+	}
+
+	masterKey := strings.TrimSpace(os.Getenv(EnvSecretMasterKey))
+	if len(secretKeys) == 0 || masterKey == "" {
+		return
+	}
+
+	cfg.Secrets = &SecretStoreConfig{
+		MasterKey:  masterKey,
+		SecretKeys: secretKeys,
+	}
+}
+
 // Validate checks that the bootstrap configuration is well-formed.
 func (cfg *BootstrapConfig) Validate() error {
 	if cfg == nil || !cfg.Backend.IsValid() {
 		return fmt.Errorf("%w: %q", ErrMissingBackend, backendString(cfg))
+	}
+
+	if cfg.Secrets != nil {
+		if err := cfg.Secrets.validate(); err != nil {
+			return err
+		}
 	}
 
 	switch cfg.Backend {
