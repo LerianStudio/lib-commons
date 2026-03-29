@@ -78,8 +78,12 @@ func (s *Snapshot) ConfigValue(key string, fallback any) any {
 }
 
 // GlobalSettingValue returns the setting value for the given key, or the fallback
-// if the key is not present.
+// if the key is not present. Nil-receiver safe.
 func (s *Snapshot) GlobalSettingValue(key string, fallback any) any {
+	if s == nil {
+		return fallback
+	}
+
 	if v, ok := s.GetGlobalSetting(key); ok {
 		return v.Value
 	}
@@ -88,8 +92,12 @@ func (s *Snapshot) GlobalSettingValue(key string, fallback any) any {
 }
 
 // TenantSettingValue returns the tenant setting value for the given key, or the
-// fallback if the key is not present.
+// fallback if the key is not present. Nil-receiver safe.
 func (s *Snapshot) TenantSettingValue(tenantID, key string, fallback any) any {
+	if s == nil {
+		return fallback
+	}
+
 	if v, ok := s.GetTenantSetting(tenantID, key); ok {
 		return v.Value
 	}

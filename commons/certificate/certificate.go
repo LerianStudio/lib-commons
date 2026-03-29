@@ -122,7 +122,13 @@ func (m *Manager) Rotate(cert *x509.Certificate, key crypto.Signer, intermediate
 	m.signer = key
 	chain := make([][]byte, 0, 1+len(intermediates))
 	chain = append(chain, cert.Raw)
-	chain = append(chain, intermediates...)
+
+	for _, inter := range intermediates {
+		interCopy := make([]byte, len(inter))
+		copy(interCopy, inter)
+		chain = append(chain, interCopy)
+	}
+
 	m.chain = chain
 	m.mu.Unlock()
 

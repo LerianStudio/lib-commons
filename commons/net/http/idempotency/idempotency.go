@@ -296,8 +296,7 @@ func (m *Middleware) saveResult(
 		}
 	} else {
 		pipe := client.Pipeline()
-		pipe.Del(ctx, key)
-		pipe.Del(ctx, responseKey)
+		pipe.Del(ctx, key, responseKey)
 
 		if _, pipeErr := pipe.Exec(ctx); pipeErr != nil {
 			m.logger.Log(ctx, log.LevelWarn,

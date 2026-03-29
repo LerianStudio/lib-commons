@@ -42,6 +42,11 @@ func DefaultSnapshotFromKeyDefs(defs []KeyDef) Snapshot {
 // to prevent aliasing between the runtime Value and the stored Default in
 // an EffectiveValue. Scalar types (string, int, bool, etc.) are returned as-is
 // since they are immutable.
+//
+// This intentionally uses type assertions (not reflection) because systemplane
+// config values are always JSON-decoded into map[string]any / []any. The
+// narrower scope avoids the cost and complexity of reflect-based cloning in
+// manager_helpers.go, which handles arbitrary Go types for reconciler bundles.
 func cloneRuntimeValue(v any) any {
 	switch x := v.(type) {
 	case map[string]any:

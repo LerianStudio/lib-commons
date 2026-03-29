@@ -166,17 +166,14 @@ func (c *Consumer) Run(ctx context.Context) {
 
 	c.stopMu.Lock()
 	if c.stopCh != nil {
-		// Already running — prevent orphaning the previous channel.
-		select {
-		case <-c.stopCh:
-			// Previous run was stopped — safe to create a new channel.
-		default:
-			c.stopMu.Unlock()
+		// Already running or previous goroutine still draining — reject to
+		// prevent overlapping Run loops. The deferred cleanup in the active
+		// goroutine will nil c.stopCh once it fully exits.
+		c.stopMu.Unlock()
 
-			c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: Run() called while already running, ignoring")
+		c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: Run() called while already running, ignoring")
 
-			return
-		}
+		return
 	}
 
 	runStopCh := make(chan struct{})
@@ -404,6 +401,8 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 			if c.metrics != nil {
 				c.metrics.RecordExhausted(ctx, metricSource)
 			}
+
+			return true
 		}
 
 		return false

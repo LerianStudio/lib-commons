@@ -588,6 +588,8 @@ func (d *Deliverer) httpsClientForPinnedIP(originalHost string) *http.Client {
 	pinned := transport.Clone()
 	if pinned.TLSClientConfig == nil {
 		pinned.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	} else if pinned.TLSClientConfig.MinVersion < tls.VersionTLS12 {
+		pinned.TLSClientConfig.MinVersion = tls.VersionTLS12
 	}
 
 	pinned.TLSClientConfig.ServerName = originalHost
