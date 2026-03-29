@@ -160,7 +160,7 @@ func NewBackendFromConfig(ctx context.Context, cfg *BootstrapConfig) (*BackendRe
 	}
 
 	if err := validateBackendResources(resources); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("bootstrap backend %q: %w", cfg.Backend, err)
 	}
 
 	return resources, nil

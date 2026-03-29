@@ -80,7 +80,11 @@ func NewManager(certPath, keyPath string) (*Manager, error) {
 
 // Rotate replaces the current certificate and key atomically (hot reload, no restart).
 // It rejects expired certificates to prevent silent deployment of invalid credentials.
-func (m *Manager) Rotate(cert *x509.Certificate, key crypto.Signer) error {
+// Optional intermediates are DER-encoded intermediate certificates appended after
+// the leaf in the chain. When omitted, the chain contains only the leaf certificate.
+// To preserve a full chain during hot reload, pass the intermediate DER bytes
+// obtained from [LoadFromFilesWithChain].
+func (m *Manager) Rotate(cert *x509.Certificate, key crypto.Signer, intermediates ...[]byte) error {
 	if m == nil {
 		return ErrNilManager
 	}
@@ -116,13 +120,18 @@ func (m *Manager) Rotate(cert *x509.Certificate, key crypto.Signer) error {
 	m.mu.Lock()
 	m.cert = cert
 	m.signer = key
-	m.chain = [][]byte{cert.Raw}
+	chain := make([][]byte, 0, 1+len(intermediates))
+	chain = append(chain, cert.Raw)
+	chain = append(chain, intermediates...)
+	m.chain = chain
 	m.mu.Unlock()
 
 	return nil
 }
 
 // GetCertificate returns the current certificate, or nil if none is loaded.
+// The returned pointer shares state with the manager; callers must treat it
+// as read-only. Use [LoadFromFiles] + [Manager.Rotate] to replace it.
 func (m *Manager) GetCertificate() *x509.Certificate {
 	if m == nil {
 		return nil
@@ -210,8 +219,15 @@ func (m *Manager) TLSCertificate() tls.Certificate {
 		return tls.Certificate{}
 	}
 
+	chainCopy := make([][]byte, len(m.chain))
+	for i, der := range m.chain {
+		derCopy := make([]byte, len(der))
+		copy(derCopy, der)
+		chainCopy[i] = derCopy
+	}
+
 	return tls.Certificate{
-		Certificate: m.chain,
+		Certificate: chainCopy,
 		PrivateKey:  m.signer,
 		Leaf:        m.cert,
 	}
@@ -240,6 +256,14 @@ func (m *Manager) GetCertificateFunc() func(*tls.ClientHelloInfo) (*tls.Certific
 func LoadFromFiles(certPath, keyPath string) (*x509.Certificate, crypto.Signer, error) {
 	cert, signer, _, err := loadFromFiles(certPath, keyPath)
 	return cert, signer, err
+}
+
+// LoadFromFilesWithChain loads and validates a certificate and private key from
+// PEM files and also returns the full DER-encoded certificate chain (leaf first,
+// then intermediates). Use this when you need to pass intermediates to
+// [Manager.Rotate] for chain-preserving hot reload.
+func LoadFromFilesWithChain(certPath, keyPath string) (*x509.Certificate, crypto.Signer, [][]byte, error) {
+	return loadFromFiles(certPath, keyPath)
 }
 
 // loadFromFiles is the internal implementation that also returns the full DER chain.

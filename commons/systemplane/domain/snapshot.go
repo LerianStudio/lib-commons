@@ -64,8 +64,12 @@ func (s *Snapshot) GetTenantSetting(tenantID, key string) (EffectiveValue, bool)
 }
 
 // ConfigValue returns the configuration value for the given key, or the
-// fallback if the key is not present.
+// fallback if the key is not present. Nil-receiver safe.
 func (s *Snapshot) ConfigValue(key string, fallback any) any {
+	if s == nil {
+		return fallback
+	}
+
 	if v, ok := s.GetConfig(key); ok {
 		return v.Value
 	}

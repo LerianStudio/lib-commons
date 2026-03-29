@@ -1,5 +1,10 @@
-// Package idempotency provides Fiber middleware for at-most-once request semantics
+// Package idempotency provides Fiber middleware for best-effort idempotency
 // backed by Redis.
+//
+// The middleware enforces at-most-once semantics when Redis is available. On
+// Redis outages, it fails open to preserve service availability — duplicate
+// requests may execute more than once. Callers that require strict at-most-once
+// guarantees must pair this middleware with application-level safeguards.
 //
 // The middleware uses the X-Idempotency request header combined with the tenant ID
 // (from tenant-manager context) to form a composite Redis key. When a tenant ID is

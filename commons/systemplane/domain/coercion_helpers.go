@@ -107,7 +107,7 @@ func intFromInt64(value int64) (int, bool) {
 }
 
 // intFromFloat64 converts a float64 to int with overflow/NaN protection.
-// The 1<<63 boundary constant assumes a 64-bit platform (GOARCH=amd64|arm64).
+// Uses float64(math.MaxInt)+1 for platform-independent bounds checking.
 func intFromFloat64(value float64) (int, bool) {
 	if math.IsNaN(value) || math.IsInf(value, 0) {
 		return 0, false
@@ -115,10 +115,10 @@ func intFromFloat64(value float64) (int, bool) {
 
 	truncated := math.Trunc(value)
 
-	// On 64-bit platforms, float64(math.MaxInt) rounds up to 2^63 which
-	// exceeds MaxInt. Use an exact float64 constant (1<<63) so the >=
-	// comparison catches the boundary alias that `> math.MaxInt` misses.
-	if truncated >= 1<<63 || truncated < math.MinInt {
+	// float64(math.MaxInt) rounds up on 64-bit platforms, so use >= with
+	// the exact float representation of MaxInt+1 for platform-independent bounds.
+	const maxIntPlusOne = float64(math.MaxInt) + 1
+	if truncated >= maxIntPlusOne || truncated < math.MinInt {
 		return 0, false
 	}
 
@@ -347,9 +347,10 @@ func scaleDurationFloat64(value float64, unit time.Duration) (time.Duration, boo
 
 	scaled := value * float64(unit)
 
-	// Same 2^63 boundary alias as intFromFloat64: float64(MaxInt64) rounds
-	// up to 2^63 which overflows int64. Use >= 1<<63 for exact rejection.
-	if math.IsNaN(scaled) || math.IsInf(scaled, 0) || scaled >= 1<<63 || scaled < math.MinInt64 {
+	// Same boundary alias as intFromFloat64: float64(MaxInt64) rounds up
+	// on 64-bit. Use float64(math.MaxInt64)+1 for platform-independent bounds.
+	const maxInt64PlusOne = float64(math.MaxInt64) + 1
+	if math.IsNaN(scaled) || math.IsInf(scaled, 0) || scaled >= maxInt64PlusOne || scaled < math.MinInt64 {
 		return 0, false
 	}
 

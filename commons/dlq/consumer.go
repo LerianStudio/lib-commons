@@ -179,8 +179,17 @@ func (c *Consumer) Run(ctx context.Context) {
 		}
 	}
 
-	c.stopCh = make(chan struct{})
+	runStopCh := make(chan struct{})
+	c.stopCh = runStopCh
 	c.stopMu.Unlock()
+
+	defer func() {
+		c.stopMu.Lock()
+		if c.stopCh == runStopCh {
+			c.stopCh = nil
+		}
+		c.stopMu.Unlock()
+	}()
 
 	ticker := time.NewTicker(c.cfg.PollInterval)
 	defer ticker.Stop()
@@ -197,7 +206,7 @@ func (c *Consumer) Run(ctx context.Context) {
 			c.logger.Log(ctx, libLog.LevelInfo, "dlq consumer stopped")
 
 			return
-		case <-c.stopCh:
+		case <-runStopCh:
 			c.logger.Log(ctx, libLog.LevelInfo, "dlq consumer stopped")
 
 			return
@@ -385,10 +394,16 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 	// Not yet time to retry — re-enqueue at the back so other messages proceed.
 	if !msg.NextRetryAt.IsZero() && now.Before(msg.NextRetryAt) {
 		if err := c.handler.Enqueue(ctx, msg); err != nil {
-			c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: failed to re-enqueue not-yet-ready message",
+			c.logger.Log(ctx, libLog.LevelError, "dlq consumer: message lost — failed to re-enqueue not-yet-ready message",
 				libLog.String("source", msg.Source),
+				libLog.Int("retry_count", msg.RetryCount),
 				libLog.Err(err),
 			)
+
+			metricSource := c.sanitizeMetricSource(msg.Source)
+			if c.metrics != nil {
+				c.metrics.RecordExhausted(ctx, metricSource)
+			}
 		}
 
 		return false
@@ -422,10 +437,18 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 		msg.NextRetryAt = time.Now().UTC().Add(backoffDuration(msg.RetryCount))
 
 		if requeueErr := c.handler.Enqueue(ctx, msg); requeueErr != nil {
-			c.logger.Log(ctx, libLog.LevelError, "dlq consumer: failed to re-enqueue after retry failure",
+			c.logger.Log(ctx, libLog.LevelError, "dlq consumer: message lost — failed to re-enqueue after retry failure",
 				libLog.String("source", msg.Source),
+				libLog.Int("retry_count", msg.RetryCount),
 				libLog.Err(requeueErr),
 			)
+
+			metricSource := c.sanitizeMetricSource(msg.Source)
+			if c.metrics != nil {
+				c.metrics.RecordExhausted(ctx, metricSource)
+			}
+
+			return true
 		}
 
 		c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: retry failed, re-enqueued",

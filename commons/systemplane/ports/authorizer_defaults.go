@@ -9,8 +9,10 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/domain"
 )
 
-// AllowAllAuthorizer permits every operation unconditionally.
-// Use only when authentication is explicitly disabled.
+// AllowAllAuthorizer permits authorization when context is non-nil and
+// permission is non-empty after trimming spaces. It fails closed with
+// [domain.ErrPermissionDenied] for nil receiver, nil context, or blank
+// permission. Use only when authentication is explicitly disabled.
 type AllowAllAuthorizer struct{}
 
 // Compile-time interface check.

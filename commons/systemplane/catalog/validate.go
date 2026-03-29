@@ -192,7 +192,7 @@ func compareKeyDef(pd domain.KeyDef, sk SharedKey, matchedByEnv bool) []Mismatch
 	}
 
 	if expectedEnvVars := allowedEnvVars(sk); len(expectedEnvVars) > 0 {
-		if !containsString(expectedEnvVars, pd.EnvVar) {
+		if !slices.Contains(expectedEnvVars, pd.EnvVar) {
 			comparisons = append(comparisons, mismatchForString(pd, sk, "EnvVar", strings.Join(expectedEnvVars, "|"), pd.EnvVar))
 		}
 	} else if pd.EnvVar != "" {
@@ -235,10 +235,6 @@ func allowedEnvVars(sk SharedKey) []string {
 	allowed = append(allowed, sk.MatchEnvVars...)
 
 	return allowed
-}
-
-func containsString(values []string, target string) bool {
-	return slices.Contains(values, target)
 }
 
 func normalizeRedactPolicy(policy domain.RedactPolicy, secret bool) domain.RedactPolicy {

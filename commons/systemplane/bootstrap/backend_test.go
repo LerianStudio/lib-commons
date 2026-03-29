@@ -356,7 +356,8 @@ func TestRegisterBackendFactory_RejectsOverwrite(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errBackendAlreadyRegistered)
 
-	factory := backendRegistry.factories[testKind]
+	factories, _ := backendRegistry.snapshot()
+	factory := factories[testKind]
 	require.NotNil(t, factory)
 
 	_, _ = factory(context.Background(), nil)
@@ -376,7 +377,8 @@ func TestRegisterBackendFactory_RejectsNilFactory(t *testing.T) {
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errNilBackendFactory)
-	_, ok := backendRegistry.factories[kind]
+	factories, _ := backendRegistry.snapshot()
+	_, ok := factories[kind]
 	assert.True(t, ok)
 }
 
@@ -405,14 +407,16 @@ func TestResetBackendFactories_ClearsRegistrations(t *testing.T) {
 
 	RecordInitError(fmt.Errorf("simulated init error"))
 
-	assert.Len(t, backendRegistry.factories, 1)
-	assert.NotEmpty(t, backendRegistry.initErrors)
+	factories, initErrors := backendRegistry.snapshot()
+	assert.Len(t, factories, 1)
+	assert.NotEmpty(t, initErrors)
 
 	// Reset and verify.
 	ResetBackendFactories()
 
-	assert.Empty(t, backendRegistry.factories, "ResetBackendFactories should clear all factories")
-	assert.Nil(t, backendRegistry.initErrors, "ResetBackendFactories should clear init errors")
+	factories, initErrors = backendRegistry.snapshot()
+	assert.Empty(t, factories, "ResetBackendFactories should clear all factories")
+	assert.Empty(t, initErrors, "ResetBackendFactories should clear init errors")
 }
 
 var _ io.Closer = noopCloser{}

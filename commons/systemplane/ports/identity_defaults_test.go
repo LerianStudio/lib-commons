@@ -209,3 +209,19 @@ func TestFuncIdentityResolver_TenantID_FailsClosedWithoutTenantIdentity(t *testi
 		})
 	}
 }
+
+func TestFuncIdentityResolver_TenantID_ExactMaxLength_Allowed(t *testing.T) {
+	t.Parallel()
+
+	exactID := strings.Repeat("t", maxTenantIDLength)
+
+	resolver := &FuncIdentityResolver{
+		TenantFunc: func(_ context.Context) string {
+			return exactID
+		},
+	}
+
+	tenant, err := resolver.TenantID(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, exactID, tenant)
+}
