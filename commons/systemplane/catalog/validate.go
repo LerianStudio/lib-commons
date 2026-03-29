@@ -32,6 +32,67 @@ func (m Mismatch) String() string {
 		m.CatalogKey, m.Field, m.CatalogValue, m.ProductValue)
 }
 
+// ValidateOption configures the behavior of ValidateKeyDefs.
+type ValidateOption func(*validateConfig)
+
+type validateConfig struct {
+	ignoreFields    map[string]bool
+	knownDeviations map[string]map[string]bool // key → field → true
+}
+
+// WithIgnoreFields tells ValidateKeyDefsWithOptions to skip comparison of the
+// given fields for all keys. Common usage: WithIgnoreFields("EnvVar") when the
+// product does not set EnvVar on its KeyDefs because values come from the
+// systemplane store rather than environment variables.
+func WithIgnoreFields(fields ...string) ValidateOption {
+	return func(vc *validateConfig) {
+		for _, field := range fields {
+			vc.ignoreFields[field] = true
+		}
+	}
+}
+
+// WithKnownDeviation tells ValidateKeyDefsWithOptions to skip a specific
+// (catalogKey, field) pair. Use this for intentional, documented deviations
+// such as overriding a key's Component for product-specific ComponentDiff
+// behavior.
+func WithKnownDeviation(catalogKey, field string) ValidateOption {
+	return func(vc *validateConfig) {
+		if vc.knownDeviations[catalogKey] == nil {
+			vc.knownDeviations[catalogKey] = make(map[string]bool)
+		}
+
+		vc.knownDeviations[catalogKey][field] = true
+	}
+}
+
+func newValidateConfig(opts []ValidateOption) *validateConfig {
+	vc := &validateConfig{
+		ignoreFields:    make(map[string]bool),
+		knownDeviations: make(map[string]map[string]bool),
+	}
+
+	for _, opt := range opts {
+		if opt != nil {
+			opt(vc)
+		}
+	}
+
+	return vc
+}
+
+func (vc *validateConfig) shouldSkip(catalogKey, field string) bool {
+	if vc.ignoreFields[field] {
+		return true
+	}
+
+	if fields, ok := vc.knownDeviations[catalogKey]; ok && fields[field] {
+		return true
+	}
+
+	return false
+}
+
 // ValidateKeyDefs checks product KeyDefs against the canonical catalog.
 // Matching is by exact Key name first, then by EnvVar or MatchEnvVars when the
 // product key name differs but still points to the same canonical configuration
@@ -43,9 +104,19 @@ func (m Mismatch) String() string {
 // (those are product-specific keys, which is fine).
 //
 // catalogKeys accepts variadic slices so callers can pass individual categories
-// or AllSharedKeys().
+// or AllSharedKeys(). To suppress known deviations, use
+// ValidateKeyDefsWithOptions which accepts ValidateOption values.
+// ValidateKeyDefs retains its original signature for backward compatibility.
 func ValidateKeyDefs(productDefs []domain.KeyDef, catalogKeys ...[]SharedKey) []Mismatch {
+	return ValidateKeyDefsWithOptions(productDefs, catalogKeys, nil)
+}
+
+// ValidateKeyDefsWithOptions is the full-featured variant of ValidateKeyDefs
+// that accepts filtering options. Use WithIgnoreFields and WithKnownDeviation
+// to suppress expected mismatches in product catalog tests.
+func ValidateKeyDefsWithOptions(productDefs []domain.KeyDef, catalogKeys [][]SharedKey, opts []ValidateOption) []Mismatch {
 	keyIndex, envIndex := buildCatalogIndexes(catalogKeys...)
+	vc := newValidateConfig(opts)
 
 	var mismatches []Mismatch
 
@@ -56,7 +127,13 @@ func ValidateKeyDefs(productDefs []domain.KeyDef, catalogKeys ...[]SharedKey) []
 			continue // product-specific key — not in catalog, nothing to check
 		}
 
-		mismatches = append(mismatches, compareKeyDef(pd, sk, matchedByEnv)...)
+		for _, mm := range compareKeyDef(pd, sk, matchedByEnv) {
+			if vc.shouldSkip(mm.CatalogKey, mm.Field) {
+				continue
+			}
+
+			mismatches = append(mismatches, mm)
+		}
 	}
 
 	sort.Slice(mismatches, func(i, j int) bool {

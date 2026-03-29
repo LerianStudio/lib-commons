@@ -12,6 +12,12 @@ var corsKeys = []SharedKey{
 
 var appServerKeys = []SharedKey{
 	{Key: "app.env_name", EnvVar: "ENV_NAME", ValueType: domain.ValueTypeString, ApplyBehavior: domain.ApplyBootstrapOnly, MutableAtRuntime: false, Component: domain.ComponentNone, Group: "app", Description: "Environment name"},
+	// app.log_level is declared with ComponentNone because the catalog
+	// represents the minimal canonical definition. Products that use
+	// ComponentDiff to trigger hot-reload of their logger (e.g., zap
+	// AtomicLevel) MAY override Component to "logger" in their KeyDefs.
+	// This is an expected, documented deviation — use
+	// WithKnownDeviation("app.log_level", "Component") in catalog tests.
 	{Key: "app.log_level", EnvVar: "LOG_LEVEL", ValueType: domain.ValueTypeString, ApplyBehavior: domain.ApplyLiveRead, MutableAtRuntime: true, Component: domain.ComponentNone, Group: "app", Description: "Application log level"},
 	{Key: "server.address", EnvVar: "SERVER_ADDRESS", ValueType: domain.ValueTypeString, ApplyBehavior: domain.ApplyBootstrapOnly, MutableAtRuntime: false, Component: domain.ComponentNone, Group: "server", Description: "HTTP server listen address"},
 	{Key: "server.body_limit_bytes", EnvVar: "HTTP_BODY_LIMIT_BYTES", ValueType: domain.ValueTypeInt, ApplyBehavior: domain.ApplyBootstrapOnly, MutableAtRuntime: false, Component: domain.ComponentNone, Group: "server", Description: "HTTP request body size limit in bytes"},
