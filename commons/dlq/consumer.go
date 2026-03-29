@@ -165,6 +165,20 @@ func (c *Consumer) Run(ctx context.Context) {
 	defer libRuntime.RecoverWithPolicyAndContext(ctx, c.logger, c.module, "dlq-consumer-loop", libRuntime.KeepRunning)
 
 	c.stopMu.Lock()
+	if c.stopCh != nil {
+		// Already running — prevent orphaning the previous channel.
+		select {
+		case <-c.stopCh:
+			// Previous run was stopped — safe to create a new channel.
+		default:
+			c.stopMu.Unlock()
+
+			c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: Run() called while already running, ignoring")
+
+			return
+		}
+	}
+
 	c.stopCh = make(chan struct{})
 	c.stopMu.Unlock()
 
@@ -399,11 +413,12 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 		return true
 	}
 
-	// Attempt retry.
-	if err := c.retryFunc(ctx, msg); err != nil {
+	// Attempt retry with panic recovery to prevent message loss.
+	retryErr := c.safeRetryFunc(ctx, msg)
+	if retryErr != nil {
 		// Retry failed — increment count, recalculate backoff, re-enqueue.
 		msg.RetryCount++
-		msg.ErrorMessage = err.Error()
+		msg.ErrorMessage = retryErr.Error()
 		msg.NextRetryAt = time.Now().UTC().Add(backoffDuration(msg.RetryCount))
 
 		if requeueErr := c.handler.Enqueue(ctx, msg); requeueErr != nil {
@@ -416,7 +431,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 		c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: retry failed, re-enqueued",
 			libLog.String("source", msg.Source),
 			libLog.Int("retry_count", msg.RetryCount),
-			libLog.Err(err),
+			libLog.Err(retryErr),
 		)
 
 		return true
@@ -434,6 +449,24 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 	)
 
 	return true
+}
+
+// safeRetryFunc wraps the caller-provided retryFunc with panic recovery. If
+// retryFunc panics, the panic is converted to an error so the caller can
+// re-enqueue the message instead of losing it silently.
+func (c *Consumer) safeRetryFunc(ctx context.Context, msg *FailedMessage) (retryErr error) {
+	defer func() {
+		if r := recover(); r != nil {
+			retryErr = fmt.Errorf("dlq consumer: retryFunc panicked: %v", r)
+
+			c.logger.Log(ctx, libLog.LevelError, "dlq consumer: retryFunc panic recovered",
+				libLog.String("source", msg.Source),
+				libLog.String("panic", fmt.Sprintf("%v", r)),
+			)
+		}
+	}()
+
+	return c.retryFunc(ctx, msg)
 }
 
 // sanitizeMetricSource returns the source label to use for metric recording.

@@ -73,7 +73,9 @@ func newValidateConfig(opts []ValidateOption) *validateConfig {
 	}
 
 	for _, opt := range opts {
-		opt(vc)
+		if opt != nil {
+			opt(vc)
+		}
 	}
 
 	return vc
@@ -102,13 +104,9 @@ func (vc *validateConfig) shouldSkip(catalogKey, field string) bool {
 // (those are product-specific keys, which is fine).
 //
 // catalogKeys accepts variadic slices so callers can pass individual categories
-// or AllSharedKeys(). Optional ValidateOption values can be appended after the
-// catalog slices to suppress known deviations.
-//
-// Because catalogKeys is variadic []SharedKey and opts is variadic
-// ValidateOption, callers pass options via ValidateKeyDefsWithOptions or by
-// appending to the returned slice after the call. For backward compatibility,
-// ValidateKeyDefs retains its original signature.
+// or AllSharedKeys(). To suppress known deviations, use
+// ValidateKeyDefsWithOptions which accepts ValidateOption values.
+// ValidateKeyDefs retains its original signature for backward compatibility.
 func ValidateKeyDefs(productDefs []domain.KeyDef, catalogKeys ...[]SharedKey) []Mismatch {
 	return ValidateKeyDefsWithOptions(productDefs, catalogKeys, nil)
 }

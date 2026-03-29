@@ -293,6 +293,10 @@ func (d *Deliverer) fanOutWithResults(
 
 		dlvCtx := context.WithoutCancel(ctx)
 
+		// Pre-populate so callers always see which endpoint was attempted,
+		// even if deliverToEndpoint panics before writing the result.
+		results[idx] = DeliveryResult{EndpointID: ep.ID}
+
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()

@@ -8,7 +8,10 @@
 //
 // # Quick start
 //
-//	conn, _ := redis.New(ctx, cfg)
+//	conn, err := redis.New(ctx, cfg)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
 //	idem := idempotency.New(conn)
 //	app.Post("/orders", idem.Check(), createOrderHandler)
 //

@@ -18,10 +18,13 @@
 // # HMAC signature scope
 //
 // The X-Webhook-Signature header carries HMAC-SHA256 computed over the raw
-// payload bytes only (not the timestamp). X-Webhook-Timestamp is sent as a
-// separate header for informational purposes. Receivers who need replay
-// protection should validate that X-Webhook-Timestamp is within an acceptable
-// window (e.g., ±5 minutes) independently of the signature check.
-// Changing the signature scope to include the timestamp would be a breaking
-// change for all existing consumers.
+// payload bytes only. X-Webhook-Timestamp is sent as a separate informational
+// header but is NOT covered by the HMAC — an attacker who captures a valid
+// payload+signature pair can replay it with a fresh timestamp.
+//
+// Receivers who need replay protection must implement it independently, for
+// example by tracking event IDs or embedding a nonce in the payload itself.
+// Timestamp-window checks alone are insufficient because the timestamp is
+// unsigned. Including the timestamp in the HMAC would be a breaking change
+// for existing consumers.
 package webhook

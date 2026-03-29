@@ -4,6 +4,7 @@ package webhook
 
 import (
 	"context"
+	"errors"
 	"net"
 	"testing"
 
@@ -148,7 +149,7 @@ func TestResolveAndValidateIP_AllowedSchemes(t *testing.T) {
 			_, _, err := resolveAndValidateIP(context.Background(), tt.url)
 			// The error, if any, should NOT be ErrSSRFBlocked for scheme reasons.
 			if err != nil {
-				assert.NotContains(t, err.Error(), "not allowed")
+				assert.False(t, errors.Is(err, ErrSSRFBlocked), "http/https should not be SSRF-blocked: %v", err)
 			}
 		})
 	}

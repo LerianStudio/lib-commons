@@ -13,6 +13,7 @@ import (
 )
 
 func TestLoadFromEnvOrDefault_FallbackDSN(t *testing.T) {
+	t.Setenv(EnvBackend, "")
 	// No SYSTEMPLANE_BACKEND set — should use fallback DSN.
 	cfg, err := LoadFromEnvOrDefault("postgres://user:pass@localhost:5432/mydb")
 	require.NoError(t, err)
@@ -35,18 +36,21 @@ func TestLoadFromEnvOrDefault_DelegatesWhenEnvSet(t *testing.T) {
 }
 
 func TestLoadFromEnvOrDefault_EmptyFallbackDSN(t *testing.T) {
+	t.Setenv(EnvBackend, "")
 	_, err := LoadFromEnvOrDefault("")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrMissingPostgresDSN)
 }
 
 func TestLoadFromEnvOrDefault_WhitespaceOnlyFallbackDSN(t *testing.T) {
+	t.Setenv(EnvBackend, "")
 	_, err := LoadFromEnvOrDefault("   ")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrMissingPostgresDSN)
 }
 
 func TestLoadFromEnvOrDefault_TrimsFallbackDSN(t *testing.T) {
+	t.Setenv(EnvBackend, "")
 	cfg, err := LoadFromEnvOrDefault("  postgres://user:pass@localhost:5432/db  ")
 	require.NoError(t, err)
 	assert.Equal(t, "postgres://user:pass@localhost:5432/db", cfg.Postgres.DSN)

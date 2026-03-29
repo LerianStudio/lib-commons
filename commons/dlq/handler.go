@@ -244,6 +244,10 @@ func (h *Handler) Dequeue(ctx context.Context, source string) (*FailedMessage, e
 		return nil, ErrNilHandler
 	}
 
+	if err := validateKeySegment("source", source); err != nil {
+		return nil, err
+	}
+
 	ctx, span := h.tracer.Start(ctx, "dlq.dequeue")
 	defer span.End()
 
@@ -277,6 +281,10 @@ func (h *Handler) QueueLength(ctx context.Context, source string) (int64, error)
 		return 0, ErrNilHandler
 	}
 
+	if err := validateKeySegment("source", source); err != nil {
+		return 0, err
+	}
+
 	key := h.tenantScopedKey(ctx, source)
 
 	rds, err := h.conn.GetClient(ctx)
@@ -297,6 +305,10 @@ func (h *Handler) QueueLength(ctx context.Context, source string) (int64, error)
 func (h *Handler) ScanQueues(ctx context.Context, source string) ([]string, error) {
 	if h == nil {
 		return nil, ErrNilHandler
+	}
+
+	if err := validateKeySegment("source", source); err != nil {
+		return nil, err
 	}
 
 	ctx, span := h.tracer.Start(ctx, "dlq.scan_queues")
@@ -360,6 +372,10 @@ func (h *Handler) PruneExhaustedMessages(ctx context.Context, source string, lim
 		return 0, ErrNilHandler
 	}
 
+	if err := validateKeySegment("source", source); err != nil {
+		return 0, err
+	}
+
 	if limit <= 0 {
 		return 0, nil
 	}
@@ -372,8 +388,13 @@ func (h *Handler) PruneExhaustedMessages(ctx context.Context, source string, lim
 	for range limit {
 		msg, err := h.Dequeue(ctx, source)
 		if err != nil {
-			// Empty queue or Redis error — stop pruning.
-			break
+			if isRedisNilError(err) {
+				// Empty queue — done.
+				break
+			}
+
+			// Real error (Redis failure, JSON corruption) — propagate.
+			return pruned, fmt.Errorf("dlq: prune: dequeue: %w", err)
 		}
 
 		if msg.RetryCount >= msg.MaxRetries {
@@ -394,6 +415,8 @@ func (h *Handler) PruneExhaustedMessages(ctx context.Context, source string, lim
 				libLog.String("source", msg.Source),
 				libLog.Err(err),
 			)
+
+			return pruned, fmt.Errorf("dlq: prune: re-enqueue: %w", err)
 		}
 	}
 

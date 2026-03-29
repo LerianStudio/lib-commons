@@ -16,8 +16,12 @@
 //	signer := m.GetSigner()
 //
 //	// Hot-reload without restart
-//	newCert, newKey, _ := certificate.LoadFromFiles("new.crt", "new.key")
-//	m.Rotate(newCert, newKey)
+//	newCert, newKey, err := certificate.LoadFromFiles("new.crt", "new.key")
+//	if err != nil {
+//	    log.Printf("pre-flight validation failed: %v", err)
+//	} else if err := m.Rotate(newCert, newKey); err != nil {
+//	    log.Printf("certificate rotation failed: %v", err)
+//	}
 //
 // # Key formats
 //

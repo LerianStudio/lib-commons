@@ -63,10 +63,9 @@ func init() {
 //   - pinnedURL  — original URL with the hostname replaced by the first resolved IP.
 //   - originalHost — the original hostname, for use as the HTTP Host header (TLS SNI).
 //
-// When DNS lookup fails the function falls back to the original URL (DNS may be
-// unavailable at validation time in some environments).  When no resolved IP can
-// be parsed from the DNS response the URL is considered unresolvable and an error
-// is returned.
+// DNS lookup failures are fail-closed: if the hostname cannot be resolved, the
+// URL is rejected.  When no resolved IP can be parsed from the DNS response the
+// URL is considered unresolvable and an error is returned.
 func resolveAndValidateIP(ctx context.Context, rawURL string) (pinnedURL string, originalHost string, err error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -84,16 +83,15 @@ func resolveAndValidateIP(ctx context.Context, rawURL string) (pinnedURL string,
 	}
 
 	ips, dnsErr := net.DefaultResolver.LookupHost(ctx, host)
-	if dnsErr != nil || len(ips) == 0 {
-		// DNS unavailable — fall back to original URL.
-		// The HTTP client will perform its own lookup; if that lookup returns a
-		// private IP, the OS-level socket will still connect, but we accept this
-		// as a best-effort fallback rather than blocking legitimate traffic when
-		// DNS is temporarily unreachable.
-		return rawURL, host, nil //nolint:nilerr // deliberate fail-open: DNS unavailable should not block delivery
+	if dnsErr != nil {
+		return "", "", fmt.Errorf("%w: DNS lookup failed for %s: %w", ErrSSRFBlocked, host, dnsErr)
 	}
 
-	validated := 0
+	if len(ips) == 0 {
+		return "", "", fmt.Errorf("%w: DNS returned no addresses for %s", ErrSSRFBlocked, host)
+	}
+
+	var firstValidIP string
 
 	for _, ipStr := range ips {
 		ip := net.ParseIP(ipStr)
@@ -101,26 +99,30 @@ func resolveAndValidateIP(ctx context.Context, rawURL string) (pinnedURL string,
 			continue
 		}
 
-		validated++
-
 		if isPrivateIP(ip) {
 			return "", "", fmt.Errorf("%w: resolved IP %s is private/loopback", ErrSSRFBlocked, ipStr)
 		}
+
+		if firstValidIP == "" {
+			firstValidIP = ipStr
+		}
 	}
 
-	if validated == 0 {
-		// Every string returned by DNS was unparseable — treat as unresolvable.
+	if firstValidIP == "" {
 		return "", "", fmt.Errorf("%w: no valid IPs resolved for %s", ErrInvalidURL, host)
 	}
 
-	// Pin to first resolved IP to prevent DNS rebinding across retries.
-	pinnedIP := ips[0]
+	// Pin to first valid resolved IP to prevent DNS rebinding across retries.
 	port := u.Port()
 
-	if port != "" {
-		u.Host = net.JoinHostPort(pinnedIP, port)
-	} else {
-		u.Host = pinnedIP
+	switch {
+	case port != "":
+		u.Host = net.JoinHostPort(firstValidIP, port)
+	case strings.Contains(firstValidIP, ":"):
+		// Bare IPv6 literal must be bracket-wrapped for url.URL.Host.
+		u.Host = "[" + firstValidIP + "]"
+	default:
+		u.Host = firstValidIP
 	}
 
 	return u.String(), host, nil
