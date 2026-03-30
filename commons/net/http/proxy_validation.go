@@ -2,21 +2,11 @@ package http
 
 import (
 	"net"
-	"net/netip"
 	"net/url"
 	"strings"
-)
 
-var blockedProxyPrefixes = []netip.Prefix{
-	netip.MustParsePrefix("0.0.0.0/8"),
-	netip.MustParsePrefix("100.64.0.0/10"),
-	netip.MustParsePrefix("192.0.0.0/24"),
-	netip.MustParsePrefix("192.0.2.0/24"),
-	netip.MustParsePrefix("198.18.0.0/15"),
-	netip.MustParsePrefix("198.51.100.0/24"),
-	netip.MustParsePrefix("203.0.113.0/24"),
-	netip.MustParsePrefix("240.0.0.0/4"),
-}
+	libSSRF "github.com/LerianStudio/lib-commons/v4/commons/security/ssrf"
+)
 
 // validateProxyTarget checks a parsed URL against the reverse proxy policy.
 func validateProxyTarget(targetURL *url.URL, policy ReverseProxyPolicy) error {
@@ -79,27 +69,7 @@ func isAllowedHost(host string, allowedHosts []string) bool {
 }
 
 // isUnsafeIP reports whether ip is a loopback, private, or otherwise non-routable address.
+// It delegates to the canonical SSRF package for the actual blocked-range check.
 func isUnsafeIP(ip net.IP) bool {
-	if ip == nil {
-		return true
-	}
-
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsUnspecified() || ip.IsMulticast() || ip.IsLinkLocalMulticast() || ip.IsLinkLocalUnicast() {
-		return true
-	}
-
-	addr, ok := netip.AddrFromSlice(ip)
-	if !ok {
-		return true
-	}
-
-	addr = addr.Unmap()
-
-	for _, prefix := range blockedProxyPrefixes {
-		if prefix.Contains(addr) {
-			return true
-		}
-	}
-
-	return false
+	return libSSRF.IsBlockedIP(ip)
 }
