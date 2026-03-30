@@ -290,7 +290,6 @@ func (m *Middleware) saveResult(
 		if _, pipeErr := pipe.Exec(ctx); pipeErr != nil {
 			m.logger.Log(ctx, log.LevelWarn,
 				"idempotency: failed to atomically cache response and mark complete",
-				log.String("key", key),
 				log.Err(pipeErr),
 			)
 		}
@@ -301,7 +300,6 @@ func (m *Middleware) saveResult(
 		if _, pipeErr := pipe.Exec(ctx); pipeErr != nil {
 			m.logger.Log(ctx, log.LevelWarn,
 				"idempotency: failed to delete keys after handler error",
-				log.String("key", key),
 				log.Err(pipeErr),
 			)
 		}

@@ -121,14 +121,23 @@ func (m *Manager) Rotate(cert *x509.Certificate, key crypto.Signer, intermediate
 		return ErrKeyMismatch
 	}
 
+	// Deep-copy the leaf to prevent aliasing caller-owned memory.
+	// x509.ParseCertificate does NOT deep-copy the input DER, so cert.Raw
+	// may alias the caller's buffer. Re-parsing from a copy ensures the
+	// manager owns independent memory.
+	rawCopy := make([]byte, len(cert.Raw))
+	copy(rawCopy, cert.Raw)
+
+	ownedCert, err := x509.ParseCertificate(rawCopy)
+	if err != nil {
+		return fmt.Errorf("certificate: failed to re-parse leaf: %w", err)
+	}
+
 	m.mu.Lock()
-	m.cert = cert
+	m.cert = ownedCert
 	m.signer = key
 	chain := make([][]byte, 0, 1+len(intermediates))
-
-	leafCopy := make([]byte, len(cert.Raw))
-	copy(leafCopy, cert.Raw)
-	chain = append(chain, leafCopy)
+	chain = append(chain, rawCopy)
 
 	for _, inter := range intermediates {
 		interCopy := make([]byte, len(inter))
@@ -219,7 +228,8 @@ func (m *Manager) DaysUntilExpiry() int {
 
 // TLSCertificate returns a [tls.Certificate] built from the currently loaded
 // certificate chain and private key. Returns an empty [tls.Certificate] if no
-// certificate is loaded.
+// certificate is loaded. The Leaf field shares state with the manager; callers
+// should treat it as read-only.
 func (m *Manager) TLSCertificate() tls.Certificate {
 	if m == nil {
 		return tls.Certificate{}
