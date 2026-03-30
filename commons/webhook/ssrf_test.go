@@ -4,39 +4,43 @@ package webhook
 
 import (
 	"context"
-	"net"
+	"errors"
+	"fmt"
 	"testing"
 
+	libSSRF "github.com/LerianStudio/lib-commons/v4/commons/security/ssrf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // ---------------------------------------------------------------------------
-// resolveAndValidateIP — URL parsing edge cases only. We do NOT hit real DNS.
+// resolveAndValidateIP — URL validation (no real DNS unless noted)
 // ---------------------------------------------------------------------------
 
-func TestResolveAndValidateIP_InvalidURLMalformed(t *testing.T) {
+// TestResolveAndValidateIP_InvalidURL checks that a completely malformed URL
+// is rejected with ErrInvalidURL.
+func TestResolveAndValidateIP_InvalidURL(t *testing.T) {
 	t.Parallel()
 
-	_, _, _, err := resolveAndValidateIP(context.Background(), "://missing-scheme")
-	assert.Error(t, err)
+	_, _, _, err := resolveAndValidateIP(context.Background(), "://no-scheme")
+	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidURL)
 }
 
-func TestResolveAndValidateIP_EmptyHostnameHTTP(t *testing.T) {
+// TestResolveAndValidateIP_EmptyHostname checks that an empty hostname is
+// rejected with ErrInvalidURL and a descriptive message.
+func TestResolveAndValidateIP_EmptyHostname(t *testing.T) {
 	t.Parallel()
 
 	_, _, _, err := resolveAndValidateIP(context.Background(), "http://")
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidURL)
 	assert.Contains(t, err.Error(), "empty hostname")
 }
 
-// ---------------------------------------------------------------------------
-// resolveAndValidateIP — scheme validation (blocks non-HTTP/HTTPS schemes).
-// ---------------------------------------------------------------------------
-
-func TestResolveAndValidateIP_UnsupportedSchemes(t *testing.T) {
+// TestResolveAndValidateIP_BlockedSchemes verifies that non-HTTP/HTTPS schemes
+// are rejected before DNS lookup.
+func TestResolveAndValidateIP_BlockedSchemes(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -55,35 +59,6 @@ func TestResolveAndValidateIP_UnsupportedSchemes(t *testing.T) {
 			t.Parallel()
 
 			_, _, _, err := resolveAndValidateIP(context.Background(), tt.url)
-			assert.Error(t, err)
-			assert.ErrorIs(t, err, ErrSSRFBlocked)
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// resolveAndValidateIP — URL parsing and scheme blocking (no DNS)
-// ---------------------------------------------------------------------------
-
-// TestResolveAndValidateIP_InvalidScheme checks that non-HTTP/HTTPS schemes are
-// rejected before DNS lookup.
-func TestResolveAndValidateIP_InvalidScheme(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		url  string
-	}{
-		{name: "gopher scheme", url: "gopher://example.com"},
-		{name: "file scheme", url: "file:///etc/passwd"},
-		{name: "ftp scheme", url: "ftp://example.com/file"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			_, _, _, err := resolveAndValidateIP(context.Background(), tt.url)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrSSRFBlocked,
 				"non-HTTP/HTTPS scheme must return ErrSSRFBlocked")
@@ -91,47 +66,61 @@ func TestResolveAndValidateIP_InvalidScheme(t *testing.T) {
 	}
 }
 
-// TestResolveAndValidateIP_EmptyHostname checks that an empty hostname is rejected.
-func TestResolveAndValidateIP_EmptyHostname(t *testing.T) {
+// TestResolveAndValidateIP_BlockedHostname confirms that hostnames rejected by
+// hostname-level SSRF validation are mapped to ErrSSRFBlocked.
+func TestResolveAndValidateIP_BlockedHostname(t *testing.T) {
 	t.Parallel()
-
-	_, _, _, err := resolveAndValidateIP(context.Background(), "http://")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidURL)
-	assert.Contains(t, err.Error(), "empty hostname")
-}
-
-// TestResolveAndValidateIP_InvalidURL checks that a completely malformed URL
-// is rejected with ErrInvalidURL.
-func TestResolveAndValidateIP_InvalidURL(t *testing.T) {
-	t.Parallel()
-
-	_, _, _, err := resolveAndValidateIP(context.Background(), "://no-scheme")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrInvalidURL)
-}
-
-// TestResolveAndValidateIP_PrivateIP confirms that hostnames that resolve to a
-// loopback/private address are blocked. "localhost" resolves to 127.0.0.1
-// (loopback), which must trigger ErrSSRFBlocked.
-//
-// This test does perform a real DNS lookup for "localhost". On all POSIX
-// systems "localhost" is defined in /etc/hosts as 127.0.0.1, so the lookup
-// is local and requires no network access. Environments that strip /etc/hosts
-// may see the DNS fall-back path (original URL returned, no error), in which
-// case the test is skipped gracefully.
-func TestResolveAndValidateIP_PrivateIP(t *testing.T) {
-	t.Parallel()
-
-	// Probe the local DNS before asserting — skip if localhost doesn't resolve.
-	addrs, lookupErr := net.LookupHost("localhost")
-	if lookupErr != nil || len(addrs) == 0 {
-		t.Skip("localhost DNS lookup failed or returned no results — skipping SSRF private-IP test")
-	}
 
 	_, _, _, err := resolveAndValidateIP(context.Background(), "http://localhost")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrSSRFBlocked,
-		"localhost (127.0.0.1) must be blocked as a private/loopback address")
+		"localhost must be blocked by hostname-level SSRF protection")
 }
 
+// ---------------------------------------------------------------------------
+// mapSSRFError — sentinel error translation (fail-closed for unknown errors)
+// ---------------------------------------------------------------------------
+
+// TestMapSSRFError verifies that all four branches of mapSSRFError translate
+// canonical SSRF sentinel errors into the webhook package's error types, and
+// that unrecognized errors are mapped to ErrSSRFBlocked (fail-closed).
+func TestMapSSRFError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  error
+		wantIs error
+	}{
+		{
+			name:   "ErrInvalidURL maps to webhook ErrInvalidURL",
+			input:  fmt.Errorf("validation: %w", libSSRF.ErrInvalidURL),
+			wantIs: ErrInvalidURL,
+		},
+		{
+			name:   "ErrBlocked maps to webhook ErrSSRFBlocked",
+			input:  fmt.Errorf("blocked: %w", libSSRF.ErrBlocked),
+			wantIs: ErrSSRFBlocked,
+		},
+		{
+			name:   "ErrDNSFailed maps to webhook ErrSSRFBlocked",
+			input:  fmt.Errorf("dns: %w", libSSRF.ErrDNSFailed),
+			wantIs: ErrSSRFBlocked,
+		},
+		{
+			name:   "unknown error maps to webhook ErrSSRFBlocked (fail-closed)",
+			input:  errors.New("unexpected internal error"),
+			wantIs: ErrSSRFBlocked,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := mapSSRFError(tt.input)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tt.wantIs)
+		})
+	}
+}
