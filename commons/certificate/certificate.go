@@ -151,9 +151,10 @@ func (m *Manager) Rotate(cert *x509.Certificate, key crypto.Signer, intermediate
 	return nil
 }
 
-// GetCertificate returns the current certificate, or nil if none is loaded.
-// The returned pointer shares state with the manager; callers must treat it
-// as read-only. Use [LoadFromFiles] + [Manager.Rotate] to replace it.
+// GetCertificate returns a deep copy of the current certificate, or nil if
+// none is loaded. The returned *x509.Certificate is an independent clone that
+// callers may freely modify without affecting the manager's internal state.
+// Use [LoadFromFiles] + [Manager.Rotate] to replace the managed certificate.
 func (m *Manager) GetCertificate() *x509.Certificate {
 	if m == nil {
 		return nil
@@ -162,7 +163,7 @@ func (m *Manager) GetCertificate() *x509.Certificate {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	return m.cert
+	return cloneCert(m.cert)
 }
 
 // GetSigner returns the current private key as a crypto.Signer, or nil if none is loaded.
@@ -212,7 +213,10 @@ func (m *Manager) ExpiresAt() time.Time {
 }
 
 // DaysUntilExpiry returns the number of days until the certificate expires.
-// Returns -1 if no certificate is loaded.
+// It returns -1 when no certificate is loaded (nil receiver or no certificate
+// configured via [NewManager]). Otherwise it returns the number of days until
+// expiry, which may be negative for already-expired certificates (e.g. -3
+// means the certificate expired 3 days ago).
 func (m *Manager) DaysUntilExpiry() int {
 	if m == nil {
 		return -1
@@ -228,8 +232,9 @@ func (m *Manager) DaysUntilExpiry() int {
 
 // TLSCertificate returns a [tls.Certificate] built from the currently loaded
 // certificate chain and private key. Returns an empty [tls.Certificate] if no
-// certificate is loaded. The Leaf field shares state with the manager; callers
-// should treat it as read-only.
+// certificate is loaded. Both the Certificate [][]byte chain and the Leaf are
+// deep copies, so callers never receive references aliasing internal state.
+// Safe to call on a nil receiver (returns an empty [tls.Certificate]).
 func (m *Manager) TLSCertificate() tls.Certificate {
 	if m == nil {
 		return tls.Certificate{}
@@ -252,7 +257,7 @@ func (m *Manager) TLSCertificate() tls.Certificate {
 	return tls.Certificate{
 		Certificate: chainCopy,
 		PrivateKey:  m.signer,
-		Leaf:        m.cert,
+		Leaf:        cloneCert(m.cert),
 	}
 }
 
@@ -387,4 +392,26 @@ func publicKeysMatch(certPublicKey, signerPublicKey any) bool {
 	}
 
 	return bytes.Equal(certDER, signerDER)
+}
+
+// cloneCert returns a deep copy of cert by re-parsing its DER encoding.
+// Returns nil when cert is nil.
+func cloneCert(cert *x509.Certificate) *x509.Certificate {
+	if cert == nil {
+		return nil
+	}
+
+	raw := make([]byte, len(cert.Raw))
+	copy(raw, cert.Raw)
+
+	// ParseCertificate is the canonical way to deep-copy an x509.Certificate.
+	// Errors here are unexpected (the DER was already parsed once), but we
+	// return nil rather than panicking to stay consistent with the package's
+	// nil-safe contract.
+	clone, err := x509.ParseCertificate(raw)
+	if err != nil {
+		return nil
+	}
+
+	return clone
 }

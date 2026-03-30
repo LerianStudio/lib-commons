@@ -21,10 +21,15 @@ const (
 )
 
 // cachedResponse stores the full HTTP response for idempotent replay.
+// Body is stored as raw bytes (base64-encoded in JSON) so that binary and
+// non-UTF-8 payloads survive a marshal/unmarshal round-trip. Headers preserves
+// response headers that must be faithfully replayed (e.g., Location, ETag,
+// Set-Cookie).
 type cachedResponse struct {
-	StatusCode  int    `json:"status_code"`
-	ContentType string `json:"content_type"`
-	Body        string `json:"body"`
+	StatusCode  int                 `json:"status_code"`
+	ContentType string              `json:"content_type"`
+	Body        []byte              `json:"body"`
+	Headers     map[string][]string `json:"headers,omitempty"`
 }
 
 // Option configures the idempotency middleware.
@@ -219,17 +224,45 @@ func (m *Middleware) handleDuplicate(
 	key, responseKey string,
 ) error {
 	// Read the current key value to distinguish in-flight from completed.
-	keyValue, _ := client.Get(ctx, key).Result()
+	keyValue, keyErr := client.Get(ctx, key).Result()
+	if keyErr != nil && keyErr != redis.Nil {
+		// Unexpected Redis error (timeout, connection failure) — fail open.
+		m.logger.Log(ctx, log.LevelWarn,
+			"idempotency: failed to read key state, failing open",
+			log.String("key", key), log.Err(keyErr),
+		)
+
+		return c.Next()
+	}
 
 	// Try to replay the cached response (true idempotency).
 	cached, cacheErr := client.Get(ctx, responseKey).Result()
-	if cacheErr == nil && cached != "" {
+
+	switch {
+	case cacheErr != nil && cacheErr != redis.Nil:
+		// Unexpected Redis error reading cached response — fail open.
+		m.logger.Log(ctx, log.LevelWarn,
+			"idempotency: failed to read cached response, failing open",
+			log.String("key", responseKey), log.Err(cacheErr),
+		)
+
+		return c.Next()
+	case cacheErr == nil && cached != "":
 		var resp cachedResponse
 		if unmarshalErr := json.Unmarshal([]byte(cached), &resp); unmarshalErr == nil {
+			// Replay persisted headers first so the caller sees
+			// Location, ETag, Set-Cookie, etc. exactly as sent originally.
+			for name, values := range resp.Headers {
+				for _, v := range values {
+					c.Set(name, v)
+				}
+			}
+
 			c.Set(chttp.IdempotencyReplayed, "true")
 			c.Set("Content-Type", resp.ContentType)
 
-			return c.Status(resp.StatusCode).SendString(resp.Body)
+			// Send (not SendString) preserves binary/non-UTF-8 bodies.
+			return c.Status(resp.StatusCode).Send(resp.Body)
 		}
 	}
 
@@ -268,10 +301,25 @@ func (m *Middleware) saveResult(
 		pipe := client.Pipeline()
 
 		if len(body) <= m.maxBodyCache {
+			// Capture response headers for faithful replay.
+			headers := make(map[string][]string)
+			c.Response().Header.VisitAll(func(key, value []byte) {
+				name := string(key)
+				// Skip headers managed by the middleware itself and
+				// transfer-encoding / content-length which Fiber sets on send.
+				switch name {
+				case "Content-Type", "Content-Length", "Transfer-Encoding",
+					chttp.IdempotencyReplayed:
+					return
+				}
+				headers[name] = append(headers[name], string(value))
+			})
+
 			resp := cachedResponse{
 				StatusCode:  c.Response().StatusCode(),
 				ContentType: string(c.Response().Header.ContentType()),
-				Body:        string(body),
+				Body:        body,
+				Headers:     headers,
 			}
 
 			if data, marshalErr := json.Marshal(resp); marshalErr == nil {

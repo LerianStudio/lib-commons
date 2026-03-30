@@ -212,14 +212,16 @@ func (supervisor *defaultSupervisor) Reload(ctx context.Context, reason string, 
 	supervisor.mu.Lock()
 	defer supervisor.mu.Unlock()
 
+	currentState := supervisor.state.Load()
+
 	var prevSnap *domain.Snapshot
-	if st := supervisor.state.Load(); st != nil {
-		prevSnap = &st.snapshot
+	if currentState != nil {
+		prevSnap = &currentState.snapshot
 	}
 
 	tenantIDs := mergeUniqueTenantIDs(cachedTenantIDs(prevSnap), extraTenantIDs)
 
-	build, err := supervisor.prepareReloadBuild(ctx, tenantIDs)
+	build, err := supervisor.prepareReloadBuild(ctx, tenantIDs, currentState)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "build runtime bundle", err)
 		return err

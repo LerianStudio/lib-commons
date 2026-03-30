@@ -4,7 +4,6 @@ package webhook
 
 import (
 	"context"
-	"errors"
 	"net"
 	"testing"
 
@@ -86,7 +85,7 @@ func TestIsPrivateIP(t *testing.T) {
 func TestResolveAndValidateIP_InvalidURLMalformed(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := resolveAndValidateIP(context.Background(), "://missing-scheme")
+	_, _, _, err := resolveAndValidateIP(context.Background(), "://missing-scheme")
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidURL)
 }
@@ -94,7 +93,7 @@ func TestResolveAndValidateIP_InvalidURLMalformed(t *testing.T) {
 func TestResolveAndValidateIP_EmptyHostnameHTTP(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := resolveAndValidateIP(context.Background(), "http://")
+	_, _, _, err := resolveAndValidateIP(context.Background(), "http://")
 	assert.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidURL)
 	assert.Contains(t, err.Error(), "empty hostname")
@@ -122,35 +121,64 @@ func TestResolveAndValidateIP_UnsupportedSchemes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, _, err := resolveAndValidateIP(context.Background(), tt.url)
+			_, _, _, err := resolveAndValidateIP(context.Background(), tt.url)
 			assert.Error(t, err)
 			assert.ErrorIs(t, err, ErrSSRFBlocked)
 		})
 	}
 }
 
-func TestResolveAndValidateIP_AllowedSchemes(t *testing.T) {
+func TestValidateScheme_AllowedSchemes(t *testing.T) {
 	t.Parallel()
 
-	// These schemes should pass the scheme check (they may still fail DNS
-	// resolution, but they should NOT fail with ErrSSRFBlocked for scheme).
+	// These schemes should pass the scheme check — tested via the pure
+	// validateScheme function to avoid any DNS dependency.
 	tests := []struct {
-		name string
-		url  string
+		name   string
+		scheme string
 	}{
-		{name: "http scheme", url: "http://example.com"},
-		{name: "https scheme", url: "https://example.com"},
+		{name: "http scheme", scheme: "http"},
+		{name: "https scheme", scheme: "https"},
+		{name: "HTTP uppercase", scheme: "HTTP"},
+		{name: "HTTPS uppercase", scheme: "HTTPS"},
+		{name: "mixed case Http", scheme: "Http"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, _, err := resolveAndValidateIP(context.Background(), tt.url)
-			// The error, if any, should NOT be ErrSSRFBlocked for scheme reasons.
-			if err != nil {
-				assert.False(t, errors.Is(err, ErrSSRFBlocked), "http/https should not be SSRF-blocked: %v", err)
-			}
+			err := validateScheme(tt.scheme)
+			assert.NoError(t, err, "scheme %q must be allowed", tt.scheme)
+		})
+	}
+}
+
+func TestValidateScheme_BlockedSchemes(t *testing.T) {
+	t.Parallel()
+
+	// These schemes must be rejected — tested via the pure validateScheme
+	// function to avoid any DNS dependency.
+	tests := []struct {
+		name   string
+		scheme string
+	}{
+		{name: "gopher scheme", scheme: "gopher"},
+		{name: "file scheme", scheme: "file"},
+		{name: "ftp scheme", scheme: "ftp"},
+		{name: "javascript scheme", scheme: "javascript"},
+		{name: "data scheme", scheme: "data"},
+		{name: "empty scheme", scheme: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateScheme(tt.scheme)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrSSRFBlocked,
+				"scheme %q must be blocked", tt.scheme)
 		})
 	}
 }
@@ -177,7 +205,7 @@ func TestResolveAndValidateIP_InvalidScheme(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			_, _, err := resolveAndValidateIP(context.Background(), tt.url)
+			_, _, _, err := resolveAndValidateIP(context.Background(), tt.url)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrSSRFBlocked,
 				"non-HTTP/HTTPS scheme must return ErrSSRFBlocked")
@@ -189,7 +217,7 @@ func TestResolveAndValidateIP_InvalidScheme(t *testing.T) {
 func TestResolveAndValidateIP_EmptyHostname(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := resolveAndValidateIP(context.Background(), "http://")
+	_, _, _, err := resolveAndValidateIP(context.Background(), "http://")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidURL)
 	assert.Contains(t, err.Error(), "empty hostname")
@@ -200,7 +228,7 @@ func TestResolveAndValidateIP_EmptyHostname(t *testing.T) {
 func TestResolveAndValidateIP_InvalidURL(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := resolveAndValidateIP(context.Background(), "://no-scheme")
+	_, _, _, err := resolveAndValidateIP(context.Background(), "://no-scheme")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidURL)
 }
@@ -223,7 +251,7 @@ func TestResolveAndValidateIP_PrivateIP(t *testing.T) {
 		t.Skip("localhost DNS lookup failed or returned no results — skipping SSRF private-IP test")
 	}
 
-	_, _, err := resolveAndValidateIP(context.Background(), "http://localhost")
+	_, _, _, err := resolveAndValidateIP(context.Background(), "http://localhost")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrSSRFBlocked,
 		"localhost (127.0.0.1) must be blocked as a private/loopback address")

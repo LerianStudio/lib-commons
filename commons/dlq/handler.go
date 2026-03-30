@@ -172,7 +172,7 @@ func (h *Handler) Enqueue(ctx context.Context, msg *FailedMessage) error {
 		msg.CreatedAt = time.Now().UTC()
 	}
 
-	if msg.MaxRetries == 0 {
+	if msg.MaxRetries <= 0 {
 		msg.MaxRetries = h.maxRetries
 	}
 
@@ -186,6 +186,16 @@ func (h *Handler) Enqueue(ctx context.Context, msg *FailedMessage) error {
 
 	if effectiveTenant != "" && ctxTenant != "" && effectiveTenant != ctxTenant {
 		return fmt.Errorf("dlq: enqueue: tenant mismatch between message (%s) and context (%s)", effectiveTenant, ctxTenant)
+	}
+
+	// Validate the effective tenant before using it to construct a Redis key.
+	// This prevents invalid tenant IDs from silently falling back to the global
+	// (non-tenant) key inside tenantScopedKeyForTenant, which would mix
+	// tenant-scoped messages into the global queue.
+	if effectiveTenant != "" {
+		if err := validateKeySegment("tenantID", effectiveTenant); err != nil {
+			return fmt.Errorf("dlq: enqueue: %w", err)
+		}
 	}
 
 	// Recalculate NextRetryAt only on initial enqueue. On re-enqueue the

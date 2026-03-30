@@ -860,20 +860,11 @@ func TestNilManager_SubTests(t *testing.T) {
 		assert.Equal(t, -1, m.DaysUntilExpiry())
 	})
 
-	t.Run("TLSCertificate returns empty", func(t *testing.T) {
+	t.Run("TLSCertificate returns empty on nil receiver", func(t *testing.T) {
 		t.Parallel()
-		// TLSCertificate checks m == nil after acquiring the lock which it
-		// can't do on a nil receiver — production code checks m == nil inside
-		// the method body after the RLock, but since m is nil the lock call
-		// itself will panic. The method guards with  `if m == nil` but the
-		// guard is AFTER the RLock. Let's verify by calling it safely.
-		// Actually the method body is: mu.RLock then `if m == nil` — a nil
-		// pointer dereference would occur. We document that TLSCertificate
-		// is NOT nil-receiver-safe (unlike the other methods) by asserting
-		// the returned value from a non-nil empty manager instead.
-		empty, emptyErr := NewManager("", "")
-		require.NoError(t, emptyErr)
-		tlsCert := empty.TLSCertificate()
+		// TLSCertificate is nil-receiver-safe: the nil guard precedes the
+		// RLock call, consistent with every other Manager method.
+		tlsCert := m.TLSCertificate()
 		assert.Equal(t, tls.Certificate{}, tlsCert)
 	})
 }

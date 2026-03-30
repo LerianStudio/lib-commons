@@ -147,7 +147,7 @@ func (supervisor *defaultSupervisor) buildBundle(
 // AdoptResourcesFrom, which runs AFTER the atomic state swap. At that point
 // Current() already returns the new candidate, so concurrent readers never
 // observe the mutation.
-func (supervisor *defaultSupervisor) prepareReloadBuild(ctx context.Context, tenantIDs []string) (reloadBuild, error) {
+func (supervisor *defaultSupervisor) prepareReloadBuild(ctx context.Context, tenantIDs []string, currentState *supervisorState) (reloadBuild, error) {
 	snap, err := supervisor.builder.BuildFull(ctx, tenantIDs...)
 	if err != nil {
 		return reloadBuild{}, fmt.Errorf("reload: %w: %w", domain.ErrSnapshotBuildFailed, err)
@@ -157,9 +157,9 @@ func (supervisor *defaultSupervisor) prepareReloadBuild(ctx context.Context, ten
 
 	var previousBundle domain.RuntimeBundle
 
-	if st := supervisor.state.Load(); st != nil {
-		prevSnap = &st.snapshot
-		previousBundle = st.bundle
+	if currentState != nil {
+		prevSnap = &currentState.snapshot
+		previousBundle = currentState.bundle
 	}
 
 	candidate, strategy, err := supervisor.buildBundle(ctx, snap, previousBundle, prevSnap)

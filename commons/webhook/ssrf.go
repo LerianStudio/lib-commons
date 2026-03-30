@@ -56,35 +56,37 @@ var additionalBlockedRanges = []*net.IPNet{
 // the pinned IP to differ from the validated one.
 //
 // On success it returns:
-//   - pinnedURL  — original URL with the hostname replaced by the first resolved IP.
-//   - originalHost — the original hostname, for use as the HTTP Host header (TLS SNI).
+//   - pinnedURL        — original URL with the hostname replaced by the first resolved IP.
+//   - originalAuthority — the original host:port authority (u.Host), suitable for the
+//     HTTP Host header so explicit non-default ports are preserved.
+//   - sniHostname       — the bare hostname (u.Hostname(), port stripped), suitable for
+//     TLS SNI / certificate verification.
 //
 // DNS lookup failures are fail-closed: if the hostname cannot be resolved, the
 // URL is rejected.  When no resolved IP can be parsed from the DNS response the
 // URL is considered unresolvable and an error is returned.
-func resolveAndValidateIP(ctx context.Context, rawURL string) (pinnedURL string, originalHost string, err error) {
+func resolveAndValidateIP(ctx context.Context, rawURL string) (pinnedURL, originalAuthority, sniHostname string, err error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return "", "", fmt.Errorf("%w: %w", ErrInvalidURL, err)
+		return "", "", "", fmt.Errorf("%w: %w", ErrInvalidURL, err)
 	}
 
-	scheme := strings.ToLower(u.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return "", "", fmt.Errorf("%w: scheme %q not allowed", ErrSSRFBlocked, scheme)
+	if err := validateScheme(u.Scheme); err != nil {
+		return "", "", "", err
 	}
 
 	host := u.Hostname()
 	if host == "" {
-		return "", "", fmt.Errorf("%w: empty hostname", ErrInvalidURL)
+		return "", "", "", fmt.Errorf("%w: empty hostname", ErrInvalidURL)
 	}
 
 	ips, dnsErr := net.DefaultResolver.LookupHost(ctx, host)
 	if dnsErr != nil {
-		return "", "", fmt.Errorf("%w: DNS lookup failed for %s: %w", ErrSSRFBlocked, host, dnsErr)
+		return "", "", "", fmt.Errorf("%w: DNS lookup failed for %s: %w", ErrSSRFBlocked, host, dnsErr)
 	}
 
 	if len(ips) == 0 {
-		return "", "", fmt.Errorf("%w: DNS returned no addresses for %s", ErrSSRFBlocked, host)
+		return "", "", "", fmt.Errorf("%w: DNS returned no addresses for %s", ErrSSRFBlocked, host)
 	}
 
 	var firstValidIP string
@@ -96,7 +98,7 @@ func resolveAndValidateIP(ctx context.Context, rawURL string) (pinnedURL string,
 		}
 
 		if isPrivateIP(ip) {
-			return "", "", fmt.Errorf("%w: resolved IP %s is private/loopback", ErrSSRFBlocked, ipStr)
+			return "", "", "", fmt.Errorf("%w: resolved IP %s is private/loopback", ErrSSRFBlocked, ipStr)
 		}
 
 		if firstValidIP == "" {
@@ -105,8 +107,12 @@ func resolveAndValidateIP(ctx context.Context, rawURL string) (pinnedURL string,
 	}
 
 	if firstValidIP == "" {
-		return "", "", fmt.Errorf("%w: no valid IPs resolved for %s", ErrInvalidURL, host)
+		return "", "", "", fmt.Errorf("%w: no valid IPs resolved for %s", ErrInvalidURL, host)
 	}
+
+	// Preserve the original authority (host:port) for the HTTP Host header
+	// before rewriting u.Host to the pinned IP.
+	authority := u.Host
 
 	// Pin to first valid resolved IP to prevent DNS rebinding across retries.
 	port := u.Port()
@@ -121,7 +127,20 @@ func resolveAndValidateIP(ctx context.Context, rawURL string) (pinnedURL string,
 		u.Host = firstValidIP
 	}
 
-	return u.String(), host, nil
+	return u.String(), authority, host, nil
+}
+
+// validateScheme checks that the URL scheme is http or https. All other
+// schemes are rejected to prevent SSRF via exotic protocols (file://, gopher://, etc.).
+// This is a pure function with no DNS or I/O dependency, making it safe for
+// isolated unit testing.
+func validateScheme(scheme string) error {
+	s := strings.ToLower(scheme)
+	if s != "http" && s != "https" {
+		return fmt.Errorf("%w: scheme %q not allowed", ErrSSRFBlocked, scheme)
+	}
+
+	return nil
 }
 
 // isPrivateIP reports whether ip is in a private, loopback, link-local,

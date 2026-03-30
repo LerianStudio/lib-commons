@@ -115,10 +115,20 @@ func ValidateKeyDefs(productDefs []domain.KeyDef, catalogKeys ...[]SharedKey) []
 // that accepts filtering options. Use WithIgnoreFields and WithKnownDeviation
 // to suppress expected mismatches in product catalog tests.
 func ValidateKeyDefsWithOptions(productDefs []domain.KeyDef, catalogKeys [][]SharedKey, opts []ValidateOption) []Mismatch {
-	keyIndex, envIndex := buildCatalogIndexes(catalogKeys...)
+	keyIndex, envIndex, envConflicts := buildCatalogIndexes(catalogKeys...)
 	vc := newValidateConfig(opts)
 
 	var mismatches []Mismatch
+
+	for _, conflict := range envConflicts {
+		mismatches = append(mismatches, Mismatch{
+			CatalogKey:   conflict.ConflictKey,
+			ProductKey:   conflict.ExistingKey,
+			Field:        "EnvVar",
+			CatalogValue: conflict.ExistingKey,
+			ProductValue: conflict.ConflictKey,
+		})
+	}
 
 	for _, pd := range productDefs {
 		sk, found, matchedByEnv := resolveSharedKey(pd, keyIndex, envIndex)
@@ -147,20 +157,45 @@ func ValidateKeyDefsWithOptions(productDefs []domain.KeyDef, catalogKeys [][]Sha
 	return mismatches
 }
 
-func buildCatalogIndexes(catalogKeys ...[]SharedKey) (map[string]SharedKey, map[string]SharedKey) {
+func buildCatalogIndexes(catalogKeys ...[]SharedKey) (map[string]SharedKey, map[string]SharedKey, []EnvVarConflict) {
 	keyIndex := make(map[string]SharedKey)
 	envIndex := make(map[string]SharedKey)
+
+	var conflicts []EnvVarConflict
 
 	for _, slice := range catalogKeys {
 		for _, sk := range slice {
 			keyIndex[sk.Key] = sk
 			for _, envVar := range allowedEnvVars(sk) {
+				if existing, duplicate := envIndex[envVar]; duplicate {
+					conflicts = append(conflicts, EnvVarConflict{
+						EnvVar:      envVar,
+						ExistingKey: existing.Key,
+						ConflictKey: sk.Key,
+					})
+
+					continue
+				}
+
 				envIndex[envVar] = sk
 			}
 		}
 	}
 
-	return keyIndex, envIndex
+	return keyIndex, envIndex, conflicts
+}
+
+// EnvVarConflict describes a duplicate environment variable mapping detected
+// during catalog index construction. Two SharedKey entries map the same env var.
+type EnvVarConflict struct {
+	EnvVar      string // the duplicated environment variable
+	ExistingKey string // the SharedKey.Key that was registered first
+	ConflictKey string // the SharedKey.Key that attempted to overwrite
+}
+
+// String returns a human-readable description of the conflict.
+func (c EnvVarConflict) String() string {
+	return fmt.Sprintf("duplicate env var %q: mapped by both %q and %q", c.EnvVar, c.ExistingKey, c.ConflictKey)
 }
 
 func resolveSharedKey(pd domain.KeyDef, keyIndex map[string]SharedKey, envIndex map[string]SharedKey) (SharedKey, bool, bool) {
