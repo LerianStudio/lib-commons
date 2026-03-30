@@ -31,13 +31,13 @@ var (
 //nolint:gochecknoglobals // package-level CIDR blocklist is intentional for SSRF protection
 var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),       // "this network" (RFC 1122 S3.2.1.3)
-	netip.MustParsePrefix("100.64.0.0/10"),    // CGNAT (RFC 6598)
-	netip.MustParsePrefix("192.0.0.0/24"),     // IETF protocol assignments (RFC 6890)
-	netip.MustParsePrefix("192.0.2.0/24"),     // TEST-NET-1 documentation (RFC 5737)
-	netip.MustParsePrefix("198.18.0.0/15"),    // benchmarking (RFC 2544)
-	netip.MustParsePrefix("198.51.100.0/24"),  // TEST-NET-2 documentation (RFC 5737)
-	netip.MustParsePrefix("203.0.113.0/24"),   // TEST-NET-3 documentation (RFC 5737)
-	netip.MustParsePrefix("240.0.0.0/4"),      // reserved / future use (RFC 1112)
+	netip.MustParsePrefix("100.64.0.0/10"),   // CGNAT (RFC 6598)
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments (RFC 6890)
+	netip.MustParsePrefix("192.0.2.0/24"),    // TEST-NET-1 documentation (RFC 5737)
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking (RFC 2544)
+	netip.MustParsePrefix("198.51.100.0/24"), // TEST-NET-2 documentation (RFC 5737)
+	netip.MustParsePrefix("203.0.113.0/24"),  // TEST-NET-3 documentation (RFC 5737)
+	netip.MustParsePrefix("240.0.0.0/4"),     // reserved / future use (RFC 1112)
 }
 
 // BlockedPrefixes returns a copy of the canonical CIDR blocklist. The returned
