@@ -250,12 +250,22 @@ func (m *Middleware) handleDuplicate(
 		return c.Next()
 	case cacheErr == nil && cached != "":
 		var resp cachedResponse
-		if unmarshalErr := json.Unmarshal([]byte(cached), &resp); unmarshalErr == nil {
+		if unmarshalErr := json.Unmarshal([]byte(cached), &resp); unmarshalErr != nil {
+			// Cache entry is corrupt or written by an incompatible version.
+			// Log a warning so operators can investigate, then fall through
+			// to the generic "already processed" response (fail-open).
+			m.logger.Log(ctx, log.LevelWarn,
+				"idempotency: failed to unmarshal cached response, falling through to generic reply",
+				log.String("key", responseKey), log.Err(unmarshalErr),
+			)
+		} else {
 			// Replay persisted headers first so the caller sees
 			// Location, ETag, Set-Cookie, etc. exactly as sent originally.
+			// Use Header.Add (not c.Set) so multi-value headers such as
+			// Set-Cookie are appended rather than silently overwritten.
 			for name, values := range resp.Headers {
 				for _, v := range values {
-					c.Set(name, v)
+					c.Response().Header.Add(name, v)
 				}
 			}
 
@@ -305,8 +315,8 @@ func (m *Middleware) saveResult(
 			// Capture response headers for faithful replay.
 			headers := make(map[string][]string)
 
-			for key, value := range c.Response().Header.All() {
-				name := string(key)
+			for hdrKey, value := range c.Response().Header.All() {
+				name := string(hdrKey)
 				// Skip headers managed by the middleware itself and
 				// transfer-encoding / content-length which Fiber sets on send.
 				switch name {

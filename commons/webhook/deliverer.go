@@ -146,12 +146,13 @@ func WithSecretDecryptor(fn SecretDecryptor) Option {
 
 // WithSignatureVersion selects the HMAC signing format for X-Webhook-Signature.
 // The default is SignatureV0 (payload-only) for backward compatibility.
-// Use SignatureV1 to include the event timestamp in the HMAC input and produce
-// a versioned signature string that enables replay protection.
+// SignatureV1 produces a versioned "v1,sha256=..." signature string that binds
+// the event timestamp into the HMAC input, enabling replay protection.
+// Receivers can enforce freshness using [VerifySignatureWithFreshness], or
+// perform basic signature verification using [VerifySignature].
 //
 // Migration path: switch to SignatureV1 only after all consumers have been
-// updated to verify the "v1,sha256=..." format. See VerifySignatureV1 for
-// the receiver-side verification logic.
+// updated to verify the "v1,sha256=..." format.
 func WithSignatureVersion(v SignatureVersion) Option {
 	return func(d *Deliverer) {
 		d.sigVersion = v
@@ -752,6 +753,7 @@ func sanitizeURL(rawURL string) string {
 
 	u.RawQuery = ""
 	u.User = nil
+	u.Fragment = ""
 
 	return u.String()
 }

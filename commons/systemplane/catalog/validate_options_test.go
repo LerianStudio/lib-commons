@@ -30,9 +30,9 @@ func TestValidateKeyDefsWithOptions_WithIgnoreFields(t *testing.T) {
 	require.NotEmpty(t, envVarMismatches, "expected EnvVar mismatch without options")
 
 	// With WithIgnoreFields("EnvVar"): should suppress the EnvVar mismatch.
-	filtered := ValidateKeyDefsWithOptions(productDefs, [][]SharedKey{AppServerKeys()},
+	result := ValidateKeyDefsWithOptions(productDefs, [][]SharedKey{AppServerKeys()},
 		[]ValidateOption{WithIgnoreFields("EnvVar")})
-	envVarMismatches = filterByField(filtered, "EnvVar")
+	envVarMismatches = filterByField(result.Mismatches, "EnvVar")
 	assert.Empty(t, envVarMismatches, "EnvVar mismatches should be suppressed by WithIgnoreFields")
 }
 
@@ -54,9 +54,9 @@ func TestValidateKeyDefsWithOptions_WithKnownDeviation(t *testing.T) {
 	require.NotEmpty(t, componentMismatches, "expected Component mismatch without options")
 
 	// With WithKnownDeviation: should suppress only that key+field.
-	filtered := ValidateKeyDefsWithOptions(productDefs, [][]SharedKey{AppServerKeys()},
+	result := ValidateKeyDefsWithOptions(productDefs, [][]SharedKey{AppServerKeys()},
 		[]ValidateOption{WithKnownDeviation("app.log_level", "Component")})
-	componentMismatches = filterByField(filtered, "Component")
+	componentMismatches = filterByField(result.Mismatches, "Component")
 	assert.Empty(t, componentMismatches, "Component mismatch should be suppressed by WithKnownDeviation")
 }
 
@@ -76,12 +76,12 @@ func TestValidateKeyDefsWithOptions_KnownDeviationDoesNotSuppressOtherKeys(t *te
 		},
 	}
 
-	filtered := ValidateKeyDefsWithOptions(productDefs,
+	result := ValidateKeyDefsWithOptions(productDefs,
 		[][]SharedKey{AppServerKeys(), CORSKeys()},
 		[]ValidateOption{WithKnownDeviation("app.log_level", "Component")})
 
 	// app.log_level Component should be suppressed.
-	for _, mm := range filtered {
+	for _, mm := range result.Mismatches {
 		if mm.CatalogKey == "app.log_level" && mm.Field == "Component" {
 			t.Error("app.log_level Component deviation should have been suppressed")
 		}
@@ -89,7 +89,7 @@ func TestValidateKeyDefsWithOptions_KnownDeviationDoesNotSuppressOtherKeys(t *te
 
 	// cors.allowed_origins Component should NOT be suppressed.
 	corsComponentFound := false
-	for _, mm := range filtered {
+	for _, mm := range result.Mismatches {
 		if mm.CatalogKey == "cors.allowed_origins" && mm.Field == "Component" {
 			corsComponentFound = true
 		}
@@ -111,7 +111,7 @@ func TestValidateKeyDefsWithOptions_NilOptions(t *testing.T) {
 
 	// Nil options should work the same as no options.
 	result := ValidateKeyDefsWithOptions(productDefs, [][]SharedKey{AppServerKeys()}, nil)
-	assert.Empty(t, result, "matching key with nil options should produce no mismatches")
+	assert.Empty(t, result.Mismatches, "matching key with nil options should produce no mismatches")
 }
 
 func TestValidateKeyDefsWithOptions_CombinedOptions(t *testing.T) {
@@ -126,13 +126,13 @@ func TestValidateKeyDefsWithOptions_CombinedOptions(t *testing.T) {
 		},
 	}
 
-	filtered := ValidateKeyDefsWithOptions(productDefs, [][]SharedKey{AppServerKeys()},
+	result := ValidateKeyDefsWithOptions(productDefs, [][]SharedKey{AppServerKeys()},
 		[]ValidateOption{
 			WithIgnoreFields("EnvVar"),
 			WithKnownDeviation("app.log_level", "Component"),
 		})
 
-	assert.Empty(t, filtered, "all mismatches should be suppressed by combined options")
+	assert.Empty(t, result.Mismatches, "all mismatches should be suppressed by combined options")
 }
 
 func filterByField(mismatches []Mismatch, field string) []Mismatch {

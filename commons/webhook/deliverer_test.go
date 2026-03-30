@@ -935,6 +935,16 @@ func TestSanitizeURL(t *testing.T) {
 			want: "https://example.com/webhook",
 		},
 		{
+			name: "strips fragment",
+			raw:  "https://example.com/webhook#access_token=secret",
+			want: "https://example.com/webhook",
+		},
+		{
+			name: "strips fragment with query and userinfo",
+			raw:  "https://user:pass@example.com/hook?key=val#frag",
+			want: "https://example.com/hook",
+		},
+		{
 			name: "invalid URL returns placeholder",
 			raw:  "://bad\x7f",
 			want: "[invalid-url]",
@@ -962,9 +972,14 @@ func TestComputeHMACv1(t *testing.T) {
 	secret := "test-secret"
 	timestamp := int64(1700000000)
 
+	// Independently computed expected value.
+	// Wire format: HMAC-SHA256("v1:1700000000.{\"id\":\"123\"}", "test-secret")
+	// prefixed with "v1,sha256=".
+	const expected = "v1,sha256=49d0851d6baa34655d12dfba153c748db08b84830d4cb01780d833956c59844c"
+
 	sig := computeHMACv1(payload, timestamp, secret)
-	assert.True(t, strings.HasPrefix(sig, "v1,sha256="),
-		"v1 signature must start with 'v1,sha256='")
+	assert.Equal(t, expected, sig,
+		"v1 signature must match independently computed HMAC-SHA256 of 'v1:<ts>.<payload>'")
 
 	// Verify it is deterministic.
 	sig2 := computeHMACv1(payload, timestamp, secret)

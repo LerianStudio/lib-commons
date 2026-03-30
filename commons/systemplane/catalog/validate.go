@@ -32,6 +32,17 @@ func (m Mismatch) String() string {
 		m.CatalogKey, m.Field, m.CatalogValue, m.ProductValue)
 }
 
+// ValidationResult holds the outcome of ValidateKeyDefsWithOptions, separating
+// product-vs-catalog mismatches from catalog-internal env var conflicts.
+type ValidationResult struct {
+	// Mismatches contains divergences between product KeyDefs and catalog SharedKeys.
+	Mismatches []Mismatch
+
+	// EnvVarConflicts contains catalog-internal duplicate env var mappings
+	// where two SharedKeys map the same environment variable.
+	EnvVarConflicts []EnvVarConflict
+}
+
 // ValidateOption configures the behavior of ValidateKeyDefs.
 type ValidateOption func(*validateConfig)
 
@@ -108,27 +119,22 @@ func (vc *validateConfig) shouldSkip(catalogKey, field string) bool {
 // ValidateKeyDefsWithOptions which accepts ValidateOption values.
 // ValidateKeyDefs retains its original signature for backward compatibility.
 func ValidateKeyDefs(productDefs []domain.KeyDef, catalogKeys ...[]SharedKey) []Mismatch {
-	return ValidateKeyDefsWithOptions(productDefs, catalogKeys, nil)
+	result := ValidateKeyDefsWithOptions(productDefs, catalogKeys, nil)
+	return result.Mismatches
 }
 
 // ValidateKeyDefsWithOptions is the full-featured variant of ValidateKeyDefs
 // that accepts filtering options. Use WithIgnoreFields and WithKnownDeviation
 // to suppress expected mismatches in product catalog tests.
-func ValidateKeyDefsWithOptions(productDefs []domain.KeyDef, catalogKeys [][]SharedKey, opts []ValidateOption) []Mismatch {
+//
+// Returns a ValidationResult separating product-vs-catalog mismatches from
+// catalog-internal env var conflicts. Use result.Mismatches for product drift
+// and result.EnvVarConflicts for catalog-internal duplicate env var mappings.
+func ValidateKeyDefsWithOptions(productDefs []domain.KeyDef, catalogKeys [][]SharedKey, opts []ValidateOption) ValidationResult {
 	keyIndex, envIndex, envConflicts := buildCatalogIndexes(catalogKeys...)
 	vc := newValidateConfig(opts)
 
 	var mismatches []Mismatch
-
-	for _, conflict := range envConflicts {
-		mismatches = append(mismatches, Mismatch{
-			CatalogKey:   conflict.ConflictKey,
-			ProductKey:   conflict.ExistingKey,
-			Field:        "EnvVar",
-			CatalogValue: conflict.ExistingKey,
-			ProductValue: conflict.ConflictKey,
-		})
-	}
 
 	for _, pd := range productDefs {
 		sk, found, matchedByEnv := resolveSharedKey(pd, keyIndex, envIndex)
@@ -154,12 +160,24 @@ func ValidateKeyDefsWithOptions(productDefs []domain.KeyDef, catalogKeys [][]Sha
 		return mismatches[i].Field < mismatches[j].Field
 	})
 
-	return mismatches
+	sort.Slice(envConflicts, func(i, j int) bool {
+		if envConflicts[i].EnvVar != envConflicts[j].EnvVar {
+			return envConflicts[i].EnvVar < envConflicts[j].EnvVar
+		}
+
+		return envConflicts[i].ExistingKey < envConflicts[j].ExistingKey
+	})
+
+	return ValidationResult{
+		Mismatches:      mismatches,
+		EnvVarConflicts: envConflicts,
+	}
 }
 
 func buildCatalogIndexes(catalogKeys ...[]SharedKey) (map[string]SharedKey, map[string]SharedKey, []EnvVarConflict) {
 	keyIndex := make(map[string]SharedKey)
 	envIndex := make(map[string]SharedKey)
+	ambiguousEnvVars := make(map[string]bool)
 
 	var conflicts []EnvVarConflict
 
@@ -167,12 +185,29 @@ func buildCatalogIndexes(catalogKeys ...[]SharedKey) (map[string]SharedKey, map[
 		for _, sk := range slice {
 			keyIndex[sk.Key] = sk
 			for _, envVar := range allowedEnvVars(sk) {
+				if ambiguousEnvVars[envVar] {
+					// Already known ambiguous from a prior conflict; record
+					// this additional claimant but do not re-add to envIndex.
+					conflicts = append(conflicts, EnvVarConflict{
+						EnvVar:      envVar,
+						ExistingKey: "(ambiguous)",
+						ConflictKey: sk.Key,
+					})
+
+					continue
+				}
+
 				if existing, duplicate := envIndex[envVar]; duplicate {
 					conflicts = append(conflicts, EnvVarConflict{
 						EnvVar:      envVar,
 						ExistingKey: existing.Key,
 						ConflictKey: sk.Key,
 					})
+
+					// Mark as ambiguous and remove from envIndex so
+					// resolveSharedKey will not match this env var.
+					ambiguousEnvVars[envVar] = true
+					delete(envIndex, envVar)
 
 					continue
 				}
