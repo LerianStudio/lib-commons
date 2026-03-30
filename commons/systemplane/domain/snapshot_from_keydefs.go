@@ -22,8 +22,8 @@ func DefaultSnapshotFromKeyDefs(defs []KeyDef) Snapshot {
 
 		configs[def.Key] = EffectiveValue{
 			Key:      def.Key,
-			Value:    def.DefaultValue,
-			Default:  def.DefaultValue,
+			Value:    cloneRuntimeValue(def.DefaultValue),
+			Default:  cloneRuntimeValue(def.DefaultValue),
 			Source:   "registry-default",
 			Revision: RevisionZero,
 			Redacted: def.Secret || (def.RedactPolicy != "" && def.RedactPolicy != RedactNone),
@@ -35,5 +35,35 @@ func DefaultSnapshotFromKeyDefs(defs []KeyDef) Snapshot {
 		GlobalSettings: make(map[string]EffectiveValue),
 		TenantSettings: make(map[string]map[string]EffectiveValue),
 		BuiltAt:        time.Now().UTC(),
+	}
+}
+
+// cloneRuntimeValue returns a deep copy for map[string]any and []any values
+// to prevent aliasing between the runtime Value and the stored Default in
+// an EffectiveValue. Scalar types (string, int, bool, etc.) are returned as-is
+// since they are immutable.
+//
+// This intentionally uses type assertions (not reflection) because systemplane
+// config values are always JSON-decoded into map[string]any / []any. The
+// narrower scope avoids the cost and complexity of reflect-based cloning in
+// manager_helpers.go, which handles arbitrary Go types for reconciler bundles.
+func cloneRuntimeValue(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, vv := range x {
+			out[k] = cloneRuntimeValue(vv)
+		}
+
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, vv := range x {
+			out[i] = cloneRuntimeValue(vv)
+		}
+
+		return out
+	default:
+		return v
 	}
 }

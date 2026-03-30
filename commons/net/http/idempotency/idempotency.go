@@ -253,8 +253,8 @@ func (m *Middleware) handleDuplicate(
 }
 
 // saveResult performs post-handler Redis bookkeeping: on success it caches the response
-// body and marks the key as complete; on handler error it deletes both keys so the client
-// can retry with the same idempotency key.
+// body and marks the key as complete in a single round-trip via a Redis pipeline; on
+// handler error it deletes both keys so the client can retry with the same idempotency key.
 func (m *Middleware) saveResult(
 	ctx context.Context,
 	c *fiber.Ctx,
@@ -265,6 +265,8 @@ func (m *Middleware) saveResult(
 	if handlerErr == nil {
 		body := c.Response().Body()
 
+		pipe := client.Pipeline()
+
 		if len(body) <= m.maxBodyCache {
 			resp := cachedResponse{
 				StatusCode:  c.Response().StatusCode(),
@@ -273,13 +275,7 @@ func (m *Middleware) saveResult(
 			}
 
 			if data, marshalErr := json.Marshal(resp); marshalErr == nil {
-				if setErr := client.Set(ctx, responseKey, string(data), m.keyTTL).Err(); setErr != nil {
-					m.logger.Log(ctx, log.LevelWarn,
-						"idempotency: failed to cache response body",
-						log.String("key", responseKey),
-						log.Err(setErr),
-					)
-				}
+				pipe.Set(ctx, responseKey, string(data), m.keyTTL)
 			}
 		} else {
 			m.logger.Log(ctx, log.LevelWarn,
@@ -289,27 +285,23 @@ func (m *Middleware) saveResult(
 			)
 		}
 
-		if setErr := client.Set(ctx, key, keyStateComplete, m.keyTTL).Err(); setErr != nil {
+		pipe.Set(ctx, key, keyStateComplete, m.keyTTL)
+
+		if _, pipeErr := pipe.Exec(ctx); pipeErr != nil {
 			m.logger.Log(ctx, log.LevelWarn,
-				"idempotency: failed to mark key as complete",
-				log.String("key", key),
-				log.Err(setErr),
+				"idempotency: failed to atomically cache response and mark complete",
+				log.Err(pipeErr),
 			)
 		}
 	} else {
-		if delErr := client.Del(ctx, key).Err(); delErr != nil {
-			m.logger.Log(ctx, log.LevelWarn,
-				"idempotency: failed to delete idempotency key after handler error",
-				log.String("key", key),
-				log.Err(delErr),
-			)
-		}
+		pipe := client.Pipeline()
+		pipe.Del(ctx, key)
+		pipe.Del(ctx, responseKey)
 
-		if delErr := client.Del(ctx, responseKey).Err(); delErr != nil {
+		if _, pipeErr := pipe.Exec(ctx); pipeErr != nil {
 			m.logger.Log(ctx, log.LevelWarn,
-				"idempotency: failed to delete response key after handler error",
-				log.String("key", responseKey),
-				log.Err(delErr),
+				"idempotency: failed to delete keys after handler error",
+				log.Err(pipeErr),
 			)
 		}
 	}

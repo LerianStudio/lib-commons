@@ -80,7 +80,15 @@ func NewManager(certPath, keyPath string) (*Manager, error) {
 
 // Rotate replaces the current certificate and key atomically (hot reload, no restart).
 // It rejects expired certificates to prevent silent deployment of invalid credentials.
-func (m *Manager) Rotate(cert *x509.Certificate, key crypto.Signer) error {
+// Optional intermediates are DER-encoded intermediate certificates appended after
+// the leaf in the chain. When omitted, the chain contains only the leaf certificate.
+// To preserve a full chain during hot reload, pass the intermediate DER bytes
+// obtained from [LoadFromFilesWithChain], e.g.:
+//
+//	cert, signer, chain, err := LoadFromFilesWithChain(certPath, keyPath)
+//	if err != nil { ... }
+//	if err := m.Rotate(cert, signer, chain[1:]...); err != nil { ... }
+func (m *Manager) Rotate(cert *x509.Certificate, key crypto.Signer, intermediates ...[]byte) error {
 	if m == nil {
 		return ErrNilManager
 	}
@@ -113,16 +121,39 @@ func (m *Manager) Rotate(cert *x509.Certificate, key crypto.Signer) error {
 		return ErrKeyMismatch
 	}
 
+	// Deep-copy the leaf to prevent aliasing caller-owned memory.
+	// x509.ParseCertificate does NOT deep-copy the input DER, so cert.Raw
+	// may alias the caller's buffer. Re-parsing from a copy ensures the
+	// manager owns independent memory.
+	rawCopy := make([]byte, len(cert.Raw))
+	copy(rawCopy, cert.Raw)
+
+	ownedCert, err := x509.ParseCertificate(rawCopy)
+	if err != nil {
+		return fmt.Errorf("certificate: failed to re-parse leaf: %w", err)
+	}
+
 	m.mu.Lock()
-	m.cert = cert
+	m.cert = ownedCert
 	m.signer = key
-	m.chain = [][]byte{cert.Raw}
+	chain := make([][]byte, 0, 1+len(intermediates))
+	chain = append(chain, rawCopy)
+
+	for _, inter := range intermediates {
+		interCopy := make([]byte, len(inter))
+		copy(interCopy, inter)
+		chain = append(chain, interCopy)
+	}
+
+	m.chain = chain
 	m.mu.Unlock()
 
 	return nil
 }
 
 // GetCertificate returns the current certificate, or nil if none is loaded.
+// The returned pointer shares state with the manager; callers must treat it
+// as read-only. Use [LoadFromFiles] + [Manager.Rotate] to replace it.
 func (m *Manager) GetCertificate() *x509.Certificate {
 	if m == nil {
 		return nil
@@ -197,7 +228,8 @@ func (m *Manager) DaysUntilExpiry() int {
 
 // TLSCertificate returns a [tls.Certificate] built from the currently loaded
 // certificate chain and private key. Returns an empty [tls.Certificate] if no
-// certificate is loaded.
+// certificate is loaded. The Leaf field shares state with the manager; callers
+// should treat it as read-only.
 func (m *Manager) TLSCertificate() tls.Certificate {
 	if m == nil {
 		return tls.Certificate{}
@@ -210,8 +242,15 @@ func (m *Manager) TLSCertificate() tls.Certificate {
 		return tls.Certificate{}
 	}
 
+	chainCopy := make([][]byte, len(m.chain))
+	for i, der := range m.chain {
+		derCopy := make([]byte, len(der))
+		copy(derCopy, der)
+		chainCopy[i] = derCopy
+	}
+
 	return tls.Certificate{
-		Certificate: m.chain,
+		Certificate: chainCopy,
 		PrivateKey:  m.signer,
 		Leaf:        m.cert,
 	}
@@ -240,6 +279,18 @@ func (m *Manager) GetCertificateFunc() func(*tls.ClientHelloInfo) (*tls.Certific
 func LoadFromFiles(certPath, keyPath string) (*x509.Certificate, crypto.Signer, error) {
 	cert, signer, _, err := loadFromFiles(certPath, keyPath)
 	return cert, signer, err
+}
+
+// LoadFromFilesWithChain loads and validates a certificate and private key from
+// PEM files and also returns the full DER-encoded certificate chain (leaf first,
+// then intermediates). Use this when you need to pass intermediates to
+// [Manager.Rotate] for chain-preserving hot reload:
+//
+//	cert, signer, chain, err := LoadFromFilesWithChain(certPath, keyPath)
+//	if err != nil { ... }
+//	if err := m.Rotate(cert, signer, chain[1:]...); err != nil { ... }
+func LoadFromFilesWithChain(certPath, keyPath string) (*x509.Certificate, crypto.Signer, [][]byte, error) {
+	return loadFromFiles(certPath, keyPath)
 }
 
 // loadFromFiles is the internal implementation that also returns the full DER chain.

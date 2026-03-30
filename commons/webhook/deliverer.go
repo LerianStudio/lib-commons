@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -103,11 +104,17 @@ func WithMaxRetries(n int) Option {
 }
 
 // WithHTTPClient replaces the default HTTP client. Use this to customize
-// timeouts, TLS configuration, or proxy settings.
+// timeouts, TLS configuration, or proxy settings. Redirect blocking is
+// always enforced regardless of the provided client's CheckRedirect
+// setting to preserve SSRF protection.
 func WithHTTPClient(c *http.Client) Option {
 	return func(d *Deliverer) {
 		if c != nil {
-			d.client = c
+			clone := *c
+			clone.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			}
+			d.client = &clone
 		}
 	}
 }
@@ -447,9 +454,9 @@ func (d *Deliverer) doHTTP(
 	req.Header.Set("X-Webhook-Event", event.Type)
 	req.Header.Set("X-Webhook-Timestamp", strconv.FormatInt(event.Timestamp, 10))
 
-	// When the URL was rewritten to use the pinned IP, set the Host header to
-	// the original hostname so TLS SNI, virtual hosting, and server-side
-	// routing work correctly.
+	// When the URL was rewritten to use the pinned IP, set the Host header
+	// for virtual hosting and use TLSClientConfig.ServerName so TLS SNI and
+	// certificate verification use the original hostname (not the IP).
 	if originalHost != "" {
 		req.Host = originalHost
 	}
@@ -459,7 +466,13 @@ func (d *Deliverer) doHTTP(
 		req.Header.Set("X-Webhook-Signature", "sha256="+sig)
 	}
 
-	resp, err := d.client.Do(req)
+	client := d.client
+
+	if originalHost != "" && strings.HasPrefix(pinnedURL, "https://") {
+		client = d.httpsClientForPinnedIP(originalHost)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return 0, fmt.Errorf("webhook: http request: %w", err)
 	}
@@ -557,6 +570,39 @@ func (d *Deliverer) recordMetrics(ctx context.Context, endpointID string, succes
 	}
 
 	d.metrics.RecordDelivery(ctx, endpointID, success, statusCode, attempts)
+}
+
+// httpsClientForPinnedIP returns an HTTP client whose TLS config uses the
+// given hostname for SNI and certificate verification. This is necessary
+// when the request URL has been rewritten to an IP address for DNS pinning
+// (SSRF protection) — without this, Go would try to verify the TLS cert
+// against the IP, which fails for hostname-based certificates.
+func (d *Deliverer) httpsClientForPinnedIP(originalHost string) *http.Client {
+	baseTransport := d.client.Transport
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport
+	}
+
+	transport, ok := baseTransport.(*http.Transport)
+	if !ok {
+		// Non-standard transport — fall back to the default client and let
+		// the caller's transport handle TLS.
+		return d.client
+	}
+
+	pinned := transport.Clone()
+	if pinned.TLSClientConfig == nil {
+		pinned.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	} else if pinned.TLSClientConfig.MinVersion < tls.VersionTLS12 {
+		pinned.TLSClientConfig.MinVersion = tls.VersionTLS12
+	}
+
+	pinned.TLSClientConfig.ServerName = originalHost
+
+	clone := *d.client
+	clone.Transport = pinned
+
+	return &clone
 }
 
 // sanitizeURL strips query parameters from a URL before logging to prevent

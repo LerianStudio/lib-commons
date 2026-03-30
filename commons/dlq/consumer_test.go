@@ -23,6 +23,7 @@ type mockMetrics struct {
 	mu             sync.Mutex
 	retriedCalls   []string
 	exhaustedCalls []string
+	lostCalls      []string
 }
 
 func (m *mockMetrics) RecordRetried(_ context.Context, source string) {
@@ -39,6 +40,13 @@ func (m *mockMetrics) RecordExhausted(_ context.Context, source string) {
 	m.exhaustedCalls = append(m.exhaustedCalls, source)
 }
 
+func (m *mockMetrics) RecordLost(_ context.Context, source string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.lostCalls = append(m.lostCalls, source)
+}
+
 func (m *mockMetrics) retriedCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -51,6 +59,13 @@ func (m *mockMetrics) exhaustedCount() int {
 	defer m.mu.Unlock()
 
 	return len(m.exhaustedCalls)
+}
+
+func (m *mockMetrics) lostCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return len(m.lostCalls)
 }
 
 // injectMessage pushes a FailedMessage directly into the Redis list,
