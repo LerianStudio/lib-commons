@@ -305,18 +305,18 @@ func (m *Middleware) saveResult(
 			// Capture response headers for faithful replay.
 			headers := make(map[string][]string)
 
-			c.Response().Header.VisitAll(func(key, value []byte) {
+			for key, value := range c.Response().Header.All() {
 				name := string(key)
 				// Skip headers managed by the middleware itself and
 				// transfer-encoding / content-length which Fiber sets on send.
 				switch name {
 				case "Content-Type", "Content-Length", "Transfer-Encoding",
 					chttp.IdempotencyReplayed:
-					return
+					continue
 				}
 
 				headers[name] = append(headers[name], string(value))
-			})
+			}
 
 			resp := cachedResponse{
 				StatusCode:  c.Response().StatusCode(),
