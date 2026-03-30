@@ -173,6 +173,14 @@ func TestIsBlockedAddr(t *testing.T) {
 	}
 }
 
+func TestIsBlockedAddr_ZeroValue(t *testing.T) {
+	t.Parallel()
+
+	// The zero-value netip.Addr{} is invalid and must be blocked (fail-closed).
+	var zero netip.Addr
+	assert.True(t, IsBlockedAddr(zero), "IsBlockedAddr(netip.Addr{}) must return true (fail-closed)")
+}
+
 // ---------------------------------------------------------------------------
 // IsBlockedIP — legacy net.IP interface
 // ---------------------------------------------------------------------------

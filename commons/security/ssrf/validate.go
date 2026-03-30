@@ -39,7 +39,7 @@ type ResolveResult struct {
 // Errors wrap [ErrBlocked] or [ErrInvalidURL] for programmatic inspection via
 // [errors.Is].
 func ValidateURL(ctx context.Context, rawURL string, opts ...Option) error {
-	_ = ctx // reserved for future use (e.g. tracing)
+	_ = ctx // TODO(ssrf): use ctx for tracing/metrics integration when telemetry is wired in
 
 	cfg := buildConfig(opts)
 
@@ -83,7 +83,7 @@ func ValidateURL(ctx context.Context, rawURL string, opts ...Option) error {
 //  1. Parse URL, validate scheme (http/https only, or https-only with [WithHTTPSOnly]).
 //  2. Check hostname blocking ([IsBlockedHostname]).
 //  3. Resolve DNS (single lookup via [net.DefaultResolver] or [WithLookupFunc]).
-//  4. Validate ALL resolved IPs ([IsBlockedAddr]).
+//  4. Validate resolved IPs — reject if ANY IP is blocked ([IsBlockedAddr]).
 //  5. Pin URL to first safe IP, return [ResolveResult].
 //
 // DNS lookup failures are fail-closed: if the hostname cannot be resolved the

@@ -2,6 +2,8 @@ package idempotency
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -152,6 +154,15 @@ func (m *Middleware) Check() fiber.Handler {
 	return m.handle
 }
 
+// redactKey returns a truncated SHA-256 hash of a Redis key for safe logging.
+// Idempotency keys are client-controlled and tenant-scoped, so logging them
+// verbatim would emit high-cardinality identifiers and potentially leak tenant
+// or client information during incidents.
+func redactKey(key string) string {
+	h := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(h[:8])
+}
+
 func (m *Middleware) handle(c *fiber.Ctx) error {
 	// Idempotency only applies to mutating methods.
 	if c.Method() == fiber.MethodGet || c.Method() == fiber.MethodOptions || c.Method() == fiber.MethodHead {
@@ -230,9 +241,17 @@ func (m *Middleware) handleDuplicate(
 		// Unexpected Redis error (timeout, connection failure) — fail open.
 		m.logger.Log(ctx, log.LevelWarn,
 			"idempotency: failed to read key state, failing open",
-			log.String("key", key), log.Err(keyErr),
+			log.String("key_hash", redactKey(key)), log.Err(keyErr),
 		)
 
+		return c.Next()
+	}
+
+	// The marker has vanished between the SetNX (which saw it) and this Get.
+	// This happens when the original request failed and deleted the key, or
+	// the TTL expired in the narrow window. Fail open so the duplicate can
+	// be retried rather than returning a false "already processed" response.
+	if errors.Is(keyErr, redis.Nil) {
 		return c.Next()
 	}
 
@@ -244,7 +263,7 @@ func (m *Middleware) handleDuplicate(
 		// Unexpected Redis error reading cached response — fail open.
 		m.logger.Log(ctx, log.LevelWarn,
 			"idempotency: failed to read cached response, failing open",
-			log.String("key", responseKey), log.Err(cacheErr),
+			log.String("key_hash", redactKey(responseKey)), log.Err(cacheErr),
 		)
 
 		return c.Next()
@@ -256,7 +275,7 @@ func (m *Middleware) handleDuplicate(
 			// to the generic "already processed" response (fail-open).
 			m.logger.Log(ctx, log.LevelWarn,
 				"idempotency: failed to unmarshal cached response, falling through to generic reply",
-				log.String("key", responseKey), log.Err(unmarshalErr),
+				log.String("key_hash", redactKey(responseKey)), log.Err(unmarshalErr),
 			)
 		} else {
 			// Replay persisted headers first so the caller sees

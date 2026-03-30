@@ -59,6 +59,12 @@ func BlockedPrefixes() []netip.Prefix {
 //     IsLinkLocalMulticast, IsMulticast, IsUnspecified.
 //  3. Custom blocklist ([BlockedPrefixes]).
 func IsBlockedAddr(addr netip.Addr) bool {
+	// Step 0: the zero-value netip.Addr{} is not a real IP address. Treating
+	// it as safe would violate the fail-closed principle — block it.
+	if !addr.IsValid() {
+		return true
+	}
+
 	// Step 1: unmap IPv4-mapped IPv6 so that ::ffff:10.0.0.1 is treated
 	// identically to 10.0.0.1.
 	addr = addr.Unmap()
