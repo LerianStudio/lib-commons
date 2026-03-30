@@ -47,6 +47,7 @@ Resilience and safety:
 - `commons/assert`: production-safe assertions with telemetry integration and domain predicates
 - `commons/safe`: panic-free math/regex/slice operations with error returns
 - `commons/security`: sensitive field detection and handling
+- `commons/security/ssrf`: canonical SSRF validation — IP blocking (CIDR blocklist + stdlib predicates), hostname blocking (metadata endpoints, dangerous suffixes), URL validation, DNS-pinned resolution with TOCTOU elimination
 - `commons/errgroup`: goroutine coordination with panic recovery
 - `commons/certificate`: thread-safe TLS certificate manager with hot reload, PEM file loading, PKCS#8/PKCS#1/EC key support, and `tls.Config` integration
 
@@ -136,6 +137,17 @@ Build and shell:
 - Read accessors (all nil-safe, read-locked): `GetCertificate() *x509.Certificate`, `GetSigner() crypto.Signer`, `PublicKey() crypto.PublicKey`, `ExpiresAt() time.Time`, `DaysUntilExpiry() int`.
 - TLS integration: `TLSCertificate() tls.Certificate` (returns populated `tls.Certificate` struct); `GetCertificateFunc() func(*tls.ClientHelloInfo) (*tls.Certificate, error)` — suitable for assignment to `tls.Config.GetCertificate` for transparent hot-reload.
 - Package-level helper: `LoadFromFiles(certPath, keyPath string) (*x509.Certificate, crypto.Signer, error)` — validates without touching any manager state, useful for pre-flight checking before calling `Rotate`.
+
+### SSRF validation (`commons/security/ssrf`)
+
+- `IsBlockedIP(net.IP)` and `IsBlockedAddr(netip.Addr)` for IP-level SSRF blocking. `IsBlockedAddr` is the core; `IsBlockedIP` delegates after conversion.
+- `IsBlockedHostname(hostname)` for hostname-level blocking: localhost, cloud metadata endpoints, `.local`/`.internal`/`.cluster.local` suffixes.
+- `BlockedPrefixes() []netip.Prefix` returns a copy of the canonical CIDR blocklist (8 ranges: this-network, CGNAT, IETF assignments, TEST-NET-1/2/3, benchmarking, reserved).
+- `ValidateURL(ctx, rawURL, opts...)` validates scheme, hostname, and parsed IP without DNS.
+- `ResolveAndValidate(ctx, rawURL, opts...) (*ResolveResult, error)` performs DNS-pinned validation. `ResolveResult` has `PinnedURL`, `Authority` (host:port for HTTP Host), `SNIHostname` (for TLS ServerName).
+- Functional options: `WithHTTPSOnly()`, `WithAllowPrivateNetwork()`, `WithLookupFunc(fn)`, `WithAllowHostname(hostname)`.
+- Sentinel errors: `ErrBlocked`, `ErrInvalidURL`, `ErrDNSFailed`.
+- Both `commons/webhook` and `commons/net/http` delegate to this package — it is the single source of truth for SSRF blocking across all Lerian services.
 
 ### Assertions (`commons/assert`)
 
@@ -238,6 +250,7 @@ Build and shell:
 - **Pointers:** `String()`, `Bool()`, `Time()`, `Int()`, `Int64()`, `Float64()`.
 - **Cron:** `Parse(expr) (Schedule, error)`; `Schedule.Next(t) (time.Time, error)`.
 - **Security:** `IsSensitiveField(name)`, `DefaultSensitiveFields()`, `DefaultSensitiveFieldsMap()`.
+- **SSRF:** `IsBlockedIP()`, `IsBlockedAddr()`, `IsBlockedHostname()`, `BlockedPrefixes()`, `ValidateURL()`, `ResolveAndValidate()`. Single source of truth for all SSRF protection. Both `webhook` and `net/http` delegate here.
 - **Transaction:** `BuildIntentPlan()` + `ValidateBalanceEligibility()` + `ApplyPosting()` with typed `IntentPlan`, `Posting`, `LedgerTarget`. `ResolveOperation(pending, isSource, status) (Operation, error)`.
 - **Constants:** `SanitizeMetricLabel(value) string` for OTEL label safety.
 - **Certificate:** `NewManager(certPath, keyPath) (*Manager, error)`; `Rotate(cert, key)`, `TLSCertificate()`, `GetCertificateFunc()`; package-level `LoadFromFiles(certPath, keyPath)` for pre-flight validation.

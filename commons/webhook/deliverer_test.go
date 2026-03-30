@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -899,4 +900,238 @@ func TestResolveSecret(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// sanitizeURL — credential redaction
+// ---------------------------------------------------------------------------
+
+func TestSanitizeURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "strips query params",
+			raw:  "https://example.com/webhook?token=secret&api_key=abc",
+			want: "https://example.com/webhook",
+		},
+		{
+			name: "strips userinfo",
+			raw:  "https://user:pass@example.com/webhook",
+			want: "https://example.com/webhook",
+		},
+		{
+			name: "strips both userinfo and query",
+			raw:  "https://admin:hunter2@example.com/hook?key=val",
+			want: "https://example.com/hook",
+		},
+		{
+			name: "no credentials passes through",
+			raw:  "https://example.com/webhook",
+			want: "https://example.com/webhook",
+		},
+		{
+			name: "strips fragment",
+			raw:  "https://example.com/webhook#access_token=secret",
+			want: "https://example.com/webhook",
+		},
+		{
+			name: "strips fragment with query and userinfo",
+			raw:  "https://user:pass@example.com/hook?key=val#frag",
+			want: "https://example.com/hook",
+		},
+		{
+			name: "invalid URL returns placeholder",
+			raw:  "://bad\x7f",
+			want: "[invalid-url]",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitizeURL(tt.raw)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Versioned signatures — v1 HMAC with timestamp binding
+// ---------------------------------------------------------------------------
+
+func TestComputeHMACv1(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"id":"123"}`)
+	secret := "test-secret"
+	timestamp := int64(1700000000)
+
+	// Independently computed expected value.
+	// Wire format: HMAC-SHA256("v1:1700000000.{\"id\":\"123\"}", "test-secret")
+	// prefixed with "v1,sha256=".
+	const expected = "v1,sha256=49d0851d6baa34655d12dfba153c748db08b84830d4cb01780d833956c59844c"
+
+	sig := computeHMACv1(payload, timestamp, secret)
+	assert.Equal(t, expected, sig,
+		"v1 signature must match independently computed HMAC-SHA256 of 'v1:<ts>.<payload>'")
+
+	// Verify it is deterministic.
+	sig2 := computeHMACv1(payload, timestamp, secret)
+	assert.Equal(t, sig, sig2, "same input must produce same signature")
+
+	// Different timestamp must produce different signature.
+	sig3 := computeHMACv1(payload, timestamp+1, secret)
+	assert.NotEqual(t, sig, sig3, "different timestamp must produce different signature")
+}
+
+func TestComputeSignature_V0Default(t *testing.T) {
+	t.Parallel()
+
+	d := &Deliverer{sigVersion: SignatureV0}
+	payload := []byte(`{"id":"123"}`)
+	timestamp := int64(1700000000)
+	secret := "test-secret"
+
+	sig := d.computeSignature(payload, timestamp, secret)
+	assert.True(t, strings.HasPrefix(sig, "sha256="),
+		"v0 signature must start with 'sha256='")
+	assert.False(t, strings.HasPrefix(sig, "v1,"),
+		"v0 signature must NOT have v1 prefix")
+}
+
+func TestComputeSignature_V1(t *testing.T) {
+	t.Parallel()
+
+	d := &Deliverer{sigVersion: SignatureV1}
+	payload := []byte(`{"id":"123"}`)
+	timestamp := int64(1700000000)
+	secret := "test-secret"
+
+	sig := d.computeSignature(payload, timestamp, secret)
+	assert.True(t, strings.HasPrefix(sig, "v1,sha256="),
+		"v1 signature must start with 'v1,sha256='")
+}
+
+func TestVerifySignature(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"id":"123"}`)
+	secret := "test-secret"
+	timestamp := int64(1700000000)
+
+	tests := []struct {
+		name    string
+		sig     string
+		wantErr string
+	}{
+		{
+			name: "valid v0 signature",
+			sig:  "sha256=" + computeHMAC(payload, secret),
+		},
+		{
+			name: "valid v1 signature",
+			sig:  computeHMACv1(payload, timestamp, secret),
+		},
+		{
+			name:    "invalid v0 signature",
+			sig:     "sha256=deadbeef",
+			wantErr: "v0 signature mismatch",
+		},
+		{
+			name:    "invalid v1 signature",
+			sig:     "v1,sha256=deadbeef",
+			wantErr: "v1 signature mismatch",
+		},
+		{
+			name:    "unrecognized format",
+			sig:     "v99,md5=abc",
+			wantErr: "unrecognized signature format",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := VerifySignature(payload, timestamp, secret, tt.sig)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestVerifySignatureWithFreshness(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"id":"123"}`)
+	secret := "test-secret"
+	now := time.Now().Unix()
+
+	// Fresh v1 signature (timestamp = now).
+	freshSig := computeHMACv1(payload, now, secret)
+
+	err := VerifySignatureWithFreshness(payload, now, secret, freshSig, 5*time.Minute)
+	assert.NoError(t, err, "fresh v1 signature within tolerance must pass")
+
+	// Stale v1 signature (timestamp = 1 hour ago).
+	staleTS := now - 3600
+	staleSig := computeHMACv1(payload, staleTS, secret)
+
+	err = VerifySignatureWithFreshness(payload, staleTS, secret, staleSig, 5*time.Minute)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside tolerance window")
+
+	// V0 signature — freshness check is skipped (timestamp not signed).
+	v0Sig := "sha256=" + computeHMAC(payload, secret)
+
+	err = VerifySignatureWithFreshness(payload, staleTS, secret, v0Sig, 5*time.Minute)
+	assert.NoError(t, err, "v0 signature skips freshness check")
+}
+
+func TestDeliver_V1Signature_EndToEnd(t *testing.T) {
+	t.Parallel()
+
+	secret := "v1-secret"
+	event := newTestEvent()
+
+	var gotSig string
+
+	srv, pubURL := startTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSig = r.Header.Get("X-Webhook-Signature")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	lister := &mockLister{
+		endpoints: []Endpoint{
+			{ID: "ep-v1", URL: pubURL, Secret: secret, Active: true},
+		},
+	}
+
+	d := NewDeliverer(lister,
+		WithMaxRetries(0),
+		WithSignatureVersion(SignatureV1),
+		WithHTTPClient(ssrfBypassClient(srv.Listener.Addr().String())),
+	)
+
+	results := d.DeliverWithResults(context.Background(), event)
+	require.Len(t, results, 1)
+	require.True(t, results[0].Success)
+
+	// The signature should be v1 format.
+	assert.True(t, strings.HasPrefix(gotSig, "v1,sha256="),
+		"v1 deliverer must produce v1 signature format, got: %s", gotSig)
+
+	// Verify the signature is correct.
+	err := VerifySignature(event.Payload, event.Timestamp, secret, gotSig)
+	assert.NoError(t, err, "v1 signature from deliverer must verify correctly")
 }

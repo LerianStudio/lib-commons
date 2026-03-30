@@ -26,6 +26,21 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/runtime"
 )
 
+// SignatureVersion controls the HMAC signing format used for X-Webhook-Signature.
+type SignatureVersion int
+
+const (
+	// SignatureV0 produces legacy payload-only signatures: "sha256=<hex(HMAC(payload))>".
+	// This is the default for backward compatibility with existing consumers.
+	SignatureV0 SignatureVersion = iota
+
+	// SignatureV1 produces versioned timestamp-bound signatures:
+	// "v1,sha256=<hex(HMAC(v1:<timestamp>.<payload>))>".
+	// The timestamp is included in the HMAC input to prevent replay attacks.
+	// Receivers must verify freshness (e.g., reject timestamps older than 5 minutes).
+	SignatureV1
+)
+
 // Defaults for Deliverer configuration.
 const (
 	defaultMaxConcurrency = 20
@@ -51,6 +66,7 @@ type Deliverer struct {
 	decryptor  SecretDecryptor
 	maxConc    int
 	maxRetries int
+	sigVersion SignatureVersion
 }
 
 // Option configures a Deliverer at construction time.
@@ -128,6 +144,21 @@ func WithSecretDecryptor(fn SecretDecryptor) Option {
 	}
 }
 
+// WithSignatureVersion selects the HMAC signing format for X-Webhook-Signature.
+// The default is SignatureV0 (payload-only) for backward compatibility.
+// SignatureV1 produces a versioned "v1,sha256=..." signature string that binds
+// the event timestamp into the HMAC input, enabling replay protection.
+// Receivers can enforce freshness using [VerifySignatureWithFreshness], or
+// perform basic signature verification using [VerifySignature].
+//
+// Migration path: switch to SignatureV1 only after all consumers have been
+// updated to verify the "v1,sha256=..." format.
+func WithSignatureVersion(v SignatureVersion) Option {
+	return func(d *Deliverer) {
+		d.sigVersion = v
+	}
+}
+
 // defaultHTTPClient creates an http.Client optimized for webhook delivery.
 // Connection pooling avoids TCP+TLS handshake overhead on repeated deliveries
 // to the same endpoint — critical at scale where hundreds of webhooks per
@@ -202,6 +233,8 @@ func (d *Deliverer) Deliver(ctx context.Context, event *Event) error {
 		return fmt.Errorf("webhook: list endpoints: %w", err)
 	}
 
+	// Defensive filter: EndpointLister contract guarantees active-only,
+	// but guard against faulty implementations.
 	active := filterActive(endpoints)
 	if len(active) == 0 {
 		d.log(ctx, log.LevelDebug, "no active endpoints for event",
@@ -239,6 +272,8 @@ func (d *Deliverer) DeliverWithResults(ctx context.Context, event *Event) []Deli
 		}}
 	}
 
+	// Defensive filter: EndpointLister contract guarantees active-only,
+	// but guard against faulty implementations.
 	active := filterActive(endpoints)
 	if len(active) == 0 {
 		return nil
@@ -335,7 +370,7 @@ func (d *Deliverer) deliverToEndpoint(
 	result := DeliveryResult{EndpointID: ep.ID}
 
 	// --- SSRF validation + DNS pinning (single lookup, eliminates TOCTOU) ---
-	pinnedURL, originalHost, ssrfErr := resolveAndValidateIP(ctx, ep.URL)
+	pinnedURL, originalAuthority, sniHostname, ssrfErr := resolveAndValidateIP(ctx, ep.URL)
 	if ssrfErr != nil {
 		span.RecordError(ssrfErr)
 		span.SetStatus(codes.Error, "SSRF blocked")
@@ -379,7 +414,7 @@ func (d *Deliverer) deliverToEndpoint(
 			}
 		}
 
-		statusCode, err := d.doHTTP(ctx, pinnedURL, originalHost, event, secret)
+		statusCode, err := d.doHTTP(ctx, pinnedURL, originalAuthority, sniHostname, event, secret)
 		result.StatusCode = statusCode
 
 		if err != nil {
@@ -408,7 +443,7 @@ func (d *Deliverer) deliverToEndpoint(
 		// Non-retryable client errors — break immediately (except 429 Too Many Requests).
 		if statusCode >= http.StatusBadRequest && statusCode < http.StatusInternalServerError && statusCode != http.StatusTooManyRequests {
 			result.Error = fmt.Errorf("webhook: non-retryable status %d", statusCode)
-			d.recordMetrics(ctx, ep.ID, false, statusCode, attempt+1)
+			d.recordMetrics(ctx, ep.ID, false, statusCode, result.Attempts)
 
 			return result
 		}
@@ -438,10 +473,16 @@ func (d *Deliverer) deliverToEndpoint(
 
 // doHTTP builds and executes a single HTTP request to the (possibly pinned) URL.
 // Returns the status code and any transport-level error.
+//
+// originalAuthority is the full host:port authority from the original URL, used
+// as the HTTP Host header to preserve explicit non-default ports.
+// sniHostname is the bare hostname (port stripped), used for TLS SNI and
+// certificate verification when the URL has been rewritten to a pinned IP.
 func (d *Deliverer) doHTTP(
 	ctx context.Context,
 	pinnedURL string,
-	originalHost string,
+	originalAuthority string,
+	sniHostname string,
 	event *Event,
 	secret string,
 ) (int, error) {
@@ -455,21 +496,22 @@ func (d *Deliverer) doHTTP(
 	req.Header.Set("X-Webhook-Timestamp", strconv.FormatInt(event.Timestamp, 10))
 
 	// When the URL was rewritten to use the pinned IP, set the Host header
-	// for virtual hosting and use TLSClientConfig.ServerName so TLS SNI and
-	// certificate verification use the original hostname (not the IP).
-	if originalHost != "" {
-		req.Host = originalHost
+	// with the original authority (host:port) for virtual hosting, and use
+	// TLSClientConfig.ServerName with the bare hostname for TLS SNI and
+	// certificate verification (not the IP).
+	if originalAuthority != "" {
+		req.Host = originalAuthority
 	}
 
 	if secret != "" {
-		sig := computeHMAC(event.Payload, secret)
-		req.Header.Set("X-Webhook-Signature", "sha256="+sig)
+		sig := d.computeSignature(event.Payload, event.Timestamp, secret)
+		req.Header.Set("X-Webhook-Signature", sig)
 	}
 
 	client := d.client
 
-	if originalHost != "" && strings.HasPrefix(pinnedURL, "https://") {
-		client = d.httpsClientForPinnedIP(originalHost)
+	if sniHostname != "" && strings.HasPrefix(pinnedURL, "https://") {
+		client = d.httpsClientForPinnedIP(sniHostname)
 	}
 
 	resp, err := client.Do(req)
@@ -506,23 +548,115 @@ func (d *Deliverer) resolveSecret(raw string) (string, error) {
 	return plaintext, nil
 }
 
+// computeSignature dispatches to the appropriate HMAC format based on the
+// configured signature version.
+func (d *Deliverer) computeSignature(payload []byte, timestamp int64, secret string) string {
+	switch d.sigVersion {
+	case SignatureV1:
+		return computeHMACv1(payload, timestamp, secret)
+	default:
+		return "sha256=" + computeHMAC(payload, secret)
+	}
+}
+
 // computeHMAC returns the hex-encoded HMAC-SHA256 of payload using the given secret.
+// This is the legacy (v0) format that signs the raw payload only.
 //
-// Design note — timestamp not included in signature (by intent):
+// Design note — timestamp not included in v0 signature (by intent):
 // The signature covers the raw payload only, not the X-Webhook-Timestamp value.
-// Some industry integrations (e.g., Stripe) sign "timestamp.payload" to bind the
-// timestamp to the signature and prevent replay attacks. We intentionally do not
-// do this because: (a) changing the input format would silently break all existing
-// consumers who already verify "sha256=HMAC(payload)" and (b) replay protection
-// at the application layer (e.g., idempotency keys, short timestamp windows) is
-// the responsibility of the receiving service. Receivers who need replay protection
-// should validate that X-Webhook-Timestamp is within an acceptable window (e.g.,
-// ±5 minutes) independently of the signature check.
+// This format is maintained for backward compatibility. New deployments should
+// prefer SignatureV1 (via WithSignatureVersion) which binds the timestamp into
+// the HMAC input to enable replay protection.
 func computeHMAC(payload []byte, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
 
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// computeHMACv1 returns a versioned signature string:
+//
+//	"v1,sha256=<hex(HMAC-SHA256("v1:<timestamp>.<payload>", secret))>"
+//
+// The version prefix "v1:" followed by the decimal timestamp and a dot separator
+// are prepended to the payload before computing the HMAC, binding the timestamp
+// to the signature. Receivers must parse the "v1," prefix, extract the timestamp
+// from the X-Webhook-Timestamp header, reconstruct the signing input, and verify
+// the HMAC before accepting the webhook.
+func computeHMACv1(payload []byte, timestamp int64, secret string) string {
+	ts := strconv.FormatInt(timestamp, 10)
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte("v1:"))
+	mac.Write([]byte(ts))
+	mac.Write([]byte("."))
+	mac.Write(payload)
+
+	return "v1,sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// VerifySignature verifies a webhook signature by auto-detecting the version
+// from the signature string format. Returns nil on valid signature, or an error
+// describing the mismatch.
+//
+// Supported formats:
+//   - "sha256=<hex>"          — v0 (payload-only)
+//   - "v1,sha256=<hex>"       — v1 (timestamp-bound)
+//
+// For v1 signatures, the timestamp parameter is required to reconstruct the
+// signing input. For v0 signatures, the timestamp is ignored.
+func VerifySignature(payload []byte, timestamp int64, secret, signature string) error {
+	switch {
+	case strings.HasPrefix(signature, "v1,"):
+		expected := computeHMACv1(payload, timestamp, secret)
+		if !hmac.Equal([]byte(signature), []byte(expected)) {
+			return errors.New("webhook: v1 signature mismatch")
+		}
+
+		return nil
+
+	case strings.HasPrefix(signature, "sha256="):
+		expected := "sha256=" + computeHMAC(payload, secret)
+		if !hmac.Equal([]byte(signature), []byte(expected)) {
+			return errors.New("webhook: v0 signature mismatch")
+		}
+
+		return nil
+
+	default:
+		return errors.New("webhook: unrecognized signature format")
+	}
+}
+
+// VerifySignatureWithFreshness verifies a v1 webhook signature and additionally
+// checks that the timestamp is within the given tolerance window from now.
+// This provides replay protection: even if an attacker captures a valid
+// payload+signature pair, it becomes invalid after the tolerance window expires.
+//
+// For v0 ("sha256=...") signatures, freshness cannot be enforced because the
+// timestamp is not covered by the HMAC. Callers receiving v0 signatures should
+// use VerifySignature and implement replay protection independently (e.g.,
+// idempotency keys or event-ID tracking).
+func VerifySignatureWithFreshness(payload []byte, timestamp int64, secret, signature string, tolerance time.Duration) error {
+	if err := VerifySignature(payload, timestamp, secret, signature); err != nil {
+		return err
+	}
+
+	// Freshness check only applies to v1 where the timestamp is signed.
+	if strings.HasPrefix(signature, "v1,") {
+		eventTime := time.Unix(timestamp, 0)
+		delta := time.Since(eventTime)
+
+		if delta < 0 {
+			delta = -delta
+		}
+
+		if delta > tolerance {
+			return fmt.Errorf("webhook: timestamp outside tolerance window (%s > %s)", delta.Truncate(time.Second), tolerance)
+		}
+	}
+
+	return nil
 }
 
 // filterActive returns only endpoints where Active is true.
@@ -605,17 +739,21 @@ func (d *Deliverer) httpsClientForPinnedIP(originalHost string) *http.Client {
 	return &clone
 }
 
-// sanitizeURL strips query parameters from a URL before logging to prevent
-// credential leakage. Webhook URLs may carry tokens in query params
-// (e.g., ?token=..., ?api_key=...) that must not appear in log output.
-// On parse failure the raw string is returned unchanged so no log line is lost.
+// sanitizeURL strips query parameters and userinfo from a URL before logging
+// to prevent credential leakage. Webhook URLs may carry tokens in query params
+// (e.g., ?token=..., ?api_key=...) or credentials in the userinfo component
+// (e.g., https://user:pass@host/...) that must not appear in log output.
+// On parse failure a safe placeholder is returned instead of the raw input
+// to avoid leaking credentials embedded in malformed URLs.
 func sanitizeURL(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return rawURL
+		return "[invalid-url]"
 	}
 
 	u.RawQuery = ""
+	u.User = nil
+	u.Fragment = ""
 
 	return u.String()
 }

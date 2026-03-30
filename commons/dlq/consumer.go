@@ -106,11 +106,15 @@ func WithBatchSize(n int) ConsumerOption {
 	}
 }
 
-// WithSources sets the DLQ source queue names to consume.
+// WithSources sets the DLQ source queue names to consume. The input slice is
+// cloned so that subsequent mutations by the caller do not race with the
+// consumer's read loop.
 func WithSources(sources ...string) ConsumerOption {
 	return func(c *Consumer) {
 		if len(sources) > 0 {
-			c.cfg.Sources = sources
+			cloned := make([]string, len(sources))
+			copy(cloned, sources)
+			c.cfg.Sources = cloned
 		}
 	}
 }

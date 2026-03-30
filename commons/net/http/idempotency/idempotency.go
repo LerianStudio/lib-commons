@@ -2,7 +2,10 @@ package idempotency
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -21,10 +24,15 @@ const (
 )
 
 // cachedResponse stores the full HTTP response for idempotent replay.
+// Body is stored as raw bytes (base64-encoded in JSON) so that binary and
+// non-UTF-8 payloads survive a marshal/unmarshal round-trip. Headers preserves
+// response headers that must be faithfully replayed (e.g., Location, ETag,
+// Set-Cookie).
 type cachedResponse struct {
-	StatusCode  int    `json:"status_code"`
-	ContentType string `json:"content_type"`
-	Body        string `json:"body"`
+	StatusCode  int                 `json:"status_code"`
+	ContentType string              `json:"content_type"`
+	Body        []byte              `json:"body"`
+	Headers     map[string][]string `json:"headers,omitempty"`
 }
 
 // Option configures the idempotency middleware.
@@ -146,6 +154,15 @@ func (m *Middleware) Check() fiber.Handler {
 	return m.handle
 }
 
+// redactKey returns a truncated SHA-256 hash of a Redis key for safe logging.
+// Idempotency keys are client-controlled and tenant-scoped, so logging them
+// verbatim would emit high-cardinality identifiers and potentially leak tenant
+// or client information during incidents.
+func redactKey(key string) string {
+	h := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(h[:8])
+}
+
 func (m *Middleware) handle(c *fiber.Ctx) error {
 	// Idempotency only applies to mutating methods.
 	if c.Method() == fiber.MethodGet || c.Method() == fiber.MethodOptions || c.Method() == fiber.MethodHead {
@@ -219,17 +236,63 @@ func (m *Middleware) handleDuplicate(
 	key, responseKey string,
 ) error {
 	// Read the current key value to distinguish in-flight from completed.
-	keyValue, _ := client.Get(ctx, key).Result()
+	keyValue, keyErr := client.Get(ctx, key).Result()
+	if keyErr != nil && !errors.Is(keyErr, redis.Nil) {
+		// Unexpected Redis error (timeout, connection failure) — fail open.
+		m.logger.Log(ctx, log.LevelWarn,
+			"idempotency: failed to read key state, failing open",
+			log.String("key_hash", redactKey(key)), log.Err(keyErr),
+		)
+
+		return c.Next()
+	}
+
+	// The marker has vanished between the SetNX (which saw it) and this Get.
+	// This happens when the original request failed and deleted the key, or
+	// the TTL expired in the narrow window. Fail open so the duplicate can
+	// be retried rather than returning a false "already processed" response.
+	if errors.Is(keyErr, redis.Nil) {
+		return c.Next()
+	}
 
 	// Try to replay the cached response (true idempotency).
 	cached, cacheErr := client.Get(ctx, responseKey).Result()
-	if cacheErr == nil && cached != "" {
+
+	switch {
+	case cacheErr != nil && !errors.Is(cacheErr, redis.Nil):
+		// Unexpected Redis error reading cached response — fail open.
+		m.logger.Log(ctx, log.LevelWarn,
+			"idempotency: failed to read cached response, failing open",
+			log.String("key_hash", redactKey(responseKey)), log.Err(cacheErr),
+		)
+
+		return c.Next()
+	case cacheErr == nil && cached != "":
 		var resp cachedResponse
-		if unmarshalErr := json.Unmarshal([]byte(cached), &resp); unmarshalErr == nil {
+		if unmarshalErr := json.Unmarshal([]byte(cached), &resp); unmarshalErr != nil {
+			// Cache entry is corrupt or written by an incompatible version.
+			// Log a warning so operators can investigate, then fall through
+			// to the generic "already processed" response (fail-open).
+			m.logger.Log(ctx, log.LevelWarn,
+				"idempotency: failed to unmarshal cached response, falling through to generic reply",
+				log.String("key_hash", redactKey(responseKey)), log.Err(unmarshalErr),
+			)
+		} else {
+			// Replay persisted headers first so the caller sees
+			// Location, ETag, Set-Cookie, etc. exactly as sent originally.
+			// Use Header.Add (not c.Set) so multi-value headers such as
+			// Set-Cookie are appended rather than silently overwritten.
+			for name, values := range resp.Headers {
+				for _, v := range values {
+					c.Response().Header.Add(name, v)
+				}
+			}
+
 			c.Set(chttp.IdempotencyReplayed, "true")
 			c.Set("Content-Type", resp.ContentType)
 
-			return c.Status(resp.StatusCode).SendString(resp.Body)
+			// Send (not SendString) preserves binary/non-UTF-8 bodies.
+			return c.Status(resp.StatusCode).Send(resp.Body)
 		}
 	}
 
@@ -268,10 +331,27 @@ func (m *Middleware) saveResult(
 		pipe := client.Pipeline()
 
 		if len(body) <= m.maxBodyCache {
+			// Capture response headers for faithful replay.
+			headers := make(map[string][]string)
+
+			for hdrKey, value := range c.Response().Header.All() {
+				name := string(hdrKey)
+				// Skip headers managed by the middleware itself and
+				// transfer-encoding / content-length which Fiber sets on send.
+				switch name {
+				case "Content-Type", "Content-Length", "Transfer-Encoding",
+					chttp.IdempotencyReplayed:
+					continue
+				}
+
+				headers[name] = append(headers[name], string(value))
+			}
+
 			resp := cachedResponse{
 				StatusCode:  c.Response().StatusCode(),
 				ContentType: string(c.Response().Header.ContentType()),
-				Body:        string(body),
+				Body:        body,
+				Headers:     headers,
 			}
 
 			if data, marshalErr := json.Marshal(resp); marshalErr == nil {

@@ -9,13 +9,13 @@ func SnapSettingString(snap *Snapshot, tenantID, key string, fallback string) st
 		return fallback
 	}
 
-	if raw, ok := snap.GetTenantSetting(tenantID, key); ok {
+	if raw, ok := snap.GetTenantSetting(tenantID, key); ok && raw.Value != nil {
 		if value, converted := tryCoerceString(raw.Value); converted {
 			return value
 		}
 	}
 
-	if raw, ok := snap.GetGlobalSetting(key); ok {
+	if raw, ok := snap.GetGlobalSetting(key); ok && raw.Value != nil {
 		if value, converted := tryCoerceString(raw.Value); converted {
 			return value
 		}
@@ -31,13 +31,13 @@ func SnapSettingInt(snap *Snapshot, tenantID, key string, fallback int) int {
 		return fallback
 	}
 
-	if raw, ok := snap.GetTenantSetting(tenantID, key); ok {
+	if raw, ok := snap.GetTenantSetting(tenantID, key); ok && raw.Value != nil {
 		if value, converted := tryCoerceInt(raw.Value); converted {
 			return value
 		}
 	}
 
-	if raw, ok := snap.GetGlobalSetting(key); ok {
+	if raw, ok := snap.GetGlobalSetting(key); ok && raw.Value != nil {
 		if value, converted := tryCoerceInt(raw.Value); converted {
 			return value
 		}
@@ -53,13 +53,13 @@ func SnapSettingBool(snap *Snapshot, tenantID, key string, fallback bool) bool {
 		return fallback
 	}
 
-	if raw, ok := snap.GetTenantSetting(tenantID, key); ok {
+	if raw, ok := snap.GetTenantSetting(tenantID, key); ok && raw.Value != nil {
 		if value, converted := tryCoerceBool(raw.Value); converted {
 			return value
 		}
 	}
 
-	if raw, ok := snap.GetGlobalSetting(key); ok {
+	if raw, ok := snap.GetGlobalSetting(key); ok && raw.Value != nil {
 		if value, converted := tryCoerceBool(raw.Value); converted {
 			return value
 		}

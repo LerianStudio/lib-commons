@@ -6,37 +6,22 @@
 // requests may execute more than once. Callers that require strict at-most-once
 // guarantees must pair this middleware with application-level safeguards.
 //
-// The middleware uses the X-Idempotency request header combined with the tenant ID
-// (from tenant-manager context) to form a composite Redis key. When a tenant ID is
-// present, keys are scoped per-tenant to prevent cross-tenant collisions. When no
-// tenant is in context (e.g., non-tenant-scoped routes), keys are still valid but
-// are shared across the global namespace. Duplicate requests receive the original
-// response with the X-Idempotency-Replayed header set to "true".
+// # Key composition
 //
-// # Quick start
+// The middleware uses the X-Idempotency request header ([constants.IdempotencyKey])
+// combined with the tenant ID (from tenant-manager context via
+// [tmcore.GetTenantIDContext]) to form a composite Redis key:
 //
-//	conn, err := redis.New(ctx, cfg)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//	idem := idempotency.New(conn)
-//	app.Post("/orders", idem.Check(), createOrderHandler)
+//	<prefix><tenantID>:<idempotencyKey>
 //
-// # Behavior
+// When a tenant ID is present, keys are scoped per-tenant to prevent
+// cross-tenant collisions. When no tenant is in context (e.g., non-tenant-scoped
+// routes), the key becomes <prefix>:<idempotencyKey> in the global namespace.
 //
-//   - GET/OPTIONS requests pass through (idempotency is irrelevant for reads).
-//   - Absent header: request proceeds normally (idempotency is opt-in).
-//   - Header exceeds MaxKeyLength (default 256): request rejected with 400.
-//   - Duplicate key: cached response replayed with X-Idempotency-Replayed: true.
-//   - Redis failure: request proceeds (fail-open for availability).
-//   - Handler success: response cached; handler failure: key deleted (client can retry).
+// A companion response key at <prefix><tenantID>:<idempotencyKey>:response stores
+// the cached response body and headers for replay.
 //
-// # Redis key namespace convention
-//
-// Keys follow the pattern: <prefix><tenantID>:<idempotencyKey>
-// with a companion response key at <prefix><tenantID>:<idempotencyKey>:response.
-//
-// The default prefix is "idempotency:" and can be overridden via WithKeyPrefix.
+// The default prefix is "idempotency:" and can be overridden via [WithKeyPrefix].
 // This namespacing convention is consistent with other lib-commons packages that
 // use Redis (e.g., rate limiting uses "ratelimit:<tenantID>:..."). Per-tenant
 // isolation is enforced by embedding the tenant ID into the key rather than
@@ -44,7 +29,44 @@
 // implementation topology-agnostic (standalone, sentinel, and cluster all behave
 // identically with this approach).
 //
+// # Quick start
+//
+//	conn, err := redis.New(ctx, cfg)
+//	if err != nil {
+//	    return err
+//	}
+//	idem := idempotency.New(conn)
+//	app.Post("/orders", idem.Check(), createOrderHandler)
+//
+// # Behavior branches
+//
+// The [Middleware.Check] handler evaluates requests through the following
+// branches in order:
+//
+//   - GET, HEAD, and OPTIONS requests pass through unconditionally — idempotency
+//     is not enforced for safe/idempotent HTTP methods.
+//   - Absent X-Idempotency header: request proceeds normally (idempotency is
+//     opt-in per request).
+//   - Header exceeds [WithMaxKeyLength] (default 256): request is passed to the
+//     configured [WithRejectedHandler]. When no custom handler is set, a 400 JSON
+//     response with code "VALIDATION_ERROR" is returned.
+//   - Redis unavailable (GetClient, SetNX, or Get failures): request proceeds
+//     without idempotency enforcement (fail-open), logged at WARN level.
+//   - Duplicate key with cached response: the original response is replayed
+//     faithfully — status code, headers (including Location, ETag, Set-Cookie),
+//     content type, and body — with [constants.IdempotencyReplayed] set to "true".
+//   - Duplicate key still in "processing" state (in-flight): 409 Conflict with
+//     code "IDEMPOTENCY_CONFLICT" is returned.
+//   - Duplicate key in "complete" state but no cached body (e.g., body exceeded
+//     [WithMaxBodyCache]): 200 OK with code "IDEMPOTENT" and detail "request
+//     already processed" is returned.
+//   - Handler success: response (status, headers, body) is cached via a Redis
+//     pipeline and the key is marked "complete".
+//   - Handler failure: both the lock key and response key are deleted so the
+//     client can retry with the same idempotency key.
+//
 // # Nil safety
 //
-// A nil *Middleware returns a pass-through handler from Check().
+// [New] returns nil when conn is nil. A nil [*Middleware] returns a pass-through
+// handler from [Middleware.Check].
 package idempotency

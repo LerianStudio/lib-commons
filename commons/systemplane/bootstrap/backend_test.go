@@ -408,7 +408,7 @@ func TestResetBackendFactories_ClearsRegistrations(t *testing.T) {
 	RecordInitError(fmt.Errorf("simulated init error"))
 
 	factories, initErrors := backendRegistry.snapshot()
-	assert.Len(t, factories, 1)
+	assert.Contains(t, factories, domain.BackendPostgres, "expected the registered factory to be present")
 	assert.NotEmpty(t, initErrors)
 
 	// Reset and verify.
