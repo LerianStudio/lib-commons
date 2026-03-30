@@ -148,62 +148,18 @@ func (h *Handler) Enqueue(ctx context.Context, msg *FailedMessage) error {
 		return ErrNilHandler
 	}
 
-	if msg == nil {
-		return errors.New("dlq: enqueue: nil message")
-	}
-
-	if msg.Source == "" {
-		return errors.New("dlq: enqueue: source must not be empty")
-	}
-
-	if err := validateKeySegment("source", msg.Source); err != nil {
+	if err := validateEnqueueMessage(msg); err != nil {
 		return err
 	}
 
 	ctx, span := h.tracer.Start(ctx, "dlq.enqueue")
 	defer span.End()
 
-	// Only stamp CreatedAt and MaxRetries on initial enqueue (zero-valued).
-	// Re-enqueue paths (consumer retry-failed, not-yet-ready, prune) pass
-	// messages that already carry the original values; overwriting them would
-	// permanently lose the original failure timestamp and retry budget.
-	initialEnqueue := msg.CreatedAt.IsZero()
-	if initialEnqueue {
-		msg.CreatedAt = time.Now().UTC()
-	}
+	h.stampInitialEnqueue(msg)
 
-	if msg.MaxRetries <= 0 {
-		msg.MaxRetries = h.maxRetries
-	}
-
-	ctxTenant := tmcore.GetTenantIDContext(ctx)
-
-	effectiveTenant := msg.TenantID
-	if effectiveTenant == "" {
-		effectiveTenant = ctxTenant
-		msg.TenantID = effectiveTenant
-	}
-
-	if effectiveTenant != "" && ctxTenant != "" && effectiveTenant != ctxTenant {
-		return fmt.Errorf("dlq: enqueue: tenant mismatch between message (%s) and context (%s)", effectiveTenant, ctxTenant)
-	}
-
-	// Validate the effective tenant before using it to construct a Redis key.
-	// This prevents invalid tenant IDs from silently falling back to the global
-	// (non-tenant) key inside tenantScopedKeyForTenant, which would mix
-	// tenant-scoped messages into the global queue.
-	if effectiveTenant != "" {
-		if err := validateKeySegment("tenantID", effectiveTenant); err != nil {
-			return fmt.Errorf("dlq: enqueue: %w", err)
-		}
-	}
-
-	// Recalculate NextRetryAt only on initial enqueue. On re-enqueue the
-	// consumer has already incremented RetryCount and the caller is
-	// responsible for timing; we preserve their NextRetryAt or let the
-	// backoff be recalculated by the consumer path that sets RetryCount.
-	if initialEnqueue && msg.RetryCount < msg.MaxRetries {
-		msg.NextRetryAt = msg.CreatedAt.Add(backoffDuration(msg.RetryCount))
+	effectiveTenant, err := h.resolveAndValidateTenant(ctx, msg)
+	if err != nil {
+		return err
 	}
 
 	data, err := json.Marshal(msg)
@@ -231,6 +187,74 @@ func (h *Handler) Enqueue(ctx context.Context, msg *FailedMessage) error {
 	}
 
 	return nil
+}
+
+// validateEnqueueMessage performs pre-flight validation on the message before
+// any state mutation or tracing begins.
+func validateEnqueueMessage(msg *FailedMessage) error {
+	if msg == nil {
+		return errors.New("dlq: enqueue: nil message")
+	}
+
+	if msg.Source == "" {
+		return errors.New("dlq: enqueue: source must not be empty")
+	}
+
+	return validateKeySegment("source", msg.Source)
+}
+
+// stampInitialEnqueue sets CreatedAt, MaxRetries, and NextRetryAt on messages
+// that are being enqueued for the first time (CreatedAt is zero).
+// Re-enqueue paths (consumer retry-failed, not-yet-ready, prune) pass messages
+// that already carry the original values; overwriting them would permanently
+// lose the original failure timestamp and retry budget.
+func (h *Handler) stampInitialEnqueue(msg *FailedMessage) {
+	initialEnqueue := msg.CreatedAt.IsZero()
+	if initialEnqueue {
+		msg.CreatedAt = time.Now().UTC()
+	}
+
+	if msg.MaxRetries <= 0 {
+		msg.MaxRetries = h.maxRetries
+	}
+
+	// Recalculate NextRetryAt only on initial enqueue. On re-enqueue the
+	// consumer has already incremented RetryCount and the caller is
+	// responsible for timing; we preserve their NextRetryAt or let the
+	// backoff be recalculated by the consumer path that sets RetryCount.
+	if initialEnqueue && msg.RetryCount < msg.MaxRetries {
+		msg.NextRetryAt = msg.CreatedAt.Add(backoffDuration(msg.RetryCount))
+	}
+}
+
+// resolveAndValidateTenant determines the effective tenant ID for the message by
+// reconciling the message's TenantID with the tenant from context. It validates
+// that they match when both are present, and validates the tenant as a safe Redis
+// key segment. Returns the effective tenant ID.
+func (h *Handler) resolveAndValidateTenant(ctx context.Context, msg *FailedMessage) (string, error) {
+	ctxTenant := tmcore.GetTenantIDContext(ctx)
+
+	effectiveTenant := msg.TenantID
+	if effectiveTenant == "" {
+		effectiveTenant = ctxTenant
+		msg.TenantID = effectiveTenant
+	}
+
+	if effectiveTenant != "" && ctxTenant != "" && effectiveTenant != ctxTenant {
+		return "", fmt.Errorf("dlq: enqueue: tenant mismatch between message (%s) and context (%s)", effectiveTenant, ctxTenant)
+	}
+
+	// Validate the effective tenant before using it to construct a Redis key.
+	// This prevents invalid tenant IDs from silently falling back to the global
+	// (non-tenant) key inside tenantScopedKeyForTenant, which would mix
+	// tenant-scoped messages into the global queue.
+	if effectiveTenant != "" {
+		if err := validateKeySegment("tenantID", effectiveTenant); err != nil {
+			return "", fmt.Errorf("dlq: enqueue: %w", err)
+		}
+	}
+
+	return effectiveTenant, nil
 }
 
 // logEnqueueFallback logs message metadata when Redis is unreachable. The

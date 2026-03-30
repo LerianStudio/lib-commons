@@ -3,6 +3,7 @@ package idempotency
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -225,7 +226,7 @@ func (m *Middleware) handleDuplicate(
 ) error {
 	// Read the current key value to distinguish in-flight from completed.
 	keyValue, keyErr := client.Get(ctx, key).Result()
-	if keyErr != nil && keyErr != redis.Nil {
+	if keyErr != nil && !errors.Is(keyErr, redis.Nil) {
 		// Unexpected Redis error (timeout, connection failure) — fail open.
 		m.logger.Log(ctx, log.LevelWarn,
 			"idempotency: failed to read key state, failing open",
@@ -239,7 +240,7 @@ func (m *Middleware) handleDuplicate(
 	cached, cacheErr := client.Get(ctx, responseKey).Result()
 
 	switch {
-	case cacheErr != nil && cacheErr != redis.Nil:
+	case cacheErr != nil && !errors.Is(cacheErr, redis.Nil):
 		// Unexpected Redis error reading cached response — fail open.
 		m.logger.Log(ctx, log.LevelWarn,
 			"idempotency: failed to read cached response, failing open",
@@ -303,6 +304,7 @@ func (m *Middleware) saveResult(
 		if len(body) <= m.maxBodyCache {
 			// Capture response headers for faithful replay.
 			headers := make(map[string][]string)
+
 			c.Response().Header.VisitAll(func(key, value []byte) {
 				name := string(key)
 				// Skip headers managed by the middleware itself and
@@ -312,6 +314,7 @@ func (m *Middleware) saveResult(
 					chttp.IdempotencyReplayed:
 					return
 				}
+
 				headers[name] = append(headers[name], string(value))
 			})
 
