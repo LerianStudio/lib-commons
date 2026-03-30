@@ -401,7 +401,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 
 			metricSource := c.sanitizeMetricSource(msg.Source)
 			if c.metrics != nil {
-				c.metrics.RecordExhausted(ctx, metricSource)
+				c.metrics.RecordLost(ctx, metricSource)
 			}
 
 			return true
@@ -448,7 +448,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 
 			metricSource := c.sanitizeMetricSource(msg.Source)
 			if c.metrics != nil {
-				c.metrics.RecordExhausted(ctx, metricSource)
+				c.metrics.RecordLost(ctx, metricSource)
 			}
 
 			return true

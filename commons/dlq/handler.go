@@ -22,6 +22,7 @@ import (
 type DLQMetrics interface {
 	RecordRetried(ctx context.Context, source string)
 	RecordExhausted(ctx context.Context, source string)
+	RecordLost(ctx context.Context, source string)
 }
 
 // FailedMessage represents a message that failed processing and was routed to
