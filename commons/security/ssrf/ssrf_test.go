@@ -399,6 +399,15 @@ func TestValidateURL_MalformedURL(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidURL)
 }
 
+func TestValidateURL_NilContext(t *testing.T) {
+	t.Parallel()
+
+	err := ValidateURL(nil, "https://example.com/hook")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidURL)
+	assert.Contains(t, err.Error(), "nil context")
+}
+
 func TestValidateURL_HTTPSOnly(t *testing.T) {
 	t.Parallel()
 
