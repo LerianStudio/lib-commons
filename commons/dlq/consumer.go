@@ -2,7 +2,6 @@ package dlq
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -12,7 +11,6 @@ import (
 	libOtel "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
 	libRuntime "github.com/LerianStudio/lib-commons/v4/commons/runtime"
 	tmcore "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
-	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )
@@ -148,8 +146,13 @@ func NewConsumer(handler *Handler, retryFn RetryFunc, opts ...ConsumerOption) (*
 	}
 
 	// Inherit handler settings when not overridden via options.
+	// Default to nopDLQMetrics to eliminate nil checks at every call site.
 	if c.metrics == nil {
-		c.metrics = handler.metrics
+		if handler.metrics != nil {
+			c.metrics = handler.metrics
+		} else {
+			c.metrics = nopDLQMetrics{}
+		}
 	}
 
 	if c.module == "" {
@@ -281,7 +284,7 @@ func (c *Consumer) processSource(ctx context.Context, source string) {
 	// Build a context per discovered tenant. Include the bare (non-tenant) context
 	// only when no tenant keys were found — if tenant keys exist, draining the
 	// global (non-tenant) key too would double-process the same logical queue.
-	keyContexts := []context.Context{}
+	var keyContexts []context.Context
 
 	for _, key := range tenantKeys {
 		tenantID := c.handler.ExtractTenantFromKey(key, source)
@@ -404,9 +407,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 			)
 
 			metricSource := c.sanitizeMetricSource(msg.Source)
-			if c.metrics != nil {
-				c.metrics.RecordLost(ctx, metricSource)
-			}
+			c.metrics.RecordLost(ctx, metricSource)
 
 			return true
 		}
@@ -419,9 +420,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 		libOtel.HandleSpanError(span, "dlq message exhausted", ErrMessageExhausted)
 
 		metricSource := c.sanitizeMetricSource(msg.Source)
-		if c.metrics != nil {
-			c.metrics.RecordExhausted(ctx, metricSource)
-		}
+		c.metrics.RecordExhausted(ctx, metricSource)
 
 		c.logger.Log(ctx, libLog.LevelError, "dlq consumer: message permanently failed, discarding",
 			libLog.String("source", msg.Source),
@@ -451,9 +450,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 			)
 
 			metricSource := c.sanitizeMetricSource(msg.Source)
-			if c.metrics != nil {
-				c.metrics.RecordLost(ctx, metricSource)
-			}
+			c.metrics.RecordLost(ctx, metricSource)
 
 			return true
 		}
@@ -469,9 +466,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 
 	// Retry succeeded — record metric and discard.
 	metricSource := c.sanitizeMetricSource(msg.Source)
-	if c.metrics != nil {
-		c.metrics.RecordRetried(ctx, metricSource)
-	}
+	c.metrics.RecordRetried(ctx, metricSource)
 
 	c.logger.Log(ctx, libLog.LevelInfo, "dlq consumer: message retry succeeded",
 		libLog.String("source", msg.Source),
@@ -509,10 +504,4 @@ func (c *Consumer) sanitizeMetricSource(source string) string {
 	}
 
 	return "unknown"
-}
-
-// isRedisNilError reports whether err wraps redis.Nil. The Handler uses
-// fmt.Errorf("%w") so errors.Is unwraps correctly through the chain.
-func isRedisNilError(err error) bool {
-	return errors.Is(err, redis.Nil)
 }
