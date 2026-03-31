@@ -39,7 +39,9 @@ type ResolveResult struct {
 // Errors wrap [ErrBlocked] or [ErrInvalidURL] for programmatic inspection via
 // [errors.Is].
 func ValidateURL(ctx context.Context, rawURL string, opts ...Option) error {
-	_ = ctx // TODO(ssrf): use ctx for tracing/metrics integration when telemetry is wired in
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidURL, err)
+	}
 
 	cfg := buildConfig(opts)
 

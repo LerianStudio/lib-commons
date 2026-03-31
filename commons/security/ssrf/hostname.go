@@ -12,6 +12,9 @@ var blockedHostnames = map[string]bool{
 	"metadata.gcp.internal":    true,
 	// AWS metadata IP as a hostname (also caught by IP check — defense-in-depth).
 	"169.254.169.254": true,
+	// Azure Instance Metadata Service (also caught by IP check and .internal
+	// suffix — defense-in-depth).
+	"metadata.azure.internal": true,
 }
 
 // blockedSuffixes contains hostname suffixes that indicate internal or

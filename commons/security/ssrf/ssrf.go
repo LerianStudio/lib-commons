@@ -38,6 +38,10 @@ var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("198.51.100.0/24"), // TEST-NET-2 documentation (RFC 5737)
 	netip.MustParsePrefix("203.0.113.0/24"),  // TEST-NET-3 documentation (RFC 5737)
 	netip.MustParsePrefix("240.0.0.0/4"),     // reserved / future use (RFC 1112)
+
+	// IPv6 special-purpose ranges not covered by stdlib predicates.
+	netip.MustParsePrefix("2001:db8::/32"), // documentation (RFC 3849)
+	netip.MustParsePrefix("100::/64"),      // discard-only (RFC 6666)
 }
 
 // BlockedPrefixes returns a copy of the canonical CIDR blocklist. The returned

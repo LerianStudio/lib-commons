@@ -20,7 +20,7 @@ import (
 // expectedPrefixCount lives in the test file so the production code does not
 // export or carry a constant that is only meaningful for test assertions.
 // Update this value when adding new CIDR ranges to blockedPrefixes.
-const expectedPrefixCount = 8
+const expectedPrefixCount = 10
 
 func TestBlockedPrefixes_ReturnsExpectedCount(t *testing.T) {
 	t.Parallel()
@@ -54,6 +54,8 @@ func TestBlockedPrefixes_ContainsExpectedRanges(t *testing.T) {
 		"198.51.100.0/24",
 		"203.0.113.0/24",
 		"240.0.0.0/4",
+		"2001:db8::/32",
+		"100::/64",
 	}
 
 	prefixes := BlockedPrefixes()
@@ -888,6 +890,30 @@ func TestIsBlockedHostnameWithConfig_AllowOverride(t *testing.T) {
 // ---------------------------------------------------------------------------
 // Error sentinel identity
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// IPv6 special-purpose ranges — documentation and discard
+// ---------------------------------------------------------------------------
+
+// TestIsBlockedAddr_IPv6_DocumentationRange verifies that addresses in the
+// IPv6 documentation range 2001:db8::/32 (RFC 3849) are blocked.
+func TestIsBlockedAddr_IPv6_DocumentationRange(t *testing.T) {
+	t.Parallel()
+
+	addr := netip.MustParseAddr("2001:db8::1")
+	assert.True(t, IsBlockedAddr(addr),
+		"IPv6 documentation address 2001:db8::1 must be blocked (RFC 3849)")
+}
+
+// TestIsBlockedAddr_IPv6_DiscardRange verifies that addresses in the
+// IPv6 discard-only range 100::/64 (RFC 6666) are blocked.
+func TestIsBlockedAddr_IPv6_DiscardRange(t *testing.T) {
+	t.Parallel()
+
+	addr := netip.MustParseAddr("100::1")
+	assert.True(t, IsBlockedAddr(addr),
+		"IPv6 discard-only address 100::1 must be blocked (RFC 6666)")
+}
 
 func TestSentinelErrors_AreDistinct(t *testing.T) {
 	t.Parallel()
