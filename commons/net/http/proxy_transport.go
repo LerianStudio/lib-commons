@@ -11,6 +11,11 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
 )
 
+// TODO(ssrf): Migrate to ssrf.ResolveAndValidate for full DNS-pinned flow to
+// eliminate the TOCTOU window between IP validation and connection. Currently
+// only IP validation is delegated to the canonical ssrf package; DNS resolution
+// and pinning are not. See commons/security/ssrf/validate.go:ResolveAndValidate.
+
 // ssrfSafeTransport wraps an http.Transport with a DialContext that validates
 // resolved IP addresses against the SSRF policy at connection time.
 // This prevents DNS rebinding attacks where a hostname resolves to a safe IP

@@ -50,6 +50,13 @@ type SchemaResponse struct {
 }
 
 // SchemaEntryDTO represents a single key's metadata in the schema response.
+//
+// Security note: the EnvVar field exposes environment variable names (e.g.
+// POSTGRES_PASSWORD) to authenticated users with schema read permissions.
+// While values are always redacted for secret keys, the variable names
+// themselves reveal infrastructure topology. This is an accepted trade-off:
+// the schema endpoint requires authentication + authorization, and operators
+// need env var names for configuration management.
 type SchemaEntryDTO struct {
 	Key              string   `json:"key"`
 	EnvVar           string   `json:"envVar,omitempty"`

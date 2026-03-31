@@ -132,11 +132,12 @@ Build and shell:
 
 - `NewManager(certPath, keyPath string) (*Manager, error)` — loads PEM files at construction; if both paths are empty an unconfigured manager is returned (TLS optional). Returns `ErrIncompleteConfig` when exactly one path is provided.
 - Key parsing order: PKCS#8 → PKCS#1 (RSA) → EC (SEC 1). Key file must have mode `0600` or stricter; looser permissions return an error before reading.
-- Atomic hot-reload via `(*Manager).Rotate(cert *x509.Certificate, key crypto.Signer) error` — validates expiry and public-key match before swapping under a write lock.
+- Atomic hot-reload via `(*Manager).Rotate(cert *x509.Certificate, key crypto.Signer, intermediates ...[]byte) error` — validates expiry and public-key match before swapping under a write lock.
 - Sentinel errors: `ErrNilManager`, `ErrCertRequired`, `ErrKeyRequired`, `ErrExpired`, `ErrNoPEMBlock`, `ErrKeyParseFailure`, `ErrNotSigner`, `ErrKeyMismatch`, `ErrIncompleteConfig`.
 - Read accessors (all nil-safe, read-locked): `GetCertificate() *x509.Certificate`, `GetSigner() crypto.Signer`, `PublicKey() crypto.PublicKey`, `ExpiresAt() time.Time`, `DaysUntilExpiry() int`.
 - TLS integration: `TLSCertificate() tls.Certificate` (returns populated `tls.Certificate` struct); `GetCertificateFunc() func(*tls.ClientHelloInfo) (*tls.Certificate, error)` — suitable for assignment to `tls.Config.GetCertificate` for transparent hot-reload.
 - Package-level helper: `LoadFromFiles(certPath, keyPath string) (*x509.Certificate, crypto.Signer, error)` — validates without touching any manager state, useful for pre-flight checking before calling `Rotate`.
+- Package-level helper: `LoadFromFilesWithChain(certPath, keyPath string) (*x509.Certificate, crypto.Signer, [][]byte, error)` — returns the full DER chain for chain-preserving hot-reload.
 
 ### SSRF validation (`commons/security/ssrf`)
 
@@ -192,7 +193,7 @@ Build and shell:
 
 - `New(conn *libRedis.Client, keyPrefix string, maxRetries int, opts ...Option) *Handler` — returns nil when `conn` is nil; all Handler methods guard against a nil receiver with `ErrNilHandler`.
 - Functional options for Handler: `WithLogger`, `WithTracer`, `WithMetrics`, `WithModule`.
-- `DLQMetrics` interface: `RecordRetried(ctx, source)`, `RecordExhausted(ctx, source)` — nil-safe, skipped when not set.
+- `DLQMetrics` interface: `RecordRetried(ctx, source)`, `RecordExhausted(ctx, source)`, `RecordLost(ctx, source)` — a nop implementation is used when not set.
 - Key operations: `Enqueue(ctx, *FailedMessage) error` (RPush), `Dequeue(ctx, source string) (*FailedMessage, error)` (LPop, destructive), `QueueLength(ctx, source string) (int64, error)`.
 - Tenant-scoped Redis keys: `"<prefix><tenantID>:<source>"` (e.g. `"dlq:tenant-abc:outbound"`); falls back to `"<prefix><source>"` when no tenant is in context.
 - `ScanQueues(ctx, source string) ([]string, error)` — uses `SCAN` (non-blocking) to discover all tenant-scoped keys for a source; suitable for background consumers without tenant context.
@@ -211,7 +212,7 @@ Build and shell:
 - Functional options: `WithLogger`, `WithKeyPrefix` (default `"idempotency:"`), `WithKeyTTL` (default 7 days), `WithMaxKeyLength` (default 256), `WithRedisTimeout` (default 500ms), `WithRejectedHandler`, `WithMaxBodyCache` (default 1 MB).
 - `(*Middleware).Check() fiber.Handler` — registers the middleware on a Fiber route.
 - Only applies to mutating methods (POST, PUT, PATCH, DELETE); GET/HEAD/OPTIONS pass through unconditionally.
-- Idempotency key is read from the `Idempotency-Key` request header (`constants.IdempotencyKey`); missing key passes through.
+- Idempotency key is read from the `X-Idempotency` request header (`constants.IdempotencyKey`); missing key passes through.
 - Key too long → 400 JSON `VALIDATION_ERROR` (or custom `WithRejectedHandler`).
 - Redis SetNX atomically claims the key as `"processing"` for the TTL duration.
 - Duplicate request behavior:
