@@ -830,6 +830,25 @@ func TestNewManager_InvalidCertPath_ErrorSpecificity(t *testing.T) {
 // 10. TestNilManager_SubTests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// TestLoadFromFilesWithChain — verify chain is returned correctly
+// ---------------------------------------------------------------------------
+
+func TestLoadFromFilesWithChain(t *testing.T) {
+	t.Parallel()
+
+	certPath, keyPath := generateTestCert(t, time.Now().Add(365*24*time.Hour))
+
+	cert, signer, chain, err := LoadFromFilesWithChain(certPath, keyPath)
+	require.NoError(t, err)
+	assert.NotNil(t, cert, "certificate must not be nil")
+	assert.NotNil(t, signer, "signer must not be nil")
+	require.NotNil(t, chain, "chain must not be nil")
+	require.Len(t, chain, 1, "single self-signed cert should produce a 1-element chain")
+	assert.Equal(t, cert.Raw, chain[0],
+		"chain[0] must equal the leaf certificate's raw DER bytes")
+}
+
 func TestNilManager_SubTests(t *testing.T) {
 	t.Parallel()
 
