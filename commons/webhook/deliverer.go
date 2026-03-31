@@ -3,10 +3,7 @@ package webhook
 import (
 	"bytes"
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
 	"crypto/tls"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -26,21 +23,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/runtime"
 )
 
-// SignatureVersion controls the HMAC signing format used for X-Webhook-Signature.
-type SignatureVersion int
-
-const (
-	// SignatureV0 produces legacy payload-only signatures: "sha256=<hex(HMAC(payload))>".
-	// This is the default for backward compatibility with existing consumers.
-	SignatureV0 SignatureVersion = iota
-
-	// SignatureV1 produces versioned timestamp-bound signatures:
-	// "v1,sha256=<hex(HMAC(v1:<timestamp>.<payload>))>".
-	// The timestamp is included in the HMAC input to prevent replay attacks.
-	// Receivers must verify freshness (e.g., reject timestamps older than 5 minutes).
-	SignatureV1
-)
-
 // Defaults for Deliverer configuration.
 const (
 	defaultMaxConcurrency = 20
@@ -50,6 +32,10 @@ const (
 	defaultMaxIdleConns   = 100
 	defaultIdlePerHost    = 10
 	defaultIdleTimeout    = 90 * time.Second
+	// maxResponseDrain limits how much of the response body is read and
+	// discarded after delivery. This ensures the underlying TCP connection
+	// can be reused by the connection pool.
+	maxResponseDrain = 64 << 10 // 64 KiB
 )
 
 // Deliverer sends webhook events to registered endpoints with SSRF protection,
@@ -140,7 +126,9 @@ func WithHTTPClient(c *http.Client) Option {
 // be skipped with an error (fail-closed).
 func WithSecretDecryptor(fn SecretDecryptor) Option {
 	return func(d *Deliverer) {
-		d.decryptor = fn
+		if fn != nil {
+			d.decryptor = fn
+		}
 	}
 }
 
@@ -298,6 +286,9 @@ func (d *Deliverer) fanOut(ctx context.Context, endpoints []Endpoint, event *Eve
 
 		sem <- struct{}{}
 
+		// Detach from parent cancel so in-flight deliveries complete during
+		// graceful shutdown. The wg.Wait() in the caller ensures all goroutines
+		// finish before Deliver/DeliverWithResults returns.
 		dlvCtx := context.WithoutCancel(ctx)
 
 		go func() {
@@ -333,6 +324,7 @@ func (d *Deliverer) fanOutWithResults(
 
 		sem <- struct{}{}
 
+		// Detach from parent cancel — see fanOut for rationale.
 		dlvCtx := context.WithoutCancel(ctx)
 
 		// Pre-populate so callers always see which endpoint was attempted,
@@ -418,6 +410,8 @@ func (d *Deliverer) deliverToEndpoint(
 		result.StatusCode = statusCode
 
 		if err != nil {
+			result.Error = err // preserve last transport error for diagnostics
+
 			d.log(ctx, log.LevelWarn, "webhook delivery failed",
 				log.String("url", sanitizeURL(ep.URL)),
 				log.Int("attempt", attempt+1),
@@ -440,6 +434,14 @@ func (d *Deliverer) deliverToEndpoint(
 			return result
 		}
 
+		// 3xx responses: redirect blocked by CheckRedirect — not a transient error.
+		if statusCode >= http.StatusMultipleChoices && statusCode < http.StatusBadRequest {
+			result.Error = fmt.Errorf("webhook: non-retryable redirect status %d (redirects blocked)", statusCode)
+			d.recordMetrics(ctx, ep.ID, false, statusCode, result.Attempts)
+
+			return result
+		}
+
 		// Non-retryable client errors — break immediately (except 429 Too Many Requests).
 		if statusCode >= http.StatusBadRequest && statusCode < http.StatusInternalServerError && statusCode != http.StatusTooManyRequests {
 			result.Error = fmt.Errorf("webhook: non-retryable status %d", statusCode)
@@ -455,8 +457,13 @@ func (d *Deliverer) deliverToEndpoint(
 		)
 	}
 
-	// Exhausted all retries.
-	result.Error = fmt.Errorf("%w: exhausted %d attempts for %s", ErrDeliveryFailed, d.maxRetries+1, sanitizeURL(ep.URL))
+	// Exhausted all retries. Wrap the last transport error (if any) for diagnostics.
+	if result.Error != nil {
+		result.Error = fmt.Errorf("%w: exhausted %d attempts for %s (last error: %w)", ErrDeliveryFailed, d.maxRetries+1, sanitizeURL(ep.URL), result.Error)
+	} else {
+		result.Error = fmt.Errorf("%w: exhausted %d attempts for %s", ErrDeliveryFailed, d.maxRetries+1, sanitizeURL(ep.URL))
+	}
+
 	d.recordMetrics(ctx, ep.ID, false, result.StatusCode, result.Attempts)
 
 	span.RecordError(result.Error)
@@ -519,7 +526,7 @@ func (d *Deliverer) doHTTP(
 		return 0, fmt.Errorf("webhook: http request: %w", err)
 	}
 
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseDrain))
 	_ = resp.Body.Close()
 
 	return resp.StatusCode, nil
@@ -557,106 +564,6 @@ func (d *Deliverer) computeSignature(payload []byte, timestamp int64, secret str
 	default:
 		return "sha256=" + computeHMAC(payload, secret)
 	}
-}
-
-// computeHMAC returns the hex-encoded HMAC-SHA256 of payload using the given secret.
-// This is the legacy (v0) format that signs the raw payload only.
-//
-// Design note — timestamp not included in v0 signature (by intent):
-// The signature covers the raw payload only, not the X-Webhook-Timestamp value.
-// This format is maintained for backward compatibility. New deployments should
-// prefer SignatureV1 (via WithSignatureVersion) which binds the timestamp into
-// the HMAC input to enable replay protection.
-func computeHMAC(payload []byte, secret string) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write(payload)
-
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
-// computeHMACv1 returns a versioned signature string:
-//
-//	"v1,sha256=<hex(HMAC-SHA256("v1:<timestamp>.<payload>", secret))>"
-//
-// The version prefix "v1:" followed by the decimal timestamp and a dot separator
-// are prepended to the payload before computing the HMAC, binding the timestamp
-// to the signature. Receivers must parse the "v1," prefix, extract the timestamp
-// from the X-Webhook-Timestamp header, reconstruct the signing input, and verify
-// the HMAC before accepting the webhook.
-func computeHMACv1(payload []byte, timestamp int64, secret string) string {
-	ts := strconv.FormatInt(timestamp, 10)
-
-	mac := hmac.New(sha256.New, []byte(secret))
-	mac.Write([]byte("v1:"))
-	mac.Write([]byte(ts))
-	mac.Write([]byte("."))
-	mac.Write(payload)
-
-	return "v1,sha256=" + hex.EncodeToString(mac.Sum(nil))
-}
-
-// VerifySignature verifies a webhook signature by auto-detecting the version
-// from the signature string format. Returns nil on valid signature, or an error
-// describing the mismatch.
-//
-// Supported formats:
-//   - "sha256=<hex>"          — v0 (payload-only)
-//   - "v1,sha256=<hex>"       — v1 (timestamp-bound)
-//
-// For v1 signatures, the timestamp parameter is required to reconstruct the
-// signing input. For v0 signatures, the timestamp is ignored.
-func VerifySignature(payload []byte, timestamp int64, secret, signature string) error {
-	switch {
-	case strings.HasPrefix(signature, "v1,"):
-		expected := computeHMACv1(payload, timestamp, secret)
-		if !hmac.Equal([]byte(signature), []byte(expected)) {
-			return errors.New("webhook: v1 signature mismatch")
-		}
-
-		return nil
-
-	case strings.HasPrefix(signature, "sha256="):
-		expected := "sha256=" + computeHMAC(payload, secret)
-		if !hmac.Equal([]byte(signature), []byte(expected)) {
-			return errors.New("webhook: v0 signature mismatch")
-		}
-
-		return nil
-
-	default:
-		return errors.New("webhook: unrecognized signature format")
-	}
-}
-
-// VerifySignatureWithFreshness verifies a v1 webhook signature and additionally
-// checks that the timestamp is within the given tolerance window from now.
-// This provides replay protection: even if an attacker captures a valid
-// payload+signature pair, it becomes invalid after the tolerance window expires.
-//
-// For v0 ("sha256=...") signatures, freshness cannot be enforced because the
-// timestamp is not covered by the HMAC. Callers receiving v0 signatures should
-// use VerifySignature and implement replay protection independently (e.g.,
-// idempotency keys or event-ID tracking).
-func VerifySignatureWithFreshness(payload []byte, timestamp int64, secret, signature string, tolerance time.Duration) error {
-	if err := VerifySignature(payload, timestamp, secret, signature); err != nil {
-		return err
-	}
-
-	// Freshness check only applies to v1 where the timestamp is signed.
-	if strings.HasPrefix(signature, "v1,") {
-		eventTime := time.Unix(timestamp, 0)
-		delta := time.Since(eventTime)
-
-		if delta < 0 {
-			delta = -delta
-		}
-
-		if delta > tolerance {
-			return fmt.Errorf("webhook: timestamp outside tolerance window (%s > %s)", delta.Truncate(time.Second), tolerance)
-		}
-	}
-
-	return nil
 }
 
 // filterActive returns only endpoints where Active is true.
@@ -705,6 +612,10 @@ func (d *Deliverer) recordMetrics(ctx context.Context, endpointID string, succes
 
 	d.metrics.RecordDelivery(ctx, endpointID, success, statusCode, attempts)
 }
+
+// TODO(perf): Cache pinned transports by SNI hostname using sync.Map to avoid
+// creating a new connection pool on every HTTPS delivery. Currently transport.Clone()
+// is called per request, which negates connection pooling for HTTPS pinned URLs.
 
 // httpsClientForPinnedIP returns an HTTP client whose TLS config uses the
 // given hostname for SNI and certificate verification. This is necessary
