@@ -99,6 +99,14 @@ func ValidateURL(ctx context.Context, rawURL string, opts ...Option) error {
 // Errors wrap [ErrBlocked], [ErrInvalidURL], or [ErrDNSFailed] for
 // programmatic inspection via [errors.Is].
 func ResolveAndValidate(ctx context.Context, rawURL string, opts ...Option) (*ResolveResult, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidURL, errors.New("nil context"))
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidURL, err)
+	}
+
 	cfg := buildConfig(opts)
 
 	u, err := url.Parse(rawURL)

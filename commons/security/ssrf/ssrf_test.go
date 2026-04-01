@@ -673,6 +673,33 @@ func TestResolveAndValidate_MalformedURL(t *testing.T) {
 	assert.ErrorIs(t, err, ErrInvalidURL)
 }
 
+func TestResolveAndValidate_NilContext(t *testing.T) {
+	t.Parallel()
+
+	_, err := ResolveAndValidate(nil, "https://example.com/hook",
+		WithLookupFunc(fakeLookup("93.184.216.34")),
+	)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidURL)
+	assert.Contains(t, err.Error(), "nil context")
+}
+
+func TestResolveAndValidate_CanceledContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := ResolveAndValidate(ctx, "https://example.com/hook",
+		WithLookupFunc(fakeLookup("93.184.216.34")),
+	)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidURL)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
 func TestResolveAndValidate_HTTPSOnly(t *testing.T) {
 	t.Parallel()
 
