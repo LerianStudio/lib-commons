@@ -40,12 +40,8 @@ type ResolveResult struct {
 // Errors wrap [ErrBlocked] or [ErrInvalidURL] for programmatic inspection via
 // [errors.Is].
 func ValidateURL(ctx context.Context, rawURL string, opts ...Option) error {
-	if ctx == nil {
-		return fmt.Errorf("%w: %w", ErrInvalidURL, errors.New("nil context"))
-	}
-
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidURL, err)
+	if err := validateContext(ctx); err != nil {
+		return err
 	}
 
 	cfg := buildConfig(opts)
@@ -99,12 +95,8 @@ func ValidateURL(ctx context.Context, rawURL string, opts ...Option) error {
 // Errors wrap [ErrBlocked], [ErrInvalidURL], or [ErrDNSFailed] for
 // programmatic inspection via [errors.Is].
 func ResolveAndValidate(ctx context.Context, rawURL string, opts ...Option) (*ResolveResult, error) {
-	if ctx == nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidURL, errors.New("nil context"))
-	}
-
-	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrInvalidURL, err)
+	if err := validateContext(ctx); err != nil {
+		return nil, err
 	}
 
 	cfg := buildConfig(opts)
@@ -182,6 +174,18 @@ func ResolveAndValidate(ctx context.Context, rawURL string, opts ...Option) (*Re
 		Authority:   authority,
 		SNIHostname: hostname,
 	}, nil
+}
+
+func validateContext(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("%w: %w", ErrInvalidURL, errors.New("nil context"))
+	}
+
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidURL, err)
+	}
+
+	return nil
 }
 
 // validateScheme checks that the URL scheme is allowed. By default only "http"
