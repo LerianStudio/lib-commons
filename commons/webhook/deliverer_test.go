@@ -1098,6 +1098,76 @@ func TestVerifySignatureWithFreshness(t *testing.T) {
 	assert.NoError(t, err, "v0 signature skips freshness check")
 }
 
+// ---------------------------------------------------------------------------
+// HTTP 429 (Too Many Requests) — must be retried, not short-circuited
+// ---------------------------------------------------------------------------
+
+// TestDeliver_429_IsRetried verifies that a 429 Too Many Requests response is
+// retried (unlike other 4xx which short-circuit). The server returns 429 twice,
+// then 200 on the third attempt.
+func TestDeliver_429_IsRetried(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+
+	srv, pubURL := startTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		n := attempts.Add(1)
+		if n <= 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	metrics := &mockMetrics{}
+	lister := &mockLister{
+		endpoints: []Endpoint{
+			{ID: "ep-429", URL: pubURL, Secret: "", Active: true},
+		},
+	}
+
+	d := NewDeliverer(lister,
+		WithMetrics(metrics),
+		WithMaxRetries(3),
+		WithHTTPClient(ssrfBypassClient(srv.Listener.Addr().String())),
+	)
+
+	results := d.DeliverWithResults(context.Background(), newTestEvent())
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Success, "429 should be retried and eventually succeed")
+	assert.Equal(t, 3, results[0].Attempts, "should have taken 3 attempts (429, 429, 200)")
+	assert.Equal(t, http.StatusOK, results[0].StatusCode)
+}
+
+// ---------------------------------------------------------------------------
+// Context cancellation — Deliver returns promptly when listing fails
+// ---------------------------------------------------------------------------
+
+// TestDeliver_ContextCancelledDuringRetry verifies that when the lister returns
+// an error (simulating a cancelled-context scenario), Deliver returns promptly
+// with the error instead of entering the retry loop.
+func TestDeliver_ContextCancelledDuringRetry(t *testing.T) {
+	t.Parallel()
+
+	lister := &mockLister{
+		err: fmt.Errorf("context canceled: %w", context.Canceled),
+	}
+
+	d := NewDeliverer(lister,
+		WithMaxRetries(10), // high retries — would take ages if listing succeeded
+	)
+
+	start := time.Now()
+	err := d.Deliver(context.Background(), newTestEvent())
+	elapsed := time.Since(start)
+
+	require.Error(t, err, "Deliver should return lister error")
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Less(t, elapsed, 2*time.Second,
+		"Deliver should complete promptly when lister fails, took %s", elapsed)
+}
+
 func TestDeliver_V1Signature_EndToEnd(t *testing.T) {
 	t.Parallel()
 

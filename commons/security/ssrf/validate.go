@@ -2,6 +2,7 @@ package ssrf
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/netip"
@@ -39,7 +40,9 @@ type ResolveResult struct {
 // Errors wrap [ErrBlocked] or [ErrInvalidURL] for programmatic inspection via
 // [errors.Is].
 func ValidateURL(ctx context.Context, rawURL string, opts ...Option) error {
-	_ = ctx // TODO(ssrf): use ctx for tracing/metrics integration when telemetry is wired in
+	if err := validateContext(ctx); err != nil {
+		return err
+	}
 
 	cfg := buildConfig(opts)
 
@@ -92,6 +95,10 @@ func ValidateURL(ctx context.Context, rawURL string, opts ...Option) error {
 // Errors wrap [ErrBlocked], [ErrInvalidURL], or [ErrDNSFailed] for
 // programmatic inspection via [errors.Is].
 func ResolveAndValidate(ctx context.Context, rawURL string, opts ...Option) (*ResolveResult, error) {
+	if err := validateContext(ctx); err != nil {
+		return nil, err
+	}
+
 	cfg := buildConfig(opts)
 
 	u, err := url.Parse(rawURL)
@@ -167,6 +174,18 @@ func ResolveAndValidate(ctx context.Context, rawURL string, opts ...Option) (*Re
 		Authority:   authority,
 		SNIHostname: hostname,
 	}, nil
+}
+
+func validateContext(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("%w: %w", ErrInvalidURL, errors.New("nil context"))
+	}
+
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidURL, err)
+	}
+
+	return nil
 }
 
 // validateScheme checks that the URL scheme is allowed. By default only "http"

@@ -36,7 +36,9 @@ func buildConfig(opts []Option) *config {
 	cfg := &config{}
 
 	for _, opt := range opts {
-		opt(cfg)
+		if opt != nil {
+			opt(cfg)
+		}
 	}
 
 	return cfg
@@ -64,7 +66,9 @@ func WithAllowPrivateNetwork() Option {
 // all IPs blocked, mixed safe/blocked IPs).
 func WithLookupFunc(fn LookupFunc) Option {
 	return func(c *config) {
-		c.lookupFunc = fn
+		if fn != nil {
+			c.lookupFunc = fn
+		}
 	}
 }
 

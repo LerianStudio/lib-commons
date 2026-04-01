@@ -101,9 +101,11 @@ func (m *Manager) Rotate(cert *x509.Certificate, key crypto.Signer, intermediate
 		return ErrKeyRequired
 	}
 
-	// Guard against interface wrapping a nil concrete value.
-	pub := key.Public()
-	if pub == nil {
+	// Guard against interface wrapping a nil concrete value. Real crypto types
+	// (ecdsa, rsa, ed25519) panic on nil receiver in Public(), so we recover
+	// rather than relying on the return value check.
+	pub, panicked := safePublic(key)
+	if panicked || pub == nil {
 		return ErrKeyRequired
 	}
 
@@ -167,6 +169,10 @@ func (m *Manager) GetCertificate() *x509.Certificate {
 }
 
 // GetSigner returns the current private key as a crypto.Signer, or nil if none is loaded.
+// The returned signer shares the underlying private key material with the manager (it is
+// NOT a copy). Callers must not modify the concrete key via unsafe type assertions.
+// Ownership of the key is transferred to the manager at [Rotate] time — the caller
+// must not mutate the key after calling Rotate.
 func (m *Manager) GetSigner() crypto.Signer {
 	if m == nil {
 		return nil
@@ -264,7 +270,14 @@ func (m *Manager) TLSCertificate() tls.Certificate {
 // GetCertificateFunc returns a function suitable for use as [tls.Config.GetCertificate].
 // The returned function always serves the most recently loaded certificate, making
 // hot-reload transparent to the TLS layer.
+// Safe to call on a nil receiver (returns a function that always returns [ErrNilManager]).
 func (m *Manager) GetCertificateFunc() func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	if m == nil {
+		return func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return nil, ErrNilManager
+		}
+	}
+
 	return func(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		cert := m.TLSCertificate()
 		if cert.Certificate == nil {
@@ -377,6 +390,19 @@ func loadFromFiles(certPath, keyPath string) (*x509.Certificate, crypto.Signer, 
 	}
 
 	return cert, signer, certChain, nil
+}
+
+// safePublic calls key.Public() with panic recovery. Real crypto types (ecdsa,
+// rsa, ed25519) panic when called on a nil concrete value behind a non-nil
+// interface. This function converts that panic to a (nil, true) return.
+func safePublic(key crypto.Signer) (pub crypto.PublicKey, panicked bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			panicked = true
+		}
+	}()
+
+	return key.Public(), false
 }
 
 // publicKeysMatch compares two public keys by their DER-encoded PKIX representation.

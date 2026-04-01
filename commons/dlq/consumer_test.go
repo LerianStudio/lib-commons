@@ -659,6 +659,55 @@ func TestNewConsumer_NilOptions(t *testing.T) {
 	assert.NotNil(t, c.tracer, "tracer must remain non-nil")
 }
 
+// TestProcessOnce_RetryFuncPanics verifies that if the caller-provided retryFn
+// panics, the consumer recovers gracefully: the test does not crash, and the
+// message is re-enqueued with an incremented retry count so it is not lost.
+func TestProcessOnce_RetryFuncPanics(t *testing.T) {
+	t.Parallel()
+
+	metrics := &mockMetrics{}
+
+	retryFn := func(_ context.Context, _ *FailedMessage) error {
+		panic("boom from retryFn")
+	}
+
+	c, h, mr := newTestConsumer(t, retryFn, metrics)
+
+	ctx := tmcore.ContextWithTenantID(context.Background(), "tenant-panic")
+
+	// Inject a retryable message with a past NextRetryAt so the consumer
+	// considers it immediately eligible for retry.
+	injectMessage(t, mr, "dlq:tenant-panic:outbound", &FailedMessage{
+		Source:       "outbound",
+		OriginalData: []byte(`{"id":"panic-msg"}`),
+		ErrorMessage: "original error",
+		RetryCount:   0,
+		MaxRetries:   3,
+		CreatedAt:    time.Now().UTC().Add(-5 * time.Minute),
+		NextRetryAt:  time.Now().UTC().Add(-1 * time.Minute),
+		TenantID:     "tenant-panic",
+	})
+
+	// ProcessOnce must not panic — the safeRetryFunc wrapper recovers.
+	require.NotPanics(t, func() {
+		c.ProcessOnce(ctx)
+	}, "ProcessOnce must not propagate a panic from retryFn")
+
+	// The message must be re-enqueued (not lost) with an incremented RetryCount.
+	length, err := h.QueueLength(ctx, "outbound")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), length,
+		"message must be re-enqueued after retryFn panic, not lost")
+
+	// Dequeue and verify the retry count was incremented.
+	msg, err := h.Dequeue(ctx, "outbound")
+	require.NoError(t, err)
+	assert.Equal(t, 1, msg.RetryCount,
+		"RetryCount must be incremented after panic-recovered retry failure")
+	assert.Contains(t, msg.ErrorMessage, "panicked",
+		"ErrorMessage must indicate the panic was recovered")
+}
+
 // TestIsRedisNilError covers the four cases for isRedisNilError:
 // direct redis.Nil sentinel, wrapped sentinel, arbitrary error, and nil.
 func TestIsRedisNilError(t *testing.T) {

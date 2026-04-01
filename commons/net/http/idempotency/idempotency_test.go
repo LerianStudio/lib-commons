@@ -795,6 +795,62 @@ func TestCheck_HeadRequest_PassesThrough(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// PUT method enforcement — idempotency applies to all mutating methods
+// ---------------------------------------------------------------------------
+
+// TestCheck_PUTRequest_Enforced verifies that PUT requests are subject to
+// idempotency enforcement: the first PUT proceeds to the handler and the
+// second PUT with the same key replays the cached response.
+func TestCheck_PUTRequest_Enforced(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newRedisClient(t, mr)
+	m := New(conn)
+
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(tenantMiddleware("tenant-put"))
+	app.Use(m.Check())
+	app.Put("/resource", func(c *fiber.Ctx) error {
+		return c.Status(fiber.StatusOK).JSON(fiber.Map{"updated": true})
+	})
+
+	doPut := func(key string) *http.Response {
+		t.Helper()
+
+		req := httptest.NewRequest(http.MethodPut, "/resource", nil)
+		if key != "" {
+			req.Header.Set(chttp.IdempotencyKey, key)
+		}
+
+		resp, err := app.Test(req, -1)
+		require.NoError(t, err)
+
+		return resp
+	}
+
+	// First PUT — should reach the handler.
+	resp1 := doPut("put-key-1")
+	body1 := readBody(t, resp1)
+
+	assert.Equal(t, http.StatusOK, resp1.StatusCode)
+	assert.Contains(t, body1, "updated")
+	assert.Empty(t, resp1.Header.Get(chttp.IdempotencyReplayed),
+		"first request must not be marked as replayed")
+
+	// Second PUT — same key — must replay the cached response.
+	resp2 := doPut("put-key-1")
+	body2 := readBody(t, resp2)
+
+	assert.Equal(t, http.StatusOK, resp2.StatusCode,
+		"replayed response must have the original status code")
+	assert.Contains(t, body2, "updated",
+		"replayed response must have the original body")
+	assert.Equal(t, "true", resp2.Header.Get(chttp.IdempotencyReplayed),
+		"replayed response must set Idempotency-Replayed: true")
+}
+
+// ---------------------------------------------------------------------------
 // Negative option values — defaults must be preserved
 // ---------------------------------------------------------------------------
 

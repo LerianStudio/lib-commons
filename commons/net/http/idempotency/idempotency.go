@@ -356,6 +356,12 @@ func (m *Middleware) saveResult(
 
 			if data, marshalErr := json.Marshal(resp); marshalErr == nil {
 				pipe.Set(ctx, responseKey, string(data), m.keyTTL)
+			} else {
+				m.logger.Log(ctx, log.LevelWarn,
+					"idempotency: failed to marshal cached response",
+					log.Err(marshalErr),
+					log.String("idempotency_key_hash", redactKey(key)),
+				)
 			}
 		} else {
 			m.logger.Log(ctx, log.LevelWarn,
