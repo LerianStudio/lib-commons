@@ -1,6 +1,7 @@
 package ratelimit
 
 import (
+	"context"
 	"net/url"
 	"time"
 
@@ -126,7 +127,7 @@ type TierFunc func(c *fiber.Ctx) Tier
 //   - read:  applied to GET, HEAD, OPTIONS and all other methods
 //
 // This mirrors the pattern where write operations are rate-limited more aggressively
-// than read operations on the same endpoint group.
+// than read operations on the same tier.
 //
 // Example:
 //
@@ -142,5 +143,110 @@ func MethodTierSelector(write, read Tier) TierFunc {
 		default:
 			return read
 		}
+	}
+}
+
+// TierResolver resolves the rate limit Tier for a given tenant and tier name.
+// Implementations must be concurrency-safe and should not perform I/O in the hot path.
+type TierResolver interface {
+	// Resolve returns the Tier for a tenant + tier name.
+	// Returns (tier, true) if tenant-specific config exists for that tier.
+	// Returns (zero, false) if not configured — caller should use Fallback.
+	Resolve(tenantID, tierName string) (Tier, bool)
+
+	// Fallback returns the fallback Tier for a tier name.
+	// Used when no tenant-specific config exists.
+	Fallback(tierName string) Tier
+}
+
+// TenantMethodTierSelector returns a TierFunc that combines tenant identity
+// and HTTP method to select the appropriate Tier.
+//
+// Resolution flow per request:
+//  1. extractTenantID(c.UserContext()) — O(1), from JWT context
+//  2. TierFromMethod(c.Method()) — POST/PUT/PATCH/DELETE → "aggressive", others → "default"
+//  3. resolver.Resolve(tenantID, tier) — O(1), cache read
+//  4. Falls back to resolver.Fallback(tier) when (3) returns false
+//
+// extractTenantID is injected to avoid importing tenant-manager packages.
+// Replaces MethodTierSelector when multi-tenant rate limiting is enabled.
+// The existing MethodTierSelector continues to work for services without tenant config.
+func TenantMethodTierSelector(
+	resolver TierResolver,
+	extractTenantID func(ctx context.Context) string,
+) TierFunc {
+	if resolver == nil || extractTenantID == nil {
+		fallback := DefaultTier()
+		return func(_ *fiber.Ctx) Tier {
+			return fallback
+		}
+	}
+
+	return func(c *fiber.Ctx) Tier {
+		tenantID := extractTenantID(c.UserContext())
+		tierName := TierFromMethod(c.Method())
+
+		if tenantID == "" {
+			return resolver.Fallback(tierName)
+		}
+
+		if tier, ok := resolver.Resolve(tenantID, tierName); ok {
+			return tier
+		}
+
+		return resolver.Fallback(tierName)
+	}
+}
+
+// WithTenantResolver enables multi-tenant rate limiting on the RateLimiter.
+// The resolver looks up tenant-specific tier configurations from cache.
+// The extractTenantID function extracts the tenant ID from the request context
+// (typically from JWT claims).
+//
+// When the resolver returns false for a tenant+tier, resolver.Fallback(tierName) is used.
+// When resolver or extractTenantID is nil, ForTier uses local fallbacks (single-tenant).
+//
+// Example:
+//
+//	rl := ratelimit.New(conn,
+//	    ratelimit.WithTenantResolver(resolver, core.GetTenantIDContext),
+//	)
+func WithTenantResolver(r TierResolver, extractTenantID func(context.Context) string) Option {
+	return func(rl *RateLimiter) {
+		rl.tierResolver = r
+		rl.extractTenantID = extractTenantID
+	}
+}
+
+// WithTierFallback registers a local fallback Tier by its Name.
+// Used in single-tenant mode or as fallback when the TierResolver returns false.
+// Overrides the built-in defaults ("default", "aggressive", "relaxed").
+// The tier name is taken from tier.Name; if empty, the option is ignored.
+//
+// Example:
+//
+//	rl := ratelimit.New(conn,
+//	    ratelimit.WithTierFallback(ratelimit.Tier{Name: "export", Max: 10, Window: 60 * time.Second}),
+//	)
+func WithTierFallback(tier Tier) Option {
+	return func(rl *RateLimiter) {
+		if tier.Name != "" {
+			rl.tierFallbacks[tier.Name] = tier
+		}
+	}
+}
+
+// TierFromMethod maps HTTP methods to tier names.
+// POST, PUT, PATCH, DELETE → "aggressive" (state-mutating operations).
+// GET, HEAD, OPTIONS and all others → "default".
+//
+// Exported so that services building custom TierFunc implementations can reuse
+// the canonical method-to-tier mapping without duplicating the switch statement.
+func TierFromMethod(method string) string {
+	switch method {
+	case fiber.MethodPost, fiber.MethodPut, fiber.MethodPatch, fiber.MethodDelete:
+		return "aggressive"
+	default:
+		return "default"
 	}
 }

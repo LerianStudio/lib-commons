@@ -252,3 +252,39 @@ func (tc *TenantConfig) HasRabbitMQ() bool {
 
 	return tc.GetRabbitMQConfig() != nil
 }
+
+// TierLimit holds the max requests and window for a single rate limit tier.
+// Used as part of RateLimitSettings to define per-tenant rate limits.
+type TierLimit struct {
+	Max    int `json:"max,omitempty"`    // max requests per window (0 = use consumer fallback)
+	Window int `json:"window,omitempty"` // window duration in seconds (0 = use consumer fallback)
+}
+
+// RateLimitSettings is a map of tier name to its limits.
+// Keys can be standard tiers like "aggressive", "default", "relaxed" or
+// custom tiers defined by the service ("export", "webhook", "batch", etc.).
+//
+// Fetched from a dedicated endpoint (GET /settings/rate-limit), NOT from /connections.
+// Cached separately in RateLimitCache (not in TenantCache).
+// If nil, consumers use local env-var-based fallbacks.
+//
+// This type must NOT import the ratelimit package.
+// Conversion to ratelimit.Tier is done by CacheTierResolver in the
+// tmratelimit sub-package.
+type RateLimitSettings map[string]*TierLimit
+
+// ForTier returns the TierLimit for the given tier name.
+// Returns (limit, true) if the tier is configured with Max > 0 and Window > 0.
+// Returns (nil, false) otherwise — caller should use its local fallback.
+func (s RateLimitSettings) ForTier(tierName string) (*TierLimit, bool) {
+	if s == nil {
+		return nil, false
+	}
+
+	tier, ok := s[tierName]
+	if !ok || tier == nil || tier.Max <= 0 || tier.Window <= 0 {
+		return nil, false
+	}
+
+	return tier, true
+}

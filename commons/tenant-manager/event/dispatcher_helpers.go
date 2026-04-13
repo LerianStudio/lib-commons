@@ -44,7 +44,8 @@ func (d *EventDispatcher) matchesService(evt TenantLifecycleEvent) (bool, error)
 func isServiceScopedEvent(eventType string) bool {
 	return strings.HasPrefix(eventType, "tenant.service.") ||
 		eventType == EventTenantCredentialsRotated ||
-		eventType == EventTenantConnectionsUpdated
+		eventType == EventTenantConnectionsUpdated ||
+		eventType == EventTenantRateLimitUpdated
 }
 
 // isTenantLevelEvent returns true if the event type is a tenant-level event

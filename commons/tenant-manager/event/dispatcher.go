@@ -43,8 +43,9 @@ type EventDispatcher struct {
 	rabbitmq *tmrabbitmq.Manager
 
 	// Callbacks for consumer coordination.
-	onTenantAdded   func(ctx context.Context, tenantID string)
-	onTenantRemoved func(ctx context.Context, tenantID string)
+	onTenantAdded      func(ctx context.Context, tenantID string)
+	onTenantRemoved    func(ctx context.Context, tenantID string)
+	onRateLimitUpdated func(ctx context.Context, tenantID string)
 
 	// ownsTenant checks if the tenant is owned locally (has been loaded at some point).
 	// When nil, falls back to cache check (existing behavior).
@@ -109,6 +110,19 @@ func (d *EventDispatcher) SetOnTenantAdded(fn func(ctx context.Context, tenantID
 // cache via suspension, deletion, disassociation, or purge events.
 func (d *EventDispatcher) SetOnTenantRemoved(fn func(ctx context.Context, tenantID string)) {
 	d.onTenantRemoved = fn
+}
+
+// WithOnRateLimitUpdated registers a callback invoked when a tenant's rate limit
+// configuration is updated via event. Typically wired to RateLimitLoader.Load
+// at bootstrap time.
+func WithOnRateLimitUpdated(fn func(ctx context.Context, tenantID string)) DispatcherOption {
+	return func(d *EventDispatcher) { d.onRateLimitUpdated = fn }
+}
+
+// SetOnRateLimitUpdated replaces the callback invoked when a tenant's rate limit
+// configuration is updated.
+func (d *EventDispatcher) SetOnRateLimitUpdated(fn func(ctx context.Context, tenantID string)) {
+	d.onRateLimitUpdated = fn
 }
 
 // Cache returns the dispatcher's internal tenant cache.
@@ -224,6 +238,8 @@ func (d *EventDispatcher) dispatchEvent(ctx context.Context, evt TenantLifecycle
 		return d.handleCredentialsRotated(ctx, evt, logger)
 	case EventTenantConnectionsUpdated:
 		return d.handleConnectionsUpdated(ctx, evt, logger)
+	case EventTenantRateLimitUpdated:
+		return d.handleRateLimitUpdated(ctx, evt, logger)
 	default:
 		logger.Base().Log(ctx, libLog.LevelWarn, "unknown event type, skipping",
 			libLog.String("event_type", evt.EventType),

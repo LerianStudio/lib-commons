@@ -3,30 +3,48 @@
 // (INCR + PEXPIRE) to guarantee that no key is left without a TTL even under
 // concurrent load or connection failures.
 //
-// # Quick start
+// # Quick start — single-tenant
 //
 //	conn, _ := redis.New(ctx, cfg)
 //
 //	rl := ratelimit.New(conn,
 //	    ratelimit.WithKeyPrefix("my-service"),
 //	    ratelimit.WithLogger(logger),
+//	    ratelimit.WithTierFallback(ratelimit.Tier{Name: "export", Max: 10, Window: 60 * time.Second}),
 //	)
 //
-//	// Fixed tier — applied globally
-//	app.Use(rl.WithRateLimit(ratelimit.DefaultTier()))
+//	// Per-route tier selection
+//	v1.Get("/accounts", rl.ForTier("default"), h.ListAccounts)
+//	v1.Post("/transactions", rl.ForTier("aggressive"), h.CreateTransaction)
+//	export := v1.Group("/export", rl.ForTier("export"))
 //
-//	// Dynamic tier — write operations are rate-limited more aggressively
-//	app.Use(rl.WithDynamicRateLimit(ratelimit.MethodTierSelector(
-//	    ratelimit.AggressiveTier(), // POST, PUT, PATCH, DELETE
-//	    ratelimit.DefaultTier(),    // GET, HEAD, OPTIONS
-//	)))
+// # Quick start — multi-tenant
+//
+//	rl := ratelimit.New(conn,
+//	    ratelimit.WithKeyPrefix("my-service"),
+//	    ratelimit.WithLogger(logger),
+//	    ratelimit.WithTenantResolver(resolver, core.GetTenantIDContext),
+//	    ratelimit.WithTierFallback(ratelimit.Tier{Name: "export", Max: 10, Window: 60 * time.Second}),
+//	)
+//
+//	// Same routes — ForTier resolves tenant-specific limits from cache,
+//	// falling back to local tiers when the tenant has no specific config.
+//	v1.Get("/accounts", rl.ForTier("default"), h.ListAccounts)
+//	v1.Post("/transactions", rl.ForTier("aggressive"), h.CreateTransaction)
+//	export := v1.Group("/export", rl.ForTier("export"))
+//
+// # Legacy API
+//
+// WithRateLimit(tier) and WithDynamicRateLimit(TierFunc) remain available for
+// backward compatibility. ForTier is the recommended API for new code as it
+// supports both single-tenant and multi-tenant modes with the same route definitions.
 //
 // # Nil-safe usage
 //
 // New returns nil when the rate limiter is disabled (RATE_LIMIT_ENABLED=false)
 // or when the Redis connection is nil. A nil *RateLimiter is always safe to use:
-// WithRateLimit and WithDynamicRateLimit return a pass-through handler that calls
-// c.Next() without enforcing any limit.
+// ForTier, WithRateLimit, and WithDynamicRateLimit return a pass-through handler
+// that calls c.Next() without enforcing any limit.
 //
 // # Identity functions
 //

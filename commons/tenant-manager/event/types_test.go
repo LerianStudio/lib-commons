@@ -395,6 +395,7 @@ func TestParseEvent_AllEventTypes(t *testing.T) {
 		EventTenantServiceReactivated,
 		EventTenantCredentialsRotated,
 		EventTenantConnectionsUpdated,
+		EventTenantRateLimitUpdated,
 	}
 
 	for _, eventType := range eventTypes {
@@ -427,7 +428,7 @@ func TestParseEvent_AllEventTypes(t *testing.T) {
 func TestEventTypeConstants(t *testing.T) {
 	t.Parallel()
 
-	// Verify all 12 event type constants have the expected values
+	// Verify all 13 event type constants have the expected values
 	tests := []struct {
 		name     string
 		constant string
@@ -445,6 +446,7 @@ func TestEventTypeConstants(t *testing.T) {
 		{name: "service reactivated", constant: EventTenantServiceReactivated, expected: "tenant.service.reactivated"},
 		{name: "credentials rotated", constant: EventTenantCredentialsRotated, expected: "tenant.credentials.rotated"},
 		{name: "connections updated", constant: EventTenantConnectionsUpdated, expected: "tenant.connections.updated"},
+		{name: "ratelimit updated", constant: EventTenantRateLimitUpdated, expected: "tenant.ratelimit.updated"},
 	}
 
 	for _, tt := range tests {

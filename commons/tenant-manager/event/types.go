@@ -32,8 +32,9 @@ const (
 	EventTenantServiceReactivated   = "tenant.service.reactivated"
 
 	// Credential and connection events.
-	EventTenantCredentialsRotated = "tenant.credentials.rotated" //#nosec G101 -- event type constant, not a credential
-	EventTenantConnectionsUpdated = "tenant.connections.updated"
+	EventTenantCredentialsRotated  = "tenant.credentials.rotated" //#nosec G101 -- event type constant, not a credential
+	EventTenantConnectionsUpdated  = "tenant.connections.updated"
+	EventTenantRateLimitUpdated    = "tenant.ratelimit.updated"
 )
 
 // Channel constants for Valkey Streams pub/sub.

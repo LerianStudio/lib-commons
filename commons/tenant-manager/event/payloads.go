@@ -4,6 +4,8 @@
 
 package event
 
+import "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+
 // ServiceAssociatedPayload is the typed payload for EventTenantServiceAssociated events.
 // It contains all information needed for a downstream service to provision
 // database connections, messaging, and secrets for a newly associated tenant.
@@ -70,4 +72,17 @@ type ConnectionsUpdatedPayload struct {
 	MaxOpenConns     int    `json:"max_open_conns"`
 	MaxIdleConns     int    `json:"max_idle_conns"`
 	StatementTimeout string `json:"statement_timeout,omitempty"`
+}
+
+// RateLimitUpdatedPayload is the typed payload for EventTenantRateLimitUpdated events.
+// Published when a tenant's rate limit configuration is changed in the tenant-manager.
+//
+// The RateLimiting field is part of the API contract for external consumers that
+// may want to inspect the new configuration inline. The built-in event handler
+// uses a push-to-fetch pattern: the event signals "go re-fetch from the API"
+// rather than applying the inline data directly, ensuring the cache is populated
+// via the same code path as initial loads.
+type RateLimitUpdatedPayload struct {
+	ServiceName  string                     `json:"service_name"`
+	RateLimiting map[string]*core.TierLimit `json:"rate_limiting"`
 }

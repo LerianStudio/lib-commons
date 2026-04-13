@@ -457,3 +457,121 @@ func TestEventDispatcher_OnTenantRemoved_Callback(t *testing.T) {
 	assert.Equal(t, "tenant-callback-002", result,
 		"onTenantRemoved callback should be invoked with the correct tenant ID")
 }
+
+func TestHandleEvent_RateLimitUpdated_MatchingService(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+
+	var callbackCalled bool
+
+	var callbackTenantID string
+
+	d := newTestDispatcher(t,
+		WithOnRateLimitUpdated(func(_ context.Context, tenantID string) {
+			mu.Lock()
+			callbackCalled = true
+			callbackTenantID = tenantID
+			mu.Unlock()
+		}),
+	)
+
+	ctx := context.Background()
+
+	payload := RateLimitUpdatedPayload{
+		ServiceName: testServiceName,
+		RateLimiting: map[string]*core.TierLimit{
+			"default": {Max: 100, Window: 60},
+		},
+	}
+
+	evt := TenantLifecycleEvent{
+		EventID:   "evt-rl-001",
+		EventType: EventTenantRateLimitUpdated,
+		TenantID:  "tenant-rl-001",
+		Timestamp: time.Now(),
+		Payload:   mustMarshalPayload(t, payload),
+	}
+
+	err := d.HandleEvent(ctx, evt)
+	require.NoError(t, err, "tenant.ratelimit.updated should not return error")
+
+	mu.Lock()
+	called := callbackCalled
+	tenantID := callbackTenantID
+	mu.Unlock()
+
+	assert.True(t, called, "onRateLimitUpdated callback should be invoked for matching service")
+	assert.Equal(t, "tenant-rl-001", tenantID,
+		"onRateLimitUpdated callback should receive the correct tenant ID")
+}
+
+func TestHandleEvent_RateLimitUpdated_DifferentService(t *testing.T) {
+	t.Parallel()
+
+	var mu sync.Mutex
+
+	var callbackCalled bool
+
+	d := newTestDispatcher(t,
+		WithOnRateLimitUpdated(func(_ context.Context, _ string) {
+			mu.Lock()
+			callbackCalled = true
+			mu.Unlock()
+		}),
+	)
+
+	ctx := context.Background()
+
+	payload := RateLimitUpdatedPayload{
+		ServiceName: "other-service",
+		RateLimiting: map[string]*core.TierLimit{
+			"default": {Max: 200, Window: 120},
+		},
+	}
+
+	evt := TenantLifecycleEvent{
+		EventID:   "evt-rl-002",
+		EventType: EventTenantRateLimitUpdated,
+		TenantID:  "tenant-rl-002",
+		Timestamp: time.Now(),
+		Payload:   mustMarshalPayload(t, payload),
+	}
+
+	err := d.HandleEvent(ctx, evt)
+	require.NoError(t, err, "tenant.ratelimit.updated for different service should be no-op")
+
+	mu.Lock()
+	called := callbackCalled
+	mu.Unlock()
+
+	assert.False(t, called,
+		"onRateLimitUpdated callback should NOT be invoked when service does not match")
+}
+
+func TestHandleEvent_RateLimitUpdated_NoCallback(t *testing.T) {
+	t.Parallel()
+
+	// Dispatcher created WITHOUT WithOnRateLimitUpdated
+	d := newTestDispatcher(t)
+
+	ctx := context.Background()
+
+	payload := RateLimitUpdatedPayload{
+		ServiceName: testServiceName,
+		RateLimiting: map[string]*core.TierLimit{
+			"default": {Max: 100, Window: 60},
+		},
+	}
+
+	evt := TenantLifecycleEvent{
+		EventID:   "evt-rl-003",
+		EventType: EventTenantRateLimitUpdated,
+		TenantID:  "tenant-rl-003",
+		Timestamp: time.Now(),
+		Payload:   mustMarshalPayload(t, payload),
+	}
+
+	err := d.HandleEvent(ctx, evt)
+	require.NoError(t, err, "tenant.ratelimit.updated without callback should not panic or return error")
+}

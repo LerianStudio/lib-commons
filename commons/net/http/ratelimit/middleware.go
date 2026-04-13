@@ -137,15 +137,18 @@ func RelaxedTier() Tier {
 //
 // A nil RateLimiter is safe to use: WithRateLimit returns a pass-through handler.
 type RateLimiter struct {
-	conn          *libRedis.Client
-	logger        log.Logger
-	keyPrefix     string
-	identityFunc  IdentityFunc
-	failOpen      bool
-	policyBlocked bool
-	policyMessage string
-	onLimited     func(c *fiber.Ctx, tier Tier)
-	redisTimeout  time.Duration
+	conn            *libRedis.Client
+	logger          log.Logger
+	keyPrefix       string
+	identityFunc    IdentityFunc
+	failOpen        bool
+	policyBlocked   bool
+	policyMessage   string
+	onLimited       func(c *fiber.Ctx, tier Tier)
+	redisTimeout    time.Duration
+	tierResolver    TierResolver
+	extractTenantID func(context.Context) string
+	tierFallbacks   map[string]Tier
 }
 
 // New creates a RateLimiter. In permissive or warn-only modes, it returns nil when:
@@ -167,6 +170,11 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 		identityFunc: IdentityFromIP(),
 		failOpen:     true,
 		redisTimeout: time.Duration(timeoutMS) * time.Millisecond,
+		tierFallbacks: map[string]Tier{
+			"default":    DefaultTier(),
+			"aggressive": AggressiveTier(),
+			"relaxed":    RelaxedTier(),
+		},
 	}
 
 	for _, opt := range opts {
@@ -327,7 +335,75 @@ func (rl *RateLimiter) WithDynamicRateLimit(fn TierFunc) fiber.Handler {
 	}
 }
 
-// check is the shared core of WithRateLimit and WithDynamicRateLimit. It runs the rate
+// ForTier returns a fiber.Handler that rate-limits requests using the named tier.
+// Use it directly on routes or groups to declare which tier applies:
+//
+//	v1.Get("/accounts", rl.ForTier("default"), h.ListAccounts)
+//	export := v1.Group("/export", rl.ForTier("export"))
+//
+// Resolution per request:
+//  1. If a TierResolver is configured (multi-tenant): resolver.Resolve(tenantID, tierName).
+//     Falls back to resolver.Fallback(tierName) when the tenant has no specific config.
+//  2. Otherwise (single-tenant): uses the local fallback registered via WithTierFallback,
+//     or the built-in defaults ("default", "aggressive", "relaxed").
+//
+// If the RateLimiter is nil, returns a pass-through handler.
+func (rl *RateLimiter) ForTier(tierName string) fiber.Handler {
+	if rl == nil {
+		return func(c *fiber.Ctx) error {
+			return c.Next()
+		}
+	}
+
+	if rl.policyBlocked {
+		return rl.blockedHandler()
+	}
+
+	return func(c *fiber.Ctx) error {
+		tier := rl.resolveTier(c, tierName)
+
+		if tier.Window <= 0 || tier.Window.Milliseconds() == 0 {
+			ctx := c.UserContext()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+
+			rl.logger.Log(ctx, log.LevelWarn,
+				"rate limit tier has invalid window; passing request through",
+				log.String("tier", tierName),
+				log.Int("max", tier.Max),
+			)
+
+			return c.Next()
+		}
+
+		return rl.check(c, tier)
+	}
+}
+
+// resolveTier resolves the final Tier for a request given a tier name.
+// Multi-tenant (tierResolver != nil): tries tenant-specific config, then resolver fallback.
+// Single-tenant (tierResolver == nil): uses local tierFallbacks map.
+func (rl *RateLimiter) resolveTier(c *fiber.Ctx, tierName string) Tier {
+	if rl.tierResolver != nil && rl.extractTenantID != nil {
+		tenantID := rl.extractTenantID(c.UserContext())
+		if tenantID != "" {
+			if tier, ok := rl.tierResolver.Resolve(tenantID, tierName); ok {
+				return tier
+			}
+		}
+
+		return rl.tierResolver.Fallback(tierName)
+	}
+
+	if tier, ok := rl.tierFallbacks[tierName]; ok {
+		return tier
+	}
+
+	return rl.tierFallbacks["default"]
+}
+
+// check is the shared core of WithRateLimit, WithDynamicRateLimit, and ForTier. It runs the rate
 // limit check for the given tier and either passes the request through or returns an
 // appropriate error response.
 func (rl *RateLimiter) check(c *fiber.Ctx, tier Tier) error {

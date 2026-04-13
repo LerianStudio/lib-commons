@@ -265,6 +265,24 @@ func (d *EventDispatcher) handleCredentialsRotated(
 	return nil
 }
 
+// handleRateLimitUpdated processes tenant.ratelimit.updated events.
+// Invokes the onRateLimitUpdated callback (typically wired to RateLimitLoader.Refresh)
+// to force-refresh the RateLimitCache for the affected tenant.
+func (d *EventDispatcher) handleRateLimitUpdated(
+	ctx context.Context,
+	evt TenantLifecycleEvent,
+	logger *logcompat.Logger,
+) error {
+	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.ratelimit.updated: refreshing rate limit cache",
+		libLog.String("tenant_id", evt.TenantID))
+
+	if d.onRateLimitUpdated != nil {
+		d.onRateLimitUpdated(ctx, evt.TenantID)
+	}
+
+	return nil
+}
+
 // handleConnectionsUpdated applies new pool settings from the event payload.
 // If the postgres manager is set, it delegates to ApplyConnectionSettings.
 func (d *EventDispatcher) handleConnectionsUpdated(
