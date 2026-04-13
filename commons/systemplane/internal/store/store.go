@@ -14,6 +14,9 @@ import (
 // ErrNilBackend is returned when a Store constructor receives a nil database handle.
 var ErrNilBackend = errors.New("systemplane/store: nil backend handle")
 
+// ErrClosed is returned when a method is called on a nil or closed Store.
+var ErrClosed = errors.New("systemplane/store: store is closed or nil")
+
 // Entry is the persisted shape of a single configuration key.
 type Entry struct {
 	Namespace string
