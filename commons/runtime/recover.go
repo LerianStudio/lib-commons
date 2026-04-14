@@ -4,11 +4,11 @@ import (
 	"context"
 	"runtime/debug"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 
 // Logger defines the minimal logging interface required by runtime.
-// This interface is satisfied by github.com/LerianStudio/lib-commons/v4/commons/log.Logger.
+// This interface is satisfied by github.com/LerianStudio/lib-commons/v5/commons/log.Logger.
 type Logger interface {
 	Log(ctx context.Context, level log.Level, msg string, fields ...log.Field)
 }

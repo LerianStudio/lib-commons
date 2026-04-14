@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/security"
+	"github.com/LerianStudio/lib-commons/v5/commons/security"
 )
 
 var logControlCharReplacer = strings.NewReplacer(

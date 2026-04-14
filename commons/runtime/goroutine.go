@@ -3,7 +3,7 @@ package runtime
 import (
 	"context"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 
 // SafeGo launches a goroutine with panic recovery. If the goroutine panics,

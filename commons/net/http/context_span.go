@@ -1,7 +1,7 @@
 package http
 
 import (
-	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"

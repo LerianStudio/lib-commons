@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/outbox"
-	libPostgres "github.com/LerianStudio/lib-commons/v4/commons/postgres"
+	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
+	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"

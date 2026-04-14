@@ -4,8 +4,8 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/gofiber/fiber/v2"
 )
 

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"testing"
 
-	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
 	"github.com/stretchr/testify/assert"
 )
 

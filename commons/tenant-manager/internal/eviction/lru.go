@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 
 // DefaultIdleTimeout is the default duration before a tenant connection becomes

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
-	"github.com/LerianStudio/lib-commons/v4/commons/security"
+	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
+	"github.com/LerianStudio/lib-commons/v5/commons/security"
 )
 
 // Response represents a business error with code, title, and message.

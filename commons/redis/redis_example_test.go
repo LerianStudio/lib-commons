@@ -5,7 +5,7 @@ package redis_test
 import (
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/redis"
+	"github.com/LerianStudio/lib-commons/v5/commons/redis"
 )
 
 func ExampleConfig() {

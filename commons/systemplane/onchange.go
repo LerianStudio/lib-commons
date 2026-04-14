@@ -5,7 +5,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 
 // OnChange registers a callback that is invoked whenever the specified key's

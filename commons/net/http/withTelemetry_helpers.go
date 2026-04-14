@@ -5,8 +5,8 @@ import (
 	"net/url"
 	"strings"
 
-	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
-	"github.com/LerianStudio/lib-commons/v4/commons/security"
+	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
+	"github.com/LerianStudio/lib-commons/v5/commons/security"
 	"github.com/gofiber/fiber/v2"
 	"google.golang.org/grpc/metadata"
 )

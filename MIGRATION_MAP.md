@@ -1,6 +1,6 @@
 # lib-commons Migration Map (v3 -> v4)
 
-This document maps notable `lib-commons/v3` APIs to the unified `lib-commons/v4` APIs. Use it as a lookup reference when migrating consumer code from the previous `lib-commons` line to the new unified major version.
+This document maps notable `lib-commons/v3` APIs to the unified `lib-commons/v5` APIs. Use it as a lookup reference when migrating consumer code from the previous `lib-commons` line to the new unified major version.
 
 ---
 
@@ -506,7 +506,7 @@ Recommended rollout:
 
 ## commons/outbox
 
-The root `commons/outbox` package is newly available in the unified `lib-commons/v4` line.
+The root `commons/outbox` package is newly available in the unified `lib-commons/v5` line.
 
 Key APIs now available to consumers:
 
@@ -809,7 +809,7 @@ No import-path change is required for consumers already using `commons/secretsma
 
 ### commons/tenant-manager
 
-The `tenant-manager` package tree provides multi-tenant connection management, preserved and expanded in unified `lib-commons/v4`.
+The `tenant-manager` package tree provides multi-tenant connection management, preserved and expanded in unified `lib-commons/v5`.
 
 #### New packages
 

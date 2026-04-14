@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
 	"github.com/shopspring/decimal"

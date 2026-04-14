@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 )
 
 // DefaultTenantCacheTTL is the default time-to-live for tenant entries in the local cache.

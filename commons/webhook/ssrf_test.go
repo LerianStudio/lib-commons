@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"testing"
 
-	libSSRF "github.com/LerianStudio/lib-commons/v4/commons/security/ssrf"
+	libSSRF "github.com/LerianStudio/lib-commons/v5/commons/security/ssrf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

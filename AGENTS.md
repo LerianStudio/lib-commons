@@ -4,14 +4,14 @@ This file provides repository-specific guidance for coding agents working on `li
 
 ## Project snapshot
 
-- Module: `github.com/LerianStudio/lib-commons/v4`
+- Module: `github.com/LerianStudio/lib-commons/v5`
 - Language: Go
 - Go version: `1.25.7` (see `go.mod`)
-- Current API generation: v4
+- Current API generation: v5
 
 ## Primary objective for changes
 
-- Preserve v4 public API contracts unless a task explicitly asks for breaking changes.
+- Preserve v5 public API contracts unless a task explicitly asks for breaking changes.
 - Prefer explicit error returns over panic paths in production code.
 - Keep behavior nil-safe and concurrency-safe by default.
 

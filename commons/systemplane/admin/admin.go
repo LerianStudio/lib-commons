@@ -15,8 +15,8 @@ import (
 	"errors"
 	"strings"
 
-	commonshttp "github.com/LerianStudio/lib-commons/v4/commons/net/http"
-	"github.com/LerianStudio/lib-commons/v4/commons/systemplane"
+	commonshttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane"
 	"github.com/gofiber/fiber/v2"
 )
 

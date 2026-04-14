@@ -124,7 +124,7 @@ lib-commons/
 
 - **Minimum**: Go 1.25.7
 - Keep `go.mod` updated with latest stable Go version
-- Module path: `github.com/LerianStudio/lib-commons/v4`
+- Module path: `github.com/LerianStudio/lib-commons/v5`
 
 ### Build Tags
 
@@ -155,7 +155,7 @@ import (
     "go.uber.org/zap"
 
     // Internal packages
-    "github.com/LerianStudio/lib-commons/v4/commons/log"
+    "github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 ```
 

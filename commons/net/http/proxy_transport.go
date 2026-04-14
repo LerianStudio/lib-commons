@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 
 // TODO(ssrf): Migrate to ssrf.ResolveAndValidate to eliminate the remaining

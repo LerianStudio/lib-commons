@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"strings"
 
-	libSSRF "github.com/LerianStudio/lib-commons/v4/commons/security/ssrf"
+	libSSRF "github.com/LerianStudio/lib-commons/v5/commons/security/ssrf"
 )
 
 // validateProxyTarget checks a parsed URL against the reverse proxy policy.

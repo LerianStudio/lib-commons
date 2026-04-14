@@ -4,8 +4,8 @@ package systemplane
 import (
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
-	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 )
 
 // clientConfig holds the merged configuration applied by Option functions.

@@ -10,11 +10,11 @@ import (
 	"net/http"
 	"time"
 
-	chttp "github.com/LerianStudio/lib-commons/v4/commons/constants"
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
-	libHTTP "github.com/LerianStudio/lib-commons/v4/commons/net/http"
-	libRedis "github.com/LerianStudio/lib-commons/v4/commons/redis"
-	tmcore "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	chttp "github.com/LerianStudio/lib-commons/v5/commons/constants"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	libHTTP "github.com/LerianStudio/lib-commons/v5/commons/net/http"
+	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
+	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
 )
