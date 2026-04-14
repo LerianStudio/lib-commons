@@ -167,7 +167,10 @@ func redactKey(key string) string {
 
 func (m *Middleware) handle(c *fiber.Ctx) error {
 	// Idempotency only applies to mutating methods.
-	if c.Method() == fiber.MethodGet || c.Method() == fiber.MethodOptions || c.Method() == fiber.MethodHead {
+	switch c.Method() {
+	case fiber.MethodPost, fiber.MethodPut, fiber.MethodPatch, fiber.MethodDelete:
+		// Apply idempotency to mutating methods only.
+	default:
 		return c.Next()
 	}
 
