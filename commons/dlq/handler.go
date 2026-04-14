@@ -291,6 +291,13 @@ func (h *Handler) logEnqueueFallback(ctx context.Context, key string, msg *Faile
 // NOTE: This uses LPop which is destructive. If the process crashes between Dequeue
 // and a subsequent re-enqueue, the message is permanently lost. This provides
 // at-most-once delivery semantics. For at-least-once, consider using LMOVE (Redis 6.2+).
+//
+// Source normalization: the returned message's Source field is set to the
+// authoritative queue name derived from the Redis key (i.e. the source argument),
+// not the value stored in the raw JSON payload. If a message was manually moved
+// between queues or its Source was corrupted in transit, Dequeue overwrites the
+// stale value and logs a warning. Callers should not assume that Source exactly
+// matches the raw JSON stored in Redis.
 func (h *Handler) Dequeue(ctx context.Context, source string) (*FailedMessage, error) {
 	if h == nil {
 		return nil, ErrNilHandler
@@ -325,6 +332,18 @@ func (h *Handler) Dequeue(ctx context.Context, source string) (*FailedMessage, e
 		libOtel.HandleSpanError(span, "dlq unmarshal failed", err)
 
 		return nil, fmt.Errorf("dlq: dequeue: unmarshal: %w", err)
+	}
+
+	// Normalize Source to the authoritative queue name derived from the Redis
+	// key being dequeued. A mismatch can occur if a message was manually moved
+	// between queues or if Source was corrupted in transit.
+	if msg.Source != source {
+		h.logger.Log(ctx, libLog.LevelWarn, "dlq: dequeue: message source mismatch, normalizing to queue source",
+			libLog.String("message_source", msg.Source),
+			libLog.String("queue_source", source),
+		)
+
+		msg.Source = source
 	}
 
 	return &msg, nil
@@ -467,10 +486,23 @@ func (h *Handler) PruneExhaustedMessages(ctx context.Context, source string, lim
 			continue
 		}
 
-		// Not exhausted — put it back.
-		if err := h.Enqueue(ctx, msg); err != nil {
+		// Not exhausted — put it back. Restore the effective tenant context
+		// from the message so that Enqueue constructs the correct tenant-scoped
+		// Redis key. Without this, a prune call running without tenant context
+		// (e.g. from a background job) would fail the tenant mismatch check
+		// inside Enqueue or route the message to the wrong queue.
+		enqueueCtx := ctx
+		if msg.TenantID != "" {
+			ctxTenant := tmcore.GetTenantIDContext(ctx)
+			if ctxTenant != msg.TenantID {
+				enqueueCtx = tmcore.ContextWithTenantID(ctx, msg.TenantID)
+			}
+		}
+
+		if err := h.Enqueue(enqueueCtx, msg); err != nil {
 			h.logger.Log(ctx, libLog.LevelError, "dlq: failed to re-enqueue non-exhausted message during prune",
 				libLog.String("source", msg.Source),
+				libLog.String("tenant_id", msg.TenantID),
 				libLog.Err(err),
 			)
 

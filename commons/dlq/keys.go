@@ -92,16 +92,19 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 
-	// Walk runes and cut at the correct byte offset.
-	byteLen := 0
+	// Walk runes and cut at the correct byte offset. Using the range index
+	// (which is the byte position of each rune) avoids out-of-bounds panics
+	// that can occur when invalid UTF-8 causes utf8.RuneLen to over-count.
+	byteLen := len(s)
 	count := 0
 
-	for _, r := range s {
+	for i := range s {
 		if count == maxLen {
+			byteLen = i
+
 			break
 		}
 
-		byteLen += utf8.RuneLen(r)
 		count++
 	}
 

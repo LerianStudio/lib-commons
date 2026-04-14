@@ -316,7 +316,7 @@ func TestCheck_DuplicateRequest_StillProcessing(t *testing.T) {
 	idempotencyKey := "processing-key"
 	lockKey := "idempotency:" + tenantID + ":" + idempotencyKey
 
-	require.NoError(t, mr.Set(lockKey, "processing"))
+	require.NoError(t, mr.Set(lockKey, keyStateProcessing))
 	mr.SetTTL(lockKey, 7*24*time.Hour)
 
 	app := newPostApp(m.Check(), tenantMiddleware(tenantID))
