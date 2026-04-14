@@ -26,7 +26,7 @@ type fakeStore struct {
 	handlers []func(store.Event)
 	closed   bool
 	subReady chan struct{} // closed when first Subscribe handler is registered
-	listErr  error        // if non-nil, List returns this error
+	listErr  error         // if non-nil, List returns this error
 }
 
 func newFakeStore() *fakeStore {

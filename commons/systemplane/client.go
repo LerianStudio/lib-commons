@@ -67,8 +67,8 @@ type Client struct {
 	subscribers map[nskey][]subscription
 	nextSubID   atomic.Uint64
 
-	startMu sync.Mutex
-	started atomic.Bool
+	startMu   sync.Mutex
+	started   atomic.Bool
 	closeOnce sync.Once
 	closed    atomic.Bool
 	cancel    context.CancelFunc // cancels the Subscribe goroutine
@@ -172,7 +172,7 @@ func (c *Client) Start(ctx context.Context) error {
 		return nil
 	}
 
-	ctx, span, finish := c.startSpan(ctx, "systemplane.client.start") //nolint:govet // ctx shadow is intentional — span context must propagate
+	ctx, span, finish := c.startSpan(ctx, "systemplane.client.start")
 	defer finish()
 
 	// 1. Seed the cache with registered defaults.
@@ -231,6 +231,7 @@ func (c *Client) Start(ctx context.Context) error {
 
 	c.wg.Go(func() {
 		defer runtime.RecoverAndLog(c.logger, "systemplane.subscribe")
+
 		if err := c.store.Subscribe(subCtx, c.onEvent); err != nil {
 			if subCtx.Err() == nil {
 				c.logWarn(subCtx, "subscribe returned error",

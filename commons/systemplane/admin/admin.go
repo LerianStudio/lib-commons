@@ -29,7 +29,7 @@ type mountConfig struct {
 // defaultMountConfig returns sensible defaults.
 func defaultMountConfig() mountConfig {
 	return mountConfig{
-		pathPrefix:     "/system",
+		pathPrefix: "/system",
 		authorizer: func(_ *fiber.Ctx, _ string) error {
 			return errors.New("admin: no authorizer configured — use admin.WithAuthorizer to set one")
 		},
