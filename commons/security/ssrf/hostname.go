@@ -59,6 +59,12 @@ func IsBlockedHostname(hostname string) bool {
 
 	lower := normalizeHostname(hostname)
 
+	// After normalization, hostnames like "." or ".." become empty. These are
+	// not valid targets and must be blocked (fail-closed).
+	if lower == "" {
+		return true
+	}
+
 	if blockedHostnames[lower] {
 		return true
 	}
@@ -80,6 +86,12 @@ func isBlockedHostnameWithConfig(hostname string, cfg *config) bool {
 	}
 
 	lower := normalizeHostname(hostname)
+
+	// After normalization, hostnames like "." or ".." become empty. These are
+	// not valid targets and must be blocked (fail-closed).
+	if lower == "" {
+		return true
+	}
 
 	// Check allow-list override first.
 	if cfg != nil && cfg.allowedHostnames[lower] {

@@ -268,6 +268,12 @@ func (m *Manager) DaysUntilExpiry() int {
 // certificate chain and private key. Returns an empty [tls.Certificate] if no
 // certificate is loaded. Both the Certificate [][]byte chain and the Leaf are
 // deep copies, so callers never receive references aliasing internal state.
+//
+// Note: the returned [tls.Certificate].PrivateKey is NOT deep-copied — it shares
+// the same underlying key material as [Manager].signer (the value returned by
+// [Manager.GetSigner]). Callers should not assume a separate copy of the private
+// key exists.
+//
 // Safe to call on a nil receiver (returns an empty [tls.Certificate]).
 func (m *Manager) TLSCertificate() tls.Certificate {
 	if m == nil {

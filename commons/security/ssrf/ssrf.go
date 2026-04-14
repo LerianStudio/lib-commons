@@ -29,6 +29,9 @@ var (
 // at init time rather than silently ignored at request time.
 //
 //nolint:gochecknoglobals // package-level CIDR blocklist is intentional for SSRF protection
+// blockedPrefixes is the canonical CIDR blocklist for SSRF protection.
+// MAINTENANCE: when adding or removing entries, update expectedPrefixCount
+// in ssrf_test.go to keep TestBlockedPrefixes_ReturnsExpectedCount in sync.
 var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),       // "this network" (RFC 1122 S3.2.1.3)
 	netip.MustParsePrefix("100.64.0.0/10"),   // CGNAT (RFC 6598)

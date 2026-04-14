@@ -301,6 +301,9 @@ func (c *Consumer) processSource(ctx context.Context, source string) {
 	}
 
 	// Round-robin drain across all discovered keys up to BatchSize total.
+	// Every drainSource call counts toward the cap regardless of whether it
+	// actually processed a message. This prevents future-dated heads from
+	// allowing unbounded drain attempts that blow past BatchSize.
 	processed := 0
 	for processed < c.cfg.BatchSize {
 		progressed := false
@@ -314,8 +317,10 @@ func (c *Consumer) processSource(ctx context.Context, source string) {
 				return
 			}
 
-			if c.drainSource(keyCtx, source, 1) > 0 {
-				processed++
+			n := c.drainSource(keyCtx, source, 1)
+			processed++
+
+			if n > 0 {
 				progressed = true
 			}
 		}

@@ -3,7 +3,6 @@
 package http
 
 import (
-	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -36,9 +35,12 @@ func TestServeReverseProxy_UpstreamTransportFailureReturns502(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
 }
 
-func TestSSRFSafeTransport_DialContext_RejectsPrivateIP(t *testing.T) {
+func TestSSRFSafeTransport_RoundTrip_RejectsPrivateIPViaSSRF(t *testing.T) {
 	t.Parallel()
 
+	// SSRF validation now happens atomically in RoundTrip via
+	// ssrf.ResolveAndValidate, not in a custom DialContext. Verify that a
+	// request to localhost is blocked at the RoundTrip level.
 	transport := newSSRFSafeTransport(ReverseProxyPolicy{
 		AllowedSchemes:          []string{"http"},
 		AllowedHosts:            []string{"localhost"},
@@ -46,10 +48,10 @@ func TestSSRFSafeTransport_DialContext_RejectsPrivateIP(t *testing.T) {
 	})
 
 	require.NotNil(t, transport)
-	require.NotNil(t, transport.base)
-	require.NotNil(t, transport.base.DialContext, "DialContext should be set when AllowUnsafeDestinations is false")
 
-	_, err := transport.base.DialContext(context.Background(), "tcp", "localhost:80")
+	req := httptest.NewRequest(http.MethodGet, "http://localhost:80/path", nil)
+
+	_, err := transport.RoundTrip(req)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrUnsafeProxyDestination)
 }

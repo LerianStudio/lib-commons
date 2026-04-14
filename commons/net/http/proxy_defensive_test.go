@@ -6,13 +6,12 @@ import (
 	"context"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	liblog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	libSSRF "github.com/LerianStudio/lib-commons/v5/commons/security/ssrf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -127,70 +126,124 @@ func TestServeReverseProxy_TypedNilLoggerOnValidationError(t *testing.T) {
 	})
 }
 
-func TestValidateResolvedIPs_NoIPs(t *testing.T) {
-	t.Parallel()
-
-	ip, err := validateResolvedIPs(context.Background(), nil, "example.com", nil)
-	require.Error(t, err)
-	assert.Nil(t, ip)
-	assert.ErrorIs(t, err, ErrNoResolvedIPs)
-}
-
 func TestSSRFSafeTransport_DNSResolutionFailure(t *testing.T) {
 	t.Parallel()
 
-	transport := newSSRFSafeTransportWithDeps(ReverseProxyPolicy{}, func(context.Context, string) ([]net.IPAddr, error) {
+	lookupFail := libSSRF.WithLookupFunc(func(_ context.Context, _ string) ([]string, error) {
 		return nil, errors.New("lookup failed")
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
 
-	_, err := transport.base.DialContext(ctx, "tcp", "example.com:443")
+	transport := newSSRFSafeTransportWithOpts(
+		ReverseProxyPolicy{
+			AllowedSchemes: []string{"https"},
+			AllowedHosts:   []string{"example.com"},
+		},
+		[]libSSRF.Option{lookupFail},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/path", nil)
+
+	_, err := transport.RoundTrip(req)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrDNSResolutionFailed)
 }
 
-func TestValidateResolvedIPs_UnsafeAddressRejected(t *testing.T) {
+func TestSSRFSafeTransport_UnsafeAddressRejected(t *testing.T) {
 	t.Parallel()
 
-	ip, err := validateResolvedIPs(context.Background(), []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, "example.com", nil)
+	lookupLoopback := libSSRF.WithLookupFunc(func(_ context.Context, _ string) ([]string, error) {
+		return []string{"127.0.0.1"}, nil
+	})
+
+	transport := newSSRFSafeTransportWithOpts(
+		ReverseProxyPolicy{
+			AllowedSchemes: []string{"https"},
+			AllowedHosts:   []string{"example.com"},
+		},
+		[]libSSRF.Option{lookupLoopback},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/path", nil)
+
+	_, err := transport.RoundTrip(req)
 	require.Error(t, err)
-	assert.Nil(t, ip)
 	assert.ErrorIs(t, err, ErrUnsafeProxyDestination)
 }
 
-func TestValidateResolvedIPs_MixedAddressesRejected(t *testing.T) {
+func TestSSRFSafeTransport_MixedAddressesRejected(t *testing.T) {
 	t.Parallel()
 
-	ip, err := validateResolvedIPs(context.Background(), []net.IPAddr{
-		{IP: net.ParseIP("8.8.8.8")},
-		{IP: net.ParseIP("127.0.0.1")},
-	}, "example.com", nil)
+	lookupMixed := libSSRF.WithLookupFunc(func(_ context.Context, _ string) ([]string, error) {
+		return []string{"8.8.8.8", "127.0.0.1"}, nil
+	})
+
+	transport := newSSRFSafeTransportWithOpts(
+		ReverseProxyPolicy{
+			AllowedSchemes: []string{"https"},
+			AllowedHosts:   []string{"example.com"},
+		},
+		[]libSSRF.Option{lookupMixed},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/path", nil)
+
+	_, err := transport.RoundTrip(req)
 	require.Error(t, err)
-	assert.Nil(t, ip)
 	assert.ErrorIs(t, err, ErrUnsafeProxyDestination)
 }
 
-func TestValidateResolvedIPs_AllSafeReturnsFirst(t *testing.T) {
+func TestSSRFSafeTransport_SafeAddressPins(t *testing.T) {
 	t.Parallel()
 
-	ip, err := validateResolvedIPs(context.Background(), []net.IPAddr{
-		{IP: net.ParseIP("8.8.8.8")},
-		{IP: net.ParseIP("1.1.1.1")},
-	}, "example.com", nil)
-	require.NoError(t, err)
-	assert.Equal(t, net.ParseIP("8.8.8.8"), ip)
+	lookupSafe := libSSRF.WithLookupFunc(func(_ context.Context, _ string) ([]string, error) {
+		return []string{"93.184.216.34"}, nil
+	})
+
+	transport := newSSRFSafeTransportWithOpts(
+		ReverseProxyPolicy{
+			AllowedSchemes: []string{"https"},
+			AllowedHosts:   []string{"example.com"},
+		},
+		[]libSSRF.Option{lookupSafe},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/path", nil)
+
+	// The RoundTrip will attempt to actually dial the pinned IP which will
+	// fail (no server listening), but that's a transport error, not an SSRF
+	// rejection. The key assertion is that we do NOT get an SSRF error.
+	_, err := transport.RoundTrip(req)
+	// The connection will fail at the TCP level, but it must NOT be an SSRF error.
+	if err != nil {
+		assert.NotErrorIs(t, err, ErrUnsafeProxyDestination)
+		assert.NotErrorIs(t, err, ErrDNSResolutionFailed)
+		assert.NotErrorIs(t, err, ErrInvalidProxyTarget)
+	}
 }
 
-func TestValidateResolvedIPs_TypedNilLogger(t *testing.T) {
+func TestSSRFSafeTransport_TypedNilLoggerOnSSRFFailure(t *testing.T) {
 	t.Parallel()
 
 	var logger *typedNilProxyLogger
 
+	lookupLoopback := libSSRF.WithLookupFunc(func(_ context.Context, _ string) ([]string, error) {
+		return []string{"127.0.0.1"}, nil
+	})
+
+	transport := newSSRFSafeTransportWithOpts(
+		ReverseProxyPolicy{
+			AllowedSchemes: []string{"https"},
+			AllowedHosts:   []string{"example.com"},
+			Logger:         logger,
+		},
+		[]libSSRF.Option{lookupLoopback},
+	)
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/path", nil)
+
 	assert.NotPanics(t, func() {
-		ip, err := validateResolvedIPs(context.Background(), nil, "example.com", logger)
+		_, err := transport.RoundTrip(req)
 		require.Error(t, err)
-		assert.Nil(t, ip)
-		assert.ErrorIs(t, err, ErrNoResolvedIPs)
+		assert.ErrorIs(t, err, ErrUnsafeProxyDestination)
 	})
 }

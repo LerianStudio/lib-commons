@@ -19,7 +19,8 @@ import (
 
 // expectedPrefixCount lives in the test file so the production code does not
 // export or carry a constant that is only meaningful for test assertions.
-// Update this value when adding new CIDR ranges to blockedPrefixes.
+// Update this value when adding or removing CIDR ranges in the production
+// blockedPrefixes variable (ssrf.go).
 const expectedPrefixCount = 10
 
 func TestBlockedPrefixes_ReturnsExpectedCount(t *testing.T) {
@@ -269,6 +270,11 @@ func TestIsBlockedHostname(t *testing.T) {
 
 		// Empty hostname
 		{name: "empty string", host: "", blocked: true},
+
+		// Hostnames that normalize to empty (root-label-only inputs)
+		{name: "single dot normalizes to empty", host: ".", blocked: true},
+		{name: "double dot normalizes to empty", host: "..", blocked: true},
+		{name: "triple dot normalizes to empty", host: "...", blocked: true},
 
 		// Legitimate hostnames — must NOT be blocked
 		{name: "example.com", host: "example.com", blocked: false},
@@ -960,6 +966,20 @@ func TestIsBlockedAddr_IPv6_DiscardRange(t *testing.T) {
 	addr := netip.MustParseAddr("100::1")
 	assert.True(t, IsBlockedAddr(addr),
 		"IPv6 discard-only address 100::1 must be blocked (RFC 6666)")
+}
+
+func TestResolveAndValidate_BlockedIPInMiddle(t *testing.T) {
+	t.Parallel()
+
+	// A blocked IP ("10.0.0.1") sits in the middle of the resolved list, between
+	// two safe IPs. ResolveAndValidate must check ALL IPs, not just the first one.
+	_, err := ResolveAndValidate(context.Background(),
+		"https://example.com/hook",
+		WithLookupFunc(fakeLookup("93.184.216.34", "10.0.0.1", "1.1.1.1")),
+	)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrBlocked)
 }
 
 func TestSentinelErrors_AreDistinct(t *testing.T) {
