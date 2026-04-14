@@ -80,6 +80,7 @@ func setupMongoDB(t *testing.T) (*mongo.Client, string) {
 
 	clientOpts := options.Client().
 		ApplyURI(uri).
+		SetDirect(true).
 		SetServerSelectionTimeout(30 * time.Second)
 
 	client, err := mongo.Connect(clientOpts)

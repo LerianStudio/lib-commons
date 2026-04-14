@@ -70,22 +70,17 @@ type Config struct {
 type entryDoc struct {
 	Namespace string    `bson:"namespace"`
 	Key       string    `bson:"key"`
-	Value     bson.Raw  `bson:"value"`
+	Value     string    `bson:"value"`
 	UpdatedAt time.Time `bson:"updated_at"`
 	UpdatedBy string    `bson:"updated_by"`
 }
 
 // toEntry converts a BSON document into the public store.Entry type.
 func (d entryDoc) toEntry() store.Entry {
-	jsonBytes, err := bson.MarshalExtJSON(d.Value, true, false)
-	if err != nil {
-		jsonBytes = []byte(d.Value)
-	}
-
 	return store.Entry{
 		Namespace: d.Namespace,
 		Key:       d.Key,
-		Value:     jsonBytes,
+		Value:     []byte(d.Value),
 		UpdatedAt: d.UpdatedAt,
 		UpdatedBy: d.UpdatedBy,
 	}
@@ -248,13 +243,6 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 		return err
 	}
 
-	// Convert JSON value bytes to bson.Raw for storage.
-	rawValue, err := jsonToBSONRaw(e.Value)
-	if err != nil {
-		opentelemetry.HandleSpanError(span, "mongodb set: value conversion failed", err)
-		return fmt.Errorf("mongodb store set: value conversion: %w", err)
-	}
-
 	filter := bson.D{
 		{Key: "namespace", Value: e.Namespace},
 		{Key: "key", Value: e.Key},
@@ -269,7 +257,7 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 		{Key: "$set", Value: bson.D{
 			{Key: "namespace", Value: e.Namespace},
 			{Key: "key", Value: e.Key},
-			{Key: "value", Value: rawValue},
+			{Key: "value", Value: string(e.Value)},
 			{Key: "updated_at", Value: now},
 			{Key: "updated_by", Value: e.UpdatedBy},
 		}},
@@ -277,7 +265,7 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 
 	opts := options.UpdateOne().SetUpsert(true)
 
-	_, err = s.coll.UpdateOne(ctx, filter, update, opts)
+	_, err := s.coll.UpdateOne(ctx, filter, update, opts)
 	if err != nil {
 		opentelemetry.HandleSpanError(span, "mongodb set: upsert failed", err)
 		return fmt.Errorf("mongodb store set: %w", err)
@@ -515,31 +503,6 @@ func (s *Store) logWarn(ctx context.Context, msg string, fields ...log.Field) {
 	}
 
 	s.cfg.Logger.Log(ctx, log.LevelWarn, msg, fields...)
-}
-
-// jsonToBSONRaw converts JSON-encoded bytes into bson.Raw for storage.
-// Non-document values are wrapped in {"v": <string>} for round-trip safety.
-func jsonToBSONRaw(data []byte) (bson.Raw, error) {
-	if len(data) == 0 {
-		return bson.Raw{}, nil
-	}
-
-	var doc bson.D
-	if err := bson.UnmarshalExtJSON(data, true, &doc); err == nil {
-		raw, marshalErr := bson.Marshal(doc)
-		if marshalErr != nil {
-			return nil, fmt.Errorf("marshal bson document: %w", marshalErr)
-		}
-
-		return bson.Raw(raw), nil
-	}
-
-	raw, err := bson.Marshal(bson.D{{Key: "v", Value: string(data)}})
-	if err != nil {
-		return nil, fmt.Errorf("marshal bson wrapper: %w", err)
-	}
-
-	return bson.Raw(raw), nil
 }
 
 // bsonLookupString extracts a string value from a bson.D by key.
