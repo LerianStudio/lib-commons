@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/tenantcache"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/tenantcache"
 	"github.com/stretchr/testify/assert"
 )
 

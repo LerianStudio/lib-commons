@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
 )
 
 // serviceNamePayload is a minimal struct used to extract the service_name field

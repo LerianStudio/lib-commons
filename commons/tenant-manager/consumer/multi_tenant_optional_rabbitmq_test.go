@@ -9,10 +9,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/testutil"
+	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	amqp "github.com/rabbitmq/amqp091-go"
 	"go.uber.org/goleak"
 )
 
@@ -150,7 +150,7 @@ func TestEnsureConsumerStarted_NoRabbitMQ_SkipsGoroutine(t *testing.T) {
 
 	// Verify: no goroutine leaks
 	goleak.VerifyNone(t,
-		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
+		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),

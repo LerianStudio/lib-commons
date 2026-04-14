@@ -26,40 +26,74 @@ lib-commons/
 ├── commons/                      # All library packages
 │   ├── assert/                     # Production-safe assertions with telemetry
 │   ├── backoff/                    # Exponential backoff with jitter
+│   ├── certificate/                # Thread-safe TLS certificate manager with hot-reload
 │   ├── circuitbreaker/             # Circuit breaker manager and health checker
 │   ├── constants/                  # Shared constants (headers, errors, pagination)
 │   ├── cron/                       # Cron expression parsing and scheduling
 │   ├── crypto/                     # Hashing and symmetric encryption
+│   ├── dlq/                        # Redis-backed dead letter queue with consumer and retry
 │   ├── errgroup/                   # Goroutine coordination with panic recovery
+│   ├── internal/                   # Internal packages (not part of public API)
+│   │   └── nilcheck/               # Nil interface detection helpers
 │   ├── jwt/                        # HMAC-based JWT signing and verification
 │   ├── license/                    # License validation and enforcement
 │   ├── log/                        # Logging abstraction (Logger interface)
 │   ├── mongo/                      # MongoDB connector
 │   ├── net/http/                   # Fiber-oriented HTTP helpers and middleware
+│   │   ├── idempotency/            # Fiber idempotency middleware (Redis-backed, tenant-scoped)
 │   │   └── ratelimit/              # Redis-backed rate limit storage
 │   ├── opentelemetry/              # Telemetry bootstrap, propagation, redaction
 │   │   └── metrics/                # Metric factory and fluent builders
+│   ├── outbox/                     # Transactional outbox primitives
+│   │   └── postgres/               # PostgreSQL outbox adapter with migrations
 │   ├── pointers/                   # Pointer conversion helpers
 │   ├── postgres/                   # PostgreSQL connector with migrations
 │   ├── rabbitmq/                   # RabbitMQ connector
 │   ├── redis/                      # Redis connector (standalone/sentinel/cluster)
 │   ├── runtime/                    # Panic recovery, metrics, safe goroutine wrappers
 │   ├── safe/                       # Panic-free math/regex/slice operations
+│   ├── secretsmanager/             # AWS Secrets Manager M2M credential retrieval
 │   ├── security/                   # Sensitive field detection and handling
 │   ├── server/                     # Graceful shutdown and lifecycle (ServerManager)
 │   ├── shell/                      # Makefile includes and shell utilities
+│   ├── systemplane/                # Runtime configuration plane (hot-reloadable settings)
+│   │   ├── admin/                  # Fiber HTTP routes for list/get/put with authorization
+│   │   ├── internal/               # Internal store implementations
+│   │   │   ├── debounce/           # Key-scoped trailing-edge debouncer
+│   │   │   ├── mongodb/            # MongoDB store with change streams and polling
+│   │   │   ├── postgres/           # Postgres store with LISTEN/NOTIFY
+│   │   │   └── store/              # Backend-agnostic Store interface
+│   │   └── systemplanetest/        # Contract test suite for Store backends
+│   ├── tenant-manager/             # Multi-tenant database-per-tenant isolation
+│   │   ├── cache/                  # In-memory tenant cache with LRU eviction
+│   │   ├── client/                 # HTTP client for tenant-manager API
+│   │   ├── consumer/               # Multi-tenant consumer with lazy loading and retry
+│   │   ├── core/                   # Core types, context, errors, validation
+│   │   ├── event/                  # Event listener, dispatcher, payloads (Redis Pub/Sub)
+│   │   ├── log/                    # Tenant-scoped logger
+│   │   ├── middleware/             # Fiber middleware (TenantMiddleware with WithPG/WithMB)
+│   │   ├── mongo/                  # MongoDB tenant manager
+│   │   ├── postgres/               # PostgreSQL tenant manager
+│   │   ├── rabbitmq/               # RabbitMQ tenant manager
+│   │   ├── redis/                  # Redis tenant client
+│   │   ├── s3/                     # S3 object storage for tenant provisioning scripts
+│   │   ├── tenantcache/            # Tenant cache and loader
+│   │   └── valkey/                 # Valkey/Redis key patterns
 │   ├── transaction/                # Typed transaction validation/posting primitives
+│   ├── webhook/                    # Webhook delivery with HMAC-SHA256 signing and SSRF protection
 │   ├── zap/                        # Zap logging adapter
 │   ├── app.go                      # Application bootstrap helpers
 │   ├── context.go                  # Context utilities
+│   ├── environment.go              # Environment detection and security tier mapping
 │   ├── errors.go                   # Error definitions
-│   ├── os.go                       # OS utilities
+│   ├── os.go                       # OS utilities and env var helpers
+│   ├── security_override.go        # ALLOW_* security policy override mechanism
 │   ├── stringUtils.go              # String utilities
 │   ├── time.go                     # Time utilities
 │   └── utils.go                    # General utility functions
 ├── docs/                           # Documentation
 ├── reports/                        # Test and coverage reports
-└── go.mod                          # Module definition (v4)
+└── go.mod                          # Module definition (v5)
 ```
 
 ### Package Design Principles
@@ -90,7 +124,7 @@ lib-commons/
 
 - **Minimum**: Go 1.25.7
 - Keep `go.mod` updated with latest stable Go version
-- Module path: `github.com/LerianStudio/lib-commons/v4`
+- Module path: `github.com/LerianStudio/lib-commons/v5`
 
 ### Build Tags
 
@@ -121,7 +155,7 @@ import (
     "go.uber.org/zap"
 
     // Internal packages
-    "github.com/LerianStudio/lib-commons/v4/commons/log"
+    "github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 ```
 
@@ -351,15 +385,15 @@ func (c *Client) Connect(ctx context.Context) error {
 
 | Category | Allowed Packages |
 |----------|-----------------|
-| Database | `pgx/v5`, `mongo-driver`, `go-redis/v9`, `dbresolver/v2`, `golang-migrate/v4` |
+| Database | `pgx/v5`, `mongo-driver`, `mongo-driver/v2`, `go-redis/v9`, `dbresolver/v2`, `golang-migrate/v4` |
 | Messaging | `amqp091-go` |
 | HTTP | `gofiber/fiber/v2` |
 | Logging | `zap`, internal `log` package |
-| Testing | `testify`, `go.uber.org/mock`, `miniredis/v2` |
-| Observability | `opentelemetry/*`, `otelzap` |
-| Utilities | `google/uuid`, `shopspring/decimal`, `go-playground/validator/v10` |
+| Testing | `testify`, `go.uber.org/mock`, `miniredis/v2`, `testcontainers-go`, `goleak` |
+| Observability | `opentelemetry/*`, `otelzap`, `grpc`, `protobuf` |
+| Utilities | `google/uuid`, `shopspring/decimal`, `go-playground/validator/v10`, `golang.org/x/sync`, `golang.org/x/text` |
 | Resilience | `sony/gobreaker`, `go-redsync/v4` |
-| Security | `golang.org/x/oauth2`, `google.golang.org/api` |
+| Security | `golang.org/x/oauth2`, `google.golang.org/api`, `golang-jwt/jwt/v5`, `aws-sdk-go-v2` (secretsmanager) |
 | System | `shirou/gopsutil`, `joho/godotenv` |
 
 ### Forbidden Dependencies
@@ -411,7 +445,8 @@ safeValue := redactor.Redact(sensitiveField)
 
 ### Environment Variables
 
-- Use `SECURE_LOG_FIELDS` for field obfuscation
+- Use `LOG_OBFUSCATION_DISABLED` to control HTTP body obfuscation (default: disabled)
+- Sensitive field detection uses `commons/security.IsSensitiveField()` with a hardcoded set
 - Document required environment variables
 - Provide sensible defaults where safe
 
@@ -428,7 +463,17 @@ safeValue := redactor.Redact(sensitiveField)
 
 ### Enabled Linters
 
-`bodyclose`, `depguard`, `dogsled`, `dupword`, `errchkjson`, `gocognit`, `gocyclo`, `loggercheck`, `misspell`, `nakedret`, `nilerr`, `nolintlint`, `prealloc`, `predeclared`, `reassign`, `revive`, `staticcheck`, `thelper`, `tparallel`, `unconvert`, `unparam`, `usestdlibvars`, `wastedassign`, `wsl_v5`
+**Existing linters:**
+`bodyclose`, `depguard`, `dogsled`, `dupword`, `errchkjson`, `gocognit`, `gocyclo`, `loggercheck`, `misspell`, `nakedret`, `nilerr`, `nolintlint`, `prealloc`, `predeclared`, `reassign`, `revive`, `staticcheck`, `unconvert`, `unparam`, `usestdlibvars`, `wastedassign`, `wsl_v5`
+
+**Tier 1 — Safety & Correctness:**
+`errorlint`, `exhaustive`, `fatcontext`, `forcetypeassert`, `gosec`, `nilnil`, `noctx`
+
+**Tier 2 — Code Quality & Modernization:**
+`goconst`, `gocritic`, `inamedparam`, `intrange`, `mirror`, `modernize`, `perfsprint`
+
+**Tier 3 — Zero-Issue Guards:**
+`asasalint`, `copyloopvar`, `durationcheck`, `exptostd`, `gocheckcompilerdirectives`, `makezero`, `musttag`, `nilnesserr`, `recvcheck`, `rowserrcheck`, `spancheck`, `sqlclosecheck`, `testifylint`
 
 ### Formatting
 
@@ -491,7 +536,7 @@ make clean                 # Clean all build artifacts
 
 ## API Invariants
 
-Key v2 API contracts that must be preserved:
+Key v4 API contracts that must be preserved:
 
 | Package | Invariant |
 |---------|-----------|
@@ -515,6 +560,19 @@ Key v2 API contracts that must be preserved:
 | `transaction` | `BuildIntentPlan()` + `ValidateBalanceEligibility()` + `ApplyPosting()` |
 | `rabbitmq` | `*Context()` variants for lifecycle; `HealthCheck()` returns `(bool, error)` |
 | `opentelemetry` | `Redactor` with `RedactionRule`; `NewDefaultRedactor()` / `NewRedactor(rules, mask)` |
+| `certificate` | `NewManager(certPath, keyPath)` — empty paths return unconfigured manager (TLS optional). `Rotate(cert, key)` for zero-downtime hot-reload. `GetCertificateFunc()` for `tls.Config.GetCertificate`. All methods nil-safe. |
+| `certificate` | Private key parsing order: PKCS#8 → PKCS#1 → EC. Key file must have mode 0600 or stricter (enforced at load time). Public key match validated against cert at load and rotate. |
+| `dlq` | `New(conn, keyPrefix, maxRetries, opts...)` returns `*Handler`; `NewConsumer(handler, retryFn, opts...)` returns `(*Consumer, error)`. |
+| `dlq` | `Handler.Enqueue(ctx, msg)`, `Dequeue(ctx, source)`, `QueueLength(ctx, source)`, `ScanQueues(ctx, source)`, `PruneExhaustedMessages(ctx, source, limit)`, `ExtractTenantFromKey(key, source)`. |
+| `dlq` | `Consumer.Run(ctx)` blocks until ctx cancelled or `Stop()` called. `ProcessOnce(ctx)` exported for testing. Tenant isolation via `tmcore.GetTenantIDContext`. |
+| `dlq` | `DLQMetrics` interface: `RecordRetried(ctx, source)`, `RecordExhausted(ctx, source)`. Nil metrics are silently skipped. |
+| `net/http/idempotency` | `New(conn, opts...)` returns `*Middleware` (nil when conn is nil). `(*Middleware).Check()` returns a Fiber handler; nil receiver returns pass-through. |
+| `net/http/idempotency` | Redis key pattern: `<prefix><tenantID>:<idempotencyKey>` with companion response key `…:response`. Default prefix `"idempotency:"`, TTL 7 days, max key length 256. |
+| `net/http/idempotency` | Fail-open on Redis errors. GET/OPTIONS/HEAD requests pass through. Handler error deletes key (client may retry). In-flight duplicate returns 409 Conflict. |
+| `webhook` | `NewDeliverer(lister, opts...)` returns `*Deliverer` (nil when lister is nil). `Deliver(ctx, event)` and `DeliverWithResults(ctx, event)` are the delivery entry points. |
+| `webhook` | SSRF protection: `resolveAndValidateIP` performs a single DNS lookup, validates all resolved IPs against private/loopback/CGNAT/RFC-reserved ranges, and pins the URL to the first IP to eliminate TOCTOU. Redirects are blocked at transport layer. |
+| `webhook` | HMAC-SHA256 signature sent in `X-Webhook-Signature: sha256=HEX` header over raw payload bytes only (timestamp excluded by design). Encrypted secrets use `enc:` prefix and require `WithSecretDecryptor`. |
+| `webhook` | `EndpointLister` interface: `ListActiveEndpoints(ctx) ([]Endpoint, error)`. `DeliveryMetrics` interface: `RecordDelivery(ctx, endpointID, success, statusCode, attempts)`. |
 
 ---
 

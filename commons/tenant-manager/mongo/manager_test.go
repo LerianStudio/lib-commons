@@ -21,10 +21,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
@@ -35,7 +35,7 @@ import (
 
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m,
-		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
+		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),
@@ -1653,10 +1653,10 @@ func TestManager_RevalidateSettings_RecoverFromPanic(t *testing.T) {
 
 	// Create a manager with nil client to trigger a panic path
 	manager := &Manager{
-		logger:                logcompat.New(capLogger),
-		connections:           make(map[string]*MongoConnection),
-		databaseNames:         make(map[string]string),
-		lastAccessed:          make(map[string]time.Time),
+		logger:                   logcompat.New(capLogger),
+		connections:              make(map[string]*MongoConnection),
+		databaseNames:            make(map[string]string),
+		lastAccessed:             make(map[string]time.Time),
 		lastConnectionsCheck:     make(map[string]time.Time),
 		connectionsCheckInterval: 1 * time.Millisecond,
 	}

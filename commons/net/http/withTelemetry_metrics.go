@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons"
-	"github.com/LerianStudio/lib-commons/v4/commons/runtime"
+	"github.com/LerianStudio/lib-commons/v5/commons"
+	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
 )
 
 // Metrics collector singleton state.

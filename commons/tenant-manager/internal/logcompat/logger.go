@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	liblog "github.com/LerianStudio/lib-commons/v4/commons/log"
-	tmlog "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/log"
+	liblog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	tmlog "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/log"
 )
 
 type Logger struct {

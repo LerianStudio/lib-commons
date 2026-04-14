@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	logpkg "github.com/LerianStudio/lib-commons/v4/commons/log"
-	"github.com/LerianStudio/lib-commons/v4/commons/runtime"
-	"github.com/LerianStudio/lib-commons/v4/commons/security"
+	logpkg "github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	"github.com/LerianStudio/lib-commons/v5/commons/security"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"

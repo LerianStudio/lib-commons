@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/testutil"
 	"go.uber.org/goleak"
 )
 
@@ -48,7 +48,7 @@ func TestMultiTenantConsumer_Run_CloseStopsConsumers(t *testing.T) {
 	}, time.Second, 20*time.Millisecond)
 
 	goleak.VerifyNone(t,
-		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
+		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),
@@ -87,7 +87,7 @@ func TestMultiTenantConsumer_Run_CancelAndCloseNoLeak(t *testing.T) {
 	}, time.Second, 20*time.Millisecond)
 
 	goleak.VerifyNone(t,
-		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
+		goleak.IgnoreTopFunction("github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/cache.(*InMemoryCache).cleanupLoop"),
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),

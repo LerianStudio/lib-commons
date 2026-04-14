@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/testutil"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -716,10 +716,10 @@ func TestManager_RevalidateSettings_RecoverFromPanic(t *testing.T) {
 
 	// Create a manager with nil client to trigger a panic path
 	manager := &Manager{
-		logger:                logcompat.New(capLogger),
-		connections:           make(map[string]*amqp.Connection),
-		cachedURIs:            make(map[string]string),
-		lastAccessed:          make(map[string]time.Time),
+		logger:                   logcompat.New(capLogger),
+		connections:              make(map[string]*amqp.Connection),
+		cachedURIs:               make(map[string]string),
+		lastAccessed:             make(map[string]time.Time),
 		lastConnectionsCheck:     make(map[string]time.Time),
 		connectionsCheckInterval: 1 * time.Millisecond,
 	}

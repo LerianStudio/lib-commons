@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/server"
+	"github.com/LerianStudio/lib-commons/v5/commons/server"
 )
 
 func ExampleServerManager_StartWithGracefulShutdownWithError_validation() {

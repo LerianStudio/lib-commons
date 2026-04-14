@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/circuitbreaker"
+	"github.com/LerianStudio/lib-commons/v5/commons/circuitbreaker"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

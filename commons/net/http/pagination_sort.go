@@ -7,7 +7,7 @@ import (
 	"regexp"
 	"strings"
 
-	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
 )
 
 // sortColumnPattern validates sort column names as simple SQL identifiers.

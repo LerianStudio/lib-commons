@@ -13,11 +13,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
-	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/cache"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
+	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/cache"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -207,10 +207,10 @@ func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) (*Cli
 	}
 
 	c := &Client{
-		baseURL: baseURL,
+		baseURL:    baseURL,
 		httpClient: newDefaultHTTPClient(),
-		logger:   logger,
-		cacheTTL: defaultCacheTTL,
+		logger:     logger,
+		cacheTTL:   defaultCacheTTL,
 	}
 
 	for _, opt := range opts {

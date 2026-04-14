@@ -4,7 +4,7 @@
 
 package consumer
 
-import "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/tenantcache"
+import "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/tenantcache"
 
 // DefaultTenantCacheTTL is re-exported from tenantcache for backward compatibility.
 const DefaultTenantCacheTTL = tenantcache.DefaultTenantCacheTTL

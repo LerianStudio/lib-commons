@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

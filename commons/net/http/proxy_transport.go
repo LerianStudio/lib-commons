@@ -1,37 +1,47 @@
 package http
 
 import (
-	"context"
-	"fmt"
+	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	libSSRF "github.com/LerianStudio/lib-commons/v5/commons/security/ssrf"
 )
 
-// ssrfSafeTransport wraps an http.Transport with a DialContext that validates
-// resolved IP addresses against the SSRF policy at connection time.
-// This prevents DNS rebinding attacks where a hostname resolves to a safe IP
-// during validation but a private IP at connection time.
-//
-// It also implements http.RoundTripper so each outbound request is re-validated
-// immediately before dialing with the current proxy policy.
+// ssrfSafeTransport wraps an http.Transport and implements http.RoundTripper.
+// On each outbound request it:
+//  1. Validates the request URL against the proxy policy (scheme/host allowlists).
+//  2. Unless AllowUnsafeDestinations is set, delegates DNS resolution and IP
+//     validation to [libSSRF.ResolveAndValidate] which performs both atomically
+//     and returns a pinned URL. This eliminates the TOCTOU window between
+//     "validate" and "connect" that existed when DNS was resolved separately in
+//     DialContext.
+//  3. Rewrites the request to use the pinned IP, preserving the original Host
+//     header for correct virtual-host routing.
 type ssrfSafeTransport struct {
 	policy ReverseProxyPolicy
 	base   *http.Transport
+	// ssrfOpts are functional options forwarded to ssrf.ResolveAndValidate.
+	// Stored at construction so that tests can inject a custom lookup function.
+	ssrfOpts []libSSRF.Option
 }
 
 // newSSRFSafeTransport creates a transport that enforces the given proxy policy
-// on DNS resolution (via DialContext) and on each outbound request validated by RoundTrip.
+// via [libSSRF.ResolveAndValidate] in its RoundTrip method.
 func newSSRFSafeTransport(policy ReverseProxyPolicy) *ssrfSafeTransport {
-	return newSSRFSafeTransportWithDeps(policy, net.DefaultResolver.LookupIPAddr)
+	return newSSRFSafeTransportWithOpts(policy, nil)
 }
 
-func newSSRFSafeTransportWithDeps(
+// newSSRFSafeTransportWithOpts is the internal constructor that accepts
+// optional [libSSRF.Option] values (primarily [libSSRF.WithLookupFunc] for
+// tests).
+func newSSRFSafeTransportWithOpts(
 	policy ReverseProxyPolicy,
-	lookupIPAddr func(context.Context, string) ([]net.IPAddr, error),
+	ssrfOpts []libSSRF.Option,
 ) *ssrfSafeTransport {
 	dialer := &net.Dialer{
 		Timeout:   30 * time.Second,
@@ -40,92 +50,67 @@ func newSSRFSafeTransportWithDeps(
 
 	transport := &http.Transport{
 		TLSHandshakeTimeout: 10 * time.Second,
-	}
-
-	if !policy.AllowUnsafeDestinations {
-		policyLogger := policy.Logger
-
-		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-			host, port, err := net.SplitHostPort(addr)
-			if err != nil {
-				host = addr
-			}
-
-			ips, err := lookupIPAddr(ctx, host)
-			if err != nil {
-				if !nilcheck.Interface(policyLogger) {
-					policyLogger.Log(ctx, log.LevelWarn, "proxy DNS resolution failed",
-						log.String("host", host),
-						log.Err(err),
-					)
-				}
-
-				return nil, fmt.Errorf("%w: %w", ErrDNSResolutionFailed, err)
-			}
-
-			safeIP, err := validateResolvedIPs(ctx, ips, host, policyLogger)
-			if err != nil {
-				return nil, err
-			}
-
-			if safeIP != nil && port != "" {
-				addr = net.JoinHostPort(safeIP.String(), port)
-			} else if safeIP != nil {
-				addr = safeIP.String()
-			}
-
-			return dialer.DialContext(ctx, network, addr)
-		}
-	} else {
-		transport.DialContext = dialer.DialContext
+		DialContext:         dialer.DialContext,
 	}
 
 	return &ssrfSafeTransport{
-		policy: policy,
-		base:   transport,
+		policy:   policy,
+		base:     transport,
+		ssrfOpts: ssrfOpts,
 	}
 }
 
-// RoundTrip validates each outbound request against the proxy policy before forwarding.
+// RoundTrip validates each outbound request against the proxy policy and, when
+// SSRF protection is enabled, atomically resolves DNS and pins the connection
+// to a validated IP via [libSSRF.ResolveAndValidate].
 func (t *ssrfSafeTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if err := validateProxyTarget(req.URL, t.policy); err != nil {
 		return nil, err
 	}
 
-	return t.base.RoundTrip(req)
-}
+	// When unsafe destinations are allowed (development/testing) skip SSRF
+	// resolution and forward the request as-is.
+	if t.policy.AllowUnsafeDestinations {
+		return t.base.RoundTrip(req)
+	}
 
-// validateResolvedIPs checks all resolved IPs against the SSRF policy.
-// Returns the first safe IP for use in the connection, or an error if any IP
-// is unsafe or if no IPs were resolved.
-func validateResolvedIPs(ctx context.Context, ips []net.IPAddr, host string, logger log.Logger) (net.IP, error) {
-	if len(ips) == 0 {
-		if !nilcheck.Interface(logger) {
-			logger.Log(ctx, log.LevelWarn, "proxy target resolved to no IPs",
-				log.String("host", host),
+	// Atomically resolve DNS, validate all IPs, and pin the URL.
+	result, err := libSSRF.ResolveAndValidate(req.Context(), req.URL.String(), t.ssrfOpts...)
+	if err != nil {
+		policyLogger := t.policy.Logger
+
+		if !nilcheck.Interface(policyLogger) {
+			policyLogger.Log(req.Context(), log.LevelWarn, "proxy SSRF validation failed",
+				log.String("host", req.URL.Host),
+				log.Err(err),
 			)
 		}
 
-		return nil, ErrNoResolvedIPs
-	}
-
-	var safeIP net.IP
-
-	for _, ipAddr := range ips {
-		if isUnsafeIP(ipAddr.IP) {
-			if !nilcheck.Interface(logger) {
-				logger.Log(ctx, log.LevelWarn, "proxy target resolved to unsafe IP",
-					log.String("host", host),
-				)
-			}
-
+		// Map SSRF sentinel errors to the proxy-specific errors that callers
+		// already match via errors.Is.
+		switch {
+		case errors.Is(err, libSSRF.ErrDNSFailed):
+			return nil, ErrDNSResolutionFailed
+		case errors.Is(err, libSSRF.ErrBlocked):
+			return nil, ErrUnsafeProxyDestination
+		case errors.Is(err, libSSRF.ErrInvalidURL):
+			return nil, ErrInvalidProxyTarget
+		default:
 			return nil, ErrUnsafeProxyDestination
 		}
-
-		if safeIP == nil {
-			safeIP = ipAddr.IP
-		}
 	}
 
-	return safeIP, nil
+	// Clone the request so we don't mutate the caller's *http.Request.
+	pinned := req.Clone(req.Context())
+
+	pinnedURL, parseErr := url.Parse(result.PinnedURL)
+	if parseErr != nil {
+		return nil, ErrInvalidProxyTarget
+	}
+
+	pinned.URL = pinnedURL
+	// Preserve the original Host header so the upstream server routes correctly.
+	pinned.Host = result.Authority
+
+	return t.base.RoundTrip(pinned)
 }

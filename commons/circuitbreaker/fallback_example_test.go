@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/circuitbreaker"
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/circuitbreaker"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 
 func ExampleManager_Execute_fallbackOnOpen() {

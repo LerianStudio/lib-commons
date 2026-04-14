@@ -5,7 +5,7 @@ package log_test
 import (
 	"fmt"
 
-	ulog "github.com/LerianStudio/lib-commons/v4/commons/log"
+	ulog "github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 
 func ExampleParseLevel() {

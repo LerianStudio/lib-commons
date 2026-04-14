@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
+	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 
 // simpleLogger is a minimal logger for examples.

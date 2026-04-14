@@ -1,6 +1,6 @@
-# lib-commons Migration Map (v3 -> v4)
+# lib-commons Migration Map (v3 -> v5)
 
-This document maps notable `lib-commons/v3` APIs to the unified `lib-commons/v4` APIs. Use it as a lookup reference when migrating consumer code from the previous `lib-commons` line to the new unified major version.
+This document maps notable `lib-commons/v3` APIs to the unified `lib-commons/v5` APIs. Unless explicitly noted otherwise, sections still labeled `v4` below describe the preserved v5 surface. Use it as a lookup reference when migrating consumer code from the previous `lib-commons` line to the new unified major version.
 
 ---
 
@@ -8,7 +8,7 @@ This document maps notable `lib-commons/v3` APIs to the unified `lib-commons/v4`
 
 ### Initialization
 
-| v3 | v4 | Notes |
+| v3 | v5 | Notes |
 |----|----|----|
 | `InitializeTelemetryWithError(*TelemetryConfig)` | `NewTelemetry(TelemetryConfig) (*Telemetry, error)` | Config passed by value, not pointer |
 | `InitializeTelemetry(*TelemetryConfig)` | removed | Use `NewTelemetry` (no silent-failure variant) |
@@ -16,7 +16,7 @@ This document maps notable `lib-commons/v3` APIs to the unified `lib-commons/v4`
 
 ### Span helpers (pointer -> value receivers on span)
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `HandleSpanError(*trace.Span, ...)` | `HandleSpanError(trace.Span, ...)` |
 | `HandleSpanEvent(*trace.Span, ...)` | `HandleSpanEvent(trace.Span, ...)` |
@@ -24,7 +24,7 @@ This document maps notable `lib-commons/v3` APIs to the unified `lib-commons/v4`
 
 ### Span attributes
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `SetSpanAttributesFromStruct(...)` | removed; use `SetSpanAttributesFromValue(...)` |
 | `SetSpanAttributesFromStructWithObfuscation(...)` | removed; use `SetSpanAttributesFromValue(...)` |
@@ -32,12 +32,12 @@ This document maps notable `lib-commons/v3` APIs to the unified `lib-commons/v4`
 
 ### Struct and field changes
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `Telemetry.MetricProvider` field | renamed to `Telemetry.MeterProvider` |
 | `ErrNilTelemetryConfig` | removed; replaced by `ErrNilTelemetryLogger`, `ErrEmptyEndpoint`, `ErrNilTelemetry`, `ErrNilShutdown` |
 
-### New in v4
+### New in v5
 
 - `TelemetryConfig` gains fields: `InsecureExporter bool`, `Propagator propagation.TextMapPropagator`, `Redactor *Redactor`
 - New method: `(*Telemetry).Tracer(name) (trace.Tracer, error)`
@@ -47,9 +47,9 @@ This document maps notable `lib-commons/v3` APIs to the unified `lib-commons/v4`
 
 ### Obfuscation -> Redaction
 
-The former obfuscation subsystem has been replaced by the redaction subsystem in v4.
+The former obfuscation subsystem has been replaced by the redaction subsystem in v5.
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `FieldObfuscator` interface | removed entirely |
 | `DefaultObfuscator` struct | removed |
@@ -69,7 +69,7 @@ New types:
 
 All propagation functions now follow the `context-first` convention.
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `InjectHTTPContext(*http.Header, context.Context)` | `InjectHTTPContext(context.Context, http.Header)` |
 | `ExtractHTTPContext(*fiber.Ctx)` | `ExtractHTTPContext(context.Context, *fiber.Ctx)` |
@@ -87,7 +87,7 @@ New low-level APIs:
 
 ### Factory and builders now return errors
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `NewMetricsFactory(meter, logger) *MetricsFactory` | `NewMetricsFactory(meter, logger) (*MetricsFactory, error)` |
 | `(*MetricsFactory).Counter(m) *CounterBuilder` | `(*MetricsFactory).Counter(m) (*CounterBuilder, error)` |
@@ -96,7 +96,7 @@ New low-level APIs:
 
 ### Builder operations now return errors
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `(*CounterBuilder).Add(ctx, value)` | now returns `error` |
 | `(*CounterBuilder).AddOne(ctx)` | now returns `error` |
@@ -106,34 +106,34 @@ New low-level APIs:
 
 ### Removed label helpers
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `WithOrganizationLabels(...)` | removed |
 | `WithLedgerLabels(...)` | removed |
 
 ### Convenience recorders (organization/ledger args removed)
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `RecordAccountCreated(ctx, organizationID, ledgerID, attrs...)` | `RecordAccountCreated(ctx, attrs...) error` |
 | `RecordTransactionProcessed(ctx, organizationID, ledgerID, attrs...)` | `RecordTransactionProcessed(ctx, attrs...) error` |
 | `RecordOperationRouteCreated(ctx, organizationID, ledgerID, attrs...)` | `RecordOperationRouteCreated(ctx, attrs...) error` |
 | `RecordTransactionRouteCreated(ctx, organizationID, ledgerID, attrs...)` | `RecordTransactionRouteCreated(ctx, attrs...) error` |
 
-**Migration note:** The `organizationID` and `ledgerID` positional parameters and the internal `WithLedgerLabels()` call were removed in v4. Callers must now pass these labels explicitly via OpenTelemetry attributes:
+**Migration note:** The `organizationID` and `ledgerID` positional parameters and the internal `WithLedgerLabels()` call were removed in v5. Callers must now pass these labels explicitly via OpenTelemetry attributes:
 
 ```go
 // v3
 factory.RecordAccountCreated(ctx, orgID, ledgerID)
 
-// v4
+// v5
 factory.RecordAccountCreated(ctx,
     attribute.String("organization_id", orgID),
     attribute.String("ledger_id", ledgerID),
 )
 ```
 
-### New in v4
+### New in v5
 
 - `NewNopFactory() *MetricsFactory` -- no-op fallback for tests / disabled metrics
 - New sentinel errors: `ErrNilMeter`, `ErrNilCounter`, `ErrNilGauge`, `ErrNilHistogram`
@@ -159,7 +159,7 @@ WithDefaultMessageTemplate(message string) Logger
 Sync() error
 ```
 
-**v4 interface (5 methods):**
+**v5 interface (5 methods):**
 
 ```
 Log(ctx context.Context, level Level, msg string, fields ...Field)
@@ -171,7 +171,7 @@ Sync(ctx context.Context) error
 
 ### Level type and constants
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `LogLevel` type (int8) | `Level` type (uint8) |
 | `PanicLevel` | removed entirely |
@@ -184,7 +184,7 @@ Sync(ctx context.Context) error
 
 ### Logger helpers
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `NoneLogger` | `NopLogger` |
 | (no constructor) | `NewNop() Logger` |
@@ -194,7 +194,7 @@ Sync(ctx context.Context) error
 
 ### New `Field` type
 
-v4 introduces a structured `Field` type with constructors:
+v5 introduces a structured `Field` type with constructors:
 
 - `Field` struct: `Key string`, `Value any`
 - `Any(key, value) Field`
@@ -209,11 +209,11 @@ v4 introduces a structured `Field` type with constructors:
 
 ### GoLogger
 
-`GoLogger` moved from `log.go` to `go_logger.go`, fully reimplemented with the v4 interface. Includes CWE-117 log-injection prevention.
+`GoLogger` moved from `log.go` to `go_logger.go`, fully reimplemented with the v5 interface. Includes CWE-117 log-injection prevention.
 
 ### Sanitizer (package move)
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `commons/logging` package | removed entirely |
 | `logging.SafeErrorf(...)` | `log.SafeError(logger, ctx, msg, err, production)` |
@@ -223,7 +223,7 @@ v4 introduces a structured `Field` type with constructors:
 
 ## commons/zap
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `ZapWithTraceLogger` struct | `Logger` struct (renamed, restructured) |
 | `InitializeLoggerWithError() (log.Logger, error)` | removed (use `New(...)`) |
@@ -231,7 +231,7 @@ v4 introduces a structured `Field` type with constructors:
 | `InitializeLoggerFromConfig(...)` | `New(cfg Config) (*Logger, error)` |
 | `hydrateArgs` / template-based logging | removed |
 
-### New in v4
+### New in v5
 
 - New types: `Config`, `Environment` (string type with constants: `EnvironmentProduction`, `EnvironmentStaging`, `EnvironmentUAT`, `EnvironmentDevelopment`, `EnvironmentLocal`)
 - `Logger.Raw() *zap.Logger` -- access underlying zap logger
@@ -247,7 +247,7 @@ v4 introduces a structured `Field` type with constructors:
 
 All individual status helpers have been removed in favor of two generic functions.
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `WriteError(c, status, title, message)` | `RespondError(c, status, title, message)` |
 | `HandleFiberError(c, err)` | `FiberErrorHandler(c, err)` |
@@ -261,7 +261,7 @@ All individual status helpers have been removed in favor of two generic function
 
 ### Cursor pagination
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `Cursor.PointsNext` (bool) | `Cursor.Direction` (string: `"next"` / `"prev"`) |
 | `CreateCursor(id, pointsNext)` | removed (construct `Cursor` directly) |
@@ -275,7 +275,7 @@ New error: `ErrInvalidCursorDirection`
 
 ### Validation / context
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `ParseAndVerifyContextParam(...)` | `ParseAndVerifyTenantScopedID(...)` |
 | `ParseAndVerifyContextQuery(...)` | `ParseAndVerifyResourceScopedID(...)` |
@@ -289,7 +289,7 @@ New types: `ResourceOwnershipVerifier` func type, `IDLocation` type, `ErrInvalid
 
 ### Error types
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `ErrorResponse.Code` (string) | `ErrorResponse.Code` (int) |
 | `ErrorResponse.Error` field | removed |
@@ -302,15 +302,15 @@ New types: `ResourceOwnershipVerifier` func type, `IDLocation` type, `ErrInvalid
 
 ### Proxy
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `ServeReverseProxy(target, res, req)` | `ServeReverseProxy(target, policy, res, req) error` |
 
 New: `DefaultReverseProxyPolicy()`, `ReverseProxyPolicy` struct with SSRF protection.
 
-### Pagination (v4 refinement)
+### Pagination (v5 refinement)
 
-| v4 (previous) | v4 (current) |
+| v4 (previous) | v5 (current) |
 |---|---|
 | `EncodeTimestampCursor(time, uuid) string` | `EncodeTimestampCursor(time, uuid) (string, error)` |
 | `EncodeSortCursor(col, val, id, next) string` | `EncodeSortCursor(col, val, id, next) (string, error)` |
@@ -318,7 +318,7 @@ New: `DefaultReverseProxyPolicy()`, `ReverseProxyPolicy` struct with SSRF protec
 | `ErrOffsetMustBePositive` sentinel | removed (negative offset silently coerced to `DefaultOffset=0`; see note below) |
 | `type Order string` + `Asc Order = "asc"` / `Desc Order = "desc"` | removed; replaced by `SortDirASC = "ASC"` / `SortDirDESC = "DESC"` (untyped `string`, uppercase) |
 
-**Migration note (offset coercion):** The `ErrOffsetMustBePositive` sentinel error is removed. In v4, negative offsets are silently coerced to `DefaultOffset=0` instead of returning an error. This tradeoff avoids breaking callers that relied on the previous behavior and preserves backward compatibility. However, callers should validate offsets before calling pagination functions (e.g., reject negative offsets at the handler level) since the pagination codepaths that previously returned `ErrOffsetMustBePositive` will now silently accept any negative value.
+**Migration note (offset coercion):** The `ErrOffsetMustBePositive` sentinel error is removed. In v5, negative offsets are silently coerced to `DefaultOffset=0` instead of returning an error. This tradeoff avoids breaking callers that relied on the previous behavior and preserves backward compatibility. However, callers should validate offsets before calling pagination functions (e.g., reject negative offsets at the handler level) since the pagination codepaths that previously returned `ErrOffsetMustBePositive` will now silently accept any negative value.
 
 **Migration note (cursor/sort):** The cursor encode functions now return errors. The `Order` type is removed; use the `SortDirASC`/`SortDirDESC` constants directly. Note the **case change** from lowercase `"asc"`/`"desc"` to uppercase `"ASC"`/`"DESC"` — any consumer that stores or compares these values must be updated.
 
@@ -326,7 +326,7 @@ New pagination defaults in `constants/pagination.go`: `DefaultLimit=20`, `Defaul
 
 ### Handler
 
-| v4 (previous) | v4 (current) |
+| v4 (previous) | v5 (current) |
 |---|---|
 | `Ping` handler returns `"healthy"` | `Ping` handler returns `"pong"` |
 
@@ -334,7 +334,7 @@ New pagination defaults in `constants/pagination.go`: `DefaultLimit=20`, `Defaul
 
 ### Health check semantics
 
-| v4 (previous) | v4 (current) |
+| v4 (previous) | v5 (current) |
 |---|---|
 | `HealthWithDependencies`: HealthCheck overrides CircuitBreaker status | Both must report healthy (AND semantics) |
 
@@ -342,7 +342,7 @@ New pagination defaults in `constants/pagination.go`: `DefaultLimit=20`, `Defaul
 
 ### Rate limit storage
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `NewRedisStorage(conn *RedisConnection)` | `NewRedisStorage(conn *Client)` |
 | Nil storage operations silently return nil | Now return `ErrStorageUnavailable` |
@@ -351,7 +351,7 @@ New pagination defaults in `constants/pagination.go`: `DefaultLimit=20`, `Defaul
 
 ## commons/server
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `GracefulShutdown` struct | removed entirely |
 | `NewGracefulShutdown(...)` | removed |
@@ -359,7 +359,7 @@ New pagination defaults in `constants/pagination.go`: `DefaultLimit=20`, `Defaul
 
 Use `ServerManager` (already existed in v3) with `StartWithGracefulShutdown()`.
 
-### New in v4
+### New in v5
 
 - `(*ServerManager).WithShutdownTimeout(d) *ServerManager` -- configures max wait for gRPC GracefulStop before hard stop (default: 30s)
 - `(*ServerManager).WithShutdownHook(hook func(context.Context) error) *ServerManager` -- registers cleanup callbacks executed during graceful shutdown (nil hooks are silently ignored)
@@ -372,7 +372,7 @@ Use `ServerManager` (already existed in v3) with `StartWithGracefulShutdown()`.
 
 ## commons/mongo
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `MongoConnection` struct | `Client` struct |
 | `BuildConnectionString(scheme, user, password, host, port, parameters, logger) string` | `BuildURI(URIConfig) (string, error)` |
@@ -380,13 +380,13 @@ Use `ServerManager` (already existed in v3) with `StartWithGracefulShutdown()`.
 | `GetDB(ctx) (*mongo.Client, error)` | `Client(ctx) (*mongo.Client, error)` |
 | `EnsureIndexes(ctx, collection, index)` | `EnsureIndexes(ctx, collection, indexes...) error` (variadic) |
 
-### Error sentinels (v4 refinement)
+### Error sentinels (v5 refinement)
 
-| v4 (previous) | v4 (current) | Notes |
+| v4 (previous) | v5 (current) | Notes |
 |---|---|---|
 | `ErrClientClosed` (nil receiver) | `ErrNilClient` | Nil receiver now returns `ErrNilClient`; `ErrClientClosed` reserved for closed/not-connected state |
 
-### New in v4
+### New in v5
 
 - Methods: `Database(ctx)`, `DatabaseName()`, `Ping(ctx)`, `Close(ctx)`, `ResolveClient(ctx)` (alias for `Client(ctx)`)
 - Types: `Config`, `URIConfig`, `Option`, `TLSConfig`
@@ -401,7 +401,7 @@ Use `ServerManager` (already existed in v3) with `StartWithGracefulShutdown()`.
 
 ## commons/redis
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `RedisConnection` struct | `Client` struct |
 | `Mode` type | removed |
@@ -414,7 +414,7 @@ Use `ServerManager` (already existed in v3) with `StartWithGracefulShutdown()`.
 
 ### Behavioral changes
 
-| Behavior | v4 |
+| Behavior | v5 |
 |----------|-----|
 | TLS minimum version | `normalizeTLSDefaults` enforces `tls.VersionTLS12` as the minimum TLS version. Explicit `tls.VersionTLS10` or `tls.VersionTLS11` values in `TLSConfig.MinVersion` are upgraded to TLS 1.2 and a warning is logged. If you still need legacy endpoints temporarily, set `TLSConfig.AllowLegacyMinVersion=true` as an explicit compatibility override and plan removal. |
 
@@ -426,7 +426,7 @@ Recommended rollout:
 
 ### Interface and lock handle changes
 
-| v4 (previous) | v4 (current) |
+| v4 (previous) | v5 (current) |
 |----|----|
 | `TryLock(ctx, key) (*redsync.Mutex, bool, error)` | `TryLock(ctx, key) (LockHandle, bool, error)` |
 | `Unlock(ctx, *redsync.Mutex) error` | `LockHandle.Unlock(ctx) error` |
@@ -436,7 +436,7 @@ Recommended rollout:
 
 **Migration note:** `TryLock` now returns an opaque `LockHandle` instead of `*redsync.Mutex`. Call `handle.Unlock(ctx)` directly instead of `lock.Unlock(ctx, mutex)`. The standalone `Unlock` method on `DistributedLock` is deprecated -- it now accepts `LockHandle` instead of `*redsync.Mutex`. Consumers no longer need to import `github.com/go-redsync/redsync/v4` to use the `DistributedLocker` interface.
 
-### New in v4
+### New in v5
 
 - Config types: `Config`, `Topology`, `StandaloneTopology`, `SentinelTopology`, `ClusterTopology`, `TLSConfig`, `Auth`, `StaticPasswordAuth`, `GCPIAMAuth`, `ConnectionOptions`
 - Methods: `GetClient(ctx) (redis.UniversalClient, error)`, `Close() error`, `Status() (Status, error)`, `IsConnected() (bool, error)`, `LastRefreshError() error`
@@ -452,7 +452,7 @@ Recommended rollout:
 
 ## commons/postgres
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `PostgresConnection` struct | `Client` struct |
 | `PostgresConnection{}` + field assignment | `New(cfg Config) (*Client, error)` |
@@ -461,11 +461,11 @@ Recommended rollout:
 | `Pagination` struct | removed (moved to `commons/net/http`) |
 | `squirrel` dependency | removed |
 
-### Error wrapping (v4 refinement)
+### Error wrapping (v5 refinement)
 
 `SanitizedError.Unwrap()` returns `nil` to prevent error chain traversal from leaking database credentials. `Error()` returns the sanitized text. Because `Unwrap()` is intentionally blocked, `errors.Is/errors.As` do not match the hidden original cause through `SanitizedError`.
 
-### New in v4
+### New in v5
 
 - Methods: `Primary() (*sql.DB, error)`, `Close() error`, `IsConnected() (bool, error)`
 - Types: `Config`, `MigrationConfig`, `SanitizedError`
@@ -485,11 +485,11 @@ Recommended rollout:
 
 ### Changed signatures
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `HealthCheck() bool` | `HealthCheck() (bool, error)` (now returns error) |
 
-### New in v4
+### New in v5
 
 - `HealthCheckContext(ctx) (bool, error)`
 - `Close() error`, `CloseContext(ctx) error`
@@ -506,7 +506,7 @@ Recommended rollout:
 
 ## commons/outbox
 
-The root `commons/outbox` package is newly available in the unified `lib-commons/v4` line.
+The root `commons/outbox` package is newly available in the unified `lib-commons/v5` line.
 
 Key APIs now available to consumers:
 
@@ -523,10 +523,10 @@ Use `commons/outbox/postgres` for PostgreSQL-backed repository and tenant resolu
 
 ### Behavioral changes
 
-| Behavior | v4 |
+| Behavior | v5 |
 |----------|-----|
 | Schema resolver tenant enforcement | `SchemaResolver` now requires tenant context by default. Use `WithAllowEmptyTenant()` only for explicit public-schema/single-tenant flows. |
-| Schema resolver tenant ID validation | `SchemaResolver.ApplyTenant` and `NewSchemaResolver` now trim whitespace from tenant IDs **and** validate them as UUIDs. Previously, whitespace was silently accepted. In v4, whitespace is trimmed but non-UUID values are rejected with an error (`"invalid tenant id format"` from `ApplyTenant`, `ErrDefaultTenantIDInvalid` from `NewSchemaResolver`). Callers must ensure tenant IDs passed to outbox functions are valid UUIDs — any code using non-UUID tenant identifiers (e.g., plain strings or slugs) will break. |
+| Schema resolver tenant ID validation | `SchemaResolver.ApplyTenant` and `NewSchemaResolver` now trim whitespace from tenant IDs **and** validate them as UUIDs. Previously, whitespace was silently accepted. In v5, whitespace is trimmed but non-UUID values are rejected with an error (`"invalid tenant id format"` from `ApplyTenant`, `ErrDefaultTenantIDInvalid` from `NewSchemaResolver`). Callers must ensure tenant IDs passed to outbox functions are valid UUIDs — any code using non-UUID tenant identifiers (e.g., plain strings or slugs) will break. |
 | Column migration primary key | `migrations/column/000001_outbox_events_column.up.sql` uses composite primary key `(tenant_id, id)` to avoid cross-tenant key coupling. |
 
 ---
@@ -549,7 +549,7 @@ New function: `ResolveOperation(pending, isSource bool, status TransactionStatus
 
 ### Validation flow
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `ValidateBalancesRules(ctx, transaction, validate, balances) error` | `BuildIntentPlan(input, status) (IntentPlan, error)` + `ValidateBalanceEligibility(plan, balances) error` |
 | `ValidateFromToOperation(ft, validate, balance) (Amount, Balance, error)` | `ApplyPosting(balance, posting) (Balance, error)` |
@@ -560,7 +560,7 @@ New function: `ResolveOperation(pending, isSource bool, status TransactionStatus
 
 ## commons/circuitbreaker
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `NewManager(logger) Manager` | `NewManager(logger, opts...) (Manager, error)` (returns error on nil logger; accepts options) |
 | `(*Manager).GetOrCreate(serviceName, config) CircuitBreaker` | `(*Manager).GetOrCreate(serviceName, config) (CircuitBreaker, error)` (validates config) |
@@ -572,7 +572,7 @@ New: `WithMetricsFactory(f *metrics.MetricsFactory) ManagerOption` -- emits `cir
 
 ## commons/errors
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `ValidateBusinessError(err, entityType, args...)` | Variadic `args` now appended to error message (previously ignored extra args) |
 
@@ -580,7 +580,7 @@ New: `WithMetricsFactory(f *metrics.MetricsFactory) ManagerOption` -- emits `cir
 
 ## commons/app
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `(*Launcher).Add(appName, app) *Launcher` | `(*Launcher).Add(appName, app) error` (no more method chaining) |
 
@@ -590,7 +590,7 @@ New sentinel errors: `ErrNilLauncher`, `ErrEmptyApp`, `ErrNilApp`
 
 ## commons/context (removals)
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `NewTracerFromContext(ctx)` | removed (was deprecated; use `NewTrackingFromContext`) |
 | `NewMetricFactoryFromContext(ctx)` | removed (was deprecated; use `NewTrackingFromContext`) |
@@ -602,7 +602,7 @@ New sentinel errors: `ErrNilLauncher`, `ErrEmptyApp`, `ErrNilApp`
 
 ## commons/os
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `EnsureConfigFromEnvVars(s any) any` | removed (use `SetConfigFromEnvVars(s any) error`) |
 
@@ -612,11 +612,11 @@ New sentinel errors: `ErrNilLauncher`, `ErrEmptyApp`, `ErrNilApp`
 
 ### Signature changes
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `GenerateUUIDv7() uuid.UUID` | `GenerateUUIDv7() (uuid.UUID, error)` |
 
-**Migration note:** In v3, `GenerateUUIDv7()` internally used `uuid.Must(uuid.NewV7())`, which panics if `crypto/rand` fails. In v4 the panic path is removed: the function returns `(uuid.UUID, error)` so callers can handle the (rare but possible) entropy-source failure gracefully. All call sites must now check the returned error.
+**Migration note:** In v3, `GenerateUUIDv7()` internally used `uuid.Must(uuid.NewV7())`, which panics if `crypto/rand` fails. In v5 the panic path is removed: the function returns `(uuid.UUID, error)` so callers can handle the (rare but possible) entropy-source failure gracefully. All call sites must now check the returned error.
 
 ### Removed deprecated functions (moved to Midaz)
 
@@ -627,7 +627,7 @@ New sentinel errors: `ErrNilLauncher`, `ErrEmptyApp`, `ErrNilApp`
 
 ## commons/crypto
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `Crypto.Logger` field (`*zap.Logger`) | `Crypto.Logger` field (`log.Logger`) |
 
@@ -639,14 +639,14 @@ Direct `go.uber.org/zap` dependency removed from this package.
 
 ### Token validation semantics
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `Token.Valid` (bool) -- full validation | `Token.SignatureValid` (bool) -- signature-only verification |
 | (no separate time validation) | `ValidateTimeClaims(claims) error` |
 | (no separate time validation) | `ValidateTimeClaimsAt(claims, now) error` |
 | (no combined parse+validate) | `ParseAndValidate(token, secret, allowedAlgs) (*Token, error)` |
 
-**Migration note:** In v3, the `Token.Valid` field was set to `true` after `Parse()` succeeded, which callers commonly interpreted as "the token is fully valid." In v4, `Token.SignatureValid` clarifies that only the cryptographic HMAC signature was verified -- it does **not** cover time-based claims (`exp`, `nbf`, `iat`). Callers relying on `Token.Valid` for authorization decisions must either:
+**Migration note:** In v3, the `Token.Valid` field was set to `true` after `Parse()` succeeded, which callers commonly interpreted as "the token is fully valid." In v5, `Token.SignatureValid` clarifies that only the cryptographic HMAC signature was verified -- it does **not** cover time-based claims (`exp`, `nbf`, `iat`). Callers relying on `Token.Valid` for authorization decisions must either:
 
 1. Switch to `ParseAndValidate()`, which performs both signature verification and time-claim validation in one call, or
 2. Call `ValidateTimeClaims(token.Claims)` (or `ValidateTimeClaimsAt(token.Claims, now)` for deterministic testing) after `Parse()`.
@@ -657,13 +657,13 @@ New sentinel errors for time validation: `ErrTokenExpired`, `ErrTokenNotYetValid
 
 ## commons/license
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `DefaultHandler(reason)` panics | `DefaultHandler(reason)` records assertion failure (no panic) |
 | `ManagerShutdown.Terminate(reason)` panics on nil handler | Records assertion failure, returns without panic |
 | Direct struct construction `&ManagerShutdown{}` | `New(opts ...ManagerOption) *ManagerShutdown` constructor with functional options |
 
-### New in v4
+### New in v5
 
 - `New(opts ...ManagerOption) *ManagerShutdown` -- constructor with default handler and functional options
 - `WithLogger(l log.Logger) ManagerOption` -- provides structured logger for assertion and validation logging
@@ -676,7 +676,7 @@ New sentinel errors for time validation: `ErrTokenExpired`, `ErrTokenNotYetValid
 
 ## commons/cron
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `schedule.Next(from)` on nil receiver | returns `(time.Time{}, nil)` -> now returns `(time.Time{}, ErrNilSchedule)` |
 
@@ -686,7 +686,7 @@ New error: `ErrNilSchedule`
 
 ## commons/security
 
-| v3 | v4 |
+| v3 | v5 |
 |----|----|
 | `DefaultSensitiveFieldsMap()` | still available (reimplemented with lazy init + `sync.Once`) |
 
@@ -696,7 +696,7 @@ Field list expanded with additional financial and PII identifiers.
 
 ## commons/constants
 
-The `commons/constants` package remains available in v4 and is materially expanded in the unified line.
+The `commons/constants` package remains available in v5 and is materially expanded in the unified line.
 
 Notable additions used across the migrated packages:
 
@@ -708,7 +708,7 @@ Notable additions used across the migrated packages:
 
 ## commons/pointers
 
-The `commons/pointers` package remains available at the same path in v4.
+The `commons/pointers` package remains available at the same path in v5.
 
 Exported helpers:
 
@@ -718,7 +718,7 @@ Exported helpers:
 
 ## commons/secretsmanager
 
-The `commons/secretsmanager` package remains available in the unified v4 line.
+The `commons/secretsmanager` package remains available in the unified v5 line.
 
 Core APIs:
 
@@ -731,7 +731,7 @@ No import-path change is required for consumers already using `commons/secretsma
 
 ---
 
-## Added or newly available in v4
+## Added or newly available in v5
 
 ### commons/circuitbreaker
 
@@ -809,7 +809,7 @@ No import-path change is required for consumers already using `commons/secretsma
 
 ### commons/tenant-manager
 
-The `tenant-manager` package tree provides multi-tenant connection management, preserved and expanded in unified `lib-commons/v4`.
+The `tenant-manager` package tree provides multi-tenant connection management, preserved and expanded in unified `lib-commons/v5`.
 
 #### New packages
 
@@ -830,7 +830,7 @@ The `tenant-manager` package tree provides multi-tenant connection management, p
 
 **1. Removed `NewMultiTenantConsumer`**
 
-| v3 | v4 |
+| v3 | v5 |
 |---|---|
 | `consumer.NewMultiTenantConsumer(cfg, logger) *MultiTenantConsumer` | removed; use `consumer.NewMultiTenantConsumerWithError(cfg, logger) (*MultiTenantConsumer, error)` |
 
@@ -838,7 +838,7 @@ The deprecated panicking constructor has been removed. `NewMultiTenantConsumerWi
 
 **2. Tenant client caching remains available through exported cache APIs**
 
-| v3 | v4 |
+| v3 | v5 |
 |---|---|
 | cache package exposed at `tenant-manager/cache` | still available at `tenant-manager/cache` |
 | `client.WithCache(...)` / `client.WithCacheTTL(...)` | still supported |
@@ -849,7 +849,7 @@ The deprecated panicking constructor has been removed. `NewMultiTenantConsumerWi
 
 Three S3 functions now return `(string, error)` instead of `string` to support delimiter validation:
 
-| v3 | v4 |
+| v3 | v5 |
 |---|---|
 | `s3.GetObjectStorageKey(tenantID, key) string` | `s3.GetObjectStorageKey(tenantID, key) (string, error)` |
 | `s3.GetObjectStorageKeyForTenant(ctx, key) string` | `s3.GetObjectStorageKeyForTenant(ctx, key) (string, error)` |
@@ -859,7 +859,7 @@ Three S3 functions now return `(string, error)` instead of `string` to support d
 
 Five Valkey functions now return `(string, error)` instead of `string` to support delimiter validation:
 
-| v3 | v4 |
+| v3 | v5 |
 |---|---|
 | `valkey.GetKey(tenantID, key) string` | `valkey.GetKey(tenantID, key) (string, error)` |
 | `valkey.GetKeyFromContext(ctx, key) string` | `valkey.GetKeyFromContext(ctx, key) (string, error)` |
@@ -869,7 +869,7 @@ Five Valkey functions now return `(string, error)` instead of `string` to suppor
 
 **5. `hasUpstreamAuthAssertion` behavioral change**
 
-| Behavior | v4 |
+| Behavior | v5 |
 |----------|-----|
 | Auth assertion via HTTP header | The middleware no longer checks the `X-User-ID` HTTP header for auth assertion (headers are client-spoofable). Only `c.Locals("user_id")` set by upstream lib-auth middleware is checked. |
 
@@ -877,7 +877,7 @@ Five Valkey functions now return `(string, error)` instead of `string` to suppor
 
 **6. `isPublicPath` boundary-aware matching**
 
-| Behavior | v3 | v4 |
+| Behavior | v3 | v5 |
 |----------|---|---|
 | `isPublicPath` matching | `strings.HasPrefix(path, prefix)` | `path == prefix \|\| strings.HasPrefix(path, prefix+"/")` |
 
@@ -889,7 +889,7 @@ Five Valkey functions now return `(string, error)` instead of `string` to suppor
 
 **7. PostgreSQL SSL default changed**
 
-| Behavior | v3 | v4 |
+| Behavior | v3 | v5 |
 |----------|---|---|
 | `buildConnectionString` SSL mode | `sslmode=disable` | `sslmode=prefer` |
 
@@ -897,7 +897,7 @@ Connections will now attempt TLS when available with graceful fallback to plaint
 
 **8. Tenant ID format validation**
 
-| Behavior | v4 |
+| Behavior | v5 |
 |----------|-----|
 | Tenant ID format | Middleware and consumer now validate tenant IDs against `^[a-zA-Z0-9][a-zA-Z0-9_-]*$` with a 256-character limit. |
 
@@ -905,7 +905,7 @@ Tenant IDs containing dots, spaces, or special characters will be rejected. This
 
 **9. `WorkersPerQueue` default changed**
 
-| Config field | v3 | v4 |
+| Config field | v3 | v5 |
 |---|---|---|
 | `DefaultMultiTenantConfig().WorkersPerQueue` | `1` | `0` |
 
@@ -913,7 +913,7 @@ The field is reserved for future use and currently a no-op.
 
 **10. Client error message format**
 
-| Behavior | v4 |
+| Behavior | v5 |
 |----------|-----|
 | Error messages from tenant manager HTTP client | No longer include raw response body content. Response bodies are now logged separately via `truncateBody` for security. |
 
@@ -927,17 +927,17 @@ The field is reserved for future use and currently a no-op.
 
 ---
 
-## Deleted files in v4
+## Deleted files in v5
 
-The following files were removed during v4 consolidation:
+The following files were removed during v5 consolidation:
 
 | File | Reason |
 |------|--------|
 | `mk/tests.mk` | test targets inlined into main Makefile |
 | `commons/logging/sanitizer.go` + `sanitizer_test.go` | package removed; moved to `commons/log/sanitizer.go` |
 | `commons/opentelemetry/metrics/labels.go` | organization/ledger label helpers removed |
-| `commons/opentelemetry/metrics/metrics_test.go` | replaced by v4 test suite |
-| `commons/opentelemetry/otel_test.go` | replaced by v4 test suite |
+| `commons/opentelemetry/metrics/metrics_test.go` | replaced by v5 test suite |
+| `commons/opentelemetry/otel_test.go` | replaced by v5 test suite |
 | `commons/opentelemetry/extract_queue_test.go` | consolidated |
 | `commons/opentelemetry/inject_trace_test.go` | consolidated |
 | `commons/opentelemetry/queue_trace_test.go` | consolidated |
@@ -948,17 +948,87 @@ The following files were removed during v4 consolidation:
 
 ---
 
+## systemplane -- v5 simplified redesign
+
+The entire `commons/systemplane` package has been rewritten. The old surface is
+removed -- no deprecation window, no compatibility shims.
+
+### Removed (entirely)
+
+- Package `commons/systemplane/domain` and every type/func within: `Kind`, `Scope`, `Target`, `Entry`, `Snapshot`, `EffectiveValue`, `Revision`, `KeyDef`, `ValueType`, `RedactPolicy` (old location), `ApplyBehavior` + all 5 constants, `ReconcilerPhase` + all 3 constants, `BackendKind`, `RuntimeBundle`, `Actor`, and all domain sentinel errors.
+- Package `commons/systemplane/ports`: `Store`, `ChangeFeed`, `HistoryStore`, `BundleFactory`, `IncrementalBundleFactory`, `BundleReconciler`, `Authorizer`, `IdentityResolver` (+ defaults).
+- Package `commons/systemplane/service`: `Manager`, `Supervisor`, `SnapshotBuilder`, `PatchRequest`, `WriteResult`, `ResolvedSet`, `SchemaEntry`, `ManagerConfig`, `SupervisorConfig`, `ReloadEvent`, `BuildStrategy`, `ComponentDiff`.
+- Package `commons/systemplane/registry` (in-memory key registry -- now internal to `*Client`).
+- Package `commons/systemplane/catalog` (canonical shared key definitions -- consumers now own their key list).
+- Package `commons/systemplane/bootstrap` (backend factory registry -- replaced by direct `NewPostgres` / `NewMongoDB` constructors).
+- Package `commons/systemplane/adapters/store/postgres` -- merged into `commons/systemplane/internal/postgres`.
+- Package `commons/systemplane/adapters/store/mongodb` -- merged into `commons/systemplane/internal/mongodb`.
+- Package `commons/systemplane/adapters/store/secretcodec` (encrypted-value codec -- secrets now live in secret managers, not the config plane).
+- Package `commons/systemplane/adapters/changefeed/*` -- merged into the respective `internal/*` stores.
+- Package `commons/systemplane/adapters/http/fiber` -- rewritten at `commons/systemplane/admin`.
+- Package `commons/systemplane/swagger` (embedded OpenAPI spec + merge utility).
+- Package `commons/systemplane/testutil` (fakes for removed interfaces).
+- The 4-axis identity model (Kind x Scope x Subject x Key) collapses into free-text `namespace` + `key`.
+- Optimistic concurrency (`Revision`, `ErrRevisionMismatch`) -- replaced with last-write-wins.
+- Bundle / reconciler / component-diff machinery -- replaced with `OnChange(ns, key, fn)` callbacks.
+- Audit history (`HistoryEntry`, `HistoryFilter`, `HistoryStore`, `GET /v1/system/*/history`) -- if needed, route writes to your audit pipeline; systemplane does not own audit.
+- AES-GCM secret codec at rest -- secrets belong in the secret manager.
+- `SYSTEMPLANE_*` env-vars for backend selection, secret master key, watch mode -- no longer read by systemplane.
+
+### New (canonical) public surface
+
+Constructors:
+
+- `systemplane.NewPostgres(db *sql.DB, listenDSN string, opts ...Option) (*Client, error)`
+- `systemplane.NewMongoDB(client *mongo.Client, database string, opts ...Option) (*Client, error)`
+
+Client methods:
+
+- `Register(namespace, key string, defaultValue any, opts ...KeyOption) error`
+- `Start(ctx context.Context) error`
+- `Close() error`
+- `Get(namespace, key string) (any, bool)`
+- `GetString(namespace, key string) string`
+- `GetInt(namespace, key string) int`
+- `GetBool(namespace, key string) bool`
+- `GetFloat64(namespace, key string) float64`
+- `GetDuration(namespace, key string) time.Duration`
+- `Set(ctx context.Context, namespace, key string, value any, actor string) error`
+- `OnChange(namespace, key string, fn func(newValue any)) (unsubscribe func())`
+- `List(namespace string) []ListEntry`
+- `KeyRedaction(namespace, key string) RedactPolicy`
+
+Admin HTTP surface:
+
+- `admin.Mount(router fiber.Router, c *systemplane.Client, opts ...MountOption)`
+  - `GET :prefix/:namespace` — list entries
+  - `GET :prefix/:namespace/:key` — read single entry
+  - `PUT :prefix/:namespace/:key` — write entry
+
+Sentinel errors:
+
+- `ErrClosed`, `ErrNotStarted`, `ErrRegisterAfterStart`, `ErrUnknownKey`, `ErrValidation`, `ErrDuplicateKey`
+
+### Migration notes for consumers
+
+- Connection-level settings previously managed via systemplane (DB DSNs, Redis URLs, RabbitMQ brokers, TLS cert paths, telemetry exporters, server listen address) must be moved to standard env-vars / existing `commons/postgres.Config` / `commons/redis.Config` / `commons/certificate.Manager` / etc.
+- Secrets previously stored via `Secret: true` keys must migrate to the secret manager (AWS Secrets Manager, Vault, GCP Secret Manager).
+- Admin clients that consumed `GET /v1/system/configs` etc. must migrate to the new `/system/:namespace` / `/system/:namespace/:key` routes.
+- Audit-history consumers must move to a dedicated audit pipeline.
+
+---
+
 ## Suggested verification command
 
 ```bash
 # Check for removed v3 patterns
 rg -n "InitializeTelemetryWithError|InitializeTelemetry\(|SetSpanAttributesFromStruct|WithLedgerLabels|WithOrganizationLabels|NoneLogger|BuildConnectionString\(|WriteError\(|HandleFiberError\(|ValidateBalancesRules\(|DetermineOperation\(|ValidateFromToOperation\(|NewTracerFromContext\(|NewMetricFactoryFromContext\(|NewHeaderIDFromContext\(|EnsureConfigFromEnvVars\(|WithTimeout\(|GracefulShutdown|MongoConnection|PostgresConnection|RedisConnection|ZapWithTraceLogger|FieldObfuscator|LogLevel|NoneLogger|WithFields\(|InitializeLogger\b" .
 
-# Check for v3 patterns that changed signature or semantics in v4
+# Check for v3 patterns that changed signature or semantics in v5
 rg -n "uuid\.Must\(uuid\.NewV7|GenerateUUIDv7\(\)" . --type go  # should now return (uuid.UUID, error)
 rg -n "Token\.Valid\b" . --type go                                # renamed to Token.SignatureValid
 rg -n "\"code\":\s*\"[0-9]" . --type go                          # ErrorResponse.Code is now int, not string
 
-# Check for added or newly available v4 packages
+# Check for added or newly available v5 packages
 rg -n "commons/circuitbreaker|commons/assert|commons/safe|commons/security|commons/jwt|commons/backoff|commons/pointers|commons/cron|commons/errgroup|commons/secretsmanager|commons/tenant-manager" . --type go
 ```

@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 )
 
 // GetObjectStorageKey returns a tenant-prefixed object storage key: "{tenantID}/{key}".

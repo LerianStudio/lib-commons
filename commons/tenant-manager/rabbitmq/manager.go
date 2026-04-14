@@ -12,13 +12,13 @@ import (
 	"sync"
 	"time"
 
-	libCommons "github.com/LerianStudio/lib-commons/v4/commons"
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/eviction"
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/internal/logcompat"
+	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/eviction"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -132,12 +132,12 @@ func WithTLS() Option {
 //   - opts: Optional configuration options
 func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 	p := &Manager{
-		client:                c,
-		service:               service,
-		logger:                logcompat.New(nil),
-		connections:           make(map[string]*amqp.Connection),
-		cachedURIs:            make(map[string]string),
-		lastAccessed:          make(map[string]time.Time),
+		client:                   c,
+		service:                  service,
+		logger:                   logcompat.New(nil),
+		connections:              make(map[string]*amqp.Connection),
+		cachedURIs:               make(map[string]string),
+		lastAccessed:             make(map[string]time.Time),
 		lastConnectionsCheck:     make(map[string]time.Time),
 		connectionsCheckInterval: defaultConnectionsCheckInterval,
 	}

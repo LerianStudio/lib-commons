@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 
 // SecurityOverride represents an explicit relaxation of a security rule.

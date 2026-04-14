@@ -2,7 +2,7 @@
 
 `lib-commons` is Lerian's shared Go toolkit for service primitives, connectors, observability, and runtime safety.
 
-The current major API surface is **v4**. If you are migrating from older `lib-commons` code, see `MIGRATION_MAP.md`.
+The current major API surface is **v5**. If you are migrating from older `lib-commons` code, see `MIGRATION_MAP.md`.
 
 ---
 
@@ -18,7 +18,7 @@ Use `MIGRATION_MAP.md` as the canonical map for renamed, redesigned, or removed 
 ## Installation
 
 ```bash
-go get github.com/LerianStudio/lib-commons/v4
+go get github.com/LerianStudio/lib-commons/v5
 ```
 
 ## What is in this library
@@ -47,15 +47,20 @@ go get github.com/LerianStudio/lib-commons/v4
 - `commons/mongo`: `Config`-based client with functional options (`NewClient`), URI builder (`BuildURI`), `Client(ctx)`/`ResolveClient(ctx)` for access, `EnsureIndexes` (variadic), TLS support, credential clearing
 - `commons/redis`: topology-based `Config` (standalone/sentinel/cluster), GCP IAM auth with token refresh, distributed locking via `LockManager` interface (`NewRedisLockManager`, `LockHandle`), `SetPackageLogger` for diagnostics, TLS defaults to a TLS1.2 minimum floor with `AllowLegacyMinVersion` as an explicit temporary compatibility override
 - `commons/rabbitmq`: connection/channel/health helpers for AMQP with `*Context()` variants, `HealthCheck() (bool, error)`, `Close()`/`CloseContext()`, confirmable publisher with broker acks and auto-recovery, DLQ topology utilities, and health-check hardening (`AllowInsecureHealthCheck`, `HealthCheckAllowedHosts`, `RequireHealthCheckAllowedHosts`)
+- `commons/dlq`: Redis-backed dead letter queue with `New(conn, keyPrefix, maxRetries, opts...)` returning nil when conn is nil (all methods guard nil receiver via `ErrNilHandler`); key operations: `Enqueue` (RPush, stamps `CreatedAt`/`MaxRetries` on first enqueue), `Dequeue` (LPop, at-most-once), `QueueLength`, `ScanQueues` (non-blocking SCAN for background consumers without tenant context), `PruneExhaustedMessages` (dequeue-discard-reenqueue cycle up to limit), `ExtractTenantFromKey`; tenant-scoped Redis keys (`"<prefix><tenantID>:<source>"`), backoff via exponential-with-jitter (base 30s, floor 5s, AWS Full Jitter); functional options `WithLogger`/`WithTracer`/`WithMetrics`/`WithModule`; `DLQMetrics` interface (`RecordRetried`/`RecordExhausted`, nil-safe); `NewConsumer(handler, retryFn, opts...) (*Consumer, error)` for background poll loop — `Run(ctx)` blocks until stop, `Stop()` idempotent, `ProcessOnce(ctx)` exported for tests; consumer options `WithConsumerLogger`/`WithConsumerTracer`/`WithConsumerMetrics`/`WithConsumerModule`/`WithPollInterval`/`WithBatchSize`/`WithSources`; sentinel errors `ErrNilHandler`, `ErrNilRetryFunc`, `ErrMessageExhausted`
+- `commons/systemplane`: dual-backend (Postgres LISTEN/NOTIFY, MongoDB change streams) hot-reload runtime configuration store with typed accessors, `OnChange` subscriptions, admin HTTP routes (`commons/systemplane/admin`), and a backend-agnostic contract test suite (`systemplanetest`)
 
 ### HTTP and server utilities
 
 - `commons/net/http`: Fiber HTTP helpers -- response (`Respond`/`RespondStatus`/`RespondError`/`RenderError`), health (`Ping`/`HealthWithDependencies`), SSRF-protected reverse proxy (`ServeReverseProxy` with `ReverseProxyPolicy`), pagination (offset/opaque cursor/timestamp cursor/sort cursor), validation (`ParseBodyAndValidate`/`ValidateStruct`/`ValidateSortDirection`/`ValidateLimit`), context/ownership (`ParseAndVerifyTenantScopedID`/`ParseAndVerifyResourceScopedID`), middleware (`WithHTTPLogging`/`WithGrpcLogging`/`WithCORS`/`WithBasicAuth`/`NewTelemetryMiddleware`), `FiberErrorHandler`
 - `commons/net/http/ratelimit`: Redis-backed distributed rate limiting middleware for Fiber — `New(conn, opts...)` returns a `*RateLimiter` (nil when disabled, nil-safe for pass-through), `WithDefaultRateLimit(conn, opts...)` as a one-liner that wires `New` + `DefaultTier` into a ready-to-use `fiber.Handler`, fixed-window counter via atomic Lua script (INCR + PEXPIRE), `WithRateLimit(tier)` for static tiers, `WithDynamicRateLimit(TierFunc)` for per-request tier selection, `MethodTierSelector` for write-vs-read split, preset tiers (`DefaultTier` / `AggressiveTier` / `RelaxedTier`) configurable via env vars, identity extractors (`IdentityFromIP` / `IdentityFromHeader` / `IdentityFromIPAndHeader` — uses `#` separator to avoid conflict with IPv6 colons), fail-open/fail-closed policy, `WithOnLimited` callback, and standard `X-RateLimit-*` / `Retry-After` headers; also exports `RedisStorage` (`NewRedisStorage`) for use with third-party Fiber middleware
+- `commons/net/http/idempotency`: Redis-backed at-most-once request middleware for Fiber — `New(conn, opts...) *Middleware` returns nil when conn is nil (`Check()` on nil returns pass-through handler, fail-open by design); `Check() fiber.Handler` registers on a Fiber route; applies only to mutating methods (POST/PUT/PATCH/DELETE), passes GET/HEAD/OPTIONS unconditionally; reads key from `Idempotency-Key` header (missing key passes through); key too long → 400 `VALIDATION_ERROR`; SetNX atomically claims key as `"processing"` for TTL; duplicate request outcomes: cached response available → replays status+body verbatim with `Idempotency-Replayed: true` header, key in-flight → 409 `IDEMPOTENCY_CONFLICT`, key `"complete"` but no body cache → 200 `IDEMPOTENT`; on handler success caches response under `<key>:response` (if ≤ `maxBodyCache`) and marks key `"complete"`; on handler error deletes both keys to allow client retry with same key; Redis unavailable → fail-open logged at WARN; tenant-scoped keys `"<prefix><tenantID>:<idempotencyKey>"`; functional options `WithLogger`/`WithKeyPrefix`/`WithKeyTTL`/`WithMaxKeyLength`/`WithRedisTimeout`/`WithRejectedHandler`/`WithMaxBodyCache`
+- `commons/webhook`: outbound webhook delivery with `NewDeliverer(lister, opts...) *Deliverer` returning nil when lister is nil (both `Deliver`/`DeliverWithResults` guard nil receiver); `Deliver(ctx, *Event) error` fans out to all active endpoints concurrently, returns errors only for pre-flight failures (nil receiver, nil event, listing failure) — per-endpoint failures are logged and metricked but do not propagate; `DeliverWithResults(ctx, *Event) []DeliveryResult` returns per-endpoint outcomes for callers needing individual results; SSRF protection via `resolveAndValidateIP`: single DNS lookup validates all resolved IPs against private/loopback/link-local/CGNAT/RFC-reserved ranges then pins URL to first resolved IP (eliminates DNS rebinding TOCTOU); redirects blocked entirely to prevent 302-to-internal bypass; HMAC-SHA256 signing via `X-Webhook-Signature: sha256=<hex>` over raw payload (timestamp not included — replay protection is the receiver's responsibility); encrypted secrets via `SecretDecryptor` func (receives ciphertext with `enc:` prefix stripped, no decryptor + encrypted secret = fail-closed); retry with exponential backoff+jitter (base 1s), non-retryable on 4xx except 429; concurrency capped by semaphore (default 20); `EndpointLister` interface (`ListActiveEndpoints`), `DeliveryMetrics` interface (`RecordDelivery`); functional options `WithLogger`/`WithTracer`/`WithMetrics`/`WithMaxConcurrency`/`WithMaxRetries`/`WithHTTPClient`/`WithSecretDecryptor`; sentinel errors `ErrNilDeliverer`/`ErrSSRFBlocked`/`ErrDeliveryFailed`/`ErrInvalidURL`
 - `commons/server`: `ServerManager`-based graceful shutdown with `WithHTTPServer`/`WithGRPCServer`/`WithShutdownChannel`/`WithShutdownTimeout`/`WithShutdownHook`, `StartWithGracefulShutdown()`/`StartWithGracefulShutdownWithError()`, `ServersStarted()` for test coordination
 
 ### Resilience and safety
 
+- `commons/certificate`: thread-safe TLS certificate manager with hot reload — `NewManager(certPath, keyPath string) (*Manager, error)` loads PEM files at construction; both paths empty returns unconfigured manager (TLS optional), exactly one path → `ErrIncompleteConfig`; key file must have mode `0600` or stricter (checked before reading); PKCS#8 → PKCS#1 (RSA) → EC (SEC 1) key parsing order; full PEM chain parsed (all `CERTIFICATE` blocks, leaf first then intermediates); `Rotate(cert *x509.Certificate, key crypto.Signer) error` atomically hot-reloads under write lock — validates `NotBefore`/`NotAfter` temporal bounds and public-key match (`ErrKeyMismatch`) before swapping; read accessors (all nil-safe, read-locked): `GetCertificate()`/`GetSigner()`/`PublicKey()`/`ExpiresAt()`/`DaysUntilExpiry()`; TLS integration: `TLSCertificate() tls.Certificate` builds populated struct with full chain; `GetCertificateFunc() func(*tls.ClientHelloInfo) (*tls.Certificate, error)` for assignment to `tls.Config.GetCertificate` for transparent hot-reload; package-level `LoadFromFiles(certPath, keyPath string) (*x509.Certificate, crypto.Signer, error)` for pre-flight validation without touching manager state; sentinel errors `ErrNilManager`/`ErrCertRequired`/`ErrKeyRequired`/`ErrExpired`/`ErrNoPEMBlock`/`ErrKeyParseFailure`/`ErrNotSigner`/`ErrKeyMismatch`/`ErrIncompleteConfig`
 - `commons/circuitbreaker`: `Manager` interface with error-returning constructors (`NewManager`), config validation, preset configs (`DefaultConfig`/`AggressiveConfig`/`ConservativeConfig`/`HTTPServiceConfig`/`DatabaseConfig`), health checker (`NewHealthCheckerWithValidation`), metrics via `WithMetricsFactory`
 - `commons/backoff`: exponential backoff with jitter (`ExponentialWithJitter`) and context-aware sleep (`WaitContext`)
 - `commons/errgroup`: error-group concurrency with panic recovery (`WithContext`, `Go`, `Wait`), configurable logger via `SetLogger`
@@ -92,14 +97,14 @@ go get github.com/LerianStudio/lib-commons/v4
 
 - `commons/shell/`: Makefile include helpers (`makefile_colors.mk`, `makefile_utils.mk`), shell scripts (`colors.sh`, `ascii.sh`), ASCII art (`logo.txt`)
 
-## Minimal v4 usage
+## Minimal v5 usage
 
 ```go
 import (
     "context"
 
-    "github.com/LerianStudio/lib-commons/v4/commons/log"
-    "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
+    "github.com/LerianStudio/lib-commons/v5/commons/log"
+    "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 )
 
 func bootstrap() error {

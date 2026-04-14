@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
 	"github.com/gofiber/fiber/v2"
 )
 
