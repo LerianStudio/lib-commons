@@ -202,14 +202,23 @@ type listResp struct {
 }
 
 type entryResp struct {
-	Key   string `json:"key"`
-	Value any    `json:"value"`
+	Key         string `json:"key"`
+	Value       any    `json:"value"`
+	Description string `json:"description,omitempty"`
 }
 
 type getResp struct {
-	Namespace string `json:"namespace"`
-	Key       string `json:"key"`
-	Value     any    `json:"value"`
+	Namespace   string `json:"namespace"`
+	Key         string `json:"key"`
+	Value       any    `json:"value"`
+	Description string `json:"description,omitempty"`
+}
+
+// allowAll returns a MountOption that permits every request. Tests use this to
+// opt in to the old allow-all behavior now that the default authorizer is
+// deny-all (secure by default).
+func allowAll() admin.MountOption {
+	return admin.WithAuthorizer(func(_ *fiber.Ctx, _ string) error { return nil })
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +255,7 @@ func TestMount_DefaultPrefix(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	app := buildApp(t, c)
+	app := buildApp(t, c, allowAll())
 
 	resp := doRequest(t, app, http.MethodGet, "/system/global", "")
 
@@ -267,7 +276,7 @@ func TestMount_CustomPrefix(t *testing.T) {
 
 	c, _ := buildClientStarted(t)
 
-	app := buildApp(t, c, admin.WithPathPrefix("/cfg"))
+	app := buildApp(t, c, allowAll(), admin.WithPathPrefix("/cfg"))
 
 	// Default prefix should NOT be registered.
 	resp := doRequest(t, app, http.MethodGet, "/system/global", "")
@@ -318,7 +327,7 @@ func TestGetList_ReturnsSortedEntries(t *testing.T) {
 		t.Fatalf("Set: %v", err)
 	}
 
-	app := buildApp(t, c)
+	app := buildApp(t, c, allowAll())
 	resp := doRequest(t, app, http.MethodGet, "/system/global", "")
 
 	var body listResp
@@ -372,7 +381,7 @@ func TestGetList_AppliesRedaction(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	app := buildApp(t, c)
+	app := buildApp(t, c, allowAll())
 	resp := doRequest(t, app, http.MethodGet, "/system/global", "")
 
 	var body listResp
@@ -418,7 +427,7 @@ func TestGetOne_Success(t *testing.T) {
 		t.Fatalf("Set: %v", err)
 	}
 
-	app := buildApp(t, c)
+	app := buildApp(t, c, allowAll())
 	resp := doRequest(t, app, http.MethodGet, "/system/global/log.level", "")
 
 	if resp.StatusCode != fiber.StatusOK {
@@ -446,7 +455,7 @@ func TestGetOne_NotFound(t *testing.T) {
 
 	c, _ := buildClientStarted(t)
 
-	app := buildApp(t, c)
+	app := buildApp(t, c, allowAll())
 	resp := doRequest(t, app, http.MethodGet, "/system/global/nonexistent", "")
 
 	if resp.StatusCode != fiber.StatusNotFound {
@@ -478,7 +487,7 @@ func TestPut_Success(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	app := buildApp(t, c)
+	app := buildApp(t, c, allowAll())
 	resp := doRequest(t, app, http.MethodPut, "/system/global/log.level", `{"value":"debug"}`)
 	defer resp.Body.Close()
 
@@ -525,7 +534,7 @@ func TestPut_ValidationFailure(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	app := buildApp(t, c)
+	app := buildApp(t, c, allowAll())
 	resp := doRequest(t, app, http.MethodPut, "/system/global/log.level", `{"value":"trace"}`)
 
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -554,7 +563,7 @@ func TestPut_UnknownKey(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	app := buildApp(t, c)
+	app := buildApp(t, c, allowAll())
 	resp := doRequest(t, app, http.MethodPut, "/system/global/unknown", `{"value":"x"}`)
 
 	if resp.StatusCode != fiber.StatusBadRequest {
@@ -648,7 +657,7 @@ func TestActorExtractor_PropagatesToSet(t *testing.T) {
 
 	extractor := func(_ *fiber.Ctx) string { return "ops-1" }
 
-	app := buildApp(t, c, admin.WithActorExtractor(extractor))
+	app := buildApp(t, c, allowAll(), admin.WithActorExtractor(extractor))
 	resp := doRequest(t, app, http.MethodPut, "/system/global/log.level", `{"value":"debug"}`)
 	defer resp.Body.Close()
 
@@ -677,7 +686,7 @@ func TestPut_ServiceUnavailable_WhenNotStarted(t *testing.T) {
 		t.Fatalf("Register: %v", err)
 	}
 
-	app := buildApp(t, c)
+	app := buildApp(t, c, allowAll())
 	resp := doRequest(t, app, http.MethodPut, "/system/global/k", `{"value":"new"}`)
 
 	if resp.StatusCode != fiber.StatusServiceUnavailable {
@@ -709,7 +718,7 @@ func TestGetOne_AppliesRedaction(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	app := buildApp(t, c)
+	app := buildApp(t, c, allowAll())
 	resp := doRequest(t, app, http.MethodGet, "/system/global/secret", "")
 
 	var body getResp
@@ -725,7 +734,7 @@ func TestGetList_EmptyNamespace(t *testing.T) {
 
 	c, _ := buildClientStarted(t)
 
-	app := buildApp(t, c)
+	app := buildApp(t, c, allowAll())
 	resp := doRequest(t, app, http.MethodGet, "/system/empty", "")
 
 	if resp.StatusCode != fiber.StatusOK {
@@ -761,7 +770,7 @@ func TestPut_InvalidBody(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	app := buildApp(t, c)
+	app := buildApp(t, c, allowAll())
 
 	// No body at all.
 	resp := doRequest(t, app, http.MethodPut, "/system/global/k", "")
@@ -788,7 +797,7 @@ func TestWithPathPrefix_LeadingSlashOptional(t *testing.T) {
 	c, _ := buildClientStarted(t)
 
 	// Without leading slash.
-	app := buildApp(t, c, admin.WithPathPrefix("cfg"))
+	app := buildApp(t, c, allowAll(), admin.WithPathPrefix("cfg"))
 	resp := doRequest(t, app, http.MethodGet, "/cfg/global", "")
 
 	if resp.StatusCode != fiber.StatusOK {
@@ -804,7 +813,7 @@ func TestWithPathPrefix_TrailingSlashNormalized(t *testing.T) {
 	c, _ := buildClientStarted(t)
 
 	// With trailing slash.
-	app := buildApp(t, c, admin.WithPathPrefix("/api/"))
+	app := buildApp(t, c, allowAll(), admin.WithPathPrefix("/api/"))
 	resp := doRequest(t, app, http.MethodGet, "/api/global", "")
 
 	if resp.StatusCode != fiber.StatusOK {

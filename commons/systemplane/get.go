@@ -7,10 +7,12 @@ import (
 )
 
 // ListEntry is a single entry returned by [Client.List]. It exposes the key
-// name and its current effective value (default or override).
+// name, its current effective value (default or override), and the
+// human-readable description registered via [WithDescription].
 type ListEntry struct {
-	Key   string
-	Value any
+	Key         string
+	Value       any
+	Description string
 }
 
 // List returns all currently-cached entries in the given namespace, sorted by
@@ -35,7 +37,7 @@ func (c *Client) List(namespace string) []ListEntry {
 	c.registryMu.RUnlock()
 
 	if len(keys) == 0 {
-		return nil
+		return []ListEntry{}
 	}
 
 	// Sort by key name for deterministic output.
@@ -46,25 +48,50 @@ func (c *Client) List(namespace string) []ListEntry {
 	// Build the result from cache (or registry defaults).
 	entries := make([]ListEntry, 0, len(keys))
 
-	c.cacheMu.RLock()
 	c.registryMu.RLock()
+	c.cacheMu.RLock()
 
 	for _, nk := range keys {
 		val, inCache := c.cache[nk]
-		if !inCache {
+
+		def, registered := c.registry[nk]
+		if !inCache && registered {
 			// Fallback to the registered default.
-			if def, registered := c.registry[nk]; registered {
-				val = def.defaultValue
-			}
+			val = def.defaultValue
 		}
 
-		entries = append(entries, ListEntry{Key: nk.Key, Value: val})
+		var desc string
+		if registered {
+			desc = def.description
+		}
+
+		entries = append(entries, ListEntry{Key: nk.Key, Value: val, Description: desc})
 	}
 
-	c.registryMu.RUnlock()
 	c.cacheMu.RUnlock()
+	c.registryMu.RUnlock()
 
 	return entries
+}
+
+// KeyDescription returns the human-readable description for a registered key.
+// Returns "" for unregistered keys or nil receivers.
+func (c *Client) KeyDescription(namespace, key string) string {
+	if c == nil {
+		return ""
+	}
+
+	nk := nskey{Namespace: namespace, Key: key}
+
+	c.registryMu.RLock()
+	def, registered := c.registry[nk]
+	c.registryMu.RUnlock()
+
+	if !registered {
+		return ""
+	}
+
+	return def.description
 }
 
 // KeyRedaction returns the redaction policy for a registered key. Returns

@@ -30,7 +30,9 @@ type mountConfig struct {
 func defaultMountConfig() mountConfig {
 	return mountConfig{
 		pathPrefix:     "/system",
-		authorizer:     func(_ *fiber.Ctx, _ string) error { return nil },
+		authorizer: func(_ *fiber.Ctx, _ string) error {
+			return errors.New("admin: no authorizer configured — use admin.WithAuthorizer to set one")
+		},
 		actorExtractor: func(_ *fiber.Ctx) string { return "" },
 	}
 }
@@ -109,7 +111,7 @@ func (m *mounter) authorize(action string) fiber.Handler {
 			return c.Status(fiber.StatusForbidden).JSON(commonshttp.ErrorResponse{
 				Code:    fiber.StatusForbidden,
 				Title:   "forbidden",
-				Message: err.Error(),
+				Message: "access denied",
 			})
 		}
 
@@ -127,14 +129,16 @@ type listResponse struct {
 }
 
 type entryResponse struct {
-	Key   string `json:"key"`
-	Value any    `json:"value"`
+	Key         string `json:"key"`
+	Value       any    `json:"value"`
+	Description string `json:"description,omitempty"`
 }
 
 type getResponse struct {
-	Namespace string `json:"namespace"`
-	Key       string `json:"key"`
-	Value     any    `json:"value"`
+	Namespace   string `json:"namespace"`
+	Key         string `json:"key"`
+	Value       any    `json:"value"`
+	Description string `json:"description,omitempty"`
 }
 
 type putRequest struct {
@@ -161,8 +165,9 @@ func (m *mounter) handleList(c *fiber.Ctx) error {
 		redacted := systemplane.ApplyRedaction(e.Value, policy)
 
 		resp.Entries = append(resp.Entries, entryResponse{
-			Key:   e.Key,
-			Value: redacted,
+			Key:         e.Key,
+			Value:       redacted,
+			Description: e.Description,
 		})
 	}
 
@@ -187,9 +192,10 @@ func (m *mounter) handleGetOne(c *fiber.Ctx) error {
 	redacted := systemplane.ApplyRedaction(value, policy)
 
 	return c.Status(fiber.StatusOK).JSON(getResponse{
-		Namespace: namespace,
-		Key:       key,
-		Value:     redacted,
+		Namespace:   namespace,
+		Key:         key,
+		Value:       redacted,
+		Description: m.client.KeyDescription(namespace, key),
 	})
 }
 
@@ -226,7 +232,7 @@ func (m *mounter) handlePut(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
 			Code:    fiber.StatusBadRequest,
 			Title:   "validation_error",
-			Message: err.Error(),
+			Message: "value rejected by validator",
 		})
 	case errors.Is(err, systemplane.ErrNotStarted),
 		errors.Is(err, systemplane.ErrClosed):
