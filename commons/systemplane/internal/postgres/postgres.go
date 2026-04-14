@@ -285,6 +285,10 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 		return errors.New("systemplane/postgres: key must not be empty")
 	}
 
+	if e.UpdatedAt.IsZero() {
+		e.UpdatedAt = time.Now().UTC()
+	}
+
 	ctx, span, finish := s.startSpan(ctx, "systemplane.postgres.set",
 		attribute.String("namespace", e.Namespace),
 		attribute.String("key", e.Key),
@@ -413,6 +417,7 @@ func (s *Store) listenLoop(ctx context.Context, handler func(store.Event)) error
 // invokeHandler calls the user's handler with panic recovery.
 func (s *Store) invokeHandler(ctx context.Context, handler func(store.Event), evt store.Event) {
 	defer runtime.RecoverAndLogWithContext(ctx, s.cfg.Logger, "systemplane", "postgres.handler")
+
 	handler(evt)
 }
 
