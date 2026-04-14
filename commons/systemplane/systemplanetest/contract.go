@@ -231,6 +231,7 @@ func testListReturnsAllAfterMultipleSets(t *testing.T, factory Factory) {
 
 	// Sort both slices by namespace+key for deterministic comparison.
 	entryKey := func(e store.Entry) string { return e.Namespace + "/" + e.Key }
+
 	sort.Slice(got, func(i, j int) bool { return entryKey(got[i]) < entryKey(got[j]) })
 	sort.Slice(entries, func(i, j int) bool { return entryKey(entries[i]) < entryKey(entries[j]) })
 

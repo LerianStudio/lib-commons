@@ -21,4 +21,8 @@ var (
 
 	// ErrValidation is returned when a value fails its registered validator.
 	ErrValidation = errors.New("systemplane: validation failed")
+
+	// ErrDuplicateKey is returned when Register is called with a (namespace, key)
+	// pair that has already been registered.
+	ErrDuplicateKey = errors.New("systemplane: duplicate key")
 )

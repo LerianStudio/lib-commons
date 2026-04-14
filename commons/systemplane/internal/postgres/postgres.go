@@ -159,11 +159,12 @@ $$ LANGUAGE plpgsql`, s.cfg.Channel)
 		return fmt.Errorf("create function: %w", err)
 	}
 
-	dropTrigger := fmt.Sprintf(`DROP TRIGGER IF EXISTS systemplane_notify_trigger ON %s`, s.cfg.Table)
+	dropTrigger := "DROP TRIGGER IF EXISTS systemplane_notify_trigger ON " + s.cfg.Table //nolint:gosec // G202: table name validated as Postgres identifier in New()
 	if _, err := tx.ExecContext(ctx, dropTrigger); err != nil {
 		return fmt.Errorf("drop trigger: %w", err)
 	}
 
+	//nolint:gosec // G201: table name validated as Postgres identifier in New()
 	createTrigger := fmt.Sprintf(`CREATE TRIGGER systemplane_notify_trigger
 AFTER INSERT OR UPDATE ON %s
 FOR EACH ROW EXECUTE FUNCTION systemplane_notify()`, s.cfg.Table)
@@ -185,10 +186,10 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 		return nil, store.ErrClosed
 	}
 
-	ctx, span := s.startSpan(ctx, "systemplane.postgres.list")
-	defer span.End()
+	ctx, span, finish := s.startSpan(ctx, "systemplane.postgres.list")
+	defer finish()
 
-	query := fmt.Sprintf(
+	query := fmt.Sprintf( //nolint:gosec // G201: table name validated as Postgres identifier in New()
 		`SELECT namespace, key, value, updated_at, updated_by FROM %s ORDER BY namespace, key`,
 		s.cfg.Table,
 	)
@@ -238,13 +239,13 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bo
 		return store.Entry{}, false, store.ErrClosed
 	}
 
-	ctx, span := s.startSpan(ctx, "systemplane.postgres.get",
+	ctx, span, finish := s.startSpan(ctx, "systemplane.postgres.get",
 		attribute.String("namespace", namespace),
 		attribute.String("key", key),
 	)
-	defer span.End()
+	defer finish()
 
-	query := fmt.Sprintf(
+	query := fmt.Sprintf( //nolint:gosec // G201: table name validated as Postgres identifier in New()
 		`SELECT namespace, key, value, updated_at, updated_by FROM %s WHERE namespace = $1 AND key = $2`,
 		s.cfg.Table,
 	)
@@ -282,12 +283,13 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 		return errors.New("systemplane/postgres: key must not be empty")
 	}
 
-	ctx, span := s.startSpan(ctx, "systemplane.postgres.set",
+	ctx, span, finish := s.startSpan(ctx, "systemplane.postgres.set",
 		attribute.String("namespace", e.Namespace),
 		attribute.String("key", e.Key),
 	)
-	defer span.End()
+	defer finish()
 
+	//nolint:gosec // G201: table name validated as Postgres identifier in New()
 	query := fmt.Sprintf(`INSERT INTO %s (namespace, key, value, updated_at, updated_by)
 VALUES ($1, $2, $3, now(), $4)
 ON CONFLICT (namespace, key) DO UPDATE
@@ -345,10 +347,7 @@ func (s *Store) Subscribe(ctx context.Context, handler func(store.Event)) error 
 			log.Err(err),
 		)
 
-		delay := backoff.ExponentialWithJitter(backoffBase, attempt)
-		if delay > backoffCap {
-			delay = backoffCap
-		}
+		delay := min(backoff.ExponentialWithJitter(backoffBase, attempt), backoffCap)
 
 		attempt++
 
@@ -373,7 +372,7 @@ func (s *Store) listenLoop(ctx context.Context, handler func(store.Event)) error
 		_ = conn.Close(cleanCtx)
 	}()
 
-	listenStmt := fmt.Sprintf("LISTEN %s", quoteIdentifier(s.cfg.Channel))
+	listenStmt := "LISTEN " + quoteIdentifier(s.cfg.Channel)
 
 	if _, err := conn.Exec(ctx, listenStmt); err != nil {
 		return fmt.Errorf("listen: %w", err)
@@ -476,22 +475,24 @@ func quoteIdentifier(name string) string {
 }
 
 // startSpan creates a child span if telemetry is configured, otherwise returns
-// a noop span.
-func (s *Store) startSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span) {
+// a noop span. Callers MUST defer finish() to end the span.
+func (s *Store) startSpan(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span, func()) {
+	noop := func() {}
+
 	if s.cfg.Telemetry == nil {
-		return ctx, trace.SpanFromContext(ctx)
+		return ctx, trace.SpanFromContext(ctx), noop
 	}
 
 	tracer, err := s.cfg.Telemetry.Tracer(tracerName)
 	if err != nil || tracer == nil {
-		return ctx, trace.SpanFromContext(ctx)
+		return ctx, trace.SpanFromContext(ctx), noop
 	}
 
 	ctx, span := tracer.Start(ctx, name,
 		trace.WithAttributes(attrs...),
 	)
 
-	return ctx, span
+	return ctx, span, func() { span.End() }
 }
 
 // logInfo emits an info-level log if a logger is configured.

@@ -4,15 +4,33 @@ package systemplane
 import "time"
 
 // Get returns the current value for the given namespace and key.
-// Returns (nil, false) when the Client is nil, not started, or the key is unknown.
+// Returns (nil, false) when the Client is nil, closed, or the key is unregistered.
+// If the key is registered but absent from the cache (before Start), the
+// registered default is returned.
 func (c *Client) Get(namespace, key string) (any, bool) {
 	if c == nil {
 		return nil, false
 	}
 
-	// TODO(phase-5): look up value from in-memory map
-	_ = namespace
-	_ = key
+	nk := nskey{Namespace: namespace, Key: key}
+
+	// Try the cache first (populated after Start).
+	c.cacheMu.RLock()
+	v, inCache := c.cache[nk]
+	c.cacheMu.RUnlock()
+
+	if inCache {
+		return v, true
+	}
+
+	// Fallback to the registered default (before Start or if cache was never populated).
+	c.registryMu.RLock()
+	def, registered := c.registry[nk]
+	c.registryMu.RUnlock()
+
+	if registered {
+		return def.defaultValue, true
+	}
 
 	return nil, false
 }

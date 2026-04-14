@@ -16,8 +16,9 @@ const (
 
 // applyRedaction returns the value rendered per policy. Used by admin handlers
 // and structured logging to prevent sensitive values from leaking.
+//
+//nolint:unused // scaffolded for admin subpackage (Phase 6)
 func applyRedaction(value any, policy RedactPolicy) any {
-	// TODO(phase-5): implement masking and full redaction
 	switch policy {
 	case RedactMask:
 		return "****"
