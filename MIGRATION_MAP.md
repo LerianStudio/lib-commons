@@ -948,6 +948,51 @@ The following files were removed during v4 consolidation:
 
 ---
 
+## systemplane -- v4 simplified redesign
+
+The entire `commons/systemplane` package has been rewritten. The old surface is
+removed -- no deprecation window, no compatibility shims.
+
+### Removed (entirely)
+
+- Package `commons/systemplane/domain` and every type/func within: `Kind`, `Scope`, `Target`, `Entry`, `Snapshot`, `EffectiveValue`, `Revision`, `KeyDef`, `ValueType`, `RedactPolicy` (old location), `ApplyBehavior` + all 5 constants, `ReconcilerPhase` + all 3 constants, `BackendKind`, `RuntimeBundle`, `Actor`, and all domain sentinel errors.
+- Package `commons/systemplane/ports`: `Store`, `ChangeFeed`, `HistoryStore`, `BundleFactory`, `IncrementalBundleFactory`, `BundleReconciler`, `Authorizer`, `IdentityResolver` (+ defaults).
+- Package `commons/systemplane/service`: `Manager`, `Supervisor`, `SnapshotBuilder`, `PatchRequest`, `WriteResult`, `ResolvedSet`, `SchemaEntry`, `ManagerConfig`, `SupervisorConfig`, `ReloadEvent`, `BuildStrategy`, `ComponentDiff`.
+- Package `commons/systemplane/registry` (in-memory key registry -- now internal to `*Client`).
+- Package `commons/systemplane/catalog` (canonical shared key definitions -- consumers now own their key list).
+- Package `commons/systemplane/bootstrap` (backend factory registry -- replaced by direct `NewPostgres` / `NewMongoDB` constructors).
+- Package `commons/systemplane/adapters/store/postgres` -- merged into `commons/systemplane/internal/postgres`.
+- Package `commons/systemplane/adapters/store/mongodb` -- merged into `commons/systemplane/internal/mongodb`.
+- Package `commons/systemplane/adapters/store/secretcodec` (encrypted-value codec -- secrets now live in secret managers, not the config plane).
+- Package `commons/systemplane/adapters/changefeed/*` -- merged into the respective `internal/*` stores.
+- Package `commons/systemplane/adapters/http/fiber` -- rewritten at `commons/systemplane/admin`.
+- Package `commons/systemplane/swagger` (embedded OpenAPI spec + merge utility).
+- Package `commons/systemplane/testutil` (fakes for removed interfaces).
+- The 4-axis identity model (Kind x Scope x Subject x Key) collapses into free-text `namespace` + `key`.
+- Optimistic concurrency (`Revision`, `ErrRevisionMismatch`) -- replaced with last-write-wins.
+- Bundle / reconciler / component-diff machinery -- replaced with `OnChange(ns, key, fn)` callbacks.
+- Audit history (`HistoryEntry`, `HistoryFilter`, `HistoryStore`, `GET /v1/system/*/history`) -- if needed, route writes to your audit pipeline; systemplane does not own audit.
+- AES-GCM secret codec at rest -- secrets belong in the secret manager.
+- `SYSTEMPLANE_*` env-vars for backend selection, secret master key, watch mode -- no longer read by systemplane.
+
+### New (canonical) public surface
+
+See the `commons/systemplane` section in `CLAUDE.md` for the full list. Key entry points:
+
+- `systemplane.NewPostgres(db, listenDSN, opts...) (*Client, error)`
+- `systemplane.NewMongoDB(client, database, opts...) (*Client, error)`
+- `(*Client).Register / Start / Close / Get / GetString / GetInt / GetBool / GetFloat64 / GetDuration / Set / OnChange / List / KeyRedaction`
+- `admin.Mount(router, client, opts...)`
+
+### Migration notes for consumers
+
+- Connection-level settings previously managed via systemplane (DB DSNs, Redis URLs, RabbitMQ brokers, TLS cert paths, telemetry exporters, server listen address) must be moved to standard env-vars / existing `commons/postgres.Config` / `commons/redis.Config` / `commons/certificate.Manager` / etc.
+- Secrets previously stored via `Secret: true` keys must migrate to the secret manager (AWS Secrets Manager, Vault, GCP Secret Manager).
+- Admin clients that consumed `GET /v1/system/configs` etc. must migrate to the new `/system/:namespace` / `/system/:namespace/:key` routes.
+- Audit-history consumers must move to a dedicated audit pipeline.
+
+---
+
 ## Suggested verification command
 
 ```bash

@@ -57,13 +57,13 @@ lib-commons/
 │   ├── server/                     # Graceful shutdown and lifecycle (ServerManager)
 │   ├── shell/                      # Makefile includes and shell utilities
 │   ├── systemplane/                # Runtime configuration plane (hot-reloadable settings)
-│   │   ├── adapters/               # Store (postgres, mongodb) and changefeed adapters
-│   │   ├── bootstrap/              # Environment-based config loading
-│   │   ├── domain/                 # Domain types, entries, revisions, snapshots
-│   │   ├── ports/                  # Port interfaces (store, changefeed, history, reconciler)
-│   │   ├── registry/               # Configuration key registry and validation
-│   │   ├── service/                # Service manager, supervisor, escalation
-│   │   └── testutil/               # Test fakes for systemplane contracts
+│   │   ├── admin/                  # Fiber HTTP routes for list/get/put with authorization
+│   │   ├── internal/               # Internal store implementations
+│   │   │   ├── debounce/           # Key-scoped trailing-edge debouncer
+│   │   │   ├── mongodb/            # MongoDB store with change streams and polling
+│   │   │   ├── postgres/           # Postgres store with LISTEN/NOTIFY
+│   │   │   └── store/              # Backend-agnostic Store interface
+│   │   └── systemplanetest/        # Contract test suite for Store backends
 │   ├── tenant-manager/             # Multi-tenant database-per-tenant isolation
 │   │   ├── cache/                  # In-memory tenant cache with LRU eviction
 │   │   ├── client/                 # HTTP client for tenant-manager API
@@ -389,7 +389,7 @@ func (c *Client) Connect(ctx context.Context) error {
 | Messaging | `amqp091-go` |
 | HTTP | `gofiber/fiber/v2` |
 | Logging | `zap`, internal `log` package |
-| Testing | `testify`, `go.uber.org/mock`, `miniredis/v2`, `testcontainers-go`, `go-sqlmock`, `goleak` |
+| Testing | `testify`, `go.uber.org/mock`, `miniredis/v2`, `testcontainers-go`, `goleak` |
 | Observability | `opentelemetry/*`, `otelzap`, `grpc`, `protobuf` |
 | Utilities | `google/uuid`, `shopspring/decimal`, `go-playground/validator/v10`, `golang.org/x/sync`, `golang.org/x/text` |
 | Resilience | `sony/gobreaker`, `go-redsync/v4` |
