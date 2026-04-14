@@ -161,7 +161,7 @@ func New(cfg Config) (*Store, error) {
 
 // List returns all entries from the MongoDB collection.
 func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
-	if s == nil {
+	if s == nil || s.isClosed() {
 		return nil, store.ErrClosed
 	}
 
@@ -194,7 +194,7 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 // Get returns a single entry by namespace and key.
 // Returns (_, false, nil) when the entry does not exist.
 func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bool, error) {
-	if s == nil {
+	if s == nil || s.isClosed() {
 		return store.Entry{}, false, store.ErrClosed
 	}
 
@@ -230,7 +230,7 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bo
 // Set persists an entry using an upsert. The change-stream or polling loop
 // picks up the modification and notifies subscribers.
 func (s *Store) Set(ctx context.Context, e store.Entry) error {
-	if s == nil {
+	if s == nil || s.isClosed() {
 		return store.ErrClosed
 	}
 
@@ -296,7 +296,7 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 // Multiple concurrent Subscribe calls are independent — each gets its own
 // stream or ticker.
 func (s *Store) Subscribe(ctx context.Context, handler func(store.Event)) error {
-	if s == nil {
+	if s == nil || s.isClosed() {
 		return store.ErrClosed
 	}
 
@@ -332,6 +332,14 @@ func (s *Store) Close() error {
 	}
 
 	return nil
+}
+
+// isClosed checks whether the store has been closed.
+func (s *Store) isClosed() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.closed
 }
 
 // subscribeChangeStream opens a MongoDB change stream on the collection and

@@ -409,12 +409,7 @@ func (s *Store) listenLoop(ctx context.Context, handler func(store.Event)) error
 
 // invokeHandler calls the user's handler with panic recovery.
 func (s *Store) invokeHandler(ctx context.Context, handler func(store.Event), evt store.Event) {
-	defer func() {
-		if s.cfg.Logger != nil {
-			runtime.RecoverAndLogWithContext(ctx, s.cfg.Logger, "systemplane", "postgres.handler")
-		}
-	}()
-
+	defer runtime.RecoverAndLogWithContext(ctx, s.cfg.Logger, "systemplane", "postgres.handler")
 	handler(evt)
 }
 
