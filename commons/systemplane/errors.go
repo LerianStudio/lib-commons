@@ -10,9 +10,6 @@ var (
 	// ErrNotStarted is returned when a read/write is attempted before Start.
 	ErrNotStarted = errors.New("systemplane: client not started")
 
-	// ErrAlreadyStarted is returned when Start is called more than once.
-	ErrAlreadyStarted = errors.New("systemplane: client already started")
-
 	// ErrRegisterAfterStart is returned when Register is called after Start.
 	ErrRegisterAfterStart = errors.New("systemplane: register called after start")
 

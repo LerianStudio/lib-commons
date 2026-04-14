@@ -3,6 +3,7 @@ package systemplane
 
 import (
 	"context"
+	"sync"
 
 	"github.com/LerianStudio/lib-commons/v4/commons/log"
 )
@@ -33,7 +34,7 @@ func (c *Client) OnChange(namespace, key string, fn func(newValue any)) (unsubsc
 	c.registryMu.RUnlock()
 
 	if !registered {
-		c.logger.Log(context.TODO(), log.LevelDebug, "OnChange called for unregistered key, returning no-op",
+		c.logger.Log(context.Background(), log.LevelDebug, "OnChange called for unregistered key, returning no-op",
 			log.String("namespace", namespace),
 			log.String("key", key),
 		)
@@ -53,25 +54,21 @@ func (c *Client) OnChange(namespace, key string, fn func(newValue any)) (unsubsc
 	c.subsMu.Unlock()
 
 	// The unsubscribe function removes this subscription by id. Safe to call
-	// multiple times — a missing id is a no-op.
-	var unsubscribed bool
+	// concurrently and multiple times — sync.Once guarantees exactly-once execution.
+	var once sync.Once
 
 	return func() {
-		if unsubscribed {
-			return
-		}
+		once.Do(func() {
+			c.subsMu.Lock()
+			defer c.subsMu.Unlock()
 
-		unsubscribed = true
-
-		c.subsMu.Lock()
-		defer c.subsMu.Unlock()
-
-		subs := c.subscribers[nk]
-		for i, s := range subs {
-			if s.id == id {
-				c.subscribers[nk] = append(subs[:i], subs[i+1:]...)
-				return
+			subs := c.subscribers[nk]
+			for i, s := range subs {
+				if s.id == id {
+					c.subscribers[nk] = append(subs[:i], subs[i+1:]...)
+					return
+				}
 			}
-		}
+		})
 	}
 }

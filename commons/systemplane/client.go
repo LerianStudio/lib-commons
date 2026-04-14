@@ -173,9 +173,11 @@ func (c *Client) Start(ctx context.Context) error {
 		// 1. Seed the cache with registered defaults.
 		c.registryMu.RLock()
 
+		c.cacheMu.Lock()
 		for nk, def := range c.registry {
 			c.cache[nk] = def.defaultValue
 		}
+		c.cacheMu.Unlock()
 
 		c.registryMu.RUnlock()
 
@@ -225,6 +227,7 @@ func (c *Client) Start(ctx context.Context) error {
 		c.cancel = cancel
 
 		c.wg.Go(func() {
+			defer runtime.RecoverAndLog(c.logger, "systemplane.subscribe")
 			if err := c.store.Subscribe(subCtx, c.onEvent); err != nil {
 				if subCtx.Err() == nil {
 					c.logWarn(subCtx, "subscribe returned error",
