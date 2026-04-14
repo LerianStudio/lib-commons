@@ -36,7 +36,7 @@ var blockedSuffixes = []string{
 // root label (".") so that "localhost." and "localhost" are treated identically.
 // This prevents trivial SSRF bypasses via the DNS root-label spelling.
 func normalizeHostname(hostname string) string {
-	return strings.TrimSuffix(strings.ToLower(hostname), ".")
+	return strings.TrimRight(strings.ToLower(hostname), ".")
 }
 
 // IsBlockedHostname reports whether hostname matches known dangerous patterns.

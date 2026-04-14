@@ -365,7 +365,7 @@ func TestProcessOnce_HeadOfLineRotation(t *testing.T) {
 	// The ready message must have been retried.
 	assert.Equal(t, 1, metrics.retriedCount(),
 		"the ready message should be retried in the same poll cycle")
-	assert.Len(t, retriedMessages, 1, "retryFn should be invoked exactly once")
+	require.Len(t, retriedMessages, 1, "retryFn should be invoked exactly once")
 	assert.JSONEq(t, `{"id":"ready"}`, string(retriedMessages[0].OriginalData),
 		"the retried message should be the ready one, not the future-dated one")
 

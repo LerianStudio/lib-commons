@@ -255,6 +255,10 @@ func TestIsBlockedHostname(t *testing.T) {
 		{name: "metadata.google.internal with root label", host: "metadata.google.internal.", blocked: true},
 		{name: "LOCALHOST. uppercase with root label", host: "LOCALHOST.", blocked: true},
 
+		// Repeated trailing dots — must be normalized and blocked
+		{name: "localhost with repeated trailing dots", host: "localhost..", blocked: true},
+		{name: "service.internal with repeated trailing dots", host: "service.internal..", blocked: true},
+
 		// Dangerous suffixes
 		{name: ".local suffix", host: "myhost.local", blocked: true},
 		{name: ".internal suffix", host: "service.internal", blocked: true},

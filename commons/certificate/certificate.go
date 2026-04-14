@@ -180,10 +180,15 @@ func (m *Manager) GetSigner() crypto.Signer {
 }
 
 // PublicKey returns a detached copy of the public key from the current certificate.
-// The returned value is a deep clone for known key types ([*rsa.PublicKey],
-// [*ecdsa.PublicKey], [ed25519.PublicKey]) so callers get a concurrency-safe copy
-// that does not alias internal manager state.
-// Returns nil if no certificate is loaded.
+//
+// It returns nil when the Manager receiver itself is nil (consistent with all
+// other nil-receiver-safe methods on Manager) and when no certificate has been
+// loaded yet.
+//
+// When a certificate is present the returned value is a deep clone for known
+// key types ([*rsa.PublicKey], [*ecdsa.PublicKey], [ed25519.PublicKey]) so
+// callers get a concurrency-safe copy that does not alias internal manager
+// state. Unknown key types are returned as-is on a best-effort basis.
 func (m *Manager) PublicKey() crypto.PublicKey {
 	if m == nil {
 		return nil

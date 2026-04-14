@@ -361,11 +361,16 @@ func (c *Consumer) drainSource(ctx context.Context, source string, limit int) in
 			return processed
 		}
 
-		// Allow up to qLen dequeue attempts to rotate through all
-		// future-dated messages and find a ready one.
+		// Cap rotation work per key to batchSize so one tenant with a large
+		// backlog of future-dated messages cannot monopolise a poll cycle.
+		rotationCap := int(qLen)
+		if rotationCap > c.cfg.BatchSize {
+			rotationCap = c.cfg.BatchSize
+		}
+
 		rotations := 0
 
-		for rotations < int(qLen) {
+		for rotations < rotationCap {
 			select {
 			case <-ctx.Done():
 				return processed

@@ -143,7 +143,8 @@ func WithMaxBodyCache(n int) Option {
 	}
 }
 
-// Check returns a Fiber middleware that enforces idempotency on mutating requests.
+// Check returns a Fiber middleware that enforces idempotency on supported mutating requests.
+// Requests without tenant context bypass idempotency to preserve tenant isolation.
 // If the Middleware is nil, a pass-through handler is returned.
 func (m *Middleware) Check() fiber.Handler {
 	if m == nil {
@@ -329,7 +330,7 @@ func (m *Middleware) handleDuplicate(
 
 // saveResult performs post-handler Redis bookkeeping: on success it caches the response
 // body and marks the key as complete in a single round-trip via a Redis pipeline; on
-// handler error it deletes both keys so the client can retry with the same idempotency key.
+// handler failure or 5xx response it deletes both keys so the client can retry with the same idempotency key.
 func (m *Middleware) saveResult(
 	ctx context.Context,
 	c *fiber.Ctx,
@@ -404,7 +405,7 @@ func (m *Middleware) saveResult(
 
 		if _, pipeErr := pipe.Exec(ctx); pipeErr != nil {
 			m.logger.Log(ctx, log.LevelWarn,
-				"idempotency: failed to delete keys after handler error",
+				"idempotency: failed to delete keys after handler failure or 5xx response",
 				log.Err(pipeErr),
 			)
 		}
