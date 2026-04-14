@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons"
+	"github.com/LerianStudio/lib-commons/v5/commons"
 )
 
 func ExampleWithTimeoutSafe() {

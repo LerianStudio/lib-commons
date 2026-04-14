@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/internal/store"
-	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/systemplanetest"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/systemplanetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"

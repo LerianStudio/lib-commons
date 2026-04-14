@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/internal/store"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 )
 
 // Factory constructs a fresh, isolated Store for a single test.

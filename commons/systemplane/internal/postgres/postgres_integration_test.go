@@ -20,8 +20,8 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/internal/store"
-	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/systemplanetest"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/systemplanetest"
 )
 
 // tableSeq generates unique table names so each factory call produces an

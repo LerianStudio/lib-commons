@@ -5,7 +5,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/internal/store"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 )
 
 // TestStore is the public mirror of the internal store.Store interface, exposed

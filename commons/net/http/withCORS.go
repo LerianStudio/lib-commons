@@ -4,9 +4,9 @@ import (
 	"context"
 	"strconv"
 
-	"github.com/LerianStudio/lib-commons/v4/commons"
-	"github.com/LerianStudio/lib-commons/v4/commons/internal/nilcheck"
-	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons"
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
+	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 )

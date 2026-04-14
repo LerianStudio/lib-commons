@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/license"
+	"github.com/LerianStudio/lib-commons/v5/commons/license"
 	"github.com/stretchr/testify/assert"
 )
 

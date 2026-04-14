@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons"
-	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
-	otelmetrics "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry/metrics"
+	"github.com/LerianStudio/lib-commons/v5/commons"
+	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
+	otelmetrics "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

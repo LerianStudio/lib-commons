@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
-	libRedis "github.com/LerianStudio/lib-commons/v4/commons/redis"
-	tmcore "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
+	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -420,6 +420,55 @@ func TestPruneExhaustedMessages(t *testing.T) {
 	remaining, err := h.Dequeue(ctx, "outbound")
 	require.NoError(t, err)
 	assert.Equal(t, 0, remaining.RetryCount, "surviving message should be the non-exhausted one")
+}
+
+// TestDequeue_EmptySource_Rejected verifies that Dequeue rejects an empty source.
+func TestDequeue_EmptySource_Rejected(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newTestHandler(t)
+	ctx := context.Background()
+
+	_, err := h.Dequeue(ctx, "")
+	require.Error(t, err, "empty source should be rejected")
+	assert.Contains(t, err.Error(), "source must not be empty")
+}
+
+// TestQueueLength_EmptySource_Rejected verifies that QueueLength rejects an empty source.
+func TestQueueLength_EmptySource_Rejected(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newTestHandler(t)
+	ctx := context.Background()
+
+	_, err := h.QueueLength(ctx, "")
+	require.Error(t, err, "empty source should be rejected")
+	assert.Contains(t, err.Error(), "source must not be empty")
+}
+
+// TestScanQueues_EmptySource_Rejected verifies that ScanQueues rejects an empty source.
+func TestScanQueues_EmptySource_Rejected(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newTestHandler(t)
+	ctx := context.Background()
+
+	_, err := h.ScanQueues(ctx, "")
+	require.Error(t, err, "empty source should be rejected")
+	assert.Contains(t, err.Error(), "source must not be empty")
+}
+
+// TestPruneExhaustedMessages_EmptySource_Rejected verifies that PruneExhaustedMessages
+// rejects an empty source.
+func TestPruneExhaustedMessages_EmptySource_Rejected(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newTestHandler(t)
+	ctx := context.Background()
+
+	_, err := h.PruneExhaustedMessages(ctx, "", 10)
+	require.Error(t, err, "empty source should be rejected")
+	assert.Contains(t, err.Error(), "source must not be empty")
 }
 
 // TestDequeue_MalformedJSON verifies that Dequeue returns an error (not a nil

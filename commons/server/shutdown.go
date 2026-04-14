@@ -11,10 +11,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/license"
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
-	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v4/commons/runtime"
+	"github.com/LerianStudio/lib-commons/v5/commons/license"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
+	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
 	"github.com/gofiber/fiber/v2"
 	"google.golang.org/grpc"
 )

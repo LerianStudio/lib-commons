@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
-	commonshttp "github.com/LerianStudio/lib-commons/v4/commons/net/http"
-	"github.com/LerianStudio/lib-commons/v4/commons/systemplane"
-	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/admin"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	commonshttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/admin"
 	"github.com/gofiber/fiber/v2"
 )
 

@@ -4,14 +4,14 @@ This file provides repository-specific guidance for coding agents working on `li
 
 ## Project snapshot
 
-- Module: `github.com/LerianStudio/lib-commons/v4`
+- Module: `github.com/LerianStudio/lib-commons/v5`
 - Language: Go
 - Go version: `1.25.7` (see `go.mod`)
-- Current API generation: v4
+- Current API generation: v5
 
 ## Primary objective for changes
 
-- Preserve v4 public API contracts unless a task explicitly asks for breaking changes.
+- Preserve v5 public API contracts unless a task explicitly asks for breaking changes.
 - Prefer explicit error returns over panic paths in production code.
 - Keep behavior nil-safe and concurrency-safe by default.
 
@@ -237,7 +237,7 @@ Build and shell:
 - `DeliveryResult` fields: `EndpointID`, `StatusCode`, `Success`, `Error`, `Attempts`.
 - `DeliveryMetrics` interface: `RecordDelivery(ctx, endpointID string, success bool, statusCode, attempts int)`.
 - `SecretDecryptor` type: `func(encrypted string) (string, error)` — receives ciphertext with `enc:` prefix stripped. No decryptor + encrypted secret = fail-closed (delivery skipped with error).
-- SSRF protection: `resolveAndValidateIP` performs a single DNS lookup, validates all resolved IPs against private/loopback/link-local/CGNAT/RFC-reserved ranges, then pins the URL to the first resolved IP — eliminates DNS rebinding TOCTOU. Only `http` and `https` schemes are allowed.
+- SSRF protection: delegates to `commons/security/ssrf.ResolveAndValidate` for DNS-pinned validation, IP range blocking, and hostname blocking. The webhook package maps ssrf sentinel errors to its own (`ErrSSRFBlocked`, `ErrInvalidURL`). Only `http` and `https` schemes are allowed.
 - HMAC signing: `X-Webhook-Signature: sha256=<hex(HMAC-SHA256(payload, secret))>`. Timestamp is NOT included in the signature — replay protection is the receiver's responsibility.
 - HTTP client blocks all redirects to prevent SSRF bypass via 302 to internal addresses.
 - Retry strategy: exponential backoff with jitter (`commons/backoff`), base 1s. Non-retryable on 4xx except 429.

@@ -8,11 +8,11 @@ import (
 	"sync"
 	"time"
 
-	constant "github.com/LerianStudio/lib-commons/v4/commons/constants"
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
-	"github.com/LerianStudio/lib-commons/v4/commons/opentelemetry/metrics"
-	"github.com/LerianStudio/lib-commons/v4/commons/runtime"
-	"github.com/LerianStudio/lib-commons/v4/commons/safe"
+	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
+	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	"github.com/LerianStudio/lib-commons/v5/commons/safe"
 	"github.com/sony/gobreaker"
 )
 

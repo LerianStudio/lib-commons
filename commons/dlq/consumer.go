@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	libLog "github.com/LerianStudio/lib-commons/v4/commons/log"
-	libOtel "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
-	libRuntime "github.com/LerianStudio/lib-commons/v4/commons/runtime"
-	tmcore "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	libOtel "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
+	libRuntime "github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )
@@ -328,6 +328,13 @@ func (c *Consumer) processSource(ctx context.Context, source string) {
 
 // drainSource dequeues up to limit messages from a single source key and
 // processes each one. Returns the count of messages processed.
+//
+// When a future-dated message is encountered, it is rotated to the tail of the
+// queue and the next message is dequeued immediately. This head-of-line
+// rotation ensures that ready messages behind future-dated ones are processed
+// within the same poll cycle. The number of consecutive rotations is bounded
+// by the queue length to prevent infinite loops when all messages are
+// future-dated.
 func (c *Consumer) drainSource(ctx context.Context, source string, limit int) int {
 	processed := 0
 
@@ -338,13 +345,11 @@ func (c *Consumer) drainSource(ctx context.Context, source string, limit int) in
 		default:
 		}
 
-		msg, err := c.handler.Dequeue(ctx, source)
+		// Query current queue length to bound rotations. This prevents an
+		// infinite loop when every message in the queue is future-dated.
+		qLen, err := c.handler.QueueLength(ctx, source)
 		if err != nil {
-			if isRedisNilError(err) {
-				return processed
-			}
-
-			c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: dequeue failed",
+			c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: queue length check failed",
 				libLog.String("source", source),
 				libLog.Err(err),
 			)
@@ -352,15 +357,50 @@ func (c *Consumer) drainSource(ctx context.Context, source string, limit int) in
 			return processed
 		}
 
-		// Defensive nil guard: Dequeue cannot structurally return (nil, nil)
-		// today, but this check protects processMessage from panicking if the
-		// invariant is ever broken by refactoring.
-		if msg == nil {
+		if qLen == 0 {
 			return processed
 		}
 
-		if c.processMessage(ctx, msg) {
-			processed++
+		// Cap rotation work per key to batchSize so one tenant with a large
+		// backlog of future-dated messages cannot monopolise a poll cycle.
+		rotationCap := min(int(qLen), c.cfg.BatchSize)
+
+		rotations := 0
+
+		for rotations < rotationCap {
+			select {
+			case <-ctx.Done():
+				return processed
+			default:
+			}
+
+			msg, deqErr := c.handler.Dequeue(ctx, source)
+			if deqErr != nil {
+				if isRedisNilError(deqErr) {
+					return processed
+				}
+
+				c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: dequeue failed",
+					libLog.String("source", source),
+					libLog.Err(deqErr),
+				)
+
+				return processed
+			}
+
+			if msg == nil {
+				return processed
+			}
+
+			if c.processMessage(ctx, msg) {
+				processed++
+
+				break
+			}
+
+			// processMessage returned false — the message was not yet ready
+			// and was re-enqueued at the tail. Continue to the next message.
+			rotations++
 		}
 	}
 

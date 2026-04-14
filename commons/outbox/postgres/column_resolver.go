@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/outbox"
-	libPostgres "github.com/LerianStudio/lib-commons/v4/commons/postgres"
+	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
+	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
 	"golang.org/x/sync/singleflight"
 )
 

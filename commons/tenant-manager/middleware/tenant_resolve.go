@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
-	tmmongo "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/mongo"
-	tmpostgres "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/postgres"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	tmmongo "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/mongo"
+	tmpostgres "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/postgres"
 )
 
 // WithPG registers a PostgreSQL manager. If module is provided, the connection

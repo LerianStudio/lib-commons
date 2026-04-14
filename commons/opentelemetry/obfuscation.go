@@ -10,9 +10,9 @@ import (
 	"fmt"
 	"regexp"
 
-	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
-	"github.com/LerianStudio/lib-commons/v4/commons/safe"
-	"github.com/LerianStudio/lib-commons/v4/commons/security"
+	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
+	"github.com/LerianStudio/lib-commons/v5/commons/safe"
+	"github.com/LerianStudio/lib-commons/v5/commons/security"
 )
 
 // RedactionAction defines how sensitive values are transformed.

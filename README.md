@@ -2,7 +2,7 @@
 
 `lib-commons` is Lerian's shared Go toolkit for service primitives, connectors, observability, and runtime safety.
 
-The current major API surface is **v4**. If you are migrating from older `lib-commons` code, see `MIGRATION_MAP.md`.
+The current major API surface is **v5**. If you are migrating from older `lib-commons` code, see `MIGRATION_MAP.md`.
 
 ---
 
@@ -18,7 +18,7 @@ Use `MIGRATION_MAP.md` as the canonical map for renamed, redesigned, or removed 
 ## Installation
 
 ```bash
-go get github.com/LerianStudio/lib-commons/v4
+go get github.com/LerianStudio/lib-commons/v5
 ```
 
 ## What is in this library
@@ -97,14 +97,14 @@ go get github.com/LerianStudio/lib-commons/v4
 
 - `commons/shell/`: Makefile include helpers (`makefile_colors.mk`, `makefile_utils.mk`), shell scripts (`colors.sh`, `ascii.sh`), ASCII art (`logo.txt`)
 
-## Minimal v4 usage
+## Minimal v5 usage
 
 ```go
 import (
     "context"
 
-    "github.com/LerianStudio/lib-commons/v4/commons/log"
-    "github.com/LerianStudio/lib-commons/v4/commons/opentelemetry"
+    "github.com/LerianStudio/lib-commons/v5/commons/log"
+    "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 )
 
 func bootstrap() error {

@@ -250,11 +250,22 @@ func TestIsBlockedHostname(t *testing.T) {
 		{name: "metadata.gcp.internal", host: "metadata.gcp.internal", blocked: true},
 		{name: "AWS metadata IP", host: "169.254.169.254", blocked: true},
 
+		// Trailing root label (DNS FQDN spelling) — must be normalized and blocked
+		{name: "localhost with root label", host: "localhost.", blocked: true},
+		{name: "metadata.google.internal with root label", host: "metadata.google.internal.", blocked: true},
+		{name: "LOCALHOST. uppercase with root label", host: "LOCALHOST.", blocked: true},
+
+		// Repeated trailing dots — must be normalized and blocked
+		{name: "localhost with repeated trailing dots", host: "localhost..", blocked: true},
+		{name: "service.internal with repeated trailing dots", host: "service.internal..", blocked: true},
+
 		// Dangerous suffixes
 		{name: ".local suffix", host: "myhost.local", blocked: true},
 		{name: ".internal suffix", host: "service.internal", blocked: true},
 		{name: ".cluster.local suffix", host: "api.default.svc.cluster.local", blocked: true},
 		{name: ".INTERNAL uppercase", host: "service.INTERNAL", blocked: true},
+		{name: ".internal suffix with root label", host: "service.internal.", blocked: true},
+		{name: ".local suffix with root label", host: "myhost.local.", blocked: true},
 
 		// Empty hostname
 		{name: "empty string", host: "", blocked: true},

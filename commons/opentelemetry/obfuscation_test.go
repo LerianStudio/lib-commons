@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	cn "github.com/LerianStudio/lib-commons/v4/commons/constants"
+	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"

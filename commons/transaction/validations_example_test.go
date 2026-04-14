@@ -5,7 +5,7 @@ package transaction_test
 import (
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v4/commons/transaction"
+	"github.com/LerianStudio/lib-commons/v5/commons/transaction"
 	"github.com/shopspring/decimal"
 )
 

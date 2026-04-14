@@ -32,9 +32,16 @@ var blockedSuffixes = []string{
 	".cluster.local", // Kubernetes internal DNS
 }
 
+// normalizeHostname lowercases the hostname and strips the optional trailing
+// root label (".") so that "localhost." and "localhost" are treated identically.
+// This prevents trivial SSRF bypasses via the DNS root-label spelling.
+func normalizeHostname(hostname string) string {
+	return strings.TrimRight(strings.ToLower(hostname), ".")
+}
+
 // IsBlockedHostname reports whether hostname matches known dangerous patterns.
 //
-// Checks performed (case-insensitive):
+// Checks performed (case-insensitive, trailing root label stripped):
 //   - Empty hostname.
 //   - Exact match against known blocked hostnames (localhost, cloud metadata
 //     endpoints, AWS metadata IP).
@@ -50,7 +57,7 @@ func IsBlockedHostname(hostname string) bool {
 		return true
 	}
 
-	lower := strings.ToLower(hostname)
+	lower := normalizeHostname(hostname)
 
 	if blockedHostnames[lower] {
 		return true
@@ -72,7 +79,7 @@ func isBlockedHostnameWithConfig(hostname string, cfg *config) bool {
 		return true
 	}
 
-	lower := strings.ToLower(hostname)
+	lower := normalizeHostname(hostname)
 
 	// Check allow-list override first.
 	if cfg != nil && cfg.allowedHostnames[lower] {

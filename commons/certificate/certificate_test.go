@@ -3,6 +3,7 @@
 package certificate
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -22,6 +23,31 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// generateExpiredCert creates an in-memory self-signed certificate whose
+// validity window is entirely in the past (NotBefore: -2h, NotAfter: -1h).
+// It is used by tests that need to exercise expired-cert rejection paths
+// without touching the filesystem.
+func generateExpiredCert(t *testing.T) (*x509.Certificate, crypto.Signer) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		NotBefore:    time.Now().Add(-2 * time.Hour),
+		NotAfter:     time.Now().Add(-time.Hour),
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	cert, err := x509.ParseCertificate(certDER)
+	require.NoError(t, err)
+
+	return cert, key
+}
 
 func generateTestCert(t *testing.T, notAfter time.Time) (string, string) {
 	t.Helper()
@@ -170,11 +196,9 @@ func TestRotate_ExpiredCert(t *testing.T) {
 	m, err := NewManager("", "")
 	require.NoError(t, err)
 
-	certPath, keyPath := generateTestCert(t, time.Now().Add(-time.Hour))
-	cert, signer, loadErr := LoadFromFiles(certPath, keyPath)
-	require.NoError(t, loadErr)
+	cert, key := generateExpiredCert(t)
 
-	rotateErr := m.Rotate(cert, signer)
+	rotateErr := m.Rotate(cert, key)
 	assert.ErrorIs(t, rotateErr, ErrExpired)
 }
 
@@ -476,12 +500,9 @@ func TestRotate_AtomicityOnError(t *testing.T) {
 	require.Nil(t, m.GetCertificate())
 	require.Nil(t, m.GetSigner())
 
-	// Attempt to rotate with an expired cert (should fail).
-	certPath, keyPath := generateTestCert(t, time.Now().Add(-time.Hour))
-	expiredCert, expiredSigner, loadErr := LoadFromFiles(certPath, keyPath)
-	require.NoError(t, loadErr)
+	expiredCert, key := generateExpiredCert(t)
 
-	rotateErr := m.Rotate(expiredCert, expiredSigner)
+	rotateErr := m.Rotate(expiredCert, key)
 	require.ErrorIs(t, rotateErr, ErrExpired)
 
 	// State must be unchanged — still nil.

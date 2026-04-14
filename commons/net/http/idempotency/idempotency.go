@@ -10,10 +10,11 @@ import (
 	"net/http"
 	"time"
 
-	chttp "github.com/LerianStudio/lib-commons/v4/commons/constants"
-	"github.com/LerianStudio/lib-commons/v4/commons/log"
-	libRedis "github.com/LerianStudio/lib-commons/v4/commons/redis"
-	tmcore "github.com/LerianStudio/lib-commons/v4/commons/tenant-manager/core"
+	chttp "github.com/LerianStudio/lib-commons/v5/commons/constants"
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	libHTTP "github.com/LerianStudio/lib-commons/v5/commons/net/http"
+	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
+	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/gofiber/fiber/v2"
 	"github.com/redis/go-redis/v9"
 )
@@ -142,7 +143,8 @@ func WithMaxBodyCache(n int) Option {
 	}
 }
 
-// Check returns a Fiber middleware that enforces idempotency on mutating requests.
+// Check returns a Fiber middleware that enforces idempotency on supported mutating requests.
+// Requests without tenant context bypass idempotency to preserve tenant isolation.
 // If the Middleware is nil, a pass-through handler is returned.
 func (m *Middleware) Check() fiber.Handler {
 	if m == nil {
@@ -165,7 +167,10 @@ func redactKey(key string) string {
 
 func (m *Middleware) handle(c *fiber.Ctx) error {
 	// Idempotency only applies to mutating methods.
-	if c.Method() == fiber.MethodGet || c.Method() == fiber.MethodOptions || c.Method() == fiber.MethodHead {
+	switch c.Method() {
+	case fiber.MethodPost, fiber.MethodPut, fiber.MethodPatch, fiber.MethodDelete:
+		// Apply idempotency to mutating methods only.
+	default:
 		return c.Next()
 	}
 
@@ -179,14 +184,21 @@ func (m *Middleware) handle(c *fiber.Ctx) error {
 			return m.onRejected(c)
 		}
 
-		return c.Status(http.StatusBadRequest).JSON(fiber.Map{
-			"code":    "VALIDATION_ERROR",
-			"message": fmt.Sprintf("%s must not exceed %d characters", chttp.IdempotencyKey, m.maxKeyLength),
-		})
+		return libHTTP.RespondError(c, http.StatusBadRequest,
+			"VALIDATION_ERROR",
+			fmt.Sprintf("%s must not exceed %d characters", chttp.IdempotencyKey, m.maxKeyLength),
+		)
 	}
 
 	// Build a tenant-scoped Redis key for per-tenant isolation.
 	tenantID := tmcore.GetTenantIDContext(c.UserContext())
+	if tenantID == "" {
+		// No tenant context — bypass idempotency to avoid collapsing all
+		// tenant-less requests onto a shared key, which breaks isolation.
+		// This is consistent with the middleware's fail-open philosophy.
+		return c.Next()
+	}
+
 	key := fmt.Sprintf("%s%s:%s", m.keyPrefix, tenantID, idempotencyKey)
 
 	ctx, cancel := context.WithTimeout(c.UserContext(), m.redisTimeout)
@@ -301,23 +313,24 @@ func (m *Middleware) handleDuplicate(
 
 	if keyValue == keyStateProcessing {
 		// Request is still in flight — tell the client to retry later.
-		return c.Status(http.StatusConflict).JSON(fiber.Map{
-			"code":   "IDEMPOTENCY_CONFLICT",
-			"detail": "a request with this idempotency key is currently being processed",
-		})
+		return libHTTP.RespondError(c, http.StatusConflict,
+			"IDEMPOTENCY_CONFLICT",
+			"a request with this idempotency key is currently being processed",
+		)
 	}
 
 	// Key is "complete" but the response body was not cached
 	// (e.g., body exceeded maxBodyCache limit).
-	return c.Status(http.StatusOK).JSON(fiber.Map{
-		"code":   "IDEMPOTENT",
-		"detail": "request already processed",
+	return libHTTP.Respond(c, http.StatusOK, libHTTP.ErrorResponse{
+		Code:    http.StatusOK,
+		Title:   "IDEMPOTENT",
+		Message: "request already processed",
 	})
 }
 
 // saveResult performs post-handler Redis bookkeeping: on success it caches the response
 // body and marks the key as complete in a single round-trip via a Redis pipeline; on
-// handler error it deletes both keys so the client can retry with the same idempotency key.
+// handler failure or 5xx response it deletes both keys so the client can retry with the same idempotency key.
 func (m *Middleware) saveResult(
 	ctx context.Context,
 	c *fiber.Ctx,
@@ -325,7 +338,13 @@ func (m *Middleware) saveResult(
 	key, responseKey string,
 	handlerErr error,
 ) {
-	if handlerErr == nil {
+	statusCode := c.Response().StatusCode()
+
+	// Treat handler errors and 5xx responses the same way: delete keys so the
+	// client can retry. Fiber handlers commonly write a 5xx and return nil, so
+	// checking handlerErr alone is not sufficient — caching a transient 5xx
+	// would make it non-retriable for the full TTL.
+	if handlerErr == nil && statusCode < http.StatusInternalServerError {
 		body := c.Response().Body()
 
 		pipe := client.Pipeline()
@@ -348,7 +367,7 @@ func (m *Middleware) saveResult(
 			}
 
 			resp := cachedResponse{
-				StatusCode:  c.Response().StatusCode(),
+				StatusCode:  statusCode,
 				ContentType: string(c.Response().Header.ContentType()),
 				Body:        body,
 				Headers:     headers,
@@ -386,7 +405,7 @@ func (m *Middleware) saveResult(
 
 		if _, pipeErr := pipe.Exec(ctx); pipeErr != nil {
 			m.logger.Log(ctx, log.LevelWarn,
-				"idempotency: failed to delete keys after handler error",
+				"idempotency: failed to delete keys after handler failure or 5xx response",
 				log.Err(pipeErr),
 			)
 		}
