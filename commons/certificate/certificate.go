@@ -217,6 +217,7 @@ func clonePublicKey(pub crypto.PublicKey) crypto.PublicKey {
 	case ed25519.PublicKey:
 		cp := make(ed25519.PublicKey, len(k))
 		copy(cp, k)
+
 		return cp
 	default:
 		return pub
@@ -338,9 +339,30 @@ func loadFromFiles(certPath, keyPath string) (*x509.Certificate, crypto.Signer, 
 	certPath = filepath.Clean(certPath)
 	keyPath = filepath.Clean(keyPath)
 
+	cert, certChain, err := parseCertPEM(certPath)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	signer, err := parseKeyFile(keyPath)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	if !publicKeysMatch(cert.PublicKey, signer.Public()) {
+		return nil, nil, nil, ErrKeyMismatch
+	}
+
+	return cert, signer, certChain, nil
+}
+
+// parseCertPEM reads PEM-encoded certificates from certPath, parses the leaf
+// certificate, and validates its NotBefore/NotAfter lifetime window. It returns
+// the parsed leaf certificate and the full DER chain (leaf first).
+func parseCertPEM(certPath string) (*x509.Certificate, [][]byte, error) {
 	certPEM, err := os.ReadFile(certPath) // #nosec G304 -- cert path comes from trusted configuration
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("read cert: %w", err)
+		return nil, nil, fmt.Errorf("read cert: %w", err)
 	}
 
 	var certChain [][]byte
@@ -361,41 +383,48 @@ func loadFromFiles(certPath, keyPath string) (*x509.Certificate, crypto.Signer, 
 	}
 
 	if len(certChain) == 0 {
-		return nil, nil, nil, fmt.Errorf("cert file: %w", ErrNoPEMBlock)
+		return nil, nil, fmt.Errorf("cert file: %w", ErrNoPEMBlock)
 	}
 
 	cert, err := x509.ParseCertificate(certChain[0])
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("parse cert: %w", err)
+		return nil, nil, fmt.Errorf("parse cert: %w", err)
 	}
 
 	now := time.Now()
 	if now.Before(cert.NotBefore) {
-		return nil, nil, nil, fmt.Errorf("certificate is not yet valid (notBefore: %s)", cert.NotBefore)
+		return nil, nil, fmt.Errorf("certificate is not yet valid (notBefore: %s)", cert.NotBefore)
 	}
 
 	if now.After(cert.NotAfter) {
-		return nil, nil, nil, fmt.Errorf("%w (notAfter: %s)", ErrExpired, cert.NotAfter)
+		return nil, nil, fmt.Errorf("%w (notAfter: %s)", ErrExpired, cert.NotAfter)
 	}
 
-	// Check key file permissions before reading its contents.
+	return cert, certChain, nil
+}
+
+// parseKeyFile reads a PEM-encoded private key from keyPath after verifying that
+// file permissions are 0600 or stricter. It tries PKCS#8, PKCS#1 (RSA), and
+// SEC 1 (EC) encodings in order and returns the first successful parse as a
+// crypto.Signer.
+func parseKeyFile(keyPath string) (crypto.Signer, error) {
 	info, err := os.Stat(keyPath)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("stat key file: %w", err)
+		return nil, fmt.Errorf("stat key file: %w", err)
 	}
 
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		return nil, nil, nil, fmt.Errorf("key file %q has overly permissive mode %04o; expected 0600 or stricter", keyPath, perm)
+		return nil, fmt.Errorf("key file %q has overly permissive mode %04o; expected 0600 or stricter", keyPath, perm)
 	}
 
 	keyPEM, err := os.ReadFile(keyPath) // #nosec G304 -- key path comes from trusted configuration
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("read key: %w", err)
+		return nil, fmt.Errorf("read key: %w", err)
 	}
 
 	keyBlock, _ := pem.Decode(keyPEM)
 	if keyBlock == nil {
-		return nil, nil, nil, fmt.Errorf("key file: %w", ErrNoPEMBlock)
+		return nil, fmt.Errorf("key file: %w", ErrNoPEMBlock)
 	}
 
 	key, err := x509.ParsePKCS8PrivateKey(keyBlock.Bytes)
@@ -406,21 +435,17 @@ func loadFromFiles(certPath, keyPath string) (*x509.Certificate, crypto.Signer, 
 			// EC key fallback for PEM-encoded SEC 1 keys.
 			key, err = x509.ParseECPrivateKey(keyBlock.Bytes)
 			if err != nil {
-				return nil, nil, nil, fmt.Errorf("%w: %w", ErrKeyParseFailure, err)
+				return nil, fmt.Errorf("%w: %w", ErrKeyParseFailure, err)
 			}
 		}
 	}
 
 	signer, ok := key.(crypto.Signer)
 	if !ok {
-		return nil, nil, nil, ErrNotSigner
+		return nil, ErrNotSigner
 	}
 
-	if !publicKeysMatch(cert.PublicKey, signer.Public()) {
-		return nil, nil, nil, ErrKeyMismatch
-	}
-
-	return cert, signer, certChain, nil
+	return signer, nil
 }
 
 // safePublic calls key.Public() with panic recovery. Real crypto types (ecdsa,
