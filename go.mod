@@ -1,6 +1,6 @@
 module github.com/LerianStudio/lib-commons/v5
 
-go 1.25.7
+go 1.25.9
 
 require (
 	cloud.google.com/go/iam v1.6.0

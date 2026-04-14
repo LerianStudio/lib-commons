@@ -1,4 +1,4 @@
-# lib-commons Migration Map (v3 -> v4)
+# lib-commons Migration Map (v3 -> v5)
 
 This document maps notable `lib-commons/v3` APIs to the unified `lib-commons/v5` APIs. Use it as a lookup reference when migrating consumer code from the previous `lib-commons` line to the new unified major version.
 

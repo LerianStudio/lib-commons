@@ -193,9 +193,6 @@ func (m *Middleware) handle(c *fiber.Ctx) error {
 		// No tenant context — bypass idempotency to avoid collapsing all
 		// tenant-less requests onto a shared key, which breaks isolation.
 		// This is consistent with the middleware's fail-open philosophy.
-		m.logger.Log(c.UserContext(), log.LevelWarn,
-			"idempotency: missing tenant context, bypassing idempotency enforcement")
-
 		return c.Next()
 	}
 

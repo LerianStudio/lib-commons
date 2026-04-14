@@ -93,7 +93,7 @@ lib-commons/
 │   └── utils.go                    # General utility functions
 ├── docs/                           # Documentation
 ├── reports/                        # Test and coverage reports
-└── go.mod                          # Module definition (v4)
+└── go.mod                          # Module definition (v5)
 ```
 
 ### Package Design Principles

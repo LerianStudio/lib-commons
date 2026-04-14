@@ -363,10 +363,7 @@ func (c *Consumer) drainSource(ctx context.Context, source string, limit int) in
 
 		// Cap rotation work per key to batchSize so one tenant with a large
 		// backlog of future-dated messages cannot monopolise a poll cycle.
-		rotationCap := int(qLen)
-		if rotationCap > c.cfg.BatchSize {
-			rotationCap = c.cfg.BatchSize
-		}
+		rotationCap := min(int(qLen), c.cfg.BatchSize)
 
 		rotations := 0
 
