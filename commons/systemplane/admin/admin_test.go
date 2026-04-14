@@ -884,6 +884,16 @@ func TestPut_ExplicitNullValue(t *testing.T) {
 		data, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 204 for explicit null value, got %d: %s", resp.StatusCode, string(data))
 	}
+
+	// Verify the value was stored as nil.
+	v, ok := c.Get("global", "k")
+	if !ok {
+		t.Fatal("expected key to exist after PUT with explicit null")
+	}
+
+	if v != nil {
+		t.Fatalf("expected nil value, got %v", v)
+	}
 }
 
 func TestWithPathPrefix_LeadingSlashOptional(t *testing.T) {
