@@ -6,7 +6,9 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +23,11 @@ import (
 	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/internal/store"
 	"github.com/LerianStudio/lib-commons/v4/commons/systemplane/systemplanetest"
 )
+
+// tableSeq generates unique table names so each factory call produces an
+// isolated Store with its own empty table. This prevents leftover data from
+// earlier contract sub-tests polluting later ones.
+var tableSeq atomic.Int64
 
 // startPostgresContainer creates a PostgreSQL 17 testcontainer and returns
 // its DSN. The container is terminated when the test finishes.
@@ -63,11 +70,13 @@ func newTestStore(t *testing.T, dsn string) *Store {
 		require.NoError(t, db.Close())
 	})
 
+	table := fmt.Sprintf("sp_test_%d", tableSeq.Add(1))
+
 	s, err := New(Config{
 		DB:        db,
 		ListenDSN: dsn,
 		Channel:   "systemplane_changes",
-		Table:     "systemplane_entries",
+		Table:     table,
 	})
 	require.NoError(t, err)
 

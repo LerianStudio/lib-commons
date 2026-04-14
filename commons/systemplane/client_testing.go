@@ -109,7 +109,6 @@ func (a *testStoreAdapter) Close() error {
 //
 // DO NOT USE IN PRODUCTION. This constructor is intentionally undocumented in
 // README/API docs. Its API stability is not promised.
-//
 func NewForTesting(s TestStore, opts ...Option) (*Client, error) {
 	if s == nil {
 		return nil, store.ErrNilBackend

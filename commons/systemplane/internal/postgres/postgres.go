@@ -159,15 +159,14 @@ $$ LANGUAGE plpgsql`, s.cfg.Channel)
 		return fmt.Errorf("create function: %w", err)
 	}
 
-	dropTrigger := "DROP TRIGGER IF EXISTS systemplane_notify_trigger ON " + s.cfg.Table //nolint:gosec // G202: table name validated as Postgres identifier in New()
+	dropTrigger := "DROP TRIGGER IF EXISTS systemplane_notify_trigger ON " + s.cfg.Table // #nosec G202 -- table name validated as Postgres identifier in New()
 	if _, err := tx.ExecContext(ctx, dropTrigger); err != nil {
 		return fmt.Errorf("drop trigger: %w", err)
 	}
 
-	//nolint:gosec // G201: table name validated as Postgres identifier in New()
 	createTrigger := fmt.Sprintf(`CREATE TRIGGER systemplane_notify_trigger
 AFTER INSERT OR UPDATE ON %s
-FOR EACH ROW EXECUTE FUNCTION systemplane_notify()`, s.cfg.Table)
+FOR EACH ROW EXECUTE FUNCTION systemplane_notify()`, s.cfg.Table) // #nosec G201 -- table name validated as Postgres identifier in New()
 
 	if _, err := tx.ExecContext(ctx, createTrigger); err != nil {
 		return fmt.Errorf("create trigger: %w", err)
@@ -189,7 +188,7 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	ctx, span, finish := s.startSpan(ctx, "systemplane.postgres.list")
 	defer finish()
 
-	query := fmt.Sprintf( //nolint:gosec // G201: table name validated as Postgres identifier in New()
+	query := fmt.Sprintf( // #nosec G201 -- table name validated as Postgres identifier in New()
 		`SELECT namespace, key, value, updated_at, updated_by FROM %s ORDER BY namespace, key`,
 		s.cfg.Table,
 	)
@@ -245,7 +244,7 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bo
 	)
 	defer finish()
 
-	query := fmt.Sprintf( //nolint:gosec // G201: table name validated as Postgres identifier in New()
+	query := fmt.Sprintf( // #nosec G201 -- table name validated as Postgres identifier in New()
 		`SELECT namespace, key, value, updated_at, updated_by FROM %s WHERE namespace = $1 AND key = $2`,
 		s.cfg.Table,
 	)
@@ -289,12 +288,11 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 	)
 	defer finish()
 
-	//nolint:gosec // G201: table name validated as Postgres identifier in New()
 	query := fmt.Sprintf(`INSERT INTO %s (namespace, key, value, updated_at, updated_by)
 VALUES ($1, $2, $3, now(), $4)
 ON CONFLICT (namespace, key) DO UPDATE
 SET value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by`,
-		s.cfg.Table,
+		s.cfg.Table, // #nosec G201 -- table name validated as Postgres identifier in New()
 	)
 
 	if _, err := s.cfg.DB.ExecContext(ctx, query, e.Namespace, e.Key, e.Value, e.UpdatedBy); err != nil {

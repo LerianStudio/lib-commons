@@ -4,7 +4,6 @@ go 1.25.7
 
 require (
 	cloud.google.com/go/iam v1.6.0
-	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/aws/aws-sdk-go-v2 v1.41.5
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.5

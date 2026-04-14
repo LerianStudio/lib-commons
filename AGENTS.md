@@ -32,6 +32,7 @@ Data and messaging:
 - `commons/redis`: Redis connector with topology-based config (standalone/sentinel/cluster), GCP IAM auth, distributed locking (Redsync), backoff-based reconnect
 - `commons/rabbitmq`: AMQP connection/channel/health helpers with context-aware methods
 - `commons/dlq`: Redis-backed dead letter queue with tenant-scoped keys, exponential backoff, and a background consumer with retry/exhaust lifecycle
+- `commons/systemplane`: dual-backend (Postgres/MongoDB) hot-reload runtime configuration store with LISTEN/NOTIFY and change-stream subscriptions, admin HTTP routes, and test contract suite
 
 HTTP and server:
 - `commons/net/http`: Fiber HTTP helpers (response, error rendering, cursor/offset/sort pagination, validation, SSRF-protected reverse proxy, CORS, basic auth, telemetry middleware, health checks, access logging)
@@ -241,6 +242,23 @@ Build and shell:
 - HTTP client blocks all redirects to prevent SSRF bypass via 302 to internal addresses.
 - Retry strategy: exponential backoff with jitter (`commons/backoff`), base 1s. Non-retryable on 4xx except 429.
 - Sentinel errors: `ErrNilDeliverer`, `ErrSSRFBlocked`, `ErrDeliveryFailed`, `ErrInvalidURL`.
+
+### Runtime configuration (`commons/systemplane`)
+
+- Dual-backend hot-reload config store. Consumers choose at construction: `NewPostgres(db *sql.DB, listenDSN string, opts ...Option) (*Client, error)` or `NewMongoDB(client *mongo.Client, database string, opts ...Option) (*Client, error)`.
+- Client lifecycle: construct → `Register(namespace, key, default, opts...)` for each known key → `Start(ctx)` (hydrates from store, begins Subscribe) → runtime operations → `Close()`. Register after Start returns `ErrRegisterAfterStart`. Nil-receiver safe on all read paths.
+- Reads: `Get(ns, key) (any, bool)` plus typed accessors `GetString`, `GetInt`, `GetBool`, `GetFloat64`, `GetDuration`. All nil-safe; return zero values on miss.
+- Writes: `Set(ctx, ns, key, value, actor)` — last-write-wins, write-through cache for same-process read consistency, fires subscribers via the changefeed echo (not synchronously from Set).
+- Subscriptions: `OnChange(ns, key, fn)` returns an `unsubscribe` func. Callbacks invoked serially with panic recovery via `commons/runtime.RecoverAndLog`. Nil-receiver safe.
+- Listing/metadata: `List(namespace) []ListEntry` returns sorted entries in a namespace; `KeyRedaction(ns, key) RedactPolicy` for admin redaction.
+- Namespaces are free-text (convention: `"global"`, `"tenant:<id>"`, `"feature-flags"`). Authorization is enforced at the admin HTTP boundary, not in the Client.
+- Registered keys carry: default value, description, validator func, redaction policy (`RedactNone | RedactMask | RedactFull`). Options: `WithDescription`, `WithValidator`, `WithRedaction`.
+- Client options: `WithLogger`, `WithTelemetry`, `WithDebounce` (default 100ms), `WithListenChannel` (Postgres default `"systemplane_changes"`), `WithTable` (Postgres default `"systemplane_entries"`), `WithCollection` (MongoDB default `"systemplane_entries"`), `WithPollInterval` (MongoDB — non-zero switches from change-streams to polling; required for standalone MongoDB without a replica set).
+- Admin HTTP surface (`commons/systemplane/admin`): `Mount(router, client, opts...)` registers three routes at a configurable prefix (default `/system`): `GET :prefix/:namespace` (list), `GET :prefix/:namespace/:key` (read), `PUT :prefix/:namespace/:key` (write). Options: `WithPathPrefix`, `WithAuthorizer` (hook with `"read"` / `"write"` actions), `WithActorExtractor`. Values are redacted per the registered `RedactPolicy` before responding.
+- Internal `Store` interface (`internal/store`) has two implementations: `internal/postgres` (LISTEN/NOTIFY, pgx/v5) and `internal/mongodb` (change streams with polling fallback, mongo-driver/v2). Both satisfy a backend-agnostic contract suite in `systemplanetest.Run(t, factory)`.
+- Sentinel errors: `ErrClosed`, `ErrNotStarted`, `ErrAlreadyStarted`, `ErrRegisterAfterStart`, `ErrUnknownKey`, `ErrValidation`.
+- `NewForTesting(s TestStore, opts ...Option) (*Client, error)` is an explicit out-of-package test helper for consumers that need a Client bound to a caller-controlled store (e.g., the admin subpackage's tests). Not a promised production API.
+- Scope: runtime-mutable knobs only. Bootstrap-only config (DB DSNs, secrets, TLS paths, telemetry init, server identity) should live in env-vars or the secret manager, not in systemplane.
 
 ### Other packages
 
