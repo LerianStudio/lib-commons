@@ -262,6 +262,9 @@ func testSubscribeReceivesEventOnSet(t *testing.T, factory Factory) {
 	}()
 
 	// Give Subscribe a moment to establish the listener before writing.
+	// This setup sleep is unavoidable with real backends (Postgres LISTEN,
+	// MongoDB change-streams) because the Store interface has no "ready"
+	// signal. The assertion side uses polling (eventually), not sleep.
 	time.Sleep(200 * time.Millisecond)
 
 	entry := store.Entry{

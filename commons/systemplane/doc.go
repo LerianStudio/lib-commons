@@ -4,7 +4,7 @@
 //
 // It allows services to hot-reload a small set of operational knobs (log levels,
 // feature flags, rate limits, circuit-breaker thresholds) without a pod restart.
-// Reads are lock-free and nil-receiver safe; writes are persisted to either
+// Reads are low-contention (read-locked) and nil-receiver safe; writes are persisted to either
 // Postgres (with LISTEN/NOTIFY change-feed) or MongoDB (with change-streams or
 // optional polling).
 //
