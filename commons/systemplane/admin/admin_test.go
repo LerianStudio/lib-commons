@@ -827,6 +827,65 @@ func TestPut_InvalidBody(t *testing.T) {
 	resp2.Body.Close()
 }
 
+func TestPut_MissingValueField(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildClient(t)
+
+	if err := c.Register("global", "k", "v"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	app := buildApp(t, c, allowAll())
+
+	// Empty object — "value" field is absent.
+	resp := doRequest(t, app, http.MethodPut, "/system/global/k", `{}`)
+
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for missing value field, got %d", resp.StatusCode)
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "bad_request" {
+		t.Fatalf("expected title 'bad_request', got %q", body.Title)
+	}
+
+	if body.Message != "missing value field" {
+		t.Fatalf("expected message 'missing value field', got %q", body.Message)
+	}
+}
+
+func TestPut_ExplicitNullValue(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildClient(t)
+
+	if err := c.Register("global", "k", "v"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	app := buildApp(t, c, allowAll())
+
+	// Explicit null — "value" is present but null; should be accepted.
+	resp := doRequest(t, app, http.MethodPut, "/system/global/k", `{"value":null}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusNoContent {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 204 for explicit null value, got %d: %s", resp.StatusCode, string(data))
+	}
+}
+
 func TestWithPathPrefix_LeadingSlashOptional(t *testing.T) {
 	t.Parallel()
 

@@ -11,6 +11,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -52,6 +53,10 @@ func WithPathPrefix(p string) MountOption {
 // WithAuthorizer sets an authorization check called before each handler.
 // The action argument is "read" for GET requests and "write" for PUT requests.
 // Return a non-nil error to reject the request with 403 Forbidden.
+//
+// Callers MUST supply a WithAuthorizer option to enable access. The default
+// authorizer is deny-all: every request returns 403 until a custom authorizer
+// is provided.
 func WithAuthorizer(fn func(*fiber.Ctx, string) error) MountOption {
 	return func(cfg *mountConfig) {
 		if fn != nil {
@@ -79,6 +84,9 @@ type mounter struct {
 
 // Mount registers the admin HTTP routes on router using the given Client.
 // Nil client causes Mount to be a no-op (does not panic).
+//
+// By default, all routes are deny-all (every request returns 403 Forbidden).
+// Callers must supply [WithAuthorizer] to enable access.
 func Mount(router fiber.Router, c *systemplane.Client, opts ...MountOption) {
 	if c == nil || router == nil {
 		return
@@ -142,7 +150,7 @@ type getResponse struct {
 }
 
 type putRequest struct {
-	Value any `json:"value"`
+	Value json.RawMessage `json:"value"`
 }
 
 // ---------------------------------------------------------------------------
@@ -213,9 +221,26 @@ func (m *mounter) handlePut(c *fiber.Ctx) error {
 		})
 	}
 
+	if body.Value == nil {
+		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
+			Code:    fiber.StatusBadRequest,
+			Title:   "bad_request",
+			Message: "missing value field",
+		})
+	}
+
+	var value any
+	if err := json.Unmarshal(body.Value, &value); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
+			Code:    fiber.StatusBadRequest,
+			Title:   "bad_request",
+			Message: "invalid value",
+		})
+	}
+
 	actor := m.cfg.actorExtractor(c)
 
-	err := m.client.Set(c.UserContext(), namespace, key, body.Value, actor)
+	err := m.client.Set(c.UserContext(), namespace, key, value, actor)
 	if err == nil {
 		return c.SendStatus(fiber.StatusNoContent)
 	}
