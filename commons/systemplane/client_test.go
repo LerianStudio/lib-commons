@@ -118,7 +118,10 @@ func (f *fakeStore) Close() error {
 // fires all subscribe handlers, mimicking a change made by another process
 // that arrives via the changefeed.
 func (f *fakeStore) simulateExternalChange(namespace, key string, value any) {
-	jsonBytes, _ := json.Marshal(value)
+	jsonBytes, err := json.Marshal(value)
+	if err != nil {
+		panic("test bug: json.Marshal: " + err.Error())
+	}
 
 	e := store.Entry{
 		Namespace: namespace,
@@ -263,7 +266,11 @@ func TestGet_AfterHydrate_StoredValueWins(t *testing.T) {
 	fs := newFakeStore()
 
 	// Pre-populate the fake store with a value that differs from the default.
-	debugBytes, _ := json.Marshal("debug")
+	debugBytes, err := json.Marshal("debug")
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
 	fs.entries[nskey{Namespace: "ns", Key: "level"}] = store.Entry{
 		Namespace: "ns",
 		Key:       "level",
@@ -487,16 +494,23 @@ func TestOnChange_Unsubscribe(t *testing.T) {
 
 	// First change — should fire.
 	fs.simulateExternalChange("ns", "level", "debug")
-	time.Sleep(50 * time.Millisecond)
 
-	if callCount.Load() != 1 {
-		t.Fatalf("expected 1 callback, got %d", callCount.Load())
+	deadline := time.Now().Add(2 * time.Second)
+	for callCount.Load() != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out: expected 1 callback, got %d", callCount.Load())
+		}
+
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	// Unsubscribe, then trigger another change — should NOT fire.
 	unsub()
 
 	fs.simulateExternalChange("ns", "level", "warn")
+
+	// Negative assertion: we expect the callback count to remain unchanged.
+	// Cannot poll for "nothing happened" — must wait a reasonable window and verify.
 	time.Sleep(50 * time.Millisecond)
 
 	if callCount.Load() != 1 {
@@ -533,11 +547,22 @@ func TestOnChange_PanicIsRecovered(t *testing.T) {
 	})
 
 	fs.simulateExternalChange("ns", "level", "debug")
-	time.Sleep(50 * time.Millisecond)
 
-	v := received.Load()
-	if v != "debug" {
-		t.Fatalf("expected second subscriber to fire with 'debug', got %v", v)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if v := received.Load(); v != nil {
+			if v != "debug" {
+				t.Fatalf("expected second subscriber to fire with 'debug', got %v", v)
+			}
+
+			break
+		}
+
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for second subscriber to fire")
+		}
+
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -708,11 +733,14 @@ func TestTypedCoercion_Durations(t *testing.T) {
 	// Case 3: Simulate a changefeed delivering a nanosecond number (JSON float64).
 	// json.Unmarshal decodes numbers as float64.
 	fs.simulateExternalChange("ns", "timeout", float64(3*time.Second))
-	time.Sleep(50 * time.Millisecond)
 
-	d = c.GetDuration("ns", "timeout")
-	if d != 3*time.Second {
-		t.Fatalf("expected 3s from float64 nanoseconds, got %v", d)
+	deadline := time.Now().Add(2 * time.Second)
+	for c.GetDuration("ns", "timeout") != 3*time.Second {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out: expected 3s from float64 nanoseconds, got %v", c.GetDuration("ns", "timeout"))
+		}
+
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -924,10 +952,14 @@ func TestMultipleSubscribers_AllFire(t *testing.T) {
 	}
 
 	fs.simulateExternalChange("ns", "k", "new")
-	time.Sleep(50 * time.Millisecond)
 
-	if got := count.Load(); got != 5 {
-		t.Fatalf("expected 5 subscribers to fire, got %d", got)
+	deadline := time.Now().Add(2 * time.Second)
+	for count.Load() != 5 {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out: expected 5 subscribers to fire, got %d", count.Load())
+		}
+
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -947,11 +979,6 @@ func TestGetString_HappyPath(t *testing.T) {
 
 	if got := c.GetString("ns", "name"); got != "alice" {
 		t.Fatalf("expected 'alice', got %q", got)
-	}
-
-	// Non-string value returns "".
-	if err := c.Register("ns2", "count", 42); err != nil {
-		// Already started, so register a new client for this case.
 	}
 
 	// Test GetString with unregistered key.
@@ -996,7 +1023,11 @@ func TestGetInt_Float64Coercion(t *testing.T) {
 	}
 
 	// Pre-populate store with a JSON number (which json.Unmarshal decodes as float64).
-	jsonBytes, _ := json.Marshal(7)
+	jsonBytes, err := json.Marshal(7)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
 	fs.entries[nskey{Namespace: "ns", Key: "retries"}] = store.Entry{
 		Namespace: "ns",
 		Key:       "retries",
@@ -1152,9 +1183,10 @@ func TestRefreshFromStore_UnmarshalError(t *testing.T) {
 	for _, h := range handlers {
 		h(evt)
 	}
-	time.Sleep(50 * time.Millisecond)
 
-	// The cache should remain at the old value because unmarshal failed.
+	// Negative assertion: cache should remain unchanged because unmarshal failed.
+	// Cannot poll for "nothing changed" — must wait a reasonable window and verify.
+	time.Sleep(50 * time.Millisecond)
 	v, ok := c.Get("ns", "k")
 	if !ok {
 		t.Fatal("expected ok=true")
@@ -1176,7 +1208,11 @@ func TestRefreshFromStore_KeyDeletedFallsBackToDefault(t *testing.T) {
 	}
 
 	// Pre-populate with a different value.
-	jsonBytes, _ := json.Marshal("override")
+	jsonBytes, err := json.Marshal("override")
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
 	fs.entries[nskey{Namespace: "ns", Key: "k"}] = store.Entry{
 		Namespace: "ns",
 		Key:       "k",
@@ -1208,15 +1244,19 @@ func TestRefreshFromStore_KeyDeletedFallsBackToDefault(t *testing.T) {
 	for _, h := range handlers {
 		h(evt)
 	}
-	time.Sleep(50 * time.Millisecond)
 
-	v, ok := c.Get("ns", "k")
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		v, ok := c.Get("ns", "k")
+		if ok && v == "default-val" {
+			break
+		}
 
-	if v != "default-val" {
-		t.Fatalf("expected fallback to 'default-val', got %v", v)
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out: expected fallback to 'default-val', got (%v, ok=%v)", v, ok)
+		}
+
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -1226,7 +1266,11 @@ func TestStart_HydrateSkipsUnregisteredKeys(t *testing.T) {
 	fs := newFakeStore()
 
 	// Seed the store with an entry for an unregistered key.
-	jsonBytes, _ := json.Marshal("orphan")
+	jsonBytes, err := json.Marshal("orphan")
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
 	fs.entries[nskey{Namespace: "ns", Key: "orphan"}] = store.Entry{
 		Namespace: "ns",
 		Key:       "orphan",
@@ -1446,9 +1490,10 @@ func TestRefreshFromStore_GetError_KeepsCurrent(t *testing.T) {
 	for _, h := range handlers {
 		h(evt)
 	}
-	time.Sleep(50 * time.Millisecond)
 
-	// Cache should remain at the original value.
+	// Negative assertion: cache should remain unchanged because Get returned an error.
+	// Cannot poll for "nothing changed" — must wait a reasonable window and verify.
+	time.Sleep(50 * time.Millisecond)
 	v, ok := c.Get("ns", "k")
 	if !ok || v != "original" {
 		t.Fatalf("expected 'original' unchanged after Get error, got (%v, %v)", v, ok)
@@ -1474,9 +1519,10 @@ func TestRefreshFromStore_UnregisteredChangefeedEvent(t *testing.T) {
 	// Simulate a changefeed event for an unregistered key.
 	// This should log a warning but not crash.
 	fs.simulateExternalChange("ns", "ghost-key", "boo")
-	time.Sleep(50 * time.Millisecond)
 
-	// Client should remain functional.
+	// Negative assertion: unregistered changefeed event should not affect existing keys.
+	// Cannot poll for "nothing changed" — must wait a reasonable window and verify.
+	time.Sleep(50 * time.Millisecond)
 	v, ok := c.Get("ns", "known")
 	if !ok || v != "v" {
 		t.Fatalf("client should remain functional after unregistered changefeed event")
@@ -1556,5 +1602,23 @@ func TestRegister_EmptyNamespaceRejected(t *testing.T) {
 	err = c.Register("ns", "", "v")
 	if !errors.Is(err, ErrUnknownKey) {
 		t.Fatalf("expected ErrUnknownKey for empty key, got %v", err)
+	}
+}
+
+func TestNewPostgres_NilDB_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewPostgres(nil, "")
+	if !errors.Is(err, store.ErrNilBackend) {
+		t.Fatalf("expected ErrNilBackend, got %v", err)
+	}
+}
+
+func TestNewMongoDB_NilClient_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewMongoDB(nil, "")
+	if !errors.Is(err, store.ErrNilBackend) {
+		t.Fatalf("expected ErrNilBackend, got %v", err)
 	}
 }

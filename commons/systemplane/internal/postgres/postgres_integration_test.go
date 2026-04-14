@@ -136,9 +136,12 @@ func TestIntegration_SetEmitsNotifyWithCorrectPayload(t *testing.T) {
 	// Allow the LISTEN command to register.
 	time.Sleep(500 * time.Millisecond)
 
-	value, _ := json.Marshal("debug")
+	value, err := json.Marshal("debug")
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
 
-	err := s.Set(ctx, store.Entry{
+	err = s.Set(ctx, store.Entry{
 		Namespace: "global",
 		Key:       "log.level",
 		Value:     value,
@@ -182,7 +185,10 @@ func TestIntegration_SetIsIdempotent(t *testing.T) {
 	dsn := startPostgresContainer(t, ctx)
 	s := newTestStore(t, dsn)
 
-	value, _ := json.Marshal(42)
+	value, err := json.Marshal(42)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
 
 	for range 3 {
 		err := s.Set(ctx, store.Entry{
@@ -291,7 +297,10 @@ func TestIntegration_ListenReconnectsAfterConnDrop(t *testing.T) {
 	time.Sleep(3 * time.Second)
 
 	// Now issue a Set; the trigger should fire NOTIFY on the new connection.
-	value, _ := json.Marshal("reconnected")
+	value, err := json.Marshal("reconnected")
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
 
 	err = s.Set(ctx, store.Entry{
 		Namespace: "global",
@@ -393,9 +402,12 @@ func TestIntegration_SetAndGet(t *testing.T) {
 	dsn := startPostgresContainer(t, ctx)
 	s := newTestStore(t, dsn)
 
-	value, _ := json.Marshal("info")
+	value, err := json.Marshal("info")
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
 
-	err := s.Set(ctx, store.Entry{
+	err = s.Set(ctx, store.Entry{
 		Namespace: "global",
 		Key:       "log.level",
 		Value:     value,
