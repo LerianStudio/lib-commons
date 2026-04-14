@@ -25,6 +25,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// Compile-time interface satisfaction check.
+var _ store.Store = (*Store)(nil)
+
 // safeIdentifierRe validates that a SQL identifier contains only safe characters.
 // This prevents SQL injection in DDL statements where parameterized queries
 // are not supported.
@@ -289,13 +292,13 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 	defer finish()
 
 	query := fmt.Sprintf(`INSERT INTO %s (namespace, key, value, updated_at, updated_by)
-VALUES ($1, $2, $3, now(), $4)
+VALUES ($1, $2, $3, $4, $5)
 ON CONFLICT (namespace, key) DO UPDATE
-SET value = EXCLUDED.value, updated_at = now(), updated_by = EXCLUDED.updated_by`,
+SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`,
 		s.cfg.Table, // #nosec G201 -- table name validated as Postgres identifier in New()
 	)
 
-	if _, err := s.cfg.DB.ExecContext(ctx, query, e.Namespace, e.Key, e.Value, e.UpdatedBy); err != nil {
+	if _, err := s.cfg.DB.ExecContext(ctx, query, e.Namespace, e.Key, e.Value, e.UpdatedAt, e.UpdatedBy); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "upsert failed")
 
@@ -396,7 +399,7 @@ func (s *Store) listenLoop(ctx context.Context, handler func(store.Event)) error
 		evt, err := parseNotifyPayload(notification.Payload)
 		if err != nil {
 			s.logWarn(ctx, "failed to decode NOTIFY payload",
-				log.String("payload", notification.Payload),
+				log.String("payload", truncateString(notification.Payload, 200)),
 				log.Err(err),
 			)
 
@@ -500,4 +503,15 @@ func (s *Store) logWarn(ctx context.Context, msg string, fields ...log.Field) {
 	if s.cfg.Logger != nil {
 		s.cfg.Logger.Log(ctx, log.LevelWarn, msg, fields...)
 	}
+}
+
+// truncateString returns s unchanged if len(s) <= maxLen, otherwise returns
+// the first maxLen bytes followed by "...". Used for defense-in-depth when
+// logging untrusted payloads.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+
+	return s[:maxLen] + "..."
 }

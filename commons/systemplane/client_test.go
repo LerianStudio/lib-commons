@@ -26,6 +26,7 @@ type fakeStore struct {
 	handlers []func(store.Event)
 	closed   bool
 	subReady chan struct{} // closed when first Subscribe handler is registered
+	listErr  error        // if non-nil, List returns this error
 }
 
 func newFakeStore() *fakeStore {
@@ -38,6 +39,10 @@ func newFakeStore() *fakeStore {
 func (f *fakeStore) List(_ context.Context) ([]store.Entry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 
 	out := make([]store.Entry, 0, len(f.entries))
 	for _, e := range f.entries {
@@ -762,6 +767,55 @@ func TestStart_IsIdempotent(t *testing.T) {
 	// Second Start — should return nil silently (not ErrAlreadyStarted).
 	if err := c.Start(context.Background()); err != nil {
 		t.Fatalf("second start: expected nil, got %v", err)
+	}
+}
+
+func TestStart_RetryAfterTransientFailure(t *testing.T) {
+	t.Parallel()
+
+	fs := newFakeStore()
+	c := testClient(t, fs)
+
+	if err := c.Register("ns", "k", "default-val"); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	// Inject a transient error so the first Start fails.
+	fs.mu.Lock()
+	fs.listErr = errors.New("transient DB error")
+	fs.mu.Unlock()
+
+	if err := c.Start(context.Background()); err == nil {
+		t.Fatal("first start: expected error, got nil")
+	}
+
+	// Client must NOT be marked as started after a failed attempt.
+	if c.started.Load() {
+		t.Fatal("started should be false after failed Start")
+	}
+
+	// Clear the error so the retry succeeds.
+	fs.mu.Lock()
+	fs.listErr = nil
+	fs.mu.Unlock()
+
+	// Retry — must succeed now.
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("retry start: expected nil, got %v", err)
+	}
+
+	if !c.started.Load() {
+		t.Fatal("started should be true after successful retry")
+	}
+
+	// Verify the default value was hydrated.
+	got, ok := c.Get("ns", "k")
+	if !ok {
+		t.Fatal("expected key to be present after start")
+	}
+
+	if got != "default-val" {
+		t.Fatalf("expected default-val, got %v", got)
 	}
 }
 

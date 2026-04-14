@@ -105,7 +105,6 @@ type Store struct {
 
 	mu     sync.Mutex
 	closed bool
-	cancel context.CancelFunc
 }
 
 // New creates a MongoDB-backed Store. Returns an error if the Config is invalid.
@@ -315,7 +314,7 @@ func (s *Store) Subscribe(ctx context.Context, handler func(store.Event)) error 
 // Does NOT close s.cfg.Client — the caller owns the MongoDB client lifecycle.
 func (s *Store) Close() error {
 	if s == nil {
-		return store.ErrClosed
+		return nil
 	}
 
 	s.mu.Lock()
@@ -326,10 +325,6 @@ func (s *Store) Close() error {
 	}
 
 	s.closed = true
-
-	if s.cancel != nil {
-		s.cancel()
-	}
 
 	return nil
 }

@@ -67,8 +67,8 @@ type Client struct {
 	subscribers map[nskey][]subscription
 	nextSubID   atomic.Uint64
 
-	startOnce sync.Once
-	started   atomic.Bool
+	startMu sync.Mutex
+	started atomic.Bool
 	closeOnce sync.Once
 	closed    atomic.Bool
 	cancel    context.CancelFunc // cancels the Subscribe goroutine
@@ -164,83 +164,85 @@ func (c *Client) Start(ctx context.Context) error {
 		return ErrClosed
 	}
 
-	var startErr error
+	c.startMu.Lock()
+	defer c.startMu.Unlock()
 
-	c.startOnce.Do(func() {
-		ctx, span, finish := c.startSpan(ctx, "systemplane.client.start") //nolint:govet // ctx shadow is intentional — span context must propagate
-		defer finish()
+	// Already started — idempotent success.
+	if c.started.Load() {
+		return nil
+	}
 
-		// 1. Seed the cache with registered defaults.
-		c.registryMu.RLock()
+	ctx, span, finish := c.startSpan(ctx, "systemplane.client.start") //nolint:govet // ctx shadow is intentional — span context must propagate
+	defer finish()
+
+	// 1. Seed the cache with registered defaults.
+	c.registryMu.RLock()
+
+	c.cacheMu.Lock()
+	for nk, def := range c.registry {
+		c.cache[nk] = def.defaultValue
+	}
+	c.cacheMu.Unlock()
+
+	c.registryMu.RUnlock()
+
+	// 2. Hydrate from persistent store: overwrite defaults with stored values.
+	entries, err := c.store.List(ctx)
+	if err != nil {
+		opentelemetry.HandleSpanError(span, "hydration failed", err)
+		return err
+	}
+
+	c.registryMu.RLock()
+
+	for _, entry := range entries {
+		nk := nskey{Namespace: entry.Namespace, Key: entry.Key}
+
+		if _, registered := c.registry[nk]; !registered {
+			c.logWarn(ctx, "unregistered key in store, skipping",
+				log.String("namespace", entry.Namespace),
+				log.String("key", entry.Key),
+			)
+
+			continue
+		}
+
+		var decoded any
+		if err := json.Unmarshal(entry.Value, &decoded); err != nil {
+			c.logWarn(ctx, "failed to unmarshal stored value, keeping default",
+				log.String("namespace", entry.Namespace),
+				log.String("key", entry.Key),
+				log.Err(err),
+			)
+
+			continue
+		}
 
 		c.cacheMu.Lock()
-		for nk, def := range c.registry {
-			c.cache[nk] = def.defaultValue
-		}
+		c.cache[nk] = decoded
 		c.cacheMu.Unlock()
+	}
 
-		c.registryMu.RUnlock()
+	c.registryMu.RUnlock()
 
-		// 2. Hydrate from persistent store: overwrite defaults with stored values.
-		entries, err := c.store.List(ctx)
-		if err != nil {
-			opentelemetry.HandleSpanError(span, "hydration failed", err)
-			startErr = err
+	// 3. Launch the Subscribe goroutine with its own cancellable context.
+	subCtx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: cancel stored in c.cancel and invoked by Close()
+	c.cancel = cancel
 
-			return
-		}
-
-		c.registryMu.RLock()
-
-		for _, entry := range entries {
-			nk := nskey{Namespace: entry.Namespace, Key: entry.Key}
-
-			if _, registered := c.registry[nk]; !registered {
-				c.logWarn(ctx, "unregistered key in store, skipping",
-					log.String("namespace", entry.Namespace),
-					log.String("key", entry.Key),
-				)
-
-				continue
-			}
-
-			var decoded any
-			if err := json.Unmarshal(entry.Value, &decoded); err != nil {
-				c.logWarn(ctx, "failed to unmarshal stored value, keeping default",
-					log.String("namespace", entry.Namespace),
-					log.String("key", entry.Key),
+	c.wg.Go(func() {
+		defer runtime.RecoverAndLog(c.logger, "systemplane.subscribe")
+		if err := c.store.Subscribe(subCtx, c.onEvent); err != nil {
+			if subCtx.Err() == nil {
+				c.logWarn(subCtx, "subscribe returned error",
 					log.Err(err),
 				)
-
-				continue
 			}
-
-			c.cacheMu.Lock()
-			c.cache[nk] = decoded
-			c.cacheMu.Unlock()
 		}
-
-		c.registryMu.RUnlock()
-
-		// 3. Launch the Subscribe goroutine with its own cancellable context.
-		subCtx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: cancel stored in c.cancel and invoked by Close()
-		c.cancel = cancel
-
-		c.wg.Go(func() {
-			defer runtime.RecoverAndLog(c.logger, "systemplane.subscribe")
-			if err := c.store.Subscribe(subCtx, c.onEvent); err != nil {
-				if subCtx.Err() == nil {
-					c.logWarn(subCtx, "subscribe returned error",
-						log.Err(err),
-					)
-				}
-			}
-		})
-
-		c.started.Store(true)
 	})
 
-	return startErr
+	c.started.Store(true)
+
+	return nil
 }
 
 // Close unsubscribes from the changefeed and releases backend resources.
