@@ -1649,13 +1649,13 @@ func TestRegister_EmptyNamespaceRejected(t *testing.T) {
 	c := testClient(t, fs)
 
 	err := c.Register("", "k", "v")
-	if !errors.Is(err, ErrUnknownKey) {
-		t.Fatalf("expected ErrUnknownKey for empty namespace, got %v", err)
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected ErrValidation for empty namespace, got %v", err)
 	}
 
 	err = c.Register("ns", "", "v")
-	if !errors.Is(err, ErrUnknownKey) {
-		t.Fatalf("expected ErrUnknownKey for empty key, got %v", err)
+	if !errors.Is(err, ErrValidation) {
+		t.Fatalf("expected ErrValidation for empty key, got %v", err)
 	}
 }
 

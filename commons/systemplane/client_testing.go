@@ -115,12 +115,14 @@ func NewForTesting(s TestStore, opts ...Option) (*Client, error) {
 	}
 
 	cfg := defaultClientConfig()
+
+	// Disable debouncing for test determinism by default.
+	// Applied before opts so callers can override via WithDebounce.
+	cfg.debounce = 0
+
 	for _, o := range opts {
 		o(&cfg)
 	}
-
-	// Disable debouncing for test determinism by default.
-	cfg.debounce = 0
 
 	return newClient(&testStoreAdapter{ts: s}, cfg), nil
 }

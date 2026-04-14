@@ -578,6 +578,42 @@ func TestPut_UnknownKey(t *testing.T) {
 	}
 }
 
+func TestMount_DefaultAuthorizer_DeniesAll(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildClientStarted(t)
+
+	// No allowAll(), no WithAuthorizer — uses the default deny-all authorizer.
+	app := buildApp(t, c)
+
+	// GET should be denied.
+	resp := doRequest(t, app, http.MethodGet, "/system/global", "")
+
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("GET: expected 403, got %d", resp.StatusCode)
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Code != fiber.StatusForbidden {
+		t.Fatalf("GET: expected code 403, got %d", body.Code)
+	}
+
+	// PUT should be denied.
+	resp = doRequest(t, app, http.MethodPut, "/system/global/some-key", `{"value":"x"}`)
+
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("PUT: expected 403, got %d", resp.StatusCode)
+	}
+
+	readJSON(t, resp, &body)
+
+	if body.Code != fiber.StatusForbidden {
+		t.Fatalf("PUT: expected code 403, got %d", body.Code)
+	}
+}
+
 func TestAuthorizer_DeniesRead(t *testing.T) {
 	t.Parallel()
 

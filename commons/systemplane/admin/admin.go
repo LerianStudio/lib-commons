@@ -111,7 +111,7 @@ func (m *mounter) authorize(action string) fiber.Handler {
 			return c.Status(fiber.StatusForbidden).JSON(commonshttp.ErrorResponse{
 				Code:    fiber.StatusForbidden,
 				Title:   "forbidden",
-				Message: "access denied",
+				Message: err.Error(),
 			})
 		}
 

@@ -70,7 +70,7 @@ func (c *Client) Register(namespace, key string, defaultValue any, opts ...KeyOp
 // validateKeyArgs checks that namespace and key are non-empty.
 func validateKeyArgs(namespace, key string) error {
 	if namespace == "" || key == "" {
-		return ErrUnknownKey
+		return fmt.Errorf("%w: namespace and key must be non-empty", ErrValidation)
 	}
 
 	return nil

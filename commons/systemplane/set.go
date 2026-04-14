@@ -67,10 +67,20 @@ func (c *Client) Set(ctx context.Context, namespace, key string, value any, acto
 		return err
 	}
 
+	// Normalize to JSON-decoded type for cache consistency with refreshFromStore.
+	// Without this, Set would cache the raw Go value (e.g., int(42)) while the
+	// changefeed roundtrip caches a JSON-decoded value (e.g., float64(42)),
+	// causing type assertion mismatches for callers.
+	var canonical any
+	if err := json.Unmarshal(jsonBytes, &canonical); err != nil {
+		// This should never fail since we just marshaled it, but guard anyway.
+		canonical = value
+	}
+
 	// Write-through cache: update immediately so a subsequent Get in the same
 	// process sees the new value without waiting for the changefeed roundtrip.
 	c.cacheMu.Lock()
-	c.cache[nk] = value
+	c.cache[nk] = canonical
 	c.cacheMu.Unlock()
 
 	return nil
