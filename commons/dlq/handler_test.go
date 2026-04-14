@@ -422,6 +422,55 @@ func TestPruneExhaustedMessages(t *testing.T) {
 	assert.Equal(t, 0, remaining.RetryCount, "surviving message should be the non-exhausted one")
 }
 
+// TestDequeue_EmptySource_Rejected verifies that Dequeue rejects an empty source.
+func TestDequeue_EmptySource_Rejected(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newTestHandler(t)
+	ctx := context.Background()
+
+	_, err := h.Dequeue(ctx, "")
+	require.Error(t, err, "empty source should be rejected")
+	assert.Contains(t, err.Error(), "source must not be empty")
+}
+
+// TestQueueLength_EmptySource_Rejected verifies that QueueLength rejects an empty source.
+func TestQueueLength_EmptySource_Rejected(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newTestHandler(t)
+	ctx := context.Background()
+
+	_, err := h.QueueLength(ctx, "")
+	require.Error(t, err, "empty source should be rejected")
+	assert.Contains(t, err.Error(), "source must not be empty")
+}
+
+// TestScanQueues_EmptySource_Rejected verifies that ScanQueues rejects an empty source.
+func TestScanQueues_EmptySource_Rejected(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newTestHandler(t)
+	ctx := context.Background()
+
+	_, err := h.ScanQueues(ctx, "")
+	require.Error(t, err, "empty source should be rejected")
+	assert.Contains(t, err.Error(), "source must not be empty")
+}
+
+// TestPruneExhaustedMessages_EmptySource_Rejected verifies that PruneExhaustedMessages
+// rejects an empty source.
+func TestPruneExhaustedMessages_EmptySource_Rejected(t *testing.T) {
+	t.Parallel()
+
+	h, _ := newTestHandler(t)
+	ctx := context.Background()
+
+	_, err := h.PruneExhaustedMessages(ctx, "", 10)
+	require.Error(t, err, "empty source should be rejected")
+	assert.Contains(t, err.Error(), "source must not be empty")
+}
+
 // TestDequeue_MalformedJSON verifies that Dequeue returns an error (not a nil
 // pointer dereference) when the Redis list contains non-JSON data. This covers
 // the case where a message was manually injected or corrupted in transit.

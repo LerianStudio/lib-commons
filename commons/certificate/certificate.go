@@ -3,11 +3,15 @@ package certificate
 import (
 	"bytes"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"sync"
@@ -59,15 +63,6 @@ func NewManager(certPath, keyPath string) (*Manager, error) {
 		cert, signer, chain, err := loadFromFiles(certPath, keyPath)
 		if err != nil {
 			return nil, fmt.Errorf("load initial certificate: %w", err)
-		}
-
-		now := time.Now()
-		if now.Before(cert.NotBefore) {
-			return nil, fmt.Errorf("certificate is not yet valid (notBefore: %s)", cert.NotBefore)
-		}
-
-		if now.After(cert.NotAfter) {
-			return nil, fmt.Errorf("%w (notAfter: %s)", ErrExpired, cert.NotAfter)
 		}
 
 		m.cert = cert
@@ -184,8 +179,11 @@ func (m *Manager) GetSigner() crypto.Signer {
 	return m.signer
 }
 
-// PublicKey returns the public key from the current certificate.
-// Returns nil if no certificate is loaded or the public key cannot be extracted.
+// PublicKey returns a detached copy of the public key from the current certificate.
+// The returned value is a deep clone for known key types ([*rsa.PublicKey],
+// [*ecdsa.PublicKey], [ed25519.PublicKey]) so callers get a concurrency-safe copy
+// that does not alias internal manager state.
+// Returns nil if no certificate is loaded.
 func (m *Manager) PublicKey() crypto.PublicKey {
 	if m == nil {
 		return nil
@@ -198,7 +196,31 @@ func (m *Manager) PublicKey() crypto.PublicKey {
 		return nil
 	}
 
-	return m.cert.PublicKey
+	return clonePublicKey(m.cert.PublicKey)
+}
+
+// clonePublicKey returns a deep copy of pub for known concrete key types.
+// Unknown types are returned as-is (best effort).
+func clonePublicKey(pub crypto.PublicKey) crypto.PublicKey {
+	switch k := pub.(type) {
+	case *rsa.PublicKey:
+		return &rsa.PublicKey{
+			N: new(big.Int).Set(k.N),
+			E: k.E,
+		}
+	case *ecdsa.PublicKey:
+		return &ecdsa.PublicKey{
+			Curve: k.Curve,
+			X:     new(big.Int).Set(k.X),
+			Y:     new(big.Int).Set(k.Y),
+		}
+	case ed25519.PublicKey:
+		cp := make(ed25519.PublicKey, len(k))
+		copy(cp, k)
+		return cp
+	default:
+		return pub
+	}
 }
 
 // ExpiresAt returns when the current certificate expires.
@@ -345,6 +367,15 @@ func loadFromFiles(certPath, keyPath string) (*x509.Certificate, crypto.Signer, 
 	cert, err := x509.ParseCertificate(certChain[0])
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("parse cert: %w", err)
+	}
+
+	now := time.Now()
+	if now.Before(cert.NotBefore) {
+		return nil, nil, nil, fmt.Errorf("certificate is not yet valid (notBefore: %s)", cert.NotBefore)
+	}
+
+	if now.After(cert.NotAfter) {
+		return nil, nil, nil, fmt.Errorf("%w (notAfter: %s)", ErrExpired, cert.NotAfter)
 	}
 
 	// Check key file permissions before reading its contents.

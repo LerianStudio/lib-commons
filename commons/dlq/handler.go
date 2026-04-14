@@ -178,6 +178,9 @@ func (h *Handler) Enqueue(ctx context.Context, msg *FailedMessage) error {
 	}
 
 	key := h.tenantScopedKeyForTenant(effectiveTenant, msg.Source)
+	if key == "" {
+		return errors.New("dlq: enqueue: invalid tenant ID produced empty key")
+	}
 
 	rds, err := h.conn.GetClient(ctx)
 	if err != nil {
@@ -197,6 +200,16 @@ func (h *Handler) Enqueue(ctx context.Context, msg *FailedMessage) error {
 	return nil
 }
 
+// validateSource checks that a source string is non-empty and safe for use
+// as a Redis key segment. Used by all exported queue operations.
+func validateSource(source string) error {
+	if source == "" {
+		return errors.New("dlq: source must not be empty")
+	}
+
+	return validateKeySegment("source", source)
+}
+
 // validateEnqueueMessage performs pre-flight validation on the message before
 // any state mutation or tracing begins.
 func validateEnqueueMessage(msg *FailedMessage) error {
@@ -204,11 +217,7 @@ func validateEnqueueMessage(msg *FailedMessage) error {
 		return errors.New("dlq: enqueue: nil message")
 	}
 
-	if msg.Source == "" {
-		return errors.New("dlq: enqueue: source must not be empty")
-	}
-
-	return validateKeySegment("source", msg.Source)
+	return validateSource(msg.Source)
 }
 
 // stampInitialEnqueue sets CreatedAt, MaxRetries, and NextRetryAt on messages
@@ -287,7 +296,7 @@ func (h *Handler) Dequeue(ctx context.Context, source string) (*FailedMessage, e
 		return nil, ErrNilHandler
 	}
 
-	if err := validateKeySegment("source", source); err != nil {
+	if err := validateSource(source); err != nil {
 		return nil, err
 	}
 
@@ -295,6 +304,9 @@ func (h *Handler) Dequeue(ctx context.Context, source string) (*FailedMessage, e
 	defer span.End()
 
 	key := h.tenantScopedKey(ctx, source)
+	if key == "" {
+		return nil, errors.New("dlq: dequeue: invalid tenant ID produced empty key")
+	}
 
 	rds, err := h.conn.GetClient(ctx)
 	if err != nil {
@@ -324,11 +336,14 @@ func (h *Handler) QueueLength(ctx context.Context, source string) (int64, error)
 		return 0, ErrNilHandler
 	}
 
-	if err := validateKeySegment("source", source); err != nil {
+	if err := validateSource(source); err != nil {
 		return 0, err
 	}
 
 	key := h.tenantScopedKey(ctx, source)
+	if key == "" {
+		return 0, errors.New("dlq: queue length: invalid tenant ID produced empty key")
+	}
 
 	rds, err := h.conn.GetClient(ctx)
 	if err != nil {
@@ -350,7 +365,7 @@ func (h *Handler) ScanQueues(ctx context.Context, source string) ([]string, erro
 		return nil, ErrNilHandler
 	}
 
-	if err := validateKeySegment("source", source); err != nil {
+	if err := validateSource(source); err != nil {
 		return nil, err
 	}
 
@@ -415,7 +430,7 @@ func (h *Handler) PruneExhaustedMessages(ctx context.Context, source string, lim
 		return 0, ErrNilHandler
 	}
 
-	if err := validateKeySegment("source", source); err != nil {
+	if err := validateSource(source); err != nil {
 		return 0, err
 	}
 

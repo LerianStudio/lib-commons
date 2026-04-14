@@ -313,6 +313,79 @@ func TestProcessOnce_NotYetReady(t *testing.T) {
 		"RetryCount must not change for not-yet-ready re-enqueue")
 }
 
+// TestProcessOnce_HeadOfLineRotation verifies that when a queue contains a
+// future-dated message at the head followed by a ready message, ProcessOnce
+// rotates the future message to the tail and immediately processes the ready
+// message in the same poll cycle — without waiting for the next tick.
+func TestProcessOnce_HeadOfLineRotation(t *testing.T) {
+	t.Parallel()
+
+	metrics := &mockMetrics{}
+
+	var retriedMessages []*FailedMessage
+
+	retryFn := func(_ context.Context, msg *FailedMessage) error {
+		retriedMessages = append(retriedMessages, msg)
+		return nil
+	}
+
+	c, h, mr := newTestConsumer(t, retryFn, metrics)
+
+	ctx := tmcore.ContextWithTenantID(context.Background(), "tenant-rot")
+
+	// Message 1: future-dated (NOT yet ready for retry).
+	futureCreatedAt := time.Now().UTC().Add(-10 * time.Minute)
+	futureRetryAt := time.Now().UTC().Add(1 * time.Hour)
+
+	injectMessage(t, mr, "dlq:tenant-rot:outbound", &FailedMessage{
+		Source:       "outbound",
+		OriginalData: []byte(`{"id":"future"}`),
+		ErrorMessage: "not yet",
+		RetryCount:   1,
+		MaxRetries:   3,
+		CreatedAt:    futureCreatedAt,
+		NextRetryAt:  futureRetryAt,
+		TenantID:     "tenant-rot",
+	})
+
+	// Message 2: ready (past NextRetryAt).
+	injectMessage(t, mr, "dlq:tenant-rot:outbound", &FailedMessage{
+		Source:       "outbound",
+		OriginalData: []byte(`{"id":"ready"}`),
+		ErrorMessage: "transient error",
+		RetryCount:   0,
+		MaxRetries:   3,
+		CreatedAt:    time.Now().UTC().Add(-5 * time.Minute),
+		NextRetryAt:  time.Now().UTC().Add(-1 * time.Minute),
+		TenantID:     "tenant-rot",
+	})
+
+	c.ProcessOnce(ctx)
+
+	// The ready message must have been retried.
+	assert.Equal(t, 1, metrics.retriedCount(),
+		"the ready message should be retried in the same poll cycle")
+	assert.Len(t, retriedMessages, 1, "retryFn should be invoked exactly once")
+	assert.JSONEq(t, `{"id":"ready"}`, string(retriedMessages[0].OriginalData),
+		"the retried message should be the ready one, not the future-dated one")
+
+	// Queue should contain exactly 1 message: the re-enqueued future message.
+	length, err := h.QueueLength(ctx, "outbound")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), length,
+		"only the future-dated message should remain in the queue")
+
+	// Verify the re-enqueued future message preserved its original fields.
+	remaining, err := h.Dequeue(ctx, "outbound")
+	require.NoError(t, err)
+	assert.Equal(t, futureCreatedAt.Unix(), remaining.CreatedAt.Unix(),
+		"CreatedAt must be preserved through rotation re-enqueue")
+	assert.Equal(t, 3, remaining.MaxRetries,
+		"MaxRetries must be preserved through rotation re-enqueue")
+	assert.Equal(t, 1, remaining.RetryCount,
+		"RetryCount must not change for a rotated not-yet-ready message")
+}
+
 func TestProcessOnce_EmptyQueue(t *testing.T) {
 	t.Parallel()
 

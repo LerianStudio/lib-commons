@@ -23,14 +23,16 @@ func (h *Handler) tenantScopedKey(ctx context.Context, source string) string {
 func (h *Handler) tenantScopedKeyForTenant(tenantID, source string) string {
 	if tenantID != "" {
 		if err := validateKeySegment("tenantID", tenantID); err != nil {
-			// Log the invalid segment and fall back to the non-tenant key
-			// rather than constructing a corrupted Redis key.
-			h.logger.Log(context.Background(), libLog.LevelWarn, "dlq: tenantScopedKeyForTenant: invalid tenantID, using global key",
+			// Fail closed: an invalid tenant ID must not silently fall back
+			// to the global key, which would mix tenant-scoped messages into
+			// the global queue. Return an empty string so callers can detect
+			// the failure and skip the operation.
+			h.logger.Log(context.Background(), libLog.LevelError, "dlq: tenantScopedKeyForTenant: invalid tenantID, rejecting operation",
 				libLog.String("tenant_id", tenantID),
 				libLog.Err(err),
 			)
 
-			return fmt.Sprintf("%s%s", h.keyPrefix, source)
+			return ""
 		}
 
 		return fmt.Sprintf("%s%s:%s", h.keyPrefix, tenantID, source)

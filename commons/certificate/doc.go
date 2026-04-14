@@ -31,5 +31,10 @@
 //
 // # Nil safety
 //
-// All methods on a nil *Manager return zero values without panicking.
+// Read helpers on a nil *Manager ([Manager.GetCertificate], [Manager.GetSigner],
+// [Manager.PublicKey], [Manager.ExpiresAt], [Manager.DaysUntilExpiry],
+// [Manager.TLSCertificate]) return zero values without panicking.
+// [Manager.Rotate] returns [ErrNilManager] on a nil receiver.
+// [Manager.GetCertificateFunc] on a nil receiver returns a live closure
+// that always returns [ErrNilManager].
 package certificate

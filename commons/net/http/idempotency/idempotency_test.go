@@ -851,6 +851,95 @@ func TestCheck_PUTRequest_Enforced(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Missing tenant context — fail-open bypass
+// ---------------------------------------------------------------------------
+
+// TestCheck_NoTenantContext_BypassesIdempotency verifies that when the tenant
+// context is missing (empty string), the middleware bypasses idempotency
+// enforcement entirely (fail-open) to avoid collapsing all tenant-less
+// requests onto a shared key that breaks tenant isolation.
+func TestCheck_NoTenantContext_BypassesIdempotency(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newRedisClient(t, mr)
+	m := New(conn)
+
+	// No tenantMiddleware — tenantID will be "".
+	app := newPostApp(m.Check())
+
+	resp := doPost(t, app, "key-without-tenant")
+	body := readBody(t, resp)
+
+	assert.Equal(t, http.StatusCreated, resp.StatusCode,
+		"missing tenant context must bypass idempotency (fail-open)")
+	assert.Contains(t, body, "created",
+		"handler must be called normally when tenant context is missing")
+
+	// No Redis keys should be written since the middleware was bypassed.
+	assert.Empty(t, mr.Keys(),
+		"no Redis keys should be created when tenant context is missing")
+}
+
+// ---------------------------------------------------------------------------
+// 5xx response — keys deleted for retryability
+// ---------------------------------------------------------------------------
+
+// TestCheck_5xxResponse_KeysDeleted verifies that when a handler writes a 5xx
+// status code and returns nil (a common Fiber pattern), the middleware does NOT
+// cache the response. Instead, it deletes the idempotency keys so the client
+// can retry the same idempotency key.
+func TestCheck_5xxResponse_KeysDeleted(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newRedisClient(t, mr)
+	m := New(conn)
+
+	callCount := atomic.Int32{}
+
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(tenantMiddleware("tenant-5xx"))
+	app.Use(m.Check())
+	app.Post("/test", func(c *fiber.Ctx) error {
+		callCount.Add(1)
+		// Handler writes 503 but returns nil — a common pattern.
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "temporarily unavailable"})
+	})
+
+	// First request — handler returns 503, nil error.
+	req1 := httptest.NewRequest(http.MethodPost, "/test", nil)
+	req1.Header.Set(chttp.IdempotencyKey, "retry-5xx-key")
+
+	resp1, err := app.Test(req1, -1)
+	require.NoError(t, err)
+	defer resp1.Body.Close()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp1.StatusCode,
+		"first request must return the 503 from the handler")
+	assert.Equal(t, int32(1), callCount.Load())
+
+	// Keys must have been deleted — 5xx should not be cached.
+	assert.Empty(t, mr.Keys(),
+		"5xx response must not be cached; keys should be deleted for retry")
+
+	// Second request — same key — must reach the handler again (not replayed).
+	req2 := httptest.NewRequest(http.MethodPost, "/test", nil)
+	req2.Header.Set(chttp.IdempotencyKey, "retry-5xx-key")
+
+	resp2, err := app.Test(req2, -1)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+
+	assert.Equal(t, http.StatusServiceUnavailable, resp2.StatusCode,
+		"second request must also reach the handler (5xx was not cached)")
+	assert.Equal(t, int32(2), callCount.Load(),
+		"handler must be called twice — 5xx responses are not cached")
+	assert.Empty(t, resp2.Header.Get(chttp.IdempotencyReplayed),
+		"second request must not be marked as replayed")
+}
+
+// ---------------------------------------------------------------------------
 // Negative option values — defaults must be preserved
 // ---------------------------------------------------------------------------
 

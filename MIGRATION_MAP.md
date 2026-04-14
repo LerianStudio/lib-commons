@@ -977,12 +977,37 @@ removed -- no deprecation window, no compatibility shims.
 
 ### New (canonical) public surface
 
-See the `commons/systemplane` section in `CLAUDE.md` for the full list. Key entry points:
+Constructors:
 
-- `systemplane.NewPostgres(db, listenDSN, opts...) (*Client, error)`
-- `systemplane.NewMongoDB(client, database, opts...) (*Client, error)`
-- `(*Client).Register / Start / Close / Get / GetString / GetInt / GetBool / GetFloat64 / GetDuration / Set / OnChange / List / KeyRedaction`
-- `admin.Mount(router, client, opts...)`
+- `systemplane.NewPostgres(db *sql.DB, listenDSN string, opts ...Option) (*Client, error)`
+- `systemplane.NewMongoDB(client *mongo.Client, database string, opts ...Option) (*Client, error)`
+
+Client methods:
+
+- `Register(namespace, key string, defaultValue any, opts ...KeyOption) error`
+- `Start(ctx context.Context) error`
+- `Close() error`
+- `Get(namespace, key string) (any, bool)`
+- `GetString(namespace, key string) string`
+- `GetInt(namespace, key string) int`
+- `GetBool(namespace, key string) bool`
+- `GetFloat64(namespace, key string) float64`
+- `GetDuration(namespace, key string) time.Duration`
+- `Set(ctx context.Context, namespace, key string, value any, actor string) error`
+- `OnChange(namespace, key string, fn func(newValue any)) (unsubscribe func())`
+- `List(namespace string) []ListEntry`
+- `KeyRedaction(namespace, key string) RedactPolicy`
+
+Admin HTTP surface:
+
+- `admin.Mount(router fiber.Router, c *systemplane.Client, opts ...MountOption)`
+  - `GET :prefix/:namespace` — list entries
+  - `GET :prefix/:namespace/:key` — read single entry
+  - `PUT :prefix/:namespace/:key` — write entry
+
+Sentinel errors:
+
+- `ErrClosed`, `ErrNotStarted`, `ErrRegisterAfterStart`, `ErrUnknownKey`, `ErrValidation`, `ErrDuplicateKey`
 
 ### Migration notes for consumers
 

@@ -170,11 +170,23 @@ func TestRotate_ExpiredCert(t *testing.T) {
 	m, err := NewManager("", "")
 	require.NoError(t, err)
 
-	certPath, keyPath := generateTestCert(t, time.Now().Add(-time.Hour))
-	cert, signer, loadErr := LoadFromFiles(certPath, keyPath)
-	require.NoError(t, loadErr)
+	// Construct an expired cert in-memory (LoadFromFiles now rejects expired certs).
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
 
-	rotateErr := m.Rotate(cert, signer)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		NotBefore:    time.Now().Add(-2 * time.Hour),
+		NotAfter:     time.Now().Add(-time.Hour),
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	cert, err := x509.ParseCertificate(certDER)
+	require.NoError(t, err)
+
+	rotateErr := m.Rotate(cert, key)
 	assert.ErrorIs(t, rotateErr, ErrExpired)
 }
 
@@ -476,12 +488,23 @@ func TestRotate_AtomicityOnError(t *testing.T) {
 	require.Nil(t, m.GetCertificate())
 	require.Nil(t, m.GetSigner())
 
-	// Attempt to rotate with an expired cert (should fail).
-	certPath, keyPath := generateTestCert(t, time.Now().Add(-time.Hour))
-	expiredCert, expiredSigner, loadErr := LoadFromFiles(certPath, keyPath)
-	require.NoError(t, loadErr)
+	// Construct an expired cert in-memory (LoadFromFiles now rejects expired certs).
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
 
-	rotateErr := m.Rotate(expiredCert, expiredSigner)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		NotBefore:    time.Now().Add(-2 * time.Hour),
+		NotAfter:     time.Now().Add(-time.Hour),
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	expiredCert, err := x509.ParseCertificate(certDER)
+	require.NoError(t, err)
+
+	rotateErr := m.Rotate(expiredCert, key)
 	require.ErrorIs(t, rotateErr, ErrExpired)
 
 	// State must be unchanged — still nil.
