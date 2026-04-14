@@ -1,7 +1,91 @@
 // Typed read accessors for systemplane Client.
 package systemplane
 
-import "time"
+import (
+	"sort"
+	"time"
+)
+
+// ListEntry is a single entry returned by [Client.List]. It exposes the key
+// name and its current effective value (default or override).
+type ListEntry struct {
+	Key   string
+	Value any
+}
+
+// List returns all currently-cached entries in the given namespace, sorted by
+// key for deterministic output. Keys registered but never persisted return
+// their default values. Safe to call concurrently; nil-safe.
+func (c *Client) List(namespace string) []ListEntry {
+	if c == nil {
+		return nil
+	}
+
+	// Collect all registered keys in this namespace.
+	c.registryMu.RLock()
+
+	keys := make([]nskey, 0)
+
+	for nk := range c.registry {
+		if nk.Namespace == namespace {
+			keys = append(keys, nk)
+		}
+	}
+
+	c.registryMu.RUnlock()
+
+	if len(keys) == 0 {
+		return nil
+	}
+
+	// Sort by key name for deterministic output.
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].Key < keys[j].Key
+	})
+
+	// Build the result from cache (or registry defaults).
+	entries := make([]ListEntry, 0, len(keys))
+
+	c.cacheMu.RLock()
+	c.registryMu.RLock()
+
+	for _, nk := range keys {
+		val, inCache := c.cache[nk]
+		if !inCache {
+			// Fallback to the registered default.
+			if def, registered := c.registry[nk]; registered {
+				val = def.defaultValue
+			}
+		}
+
+		entries = append(entries, ListEntry{Key: nk.Key, Value: val})
+	}
+
+	c.registryMu.RUnlock()
+	c.cacheMu.RUnlock()
+
+	return entries
+}
+
+// KeyRedaction returns the redaction policy for a registered key. Returns
+// [RedactNone] for unregistered keys or nil receivers.
+func (c *Client) KeyRedaction(namespace, key string) RedactPolicy {
+	if c == nil {
+		return RedactNone
+	}
+
+	nk := nskey{Namespace: namespace, Key: key}
+
+	c.registryMu.RLock()
+	def, registered := c.registry[nk]
+	c.registryMu.RUnlock()
+
+	if !registered {
+		return RedactNone
+	}
+
+	return def.redaction
+}
 
 // Get returns the current value for the given namespace and key.
 // Returns (nil, false) when the Client is nil, closed, or the key is unregistered.

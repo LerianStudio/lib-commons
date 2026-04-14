@@ -869,15 +869,15 @@ func TestOptions_ApplyCorrectly(t *testing.T) {
 func TestRedaction(t *testing.T) {
 	t.Parallel()
 
-	if v := applyRedaction("secret", RedactNone); v != "secret" {
+	if v := ApplyRedaction("secret", RedactNone); v != "secret" {
 		t.Fatalf("RedactNone: expected 'secret', got %v", v)
 	}
 
-	if v := applyRedaction("secret", RedactMask); v != "****" {
+	if v := ApplyRedaction("secret", RedactMask); v != "****" {
 		t.Fatalf("RedactMask: expected '****', got %v", v)
 	}
 
-	if v := applyRedaction("secret", RedactFull); v != "[REDACTED]" {
+	if v := ApplyRedaction("secret", RedactFull); v != "[REDACTED]" {
 		t.Fatalf("RedactFull: expected '[REDACTED]', got %v", v)
 	}
 }
