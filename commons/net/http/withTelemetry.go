@@ -60,14 +60,25 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, exclud
 			return c.Next()
 		}
 
+		// Capture all Fiber context string values BEFORE c.Next(). Fiber v2 uses
+		// utils.UnsafeString which returns pointers into fasthttp's request buffer.
+		// After c.Next() returns, fasthttp may recycle the underlying RequestCtx
+		// for the next connection, corrupting any previously returned string slices.
+		// Safe copies via string([]byte(...)) ensure the data is heap-owned.
+		method := string([]byte(c.Method()))
+		originalURL := string([]byte(c.OriginalURL()))
+		protocol := string([]byte(c.Protocol()))
+		hostname := string([]byte(c.Hostname()))
+		userAgent := string([]byte(c.Get(cn.HeaderUserAgent)))
+
 		tracer := effectiveTelemetry.TracerProvider.Tracer(effectiveTelemetry.LibraryName)
-		routePathWithMethod := c.Method() + " " + commons.ReplaceUUIDWithPlaceholder(c.Path())
+		routePathWithMethod := method + " " + commons.ReplaceUUIDWithPlaceholder(c.Path())
 
 		traceCtx := c.UserContext()
 		// Compatibility note: trace extraction currently trusts the internal-service
 		// User-Agent heuristic. This is an interoperability hint, not an authenticated
 		// trust boundary, and is preserved to avoid changing existing caller behavior.
-		if commons.IsInternalLerianService(c.Get(cn.HeaderUserAgent)) {
+		if commons.IsInternalLerianService(userAgent) {
 			traceCtx = opentelemetry.ExtractHTTPContext(traceCtx, c)
 		}
 
@@ -87,12 +98,12 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, exclud
 
 		statusCode := c.Response().StatusCode()
 		span.SetAttributes(
-			attribute.String("http.request.method", c.Method()),
-			attribute.String("url.path", sanitizeURL(c.OriginalURL())),
+			attribute.String("http.request.method", method),
+			attribute.String("url.path", sanitizeURL(originalURL)),
 			attribute.String("http.route", c.Route().Path),
-			attribute.String("url.scheme", c.Protocol()),
-			attribute.String("server.address", c.Hostname()),
-			attribute.String("user_agent.original", c.Get(cn.HeaderUserAgent)),
+			attribute.String("url.scheme", protocol),
+			attribute.String("server.address", hostname),
+			attribute.String("user_agent.original", userAgent),
 			attribute.Int("http.response.status_code", statusCode),
 		)
 
