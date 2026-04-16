@@ -496,8 +496,33 @@ func (rc *RabbitMQConnection) EnsureChannelContext(ctx context.Context) error {
 
 	rc.mu.Lock()
 	if newConnection {
+		// Race detection: if another goroutine already established a healthy
+		// connection while we were dialing, close ours and reuse theirs to
+		// prevent connection leaks under concurrent reconnection pressure.
+		if rc.Connection != nil && rc.Connection != conn && !snap.connectionClosedFn(rc.Connection) {
+			rc.mu.Unlock()
+
+			// Close the connection we just created — another goroutine won the race.
+			rc.closeConnectionWith(conn, snap.connCloser)
+
+			return nil
+		}
+
+		// Capture old connection to close outside the lock.
+		oldConn := rc.Connection
 		rc.Connection = conn
 		rc.reconnectAttempts = 0
+		rc.Channel = ch
+		rc.Connected = true
+		rc.mu.Unlock()
+
+		// Best-effort cleanup of the replaced connection (usually already dead,
+		// but explicit close ensures no half-open TCP socket is leaked).
+		if oldConn != nil && oldConn != conn {
+			rc.closeConnectionWith(oldConn, snap.connCloser)
+		}
+
+		return nil
 	}
 
 	rc.Channel = ch
