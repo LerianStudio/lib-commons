@@ -415,9 +415,9 @@ func TestIntegration_PartitionFIFO(t *testing.T) {
 	p := newTestProducer(t, brokers)
 
 	const (
-		tenantCount       = 5
-		eventsPerTenant   = 200
-		totalEvents       = tenantCount * eventsPerTenant
+		tenantCount     = 5
+		eventsPerTenant = 200
+		totalEvents     = tenantCount * eventsPerTenant
 	)
 
 	consumer := newConsumerClient(t, brokers, topic)
@@ -951,4 +951,3 @@ func TestIntegration_CloudEventsSDKContract(t *testing.T) {
 	assert.Equal(t, event.Source, ce.Source(), "Source")
 	assert.True(t, ce.Time().Equal(now), "Time")
 }
-
