@@ -3,6 +3,19 @@
 //
 // Change-streams require a replica set; standalone deployments should use
 // polling by setting Config.PollInterval to a positive duration.
+//
+// Tenant scoping:
+//   - Every document carries a tenant_id field. The sentinel "_global" marks
+//     rows owned by the legacy (non-tenant-scoped) API surface. Any other
+//     value is a tenant-specific override.
+//   - The document _id is a compound sub-document {namespace, key, tenant_id}.
+//     A compound _id (instead of ObjectId) is what makes change-stream delete
+//     events self-describing: a delete event has no fullDocument, only
+//     documentKey._id, so the tuple must live there to preserve tenant
+//     attribution on DeleteForTenant flows (TRD §3.2).
+//   - Existing callers of Set / Get / List continue to see only "_global" rows.
+//     Tenant-specific reads/writes go through SetTenantValue / GetTenantValue /
+//     DeleteTenantValue / ListTenantValues / ListTenantsForKey.
 package mongodb
 
 import (
@@ -12,10 +25,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
-	libRuntime "github.com/LerianStudio/lib-commons/v5/commons/runtime"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -37,6 +48,16 @@ const (
 
 	// tracerName is the OpenTelemetry tracer name for this package.
 	tracerName = "systemplane.mongodb"
+
+	// sentinelGlobal is the tenant_id value used for shared (non-tenant-scoped)
+	// rows. The tenant-manager regex ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ forbids a
+	// real tenant from starting with "_", so the sentinel cannot collide.
+	// See TRD §3.1 and commons/tenant-manager/core/validation.go.
+	sentinelGlobal = "_global"
+
+	// schemaInitTimeout bounds the time spent running migration and index
+	// creation at construction time.
+	schemaInitTimeout = 30 * time.Second
 )
 
 // Compile-time interface check.
@@ -66,13 +87,34 @@ type Config struct {
 	Telemetry *opentelemetry.Telemetry
 }
 
+// compoundID is the shape of the document _id.
+//
+// Storing the full (namespace, key, tenant_id) tuple in _id guarantees that
+// change-stream delete events — which surface only documentKey, never
+// fullDocument — still carry enough information to route the deletion to the
+// correct tenant-aware subscriber. Without this, delete events would require
+// change-stream pre/post-images (MongoDB 6.0+ server-side opt-in) or a
+// re-read that cannot work because the document is gone. See TRD §3.2.
+type compoundID struct {
+	Namespace string `bson:"namespace"`
+	Key       string `bson:"key"`
+	TenantID  string `bson:"tenant_id"`
+}
+
 // entryDoc is the BSON document shape persisted in the collection.
+//
+// The ID field mirrors the compoundID triple redundantly into the top-level
+// namespace / key / tenant_id fields. Top-level fields are what
+// ListTenantsForKey's Distinct and the polling path's filters read; the _id
+// is what the change-stream delete path extracts. Both paths stay cheap.
 type entryDoc struct {
-	Namespace string    `bson:"namespace"`
-	Key       string    `bson:"key"`
-	Value     string    `bson:"value"`
-	UpdatedAt time.Time `bson:"updated_at"`
-	UpdatedBy string    `bson:"updated_by"`
+	ID        compoundID `bson:"_id"`
+	Namespace string     `bson:"namespace"`
+	Key       string     `bson:"key"`
+	TenantID  string     `bson:"tenant_id"`
+	Value     string     `bson:"value"`
+	UpdatedAt time.Time  `bson:"updated_at"`
+	UpdatedBy string     `bson:"updated_by"`
 }
 
 // toEntry converts a BSON document into the public store.Entry type.
@@ -80,16 +122,11 @@ func (d entryDoc) toEntry() store.Entry {
 	return store.Entry{
 		Namespace: d.Namespace,
 		Key:       d.Key,
+		TenantID:  d.TenantID,
 		Value:     []byte(d.Value),
 		UpdatedAt: d.UpdatedAt,
 		UpdatedBy: d.UpdatedBy,
 	}
-}
-
-// changeEvent is the subset of a MongoDB change stream event we decode.
-type changeEvent struct {
-	OperationType string  `bson:"operationType"`
-	FullDocument  *bson.D `bson:"fullDocument,omitempty"`
 }
 
 // Store implements [store.Store] over MongoDB.
@@ -104,7 +141,11 @@ type Store struct {
 
 // New creates a MongoDB-backed Store. Returns an error if the Config is invalid.
 //
-// The compound unique index on (namespace, key) is created idempotently.
+// The compound unique index on (namespace, key, tenant_id) is created
+// idempotently. Any pre-existing (namespace, key) index from older deployments
+// is dropped, and pre-existing documents with ObjectId _id or missing
+// tenant_id are migrated to the compound _id shape. See ensureSchema.
+//
 // When PollInterval is zero, Subscribe uses change-streams (requires a replica
 // set). When PollInterval is positive, Subscribe uses a polling loop that works
 // with standalone MongoDB deployments.
@@ -123,20 +164,11 @@ func New(cfg Config) (*Store, error) {
 
 	coll := cfg.Client.Database(cfg.Database).Collection(cfg.Collection)
 
-	// Create compound unique index on (namespace, key) idempotently.
-	indexModel := mongo.IndexModel{
-		Keys: bson.D{
-			{Key: "namespace", Value: 1},
-			{Key: "key", Value: 1},
-		},
-		Options: options.Index().SetUnique(true),
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), schemaInitTimeout)
 	defer cancel()
 
-	if _, err := coll.Indexes().CreateOne(ctx, indexModel); err != nil {
-		return nil, fmt.Errorf("mongodb store: create unique index: %w", err)
+	if err := ensureSchema(ctx, coll); err != nil {
+		return nil, fmt.Errorf("mongodb store: schema init: %w", err)
 	}
 
 	tracer := noop.NewTracerProvider().Tracer(tracerName)
@@ -153,7 +185,11 @@ func New(cfg Config) (*Store, error) {
 	}, nil
 }
 
-// List returns all entries from the MongoDB collection.
+// List returns all "_global" entries from the MongoDB collection.
+//
+// This is the legacy (non-tenant-scoped) read path and intentionally excludes
+// tenant-specific rows so that existing consumers of List see only the shared
+// global configuration. Tenant hydration uses ListTenantValues.
 func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	if s == nil || s.isClosed() {
 		return nil, store.ErrClosed
@@ -162,7 +198,9 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.list")
 	defer span.End()
 
-	cursor, err := s.coll.Find(ctx, bson.D{})
+	filter := bson.D{{Key: "tenant_id", Value: sentinelGlobal}}
+
+	cursor, err := s.coll.Find(ctx, filter)
 	if err != nil {
 		opentelemetry.HandleSpanError(span, "mongodb list: find failed", err)
 		return nil, fmt.Errorf("mongodb store list: %w", err)
@@ -185,8 +223,11 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	return entries, nil
 }
 
-// Get returns a single entry by namespace and key.
+// Get returns a single "_global" entry by namespace and key.
 // Returns (_, false, nil) when the entry does not exist.
+//
+// Get is strictly global-scoped: tenant-specific rows are invisible to this
+// method. See GetTenantValue for tenant-aware reads.
 func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bool, error) {
 	if s == nil || s.isClosed() {
 		return store.Entry{}, false, store.ErrClosed
@@ -200,29 +241,25 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bo
 		attribute.String("entry.key", key),
 	)
 
-	filter := bson.D{
-		{Key: "namespace", Value: namespace},
-		{Key: "key", Value: key},
+	doc, found, err := s.findOne(ctx, namespace, key, sentinelGlobal)
+	if err != nil {
+		opentelemetry.HandleSpanError(span, "mongodb get: find failed", err)
+		return store.Entry{}, false, fmt.Errorf("mongodb store get: %w", err)
 	}
 
-	var doc entryDoc
-
-	err := s.coll.FindOne(ctx, filter).Decode(&doc)
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return store.Entry{}, false, nil
-		}
-
-		opentelemetry.HandleSpanError(span, "mongodb get: find failed", err)
-
-		return store.Entry{}, false, fmt.Errorf("mongodb store get: %w", err)
+	if !found {
+		return store.Entry{}, false, nil
 	}
 
 	return doc.toEntry(), true, nil
 }
 
-// Set persists an entry using an upsert. The change-stream or polling loop
-// picks up the modification and notifies subscribers.
+// Set persists a "_global" entry using an upsert. The change-stream or
+// polling loop picks up the modification and notifies subscribers.
+//
+// Set is strictly global-scoped: it unconditionally writes tenant_id="_global"
+// regardless of the Entry.TenantID field on input. Tenant writes must go
+// through SetTenantValue. This matches TRD §9 (Backward Compatibility Matrix).
 func (s *Store) Set(ctx context.Context, e store.Entry) error {
 	if s == nil || s.isClosed() {
 		return store.ErrClosed
@@ -243,59 +280,12 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 		return err
 	}
 
-	filter := bson.D{
-		{Key: "namespace", Value: e.Namespace},
-		{Key: "key", Value: e.Key},
-	}
-
-	now := time.Now().UTC()
-	if !e.UpdatedAt.IsZero() {
-		now = e.UpdatedAt
-	}
-
-	update := bson.D{
-		{Key: "$set", Value: bson.D{
-			{Key: "namespace", Value: e.Namespace},
-			{Key: "key", Value: e.Key},
-			{Key: "value", Value: string(e.Value)},
-			{Key: "updated_at", Value: now},
-			{Key: "updated_by", Value: e.UpdatedBy},
-		}},
-	}
-
-	opts := options.UpdateOne().SetUpsert(true)
-
-	_, err := s.coll.UpdateOne(ctx, filter, update, opts)
-	if err != nil {
+	if err := s.upsert(ctx, e, sentinelGlobal); err != nil {
 		opentelemetry.HandleSpanError(span, "mongodb set: upsert failed", err)
 		return fmt.Errorf("mongodb store set: %w", err)
 	}
 
 	return nil
-}
-
-// Subscribe blocks until ctx is cancelled, watching for changes via
-// change-streams or polling depending on cfg.PollInterval.
-//
-// Change-stream mode (PollInterval == 0) requires a MongoDB replica set.
-// Polling mode (PollInterval > 0) works with standalone MongoDB deployments.
-//
-// Multiple concurrent Subscribe calls are independent — each gets its own
-// stream or ticker.
-func (s *Store) Subscribe(ctx context.Context, handler func(store.Event)) error {
-	if s == nil || s.isClosed() {
-		return store.ErrClosed
-	}
-
-	if handler == nil {
-		return errors.New("mongodb store subscribe: handler must not be nil")
-	}
-
-	if s.cfg.PollInterval > 0 {
-		return s.subscribePoll(ctx, handler)
-	}
-
-	return s.subscribeChangeStream(ctx, handler)
 }
 
 // Close releases any resources held by the Store. Idempotent.
@@ -325,175 +315,64 @@ func (s *Store) isClosed() bool {
 	return s.closed
 }
 
-// subscribeChangeStream opens a MongoDB change stream on the collection and
-// translates insert/update/replace events into store.Event values.
-// On stream error, it reconnects with exponential backoff.
-func (s *Store) subscribeChangeStream(ctx context.Context, handler func(store.Event)) error {
-	attempt := 0
+// findOne runs a FindOne keyed on the compound (namespace, key, tenant_id)
+// tuple. Returns (entryDoc{}, false, nil) when no document matches.
+func (s *Store) findOne(ctx context.Context, namespace, key, tenantID string) (entryDoc, bool, error) {
+	filter := bson.D{
+		{Key: "namespace", Value: namespace},
+		{Key: "key", Value: key},
+		{Key: "tenant_id", Value: tenantID},
+	}
 
-	for {
-		if err := s.watchOnce(ctx, handler); err != nil {
-			// Context cancelled — clean exit regardless of the watch error.
-			if ctx.Err() != nil {
-				return ctx.Err() //nolint:wrapcheck // propagate cancellation as-is
-			}
+	var doc entryDoc
 
-			// Log and reconnect with backoff.
-			s.logWarn(ctx, "change stream disconnected, reconnecting",
-				log.Err(err),
-				log.Int("attempt", attempt),
-			)
-
-			delay := min(backoff.ExponentialWithJitter(reconnectBaseDelay, attempt), reconnectMaxDelay)
-			attempt++
-
-			if waitErr := backoff.WaitContext(ctx, delay); waitErr != nil {
-				return waitErr //nolint:wrapcheck // propagate cancellation as-is
-			}
-
-			continue
+	err := s.coll.FindOne(ctx, filter).Decode(&doc)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return entryDoc{}, false, nil
 		}
 
-		return nil
+		return entryDoc{}, false, err //nolint:wrapcheck // caller wraps with method context
 	}
+
+	return doc, true, nil
 }
 
-// watchOnce opens a single change stream session and processes events until
-// error or context cancellation.
-func (s *Store) watchOnce(ctx context.Context, handler func(store.Event)) error {
-	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.D{
-			{Key: "operationType", Value: bson.D{
-				{Key: "$in", Value: bson.A{"insert", "update", "replace"}},
-			}},
-		}}},
+// upsert writes an entry under the given tenantID. On insert the document
+// lands with a compound _id {namespace, key, tenant_id}; on update only the
+// mutable fields are set (namespace/key/tenant_id are pinned to _id values).
+func (s *Store) upsert(ctx context.Context, e store.Entry, tenantID string) error {
+	now := time.Now().UTC()
+	if !e.UpdatedAt.IsZero() {
+		now = e.UpdatedAt
 	}
 
-	opts := options.ChangeStream().
-		SetFullDocument(options.UpdateLookup)
-
-	stream, err := s.coll.Watch(ctx, pipeline, opts)
-	if err != nil {
-		return fmt.Errorf("open change stream: %w", err)
-	}
-	defer stream.Close(ctx)
-
-	for stream.Next(ctx) {
-		var event changeEvent
-		if err := stream.Decode(&event); err != nil {
-			s.logWarn(ctx, "change stream decode error, skipping event", log.Err(err))
-			continue
-		}
-
-		evt, ok := extractEvent(event)
-		if !ok {
-			continue
-		}
-
-		s.safeInvokeHandler(ctx, handler, evt)
+	id := compoundID{
+		Namespace: e.Namespace,
+		Key:       e.Key,
+		TenantID:  tenantID,
 	}
 
-	if ctx.Err() != nil {
-		return nil
+	filter := bson.D{{Key: "_id", Value: id}}
+
+	update := bson.D{
+		{Key: "$set", Value: bson.D{
+			{Key: "namespace", Value: e.Namespace},
+			{Key: "key", Value: e.Key},
+			{Key: "tenant_id", Value: tenantID},
+			{Key: "value", Value: string(e.Value)},
+			{Key: "updated_at", Value: now},
+			{Key: "updated_by", Value: e.UpdatedBy},
+		}},
 	}
 
-	if err := stream.Err(); err != nil {
-		return fmt.Errorf("change stream error: %w", err)
+	opts := options.UpdateOne().SetUpsert(true)
+
+	if _, err := s.coll.UpdateOne(ctx, filter, update, opts); err != nil {
+		return err //nolint:wrapcheck // caller wraps with method context
 	}
 
 	return nil
-}
-
-// extractEvent converts a decoded changeEvent into a store.Event.
-// Returns false if the event cannot be mapped (missing fields, etc.).
-func extractEvent(ce changeEvent) (store.Event, bool) {
-	if ce.FullDocument == nil {
-		return store.Event{}, false
-	}
-
-	ns := bsonLookupString(ce.FullDocument, "namespace")
-	key := bsonLookupString(ce.FullDocument, "key")
-
-	if ns == "" || key == "" {
-		return store.Event{}, false
-	}
-
-	return store.Event{Namespace: ns, Key: key}, true
-}
-
-// subscribePoll uses a ticker to periodically query for entries updated since
-// the last watermark and emits events for each changed entry.
-func (s *Store) subscribePoll(ctx context.Context, handler func(store.Event)) error {
-	watermark := time.Now().UTC()
-	ticker := time.NewTicker(s.cfg.PollInterval)
-
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			newWatermark, err := s.pollChanges(ctx, watermark, handler)
-			if err != nil {
-				// Transient error — log and retry on next tick.
-				s.logWarn(ctx, "poll query failed", log.Err(err))
-				continue
-			}
-
-			watermark = newWatermark
-		}
-	}
-}
-
-// pollChanges queries for documents updated after the watermark, invokes the
-// handler for each, and returns the new watermark.
-func (s *Store) pollChanges(
-	ctx context.Context,
-	watermark time.Time,
-	handler func(store.Event),
-) (time.Time, error) {
-	filter := bson.D{
-		{Key: "updated_at", Value: bson.D{{Key: "$gt", Value: watermark}}},
-	}
-
-	findOpts := options.Find().SetSort(bson.D{{Key: "updated_at", Value: 1}})
-
-	cursor, err := s.coll.Find(ctx, filter, findOpts)
-	if err != nil {
-		return watermark, fmt.Errorf("poll find: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	newWatermark := watermark
-
-	for cursor.Next(ctx) {
-		var doc entryDoc
-		if err := cursor.Decode(&doc); err != nil {
-			s.logWarn(ctx, "poll decode error, skipping document", log.Err(err))
-			continue
-		}
-
-		evt := store.Event{Namespace: doc.Namespace, Key: doc.Key}
-		s.safeInvokeHandler(ctx, handler, evt)
-
-		if doc.UpdatedAt.After(newWatermark) {
-			newWatermark = doc.UpdatedAt
-		}
-	}
-
-	if err := cursor.Err(); err != nil {
-		return watermark, fmt.Errorf("poll cursor error: %w", err)
-	}
-
-	return newWatermark, nil
-}
-
-// safeInvokeHandler calls handler inside a deferred panic recovery.
-func (s *Store) safeInvokeHandler(ctx context.Context, handler func(store.Event), evt store.Event) {
-	defer libRuntime.RecoverAndLogWithContext(ctx, s.cfg.Logger, "systemplane", "mongodb.handler")
-
-	handler(evt)
 }
 
 // logWarn logs a warning-level message via the configured logger.
@@ -503,50 +382,4 @@ func (s *Store) logWarn(ctx context.Context, msg string, fields ...log.Field) {
 	}
 
 	s.cfg.Logger.Log(ctx, log.LevelWarn, msg, fields...)
-}
-
-// GetTenantValue is a Task 1 stub. Real implementation lands in Task 4.
-func (s *Store) GetTenantValue(_ context.Context, _, _, _ string) (store.Entry, bool, error) {
-	return store.Entry{}, false, errors.New("mongodb: GetTenantValue not implemented — task 4")
-}
-
-// SetTenantValue is a Task 1 stub. Real implementation lands in Task 4.
-func (s *Store) SetTenantValue(_ context.Context, _ string, _ store.Entry) error {
-	return errors.New("mongodb: SetTenantValue not implemented — task 4")
-}
-
-// DeleteTenantValue is a Task 1 stub. Real implementation lands in Task 4.
-func (s *Store) DeleteTenantValue(_ context.Context, _, _, _, _ string) error {
-	return errors.New("mongodb: DeleteTenantValue not implemented — task 4")
-}
-
-// ListTenantValues is a Task 1 stub. Real implementation lands in Task 4.
-func (s *Store) ListTenantValues(_ context.Context) ([]store.Entry, error) {
-	return nil, errors.New("mongodb: ListTenantValues not implemented — task 4")
-}
-
-// ListTenantsForKey is a Task 1 stub. Real implementation lands in Task 4.
-func (s *Store) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
-	return nil, errors.New("mongodb: ListTenantsForKey not implemented — task 4")
-}
-
-// bsonLookupString extracts a string value from a bson.D by key.
-// Returns "" when the key is absent or the value is not a string.
-func bsonLookupString(doc *bson.D, key string) string {
-	if doc == nil {
-		return ""
-	}
-
-	for _, elem := range *doc {
-		if elem.Key == key {
-			s, ok := elem.Value.(string)
-			if ok {
-				return s
-			}
-
-			return ""
-		}
-	}
-
-	return ""
 }
