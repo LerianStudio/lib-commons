@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/circuitbreaker"
 )
@@ -92,11 +93,10 @@ func buildCBConfig(cfg Config) circuitbreaker.Config {
 		cbCfg.FailureRatio = cfg.CBFailureRatio
 	}
 
-	if cfg.CBMinRequests > 0 {
+	if cfg.CBMinRequests > 0 && cfg.CBMinRequests <= math.MaxUint32 {
 		// CBMinRequests is `int` in streaming.Config but uint32 in
-		// circuitbreaker.Config. The preset is a small positive number; env
-		// parsers reject negatives upstream, so clamping at zero is safe.
-		//nolint:gosec // bounded by the positive-value guard above
+		// circuitbreaker.Config. Bounded by [1, math.MaxUint32], making
+		// the conversion provably safe for gosec G115.
 		cbCfg.MinRequests = uint32(cfg.CBMinRequests)
 	}
 
