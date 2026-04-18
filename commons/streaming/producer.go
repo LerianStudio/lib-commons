@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -90,6 +91,16 @@ type Producer struct {
 	// closed flips to true on Close; subsequent Emit calls return
 	// ErrEmitterClosed synchronously before any I/O.
 	closed atomic.Bool
+
+	// stop is closed by CloseContext on first successful CAS. RunContext
+	// selects on this channel alongside ctx.Done() so app-bootstrap-driven
+	// shutdown and ctx-cancel-driven shutdown converge on the same exit
+	// path. Unbuffered, close-only — never sent on.
+	stop chan struct{}
+
+	// stopOnce guards the close(p.stop) call so concurrent callers do not
+	// panic on a double-close. Mirrors outbox.Dispatcher.stopOnce.
+	stopOnce sync.Once
 
 	// producerID uniquely identifies this Producer instance. Used in the
 	// circuit-breaker service name and as a span attribute.
@@ -219,6 +230,7 @@ func NewProducer(ctx context.Context, cfg Config, opts ...EmitterOption) (*Produ
 		toggles:      cfg.EventToggles,
 		closeTimeout: closeTimeout,
 		outbox:       resolvedOpts.outbox,
+		stop:         make(chan struct{}),
 	}
 
 	// Wire the circuit breaker: resolve manager, register service-named

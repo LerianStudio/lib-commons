@@ -42,6 +42,21 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 	}
 
 	if p.closed.Load() {
+		// Post-close Emit is semantically a caller-side contract violation
+		// (DX-E02/E03 — service methods MUST NOT call Emit after the app
+		// bootstrap has closed the producer). Record the caller_error
+		// metric so operators can see misbehaving services in dashboards,
+		// but do NOT create a span — spans are bounded to actual emission
+		// attempts per TRD §7.2. No broker I/O either: this return is
+		// strictly in-process.
+		//
+		// event.Topic() is safe on an un-defaulted Event because Topic()
+		// derives from ResourceType+EventType which the caller already
+		// populated. If those are empty the label will be ".": still
+		// cardinality-bounded, surfaces as "you're emitting a closed
+		// producer AND with an unpopulated event".
+		p.metrics.recordEmitted(ctx, event.Topic(), "send", outcomeCallerError)
+
 		return ErrEmitterClosed
 	}
 
