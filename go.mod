@@ -28,6 +28,8 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.41.0
 	github.com/testcontainers/testcontainers-go/modules/rabbitmq v0.41.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.41.0
+	github.com/twmb/franz-go v1.20.7
+	github.com/twmb/franz-go/pkg/kfake v0.0.0-20260406064450-c0fa0a167730
 	go.mongodb.org/mongo-driver v1.17.9
 	go.mongodb.org/mongo-driver/v2 v2.5.0
 	go.opentelemetry.io/contrib/bridges/otelzap v0.17.0
@@ -45,6 +47,7 @@ require (
 	go.uber.org/goleak v1.3.0
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.27.1
+	golang.org/x/mod v0.35.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/text v0.35.0
@@ -116,6 +119,7 @@ require (
 	github.com/morikuni/aec v1.0.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
+	github.com/pierrec/lz4/v4 v4.1.25 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
@@ -123,6 +127,7 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
+	github.com/twmb/franz-go/pkg/kmsg v1.12.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.69.0 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect

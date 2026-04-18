@@ -119,6 +119,12 @@ var (
 	// ErrInvalidAcks is returned by LoadConfig when STREAMING_REQUIRED_ACKS is
 	// not one of all, leader, none.
 	ErrInvalidAcks = errors.New("streaming: invalid required-acks value")
+
+	// ErrNilProducer is returned when a method is invoked on a nil *Producer.
+	// Parallels circuitbreaker.ErrNilCircuitBreaker. Callers should treat this
+	// as a programming error — a nil Producer indicates construction was
+	// skipped or silently failed upstream.
+	ErrNilProducer = errors.New("streaming: nil producer")
 )
 
 // EmitError is the structured error type returned from Emit on publish

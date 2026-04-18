@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/mod/semver"
 )
 
 // Event is the CloudEvents-aligned envelope produced by a service method.
@@ -75,10 +76,10 @@ const topicPrefix = "lerian.streaming."
 // "lerian.streaming.<resource>.<event>.v2". Invalid or empty semver falls
 // through to the base form.
 //
-// TODO: Swap the inline semver parser for golang.org/x/mod/semver once that
-// dependency is added in T2. The current parser is deliberately minimal and
-// tolerant — it accepts a leading "v" and extracts the digits before the
-// first dot.
+// Semver parsing is delegated to golang.org/x/mod/semver.Major, which is the
+// canonical Go ecosystem library for semver classification. Input is accepted
+// both with and without a leading "v" — we normalize to the "v"-prefixed form
+// before delegating (golang.org/x/mod/semver requires the "v" prefix).
 func (e *Event) Topic() string {
 	if e == nil {
 		return ""
@@ -151,24 +152,27 @@ func (e *Event) ApplyDefaults() {
 // 0 on any parse failure so callers can guard with "< 2" to fall through to
 // the base topic form.
 //
-// Accepts an optional leading "v" (e.g. "v2.3.1").
-//
-// Deliberately simpler than golang.org/x/mod/semver — strips the "v",
-// splits on ".", and parses the first segment as an int. T2 will replace
-// this with golang.org/x/mod/semver.Major when that dependency is added.
+// Accepts input with or without a leading "v" (e.g. "v2.3.1" or "2.3.1").
+// Delegates to golang.org/x/mod/semver.Major, which is the canonical semver
+// classifier in the Go ecosystem. We normalize the input to the "v"-prefixed
+// form because semver.Major requires it; a missing "v" would be reported as
+// an invalid semver otherwise.
 func parseMajorVersion(v string) int {
 	if v == "" {
 		return 0
 	}
 
-	v = strings.TrimPrefix(v, "v")
+	// semver.Major requires a leading "v". Normalize by re-prefixing.
+	trimmed := strings.TrimPrefix(v, "v")
+	canonical := "v" + trimmed
 
-	parts := strings.SplitN(v, ".", 2)
-	if len(parts) == 0 || parts[0] == "" {
+	major := semver.Major(canonical)
+	if major == "" {
 		return 0
 	}
 
-	n, err := strconv.Atoi(parts[0])
+	// semver.Major returns "vN" on success; strip the "v" and parse.
+	n, err := strconv.Atoi(strings.TrimPrefix(major, "v"))
 	if err != nil || n < 0 {
 		return 0
 	}
