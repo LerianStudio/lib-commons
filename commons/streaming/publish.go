@@ -13,38 +13,24 @@ import (
 // payload Redpanda would reject downstream.
 const maxPayloadBytes = 1_048_576
 
-// publishDirect is the happy-path publish step: it validates the caller's
-// Event, assembles a kgo.Record, and synchronously produces it to the broker.
+// preFlight runs all caller-side validation on an Event before it reaches
+// the circuit breaker. Defaults must already be applied by the caller —
+// preFlight is pure validation, never mutation. Split from publishDirect in
+// T3 so a storm of caller-fault emissions cannot trip the breaker.
 //
-// Pre-flight validation runs BEFORE any I/O so caller faults surface
-// synchronously without touching the broker. Order of checks is tuned so the
-// cheapest / most-common caller mistake surfaces first:
+// Order of checks is tuned so the cheapest / most-common caller mistake
+// surfaces first:
 //
-//  1. Producer lifecycle: closed producer → ErrEmitterClosed
-//  2. Event toggle: resource.event key opts the event out at runtime
-//  3. Tenant: non-system events require a tenant
-//  4. Source: required CloudEvents ce-source
-//  5. Payload size: reject before serialization
-//  6. Payload JSON validity: prevents DLQ poisoning downstream
+//  1. Event toggle: resource.event key opts the event out at runtime
+//  2. Tenant: non-system events require a tenant
+//  3. Source: required CloudEvents ce-source
+//  4. Payload size: reject before JSON scan
+//  5. Payload JSON validity: prevents DLQ poisoning downstream
 //
-// After validation, we apply defaults (EventID, Timestamp, SchemaVersion,
-// DataContentType) on a local copy of the Event so the caller's struct is
-// not mutated — this keeps Emit concurrency-safe and makes tests that assert
-// on the original Event struct stable.
-//
-// The franz-go produce call is synchronous (ProduceSync + FirstErr). On
-// non-nil err, we wrap in an *EmitError so the caller has the full diagnostic
-// envelope (topic, resource, event, class, cause). The Cause stays on the
-// error chain via Unwrap so errors.Is still works for sentinels.
-func (p *Producer) publishDirect(ctx context.Context, event Event) error {
-	if p == nil {
-		return ErrNilProducer
-	}
-
-	if p.closed.Load() {
-		return ErrEmitterClosed
-	}
-
+// Returns one of the caller sentinel errors (ErrEventDisabled,
+// ErrMissingTenantID, ErrMissingSource, ErrPayloadTooLarge, ErrNotJSON).
+// Never returns an *EmitError — caller faults have no Kafka-level class.
+func (p *Producer) preFlight(event Event) error {
 	// Event-type toggle. Built from STREAMING_EVENT_TOGGLES at LoadConfig;
 	// empty map (nil) means every event is enabled by default.
 	if p.toggles != nil {
@@ -83,11 +69,33 @@ func (p *Producer) publishDirect(ctx context.Context, event Event) error {
 		return ErrNotJSON
 	}
 
-	// Fill zero-valued optional fields on a LOCAL COPY so we don't mutate
-	// the caller's struct. This is a concurrency-safety boundary: if the
-	// caller re-uses the same Event across goroutines, each call gets its
-	// own defaults without races.
-	(&event).ApplyDefaults()
+	return nil
+}
+
+// publishDirect is the synchronous produce step. Caller-side validation is
+// assumed complete (see preFlight) and defaults are assumed applied. This
+// function assembles a kgo.Record from the Event and calls ProduceSync.
+//
+// The franz-go produce call is synchronous (ProduceSync + FirstErr). On
+// non-nil err, we wrap in an *EmitError so the caller has the full diagnostic
+// envelope (topic, resource, event, class, cause). The Cause stays on the
+// error chain via Unwrap so errors.Is still works for sentinels.
+//
+// Errors returned from publishDirect DO feed the circuit breaker (via
+// cb.Execute in Emit) — transport-level failures are exactly the signal the
+// breaker needs to trip.
+func (p *Producer) publishDirect(ctx context.Context, event Event) error {
+	if p == nil {
+		return ErrNilProducer
+	}
+
+	// Defense in depth: publishDirect can be called by the outbox handler
+	// bridge in T4, so re-checking the closed flag keeps the invariant
+	// "closed producer never touches the broker" true even off the main
+	// Emit path.
+	if p.closed.Load() {
+		return ErrEmitterClosed
+	}
 
 	// Partition key: operator override (WithPartitionKey) if configured,
 	// else the Event's struct-level default (tenant-id / system-eventtype).

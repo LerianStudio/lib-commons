@@ -2,7 +2,6 @@ package streaming
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -15,10 +14,13 @@ import (
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 
-// healthPingTimeout caps the per-Healthy broker Ping. 500ms is aligned with
-// commons/rabbitmq and the `net/http.HealthWithDependencies` conventions —
-// readyness probes should return fast.
-const healthPingTimeout = 500 * time.Millisecond
+// Circuit-breaker-related constants (flagCB*, cbServiceNamePrefix) and the
+// initCircuitBreaker / buildCBConfig helpers live in cb_init.go. Keeping them
+// colocated with the state listener (cb_listener.go) makes the CB integration
+// easy to reason about as a unit.
+//
+// Close/CloseContext/Healthy and healthPingTimeout live in lifecycle.go so
+// this file stays focused on construction and the hot-path Emit dispatch.
 
 // Producer is the franz-go-backed Emitter implementation. It owns one
 // *kgo.Client per instance; the client multiplexes produces across broker
@@ -40,9 +42,27 @@ type Producer struct {
 	// validation, and option overrides.
 	cfg Config
 
-	// cbManager is the shared circuit-breaker manager; nil until T3 wires
-	// it. Retained here so T3 can patch without reshaping the struct.
+	// cbManager is the shared circuit-breaker manager. Non-nil after New;
+	// either the caller supplied one via WithCircuitBreakerManager or the
+	// Producer built its own. Multiple Producers can share a manager so the
+	// caller has a process-wide view of breaker state.
 	cbManager circuitbreaker.Manager
+
+	// cb is this Producer's breaker instance — always the one named
+	// "streaming.producer:<producerID>" in cbManager.
+	cb circuitbreaker.CircuitBreaker
+
+	// cbServiceName is the service name registered with cbManager. Stored
+	// so the state-change listener can filter events that belong to other
+	// breakers in a shared manager (the listener is called for every
+	// service, not just ours).
+	cbServiceName string
+
+	// cbStateFlag mirrors the breaker's state via the state-change listener.
+	// Writes come exclusively from the listener; reads come from the publish
+	// hot path. Using atomic.Int32 keeps both lock-free. Values are the
+	// flagCB* constants above.
+	cbStateFlag atomic.Int32
 
 	// tracer is the OTEL tracer used for the streaming.emit span. nil
 	// falls back to the global tracer provider (T6 owns the wrap).
@@ -168,19 +188,32 @@ func NewProducer(ctx context.Context, cfg Config, opts ...EmitterOption) (*Produ
 		closeTimeout: closeTimeout,
 	}
 
-	// Touch ctx to silence unused-parameter warnings; T3 uses it to create
-	// the CB manager, T6 to create span/metric resources. We deliberately
-	// keep the ctx parameter today so the T2 signature is forward-
-	// compatible with T3-T7.
+	// Wire the circuit breaker: resolve manager, register service-named
+	// breaker, register state listener. initCircuitBreaker populates
+	// p.cb, p.cbManager, p.cbServiceName. Failure here means we cannot
+	// publish safely; close the client to release sockets and propagate.
+	if err := p.initCircuitBreaker(); err != nil {
+		p.client.Close()
+
+		return nil, err
+	}
+
+	// Touch ctx to silence unused-parameter warnings; T6 uses it to create
+	// span/metric resources. We deliberately keep the ctx parameter today
+	// so the T3 signature is forward-compatible with T4-T7.
 	_ = ctx
 
 	return p, nil
 }
 
-// Emit publishes a single Event. See (*Producer).publishDirect for the
-// validation-then-produce implementation. This is the public façade; T2
-// keeps it a thin wrapper so T3 can slot in the circuit-breaker Execute
-// closure without reshaping callers.
+// Emit publishes a single Event. It performs caller-side validation
+// synchronously (tenant/source/size/JSON), applies defaults on a local copy
+// so the caller's struct is untouched, then dispatches the produce through
+// the circuit-breaker wrapper so infrastructure faults feed the breaker but
+// caller faults do NOT.
+//
+// T3 returns ErrCircuitOpen when the breaker is open. T4 replaces that branch
+// with a publishToOutbox call that returns nil after a durable write.
 //
 // Nil-receiver safe: returns ErrNilProducer rather than panicking.
 func (p *Producer) Emit(ctx context.Context, event Event) error {
@@ -188,96 +221,47 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 		return ErrNilProducer
 	}
 
-	return p.publishDirect(ctx, event)
-}
-
-// Close is idempotent: subsequent calls return nil without re-flushing. The
-// first call flips the atomic, flushes the underlying franz-go client under
-// a deadline derived from Producer.closeTimeout, then closes the client.
-//
-// Flush errors surface as returned errors so the caller can decide whether
-// to proceed with shutdown or wait — but Client.Close is called regardless
-// so socket resources always get reclaimed.
-//
-// Nil-receiver safe.
-func (p *Producer) Close() error {
-	if p == nil {
-		return nil
-	}
-
-	return p.CloseContext(context.Background())
-}
-
-// CloseContext is the paired ctx-aware variant. The provided context bounds
-// the Flush; if the caller passes a context that's already canceled, Flush
-// returns immediately and any un-flushed records are abandoned.
-//
-// A fresh deadline derived from Producer.closeTimeout is applied on top of
-// the caller's context so Flush cannot hang indefinitely even on a
-// background context. This preserves the "Close never blocks service
-// shutdown forever" contract.
-func (p *Producer) CloseContext(ctx context.Context) error {
-	if p == nil {
-		return nil
-	}
-
-	// CompareAndSwap guarantees exactly-one Flush + Close even under
-	// concurrent Close callers.
-	if !p.closed.CompareAndSwap(false, true) {
-		return nil
-	}
-
-	if p.client == nil {
-		return nil
-	}
-
-	// Derive a deadline so a misbehaving broker or stuck flush cannot
-	// deadlock service shutdown. If the caller already supplied a shorter
-	// deadline, context.WithTimeout uses the tighter one.
-	flushCtx, cancel := context.WithTimeout(ctx, p.closeTimeout)
-	defer cancel()
-
-	flushErr := p.client.Flush(flushCtx)
-
-	// Always close the client so connection sockets are reclaimed even on
-	// Flush failure. kgo.Client.Close returns no error.
-	p.client.Close()
-
-	if flushErr != nil {
-		return fmt.Errorf("streaming: flush on close: %w", flushErr)
-	}
-
-	return nil
-}
-
-// Healthy reports readiness. Returns nil when the Producer is not closed and
-// the broker responds to a Ping within healthPingTimeout. Otherwise returns a
-// *HealthError with a typed State() so consumers of
-// net/http.HealthWithDependencies can differentiate Degraded from Down.
-//
-// T2 ships the broker-ping rung only. The Degraded/Down split based on
-// outbox availability arrives with T4 (outbox integration).
-//
-// Nil-receiver safe.
-func (p *Producer) Healthy(ctx context.Context) error {
-	if p == nil {
-		return NewHealthError(Down, ErrNilProducer)
-	}
-
 	if p.closed.Load() {
-		return NewHealthError(Down, ErrEmitterClosed)
+		return ErrEmitterClosed
 	}
 
-	if p.client == nil {
-		return NewHealthError(Down, errors.New("streaming: client not initialized"))
+	// Apply defaults on a local copy first so the caller's struct is not
+	// mutated. Safe before validation because defaults (EventID, Timestamp,
+	// SchemaVersion, DataContentType) do not influence any validation check.
+	(&event).ApplyDefaults()
+
+	// Pre-flight validation runs OUTSIDE the circuit-breaker wrapper so a
+	// barrage of caller mistakes cannot trip the breaker — breaker counts
+	// only reflect infrastructure health, not caller hygiene.
+	if err := p.preFlight(event); err != nil {
+		return err
 	}
 
-	pingCtx, cancel := context.WithTimeout(ctx, healthPingTimeout)
-	defer cancel()
+	// cb.Execute takes a closure with signature func() (any, error). We close
+	// over the outer ctx and defaulted-event. A typed-nil result is fine;
+	// the caller discards it. Errors are propagated verbatim — Execute wraps
+	// ErrOpenState / ErrTooManyRequests into its own diagnostic so callers
+	// can still errors.Is for those sentinels.
+	_, err := p.cb.Execute(func() (any, error) {
+		// T3 temporary surface: the outbox fallback lands in T4. For now,
+		// we observe the mirrored flag and return ErrCircuitOpen so tests
+		// and callers can distinguish the open-circuit branch from a
+		// transport-level failure. This does NOT cause gobreaker to count
+		// the call as a failure — it's a fast-fail from our side while the
+		// breaker is open.
+		if p.cbStateFlag.Load() == flagCBOpen {
+			return nil, ErrCircuitOpen
+		}
 
-	if err := p.client.Ping(pingCtx); err != nil {
-		return NewHealthError(Degraded, err)
-	}
+		if err := p.publishDirect(ctx, event); err != nil {
+			return nil, err
+		}
 
-	return nil
+		// Success: the result value is unused by Emit and the CB manager
+		// only inspects the error. A nil, nil return is the idiomatic
+		// success signal for this Execute signature.
+		return nil, nil //nolint:nilnil // CB Execute signature mandates (any, error); nil result is discarded
+	})
+
+	return err
 }

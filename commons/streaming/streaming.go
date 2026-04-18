@@ -125,6 +125,20 @@ var (
 	// as a programming error — a nil Producer indicates construction was
 	// skipped or silently failed upstream.
 	ErrNilProducer = errors.New("streaming: nil producer")
+
+	// ErrCircuitOpen is returned from Emit when the circuit breaker is open
+	// and no outbox fallback is wired yet.
+	//
+	// This is a TEMPORARY T3 surface: once T4 lands the outbox-fallback
+	// branch, a circuit-open Emit succeeds (returns nil) by writing to the
+	// outbox instead of surfacing an error to the caller. T3 ships this
+	// sentinel so tests can observe the circuit-open branch without the
+	// outbox plumbing in place.
+	//
+	// ErrCircuitOpen is NOT a caller error — it signals runtime
+	// infrastructure degradation, not a caller-side mistake. IsCallerError
+	// returns false for it.
+	ErrCircuitOpen = errors.New("streaming: circuit breaker open")
 )
 
 // EmitError is the structured error type returned from Emit on publish
