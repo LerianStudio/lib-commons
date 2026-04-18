@@ -198,7 +198,7 @@ func NewProducer(ctx context.Context, cfg Config, opts ...EmitterOption) (*Produ
 	// TRD risk R1 — franz-go's defaults have flipped between versions in
 	// the past, and a silent latency change would be operationally
 	// catastrophic.
-	kgoOpts, err := buildKgoOpts(cfg)
+	kgoOpts, err := buildKgoOpts(cfg, *resolvedOpts)
 	if err != nil {
 		return nil, err
 	}

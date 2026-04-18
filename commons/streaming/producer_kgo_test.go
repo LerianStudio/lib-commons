@@ -110,12 +110,12 @@ func TestBuildKgoOpts_AcksAllKeepsIdempotent(t *testing.T) {
 	leaderCfg := base
 	leaderCfg.RequiredAcks = "leader"
 
-	allOpts, err := buildKgoOpts(allCfg)
+	allOpts, err := buildKgoOpts(allCfg, emitterOptions{})
 	if err != nil {
 		t.Fatalf("buildKgoOpts(all) err = %v", err)
 	}
 
-	leaderOpts, err := buildKgoOpts(leaderCfg)
+	leaderOpts, err := buildKgoOpts(leaderCfg, emitterOptions{})
 	if err != nil {
 		t.Fatalf("buildKgoOpts(leader) err = %v", err)
 	}
@@ -151,12 +151,12 @@ func TestBuildKgoOpts_ClientIDOptional(t *testing.T) {
 	withIDCfg := base
 	withIDCfg.ClientID = "service-x"
 
-	noIDOpts, err := buildKgoOpts(noIDCfg)
+	noIDOpts, err := buildKgoOpts(noIDCfg, emitterOptions{})
 	if err != nil {
 		t.Fatalf("buildKgoOpts(no id) err = %v", err)
 	}
 
-	withIDOpts, err := buildKgoOpts(withIDCfg)
+	withIDOpts, err := buildKgoOpts(withIDCfg, emitterOptions{})
 	if err != nil {
 		t.Fatalf("buildKgoOpts(with id) err = %v", err)
 	}
@@ -180,7 +180,7 @@ func TestBuildKgoOpts_InvalidCompressionSurfaces(t *testing.T) {
 		RequiredAcks: "all",
 	}
 
-	_, err := buildKgoOpts(cfg)
+	_, err := buildKgoOpts(cfg, emitterOptions{})
 	if !errors.Is(err, ErrInvalidCompression) {
 		t.Errorf("buildKgoOpts err = %v; want ErrInvalidCompression", err)
 	}
@@ -196,7 +196,7 @@ func TestBuildKgoOpts_InvalidAcksSurfaces(t *testing.T) {
 		RequiredAcks: "maybe",
 	}
 
-	_, err := buildKgoOpts(cfg)
+	_, err := buildKgoOpts(cfg, emitterOptions{})
 	if !errors.Is(err, ErrInvalidAcks) {
 		t.Errorf("buildKgoOpts err = %v; want ErrInvalidAcks", err)
 	}

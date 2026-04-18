@@ -1,12 +1,14 @@
 package streaming
 
 import (
+	"crypto/tls"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/circuitbreaker"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
+	"github.com/twmb/franz-go/pkg/sasl"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -14,9 +16,9 @@ import (
 // functional; callers chain them in any order. Producer applies defaults for
 // every unset option.
 //
-// Options that concern optional transport-level security (WithTLSConfig,
-// WithSASL) land in T8 — deliberately absent here so unit tests never reach
-// into kgo internals.
+// Transport-level security (WithTLSConfig, WithSASL) is wired here in T8 —
+// both options remain pure plumbing in v1; real TLS/SASL handshakes land in
+// the first SASL-using consumer's integration suite.
 type EmitterOption func(*emitterOptions)
 
 // emitterOptions is the internal struct assembled from every EmitterOption.
@@ -52,6 +54,16 @@ type emitterOptions struct {
 	// breaker is open. The caller is responsible for constructing and
 	// owning the OutboxRepository — streaming never builds one itself.
 	outbox outbox.OutboxRepository
+
+	// tlsConfig, when non-nil, is threaded to kgo.DialTLSConfig so broker
+	// connections run over TLS. Nil means plaintext (the default). See
+	// WithTLSConfig for the full contract.
+	tlsConfig *tls.Config
+
+	// saslMechanism, when non-nil, is threaded to kgo.SASL so the client
+	// authenticates against brokers using the selected mechanism. Nil means
+	// no SASL (the default). See WithSASL for the full contract.
+	saslMechanism sasl.Mechanism
 }
 
 // WithLogger sets the structured logger used across the package. When not
@@ -123,5 +135,45 @@ func WithCloseTimeout(d time.Duration) EmitterOption {
 func WithOutboxRepository(repo outbox.OutboxRepository) EmitterOption {
 	return func(o *emitterOptions) {
 		o.outbox = repo
+	}
+}
+
+// WithTLSConfig sets a TLS configuration for broker connections.
+//
+// When set, the Producer dials brokers using the supplied *tls.Config via
+// franz-go's kgo.DialTLSConfig. Typical use cases include connecting to
+// Redpanda Cloud clusters, enforcing mutual TLS (client certificates), or
+// pinning CA roots for on-premise Kafka clusters served by internal CAs.
+// franz-go clones the config at each dial and fills in ServerName from the
+// broker host when ServerName is empty, so callers rarely need to set it.
+//
+// When nil, brokers are connected via plaintext (the default in v1).
+//
+// v1 ships this option for forward-compatibility. The plumbing is unit-tested
+// — a real TLS handshake is not. Integration coverage arrives with the first
+// TLS-using consumer per the T8 scope note in docs/pre-dev/streaming/tasks.md.
+func WithTLSConfig(cfg *tls.Config) EmitterOption {
+	return func(o *emitterOptions) {
+		o.tlsConfig = cfg
+	}
+}
+
+// WithSASL sets the SASL mechanism for broker authentication.
+//
+// franz-go ships mechanisms for PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, and
+// OAUTHBEARER via github.com/twmb/franz-go/pkg/sasl/*. Pass the mechanism
+// constructor's result, e.g.:
+//
+//	WithSASL(scram.Auth{User: "alice", Pass: "secret"}.AsSha256Mechanism())
+//	WithSASL(plain.Auth{User: "alice", Pass: "secret"}.AsMechanism())
+//
+// When nil, SASL is not configured (the default).
+//
+// v1 ships plumbing only — a real SCRAM/OAUTHBEARER handshake is not covered
+// by unit tests. Integration coverage arrives with the first SASL-using
+// consumer per the T8 scope note in docs/pre-dev/streaming/tasks.md.
+func WithSASL(mech sasl.Mechanism) EmitterOption {
+	return func(o *emitterOptions) {
+		o.saslMechanism = mech
 	}
 }

@@ -15,15 +15,20 @@ import (
 // for 2 GiB is already far past any real-world setting.
 const maxBatchMaxBytes = math.MaxInt32
 
-// buildKgoOpts translates a validated streaming.Config into the franz-go
-// option slice. Each option is pinned explicitly per TRD risk R1 — franz-go
-// defaults have flipped between versions (ProducerLinger 0ms→10ms at v1.17→
-// v1.20), and we refuse to silently absorb that kind of drift.
+// buildKgoOpts translates a validated streaming.Config plus the resolved
+// emitterOptions into the franz-go option slice. Each option is pinned
+// explicitly per TRD risk R1 — franz-go defaults have flipped between
+// versions (ProducerLinger 0ms→10ms at v1.17→v1.20), and we refuse to
+// silently absorb that kind of drift.
+//
+// cfg carries env-driven runtime knobs; opts carries caller-supplied wiring
+// that must never come from environment variables (TLS certs, SASL secrets)
+// per the TRD §8 security boundary. Either argument may be zero-valued.
 //
 // This function assumes cfg has already passed cfg.validate(); invalid
 // compression codec / acks values surface as ErrInvalidCompression /
 // ErrInvalidAcks defensively but the happy path never hits them.
-func buildKgoOpts(cfg Config) ([]kgo.Opt, error) {
+func buildKgoOpts(cfg Config, opts emitterOptions) ([]kgo.Opt, error) {
 	codec, err := resolveCompression(cfg.Compression)
 	if err != nil {
 		return nil, err
@@ -41,7 +46,7 @@ func buildKgoOpts(cfg Config) ([]kgo.Opt, error) {
 	batchMaxBytes := min(cfg.BatchMaxBytes, maxBatchMaxBytes)
 	batchMaxBytes = max(batchMaxBytes, 0)
 
-	opts := []kgo.Opt{
+	kgoOpts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
 
 		// Batching. ProducerLinger default flipped between franz-go
@@ -88,17 +93,32 @@ func buildKgoOpts(cfg Config) ([]kgo.Opt, error) {
 	// for lower latency — we must disable idempotent writes so the kgo
 	// client starts up instead of failing validation.
 	if cfg.RequiredAcks != "all" {
-		opts = append(opts, kgo.DisableIdempotentWrite())
+		kgoOpts = append(kgoOpts, kgo.DisableIdempotentWrite())
 	}
 
 	// ClientID is optional — if the operator didn't set it, let franz-go
 	// pick a reasonable default. Empty ClientID is valid; we only add the
 	// option when the operator has something specific to say.
 	if cfg.ClientID != "" {
-		opts = append(opts, kgo.ClientID(cfg.ClientID))
+		kgoOpts = append(kgoOpts, kgo.ClientID(cfg.ClientID))
 	}
 
-	return opts, nil
+	// TLS configuration (T8). franz-go's DialTLSConfig clones the config
+	// per-dial and auto-fills ServerName from the broker host; callers
+	// rarely need to set it. We never source TLS material from env — the
+	// only path in is WithTLSConfig.
+	if opts.tlsConfig != nil {
+		kgoOpts = append(kgoOpts, kgo.DialTLSConfig(opts.tlsConfig))
+	}
+
+	// SASL mechanism (T8). kgo.SASL is variadic; we always pass exactly one
+	// mechanism in v1. Multi-mechanism fallback (negotiate the first
+	// broker-supported one) is out of scope until a real auth flow ships.
+	if opts.saslMechanism != nil {
+		kgoOpts = append(kgoOpts, kgo.SASL(opts.saslMechanism))
+	}
+
+	return kgoOpts, nil
 }
 
 // resolveCompression maps the Config string to a kgo.CompressionCodec. The

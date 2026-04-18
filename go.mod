@@ -30,6 +30,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/redis v0.41.0
 	github.com/twmb/franz-go v1.20.7
 	github.com/twmb/franz-go/pkg/kfake v0.0.0-20260406064450-c0fa0a167730
+	github.com/twmb/franz-go/pkg/kmsg v1.12.0
 	go.mongodb.org/mongo-driver v1.17.9
 	go.mongodb.org/mongo-driver/v2 v2.5.0
 	go.opentelemetry.io/contrib/bridges/otelzap v0.17.0
@@ -127,7 +128,6 @@ require (
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/tklauser/go-sysconf v0.3.16 // indirect
 	github.com/tklauser/numcpus v0.11.0 // indirect
-	github.com/twmb/franz-go/pkg/kmsg v1.12.0 // indirect
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasthttp v1.69.0 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
