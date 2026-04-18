@@ -18,6 +18,7 @@ import (
 	mongoDB "github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/mongodb"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/postgres"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -29,8 +30,23 @@ const closeWaitTimeout = 10 * time.Second
 // changefeed-driven refresh.
 const refreshTimeout = 5 * time.Second
 
+// tenantStoreTimeout is the deadline for individual store.GetTenantValue /
+// SetTenantValue / DeleteTenantValue / ListTenantsForKey calls issued
+// internally (e.g. lazy-mode cache miss, ListTenantsForKey without caller
+// context). Set-like writes issued via SetForTenant / DeleteForTenant are
+// bounded by the caller's ctx; this timeout only applies when the Client
+// synthesizes its own background context.
+const tenantStoreTimeout = 5 * time.Second
+
 // tracerName is the OpenTelemetry instrumentation scope name for the Client.
 const tracerName = "systemplane.client"
+
+// sentinelGlobal is the tenant_id value carried in Entry and Event structures
+// for shared (non-tenant-scoped) rows. Backends define their own copies; the
+// Client uses this sentinel to branch changefeed routing between the legacy
+// OnChange path and the new OnTenantChange path. Must match the values at
+// internal/postgres.sentinelGlobal and internal/mongodb.sentinelGlobal.
+const sentinelGlobal = "_global"
 
 // nskey is the composite map key for registry/cache/subscriber lookups.
 // Namespace and Key are separated structurally rather than via string
@@ -90,13 +106,11 @@ type Client struct {
 	subscribers map[nskey][]subscription
 	nextSubID   atomic.Uint64
 
-	// tenantSubscribers holds per-(ns,key) OnTenantChange callbacks wired up
-	// in Task 5. Protected by tenantSubsMu. The scaffolding (state + mutex +
-	// id counter) lands here so Task 5 can flesh out dispatch without
-	// revisiting the struct layout.
-	tenantSubsMu      sync.RWMutex            //nolint:unused // consumed by Task 5 (OnTenantChange dispatch)
+	// tenantSubscribers holds per-(ns,key) OnTenantChange callbacks. Protected
+	// by tenantSubsMu.
+	tenantSubsMu      sync.RWMutex
 	tenantSubscribers map[nskey][]tenantSubscription
-	nextTenantSubID   atomic.Uint64 //nolint:unused // consumed by Task 5 (OnTenantChange id allocation)
+	nextTenantSubID   atomic.Uint64
 
 	// tenantLoadMode drives Start's tenant hydration strategy (eager = load
 	// all at Start; lazy = miss-populate under a bounded LRU). Set once at
@@ -113,12 +127,10 @@ type Client struct {
 
 // tenantSubscription holds a single OnTenantChange callback and its monotonic
 // id. The callback signature carries the tenantID so a subscriber can
-// distinguish which tenant's override changed. Used by Task 5's
-// OnTenantChange / fireTenantSubscribers; landed here alongside the
-// tenantSubscribers slice so the Client's zero-value wiring is complete.
+// distinguish which tenant's override changed.
 type tenantSubscription struct {
-	id uint64                                                  //nolint:unused // consumed by Task 5 (OnTenantChange dispatch)
-	fn func(namespace, key, tenantID string, newValue any) //nolint:unused // consumed by Task 5 (OnTenantChange dispatch)
+	id uint64
+	fn func(namespace, key, tenantID string, newValue any)
 }
 
 // NewPostgres creates a Client backed by a Postgres database with LISTEN/NOTIFY
@@ -289,6 +301,14 @@ func (c *Client) Start(ctx context.Context) error {
 
 	c.registryMu.RUnlock()
 
+	// 2b. Eager-hydrate tenant overrides. In lazy mode we skip this step and
+	// populate the LRU on miss. Hydration failures here are non-fatal: the
+	// lazy fallback semantics already handle miss-populate so a failed
+	// eager pass simply degrades to lazy-like behavior without breaking Start.
+	if c.tenantLoadMode == tenantLoadEager {
+		c.hydrateTenantCache(ctx)
+	}
+
 	// 3. Launch the Subscribe goroutine with its own cancellable context.
 	subCtx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: cancel stored in c.cancel and invoked by Close()
 	c.cancel = cancel
@@ -349,78 +369,21 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// onEvent is the raw changefeed handler. It debounces per (namespace, key) to
-// coalesce rapid updates into a single refresh.
+// onEvent is the raw changefeed handler. It debounces per (namespace, key,
+// tenantID) tuple to coalesce rapid updates into a single refresh.
 //
 // The composite key uses U+001F (Unit Separator) as a delimiter, which is a
-// control character guaranteed not to appear in reasonable namespace/key strings.
+// control character guaranteed not to appear in reasonable namespace/key
+// strings. The tenantID component is always populated by the backend —
+// sentinelGlobal ("_global") for shared rows, the tenant ID otherwise — so
+// tenant-A and tenant-B events for the same (namespace, key) never collide on
+// the same debounce timer slot.
 func (c *Client) onEvent(evt store.Event) {
-	compositeKey := evt.Namespace + "\x1f" + evt.Key
+	compositeKey := evt.Namespace + "\x1f" + evt.Key + "\x1f" + evt.TenantID
 
 	c.debouncer.Submit(compositeKey, func() {
-		c.refreshFromStore(evt.Namespace, evt.Key)
+		c.refreshFromStoreRouted(evt.Namespace, evt.Key, evt.TenantID)
 	})
-}
-
-// refreshFromStore re-reads a single key from the backend, updates the cache,
-// and fires OnChange subscribers.
-func (c *Client) refreshFromStore(ns, key string) {
-	nk := nskey{Namespace: ns, Key: key}
-
-	// 1. Look up registration.
-	c.registryMu.RLock()
-	def, registered := c.registry[nk]
-	c.registryMu.RUnlock()
-
-	if !registered {
-		c.logWarn(context.Background(), "changefeed event for unregistered key, skipping",
-			log.String("namespace", ns),
-			log.String("key", key),
-		)
-
-		return
-	}
-
-	// 2. Fetch from store with a bounded timeout.
-	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
-	defer cancel()
-
-	entry, found, err := c.store.Get(ctx, ns, key)
-	if err != nil {
-		c.logWarn(ctx, "refresh from store failed",
-			log.String("namespace", ns),
-			log.String("key", key),
-			log.Err(err),
-		)
-
-		return
-	}
-
-	// 3. Resolve the new value: persisted or default.
-	newValue := def.defaultValue
-
-	if found {
-		var decoded any
-		if err := json.Unmarshal(entry.Value, &decoded); err != nil {
-			c.logWarn(ctx, "failed to unmarshal refreshed value, keeping current",
-				log.String("namespace", ns),
-				log.String("key", key),
-				log.Err(err),
-			)
-
-			return
-		}
-
-		newValue = decoded
-	}
-
-	// 4. Update cache.
-	c.cacheMu.Lock()
-	c.cache[nk] = newValue
-	c.cacheMu.Unlock()
-
-	// 5. Fire subscribers.
-	c.fireSubscribers(nk, newValue)
 }
 
 // fireSubscribers invokes all OnChange callbacks for a key. Each callback is
@@ -446,6 +409,15 @@ func (c *Client) fireSubscribers(nk nskey, newValue any) {
 // startSpan creates a child span if telemetry is configured, otherwise returns
 // a no-op span. Callers MUST defer finish() to end the span.
 func (c *Client) startSpan(ctx context.Context, name string) (context.Context, trace.Span, func()) {
+	return c.startSpanWithAttrs(ctx, name)
+}
+
+// startSpanWithAttrs creates a child span and (when telemetry is configured)
+// sets the provided attributes on it before returning. Callers MUST defer
+// finish() to end the span. The attributes argument is variadic so zero
+// attributes is a valid — and common — call shape, used by legacy callers
+// that do not need span attributes.
+func (c *Client) startSpanWithAttrs(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span, func()) {
 	noop := func() {}
 
 	if c.telemetry == nil {
@@ -458,6 +430,10 @@ func (c *Client) startSpan(ctx context.Context, name string) (context.Context, t
 	}
 
 	ctx, span := tracer.Start(ctx, name)
+
+	if len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
 
 	return ctx, span, func() { span.End() }
 }
