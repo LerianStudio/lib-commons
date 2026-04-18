@@ -17,6 +17,11 @@ type clientConfig struct {
 	debounce      time.Duration
 	collection    string // MongoDB collection name
 	table         string // Postgres table name
+
+	// tenantLoadMode selects eager (default) vs lazy tenant value hydration.
+	// tenantCacheMax is the LRU bound in lazy mode; ignored in eager mode.
+	tenantLoadMode tenantLoadMode
+	tenantCacheMax int
 }
 
 // defaultClientConfig returns sensible defaults.
@@ -96,6 +101,31 @@ func WithTable(name string) Option {
 		if name != "" {
 			cfg.table = name
 		}
+	}
+}
+
+// WithLazyTenantLoad switches tenant value caching from eager hydration (the
+// default, which loads every tenant row at Start) to a lazy bounded-LRU cache
+// populated on first read.
+//
+// In lazy mode, GetForTenant issues a single-flight store.GetTenantValue call
+// on a cache miss (with a 5s timeout) and evicts the least-recently-used entry
+// when the cache reaches max entries. The trade-off is a ~5-10ms first-touch
+// cost per (tenant, key) tuple in exchange for bounded memory. Best fit for
+// deployments with a large tenant population where only a subset is routinely
+// active (e.g. >10k tenants × 12 keys with ~100 active tenants at a time).
+//
+// A non-positive max is treated as "disabled" and falls back to eager mode,
+// matching the convention used by WithDebounce and WithPollInterval.
+func WithLazyTenantLoad(maxEntries int) Option {
+	return func(cfg *clientConfig) {
+		if maxEntries <= 0 {
+			// Treat as disabled: eager mode remains active.
+			return
+		}
+
+		cfg.tenantLoadMode = tenantLoadLazy
+		cfg.tenantCacheMax = maxEntries
 	}
 }
 

@@ -22,4 +22,22 @@ var (
 	// ErrDuplicateKey is returned when Register is called with a (namespace, key)
 	// pair that has already been registered.
 	ErrDuplicateKey = errors.New("systemplane: duplicate key")
+
+	// ErrMissingTenantContext is returned when a tenant-scoped read or write is
+	// attempted without a tenant ID present in the context. Tenant resolution
+	// is fail-closed: there is no fallback to a shared global for tenant-scoped
+	// keys.
+	ErrMissingTenantContext = errors.New("systemplane: missing tenant ID in context")
+
+	// ErrInvalidTenantID is returned when the tenant ID extracted from context
+	// fails validation (empty, too long, or otherwise malformed). Tenant IDs
+	// must satisfy core.IsValidTenantID and cannot collide with the "_global"
+	// sentinel that identifies shared rows.
+	ErrInvalidTenantID = errors.New("systemplane: invalid tenant ID")
+
+	// ErrTenantScopeNotRegistered is returned when a tenant-scoped operation
+	// (GetForTenant, SetForTenant, DeleteForTenant) references a key that was
+	// registered via Register rather than RegisterTenantScoped. Globals-only
+	// keys cannot accept tenant overrides.
+	ErrTenantScopeNotRegistered = errors.New("systemplane: key was not registered via RegisterTenantScoped")
 )

@@ -48,6 +48,23 @@ type subscription struct {
 
 // Client is the runtime-config handle. Read methods are nil-receiver safe,
 // returning zero values when the Client is nil or not yet started.
+//
+// # Mutex hierarchy
+//
+// Locks are ordered to prevent deadlock. No code path holds two RWMutex
+// writes simultaneously:
+//
+//  1. startMu       (Mutex)    — serializes Start()
+//  2. registryMu    (RWMutex)  — protects registry AND tenantScopedRegistry
+//  3. cacheMu       (RWMutex)  — protects cache AND tenantCache
+//  4. subsMu        (RWMutex)  — protects OnChange subscribers
+//  5. tenantSubsMu  (RWMutex)  — protects OnTenantChange subscribers
+//
+// Dispatch follows the existing "RLock → copy → RUnlock → invoke under panic
+// shield" pattern (see fireSubscribers). The convention is: take at most one
+// write lock at a time; for chained reads across registry + cache, acquire
+// both RLocks in registry→cache order and release in reverse (see List in
+// get.go for the reference pattern).
 type Client struct {
 	store     store.Store
 	debouncer *debounce.Debouncer
@@ -55,17 +72,36 @@ type Client struct {
 	telemetry *opentelemetry.Telemetry
 
 	// registry is populated by Register (before Start) and read-only after Start.
-	registryMu sync.RWMutex
-	registry   map[nskey]keyDef
+	// registryMu also guards tenantScopedRegistry — both are set together at
+	// registration time and never mutated after Start.
+	registryMu           sync.RWMutex
+	registry             map[nskey]keyDef
+	tenantScopedRegistry map[nskey]struct{}
 
 	// cache holds effective values (default or override). Protected by cacheMu.
-	cacheMu sync.RWMutex
-	cache   map[nskey]any
+	// cacheMu also guards tenantCache writes and reads; tenantCache
+	// implementations are NOT internally synchronized (see tenant_cache.go).
+	cacheMu     sync.RWMutex
+	cache       map[nskey]any
+	tenantCache tenantCache
 
 	// subscribers holds per-key OnChange callbacks. Protected by subsMu.
 	subsMu      sync.RWMutex
 	subscribers map[nskey][]subscription
 	nextSubID   atomic.Uint64
+
+	// tenantSubscribers holds per-(ns,key) OnTenantChange callbacks wired up
+	// in Task 5. Protected by tenantSubsMu. The scaffolding (state + mutex +
+	// id counter) lands here so Task 5 can flesh out dispatch without
+	// revisiting the struct layout.
+	tenantSubsMu      sync.RWMutex            //nolint:unused // consumed by Task 5 (OnTenantChange dispatch)
+	tenantSubscribers map[nskey][]tenantSubscription
+	nextTenantSubID   atomic.Uint64 //nolint:unused // consumed by Task 5 (OnTenantChange id allocation)
+
+	// tenantLoadMode drives Start's tenant hydration strategy (eager = load
+	// all at Start; lazy = miss-populate under a bounded LRU). Set once at
+	// construction via WithLazyTenantLoad; immutable thereafter.
+	tenantLoadMode tenantLoadMode
 
 	startMu   sync.Mutex
 	started   atomic.Bool
@@ -73,6 +109,16 @@ type Client struct {
 	closed    atomic.Bool
 	cancel    context.CancelFunc // cancels the Subscribe goroutine
 	wg        sync.WaitGroup     // tracks the Subscribe goroutine
+}
+
+// tenantSubscription holds a single OnTenantChange callback and its monotonic
+// id. The callback signature carries the tenantID so a subscriber can
+// distinguish which tenant's override changed. Used by Task 5's
+// OnTenantChange / fireTenantSubscribers; landed here alongside the
+// tenantSubscribers slice so the Client's zero-value wiring is complete.
+type tenantSubscription struct {
+	id uint64                                                  //nolint:unused // consumed by Task 5 (OnTenantChange dispatch)
+	fn func(namespace, key, tenantID string, newValue any) //nolint:unused // consumed by Task 5 (OnTenantChange dispatch)
 }
 
 // NewPostgres creates a Client backed by a Postgres database with LISTEN/NOTIFY
@@ -145,15 +191,33 @@ func newClient(s store.Store, cfg clientConfig) *Client {
 		logger = log.NewNop()
 	}
 
+	tc := newTenantCacheForConfig(cfg)
+
 	return &Client{
-		store:       s,
-		debouncer:   debounce.New(cfg.debounce, debounce.WithLogger(logger)),
-		logger:      logger,
-		telemetry:   cfg.telemetry,
-		registry:    make(map[nskey]keyDef),
-		cache:       make(map[nskey]any),
-		subscribers: make(map[nskey][]subscription),
+		store:                s,
+		debouncer:            debounce.New(cfg.debounce, debounce.WithLogger(logger)),
+		logger:               logger,
+		telemetry:            cfg.telemetry,
+		registry:             make(map[nskey]keyDef),
+		tenantScopedRegistry: make(map[nskey]struct{}),
+		cache:                make(map[nskey]any),
+		tenantCache:          tc,
+		subscribers:          make(map[nskey][]subscription),
+		tenantSubscribers:    make(map[nskey][]tenantSubscription),
+		tenantLoadMode:       tc.mode(),
 	}
+}
+
+// newTenantCacheForConfig picks the tenantCache implementation matching the
+// configured load mode. Eager is the default; lazy requires a positive bound
+// (WithLazyTenantLoad enforces this, and newTenantCacheLRU falls back to
+// eager on non-positive bounds as a defensive guard).
+func newTenantCacheForConfig(cfg clientConfig) tenantCache {
+	if cfg.tenantLoadMode == tenantLoadLazy && cfg.tenantCacheMax > 0 {
+		return newTenantCacheLRU(cfg.tenantCacheMax)
+	}
+
+	return newTenantCacheEager()
 }
 
 // Start hydrates initial values from the backing store and begins listening
