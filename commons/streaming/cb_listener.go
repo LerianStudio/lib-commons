@@ -65,24 +65,36 @@ func (l *streamingStateListener) OnStateChange(
 		return
 	}
 
+	// Producer identity (producer_id) goes on every log line per TRD §7.3
+	// so ops tooling can correlate CB transitions with emit log lines. The
+	// "service" field remains for back-compat with any pre-existing
+	// dashboards that key on it.
+	producerIDField := log.String("producer_id", l.producer.producerID)
+
 	switch to {
 	case circuitbreaker.StateClosed:
 		l.producer.cbStateFlag.Store(flagCBClosed)
+		l.producer.metrics.recordCircuitState(ctx, flagCBClosed)
 		l.producer.logger.Log(ctx, log.LevelInfo, "streaming: circuit closed",
+			producerIDField,
 			log.String("service", serviceName),
 			log.String("from", string(from)),
 			log.String("to", string(to)),
 		)
 	case circuitbreaker.StateHalfOpen:
 		l.producer.cbStateFlag.Store(flagCBHalfOpen)
+		l.producer.metrics.recordCircuitState(ctx, flagCBHalfOpen)
 		l.producer.logger.Log(ctx, log.LevelInfo, "streaming: circuit half-open",
+			producerIDField,
 			log.String("service", serviceName),
 			log.String("from", string(from)),
 			log.String("to", string(to)),
 		)
 	case circuitbreaker.StateOpen:
 		l.producer.cbStateFlag.Store(flagCBOpen)
+		l.producer.metrics.recordCircuitState(ctx, flagCBOpen)
 		l.producer.logger.Log(ctx, log.LevelWarn, "streaming: circuit open",
+			producerIDField,
 			log.String("service", serviceName),
 			log.String("from", string(from)),
 			log.String("to", string(to)),
@@ -90,8 +102,11 @@ func (l *streamingStateListener) OnStateChange(
 	case circuitbreaker.StateUnknown:
 		// Unknown state shouldn't happen for a registered breaker; log a
 		// warning so operators notice if the circuitbreaker package ever
-		// introduces a new state without updating this switch.
+		// introduces a new state without updating this switch. NOT writing
+		// to the metric gauge here — writing an unknown numeric would
+		// corrupt the gauge semantics (0/1/2 closed/half-open/open).
 		l.producer.logger.Log(ctx, log.LevelWarn, "streaming: circuit state unknown",
+			producerIDField,
 			log.String("service", serviceName),
 			log.String("from", string(from)),
 			log.String("to", string(to)),

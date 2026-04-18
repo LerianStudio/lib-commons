@@ -171,19 +171,31 @@ func (p *Producer) publishDLQ(
 		// DLQ write itself failed. Log at ERROR so alerting picks this up
 		// (a failing DLQ is a leading indicator of correlated broker
 		// failure — streaming_dlq_publish_failed_total is the metric
-		// operators alert on once T6 wires it). The caller sees a wrapped
-		// error containing both the original cause and the DLQ failure,
-		// so no context is lost.
+		// operators alert on). The caller sees a wrapped error containing
+		// both the original cause and the DLQ failure, so no context is
+		// lost.
+		//
+		// Log fields follow TRD §7.3 — producer_id / topic / resource_type /
+		// event_type / tenant_id / event_id / error_class / outcome. Kept
+		// in the same order everywhere so log-stream shapes stay stable.
 		p.logger.Log(ctx, log.LevelError, "streaming: DLQ publish failed",
-			log.String("source_topic", sourceTopic),
-			log.String("dlq_topic", dlqTopic(sourceTopic)),
+			log.String("producer_id", p.producerID),
+			log.String("topic", sourceTopic),
+			log.String("resource_type", event.ResourceType),
+			log.String("event_type", event.EventType),
+			log.String("tenant_id", event.TenantID),
+			log.String("event_id", event.EventID),
+			log.String("outcome", "dlq_publish_failed"),
 			log.String("error_class", string(cls)),
+			log.String("dlq_topic", dlqTopic(sourceTopic)),
 			log.Err(err),
 		)
 
-		// streaming_dlq_publish_failed_total counter increment lands here
-		// in T6 (see TRD §7.1). The stub is documented to keep the edit
-		// surface small when T6 arrives.
+		// streaming_dlq_publish_failed_total counter. Guarded by metrics
+		// nil-safety so a misconfigured Producer (no metrics factory)
+		// still logs the error and returns the wrapped chain.
+		p.metrics.recordDLQFailed(ctx, sourceTopic)
+
 		return fmt.Errorf("streaming: DLQ publish to %s failed: %w", dlqTopic(sourceTopic), err)
 	}
 

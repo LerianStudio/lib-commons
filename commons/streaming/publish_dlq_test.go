@@ -904,8 +904,10 @@ func TestProducer_PublishDLQ_DLQFailure_SurfacesWrappedError(t *testing.T) {
 		t.Fatalf("no ERROR log entry for 'DLQ publish failed'; entries=%d", len(spy.entries))
 	}
 
-	if got, ok := entry.fields["source_topic"].(string); !ok || got != sourceTopic {
-		t.Errorf("log entry source_topic = %v; want %q", entry.fields["source_topic"], sourceTopic)
+	// T6 standardization (TRD §7.3): source topic is carried in the "topic"
+	// field; the dedicated "dlq_topic" field carries the derived DLQ name.
+	if got, ok := entry.fields["topic"].(string); !ok || got != sourceTopic {
+		t.Errorf("log entry topic = %v; want %q", entry.fields["topic"], sourceTopic)
 	}
 	if got, ok := entry.fields["dlq_topic"].(string); !ok || got != dlq {
 		t.Errorf("log entry dlq_topic = %v; want %q", entry.fields["dlq_topic"], dlq)

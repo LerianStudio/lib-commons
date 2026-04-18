@@ -8,12 +8,17 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/twmb/franz-go/pkg/kgo"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/circuitbreaker"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 )
+
+// tracerName + emitSpanName live in emit_span.go (colocated with the
+// attribute-builder setEmitSpanAttributes) so the OTEL-naming contract is
+// a single-file read.
 
 // Circuit-breaker-related constants (flagCB*, cbServiceNamePrefix) and the
 // initCircuitBreaker / buildCBConfig helpers live in cb_init.go. Keeping them
@@ -65,14 +70,22 @@ type Producer struct {
 	// flagCB* constants above.
 	cbStateFlag atomic.Int32
 
-	// tracer is the OTEL tracer used for the streaming.emit span. nil
-	// falls back to the global tracer provider (T6 owns the wrap).
+	// tracer is the OTEL tracer used for the streaming.emit span. Never
+	// nil after NewProducer — falls back to otel.Tracer("streaming") when
+	// the caller did not supply WithTracer.
 	tracer trace.Tracer
 
 	// logger is the structured logger. Never nil; New substitutes
 	// log.NewNop() when none supplied, so internal log sites can call
 	// Log(ctx, ...) unguarded.
 	logger log.Logger
+
+	// metrics holds lazy-initialised OTEL instruments. Never nil after
+	// NewProducer; when WithMetricsFactory is omitted (or passed nil) the
+	// streamingMetrics still wraps a nil factory and degrades record* calls
+	// to a single WARN + silent no-ops. Kept non-nil so Emit can call
+	// p.metrics.recordEmitted unconditionally.
+	metrics *streamingMetrics
 
 	// closed flips to true on Close; subsequent Emit calls return
 	// ErrEmitterClosed synchronously before any I/O.
@@ -184,12 +197,23 @@ func NewProducer(ctx context.Context, cfg Config, opts ...EmitterOption) (*Produ
 		return nil, fmt.Errorf("streaming: kgo client init: %w", err)
 	}
 
+	// Tracer fallback. A nil tracer here means the caller did not invoke
+	// WithTracer; we use the global tracer provider's "streaming" tracer
+	// so spans still surface in whatever provider the service bootstrapped.
+	// If the process has no provider set, otel.Tracer returns a no-op
+	// tracer — start/end are cheap and correct under that backend.
+	tracer := resolvedOpts.tracer
+	if tracer == nil {
+		tracer = otel.Tracer(tracerName)
+	}
+
 	p := &Producer{
 		client:       client,
 		cfg:          cfg,
 		cbManager:    resolvedOpts.cbManager,
-		tracer:       resolvedOpts.tracer,
+		tracer:       tracer,
 		logger:       logger,
+		metrics:      newStreamingMetrics(resolvedOpts.metricsFactory, logger),
 		producerID:   uuid.NewString(),
 		partFn:       resolvedOpts.partitionKeyFn,
 		toggles:      cfg.EventToggles,
@@ -215,87 +239,6 @@ func NewProducer(ctx context.Context, cfg Config, opts ...EmitterOption) (*Produ
 	return p, nil
 }
 
-// Emit publishes a single Event. It performs caller-side validation
-// synchronously (tenant/source/size/JSON), applies defaults on a local copy
-// so the caller's struct is untouched, then dispatches the produce through
-// the circuit-breaker wrapper so infrastructure faults feed the breaker but
-// caller faults do NOT.
-//
-// Circuit-open behavior:
-//   - With WithOutboxRepository wired: Emit writes the event to the outbox
-//     and returns nil. The outbox Dispatcher will drain it via the handler
-//     registered by RegisterOutboxHandler (bypasses the breaker on replay).
-//   - Without an outbox wired: Emit returns ErrCircuitOpen so the caller
-//     can fail fast or implement its own fallback.
-//
-// In either case the circuit breaker itself stays untouched during the
-// circuit-open branch — it is already OPEN; there is nothing to "feed".
-//
-// Nil-receiver safe: returns ErrNilProducer rather than panicking.
-func (p *Producer) Emit(ctx context.Context, event Event) error {
-	if p == nil {
-		return ErrNilProducer
-	}
-
-	if p.closed.Load() {
-		return ErrEmitterClosed
-	}
-
-	// Apply defaults on a local copy first so the caller's struct is not
-	// mutated. Safe before validation because defaults (EventID, Timestamp,
-	// SchemaVersion, DataContentType) do not influence any validation check.
-	(&event).ApplyDefaults()
-
-	// Pre-flight validation runs OUTSIDE the circuit-breaker wrapper so a
-	// barrage of caller mistakes cannot trip the breaker — breaker counts
-	// only reflect infrastructure health, not caller hygiene.
-	if err := p.preFlight(event); err != nil {
-		return err
-	}
-
-	// cb.Execute takes a closure with signature func() (any, error). We close
-	// over the outer ctx and defaulted-event. A typed-nil result is fine;
-	// the caller discards it. Errors are propagated verbatim — Execute wraps
-	// ErrOpenState / ErrTooManyRequests into its own diagnostic so callers
-	// can still errors.Is for those sentinels.
-	_, err := p.cb.Execute(func() (any, error) {
-		// Circuit-open fallback. When the breaker is OPEN we observe the
-		// mirrored flag and either (a) route to the outbox if one is
-		// configured — caller sees nil after a durable write — or (b) fail
-		// fast with ErrCircuitOpen. Either way we return (nil, nil) on the
-		// outbox-success path so gobreaker leaves the breaker untouched;
-		// returning an error here would count against the already-open
-		// breaker for no useful reason.
-		if p.cbStateFlag.Load() == flagCBOpen {
-			if p.outbox != nil {
-				if obxErr := p.publishToOutbox(ctx, event); obxErr != nil {
-					// Outbox write itself failed: surface the error so the
-					// caller knows the event wasn't durably captured. This
-					// is a rare but load-bearing failure mode — silent drop
-					// here would lose the event entirely.
-					return nil, obxErr
-				}
-
-				// Outbox wrote successfully. Caller sees nil; Dispatcher
-				// will drain the row back through publishDirect once the
-				// broker recovers.
-				return nil, nil //nolint:nilnil // CB Execute signature mandates (any, error); nil result is discarded
-			}
-
-			// No outbox configured — T3 behavior preserved. Caller gets an
-			// explicit sentinel they can errors.Is against.
-			return nil, ErrCircuitOpen
-		}
-
-		if err := p.publishDirect(ctx, event); err != nil {
-			return nil, err
-		}
-
-		// Success: the result value is unused by Emit and the CB manager
-		// only inspects the error. A nil, nil return is the idiomatic
-		// success signal for this Execute signature.
-		return nil, nil //nolint:nilnil // CB Execute signature mandates (any, error); nil result is discarded
-	})
-
-	return err
-}
+// Emit and its helpers live in emit.go (plus setEmitSpanAttributes in
+// emit_span.go). Keeping producer.go focused on construction/lifecycle
+// makes it easier to audit the hot path in isolation.
