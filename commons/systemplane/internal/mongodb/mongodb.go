@@ -85,6 +85,15 @@ type Config struct {
 
 	// Telemetry is the OpenTelemetry provider for spans and metrics.
 	Telemetry *opentelemetry.Telemetry
+
+	// TenantSchemaEnabled opts the backend into phase-2 schema. When false
+	// (the default), ensureSchema keeps a unique index on (namespace, key)
+	// so pre-tenant lib-commons binaries (v5.0.x) can continue to upsert
+	// under the legacy ObjectId _id shape. Tenant writes return
+	// ErrTenantSchemaNotEnabled. When true, the legacy ObjectId _id is
+	// migrated to the compound {namespace, key, tenant_id} shape and
+	// tenant writes are permitted.
+	TenantSchemaEnabled bool
 }
 
 // compoundID is the shape of the document _id.
@@ -141,10 +150,16 @@ type Store struct {
 
 // New creates a MongoDB-backed Store. Returns an error if the Config is invalid.
 //
-// The compound unique index on (namespace, key, tenant_id) is created
-// idempotently. Any pre-existing (namespace, key) index from older deployments
-// is dropped, and pre-existing documents with ObjectId _id or missing
-// tenant_id are migrated to the compound _id shape. See ensureSchema.
+// Schema bootstrap is two-phased to support rolling deploys:
+//
+//   - Phase 1 (default, TenantSchemaEnabled=false): ensureLegacySchema creates
+//     a unique index on (namespace, key). Documents retain their legacy
+//     ObjectId _id shape. Tenant writes return ErrTenantSchemaNotEnabled.
+//     This is the rolling-deploy safe configuration: pre-tenant binaries
+//     (v5.0.x) can continue to upsert against the same collection.
+//   - Phase 2 (TenantSchemaEnabled=true): ensureSchema drops the legacy
+//     unique index and runs the compound _id migration. After this phase
+//     the backend accepts tenant writes.
 //
 // When PollInterval is zero, Subscribe uses change-streams (requires a replica
 // set). When PollInterval is positive, Subscribe uses a polling loop that works
@@ -167,7 +182,12 @@ func New(cfg Config) (*Store, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), schemaInitTimeout)
 	defer cancel()
 
-	if err := ensureSchema(ctx, coll); err != nil {
+	schemaFn := ensureLegacySchema
+	if cfg.TenantSchemaEnabled {
+		schemaFn = ensureSchema
+	}
+
+	if err := schemaFn(ctx, coll); err != nil {
 		return nil, fmt.Errorf("mongodb store: schema init: %w", err)
 	}
 

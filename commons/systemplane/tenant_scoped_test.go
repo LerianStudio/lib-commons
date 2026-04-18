@@ -68,6 +68,15 @@ type tenantFakeStore struct {
 	// lazy-mode tests that need to force the miss-populate path to log-and-
 	// fall-through rather than succeed.
 	getTenantErr error
+
+	// setTenantErr, if non-nil, is returned from SetTenantValue before any
+	// state mutation — used by phase-1 rolling-deploy tests that need the
+	// backend to simulate ErrTenantSchemaNotEnabled.
+	setTenantErr error
+
+	// deleteTenantErr, if non-nil, is returned from DeleteTenantValue before
+	// any state mutation — symmetric with setTenantErr for the delete path.
+	deleteTenantErr error
 }
 
 func newTenantFakeStore() *tenantFakeStore {
@@ -155,9 +164,15 @@ func (s *tenantFakeStore) GetTenantValue(_ context.Context, tenantID, namespace,
 }
 
 func (s *tenantFakeStore) SetTenantValue(_ context.Context, tenantID string, e TestEntry) error {
-	e.TenantID = tenantID
-
 	s.mu.Lock()
+	if s.setTenantErr != nil {
+		err := s.setTenantErr
+		s.mu.Unlock()
+
+		return err
+	}
+
+	e.TenantID = tenantID
 	s.rows[tenantRowKey{tenantID: tenantID, namespace: e.Namespace, key: e.Key}] = e
 	s.mu.Unlock()
 
@@ -168,6 +183,13 @@ func (s *tenantFakeStore) SetTenantValue(_ context.Context, tenantID string, e T
 
 func (s *tenantFakeStore) DeleteTenantValue(_ context.Context, tenantID, namespace, key, _ string) error {
 	s.mu.Lock()
+	if s.deleteTenantErr != nil {
+		err := s.deleteTenantErr
+		s.mu.Unlock()
+
+		return err
+	}
+
 	delete(s.rows, tenantRowKey{tenantID: tenantID, namespace: namespace, key: key})
 	s.mu.Unlock()
 
@@ -445,6 +467,43 @@ func TestSetForTenant_NilReceiverReturnsErrClosed(t *testing.T) {
 
 	err := c.SetForTenant(tctx("tenant-A"), "ns", "k", 1, "admin")
 	assert.ErrorIs(t, err, ErrClosed, "nil receiver must return ErrClosed")
+}
+
+// TestSetForTenant_SurfacesErrTenantSchemaNotEnabled is the Client-level
+// mirror of the backend phase-1 guard. When the underlying store returns
+// store.ErrTenantSchemaNotEnabled (which is aliased as
+// systemplane.ErrTenantSchemaNotEnabled), the Client wraps the error via
+// persistTenantValue and surfaces it unchanged through errors.Is — so
+// callers can match on the public sentinel without reaching into the
+// internal store package.
+//
+// This is the rolling-deploy safety contract: phase-1 binaries MUST be
+// able to detect "tenant writes not allowed yet" programmatically.
+func TestSetForTenant_SurfacesErrTenantSchemaNotEnabled(t *testing.T) {
+	t.Parallel()
+
+	c, fs := buildStartedClient(t, "global", "fee.rate", 0.0)
+
+	// Simulate the backend running in phase-1 compat mode: SetTenantValue
+	// returns ErrTenantSchemaNotEnabled before mutating state.
+	fs.mu.Lock()
+	fs.setTenantErr = ErrTenantSchemaNotEnabled
+	fs.mu.Unlock()
+
+	err := c.SetForTenant(tctx("tenant-A"), "global", "fee.rate", 0.5, "admin")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTenantSchemaNotEnabled,
+		"phase-1 backend error must surface through Client via errors.Is")
+
+	// Defense-in-depth: the tenant cache must NOT have been populated when
+	// the backend rejected the write. Otherwise a subsequent GetForTenant
+	// in the same process would see a value that never made it to the
+	// backend — a silent split-brain.
+	_, found, err := c.GetForTenant(tctx("tenant-A"), "global", "fee.rate")
+	require.NoError(t, err)
+	// Either the global default (0.0) or nothing cached — but definitely
+	// not 0.5 that we attempted to write.
+	assert.True(t, found, "fall-through to default should still report found")
 }
 
 // ---------------------------------------------------------------------------

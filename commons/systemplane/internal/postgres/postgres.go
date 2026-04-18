@@ -76,6 +76,14 @@ type Config struct {
 
 	// Telemetry is the OpenTelemetry provider for spans and metrics.
 	Telemetry *opentelemetry.Telemetry
+
+	// TenantSchemaEnabled opts the backend into phase-2 schema. When false
+	// (the default), ensureSchema keeps the legacy (namespace, key) primary
+	// key intact so pre-tenant binaries can continue to use ON CONFLICT
+	// (namespace, key). Tenant writes return ErrTenantSchemaNotEnabled.
+	// When true, the legacy PK is dropped and a composite unique on
+	// (namespace, key, tenant_id) is created.
+	TenantSchemaEnabled bool
 }
 
 // Store implements [store.Store] over Postgres with LISTEN/NOTIFY.
@@ -233,11 +241,20 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bo
 // (upsert). The tenant_id column is populated explicitly with the '_global'
 // sentinel — the column's DEFAULT would do the same, but writing it
 // explicitly keeps the intent visible and future-proofs against a column
-// rewrite that might remove the default. The ON CONFLICT target is the
-// composite (namespace, key, tenant_id) unique index; with tenant_id pinned
-// to the sentinel the effective collision domain is the same as the
-// pre-tenant (namespace, key) PK. The backing trigger issues NOTIFY on the
-// configured channel.
+// rewrite that might remove the default.
+//
+// The ON CONFLICT target adapts to the configured schema phase:
+//
+//   - Phase 1 (TenantSchemaEnabled=false, default): targets the legacy
+//     (namespace, key) primary key, matching the arbiter shape used by
+//     pre-tenant lib-commons binaries (v5.0.x). This is the rolling-deploy
+//     safe configuration.
+//   - Phase 2 (TenantSchemaEnabled=true): targets the composite
+//     (namespace, key, tenant_id) unique index.
+//
+// In both phases tenant_id is pinned to '_global' for writes issued through
+// this method, so the collision domain is effectively (namespace, key).
+// The backing trigger issues NOTIFY on the configured channel.
 func (s *Store) Set(ctx context.Context, e store.Entry) error {
 	if s == nil || s.isClosed() {
 		return store.ErrClosed
@@ -261,11 +278,16 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 	)
 	defer finish()
 
+	conflictTarget := "(namespace, key)"
+	if s.cfg.TenantSchemaEnabled {
+		conflictTarget = "(namespace, key, tenant_id)"
+	}
+
 	query := fmt.Sprintf(`INSERT INTO %s (namespace, key, tenant_id, value, updated_at, updated_by)
 VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (namespace, key, tenant_id) DO UPDATE
+ON CONFLICT %s DO UPDATE
 SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`,
-		s.cfg.Table, // #nosec G201 -- table name validated as Postgres identifier in New()
+		s.cfg.Table, conflictTarget, // #nosec G201 -- table name validated as Postgres identifier in New(); conflictTarget is a compile-time literal
 	)
 
 	if _, err := s.cfg.DB.ExecContext(ctx, query, e.Namespace, e.Key, sentinelGlobal, e.Value, e.UpdatedAt, e.UpdatedBy); err != nil {

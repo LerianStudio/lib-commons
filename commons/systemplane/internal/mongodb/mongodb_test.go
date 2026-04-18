@@ -3,6 +3,7 @@
 package mongodb
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -10,6 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.opentelemetry.io/otel/trace/noop"
+
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 )
 
 // TestExtractEvent_DeleteUsesDocumentKey verifies the critical tenant-attribution
@@ -332,6 +336,45 @@ func TestChangeEvent_BSONDecodesDeleteEventShape(t *testing.T) {
 	assert.Equal(t, "global", got.Namespace)
 	assert.Equal(t, "feature.enabled", got.Key)
 	assert.Equal(t, "acme", got.TenantID)
+}
+
+// TestSetTenantValue_Phase1ReturnsErrTenantSchemaNotEnabled pins the H6
+// rolling-deploy guard for the MongoDB backend: when the Store is running
+// in phase-1 compat mode (the default, TenantSchemaEnabled=false),
+// SetTenantValue MUST return store.ErrTenantSchemaNotEnabled BEFORE touching
+// the collection. The check runs at the very top of the method, so a nil
+// *mongo.Collection is sufficient — the guard short-circuits the driver
+// call entirely.
+func TestSetTenantValue_Phase1ReturnsErrTenantSchemaNotEnabled(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{
+		cfg:    Config{TenantSchemaEnabled: false, Database: "test"},
+		tracer: noop.NewTracerProvider().Tracer(tracerName),
+	}
+
+	err := s.SetTenantValue(context.Background(), "tenant-A", store.Entry{
+		Namespace: "global", Key: "fee.rate", Value: []byte(`0.01`),
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, store.ErrTenantSchemaNotEnabled,
+		"phase-1 SetTenantValue must reject with ErrTenantSchemaNotEnabled")
+}
+
+// TestDeleteTenantValue_Phase1ReturnsErrTenantSchemaNotEnabled mirrors the
+// SetTenantValue guard for the MongoDB delete path.
+func TestDeleteTenantValue_Phase1ReturnsErrTenantSchemaNotEnabled(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{
+		cfg:    Config{TenantSchemaEnabled: false, Database: "test"},
+		tracer: noop.NewTracerProvider().Tracer(tracerName),
+	}
+
+	err := s.DeleteTenantValue(context.Background(), "tenant-A", "global", "fee.rate", "admin")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, store.ErrTenantSchemaNotEnabled,
+		"phase-1 DeleteTenantValue must reject with ErrTenantSchemaNotEnabled")
 }
 
 // TestChangeEvent_BSONDecodesInsertEventShape simulates the wire shape of

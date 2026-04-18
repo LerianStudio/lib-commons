@@ -76,6 +76,10 @@ func (s *Store) SetTenantValue(ctx context.Context, tenantID string, e store.Ent
 		return store.ErrClosed
 	}
 
+	if !s.cfg.TenantSchemaEnabled {
+		return store.ErrTenantSchemaNotEnabled
+	}
+
 	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.set_tenant_value")
 	defer span.End()
 
@@ -129,6 +133,10 @@ func (s *Store) DeleteTenantValue(
 ) error {
 	if s == nil || s.isClosed() {
 		return store.ErrClosed
+	}
+
+	if !s.cfg.TenantSchemaEnabled {
+		return store.ErrTenantSchemaNotEnabled
 	}
 
 	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.delete_tenant_value")

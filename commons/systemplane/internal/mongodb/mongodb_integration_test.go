@@ -108,9 +108,10 @@ func newTestStore(t *testing.T, client *mongo.Client, pollInterval time.Duration
 	dbName := fmt.Sprintf("test_%d", time.Now().UnixNano())
 
 	cfg := Config{
-		Client:       client,
-		Database:     dbName,
-		PollInterval: pollInterval,
+		Client:              client,
+		Database:            dbName,
+		PollInterval:        pollInterval,
+		TenantSchemaEnabled: true,
 	}
 
 	s, err := New(cfg)

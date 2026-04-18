@@ -17,6 +17,15 @@ var ErrNilBackend = errors.New("systemplane/store: nil backend handle")
 // ErrClosed is returned when a method is called on a nil or closed Store.
 var ErrClosed = errors.New("systemplane/store: store is closed or nil")
 
+// ErrTenantSchemaNotEnabled is returned by SetTenantValue / DeleteTenantValue
+// when the backend is running in phase-1 compat mode. In phase 1 the legacy
+// unique constraint on (namespace, key) is preserved so pre-tenant binaries
+// (v5.0.x) can continue to upsert without hitting ON CONFLICT arbiter
+// mismatches. Tenant writes are therefore rejected at the store boundary
+// with a clear error rather than a cryptic DB-level unique violation.
+// See commons/systemplane/MIGRATION_TENANT_SCOPED.md §4 for the upgrade path.
+var ErrTenantSchemaNotEnabled = errors.New("systemplane/store: tenant schema not enabled (phase 1 compat); enable via WithTenantSchemaEnabled() once all consumers are upgraded")
+
 // Entry is the persisted shape of a single configuration key.
 //
 // TenantID carries the tenant scope for the row. The sentinel value "_global"

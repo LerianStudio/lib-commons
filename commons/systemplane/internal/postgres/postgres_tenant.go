@@ -79,8 +79,16 @@ func (s *Store) SetTenantValue(ctx context.Context, tenantID string, e store.Ent
 		return store.ErrClosed
 	}
 
+	if !s.cfg.TenantSchemaEnabled {
+		return store.ErrTenantSchemaNotEnabled
+	}
+
 	if tenantID == "" {
 		return errors.New("systemplane/postgres: tenantID must not be empty")
+	}
+
+	if tenantID == sentinelGlobal {
+		return errors.New("systemplane/postgres: tenantID must not be the '_global' sentinel")
 	}
 
 	if e.Namespace == "" {
@@ -134,8 +142,16 @@ func (s *Store) DeleteTenantValue(ctx context.Context, tenantID, namespace, key,
 		return store.ErrClosed
 	}
 
+	if !s.cfg.TenantSchemaEnabled {
+		return store.ErrTenantSchemaNotEnabled
+	}
+
 	if tenantID == "" {
 		return errors.New("systemplane/postgres: tenantID must not be empty")
+	}
+
+	if tenantID == sentinelGlobal {
+		return errors.New("systemplane/postgres: tenantID must not be the '_global' sentinel")
 	}
 
 	if namespace == "" {

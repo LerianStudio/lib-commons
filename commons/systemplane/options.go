@@ -22,6 +22,15 @@ type clientConfig struct {
 	// tenantCacheMax is the LRU bound in lazy mode; ignored in eager mode.
 	tenantLoadMode tenantLoadMode
 	tenantCacheMax int
+
+	// tenantSchemaEnabled selects the backend schema phase (default: phase 1
+	// compat). When false, the backend preserves the legacy unique constraint
+	// on (namespace, key) so pre-tenant binaries (v5.0.x) can upsert during a
+	// rolling deploy; tenant writes return ErrTenantSchemaNotEnabled. When
+	// true, the backend drops the legacy constraint and creates the composite
+	// unique on (namespace, key, tenant_id), enabling tenant writes. Flip this
+	// only after every consumer process is on v5.1+.
+	tenantSchemaEnabled bool
 }
 
 // defaultClientConfig returns sensible defaults.
@@ -126,6 +135,29 @@ func WithLazyTenantLoad(maxEntries int) Option {
 
 		cfg.tenantLoadMode = tenantLoadLazy
 		cfg.tenantCacheMax = maxEntries
+	}
+}
+
+// WithTenantSchemaEnabled opts the backend into phase-2 schema: the legacy
+// unique constraint on (namespace, key) is dropped and replaced by a composite
+// unique on (namespace, key, tenant_id). Required before [SetForTenant],
+// [DeleteForTenant], and [RegisterTenantScoped]'s write paths can be used;
+// without it, those methods return [ErrTenantSchemaNotEnabled].
+//
+// # Rolling-deploy safety
+//
+// The default (phase 1) keeps the legacy constraint alive so pre-tenant
+// binaries (lib-commons v5.0.x) can continue to upsert via
+// ON CONFLICT (namespace, key) during a rolling deploy. Flip this option
+// only AFTER every consumer process in the same database is running
+// lib-commons v5.1+ — otherwise legacy binaries will fail with
+// "no unique or exclusion constraint matching the ON CONFLICT specification"
+// the first time they attempt an upsert.
+//
+// See commons/systemplane/MIGRATION_TENANT_SCOPED.md §4 for the full runbook.
+func WithTenantSchemaEnabled() Option {
+	return func(cfg *clientConfig) {
+		cfg.tenantSchemaEnabled = true
 	}
 }
 

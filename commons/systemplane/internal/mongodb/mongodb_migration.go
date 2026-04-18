@@ -52,10 +52,19 @@ const namespaceNotFoundCode = 26
 // the driver-assigned name is "namespace_1_key_1".
 const legacyNamespaceKeyIndex = "namespace_1_key_1"
 
-// ensureSchema runs the four migration steps documented on the package doc.
-// All steps are idempotent; re-running against a migrated collection is a
-// no-op modulo the round-trip cost.
+// ensureSchema runs the phase-2 migration steps. All steps are idempotent;
+// re-running against a migrated collection is a no-op modulo the round-trip
+// cost. The pre-flight duplicate-detection runs BEFORE backfill so an
+// ambiguous pre-migration state aborts loudly rather than silently losing
+// data at the $set stage (H6).
+//
+// Callers MUST only invoke this when Config.TenantSchemaEnabled is true;
+// New() routes to ensureLegacySchema otherwise.
 func ensureSchema(ctx context.Context, coll *mongo.Collection) error {
+	if err := verifyNoAmbiguousTenantDocs(ctx, coll); err != nil {
+		return err
+	}
+
 	if err := backfillTenantID(ctx, coll); err != nil {
 		return fmt.Errorf("backfill tenant_id: %w", err)
 	}
@@ -70,6 +79,78 @@ func ensureSchema(ctx context.Context, coll *mongo.Collection) error {
 
 	if err := createCompoundIndex(ctx, coll); err != nil {
 		return fmt.Errorf("create compound unique index: %w", err)
+	}
+
+	return nil
+}
+
+// ensureLegacySchema is the phase-1 schema bootstrap. It creates the legacy
+// unique index on (namespace, key) idempotently and leaves documents on
+// their ObjectId _id shape. No backfill, no _id rewrite, no compound index —
+// those belong to phase 2. Pre-tenant binaries that hit the same collection
+// remain schema-compatible.
+func ensureLegacySchema(ctx context.Context, coll *mongo.Collection) error {
+	model := mongo.IndexModel{
+		Keys: bson.D{
+			{Key: "namespace", Value: 1},
+			{Key: "key", Value: 1},
+		},
+		Options: options.Index().SetUnique(true).SetName(legacyNamespaceKeyIndex),
+	}
+
+	if _, err := coll.Indexes().CreateOne(ctx, model); err != nil {
+		return fmt.Errorf("create legacy unique index: %w", err)
+	}
+
+	return nil
+}
+
+// verifyNoAmbiguousTenantDocs is the phase-2 pre-flight guard (H6 sibling
+// of the Postgres H8). If a (namespace, key) pair has BOTH a document with
+// tenant_id missing AND another document with tenant_id="_global", the
+// subsequent backfill ($set tenant_id="_global" on the missing-field doc)
+// would produce two "_global" documents for the same pair and — once the
+// compound unique index is created — cause one of them to vanish on the
+// next upsert. Fail loudly so operators consolidate the rows manually.
+//
+// The aggregation pipeline returns zero when the collection is empty or
+// already consistent, so the check is a no-op on fresh deployments.
+func verifyNoAmbiguousTenantDocs(ctx context.Context, coll *mongo.Collection) error {
+	pipeline := mongo.Pipeline{
+		// Project a "has_tenant_id" flag so we can count each shape per group.
+		{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: bson.D{
+				{Key: "namespace", Value: "$namespace"},
+				{Key: "key", Value: "$key"},
+			}},
+			{Key: "tenantIDs", Value: bson.D{
+				{Key: "$addToSet", Value: bson.D{
+					{Key: "$ifNull", Value: bson.A{"$tenant_id", "__missing__"}},
+				}},
+			}},
+		}}},
+		// A colliding group is one that contains BOTH the missing marker AND
+		// the _global sentinel.
+		{{Key: "$match", Value: bson.D{
+			{Key: "tenantIDs", Value: bson.D{{Key: "$all", Value: bson.A{"__missing__", sentinelGlobal}}}},
+		}}},
+		{{Key: "$limit", Value: 1}},
+	}
+
+	cursor, err := coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return fmt.Errorf("detect ambiguous docs: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	if cursor.Next(ctx) {
+		return errors.New(
+			"systemplane/mongodb: ambiguous pre-migration state: documents exist with missing tenant_id AND a '_global' sibling for the same (namespace, key) — consolidate before enabling phase 2",
+		)
+	}
+
+	if err := cursor.Err(); err != nil {
+		return fmt.Errorf("detect ambiguous docs cursor: %w", err)
 	}
 
 	return nil

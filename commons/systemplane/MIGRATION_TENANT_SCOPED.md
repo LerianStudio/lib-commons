@@ -13,10 +13,11 @@ through:
 2. Wiring the tenant ID into `context.Context` at the call site.
 3. Migrating your admin authorizer from `WithAuthorizer` to
    `WithTenantAuthorizer`.
-4. Rollback stance and the MongoDB `_id` rewrite migration.
-5. Performance characteristics and when to choose eager vs lazy mode.
-6. New sentinel errors and `OnTenantChange` semantics.
-7. A full lifecycle example.
+4. Two-phase rolling-deploy migration and `WithTenantSchemaEnabled`.
+5. Rollback stance and the MongoDB `_id` rewrite migration.
+6. Performance characteristics and when to choose eager vs lazy mode.
+7. New sentinel errors and `OnTenantChange` semantics.
+8. A full lifecycle example.
 
 Primary audience: `plugin-br-bank-transfer` Phase 3, and any other
 downstream service consuming `commons/systemplane`.
@@ -142,7 +143,7 @@ rather than a generic "regex didn't match".
 
 ### Per-request read at the natural point
 
-Because the hit path is sub-microsecond (see §5), downstream code can
+Because the hit path is sub-microsecond (see §6), downstream code can
 call `GetForTenant` (or one of its typed accessor mirrors) at the
 natural logical point — for example once per fee computation inside the
 transfer handler — without caching the result at the call site. Caching
@@ -237,7 +238,114 @@ your hook is guaranteed to receive a well-formed tenant ID or `""`.
 
 ---
 
-## 4. Rollback and forward-only migration
+## 4. Two-phase rolling-deploy migration
+
+The tenant-scoped schema change drops the legacy `(namespace, key)`
+primary key (Postgres) / unique index (MongoDB) and replaces it with the
+composite `(namespace, key, tenant_id)`. Pre-tenant `lib-commons`
+binaries (v5.0.x) upsert via `ON CONFLICT (namespace, key)`; if those
+binaries hit the evolved schema they fail with
+`no unique or exclusion constraint matching the ON CONFLICT
+specification` on the first write. Every rolling deploy therefore needs
+a window where the old and new binaries coexist **against the legacy
+schema**.
+
+Phase 2 is opt-in via [`WithTenantSchemaEnabled()`](./options.go). The
+default is phase 1 — compat mode. **This is deliberate: tenant writes
+are rejected with [`ErrTenantSchemaNotEnabled`](./errors.go) until you
+explicitly flip the option.**
+
+### Phase 1 — deploy v5.1 everywhere
+
+1. Upgrade the library to v5.1+ across every consumer that shares the
+   database.
+2. Use the default Client construction (no `WithTenantSchemaEnabled`).
+   The backend creates the table / collection with the legacy unique
+   shape, adds the `tenant_id` column with the `_global` default, and
+   installs the NOTIFY trigger (Postgres) — but does **not** drop the
+   legacy PK and does **not** run the MongoDB `_id` rewrite migration.
+3. Mixed-version state is safe: v5.0.x binaries continue to upsert via
+   `ON CONFLICT (namespace, key)` against the same table/collection;
+   v5.1 binaries also upsert against `(namespace, key)` in phase 1.
+4. Tenant writes (`SetForTenant`, `DeleteForTenant`, and the admin
+   `PUT /:key/tenants/:tenantID` / `DELETE /:key/tenants/:tenantID`
+   routes) return `ErrTenantSchemaNotEnabled`. This is expected. Tenant
+   reads (`GetForTenant`, `ListTenantsForKey`) fall through to the
+   registered default because no tenant rows exist yet.
+
+### Phase transition — verify every consumer is on v5.1+
+
+Before flipping phase 2, confirm that **no** v5.0.x binaries are still
+running against this database. The inventory check is deployment-
+specific — a combination of Kubernetes image tags, service dashboards,
+and `go.mod` audits of every consumer. Any missed binary will start
+failing its first upsert the moment phase 2 commits.
+
+### Phase 2 — opt in to the composite unique
+
+```go
+c, err := systemplane.NewPostgres(db, dsn,
+    systemplane.WithLogger(logger),
+    systemplane.WithTenantSchemaEnabled(), // enable phase 2
+)
+```
+
+On the next `Start()` call the backend runs the schema evolution:
+
+- **Postgres:** `DROP CONSTRAINT IF EXISTS <table>_pkey`, then
+  `CREATE UNIQUE INDEX IF NOT EXISTS <table>_pkey_v2 ON ... (namespace,
+  key, tenant_id)`. Before the drop, the backend runs a
+  duplicate-detection query (see H8 below); the migration aborts with a
+  clear error if the pre-migration state is ambiguous.
+- **MongoDB:** drops the `namespace_1_key_1` unique index and runs the
+  `ObjectId _id` → compound-`_id` rewrite migration. Before the rewrite,
+  the backend runs an aggregation that aborts if the same
+  `(namespace, key)` has both a missing-`tenant_id` document and a
+  `_global` sibling.
+
+Both the Postgres and MongoDB migrations are **idempotent**. Crashes
+mid-migration are recoverable: restart the Client and the remaining
+steps run to completion.
+
+### Duplicate-detection errors (H6/H8)
+
+If the pre-migration data is ambiguous, the migration aborts with one of:
+
+- **Postgres:** `ambiguous pre-migration state: multiple rows for (ns,
+  key) with inconsistent tenant_id — consolidate before enabling phase
+  2` (carries an affected-row count).
+- **MongoDB:** `ambiguous pre-migration state: documents exist with
+  missing tenant_id AND a '_global' sibling for the same (namespace,
+  key) — consolidate before enabling phase 2`.
+
+The fix is to manually consolidate the rows (pick which one is
+authoritative, delete the other) **before** re-running with
+`WithTenantSchemaEnabled()`. The backend refuses to silently backfill
+and lose data.
+
+### DO NOT flip to phase 2 until every consumer is upgraded
+
+Flipping `WithTenantSchemaEnabled()` with any v5.0.x binaries still
+running against the database will break those binaries' upserts the
+next time they write. The legacy `ON CONFLICT (namespace, key)` clause
+has no matching unique constraint once phase 2 drops it, and the
+Postgres driver returns
+`no unique or exclusion constraint matching the ON CONFLICT
+specification`. MongoDB fails the upsert with a duplicate-key error on
+the compound `_id` because the v5.0.x binary still tries to allocate an
+`ObjectId _id`.
+
+### Cross-references
+
+- [`ErrTenantSchemaNotEnabled`](./errors.go) — the sentinel returned
+  during phase 1; match with `errors.Is`.
+- [`WithTenantSchemaEnabled()`](./options.go) — the opt-in option.
+- Postgres phase-2 pre-flight and DDL: `internal/postgres/postgres_schema.go`.
+- MongoDB phase-2 pre-flight and migration: `internal/mongodb/mongodb_migration.go`.
+
+---
+
+## 5. Rollback and forward-only migration
 
 The feature is **additive**. Opting back out — switching a key from
 `RegisterTenantScoped` to plain `Register` — is supported by the code
@@ -291,7 +399,7 @@ the column default.
 
 ---
 
-## 5. Performance notes and load modes
+## 6. Performance notes and load modes
 
 The Client tracks two modes for tenant value caching:
 
@@ -345,7 +453,7 @@ internally.
 
 ---
 
-## 6. New sentinel errors
+## 7. New sentinel errors
 
 | Sentinel                             | Meaning                                                                                       |
 | ------------------------------------ | --------------------------------------------------------------------------------------------- |
@@ -367,7 +475,7 @@ appropriate.
 
 ---
 
-## 7. `OnTenantChange` semantics
+## 8. `OnTenantChange` semantics
 
 `OnTenantChange(namespace, key, fn)` is the tenant-aware sibling of
 `OnChange`. Two invariants matter for reconcilers:
@@ -417,7 +525,7 @@ mirroring `OnChange` for unknown keys. Use `OnChange` for those keys.
 
 ---
 
-## 8. Full lifecycle example
+## 9. Full lifecycle example
 
 A condensed end-to-end example showing registration, boot, an admin
 override, a request-time read, and a subscriber.
@@ -502,7 +610,7 @@ defer unsubscribe()
 
 ---
 
-## 9. Migration checklist
+## 10. Migration checklist
 
 For a service adopting at least one tenant-scoped key:
 
@@ -529,7 +637,7 @@ For a service adopting at least one tenant-scoped key:
 - [ ] For deployments with very high tenant cardinality (>10 k), add
       `systemplane.WithLazyTenantLoad(N)` where `N` is the active
       tenant count.
-- [ ] Review the rollback stance (§4) with operations before first
+- [ ] Review the rollback stance (§5) with operations before first
       production rollout.
 - [ ] No new environment variables are introduced by this feature —
       `.env.reference` is unchanged.

@@ -1,4 +1,10 @@
+//go:build unit || integration
+
 // NewForTesting constructor for out-of-package tests.
+//
+// Build-tag gated: this file is compiled only under `-tags=unit` or
+// `-tags=integration`. Production binaries exclude it entirely, so the
+// TestStore / TestEntry / TestEvent / NewForTesting symbols do not ship.
 package systemplane
 
 import (

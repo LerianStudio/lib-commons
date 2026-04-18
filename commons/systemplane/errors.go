@@ -1,6 +1,10 @@
 package systemplane
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
+)
 
 // Sentinel errors returned by Client methods.
 var (
@@ -40,4 +44,13 @@ var (
 	// registered via Register rather than RegisterTenantScoped. Globals-only
 	// keys cannot accept tenant overrides.
 	ErrTenantScopeNotRegistered = errors.New("systemplane: key was not registered via RegisterTenantScoped")
+
+	// ErrTenantSchemaNotEnabled is returned when a tenant write (SetForTenant,
+	// DeleteForTenant) is attempted against a backend running in phase-1 compat
+	// mode. Phase 1 preserves the legacy unique constraint on (namespace, key)
+	// so pre-tenant consumers (v5.0.x) can continue to upsert safely during a
+	// rolling deploy. Enable phase 2 via [WithTenantSchemaEnabled] once every
+	// consumer is on v5.1+ — see MIGRATION_TENANT_SCOPED.md §4 for the full
+	// upgrade runbook.
+	ErrTenantSchemaNotEnabled = store.ErrTenantSchemaNotEnabled
 )

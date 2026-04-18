@@ -73,10 +73,11 @@ func newTestStore(t *testing.T, dsn string) *Store {
 	table := fmt.Sprintf("sp_test_%d", tableSeq.Add(1))
 
 	s, err := New(Config{
-		DB:        db,
-		ListenDSN: dsn,
-		Channel:   "systemplane_changes",
-		Table:     table,
+		DB:                  db,
+		ListenDSN:           dsn,
+		Channel:             "systemplane_changes",
+		Table:               table,
+		TenantSchemaEnabled: true,
 	})
 	require.NoError(t, err)
 

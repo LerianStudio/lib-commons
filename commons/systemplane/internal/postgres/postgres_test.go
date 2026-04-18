@@ -3,6 +3,7 @@
 package postgres
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -79,4 +80,67 @@ func TestParseNotifyPayload_InvalidJSONReturnsError(t *testing.T) {
 	require.Error(t, err)
 
 	assert.Contains(t, err.Error(), "unmarshal")
+}
+
+// TestSetTenantValue_Phase1ReturnsErrTenantSchemaNotEnabled pins the H8
+// rolling-deploy guard: when the Store is running in phase-1 compat mode
+// (the default, TenantSchemaEnabled=false), SetTenantValue MUST return
+// store.ErrTenantSchemaNotEnabled BEFORE issuing any I/O. The check runs
+// at the very top of the method, so a nil *sql.DB on Config is sufficient
+// — the guard short-circuits the DB call entirely.
+func TestSetTenantValue_Phase1ReturnsErrTenantSchemaNotEnabled(t *testing.T) {
+	t.Parallel()
+
+	// Construct a Store manually (bypassing New, which would require a real
+	// DB handle for ensureSchema). The phase guard runs before any DB access,
+	// so the nil DB is never dereferenced.
+	s := &Store{cfg: Config{TenantSchemaEnabled: false, Table: "test"}}
+
+	err := s.SetTenantValue(context.Background(), "tenant-A", store.Entry{
+		Namespace: "global", Key: "fee.rate", Value: []byte(`0.01`),
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, store.ErrTenantSchemaNotEnabled,
+		"phase-1 SetTenantValue must reject with ErrTenantSchemaNotEnabled")
+}
+
+// TestDeleteTenantValue_Phase1ReturnsErrTenantSchemaNotEnabled mirrors the
+// SetTenantValue guard for the delete path.
+func TestDeleteTenantValue_Phase1ReturnsErrTenantSchemaNotEnabled(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{cfg: Config{TenantSchemaEnabled: false, Table: "test"}}
+
+	err := s.DeleteTenantValue(context.Background(), "tenant-A", "global", "fee.rate", "admin")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, store.ErrTenantSchemaNotEnabled,
+		"phase-1 DeleteTenantValue must reject with ErrTenantSchemaNotEnabled")
+}
+
+// TestSetTenantValue_RejectsGlobalSentinel pins M1: a caller that attempts
+// to pass "_global" as the tenantID in phase 2 gets rejected explicitly,
+// mirroring the MongoDB backend's long-standing behavior. The phase-2
+// prerequisite keeps this check on the write-time fast path.
+func TestSetTenantValue_RejectsGlobalSentinel(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
+
+	err := s.SetTenantValue(context.Background(), sentinelGlobal, store.Entry{
+		Namespace: "global", Key: "fee.rate", Value: []byte(`0.01`),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "_global", "error must name the forbidden sentinel")
+}
+
+// TestDeleteTenantValue_RejectsGlobalSentinel mirrors the Set guard for the
+// delete path under phase 2.
+func TestDeleteTenantValue_RejectsGlobalSentinel(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
+
+	err := s.DeleteTenantValue(context.Background(), sentinelGlobal, "global", "fee.rate", "admin")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "_global", "error must name the forbidden sentinel")
 }

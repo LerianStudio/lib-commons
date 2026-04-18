@@ -152,12 +152,13 @@ func NewPostgres(db *sql.DB, listenDSN string, opts ...Option) (*Client, error) 
 	}
 
 	pgStore, err := postgres.New(postgres.Config{
-		DB:        db,
-		ListenDSN: listenDSN,
-		Channel:   cfg.listenChannel,
-		Table:     cfg.table,
-		Logger:    cfg.logger,
-		Telemetry: cfg.telemetry,
+		DB:                  db,
+		ListenDSN:           listenDSN,
+		Channel:             cfg.listenChannel,
+		Table:               cfg.table,
+		Logger:              cfg.logger,
+		Telemetry:           cfg.telemetry,
+		TenantSchemaEnabled: cfg.tenantSchemaEnabled,
 	})
 	if err != nil {
 		return nil, err
@@ -180,12 +181,13 @@ func NewMongoDB(client *mongo.Client, database string, opts ...Option) (*Client,
 	}
 
 	mStore, err := mongoDB.New(mongoDB.Config{
-		Client:       client,
-		Database:     database,
-		Collection:   cfg.collection,
-		PollInterval: cfg.pollInterval,
-		Logger:       cfg.logger,
-		Telemetry:    cfg.telemetry,
+		Client:              client,
+		Database:            database,
+		Collection:          cfg.collection,
+		PollInterval:        cfg.pollInterval,
+		Logger:              cfg.logger,
+		Telemetry:           cfg.telemetry,
+		TenantSchemaEnabled: cfg.tenantSchemaEnabled,
 	})
 	if err != nil {
 		return nil, err
