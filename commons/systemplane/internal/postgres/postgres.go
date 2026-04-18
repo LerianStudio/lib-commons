@@ -45,6 +45,13 @@ const closeTimeout = 5 * time.Second
 // tracerName is the OpenTelemetry instrumentation scope name.
 const tracerName = "systemplane.postgres"
 
+// sentinelGlobal is the tenant_id value used for shared (non-tenant-scoped)
+// rows. It is chosen so that no valid tenant ID can collide: per
+// commons/tenant-manager/core/validation.go the tenant ID regex is
+// ^[a-zA-Z0-9][a-zA-Z0-9_-]*$, so an identifier starting with "_" is illegal
+// for a real tenant and safe as a sentinel. Mirrors TRD §3.1.
+const sentinelGlobal = "_global"
+
 // Config holds the parameters needed to construct a Postgres-backed Store.
 type Config struct {
 	// DB is the database/sql handle for reads and writes.
@@ -124,65 +131,13 @@ func New(cfg Config) (*Store, error) {
 	return s, nil
 }
 
-// ensureSchema creates the table and trigger in a single transaction.
-func (s *Store) ensureSchema(ctx context.Context) error {
-	tx, err := s.cfg.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	createTable := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-		namespace   TEXT NOT NULL,
-		key         TEXT NOT NULL,
-		value       JSONB NOT NULL,
-		updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-		updated_by  TEXT NOT NULL DEFAULT '',
-		PRIMARY KEY (namespace, key)
-	)`, s.cfg.Table)
-
-	if _, err := tx.ExecContext(ctx, createTable); err != nil {
-		return fmt.Errorf("create table: %w", err)
-	}
-
-	// The trigger function references the channel name literally. We have
-	// already validated it against safeIdentifierRe, so direct interpolation
-	// is safe here.
-	createFunc := fmt.Sprintf(`CREATE OR REPLACE FUNCTION systemplane_notify() RETURNS TRIGGER AS $$
-BEGIN
-	PERFORM pg_notify('%s', json_build_object('namespace', NEW.namespace, 'key', NEW.key)::text);
-	RETURN NEW;
-END;
-$$ LANGUAGE plpgsql`, s.cfg.Channel)
-
-	if _, err := tx.ExecContext(ctx, createFunc); err != nil {
-		return fmt.Errorf("create function: %w", err)
-	}
-
-	dropTrigger := "DROP TRIGGER IF EXISTS systemplane_notify_trigger ON " + s.cfg.Table // #nosec G202 -- table name validated as Postgres identifier in New()
-	if _, err := tx.ExecContext(ctx, dropTrigger); err != nil {
-		return fmt.Errorf("drop trigger: %w", err)
-	}
-
-	createTrigger := fmt.Sprintf(`CREATE TRIGGER systemplane_notify_trigger
-AFTER INSERT OR UPDATE ON %s
-FOR EACH ROW EXECUTE FUNCTION systemplane_notify()`, s.cfg.Table) // #nosec G201 -- table name validated as Postgres identifier in New()
-
-	if _, err := tx.ExecContext(ctx, createTrigger); err != nil {
-		return fmt.Errorf("create trigger: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-
-	return nil
-}
-
-// List returns all entries from the Postgres table.
+// List returns only the global (tenant_id='_global') entries from the Postgres
+// table. Tenant-scoped overrides are deliberately excluded — callers wanting
+// every row (including overrides) should use ListTenantValues. This filter
+// preserves backward compatibility: pre-tenant consumers called List() to
+// hydrate their global cache, and they must continue to see only globals
+// even after the schema gains tenant rows (TRD §9 backward-compat matrix,
+// TRD §4.5 hydration sequence).
 func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	if s == nil || s.isClosed() {
 		return nil, store.ErrClosed
@@ -192,11 +147,11 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	defer finish()
 
 	query := fmt.Sprintf( // #nosec G201 -- table name validated as Postgres identifier in New()
-		`SELECT namespace, key, value, updated_at, updated_by FROM %s ORDER BY namespace, key`,
+		`SELECT namespace, key, tenant_id, value, updated_at, updated_by FROM %s WHERE tenant_id = $1 ORDER BY namespace, key`,
 		s.cfg.Table,
 	)
 
-	rows, err := s.cfg.DB.QueryContext(ctx, query)
+	rows, err := s.cfg.DB.QueryContext(ctx, query, sentinelGlobal)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "query failed")
@@ -210,7 +165,7 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	for rows.Next() {
 		var e store.Entry
 
-		if err := rows.Scan(&e.Namespace, &e.Key, &e.Value, &e.UpdatedAt, &e.UpdatedBy); err != nil {
+		if err := rows.Scan(&e.Namespace, &e.Key, &e.TenantID, &e.Value, &e.UpdatedAt, &e.UpdatedBy); err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, "scan failed")
 
@@ -235,7 +190,11 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	return entries, nil
 }
 
-// Get returns a single entry by namespace and key.
+// Get returns the global (tenant_id='_global') entry for the given
+// (namespace, key). Tenant-scoped overrides are deliberately invisible to
+// the legacy Get path — consumers that want a tenant override must call
+// GetTenantValue explicitly. This preserves PRD AC1: Get(ns, key) must
+// ignore tenant overrides even when they exist.
 func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bool, error) {
 	if s == nil || s.isClosed() {
 		return store.Entry{}, false, store.ErrClosed
@@ -248,14 +207,14 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bo
 	defer finish()
 
 	query := fmt.Sprintf( // #nosec G201 -- table name validated as Postgres identifier in New()
-		`SELECT namespace, key, value, updated_at, updated_by FROM %s WHERE namespace = $1 AND key = $2`,
+		`SELECT namespace, key, tenant_id, value, updated_at, updated_by FROM %s WHERE namespace = $1 AND key = $2 AND tenant_id = $3`,
 		s.cfg.Table,
 	)
 
 	var e store.Entry
 
-	err := s.cfg.DB.QueryRowContext(ctx, query, namespace, key).
-		Scan(&e.Namespace, &e.Key, &e.Value, &e.UpdatedAt, &e.UpdatedBy)
+	err := s.cfg.DB.QueryRowContext(ctx, query, namespace, key, sentinelGlobal).
+		Scan(&e.Namespace, &e.Key, &e.TenantID, &e.Value, &e.UpdatedAt, &e.UpdatedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.Entry{}, false, nil
 	}
@@ -270,8 +229,15 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bo
 	return e, true, nil
 }
 
-// Set persists an entry using an INSERT ... ON CONFLICT UPDATE (upsert).
-// The backing trigger issues NOTIFY on the configured channel.
+// Set persists a global entry using an INSERT ... ON CONFLICT UPDATE
+// (upsert). The tenant_id column is populated explicitly with the '_global'
+// sentinel — the column's DEFAULT would do the same, but writing it
+// explicitly keeps the intent visible and future-proofs against a column
+// rewrite that might remove the default. The ON CONFLICT target is the
+// composite (namespace, key, tenant_id) unique index; with tenant_id pinned
+// to the sentinel the effective collision domain is the same as the
+// pre-tenant (namespace, key) PK. The backing trigger issues NOTIFY on the
+// configured channel.
 func (s *Store) Set(ctx context.Context, e store.Entry) error {
 	if s == nil || s.isClosed() {
 		return store.ErrClosed
@@ -295,14 +261,14 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 	)
 	defer finish()
 
-	query := fmt.Sprintf(`INSERT INTO %s (namespace, key, value, updated_at, updated_by)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (namespace, key) DO UPDATE
+	query := fmt.Sprintf(`INSERT INTO %s (namespace, key, tenant_id, value, updated_at, updated_by)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT (namespace, key, tenant_id) DO UPDATE
 SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`,
 		s.cfg.Table, // #nosec G201 -- table name validated as Postgres identifier in New()
 	)
 
-	if _, err := s.cfg.DB.ExecContext(ctx, query, e.Namespace, e.Key, e.Value, e.UpdatedAt, e.UpdatedBy); err != nil {
+	if _, err := s.cfg.DB.ExecContext(ctx, query, e.Namespace, e.Key, sentinelGlobal, e.Value, e.UpdatedAt, e.UpdatedBy); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "upsert failed")
 
@@ -387,9 +353,6 @@ func (s *Store) listenLoop(ctx context.Context, handler func(store.Event)) error
 		log.String("channel", s.cfg.Channel),
 	)
 
-	// Reset attempt counter on successful connection (the caller manages this,
-	// but we signal success by returning a non-connection error or nil).
-
 	for {
 		notification, err := conn.WaitForNotification(ctx)
 		if err != nil {
@@ -422,12 +385,23 @@ func (s *Store) invokeHandler(ctx context.Context, handler func(store.Event), ev
 }
 
 // notifyPayload is the JSON shape emitted by the pg_notify trigger.
+// The TenantID field is populated by post-Task-3 installations; older
+// payloads (produced before the tenant column was added) lack the key and
+// decode as an empty string, which the Client layer treats as "unknown
+// tenant" and routes through the global path — that graceful degradation
+// is intentional so a mid-rollout mix of upgraded and legacy rows cannot
+// wedge a subscriber.
 type notifyPayload struct {
 	Namespace string `json:"namespace"`
 	Key       string `json:"key"`
+	TenantID  string `json:"tenant_id"`
 }
 
 // parseNotifyPayload converts a NOTIFY JSON payload into a store.Event.
+// A missing tenant_id field is not an error — it decodes as "" and the
+// caller is responsible for treating the absence as "pre-tenant payload".
+// Real post-Task-3 payloads always carry the sentinel '_global' for global
+// writes, so an empty TenantID on a fresh install should not occur.
 func parseNotifyPayload(data string) (store.Event, error) {
 	var p notifyPayload
 
@@ -438,6 +412,7 @@ func parseNotifyPayload(data string) (store.Event, error) {
 	return store.Event{
 		Namespace: p.Namespace,
 		Key:       p.Key,
+		TenantID:  p.TenantID,
 	}, nil
 }
 
@@ -521,27 +496,4 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// GetTenantValue is a Task 1 stub. Real implementation lands in Task 3.
-func (s *Store) GetTenantValue(_ context.Context, _, _, _ string) (store.Entry, bool, error) {
-	return store.Entry{}, false, errors.New("postgres: GetTenantValue not implemented — task 3")
-}
-
-// SetTenantValue is a Task 1 stub. Real implementation lands in Task 3.
-func (s *Store) SetTenantValue(_ context.Context, _ string, _ store.Entry) error {
-	return errors.New("postgres: SetTenantValue not implemented — task 3")
-}
-
-// DeleteTenantValue is a Task 1 stub. Real implementation lands in Task 3.
-func (s *Store) DeleteTenantValue(_ context.Context, _, _, _, _ string) error {
-	return errors.New("postgres: DeleteTenantValue not implemented — task 3")
-}
-
-// ListTenantValues is a Task 1 stub. Real implementation lands in Task 3.
-func (s *Store) ListTenantValues(_ context.Context) ([]store.Entry, error) {
-	return nil, errors.New("postgres: ListTenantValues not implemented — task 3")
-}
-
-// ListTenantsForKey is a Task 1 stub. Real implementation lands in Task 3.
-func (s *Store) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
-	return nil, errors.New("postgres: ListTenantsForKey not implemented — task 3")
-}
+// Tenant-scoped Store methods live in postgres_tenant.go.
