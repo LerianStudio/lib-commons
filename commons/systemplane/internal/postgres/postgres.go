@@ -520,3 +520,28 @@ func truncateString(s string, maxLen int) string {
 
 	return s[:maxLen] + "..."
 }
+
+// GetTenantValue is a Task 1 stub. Real implementation lands in Task 3.
+func (s *Store) GetTenantValue(_ context.Context, _, _, _ string) (store.Entry, bool, error) {
+	return store.Entry{}, false, errors.New("postgres: GetTenantValue not implemented — task 3")
+}
+
+// SetTenantValue is a Task 1 stub. Real implementation lands in Task 3.
+func (s *Store) SetTenantValue(_ context.Context, _ string, _ store.Entry) error {
+	return errors.New("postgres: SetTenantValue not implemented — task 3")
+}
+
+// DeleteTenantValue is a Task 1 stub. Real implementation lands in Task 3.
+func (s *Store) DeleteTenantValue(_ context.Context, _, _, _, _ string) error {
+	return errors.New("postgres: DeleteTenantValue not implemented — task 3")
+}
+
+// ListTenantValues is a Task 1 stub. Real implementation lands in Task 3.
+func (s *Store) ListTenantValues(_ context.Context) ([]store.Entry, error) {
+	return nil, errors.New("postgres: ListTenantValues not implemented — task 3")
+}
+
+// ListTenantsForKey is a Task 1 stub. Real implementation lands in Task 3.
+func (s *Store) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
+	return nil, errors.New("postgres: ListTenantsForKey not implemented — task 3")
+}

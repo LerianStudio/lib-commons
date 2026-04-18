@@ -505,6 +505,31 @@ func (s *Store) logWarn(ctx context.Context, msg string, fields ...log.Field) {
 	s.cfg.Logger.Log(ctx, log.LevelWarn, msg, fields...)
 }
 
+// GetTenantValue is a Task 1 stub. Real implementation lands in Task 4.
+func (s *Store) GetTenantValue(_ context.Context, _, _, _ string) (store.Entry, bool, error) {
+	return store.Entry{}, false, errors.New("mongodb: GetTenantValue not implemented — task 4")
+}
+
+// SetTenantValue is a Task 1 stub. Real implementation lands in Task 4.
+func (s *Store) SetTenantValue(_ context.Context, _ string, _ store.Entry) error {
+	return errors.New("mongodb: SetTenantValue not implemented — task 4")
+}
+
+// DeleteTenantValue is a Task 1 stub. Real implementation lands in Task 4.
+func (s *Store) DeleteTenantValue(_ context.Context, _, _, _, _ string) error {
+	return errors.New("mongodb: DeleteTenantValue not implemented — task 4")
+}
+
+// ListTenantValues is a Task 1 stub. Real implementation lands in Task 4.
+func (s *Store) ListTenantValues(_ context.Context) ([]store.Entry, error) {
+	return nil, errors.New("mongodb: ListTenantValues not implemented — task 4")
+}
+
+// ListTenantsForKey is a Task 1 stub. Real implementation lands in Task 4.
+func (s *Store) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
+	return nil, errors.New("mongodb: ListTenantsForKey not implemented — task 4")
+}
+
 // bsonLookupString extracts a string value from a bson.D by key.
 // Returns "" when the key is absent or the value is not a string.
 func bsonLookupString(doc *bson.D, key string) string {

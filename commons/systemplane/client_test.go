@@ -119,6 +119,29 @@ func (f *fakeStore) Close() error {
 	return nil
 }
 
+// Tenant-scoped methods — Task 1 no-op stubs so fakeStore satisfies store.Store.
+// Real tenant semantics are exercised by the TestStore-backed tests in Task 7.
+
+func (f *fakeStore) GetTenantValue(_ context.Context, _, _, _ string) (store.Entry, bool, error) {
+	return store.Entry{}, false, nil
+}
+
+func (f *fakeStore) SetTenantValue(_ context.Context, _ string, _ store.Entry) error {
+	return nil
+}
+
+func (f *fakeStore) DeleteTenantValue(_ context.Context, _, _, _, _ string) error {
+	return nil
+}
+
+func (f *fakeStore) ListTenantValues(_ context.Context) ([]store.Entry, error) {
+	return nil, nil
+}
+
+func (f *fakeStore) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
+	return nil, nil
+}
+
 // simulateExternalChange writes an entry directly (bypassing the Client) and
 // fires all subscribe handlers, mimicking a change made by another process
 // that arrives via the changefeed.

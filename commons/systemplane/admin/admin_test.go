@@ -97,6 +97,29 @@ func (f *fakeStore) Close() error {
 	return nil
 }
 
+// Tenant-scoped methods — Task 1 no-op stubs so fakeStore satisfies TestStore.
+// Real tenant semantics are exercised by the TestStore-backed tests in Task 7.
+
+func (f *fakeStore) GetTenantValue(_ context.Context, _, _, _ string) (systemplane.TestEntry, bool, error) {
+	return systemplane.TestEntry{}, false, nil
+}
+
+func (f *fakeStore) SetTenantValue(_ context.Context, _ string, _ systemplane.TestEntry) error {
+	return nil
+}
+
+func (f *fakeStore) DeleteTenantValue(_ context.Context, _, _, _, _ string) error {
+	return nil
+}
+
+func (f *fakeStore) ListTenantValues(_ context.Context) ([]systemplane.TestEntry, error) {
+	return nil, nil
+}
+
+func (f *fakeStore) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
+	return nil, nil
+}
+
 // lastEntry returns the last-written entry for a (namespace, key) pair.
 func (f *fakeStore) lastEntry(namespace, key string) (systemplane.TestEntry, bool) {
 	f.mu.Lock()

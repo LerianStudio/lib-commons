@@ -18,18 +18,28 @@ var ErrNilBackend = errors.New("systemplane/store: nil backend handle")
 var ErrClosed = errors.New("systemplane/store: store is closed or nil")
 
 // Entry is the persisted shape of a single configuration key.
+//
+// TenantID carries the tenant scope for the row. The sentinel value "_global"
+// identifies the shared (non-tenant-scoped) row; any other value is a tenant
+// override. Backends populate TenantID on reads and honour it on writes.
 type Entry struct {
 	Namespace string
 	Key       string
+	TenantID  string
 	Value     []byte // JSON-encoded
 	UpdatedAt time.Time
 	UpdatedBy string
 }
 
 // Event is what a changefeed delivers when a key is modified.
+//
+// TenantID identifies which tenant's row changed. The sentinel "_global"
+// indicates a change to the shared row; any other value indicates a
+// tenant-scoped override.
 type Event struct {
 	Namespace string
 	Key       string
+	TenantID  string
 }
 
 // Store is implemented by internal/postgres and internal/mongodb.
@@ -50,4 +60,37 @@ type Store interface {
 
 	// Close releases backend resources. Idempotent.
 	Close() error
+
+	// GetTenantValue returns the tenant-specific override for (namespace, key)
+	// scoped to tenantID. Returns (Entry{}, false, nil) when no override exists
+	// for this tenant — callers are expected to fall back to the "_global" row.
+	// The returned Entry has its TenantID populated with the requested tenantID
+	// when found = true.
+	GetTenantValue(ctx context.Context, tenantID, namespace, key string) (Entry, bool, error)
+
+	// SetTenantValue persists an entry under the given tenantID using
+	// last-write-wins semantics. The backend writes tenantID into the row's
+	// tenant_id column/field and emits a changefeed event whose Event.TenantID
+	// equals tenantID. The Entry.TenantID field is ignored; tenantID is
+	// authoritative.
+	SetTenantValue(ctx context.Context, tenantID string, e Entry) error
+
+	// DeleteTenantValue removes a single tenant's override row for
+	// (namespace, key). actor is recorded for audit. The backend emits a
+	// changefeed event for the deletion so subscribers can drop the cached
+	// override and re-derive the effective value from the "_global" row.
+	// Returns nil when no matching row exists (delete is idempotent).
+	DeleteTenantValue(ctx context.Context, tenantID, namespace, key, actor string) error
+
+	// ListTenantValues returns every row in the store, including both the
+	// "_global" rows and every tenant-scoped override. Callers filter by
+	// TenantID as needed; used by the Client to hydrate the tenantCache at
+	// Start(). Returns an empty slice, not nil, when the store is empty.
+	ListTenantValues(ctx context.Context) ([]Entry, error)
+
+	// ListTenantsForKey returns a sorted, deduplicated list of distinct
+	// tenant IDs that have an override for (namespace, key). The "_global"
+	// sentinel is excluded from the result. Returns an empty slice, not nil,
+	// when no tenant has overridden the key.
+	ListTenantsForKey(ctx context.Context, namespace, key string) ([]string, error)
 }
