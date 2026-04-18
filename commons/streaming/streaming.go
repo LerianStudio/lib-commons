@@ -127,18 +127,32 @@ var (
 	ErrNilProducer = errors.New("streaming: nil producer")
 
 	// ErrCircuitOpen is returned from Emit when the circuit breaker is open
-	// and no outbox fallback is wired yet.
-	//
-	// This is a TEMPORARY T3 surface: once T4 lands the outbox-fallback
-	// branch, a circuit-open Emit succeeds (returns nil) by writing to the
-	// outbox instead of surfacing an error to the caller. T3 ships this
-	// sentinel so tests can observe the circuit-open branch without the
-	// outbox plumbing in place.
+	// AND no outbox repository has been wired via WithOutboxRepository. When
+	// an outbox IS configured, a circuit-open Emit writes to the outbox and
+	// returns nil instead — callers never see this sentinel in that case.
 	//
 	// ErrCircuitOpen is NOT a caller error — it signals runtime
 	// infrastructure degradation, not a caller-side mistake. IsCallerError
 	// returns false for it.
 	ErrCircuitOpen = errors.New("streaming: circuit breaker open")
+
+	// ErrOutboxNotConfigured is returned from publishToOutbox when the
+	// Producer has no OutboxRepository wired. Reachable only through the
+	// unexported helper; Emit itself falls back to ErrCircuitOpen when the
+	// circuit is open and no outbox is configured, not to this sentinel.
+	//
+	// NOT a caller error — it signals a setup/infrastructure gap (the
+	// operator forgot WithOutboxRepository). IsCallerError returns false.
+	ErrOutboxNotConfigured = errors.New("streaming: outbox repository not configured for fallback")
+
+	// ErrNilOutboxRegistry is returned from RegisterOutboxHandler when the
+	// supplied *outbox.HandlerRegistry is nil. Caller must construct the
+	// registry before handing it to the Producer.
+	//
+	// NOT a caller error in the runtime-validation sense — it signals a
+	// wiring bug at bootstrap. IsCallerError returns false. Parallels
+	// ErrNilProducer.
+	ErrNilOutboxRegistry = errors.New("streaming: outbox registry is nil")
 )
 
 // EmitError is the structured error type returned from Emit on publish

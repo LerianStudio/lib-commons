@@ -6,6 +6,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v5/commons/circuitbreaker"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
+	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -45,6 +46,12 @@ type emitterOptions struct {
 	// closeTimeout caps how long Close waits for flush + outbox drain.
 	// Zero means "use the STREAMING_CLOSE_TIMEOUT_S config default (30s)".
 	closeTimeout time.Duration
+
+	// outbox, when non-nil, enables circuit-open fallback: Emit writes the
+	// event to the outbox instead of returning ErrCircuitOpen while the
+	// breaker is open. The caller is responsible for constructing and
+	// owning the OutboxRepository — streaming never builds one itself.
+	outbox outbox.OutboxRepository
 }
 
 // WithLogger sets the structured logger used across the package. When not
@@ -98,5 +105,23 @@ func WithPartitionKey(fn func(Event) string) EmitterOption {
 func WithCloseTimeout(d time.Duration) EmitterOption {
 	return func(o *emitterOptions) {
 		o.closeTimeout = d
+	}
+}
+
+// WithOutboxRepository wires an OutboxRepository so the Producer can fall
+// back to durable storage when the circuit breaker is open. Without this
+// option, circuit-open Emits return ErrCircuitOpen.
+//
+// The typical pairing is: the caller also invokes
+// (*Producer).RegisterOutboxHandler on the process-level outbox Dispatcher's
+// HandlerRegistry so outbox rows are drained back through publishDirect once
+// the broker recovers. See outbox_handler.go for that relay path.
+//
+// The Producer NEVER constructs an OutboxRepository itself; ownership and
+// lifecycle stay with the consuming service. Passing nil is equivalent to
+// not calling this option (circuit-open → ErrCircuitOpen).
+func WithOutboxRepository(repo outbox.OutboxRepository) EmitterOption {
+	return func(o *emitterOptions) {
+		o.outbox = repo
 	}
 }

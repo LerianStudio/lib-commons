@@ -12,6 +12,7 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v5/commons/circuitbreaker"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 )
 
 // Circuit-breaker-related constants (flagCB*, cbServiceNamePrefix) and the
@@ -93,6 +94,13 @@ type Producer struct {
 	// closeTimeout caps Close's Flush deadline. Resolved in New from the
 	// option override or Config.CloseTimeout.
 	closeTimeout time.Duration
+
+	// outbox, when non-nil, enables the circuit-open fallback: Emit writes
+	// a serialized event to the OutboxRepository and returns nil instead
+	// of ErrCircuitOpen while the breaker is open. The corresponding relay
+	// is registered via RegisterOutboxHandler on the outbox Dispatcher's
+	// HandlerRegistry. Nil means fallback is disabled (T3 behavior).
+	outbox outbox.OutboxRepository
 }
 
 // Compile-time assertion: *Producer must satisfy Emitter. A missing method
@@ -186,6 +194,7 @@ func NewProducer(ctx context.Context, cfg Config, opts ...EmitterOption) (*Produ
 		partFn:       resolvedOpts.partitionKeyFn,
 		toggles:      cfg.EventToggles,
 		closeTimeout: closeTimeout,
+		outbox:       resolvedOpts.outbox,
 	}
 
 	// Wire the circuit breaker: resolve manager, register service-named
@@ -212,8 +221,15 @@ func NewProducer(ctx context.Context, cfg Config, opts ...EmitterOption) (*Produ
 // the circuit-breaker wrapper so infrastructure faults feed the breaker but
 // caller faults do NOT.
 //
-// T3 returns ErrCircuitOpen when the breaker is open. T4 replaces that branch
-// with a publishToOutbox call that returns nil after a durable write.
+// Circuit-open behavior:
+//   - With WithOutboxRepository wired: Emit writes the event to the outbox
+//     and returns nil. The outbox Dispatcher will drain it via the handler
+//     registered by RegisterOutboxHandler (bypasses the breaker on replay).
+//   - Without an outbox wired: Emit returns ErrCircuitOpen so the caller
+//     can fail fast or implement its own fallback.
+//
+// In either case the circuit breaker itself stays untouched during the
+// circuit-open branch — it is already OPEN; there is nothing to "feed".
 //
 // Nil-receiver safe: returns ErrNilProducer rather than panicking.
 func (p *Producer) Emit(ctx context.Context, event Event) error {
@@ -243,13 +259,31 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 	// ErrOpenState / ErrTooManyRequests into its own diagnostic so callers
 	// can still errors.Is for those sentinels.
 	_, err := p.cb.Execute(func() (any, error) {
-		// T3 temporary surface: the outbox fallback lands in T4. For now,
-		// we observe the mirrored flag and return ErrCircuitOpen so tests
-		// and callers can distinguish the open-circuit branch from a
-		// transport-level failure. This does NOT cause gobreaker to count
-		// the call as a failure — it's a fast-fail from our side while the
-		// breaker is open.
+		// Circuit-open fallback. When the breaker is OPEN we observe the
+		// mirrored flag and either (a) route to the outbox if one is
+		// configured — caller sees nil after a durable write — or (b) fail
+		// fast with ErrCircuitOpen. Either way we return (nil, nil) on the
+		// outbox-success path so gobreaker leaves the breaker untouched;
+		// returning an error here would count against the already-open
+		// breaker for no useful reason.
 		if p.cbStateFlag.Load() == flagCBOpen {
+			if p.outbox != nil {
+				if obxErr := p.publishToOutbox(ctx, event); obxErr != nil {
+					// Outbox write itself failed: surface the error so the
+					// caller knows the event wasn't durably captured. This
+					// is a rare but load-bearing failure mode — silent drop
+					// here would lose the event entirely.
+					return nil, obxErr
+				}
+
+				// Outbox wrote successfully. Caller sees nil; Dispatcher
+				// will drain the row back through publishDirect once the
+				// broker recovers.
+				return nil, nil //nolint:nilnil // CB Execute signature mandates (any, error); nil result is discarded
+			}
+
+			// No outbox configured — T3 behavior preserved. Caller gets an
+			// explicit sentinel they can errors.Is against.
 			return nil, ErrCircuitOpen
 		}
 
