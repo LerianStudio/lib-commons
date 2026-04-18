@@ -148,7 +148,12 @@ func TestIntegration_ContractSuite_Polling(t *testing.T) {
 
 	systemplanetest.Run(t, func(t *testing.T) store.Store {
 		return newTestStore(t, client, 100*time.Millisecond) // polling mode, fast poll for tests
-	})
+	},
+		// Polling mode cannot observe inter-tick deletes; see
+		// subscribePoll godoc in mongodb_changestream.go. Skip the delete-event
+		// contract rather than silently weaken the assertion.
+		systemplanetest.SkipSubtest("TenantSubscribeReceivesDeleteEvent"),
+	)
 }
 
 // ---------------------------------------------------------------------------

@@ -37,6 +37,14 @@ import (
 // code returned by dropIndexes when the named index does not exist.
 const indexNotFoundCode = 27
 
+// namespaceNotFoundCode is the MongoDB server error code for
+// NamespaceNotFound, returned by dropIndexes (and similar operations) when
+// the target collection itself does not exist. On a fresh installation
+// ensureSchema runs before any document is inserted, so the collection is
+// lazily created later; dropping a legacy index against a non-existent
+// collection is semantically a no-op.
+const namespaceNotFoundCode = 26
+
 // legacyNamespaceKeyIndex is the name the driver assigns to the pre-tenant
 // compound unique index on (namespace, key). mongo-driver/v2 names compound
 // indexes by concatenating "<field>_<direction>" per key. The old index in
@@ -174,9 +182,12 @@ func rewriteObjectIDDocuments(ctx context.Context, coll *mongo.Collection) error
 
 // dropLegacyIndex removes the pre-tenant (namespace, key) unique index. Not
 // finding the index is a no-op — fresh installations never had one.
+// Not finding the collection itself (NamespaceNotFound) is likewise a no-op:
+// fresh installations create the collection lazily on the first write, so
+// there is no index to drop yet.
 func dropLegacyIndex(ctx context.Context, coll *mongo.Collection) error {
 	if err := coll.Indexes().DropOne(ctx, legacyNamespaceKeyIndex); err != nil {
-		if isIndexNotFoundErr(err) {
+		if isIndexNotFoundErr(err) || isNamespaceNotFoundErr(err) {
 			return nil
 		}
 
@@ -227,13 +238,38 @@ func isIndexNotFoundErr(err error) bool {
 	// Defensive fallback: mongo-driver/v2 sometimes wraps the server response
 	// in a non-CommandError type for dropIndexes. The server-side message
 	// text is stable: "index not found with name [%s]".
-	return containsIndexNotFoundMessage(err.Error())
+	return containsSubstring(err.Error(), "index not found")
 }
 
-// containsIndexNotFoundMessage checks for the stable server-side substring
-// that identifies an IndexNotFound reply, without pulling in a regex.
-func containsIndexNotFoundMessage(msg string) bool {
-	const needle = "index not found"
+// isNamespaceNotFoundErr reports whether err is the MongoDB server's
+// NamespaceNotFound (code 26). This is the error returned by dropIndexes
+// and similar commands when the target collection itself does not yet exist,
+// which is the expected state during ensureSchema on a fresh installation.
+// Like isIndexNotFoundErr, this handles both CommandError (canonical path)
+// and the "ns not found" substring fallback for driver versions that wrap
+// the server reply differently.
+func isNamespaceNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var cmdErr mongo.CommandError
+	if errors.As(err, &cmdErr) {
+		if cmdErr.HasErrorCode(namespaceNotFoundCode) {
+			return true
+		}
+	}
+
+	return containsSubstring(err.Error(), "ns not found")
+}
+
+// containsSubstring is a minimal substring check shared by the error
+// classifiers; keeping it here avoids importing strings solely for a
+// single call site.
+func containsSubstring(msg, needle string) bool {
+	if len(needle) == 0 || len(msg) < len(needle) {
+		return len(needle) == 0
+	}
 
 	for i := 0; i+len(needle) <= len(msg); i++ {
 		if msg[i:i+len(needle)] == needle {
