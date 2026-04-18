@@ -1,0 +1,298 @@
+{
+  "feature": "streaming",
+  "gate": 4,
+  "track": "small",
+  "version": "v1",
+  "created": "2026-04-18",
+  "upstream_docs": [
+    "docs/pre-dev/streaming/tasks.md",
+    "docs/pre-dev/streaming/trd.md",
+    "docs/pre-dev/streaming/prd.md"
+  ],
+  "inputs": {
+    "start_date": "2026-04-20",
+    "team_size": 1,
+    "cadence": "continuous",
+    "multiplier": 1.2,
+    "available_capacity": 0.9,
+    "hours_per_day": 8,
+    "workweek": "Mon-Fri",
+    "stretch_included_in_baseline": false
+  },
+  "formula": "calendar_days = (ai_estimate * multiplier / 0.90) / 8 / team_size",
+  "totals": {
+    "ai_hours": 60,
+    "ai_hours_with_stretch": 63,
+    "critical_path_hours": 46,
+    "effort_hours_with_multiplier": 72,
+    "effort_hours_at_capacity": 80,
+    "working_days": 10,
+    "calendar_days": 12,
+    "target_end_date": "2026-05-01",
+    "contingency_days": 3,
+    "declared_delivery_target": "2026-05-05",
+    "critical_path_working_days": 7.67
+  },
+  "confidence": {
+    "high": 4,
+    "medium": 5,
+    "low": 2,
+    "weighted": 0.7
+  },
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Emitter interface, sentinels, EmitError, NoopEmitter, MockEmitter, Config loader",
+      "hours": 7,
+      "confidence": "High",
+      "blocked_by": [],
+      "start_date": "2026-04-20",
+      "end_date": "2026-04-21",
+      "critical_path": true
+    },
+    {
+      "id": "T2",
+      "title": "franz-go Producer happy path (publishDirect, Close, Healthy, classifier, CloudEvents headers)",
+      "hours": 8,
+      "confidence": "Medium",
+      "blocked_by": ["T1"],
+      "start_date": "2026-04-22",
+      "end_date": "2026-04-23",
+      "critical_path": true
+    },
+    {
+      "id": "T3",
+      "title": "Circuit breaker integration + state listener + outbox-fallback flag plumbing",
+      "hours": 5,
+      "confidence": "Medium",
+      "blocked_by": ["T2"],
+      "start_date": "2026-04-24",
+      "end_date": "2026-04-27",
+      "critical_path": true
+    },
+    {
+      "id": "T4",
+      "title": "Outbox integration (circuit-open fallback + Dispatcher handler bridge)",
+      "hours": 6,
+      "confidence": "Medium",
+      "blocked_by": ["T3"],
+      "start_date": "2026-04-27",
+      "end_date": "2026-04-28",
+      "critical_path": true
+    },
+    {
+      "id": "T5",
+      "title": "Per-topic DLQ publisher + retry-exhaustion path + classifier DLQ routing",
+      "hours": 5,
+      "confidence": "Medium",
+      "blocked_by": ["T4"],
+      "start_date": "2026-04-28",
+      "end_date": "2026-04-28",
+      "critical_path": true
+    },
+    {
+      "id": "T6",
+      "title": "OTEL metrics (6 instruments, lazy-init, nil-guarded) + streaming.emit span + log fields",
+      "hours": 6,
+      "confidence": "Medium",
+      "blocked_by": ["T2"],
+      "start_date": "2026-04-28",
+      "end_date": "2026-04-29",
+      "critical_path": true
+    },
+    {
+      "id": "T7",
+      "title": "commons.App integration, paired X/XContext, nil guards, Close flush deadline",
+      "hours": 4,
+      "confidence": "High",
+      "blocked_by": ["T6"],
+      "start_date": "2026-04-29",
+      "end_date": "2026-04-30",
+      "critical_path": true
+    },
+    {
+      "id": "T8",
+      "title": "WithTLSConfig + WithSASL options (minimal v1 plumbing to kgo)",
+      "hours": 2,
+      "confidence": "High",
+      "blocked_by": ["T2"],
+      "start_date": "2026-04-24",
+      "end_date": "2026-04-24",
+      "critical_path": false
+    },
+    {
+      "id": "T9",
+      "title": "Integration tests (testcontainers Redpanda round-trip, DLQ, outbox fallback, CloudEvents contract)",
+      "hours": 12,
+      "confidence": "Low",
+      "blocked_by": ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8"],
+      "start_date": "2026-04-30",
+      "end_date": "2026-05-01",
+      "critical_path": true
+    },
+    {
+      "id": "T10",
+      "title": "doc.go, .env.reference, CLAUDE.md streaming section, README one-liner",
+      "hours": 5,
+      "confidence": "High",
+      "blocked_by": ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8"],
+      "start_date": "2026-05-01",
+      "end_date": "2026-05-01",
+      "critical_path": true,
+      "parallel_with": ["T9"]
+    },
+    {
+      "id": "T11",
+      "title": "Grafana dashboard JSON (stretch)",
+      "hours": 3,
+      "confidence": "Low",
+      "blocked_by": ["T6"],
+      "start_date": "2026-05-05",
+      "end_date": "2026-05-05",
+      "critical_path": false,
+      "optional": true,
+      "stretch": true
+    }
+  ],
+  "milestones": [
+    {
+      "id": "M1",
+      "name": "Core Emitter landable",
+      "target_date": "2026-04-24",
+      "tasks": ["T1", "T2", "T8"],
+      "description": "Services can unit-test against MockEmitter; NoopEmitter ready for feature-flag-off paths."
+    },
+    {
+      "id": "M2",
+      "name": "Broker integration stable",
+      "target_date": "2026-04-29",
+      "tasks": ["T3", "T4", "T5"],
+      "description": "Circuit breaker + outbox fallback + per-topic DLQ functional."
+    },
+    {
+      "id": "M3",
+      "name": "Observability ready",
+      "target_date": "2026-04-30",
+      "tasks": ["T6", "T7"],
+      "description": "Spans, metrics, logs flow; commons.App bootstrap works; Healthy plugs into HealthWithDependencies."
+    },
+    {
+      "id": "M4",
+      "name": "v1 shippable",
+      "target_date": "2026-05-01",
+      "tasks": ["T9", "T10"],
+      "description": "Integration CI green; docs, .env.reference, and CLAUDE.md section complete."
+    },
+    {
+      "id": "M5",
+      "name": "Optional polish (stretch)",
+      "target_date": "2026-05-05",
+      "tasks": ["T11"],
+      "description": "Grafana dashboard JSON if time permits; otherwise slip to v1.1.",
+      "stretch": true
+    }
+  ],
+  "critical_path": ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T9", "T10"],
+  "parallel_streams": [
+    {
+      "stream": "A",
+      "label": "Critical path (solo)",
+      "tasks": ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T9", "T10"],
+      "applies_to_team_size": 1
+    },
+    {
+      "stream": "B",
+      "label": "Future parallelization if team scales to 2 devs",
+      "tasks": ["T5", "T6", "T8"],
+      "blocked_by": ["T2"],
+      "applies_to_team_size": 2,
+      "note": "Informational only; not part of Gate 4 baseline."
+    },
+    {
+      "stream": "C",
+      "label": "Stretch dashboard",
+      "tasks": ["T11"],
+      "blocked_by": ["T6"],
+      "applies_to_team_size": 1,
+      "note": "Can run any time after M3."
+    }
+  ],
+  "risks": [
+    {
+      "id": "R1",
+      "description": "T9 testcontainers + Redpanda v0.41.0 API quirks and cold-start variance",
+      "time_impact_hours_min": 6,
+      "time_impact_hours_max": 9,
+      "mitigation": "Pre-plan T9 split into T9a (round-trip + FIFO + CloudEvents contract) and T9b (DLQ + outbox fallback) per tasks.md section 7."
+    },
+    {
+      "id": "R2",
+      "description": "franz-go ProducerLinger default 10ms regressions p50 latency budget",
+      "time_impact_hours_min": 1,
+      "time_impact_hours_max": 2,
+      "mitigation": "Pin ProducerLinger(5 * time.Millisecond) explicitly; integration assertion pins p50 < 20ms."
+    },
+    {
+      "id": "R3",
+      "description": "CloudEvents sdk-go v2.15.2 strict parsing rejects a header choice",
+      "time_impact_hours_min": 2,
+      "time_impact_hours_max": 4,
+      "mitigation": "Single contract test builds the Event once and validates produce + parse round-trip."
+    },
+    {
+      "id": "R4",
+      "description": "Outbox-on-circuit-open race under load",
+      "time_impact_hours_min": 2,
+      "time_impact_hours_max": 2,
+      "mitigation": "Table-driven test in T4 forces the race condition explicitly."
+    },
+    {
+      "id": "R5",
+      "description": "Latent lib-commons bug exposed during integration (5+ commons packages wired)",
+      "time_impact_hours_min": 1,
+      "time_impact_hours_max": 4,
+      "mitigation": "Escalate via normal bug flow; unaffected layers merge independently."
+    }
+  ],
+  "spillover": {
+    "primary_risk_task": "T9",
+    "baseline_hours": 12,
+    "scenarios": [
+      { "scenario": "on_estimate", "t9_hours": 12, "ship_date": "2026-05-01" },
+      { "scenario": "1_5x", "t9_hours": 18, "ship_date": "2026-05-04" },
+      { "scenario": "1_75x", "t9_hours": 21, "ship_date": "2026-05-06" },
+      { "scenario": "2x_or_split", "t9_hours": 24, "ship_date": "2026-05-07" }
+    ]
+  },
+  "contingency": {
+    "percent": 0.15,
+    "extra_working_days": 3,
+    "declared_delivery_target": "2026-05-05",
+    "worst_case_end_date": "2026-05-07"
+  },
+  "gate4_checklist": {
+    "all_tasks_scheduled": true,
+    "critical_path_identified": true,
+    "capacity_90_pct_applied": true,
+    "period_boundaries_respected": true,
+    "spillovers_documented": true,
+    "parallel_streams_defined": true,
+    "risks_flagged": true,
+    "contingency_buffer_added": true,
+    "formula_applied_step_by_step": true
+  },
+  "handoff": {
+    "next_gate": 5,
+    "next_gate_name": "Review / Approval",
+    "post_approval_tooling": [
+      "/ring:worktree",
+      "/ring:write-plan",
+      "/ring:dev-cycle"
+    ]
+  },
+  "update_cadence": {
+    "refresh_at": "end_of_week_1",
+    "refresh_trigger": "M1 lands (T1, T2, T8 merged)",
+    "metrics_to_compare": ["planned_hours", "actual_hours", "multiplier_calibration"]
+  }
+}
