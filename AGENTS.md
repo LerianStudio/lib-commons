@@ -31,6 +31,7 @@ Data and messaging:
 - `commons/mongo`: MongoDB connector with functional options, URI builder, index helpers, OTEL spans
 - `commons/redis`: Redis connector with topology-based config (standalone/sentinel/cluster), GCP IAM auth, distributed locking (Redsync), backoff-based reconnect
 - `commons/rabbitmq`: AMQP connection/channel/health helpers with context-aware methods
+- `commons/streaming`: CloudEvents-framed domain event publisher to Redpanda/Kafka with circuit-breaker + outbox fallback, per-topic DLQ, and franz-go backing (producer only; orthogonal to `commons/rabbitmq`)
 - `commons/dlq`: Redis-backed dead letter queue with tenant-scoped keys, exponential backoff, and a background consumer with retry/exhaust lifecycle
 - `commons/systemplane`: dual-backend (Postgres/MongoDB) hot-reload runtime configuration store with LISTEN/NOTIFY and change-stream subscriptions, admin HTTP routes, and test contract suite
 
@@ -188,7 +189,7 @@ Build and shell:
 - **Mongo:** `NewClient(ctx, cfg, opts...) (*Client, error)`; methods `Client(ctx)`, `ResolveClient(ctx)`, `Database(ctx)`, `Ping(ctx)`, `Close(ctx)`, `EnsureIndexes(ctx, collection, indexes...)`.
 - **Redis:** `New(ctx, cfg) (*Client, error)` with topology-based `Config` (standalone/sentinel/cluster). `GetClient(ctx)`, `Close()`, `Status()`, `IsConnected()`, `LastRefreshError()`. `SetPackageLogger(logger)` for nil-receiver diagnostics.
 - **Redis locking:** `NewRedisLockManager(conn) (*RedisLockManager, error)` and `LockManager` interface. `LockHandle` for acquired locks. `DefaultLockOptions()`, `RateLimiterLockOptions()`.
-- **RabbitMQ:** `*Context()` variants of all lifecycle methods; `HealthCheck() (bool, error)`.
+- **RabbitMQ:** `*Context()` variants of all lifecycle methods; `HealthCheck() (bool, error)`. Secret redaction marker switched from `"xxxxx"` to `"****"` (unified with `commons/security/sanitize.SecretRedactionMarker`) — operator tooling (SIEM rules, dashboards, log-grep alerts) keyed on the literal `"xxxxx"` in rabbitmq sanitized error messages must update queries to match `"****"`. Affects `sanitizeAMQPErr`, `redactURLCredentialToken`, and `redactURLCredentialsFallback` output only.
 
 ### Dead letter queue (`commons/dlq`)
 
@@ -243,6 +244,27 @@ Build and shell:
 - Retry strategy: exponential backoff with jitter (`commons/backoff`), base 1s. Non-retryable on 4xx except 429.
 - Sentinel errors: `ErrNilDeliverer`, `ErrSSRFBlocked`, `ErrDeliveryFailed`, `ErrInvalidURL`.
 
+### Streaming (`commons/streaming`)
+
+- `commons/streaming` is producer-only; `commons/rabbitmq` handles internal command queues. The two are orthogonal and neither deprecates the other.
+- Three-method `Emitter` interface (`Emit(ctx, Event) error`, `Close() error`, `Healthy(ctx) error`). Three implementations: `*Producer` (franz-go-backed), `NoopEmitter` (fail-safe when disabled), and `MockEmitter` (concurrency-safe test double with deep-copy Events, `Assert*` helpers, and `WaitForEvent`).
+- Constructors: `New(ctx, cfg Config, opts ...EmitterOption) (Emitter, error)` picks the right implementation from Config — returns a NoopEmitter when `Enabled=false` or `Brokers` is empty; `NewProducer(ctx, cfg, opts...) (*Producer, error)` forces construction and never substitutes a Noop.
+- `LoadConfig() (Config, error)` reads every `STREAMING_*` env var, applies defaults, and validates the result. Validation is skipped when `Enabled=false`.
+- Functional options: `WithLogger`, `WithMetricsFactory`, `WithTracer`, `WithCircuitBreakerManager`, `WithPartitionKey`, `WithCloseTimeout`, `WithOutboxRepository`, `WithTLSConfig`, `WithSASL`. Passing nil for any factory or manager is safe — the Producer falls back to a no-op recorder / its own CB manager.
+- `Event` struct carries the CloudEvents 1.0 binary-mode envelope: `TenantID`, `ResourceType`, `EventType`, `EventID`, `SchemaVersion`, `Timestamp`, `Source` (required CloudEvents fields) plus `Subject`, `DataContentType`, `DataSchema`, `SystemEvent`, and `Payload json.RawMessage`. `ApplyDefaults()` fills missing EventID (uuid.NewV7), Timestamp (now UTC), SchemaVersion ("1.0.0"), and DataContentType ("application/json") on a local copy before publish.
+- `Event.Topic()` derives `"lerian.streaming.<resource>.<event>"` (with `".v<major>"` suffix when `SchemaVersion` major is ≥2). `Event.PartitionKey()` returns `TenantID` by default, or `"system:" + EventType` when `SystemEvent=true`.
+- Caller-side sentinels (synchronous, no I/O): `ErrMissingTenantID`, `ErrMissingSource`, `ErrPayloadTooLarge` (1 MiB cap), `ErrNotJSON`, `ErrEventDisabled`, `ErrEmitterClosed`.
+- Config-validation sentinels: `ErrMissingBrokers`, `ErrInvalidCompression`, `ErrInvalidAcks` (`ErrMissingSource` is shared with Emit).
+- Lifecycle/wiring sentinels (NOT caller errors — `IsCallerError` returns false): `ErrNilProducer`, `ErrCircuitOpen`, `ErrOutboxNotConfigured`, `ErrNilOutboxRegistry`.
+- `*EmitError` carries `ResourceType`, `EventType`, `TenantID`, `Topic`, `Class ErrorClass`, and `Cause error`. `Error()` runs through `sanitizeBrokerURL` so SASL credentials never surface in logs. `IsCallerError(err)` returns true for the caller-correctable sentinels and for `*EmitError` with class `ClassSerialization`, `ClassValidation`, or `ClassAuth`.
+- Eight `ErrorClass` values: `ClassSerialization`, `ClassValidation`, `ClassAuth`, `ClassTopicNotFound`, `ClassBrokerUnavailable`, `ClassNetworkTimeout`, `ClassContextCanceled`, `ClassBrokerOverloaded`. DLQ routing applies to every class except `ClassValidation` and `ClassContextCanceled` (TRD §C9).
+- Lifecycle invariants: `*Producer` implements `commons.App` — `Run(launcher)` / `RunContext(ctx, launcher)` block until ctx is canceled or Close is called, then invoke `CloseContext` with a fresh background ctx so a canceled caller ctx does not abort Flush. `Close`/`CloseContext` are idempotent via `atomic.Bool` CAS. Post-close `Emit` returns `ErrEmitterClosed` synchronously before any I/O. Service methods MUST NOT call Close — the Launcher owns lifecycle.
+- Outbox fallback: when `WithOutboxRepository` is wired and the circuit breaker is OPEN, Emit writes the event to the outbox and returns nil. The caller registers the replay handler via `(*Producer).RegisterOutboxHandler(registry, eventTypes...)`, which routes back through `publishDirect` (NOT Emit) so replays bypass the breaker and cannot re-enqueue themselves on a sustained outage (TRD §C7). Without an outbox wired, circuit-open Emits return `ErrCircuitOpen`. The Producer NEVER constructs an `OutboxRepository` itself — ownership stays with the consuming service.
+- DLQ: per-topic, named `"<source>.dlq"`. Each DLQ message carries six headers (`x-lerian-dlq-source-topic`, `x-lerian-dlq-error-class`, `x-lerian-dlq-error-message`, `x-lerian-dlq-retry-count`, `x-lerian-dlq-first-failure-at`, `x-lerian-dlq-producer-id`) alongside the CloudEvents ce-* context attributes. DLQ publish failures surface on the `streaming_dlq_publish_failed_total` counter and are logged, not returned to the caller.
+- `Healthy(ctx)` returns nil when ready; otherwise returns a `*HealthError` whose `State()` is one of `Healthy`, `Degraded` (broker unreachable but outbox viable), or `Down` (both unreachable). Health check bounds the broker Ping to 500ms.
+- Concurrency: `*Producer`, `MockEmitter`, and `NoopEmitter` are all safe for concurrent use from any number of goroutines.
+- Metrics: `streaming_emitted_total`, `streaming_emit_duration_ms`, `streaming_dlq_total`, `streaming_dlq_publish_failed_total`, `streaming_outbox_routed_total`, `streaming_circuit_state`. All registered via the `MetricsFactory` passed through `WithMetricsFactory`; nil factory degrades to a no-op recorder after a single WARN log at first Emit.
+
 ### Runtime configuration (`commons/systemplane`)
 
 - Dual-backend hot-reload config store. Consumers choose at construction: `NewPostgres(db *sql.DB, listenDSN string, opts ...Option) (*Client, error)` or `NewMongoDB(client *mongo.Client, database string, opts ...Option) (*Client, error)`.
@@ -276,6 +298,7 @@ Build and shell:
 - **DLQ:** `New(conn, keyPrefix, maxRetries, opts...) *Handler`; `NewConsumer(handler, retryFn, opts...) (*Consumer, error)`; `Run(ctx)` / `Stop()` / `ProcessOnce(ctx)` for consumer lifecycle.
 - **Idempotency:** `New(conn, opts...) *Middleware`; `(*Middleware).Check() fiber.Handler`; fail-open when Redis is unavailable.
 - **Webhook:** `NewDeliverer(lister, opts...) *Deliverer`; `Deliver(ctx, event) error`; `DeliverWithResults(ctx, event) []DeliveryResult`; SSRF-protected with DNS pinning and HMAC-SHA256 signing.
+- **Streaming:** `LoadConfig() (Config, error)`; `New(ctx, cfg, opts...) (Emitter, error)` picks Producer or NoopEmitter from Config; `NewProducer(ctx, cfg, opts...) (*Producer, error)` forces construction; three-method `Emitter` interface (`Emit`/`Close`/`Healthy`); `MockEmitter` test double with `Assert*` helpers; `*Producer` implements `commons.App` — Close is idempotent, post-close Emit returns `ErrEmitterClosed`. Producer-only; `commons/rabbitmq` handles internal command queues.
 
 ## Coding rules
 

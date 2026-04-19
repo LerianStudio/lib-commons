@@ -3,6 +3,7 @@ package commons
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"strconv"
@@ -60,6 +61,28 @@ func GetenvIntOrDefault(key string, defaultValue int64) int64 {
 		if str != "" {
 			fmt.Fprintf(os.Stderr, "WARN: env var %s=%q is not a valid int, using default %v\n", key, str, defaultValue)
 		}
+
+		return defaultValue
+	}
+
+	return val
+}
+
+// GetenvFloat64OrDefault returns the value of os.Getenv(key string) value as float64 or defaultValue if error.
+// If the environment variable (key) is not defined, it returns the given defaultValue.
+// strconv.ParseFloat is strict — trailing garbage (e.g. "0.5abc") fails and the caller receives
+// the default rather than a silently truncated value.
+// A warning is printed to stderr when a non-empty value fails to parse, providing
+// visibility into misconfigured environment variables.
+func GetenvFloat64OrDefault(key string, defaultValue float64) float64 {
+	str := strings.TrimSpace(os.Getenv(key))
+	if str == "" {
+		return defaultValue
+	}
+
+	val, err := strconv.ParseFloat(str, 64)
+	if err != nil || math.IsNaN(val) || math.IsInf(val, 0) {
+		fmt.Fprintf(os.Stderr, "WARN: env var %s is not a valid float, using default %v\n", key, defaultValue)
 
 		return defaultValue
 	}
