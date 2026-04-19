@@ -1,3 +1,5 @@
+//go:build unit || integration
+
 // Additional tenant-scoped handler tests — horizontal split from
 // admin_test.go once that file passed 1,600 LOC.
 //
