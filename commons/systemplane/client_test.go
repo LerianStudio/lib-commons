@@ -68,7 +68,7 @@ func (f *fakeStore) Set(_ context.Context, e store.Entry) error {
 	// the persisted row plus emitted event both carry tenant_id="_global".
 	// Without this, onEvent would route to refreshTenantFromStore, which
 	// requires a tenant-scoped registration the legacy tests do not have.
-	e.TenantID = "_global"
+	e.TenantID = store.SentinelGlobal
 
 	f.mu.Lock()
 	nk := nskey{Namespace: e.Namespace, Key: e.Key}
@@ -80,7 +80,7 @@ func (f *fakeStore) Set(_ context.Context, e store.Entry) error {
 
 	// Fire changefeed echo synchronously (outside the lock to avoid deadlock
 	// with the Client's own locking in onEvent/refreshFromStore).
-	evt := store.Event{Namespace: e.Namespace, Key: e.Key, TenantID: "_global"}
+	evt := store.Event{Namespace: e.Namespace, Key: e.Key, TenantID: store.SentinelGlobal}
 	for _, h := range handlers {
 		h(evt)
 	}
@@ -174,7 +174,7 @@ func (f *fakeStore) simulateExternalChange(namespace, key string, value any) {
 	e := store.Entry{
 		Namespace: namespace,
 		Key:       key,
-		TenantID:  "_global",
+		TenantID:  store.SentinelGlobal,
 		Value:     jsonBytes,
 		UpdatedAt: time.Now(),
 		UpdatedBy: "external",
@@ -187,7 +187,7 @@ func (f *fakeStore) simulateExternalChange(namespace, key string, value any) {
 	copy(handlers, f.handlers)
 	f.mu.Unlock()
 
-	evt := store.Event{Namespace: namespace, Key: key, TenantID: "_global"}
+	evt := store.Event{Namespace: namespace, Key: key, TenantID: store.SentinelGlobal}
 	for _, h := range handlers {
 		h(evt)
 	}
@@ -1269,7 +1269,7 @@ func TestRefreshFromStore_UnmarshalError(t *testing.T) {
 	fs.entries[nk] = store.Entry{
 		Namespace: "ns",
 		Key:       "k",
-		TenantID:  "_global",
+		TenantID:  store.SentinelGlobal,
 		Value:     []byte("{{invalid json}}"),
 		UpdatedAt: time.Now(),
 		UpdatedBy: "bad-actor",
@@ -1278,7 +1278,7 @@ func TestRefreshFromStore_UnmarshalError(t *testing.T) {
 	copy(handlers, fs.handlers)
 	fs.mu.Unlock()
 
-	evt := store.Event{Namespace: "ns", Key: "k", TenantID: "_global"}
+	evt := store.Event{Namespace: "ns", Key: "k", TenantID: store.SentinelGlobal}
 	for _, h := range handlers {
 		h(evt)
 	}
@@ -1339,7 +1339,7 @@ func TestRefreshFromStore_KeyDeletedFallsBackToDefault(t *testing.T) {
 	copy(handlers, fs.handlers)
 	fs.mu.Unlock()
 
-	evt := store.Event{Namespace: "ns", Key: "k", TenantID: "_global"}
+	evt := store.Event{Namespace: "ns", Key: "k", TenantID: store.SentinelGlobal}
 	for _, h := range handlers {
 		h(evt)
 	}
@@ -1585,7 +1585,7 @@ func TestRefreshFromStore_GetError_KeepsCurrent(t *testing.T) {
 	copy(handlers, es.fakeStore.handlers)
 	es.fakeStore.mu.Unlock()
 
-	evt := store.Event{Namespace: "ns", Key: "k", TenantID: "_global"}
+	evt := store.Event{Namespace: "ns", Key: "k", TenantID: store.SentinelGlobal}
 	for _, h := range handlers {
 		h(evt)
 	}

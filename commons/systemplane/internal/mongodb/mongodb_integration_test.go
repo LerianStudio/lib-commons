@@ -1014,10 +1014,15 @@ func TestIntegration_Mongo_ChangeStream_ReconnectsAfterStreamClose(t *testing.T)
 
 	// Enumerate the cursors. MongoDB 7 supports `$listLocalSessions` but
 	// the simpler approach is to call `killAllSessions` on the admin db,
-	// which aborts every open cursor on the connection.
-	_ = adminDB.RunCommand(context.Background(), bson.D{
+	// which aborts every open cursor on the connection. If this command
+	// is rejected or no-ops the second write would arrive on the original
+	// stream and the reconnect path would never be exercised, so fail the
+	// test loudly rather than let it pass silently.
+	cmdErr := adminDB.RunCommand(context.Background(), bson.D{
 		{Key: "killAllSessionsByPattern", Value: bson.A{}},
 	}).Err()
+	require.NoError(t, cmdErr,
+		"failed to tear down change-stream sessions; reconnect path was not exercised")
 
 	// Give the reconnect loop time to re-establish the stream.
 	time.Sleep(streamOpenSettle)
@@ -1081,20 +1086,14 @@ func assertCompoundIndexExists(t *testing.T, client *mongo.Client, dbName, collN
 			continue
 		}
 
-		var hasNS, hasKey, hasTID bool
-
-		for _, elem := range keyDoc {
-			switch elem.Key {
-			case "namespace":
-				hasNS = true
-			case "key":
-				hasKey = true
-			case "tenant_id":
-				hasTID = true
-			}
-		}
-
-		if !(hasNS && hasKey && hasTID) {
+		// Pin the compound index ORDER, not just field membership: the
+		// migration contract and keyset-ordering paths rely on
+		// (namespace, key, tenant_id) specifically. A reordered variant
+		// like (tenant_id, namespace, key) must fail this assertion.
+		if len(keyDoc) != 3 ||
+			keyDoc[0].Key != "namespace" ||
+			keyDoc[1].Key != "key" ||
+			keyDoc[2].Key != "tenant_id" {
 			continue
 		}
 
