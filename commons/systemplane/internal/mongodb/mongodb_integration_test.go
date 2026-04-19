@@ -4,6 +4,7 @@ package mongodb
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -18,6 +19,40 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
+
+// subscriberDrainTimeout bounds the wait for a Subscribe goroutine to return
+// after its context has been cancelled. If a Subscribe implementation
+// regresses and stops honoring cancellation, an unbounded <-errCh read would
+// hang the package-level `go test` run until the global 10-minute test
+// timeout fires. This value is intentionally generous relative to the
+// streamOpenSettle/deliveryDeadline constants so CI hardware variance
+// doesn't flake it. Keep it in one place so all bounded-drain sites agree.
+const subscriberDrainTimeout = 5 * time.Second
+
+// assertSubscribeTerminated waits up to subscriberDrainTimeout for a
+// Subscribe goroutine to push its terminal error onto errCh and then
+// validates the error is the expected cancel-path result.
+//
+// Both mongodb backends satisfy Subscribe's "blocks until ctx is cancelled"
+// contract but disagree on the terminal error they report:
+//   - change-stream path returns ctx.Err() (context.Canceled)
+//   - polling path returns nil
+//
+// Either is a clean shutdown; anything else (including a timeout on errCh)
+// indicates a regression where the Subscribe loop is no longer exiting on
+// cancel. The label argument is baked into the failure message so the
+// first failing channel (cs vs. poll) is obvious in CI output.
+func assertSubscribeTerminated(t *testing.T, errCh <-chan error, label string) {
+	t.Helper()
+
+	select {
+	case err := <-errCh:
+		require.True(t, err == nil || errors.Is(err, context.Canceled),
+			"%s Subscribe should return nil or context.Canceled after cancel(); got %v", label, err)
+	case <-time.After(subscriberDrainTimeout):
+		t.Fatalf("%s Subscribe did not return within %s after cancel() — possible regression in cancellation handling", label, subscriberDrainTimeout)
+	}
+}
 
 // Test timing constants. Keeping them as package-level named values makes
 // the intent obvious (settle = "wait for change stream to open"; delivery
@@ -407,8 +442,14 @@ func TestIntegration_PollingAndChangeStreamParity(t *testing.T) {
 		// both Subscribe loops to exit so no further appends can happen,
 		// then snapshot under each mutex to guarantee a race-free parity
 		// check (race detector surfaces this otherwise).
-		<-csErrCh
-		<-pollErrCh
+		//
+		// Use bounded drains with validated terminal errors instead of
+		// naked <-errCh reads. An unbounded read would silently turn a
+		// cancellation-handling regression into a 10-minute package-level
+		// test timeout, which is a much less diagnosable failure mode
+		// than "Subscribe did not return within 5s".
+		assertSubscribeTerminated(t, csErrCh, "change-stream")
+		assertSubscribeTerminated(t, pollErrCh, "poll")
 
 		csMu.Lock()
 		csSnapshot := append([]store.Event(nil), csEvents...)
@@ -461,8 +502,18 @@ func TestIntegration_PollingAndChangeStreamParity(t *testing.T) {
 
 		const tenant = "tenant-del-1"
 
+		// Capture Subscribe's terminal error instead of discarding it. A
+		// Subscribe call that fails before the delete wave (bad config,
+		// handler panic recovery, resume-token load error, etc.) would
+		// previously leave pollDeletesAfter at zero and let this subtest
+		// pass silently even though the polling delivery path never
+		// executed. Surfacing the error after cancel() turns that class
+		// of regression into a loud test failure.
+		csSubErrCh := make(chan error, 1)
+		pollSubErrCh := make(chan error, 1)
+
 		go func() {
-			_ = csStore.Subscribe(ctx, func(evt store.Event) {
+			csSubErrCh <- csStore.Subscribe(ctx, func(evt store.Event) {
 				if evt.Namespace == ns && evt.Key == key && evt.TenantID == tenant {
 					csMu.Lock()
 					csDeletes++
@@ -472,7 +523,7 @@ func TestIntegration_PollingAndChangeStreamParity(t *testing.T) {
 		}()
 
 		go func() {
-			_ = pollStore.Subscribe(ctx, func(evt store.Event) {
+			pollSubErrCh <- pollStore.Subscribe(ctx, func(evt store.Event) {
 				if evt.Namespace == ns && evt.Key == key {
 					pollMu.Lock()
 					pollDeletesAfter++
@@ -518,11 +569,28 @@ func TestIntegration_PollingAndChangeStreamParity(t *testing.T) {
 		// a write races in. Give the ticker a few rotations to confirm.
 		time.Sleep(shortPollInterval * 5)
 
+		// Snapshot the counter under the mutex but release before the
+		// bounded Subscribe drain below — the drain waits up to 5s and
+		// holding pollMu that long would block the subscriber goroutine
+		// from its own final handler call (if one is in flight) and risk
+		// a self-deadlock.
 		pollMu.Lock()
-		defer pollMu.Unlock()
-		assert.Equal(t, 0, pollDeletesAfter,
+		pollGot := pollDeletesAfter
+		pollMu.Unlock()
+
+		assert.Equal(t, 0, pollGot,
 			"polling must not observe inter-tick deletes; got %d (pre-delete baseline %d)",
-			pollDeletesAfter, pollSeen)
+			pollGot, pollSeen)
+
+		// Cancel the subscribers and assert both Subscribe calls return
+		// cleanly within the bounded drain window. A Subscribe that fails
+		// before the delete wave would leave pollDeletesAfter at zero
+		// (passing the assertion above) even though the delivery path
+		// was never exercised — draining csSubErrCh/pollSubErrCh here
+		// converts that silent pass into a surfaced error.
+		cancel()
+		assertSubscribeTerminated(t, csSubErrCh, "change-stream")
+		assertSubscribeTerminated(t, pollSubErrCh, "poll")
 	})
 }
 

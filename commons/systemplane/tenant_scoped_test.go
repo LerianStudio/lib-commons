@@ -948,6 +948,26 @@ func TestGetFloat64ForTenant_Succeeds(t *testing.T) {
 	assert.InDelta(t, 2.5, f, 0.0001)
 }
 
+// TestGetFloat64ForTenant_AcceptsIntDefault locks the symmetry invariant
+// with GetIntForTenant: a registered default that is a Go int literal must
+// coerce to float64 on read instead of surfacing ErrValidation. Without the
+// int branch in the accessor's type switch, tenants with no override would
+// hit the default, receive an int, and get a misleading "not a float64"
+// error — even though the configuration surface was never meant to enforce
+// a distinction between int and float64 for numeric defaults.
+func TestGetFloat64ForTenant_AcceptsIntDefault(t *testing.T) {
+	t.Parallel()
+
+	// Register an int default — no SetForTenant call, so the cascade lands
+	// on the registered default (which is a native Go int, not the float64
+	// that would result from a JSON round-trip).
+	c, _ := buildStartedClient(t, "global", "ratio", 3)
+
+	f, err := c.GetFloat64ForTenant(tctx("tenant-A"), "global", "ratio")
+	require.NoError(t, err, "int default must coerce to float64 without error")
+	assert.InDelta(t, 3.0, f, 0.0001, "int default must round-trip as its exact float64 equivalent")
+}
+
 func TestGetDurationForTenant_Succeeds(t *testing.T) {
 	t.Parallel()
 

@@ -84,19 +84,30 @@ func (c *Client) GetBoolForTenant(ctx context.Context, namespace, key string) (b
 }
 
 // GetFloat64ForTenant returns the current tenant-scoped value as a float64.
-// Returns (0, err) when GetForTenant fails or the value is not a float64.
+//
+// Both float64 and int backing types are accepted for symmetry with
+// GetIntForTenant: values set via SetForTenant round-trip through JSON and
+// come back as float64, but a registered default that is a Go int literal
+// (for example `RegisterTenantScoped(..., 0, ...)`) would otherwise surface
+// ErrValidation on a tenant without any override. Coercing int → float64 here
+// keeps the typed accessor cascade uniform with the legacy GetFloat64 path
+// and with GetIntForTenant's dual-type handling.
+//
+// Returns (0, err) when GetForTenant fails or the value is neither numeric.
 func (c *Client) GetFloat64ForTenant(ctx context.Context, namespace, key string) (float64, error) {
 	v, _, err := c.GetForTenant(ctx, namespace, key)
 	if err != nil {
 		return 0, err
 	}
 
-	f, ok := v.(float64)
-	if !ok {
+	switch n := v.(type) {
+	case float64:
+		return n, nil
+	case int:
+		return float64(n), nil
+	default:
 		return 0, fmt.Errorf("%w: value at %s/%s is not a float64 (type %T)", ErrValidation, namespace, key, v)
 	}
-
-	return f, nil
 }
 
 // GetDurationForTenant returns the current tenant-scoped value as a
@@ -122,7 +133,13 @@ func (c *Client) GetDurationForTenant(ctx context.Context, namespace, key string
 			// time.ParseDuration error as a wrapped sibling would confuse the
 			// chain for no functional gain — the parse error message is
 			// already embedded in the formatted string.
-			return 0, fmt.Errorf("%w: value at %s/%s is not a valid duration: %v", ErrValidation, namespace, key, err)
+			//
+			// The //nolint:errorlint directive is load-bearing: golangci-lint's
+			// --fix mode (invoked by `make lint-fix`, which `make ci` calls)
+			// rewrites %v back to %w on every run without it, silently
+			// undoing this intentional design. Without the nolint annotation
+			// the two fixes fight and this line flip-flops across commits.
+			return 0, fmt.Errorf("%w: value at %s/%s is not a valid duration: %v", ErrValidation, namespace, key, err) //nolint:errorlint // intentional: single-root error chain via ErrValidation
 		}
 
 		return parsed, nil
