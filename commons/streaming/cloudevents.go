@@ -132,6 +132,10 @@ var ErrMissingRequiredHeader = errors.New("streaming: missing required CloudEven
 //
 // ce-time is parsed via time.RFC3339Nano to preserve sub-second precision
 // across the round trip.
+//
+// When a header key appears multiple times, the LAST occurrence wins.
+// Callers relying on duplicate-header semantics should parse headers
+// directly from kgo.Record.Headers instead.
 func ParseCloudEventsHeaders(headers []kgo.RecordHeader) (Event, error) {
 	// Flatten headers into a map so we can do O(1) lookups. The last header
 	// with a given key wins — mirrors producer behavior where later keys

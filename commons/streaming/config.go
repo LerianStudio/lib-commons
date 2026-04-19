@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -207,15 +208,17 @@ func parseEventToggles(s string) map[string]bool {
 }
 
 // getenvFloat64OrDefault mirrors the pattern of commons.GetenvIntOrDefault
-// for floats. Keeps the env-loader uniform.
+// for floats. Keeps the env-loader uniform. strconv.ParseFloat is strict —
+// trailing garbage (e.g. "0.5abc") fails and the caller receives the default
+// rather than a silently truncated value.
 func getenvFloat64OrDefault(key string, defaultValue float64) float64 {
 	raw := commons.GetenvOrDefault(key, "")
 	if raw == "" {
 		return defaultValue
 	}
 
-	var f float64
-	if _, err := fmt.Sscanf(raw, "%f", &f); err != nil {
+	f, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
 		return defaultValue
 	}
 

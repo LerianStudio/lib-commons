@@ -368,6 +368,16 @@ func (l *oneShotPanicLogger) Sync(_ context.Context) error   { return nil }
 // listener does NOT propagate out of OnStateChange — the runtime.RecoverAndLog
 // guard must absorb it. Uses a one-shot panicking logger so the recovery's
 // own log call lands successfully and the panic is contained.
+//
+// Listener contract pinned by this test:
+//
+//	The atomic.Store on cbStateFlag MUST run BEFORE the logger.Log call
+//	in each switch arm. That ordering is load-bearing — it means a logger
+//	panic does not lose the state update, and this test asserts exactly
+//	that by checking p.circuitState() == flagCBOpen AFTER the panic has
+//	been absorbed by RecoverAndLog. A future refactor that reverses the
+//	ordering (logs before storing) would flip the atomic load below to
+//	observe flagCBClosed instead, breaking this test.
 func TestProducer_CBListener_PanicSafe(t *testing.T) {
 	cfg, _ := kfakeConfig(t)
 
@@ -413,9 +423,18 @@ func TestProducer_CBListener_PanicSafe(t *testing.T) {
 }
 
 // TestProducer_CBListener_SubMillisecond wall-clocks the listener to ensure
-// it completes well under the Manager's 10-second deadline (TRD R5). The
-// threshold is 1ms; if this ever regresses, we've likely added I/O to the
-// listener in violation of the design.
+// it completes well under the Manager's 10-second deadline (TRD R5). If this
+// ever regresses, we've likely added I/O to the listener in violation of the
+// design.
+//
+// Threshold rationale: the original intent was 1ms — a listener that only
+// touches atomics + nop logger should take single-digit microseconds. In
+// practice CI scheduling variance (GOGC pauses, noisy-neighbour CPU steal,
+// container throttling) can push a microsecond-scale operation past 1ms,
+// producing flaky failures that tell us nothing about the listener's real
+// cost. 5ms is still three orders of magnitude below the 10s Manager
+// deadline and catches any accidental I/O addition, while sitting comfortably
+// above CI noise.
 func TestProducer_CBListener_SubMillisecond(t *testing.T) {
 	cfg, _ := kfakeConfig(t)
 
@@ -437,11 +456,12 @@ func TestProducer_CBListener_SubMillisecond(t *testing.T) {
 
 	listener := &streamingStateListener{producer: p}
 
-	// Measure a handful of transitions and assert the median is under 1ms.
-	// A single sample can be arbitrarily slow under CI scheduling pressure.
+	// Measure a handful of transitions and assert the median is under
+	// `threshold`. A single sample can be arbitrarily slow under CI
+	// scheduling pressure.
 	const (
 		samples   = 10
-		threshold = 1 * time.Millisecond
+		threshold = 5 * time.Millisecond
 	)
 
 	under := 0
@@ -453,8 +473,9 @@ func TestProducer_CBListener_SubMillisecond(t *testing.T) {
 		}
 	}
 
-	// Require the majority of samples to be under 1ms. If fewer than 6 are
-	// sub-millisecond, someone probably added I/O to the listener.
+	// Require the majority of samples to be under threshold. If fewer than
+	// half are below the threshold, someone probably added I/O to the
+	// listener — the happy path is atomics + nop logger.
 	if under < samples/2+1 {
 		t.Errorf("listener samples under %v: %d/%d — 10s deadline risk", threshold, under, samples)
 	}

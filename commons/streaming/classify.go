@@ -130,7 +130,8 @@ func classifyRecordRetries(err error) ErrorClass {
 		return ClassBrokerUnavailable
 	}
 
-	// Guard against a pathological wrapper that unwraps to itself.
+	// Defensive: errors.Unwrap contract forbids self-return, but guard
+	// against misbehaving wrappers that would otherwise infinite-loop us.
 	if errors.Is(unwrapped, err) && errors.Is(err, unwrapped) {
 		return ClassBrokerUnavailable
 	}
