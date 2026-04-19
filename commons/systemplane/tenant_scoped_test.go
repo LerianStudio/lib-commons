@@ -1548,15 +1548,19 @@ func (s *hydrateFakeStore) GetTenantValue(_ context.Context, tenantID, namespace
 	e, ok := s.rows[tenantRowKey{tenantID: tenantID, namespace: namespace, key: key}]
 	return e, ok, nil
 }
+
 func (s *hydrateFakeStore) SetTenantValue(_ context.Context, _ string, _ TestEntry) error {
 	return nil
 }
+
 func (s *hydrateFakeStore) DeleteTenantValue(_ context.Context, _, _, _, _ string) error {
 	return nil
 }
+
 func (s *hydrateFakeStore) ListTenantValues(_ context.Context) ([]TestEntry, error) {
 	return nil, nil
 }
+
 func (s *hydrateFakeStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1564,6 +1568,7 @@ func (s *hydrateFakeStore) ListTenantOverrides(_ context.Context, _, _, _ string
 	copy(out, s.overrides)
 	return out, nil
 }
+
 func (s *hydrateFakeStore) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
 	return nil, nil
 }
@@ -1736,5 +1741,7 @@ func TestHydrateTenantCache_SkipsBadJSON(t *testing.T) {
 
 // Guardrail: tenant-manager core symbols are still reachable. If the import
 // becomes unused this test prevents a silent drop.
-var _ = strings.Contains
-var _ = core.IsValidTenantID
+var (
+	_ = strings.Contains
+	_ = core.IsValidTenantID
+)

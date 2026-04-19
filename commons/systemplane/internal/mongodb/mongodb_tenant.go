@@ -49,8 +49,13 @@ func (s *Store) GetTenantValue(
 	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.get_tenant_value")
 	defer span.End()
 
+	// Keep span attributes bounded: entry.namespace and entry.key are
+	// enumerable across the registered-key set. tenant.id is deliberately
+	// omitted because it is unbounded in a real multi-tenant deployment
+	// and would inflate trace index cardinality on every store call.
+	// Tenant ID flows through ctx and is recorded by the Client layer's
+	// telemetry (which already pairs it with bounded enum labels).
 	span.SetAttributes(
-		attribute.String("tenant.id", tenantID),
 		attribute.String("entry.namespace", namespace),
 		attribute.String("entry.key", key),
 	)
@@ -101,8 +106,8 @@ func (s *Store) SetTenantValue(ctx context.Context, tenantID string, e store.Ent
 	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.set_tenant_value")
 	defer span.End()
 
+	// See get_tenant_value: tenant.id stays off the span for cardinality.
 	span.SetAttributes(
-		attribute.String("tenant.id", tenantID),
 		attribute.String("entry.namespace", e.Namespace),
 		attribute.String("entry.key", e.Key),
 	)
@@ -161,11 +166,13 @@ func (s *Store) DeleteTenantValue(
 	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.delete_tenant_value")
 	defer span.End()
 
+	// See get_tenant_value: tenant.id and entry.actor stay off the span
+	// for cardinality. Both values are recorded to the audit logger below
+	// (line ~210) when a row actually went away, where the structured log
+	// backend has a much higher cardinality budget than the trace index.
 	span.SetAttributes(
-		attribute.String("tenant.id", tenantID),
 		attribute.String("entry.namespace", namespace),
 		attribute.String("entry.key", key),
-		attribute.String("entry.actor", actor),
 	)
 
 	if tenantID == "" {
@@ -290,10 +297,13 @@ func (s *Store) ListTenantOverrides(
 	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.list_tenant_overrides")
 	defer span.End()
 
+	// cursor.after_tenant is omitted for cardinality: it takes one of
+	// {tenant ID values}, which is unbounded. The (afterNamespace,
+	// afterKey) pair is bounded by the registered-key set and is kept for
+	// debugging keyset pagination.
 	span.SetAttributes(
 		attribute.String("cursor.after_namespace", afterNamespace),
 		attribute.String("cursor.after_key", afterKey),
-		attribute.String("cursor.after_tenant", afterTenantID),
 		attribute.Int("cursor.limit", limit),
 	)
 

@@ -247,9 +247,13 @@ func newClient(s store.Store, cfg clientConfig) *Client {
 // configured load mode. Eager is the default; lazy requires a positive bound
 // (WithLazyTenantLoad enforces this, and newTenantCacheLRU falls back to
 // eager on non-positive bounds as a defensive guard).
+//
+// cfg.logger is forwarded so the (defensive, unreachable-in-practice) LRU
+// init failure path can surface a warning instead of silently switching the
+// process to an unbounded eager cache.
 func newTenantCacheForConfig(cfg clientConfig) tenantCache {
 	if cfg.tenantLoadMode == tenantLoadLazy && cfg.tenantCacheMax > 0 {
-		return newTenantCacheLRU(cfg.tenantCacheMax)
+		return newTenantCacheLRU(cfg.tenantCacheMax, cfg.logger)
 	}
 
 	return newTenantCacheEager()

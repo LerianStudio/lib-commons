@@ -116,6 +116,12 @@ func (c *Client) GetDurationForTenant(ctx context.Context, namespace, key string
 	case string:
 		parsed, err := time.ParseDuration(d)
 		if err != nil {
+			// Use %v (not %w) for the parse error so the error chain
+			// has a single root (ErrValidation). Errors.Is(err, ErrValidation)
+			// is the only contract we want callers to rely on; surfacing the
+			// time.ParseDuration error as a wrapped sibling would confuse the
+			// chain for no functional gain — the parse error message is
+			// already embedded in the formatted string.
 			return 0, fmt.Errorf("%w: value at %s/%s is not a valid duration: %w", ErrValidation, namespace, key, err)
 		}
 

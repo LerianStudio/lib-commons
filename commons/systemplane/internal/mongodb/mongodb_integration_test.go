@@ -402,8 +402,24 @@ func TestIntegration_PollingAndChangeStreamParity(t *testing.T) {
 
 		cancel()
 
-		csKeys := eventKeys(csEvents)
-		pollKeys := eventKeys(pollEvents)
+		// cancel() is asynchronous — the subscriber goroutines may still
+		// be appending to csEvents/pollEvents when we read them. Wait for
+		// both Subscribe loops to exit so no further appends can happen,
+		// then snapshot under each mutex to guarantee a race-free parity
+		// check (race detector surfaces this otherwise).
+		<-csErrCh
+		<-pollErrCh
+
+		csMu.Lock()
+		csSnapshot := append([]store.Event(nil), csEvents...)
+		csMu.Unlock()
+
+		pollMu.Lock()
+		pollSnapshot := append([]store.Event(nil), pollEvents...)
+		pollMu.Unlock()
+
+		csKeys := eventKeys(csSnapshot)
+		pollKeys := eventKeys(pollSnapshot)
 
 		assert.ElementsMatch(t, csKeys, pollKeys,
 			"change-stream and poll mode should observe the same namespace+key pairs")
@@ -1036,6 +1052,10 @@ func eventKeys(events []store.Event) []string {
 // assertCompoundIndexExists asserts the (namespace, key, tenant_id) unique
 // index is present on the collection. Used by migration tests to pin the
 // post-migration schema shape.
+//
+// Also pins the "unique" flag so a regression that creates a non-unique
+// compound index (which would still allow duplicate tenant rows and break
+// last-write-wins) fails this assertion instead of passing silently.
 func assertCompoundIndexExists(t *testing.T, client *mongo.Client, dbName, collName string) {
 	t.Helper()
 
@@ -1050,20 +1070,46 @@ func assertCompoundIndexExists(t *testing.T, client *mongo.Client, dbName, collN
 	var found bool
 
 	for _, idx := range indexes {
-		keyDoc, ok := idx["key"].(bson.M)
+		// mongo-driver/v2 decodes nested documents inside a top-level
+		// bson.M as bson.D (to preserve field order). listIndexes returns
+		// the "key" subdocument as bson.D — an older implementation of
+		// this helper asserted to bson.M and silently skipped every
+		// index, which is why the assertion failed even when the compound
+		// index was present. Iterate bson.D by element instead.
+		keyDoc, ok := idx["key"].(bson.D)
 		if !ok {
 			continue
 		}
 
-		_, hasNS := keyDoc["namespace"]
-		_, hasKey := keyDoc["key"]
-		_, hasTID := keyDoc["tenant_id"]
+		var hasNS, hasKey, hasTID bool
 
-		if hasNS && hasKey && hasTID {
-			found = true
-			break
+		for _, elem := range keyDoc {
+			switch elem.Key {
+			case "namespace":
+				hasNS = true
+			case "key":
+				hasKey = true
+			case "tenant_id":
+				hasTID = true
+			}
 		}
+
+		if !(hasNS && hasKey && hasTID) {
+			continue
+		}
+
+		// MongoDB omits the "unique" flag from listIndexes output when
+		// false, so a missing key here is treated as non-unique. Require
+		// the flag to be both present and true.
+		unique, _ := idx["unique"].(bool)
+		if !unique {
+			continue
+		}
+
+		found = true
+
+		break
 	}
 
-	assert.True(t, found, "compound (namespace, key, tenant_id) index must exist after phase-2 migration")
+	assert.True(t, found, "unique compound (namespace, key, tenant_id) index must exist after phase-2 migration")
 }

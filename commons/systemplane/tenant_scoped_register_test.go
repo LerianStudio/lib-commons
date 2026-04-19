@@ -31,18 +31,23 @@ func (emptyTenantTestStore) Close() error { return nil }
 func (emptyTenantTestStore) GetTenantValue(_ context.Context, _, _, _ string) (TestEntry, bool, error) {
 	return TestEntry{}, false, nil
 }
+
 func (emptyTenantTestStore) SetTenantValue(_ context.Context, _ string, _ TestEntry) error {
 	return nil
 }
+
 func (emptyTenantTestStore) DeleteTenantValue(_ context.Context, _, _, _, _ string) error {
 	return nil
 }
+
 func (emptyTenantTestStore) ListTenantValues(_ context.Context) ([]TestEntry, error) {
 	return nil, nil
 }
+
 func (emptyTenantTestStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {
 	return nil, nil
 }
+
 func (emptyTenantTestStore) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
 	return nil, nil
 }
@@ -237,7 +242,7 @@ func TestTenantCache_LRUEvictsOldest(t *testing.T) {
 	t.Parallel()
 
 	const max = 3
-	lru := newTenantCacheLRU(max)
+	lru := newTenantCacheLRU(max, nil)
 
 	ns := "ns"
 	nks := []nskey{
@@ -276,7 +281,7 @@ func TestTenantCache_LRUPromoteOnGet(t *testing.T) {
 	t.Parallel()
 
 	const max = 3
-	lru := newTenantCacheLRU(max)
+	lru := newTenantCacheLRU(max, nil)
 
 	ns := "ns"
 	nks := []nskey{
@@ -318,7 +323,7 @@ func TestTenantCache_LRUUpdateInPlace(t *testing.T) {
 	t.Parallel()
 
 	const max = 2
-	lru := newTenantCacheLRU(max)
+	lru := newTenantCacheLRU(max, nil)
 
 	nk0 := nskey{Namespace: "ns", Key: "k0"}
 	nk1 := nskey{Namespace: "ns", Key: "k1"}

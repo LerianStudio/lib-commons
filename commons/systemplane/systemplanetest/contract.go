@@ -116,8 +116,9 @@ func Run(t *testing.T, factory Factory, opts ...RunOption) {
 	run := func(name string, fn func(*testing.T)) {
 		t.Run(name, func(t *testing.T) {
 			if cfg.shouldSkip(name) {
+				// t.Skipf calls runtime.Goexit internally; the control
+				// flow below is unreachable, so no explicit return needed.
 				t.Skipf("skipped by SkipSubtest(%q)", name)
-				return
 			}
 
 			fn(t)

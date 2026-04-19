@@ -47,7 +47,7 @@ type putRequest struct {
 // an appropriate HTTP status code. It handles both the legacy global-route
 // sentinels (ErrUnknownKey, ErrValidation, ErrClosed, ErrNotStarted) and the
 // tenant-scoped additions (ErrMissingTenantContext, ErrInvalidTenantID,
-// ErrTenantScopeNotRegistered).
+// ErrTenantScopeNotRegistered, ErrTenantSchemaNotEnabled).
 //
 // The default branch returns 500 with a generic "internal_error" message to
 // avoid leaking backend details through the wire response. Detailed error
@@ -80,6 +80,17 @@ func mapSentinelErr(c *fiber.Ctx, err error) error {
 		errors.Is(err, systemplane.ErrClosed):
 		return commonshttp.RespondError(c, http.StatusServiceUnavailable, "service_unavailable",
 			"configuration service is not available")
+	case errors.Is(err, systemplane.ErrTenantSchemaNotEnabled):
+		// Phase-1 compatibility: tenant writes (SetTenantValue /
+		// DeleteTenantValue) are rejected at the store layer when
+		// TenantSchemaEnabled is false. Surface a 503 with a specific
+		// title so operators can distinguish "service down" from
+		// "feature gated during rollout" — same status family as
+		// ErrNotStarted/ErrClosed since both indicate the capability is
+		// not currently serving, but the title tells the caller to retry
+		// against an upgraded fleet rather than to wait for recovery.
+		return commonshttp.RespondError(c, http.StatusServiceUnavailable, "tenant_schema_not_enabled",
+			"tenant schema not enabled yet; feature is gated behind the phase-2 rollout flag")
 	default:
 		// Do not leak internal error details on the wire.
 		return commonshttp.RespondError(c, fiber.StatusInternalServerError, "internal_error", "write failed")

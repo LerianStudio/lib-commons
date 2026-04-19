@@ -9,6 +9,9 @@
 package systemplane
 
 import (
+	"context"
+
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	lru "github.com/hashicorp/golang-lru/v2"
 )
 
@@ -38,15 +41,29 @@ type tenantCacheLRU struct {
 // unbounded eager cache is returned instead — treating a non-positive bound
 // as a disabled feature rather than a configuration error matches the
 // existing option conventions (see WithDebounce in options.go).
-func newTenantCacheLRU(maxEntries int) tenantCache {
+//
+// logger is used only to surface the defensive fallback branch below; a nil
+// logger is tolerated (callers like unit tests pass nil or log.NewNop()).
+// In practice the fallback is unreachable — lru.New only errors on size <=
+// 0, which the guard above already rejects — but when it DOES fire we want
+// a loud signal rather than a silent mode switch, because an unbounded
+// eager cache in a long-running service will leak memory if tenant
+// overrides churn.
+func newTenantCacheLRU(maxEntries int, logger log.Logger) tenantCache {
 	if maxEntries <= 0 {
 		return newTenantCacheEager()
 	}
 
-	// lru.New only errors on size <= 0, which we already guarded above.
-	// The error is unreachable in practice; we fall back to eager defensively.
 	cache, err := lru.New[lruKey, any](maxEntries)
 	if err != nil || cache == nil {
+		if logger != nil {
+			logger.Log(context.Background(), log.LevelWarn,
+				"systemplane: bounded LRU tenant cache init failed; falling back to unbounded eager cache",
+				log.Int("max_entries", maxEntries),
+				log.Err(err),
+			)
+		}
+
 		return newTenantCacheEager()
 	}
 

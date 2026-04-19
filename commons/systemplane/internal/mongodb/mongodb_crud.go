@@ -44,21 +44,28 @@ func (s *Store) findOne(ctx context.Context, namespace, key, tenantID string) (e
 //
 // Phase selection via s.cfg.TenantSchemaEnabled:
 //
-//   - Phase 1 (TenantSchemaEnabled=false): the upsert filter is the natural
-//     tuple {namespace, key, tenant_id} rather than {_id: compoundID}. This
-//     matches BOTH legacy ObjectId-_id rows (inserted by pre-tenant v5.0.x
-//     binaries whose _id is a bare ObjectId) AND already-migrated compound-id
-//     rows. Using {_id: compoundID} in phase 1 would miss the legacy shape
-//     entirely and issue an insert that collides with the legacy unique
-//     index on (namespace, key) — the exact E11000 condition a rolling
-//     deploy is supposed to avoid (C1).
+//   - Phase 1 (TenantSchemaEnabled=false): the upsert filter keys by
+//     (namespace, key) ONLY. This matches BOTH legacy ObjectId-_id rows
+//     (inserted by pre-tenant v5.0.x binaries whose _id is a bare ObjectId
+//     and which have no tenant_id field at all) AND already-migrated
+//     compound-id rows. Including tenant_id in the phase-1 filter would
+//     miss legacy rows — they lack the field — and trigger an insert that
+//     collides with the legacy unique index on (namespace, key), which is
+//     the exact E11000 condition a rolling deploy is supposed to avoid
+//     (C1). In phase 1 the SetTenantValue / DeleteTenantValue paths return
+//     ErrTenantSchemaNotEnabled, so every upsert through this function is
+//     a global (tenantID="_global") write, and the legacy unique index on
+//     (namespace, key) already enforces "one row per (namespace, key)" —
+//     making (namespace, key) a sufficient filter in phase 1.
 //   - Phase 2 (TenantSchemaEnabled=true): the migration has run, so every
 //     row is compound-id and the filter can key directly on _id for a
 //     natural primary-key lookup.
 //
 // In both phases the $set update rewrites the full field set, and an insert
 // pins _id to the compound tuple so subsequent upserts observe the phase-2
-// shape.
+// shape. The legacy row retains its ObjectId _id on a phase-1 update
+// because MongoDB never rewrites _id via $set; the subsequent phase-2
+// migration cleans those up.
 func (s *Store) upsert(ctx context.Context, e store.Entry, tenantID string) error {
 	now := time.Now().UTC()
 	if !e.UpdatedAt.IsZero() {
@@ -75,12 +82,15 @@ func (s *Store) upsert(ctx context.Context, e store.Entry, tenantID string) erro
 	if s.cfg.TenantSchemaEnabled {
 		filter = bson.D{{Key: "_id", Value: id}}
 	} else {
-		// Phase-1 rolling-deploy filter: match by the natural tuple so legacy
-		// ObjectId-_id rows and compound-id rows both resolve.
+		// Phase-1 filter: match by (namespace, key) alone. Legacy rows
+		// lack tenant_id entirely; including it in the filter turns the
+		// upsert into an insert that E11000s on the legacy unique index.
+		// Safe because phase-1 rejects tenant writes — only globals land
+		// here — and the legacy unique index guarantees at most one row
+		// per (namespace, key).
 		filter = bson.D{
 			{Key: "namespace", Value: e.Namespace},
 			{Key: "key", Value: e.Key},
-			{Key: "tenant_id", Value: tenantID},
 		}
 	}
 

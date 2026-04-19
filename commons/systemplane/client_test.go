@@ -127,31 +127,39 @@ func (f *fakeStore) Close() error {
 	return nil
 }
 
-// Tenant-scoped methods — Task 1 no-op stubs so fakeStore satisfies store.Store.
+// Tenant-scoped methods — fail-fast stubs so fakeStore satisfies store.Store.
 // Real tenant semantics are exercised by the TestStore-backed tests in Task 7.
+//
+// Returning a sentinel error (instead of nil) ensures that if client code
+// accidentally routes through tenant APIs in the legacy-globals test suite,
+// tests fail loudly with a diagnosable reason rather than passing silently
+// on the zero-value return. This catches regressions at the boundary.
+var errTenantStubCalled = errors.New(
+	"fakeStore: tenant-scoped methods are not supported in this unit test double; " +
+		"use TestStore-backed tests for tenant coverage")
 
 func (f *fakeStore) GetTenantValue(_ context.Context, _, _, _ string) (store.Entry, bool, error) {
-	return store.Entry{}, false, nil
+	return store.Entry{}, false, errTenantStubCalled
 }
 
 func (f *fakeStore) SetTenantValue(_ context.Context, _ string, _ store.Entry) error {
-	return nil
+	return errTenantStubCalled
 }
 
 func (f *fakeStore) DeleteTenantValue(_ context.Context, _, _, _, _ string) error {
-	return nil
+	return errTenantStubCalled
 }
 
 func (f *fakeStore) ListTenantValues(_ context.Context) ([]store.Entry, error) {
-	return nil, nil
+	return nil, errTenantStubCalled
 }
 
 func (f *fakeStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]store.Entry, error) {
-	return nil, nil
+	return nil, errTenantStubCalled
 }
 
 func (f *fakeStore) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
-	return nil, nil
+	return nil, errTenantStubCalled
 }
 
 // simulateExternalChange writes an entry directly (bypassing the Client) and

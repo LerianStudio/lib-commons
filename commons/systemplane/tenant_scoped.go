@@ -136,8 +136,9 @@ func (c *Client) RegisterTenantScoped(namespace, key string, defaultValue any, o
 }
 
 // extractTenantID pulls a tenant ID from ctx and validates it against
-// core.IsValidTenantID. Returns the trimmed tenant ID on success, or an
-// error on any of:
+// core.IsValidTenantID. Returns the tenant ID verbatim (as stored in ctx
+// by core.ContextWithTenantID — no trimming or normalization) on success,
+// or an error on any of:
 //
 //   - ctx has no tenant ID   → ErrMissingTenantContext
 //   - tenant ID fails regex  → ErrInvalidTenantID
@@ -295,8 +296,8 @@ func (c *Client) SetForTenant(ctx context.Context, namespace, key string, value 
 // the global/default cascade so a degraded store does not block reads.
 //
 // Errors (value is nil, found is false):
-//   - ErrClosed, ErrMissingTenantContext, ErrInvalidTenantID, ErrUnknownKey,
-//     ErrTenantScopeNotRegistered
+//   - ErrClosed, ErrNotStarted, ErrMissingTenantContext, ErrInvalidTenantID,
+//     ErrUnknownKey, ErrTenantScopeNotRegistered
 func (c *Client) GetForTenant(ctx context.Context, namespace, key string) (any, bool, error) {
 	if c == nil || c.closed.Load() {
 		return nil, false, ErrClosed

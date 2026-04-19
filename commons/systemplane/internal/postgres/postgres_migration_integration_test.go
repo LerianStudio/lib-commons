@@ -505,12 +505,22 @@ func seedRawEntryNullTenant(ctx context.Context, t *testing.T, db *sql.DB, table
 	// declared NOT NULL on the committed schema).
 	_, err = db.ExecContext(ctx, fmt.Sprintf(
 		`ALTER TABLE %s ALTER COLUMN tenant_id SET NOT NULL`, table))
-	// If any rows still carry NULL this ALTER fails. We intentionally do
-	// not assert nil error here — a half-migrated state legitimately has
-	// NULLs, and re-asserting NOT NULL on such a table is expected to
-	// fail. The phase-2 ensureSchema backfill will normalize them before
-	// the composite unique index is built.
-	_ = err
+	// If any rows still carry NULL this ALTER fails with SQLSTATE 23502
+	// (not_null_violation) — that is the one expected failure, because a
+	// half-migrated table legitimately has NULLs that the phase-2
+	// ensureSchema backfill will normalize before the composite unique
+	// index is built. Any OTHER error (driver wiring, privilege issue,
+	// container lifecycle bug) is a real problem and must fail the test
+	// instead of being silently swallowed.
+	//
+	// The pgx stdlib driver surfaces the SQLSTATE in the error message as
+	// "contains null values" (which is Postgres's own wording for 23502).
+	// Keeping the match on the human-readable phrase avoids pulling in
+	// pgconn just for this one assertion.
+	if err != nil {
+		require.Contains(t, err.Error(), "contains null values",
+			"unexpected SET NOT NULL failure while seeding NULL tenant row: %v", err)
+	}
 }
 
 // dropLegacyPK drops the <table>_pkey constraint if present. Used to

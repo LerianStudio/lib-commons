@@ -636,7 +636,9 @@ func TestDebouncer_DoesNotCollapseAcrossTenants(t *testing.T) {
 	// Assert the set of observed (tenant, value) tuples instead.
 	seen := make(map[string]float64, 2)
 	for _, f := range fires {
-		seen[f.tenantID] = f.value.(float64)
+		v, ok := f.value.(float64)
+		require.Truef(t, ok, "expected float64 value for tenant %s, got %T", f.tenantID, f.value)
+		seen[f.tenantID] = v
 	}
 
 	assert.InDelta(t, 1.0, seen["tenant-A"], 0.0001, "tenant-A's fire must carry its own value")
