@@ -224,7 +224,13 @@ func (p *Producer) publishDLQ(
 		// still logs the error and returns the wrapped chain.
 		p.metrics.recordDLQFailed(ctx, sourceTopic)
 
-		return fmt.Errorf("streaming: DLQ publish to %s failed: %w", dlqTopic(sourceTopic), err)
+		// DLQ is best-effort: the failure is already logged and counted
+		// via streaming_dlq_publish_failed_total. Surfacing the DLQ
+		// publish error to Emit would amplify a single source-topic
+		// failure into a caller-visible double-failure and encourages
+		// retry storms when both source and DLQ topics share the same
+		// broker outage.
+		return nil
 	}
 
 	return nil

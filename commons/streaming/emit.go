@@ -130,27 +130,29 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 		return p.emitAttempt(ctx, span, event, topic, &outcome)
 	})
 	if err != nil {
-		// When cb.Execute rejects without invoking the closure (breaker
-		// OPEN, or HALF-OPEN probe quota exhausted), the closure never
-		// mutated outcome — it stays at the default caller_error, mis-
-		// labeling an infrastructure rejection as a caller fault in
-		// streaming_emitted_total. Overwrite so dashboards see the real
-		// bucket.
-		//
-		// The cbStateFlag mirror inside emitAttempt can briefly lag
-		// gobreaker's internal state (the listener fires asynchronously
-		// via the manager's SafeGo pool), so "mirror says CLOSED but
-		// gobreaker is OPEN" is a real race, not hypothetical.
 		if errors.Is(err, circuitbreaker.ErrBreakerOpen) ||
 			errors.Is(err, circuitbreaker.ErrBreakerHalfOpenFull) {
-			outcome = outcomeCircuitOpen
+			// Breaker short-circuited before the closure ran — emitAttempt
+			// (which contains the outbox fallback) was never invoked. Call
+			// emitCircuitOpenBranch directly so the outbox-backed path still
+			// works, and the non-outbox path returns ErrCircuitOpen.
+			//
+			// The cbStateFlag mirror inside emitAttempt can briefly lag
+			// gobreaker's internal state (the listener fires asynchronously
+			// via the manager's SafeGo pool), so "mirror says CLOSED but
+			// gobreaker is OPEN" is a real race, not hypothetical — and
+			// without this direct call the outbox branch would be skipped
+			// entirely whenever the breaker short-circuits.
+			_, err = p.emitCircuitOpenBranch(ctx, span, event, topic, &outcome)
 		}
 
-		// Record error on the span so trace viewers surface it in the span
-		// status/events. Does not override the outcome attribute — the
-		// deferred SetAttributes fires after this return path and carries
-		// the final outcome label.
-		span.RecordError(err)
+		if err != nil {
+			// Record error on the span so trace viewers surface it in the
+			// span status/events. Does not override the outcome attribute —
+			// the deferred SetAttributes fires after this return path and
+			// carries the final outcome label.
+			span.RecordError(err)
+		}
 	}
 
 	return err

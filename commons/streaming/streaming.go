@@ -24,9 +24,9 @@ import (
 // Emit is safe for concurrent use from any number of goroutines. Implementations
 // must document their concurrency and lifecycle semantics in their own godoc.
 type Emitter interface {
-	// Emit publishes a single Event. The context carries cancellation,
-	// deadline, and tenant identity. See EmitError for the structured
-	// diagnostic envelope returned on failure.
+	// Emit publishes a single Event. The context carries cancellation and
+	// deadline; tenant identity is in Event.TenantID. See EmitError for
+	// the structured diagnostic envelope returned on failure.
 	Emit(ctx context.Context, event Event) error
 
 	// Close releases any underlying connections and flushes buffered records.
@@ -141,6 +141,28 @@ var (
 	// attribute but still travels as a header and must be header-safe.
 	ErrInvalidSubject = errors.New("streaming: Event.Subject contains control chars or exceeds 1024 bytes")
 
+	// ErrInvalidEventID is returned when Event.EventID exceeds
+	// maxEventIDBytes or contains control characters. EventID travels as
+	// ce-id; a malformed value would corrupt downstream correlation
+	// tooling and trace context.
+	ErrInvalidEventID = errors.New("streaming: Event.EventID contains control chars or exceeds 256 bytes")
+
+	// ErrInvalidSchemaVersion is returned when Event.SchemaVersion exceeds
+	// maxSchemaVersionBytes or contains control characters. SchemaVersion
+	// travels as ce-schemaversion and is used by major-version topic
+	// suffixing in Topic().
+	ErrInvalidSchemaVersion = errors.New("streaming: Event.SchemaVersion contains control chars or exceeds 64 bytes")
+
+	// ErrInvalidDataContentType is returned when Event.DataContentType
+	// exceeds maxDataContentTypeBytes or contains control characters.
+	// DataContentType travels as ce-datacontenttype.
+	ErrInvalidDataContentType = errors.New("streaming: Event.DataContentType contains control chars or exceeds 256 bytes")
+
+	// ErrInvalidDataSchema is returned when Event.DataSchema exceeds
+	// maxDataSchemaBytes or contains control characters. DataSchema
+	// travels as ce-dataschema.
+	ErrInvalidDataSchema = errors.New("streaming: Event.DataSchema contains control chars or exceeds 2048 bytes")
+
 	// ErrEmitterClosed is returned from Emit after Close has been called.
 	ErrEmitterClosed = errors.New("streaming: emitter is closed")
 
@@ -160,12 +182,14 @@ var (
 	// but STREAMING_BROKERS is empty.
 	ErrMissingBrokers = errors.New("streaming: STREAMING_BROKERS required when ENABLED=true")
 
-	// ErrInvalidCompression is returned by LoadConfig when STREAMING_COMPRESSION
-	// is not one of snappy, lz4, zstd, gzip, none.
+	// ErrInvalidCompression is returned when the compression codec is not
+	// one of snappy, lz4, zstd, gzip, none. Surfaced by both LoadConfig
+	// (env-var validation) and buildKgoOpts (defensive re-check).
 	ErrInvalidCompression = errors.New("streaming: invalid compression codec")
 
-	// ErrInvalidAcks is returned by LoadConfig when STREAMING_REQUIRED_ACKS is
-	// not one of all, leader, none.
+	// ErrInvalidAcks is returned when the required-acks value is not one
+	// of all, leader, none. Surfaced by both LoadConfig (env-var validation)
+	// and buildKgoOpts (defensive re-check).
 	ErrInvalidAcks = errors.New("streaming: invalid required-acks value")
 
 	// ErrNilProducer is returned when a method is invoked on a nil *Producer.
@@ -280,6 +304,10 @@ var callerErrorSentinels = []error{
 	ErrInvalidEventType,
 	ErrInvalidSource,
 	ErrInvalidSubject,
+	ErrInvalidEventID,
+	ErrInvalidSchemaVersion,
+	ErrInvalidDataContentType,
+	ErrInvalidDataSchema,
 }
 
 // IsCallerError reports whether err represents a caller-correctable fault

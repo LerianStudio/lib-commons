@@ -106,7 +106,7 @@ func (p *Producer) publishToOutbox(ctx context.Context, event Event, topic strin
 	row := &outbox.OutboxEvent{
 		ID:          uuid.New(),
 		EventType:   topic,
-		AggregateID: deriveAggregateID(event),
+		AggregateID: p.deriveOutboxAggregateID(event),
 		Payload:     payload,
 		// Status / Attempts deliberately left zero-value — the outbox
 		// repository overwrites them to PENDING/0 in normalizedCreateValues.
@@ -136,24 +136,35 @@ func (p *Producer) publishToOutbox(ctx context.Context, event Event, topic strin
 //
 // For non-system events this hashes only the PartitionKey (= TenantID),
 // giving tenant-level correlation. AggregateID is NOT per-event identity
-// — use event.Subject for that. If a service wants per-aggregate grouping
-// stronger than tenant, it should override the partition key via
-// WithPartitionKey or, preferably, use a distinct Subject per aggregate.
+// — use event.Subject for that.
 //
 // SystemEvent=true events use a random UUID because their "partition key"
 // ("system:<eventtype>") would otherwise collapse every system event into
 // the same aggregate — not what we want for audit/correlation.
-//
-// Uses uuid.NewSHA1 (v5) against the DNS namespace as a stable, well-known
-// deterministic-UUID recipe. The exact namespace choice is not
-// cryptographically significant; we need determinism, not uniqueness
-// across namespaces.
 func deriveAggregateID(event Event) uuid.UUID {
 	if event.SystemEvent {
 		return uuid.New()
 	}
 
 	return uuid.NewSHA1(uuid.NameSpaceDNS, []byte(event.PartitionKey()))
+}
+
+// deriveOutboxAggregateID produces the AggregateID using the same
+// partition-key resolution as publishDirect: when a custom partition
+// function is configured via WithPartitionKey, it takes precedence over
+// the event's default PartitionKey(). This keeps outbox ordering aligned
+// with the Kafka partition stream. Delegates to deriveAggregateID for the
+// common case where no custom partition function is set.
+func (p *Producer) deriveOutboxAggregateID(event Event) uuid.UUID {
+	if p.partFn == nil {
+		return deriveAggregateID(event)
+	}
+
+	if event.SystemEvent {
+		return uuid.New()
+	}
+
+	return uuid.NewSHA1(uuid.NameSpaceDNS, []byte(p.partFn(event)))
 }
 
 // txFromContext returns the ambient *sql.Tx if one is stored on ctx under

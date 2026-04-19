@@ -80,7 +80,7 @@ func skipIfNoDocker(t *testing.T, err error) bool {
 		strings.Contains(msg, "docker socket") ||
 		strings.Contains(msg, "Is the docker daemon running") ||
 		strings.Contains(msg, "provider not implemented") ||
-		strings.Contains(msg, "no such host") && strings.Contains(msg, "docker") {
+		strings.Contains(msg, "docker.sock") {
 		t.Skipf("Docker not available in this environment: %v", err)
 		return true
 	}

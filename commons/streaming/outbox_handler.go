@@ -134,10 +134,13 @@ func (p *Producer) handleOutboxRow(ctx context.Context, row *outbox.OutboxEvent)
 		return fmt.Errorf("streaming: outbox replay preflight rejected row %s: %w", row.ID, err)
 	}
 
-	// publishDirect (NOT Emit) — the whole point of this handler. Compute
-	// event.Topic() once; publishDirect expects the caller to thread it
-	// through to avoid recomputation in downstream DLQ paths.
-	if err := p.publishDirect(ctx, event, event.Topic()); err != nil {
+	// publishDirect (NOT Emit) — the whole point of this handler.
+	//
+	// Use the persisted topic (row.EventType) rather than recomputing
+	// event.Topic(). The outbox row captured the original destination;
+	// recomputing would break replays if Topic() derivation changes
+	// (e.g., a schema-major suffix or resource rename).
+	if err := p.publishDirect(ctx, event, row.EventType); err != nil {
 		return fmt.Errorf("streaming: replay outbox row %s: %w", row.ID, err)
 	}
 

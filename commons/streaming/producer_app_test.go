@@ -599,7 +599,7 @@ func TestProducer_Healthy_PlugsIntoHealthWithDependencies(t *testing.T) {
 	// kfake.Close is synchronous but franz-go ping can race. Allow up to
 	// 2s for the next HealthCheck call to observe the dead broker.
 	deadline := time.Now().Add(2 * time.Second)
-	var lastResult = true
+	lastResult := true
 
 	for time.Now().Before(deadline) {
 		lastResult = dep.HealthCheck()

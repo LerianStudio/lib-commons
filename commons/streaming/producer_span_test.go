@@ -569,16 +569,16 @@ func TestEmit_Span_AttributeCountInvariant(t *testing.T) {
 	for _, key := range wantKeys {
 		if _, ok := have[key]; !ok {
 			t.Errorf("span missing attribute %q; have=%v", key,
-				sortedKeys(have))
+				mapKeys(have))
 		}
 	}
 }
 
-// sortedKeys returns the map keys in Go's randomized iteration order. Go
+// mapKeys returns the map keys in Go's randomized iteration order. Go
 // maps have no defined iteration order; this helper exists purely to surface
 // keys in error messages for readable failure output — a stable order is
 // not required and not provided.
-func sortedKeys(m map[string]struct{}) []string {
+func mapKeys(m map[string]struct{}) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
 		keys = append(keys, k)

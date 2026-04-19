@@ -3,6 +3,7 @@ package commons
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"reflect"
 	"strconv"
@@ -80,8 +81,8 @@ func GetenvFloat64OrDefault(key string, defaultValue float64) float64 {
 	}
 
 	val, err := strconv.ParseFloat(str, 64)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "WARN: env var %s=%q is not a valid float, using default %v\n", key, str, defaultValue)
+	if err != nil || math.IsNaN(val) || math.IsInf(val, 0) {
+		fmt.Fprintf(os.Stderr, "WARN: env var %s is not a valid float, using default %v\n", key, defaultValue)
 
 		return defaultValue
 	}

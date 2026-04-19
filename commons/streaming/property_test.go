@@ -78,10 +78,11 @@ func propertyEventGenerator(rng *rand.Rand, _ int) reflect.Value {
 }
 
 // propertyConfig wraps propertyEventGenerator into a *quick.Config so
-// callers just pass it to quick.Check. Seed is zero (deterministic under
-// repeated runs via testing/quick's default PRNG).
+// callers just pass it to quick.Check. Rand is seeded explicitly at 0
+// for deterministic, reproducible runs.
 func propertyConfig() *quick.Config {
 	return &quick.Config{
+		Rand: rand.New(rand.NewSource(0)),
 		Values: func(args []reflect.Value, rng *rand.Rand) {
 			args[0] = propertyEventGenerator(rng, 0)
 		},

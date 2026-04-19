@@ -239,10 +239,13 @@ func readDLQRecord(t *testing.T, cluster *kfake.Cluster, topic string, timeout t
 			return nil
 		}
 
-		// Sleep briefly between empty polls. Prevents spinning the CPU
-		// under -race / parallel test execution when kfake returns fast
-		// with no records while controller metadata propagates.
-		time.Sleep(10 * time.Millisecond)
+		// Sleep briefly between empty polls. Context-aware so cancellation
+		// is not delayed by the sleep.
+		select {
+		case <-fetchCtx.Done():
+			return nil
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
 
 	return nil
@@ -799,12 +802,21 @@ func TestProducer_PublishDLQ_ErrorMessageSanitized(t *testing.T) {
 	}
 }
 
-// TestProducer_PublishDLQ_DLQFailure_SurfacesWrappedError covers the sad path:
-// when the DLQ topic write itself fails (e.g., DLQ topic doesn't exist with
-// auto-create off), the caller receives a wrapped error AND an ERROR log is
-// emitted. The strategy: inject errors on BOTH the source topic AND the DLQ
-// topic so publishDirect hits the "DLQ also failed" branch.
-func TestProducer_PublishDLQ_DLQFailure_SurfacesWrappedError(t *testing.T) {
+// TestProducer_PublishDLQ_DLQFailure_DoesNotSurfaceToEmit covers the sad
+// path: when the DLQ topic write itself fails (e.g., DLQ topic doesn't
+// exist with auto-create off), DLQ publication is best-effort — the caller
+// receives the ORIGINAL source-topic error without a "DLQ also failed"
+// wrapper. The DLQ failure is captured via the ERROR log +
+// streaming_dlq_publish_failed_total counter so operators still see it.
+//
+// Surfacing the DLQ failure to Emit would amplify a single source-topic
+// failure into a caller-visible double-failure and encourage retry storms
+// when both source and DLQ topics share the same broker outage.
+//
+// Strategy: inject errors on BOTH the source topic AND the DLQ topic so
+// publishDirect hits the "DLQ also failed" branch and verify the resulting
+// error chain contains only the original cause.
+func TestProducer_PublishDLQ_DLQFailure_DoesNotSurfaceToEmit(t *testing.T) {
 	cfg, cluster := kfakeDLQConfig(t)
 
 	sourceTopic := "lerian.streaming.transaction.created"
@@ -876,11 +888,11 @@ func TestProducer_PublishDLQ_DLQFailure_SurfacesWrappedError(t *testing.T) {
 
 	emitErr := emitter.Emit(ctx, sampleEvent())
 	if emitErr == nil {
-		t.Fatalf("Emit err = nil; want non-nil (both topics failed)")
+		t.Fatalf("Emit err = nil; want non-nil (source topic failed)")
 	}
 
-	// The error MUST carry both legs: the original MessageTooLarge class
-	// and the DLQ publish failure description.
+	// Emit MUST return the ORIGINAL source-topic error classification;
+	// the DLQ failure is best-effort and never surfaces to the caller.
 	var ee *EmitError
 	if !errors.As(emitErr, &ee) {
 		t.Fatalf("Emit err = %v; want *EmitError", emitErr)
@@ -891,8 +903,10 @@ func TestProducer_PublishDLQ_DLQFailure_SurfacesWrappedError(t *testing.T) {
 			ee.Class, ClassSerialization)
 	}
 
-	if !strings.Contains(ee.Error(), "DLQ also failed") {
-		t.Errorf("ee.Error() = %q; want to contain 'DLQ also failed'", ee.Error())
+	// The error message MUST NOT contain "DLQ also failed" — that leg is
+	// swallowed and observable only via the ERROR log + DLQ-failed counter.
+	if strings.Contains(ee.Error(), "DLQ also failed") {
+		t.Errorf("ee.Error() = %q; DLQ failure must not surface to the caller (best-effort semantics)", ee.Error())
 	}
 
 	// An ERROR-level log entry must have been emitted by publishDLQ.

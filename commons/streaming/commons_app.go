@@ -16,7 +16,7 @@ import (
 var _ libCommons.App = (*Producer)(nil)
 
 // Run registers the Producer with the Launcher lifecycle. It blocks until
-// Close (or CloseContext) is called, then returns nil.
+// Close (or CloseContext) is called, then returns the CloseContext result.
 //
 // Run delegates to RunContext with a background context, mirroring the
 // Close/CloseContext pairing across the package. Consuming services

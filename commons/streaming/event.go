@@ -159,6 +159,10 @@ func (e *Event) PartitionKey() string {
 // bytes), EventID is left empty and the caller's own validation can surface
 // the issue.
 func (e *Event) ApplyDefaults() {
+	if e == nil {
+		return
+	}
+
 	if e.EventID == "" {
 		if id, err := commons.GenerateUUIDv7(); err == nil {
 			e.EventID = id.String()

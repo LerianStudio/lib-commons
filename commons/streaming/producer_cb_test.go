@@ -85,11 +85,14 @@ func (f *fakeCBManager) Execute(_ string, _ func() (any, error)) (any, error) {
 
 func (f *fakeCBManager) GetState(name string) circuitbreaker.State {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if b, ok := f.breakers[name]; ok {
-		return b.state
+	b, ok := f.breakers[name]
+	f.mu.Unlock()
+	if !ok {
+		return circuitbreaker.StateUnknown
 	}
-	return circuitbreaker.StateUnknown
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.state
 }
 
 func (f *fakeCBManager) GetCounts(_ string) circuitbreaker.Counts {
@@ -102,9 +105,12 @@ func (f *fakeCBManager) IsHealthy(name string) bool {
 
 func (f *fakeCBManager) Reset(name string) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if b, ok := f.breakers[name]; ok {
+	b, ok := f.breakers[name]
+	f.mu.Unlock()
+	if ok {
+		b.mu.Lock()
 		b.state = circuitbreaker.StateClosed
+		b.mu.Unlock()
 	}
 }
 
@@ -129,8 +135,10 @@ func (f *fakeCBManager) ForceTransition(name string, to circuitbreaker.State) {
 		return
 	}
 
+	b.mu.Lock()
 	from := b.state
 	b.state = to
+	b.mu.Unlock()
 
 	// Copy listener slice so we notify outside the lock to avoid deadlock
 	// if a listener calls back into the manager.

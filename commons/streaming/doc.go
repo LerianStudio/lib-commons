@@ -19,7 +19,7 @@
 //
 //	cfg, err := streaming.LoadConfig()
 //	if err != nil { return err }
-//	producer, err := streaming.New(ctx, cfg,
+//	producer, err := streaming.NewProducer(ctx, cfg,
 //	    streaming.WithLogger(logger),
 //	    streaming.WithMetricsFactory(metricsFactory),
 //	    streaming.WithTracer(tracer),
@@ -170,8 +170,7 @@
 // self-consistent — publishToOutbox and handleOutboxRow both use the same
 // json package — but any external consumer (reconciliation tooling, audit
 // readers) must be written to the PascalCase shape documented here, not
-// to the TRD §6.2 snake_case draft. A future breaking revision can add
-// `json:"..."` tags to Event to align with the TRD.
+// to the TRD §6.2 snake_case draft.
 //
 // # Minimum broker version
 //
@@ -196,8 +195,7 @@
 // Choose commons/dlq for operational work queues; streaming's DLQ is
 // automatic and scoped to publish failures.
 //
-// Note: x-lerian-dlq-retry-count is currently 0 in v1 pending an upstream
-// franz-go retry-count accessor (tracked for v1.1). Do not build tooling
+// Note: x-lerian-dlq-retry-count is currently 0. Do not build tooling
 // that relies on non-zero values.
 //
 // # Tuning for throughput
@@ -223,8 +221,7 @@
 //
 // Metrics conform to: streaming_emitted_total, streaming_emit_duration_ms,
 // streaming_dlq_total, streaming_dlq_publish_failed_total,
-// streaming_outbox_routed_total, streaming_circuit_state. A reference
-// Grafana dashboard is tracked as v1.1 (see docs/pre-dev/streaming/tasks.md §T11).
+// streaming_outbox_routed_total, streaming_circuit_state.
 //
 // Per-tenant attribution of DLQ or routing spikes is available through
 // the span attribute tenant.id, NOT metric labels — tenant is deliberately

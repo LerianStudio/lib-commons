@@ -21,11 +21,15 @@ const maxPayloadBytes = 1_048_576
 // intentionally conservative — longer values almost always indicate a bug
 // (e.g. a UUID concatenated in a loop) rather than a legitimate use case.
 const (
-	maxTenantIDBytes     = 256
-	maxResourceTypeBytes = 128
-	maxEventTypeBytes    = 128
-	maxSourceBytes       = 2048
-	maxSubjectBytes      = 1024
+	maxTenantIDBytes        = 256
+	maxResourceTypeBytes    = 128
+	maxEventTypeBytes       = 128
+	maxSourceBytes          = 2048
+	maxSubjectBytes         = 1024
+	maxEventIDBytes         = 256
+	maxSchemaVersionBytes   = 64
+	maxDataContentTypeBytes = 256
+	maxDataSchemaBytes      = 2048
 )
 
 // hasControlChar reports whether s contains any ASCII control character
@@ -142,29 +146,34 @@ func (p *Producer) preFlight(event Event) error {
 	return nil
 }
 
+// headerFieldCheck pairs a field value with its size ceiling and sentinel.
+type headerFieldCheck struct {
+	value    string
+	maxBytes int
+	sentinel error
+}
+
 // validateHeaderSafeFields checks every CloudEvents attribute that travels
 // as a Kafka header for control characters and length overruns. Returns
 // the first offending sentinel. Empty values are NOT checked here —
 // required-vs-optional semantics live in preFlight (tenant, source).
 func (*Producer) validateHeaderSafeFields(event Event) error {
-	if len(event.TenantID) > maxTenantIDBytes || hasControlChar(event.TenantID) {
-		return ErrInvalidTenantID
+	checks := [...]headerFieldCheck{
+		{event.TenantID, maxTenantIDBytes, ErrInvalidTenantID},
+		{event.ResourceType, maxResourceTypeBytes, ErrInvalidResourceType},
+		{event.EventType, maxEventTypeBytes, ErrInvalidEventType},
+		{event.Source, maxSourceBytes, ErrInvalidSource},
+		{event.Subject, maxSubjectBytes, ErrInvalidSubject},
+		{event.EventID, maxEventIDBytes, ErrInvalidEventID},
+		{event.SchemaVersion, maxSchemaVersionBytes, ErrInvalidSchemaVersion},
+		{event.DataContentType, maxDataContentTypeBytes, ErrInvalidDataContentType},
+		{event.DataSchema, maxDataSchemaBytes, ErrInvalidDataSchema},
 	}
 
-	if len(event.ResourceType) > maxResourceTypeBytes || hasControlChar(event.ResourceType) {
-		return ErrInvalidResourceType
-	}
-
-	if len(event.EventType) > maxEventTypeBytes || hasControlChar(event.EventType) {
-		return ErrInvalidEventType
-	}
-
-	if len(event.Source) > maxSourceBytes || hasControlChar(event.Source) {
-		return ErrInvalidSource
-	}
-
-	if len(event.Subject) > maxSubjectBytes || hasControlChar(event.Subject) {
-		return ErrInvalidSubject
+	for _, c := range checks {
+		if len(c.value) > c.maxBytes || hasControlChar(c.value) {
+			return c.sentinel
+		}
 	}
 
 	return nil

@@ -2,10 +2,10 @@ package streaming
 
 import "context"
 
-// noopEmitter is the NoopEmitter implementation. Zero-state, all methods
-// return nil. Returned automatically when Config.Enabled is false or the
-// broker list is empty.
-type noopEmitter struct{}
+// NoopEmitter is the fail-safe Emitter implementation. Zero-state, all
+// methods return nil. Returned automatically when Config.Enabled is false
+// or the broker list is empty.
+type NoopEmitter struct{}
 
 // NewNoopEmitter returns an Emitter whose methods are unconditional no-ops.
 // Safe for feature-flag-off paths, tests, and environments where no broker
@@ -14,20 +14,20 @@ type noopEmitter struct{}
 //
 // Mirrors log.NewNop() and metrics.NewNopFactory() (DX-C05).
 func NewNoopEmitter() Emitter {
-	return &noopEmitter{}
+	return &NoopEmitter{}
 }
 
 // Emit is a no-op; always returns nil.
-func (n *noopEmitter) Emit(_ context.Context, _ Event) error {
+func (n *NoopEmitter) Emit(_ context.Context, _ Event) error {
 	return nil
 }
 
 // Close is a no-op; always returns nil.
-func (n *noopEmitter) Close() error {
+func (n *NoopEmitter) Close() error {
 	return nil
 }
 
 // Healthy is a no-op; always returns nil.
-func (n *noopEmitter) Healthy(_ context.Context) error {
+func (n *NoopEmitter) Healthy(_ context.Context) error {
 	return nil
 }

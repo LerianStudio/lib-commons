@@ -15,14 +15,16 @@ import (
 func Example_basicUsage() {
 	mock := streaming.NewMockEmitter()
 
-	_ = mock.Emit(context.Background(), streaming.Event{
+	if err := mock.Emit(context.Background(), streaming.Event{
 		TenantID:     "t-abc",
 		ResourceType: "transaction",
 		EventType:    "created",
 		Source:       "//lerian.midaz/transaction-service",
 		Subject:      "tx-123",
 		Payload:      []byte(`{"amount":100}`),
-	})
+	}); err != nil {
+		return
+	}
 
 	fmt.Println(len(mock.Events()))
 	// Output: 1

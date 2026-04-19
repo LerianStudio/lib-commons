@@ -33,8 +33,8 @@ func TestProducer_New_DisabledReturnsNoop(t *testing.T) {
 		t.Fatalf("New(disabled) err = %v", err)
 	}
 
-	if _, ok := emitter.(*noopEmitter); !ok {
-		t.Errorf("New(disabled) returned %T; want *noopEmitter", emitter)
+	if _, ok := emitter.(*NoopEmitter); !ok {
+		t.Errorf("New(disabled) returned %T; want *NoopEmitter", emitter)
 	}
 }
 
@@ -58,8 +58,8 @@ func TestProducer_New_NoBrokersReturnsNoop(t *testing.T) {
 		t.Fatalf("New(empty brokers) err = %v", err)
 	}
 
-	if _, ok := emitter.(*noopEmitter); !ok {
-		t.Errorf("New(empty brokers) returned %T; want *noopEmitter", emitter)
+	if _, ok := emitter.(*NoopEmitter); !ok {
+		t.Errorf("New(empty brokers) returned %T; want *NoopEmitter", emitter)
 	}
 }
 

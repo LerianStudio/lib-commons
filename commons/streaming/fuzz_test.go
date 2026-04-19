@@ -4,18 +4,15 @@ package streaming
 
 import (
 	"net/url"
-	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-// fuzzURLPattern mirrors sanitize.go's urlPattern so fuzz assertions only
-// apply to inputs the sanitizer actually targets. Kept separate here to
-// avoid exporting the production regex — if sanitize.go's pattern diverges,
-// this one needs to be updated deliberately.
-var fuzzURLPattern = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+`)
+// fuzzURLPattern reuses the production urlPattern from sanitize.go so the
+// fuzz harness always stays aligned with the real sanitizer.
+var fuzzURLPattern = urlPattern
 
 // --- GROUP A: streaming fuzz tests. ---
 //
@@ -192,9 +189,14 @@ func FuzzSanitizeBrokerURL(f *testing.F) {
 			// the output. Checking the exact string prevents trivial
 			// passes where the sanitizer replaces the password with
 			// another string that happens to contain "hunter2".
-			if strings.Contains(out, marker) {
-				t.Fatalf("credential leak: input=%q output=%q URL-match=%q parsed-password=%q",
-					in, out, m, pw)
+			// Only check URL-shaped matches in the output for the
+			// marker — the raw marker may appear elsewhere in the
+			// fuzzer-generated string outside of a URL context.
+			for _, outMatch := range urlPattern.FindAllString(out, -1) {
+				if strings.Contains(outMatch, ":"+marker+"@") {
+					t.Fatalf("credential leak: input=%q output=%q URL-match=%q parsed-password=%q",
+						in, out, m, pw)
+				}
 			}
 		}
 	})

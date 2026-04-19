@@ -39,12 +39,15 @@ func buildKgoOpts(cfg Config, opts emitterOptions) ([]kgo.Opt, error) {
 		return nil, err
 	}
 
-	// Bounds check before the int→int32 narrowing. In practice operators set
-	// BatchMaxBytes at or below 1 MiB; a misconfiguration above math.MaxInt32
-	// would silently overflow so we clamp instead. Negative values are
-	// normalized to zero — franz-go will fall back to its own default.
-	batchMaxBytes := min(cfg.BatchMaxBytes, maxBatchMaxBytes)
-	batchMaxBytes = max(batchMaxBytes, 0)
+	// Bounds check before the int→int32 narrowing. Non-positive values
+	// fall back to defaultBatchMaxBytes — franz-go validates a minimum
+	// of ~512 bytes so passing 0 would either error or clamp unexpectedly.
+	batchMaxBytes := cfg.BatchMaxBytes
+	if batchMaxBytes <= 0 {
+		batchMaxBytes = defaultBatchMaxBytes
+	} else if batchMaxBytes > maxBatchMaxBytes {
+		batchMaxBytes = maxBatchMaxBytes
+	}
 
 	kgoOpts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
