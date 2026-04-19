@@ -7,6 +7,8 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/LerianStudio/lib-commons/v5/commons/circuitbreaker"
 )
 
 // Emit publishes a single Event. It performs caller-side validation
@@ -36,15 +38,23 @@ import (
 //     signals aligned is the whole point of the single-span design.
 //
 // Nil-receiver safe: returns ErrNilProducer rather than panicking.
+// Nil-ctx safe: falls back to context.Background if ctx is nil (symmetry
+// with CloseContext / Healthy / RunContext / WaitForEvent; the global noop
+// OTEL tracer panics in ContextWithSpan when handed a nil parent).
 func (p *Producer) Emit(ctx context.Context, event Event) error {
 	if p == nil {
 		return ErrNilProducer
 	}
 
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	// Compute the topic once and thread it through every downstream call
-	// site. Topic() allocates a string on every invocation; caching it
-	// avoids the allocation across the recordEmitted + recordEmitDuration
-	// + DLQ + span-attribute write paths on the hot path.
+	// site. Topic() concatenates strings and may call semver.Major; caching
+	// it avoids the allocation across recordEmitted + recordEmitDuration +
+	// setEmitSpanAttributes + publishDirect + publishDLQ + publishToOutbox
+	// on the hot path.
 	topic := event.Topic()
 
 	if p.closed.Load() {
@@ -90,7 +100,7 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 	ctx, span := p.tracer.Start(ctx, emitSpanName, trace.WithSpanKind(trace.SpanKindProducer))
 	defer span.End()
 
-	p.setEmitSpanAttributes(span, event)
+	p.setEmitSpanAttributes(span, event, topic)
 
 	// outcome tracks the terminal branch so the deferred metric recorders
 	// and the span attribute write a consistent value. Defaulting to
@@ -120,6 +130,22 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 		return p.emitAttempt(ctx, span, event, topic, &outcome)
 	})
 	if err != nil {
+		// When cb.Execute rejects without invoking the closure (breaker
+		// OPEN, or HALF-OPEN probe quota exhausted), the closure never
+		// mutated outcome — it stays at the default caller_error, mis-
+		// labeling an infrastructure rejection as a caller fault in
+		// streaming_emitted_total. Overwrite so dashboards see the real
+		// bucket.
+		//
+		// The cbStateFlag mirror inside emitAttempt can briefly lag
+		// gobreaker's internal state (the listener fires asynchronously
+		// via the manager's SafeGo pool), so "mirror says CLOSED but
+		// gobreaker is OPEN" is a real race, not hypothetical.
+		if errors.Is(err, circuitbreaker.ErrBreakerOpen) ||
+			errors.Is(err, circuitbreaker.ErrBreakerHalfOpenFull) {
+			outcome = outcomeCircuitOpen
+		}
+
 		// Record error on the span so trace viewers surface it in the span
 		// status/events. Does not override the outcome attribute — the
 		// deferred SetAttributes fires after this return path and carries
@@ -152,7 +178,7 @@ func (p *Producer) emitAttempt(ctx context.Context, span trace.Span, event Event
 		return p.emitCircuitOpenBranch(ctx, span, event, topic, outcome)
 	}
 
-	if err := p.publishDirect(ctx, event); err != nil {
+	if err := p.publishDirect(ctx, event, topic); err != nil {
 		// Classify via EmitError (populated by publishDirect). Outcome
 		// mapping is DRIVEN BY DLQ ROUTING, not by IsCallerError:
 		//
@@ -202,7 +228,7 @@ func (p *Producer) emitAttempt(ctx context.Context, span trace.Span, event Event
 // its own docstring and test seams.
 func (p *Producer) emitCircuitOpenBranch(ctx context.Context, span trace.Span, event Event, topic string, outcome *string) (any, error) {
 	if p.outbox != nil {
-		if obxErr := p.publishToOutbox(ctx, event); obxErr != nil {
+		if obxErr := p.publishToOutbox(ctx, event, topic); obxErr != nil {
 			// Outbox write itself failed: surface the error so the caller
 			// knows the event wasn't durably captured. Silent drop here
 			// would lose the event entirely. Labeled outcomeOutboxFailed

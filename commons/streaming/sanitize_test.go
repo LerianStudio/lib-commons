@@ -51,12 +51,6 @@ func TestSanitizeBrokerURL(t *testing.T) {
 			mustContainAny: []string{"ordinary error message with no credentials"},
 		},
 		{
-			name:           "empty string",
-			in:             "",
-			mustNotContain: []string{},
-			mustContainAny: []string{""},
-		},
-		{
 			// Regression guard: an "@" inside a non-URL token (e.g. an email
 			// address in a log message) must NOT be treated as userinfo
 			// delimiter. fallbackRedact's URL-aware splitter only fires on
@@ -94,5 +88,18 @@ func TestSanitizeBrokerURL(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSanitizeBrokerURL_EmptyInput asserts the empty-string fast-path
+// explicitly. Table-driven mustContainAny:[]string{""} is vacuously true
+// (strings.Contains returns true for the empty substring), so this case
+// needs a direct equality check to pin the contract.
+func TestSanitizeBrokerURL_EmptyInput(t *testing.T) {
+	t.Parallel()
+
+	out := sanitizeBrokerURL("")
+	if out != "" {
+		t.Errorf("sanitizeBrokerURL(%q) = %q; want %q", "", out, "")
 	}
 }

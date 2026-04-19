@@ -32,7 +32,10 @@ const emitSpanName = "streaming.emit"
 // No ctx parameter: span attributes attach via the span's own context; the
 // debug check consults the logger directly. A ctx argument here would be
 // unused (flagged by linter).
-func (p *Producer) setEmitSpanAttributes(span trace.Span, event Event) {
+//
+// topic is threaded from Emit (already computed once per Emit) so we avoid
+// recomputing event.Topic() per span attribute set.
+func (p *Producer) setEmitSpanAttributes(span trace.Span, event Event, topic string) {
 	if !span.IsRecording() {
 		// Fast path for no-op spans: building the attribute slice is pure
 		// waste when the backend will drop them all. IsRecording is the
@@ -42,7 +45,7 @@ func (p *Producer) setEmitSpanAttributes(span trace.Span, event Event) {
 
 	span.SetAttributes(
 		attribute.String("messaging.system", "kafka"),
-		attribute.String("messaging.destination.name", event.Topic()),
+		attribute.String("messaging.destination.name", topic),
 		// "messaging.operation.type" (modern semconv) — NOT the deprecated
 		// "messaging.operation" key. If semconv v1.27 is imported later,
 		// replace the literal with semconv.MessagingOperationTypeKey.

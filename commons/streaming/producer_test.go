@@ -265,6 +265,80 @@ func TestProducer_EmitPreFlight_InvalidJSON(t *testing.T) {
 	}
 }
 
+// TestProducer_EmitPreFlight_MissingResourceType: empty ResourceType surfaces
+// ErrMissingResourceType synchronously. Guards against the degenerate
+// "lerian.streaming.." topic and malformed "studio.lerian." ce-type header
+// that a caller-blank ResourceType would produce — no consumer routes those,
+// so the emit would silently vanish at the worst possible layer.
+func TestProducer_EmitPreFlight_MissingResourceType(t *testing.T) {
+	cfg, _ := kfakeConfig(t)
+
+	emitter, err := New(context.Background(), cfg, WithLogger(log.NewNop()))
+	if err != nil {
+		t.Fatalf("New err = %v", err)
+	}
+
+	t.Cleanup(func() { _ = emitter.Close() })
+
+	bad := sampleEvent()
+	bad.ResourceType = ""
+
+	err = emitter.Emit(context.Background(), bad)
+	if !errors.Is(err, ErrMissingResourceType) {
+		t.Fatalf("Emit err = %v; want ErrMissingResourceType", err)
+	}
+}
+
+// TestProducer_EmitPreFlight_MissingEventType: empty EventType surfaces
+// ErrMissingEventType synchronously. Same rationale as MissingResourceType:
+// empty EventType produces a degenerate topic and malformed ce-type header.
+func TestProducer_EmitPreFlight_MissingEventType(t *testing.T) {
+	cfg, _ := kfakeConfig(t)
+
+	emitter, err := New(context.Background(), cfg, WithLogger(log.NewNop()))
+	if err != nil {
+		t.Fatalf("New err = %v", err)
+	}
+
+	t.Cleanup(func() { _ = emitter.Close() })
+
+	bad := sampleEvent()
+	bad.EventType = ""
+
+	err = emitter.Emit(context.Background(), bad)
+	if !errors.Is(err, ErrMissingEventType) {
+		t.Fatalf("Emit err = %v; want ErrMissingEventType", err)
+	}
+}
+
+// TestProducer_Emit_NilCtx_DoesNotPanic is the H1 regression test. The noop
+// OTEL global tracer panics in ContextWithSpan when handed a nil parent
+// context; Emit must substitute context.Background() before reaching the
+// tracer. Mirrors the same defense pattern as TestProducer_RunContext_NilCtx.
+func TestProducer_Emit_NilCtx_DoesNotPanic(t *testing.T) {
+	cfg, _ := kfakeConfig(t)
+
+	emitter, err := New(context.Background(), cfg, WithLogger(log.NewNop()))
+	if err != nil {
+		t.Fatalf("New err = %v", err)
+	}
+
+	t.Cleanup(func() { _ = emitter.Close() })
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Emit(nil, event) panicked: %v", r)
+		}
+	}()
+
+	event := sampleEvent()
+
+	//nolint:staticcheck // SA1012: intentional nil ctx to validate substitution
+	if err := emitter.Emit(nil, event); err != nil {
+		t.Fatalf("Emit(nil, event) err = %v; want nil", err)
+	}
+}
+
 // TestProducer_EmitPreFlight_MissingSource: empty ce-source surfaces
 // ErrMissingSource synchronously.
 func TestProducer_EmitPreFlight_MissingSource(t *testing.T) {
@@ -331,6 +405,8 @@ func TestProducer_ConcurrentEmit(t *testing.T) {
 	var (
 		wg        sync.WaitGroup
 		successes atomic.Int64
+		failures  atomic.Int64
+		firstErr  atomic.Value // stores the first observed error for diagnostics
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -346,13 +422,23 @@ func TestProducer_ConcurrentEmit(t *testing.T) {
 				if err := emitter.Emit(ctx, sampleEvent()); err == nil {
 					successes.Add(1)
 				} else {
-					t.Errorf("concurrent Emit err = %v", err)
+					failures.Add(1)
+					// Capture the first error only; prevents thousands of
+					// per-emit t.Errorf calls from flooding test output when
+					// a single systemic failure fails every concurrent emit.
+					firstErr.CompareAndSwap(nil, err)
 				}
 			}
 		}()
 	}
 
 	wg.Wait()
+
+	if got := failures.Load(); got > 0 {
+		first, _ := firstErr.Load().(error)
+		t.Errorf("concurrent Emit failures = %d/%d; first error = %v",
+			got, goroutines*emitsPerGoroutine, first)
+	}
 
 	if got := successes.Load(); got != int64(goroutines*emitsPerGoroutine) {
 		t.Errorf("successful emits = %d; want %d", got, goroutines*emitsPerGoroutine)

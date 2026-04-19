@@ -154,6 +154,17 @@ func WithOutboxRepository(repo outbox.OutboxRepository) EmitterOption {
 //
 // When nil, brokers are connected via plaintext (the default in v1).
 //
+// TLS is PROCESS-LEVEL, not per-tenant. The *tls.Config authenticates the
+// streaming producer process to the broker under a single identity; it is
+// not rotated or multiplexed by Event.TenantID. Per-tenant broker isolation
+// is NOT the streaming producer's responsibility — it is an infrastructure
+// concern (broker ACLs, network segmentation) or a consumer-side filtering
+// concern (ce-tenantid header).
+//
+// Recommended baseline: MinVersion: tls.VersionTLS12 (or TLS 1.3 where the
+// broker supports it). The library does not set a default MinVersion; the
+// caller owns TLS policy.
+//
 // v1 ships this option for forward-compatibility. The plumbing is unit-tested
 // — a real TLS handshake is not. Integration coverage arrives with the first
 // TLS-using consumer per the T8 scope note in docs/pre-dev/streaming/tasks.md.
@@ -173,6 +184,12 @@ func WithTLSConfig(cfg *tls.Config) EmitterOption {
 //	WithSASL(plain.Auth{User: "alice", Pass: "secret"}.AsMechanism())
 //
 // When nil, SASL is not configured (the default).
+//
+// SASL auth is PROCESS-LEVEL, not per-tenant. The mechanism authenticates
+// the streaming producer process to the broker under a single service
+// identity; it is not rotated or multiplexed by Event.TenantID. A consuming
+// service that wires per-tenant credentials here will NOT see them applied
+// per tenant — the Producer holds one mechanism for its lifetime.
 //
 // v1 ships plumbing only — a real SCRAM/OAUTHBEARER handshake is not covered
 // by unit tests. Integration coverage arrives with the first SASL-using

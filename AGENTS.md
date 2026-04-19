@@ -189,7 +189,7 @@ Build and shell:
 - **Mongo:** `NewClient(ctx, cfg, opts...) (*Client, error)`; methods `Client(ctx)`, `ResolveClient(ctx)`, `Database(ctx)`, `Ping(ctx)`, `Close(ctx)`, `EnsureIndexes(ctx, collection, indexes...)`.
 - **Redis:** `New(ctx, cfg) (*Client, error)` with topology-based `Config` (standalone/sentinel/cluster). `GetClient(ctx)`, `Close()`, `Status()`, `IsConnected()`, `LastRefreshError()`. `SetPackageLogger(logger)` for nil-receiver diagnostics.
 - **Redis locking:** `NewRedisLockManager(conn) (*RedisLockManager, error)` and `LockManager` interface. `LockHandle` for acquired locks. `DefaultLockOptions()`, `RateLimiterLockOptions()`.
-- **RabbitMQ:** `*Context()` variants of all lifecycle methods; `HealthCheck() (bool, error)`.
+- **RabbitMQ:** `*Context()` variants of all lifecycle methods; `HealthCheck() (bool, error)`. Secret redaction marker switched from `"xxxxx"` to `"****"` (unified with `commons/security/sanitize.SecretRedactionMarker`) — operator tooling (SIEM rules, dashboards, log-grep alerts) keyed on the literal `"xxxxx"` in rabbitmq sanitized error messages must update queries to match `"****"`. Affects `sanitizeAMQPErr`, `redactURLCredentialToken`, and `redactURLCredentialsFallback` output only.
 
 ### Dead letter queue (`commons/dlq`)
 

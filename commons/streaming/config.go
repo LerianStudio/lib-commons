@@ -2,7 +2,6 @@ package streaming
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -111,7 +110,7 @@ func LoadConfig() (Config, error) {
 		RecordRetries:         int(commons.GetenvIntOrDefault("STREAMING_RECORD_RETRIES", int64(defaultRecordRetries))),
 		RecordDeliveryTimeout: time.Duration(commons.GetenvIntOrDefault("STREAMING_RECORD_DELIVERY_TIMEOUT_S", int64(defaultRecordDeliveryTimeout.Seconds()))) * time.Second,
 		RequiredAcks:          commons.GetenvOrDefault("STREAMING_REQUIRED_ACKS", defaultRequiredAcks),
-		CBFailureRatio:        getenvFloat64OrDefault("STREAMING_CB_FAILURE_RATIO", defaultCBFailureRatio),
+		CBFailureRatio:        commons.GetenvFloat64OrDefault("STREAMING_CB_FAILURE_RATIO", defaultCBFailureRatio),
 		CBMinRequests:         int(commons.GetenvIntOrDefault("STREAMING_CB_MIN_REQUESTS", int64(defaultCBMinRequests))),
 		CBTimeout:             time.Duration(commons.GetenvIntOrDefault("STREAMING_CB_TIMEOUT_S", int64(defaultCBTimeout.Seconds()))) * time.Second,
 		CloseTimeout:          time.Duration(commons.GetenvIntOrDefault("STREAMING_CLOSE_TIMEOUT_S", int64(defaultCloseTimeout.Seconds()))) * time.Second,
@@ -205,22 +204,4 @@ func parseEventToggles(s string) map[string]bool {
 	}
 
 	return result
-}
-
-// getenvFloat64OrDefault mirrors the pattern of commons.GetenvIntOrDefault
-// for floats. Keeps the env-loader uniform. strconv.ParseFloat is strict —
-// trailing garbage (e.g. "0.5abc") fails and the caller receives the default
-// rather than a silently truncated value.
-func getenvFloat64OrDefault(key string, defaultValue float64) float64 {
-	raw := commons.GetenvOrDefault(key, "")
-	if raw == "" {
-		return defaultValue
-	}
-
-	f, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
-	if err != nil {
-		return defaultValue
-	}
-
-	return f
 }

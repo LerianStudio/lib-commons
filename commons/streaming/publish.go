@@ -77,6 +77,21 @@ func (p *Producer) preFlight(event Event) error {
 		return ErrSystemEventsNotAllowed
 	}
 
+	// Topic-forming fields MUST be populated. An empty ResourceType or
+	// EventType would produce a degenerate Kafka topic ("lerian.streaming..")
+	// and a malformed ce-type header ("studio.lerian.."). No downstream
+	// consumer routes those, so the event would be silently lost at the
+	// worst possible layer. Checked before the toggle lookup so a caller
+	// that forgot to set these fields can't accidentally match the "."
+	// toggle key.
+	if event.ResourceType == "" {
+		return ErrMissingResourceType
+	}
+
+	if event.EventType == "" {
+		return ErrMissingEventType
+	}
+
 	// Event-type toggle. Built from STREAMING_EVENT_TOGGLES at LoadConfig;
 	// empty map (nil) means every event is enabled by default.
 	if p.toggles != nil {
@@ -177,9 +192,21 @@ func (*Producer) validateHeaderSafeFields(event Event) error {
 // — transport-level failures on the SOURCE topic are exactly the signal
 // the breaker needs to trip, and whether DLQ succeeded has no bearing on
 // source-topic health.
-func (p *Producer) publishDirect(ctx context.Context, event Event) error {
+//
+// topic is passed through from Emit (already computed once and threaded to
+// every downstream call site) so we avoid recomputing event.Topic() on the
+// hot path.
+func (p *Producer) publishDirect(ctx context.Context, event Event, topic string) error {
 	if p == nil {
 		return ErrNilProducer
+	}
+
+	// Nil-ctx belt-and-suspenders. Emit already guards its caller ctx and
+	// handleOutboxRow receives the Dispatcher's ctx (non-nil by contract),
+	// but a direct tester or future internal caller must not reach franz-go
+	// with a nil ctx — ProduceSync reads ctx.Err()/ctx.Done() internally.
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	// Defense in depth: publishDirect can be called by the outbox handler
@@ -198,7 +225,7 @@ func (p *Producer) publishDirect(ctx context.Context, event Event) error {
 	}
 
 	record := &kgo.Record{
-		Topic:   event.Topic(),
+		Topic:   topic,
 		Key:     []byte(partKey),
 		Value:   event.Payload,
 		Headers: buildCloudEventsHeaders(event),
@@ -223,7 +250,7 @@ func (p *Producer) publishDirect(ctx context.Context, event Event) error {
 	// isDLQRoutable for the two-class deny-list. routeToDLQIfApplicable is
 	// nil-safe and returns a result that encodes both the routing decision
 	// and any DLQ-side failure.
-	cls, dlq := p.routeToDLQIfApplicable(ctx, event, err, firstAttempt)
+	cls, dlq := p.routeToDLQIfApplicable(ctx, event, err, topic, firstAttempt)
 
-	return buildEmitErrorWithDLQ(event, err, cls, dlq)
+	return buildEmitErrorWithDLQ(event, err, topic, cls, dlq)
 }

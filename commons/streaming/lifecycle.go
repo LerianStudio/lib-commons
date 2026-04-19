@@ -116,8 +116,14 @@ func (p *Producer) signalStop() {
 // *HealthError with a typed State() so consumers of
 // net/http.HealthWithDependencies can differentiate Degraded from Down.
 //
-// T2 ships the broker-ping rung only. The Degraded/Down split based on
-// outbox availability arrives with T4 (outbox integration).
+// State semantics:
+//   - Healthy: broker ping succeeds.
+//   - Degraded: broker unreachable BUT an outbox is wired (via
+//     WithOutboxRepository). Emits still succeed (routed to outbox on CB
+//     open) so readiness consumers can keep serving traffic.
+//   - Down: broker unreachable AND no outbox wired. Emits will return
+//     ErrCircuitOpen once the breaker trips. Readiness consumers should
+//     route away.
 //
 // Nil-receiver safe. Nil-ctx safe: falls back to context.Background if ctx
 // is nil (RunContext applies the same defense; symmetry across lifecycle
@@ -143,6 +149,21 @@ func (p *Producer) Healthy(ctx context.Context) error {
 	defer cancel()
 
 	if err := p.client.Ping(pingCtx); err != nil {
+		// Distinguish Degraded from Down by outbox availability. Without an
+		// outbox, broker-down means the next Emit returns ErrCircuitOpen
+		// once the breaker trips — the Producer is effectively unable to
+		// deliver, which is Down. With an outbox, Emits continue to succeed
+		// on the CB-open branch (durable capture) until the broker recovers
+		// — that's Degraded.
+		//
+		// Probing outbox liveness would require an OutboxRepository.Ping —
+		// an interface change outside this package's scope. Non-nil check
+		// is sufficient: OutboxRepository is wired at construction and
+		// cannot become nil afterward.
+		if p.outbox == nil {
+			return NewHealthError(Down, err)
+		}
+
 		return NewHealthError(Degraded, err)
 	}
 

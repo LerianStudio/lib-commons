@@ -431,7 +431,10 @@ func TestIntegration_PartitionFIFO(t *testing.T) {
 		tenantID := fmt.Sprintf("tenant-%02d", i)
 		g.Go(func() error {
 			for seq := range eventsPerTenant {
-				payload, _ := json.Marshal(map[string]int{"seq": seq})
+				payload, err := json.Marshal(map[string]int{"seq": seq})
+				if err != nil {
+					return fmt.Errorf("marshal seq=%d: %w", seq, err)
+				}
 				ev := Event{
 					TenantID:     tenantID,
 					ResourceType: "order",

@@ -1018,6 +1018,23 @@ Sentinel errors:
 
 ---
 
+## New in v5.x (additive packages)
+
+| Package | Purpose | Notes |
+|----|----|----|
+| `commons/streaming` | CloudEvents-framed domain event publisher to Redpanda/Kafka via franz-go, with circuit-breaker + outbox fallback and per-topic DLQ | Producer-only. Orthogonal to `commons/rabbitmq` (which handles internal command queues). Bootstrap: `New(ctx, cfg, opts...) (Emitter, error)` returns `NoopEmitter` when `Enabled=false` or `Brokers` is empty. |
+| `commons/security/sanitize` | Centralized secret redaction marker (`"****"`) used across packages to ensure cross-package consistency | Consumed by `commons/streaming` and `commons/rabbitmq`. Replaces the historical literal `"xxxxx"` previously used inside `commons/rabbitmq` — see the rabbitmq note in AGENTS.md for operator tooling impact. |
+
+New exported env helper in `commons/os.go` (additive, non-breaking):
+
+- `GetenvFloat64OrDefault(key string, defaultValue float64) float64` — mirrors `GetenvIntOrDefault` for float64 values. Strict `strconv.ParseFloat`; trailing garbage returns the default.
+
+New exported sentinels in `commons/circuitbreaker/types.go` (additive):
+
+- `ErrBreakerOpen` / `ErrBreakerHalfOpenFull` — aliases for `gobreaker.ErrOpenState` / `gobreaker.ErrTooManyRequests`. Lets callers distinguish breaker-rejection-without-closure-invocation from the wrapped function's own errors after `Manager.Execute`.
+
+---
+
 ## Suggested verification command
 
 ```bash

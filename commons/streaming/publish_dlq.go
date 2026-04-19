@@ -74,13 +74,24 @@ func isDLQRoutable(cls ErrorClass) bool {
 // extractRetryCount reports the franz-go retry counter at the time of
 // exhaustion. franz-go does NOT export a stable API for retrieving the
 // retry counter off kgo.ErrRecordRetries — the internal metadata is
-// package-private. Returning 0 is the conservative choice; ops tooling can
-// infer retry count from repeated DLQ entries or (preferred) from the
-// upstream producer's span attribute set in T6.
+// package-private. Returning 0 is the conservative choice: the DLQ message
+// still carries a well-formed x-lerian-dlq-retry-count header with a
+// predictable shape, and ops tooling knows (per doc.go) that 0 means
+// "unknown" in v1, not "no retries attempted."
 //
-// TODO(v1.1): if franz-go exposes a public accessor in a future version,
-// swap this stub for the real extraction. Tracked via the TRD §C8 header
-// specification which notes retry_count is "best-effort today".
+// Ops interpretation contract (documented in doc.go # Relation to commons/dlq):
+//   - v1:   header always present, value = 0 when franz-go returns a
+//     retries-exhausted error. Operators treat 0 as "unknown count".
+//   - v1.1: when franz-go exposes a public retry-count accessor, this stub
+//     is replaced and the header carries the real integer.
+//
+// Omitting the header entirely when unknown was considered; it would break
+// operator grep tooling that currently expects the key to always exist. A
+// stable shape with a known "unknown" value is a lower-friction contract.
+//
+// TODO(v1.1): swap this stub for the real extraction once franz-go exposes
+// a public accessor (tracked via TRD §C8 header specification which already
+// notes retry_count is "best-effort today").
 func extractRetryCount(_ error) int {
 	return 0
 }
@@ -119,6 +130,7 @@ func (p *Producer) publishDLQ(
 	ctx context.Context,
 	event Event,
 	cause error,
+	sourceTopic string,
 	retryCount int,
 	firstFailureAt time.Time,
 ) error {
@@ -130,7 +142,6 @@ func (p *Producer) publishDLQ(
 		return ErrEmitterClosed
 	}
 
-	sourceTopic := event.Topic()
 	cls := classifyError(cause)
 
 	// Sanitize the cause before it lands on a header that downstream
@@ -190,6 +201,11 @@ func (p *Producer) publishDLQ(
 		// Log fields follow TRD §7.3 — producer_id / topic / resource_type /
 		// event_type / tenant_id / event_id / error_class / outcome. Kept
 		// in the same order everywhere so log-stream shapes stay stable.
+		// Sanitize before logging: the franz-go err may surface a broker
+		// URL that carries SASL credentials (user:pass@host). log.Err(err)
+		// would land the raw string in the log stream verbatim. EmitError
+		// also sanitizes at its .Error() call, but that's the OUTER
+		// boundary — this log site is earlier in the chain.
 		p.logger.Log(ctx, log.LevelError, "streaming: DLQ publish failed",
 			log.String("producer_id", p.producerID),
 			log.String("topic", sourceTopic),
@@ -200,7 +216,7 @@ func (p *Producer) publishDLQ(
 			log.String("outcome", "dlq_publish_failed"),
 			log.String("error_class", string(cls)),
 			log.String("dlq_topic", dlqTopic(sourceTopic)),
-			log.Err(err),
+			log.String("error", sanitizeBrokerURL(err.Error())),
 		)
 
 		// streaming_dlq_publish_failed_total counter. Guarded by metrics
@@ -242,6 +258,7 @@ func (p *Producer) routeToDLQIfApplicable(
 	ctx context.Context,
 	event Event,
 	origErr error,
+	sourceTopic string,
 	firstAttempt time.Time,
 ) (ErrorClass, dlqRouteResult) {
 	cls := classifyError(origErr)
@@ -254,7 +271,7 @@ func (p *Producer) routeToDLQIfApplicable(
 
 	retryCount := extractRetryCount(origErr)
 
-	if dlqErr := p.publishDLQ(ctx, event, origErr, retryCount, firstAttempt); dlqErr != nil {
+	if dlqErr := p.publishDLQ(ctx, event, origErr, sourceTopic, retryCount, firstAttempt); dlqErr != nil {
 		return cls, dlqRouteResult{routed: false, dlqErr: dlqErr}
 	}
 
@@ -270,7 +287,7 @@ func (p *Producer) routeToDLQIfApplicable(
 //
 // This is a pure helper with no I/O — it lives here rather than inline so
 // publishDirect stays legible.
-func buildEmitErrorWithDLQ(event Event, origErr error, cls ErrorClass, dlq dlqRouteResult) *EmitError {
+func buildEmitErrorWithDLQ(event Event, origErr error, topic string, cls ErrorClass, dlq dlqRouteResult) *EmitError {
 	cause := origErr
 	if !dlq.routed && dlq.dlqErr != nil {
 		// errors.Join preserves errors.Is on BOTH legs; the fmt wrapper is
@@ -283,7 +300,7 @@ func buildEmitErrorWithDLQ(event Event, origErr error, cls ErrorClass, dlq dlqRo
 		ResourceType: event.ResourceType,
 		EventType:    event.EventType,
 		TenantID:     event.TenantID,
-		Topic:        event.Topic(),
+		Topic:        topic,
 		Class:        cls,
 		Cause:        cause,
 	}

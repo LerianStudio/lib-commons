@@ -456,12 +456,16 @@ func TestProducer_CBListener_SubMillisecond(t *testing.T) {
 
 	listener := &streamingStateListener{producer: p}
 
-	// Measure a handful of transitions and assert the median is under
-	// `threshold`. A single sample can be arbitrarily slow under CI
-	// scheduling pressure.
+	// Measure transitions and assert a majority are under `threshold`. Single
+	// samples can be arbitrarily slow under CI scheduling pressure, so we
+	// keep both the sample count (20) and the threshold (10ms) loose enough
+	// to survive shared-runner contention while still catching the regression
+	// we care about: someone adds blocking I/O to the listener and every
+	// sample exceeds threshold. The real invariant is "listener is cheap" —
+	// one outlier does not break the contract.
 	const (
-		samples   = 10
-		threshold = 5 * time.Millisecond
+		samples   = 20
+		threshold = 10 * time.Millisecond
 	)
 
 	under := 0
@@ -473,11 +477,13 @@ func TestProducer_CBListener_SubMillisecond(t *testing.T) {
 		}
 	}
 
-	// Require the majority of samples to be under threshold. If fewer than
-	// half are below the threshold, someone probably added I/O to the
-	// listener — the happy path is atomics + nop logger.
-	if under < samples/2+1 {
-		t.Errorf("listener samples under %v: %d/%d — 10s deadline risk", threshold, under, samples)
+	// Require at least 60% of samples under threshold. Below that, something
+	// structural changed — the happy path is atomics + nop logger, and
+	// blocking I/O would fail every sample, not half.
+	minUnder := (samples * 60) / 100
+	if under < minUnder {
+		t.Errorf("listener samples under %v: %d/%d (want >= %d) — 10s deadline risk",
+			threshold, under, samples, minUnder)
 	}
 }
 

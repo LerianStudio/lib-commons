@@ -363,7 +363,7 @@ func TestProducer_PublishToOutbox_WithAmbientTx_CallsCreateWithTx(t *testing.T) 
 	event := sampleEvent()
 	(&event).ApplyDefaults()
 
-	if err := p.publishToOutbox(ctx, event); err != nil {
+	if err := p.publishToOutbox(ctx, event, event.Topic()); err != nil {
 		t.Fatalf("publishToOutbox(ctx with tx) err = %v", err)
 	}
 
@@ -407,7 +407,7 @@ func TestProducer_PublishToOutbox_WithAmbientTx_PropagatesError(t *testing.T) {
 	event := sampleEvent()
 	(&event).ApplyDefaults()
 
-	err = p.publishToOutbox(ctx, event)
+	err = p.publishToOutbox(ctx, event, event.Topic())
 	if err == nil {
 		t.Fatal("publishToOutbox err = nil; want non-nil (tx-path error must surface)")
 	}
@@ -425,7 +425,8 @@ func TestProducer_PublishToOutbox_NilReceiver(t *testing.T) {
 	t.Parallel()
 
 	var p *Producer
-	err := p.publishToOutbox(context.Background(), sampleEvent())
+	ev := sampleEvent()
+	err := p.publishToOutbox(context.Background(), ev, ev.Topic())
 	if !errors.Is(err, ErrNilProducer) {
 		t.Errorf("nil.publishToOutbox err = %v; want ErrNilProducer", err)
 	}
@@ -448,7 +449,8 @@ func TestProducer_PublishToOutbox_NoRepoConfigured(t *testing.T) {
 
 	p := asProducer(t, emitter)
 
-	err = p.publishToOutbox(context.Background(), sampleEvent())
+	ev := sampleEvent()
+	err = p.publishToOutbox(context.Background(), ev, ev.Topic())
 	if !errors.Is(err, ErrOutboxNotConfigured) {
 		t.Errorf("publishToOutbox without repo err = %v; want ErrOutboxNotConfigured", err)
 	}
@@ -486,7 +488,7 @@ func TestProducer_PublishToOutbox_MarshalFailure(t *testing.T) {
 	bad := sampleEvent()
 	bad.Payload = []byte("{bad-json")
 
-	err = p.publishToOutbox(context.Background(), bad)
+	err = p.publishToOutbox(context.Background(), bad, bad.Topic())
 	if err == nil {
 		t.Fatal("publishToOutbox(bad json) err = nil; want marshal error")
 	}

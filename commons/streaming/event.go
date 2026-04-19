@@ -6,8 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
+
+	"github.com/LerianStudio/lib-commons/v5/commons"
 )
 
 // Event is the CloudEvents-aligned envelope produced by a service method.
@@ -15,8 +16,10 @@ import (
 //
 // Required CloudEvents fields (ce-* headers on the wire):
 //
-//   - TenantID: maps to ce-tenantid (Lerian extension). Empty means "derive
-//     from context"; when SystemEvent is true, TenantID is optional.
+//   - TenantID: maps to ce-tenantid (Lerian extension). Required for
+//     non-system events; when SystemEvent is true, TenantID is optional.
+//     The library does NOT derive TenantID from ambient context — callers
+//     must populate it explicitly (see the struct field doc below).
 //   - ResourceType / EventType: composed into ce-type as
 //     "studio.lerian.<ResourceType>.<EventType>".
 //   - EventID: maps to ce-id. Auto-populated by ApplyDefaults using uuid.NewV7.
@@ -137,20 +140,27 @@ func (e *Event) PartitionKey() string {
 	return e.TenantID
 }
 
-// ApplyDefaults fills zero-valued optional fields with sensible defaults:
+// ApplyDefaults MUTATES the receiver in place, filling zero-valued optional
+// fields with sensible defaults:
 //
-//   - EventID → uuid.NewV7() when empty
+//   - EventID → commons.GenerateUUIDv7().String() when empty
 //   - Timestamp → time.Now().UTC() when zero
 //   - SchemaVersion → "1.0.0" when empty
 //   - DataContentType → "application/json" when empty
 //
 // Explicit values are preserved. Safe to call on a fully-populated event.
 //
-// If uuid.NewV7 fails (vanishingly unlikely — it falls back to random bytes),
-// EventID is left empty and the caller's own validation can surface the issue.
+// Non-destructiveness on the Emit path is a property of Emit (which passes
+// event by value, so ApplyDefaults lands on a local copy), NOT a property of
+// this method. External callers who invoke (*Event).ApplyDefaults() on their
+// own struct WILL see mutation on the receiver.
+//
+// If UUIDv7 generation fails (vanishingly unlikely — falls back to random
+// bytes), EventID is left empty and the caller's own validation can surface
+// the issue.
 func (e *Event) ApplyDefaults() {
 	if e.EventID == "" {
-		if id, err := uuid.NewV7(); err == nil {
+		if id, err := commons.GenerateUUIDv7(); err == nil {
 			e.EventID = id.String()
 		}
 	}
@@ -180,6 +190,15 @@ func (e *Event) ApplyDefaults() {
 func parseMajorVersion(v string) int {
 	if v == "" {
 		return 0
+	}
+
+	// Fast path for the overwhelmingly-common production case: first-major
+	// schemas. defaultSchemaVersion ("1.0.0") is the value ApplyDefaults
+	// writes when the caller leaves SchemaVersion empty, so the vast
+	// majority of events flowing through Topic() hit this branch. Bypassing
+	// semver.Major here saves a full semver parse per Emit.
+	if v == defaultSchemaVersion || v == "v"+defaultSchemaVersion || v == "1" || v == "v1" {
+		return 1
 	}
 
 	// semver.Major requires a leading "v". Normalize by re-prefixing.

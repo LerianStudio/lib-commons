@@ -124,10 +124,10 @@ func (c *chaosInMemoryOutbox) Create(
 
 	// Defensive: a fresh copy so subsequent mutations through the same
 	// pointer don't leak into our captured list.
-	copy := *event
-	c.rows = append(c.rows, &copy)
+	eventCopy := *event
+	c.rows = append(c.rows, &eventCopy)
 
-	return &copy, nil
+	return &eventCopy, nil
 }
 
 func (c *chaosInMemoryOutbox) CreateWithTx(

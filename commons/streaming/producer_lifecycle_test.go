@@ -66,10 +66,12 @@ func TestProducer_Healthy_OK(t *testing.T) {
 	}
 }
 
-// TestProducer_Healthy_Degraded_AfterClusterShutdown: close the kfake
-// cluster, then call Healthy — Ping fails, Healthy returns a *HealthError
-// with State()=Degraded.
-func TestProducer_Healthy_Degraded_AfterClusterShutdown(t *testing.T) {
+// TestProducer_Healthy_Down_BrokerDown_NoOutbox: broker is unreachable AND
+// no outbox is wired — Healthy returns *HealthError with State()=Down. This
+// matches the AGENTS.md contract: without an outbox wired, broker-down means
+// the next Emit returns ErrCircuitOpen once the breaker trips, which is
+// effectively Down from a readiness-probe perspective.
+func TestProducer_Healthy_Down_BrokerDown_NoOutbox(t *testing.T) {
 	cfg, cluster := kfakeConfig(t)
 
 	emitter, err := New(context.Background(), cfg, WithLogger(log.NewNop()))
@@ -95,8 +97,46 @@ func TestProducer_Healthy_Degraded_AfterClusterShutdown(t *testing.T) {
 		t.Fatalf("Healthy err = %T; want *HealthError", err)
 	}
 
+	if he.State() != Down {
+		t.Errorf("Healthy state = %q; want %q (no outbox wired => broker-down is Down)", he.State(), Down)
+	}
+}
+
+// TestProducer_Healthy_Degraded_BrokerDown_WithOutbox: broker is unreachable
+// BUT an outbox is wired — Healthy returns *HealthError with State()=Degraded.
+// Emits still succeed on the CB-open branch (durable capture in the outbox)
+// until the broker recovers, so readiness probes can keep serving traffic.
+func TestProducer_Healthy_Degraded_BrokerDown_WithOutbox(t *testing.T) {
+	cfg, cluster := kfakeConfig(t)
+
+	emitter, err := New(context.Background(), cfg,
+		WithLogger(log.NewNop()),
+		WithOutboxRepository(&fakeOutboxRepo{}),
+	)
+	if err != nil {
+		t.Fatalf("New err = %v", err)
+	}
+
+	t.Cleanup(func() { _ = emitter.Close() })
+
+	// Kill the broker so Ping fails.
+	cluster.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err = emitter.Healthy(ctx)
+	if err == nil {
+		t.Fatal("Healthy returned nil after cluster shutdown; want *HealthError")
+	}
+
+	var he *HealthError
+	if !errors.As(err, &he) {
+		t.Fatalf("Healthy err = %T; want *HealthError", err)
+	}
+
 	if he.State() != Degraded {
-		t.Errorf("Healthy state = %q; want %q", he.State(), Degraded)
+		t.Errorf("Healthy state = %q; want %q (outbox wired => broker-down is Degraded, not Down)", he.State(), Degraded)
 	}
 }
 

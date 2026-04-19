@@ -75,7 +75,11 @@ func ContextWithTx(ctx context.Context, tx *sql.Tx) context.Context {
 //
 // Nil-receiver safe. Returns ErrNilProducer / ErrOutboxNotConfigured so
 // callers get deterministic sentinels instead of panics.
-func (p *Producer) publishToOutbox(ctx context.Context, event Event) error {
+//
+// topic is passed through from Emit so this function does not recompute
+// event.Topic() — matches the threading that publishDirect and
+// setEmitSpanAttributes already use.
+func (p *Producer) publishToOutbox(ctx context.Context, event Event, topic string) error {
 	if p == nil {
 		return ErrNilProducer
 	}
@@ -101,15 +105,15 @@ func (p *Producer) publishToOutbox(ctx context.Context, event Event) error {
 
 	row := &outbox.OutboxEvent{
 		ID:          uuid.New(),
-		EventType:   event.Topic(),
+		EventType:   topic,
 		AggregateID: deriveAggregateID(event),
 		Payload:     payload,
 		// Status / Attempts deliberately left zero-value — the outbox
 		// repository overwrites them to PENDING/0 in normalizedCreateValues.
 	}
 
-	// Ambient transaction path. See txFromContext for why v1 doesn't yet
-	// thread anything onto this key.
+	// Ambient transaction path: CreateWithTx when the caller installed a
+	// *sql.Tx via ContextWithTx; otherwise fall through to Create.
 	if tx, ok := txFromContext(ctx); ok {
 		if _, err := p.outbox.CreateWithTx(ctx, tx, row); err != nil {
 			return fmt.Errorf("streaming: outbox create (tx): %w", err)
@@ -153,7 +157,8 @@ func deriveAggregateID(event Event) uuid.UUID {
 }
 
 // txFromContext returns the ambient *sql.Tx if one is stored on ctx under
-// streaming's tx context key, previously installed by ContextWithTx.
+// streaming's tx context key, previously installed by ContextWithTx
+// (shipped in commit 8a2df02).
 //
 // When no tx is on the context (the common case), returns (nil, false)
 // and publishToOutbox falls through to the non-transactional Create

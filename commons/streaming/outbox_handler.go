@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 )
 
@@ -94,6 +95,16 @@ func (p *Producer) handleOutboxRow(ctx context.Context, row *outbox.OutboxEvent)
 		// choice: an error would cause the Dispatcher to mark the row
 		// FAILED, which is destructive for a row that wasn't ours in
 		// the first place.
+		//
+		// Log at WARN so the operator sees the misconfiguration instead
+		// of silently dropping every mis-registered row. A quiet no-op
+		// here previously masked registration bugs in production.
+		p.logger.Log(ctx, log.LevelWarn, "streaming: outbox row routed to streaming handler but EventType lacks expected prefix",
+			log.String("row_id", row.ID.String()),
+			log.String("event_type", row.EventType),
+			log.String("expected_prefix", streamingOutboxPrefix),
+		)
+
 		return nil
 	}
 
@@ -123,8 +134,10 @@ func (p *Producer) handleOutboxRow(ctx context.Context, row *outbox.OutboxEvent)
 		return fmt.Errorf("streaming: outbox replay preflight rejected row %s: %w", row.ID, err)
 	}
 
-	// publishDirect (NOT Emit) — the whole point of this handler.
-	if err := p.publishDirect(ctx, event); err != nil {
+	// publishDirect (NOT Emit) — the whole point of this handler. Compute
+	// event.Topic() once; publishDirect expects the caller to thread it
+	// through to avoid recomputation in downstream DLQ paths.
+	if err := p.publishDirect(ctx, event, event.Topic()); err != nil {
 		return fmt.Errorf("streaming: replay outbox row %s: %w", row.ID, err)
 	}
 

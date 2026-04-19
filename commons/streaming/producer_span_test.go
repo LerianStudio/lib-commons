@@ -574,9 +574,10 @@ func TestEmit_Span_AttributeCountInvariant(t *testing.T) {
 	}
 }
 
-// sortedKeys returns the map keys in insertion order for error messages.
-// A stable order is not required; this is purely cosmetic for readable
-// failure output.
+// sortedKeys returns the map keys in Go's randomized iteration order. Go
+// maps have no defined iteration order; this helper exists purely to surface
+// keys in error messages for readable failure output — a stable order is
+// not required and not provided.
 func sortedKeys(m map[string]struct{}) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

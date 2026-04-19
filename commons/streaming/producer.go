@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -110,9 +111,13 @@ type Producer struct {
 	// Default (nil) means struct-level PartitionKey().
 	partFn func(Event) string
 
-	// toggles copies the Config.EventToggles map at construction. Reads in
-	// publishDirect are racy-by-design: operators are expected to redeploy
-	// to flip an event toggle, not hot-reload.
+	// toggles is a point-in-time COPY of Config.EventToggles taken at
+	// construction (via maps.Clone in NewProducer). The copy protects the
+	// Producer from caller-side mutation of the source map after
+	// construction; under -race a shared reference would surface as a data
+	// race between the caller goroutine and the publishDirect read. Reads
+	// in publishDirect otherwise remain unsynchronized by design — operators
+	// are expected to redeploy to flip an event toggle, not hot-reload.
 	toggles map[string]bool
 
 	// closeTimeout caps Close's Flush deadline. Resolved in New from the
@@ -211,7 +216,12 @@ func NewProducer(ctx context.Context, cfg Config, opts ...EmitterOption) (*Produ
 
 	client, err := kgo.NewClient(kgoOpts...)
 	if err != nil {
-		return nil, fmt.Errorf("streaming: kgo client init: %w", err)
+		// Sanitize defense-in-depth: kgo.NewClient does not currently
+		// surface credentialed broker URLs in its init error, but this is
+		// a franz-go implementation detail that could drift. Running the
+		// message through sanitizeBrokerURL keeps us safe against that
+		// drift at zero runtime cost.
+		return nil, fmt.Errorf("streaming: kgo client init: %s", sanitizeBrokerURL(err.Error()))
 	}
 
 	// Tracer fallback. A nil tracer here means the caller did not invoke
@@ -233,7 +243,7 @@ func NewProducer(ctx context.Context, cfg Config, opts ...EmitterOption) (*Produ
 		metrics:           newStreamingMetrics(resolvedOpts.metricsFactory, logger),
 		producerID:        uuid.NewString(),
 		partFn:            resolvedOpts.partitionKeyFn,
-		toggles:           cfg.EventToggles,
+		toggles:           maps.Clone(cfg.EventToggles),
 		closeTimeout:      closeTimeout,
 		outbox:            resolvedOpts.outbox,
 		stop:              make(chan struct{}),

@@ -357,7 +357,9 @@ func TestPublishDLQ_NilReceiver(t *testing.T) {
 
 	var p *Producer
 
-	err := p.publishDLQ(context.Background(), sampleEvent(), errors.New("cause"), 0, time.Now())
+	ev := sampleEvent()
+
+	err := p.publishDLQ(context.Background(), ev, errors.New("cause"), ev.Topic(), 0, time.Now())
 	if !errors.Is(err, ErrNilProducer) {
 		t.Errorf("nil.publishDLQ err = %v; want ErrNilProducer", err)
 	}
@@ -380,7 +382,9 @@ func TestPublishDLQ_ClosedProducer(t *testing.T) {
 		t.Fatalf("Close err = %v", err)
 	}
 
-	err = p.publishDLQ(context.Background(), sampleEvent(), errors.New("cause"), 0, time.Now())
+	ev := sampleEvent()
+
+	err = p.publishDLQ(context.Background(), ev, errors.New("cause"), ev.Topic(), 0, time.Now())
 	if !errors.Is(err, ErrEmitterClosed) {
 		t.Errorf("closed publishDLQ err = %v; want ErrEmitterClosed", err)
 	}
@@ -394,8 +398,9 @@ func TestBuildEmitErrorWithDLQ_RoutedSuccess(t *testing.T) {
 
 	orig := kerr.MessageTooLarge
 	res := dlqRouteResult{routed: true}
+	ev := sampleEvent()
 
-	emit := buildEmitErrorWithDLQ(sampleEvent(), orig, ClassSerialization, res)
+	emit := buildEmitErrorWithDLQ(ev, orig, ev.Topic(), ClassSerialization, res)
 	if emit == nil {
 		t.Fatalf("buildEmitErrorWithDLQ returned nil")
 	}
@@ -416,8 +421,9 @@ func TestBuildEmitErrorWithDLQ_DLQFailed(t *testing.T) {
 	orig := kerr.MessageTooLarge
 	dlqFail := errors.New("dlq produce sync failed")
 	res := dlqRouteResult{routed: false, dlqErr: dlqFail}
+	ev := sampleEvent()
 
-	emit := buildEmitErrorWithDLQ(sampleEvent(), orig, ClassSerialization, res)
+	emit := buildEmitErrorWithDLQ(ev, orig, ev.Topic(), ClassSerialization, res)
 
 	if !errors.Is(emit, kerr.MessageTooLarge) {
 		t.Errorf("errors.Is(emit, MessageTooLarge) = false; want true (original cause preserved)")
@@ -775,7 +781,7 @@ func TestProducer_PublishDLQ_ErrorMessageSanitized(t *testing.T) {
 	ctx, cancelCtx := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancelCtx()
 
-	if err := p.publishDLQ(ctx, event, cause, 0, time.Now()); err != nil {
+	if err := p.publishDLQ(ctx, event, cause, event.Topic(), 0, time.Now()); err != nil {
 		t.Fatalf("publishDLQ err = %v", err)
 	}
 

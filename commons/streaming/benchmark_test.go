@@ -286,6 +286,74 @@ func BenchmarkParseCloudEventsHeaders(b *testing.B) {
 	}
 }
 
+// BenchmarkPreFlight measures the preflight validation path alone —
+// isolated from franz-go / kfake so allocation regressions in validation
+// surface cleanly. BenchmarkEmit_HappyPath's per-op allocs are dominated
+// by kfake's in-process broker simulation; this bench measures the
+// streaming-code-only cost of the same hot path prefix.
+func BenchmarkPreFlight(b *testing.B) {
+	b.ReportAllocs()
+
+	// Minimal Producer with no broker — we never exercise publish, so no
+	// kgo.Client is needed for this bench. Constructing the struct directly
+	// avoids the whole NewProducer / kgo.NewClient cost and leaves the
+	// measurement isolated to preflight-touched fields.
+	p := &Producer{
+		allowSystemEvents: false,
+		toggles:           nil,
+	}
+
+	event := sampleEvent()
+	(&event).ApplyDefaults()
+
+	for b.Loop() {
+		if err := p.preFlight(event); err != nil {
+			b.Fatalf("preFlight err = %v", err)
+		}
+	}
+}
+
+// BenchmarkEvent_Topic measures the Topic() hot-path string concat + semver
+// parse. Isolated from franz-go so the L3 fast-path (SchemaVersion="1.0.0"
+// short-circuit) can be verified as a pure win. Compare against runs before
+// the fast-path lands to see the delta.
+func BenchmarkEvent_Topic(b *testing.B) {
+	b.Run("v1_default", func(b *testing.B) {
+		b.ReportAllocs()
+		event := Event{
+			ResourceType:  "transaction",
+			EventType:     "created",
+			SchemaVersion: "1.0.0",
+		}
+		for b.Loop() {
+			_ = event.Topic()
+		}
+	})
+
+	b.Run("v2_semver", func(b *testing.B) {
+		b.ReportAllocs()
+		event := Event{
+			ResourceType:  "transaction",
+			EventType:     "created",
+			SchemaVersion: "2.3.1",
+		}
+		for b.Loop() {
+			_ = event.Topic()
+		}
+	})
+
+	b.Run("empty_version", func(b *testing.B) {
+		b.ReportAllocs()
+		event := Event{
+			ResourceType: "transaction",
+			EventType:    "created",
+		}
+		for b.Loop() {
+			_ = event.Topic()
+		}
+	})
+}
+
 // fakeNetTimeoutErr is declared in classify_test.go (same package). The
 // benchmark above reuses it via fakeNetTimeoutErr{}.
 //

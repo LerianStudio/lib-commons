@@ -166,7 +166,6 @@ func TestLoadConfig_ValidCSVBrokers(t *testing.T) {
 // TestLoadConfig_AllValidCompressionCodecs asserts each supported codec.
 func TestLoadConfig_AllValidCompressionCodecs(t *testing.T) {
 	for _, codec := range []string{"snappy", "lz4", "zstd", "gzip", "none"} {
-		codec := codec
 		t.Run(codec, func(t *testing.T) {
 			clearStreamingEnv(t)
 			t.Setenv("STREAMING_ENABLED", "true")
@@ -188,7 +187,6 @@ func TestLoadConfig_AllValidCompressionCodecs(t *testing.T) {
 // TestLoadConfig_AllValidAcks asserts each supported acks value.
 func TestLoadConfig_AllValidAcks(t *testing.T) {
 	for _, acks := range []string{"all", "leader", "none"} {
-		acks := acks
 		t.Run(acks, func(t *testing.T) {
 			clearStreamingEnv(t)
 			t.Setenv("STREAMING_ENABLED", "true")

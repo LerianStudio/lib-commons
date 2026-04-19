@@ -24,6 +24,8 @@ func TestIsCallerError(t *testing.T) {
 		{"ClassAuth", &EmitError{Class: ClassAuth}},
 		{"ErrMissingTenantID", ErrMissingTenantID},
 		{"ErrMissingSource", ErrMissingSource},
+		{"ErrMissingResourceType", ErrMissingResourceType},
+		{"ErrMissingEventType", ErrMissingEventType},
 		{"ErrPayloadTooLarge", ErrPayloadTooLarge},
 		{"ErrNotJSON", ErrNotJSON},
 		{"ErrEventDisabled", ErrEventDisabled},
@@ -190,6 +192,8 @@ func TestSentinelErrors_IsMatches(t *testing.T) {
 	sentinels := []error{
 		ErrMissingTenantID,
 		ErrMissingSource,
+		ErrMissingResourceType,
+		ErrMissingEventType,
 		ErrEmitterClosed,
 		ErrEventDisabled,
 		ErrPayloadTooLarge,
@@ -200,7 +204,6 @@ func TestSentinelErrors_IsMatches(t *testing.T) {
 	}
 
 	for _, s := range sentinels {
-		s := s
 		t.Run(s.Error(), func(t *testing.T) {
 			t.Parallel()
 			// Wrap and re-check.

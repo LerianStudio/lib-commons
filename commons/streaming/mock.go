@@ -203,12 +203,21 @@ func AssertNoEvents(t testing.TB, m *MockEmitter) {
 // event, or timeout elapses. Calls t.Fatalf on timeout. Returns the matching
 // event on success.
 //
-// Under testing/synctest the polling loop is fully deterministic — time
-// advances only when every goroutine in the bubble is blocked.
+// The poll interval is fixed at 1ms — intentionally small so wall-clock
+// tests see fast convergence. Under testing/synctest the polling loop is
+// fully deterministic because time advances only when every goroutine in
+// the bubble is blocked, so the 1ms granularity does NOT add real wait time.
 //
 // Nil-ctx safe: passing a nil ctx falls back to context.Background.
+// Nil-matcher is a test programming bug — calls t.Fatalf instead of panicking
+// mid-loop with a nil-deref.
 func WaitForEvent(t testing.TB, ctx context.Context, m *MockEmitter, matcher func(Event) bool, timeout time.Duration) Event {
 	t.Helper()
+
+	if matcher == nil {
+		t.Fatalf("WaitForEvent: matcher must not be nil")
+		return Event{}
+	}
 
 	if ctx == nil {
 		ctx = context.Background()

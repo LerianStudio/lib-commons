@@ -101,6 +101,18 @@ var (
 	// required CloudEvents attribute (ce-source).
 	ErrMissingSource = errors.New("streaming: Event.Source required (CloudEvents ce-source)")
 
+	// ErrMissingResourceType is returned when Event.ResourceType is empty.
+	// ResourceType is part of the derived Kafka topic name and the ce-type
+	// header — an empty value yields a degenerate topic (lerian.streaming..)
+	// and a malformed ce-type (studio.lerian..EventType). Classified as
+	// ClassValidation; IsCallerError returns true.
+	ErrMissingResourceType = errors.New("streaming: Event.ResourceType required")
+
+	// ErrMissingEventType is returned when Event.EventType is empty. Same
+	// rationale as ErrMissingResourceType — EventType is part of the topic
+	// name and the ce-type header.
+	ErrMissingEventType = errors.New("streaming: Event.EventType required")
+
 	// ErrInvalidTenantID is returned when Event.TenantID contains control
 	// characters (< 0x20 or == 0x7F) or exceeds 256 bytes. Both shapes
 	// would corrupt downstream log parsers, OTEL label pipelines, and
@@ -255,6 +267,8 @@ var callerErrorSentinels = []error{
 	ErrMissingTenantID,
 	ErrSystemEventsNotAllowed,
 	ErrMissingSource,
+	ErrMissingResourceType,
+	ErrMissingEventType,
 	ErrPayloadTooLarge,
 	ErrNotJSON,
 	ErrEventDisabled,
@@ -274,8 +288,9 @@ var callerErrorSentinels = []error{
 //
 // Returns true when err (or any error in its chain) is one of:
 //   - ErrMissingTenantID, ErrSystemEventsNotAllowed, ErrMissingSource,
-//     ErrPayloadTooLarge, ErrNotJSON, ErrEventDisabled, ErrMissingBrokers,
-//     ErrInvalidCompression, ErrInvalidAcks
+//     ErrMissingResourceType, ErrMissingEventType, ErrPayloadTooLarge,
+//     ErrNotJSON, ErrEventDisabled, ErrMissingBrokers, ErrInvalidCompression,
+//     ErrInvalidAcks
 //   - Header-sanitization sentinels: ErrInvalidTenantID, ErrInvalidResourceType,
 //     ErrInvalidEventType, ErrInvalidSource, ErrInvalidSubject
 //   - An *EmitError whose Class is ClassSerialization, ClassValidation, or

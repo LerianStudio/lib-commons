@@ -75,36 +75,22 @@
 //
 // # Error classes and sentinels
 //
-// Emit returns a sentinel synchronously for caller-side validation
-// failures (no I/O):
+// Sentinel errors are defined in streaming.go (search for `var (` on that
+// file for the authoritative list with full godoc on each). The categories:
 //
-//   - ErrMissingTenantID — Event.TenantID empty and SystemEvent=false
-//   - ErrSystemEventsNotAllowed — Event.SystemEvent=true but the Producer
-//     was not constructed with WithAllowSystemEvents
-//   - ErrMissingSource — Event.Source empty (CloudEvents ce-source required)
-//   - ErrInvalidTenantID — TenantID contains control chars or exceeds 256 bytes
-//   - ErrInvalidResourceType — ResourceType contains control chars or exceeds 128 bytes
-//   - ErrInvalidEventType — EventType contains control chars or exceeds 128 bytes
-//   - ErrInvalidSource — Source contains control chars or exceeds 2048 bytes
-//   - ErrInvalidSubject — Subject contains control chars or exceeds 1024 bytes
-//   - ErrPayloadTooLarge — Event.Payload exceeds 1 MiB
-//   - ErrNotJSON — Event.Payload fails json.Valid
-//   - ErrEventDisabled — resource.event disabled via STREAMING_EVENT_TOGGLES
-//   - ErrEmitterClosed — Close has already been called
+//   - Caller-side validation (synchronous, no I/O): ErrMissingTenantID,
+//     ErrSystemEventsNotAllowed, ErrMissingSource, ErrMissingResourceType,
+//     ErrMissingEventType, ErrInvalid{TenantID,ResourceType,EventType,Source,
+//     Subject}, ErrPayloadTooLarge, ErrNotJSON, ErrEventDisabled,
+//     ErrEmitterClosed.
+//   - Config validation (LoadConfig): ErrMissingBrokers, ErrMissingSource,
+//     ErrInvalidCompression, ErrInvalidAcks.
+//   - Lifecycle / wiring (NOT caller errors — see IsCallerError):
+//     ErrNilProducer, ErrCircuitOpen, ErrOutboxNotConfigured,
+//     ErrNilOutboxRegistry.
 //
-// LoadConfig returns one of these sentinels on invalid Config:
-//
-//   - ErrMissingBrokers — STREAMING_ENABLED=true but STREAMING_BROKERS empty
-//   - ErrMissingSource — STREAMING_CLOUDEVENTS_SOURCE empty when Enabled=true
-//   - ErrInvalidCompression — STREAMING_COMPRESSION not in {snappy,lz4,zstd,gzip,none}
-//   - ErrInvalidAcks — STREAMING_REQUIRED_ACKS not in {all,leader,none}
-//
-// Lifecycle / wiring sentinels (all NOT caller errors — see IsCallerError):
-//
-//   - ErrNilProducer — method invoked on a nil *Producer
-//   - ErrCircuitOpen — circuit breaker is open and no outbox is wired
-//   - ErrOutboxNotConfigured — publishToOutbox called without WithOutboxRepository
-//   - ErrNilOutboxRegistry — RegisterOutboxHandler called with a nil registry
+// Use IsCallerError(err) to distinguish caller-correctable faults from
+// infrastructure faults without matching each sentinel individually.
 //
 // Runtime publish failures surface as *EmitError with one of eight
 // ErrorClass values. Per the TRD §C9 retry-and-DLQ table, DLQ routing
@@ -175,6 +161,25 @@
 // a sustained outage.
 //
 // Without an outbox wired, circuit-open Emits return ErrCircuitOpen.
+//
+// # Outbox wire format
+//
+// The outbox row Payload is a JSON-marshaled streaming.Event using Go's
+// default field capitalization (PascalCase: TenantID, ResourceType, ...),
+// NOT the snake_case shape referenced in TRD §6.2. The round-trip is
+// self-consistent — publishToOutbox and handleOutboxRow both use the same
+// json package — but any external consumer (reconciliation tooling, audit
+// readers) must be written to the PascalCase shape documented here, not
+// to the TRD §6.2 snake_case draft. A future breaking revision can add
+// `json:"..."` tags to Event to align with the TRD.
+//
+// # Minimum broker version
+//
+// Tested against Redpanda v24.2.x (the v24.2.18 image is pinned by the
+// integration suite in commons/streaming/integration_test.go). franz-go
+// auto-negotiates ApiVersions with the broker, so older Kafka clusters
+// may work but are unsupported — consumer services running against Kafka
+// <3.0 should validate manually before production rollout.
 //
 // # Relation to commons/dlq
 //
