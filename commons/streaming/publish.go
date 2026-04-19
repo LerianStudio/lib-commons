@@ -256,10 +256,10 @@ func (p *Producer) publishDirect(ctx context.Context, event Event, topic string)
 	}
 
 	// Classify and (conditionally) route to the per-topic DLQ. See
-	// isDLQRoutable for the two-class deny-list. routeToDLQIfApplicable is
-	// nil-safe and returns a result that encodes both the routing decision
-	// and any DLQ-side failure.
-	cls, dlq := p.routeToDLQIfApplicable(ctx, event, err, topic, firstAttempt)
+	// isDLQRoutable for the two-class deny-list. DLQ publish is
+	// best-effort — failures are logged and metricked inside publishDLQ
+	// and do not propagate here.
+	cls := p.routeToDLQIfApplicable(ctx, event, err, topic, firstAttempt)
 
-	return buildEmitErrorWithDLQ(event, err, topic, cls, dlq)
+	return buildEmitError(event, err, topic, cls)
 }

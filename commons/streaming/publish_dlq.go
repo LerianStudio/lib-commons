@@ -2,7 +2,6 @@ package streaming
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"time"
 
@@ -232,26 +231,13 @@ func (p *Producer) publishDLQ(
 	return nil
 }
 
-// dlqRouteResult describes the outcome of attempting to route a failed
-// direct-publish through the DLQ. It lets publishDirect return a single
-// *EmitError with the appropriate Cause chain — either the original cause
-// when DLQ succeeded, or a joined "<original>; DLQ also failed: <dlq>"
-// chain when DLQ itself failed.
-type dlqRouteResult struct {
-	// routed is true when the DLQ write succeeded. When false, dlqErr
-	// carries the DLQ-side failure; the caller joins it onto the original
-	// cause for a single error return.
-	routed bool
-
-	// dlqErr is the DLQ publishSync failure, if any. Populated only when
-	// routed == false AND the class was DLQ-routable.
-	dlqErr error
-}
-
 // routeToDLQIfApplicable classifies origErr, checks the DLQ routing rule,
-// and (when applicable) publishes the event onto the per-topic DLQ. Returns
-// a dlqRouteResult describing what happened so publishDirect can assemble
-// its return error without branching at every step.
+// and (when applicable) publishes the event onto the per-topic DLQ.
+//
+// publishDLQ is best-effort — failures are logged and metricked inside
+// the method and intentionally do not propagate to the caller (see the
+// comment block in publishDLQ and TRD §C9). The return value is the
+// classified ErrorClass so publishDirect can stamp it on the *EmitError.
 //
 // Ordering rationale: classify FIRST (cheap, pure), then decide routing
 // (also cheap), then publish to DLQ (I/O). This keeps the hot path short
@@ -262,48 +248,38 @@ func (p *Producer) routeToDLQIfApplicable(
 	origErr error,
 	sourceTopic string,
 	firstAttempt time.Time,
-) (ErrorClass, dlqRouteResult) {
+) ErrorClass {
 	cls := classifyError(origErr)
 
 	if !isDLQRoutable(cls) {
 		// Caller-cancel or caller-validation: do not route. Caller sees
 		// the *EmitError with the original cause and decides.
-		return cls, dlqRouteResult{}
+		return cls
 	}
 
 	retryCount := extractRetryCount(origErr)
 
-	if dlqErr := p.publishDLQ(ctx, event, origErr, sourceTopic, retryCount, firstAttempt); dlqErr != nil {
-		return cls, dlqRouteResult{routed: false, dlqErr: dlqErr}
-	}
+	// Best-effort: publishDLQ logs + metrics internally and always
+	// returns nil so the caller sees only the original produce error.
+	_ = p.publishDLQ(ctx, event, origErr, sourceTopic, retryCount, firstAttempt)
 
-	return cls, dlqRouteResult{routed: true}
+	return cls
 }
 
-// buildEmitErrorWithDLQ assembles the *EmitError returned from publishDirect
-// when a direct publish has failed. When the DLQ succeeded, the Cause is
-// the original error alone (callers can errors.Is against kerr sentinels).
-// When the DLQ also failed, we join the two via errors.Join so both chains
-// remain walkable via errors.Is, and format a human-readable wrapper for
-// Error().
+// buildEmitError assembles the *EmitError returned from publishDirect when
+// a direct publish has failed. The Cause is always the original produce
+// error so callers can errors.Is against kerr sentinels without extra
+// unwrapping.
 //
 // This is a pure helper with no I/O — it lives here rather than inline so
 // publishDirect stays legible.
-func buildEmitErrorWithDLQ(event Event, origErr error, topic string, cls ErrorClass, dlq dlqRouteResult) *EmitError {
-	cause := origErr
-	if !dlq.routed && dlq.dlqErr != nil {
-		// errors.Join preserves errors.Is on BOTH legs; the fmt wrapper is
-		// for human-readable log output (EmitError.Error() runs the full
-		// cause through sanitizeBrokerURL so neither leg leaks credentials).
-		cause = fmt.Errorf("%w; DLQ also failed: %w", origErr, dlq.dlqErr)
-	}
-
+func buildEmitError(event Event, origErr error, topic string, cls ErrorClass) *EmitError {
 	return &EmitError{
 		ResourceType: event.ResourceType,
 		EventType:    event.EventType,
 		TenantID:     event.TenantID,
 		Topic:        topic,
 		Class:        cls,
-		Cause:        cause,
+		Cause:        origErr,
 	}
 }

@@ -66,7 +66,7 @@
 //	STREAMING_RECORD_RETRIES             | int      | 10              | Per-record retry budget inside franz-go
 //	STREAMING_RECORD_DELIVERY_TIMEOUT_S  | int(s)   | 30              | Per-record delivery cap in seconds
 //	STREAMING_REQUIRED_ACKS              | string   | all             | One of all, leader, none
-//	STREAMING_CB_FAILURE_RATIO           | float    | 0.5             | Circuit-breaker trip ratio in [0.0, 1.0]
+//	STREAMING_CB_FAILURE_RATIO           | float    | 0.5             | Circuit-breaker trip ratio in (0.0, 1.0]
 //	STREAMING_CB_MIN_REQUESTS            | int      | 10              | Minimum observations before the CB evaluates the ratio
 //	STREAMING_CB_TIMEOUT_S               | int(s)   | 30              | Open to half-open probe delay in seconds
 //	STREAMING_CLOSE_TIMEOUT_S            | int(s)   | 30              | Max drain+flush window on Close in seconds

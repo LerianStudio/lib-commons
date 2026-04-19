@@ -393,19 +393,18 @@ func TestPublishDLQ_ClosedProducer(t *testing.T) {
 	}
 }
 
-// TestBuildEmitErrorWithDLQ_RoutedSuccess asserts the Cause on an *EmitError
-// is the original error alone when DLQ succeeded. Callers can errors.Is
-// against kerr sentinels without extra unwrapping.
-func TestBuildEmitErrorWithDLQ_RoutedSuccess(t *testing.T) {
+// TestBuildEmitError asserts the Cause on an *EmitError is the original
+// error alone. Callers can errors.Is against kerr sentinels without extra
+// unwrapping.
+func TestBuildEmitError(t *testing.T) {
 	t.Parallel()
 
 	orig := kerr.MessageTooLarge
-	res := dlqRouteResult{routed: true}
 	ev := sampleEvent()
 
-	emit := buildEmitErrorWithDLQ(ev, orig, ev.Topic(), ClassSerialization, res)
+	emit := buildEmitError(ev, orig, ev.Topic(), ClassSerialization)
 	if emit == nil {
-		t.Fatalf("buildEmitErrorWithDLQ returned nil")
+		t.Fatalf("buildEmitError returned nil")
 	}
 
 	if !errors.Is(emit, kerr.MessageTooLarge) {
@@ -413,29 +412,6 @@ func TestBuildEmitErrorWithDLQ_RoutedSuccess(t *testing.T) {
 	}
 	if emit.Class != ClassSerialization {
 		t.Errorf("emit.Class = %q; want %q", emit.Class, ClassSerialization)
-	}
-}
-
-// TestBuildEmitErrorWithDLQ_DLQFailed asserts both legs (original cause and
-// DLQ failure) remain errors.Is-matchable when DLQ itself failed.
-func TestBuildEmitErrorWithDLQ_DLQFailed(t *testing.T) {
-	t.Parallel()
-
-	orig := kerr.MessageTooLarge
-	dlqFail := errors.New("dlq produce sync failed")
-	res := dlqRouteResult{routed: false, dlqErr: dlqFail}
-	ev := sampleEvent()
-
-	emit := buildEmitErrorWithDLQ(ev, orig, ev.Topic(), ClassSerialization, res)
-
-	if !errors.Is(emit, kerr.MessageTooLarge) {
-		t.Errorf("errors.Is(emit, MessageTooLarge) = false; want true (original cause preserved)")
-	}
-	if !errors.Is(emit, dlqFail) {
-		t.Errorf("errors.Is(emit, dlqFail) = false; want true (DLQ leg preserved)")
-	}
-	if !strings.Contains(emit.Error(), "DLQ also failed") {
-		t.Errorf("emit.Error() = %q; want to contain 'DLQ also failed'", emit.Error())
 	}
 }
 

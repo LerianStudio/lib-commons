@@ -38,7 +38,7 @@ type Config struct {
 	RecordDeliveryTimeout time.Duration
 	// RequiredAcks is one of all, leader, none. Default: all.
 	RequiredAcks string
-	// CBFailureRatio is the circuit-breaker trip threshold in [0.0, 1.0].
+	// CBFailureRatio is the circuit-breaker trip threshold in (0.0, 1.0].
 	// Default: 0.5.
 	CBFailureRatio float64
 	// CBMinRequests is the minimum observations before evaluating the ratio.
