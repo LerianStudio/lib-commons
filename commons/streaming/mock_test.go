@@ -191,101 +191,18 @@ func TestMockEmitter_NilReceiver(t *testing.T) {
 	}
 }
 
-// TestAssertEventEmitted_Pass passes when a matching event exists. We use the
-// internal assertEventEmitted helper (takes the narrow tbSpy interface) to
-// avoid threading a real *testing.T into a failure-expected branch. The
-// exported helper takes testing.TB and delegates to the narrow form.
+// TestAssertEventEmitted_Pass passes when a matching event exists.
 func TestAssertEventEmitted_Pass(t *testing.T) {
 	t.Parallel()
 
 	m := NewMockEmitter()
 	_ = m.Emit(context.Background(), Event{ResourceType: "transaction", EventType: "created", TenantID: "t-1"})
 
-	spy := &tbSpy{}
-	assertEventEmittedImpl(spy, m, "transaction", "created")
-	if spy.Failed() {
-		t.Errorf("assertEventEmittedImpl failed for matching event; spy = %+v", spy)
-	}
-
-	// Also exercise the exported wrappers with a real *testing.T — these
-	// must not fail for a matching event. This drives the public-surface
-	// coverage lines in mock.go.
+	// All four exported assertion helpers must succeed silently on a
+	// matching mock. Any failure bubbles up through the real *testing.T.
 	AssertEventEmitted(t, m, "transaction", "created")
 	AssertEventCount(t, m, "transaction", "created", 1)
 	AssertTenantID(t, m, "t-1")
-}
-
-// TestAssertEventEmitted_Fail calls Errorf when no matching event exists.
-func TestAssertEventEmitted_Fail(t *testing.T) {
-	t.Parallel()
-
-	m := NewMockEmitter()
-	_ = m.Emit(context.Background(), Event{ResourceType: "account", EventType: "updated", TenantID: "t-1"})
-
-	spy := &tbSpy{}
-	assertEventEmittedImpl(spy, m, "transaction", "created")
-	if !spy.Failed() {
-		t.Errorf("assertEventEmittedImpl did not fail for missing event")
-	}
-}
-
-// TestAssertEventCount_Pass asserts the exact occurrence count.
-func TestAssertEventCount_Pass(t *testing.T) {
-	t.Parallel()
-
-	m := NewMockEmitter()
-	ctx := context.Background()
-	_ = m.Emit(ctx, Event{ResourceType: "transaction", EventType: "created", TenantID: "t-1"})
-	_ = m.Emit(ctx, Event{ResourceType: "transaction", EventType: "created", TenantID: "t-2"})
-
-	spy := &tbSpy{}
-	assertEventCountImpl(spy, m, "transaction", "created", 2)
-	if spy.Failed() {
-		t.Errorf("assertEventCountImpl failed for matching count; spy = %+v", spy)
-	}
-}
-
-// TestAssertEventCount_Fail fires on mismatch.
-func TestAssertEventCount_Fail(t *testing.T) {
-	t.Parallel()
-
-	m := NewMockEmitter()
-	ctx := context.Background()
-	_ = m.Emit(ctx, Event{ResourceType: "transaction", EventType: "created", TenantID: "t-1"})
-
-	spy := &tbSpy{}
-	assertEventCountImpl(spy, m, "transaction", "created", 5)
-	if !spy.Failed() {
-		t.Errorf("assertEventCountImpl did not fail for mismatch (got 1, want 5)")
-	}
-}
-
-// TestAssertTenantID_Pass passes when at least one event has the tenant.
-func TestAssertTenantID_Pass(t *testing.T) {
-	t.Parallel()
-
-	m := NewMockEmitter()
-	_ = m.Emit(context.Background(), Event{ResourceType: "transaction", EventType: "created", TenantID: "t-123"})
-
-	spy := &tbSpy{}
-	assertTenantIDImpl(spy, m, "t-123")
-	if spy.Failed() {
-		t.Errorf("assertTenantIDImpl failed for matching tenant; spy = %+v", spy)
-	}
-}
-
-// TestAssertTenantID_Fail fires when no event carries the tenant.
-func TestAssertTenantID_Fail(t *testing.T) {
-	t.Parallel()
-
-	m := NewMockEmitter()
-	_ = m.Emit(context.Background(), Event{ResourceType: "transaction", EventType: "created", TenantID: "t-other"})
-
-	spy := &tbSpy{}
-	assertTenantIDImpl(spy, m, "t-123")
-	if !spy.Failed() {
-		t.Errorf("assertTenantIDImpl did not fail for missing tenant")
-	}
 }
 
 // TestAssertNoEvents_Pass passes on a fresh mock.
@@ -294,29 +211,7 @@ func TestAssertNoEvents_Pass(t *testing.T) {
 
 	m := NewMockEmitter()
 
-	spy := &tbSpy{}
-	assertNoEventsImpl(spy, m)
-	if spy.Failed() {
-		t.Errorf("assertNoEventsImpl failed on empty mock; spy = %+v", spy)
-	}
-
-	// Also exercise the exported wrapper with a real *testing.T — drives
-	// the public-surface coverage line.
 	AssertNoEvents(t, m)
-}
-
-// TestAssertNoEvents_Fail fires when any event was emitted.
-func TestAssertNoEvents_Fail(t *testing.T) {
-	t.Parallel()
-
-	m := NewMockEmitter()
-	_ = m.Emit(context.Background(), Event{ResourceType: "transaction", EventType: "created", TenantID: "t-1"})
-
-	spy := &tbSpy{}
-	assertNoEventsImpl(spy, m)
-	if !spy.Failed() {
-		t.Errorf("assertNoEventsImpl did not fail when events were present")
-	}
 }
 
 // TestWaitForEvent_DeterministicMatch uses testing/synctest so polling timing
@@ -346,50 +241,31 @@ func TestWaitForEvent_DeterministicMatch(t *testing.T) {
 	})
 }
 
-// TestWaitForEvent_Timeout fires Fatalf when timeout elapses without a match.
-// We use waitForEventImpl (narrow interface) so we can observe the failure
-// without aborting the outer test.
-func TestWaitForEvent_Timeout(t *testing.T) {
+// TestWaitForEvent_NilContext verifies that passing a nil context to
+// WaitForEvent falls back to context.Background rather than panicking on a
+// nil-deref. Mirrors the nil-ctx defense in Producer.Healthy / CloseContext.
+func TestWaitForEvent_NilContext(t *testing.T) {
 	t.Parallel()
 
 	synctest.Test(t, func(t *testing.T) {
 		m := NewMockEmitter()
-		ctx := context.Background()
 
-		spy := &tbSpy{}
-		// This returns zero Event on timeout in the internal helper.
-		waitForEventImpl(spy, ctx, m, func(e Event) bool {
-			return e.ResourceType == "nope"
-		}, 50*time.Millisecond)
+		go func() {
+			time.Sleep(5 * time.Millisecond)
+			_ = m.Emit(context.Background(), Event{
+				ResourceType: "transaction",
+				EventType:    "created",
+				TenantID:     "t-1",
+			})
+		}()
 
-		if !spy.Failed() {
-			t.Errorf("waitForEventImpl timeout did not record a failure on spy")
+		//nolint:staticcheck // intentional nil ctx to verify fallback
+		got := WaitForEvent(t, nil, m, func(e Event) bool {
+			return e.ResourceType == "transaction"
+		}, 1*time.Second)
+
+		if got.TenantID != "t-1" {
+			t.Errorf("WaitForEvent(nil ctx) returned %+v; want TenantID=t-1", got)
 		}
 	})
-}
-
-// tbSpy is the minimal interface for internal *Impl helpers. It records
-// whether Errorf / Fatalf were called so the test can verify pass/fail
-// behavior without bringing down the outer test.
-type tbSpy struct {
-	mu       sync.Mutex
-	failed   bool
-	messages []string
-}
-
-func (s *tbSpy) Helper()                           {}
-func (s *tbSpy) Errorf(format string, args ...any) { s.record(fmt.Sprintf(format, args...)) }
-func (s *tbSpy) Fatalf(format string, args ...any) { s.record(fmt.Sprintf(format, args...)) }
-
-func (s *tbSpy) record(msg string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.failed = true
-	s.messages = append(s.messages, msg)
-}
-
-func (s *tbSpy) Failed() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.failed
 }

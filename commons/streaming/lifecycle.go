@@ -42,9 +42,17 @@ func (p *Producer) Close() error {
 // unblocks — converging ctx-cancel-driven and Close-driven shutdown on the
 // same exit path. stopOnce protects against a double-close panic when
 // RunContext and an external Close race.
+//
+// Nil-ctx safe: if ctx is nil, falls back to context.Background. Close()
+// already passes context.Background, but a direct external CloseContext(nil)
+// should not panic.
 func (p *Producer) CloseContext(ctx context.Context) error {
 	if p == nil {
 		return nil
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	// CompareAndSwap guarantees exactly-one Flush + Close even under
@@ -111,10 +119,16 @@ func (p *Producer) signalStop() {
 // T2 ships the broker-ping rung only. The Degraded/Down split based on
 // outbox availability arrives with T4 (outbox integration).
 //
-// Nil-receiver safe.
+// Nil-receiver safe. Nil-ctx safe: falls back to context.Background if ctx
+// is nil (RunContext applies the same defense; symmetry across lifecycle
+// entry points).
 func (p *Producer) Healthy(ctx context.Context) error {
 	if p == nil {
 		return NewHealthError(Down, ErrNilProducer)
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	if p.closed.Load() {

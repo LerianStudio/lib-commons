@@ -124,3 +124,27 @@ func TestHealthError_ErrorsAs(t *testing.T) {
 		t.Errorf("extracted state = %q; want %q", target.State(), Degraded)
 	}
 }
+
+// TestHealthError_Unwrap_DirectSentinel pins the Unwrap contract against a
+// known sentinel. Explicitly verifies that errors.Is walks straight to the
+// wrapped ErrNilProducer so callers do not need to reach into HealthError
+// internals. This complements TestHealthError_Unwrap (which uses a generic
+// root error) by exercising the exact shape used by (*Producer).Healthy on
+// a nil receiver.
+func TestHealthError_Unwrap_DirectSentinel(t *testing.T) {
+	t.Parallel()
+
+	he := NewHealthError(Down, ErrNilProducer)
+
+	if !errors.Is(he, ErrNilProducer) {
+		t.Errorf("errors.Is(he, ErrNilProducer) = false; want true")
+	}
+
+	if got := he.Unwrap(); got != ErrNilProducer {
+		t.Errorf("Unwrap() = %v; want ErrNilProducer", got)
+	}
+
+	if he.State() != Down {
+		t.Errorf("State() = %q; want Down", he.State())
+	}
+}

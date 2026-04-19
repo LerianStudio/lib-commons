@@ -144,57 +144,10 @@ func deepCopyEvent(e Event) Event {
 	}
 }
 
-// mockAsserter is the narrow interface the assertEventEmittedImpl,
-// assertEventCountImpl, assertTenantIDImpl, assertNoEventsImpl, and
-// waitForEventImpl functions require. Both *testing.T and a test-local
-// spy satisfy it, so the helpers' failure behavior is directly testable.
-type mockAsserter interface {
-	Helper()
-	Errorf(format string, args ...any)
-	Fatalf(format string, args ...any)
-}
-
 // AssertEventEmitted fails t when no captured event has the given resource
 // and event type pair. Uses testing.TB so helpers work in benchmarks and
 // fuzz tests. Calls t.Helper() for clean stack traces.
 func AssertEventEmitted(t testing.TB, m *MockEmitter, resourceType, eventType string) {
-	t.Helper()
-	assertEventEmittedImpl(t, m, resourceType, eventType)
-}
-
-// AssertEventCount fails t when the count of captured events matching the
-// resource + event type pair does not equal n.
-func AssertEventCount(t testing.TB, m *MockEmitter, resourceType, eventType string, n int) {
-	t.Helper()
-	assertEventCountImpl(t, m, resourceType, eventType, n)
-}
-
-// AssertTenantID fails t when no captured event carries the given tenant ID.
-func AssertTenantID(t testing.TB, m *MockEmitter, tenantID string) {
-	t.Helper()
-	assertTenantIDImpl(t, m, tenantID)
-}
-
-// AssertNoEvents fails t when any event was captured.
-func AssertNoEvents(t testing.TB, m *MockEmitter) {
-	t.Helper()
-	assertNoEventsImpl(t, m)
-}
-
-// WaitForEvent blocks until the matcher returns true on a newly-observed
-// event, or timeout elapses. Calls t.Fatalf on timeout. Returns the matching
-// event on success.
-//
-// Under testing/synctest the polling loop is fully deterministic — time
-// advances only when every goroutine in the bubble is blocked.
-func WaitForEvent(t testing.TB, ctx context.Context, m *MockEmitter, matcher func(Event) bool, timeout time.Duration) Event {
-	t.Helper()
-	return waitForEventImpl(t, ctx, m, matcher, timeout)
-}
-
-// --- Internal implementations on the narrow mockAsserter interface. ---
-
-func assertEventEmittedImpl(t mockAsserter, m *MockEmitter, resourceType, eventType string) {
 	t.Helper()
 
 	for _, e := range m.Events() {
@@ -206,7 +159,9 @@ func assertEventEmittedImpl(t mockAsserter, m *MockEmitter, resourceType, eventT
 	t.Errorf("expected event %s.%s to be emitted; none found in %d captured events", resourceType, eventType, len(m.Events()))
 }
 
-func assertEventCountImpl(t mockAsserter, m *MockEmitter, resourceType, eventType string, n int) {
+// AssertEventCount fails t when the count of captured events matching the
+// resource + event type pair does not equal n.
+func AssertEventCount(t testing.TB, m *MockEmitter, resourceType, eventType string, n int) {
 	t.Helper()
 
 	count := 0
@@ -222,7 +177,8 @@ func assertEventCountImpl(t mockAsserter, m *MockEmitter, resourceType, eventTyp
 	}
 }
 
-func assertTenantIDImpl(t mockAsserter, m *MockEmitter, tenantID string) {
+// AssertTenantID fails t when no captured event carries the given tenant ID.
+func AssertTenantID(t testing.TB, m *MockEmitter, tenantID string) {
 	t.Helper()
 
 	for _, e := range m.Events() {
@@ -234,7 +190,8 @@ func assertTenantIDImpl(t mockAsserter, m *MockEmitter, tenantID string) {
 	t.Errorf("expected at least one event with TenantID=%q; none found in %d captured events", tenantID, len(m.Events()))
 }
 
-func assertNoEventsImpl(t mockAsserter, m *MockEmitter) {
+// AssertNoEvents fails t when any event was captured.
+func AssertNoEvents(t testing.TB, m *MockEmitter) {
 	t.Helper()
 
 	if got := len(m.Events()); got != 0 {
@@ -242,15 +199,20 @@ func assertNoEventsImpl(t mockAsserter, m *MockEmitter) {
 	}
 }
 
-// waitForEventImpl polls m.Events() every pollInterval until the matcher
-// returns true or timeout elapses. On timeout, calls Fatalf and returns
-// a zero Event so the caller's assignment is well-defined.
+// WaitForEvent blocks until the matcher returns true on a newly-observed
+// event, or timeout elapses. Calls t.Fatalf on timeout. Returns the matching
+// event on success.
 //
-// The polling-loop pattern (rather than a channel subscription) keeps the
-// mock's public surface lean; the loop is fully deterministic under
-// testing/synctest because time.Sleep is virtualized inside the bubble.
-func waitForEventImpl(t mockAsserter, ctx context.Context, m *MockEmitter, matcher func(Event) bool, timeout time.Duration) Event {
+// Under testing/synctest the polling loop is fully deterministic — time
+// advances only when every goroutine in the bubble is blocked.
+//
+// Nil-ctx safe: passing a nil ctx falls back to context.Background.
+func WaitForEvent(t testing.TB, ctx context.Context, m *MockEmitter, matcher func(Event) bool, timeout time.Duration) Event {
 	t.Helper()
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	const pollInterval = 1 * time.Millisecond
 
