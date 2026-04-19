@@ -145,3 +145,181 @@ func TestDeleteTenantValue_RejectsGlobalSentinel(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "_global", "error must name the forbidden sentinel")
 }
+
+// TestGetTenantValue_RejectsGlobalSentinel pins M-S3-7: the read path must
+// refuse the '_global' sentinel as a tenant ID. Reading via the
+// tenant-scoped path with the sentinel would silently return the shared
+// global row, defeating the row-separation invariant (TRD §3 / PRD AC13).
+// The Postgres backend has no phase-1/phase-2 gate on Get, so the check
+// runs regardless of TenantSchemaEnabled.
+func TestGetTenantValue_RejectsGlobalSentinel(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
+
+	_, _, err := s.GetTenantValue(context.Background(), store.SentinelGlobal, "global", "fee.rate")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "_global", "error must name the forbidden sentinel")
+}
+
+// TestGetTenantValue_RejectsEmptyTenantID pins the empty-tenant guard on
+// the read path — without it, a caller passing "" would return whichever
+// row happens to have an empty tenant_id (the pre-migration legacy shape).
+func TestGetTenantValue_RejectsEmptyTenantID(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
+
+	_, _, err := s.GetTenantValue(context.Background(), "", "global", "fee.rate")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tenantID must not be empty")
+}
+
+// TestSet_RejectsEmptyNamespace pins the empty-namespace guard on the
+// global Set path. Empty namespaces would collide with the table's
+// DEFAULT handling and could create a row unreachable by namespace-scoped
+// Get. The method short-circuits before any DB access (M-S2-7).
+func TestSet_RejectsEmptyNamespace(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
+
+	err := s.Set(context.Background(), store.Entry{
+		Namespace: "", Key: "fee.rate", Value: []byte(`0.01`),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "namespace must not be empty")
+}
+
+// TestSet_RejectsEmptyKey pins the empty-key guard on the global Set path.
+func TestSet_RejectsEmptyKey(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
+
+	err := s.Set(context.Background(), store.Entry{
+		Namespace: "global", Key: "", Value: []byte(`0.01`),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key must not be empty")
+}
+
+// TestSetTenantValue_RejectsEmptyTenantID pins the empty-tenant guard on
+// the tenant write path.
+func TestSetTenantValue_RejectsEmptyTenantID(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
+
+	err := s.SetTenantValue(context.Background(), "", store.Entry{
+		Namespace: "global", Key: "fee.rate", Value: []byte(`0.01`),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tenantID must not be empty")
+}
+
+// TestSetTenantValue_RejectsEmptyNamespace pins the empty-namespace guard
+// on the tenant write path.
+func TestSetTenantValue_RejectsEmptyNamespace(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
+
+	err := s.SetTenantValue(context.Background(), "tenant-A", store.Entry{
+		Namespace: "", Key: "fee.rate", Value: []byte(`0.01`),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "namespace must not be empty")
+}
+
+// TestSetTenantValue_RejectsEmptyKey pins the empty-key guard on the
+// tenant write path.
+func TestSetTenantValue_RejectsEmptyKey(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
+
+	err := s.SetTenantValue(context.Background(), "tenant-A", store.Entry{
+		Namespace: "global", Key: "", Value: []byte(`0.01`),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key must not be empty")
+}
+
+// TestDeleteTenantValue_RejectsEmptyTenantID pins the empty-tenant guard
+// on the tenant delete path.
+func TestDeleteTenantValue_RejectsEmptyTenantID(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
+
+	err := s.DeleteTenantValue(context.Background(), "", "global", "fee.rate", "admin")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tenantID must not be empty")
+}
+
+// TestDeleteTenantValue_RejectsEmptyNamespace pins the empty-namespace
+// guard on the tenant delete path.
+func TestDeleteTenantValue_RejectsEmptyNamespace(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
+
+	err := s.DeleteTenantValue(context.Background(), "tenant-A", "", "fee.rate", "admin")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "namespace must not be empty")
+}
+
+// TestDeleteTenantValue_RejectsEmptyKey pins the empty-key guard on the
+// tenant delete path.
+func TestDeleteTenantValue_RejectsEmptyKey(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
+
+	err := s.DeleteTenantValue(context.Background(), "tenant-A", "global", "", "admin")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "key must not be empty")
+}
+
+// TestTruncateString pins the helper used to cap untrusted NOTIFY payload
+// lengths before logging. The three cases mirror boundary behavior: below
+// the cap, exactly at the cap, and strictly above.
+func TestTruncateString(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		input  string
+		maxLen int
+		want   string
+	}{
+		{
+			name:   "shorter than max returns input unchanged",
+			input:  "abc",
+			maxLen: 10,
+			want:   "abc",
+		},
+		{
+			name:   "exactly max length returns input unchanged",
+			input:  "abcdefghij",
+			maxLen: 10,
+			want:   "abcdefghij",
+		},
+		{
+			name:   "longer than max truncates and appends ellipsis",
+			input:  "abcdefghijXYZ",
+			maxLen: 10,
+			want:   "abcdefghij...",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := truncateString(tt.input, tt.maxLen)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

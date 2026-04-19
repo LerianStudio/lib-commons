@@ -61,8 +61,16 @@ func (s *Store) Subscribe(ctx context.Context, handler func(store.Event)) error 
 
 	var attempt int
 
+	// onConnected lets listenLoop reset the backoff counter once it has
+	// actually established the LISTEN connection. Without this, a long-lived
+	// connection that dropped after hours would inherit the cumulative
+	// attempt from the initial reconnect storm and pin backoff at the cap
+	// (L-S2-1). Resetting on successful establishment restarts backoff from
+	// the floor on each fresh disconnect.
+	onConnected := func() { attempt = 0 }
+
 	for {
-		err := s.listenLoop(ctx, handler)
+		err := s.listenLoop(ctx, handler, onConnected)
 		if err == nil {
 			return nil
 		}
@@ -72,10 +80,22 @@ func (s *Store) Subscribe(ctx context.Context, handler func(store.Event)) error 
 			return nil
 		}
 
-		s.logWarn(ctx, "LISTEN connection lost, reconnecting",
-			log.Int("attempt", attempt),
-			log.Err(err),
-		)
+		// Reconnect noise suppression: logWarn on the first attempt so
+		// operators see a single high-signal line per incident, then demote
+		// subsequent reconnect chatter to Debug. Prevents log-flooding
+		// during a sustained outage where each 500ms-backoff tick would
+		// otherwise emit a duplicate warn (L-S2-2).
+		if attempt == 0 {
+			s.logWarn(ctx, "LISTEN connection lost, reconnecting",
+				log.Int("attempt", attempt),
+				log.Err(err),
+			)
+		} else {
+			s.logDebug(ctx, "LISTEN reconnect attempt continuing",
+				log.Int("attempt", attempt),
+				log.Err(err),
+			)
+		}
 
 		delay := min(backoff.ExponentialWithJitter(backoffBase, attempt), backoffCap)
 
@@ -89,10 +109,21 @@ func (s *Store) Subscribe(ctx context.Context, handler func(store.Event)) error 
 
 // listenLoop establishes a single pgx connection, issues LISTEN, and processes
 // notifications until the context is cancelled or the connection fails.
-func (s *Store) listenLoop(ctx context.Context, handler func(store.Event)) error {
+//
+// onConnected is invoked once, after LISTEN is successfully installed on the
+// fresh connection. Subscribe uses it to reset the reconnect-backoff counter
+// so a long-lived connection that disconnects after hours restarts backoff
+// from the floor rather than inheriting the prior reconnect storm's cap.
+func (s *Store) listenLoop(ctx context.Context, handler func(store.Event), onConnected func()) error {
 	conn, err := pgx.Connect(ctx, s.cfg.ListenDSN)
 	if err != nil {
-		return fmt.Errorf("connect: %w", err)
+		// L-S2-sec-2: do NOT include s.cfg.ListenDSN in the wrapped error.
+		// pgx.Connect may surface the DSN via its own %w chain (with a
+		// password rendered in plain-text from URL-parsed credentials) but
+		// at minimum the systemplane layer must not re-amplify it. Keep
+		// the error message generic so aggregated logs do not become a
+		// grep target for credential harvesting.
+		return fmt.Errorf("postgres listen connect failed: %w", err)
 	}
 
 	defer func() {
@@ -106,6 +137,10 @@ func (s *Store) listenLoop(ctx context.Context, handler func(store.Event)) error
 
 	if _, err := conn.Exec(ctx, listenStmt); err != nil {
 		return fmt.Errorf("listen: %w", err)
+	}
+
+	if onConnected != nil {
+		onConnected()
 	}
 
 	s.logInfo(ctx, "LISTEN connection established",

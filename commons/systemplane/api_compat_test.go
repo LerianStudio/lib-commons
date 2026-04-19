@@ -76,6 +76,8 @@ var (
 	_ func(namespace string) []systemplane.ListEntry       = (*systemplane.Client)(nil).List
 	_ func(namespace, key string) string                   = (*systemplane.Client)(nil).KeyDescription
 	_ func(namespace, key string) systemplane.RedactPolicy = (*systemplane.Client)(nil).KeyRedaction
+	_ func(namespace, key string) (bool, bool)             = (*systemplane.Client)(nil).KeyStatus
+	_ func() log.Logger                                    = (*systemplane.Client)(nil).Logger
 
 	_ func(ctx context.Context, namespace, key string, value any, actor string) error = (*systemplane.Client)(nil).Set
 

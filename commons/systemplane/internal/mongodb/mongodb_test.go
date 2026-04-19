@@ -376,6 +376,77 @@ func TestDeleteTenantValue_Phase1ReturnsErrTenantSchemaNotEnabled(t *testing.T) 
 		"phase-1 DeleteTenantValue must reject with ErrTenantSchemaNotEnabled")
 }
 
+// TestIsNamespaceNotFoundErr_CommandError pins the canonical detection
+// path: mongo.CommandError with Code == 26 is a NamespaceNotFound. Guards
+// against a driver-version drift that would cause the lenient DropOne path
+// in dropLegacyIndex to reject a fresh (collection-lazy) installation
+// (M-S3-5).
+func TestIsNamespaceNotFoundErr_CommandError(t *testing.T) {
+	t.Parallel()
+
+	cmdErr := mongo.CommandError{
+		Code:    namespaceNotFoundCode,
+		Name:    "NamespaceNotFound",
+		Message: "ns not found",
+	}
+
+	assert.True(t, isNamespaceNotFoundErr(cmdErr))
+}
+
+// TestIsNamespaceNotFoundErr_CommandErrorWrongCode verifies the detector
+// does not swallow unrelated CommandErrors (a duplicate-key error is code
+// 11000, an auth failure is 13, etc.).
+func TestIsNamespaceNotFoundErr_CommandErrorWrongCode(t *testing.T) {
+	t.Parallel()
+
+	cmdErr := mongo.CommandError{
+		Code:    11000,
+		Name:    "DuplicateKey",
+		Message: "E11000 duplicate key error",
+	}
+
+	assert.False(t, isNamespaceNotFoundErr(cmdErr))
+}
+
+// TestIsNamespaceNotFoundErr_MessageFallback covers the defensive string-
+// match path for drivers that wrap the server response without exposing
+// the CommandError. The canonical server reply carries "ns not found".
+func TestIsNamespaceNotFoundErr_MessageFallback(t *testing.T) {
+	t.Parallel()
+
+	err := errors.New("operation failed: ns not found")
+	assert.True(t, isNamespaceNotFoundErr(err))
+}
+
+// TestIsNamespaceNotFoundErr_NilAndUnrelated covers the boundary conditions.
+func TestIsNamespaceNotFoundErr_NilAndUnrelated(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, isNamespaceNotFoundErr(nil))
+	assert.False(t, isNamespaceNotFoundErr(errors.New("connection refused")))
+	assert.False(t, isNamespaceNotFoundErr(errors.New("")))
+}
+
+// TestGetTenantValue_RejectsGlobalSentinel pins M-S3-7: a caller that
+// mistakenly passes the "_global" sentinel to GetTenantValue MUST get
+// ErrInvalidTenantID back, not a silent alias to the global row. The guard
+// runs before findOne so a nil collection would fail later; this test
+// exercises the guard path only.
+func TestGetTenantValue_RejectsGlobalSentinel(t *testing.T) {
+	t.Parallel()
+
+	s := &Store{
+		cfg:    Config{TenantSchemaEnabled: true, Database: "test"},
+		tracer: noop.NewTracerProvider().Tracer(tracerName),
+	}
+
+	_, found, err := s.GetTenantValue(context.Background(), store.SentinelGlobal, "global", "log.level")
+	require.Error(t, err)
+	assert.False(t, found)
+	assert.ErrorIs(t, err, ErrInvalidTenantID,
+		"GetTenantValue must reject the _global sentinel with ErrInvalidTenantID")
+}
+
 // TestChangeEvent_BSONDecodesInsertEventShape simulates the wire shape of
 // an insert change-stream event — includes operationType, documentKey, and
 // fullDocument — and confirms the extractor reads tenant_id from

@@ -12,18 +12,21 @@
 //
 // The default path prefix is "/system".
 //
-// Authorization is deny-all by default on every route. The three legacy
-// global routes use [WithAuthorizer]; the three tenant-scoped routes use
-// [WithTenantAuthorizer]. Tenant routes do NOT fall back to WithAuthorizer
-// when WithTenantAuthorizer is absent — the legacy hook does not know about
-// tenants, so silent reuse would let a service accept tenant writes it was
-// never authorized to handle. See [WithTenantAuthorizer] for the full
+// Authorization is deny-all by default on every route. Legacy routes deny-all
+// when [WithAuthorizer] is absent; tenant routes ALSO deny-all when
+// [WithTenantAuthorizer] is absent — the two authorizers are independent by
+// design (silent privilege-escalation prevention). Configuring only
+// [WithAuthorizer] does NOT implicitly grant access to tenant routes, and
+// configuring only [WithTenantAuthorizer] does NOT implicitly grant access
+// to the legacy global routes. See [WithTenantAuthorizer] for the full
 // rationale.
 package admin
 
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
@@ -32,13 +35,21 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+// Boundary limits for path segments. Enforced at the HTTP edge so malformed
+// inputs never reach the Client layer. The caps are generous relative to any
+// realistic namespace/key but short enough to prevent denial-of-service via
+// pathologically long URLs.
+const (
+	maxNamespaceLen = 256
+	maxKeyLen       = 512
+)
+
 // mountConfig holds options applied by MountOption functions.
 type mountConfig struct {
 	pathPrefix       string
 	authorizer       func(*fiber.Ctx, string) error
 	tenantAuthorizer func(*fiber.Ctx, string, string) error
 	actorExtractor   func(*fiber.Ctx) string
-	logger           log.Logger
 }
 
 // defaultMountConfig returns sensible defaults.
@@ -58,7 +69,6 @@ func defaultMountConfig() mountConfig {
 			return errors.New("admin: WithTenantAuthorizer not configured; tenant routes default to deny-all")
 		},
 		actorExtractor: func(_ *fiber.Ctx) string { return "" },
-		logger:         log.NewNop(),
 	}
 }
 
@@ -138,30 +148,29 @@ func WithActorExtractor(fn func(*fiber.Ctx) string) MountOption {
 	}
 }
 
-// WithLogger attaches a logger used by admin handlers to record non-fatal
-// observations (e.g. a transient GetForTenant miss after a successful
-// SetForTenant in [mounter.handlePutTenant]). Defaults to a nop logger.
-// Useful for operators who want a debug-level trail when tenant PUT
-// responses fall back to echoing the submitted value.
-func WithLogger(l log.Logger) MountOption {
-	return func(cfg *mountConfig) {
-		if l != nil {
-			cfg.logger = l
-		}
-	}
-}
-
 // mounter binds a Client and its config together for handler generation.
 type mounter struct {
 	client *systemplane.Client
 	cfg    mountConfig
+	logger log.Logger // snapshot of client.Logger() at Mount time
 }
 
 // Mount registers the admin HTTP routes on router using the given Client.
-// Nil client causes Mount to be a no-op (does not panic).
+// Nil client causes Mount to be a no-op (does not panic). Nil router causes
+// Mount to be a no-op (does not panic).
+//
+// Mount panics if called with a nil [MountOption] — this is the conventional
+// functional-options fail-fast contract and matches the systemplane Client's
+// own Option handling.
 //
 // By default, all routes are deny-all (every request returns 403 Forbidden).
-// Callers must supply [WithAuthorizer] to enable access.
+// Callers must supply [WithAuthorizer] to enable access to legacy routes and
+// [WithTenantAuthorizer] to enable access to tenant routes (the two are
+// independent; see [WithTenantAuthorizer]).
+//
+// The logger used by admin handlers for non-fatal observations is inherited
+// from the Client (via [systemplane.WithLogger]); there is no separate
+// admin-level logger option.
 func Mount(router fiber.Router, c *systemplane.Client, opts ...MountOption) {
 	if c == nil || router == nil {
 		return
@@ -180,30 +189,38 @@ func Mount(router fiber.Router, c *systemplane.Client, opts ...MountOption) {
 
 	prefix = strings.TrimRight(prefix, "/")
 
-	m := &mounter{client: c, cfg: cfg}
+	m := &mounter{client: c, cfg: cfg, logger: c.Logger()}
 
 	// Legacy global routes — use WithAuthorizer.
-	router.Get(prefix+"/:namespace", m.authorize("read"), m.handleList)
-	router.Get(prefix+"/:namespace/:key", m.authorize("read"), m.handleGetOne)
-	router.Put(prefix+"/:namespace/:key", m.authorize("write"), m.handlePut)
+	router.Get(prefix+"/:namespace", m.validateNamespaceParam, m.authorize("read"), m.handleList)
+	router.Get(prefix+"/:namespace/:key", m.validatePathParams, m.authorize("read"), m.handleGetOne)
+	router.Put(prefix+"/:namespace/:key", m.validatePathParams, m.authorize("write"), m.handlePut)
 
 	// Tenant-scoped routes — use WithTenantAuthorizer (default-deny when absent).
 	// The tenant-list route carries no :tenantID segment; the authorizer
 	// receives "" for the tenantID argument in that case.
-	router.Get(prefix+"/:namespace/:key/tenants", m.authorizeTenant("read"), m.handleListTenants)
-	router.Put(prefix+"/:namespace/:key/tenants/:tenantID", m.authorizeTenant("write"), m.handlePutTenant)
-	router.Delete(prefix+"/:namespace/:key/tenants/:tenantID", m.authorizeTenant("write"), m.handleDeleteTenant)
+	router.Get(prefix+"/:namespace/:key/tenants", m.validatePathParams, m.authorizeTenant("read"), m.handleListTenants)
+	router.Put(prefix+"/:namespace/:key/tenants/:tenantID", m.validatePathParams, m.authorizeTenant("write"), m.handlePutTenant)
+	router.Delete(prefix+"/:namespace/:key/tenants/:tenantID", m.validatePathParams, m.authorizeTenant("write"), m.handleDeleteTenant)
 }
 
 // authorize returns a per-route middleware that checks the configured authorizer.
+//
+// On rejection the response body carries a fixed "forbidden" message. The
+// authorizer's own error string is NOT echoed on the wire — it can leak
+// library-internal details (version fingerprints, policy IDs) that
+// unauthorized callers should not see. The original error is logged at
+// Debug level so operators can diagnose policy rejections without the
+// leak.
 func (m *mounter) authorize(action string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if err := m.cfg.authorizer(c, action); err != nil {
-			return c.Status(fiber.StatusForbidden).JSON(commonshttp.ErrorResponse{
-				Code:    fiber.StatusForbidden,
-				Title:   "forbidden",
-				Message: err.Error(),
-			})
+			m.logger.Log(c.UserContext(), log.LevelDebug, "admin: authorizer denied",
+				log.String("action", action),
+				log.Err(err),
+			)
+
+			return commonshttp.RespondError(c, http.StatusForbidden, "forbidden", "forbidden")
 		}
 
 		return c.Next()
@@ -215,45 +232,53 @@ func (m *mounter) authorize(action string) fiber.Handler {
 // through to the hook; for the tenant-list route it is empty. When
 // [WithTenantAuthorizer] has not been configured, the default deny-all
 // hook rejects every request with 403.
+//
+// As with [authorize], the authorizer's error string is redacted on the
+// wire: the response body carries a fixed "forbidden" message and the
+// original error is logged at Debug level.
 func (m *mounter) authorizeTenant(action string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		tenantID := c.Params("tenantID")
 		if err := m.cfg.tenantAuthorizer(c, action, tenantID); err != nil {
-			return c.Status(fiber.StatusForbidden).JSON(commonshttp.ErrorResponse{
-				Code:    fiber.StatusForbidden,
-				Title:   "forbidden",
-				Message: err.Error(),
-			})
+			m.logger.Log(c.UserContext(), log.LevelDebug, "admin: tenant authorizer denied",
+				log.String("action", action),
+				log.String("tenant_id", tenantID),
+				log.Err(err),
+			)
+
+			return commonshttp.RespondError(c, http.StatusForbidden, "forbidden", "forbidden")
 		}
 
 		return c.Next()
 	}
 }
 
-// ---------------------------------------------------------------------------
-// DTOs
-// ---------------------------------------------------------------------------
+// validateNamespaceParam rejects namespaces longer than [maxNamespaceLen].
+// Applied as middleware on routes that carry :namespace but no :key.
+func (m *mounter) validateNamespaceParam(c *fiber.Ctx) error {
+	if ns := c.Params("namespace"); len(ns) > maxNamespaceLen {
+		return commonshttp.RespondError(c, http.StatusBadRequest, "validation_error",
+			fmt.Sprintf("namespace exceeds maximum length of %d", maxNamespaceLen))
+	}
 
-type listResponse struct {
-	Namespace string          `json:"namespace"`
-	Entries   []entryResponse `json:"entries"`
+	return c.Next()
 }
 
-type entryResponse struct {
-	Key         string `json:"key"`
-	Value       any    `json:"value"`
-	Description string `json:"description,omitempty"`
-}
+// validatePathParams rejects namespaces longer than [maxNamespaceLen] and
+// keys longer than [maxKeyLen]. Applied as middleware on routes that carry
+// both :namespace and :key.
+func (m *mounter) validatePathParams(c *fiber.Ctx) error {
+	if ns := c.Params("namespace"); len(ns) > maxNamespaceLen {
+		return commonshttp.RespondError(c, http.StatusBadRequest, "validation_error",
+			fmt.Sprintf("namespace exceeds maximum length of %d", maxNamespaceLen))
+	}
 
-type getResponse struct {
-	Namespace   string `json:"namespace"`
-	Key         string `json:"key"`
-	Value       any    `json:"value"`
-	Description string `json:"description,omitempty"`
-}
+	if k := c.Params("key"); len(k) > maxKeyLen {
+		return commonshttp.RespondError(c, http.StatusBadRequest, "validation_error",
+			fmt.Sprintf("key exceeds maximum length of %d", maxKeyLen))
+	}
 
-type putRequest struct {
-	Value json.RawMessage `json:"value"`
+	return c.Next()
 }
 
 // ---------------------------------------------------------------------------
@@ -292,11 +317,7 @@ func (m *mounter) handleGetOne(c *fiber.Ctx) error {
 
 	value, ok := m.client.Get(namespace, key)
 	if !ok {
-		return c.Status(fiber.StatusNotFound).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusNotFound,
-			Title:   "not_found",
-			Message: "key not found",
-		})
+		return commonshttp.RespondError(c, http.StatusNotFound, "not_found", "key not found")
 	}
 
 	policy := m.client.KeyRedaction(namespace, key)
@@ -317,28 +338,16 @@ func (m *mounter) handlePut(c *fiber.Ctx) error {
 
 	var body putRequest
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusBadRequest,
-			Title:   "bad_request",
-			Message: "invalid request body",
-		})
+		return commonshttp.RespondError(c, http.StatusBadRequest, "bad_request", "invalid request body")
 	}
 
 	if body.Value == nil {
-		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusBadRequest,
-			Title:   "bad_request",
-			Message: "missing value field",
-		})
+		return commonshttp.RespondError(c, http.StatusBadRequest, "bad_request", "missing value field")
 	}
 
 	var value any
 	if err := json.Unmarshal(body.Value, &value); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusBadRequest,
-			Title:   "bad_request",
-			Message: "invalid value",
-		})
+		return commonshttp.RespondError(c, http.StatusBadRequest, "bad_request", "invalid value")
 	}
 
 	actor := m.cfg.actorExtractor(c)
@@ -349,73 +358,4 @@ func (m *mounter) handlePut(c *fiber.Ctx) error {
 	}
 
 	return mapSentinelErr(c, err)
-}
-
-// mapSentinelErr translates a Client error into a JSON error response with
-// an appropriate HTTP status code. It handles both the legacy global-route
-// sentinels (ErrUnknownKey, ErrValidation, ErrClosed, ErrNotStarted) and the
-// tenant-scoped additions (ErrMissingTenantContext, ErrInvalidTenantID,
-// ErrTenantScopeNotRegistered).
-//
-// The default branch returns 500 with a generic "internal_error" message to
-// avoid leaking backend details through the wire response. Detailed error
-// information stays in server-side logs (the Client's own telemetry path
-// carries it; this helper deliberately does not log, to keep the admin
-// package a thin HTTP adapter).
-//
-// Used by [mounter.handlePut], [mounter.handlePutTenant], and
-// [mounter.handleDeleteTenant].
-func mapSentinelErr(c *fiber.Ctx, err error) error {
-	switch {
-	case errors.Is(err, systemplane.ErrUnknownKey):
-		// Preserved from the legacy handlePut behavior: 400 Bad Request.
-		// Callers wishing to distinguish "not registered" from "malformed
-		// body" use the "unknown_key" title string.
-		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusBadRequest,
-			Title:   "unknown_key",
-			Message: "key is not registered",
-		})
-	case errors.Is(err, systemplane.ErrValidation):
-		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusBadRequest,
-			Title:   "validation_error",
-			Message: "value rejected by validator",
-		})
-	case errors.Is(err, systemplane.ErrMissingTenantContext):
-		// Defensive: handlers inject the tenant ID from :tenantID into ctx,
-		// so this branch should never fire for tenant routes. A non-zero
-		// rate would indicate a regression.
-		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusBadRequest,
-			Title:   "missing_tenant_context",
-			Message: "tenant ID is required",
-		})
-	case errors.Is(err, systemplane.ErrInvalidTenantID):
-		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusBadRequest,
-			Title:   "invalid_tenant_id",
-			Message: "tenant ID is invalid",
-		})
-	case errors.Is(err, systemplane.ErrTenantScopeNotRegistered):
-		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusBadRequest,
-			Title:   "tenant_scope_not_registered",
-			Message: "key was not registered with RegisterTenantScoped; tenant overrides are not permitted",
-		})
-	case errors.Is(err, systemplane.ErrNotStarted),
-		errors.Is(err, systemplane.ErrClosed):
-		return c.Status(fiber.StatusServiceUnavailable).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusServiceUnavailable,
-			Title:   "service_unavailable",
-			Message: "configuration service is not available",
-		})
-	default:
-		// Do not leak internal error details on the wire.
-		return c.Status(fiber.StatusInternalServerError).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusInternalServerError,
-			Title:   "internal_error",
-			Message: "write failed",
-		})
-	}
 }

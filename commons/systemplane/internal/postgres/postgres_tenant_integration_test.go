@@ -40,7 +40,7 @@ func TestIntegration_PostgresTenantContracts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	dsn := startPostgresContainer(t, ctx)
+	dsn := startPostgresContainer(ctx, t)
 
 	systemplanetest.Run(t, func(t *testing.T) store.Store {
 		return newTestStore(t, dsn)

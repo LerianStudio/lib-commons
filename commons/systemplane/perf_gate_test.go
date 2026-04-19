@@ -83,6 +83,9 @@ func TestPerf_GetForTenant_HitPathUnderThreshold(t *testing.T) {
 
 		b.ReportAllocs()
 
+		// b.Loop() requires Go 1.24+ (inside testing.Benchmark). The repo is
+		// pinned to Go 1.25+ in go.mod, so this is safe — but the loop form
+		// is new enough to be worth flagging.
 		for b.Loop() {
 			_, _, _ = c.GetForTenant(ctx, "global", "fee.rate")
 		}

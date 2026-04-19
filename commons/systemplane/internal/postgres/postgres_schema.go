@@ -59,6 +59,17 @@ func (s *Store) ensureSchema(ctx context.Context) error {
 	// Phase 2 pre-flight runs OUTSIDE the main DDL transaction so the
 	// detection query reads committed rows and so a validation failure
 	// exits with a clean error rather than an aborted transaction message.
+	//
+	// TOCTOU note (L-S2-3 / L-S2-BL-2 dup): the check-then-act gap between
+	// verifyNoAmbiguousTenantRows and the subsequent composite unique index
+	// create is intentional and best-effort. A concurrent writer could in
+	// principle insert an ambiguous row after the verify returns but before
+	// the index exists. That race is backstopped by the composite unique
+	// index inside the DDL transaction below: if a conflicting pair exists
+	// at index-build time, CREATE UNIQUE INDEX aborts with a duplicate-key
+	// error and the whole ensureSchema rolls back. The pre-flight exists to
+	// produce a clean, operator-readable error message in the common case;
+	// the index itself is the ultimate guarantee.
 	if s.cfg.TenantSchemaEnabled {
 		if err := s.verifyNoAmbiguousTenantRows(ctx); err != nil {
 			return err
@@ -102,36 +113,30 @@ func (s *Store) ensureSchema(ctx context.Context) error {
 	// Idempotent backfill. A prior installation that added the column
 	// without a default may have rows with NULL; enforce the sentinel.
 	// Runs in both phases for the same reason the column add does.
+	//
+	// The UPDATE is wrapped in a DO block that first EXISTS-checks for any
+	// row needing backfill. On a fresh or already-backfilled table this
+	// short-circuits the UPDATE entirely — zero rows scanned, zero WAL
+	// written, zero row-level locks acquired. The win shows up most in
+	// repeated boot cycles against a large populated table where the
+	// unconditional UPDATE would otherwise acquire a brief SHARE lock over
+	// every row just to prove none match (L-S2-BL-1 / cons-2).
 	backfillTenant := fmt.Sprintf(
-		`UPDATE %s SET tenant_id = '%s' WHERE tenant_id IS NULL OR tenant_id = ''`,
-		s.cfg.Table, store.SentinelGlobal, // #nosec G201 -- table name validated; store.SentinelGlobal is a package constant
+		`DO $$
+BEGIN
+	IF EXISTS (SELECT 1 FROM %s WHERE tenant_id IS NULL OR tenant_id = '') THEN
+		UPDATE %s SET tenant_id = '%s' WHERE tenant_id IS NULL OR tenant_id = '';
+	END IF;
+END $$`,
+		s.cfg.Table, s.cfg.Table, store.SentinelGlobal, // #nosec G201 -- table name validated; store.SentinelGlobal is a package constant
 	)
 	if _, err := tx.ExecContext(ctx, backfillTenant); err != nil {
 		return fmt.Errorf("backfill tenant_id: %w", err)
 	}
 
 	if s.cfg.TenantSchemaEnabled {
-		// Drop the old (namespace, key) primary key. Postgres names the
-		// constraint "<table>_pkey" by default when the table was created
-		// with PRIMARY KEY (...). DROP CONSTRAINT IF EXISTS keeps this
-		// idempotent for fresh DBs where the constraint may have been
-		// renamed, dropped, or already migrated to the v2 index.
-		dropOldPK := fmt.Sprintf(
-			`ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s_pkey`,
-			s.cfg.Table, s.cfg.Table, // #nosec G201 -- table name validated as Postgres identifier in New()
-		)
-		if _, err := tx.ExecContext(ctx, dropOldPK); err != nil {
-			return fmt.Errorf("drop old primary key: %w", err)
-		}
-
-		// Composite unique index that replaces the old PK. This is what
-		// subsequent ON CONFLICT clauses target in phase 2.
-		createNewUnique := fmt.Sprintf(
-			`CREATE UNIQUE INDEX IF NOT EXISTS %s_pkey_v2 ON %s (namespace, key, tenant_id)`,
-			s.cfg.Table, s.cfg.Table, // #nosec G201 -- table name validated as Postgres identifier in New()
-		)
-		if _, err := tx.ExecContext(ctx, createNewUnique); err != nil {
-			return fmt.Errorf("create composite unique index: %w", err)
+		if err := s.migrateToPhase2(ctx, tx); err != nil {
+			return err
 		}
 	}
 
@@ -170,12 +175,37 @@ $$ LANGUAGE plpgsql`, s.cfg.Channel)
 		return fmt.Errorf("drop trigger: %w", err)
 	}
 
-	createTrigger := fmt.Sprintf(`CREATE TRIGGER systemplane_notify_trigger
-AFTER INSERT OR UPDATE OR DELETE ON %s
+	// Drop the companion UPDATE-only trigger defensively in case a prior
+	// binary left one behind. IF EXISTS keeps this no-op on fresh schemas.
+	dropUpdateTrigger := "DROP TRIGGER IF EXISTS systemplane_notify_update_trigger ON " + s.cfg.Table // #nosec G202 -- table name validated as Postgres identifier in New()
+	if _, err := tx.ExecContext(ctx, dropUpdateTrigger); err != nil {
+		return fmt.Errorf("drop update trigger: %w", err)
+	}
+
+	// Two triggers instead of one: INSERT/DELETE fire unconditionally (every
+	// row that survives constraints is a genuine change), but UPDATE is
+	// guarded by `WHEN (OLD IS DISTINCT FROM NEW)` so a re-upsert with the
+	// same value does not emit a spurious NOTIFY (M-S2-2 defense-in-depth).
+	// Postgres rejects the WHEN clause on INSERT because OLD is not bound at
+	// insert time, which is why the events are split. Both triggers share
+	// the same function; TG_OP inside the function still distinguishes the
+	// DELETE vs INSERT/UPDATE branches for payload construction.
+	createInsertDeleteTrigger := fmt.Sprintf(`CREATE TRIGGER systemplane_notify_trigger
+AFTER INSERT OR DELETE ON %s
 FOR EACH ROW EXECUTE FUNCTION systemplane_notify()`, s.cfg.Table) // #nosec G201 -- table name validated as Postgres identifier in New()
 
-	if _, err := tx.ExecContext(ctx, createTrigger); err != nil {
+	if _, err := tx.ExecContext(ctx, createInsertDeleteTrigger); err != nil {
 		return fmt.Errorf("create trigger: %w", err)
+	}
+
+	createUpdateTrigger := fmt.Sprintf(`CREATE TRIGGER systemplane_notify_update_trigger
+AFTER UPDATE ON %s
+FOR EACH ROW
+WHEN (OLD IS DISTINCT FROM NEW)
+EXECUTE FUNCTION systemplane_notify()`, s.cfg.Table) // #nosec G201 -- table name validated as Postgres identifier in New()
+
+	if _, err := tx.ExecContext(ctx, createUpdateTrigger); err != nil {
+		return fmt.Errorf("create update trigger: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -277,4 +307,92 @@ func (s *Store) tenantColumnExists(ctx context.Context) (bool, error) {
 	}
 
 	return exists, nil
+}
+
+// lookupPrimaryKeyName resolves the name of the PRIMARY KEY constraint on
+// s.cfg.Table via information_schema, returning "" when the table has no
+// primary key (the expected case after phase-2 migration has completed).
+//
+// Postgres defaults to "<table>_pkey" when a PRIMARY KEY is declared
+// inline, but a table imported via pg_dump, restored from a backup, or
+// created with an explicit CONSTRAINT <name> PRIMARY KEY clause can carry
+// a different name. Querying information_schema instead of hardcoding the
+// default keeps the phase-2 drop step correct in those environments
+// (L-S2-cons-1).
+func (s *Store) lookupPrimaryKeyName(ctx context.Context, tx *sql.Tx) (string, error) {
+	const query = `SELECT constraint_name
+		FROM information_schema.table_constraints
+		WHERE table_name = $1
+		  AND constraint_type = 'PRIMARY KEY'
+		LIMIT 1`
+
+	var name string
+
+	err := tx.QueryRowContext(ctx, query, s.cfg.Table).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("information_schema.table_constraints: %w", err)
+	}
+
+	return name, nil
+}
+
+// migrateToPhase2 runs the DDL that transitions a phase-1 schema into the
+// tenant-scoped phase-2 shape: drop the legacy (namespace, key) primary key
+// by its resolved constraint name and install the composite unique index on
+// (namespace, key, tenant_id). Called from ensureSchema only when
+// TenantSchemaEnabled is true. Extracted from ensureSchema to keep its
+// cyclomatic complexity below the project's gocyclo budget.
+//
+// Maintenance-window note: CREATE UNIQUE INDEX runs inside the caller's DDL
+// transaction and therefore CANNOT use CONCURRENTLY (Postgres forbids
+// CREATE INDEX CONCURRENTLY inside a tx block). The index build holds a
+// brief SHARE lock on the table; writes block for the build's duration.
+// For small systemplane tables (< 10k rows is the design target) this is
+// milliseconds. Large deployments should run ensureSchema during a
+// maintenance window (M-S2-4).
+func (s *Store) migrateToPhase2(ctx context.Context, tx *sql.Tx) error {
+	// Drop the old primary key by resolved name. Postgres defaults to
+	// "<table>_pkey" when the table was created with PRIMARY KEY (...),
+	// but a table imported from pg_dump, restored from a backup, or
+	// created with an explicit CONSTRAINT <name> PRIMARY KEY clause can
+	// carry a different name. We query information_schema for the
+	// constraint name and DROP by that resolved name (L-S2-cons-1).
+	pkName, err := s.lookupPrimaryKeyName(ctx, tx)
+	if err != nil {
+		return fmt.Errorf("lookup primary key name: %w", err)
+	}
+
+	if pkName != "" {
+		// safeIdentifierRe gates cfg.Table at New(); the resolved pk name
+		// came from a parameterized information_schema query, so it cannot
+		// carry SQL metacharacters — but we still validate defensively
+		// before interpolation.
+		if !safeIdentifierRe.MatchString(pkName) {
+			return fmt.Errorf("unsafe primary key constraint name %q", pkName)
+		}
+
+		dropOldPK := fmt.Sprintf(
+			`ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s`,
+			s.cfg.Table, pkName, // #nosec G201 -- table name validated in New(); pkName re-validated above
+		)
+		if _, err := tx.ExecContext(ctx, dropOldPK); err != nil {
+			return fmt.Errorf("drop old primary key: %w", err)
+		}
+	}
+
+	// Composite unique index that replaces the old PK. This is what
+	// subsequent ON CONFLICT clauses target in phase 2.
+	createNewUnique := fmt.Sprintf(
+		`CREATE UNIQUE INDEX IF NOT EXISTS %s_pkey_v2 ON %s (namespace, key, tenant_id)`,
+		s.cfg.Table, s.cfg.Table, // #nosec G201 -- table name validated as Postgres identifier in New()
+	)
+	if _, err := tx.ExecContext(ctx, createNewUnique); err != nil {
+		return fmt.Errorf("create composite unique index: %w", err)
+	}
+
+	return nil
 }

@@ -1,3 +1,5 @@
+//go:build unit
+
 package systemplane
 
 import (
@@ -144,7 +146,7 @@ func (f *fakeStore) ListTenantValues(_ context.Context) ([]store.Entry, error) {
 	return nil, nil
 }
 
-func (f *fakeStore) ListTenantOverrides(_ context.Context) ([]store.Entry, error) {
+func (f *fakeStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]store.Entry, error) {
 	return nil, nil
 }
 

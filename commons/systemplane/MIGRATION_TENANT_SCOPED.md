@@ -81,6 +81,30 @@ accessor mirrors) reject globals-only keys with
 `ErrTenantScopeNotRegistered`. If you call `SetForTenant` against a key
 declared by `Register`, the write is rejected without touching the store.
 
+### Registration breaking changes
+
+v5.1 tightens registration-time input validation. Keys registered via
+`Register` or `RegisterTenantScoped` are rejected at call time (before
+`Start`) when they fail any of:
+
+- **Reserved key name `"tenants"`** — this literal is reserved because the
+  admin HTTP surface mounts `/:namespace/:key/tenants` as the tenant-list
+  route, and keys literally named `"tenants"` would create a naming
+  footgun (the path `GET /system/foo/tenants/tenants` would list
+  overrides on the key `"tenants"` while `GET /system/foo/tenants`
+  reads legacy global `tenants` — Fiber disambiguates by segment
+  count, but the adjacency is confusing). Any v5.0.x consumer that
+  registered a key literally named `"tenants"` must rename it before
+  upgrading. `ErrValidation` is returned at `Register` time.
+- **U+001F (unit separator) in namespace, key, or tenant ID** — rejected
+  because the internal single-flight cache key uses U+001F as a
+  field delimiter and a literal in user input would collide with legitimate
+  compound keys. Callers that store `"\x1f"` in namespaces, keys, or tenant
+  IDs must sanitize their inputs before registration.
+
+Both checks are fail-fast at registration; a mis-registered key never
+reaches the store.
+
 ---
 
 ## 2. Context setup
@@ -194,8 +218,7 @@ passed. This is a deliberate conservative choice:
    upgrade conscious and auditable.
 
 See the `WithTenantAuthorizer` docblock in
-`commons/systemplane/admin/admin.go:94-125` for the authoritative
-rationale.
+`commons/systemplane/admin/admin.go` for the authoritative rationale.
 
 ### Wiring `WithTenantAuthorizer`
 
@@ -232,9 +255,14 @@ admin.Mount(app, systemplaneClient,
 )
 ```
 
-The admin layer validates `:tenantID` (via `core.IsValidTenantID` and
-the `_global` sentinel check) **before** calling your authorizer, so
-your hook is guaranteed to receive a well-formed tenant ID or `""`.
+The admin layer's `:tenantID` validation (via `core.IsValidTenantID`
+and the `_global` sentinel check) runs **after** your authorizer, so
+the hook receives the raw URL path segment. A denied authorizer on a
+malformed `:tenantID` surfaces as 403, not 400 — this is deliberate:
+never let unauthorized callers probe the syntactic validity of tenant
+IDs (which would leak a content oracle). Your authorizer must treat
+`tenantID` as untrusted input; use `core.IsValidTenantID` before
+consulting it against any policy store.
 
 ---
 
@@ -306,6 +334,29 @@ On the next `Start()` call the backend runs the schema evolution:
 Both the Postgres and MongoDB migrations are **idempotent**. Crashes
 mid-migration are recoverable: restart the Client and the remaining
 steps run to completion.
+
+### Phase-2 maintenance window considerations
+
+Two operational points to plan for:
+
+- **Postgres unique-index build.** The phase-2 DDL runs inside a single
+  transaction to keep the drop-then-create atomic. This means the
+  `CREATE UNIQUE INDEX` on `(namespace, key, tenant_id)` cannot use
+  `CONCURRENTLY` (Postgres rejects `CONCURRENTLY` inside a transaction).
+  During the build, Postgres holds a `SHARE` lock on the table,
+  blocking concurrent writes for the duration. For the expected
+  `systemplane_entries` size (hundreds to low thousands of rows),
+  this is measured in milliseconds and safe to run online. Plan a
+  short write-freeze anyway if your table has grown outside those
+  bounds.
+- **DELETE notification behavior change.** v5.1 widens the NOTIFY
+  trigger to fire on `DELETE` in addition to `INSERT`/`UPDATE`. A
+  v5.0.x binary running against a phase-1-migrated database receives
+  DELETE notifications it never received before. The payload still
+  parses and the subscriber resets to the registered default — effect
+  is benign — but the change is observable for anyone watching
+  NOTIFY traffic directly (e.g., `LISTEN systemplane_changes` from a
+  non-lib-commons client).
 
 ### Duplicate-detection errors (H6/H8)
 

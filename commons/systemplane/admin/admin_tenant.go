@@ -10,7 +10,7 @@
 // and the three legacy global-route handlers. These two files share:
 //
 //   - mounter (receiver) — defined in admin.go
-//   - mapSentinelErr (error-to-HTTP translation) — defined in admin.go
+//   - mapSentinelErr (error-to-HTTP translation) — defined in admin_responses.go
 //   - authorizeTenant (middleware) — defined in admin.go
 //
 // See admin.go's package doc and [WithTenantAuthorizer] for the default-deny
@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	commonshttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
@@ -56,9 +57,22 @@ type tenantValueResponse struct {
 // ---------------------------------------------------------------------------
 
 // handleListTenants returns a sorted list of tenant IDs with an override for
-// (namespace, key). The underlying Client.ListTenantsForKey swallows backend
-// errors and returns an empty slice; the admin surface mirrors that
-// contract — a degraded backend produces an empty list rather than a 5xx.
+// (namespace, key).
+//
+// The handler distinguishes the following cases via [systemplane.Client.KeyStatus]:
+//
+//   - Unregistered key                        → 404 not_found
+//   - Registered but not tenant-scoped        → 400 validation_error
+//   - Tenant-scoped, no overrides configured  → 200 {"tenants":[]}
+//   - Tenant-scoped, with overrides           → 200 {"tenants":[...]}
+//
+// The tenant-scoped empty-list case returns 200 with a DEBUG-level log line
+// so operators can distinguish "legitimately empty" from the error paths
+// above without relying on wire-level status codes alone.
+//
+// Backend errors from ListTenantsForKey (which swallows them and returns an
+// empty slice) do NOT surface as 5xx here; the Client is the authoritative
+// error boundary and we preserve its fail-soft contract.
 //
 // The route does not require a :tenantID path segment; the authorizer is
 // invoked with tenantID="" so policies can distinguish the reflection-style
@@ -67,12 +81,34 @@ func (m *mounter) handleListTenants(c *fiber.Ctx) error {
 	namespace := c.Params("namespace")
 	key := c.Params("key")
 
+	registered, tenantScoped := m.client.KeyStatus(namespace, key)
+
+	switch {
+	case !registered:
+		return commonshttp.RespondError(c, http.StatusNotFound, "not_found", "key not found")
+	case !tenantScoped:
+		return commonshttp.RespondError(c, http.StatusBadRequest, "validation_error", "key is not tenant-scoped")
+	}
+
 	tenants := m.client.ListTenantsForKey(namespace, key)
 
 	// Client returns sorted, deduplicated results; the response mirrors that.
 	// Coalesce a nil return to an empty slice so JSON encodes `[]` not `null`.
 	if tenants == nil {
 		tenants = []string{}
+	}
+
+	if len(tenants) == 0 {
+		// Operator observability for the 200-[] case. The empty response
+		// is the correct security posture (no side-channel leakage) but
+		// operators debugging "why does my tenant not appear" benefit
+		// from a trail showing the handler served the request
+		// successfully with zero overrides.
+		m.logger.Log(c.UserContext(), log.LevelDebug, "admin: handleListTenants returned empty overrides",
+			log.String("namespace", namespace),
+			log.String("key", key),
+			log.String("reason", "no_overrides"),
+		)
 	}
 
 	return c.Status(fiber.StatusOK).JSON(listTenantsResponse{
@@ -109,11 +145,7 @@ func (m *mounter) handlePutTenant(c *fiber.Ctx) error {
 	// "_global" — with a uniform 400 error that does not leak the sentinel
 	// name.
 	if err := validateTenantIDParam(tenantID); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusBadRequest,
-			Title:   "invalid_tenant_id",
-			Message: err.Error(),
-		})
+		return commonshttp.RespondError(c, http.StatusBadRequest, "invalid_tenant_id", err.Error())
 	}
 
 	namespace := c.Params("namespace")
@@ -121,28 +153,16 @@ func (m *mounter) handlePutTenant(c *fiber.Ctx) error {
 
 	var body putRequest
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusBadRequest,
-			Title:   "bad_request",
-			Message: "invalid request body",
-		})
+		return commonshttp.RespondError(c, http.StatusBadRequest, "bad_request", "invalid request body")
 	}
 
 	if body.Value == nil {
-		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusBadRequest,
-			Title:   "bad_request",
-			Message: "missing value field",
-		})
+		return commonshttp.RespondError(c, http.StatusBadRequest, "bad_request", "missing value field")
 	}
 
 	var value any
 	if err := json.Unmarshal(body.Value, &value); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusBadRequest,
-			Title:   "bad_request",
-			Message: "invalid value",
-		})
+		return commonshttp.RespondError(c, http.StatusBadRequest, "bad_request", "invalid value")
 	}
 
 	// Inject the tenant ID into the downstream context so Client.SetForTenant
@@ -179,12 +199,28 @@ func (m *mounter) handlePutTenant(c *fiber.Ctx) error {
 	v, found, getErr := m.client.GetForTenant(ctx, namespace, key)
 	switch {
 	case getErr != nil:
-		m.cfg.logger.Log(ctx, log.LevelDebug, "handlePutTenant: GetForTenant failed after successful write, echoing submitted value",
+		m.logger.Log(ctx, log.LevelDebug, "handlePutTenant: GetForTenant failed after successful write, echoing submitted value",
 			log.String("namespace", namespace),
 			log.String("key", key),
 			log.String("tenant_id", tenantID),
 			log.Err(getErr),
 		)
+	case !found:
+		// Defense in depth: GetForTenant returned no error but reported the
+		// row as absent immediately after a successful SetForTenant. This
+		// is unreachable under the Client's current contract (write-through
+		// cache makes the row visible synchronously), but if a future
+		// backend refactor changes that invariant we want a loud signal
+		// rather than silently echoing stale state. The write is already
+		// durable, so we return a 500 with a generic message.
+		m.logger.Log(ctx, log.LevelWarn,
+			"handlePutTenant: GetForTenant returned nil error but not found — unexpected post-write state",
+			log.String("namespace", namespace),
+			log.String("key", key),
+			log.String("tenant_id", tenantID),
+		)
+
+		return commonshttp.RespondError(c, fiber.StatusInternalServerError, "internal_error", "write succeeded but post-write read failed")
 	case found:
 		displayValue = v
 	}
@@ -208,11 +244,7 @@ func (m *mounter) handleDeleteTenant(c *fiber.Ctx) error {
 	tenantID := c.Params("tenantID")
 
 	if err := validateTenantIDParam(tenantID); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
-			Code:    fiber.StatusBadRequest,
-			Title:   "invalid_tenant_id",
-			Message: err.Error(),
-		})
+		return commonshttp.RespondError(c, http.StatusBadRequest, "invalid_tenant_id", err.Error())
 	}
 
 	namespace := c.Params("namespace")

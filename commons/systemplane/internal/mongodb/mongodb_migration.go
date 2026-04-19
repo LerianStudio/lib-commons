@@ -1,23 +1,30 @@
 // Idempotent schema evolution for the MongoDB backend.
 //
-// ensureSchema is called once per Store construction (New) and performs four
-// distinct migrations in order:
+// ensureSchema is called once per Store construction (New) when phase-2 is
+// enabled and performs the following migrations in order:
 //
-//  1. Backfill: documents missing the tenant_id field gain tenant_id = "_global".
-//  2. _id rewrite: documents whose _id is still an ObjectId (created by the
+//  1. Lease acquisition: a sentinel document coordinates exclusion between
+//     concurrent New() calls from different processes. Without it, two nodes
+//     racing through rewriteObjectIDDocuments could each insert a migrated
+//     copy and then each delete the legacy row — either is harmless on its
+//     own, but the duplicate-insert path can trip E11000 on the compound
+//     unique index created in step 5 (H3).
+//  2. Pre-flight ambiguity check: documents where (namespace, key) already
+//     has BOTH a tenant_id=missing and a tenant_id="_global" row would
+//     collapse into a duplicate after backfill; abort loudly instead.
+//  3. Backfill: documents missing the tenant_id field gain tenant_id="_global".
+//  4. _id rewrite: documents whose _id is still an ObjectId (created by the
 //     pre-tenant-scoping schema) are re-inserted with a compound _id
-//     {namespace, key, tenant_id} and the original row is deleted. This is
-//     what makes change-stream DELETE events self-describing — see TRD §3.2.
-//  3. Old index drop: the legacy "namespace_1_key_1" unique index is
-//     dropped. Index 27 (IndexNotFound) is treated as a no-op so fresh
-//     installations succeed.
-//  4. New index create: a compound unique index on (namespace, key, tenant_id)
-//     is created. Duplicate index creation is idempotent under the same key
-//     signature.
+//     {namespace, key, tenant_id} and the original row is deleted. Uses
+//     batched InsertMany / DeleteMany in chunks to keep the operation
+//     bounded when the pre-migration row count is large (H4). The rewrite
+//     lives in mongodb_migration_legacy.go.
+//  5. Old index drop: the legacy "namespace_1_key_1" unique index is dropped.
+//  6. New index create: a compound unique index on (namespace, key, tenant_id).
 //
-// Every step is crash-safe: on re-run of a half-applied migration, steps 1, 3,
-// and 4 are naturally idempotent, and step 2 becomes a no-op once no
-// ObjectId _id documents remain.
+// Every step is crash-safe: on re-run of a half-applied migration, steps 2,
+// 3, 5, and 6 are naturally idempotent, step 1 re-acquires a fresh lease,
+// and step 4 becomes a no-op once no ObjectId _id documents remain.
 
 package mongodb
 
@@ -26,8 +33,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -62,24 +69,50 @@ const legacyNamespaceKeyIndex = "namespace_1_key_1"
 //
 // Callers MUST only invoke this when Config.TenantSchemaEnabled is true;
 // New() routes to ensureLegacySchema otherwise.
-func ensureSchema(ctx context.Context, coll *mongo.Collection) error {
-	if err := verifyNoAmbiguousTenantDocs(ctx, coll); err != nil {
+//
+// logger is threaded in so the lease-skip WARN can be surfaced; it may be
+// nil for tests that don't care about structured output.
+func ensureSchema(ctx context.Context, coll *mongo.Collection, logger log.Logger) error {
+	// H3: coordinate exclusion across processes. A lease held by a peer in
+	// the middle of its migration causes this caller to skip — the peer
+	// will complete the work. Staleness (lease heartbeat older than 5m) is
+	// handled inside acquireMigrationLease.
+	leaseCtx, releaseLease, acquired, err := acquireMigrationLease(ctx, coll, logger)
+	if err != nil {
+		return fmt.Errorf("acquire migration lease: %w", err)
+	}
+
+	if !acquired {
+		// Peer is already migrating. Nothing to do; fall through to index
+		// creation only, which is idempotent under the same shape.
+		if logger != nil {
+			logger.Log(ctx, log.LevelInfo,
+				"systemplane/mongodb: migration lease held by peer, skipping _id rewrite",
+			)
+		}
+
+		return createCompoundIndex(ctx, coll)
+	}
+
+	defer releaseLease()
+
+	if err := verifyNoAmbiguousTenantDocs(leaseCtx, coll); err != nil {
 		return err
 	}
 
-	if err := backfillTenantID(ctx, coll); err != nil {
+	if err := backfillTenantID(leaseCtx, coll); err != nil {
 		return fmt.Errorf("backfill tenant_id: %w", err)
 	}
 
-	if err := rewriteObjectIDDocuments(ctx, coll); err != nil {
+	if err := rewriteObjectIDDocuments(leaseCtx, coll); err != nil {
 		return fmt.Errorf("rewrite _id: %w", err)
 	}
 
-	if err := dropLegacyIndex(ctx, coll); err != nil {
+	if err := dropLegacyIndex(leaseCtx, coll); err != nil {
 		return fmt.Errorf("drop legacy index: %w", err)
 	}
 
-	if err := createCompoundIndex(ctx, coll); err != nil {
+	if err := createCompoundIndex(leaseCtx, coll); err != nil {
 		return fmt.Errorf("create compound unique index: %w", err)
 	}
 
@@ -109,17 +142,21 @@ func ensureLegacySchema(ctx context.Context, coll *mongo.Collection) error {
 
 // verifyNoAmbiguousTenantDocs is the phase-2 pre-flight guard (H6 sibling
 // of the Postgres H8). If a (namespace, key) pair has BOTH a document with
-// tenant_id missing AND another document with tenant_id="_global", the
-// subsequent backfill ($set tenant_id="_global" on the missing-field doc)
-// would produce two "_global" documents for the same pair and — once the
-// compound unique index is created — cause one of them to vanish on the
-// next upsert. Fail loudly so operators consolidate the rows manually.
+// tenant_id missing (or an empty string — both treated identically, M-S3-6)
+// AND another document with tenant_id="_global", the subsequent backfill
+// ($set tenant_id="_global" on the missing-field doc) would produce two
+// "_global" documents for the same pair and — once the compound unique
+// index is created — cause one of them to vanish on the next upsert. Fail
+// loudly so operators consolidate the rows manually.
 //
 // The aggregation pipeline returns zero when the collection is empty or
 // already consistent, so the check is a no-op on fresh deployments.
 func verifyNoAmbiguousTenantDocs(ctx context.Context, coll *mongo.Collection) error {
 	pipeline := mongo.Pipeline{
 		// Project a "has_tenant_id" flag so we can count each shape per group.
+		// The $cond folds two shapes — missing field ($ifNull) and empty
+		// string — into the "__missing__" bucket so both collide with
+		// "_global" the same way.
 		{{Key: "$group", Value: bson.D{
 			{Key: "_id", Value: bson.D{
 				{Key: "namespace", Value: "$namespace"},
@@ -127,7 +164,15 @@ func verifyNoAmbiguousTenantDocs(ctx context.Context, coll *mongo.Collection) er
 			}},
 			{Key: "tenantIDs", Value: bson.D{
 				{Key: "$addToSet", Value: bson.D{
-					{Key: "$ifNull", Value: bson.A{"$tenant_id", "__missing__"}},
+					{Key: "$cond", Value: bson.D{
+						{Key: "if", Value: bson.D{
+							{Key: "$or", Value: bson.A{
+								bson.D{{Key: "$eq", Value: bson.A{bson.D{{Key: "$ifNull", Value: bson.A{"$tenant_id", ""}}}, ""}}},
+							}},
+						}},
+						{Key: "then", Value: "__missing__"},
+						{Key: "else", Value: "$tenant_id"},
+					}},
 				}},
 			}},
 		}}},
@@ -147,7 +192,7 @@ func verifyNoAmbiguousTenantDocs(ctx context.Context, coll *mongo.Collection) er
 
 	if cursor.Next(ctx) {
 		return errors.New(
-			"systemplane/mongodb: ambiguous pre-migration state: documents exist with missing tenant_id AND a '_global' sibling for the same (namespace, key) — consolidate before enabling phase 2",
+			"systemplane/mongodb: ambiguous pre-migration state: documents exist with missing/empty tenant_id AND a '_global' sibling for the same (namespace, key) — consolidate before enabling phase 2",
 		)
 	}
 
@@ -167,97 +212,6 @@ func backfillTenantID(ctx context.Context, coll *mongo.Collection) error {
 
 	if _, err := coll.UpdateMany(ctx, filter, update); err != nil {
 		return err //nolint:wrapcheck // wrapped by ensureSchema
-	}
-
-	return nil
-}
-
-// legacyDoc mirrors entryDoc but decodes _id as bson.RawValue so we can
-// inspect its BSON type without forcing a compoundID decode that would fail
-// on legacy ObjectId-valued rows.
-type legacyDoc struct {
-	ID        bson.RawValue `bson:"_id"`
-	Namespace string        `bson:"namespace"`
-	Key       string        `bson:"key"`
-	TenantID  string        `bson:"tenant_id"`
-	Value     string        `bson:"value"`
-	UpdatedAt time.Time     `bson:"updated_at"`
-	UpdatedBy string        `bson:"updated_by"`
-}
-
-// rewriteObjectIDDocuments converts any document whose _id is still a bare
-// ObjectId (from the pre-Task-4 schema) into one with a compound _id. Runs
-// sequentially — the migration is one-shot at construction and the expected
-// document count is small (PRD §8 estimates ~1,200 entries across every
-// known consumer) so batching machinery is unnecessary.
-//
-// Not atomic across the collection: a crash mid-loop leaves a mix of old
-// and new _id shapes, but re-running ensureSchema cleans up whatever is
-// left. The insert-then-delete order is chosen so that a crash after the
-// insert but before the delete keeps the row visible under the new _id;
-// the stale ObjectId row is cleaned on the next run.
-func rewriteObjectIDDocuments(ctx context.Context, coll *mongo.Collection) error {
-	filter := bson.D{{Key: "_id", Value: bson.D{{Key: "$type", Value: "objectId"}}}}
-
-	cursor, err := coll.Find(ctx, filter)
-	if err != nil {
-		return err //nolint:wrapcheck // wrapped by ensureSchema
-	}
-
-	// Drain the cursor into memory BEFORE issuing any writes. Two reasons:
-	//   1. We are about to insert new documents and delete old ones in the
-	//      same collection; whether a still-open cursor would re-observe
-	//      those writes depends on snapshot-vs-tailing semantics, which vary
-	//      across server versions. Draining first removes the ambiguity.
-	//   2. Expected worst-case cardinality is ~1,200 rows (PRD §8). Loading
-	//      that into memory costs a few hundred KB — free.
-	var docs []legacyDoc
-	if err := cursor.All(ctx, &docs); err != nil {
-		_ = cursor.Close(ctx)
-		return fmt.Errorf("drain legacy cursor: %w", err)
-	}
-
-	if err := cursor.Close(ctx); err != nil {
-		return fmt.Errorf("close legacy cursor: %w", err)
-	}
-
-	for _, doc := range docs {
-		tenantID := doc.TenantID
-		if tenantID == "" {
-			tenantID = store.SentinelGlobal
-		}
-
-		newID := compoundID{
-			Namespace: doc.Namespace,
-			Key:       doc.Key,
-			TenantID:  tenantID,
-		}
-
-		// Build the replacement document using bson.D so we control field
-		// ordering and avoid the struct-tag coupling to entryDoc's internal
-		// shape — migrations should be insulated from entryDoc churn.
-		newDoc := bson.D{
-			{Key: "_id", Value: newID},
-			{Key: "namespace", Value: doc.Namespace},
-			{Key: "key", Value: doc.Key},
-			{Key: "tenant_id", Value: tenantID},
-			{Key: "value", Value: doc.Value},
-			{Key: "updated_at", Value: doc.UpdatedAt},
-			{Key: "updated_by", Value: doc.UpdatedBy},
-		}
-
-		if _, err := coll.InsertOne(ctx, newDoc); err != nil {
-			// A duplicate key error here means a previous run already
-			// created the compound-id row; treat as benign and proceed
-			// to delete the ObjectId original.
-			if !mongo.IsDuplicateKeyError(err) {
-				return fmt.Errorf("insert migrated doc: %w", err)
-			}
-		}
-
-		if _, err := coll.DeleteOne(ctx, bson.D{{Key: "_id", Value: doc.ID}}); err != nil {
-			return fmt.Errorf("delete legacy doc: %w", err)
-		}
 	}
 
 	return nil

@@ -38,8 +38,11 @@ type fakeStore struct {
 	entries      map[string]systemplane.TestEntry    // keyed by "namespace\x1fkey" — globals only
 	tenantRows   map[tenantKey]systemplane.TestEntry // keyed by (tenantID, ns, key)
 	handlers     []func(systemplane.TestEvent)
-	closed       bool
 	subscribedCh chan struct{} // closed when the first Subscribe registers
+
+	// errOnSet, if non-nil, is returned verbatim by Set. Used to exercise
+	// the mapSentinelErr default (non-sentinel → 500) branch.
+	errOnSet error
 }
 
 // tenantKey addresses a tenant-scoped row. This is scoped to the admin
@@ -84,6 +87,14 @@ func (f *fakeStore) Get(_ context.Context, namespace, key string) (systemplane.T
 
 func (f *fakeStore) Set(_ context.Context, e systemplane.TestEntry) error {
 	f.mu.Lock()
+
+	if f.errOnSet != nil {
+		err := f.errOnSet
+		f.mu.Unlock()
+
+		return err
+	}
+
 	f.entries[storeKey(e.Namespace, e.Key)] = e
 
 	handlers := make([]func(systemplane.TestEvent), len(f.handlers))
@@ -120,11 +131,6 @@ func (f *fakeStore) Subscribe(ctx context.Context, handler func(systemplane.Test
 }
 
 func (f *fakeStore) Close() error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	f.closed = true
-
 	return nil
 }
 
@@ -199,13 +205,27 @@ func (f *fakeStore) ListTenantValues(_ context.Context) ([]systemplane.TestEntry
 // the production backends that apply the "tenant_id != SentinelGlobal"
 // filter server-side. This fake partitions globals and tenant rows into
 // separate maps, so the method is a direct listing of f.tenantRows.
-func (f *fakeStore) ListTenantOverrides(_ context.Context) ([]systemplane.TestEntry, error) {
+func (f *fakeStore) ListTenantOverrides(_ context.Context, afterNamespace, afterKey, afterTenantID string, limit int) ([]systemplane.TestEntry, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
 	out := make([]systemplane.TestEntry, 0, len(f.tenantRows))
 	for _, e := range f.tenantRows {
+		// Simple in-memory keyset filter: only include entries strictly
+		// greater than the cursor tuple. Empty cursors mean "from the start".
+		if afterNamespace != "" || afterKey != "" || afterTenantID != "" {
+			if !(e.Namespace > afterNamespace ||
+				(e.Namespace == afterNamespace && e.Key > afterKey) ||
+				(e.Namespace == afterNamespace && e.Key == afterKey && e.TenantID > afterTenantID)) {
+				continue
+			}
+		}
+
 		out = append(out, e)
+	}
+
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
 	}
 
 	return out, nil
@@ -875,6 +895,116 @@ func TestPut_ServiceUnavailable_WhenNotStarted(t *testing.T) {
 	}
 }
 
+// TestPathLengthCap_NamespaceTooLong verifies that a namespace longer than
+// the admin edge cap surfaces 400 validation_error BEFORE reaching the
+// authorizer or the Client.
+func TestPathLengthCap_NamespaceTooLong(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildClientStarted(t)
+
+	app := buildApp(t, c, allowAll())
+
+	overNS := strings.Repeat("n", 257) // > 256 byte cap.
+
+	resp := doRequest(t, app, http.MethodGet, "/system/"+overNS, "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for over-length namespace, got %d", resp.StatusCode)
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "validation_error" {
+		t.Fatalf("expected title 'validation_error', got %q", body.Title)
+	}
+}
+
+// TestPathLengthCap_KeyTooLong verifies that a key longer than the admin
+// edge cap surfaces 400 validation_error BEFORE reaching the authorizer
+// or the Client.
+func TestPathLengthCap_KeyTooLong(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildClientStarted(t)
+
+	app := buildApp(t, c, allowAll())
+
+	overKey := strings.Repeat("k", 513) // > 512 byte cap.
+
+	resp := doRequest(t, app, http.MethodGet, "/system/global/"+overKey, "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for over-length key, got %d", resp.StatusCode)
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "validation_error" {
+		t.Fatalf("expected title 'validation_error', got %q", body.Title)
+	}
+}
+
+// TestMapSentinelErr_NonSentinelReturns500 verifies that a non-sentinel error
+// from the Client's write path (e.g. a transient backend error that does NOT
+// wrap any of the exported ErrClosed/ErrNotStarted/ErrUnknownKey/ErrValidation
+// sentinels) surfaces as 500 internal_error with a generic "write failed"
+// message — no backend detail leaks onto the wire.
+func TestMapSentinelErr_NonSentinelReturns500(t *testing.T) {
+	t.Parallel()
+
+	c, fs := buildClient(t)
+
+	if err := c.Register("global", "k", "v"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Inject a non-sentinel error on the fake store's Set. The Client will
+	// wrap it and bubble up; mapSentinelErr's default branch should catch it.
+	const backendDetail = "postgres: connection lost (connection_id=abcd1234)"
+	fs.mu.Lock()
+	fs.errOnSet = errors.New(backendDetail)
+	fs.mu.Unlock()
+
+	app := buildApp(t, c, allowAll())
+
+	resp := doRequest(t, app, http.MethodPut, "/system/global/k", `{"value":"new"}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusInternalServerError {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 500 for non-sentinel error, got %d: %s", resp.StatusCode, string(data))
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Code != fiber.StatusInternalServerError {
+		t.Fatalf("expected Code=500, got %d", body.Code)
+	}
+
+	if body.Title != "internal_error" {
+		t.Fatalf("expected Title='internal_error', got %q", body.Title)
+	}
+
+	// The backend detail must NOT leak onto the wire.
+	if strings.Contains(body.Message, backendDetail) {
+		t.Fatalf("regression: backend error detail leaked on wire, got %q", body.Message)
+	}
+
+	if strings.Contains(body.Message, "connection_id") {
+		t.Fatalf("regression: backend connection ID leaked on wire, got %q", body.Message)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Bonus edge case tests
 // ---------------------------------------------------------------------------
@@ -1274,10 +1404,13 @@ func TestPutTenant_MissingAuthorizer_Returns403(t *testing.T) {
 		t.Fatalf("expected body Code=403, got %d", body.Code)
 	}
 
-	// The default-deny message should surface in the body so operators can
-	// diagnose the misconfiguration.
-	if !strings.Contains(body.Message, "WithTenantAuthorizer") {
-		t.Fatalf("expected default-deny message to mention WithTenantAuthorizer, got %q", body.Message)
+	// The body carries a stable "forbidden" title; the default-deny reason
+	// stays in server-side logs. Coupling to the literal "WithTenantAuthorizer"
+	// string would pin test behavior to a library-internal phrasing and leak
+	// a library-version fingerprint on the wire — neither of which is
+	// desirable for a security-sensitive response body.
+	if body.Title != "forbidden" {
+		t.Fatalf("expected Title='forbidden', got %q", body.Title)
 	}
 }
 

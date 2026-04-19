@@ -16,12 +16,21 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+// ErrInvalidTenantID is returned when a tenant-scoped read/write is called
+// with a tenantID that equals the reserved "_global" sentinel. The sentinel
+// addresses the shared row via the legacy Set/Get/List surface; tenant-scoped
+// methods MUST fail closed on it rather than silently aliasing to a global
+// read (M-S3-7).
+var ErrInvalidTenantID = errors.New("mongodb store: tenantID must not be the '_global' sentinel")
 
 // GetTenantValue returns the tenant-specific override for (namespace, key)
 // scoped to tenantID. Returns (Entry{}, false, nil) when no override row
@@ -51,6 +60,15 @@ func (s *Store) GetTenantValue(
 		opentelemetry.HandleSpanBusinessErrorEvent(span, "validation failed", err)
 
 		return store.Entry{}, false, err
+	}
+
+	if tenantID == store.SentinelGlobal {
+		// Reject "_global" on the tenant surface so a caller misuse does
+		// not silently alias to the legacy global read. The legacy Get
+		// method is the correct path for the shared row. (M-S3-7)
+		opentelemetry.HandleSpanBusinessErrorEvent(span, "validation failed", ErrInvalidTenantID)
+
+		return store.Entry{}, false, ErrInvalidTenantID
 	}
 
 	doc, found, err := s.findOne(ctx, namespace, key, tenantID)
@@ -126,7 +144,8 @@ func (s *Store) SetTenantValue(ctx context.Context, tenantID string, e store.Ent
 //
 // The actor argument is accepted for audit parity with the Postgres backend;
 // MongoDB has no equivalent of the trigger audit trail, so actor is recorded
-// only via the span attribute below.
+// via the span attribute and — on a row that actually existed — an
+// info-level audit log line (L-S3-sec-2).
 func (s *Store) DeleteTenantValue(
 	ctx context.Context,
 	tenantID, namespace, key, actor string,
@@ -169,24 +188,37 @@ func (s *Store) DeleteTenantValue(
 		TenantID:  tenantID,
 	}}}
 
-	// DeleteOne does not return an error when no document matches — it returns
-	// DeleteResult{DeletedCount: 0} and nil. A missing row is therefore
-	// naturally a no-op without extra branching, which keeps DeleteTenantValue
-	// idempotent per the store.Store contract.
-	if _, err := s.coll.DeleteOne(ctx, filter); err != nil {
+	// DeleteOne returns DeleteResult{DeletedCount: 0} and nil when no row
+	// matches — idempotent by design. Only emit the audit log when a row
+	// actually went away, otherwise the log becomes noise on retried
+	// no-op deletes.
+	res, err := s.coll.DeleteOne(ctx, filter)
+	if err != nil {
 		opentelemetry.HandleSpanError(span, "mongodb delete_tenant_value: delete failed", err)
 
 		return fmt.Errorf("mongodb store delete_tenant_value: %w", err)
+	}
+
+	if res.DeletedCount > 0 {
+		s.logInfo(ctx, "tenant_value_deleted",
+			log.String("tenant_id", tenantID),
+			log.String("namespace", namespace),
+			log.String("key", key),
+			log.String("actor", actor),
+		)
 	}
 
 	return nil
 }
 
 // ListTenantValues returns every row in the collection, including both the
-// "_global" rows and every tenant-specific override. The Client uses this to
-// hydrate tenantCache at Start(); callers filter by TenantID as needed.
+// "_global" rows and every tenant-specific override. Hydrate paths that want
+// only overrides use ListTenantOverrides; this method is kept for the
+// contract test suite and any caller that needs the full listing.
 //
-// Returns an empty slice (not nil) when the collection is empty.
+// Returns an empty slice (not nil) when the collection is empty. Server-side
+// sort on (namespace, key, tenant_id) keeps ordering deterministic without
+// depending on WiredTiger's natural order.
 func (s *Store) ListTenantValues(ctx context.Context) ([]store.Entry, error) {
 	if s == nil || s.isClosed() {
 		return nil, store.ErrClosed
@@ -195,7 +227,13 @@ func (s *Store) ListTenantValues(ctx context.Context) ([]store.Entry, error) {
 	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.list_tenant_values")
 	defer span.End()
 
-	cursor, err := s.coll.Find(ctx, bson.D{})
+	findOpts := options.Find().SetSort(bson.D{
+		{Key: "namespace", Value: 1},
+		{Key: "key", Value: 1},
+		{Key: "tenant_id", Value: 1},
+	})
+
+	cursor, err := s.coll.Find(ctx, bson.D{}, findOpts)
 	if err != nil {
 		opentelemetry.HandleSpanError(span, "mongodb list_tenant_values: find failed", err)
 		return nil, fmt.Errorf("mongodb store list_tenant_values: %w", err)
@@ -208,22 +246,6 @@ func (s *Store) ListTenantValues(ctx context.Context) ([]store.Entry, error) {
 		return nil, fmt.Errorf("mongodb store list_tenant_values: decode: %w", err)
 	}
 
-	// Deterministic order: (namespace, key, tenant_id) ascending. Cursor
-	// natural order is insertion order on WiredTiger, which is fine for the
-	// Client hydrate path but unpredictable for tests. Sort in-process to
-	// avoid depending on a compound sort index.
-	sort.Slice(docs, func(i, j int) bool {
-		if docs[i].Namespace != docs[j].Namespace {
-			return docs[i].Namespace < docs[j].Namespace
-		}
-
-		if docs[i].Key != docs[j].Key {
-			return docs[i].Key < docs[j].Key
-		}
-
-		return docs[i].TenantID < docs[j].TenantID
-	})
-
 	entries := make([]store.Entry, len(docs))
 	for i := range docs {
 		entries[i] = docs[i].toEntry()
@@ -235,12 +257,32 @@ func (s *Store) ListTenantValues(ctx context.Context) ([]store.Entry, error) {
 }
 
 // ListTenantOverrides returns only the tenant-scoped rows (tenant_id !=
-// '_global'). Used by the Client's hydrateTenantCache at Start() where the
-// shared global rows are irrelevant to the tenant cache. The filter runs
-// server-side so a large _global row count does not inflate hydration
-// transfer. Ordering mirrors ListTenantValues —
-// (namespace, key, tenant_id) ascending — for deterministic replay.
-func (s *Store) ListTenantOverrides(ctx context.Context) ([]store.Entry, error) {
+// '_global') in (namespace, key, tenant_id) ascending order. Used by the
+// Client's hydrateTenantCache at Start() and by admin endpoints that page
+// through overrides. The filter runs server-side so a large _global row
+// count does not inflate hydration transfer.
+//
+// Keyset pagination is driven by the (afterNamespace, afterKey,
+// afterTenantID) tuple: callers pass the empty strings on the first page,
+// then repeat with the last-observed tuple for each subsequent page. A
+// non-positive limit is treated as "no limit" (unbounded page — intended
+// for the Client hydrate path, which consumes the entire result anyway).
+//
+// The returned slice is empty (not nil) when no overrides exist after the
+// cursor. Callers detect end-of-stream when len(result) < limit on a
+// bounded page, or when the returned slice is empty on an unbounded page.
+//
+// COORDINATION NOTE: the parallel refactor on internal/store/store.go is
+// introducing a TenantEntry type and updating the Store interface signature
+// to match this shape. Until that lands, this method returns []store.Entry
+// (the existing type) — which the parallel refactor will rename / alias to
+// TenantEntry in a single rename pass across every backend. The method
+// body is the hard part; the type name is a mechanical follow-up.
+func (s *Store) ListTenantOverrides(
+	ctx context.Context,
+	afterNamespace, afterKey, afterTenantID string,
+	limit int,
+) ([]store.Entry, error) {
 	if s == nil || s.isClosed() {
 		return nil, store.ErrClosed
 	}
@@ -248,9 +290,51 @@ func (s *Store) ListTenantOverrides(ctx context.Context) ([]store.Entry, error) 
 	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.list_tenant_overrides")
 	defer span.End()
 
-	filter := bson.D{{Key: "tenant_id", Value: bson.D{{Key: "$ne", Value: store.SentinelGlobal}}}}
+	span.SetAttributes(
+		attribute.String("cursor.after_namespace", afterNamespace),
+		attribute.String("cursor.after_key", afterKey),
+		attribute.String("cursor.after_tenant", afterTenantID),
+		attribute.Int("cursor.limit", limit),
+	)
 
-	cursor, err := s.coll.Find(ctx, filter)
+	// Base filter: exclude the global rows. Keyset predicate (when
+	// afterNamespace/afterKey/afterTenantID is non-empty) is layered on top
+	// as a lexicographic "greater than" across the sort triple. Mongo has
+	// no native tuple comparison, so the cursor is expressed as the
+	// canonical OR-chain that matches how SQL's (a,b,c) > (x,y,z)
+	// desugars.
+	and := bson.A{
+		bson.D{{Key: "tenant_id", Value: bson.D{{Key: "$ne", Value: store.SentinelGlobal}}}},
+	}
+
+	if afterNamespace != "" || afterKey != "" || afterTenantID != "" {
+		and = append(and, bson.D{{Key: "$or", Value: bson.A{
+			bson.D{{Key: "namespace", Value: bson.D{{Key: "$gt", Value: afterNamespace}}}},
+			bson.D{
+				{Key: "namespace", Value: afterNamespace},
+				{Key: "key", Value: bson.D{{Key: "$gt", Value: afterKey}}},
+			},
+			bson.D{
+				{Key: "namespace", Value: afterNamespace},
+				{Key: "key", Value: afterKey},
+				{Key: "tenant_id", Value: bson.D{{Key: "$gt", Value: afterTenantID}}},
+			},
+		}}})
+	}
+
+	filter := bson.D{{Key: "$and", Value: and}}
+
+	findOpts := options.Find().SetSort(bson.D{
+		{Key: "namespace", Value: 1},
+		{Key: "key", Value: 1},
+		{Key: "tenant_id", Value: 1},
+	})
+
+	if limit > 0 {
+		findOpts = findOpts.SetLimit(int64(limit))
+	}
+
+	cursor, err := s.coll.Find(ctx, filter, findOpts)
 	if err != nil {
 		opentelemetry.HandleSpanError(span, "mongodb list_tenant_overrides: find failed", err)
 		return nil, fmt.Errorf("mongodb store list_tenant_overrides: %w", err)
@@ -262,20 +346,6 @@ func (s *Store) ListTenantOverrides(ctx context.Context) ([]store.Entry, error) 
 		opentelemetry.HandleSpanError(span, "mongodb list_tenant_overrides: decode failed", err)
 		return nil, fmt.Errorf("mongodb store list_tenant_overrides: decode: %w", err)
 	}
-
-	// Deterministic order: (namespace, key, tenant_id) ascending, matching
-	// ListTenantValues.
-	sort.Slice(docs, func(i, j int) bool {
-		if docs[i].Namespace != docs[j].Namespace {
-			return docs[i].Namespace < docs[j].Namespace
-		}
-
-		if docs[i].Key != docs[j].Key {
-			return docs[i].Key < docs[j].Key
-		}
-
-		return docs[i].TenantID < docs[j].TenantID
-	})
 
 	entries := make([]store.Entry, len(docs))
 	for i := range docs {
@@ -339,11 +409,15 @@ func (s *Store) ListTenantsForKey(
 		return nil, fmt.Errorf("mongodb store list_tenants_for_key: decode: %w", err)
 	}
 
-	sort.Strings(tenantIDs)
-
+	// Nil-coerce BEFORE sort.Strings so the empty-but-non-nil invariant
+	// holds end-to-end (L-S3-3). sort.Strings(nil) is safe, but a later
+	// reader could easily introduce a bug that depends on the slice being
+	// non-nil — better to normalize early.
 	if tenantIDs == nil {
 		tenantIDs = []string{}
 	}
+
+	sort.Strings(tenantIDs)
 
 	span.SetAttributes(attribute.Int("tenants.count", len(tenantIDs)))
 

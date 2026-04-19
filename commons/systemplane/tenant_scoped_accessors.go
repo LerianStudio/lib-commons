@@ -13,6 +13,16 @@
 // is reported as ErrValidation — a configuration issue, not a runtime
 // failure. The legacy accessors return a zero value on mismatch; we
 // intentionally deviate so tenant-scoped code paths get a loud signal.
+//
+// # Nil-receiver safety
+//
+// Each accessor forwards to GetForTenant as its first operation. GetForTenant
+// guards against c == nil (returning ErrClosed), so a nil-receiver call on
+// any accessor below inherits that guard transitively: the accessor returns
+// its zero value and a wrapped ErrClosed without ever dereferencing c.
+// Maintainers modifying these accessors MUST preserve that property — any
+// field access on c before the GetForTenant call would regress the
+// nil-safety contract the Client doc promises.
 package systemplane
 
 import (

@@ -19,8 +19,6 @@ import (
 	mongoDB "github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/mongodb"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/postgres"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // closeWaitTimeout is the maximum time Close waits for the Subscribe goroutine
@@ -437,51 +435,5 @@ func (c *Client) fireSubscribers(nk nskey, newValue any) {
 	}
 }
 
-// startSpan creates a child span if telemetry is configured, otherwise returns
-// a no-op span. Callers MUST defer finish() to end the span.
-func (c *Client) startSpan(ctx context.Context, name string) (context.Context, trace.Span, func()) {
-	return c.startSpanWithAttrs(ctx, name)
-}
-
-// startSpanWithAttrs creates a child span and (when telemetry is configured)
-// sets the provided attributes on it before returning. Callers MUST defer
-// finish() to end the span. The attributes argument is variadic so zero
-// attributes is a valid — and common — call shape, used by legacy callers
-// that do not need span attributes.
-func (c *Client) startSpanWithAttrs(ctx context.Context, name string, attrs ...attribute.KeyValue) (context.Context, trace.Span, func()) {
-	noop := func() {}
-
-	if c.telemetry == nil {
-		return ctx, trace.SpanFromContext(ctx), noop
-	}
-
-	tracer, err := c.telemetry.Tracer(tracerName)
-	if err != nil || tracer == nil {
-		return ctx, trace.SpanFromContext(ctx), noop
-	}
-
-	ctx, span := tracer.Start(ctx, name)
-
-	if len(attrs) > 0 {
-		span.SetAttributes(attrs...)
-	}
-
-	return ctx, span, func() { span.End() }
-}
-
-// logWarn emits a warning-level log via the configured logger.
-func (c *Client) logWarn(ctx context.Context, msg string, fields ...log.Field) {
-	if c.logger != nil {
-		c.logger.Log(ctx, log.LevelWarn, msg, fields...)
-	}
-}
-
-// logDebug emits a debug-level log via the configured logger. Nil-safe on
-// the logger field for symmetry with logWarn — newClient always wires a
-// non-nil logger today, but the guard future-proofs against construction
-// paths that might bypass it.
-func (c *Client) logDebug(ctx context.Context, msg string, fields ...log.Field) {
-	if c.logger != nil {
-		c.logger.Log(ctx, log.LevelDebug, msg, fields...)
-	}
-}
+// Span and logger helpers (startSpan, startSpanWithAttrs, logWarn, logDebug)
+// live in client_telemetry.go.

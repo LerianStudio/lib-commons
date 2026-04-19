@@ -24,8 +24,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 
+	libOTEL "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 )
 
@@ -36,6 +36,18 @@ import (
 func (s *Store) GetTenantValue(ctx context.Context, tenantID, namespace, key string) (store.Entry, bool, error) {
 	if s == nil || s.isClosed() {
 		return store.Entry{}, false, store.ErrClosed
+	}
+
+	// Validation branches before I/O: reject empty tenantID and the reserved
+	// '_global' sentinel. Passing '_global' here would silently read the
+	// shared row via the tenant-scoped path, defeating row-separation (TRD
+	// §3 / PRD AC13); fail-closed mirrors SetTenantValue / DeleteTenantValue.
+	if tenantID == "" {
+		return store.Entry{}, false, errors.New("systemplane/postgres: tenantID must not be empty")
+	}
+
+	if tenantID == store.SentinelGlobal {
+		return store.Entry{}, false, errors.New("systemplane/postgres: tenantID must not be the '_global' sentinel")
 	}
 
 	ctx, span, finish := s.startSpan(ctx, "systemplane.postgres.get_tenant_value",
@@ -59,8 +71,7 @@ func (s *Store) GetTenantValue(ctx context.Context, tenantID, namespace, key str
 	}
 
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "query failed")
+		libOTEL.HandleSpanError(span, "get_tenant_value query failed", err)
 
 		return store.Entry{}, false, fmt.Errorf("systemplane/postgres: get_tenant_value: %w", err)
 	}
@@ -118,8 +129,7 @@ SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLU
 	)
 
 	if _, err := s.cfg.DB.ExecContext(ctx, query, e.Namespace, e.Key, tenantID, e.Value, e.UpdatedAt, e.UpdatedBy); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "upsert failed")
+		libOTEL.HandleSpanError(span, "set_tenant_value upsert failed", err)
 
 		return fmt.Errorf("systemplane/postgres: set_tenant_value: %w", err)
 	}
@@ -175,9 +185,16 @@ func (s *Store) DeleteTenantValue(ctx context.Context, tenantID, namespace, key,
 		s.cfg.Table,
 	)
 
+	// Idempotency contract: database/sql.ExecContext returns (Result, nil)
+	// even when the DELETE matched zero rows. The contract at
+	// internal/store/store.go documents this as the authoritative behavior —
+	// a no-op delete is a success. We deliberately do NOT inspect
+	// Result.RowsAffected because the contract does not distinguish between
+	// "row existed and was deleted" and "row never existed"; both resolve to
+	// nil error. This mirrors the MongoDB backend's delete semantics and
+	// matches sql.DELETE's native per-SQL-standard idempotency.
 	if _, err := s.cfg.DB.ExecContext(ctx, query, namespace, key, tenantID); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "delete failed")
+		libOTEL.HandleSpanError(span, "delete_tenant_value delete failed", err)
 
 		return fmt.Errorf("systemplane/postgres: delete_tenant_value: %w", err)
 	}
@@ -207,8 +224,7 @@ func (s *Store) ListTenantValues(ctx context.Context) ([]store.Entry, error) {
 
 	rows, err := s.cfg.DB.QueryContext(ctx, query)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "query failed")
+		libOTEL.HandleSpanError(span, "list_tenant_values query failed", err)
 
 		return nil, fmt.Errorf("systemplane/postgres: list_tenant_values: %w", err)
 	}
@@ -220,8 +236,7 @@ func (s *Store) ListTenantValues(ctx context.Context) ([]store.Entry, error) {
 		var e store.Entry
 
 		if err := rows.Scan(&e.Namespace, &e.Key, &e.TenantID, &e.Value, &e.UpdatedAt, &e.UpdatedBy); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "scan failed")
+			libOTEL.HandleSpanError(span, "list_tenant_values scan failed", err)
 
 			return nil, fmt.Errorf("systemplane/postgres: list_tenant_values scan: %w", err)
 		}
@@ -230,8 +245,7 @@ func (s *Store) ListTenantValues(ctx context.Context) ([]store.Entry, error) {
 	}
 
 	if err := rows.Err(); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "rows iteration failed")
+		libOTEL.HandleSpanError(span, "list_tenant_values rows iteration failed", err)
 
 		return nil, fmt.Errorf("systemplane/postgres: list_tenant_values rows: %w", err)
 	}
@@ -245,28 +259,64 @@ func (s *Store) ListTenantValues(ctx context.Context) ([]store.Entry, error) {
 }
 
 // ListTenantOverrides returns only the tenant-scoped rows (tenant_id <>
-// '_global'). Used by the Client's hydrateTenantCache at Start() where the
-// shared global rows are irrelevant to the tenant cache. The WHERE filter
-// runs server-side so a large _global row count does not inflate hydration
-// transfer. Ordering mirrors ListTenantValues — (namespace, key, tenant_id)
-// ascending — for deterministic replay during tests.
-func (s *Store) ListTenantOverrides(ctx context.Context) ([]store.Entry, error) {
+// '_global') in (namespace, key, tenant_id) ascending order. Used by the
+// Client's hydrateTenantCache at Start() and by admin endpoints that page
+// through overrides. The WHERE filter runs server-side so a large _global
+// row count does not inflate hydration transfer.
+//
+// Keyset pagination: callers pass empty strings for the after-* args on the
+// first page, then repeat with the last-observed tuple for each subsequent
+// page. A non-positive limit means "no limit" (single-shot read of the
+// remaining rows). Postgres handles the tuple comparison natively via
+// ROW(namespace,key,tenant_id) > ROW($2,$3,$4), which is simpler than the
+// mongo OR-chain expansion.
+//
+// Returns an empty slice, not nil, when no overrides exist after the cursor.
+func (s *Store) ListTenantOverrides(
+	ctx context.Context,
+	afterNamespace, afterKey, afterTenantID string,
+	limit int,
+) ([]store.Entry, error) {
 	if s == nil || s.isClosed() {
 		return nil, store.ErrClosed
 	}
 
-	ctx, span, finish := s.startSpan(ctx, "systemplane.postgres.list_tenant_overrides")
+	ctx, span, finish := s.startSpan(ctx, "systemplane.postgres.list_tenant_overrides",
+		attribute.String("cursor.after_namespace", afterNamespace),
+		attribute.String("cursor.after_key", afterKey),
+		attribute.String("cursor.after_tenant", afterTenantID),
+		attribute.Int("cursor.limit", limit),
+	)
 	defer finish()
 
-	query := fmt.Sprintf( // #nosec G201 -- table name validated as Postgres identifier in New()
-		`SELECT namespace, key, tenant_id, value, updated_at, updated_by FROM %s WHERE tenant_id <> $1 ORDER BY namespace, key, tenant_id`,
-		s.cfg.Table,
+	// Build the query incrementally. The keyset predicate only applies when
+	// any of the after-* cursors is non-empty; otherwise the first page
+	// returns from the top of the sort order.
+	var (
+		args     = []any{store.SentinelGlobal}
+		whereAdd string
 	)
 
-	rows, err := s.cfg.DB.QueryContext(ctx, query, store.SentinelGlobal)
+	if afterNamespace != "" || afterKey != "" || afterTenantID != "" {
+		whereAdd = " AND (namespace, key, tenant_id) > ($2, $3, $4)"
+
+		args = append(args, afterNamespace, afterKey, afterTenantID)
+	}
+
+	limitClause := ""
+	if limit > 0 {
+		limitClause = fmt.Sprintf(" LIMIT $%d", len(args)+1)
+		args = append(args, limit)
+	}
+
+	query := fmt.Sprintf( // #nosec G201 -- table name validated as Postgres identifier in New()
+		`SELECT namespace, key, tenant_id, value, updated_at, updated_by FROM %s WHERE tenant_id <> $1%s ORDER BY namespace, key, tenant_id%s`,
+		s.cfg.Table, whereAdd, limitClause,
+	)
+
+	rows, err := s.cfg.DB.QueryContext(ctx, query, args...)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "query failed")
+		libOTEL.HandleSpanError(span, "list_tenant_overrides query failed", err)
 
 		return nil, fmt.Errorf("systemplane/postgres: list_tenant_overrides: %w", err)
 	}
@@ -278,8 +328,7 @@ func (s *Store) ListTenantOverrides(ctx context.Context) ([]store.Entry, error) 
 		var e store.Entry
 
 		if err := rows.Scan(&e.Namespace, &e.Key, &e.TenantID, &e.Value, &e.UpdatedAt, &e.UpdatedBy); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "scan failed")
+			libOTEL.HandleSpanError(span, "list_tenant_overrides scan failed", err)
 
 			return nil, fmt.Errorf("systemplane/postgres: list_tenant_overrides scan: %w", err)
 		}
@@ -288,8 +337,7 @@ func (s *Store) ListTenantOverrides(ctx context.Context) ([]store.Entry, error) 
 	}
 
 	if err := rows.Err(); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "rows iteration failed")
+		libOTEL.HandleSpanError(span, "list_tenant_overrides rows iteration failed", err)
 
 		return nil, fmt.Errorf("systemplane/postgres: list_tenant_overrides rows: %w", err)
 	}
@@ -324,8 +372,7 @@ func (s *Store) ListTenantsForKey(ctx context.Context, namespace, key string) ([
 
 	rows, err := s.cfg.DB.QueryContext(ctx, query, namespace, key, store.SentinelGlobal)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "query failed")
+		libOTEL.HandleSpanError(span, "list_tenants_for_key query failed", err)
 
 		return nil, fmt.Errorf("systemplane/postgres: list_tenants_for_key: %w", err)
 	}
@@ -337,8 +384,7 @@ func (s *Store) ListTenantsForKey(ctx context.Context, namespace, key string) ([
 		var tenantID string
 
 		if err := rows.Scan(&tenantID); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "scan failed")
+			libOTEL.HandleSpanError(span, "list_tenants_for_key scan failed", err)
 
 			return nil, fmt.Errorf("systemplane/postgres: list_tenants_for_key scan: %w", err)
 		}
@@ -347,8 +393,7 @@ func (s *Store) ListTenantsForKey(ctx context.Context, namespace, key string) ([
 	}
 
 	if err := rows.Err(); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "rows iteration failed")
+		libOTEL.HandleSpanError(span, "list_tenants_for_key rows iteration failed", err)
 
 		return nil, fmt.Errorf("systemplane/postgres: list_tenants_for_key rows: %w", err)
 	}

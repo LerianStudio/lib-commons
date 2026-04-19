@@ -152,10 +152,15 @@ func (s *raceStore) SetTenantValue(_ context.Context, tenantID string, e TestEnt
 
 func (s *raceStore) DeleteTenantValue(_ context.Context, tenantID, namespace, key, _ string) error {
 	s.rowsMu.Lock()
-	delete(s.rows, raceKey{tenantID: tenantID, namespace: namespace, key: key})
+	// Only fire when a row actually existed — real backends do the same.
+	rk := raceKey{tenantID: tenantID, namespace: namespace, key: key}
+	_, existed := s.rows[rk]
+	delete(s.rows, rk)
 	s.rowsMu.Unlock()
 
-	s.fire(TestEvent{Namespace: namespace, Key: key, TenantID: tenantID})
+	if existed {
+		s.fire(TestEvent{Namespace: namespace, Key: key, TenantID: tenantID})
+	}
 
 	return nil
 }
@@ -172,7 +177,7 @@ func (s *raceStore) ListTenantValues(_ context.Context) ([]TestEntry, error) {
 	return out, nil
 }
 
-func (s *raceStore) ListTenantOverrides(_ context.Context) ([]TestEntry, error) {
+func (s *raceStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {
 	s.rowsMu.RLock()
 	defer s.rowsMu.RUnlock()
 

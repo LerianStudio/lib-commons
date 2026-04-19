@@ -153,6 +153,12 @@ func (c *Client) refreshTenantFromStore(ns, key, tenantID string) {
 	// emitted under this refresh. The store.GetTenantValue call takes
 	// tenantID positionally — the ctx binding is purely for telemetry
 	// attribution downstream.
+	//
+	// bgCtx carries tenantID for downstream OTEL spans; detached from the
+	// caller's ctx so refresh doesn't abort on short-lived request
+	// contexts. The changefeed echo can arrive long after the request
+	// that triggered it returned, so tying the refresh lifetime to a
+	// request ctx would drop async echoes silently.
 	bgCtx := core.ContextWithTenantID(context.Background(), tenantID)
 
 	ctx, cancel := context.WithTimeout(bgCtx, refreshTimeout)
@@ -205,115 +211,5 @@ func (c *Client) refreshTenantFromStore(ns, key, tenantID string) {
 	c.fireTenantSubscribers(nk, tenantID, decoded)
 }
 
-// hydrateTenantCache loads every tenant-scoped row from the backing store
-// into tenantCache. Called by Start() in eager mode only. Failures here are
-// non-fatal because the lazy-mode fallback (miss-populate) already handles
-// the case where tenantCache is empty; a hydration failure simply degrades
-// to lazy-like behavior on subsequent GetForTenant calls.
-//
-// Rows for unregistered keys or keys not registered via RegisterTenantScoped
-// are logged and skipped — they signal drift between the running binary and
-// the underlying DB but are not fatal.
-//
-// Locking contract: this function MUST NOT hold registryMu across
-// json.Unmarshal or any other per-row work. At 10k+ entries, a held
-// registry lock during per-row unmarshal would stall concurrent Register
-// calls for 100-500ms. Register is supposed to be pre-Start, but the
-// invariant is cheap to preserve and forestalls future misuse. We snapshot
-// the tenant-scoped registration set under a short registryMu.RLock, then
-// iterate + unmarshal outside the lock, populating tenantCache under a
-// single cacheMu.Lock window instead of N lock/unlock cycles.
-func (c *Client) hydrateTenantCache(ctx context.Context) {
-	// ListTenantOverrides is the server-side-filtered variant that omits
-	// the _global rows already seeded by the earlier global hydrate pass.
-	// On clusters dominated by globals this roughly halves hydration
-	// transfer (see TRD §4.5); on balanced clusters it still eliminates the
-	// per-row discard branch the old code ran in Go.
-	tenantEntries, err := c.store.ListTenantOverrides(ctx)
-	if err != nil {
-		c.logWarn(ctx, "tenant hydration failed, falling back to miss-populate",
-			log.Err(err),
-		)
-
-		return
-	}
-
-	// Snapshot only the registry state the decode loop needs. Holding the
-	// lock just for the snapshot — not the unmarshal — keeps concurrent
-	// Register calls unblocked for O(10k) entries.
-	type regState struct {
-		registered   bool
-		tenantScoped bool
-	}
-
-	c.registryMu.RLock()
-
-	regSnap := make(map[nskey]regState, len(c.registry))
-	for nk := range c.registry {
-		_, tenantScoped := c.tenantScopedRegistry[nk]
-		regSnap[nk] = regState{registered: true, tenantScoped: tenantScoped}
-	}
-
-	c.registryMu.RUnlock()
-
-	// Decode and filter outside the registry lock. Successful decodes are
-	// collected into a batch so the cache is populated under a single
-	// cacheMu.Lock window below.
-	type hydrateItem struct {
-		tenantID string
-		nk       nskey
-		value    any
-	}
-
-	batch := make([]hydrateItem, 0, len(tenantEntries))
-
-	for _, entry := range tenantEntries {
-		nk := nskey{Namespace: entry.Namespace, Key: entry.Key}
-
-		state, registered := regSnap[nk]
-		if !registered {
-			c.logWarn(ctx, "tenant row for unregistered key, skipping",
-				log.String("namespace", entry.Namespace),
-				log.String("key", entry.Key),
-				log.String("tenant_id", entry.TenantID),
-			)
-
-			continue
-		}
-
-		if !state.tenantScoped {
-			c.logWarn(ctx, "tenant row for key not registered via RegisterTenantScoped, skipping",
-				log.String("namespace", entry.Namespace),
-				log.String("key", entry.Key),
-				log.String("tenant_id", entry.TenantID),
-			)
-
-			continue
-		}
-
-		var decoded any
-		if err := json.Unmarshal(entry.Value, &decoded); err != nil {
-			c.logWarn(ctx, "failed to unmarshal tenant value during hydration, skipping",
-				log.String("namespace", entry.Namespace),
-				log.String("key", entry.Key),
-				log.String("tenant_id", entry.TenantID),
-				log.Err(err),
-			)
-
-			continue
-		}
-
-		batch = append(batch, hydrateItem{tenantID: entry.TenantID, nk: nk, value: decoded})
-	}
-
-	if len(batch) == 0 {
-		return
-	}
-
-	// Single lock window for the whole batch — avoids N lock/unlock cycles.
-	c.cacheMu.Lock()
-	for _, it := range batch {
-		c.tenantCache.set(it.tenantID, it.nk, it.value)
-	}
-	c.cacheMu.Unlock()
-}
+// hydrateTenantCache is implemented in tenant_hydration.go. It is invoked
+// by Start() in eager mode to populate tenantCache from the backing store.

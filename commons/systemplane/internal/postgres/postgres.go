@@ -13,10 +13,9 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
-	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
+	libOTEL "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -66,7 +65,7 @@ type Config struct {
 	Logger log.Logger
 
 	// Telemetry is the OpenTelemetry provider for spans and metrics.
-	Telemetry *opentelemetry.Telemetry
+	Telemetry *libOTEL.Telemetry
 
 	// TenantSchemaEnabled opts the backend into phase-2 schema. When false
 	// (the default), ensureSchema keeps the legacy (namespace, key) primary
@@ -165,8 +164,7 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 
 	rows, err := s.cfg.DB.QueryContext(ctx, query, store.SentinelGlobal)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "query failed")
+		libOTEL.HandleSpanError(span, "list query failed", err)
 
 		return nil, fmt.Errorf("systemplane/postgres: list: %w", err)
 	}
@@ -178,8 +176,7 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 		var e store.Entry
 
 		if err := rows.Scan(&e.Namespace, &e.Key, &e.TenantID, &e.Value, &e.UpdatedAt, &e.UpdatedBy); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "scan failed")
+			libOTEL.HandleSpanError(span, "list scan failed", err)
 
 			return nil, fmt.Errorf("systemplane/postgres: list scan: %w", err)
 		}
@@ -188,8 +185,7 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	}
 
 	if err := rows.Err(); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "rows iteration failed")
+		libOTEL.HandleSpanError(span, "list rows iteration failed", err)
 
 		return nil, fmt.Errorf("systemplane/postgres: list rows: %w", err)
 	}
@@ -232,8 +228,7 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bo
 	}
 
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "query failed")
+		libOTEL.HandleSpanError(span, "get query failed", err)
 
 		return store.Entry{}, false, fmt.Errorf("systemplane/postgres: get: %w", err)
 	}
@@ -295,8 +290,7 @@ SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLU
 	)
 
 	if _, err := s.cfg.DB.ExecContext(ctx, query, e.Namespace, e.Key, store.SentinelGlobal, e.Value, e.UpdatedAt, e.UpdatedBy); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "upsert failed")
+		libOTEL.HandleSpanError(span, "set upsert failed", err)
 
 		return fmt.Errorf("systemplane/postgres: set: %w", err)
 	}
@@ -370,6 +364,15 @@ func (s *Store) logInfo(ctx context.Context, msg string, fields ...log.Field) {
 func (s *Store) logWarn(ctx context.Context, msg string, fields ...log.Field) {
 	if s.cfg.Logger != nil {
 		s.cfg.Logger.Log(ctx, log.LevelWarn, msg, fields...)
+	}
+}
+
+// logDebug emits a debug-level log if a logger is configured. Used for
+// low-signal reconnect chatter where the first incident is already logged
+// at warn level.
+func (s *Store) logDebug(ctx context.Context, msg string, fields ...log.Field) {
+	if s.cfg.Logger != nil {
+		s.cfg.Logger.Log(ctx, log.LevelDebug, msg, fields...)
 	}
 }
 

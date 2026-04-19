@@ -222,10 +222,19 @@ func (s *tenantFakeStore) DeleteTenantValue(_ context.Context, tenantID, namespa
 		return err
 	}
 
-	delete(s.rows, tenantRowKey{tenantID: tenantID, namespace: namespace, key: key})
+	// Only fire a changefeed event when a row actually existed — this mirrors
+	// the Postgres/MongoDB contract (a DELETE that removes zero rows emits no
+	// NOTIFY / change-stream event). Firing on a no-op delete would cause
+	// OnTenantChange subscribers to observe a phantom echo that real backends
+	// never produce.
+	rk := tenantRowKey{tenantID: tenantID, namespace: namespace, key: key}
+	_, existed := s.rows[rk]
+	delete(s.rows, rk)
 	s.mu.Unlock()
 
-	s.fire(TestEvent{Namespace: namespace, Key: key, TenantID: tenantID})
+	if existed {
+		s.fire(TestEvent{Namespace: namespace, Key: key, TenantID: tenantID})
+	}
 
 	return nil
 }
@@ -242,7 +251,7 @@ func (s *tenantFakeStore) ListTenantValues(_ context.Context) ([]TestEntry, erro
 	return out, nil
 }
 
-func (s *tenantFakeStore) ListTenantOverrides(_ context.Context) ([]TestEntry, error) {
+func (s *tenantFakeStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -1250,6 +1259,479 @@ func TestTenantFakeStore_FireReachesSubscribedHandlers(t *testing.T) {
 	// through every backend assertion. Keep this check literal so a future
 	// change has to think twice.
 	assert.Equal(t, "_global", store.SentinelGlobal, "store.SentinelGlobal should remain '_global' (TRD §3, decision D2)")
+}
+
+// ---------------------------------------------------------------------------
+// Delete — no-op must not fire subscribers; backend errors must surface.
+// ---------------------------------------------------------------------------
+
+// TestDeleteForTenant_NoOpDoesNotFireSubscribers pins the TRD §4.4 contract
+// that DeleteForTenant is idempotent AND that a no-op delete (no row to
+// remove) emits NO changefeed event — so OnTenantChange does NOT fire.
+// Real backends (Postgres / MongoDB) do the same: a DELETE that removes
+// zero rows produces no NOTIFY / change-stream event.
+//
+// A phantom echo here would mean subscribers observe a spurious "reverted
+// to default" fire every time an admin panel idempotently cleared a row
+// that was already gone.
+func TestDeleteForTenant_NoOpDoesNotFireSubscribers(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildStartedClient(t, "global", "fee.rate", 0.42)
+
+	var fires atomic.Int64
+
+	unsub := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, _ any) {
+		fires.Add(1)
+	})
+	defer unsub()
+
+	// tenant-A has NO row — delete must be a silent no-op.
+	require.NoError(t, c.DeleteForTenant(tctx("tenant-A"), "global", "fee.rate", "admin"))
+
+	// Wait past any debounce window; the fake store has debounce=0 by
+	// default (NewForTesting) so 100ms is very comfortable.
+	time.Sleep(100 * time.Millisecond)
+
+	assert.Equal(t, int64(0), fires.Load(),
+		"no-op delete must NOT fire OnTenantChange — real backends emit no event for zero-row DELETE")
+}
+
+// TestDeleteForTenant_BackendErrorSurfaces exercises the deleteTenantErr
+// injection hook (tenant_scoped_test.go:81) to verify that
+// removeTenantValue's error propagation is observable end-to-end: a backend
+// failure on DeleteTenantValue must surface to the caller, NOT be silently
+// swallowed.
+//
+// Matches the SetForTenant symmetry exercise in
+// TestSetForTenant_SurfacesErrTenantSchemaNotEnabled.
+func TestDeleteForTenant_BackendErrorSurfaces(t *testing.T) {
+	t.Parallel()
+
+	c, fs := buildStartedClient(t, "global", "fee.rate", 0.0)
+
+	// Seed a row so the delete path is semantically valid (it would succeed
+	// in the absence of the error hook). The actual assertion is about the
+	// error bubble-up, not about row presence.
+	require.NoError(t, c.SetForTenant(tctx("tenant-A"), "global", "fee.rate", 0.5, "admin"))
+
+	sentinel := errors.New("synthetic backend delete failure")
+
+	fs.mu.Lock()
+	fs.deleteTenantErr = sentinel
+	fs.mu.Unlock()
+
+	err := c.DeleteForTenant(tctx("tenant-A"), "global", "fee.rate", "admin")
+	require.Error(t, err, "backend delete failure must surface to caller")
+	assert.ErrorIs(t, err, sentinel,
+		"wrapped sentinel must remain visible via errors.Is (removeTenantValue wraps but preserves)")
+
+	// Defense-in-depth: the tenant cache still holds the override since
+	// the delete failed and the write-through cache-clear is gated behind
+	// a nil error from removeTenantValue.
+	v, found, gErr := c.GetForTenant(tctx("tenant-A"), "global", "fee.rate")
+	require.NoError(t, gErr)
+	assert.True(t, found)
+	assert.InDelta(t, 0.5, v, 0.0001,
+		"failed backend delete must NOT have cleared the in-memory override (no silent split-brain)")
+}
+
+// TestDeleteForTenant_LazyModeRemovesFromLRU is the symmetric lazy-mode
+// complement to TestGetForTenant_LazyModeSingleFlightCoalescesMisses. It
+// asserts that a successful DeleteForTenant evicts the entry from the
+// bounded-LRU tenant cache so a subsequent GetForTenant miss path triggers
+// a fresh backend fetch (and observes any cleanup the backend performed).
+//
+// Observable mechanism: populate the LRU via a miss-populate, delete the
+// row, then force the backend into a failure mode. The subsequent
+// GetForTenant must fall through to the global/default cascade — proving
+// the LRU entry is no longer serving stale reads.
+func TestDeleteForTenant_LazyModeRemovesFromLRU(t *testing.T) {
+	t.Parallel()
+
+	fs := newTenantFakeStore()
+
+	c, err := NewForTesting(fs, WithLazyTenantLoad(10))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	require.NoError(t, c.RegisterTenantScoped("global", "fee.rate", 0.01))
+	require.NoError(t, c.Start(context.Background()))
+
+	select {
+	case <-fs.subReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Subscribe handler did not register")
+	}
+
+	// Seed a tenant row directly (bypass changefeed) and populate the LRU
+	// via a first miss-populate read.
+	fs.directSetTenantRow("tenant-A", "global", "fee.rate", []byte(`0.42`))
+
+	v, found, err := c.GetForTenant(tctx("tenant-A"), "global", "fee.rate")
+	require.NoError(t, err)
+	require.True(t, found)
+	require.InDelta(t, 0.42, v, 0.0001, "initial miss must populate from the backend")
+
+	// Delete the override. This evicts the LRU entry via the write-through
+	// delete path in DeleteForTenant (tenant_scoped.go).
+	require.NoError(t, c.DeleteForTenant(tctx("tenant-A"), "global", "fee.rate", "admin"))
+
+	// Force the backend into a failure mode — a subsequent cache miss
+	// would fall through to the default. A cache HIT would keep returning
+	// 0.42 (the eviction did not happen) and we would detect the bug.
+	fs.mu.Lock()
+	fs.getTenantErr = errors.New("forced backend failure after delete")
+	fs.mu.Unlock()
+
+	v2, found2, err := c.GetForTenant(tctx("tenant-A"), "global", "fee.rate")
+	require.NoError(t, err, "lazy miss with backend error must fall through to default, not error")
+	require.True(t, found2)
+	assert.InDelta(t, 0.01, v2, 0.0001,
+		"after DeleteForTenant the LRU entry must be evicted so reads cascade to global/default")
+}
+
+// TestGetForTenant_LazyMode_NilValuedOverrideReturnsNilAndFound pins the
+// AC3 fix: a tenant override whose JSON-decoded value is nil (e.g. a key
+// whose stored representation is literally `null`) must be returned as
+// (nil, true, nil) from GetForTenant — NOT collapsed to (fall-through,
+// true) because the single-flight closure returned a nil value.
+//
+// The historical bug: the outer caller branched on `fetched != nil` after
+// sfg.Do, conflating "found=true, value=nil" with "no override". The fix
+// threads a struct{value, found} through so the branch is on the explicit
+// `found` flag, not on nil-equality of the value.
+func TestGetForTenant_LazyMode_NilValuedOverrideReturnsNilAndFound(t *testing.T) {
+	t.Parallel()
+
+	fs := newTenantFakeStore()
+
+	c, err := NewForTesting(fs, WithLazyTenantLoad(10))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	require.NoError(t, c.RegisterTenantScoped("global", "feature", "default-string"))
+	require.NoError(t, c.Start(context.Background()))
+
+	select {
+	case <-fs.subReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Subscribe handler did not register")
+	}
+
+	// Seed a tenant row whose stored JSON value decodes to a literal nil
+	// (the JSON `null` token). This is the minimal reproducer for AC3.
+	fs.directSetTenantRow("tenant-A", "global", "feature", []byte(`null`))
+
+	// Lazy miss-populate path; the closure must return (nil-value, found=true)
+	// and the outer caller must branch on `found`, not on the value.
+	v, found, err := c.GetForTenant(tctx("tenant-A"), "global", "feature")
+	require.NoError(t, err)
+	assert.True(t, found,
+		"nil-valued override must report found=true — conflating with 'no override' would cause wrong fall-through")
+	assert.Nil(t, v, "the decoded nil value must be returned as-is, not replaced with the default")
+
+	// Subsequent read must hit the LRU, also reporting (nil, true) — proves
+	// the LRU itself can hold and dispense a literal nil value.
+	v2, found2, err := c.GetForTenant(tctx("tenant-A"), "global", "feature")
+	require.NoError(t, err)
+	assert.True(t, found2, "LRU-populated nil-valued entry must also report found=true")
+	assert.Nil(t, v2, "LRU must hold the literal nil, not fall back to the default on re-read")
+}
+
+// ---------------------------------------------------------------------------
+// Typed accessor — GetIntForTenant.
+// ---------------------------------------------------------------------------
+
+// TestGetIntForTenant_Succeeds covers both numeric backing types the
+// accessor contract accepts: a native int (set via SetForTenant with an
+// int literal) and a float64 (the JSON-decoded form used by any value
+// round-tripped through the store). Matches the legacy GetInt accessor
+// behavior in get.go.
+func TestGetIntForTenant_Succeeds(t *testing.T) {
+	t.Parallel()
+
+	t.Run("int_literal", func(t *testing.T) {
+		t.Parallel()
+
+		c, _ := buildStartedClient(t, "global", "threshold", 42)
+
+		// SetForTenant round-trips through JSON (persistTenantValue does the
+		// marshal + canonical unmarshal), so the cached value is float64.
+		require.NoError(t, c.SetForTenant(tctx("tenant-A"), "global", "threshold", 7, "admin"))
+
+		n, err := c.GetIntForTenant(tctx("tenant-A"), "global", "threshold")
+		require.NoError(t, err)
+		assert.Equal(t, 7, n, "numeric JSON decode path must coerce float64 → int")
+	})
+
+	t.Run("default_is_int", func(t *testing.T) {
+		t.Parallel()
+
+		// No SetForTenant; the cascade hits the registered int default.
+		c, _ := buildStartedClient(t, "global", "threshold", 42)
+
+		n, err := c.GetIntForTenant(tctx("tenant-A"), "global", "threshold")
+		require.NoError(t, err)
+		assert.Equal(t, 42, n, "registered default is a Go int and must be returned unchanged")
+	})
+}
+
+// TestGetIntForTenant_WrongTypeReturnsErrValidation pins the D8 invariant:
+// a type mismatch on the tenant-scoped typed accessor returns
+// ErrValidation loudly, instead of silently collapsing to zero.
+func TestGetIntForTenant_WrongTypeReturnsErrValidation(t *testing.T) {
+	t.Parallel()
+
+	// Register a string default — asking for an int must fail.
+	c, _ := buildStartedClient(t, "global", "label", "hello")
+
+	n, err := c.GetIntForTenant(tctx("tenant-A"), "global", "label")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrValidation, "type mismatch must surface ErrValidation (D8: no silent zero)")
+	assert.Zero(t, n, "on error the typed accessor returns the zero value")
+}
+
+// ---------------------------------------------------------------------------
+// hydrateTenantCache — skip branches + lazy-mode short-circuit.
+// ---------------------------------------------------------------------------
+
+// hydrateFakeStore is a compact TestStore used by the hydration branch
+// tests. It pre-seeds tenant rows into ListTenantOverrides so Start()
+// exercises the hydration code path before the test asserts what ended
+// up (or did not end up) in the cache. Unlike tenantFakeStore, every
+// method beyond the hydration surface is a benign no-op.
+type hydrateFakeStore struct {
+	mu        sync.Mutex
+	overrides []TestEntry
+	rows      map[tenantRowKey]TestEntry
+	handlers  []func(TestEvent)
+	subReady  chan struct{}
+}
+
+func newHydrateFakeStore(overrides ...TestEntry) *hydrateFakeStore {
+	s := &hydrateFakeStore{
+		overrides: append([]TestEntry(nil), overrides...),
+		rows:      make(map[tenantRowKey]TestEntry),
+		subReady:  make(chan struct{}),
+	}
+	for _, e := range overrides {
+		s.rows[tenantRowKey{tenantID: e.TenantID, namespace: e.Namespace, key: e.Key}] = e
+	}
+	return s
+}
+
+func (s *hydrateFakeStore) List(_ context.Context) ([]TestEntry, error) { return nil, nil }
+func (s *hydrateFakeStore) Get(_ context.Context, _, _ string) (TestEntry, bool, error) {
+	return TestEntry{}, false, nil
+}
+func (s *hydrateFakeStore) Set(_ context.Context, _ TestEntry) error { return nil }
+
+func (s *hydrateFakeStore) Subscribe(ctx context.Context, handler func(TestEvent)) error {
+	s.mu.Lock()
+	first := len(s.handlers) == 0
+	s.handlers = append(s.handlers, handler)
+	s.mu.Unlock()
+
+	if first {
+		close(s.subReady)
+	}
+
+	<-ctx.Done()
+	return nil
+}
+func (s *hydrateFakeStore) Close() error { return nil }
+
+func (s *hydrateFakeStore) GetTenantValue(_ context.Context, tenantID, namespace, key string) (TestEntry, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.rows[tenantRowKey{tenantID: tenantID, namespace: namespace, key: key}]
+	return e, ok, nil
+}
+func (s *hydrateFakeStore) SetTenantValue(_ context.Context, _ string, _ TestEntry) error {
+	return nil
+}
+func (s *hydrateFakeStore) DeleteTenantValue(_ context.Context, _, _, _, _ string) error {
+	return nil
+}
+func (s *hydrateFakeStore) ListTenantValues(_ context.Context) ([]TestEntry, error) {
+	return nil, nil
+}
+func (s *hydrateFakeStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]TestEntry, len(s.overrides))
+	copy(out, s.overrides)
+	return out, nil
+}
+func (s *hydrateFakeStore) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
+	return nil, nil
+}
+
+// TestHydrateTenantCache_SkipsUnregisteredKey verifies that hydrateTenantCache
+// ignores backend rows whose (namespace, key) is not in the registry at all.
+// These rows signal drift between the running binary and the database (e.g.
+// an older deploy wrote a key the newer deploy removed from its registry).
+// Skipping is safe; populating would create ghost entries nobody reads.
+func TestHydrateTenantCache_SkipsUnregisteredKey(t *testing.T) {
+	t.Parallel()
+
+	fs := newHydrateFakeStore(TestEntry{
+		Namespace: "global",
+		Key:       "ghost.key", // NEVER registered
+		TenantID:  "tenant-A",
+		Value:     []byte(`0.99`),
+	})
+
+	c, err := NewForTesting(fs)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	// Register a DIFFERENT key. The ghost row should be skipped.
+	require.NoError(t, c.RegisterTenantScoped("global", "real.key", 0.0))
+	require.NoError(t, c.Start(context.Background()))
+
+	select {
+	case <-fs.subReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Subscribe handler did not register")
+	}
+
+	// The ghost key should not be reachable via GetForTenant (it was never
+	// registered). Attempting to read it should surface ErrUnknownKey.
+	_, _, err = c.GetForTenant(tctx("tenant-A"), "global", "ghost.key")
+	assert.ErrorIs(t, err, ErrUnknownKey, "ghost-key row must not become queryable via hydration")
+}
+
+// TestHydrateTenantCache_SkipsNonTenantScoped verifies that hydrateTenantCache
+// skips rows for keys registered only via Register (legacy), not via
+// RegisterTenantScoped. Populating tenantCache for a globals-only key
+// would violate AC8 by creating ghost overrides that should not exist.
+func TestHydrateTenantCache_SkipsNonTenantScoped(t *testing.T) {
+	t.Parallel()
+
+	fs := newHydrateFakeStore(TestEntry{
+		Namespace: "global",
+		Key:       "legacy.key",
+		TenantID:  "tenant-A",
+		Value:     []byte(`"ignored"`),
+	})
+
+	c, err := NewForTesting(fs)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	// Register via Register, NOT RegisterTenantScoped. Any tenant row for
+	// this key is drift and must be skipped.
+	require.NoError(t, c.Register("global", "legacy.key", "default"))
+	require.NoError(t, c.Start(context.Background()))
+
+	select {
+	case <-fs.subReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Subscribe handler did not register")
+	}
+
+	// The tenant-scoped read surface must reject — the key is not
+	// tenant-scoped, regardless of what's in the backend.
+	_, _, err = c.GetForTenant(tctx("tenant-A"), "global", "legacy.key")
+	assert.ErrorIs(t, err, ErrTenantScopeNotRegistered,
+		"non-tenant-scoped key must be rejected by GetForTenant even if hydration saw a row for it")
+}
+
+// TestHydrateTenantCache_LazyModeSkipsBackfill verifies that Start() in
+// lazy mode does NOT call hydrateTenantCache. Observable proof: seed a
+// tenant row, force the backend into failure mode after Start, then
+// attempt GetForTenant. In eager mode the row would already be cached
+// and the read would succeed; in lazy mode the read path hits the
+// backend (which we've broken), and must fall through to the default
+// rather than return the hydrated value.
+func TestHydrateTenantCache_LazyModeSkipsBackfill(t *testing.T) {
+	t.Parallel()
+
+	fs := newTenantFakeStore()
+
+	// Seed a row BEFORE Start so an eager-mode client would hydrate it.
+	fs.directSetTenantRow("tenant-A", "global", "fee.rate", []byte(`0.99`))
+
+	c, err := NewForTesting(fs, WithLazyTenantLoad(10))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	require.NoError(t, c.RegisterTenantScoped("global", "fee.rate", 0.01))
+	require.NoError(t, c.Start(context.Background()))
+
+	select {
+	case <-fs.subReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Subscribe handler did not register")
+	}
+
+	// Kill the backend. If lazy mode had (wrongly) hydrated tenantCache at
+	// Start, the subsequent read would hit the cache and see 0.99. With
+	// lazy-mode-skips-hydration honored, the read must miss the LRU,
+	// attempt the backend, observe the failure, and fall through to the
+	// default (0.01).
+	fs.mu.Lock()
+	fs.getTenantErr = errors.New("forced backend failure")
+	fs.mu.Unlock()
+
+	v, found, err := c.GetForTenant(tctx("tenant-A"), "global", "fee.rate")
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.InDelta(t, 0.01, v, 0.0001,
+		"lazy mode must skip hydration — otherwise the pre-seeded 0.99 would have been served from cache")
+}
+
+// TestHydrateTenantCache_SkipsBadJSON verifies that a row with malformed
+// JSON in the Value field is logged and skipped, not returned as a
+// corrupted override. The successful rows in the same batch must still
+// populate.
+func TestHydrateTenantCache_SkipsBadJSON(t *testing.T) {
+	t.Parallel()
+
+	fs := newHydrateFakeStore(
+		TestEntry{
+			Namespace: "global",
+			Key:       "fee.rate",
+			TenantID:  "tenant-A",
+			Value:     []byte(`{not-valid-json`), // malformed
+		},
+		TestEntry{
+			Namespace: "global",
+			Key:       "fee.rate",
+			TenantID:  "tenant-B",
+			Value:     []byte(`0.5`), // valid
+		},
+	)
+
+	c, err := NewForTesting(fs)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	require.NoError(t, c.RegisterTenantScoped("global", "fee.rate", 0.01))
+	require.NoError(t, c.Start(context.Background()))
+
+	select {
+	case <-fs.subReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Subscribe handler did not register")
+	}
+
+	// tenant-A's row was malformed; GetForTenant must fall through to the
+	// default (the row was NOT cached as corrupt).
+	v, found, err := c.GetForTenant(tctx("tenant-A"), "global", "fee.rate")
+	require.NoError(t, err)
+	require.True(t, found)
+	assert.InDelta(t, 0.01, v, 0.0001,
+		"bad-JSON row must be skipped at hydration, falling through to default")
+
+	// tenant-B's row was valid; hydration populated tenantCache.
+	v2, found2, err := c.GetForTenant(tctx("tenant-B"), "global", "fee.rate")
+	require.NoError(t, err)
+	require.True(t, found2)
+	assert.InDelta(t, 0.5, v2, 0.0001,
+		"same-batch valid row must still populate despite sibling bad-JSON row")
 }
 
 // Guardrail: tenant-manager core symbols are still reachable. If the import

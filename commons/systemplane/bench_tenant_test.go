@@ -128,7 +128,7 @@ func (s *benchTenantStore) ListTenantValues(_ context.Context) ([]TestEntry, err
 	return out, nil
 }
 
-func (s *benchTenantStore) ListTenantOverrides(_ context.Context) ([]TestEntry, error) {
+func (s *benchTenantStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

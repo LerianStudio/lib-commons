@@ -103,14 +103,15 @@ type Store interface {
 	// Returns nil when no matching row exists (delete is idempotent).
 	DeleteTenantValue(ctx context.Context, tenantID, namespace, key, actor string) error
 
-	// ListTenantValues returns every row in the store, including both the
-	// "_global" rows and every tenant-scoped override. Callers filter by
-	// TenantID as needed; used by the Client to hydrate the tenantCache at
-	// Start(). Returns an empty slice, not nil, when the store is empty.
-	ListTenantValues(ctx context.Context) ([]Entry, error)
-
 	// ListTenantOverrides returns only the tenant-scoped override rows
 	// (tenant_id != SentinelGlobal), omitting the shared '_global' rows.
+	//
+	// Keyset pagination: callers pass empty strings on the first page, then
+	// repeat with the last-observed (namespace, key, tenant_id) tuple for each
+	// subsequent page. A non-positive limit is treated as "no limit" (unbounded
+	// page). Results are ordered by (namespace, key, tenant_id) ascending so
+	// the cursor tuple is lexicographically monotonic. End-of-stream is
+	// signalled by a short page (len(result) < limit) or an empty result.
 	//
 	// This is the hot-path variant used by hydrateTenantCache at Start(): the
 	// tenant cache only cares about overrides, and eliding globals at the
@@ -121,9 +122,12 @@ type Store interface {
 	// still incur the bandwidth cost this method exists to avoid.
 	//
 	// Returns an empty slice, not nil, when no tenant overrides exist.
-	// ListTenantValues remains available for callers (notably the contract
-	// test suite) that need the full listing.
-	ListTenantOverrides(ctx context.Context) ([]Entry, error)
+	//
+	// Backends also expose ListTenantValues(ctx) ([]Entry, error) as a concrete
+	// method (not on this interface) for the systemplanetest contract suite's
+	// full-listing assertions. Production code uses ListTenantOverrides
+	// exclusively; ListTenantValues is a test-support affordance.
+	ListTenantOverrides(ctx context.Context, afterNamespace, afterKey, afterTenantID string, limit int) ([]Entry, error)
 
 	// ListTenantsForKey returns a sorted, deduplicated list of distinct
 	// tenant IDs that have an override for (namespace, key). The "_global"

@@ -103,7 +103,7 @@ func (f *fakeTenantTestStore) ListTenantValues(_ context.Context) ([]TestEntry, 
 	return nil, nil
 }
 
-func (f *fakeTenantTestStore) ListTenantOverrides(_ context.Context) ([]TestEntry, error) {
+func (f *fakeTenantTestStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {
 	return nil, nil
 }
 

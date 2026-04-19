@@ -132,6 +132,16 @@ func (c *Client) OnTenantChange(namespace, key string, fn func(ctx context.Conte
 // from the debouncer's internal ctx (they already execute after the
 // changefeed echo, not synchronously with the triggering write).
 func (c *Client) fireTenantSubscribers(nk nskey, tenantID string, newValue any) {
+	// Nil-receiver guard: mirrors fireSubscribers in client.go and preserves
+	// the "read methods are nil-safe" surface promised by the Client doc.
+	// Refresh paths ought never invoke this with a nil receiver in
+	// production, but a defensive guard here costs nothing and prevents a
+	// nil-pointer panic inside the RLock if a future refactor reorders the
+	// call sequence.
+	if c == nil {
+		return
+	}
+
 	c.tenantSubsMu.RLock()
 	subs := c.tenantSubscribers[nk]
 

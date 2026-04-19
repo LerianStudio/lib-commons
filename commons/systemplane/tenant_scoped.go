@@ -175,6 +175,14 @@ func extractTenantID(ctx context.Context) (string, error) {
 func (c *Client) requireTenantScoped(namespace, key string) (keyDef, nskey, error) {
 	nk := nskey{Namespace: namespace, Key: key}
 
+	// Nil-receiver guard: matches the ErrClosed pattern used by every public
+	// tenant-scoped entry point. Every caller of requireTenantScoped also
+	// guards against nil at the public-method level, but the defensive check
+	// here forestalls a nil-pointer panic if a future caller forgets.
+	if c == nil {
+		return keyDef{}, nk, ErrClosed
+	}
+
 	c.registryMu.RLock()
 	def, registered := c.registry[nk]
 	_, tenantScoped := c.tenantScopedRegistry[nk]
@@ -294,6 +302,10 @@ func (c *Client) GetForTenant(ctx context.Context, namespace, key string) (any, 
 		return nil, false, ErrClosed
 	}
 
+	if !c.started.Load() {
+		return nil, false, ErrNotStarted
+	}
+
 	tenantID, err := extractTenantID(ctx)
 	if err != nil {
 		return nil, false, err
@@ -319,51 +331,11 @@ func (c *Client) GetForTenant(ctx context.Context, namespace, key string) (any, 
 		return v, true, nil
 	}
 
-	// 1b. Lazy-mode miss: single-flight fetch with a bounded timeout.
-	// On success, populate the LRU and return. On failure, log warn and
-	// fall through — a degraded store must not break reads. The
-	// single-flight group coalesces concurrent misses on the same
-	// (tenantID, namespace, key) tuple into exactly one backend round-trip;
-	// N concurrent goroutines share the result of the sole in-flight call.
+	// 1b. Lazy-mode miss: delegate to the helper so this method stays
+	// focused on the cascade (tenantCache → legacy global → default).
 	if c.tenantLoadMode == tenantLoadLazy {
-		sfKey := singleflightKey(tenantID, namespace, key)
-
-		fetched, fetchErr, _ := c.sfg.Do(sfKey, func() (any, error) {
-			fetchCtx, cancel := context.WithTimeout(ctx, tenantStoreTimeout)
-			defer cancel()
-
-			decoded, found, err := c.fetchTenantValue(fetchCtx, tenantID, namespace, key)
-			if err != nil {
-				return nil, err
-			}
-
-			if !found {
-				return nil, nil //nolint:nilnil // intentional: "no override" is a valid result with no error
-			}
-
-			// Populate the LRU under cacheMu.Lock before returning so every
-			// shared-call waiter sees the same cached state.
-			c.cacheMu.Lock()
-			c.tenantCache.set(tenantID, nk, decoded)
-			c.cacheMu.Unlock()
-
-			return decoded, nil
-		})
-
-		if fetchErr == nil && fetched != nil {
-			return fetched, true, nil
-		}
-
-		if fetchErr != nil {
-			c.logWarn(ctx, "lazy GetForTenant store fetch failed, falling through to global/default",
-				fetchErrFields(namespace, key, tenantID, fetchErr)...,
-			)
-			// Attribute the fall-through for operators: a non-zero rate
-			// here indicates the lazy cache is absorbing backend failures
-			// behind the scenes. The metric is tenant-agnostic by design
-			// (cardinality) — namespace+key alone is sufficient to locate
-			// the affected key.
-			c.recordTenantLazyFetchError(ctx, namespace, key)
+		if val, found, handled := c.getForTenantLazyMissLocked(ctx, tenantID, namespace, key, nk); handled {
+			return val, found, nil
 		}
 	}
 
@@ -381,6 +353,82 @@ func (c *Client) GetForTenant(ctx context.Context, namespace, key string) (any, 
 	// 3. Registered default. Never errors on "no override" — GetForTenant
 	// always returns a value when the key is correctly registered.
 	return def.defaultValue, true, nil
+}
+
+// getForTenantLazyMissLocked executes the lazy-mode cache-miss path:
+// single-flight coalesced fetch from the backend, populate the LRU on a hit,
+// and swallow-with-log on failure (falling through to the global/default
+// cascade in the caller).
+//
+// Return contract:
+//   - (value, true, true)  — override present in the store (including nil-value
+//     overrides — "found=true" is the sole signal, the value may legitimately
+//     be nil).
+//   - (nil, false, false)  — no override; caller proceeds with the cascade.
+//   - (nil, false, false)  — fetch failed; caller proceeds with the cascade.
+//
+// The closure's return is wrapped in a struct {value, found} so that the
+// outer code branches on the explicit `found` flag rather than the historical
+// `fetched != nil` heuristic, which conflated a nil-valued override (found=true,
+// value=nil) with "no override" (found=false). See AC3.
+//
+// The "Locked" suffix reflects that the method takes cacheMu.Lock internally
+// around the LRU populate; it does not require the caller to hold any lock.
+func (c *Client) getForTenantLazyMissLocked(ctx context.Context, tenantID, namespace, key string, nk nskey) (any, bool, bool) {
+	sfKey := singleflightKey(tenantID, namespace, key)
+
+	// Struct-wrap the single-flight payload so "nil-valued override" and
+	// "no override" are unambiguously distinguishable. The previous
+	// (fetched any, err error) shape collapsed both to (nil, nil) and
+	// caused the AC3 nil-value bug.
+	type sfResult struct {
+		value any
+		found bool
+	}
+
+	res, fetchErr, _ := c.sfg.Do(sfKey, func() (any, error) {
+		fetchCtx, cancel := context.WithTimeout(ctx, tenantStoreTimeout)
+		defer cancel()
+
+		decoded, found, err := c.fetchTenantValue(fetchCtx, tenantID, namespace, key)
+		if err != nil {
+			return sfResult{}, err
+		}
+
+		if !found {
+			return sfResult{found: false}, nil
+		}
+
+		// Populate the LRU under cacheMu.Lock before returning so every
+		// shared-call waiter sees the same cached state.
+		c.cacheMu.Lock()
+		c.tenantCache.set(tenantID, nk, decoded)
+		c.cacheMu.Unlock()
+
+		return sfResult{value: decoded, found: true}, nil
+	})
+	if fetchErr != nil {
+		c.logWarn(ctx, "lazy GetForTenant store fetch failed, falling through to global/default",
+			fetchErrFields(namespace, key, tenantID, fetchErr)...,
+		)
+		// Attribute the fall-through for operators: a non-zero rate
+		// here indicates the lazy cache is absorbing backend failures
+		// behind the scenes. The metric is tenant-agnostic by design
+		// (cardinality) — namespace+key alone is sufficient to locate
+		// the affected key.
+		c.recordTenantLazyFetchError(ctx, namespace, key)
+
+		return nil, false, false
+	}
+
+	// sfg.Do returns `any`; the type assertion is safe because the closure
+	// always returns an sfResult.
+	r, _ := res.(sfResult)
+	if !r.found {
+		return nil, false, false
+	}
+
+	return r.value, true, true
 }
 
 // DeleteForTenant removes the tenant-specific override for (namespace, key)
@@ -438,6 +486,16 @@ func (c *Client) DeleteForTenant(ctx context.Context, namespace, key, actor stri
 	return nil
 }
 
+// emptyTenantList is the canonical empty slice returned by ListTenantsForKey
+// on any error or unregistered-key path. Defined as a package-level var so
+// every error branch shares the same zero-allocation sentinel instead of
+// rebuilding a fresh []string{} on each call. Callers MUST NOT mutate the
+// returned slice — it is structurally shared across every error response.
+// Matches the "return the same zero-length slice" pattern used by a handful
+// of stdlib helpers (e.g. strings.Split returning a 1-element slice of
+// empty) to avoid unnecessary allocation on the cold path.
+var emptyTenantList = []string{}
+
 // ListTenantsForKey returns a sorted, deduplicated list of tenant IDs that
 // have an override for (namespace, key). Returns an empty slice (never nil)
 // on any error; errors are logged at warn level. Callers that need to
@@ -449,10 +507,8 @@ func (c *Client) DeleteForTenant(ctx context.Context, namespace, key, actor stri
 // does NOT require a tenant ID in ctx — it is an administrative/reflection
 // query. An internal 5s timeout bounds the backend call.
 func (c *Client) ListTenantsForKey(namespace, key string) []string {
-	empty := []string{}
-
 	if c == nil || c.closed.Load() {
-		return empty
+		return emptyTenantList
 	}
 
 	if _, _, err := c.requireTenantScoped(namespace, key); err != nil {
@@ -460,7 +516,7 @@ func (c *Client) ListTenantsForKey(namespace, key string) []string {
 			registrationErrFields(namespace, key, err)...,
 		)
 
-		return empty
+		return emptyTenantList
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), tenantStoreTimeout)
@@ -472,7 +528,7 @@ func (c *Client) ListTenantsForKey(namespace, key string) []string {
 			registrationErrFields(namespace, key, err)...,
 		)
 
-		return empty
+		return emptyTenantList
 	}
 
 	return tenants
@@ -481,11 +537,18 @@ func (c *Client) ListTenantsForKey(namespace, key string) []string {
 // singleflightKey builds the composite string key used by the Client's
 // singleflight.Group to coalesce concurrent lazy-mode miss fetches on the
 // same (tenantID, namespace, key) tuple. The U+001F (Unit Separator)
-// delimiter is a control character that cannot appear in valid tenantIDs,
-// namespaces, or keys — the same scheme the changefeed debouncer used
-// before it was moved to a struct key in onEvent.
+// delimiter (see the `unitSeparator` constant in register.go) is a control
+// character that cannot appear in valid tenantIDs, namespaces, or keys —
+// the same scheme the changefeed debouncer used before it was moved to a
+// struct key in onEvent.
+//
+// Safety depends on validateKeyArgs rejecting namespace/key that contain
+// U+001F AND on core.IsValidTenantID rejecting tenant IDs that contain
+// U+001F (it accepts only `[A-Za-z0-9][A-Za-z0-9_-]*`, so the delimiter is
+// structurally impossible in a valid tenant ID). If either guard weakens,
+// distinct tuples could collide on the same singleflight slot.
 func singleflightKey(tenantID, namespace, key string) string {
-	return tenantID + "\x1f" + namespace + "\x1f" + key
+	return tenantID + unitSeparator + namespace + unitSeparator + key
 }
 
 // fetchErrFields builds the log.Field slice for a lazy-mode cache-miss

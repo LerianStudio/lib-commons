@@ -46,6 +46,11 @@ func defaultClientConfig() clientConfig {
 		debounce:      100 * time.Millisecond,
 		collection:    "systemplane_entries",
 		table:         "systemplane_entries",
+		// Explicit — relying on the zero value of tenantLoadMode would silently
+		// break if tenantLoadEager were ever renumbered (it currently sits at
+		// iota == 0). State the default here so the intent is locked to the
+		// name, not the ordering.
+		tenantLoadMode: tenantLoadEager,
 	}
 }
 

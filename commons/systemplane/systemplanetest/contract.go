@@ -20,6 +20,33 @@ import (
 // a t.Cleanup to tear down containers, databases, etc.
 type Factory func(t *testing.T) store.Store
 
+// tenantValuesLister is a test-only extension interface for the ListTenantValues
+// helper. Production code switched to ListTenantOverrides (server-side
+// filtering of the global rows) in commit 53b789c, so ListTenantValues is no
+// longer part of the store.Store surface. Backend implementations (postgres,
+// mongodb) still expose it as a concrete method so the contract suite can
+// assert row-level parity where globals and tenant rows must coexist.
+//
+// Contract tests type-assert through this interface; a backend that does
+// not implement it gets its ListTenantValues-dependent subtests skipped.
+type tenantValuesLister interface {
+	ListTenantValues(ctx context.Context) ([]store.Entry, error)
+}
+
+// requireTenantValuesLister returns the store cast to the ListTenantValues
+// extension; if the cast fails it skips the calling test with a clear reason.
+// Keeps the type-assertion logic in one place.
+func requireTenantValuesLister(t *testing.T, s store.Store) tenantValuesLister {
+	t.Helper()
+
+	lister, ok := s.(tenantValuesLister)
+	if !ok {
+		t.Skipf("backend %T does not implement tenantValuesLister (ListTenantValues); skipping subtest", s)
+	}
+
+	return lister
+}
+
 // RunOption configures the behavior of [Run].
 type RunOption func(*runConfig)
 
@@ -118,6 +145,8 @@ func Run(t *testing.T, factory Factory, opts ...RunOption) {
 	run("GlobalAndTenantRowsCoexist", func(t *testing.T) { testGlobalAndTenantRowsCoexist(t, factory) })
 	run("TenantSubscribeReceivesSetEvent", func(t *testing.T) { testTenantSubscribeReceivesSetEvent(t, factory) })
 	run("TenantSubscribeReceivesDeleteEvent", func(t *testing.T) { testTenantSubscribeReceivesDeleteEvent(t, factory) })
+	run("ListTenantOverrides_FiltersGlobalsServerSide", func(t *testing.T) { testListTenantOverridesFiltersGlobals(t, factory) })
+	run("DeleteTenantValueNoOpEmitsNoEvent", func(t *testing.T) { testDeleteTenantValueNoOpEmitsNoEvent(t, factory) })
 }
 
 // ---------------------------------------------------------------------------
@@ -521,7 +550,9 @@ func testTenantListOnEmpty(t *testing.T, factory Factory) {
 	s := factory(t)
 	ctx := context.Background()
 
-	entries, err := s.ListTenantValues(ctx)
+	lister := requireTenantValuesLister(t, s)
+
+	entries, err := lister.ListTenantValues(ctx)
 	if err != nil {
 		t.Fatalf("ListTenantValues on empty store: %v", err)
 	}
@@ -642,7 +673,9 @@ func testSetTenantTwiceLastWriteWins(t *testing.T, factory Factory) {
 	}
 
 	// Only one row in ListTenantValues for (tenant-A, global, fee.rate).
-	entries, err := s.ListTenantValues(ctx)
+	lister := requireTenantValuesLister(t, s)
+
+	entries, err := lister.ListTenantValues(ctx)
 	if err != nil {
 		t.Fatalf("ListTenantValues: %v", err)
 	}
@@ -848,7 +881,9 @@ func assertBothRowsVisible(t *testing.T, s store.Store) {
 
 	ctx := context.Background()
 
-	allEntries, err := s.ListTenantValues(ctx)
+	lister := requireTenantValuesLister(t, s)
+
+	allEntries, err := lister.ListTenantValues(ctx)
 	if err != nil {
 		t.Fatalf("ListTenantValues: %v", err)
 	}
@@ -1044,6 +1079,120 @@ drainSeed:
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// testListTenantOverridesFiltersGlobals pins the server-side filter contract
+// for ListTenantOverrides (M-S2-5). Seeding two global rows and three tenant
+// overrides and asserting the returned slice length is exactly 3 — with no
+// row carrying the '_global' sentinel — proves the filter runs on the
+// backend rather than in Go. A post-read filter in Go would still count as
+// a server bandwidth cost the method exists to eliminate; this subtest
+// catches regressions where a future backend accidentally fetches-then-
+// filters.
+func testListTenantOverridesFiltersGlobals(t *testing.T, factory Factory) {
+	t.Helper()
+
+	s := factory(t)
+	ctx := context.Background()
+
+	// Two global rows under the same namespace, distinct keys.
+	globals := []store.Entry{
+		{Namespace: "global", Key: "rate_limit", Value: []byte(`100`), UpdatedBy: "admin"},
+		{Namespace: "global", Key: "log.level", Value: []byte(`"info"`), UpdatedBy: "admin"},
+	}
+
+	for _, g := range globals {
+		if err := s.Set(ctx, g); err != nil {
+			t.Fatalf("Set global %s/%s: %v", g.Namespace, g.Key, err)
+		}
+	}
+
+	// Three tenant overrides for the fixtureKey, distinct tenants.
+	tenantEntry := store.Entry{
+		Namespace: "global",
+		Key:       fixtureKey,
+		Value:     []byte(`0.05`),
+		UpdatedBy: "admin",
+	}
+
+	for _, tid := range []string{fixtureTenantA, "tenant-B", "tenant-C"} {
+		if err := s.SetTenantValue(ctx, tid, tenantEntry); err != nil {
+			t.Fatalf("SetTenantValue %s: %v", tid, err)
+		}
+	}
+
+	// Unbounded page (limit=0) to retrieve the whole result in one shot —
+	// matches how hydrateTenantCache used the method pre-pagination.
+	got, err := s.ListTenantOverrides(ctx, "", "", "", 0)
+	if err != nil {
+		t.Fatalf("ListTenantOverrides: %v", err)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 tenant overrides, got %d (entries: %+v)", len(got), got)
+	}
+
+	for _, e := range got {
+		if e.TenantID == store.SentinelGlobal {
+			t.Fatalf("ListTenantOverrides returned a row with TenantID=%q (must be filtered server-side): %+v",
+				store.SentinelGlobal, e)
+		}
+	}
+}
+
+// testDeleteTenantValueNoOpEmitsNoEvent pins M-S2-8: a DeleteTenantValue
+// against a row that never existed must NOT fire the changefeed. The
+// Postgres trigger is AFTER INSERT OR UPDATE OR DELETE FOR EACH ROW, so a
+// no-op delete has no row to fire on and the trigger is silent by design.
+// This test subscribes, deletes a non-existent row, waits 500ms, and
+// asserts zero events arrived. Without the guard, subscribers would see
+// spurious invalidations on every idempotent delete retry.
+func testDeleteTenantValueNoOpEmitsNoEvent(t *testing.T, factory Factory) {
+	t.Helper()
+
+	s := factory(t)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	t.Cleanup(cancel)
+
+	events := make(chan store.Event, 8)
+	subErr := make(chan error, 1)
+
+	go func() {
+		subErr <- s.Subscribe(ctx, func(e store.Event) {
+			events <- e
+		})
+	}()
+
+	// Give Subscribe time to attach its backend listener before the delete.
+	time.Sleep(500 * time.Millisecond)
+
+	// Delete a row that never existed for tenant-never; the operation must
+	// succeed (idempotent) and must not emit a changefeed event.
+	if err := s.DeleteTenantValue(ctx, "tenant-never", "global", fixtureKey, "admin"); err != nil {
+		t.Fatalf("DeleteTenantValue (no-op): %v", err)
+	}
+
+	// Wait longer than any reasonable changefeed propagation window, then
+	// assert nothing arrived.
+	time.Sleep(500 * time.Millisecond)
+
+	select {
+	case e := <-events:
+		t.Fatalf("no-op DeleteTenantValue emitted an unexpected event: %+v", e)
+	default:
+	}
+
+	cancel()
+
+	select {
+	case err := <-subErr:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("Subscribe returned unexpected error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Subscribe did not return after context cancel")
+	}
+}
 
 // eventually polls check at short intervals until it returns true or timeout
 // elapses. Returns true if check succeeded, false on timeout.

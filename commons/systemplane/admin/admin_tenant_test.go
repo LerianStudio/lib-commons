@@ -390,12 +390,13 @@ func TestTenantAuthorizer_ActionIsWriteForDelete(t *testing.T) {
 	}
 }
 
-// TestTenantAuthorizer_ErrorPropagatesAs403 verifies that a non-nil return
-// from the authorizer produces a 403 whose body carries the authorizer's
-// error message. This is load-bearing: operators rely on the body message
-// to diagnose WHICH policy rejected (RBAC role? tenant ownership? feature
-// gate?), so dropping the message on the wire would blind every consumer.
-func TestTenantAuthorizer_ErrorPropagatesAs403(t *testing.T) {
+// TestTenantAuthorizer_RejectionReturns403WithRedactedBody verifies that a
+// non-nil return from the authorizer produces a 403 with a stable "forbidden"
+// title/body. The authorizer's internal error string is deliberately NOT
+// echoed on the wire — it can leak library-internal details (version
+// fingerprints, policy IDs) that unauthorized callers should not see.
+// Operators diagnose rejections via server-side logs, not the 403 body.
+func TestTenantAuthorizer_RejectionReturns403WithRedactedBody(t *testing.T) {
 	t.Parallel()
 
 	c, _ := buildTenantClientStarted(t, 0.0)
@@ -418,12 +419,17 @@ func TestTenantAuthorizer_ErrorPropagatesAs403(t *testing.T) {
 	var body commonshttp.ErrorResponse
 	readJSON(t, resp, &body)
 
-	if body.Message != reason {
-		t.Fatalf("expected body message to carry authorizer error verbatim, got %q", body.Message)
-	}
-
 	if body.Code != fiber.StatusForbidden {
 		t.Fatalf("expected body Code=403, got %d", body.Code)
+	}
+
+	if body.Title != "forbidden" {
+		t.Fatalf("expected Title='forbidden', got %q", body.Title)
+	}
+
+	// The authorizer's error string must NOT leak into the body.
+	if strings.Contains(body.Message, reason) {
+		t.Fatalf("regression: authorizer error string leaked on wire (expected redaction), got %q", body.Message)
 	}
 }
 
@@ -466,6 +472,379 @@ func TestTenantAuthorizer_DenyBeforeInvalidTenantIDOrder(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+	if !denied {
+		t.Fatal("expected authorizer to be invoked even with a syntactically invalid tenantID")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M-S4-3 — handleListTenants case distinction.
+// ---------------------------------------------------------------------------
+
+// TestListTenants_UnregisteredKeyReturns404 verifies that a GET against a
+// namespace/key pair that was never registered surfaces 404 not_found.
+// Previously the handler conflated "unregistered" with "registered but no
+// overrides" — both returned 200 with an empty list.
+func TestListTenants_UnregisteredKeyReturns404(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildClientStarted(t)
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	resp := doRequest(t, app, http.MethodGet, "/system/global/never.registered/tenants", "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusNotFound {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 404 for unregistered key, got %d: %s", resp.StatusCode, string(data))
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "not_found" {
+		t.Fatalf("expected title 'not_found', got %q", body.Title)
+	}
+}
+
+// TestListTenants_NonTenantScopedKeyReturns400 verifies that a GET against
+// a key registered via the legacy Register (not RegisterTenantScoped)
+// surfaces 400 validation_error with a message that flags the non-tenant-
+// scoped shape.
+func TestListTenants_NonTenantScopedKeyReturns400(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildClient(t)
+
+	// Register via legacy Register — key is registered but NOT tenant-scoped.
+	if err := c.Register("global", "legacy.key", "v"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	resp := doRequest(t, app, http.MethodGet, "/system/global/legacy.key/tenants", "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 for non-tenant-scoped key, got %d: %s", resp.StatusCode, string(data))
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "validation_error" {
+		t.Fatalf("expected title 'validation_error', got %q", body.Title)
+	}
+
+	if !strings.Contains(body.Message, "not tenant-scoped") {
+		t.Fatalf("expected message to flag non-tenant-scoped key, got %q", body.Message)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M-S4-5 / M-S4-6 — Authorizer independence between legacy and tenant routes.
+// ---------------------------------------------------------------------------
+
+// TestTenantRoutes_UsesTenantAuthorizer_NotLegacyAuthorizer verifies that
+// WithAuthorizer's read denial does NOT apply to tenant routes, and that
+// WithTenantAuthorizer's allow is what actually gates them. Conversely, a
+// GET on the legacy route remains denied by the legacy authorizer.
+func TestTenantRoutes_UsesTenantAuthorizer_NotLegacyAuthorizer(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	denyRead := admin.WithAuthorizer(func(_ *fiber.Ctx, action string) error {
+		if action == "read" {
+			return errors.New("legacy deny")
+		}
+
+		return nil
+	})
+	allowAllTenantFn := admin.WithTenantAuthorizer(func(_ *fiber.Ctx, _, _ string) error { return nil })
+
+	app := buildApp(t, c, denyRead, allowAllTenantFn)
+
+	// Tenant PUT should succeed — tenant authorizer allows, legacy deny-read
+	// does NOT apply here.
+	putResp := doRequest(t, app, http.MethodPut, "/system/global/fee.rate/tenants/tenant-A", `{"value":0.1}`)
+	defer putResp.Body.Close()
+
+	if putResp.StatusCode != fiber.StatusOK {
+		data, _ := io.ReadAll(putResp.Body)
+		t.Fatalf("tenant PUT: expected 200 (tenant authorizer allows), got %d: %s",
+			putResp.StatusCode, string(data))
+	}
+
+	// Legacy GET should be denied by the legacy authorizer.
+	getResp := doRequest(t, app, http.MethodGet, "/system/global", "")
+	defer getResp.Body.Close()
+
+	if getResp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("legacy GET: expected 403 (legacy deny-read), got %d", getResp.StatusCode)
+	}
+}
+
+// TestLegacyRoutes_UsesLegacyAuthorizer_NotTenantAuthorizer is the mirror
+// of the previous test: WithTenantAuthorizer denying does NOT apply to
+// legacy routes, and WithAuthorizer's allow is what gates them.
+func TestLegacyRoutes_UsesLegacyAuthorizer_NotTenantAuthorizer(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	allowLegacy := admin.WithAuthorizer(func(_ *fiber.Ctx, _ string) error { return nil })
+	denyTenant := admin.WithTenantAuthorizer(func(_ *fiber.Ctx, _, _ string) error {
+		return errors.New("tenant deny")
+	})
+
+	app := buildApp(t, c, allowLegacy, denyTenant)
+
+	// Legacy GET should succeed — legacy authorizer allows; the tenant
+	// authorizer is not consulted on this route.
+	getResp := doRequest(t, app, http.MethodGet, "/system/global", "")
+	defer getResp.Body.Close()
+
+	if getResp.StatusCode != fiber.StatusOK {
+		data, _ := io.ReadAll(getResp.Body)
+		t.Fatalf("legacy GET: expected 200, got %d: %s", getResp.StatusCode, string(data))
+	}
+
+	// Tenant list GET should be denied — tenant authorizer rejects.
+	listResp := doRequest(t, app, http.MethodGet, "/system/global/fee.rate/tenants", "")
+	defer listResp.Body.Close()
+
+	if listResp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("tenant list GET: expected 403, got %d", listResp.StatusCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M-S4-7 — Route precedence: /:key/tenants literal conflict.
+// ---------------------------------------------------------------------------
+
+// TestRoutePrecedence_KeyNamedTenants_HitsLegacyRoute pins the Fiber
+// routing contract: a PUT to /system/global/tenants has three path segments
+// (`/system`, `/global`, `/tenants`) and matches the legacy
+// `:namespace/:key` route (namespace=global, key=tenants), NOT the
+// tenant-list GET route.
+//
+// Note: the Client deliberately reserves "tenants" as a key name (see
+// register.go reservedKey) precisely to prevent the URL collision this
+// test guards against. So the write lands in the legacy PUT handler and
+// bubbles up as ErrUnknownKey → 400 unknown_key. Crucially it does NOT
+// match the tenant-list route (which would return 200 OK with a tenants
+// list), and the tenant rows map stays empty.
+func TestRoutePrecedence_KeyNamedTenants_HitsLegacyRoute(t *testing.T) {
+	t.Parallel()
+
+	c, fs := buildClient(t)
+
+	// Register some other legacy key so Start succeeds. "tenants" itself is
+	// reserved (the Client rejects Register for it), which is the belt-and-
+	// braces defense against this URL collision.
+	if err := c.Register("global", "log.level", "info"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	resp := doRequest(t, app, http.MethodPut, "/system/global/tenants", `{"value":"x"}`)
+	defer resp.Body.Close()
+
+	// Must hit the legacy PUT handler. The key is not registered (the Client
+	// rejects registration of "tenants") so the response is 400 unknown_key
+	// — NOT 200 OK (which would mean the tenant-list GET route matched, a
+	// routing bug) and NOT 404 (which the tenant-list handler emits).
+	if resp.StatusCode != fiber.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400 from legacy route (unknown key), got %d: %s",
+			resp.StatusCode, string(data))
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "unknown_key" {
+		t.Fatalf("expected title 'unknown_key' from legacy PUT, got %q", body.Title)
+	}
+
+	// Must NOT have leaked into the tenant rows map.
+	if len(fs.tenantRows) != 0 {
+		t.Fatalf("expected zero tenant rows, got %d: %+v", len(fs.tenantRows), fs.tenantRows)
+	}
+
+	// Must NOT have landed in the legacy globals map either (Client rejected
+	// via ErrUnknownKey before reaching the store).
+	if _, ok := fs.lastEntry("global", "tenants"); ok {
+		t.Fatal("expected no global row for reserved key 'tenants'")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M-S4-8 — Tenant ID boundary cases.
+// ---------------------------------------------------------------------------
+
+// TestTenantIDBoundary_AcceptsMaxLength verifies the regex validator
+// accepts a tenant ID exactly [core.MaxTenantIDLength] characters long.
+// The MaxTenantIDLength constant is the inclusive upper bound.
+func TestTenantIDBoundary_AcceptsMaxLength(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	maxID := strings.Repeat("a", core.MaxTenantIDLength)
+
+	resp := doRequest(t, app, http.MethodPut,
+		"/system/global/fee.rate/tenants/"+maxID, `{"value":0.5}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 for max-length tenantID, got %d: %s",
+			resp.StatusCode, string(data))
+	}
+}
+
+// TestTenantIDBoundary_RejectsOverLength verifies the regex validator
+// rejects a tenant ID one byte past [core.MaxTenantIDLength].
+func TestTenantIDBoundary_RejectsOverLength(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	overID := strings.Repeat("a", core.MaxTenantIDLength+1)
+
+	resp := doRequest(t, app, http.MethodPut,
+		"/system/global/fee.rate/tenants/"+overID, `{"value":0.5}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for over-length tenantID, got %d", resp.StatusCode)
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "invalid_tenant_id" {
+		t.Fatalf("expected title 'invalid_tenant_id', got %q", body.Title)
+	}
+}
+
+// TestTenantIDBoundary_RejectsControlChars verifies the regex validator
+// rejects a tenant ID containing a disallowed control character (here, a
+// tab). The regex is `^[a-zA-Z0-9][a-zA-Z0-9_-]*$` so anything outside
+// that whitelist is rejected.
+func TestTenantIDBoundary_RejectsControlChars(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	// URL-encoded \t (0x09) embedded mid-ID.
+	resp := doRequest(t, app, http.MethodPut,
+		"/system/global/fee.rate/tenants/tenant%09bad", `{"value":0.5}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for control-char tenantID, got %d", resp.StatusCode)
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "invalid_tenant_id" {
+		t.Fatalf("expected title 'invalid_tenant_id', got %q", body.Title)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M-S4-10 — DELETE default-deny symmetric to PUT.
+// ---------------------------------------------------------------------------
+
+// TestDeleteTenant_MissingAuthorizer_Returns403 verifies that a DELETE to
+// a tenant route without WithTenantAuthorizer configured surfaces 403 — the
+// symmetric default-deny behavior to PUT.
+func TestDeleteTenant_MissingAuthorizer_Returns403(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	// Mount WITHOUT WithTenantAuthorizer.
+	app := buildApp(t, c, allowAll())
+
+	resp := doRequest(t, app, http.MethodDelete, "/system/global/fee.rate/tenants/tenant-A", "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Code != fiber.StatusForbidden {
+		t.Fatalf("expected body Code=403, got %d", body.Code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// L-S4-11 — DELETE authorizer-before-validation order.
+// ---------------------------------------------------------------------------
+
+// TestDeleteTenantAuthorizer_DenyBeforeInvalidTenantIDOrder is the DELETE
+// counterpart to [TestTenantAuthorizer_DenyBeforeInvalidTenantIDOrder]:
+// even a syntactically invalid tenantID surfaces 403 (not 400) when the
+// authorizer denies, confirming auth runs before validation on the
+// DELETE route too.
+func TestDeleteTenantAuthorizer_DenyBeforeInvalidTenantIDOrder(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	var (
+		mu     sync.Mutex
+		denied bool
+	)
+
+	authz := func(_ *fiber.Ctx, _, _ string) error {
+		mu.Lock()
+		denied = true
+		mu.Unlock()
+
+		return errors.New("deny-all")
+	}
+
+	app := buildApp(t, c, allowAll(), admin.WithTenantAuthorizer(authz))
+
+	// "_global" is invalid. If validation ran before auth, this would be
+	// 400. Since auth runs first, it should be 403.
+	resp := doRequest(t, app, http.MethodDelete, "/system/global/fee.rate/tenants/_global", "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("expected 403 (authorizer rejects before validation), got %d", resp.StatusCode)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
 	if !denied {
 		t.Fatal("expected authorizer to be invoked even with a syntactically invalid tenantID")
 	}
