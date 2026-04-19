@@ -4,6 +4,7 @@ go 1.25.9
 
 require (
 	cloud.google.com/go/iam v1.6.0
+	github.com/Shopify/toxiproxy/v2 v2.12.0
 	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/aws/aws-sdk-go-v2 v1.41.5
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.5

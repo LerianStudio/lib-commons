@@ -952,3 +952,117 @@ func TestIntegration_CloudEventsSDKContract(t *testing.T) {
 	assert.Equal(t, event.Source, ce.Source(), "Source")
 	assert.True(t, ce.Time().Equal(now), "Time")
 }
+
+// TestIntegration_CircuitBreaker_TripsOrganically is the complement to the
+// unit tests that drive the mirrored cbStateFlag directly. Here the breaker
+// trips organically: we stop the Redpanda container, emit events, and
+// wait for the real gobreaker to observe enough failures to transition to
+// OPEN. The mirrored flag follows via the state-change listener.
+//
+// This closes a gap in the existing test coverage — unit tests that
+// force-store flagCBOpen prove the consumer side works, but do not
+// exercise the full signal path (publish fail → CB observes → listener
+// runs → flag mirrors). Any refactor that breaks the listener wiring
+// would pass the unit tests but fail this one.
+func TestIntegration_CircuitBreaker_TripsOrganically(t *testing.T) {
+	seed, rpContainer := startRedpanda(t)
+	if rpContainer == nil {
+		return
+	}
+
+	brokers := []string{seed}
+
+	// Pre-create source + DLQ so the baseline emits don't race on metadata.
+	sourceTopic := topicPrefix + "transaction.cb_organic"
+	ensureTopics(t, brokers[0], 1, sourceTopic, dlqTopic(sourceTopic))
+
+	// CB tuned to trip with minimal friction: low min-requests, low
+	// failure ratio, short record-delivery timeout so a stopped broker
+	// surfaces failures fast without exhausting the test deadline.
+	cfg := Config{
+		Enabled:               true,
+		Brokers:               brokers,
+		BatchLingerMs:         0,
+		BatchMaxBytes:         defaultBatchMaxBytes,
+		MaxBufferedRecords:    defaultMaxBufferedRecords,
+		Compression:           defaultCompression,
+		RecordRetries:         1,
+		RecordDeliveryTimeout: 2 * time.Second,
+		RequiredAcks:          defaultRequiredAcks,
+		CBFailureRatio:        0.5,
+		CBMinRequests:         5,
+		CBTimeout:             30 * time.Second,
+		CloseTimeout:          3 * time.Second,
+		CloudEventsSource:     integrationSource,
+	}
+
+	p, err := NewProducer(context.Background(), cfg, WithLogger(log.NewNop()))
+	require.NoError(t, err, "NewProducer")
+	t.Cleanup(func() { _ = p.Close() })
+
+	healthyEvent := func(i int) Event {
+		return Event{
+			TenantID:     "tenant-cb-organic",
+			ResourceType: "transaction",
+			EventType:    "cb_organic",
+			Source:       integrationSource,
+			Payload:      json.RawMessage(fmt.Sprintf(`{"seq":%d}`, i)),
+		}
+	}
+
+	// Baseline: emit several healthy events to populate the breaker's
+	// observation window with successes. Ten emits is generous above
+	// CBMinRequests=5 so the breaker has a real sample to evaluate.
+	baselineCtx, baselineCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	for i := range 10 {
+		require.NoError(t, p.Emit(baselineCtx, healthyEvent(i)), "baseline emit %d", i)
+	}
+	baselineCancel()
+
+	// Confirm the mirrored flag is still CLOSED — baseline succeeded.
+	require.Equal(t, int32(flagCBClosed), p.cbStateFlag.Load(),
+		"baseline should leave breaker CLOSED")
+
+	// Stop the broker. Short timeout so the test doesn't stall on
+	// graceful shutdown.
+	stopTimeout := 5 * time.Second
+	require.NoError(t, rpContainer.Stop(context.Background(), &stopTimeout),
+		"redpanda Stop")
+
+	// Emit enough events post-stop that publishDirect's failures feed
+	// the breaker past the ratio threshold. Each Emit blocks up to
+	// RecordDeliveryTimeout (2s) before surfacing the failure, so we
+	// give the loop a generous ceiling and break early when the flag
+	// flips.
+	pollDeadline := time.Now().Add(30 * time.Second)
+	observedOpen := false
+
+	for i := 0; i < 30 && time.Now().Before(pollDeadline); i++ {
+		emitCtx, emitCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// Emit returns an error (ErrCircuitOpen eventually, or the
+		// underlying broker-unreachable error before the trip). We
+		// don't assert on the specific shape — the load-bearing
+		// invariant is the flag transition below.
+		_ = p.Emit(emitCtx, healthyEvent(i+100))
+		emitCancel()
+
+		if p.cbStateFlag.Load() == flagCBOpen {
+			observedOpen = true
+			break
+		}
+	}
+
+	require.True(t, observedOpen,
+		"cbStateFlag never transitioned to OPEN after broker stop; "+
+			"organic trip path is broken")
+
+	// Post-trip Emit should fail-fast with ErrCircuitOpen (no outbox
+	// wired in this test). Exercises the full chain one more time.
+	failFastCtx, failFastCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer failFastCancel()
+
+	err = p.Emit(failFastCtx, healthyEvent(9999))
+	require.Error(t, err, "Emit post-trip should not return nil")
+	require.Truef(t, errors.Is(err, ErrCircuitOpen),
+		"Emit post-trip err = %v; want errors.Is(..., ErrCircuitOpen)", err)
+}
