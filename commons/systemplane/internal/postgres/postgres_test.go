@@ -53,10 +53,11 @@ func TestParseNotifyPayload_GlobalSentinel(t *testing.T) {
 // but the trigger has not yet been recreated with the new payload body,
 // the Postgres server may still emit the pre-Task-3 shape
 // ({"namespace":"...", "key":"..."} with no tenant_id field). The parser
-// must decode such payloads without error and leave TenantID empty so
-// the Client can gracefully route the event through the global path.
-// Without this tolerance a single legacy notification would silently
-// wedge the subscriber loop.
+// must decode such payloads without error and coerce the missing tenant_id
+// to the '_global' sentinel so the Client's refresh router takes the
+// legacy global path. Leaving TenantID empty would cause the router to
+// treat the event as a tenant event and emit a spurious warn for every
+// legacy payload during a rolling upgrade.
 func TestParseNotifyPayload_BackwardCompatNoTenantID(t *testing.T) {
 	t.Parallel()
 
@@ -67,7 +68,7 @@ func TestParseNotifyPayload_BackwardCompatNoTenantID(t *testing.T) {
 
 	assert.Equal(t, "global", evt.Namespace)
 	assert.Equal(t, "log.level", evt.Key)
-	assert.Equal(t, "", evt.TenantID, "missing tenant_id must decode as empty, not error")
+	assert.Equal(t, store.SentinelGlobal, evt.TenantID, "missing tenant_id must coerce to the _global sentinel for router safety")
 }
 
 // TestParseNotifyPayload_InvalidJSONReturnsError is a regression pin so

@@ -193,6 +193,22 @@ func (f *fakeStore) ListTenantValues(_ context.Context) ([]systemplane.TestEntry
 	return out, nil
 }
 
+// ListTenantOverrides returns the tenant-scoped override rows only — mirrors
+// the production backends that apply the "tenant_id != SentinelGlobal"
+// filter server-side. This fake partitions globals and tenant rows into
+// separate maps, so the method is a direct listing of f.tenantRows.
+func (f *fakeStore) ListTenantOverrides(_ context.Context) ([]systemplane.TestEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]systemplane.TestEntry, 0, len(f.tenantRows))
+	for _, e := range f.tenantRows {
+		out = append(out, e)
+	}
+
+	return out, nil
+}
+
 func (f *fakeStore) ListTenantsForKey(_ context.Context, namespace, key string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1288,9 +1304,12 @@ func TestPutTenant_InvalidTenantID_Returns400(t *testing.T) {
 
 	app := buildApp(t, c, allowAll(), allowAllTenant())
 
-	// "_global" is the reserved sentinel; IsValidTenantID rejects it
-	// (first char "_" is non-alphanumeric) AND admin.validateTenantIDParam
-	// explicitly blocks it with a dedicated error message.
+	// "_global" is the reserved sentinel; core.IsValidTenantID rejects it
+	// (first char "_" is non-alphanumeric). The admin validator no longer
+	// emits a sentinel-specific error message — unauthorized callers must
+	// not be able to probe for the literal sentinel name via error
+	// variants, so "_global" rejection is indistinguishable from any other
+	// malformed tenant ID at the wire boundary.
 	resp := doRequest(t, app, http.MethodPut, "/system/global/fee.rate/tenants/_global", `{"value":0.05}`)
 	defer resp.Body.Close()
 
@@ -1306,10 +1325,15 @@ func TestPutTenant_InvalidTenantID_Returns400(t *testing.T) {
 		t.Fatalf("expected title 'invalid_tenant_id', got %q", body.Title)
 	}
 
-	// The sentinel-specific message should mention "_global" so operators
-	// can diagnose the collision without reading source.
-	if !strings.Contains(body.Message, "_global") {
-		t.Fatalf("expected message to mention '_global' sentinel, got %q", body.Message)
+	// The generic regex-based message is expected. Crucially, the response
+	// must NOT leak the "_global" literal — that would let unauthorized
+	// callers probe for the sentinel by reading error text.
+	if strings.Contains(body.Message, "_global") {
+		t.Fatalf("regression: message must not mention '_global' literal, got %q", body.Message)
+	}
+
+	if !strings.Contains(body.Message, "^[a-zA-Z0-9]") {
+		t.Fatalf("expected regex-based message, got %q", body.Message)
 	}
 }
 

@@ -130,6 +130,13 @@ type Client struct {
 	// and the zero value is safe for unused state.
 	sfg singleflight.Group
 
+	// metrics holds OpenTelemetry instruments lazily initialized on first
+	// use via metricsOnce. See ensureMetrics / tenant_metrics.go for the
+	// current instrument set. nil-safe: when c.telemetry is unset every
+	// accessor no-ops.
+	metricsOnce sync.Once
+	metrics     *clientMetrics
+
 	startMu   sync.Mutex
 	started   atomic.Bool
 	closeOnce sync.Once
@@ -170,6 +177,7 @@ func NewPostgres(db *sql.DB, listenDSN string, opts ...Option) (*Client, error) 
 		DB:                  db,
 		ListenDSN:           listenDSN,
 		Channel:             cfg.listenChannel,
+		ChannelExplicit:     cfg.listenChannelExplicit,
 		Table:               cfg.table,
 		Logger:              cfg.logger,
 		Telemetry:           cfg.telemetry,

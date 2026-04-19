@@ -6,19 +6,14 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/LerianStudio/lib-commons/v5/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -33,17 +28,13 @@ var _ store.Store = (*Store)(nil)
 // are not supported.
 var safeIdentifierRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-// backoffBase is the starting delay for LISTEN reconnection backoff.
-const backoffBase = 500 * time.Millisecond
-
-// backoffCap is the maximum delay between LISTEN reconnection attempts.
-const backoffCap = 30 * time.Second
-
-// closeTimeout is the deadline for best-effort cleanup on connection close.
-const closeTimeout = 5 * time.Second
-
 // tracerName is the OpenTelemetry instrumentation scope name.
 const tracerName = "systemplane.postgres"
+
+// defaultChannel is the LISTEN/NOTIFY channel used when Config.Channel is
+// empty. Hardcoded because changing this is a wire-format break: every
+// consumer of a given database must agree on the channel name.
+const defaultChannel = "systemplane_changes"
 
 // Config holds the parameters needed to construct a Postgres-backed Store.
 type Config struct {
@@ -59,6 +50,13 @@ type Config struct {
 	// Channel is the Postgres LISTEN/NOTIFY channel name.
 	// Default: "systemplane_changes".
 	Channel string
+
+	// ChannelExplicit signals that the caller deliberately selected Channel
+	// (typically via WithListenChannel). When false, New emits a warning if
+	// Channel resolves to the default "systemplane_changes" — multiple
+	// services sharing a database on that channel receive each other's
+	// NOTIFY traffic, which is rarely what operators want.
+	ChannelExplicit bool
 
 	// Table is the Postgres table name.
 	// Default: "systemplane_entries".
@@ -100,8 +98,9 @@ func New(cfg Config) (*Store, error) {
 		return nil, errors.New("systemplane/postgres: ListenDSN is required")
 	}
 
-	if cfg.Channel == "" {
-		cfg.Channel = "systemplane_changes"
+	usingDefaultChannel := cfg.Channel == ""
+	if usingDefaultChannel {
+		cfg.Channel = defaultChannel
 	}
 
 	if cfg.Table == "" {
@@ -122,6 +121,18 @@ func New(cfg Config) (*Store, error) {
 		cfg:    cfg,
 		cancel: cancel,
 		ctx:    ctx,
+	}
+
+	// Warn once when we're falling back to the default channel without an
+	// explicit opt-in. Every service sharing this database on the default
+	// channel will see each other's NOTIFY traffic; operators should isolate
+	// via a per-service channel name. Only warn when the caller did NOT
+	// explicitly select the channel (even if their explicit selection
+	// happens to match the default — their intent was deliberate).
+	if usingDefaultChannel && !cfg.ChannelExplicit && cfg.Logger != nil {
+		s.logWarn(ctx, "Postgres LISTEN channel using default 'systemplane_changes'; multiple services sharing this database will receive each other's events. Consider setting WithListenChannel('<service_name>_systemplane_changes') to isolate changefeeds.",
+			log.String("channel", cfg.Channel),
+		)
 	}
 
 	if err := s.ensureSchema(context.Background()); err != nil {
@@ -293,144 +304,6 @@ SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLU
 	return nil
 }
 
-// Subscribe blocks until ctx is cancelled, listening on the Postgres
-// LISTEN/NOTIFY channel and invoking handler for each change event.
-// Uses pgx.Connect with the ListenDSN for a dedicated connection.
-// Safe to invoke multiple times concurrently; each call is its own subscription.
-func (s *Store) Subscribe(ctx context.Context, handler func(store.Event)) error {
-	if s == nil || s.isClosed() {
-		return store.ErrClosed
-	}
-
-	// Merge the store-level cancellation with the caller's context so that
-	// Close() also terminates running subscriptions.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	go func() {
-		select {
-		case <-s.ctx.Done():
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-
-	var attempt int
-
-	for {
-		err := s.listenLoop(ctx, handler)
-		if err == nil {
-			return nil
-		}
-
-		// Context cancelled (either caller or store close) -- clean exit.
-		if ctx.Err() != nil {
-			return nil
-		}
-
-		s.logWarn(ctx, "LISTEN connection lost, reconnecting",
-			log.Int("attempt", attempt),
-			log.Err(err),
-		)
-
-		delay := min(backoff.ExponentialWithJitter(backoffBase, attempt), backoffCap)
-
-		attempt++
-
-		if err := backoff.WaitContext(ctx, delay); err != nil {
-			return nil
-		}
-	}
-}
-
-// listenLoop establishes a single pgx connection, issues LISTEN, and processes
-// notifications until the context is cancelled or the connection fails.
-func (s *Store) listenLoop(ctx context.Context, handler func(store.Event)) error {
-	conn, err := pgx.Connect(ctx, s.cfg.ListenDSN)
-	if err != nil {
-		return fmt.Errorf("connect: %w", err)
-	}
-
-	defer func() {
-		cleanCtx, cleanCancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
-		defer cleanCancel()
-
-		_ = conn.Close(cleanCtx)
-	}()
-
-	listenStmt := "LISTEN " + quoteIdentifier(s.cfg.Channel)
-
-	if _, err := conn.Exec(ctx, listenStmt); err != nil {
-		return fmt.Errorf("listen: %w", err)
-	}
-
-	s.logInfo(ctx, "LISTEN connection established",
-		log.String("channel", s.cfg.Channel),
-	)
-
-	for {
-		notification, err := conn.WaitForNotification(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-
-			return fmt.Errorf("wait: %w", err)
-		}
-
-		evt, err := parseNotifyPayload(notification.Payload)
-		if err != nil {
-			s.logWarn(ctx, "failed to decode NOTIFY payload",
-				log.String("payload", truncateString(notification.Payload, 200)),
-				log.Err(err),
-			)
-
-			continue
-		}
-
-		s.invokeHandler(ctx, handler, evt)
-	}
-}
-
-// invokeHandler calls the user's handler with panic recovery.
-func (s *Store) invokeHandler(ctx context.Context, handler func(store.Event), evt store.Event) {
-	defer runtime.RecoverAndLogWithContext(ctx, s.cfg.Logger, "systemplane", "postgres.handler")
-
-	handler(evt)
-}
-
-// notifyPayload is the JSON shape emitted by the pg_notify trigger.
-// The TenantID field is populated by post-Task-3 installations; older
-// payloads (produced before the tenant column was added) lack the key and
-// decode as an empty string, which the Client layer treats as "unknown
-// tenant" and routes through the global path — that graceful degradation
-// is intentional so a mid-rollout mix of upgraded and legacy rows cannot
-// wedge a subscriber.
-type notifyPayload struct {
-	Namespace string `json:"namespace"`
-	Key       string `json:"key"`
-	TenantID  string `json:"tenant_id"`
-}
-
-// parseNotifyPayload converts a NOTIFY JSON payload into a store.Event.
-// A missing tenant_id field is not an error — it decodes as "" and the
-// caller is responsible for treating the absence as "pre-tenant payload".
-// Real post-Task-3 payloads always carry the sentinel '_global' for global
-// writes, so an empty TenantID on a fresh install should not occur.
-func parseNotifyPayload(data string) (store.Event, error) {
-	var p notifyPayload
-
-	if err := json.Unmarshal([]byte(data), &p); err != nil {
-		return store.Event{}, fmt.Errorf("unmarshal: %w", err)
-	}
-
-	return store.Event{
-		Namespace: p.Namespace,
-		Key:       p.Key,
-		TenantID:  p.TenantID,
-	}, nil
-}
-
 // Close releases any resources held by the Store. Idempotent.
 // Does NOT close s.cfg.DB; that is the caller's responsibility.
 func (s *Store) Close() error {
@@ -500,15 +373,5 @@ func (s *Store) logWarn(ctx context.Context, msg string, fields ...log.Field) {
 	}
 }
 
-// truncateString returns s unchanged if len(s) <= maxLen, otherwise returns
-// the first maxLen bytes followed by "...". Used for defense-in-depth when
-// logging untrusted payloads.
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-
-	return s[:maxLen] + "..."
-}
-
+// LISTEN/NOTIFY subscription methods live in postgres_listen.go.
 // Tenant-scoped Store methods live in postgres_tenant.go.

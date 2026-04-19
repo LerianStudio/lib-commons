@@ -635,6 +635,31 @@ The backend-agnostic contract suite skips
 tests via `SkipSubtest`, so this gap is explicitly known and
 documented rather than silently accepted.
 
+### MongoDB change streams lose events during reconnect windows
+
+The change-stream path does NOT persist resume tokens. When the
+stream errors and `subscribeChangeStream` reconnects after the
+exponential backoff, a fresh stream opens from the current oplog
+position — events that occurred during the disconnect window are
+lost.
+
+For active keys this is self-healing: the next write reinstates
+correct state via the debouncer's changefeed coalesce, so a missed
+intermediate event is eventually overwritten. For idle keys (no
+writes during or after the disconnect), the in-process
+`tenantCache` may hold a stale value until the next explicit write
+or a `Client` restart re-hydrates from the durable store.
+
+Operators who need strict at-least-once delivery across reconnects
+should either persist the resume token externally (not currently
+exposed — would require a lib-commons API extension to thread
+`options.ChangeStream().SetResumeAfter(token)`) or schedule a
+periodic `ListTenantValues` reconciliation at the Client layer to
+cross-check the cache against the durable store.
+
+See `commons/systemplane/internal/mongodb/mongodb_changestream.go`
+(`watchOnce` godoc) for the corresponding code-level note.
+
 ### Postgres NOTIFY now fires on DELETE
 
 Prior to tenant-scoped routing, the Postgres LISTEN/NOTIFY trigger

@@ -22,6 +22,7 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 )
 
 // refreshFromStoreRouted is the entry point for debounced changefeed
@@ -146,8 +147,14 @@ func (c *Client) refreshTenantFromStore(ns, key, tenantID string) {
 		return
 	}
 
-	// 2. Fetch from store with a bounded timeout.
-	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
+	// 2. Fetch from store with a bounded timeout. Synthesize a ctx that
+	// carries the tenantID so observability middleware reading
+	// core.GetTenantIDContext sees the right value on spans and logs
+	// emitted under this refresh. The store.GetTenantValue call takes
+	// tenantID positionally — the ctx binding is purely for telemetry
+	// attribution downstream.
+	bgCtx := core.ContextWithTenantID(context.Background(), tenantID)
+	ctx, cancel := context.WithTimeout(bgCtx, refreshTimeout)
 	defer cancel()
 
 	entry, found, err := c.store.GetTenantValue(ctx, tenantID, ns, key)
@@ -203,12 +210,25 @@ func (c *Client) refreshTenantFromStore(ns, key, tenantID string) {
 // the case where tenantCache is empty; a hydration failure simply degrades
 // to lazy-like behavior on subsequent GetForTenant calls.
 //
-// Rows tagged store.SentinelGlobal are skipped (those are seeded via the earlier
-// global-hydrate pass). Rows for unregistered keys or keys not registered
-// via RegisterTenantScoped are also skipped — they are a sign of drift
-// between the running binary and the underlying DB but are not fatal.
+// Rows for unregistered keys or keys not registered via RegisterTenantScoped
+// are logged and skipped — they signal drift between the running binary and
+// the underlying DB but are not fatal.
+//
+// Locking contract: this function MUST NOT hold registryMu across
+// json.Unmarshal or any other per-row work. At 10k+ entries, a held
+// registry lock during per-row unmarshal would stall concurrent Register
+// calls for 100-500ms. Register is supposed to be pre-Start, but the
+// invariant is cheap to preserve and forestalls future misuse. We snapshot
+// the tenant-scoped registration set under a short registryMu.RLock, then
+// iterate + unmarshal outside the lock, populating tenantCache under a
+// single cacheMu.Lock window instead of N lock/unlock cycles.
 func (c *Client) hydrateTenantCache(ctx context.Context) {
-	tenantEntries, err := c.store.ListTenantValues(ctx)
+	// ListTenantOverrides is the server-side-filtered variant that omits
+	// the _global rows already seeded by the earlier global hydrate pass.
+	// On clusters dominated by globals this roughly halves hydration
+	// transfer (see TRD §4.5); on balanced clusters it still eliminates the
+	// per-row discard branch the old code ran in Go.
+	tenantEntries, err := c.store.ListTenantOverrides(ctx)
 	if err != nil {
 		c.logWarn(ctx, "tenant hydration failed, falling back to miss-populate",
 			log.Err(err),
@@ -217,17 +237,40 @@ func (c *Client) hydrateTenantCache(ctx context.Context) {
 		return
 	}
 
+	// Snapshot only the registry state the decode loop needs. Holding the
+	// lock just for the snapshot — not the unmarshal — keeps concurrent
+	// Register calls unblocked for O(10k) entries.
+	type regState struct {
+		registered   bool
+		tenantScoped bool
+	}
+
 	c.registryMu.RLock()
-	defer c.registryMu.RUnlock()
+
+	regSnap := make(map[nskey]regState, len(c.registry))
+	for nk := range c.registry {
+		_, tenantScoped := c.tenantScopedRegistry[nk]
+		regSnap[nk] = regState{registered: true, tenantScoped: tenantScoped}
+	}
+
+	c.registryMu.RUnlock()
+
+	// Decode and filter outside the registry lock. Successful decodes are
+	// collected into a batch so the cache is populated under a single
+	// cacheMu.Lock window below.
+	type hydrateItem struct {
+		tenantID string
+		nk       nskey
+		value    any
+	}
+
+	batch := make([]hydrateItem, 0, len(tenantEntries))
 
 	for _, entry := range tenantEntries {
-		if entry.TenantID == store.SentinelGlobal {
-			continue
-		}
-
 		nk := nskey{Namespace: entry.Namespace, Key: entry.Key}
 
-		if _, registered := c.registry[nk]; !registered {
+		state, registered := regSnap[nk]
+		if !registered {
 			c.logWarn(ctx, "tenant row for unregistered key, skipping",
 				log.String("namespace", entry.Namespace),
 				log.String("key", entry.Key),
@@ -237,7 +280,7 @@ func (c *Client) hydrateTenantCache(ctx context.Context) {
 			continue
 		}
 
-		if _, tenantScoped := c.tenantScopedRegistry[nk]; !tenantScoped {
+		if !state.tenantScoped {
 			c.logWarn(ctx, "tenant row for key not registered via RegisterTenantScoped, skipping",
 				log.String("namespace", entry.Namespace),
 				log.String("key", entry.Key),
@@ -259,8 +302,17 @@ func (c *Client) hydrateTenantCache(ctx context.Context) {
 			continue
 		}
 
-		c.cacheMu.Lock()
-		c.tenantCache.set(entry.TenantID, nk, decoded)
-		c.cacheMu.Unlock()
+		batch = append(batch, hydrateItem{tenantID: entry.TenantID, nk: nk, value: decoded})
 	}
+
+	if len(batch) == 0 {
+		return
+	}
+
+	// Single lock window for the whole batch — avoids N lock/unlock cycles.
+	c.cacheMu.Lock()
+	for _, it := range batch {
+		c.tenantCache.set(it.tenantID, it.nk, it.value)
+	}
+	c.cacheMu.Unlock()
 }

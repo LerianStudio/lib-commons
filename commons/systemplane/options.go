@@ -18,6 +18,12 @@ type clientConfig struct {
 	collection    string // MongoDB collection name
 	table         string // Postgres table name
 
+	// listenChannelExplicit records whether WithListenChannel was called.
+	// postgres.New uses this to suppress the default-channel collision
+	// warning when the caller explicitly chose the default name — the
+	// warning is about accidental default usage, not deliberate opt-in.
+	listenChannelExplicit bool
+
 	// tenantLoadMode selects eager (default) vs lazy tenant value hydration.
 	// tenantCacheMax is the LRU bound in lazy mode; ignored in eager mode.
 	tenantLoadMode tenantLoadMode
@@ -66,10 +72,15 @@ func WithTelemetry(t *opentelemetry.Telemetry) Option {
 
 // WithListenChannel overrides the Postgres LISTEN/NOTIFY channel name.
 // Default: "systemplane_changes". Ignored by MongoDB backends.
+//
+// Calling this option suppresses the default-channel collision warning,
+// even when the caller passes the default name — the warning exists to
+// catch silent default usage, not deliberate opt-in.
 func WithListenChannel(name string) Option {
 	return func(cfg *clientConfig) {
 		if name != "" {
 			cfg.listenChannel = name
+			cfg.listenChannelExplicit = true
 		}
 	}
 }

@@ -26,6 +26,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	commonshttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane"
 	"github.com/gofiber/fiber/v2"
@@ -37,6 +38,7 @@ type mountConfig struct {
 	authorizer       func(*fiber.Ctx, string) error
 	tenantAuthorizer func(*fiber.Ctx, string, string) error
 	actorExtractor   func(*fiber.Ctx) string
+	logger           log.Logger
 }
 
 // defaultMountConfig returns sensible defaults.
@@ -56,6 +58,7 @@ func defaultMountConfig() mountConfig {
 			return errors.New("admin: WithTenantAuthorizer not configured; tenant routes default to deny-all")
 		},
 		actorExtractor: func(_ *fiber.Ctx) string { return "" },
+		logger:         log.NewNop(),
 	}
 }
 
@@ -131,6 +134,19 @@ func WithActorExtractor(fn func(*fiber.Ctx) string) MountOption {
 	return func(cfg *mountConfig) {
 		if fn != nil {
 			cfg.actorExtractor = fn
+		}
+	}
+}
+
+// WithLogger attaches a logger used by admin handlers to record non-fatal
+// observations (e.g. a transient GetForTenant miss after a successful
+// SetForTenant in [mounter.handlePutTenant]). Defaults to a nop logger.
+// Useful for operators who want a debug-level trail when tenant PUT
+// responses fall back to echoing the submitted value.
+func WithLogger(l log.Logger) MountOption {
+	return func(cfg *mountConfig) {
+		if l != nil {
+			cfg.logger = l
 		}
 	}
 }

@@ -128,6 +128,22 @@ func (s *benchTenantStore) ListTenantValues(_ context.Context) ([]TestEntry, err
 	return out, nil
 }
 
+func (s *benchTenantStore) ListTenantOverrides(_ context.Context) ([]TestEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	out := make([]TestEntry, 0, len(s.rows))
+	for k, e := range s.rows {
+		if k.tenantID == "_global" {
+			continue
+		}
+
+		out = append(out, e)
+	}
+
+	return out, nil
+}
+
 func (s *benchTenantStore) ListTenantsForKey(_ context.Context, namespace, key string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

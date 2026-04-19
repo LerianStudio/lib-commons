@@ -358,6 +358,12 @@ func (c *Client) GetForTenant(ctx context.Context, namespace, key string) (any, 
 			c.logWarn(ctx, "lazy GetForTenant store fetch failed, falling through to global/default",
 				fetchErrFields(namespace, key, tenantID, fetchErr)...,
 			)
+			// Attribute the fall-through for operators: a non-zero rate
+			// here indicates the lazy cache is absorbing backend failures
+			// behind the scenes. The metric is tenant-agnostic by design
+			// (cardinality) — namespace+key alone is sufficient to locate
+			// the affected key.
+			c.recordTenantLazyFetchError(ctx, namespace, key)
 		}
 	}
 
@@ -432,29 +438,16 @@ func (c *Client) DeleteForTenant(ctx context.Context, namespace, key, actor stri
 	return nil
 }
 
-// ListTenantsForKey returns a sorted, deduplicated list of distinct tenant
-// IDs that have an override for (namespace, key). The '_global' sentinel is
-// excluded by the backend; this method surfaces only actual tenant IDs.
+// ListTenantsForKey returns a sorted, deduplicated list of tenant IDs that
+// have an override for (namespace, key). Returns an empty slice (never nil)
+// on any error; errors are logged at warn level. Callers that need to
+// distinguish "empty" from "errored" should use the admin surface, which
+// returns explicit HTTP status codes.
 //
-// Unlike the other tenant methods, ListTenantsForKey does NOT require a
-// tenant ID in ctx — it is an administrative/reflection query that lists
-// tenants across the org. An internal 5s timeout bounds the backend call
-// (synthesizing a background context since no caller ctx is required).
-//
-// Returns an empty slice (never nil) when no tenants have overrides or the
-// key is correctly registered but no overrides exist yet. Returns an empty
-// slice on ANY error (nil receiver, closed client, unregistered key,
-// non-tenant-scoped key, or backend failure) with the error surfaced via
-// the returned error's absence — a quiet ignore approach is WRONG here
-// because callers need to differentiate a truly empty result from a
-// misconfigured one. However, the signature per TRD §2.1 does not include
-// an error return, so we log backend failures and return an empty slice —
-// the documented contract.
-//
-// NOTE on the signature (per TRD decision D1 / §2.1): ListTenantsForKey
-// returns []string with no error channel. Backend failures are logged and
-// surfaced as an empty slice. This mirrors the List / KeyDescription /
-// KeyRedaction convention in get.go.
+// The '_global' sentinel is excluded by the backend; this method surfaces
+// only actual tenant IDs. Unlike the other tenant methods, ListTenantsForKey
+// does NOT require a tenant ID in ctx — it is an administrative/reflection
+// query. An internal 5s timeout bounds the backend call.
 func (c *Client) ListTenantsForKey(namespace, key string) []string {
 	empty := []string{}
 

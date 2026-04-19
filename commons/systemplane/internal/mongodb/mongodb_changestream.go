@@ -115,6 +115,30 @@ func (s *Store) subscribeChangeStream(ctx context.Context, handler func(store.Ev
 
 // watchOnce opens a single change stream session and processes events until
 // error or context cancellation.
+//
+// # Resume token behavior (operational caveat)
+//
+// Resume tokens are NOT persisted across reconnects. When the change stream
+// errors and subscribeChangeStream wakes the loop after its backoff delay,
+// watchOnce opens a fresh stream that starts from the current oplog
+// position — events that occurred during the disconnect window are lost.
+//
+// For active keys this is self-healing: the next write reinstates correct
+// state via the debouncer's changefeed coalesce, so a missed intermediate
+// event is eventually overwritten by a later one. For idle keys (no writes
+// during or after the disconnect), the tenantCache may hold a stale value
+// until the next explicit write or a Client restart re-hydrates from the
+// source of truth in ensureSchema.
+//
+// Operators who need strict at-least-once delivery across reconnects
+// should either:
+//   - persist the resume token externally and thread it via
+//     options.ChangeStream().SetResumeAfter(token) — this would require a
+//     lib-commons API extension and is not currently exposed; or
+//   - schedule a periodic ListTenantValues reconciliation at the Client
+//     layer to cross-check the cache against the durable store.
+//
+// See also MIGRATION_TENANT_SCOPED.md §8.1 (Operational caveats).
 func (s *Store) watchOnce(ctx context.Context, handler func(store.Event)) error {
 	pipeline := mongo.Pipeline{
 		{{Key: "$match", Value: bson.D{

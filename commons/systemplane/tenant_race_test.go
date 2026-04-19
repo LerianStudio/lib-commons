@@ -172,6 +172,22 @@ func (s *raceStore) ListTenantValues(_ context.Context) ([]TestEntry, error) {
 	return out, nil
 }
 
+func (s *raceStore) ListTenantOverrides(_ context.Context) ([]TestEntry, error) {
+	s.rowsMu.RLock()
+	defer s.rowsMu.RUnlock()
+
+	out := make([]TestEntry, 0, len(s.rows))
+	for k, e := range s.rows {
+		if k.tenantID == "_global" {
+			continue
+		}
+
+		out = append(out, e)
+	}
+
+	return out, nil
+}
+
 func (s *raceStore) ListTenantsForKey(_ context.Context, namespace, key string) ([]string, error) {
 	s.rowsMu.RLock()
 	defer s.rowsMu.RUnlock()

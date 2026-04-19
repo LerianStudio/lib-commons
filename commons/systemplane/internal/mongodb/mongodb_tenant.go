@@ -169,14 +169,11 @@ func (s *Store) DeleteTenantValue(
 		TenantID:  tenantID,
 	}}}
 
-	// DeleteOne returns ErrNoDocuments wrapped; we treat a missing row as a
-	// no-op so callers can invoke DeleteTenantValue defensively without a
-	// pre-check round-trip.
+	// DeleteOne does not return an error when no document matches — it returns
+	// DeleteResult{DeletedCount: 0} and nil. A missing row is therefore
+	// naturally a no-op without extra branching, which keeps DeleteTenantValue
+	// idempotent per the store.Store contract.
 	if _, err := s.coll.DeleteOne(ctx, filter); err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil
-		}
-
 		opentelemetry.HandleSpanError(span, "mongodb delete_tenant_value: delete failed", err)
 
 		return fmt.Errorf("mongodb store delete_tenant_value: %w", err)
@@ -237,6 +234,59 @@ func (s *Store) ListTenantValues(ctx context.Context) ([]store.Entry, error) {
 	return entries, nil
 }
 
+// ListTenantOverrides returns only the tenant-scoped rows (tenant_id !=
+// '_global'). Used by the Client's hydrateTenantCache at Start() where the
+// shared global rows are irrelevant to the tenant cache. The filter runs
+// server-side so a large _global row count does not inflate hydration
+// transfer. Ordering mirrors ListTenantValues —
+// (namespace, key, tenant_id) ascending — for deterministic replay.
+func (s *Store) ListTenantOverrides(ctx context.Context) ([]store.Entry, error) {
+	if s == nil || s.isClosed() {
+		return nil, store.ErrClosed
+	}
+
+	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.list_tenant_overrides")
+	defer span.End()
+
+	filter := bson.D{{Key: "tenant_id", Value: bson.D{{Key: "$ne", Value: store.SentinelGlobal}}}}
+
+	cursor, err := s.coll.Find(ctx, filter)
+	if err != nil {
+		opentelemetry.HandleSpanError(span, "mongodb list_tenant_overrides: find failed", err)
+		return nil, fmt.Errorf("mongodb store list_tenant_overrides: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var docs []entryDoc
+	if err := cursor.All(ctx, &docs); err != nil {
+		opentelemetry.HandleSpanError(span, "mongodb list_tenant_overrides: decode failed", err)
+		return nil, fmt.Errorf("mongodb store list_tenant_overrides: decode: %w", err)
+	}
+
+	// Deterministic order: (namespace, key, tenant_id) ascending, matching
+	// ListTenantValues.
+	sort.Slice(docs, func(i, j int) bool {
+		if docs[i].Namespace != docs[j].Namespace {
+			return docs[i].Namespace < docs[j].Namespace
+		}
+
+		if docs[i].Key != docs[j].Key {
+			return docs[i].Key < docs[j].Key
+		}
+
+		return docs[i].TenantID < docs[j].TenantID
+	})
+
+	entries := make([]store.Entry, len(docs))
+	for i := range docs {
+		entries[i] = docs[i].toEntry()
+	}
+
+	span.SetAttributes(attribute.Int("entries.count", len(entries)))
+
+	return entries, nil
+}
+
 // ListTenantsForKey returns a sorted, deduplicated list of distinct tenant
 // IDs that have an override for (namespace, key). The "_global" sentinel is
 // excluded. Returns an empty slice (not nil) when no tenant has overridden
@@ -264,11 +314,13 @@ func (s *Store) ListTenantsForKey(
 	}
 
 	// Distinct is the natural operator here: one index seek, constant memory,
-	// no cursor iteration required. The result is decoded directly into a
-	// []string for allocation-free conversion.
-	var tenantIDs []string
-
-	if err := s.coll.Distinct(ctx, "tenant_id", filter).Decode(&tenantIDs); err != nil {
+	// no cursor iteration required. Check .Err() BEFORE .Decode — mongo-driver
+	// v2's DistinctResult.Decode does NOT inspect its internal err field, so a
+	// failed operation (auth error, network drop mid-flight, invalid collation)
+	// would otherwise surface as a silent empty slice. Inspecting .Err() first
+	// preserves fail-closed semantics.
+	res := s.coll.Distinct(ctx, "tenant_id", filter)
+	if err := res.Err(); err != nil {
 		// ErrNoDocuments from a Distinct that matched nothing is benign —
 		// return an empty slice rather than propagating.
 		if errors.Is(err, mongo.ErrNoDocuments) {
@@ -278,6 +330,13 @@ func (s *Store) ListTenantsForKey(
 		opentelemetry.HandleSpanError(span, "mongodb list_tenants_for_key: distinct failed", err)
 
 		return nil, fmt.Errorf("mongodb store list_tenants_for_key: %w", err)
+	}
+
+	var tenantIDs []string
+	if err := res.Decode(&tenantIDs); err != nil {
+		opentelemetry.HandleSpanError(span, "mongodb list_tenants_for_key: decode failed", err)
+
+		return nil, fmt.Errorf("mongodb store list_tenants_for_key: decode: %w", err)
 	}
 
 	sort.Strings(tenantIDs)

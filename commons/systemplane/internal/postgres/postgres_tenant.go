@@ -244,6 +244,63 @@ func (s *Store) ListTenantValues(ctx context.Context) ([]store.Entry, error) {
 	return entries, nil
 }
 
+// ListTenantOverrides returns only the tenant-scoped rows (tenant_id <>
+// '_global'). Used by the Client's hydrateTenantCache at Start() where the
+// shared global rows are irrelevant to the tenant cache. The WHERE filter
+// runs server-side so a large _global row count does not inflate hydration
+// transfer. Ordering mirrors ListTenantValues — (namespace, key, tenant_id)
+// ascending — for deterministic replay during tests.
+func (s *Store) ListTenantOverrides(ctx context.Context) ([]store.Entry, error) {
+	if s == nil || s.isClosed() {
+		return nil, store.ErrClosed
+	}
+
+	ctx, span, finish := s.startSpan(ctx, "systemplane.postgres.list_tenant_overrides")
+	defer finish()
+
+	query := fmt.Sprintf( // #nosec G201 -- table name validated as Postgres identifier in New()
+		`SELECT namespace, key, tenant_id, value, updated_at, updated_by FROM %s WHERE tenant_id <> $1 ORDER BY namespace, key, tenant_id`,
+		s.cfg.Table,
+	)
+
+	rows, err := s.cfg.DB.QueryContext(ctx, query, store.SentinelGlobal)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query failed")
+
+		return nil, fmt.Errorf("systemplane/postgres: list_tenant_overrides: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []store.Entry
+
+	for rows.Next() {
+		var e store.Entry
+
+		if err := rows.Scan(&e.Namespace, &e.Key, &e.TenantID, &e.Value, &e.UpdatedAt, &e.UpdatedBy); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "scan failed")
+
+			return nil, fmt.Errorf("systemplane/postgres: list_tenant_overrides scan: %w", err)
+		}
+
+		entries = append(entries, e)
+	}
+
+	if err := rows.Err(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "rows iteration failed")
+
+		return nil, fmt.Errorf("systemplane/postgres: list_tenant_overrides rows: %w", err)
+	}
+
+	if entries == nil {
+		entries = []store.Entry{}
+	}
+
+	return entries, nil
+}
+
 // ListTenantsForKey returns a sorted, deduplicated list of distinct
 // tenant IDs that have an override for (namespace, key). The '_global'
 // sentinel is excluded because it represents "no tenant override", not a

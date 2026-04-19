@@ -40,6 +40,9 @@ func (emptyTenantTestStore) DeleteTenantValue(_ context.Context, _, _, _, _ stri
 func (emptyTenantTestStore) ListTenantValues(_ context.Context) ([]TestEntry, error) {
 	return nil, nil
 }
+func (emptyTenantTestStore) ListTenantOverrides(_ context.Context) ([]TestEntry, error) {
+	return nil, nil
+}
 func (emptyTenantTestStore) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
 	return nil, nil
 }
@@ -132,6 +135,50 @@ func TestRegisterTenantScoped_InvalidArgsReturnsValidationError(t *testing.T) {
 
 	err = c.RegisterTenantScoped("ns", "", "v")
 	require.Error(t, err, "empty key should error")
+	assert.ErrorIs(t, err, ErrValidation, "error should wrap ErrValidation")
+}
+
+// TestRegister_ReservedKeyTenantsRejected locks the admin-routing preemption:
+// registering a key literally named "tenants" would shadow the admin surface
+// at /<prefix>/:namespace/:key/tenants. Both Register and RegisterTenantScoped
+// must reject it so the collision cannot be introduced through either path.
+func TestRegister_ReservedKeyTenantsRejected(t *testing.T) {
+	t.Parallel()
+
+	c := newClientForTest(t)
+
+	err := c.Register("global", "tenants", "v")
+	require.Error(t, err, "Register should reject the reserved 'tenants' key")
+	assert.ErrorIs(t, err, ErrValidation, "error should wrap ErrValidation")
+
+	err = c.RegisterTenantScoped("global", "tenants", "v")
+	require.Error(t, err, "RegisterTenantScoped should reject the reserved 'tenants' key")
+	assert.ErrorIs(t, err, ErrValidation, "error should wrap ErrValidation")
+}
+
+// TestRegister_UnitSeparatorRejected locks the singleflight composite-key
+// guard: namespaces or keys containing U+001F could collide on the same
+// slot because singleflightKey concatenates via that delimiter. Both
+// Register and RegisterTenantScoped must reject.
+func TestRegister_UnitSeparatorRejected(t *testing.T) {
+	t.Parallel()
+
+	c := newClientForTest(t)
+
+	err := c.Register("global\x1fevil", "k", "v")
+	require.Error(t, err, "Register should reject U+001F in namespace")
+	assert.ErrorIs(t, err, ErrValidation, "error should wrap ErrValidation")
+
+	err = c.Register("global", "k\x1fevil", "v")
+	require.Error(t, err, "Register should reject U+001F in key")
+	assert.ErrorIs(t, err, ErrValidation, "error should wrap ErrValidation")
+
+	err = c.RegisterTenantScoped("global\x1fevil", "k", "v")
+	require.Error(t, err, "RegisterTenantScoped should reject U+001F in namespace")
+	assert.ErrorIs(t, err, ErrValidation, "error should wrap ErrValidation")
+
+	err = c.RegisterTenantScoped("global", "k\x1fevil", "v")
+	require.Error(t, err, "RegisterTenantScoped should reject U+001F in key")
 	assert.ErrorIs(t, err, ErrValidation, "error should wrap ErrValidation")
 }
 

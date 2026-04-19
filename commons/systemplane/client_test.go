@@ -144,6 +144,10 @@ func (f *fakeStore) ListTenantValues(_ context.Context) ([]store.Entry, error) {
 	return nil, nil
 }
 
+func (f *fakeStore) ListTenantOverrides(_ context.Context) ([]store.Entry, error) {
+	return nil, nil
+}
+
 func (f *fakeStore) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
 	return nil, nil
 }

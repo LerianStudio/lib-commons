@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	commonshttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
@@ -82,9 +83,14 @@ func (m *mounter) handleListTenants(c *fiber.Ctx) error {
 }
 
 // handlePutTenant writes a tenant-specific override for (namespace, key).
-// The :tenantID URL segment is validated before authorization to avoid
-// leaking "tenant ID validity" through the 403/400 boundary (all callers
-// see the same 400 for malformed IDs regardless of auth posture).
+//
+// Authorization runs first via the route middleware (see admin.go Mount).
+// When the authorizer denies a request, a malformed :tenantID still
+// produces 403 (not 400) — which is the correct security posture: never
+// tell unauthorized callers whether a tenant ID is syntactically valid.
+// In-handler validation via validateTenantIDParam catches malformed IDs
+// on authorized paths and returns a uniform 400 regardless of whether
+// the value is the "_global" sentinel or any other rejected shape.
 //
 // The request body mirrors handlePut's shape:
 //
@@ -96,10 +102,12 @@ func (m *mounter) handleListTenants(c *fiber.Ctx) error {
 func (m *mounter) handlePutTenant(c *fiber.Ctx) error {
 	tenantID := c.Params("tenantID")
 
-	// Validate BEFORE parsing body and BEFORE authorization. core.IsValidTenantID
-	// enforces a conservative regex; the "_global" sentinel is rejected here
-	// too (Client.extractTenantID catches it as a defense-in-depth, but the
-	// admin layer rejects earlier with a clearer error code).
+	// Validate the :tenantID after authorization (authorizeTenant runs as
+	// Fiber middleware before this handler; see admin.go Mount). Authorization
+	// failure surfaces as 403 before any tenantID inspection. On authorized
+	// paths, the regex-based validator below rejects malformed IDs — including
+	// "_global" — with a uniform 400 error that does not leak the sentinel
+	// name.
 	if err := validateTenantIDParam(tenantID); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(commonshttp.ErrorResponse{
 			Code:    fiber.StatusBadRequest,
@@ -159,14 +167,25 @@ func (m *mounter) handlePutTenant(c *fiber.Ctx) error {
 	// We already have the canonical value pre-write; however, the Client
 	// applies a JSON round-trip during SetForTenant and that canonical form
 	// is what reads will observe. Perform a GetForTenant here so the
-	// response matches what a subsequent read would return. Ignoring the
-	// error path is deliberate: if the write succeeded but the read failed
-	// (e.g. a transient backend blip for a lazy-mode Client), we still
-	// report the write as successful, echoing the caller's submitted value
-	// with redaction applied as a best effort.
+	// response matches what a subsequent read would return. On read failure
+	// we still report the write as successful and echo the caller's
+	// submitted value with redaction — best-effort, because the durable
+	// state is already committed by the SetForTenant above. The read error
+	// is logged at Debug level so operators have a trail when diagnosing
+	// transient backend blips (e.g. a lazy-mode Client whose GetForTenant
+	// timed out against the store).
 	displayValue := value
 
-	if v, found, _ := m.client.GetForTenant(ctx, namespace, key); found {
+	v, found, getErr := m.client.GetForTenant(ctx, namespace, key)
+	switch {
+	case getErr != nil:
+		m.cfg.logger.Log(ctx, log.LevelDebug, "handlePutTenant: GetForTenant failed after successful write, echoing submitted value",
+			log.String("namespace", namespace),
+			log.String("key", key),
+			log.String("tenant_id", tenantID),
+			log.Err(getErr),
+		)
+	case found:
 		displayValue = v
 	}
 
@@ -214,25 +233,22 @@ func (m *mounter) handleDeleteTenant(c *fiber.Ctx) error {
 // ---------------------------------------------------------------------------
 
 // validateTenantIDParam enforces the same constraints the Client applies at
-// extractTenantID — a char whitelist regex and a rejection of the "_global"
-// sentinel. Rejecting at the admin layer produces a clearer error code and
-// avoids a round-trip through the Client before the failure surfaces.
-//
-// The "_global" check here is defense-in-depth: Client.extractTenantID also
-// rejects it, but callers should never be able to reach that path through
-// this admin surface.
+// extractTenantID — a char whitelist regex enforced by core.IsValidTenantID.
+// Rejecting at the admin layer produces a clearer HTTP status (400 instead
+// of round-tripping through the Client) and emits a uniform error message
+// regardless of whether the caller submitted the "_global" sentinel, a
+// leading hyphen, or any other malformed value — the admin surface
+// deliberately does NOT distinguish "_global specifically" from generic
+// regex rejection, so unauthorized callers cannot use error variants to
+// probe for the sentinel's literal name.
 func validateTenantIDParam(tenantID string) error {
 	if tenantID == "" {
 		return errors.New("tenantID must not be empty")
 	}
 
-	// The "_global" sentinel collides with Client's shared-row marker.
-	// Reject it explicitly so the error message is obvious; otherwise
-	// IsValidTenantID would flag it via the leading-underscore rule anyway.
-	if tenantID == "_global" {
-		return fmt.Errorf("tenantID must not be the %q sentinel", "_global")
-	}
-
+	// core.IsValidTenantID rejects "_global" (leading underscore is not
+	// alphanumeric) along with every other malformed value. A uniform
+	// error keeps the sentinel's literal name out of the wire response.
 	if !core.IsValidTenantID(tenantID) {
 		return fmt.Errorf("tenantID must match ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ and be at most %d characters", core.MaxTenantIDLength)
 	}

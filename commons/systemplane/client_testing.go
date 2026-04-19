@@ -35,6 +35,8 @@ type TestStore interface {
 	DeleteTenantValue(ctx context.Context, tenantID, namespace, key, actor string) error
 	// ListTenantValues mirrors store.Store.ListTenantValues.
 	ListTenantValues(ctx context.Context) ([]TestEntry, error)
+	// ListTenantOverrides mirrors store.Store.ListTenantOverrides.
+	ListTenantOverrides(ctx context.Context) ([]TestEntry, error)
 	// ListTenantsForKey mirrors store.Store.ListTenantsForKey.
 	ListTenantsForKey(ctx context.Context, namespace, key string) ([]string, error)
 }
@@ -156,6 +158,27 @@ func (a *testStoreAdapter) DeleteTenantValue(ctx context.Context, tenantID, name
 
 func (a *testStoreAdapter) ListTenantValues(ctx context.Context) ([]store.Entry, error) {
 	entries, err := a.ts.ListTenantValues(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]store.Entry, len(entries))
+	for i, e := range entries {
+		out[i] = store.Entry{
+			Namespace: e.Namespace,
+			Key:       e.Key,
+			TenantID:  e.TenantID,
+			Value:     e.Value,
+			UpdatedAt: e.UpdatedAt,
+			UpdatedBy: e.UpdatedBy,
+		}
+	}
+
+	return out, nil
+}
+
+func (a *testStoreAdapter) ListTenantOverrides(ctx context.Context) ([]store.Entry, error) {
+	entries, err := a.ts.ListTenantOverrides(ctx)
 	if err != nil {
 		return nil, err
 	}
