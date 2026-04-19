@@ -56,6 +56,17 @@ func TestSanitizeBrokerURL(t *testing.T) {
 			mustNotContain: []string{},
 			mustContainAny: []string{""},
 		},
+		{
+			// Regression guard: an "@" inside a non-URL token (e.g. an email
+			// address in a log message) must NOT be treated as userinfo
+			// delimiter. fallbackRedact's URL-aware splitter only fires on
+			// "://" presence, so an email-only message should pass through
+			// untouched.
+			name:           "email address in plain text is preserved",
+			in:             "user message with email@domain.com",
+			mustNotContain: []string{"****", "[REDACTED]"},
+			mustContainAny: []string{"email@domain.com"},
+		},
 	}
 
 	for _, tt := range tests {

@@ -1573,7 +1573,7 @@ func TestRedactURLCredentials(t *testing.T) {
 		{
 			name:            "amqps scheme is redacted",
 			message:         "dial amqps://admin:s3cret@broker:5671/vhost failed",
-			expectedContain: []string{"amqps://admin:xxxxx@broker:5671/vhost"},
+			expectedContain: []string{"amqps://admin:****@broker:5671/vhost"},
 			notContain:      []string{"s3cret"},
 		},
 		{
@@ -1584,49 +1584,49 @@ func TestRedactURLCredentials(t *testing.T) {
 		{
 			name:            "url-encoded password is redacted",
 			message:         "dial amqp://admin:p%40ss%3Aword%2F123@broker:5672 failed",
-			expectedContain: []string{"amqp://admin:xxxxx@broker:5672"},
+			expectedContain: []string{"amqp://admin:****@broker:5672"},
 			notContain:      []string{"p%40ss%3Aword%2F123"},
 		},
 		{
 			name:            "password with slash is redacted",
 			message:         "dial amqp://admin:pa/ss@broker:5672 failed",
-			expectedContain: []string{"amqp://admin:xxxxx@broker:5672"},
+			expectedContain: []string{"amqp://admin:****@broker:5672"},
 			notContain:      []string{"pa/ss"},
 		},
 		{
 			name:            "password with literal at is redacted",
 			message:         "dial amqp://admin:p@ss@broker:5672 failed",
-			expectedContain: []string{"amqp://admin:xxxxx@broker:5672"},
+			expectedContain: []string{"amqp://admin:****@broker:5672"},
 			notContain:      []string{"p@ss"},
 		},
 		{
 			name:            "multiple URLs are redacted",
 			message:         "upstream amqp://u1:p1@host1:5672 then amqps://u2:p2@host2:5671",
-			expectedContain: []string{"amqp://u1:xxxxx@host1:5672", "amqps://u2:xxxxx@host2:5671"},
+			expectedContain: []string{"amqp://u1:****@host1:5672", "amqps://u2:****@host2:5671"},
 			notContain:      []string{"u1:p1", "u2:p2"},
 		},
 		{
 			name:            "ipv6 host is redacted",
 			message:         "dial amqp://guest:guest@[::1]:5672 failed",
-			expectedContain: []string{"amqp://guest:xxxxx@[::1]:5672"},
+			expectedContain: []string{"amqp://guest:****@[::1]:5672"},
 			notContain:      []string{"guest:guest@[::1]"},
 		},
 		{
 			name:            "empty password is normalized to redacted placeholder",
 			message:         "dial amqp://user:@localhost:5672 failed",
-			expectedContain: []string{"amqp://user:xxxxx@localhost:5672"},
+			expectedContain: []string{"amqp://user:****@localhost:5672"},
 			notContain:      []string{"user:@localhost"},
 		},
 		{
 			name:            "surrounding text and punctuation are preserved",
 			message:         "error details (amqp://user:secret@localhost:5672), retry later",
-			expectedContain: []string{"error details (amqp://user:xxxxx@localhost:5672), retry later"},
+			expectedContain: []string{"error details (amqp://user:****@localhost:5672), retry later"},
 			notContain:      []string{"user:secret@"},
 		},
 		{
 			name:            "multiple colons in userinfo are fully redacted",
 			message:         "dial amqp://user:name:secret@localhost:5672 failed",
-			expectedContain: []string{"amqp://user:xxxxx@localhost:5672"},
+			expectedContain: []string{"amqp://user:****@localhost:5672"},
 			notContain:      []string{"secret", "user:name:secret"},
 		},
 	}
@@ -1662,7 +1662,7 @@ func TestRedactURLCredentialsFallback(t *testing.T) {
 
 		got := redactURLCredentialsFallback(token)
 
-		assert.Equal(t, "amqp://user:xxxxx@host:5672/path@segment?key=value", got)
+		assert.Equal(t, "amqp://user:****@host:5672/path@segment?key=value", got)
 	})
 
 	t.Run("does not redact when at-sign appears only in path", func(t *testing.T) {
@@ -1688,7 +1688,7 @@ func TestSanitizeAMQPErr(t *testing.T) {
 		got := sanitizeAMQPErr(err, connectionString)
 
 		assert.NotContains(t, got, "s3cretP@ss")
-		assert.Contains(t, got, "xxxxx")
+		assert.Contains(t, got, "****")
 	})
 
 	t.Run("nil error returns empty string", func(t *testing.T) {
@@ -1729,7 +1729,7 @@ func TestSanitizeAMQPErr(t *testing.T) {
 		got := sanitizeAMQPErr(err, connectionString)
 
 		assert.NotContains(t, got, "s3cr3t")
-		assert.Contains(t, got, "xxxxx")
+		assert.Contains(t, got, "****")
 	})
 
 	t.Run("redacts URL-encoded password in decoded form", func(t *testing.T) {
@@ -1742,7 +1742,7 @@ func TestSanitizeAMQPErr(t *testing.T) {
 		got := sanitizeAMQPErr(err, connectionString)
 
 		assert.NotContains(t, got, "p@ss:word/123")
-		assert.Contains(t, got, "xxxxx")
+		assert.Contains(t, got, "****")
 	})
 
 	t.Run("empty connection string without URL credentials returns unmodified error", func(t *testing.T) {
@@ -1763,7 +1763,7 @@ func TestSanitizeAMQPErr(t *testing.T) {
 		got := sanitizeAMQPErr(err, "")
 
 		assert.NotContains(t, got, "guest:guest")
-		assert.Contains(t, got, "xxxxx")
+		assert.Contains(t, got, "****")
 	})
 
 	t.Run("fallback redaction fully redacts multi-colon userinfo passwords", func(t *testing.T) {
@@ -1774,7 +1774,7 @@ func TestSanitizeAMQPErr(t *testing.T) {
 		got := sanitizeAMQPErr(err, "")
 
 		assert.NotContains(t, got, "secret")
-		assert.Contains(t, got, "amqp://user:xxxxx@localhost:5672")
+		assert.Contains(t, got, "amqp://user:****@localhost:5672")
 	})
 }
 

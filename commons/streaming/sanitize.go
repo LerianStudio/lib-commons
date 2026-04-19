@@ -4,11 +4,14 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/LerianStudio/lib-commons/v5/commons/security/sanitize"
 )
 
 // redactedMarker is the replacement string substituted for credentials.
-// Matches the pattern in commons/rabbitmq/rabbitmq.go:124 (redactedURLPassword).
-const redactedMarker = "****"
+// Delegates to the shared sanitize.SecretRedactionMarker so streaming,
+// rabbitmq, and any future redaction caller emit the same literal.
+const redactedMarker = sanitize.SecretRedactionMarker
 
 // urlPattern matches scheme://rest-of-URL sequences. Kept intentionally simple
 // to mirror commons/rabbitmq/rabbitmq.go:129. Credential redaction is applied
