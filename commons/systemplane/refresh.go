@@ -154,6 +154,7 @@ func (c *Client) refreshTenantFromStore(ns, key, tenantID string) {
 	// tenantID positionally — the ctx binding is purely for telemetry
 	// attribution downstream.
 	bgCtx := core.ContextWithTenantID(context.Background(), tenantID)
+
 	ctx, cancel := context.WithTimeout(bgCtx, refreshTimeout)
 	defer cancel()
 

@@ -29,7 +29,7 @@ import (
 //
 //  1. CREATE TABLE IF NOT EXISTS with legacy PRIMARY KEY (namespace, key).
 //  2. ALTER TABLE ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '_global'.
-//  3. UPDATE ... SET tenant_id='_global' WHERE tenant_id IS NULL OR ''.
+//  3. UPDATE ... SET tenant_id='_global' WHERE tenant_id IS NULL OR ”.
 //  4. CREATE OR REPLACE FUNCTION systemplane_notify (emits tenant_id in payload;
 //     under phase 1 the emitted tenant_id is always '_global' because no
 //     tenant rows exist).
@@ -41,14 +41,14 @@ import (
 //
 // Phase 2 (opt-in via WithTenantSchemaEnabled()):
 //
-//	All phase-1 steps, plus:
+//		All phase-1 steps, plus:
 //
-//  6. Pre-flight duplicate-detection: if any (namespace, key) has BOTH a row
-//     with tenant_id IN (NULL, '') AND a sibling '_global' row, abort with a
-//     clear error. The backfill in step 3 would otherwise violate the
-//     composite unique and silently erase one of the rows.
-//  7. ALTER TABLE ... DROP CONSTRAINT IF EXISTS <table>_pkey (idempotent).
-//  8. CREATE UNIQUE INDEX IF NOT EXISTS <table>_pkey_v2 ON ... (namespace, key, tenant_id).
+//	 6. Pre-flight duplicate-detection: if any (namespace, key) has BOTH a row
+//	    with tenant_id IN (NULL, '') AND a sibling '_global' row, abort with a
+//	    clear error. The backfill in step 3 would otherwise violate the
+//	    composite unique and silently erase one of the rows.
+//	 7. ALTER TABLE ... DROP CONSTRAINT IF EXISTS <table>_pkey (idempotent).
+//	 8. CREATE UNIQUE INDEX IF NOT EXISTS <table>_pkey_v2 ON ... (namespace, key, tenant_id).
 //
 // Phase 2 is what SetTenantValue / DeleteTenantValue require; the store's
 // tenant methods return ErrTenantSchemaNotEnabled while running in phase 1.
@@ -186,7 +186,7 @@ FOR EACH ROW EXECUTE FUNCTION systemplane_notify()`, s.cfg.Table) // #nosec G201
 }
 
 // verifyNoAmbiguousTenantRows is the phase-2 pre-flight guard (H8). If the
-// table already contains rows with tenant_id IN (NULL, '') AND a sibling
+// table already contains rows with tenant_id IN (NULL, ”) AND a sibling
 // '_global' row for the same (namespace, key), the subsequent backfill would
 // collide with the composite unique index and silently erase one of the two
 // rows. We fail loudly so operators consolidate the data before re-running
