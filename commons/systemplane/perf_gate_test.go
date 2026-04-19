@@ -1,6 +1,12 @@
-//go:build unit
+//go:build unit && !race
 
 // Package systemplane — automated AC15 performance threshold gates.
+//
+// Build-tag note: `!race` is required because the race detector adds
+// 10-50× latency overhead per atomic/mutex op, which makes sub-microsecond
+// thresholds meaningless. The race-enabled test lane (make ci / -race)
+// silently skips this file; run `go test -tags=unit -run=TestPerf_` without
+// `-race` to exercise the gate.
 //
 // PRD AC15 targets the eager-mode tenant read path:
 //
