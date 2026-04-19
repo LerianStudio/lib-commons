@@ -41,6 +41,12 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 		return ErrNilProducer
 	}
 
+	// Compute the topic once and thread it through every downstream call
+	// site. Topic() allocates a string on every invocation; caching it
+	// avoids the allocation across the recordEmitted + recordEmitDuration
+	// + DLQ + span-attribute write paths on the hot path.
+	topic := event.Topic()
+
 	if p.closed.Load() {
 		// Post-close Emit is semantically a caller-side contract violation
 		// (DX-E02/E03 — service methods MUST NOT call Emit after the app
@@ -50,12 +56,10 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 		// attempts per TRD §7.2. No broker I/O either: this return is
 		// strictly in-process.
 		//
-		// event.Topic() is safe on an un-defaulted Event because Topic()
-		// derives from ResourceType+EventType which the caller already
-		// populated. If those are empty the label will be ".": still
-		// cardinality-bounded, surfaces as "you're emitting a closed
-		// producer AND with an unpopulated event".
-		p.metrics.recordEmitted(ctx, event.Topic(), "send", outcomeCallerError)
+		// Topic derives from ResourceType+EventType which the caller
+		// already populated. If those are empty the label will be ".":
+		// still cardinality-bounded.
+		p.metrics.recordEmitted(ctx, topic, "send", outcomeCallerError)
 
 		return ErrEmitterClosed
 	}
@@ -74,7 +78,7 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 	// cover emission attempts, not input-validation rejections). Recording
 	// duration on a non-attempt would skew the histogram.
 	if err := p.preFlight(event); err != nil {
-		p.metrics.recordEmitted(ctx, event.Topic(), "send", outcomeCallerError)
+		p.metrics.recordEmitted(ctx, topic, "send", outcomeCallerError)
 
 		return err
 	}
@@ -103,8 +107,8 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 	// auditing the histogram against the counter.
 	defer func() {
 		span.SetAttributes(attribute.String("event.outcome", outcome))
-		p.metrics.recordEmitted(ctx, event.Topic(), "send", outcome)
-		p.metrics.recordEmitDuration(ctx, event.Topic(), outcome, durationMilliseconds(time.Since(start)))
+		p.metrics.recordEmitted(ctx, topic, "send", outcome)
+		p.metrics.recordEmitDuration(ctx, topic, outcome, durationMilliseconds(time.Since(start)))
 	}()
 
 	// cb.Execute takes a closure with signature func() (any, error). We close
@@ -113,7 +117,7 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 	// ErrOpenState / ErrTooManyRequests into its own diagnostic so callers
 	// can still errors.Is for those sentinels.
 	_, err := p.cb.Execute(func() (any, error) {
-		return p.emitAttempt(ctx, span, event, &outcome)
+		return p.emitAttempt(ctx, span, event, topic, &outcome)
 	})
 	if err != nil {
 		// Record error on the span so trace viewers surface it in the span
@@ -133,7 +137,10 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 // outcome is a pointer because the deferred recorders in Emit close over
 // the same variable; every branch writes to *outcome before returning so
 // the deferred SetAttributes + recordEmitted picks up the final value.
-func (p *Producer) emitAttempt(ctx context.Context, span trace.Span, event Event, outcome *string) (any, error) {
+//
+// topic is passed through from Emit so every downstream metric reuses the
+// same string literal rather than recomputing event.Topic() per call.
+func (p *Producer) emitAttempt(ctx context.Context, span trace.Span, event Event, topic string, outcome *string) (any, error) {
 	// Circuit-open fallback. When the breaker is OPEN we observe the
 	// mirrored flag and either (a) route to the outbox if one is
 	// configured — caller sees nil after a durable write — or (b) fail
@@ -142,7 +149,7 @@ func (p *Producer) emitAttempt(ctx context.Context, span trace.Span, event Event
 	// returning an error here would count against the already-open
 	// breaker for no useful reason.
 	if p.cbStateFlag.Load() == flagCBOpen {
-		return p.emitCircuitOpenBranch(ctx, span, event, outcome)
+		return p.emitCircuitOpenBranch(ctx, span, event, topic, outcome)
 	}
 
 	if err := p.publishDirect(ctx, event); err != nil {
@@ -164,7 +171,7 @@ func (p *Producer) emitAttempt(ctx context.Context, span trace.Span, event Event
 			if isDLQRoutable(emitErr.Class) {
 				*outcome = outcomeDLQ
 
-				p.metrics.recordDLQ(ctx, event.Topic(), string(emitErr.Class))
+				p.metrics.recordDLQ(ctx, topic, string(emitErr.Class))
 			} else {
 				*outcome = outcomeCallerError
 			}
@@ -193,17 +200,15 @@ func (p *Producer) emitAttempt(ctx context.Context, span trace.Span, event Event
 // Extracted from emitAttempt to keep single-responsibility per function;
 // the CB-open decision tree is simple but verbose enough to benefit from
 // its own docstring and test seams.
-func (p *Producer) emitCircuitOpenBranch(ctx context.Context, span trace.Span, event Event, outcome *string) (any, error) {
+func (p *Producer) emitCircuitOpenBranch(ctx context.Context, span trace.Span, event Event, topic string, outcome *string) (any, error) {
 	if p.outbox != nil {
 		if obxErr := p.publishToOutbox(ctx, event); obxErr != nil {
 			// Outbox write itself failed: surface the error so the caller
 			// knows the event wasn't durably captured. Silent drop here
-			// would lose the event entirely. Classified as caller_error
-			// at the metric layer because the caller needs to know the
-			// event is not durably captured — there is no dedicated
-			// outbox-fail outcome in the TRD enum and adding one would
-			// be scope creep.
-			*outcome = outcomeCallerError
+			// would lose the event entirely. Labeled outcomeOutboxFailed
+			// so operators can distinguish outbox-infrastructure failures
+			// from caller-input failures on the dashboard.
+			*outcome = outcomeOutboxFailed
 
 			return nil, obxErr
 		}
@@ -216,7 +221,7 @@ func (p *Producer) emitCircuitOpenBranch(ctx context.Context, span trace.Span, e
 		span.AddEvent("outbox.routed", trace.WithAttributes(
 			attribute.String("reason", "circuit_open"),
 		))
-		p.metrics.recordOutboxRouted(ctx, event.Topic(), "circuit_open")
+		p.metrics.recordOutboxRouted(ctx, topic, "circuit_open")
 
 		return nil, nil //nolint:nilnil // CB Execute signature mandates (any, error); nil result is discarded
 	}

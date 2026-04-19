@@ -10,21 +10,24 @@ import (
 )
 
 // Outcome label values. The "outcome" label on streaming metrics is a closed
-// enum of five values per TRD §7.1 — Gate 2 made this addition to keep
-// histogram bucket-cardinality bounded. NEVER introduce a sixth value without
-// a TRD amendment: downstream dashboards and SLO alerts key off this set.
+// enum per TRD §7.1. NEVER introduce a new value without a TRD amendment:
+// downstream dashboards and SLO alerts key off this set.
 //
-// - outcomeProduced: direct publish succeeded (CLOSED circuit, broker healthy)
-// - outcomeOutboxed: circuit OPEN but outbox fallback wrote the event durably
-// - outcomeCircuitOpen: circuit OPEN and no outbox → caller got ErrCircuitOpen
-// - outcomeCallerError: preflight rejection or caller-class EmitError
-// - outcomeDLQ: publish failed with an infra class; payload went to {topic}.dlq
+//   - outcomeProduced:     direct publish succeeded (CLOSED circuit, broker healthy).
+//   - outcomeOutboxed:     circuit OPEN but outbox fallback wrote the event durably.
+//   - outcomeCircuitOpen:  circuit OPEN and no outbox → caller got ErrCircuitOpen.
+//   - outcomeCallerError:  preflight rejection or caller-class EmitError.
+//   - outcomeDLQ:          publish failed with an infra class; payload went to {topic}.dlq.
+//   - outcomeOutboxFailed: outbox fallback attempted but the outbox write
+//     itself failed — distinct from outcomeCallerError because the root
+//     cause is outbox infrastructure, not caller input.
 const (
-	outcomeProduced    = "produced"
-	outcomeOutboxed    = "outboxed"
-	outcomeCircuitOpen = "circuit_open"
-	outcomeCallerError = "caller_error"
-	outcomeDLQ         = "dlq"
+	outcomeProduced     = "produced"
+	outcomeOutboxed     = "outboxed"
+	outcomeCircuitOpen  = "circuit_open"
+	outcomeCallerError  = "caller_error"
+	outcomeDLQ          = "dlq"
+	outcomeOutboxFailed = "outbox_failed"
 )
 
 // Metric names. Kept colocated with the recorder so a TRD rename is a one-file
@@ -70,18 +73,23 @@ type streamingMetrics struct {
 	// still work.
 	emittedOnce    sync.Once
 	emittedCounter *metrics.CounterBuilder
+	emittedCache   labelSetCache // topic+operation+outcome → labeled builder
 
 	emitDurationOnce      sync.Once
 	emitDurationHistogram *metrics.HistogramBuilder
+	emitDurationCache     labelSetCache // topic+outcome → labeled builder
 
 	dlqOnce    sync.Once
 	dlqCounter *metrics.CounterBuilder
+	dlqCache   labelSetCache // topic+error_class → labeled builder
 
 	dlqFailedOnce    sync.Once
 	dlqFailedCounter *metrics.CounterBuilder
+	dlqFailedCache   labelSetCache // topic → labeled builder
 
 	outboxRoutedOnce    sync.Once
 	outboxRoutedCounter *metrics.CounterBuilder
+	outboxRoutedCache   labelSetCache // topic+reason → labeled builder
 
 	circuitStateOnce  sync.Once
 	circuitStateGauge *metrics.GaugeBuilder

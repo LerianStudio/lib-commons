@@ -725,7 +725,11 @@ func TestMetrics_CircuitState_UnknownStateDoesNotRecord(t *testing.T) {
 // past any reasonable storage budget.
 //
 // 10k matches the AC-06 / DX-D02 target; any leak would surface well
-// within the first 100 emits.
+// within the first 100 emits. The large iteration count is intentional —
+// a smaller count would miss a leak that only manifests once a
+// label-cache resize crosses a threshold.
+//
+// Runtime: ~10-30s on typical CI. Skipped under -short.
 func TestMetrics_NoTenantIDLabel_10kEmits(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping 10k cardinality test in -short mode")

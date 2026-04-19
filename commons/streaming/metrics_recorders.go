@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"sync"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
@@ -12,20 +13,25 @@ import (
 // cap and so the ceremonial-but-verbose lazy-init pattern is easy to skim
 // top-down.
 //
-// Every method follows the same shape:
-//   1. Nil-receiver guard.
-//   2. Nil-factory guard (logs once via warnNilFactoryOnce).
-//   3. sync.Once-guarded builder creation. On creation failure, log at
-//      ERROR and leave the builder nil — subsequent record* calls silently
-//      no-op via the "if builder == nil { return }" check.
-//   4. Build a label set and write to the instrument; log WARN on any
-//      write error (extremely rare — negative counter value etc.).
-//
-// The shape is identical across all six methods; the only thing that
-// differs is the metric name, label keys, and write-operation (Add / Set /
-// Record). No abstraction layer is introduced because the concrete,
-// line-by-line shape makes a failed-build-then-silent-no-op invariant
-// easy to audit under time pressure.
+// Per-label-set builder caching (T6.1 hardening): the *Builder values
+// returned by (*MetricsFactory).Counter/Histogram/Gauge cache the
+// underlying OTEL instruments, but WithLabels/WithAttributes allocate a
+// fresh builder on every call. On a 10k-RPS service that produces ~40k
+// small heap objects per second. We cache a per-labelset builder keyed
+// by a stable string (strings are hashable; attribute-set keys would
+// require manual fingerprinting), reusing it across record calls.
+// Topic + outcome cardinality is bounded per-process, so the cache is
+// bounded too.
+
+// labelSetCache is a concurrency-safe map of stable-key → *Builder. The
+// concrete builder type is captured as `any` so the same cache shape
+// fits counters, histograms, and gauges without generics bleed-through.
+type labelSetCache struct {
+	// m is keyed by a composed string. Value is one of:
+	//   *metrics.CounterBuilder, *metrics.HistogramBuilder, *metrics.GaugeBuilder
+	// depending on which record* populated it.
+	m sync.Map
+}
 
 // recordEmitted increments streaming_emitted_total by 1 with the given
 // topic/operation/outcome label set. No-op when m is nil or factory is nil
@@ -61,11 +67,21 @@ func (m *streamingMetrics) recordEmitted(ctx context.Context, topic, operation, 
 		return
 	}
 
-	if err := m.emittedCounter.WithLabels(map[string]string{
+	// Cache the labeled builder keyed by (topic, operation, outcome). The
+	// hot path re-uses a single *CounterBuilder per tuple instead of
+	// allocating one via WithLabels on every Add.
+	key := topic + "\x00" + operation + "\x00" + outcome
+
+	builder := m.getOrBuildCounter(&m.emittedCache, key, m.emittedCounter, map[string]string{
 		"topic":     topic,
 		"operation": operation,
 		"outcome":   outcome,
-	}).Add(ctx, 1); err != nil {
+	})
+	if builder == nil {
+		return
+	}
+
+	if err := builder.Add(ctx, 1); err != nil {
 		m.logger.Log(ctx, log.LevelWarn, "streaming: metrics: record emitted",
 			log.String("metric", metricNameEmitted), log.Err(err))
 	}
@@ -104,10 +120,17 @@ func (m *streamingMetrics) recordEmitDuration(ctx context.Context, topic, outcom
 		return
 	}
 
-	if err := m.emitDurationHistogram.WithLabels(map[string]string{
+	key := topic + "\x00" + outcome
+
+	builder := m.getOrBuildHistogram(&m.emitDurationCache, key, m.emitDurationHistogram, map[string]string{
 		"topic":   topic,
 		"outcome": outcome,
-	}).Record(ctx, durationMs); err != nil {
+	})
+	if builder == nil {
+		return
+	}
+
+	if err := builder.Record(ctx, durationMs); err != nil {
 		m.logger.Log(ctx, log.LevelWarn, "streaming: metrics: record duration",
 			log.String("metric", metricNameEmitDurationMS), log.Err(err))
 	}
@@ -147,10 +170,17 @@ func (m *streamingMetrics) recordDLQ(ctx context.Context, topic, errorClass stri
 		return
 	}
 
-	if err := m.dlqCounter.WithLabels(map[string]string{
+	key := topic + "\x00" + errorClass
+
+	builder := m.getOrBuildCounter(&m.dlqCache, key, m.dlqCounter, map[string]string{
 		"topic":       topic,
 		"error_class": errorClass,
-	}).Add(ctx, 1); err != nil {
+	})
+	if builder == nil {
+		return
+	}
+
+	if err := builder.Add(ctx, 1); err != nil {
 		m.logger.Log(ctx, log.LevelWarn, "streaming: metrics: record dlq",
 			log.String("metric", metricNameDLQTotal), log.Err(err))
 	}
@@ -191,9 +221,14 @@ func (m *streamingMetrics) recordDLQFailed(ctx context.Context, topic string) {
 		return
 	}
 
-	if err := m.dlqFailedCounter.WithLabels(map[string]string{
+	builder := m.getOrBuildCounter(&m.dlqFailedCache, topic, m.dlqFailedCounter, map[string]string{
 		"topic": topic,
-	}).Add(ctx, 1); err != nil {
+	})
+	if builder == nil {
+		return
+	}
+
+	if err := builder.Add(ctx, 1); err != nil {
 		m.logger.Log(ctx, log.LevelWarn, "streaming: metrics: record dlq_failed",
 			log.String("metric", metricNameDLQFailed), log.Err(err))
 	}
@@ -233,10 +268,17 @@ func (m *streamingMetrics) recordOutboxRouted(ctx context.Context, topic, reason
 		return
 	}
 
-	if err := m.outboxRoutedCounter.WithLabels(map[string]string{
+	key := topic + "\x00" + reason
+
+	builder := m.getOrBuildCounter(&m.outboxRoutedCache, key, m.outboxRoutedCounter, map[string]string{
 		"topic":  topic,
 		"reason": reason,
-	}).Add(ctx, 1); err != nil {
+	})
+	if builder == nil {
+		return
+	}
+
+	if err := builder.Add(ctx, 1); err != nil {
 		m.logger.Log(ctx, log.LevelWarn, "streaming: metrics: record outbox_routed",
 			log.String("metric", metricNameOutboxRouted), log.Err(err))
 	}
@@ -280,8 +322,73 @@ func (m *streamingMetrics) recordCircuitState(ctx context.Context, state int32) 
 		return
 	}
 
+	// circuit_state has no labels, so there is nothing to cache; the
+	// labeled builder would be identical to the base builder.
 	if err := m.circuitStateGauge.Set(ctx, int64(state)); err != nil {
 		m.logger.Log(ctx, log.LevelWarn, "streaming: metrics: record circuit_state",
 			log.String("metric", metricNameCircuitState), log.Err(err))
 	}
+}
+
+// getOrBuildCounter returns a *CounterBuilder for the given labelset,
+// caching it in cache keyed by key. First-hit path builds a new builder
+// via WithLabels; subsequent hits reuse the same builder pointer. Returns
+// nil if WithLabels returned a nil builder (shouldn't happen in practice).
+func (m *streamingMetrics) getOrBuildCounter(
+	cache *labelSetCache,
+	key string,
+	base *metrics.CounterBuilder,
+	labels map[string]string,
+) *metrics.CounterBuilder {
+	if cache == nil {
+		return nil
+	}
+
+	if v, ok := cache.m.Load(key); ok {
+		if builder, ok := v.(*metrics.CounterBuilder); ok {
+			return builder
+		}
+	}
+
+	built := base.WithLabels(labels)
+	if built == nil {
+		return nil
+	}
+
+	actual, _ := cache.m.LoadOrStore(key, built)
+	if builder, ok := actual.(*metrics.CounterBuilder); ok {
+		return builder
+	}
+
+	return built
+}
+
+// getOrBuildHistogram mirrors getOrBuildCounter for histogram builders.
+func (m *streamingMetrics) getOrBuildHistogram(
+	cache *labelSetCache,
+	key string,
+	base *metrics.HistogramBuilder,
+	labels map[string]string,
+) *metrics.HistogramBuilder {
+	if cache == nil {
+		return nil
+	}
+
+	if v, ok := cache.m.Load(key); ok {
+		if builder, ok := v.(*metrics.HistogramBuilder); ok {
+			return builder
+		}
+	}
+
+	built := base.WithLabels(labels)
+	if built == nil {
+		return nil
+	}
+
+	actual, _ := cache.m.LoadOrStore(key, built)
+	if builder, ok := actual.(*metrics.HistogramBuilder); ok {
+		return builder
+	}
+
+	return built
 }
