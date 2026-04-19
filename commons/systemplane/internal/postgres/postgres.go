@@ -45,13 +45,6 @@ const closeTimeout = 5 * time.Second
 // tracerName is the OpenTelemetry instrumentation scope name.
 const tracerName = "systemplane.postgres"
 
-// sentinelGlobal is the tenant_id value used for shared (non-tenant-scoped)
-// rows. It is chosen so that no valid tenant ID can collide: per
-// commons/tenant-manager/core/validation.go the tenant ID regex is
-// ^[a-zA-Z0-9][a-zA-Z0-9_-]*$, so an identifier starting with "_" is illegal
-// for a real tenant and safe as a sentinel. Mirrors TRD §3.1.
-const sentinelGlobal = "_global"
-
 // Config holds the parameters needed to construct a Postgres-backed Store.
 type Config struct {
 	// DB is the database/sql handle for reads and writes.
@@ -159,7 +152,7 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 		s.cfg.Table,
 	)
 
-	rows, err := s.cfg.DB.QueryContext(ctx, query, sentinelGlobal)
+	rows, err := s.cfg.DB.QueryContext(ctx, query, store.SentinelGlobal)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "query failed")
@@ -221,7 +214,7 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bo
 
 	var e store.Entry
 
-	err := s.cfg.DB.QueryRowContext(ctx, query, namespace, key, sentinelGlobal).
+	err := s.cfg.DB.QueryRowContext(ctx, query, namespace, key, store.SentinelGlobal).
 		Scan(&e.Namespace, &e.Key, &e.TenantID, &e.Value, &e.UpdatedAt, &e.UpdatedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.Entry{}, false, nil
@@ -290,7 +283,7 @@ SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLU
 		s.cfg.Table, conflictTarget, // #nosec G201 -- table name validated as Postgres identifier in New(); conflictTarget is a compile-time literal
 	)
 
-	if _, err := s.cfg.DB.ExecContext(ctx, query, e.Namespace, e.Key, sentinelGlobal, e.Value, e.UpdatedAt, e.UpdatedBy); err != nil {
+	if _, err := s.cfg.DB.ExecContext(ctx, query, e.Namespace, e.Key, store.SentinelGlobal, e.Value, e.UpdatedAt, e.UpdatedBy); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "upsert failed")
 

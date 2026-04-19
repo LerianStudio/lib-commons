@@ -5,19 +5,35 @@
 //
 //   - tenantCacheEager: a bare map[string]map[nskey]any. Zero-allocation hot
 //     path. Used when Start() hydrates every row from the store up front.
+//     Requires caller-held cacheMu (RLock for get; Lock for set/delete) because
+//     the bare map itself is not concurrency-safe.
 //
-//   - tenantCacheLRU: a bounded LRU backed by container/list. Used when the
-//     consumer opts into lazy loading via WithLazyTenantLoad(max). Entries are
-//     populated on first read (a cache miss triggers store.GetTenantValue) and
-//     the least-recently-used entry is evicted when the total population
-//     exceeds max.
+//   - tenantCacheLRU: a bounded LRU backed by hashicorp/golang-lru/v2. Used
+//     when the consumer opts into lazy loading via WithLazyTenantLoad(max).
+//     Entries are populated on first read (a cache miss triggers
+//     store.GetTenantValue) and the least-recently-used entry is evicted when
+//     the total population exceeds max. The library handles its own internal
+//     concurrency — so get() is safe to call under cacheMu.RLock even though
+//     it promotes the hit to MRU.
 //
-// Concurrency contract: implementations of the tenantCache interface are NOT
-// internally synchronized. Every call site is expected to be holding the
-// Client's cacheMu (read for get, write for set/delete). This mirrors the
-// existing pattern at set.go:82-84 and refreshFromStore at client.go:353-356
-// and keeps the mutex hierarchy flat (no nested RWMutex holds). Task 5 wires
-// this lock-under-caller discipline on every tenant Client method.
+// Concurrency contract (READ THIS BEFORE ADDING A CALL SITE):
+//
+//   - get(): read-only from the caller's perspective. No outer mutation
+//     leaks — even the LRU's MRU promotion happens inside the library's own
+//     lock. Safe under cacheMu.RLock for BOTH implementations. The lazy
+//     GetForTenant path takes advantage of this (tenant_scoped.go) so
+//     concurrent hits do not serialize through a write lock.
+//
+//   - set() / delete(): REQUIRE caller-held cacheMu.Lock. The eager map is not
+//     concurrency-safe, and more importantly, the outer write lock coordinates
+//     writes across the tenantCache, the legacy cache[nk], and the subscriber
+//     and refresh paths that also take cacheMu (see refresh.go,
+//     set.go, tenant_scoped.go). The tenantCache implementations themselves do
+//     NOT enforce this — it is a contract the callers must honor.
+//
+// Mutex hierarchy: the tenantCache takes no locks on its own. See client.go
+// for the global lock ordering (startMu → registryMu → cacheMu → subsMu →
+// tenantSubsMu); tenantCache sits under cacheMu.
 package systemplane
 
 // tenantLoadMode selects eager vs lazy tenant cache population at Start().
@@ -37,11 +53,15 @@ const (
 )
 
 // tenantCache is the abstraction over both eager (unbounded map) and lazy
-// (bounded LRU) tenant value caches. All methods assume the caller holds the
-// Client's cacheMu; no internal synchronization is performed.
+// (bounded LRU) tenant value caches. See the package doc above for the
+// cacheMu-holding requirements per method; implementations do NOT enforce
+// concurrency on their own (eager case) or rely on library-internal
+// synchronization (LRU case via hashicorp/golang-lru/v2).
 type tenantCache interface {
-	// get returns the cached value and a hit flag. Lazy implementations
-	// additionally promote the entry to most-recently-used.
+	// get returns the cached value and a hit flag. Safe under cacheMu.RLock
+	// for both implementations: the eager map is read-only from this method's
+	// perspective, and the LRU's promotion-to-MRU happens under the library's
+	// own internal lock (not the outer cacheMu).
 	get(tenantID string, nk nskey) (any, bool)
 
 	// set stores the value, creating nested maps as needed. In the lazy
@@ -52,13 +72,6 @@ type tenantCache interface {
 	// delete removes a single (tenantID, nk) entry if present. Absent entries
 	// are a silent no-op.
 	delete(tenantID string, nk nskey)
-
-	// iterate walks every (tenantID, nk, value) currently in the cache. The
-	// callback returns true to continue iteration, false to stop. Eager caches
-	// surface every entry; lazy caches surface every entry currently resident
-	// (cold entries are not observable). Used by Start() hydration and by
-	// snapshot helpers.
-	iterate(fn func(tenantID string, nk nskey, value any) bool)
 
 	// mode returns the configured load mode. Callers use this to branch
 	// between "hydrate at Start" (eager) and "fetch on miss" (lazy) semantics.
@@ -107,16 +120,6 @@ func (c *tenantCacheEager) delete(tenantID string, nk nskey) {
 
 	if len(inner) == 0 {
 		delete(c.entries, tenantID)
-	}
-}
-
-func (c *tenantCacheEager) iterate(fn func(tenantID string, nk nskey, value any) bool) {
-	for tenantID, inner := range c.entries {
-		for nk, v := range inner {
-			if !fn(tenantID, nk, v) {
-				return
-			}
-		}
 	}
 }
 

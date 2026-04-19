@@ -45,7 +45,7 @@ func TestParseNotifyPayload_GlobalSentinel(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "_global", evt.TenantID)
-	assert.Equal(t, sentinelGlobal, evt.TenantID, "parser should surface the sentinel unchanged")
+	assert.Equal(t, store.SentinelGlobal, evt.TenantID, "parser should surface the sentinel unchanged")
 }
 
 // TestParseNotifyPayload_BackwardCompatNoTenantID guards against a
@@ -126,7 +126,7 @@ func TestSetTenantValue_RejectsGlobalSentinel(t *testing.T) {
 
 	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
 
-	err := s.SetTenantValue(context.Background(), sentinelGlobal, store.Entry{
+	err := s.SetTenantValue(context.Background(), store.SentinelGlobal, store.Entry{
 		Namespace: "global", Key: "fee.rate", Value: []byte(`0.01`),
 	})
 	require.Error(t, err)
@@ -140,7 +140,7 @@ func TestDeleteTenantValue_RejectsGlobalSentinel(t *testing.T) {
 
 	s := &Store{cfg: Config{TenantSchemaEnabled: true, Table: "test"}}
 
-	err := s.DeleteTenantValue(context.Background(), sentinelGlobal, "global", "fee.rate", "admin")
+	err := s.DeleteTenantValue(context.Background(), store.SentinelGlobal, "global", "fee.rate", "admin")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "_global", "error must name the forbidden sentinel")
 }

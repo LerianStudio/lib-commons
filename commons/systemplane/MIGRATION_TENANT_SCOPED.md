@@ -384,13 +384,31 @@ Important properties:
   recoverable: restarting the Client resumes from where it left off
   (the detection is per-document).
 - Reads concurrent with the rewrite are safe — the rewrite uses a
-  temporary marker field so an interrupted document never appears
-  twice.
+  temporary marker field so an interrupted document is never lost.
 - The migration runs once, synchronously, before `Start` returns.
   Expect a one-time cold-start delay proportional to the number of
   existing entries.
 
 For fresh MongoDB collections, the rewrite path is a no-op.
+
+> **Transient duplicate window during rewrite.** The rewrite is not a
+> single atomic transaction — it processes one document at a time
+> (insert-new-id → delete-old-id). A long-running read session that
+> begins before `rewriteObjectIDDocuments` starts and is still active
+> while a specific document is mid-migration can observe BOTH the
+> legacy `ObjectId _id` document AND the compound-`_id` document for
+> the same `(namespace, key)`. The window is bounded per row
+> (typically sub-millisecond), closes on the next read, and does not
+> affect `Get` / `GetForTenant` correctness (both filter by the
+> compound fields, not `_id`).
+>
+> Caller implication: if a consumer holds a long-lived cursor over
+> `List(namespace)` during `Start()`, it may see transient duplicates
+> for the same `(namespace, key)` pair while the rewrite is running.
+> The recommendation is to avoid running the first-boot migration
+> concurrent with heavy read traffic; either schedule the upgrade in
+> a maintenance window or accept the bounded duplicate window on the
+> read side.
 
 The Postgres backend's DDL evolution is a simpler ALTER TABLE adding
 `tenant_id TEXT NOT NULL DEFAULT '_global'` plus a composite unique
@@ -522,6 +540,64 @@ subsequent subscribers. Unsubscribe is safe to call multiple times
 Registering `OnTenantChange` against a key declared by `Register`
 (globals-only) returns a no-op unsubscribe — silent tolerance
 mirroring `OnChange` for unknown keys. Use `OnChange` for those keys.
+
+---
+
+## 8.1 Operational caveats
+
+Two backend-specific behaviors are worth calling out explicitly because
+they can surprise operators during or after a rolling upgrade.
+
+### MongoDB polling-mode consumers miss DELETE events
+
+The MongoDB backend defaults to change streams for the subscribe path,
+which requires a replica set (or a sharded cluster with config
+replica sets). Standalone MongoDB deployments must opt into polling
+mode via `systemplane.WithPollInterval(d)` — the Client then runs a
+periodic `find + watermark` loop instead of a persistent change
+stream.
+
+**Polling mode cannot observe DELETE events.** A document that was
+inserted and then deleted between two polling ticks leaves no trace
+for the poller to find — the watermark advances past it and the
+delete is silently skipped. In the tenant-scoped world this is a
+hard violation of PRD AC9: `DeleteForTenant` is supposed to fire
+`OnTenantChange` with the registered default as the "reverted to
+global" signal, and polling consumers will not see that signal.
+
+Recommendation: if your service uses `RegisterTenantScoped` +
+`DeleteForTenant`, run MongoDB as a replica set and keep change
+streams. If polling is a hard constraint (development-only
+standalone, air-gapped single-node deployments), treat
+`OnTenantChange` subscriptions as best-effort for INSERT/UPDATE only
+and reconcile deletions through a separate mechanism (e.g. a
+periodic `ListTenantsForKey` diff).
+
+The backend-agnostic contract suite skips
+`TenantSubscribeReceivesDeleteEvent` for polling-mode integration
+tests via `SkipSubtest`, so this gap is explicitly known and
+documented rather than silently accepted.
+
+### Postgres NOTIFY now fires on DELETE
+
+Prior to tenant-scoped routing, the Postgres LISTEN/NOTIFY trigger
+fired only on `INSERT` and `UPDATE` of rows in
+`systemplane_entries`. Delete-event routing (PRD AC9) required
+extending the trigger to fire on `DELETE` as well so subscribers
+can observe `DeleteForTenant`.
+
+Legacy v5.0.x consumers that subscribed to the same Postgres channel
+with their own LISTEN handlers will now receive more notification
+fanout than before. The payload shape is unchanged (JSON with
+namespace, key, tenant_id); older clients that are JSON-tolerant of
+the extra `tenant_id` field will decode the envelope successfully
+and their downstream `Get("global", "<key>")` call returns the
+registered default for the deleted row. No behavioral regression,
+just more events on the wire.
+
+If a consumer specifically needs to filter out DELETE events at the
+listen side, examine the `tenant_id` on the NOTIFY payload rather
+than relying on the event's presence/absence.
 
 ---
 

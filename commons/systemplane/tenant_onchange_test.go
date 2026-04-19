@@ -508,10 +508,22 @@ func TestDebouncer_CoalescesRapidSetsForSameTenant(t *testing.T) {
 		fires []fire
 	)
 
+	// Buffered channel for signalling: every fire pushes a copy; the test
+	// waits deterministically for the first signal and then gives the
+	// debouncer a bounded quiet window to prove no second fire arrives.
+	signals := make(chan fire, 8)
+
 	unsub := c.OnTenantChange("global", "fee.rate", func(_, _, tenantID string, newValue any) {
+		f := fire{tenantID, newValue}
+
 		mu.Lock()
-		defer mu.Unlock()
-		fires = append(fires, fire{tenantID, newValue})
+		fires = append(fires, f)
+		mu.Unlock()
+
+		select {
+		case signals <- f:
+		default:
+		}
 	})
 	defer unsub()
 
@@ -521,9 +533,17 @@ func TestDebouncer_CoalescesRapidSetsForSameTenant(t *testing.T) {
 		require.NoError(t, c.SetForTenant(tctx("tenant-A"), "global", "fee.rate", float64(i), "admin"))
 	}
 
-	// Wait 3x the debounce window to comfortably clear the debounce timer
-	// and any latency on the refresh goroutine.
-	time.Sleep(3 * window)
+	// Wait deterministically for the first fire (with a generous upper bound).
+	select {
+	case <-signals:
+	case <-time.After(5 * window):
+		t.Fatal("no fire observed within 5x the debounce window")
+	}
+
+	// Now allow a bounded quiet window: any additional fire beyond the first
+	// comes from a mid-burst flush that the test tolerates up to one extra.
+	// Past 2x the debounce window no further flushes are possible.
+	time.Sleep(2 * window)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -532,10 +552,6 @@ func TestDebouncer_CoalescesRapidSetsForSameTenant(t *testing.T) {
 	// edge cases where the debouncer happens to flush mid-burst. The
 	// invariant we care about is (a) it is NOT 5 (coalescing works) AND
 	// (b) the LAST fire observed matches the final value (tail wins).
-	//
-	// Most runs will see exactly one fire (the 100ms window is easily wider
-	// than the synchronous set loop). The upper bound assertion is deliberately
-	// lenient to avoid flaky failures on a loaded CI machine.
 	require.NotEmpty(t, fires, "at least one fire expected")
 	assert.LessOrEqual(t, len(fires), 2,
 		"5 rapid sets for the same tuple must coalesce (got %d fires)", len(fires))
@@ -569,10 +585,19 @@ func TestDebouncer_DoesNotCollapseAcrossTenants(t *testing.T) {
 		fires []fire
 	)
 
+	signals := make(chan fire, 8)
+
 	unsub := c.OnTenantChange("global", "fee.rate", func(_, _, tenantID string, newValue any) {
+		f := fire{tenantID, newValue}
+
 		mu.Lock()
-		defer mu.Unlock()
-		fires = append(fires, fire{tenantID, newValue})
+		fires = append(fires, f)
+		mu.Unlock()
+
+		select {
+		case signals <- f:
+		default:
+		}
 	})
 	defer unsub()
 
@@ -583,7 +608,20 @@ func TestDebouncer_DoesNotCollapseAcrossTenants(t *testing.T) {
 	require.NoError(t, c.SetForTenant(tctx("tenant-A"), "global", "fee.rate", 1.0, "admin"))
 	require.NoError(t, c.SetForTenant(tctx("tenant-B"), "global", "fee.rate", 2.0, "admin"))
 
-	time.Sleep(3 * window)
+	// Wait deterministically for exactly two signals (one per tenant).
+	// Beyond 5x the debounce window anything else is a CI hang.
+	deadline := time.After(5 * window)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-signals:
+		case <-deadline:
+			mu.Lock()
+			got := len(fires)
+			mu.Unlock()
+
+			t.Fatalf("expected 2 fires within 5x debounce window, observed %d", got)
+		}
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -621,24 +659,51 @@ func TestDebouncer_GlobalAndTenantDoNotCollide(t *testing.T) {
 		onTenantFires []any
 	)
 
+	globalSignals := make(chan struct{}, 4)
+	tenantSignals := make(chan struct{}, 4)
+
 	unsubGlobal := c.OnChange("global", "fee.rate", func(newValue any) {
 		mu.Lock()
-		defer mu.Unlock()
 		onChangeFires = append(onChangeFires, newValue)
+		mu.Unlock()
+
+		select {
+		case globalSignals <- struct{}{}:
+		default:
+		}
 	})
 	defer unsubGlobal()
 
 	unsubTenant := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, newValue any) {
 		mu.Lock()
-		defer mu.Unlock()
 		onTenantFires = append(onTenantFires, newValue)
+		mu.Unlock()
+
+		select {
+		case tenantSignals <- struct{}{}:
+		default:
+		}
 	})
 	defer unsubTenant()
 
 	require.NoError(t, c.Set(context.Background(), "global", "fee.rate", 10.0, "admin"))
 	require.NoError(t, c.SetForTenant(tctx("tenant-A"), "global", "fee.rate", 20.0, "admin"))
 
-	time.Sleep(3 * window)
+	// Wait deterministically for one fire on each surface. 5x the debounce
+	// window is a hard upper bound — beyond that the test has hung.
+	deadline := time.After(5 * window)
+
+	gotGlobal, gotTenant := false, false
+	for !gotGlobal || !gotTenant {
+		select {
+		case <-globalSignals:
+			gotGlobal = true
+		case <-tenantSignals:
+			gotTenant = true
+		case <-deadline:
+			t.Fatalf("timed out waiting for both fires (global=%v tenant=%v)", gotGlobal, gotTenant)
+		}
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -654,20 +719,9 @@ func TestDebouncer_GlobalAndTenantDoNotCollide(t *testing.T) {
 // Nil-receiver / defensive paths.
 // ---------------------------------------------------------------------------
 
-func TestOnTenantChange_NilReceiverReturnsNoOpUnsubscribe(t *testing.T) {
-	t.Parallel()
-
-	var c *Client
-
-	unsub := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, _ any) {
-		t.Fatal("nil-receiver subscription must never fire")
-	})
-	require.NotNil(t, unsub, "unsubscribe must not be nil — callers defer it")
-
-	// Calling the no-op unsubscribe must not panic.
-	unsub()
-	unsub()
-}
+// Nil-receiver coverage for OnTenantChange lives in the consolidated
+// TestNilClient_TenantMethods table in tenant_scoped_test.go. The nil-fn
+// case below is distinct (Client is valid, fn is nil) so it stays here.
 
 func TestOnTenantChange_NilFnReturnsNoOpUnsubscribe(t *testing.T) {
 	t.Parallel()

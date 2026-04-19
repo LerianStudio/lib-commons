@@ -6,7 +6,7 @@
 // tenant's override changed — a single subscription observes every tenant.
 //
 // Relationship with OnChange (invariant AC8): OnChange fires exclusively for
-// sentinelGlobal events. OnTenantChange fires exclusively for tenant events.
+// store.SentinelGlobal events. OnTenantChange fires exclusively for tenant events.
 // The router in refresh.go enforces this split; see refreshFromStoreRouted.
 // A tenant-scoped key's global row changing fires OnChange, not
 // OnTenantChange — the split is on the row's tenant_id, not on whether the

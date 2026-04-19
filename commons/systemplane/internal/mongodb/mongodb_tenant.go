@@ -96,7 +96,7 @@ func (s *Store) SetTenantValue(ctx context.Context, tenantID string, e store.Ent
 		return err
 	}
 
-	if tenantID == sentinelGlobal {
+	if tenantID == store.SentinelGlobal {
 		err := errors.New("mongodb set_tenant_value: tenantID must not be the '_global' sentinel")
 		opentelemetry.HandleSpanBusinessErrorEvent(span, "validation failed", err)
 
@@ -156,7 +156,7 @@ func (s *Store) DeleteTenantValue(
 		return err
 	}
 
-	if tenantID == sentinelGlobal {
+	if tenantID == store.SentinelGlobal {
 		err := errors.New("mongodb delete_tenant_value: tenantID must not be the '_global' sentinel")
 		opentelemetry.HandleSpanBusinessErrorEvent(span, "validation failed", err)
 
@@ -260,7 +260,7 @@ func (s *Store) ListTenantsForKey(
 	filter := bson.D{
 		{Key: "namespace", Value: namespace},
 		{Key: "key", Value: key},
-		{Key: "tenant_id", Value: bson.D{{Key: "$ne", Value: sentinelGlobal}}},
+		{Key: "tenant_id", Value: bson.D{{Key: "$ne", Value: store.SentinelGlobal}}},
 	}
 
 	// Distinct is the natural operator here: one index seek, constant memory,

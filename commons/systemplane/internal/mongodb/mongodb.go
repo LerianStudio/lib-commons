@@ -49,12 +49,6 @@ const (
 	// tracerName is the OpenTelemetry tracer name for this package.
 	tracerName = "systemplane.mongodb"
 
-	// sentinelGlobal is the tenant_id value used for shared (non-tenant-scoped)
-	// rows. The tenant-manager regex ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ forbids a
-	// real tenant from starting with "_", so the sentinel cannot collide.
-	// See TRD §3.1 and commons/tenant-manager/core/validation.go.
-	sentinelGlobal = "_global"
-
 	// schemaInitTimeout bounds the time spent running migration and index
 	// creation at construction time.
 	schemaInitTimeout = 30 * time.Second
@@ -218,7 +212,7 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.list")
 	defer span.End()
 
-	filter := bson.D{{Key: "tenant_id", Value: sentinelGlobal}}
+	filter := bson.D{{Key: "tenant_id", Value: store.SentinelGlobal}}
 
 	cursor, err := s.coll.Find(ctx, filter)
 	if err != nil {
@@ -261,7 +255,7 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bo
 		attribute.String("entry.key", key),
 	)
 
-	doc, found, err := s.findOne(ctx, namespace, key, sentinelGlobal)
+	doc, found, err := s.findOne(ctx, namespace, key, store.SentinelGlobal)
 	if err != nil {
 		opentelemetry.HandleSpanError(span, "mongodb get: find failed", err)
 		return store.Entry{}, false, fmt.Errorf("mongodb store get: %w", err)
@@ -300,7 +294,7 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 		return err
 	}
 
-	if err := s.upsert(ctx, e, sentinelGlobal); err != nil {
+	if err := s.upsert(ctx, e, store.SentinelGlobal); err != nil {
 		opentelemetry.HandleSpanError(span, "mongodb set: upsert failed", err)
 		return fmt.Errorf("mongodb store set: %w", err)
 	}

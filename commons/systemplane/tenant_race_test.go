@@ -294,20 +294,12 @@ func TestRace_ConcurrentSetForTenant_DistinctTenants(t *testing.T) {
 
 	wg.Wait()
 
-	// With debounce=0 the fires are synchronous in each writing goroutine's
-	// stack, so all fires are observed by the time wg.Wait returns. A small
-	// safety margin handles any scheduler noise.
-	deadline := time.Now().Add(2 * time.Second)
-
-	const expectedEvents = numTenants * (writesPerTenant + 1) // sets + delete per tenant
-
-	for time.Now().Before(deadline) {
-		if tenantFires.Load() >= int64(expectedEvents) {
-			break
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
+	// With debounce=0 (NewForTesting default) the dispatch path is fully
+	// synchronous: SetForTenant → raceStore.SetTenantValue → raceStore.fire
+	// → debouncer.Submit(window=0) → invokeWithRecover → fireTenantSubscribers
+	// → subscriber callback. Every fire happens on the writing goroutine's
+	// stack before SetForTenant returns, so by the time wg.Wait returns all
+	// expected events have been counted. No polling loop required.
 
 	// AC8 — legacy OnChange must have fired ZERO times.
 	require.Zero(t, globalFires.Load(),
@@ -332,8 +324,8 @@ func TestRace_ConcurrentSetForTenant_DistinctTenants(t *testing.T) {
 		require.Positive(t, count, "tenant %s received zero OnTenantChange fires", tid)
 	}
 
-	// With debounce=0 the fire count should equal expectedEvents exactly.
-	// Allow equality or more (in case a future refactor adds additional
+	// With debounce=0 the fire count should equal numTenants*(writesPerTenant+1)
+	// exactly. Allow equality or more (in case a future refactor adds additional
 	// benign fires) to keep the test robust; the strict upper-bound check
 	// lives in the unit suite.
 	require.GreaterOrEqual(t, tenantFires.Load(), int64(numTenants),

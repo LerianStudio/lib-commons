@@ -497,11 +497,6 @@ func testNamespaceIsolation(t *testing.T, factory Factory) {
 // Tenant-scoped contract implementations (Task 8, PRD AC13)
 // ---------------------------------------------------------------------------
 
-// sentinelGlobal is the tenant_id value used for shared (non-tenant-scoped)
-// rows. Mirrored locally from the Client/package-level constant so the
-// contract suite has no cyclic dependency on the Client package.
-const sentinelGlobal = "_global"
-
 // Shared fixture strings used across the tenant contract tests. They are
 // declared as a tight group rather than inlined so the suite speaks a
 // single vocabulary — contract tests benefit enormously from naming
@@ -729,7 +724,7 @@ func testDeleteTenantValueIsIdempotent(t *testing.T, factory Factory) {
 }
 
 // testListTenantsForKeySorted: ListTenantsForKey returns tenants sorted and
-// deduplicated with the sentinelGlobal row excluded. Writes arrive in a
+// deduplicated with the store.SentinelGlobal row excluded. Writes arrive in a
 // non-sorted order and tenant-A is set twice to exercise dedup.
 func testListTenantsForKeySorted(t *testing.T, factory Factory) {
 	t.Helper()
@@ -747,7 +742,7 @@ func testListTenantsForKeySorted(t *testing.T, factory Factory) {
 	}
 
 	// The global row for the same (ns, key) MUST be excluded from the tenant
-	// list — sentinelGlobal is a sentinel, not a real tenant.
+	// list — store.SentinelGlobal is a sentinel, not a real tenant.
 	if err := s.Set(ctx, store.Entry{
 		Namespace: "global",
 		Key:       fixtureKey,
@@ -779,8 +774,8 @@ func testListTenantsForKeySorted(t *testing.T, factory Factory) {
 
 	// Guard against any backend accidentally returning the sentinel.
 	for _, tid := range tenants {
-		if tid == sentinelGlobal {
-			t.Fatalf("ListTenantsForKey must never return %q sentinel, got: %v", sentinelGlobal, tenants)
+		if tid == store.SentinelGlobal {
+			t.Fatalf("ListTenantsForKey must never return %q sentinel, got: %v", store.SentinelGlobal, tenants)
 		}
 	}
 }
@@ -866,7 +861,7 @@ func assertBothRowsVisible(t *testing.T, s store.Store) {
 		}
 
 		switch e.TenantID {
-		case sentinelGlobal:
+		case store.SentinelGlobal:
 			sawGlobal = true
 		case fixtureTenantA:
 			sawTenant = true
@@ -986,25 +981,44 @@ func testTenantSubscribeReceivesDeleteEvent(t *testing.T, factory Factory) {
 		})
 	}()
 
+	// Allow the backend's subscribe handler to attach.
 	time.Sleep(500 * time.Millisecond)
+
+	// Drain any events the backend may have delivered for the pre-subscribe
+	// seed write. LISTEN/NOTIFY and change streams can deliver INSERT/UPDATE
+	// events that arrived just as the subscriber attached; without draining,
+	// the post-delete eventually() below could match on the seed event and
+	// pass without ever observing the delete.
+	//
+	// An additional short wait catches late seed-induced deliveries that were
+	// scheduled but not yet written to the channel when the subscriber came
+	// up. Any event that arrives after this drain must be the result of the
+	// DeleteTenantValue below (the only subsequent write).
+	time.Sleep(100 * time.Millisecond)
+
+drainSeed:
+	for {
+		select {
+		case <-events:
+			// Discard — seed INSERT or spurious backend echo.
+		default:
+			break drainSeed
+		}
+	}
 
 	if err := s.DeleteTenantValue(ctx, fixtureTenantA, "global", fixtureKey, "admin"); err != nil {
 		t.Fatalf("DeleteTenantValue: %v", err)
 	}
 
+	// After the drain, the only remaining write that can produce a matching
+	// event is the DELETE above. Matching on (namespace, key, tenant_id) is
+	// therefore sufficient proof of delete-event routing without needing an
+	// explicit event-type field on store.Event.
 	if !eventually(t, 10*time.Second, func() bool {
 		for {
 			select {
 			case e := <-events:
-				// The seed's insert event may have been observed depending
-				// on subscribe timing; we're looking specifically for the
-				// delete with matching TenantID.
 				if e.Namespace == fixtureNamespace && e.Key == fixtureKey && e.TenantID == fixtureTenantA {
-					// Drain queued events until the delete or timeout — we
-					// can't distinguish insert from delete from Event alone,
-					// so accept any matching event AFTER the delete was
-					// issued. Given events arrive in order per tenant, this
-					// is a sufficient proof.
 					return true
 				}
 			default:

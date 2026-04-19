@@ -25,12 +25,14 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 )
 
@@ -77,6 +79,18 @@ type tenantFakeStore struct {
 	// deleteTenantErr, if non-nil, is returned from DeleteTenantValue before
 	// any state mutation — symmetric with setTenantErr for the delete path.
 	deleteTenantErr error
+
+	// getTenantCalls counts invocations of GetTenantValue. Used by the
+	// single-flight coalescing test to assert that N concurrent cache
+	// misses collapse into exactly 1 backend round-trip.
+	getTenantCalls atomic.Int64
+
+	// getTenantBlock, if non-nil, is signaled BEFORE GetTenantValue returns,
+	// and GetTenantValue waits on getTenantRelease before proceeding. Used
+	// by the single-flight test to hold the first call in-flight while the
+	// remaining concurrent callers arrive at sfg.Do and are coalesced.
+	getTenantBlock   chan struct{}
+	getTenantRelease chan struct{}
 }
 
 func newTenantFakeStore() *tenantFakeStore {
@@ -104,7 +118,7 @@ func (s *tenantFakeStore) List(_ context.Context) ([]TestEntry, error) {
 	out := make([]TestEntry, 0)
 
 	for k, e := range s.rows {
-		if k.tenantID == sentinelGlobal {
+		if k.tenantID == store.SentinelGlobal {
 			out = append(out, e)
 		}
 	}
@@ -116,19 +130,19 @@ func (s *tenantFakeStore) Get(_ context.Context, namespace, key string) (TestEnt
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	e, ok := s.rows[tenantRowKey{tenantID: sentinelGlobal, namespace: namespace, key: key}]
+	e, ok := s.rows[tenantRowKey{tenantID: store.SentinelGlobal, namespace: namespace, key: key}]
 
 	return e, ok, nil
 }
 
 func (s *tenantFakeStore) Set(_ context.Context, e TestEntry) error {
-	e.TenantID = sentinelGlobal
+	e.TenantID = store.SentinelGlobal
 
 	s.mu.Lock()
-	s.rows[tenantRowKey{tenantID: sentinelGlobal, namespace: e.Namespace, key: e.Key}] = e
+	s.rows[tenantRowKey{tenantID: store.SentinelGlobal, namespace: e.Namespace, key: e.Key}] = e
 	s.mu.Unlock()
 
-	s.fire(TestEvent{Namespace: e.Namespace, Key: e.Key, TenantID: sentinelGlobal})
+	s.fire(TestEvent{Namespace: e.Namespace, Key: e.Key, TenantID: store.SentinelGlobal})
 
 	return nil
 }
@@ -151,6 +165,24 @@ func (s *tenantFakeStore) Subscribe(ctx context.Context, handler func(TestEvent)
 func (s *tenantFakeStore) Close() error { return nil }
 
 func (s *tenantFakeStore) GetTenantValue(_ context.Context, tenantID, namespace, key string) (TestEntry, bool, error) {
+	s.getTenantCalls.Add(1)
+
+	// Coordinate with a blocked-call test harness if the hooks are wired.
+	// The channels are read under no lock — they are populated exactly once
+	// during test setup and never mutated afterward.
+	if s.getTenantBlock != nil {
+		// Signal the first caller is in-flight.
+		select {
+		case s.getTenantBlock <- struct{}{}:
+		default:
+		}
+
+		// Wait until the test releases us.
+		if s.getTenantRelease != nil {
+			<-s.getTenantRelease
+		}
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -217,7 +249,7 @@ func (s *tenantFakeStore) ListTenantsForKey(_ context.Context, namespace, key st
 	seen := make(map[string]struct{})
 
 	for k := range s.rows {
-		if k.namespace == namespace && k.key == key && k.tenantID != sentinelGlobal {
+		if k.namespace == namespace && k.key == key && k.tenantID != store.SentinelGlobal {
 			seen[k.tenantID] = struct{}{}
 		}
 	}
@@ -337,7 +369,7 @@ func TestSetForTenant_InvalidTenantIDReturnsErrInvalidTenantID(t *testing.T) {
 	}{
 		{"leading_underscore", "_tenant"},
 		{"leading_hyphen", "-tenant"},
-		{"global_sentinel", sentinelGlobal},
+		{"global_sentinel", store.SentinelGlobal},
 		{"special_chars", "tenant@acme"},
 		{"space_inside", "tenant acme"},
 		{"only_underscore", "_"},
@@ -368,23 +400,18 @@ func TestSetForTenant_UnknownKeyReturnsErrUnknownKey(t *testing.T) {
 func TestSetForTenant_NonTenantScopedKeyReturnsErrTenantScopeNotRegistered(t *testing.T) {
 	t.Parallel()
 
-	c, _ := buildStartedClientNoKey(t)
-
 	// Register via the legacy Register (NOT RegisterTenantScoped). Tenant
 	// methods must refuse to operate on this key because the consumer never
-	// opted in to tenant semantics.
-	//
-	// Register needs to happen before Start; buildStartedClientNoKey already
-	// started the client, so we tear it down and rebuild without Start being
-	// auto-called. Work around: build a fresh client without auto-start.
+	// opted in to tenant semantics. Register must happen before Start, so we
+	// build a fresh client without the auto-start helper.
 	fs := newTenantFakeStore()
 
-	c2, err := NewForTesting(fs)
+	c, err := NewForTesting(fs)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = c2.Close() })
+	t.Cleanup(func() { _ = c.Close() })
 
-	require.NoError(t, c2.Register("global", "legacy.key", "x"))
-	require.NoError(t, c2.Start(context.Background()))
+	require.NoError(t, c.Register("global", "legacy.key", "x"))
+	require.NoError(t, c.Start(context.Background()))
 
 	select {
 	case <-fs.subReady:
@@ -392,16 +419,13 @@ func TestSetForTenant_NonTenantScopedKeyReturnsErrTenantScopeNotRegistered(t *te
 		t.Fatal("Subscribe handler did not register")
 	}
 
-	err = c2.SetForTenant(tctx("tenant-A"), "global", "legacy.key", "y", "admin")
+	err = c.SetForTenant(tctx("tenant-A"), "global", "legacy.key", "y", "admin")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrTenantScopeNotRegistered, "non-tenant-scoped key must surface ErrTenantScopeNotRegistered")
 
 	// Guardrail: the non-tenant-scoped path must not accidentally wrap a
 	// different sentinel.
 	assert.NotErrorIs(t, err, ErrUnknownKey, "must not masquerade as ErrUnknownKey")
-
-	// Avoid unused-var warning when lint runs with -unused.
-	_ = c
 }
 
 func TestSetForTenant_ValidatorRejectsValueReturnsErrValidation(t *testing.T) {
@@ -460,13 +484,134 @@ func TestSetForTenant_BeforeStartReturnsErrNotStarted(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotStarted, "write before Start must surface ErrNotStarted")
 }
 
-func TestSetForTenant_NilReceiverReturnsErrClosed(t *testing.T) {
+// TestNilClient_TenantMethods table-drives every tenant-scoped public method
+// against a nil *Client receiver. The invariants being pinned:
+//
+//   - Write-path methods (RegisterTenantScoped, SetForTenant, DeleteForTenant,
+//     GetForTenant, and every typed accessor) return ErrClosed via errors.Is.
+//   - Read-only side-effect-free methods (ListTenantsForKey) return empty /
+//     zero values without panicking.
+//   - Subscription methods (OnTenantChange) return a no-op unsubscribe
+//     function that is safe to call (including multiple times).
+//
+// Consolidating these into one table avoids the churn of maintaining
+// N near-identical "nil receiver" functions as the tenant surface grows.
+func TestNilClient_TenantMethods(t *testing.T) {
 	t.Parallel()
 
-	var c *Client
+	ctx := tctx("tenant-A")
 
-	err := c.SetForTenant(tctx("tenant-A"), "ns", "k", 1, "admin")
-	assert.ErrorIs(t, err, ErrClosed, "nil receiver must return ErrClosed")
+	t.Run("RegisterTenantScoped", func(t *testing.T) {
+		t.Parallel()
+
+		var c *Client
+
+		err := c.RegisterTenantScoped("ns", "k", "v")
+		assert.ErrorIs(t, err, ErrClosed)
+	})
+
+	t.Run("SetForTenant", func(t *testing.T) {
+		t.Parallel()
+
+		var c *Client
+
+		err := c.SetForTenant(ctx, "ns", "k", 1, "admin")
+		assert.ErrorIs(t, err, ErrClosed)
+	})
+
+	t.Run("GetForTenant", func(t *testing.T) {
+		t.Parallel()
+
+		var c *Client
+
+		v, found, err := c.GetForTenant(ctx, "ns", "k")
+		assert.ErrorIs(t, err, ErrClosed)
+		assert.Nil(t, v)
+		assert.False(t, found)
+	})
+
+	t.Run("DeleteForTenant", func(t *testing.T) {
+		t.Parallel()
+
+		var c *Client
+
+		err := c.DeleteForTenant(ctx, "ns", "k", "admin")
+		assert.ErrorIs(t, err, ErrClosed)
+	})
+
+	t.Run("ListTenantsForKey", func(t *testing.T) {
+		t.Parallel()
+
+		var c *Client
+
+		got := c.ListTenantsForKey("ns", "k")
+		assert.Empty(t, got, "nil receiver must return empty slice without panic")
+	})
+
+	t.Run("OnTenantChange", func(t *testing.T) {
+		t.Parallel()
+
+		var c *Client
+
+		unsub := c.OnTenantChange("ns", "k", func(_, _, _ string, _ any) {
+			t.Fatal("nil-receiver subscription must never fire")
+		})
+		require.NotNil(t, unsub, "unsubscribe must not be nil — callers defer it")
+
+		// Multiple invocations must be safe.
+		unsub()
+		unsub()
+	})
+
+	t.Run("GetStringForTenant", func(t *testing.T) {
+		t.Parallel()
+
+		var c *Client
+
+		s, err := c.GetStringForTenant(ctx, "ns", "k")
+		assert.ErrorIs(t, err, ErrClosed)
+		assert.Empty(t, s)
+	})
+
+	t.Run("GetIntForTenant", func(t *testing.T) {
+		t.Parallel()
+
+		var c *Client
+
+		n, err := c.GetIntForTenant(ctx, "ns", "k")
+		assert.ErrorIs(t, err, ErrClosed)
+		assert.Zero(t, n)
+	})
+
+	t.Run("GetBoolForTenant", func(t *testing.T) {
+		t.Parallel()
+
+		var c *Client
+
+		b, err := c.GetBoolForTenant(ctx, "ns", "k")
+		assert.ErrorIs(t, err, ErrClosed)
+		assert.False(t, b)
+	})
+
+	t.Run("GetFloat64ForTenant", func(t *testing.T) {
+		t.Parallel()
+
+		var c *Client
+
+		f, err := c.GetFloat64ForTenant(ctx, "ns", "k")
+		assert.ErrorIs(t, err, ErrClosed)
+		assert.Zero(t, f)
+	})
+
+	t.Run("GetDurationForTenant", func(t *testing.T) {
+		t.Parallel()
+
+		var c *Client
+
+		d, err := c.GetDurationForTenant(ctx, "ns", "k")
+		assert.ErrorIs(t, err, ErrClosed)
+		assert.Zero(t, d)
+	})
 }
 
 // TestSetForTenant_SurfacesErrTenantSchemaNotEnabled is the Client-level
@@ -847,8 +992,12 @@ func TestGet_IgnoresTenantOverrides(t *testing.T) {
 
 // TestGetForTenant_LazyModeMissPopulatesLRU verifies that in lazy mode, a
 // GetForTenant cache miss fetches from the backend and populates the LRU.
-// We seed the store directly (bypassing the changefeed fire) so the Client's
-// eager hydrate does not beat the test assertion.
+//
+// Population is verified through observable behavior (not private state):
+// after the first miss populates the cache, the backend is forced to fail
+// on subsequent calls. If the second GetForTenant still returns the correct
+// value, it could only have come from the cache — proving population without
+// coupling the test to the tenantCache internal shape.
 func TestGetForTenant_LazyModeMissPopulatesLRU(t *testing.T) {
 	t.Parallel()
 
@@ -872,25 +1021,28 @@ func TestGetForTenant_LazyModeMissPopulatesLRU(t *testing.T) {
 	// the miss-populate path.
 	fs.directSetTenantRow("tenant-A", "global", "fee.rate", []byte(`0.42`))
 
-	// Pre-assert: tenantCache is empty (lazy Start skips hydration).
-	c.cacheMu.RLock()
-	_, preHit := c.tenantCache.get("tenant-A", nskey{Namespace: "global", Key: "fee.rate"})
-	c.cacheMu.RUnlock()
-	assert.False(t, preHit, "lazy mode should not hydrate at Start")
-
-	// Miss-populate: GetForTenant fetches from the store and returns the
-	// stored value.
+	// Miss-populate: first GetForTenant fetches from the store and returns
+	// the stored value. This is the only call that should touch the backend.
 	v, found, err := c.GetForTenant(tctx("tenant-A"), "global", "fee.rate")
 	require.NoError(t, err)
 	assert.True(t, found)
 	assert.InDelta(t, 0.42, v, 0.0001, "lazy miss should populate from the store")
 
-	// LRU should now hold the entry.
-	c.cacheMu.RLock()
-	postVal, postHit := c.tenantCache.get("tenant-A", nskey{Namespace: "global", Key: "fee.rate"})
-	c.cacheMu.RUnlock()
-	assert.True(t, postHit, "lazy cache should be populated after a miss")
-	assert.InDelta(t, 0.42, postVal, 0.0001, "LRU should hold the decoded value")
+	// Force the backend to fail. A subsequent cache miss would fall through
+	// to the global default (0.0) via the error-handling path; a cache hit
+	// must bypass the backend entirely and keep returning 0.42.
+	fs.mu.Lock()
+	fs.getTenantErr = errors.New("backend unavailable after initial populate")
+	fs.mu.Unlock()
+
+	// Second read MUST return the previously populated value. This proves
+	// the LRU entry exists and is consulted before any backend call —
+	// population verified purely through observable behavior.
+	v2, found2, err := c.GetForTenant(tctx("tenant-A"), "global", "fee.rate")
+	require.NoError(t, err, "cache hit must not observe the backend error")
+	assert.True(t, found2, "populated LRU entry must survive backend failure")
+	assert.InDelta(t, 0.42, v2, 0.0001,
+		"second read must return the cached value — population only verifiable via this behavior")
 }
 
 // TestGetForTenant_LazyModeStoreFailureFallsThrough verifies that when the
@@ -925,6 +1077,105 @@ func TestGetForTenant_LazyModeStoreFailureFallsThrough(t *testing.T) {
 	require.NoError(t, err, "store failure must not surface to the caller; fall through to default")
 	assert.True(t, found)
 	assert.Equal(t, "info", v, "fall-through returns the registered default")
+}
+
+// TestGetForTenant_LazyModeSingleFlightCoalescesMisses is the C5 regression
+// pin: N concurrent GetForTenant calls on the same (tenantID, ns, key)
+// tuple that all miss the LRU must collapse into exactly ONE
+// store.GetTenantValue round-trip, not N.
+//
+// Mechanism: the fake store blocks its first GetTenantValue call via a
+// signaling channel. While the first goroutine is held in-flight, the
+// remaining N-1 goroutines arrive at sfg.Do for the same key and wait on
+// the single-flight group instead of issuing their own backend call. The
+// test then releases the blocked call and asserts that all goroutines
+// observed the same value AND that GetTenantValue was invoked exactly
+// once across the burst.
+//
+// Without single-flight this test would record N calls to the backend
+// and is the smoking gun for the C5 fix.
+func TestGetForTenant_LazyModeSingleFlightCoalescesMisses(t *testing.T) {
+	t.Parallel()
+
+	const numGoroutines = 20
+
+	fs := newTenantFakeStore()
+	// Block the backend call until the test explicitly releases it.
+	// Buffer block by 1 so the first call does not deadlock before any
+	// drainer is present; the test reads from block to confirm in-flight.
+	fs.getTenantBlock = make(chan struct{}, 1)
+	fs.getTenantRelease = make(chan struct{})
+
+	c, err := NewForTesting(fs, WithLazyTenantLoad(10))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = c.Close() })
+
+	require.NoError(t, c.RegisterTenantScoped("global", "fee.rate", 0.0))
+	require.NoError(t, c.Start(context.Background()))
+
+	select {
+	case <-fs.subReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Subscribe handler did not register")
+	}
+
+	// Seed a tenant row directly so the single-flight fetch has a real
+	// value to return (we want to distinguish "coalesced to one call" from
+	// "coalesced because nothing was found").
+	fs.directSetTenantRow("tenant-A", "global", "fee.rate", []byte(`0.42`))
+
+	type result struct {
+		val any
+		ok  bool
+		err error
+	}
+
+	results := make(chan result, numGoroutines)
+
+	// Launch N concurrent GetForTenant calls; the first will block in the
+	// backend, the remaining N-1 must coalesce via sfg.Do.
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			v, ok, err := c.GetForTenant(tctx("tenant-A"), "global", "fee.rate")
+			results <- result{val: v, ok: ok, err: err}
+		}()
+	}
+
+	// Wait for the first call to signal it has entered GetTenantValue.
+	select {
+	case <-fs.getTenantBlock:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first GetTenantValue call did not arrive in time")
+	}
+
+	// Give the remaining N-1 goroutines a moment to pile up at sfg.Do.
+	// 50ms is ample at any realistic CPU count; 20 goroutines reach the
+	// single-flight point in well under 1ms on an idle machine.
+	time.Sleep(50 * time.Millisecond)
+
+	// Release the blocked backend call. All goroutines should now complete.
+	close(fs.getTenantRelease)
+
+	// Drain results and verify every goroutine saw the canonical value.
+	for i := 0; i < numGoroutines; i++ {
+		select {
+		case r := <-results:
+			require.NoError(t, r.err)
+			assert.True(t, r.ok)
+			assert.InDelta(t, 0.42, r.val, 0.0001,
+				"all concurrent callers must observe the single-flight result")
+		case <-time.After(2 * time.Second):
+			t.Fatalf("goroutine %d did not return", i)
+		}
+	}
+
+	// THE CRITICAL ASSERTION: exactly one backend round-trip for N
+	// concurrent misses. Without single-flight this would be N.
+	calls := fs.getTenantCalls.Load()
+	assert.Equal(t, int64(1), calls,
+		"single-flight must coalesce %d concurrent misses into 1 backend call (got %d)",
+		numGoroutines, calls)
 }
 
 // ---------------------------------------------------------------------------
@@ -979,10 +1230,10 @@ func TestTenantFakeStore_FireReachesSubscribedHandlers(t *testing.T) {
 	defer mu.Unlock()
 	require.Len(t, received, 1)
 	assert.Equal(t, "tenant-A", received[0].TenantID)
-	// Guardrail: sentinelGlobal really is "_global" — a rename would cascade
+	// Guardrail: store.SentinelGlobal really is "_global" — a rename would cascade
 	// through every backend assertion. Keep this check literal so a future
 	// change has to think twice.
-	assert.Equal(t, "_global", sentinelGlobal, "sentinelGlobal should remain '_global' (TRD §3, decision D2)")
+	assert.Equal(t, "_global", store.SentinelGlobal, "store.SentinelGlobal should remain '_global' (TRD §3, decision D2)")
 }
 
 // Guardrail: tenant-manager core symbols are still reachable. If the import

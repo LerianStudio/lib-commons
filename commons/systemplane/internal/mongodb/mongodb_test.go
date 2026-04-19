@@ -97,8 +97,8 @@ func TestExtractEvent_InsertUpdateReadsFullDocument(t *testing.T) {
 		{
 			name:     "insert global row",
 			opType:   "insert",
-			wantTID:  sentinelGlobal,
-			payload:  changeEventFullDoc{Namespace: "global", Key: "log.level", TenantID: sentinelGlobal},
+			wantTID:  store.SentinelGlobal,
+			payload:  changeEventFullDoc{Namespace: "global", Key: "log.level", TenantID: store.SentinelGlobal},
 			expectOK: true,
 		},
 		{
@@ -111,7 +111,7 @@ func TestExtractEvent_InsertUpdateReadsFullDocument(t *testing.T) {
 		{
 			name:     "replace legacy row missing tenant_id falls back to sentinel",
 			opType:   "replace",
-			wantTID:  sentinelGlobal,
+			wantTID:  store.SentinelGlobal,
 			payload:  changeEventFullDoc{Namespace: "global", Key: "log.level"}, // TenantID == ""
 			expectOK: true,
 		},
@@ -133,10 +133,9 @@ func TestExtractEvent_InsertUpdateReadsFullDocument(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			payload := tc.payload
 			ev := changeEvent{
 				OperationType: tc.opType,
-				FullDocument:  &payload,
+				FullDocument:  &tc.payload,
 			}
 
 			got, ok := extractEvent(ev)
@@ -390,18 +389,18 @@ func TestChangeEvent_BSONDecodesInsertEventShape(t *testing.T) {
 			{Key: "_id", Value: bson.D{
 				{Key: "namespace", Value: "global"},
 				{Key: "key", Value: "log.level"},
-				{Key: "tenant_id", Value: sentinelGlobal},
+				{Key: "tenant_id", Value: store.SentinelGlobal},
 			}},
 		}},
 		{Key: "fullDocument", Value: bson.D{
 			{Key: "_id", Value: bson.D{
 				{Key: "namespace", Value: "global"},
 				{Key: "key", Value: "log.level"},
-				{Key: "tenant_id", Value: sentinelGlobal},
+				{Key: "tenant_id", Value: store.SentinelGlobal},
 			}},
 			{Key: "namespace", Value: "global"},
 			{Key: "key", Value: "log.level"},
-			{Key: "tenant_id", Value: sentinelGlobal},
+			{Key: "tenant_id", Value: store.SentinelGlobal},
 			{Key: "value", Value: `"info"`},
 		}},
 	}
@@ -415,9 +414,9 @@ func TestChangeEvent_BSONDecodesInsertEventShape(t *testing.T) {
 	require.NotNil(t, ev.FullDocument)
 	assert.Equal(t, "global", ev.FullDocument.Namespace)
 	assert.Equal(t, "log.level", ev.FullDocument.Key)
-	assert.Equal(t, sentinelGlobal, ev.FullDocument.TenantID)
+	assert.Equal(t, store.SentinelGlobal, ev.FullDocument.TenantID)
 
 	got, ok := extractEvent(ev)
 	require.True(t, ok)
-	assert.Equal(t, sentinelGlobal, got.TenantID)
+	assert.Equal(t, store.SentinelGlobal, got.TenantID)
 }

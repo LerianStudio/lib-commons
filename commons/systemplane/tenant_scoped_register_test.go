@@ -153,14 +153,8 @@ func TestRegisterTenantScoped_ValidatorRejectsDefault(t *testing.T) {
 	assert.False(t, inRegistry, "registry should remain empty on validator rejection")
 }
 
-func TestRegisterTenantScoped_NilReceiverReturnsErrClosed(t *testing.T) {
-	t.Parallel()
-
-	var c *Client
-
-	err := c.RegisterTenantScoped("ns", "k", "v")
-	assert.ErrorIs(t, err, ErrClosed, "nil receiver should return ErrClosed")
-}
+// Nil-receiver coverage for RegisterTenantScoped lives in the consolidated
+// TestNilClient_TenantMethods table in tenant_scoped_test.go.
 
 func TestWithLazyTenantLoad_ConfiguresLRU(t *testing.T) {
 	t.Parallel()
@@ -298,7 +292,7 @@ func TestTenantCache_LRUUpdateInPlace(t *testing.T) {
 }
 
 // TestTenantCache_EagerBasicOps is a smoke test for the eager cache — a trivial
-// get/set/delete/iterate round-trip to lock the interface contract that the
+// get/set/delete round-trip to lock the interface contract that the
 // eager implementation honors. The LRU suite above carries the subtle behavior.
 func TestTenantCache_EagerBasicOps(t *testing.T) {
 	t.Parallel()
@@ -320,20 +314,6 @@ func TestTenantCache_EagerBasicOps(t *testing.T) {
 	// Different tenant should miss (isolation).
 	_, ok = c.get("tenant-B", nk)
 	assert.False(t, ok, "different tenant should not share the value")
-
-	// Iterate surfaces the single entry.
-	var visited int
-
-	c.iterate(func(tenantID string, gotNk nskey, value any) bool {
-		visited++
-
-		assert.Equal(t, "tenant-A", tenantID)
-		assert.Equal(t, nk, gotNk)
-		assert.Equal(t, 42, value)
-
-		return true
-	})
-	assert.Equal(t, 1, visited, "iterate should surface exactly one entry")
 
 	// Delete + re-get should miss.
 	c.delete("tenant-A", nk)

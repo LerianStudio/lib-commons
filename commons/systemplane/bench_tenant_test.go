@@ -21,6 +21,7 @@ package systemplane
 import (
 	"context"
 	"sort"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -193,9 +194,8 @@ func BenchmarkGetForTenant_Hit(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, _ = c.GetForTenant(ctx, "global", "fee.rate")
 	}
 }
@@ -216,9 +216,8 @@ func BenchmarkGetForTenant_Miss_Eager(b *testing.B) {
 	// RegisterTenantScoped seeds it at tenant_scoped.go:119-121).
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, _ = c.GetForTenant(ctx, "global", "fee.rate")
 	}
 }
@@ -240,11 +239,41 @@ func BenchmarkGetForTenant_Miss_Lazy(b *testing.B) {
 	// to the backend (which returns not-found), then to the legacy global.
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_, _, _ = c.GetForTenant(ctx, "global", "fee.rate")
 	}
+}
+
+// BenchmarkGetForTenant_Hit_Lazy_Parallel measures concurrent lazy-mode
+// cache hits. After C4 (hashicorp/golang-lru/v2) this path runs under
+// cacheMu.RLock because the library handles MRU promotion with its own
+// internal lock — so N goroutines reading the same primed key do NOT
+// serialize on a write lock, and throughput scales close to linearly with
+// GOMAXPROCS.
+//
+// Regression signal: if this benchmark's allocs/op climbs above 0 or
+// ns/op blows out proportional to GOMAXPROCS, the lazy hit path has
+// likely been reverted to cacheMu.Lock (the old hand-rolled LRU behavior
+// that made MoveToFront a write operation).
+func BenchmarkGetForTenant_Hit_Lazy_Parallel(b *testing.B) {
+	c, _ := newBenchClient(b, "global", "fee.rate", 0.05, WithLazyTenantLoad(100))
+
+	ctx := core.ContextWithTenantID(context.Background(), "tenant-A")
+
+	// Prime the LRU via the write-through path so subsequent reads hit.
+	if err := c.SetForTenant(ctx, "global", "fee.rate", 0.10, "bench"); err != nil {
+		b.Fatalf("SetForTenant prime: %v", err)
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			_, _, _ = c.GetForTenant(ctx, "global", "fee.rate")
+		}
+	})
 }
 
 // BenchmarkSetForTenant measures the write-through path: validator run,
@@ -257,10 +286,11 @@ func BenchmarkSetForTenant(b *testing.B) {
 	ctx := core.ContextWithTenantID(context.Background(), "tenant-A")
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	i := 0
+	for b.Loop() {
 		_ = c.SetForTenant(ctx, "global", "fee.rate", float64(i), "bench")
+		i++
 	}
 }
 
@@ -293,9 +323,8 @@ func BenchmarkOnTenantChange_FireFanout_10(b *testing.B) {
 	nk := nskey{Namespace: "global", Key: "fee.rate"}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		c.fireTenantSubscribers(nk, "tenant-A", 0.05)
 	}
 }
@@ -316,9 +345,8 @@ func BenchmarkListTenantsForKey(b *testing.B) {
 	}
 
 	b.ReportAllocs()
-	b.ResetTimer()
 
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		_ = c.ListTenantsForKey("global", "fee.rate")
 	}
 }
@@ -327,35 +355,5 @@ func BenchmarkListTenantsForKey(b *testing.B) {
 // a helper so future benchmarks can reuse the same naming scheme.
 func tenantName(n int) string {
 	// Simple alphanumeric so core.IsValidTenantID passes.
-	return "tenant-" + itoa(n)
-}
-
-// itoa avoids importing strconv solely for a 5-digit number formatter.
-// Benchmarks are hot paths and we keep allocations explicit.
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-
-	var buf [20]byte
-
-	i := len(buf)
-
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-
-	return string(buf[i:])
+	return "tenant-" + strconv.Itoa(n)
 }

@@ -4,7 +4,7 @@
 // the (namespace, key, tenantID) tuple and — once the debounce window closes —
 // dispatched to refreshFromStoreRouted in this file.
 //
-// The router branches on the sentinel: sentinelGlobal ("_global") → legacy
+// The router branches on the sentinel: store.SentinelGlobal ("_global") → legacy
 // global refresh (re-reads via store.Get, updates cache, fires OnChange);
 // any other value → tenant refresh (re-reads via store.GetTenantValue, updates
 // tenantCache, fires OnTenantChange). This is the locked D5 invariant from
@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 )
 
 // refreshFromStoreRouted is the entry point for debounced changefeed
@@ -28,10 +29,10 @@ import (
 // event's tenant_id.
 //
 // The tenantID argument always carries the backend-reported value:
-// sentinelGlobal ("_global") for shared rows, the actual tenant ID otherwise.
+// store.SentinelGlobal ("_global") for shared rows, the actual tenant ID otherwise.
 // Callers (onEvent in client.go) do not interpret it — they pass through.
 func (c *Client) refreshFromStoreRouted(ns, key, tenantID string) {
-	if tenantID == sentinelGlobal {
+	if tenantID == store.SentinelGlobal {
 		c.refreshGlobalFromStore(ns, key)
 
 		return
@@ -202,7 +203,7 @@ func (c *Client) refreshTenantFromStore(ns, key, tenantID string) {
 // the case where tenantCache is empty; a hydration failure simply degrades
 // to lazy-like behavior on subsequent GetForTenant calls.
 //
-// Rows tagged sentinelGlobal are skipped (those are seeded via the earlier
+// Rows tagged store.SentinelGlobal are skipped (those are seeded via the earlier
 // global-hydrate pass). Rows for unregistered keys or keys not registered
 // via RegisterTenantScoped are also skipped — they are a sign of drift
 // between the running binary and the underlying DB but are not fatal.
@@ -220,7 +221,7 @@ func (c *Client) hydrateTenantCache(ctx context.Context) {
 	defer c.registryMu.RUnlock()
 
 	for _, entry := range tenantEntries {
-		if entry.TenantID == sentinelGlobal {
+		if entry.TenantID == store.SentinelGlobal {
 			continue
 		}
 

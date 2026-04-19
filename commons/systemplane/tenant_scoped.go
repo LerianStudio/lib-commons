@@ -142,8 +142,8 @@ func extractTenantID(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("%w", ErrMissingTenantContext)
 	}
 
-	if id == sentinelGlobal {
-		return "", fmt.Errorf("%w: tenantID must not be the %q sentinel", ErrInvalidTenantID, sentinelGlobal)
+	if id == store.SentinelGlobal {
+		return "", fmt.Errorf("%w: tenantID must not be the %q sentinel", ErrInvalidTenantID, store.SentinelGlobal)
 	}
 
 	if !core.IsValidTenantID(id) {
@@ -292,43 +292,54 @@ func (c *Client) GetForTenant(ctx context.Context, namespace, key string) (any, 
 		return nil, false, err
 	}
 
-	// 1. Try the tenant cache under RLock. Both implementations (eager and
-	// LRU) are safe for read-only get under RLock; the LRU's MRU-promotion
-	// mutates internal list state, so the eager/LRU divergence matters
-	// here — LRU requires the write lock to promote.
-	if c.tenantLoadMode == tenantLoadEager {
-		c.cacheMu.RLock()
-		v, hit := c.tenantCache.get(tenantID, nk)
-		c.cacheMu.RUnlock()
+	// 1. Try the tenant cache under RLock. Per the tenantCache contract in
+	// tenant_cache.go, BOTH implementations (eager map and LRU) are safe
+	// for read-only get() under cacheMu.RLock: the eager map is read-only
+	// from this method's perspective, and the LRU's MRU-promotion happens
+	// under the library's OWN internal lock (hashicorp/golang-lru/v2), not
+	// the outer cacheMu. Concurrent hits therefore do not serialize
+	// through a write lock — critical for lazy hot-path throughput.
+	c.cacheMu.RLock()
+	v, hit := c.tenantCache.get(tenantID, nk)
+	c.cacheMu.RUnlock()
 
-		if hit {
-			return v, true, nil
-		}
-	} else {
-		// Lazy mode: the LRU's get() calls MoveToFront, mutating internal
-		// list pointers. Acquire the write lock.
-		c.cacheMu.Lock()
-		v, hit := c.tenantCache.get(tenantID, nk)
-		c.cacheMu.Unlock()
+	if hit {
+		return v, true, nil
+	}
 
-		if hit {
-			return v, true, nil
-		}
+	// 1b. Lazy-mode miss: single-flight fetch with a bounded timeout.
+	// On success, populate the LRU and return. On failure, log warn and
+	// fall through — a degraded store must not break reads. The
+	// single-flight group coalesces concurrent misses on the same
+	// (tenantID, namespace, key) tuple into exactly one backend round-trip;
+	// N concurrent goroutines share the result of the sole in-flight call.
+	if c.tenantLoadMode == tenantLoadLazy {
+		sfKey := singleflightKey(tenantID, namespace, key)
 
-		// Miss in lazy mode: single-flight fetch with a bounded timeout.
-		// On success, populate the LRU and return. On failure, log warn
-		// and fall through — a degraded store must not break reads.
-		fetchCtx, cancel := context.WithTimeout(ctx, tenantStoreTimeout)
-		decoded, found, fetchErr := c.fetchTenantValue(fetchCtx, tenantID, namespace, key)
+		fetched, fetchErr, _ := c.sfg.Do(sfKey, func() (any, error) {
+			fetchCtx, cancel := context.WithTimeout(ctx, tenantStoreTimeout)
+			defer cancel()
 
-		cancel()
+			decoded, found, err := c.fetchTenantValue(fetchCtx, tenantID, namespace, key)
+			if err != nil {
+				return nil, err
+			}
 
-		if fetchErr == nil && found {
+			if !found {
+				return nil, nil //nolint:nilnil // intentional: "no override" is a valid result with no error
+			}
+
+			// Populate the LRU under cacheMu.Lock before returning so every
+			// shared-call waiter sees the same cached state.
 			c.cacheMu.Lock()
 			c.tenantCache.set(tenantID, nk, decoded)
 			c.cacheMu.Unlock()
 
-			return decoded, true, nil
+			return decoded, nil
+		})
+
+		if fetchErr == nil && fetched != nil {
+			return fetched, true, nil
 		}
 
 		if fetchErr != nil {
@@ -454,6 +465,16 @@ func (c *Client) ListTenantsForKey(namespace, key string) []string {
 	}
 
 	return tenants
+}
+
+// singleflightKey builds the composite string key used by the Client's
+// singleflight.Group to coalesce concurrent lazy-mode miss fetches on the
+// same (tenantID, namespace, key) tuple. The U+001F (Unit Separator)
+// delimiter is a control character that cannot appear in valid tenantIDs,
+// namespaces, or keys — the same scheme the changefeed debouncer used
+// before it was moved to a struct key in onEvent.
+func singleflightKey(tenantID, namespace, key string) string {
+	return tenantID + "\x1f" + namespace + "\x1f" + key
 }
 
 // fetchErrFields builds the log.Field slice for a lazy-mode cache-miss

@@ -208,7 +208,7 @@ func extractEvent(ce changeEvent) (store.Event, bool) {
 	// than dropping the event.
 	tenantID := fd.TenantID
 	if tenantID == "" {
-		tenantID = sentinelGlobal
+		tenantID = store.SentinelGlobal
 	}
 
 	return store.Event{
@@ -281,7 +281,7 @@ func (s *Store) pollChanges(
 
 		tenantID := doc.TenantID
 		if tenantID == "" {
-			tenantID = sentinelGlobal
+			tenantID = store.SentinelGlobal
 		}
 
 		evt := store.Event{

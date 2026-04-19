@@ -1,9 +1,15 @@
 // Package debounce provides a trailing-edge, per-key debouncer used by the
 // systemplane Client to coalesce rapid change notifications into a single
 // callback invocation.
+//
+// The Debouncer is generic on the key type (any Go comparable). Callers that
+// previously used string keys can continue doing so; callers on the changefeed
+// hot path use a struct key to avoid per-event string-concat allocations (see
+// commons/systemplane/client.go onEvent).
 package debounce
 
 import (
+	"fmt"
 	"sync"
 	"time"
 
@@ -15,21 +21,26 @@ import (
 // most-recently submitted function after the configured window elapses
 // with no new submissions for that key.
 //
+// The type parameter K is any Go comparable type: strings, plain structs
+// of comparable fields, pointers, etc. Structs are preferred on hot paths
+// to avoid per-Submit string allocations.
+//
 // All methods are nil-receiver safe.
-type Debouncer struct {
+type Debouncer[K comparable] struct {
 	window time.Duration
 	logger log.Logger
 	mu     sync.Mutex
-	timers map[string]*time.Timer
+	timers map[K]*time.Timer
 	closed bool
 }
 
-// Option configures a Debouncer.
-type Option func(*Debouncer)
+// Option configures a Debouncer. The type parameter matches the Debouncer
+// it will be applied to.
+type Option[K comparable] func(*Debouncer[K])
 
 // WithLogger sets a structured logger for panic-recovery diagnostics.
-func WithLogger(l log.Logger) Option {
-	return func(d *Debouncer) {
+func WithLogger[K comparable](l log.Logger) Option[K] {
+	return func(d *Debouncer[K]) {
 		if l != nil {
 			d.logger = l
 		}
@@ -39,11 +50,11 @@ func WithLogger(l log.Logger) Option {
 // New creates a trailing-edge debouncer with the given quiet window.
 // A zero or negative window disables debouncing: Submit invokes fn
 // synchronously inline, with panic recovery via commons/runtime.
-func New(window time.Duration, opts ...Option) *Debouncer {
-	d := &Debouncer{
+func New[K comparable](window time.Duration, opts ...Option[K]) *Debouncer[K] {
+	d := &Debouncer[K]{
 		window: window,
 		logger: log.NewNop(),
-		timers: make(map[string]*time.Timer),
+		timers: make(map[K]*time.Timer),
 	}
 
 	for _, opt := range opts {
@@ -61,7 +72,7 @@ func New(window time.Duration, opts ...Option) *Debouncer {
 // panic recovery.
 //
 // Nil-receiver safe: does nothing if d is nil.
-func (d *Debouncer) Submit(key string, fn func()) {
+func (d *Debouncer[K]) Submit(key K, fn func()) {
 	if d == nil || fn == nil {
 		return
 	}
@@ -91,7 +102,7 @@ func (d *Debouncer) Submit(key string, fn func()) {
 
 // Close cancels all pending timers and marks the debouncer as closed.
 // Further Submit calls become no-ops. Idempotent. Nil-receiver safe.
-func (d *Debouncer) Close() {
+func (d *Debouncer[K]) Close() {
 	if d == nil {
 		return
 	}
@@ -114,7 +125,7 @@ func (d *Debouncer) Close() {
 // fire removes the key from the timer map (under lock) and invokes fn
 // with panic recovery. If the debouncer has been closed between the
 // timer being scheduled and firing, the invocation is skipped.
-func (d *Debouncer) fire(key string, fn func()) {
+func (d *Debouncer[K]) fire(key K, fn func()) {
 	d.mu.Lock()
 
 	if d.closed {
@@ -131,8 +142,11 @@ func (d *Debouncer) fire(key string, fn func()) {
 
 // invokeWithRecover calls fn inside a deferred RecoverAndLog so that a
 // panicking callback cannot crash the process or break the debouncer.
-func (d *Debouncer) invokeWithRecover(key string, fn func()) {
-	defer runtime.RecoverAndLog(d.logger, "debounce:"+key)
+// The key is rendered with fmt.Sprint into the recovery component name
+// so crash logs identify which key's callback blew up regardless of
+// whether K is a string, struct, or something else.
+func (d *Debouncer[K]) invokeWithRecover(key K, fn func()) {
+	defer runtime.RecoverAndLog(d.logger, fmt.Sprintf("debounce:%v", key))
 
 	fn()
 }

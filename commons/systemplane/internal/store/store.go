@@ -14,6 +14,18 @@ import (
 // ErrNilBackend is returned when a Store constructor receives a nil database handle.
 var ErrNilBackend = errors.New("systemplane/store: nil backend handle")
 
+// SentinelGlobal is the tenant_id value carried in Entry and Event structures
+// for shared (non-tenant-scoped) rows. It is the single source of truth shared
+// by every backend (internal/postgres, internal/mongodb), the public Client,
+// and the contract test suite — a rename here is the only rename needed to
+// move the sentinel across the codebase.
+//
+// The leading underscore is deliberate: the tenant-manager validation regex
+// ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ (commons/tenant-manager/core/validation.go)
+// rejects identifiers that start with "_", so no real tenant ID can collide
+// with the sentinel. See TRD §3.1 decision D2.
+const SentinelGlobal = "_global"
+
 // ErrClosed is returned when a method is called on a nil or closed Store.
 var ErrClosed = errors.New("systemplane/store: store is closed or nil")
 

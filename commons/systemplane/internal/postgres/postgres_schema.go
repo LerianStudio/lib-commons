@@ -12,6 +12,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 )
 
 // ensureSchema creates the table, tenant-scoped column + index, and the
@@ -91,7 +93,7 @@ func (s *Store) ensureSchema(ctx context.Context) error {
 	// part of the composite unique.
 	addTenantColumn := fmt.Sprintf(
 		`ALTER TABLE %s ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL DEFAULT '%s'`,
-		s.cfg.Table, sentinelGlobal, // #nosec G201 -- table name validated; sentinelGlobal is a package constant
+		s.cfg.Table, store.SentinelGlobal, // #nosec G201 -- table name validated; store.SentinelGlobal is a package constant
 	)
 	if _, err := tx.ExecContext(ctx, addTenantColumn); err != nil {
 		return fmt.Errorf("add tenant column: %w", err)
@@ -102,7 +104,7 @@ func (s *Store) ensureSchema(ctx context.Context) error {
 	// Runs in both phases for the same reason the column add does.
 	backfillTenant := fmt.Sprintf(
 		`UPDATE %s SET tenant_id = '%s' WHERE tenant_id IS NULL OR tenant_id = ''`,
-		s.cfg.Table, sentinelGlobal, // #nosec G201 -- table name validated; sentinelGlobal is a package constant
+		s.cfg.Table, store.SentinelGlobal, // #nosec G201 -- table name validated; store.SentinelGlobal is a package constant
 	)
 	if _, err := tx.ExecContext(ctx, backfillTenant); err != nil {
 		return fmt.Errorf("backfill tenant_id: %w", err)
@@ -226,7 +228,7 @@ func (s *Store) verifyNoAmbiguousTenantRows(ctx context.Context) error {
 	)
 
 	var collisions int
-	if err := s.cfg.DB.QueryRowContext(ctx, query, sentinelGlobal).Scan(&collisions); err != nil {
+	if err := s.cfg.DB.QueryRowContext(ctx, query, store.SentinelGlobal).Scan(&collisions); err != nil {
 		// A sql.ErrNoRows here would be a driver bug on COUNT(*); treat it
 		// defensively as zero rather than fail the migration.
 		if errors.Is(err, sql.ErrNoRows) {

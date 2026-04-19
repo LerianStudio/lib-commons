@@ -119,10 +119,14 @@ func WithTable(name string) Option {
 //
 // In lazy mode, GetForTenant issues a single-flight store.GetTenantValue call
 // on a cache miss (with a 5s timeout) and evicts the least-recently-used entry
-// when the cache reaches max entries. The trade-off is a ~5-10ms first-touch
-// cost per (tenant, key) tuple in exchange for bounded memory. Best fit for
-// deployments with a large tenant population where only a subset is routinely
-// active (e.g. >10k tenants × 12 keys with ~100 active tenants at a time).
+// when the cache reaches max entries. The LRU is backed by
+// github.com/hashicorp/golang-lru/v2, which maintains atomic MRU ordering under
+// its own internal RWMutex — concurrent cache hits run under the outer
+// cacheMu.RLock without serializing on a write lock. The trade-off versus
+// eager mode is a ~5-10ms first-touch cost per (tenant, key) tuple in exchange
+// for bounded memory. Best fit for deployments with a large tenant population
+// where only a subset is routinely active (e.g. >10k tenants × 12 keys with
+// ~100 active tenants at a time).
 //
 // A non-positive max is treated as "disabled" and falls back to eager mode,
 // matching the convention used by WithDebounce and WithPollInterval.

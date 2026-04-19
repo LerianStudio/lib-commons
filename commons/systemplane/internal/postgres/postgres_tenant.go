@@ -87,7 +87,7 @@ func (s *Store) SetTenantValue(ctx context.Context, tenantID string, e store.Ent
 		return errors.New("systemplane/postgres: tenantID must not be empty")
 	}
 
-	if tenantID == sentinelGlobal {
+	if tenantID == store.SentinelGlobal {
 		return errors.New("systemplane/postgres: tenantID must not be the '_global' sentinel")
 	}
 
@@ -150,7 +150,7 @@ func (s *Store) DeleteTenantValue(ctx context.Context, tenantID, namespace, key,
 		return errors.New("systemplane/postgres: tenantID must not be empty")
 	}
 
-	if tenantID == sentinelGlobal {
+	if tenantID == store.SentinelGlobal {
 		return errors.New("systemplane/postgres: tenantID must not be the '_global' sentinel")
 	}
 
@@ -265,7 +265,7 @@ func (s *Store) ListTenantsForKey(ctx context.Context, namespace, key string) ([
 		s.cfg.Table,
 	)
 
-	rows, err := s.cfg.DB.QueryContext(ctx, query, namespace, key, sentinelGlobal)
+	rows, err := s.cfg.DB.QueryContext(ctx, query, namespace, key, store.SentinelGlobal)
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "query failed")

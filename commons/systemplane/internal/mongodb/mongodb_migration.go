@@ -25,8 +25,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -132,7 +134,7 @@ func verifyNoAmbiguousTenantDocs(ctx context.Context, coll *mongo.Collection) er
 		// A colliding group is one that contains BOTH the missing marker AND
 		// the _global sentinel.
 		{{Key: "$match", Value: bson.D{
-			{Key: "tenantIDs", Value: bson.D{{Key: "$all", Value: bson.A{"__missing__", sentinelGlobal}}}},
+			{Key: "tenantIDs", Value: bson.D{{Key: "$all", Value: bson.A{"__missing__", store.SentinelGlobal}}}},
 		}}},
 		{{Key: "$limit", Value: 1}},
 	}
@@ -161,7 +163,7 @@ func verifyNoAmbiguousTenantDocs(ctx context.Context, coll *mongo.Collection) er
 // successful pass.
 func backfillTenantID(ctx context.Context, coll *mongo.Collection) error {
 	filter := bson.D{{Key: "tenant_id", Value: bson.D{{Key: "$exists", Value: false}}}}
-	update := bson.D{{Key: "$set", Value: bson.D{{Key: "tenant_id", Value: sentinelGlobal}}}}
+	update := bson.D{{Key: "$set", Value: bson.D{{Key: "tenant_id", Value: store.SentinelGlobal}}}}
 
 	if _, err := coll.UpdateMany(ctx, filter, update); err != nil {
 		return err //nolint:wrapcheck // wrapped by ensureSchema
@@ -222,7 +224,7 @@ func rewriteObjectIDDocuments(ctx context.Context, coll *mongo.Collection) error
 	for _, doc := range docs {
 		tenantID := doc.TenantID
 		if tenantID == "" {
-			tenantID = sentinelGlobal
+			tenantID = store.SentinelGlobal
 		}
 
 		newID := compoundID{
@@ -319,7 +321,7 @@ func isIndexNotFoundErr(err error) bool {
 	// Defensive fallback: mongo-driver/v2 sometimes wraps the server response
 	// in a non-CommandError type for dropIndexes. The server-side message
 	// text is stable: "index not found with name [%s]".
-	return containsSubstring(err.Error(), "index not found")
+	return strings.Contains(err.Error(), "index not found")
 }
 
 // isNamespaceNotFoundErr reports whether err is the MongoDB server's
@@ -341,22 +343,5 @@ func isNamespaceNotFoundErr(err error) bool {
 		}
 	}
 
-	return containsSubstring(err.Error(), "ns not found")
-}
-
-// containsSubstring is a minimal substring check shared by the error
-// classifiers; keeping it here avoids importing strings solely for a
-// single call site.
-func containsSubstring(msg, needle string) bool {
-	if len(needle) == 0 || len(msg) < len(needle) {
-		return len(needle) == 0
-	}
-
-	for i := 0; i+len(needle) <= len(msg); i++ {
-		if msg[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-
-	return false
+	return strings.Contains(err.Error(), "ns not found")
 }

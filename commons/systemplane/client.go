@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
@@ -41,19 +42,25 @@ const tenantStoreTimeout = 5 * time.Second
 // tracerName is the OpenTelemetry instrumentation scope name for the Client.
 const tracerName = "systemplane.client"
 
-// sentinelGlobal is the tenant_id value carried in Entry and Event structures
-// for shared (non-tenant-scoped) rows. Backends define their own copies; the
-// Client uses this sentinel to branch changefeed routing between the legacy
-// OnChange path and the new OnTenantChange path. Must match the values at
-// internal/postgres.sentinelGlobal and internal/mongodb.sentinelGlobal.
-const sentinelGlobal = "_global"
-
 // nskey is the composite map key for registry/cache/subscriber lookups.
 // Namespace and Key are separated structurally rather than via string
 // concatenation, preventing ambiguity when either contains special characters.
 type nskey struct {
 	Namespace string
 	Key       string
+}
+
+// evtKey is the composite debouncer key for changefeed event coalescing:
+// (namespace, key, tenantID). All fields are comparable strings, so the
+// struct itself is a valid Go map key. Using a struct rather than a
+// concatenated string eliminates the per-event allocation that the
+// previous "ns + \x1f + key + \x1f + tenantID" scheme incurred on every
+// NOTIFY / change-stream event — a measurable GC-pressure source at high
+// update rates.
+type evtKey struct {
+	Namespace string
+	Key       string
+	TenantID  string
 }
 
 // subscription holds a single OnChange callback and its monotonic id.
@@ -83,7 +90,7 @@ type subscription struct {
 // get.go for the reference pattern).
 type Client struct {
 	store     store.Store
-	debouncer *debounce.Debouncer
+	debouncer *debounce.Debouncer[evtKey]
 	logger    log.Logger
 	telemetry *opentelemetry.Telemetry
 
@@ -116,6 +123,12 @@ type Client struct {
 	// all at Start; lazy = miss-populate under a bounded LRU). Set once at
 	// construction via WithLazyTenantLoad; immutable thereafter.
 	tenantLoadMode tenantLoadMode
+
+	// sfg coalesces concurrent lazy-mode GetForTenant misses on the same
+	// (tenantID, namespace, key) tuple into one backend round-trip. Used
+	// only by the lazy path; eager mode never consults the backend on Get
+	// and the zero value is safe for unused state.
+	sfg singleflight.Group
 
 	startMu   sync.Mutex
 	started   atomic.Bool
@@ -196,9 +209,9 @@ func NewMongoDB(client *mongo.Client, database string, opts ...Option) (*Client,
 	return newClient(mStore, cfg), nil
 }
 
-// newClientFromStore builds a Client from an already-constructed Store.
-// Exported only within the package (lowercase) — used by both constructors
-// and by tests that supply a fake store.
+// newClient builds a Client from an already-constructed Store. Used by the
+// public NewPostgres / NewMongoDB constructors and by tests that supply a
+// fake store via NewForTesting.
 func newClient(s store.Store, cfg clientConfig) *Client {
 	logger := cfg.logger
 	if logger == nil {
@@ -209,7 +222,7 @@ func newClient(s store.Store, cfg clientConfig) *Client {
 
 	return &Client{
 		store:                s,
-		debouncer:            debounce.New(cfg.debounce, debounce.WithLogger(logger)),
+		debouncer:            debounce.New[evtKey](cfg.debounce, debounce.WithLogger[evtKey](logger)),
 		logger:               logger,
 		telemetry:            cfg.telemetry,
 		registry:             make(map[nskey]keyDef),
@@ -374,16 +387,22 @@ func (c *Client) Close() error {
 // onEvent is the raw changefeed handler. It debounces per (namespace, key,
 // tenantID) tuple to coalesce rapid updates into a single refresh.
 //
-// The composite key uses U+001F (Unit Separator) as a delimiter, which is a
-// control character guaranteed not to appear in reasonable namespace/key
-// strings. The tenantID component is always populated by the backend —
-// sentinelGlobal ("_global") for shared rows, the tenant ID otherwise — so
-// tenant-A and tenant-B events for the same (namespace, key) never collide on
-// the same debounce timer slot.
+// The composite key is a struct (see evtKey) — structs of comparable fields
+// are valid Go map keys, so the debouncer's internal map[evtKey]*time.Timer
+// works directly. This avoids the per-event string-concat allocation the
+// prior "ns + \x1f + key + \x1f + tenantID" scheme required — visible GC
+// pressure at high update rates. The tenantID component is always populated
+// by the backend (store.SentinelGlobal "_global" for shared rows, the
+// actual tenant ID otherwise), so tenant-A and tenant-B events for the
+// same (namespace, key) never collide on the same debounce timer slot.
 func (c *Client) onEvent(evt store.Event) {
-	compositeKey := evt.Namespace + "\x1f" + evt.Key + "\x1f" + evt.TenantID
+	key := evtKey{
+		Namespace: evt.Namespace,
+		Key:       evt.Key,
+		TenantID:  evt.TenantID,
+	}
 
-	c.debouncer.Submit(compositeKey, func() {
+	c.debouncer.Submit(key, func() {
 		c.refreshFromStoreRouted(evt.Namespace, evt.Key, evt.TenantID)
 	})
 }
