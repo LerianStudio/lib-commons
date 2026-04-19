@@ -421,7 +421,7 @@ func TestBuildEmitError(t *testing.T) {
 // scenario. Force a broker-side error (MessageTooLarge) via kfake.Control,
 // verify the DLQ message receives:
 //
-//  1. All 7 x-lerian-dlq-* headers with correct values.
+//  1. All 6 x-lerian-dlq-* headers with correct values.
 //  2. All CloudEvents ce-* headers preserved verbatim.
 //  3. The original payload bytes, unchanged.
 //  4. Partition key preserved (tenant ID for non-system events).
@@ -475,7 +475,7 @@ func TestProducer_PublishDLQ_WritesAllHeaders(t *testing.T) {
 		t.Errorf("record.Key = %q; want %q", record.Key, event.TenantID)
 	}
 
-	// All 7 x-lerian-dlq-* headers present.
+	// All 6 x-lerian-dlq-* headers present.
 	if got := headerValue(record, dlqHeaderSourceTopic); got != sourceTopic {
 		t.Errorf("%s = %q; want %q", dlqHeaderSourceTopic, got, sourceTopic)
 	}

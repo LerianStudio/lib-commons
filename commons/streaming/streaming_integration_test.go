@@ -506,7 +506,7 @@ func TestIntegration_PartitionFIFO(t *testing.T) {
 // max.message.bytes on the source topic to 1 KiB and emitting a 2 KiB
 // payload. franz-go's retries exhaust on ClassSerialization, the Producer's
 // publishDLQ routes the message to {topic}.dlq, and the test asserts all
-// 7 x-lerian-dlq-* + 13 ce-* headers land on the DLQ message intact.
+// 6 x-lerian-dlq-* + ce-* headers land on the DLQ message intact.
 func TestIntegration_DLQRouting(t *testing.T) {
 	seed, c := startRedpanda(t)
 	if c == nil {

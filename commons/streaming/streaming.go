@@ -321,8 +321,7 @@ var callerErrorSentinels = []error{
 //   - ErrMissingTenantID, ErrSystemEventsNotAllowed, ErrMissingSource,
 //     ErrMissingResourceType, ErrMissingEventType, ErrPayloadTooLarge,
 //     ErrNotJSON, ErrEventDisabled, ErrMissingBrokers, ErrInvalidCompression,
-//     ErrInvalidAcks
-//   - Header-sanitization sentinels: ErrInvalidTenantID, ErrInvalidResourceType,
+//     ErrInvalidAcks, ErrInvalidTenantID, ErrInvalidResourceType,
 //     ErrInvalidEventType, ErrInvalidSource, ErrInvalidSubject,
 //     ErrInvalidEventID, ErrInvalidSchemaVersion, ErrInvalidDataContentType,
 //     ErrInvalidDataSchema
