@@ -64,6 +64,11 @@ type emitterOptions struct {
 	// authenticates against brokers using the selected mechanism. Nil means
 	// no SASL (the default). See WithSASL for the full contract.
 	saslMechanism sasl.Mechanism
+
+	// allowSystemEvents gates SystemEvent=true emissions. Defaults to false:
+	// a Producer that has not opted in rejects SystemEvent emissions with
+	// ErrSystemEventsNotAllowed at preflight. See WithAllowSystemEvents.
+	allowSystemEvents bool
 }
 
 // WithLogger sets the structured logger used across the package. When not
@@ -175,5 +180,24 @@ func WithTLSConfig(cfg *tls.Config) EmitterOption {
 func WithSASL(mech sasl.Mechanism) EmitterOption {
 	return func(o *emitterOptions) {
 		o.saslMechanism = mech
+	}
+}
+
+// WithAllowSystemEvents opts a Producer into accepting Event.SystemEvent=true
+// emissions. Without this option, any Emit whose Event has SystemEvent=true
+// is rejected at preflight with ErrSystemEventsNotAllowed.
+//
+// SystemEvents are a privileged capability: they bypass tenant discipline
+// (TenantID may be empty) and hijack the "system:*" partition space so a
+// per-tenant service that sets SystemEvent=true by accident could cause
+// cross-tenant ordering issues. Only platform-level publishers (reaper
+// services, ops fan-out) should enable this option.
+//
+// FORBIDDEN for per-tenant service flows. A buggy service that sets
+// SystemEvent=true without this option will see ErrSystemEventsNotAllowed
+// at runtime instead of silently hijacking the partition space.
+func WithAllowSystemEvents() EmitterOption {
+	return func(o *emitterOptions) {
+		o.allowSystemEvents = true
 	}
 }

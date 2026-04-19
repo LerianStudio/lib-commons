@@ -110,6 +110,19 @@ func (p *Producer) handleOutboxRow(ctx context.Context, row *outbox.OutboxEvent)
 		return fmt.Errorf("streaming: unmarshal outbox row %s: %w", row.ID, err)
 	}
 
+	// Re-run preFlight on the deserialized Event. An outbox row is just
+	// persisted bytes — it may have been corrupted in transit, tampered
+	// with at rest, or authored before we tightened header-sanitization
+	// rules. Re-validation here guarantees publishDirect never sees a
+	// structurally-invalid Event, and surfaces the violation as a FAILED
+	// row (not a silent publish of garbage).
+	//
+	// Same safety property as unmarshal failure: returning an error marks
+	// the row FAILED so the Dispatcher stops retrying a hopeless row.
+	if err := p.preFlight(event); err != nil {
+		return fmt.Errorf("streaming: outbox replay preflight rejected row %s: %w", row.ID, err)
+	}
+
 	// publishDirect (NOT Emit) — the whole point of this handler.
 	if err := p.publishDirect(ctx, event); err != nil {
 		return fmt.Errorf("streaming: replay outbox row %s: %w", row.ID, err)

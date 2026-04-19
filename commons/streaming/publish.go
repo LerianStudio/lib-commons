@@ -14,6 +14,37 @@ import (
 // payload Redpanda would reject downstream.
 const maxPayloadBytes = 1_048_576
 
+// Header-length ceilings for CloudEvents context attributes. Values
+// balance two constraints: (a) Kafka's default max.header.bytes per record
+// is large but not unbounded; (b) downstream log parsers and OTEL label
+// pipelines choke on arbitrary-length attribute values. The ceilings are
+// intentionally conservative — longer values almost always indicate a bug
+// (e.g. a UUID concatenated in a loop) rather than a legitimate use case.
+const (
+	maxTenantIDBytes     = 256
+	maxResourceTypeBytes = 128
+	maxEventTypeBytes    = 128
+	maxSourceBytes       = 2048
+	maxSubjectBytes      = 1024
+)
+
+// hasControlChar reports whether s contains any ASCII control character
+// (bytes < 0x20 including tab 0x09, or the DEL byte 0x7F). Control chars
+// would corrupt log streams (CRLF injection, ANSI escape), break OTEL
+// label pipelines, and confuse downstream header parsers. Tab is included
+// in the deny set — legitimate CloudEvents attribute values never contain
+// tabs, and allowing them would be a discipline gap.
+func hasControlChar(s string) bool {
+	for i := range len(s) {
+		b := s[i]
+		if b < 0x20 || b == 0x7F {
+			return true
+		}
+	}
+
+	return false
+}
+
 // preFlight runs all caller-side validation on an Event before it reaches
 // the circuit breaker. Defaults must already be applied by the caller —
 // preFlight is pure validation, never mutation. Split from publishDirect in
@@ -22,16 +53,30 @@ const maxPayloadBytes = 1_048_576
 // Order of checks is tuned so the cheapest / most-common caller mistake
 // surfaces first:
 //
-//  1. Event toggle: resource.event key opts the event out at runtime
-//  2. Tenant: non-system events require a tenant
-//  3. Source: required CloudEvents ce-source
-//  4. Payload size: reject before JSON scan
-//  5. Payload JSON validity: prevents DLQ poisoning downstream
+//  1. SystemEvent capability gate: reject before any other work if the
+//     Producer did not opt into system events.
+//  2. Event toggle: resource.event key opts the event out at runtime.
+//  3. Tenant: non-system events require a tenant.
+//  4. Source: required CloudEvents ce-source.
+//  5. Header sanitization: TenantID / ResourceType / EventType / Source /
+//     Subject must be header-safe (no control chars, bounded length).
+//  6. Payload size: reject before JSON scan.
+//  7. Payload JSON validity: prevents DLQ poisoning downstream.
 //
-// Returns one of the caller sentinel errors (ErrEventDisabled,
-// ErrMissingTenantID, ErrMissingSource, ErrPayloadTooLarge, ErrNotJSON).
-// Never returns an *EmitError — caller faults have no Kafka-level class.
+// Returns one of the caller sentinel errors (ErrSystemEventsNotAllowed,
+// ErrEventDisabled, ErrMissingTenantID, ErrMissingSource, ErrInvalid*,
+// ErrPayloadTooLarge, ErrNotJSON). Never returns an *EmitError — caller
+// faults have no Kafka-level class.
 func (p *Producer) preFlight(event Event) error {
+	// SystemEvent capability gate — runs FIRST so an opt-in violation is
+	// rejected before any other validation can mask it. A service that
+	// sets SystemEvent=true without WithAllowSystemEvents would otherwise
+	// hijack the "system:*" partition space, so the rejection must be
+	// unambiguous and fire even if other fields are also malformed.
+	if event.SystemEvent && !p.allowSystemEvents {
+		return ErrSystemEventsNotAllowed
+	}
+
 	// Event-type toggle. Built from STREAMING_EVENT_TOGGLES at LoadConfig;
 	// empty map (nil) means every event is enabled by default.
 	if p.toggles != nil {
@@ -54,6 +99,15 @@ func (p *Producer) preFlight(event Event) error {
 		return ErrMissingSource
 	}
 
+	// Header sanitization. Every field that travels as a CloudEvents
+	// context attribute (header) must be free of control characters and
+	// within a bounded length. Bypassing these checks would let malicious
+	// or buggy callers corrupt downstream log streams (CRLF injection
+	// into structured logs) or break OTEL label pipelines.
+	if err := p.validateHeaderSafeFields(event); err != nil {
+		return err
+	}
+
 	// Pre-flight size cap. 1 MiB is the Redpanda default; we check BEFORE
 	// JSON validity so the dominant caller mistake (huge payload) short-
 	// circuits the slightly more expensive json.Valid scan.
@@ -68,6 +122,34 @@ func (p *Producer) preFlight(event Event) error {
 	// empty byte slice fails json.Valid and surfaces ErrNotJSON.
 	if !json.Valid(event.Payload) {
 		return ErrNotJSON
+	}
+
+	return nil
+}
+
+// validateHeaderSafeFields checks every CloudEvents attribute that travels
+// as a Kafka header for control characters and length overruns. Returns
+// the first offending sentinel. Empty values are NOT checked here —
+// required-vs-optional semantics live in preFlight (tenant, source).
+func (*Producer) validateHeaderSafeFields(event Event) error {
+	if len(event.TenantID) > maxTenantIDBytes || hasControlChar(event.TenantID) {
+		return ErrInvalidTenantID
+	}
+
+	if len(event.ResourceType) > maxResourceTypeBytes || hasControlChar(event.ResourceType) {
+		return ErrInvalidResourceType
+	}
+
+	if len(event.EventType) > maxEventTypeBytes || hasControlChar(event.EventType) {
+		return ErrInvalidEventType
+	}
+
+	if len(event.Source) > maxSourceBytes || hasControlChar(event.Source) {
+		return ErrInvalidSource
+	}
+
+	if len(event.Subject) > maxSubjectBytes || hasControlChar(event.Subject) {
+		return ErrInvalidSubject
 	}
 
 	return nil

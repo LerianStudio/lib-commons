@@ -89,9 +89,45 @@ var (
 	// Event.SystemEvent is false. Returned synchronously before any I/O.
 	ErrMissingTenantID = errors.New("streaming: tenant_id required for non-system events")
 
+	// ErrSystemEventsNotAllowed is returned synchronously when an Event
+	// arrives with SystemEvent=true but the Producer was constructed
+	// without WithAllowSystemEvents. SystemEvents bypass tenant discipline
+	// and hijack the "system:*" partition space — producers MUST opt in
+	// explicitly at bootstrap. See WithAllowSystemEvents for the full
+	// contract. Classified as ClassValidation; IsCallerError returns true.
+	ErrSystemEventsNotAllowed = errors.New("streaming: system events not permitted; construct Producer with WithAllowSystemEvents()")
+
 	// ErrMissingSource is returned when Event.Source is empty. Source is a
 	// required CloudEvents attribute (ce-source).
 	ErrMissingSource = errors.New("streaming: Event.Source required (CloudEvents ce-source)")
+
+	// ErrInvalidTenantID is returned when Event.TenantID contains control
+	// characters (< 0x20 or == 0x7F) or exceeds 256 bytes. Both shapes
+	// would corrupt downstream log parsers, OTEL label pipelines, and
+	// header consumers. Classified as ClassValidation.
+	ErrInvalidTenantID = errors.New("streaming: Event.TenantID contains control chars or exceeds 256 bytes")
+
+	// ErrInvalidResourceType is returned when Event.ResourceType contains
+	// control characters or exceeds 128 bytes. ResourceType is part of the
+	// Kafka topic name and the ce-type header; a malformed value would
+	// break topic routing at the broker level.
+	ErrInvalidResourceType = errors.New("streaming: Event.ResourceType contains control chars or exceeds 128 bytes")
+
+	// ErrInvalidEventType is returned when Event.EventType contains control
+	// characters or exceeds 128 bytes. Same rationale as
+	// ErrInvalidResourceType — EventType lands in the topic name and the
+	// ce-type header.
+	ErrInvalidEventType = errors.New("streaming: Event.EventType contains control chars or exceeds 128 bytes")
+
+	// ErrInvalidSource is returned when Event.Source contains control
+	// characters or exceeds 2048 bytes. Distinct from ErrMissingSource
+	// (empty): this sentinel fires on a populated but malformed value.
+	ErrInvalidSource = errors.New("streaming: Event.Source contains control chars or exceeds 2048 bytes")
+
+	// ErrInvalidSubject is returned when Event.Subject contains control
+	// characters or exceeds 1024 bytes. Subject is an optional CloudEvents
+	// attribute but still travels as a header and must be header-safe.
+	ErrInvalidSubject = errors.New("streaming: Event.Subject contains control chars or exceeds 1024 bytes")
 
 	// ErrEmitterClosed is returned from Emit after Close has been called.
 	ErrEmitterClosed = errors.New("streaming: emitter is closed")
@@ -217,6 +253,7 @@ var callerErrorClasses = map[ErrorClass]struct{}{
 // correctable fault. Used by IsCallerError via errors.Is walking.
 var callerErrorSentinels = []error{
 	ErrMissingTenantID,
+	ErrSystemEventsNotAllowed,
 	ErrMissingSource,
 	ErrPayloadTooLarge,
 	ErrNotJSON,
@@ -224,6 +261,11 @@ var callerErrorSentinels = []error{
 	ErrMissingBrokers,
 	ErrInvalidCompression,
 	ErrInvalidAcks,
+	ErrInvalidTenantID,
+	ErrInvalidResourceType,
+	ErrInvalidEventType,
+	ErrInvalidSource,
+	ErrInvalidSubject,
 }
 
 // IsCallerError reports whether err represents a caller-correctable fault
@@ -231,8 +273,11 @@ var callerErrorSentinels = []error{
 // transient infrastructure fault (broker down, network timeout).
 //
 // Returns true when err (or any error in its chain) is one of:
-//   - ErrMissingTenantID, ErrMissingSource, ErrPayloadTooLarge, ErrNotJSON,
-//     ErrEventDisabled, ErrMissingBrokers, ErrInvalidCompression, ErrInvalidAcks
+//   - ErrMissingTenantID, ErrSystemEventsNotAllowed, ErrMissingSource,
+//     ErrPayloadTooLarge, ErrNotJSON, ErrEventDisabled, ErrMissingBrokers,
+//     ErrInvalidCompression, ErrInvalidAcks
+//   - Header-sanitization sentinels: ErrInvalidTenantID, ErrInvalidResourceType,
+//     ErrInvalidEventType, ErrInvalidSource, ErrInvalidSubject
 //   - An *EmitError whose Class is ClassSerialization, ClassValidation, or
 //     ClassAuth.
 //

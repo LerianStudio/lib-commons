@@ -28,6 +28,7 @@ func TestOptions_ApplyAllSetsFields(t *testing.T) {
 		WithCircuitBreakerManager(nil),
 		WithPartitionKey(partFn),
 		WithCloseTimeout(7 * time.Second),
+		WithAllowSystemEvents(),
 	} {
 		apply(opts)
 	}
@@ -43,5 +44,8 @@ func TestOptions_ApplyAllSetsFields(t *testing.T) {
 	}
 	if opts.closeTimeout != 7*time.Second {
 		t.Errorf("opts.closeTimeout = %v; want 7s", opts.closeTimeout)
+	}
+	if !opts.allowSystemEvents {
+		t.Error("WithAllowSystemEvents did not set opts.allowSystemEvents")
 	}
 }

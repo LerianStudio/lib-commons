@@ -38,6 +38,16 @@ import (
 //   - Payload: the raw domain payload bytes, sent unchanged as the Kafka
 //     message value. Consumers read metadata from the ce-* headers.
 type Event struct {
+	// TenantID identifies the tenant that owns this event. Required for
+	// non-system events (see SystemEvent). The library does NOT cross-
+	// check TenantID against any ambient context value — the caller is
+	// responsible for ensuring TenantID matches the authenticated tenant
+	// on the request context. Mismatches are silently accepted.
+	//
+	// Services using lib-commons multitenancy SHOULD set:
+	//
+	//	tenantID, _ := tmcore.GetTenantIDContext(ctx)
+	//	event.TenantID = tenantID
 	TenantID      string
 	ResourceType  string
 	EventType     string
@@ -50,6 +60,16 @@ type Event struct {
 	DataContentType string
 	DataSchema      string
 
+	// SystemEvent marks this event as platform-level (not tenant-scoped).
+	// When true, the producer emits ce-systemevent: "true", omits
+	// ce-tenantid from headers, and uses "system:" + EventType as the
+	// partition key.
+	//
+	// This is a privileged capability. The producer MUST be constructed
+	// with WithAllowSystemEvents() — otherwise preFlight rejects the emit
+	// with ErrSystemEventsNotAllowed. FORBIDDEN for per-tenant service
+	// flows: a buggy service that sets SystemEvent=true would hijack the
+	// system:* partition space.
 	SystemEvent bool
 	Payload     json.RawMessage
 }

@@ -125,6 +125,12 @@ type Producer struct {
 	// is registered via RegisterOutboxHandler on the outbox Dispatcher's
 	// HandlerRegistry. Nil means fallback is disabled (T3 behavior).
 	outbox outbox.OutboxRepository
+
+	// allowSystemEvents, when true, permits Event.SystemEvent=true through
+	// preflight. When false (the default), any SystemEvent emission is
+	// rejected synchronously with ErrSystemEventsNotAllowed. See
+	// WithAllowSystemEvents.
+	allowSystemEvents bool
 }
 
 // Compile-time assertion: *Producer must satisfy Emitter. A missing method
@@ -219,18 +225,19 @@ func NewProducer(ctx context.Context, cfg Config, opts ...EmitterOption) (*Produ
 	}
 
 	p := &Producer{
-		client:       client,
-		cfg:          cfg,
-		cbManager:    resolvedOpts.cbManager,
-		tracer:       tracer,
-		logger:       logger,
-		metrics:      newStreamingMetrics(resolvedOpts.metricsFactory, logger),
-		producerID:   uuid.NewString(),
-		partFn:       resolvedOpts.partitionKeyFn,
-		toggles:      cfg.EventToggles,
-		closeTimeout: closeTimeout,
-		outbox:       resolvedOpts.outbox,
-		stop:         make(chan struct{}),
+		client:            client,
+		cfg:               cfg,
+		cbManager:         resolvedOpts.cbManager,
+		tracer:            tracer,
+		logger:            logger,
+		metrics:           newStreamingMetrics(resolvedOpts.metricsFactory, logger),
+		producerID:        uuid.NewString(),
+		partFn:            resolvedOpts.partitionKeyFn,
+		toggles:           cfg.EventToggles,
+		closeTimeout:      closeTimeout,
+		outbox:            resolvedOpts.outbox,
+		stop:              make(chan struct{}),
+		allowSystemEvents: resolvedOpts.allowSystemEvents,
 	}
 
 	// Wire the circuit breaker: resolve manager, register service-named
@@ -242,11 +249,6 @@ func NewProducer(ctx context.Context, cfg Config, opts ...EmitterOption) (*Produ
 
 		return nil, err
 	}
-
-	// Touch ctx to silence unused-parameter warnings; T6 uses it to create
-	// span/metric resources. We deliberately keep the ctx parameter today
-	// so the T3 signature is forward-compatible with T4-T7.
-	_ = ctx
 
 	return p, nil
 }

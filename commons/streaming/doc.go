@@ -79,7 +79,14 @@
 // failures (no I/O):
 //
 //   - ErrMissingTenantID — Event.TenantID empty and SystemEvent=false
+//   - ErrSystemEventsNotAllowed — Event.SystemEvent=true but the Producer
+//     was not constructed with WithAllowSystemEvents
 //   - ErrMissingSource — Event.Source empty (CloudEvents ce-source required)
+//   - ErrInvalidTenantID — TenantID contains control chars or exceeds 256 bytes
+//   - ErrInvalidResourceType — ResourceType contains control chars or exceeds 128 bytes
+//   - ErrInvalidEventType — EventType contains control chars or exceeds 128 bytes
+//   - ErrInvalidSource — Source contains control chars or exceeds 2048 bytes
+//   - ErrInvalidSubject — Subject contains control chars or exceeds 1024 bytes
 //   - ErrPayloadTooLarge — Event.Payload exceeds 1 MiB
 //   - ErrNotJSON — Event.Payload fails json.Valid
 //   - ErrEventDisabled — resource.event disabled via STREAMING_EVENT_TOGGLES
@@ -135,6 +142,20 @@
 // After Close, subsequent Emit calls return ErrEmitterClosed synchronously
 // before any I/O.
 //
+// # Consumer responsibilities
+//
+// Topics are SHARED across tenants. The topic name derives from
+// <resource>.<event> only — NOT tenant. Partition keys give per-tenant FIFO
+// ordering within a topic but do NOT isolate tenants at the topic level.
+//
+// Every consumer MUST filter events by ce-tenantid (or Event.TenantID after
+// parsing) before dispatching to tenant-scoped business logic. A consumer
+// that processes an event without a tenant check has a cross-tenant data
+// leak.
+//
+// This is the single biggest operational invariant of the streaming bus:
+// producer-side tenant discipline alone is not sufficient.
+//
 // # Concurrency safety
 //
 // *Producer is safe for concurrent use from any number of goroutines.
@@ -155,10 +176,52 @@
 //
 // Without an outbox wired, circuit-open Emits return ErrCircuitOpen.
 //
+// # Relation to commons/dlq
+//
+// commons/dlq is a Redis-backed retriable work-item queue with consumer-
+// driven dequeue semantics. This package's per-topic Kafka DLQ
+// (<source>.dlq) is an immutable, consumer-pull, append-only quarantine
+// log for failed event publications. They are orthogonal and not
+// substitutes:
+//
+//   - commons/dlq: work items that need retry with exponential backoff.
+//   - streaming Kafka DLQ: events that failed to publish and need forensic
+//     analysis or manual replay.
+//
+// Choose commons/dlq for operational work queues; streaming's DLQ is
+// automatic and scoped to publish failures.
+//
+// Note: x-lerian-dlq-retry-count is currently 0 in v1 pending an upstream
+// franz-go retry-count accessor (tracked for v1.1). Do not build tooling
+// that relies on non-zero values.
+//
+// # Tuning for throughput
+//
+// Default configuration targets low-latency per-event emission. For
+// high-throughput workloads (>10k RPS per service), consider:
+//
+//   - STREAMING_BATCH_LINGER_MS=20..50: allows more records to accumulate
+//     per batch, improving compression ratio and broker efficiency. Trades
+//     per-event latency for throughput.
+//   - STREAMING_MAX_BUFFERED_RECORDS=100000+: raises the in-flight ceiling
+//     before Emit back-pressures. Monitor memory proportionally.
+//   - STREAMING_COMPRESSION=zstd: better compression ratio than lz4 at
+//     higher CPU cost. Prefer lz4 for latency-sensitive paths; zstd for
+//     bulk/async paths.
+//   - STREAMING_BATCH_MAX_BYTES: keep at 1 MiB unless broker
+//     max.message.bytes is raised. Must match broker config.
+//
+// Benchmark with your actual payload distribution before tuning; defaults
+// are safe for <1k RPS.
+//
 // # Dashboard
 //
 // Metrics conform to: streaming_emitted_total, streaming_emit_duration_ms,
 // streaming_dlq_total, streaming_dlq_publish_failed_total,
 // streaming_outbox_routed_total, streaming_circuit_state. A reference
 // Grafana dashboard is tracked as v1.1 (see docs/pre-dev/streaming/tasks.md §T11).
+//
+// Per-tenant attribution of DLQ or routing spikes is available through
+// the span attribute tenant.id, NOT metric labels — tenant is deliberately
+// kept off the metric label set to bound cardinality.
 package streaming
