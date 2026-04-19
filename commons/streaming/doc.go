@@ -78,16 +78,17 @@
 // Sentinel errors are defined in streaming.go (search for `var (` on that
 // file for the authoritative list with full godoc on each). The categories:
 //
-//   - Caller-side validation (synchronous, no I/O): ErrMissingTenantID,
-//     ErrSystemEventsNotAllowed, ErrMissingSource, ErrMissingResourceType,
-//     ErrMissingEventType, ErrInvalid{TenantID,ResourceType,EventType,Source,
-//     Subject,EventID,SchemaVersion,DataContentType,DataSchema},
-//     ErrPayloadTooLarge, ErrNotJSON, ErrEventDisabled, ErrEmitterClosed.
+//   - Caller-side validation (synchronous, no I/O — IsCallerError returns
+//     true): ErrMissingTenantID, ErrSystemEventsNotAllowed, ErrMissingSource,
+//     ErrMissingResourceType, ErrMissingEventType,
+//     ErrInvalid{TenantID,ResourceType,EventType,Source,Subject,EventID,
+//     SchemaVersion,DataContentType,DataSchema}, ErrPayloadTooLarge,
+//     ErrNotJSON, ErrEventDisabled.
 //   - Config validation (LoadConfig): ErrMissingBrokers, ErrMissingSource,
 //     ErrInvalidCompression, ErrInvalidAcks.
-//   - Lifecycle / wiring (NOT caller errors — see IsCallerError):
-//     ErrNilProducer, ErrCircuitOpen, ErrOutboxNotConfigured,
-//     ErrNilOutboxRegistry.
+//   - Lifecycle / wiring (NOT caller errors — IsCallerError returns false):
+//     ErrEmitterClosed, ErrNilProducer, ErrCircuitOpen,
+//     ErrOutboxNotConfigured, ErrNilOutboxRegistry.
 //
 // Use IsCallerError(err) to distinguish caller-correctable faults from
 // infrastructure faults without matching each sentinel individually.

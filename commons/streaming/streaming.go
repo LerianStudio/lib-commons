@@ -81,9 +81,12 @@ const (
 	ClassBrokerOverloaded ErrorClass = "broker_overloaded"
 )
 
-// Sentinel errors. Each maps to a well-defined caller fault that callers can
-// match with errors.Is. The full truth table for IsCallerError lives in
-// IsCallerError and is mirrored in the godoc of each sentinel.
+// Sentinel errors. Each maps to a well-defined error condition that callers
+// can match with errors.Is. Not all sentinels are caller faults — lifecycle
+// and infrastructure errors (ErrEmitterClosed, ErrCircuitOpen,
+// ErrOutboxNotConfigured, ErrNilProducer, ErrNilOutboxRegistry) are included
+// here alongside caller-correctable validation errors. The full truth table
+// lives in IsCallerError and is mirrored in the godoc of each sentinel.
 var (
 	// ErrMissingTenantID is returned when Event.TenantID is empty and
 	// Event.SystemEvent is false. Returned synchronously before any I/O.

@@ -520,8 +520,18 @@ func TestProducer_PublishDLQ_WritesAllHeaders(t *testing.T) {
 	if got := headerValue(record, dlqHeaderProducerID); got == "" {
 		t.Errorf("%s is empty; want non-empty producer ID", dlqHeaderProducerID)
 	}
-	if got := headerValue(record, dlqHeaderTenantID); got != event.TenantID {
-		t.Errorf("%s = %q; want %q (tenant convenience header)", dlqHeaderTenantID, got, event.TenantID)
+
+	// Tenant identity is carried exclusively in ce-tenantid (CloudEvents
+	// header), NOT in x-lerian-dlq-tenant-id. Verify the DLQ envelope
+	// has exactly six x-lerian-dlq-* headers — no more, no less.
+	var dlqHeaderCount int
+	for _, h := range record.Headers {
+		if strings.HasPrefix(h.Key, "x-lerian-dlq-") {
+			dlqHeaderCount++
+		}
+	}
+	if dlqHeaderCount != 6 {
+		t.Errorf("DLQ header count = %d; want 6", dlqHeaderCount)
 	}
 }
 

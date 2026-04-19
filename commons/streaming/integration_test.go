@@ -611,7 +611,8 @@ func TestIntegration_DLQRouting(t *testing.T) {
 	dlqRecord := records[0]
 	hdrs := headerMap(dlqRecord.Headers)
 
-	// Seven x-lerian-dlq-* headers all present.
+	// Six x-lerian-dlq-* headers all present. Tenant identity is in
+	// ce-tenantid (CloudEvents), not in a DLQ-specific header.
 	assert.Equal(t, sourceTopic, hdrs[dlqHeaderSourceTopic], "dlq source-topic")
 	assert.NotEmpty(t, hdrs[dlqHeaderErrorClass], "dlq error-class")
 	assert.Truef(t, isDLQRoutable(ErrorClass(hdrs[dlqHeaderErrorClass])),
@@ -620,7 +621,6 @@ func TestIntegration_DLQRouting(t *testing.T) {
 	assert.NotEmpty(t, hdrs[dlqHeaderRetryCount], "dlq retry-count") // "0" is the v1 best-effort value
 	assert.NotEmpty(t, hdrs[dlqHeaderFirstFailureAt], "dlq first-failure-at")
 	assert.NotEmpty(t, hdrs[dlqHeaderProducerID], "dlq producer-id")
-	assert.Equal(t, event.TenantID, hdrs[dlqHeaderTenantID], "dlq tenant-id")
 
 	// Thirteen ce-* headers preserved verbatim. We assert on the required
 	// subset (spec, id, source, type, time, resourcetype, eventtype,
