@@ -493,6 +493,57 @@ appropriate.
 
 ---
 
+## 7.1 API migration notes (tenant-scoped surface)
+
+The tenant-scoped surface is new in v5.1 and has no external
+consumers yet, so the signatures below were tightened at introduction
+time rather than carrying through a deprecation cycle. If you are
+adopting the surface now, write against the post-tightening shape
+directly.
+
+### `OnTenantChange` callback gained a leading `ctx` parameter
+
+**Before** (initial v5.1 draft — never shipped externally):
+
+```go
+client.OnTenantChange(ns, key,
+    func(namespace, key, tenantID string, newValue any) { ... })
+```
+
+**Current signature**:
+
+```go
+client.OnTenantChange(ns, key,
+    func(ctx context.Context, namespace, key, tenantID string, newValue any) { ... })
+```
+
+The `ctx` is synthesized per invocation inside `fireTenantSubscribers`
+via `core.ContextWithTenantID(context.Background(), tenantID)`, so it
+is **already scoped to the tenant whose override changed**.
+Subscribers can forward it directly into tenant-aware lib-commons
+facilities — `commons/dlq` (tenant-scoped Redis keys),
+`commons/net/http/idempotency` (tenant-scoped idempotency keys),
+`commons/webhook` — without manually wrapping the context. This
+closes an ergonomic landmine where subscribers that reached for these
+facilities without re-wrapping the ctx would silently fall through to
+an untenanted key space.
+
+Update any existing subscriber literal by adding a leading
+`ctx context.Context` (or `_ context.Context` if unused):
+
+```go
+// before
+func(ns, key, tenantID string, newValue any) { ... }
+
+// after
+func(_ context.Context, ns, key, tenantID string, newValue any) { ... }
+```
+
+The unsubscribe contract, panic recovery, and ordering guarantees are
+unchanged.
+
+---
+
 ## 8. `OnTenantChange` semantics
 
 `OnTenantChange(namespace, key, fn)` is the tenant-aware sibling of
@@ -511,15 +562,21 @@ appropriate.
   reconcilers see the same value they would see on first startup
   before any override was written.
 
-The callback signature carries the tenant ID so a single subscription
-observes every tenant:
+The callback receives a `ctx` pre-scoped to the changing tenant (via
+`core.ContextWithTenantID`) alongside the raw tenantID string, so
+subscribers can immediately call tenant-aware lib-commons facilities
+(DLQ, idempotency middleware, webhook delivery) without manually
+re-propagating the tenant:
 
 ```go
 unsubscribe := client.OnTenantChange("global", "fees.fail_closed_default",
-    func(ns, key, tenantID string, newValue any) {
+    func(ctx context.Context, ns, key, tenantID string, newValue any) {
         log.Info("tenant config changed",
             zap.String("tenant", tenantID),
             zap.Any("new", newValue))
+
+        // ctx already carries tenantID — safe to pass into tenant-aware helpers
+        // like commons/dlq or commons/webhook without re-wrapping it.
     })
 defer unsubscribe()
 ```
@@ -672,11 +729,15 @@ func handleTransfer(ctx context.Context) error {
 // --- Reconciler path (reacting to config changes) -----------------------
 
 unsubscribe := c.OnTenantChange("global", "fees.fail_closed_default",
-    func(ns, key, tenantID string, newValue any) {
-        logger.Info(ctx, "tenant config changed",
+    func(cbCtx context.Context, ns, key, tenantID string, newValue any) {
+        logger.Info(cbCtx, "tenant config changed",
             log.String("tenant", tenantID),
             log.Any("new_value", newValue))
 
+        // cbCtx already carries the changing tenant's ID — pass it through
+        // to any tenant-aware lib-commons helpers (DLQ, webhook, idempotency)
+        // without manually calling core.ContextWithTenantID again.
+        //
         // Update any local caches / feature-flag mirrors / etc. The callback
         // fires for every tenant-scoped change to this (ns, key); multi-tenant
         // services typically index their local state by tenantID.

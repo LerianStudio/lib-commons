@@ -288,7 +288,7 @@ func TestOnTenantChange_FiresOnTenantWrite_OnChangeStaysSilent(t *testing.T) {
 	onTenantDone := make(chan struct{}, 2)
 	onChangeDone := make(chan struct{}, 2)
 
-	unsubTenant := c.OnTenantChange("global", "fee.rate", func(_, _, tenantID string, newValue any) {
+	unsubTenant := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, tenantID string, newValue any) {
 		mu.Lock()
 		onTenantFires = append(onTenantFires, struct {
 			tenantID string
@@ -362,7 +362,7 @@ func TestOnTenantChange_FiresOnDelete(t *testing.T) {
 
 	done := make(chan struct{}, 2)
 
-	unsub := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, newValue any) {
+	unsub := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, newValue any) {
 		mu.Lock()
 		fires = append(fires, newValue)
 		mu.Unlock()

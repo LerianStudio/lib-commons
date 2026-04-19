@@ -101,7 +101,7 @@ var (
 	_ func(ctx context.Context, namespace, key, actor string) error                   = (*systemplane.Client)(nil).DeleteForTenant
 	_ func(namespace, key string) []string                                            = (*systemplane.Client)(nil).ListTenantsForKey
 
-	_ func(namespace, key string, fn func(namespace, key, tenantID string, newValue any)) (unsubscribe func()) = (*systemplane.Client)(nil).OnTenantChange
+	_ func(namespace, key string, fn func(ctx context.Context, namespace, key, tenantID string, newValue any)) (unsubscribe func()) = (*systemplane.Client)(nil).OnTenantChange
 
 	// Typed accessor mirrors — all return (T, error) with the fail-closed
 	// contract documented in tenant_scoped_accessors.go. A shape regression

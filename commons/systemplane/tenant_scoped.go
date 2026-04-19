@@ -53,6 +53,18 @@ import (
 //   - Seeds the legacy cache[nk] = defaultValue under cacheMu so a pre-Start
 //     Get call returns the default (same contract as Register).
 //
+// # Mutable defaults
+//
+// Avoid mutable defaults (slices, maps, pointers to shared state). The
+// registered default is held by reference and shared across every tenant
+// that falls through to it — a subscriber (or reader) mutating the default
+// is visible to every other tenant's subsequent reads and to every
+// OnTenantChange delete echo (which dispatches def.defaultValue). The
+// blast radius is N tenants × K keys. Prefer value types (string, int,
+// bool, duration), or wrap slices/maps in a defensive copy the caller
+// owns. This same caveat applies to Register; tenant scoping widens the
+// surface, not the shape.
+//
 // Concurrency: the two writes (registry insert + cacheMu seed) happen under
 // separate locks; no other goroutine can observe the in-between state because
 // RegisterTenantScoped is only legal before Start (see the started.Load guard
@@ -378,6 +390,12 @@ func (c *Client) GetForTenant(ctx context.Context, namespace, key string) (any, 
 // Delete is idempotent at the backend: removing a non-existent override
 // returns nil, not an error. This matches the store.Store contract
 // documented at internal/store/store.go:82.
+//
+// If no override row exists for the tenant (idempotent delete), the
+// underlying backend emits no change event and OnTenantChange does NOT
+// fire. Callers waiting for the echo — e.g. tests that assert a callback
+// runs after DeleteForTenant — must ensure a row exists first
+// (SetForTenant) or they will wait forever.
 //
 // Returns the same error set as SetForTenant (except ErrValidation, which
 // is not reachable on delete).

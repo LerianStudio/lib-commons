@@ -19,6 +19,7 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 )
 
 // OnTenantChange registers a tenant-aware callback invoked whenever the
@@ -26,12 +27,15 @@ import (
 // backend changefeed. The returned function unsubscribes the callback and is
 // safe to call multiple times.
 //
-// The callback signature carries the tenantID so a single subscriber can
-// distinguish which tenant's override changed:
+// The callback receives a context.Context already scoped to the tenantID via
+// core.ContextWithTenantID, so subscribers can use tenant-aware lib-commons
+// facilities (DLQ, idempotency middleware, webhook delivery) without
+// manually re-propagating the tenant ID. A single subscription observes
+// every tenant — the tenantID argument distinguishes which override changed:
 //
 //	unsub := c.OnTenantChange("global", "fees.fail_closed_default",
-//	    func(ns, key, tenantID string, newValue any) {
-//	        // ...
+//	    func(ctx context.Context, ns, key, tenantID string, newValue any) {
+//	        // ctx already carries tenantID; safe to pass into DLQ/webhook/etc.
 //	    })
 //	defer unsub()
 //
@@ -46,7 +50,7 @@ import (
 // (silent tolerance, mirroring OnChange for unknown keys at onchange.go:22).
 // Registering a legacy (non-tenant-scoped) key here also returns a no-op —
 // OnChange is the correct surface for those keys, not OnTenantChange.
-func (c *Client) OnTenantChange(namespace, key string, fn func(ns, key, tenantID string, newValue any)) (unsubscribe func()) {
+func (c *Client) OnTenantChange(namespace, key string, fn func(ctx context.Context, ns, key, tenantID string, newValue any)) (unsubscribe func()) {
 	noop := func() {}
 
 	if c == nil || fn == nil {
@@ -65,7 +69,7 @@ func (c *Client) OnTenantChange(namespace, key string, fn func(ns, key, tenantID
 	c.registryMu.RUnlock()
 
 	if !registered || !tenantScoped {
-		c.logger.Log(context.Background(), log.LevelDebug, "OnTenantChange called for unregistered or non-tenant-scoped key, returning no-op",
+		c.logDebug(context.Background(), "OnTenantChange called for unregistered or non-tenant-scoped key, returning no-op",
 			log.String("namespace", namespace),
 			log.String("key", key),
 			log.Bool("registered", registered),
@@ -115,19 +119,41 @@ func (c *Client) OnTenantChange(namespace, key string, fn func(ns, key, tenantID
 // that unsubscribes itself (by calling the returned unsubscribe func) does
 // not mutate the slice we are iterating. Without the copy, that sequence
 // would either deadlock (on tenantSubsMu) or corrupt the iteration index.
+//
+// Early-return when no subscribers are registered: skips the make+copy
+// allocation that otherwise runs on every NOTIFY / change-stream event.
+// The non-empty branch still snapshots under lock — that's what protects
+// against concurrent unsubscribe during dispatch.
+//
+// A fresh ctx is synthesized per call scoped to tenantID via
+// core.ContextWithTenantID so subscribers can use tenant-aware facilities
+// (DLQ, idempotency, webhook) without manually re-propagating the tenant.
+// Callbacks run with context.Background() as the root to decouple them
+// from the debouncer's internal ctx (they already execute after the
+// changefeed echo, not synchronously with the triggering write).
 func (c *Client) fireTenantSubscribers(nk nskey, tenantID string, newValue any) {
 	c.tenantSubsMu.RLock()
-	subs := make([]tenantSubscription, len(c.tenantSubscribers[nk]))
-	copy(subs, c.tenantSubscribers[nk])
+	subs := c.tenantSubscribers[nk]
+
+	if len(subs) == 0 {
+		c.tenantSubsMu.RUnlock()
+
+		return
+	}
+
+	snapshot := make([]tenantSubscription, len(subs))
+	copy(snapshot, subs)
 	c.tenantSubsMu.RUnlock()
 
-	for _, sub := range subs {
+	ctx := core.ContextWithTenantID(context.Background(), tenantID)
+
+	for _, sub := range snapshot {
 		fn := sub.fn
 
 		func() {
 			defer runtime.RecoverAndLog(c.logger, "systemplane.ontenantchange")
 
-			fn(nk.Namespace, nk.Key, tenantID, newValue)
+			fn(ctx, nk.Namespace, nk.Key, tenantID, newValue)
 		}()
 	}
 }

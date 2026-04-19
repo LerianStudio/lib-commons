@@ -309,7 +309,7 @@ func BenchmarkOnTenantChange_FireFanout_10(b *testing.B) {
 	unsubs := make([]func(), numSubs)
 
 	for i := 0; i < numSubs; i++ {
-		unsubs[i] = c.OnTenantChange("global", "fee.rate", func(_, _, _ string, _ any) {
+		unsubs[i] = c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, _ any) {
 			// no-op
 		})
 	}

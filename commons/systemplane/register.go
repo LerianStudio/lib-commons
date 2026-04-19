@@ -23,6 +23,16 @@ type keyDef struct {
 // default fails validation (a broken default would cause silent misbehavior).
 //
 // Registering the same (namespace, key) pair twice returns [ErrDuplicateKey].
+//
+// # Mutable defaults
+//
+// Avoid mutable defaults (slices, maps, pointers to shared state). The
+// registered default is held by reference: when Get falls through to the
+// default (no persisted override yet), subsequent readers see whatever
+// mutations earlier callers applied. Prefer value types, or wrap
+// slices/maps in a defensive copy the caller owns. This caveat is shared
+// with [Client.RegisterTenantScoped], where the blast radius is wider
+// (every tenant that falls through to the default).
 func (c *Client) Register(namespace, key string, defaultValue any, opts ...KeyOption) error {
 	if c == nil || c.closed.Load() {
 		return ErrClosed

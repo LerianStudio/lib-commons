@@ -553,7 +553,7 @@ func TestNilClient_TenantMethods(t *testing.T) {
 
 		var c *Client
 
-		unsub := c.OnTenantChange("ns", "k", func(_, _, _ string, _ any) {
+		unsub := c.OnTenantChange("ns", "k", func(_ context.Context, _, _, _ string, _ any) {
 			t.Fatal("nil-receiver subscription must never fire")
 		})
 		require.NotNil(t, unsub, "unsubscribe must not be nil — callers defer it")

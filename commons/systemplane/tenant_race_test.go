@@ -247,7 +247,7 @@ func TestRace_ConcurrentSetForTenant_DistinctTenants(t *testing.T) {
 	perTenantMu := sync.Mutex{}
 	perTenantSeen := make(map[string]int)
 
-	unsubTenant := c.OnTenantChange("global", "fee.rate", func(_, _, tenantID string, _ any) {
+	unsubTenant := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, tenantID string, _ any) {
 		tenantFires.Add(1)
 
 		perTenantMu.Lock()
@@ -368,7 +368,7 @@ func TestRace_ConcurrentSubscribeUnsubscribe(t *testing.T) {
 	// the transient subs unsubscribe themselves.
 	var baselineFires atomic.Int64
 
-	unsubBase := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, _ any) {
+	unsubBase := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, _ any) {
 		baselineFires.Add(1)
 	})
 	t.Cleanup(unsubBase)
@@ -391,7 +391,7 @@ func TestRace_ConcurrentSubscribeUnsubscribe(t *testing.T) {
 				default:
 				}
 
-				unsub := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, _ any) {
+				unsub := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, _ any) {
 					// no-op transient subscriber
 				})
 				unsub()

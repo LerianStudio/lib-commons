@@ -139,11 +139,13 @@ type Client struct {
 }
 
 // tenantSubscription holds a single OnTenantChange callback and its monotonic
-// id. The callback signature carries the tenantID so a subscriber can
-// distinguish which tenant's override changed.
+// id. The callback signature carries a ctx pre-scoped to tenantID (via
+// core.ContextWithTenantID in fireTenantSubscribers) alongside the tenantID
+// itself, so subscribers can invoke tenant-aware lib-commons facilities
+// (DLQ, idempotency, webhook) without manually re-propagating the tenant.
 type tenantSubscription struct {
 	id uint64
-	fn func(namespace, key, tenantID string, newValue any)
+	fn func(ctx context.Context, namespace, key, tenantID string, newValue any)
 }
 
 // NewPostgres creates a Client backed by a Postgres database with LISTEN/NOTIFY
@@ -463,5 +465,15 @@ func (c *Client) startSpanWithAttrs(ctx context.Context, name string, attrs ...a
 func (c *Client) logWarn(ctx context.Context, msg string, fields ...log.Field) {
 	if c.logger != nil {
 		c.logger.Log(ctx, log.LevelWarn, msg, fields...)
+	}
+}
+
+// logDebug emits a debug-level log via the configured logger. Nil-safe on
+// the logger field for symmetry with logWarn — newClient always wires a
+// non-nil logger today, but the guard future-proofs against construction
+// paths that might bypass it.
+func (c *Client) logDebug(ctx context.Context, msg string, fields ...log.Field) {
+	if c.logger != nil {
+		c.logger.Log(ctx, log.LevelDebug, msg, fields...)
 	}
 }

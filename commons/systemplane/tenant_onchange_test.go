@@ -53,7 +53,7 @@ func TestOnTenantChange_FiresOnSetForTenant(t *testing.T) {
 		done  = make(chan struct{}, 1)
 	)
 
-	unsub := c.OnTenantChange("global", "fee.rate", func(ns, key, tenantID string, newValue any) {
+	unsub := c.OnTenantChange("global", "fee.rate", func(_ context.Context, ns, key, tenantID string, newValue any) {
 		mu.Lock()
 		fires = append(fires, fire{ns, key, tenantID, newValue})
 		mu.Unlock()
@@ -98,7 +98,7 @@ func TestOnTenantChange_FiresOnDeleteForTenantWithDefault(t *testing.T) {
 		done  = make(chan struct{}, 2)
 	)
 
-	unsub := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, newValue any) {
+	unsub := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, newValue any) {
 		mu.Lock()
 		fires = append(fires, newValue)
 		mu.Unlock()
@@ -146,7 +146,7 @@ func TestOnTenantChange_MultipleSubscribersAllFire(t *testing.T) {
 		doneA, doneB   = make(chan struct{}, 1), make(chan struct{}, 1)
 	)
 
-	unsubA := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, _ any) {
+	unsubA := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, _ any) {
 		mu.Lock()
 		countA++
 		mu.Unlock()
@@ -157,7 +157,7 @@ func TestOnTenantChange_MultipleSubscribersAllFire(t *testing.T) {
 	})
 	defer unsubA()
 
-	unsubB := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, _ any) {
+	unsubB := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, _ any) {
 		mu.Lock()
 		countB++
 		mu.Unlock()
@@ -204,7 +204,7 @@ func TestOnTenantChange_UnsubscribeRemovesFromList(t *testing.T) {
 		fireCount int
 	)
 
-	unsub := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, _ any) {
+	unsub := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, _ any) {
 		mu.Lock()
 		fireCount++
 		mu.Unlock()
@@ -246,7 +246,7 @@ func TestOnTenantChange_SelfUnsubscribeFromCallbackIsSafe(t *testing.T) {
 	// Pre-declare unsubSelf so the callback can reference it.
 	var unsubSelf func()
 
-	unsubSelf = c.OnTenantChange("global", "fee.rate", func(_, _, _ string, _ any) {
+	unsubSelf = c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, _ any) {
 		mu.Lock()
 		selfFired++
 		mu.Unlock()
@@ -255,7 +255,7 @@ func TestOnTenantChange_SelfUnsubscribeFromCallbackIsSafe(t *testing.T) {
 	})
 	defer unsubSelf()
 
-	unsubSibling := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, _ any) {
+	unsubSibling := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, _ any) {
 		mu.Lock()
 		siblingFired++
 		mu.Unlock()
@@ -309,13 +309,13 @@ func TestOnTenantChange_PanickingCallbackDoesNotAffectOthers(t *testing.T) {
 	)
 
 	// Subscriber #1: panics on every invocation.
-	unsubPanic := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, _ any) {
+	unsubPanic := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, _ any) {
 		panic("intentional test panic")
 	})
 	defer unsubPanic()
 
 	// Subscriber #2: records a hit — this one must survive.
-	unsubOK := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, _ any) {
+	unsubOK := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, _ any) {
 		mu.Lock()
 		survivorHits++
 		mu.Unlock()
@@ -451,7 +451,7 @@ func TestOnTenantChange_DoesNotFireOnGlobalWrites(t *testing.T) {
 
 	var tenantFires atomic.Int32
 
-	unsub := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, _ any) {
+	unsub := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, _ any) {
 		tenantFires.Add(1)
 	})
 	defer unsub()
@@ -513,7 +513,7 @@ func TestDebouncer_CoalescesRapidSetsForSameTenant(t *testing.T) {
 	// debouncer a bounded quiet window to prove no second fire arrives.
 	signals := make(chan fire, 8)
 
-	unsub := c.OnTenantChange("global", "fee.rate", func(_, _, tenantID string, newValue any) {
+	unsub := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, tenantID string, newValue any) {
 		f := fire{tenantID, newValue}
 
 		mu.Lock()
@@ -587,7 +587,7 @@ func TestDebouncer_DoesNotCollapseAcrossTenants(t *testing.T) {
 
 	signals := make(chan fire, 8)
 
-	unsub := c.OnTenantChange("global", "fee.rate", func(_, _, tenantID string, newValue any) {
+	unsub := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, tenantID string, newValue any) {
 		f := fire{tenantID, newValue}
 
 		mu.Lock()
@@ -674,7 +674,7 @@ func TestDebouncer_GlobalAndTenantDoNotCollide(t *testing.T) {
 	})
 	defer unsubGlobal()
 
-	unsubTenant := c.OnTenantChange("global", "fee.rate", func(_, _, _ string, newValue any) {
+	unsubTenant := c.OnTenantChange("global", "fee.rate", func(_ context.Context, _, _, _ string, newValue any) {
 		mu.Lock()
 		onTenantFires = append(onTenantFires, newValue)
 		mu.Unlock()
@@ -743,7 +743,7 @@ func TestOnTenantChange_UnregisteredKeyReturnsNoOp(t *testing.T) {
 
 	c, _ := buildStartedClient(t, "global", "fee.rate", 0.0)
 
-	unsub := c.OnTenantChange("global", "unregistered.key", func(_, _, _ string, _ any) {
+	unsub := c.OnTenantChange("global", "unregistered.key", func(_ context.Context, _, _, _ string, _ any) {
 		t.Fatal("unregistered-key callback must not fire")
 	})
 	require.NotNil(t, unsub)
@@ -778,7 +778,7 @@ func TestOnTenantChange_LegacyRegisteredKeyReturnsNoOp(t *testing.T) {
 		t.Fatal("Subscribe handler did not register")
 	}
 
-	unsub := c.OnTenantChange("global", "legacy.key", func(_, _, _ string, _ any) {
+	unsub := c.OnTenantChange("global", "legacy.key", func(_ context.Context, _, _, _ string, _ any) {
 		t.Fatal("OnTenantChange on a legacy key must never fire")
 	})
 	require.NotNil(t, unsub)
