@@ -11,13 +11,47 @@ import (
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 )
 
-// txContextKey is the (currently unused) context key that WOULD hold an
-// ambient *sql.Tx for the outbox fallback to join. See the note on
-// txFromContext for why v1 is a no-op on this branch.
+// txContextKey is the context key that holds an ambient *sql.Tx for the
+// outbox fallback to join via CreateWithTx.
 //
 // A package-local unexported type avoids collisions with any other
 // package's context values (the standard idiom for context keys).
 type txContextKey struct{}
+
+// ContextWithTx returns a copy of ctx carrying the supplied *sql.Tx under
+// streaming's unexported context key. When the circuit breaker is OPEN
+// and WithOutboxRepository is wired, Emit's outbox fallback detects the
+// ambient tx and writes the outbox row via CreateWithTx — joining the
+// event publication to the caller's unit of work.
+//
+// Typical use:
+//
+//	tx, err := db.BeginTx(ctx, nil)
+//	// ... business writes under tx ...
+//	ctx = streaming.ContextWithTx(ctx, tx)
+//	if err := emitter.Emit(ctx, event); err != nil { ... }
+//	if err := tx.Commit(); err != nil { ... }
+//
+// Passing a nil *sql.Tx is a no-op — the outbox path falls back to
+// Create. When the ambient tx is present but the circuit is CLOSED, the
+// event publishes directly to the broker (no outbox row); the caller's
+// tx proceeds independently. Callers who need strict at-least-once
+// semantics should always pair Emit with tx-wrapped business writes AND
+// wire an outbox Dispatcher.
+//
+// ContextWithTx is safe for concurrent use; context.WithValue produces a
+// new ctx and does not mutate the parent.
+func ContextWithTx(ctx context.Context, tx *sql.Tx) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if tx == nil {
+		return ctx
+	}
+
+	return context.WithValue(ctx, txContextKey{}, tx)
+}
 
 // publishToOutbox serializes an already-pre-flighted Event to an
 // outbox.OutboxEvent and writes it via the configured OutboxRepository.
@@ -96,6 +130,12 @@ func (p *Producer) publishToOutbox(ctx context.Context, event Event) error {
 // outbox row stream aligned with the Kafka partition stream and lets
 // operators correlate the two by hash.
 //
+// For non-system events this hashes only the PartitionKey (= TenantID),
+// giving tenant-level correlation. AggregateID is NOT per-event identity
+// — use event.Subject for that. If a service wants per-aggregate grouping
+// stronger than tenant, it should override the partition key via
+// WithPartitionKey or, preferably, use a distinct Subject per aggregate.
+//
 // SystemEvent=true events use a random UUID because their "partition key"
 // ("system:<eventtype>") would otherwise collapse every system event into
 // the same aggregate — not what we want for audit/correlation.
@@ -113,23 +153,12 @@ func deriveAggregateID(event Event) uuid.UUID {
 }
 
 // txFromContext returns the ambient *sql.Tx if one is stored on ctx under
-// streaming's tx context key.
+// streaming's tx context key, previously installed by ContextWithTx.
 //
-// v1 status: commons/outbox does NOT export a context-key helper for the
-// ambient tx (only CreateWithTx accepts one as an explicit argument), and
-// streaming does NOT yet export a ContextWithTx helper either — exposing
-// one would expand the public API beyond T4 scope and the ambient-tx
-// flow needs real-world shape-checking from a downstream service first.
-//
-// Consequence: this function ALWAYS returns (nil, false) today. The
-// CreateWithTx branch in publishToOutbox is therefore never taken, and
-// all fallback writes go through Create. The hook is kept in place so
-// v1.1 can enable the ambient-tx path with a single constructor addition
-// (a public ContextWithTx helper) without reshaping publishToOutbox.
-//
-// TODO(v1.1): Expose ContextWithTx + wire a downstream consumer test
-// once a service actually needs the transactional-outbox semantics. The
-// streaming-side test for this path is Skip()'d per T4 spec.
+// When no tx is on the context (the common case), returns (nil, false)
+// and publishToOutbox falls through to the non-transactional Create
+// branch. The outbox Dispatcher then drains the row with its own
+// transaction management.
 func txFromContext(ctx context.Context) (*sql.Tx, bool) {
 	if ctx == nil {
 		return nil, false

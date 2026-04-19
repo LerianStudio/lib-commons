@@ -503,7 +503,7 @@ func TestIntegration_PartitionFIFO(t *testing.T) {
 // max.message.bytes on the source topic to 1 KiB and emitting a 2 KiB
 // payload. franz-go's retries exhaust on ClassSerialization, the Producer's
 // publishDLQ routes the message to {topic}.dlq, and the test asserts all
-// 6 x-lerian-dlq-* + 13 ce-* headers land on the DLQ message intact.
+// 7 x-lerian-dlq-* + 13 ce-* headers land on the DLQ message intact.
 func TestIntegration_DLQRouting(t *testing.T) {
 	seed, c := startRedpanda(t)
 	if c == nil {
@@ -608,7 +608,7 @@ func TestIntegration_DLQRouting(t *testing.T) {
 	dlqRecord := records[0]
 	hdrs := headerMap(dlqRecord.Headers)
 
-	// Six x-lerian-dlq-* headers all present.
+	// Seven x-lerian-dlq-* headers all present.
 	assert.Equal(t, sourceTopic, hdrs[dlqHeaderSourceTopic], "dlq source-topic")
 	assert.NotEmpty(t, hdrs[dlqHeaderErrorClass], "dlq error-class")
 	assert.Truef(t, isDLQRoutable(ErrorClass(hdrs[dlqHeaderErrorClass])),
@@ -617,6 +617,7 @@ func TestIntegration_DLQRouting(t *testing.T) {
 	assert.NotEmpty(t, hdrs[dlqHeaderRetryCount], "dlq retry-count") // "0" is the v1 best-effort value
 	assert.NotEmpty(t, hdrs[dlqHeaderFirstFailureAt], "dlq first-failure-at")
 	assert.NotEmpty(t, hdrs[dlqHeaderProducerID], "dlq producer-id")
+	assert.Equal(t, event.TenantID, hdrs[dlqHeaderTenantID], "dlq tenant-id")
 
 	// Thirteen ce-* headers preserved verbatim. We assert on the required
 	// subset (spec, id, source, type, time, resourcetype, eventtype,

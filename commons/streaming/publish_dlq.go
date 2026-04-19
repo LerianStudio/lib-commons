@@ -11,10 +11,16 @@ import (
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 
-// DLQ header keys (TRD §C8). Every DLQ message carries all six; none are
+// DLQ header keys (TRD §C8). Every DLQ message carries all seven; none are
 // optional. Keeping them colocated here (not in cloudevents.go) because they
 // are NOT CloudEvents context attributes — they are Lerian-specific
 // operational metadata that sits alongside the ce-* headers on DLQ messages.
+//
+// ce-tenantid remains the canonical source of truth for the tenant on a
+// CloudEvents binary-mode envelope; x-lerian-dlq-tenant-id is a convenience
+// duplicate for operator tooling that keys off the x-lerian-dlq-* prefix
+// (alerting, query tooling, ad-hoc scripts). Empty bytes are emitted for
+// system events, matching the ce-tenantid behavior in buildCloudEventsHeaders.
 const (
 	dlqHeaderSourceTopic    = "x-lerian-dlq-source-topic"
 	dlqHeaderErrorClass     = "x-lerian-dlq-error-class"
@@ -22,6 +28,7 @@ const (
 	dlqHeaderRetryCount     = "x-lerian-dlq-retry-count"
 	dlqHeaderFirstFailureAt = "x-lerian-dlq-first-failure-at"
 	dlqHeaderProducerID     = "x-lerian-dlq-producer-id"
+	dlqHeaderTenantID       = "x-lerian-dlq-tenant-id"
 )
 
 // dlqTopicSuffix is the literal suffix appended to the source topic to derive
@@ -79,7 +86,7 @@ func extractRetryCount(_ error) int {
 }
 
 // publishDLQ writes the original record body to {source}.dlq, preserving
-// every ce-* header verbatim and adding the six x-lerian-dlq-* headers
+// every ce-* header verbatim and adding the seven x-lerian-dlq-* headers
 // defined in TRD §C8.
 //
 // Contract:
@@ -90,7 +97,7 @@ func extractRetryCount(_ error) int {
 //   - Every ce-* header present on the original emit is copied onto the
 //     DLQ message, in the same order (buildCloudEventsHeaders is
 //     deterministic).
-//   - The six x-lerian-dlq-* headers are appended after the ce-* headers
+//   - The seven x-lerian-dlq-* headers are appended after the ce-* headers
 //     so consumers that skim headers top-down see the protocol envelope
 //     first, then the DLQ metadata.
 //   - The error message carried in x-lerian-dlq-error-message is run
@@ -141,8 +148,12 @@ func (p *Producer) publishDLQ(
 	// that makes replay tooling trivial (strip x-lerian-dlq-*, republish).
 	headers := buildCloudEventsHeaders(event)
 
-	// Append the six DLQ-specific headers. Per TRD §C8, all six are
-	// REQUIRED on every DLQ message — no optional branches here.
+	// Append the seven DLQ-specific headers. Per TRD §C8, all seven are
+	// REQUIRED on every DLQ message — no optional branches here. Empty
+	// bytes for x-lerian-dlq-tenant-id on system events match the
+	// ce-tenantid omission behavior (buildCloudEventsHeaders skips
+	// ce-tenantid when TenantID is empty; this header does not skip so
+	// operator tooling can grep for the key unconditionally).
 	headers = append(headers,
 		kgo.RecordHeader{Key: dlqHeaderSourceTopic, Value: []byte(sourceTopic)},
 		kgo.RecordHeader{Key: dlqHeaderErrorClass, Value: []byte(cls)},
@@ -150,6 +161,7 @@ func (p *Producer) publishDLQ(
 		kgo.RecordHeader{Key: dlqHeaderRetryCount, Value: []byte(strconv.Itoa(retryCount))},
 		kgo.RecordHeader{Key: dlqHeaderFirstFailureAt, Value: []byte(firstFailureAt.UTC().Format(time.RFC3339Nano))},
 		kgo.RecordHeader{Key: dlqHeaderProducerID, Value: []byte(p.producerID)},
+		kgo.RecordHeader{Key: dlqHeaderTenantID, Value: []byte(event.TenantID)},
 	)
 
 	// Preserve the partition key so within-tenant ordering is maintained

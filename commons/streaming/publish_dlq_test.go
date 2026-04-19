@@ -3,6 +3,7 @@
 package streaming
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -205,7 +206,9 @@ func resolveRequestTopicNames(cluster *kfake.Cluster, produceReq *kmsg.ProduceRe
 
 // readDLQRecord polls a kgo consumer until one record lands on topic, or the
 // deadline expires. Returns nil when no record is fetched (lets tests assert
-// on absence).
+// on absence). Between empty PollFetches iterations we sleep for 10ms to
+// avoid burning CPU under parallel test execution — kfake PollFetches can
+// return fast with no records while metadata is still refreshing.
 func readDLQRecord(t *testing.T, cluster *kfake.Cluster, topic string, timeout time.Duration) *kgo.Record {
 	t.Helper()
 
@@ -235,6 +238,11 @@ func readDLQRecord(t *testing.T, cluster *kfake.Cluster, topic string, timeout t
 		if fetchCtx.Err() != nil {
 			return nil
 		}
+
+		// Sleep briefly between empty polls. Prevents spinning the CPU
+		// under -race / parallel test execution when kfake returns fast
+		// with no records while controller metadata propagates.
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	return nil
@@ -277,7 +285,6 @@ func TestDlqTopic_Derivation(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.source, func(t *testing.T) {
 			t.Parallel()
 			if got := dlqTopic(tt.source); got != tt.want {
@@ -308,7 +315,6 @@ func TestIsDLQRoutable_TruthTable(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(string(tt.cls), func(t *testing.T) {
 			t.Parallel()
 			if got := isDLQRoutable(tt.cls); got != tt.want {
@@ -335,7 +341,6 @@ func TestExtractRetryCount_Stub(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			if got := extractRetryCount(tt.err); got != 0 {
@@ -431,7 +436,7 @@ func TestBuildEmitErrorWithDLQ_DLQFailed(t *testing.T) {
 // scenario. Force a broker-side error (MessageTooLarge) via kfake.Control,
 // verify the DLQ message receives:
 //
-//  1. All 6 x-lerian-dlq-* headers with correct values.
+//  1. All 7 x-lerian-dlq-* headers with correct values.
 //  2. All CloudEvents ce-* headers preserved verbatim.
 //  3. The original payload bytes, unchanged.
 //  4. Partition key preserved (tenant ID for non-system events).
@@ -485,7 +490,7 @@ func TestProducer_PublishDLQ_WritesAllHeaders(t *testing.T) {
 		t.Errorf("record.Key = %q; want %q", record.Key, event.TenantID)
 	}
 
-	// All 6 x-lerian-dlq-* headers present.
+	// All 7 x-lerian-dlq-* headers present.
 	if got := headerValue(record, dlqHeaderSourceTopic); got != sourceTopic {
 		t.Errorf("%s = %q; want %q", dlqHeaderSourceTopic, got, sourceTopic)
 	}
@@ -505,6 +510,9 @@ func TestProducer_PublishDLQ_WritesAllHeaders(t *testing.T) {
 	}
 	if got := headerValue(record, dlqHeaderProducerID); got == "" {
 		t.Errorf("%s is empty; want non-empty producer ID", dlqHeaderProducerID)
+	}
+	if got := headerValue(record, dlqHeaderTenantID); got != event.TenantID {
+		t.Errorf("%s = %q; want %q (tenant convenience header)", dlqHeaderTenantID, got, event.TenantID)
 	}
 }
 
@@ -592,28 +600,11 @@ func TestProducer_PublishDLQ_BodyByteEqual(t *testing.T) {
 		t.Fatalf("no DLQ record")
 	}
 
-	// Byte-equal comparison. Using string conversion ONLY for the error
-	// message — the actual comparison is on the raw []byte.
-	if !bytesEqual(record.Value, event.Payload) {
+	// Byte-equal comparison via stdlib bytes.Equal — the actual comparison
+	// is on the raw []byte; string conversion is only for the error message.
+	if !bytes.Equal(record.Value, event.Payload) {
 		t.Errorf("record.Value = %q; want byte-equal to %q", record.Value, event.Payload)
 	}
-}
-
-// bytesEqual is a local fixture to avoid pulling in reflect.DeepEqual for a
-// simple []byte comparison that the standard library reserves for strings.
-// Intentionally a trivial function — explicit for readability.
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-
-	return true
 }
 
 // TestProducer_PublishDLQ_AuthError_RoutesToDLQ exercises a second DLQ-

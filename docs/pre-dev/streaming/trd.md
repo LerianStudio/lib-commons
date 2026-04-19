@@ -302,6 +302,11 @@ Per-source-topic DLQ: source topic `lerian.streaming.transaction.created` → DL
 | `x-lerian-dlq-retry-count` | int as string (franz-go `RecordRetries` counter at exhaust) |
 | `x-lerian-dlq-first-failure-at` | RFC3339 UTC timestamp |
 | `x-lerian-dlq-producer-id` | `p.producerID` |
+| `x-lerian-dlq-tenant-id` | `event.TenantID` (empty bytes for system events) |
+
+`x-lerian-dlq-tenant-id` is operator ergonomics — alerting and query tooling
+often keys off the `x-lerian-dlq-*` prefix; `ce-tenantid` remains the canonical
+source of truth via CloudEvents binary mode.
 
 **Body:** the original domain payload, **unchanged**. This makes replay trivial: an ops tool copies the message, strips `x-lerian-dlq-*` headers, and republishes to the source topic.
 
