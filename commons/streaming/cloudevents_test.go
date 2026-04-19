@@ -294,6 +294,31 @@ func TestParseCloudEventsHeaders_MissingRequiredHeader(t *testing.T) {
 	}
 }
 
+// TestParseCloudEventsHeaders_UnsupportedSpecVersion verifies that a present
+// but non-"1.0" ce-specversion returns ErrUnsupportedSpecVersion (not
+// ErrMissingRequiredHeader).
+func TestParseCloudEventsHeaders_UnsupportedSpecVersion(t *testing.T) {
+	t.Parallel()
+
+	headers := []kgo.RecordHeader{
+		{Key: headerCESpecVersion, Value: []byte("2.0")},
+		{Key: headerCEID, Value: []byte("evt-1")},
+		{Key: headerCESource, Value: []byte("//source")},
+		{Key: headerCEType, Value: []byte("studio.lerian.t.e")},
+		{Key: headerCETime, Value: []byte(time.Now().UTC().Format(time.RFC3339Nano))},
+	}
+
+	_, err := ParseCloudEventsHeaders(headers)
+	if !errors.Is(err, ErrUnsupportedSpecVersion) {
+		t.Fatalf("expected ErrUnsupportedSpecVersion; got %v", err)
+	}
+
+	// Must NOT match ErrMissingRequiredHeader — the header is present.
+	if errors.Is(err, ErrMissingRequiredHeader) {
+		t.Errorf("should not match ErrMissingRequiredHeader for a present but wrong specversion")
+	}
+}
+
 // TestParseCloudEventsHeaders_InvalidTime surfaces a parse error for
 // ce-time payload that is not RFC3339Nano.
 func TestParseCloudEventsHeaders_InvalidTime(t *testing.T) {

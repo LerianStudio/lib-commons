@@ -85,7 +85,9 @@ func (p *Producer) initCircuitBreaker() error {
 // from the HTTP preset — it's the tightest preset that matches a wire-level
 // producer (short timeout, fail-fast) — and apply non-zero Config overrides.
 // Zero or negative values are treated as "use the preset", matching the
-// documented env-var semantics.
+// documented env-var semantics. The valid range for CBFailureRatio is (0, 1];
+// an explicit zero is indistinguishable from "not set" (float64 zero value)
+// and falls through to the preset.
 func buildCBConfig(cfg Config) circuitbreaker.Config {
 	cbCfg := circuitbreaker.HTTPServiceConfig()
 

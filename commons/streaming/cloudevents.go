@@ -125,6 +125,12 @@ func buildCloudEventsHeaders(event Event) []kgo.RecordHeader {
 // match the error precisely via errors.Is.
 var ErrMissingRequiredHeader = errors.New("streaming: missing required CloudEvents header")
 
+// ErrUnsupportedSpecVersion is returned by ParseCloudEventsHeaders when the
+// ce-specversion header IS present but carries a value other than "1.0".
+// Distinct from ErrMissingRequiredHeader so callers can distinguish "header
+// absent" from "header present but wrong version" via errors.Is.
+var ErrUnsupportedSpecVersion = errors.New("streaming: unsupported CloudEvents specversion")
+
 // ParseCloudEventsHeaders is the inverse of buildCloudEventsHeaders. It is
 // primarily used by tests that verify the on-wire format round-trips back to
 // the same Event shape — particularly the CloudEvents SDK contract test in
@@ -159,7 +165,7 @@ func ParseCloudEventsHeaders(headers []kgo.RecordHeader) (Event, error) {
 	}
 
 	if specVersion != ceSpecVersion1_0 {
-		return Event{}, fmt.Errorf("%w: unsupported specversion %q (want %q)", ErrMissingRequiredHeader, specVersion, ceSpecVersion1_0)
+		return Event{}, fmt.Errorf("%w: %q (want %q)", ErrUnsupportedSpecVersion, specVersion, ceSpecVersion1_0)
 	}
 
 	eventID, ok := index[headerCEID]

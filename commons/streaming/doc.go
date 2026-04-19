@@ -81,8 +81,8 @@
 //   - Caller-side validation (synchronous, no I/O): ErrMissingTenantID,
 //     ErrSystemEventsNotAllowed, ErrMissingSource, ErrMissingResourceType,
 //     ErrMissingEventType, ErrInvalid{TenantID,ResourceType,EventType,Source,
-//     Subject}, ErrPayloadTooLarge, ErrNotJSON, ErrEventDisabled,
-//     ErrEmitterClosed.
+//     Subject,EventID,SchemaVersion,DataContentType,DataSchema},
+//     ErrPayloadTooLarge, ErrNotJSON, ErrEventDisabled, ErrEmitterClosed.
 //   - Config validation (LoadConfig): ErrMissingBrokers, ErrMissingSource,
 //     ErrInvalidCompression, ErrInvalidAcks.
 //   - Lifecycle / wiring (NOT caller errors — see IsCallerError):

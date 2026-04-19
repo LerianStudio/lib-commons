@@ -320,7 +320,9 @@ var callerErrorSentinels = []error{
 //     ErrNotJSON, ErrEventDisabled, ErrMissingBrokers, ErrInvalidCompression,
 //     ErrInvalidAcks
 //   - Header-sanitization sentinels: ErrInvalidTenantID, ErrInvalidResourceType,
-//     ErrInvalidEventType, ErrInvalidSource, ErrInvalidSubject
+//     ErrInvalidEventType, ErrInvalidSource, ErrInvalidSubject,
+//     ErrInvalidEventID, ErrInvalidSchemaVersion, ErrInvalidDataContentType,
+//     ErrInvalidDataSchema
 //   - An *EmitError whose Class is ClassSerialization, ClassValidation, or
 //     ClassAuth.
 //

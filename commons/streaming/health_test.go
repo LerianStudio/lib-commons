@@ -53,6 +53,13 @@ func TestHealthError_Error_WithCause(t *testing.T) {
 	if strings.Contains(got, "hunter2") {
 		t.Errorf("Error() = %q; leaks credential 'hunter2'", got)
 	}
+
+	// The full credential pair "user:hunter2" must not appear verbatim.
+	// The sanitizer preserves the username but replaces the password, so
+	// "user:****" is expected — but the original pair must be gone.
+	if strings.Contains(got, "user:hunter2") {
+		t.Errorf("Error() = %q; leaks full credential pair 'user:hunter2'", got)
+	}
 }
 
 // TestHealthError_Error_NoCause covers the branch where cause is nil.

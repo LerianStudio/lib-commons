@@ -50,11 +50,18 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 		ctx = context.Background()
 	}
 
+	// Apply defaults on a local copy first so derived fields like Topic()
+	// see the canonical event shape (SchemaVersion defaults to "1.0.0",
+	// which influences the topic suffix for major >= 2). The caller's
+	// struct is not mutated because Emit receives event by value.
+	(&event).ApplyDefaults()
+
 	// Compute the topic once and thread it through every downstream call
 	// site. Topic() concatenates strings and may call semver.Major; caching
 	// it avoids the allocation across recordEmitted + recordEmitDuration +
 	// setEmitSpanAttributes + publishDirect + publishDLQ + publishToOutbox
-	// on the hot path.
+	// on the hot path. Must run AFTER ApplyDefaults so SchemaVersion is
+	// populated.
 	topic := event.Topic()
 
 	if p.closed.Load() {
@@ -73,11 +80,6 @@ func (p *Producer) Emit(ctx context.Context, event Event) error {
 
 		return ErrEmitterClosed
 	}
-
-	// Apply defaults on a local copy first so the caller's struct is not
-	// mutated. Safe before validation because defaults (EventID, Timestamp,
-	// SchemaVersion, DataContentType) do not influence any validation check.
-	(&event).ApplyDefaults()
 
 	// Pre-flight validation runs OUTSIDE the circuit-breaker wrapper so a
 	// barrage of caller mistakes cannot trip the breaker — breaker counts

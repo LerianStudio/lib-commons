@@ -16,13 +16,18 @@ import (
 var _ libCommons.App = (*Producer)(nil)
 
 // Run registers the Producer with the Launcher lifecycle. It blocks until
-// Close (or CloseContext) is called, then returns the CloseContext result.
+// Close (or CloseContext) is called, then returns the result of CloseContext.
 //
 // Run delegates to RunContext with a background context, mirroring the
 // Close/CloseContext pairing across the package. Consuming services
 // typically call launcher.Add("streaming", producer); the Launcher then
 // invokes Run from its goroutine pool and waits for it to return before
 // Launcher.RunWithError completes.
+//
+// Returns:
+//   - ErrNilProducer when called on a nil *Producer.
+//   - nil when the Producer was already closed before Run was called.
+//   - The error from CloseContext (if any) on normal shutdown.
 //
 // Nil-receiver safe: returns ErrNilProducer so a mis-wired bootstrap
 // surfaces as a typed error rather than a crash.
@@ -35,8 +40,9 @@ func (p *Producer) Run(launcher *libCommons.Launcher) error {
 //   - the internal stop channel is closed (via Close/CloseContext from
 //     another goroutine),
 //
-// then invokes CloseContext(ctx) so the Producer flushes and releases its
-// broker connections before Run returns.
+// then invokes CloseContext with a fresh background context (NOT the
+// caller's ctx) so a canceled upstream context does not abort the Flush
+// before it starts. The Producer's CloseTimeout caps the wait.
 //
 // RunContext is SAFE TO CALL MULTIPLE TIMES — the idempotence guard lives
 // in CloseContext. The second caller just blocks on stop, then sees a
