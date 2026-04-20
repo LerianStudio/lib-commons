@@ -743,6 +743,7 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 		closed := make(map[*amqp.Connection]bool)  // tracks all closed connections
 		dialStarted := make(chan struct{}, 1)      // signals that dialing has begun (buffered so the first dialer never drops the signal)
 		dialBarrier := make(chan struct{})         // holds all dialers until released
+		var dialersReady atomic.Int32
 
 		// The "dead" connection that was killed externally.
 		deadConn := &amqp.Connection{}
@@ -763,6 +764,7 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 			dialerContext: func(_ context.Context, _ string) (*amqp.Connection, error) {
 				// Signal that we started dialing, then wait for barrier.
 				// This ensures all goroutines enter the dial phase concurrently.
+				dialersReady.Add(1)
 				select {
 				case dialStarted <- struct{}{}:
 				default:
@@ -801,12 +803,15 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 		}
 
 		// Wait for at least one goroutine to enter the dial phase,
-		// then release all of them at once to maximize concurrency.
+		// then wait for multiple dialers to maximize race coverage.
 		select {
 		case <-dialStarted:
 		case <-time.After(5 * time.Second):
 			t.Fatal("timed out waiting for a dialer to enter the dial phase")
 		}
+		require.Eventually(t, func() bool {
+			return dialersReady.Load() >= 2
+		}, time.Second, 10*time.Millisecond, "test did not force concurrent reconnect attempts")
 		close(dialBarrier)
 
 		wg.Wait()
@@ -820,8 +825,8 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 		numCreated := len(created)
 		mu.Unlock()
 
-		// At least one connection was created.
-		assert.GreaterOrEqual(t, numCreated, 1, "should have created at least 1 connection")
+		// Multiple connections were created (proves the race path was exercised).
+		assert.Greater(t, numCreated, 1, "test must create multiple concurrent reconnects to validate leak cleanup")
 		// The final state has exactly 1 surviving connection.
 		assert.True(t, conn.Connected, "should be connected after reconnect")
 		assert.NotNil(t, conn.Connection, "should have a live connection")

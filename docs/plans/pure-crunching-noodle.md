@@ -1,5 +1,11 @@
 # Plan: Simplify `commons/systemplane`
 
+> **Historical Document**: This plan has been implemented and shipped. The pseudocode
+> in this document represents the initial proposal; the actual API includes additional
+> features (tenant-scoped methods, lazy loading, admin tenant routes) not shown here.
+> For the current API surface, see `AGENTS.md` §"Runtime configuration (`commons/systemplane`)"
+> and `MIGRATION_MAP.md`.
+
 ## Context
 
 ### Why we're doing this
@@ -354,6 +360,12 @@ repository.
    **This is the single highest-risk change.** Accepted as a known trade-off; if a
    downstream app relied on library-level tenant enforcement, we reintroduce it when
    it surfaces during Phase 8 migration.
+
+   **Post-implementation note:** The shipped version added `RegisterTenantScoped` and
+   tenant-scoped methods (`GetForTenant`, `SetForTenant`, `DeleteForTenant`) that
+   preserve library-level tenant enforcement. Tenant IDs are extracted from context via
+   `core.GetTenantIDContext` and validated against `core.IsValidTenantID`, failing
+   closed with no silent fallback to global.
 2. **Audit history.** If either downstream app uses the current history endpoints for
    compliance evidence, deleting the history table is a regression. Mitigation: route
    writes to a standard audit stream (Kafka / log pipeline / dedicated audit service)
@@ -375,6 +387,8 @@ repository.
 ---
 
 ## Verification
+
+The following were the verification requirements used before shipping:
 
 ### Unit / static checks
 
