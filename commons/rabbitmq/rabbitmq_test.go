@@ -741,7 +741,7 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 		var mu sync.Mutex
 		created := make(map[*amqp.Connection]bool) // tracks all created connections
 		closed := make(map[*amqp.Connection]bool)  // tracks all closed connections
-		dialStarted := make(chan struct{})         // signals that dialing has begun
+		dialStarted := make(chan struct{}, 1)      // signals that dialing has begun (buffered so the first dialer never drops the signal)
 		dialBarrier := make(chan struct{})         // holds all dialers until released
 
 		// The "dead" connection that was killed externally.
@@ -790,12 +790,13 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 
 		const goroutines = 5
 		var wg sync.WaitGroup
+		errs := make(chan error, goroutines)
 		wg.Add(goroutines)
 
 		for i := 0; i < goroutines; i++ {
 			go func() {
 				defer wg.Done()
-				_ = conn.EnsureChannelContext(context.Background())
+				errs <- conn.EnsureChannelContext(context.Background())
 			}()
 		}
 
@@ -805,6 +806,11 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 		close(dialBarrier)
 
 		wg.Wait()
+		close(errs)
+
+		for err := range errs {
+			assert.NoError(t, err)
+		}
 
 		mu.Lock()
 		numCreated := len(created)

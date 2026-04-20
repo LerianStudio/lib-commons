@@ -512,6 +512,23 @@ func (rc *RabbitMQConnection) commitChannelState(conn *amqp.Connection, ch *amqp
 	rc.mu.Lock()
 
 	if !newConnection {
+		// Another goroutine may have swapped rc.Connection between the snapshot
+		// and the lock re-acquisition. If so, ch belongs to snap.existingConn
+		// but rc.Connection now points elsewhere — publishing on ch would hit a
+		// dead socket. Close the orphaned channel and bail without mutating state.
+		if rc.Connection != snap.existingConn || snap.connectionClosedFn(rc.Connection) {
+			chCloser := rc.channelCloser
+			rc.mu.Unlock()
+
+			if chCloser != nil {
+				if err := chCloser(ch); err != nil {
+					rc.logger().Log(context.Background(), log.LevelWarn, "failed to close orphaned rabbitmq channel", log.Err(err))
+				}
+			}
+
+			return
+		}
+
 		rc.Channel = ch
 		rc.Connected = true
 		rc.mu.Unlock()

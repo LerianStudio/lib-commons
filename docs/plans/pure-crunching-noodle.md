@@ -67,6 +67,12 @@ supports as a runtime call).
 
 ## Proposed Architecture
 
+> **Non-normative pseudocode.** The Go snippets in this section are the pre-implementation
+> proposal and are NOT guaranteed to compile. For the actual shipped API surface (method
+> names, option constructors, tenant-scoped methods added post-plan), see
+> `CLAUDE.md` §"API invariants to respect" → **Runtime configuration (`commons/systemplane`)**
+> and `MIGRATION_MAP.md`.
+
 ### Public package (`commons/systemplane/`)
 
 ```go
@@ -290,7 +296,7 @@ pattern in the new `internal/postgres/postgres.go` for LISTEN reconnect.
 
 ## Critical Files — Concrete Modifications
 
-### Created (13 files)
+### Created (15 files)
 
 - `commons/systemplane/doc.go`
 - `commons/systemplane/client.go` — `Client`, `NewPostgres`, `NewMongoDB`, `Start`, `Close`
@@ -329,79 +335,14 @@ pattern in the new `internal/postgres/postgres.go` for LISTEN reconnect.
 
 ---
 
-## Execution Phases
+## Status
 
-Each phase gated on user review. No single-shot merge.
-
-### Phase 1 — Branch + scaffold
-
-1. Create branch `feat/systemplane-simplification` off `develop`.
-2. Scaffold the 15 new files (empty stubs, package declarations, type signatures).
-3. Commit: `chore(systemplane): scaffold v2 package skeleton`.
-
-### Phase 2 — `internal/store` + Postgres adapter
-
-1. Write `internal/store/store.go` — Store interface + Entry + Event types.
-2. Write `internal/postgres/postgres.go`:
-   - Embedded DDL (single `systemplane_entries` table with PK `(namespace, key)`,
-     `value_json` JSONB, `updated_at`, `updated_by`; plus trigger → NOTIFY on each
-     upsert with namespace+key payload).
-   - `List`, `Get`, `Set`, `Subscribe`, `Close` implementations.
-   - LISTEN reconnect via `commons/backoff.ExponentialWithJitter`.
-3. Write `internal/postgres/postgres_integration_test.go` against a real Postgres
-   container via `testcontainers`.
-4. Verify: `make test-integration PKG=./commons/systemplane/internal/postgres/...`.
-5. Commit.
-
-### Phase 3 — MongoDB adapter
-
-1. Write `internal/mongodb/mongodb.go`:
-   - Change-stream mode by default; polling when `WithPollInterval` is set.
-   - `List`, `Get`, `Set`, `Subscribe`, `Close`.
-   - Documented replica-set requirement for change streams.
-2. Write `internal/mongodb/mongodb_integration_test.go` against a real MongoDB
-   container.
-3. Verify: integration tests pass for both `change_stream` and `poll` modes.
-4. Commit.
-
-### Phase 4 — `internal/debounce` + shared contract tests
-
-1. Write `internal/debounce/debounce.go` — trailing-edge, per-key, panic-safe via
-   `commons/runtime.RecoverAndLog`.
-2. Write `systemplanetest/contract.go` — backend-agnostic test suite.
-3. Wire it into both `internal/postgres/` and `internal/mongodb/` tests.
-4. Commit.
-
-### Phase 5 — Public `Client`
-
-1. Implement `client.go`, `register.go`, `get.go`, `set.go`, `onchange.go`,
-   `options.go`, `redact.go`, `errors.go`.
-2. Unit tests against an in-memory fake `Store` (scoped to `client_test.go`).
-3. Verify: `make test-unit PKG=./commons/systemplane/...` passes with >=90% coverage.
-4. Commit.
-
-### Phase 6 — Admin subpackage
-
-1. Implement `admin/admin.go` — three routes (`GET /:ns`, `GET /:ns/:key`,
-   `PUT /:ns/:key`), authorizer hook, actor extractor hook.
-2. `admin_test.go` with `fiber.New()` + fake `*Client`.
-3. Commit.
-
-### Phase 7 — Wipe the old implementation
-
-1. `git rm -r` the nine deleted subdirectories listed above.
-2. Update `CLAUDE.md` with the new API invariants.
-3. Update `MIGRATION_MAP.md` with the v4 symbol deletions.
-4. `make ci` — full fix+verify pipeline. All green required.
-5. Commit.
-
-### Phase 8 — Migrate downstream apps (out of this repo)
-
-Not part of this plan's deliverables — but listed for visibility:
-
-1. Migrate downstream app #1 onto the v4.next `systemplane`.
-2. Migrate downstream app #2.
-3. Both verified in staging before lib-commons publishes the new minor version.
+**Shipped.** The simplification landed in `commons/systemplane/` and its subpackages.
+For the landed public API (including post-plan additions such as `RegisterTenantScoped`,
+`SetForTenant`, `WithLazyTenantLoad`, and the admin tenant routes), see
+`CLAUDE.md` §"Runtime configuration (`commons/systemplane`)". Deleted symbols are
+recorded in `MIGRATION_MAP.md`. Downstream app migration is tracked outside this
+repository.
 
 ---
 
