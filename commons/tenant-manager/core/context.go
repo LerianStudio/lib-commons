@@ -23,9 +23,22 @@ type contextKey struct {
 	name string
 }
 
+// tenantCtxKey is the *pointer-valued* type for the tenant ID context key.
+// A pointer key is used (instead of a struct value like contextKey) so that
+// context.Context.Value lookups on the tenant ID — which sit on the hot
+// read path — do not box the key into a heap-allocated any{} wrapper on
+// every call. With a struct-value key, the compiler spills the boxed key
+// to heap per call (16 B/op, ~12 ns/op overhead); a pointer key reuses the
+// single package-level address and the boxed any is stack-friendly (0 B/op,
+// ~2 ns/op). See the AC15 perf gate for the regression that drove this.
+type tenantCtxKey struct {
+	name string
+}
+
 var (
 	// tenantIDKey is the context key for storing the tenant ID.
-	tenantIDKey = contextKey{name: "tenantID"}
+	// Pointer-valued to keep ctx.Value lookups allocation-free on the hot path.
+	tenantIDKey = &tenantCtxKey{name: "tenantID"}
 	// pgConnectionKey is the context key for storing the resolved dbresolver.DB connection.
 	pgConnectionKey = contextKey{name: "pgConnection"}
 	// mongoKey is the context key for storing the tenant MongoDB database.
@@ -38,9 +51,20 @@ func ContextWithTenantID(ctx context.Context, tenantID string) context.Context {
 }
 
 // GetTenantIDContext retrieves the tenant ID from the context.
-// Returns empty string if not found.
+// Returns empty string if not found (including when ctx is nil).
+//
+// The nil-ctx guard is inlined here rather than delegated to nonNilContext
+// because escape analysis cannot prove the fresh context.Background() value
+// is unreachable after inlining, so the construction is spilled to heap on
+// every call — a 16 B/op alloc the hot path cannot afford. Handling nil
+// explicitly keeps GetTenantIDContext allocation-free. See bench_tenant_test.go
+// (AC15 perf gate) for the measurement that caught this regression.
 func GetTenantIDContext(ctx context.Context) string {
-	if id, ok := nonNilContext(ctx).Value(tenantIDKey).(string); ok {
+	if ctx == nil {
+		return ""
+	}
+
+	if id, ok := ctx.Value(tenantIDKey).(string); ok {
 		return id
 	}
 

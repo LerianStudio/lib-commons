@@ -498,17 +498,69 @@ func (rc *RabbitMQConnection) EnsureChannelContext(ctx context.Context) error {
 		return fmt.Errorf("rabbitmq ensure channel: %w", err)
 	}
 
+	rc.commitChannelState(conn, ch, newConnection, snap)
+
+	return nil
+}
+
+// commitChannelState publishes a successful dial/channel-open result into
+// the connection state. For a freshly dialed connection it detects races
+// against concurrent reconnects, closing whichever connection lost the race
+// to prevent connection leaks. For an existing connection it just records
+// the new channel. The lock is always released before any connection close.
+func (rc *RabbitMQConnection) commitChannelState(conn *amqp.Connection, ch *amqp.Channel, newConnection bool, snap ensureChannelSnapshot) {
 	rc.mu.Lock()
-	if newConnection {
-		rc.Connection = conn
-		rc.reconnectAttempts = 0
+
+	if !newConnection {
+		// Another goroutine may have swapped rc.Connection between the snapshot
+		// and the lock re-acquisition. If so, ch belongs to snap.existingConn
+		// but rc.Connection now points elsewhere — publishing on ch would hit a
+		// dead socket. Close the orphaned channel and bail without mutating state.
+		if rc.Connection != snap.existingConn || snap.connectionClosedFn(rc.Connection) {
+			chCloser := rc.channelCloser
+			rc.mu.Unlock()
+
+			if chCloser != nil {
+				if err := chCloser(ch); err != nil {
+					rc.logger().Log(context.Background(), log.LevelWarn, "failed to close orphaned rabbitmq channel", log.Err(err))
+				}
+			}
+
+			return
+		}
+
+		rc.Channel = ch
+		rc.Connected = true
+		rc.mu.Unlock()
+
+		return
 	}
 
+	// Race detection: if another goroutine already established a healthy
+	// connection while we were dialing, close ours and reuse theirs to
+	// prevent connection leaks under concurrent reconnection pressure.
+	if rc.Connection != nil && rc.Connection != conn && !snap.connectionClosedFn(rc.Connection) {
+		rc.mu.Unlock()
+
+		// Close the connection we just created — another goroutine won the race.
+		rc.closeConnectionWith(conn, snap.connCloser)
+
+		return
+	}
+
+	// Capture old connection to close outside the lock.
+	oldConn := rc.Connection
+	rc.Connection = conn
+	rc.reconnectAttempts = 0
 	rc.Channel = ch
 	rc.Connected = true
 	rc.mu.Unlock()
 
-	return nil
+	// Best-effort cleanup of the replaced connection (usually already dead,
+	// but explicit close ensures no half-open TCP socket is leaked).
+	if oldConn != nil && oldConn != conn {
+		rc.closeConnectionWith(oldConn, snap.connCloser)
+	}
 }
 
 // GetNewConnect returns a pointer to the rabbitmq connection, initializing it if necessary.

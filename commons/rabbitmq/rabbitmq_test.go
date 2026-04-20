@@ -697,6 +697,8 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 			},
 			connectionClosedFn: func(connection *amqp.Connection) bool { return connection == nil },
 			channelClosedFn:    func(ch *amqp.Channel) bool { return ch == nil },
+			// Stub closer: real amqp.Connection{} zero-value cannot be closed.
+			connectionCloser: func(_ *amqp.Connection) error { return nil },
 		}
 
 		const total = 10
@@ -729,6 +731,115 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 		assert.LessOrEqual(t, dials, int32(total))
 		assert.True(t, conn.Connected)
 		assert.NotNil(t, conn.Channel)
+	})
+
+	t.Run("concurrent reconnect closes leaked connections", func(t *testing.T) {
+		// Simulates a chaos scenario: connection is killed while under load.
+		// Multiple goroutines detect the dead connection and race to reconnect.
+		// Verifies that duplicate connections are properly closed (no leaks).
+
+		var mu sync.Mutex
+		created := make(map[*amqp.Connection]bool) // tracks all created connections
+		closed := make(map[*amqp.Connection]bool)  // tracks all closed connections
+		dialStarted := make(chan struct{}, 1)      // signals that dialing has begun (buffered so the first dialer never drops the signal)
+		dialBarrier := make(chan struct{})         // holds all dialers until released
+
+		// The "dead" connection that was killed externally.
+		deadConn := &amqp.Connection{}
+
+		conn := &RabbitMQConnection{
+			Logger:    &log.NopLogger{},
+			Connected: true,
+			// Simulate an existing dead connection (force-closed by RabbitMQ).
+			Connection: deadConn,
+			Channel:    &amqp.Channel{},
+			connectionClosedFn: func(c *amqp.Connection) bool {
+				// deadConn is always considered closed; new connections are alive.
+				return c == deadConn
+			},
+			channelClosedFn: func(ch *amqp.Channel) bool {
+				return ch == nil
+			},
+			dialerContext: func(_ context.Context, _ string) (*amqp.Connection, error) {
+				// Signal that we started dialing, then wait for barrier.
+				// This ensures all goroutines enter the dial phase concurrently.
+				select {
+				case dialStarted <- struct{}{}:
+				default:
+				}
+				<-dialBarrier
+
+				newConn := &amqp.Connection{}
+				mu.Lock()
+				created[newConn] = true
+				mu.Unlock()
+
+				return newConn, nil
+			},
+			channelFactoryContext: func(_ context.Context, _ *amqp.Connection) (*amqp.Channel, error) {
+				return &amqp.Channel{}, nil
+			},
+			connectionCloser: func(c *amqp.Connection) error {
+				mu.Lock()
+				closed[c] = true
+				mu.Unlock()
+
+				return nil
+			},
+		}
+
+		const goroutines = 5
+		var wg sync.WaitGroup
+		errs := make(chan error, goroutines)
+		wg.Add(goroutines)
+
+		for i := 0; i < goroutines; i++ {
+			go func() {
+				defer wg.Done()
+				errs <- conn.EnsureChannelContext(context.Background())
+			}()
+		}
+
+		// Wait for at least one goroutine to enter the dial phase,
+		// then release all of them at once to maximize concurrency.
+		select {
+		case <-dialStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for a dialer to enter the dial phase")
+		}
+		close(dialBarrier)
+
+		wg.Wait()
+		close(errs)
+
+		for err := range errs {
+			assert.NoError(t, err)
+		}
+
+		mu.Lock()
+		numCreated := len(created)
+		mu.Unlock()
+
+		// At least one connection was created.
+		assert.GreaterOrEqual(t, numCreated, 1, "should have created at least 1 connection")
+		// The final state has exactly 1 surviving connection.
+		assert.True(t, conn.Connected, "should be connected after reconnect")
+		assert.NotNil(t, conn.Connection, "should have a live connection")
+		// Use pointer identity (not DeepEqual) since all amqp.Connection{} zero-values are equal.
+		assert.False(t, conn.Connection == deadConn, "should not be the dead connection (pointer identity)")
+		// All excess connections (created - 1 survivor) plus the dead connection are closed.
+		// The dead connection may or may not be closed (it's already dead), so we check
+		// that at minimum the duplicate new connections were closed.
+		survivingNew := 0
+		mu.Lock()
+		for c := range created {
+			if !closed[c] {
+				survivingNew++
+			}
+		}
+		mu.Unlock()
+
+		assert.Equal(t, 1, survivingNew, "exactly 1 new connection should survive; all others must be closed to prevent connection leak")
 	})
 }
 
