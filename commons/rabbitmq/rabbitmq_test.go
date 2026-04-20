@@ -802,7 +802,11 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 
 		// Wait for at least one goroutine to enter the dial phase,
 		// then release all of them at once to maximize concurrency.
-		<-dialStarted
+		select {
+		case <-dialStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for a dialer to enter the dial phase")
+		}
 		close(dialBarrier)
 
 		wg.Wait()
