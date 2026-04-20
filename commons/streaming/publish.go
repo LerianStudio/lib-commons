@@ -277,6 +277,7 @@ func (p *Producer) publishDirect(ctx context.Context, event Event, topic string)
 // — the callback writes to the buffer and returns.
 func (p *Producer) produceWithContext(ctx context.Context, record *kgo.Record) error {
 	errCh := make(chan error, 1)
+
 	p.client.Produce(ctx, record, func(_ *kgo.Record, err error) {
 		errCh <- err
 	})
