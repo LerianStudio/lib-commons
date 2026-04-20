@@ -55,3 +55,22 @@ jobs:
         uses: securego/gosec@master
         with:
           args: ./...
+
+  PerfGate:
+    name: Run AC15 Perf Gate (systemplane)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      # AC15 perf gate is build-tagged `unit && !race` because the race detector
+      # adds 10-50x latency overhead, making sub-microsecond thresholds
+      # meaningless. Run the gate explicitly without -race so a regression in
+      # GetForTenant fails CI rather than going silently unnoticed in the
+      # race-enabled lane.
+      - name: Run AC15 perf gate (no -race)
+        run: go test -tags=unit -run=^TestPerf_ ./commons/systemplane/...

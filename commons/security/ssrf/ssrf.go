@@ -26,7 +26,6 @@ var (
 // standard library predicates (IsLoopback, IsPrivate, IsLinkLocalUnicast,
 // etc.). Each entry is intentionally a netip.Prefix literal so typos are
 // caught at init time rather than silently ignored at request time.
-//
 // MAINTENANCE: when adding or removing entries, update expectedPrefixCount
 // in ssrf_test.go to keep TestBlockedPrefixes_ReturnsExpectedCount in sync.
 //

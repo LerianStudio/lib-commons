@@ -185,7 +185,7 @@ func (p *Producer) publishDLQ(
 		Headers: headers,
 	}
 
-	if err := p.client.ProduceSync(ctx, record).FirstErr(); err != nil {
+	if err := p.produceWithContext(ctx, record); err != nil {
 		// DLQ write itself failed. Log at ERROR so alerting picks this up
 		// (a failing DLQ is a leading indicator of correlated broker
 		// failure — streaming_dlq_publish_failed_total is the metric

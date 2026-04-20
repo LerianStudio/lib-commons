@@ -15,7 +15,7 @@ const (
 func TestDebouncer_SingleSubmitFiresAfterWindow(t *testing.T) {
 	t.Parallel()
 
-	d := New(testWindow)
+	d := New[string](testWindow)
 	t.Cleanup(d.Close)
 
 	var fired atomic.Int32
@@ -32,7 +32,7 @@ func TestDebouncer_SingleSubmitFiresAfterWindow(t *testing.T) {
 func TestDebouncer_RapidSubmitsCoalesce(t *testing.T) {
 	t.Parallel()
 
-	d := New(testWindow)
+	d := New[string](testWindow)
 	t.Cleanup(d.Close)
 
 	var fired atomic.Int32
@@ -53,7 +53,7 @@ func TestDebouncer_RapidSubmitsCoalesce(t *testing.T) {
 func TestDebouncer_DifferentKeysIndependent(t *testing.T) {
 	t.Parallel()
 
-	d := New(testWindow)
+	d := New[string](testWindow)
 	t.Cleanup(d.Close)
 
 	var firedA, firedB atomic.Int32
@@ -75,7 +75,7 @@ func TestDebouncer_DifferentKeysIndependent(t *testing.T) {
 func TestDebouncer_ClosePreventsFires(t *testing.T) {
 	t.Parallel()
 
-	d := New(testWindow)
+	d := New[string](testWindow)
 
 	var fired atomic.Int32
 
@@ -93,7 +93,7 @@ func TestDebouncer_ClosePreventsFires(t *testing.T) {
 func TestDebouncer_NilReceiverSafe(t *testing.T) {
 	t.Parallel()
 
-	var d *Debouncer
+	var d *Debouncer[string]
 	// Must not panic.
 	d.Submit("k", func() {})
 	d.Close()
@@ -102,7 +102,7 @@ func TestDebouncer_NilReceiverSafe(t *testing.T) {
 func TestDebouncer_PanicInFnRecovered(t *testing.T) {
 	t.Parallel()
 
-	d := New(testWindow)
+	d := New[string](testWindow)
 	t.Cleanup(d.Close)
 
 	var secondFired atomic.Int32
@@ -123,7 +123,7 @@ func TestDebouncer_PanicInFnRecovered(t *testing.T) {
 func TestDebouncer_ZeroWindowInvokesSync(t *testing.T) {
 	t.Parallel()
 
-	d := New(0)
+	d := New[string](0)
 	t.Cleanup(d.Close)
 
 	fired := false
@@ -139,7 +139,7 @@ func TestDebouncer_ZeroWindowInvokesSync(t *testing.T) {
 func TestDebouncer_CloseIdempotent(t *testing.T) {
 	t.Parallel()
 
-	d := New(testWindow)
+	d := New[string](testWindow)
 	// Multiple closes must not panic.
 	d.Close()
 	d.Close()
@@ -149,7 +149,7 @@ func TestDebouncer_CloseIdempotent(t *testing.T) {
 func TestDebouncer_SubmitAfterCloseIsNoop(t *testing.T) {
 	t.Parallel()
 
-	d := New(testWindow)
+	d := New[string](testWindow)
 	d.Close()
 
 	var fired atomic.Int32
@@ -165,9 +165,42 @@ func TestDebouncer_SubmitAfterCloseIsNoop(t *testing.T) {
 func TestDebouncer_NilFnIgnored(t *testing.T) {
 	t.Parallel()
 
-	d := New(testWindow)
+	d := New[string](testWindow)
 	t.Cleanup(d.Close)
 
 	// Must not panic.
 	d.Submit("k", nil)
+}
+
+// TestDebouncer_StructKey verifies a plain comparable struct type works as the
+// debouncer key. This is the shape used by commons/systemplane (evtKey) to
+// avoid per-event string-concat allocations on the changefeed hot path.
+func TestDebouncer_StructKey(t *testing.T) {
+	t.Parallel()
+
+	type key struct {
+		A string
+		B string
+	}
+
+	d := New[key](testWindow)
+	t.Cleanup(d.Close)
+
+	var firedAB, firedCD atomic.Int32
+
+	d.Submit(key{"a", "b"}, func() { firedAB.Add(1) })
+	d.Submit(key{"c", "d"}, func() { firedCD.Add(1) })
+
+	// Duplicate submit for (a, b) within the window must coalesce.
+	d.Submit(key{"a", "b"}, func() { firedAB.Add(1) })
+
+	time.Sleep(testWindow + slack)
+
+	if got := firedAB.Load(); got != 1 {
+		t.Fatalf("expected key{a,b} to coalesce to one fire, got %d", got)
+	}
+
+	if got := firedCD.Load(); got != 1 {
+		t.Fatalf("expected key{c,d} to fire once, got %d", got)
+	}
 }

@@ -27,6 +27,12 @@ const (
 
 // setupRabbitMQContainer starts a RabbitMQ testcontainer with the management plugin
 // and returns the AMQP URL, the management HTTP URL, and a cleanup function.
+//
+// The module's default wait strategy only checks for the "Server startup
+// complete" log line. On macOS Docker Desktop the VM-level port forwarding
+// can lag behind the log, causing MappedPort("5672/tcp") to fail with
+// "port not found". Adding ForListeningPort ensures the AMQP port is both
+// mapped AND accepting TCP connections before we proceed.
 func setupRabbitMQContainer(t *testing.T) (amqpURL string, mgmtURL string, cleanup func()) {
 	t.Helper()
 
@@ -34,8 +40,8 @@ func setupRabbitMQContainer(t *testing.T) (amqpURL string, mgmtURL string, clean
 
 	container, err := tcrabbit.Run(ctx,
 		testRabbitMQImage,
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("Server startup complete").
+		testcontainers.WithAdditionalWaitStrategy(
+			wait.ForListeningPort("5672/tcp").
 				WithStartupTimeout(testStartupTimeout),
 		),
 	)

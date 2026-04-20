@@ -34,7 +34,7 @@ func (c *Client) OnChange(namespace, key string, fn func(newValue any)) (unsubsc
 	c.registryMu.RUnlock()
 
 	if !registered {
-		c.logger.Log(context.Background(), log.LevelDebug, "OnChange called for unregistered key, returning no-op",
+		c.logDebug(context.Background(), "OnChange called for unregistered key, returning no-op",
 			log.String("namespace", namespace),
 			log.String("key", key),
 		)
