@@ -23,6 +23,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
+	"github.com/LerianStudio/lib-commons/v5/commons/security/sanitize"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -121,7 +122,10 @@ var ErrHealthCheckAllowedHostsRequired = errors.New("rabbitmq health check allow
 // ErrNilConnection is returned when a method is called on a nil RabbitMQConnection.
 var ErrNilConnection = errors.New("rabbitmq connection is nil")
 
-const redactedURLPassword = "xxxxx"
+// redactedURLPassword is the canonical redaction marker for credentials in
+// RabbitMQ URLs. Delegates to commons/security/sanitize.SecretRedactionMarker
+// so log-stream shapes stay uniform across lib-commons.
+const redactedURLPassword = sanitize.SecretRedactionMarker
 
 // Best-effort URL matcher used for redaction on arbitrary error messages.
 // This intentionally differs from outbox's storage sanitizer because this path
@@ -1273,7 +1277,10 @@ func sanitizeAMQPErr(err error, connectionString string) string {
 		return redactURLCredentials(errMsg)
 	}
 
-	redactedURL := referenceURL.Redacted()
+	// Build the redacted form via the fallback splitter. stdlib's
+	// (*url.URL).Redacted() hardcodes "xxxxx"; we want the sanitize package's
+	// canonical marker for cross-package consistency.
+	redactedURL := redactURLCredentialsFallback(connectionString)
 
 	if strings.Contains(errMsg, connectionString) {
 		errMsg = strings.ReplaceAll(errMsg, connectionString, redactedURL)
@@ -1330,11 +1337,13 @@ func redactURLCredentialToken(token string) string {
 
 	parsedURL, err := url.Parse(token)
 	if err == nil && parsedURL != nil && parsedURL.User != nil {
-		username := parsedURL.User.Username()
 		if _, hasPassword := parsedURL.User.Password(); hasPassword {
-			parsedURL.User = url.UserPassword(username, redactedURLPassword)
-
-			return parsedURL.String()
+			// Use the fallback string-splitter rather than (*url.URL).String().
+			// The url package percent-encodes userinfo at serialize time, which
+			// would turn our marker ("****") into "%2A%2A%2A%2A" — unreadable
+			// in logs. Parse is still the authoritative detector for a
+			// userinfo-carrying URL; the replacement itself must stay literal.
+			return redactURLCredentialsFallback(token)
 		}
 
 		return token
