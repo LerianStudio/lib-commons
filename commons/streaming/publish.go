@@ -240,17 +240,13 @@ func (p *Producer) publishDirect(ctx context.Context, event Event, topic string)
 		Headers: buildCloudEventsHeaders(event),
 	}
 
-	// firstAttempt is captured before ProduceSync so x-lerian-dlq-first-failure-at
-	// on the DLQ message reflects when this attempt started (not when it
-	// failed). For a replay-oriented tool, the start timestamp is the more
-	// useful anchor.
+	// firstAttempt is captured before the produce call so
+	// x-lerian-dlq-first-failure-at on the DLQ message reflects when this
+	// attempt started (not when it failed). For a replay-oriented tool,
+	// the start timestamp is the more useful anchor.
 	firstAttempt := time.Now().UTC()
 
-	// ProduceSync blocks until all records are fully produced OR an error
-	// surfaces. With a single record, FirstErr() is the produce outcome.
-	results := p.client.ProduceSync(ctx, record)
-
-	err := results.FirstErr()
+	err := p.produceWithContext(ctx, record)
 	if err == nil {
 		return nil
 	}
@@ -262,4 +258,33 @@ func (p *Producer) publishDirect(ctx context.Context, event Event, topic string)
 	cls := p.routeToDLQIfApplicable(ctx, event, err, topic, firstAttempt)
 
 	return buildEmitError(event, err, topic, cls)
+}
+
+// produceWithContext sends a single record to the broker with reliable
+// context cancellation. It replaces direct ProduceSync calls throughout the
+// produce path.
+//
+// franz-go's ProduceSync blocks on a sync.WaitGroup that does NOT honor
+// context cancellation: when the broker is completely unreachable and
+// metadata fetches stall, RecordDeliveryTimeout only starts counting once
+// the record is assigned to a partition — which never happens if the
+// metadata loop can't discover any broker. The result is an indefinite
+// hang that ignores ctx.Done().
+//
+// By using async Produce + select{} we guarantee the call returns within
+// the caller's context deadline. The buffered channel (cap 1) ensures the
+// callback goroutine never leaks even if we exit via the ctx.Done() branch
+// — the callback writes to the buffer and returns.
+func (p *Producer) produceWithContext(ctx context.Context, record *kgo.Record) error {
+	errCh := make(chan error, 1)
+	p.client.Produce(ctx, record, func(_ *kgo.Record, err error) {
+		errCh <- err
+	})
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
