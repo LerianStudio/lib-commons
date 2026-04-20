@@ -669,11 +669,13 @@ func TestSetForTenant_SurfacesErrTenantSchemaNotEnabled(t *testing.T) {
 	// the backend rejected the write. Otherwise a subsequent GetForTenant
 	// in the same process would see a value that never made it to the
 	// backend — a silent split-brain.
-	_, found, err := c.GetForTenant(tctx("tenant-A"), "global", "fee.rate")
+	v, found, err := c.GetForTenant(tctx("tenant-A"), "global", "fee.rate")
 	require.NoError(t, err)
 	// Either the global default (0.0) or nothing cached — but definitely
 	// not 0.5 that we attempted to write.
 	assert.True(t, found, "fall-through to default should still report found")
+	assert.InDelta(t, 0.0, v, 0.0001,
+		"rejected tenant write must not leave a tenant override cached in-process")
 }
 
 // ---------------------------------------------------------------------------
@@ -1520,25 +1522,22 @@ func TestGetIntForTenant_WrongTypeReturnsErrValidation(t *testing.T) {
 // tests. It pre-seeds tenant rows into ListTenantOverrides so Start()
 // exercises the hydration code path before the test asserts what ended
 // up (or did not end up) in the cache. Unlike tenantFakeStore, every
-// method beyond the hydration surface is a benign no-op.
+// method beyond the hydration surface deliberately fails fast: the
+// hydration suite must never fall through to tenant CRUD, so any such
+// call signals a regression (e.g., eager hydration unexpectedly invoking
+// GetTenantValue). See errUnexpectedHydrateStoreCall below.
 type hydrateFakeStore struct {
 	mu        sync.Mutex
 	overrides []TestEntry
-	rows      map[tenantRowKey]TestEntry
 	handlers  []func(TestEvent)
 	subReady  chan struct{}
 }
 
 func newHydrateFakeStore(overrides ...TestEntry) *hydrateFakeStore {
-	s := &hydrateFakeStore{
+	return &hydrateFakeStore{
 		overrides: append([]TestEntry(nil), overrides...),
-		rows:      make(map[tenantRowKey]TestEntry),
 		subReady:  make(chan struct{}),
 	}
-	for _, e := range overrides {
-		s.rows[tenantRowKey{tenantID: e.TenantID, namespace: e.Namespace, key: e.Key}] = e
-	}
-	return s
 }
 
 func (s *hydrateFakeStore) List(_ context.Context) ([]TestEntry, error) { return nil, nil }
@@ -1562,23 +1561,29 @@ func (s *hydrateFakeStore) Subscribe(ctx context.Context, handler func(TestEvent
 }
 func (s *hydrateFakeStore) Close() error { return nil }
 
-func (s *hydrateFakeStore) GetTenantValue(_ context.Context, tenantID, namespace, key string) (TestEntry, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.rows[tenantRowKey{tenantID: tenantID, namespace: namespace, key: key}]
-	return e, ok, nil
+// errUnexpectedHydrateStoreCall is returned by the tenant CRUD methods on
+// hydrateFakeStore. The hydration tests only exercise the one-shot hydration
+// pathway (ListTenantOverrides), so a call to any tenant read/write method is
+// a regression signal: eager hydration should not be hitting the backend for
+// these methods, and lazy hydration is covered by tenantFakeStore in a
+// different suite. Returning a sentinel instead of nil/zero means a regressed
+// code path fails loudly rather than silently green-washing the test.
+var errUnexpectedHydrateStoreCall = errors.New("unexpected hydrateFakeStore method call")
+
+func (s *hydrateFakeStore) GetTenantValue(_ context.Context, _, _, _ string) (TestEntry, bool, error) {
+	return TestEntry{}, false, errUnexpectedHydrateStoreCall
 }
 
 func (s *hydrateFakeStore) SetTenantValue(_ context.Context, _ string, _ TestEntry) error {
-	return nil
+	return errUnexpectedHydrateStoreCall
 }
 
 func (s *hydrateFakeStore) DeleteTenantValue(_ context.Context, _, _, _, _ string) error {
-	return nil
+	return errUnexpectedHydrateStoreCall
 }
 
 func (s *hydrateFakeStore) ListTenantValues(_ context.Context) ([]TestEntry, error) {
-	return nil, nil
+	return nil, errUnexpectedHydrateStoreCall
 }
 
 func (s *hydrateFakeStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {
@@ -1590,7 +1595,7 @@ func (s *hydrateFakeStore) ListTenantOverrides(_ context.Context, _, _, _ string
 }
 
 func (s *hydrateFakeStore) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
-	return nil, nil
+	return nil, errUnexpectedHydrateStoreCall
 }
 
 // TestHydrateTenantCache_SkipsUnregisteredKey verifies that hydrateTenantCache

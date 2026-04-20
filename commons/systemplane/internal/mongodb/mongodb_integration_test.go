@@ -1050,8 +1050,14 @@ func TestIntegration_Mongo_ChangeStream_ReconnectsAfterStreamClose(t *testing.T)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Capture the terminal error from Subscribe so a config-phase failure
+	// (bad resume token, killed cursor on the very first cursor open, etc.)
+	// surfaces as an actionable diagnostic rather than the much less useful
+	// "first event must be delivered" timeout downstream.
+	subErrCh := make(chan error, 1)
+
 	go func() {
-		_ = s.Subscribe(ctx, func(evt store.Event) {
+		subErrCh <- s.Subscribe(ctx, func(evt store.Event) {
 			mu.Lock()
 			events = append(events, evt)
 			mu.Unlock()
@@ -1107,6 +1113,14 @@ func TestIntegration_Mongo_ChangeStream_ReconnectsAfterStreamClose(t *testing.T)
 		return len(events) >= 2
 	}, extendedDeliveryDeadline, 200*time.Millisecond,
 		"second event must be delivered after change-stream reconnect")
+
+	// Bounded drain: cancel now (instead of waiting for defer) and confirm
+	// the Subscribe loop terminated cleanly within subscriberDrainTimeout.
+	// An unbounded read here would let a cancellation-handling regression
+	// masquerade as a 10-minute package-level timeout, which is far less
+	// diagnosable than "Subscribe did not return within 5s".
+	cancel()
+	assertSubscribeTerminated(t, subErrCh, "change-stream")
 }
 
 // ---------------------------------------------------------------------------

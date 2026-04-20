@@ -28,6 +28,7 @@ package systemplane
 import (
 	"context"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -50,7 +51,11 @@ func (c *Client) GetStringForTenant(ctx context.Context, namespace, key string) 
 // GetIntForTenant returns the current tenant-scoped value as an int.
 // JSON numbers decode as float64, so this accessor transparently accepts
 // both int and float64 backing types (matching the legacy GetInt at
-// get.go:164-178). Returns (0, err) on any failure.
+// get.go:164-178). Non-integral float64 values (for example 0.9 or 3.14)
+// are rejected with ErrValidation rather than silently truncated to an
+// int — a silent truncation would convert a bad config into a different
+// valid config instead of surfacing the misconfiguration to the caller.
+// Returns (0, err) on any failure.
 func (c *Client) GetIntForTenant(ctx context.Context, namespace, key string) (int, error) {
 	v, _, err := c.GetForTenant(ctx, namespace, key)
 	if err != nil {
@@ -61,6 +66,10 @@ func (c *Client) GetIntForTenant(ctx context.Context, namespace, key string) (in
 	case int:
 		return n, nil
 	case float64:
+		if n != math.Trunc(n) {
+			return 0, fmt.Errorf("%w: value at %s/%s is not an int (got non-integral float64 %v)", ErrValidation, namespace, key, n)
+		}
+
 		return int(n), nil
 	default:
 		return 0, fmt.Errorf("%w: value at %s/%s is not an int (type %T)", ErrValidation, namespace, key, v)
