@@ -511,43 +511,18 @@ func (rc *RabbitMQConnection) EnsureChannelContext(ctx context.Context) error {
 func (rc *RabbitMQConnection) commitChannelState(conn *amqp.Connection, ch *amqp.Channel, newConnection bool, snap ensureChannelSnapshot) {
 	rc.mu.Lock()
 
-	if !newConnection {
-		// Another goroutine may have swapped rc.Connection between the snapshot
-		// and the lock re-acquisition. If so, ch belongs to snap.existingConn
-		// but rc.Connection now points elsewhere — publishing on ch would hit a
-		// dead socket. Close the orphaned channel and bail without mutating state.
-		if rc.Connection != snap.existingConn || snap.connectionClosedFn(rc.Connection) {
-			chCloser := rc.channelCloser
-			rc.mu.Unlock()
-
-			if chCloser != nil {
-				if err := chCloser(ch); err != nil {
-					rc.logger().Log(context.Background(), log.LevelWarn, "failed to close orphaned rabbitmq channel", log.Err(err))
-				}
-			}
-
-			return
-		}
-
-		oldCh := rc.Channel
-		chCloser := rc.channelCloser
-		chClosed := rc.channelClosedFn
-		rc.Channel = ch
-		rc.Connected = true
-		rc.mu.Unlock()
-
-		// Best-effort cleanup of the replaced channel. Skip if the old channel
-		// is already closed — calling Close() on an already-shut-down amqp
-		// channel panics inside the driver.
-		if oldCh != nil && oldCh != ch && chCloser != nil && (chClosed == nil || !chClosed(oldCh)) {
-			if err := chCloser(oldCh); err != nil {
-				rc.logger().Log(context.Background(), log.LevelWarn, "failed to close replaced rabbitmq channel", log.Err(err))
-			}
-		}
-
+	if newConnection {
+		rc.commitNewConnection(conn, ch, snap)
 		return
 	}
 
+	rc.commitChannelOnExistingConnection(ch, snap)
+}
+
+// commitNewConnection finalises the state change that accompanies a freshly
+// dialed connection. The caller must hold rc.mu; this function is responsible
+// for releasing it before any blocking cleanup.
+func (rc *RabbitMQConnection) commitNewConnection(conn *amqp.Connection, ch *amqp.Channel, snap ensureChannelSnapshot) {
 	// Race detection: if another goroutine already established a healthy
 	// connection while we were dialing, close ours and reuse theirs to
 	// prevent connection leaks under concurrent reconnection pressure.
@@ -572,6 +547,44 @@ func (rc *RabbitMQConnection) commitChannelState(conn *amqp.Connection, ch *amqp
 	// but explicit close ensures no half-open TCP socket is leaked).
 	if oldConn != nil && oldConn != conn {
 		rc.closeConnectionWith(oldConn, snap.connCloser)
+	}
+}
+
+// commitChannelOnExistingConnection finalises the state change when we
+// reopened a channel on a still-live connection. The caller must hold rc.mu;
+// this function is responsible for releasing it before any blocking cleanup.
+func (rc *RabbitMQConnection) commitChannelOnExistingConnection(ch *amqp.Channel, snap ensureChannelSnapshot) {
+	// Another goroutine may have swapped rc.Connection between the snapshot
+	// and the lock re-acquisition. If so, ch belongs to snap.existingConn
+	// but rc.Connection now points elsewhere — publishing on ch would hit a
+	// dead socket. Close the orphaned channel and bail without mutating state.
+	if rc.Connection != snap.existingConn || snap.connectionClosedFn(rc.Connection) {
+		chCloser := rc.channelCloser
+		rc.mu.Unlock()
+
+		if chCloser != nil {
+			if err := chCloser(ch); err != nil {
+				rc.logger().Log(context.Background(), log.LevelWarn, "failed to close orphaned rabbitmq channel", log.Err(err))
+			}
+		}
+
+		return
+	}
+
+	oldCh := rc.Channel
+	chCloser := rc.channelCloser
+	chClosed := rc.channelClosedFn
+	rc.Channel = ch
+	rc.Connected = true
+	rc.mu.Unlock()
+
+	// Best-effort cleanup of the replaced channel. Skip if the old channel
+	// is already closed — calling Close() on an already-shut-down amqp
+	// channel panics inside the driver.
+	if oldCh != nil && oldCh != ch && chCloser != nil && (chClosed == nil || !chClosed(oldCh)) {
+		if err := chCloser(oldCh); err != nil {
+			rc.logger().Log(context.Background(), log.LevelWarn, "failed to close replaced rabbitmq channel", log.Err(err))
+		}
 	}
 }
 
