@@ -529,9 +529,21 @@ func (rc *RabbitMQConnection) commitChannelState(conn *amqp.Connection, ch *amqp
 			return
 		}
 
+		oldCh := rc.Channel
+		chCloser := rc.channelCloser
+		chClosed := rc.channelClosedFn
 		rc.Channel = ch
 		rc.Connected = true
 		rc.mu.Unlock()
+
+		// Best-effort cleanup of the replaced channel. Skip if the old channel
+		// is already closed — calling Close() on an already-shut-down amqp
+		// channel panics inside the driver.
+		if oldCh != nil && oldCh != ch && chCloser != nil && (chClosed == nil || !chClosed(oldCh)) {
+			if err := chCloser(oldCh); err != nil {
+				rc.logger().Log(context.Background(), log.LevelWarn, "failed to close replaced rabbitmq channel", log.Err(err))
+			}
+		}
 
 		return
 	}
