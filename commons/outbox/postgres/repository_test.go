@@ -296,6 +296,11 @@ func TestRepository_TenantIDFromContext(t *testing.T) {
 	tenantID, err = repo.tenantIDFromContext(ctx)
 	require.NoError(t, err)
 	require.Equal(t, "tenant-a", tenantID)
+
+	ctx = outbox.ContextWithTenantID(context.Background(), "_invalid")
+	tenantID, err = repo.tenantIDFromContext(ctx)
+	require.Empty(t, tenantID)
+	require.ErrorIs(t, err, outbox.ErrInvalidTenantID)
 }
 
 func TestLogSanitizedError_TypedNilLoggerDoesNotPanic(t *testing.T) {

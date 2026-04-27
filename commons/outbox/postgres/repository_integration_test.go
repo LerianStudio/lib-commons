@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +17,9 @@ import (
 	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/testcontainers/testcontainers-go/wait"
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
@@ -33,12 +35,25 @@ type integrationRepoFixture struct {
 func newIntegrationRepoFixture(t *testing.T) *integrationRepoFixture {
 	t.Helper()
 
-	dsn := strings.TrimSpace(os.Getenv("OUTBOX_POSTGRES_DSN"))
-	if dsn == "" {
-		t.Skip("OUTBOX_POSTGRES_DSN not set")
+	dsn, cleanup := integrationPostgresDSN(t)
+	if cleanup != nil {
+		t.Cleanup(cleanup)
 	}
 
-	ctx := context.Background()
+	return newIntegrationRepoFixtureWithDSN(t, dsn)
+}
+
+func integrationPostgresDSN(t *testing.T) (string, func()) {
+	t.Helper()
+
+	return setupOutboxPostgresContainer(t)
+}
+
+func newIntegrationRepoFixtureWithDSN(t *testing.T, dsn string) *integrationRepoFixture {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
 	client, err := libPostgres.New(libPostgres.Config{PrimaryDSN: dsn, ReplicaDSN: dsn})
 	require.NoError(t, err)
 
@@ -114,6 +129,36 @@ CREATE TABLE %s (
 	}
 }
 
+func setupOutboxPostgresContainer(t *testing.T) (string, func()) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	container, err := tcpostgres.Run(ctx,
+		"postgres:16-alpine",
+		tcpostgres.WithDatabase("outbox_it"),
+		tcpostgres.WithUsername("outbox"),
+		tcpostgres.WithPassword("outbox"),
+		testcontainers.WithWaitStrategy(
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(30*time.Second),
+		),
+	)
+	require.NoError(t, err)
+
+	dsn, err := container.ConnectionString(ctx, "sslmode=disable")
+	require.NoError(t, err)
+
+	return dsn, func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer closeCancel()
+
+		require.NoError(t, container.Terminate(closeCtx))
+	}
+}
+
 func createFixtureEvent(t *testing.T, fx *integrationRepoFixture, eventType string) *outbox.OutboxEvent {
 	t.Helper()
 
@@ -177,7 +222,7 @@ func updateFixtureEventState(
 	updateFixtureEventStateForTenant(t, fx, id, "tenant-a", status, attempts, updatedAt)
 }
 
-func TestRepository_IntegrationCreateListAndMarkFailed(t *testing.T) {
+func TestIntegration_Repository_CreateListAndMarkFailed(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
 	created := createFixtureEvent(t, fx, "payment.created")
@@ -196,14 +241,34 @@ func TestRepository_IntegrationCreateListAndMarkFailed(t *testing.T) {
 	require.NotContains(t, updated.LastError, "abc123")
 }
 
-func TestRepository_IntegrationContractSuite(t *testing.T) {
+func TestIntegration_Repository_ContractSuite(t *testing.T) {
+	dsn, cleanup := integrationPostgresDSN(t)
+	if cleanup != nil {
+		t.Cleanup(cleanup)
+	}
+
+	var current *integrationRepoFixture
+
 	outboxtest.Run(t, func(t *testing.T) outbox.OutboxRepository {
 		t.Helper()
-		return newIntegrationRepoFixture(t).repo
-	})
+		current = newIntegrationRepoFixtureWithDSN(t, dsn)
+		return current.repo
+	}, outboxtest.WithTransactionFactory(func(t *testing.T, ctx context.Context) (outbox.Tx, func()) {
+		t.Helper()
+		require.NotNil(t, current)
+
+		tx, err := current.primaryDB.BeginTx(ctx, nil)
+		require.NoError(t, err)
+
+		return tx, func() {
+			if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+				t.Errorf("cleanup: tx rollback: %v", err)
+			}
+		}
+	}))
 }
 
-func TestRepository_IntegrationMarkPublished(t *testing.T) {
+func TestIntegration_Repository_MarkPublished(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
 	event := createFixtureEvent(t, fx, "payment.published")
@@ -217,7 +282,7 @@ func TestRepository_IntegrationMarkPublished(t *testing.T) {
 	require.Equal(t, outbox.OutboxStatusPublished, published.Status)
 }
 
-func TestRepository_IntegrationMarkInvalidRedactsSensitiveData(t *testing.T) {
+func TestIntegration_Repository_MarkInvalidRedactsSensitiveData(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
 	event := createFixtureEvent(t, fx, "payment.invalid")
@@ -232,7 +297,7 @@ func TestRepository_IntegrationMarkInvalidRedactsSensitiveData(t *testing.T) {
 	require.NotContains(t, invalid.LastError, "super-secret")
 }
 
-func TestRepository_IntegrationListPendingByType(t *testing.T) {
+func TestIntegration_Repository_ListPendingByType(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
 	target := createFixtureEvent(t, fx, "payment.priority")
@@ -245,7 +310,7 @@ func TestRepository_IntegrationListPendingByType(t *testing.T) {
 	require.Equal(t, outbox.OutboxStatusProcessing, priorityEvents[0].Status)
 }
 
-func TestRepository_IntegrationResetForRetry(t *testing.T) {
+func TestIntegration_Repository_ResetForRetry(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
 	event := createFixtureEvent(t, fx, "payment.failed")
@@ -260,7 +325,7 @@ func TestRepository_IntegrationResetForRetry(t *testing.T) {
 	require.Equal(t, outbox.OutboxStatusProcessing, retried[0].Status)
 }
 
-func TestRepository_IntegrationResetStuckProcessing(t *testing.T) {
+func TestIntegration_Repository_ResetStuckProcessing(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
 	retryEvent := createFixtureEvent(t, fx, "payment.stuck.retry")
@@ -284,7 +349,7 @@ func TestRepository_IntegrationResetStuckProcessing(t *testing.T) {
 	require.Equal(t, "max dispatch attempts exceeded", exhausted.LastError)
 }
 
-func TestRepository_IntegrationCreateWithTx(t *testing.T) {
+func TestIntegration_Repository_CreateWithTx(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
 	tx, err := fx.primaryDB.BeginTx(fx.tenantCtx, nil)
@@ -309,7 +374,7 @@ func TestRepository_IntegrationCreateWithTx(t *testing.T) {
 	require.Equal(t, created.ID, stored.ID)
 }
 
-func TestRepository_IntegrationMarkPublishedRequiresProcessingState(t *testing.T) {
+func TestIntegration_Repository_MarkPublishedRequiresProcessingState(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
 	event := createFixtureEvent(t, fx, "payment.state.guard")
@@ -318,7 +383,7 @@ func TestRepository_IntegrationMarkPublishedRequiresProcessingState(t *testing.T
 	require.ErrorIs(t, err, ErrStateTransitionConflict)
 }
 
-func TestRepository_IntegrationCreateForcesPendingLifecycleInvariants(t *testing.T) {
+func TestIntegration_Repository_CreateForcesPendingLifecycleInvariants(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
 	now := time.Now().UTC()
@@ -347,7 +412,7 @@ func TestRepository_IntegrationCreateForcesPendingLifecycleInvariants(t *testing
 	require.Empty(t, created.LastError)
 }
 
-func TestRepository_IntegrationTenantIsolationBoundaries(t *testing.T) {
+func TestIntegration_Repository_TenantIsolationBoundaries(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
 	tenantA := outbox.ContextWithTenantID(fx.ctx, "tenant-a")
@@ -379,7 +444,41 @@ func TestRepository_IntegrationTenantIsolationBoundaries(t *testing.T) {
 	require.Equal(t, outbox.OutboxStatusProcessing, storedB.Status)
 }
 
-func TestRepository_IntegrationMarkFailedAndInvalidRequireProcessingState(t *testing.T) {
+func TestIntegration_Repository_InvalidTenantIDsAreRejected(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+
+	invalidCtx := outbox.ContextWithTenantID(fx.ctx, "_invalid")
+	event, err := outbox.NewOutboxEvent(invalidCtx, "payment.invalid-tenant", uuid.New(), []byte(`{"ok":true}`))
+	require.NoError(t, err)
+
+	_, err = fx.repo.Create(invalidCtx, event)
+	require.ErrorIs(t, err, outbox.ErrInvalidTenantID)
+
+	now := time.Now().UTC()
+	_, err = fx.primaryDB.ExecContext(
+		fx.ctx,
+		fmt.Sprintf(
+			"INSERT INTO %s (id, event_type, aggregate_id, payload, status, attempts, created_at, updated_at, tenant_id) VALUES ($1, $2, $3, $4, $5::outbox_event_status, $6, $7, $8, $9)",
+			quoteIdentifier(fx.tableName),
+		),
+		uuid.New(),
+		"payment.invalid-discovery",
+		uuid.New(),
+		[]byte(`{"ok":true}`),
+		outbox.OutboxStatusPending,
+		0,
+		now,
+		now,
+		"_invalid",
+	)
+	require.NoError(t, err)
+
+	tenants, err := fx.repo.ListTenants(fx.ctx)
+	require.Nil(t, tenants)
+	require.ErrorIs(t, err, outbox.ErrInvalidTenantID)
+}
+
+func TestIntegration_Repository_MarkFailedAndInvalidRequireProcessingState(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
 	failedEvent := createFixtureEvent(t, fx, "payment.failed.guard")
@@ -393,7 +492,7 @@ func TestRepository_IntegrationMarkFailedAndInvalidRequireProcessingState(t *tes
 	require.ErrorIs(t, err, ErrStateTransitionConflict)
 }
 
-func TestRepository_IntegrationDispatcherLifecyclePersistsPublishedState(t *testing.T) {
+func TestIntegration_Repository_DispatcherLifecyclePersistsPublishedState(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
 	created := createFixtureEvent(t, fx, "payment.dispatch.lifecycle")
@@ -434,7 +533,7 @@ func TestRepository_IntegrationDispatcherLifecyclePersistsPublishedState(t *test
 	require.True(t, stored.UpdatedAt.After(created.UpdatedAt) || stored.UpdatedAt.Equal(created.UpdatedAt))
 }
 
-func TestColumnResolver_IntegrationDiscoverTenants(t *testing.T) {
+func TestIntegration_ColumnResolver_DiscoverTenants(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
 	_, err := fx.repo.Create(
@@ -464,12 +563,14 @@ func TestColumnResolver_IntegrationDiscoverTenants(t *testing.T) {
 	require.Contains(t, tenants, "tenant-b")
 }
 
-func TestSchemaResolver_IntegrationApplyTenantAndDiscoverTenants(t *testing.T) {
+func TestIntegration_SchemaResolver_ApplyTenantAndDiscoverTenants(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 	tenantSchema := uuid.NewString()
 	defaultTenant := uuid.NewString()
 
 	_, err := fx.primaryDB.ExecContext(fx.ctx, fmt.Sprintf("CREATE SCHEMA %s", quoteIdentifier(tenantSchema)))
+	require.NoError(t, err)
+	_, err = fx.primaryDB.ExecContext(fx.ctx, fmt.Sprintf("CREATE TABLE %s.%s (id UUID)", quoteIdentifier(tenantSchema), quoteIdentifier(defaultOutboxTableName)))
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		if _, err := fx.primaryDB.ExecContext(fx.ctx, fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", quoteIdentifier(tenantSchema))); err != nil {
@@ -498,5 +599,5 @@ func TestSchemaResolver_IntegrationApplyTenantAndDiscoverTenants(t *testing.T) {
 	tenants, err := resolver.DiscoverTenants(fx.ctx)
 	require.NoError(t, err)
 	require.Contains(t, tenants, tenantSchema)
-	require.Contains(t, tenants, defaultTenant)
+	require.NotContains(t, tenants, defaultTenant)
 }

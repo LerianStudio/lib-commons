@@ -1,0 +1,35 @@
+package mongo
+
+import (
+	"context"
+	"maps"
+	"regexp"
+
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
+	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
+	"go.mongodb.org/mongo-driver/bson"
+)
+
+func mergeFilters(base bson.M, extras ...bson.M) bson.M {
+	merged := make(bson.M, len(base)+len(extras)*2)
+	maps.Copy(merged, base)
+
+	for _, extra := range extras {
+		maps.Copy(merged, extra)
+	}
+
+	return merged
+}
+
+func logSanitizedError(logger libLog.Logger, ctx context.Context, message string, err error) {
+	if nilcheck.Interface(logger) || err == nil {
+		return
+	}
+
+	logger.Log(ctx, libLog.LevelError, message, libLog.String("error", outbox.SanitizeErrorMessageForStorage(err.Error())))
+}
+
+func regexpIdentifier() *regexp.Regexp {
+	return regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+}

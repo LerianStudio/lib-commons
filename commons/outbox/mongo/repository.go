@@ -2,26 +2,24 @@ package mongo
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
-	"reflect"
-	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
 	libMongo "github.com/LerianStudio/lib-commons/v5/commons/mongo"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
+	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
-	mongooptions "go.mongodb.org/mongo-driver/mongo/options"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )
@@ -30,7 +28,9 @@ const (
 	defaultCollectionName = "outbox_events"
 	defaultTenantField    = "tenant_id"
 	defaultScopeTenantID  = ""
-	maxListScanMultiplier = 4
+	maxListScanMultiplier = 8
+	defaultIndexTimeout   = 10 * time.Second
+	cursorCloseTimeout    = 2 * time.Second
 )
 
 var (
@@ -45,25 +45,42 @@ var (
 	ErrTransactionUnsupported    = errors.New("mongo outbox repository does not support sql transactions")
 	ErrInvalidIdentifier         = errors.New("invalid mongo identifier")
 	ErrCollectionRequired        = errors.New("collection name is required")
+	ErrTenantDatabaseRequired    = errors.New("tenant mongo database is required")
+	errUseDefaultDatabase        = errors.New("use default mongo database")
 	identifierPattern            = regexpIdentifier()
 )
 
+// Option customizes a MongoDB outbox repository.
 type Option func(*Repository)
 
+// TenantDatabaseResolver resolves tenant-scoped MongoDB databases for dispatcher
+// contexts that only carry a tenant ID. It lets generic outbox dispatchers drain
+// rows written through tenant-manager/core.ContextWithMB without requiring the
+// caller to pre-install a database handle on every dispatch context.
+type TenantDatabaseResolver interface {
+	ListTenants(ctx context.Context, module string) ([]string, error)
+	DatabaseForTenant(ctx context.Context, tenantID string, module string) (*mongodriver.Database, error)
+}
+
+// WithLogger configures the logger used for sanitized repository error logs.
 func WithLogger(logger libLog.Logger) Option {
 	return func(repo *Repository) {
-		if logger != nil {
-			repo.logger = logger
+		if nilcheck.Interface(logger) {
+			return
 		}
+
+		repo.logger = logger
 	}
 }
 
+// WithCollectionName configures the MongoDB collection used to store outbox events.
 func WithCollectionName(collectionName string) Option {
 	return func(repo *Repository) {
 		repo.collectionName = collectionName
 	}
 }
 
+// WithTenantField configures the BSON field used to store the tenant identifier.
 func WithTenantField(field string) Option {
 	return func(repo *Repository) {
 		repo.tenantField = field
@@ -87,30 +104,79 @@ func WithRequireTenant() Option {
 	}
 }
 
+// WithModule configures the tenant-manager module used to resolve a
+// module-scoped MongoDB database from context. When set, repository operations
+// fail closed if the module-specific database is absent from context.
+func WithModule(module string) Option {
+	return func(repo *Repository) {
+		repo.tenantModule = module
+	}
+}
+
+// WithTenantDatabaseResolver configures tenant database discovery for generic
+// dispatcher loops. When set, ListTenants uses the resolver and collection
+// resolution can derive the tenant Mongo database from context tenant ID.
+func WithTenantDatabaseResolver(resolver TenantDatabaseResolver) Option {
+	return func(repo *Repository) {
+		if nilcheck.Interface(resolver) {
+			return
+		}
+
+		repo.tenantDatabaseResolver = resolver
+	}
+}
+
+// Repository persists outbox events in MongoDB.
+//
+// By default, operations require a tenant ID in context and store it in the
+// configured tenant field. When a tenant-scoped MongoDB database is present in
+// context through tenant-manager/core.ContextWithMB, that database is used;
+// otherwise the constructor client database is used for row-scoped deployments.
 type Repository struct {
-	client         *libMongo.Client
-	collectionName string
-	tenantField    string
-	requireTenant  bool
-	logger         libLog.Logger
-	tracer         trace.Tracer
+	client                 *libMongo.Client
+	collectionName         string
+	tenantField            string
+	requireTenant          bool
+	logger                 libLog.Logger
+	tracer                 trace.Tracer
+	tenantModule           string
+	tenantDatabaseResolver TenantDatabaseResolver
+	indexMu                sync.Mutex
+	indexedTenantDatabases sync.Map
 }
 
 type document struct {
-	ID          string
-	EventType   string
-	AggregateID string
-	Payload     string
-	Status      string
-	Attempts    int
-	PublishedAt *time.Time
-	LastError   string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	TenantID    string
+	ID          string     `bson:"id"`
+	EventType   string     `bson:"event_type"`
+	AggregateID string     `bson:"aggregate_id"`
+	Payload     string     `bson:"payload"`
+	Status      string     `bson:"status"`
+	Attempts    int        `bson:"attempts"`
+	PublishedAt *time.Time `bson:"published_at,omitempty"`
+	LastError   string     `bson:"last_error,omitempty"`
+	CreatedAt   time.Time  `bson:"created_at"`
+	UpdatedAt   time.Time  `bson:"updated_at"`
+	TenantID    string     `bson:"tenant_id,omitempty"`
 }
 
+// NewRepository creates a MongoDB outbox repository.
+//
+// Indexes are ensured during construction with a bounded default timeout. Use
+// NewRepositoryWithContext when caller-controlled cancellation is required.
 func NewRepository(client *libMongo.Client, opts ...Option) (*Repository, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultIndexTimeout)
+	defer cancel()
+
+	return NewRepositoryWithContext(ctx, client, opts...)
+}
+
+// NewRepositoryWithContext creates a MongoDB outbox repository using ctx for
+// constructor-time index creation.
+func NewRepositoryWithContext(ctx context.Context, client *libMongo.Client, opts ...Option) (*Repository, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	if client == nil {
 		return nil, ErrConnectionRequired
 	}
@@ -130,8 +196,13 @@ func NewRepository(client *libMongo.Client, opts ...Option) (*Repository, error)
 		}
 	}
 
+	if nilcheck.Interface(repo.logger) {
+		repo.logger = libLog.NewNop()
+	}
+
 	repo.collectionName = strings.TrimSpace(repo.collectionName)
 	repo.tenantField = strings.TrimSpace(repo.tenantField)
+	repo.tenantModule = strings.TrimSpace(repo.tenantModule)
 
 	if repo.collectionName == "" {
 		return nil, ErrCollectionRequired
@@ -149,7 +220,7 @@ func NewRepository(client *libMongo.Client, opts ...Option) (*Repository, error)
 		repo.requireTenant = false
 	}
 
-	if err := repo.ensureIndexes(context.Background()); err != nil {
+	if err := repo.ensureIndexes(ctx); err != nil {
 		return nil, err
 	}
 
@@ -249,6 +320,18 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 	ctx, span := tracer.Start(ctx, "mongo.list_outbox_tenants")
 	defer span.End()
 
+	if !nilcheck.Interface(repo.tenantDatabaseResolver) {
+		tenants, err := repo.tenantDatabaseResolver.ListTenants(ctx, repo.tenantModule)
+		if err != nil {
+			libOpentelemetry.HandleSpanError(span, "failed to list tenant databases", err)
+			logSanitizedError(logger, ctx, "failed to list tenant databases", err)
+
+			return nil, fmt.Errorf("listing tenant databases: %w", err)
+		}
+
+		return normalizeTenantIDs(tenants)
+	}
+
 	collection, err := repo.collection(ctx)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to resolve mongo collection", err)
@@ -276,6 +359,10 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 		tenantID = strings.TrimSpace(tenantID)
 		if tenantID == "" {
 			continue
+		}
+
+		if !tmcore.IsValidTenantID(tenantID) {
+			return nil, fmt.Errorf("%w: %q", outbox.ErrInvalidTenantID, tenantID)
 		}
 
 		tenants = append(tenants, tenantID)
@@ -315,19 +402,14 @@ func (repo *Repository) GetByID(ctx context.Context, id uuid.UUID) (*outbox.Outb
 		return nil, err
 	}
 
-	var raw bson.M
-	if err := collection.FindOne(ctx, repo.idTenantFilter(id, tenantID)).Decode(&raw); err != nil {
+	doc, err := repo.decodeSingle(ctx, collection, repo.idTenantFilter(id, tenantID))
+	if err != nil {
 		if !errors.Is(err, mongodriver.ErrNoDocuments) {
 			libOpentelemetry.HandleSpanError(span, "failed to get outbox event", err)
 			logSanitizedError(logger, ctx, "failed to get outbox event", err)
 		}
 
 		return nil, fmt.Errorf("getting outbox event: %w", err)
-	}
-
-	doc, err := documentFromBSON(raw, repo.tenantField)
-	if err != nil {
-		return nil, fmt.Errorf("decode outbox event: %w", err)
 	}
 
 	return doc.toOutboxEvent()
@@ -372,7 +454,7 @@ func (repo *Repository) MarkPublished(ctx context.Context, id uuid.UUID, publish
 			"status":       outbox.OutboxStatusPublished,
 			"published_at": publishedAt,
 			"updated_at":   time.Now().UTC(),
-		}},
+		}, "$unset": bson.M{"claim_token": ""}},
 	)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to mark outbox published", err)
@@ -457,7 +539,7 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 			"attempts":   nextAttempts,
 			"last_error": nextLastError,
 			"updated_at": time.Now().UTC(),
-		}},
+		}, "$unset": bson.M{"claim_token": ""}},
 	)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to mark outbox failed", err)
@@ -532,49 +614,18 @@ func (repo *Repository) ResetForRetry(ctx context.Context, limit int, failedBefo
 	ctx, span := tracer.Start(ctx, "mongo.reset_for_retry")
 	defer span.End()
 
-	candidates, err := repo.findCandidates(ctx, bson.M{
+	claimed, err := repo.claimMatching(ctx, bson.M{
 		"status":     outbox.OutboxStatusFailed,
 		"attempts":   bson.M{"$lt": maxAttempts},
 		"updated_at": bson.M{"$lte": failedBefore},
-	}, bson.D{{Key: "updated_at", Value: 1}, {Key: "id", Value: 1}}, limit)
+	}, bson.D{{Key: "updated_at", Value: 1}, {Key: "id", Value: 1}}, limit, outbox.OutboxStatusFailed, outbox.OutboxStatusProcessing, func(_ document) bson.M {
+		return bson.M{"status": outbox.OutboxStatusProcessing, "updated_at": time.Now().UTC()}
+	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to reset events for retry", err)
 		logSanitizedError(logger, ctx, "failed to reset events for retry", err)
 
 		return nil, fmt.Errorf("resetting events for retry: %w", err)
-	}
-
-	collection, err := repo.collection(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	now := time.Now().UTC()
-
-	claimed := make([]document, 0, len(candidates))
-	for _, candidate := range candidates {
-		result, updateErr := collection.UpdateOne(ctx,
-			mergeFilters(repo.idTenantFilter(parsedUUID(candidate.ID), candidate.TenantID), bson.M{
-				"status":     outbox.OutboxStatusFailed,
-				"attempts":   candidate.Attempts,
-				"updated_at": candidate.UpdatedAt,
-			}),
-			bson.M{"$set": bson.M{"status": outbox.OutboxStatusProcessing, "updated_at": now}},
-		)
-		if updateErr != nil {
-			libOpentelemetry.HandleSpanError(span, "failed to update retry candidate", updateErr)
-			logSanitizedError(logger, ctx, "failed to update retry candidate", updateErr)
-
-			return nil, fmt.Errorf("resetting events for retry: %w", updateErr)
-		}
-
-		if result.ModifiedCount == 0 {
-			continue
-		}
-
-		candidate.Status = outbox.OutboxStatusProcessing
-		candidate.UpdatedAt = now
-		claimed = append(claimed, candidate)
 	}
 
 	return docsToEvents(claimed)
@@ -602,26 +653,10 @@ func (repo *Repository) ResetStuckProcessing(ctx context.Context, limit int, pro
 	ctx, span := tracer.Start(ctx, "mongo.reset_outbox_processing")
 	defer span.End()
 
-	candidates, err := repo.findCandidates(ctx, bson.M{
+	claimed, err := repo.claimMatching(ctx, bson.M{
 		"status":     outbox.OutboxStatusProcessing,
 		"updated_at": bson.M{"$lte": processingBefore},
-	}, bson.D{{Key: "updated_at", Value: 1}, {Key: "id", Value: 1}}, limit)
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "failed to reset stuck events", err)
-		logSanitizedError(logger, ctx, "failed to reset stuck events", err)
-
-		return nil, fmt.Errorf("reset stuck events: %w", err)
-	}
-
-	collection, err := repo.collection(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	now := time.Now().UTC()
-
-	retryDocs := make([]document, 0, len(candidates))
-	for _, candidate := range candidates {
+	}, bson.D{{Key: "updated_at", Value: 1}, {Key: "id", Value: 1}}, limit, outbox.OutboxStatusProcessing, outbox.OutboxStatusProcessing, func(candidate document) bson.M {
 		nextAttempts := candidate.Attempts + 1
 		nextStatus := outbox.OutboxStatusProcessing
 		nextLastError := candidate.LastError
@@ -631,41 +666,16 @@ func (repo *Repository) ResetStuckProcessing(ctx context.Context, limit int, pro
 			nextLastError = "max dispatch attempts exceeded"
 		}
 
-		result, updateErr := collection.UpdateOne(ctx,
-			mergeFilters(repo.idTenantFilter(parsedUUID(candidate.ID), candidate.TenantID), bson.M{
-				"status":     outbox.OutboxStatusProcessing,
-				"attempts":   candidate.Attempts,
-				"updated_at": candidate.UpdatedAt,
-			}),
-			bson.M{"$set": bson.M{
-				"status":     nextStatus,
-				"attempts":   nextAttempts,
-				"last_error": nextLastError,
-				"updated_at": now,
-			}},
-		)
-		if updateErr != nil {
-			libOpentelemetry.HandleSpanError(span, "failed to update stuck candidate", updateErr)
-			logSanitizedError(logger, ctx, "failed to update stuck candidate", updateErr)
+		return bson.M{"status": nextStatus, "attempts": nextAttempts, "last_error": nextLastError, "updated_at": time.Now().UTC()}
+	})
+	if err != nil {
+		libOpentelemetry.HandleSpanError(span, "failed to reset stuck events", err)
+		logSanitizedError(logger, ctx, "failed to reset stuck events", err)
 
-			return nil, fmt.Errorf("reset stuck events: %w", updateErr)
-		}
-
-		if result.ModifiedCount == 0 {
-			continue
-		}
-
-		if nextStatus == outbox.OutboxStatusInvalid {
-			continue
-		}
-
-		candidate.Attempts = nextAttempts
-		candidate.Status = nextStatus
-		candidate.UpdatedAt = now
-		retryDocs = append(retryDocs, candidate)
+		return nil, fmt.Errorf("reset stuck events: %w", err)
 	}
 
-	return docsToEvents(retryDocs)
+	return docsToEvents(claimed)
 }
 
 func (repo *Repository) MarkInvalid(ctx context.Context, id uuid.UUID, errMsg string) error {
@@ -705,7 +715,7 @@ func (repo *Repository) MarkInvalid(ctx context.Context, id uuid.UUID, errMsg st
 
 	result, err := collection.UpdateOne(ctx,
 		mergeFilters(repo.idTenantFilter(id, tenantID), bson.M{"status": outbox.OutboxStatusProcessing}),
-		bson.M{"$set": bson.M{"status": outbox.OutboxStatusInvalid, "last_error": errMsg, "updated_at": time.Now().UTC()}},
+		bson.M{"$set": bson.M{"status": outbox.OutboxStatusInvalid, "last_error": errMsg, "updated_at": time.Now().UTC()}, "$unset": bson.M{"claim_token": ""}},
 	)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to mark outbox invalid", err)
@@ -729,122 +739,6 @@ func (repo *Repository) RequiresTenant() bool {
 	return repo.requireTenant
 }
 
-func (repo *Repository) claimPending(ctx context.Context, limit int, eventType string, spanName string) ([]*outbox.OutboxEvent, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	if !repo.initialized() {
-		return nil, ErrRepositoryNotInitialized
-	}
-
-	if limit <= 0 {
-		return nil, ErrLimitMustBePositive
-	}
-
-	logger, tracer := repo.tracking(ctx)
-
-	ctx, span := tracer.Start(ctx, spanName)
-	defer span.End()
-
-	filter := bson.M{"status": outbox.OutboxStatusPending}
-	if eventType != "" {
-		filter["event_type"] = eventType
-	}
-
-	candidates, err := repo.findCandidates(ctx, filter, bson.D{{Key: "created_at", Value: 1}, {Key: "id", Value: 1}}, limit)
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "failed to list outbox events", err)
-		logSanitizedError(logger, ctx, "failed to list outbox events", err)
-
-		return nil, fmt.Errorf("listing pending events: %w", err)
-	}
-
-	collection, err := repo.collection(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	now := time.Now().UTC()
-
-	claimed := make([]document, 0, len(candidates))
-	for _, candidate := range candidates {
-		updateFilter := mergeFilters(repo.idTenantFilter(parsedUUID(candidate.ID), candidate.TenantID), bson.M{
-			"status":     outbox.OutboxStatusPending,
-			"attempts":   candidate.Attempts,
-			"updated_at": candidate.UpdatedAt,
-		})
-
-		result, updateErr := collection.UpdateOne(ctx, updateFilter, bson.M{"$set": bson.M{"status": outbox.OutboxStatusProcessing, "updated_at": now}})
-		if updateErr != nil {
-			libOpentelemetry.HandleSpanError(span, "failed to claim outbox event", updateErr)
-			logSanitizedError(logger, ctx, "failed to claim outbox event", updateErr)
-
-			return nil, fmt.Errorf("listing pending events: %w", updateErr)
-		}
-
-		if result.ModifiedCount == 0 {
-			continue
-		}
-
-		candidate.Status = outbox.OutboxStatusProcessing
-		candidate.UpdatedAt = now
-		claimed = append(claimed, candidate)
-	}
-
-	return docsToEvents(claimed)
-}
-
-func (repo *Repository) findCandidates(ctx context.Context, filter bson.M, sortSpec bson.D, limit int) ([]document, error) {
-	tenantID, err := repo.tenantIDFromContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	collection, err := repo.collection(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	filter = mergeFilters(filter, repo.tenantMatchFilter(tenantID))
-
-	findLimit := int64(limit)
-	if findLimit < int64(maxListScanMultiplier) {
-		findLimit *= maxListScanMultiplier
-	}
-
-	cursor, err := collection.Find(ctx, filter, mongooptions.Find().SetSort(sortSpec).SetLimit(findLimit))
-	if err != nil {
-		return nil, err
-	}
-	defer cursor.Close(ctx)
-
-	docs := make([]document, 0, limit)
-
-	for cursor.Next(ctx) {
-		var raw bson.M
-		if err := cursor.Decode(&raw); err != nil {
-			return nil, fmt.Errorf("decode outbox event: %w", err)
-		}
-
-		doc, err := documentFromBSON(raw, repo.tenantField)
-		if err != nil {
-			return nil, fmt.Errorf("decode outbox event: %w", err)
-		}
-
-		docs = append(docs, doc)
-		if len(docs) >= limit {
-			break
-		}
-	}
-
-	if err := cursor.Err(); err != nil {
-		return nil, err
-	}
-
-	return docs, nil
-}
-
 func (repo *Repository) getByIDAndStatus(ctx context.Context, id uuid.UUID, status string) (document, error) {
 	tenantID, err := repo.tenantIDFromContext(ctx)
 	if err != nil {
@@ -856,18 +750,13 @@ func (repo *Repository) getByIDAndStatus(ctx context.Context, id uuid.UUID, stat
 		return document{}, err
 	}
 
-	var raw bson.M
-
 	filter := mergeFilters(repo.idTenantFilter(id, tenantID), bson.M{"status": status})
-	if err := collection.FindOne(ctx, filter).Decode(&raw); err != nil {
-		return document{}, err
-	}
 
-	return documentFromBSON(raw, repo.tenantField)
+	return repo.decodeSingle(ctx, collection, filter)
 }
 
 func (repo *Repository) initialized() bool {
-	return repo != nil && repo.client != nil && !isNilPointer(repo.client)
+	return repo != nil && !nilcheck.Interface(repo.client)
 }
 
 func (repo *Repository) collection(ctx context.Context) (*mongodriver.Collection, error) {
@@ -875,12 +764,82 @@ func (repo *Repository) collection(ctx context.Context) (*mongodriver.Collection
 		return nil, ErrRepositoryNotInitialized
 	}
 
-	database, err := repo.client.Database(ctx)
+	database, err := repo.collectionDatabase(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("resolve mongo database: %w", err)
+		if !errors.Is(err, errUseDefaultDatabase) {
+			return nil, err
+		}
+
+		database = nil
+	}
+
+	if database == nil {
+		database, err = repo.client.Database(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("resolve mongo database: %w", err)
+		}
 	}
 
 	return database.Collection(repo.collectionName), nil
+}
+
+func (repo *Repository) collectionDatabase(ctx context.Context) (*mongodriver.Database, error) {
+	if repo.tenantModule != "" {
+		database := tmcore.GetMBContext(ctx, repo.tenantModule)
+		if database == nil && !nilcheck.Interface(repo.tenantDatabaseResolver) {
+			resolved, err := repo.resolveTenantDatabase(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			database = resolved
+		}
+
+		if database == nil {
+			return nil, ErrTenantDatabaseRequired
+		}
+
+		if err := repo.ensureDatabaseIndexes(ctx, database); err != nil {
+			return nil, err
+		}
+
+		return database, nil
+	}
+
+	if database := tmcore.GetMBContext(ctx); database != nil {
+		if err := repo.ensureDatabaseIndexes(ctx, database); err != nil {
+			return nil, err
+		}
+
+		return database, nil
+	}
+
+	return repo.resolvedTenantDatabase(ctx)
+}
+
+func (repo *Repository) resolvedTenantDatabase(ctx context.Context) (*mongodriver.Database, error) {
+	if nilcheck.Interface(repo.tenantDatabaseResolver) {
+		return nil, errUseDefaultDatabase
+	}
+
+	database, err := repo.resolveTenantDatabase(ctx)
+	if err != nil {
+		if errors.Is(err, outbox.ErrTenantIDRequired) {
+			return nil, errUseDefaultDatabase
+		}
+
+		return nil, err
+	}
+
+	if database == nil {
+		return nil, errUseDefaultDatabase
+	}
+
+	if err := repo.ensureDatabaseIndexes(ctx, database); err != nil {
+		return nil, err
+	}
+
+	return database, nil
 }
 
 func (repo *Repository) ensureIndexes(ctx context.Context) error {
@@ -888,7 +847,7 @@ func (repo *Repository) ensureIndexes(ctx context.Context) error {
 		ctx = context.Background()
 	}
 
-	indexes := buildIndexes(repo.collectionName, repo.tenantField)
+	indexes := buildIndexes(repo.tenantField)
 	if len(indexes) == 0 {
 		return nil
 	}
@@ -900,6 +859,63 @@ func (repo *Repository) ensureIndexes(ctx context.Context) error {
 	return nil
 }
 
+func (repo *Repository) ensureDatabaseIndexes(ctx context.Context, database *mongodriver.Database) error {
+	if database == nil {
+		return ErrRepositoryNotInitialized
+	}
+
+	indexes := buildIndexes(repo.tenantField)
+	if len(indexes) == 0 {
+		return nil
+	}
+
+	key := fmt.Sprintf("%p/%s/%s", database.Client(), database.Name(), repo.collectionName)
+	if _, loaded := repo.indexedTenantDatabases.Load(key); loaded {
+		return nil
+	}
+
+	repo.indexMu.Lock()
+	defer repo.indexMu.Unlock()
+
+	if _, loaded := repo.indexedTenantDatabases.Load(key); loaded {
+		return nil
+	}
+
+	if _, err := database.Collection(repo.collectionName).Indexes().CreateMany(ctx, indexes); err != nil {
+		return fmt.Errorf("ensure outbox indexes for tenant database: %w", err)
+	}
+
+	repo.indexedTenantDatabases.Store(key, struct{}{})
+
+	return nil
+}
+
+func (repo *Repository) resolveTenantDatabase(ctx context.Context) (*mongodriver.Database, error) {
+	if nilcheck.Interface(repo.tenantDatabaseResolver) {
+		return nil, ErrTenantDatabaseRequired
+	}
+
+	tenantID, err := repo.tenantIDFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if tenantID == defaultScopeTenantID {
+		return nil, outbox.ErrTenantIDRequired
+	}
+
+	database, err := repo.tenantDatabaseResolver.DatabaseForTenant(ctx, tenantID, repo.tenantModule)
+	if err != nil {
+		return nil, fmt.Errorf("resolving tenant mongo database: %w", err)
+	}
+
+	if database == nil {
+		return nil, ErrTenantDatabaseRequired
+	}
+
+	return database, nil
+}
+
 func (repo *Repository) tenantIDFromContext(ctx context.Context) (string, error) {
 	tenantID, ok := outbox.TenantIDFromContext(ctx)
 	if repo.requireTenant && (!ok || tenantID == "") {
@@ -908,6 +924,15 @@ func (repo *Repository) tenantIDFromContext(ctx context.Context) (string, error)
 
 	if !ok {
 		return defaultScopeTenantID, nil
+	}
+
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return "", outbox.ErrTenantIDRequired
+	}
+
+	if !tmcore.IsValidTenantID(tenantID) {
+		return "", fmt.Errorf("%w: %q", outbox.ErrInvalidTenantID, tenantID)
 	}
 
 	return tenantID, nil
@@ -930,11 +955,11 @@ func (repo *Repository) idTenantFilter(id uuid.UUID, tenantID string) bson.M {
 
 func (repo *Repository) tracking(ctx context.Context) (libLog.Logger, trace.Tracer) {
 	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-	if logger == nil {
+	if nilcheck.Interface(logger) {
 		logger = repo.logger
 	}
 
-	if logger == nil {
+	if nilcheck.Interface(logger) {
 		logger = libLog.NewNop()
 	}
 
@@ -947,402 +972,4 @@ func (repo *Repository) tracking(ctx context.Context) (libLog.Logger, trace.Trac
 	}
 
 	return logger, tracer
-}
-
-func buildIndexes(collectionName, tenantField string) []mongodriver.IndexModel {
-	_ = collectionName
-
-	keysWithTenant := func(keys bson.D) bson.D {
-		if tenantField == "" {
-			return keys
-		}
-
-		prefixed := make(bson.D, 0, len(keys)+1)
-		prefixed = append(prefixed, bson.E{Key: tenantField, Value: 1})
-		prefixed = append(prefixed, keys...)
-
-		return prefixed
-	}
-
-	uniqueIDKeys := bson.D{{Key: "id", Value: 1}}
-	if tenantField != "" {
-		uniqueIDKeys = keysWithTenant(bson.D{{Key: "id", Value: 1}})
-	}
-
-	indexes := []mongodriver.IndexModel{
-		{
-			Keys:    uniqueIDKeys,
-			Options: mongooptions.Index().SetUnique(true).SetName("outbox_id_scope_unique"),
-		},
-		{
-			Keys:    keysWithTenant(bson.D{{Key: "status", Value: 1}, {Key: "created_at", Value: 1}, {Key: "id", Value: 1}}),
-			Options: mongooptions.Index().SetName("outbox_pending_claim"),
-		},
-		{
-			Keys:    keysWithTenant(bson.D{{Key: "event_type", Value: 1}, {Key: "status", Value: 1}, {Key: "created_at", Value: 1}, {Key: "id", Value: 1}}),
-			Options: mongooptions.Index().SetName("outbox_pending_by_type_claim"),
-		},
-		{
-			Keys:    keysWithTenant(bson.D{{Key: "status", Value: 1}, {Key: "updated_at", Value: 1}, {Key: "id", Value: 1}}),
-			Options: mongooptions.Index().SetName("outbox_state_updated_scan"),
-		},
-	}
-
-	if tenantField != "" {
-		indexes = append(indexes, mongodriver.IndexModel{
-			Keys:    bson.D{{Key: tenantField, Value: 1}, {Key: "status", Value: 1}},
-			Options: mongooptions.Index().SetName("outbox_tenant_status"),
-		})
-	}
-
-	return indexes
-}
-
-func (doc document) toBSON(tenantField string) bson.M {
-	raw := bson.M{
-		"id":           doc.ID,
-		"event_type":   doc.EventType,
-		"aggregate_id": doc.AggregateID,
-		"payload":      doc.Payload,
-		"status":       doc.Status,
-		"attempts":     doc.Attempts,
-		"created_at":   doc.CreatedAt,
-		"updated_at":   doc.UpdatedAt,
-	}
-
-	if doc.PublishedAt != nil {
-		raw["published_at"] = *doc.PublishedAt
-	}
-
-	if doc.LastError != "" {
-		raw["last_error"] = doc.LastError
-	}
-
-	if tenantField != "" {
-		raw[tenantField] = doc.TenantID
-	}
-
-	return raw
-}
-
-func documentFromBSON(raw bson.M, tenantField string) (document, error) {
-	id, err := stringField(raw, "id")
-	if err != nil {
-		return document{}, err
-	}
-
-	eventType, err := stringField(raw, "event_type")
-	if err != nil {
-		return document{}, err
-	}
-
-	aggregateID, err := stringField(raw, "aggregate_id")
-	if err != nil {
-		return document{}, err
-	}
-
-	payload, err := stringField(raw, "payload")
-	if err != nil {
-		return document{}, err
-	}
-
-	status, err := stringField(raw, "status")
-	if err != nil {
-		return document{}, err
-	}
-
-	attempts, err := intField(raw, "attempts")
-	if err != nil {
-		return document{}, err
-	}
-
-	createdAt, err := timeField(raw, "created_at")
-	if err != nil {
-		return document{}, err
-	}
-
-	updatedAt, err := timeField(raw, "updated_at")
-	if err != nil {
-		return document{}, err
-	}
-
-	lastError, err := optionalStringField(raw, "last_error")
-	if err != nil {
-		return document{}, err
-	}
-
-	publishedAt, err := optionalTimeField(raw, "published_at")
-	if err != nil {
-		return document{}, err
-	}
-
-	tenantID := defaultScopeTenantID
-	if tenantField != "" {
-		tenantID, err = optionalStringField(raw, tenantField)
-		if err != nil {
-			return document{}, err
-		}
-	}
-
-	return document{
-		ID:          id,
-		EventType:   eventType,
-		AggregateID: aggregateID,
-		Payload:     payload,
-		Status:      status,
-		Attempts:    attempts,
-		PublishedAt: publishedAt,
-		LastError:   strings.TrimSpace(lastError),
-		CreatedAt:   createdAt,
-		UpdatedAt:   updatedAt,
-		TenantID:    strings.TrimSpace(tenantID),
-	}, nil
-}
-
-func docsToEvents(docs []document) ([]*outbox.OutboxEvent, error) {
-	result := make([]*outbox.OutboxEvent, 0, len(docs))
-	for _, doc := range docs {
-		event, err := doc.toOutboxEvent()
-		if err != nil {
-			return nil, err
-		}
-
-		result = append(result, event)
-	}
-
-	return result, nil
-}
-
-func (doc document) toOutboxEvent() (*outbox.OutboxEvent, error) {
-	id, err := uuid.Parse(doc.ID)
-	if err != nil {
-		return nil, fmt.Errorf("parse outbox event id: %w", err)
-	}
-
-	aggregateID, err := uuid.Parse(doc.AggregateID)
-	if err != nil {
-		return nil, fmt.Errorf("parse outbox aggregate id: %w", err)
-	}
-
-	return &outbox.OutboxEvent{
-		ID:          id,
-		EventType:   doc.EventType,
-		AggregateID: aggregateID,
-		Payload:     []byte(doc.Payload),
-		Status:      doc.Status,
-		Attempts:    doc.Attempts,
-		PublishedAt: doc.PublishedAt,
-		LastError:   doc.LastError,
-		CreatedAt:   doc.CreatedAt,
-		UpdatedAt:   doc.UpdatedAt,
-	}, nil
-}
-
-func stringField(raw bson.M, key string) (string, error) {
-	value, ok := raw[key]
-	if !ok {
-		return "", fmt.Errorf("missing field %q", key)
-	}
-
-	str, ok := value.(string)
-	if !ok {
-		return "", fmt.Errorf("field %q must be string", key)
-	}
-
-	return str, nil
-}
-
-func optionalStringField(raw bson.M, key string) (string, error) {
-	value, ok := raw[key]
-	if !ok || value == nil {
-		return "", nil
-	}
-
-	str, ok := value.(string)
-	if !ok {
-		return "", fmt.Errorf("field %q must be string", key)
-	}
-
-	return str, nil
-}
-
-func intField(raw bson.M, key string) (int, error) {
-	value, ok := raw[key]
-	if !ok {
-		return 0, fmt.Errorf("missing field %q", key)
-	}
-
-	switch typed := value.(type) {
-	case int:
-		return typed, nil
-	case int32:
-		return int(typed), nil
-	case int64:
-		return int(typed), nil
-	case float64:
-		return int(typed), nil
-	default:
-		return 0, fmt.Errorf("field %q must be integer", key)
-	}
-}
-
-func timeField(raw bson.M, key string) (time.Time, error) {
-	value, ok := raw[key]
-	if !ok {
-		return time.Time{}, fmt.Errorf("missing field %q", key)
-	}
-
-	switch typed := value.(type) {
-	case time.Time:
-		return typed, nil
-	case primitive.DateTime:
-		return typed.Time(), nil
-	default:
-		return time.Time{}, fmt.Errorf("field %q must be time", key)
-	}
-}
-
-func optionalTimeField(raw bson.M, key string) (*time.Time, error) {
-	value, ok := raw[key]
-	if !ok || value == nil {
-		return nil, nil //nolint:nilnil // nil pointer represents an absent optional timestamp.
-	}
-
-	switch typed := value.(type) {
-	case time.Time:
-		return &typed, nil
-	case primitive.DateTime:
-		timeValue := typed.Time()
-		return &timeValue, nil
-	default:
-		return nil, fmt.Errorf("field %q must be time", key)
-	}
-}
-
-type createValues struct {
-	id          uuid.UUID
-	eventType   string
-	aggregateID uuid.UUID
-	payload     []byte
-	status      string
-	attempts    int
-	publishedAt *time.Time
-	lastError   string
-	createdAt   time.Time
-	updatedAt   time.Time
-}
-
-func documentFromCreateValues(values createValues, tenantID string) document {
-	return document{
-		ID:          values.id.String(),
-		EventType:   values.eventType,
-		AggregateID: values.aggregateID.String(),
-		Payload:     string(values.payload),
-		Status:      values.status,
-		Attempts:    values.attempts,
-		PublishedAt: values.publishedAt,
-		LastError:   values.lastError,
-		CreatedAt:   values.createdAt,
-		UpdatedAt:   values.updatedAt,
-		TenantID:    tenantID,
-	}
-}
-
-func normalizedCreateValues(event *outbox.OutboxEvent, now time.Time) createValues {
-	createdAt := event.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = now
-	}
-
-	updatedAt := event.UpdatedAt
-	if updatedAt.IsZero() || updatedAt.Before(createdAt) {
-		updatedAt = createdAt
-	}
-
-	return createValues{
-		id:          event.ID,
-		eventType:   strings.TrimSpace(event.EventType),
-		aggregateID: event.AggregateID,
-		payload:     event.Payload,
-		status:      outbox.OutboxStatusPending,
-		attempts:    0,
-		publishedAt: nil,
-		lastError:   "",
-		createdAt:   createdAt,
-		updatedAt:   updatedAt,
-	}
-}
-
-func validateCreateEvent(event *outbox.OutboxEvent) error {
-	if event == nil {
-		return outbox.ErrOutboxEventRequired
-	}
-
-	if event.ID == uuid.Nil {
-		return ErrIDRequired
-	}
-
-	if strings.TrimSpace(event.EventType) == "" {
-		return ErrEventTypeRequired
-	}
-
-	if event.AggregateID == uuid.Nil {
-		return ErrAggregateIDRequired
-	}
-
-	if len(event.Payload) == 0 {
-		return outbox.ErrOutboxEventPayloadRequired
-	}
-
-	if len(event.Payload) > outbox.DefaultMaxPayloadBytes {
-		return outbox.ErrOutboxEventPayloadTooLarge
-	}
-
-	if !json.Valid(event.Payload) {
-		return outbox.ErrOutboxEventPayloadNotJSON
-	}
-
-	return nil
-}
-
-func mergeFilters(base bson.M, extras ...bson.M) bson.M {
-	merged := make(bson.M, len(base)+len(extras)*2)
-	maps.Copy(merged, base)
-
-	for _, extra := range extras {
-		maps.Copy(merged, extra)
-	}
-
-	return merged
-}
-
-func parsedUUID(raw string) uuid.UUID {
-	parsed, err := uuid.Parse(raw)
-	if err != nil {
-		return uuid.Nil
-	}
-
-	return parsed
-}
-
-func logSanitizedError(logger libLog.Logger, ctx context.Context, message string, err error) {
-	if logger == nil || err == nil {
-		return
-	}
-
-	logger.Log(ctx, libLog.LevelError, message, libLog.String("error", outbox.SanitizeErrorMessageForStorage(err.Error())))
-}
-
-func regexpIdentifier() *regexp.Regexp {
-	return regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
-}
-
-func isNilPointer(value any) bool {
-	if value == nil {
-		return true
-	}
-
-	rv := reflect.ValueOf(value)
-
-	return rv.Kind() == reflect.Pointer && rv.IsNil()
 }

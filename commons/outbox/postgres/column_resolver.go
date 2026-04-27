@@ -10,6 +10,7 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
+	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -179,9 +180,15 @@ func (resolver *ColumnResolver) queryTenants(ctx context.Context) ([]string, err
 
 		tenant = strings.TrimSpace(tenant)
 
-		if tenant != "" {
-			tenants = append(tenants, tenant)
+		if tenant == "" {
+			continue
 		}
+
+		if !tmcore.IsValidTenantID(tenant) {
+			return nil, fmt.Errorf("%w: %q", outbox.ErrInvalidTenantID, tenant)
+		}
+
+		tenants = append(tenants, tenant)
 	}
 
 	if err := rows.Err(); err != nil {

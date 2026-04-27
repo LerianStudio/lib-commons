@@ -36,7 +36,7 @@ var sensitiveDataPatterns = []sensitiveDataPattern{
 		replacement: redactedValue,
 	},
 	{
-		pattern:     regexp.MustCompile(`(?i)\b(api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|password|secret)\s*[:=]\s*([^\s,;]+)`),
+		pattern:     regexp.MustCompile(`(?i)\b(api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|token|password|secret)\s*[:=]\s*([^\s,;]+)`),
 		replacement: `$1=` + redactedValue,
 	},
 	{
