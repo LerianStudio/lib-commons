@@ -171,6 +171,7 @@ func (resolver *ColumnResolver) queryTenants(ctx context.Context) ([]string, err
 	defer rows.Close()
 
 	tenants := make([]string, 0)
+	seen := make(map[string]struct{})
 
 	for rows.Next() {
 		var tenant string
@@ -187,6 +188,12 @@ func (resolver *ColumnResolver) queryTenants(ctx context.Context) ([]string, err
 		if !tmcore.IsValidTenantID(tenant) {
 			return nil, fmt.Errorf("%w: %q", outbox.ErrInvalidTenantID, tenant)
 		}
+
+		if _, ok := seen[tenant]; ok {
+			continue
+		}
+
+		seen[tenant] = struct{}{}
 
 		tenants = append(tenants, tenant)
 	}

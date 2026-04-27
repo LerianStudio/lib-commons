@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
 	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
@@ -171,7 +170,7 @@ func (repo *Repository) GetByID(ctx context.Context, id uuid.UUID) (*outbox.Outb
 		return nil, ErrIDRequired
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.get_outbox_by_id")
 	defer span.End()
@@ -204,7 +203,6 @@ func (repo *Repository) GetByID(ctx context.Context, id uuid.UUID) (*outbox.Outb
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			libOpentelemetry.HandleSpanError(span, "failed to get outbox event", err)
-			logSanitizedError(logger, ctx, "failed to get outbox event", err)
 		}
 
 		return nil, fmt.Errorf("getting outbox event: %w", err)
@@ -244,13 +242,17 @@ func (repo *Repository) create(
 		return nil, err
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.create_outbox_event")
 	defer span.End()
 
 	result, err := withTenantTxOrExisting(repo, ctx, tx, func(execTx *sql.Tx) (*outbox.OutboxEvent, error) {
-		values := normalizedCreateValues(event, time.Now().UTC())
+		values, valuesErr := normalizedCreateValues(event, time.Now().UTC())
+		if valuesErr != nil {
+			return nil, valuesErr
+		}
+
 		table := quoteIdentifierPath(repo.tableName)
 		query := "INSERT INTO " + table + // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
 			" (id, event_type, aggregate_id, payload, status, attempts, published_at, last_error, created_at, updated_at"
@@ -297,7 +299,6 @@ func (repo *Repository) create(
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to create outbox event", err)
-		logSanitizedError(logger, ctx, "failed to create outbox event", err)
 
 		return nil, fmt.Errorf("creating outbox event: %w", err)
 	}
@@ -319,7 +320,7 @@ func (repo *Repository) ListPending(ctx context.Context, limit int) ([]*outbox.O
 		return nil, ErrLimitMustBePositive
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.list_outbox_pending")
 	defer span.End()
@@ -356,7 +357,6 @@ func (repo *Repository) ListPending(ctx context.Context, limit int) ([]*outbox.O
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list outbox events", err)
-		logSanitizedError(logger, ctx, "failed to list outbox events", err)
 
 		return nil, fmt.Errorf("listing pending events: %w", err)
 	}
@@ -388,7 +388,7 @@ func (repo *Repository) ListPendingByType(
 		return nil, ErrEventTypeRequired
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.list_outbox_pending_by_type")
 	defer span.End()
@@ -425,7 +425,6 @@ func (repo *Repository) ListPendingByType(
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list outbox events by type", err)
-		logSanitizedError(logger, ctx, "failed to list outbox events by type", err)
 
 		return nil, fmt.Errorf("listing pending events by type: %w", err)
 	}
@@ -443,7 +442,7 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 		return nil, ErrRepositoryNotInitialized
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.list_outbox_tenants")
 	defer span.End()
@@ -451,7 +450,6 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 	tenants, err := repo.tenantDiscoverer.DiscoverTenants(ctx)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list tenant schemas", err)
-		logSanitizedError(logger, ctx, "failed to list tenant schemas", err)
 
 		return nil, fmt.Errorf("list tenant schemas: %w", err)
 	}

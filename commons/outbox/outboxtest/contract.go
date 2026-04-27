@@ -550,7 +550,7 @@ func testTenantIsolationAndDiscovery(t *testing.T, factory Factory) {
 
 	tenants, err := repo.ListTenants(contractContext(t))
 	require.NoError(t, err)
-	require.Equal(t, []string{"tenant-a", "tenant-b"}, tenants)
+	require.ElementsMatch(t, []string{"tenant-a", "tenant-b"}, tenants)
 }
 
 func testDispatcherLifecyclePersistsPublishedState(t *testing.T, factory Factory) {

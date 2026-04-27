@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 	"github.com/google/uuid"
@@ -30,7 +29,7 @@ func (repo *Repository) MarkPublished(ctx context.Context, id uuid.UUID, publish
 		return ErrIDRequired
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.mark_outbox_published")
 	defer span.End()
@@ -70,7 +69,6 @@ func (repo *Repository) MarkPublished(ctx context.Context, id uuid.UUID, publish
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to mark outbox published", err)
-		logSanitizedError(logger, ctx, "failed to mark outbox published", err)
 
 		return fmt.Errorf("marking published: %w", err)
 	}
@@ -106,7 +104,7 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 
 	errMsg = outbox.SanitizeErrorMessageForStorage(errMsg)
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.mark_outbox_failed")
 	defer span.End()
@@ -157,7 +155,6 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to mark outbox failed", err)
-		logSanitizedError(logger, ctx, "failed to mark outbox failed", err)
 
 		return fmt.Errorf("marking failed: %w", err)
 	}
@@ -188,7 +185,7 @@ func (repo *Repository) ListFailedForRetry(
 		return nil, ErrMaxAttemptsMustBePositive
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.list_failed_for_retry")
 	defer span.End()
@@ -198,7 +195,6 @@ func (repo *Repository) ListFailedForRetry(
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list failed events for retry", err)
-		logSanitizedError(logger, ctx, "failed to list failed events for retry", err)
 
 		return nil, fmt.Errorf("listing failed events for retry: %w", err)
 	}
@@ -229,7 +225,7 @@ func (repo *Repository) ResetForRetry(
 		return nil, ErrMaxAttemptsMustBePositive
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.reset_for_retry")
 	defer span.End()
@@ -266,7 +262,6 @@ func (repo *Repository) ResetForRetry(
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to reset events for retry", err)
-		logSanitizedError(logger, ctx, "failed to reset events for retry", err)
 
 		return nil, fmt.Errorf("resetting events for retry: %w", err)
 	}
@@ -297,7 +292,7 @@ func (repo *Repository) ResetStuckProcessing(
 		return nil, ErrMaxAttemptsMustBePositive
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.reset_outbox_processing")
 	defer span.End()
@@ -339,7 +334,6 @@ func (repo *Repository) ResetStuckProcessing(
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to reset stuck events", err)
-		logSanitizedError(logger, ctx, "failed to reset stuck events", err)
 
 		return nil, fmt.Errorf("reset stuck events: %w", err)
 	}
@@ -367,7 +361,7 @@ func (repo *Repository) MarkInvalid(ctx context.Context, id uuid.UUID, errMsg st
 
 	errMsg = outbox.SanitizeErrorMessageForStorage(errMsg)
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.mark_outbox_invalid")
 	defer span.End()
@@ -407,7 +401,6 @@ func (repo *Repository) MarkInvalid(ctx context.Context, id uuid.UUID, errMsg st
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to mark outbox invalid", err)
-		logSanitizedError(logger, ctx, "failed to mark outbox invalid", err)
 
 		return fmt.Errorf("marking invalid: %w", err)
 	}

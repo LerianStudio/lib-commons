@@ -81,8 +81,9 @@ func setupMongoContainer(t *testing.T) (string, func()) {
 		if err != nil {
 			lastErr = err
 			termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			_ = container.Terminate(termCtx)
+			termErr := container.Terminate(termCtx)
 			termCancel()
+			require.NoError(t, termErr, "failed to terminate MongoDB container after connection string error")
 			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
 
 			continue
@@ -116,7 +117,10 @@ func newIntegrationRepoFixture(t *testing.T, repoOpts ...Option) *integrationRep
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		require.NoError(t, client.Close(context.Background()))
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+
+		require.NoError(t, client.Close(cleanupCtx))
 	})
 
 	return newIntegrationRepoFixtureFromClient(t, context.Background(), client, repoOpts...)
@@ -157,7 +161,10 @@ func newIntegrationMongoSuite(t *testing.T) *integrationMongoSuite {
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		require.NoError(t, client.Close(context.Background()))
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+
+		require.NoError(t, client.Close(cleanupCtx))
 	})
 
 	return &integrationMongoSuite{ctx: context.Background(), client: client}
@@ -357,7 +364,10 @@ func TestIntegration_Repository_UsesTenantScopedMongoDatabaseFromContext(t *test
 
 	tenantDB := driverClient.Database("tenant_outbox_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16])
 	t.Cleanup(func() {
-		require.NoError(t, tenantDB.Drop(context.Background()))
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+
+		require.NoError(t, tenantDB.Drop(cleanupCtx))
 	})
 
 	tenantCtx := outbox.ContextWithTenantID(fx.ctx, "tenant-a")
@@ -406,7 +416,10 @@ func TestIntegration_Repository_UsesModuleScopedMongoDatabaseFromContext(t *test
 
 	moduleDB := driverClient.Database("tenant_module_outbox_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16])
 	t.Cleanup(func() {
-		require.NoError(t, moduleDB.Drop(context.Background()))
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+
+		require.NoError(t, moduleDB.Drop(cleanupCtx))
 	})
 
 	ctx := outbox.ContextWithTenantID(fx.ctx, "tenant-a")
@@ -434,7 +447,10 @@ func TestIntegration_Repository_DispatcherDrainsTenantDatabaseWithResolver(t *te
 
 	tenantDB := driverClient.Database("tenant_resolver_outbox_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16])
 	t.Cleanup(func() {
-		require.NoError(t, tenantDB.Drop(context.Background()))
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+
+		require.NoError(t, tenantDB.Drop(cleanupCtx))
 	})
 
 	resolver := &integrationTenantDatabaseResolver{
@@ -489,5 +505,10 @@ func TestIntegration_Repository_DispatcherDrainsTenantDatabaseWithResolver(t *te
 	}, 5*time.Second, 50*time.Millisecond)
 
 	dispatcher.Stop()
-	require.NoError(t, <-runDone)
+	select {
+	case err := <-runDone:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		require.Fail(t, "dispatcher did not stop within timeout")
+	}
 }

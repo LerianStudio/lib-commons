@@ -26,7 +26,7 @@ func (repo *Repository) claimPending(ctx context.Context, limit int, eventType s
 		return nil, ErrLimitMustBePositive
 	}
 
-	logger, tracer := repo.tracking(ctx)
+	tracer := repo.tracking(ctx)
 
 	ctx, span := tracer.Start(ctx, spanName)
 	defer span.End()
@@ -41,7 +41,6 @@ func (repo *Repository) claimPending(ctx context.Context, limit int, eventType s
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list outbox events", err)
-		logSanitizedError(logger, ctx, "failed to list outbox events", err)
 
 		return nil, fmt.Errorf("listing pending events: %w", err)
 	}
@@ -72,13 +71,21 @@ func (repo *Repository) claimMatching(
 			break
 		}
 
-		batch, modified, err := repo.claimDocuments(ctx, candidates, fromStatus, returnStatus, sortSpec, setForCandidate)
+		batch, modified, claimToken, err := repo.claimDocuments(ctx, candidates, fromStatus, returnStatus, sortSpec, setForCandidate)
 		if err != nil {
 			return nil, err
 		}
 
 		claimed = append(claimed, batch...)
 		if modified != int64(len(batch)) {
+			if err := repo.rollbackMissingClaims(ctx, candidates, batch, claimToken, returnStatus, fromStatus); err != nil {
+				return nil, err
+			}
+
+			continue
+		}
+
+		if fromStatus == returnStatus {
 			break
 		}
 
@@ -90,6 +97,43 @@ func (repo *Repository) claimMatching(
 	return claimed, nil
 }
 
+func (repo *Repository) rollbackMissingClaims(ctx context.Context, candidates []document, claimed []document, claimToken string, returnStatus string, fromStatus string) error {
+	if claimToken == "" {
+		return nil
+	}
+
+	claimedIDs := make(map[string]struct{}, len(claimed))
+	for _, doc := range claimed {
+		claimedIDs[doc.ID] = struct{}{}
+	}
+
+	models := make([]mongodriver.WriteModel, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, ok := claimedIDs[candidate.ID]; ok {
+			continue
+		}
+
+		models = append(models, mongodriver.NewUpdateOneModel().
+			SetFilter(mergeFilters(bson.M{"id": candidate.ID, "status": returnStatus, "claim_token": claimToken}, repo.tenantMatchFilter(candidate.TenantID))).
+			SetUpdate(bson.M{"$set": bson.M{"status": fromStatus, "updated_at": time.Now().UTC()}, "$unset": bson.M{"claim_token": ""}}))
+	}
+
+	if len(models) == 0 {
+		return nil
+	}
+
+	collection, err := repo.collection(ctx)
+	if err != nil {
+		return err
+	}
+
+	if _, err := collection.BulkWrite(ctx, models, mongooptions.BulkWrite().SetOrdered(false)); err != nil {
+		return fmt.Errorf("rolling back missing claims: %w", err)
+	}
+
+	return nil
+}
+
 func (repo *Repository) claimDocuments(
 	ctx context.Context,
 	candidates []document,
@@ -97,14 +141,14 @@ func (repo *Repository) claimDocuments(
 	returnStatus string,
 	sortSpec bson.D,
 	setForCandidate func(document) bson.M,
-) ([]document, int64, error) {
+) ([]document, int64, string, error) {
 	if len(candidates) == 0 {
-		return []document{}, 0, nil
+		return []document{}, 0, "", nil
 	}
 
 	collection, err := repo.collection(ctx)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 
 	claimToken := uuid.NewString()
@@ -131,15 +175,15 @@ func (repo *Repository) claimDocuments(
 
 	result, err := collection.BulkWrite(ctx, models, mongooptions.BulkWrite().SetOrdered(false))
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 
 	if result.ModifiedCount == 0 {
-		return []document{}, 0, nil
+		return []document{}, 0, claimToken, nil
 	}
 
 	if len(claimedIDs) == 0 {
-		return []document{}, result.ModifiedCount, nil
+		return []document{}, result.ModifiedCount, claimToken, nil
 	}
 
 	claimedFilter := mergeFilters(
@@ -150,12 +194,12 @@ func (repo *Repository) claimDocuments(
 
 	cursor, err := collection.Find(ctx, claimedFilter, mongooptions.Find().SetSort(sortSpec))
 	if err != nil {
-		return nil, result.ModifiedCount, err
+		return nil, int64(len(claimedIDs)), claimToken, err
 	}
 
-	claimed, err := repo.decodeAndCloseCursor(ctx, cursor, int(result.ModifiedCount))
+	claimed, err := repo.decodeAndCloseCursor(ctx, cursor, len(claimedIDs))
 
-	return claimed, result.ModifiedCount, err
+	return claimed, int64(len(claimedIDs)), claimToken, err
 }
 
 func (repo *Repository) findClaimCandidates(ctx context.Context, filter bson.M, sortSpec bson.D, limit int) ([]document, error) {

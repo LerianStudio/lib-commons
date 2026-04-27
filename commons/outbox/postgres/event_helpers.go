@@ -22,7 +22,11 @@ type createValues struct {
 	updatedAt   time.Time
 }
 
-func normalizedCreateValues(event *outbox.OutboxEvent, now time.Time) createValues {
+func normalizedCreateValues(event *outbox.OutboxEvent, now time.Time) (createValues, error) {
+	if event == nil {
+		return createValues{}, outbox.ErrOutboxEventRequired
+	}
+
 	createdAt := event.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = now
@@ -44,7 +48,7 @@ func normalizedCreateValues(event *outbox.OutboxEvent, now time.Time) createValu
 		lastError:   "",
 		createdAt:   createdAt,
 		updatedAt:   updatedAt,
-	}
+	}, nil
 }
 
 func validateCreateEvent(event *outbox.OutboxEvent) error {

@@ -20,12 +20,7 @@ func validateIdentifier(identifier string) error {
 }
 
 func validateIdentifierPath(path string) error {
-	parts := strings.Split(path, ".")
-	if len(parts) == 0 {
-		return ErrInvalidIdentifier
-	}
-
-	for _, part := range parts {
+	for part := range strings.SplitSeq(path, ".") {
 		trimmed := strings.TrimSpace(part)
 		if err := validateIdentifier(trimmed); err != nil {
 			return err

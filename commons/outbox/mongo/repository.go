@@ -240,7 +240,7 @@ func (repo *Repository) Create(ctx context.Context, event *outbox.OutboxEvent) (
 		return nil, err
 	}
 
-	logger, tracer := repo.tracking(ctx)
+	tracer := repo.tracking(ctx)
 
 	ctx, span := tracer.Start(ctx, "mongo.create_outbox_event")
 	defer span.End()
@@ -261,7 +261,6 @@ func (repo *Repository) Create(ctx context.Context, event *outbox.OutboxEvent) (
 
 	if _, err := collection.InsertOne(ctx, doc.toBSON(repo.tenantField)); err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to create outbox event", err)
-		logSanitizedError(logger, ctx, "failed to create outbox event", err)
 
 		return nil, fmt.Errorf("creating outbox event: %w", err)
 	}
@@ -315,7 +314,7 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 		return []string{}, nil
 	}
 
-	logger, tracer := repo.tracking(ctx)
+	tracer := repo.tracking(ctx)
 
 	ctx, span := tracer.Start(ctx, "mongo.list_outbox_tenants")
 	defer span.End()
@@ -324,7 +323,6 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 		tenants, err := repo.tenantDatabaseResolver.ListTenants(ctx, repo.tenantModule)
 		if err != nil {
 			libOpentelemetry.HandleSpanError(span, "failed to list tenant databases", err)
-			logSanitizedError(logger, ctx, "failed to list tenant databases", err)
 
 			return nil, fmt.Errorf("listing tenant databases: %w", err)
 		}
@@ -344,7 +342,6 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list tenants", err)
-		logSanitizedError(logger, ctx, "failed to list tenants", err)
 
 		return nil, fmt.Errorf("listing tenants: %w", err)
 	}
@@ -386,7 +383,7 @@ func (repo *Repository) GetByID(ctx context.Context, id uuid.UUID) (*outbox.Outb
 		return nil, ErrIDRequired
 	}
 
-	logger, tracer := repo.tracking(ctx)
+	tracer := repo.tracking(ctx)
 
 	ctx, span := tracer.Start(ctx, "mongo.get_outbox_by_id")
 	defer span.End()
@@ -406,7 +403,6 @@ func (repo *Repository) GetByID(ctx context.Context, id uuid.UUID) (*outbox.Outb
 	if err != nil {
 		if !errors.Is(err, mongodriver.ErrNoDocuments) {
 			libOpentelemetry.HandleSpanError(span, "failed to get outbox event", err)
-			logSanitizedError(logger, ctx, "failed to get outbox event", err)
 		}
 
 		return nil, fmt.Errorf("getting outbox event: %w", err)
@@ -432,7 +428,7 @@ func (repo *Repository) MarkPublished(ctx context.Context, id uuid.UUID, publish
 		return ErrIDRequired
 	}
 
-	logger, tracer := repo.tracking(ctx)
+	tracer := repo.tracking(ctx)
 
 	ctx, span := tracer.Start(ctx, "mongo.mark_outbox_published")
 	defer span.End()
@@ -458,7 +454,6 @@ func (repo *Repository) MarkPublished(ctx context.Context, id uuid.UUID, publish
 	)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to mark outbox published", err)
-		logSanitizedError(logger, ctx, "failed to mark outbox published", err)
 
 		return fmt.Errorf("marking published: %w", err)
 	}
@@ -497,7 +492,7 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 
 	errMsg = outbox.SanitizeErrorMessageForStorage(errMsg)
 
-	logger, tracer := repo.tracking(ctx)
+	tracer := repo.tracking(ctx)
 
 	ctx, span := tracer.Start(ctx, "mongo.mark_outbox_failed")
 	defer span.End()
@@ -509,7 +504,6 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 		}
 
 		libOpentelemetry.HandleSpanError(span, "failed to load outbox event", err)
-		logSanitizedError(logger, ctx, "failed to load outbox event", err)
 
 		return fmt.Errorf("loading outbox event: %w", err)
 	}
@@ -543,7 +537,6 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 	)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to mark outbox failed", err)
-		logSanitizedError(logger, ctx, "failed to mark outbox failed", err)
 
 		return fmt.Errorf("marking failed: %w", err)
 	}
@@ -572,7 +565,7 @@ func (repo *Repository) ListFailedForRetry(ctx context.Context, limit int, faile
 		return nil, ErrMaxAttemptsMustBePositive
 	}
 
-	logger, tracer := repo.tracking(ctx)
+	tracer := repo.tracking(ctx)
 
 	ctx, span := tracer.Start(ctx, "mongo.list_failed_for_retry")
 	defer span.End()
@@ -584,7 +577,6 @@ func (repo *Repository) ListFailedForRetry(ctx context.Context, limit int, faile
 	}, bson.D{{Key: "updated_at", Value: 1}, {Key: "id", Value: 1}}, limit)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list failed events for retry", err)
-		logSanitizedError(logger, ctx, "failed to list failed events for retry", err)
 
 		return nil, fmt.Errorf("listing failed events for retry: %w", err)
 	}
@@ -609,7 +601,7 @@ func (repo *Repository) ResetForRetry(ctx context.Context, limit int, failedBefo
 		return nil, ErrMaxAttemptsMustBePositive
 	}
 
-	logger, tracer := repo.tracking(ctx)
+	tracer := repo.tracking(ctx)
 
 	ctx, span := tracer.Start(ctx, "mongo.reset_for_retry")
 	defer span.End()
@@ -623,7 +615,6 @@ func (repo *Repository) ResetForRetry(ctx context.Context, limit int, failedBefo
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to reset events for retry", err)
-		logSanitizedError(logger, ctx, "failed to reset events for retry", err)
 
 		return nil, fmt.Errorf("resetting events for retry: %w", err)
 	}
@@ -648,7 +639,7 @@ func (repo *Repository) ResetStuckProcessing(ctx context.Context, limit int, pro
 		return nil, ErrMaxAttemptsMustBePositive
 	}
 
-	logger, tracer := repo.tracking(ctx)
+	tracer := repo.tracking(ctx)
 
 	ctx, span := tracer.Start(ctx, "mongo.reset_outbox_processing")
 	defer span.End()
@@ -670,7 +661,6 @@ func (repo *Repository) ResetStuckProcessing(ctx context.Context, limit int, pro
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to reset stuck events", err)
-		logSanitizedError(logger, ctx, "failed to reset stuck events", err)
 
 		return nil, fmt.Errorf("reset stuck events: %w", err)
 	}
@@ -697,7 +687,7 @@ func (repo *Repository) MarkInvalid(ctx context.Context, id uuid.UUID, errMsg st
 
 	errMsg = outbox.SanitizeErrorMessageForStorage(errMsg)
 
-	logger, tracer := repo.tracking(ctx)
+	tracer := repo.tracking(ctx)
 
 	ctx, span := tracer.Start(ctx, "mongo.mark_outbox_invalid")
 	defer span.End()
@@ -719,7 +709,6 @@ func (repo *Repository) MarkInvalid(ctx context.Context, id uuid.UUID, errMsg st
 	)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to mark outbox invalid", err)
-		logSanitizedError(logger, ctx, "failed to mark outbox invalid", err)
 
 		return fmt.Errorf("marking invalid: %w", err)
 	}
@@ -953,15 +942,11 @@ func (repo *Repository) idTenantFilter(id uuid.UUID, tenantID string) bson.M {
 	return filter
 }
 
-func (repo *Repository) tracking(ctx context.Context) (libLog.Logger, trace.Tracer) {
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-	if nilcheck.Interface(logger) {
-		logger = repo.logger
-	}
-
-	if nilcheck.Interface(logger) {
-		logger = libLog.NewNop()
-	}
+func (repo *Repository) tracking(ctx context.Context) trace.Tracer {
+	logger, tracer, meter, trackingErr := libCommons.NewTrackingFromContext(ctx)
+	_ = logger
+	_ = meter
+	_ = trackingErr
 
 	if tracer == nil {
 		tracer = repo.tracer
@@ -971,5 +956,5 @@ func (repo *Repository) tracking(ctx context.Context) (libLog.Logger, trace.Trac
 		tracer = noop.NewTracerProvider().Tracer("outbox.mongo")
 	}
 
-	return logger, tracer
+	return tracer
 }

@@ -54,6 +54,7 @@ func newIntegrationRepoFixtureWithDSN(t *testing.T, dsn string) *integrationRepo
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
+	fixtureCtx := context.Background()
 	client, err := libPostgres.New(libPostgres.Config{PrimaryDSN: dsn, ReplicaDSN: dsn})
 	require.NoError(t, err)
 
@@ -98,7 +99,10 @@ CREATE TABLE %s (
 `, quoteIdentifier(tableName)))
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		if _, err := primaryDB.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", quoteIdentifier(tableName))); err != nil {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+
+		if _, err := primaryDB.ExecContext(cleanupCtx, fmt.Sprintf("DROP TABLE IF EXISTS %s", quoteIdentifier(tableName))); err != nil {
 			t.Errorf("cleanup: drop table %s: %v", tableName, err)
 		}
 	})
@@ -120,12 +124,12 @@ CREATE TABLE %s (
 	require.NoError(t, err)
 
 	return &integrationRepoFixture{
-		ctx:       ctx,
+		ctx:       fixtureCtx,
 		client:    client,
 		primaryDB: primaryDB,
 		repo:      repo,
 		tableName: tableName,
-		tenantCtx: outbox.ContextWithTenantID(ctx, "tenant-a"),
+		tenantCtx: outbox.ContextWithTenantID(fixtureCtx, "tenant-a"),
 	}
 }
 

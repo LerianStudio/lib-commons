@@ -303,16 +303,6 @@ func TestRepository_TenantIDFromContext(t *testing.T) {
 	require.ErrorIs(t, err, outbox.ErrInvalidTenantID)
 }
 
-func TestLogSanitizedError_TypedNilLoggerDoesNotPanic(t *testing.T) {
-	t.Parallel()
-
-	var logger *panicLogger
-
-	require.NotPanics(t, func() {
-		logSanitizedError(logger, context.Background(), "msg", errors.New("boom"))
-	})
-}
-
 func TestNewRepository_WithTypedNilLoggerFallsBackToNop(t *testing.T) {
 	t.Parallel()
 
@@ -350,7 +340,7 @@ func TestNormalizedCreateValues_EnforcesInitialLifecycleInvariants(t *testing.T)
 	now := time.Now().UTC()
 	publishedAt := now.Add(-time.Minute)
 
-	values := normalizedCreateValues(&outbox.OutboxEvent{
+	values, err := normalizedCreateValues(&outbox.OutboxEvent{
 		ID:          uuid.New(),
 		EventType:   "payment.created",
 		AggregateID: uuid.New(),
@@ -362,6 +352,7 @@ func TestNormalizedCreateValues_EnforcesInitialLifecycleInvariants(t *testing.T)
 		CreatedAt:   now,
 		UpdatedAt:   now.Add(-time.Hour),
 	}, now)
+	require.NoError(t, err)
 
 	require.Equal(t, outbox.OutboxStatusPending, values.status)
 	require.Equal(t, 0, values.attempts)
@@ -374,14 +365,23 @@ func TestNormalizedCreateValues_EnforcesInitialLifecycleInvariants(t *testing.T)
 func TestNormalizedCreateValues_TrimsEventType(t *testing.T) {
 	t.Parallel()
 
-	values := normalizedCreateValues(&outbox.OutboxEvent{
+	values, err := normalizedCreateValues(&outbox.OutboxEvent{
 		ID:          uuid.New(),
 		EventType:   "  payment.created  ",
 		AggregateID: uuid.New(),
 		Payload:     []byte(`{"ok":true}`),
 	}, time.Now().UTC())
+	require.NoError(t, err)
 
 	require.Equal(t, "payment.created", values.eventType)
+}
+
+func TestNormalizedCreateValues_NilEventReturnsError(t *testing.T) {
+	t.Parallel()
+
+	values, err := normalizedCreateValues(nil, time.Now().UTC())
+	require.ErrorIs(t, err, outbox.ErrOutboxEventRequired)
+	require.Zero(t, values)
 }
 
 func TestRepository_RequiresTenant(t *testing.T) {

@@ -5,17 +5,17 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
-	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
+	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
+	"go.opentelemetry.io/otel/trace"
 )
 
-func logSanitizedError(logger libLog.Logger, ctx context.Context, message string, err error) {
-	if nilcheck.Interface(logger) || err == nil {
-		return
-	}
+func tracerFromContext(ctx context.Context) trace.Tracer {
+	logger, tracer, meter, trackingErr := libCommons.NewTrackingFromContext(ctx)
+	_ = logger
+	_ = meter
+	_ = trackingErr
 
-	logger.Log(ctx, libLog.LevelError, message, libLog.String("error", outbox.SanitizeErrorMessageForStorage(err.Error())))
+	return tracer
 }
 
 func ensureRowsAffected(result sql.Result) error {

@@ -16,6 +16,14 @@ func queryOutboxEvents(
 	limit int,
 	errorPrefix string,
 ) ([]*outbox.OutboxEvent, error) {
+	if tx == nil {
+		return nil, ErrConnectionRequired
+	}
+
+	if limit < 0 {
+		limit = 0
+	}
+
 	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", errorPrefix, err)
