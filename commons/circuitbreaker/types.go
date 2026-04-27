@@ -22,6 +22,18 @@ var (
 	// ErrConfigMismatch is returned when GetOrCreate is called with a config that
 	// differs from the one stored for an existing breaker with the same name.
 	ErrConfigMismatch = errors.New("circuitbreaker: breaker already exists with different config")
+
+	// ErrBreakerOpen is returned from Execute when the breaker is OPEN and
+	// rejects the request without invoking the callback. Aliases
+	// gobreaker.ErrOpenState so callers that previously matched the underlying
+	// sentinel continue to work via errors.Is.
+	ErrBreakerOpen = gobreaker.ErrOpenState
+
+	// ErrBreakerHalfOpenFull is returned from Execute when the breaker is
+	// HALF-OPEN and has exhausted its probe-request quota. Aliases
+	// gobreaker.ErrTooManyRequests for the same errors.Is compatibility as
+	// ErrBreakerOpen.
+	ErrBreakerHalfOpenFull = gobreaker.ErrTooManyRequests
 )
 
 // Manager manages circuit breakers for external services

@@ -4,6 +4,8 @@ package systemplane
 import (
 	"sort"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 
 // ListEntry is a single entry returned by [Client.List]. It exposes the key
@@ -112,6 +114,46 @@ func (c *Client) KeyRedaction(namespace, key string) RedactPolicy {
 	}
 
 	return def.redaction
+}
+
+// KeyStatus reports whether a (namespace, key) pair is registered and, if so,
+// whether it was registered via [Client.RegisterTenantScoped]. Returns
+// (false, false) for nil receivers or unregistered keys. A key registered via
+// the legacy [Client.Register] returns (true, false); a tenant-scoped key
+// returns (true, true).
+//
+// Callers such as the admin HTTP surface use this to distinguish "key does not
+// exist" (404) from "key exists but is not tenant-scoped" (400) without
+// threading new sentinel errors through the write path.
+func (c *Client) KeyStatus(namespace, key string) (registered, tenantScoped bool) {
+	if c == nil {
+		return false, false
+	}
+
+	nk := nskey{Namespace: namespace, Key: key}
+
+	c.registryMu.RLock()
+	_, registered = c.registry[nk]
+	_, tenantScoped = c.tenantScopedRegistry[nk]
+	c.registryMu.RUnlock()
+
+	return registered, tenantScoped
+}
+
+// Logger returns the logger attached to this Client (via [WithLogger] at
+// construction time) or a nop logger when the Client is nil or was
+// constructed without a logger. Never returns nil — callers may safely
+// invoke methods on the returned logger without a nil check.
+//
+// This accessor exists so sibling subpackages (notably commons/systemplane/admin)
+// can share the Client's configured logger without reintroducing a
+// parallel WithLogger option on their own surface.
+func (c *Client) Logger() log.Logger {
+	if c == nil || c.logger == nil {
+		return log.NewNop()
+	}
+
+	return c.logger
 }
 
 // Get returns the current value for the given namespace and key.

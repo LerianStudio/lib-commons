@@ -43,6 +43,17 @@ func TestContextWithTenantIDStrict_NoErrorOnCleanID(t *testing.T) {
 	require.Equal(t, "tenant-1", tenantID)
 }
 
+func TestContextWithTenantIDStrict_ReturnsErrorOnInvalidTenantID(t *testing.T) {
+	t.Parallel()
+
+	ctx, err := ContextWithTenantIDStrict(context.Background(), "_invalid")
+	require.ErrorIs(t, err, ErrInvalidTenantID)
+
+	tenantID, ok := TenantIDFromContext(ctx)
+	require.False(t, ok)
+	require.Empty(t, tenantID)
+}
+
 func TestContextWithTenantID_NilContextUsesBackground(t *testing.T) {
 	t.Parallel()
 

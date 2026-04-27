@@ -21,7 +21,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
-	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/systemplanetest"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/storetest"
 )
 
 // tableSeq generates unique table names so each factory call produces an
@@ -31,7 +31,10 @@ var tableSeq atomic.Int64
 
 // startPostgresContainer creates a PostgreSQL 17 testcontainer and returns
 // its DSN. The container is terminated when the test finishes.
-func startPostgresContainer(t *testing.T, ctx context.Context) string {
+//
+// Argument order follows the Go convention — context first, then *testing.T —
+// to satisfy linters that flag `t, ctx` as an anti-pattern (L-S2-test-1).
+func startPostgresContainer(ctx context.Context, t *testing.T) string {
 	t.Helper()
 
 	container, err := tcpostgres.Run(ctx,
@@ -73,10 +76,11 @@ func newTestStore(t *testing.T, dsn string) *Store {
 	table := fmt.Sprintf("sp_test_%d", tableSeq.Add(1))
 
 	s, err := New(Config{
-		DB:        db,
-		ListenDSN: dsn,
-		Channel:   "systemplane_changes",
-		Table:     table,
+		DB:                  db,
+		ListenDSN:           dsn,
+		Channel:             "systemplane_changes",
+		Table:               table,
+		TenantSchemaEnabled: true,
 	})
 	require.NoError(t, err)
 
@@ -87,10 +91,7 @@ func newTestStore(t *testing.T, dsn string) *Store {
 	return s
 }
 
-// TestIntegration_ContractSuite invokes the shared contract test suite. If
-// Phase 4 hasn't landed yet, systemplanetest.Run is a no-op stub that passes
-// trivially.
-func TestIntegration_ContractSuite(t *testing.T) {
+func TestIntegration_TenantStoreContracts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -98,9 +99,10 @@ func TestIntegration_ContractSuite(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	dsn := startPostgresContainer(t, ctx)
+	dsn := startPostgresContainer(ctx, t)
+	storetest.RunTenantContracts(t, func(t *testing.T) store.Store {
+		t.Helper()
 
-	systemplanetest.Run(t, func(t *testing.T) store.Store {
 		return newTestStore(t, dsn)
 	})
 }
@@ -115,7 +117,7 @@ func TestIntegration_SetEmitsNotifyWithCorrectPayload(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	dsn := startPostgresContainer(t, ctx)
+	dsn := startPostgresContainer(ctx, t)
 	s := newTestStore(t, dsn)
 
 	var mu sync.Mutex
@@ -162,6 +164,12 @@ func TestIntegration_SetEmitsNotifyWithCorrectPayload(t *testing.T) {
 
 	assert.Equal(t, "global", evt.Namespace)
 	assert.Equal(t, "log.level", evt.Key)
+	// H6: a global-path Set must emit NOTIFY carrying the '_global' sentinel
+	// as tenant_id — the Client's changefeed router distinguishes global vs
+	// tenant-scoped events by this field. Asserting it here pins the NOTIFY
+	// payload contract at the integration boundary where the real trigger
+	// runs, not just the parseNotifyPayload unit test.
+	assert.Equal(t, store.SentinelGlobal, evt.TenantID)
 
 	subCancel()
 
@@ -182,7 +190,7 @@ func TestIntegration_SetIsIdempotent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	dsn := startPostgresContainer(t, ctx)
+	dsn := startPostgresContainer(ctx, t)
 	s := newTestStore(t, dsn)
 
 	value, err := json.Marshal(42)
@@ -225,7 +233,7 @@ func TestIntegration_InvalidChannelNameRejected(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	dsn := startPostgresContainer(t, ctx)
+	dsn := startPostgresContainer(ctx, t)
 
 	db, err := sql.Open("pgx", dsn)
 	require.NoError(t, err)
@@ -254,7 +262,7 @@ func TestIntegration_ListenReconnectsAfterConnDrop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	dsn := startPostgresContainer(t, ctx)
+	dsn := startPostgresContainer(ctx, t)
 	s := newTestStore(t, dsn)
 
 	var mu sync.Mutex
@@ -363,7 +371,7 @@ func TestIntegration_GetNotFound(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	dsn := startPostgresContainer(t, ctx)
+	dsn := startPostgresContainer(ctx, t)
 	s := newTestStore(t, dsn)
 
 	_, found, err := s.Get(ctx, "nonexistent", "key")
@@ -381,7 +389,7 @@ func TestIntegration_ListEmpty(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	dsn := startPostgresContainer(t, ctx)
+	dsn := startPostgresContainer(ctx, t)
 	s := newTestStore(t, dsn)
 
 	entries, err := s.List(ctx)
@@ -399,7 +407,7 @@ func TestIntegration_SetAndGet(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	dsn := startPostgresContainer(t, ctx)
+	dsn := startPostgresContainer(ctx, t)
 	s := newTestStore(t, dsn)
 
 	value, err := json.Marshal("info")

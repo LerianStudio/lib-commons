@@ -17,9 +17,15 @@ type tenantIDContextKey string
 // This constant will be removed in v3.0.
 const TenantIDContextKey tenantIDContextKey = "outbox.tenant_id"
 
-// ErrTenantIDWhitespace is returned when a tenant ID contains leading or
-// trailing whitespace. Callers should trim the ID before passing it.
-var ErrTenantIDWhitespace = errors.New("tenant ID contains leading or trailing whitespace")
+var (
+	// ErrTenantIDWhitespace is returned when a tenant ID contains leading or
+	// trailing whitespace. Callers should trim the ID before passing it.
+	ErrTenantIDWhitespace = errors.New("tenant ID contains leading or trailing whitespace")
+
+	// ErrInvalidTenantID is returned by tenant-aware outbox repositories when a
+	// tenant ID does not satisfy tenant-manager/core.IsValidTenantID.
+	ErrInvalidTenantID = errors.New("invalid tenant ID")
+)
 
 // TenantResolver applies tenant-scoping rules for a transaction.
 type TenantResolver interface {
@@ -34,8 +40,8 @@ type TenantDiscoverer interface {
 // ContextWithTenantID returns a context carrying tenantID.
 //
 // If the tenant ID contains leading or trailing whitespace, it is trimmed
-// before storing. An error is returned alongside the context to signal that
-// the caller provided a malformed input.
+// before storing. Tenant-aware repository implementations may reject stored
+// tenant IDs that do not satisfy tenant-manager/core.IsValidTenantID.
 func ContextWithTenantID(ctx context.Context, tenantID string) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -54,8 +60,10 @@ func ContextWithTenantID(ctx context.Context, tenantID string) context.Context {
 // ContextWithTenantIDStrict returns a context carrying tenantID.
 //
 // Unlike ContextWithTenantID, this variant returns an error when the tenant ID
-// contains leading or trailing whitespace instead of silently trimming. The
-// trimmed value is still stored so the context is usable.
+// contains leading or trailing whitespace instead of silently trimming, and
+// returns ErrInvalidTenantID when the trimmed ID does not satisfy
+// tenant-manager/core.IsValidTenantID. The trimmed value is still stored when
+// only whitespace differs so callers can decide whether to proceed.
 func ContextWithTenantIDStrict(ctx context.Context, tenantID string) (context.Context, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -64,6 +72,10 @@ func ContextWithTenantIDStrict(ctx context.Context, tenantID string) (context.Co
 	trimmed := strings.TrimSpace(tenantID)
 	if trimmed == "" {
 		return ctx, nil
+	}
+
+	if !core.IsValidTenantID(trimmed) {
+		return ctx, ErrInvalidTenantID
 	}
 
 	ctx = core.ContextWithTenantID(ctx, trimmed)

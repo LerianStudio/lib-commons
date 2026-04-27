@@ -1,3 +1,5 @@
+//go:build unit || integration
+
 package admin_test
 
 import (
@@ -6,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +18,7 @@ import (
 	commonshttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/admin"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -25,16 +29,36 @@ import (
 // fakeStore implements systemplane.TestStore entirely in memory. Set invokes
 // all registered subscribe handlers synchronously after the map write,
 // simulating a changefeed echo.
+//
+// Tenant-scoped rows live in a separate map keyed by (tenantID, ns, key) so
+// the legacy namespace/key path stays unchanged and existing tests that
+// never touch tenant methods continue to observe the pre-tenant behavior.
 type fakeStore struct {
-	mu       sync.Mutex
-	entries  map[string]systemplane.TestEntry // keyed by "namespace\x1fkey"
-	handlers []func(systemplane.TestEvent)
-	closed   bool
+	mu           sync.Mutex
+	entries      map[string]systemplane.TestEntry    // keyed by "namespace\x1fkey" — globals only
+	tenantRows   map[tenantKey]systemplane.TestEntry // keyed by (tenantID, ns, key)
+	handlers     []func(systemplane.TestEvent)
+	subscribedCh chan struct{} // closed when the first Subscribe registers
+
+	// errOnSet, if non-nil, is returned verbatim by Set. Used to exercise
+	// the mapSentinelErr default (non-sentinel → 500) branch.
+	errOnSet error
+}
+
+// tenantKey addresses a tenant-scoped row. This is scoped to the admin
+// fakeStore and does not collide with the same-named type in the parent
+// systemplane package's smoke tests.
+type tenantKey struct {
+	tenantID  string
+	namespace string
+	key       string
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		entries: make(map[string]systemplane.TestEntry),
+		entries:      make(map[string]systemplane.TestEntry),
+		tenantRows:   make(map[tenantKey]systemplane.TestEntry),
+		subscribedCh: make(chan struct{}),
 	}
 }
 
@@ -63,6 +87,14 @@ func (f *fakeStore) Get(_ context.Context, namespace, key string) (systemplane.T
 
 func (f *fakeStore) Set(_ context.Context, e systemplane.TestEntry) error {
 	f.mu.Lock()
+
+	if f.errOnSet != nil {
+		err := f.errOnSet
+		f.mu.Unlock()
+
+		return err
+	}
+
 	f.entries[storeKey(e.Namespace, e.Key)] = e
 
 	handlers := make([]func(systemplane.TestEvent), len(f.handlers))
@@ -80,8 +112,18 @@ func (f *fakeStore) Set(_ context.Context, e systemplane.TestEntry) error {
 
 func (f *fakeStore) Subscribe(ctx context.Context, handler func(systemplane.TestEvent)) error {
 	f.mu.Lock()
+	first := len(f.handlers) == 0
 	f.handlers = append(f.handlers, handler)
 	f.mu.Unlock()
+
+	// Signal first-handler registration so tenant tests can wait for the
+	// Client's Start() goroutine to plumb the subscriber through. Without
+	// this, a PUT immediately after Start may race the subscribe handler
+	// registration and lose its changefeed echo (tolerable for these
+	// handler-level tests, but the signal costs nothing).
+	if first {
+		close(f.subscribedCh)
+	}
 
 	<-ctx.Done()
 
@@ -89,12 +131,116 @@ func (f *fakeStore) Subscribe(ctx context.Context, handler func(systemplane.Test
 }
 
 func (f *fakeStore) Close() error {
+	return nil
+}
+
+// fireLocked fires a changefeed event to all subscribers. Caller must NOT
+// hold f.mu — the handlers map is snapshotted under the lock, then released
+// before firing so a handler that re-enters the store does not deadlock.
+func (f *fakeStore) fire(evt systemplane.TestEvent) {
+	f.mu.Lock()
+	handlers := make([]func(systemplane.TestEvent), len(f.handlers))
+	copy(handlers, f.handlers)
+	f.mu.Unlock()
+
+	for _, h := range handlers {
+		h(evt)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Tenant-scoped TestStore methods — real implementations.
+//
+// The storage is partitioned: globals live in f.entries, tenant overrides
+// live in f.tenantRows. A tenant-scoped write NEVER touches the globals
+// map and vice versa, matching the production backend contract where the
+// "_global" sentinel segregates rows at the database level.
+// ---------------------------------------------------------------------------
+
+func (f *fakeStore) GetTenantValue(_ context.Context, tenantID, namespace, key string) (systemplane.TestEntry, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	f.closed = true
+	e, ok := f.tenantRows[tenantKey{tenantID: tenantID, namespace: namespace, key: key}]
+
+	return e, ok, nil
+}
+
+func (f *fakeStore) SetTenantValue(_ context.Context, tenantID string, e systemplane.TestEntry) error {
+	e.TenantID = tenantID
+
+	f.mu.Lock()
+	f.tenantRows[tenantKey{tenantID: tenantID, namespace: e.Namespace, key: e.Key}] = e
+	f.mu.Unlock()
+
+	// Fire a changefeed echo so OnTenantChange subscribers see the write.
+	f.fire(systemplane.TestEvent{Namespace: e.Namespace, Key: e.Key, TenantID: tenantID})
 
 	return nil
+}
+
+func (f *fakeStore) DeleteTenantValue(_ context.Context, tenantID, namespace, key, _ string) error {
+	f.mu.Lock()
+	delete(f.tenantRows, tenantKey{tenantID: tenantID, namespace: namespace, key: key})
+	f.mu.Unlock()
+
+	f.fire(systemplane.TestEvent{Namespace: namespace, Key: key, TenantID: tenantID})
+
+	return nil
+}
+
+// ListTenantOverrides returns the tenant-scoped override rows only — mirrors
+// the production backends that apply the "tenant_id != SentinelGlobal"
+// filter server-side. This fake partitions globals and tenant rows into
+// separate maps, so the method is a direct listing of f.tenantRows.
+func (f *fakeStore) ListTenantOverrides(_ context.Context, afterNamespace, afterKey, afterTenantID string, limit int) ([]systemplane.TestEntry, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	out := make([]systemplane.TestEntry, 0, len(f.tenantRows))
+	for _, e := range f.tenantRows {
+		// Simple in-memory keyset filter: only include entries strictly
+		// greater than the cursor tuple. Empty cursors mean "from the start".
+		if afterNamespace != "" || afterKey != "" || afterTenantID != "" {
+			if !(e.Namespace > afterNamespace ||
+				(e.Namespace == afterNamespace && e.Key > afterKey) ||
+				(e.Namespace == afterNamespace && e.Key == afterKey && e.TenantID > afterTenantID)) {
+				continue
+			}
+		}
+
+		out = append(out, e)
+	}
+
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+
+	return out, nil
+}
+
+func (f *fakeStore) ListTenantsForKey(_ context.Context, namespace, key string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	seen := make(map[string]struct{})
+
+	for k := range f.tenantRows {
+		if k.namespace == namespace && k.key == key {
+			seen[k.tenantID] = struct{}{}
+		}
+	}
+
+	out := make([]string, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+
+	// Tests assert on sorted output; the real backends also return sorted
+	// lists, so the fake preserves that contract to avoid false negatives.
+	sort.Strings(out)
+
+	return out, nil
 }
 
 // lastEntry returns the last-written entry for a (namespace, key) pair.
@@ -737,6 +883,116 @@ func TestPut_ServiceUnavailable_WhenNotStarted(t *testing.T) {
 	}
 }
 
+// TestPathLengthCap_NamespaceTooLong verifies that a namespace longer than
+// the admin edge cap surfaces 400 validation_error BEFORE reaching the
+// authorizer or the Client.
+func TestPathLengthCap_NamespaceTooLong(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildClientStarted(t)
+
+	app := buildApp(t, c, allowAll())
+
+	overNS := strings.Repeat("n", 257) // > 256 byte cap.
+
+	resp := doRequest(t, app, http.MethodGet, "/system/"+overNS, "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for over-length namespace, got %d", resp.StatusCode)
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "validation_error" {
+		t.Fatalf("expected title 'validation_error', got %q", body.Title)
+	}
+}
+
+// TestPathLengthCap_KeyTooLong verifies that a key longer than the admin
+// edge cap surfaces 400 validation_error BEFORE reaching the authorizer
+// or the Client.
+func TestPathLengthCap_KeyTooLong(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildClientStarted(t)
+
+	app := buildApp(t, c, allowAll())
+
+	overKey := strings.Repeat("k", 513) // > 512 byte cap.
+
+	resp := doRequest(t, app, http.MethodGet, "/system/global/"+overKey, "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for over-length key, got %d", resp.StatusCode)
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "validation_error" {
+		t.Fatalf("expected title 'validation_error', got %q", body.Title)
+	}
+}
+
+// TestMapSentinelErr_NonSentinelReturns500 verifies that a non-sentinel error
+// from the Client's write path (e.g. a transient backend error that does NOT
+// wrap any of the exported ErrClosed/ErrNotStarted/ErrUnknownKey/ErrValidation
+// sentinels) surfaces as 500 internal_error with a generic "write failed"
+// message — no backend detail leaks onto the wire.
+func TestMapSentinelErr_NonSentinelReturns500(t *testing.T) {
+	t.Parallel()
+
+	c, fs := buildClient(t)
+
+	if err := c.Register("global", "k", "v"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Inject a non-sentinel error on the fake store's Set. The Client will
+	// wrap it and bubble up; mapSentinelErr's default branch should catch it.
+	const backendDetail = "postgres: connection lost (connection_id=abcd1234)"
+	fs.mu.Lock()
+	fs.errOnSet = errors.New(backendDetail)
+	fs.mu.Unlock()
+
+	app := buildApp(t, c, allowAll())
+
+	resp := doRequest(t, app, http.MethodPut, "/system/global/k", `{"value":"new"}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusInternalServerError {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 500 for non-sentinel error, got %d: %s", resp.StatusCode, string(data))
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Code != fiber.StatusInternalServerError {
+		t.Fatalf("expected Code=500, got %d", body.Code)
+	}
+
+	if body.Title != "internal_error" {
+		t.Fatalf("expected Title='internal_error', got %q", body.Title)
+	}
+
+	// The backend detail must NOT leak onto the wire.
+	if strings.Contains(body.Message, backendDetail) {
+		t.Fatalf("regression: backend error detail leaked on wire, got %q", body.Message)
+	}
+
+	if strings.Contains(body.Message, "connection_id") {
+		t.Fatalf("regression: backend connection ID leaked on wire, got %q", body.Message)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Bonus edge case tests
 // ---------------------------------------------------------------------------
@@ -1000,5 +1256,578 @@ func TestActorExtractor_VerifiesAdapterPath(t *testing.T) {
 
 	if !entry.UpdatedAt.After(time.Time{}) {
 		t.Fatal("expected non-zero UpdatedAt")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 6 — Tenant-scoped admin route tests
+// ---------------------------------------------------------------------------
+
+// tenantValueResp deserializes the PUT :key/tenants/:tenantID response body.
+type tenantValueResp struct {
+	Namespace string `json:"namespace"`
+	Key       string `json:"key"`
+	TenantID  string `json:"tenant_id"`
+	Value     any    `json:"value"`
+}
+
+// tenantListResp deserializes the GET :key/tenants response body.
+type tenantListResp struct {
+	Namespace string   `json:"namespace"`
+	Key       string   `json:"key"`
+	Tenants   []string `json:"tenants"`
+}
+
+// buildTenantClientStarted builds a started Client with one tenant-scoped key
+// registered at ("global", "fee.rate") with the given default value, plus
+// any extra KeyOptions. Returns the Client, the fakeStore, and waits for the
+// Subscribe handler to register before returning so subsequent writes
+// deterministically fire their changefeed echoes.
+func buildTenantClientStarted(t *testing.T, defaultValue any, opts ...systemplane.KeyOption) (*systemplane.Client, *fakeStore) {
+	t.Helper()
+
+	c, fs := buildClient(t)
+
+	if err := c.RegisterTenantScoped("global", "fee.rate", defaultValue, opts...); err != nil {
+		t.Fatalf("RegisterTenantScoped: %v", err)
+	}
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for Subscribe to register before callers fire writes. Without
+	// this, a tenant write immediately after Start may race the
+	// subscribe goroutine's handler registration and miss the echo.
+	select {
+	case <-fs.subscribedCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Subscribe handler did not register within 2s")
+	}
+
+	return c, fs
+}
+
+// allowAllTenant returns a MountOption that permits every tenant-route
+// request, mirroring [allowAll] but for the tenant authorizer. Tests that
+// want to exercise the tenant handlers without engaging the default-deny
+// behavior use this.
+func allowAllTenant() admin.MountOption {
+	return admin.WithTenantAuthorizer(func(_ *fiber.Ctx, _, _ string) error { return nil })
+}
+
+func TestPutTenant_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	c, fs := buildTenantClientStarted(t, 0.0)
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	resp := doRequest(t, app, http.MethodPut, "/system/global/fee.rate/tenants/tenant-A", `{"value":0.05}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(data))
+	}
+
+	var body tenantValueResp
+	readJSON(t, resp, &body)
+
+	if body.Namespace != "global" || body.Key != "fee.rate" || body.TenantID != "tenant-A" {
+		t.Fatalf("response path mismatch: got %+v", body)
+	}
+
+	// JSON round-trips numbers as float64.
+	if body.Value != float64(0.05) {
+		t.Fatalf("expected Value=0.05, got %v (%T)", body.Value, body.Value)
+	}
+
+	// Verify the store observed the write.
+	stored, ok := fs.tenantRows[tenantKey{tenantID: "tenant-A", namespace: "global", key: "fee.rate"}]
+	if !ok {
+		t.Fatal("expected tenant row in fake store")
+	}
+
+	if stored.TenantID != "tenant-A" {
+		t.Fatalf("expected stored TenantID='tenant-A', got %q", stored.TenantID)
+	}
+
+	// Verify via Client.GetForTenant that the value landed and is readable.
+	v, found, err := c.GetForTenant(core.ContextWithTenantID(context.Background(), "tenant-A"), "global", "fee.rate")
+	if err != nil {
+		t.Fatalf("GetForTenant: %v", err)
+	}
+
+	if !found {
+		t.Fatal("GetForTenant: expected found=true")
+	}
+
+	if v != 0.05 {
+		t.Fatalf("GetForTenant: expected 0.05, got %v", v)
+	}
+}
+
+func TestPutTenant_MissingAuthorizer_Returns403(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	// Mount WITHOUT WithTenantAuthorizer. allowAll() configures only the
+	// legacy authorizer; tenant routes MUST still deny by default.
+	app := buildApp(t, c, allowAll())
+
+	resp := doRequest(t, app, http.MethodPut, "/system/global/fee.rate/tenants/tenant-A", `{"value":0.05}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusForbidden {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 403, got %d: %s", resp.StatusCode, string(data))
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Code != fiber.StatusForbidden {
+		t.Fatalf("expected body Code=403, got %d", body.Code)
+	}
+
+	// The body carries a stable "forbidden" title; the default-deny reason
+	// stays in server-side logs. Coupling to the literal "WithTenantAuthorizer"
+	// string would pin test behavior to a library-internal phrasing and leak
+	// a library-version fingerprint on the wire — neither of which is
+	// desirable for a security-sensitive response body.
+	if body.Title != "forbidden" {
+		t.Fatalf("expected Title='forbidden', got %q", body.Title)
+	}
+}
+
+// TestListTenants_MissingAuthorizer_Returns403 exercises the tenant-list
+// route's default-deny behavior. The list route passes tenantID="" to the
+// authorizer; the default deny-all hook must still reject.
+func TestListTenants_MissingAuthorizer_Returns403(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	app := buildApp(t, c, allowAll()) // NO WithTenantAuthorizer.
+
+	resp := doRequest(t, app, http.MethodGet, "/system/global/fee.rate/tenants", "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusForbidden {
+		t.Fatalf("expected 403, got %d", resp.StatusCode)
+	}
+}
+
+func TestPutTenant_InvalidTenantID_Returns400(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	// "_global" is the reserved sentinel; core.IsValidTenantID rejects it
+	// (first char "_" is non-alphanumeric). The admin validator no longer
+	// emits a sentinel-specific error message — unauthorized callers must
+	// not be able to probe for the literal sentinel name via error
+	// variants, so "_global" rejection is indistinguishable from any other
+	// malformed tenant ID at the wire boundary.
+	resp := doRequest(t, app, http.MethodPut, "/system/global/fee.rate/tenants/_global", `{"value":0.05}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, string(data))
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "invalid_tenant_id" {
+		t.Fatalf("expected title 'invalid_tenant_id', got %q", body.Title)
+	}
+
+	// The generic regex-based message is expected. Crucially, the response
+	// must NOT leak the "_global" literal — that would let unauthorized
+	// callers probe for the sentinel by reading error text.
+	if strings.Contains(body.Message, "_global") {
+		t.Fatalf("regression: message must not mention '_global' literal, got %q", body.Message)
+	}
+
+	if !strings.Contains(body.Message, "^[a-zA-Z0-9]") {
+		t.Fatalf("expected regex-based message, got %q", body.Message)
+	}
+}
+
+// TestPutTenant_InvalidTenantID_SpecialChars verifies the regex validator
+// rejects tenant IDs with disallowed characters (the admin layer blocks
+// these BEFORE invoking authorization, so a malformed path never reaches
+// the Client).
+func TestPutTenant_InvalidTenantID_SpecialChars(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	// tenant-manager/core's validTenantIDPattern requires the first
+	// character to be alphanumeric. Leading hyphen must be rejected.
+	resp := doRequest(t, app, http.MethodPut, "/system/global/fee.rate/tenants/-badlead", `{"value":0.05}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for leading-hyphen tenantID, got %d", resp.StatusCode)
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "invalid_tenant_id" {
+		t.Fatalf("expected title 'invalid_tenant_id', got %q", body.Title)
+	}
+}
+
+func TestPutTenant_UnknownKey_Returns400(t *testing.T) {
+	t.Parallel()
+
+	// Client is started with fee.rate registered as tenant-scoped, but the
+	// request targets a namespace/key pair that was never registered at
+	// all — Client.requireTenantScoped returns ErrUnknownKey.
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	resp := doRequest(t, app, http.MethodPut, "/system/global/unknown.key/tenants/tenant-A", `{"value":1}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, string(data))
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "unknown_key" {
+		t.Fatalf("expected title 'unknown_key', got %q", body.Title)
+	}
+}
+
+// TestPutTenant_NonTenantScopedKey verifies that writing a tenant override
+// for a key registered with the legacy Register (not RegisterTenantScoped)
+// returns ErrTenantScopeNotRegistered → 400 with the tenant_scope_not_registered
+// title.
+func TestPutTenant_NonTenantScopedKey(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildClient(t)
+
+	// Register via legacy Register, NOT RegisterTenantScoped.
+	if err := c.Register("global", "legacy.key", "v"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	resp := doRequest(t, app, http.MethodPut, "/system/global/legacy.key/tenants/tenant-A", `{"value":"x"}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusBadRequest {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, string(data))
+	}
+
+	var body commonshttp.ErrorResponse
+	readJSON(t, resp, &body)
+
+	if body.Title != "tenant_scope_not_registered" {
+		t.Fatalf("expected title 'tenant_scope_not_registered', got %q", body.Title)
+	}
+}
+
+func TestDeleteTenant_HappyPath(t *testing.T) {
+	t.Parallel()
+
+	// Register the key with a distinctive default so the fallthrough is
+	// observable after delete.
+	c, fs := buildTenantClientStarted(t, 0.42)
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	// 1. Write an override.
+	putResp := doRequest(t, app, http.MethodPut, "/system/global/fee.rate/tenants/tenant-A", `{"value":0.99}`)
+	putResp.Body.Close()
+
+	if putResp.StatusCode != fiber.StatusOK {
+		t.Fatalf("PUT preconditions: expected 200, got %d", putResp.StatusCode)
+	}
+
+	// Sanity: the override should be in the store.
+	if _, ok := fs.tenantRows[tenantKey{tenantID: "tenant-A", namespace: "global", key: "fee.rate"}]; !ok {
+		t.Fatal("preconditions: tenant row should exist after PUT")
+	}
+
+	// 2. Delete via HTTP.
+	delResp := doRequest(t, app, http.MethodDelete, "/system/global/fee.rate/tenants/tenant-A", "")
+	defer delResp.Body.Close()
+
+	if delResp.StatusCode != fiber.StatusNoContent {
+		data, _ := io.ReadAll(delResp.Body)
+		t.Fatalf("DELETE: expected 204, got %d: %s", delResp.StatusCode, string(data))
+	}
+
+	// 3. Store should no longer have the override.
+	if _, ok := fs.tenantRows[tenantKey{tenantID: "tenant-A", namespace: "global", key: "fee.rate"}]; ok {
+		t.Fatal("expected tenant row to be gone after DELETE")
+	}
+
+	// 4. GetForTenant should fall through to the registered default (0.42)
+	// since neither a tenant override nor a global Set is in play.
+	v, found, err := c.GetForTenant(core.ContextWithTenantID(context.Background(), "tenant-A"), "global", "fee.rate")
+	if err != nil {
+		t.Fatalf("GetForTenant: %v", err)
+	}
+
+	if !found {
+		t.Fatal("GetForTenant after delete: expected found=true")
+	}
+
+	if v != 0.42 {
+		t.Fatalf("GetForTenant after delete: expected default 0.42, got %v", v)
+	}
+}
+
+// TestDeleteTenant_Idempotent verifies that deleting a non-existent override
+// is NOT an error — it returns 204 just like a successful delete. This
+// mirrors Client.DeleteForTenant's contract (backend delete is idempotent).
+func TestDeleteTenant_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	// No prior write — delete against a nonexistent override.
+	resp := doRequest(t, app, http.MethodDelete, "/system/global/fee.rate/tenants/tenant-A", "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusNoContent {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 204 for idempotent delete, got %d: %s", resp.StatusCode, string(data))
+	}
+}
+
+func TestListTenants_ReturnsSortedList(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	// Seed three overrides in non-alphabetical order via the Client (so
+	// both the changefeed path and the store path are exercised).
+	tenants := []string{"tenant-C", "tenant-A", "tenant-B"}
+	for _, id := range tenants {
+		ctx := core.ContextWithTenantID(context.Background(), id)
+		if err := c.SetForTenant(ctx, "global", "fee.rate", 0.01, "admin"); err != nil {
+			t.Fatalf("SetForTenant(%s): %v", id, err)
+		}
+	}
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	resp := doRequest(t, app, http.MethodGet, "/system/global/fee.rate/tenants", "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(data))
+	}
+
+	var body tenantListResp
+	readJSON(t, resp, &body)
+
+	if body.Namespace != "global" || body.Key != "fee.rate" {
+		t.Fatalf("response path mismatch: got namespace=%q key=%q", body.Namespace, body.Key)
+	}
+
+	expected := []string{"tenant-A", "tenant-B", "tenant-C"}
+	if len(body.Tenants) != len(expected) {
+		t.Fatalf("expected %d tenants, got %d: %v", len(expected), len(body.Tenants), body.Tenants)
+	}
+
+	for i, want := range expected {
+		if body.Tenants[i] != want {
+			t.Fatalf("tenants[%d]: expected %q, got %q (full list: %v)", i, want, body.Tenants[i], body.Tenants)
+		}
+	}
+}
+
+// TestListTenants_EmptyList verifies the empty-state response: a registered
+// tenant-scoped key with no overrides returns 200 + an empty slice (NOT null
+// in JSON, which would break JS clients expecting an iterable).
+func TestListTenants_EmptyList(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	resp := doRequest(t, app, http.MethodGet, "/system/global/fee.rate/tenants", "")
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Decode the raw bytes to inspect the wire format — we want to see "[]"
+	// not "null" for the empty tenants field.
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+
+	var body tenantListResp
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatalf("Unmarshal(%s): %v", string(data), err)
+	}
+
+	if body.Tenants == nil {
+		t.Fatalf("expected non-nil tenants slice, raw body: %s", string(data))
+	}
+
+	if len(body.Tenants) != 0 {
+		t.Fatalf("expected empty tenants slice, got %v", body.Tenants)
+	}
+
+	// Verify wire format: JSON should contain `"tenants":[]`, not
+	// `"tenants":null`.
+	if !strings.Contains(string(data), `"tenants":[]`) {
+		t.Fatalf("expected wire format to contain '\"tenants\":[]', got: %s", string(data))
+	}
+}
+
+// TestPutTenant_TenantAuthorizerReceivesTenantID verifies that the tenantID
+// URL parameter is propagated to the authorizer hook. This is the load-
+// bearing behavior callers will build tenant-specific policy on top of (e.g.
+// "allow write only if caller owns :tenantID").
+func TestPutTenant_TenantAuthorizerReceivesTenantID(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	var (
+		mu           sync.Mutex
+		seenAction   string
+		seenTenantID string
+		callCount    int
+	)
+
+	authz := func(_ *fiber.Ctx, action, tenantID string) error {
+		mu.Lock()
+		seenAction = action
+		seenTenantID = tenantID
+		callCount++
+		mu.Unlock()
+
+		return nil
+	}
+
+	app := buildApp(t, c, allowAll(), admin.WithTenantAuthorizer(authz))
+
+	resp := doRequest(t, app, http.MethodPut, "/system/global/fee.rate/tenants/tenant-X", `{"value":1.23}`)
+	resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if callCount != 1 {
+		t.Fatalf("expected authorizer to be called exactly once, got %d calls", callCount)
+	}
+
+	if seenAction != "write" {
+		t.Fatalf("expected action='write', got %q", seenAction)
+	}
+
+	if seenTenantID != "tenant-X" {
+		t.Fatalf("expected tenantID='tenant-X', got %q", seenTenantID)
+	}
+}
+
+// TestListTenants_AuthorizerReceivesEmptyTenantID verifies the list route
+// invokes the authorizer with tenantID="" (no :tenantID segment in the path).
+// Policies can use this sentinel to distinguish "list tenants" from
+// per-tenant actions.
+func TestListTenants_AuthorizerReceivesEmptyTenantID(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, 0.0)
+
+	var (
+		mu           sync.Mutex
+		seenTenantID string
+		seenAction   string
+	)
+
+	authz := func(_ *fiber.Ctx, action, tenantID string) error {
+		mu.Lock()
+		seenTenantID = tenantID
+		seenAction = action
+		mu.Unlock()
+
+		return nil
+	}
+
+	app := buildApp(t, c, allowAll(), admin.WithTenantAuthorizer(authz))
+
+	resp := doRequest(t, app, http.MethodGet, "/system/global/fee.rate/tenants", "")
+	resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if seenTenantID != "" {
+		t.Fatalf("expected empty tenantID for list route, got %q", seenTenantID)
+	}
+
+	if seenAction != "read" {
+		t.Fatalf("expected action='read', got %q", seenAction)
+	}
+}
+
+// TestPutTenant_AppliesRedaction verifies that a key registered with
+// RedactFull round-trips through the PUT handler's response with the
+// redacted value, not the plaintext the caller submitted.
+func TestPutTenant_AppliesRedaction(t *testing.T) {
+	t.Parallel()
+
+	c, _ := buildTenantClientStarted(t, "initial", systemplane.WithRedaction(systemplane.RedactFull))
+
+	app := buildApp(t, c, allowAll(), allowAllTenant())
+
+	resp := doRequest(t, app, http.MethodPut, "/system/global/fee.rate/tenants/tenant-A", `{"value":"hunter2"}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != fiber.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, string(data))
+	}
+
+	var body tenantValueResp
+	readJSON(t, resp, &body)
+
+	if body.Value != "[REDACTED]" {
+		t.Fatalf("expected redacted response value, got %v", body.Value)
 	}
 }

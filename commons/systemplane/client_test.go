@@ -1,3 +1,5 @@
+//go:build unit
+
 package systemplane
 
 import (
@@ -62,6 +64,12 @@ func (f *fakeStore) Get(_ context.Context, namespace, key string) (store.Entry, 
 }
 
 func (f *fakeStore) Set(_ context.Context, e store.Entry) error {
+	// Mirror the post-Task-3 backend invariant: Set is globals-only and
+	// the persisted row plus emitted event both carry tenant_id="_global".
+	// Without this, onEvent would route to refreshTenantFromStore, which
+	// requires a tenant-scoped registration the legacy tests do not have.
+	e.TenantID = store.SentinelGlobal
+
 	f.mu.Lock()
 	nk := nskey{Namespace: e.Namespace, Key: e.Key}
 	f.entries[nk] = e
@@ -72,7 +80,7 @@ func (f *fakeStore) Set(_ context.Context, e store.Entry) error {
 
 	// Fire changefeed echo synchronously (outside the lock to avoid deadlock
 	// with the Client's own locking in onEvent/refreshFromStore).
-	evt := store.Event{Namespace: e.Namespace, Key: e.Key}
+	evt := store.Event{Namespace: e.Namespace, Key: e.Key, TenantID: store.SentinelGlobal}
 	for _, h := range handlers {
 		h(evt)
 	}
@@ -119,6 +127,37 @@ func (f *fakeStore) Close() error {
 	return nil
 }
 
+// Tenant-scoped methods — fail-fast stubs so fakeStore satisfies store.Store.
+// Real tenant semantics are exercised by the TestStore-backed tests in Task 7.
+//
+// Returning a sentinel error (instead of nil) ensures that if client code
+// accidentally routes through tenant APIs in the legacy-globals test suite,
+// tests fail loudly with a diagnosable reason rather than passing silently
+// on the zero-value return. This catches regressions at the boundary.
+var errTenantStubCalled = errors.New(
+	"fakeStore: tenant-scoped methods are not supported in this unit test double; " +
+		"use TestStore-backed tests for tenant coverage")
+
+func (f *fakeStore) GetTenantValue(_ context.Context, _, _, _ string) (store.Entry, bool, error) {
+	return store.Entry{}, false, errTenantStubCalled
+}
+
+func (f *fakeStore) SetTenantValue(_ context.Context, _ string, _ store.Entry) error {
+	return errTenantStubCalled
+}
+
+func (f *fakeStore) DeleteTenantValue(_ context.Context, _, _, _, _ string) error {
+	return errTenantStubCalled
+}
+
+func (f *fakeStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]store.Entry, error) {
+	return nil, errTenantStubCalled
+}
+
+func (f *fakeStore) ListTenantsForKey(_ context.Context, _, _ string) ([]string, error) {
+	return nil, errTenantStubCalled
+}
+
 // simulateExternalChange writes an entry directly (bypassing the Client) and
 // fires all subscribe handlers, mimicking a change made by another process
 // that arrives via the changefeed.
@@ -131,6 +170,7 @@ func (f *fakeStore) simulateExternalChange(namespace, key string, value any) {
 	e := store.Entry{
 		Namespace: namespace,
 		Key:       key,
+		TenantID:  store.SentinelGlobal,
 		Value:     jsonBytes,
 		UpdatedAt: time.Now(),
 		UpdatedBy: "external",
@@ -143,7 +183,7 @@ func (f *fakeStore) simulateExternalChange(namespace, key string, value any) {
 	copy(handlers, f.handlers)
 	f.mu.Unlock()
 
-	evt := store.Event{Namespace: namespace, Key: key}
+	evt := store.Event{Namespace: namespace, Key: key, TenantID: store.SentinelGlobal}
 	for _, h := range handlers {
 		h(evt)
 	}
@@ -1225,6 +1265,7 @@ func TestRefreshFromStore_UnmarshalError(t *testing.T) {
 	fs.entries[nk] = store.Entry{
 		Namespace: "ns",
 		Key:       "k",
+		TenantID:  store.SentinelGlobal,
 		Value:     []byte("{{invalid json}}"),
 		UpdatedAt: time.Now(),
 		UpdatedBy: "bad-actor",
@@ -1233,7 +1274,7 @@ func TestRefreshFromStore_UnmarshalError(t *testing.T) {
 	copy(handlers, fs.handlers)
 	fs.mu.Unlock()
 
-	evt := store.Event{Namespace: "ns", Key: "k"}
+	evt := store.Event{Namespace: "ns", Key: "k", TenantID: store.SentinelGlobal}
 	for _, h := range handlers {
 		h(evt)
 	}
@@ -1294,7 +1335,7 @@ func TestRefreshFromStore_KeyDeletedFallsBackToDefault(t *testing.T) {
 	copy(handlers, fs.handlers)
 	fs.mu.Unlock()
 
-	evt := store.Event{Namespace: "ns", Key: "k"}
+	evt := store.Event{Namespace: "ns", Key: "k", TenantID: store.SentinelGlobal}
 	for _, h := range handlers {
 		h(evt)
 	}
@@ -1540,7 +1581,7 @@ func TestRefreshFromStore_GetError_KeepsCurrent(t *testing.T) {
 	copy(handlers, es.fakeStore.handlers)
 	es.fakeStore.mu.Unlock()
 
-	evt := store.Event{Namespace: "ns", Key: "k"}
+	evt := store.Event{Namespace: "ns", Key: "k", TenantID: store.SentinelGlobal}
 	for _, h := range handlers {
 		h(evt)
 	}

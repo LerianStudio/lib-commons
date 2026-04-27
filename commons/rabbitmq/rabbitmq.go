@@ -23,6 +23,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
+	"github.com/LerianStudio/lib-commons/v5/commons/security/sanitize"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -121,7 +122,10 @@ var ErrHealthCheckAllowedHostsRequired = errors.New("rabbitmq health check allow
 // ErrNilConnection is returned when a method is called on a nil RabbitMQConnection.
 var ErrNilConnection = errors.New("rabbitmq connection is nil")
 
-const redactedURLPassword = "xxxxx"
+// redactedURLPassword is the canonical redaction marker for credentials in
+// RabbitMQ URLs. Delegates to commons/security/sanitize.SecretRedactionMarker
+// so log-stream shapes stay uniform across lib-commons.
+const redactedURLPassword = sanitize.SecretRedactionMarker
 
 // Best-effort URL matcher used for redaction on arbitrary error messages.
 // This intentionally differs from outbox's storage sanitizer because this path
@@ -494,42 +498,94 @@ func (rc *RabbitMQConnection) EnsureChannelContext(ctx context.Context) error {
 		return fmt.Errorf("rabbitmq ensure channel: %w", err)
 	}
 
+	rc.commitChannelState(conn, ch, newConnection, snap)
+
+	return nil
+}
+
+// commitChannelState publishes a successful dial/channel-open result into
+// the connection state. For a freshly dialed connection it detects races
+// against concurrent reconnects, closing whichever connection lost the race
+// to prevent connection leaks. For an existing connection it just records
+// the new channel. The lock is always released before any connection close.
+func (rc *RabbitMQConnection) commitChannelState(conn *amqp.Connection, ch *amqp.Channel, newConnection bool, snap ensureChannelSnapshot) {
 	rc.mu.Lock()
+
 	if newConnection {
-		// Race detection: if another goroutine already established a healthy
-		// connection while we were dialing, close ours and reuse theirs to
-		// prevent connection leaks under concurrent reconnection pressure.
-		if rc.Connection != nil && rc.Connection != conn && !snap.connectionClosedFn(rc.Connection) {
-			rc.mu.Unlock()
-
-			// Close the connection we just created — another goroutine won the race.
-			rc.closeConnectionWith(conn, snap.connCloser)
-
-			return nil
-		}
-
-		// Capture old connection to close outside the lock.
-		oldConn := rc.Connection
-		rc.Connection = conn
-		rc.reconnectAttempts = 0
-		rc.Channel = ch
-		rc.Connected = true
-		rc.mu.Unlock()
-
-		// Best-effort cleanup of the replaced connection (usually already dead,
-		// but explicit close ensures no half-open TCP socket is leaked).
-		if oldConn != nil && oldConn != conn {
-			rc.closeConnectionWith(oldConn, snap.connCloser)
-		}
-
-		return nil
+		rc.commitNewConnection(conn, ch, snap)
+		return
 	}
 
+	rc.commitChannelOnExistingConnection(ch, snap)
+}
+
+// commitNewConnection finalises the state change that accompanies a freshly
+// dialed connection. The caller must hold rc.mu; this function is responsible
+// for releasing it before any blocking cleanup.
+func (rc *RabbitMQConnection) commitNewConnection(conn *amqp.Connection, ch *amqp.Channel, snap ensureChannelSnapshot) {
+	// Race detection: if another goroutine already established a healthy
+	// connection while we were dialing, close ours and reuse theirs to
+	// prevent connection leaks under concurrent reconnection pressure.
+	if rc.Connection != nil && rc.Connection != conn && !snap.connectionClosedFn(rc.Connection) {
+		rc.mu.Unlock()
+
+		// Close the connection we just created — another goroutine won the race.
+		rc.closeConnectionWith(conn, snap.connCloser)
+
+		return
+	}
+
+	// Capture old connection to close outside the lock.
+	oldConn := rc.Connection
+	rc.Connection = conn
+	rc.reconnectAttempts = 0
 	rc.Channel = ch
 	rc.Connected = true
 	rc.mu.Unlock()
 
-	return nil
+	// Best-effort cleanup of the replaced connection (usually already dead,
+	// but explicit close ensures no half-open TCP socket is leaked).
+	if oldConn != nil && oldConn != conn {
+		rc.closeConnectionWith(oldConn, snap.connCloser)
+	}
+}
+
+// commitChannelOnExistingConnection finalises the state change when we
+// reopened a channel on a still-live connection. The caller must hold rc.mu;
+// this function is responsible for releasing it before any blocking cleanup.
+func (rc *RabbitMQConnection) commitChannelOnExistingConnection(ch *amqp.Channel, snap ensureChannelSnapshot) {
+	// Another goroutine may have swapped rc.Connection between the snapshot
+	// and the lock re-acquisition. If so, ch belongs to snap.existingConn
+	// but rc.Connection now points elsewhere — publishing on ch would hit a
+	// dead socket. Close the orphaned channel and bail without mutating state.
+	if rc.Connection != snap.existingConn || snap.connectionClosedFn(rc.Connection) {
+		chCloser := rc.channelCloser
+		rc.mu.Unlock()
+
+		if chCloser != nil {
+			if err := chCloser(ch); err != nil {
+				rc.logger().Log(context.Background(), log.LevelWarn, "failed to close orphaned rabbitmq channel", log.Err(err))
+			}
+		}
+
+		return
+	}
+
+	oldCh := rc.Channel
+	chCloser := rc.channelCloser
+	chClosed := rc.channelClosedFn
+	rc.Channel = ch
+	rc.Connected = true
+	rc.mu.Unlock()
+
+	// Best-effort cleanup of the replaced channel. Skip if the old channel
+	// is already closed — calling Close() on an already-shut-down amqp
+	// channel panics inside the driver.
+	if oldCh != nil && oldCh != ch && chCloser != nil && (chClosed == nil || !chClosed(oldCh)) {
+		if err := chCloser(oldCh); err != nil {
+			rc.logger().Log(context.Background(), log.LevelWarn, "failed to close replaced rabbitmq channel", log.Err(err))
+		}
+	}
 }
 
 // GetNewConnect returns a pointer to the rabbitmq connection, initializing it if necessary.
@@ -1298,7 +1354,10 @@ func sanitizeAMQPErr(err error, connectionString string) string {
 		return redactURLCredentials(errMsg)
 	}
 
-	redactedURL := referenceURL.Redacted()
+	// Build the redacted form via the fallback splitter. stdlib's
+	// (*url.URL).Redacted() hardcodes "xxxxx"; we want the sanitize package's
+	// canonical marker for cross-package consistency.
+	redactedURL := redactURLCredentialsFallback(connectionString)
 
 	if strings.Contains(errMsg, connectionString) {
 		errMsg = strings.ReplaceAll(errMsg, connectionString, redactedURL)
@@ -1355,11 +1414,13 @@ func redactURLCredentialToken(token string) string {
 
 	parsedURL, err := url.Parse(token)
 	if err == nil && parsedURL != nil && parsedURL.User != nil {
-		username := parsedURL.User.Username()
 		if _, hasPassword := parsedURL.User.Password(); hasPassword {
-			parsedURL.User = url.UserPassword(username, redactedURLPassword)
-
-			return parsedURL.String()
+			// Use the fallback string-splitter rather than (*url.URL).String().
+			// The url package percent-encodes userinfo at serialize time, which
+			// would turn our marker ("****") into "%2A%2A%2A%2A" — unreadable
+			// in logs. Parse is still the authoritative detector for a
+			// userinfo-carrying URL; the replacement itself must stay literal.
+			return redactURLCredentialsFallback(token)
 		}
 
 		return token

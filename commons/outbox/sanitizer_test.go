@@ -71,6 +71,43 @@ func TestSanitizeErrorMessageForStorage_RedactsQueryParameterCredentials(t *test
 	require.Contains(t, sanitized, "password="+redactedValue)
 }
 
+func TestSanitizeErrorMessageForStorage_RedactsGenericTokenAssignments(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		message string
+		secret  string
+	}{
+		{
+			name:    "equals",
+			message: "request failed token=super-secret",
+			secret:  "super-secret",
+		},
+		{
+			name:    "colon",
+			message: "request failed token: super-secret",
+			secret:  "super-secret",
+		},
+		{
+			name:    "mixed case",
+			message: "request failed ToKeN=super-secret",
+			secret:  "super-secret",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			sanitized := SanitizeErrorMessageForStorage(tt.message)
+
+			require.NotContains(t, sanitized, tt.secret)
+			require.Contains(t, sanitized, redactedValue)
+		})
+	}
+}
+
 func TestSanitizeErrorMessageForStorage_DoesNotRedactNonLuhnLongNumbers(t *testing.T) {
 	t.Parallel()
 

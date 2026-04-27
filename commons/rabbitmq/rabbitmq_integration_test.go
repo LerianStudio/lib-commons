@@ -5,6 +5,7 @@ package rabbitmq
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,8 +26,13 @@ const (
 	testConsumeDeadline = 10 * time.Second
 )
 
-// setupRabbitMQContainer starts a RabbitMQ testcontainer with the management plugin
-// and returns the AMQP URL, the management HTTP URL, and a cleanup function.
+// setupRabbitMQContainer starts a RabbitMQ testcontainer with the management
+// plugin and returns the AMQP URL, the management HTTP URL, and a cleanup
+// function.
+//
+// On Docker Desktop the broker can report startup complete before Docker has
+// published the mapped host ports. The additional port waits make endpoint
+// discovery deterministic before the AMQP and management URLs are resolved.
 func setupRabbitMQContainer(t *testing.T) (amqpURL string, mgmtURL string, cleanup func()) {
 	t.Helper()
 
@@ -34,21 +40,45 @@ func setupRabbitMQContainer(t *testing.T) (amqpURL string, mgmtURL string, clean
 
 	container, err := tcrabbit.Run(ctx,
 		testRabbitMQImage,
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("Server startup complete").
-				WithStartupTimeout(testStartupTimeout),
+		testcontainers.WithAdditionalWaitStrategy(
+			wait.ForListeningPort(tcrabbit.DefaultAMQPPort),
+			wait.ForListeningPort(tcrabbit.DefaultHTTPPort),
 		),
 	)
 	require.NoError(t, err, "failed to start RabbitMQ container")
+	var terminateOnce sync.Once
+	var terminateErr error
+	terminate := func() error {
+		terminateOnce.Do(func() {
+			termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer termCancel()
 
-	amqpEndpoint, err := container.AmqpURL(ctx)
-	require.NoError(t, err, "failed to get AMQP URL from container")
+			terminateErr = container.Terminate(termCtx)
+		})
 
-	httpEndpoint, err := container.HttpURL(ctx)
-	require.NoError(t, err, "failed to get HTTP management URL from container")
+		return terminateErr
+	}
+	t.Cleanup(func() {
+		require.NoError(t, terminate(), "failed to terminate RabbitMQ container")
+	})
+
+	var amqpEndpoint string
+	var httpEndpoint string
+
+	require.Eventually(t, func() bool {
+		var amqpErr error
+		amqpEndpoint, amqpErr = container.AmqpURL(ctx)
+		if amqpErr != nil || amqpEndpoint == "" {
+			return false
+		}
+
+		var httpErr error
+		httpEndpoint, httpErr = container.HttpURL(ctx)
+		return httpErr == nil && httpEndpoint != ""
+	}, testStartupTimeout, 100*time.Millisecond, "failed to resolve RabbitMQ container endpoints")
 
 	return amqpEndpoint, httpEndpoint, func() {
-		require.NoError(t, container.Terminate(ctx), "failed to terminate RabbitMQ container")
+		require.NoError(t, terminate(), "failed to terminate RabbitMQ container")
 	}
 }
 

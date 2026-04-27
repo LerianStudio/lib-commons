@@ -3,6 +3,19 @@
 //
 // Change-streams require a replica set; standalone deployments should use
 // polling by setting Config.PollInterval to a positive duration.
+//
+// Tenant scoping:
+//   - Every document carries a tenant_id field. The sentinel "_global" marks
+//     rows owned by the legacy (non-tenant-scoped) API surface. Any other
+//     value is a tenant-specific override.
+//   - The document _id is a compound sub-document {namespace, key, tenant_id}.
+//     A compound _id (instead of ObjectId) is what makes change-stream delete
+//     events self-describing: a delete event has no fullDocument, only
+//     documentKey._id, so the tuple must live there to preserve tenant
+//     attribution on DeleteForTenant flows (TRD §3.2).
+//   - Existing callers of Set / Get / List continue to see only "_global" rows.
+//     Tenant-specific reads/writes go through SetTenantValue / GetTenantValue /
+//     DeleteTenantValue / ListTenantOverrides / ListTenantsForKey.
 package mongodb
 
 import (
@@ -10,16 +23,14 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
-	libRuntime "github.com/LerianStudio/lib-commons/v5/commons/runtime"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -37,9 +48,17 @@ const (
 
 	// tracerName is the OpenTelemetry tracer name for this package.
 	tracerName = "systemplane.mongodb"
+
+	// defaultSchemaInitTimeout bounds the time spent running migration and
+	// index creation at construction time when Config.SchemaInitTimeout is
+	// zero. Kept deliberately generous because Phase-2 migration walks every
+	// ObjectId-_id row sequentially; operators with large collections can
+	// raise it via Config.SchemaInitTimeout.
+	defaultSchemaInitTimeout = 30 * time.Second
 )
 
-// Compile-time interface check.
+// Compile-time interface check. Any divergence from store.Store fails the
+// build loudly rather than at runtime.
 var _ store.Store = (*Store)(nil)
 
 // Config holds the parameters needed to construct a MongoDB-backed Store.
@@ -55,24 +74,86 @@ type Config struct {
 	Collection string
 
 	// PollInterval enables polling mode when set to a positive duration.
-	// A zero value (the default) uses change-streams, which require a
-	// replica set.
+	// A zero value (the default) uses change-streams, which require a replica
+	// set. Recommended minimum when set: 500ms — anything tighter risks
+	// saturating the primary with watermark queries without a proportional
+	// delivery-latency benefit.
 	PollInterval time.Duration
+
+	// SchemaInitTimeout bounds the time spent running the Phase-2 migration
+	// and index creation during New(). A zero value falls back to
+	// defaultSchemaInitTimeout (30s). Raise this for large collections where
+	// rewriteObjectIDDocuments needs to walk tens of thousands of rows.
+	SchemaInitTimeout time.Duration
 
 	// Logger is the structured logger.
 	Logger log.Logger
 
 	// Telemetry is the OpenTelemetry provider for spans and metrics.
 	Telemetry *opentelemetry.Telemetry
+
+	// TenantSchemaEnabled opts the backend into phase-2 schema. When false
+	// (the default), ensureSchema keeps a unique index on (namespace, key)
+	// so pre-tenant lib-commons binaries (v5.0.x) can continue to upsert
+	// under the legacy ObjectId _id shape. Tenant writes return
+	// ErrTenantSchemaNotEnabled. When true, the legacy ObjectId _id is
+	// migrated to the compound {namespace, key, tenant_id} shape and
+	// tenant writes are permitted.
+	TenantSchemaEnabled bool
+
+	// LoadResumeToken, when non-nil, is invoked once per change-stream open
+	// (including reconnects) to recover the last persisted resume token. A
+	// returned (token, nil) is passed to options.ChangeStream().SetResumeAfter
+	// so events that occurred during a disconnect window are replayed from the
+	// oplog. A returned (_, err) is logged and fails soft — the change stream
+	// opens from the current oplog position without resume, matching the
+	// pre-H2 behavior. A (nil, nil) return indicates "no prior token" (fresh
+	// subscriber) and is handled the same way.
+	LoadResumeToken func(ctx context.Context) (bson.Raw, error)
+
+	// SaveResumeToken, when non-nil, is invoked periodically from the event
+	// loop to persist the latest ResumeToken observed. The batching cadence
+	// (every N events or T duration) is internal to the subscription loop.
+	// SaveResumeToken MUST be idempotent and MUST tolerate being called
+	// concurrently with itself only via external synchronization — the loop
+	// serializes calls. Failures are logged at WARN and do not interrupt
+	// event delivery; the next successful Save replaces the lost one.
+	SaveResumeToken func(ctx context.Context, token bson.Raw) error
+}
+
+// compoundID is the shape of the document _id.
+//
+// Storing the full (namespace, key, tenant_id) tuple in _id guarantees that
+// change-stream delete events — which surface only documentKey, never
+// fullDocument — still carry enough information to route the deletion to the
+// correct tenant-aware subscriber. Without this, delete events would require
+// change-stream pre/post-images (MongoDB 6.0+ server-side opt-in) or a
+// re-read that cannot work because the document is gone. See TRD §3.2.
+type compoundID struct {
+	Namespace string `bson:"namespace"`
+	Key       string `bson:"key"`
+	TenantID  string `bson:"tenant_id"`
 }
 
 // entryDoc is the BSON document shape persisted in the collection.
+//
+// The ID field mirrors the compoundID triple redundantly into the top-level
+// namespace / key / tenant_id fields. Top-level fields are what
+// ListTenantsForKey's Distinct and the polling path's filters read; the _id
+// is what the change-stream delete path extracts. Both paths stay cheap.
+//
+// ID is populated by the BSON decoder (struct-tag driven) and is only read on
+// the migration delete path (rewriteObjectIDDocuments), where the raw legacy
+// _id value is used to target a DeleteOne against the pre-migration row.
+// All other call sites work with the top-level namespace/key/tenant_id trio.
 type entryDoc struct {
-	Namespace string    `bson:"namespace"`
-	Key       string    `bson:"key"`
-	Value     string    `bson:"value"`
-	UpdatedAt time.Time `bson:"updated_at"`
-	UpdatedBy string    `bson:"updated_by"`
+	ID        compoundID `bson:"_id"`
+	Namespace string     `bson:"namespace"`
+	Key       string     `bson:"key"`
+	TenantID  string     `bson:"tenant_id"`
+	Value     string     `bson:"value"`
+	UpdatedAt time.Time  `bson:"updated_at"`
+	UpdatedBy string     `bson:"updated_by"`
 }
 
 // toEntry converts a BSON document into the public store.Entry type.
@@ -80,16 +161,11 @@ func (d entryDoc) toEntry() store.Entry {
 	return store.Entry{
 		Namespace: d.Namespace,
 		Key:       d.Key,
+		TenantID:  d.TenantID,
 		Value:     []byte(d.Value),
 		UpdatedAt: d.UpdatedAt,
 		UpdatedBy: d.UpdatedBy,
 	}
-}
-
-// changeEvent is the subset of a MongoDB change stream event we decode.
-type changeEvent struct {
-	OperationType string  `bson:"operationType"`
-	FullDocument  *bson.D `bson:"fullDocument,omitempty"`
 }
 
 // Store implements [store.Store] over MongoDB.
@@ -98,13 +174,35 @@ type Store struct {
 	coll   *mongo.Collection
 	tracer trace.Tracer
 
+	// ctx/cancel scope all long-running subscriptions to the Store lifetime.
+	// Close cancels ctx so any in-flight Subscribe call unwinds its
+	// change-stream or polling loop even when the caller's ctx is still live.
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	mu     sync.Mutex
 	closed bool
+
+	// droppedEvents counts change-stream events that were dropped because
+	// their identifying tuple was incomplete (see extractEvent). Surfaced via
+	// DroppedEvents() for operator dashboards; the WARN log is still the
+	// primary signal.
+	droppedEvents atomic.Int64
 }
 
 // New creates a MongoDB-backed Store. Returns an error if the Config is invalid.
 //
-// The compound unique index on (namespace, key) is created idempotently.
+// Schema bootstrap is two-phased to support rolling deploys:
+//
+//   - Phase 1 (default, TenantSchemaEnabled=false): ensureLegacySchema creates
+//     a unique index on (namespace, key). Documents retain their legacy
+//     ObjectId _id shape. Tenant writes return ErrTenantSchemaNotEnabled.
+//     This is the rolling-deploy safe configuration: pre-tenant binaries
+//     (v5.0.x) can continue to upsert against the same collection.
+//   - Phase 2 (TenantSchemaEnabled=true): ensureSchema drops the legacy
+//     unique index and runs the compound _id migration. After this phase
+//     the backend accepts tenant writes.
+//
 // When PollInterval is zero, Subscribe uses change-streams (requires a replica
 // set). When PollInterval is positive, Subscribe uses a polling loop that works
 // with standalone MongoDB deployments.
@@ -121,22 +219,26 @@ func New(cfg Config) (*Store, error) {
 		cfg.Collection = defaultCollection
 	}
 
-	coll := cfg.Client.Database(cfg.Database).Collection(cfg.Collection)
-
-	// Create compound unique index on (namespace, key) idempotently.
-	indexModel := mongo.IndexModel{
-		Keys: bson.D{
-			{Key: "namespace", Value: 1},
-			{Key: "key", Value: 1},
-		},
-		Options: options.Index().SetUnique(true),
+	initTimeout := cfg.SchemaInitTimeout
+	if initTimeout <= 0 {
+		initTimeout = defaultSchemaInitTimeout
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	coll := cfg.Client.Database(cfg.Database).Collection(cfg.Collection)
 
-	if _, err := coll.Indexes().CreateOne(ctx, indexModel); err != nil {
-		return nil, fmt.Errorf("mongodb store: create unique index: %w", err)
+	initCtx, cancelInit := context.WithTimeout(context.Background(), initTimeout)
+	defer cancelInit()
+
+	logger := cfg.Logger
+
+	if cfg.TenantSchemaEnabled {
+		if err := ensureSchema(initCtx, coll, logger); err != nil {
+			return nil, fmt.Errorf("mongodb store: schema init: %w", err)
+		}
+	} else {
+		if err := ensureLegacySchema(initCtx, coll); err != nil {
+			return nil, fmt.Errorf("mongodb store: schema init: %w", err)
+		}
 	}
 
 	tracer := noop.NewTracerProvider().Tracer(tracerName)
@@ -146,14 +248,24 @@ func New(cfg Config) (*Store, error) {
 		}
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	return &Store{
 		cfg:    cfg,
 		coll:   coll,
 		tracer: tracer,
+		ctx:    ctx,
+		cancel: cancel,
 	}, nil
 }
 
-// List returns all entries from the MongoDB collection.
+// List returns all "_global" entries from the MongoDB collection.
+//
+// This is the legacy (non-tenant-scoped) read path and intentionally excludes
+// tenant-specific rows so that existing consumers of List see only the shared
+// global configuration. Tenant hydration uses ListTenantOverrides (the hot
+// path; see tenant_hydration.go) or ListTenantValues (full listing; used by
+// the contract test suite).
 func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	if s == nil || s.isClosed() {
 		return nil, store.ErrClosed
@@ -162,7 +274,9 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.list")
 	defer span.End()
 
-	cursor, err := s.coll.Find(ctx, bson.D{})
+	filter := bson.D{{Key: "tenant_id", Value: store.SentinelGlobal}}
+
+	cursor, err := s.coll.Find(ctx, filter)
 	if err != nil {
 		opentelemetry.HandleSpanError(span, "mongodb list: find failed", err)
 		return nil, fmt.Errorf("mongodb store list: %w", err)
@@ -185,8 +299,11 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	return entries, nil
 }
 
-// Get returns a single entry by namespace and key.
+// Get returns a single "_global" entry by namespace and key.
 // Returns (_, false, nil) when the entry does not exist.
+//
+// Get is strictly global-scoped: tenant-specific rows are invisible to this
+// method. See GetTenantValue for tenant-aware reads.
 func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bool, error) {
 	if s == nil || s.isClosed() {
 		return store.Entry{}, false, store.ErrClosed
@@ -200,29 +317,25 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bo
 		attribute.String("entry.key", key),
 	)
 
-	filter := bson.D{
-		{Key: "namespace", Value: namespace},
-		{Key: "key", Value: key},
+	doc, found, err := s.findOne(ctx, namespace, key, store.SentinelGlobal)
+	if err != nil {
+		opentelemetry.HandleSpanError(span, "mongodb get: find failed", err)
+		return store.Entry{}, false, fmt.Errorf("mongodb store get: %w", err)
 	}
 
-	var doc entryDoc
-
-	err := s.coll.FindOne(ctx, filter).Decode(&doc)
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return store.Entry{}, false, nil
-		}
-
-		opentelemetry.HandleSpanError(span, "mongodb get: find failed", err)
-
-		return store.Entry{}, false, fmt.Errorf("mongodb store get: %w", err)
+	if !found {
+		return store.Entry{}, false, nil
 	}
 
 	return doc.toEntry(), true, nil
 }
 
-// Set persists an entry using an upsert. The change-stream or polling loop
-// picks up the modification and notifies subscribers.
+// Set persists a "_global" entry using an upsert. The change-stream or
+// polling loop picks up the modification and notifies subscribers.
+//
+// Set is strictly global-scoped: it unconditionally writes tenant_id="_global"
+// regardless of the Entry.TenantID field on input. Tenant writes must go
+// through SetTenantValue. This matches TRD §9 (Backward Compatibility Matrix).
 func (s *Store) Set(ctx context.Context, e store.Entry) error {
 	if s == nil || s.isClosed() {
 		return store.ErrClosed
@@ -243,30 +356,7 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 		return err
 	}
 
-	filter := bson.D{
-		{Key: "namespace", Value: e.Namespace},
-		{Key: "key", Value: e.Key},
-	}
-
-	now := time.Now().UTC()
-	if !e.UpdatedAt.IsZero() {
-		now = e.UpdatedAt
-	}
-
-	update := bson.D{
-		{Key: "$set", Value: bson.D{
-			{Key: "namespace", Value: e.Namespace},
-			{Key: "key", Value: e.Key},
-			{Key: "value", Value: string(e.Value)},
-			{Key: "updated_at", Value: now},
-			{Key: "updated_by", Value: e.UpdatedBy},
-		}},
-	}
-
-	opts := options.UpdateOne().SetUpsert(true)
-
-	_, err := s.coll.UpdateOne(ctx, filter, update, opts)
-	if err != nil {
+	if err := s.upsert(ctx, e, store.SentinelGlobal); err != nil {
 		opentelemetry.HandleSpanError(span, "mongodb set: upsert failed", err)
 		return fmt.Errorf("mongodb store set: %w", err)
 	}
@@ -274,32 +364,13 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 	return nil
 }
 
-// Subscribe blocks until ctx is cancelled, watching for changes via
-// change-streams or polling depending on cfg.PollInterval.
-//
-// Change-stream mode (PollInterval == 0) requires a MongoDB replica set.
-// Polling mode (PollInterval > 0) works with standalone MongoDB deployments.
-//
-// Multiple concurrent Subscribe calls are independent — each gets its own
-// stream or ticker.
-func (s *Store) Subscribe(ctx context.Context, handler func(store.Event)) error {
-	if s == nil || s.isClosed() {
-		return store.ErrClosed
-	}
-
-	if handler == nil {
-		return errors.New("mongodb store subscribe: handler must not be nil")
-	}
-
-	if s.cfg.PollInterval > 0 {
-		return s.subscribePoll(ctx, handler)
-	}
-
-	return s.subscribeChangeStream(ctx, handler)
-}
-
 // Close releases any resources held by the Store. Idempotent.
 // Does NOT close s.cfg.Client — the caller owns the MongoDB client lifecycle.
+//
+// Close cancels s.ctx, which terminates any in-flight Subscribe call even
+// when the caller's Subscribe ctx is still live. Without this, a goroutine
+// that did `store.Subscribe(context.Background(), ...)` would leak past
+// Close until its process exit.
 func (s *Store) Close() error {
 	if s == nil {
 		return nil
@@ -314,7 +385,22 @@ func (s *Store) Close() error {
 
 	s.closed = true
 
+	if s.cancel != nil {
+		s.cancel()
+	}
+
 	return nil
+}
+
+// DroppedEvents returns the total number of change-stream events dropped due
+// to incomplete identifiers since Store construction. Exposed for operator
+// dashboards and canary checks. Concurrency-safe (atomic load).
+func (s *Store) DroppedEvents() int64 {
+	if s == nil {
+		return 0
+	}
+
+	return s.droppedEvents.Load()
 }
 
 // isClosed checks whether the store has been closed.
@@ -325,203 +411,25 @@ func (s *Store) isClosed() bool {
 	return s.closed
 }
 
-// subscribeChangeStream opens a MongoDB change stream on the collection and
-// translates insert/update/replace events into store.Event values.
-// On stream error, it reconnects with exponential backoff.
-func (s *Store) subscribeChangeStream(ctx context.Context, handler func(store.Event)) error {
-	attempt := 0
-
-	for {
-		if err := s.watchOnce(ctx, handler); err != nil {
-			// Context cancelled — clean exit regardless of the watch error.
-			if ctx.Err() != nil {
-				return ctx.Err() //nolint:wrapcheck // propagate cancellation as-is
-			}
-
-			// Log and reconnect with backoff.
-			s.logWarn(ctx, "change stream disconnected, reconnecting",
-				log.Err(err),
-				log.Int("attempt", attempt),
-			)
-
-			delay := min(backoff.ExponentialWithJitter(reconnectBaseDelay, attempt), reconnectMaxDelay)
-			attempt++
-
-			if waitErr := backoff.WaitContext(ctx, delay); waitErr != nil {
-				return waitErr //nolint:wrapcheck // propagate cancellation as-is
-			}
-
-			continue
-		}
-
-		return nil
-	}
-}
-
-// watchOnce opens a single change stream session and processes events until
-// error or context cancellation.
-func (s *Store) watchOnce(ctx context.Context, handler func(store.Event)) error {
-	pipeline := mongo.Pipeline{
-		{{Key: "$match", Value: bson.D{
-			{Key: "operationType", Value: bson.D{
-				{Key: "$in", Value: bson.A{"insert", "update", "replace"}},
-			}},
-		}}},
-	}
-
-	opts := options.ChangeStream().
-		SetFullDocument(options.UpdateLookup)
-
-	stream, err := s.coll.Watch(ctx, pipeline, opts)
-	if err != nil {
-		return fmt.Errorf("open change stream: %w", err)
-	}
-	defer stream.Close(ctx)
-
-	for stream.Next(ctx) {
-		var event changeEvent
-		if err := stream.Decode(&event); err != nil {
-			s.logWarn(ctx, "change stream decode error, skipping event", log.Err(err))
-			continue
-		}
-
-		evt, ok := extractEvent(event)
-		if !ok {
-			continue
-		}
-
-		s.safeInvokeHandler(ctx, handler, evt)
-	}
-
-	if ctx.Err() != nil {
-		return nil
-	}
-
-	if err := stream.Err(); err != nil {
-		return fmt.Errorf("change stream error: %w", err)
-	}
-
-	return nil
-}
-
-// extractEvent converts a decoded changeEvent into a store.Event.
-// Returns false if the event cannot be mapped (missing fields, etc.).
-func extractEvent(ce changeEvent) (store.Event, bool) {
-	if ce.FullDocument == nil {
-		return store.Event{}, false
-	}
-
-	ns := bsonLookupString(ce.FullDocument, "namespace")
-	key := bsonLookupString(ce.FullDocument, "key")
-
-	if ns == "" || key == "" {
-		return store.Event{}, false
-	}
-
-	return store.Event{Namespace: ns, Key: key}, true
-}
-
-// subscribePoll uses a ticker to periodically query for entries updated since
-// the last watermark and emits events for each changed entry.
-func (s *Store) subscribePoll(ctx context.Context, handler func(store.Event)) error {
-	watermark := time.Now().UTC()
-	ticker := time.NewTicker(s.cfg.PollInterval)
-
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			newWatermark, err := s.pollChanges(ctx, watermark, handler)
-			if err != nil {
-				// Transient error — log and retry on next tick.
-				s.logWarn(ctx, "poll query failed", log.Err(err))
-				continue
-			}
-
-			watermark = newWatermark
-		}
-	}
-}
-
-// pollChanges queries for documents updated after the watermark, invokes the
-// handler for each, and returns the new watermark.
-func (s *Store) pollChanges(
-	ctx context.Context,
-	watermark time.Time,
-	handler func(store.Event),
-) (time.Time, error) {
-	filter := bson.D{
-		{Key: "updated_at", Value: bson.D{{Key: "$gt", Value: watermark}}},
-	}
-
-	findOpts := options.Find().SetSort(bson.D{{Key: "updated_at", Value: 1}})
-
-	cursor, err := s.coll.Find(ctx, filter, findOpts)
-	if err != nil {
-		return watermark, fmt.Errorf("poll find: %w", err)
-	}
-	defer cursor.Close(ctx)
-
-	newWatermark := watermark
-
-	for cursor.Next(ctx) {
-		var doc entryDoc
-		if err := cursor.Decode(&doc); err != nil {
-			s.logWarn(ctx, "poll decode error, skipping document", log.Err(err))
-			continue
-		}
-
-		evt := store.Event{Namespace: doc.Namespace, Key: doc.Key}
-		s.safeInvokeHandler(ctx, handler, evt)
-
-		if doc.UpdatedAt.After(newWatermark) {
-			newWatermark = doc.UpdatedAt
-		}
-	}
-
-	if err := cursor.Err(); err != nil {
-		return watermark, fmt.Errorf("poll cursor error: %w", err)
-	}
-
-	return newWatermark, nil
-}
-
-// safeInvokeHandler calls handler inside a deferred panic recovery.
-func (s *Store) safeInvokeHandler(ctx context.Context, handler func(store.Event), evt store.Event) {
-	defer libRuntime.RecoverAndLogWithContext(ctx, s.cfg.Logger, "systemplane", "mongodb.handler")
-
-	handler(evt)
-}
-
-// logWarn logs a warning-level message via the configured logger.
+// logWarn logs a warning-level message via the configured logger. Centralized
+// so every emitter in the package goes through the same nil-guard — without
+// it, call sites scatter `if s.cfg.Logger != nil` checks that drift over
+// time.
 func (s *Store) logWarn(ctx context.Context, msg string, fields ...log.Field) {
-	if s.cfg.Logger == nil {
+	if s == nil || s.cfg.Logger == nil {
 		return
 	}
 
 	s.cfg.Logger.Log(ctx, log.LevelWarn, msg, fields...)
 }
 
-// bsonLookupString extracts a string value from a bson.D by key.
-// Returns "" when the key is absent or the value is not a string.
-func bsonLookupString(doc *bson.D, key string) string {
-	if doc == nil {
-		return ""
+// logInfo logs an info-level message via the configured logger. Symmetric
+// with logWarn; used by audit-style emissions (tenant delete, migration
+// decisions) where WARN would overstate the severity.
+func (s *Store) logInfo(ctx context.Context, msg string, fields ...log.Field) {
+	if s == nil || s.cfg.Logger == nil {
+		return
 	}
 
-	for _, elem := range *doc {
-		if elem.Key == key {
-			s, ok := elem.Value.(string)
-			if ok {
-				return s
-			}
-
-			return ""
-		}
-	}
-
-	return ""
+	s.cfg.Logger.Log(ctx, log.LevelInfo, msg, fields...)
 }

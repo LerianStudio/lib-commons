@@ -1,16 +1,23 @@
+//go:build unit || integration
+
 // NewForTesting constructor for out-of-package tests.
+//
+// Build-tag gated: this file is compiled only under `-tags=unit` or
+// `-tags=integration`. Production binaries exclude it entirely, so the
+// TestStore / TestEntry / TestEvent / NewForTesting symbols do not ship.
 package systemplane
 
 import (
 	"context"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 )
 
-// TestStore is the public mirror of the internal store.Store interface, exposed
-// solely for [NewForTesting]. Production code uses [NewPostgres] or [NewMongoDB]
-// which wire the internal interface directly.
+// TestStore is a test-only storage contract exposed solely for [NewForTesting].
+// Production code uses [NewPostgres] or [NewMongoDB], which wire real backend
+// storage directly.
 //
 // DO NOT USE IN PRODUCTION. This interface is intentionally undocumented in
 // README/API docs. Its API stability is not promised.
@@ -20,21 +27,34 @@ type TestStore interface {
 	Set(ctx context.Context, e TestEntry) error
 	Subscribe(ctx context.Context, handler func(TestEvent)) error
 	Close() error
+
+	// GetTenantValue returns a tenant override for namespace/key.
+	GetTenantValue(ctx context.Context, tenantID, namespace, key string) (TestEntry, bool, error)
+	// SetTenantValue persists a tenant override for namespace/key.
+	SetTenantValue(ctx context.Context, tenantID string, e TestEntry) error
+	// DeleteTenantValue removes a tenant override for namespace/key.
+	DeleteTenantValue(ctx context.Context, tenantID, namespace, key, actor string) error
+	// ListTenantOverrides returns only tenant override rows using keyset pagination.
+	ListTenantOverrides(ctx context.Context, afterNamespace, afterKey, afterTenantID string, limit int) ([]TestEntry, error)
+	// ListTenantsForKey returns tenants that have overridden namespace/key.
+	ListTenantsForKey(ctx context.Context, namespace, key string) ([]string, error)
 }
 
-// TestEntry is the public mirror of internal store.Entry.
+// TestEntry is a test-only persisted configuration row.
 type TestEntry struct {
 	Namespace string
 	Key       string
+	TenantID  string
 	Value     []byte // JSON-encoded
 	UpdatedAt time.Time
 	UpdatedBy string
 }
 
-// TestEvent is the public mirror of internal store.Event.
+// TestEvent is a test-only changefeed event.
 type TestEvent struct {
 	Namespace string
 	Key       string
+	TenantID  string
 }
 
 // testStoreAdapter wraps a TestStore to satisfy the internal store.Store interface.
@@ -53,6 +73,7 @@ func (a *testStoreAdapter) List(ctx context.Context) ([]store.Entry, error) {
 		out[i] = store.Entry{
 			Namespace: e.Namespace,
 			Key:       e.Key,
+			TenantID:  e.TenantID,
 			Value:     e.Value,
 			UpdatedAt: e.UpdatedAt,
 			UpdatedBy: e.UpdatedBy,
@@ -71,6 +92,7 @@ func (a *testStoreAdapter) Get(ctx context.Context, namespace, key string) (stor
 	return store.Entry{
 		Namespace: te.Namespace,
 		Key:       te.Key,
+		TenantID:  te.TenantID,
 		Value:     te.Value,
 		UpdatedAt: te.UpdatedAt,
 		UpdatedBy: te.UpdatedBy,
@@ -81,6 +103,7 @@ func (a *testStoreAdapter) Set(ctx context.Context, e store.Entry) error {
 	return a.ts.Set(ctx, TestEntry{
 		Namespace: e.Namespace,
 		Key:       e.Key,
+		TenantID:  e.TenantID,
 		Value:     e.Value,
 		UpdatedAt: e.UpdatedAt,
 		UpdatedBy: e.UpdatedBy,
@@ -92,12 +115,69 @@ func (a *testStoreAdapter) Subscribe(ctx context.Context, handler func(store.Eve
 		handler(store.Event{
 			Namespace: te.Namespace,
 			Key:       te.Key,
+			TenantID:  te.TenantID,
 		})
 	})
 }
 
 func (a *testStoreAdapter) Close() error {
 	return a.ts.Close()
+}
+
+func (a *testStoreAdapter) GetTenantValue(ctx context.Context, tenantID, namespace, key string) (store.Entry, bool, error) {
+	te, found, err := a.ts.GetTenantValue(ctx, tenantID, namespace, key)
+	if err != nil || !found {
+		return store.Entry{}, found, err
+	}
+
+	return store.Entry{
+		Namespace: te.Namespace,
+		Key:       te.Key,
+		TenantID:  te.TenantID,
+		Value:     te.Value,
+		UpdatedAt: te.UpdatedAt,
+		UpdatedBy: te.UpdatedBy,
+	}, true, nil
+}
+
+func (a *testStoreAdapter) SetTenantValue(ctx context.Context, tenantID string, e store.Entry) error {
+	return a.ts.SetTenantValue(ctx, tenantID, TestEntry{
+		Namespace: e.Namespace,
+		Key:       e.Key,
+		TenantID:  e.TenantID,
+		Value:     e.Value,
+		UpdatedAt: e.UpdatedAt,
+		UpdatedBy: e.UpdatedBy,
+	})
+}
+
+func (a *testStoreAdapter) DeleteTenantValue(ctx context.Context, tenantID, namespace, key, actor string) error {
+	return a.ts.DeleteTenantValue(ctx, tenantID, namespace, key, actor)
+}
+
+func (a *testStoreAdapter) ListTenantOverrides(ctx context.Context, afterNamespace, afterKey, afterTenantID string, limit int) ([]store.Entry, error) {
+	entries, err := a.ts.ListTenantOverrides(ctx, afterNamespace, afterKey, afterTenantID, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]store.Entry, len(entries))
+	for i, e := range entries {
+		out[i] = store.Entry{
+			Namespace: e.Namespace,
+			Key:       e.Key,
+			TenantID:  e.TenantID,
+			Value:     e.Value,
+			UpdatedAt: e.UpdatedAt,
+			UpdatedBy: e.UpdatedBy,
+		}
+	}
+
+	return out, nil
+}
+
+func (a *testStoreAdapter) ListTenantsForKey(ctx context.Context, namespace, key string) ([]string, error) {
+	return a.ts.ListTenantsForKey(ctx, namespace, key)
 }
 
 // NewForTesting wires a Client from an explicit [TestStore] implementation. It
@@ -110,7 +190,7 @@ func (a *testStoreAdapter) Close() error {
 // DO NOT USE IN PRODUCTION. This constructor is intentionally undocumented in
 // README/API docs. Its API stability is not promised.
 func NewForTesting(s TestStore, opts ...Option) (*Client, error) {
-	if s == nil {
+	if nilcheck.Interface(s) {
 		return nil, store.ErrNilBackend
 	}
 

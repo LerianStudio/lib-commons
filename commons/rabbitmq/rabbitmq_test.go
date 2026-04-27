@@ -741,8 +741,9 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 		var mu sync.Mutex
 		created := make(map[*amqp.Connection]bool) // tracks all created connections
 		closed := make(map[*amqp.Connection]bool)  // tracks all closed connections
-		dialStarted := make(chan struct{})         // signals that dialing has begun
+		dialStarted := make(chan struct{}, 1)      // signals that dialing has begun (buffered so the first dialer never drops the signal)
 		dialBarrier := make(chan struct{})         // holds all dialers until released
+		var dialersReady atomic.Int32
 
 		// The "dead" connection that was killed externally.
 		deadConn := &amqp.Connection{}
@@ -763,6 +764,7 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 			dialerContext: func(_ context.Context, _ string) (*amqp.Connection, error) {
 				// Signal that we started dialing, then wait for barrier.
 				// This ensures all goroutines enter the dial phase concurrently.
+				dialersReady.Add(1)
 				select {
 				case dialStarted <- struct{}{}:
 				default:
@@ -790,28 +792,41 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 
 		const goroutines = 5
 		var wg sync.WaitGroup
+		errs := make(chan error, goroutines)
 		wg.Add(goroutines)
 
 		for i := 0; i < goroutines; i++ {
 			go func() {
 				defer wg.Done()
-				_ = conn.EnsureChannelContext(context.Background())
+				errs <- conn.EnsureChannelContext(context.Background())
 			}()
 		}
 
 		// Wait for at least one goroutine to enter the dial phase,
-		// then release all of them at once to maximize concurrency.
-		<-dialStarted
+		// then wait for multiple dialers to maximize race coverage.
+		select {
+		case <-dialStarted:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for a dialer to enter the dial phase")
+		}
+		require.Eventually(t, func() bool {
+			return dialersReady.Load() >= 2
+		}, time.Second, 10*time.Millisecond, "test did not force concurrent reconnect attempts")
 		close(dialBarrier)
 
 		wg.Wait()
+		close(errs)
+
+		for err := range errs {
+			assert.NoError(t, err)
+		}
 
 		mu.Lock()
 		numCreated := len(created)
 		mu.Unlock()
 
-		// At least one connection was created.
-		assert.GreaterOrEqual(t, numCreated, 1, "should have created at least 1 connection")
+		// Multiple connections were created (proves the race path was exercised).
+		assert.Greater(t, numCreated, 1, "test must create multiple concurrent reconnects to validate leak cleanup")
 		// The final state has exactly 1 surviving connection.
 		assert.True(t, conn.Connected, "should be connected after reconnect")
 		assert.NotNil(t, conn.Connection, "should have a live connection")
@@ -1674,7 +1689,7 @@ func TestRedactURLCredentials(t *testing.T) {
 		{
 			name:            "amqps scheme is redacted",
 			message:         "dial amqps://admin:s3cret@broker:5671/vhost failed",
-			expectedContain: []string{"amqps://admin:xxxxx@broker:5671/vhost"},
+			expectedContain: []string{"amqps://admin:****@broker:5671/vhost"},
 			notContain:      []string{"s3cret"},
 		},
 		{
@@ -1685,49 +1700,49 @@ func TestRedactURLCredentials(t *testing.T) {
 		{
 			name:            "url-encoded password is redacted",
 			message:         "dial amqp://admin:p%40ss%3Aword%2F123@broker:5672 failed",
-			expectedContain: []string{"amqp://admin:xxxxx@broker:5672"},
+			expectedContain: []string{"amqp://admin:****@broker:5672"},
 			notContain:      []string{"p%40ss%3Aword%2F123"},
 		},
 		{
 			name:            "password with slash is redacted",
 			message:         "dial amqp://admin:pa/ss@broker:5672 failed",
-			expectedContain: []string{"amqp://admin:xxxxx@broker:5672"},
+			expectedContain: []string{"amqp://admin:****@broker:5672"},
 			notContain:      []string{"pa/ss"},
 		},
 		{
 			name:            "password with literal at is redacted",
 			message:         "dial amqp://admin:p@ss@broker:5672 failed",
-			expectedContain: []string{"amqp://admin:xxxxx@broker:5672"},
+			expectedContain: []string{"amqp://admin:****@broker:5672"},
 			notContain:      []string{"p@ss"},
 		},
 		{
 			name:            "multiple URLs are redacted",
 			message:         "upstream amqp://u1:p1@host1:5672 then amqps://u2:p2@host2:5671",
-			expectedContain: []string{"amqp://u1:xxxxx@host1:5672", "amqps://u2:xxxxx@host2:5671"},
+			expectedContain: []string{"amqp://u1:****@host1:5672", "amqps://u2:****@host2:5671"},
 			notContain:      []string{"u1:p1", "u2:p2"},
 		},
 		{
 			name:            "ipv6 host is redacted",
 			message:         "dial amqp://guest:guest@[::1]:5672 failed",
-			expectedContain: []string{"amqp://guest:xxxxx@[::1]:5672"},
+			expectedContain: []string{"amqp://guest:****@[::1]:5672"},
 			notContain:      []string{"guest:guest@[::1]"},
 		},
 		{
 			name:            "empty password is normalized to redacted placeholder",
 			message:         "dial amqp://user:@localhost:5672 failed",
-			expectedContain: []string{"amqp://user:xxxxx@localhost:5672"},
+			expectedContain: []string{"amqp://user:****@localhost:5672"},
 			notContain:      []string{"user:@localhost"},
 		},
 		{
 			name:            "surrounding text and punctuation are preserved",
 			message:         "error details (amqp://user:secret@localhost:5672), retry later",
-			expectedContain: []string{"error details (amqp://user:xxxxx@localhost:5672), retry later"},
+			expectedContain: []string{"error details (amqp://user:****@localhost:5672), retry later"},
 			notContain:      []string{"user:secret@"},
 		},
 		{
 			name:            "multiple colons in userinfo are fully redacted",
 			message:         "dial amqp://user:name:secret@localhost:5672 failed",
-			expectedContain: []string{"amqp://user:xxxxx@localhost:5672"},
+			expectedContain: []string{"amqp://user:****@localhost:5672"},
 			notContain:      []string{"secret", "user:name:secret"},
 		},
 	}
@@ -1763,7 +1778,7 @@ func TestRedactURLCredentialsFallback(t *testing.T) {
 
 		got := redactURLCredentialsFallback(token)
 
-		assert.Equal(t, "amqp://user:xxxxx@host:5672/path@segment?key=value", got)
+		assert.Equal(t, "amqp://user:****@host:5672/path@segment?key=value", got)
 	})
 
 	t.Run("does not redact when at-sign appears only in path", func(t *testing.T) {
@@ -1789,7 +1804,7 @@ func TestSanitizeAMQPErr(t *testing.T) {
 		got := sanitizeAMQPErr(err, connectionString)
 
 		assert.NotContains(t, got, "s3cretP@ss")
-		assert.Contains(t, got, "xxxxx")
+		assert.Contains(t, got, "****")
 	})
 
 	t.Run("nil error returns empty string", func(t *testing.T) {
@@ -1830,7 +1845,7 @@ func TestSanitizeAMQPErr(t *testing.T) {
 		got := sanitizeAMQPErr(err, connectionString)
 
 		assert.NotContains(t, got, "s3cr3t")
-		assert.Contains(t, got, "xxxxx")
+		assert.Contains(t, got, "****")
 	})
 
 	t.Run("redacts URL-encoded password in decoded form", func(t *testing.T) {
@@ -1843,7 +1858,7 @@ func TestSanitizeAMQPErr(t *testing.T) {
 		got := sanitizeAMQPErr(err, connectionString)
 
 		assert.NotContains(t, got, "p@ss:word/123")
-		assert.Contains(t, got, "xxxxx")
+		assert.Contains(t, got, "****")
 	})
 
 	t.Run("empty connection string without URL credentials returns unmodified error", func(t *testing.T) {
@@ -1864,7 +1879,7 @@ func TestSanitizeAMQPErr(t *testing.T) {
 		got := sanitizeAMQPErr(err, "")
 
 		assert.NotContains(t, got, "guest:guest")
-		assert.Contains(t, got, "xxxxx")
+		assert.Contains(t, got, "****")
 	})
 
 	t.Run("fallback redaction fully redacts multi-colon userinfo passwords", func(t *testing.T) {
@@ -1875,7 +1890,7 @@ func TestSanitizeAMQPErr(t *testing.T) {
 		got := sanitizeAMQPErr(err, "")
 
 		assert.NotContains(t, got, "secret")
-		assert.Contains(t, got, "amqp://user:xxxxx@localhost:5672")
+		assert.Contains(t, got, "amqp://user:****@localhost:5672")
 	})
 }
 

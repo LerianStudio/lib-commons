@@ -6,22 +6,16 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/LerianStudio/lib-commons/v5/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
-	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	libOTEL "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -33,17 +27,13 @@ var _ store.Store = (*Store)(nil)
 // are not supported.
 var safeIdentifierRe = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-// backoffBase is the starting delay for LISTEN reconnection backoff.
-const backoffBase = 500 * time.Millisecond
-
-// backoffCap is the maximum delay between LISTEN reconnection attempts.
-const backoffCap = 30 * time.Second
-
-// closeTimeout is the deadline for best-effort cleanup on connection close.
-const closeTimeout = 5 * time.Second
-
 // tracerName is the OpenTelemetry instrumentation scope name.
 const tracerName = "systemplane.postgres"
+
+// defaultChannel is the LISTEN/NOTIFY channel used when Config.Channel is
+// empty. Hardcoded because changing this is a wire-format break: every
+// consumer of a given database must agree on the channel name.
+const defaultChannel = "systemplane_changes"
 
 // Config holds the parameters needed to construct a Postgres-backed Store.
 type Config struct {
@@ -60,6 +50,13 @@ type Config struct {
 	// Default: "systemplane_changes".
 	Channel string
 
+	// ChannelExplicit signals that the caller deliberately selected Channel
+	// (typically via WithListenChannel). When false, New emits a warning if
+	// Channel resolves to the default "systemplane_changes" — multiple
+	// services sharing a database on that channel receive each other's
+	// NOTIFY traffic, which is rarely what operators want.
+	ChannelExplicit bool
+
 	// Table is the Postgres table name.
 	// Default: "systemplane_entries".
 	Table string
@@ -68,7 +65,15 @@ type Config struct {
 	Logger log.Logger
 
 	// Telemetry is the OpenTelemetry provider for spans and metrics.
-	Telemetry *opentelemetry.Telemetry
+	Telemetry *libOTEL.Telemetry
+
+	// TenantSchemaEnabled opts the backend into phase-2 schema. When false
+	// (the default), ensureSchema keeps the legacy (namespace, key) primary
+	// key intact so pre-tenant binaries can continue to use ON CONFLICT
+	// (namespace, key). Tenant writes return ErrTenantSchemaNotEnabled.
+	// When true, the legacy PK is dropped and a composite unique on
+	// (namespace, key, tenant_id) is created.
+	TenantSchemaEnabled bool
 }
 
 // Store implements [store.Store] over Postgres with LISTEN/NOTIFY.
@@ -92,8 +97,9 @@ func New(cfg Config) (*Store, error) {
 		return nil, errors.New("systemplane/postgres: ListenDSN is required")
 	}
 
-	if cfg.Channel == "" {
-		cfg.Channel = "systemplane_changes"
+	usingDefaultChannel := cfg.Channel == ""
+	if usingDefaultChannel {
+		cfg.Channel = defaultChannel
 	}
 
 	if cfg.Table == "" {
@@ -116,6 +122,18 @@ func New(cfg Config) (*Store, error) {
 		ctx:    ctx,
 	}
 
+	// Warn once when we're falling back to the default channel without an
+	// explicit opt-in. Every service sharing this database on the default
+	// channel will see each other's NOTIFY traffic; operators should isolate
+	// via a per-service channel name. Only warn when the caller did NOT
+	// explicitly select the channel (even if their explicit selection
+	// happens to match the default — their intent was deliberate).
+	if usingDefaultChannel && !cfg.ChannelExplicit && cfg.Logger != nil {
+		s.logWarn(ctx, "Postgres LISTEN channel using default 'systemplane_changes'; multiple services sharing this database will receive each other's events. Consider setting WithListenChannel('<service_name>_systemplane_changes') to isolate changefeeds.",
+			log.String("channel", cfg.Channel),
+		)
+	}
+
 	if err := s.ensureSchema(context.Background()); err != nil {
 		cancel()
 		return nil, fmt.Errorf("systemplane/postgres: schema init: %w", err)
@@ -124,65 +142,13 @@ func New(cfg Config) (*Store, error) {
 	return s, nil
 }
 
-// ensureSchema creates the table and trigger in a single transaction.
-func (s *Store) ensureSchema(ctx context.Context) error {
-	tx, err := s.cfg.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-
-	defer func() {
-		_ = tx.Rollback()
-	}()
-
-	createTable := fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %s (
-		namespace   TEXT NOT NULL,
-		key         TEXT NOT NULL,
-		value       JSONB NOT NULL,
-		updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-		updated_by  TEXT NOT NULL DEFAULT '',
-		PRIMARY KEY (namespace, key)
-	)`, s.cfg.Table)
-
-	if _, err := tx.ExecContext(ctx, createTable); err != nil {
-		return fmt.Errorf("create table: %w", err)
-	}
-
-	// The trigger function references the channel name literally. We have
-	// already validated it against safeIdentifierRe, so direct interpolation
-	// is safe here.
-	createFunc := fmt.Sprintf(`CREATE OR REPLACE FUNCTION systemplane_notify() RETURNS TRIGGER AS $$
-BEGIN
-	PERFORM pg_notify('%s', json_build_object('namespace', NEW.namespace, 'key', NEW.key)::text);
-	RETURN NEW;
-END;
-$$ LANGUAGE plpgsql`, s.cfg.Channel)
-
-	if _, err := tx.ExecContext(ctx, createFunc); err != nil {
-		return fmt.Errorf("create function: %w", err)
-	}
-
-	dropTrigger := "DROP TRIGGER IF EXISTS systemplane_notify_trigger ON " + s.cfg.Table // #nosec G202 -- table name validated as Postgres identifier in New()
-	if _, err := tx.ExecContext(ctx, dropTrigger); err != nil {
-		return fmt.Errorf("drop trigger: %w", err)
-	}
-
-	createTrigger := fmt.Sprintf(`CREATE TRIGGER systemplane_notify_trigger
-AFTER INSERT OR UPDATE ON %s
-FOR EACH ROW EXECUTE FUNCTION systemplane_notify()`, s.cfg.Table) // #nosec G201 -- table name validated as Postgres identifier in New()
-
-	if _, err := tx.ExecContext(ctx, createTrigger); err != nil {
-		return fmt.Errorf("create trigger: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit: %w", err)
-	}
-
-	return nil
-}
-
-// List returns all entries from the Postgres table.
+// List returns only the global (tenant_id='_global') entries from the Postgres
+// table. Tenant-scoped overrides are deliberately excluded — callers wanting
+// every row (including overrides) should use ListTenantValues. This filter
+// preserves backward compatibility: pre-tenant consumers called List() to
+// hydrate their global cache, and they must continue to see only globals
+// even after the schema gains tenant rows (TRD §9 backward-compat matrix,
+// TRD §4.5 hydration sequence).
 func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	if s == nil || s.isClosed() {
 		return nil, store.ErrClosed
@@ -192,14 +158,13 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	defer finish()
 
 	query := fmt.Sprintf( // #nosec G201 -- table name validated as Postgres identifier in New()
-		`SELECT namespace, key, value, updated_at, updated_by FROM %s ORDER BY namespace, key`,
+		`SELECT namespace, key, tenant_id, value, updated_at, updated_by FROM %s WHERE tenant_id = $1 ORDER BY namespace, key`,
 		s.cfg.Table,
 	)
 
-	rows, err := s.cfg.DB.QueryContext(ctx, query)
+	rows, err := s.cfg.DB.QueryContext(ctx, query, store.SentinelGlobal)
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "query failed")
+		libOTEL.HandleSpanError(span, "list query failed", err)
 
 		return nil, fmt.Errorf("systemplane/postgres: list: %w", err)
 	}
@@ -210,9 +175,8 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	for rows.Next() {
 		var e store.Entry
 
-		if err := rows.Scan(&e.Namespace, &e.Key, &e.Value, &e.UpdatedAt, &e.UpdatedBy); err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, "scan failed")
+		if err := rows.Scan(&e.Namespace, &e.Key, &e.TenantID, &e.Value, &e.UpdatedAt, &e.UpdatedBy); err != nil {
+			libOTEL.HandleSpanError(span, "list scan failed", err)
 
 			return nil, fmt.Errorf("systemplane/postgres: list scan: %w", err)
 		}
@@ -221,8 +185,7 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	}
 
 	if err := rows.Err(); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "rows iteration failed")
+		libOTEL.HandleSpanError(span, "list rows iteration failed", err)
 
 		return nil, fmt.Errorf("systemplane/postgres: list rows: %w", err)
 	}
@@ -235,7 +198,11 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	return entries, nil
 }
 
-// Get returns a single entry by namespace and key.
+// Get returns the global (tenant_id='_global') entry for the given
+// (namespace, key). Tenant-scoped overrides are deliberately invisible to
+// the legacy Get path — consumers that want a tenant override must call
+// GetTenantValue explicitly. This preserves PRD AC1: Get(ns, key) must
+// ignore tenant overrides even when they exist.
 func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bool, error) {
 	if s == nil || s.isClosed() {
 		return store.Entry{}, false, store.ErrClosed
@@ -248,21 +215,20 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bo
 	defer finish()
 
 	query := fmt.Sprintf( // #nosec G201 -- table name validated as Postgres identifier in New()
-		`SELECT namespace, key, value, updated_at, updated_by FROM %s WHERE namespace = $1 AND key = $2`,
+		`SELECT namespace, key, tenant_id, value, updated_at, updated_by FROM %s WHERE namespace = $1 AND key = $2 AND tenant_id = $3`,
 		s.cfg.Table,
 	)
 
 	var e store.Entry
 
-	err := s.cfg.DB.QueryRowContext(ctx, query, namespace, key).
-		Scan(&e.Namespace, &e.Key, &e.Value, &e.UpdatedAt, &e.UpdatedBy)
+	err := s.cfg.DB.QueryRowContext(ctx, query, namespace, key, store.SentinelGlobal).
+		Scan(&e.Namespace, &e.Key, &e.TenantID, &e.Value, &e.UpdatedAt, &e.UpdatedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.Entry{}, false, nil
 	}
 
 	if err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "query failed")
+		libOTEL.HandleSpanError(span, "get query failed", err)
 
 		return store.Entry{}, false, fmt.Errorf("systemplane/postgres: get: %w", err)
 	}
@@ -270,7 +236,23 @@ func (s *Store) Get(ctx context.Context, namespace, key string) (store.Entry, bo
 	return e, true, nil
 }
 
-// Set persists an entry using an INSERT ... ON CONFLICT UPDATE (upsert).
+// Set persists a global entry using an INSERT ... ON CONFLICT UPDATE
+// (upsert). The tenant_id column is populated explicitly with the '_global'
+// sentinel — the column's DEFAULT would do the same, but writing it
+// explicitly keeps the intent visible and future-proofs against a column
+// rewrite that might remove the default.
+//
+// The ON CONFLICT target adapts to the configured schema phase:
+//
+//   - Phase 1 (TenantSchemaEnabled=false, default): targets the legacy
+//     (namespace, key) primary key, matching the arbiter shape used by
+//     pre-tenant lib-commons binaries (v5.0.x). This is the rolling-deploy
+//     safe configuration.
+//   - Phase 2 (TenantSchemaEnabled=true): targets the composite
+//     (namespace, key, tenant_id) unique index.
+//
+// In both phases tenant_id is pinned to '_global' for writes issued through
+// this method, so the collision domain is effectively (namespace, key).
 // The backing trigger issues NOTIFY on the configured channel.
 func (s *Store) Set(ctx context.Context, e store.Entry) error {
 	if s == nil || s.isClosed() {
@@ -295,150 +277,25 @@ func (s *Store) Set(ctx context.Context, e store.Entry) error {
 	)
 	defer finish()
 
-	query := fmt.Sprintf(`INSERT INTO %s (namespace, key, value, updated_at, updated_by)
-VALUES ($1, $2, $3, $4, $5)
-ON CONFLICT (namespace, key) DO UPDATE
+	conflictTarget := "(namespace, key)"
+	if s.cfg.TenantSchemaEnabled {
+		conflictTarget = "(namespace, key, tenant_id)"
+	}
+
+	query := fmt.Sprintf(`INSERT INTO %s (namespace, key, tenant_id, value, updated_at, updated_by)
+VALUES ($1, $2, $3, $4, $5, $6)
+ON CONFLICT %s DO UPDATE
 SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by`,
-		s.cfg.Table, // #nosec G201 -- table name validated as Postgres identifier in New()
+		s.cfg.Table, conflictTarget, // #nosec G201 -- table name validated as Postgres identifier in New(); conflictTarget is a compile-time literal
 	)
 
-	if _, err := s.cfg.DB.ExecContext(ctx, query, e.Namespace, e.Key, e.Value, e.UpdatedAt, e.UpdatedBy); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, "upsert failed")
+	if _, err := s.cfg.DB.ExecContext(ctx, query, e.Namespace, e.Key, store.SentinelGlobal, e.Value, e.UpdatedAt, e.UpdatedBy); err != nil {
+		libOTEL.HandleSpanError(span, "set upsert failed", err)
 
 		return fmt.Errorf("systemplane/postgres: set: %w", err)
 	}
 
 	return nil
-}
-
-// Subscribe blocks until ctx is cancelled, listening on the Postgres
-// LISTEN/NOTIFY channel and invoking handler for each change event.
-// Uses pgx.Connect with the ListenDSN for a dedicated connection.
-// Safe to invoke multiple times concurrently; each call is its own subscription.
-func (s *Store) Subscribe(ctx context.Context, handler func(store.Event)) error {
-	if s == nil || s.isClosed() {
-		return store.ErrClosed
-	}
-
-	// Merge the store-level cancellation with the caller's context so that
-	// Close() also terminates running subscriptions.
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	go func() {
-		select {
-		case <-s.ctx.Done():
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-
-	var attempt int
-
-	for {
-		err := s.listenLoop(ctx, handler)
-		if err == nil {
-			return nil
-		}
-
-		// Context cancelled (either caller or store close) -- clean exit.
-		if ctx.Err() != nil {
-			return nil
-		}
-
-		s.logWarn(ctx, "LISTEN connection lost, reconnecting",
-			log.Int("attempt", attempt),
-			log.Err(err),
-		)
-
-		delay := min(backoff.ExponentialWithJitter(backoffBase, attempt), backoffCap)
-
-		attempt++
-
-		if err := backoff.WaitContext(ctx, delay); err != nil {
-			return nil
-		}
-	}
-}
-
-// listenLoop establishes a single pgx connection, issues LISTEN, and processes
-// notifications until the context is cancelled or the connection fails.
-func (s *Store) listenLoop(ctx context.Context, handler func(store.Event)) error {
-	conn, err := pgx.Connect(ctx, s.cfg.ListenDSN)
-	if err != nil {
-		return fmt.Errorf("connect: %w", err)
-	}
-
-	defer func() {
-		cleanCtx, cleanCancel := context.WithTimeout(context.WithoutCancel(ctx), closeTimeout)
-		defer cleanCancel()
-
-		_ = conn.Close(cleanCtx)
-	}()
-
-	listenStmt := "LISTEN " + quoteIdentifier(s.cfg.Channel)
-
-	if _, err := conn.Exec(ctx, listenStmt); err != nil {
-		return fmt.Errorf("listen: %w", err)
-	}
-
-	s.logInfo(ctx, "LISTEN connection established",
-		log.String("channel", s.cfg.Channel),
-	)
-
-	// Reset attempt counter on successful connection (the caller manages this,
-	// but we signal success by returning a non-connection error or nil).
-
-	for {
-		notification, err := conn.WaitForNotification(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-
-			return fmt.Errorf("wait: %w", err)
-		}
-
-		evt, err := parseNotifyPayload(notification.Payload)
-		if err != nil {
-			s.logWarn(ctx, "failed to decode NOTIFY payload",
-				log.String("payload", truncateString(notification.Payload, 200)),
-				log.Err(err),
-			)
-
-			continue
-		}
-
-		s.invokeHandler(ctx, handler, evt)
-	}
-}
-
-// invokeHandler calls the user's handler with panic recovery.
-func (s *Store) invokeHandler(ctx context.Context, handler func(store.Event), evt store.Event) {
-	defer runtime.RecoverAndLogWithContext(ctx, s.cfg.Logger, "systemplane", "postgres.handler")
-
-	handler(evt)
-}
-
-// notifyPayload is the JSON shape emitted by the pg_notify trigger.
-type notifyPayload struct {
-	Namespace string `json:"namespace"`
-	Key       string `json:"key"`
-}
-
-// parseNotifyPayload converts a NOTIFY JSON payload into a store.Event.
-func parseNotifyPayload(data string) (store.Event, error) {
-	var p notifyPayload
-
-	if err := json.Unmarshal([]byte(data), &p); err != nil {
-		return store.Event{}, fmt.Errorf("unmarshal: %w", err)
-	}
-
-	return store.Event{
-		Namespace: p.Namespace,
-		Key:       p.Key,
-	}, nil
 }
 
 // Close releases any resources held by the Store. Idempotent.
@@ -510,13 +367,14 @@ func (s *Store) logWarn(ctx context.Context, msg string, fields ...log.Field) {
 	}
 }
 
-// truncateString returns s unchanged if len(s) <= maxLen, otherwise returns
-// the first maxLen bytes followed by "...". Used for defense-in-depth when
-// logging untrusted payloads.
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
+// logDebug emits a debug-level log if a logger is configured. Used for
+// low-signal reconnect chatter where the first incident is already logged
+// at warn level.
+func (s *Store) logDebug(ctx context.Context, msg string, fields ...log.Field) {
+	if s.cfg.Logger != nil {
+		s.cfg.Logger.Log(ctx, log.LevelDebug, msg, fields...)
 	}
-
-	return s[:maxLen] + "..."
 }
+
+// LISTEN/NOTIFY subscription methods live in postgres_listen.go.
+// Tenant-scoped Store methods live in postgres_tenant.go.

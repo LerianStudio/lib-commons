@@ -3,19 +3,17 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
 	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
+	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/google/uuid"
 )
 
@@ -35,7 +33,6 @@ var (
 	ErrTenantDiscovererRequired  = errors.New("tenant discoverer is required")
 	ErrNoPrimaryDB               = errors.New("no primary database configured for tenant transaction")
 	ErrInvalidIdentifier         = errors.New("invalid sql identifier")
-	identifierPattern            = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 	defaultTransactionTimeout    = 30 * time.Second
 	outboxColumns                = "id, event_type, aggregate_id, payload, status, attempts, published_at, last_error, created_at, updated_at"
 )
@@ -173,7 +170,7 @@ func (repo *Repository) GetByID(ctx context.Context, id uuid.UUID) (*outbox.Outb
 		return nil, ErrIDRequired
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.get_outbox_by_id")
 	defer span.End()
@@ -206,7 +203,6 @@ func (repo *Repository) GetByID(ctx context.Context, id uuid.UUID) (*outbox.Outb
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			libOpentelemetry.HandleSpanError(span, "failed to get outbox event", err)
-			logSanitizedError(logger, ctx, "failed to get outbox event", err)
 		}
 
 		return nil, fmt.Errorf("getting outbox event: %w", err)
@@ -246,28 +242,32 @@ func (repo *Repository) create(
 		return nil, err
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.create_outbox_event")
 	defer span.End()
 
 	result, err := withTenantTxOrExisting(repo, ctx, tx, func(execTx *sql.Tx) (*outbox.OutboxEvent, error) {
-		createValues := normalizedCreateValues(event, time.Now().UTC())
+		values, valuesErr := normalizedCreateValues(event, time.Now().UTC())
+		if valuesErr != nil {
+			return nil, valuesErr
+		}
+
 		table := quoteIdentifierPath(repo.tableName)
 		query := "INSERT INTO " + table + // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
 			" (id, event_type, aggregate_id, payload, status, attempts, published_at, last_error, created_at, updated_at"
 
 		args := []any{
-			createValues.id,
-			createValues.eventType,
-			createValues.aggregateID,
-			createValues.payload,
-			createValues.status,
-			createValues.attempts,
-			createValues.publishedAt,
-			createValues.lastError,
-			createValues.createdAt,
-			createValues.updatedAt,
+			values.id,
+			values.eventType,
+			values.aggregateID,
+			values.payload,
+			values.status,
+			values.attempts,
+			values.publishedAt,
+			values.lastError,
+			values.createdAt,
+			values.updatedAt,
 		}
 
 		if repo.tenantColumn != "" {
@@ -299,7 +299,6 @@ func (repo *Repository) create(
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to create outbox event", err)
-		logSanitizedError(logger, ctx, "failed to create outbox event", err)
 
 		return nil, fmt.Errorf("creating outbox event: %w", err)
 	}
@@ -321,7 +320,7 @@ func (repo *Repository) ListPending(ctx context.Context, limit int) ([]*outbox.O
 		return nil, ErrLimitMustBePositive
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.list_outbox_pending")
 	defer span.End()
@@ -358,7 +357,6 @@ func (repo *Repository) ListPending(ctx context.Context, limit int) ([]*outbox.O
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list outbox events", err)
-		logSanitizedError(logger, ctx, "failed to list outbox events", err)
 
 		return nil, fmt.Errorf("listing pending events: %w", err)
 	}
@@ -390,7 +388,7 @@ func (repo *Repository) ListPendingByType(
 		return nil, ErrEventTypeRequired
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.list_outbox_pending_by_type")
 	defer span.End()
@@ -427,7 +425,6 @@ func (repo *Repository) ListPendingByType(
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list outbox events by type", err)
-		logSanitizedError(logger, ctx, "failed to list outbox events by type", err)
 
 		return nil, fmt.Errorf("listing pending events by type: %w", err)
 	}
@@ -445,7 +442,7 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 		return nil, ErrRepositoryNotInitialized
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	tracer := tracerFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "postgres.list_outbox_tenants")
 	defer span.End()
@@ -453,415 +450,11 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 	tenants, err := repo.tenantDiscoverer.DiscoverTenants(ctx)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list tenant schemas", err)
-		logSanitizedError(logger, ctx, "failed to list tenant schemas", err)
 
 		return nil, fmt.Errorf("list tenant schemas: %w", err)
 	}
 
 	return tenants, nil
-}
-
-// MarkPublished marks an outbox event as published.
-func (repo *Repository) MarkPublished(ctx context.Context, id uuid.UUID, publishedAt time.Time) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	if !repo.initialized() {
-		return ErrRepositoryNotInitialized
-	}
-
-	if err := outbox.ValidateOutboxTransition(outbox.OutboxStatusProcessing, outbox.OutboxStatusPublished); err != nil {
-		return fmt.Errorf("mark published transition: %w", err)
-	}
-
-	if id == uuid.Nil {
-		return ErrIDRequired
-	}
-
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-
-	ctx, span := tracer.Start(ctx, "postgres.mark_outbox_published")
-	defer span.End()
-
-	_, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) (struct{}, error) {
-		table := quoteIdentifierPath(repo.tableName)
-		query := "UPDATE " + table + " SET status = $1::outbox_event_status, published_at = $2, updated_at = $3 " + // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
-			"WHERE id = $4 AND status = $5::outbox_event_status"
-
-		tenantID, tenantErr := repo.tenantIDFromContext(ctx)
-		if tenantErr != nil {
-			return struct{}{}, tenantErr
-		}
-
-		filter, filterArgs, filterErr := repo.tenantFilterClause(6, tenantID)
-		if filterErr != nil {
-			return struct{}{}, filterErr
-		}
-
-		args := make([]any, 0, 5+len(filterArgs))
-		args = append(args, outbox.OutboxStatusPublished, publishedAt, time.Now().UTC(), id, outbox.OutboxStatusProcessing)
-
-		query += filter
-
-		args = append(args, filterArgs...)
-
-		result, execErr := tx.ExecContext(ctx, query, args...)
-		if execErr != nil {
-			return struct{}{}, fmt.Errorf("executing update: %w", execErr)
-		}
-
-		if err := ensureRowsAffected(result); err != nil {
-			return struct{}{}, err
-		}
-
-		return struct{}{}, nil
-	})
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "failed to mark outbox published", err)
-		logSanitizedError(logger, ctx, "failed to mark outbox published", err)
-
-		return fmt.Errorf("marking published: %w", err)
-	}
-
-	return nil
-}
-
-// MarkFailed marks an outbox event as failed and may transition to invalid.
-func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg string, maxAttempts int) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	if !repo.initialized() {
-		return ErrRepositoryNotInitialized
-	}
-
-	if err := outbox.ValidateOutboxTransition(outbox.OutboxStatusProcessing, outbox.OutboxStatusFailed); err != nil {
-		return fmt.Errorf("mark failed transition: %w", err)
-	}
-
-	if err := outbox.ValidateOutboxTransition(outbox.OutboxStatusProcessing, outbox.OutboxStatusInvalid); err != nil {
-		return fmt.Errorf("mark failed->invalid transition: %w", err)
-	}
-
-	if id == uuid.Nil {
-		return ErrIDRequired
-	}
-
-	if maxAttempts <= 0 {
-		return ErrMaxAttemptsMustBePositive
-	}
-
-	errMsg = outbox.SanitizeErrorMessageForStorage(errMsg)
-
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-
-	ctx, span := tracer.Start(ctx, "postgres.mark_outbox_failed")
-	defer span.End()
-
-	_, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) (struct{}, error) {
-		table := quoteIdentifierPath(repo.tableName)
-		query := "UPDATE " + table + " SET " + // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
-			"status = CASE WHEN attempts + 1 >= $1 THEN $2 ELSE $3 END::outbox_event_status, " +
-			"attempts = attempts + 1, " +
-			"last_error = CASE WHEN attempts + 1 >= $1 THEN $4 ELSE $5 END, " +
-			"updated_at = $6 WHERE id = $7 AND status = $8::outbox_event_status"
-
-		args := []any{
-			maxAttempts,
-			outbox.OutboxStatusInvalid,
-			outbox.OutboxStatusFailed,
-			"max dispatch attempts exceeded",
-			errMsg,
-			time.Now().UTC(),
-			id,
-			outbox.OutboxStatusProcessing,
-		}
-
-		tenantID, tenantErr := repo.tenantIDFromContext(ctx)
-		if tenantErr != nil {
-			return struct{}{}, tenantErr
-		}
-
-		filter, filterArgs, filterErr := repo.tenantFilterClause(9, tenantID)
-		if filterErr != nil {
-			return struct{}{}, filterErr
-		}
-
-		query += filter
-
-		args = append(args, filterArgs...)
-
-		result, execErr := tx.ExecContext(ctx, query, args...)
-		if execErr != nil {
-			return struct{}{}, fmt.Errorf("executing update: %w", execErr)
-		}
-
-		if err := ensureRowsAffected(result); err != nil {
-			return struct{}{}, err
-		}
-
-		return struct{}{}, nil
-	})
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "failed to mark outbox failed", err)
-		logSanitizedError(logger, ctx, "failed to mark outbox failed", err)
-
-		return fmt.Errorf("marking failed: %w", err)
-	}
-
-	return nil
-}
-
-// ListFailedForRetry lists failed events eligible for retry.
-func (repo *Repository) ListFailedForRetry(
-	ctx context.Context,
-	limit int,
-	failedBefore time.Time,
-	maxAttempts int,
-) ([]*outbox.OutboxEvent, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	if !repo.initialized() {
-		return nil, ErrRepositoryNotInitialized
-	}
-
-	if limit <= 0 {
-		return nil, ErrLimitMustBePositive
-	}
-
-	if maxAttempts <= 0 {
-		return nil, ErrMaxAttemptsMustBePositive
-	}
-
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-
-	ctx, span := tracer.Start(ctx, "postgres.list_failed_for_retry")
-	defer span.End()
-
-	result, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) ([]*outbox.OutboxEvent, error) {
-		return repo.listFailedForRetryRows(ctx, tx, limit, failedBefore, maxAttempts, false)
-	})
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "failed to list failed events for retry", err)
-		logSanitizedError(logger, ctx, "failed to list failed events for retry", err)
-
-		return nil, fmt.Errorf("listing failed events for retry: %w", err)
-	}
-
-	return result, nil
-}
-
-// ResetForRetry atomically selects and resets failed events to processing.
-func (repo *Repository) ResetForRetry(
-	ctx context.Context,
-	limit int,
-	failedBefore time.Time,
-	maxAttempts int,
-) ([]*outbox.OutboxEvent, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	if !repo.initialized() {
-		return nil, ErrRepositoryNotInitialized
-	}
-
-	if limit <= 0 {
-		return nil, ErrLimitMustBePositive
-	}
-
-	if maxAttempts <= 0 {
-		return nil, ErrMaxAttemptsMustBePositive
-	}
-
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-
-	ctx, span := tracer.Start(ctx, "postgres.reset_for_retry")
-	defer span.End()
-
-	result, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) ([]*outbox.OutboxEvent, error) {
-		events, err := repo.listFailedForRetryRows(ctx, tx, limit, failedBefore, maxAttempts, true)
-		if err != nil {
-			return nil, err
-		}
-
-		if len(events) == 0 {
-			return events, nil
-		}
-
-		ids := collectEventIDs(events)
-		if len(ids) == 0 {
-			return events, nil
-		}
-
-		now := time.Now().UTC()
-
-		tenantID, tenantErr := repo.tenantIDFromContext(ctx)
-		if tenantErr != nil {
-			return nil, tenantErr
-		}
-
-		if err := repo.markEventsProcessing(ctx, tx, now, ids, tenantID, outbox.OutboxStatusFailed); err != nil {
-			return nil, err
-		}
-
-		applyProcessingState(events, now)
-
-		return events, nil
-	})
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "failed to reset events for retry", err)
-		logSanitizedError(logger, ctx, "failed to reset events for retry", err)
-
-		return nil, fmt.Errorf("resetting events for retry: %w", err)
-	}
-
-	return result, nil
-}
-
-// ResetStuckProcessing reclaims long-running processing events.
-func (repo *Repository) ResetStuckProcessing(
-	ctx context.Context,
-	limit int,
-	processingBefore time.Time,
-	maxAttempts int,
-) ([]*outbox.OutboxEvent, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	if !repo.initialized() {
-		return nil, ErrRepositoryNotInitialized
-	}
-
-	if limit <= 0 {
-		return nil, ErrLimitMustBePositive
-	}
-
-	if maxAttempts <= 0 {
-		return nil, ErrMaxAttemptsMustBePositive
-	}
-
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-
-	ctx, span := tracer.Start(ctx, "postgres.reset_outbox_processing")
-	defer span.End()
-
-	result, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) ([]*outbox.OutboxEvent, error) {
-		events, err := repo.listStuckProcessingRows(ctx, tx, limit, processingBefore)
-		if err != nil {
-			return nil, err
-		}
-
-		if len(events) == 0 {
-			return events, nil
-		}
-
-		tenantID, tenantErr := repo.tenantIDFromContext(ctx)
-		if tenantErr != nil {
-			return nil, tenantErr
-		}
-
-		retryEvents, exhaustedIDs := splitStuckEvents(events, maxAttempts)
-		now := time.Now().UTC()
-
-		retryIDs := collectEventIDs(retryEvents)
-		if len(retryIDs) > 0 {
-			if err := repo.markStuckEventsReprocessing(ctx, tx, now, retryIDs, tenantID); err != nil {
-				return nil, err
-			}
-
-			applyStuckReprocessingState(retryEvents, now)
-		}
-
-		if len(exhaustedIDs) > 0 {
-			if err := repo.markStuckEventsInvalid(ctx, tx, now, exhaustedIDs, tenantID); err != nil {
-				return nil, err
-			}
-		}
-
-		return retryEvents, nil
-	})
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "failed to reset stuck events", err)
-		logSanitizedError(logger, ctx, "failed to reset stuck events", err)
-
-		return nil, fmt.Errorf("reset stuck events: %w", err)
-	}
-
-	return result, nil
-}
-
-// MarkInvalid marks an outbox event as invalid.
-func (repo *Repository) MarkInvalid(ctx context.Context, id uuid.UUID, errMsg string) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	if !repo.initialized() {
-		return ErrRepositoryNotInitialized
-	}
-
-	if err := outbox.ValidateOutboxTransition(outbox.OutboxStatusProcessing, outbox.OutboxStatusInvalid); err != nil {
-		return fmt.Errorf("mark invalid transition: %w", err)
-	}
-
-	if id == uuid.Nil {
-		return ErrIDRequired
-	}
-
-	errMsg = outbox.SanitizeErrorMessageForStorage(errMsg)
-
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
-
-	ctx, span := tracer.Start(ctx, "postgres.mark_outbox_invalid")
-	defer span.End()
-
-	_, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) (struct{}, error) {
-		table := quoteIdentifierPath(repo.tableName)
-		query := "UPDATE " + table + " SET status = $1::outbox_event_status, last_error = $2, updated_at = $3 " + // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
-			"WHERE id = $4 AND status = $5::outbox_event_status"
-
-		tenantID, tenantErr := repo.tenantIDFromContext(ctx)
-		if tenantErr != nil {
-			return struct{}{}, tenantErr
-		}
-
-		filter, filterArgs, filterErr := repo.tenantFilterClause(6, tenantID)
-		if filterErr != nil {
-			return struct{}{}, filterErr
-		}
-
-		args := make([]any, 0, 5+len(filterArgs))
-		args = append(args, outbox.OutboxStatusInvalid, errMsg, time.Now().UTC(), id, outbox.OutboxStatusProcessing)
-
-		query += filter
-
-		args = append(args, filterArgs...)
-
-		result, execErr := tx.ExecContext(ctx, query, args...)
-		if execErr != nil {
-			return struct{}{}, fmt.Errorf("executing update: %w", execErr)
-		}
-
-		if err := ensureRowsAffected(result); err != nil {
-			return struct{}{}, err
-		}
-
-		return struct{}{}, nil
-	})
-	if err != nil {
-		libOpentelemetry.HandleSpanError(span, "failed to mark outbox invalid", err)
-		logSanitizedError(logger, ctx, "failed to mark outbox invalid", err)
-
-		return fmt.Errorf("marking invalid: %w", err)
-	}
-
-	return nil
 }
 
 func (repo *Repository) listPendingRows(ctx context.Context, tx *sql.Tx, limit int) ([]*outbox.OutboxEvent, error) {
@@ -1326,6 +919,15 @@ func (repo *Repository) tenantIDFromContext(ctx context.Context) (string, error)
 		return "", nil
 	}
 
+	tenantID = strings.TrimSpace(tenantID)
+	if tenantID == "" {
+		return "", outbox.ErrTenantIDRequired
+	}
+
+	if !tmcore.IsValidTenantID(tenantID) {
+		return "", fmt.Errorf("%w: %q", outbox.ErrInvalidTenantID, tenantID)
+	}
+
 	return tenantID, nil
 }
 
@@ -1341,199 +943,4 @@ func (repo *Repository) tenantFilterClause(index int, tenantID string) (string, 
 	filter := fmt.Sprintf(" AND %s = $%d", quoteIdentifier(repo.tenantColumn), index)
 
 	return filter, []any{tenantID}, nil
-}
-
-func validateIdentifier(identifier string) error {
-	if len(identifier) > maxSQLIdentifierLength {
-		return ErrInvalidIdentifier
-	}
-
-	if !identifierPattern.MatchString(identifier) {
-		return ErrInvalidIdentifier
-	}
-
-	return nil
-}
-
-func validateIdentifierPath(path string) error {
-	parts := strings.Split(path, ".")
-	if len(parts) == 0 {
-		return ErrInvalidIdentifier
-	}
-
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if err := validateIdentifier(trimmed); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func quoteIdentifierPath(path string) string {
-	parts := strings.Split(path, ".")
-	quoted := make([]string, 0, len(parts))
-
-	for _, part := range parts {
-		quoted = append(quoted, quoteIdentifier(strings.TrimSpace(part)))
-	}
-
-	return strings.Join(quoted, ".")
-}
-
-func quoteIdentifier(identifier string) string {
-	identifier = strings.ReplaceAll(identifier, "\x00", "")
-
-	return "\"" + strings.ReplaceAll(identifier, "\"", "\"\"") + "\""
-}
-
-func logSanitizedError(logger libLog.Logger, ctx context.Context, message string, err error) {
-	if nilcheck.Interface(logger) || err == nil {
-		return
-	}
-
-	logger.Log(ctx, libLog.LevelError, message, libLog.String("error", outbox.SanitizeErrorMessageForStorage(err.Error())))
-}
-
-func ensureRowsAffected(result sql.Result) error {
-	rows, err := rowsAffected(result)
-	if err != nil {
-		return err
-	}
-
-	if rows == 0 {
-		return ErrStateTransitionConflict
-	}
-
-	return nil
-}
-
-func ensureRowsAffectedExact(result sql.Result, expected int64) error {
-	rows, err := rowsAffected(result)
-	if err != nil {
-		return err
-	}
-
-	if rows != expected {
-		return ErrStateTransitionConflict
-	}
-
-	return nil
-}
-
-func rowsAffected(result sql.Result) (int64, error) {
-	if result == nil {
-		return 0, ErrStateTransitionConflict
-	}
-
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("rows affected: %w", err)
-	}
-
-	return rows, nil
-}
-
-type createValues struct {
-	id          uuid.UUID
-	eventType   string
-	aggregateID uuid.UUID
-	payload     []byte
-	status      string
-	attempts    int
-	publishedAt *time.Time
-	lastError   string
-	createdAt   time.Time
-	updatedAt   time.Time
-}
-
-func normalizedCreateValues(event *outbox.OutboxEvent, now time.Time) createValues {
-	createdAt := event.CreatedAt
-	if createdAt.IsZero() {
-		createdAt = now
-	}
-
-	updatedAt := event.UpdatedAt
-	if updatedAt.IsZero() || updatedAt.Before(createdAt) {
-		updatedAt = createdAt
-	}
-
-	return createValues{
-		id:          event.ID,
-		eventType:   strings.TrimSpace(event.EventType),
-		aggregateID: event.AggregateID,
-		payload:     event.Payload,
-		status:      outbox.OutboxStatusPending,
-		attempts:    0,
-		publishedAt: nil,
-		lastError:   "",
-		createdAt:   createdAt,
-		updatedAt:   updatedAt,
-	}
-}
-
-func validateCreateEvent(event *outbox.OutboxEvent) error {
-	if event == nil {
-		return outbox.ErrOutboxEventRequired
-	}
-
-	if event.ID == uuid.Nil {
-		return ErrIDRequired
-	}
-
-	if strings.TrimSpace(event.EventType) == "" {
-		return ErrEventTypeRequired
-	}
-
-	if event.AggregateID == uuid.Nil {
-		return ErrAggregateIDRequired
-	}
-
-	if len(event.Payload) == 0 {
-		return outbox.ErrOutboxEventPayloadRequired
-	}
-
-	if len(event.Payload) > outbox.DefaultMaxPayloadBytes {
-		return outbox.ErrOutboxEventPayloadTooLarge
-	}
-
-	if !json.Valid(event.Payload) {
-		return outbox.ErrOutboxEventPayloadNotJSON
-	}
-
-	return nil
-}
-
-func queryOutboxEvents(
-	ctx context.Context,
-	tx *sql.Tx,
-	query string,
-	args []any,
-	limit int,
-	errorPrefix string,
-) ([]*outbox.OutboxEvent, error) {
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", errorPrefix, err)
-	}
-
-	defer rows.Close()
-
-	events := make([]*outbox.OutboxEvent, 0, limit)
-
-	for rows.Next() {
-		event, scanErr := scanOutboxEvent(rows)
-		if scanErr != nil {
-			return nil, fmt.Errorf("scanning outbox event: %w", scanErr)
-		}
-
-		events = append(events, event)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating rows: %w", err)
-	}
-
-	return events, nil
 }
