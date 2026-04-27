@@ -40,16 +40,16 @@ func setupRabbitMQContainer(t *testing.T) (amqpURL string, mgmtURL string, clean
 	container, err := tcrabbit.Run(ctx, testRabbitMQImage)
 	require.NoError(t, err, "failed to start RabbitMQ container")
 	var terminateOnce sync.Once
+	var terminateErr error
 	terminate := func() error {
-		var termErr error
 		terminateOnce.Do(func() {
 			termCtx, termCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer termCancel()
 
-			termErr = container.Terminate(termCtx)
+			terminateErr = container.Terminate(termCtx)
 		})
 
-		return termErr
+		return terminateErr
 	}
 	t.Cleanup(func() {
 		require.NoError(t, terminate(), "failed to terminate RabbitMQ container")
