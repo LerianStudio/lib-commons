@@ -35,8 +35,7 @@ func setupRedisContainerRaw(t *testing.T) (*tcredis.RedisContainer, string, func
 	)
 	require.NoError(t, err)
 
-	endpoint, err := container.Endpoint(ctx, "")
-	require.NoError(t, err)
+	endpoint := waitForRedisEndpoint(t, container)
 
 	return container, endpoint, func() {
 		_ = container.Terminate(ctx)
@@ -110,8 +109,7 @@ func TestIntegration_Redis_Resilience_ReconnectAfterServerRestart(t *testing.T) 
 	t.Log("Restarting Redis container...")
 	require.NoError(t, container.Start(ctx))
 
-	newAddr, err := container.Endpoint(ctx, "")
-	require.NoError(t, err, "must be able to read endpoint after restart")
+	newAddr := waitForRedisEndpoint(t, container)
 	t.Logf("Redis endpoint after restart: %s (was: %s)", newAddr, addr)
 
 	// Poll until the server is accepting connections at the (potentially new) address.

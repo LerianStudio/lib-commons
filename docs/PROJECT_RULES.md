@@ -45,7 +45,9 @@ lib-commons/
 │   ├── opentelemetry/              # Telemetry bootstrap, propagation, redaction
 │   │   └── metrics/                # Metric factory and fluent builders
 │   ├── outbox/                     # Transactional outbox primitives
-│   │   └── postgres/               # PostgreSQL outbox adapter with migrations
+│   │   ├── mongo/                  # MongoDB outbox adapter with row-scoped tenants and tenant DB resolver
+│   │   ├── outboxtest/             # Backend-agnostic outbox repository contract tests
+│   │   └── postgres/               # PostgreSQL outbox adapter with schema/column tenant strategies
 │   ├── pointers/                   # Pointer conversion helpers
 │   ├── postgres/                   # PostgreSQL connector with migrations
 │   ├── rabbitmq/                   # RabbitMQ connector
@@ -536,7 +538,7 @@ make clean                 # Clean all build artifacts
 
 ## API Invariants
 
-Key v4 API contracts that must be preserved:
+Key v5 API contracts that must be preserved:
 
 | Package | Invariant |
 |---------|-----------|
@@ -573,6 +575,10 @@ Key v4 API contracts that must be preserved:
 | `webhook` | SSRF protection: `resolveAndValidateIP` performs a single DNS lookup, validates all resolved IPs against private/loopback/CGNAT/RFC-reserved ranges, and pins the URL to the first IP to eliminate TOCTOU. Redirects are blocked at transport layer. |
 | `webhook` | HMAC-SHA256 signature sent in `X-Webhook-Signature: sha256=HEX` header over raw payload bytes only (timestamp excluded by design). Encrypted secrets use `enc:` prefix and require `WithSecretDecryptor`. |
 | `webhook` | `EndpointLister` interface: `ListActiveEndpoints(ctx) ([]Endpoint, error)`. `DeliveryMetrics` interface: `RecordDelivery(ctx, endpointID, success, statusCode, attempts)`. |
+| `outbox` | `OutboxRepository` contract: `Create`, `CreateWithTx`, `ListPending`, `ListPendingByType`, `ListTenants`, `GetByID`, `MarkPublished`, `MarkFailed`, `ListFailedForRetry`, `ResetForRetry`, `ResetStuckProcessing`, `MarkInvalid`. |
+| `outbox` | Tenant-aware repositories validate tenant IDs with `tenant-manager/core.IsValidTenantID` and return `ErrInvalidTenantID` for invalid IDs; tenant discovery must not return malformed tenant IDs. |
+| `outbox/mongo` | Mongo repository supports row-scoped tenant field storage by default and optional tenant Mongo database dispatch via `WithModule` plus `WithTenantDatabaseResolver`; module-scoped repositories fail closed with `ErrTenantDatabaseRequired` when no tenant database can be resolved. |
+| `outbox/postgres` | Postgres repository supports schema-per-tenant and column-per-tenant strategies; column tenant isolation uses parameterized tenant filters and composite `(tenant_id, id)` semantics. |
 
 ---
 

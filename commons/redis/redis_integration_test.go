@@ -17,6 +17,27 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
+const testRedisPort = "6379/tcp"
+
+func waitForRedisEndpoint(t *testing.T, container *tcredis.RedisContainer) string {
+	t.Helper()
+
+	ctx := context.Background()
+	var endpoint string
+
+	require.Eventually(t, func() bool {
+		value, err := container.PortEndpoint(ctx, testRedisPort, "")
+		if err != nil || value == "" {
+			return false
+		}
+
+		endpoint = value
+		return true
+	}, 10*time.Second, 100*time.Millisecond, "failed to resolve Redis container endpoint")
+
+	return endpoint
+}
+
 // setupRedisContainer starts a real Redis 7 container and returns its address
 // (host:port) plus a cleanup function. The container is waited on until Redis
 // logs "Ready to accept connections", which guarantees the server is ready.
@@ -34,8 +55,7 @@ func setupRedisContainer(t *testing.T) (string, func()) {
 	)
 	require.NoError(t, err)
 
-	endpoint, err := container.Endpoint(ctx, "")
-	require.NoError(t, err)
+	endpoint := waitForRedisEndpoint(t, container)
 
 	return endpoint, func() {
 		require.NoError(t, container.Terminate(ctx))
@@ -61,8 +81,7 @@ func setupRedisContainerWithPassword(t *testing.T, password string) (string, fun
 	)
 	require.NoError(t, err)
 
-	endpoint, err := container.Endpoint(ctx, "")
-	require.NoError(t, err)
+	endpoint := waitForRedisEndpoint(t, container)
 
 	return endpoint, func() {
 		require.NoError(t, container.Terminate(ctx))
