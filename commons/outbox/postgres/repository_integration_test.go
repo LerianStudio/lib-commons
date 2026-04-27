@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
+	"github.com/LerianStudio/lib-commons/v5/commons/outbox/outboxtest"
 	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -193,6 +194,13 @@ func TestRepository_IntegrationCreateListAndMarkFailed(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, outbox.OutboxStatusFailed, updated.Status)
 	require.NotContains(t, updated.LastError, "abc123")
+}
+
+func TestRepository_IntegrationContractSuite(t *testing.T) {
+	outboxtest.Run(t, func(t *testing.T) outbox.OutboxRepository {
+		t.Helper()
+		return newIntegrationRepoFixture(t).repo
+	})
 }
 
 func TestRepository_IntegrationMarkPublished(t *testing.T) {
