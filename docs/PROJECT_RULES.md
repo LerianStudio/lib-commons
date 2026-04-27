@@ -65,7 +65,7 @@ lib-commons/
 │   │   │   ├── mongodb/            # MongoDB store with change streams and polling
 │   │   │   ├── postgres/           # Postgres store with LISTEN/NOTIFY
 │   │   │   └── store/              # Backend-agnostic Store interface
-│   │   └── systemplanetest/        # Contract test suite for Store backends
+│   │   └── systemplanetest/        # Public Client contract test suite for service backends
 │   ├── tenant-manager/             # Multi-tenant database-per-tenant isolation
 │   │   ├── cache/                  # In-memory tenant cache with LRU eviction
 │   │   ├── client/                 # HTTP client for tenant-manager API
@@ -124,7 +124,7 @@ lib-commons/
 
 ### Go Version
 
-- **Minimum**: Go 1.25.7
+- **Minimum**: Go 1.25.9
 - Keep `go.mod` updated with latest stable Go version
 - Module path: `github.com/LerianStudio/lib-commons/v5`
 

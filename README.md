@@ -13,7 +13,7 @@ Use `MIGRATION_MAP.md` as the canonical map for renamed, redesigned, or removed 
 
 ## Requirements
 
-- Go `1.25.7` or newer
+- Go `1.25.9` or newer
 
 ## Installation
 
