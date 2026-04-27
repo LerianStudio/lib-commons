@@ -13,7 +13,9 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
 	tcrabbit "github.com/testcontainers/testcontainers-go/modules/rabbitmq"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 const (
@@ -29,15 +31,20 @@ const (
 // function.
 //
 // On Docker Desktop the broker can report startup complete before Docker has
-// published the mapped host ports. Instead of adding another startup wait that
-// depends on port resolution during container boot, wait until the module can
-// resolve both URLs after the container is running.
+// published the mapped host ports. The additional port waits make endpoint
+// discovery deterministic before the AMQP and management URLs are resolved.
 func setupRabbitMQContainer(t *testing.T) (amqpURL string, mgmtURL string, cleanup func()) {
 	t.Helper()
 
 	ctx := context.Background()
 
-	container, err := tcrabbit.Run(ctx, testRabbitMQImage)
+	container, err := tcrabbit.Run(ctx,
+		testRabbitMQImage,
+		testcontainers.WithAdditionalWaitStrategy(
+			wait.ForListeningPort(tcrabbit.DefaultAMQPPort),
+			wait.ForListeningPort(tcrabbit.DefaultHTTPPort),
+		),
+	)
 	require.NoError(t, err, "failed to start RabbitMQ container")
 	var terminateOnce sync.Once
 	var terminateErr error

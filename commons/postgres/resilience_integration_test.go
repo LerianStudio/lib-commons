@@ -12,9 +12,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // setupPostgresContainerRaw starts a PostgreSQL 16 container and returns the
@@ -31,11 +29,7 @@ func setupPostgresContainerRaw(t *testing.T) (*tcpostgres.PostgresContainer, str
 		tcpostgres.WithDatabase("testdb"),
 		tcpostgres.WithUsername("test"),
 		tcpostgres.WithPassword("test"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(30*time.Second),
-		),
+		tcpostgres.BasicWaitStrategies(),
 	)
 	require.NoError(t, err)
 

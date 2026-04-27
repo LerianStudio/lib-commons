@@ -17,9 +17,7 @@ import (
 	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
-	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
-	"github.com/testcontainers/testcontainers-go/wait"
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
@@ -144,11 +142,7 @@ func setupOutboxPostgresContainer(t *testing.T) (string, func()) {
 		tcpostgres.WithDatabase("outbox_it"),
 		tcpostgres.WithUsername("outbox"),
 		tcpostgres.WithPassword("outbox"),
-		testcontainers.WithWaitStrategy(
-			wait.ForLog("database system is ready to accept connections").
-				WithOccurrence(2).
-				WithStartupTimeout(30*time.Second),
-		),
+		tcpostgres.BasicWaitStrategies(),
 	)
 	require.NoError(t, err)
 
