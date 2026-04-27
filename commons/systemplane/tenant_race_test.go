@@ -165,18 +165,6 @@ func (s *raceStore) DeleteTenantValue(_ context.Context, tenantID, namespace, ke
 	return nil
 }
 
-func (s *raceStore) ListTenantValues(_ context.Context) ([]TestEntry, error) {
-	s.rowsMu.RLock()
-	defer s.rowsMu.RUnlock()
-
-	out := make([]TestEntry, 0, len(s.rows))
-	for _, e := range s.rows {
-		out = append(out, e)
-	}
-
-	return out, nil
-}
-
 func (s *raceStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {
 	s.rowsMu.RLock()
 	defer s.rowsMu.RUnlock()

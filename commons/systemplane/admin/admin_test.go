@@ -189,18 +189,6 @@ func (f *fakeStore) DeleteTenantValue(_ context.Context, tenantID, namespace, ke
 	return nil
 }
 
-func (f *fakeStore) ListTenantValues(_ context.Context) ([]systemplane.TestEntry, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	out := make([]systemplane.TestEntry, 0, len(f.tenantRows))
-	for _, e := range f.tenantRows {
-		out = append(out, e)
-	}
-
-	return out, nil
-}
-
 // ListTenantOverrides returns the tenant-scoped override rows only — mirrors
 // the production backends that apply the "tenant_id != SentinelGlobal"
 // filter server-side. This fake partitions globals and tenant rows into

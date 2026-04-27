@@ -239,18 +239,6 @@ func (s *tenantFakeStore) DeleteTenantValue(_ context.Context, tenantID, namespa
 	return nil
 }
 
-func (s *tenantFakeStore) ListTenantValues(_ context.Context) ([]TestEntry, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	out := make([]TestEntry, 0, len(s.rows))
-	for _, e := range s.rows {
-		out = append(out, e)
-	}
-
-	return out, nil
-}
-
 func (s *tenantFakeStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1580,10 +1568,6 @@ func (s *hydrateFakeStore) SetTenantValue(_ context.Context, _ string, _ TestEnt
 
 func (s *hydrateFakeStore) DeleteTenantValue(_ context.Context, _, _, _, _ string) error {
 	return errUnexpectedHydrateStoreCall
-}
-
-func (s *hydrateFakeStore) ListTenantValues(_ context.Context) ([]TestEntry, error) {
-	return nil, errUnexpectedHydrateStoreCall
 }
 
 func (s *hydrateFakeStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {

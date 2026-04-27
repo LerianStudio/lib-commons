@@ -116,18 +116,6 @@ func (s *benchTenantStore) DeleteTenantValue(_ context.Context, tenantID, namesp
 	return nil
 }
 
-func (s *benchTenantStore) ListTenantValues(_ context.Context) ([]TestEntry, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	out := make([]TestEntry, 0, len(s.rows))
-	for _, e := range s.rows {
-		out = append(out, e)
-	}
-
-	return out, nil
-}
-
 func (s *benchTenantStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

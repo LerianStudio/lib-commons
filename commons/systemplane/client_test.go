@@ -150,10 +150,6 @@ func (f *fakeStore) DeleteTenantValue(_ context.Context, _, _, _, _ string) erro
 	return errTenantStubCalled
 }
 
-func (f *fakeStore) ListTenantValues(_ context.Context) ([]store.Entry, error) {
-	return nil, errTenantStubCalled
-}
-
 func (f *fakeStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]store.Entry, error) {
 	return nil, errTenantStubCalled
 }

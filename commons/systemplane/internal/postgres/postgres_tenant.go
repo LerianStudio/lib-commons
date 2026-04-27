@@ -205,10 +205,9 @@ func (s *Store) DeleteTenantValue(ctx context.Context, tenantID, namespace, key,
 // ListTenantValues returns every row in the table, including both the
 // '_global' rows and every tenant-scoped override. Ordering is
 // deterministic (namespace, key, tenant_id) so hydration iteration is
-// repeatable across restarts. Callers filter by Entry.TenantID to decide
-// whether a row populates the global cache or the per-tenant cache — the
-// Client at Start() uses this to hydrate tenantCache in eager mode
-// (TRD §4.5).
+// repeatable across restarts. Production hydration uses ListTenantOverrides;
+// this full-listing method is kept for backend-local contract assertions that
+// need to prove global and tenant rows coexist.
 func (s *Store) ListTenantValues(ctx context.Context) ([]store.Entry, error) {
 	if s == nil || s.isClosed() {
 		return nil, store.ErrClosed

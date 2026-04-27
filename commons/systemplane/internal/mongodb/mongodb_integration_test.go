@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
-	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/systemplanetest"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/storetest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
@@ -187,36 +187,32 @@ func newTestStore(t *testing.T, client *mongo.Client, pollInterval time.Duration
 	return s
 }
 
-// ---------------------------------------------------------------------------
-// Contract test suites (Phase 4's systemplanetest.Run)
-// ---------------------------------------------------------------------------
-
-func TestIntegration_ContractSuite_ChangeStreams(t *testing.T) {
+func TestIntegration_TenantStoreContracts_ChangeStream(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
 	client, _ := setupMongoDB(t)
+	storetest.RunTenantContracts(t, func(t *testing.T) store.Store {
+		t.Helper()
 
-	systemplanetest.Run(t, func(t *testing.T) store.Store {
-		return newTestStore(t, client, 0) // PollInterval=0 -> change streams
-	})
+		return newTestStore(t, client, 0)
+	}, storetest.WithEventSettle(streamOpenSettle))
 }
 
-func TestIntegration_ContractSuite_Polling(t *testing.T) {
+func TestIntegration_TenantStoreContracts_Polling(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
 	client, _ := setupMongoDB(t)
+	storetest.RunTenantContracts(t, func(t *testing.T) store.Store {
+		t.Helper()
 
-	systemplanetest.Run(t, func(t *testing.T) store.Store {
-		return newTestStore(t, client, shortPollInterval) // polling mode, fast poll for tests
+		return newTestStore(t, client, shortPollInterval)
 	},
-		// Polling mode cannot observe inter-tick deletes; see
-		// subscribePoll godoc in mongodb_changestream.go. Skip the delete-event
-		// contract rather than silently weaken the assertion.
-		systemplanetest.SkipSubtest("TenantSubscribeReceivesDeleteEvent"),
+		storetest.WithEventSettle(streamOpenSettle),
+		storetest.SkipSubtest("TenantSubscribeReceivesDeleteEvent"),
 	)
 }
 
@@ -470,8 +466,7 @@ func TestIntegration_PollingAndChangeStreamParity(t *testing.T) {
 		// Pins the known gap: the polling path has no native delete signal,
 		// so a DeleteTenantValue that happens between two ticks is
 		// invisible to polling subscribers but delivered by change streams.
-		// Documented in subscribePoll's godoc and reflected in the
-		// systemplanetest.SkipSubtest above.
+		// Documented in subscribePoll's godoc.
 		dbName := fmt.Sprintf("test_delete_%d", time.Now().UnixNano())
 
 		csStore, err := New(Config{Client: client, Database: dbName, TenantSchemaEnabled: true})

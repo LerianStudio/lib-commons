@@ -40,10 +40,6 @@ func (emptyTenantTestStore) DeleteTenantValue(_ context.Context, _, _, _, _ stri
 	return nil
 }
 
-func (emptyTenantTestStore) ListTenantValues(_ context.Context) ([]TestEntry, error) {
-	return nil, nil
-}
-
 func (emptyTenantTestStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {
 	return nil, nil
 }

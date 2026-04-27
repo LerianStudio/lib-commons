@@ -99,10 +99,6 @@ func (f *fakeTenantTestStore) DeleteTenantValue(_ context.Context, _, _, _, _ st
 	return nil
 }
 
-func (f *fakeTenantTestStore) ListTenantValues(_ context.Context) ([]TestEntry, error) {
-	return nil, nil
-}
-
 func (f *fakeTenantTestStore) ListTenantOverrides(_ context.Context, _, _, _ string, _ int) ([]TestEntry, error) {
 	return nil, nil
 }
@@ -208,4 +204,14 @@ func TestStoreAdapter_TenantIDRoundtrips(t *testing.T) {
 
 	cancel()
 	wg.Wait()
+}
+
+func TestNewForTesting_RejectsTypedNilStore(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *fakeTenantTestStore
+
+	client, err := NewForTesting(typedNil)
+	require.ErrorIs(t, err, store.ErrNilBackend)
+	require.Nil(t, client)
 }

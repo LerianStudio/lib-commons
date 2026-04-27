@@ -1,76 +1,95 @@
 // Package systemplanetest provides backend-agnostic contract tests for the
-// internal store.Store interface. Both the Postgres and MongoDB backends
-// run this shared suite in their integration tests to ensure behavioral
-// equivalence.
+// public systemplane Client API. Service repositories can run this suite
+// against their real systemplane backend without importing lib-commons internal
+// packages.
 package systemplanetest
 
 import (
 	"context"
 	"errors"
-	"sort"
+	"math"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane"
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 )
 
-// Factory constructs a fresh, isolated Store for a single test.
-// Must be safe to call multiple times per *testing.T (each call yields a
-// new Store with its own empty state). Implementations typically register
-// a t.Cleanup to tear down containers, databases, etc.
-type Factory func(t *testing.T) store.Store
+const (
+	contractNamespace  = "systemplanetest"
+	defaultEventSettle = 500 * time.Millisecond
+	eventDeadline      = 10 * time.Second
+	noEventWindow      = 500 * time.Millisecond
+	debugValue         = "debug"
+	tenantRateKey      = "tenant_rate"
+	tenantA            = "tenant-A"
+	tenantB            = "tenant-B"
+	tenantC            = "tenant-C"
+	tenantRateDefault  = 0.10
+)
 
-// tenantValuesLister is a test-only extension interface for the ListTenantValues
-// helper. Production code switched to ListTenantOverrides (server-side
-// filtering of the global rows) in commit 53b789c, so ListTenantValues is no
-// longer part of the store.Store surface. Backend implementations (postgres,
-// mongodb) still expose it as a concrete method so the contract suite can
-// assert row-level parity where globals and tenant rows must coexist.
-//
-// Contract tests type-assert through this interface; a backend that does
-// not implement it gets its ListTenantValues-dependent subtests skipped.
-type tenantValuesLister interface {
-	ListTenantValues(ctx context.Context) ([]store.Entry, error)
-}
+// ClientFactory constructs a fresh, isolated Client for a single contract
+// subtest. The client must be backed by the real backend under test. The
+// factory should register cleanup for external resources such as database
+// handles, containers, or temporary schemas.
+type ClientFactory func(t *testing.T) *systemplane.Client
 
-// requireTenantValuesLister returns the store cast to the ListTenantValues
-// extension; if the cast fails it skips the calling test with a clear reason.
-// Keeps the type-assertion logic in one place.
-func requireTenantValuesLister(t *testing.T, s store.Store) tenantValuesLister {
-	t.Helper()
-
-	lister, ok := s.(tenantValuesLister)
-	if !ok {
-		t.Skipf("backend %T does not implement tenantValuesLister (ListTenantValues); skipping subtest", s)
-	}
-
-	return lister
-}
+// Factory is kept as a short alias for callers that already use the generic
+// "factory" naming convention. It is intentionally a public Client factory,
+// not an internal store factory.
+type Factory = ClientFactory
 
 // RunOption configures the behavior of [Run].
-type RunOption func(*runConfig)
+type RunOption interface {
+	applyRunOption(cfg *runConfig)
+}
+
+type runOptionFunc func(*runConfig)
+
+func (fn runOptionFunc) applyRunOption(cfg *runConfig) {
+	fn(cfg)
+}
 
 // runConfig carries the options accumulated via [RunOption] calls.
 type runConfig struct {
-	skip map[string]struct{}
+	skip        map[string]struct{}
+	eventSettle time.Duration
 }
 
-// SkipSubtest instructs [Run] to call t.Skip on the named subtest. Useful
-// when a specific backend topology cannot satisfy a particular contract —
-// e.g. MongoDB polling mode cannot observe inter-tick deletes, so
-// "TenantSubscribeReceivesDeleteEvent" must be skipped for that mode.
-//
-// The name must match the t.Run subtest name exactly (case-sensitive).
-// Unknown names are silently ignored so adding a new contract does not
-// break callers.
+var legacySkipAliases = map[string][]string{
+	"TenantSubscribeReceivesSetEvent":    {"TenantOnChangeReceivesSet"},
+	"TenantSubscribeReceivesDeleteEvent": {"TenantOnChangeReceivesDelete"},
+	"TenantOnChangeReceivesSetAndDelete": {"TenantOnChangeReceivesSet", "TenantOnChangeReceivesDelete"},
+}
+
+// SkipSubtest instructs [Run] to call t.Skip on the named subtest. Useful when
+// a specific backend topology cannot satisfy a particular contract. The name
+// must match the t.Run subtest name exactly. Legacy Store-level tenant event
+// names are mapped to their Client-level equivalents so older polling-mode
+// callers keep skipping the same behavioral gap.
 func SkipSubtest(name string) RunOption {
-	return func(cfg *runConfig) {
+	return runOptionFunc(func(cfg *runConfig) {
 		if cfg.skip == nil {
 			cfg.skip = make(map[string]struct{})
 		}
 
 		cfg.skip[name] = struct{}{}
-	}
+		for _, alias := range legacySkipAliases[name] {
+			cfg.skip[alias] = struct{}{}
+		}
+	})
+}
+
+// WithEventSettle configures how long event-driven contract tests wait after
+// registering subscribers before issuing writes. Backends with synchronous or
+// explicitly-ready changefeeds may pass zero to avoid unnecessary sleep.
+func WithEventSettle(d time.Duration) RunOption {
+	return runOptionFunc(func(cfg *runConfig) {
+		if d >= 0 {
+			cfg.eventSettle = d
+		}
+	})
 }
 
 // shouldSkip reports whether the named subtest is in the skip set.
@@ -84,40 +103,23 @@ func (c *runConfig) shouldSkip(name string) bool {
 	return ok
 }
 
-// Run executes the full contract test suite. Each sub-test receives a
-// fresh Store via the factory. Contract tests block up to 10s for
-// eventual-consistency operations (e.g., Subscribe delivery); individual
-// tests use smaller deadlines where possible.
-//
-// # Tenant sub-suite
-//
-// The tenant-scoped contracts (Task 8, PRD AC13) exercise the tenant surface
-// of store.Store — SetTenantValue, GetTenantValue, DeleteTenantValue,
-// ListTenantValues, ListTenantsForKey — against the same factory the
-// global contracts use. This proves observable parity across Postgres and
-// MongoDB backends plus the in-memory TestStore.
-//
-// A handful of tenant contracts assert that Subscribe delivers events for
-// tenant mutations, including DELETE events. MongoDB polling mode cannot
-// observe deletes between ticks (see internal/mongodb/mongodb_changestream.go
-// subscribePoll godoc). Polling-mode integration tests should skip
-// "TenantSubscribeReceivesDeleteEvent" via t.Skip at the integration-test
-// level; see internal/mongodb/mongodb_tenant_integration_test.go.
-func Run(t *testing.T, factory Factory, opts ...RunOption) {
+// Run executes the public systemplane Client contract suite. Every subtest gets
+// a fresh Client from factory and uses only public v5 API surface from
+// github.com/LerianStudio/lib-commons/v5/commons/systemplane.
+func Run(t *testing.T, factory ClientFactory, opts ...RunOption) {
 	t.Helper()
 
-	cfg := &runConfig{}
+	cfg := &runConfig{eventSettle: defaultEventSettle}
+
 	for _, opt := range opts {
-		opt(cfg)
+		if opt != nil {
+			opt.applyRunOption(cfg)
+		}
 	}
 
-	// run is a tiny helper that wraps t.Run with opt-in skip support. Keeping
-	// the skip check in one place prevents copy-paste drift across 19 subtests.
 	run := func(name string, fn func(*testing.T)) {
 		t.Run(name, func(t *testing.T) {
 			if cfg.shouldSkip(name) {
-				// t.Skipf calls runtime.Goexit internally; the control
-				// flow below is unreachable, so no explicit return needed.
 				t.Skipf("skipped by SkipSubtest(%q)", name)
 			}
 
@@ -125,1097 +127,757 @@ func Run(t *testing.T, factory Factory, opts ...RunOption) {
 		})
 	}
 
-	run("ListOnEmpty", func(t *testing.T) { testListOnEmpty(t, factory) })
-	run("GetMissingReturnsFalse", func(t *testing.T) { testGetMissingReturnsFalse(t, factory) })
-	run("SetThenGetRoundtrip", func(t *testing.T) { testSetThenGetRoundtrip(t, factory) })
-	run("SetTwiceLastWriteWins", func(t *testing.T) { testSetTwiceLastWriteWins(t, factory) })
-	run("ListReturnsAllAfterMultipleSets", func(t *testing.T) { testListReturnsAllAfterMultipleSets(t, factory) })
-	run("SubscribeReceivesEventOnSet", func(t *testing.T) { testSubscribeReceivesEventOnSet(t, factory) })
-	run("SubscribeRespectsContextCancel", func(t *testing.T) { testSubscribeRespectsContextCancel(t, factory) })
-	run("CloseIsIdempotent", func(t *testing.T) { testCloseIsIdempotent(t, factory) })
-	run("OperationsAfterCloseReturnError", func(t *testing.T) { testOperationsAfterCloseReturnError(t, factory) })
-	run("NamespaceIsolation", func(t *testing.T) { testNamespaceIsolation(t, factory) })
-
-	// Tenant contract sub-suite (Task 8, PRD AC13).
-	run("TenantListOnEmpty", func(t *testing.T) { testTenantListOnEmpty(t, factory) })
-	run("SetTenantThenGetRoundtrip", func(t *testing.T) { testSetTenantThenGetRoundtrip(t, factory) })
-	run("SetTenantTwiceLastWriteWins", func(t *testing.T) { testSetTenantTwiceLastWriteWins(t, factory) })
-	run("DeleteTenantValueReturnsMissing", func(t *testing.T) { testDeleteTenantValueReturnsMissing(t, factory) })
-	run("DeleteTenantValueIsIdempotent", func(t *testing.T) { testDeleteTenantValueIsIdempotent(t, factory) })
-	run("ListTenantsForKeySorted", func(t *testing.T) { testListTenantsForKeySorted(t, factory) })
-	run("GlobalAndTenantRowsCoexist", func(t *testing.T) { testGlobalAndTenantRowsCoexist(t, factory) })
-	run("TenantSubscribeReceivesSetEvent", func(t *testing.T) { testTenantSubscribeReceivesSetEvent(t, factory) })
-	run("TenantSubscribeReceivesDeleteEvent", func(t *testing.T) { testTenantSubscribeReceivesDeleteEvent(t, factory) })
-	run("ListTenantOverrides_FiltersGlobalsServerSide", func(t *testing.T) { testListTenantOverridesFiltersGlobals(t, factory) })
-	run("DeleteTenantValueNoOpEmitsNoEvent", func(t *testing.T) { testDeleteTenantValueNoOpEmitsNoEvent(t, factory) })
+	run("RegisterBeforeStart", func(t *testing.T) { testRegisterBeforeStart(t, factory) })
+	run("StartAndCloseLifecycle", func(t *testing.T) { testStartAndCloseLifecycle(t, factory) })
+	run("TypedReads", func(t *testing.T) { testTypedReads(t, factory) })
+	run("SetPersistence", func(t *testing.T) { testSetPersistence(t, factory) })
+	run("OnChangeReceivesSet", func(t *testing.T) { testOnChangeReceivesSet(t, factory, cfg.eventSettle) })
+	run("DebounceDeliversLatestValue", func(t *testing.T) { testDebounceDeliversLatestValue(t, factory, cfg.eventSettle) })
+	run("PanicSafeSubscriberCallbacks", func(t *testing.T) { testPanicSafeSubscriberCallbacks(t, factory, cfg.eventSettle) })
+	run("MultipleSubscribers", func(t *testing.T) { testMultipleSubscribers(t, factory, cfg.eventSettle) })
+	run("TenantScopedOverrideLifecycle", func(t *testing.T) { testTenantScopedOverrideLifecycle(t, factory) })
+	run("TenantOnChangeReceivesSet", func(t *testing.T) { testTenantOnChangeReceivesSet(t, factory, cfg.eventSettle) })
+	run("TenantOnChangeReceivesDelete", func(t *testing.T) { testTenantOnChangeReceivesDelete(t, factory, cfg.eventSettle) })
+	run("TenantDeleteNoOpEmitsNoEvent", func(t *testing.T) { testTenantDeleteNoOpEmitsNoEvent(t, factory, cfg.eventSettle) })
+	run("TenantContextValidation", func(t *testing.T) { testTenantContextValidation(t, factory) })
+	run("NilReceiverSafety", testNilReceiverSafety)
+	run("ValidationFailures", func(t *testing.T) { testValidationFailures(t, factory) })
+	run("RedactionMetadata", func(t *testing.T) { testRedactionMetadata(t, factory) })
 }
 
-// ---------------------------------------------------------------------------
-// Test implementations
-// ---------------------------------------------------------------------------
-
-// testListOnEmpty: List on a fresh store returns an empty slice, no error.
-func testListOnEmpty(t *testing.T, factory Factory) {
+// RunClient is an explicit alias for [Run]. It exists for callers that prefer
+// the method name to state that this suite validates public Client behavior.
+func RunClient(t *testing.T, factory ClientFactory, opts ...RunOption) {
 	t.Helper()
 
-	s := factory(t)
-	ctx := context.Background()
+	Run(t, factory, opts...)
+}
 
-	entries, err := s.List(ctx)
-	if err != nil {
-		t.Fatalf("List on empty store: %v", err)
-	}
+func testRegisterBeforeStart(t *testing.T, factory ClientFactory) {
+	t.Helper()
 
-	if len(entries) != 0 {
-		t.Fatalf("expected 0 entries, got %d", len(entries))
+	c := newClient(t, factory)
+	mustRegister(t, c, "level", "info")
+	mustStart(t, c)
+
+	if err := c.Register(contractNamespace, "after_start", "value"); !errors.Is(err, systemplane.ErrRegisterAfterStart) {
+		t.Fatalf("Register after Start error = %v, want ErrRegisterAfterStart", err)
 	}
 }
 
-// testGetMissingReturnsFalse: Get for a non-existent key returns (_, false, nil).
-func testGetMissingReturnsFalse(t *testing.T, factory Factory) {
+func testStartAndCloseLifecycle(t *testing.T, factory ClientFactory) {
 	t.Helper()
 
-	s := factory(t)
-	ctx := context.Background()
+	c := newClient(t, factory)
+	mustRegister(t, c, "level", "info")
+	mustStart(t, c)
+	mustStart(t, c)
 
-	_, found, err := s.Get(ctx, "ns", "missing-key")
-	if err != nil {
-		t.Fatalf("Get on missing key: %v", err)
-	}
-
-	if found {
-		t.Fatal("expected found=false for missing key")
-	}
-}
-
-// testSetThenGetRoundtrip: Set an entry, then Get returns the same data.
-func testSetThenGetRoundtrip(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx := context.Background()
-
-	entry := store.Entry{
-		Namespace: "global",
-		Key:       "log.level",
-		Value:     []byte(`"info"`),
-		UpdatedAt: time.Now().UTC().Truncate(time.Millisecond),
-		UpdatedBy: "actor-1",
-	}
-
-	if err := s.Set(ctx, entry); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-
-	got, found, err := s.Get(ctx, "global", "log.level")
-	if err != nil {
-		t.Fatalf("Get after Set: %v", err)
-	}
-
-	if !found {
-		t.Fatal("expected found=true after Set")
-	}
-
-	if got.Namespace != entry.Namespace {
-		t.Fatalf("namespace: got %q, want %q", got.Namespace, entry.Namespace)
-	}
-
-	if got.Key != entry.Key {
-		t.Fatalf("key: got %q, want %q", got.Key, entry.Key)
-	}
-
-	if string(got.Value) != string(entry.Value) {
-		t.Fatalf("value: got %q, want %q", got.Value, entry.Value)
-	}
-
-	if got.UpdatedBy != entry.UpdatedBy {
-		t.Fatalf("updated_by: got %q, want %q", got.UpdatedBy, entry.UpdatedBy)
-	}
-
-	// updated_at should be within the last 5 seconds (allows backend clock drift).
-	if time.Since(got.UpdatedAt) > 5*time.Second {
-		t.Fatalf("updated_at too old: %v (now: %v)", got.UpdatedAt, time.Now().UTC())
-	}
-}
-
-// testSetTwiceLastWriteWins: Set v1, Set v2 for same key; Get returns v2,
-// List returns exactly one entry.
-func testSetTwiceLastWriteWins(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx := context.Background()
-
-	base := store.Entry{
-		Namespace: "global",
-		Key:       "rate_limit.rps",
-		UpdatedBy: "actor-1",
-	}
-
-	base.Value = []byte(`100`)
-	if err := s.Set(ctx, base); err != nil {
-		t.Fatalf("Set v1: %v", err)
-	}
-
-	base.Value = []byte(`200`)
-	base.UpdatedBy = "actor-2"
-
-	if err := s.Set(ctx, base); err != nil {
-		t.Fatalf("Set v2: %v", err)
-	}
-
-	got, found, err := s.Get(ctx, base.Namespace, base.Key)
-	if err != nil {
-		t.Fatalf("Get after overwrite: %v", err)
-	}
-
-	if !found {
-		t.Fatal("expected found=true")
-	}
-
-	if string(got.Value) != `200` {
-		t.Fatalf("value: got %q, want %q", got.Value, `200`)
-	}
-
-	if got.UpdatedBy != "actor-2" {
-		t.Fatalf("updated_by: got %q, want %q", got.UpdatedBy, "actor-2")
-	}
-
-	entries, err := s.List(ctx)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 entry after two Sets to same key, got %d", len(entries))
-	}
-}
-
-// testListReturnsAllAfterMultipleSets: Set 3 entries with different
-// namespace/key combos. List returns all 3 (order unspecified).
-func testListReturnsAllAfterMultipleSets(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx := context.Background()
-
-	entries := []store.Entry{
-		{Namespace: "global", Key: "log.level", Value: []byte(`"info"`), UpdatedBy: "a"},
-		{Namespace: "global", Key: "rate_limit", Value: []byte(`100`), UpdatedBy: "b"},
-		{Namespace: "tenant:acme", Key: "feature.x", Value: []byte(`true`), UpdatedBy: "c"},
-	}
-
-	for _, e := range entries {
-		if err := s.Set(ctx, e); err != nil {
-			t.Fatalf("Set(%s/%s): %v", e.Namespace, e.Key, err)
-		}
-	}
-
-	got, err := s.List(ctx)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-
-	if len(got) != 3 {
-		t.Fatalf("expected 3 entries, got %d", len(got))
-	}
-
-	// Sort both slices by namespace+key for deterministic comparison.
-	entryKey := func(e store.Entry) string { return e.Namespace + "/" + e.Key }
-
-	sort.Slice(got, func(i, j int) bool { return entryKey(got[i]) < entryKey(got[j]) })
-	sort.Slice(entries, func(i, j int) bool { return entryKey(entries[i]) < entryKey(entries[j]) })
-
-	for i := range entries {
-		if entryKey(got[i]) != entryKey(entries[i]) {
-			t.Fatalf("entry[%d]: got %q, want %q", i, entryKey(got[i]), entryKey(entries[i]))
-		}
-	}
-}
-
-// testSubscribeReceivesEventOnSet: Subscribe in a goroutine, Set an entry,
-// verify the handler receives a matching Event within 10 seconds.
-func testSubscribeReceivesEventOnSet(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx, cancel := context.WithCancel(context.Background())
-
-	t.Cleanup(cancel)
-
-	events := make(chan store.Event, 8)
-	subErr := make(chan error, 1)
-
-	go func() {
-		subErr <- s.Subscribe(ctx, func(e store.Event) {
-			events <- e
-		})
-	}()
-
-	// Give Subscribe a moment to establish the listener before writing.
-	// This setup sleep is unavoidable with real backends (Postgres LISTEN,
-	// MongoDB change-streams) because the Store interface has no "ready"
-	// signal. The assertion side uses polling (eventually), not sleep.
-	time.Sleep(200 * time.Millisecond)
-
-	entry := store.Entry{
-		Namespace: "global",
-		Key:       "log.level",
-		Value:     []byte(`"debug"`),
-		UpdatedBy: "actor-test",
-	}
-
-	if err := s.Set(ctx, entry); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-
-	// Wait for event delivery (up to 10s for change-stream warmup).
-	if !eventually(t, 10*time.Second, func() bool {
-		select {
-		case e := <-events:
-			return e.Namespace == entry.Namespace && e.Key == entry.Key
-		default:
-			return false
-		}
-	}) {
-		t.Fatal("timed out waiting for subscribe event")
-	}
-
-	cancel()
-
-	// Drain Subscribe return.
-	select {
-	case err := <-subErr:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("Subscribe returned unexpected error: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Subscribe did not return after context cancel")
-	}
-}
-
-// testSubscribeRespectsContextCancel: Cancel the context, verify Subscribe
-// returns promptly with nil or context.Canceled.
-func testSubscribeRespectsContextCancel(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	subErr := make(chan error, 1)
-
-	go func() {
-		subErr <- s.Subscribe(ctx, func(_ store.Event) {})
-	}()
-
-	// Let Subscribe settle, then cancel.
-	time.Sleep(100 * time.Millisecond)
-	cancel()
-
-	select {
-	case err := <-subErr:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("Subscribe returned unexpected error: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Subscribe did not return within 2s after context cancel")
-	}
-}
-
-// testCloseIsIdempotent: Close twice, no panic, no error on second call.
-func testCloseIsIdempotent(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-
-	if err := s.Close(); err != nil {
-		t.Fatalf("first Close: %v", err)
-	}
-
-	if err := s.Close(); err != nil {
-		t.Fatalf("second Close: %v", err)
-	}
-}
-
-// testOperationsAfterCloseReturnError: After Close, List, Get, Set, and
-// Subscribe all return store.ErrClosed.
-func testOperationsAfterCloseReturnError(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx := context.Background()
-
-	if err := s.Close(); err != nil {
+	if err := c.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 
-	if _, err := s.List(ctx); !errors.Is(err, store.ErrClosed) {
-		t.Fatalf("List after Close: got %v, want %v", err, store.ErrClosed)
+	if err := c.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
 	}
 
-	if _, _, err := s.Get(ctx, "ns", "k"); !errors.Is(err, store.ErrClosed) {
-		t.Fatalf("Get after Close: got %v, want %v", err, store.ErrClosed)
-	}
-
-	entry := store.Entry{Namespace: "ns", Key: "k", Value: []byte(`1`), UpdatedBy: "a"}
-	if err := s.Set(ctx, entry); !errors.Is(err, store.ErrClosed) {
-		t.Fatalf("Set after Close: got %v, want %v", err, store.ErrClosed)
-	}
-
-	if err := s.Subscribe(ctx, func(_ store.Event) {}); !errors.Is(err, store.ErrClosed) {
-		t.Fatalf("Subscribe after Close: got %v, want %v", err, store.ErrClosed)
+	if err := c.Set(context.Background(), contractNamespace, "level", debugValue, "contract"); !errors.Is(err, systemplane.ErrClosed) {
+		t.Fatalf("Set after Close error = %v, want ErrClosed", err)
 	}
 }
 
-// testNamespaceIsolation: Set entries with the same key in different
-// namespaces; verify they are stored and retrievable independently.
-func testNamespaceIsolation(t *testing.T, factory Factory) {
+func testTypedReads(t *testing.T, factory ClientFactory) {
 	t.Helper()
 
-	s := factory(t)
-	ctx := context.Background()
+	c := newClient(t, factory)
+	mustRegister(t, c, "string", "info")
+	mustRegister(t, c, "int", 10)
+	mustRegister(t, c, "bool", false)
+	mustRegister(t, c, "float", 1.5)
+	mustRegister(t, c, "duration", 2*time.Second)
+	mustStart(t, c)
 
-	e1 := store.Entry{Namespace: "nsA", Key: "k1", Value: []byte(`"alpha"`), UpdatedBy: "a"}
-	e2 := store.Entry{Namespace: "nsB", Key: "k1", Value: []byte(`"beta"`), UpdatedBy: "b"}
-
-	if err := s.Set(ctx, e1); err != nil {
-		t.Fatalf("Set nsA/k1: %v", err)
+	if got := c.GetString(contractNamespace, "string"); got != "info" {
+		t.Fatalf("GetString default = %q, want %q", got, "info")
 	}
 
-	if err := s.Set(ctx, e2); err != nil {
-		t.Fatalf("Set nsB/k1: %v", err)
+	if got := c.GetInt(contractNamespace, "int"); got != 10 {
+		t.Fatalf("GetInt default = %d, want 10", got)
 	}
 
-	gotA, foundA, err := s.Get(ctx, "nsA", "k1")
-	if err != nil || !foundA {
-		t.Fatalf("Get nsA/k1: found=%v, err=%v", foundA, err)
+	if got := c.GetBool(contractNamespace, "bool"); got {
+		t.Fatal("GetBool default = true, want false")
 	}
 
-	if string(gotA.Value) != `"alpha"` {
-		t.Fatalf("nsA/k1 value: got %q, want %q", gotA.Value, `"alpha"`)
+	if got := c.GetFloat64(contractNamespace, "float"); !almostEqual(got, 1.5) {
+		t.Fatalf("GetFloat64 default = %v, want 1.5", got)
 	}
 
-	gotB, foundB, err := s.Get(ctx, "nsB", "k1")
-	if err != nil || !foundB {
-		t.Fatalf("Get nsB/k1: found=%v, err=%v", foundB, err)
+	if got := c.GetDuration(contractNamespace, "duration"); got != 2*time.Second {
+		t.Fatalf("GetDuration default = %s, want 2s", got)
 	}
-
-	if string(gotB.Value) != `"beta"` {
-		t.Fatalf("nsB/k1 value: got %q, want %q", gotB.Value, `"beta"`)
-	}
-
-	entries, err := s.List(ctx)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-
-	if len(entries) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(entries))
-	}
-
-	// Verify the two entries are distinguishable.
-	nsSet := map[string]bool{}
-	for _, e := range entries {
-		nsSet[e.Namespace] = true
-	}
-
-	if !nsSet["nsA"] || !nsSet["nsB"] {
-		t.Fatalf("expected namespaces nsA and nsB, got %v", nsSet)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Tenant-scoped contract implementations (Task 8, PRD AC13)
-// ---------------------------------------------------------------------------
-
-// Shared fixture strings used across the tenant contract tests. They are
-// declared as a tight group rather than inlined so the suite speaks a
-// single vocabulary — contract tests benefit enormously from naming
-// conventions being identical across subtests when a failure surfaces.
-//
-// `fixtureNamespace` deliberately overlaps the string "global" used in the
-// pre-Task-8 global contracts at the top of the file; re-declaring it as a
-// constant lets the tenant sub-suite satisfy goconst without touching the
-// Task 7 test bodies that own the upper half of this file.
-const (
-	fixtureTenantA   = "tenant-A"
-	fixtureKey       = "fee.rate"
-	fixtureNamespace = "global"
-)
-
-// testTenantListOnEmpty: ListTenantValues on a fresh store returns an empty
-// slice; ListTenantsForKey for any key returns an empty slice. Neither
-// surfaces nil.
-func testTenantListOnEmpty(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx := context.Background()
-
-	lister := requireTenantValuesLister(t, s)
-
-	entries, err := lister.ListTenantValues(ctx)
-	if err != nil {
-		t.Fatalf("ListTenantValues on empty store: %v", err)
-	}
-
-	if len(entries) != 0 {
-		t.Fatalf("expected 0 tenant entries, got %d", len(entries))
-	}
-
-	tenants, err := s.ListTenantsForKey(ctx, "global", fixtureKey)
-	if err != nil {
-		t.Fatalf("ListTenantsForKey on empty store: %v", err)
-	}
-
-	if tenants == nil {
-		t.Fatal("ListTenantsForKey must return a non-nil empty slice, got nil")
-	}
-
-	if len(tenants) != 0 {
-		t.Fatalf("expected 0 tenants, got %d (%v)", len(tenants), tenants)
-	}
-}
-
-// testSetTenantThenGetRoundtrip: SetTenantValue persists; GetTenantValue for
-// the same tenantID returns the row, while GetTenantValue for a different
-// tenantID returns (_, false, nil). Enforces that rows are strictly scoped
-// per tenantID.
-func testSetTenantThenGetRoundtrip(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx := context.Background()
-
-	entry := store.Entry{
-		Namespace: "global",
-		Key:       fixtureKey,
-		Value:     []byte(`0.05`),
-		UpdatedBy: "admin-A",
-	}
-
-	if err := s.SetTenantValue(ctx, fixtureTenantA, entry); err != nil {
-		t.Fatalf("SetTenantValue tenant-A: %v", err)
-	}
-
-	got, found, err := s.GetTenantValue(ctx, fixtureTenantA, "global", fixtureKey)
-	if err != nil {
-		t.Fatalf("GetTenantValue tenant-A: %v", err)
-	}
-
-	if !found {
-		t.Fatal("GetTenantValue tenant-A: expected found=true")
-	}
-
-	if got.TenantID != fixtureTenantA {
-		t.Fatalf("GetTenantValue tenant-A: tenant_id=%q, want %q", got.TenantID, fixtureTenantA)
-	}
-
-	if string(got.Value) != `0.05` {
-		t.Fatalf("GetTenantValue tenant-A: value=%q, want %q", got.Value, `0.05`)
-	}
-
-	if got.UpdatedBy != "admin-A" {
-		t.Fatalf("GetTenantValue tenant-A: updated_by=%q, want %q", got.UpdatedBy, "admin-A")
-	}
-
-	// Other tenant must NOT see tenant-A's row.
-	_, foundB, err := s.GetTenantValue(ctx, "tenant-B", "global", fixtureKey)
-	if err != nil {
-		t.Fatalf("GetTenantValue tenant-B: %v", err)
-	}
-
-	if foundB {
-		t.Fatal("GetTenantValue tenant-B: expected found=false (row belongs to tenant-A)")
-	}
-}
-
-// testSetTenantTwiceLastWriteWins: two SetTenantValue calls for the same
-// (tenantID, namespace, key) collapse into a single row and the second
-// value wins.
-func testSetTenantTwiceLastWriteWins(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx := context.Background()
-
-	base := store.Entry{
-		Namespace: "global",
-		Key:       fixtureKey,
-		Value:     []byte(`0.05`),
-		UpdatedBy: "admin-A",
-	}
-
-	if err := s.SetTenantValue(ctx, fixtureTenantA, base); err != nil {
-		t.Fatalf("SetTenantValue v1: %v", err)
-	}
-
-	base.Value = []byte(`0.10`)
-	base.UpdatedBy = "admin-B"
-
-	if err := s.SetTenantValue(ctx, fixtureTenantA, base); err != nil {
-		t.Fatalf("SetTenantValue v2: %v", err)
-	}
-
-	got, found, err := s.GetTenantValue(ctx, fixtureTenantA, "global", fixtureKey)
-	if err != nil {
-		t.Fatalf("GetTenantValue: %v", err)
-	}
-
-	if !found {
-		t.Fatal("expected found=true")
-	}
-
-	if string(got.Value) != `0.10` {
-		t.Fatalf("value: got %q, want %q", got.Value, `0.10`)
-	}
-
-	if got.UpdatedBy != "admin-B" {
-		t.Fatalf("updated_by: got %q, want %q", got.UpdatedBy, "admin-B")
-	}
-
-	// Only one row in ListTenantValues for (tenant-A, global, fee.rate).
-	lister := requireTenantValuesLister(t, s)
-
-	entries, err := lister.ListTenantValues(ctx)
-	if err != nil {
-		t.Fatalf("ListTenantValues: %v", err)
-	}
-
-	var count int
-
-	for _, e := range entries {
-		if e.TenantID == fixtureTenantA && e.Namespace == fixtureNamespace && e.Key == fixtureKey {
-			count++
-		}
-	}
-
-	if count != 1 {
-		t.Fatalf("expected exactly 1 row for (tenant-A, global, fee.rate), got %d", count)
-	}
-}
-
-// testDeleteTenantValueReturnsMissing: after DeleteTenantValue, a
-// GetTenantValue for the same (tenantID, ns, key) returns (_, false, nil).
-// The Client layer translates this to "fall through to global/default",
-// but at the store level the row simply disappears.
-func testDeleteTenantValueReturnsMissing(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx := context.Background()
-
-	entry := store.Entry{
-		Namespace: "global",
-		Key:       fixtureKey,
-		Value:     []byte(`0.05`),
-		UpdatedBy: "admin",
-	}
-
-	if err := s.SetTenantValue(ctx, fixtureTenantA, entry); err != nil {
-		t.Fatalf("SetTenantValue: %v", err)
-	}
-
-	if err := s.DeleteTenantValue(ctx, fixtureTenantA, "global", fixtureKey, "admin"); err != nil {
-		t.Fatalf("DeleteTenantValue: %v", err)
-	}
-
-	_, found, err := s.GetTenantValue(ctx, fixtureTenantA, "global", fixtureKey)
-	if err != nil {
-		t.Fatalf("GetTenantValue after delete: %v", err)
-	}
-
-	if found {
-		t.Fatal("GetTenantValue after delete: expected found=false")
-	}
-}
-
-// testDeleteTenantValueIsIdempotent: DeleteTenantValue on a non-existent row
-// returns nil, matching the contract documented at internal/store/store.go.
-func testDeleteTenantValueIsIdempotent(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx := context.Background()
-
-	// Never set anything for tenant-missing; delete must still succeed.
-	if err := s.DeleteTenantValue(ctx, "tenant-missing", "global", fixtureKey, "admin"); err != nil {
-		t.Fatalf("DeleteTenantValue on missing row: %v", err)
-	}
-
-	// Double-delete after a set should also be nil.
-	entry := store.Entry{Namespace: "global", Key: fixtureKey, Value: []byte(`0.05`), UpdatedBy: "admin"}
-	if err := s.SetTenantValue(ctx, fixtureTenantA, entry); err != nil {
-		t.Fatalf("SetTenantValue: %v", err)
-	}
-
-	if err := s.DeleteTenantValue(ctx, fixtureTenantA, "global", fixtureKey, "admin"); err != nil {
-		t.Fatalf("first DeleteTenantValue: %v", err)
-	}
-
-	if err := s.DeleteTenantValue(ctx, fixtureTenantA, "global", fixtureKey, "admin"); err != nil {
-		t.Fatalf("second DeleteTenantValue (idempotent): %v", err)
-	}
-}
-
-// testListTenantsForKeySorted: ListTenantsForKey returns tenants sorted and
-// deduplicated with the store.SentinelGlobal row excluded. Writes arrive in a
-// non-sorted order and tenant-A is set twice to exercise dedup.
-func testListTenantsForKeySorted(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx := context.Background()
-
-	entry := store.Entry{Namespace: "global", Key: fixtureKey, Value: []byte(`0.05`), UpdatedBy: "admin"}
-
-	// Inserted deliberately out of sorted order: C, A, B, A-again.
-	for _, tid := range []string{"tenant-C", fixtureTenantA, "tenant-B", fixtureTenantA} {
-		if err := s.SetTenantValue(ctx, tid, entry); err != nil {
-			t.Fatalf("SetTenantValue %s: %v", tid, err)
-		}
-	}
-
-	// The global row for the same (ns, key) MUST be excluded from the tenant
-	// list — store.SentinelGlobal is a sentinel, not a real tenant.
-	if err := s.Set(ctx, store.Entry{
-		Namespace: "global",
-		Key:       fixtureKey,
-		Value:     []byte(`0.01`),
-		UpdatedBy: "admin",
-	}); err != nil {
-		t.Fatalf("Set global: %v", err)
-	}
-
-	tenants, err := s.ListTenantsForKey(ctx, "global", fixtureKey)
-	if err != nil {
-		t.Fatalf("ListTenantsForKey: %v", err)
-	}
-
-	if tenants == nil {
-		t.Fatal("ListTenantsForKey must return a non-nil slice")
-	}
-
-	want := []string{fixtureTenantA, "tenant-B", "tenant-C"}
-	if len(tenants) != len(want) {
-		t.Fatalf("tenants: got %v (len %d), want %v (len %d)", tenants, len(tenants), want, len(want))
-	}
-
-	for i := range want {
-		if tenants[i] != want[i] {
-			t.Fatalf("tenants[%d]: got %q, want %q (full: %v)", i, tenants[i], want[i], tenants)
-		}
-	}
-
-	// Guard against any backend accidentally returning the sentinel.
-	for _, tid := range tenants {
-		if tid == store.SentinelGlobal {
-			t.Fatalf("ListTenantsForKey must never return %q sentinel, got: %v", store.SentinelGlobal, tenants)
-		}
-	}
-}
-
-// testGlobalAndTenantRowsCoexist: Set (global) and SetTenantValue for the
-// same (namespace, key) must produce two distinct rows. The global-facing
-// Get reads the global row; GetTenantValue reads the tenant row;
-// ListTenantValues sees both. This pins the D2 / TRD §3 row-separation
-// invariant at the store contract level.
-func testGlobalAndTenantRowsCoexist(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx := context.Background()
-
-	globalEntry := store.Entry{
-		Namespace: "global",
-		Key:       fixtureKey,
-		Value:     []byte(`0.01`),
-		UpdatedBy: "admin",
-	}
-
-	tenantEntry := store.Entry{
-		Namespace: "global",
-		Key:       fixtureKey,
-		Value:     []byte(`0.05`),
-		UpdatedBy: "tenant-admin",
-	}
-
-	if err := s.Set(ctx, globalEntry); err != nil {
-		t.Fatalf("Set global: %v", err)
-	}
-
-	if err := s.SetTenantValue(ctx, fixtureTenantA, tenantEntry); err != nil {
-		t.Fatalf("SetTenantValue tenant-A: %v", err)
-	}
-
-	// Global-path Get returns the global value, NOT tenant-A's override.
-	got, found, err := s.Get(ctx, "global", fixtureKey)
-	if err != nil || !found {
-		t.Fatalf("Get global: found=%v, err=%v", found, err)
-	}
-
-	if string(got.Value) != `0.01` {
-		t.Fatalf("Get global value: got %q, want %q", got.Value, `0.01`)
-	}
-
-	// Tenant-path Get returns the tenant value, NOT the global.
-	gotT, foundT, err := s.GetTenantValue(ctx, fixtureTenantA, "global", fixtureKey)
-	if err != nil || !foundT {
-		t.Fatalf("GetTenantValue tenant-A: found=%v, err=%v", foundT, err)
-	}
-
-	if string(gotT.Value) != `0.05` {
-		t.Fatalf("GetTenantValue tenant-A value: got %q, want %q", gotT.Value, `0.05`)
-	}
-
-	// ListTenantValues must surface both rows (global + tenant-A). Extracted
-	// to a helper so the main test body stays under the gocyclo budget.
-	assertBothRowsVisible(t, s)
-}
-
-// assertBothRowsVisible fails the test unless ListTenantValues returns both
-// the _global sentinel row and the tenant-A row for the (global, fee.rate)
-// tuple. Kept out of testGlobalAndTenantRowsCoexist so the complexity of the
-// outer function stays within the gocyclo budget without sacrificing the
-// inline assertion pattern elsewhere in the suite.
-func assertBothRowsVisible(t *testing.T, s store.Store) {
-	t.Helper()
 
 	ctx := context.Background()
+	mustSet(t, c, ctx, "string", debugValue)
+	mustSet(t, c, ctx, "int", 42)
+	mustSet(t, c, ctx, "bool", true)
+	mustSet(t, c, ctx, "float", 3.25)
+	mustSet(t, c, ctx, "duration", "5s")
 
-	lister := requireTenantValuesLister(t, s)
-
-	allEntries, err := lister.ListTenantValues(ctx)
-	if err != nil {
-		t.Fatalf("ListTenantValues: %v", err)
+	if got := c.GetString(contractNamespace, "string"); got != debugValue {
+		t.Fatalf("GetString after Set = %q, want %q", got, debugValue)
 	}
 
-	var sawGlobal, sawTenant bool
-
-	for _, e := range allEntries {
-		if e.Namespace != fixtureNamespace || e.Key != fixtureKey {
-			continue
-		}
-
-		switch e.TenantID {
-		case store.SentinelGlobal:
-			sawGlobal = true
-		case fixtureTenantA:
-			sawTenant = true
-		}
+	if got := c.GetInt(contractNamespace, "int"); got != 42 {
+		t.Fatalf("GetInt after Set = %d, want 42", got)
 	}
 
-	if !sawGlobal {
-		t.Fatal("ListTenantValues missing the _global row for (global, fee.rate)")
+	if got := c.GetBool(contractNamespace, "bool"); !got {
+		t.Fatal("GetBool after Set = false, want true")
 	}
 
-	if !sawTenant {
-		t.Fatal("ListTenantValues missing the tenant-A row for (global, fee.rate)")
+	if got := c.GetFloat64(contractNamespace, "float"); !almostEqual(got, 3.25) {
+		t.Fatalf("GetFloat64 after Set = %v, want 3.25", got)
+	}
+
+	if got := c.GetDuration(contractNamespace, "duration"); got != 5*time.Second {
+		t.Fatalf("GetDuration after Set = %s, want 5s", got)
 	}
 }
 
-// testTenantSubscribeReceivesSetEvent: SetTenantValue triggers a Subscribe
-// event whose TenantID matches the write's tenant ID (not the sentinel).
-// The write-side actor performs the Set from a separate goroutine after the
-// subscriber has had time to register. This exercises the TRD §5.2 widened
-// debounce key at the store contract level.
-func testTenantSubscribeReceivesSetEvent(t *testing.T, factory Factory) {
+func testSetPersistence(t *testing.T, factory ClientFactory) {
 	t.Helper()
 
-	s := factory(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	c := newClient(t, factory)
+	mustRegister(t, c, "level", "info", systemplane.WithDescription("log verbosity"))
+	mustStart(t, c)
+	mustSet(t, c, context.Background(), "level", debugValue)
 
-	t.Cleanup(cancel)
-
-	events := make(chan store.Event, 8)
-	subErr := make(chan error, 1)
-
-	go func() {
-		subErr <- s.Subscribe(ctx, func(e store.Event) {
-			events <- e
-		})
-	}()
-
-	// Change-streams / LISTEN registration is asynchronous; no Store-level
-	// "ready" signal exists so we sleep for a backend-generous window before
-	// writing. Consistent with testSubscribeReceivesEventOnSet's 200ms.
-	time.Sleep(500 * time.Millisecond)
-
-	entry := store.Entry{
-		Namespace: "global",
-		Key:       fixtureKey,
-		Value:     []byte(`0.05`),
-		UpdatedBy: "tenant-admin",
+	if got := c.GetString(contractNamespace, "level"); got != debugValue {
+		t.Fatalf("GetString after Set = %q, want %q", got, debugValue)
 	}
 
-	if err := s.SetTenantValue(ctx, fixtureTenantA, entry); err != nil {
-		t.Fatalf("SetTenantValue: %v", err)
+	entries := c.List(contractNamespace)
+	if len(entries) != 1 {
+		t.Fatalf("List length = %d, want 1", len(entries))
 	}
 
-	if !eventually(t, 10*time.Second, func() bool {
-		select {
-		case e := <-events:
-			// Must match BOTH (ns, key) AND TenantID — the row separation
-			// invariant requires the event to carry the tenant ID, not the
-			// sentinel.
-			return e.Namespace == entry.Namespace && e.Key == entry.Key && e.TenantID == fixtureTenantA
-		default:
-			return false
-		}
-	}) {
-		t.Fatal("timed out waiting for tenant-A Subscribe event with matching TenantID")
-	}
-
-	cancel()
-
-	select {
-	case err := <-subErr:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("Subscribe returned unexpected error: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Subscribe did not return after context cancel")
+	if entries[0].Key != "level" || entries[0].Value != debugValue || entries[0].Description != "log verbosity" {
+		t.Fatalf("List entry = %#v, want key level/value %s/description log verbosity", entries[0], debugValue)
 	}
 }
 
-// testTenantSubscribeReceivesDeleteEvent: DeleteTenantValue triggers a
-// Subscribe event. This contract is CRITICAL for OnTenantChange's
-// "revert-to-default" behavior (TRD §4.4 / PRD AC9) — without the delete
-// event the Client cannot notify subscribers that the tenant has reverted.
-//
-// IMPORTANT: MongoDB polling mode cannot observe deletes between ticks
-// (see internal/mongodb/mongodb_changestream.go subscribePoll godoc). The
-// polling-mode integration test MUST skip this subtest via
-// [SkipSubtest]("TenantSubscribeReceivesDeleteEvent").
-func testTenantSubscribeReceivesDeleteEvent(t *testing.T, factory Factory) {
+func testOnChangeReceivesSet(t *testing.T, factory ClientFactory, settle time.Duration) {
 	t.Helper()
 
-	s := factory(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	c := newStartedSingleKeyClient(t, factory, "level", "info")
+	changes := make(chan any, 1)
 
-	t.Cleanup(cancel)
+	unsub := c.OnChange(contractNamespace, "level", func(newValue any) {
+		changes <- newValue
+	})
+	defer unsub()
 
-	// Seed the row BEFORE the subscriber registers so the delete is the only
-	// event we assert on. Seeded writes that race with Subscribe setup may or
-	// may not be delivered depending on backend; we don't assert on them.
-	seed := store.Entry{
-		Namespace: "global",
-		Key:       fixtureKey,
-		Value:     []byte(`0.05`),
-		UpdatedBy: "admin",
+	settleChangefeed(settle)
+	mustSet(t, c, context.Background(), "level", debugValue)
+
+	if got := waitForValue(t, changes); got != debugValue {
+		t.Fatalf("OnChange value = %#v, want %q", got, debugValue)
 	}
+}
 
-	if err := s.SetTenantValue(ctx, fixtureTenantA, seed); err != nil {
-		t.Fatalf("SetTenantValue seed: %v", err)
-	}
+func testDebounceDeliversLatestValue(t *testing.T, factory ClientFactory, settle time.Duration) {
+	t.Helper()
 
-	events := make(chan store.Event, 8)
-	subErr := make(chan error, 1)
+	c := newStartedSingleKeyClient(t, factory, "limit", 0)
+	changes := make(chan any, 8)
 
-	go func() {
-		subErr <- s.Subscribe(ctx, func(e store.Event) {
-			events <- e
-		})
-	}()
+	unsub := c.OnChange(contractNamespace, "limit", func(newValue any) {
+		changes <- newValue
+	})
+	defer unsub()
 
-	// Allow the backend's subscribe handler to attach.
-	time.Sleep(500 * time.Millisecond)
+	settleChangefeed(settle)
+	mustSet(t, c, context.Background(), "limit", 1)
+	mustSet(t, c, context.Background(), "limit", 2)
+	mustSet(t, c, context.Background(), "limit", 3)
 
-	// Drain any events the backend may have delivered for the pre-subscribe
-	// seed write. LISTEN/NOTIFY and change streams can deliver INSERT/UPDATE
-	// events that arrived just as the subscriber attached; without draining,
-	// the post-delete eventually() below could match on the seed event and
-	// pass without ever observing the delete.
-	//
-	// An additional short wait catches late seed-induced deliveries that were
-	// scheduled but not yet written to the channel when the subscriber came
-	// up. Any event that arrives after this drain must be the result of the
-	// DeleteTenantValue below (the only subsequent write).
-	time.Sleep(100 * time.Millisecond)
+	var got any
 
-drainSeed:
+	deadline := time.After(eventDeadline)
+
 	for {
 		select {
-		case <-events:
-			// Discard — seed INSERT or spurious backend echo.
-		default:
-			break drainSeed
-		}
-	}
-
-	if err := s.DeleteTenantValue(ctx, fixtureTenantA, "global", fixtureKey, "admin"); err != nil {
-		t.Fatalf("DeleteTenantValue: %v", err)
-	}
-
-	// After the drain, the only remaining write that can produce a matching
-	// event is the DELETE above. Matching on (namespace, key, tenant_id) is
-	// therefore sufficient proof of delete-event routing without needing an
-	// explicit event-type field on store.Event.
-	if !eventually(t, 10*time.Second, func() bool {
-		for {
-			select {
-			case e := <-events:
-				if e.Namespace == fixtureNamespace && e.Key == fixtureKey && e.TenantID == fixtureTenantA {
-					return true
-				}
-			default:
-				return false
+		case got = <-changes:
+			if numericEquals(got, 3) {
+				return
 			}
-		}
-	}) {
-		t.Fatal("timed out waiting for tenant-A delete Subscribe event")
-	}
-
-	cancel()
-
-	select {
-	case err := <-subErr:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("Subscribe returned unexpected error: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Subscribe did not return after context cancel")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// testListTenantOverridesFiltersGlobals pins the server-side filter contract
-// for ListTenantOverrides (M-S2-5). Seeding two global rows and three tenant
-// overrides and asserting the returned slice length is exactly 3 — with no
-// row carrying the '_global' sentinel — proves the filter runs on the
-// backend rather than in Go. A post-read filter in Go would still count as
-// a server bandwidth cost the method exists to eliminate; this subtest
-// catches regressions where a future backend accidentally fetches-then-
-// filters.
-func testListTenantOverridesFiltersGlobals(t *testing.T, factory Factory) {
-	t.Helper()
-
-	s := factory(t)
-	ctx := context.Background()
-
-	// Two global rows under the same namespace, distinct keys.
-	globals := []store.Entry{
-		{Namespace: "global", Key: "rate_limit", Value: []byte(`100`), UpdatedBy: "admin"},
-		{Namespace: "global", Key: "log.level", Value: []byte(`"info"`), UpdatedBy: "admin"},
-	}
-
-	for _, g := range globals {
-		if err := s.Set(ctx, g); err != nil {
-			t.Fatalf("Set global %s/%s: %v", g.Namespace, g.Key, err)
-		}
-	}
-
-	// Three tenant overrides for the fixtureKey, distinct tenants.
-	tenantEntry := store.Entry{
-		Namespace: "global",
-		Key:       fixtureKey,
-		Value:     []byte(`0.05`),
-		UpdatedBy: "admin",
-	}
-
-	for _, tid := range []string{fixtureTenantA, "tenant-B", "tenant-C"} {
-		if err := s.SetTenantValue(ctx, tid, tenantEntry); err != nil {
-			t.Fatalf("SetTenantValue %s: %v", tid, err)
-		}
-	}
-
-	// Unbounded page (limit=0) to retrieve the whole result in one shot —
-	// matches how hydrateTenantCache used the method pre-pagination.
-	got, err := s.ListTenantOverrides(ctx, "", "", "", 0)
-	if err != nil {
-		t.Fatalf("ListTenantOverrides: %v", err)
-	}
-
-	if len(got) != 3 {
-		t.Fatalf("expected 3 tenant overrides, got %d (entries: %+v)", len(got), got)
-	}
-
-	for _, e := range got {
-		if e.TenantID == store.SentinelGlobal {
-			t.Fatalf("ListTenantOverrides returned a row with TenantID=%q (must be filtered server-side): %+v",
-				store.SentinelGlobal, e)
+		case <-deadline:
+			t.Fatalf("debounced OnChange never delivered latest value 3; last value: %#v", got)
 		}
 	}
 }
 
-// testDeleteTenantValueNoOpEmitsNoEvent pins M-S2-8: a DeleteTenantValue
-// against a row that never existed must NOT fire the changefeed. The
-// Postgres trigger is AFTER INSERT OR UPDATE OR DELETE FOR EACH ROW, so a
-// no-op delete has no row to fire on and the trigger is silent by design.
-// This test subscribes, deletes a non-existent row, waits 500ms, and
-// asserts zero events arrived. Without the guard, subscribers would see
-// spurious invalidations on every idempotent delete retry.
-func testDeleteTenantValueNoOpEmitsNoEvent(t *testing.T, factory Factory) {
+func testPanicSafeSubscriberCallbacks(t *testing.T, factory ClientFactory, settle time.Duration) {
 	t.Helper()
 
-	s := factory(t)
-	ctx, cancel := context.WithCancel(context.Background())
+	c := newStartedSingleKeyClient(t, factory, "level", "info")
+	secondSubscriber := make(chan any, 1)
 
-	t.Cleanup(cancel)
+	unsubPanic := c.OnChange(contractNamespace, "level", func(any) {
+		panic("systemplanetest intentional subscriber panic")
+	})
+	defer unsubPanic()
 
-	events := make(chan store.Event, 8)
-	subErr := make(chan error, 1)
+	unsubSecond := c.OnChange(contractNamespace, "level", func(newValue any) {
+		secondSubscriber <- newValue
+	})
+	defer unsubSecond()
 
-	go func() {
-		subErr <- s.Subscribe(ctx, func(e store.Event) {
-			events <- e
-		})
-	}()
+	settleChangefeed(settle)
+	mustSet(t, c, context.Background(), "level", debugValue)
 
-	// Give Subscribe time to attach its backend listener before the delete.
-	time.Sleep(500 * time.Millisecond)
+	if got := waitForValue(t, secondSubscriber); got != debugValue {
+		t.Fatalf("second subscriber value = %#v, want %q", got, debugValue)
+	}
+}
 
-	// Delete a row that never existed for tenant-never; the operation must
-	// succeed (idempotent) and must not emit a changefeed event.
-	if err := s.DeleteTenantValue(ctx, "tenant-never", "global", fixtureKey, "admin"); err != nil {
-		t.Fatalf("DeleteTenantValue (no-op): %v", err)
+func testMultipleSubscribers(t *testing.T, factory ClientFactory, settle time.Duration) {
+	t.Helper()
+
+	c := newStartedSingleKeyClient(t, factory, "level", "info")
+
+	var seenA, seenB atomic.Int64
+
+	doneA := make(chan struct{}, 1)
+	doneB := make(chan struct{}, 1)
+
+	unsubA := c.OnChange(contractNamespace, "level", func(any) {
+		seenA.Add(1)
+		signal(doneA)
+	})
+	defer unsubA()
+
+	unsubB := c.OnChange(contractNamespace, "level", func(any) {
+		seenB.Add(1)
+		signal(doneB)
+	})
+	defer unsubB()
+
+	settleChangefeed(settle)
+	mustSet(t, c, context.Background(), "level", debugValue)
+	waitForSignal(t, doneA, "subscriber A")
+	waitForSignal(t, doneB, "subscriber B")
+
+	if seenA.Load() == 0 || seenB.Load() == 0 {
+		t.Fatalf("subscriber counts = (%d, %d), want both > 0", seenA.Load(), seenB.Load())
+	}
+}
+
+func testTenantScopedOverrideLifecycle(t *testing.T, factory ClientFactory) {
+	t.Helper()
+
+	c := newClient(t, factory)
+	mustRegisterTenantRate(t, c)
+	mustStart(t, c)
+
+	ctxA := tenantContext(tenantA)
+	ctxB := tenantContext(tenantB)
+	ctxC := tenantContext(tenantC)
+	ctxD := tenantContext("tenant-D")
+
+	if tenants := c.ListTenantsForKey(contractNamespace, tenantRateKey); len(tenants) != 0 {
+		t.Fatalf("ListTenantsForKey before overrides = %v, want empty", tenants)
 	}
 
-	// Wait longer than any reasonable changefeed propagation window, then
-	// assert nothing arrived.
-	time.Sleep(500 * time.Millisecond)
+	mustSet(t, c, context.Background(), tenantRateKey, 0.15)
+	mustSetTenantRate(t, c, ctxC, 0.30)
+	mustSetTenantRate(t, c, ctxA, 0.20)
+	mustSetTenantRate(t, c, ctxB, 0.35)
+	mustSetTenantRate(t, c, ctxA, 0.25)
+
+	gotA, foundA, err := c.GetForTenant(ctxA, contractNamespace, tenantRateKey)
+	if err != nil || !foundA || !numericEquals(gotA, 0.25) {
+		t.Fatalf("GetForTenant %s = (%#v, %v, %v), want (0.25, true, nil)", tenantA, gotA, foundA, err)
+	}
+
+	gotD, foundD, err := c.GetForTenant(ctxD, contractNamespace, tenantRateKey)
+	if err != nil || !foundD || !numericEquals(gotD, 0.15) {
+		t.Fatalf("GetForTenant tenant-D = (%#v, %v, %v), want global 0.15", gotD, foundD, err)
+	}
+
+	if got := c.GetFloat64(contractNamespace, tenantRateKey); !almostEqual(got, 0.15) {
+		t.Fatalf("global GetFloat64 after tenant overrides = %v, want 0.15", got)
+	}
+
+	tenants := c.ListTenantsForKey(contractNamespace, tenantRateKey)
+
+	wantTenants := []string{tenantA, tenantB, tenantC}
+	if !stringSlicesEqual(tenants, wantTenants) {
+		t.Fatalf("ListTenantsForKey = %v, want %v", tenants, wantTenants)
+	}
+
+	mustDeleteTenantRate(t, c, ctxA)
+
+	gotA, foundA, err = c.GetForTenant(ctxA, contractNamespace, tenantRateKey)
+	if err != nil || !foundA || !numericEquals(gotA, 0.15) {
+		t.Fatalf("GetForTenant %s after delete = (%#v, %v, %v), want global 0.15", tenantA, gotA, foundA, err)
+	}
+}
+
+func testTenantOnChangeReceivesSet(t *testing.T, factory ClientFactory, settle time.Duration) {
+	t.Helper()
+
+	c := newClient(t, factory)
+	mustRegisterTenantRate(t, c)
+	mustStart(t, c)
+
+	type tenantEvent struct {
+		ctxTenantID string
+		tenantID    string
+		value       any
+	}
+
+	changes := make(chan tenantEvent, 2)
+
+	unsub := c.OnTenantChange(contractNamespace, tenantRateKey, func(ctx context.Context, _, _ string, tenantID string, newValue any) {
+		changes <- tenantEvent{
+			ctxTenantID: core.GetTenantIDContext(ctx),
+			tenantID:    tenantID,
+			value:       newValue,
+		}
+	})
+	defer unsub()
+
+	ctxA := tenantContext(tenantA)
+
+	settleChangefeed(settle)
+	mustSetTenantRate(t, c, ctxA, 0.25)
+
+	setEvent := waitForTenantEvent(t, changes)
+	if setEvent.tenantID != tenantA || setEvent.ctxTenantID != tenantA || !numericEquals(setEvent.value, 0.25) {
+		t.Fatalf("tenant set event = %#v, want %s value 0.25", setEvent, tenantA)
+	}
+}
+
+func testTenantOnChangeReceivesDelete(t *testing.T, factory ClientFactory, settle time.Duration) {
+	t.Helper()
+
+	c := newClient(t, factory)
+	mustRegisterTenantRate(t, c)
+	mustStart(t, c)
+
+	type tenantEvent struct {
+		ctxTenantID string
+		tenantID    string
+		value       any
+	}
+
+	ctxA := tenantContext(tenantA)
+	mustSetTenantRate(t, c, ctxA, 0.25)
+
+	changes := make(chan tenantEvent, 2)
+
+	unsub := c.OnTenantChange(contractNamespace, tenantRateKey, func(ctx context.Context, _, _ string, tenantID string, newValue any) {
+		changes <- tenantEvent{
+			ctxTenantID: core.GetTenantIDContext(ctx),
+			tenantID:    tenantID,
+			value:       newValue,
+		}
+	})
+	defer unsub()
+
+	settleChangefeed(settle)
+	drainTenantEvents(changes)
+	mustDeleteTenantRate(t, c, ctxA)
+
+	deleteEvent := waitForTenantEvent(t, changes)
+	if deleteEvent.tenantID != tenantA || deleteEvent.ctxTenantID != tenantA || !numericEquals(deleteEvent.value, 0.10) {
+		t.Fatalf("tenant delete event = %#v, want %s default value 0.10", deleteEvent, tenantA)
+	}
+}
+
+func testTenantDeleteNoOpEmitsNoEvent(t *testing.T, factory ClientFactory, settle time.Duration) {
+	t.Helper()
+
+	c := newClient(t, factory)
+	mustRegisterTenantRate(t, c)
+	mustStart(t, c)
+
+	changes := make(chan struct{}, 1)
+
+	unsub := c.OnTenantChange(contractNamespace, tenantRateKey, func(context.Context, string, string, string, any) {
+		signal(changes)
+	})
+	defer unsub()
+
+	settleChangefeed(settle)
+	mustDeleteTenantRate(t, c, tenantContext("tenant-missing"))
 
 	select {
-	case e := <-events:
-		t.Fatalf("no-op DeleteTenantValue emitted an unexpected event: %+v", e)
+	case <-changes:
+		t.Fatal("no-op DeleteForTenant emitted unexpected OnTenantChange event")
+	case <-time.After(noEventWindow):
+	}
+}
+
+func testTenantContextValidation(t *testing.T, factory ClientFactory) {
+	t.Helper()
+
+	c := newClient(t, factory)
+	mustRegisterTenantRate(t, c)
+	mustStart(t, c)
+
+	assertTenantError := func(label string, ctx context.Context, want error) {
+		t.Helper()
+
+		if _, _, err := c.GetForTenant(ctx, contractNamespace, tenantRateKey); !errors.Is(err, want) {
+			t.Fatalf("%s GetForTenant error = %v, want %v", label, err, want)
+		}
+
+		if err := c.SetForTenant(ctx, contractNamespace, tenantRateKey, 0.20, "systemplanetest"); !errors.Is(err, want) {
+			t.Fatalf("%s SetForTenant error = %v, want %v", label, err, want)
+		}
+
+		if err := c.DeleteForTenant(ctx, contractNamespace, tenantRateKey, "systemplanetest"); !errors.Is(err, want) {
+			t.Fatalf("%s DeleteForTenant error = %v, want %v", label, err, want)
+		}
+	}
+
+	assertTenantError("missing tenant", context.Background(), systemplane.ErrMissingTenantContext)
+	assertTenantError("invalid tenant", tenantContext("invalid tenant"), systemplane.ErrInvalidTenantID)
+	assertTenantError("global sentinel", tenantContext("_global"), systemplane.ErrInvalidTenantID)
+}
+
+func testNilReceiverSafety(t *testing.T) {
+	t.Helper()
+
+	var c *systemplane.Client
+	assertNilReceiverReads(t, c)
+	assertNilReceiverMetadata(t, c)
+	assertNilReceiverLifecycle(t, c)
+}
+
+func assertNilReceiverReads(t *testing.T, c *systemplane.Client) {
+	t.Helper()
+
+	if v, ok := c.Get(contractNamespace, "missing"); v != nil || ok {
+		t.Fatalf("nil Get = (%#v, %v), want (nil, false)", v, ok)
+	}
+
+	if got := c.List(contractNamespace); got != nil {
+		t.Fatalf("nil List = %#v, want nil", got)
+	}
+
+	if got := c.GetString(contractNamespace, "missing"); got != "" {
+		t.Fatalf("nil GetString = %q, want empty", got)
+	}
+
+	if got := c.GetInt(contractNamespace, "missing"); got != 0 {
+		t.Fatalf("nil GetInt = %d, want 0", got)
+	}
+
+	if got := c.GetBool(contractNamespace, "missing"); got {
+		t.Fatal("nil GetBool = true, want false")
+	}
+
+	if got := c.GetFloat64(contractNamespace, "missing"); got != 0 {
+		t.Fatalf("nil GetFloat64 = %v, want 0", got)
+	}
+
+	if got := c.GetDuration(contractNamespace, "missing"); got != 0 {
+		t.Fatalf("nil GetDuration = %s, want 0", got)
+	}
+}
+
+func assertNilReceiverMetadata(t *testing.T, c *systemplane.Client) {
+	t.Helper()
+
+	if got := c.KeyDescription(contractNamespace, "missing"); got != "" {
+		t.Fatalf("nil KeyDescription = %q, want empty", got)
+	}
+
+	if got := c.KeyRedaction(contractNamespace, "missing"); got != systemplane.RedactNone {
+		t.Fatalf("nil KeyRedaction = %v, want RedactNone", got)
+	}
+
+	registered, tenantScoped := c.KeyStatus(contractNamespace, "missing")
+	if registered || tenantScoped {
+		t.Fatalf("nil KeyStatus = (%v, %v), want (false, false)", registered, tenantScoped)
+	}
+
+	if c.Logger() == nil {
+		t.Fatal("nil Logger returned nil")
+	}
+
+	c.OnChange(contractNamespace, "missing", func(any) {})()
+}
+
+func assertNilReceiverLifecycle(t *testing.T, c *systemplane.Client) {
+	t.Helper()
+
+	if err := c.Close(); err != nil {
+		t.Fatalf("nil Close: %v", err)
+	}
+
+	if err := c.Register(contractNamespace, "k", "v"); !errors.Is(err, systemplane.ErrClosed) {
+		t.Fatalf("nil Register error = %v, want ErrClosed", err)
+	}
+
+	if err := c.Start(context.Background()); !errors.Is(err, systemplane.ErrClosed) {
+		t.Fatalf("nil Start error = %v, want ErrClosed", err)
+	}
+
+	if err := c.Set(context.Background(), contractNamespace, "k", "v", "contract"); !errors.Is(err, systemplane.ErrClosed) {
+		t.Fatalf("nil Set error = %v, want ErrClosed", err)
+	}
+}
+
+func testValidationFailures(t *testing.T, factory ClientFactory) {
+	t.Helper()
+
+	rejectNegative := func(value any) error {
+		if asFloat(value) < 0 {
+			return errors.New("negative values are rejected")
+		}
+
+		return nil
+	}
+
+	c := newClient(t, factory)
+	if err := c.Register(contractNamespace, "bad_default", -1, systemplane.WithValidator(rejectNegative)); !errors.Is(err, systemplane.ErrValidation) {
+		t.Fatalf("invalid default Register error = %v, want ErrValidation", err)
+	}
+
+	if err := c.Register(contractNamespace, "limit", 1, systemplane.WithValidator(rejectNegative)); err != nil {
+		t.Fatalf("Register valid key: %v", err)
+	}
+
+	if err := c.Set(context.Background(), contractNamespace, "limit", 2, "contract"); !errors.Is(err, systemplane.ErrNotStarted) {
+		t.Fatalf("Set before Start error = %v, want ErrNotStarted", err)
+	}
+
+	mustStart(t, c)
+
+	if err := c.Set(context.Background(), contractNamespace, "limit", -1, "contract"); !errors.Is(err, systemplane.ErrValidation) {
+		t.Fatalf("Set invalid value error = %v, want ErrValidation", err)
+	}
+
+	if err := c.Set(context.Background(), contractNamespace, "unknown", 1, "contract"); !errors.Is(err, systemplane.ErrUnknownKey) {
+		t.Fatalf("Set unknown key error = %v, want ErrUnknownKey", err)
+	}
+
+	if err := c.Set(context.Background(), contractNamespace, "limit", math.Inf(1), "contract"); !errors.Is(err, systemplane.ErrValidation) {
+		t.Fatalf("Set non-JSON value error = %v, want ErrValidation", err)
+	}
+}
+
+func testRedactionMetadata(t *testing.T, factory ClientFactory) {
+	t.Helper()
+
+	c := newClient(t, factory)
+	if err := c.Register(contractNamespace, "secret", "hunter2",
+		systemplane.WithDescription("API secret"),
+		systemplane.WithRedaction(systemplane.RedactFull),
+	); err != nil {
+		t.Fatalf("Register secret: %v", err)
+	}
+
+	if got := c.KeyDescription(contractNamespace, "secret"); got != "API secret" {
+		t.Fatalf("KeyDescription = %q, want %q", got, "API secret")
+	}
+
+	if got := c.KeyRedaction(contractNamespace, "secret"); got != systemplane.RedactFull {
+		t.Fatalf("KeyRedaction = %v, want RedactFull", got)
+	}
+
+	if got := systemplane.ApplyRedaction("hunter2", c.KeyRedaction(contractNamespace, "secret")); got != "[REDACTED]" {
+		t.Fatalf("ApplyRedaction = %#v, want [REDACTED]", got)
+	}
+}
+
+func newClient(t *testing.T, factory ClientFactory) *systemplane.Client {
+	t.Helper()
+
+	if factory == nil {
+		t.Fatal("nil ClientFactory")
+	}
+
+	c := factory(t)
+	if c == nil {
+		t.Fatal("ClientFactory returned nil")
+	}
+
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Errorf("cleanup Close: %v", err)
+		}
+	})
+
+	return c
+}
+
+func newStartedSingleKeyClient(t *testing.T, factory ClientFactory, key string, defaultValue any) *systemplane.Client {
+	t.Helper()
+
+	c := newClient(t, factory)
+	mustRegister(t, c, key, defaultValue)
+	mustStart(t, c)
+
+	return c
+}
+
+func mustRegister(t *testing.T, c *systemplane.Client, key string, defaultValue any, opts ...systemplane.KeyOption) {
+	t.Helper()
+
+	if err := c.Register(contractNamespace, key, defaultValue, opts...); err != nil {
+		t.Fatalf("Register(%q): %v", key, err)
+	}
+}
+
+func mustRegisterTenantRate(t *testing.T, c *systemplane.Client) {
+	t.Helper()
+
+	if err := c.RegisterTenantScoped(contractNamespace, tenantRateKey, tenantRateDefault); err != nil {
+		t.Fatalf("RegisterTenantScoped(%q): %v", tenantRateKey, err)
+	}
+}
+
+func mustStart(t *testing.T, c *systemplane.Client) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), eventDeadline)
+	defer cancel()
+
+	if err := c.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+}
+
+func mustSet(t *testing.T, c *systemplane.Client, ctx context.Context, key string, value any) {
+	t.Helper()
+
+	if err := c.Set(ctx, contractNamespace, key, value, "systemplanetest"); err != nil {
+		t.Fatalf("Set(%q, %#v): %v", key, value, err)
+	}
+}
+
+func mustSetTenantRate(t *testing.T, c *systemplane.Client, ctx context.Context, value any) {
+	t.Helper()
+
+	if err := c.SetForTenant(ctx, contractNamespace, tenantRateKey, value, "systemplanetest"); err != nil {
+		t.Fatalf("SetForTenant(%q, %#v): %v", tenantRateKey, value, err)
+	}
+}
+
+func mustDeleteTenantRate(t *testing.T, c *systemplane.Client, ctx context.Context) {
+	t.Helper()
+
+	if err := c.DeleteForTenant(ctx, contractNamespace, tenantRateKey, "systemplanetest"); err != nil {
+		t.Fatalf("DeleteForTenant(%q): %v", tenantRateKey, err)
+	}
+}
+
+func tenantContext(tenantID string) context.Context {
+	return core.ContextWithTenantID(context.Background(), tenantID)
+}
+
+func settleChangefeed(d time.Duration) {
+	if d > 0 {
+		time.Sleep(d)
+	}
+}
+
+func waitForValue(t *testing.T, ch <-chan any) any {
+	t.Helper()
+
+	select {
+	case got := <-ch:
+		return got
+	case <-time.After(eventDeadline):
+		t.Fatal("timed out waiting for OnChange callback")
+
+		return nil
+	}
+}
+
+func waitForSignal(t *testing.T, ch <-chan struct{}, label string) {
+	t.Helper()
+
+	select {
+	case <-ch:
+	case <-time.After(eventDeadline):
+		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
+func waitForTenantEvent[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+
+	select {
+	case got := <-ch:
+		return got
+	case <-time.After(eventDeadline):
+		t.Fatal("timed out waiting for OnTenantChange callback")
+
+		var zero T
+
+		return zero
+	}
+}
+
+func drainTenantEvents[T any](ch <-chan T) {
+	for {
+		select {
+		case <-ch:
+		default:
+			return
+		}
+	}
+}
+
+func signal(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
 	default:
 	}
-
-	cancel()
-
-	select {
-	case err := <-subErr:
-		if err != nil && !errors.Is(err, context.Canceled) {
-			t.Fatalf("Subscribe returned unexpected error: %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Subscribe did not return after context cancel")
-	}
 }
 
-// eventually polls check at short intervals until it returns true or timeout
-// elapses. Returns true if check succeeded, false on timeout.
-func eventually(t *testing.T, timeout time.Duration, check func() bool) bool {
-	t.Helper()
+func almostEqual(got, want float64) bool {
+	const tolerance = 0.000001
 
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
+	return math.Abs(got-want) <= tolerance
+}
 
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
+func numericEquals(got any, want float64) bool {
+	return almostEqual(asFloat(got), want)
+}
 
-	for {
-		if check() {
-			return true
-		}
+func stringSlicesEqual(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
 
-		select {
-		case <-deadline.C:
+	for i := range got {
+		if got[i] != want[i] {
 			return false
-		case <-ticker.C:
-			// next iteration
 		}
+	}
+
+	return true
+}
+
+func asFloat(value any) float64 {
+	switch v := value.(type) {
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	default:
+		return math.NaN()
 	}
 }

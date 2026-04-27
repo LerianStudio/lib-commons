@@ -11,12 +11,13 @@ import (
 	"context"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 )
 
-// TestStore is the public mirror of the internal store.Store interface, exposed
-// solely for [NewForTesting]. Production code uses [NewPostgres] or [NewMongoDB]
-// which wire the internal interface directly.
+// TestStore is a test-only storage contract exposed solely for [NewForTesting].
+// Production code uses [NewPostgres] or [NewMongoDB], which wire real backend
+// storage directly.
 //
 // DO NOT USE IN PRODUCTION. This interface is intentionally undocumented in
 // README/API docs. Its API stability is not promised.
@@ -27,19 +28,19 @@ type TestStore interface {
 	Subscribe(ctx context.Context, handler func(TestEvent)) error
 	Close() error
 
-	// GetTenantValue mirrors store.Store.GetTenantValue.
+	// GetTenantValue returns a tenant override for namespace/key.
 	GetTenantValue(ctx context.Context, tenantID, namespace, key string) (TestEntry, bool, error)
-	// SetTenantValue mirrors store.Store.SetTenantValue.
+	// SetTenantValue persists a tenant override for namespace/key.
 	SetTenantValue(ctx context.Context, tenantID string, e TestEntry) error
-	// DeleteTenantValue mirrors store.Store.DeleteTenantValue.
+	// DeleteTenantValue removes a tenant override for namespace/key.
 	DeleteTenantValue(ctx context.Context, tenantID, namespace, key, actor string) error
-	// ListTenantOverrides mirrors store.Store.ListTenantOverrides.
+	// ListTenantOverrides returns only tenant override rows using keyset pagination.
 	ListTenantOverrides(ctx context.Context, afterNamespace, afterKey, afterTenantID string, limit int) ([]TestEntry, error)
-	// ListTenantsForKey mirrors store.Store.ListTenantsForKey.
+	// ListTenantsForKey returns tenants that have overridden namespace/key.
 	ListTenantsForKey(ctx context.Context, namespace, key string) ([]string, error)
 }
 
-// TestEntry is the public mirror of internal store.Entry.
+// TestEntry is a test-only persisted configuration row.
 type TestEntry struct {
 	Namespace string
 	Key       string
@@ -49,7 +50,7 @@ type TestEntry struct {
 	UpdatedBy string
 }
 
-// TestEvent is the public mirror of internal store.Event.
+// TestEvent is a test-only changefeed event.
 type TestEvent struct {
 	Namespace string
 	Key       string
@@ -189,7 +190,7 @@ func (a *testStoreAdapter) ListTenantsForKey(ctx context.Context, namespace, key
 // DO NOT USE IN PRODUCTION. This constructor is intentionally undocumented in
 // README/API docs. Its API stability is not promised.
 func NewForTesting(s TestStore, opts ...Option) (*Client, error) {
-	if s == nil {
+	if nilcheck.Interface(s) {
 		return nil, store.ErrNilBackend
 	}
 

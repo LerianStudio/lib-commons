@@ -21,7 +21,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
-	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/systemplanetest"
+	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/storetest"
 )
 
 // tableSeq generates unique table names so each factory call produces an
@@ -91,10 +91,7 @@ func newTestStore(t *testing.T, dsn string) *Store {
 	return s
 }
 
-// TestIntegration_ContractSuite invokes the shared contract test suite. If
-// Phase 4 hasn't landed yet, systemplanetest.Run is a no-op stub that passes
-// trivially.
-func TestIntegration_ContractSuite(t *testing.T) {
+func TestIntegration_TenantStoreContracts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
@@ -103,8 +100,9 @@ func TestIntegration_ContractSuite(t *testing.T) {
 	defer cancel()
 
 	dsn := startPostgresContainer(ctx, t)
+	storetest.RunTenantContracts(t, func(t *testing.T) store.Store {
+		t.Helper()
 
-	systemplanetest.Run(t, func(t *testing.T) store.Store {
 		return newTestStore(t, dsn)
 	})
 }

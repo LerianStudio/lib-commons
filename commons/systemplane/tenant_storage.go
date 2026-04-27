@@ -134,11 +134,10 @@ func (c *Client) removeTenantValue(ctx context.Context, tenantID, namespace, key
 
 // listTenantsForKey wraps store.ListTenantsForKey with a span and consistent
 // error prefix. The backend guarantees a sorted, deduplicated slice with the
-// '_global' sentinel excluded AND a non-nil empty slice on no-match — that
-// contract is asserted by the contract test suite in systemplanetest.Run, so
-// this wrapper does not re-coerce a nil return. A nil return from the store
-// would be a contract violation, not something the dispatch layer should
-// silently paper over.
+// '_global' sentinel excluded AND a non-nil empty slice on no-match, so this
+// wrapper does not re-coerce a nil return. A nil return from the store would be
+// a contract violation, not something the dispatch layer should silently paper
+// over.
 func (c *Client) listTenantsForKey(ctx context.Context, namespace, key string) ([]string, error) {
 	ctx, span, finish := c.startSpanWithAttrs(ctx, "systemplane.client.list_tenants_for_key",
 		attribute.String("systemplane.namespace", namespace),

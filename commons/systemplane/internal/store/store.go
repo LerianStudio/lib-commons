@@ -123,10 +123,10 @@ type Store interface {
 	//
 	// Returns an empty slice, not nil, when no tenant overrides exist.
 	//
-	// Backends also expose ListTenantValues(ctx) ([]Entry, error) as a concrete
-	// method (not on this interface) for the systemplanetest contract suite's
-	// full-listing assertions. Production code uses ListTenantOverrides
-	// exclusively; ListTenantValues is a test-support affordance.
+	// Backends may also expose ListTenantValues(ctx) ([]Entry, error) as a
+	// concrete method (not on this interface) for backend-local full-listing
+	// assertions. Production code uses ListTenantOverrides exclusively;
+	// ListTenantValues is a test-support affordance.
 	ListTenantOverrides(ctx context.Context, afterNamespace, afterKey, afterTenantID string, limit int) ([]Entry, error)
 
 	// ListTenantsForKey returns a sorted, deduplicated list of distinct
