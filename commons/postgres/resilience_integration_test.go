@@ -22,14 +22,15 @@ import (
 func setupPostgresContainerRaw(t *testing.T) (*tcpostgres.PostgresContainer, string, func()) {
 	t.Helper()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), postgresContainerStartupTimeout)
+	defer cancel()
 
 	container, err := tcpostgres.Run(ctx,
 		"postgres:16-alpine",
 		tcpostgres.WithDatabase("testdb"),
 		tcpostgres.WithUsername("test"),
 		tcpostgres.WithPassword("test"),
-		tcpostgres.BasicWaitStrategies(),
+		postgresContainerWaitStrategy(),
 	)
 	require.NoError(t, err)
 
@@ -37,7 +38,10 @@ func setupPostgresContainerRaw(t *testing.T) (*tcpostgres.PostgresContainer, str
 	require.NoError(t, err)
 
 	return container, connStr, func() {
-		_ = container.Terminate(ctx)
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer closeCancel()
+
+		_ = container.Terminate(closeCtx)
 	}
 }
 
