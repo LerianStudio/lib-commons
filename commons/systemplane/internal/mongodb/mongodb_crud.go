@@ -21,9 +21,9 @@ import (
 // tuple. Returns (entryDoc{}, false, nil) when no document matches.
 func (s *Store) findOne(ctx context.Context, namespace, key, tenantID string) (entryDoc, bool, error) {
 	filter := bson.D{
-		{Key: "namespace", Value: namespace},
-		{Key: "key", Value: key},
-		{Key: "tenant_id", Value: tenantID},
+		{Key: mongoFieldNamespace, Value: namespace},
+		{Key: mongoFieldKey, Value: key},
+		{Key: mongoFieldTenantID, Value: tenantID},
 	}
 
 	var doc entryDoc
@@ -80,7 +80,7 @@ func (s *Store) upsert(ctx context.Context, e store.Entry, tenantID string) erro
 
 	var filter bson.D
 	if s.cfg.TenantSchemaEnabled {
-		filter = bson.D{{Key: "_id", Value: id}}
+		filter = bson.D{{Key: mongoFieldID, Value: id}}
 	} else {
 		// Phase-1 filter: match by (namespace, key) alone. Legacy rows
 		// lack tenant_id entirely; including it in the filter turns the
@@ -89,26 +89,26 @@ func (s *Store) upsert(ctx context.Context, e store.Entry, tenantID string) erro
 		// here — and the legacy unique index guarantees at most one row
 		// per (namespace, key).
 		filter = bson.D{
-			{Key: "namespace", Value: e.Namespace},
-			{Key: "key", Value: e.Key},
+			{Key: mongoFieldNamespace, Value: e.Namespace},
+			{Key: mongoFieldKey, Value: e.Key},
 		}
 	}
 
 	update := bson.D{
-		{Key: "$set", Value: bson.D{
-			{Key: "namespace", Value: e.Namespace},
-			{Key: "key", Value: e.Key},
-			{Key: "tenant_id", Value: tenantID},
-			{Key: "value", Value: string(e.Value)},
-			{Key: "updated_at", Value: now},
-			{Key: "updated_by", Value: e.UpdatedBy},
+		{Key: mongoOperatorSet, Value: bson.D{
+			{Key: mongoFieldNamespace, Value: e.Namespace},
+			{Key: mongoFieldKey, Value: e.Key},
+			{Key: mongoFieldTenantID, Value: tenantID},
+			{Key: mongoFieldValue, Value: string(e.Value)},
+			{Key: mongoFieldUpdatedAt, Value: now},
+			{Key: mongoFieldUpdatedBy, Value: e.UpdatedBy},
 		}},
 		// On insert, pin _id to the compound tuple. For phase-1 hits against
 		// a legacy ObjectId row, this branch is skipped — MongoDB never
 		// rewrites _id on update — so the legacy row retains its ObjectId
 		// and is cleaned up by the subsequent phase-2 migration.
 		{Key: "$setOnInsert", Value: bson.D{
-			{Key: "_id", Value: id},
+			{Key: mongoFieldID, Value: id},
 		}},
 	}
 

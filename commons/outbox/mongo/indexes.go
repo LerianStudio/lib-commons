@@ -19,9 +19,9 @@ func buildIndexes(tenantField string) []mongodriver.IndexModel {
 		return prefixed
 	}
 
-	uniqueIDKeys := bson.D{{Key: "id", Value: 1}}
+	uniqueIDKeys := bson.D{{Key: bsonFieldID, Value: 1}}
 	if tenantField != "" {
-		uniqueIDKeys = keysWithTenant(bson.D{{Key: "id", Value: 1}})
+		uniqueIDKeys = keysWithTenant(bson.D{{Key: bsonFieldID, Value: 1}})
 	}
 
 	indexes := []mongodriver.IndexModel{
@@ -30,26 +30,26 @@ func buildIndexes(tenantField string) []mongodriver.IndexModel {
 			Options: mongooptions.Index().SetUnique(true).SetName("outbox_id_scope_unique"),
 		},
 		{
-			Keys:    keysWithTenant(bson.D{{Key: "status", Value: 1}, {Key: "created_at", Value: 1}, {Key: "id", Value: 1}}),
+			Keys:    keysWithTenant(bson.D{{Key: bsonFieldStatus, Value: 1}, {Key: bsonFieldCreatedAt, Value: 1}, {Key: bsonFieldID, Value: 1}}),
 			Options: mongooptions.Index().SetName("outbox_pending_claim"),
 		},
 		{
-			Keys:    keysWithTenant(bson.D{{Key: "event_type", Value: 1}, {Key: "status", Value: 1}, {Key: "created_at", Value: 1}, {Key: "id", Value: 1}}),
+			Keys:    keysWithTenant(bson.D{{Key: bsonFieldEventType, Value: 1}, {Key: bsonFieldStatus, Value: 1}, {Key: bsonFieldCreatedAt, Value: 1}, {Key: bsonFieldID, Value: 1}}),
 			Options: mongooptions.Index().SetName("outbox_pending_by_type_claim"),
 		},
 		{
-			Keys:    keysWithTenant(bson.D{{Key: "status", Value: 1}, {Key: "updated_at", Value: 1}, {Key: "id", Value: 1}}),
+			Keys:    keysWithTenant(bson.D{{Key: bsonFieldStatus, Value: 1}, {Key: bsonFieldUpdatedAt, Value: 1}, {Key: bsonFieldID, Value: 1}}),
 			Options: mongooptions.Index().SetName("outbox_state_updated_scan"),
 		},
 		{
-			Keys:    keysWithTenant(bson.D{{Key: "claim_token", Value: 1}, {Key: "status", Value: 1}, {Key: "id", Value: 1}}),
+			Keys:    keysWithTenant(bson.D{{Key: bsonFieldClaimToken, Value: 1}, {Key: bsonFieldStatus, Value: 1}, {Key: bsonFieldID, Value: 1}}),
 			Options: mongooptions.Index().SetName("outbox_claim_token_lookup").SetSparse(true),
 		},
 	}
 
 	if tenantField != "" {
 		indexes = append(indexes, mongodriver.IndexModel{
-			Keys:    bson.D{{Key: "status", Value: 1}, {Key: tenantField, Value: 1}},
+			Keys:    bson.D{{Key: bsonFieldStatus, Value: 1}, {Key: tenantField, Value: 1}},
 			Options: mongooptions.Index().SetName("outbox_status_tenant"),
 		})
 	}

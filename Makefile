@@ -137,6 +137,9 @@ help:
 	@echo "  make vet                         - Run go vet on all packages"
 	@echo "  make sec                         - Run security checks using gosec"
 	@echo "  make sec SARIF=1                 - Run security checks with SARIF output"
+	@echo "  make telemetry-dictionary        - Generate docs/dashboards/telemetry-dictionary.md"
+	@echo "  make verify-telemetry            - Verify telemetry dictionary is in sync"
+	@echo "  make update-goldens              - Update telemetry-inventory golden files"
 	@echo ""
 	@echo ""
 	@echo "Git Hook Commands:"
@@ -614,6 +617,27 @@ tidy:
 	go mod tidy
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) Dependencies cleaned successfully$(GREEN) ✔️$(NC)"
 
+.PHONY: telemetry-dictionary
+telemetry-dictionary:
+	$(call print_title,Generating telemetry dictionary)
+	$(call check_command,go,"Install Go from https://golang.org/doc/install")
+	go run ./cmd/telemetry-inventory inventory .
+	@echo "$(GREEN)$(BOLD)[ok]$(NC) Telemetry dictionary generated$(GREEN) ✔️$(NC)"
+
+.PHONY: verify-telemetry
+verify-telemetry:
+	$(call print_title,Verifying telemetry dictionary against committed version)
+	$(call check_command,go,"Install Go from https://golang.org/doc/install")
+	go run ./cmd/telemetry-inventory verify .
+	@echo "$(GREEN)$(BOLD)[ok]$(NC) Telemetry dictionary in sync$(GREEN) ✔️$(NC)"
+
+.PHONY: update-goldens
+update-goldens:
+	$(call print_title,Updating telemetry-inventory golden files)
+	$(call check_command,go,"Install Go from https://golang.org/doc/install")
+	UPDATE_GOLDEN=1 go test -tags=unit -count=1 -run Golden ./cmd/telemetry-inventory/...
+	@echo "$(GREEN)$(BOLD)[ok]$(NC) Goldens updated - review with git diff before committing$(GREEN) ✔️$(NC)"
+
 # SARIF output for GitHub Security tab integration (optional)
 # Usage: make sec SARIF=1
 SARIF ?= 0
@@ -626,10 +650,11 @@ sec:
 		go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION); \
 	fi
 	@if find . -name "*.go" -type f -not -path './vendor/*' | grep -q .; then \
+		packages="$$(go list ./...)"; \
 		echo "Running security checks on all packages..."; \
 		if [ "$(SARIF)" = "1" ]; then \
 			echo "Generating SARIF output: gosec-report.sarif"; \
-			if gosec -fmt sarif -out gosec-report.sarif ./...; then \
+			if gosec -fmt sarif -out gosec-report.sarif $$packages; then \
 				echo "$(GREEN)$(BOLD)[ok]$(NC) SARIF report generated: gosec-report.sarif$(GREEN) ✔️$(NC)"; \
 			else \
 				printf "\n%s%sSecurity issues found by gosec. Please address them before proceeding.%s\n\n" "$(BOLD)" "$(RED)" "$(NC)"; \
@@ -637,7 +662,7 @@ sec:
 				exit 1; \
 			fi; \
 		else \
-			if gosec ./...; then \
+			if gosec $$packages; then \
 				echo "$(GREEN)$(BOLD)[ok]$(NC) Security checks completed$(GREEN) ✔️$(NC)"; \
 			else \
 				printf "\n%s%sSecurity issues found by gosec. Please address them before proceeding.%s\n\n" "$(BOLD)" "$(RED)" "$(NC)"; \

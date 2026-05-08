@@ -77,7 +77,8 @@ func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
 			return
 		}
 
-		metricsCollectorShutdown = make(chan struct{})
+		shutdown := make(chan struct{})
+		metricsCollectorShutdown = shutdown
 		ticker := time.NewTicker(getMetricsCollectionInterval())
 
 		runtime.SafeGoWithContextAndComponent(
@@ -92,7 +93,7 @@ func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
 
 				for {
 					select {
-					case <-metricsCollectorShutdown:
+					case <-shutdown:
 						ticker.Stop()
 						return
 					case <-ticker.C:

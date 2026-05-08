@@ -392,10 +392,10 @@ func (s *Store) pollChanges(
 	handler func(store.Event),
 ) (time.Time, error) {
 	filter := bson.D{
-		{Key: "updated_at", Value: bson.D{{Key: "$gt", Value: watermark}}},
+		{Key: mongoFieldUpdatedAt, Value: bson.D{{Key: mongoOperatorGT, Value: watermark}}},
 	}
 
-	findOpts := options.Find().SetSort(bson.D{{Key: "updated_at", Value: 1}})
+	findOpts := options.Find().SetSort(bson.D{{Key: mongoFieldUpdatedAt, Value: 1}})
 
 	cursor, err := s.coll.Find(ctx, filter, findOpts)
 	if err != nil {

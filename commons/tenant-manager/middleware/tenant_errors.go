@@ -12,6 +12,15 @@ import (
 	"github.com/gofiber/fiber/v2"
 )
 
+const (
+	errorResponseCodeKey    = "code"
+	errorResponseTitleKey   = "title"
+	errorResponseMessageKey = "message"
+	serviceUnavailableCode  = "SERVICE_UNAVAILABLE"
+	serviceUnavailableTitle = "Service Unavailable"
+	serviceUnavailableMsg   = "Service temporarily unavailable"
+)
+
 // mapDomainErrorToHTTP is a centralized error-to-HTTP mapping function used by
 // TenantMiddleware to ensure consistent status codes for domain errors.
 func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
@@ -26,9 +35,9 @@ func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
 	// Tenant not found -> 404
 	if errors.Is(err, core.ErrTenantNotFound) {
 		return c.Status(http.StatusNotFound).JSON(fiber.Map{
-			"code":    "TENANT_NOT_FOUND",
-			"title":   "Tenant Not Found",
-			"message": "tenant not found: " + tenantID,
+			errorResponseCodeKey:    "TENANT_NOT_FOUND",
+			errorResponseTitleKey:   "Tenant Not Found",
+			errorResponseMessageKey: "tenant not found: " + tenantID,
 		})
 	}
 
@@ -47,29 +56,17 @@ func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
 
 	// Manager closed or service not configured -> 503
 	if errors.Is(err, core.ErrManagerClosed) || errors.Is(err, core.ErrServiceNotConfigured) {
-		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
-			"code":    "SERVICE_UNAVAILABLE",
-			"title":   "Service Unavailable",
-			"message": "Service temporarily unavailable",
-		})
+		return serviceUnavailableError(c)
 	}
 
 	// Circuit breaker open -> 503
 	if errors.Is(err, core.ErrCircuitBreakerOpen) {
-		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
-			"code":    "SERVICE_UNAVAILABLE",
-			"title":   "Service Unavailable",
-			"message": "Service temporarily unavailable",
-		})
+		return serviceUnavailableError(c)
 	}
 
 	// Connection errors -> 503
 	if errors.Is(err, core.ErrConnectionFailed) {
-		return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
-			"code":    "SERVICE_UNAVAILABLE",
-			"title":   "Service Unavailable",
-			"message": "Service temporarily unavailable",
-		})
+		return serviceUnavailableError(c)
 	}
 
 	// Default -> 500
@@ -80,26 +77,34 @@ func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
 // Used when the tenant-service association exists but is not active (suspended or purged).
 func forbiddenError(c *fiber.Ctx, code, title, message string) error {
 	return c.Status(http.StatusForbidden).JSON(fiber.Map{
-		"code":    code,
-		"title":   title,
-		"message": message,
+		errorResponseCodeKey:    code,
+		errorResponseTitleKey:   title,
+		errorResponseMessageKey: message,
+	})
+}
+
+func serviceUnavailableError(c *fiber.Ctx) error {
+	return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
+		errorResponseCodeKey:    serviceUnavailableCode,
+		errorResponseTitleKey:   serviceUnavailableTitle,
+		errorResponseMessageKey: serviceUnavailableMsg,
 	})
 }
 
 // internalServerError sends an HTTP 500 Internal Server Error response.
 func internalServerError(c *fiber.Ctx, code, title string) error {
 	return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
-		"code":    code,
-		"title":   title,
-		"message": "Internal server error",
+		errorResponseCodeKey:    code,
+		errorResponseTitleKey:   title,
+		errorResponseMessageKey: "Internal server error",
 	})
 }
 
 // unauthorizedError sends an HTTP 401 Unauthorized response.
 func unauthorizedError(c *fiber.Ctx, code, message string) error {
 	return c.Status(http.StatusUnauthorized).JSON(fiber.Map{
-		"code":    code,
-		"title":   "Unauthorized",
-		"message": message,
+		errorResponseCodeKey:    code,
+		errorResponseTitleKey:   "Unauthorized",
+		errorResponseMessageKey: message,
 	})
 }

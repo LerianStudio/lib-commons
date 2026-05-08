@@ -95,6 +95,8 @@ func buildKgoOpts(cfg Config, opts emitterOptions) ([]kgo.Opt, error) {
 	// opted into acks=leader/none, they've consciously traded idempotency
 	// for lower latency — we must disable idempotent writes so the kgo
 	// client starts up instead of failing validation.
+	// kgo.DisableIdempotentWrite is needed only when acks != "all"; coupled
+	// to the kafka idempotent-write invariant, not the validation default.
 	if cfg.RequiredAcks != "all" {
 		kgoOpts = append(kgoOpts, kgo.DisableIdempotentWrite())
 	}
@@ -136,7 +138,7 @@ func resolveCompression(name string) (kgo.CompressionCodec, error) {
 		return kgo.ZstdCompression(), nil
 	case "gzip":
 		return kgo.GzipCompression(), nil
-	case "none":
+	case configValueNone:
 		return kgo.NoCompression(), nil
 	default:
 		return kgo.CompressionCodec{}, fmt.Errorf("%w: %q", ErrInvalidCompression, name)
@@ -148,11 +150,11 @@ func resolveCompression(name string) (kgo.CompressionCodec, error) {
 // defensive.
 func resolveAcks(name string) (kgo.Acks, error) {
 	switch name {
-	case "all":
+	case defaultRequiredAcks:
 		return kgo.AllISRAcks(), nil
 	case "leader":
 		return kgo.LeaderAck(), nil
-	case "none":
+	case configValueNone:
 		return kgo.NoAck(), nil
 	default:
 		return kgo.Acks{}, fmt.Errorf("%w: %q", ErrInvalidAcks, name)

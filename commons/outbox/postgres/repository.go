@@ -114,7 +114,7 @@ func NewRepository(
 		tenantResolver:     tenantResolver,
 		tenantDiscoverer:   tenantDiscoverer,
 		logger:             libLog.NewNop(),
-		tableName:          "outbox_events",
+		tableName:          defaultOutboxTableName,
 		transactionTimeout: defaultTransactionTimeout,
 	}
 
@@ -138,7 +138,7 @@ func NewRepository(
 
 	repo.tableName = strings.TrimSpace(repo.tableName)
 	if repo.tableName == "" {
-		repo.tableName = "outbox_events"
+		repo.tableName = defaultOutboxTableName
 	}
 
 	repo.tenantColumn = strings.TrimSpace(repo.tenantColumn)

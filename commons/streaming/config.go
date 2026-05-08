@@ -70,22 +70,23 @@ const (
 	defaultCBMinRequests         = 10
 	defaultCBTimeout             = 30 * time.Second
 	defaultCloseTimeout          = 30 * time.Second
+	configValueNone              = "none"
 )
 
 // validCompressionCodecs enumerates the accepted STREAMING_COMPRESSION values.
 var validCompressionCodecs = map[string]struct{}{
-	"snappy": {},
-	"lz4":    {},
-	"zstd":   {},
-	"gzip":   {},
-	"none":   {},
+	"snappy":        {},
+	"lz4":           {},
+	"zstd":          {},
+	"gzip":          {},
+	configValueNone: {},
 }
 
 // validAcks enumerates the accepted STREAMING_REQUIRED_ACKS values.
 var validAcks = map[string]struct{}{
-	"all":    {},
-	"leader": {},
-	"none":   {},
+	defaultRequiredAcks: {},
+	"leader":            {},
+	configValueNone:     {},
 }
 
 // LoadConfig reads every STREAMING_* environment variable, applies defaults

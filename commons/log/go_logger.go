@@ -175,7 +175,7 @@ func isTypedNil(v any) bool {
 	rv := reflect.ValueOf(v)
 
 	switch rv.Kind() {
-	case reflect.Ptr, reflect.Interface, reflect.Func, reflect.Map, reflect.Slice, reflect.Chan:
+	case reflect.Pointer, reflect.Interface, reflect.Func, reflect.Map, reflect.Slice, reflect.Chan:
 		return rv.IsNil()
 	default:
 		return false

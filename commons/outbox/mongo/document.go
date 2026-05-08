@@ -16,22 +16,22 @@ import (
 
 func (doc document) toBSON(tenantField string) bson.M {
 	raw := bson.M{
-		"id":           doc.ID,
-		"event_type":   doc.EventType,
-		"aggregate_id": doc.AggregateID,
-		"payload":      doc.Payload,
-		"status":       doc.Status,
-		"attempts":     doc.Attempts,
-		"created_at":   doc.CreatedAt,
-		"updated_at":   doc.UpdatedAt,
+		bsonFieldID:          doc.ID,
+		bsonFieldEventType:   doc.EventType,
+		bsonFieldAggregateID: doc.AggregateID,
+		bsonFieldPayload:     doc.Payload,
+		bsonFieldStatus:      doc.Status,
+		bsonFieldAttempts:    doc.Attempts,
+		bsonFieldCreatedAt:   doc.CreatedAt,
+		bsonFieldUpdatedAt:   doc.UpdatedAt,
 	}
 
 	if doc.PublishedAt != nil {
-		raw["published_at"] = *doc.PublishedAt
+		raw[bsonFieldPublishedAt] = *doc.PublishedAt
 	}
 
 	if doc.LastError != "" {
-		raw["last_error"] = doc.LastError
+		raw[bsonFieldLastError] = doc.LastError
 	}
 
 	if tenantField != "" {
@@ -166,52 +166,52 @@ func (repo *Repository) decodeAndCloseClaimCursor(ctx context.Context, cursor *m
 }
 
 func documentFromBSON(raw bson.M, tenantField string) (document, error) {
-	id, err := stringField(raw, "id")
+	id, err := stringField(raw, bsonFieldID)
 	if err != nil {
 		return document{}, err
 	}
 
-	eventType, err := stringField(raw, "event_type")
+	eventType, err := stringField(raw, bsonFieldEventType)
 	if err != nil {
 		return document{}, err
 	}
 
-	aggregateID, err := stringField(raw, "aggregate_id")
+	aggregateID, err := stringField(raw, bsonFieldAggregateID)
 	if err != nil {
 		return document{}, err
 	}
 
-	payload, err := stringField(raw, "payload")
+	payload, err := stringField(raw, bsonFieldPayload)
 	if err != nil {
 		return document{}, err
 	}
 
-	status, err := stringField(raw, "status")
+	status, err := stringField(raw, bsonFieldStatus)
 	if err != nil {
 		return document{}, err
 	}
 
-	attempts, err := intField(raw, "attempts")
+	attempts, err := intField(raw, bsonFieldAttempts)
 	if err != nil {
 		return document{}, err
 	}
 
-	createdAt, err := timeField(raw, "created_at")
+	createdAt, err := timeField(raw, bsonFieldCreatedAt)
 	if err != nil {
 		return document{}, err
 	}
 
-	updatedAt, err := timeField(raw, "updated_at")
+	updatedAt, err := timeField(raw, bsonFieldUpdatedAt)
 	if err != nil {
 		return document{}, err
 	}
 
-	lastError, err := optionalStringField(raw, "last_error")
+	lastError, err := optionalStringField(raw, bsonFieldLastError)
 	if err != nil {
 		return document{}, err
 	}
 
-	publishedAt, err := optionalTimeField(raw, "published_at")
+	publishedAt, err := optionalTimeField(raw, bsonFieldPublishedAt)
 	if err != nil {
 		return document{}, err
 	}
@@ -246,7 +246,7 @@ func validateDecodedDocument(doc document) (document, error) {
 	}
 
 	if doc.Attempts < 0 {
-		return document{}, fmt.Errorf("field %q must be non-negative", "attempts")
+		return document{}, fmt.Errorf("field %q must be non-negative", bsonFieldAttempts)
 	}
 
 	doc.LastError = strings.TrimSpace(doc.LastError)
@@ -256,27 +256,27 @@ func validateDecodedDocument(doc document) (document, error) {
 }
 
 func claimDocumentFromBSON(raw bson.M, tenantField string) (document, error) {
-	id, err := stringField(raw, "id")
+	id, err := stringField(raw, bsonFieldID)
 	if err != nil {
 		return document{}, err
 	}
 
-	status, err := stringField(raw, "status")
+	status, err := stringField(raw, bsonFieldStatus)
 	if err != nil {
 		return document{}, err
 	}
 
-	attempts, err := intField(raw, "attempts")
+	attempts, err := intField(raw, bsonFieldAttempts)
 	if err != nil {
 		return document{}, err
 	}
 
-	updatedAt, err := timeField(raw, "updated_at")
+	updatedAt, err := timeField(raw, bsonFieldUpdatedAt)
 	if err != nil {
 		return document{}, err
 	}
 
-	lastError, err := optionalStringField(raw, "last_error")
+	lastError, err := optionalStringField(raw, bsonFieldLastError)
 	if err != nil {
 		return document{}, err
 	}
@@ -302,7 +302,7 @@ func claimDocumentFromBSON(raw bson.M, tenantField string) (document, error) {
 func validateClaimDocument(doc document) (document, error) {
 	doc.ID = strings.TrimSpace(doc.ID)
 	if doc.ID == "" {
-		return document{}, fmt.Errorf("missing field %q", "id")
+		return document{}, fmt.Errorf("missing field %q", bsonFieldID)
 	}
 
 	doc.Status = strings.TrimSpace(doc.Status)
@@ -311,11 +311,11 @@ func validateClaimDocument(doc document) (document, error) {
 	}
 
 	if doc.Attempts < 0 {
-		return document{}, fmt.Errorf("field %q must be non-negative", "attempts")
+		return document{}, fmt.Errorf("field %q must be non-negative", bsonFieldAttempts)
 	}
 
 	if doc.UpdatedAt.IsZero() {
-		return document{}, fmt.Errorf("missing field %q", "updated_at")
+		return document{}, fmt.Errorf("missing field %q", bsonFieldUpdatedAt)
 	}
 
 	doc.LastError = strings.TrimSpace(doc.LastError)

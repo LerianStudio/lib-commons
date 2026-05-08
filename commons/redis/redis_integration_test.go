@@ -5,11 +5,13 @@ package redis
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/docker/go-connections/nat"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -24,18 +26,39 @@ func waitForRedisEndpoint(t *testing.T, container *tcredis.RedisContainer) strin
 
 	ctx := context.Background()
 	var endpoint string
+	var lastErr error
 
 	require.Eventually(t, func() bool {
-		value, err := container.PortEndpoint(ctx, testRedisPort, "")
-		if err != nil || value == "" {
+		value, err := redisEndpoint(ctx, container)
+		if err != nil {
+			lastErr = err
+
 			return false
 		}
 
 		endpoint = value
 		return true
-	}, 10*time.Second, 100*time.Millisecond, "failed to resolve Redis container endpoint")
+	}, 30*time.Second, 100*time.Millisecond, "failed to resolve Redis container endpoint: %v", lastErr)
 
 	return endpoint
+}
+
+func redisEndpoint(ctx context.Context, container *tcredis.RedisContainer) (string, error) {
+	host, err := container.Host(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolve redis container host: %w", err)
+	}
+
+	mappedPort, err := container.MappedPort(ctx, nat.Port(testRedisPort))
+	if err != nil {
+		return "", fmt.Errorf("resolve redis mapped port: %w", err)
+	}
+
+	if host == "" || mappedPort.Port() == "" {
+		return "", fmt.Errorf("empty redis endpoint host=%q port=%q", host, mappedPort.Port())
+	}
+
+	return net.JoinHostPort(host, mappedPort.Port()), nil
 }
 
 // setupRedisContainer starts a real Redis 7 container and returns its address

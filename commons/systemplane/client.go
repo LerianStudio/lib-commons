@@ -337,7 +337,7 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 
 	// 3. Launch the Subscribe goroutine with its own cancellable context.
-	subCtx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: cancel stored in c.cancel and invoked by Close()
+	subCtx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
 
 	c.wg.Go(func() {
