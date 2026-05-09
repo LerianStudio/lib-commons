@@ -30,7 +30,6 @@ attributes: []
 emission_sites:
   - file: "main.go"
     line: 10
-
 record_on_error_observed: false
 status_on_error_observed: false
 unbounded_span: false
@@ -43,7 +42,6 @@ attributes: []
 emission_sites:
   - file: "main.go"
     line: 16
-
 record_on_error_observed: false
 status_on_error_observed: false
 unbounded_span: true

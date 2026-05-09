@@ -19,7 +19,6 @@ emission_sites:
   - file: "main.go"
     line: 11
     tier: 1
-
 instrument_type: "counter"
 label_cardinality_estimate: 1
 labels: ["tenant_id"]

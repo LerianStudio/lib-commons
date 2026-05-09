@@ -19,7 +19,6 @@ emission_sites:
   - file: "main.go"
     line: 43
     tier: 3
-
 instrument_type: "counter"
 label_cardinality_estimate: 1
 labels: ["tenant_id"]
@@ -35,7 +34,6 @@ emission_sites:
   - file: "main.go"
     line: 34
     tier: 2
-
 instrument_type: "counter"
 label_cardinality_estimate: 1
 labels: ["tenant_id"]
@@ -51,7 +49,6 @@ emission_sites:
   - file: "main.go"
     line: 28
     tier: 1
-
 instrument_type: "counter"
 label_cardinality_estimate: 1
 labels: ["tenant_id"]
@@ -70,7 +67,6 @@ emission_sites:
   - file: "main.go"
     line: 31
     tier: 1
-
 instrument_type: "histogram"
 label_cardinality_estimate: 1
 labels: ["tenant_id"]
@@ -91,7 +87,6 @@ attributes: ["tenant_id"]
 emission_sites:
   - file: "main.go"
     line: 24
-
 record_on_error_observed: true
 status_on_error_observed: false
 unbounded_span: false
@@ -105,10 +100,8 @@ unbounded_span: false
 emission_sites:
   - file: "main.go"
     line: 26
-
 level_distribution:
   info: 1
-
 pii_risk_flag: false
 ```
 
@@ -118,10 +111,8 @@ pii_risk_flag: false
 emission_sites:
   - file: "main.go"
     line: 26
-
 level_distribution:
   info: 1
-
 pii_risk_flag: false
 ```
 
@@ -135,7 +126,6 @@ auto_spans: ["gRPC server"]
 emission_sites:
   - file: "main.go"
     line: 19
-
 ```
 
 ### lib-commons/http-telemetry
@@ -146,7 +136,6 @@ auto_spans: ["HTTP route"]
 emission_sites:
   - file: "main.go"
     line: 20
-
 ```
 
 ### net/http/otelhttp
@@ -157,7 +146,6 @@ auto_spans: ["HTTP route"]
 emission_sites:
   - file: "main.go"
     line: 18
-
 ```
 
 ## Cross-Cutting
@@ -171,7 +159,6 @@ kind: "error_attribution"
 site:
   - file: "main.go"
     line: 35
-
 ```
 
 ### error_attribution at main.go
@@ -183,6 +170,5 @@ kind: "error_attribution"
 site:
   - file: "main.go"
     line: 39
-
 ```
 

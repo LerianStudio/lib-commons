@@ -19,7 +19,6 @@ emission_sites:
   - file: "a.go"
     line: 10
     tier: 1
-
 instrument_type: "counter"
 label_cardinality_estimate: 0
 labels: []
@@ -35,7 +34,6 @@ emission_sites:
   - file: "b.go"
     line: 20
     tier: 2
-
 instrument_type: "counter"
 label_cardinality_estimate: 2
 labels: ["result", "tenant_id"]
@@ -54,7 +52,6 @@ emission_sites:
   - file: "c.go"
     line: 30
     tier: 1
-
 instrument_type: "histogram"
 label_cardinality_estimate: 1
 labels: ["tenant_id"]
@@ -72,7 +69,6 @@ emission_sites:
   - file: "d.go"
     line: 40
     tier: 3
-
 instrument_type: "gauge"
 label_cardinality_estimate: 0
 labels: []
@@ -89,7 +85,6 @@ attributes: ["tenant_id"]
 emission_sites:
   - file: "e.go"
     line: 50
-
 record_on_error_observed: true
 status_on_error_observed: true
 unbounded_span: false
@@ -103,11 +98,9 @@ unbounded_span: false
 emission_sites:
   - file: "f.go"
     line: 60
-
 level_distribution:
   error: 1
   info: 2
-
 pii_risk_flag: false
 ```
 
@@ -121,7 +114,6 @@ auto_spans: ["HTTP route"]
 emission_sites:
   - file: "g.go"
     line: 70
-
 ```
 
 ## Cross-Cutting
@@ -135,6 +127,5 @@ kind: "tenant_consistency"
 site:
   - file: "h.go"
     line: 80
-
 ```
 

@@ -19,7 +19,6 @@ emission_sites:
   - file: "main.go"
     line: 11
     tier: 2
-
 instrument_type: "counter"
 label_cardinality_estimate: 1
 labels: ["tenant_id"]
@@ -38,7 +37,6 @@ emission_sites:
   - file: "main.go"
     line: 18
     tier: 2
-
 instrument_type: "histogram"
 label_cardinality_estimate: 1
 labels: ["tenant_id"]
@@ -73,7 +71,6 @@ kind: "error_attribution"
 site:
   - file: "main.go"
     line: 12
-
 ```
 
 ### error_attribution at main.go
@@ -85,7 +82,6 @@ kind: "error_attribution"
 site:
   - file: "main.go"
     line: 15
-
 ```
 
 ### error_attribution at main.go
@@ -97,7 +93,6 @@ kind: "error_attribution"
 site:
   - file: "main.go"
     line: 19
-
 ```
 
 ### trace_correlation at main.go
@@ -110,6 +105,5 @@ site:
   - file: "main.go"
     line: 18
     tier: 2
-
 ```
 

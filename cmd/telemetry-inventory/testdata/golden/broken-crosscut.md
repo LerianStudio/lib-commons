@@ -19,7 +19,6 @@ emission_sites:
   - file: "main.go"
     line: 16
     tier: 2
-
 instrument_type: "counter"
 label_cardinality_estimate: 1
 labels: ["tenant_id"]
@@ -44,7 +43,6 @@ attributes: []
 emission_sites:
   - file: "main.go"
     line: 14
-
 record_on_error_observed: false
 status_on_error_observed: false
 unbounded_span: false
@@ -58,10 +56,8 @@ unbounded_span: false
 emission_sites:
   - file: "main.go"
     line: 23
-
 level_distribution:
   info: 1
-
 pii_risk_flag: false
 ```
 
@@ -80,7 +76,6 @@ kind: "error_attribution"
 site:
   - file: "main.go"
     line: 17
-
 ```
 
 ### error_attribution at main.go
@@ -92,7 +87,6 @@ kind: "error_attribution"
 site:
   - file: "main.go"
     line: 20
-
 ```
 
 ### error_attribution at main.go
@@ -104,7 +98,6 @@ kind: "error_attribution"
 site:
   - file: "main.go"
     line: 24
-
 ```
 
 ### tenant_consistency at main.go
@@ -116,7 +109,6 @@ kind: "tenant_consistency"
 site:
   - file: "main.go"
     line: 14
-
 ```
 
 ### tenant_consistency at main.go
@@ -128,6 +120,5 @@ kind: "tenant_consistency"
 site:
   - file: "main.go"
     line: 23
-
 ```
 

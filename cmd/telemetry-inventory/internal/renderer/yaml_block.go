@@ -105,7 +105,7 @@ func writeSites(sb *strings.Builder, indent int, values []schema.EmissionSite) {
 
 	sb.WriteByte('\n')
 
-	for _, site := range sites {
+	for i, site := range sites {
 		prefix := strings.Repeat(" ", indent)
 		sb.WriteString(prefix)
 		sb.WriteString("- file: ")
@@ -122,7 +122,12 @@ func writeSites(sb *strings.Builder, indent int, values []schema.EmissionSite) {
 			sb.WriteString(strconv.Itoa(site.Tier))
 		}
 
-		sb.WriteByte('\n')
+		// Caller's writeYAMLBlock loop appends its own newline after the
+		// value; emitting one here on the final entry produces a blank
+		// line inside the YAML block.
+		if i < len(sites)-1 {
+			sb.WriteByte('\n')
+		}
 	}
 }
 
@@ -140,11 +145,16 @@ func writeIntMap(sb *strings.Builder, indent int, values map[string]int) {
 	sort.Strings(keys)
 	sb.WriteByte('\n')
 
-	for _, key := range keys {
+	for i, key := range keys {
 		sb.WriteString(strings.Repeat(" ", indent))
 		sb.WriteString(key)
 		sb.WriteString(": ")
 		sb.WriteString(strconv.Itoa(values[key]))
-		sb.WriteByte('\n')
+
+		// Same trailing-newline reasoning as writeSites: the caller's
+		// writeYAMLBlock loop appends its own newline after the value.
+		if i < len(keys)-1 {
+			sb.WriteByte('\n')
+		}
 	}
 }
