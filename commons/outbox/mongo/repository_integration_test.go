@@ -21,6 +21,7 @@ import (
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"github.com/testcontainers/testcontainers-go/wait"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
 	mongooptions "go.mongodb.org/mongo-driver/mongo/options"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -389,7 +390,7 @@ func TestIntegration_Repository_ResetStuckProcessing(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, outbox.OutboxStatusInvalid, exhausted.Status)
 	require.Equal(t, 3, exhausted.Attempts)
-	require.Equal(t, "max dispatch attempts exceeded", exhausted.LastError)
+	require.Equal(t, outbox.ErrMessageMaxDispatchExceeded, exhausted.LastError)
 }
 
 func TestIntegration_Repository_TenantIsolation(t *testing.T) {
@@ -620,4 +621,62 @@ func TestIntegration_Repository_DispatcherDrainsTenantDatabaseWithResolver(t *te
 	case <-time.After(5 * time.Second):
 		require.Fail(t, "dispatcher did not stop within timeout")
 	}
+}
+
+// TestIntegration_Repository_PartialClaimRollback exercises the partial-claim
+// path: pre-write 2 pending events, manually mutate one of them to look like
+// a stale claim from another worker (status=processing, claim_token=<other>),
+// then call ListPending. The still-pending event must be claimed cleanly,
+// and the pre-claimed event must be left untouched (status, claim_token,
+// updated_at all preserved). Pins the contract that a stale-claim row is
+// invisible to findClaimCandidates (status filter excludes it) AND that the
+// rollback path's claim-token-scoped UpdateOne filter cannot accidentally
+// touch a row holding a different worker's token.
+func TestIntegration_Repository_PartialClaimRollback(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+
+	staleEvent := createFixtureEvent(t, fx, "payment.partial.stale")
+	freshEvent := createFixtureEvent(t, fx, "payment.partial.fresh")
+
+	database, err := fx.client.Database(fx.ctx)
+	require.NoError(t, err)
+	collection := database.Collection(fx.collectionName)
+
+	// Simulate a stale claim from another worker on staleEvent: status flips
+	// to processing and a foreign claim_token is set. findClaimCandidates
+	// filters on status=pending so this row becomes invisible to the next
+	// claim cycle — but its claim_token must survive untouched.
+	otherClaimToken := uuid.NewString()
+	staleUpdatedAt := time.Now().UTC().Add(-time.Minute)
+	staleFilter := bson.M{"id": staleEvent.ID.String()}
+	if fx.repo.tenantField != "" {
+		staleFilter[fx.repo.tenantField] = "tenant-a"
+	}
+
+	_, err = collection.UpdateOne(fx.ctx, staleFilter, bson.M{"$set": bson.M{
+		"status":      outbox.OutboxStatusProcessing,
+		"claim_token": otherClaimToken,
+		"updated_at":  staleUpdatedAt,
+	}})
+	require.NoError(t, err)
+
+	// Trigger the public claim flow. Only freshEvent is pending — it must
+	// claim cleanly.
+	pending, err := fx.repo.ListPending(fx.tenantCtx, 10)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	require.Equal(t, freshEvent.ID, pending[0].ID)
+	require.Equal(t, outbox.OutboxStatusProcessing, pending[0].Status)
+
+	// staleEvent must be unchanged — its claim_token must still be the
+	// foreign token, and its updated_at must not have moved.
+	var raw bson.M
+	require.NoError(t, collection.FindOne(fx.ctx, staleFilter).Decode(&raw))
+	require.Equal(t, outbox.OutboxStatusProcessing, raw["status"])
+	require.Equal(t, otherClaimToken, raw["claim_token"])
+
+	gotUpdatedAt, ok := raw["updated_at"].(primitive.DateTime)
+	require.True(t, ok, "updated_at must decode as DateTime, got %T", raw["updated_at"])
+	require.WithinDuration(t, staleUpdatedAt, gotUpdatedAt.Time(), time.Second,
+		"stale event's updated_at must not have been touched by the rollback path")
 }

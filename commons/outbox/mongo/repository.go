@@ -531,7 +531,7 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 
 	if nextAttempts >= maxAttempts {
 		nextStatus = outbox.OutboxStatusInvalid
-		nextLastError = "max dispatch attempts exceeded"
+		nextLastError = outbox.ErrMessageMaxDispatchExceeded
 	}
 
 	collection, err := repo.collection(ctx)
@@ -671,7 +671,7 @@ func (repo *Repository) ResetStuckProcessing(ctx context.Context, limit int, pro
 
 		if nextAttempts >= maxAttempts {
 			nextStatus = outbox.OutboxStatusInvalid
-			nextLastError = "max dispatch attempts exceeded"
+			nextLastError = outbox.ErrMessageMaxDispatchExceeded
 		}
 
 		return bson.M{bsonFieldStatus: nextStatus, bsonFieldAttempts: nextAttempts, bsonFieldLastError: nextLastError, bsonFieldUpdatedAt: time.Now().UTC()}

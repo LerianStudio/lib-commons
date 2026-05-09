@@ -356,7 +356,7 @@ func TestIntegration_Repository_ResetStuckProcessing(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, outbox.OutboxStatusInvalid, exhausted.Status)
 	require.Equal(t, 3, exhausted.Attempts)
-	require.Equal(t, "max dispatch attempts exceeded", exhausted.LastError)
+	require.Equal(t, outbox.ErrMessageMaxDispatchExceeded, exhausted.LastError)
 }
 
 func TestIntegration_Repository_CreateWithTx(t *testing.T) {

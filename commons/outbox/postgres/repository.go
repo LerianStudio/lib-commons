@@ -712,7 +712,7 @@ func (repo *Repository) markStuckEventsInvalid(
 	}
 
 	args := make([]any, 0, 5+len(filterArgs))
-	args = append(args, outbox.OutboxStatusInvalid, "max dispatch attempts exceeded", now, ids, outbox.OutboxStatusProcessing)
+	args = append(args, outbox.OutboxStatusInvalid, outbox.ErrMessageMaxDispatchExceeded, now, ids, outbox.OutboxStatusProcessing)
 
 	query += filter
 

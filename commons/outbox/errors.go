@@ -2,6 +2,11 @@ package outbox
 
 import "errors"
 
+// ErrMessageMaxDispatchExceeded is the error message recorded on outbox messages
+// that exhausted MaxAttempts. Used as the persisted last_error string when an
+// event transitions to status=invalid via attempts exhaustion.
+const ErrMessageMaxDispatchExceeded = "max dispatch attempts exceeded"
+
 var (
 	ErrOutboxEventRequired        = errors.New("outbox event is required")
 	ErrOutboxRepositoryRequired   = errors.New("outbox repository is required")

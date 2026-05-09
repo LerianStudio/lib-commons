@@ -71,13 +71,13 @@ func (repo *Repository) claimMatching(
 			break
 		}
 
-		batch, modified, claimToken, err := repo.claimDocuments(ctx, candidates, fromStatus, returnStatus, sortSpec, setForCandidate)
+		batch, intendedClaims, claimToken, err := repo.claimDocuments(ctx, candidates, fromStatus, returnStatus, sortSpec, setForCandidate)
 		if err != nil {
 			return nil, err
 		}
 
 		claimed = append(claimed, batch...)
-		if modified != int64(len(batch)) {
+		if intendedClaims != int64(len(batch)) {
 			if err := repo.rollbackMissingClaims(ctx, candidates, batch, claimToken, returnStatus, fromStatus); err != nil {
 				return nil, err
 			}
@@ -199,6 +199,9 @@ func (repo *Repository) claimDocuments(
 
 	claimed, err := repo.decodeAndCloseCursor(ctx, cursor, len(claimedIDs))
 
+	// The int64 return is the intended-claim count (len(claimedIDs)), not
+	// result.ModifiedCount from the BulkWrite. Callers compare it against
+	// len(returned batch) to decide whether to roll back missed candidates.
 	return claimed, int64(len(claimedIDs)), claimToken, err
 }
 
