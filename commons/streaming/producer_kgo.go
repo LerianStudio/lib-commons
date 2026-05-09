@@ -97,6 +97,11 @@ func buildKgoOpts(cfg Config, opts emitterOptions) ([]kgo.Opt, error) {
 	// client starts up instead of failing validation.
 	// kgo.DisableIdempotentWrite is needed only when acks != "all"; coupled
 	// to the kafka idempotent-write invariant, not the validation default.
+	// The literal "all" here encodes the kafka-protocol idempotent-acks
+	// invariant — intentionally distinct from defaultRequiredAcks (the
+	// user-configurable default in config.go). They happen to be the same
+	// string today; do NOT collapse them — a future default change must
+	// not silently disable kafka idempotency.
 	if cfg.RequiredAcks != "all" {
 		kgoOpts = append(kgoOpts, kgo.DisableIdempotentWrite())
 	}
