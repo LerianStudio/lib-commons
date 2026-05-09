@@ -47,7 +47,10 @@ const (
 // Returned by ParseLevel on error to distinguish from LevelError (the zero value).
 const LevelUnknown Level = 255
 
-const errFieldKey = "error"
+const (
+	errLevelName = "error" // String form of LevelError (severity name)
+	errFieldKey  = "error" // Conventional field key for Err() helper
+)
 
 // String returns the string representation of a log level.
 func (level Level) String() string {
@@ -59,7 +62,7 @@ func (level Level) String() string {
 	case LevelWarn:
 		return "warn"
 	case LevelError:
-		return errFieldKey
+		return errLevelName
 	default:
 		return "unknown"
 	}
@@ -75,7 +78,7 @@ func ParseLevel(lvl string) (Level, error) {
 		return LevelInfo, nil
 	case "warn", "warning":
 		return LevelWarn, nil
-	case errFieldKey:
+	case errLevelName:
 		return LevelError, nil
 	}
 
