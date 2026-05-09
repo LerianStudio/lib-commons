@@ -3,6 +3,8 @@
 package orchestrator_test
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v5/cmd/telemetry-inventory/internal/orchestrator"
@@ -13,6 +15,18 @@ func TestInventory_NoPackages_ReturnsError(t *testing.T) {
 	dict, err := orchestrator.Inventory(t.TempDir())
 	if err == nil {
 		t.Fatalf("expected error, got dict=%+v", dict)
+	}
+	// Pin the contract: an empty target must surface either the
+	// ErrNoPackages sentinel (on go-tooling versions where packages.Load
+	// returns 0 packages for an empty dir) or a "package load errors"
+	// wrapping error (on versions where Load returns a package carrying
+	// the no-go-files diagnostic). A refactor that drops both branches
+	// to a bare error would be caught here, and a refactor that returns
+	// a non-error nil-dict would be caught above.
+	if !errors.Is(err, orchestrator.ErrNoPackages) &&
+		!strings.Contains(err.Error(), "package load errors") &&
+		!strings.Contains(err.Error(), "load packages") {
+		t.Fatalf("err = %v, want ErrNoPackages or a wrapped package-load error", err)
 	}
 }
 

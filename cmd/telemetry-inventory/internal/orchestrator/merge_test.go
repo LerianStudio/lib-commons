@@ -164,6 +164,76 @@ func TestNormalizeSite_RelativizesAbsolutePath(t *testing.T) {
 	}
 }
 
+// TestMergeFrameworks_UnionsAutoMetrics asserts that two FrameworkInstrumentation
+// entries with the same Framework name get unioned: AutoMetrics and AutoSpans
+// are deduped and sorted, EmissionSites are concatenated. Mirrors
+// TestMergeCounters_DedupesAndUnionsLabels for the framework path.
+func TestMergeFrameworks_UnionsAutoMetrics(t *testing.T) {
+	in := []schema.FrameworkInstrumentation{
+		{
+			Framework:     "fiber",
+			AutoMetrics:   []string{"http.server.duration", "http.server.request.size"},
+			AutoSpans:     []string{"HTTP route"},
+			EmissionSites: []schema.EmissionSite{{File: "/abs/a.go", Line: 10}},
+		},
+		{
+			Framework:     "fiber",
+			AutoMetrics:   []string{"http.server.request.size", "http.server.response.size"},
+			AutoSpans:     []string{"HTTP route", "HTTP request"},
+			EmissionSites: []schema.EmissionSite{{File: "/abs/b.go", Line: 20}},
+		},
+		{
+			Framework:     "grpc",
+			EmissionSites: []schema.EmissionSite{{File: "/abs/c.go", Line: 30}},
+		},
+	}
+
+	out := mergeFrameworks(in)
+
+	if len(out) != 2 {
+		t.Fatalf("expected 2 distinct frameworks after merge, got %d: %+v", len(out), out)
+	}
+
+	var fiber *schema.FrameworkInstrumentation
+	for i := range out {
+		if out[i].Framework == "fiber" {
+			fiber = &out[i]
+		}
+	}
+	if fiber == nil {
+		t.Fatalf("fiber missing from merged output")
+	}
+
+	wantMetrics := []string{"http.server.duration", "http.server.request.size", "http.server.response.size"}
+	if len(fiber.AutoMetrics) != len(wantMetrics) {
+		t.Fatalf("AutoMetrics = %v, want %v", fiber.AutoMetrics, wantMetrics)
+	}
+	for i, want := range wantMetrics {
+		if fiber.AutoMetrics[i] != want {
+			t.Fatalf("AutoMetrics[%d] = %q, want %q (full=%v)", i, fiber.AutoMetrics[i], want, fiber.AutoMetrics)
+		}
+	}
+
+	wantSpans := []string{"HTTP request", "HTTP route"}
+	if len(fiber.AutoSpans) != len(wantSpans) {
+		t.Fatalf("AutoSpans = %v, want %v", fiber.AutoSpans, wantSpans)
+	}
+	for i, want := range wantSpans {
+		if fiber.AutoSpans[i] != want {
+			t.Fatalf("AutoSpans[%d] = %q, want %q (full=%v)", i, fiber.AutoSpans[i], want, fiber.AutoSpans)
+		}
+	}
+
+	if len(fiber.EmissionSites) != 2 {
+		t.Fatalf("expected 2 emission sites, got %d: %+v", len(fiber.EmissionSites), fiber.EmissionSites)
+	}
+
+	// Top-level sort by Framework name (alphabetic).
+	if out[0].Framework > out[1].Framework {
+		t.Fatalf("frameworks not sorted by name: %+v", out)
+	}
+}
+
 // TestMergeStringSet_DedupesAndSorts pins the deterministic ordering used
 // across labels and AutoSpans/AutoMetrics merging.
 func TestMergeStringSet_DedupesAndSorts(t *testing.T) {

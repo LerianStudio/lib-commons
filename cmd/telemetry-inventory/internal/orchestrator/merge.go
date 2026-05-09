@@ -104,6 +104,26 @@ func normalizeSites(sites []schema.EmissionSite, target string) []schema.Emissio
 	return out
 }
 
+// dedupSortSites removes duplicate emission sites and sorts the result. It
+// is the post-merge counterpart to normalizeSites: paths have already been
+// rewritten relative to target, so re-running filepath.Rel(".", relpath) is
+// a no-op that allocates per site.
+func dedupSortSites(sites []schema.EmissionSite) []schema.EmissionSite {
+	out := make([]schema.EmissionSite, 0, len(sites))
+	seen := map[schema.EmissionSite]bool{}
+
+	for _, site := range sites {
+		if !seen[site] {
+			seen[site] = true
+			out = append(out, site)
+		}
+	}
+
+	sortSites(out)
+
+	return out
+}
+
 func normalizeSite(site schema.EmissionSite, target string) schema.EmissionSite {
 	if rel, err := filepath.Rel(target, site.File); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, "../") {
 		site.File = rel
@@ -146,7 +166,7 @@ func mergeCounters(values []schema.CounterPrimitive) []schema.CounterPrimitive {
 
 	out := make([]schema.CounterPrimitive, 0, len(byName))
 	for _, v := range byName {
-		v.EmissionSites = normalizeSites(v.EmissionSites, ".")
+		v.EmissionSites = dedupSortSites(v.EmissionSites)
 		v.LabelCardinality = len(v.Labels)
 		out = append(out, *v)
 	}
@@ -174,7 +194,7 @@ func mergeHistograms(values []schema.HistogramPrimitive) []schema.HistogramPrimi
 
 	out := make([]schema.HistogramPrimitive, 0, len(byName))
 	for _, v := range byName {
-		v.EmissionSites = normalizeSites(v.EmissionSites, ".")
+		v.EmissionSites = dedupSortSites(v.EmissionSites)
 		v.LabelCardinality = len(v.Labels)
 		out = append(out, *v)
 	}
@@ -202,7 +222,7 @@ func mergeGauges(values []schema.GaugePrimitive) []schema.GaugePrimitive {
 
 	out := make([]schema.GaugePrimitive, 0, len(byName))
 	for _, v := range byName {
-		v.EmissionSites = normalizeSites(v.EmissionSites, ".")
+		v.EmissionSites = dedupSortSites(v.EmissionSites)
 		v.LabelCardinality = len(v.Labels)
 		out = append(out, *v)
 	}
@@ -232,7 +252,7 @@ func mergeSpans(values []schema.SpanPrimitive) []schema.SpanPrimitive {
 
 	out := make([]schema.SpanPrimitive, 0, len(byName))
 	for _, v := range byName {
-		v.EmissionSites = normalizeSites(v.EmissionSites, ".")
+		v.EmissionSites = dedupSortSites(v.EmissionSites)
 		out = append(out, *v)
 	}
 
@@ -266,7 +286,7 @@ func mergeLogFields(values []schema.LogFieldPrimitive) []schema.LogFieldPrimitiv
 
 	out := make([]schema.LogFieldPrimitive, 0, len(byName))
 	for _, v := range byName {
-		v.EmissionSites = normalizeSites(v.EmissionSites, ".")
+		v.EmissionSites = dedupSortSites(v.EmissionSites)
 		out = append(out, *v)
 	}
 
@@ -293,7 +313,7 @@ func mergeFrameworks(values []schema.FrameworkInstrumentation) []schema.Framewor
 
 	out := make([]schema.FrameworkInstrumentation, 0, len(byName))
 	for _, v := range byName {
-		v.EmissionSites = normalizeSites(v.EmissionSites, ".")
+		v.EmissionSites = dedupSortSites(v.EmissionSites)
 		out = append(out, *v)
 	}
 
