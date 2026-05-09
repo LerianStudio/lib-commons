@@ -3,6 +3,16 @@ package metrics
 // MetricType identifies an OpenTelemetry instrument category.
 type MetricType int
 
+// MetricType values are exposed as package-level constants for use in
+// HelperSpec entries and other registry consumers. They share their
+// short names (Counter, Histogram, Gauge) with the *MetricsFactory
+// instrument-creation methods, which is intentional and unambiguous:
+//
+//	metrics.Counter            // a MetricType constant (this declaration)
+//	factory.Counter(metric)    // an instrument-creation method
+//
+// Call-site syntax distinguishes the two — package-qualified value vs
+// receiver method invocation.
 const (
 	// Counter is a monotonically increasing instrument.
 	Counter MetricType = iota
@@ -10,6 +20,18 @@ const (
 	Histogram
 	// Gauge records a current value at a point in time.
 	Gauge
+)
+
+// HelperSignatureKind classifies the call shape of a MetricsFactory helper.
+// Static analyzers branch on this to know whether trailing arguments are
+// label key/value pairs or a scalar value.
+type HelperSignatureKind int
+
+const (
+	// SignatureAttributesVariadic is (ctx, ...attribute.KeyValue).
+	SignatureAttributesVariadic HelperSignatureKind = iota
+	// SignatureScalarValue is (ctx, value <numeric>).
+	SignatureScalarValue
 )
 
 // String returns the lowercase canonical name used in dictionary output.
@@ -45,6 +67,10 @@ type HelperSpec struct {
 	// future helper (e.g. RecordTenantQuotaExceeded) can declare the
 	// canonical label set without an analyzer-side schema change.
 	DefaultLabels []string
+	// SignatureKind formalizes the helper call shape so static analyzers
+	// can pick the correct argument-extraction strategy. Defaults to
+	// SignatureAttributesVariadic (the zero value) for the common case.
+	SignatureKind HelperSignatureKind
 }
 
 // Helpers is the canonical registry of MetricsFactory.Record* helpers.
@@ -86,6 +112,7 @@ var Helpers = []HelperSpec{
 		InstrumentType: Gauge,
 		Unit:           metricUnitPercentage,
 		Description:    "Current CPU usage percentage of the process host.",
+		SignatureKind:  SignatureScalarValue,
 	},
 	{
 		GoFunctionName: "RecordSystemMemUsage",
@@ -93,5 +120,6 @@ var Helpers = []HelperSpec{
 		InstrumentType: Gauge,
 		Unit:           metricUnitPercentage,
 		Description:    "Current memory usage percentage of the process host.",
+		SignatureKind:  SignatureScalarValue,
 	},
 }
