@@ -32,3 +32,13 @@ func TestCounterAnalyzer_Tier3Collision(t *testing.T) {
 	testdata := analysistest.TestData()
 	analysistest.Run(t, testdata, analyzers.CounterAnalyzer, "counter-tier3-collision")
 }
+
+// TestCounterAnalyzer_Tier2VarDecl exercises three otherwise-uncovered helpers
+// in a single fixture: resolveVarInitLit (package-var metrics.Metric resolved
+// back to its composite literal), bindValueSpec (top-level `var counter, err
+// = f.Counter(...)` ValueSpec), and extractMapStringKeys (.WithLabels(map[
+// string]string{...}) label harvesting).
+func TestCounterAnalyzer_Tier2VarDecl(t *testing.T) {
+	testdata := analysistest.TestData()
+	analysistest.Run(t, testdata, analyzers.CounterAnalyzer, "counter-tier2-vardecl")
+}

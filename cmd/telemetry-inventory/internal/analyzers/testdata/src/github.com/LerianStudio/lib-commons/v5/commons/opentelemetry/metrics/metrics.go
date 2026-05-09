@@ -37,6 +37,7 @@ func (*MetricsFactory) RecordOperationRouteCreated(context.Context, ...attribute
 }
 
 func (*CounterBuilder) WithAttributes(...attribute.KeyValue) *CounterBuilder     { return nil }
+func (*CounterBuilder) WithLabels(map[string]string) *CounterBuilder             { return nil }
 func (*CounterBuilder) AddOne(context.Context) error                             { return nil }
 func (*CounterBuilder) Add(context.Context, int64) error                         { return nil }
 func (*HistogramBuilder) WithAttributes(...attribute.KeyValue) *HistogramBuilder { return nil }

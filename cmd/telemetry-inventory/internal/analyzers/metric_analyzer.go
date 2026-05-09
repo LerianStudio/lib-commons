@@ -215,17 +215,19 @@ func matchTier3Metric(pass *analysis.Pass, cfg metricKindConfig, call *ast.CallE
 		return nil
 	}
 
-	spec, ok := helperByMethod[sel.Sel.Name]
+	spec, ok := lookupHelperByMethod(sel.Sel.Name)
 	if !ok || spec.InstrumentType != cfg.helperType {
 		return nil
 	}
 
 	labels := append([]string(nil), spec.DefaultLabels...)
-	// Helper signature is (ctx, ...attribute.KeyValue) — caller-passed
-	// attribute.String("tenant_id", v) etc. carries real labels alongside
-	// the helper's defaults. Without this, every Tier-3 site reports
-	// labels = DefaultLabels regardless of what the caller emits.
-	if len(call.Args) > 1 {
+	// Tier-3 helpers come in two shapes formalized by spec.SignatureKind:
+	//   SignatureAttributesVariadic: (ctx, ...attribute.KeyValue) — trailing
+	//     args carry real labels; harvest them alongside DefaultLabels.
+	//   SignatureScalarValue: (ctx, value <numeric>) — no trailing labels.
+	// Without the branch every Tier-3 site reports labels=DefaultLabels
+	// (variadic case) or misclassifies the scalar arg as label material.
+	if spec.SignatureKind == libmetrics.SignatureAttributesVariadic && len(call.Args) > 1 {
 		labels = append(labels, extractAttributeKeys(pass, call.Args[1:])...)
 	}
 

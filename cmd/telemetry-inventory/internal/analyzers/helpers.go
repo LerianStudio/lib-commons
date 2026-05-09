@@ -1,6 +1,8 @@
 package analyzers
 
 import (
+	"errors"
+	"fmt"
 	"go/ast"
 	"go/constant"
 	"go/token"
@@ -34,22 +36,58 @@ const (
 	logMethodName        = "Log"
 )
 
-var helperByMethod = func() map[string]libmetrics.HelperSpec {
+// helperByMethod is the GoFunctionName→HelperSpec lookup table consumed by
+// Tier-3 metric matching. It is populated eagerly at package init using the
+// libmetrics.Helpers slice. ValidateHelperRegistry repeats the build with
+// duplicate detection so the binary entry point (main.run) can refuse to
+// start if the registry is malformed; the metrics package's
+// TestHelpers_NoDuplicateGoFunctionName enforces the same invariant at
+// `make ci` time.
+var helperByMethod = buildHelperRegistry()
+
+// buildHelperRegistry copies libmetrics.Helpers into a map keyed by
+// GoFunctionName. Duplicates are not detected here — ValidateHelperRegistry
+// is the explicit validator. Both production startup and the test suite
+// already reject duplicates, so this is the unambiguous fast path.
+func buildHelperRegistry() map[string]libmetrics.HelperSpec {
 	out := make(map[string]libmetrics.HelperSpec, len(libmetrics.Helpers))
 	for _, h := range libmetrics.Helpers {
-		// Init-time panic is intentional: a duplicate GoFunctionName means
-		// the metrics.Helpers registry is malformed at compile time, not
-		// in any production hot path. Failing fast at startup is cheaper
-		// than silently overwriting and serving wrong analysis output.
-		if _, exists := out[h.GoFunctionName]; exists {
-			panic("duplicate helper registry entry: " + h.GoFunctionName)
-		}
-
 		out[h.GoFunctionName] = h
 	}
 
 	return out
-}()
+}
+
+// ValidateHelperRegistry returns an error if libmetrics.Helpers declares the
+// same Go method name more than once — a malformed registry would silently
+// overwrite entries and produce wrong analyzer output. main.run calls this
+// once before subcommand dispatch and exits non-zero on error.
+func ValidateHelperRegistry() error {
+	seen := make(map[string]struct{}, len(libmetrics.Helpers))
+	for _, h := range libmetrics.Helpers {
+		if _, exists := seen[h.GoFunctionName]; exists {
+			return fmt.Errorf("duplicate helper registry entry: %s", h.GoFunctionName)
+		}
+
+		seen[h.GoFunctionName] = struct{}{}
+	}
+
+	return nil
+}
+
+// ErrHelperRegistryNotInitialized is reserved for callers that need to
+// distinguish an unbuilt registry from a missing helper. The current
+// package-level helperByMethod is built at init, so lookups never hit the
+// uninitialized branch — the sentinel exists for future plumbing.
+var ErrHelperRegistryNotInitialized = errors.New("analyzers: helper registry not initialized")
+
+// lookupHelperByMethod returns the HelperSpec for a given Go method name.
+// The second return is false when the method is not a registered helper.
+func lookupHelperByMethod(name string) (libmetrics.HelperSpec, bool) {
+	spec, ok := helperByMethod[name]
+
+	return spec, ok
+}
 
 func siteFor(pass *analysis.Pass, pos token.Pos, tier int) schema.EmissionSite {
 	p := pass.Fset.Position(pos)

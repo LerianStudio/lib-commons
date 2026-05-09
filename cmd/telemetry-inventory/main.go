@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/LerianStudio/lib-commons/v5/cmd/telemetry-inventory/internal/analyzers"
 )
 
 const usage = `telemetry-inventory - OpenTelemetry primitive inventory for Go services.
@@ -65,6 +67,10 @@ func main() {
 func run(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		return errUsage
+	}
+
+	if err := analyzers.ValidateHelperRegistry(); err != nil {
+		return err
 	}
 
 	switch args[0] {
