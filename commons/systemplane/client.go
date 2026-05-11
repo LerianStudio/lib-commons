@@ -363,15 +363,18 @@ func (c *Client) Start(ctx context.Context) error {
 //	         fires → bridge exits without calling cancel a second time
 //	         (idempotent anyway, but the select avoids the redundant call).
 //
-// The bridge is NOT added to c.wg because Close's wait drains via the main
-// Subscribe goroutine; the bridge's exit is always covered by that drain.
+// The bridge is registered with c.wg so Close's wg.Wait drains BOTH the
+// Subscribe goroutine and the bridge; a goleak.VerifyNone immediately after
+// Close returns must observe no transient leak.
 func (c *Client) runSubscribe() {
 	defer runtime.RecoverAndLog(c.logger, "systemplane.subscribe")
 
 	subCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	runtime.SafeGo(c.logger, "systemplane.cancel-bridge", runtime.KeepRunning, func() {
+	c.wg.Go(func() {
+		defer runtime.RecoverAndLog(c.logger, "systemplane.cancel-bridge")
+
 		select {
 		case <-c.cancelDone:
 			cancel()
