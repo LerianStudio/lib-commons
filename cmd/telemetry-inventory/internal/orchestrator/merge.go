@@ -80,11 +80,40 @@ func normalizeAndMerge(dict *schema.Dictionary, target string) {
 	dict.LogFields = mergeLogFields(dict.LogFields)
 
 	dict.Frameworks = mergeFrameworks(dict.Frameworks)
-	if dict.CrossCut == nil {
-		dict.CrossCut = []schema.CrossCutFinding{}
+	dict.CrossCut = mergeCrossCut(dict.CrossCut)
+}
+
+// mergeCrossCut dedups CrossCut findings by the tuple
+// (Kind, Site.File, Site.Line, Function, Detail). Without dedup, the same
+// finding emitted by two analyzer runs (or by a future analyzer that
+// re-reports an existing issue) would surface twice. Returns a non-nil slice
+// so JSON output stays an empty array, not null.
+func mergeCrossCut(values []schema.CrossCutFinding) []schema.CrossCutFinding {
+	type tupleKey struct {
+		kind     string
+		file     string
+		line     int
+		function string
+		detail   string
 	}
 
-	sortCrossCut(dict.CrossCut)
+	seen := make(map[tupleKey]struct{}, len(values))
+	out := make([]schema.CrossCutFinding, 0, len(values))
+
+	for _, v := range values {
+		key := tupleKey{kind: v.Kind, file: v.Site.File, line: v.Site.Line, function: v.Function, detail: v.Detail}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+
+		seen[key] = struct{}{}
+
+		out = append(out, v)
+	}
+
+	sortCrossCut(out)
+
+	return out
 }
 
 func normalizeSites(sites []schema.EmissionSite, target string) []schema.EmissionSite {

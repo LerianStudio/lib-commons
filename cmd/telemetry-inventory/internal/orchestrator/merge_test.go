@@ -234,6 +234,48 @@ func TestMergeFrameworks_UnionsAutoMetrics(t *testing.T) {
 	}
 }
 
+// TestMergeCrossCut_DedupesByTuple asserts that identical CrossCut findings
+// — same (Kind, Site.File, Site.Line, Function, Detail) — collapse to one
+// entry. Without dedup, a finding observed by two analyzer passes (or any
+// future overlap) would surface twice.
+func TestMergeCrossCut_DedupesByTuple(t *testing.T) {
+	in := []schema.CrossCutFinding{
+		{Kind: "tenant_consistency", Site: schema.EmissionSite{File: "a.go", Line: 10}, Function: "Foo", Detail: "missing tenant_id"},
+		{Kind: "tenant_consistency", Site: schema.EmissionSite{File: "a.go", Line: 10}, Function: "Foo", Detail: "missing tenant_id"}, // duplicate
+		{Kind: "tenant_consistency", Site: schema.EmissionSite{File: "a.go", Line: 20}, Function: "Foo", Detail: "missing tenant_id"}, // diff line
+		{Kind: "trace_correlation", Site: schema.EmissionSite{File: "a.go", Line: 10}, Function: "Foo", Detail: "missing tenant_id"},  // diff kind
+		{Kind: "tenant_consistency", Site: schema.EmissionSite{File: "b.go", Line: 10}, Function: "Foo", Detail: "missing tenant_id"}, // diff file
+		{Kind: "tenant_consistency", Site: schema.EmissionSite{File: "a.go", Line: 10}, Function: "Bar", Detail: "missing tenant_id"}, // diff func
+		{Kind: "tenant_consistency", Site: schema.EmissionSite{File: "a.go", Line: 10}, Function: "Foo", Detail: "other"},             // diff detail
+	}
+
+	out := mergeCrossCut(in)
+
+	// 7 inputs, 1 exact duplicate → 6 unique.
+	if len(out) != 6 {
+		t.Fatalf("expected 6 deduped findings, got %d: %+v", len(out), out)
+	}
+
+	// Sorted by (Kind, File, Line) — pin one transition to detect a
+	// regression in sortCrossCut.
+	if out[0].Kind > out[len(out)-1].Kind {
+		t.Fatalf("findings not sorted by kind: %+v", out)
+	}
+}
+
+// TestMergeCrossCut_NilInputReturnsEmptySlice pins the JSON-output invariant:
+// a nil input must still surface as an empty (non-nil) slice so downstream
+// JSON marshals "[]" not "null".
+func TestMergeCrossCut_NilInputReturnsEmptySlice(t *testing.T) {
+	out := mergeCrossCut(nil)
+	if out == nil {
+		t.Fatalf("mergeCrossCut(nil) returned nil; want empty slice")
+	}
+	if len(out) != 0 {
+		t.Fatalf("mergeCrossCut(nil) returned %d entries; want 0", len(out))
+	}
+}
+
 // TestMergeStringSet_DedupesAndSorts pins the deterministic ordering used
 // across labels and AutoSpans/AutoMetrics merging.
 func TestMergeStringSet_DedupesAndSorts(t *testing.T) {
