@@ -140,7 +140,7 @@ type Client struct {
 	closeOnce  sync.Once
 	closed     atomic.Bool
 	cancelDone chan struct{}  // closed by Close to signal the Subscribe goroutine to exit
-	wg         sync.WaitGroup // tracks the Subscribe goroutine
+	wg         sync.WaitGroup // tracks the Subscribe goroutine and its cancel-bridge
 }
 
 // tenantSubscription holds a single OnTenantChange callback and its monotonic
