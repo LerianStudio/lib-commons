@@ -185,11 +185,11 @@ func indexFunctionsByFile(functions []functionRange) map[string][]functionRange 
 	return out
 }
 
-// enclosingFunction binary-searches the per-file bucket for the deepest
-// function whose range contains site.Line. Nested functions appear in the
-// bucket in source order; the walk-back from sort.Search picks the smallest
-// function containing the line (the innermost), preserving the original
-// linear-scan semantics where the first match wins.
+// enclosingFunction binary-searches the per-file bucket for the FuncDecl
+// whose [startLine, endLine] range contains site.Line. collectFunctionRanges
+// only walks *ast.FuncDecl nodes (Go FuncDecls cannot nest — only FuncLits
+// can), so each line in a file is covered by at most one FuncDecl; the
+// walk-back from sort.Search yields either zero or one match.
 func enclosingFunction(functionsByFile map[string][]functionRange, site schema.EmissionSite) functionRange {
 	bucket := functionsByFile[site.File]
 	if len(bucket) == 0 {
@@ -197,15 +197,14 @@ func enclosingFunction(functionsByFile map[string][]functionRange, site schema.E
 	}
 
 	// sort.Search returns the smallest index where startLine > site.Line; the
-	// candidate enclosing function is at index idx-1 (or earlier, for nested
-	// functions whose endLine is closer to site.Line).
+	// candidate enclosing FuncDecl, if any, is at index idx-1.
 	idx := sort.Search(len(bucket), func(i int) bool {
 		return bucket[i].startLine > site.Line
 	})
 
-	// Walk back to find the innermost enclosing range. Nested functions have
-	// later startLines than their parent but appear after it in source order;
-	// the first match while walking backward is the innermost candidate.
+	// Walk back to find the FuncDecl whose range contains site.Line. At most
+	// one match exists per file because FuncDecls cannot overlap; the loop
+	// returns as soon as it finds it.
 	for i := idx - 1; i >= 0; i-- {
 		fn := bucket[i]
 		if fn.startLine <= site.Line && site.Line <= fn.endLine {
