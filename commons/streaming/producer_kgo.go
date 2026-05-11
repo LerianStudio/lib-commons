@@ -153,9 +153,13 @@ func resolveCompression(name string) (kgo.CompressionCodec, error) {
 // resolveAcks maps the Config string to a kgo.Acks value. cfg.validate()
 // already rejects anything outside the closed set; the default branch is
 // defensive.
+//
+// Literal "all" is the kafka-protocol invariant for idempotency; see
+// producer_kgo.go:100-104. Do NOT collapse to defaultRequiredAcks — a future
+// default change must not silently disable kafka idempotency.
 func resolveAcks(name string) (kgo.Acks, error) {
 	switch name {
-	case defaultRequiredAcks:
+	case "all":
 		return kgo.AllISRAcks(), nil
 	case "leader":
 		return kgo.LeaderAck(), nil

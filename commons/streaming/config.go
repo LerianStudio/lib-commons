@@ -83,10 +83,14 @@ var validCompressionCodecs = map[string]struct{}{
 }
 
 // validAcks enumerates the accepted STREAMING_REQUIRED_ACKS values.
+//
+// Literal "all" is the kafka-protocol invariant for idempotency; see
+// producer_kgo.go:100-104. Do NOT collapse to defaultRequiredAcks — a future
+// default change must not silently disable kafka idempotency.
 var validAcks = map[string]struct{}{
-	defaultRequiredAcks: {},
-	"leader":            {},
-	configValueNone:     {},
+	"all":           {},
+	"leader":        {},
+	configValueNone: {},
 }
 
 // LoadConfig reads every STREAMING_* environment variable, applies defaults
