@@ -1,7 +1,6 @@
 package analyzers
 
 import (
-	"errors"
 	"fmt"
 	"go/ast"
 	"go/constant"
@@ -74,12 +73,6 @@ func ValidateHelperRegistry() error {
 
 	return nil
 }
-
-// ErrHelperRegistryNotInitialized is reserved for callers that need to
-// distinguish an unbuilt registry from a missing helper. The current
-// package-level helperByMethod is built at init, so lookups never hit the
-// uninitialized branch — the sentinel exists for future plumbing.
-var ErrHelperRegistryNotInitialized = errors.New("analyzers: helper registry not initialized")
 
 // lookupHelperByMethod returns the HelperSpec for a given Go method name.
 // The second return is false when the method is not a registered helper.
