@@ -142,12 +142,13 @@ func collectMetricFindingsInBlock(pass *analysis.Pass, cfg metricKindConfig, bod
 //	x, y := makeMetric(...)          → tuple return: bind call to [x, y]
 //	x, y := makeMetric(...), other() → positional: x↔makeMetric, y↔other
 //
-// The tuple-return case (`len(Lhs)==2 && len(Rhs)==1`) mirrors the pattern
-// used by span.go's secondReturnIdent. Without binding both lhs entries, a
-// future metric helper returning (Counter, error) would lose its second
-// alias and miss subsequent record-site merging.
+// The tuple-return case (`len(Lhs)>=2 && len(Rhs)==1`) mirrors the pattern
+// used by span.go's secondReturnIdent and bindValueSpec for parity. Without
+// binding every lhs entry, a metric helper returning (Counter, error) — or
+// hypothetically more — would lose aliases past the first and miss
+// subsequent record-site merging.
 func bindAssignStmt(x *ast.AssignStmt, bind func(*ast.CallExpr, []ast.Expr)) {
-	if len(x.Lhs) == 2 && len(x.Rhs) == 1 {
+	if len(x.Lhs) >= 2 && len(x.Rhs) == 1 {
 		call, ok := x.Rhs[0].(*ast.CallExpr)
 		if !ok {
 			return
