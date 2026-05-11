@@ -35,8 +35,12 @@ func Inventory(target string) (*schema.Dictionary, error) {
 		return nil, fmt.Errorf("resolve target %q: %w", target, err)
 	}
 
+	// Mode is intentionally minimal: analyzers consume Syntax + TypesInfo and
+	// nothing else. NeedCompiledGoFiles is dropped because the runtime never
+	// inspects compiled object files — it would trigger extra cgo work for no
+	// downstream consumer.
 	cfg := &packages.Config{
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
+		Mode: packages.NeedName | packages.NeedFiles |
 			packages.NeedImports | packages.NeedTypes | packages.NeedTypesInfo |
 			packages.NeedSyntax | packages.NeedModule | packages.NeedTypesSizes,
 		Dir: absTarget,
