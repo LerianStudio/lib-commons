@@ -23,6 +23,14 @@ var LogFieldAnalyzer = &analysis.Analyzer{
 
 var piiFieldPattern = regexp.MustCompile(`(?i)(password|token|secret|apikey|api_key|email|ssn|phone|address|cpf|cnpj|card)`)
 
+// IsPIIField reports whether key matches the analyzer's canonical PII
+// pattern. Exported so that tests can pin the contract against the single
+// regex literal in this file (avoiding silent drift between a test copy and
+// the production source).
+func IsPIIField(key string) bool {
+	return piiFieldPattern.MatchString(key)
+}
+
 func runLogField(pass *analysis.Pass) (any, error) {
 	insp, ok := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
 	if !ok || insp == nil {
@@ -48,7 +56,7 @@ func runLogField(pass *analysis.Pass) (any, error) {
 				p = &schema.LogFieldPrimitive{
 					Name:              key,
 					LevelDistribution: map[string]int{},
-					PIIRiskFlag:       piiFieldPattern.MatchString(key),
+					PIIRiskFlag:       IsPIIField(key),
 				}
 				fields[key] = p
 			}
