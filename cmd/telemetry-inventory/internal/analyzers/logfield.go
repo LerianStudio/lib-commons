@@ -4,7 +4,6 @@ import (
 	"go/ast"
 	"reflect"
 	"regexp"
-	"strings"
 
 	"github.com/LerianStudio/lib-commons/v5/cmd/telemetry-inventory/internal/schema"
 	"golang.org/x/tools/go/analysis"
@@ -75,14 +74,20 @@ func runLogField(pass *analysis.Pass) (any, error) {
 	return out, nil
 }
 
+// matchLogCall recognizes structured log calls against the canonical
+// commons/log.Logger interface (5 methods: Log, With, WithGroup, Enabled,
+// Sync). Only Log and With carry field arguments worth harvesting; the rest
+// do not surface log field keys. Convenience methods like Debug/Info/Warn/
+// Error are NOT on commons/log.Logger and the commons/zap shape
+// (msg string, fields ...Field) does not put fields where this matcher
+// expects them — see logfield.go's commit history for the prior dead branch.
 func matchLogCall(pass *analysis.Pass, call *ast.CallExpr) (string, []ast.Expr, bool) {
 	sel, ok := selectorCall(call)
 	if !ok {
 		return "", nil, false
 	}
 
-	method := sel.Sel.Name
-	switch method {
+	switch sel.Sel.Name {
 	case logMethodName:
 		if len(call.Args) < 4 || !isLogger(pass, sel.X) {
 			return "", nil, false
@@ -95,16 +100,6 @@ func matchLogCall(pass *analysis.Pass, call *ast.CallExpr) (string, []ast.Expr, 
 		}
 
 		return "with", call.Args, true
-	case "Debug", "Info", "Warn", "Error":
-		if !isLogger(pass, sel.X) {
-			return "", nil, false
-		}
-
-		if len(call.Args) < 2 {
-			return strings.ToLower(method), nil, false
-		}
-
-		return strings.ToLower(method), call.Args[1:], true
 	default:
 		return "", nil, false
 	}
