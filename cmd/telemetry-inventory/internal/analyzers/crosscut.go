@@ -65,9 +65,10 @@ func runCrossCut(pass *analysis.Pass) (any, error) {
 	}
 
 	functions := collectFunctionRanges(pass, insp)
+	functionsByFile := indexFunctionsByFile(functions)
 	bundles := map[string]*functionBundle{}
 	getBundle := func(site schema.EmissionSite) *functionBundle {
-		fn := enclosingFunction(functions, site)
+		fn := enclosingFunction(functionsByFile, site)
 		if fn.name == "" {
 			return nil
 		}
@@ -141,7 +142,7 @@ func runCrossCut(pass *analysis.Pass) (any, error) {
 		out.Issues = append(out.Issues, traceCorrelationFindings(pass, b)...)
 	}
 
-	out.Issues = append(out.Issues, errorAttributionFindings(pass, functions)...)
+	out.Issues = append(out.Issues, errorAttributionFindings(pass, functionsByFile)...)
 
 	return out, nil
 }
@@ -170,9 +171,44 @@ func collectFunctionRanges(pass *analysis.Pass, insp *inspector.Inspector) []fun
 	return ranges
 }
 
-func enclosingFunction(functions []functionRange, site schema.EmissionSite) functionRange {
+// indexFunctionsByFile buckets the flat function-range slice produced by
+// collectFunctionRanges into a per-file map. Each per-file slice is sorted by
+// startLine (collectFunctionRanges already sorts globally by (file, startLine),
+// so the per-file order survives the partition). Callers use enclosingFunction
+// for O(log F) lookup per site instead of the prior O(S·F) linear scan.
+func indexFunctionsByFile(functions []functionRange) map[string][]functionRange {
+	out := make(map[string][]functionRange)
 	for _, fn := range functions {
-		if fn.file == site.File && fn.startLine <= site.Line && site.Line <= fn.endLine {
+		out[fn.file] = append(out[fn.file], fn)
+	}
+
+	return out
+}
+
+// enclosingFunction binary-searches the per-file bucket for the deepest
+// function whose range contains site.Line. Nested functions appear in the
+// bucket in source order; the walk-back from sort.Search picks the smallest
+// function containing the line (the innermost), preserving the original
+// linear-scan semantics where the first match wins.
+func enclosingFunction(functionsByFile map[string][]functionRange, site schema.EmissionSite) functionRange {
+	bucket := functionsByFile[site.File]
+	if len(bucket) == 0 {
+		return functionRange{}
+	}
+
+	// sort.Search returns the smallest index where startLine > site.Line; the
+	// candidate enclosing function is at index idx-1 (or earlier, for nested
+	// functions whose endLine is closer to site.Line).
+	idx := sort.Search(len(bucket), func(i int) bool {
+		return bucket[i].startLine > site.Line
+	})
+
+	// Walk back to find the innermost enclosing range. Nested functions have
+	// later startLines than their parent but appear after it in source order;
+	// the first match while walking backward is the innermost candidate.
+	for i := idx - 1; i >= 0; i-- {
+		fn := bucket[i]
+		if fn.startLine <= site.Line && site.Line <= fn.endLine {
 			return fn
 		}
 	}
@@ -273,7 +309,7 @@ func errorAttributionCounts(pass *analysis.Pass, body *ast.BlockStmt) (hasRecord
 	return hasRecord, hasStatus, hasLog
 }
 
-func errorAttributionFindings(pass *analysis.Pass, functions []functionRange) []schema.CrossCutFinding {
+func errorAttributionFindings(pass *analysis.Pass, functionsByFile map[string][]functionRange) []schema.CrossCutFinding {
 	var out []schema.CrossCutFinding
 
 	for _, file := range pass.Files {
@@ -290,7 +326,7 @@ func errorAttributionFindings(pass *analysis.Pass, functions []functionRange) []
 			}
 
 			pos := pass.Fset.Position(stmt.Pos())
-			fn := enclosingFunction(functions, schema.EmissionSite{File: pos.Filename, Line: pos.Line})
+			fn := enclosingFunction(functionsByFile, schema.EmissionSite{File: pos.Filename, Line: pos.Line})
 
 			missing := []string{}
 			if !hasRecord {
