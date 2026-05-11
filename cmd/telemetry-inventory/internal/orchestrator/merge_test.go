@@ -234,6 +234,112 @@ func TestMergeFrameworks_UnionsAutoMetrics(t *testing.T) {
 	}
 }
 
+// TestMergeCounters_DedupesIdenticalEmissionSites pins the post-merge
+// dedup behavior across the metric-family merge functions. Two counter
+// inputs sharing the SAME (File, Line, Tier) emission site must collapse
+// to a single site in the merged primitive.
+func TestMergeCounters_DedupesIdenticalEmissionSites(t *testing.T) {
+	site := schema.EmissionSite{File: "a.go", Line: 10, Tier: 1}
+
+	in := []schema.CounterPrimitive{
+		{
+			Name:          "shared",
+			Labels:        []string{"tenant_id"},
+			EmissionSites: []schema.EmissionSite{site},
+		},
+		{
+			Name:          "shared",
+			Labels:        []string{"result"},
+			EmissionSites: []schema.EmissionSite{site, {File: "b.go", Line: 20, Tier: 1}},
+		},
+	}
+
+	out := mergeCounters(in)
+	if len(out) != 1 {
+		t.Fatalf("expected 1 merged counter, got %d", len(out))
+	}
+
+	got := out[0]
+	if len(got.EmissionSites) != 2 {
+		t.Fatalf("expected 2 emission sites after dedup, got %d: %+v", len(got.EmissionSites), got.EmissionSites)
+	}
+}
+
+// TestMergeHistograms_DedupesIdenticalEmissionSites mirrors the counter case
+// for histograms.
+func TestMergeHistograms_DedupesIdenticalEmissionSites(t *testing.T) {
+	site := schema.EmissionSite{File: "a.go", Line: 10, Tier: 1}
+	in := []schema.HistogramPrimitive{
+		{Name: "h", EmissionSites: []schema.EmissionSite{site}},
+		{Name: "h", EmissionSites: []schema.EmissionSite{site}},
+	}
+
+	out := mergeHistograms(in)
+	if len(out) != 1 || len(out[0].EmissionSites) != 1 {
+		t.Fatalf("expected 1 histogram with 1 emission site, got %+v", out)
+	}
+}
+
+// TestMergeGauges_DedupesIdenticalEmissionSites mirrors the counter case
+// for gauges.
+func TestMergeGauges_DedupesIdenticalEmissionSites(t *testing.T) {
+	site := schema.EmissionSite{File: "a.go", Line: 10, Tier: 1}
+	in := []schema.GaugePrimitive{
+		{Name: "g", EmissionSites: []schema.EmissionSite{site}},
+		{Name: "g", EmissionSites: []schema.EmissionSite{site}},
+	}
+
+	out := mergeGauges(in)
+	if len(out) != 1 || len(out[0].EmissionSites) != 1 {
+		t.Fatalf("expected 1 gauge with 1 emission site, got %+v", out)
+	}
+}
+
+// TestMergeSpans_DedupesIdenticalEmissionSites mirrors the counter case
+// for spans.
+func TestMergeSpans_DedupesIdenticalEmissionSites(t *testing.T) {
+	site := schema.EmissionSite{File: "a.go", Line: 10}
+	in := []schema.SpanPrimitive{
+		{Name: "s", EmissionSites: []schema.EmissionSite{site}},
+		{Name: "s", EmissionSites: []schema.EmissionSite{site}},
+	}
+
+	out := mergeSpans(in)
+	if len(out) != 1 || len(out[0].EmissionSites) != 1 {
+		t.Fatalf("expected 1 span with 1 emission site, got %+v", out)
+	}
+}
+
+// TestMergeLogFields_DedupesIdenticalEmissionSites mirrors the counter case
+// for log fields.
+func TestMergeLogFields_DedupesIdenticalEmissionSites(t *testing.T) {
+	site := schema.EmissionSite{File: "a.go", Line: 10}
+	in := []schema.LogFieldPrimitive{
+		{Name: "tenant_id", LevelDistribution: map[string]int{"info": 1}, EmissionSites: []schema.EmissionSite{site}},
+		{Name: "tenant_id", LevelDistribution: map[string]int{"info": 1}, EmissionSites: []schema.EmissionSite{site}},
+	}
+
+	out := mergeLogFields(in)
+	if len(out) != 1 || len(out[0].EmissionSites) != 1 {
+		t.Fatalf("expected 1 log field with 1 emission site, got %+v", out)
+	}
+}
+
+// TestMergeFrameworks_DedupesIdenticalEmissionSites mirrors the counter case
+// for frameworks.
+func TestMergeFrameworks_DedupesIdenticalEmissionSites(t *testing.T) {
+	site := schema.EmissionSite{File: "a.go", Line: 10}
+	in := []schema.FrameworkInstrumentation{
+		{Framework: "fiber", EmissionSites: []schema.EmissionSite{site}},
+		{Framework: "fiber", EmissionSites: []schema.EmissionSite{site}},
+	}
+
+	out := mergeFrameworks(in)
+	if len(out) != 1 || len(out[0].EmissionSites) != 1 {
+		t.Fatalf("expected 1 framework with 1 emission site, got %+v", out)
+	}
+}
+
 // TestMergeCrossCut_DedupesByTuple asserts that identical CrossCut findings
 // — same (Kind, Site.File, Site.Line, Function, Detail) — collapse to one
 // entry. Without dedup, a finding observed by two analyzer passes (or any
