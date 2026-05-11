@@ -3,6 +3,7 @@
 package orchestrator
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v5/cmd/telemetry-inventory/internal/schema"
@@ -159,8 +160,8 @@ func TestNormalizeSite_RelativizesAbsolutePath(t *testing.T) {
 	// out of the target with `../`.
 	in2 := schema.EmissionSite{File: "/repo/sibling/main.go", Line: 1}
 	got2 := normalizeSite(in2, target)
-	if got2.File == "" {
-		t.Fatalf("sibling path was unexpectedly cleared")
+	if got2.File == "" || got2.File == ".." || strings.HasPrefix(got2.File, "../") {
+		t.Fatalf("sibling path escaped target: %q", got2.File)
 	}
 }
 

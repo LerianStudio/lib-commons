@@ -354,7 +354,7 @@ func (m *streamingMetrics) getOrBuildCounter(
 	base *metrics.CounterBuilder,
 	buildLabels func() map[string]string,
 ) *metrics.CounterBuilder {
-	if cache == nil {
+	if cache == nil || base == nil || buildLabels == nil {
 		return nil
 	}
 
@@ -384,7 +384,7 @@ func (m *streamingMetrics) getOrBuildHistogram(
 	base *metrics.HistogramBuilder,
 	buildLabels func() map[string]string,
 ) *metrics.HistogramBuilder {
-	if cache == nil {
+	if cache == nil || base == nil || buildLabels == nil {
 		return nil
 	}
 

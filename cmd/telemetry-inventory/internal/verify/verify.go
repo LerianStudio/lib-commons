@@ -47,7 +47,15 @@ func Compare(committed, generated string) Result {
 		return Result{Code: 2, Message: "telemetry dictionary missing schema_version; run make telemetry-dictionary to regenerate"}
 	}
 
-	if generatedVersion != "" && committedVersion != generatedVersion {
+	// Symmetric guard: when the regenerated dictionary drops its
+	// schema_version header (e.g. a renderer regression), surface the
+	// malformed-generated condition explicitly rather than falling through
+	// to a generic drift diff that misroutes debugging to the committed file.
+	if generatedVersion == "" {
+		return Result{Code: 2, Message: "malformed generated telemetry dictionary: missing schema_version; expected=" + schema.SchemaVersion}
+	}
+
+	if committedVersion != generatedVersion {
 		return Result{Code: 2, Message: fmt.Sprintf("telemetry dictionary schema mismatch: committed=%s generated=%s; regenerate against CLI schema %s", committedVersion, generatedVersion, schema.SchemaVersion)}
 	}
 

@@ -76,7 +76,11 @@ func collectMetricFindings(pass *analysis.Pass, cfg metricKindConfig) []observed
 func collectMetricFindingsInBlock(pass *analysis.Pass, cfg metricKindConfig, body *ast.BlockStmt) []*observedMetric {
 	var findings []*observedMetric
 
-	bound := map[string]*observedMetric{}
+	// bound is keyed by types.Object (not by lhs ident name) so that an inner
+	// block declaring `direct := ...` cannot overwrite an outer binding under
+	// the same source name and merge labels into the wrong metric after the
+	// inner scope ends. Each Object is unique per declaration site.
+	bound := map[types.Object]*observedMetric{}
 	processed := map[ast.Node]bool{}
 
 	bindCall := func(call *ast.CallExpr, lhs []ast.Expr) {
@@ -104,11 +108,24 @@ func collectMetricFindingsInBlock(pass *analysis.Pass, cfg metricKindConfig, bod
 				continue
 			}
 
-			bound[id.Name] = p
+			// Defs covers `:=`-bound idents and `var` ValueSpec names.
+			// ObjectOf would also fall back to Uses, but at a binding site
+			// the symbol is being defined here, so Defs is exact.
+			if obj := pass.TypesInfo.Defs[id]; obj != nil {
+				bound[obj] = p
+			}
 		}
 	}
 
 	ast.Inspect(body, func(n ast.Node) bool {
+		// Skip nested function literals: collectMetricFindings already
+		// schedules every *ast.FuncLit body for its own scan via Preorder,
+		// so descending into one here would double-count every constructor
+		// and record-site it contains.
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+
 		switch x := n.(type) {
 		case *ast.AssignStmt:
 			bindAssignStmt(x, bindCall)
@@ -294,18 +311,18 @@ func matchTier3Metric(pass *analysis.Pass, cfg metricKindConfig, call *ast.CallE
 	}
 }
 
-func mergeMetricRecordLabels(pass *analysis.Pass, cfg metricKindConfig, call *ast.CallExpr, bound map[string]*observedMetric) {
+func mergeMetricRecordLabels(pass *analysis.Pass, cfg metricKindConfig, call *ast.CallExpr, bound map[types.Object]*observedMetric) {
 	sel, ok := selectorCall(call)
 	if !ok || !cfg.recordMethods[sel.Sel.Name] {
 		return
 	}
 
-	base, receiverLabels := baseIdentAndLabels(pass, sel.X)
-	if base == "" {
+	obj, receiverLabels := baseIdentObjectAndLabels(pass, sel.X)
+	if obj == nil {
 		return
 	}
 
-	p := bound[base]
+	p := bound[obj]
 	if p == nil {
 		return
 	}

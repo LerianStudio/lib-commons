@@ -28,9 +28,9 @@ func runVerify(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	target := "."
-	if fs.NArg() > 0 {
-		target = fs.Arg(0)
+	target, err := resolveTargetArg(fs, "verify")
+	if err != nil {
+		return err
 	}
 
 	data, err := readCommittedDictionary(*committed)

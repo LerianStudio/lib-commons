@@ -321,17 +321,24 @@ func extractLogFieldKeys(pass *analysis.Pass, args []ast.Expr) []string {
 	return uniqueSorted(keys)
 }
 
-func baseIdentAndLabels(pass *analysis.Pass, expr ast.Expr) (string, []string) {
+// baseIdentObjectAndLabels resolves the base identifier of an expression
+// chain to its types.Object (via pass.TypesInfo.ObjectOf) and returns the
+// labels accumulated by any WithAttributes/WithLabels receiver calls along
+// the chain. Scope-aware lookups (e.g. the metric analyzer's bound map)
+// key on this object so shadowed locals do not collide on a shared source
+// name. Returns (nil, nil) when expr is not an ident chain or the ident
+// has no resolved object.
+func baseIdentObjectAndLabels(pass *analysis.Pass, expr ast.Expr) (types.Object, []string) {
 	switch x := expr.(type) {
 	case *ast.Ident:
-		return x.Name, nil
+		return pass.TypesInfo.ObjectOf(x), nil
 	case *ast.CallExpr:
 		sel, ok := selectorCall(x)
 		if !ok || (sel.Sel.Name != withAttributesMethod && sel.Sel.Name != withLabelsMethod) {
-			return "", nil
+			return nil, nil
 		}
 
-		base, nested := baseIdentAndLabels(pass, sel.X)
+		obj, nested := baseIdentObjectAndLabels(pass, sel.X)
 		labels := append([]string{}, nested...)
 
 		if sel.Sel.Name == withLabelsMethod {
@@ -342,9 +349,9 @@ func baseIdentAndLabels(pass *analysis.Pass, expr ast.Expr) (string, []string) {
 			labels = append(labels, extractAttributeKeys(pass, x.Args)...)
 		}
 
-		return base, uniqueSorted(labels)
+		return obj, uniqueSorted(labels)
 	default:
-		return "", nil
+		return nil, nil
 	}
 }
 

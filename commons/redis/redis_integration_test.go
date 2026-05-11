@@ -28,7 +28,11 @@ func waitForRedisEndpoint(t *testing.T, container *tcredis.RedisContainer) strin
 	var endpoint string
 	var lastErr error
 
-	require.Eventually(t, func() bool {
+	// assert.Eventually returns a bool so the failure message can be
+	// formatted with the *final* lastErr — require.Eventually's variadic
+	// msgAndArgs are captured once at call time, which would always log
+	// nil here.
+	ok := assert.Eventually(t, func() bool {
 		value, err := redisEndpoint(ctx, container)
 		if err != nil {
 			lastErr = err
@@ -38,7 +42,8 @@ func waitForRedisEndpoint(t *testing.T, container *tcredis.RedisContainer) strin
 
 		endpoint = value
 		return true
-	}, 30*time.Second, 100*time.Millisecond, "failed to resolve Redis container endpoint: %v", lastErr)
+	}, 30*time.Second, 100*time.Millisecond)
+	require.True(t, ok, "failed to resolve Redis container endpoint: %v", lastErr)
 
 	return endpoint
 }

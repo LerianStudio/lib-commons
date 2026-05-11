@@ -349,6 +349,17 @@ func errorAttributionFindings(pass *analysis.Pass, functionsByFile map[string][]
 	return out
 }
 
+// isErrNotNil reports whether expr is exactly `err != nil` (in either
+// operand order). The match is intentionally narrow:
+//
+//   - Compound conditions like `err != nil && shouldLog` do not match.
+//   - Differently-named error variables (`myErr != nil`) do not match.
+//   - Pointer comparisons (`x != nil` for non-error x) do not match.
+//
+// This is the right scope for error-attribution analysis: the analyzer is
+// looking for canonical idiomatic error handling at the if-statement guard
+// level, not for every possible error path. A wider matcher would surface
+// false positives that drown out the real signal.
 func isErrNotNil(expr ast.Expr) bool {
 	binary, ok := expr.(*ast.BinaryExpr)
 	if !ok || binary.Op != token.NEQ {

@@ -81,6 +81,14 @@ func collectSpansInBlock(pass *analysis.Pass, body *ast.BlockStmt) []schema.Span
 	}
 
 	ast.Inspect(body, func(n ast.Node) bool {
+		// Skip nested function literals: runSpan already schedules every
+		// *ast.FuncLit body for its own scan via Preorder, so descending
+		// into one here would double-emit spans and let nested End calls
+		// mutate the outer byVariable map.
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+
 		switch x := n.(type) {
 		case *ast.AssignStmt:
 			for i, rhs := range x.Rhs {

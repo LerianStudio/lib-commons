@@ -73,8 +73,9 @@ func TestRunInventory_WritesMarkdownAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read markdown: %v", err)
 	}
-	if !strings.Contains(string(mdBytes), "schema_version: \"1.0.0\"") {
-		t.Fatalf("markdown missing schema_version line; got:\n%s", string(mdBytes))
+	expectedSchemaLine := "schema_version: \"" + schema.SchemaVersion + "\""
+	if !strings.Contains(string(mdBytes), expectedSchemaLine) {
+		t.Fatalf("markdown missing %q line; got:\n%s", expectedSchemaLine, string(mdBytes))
 	}
 
 	jsonBytes, err := os.ReadFile(jsonPath) //nolint:gosec // G304: path under t.TempDir()
@@ -238,7 +239,7 @@ func TestRunVerify_SchemaMismatchReturnsExitCode2(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read committed: %v", err)
 	}
-	mutated = bytes.ReplaceAll(mutated, []byte(`schema_version: "1.0.0"`), []byte(`schema_version: "0.9.0"`))
+	mutated = bytes.ReplaceAll(mutated, []byte(`schema_version: "`+schema.SchemaVersion+`"`), []byte(`schema_version: "0.9.0"`))
 	if err := os.WriteFile(committed, mutated, 0o644); err != nil {
 		t.Fatalf("write committed: %v", err)
 	}

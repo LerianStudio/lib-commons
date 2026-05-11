@@ -19,6 +19,7 @@ Usage:
 Subcommands:
   inventory   Sweep target and render Markdown or JSON dictionary.
   verify      Regenerate and byte-diff against a committed dictionary.
+  version     Show CLI version and build info.
 
 Run 'telemetry-inventory <subcommand> -h' for subcommand-specific flags.
 `

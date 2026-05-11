@@ -64,6 +64,15 @@ func writeYAMLValue(sb *strings.Builder, indent int, v any) {
 	case schema.EmissionSite:
 		writeYAMLValue(sb, indent, []schema.EmissionSite{x})
 	default:
+		// The renderer's callers (markdown.go) only pass values whose types
+		// match one of the cases above — all sourced from the typed
+		// schema.Dictionary fields. The "null" fallback is a structural
+		// safety net for an unreachable branch: a future schema field that
+		// introduces a new value type will surface here as a literal "null"
+		// in the generated dictionary, which the golden tests catch
+		// immediately as drift. Promoting this to an error return would
+		// cascade error-handling through Render and its callers (inventory,
+		// verify) for a branch that is statically unreachable today.
 		sb.WriteString("null")
 	}
 }

@@ -42,9 +42,9 @@ func runInventory(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("unsupported schema version %q: current schema is %s", *schemaVersion, schema.SchemaVersion)
 	}
 
-	target := "."
-	if fs.NArg() > 0 {
-		target = fs.Arg(0)
+	target, err := resolveTargetArg(fs, "inventory")
+	if err != nil {
+		return err
 	}
 
 	if *verbose {
@@ -90,6 +90,21 @@ func runInventory(args []string, stdout, stderr io.Writer) error {
 	}
 
 	return nil
+}
+
+// resolveTargetArg returns the single positional argument as the target
+// path, defaulting to ".". A second positional arg is rejected so that a
+// CLI typo cannot silently inventory the wrong directory.
+func resolveTargetArg(fs *flag.FlagSet, subcommand string) (string, error) {
+	if fs.NArg() > 1 {
+		return "", fmt.Errorf("%s accepts at most one target path; got %d", subcommand, fs.NArg())
+	}
+
+	if fs.NArg() == 1 {
+		return fs.Arg(0), nil
+	}
+
+	return ".", nil
 }
 
 func writeFileCreatingParents(path string, data []byte) error {
