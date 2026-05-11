@@ -3,9 +3,9 @@ package analyzers
 import (
 	"go/ast"
 	"reflect"
-	"regexp"
 
 	"github.com/LerianStudio/lib-commons/v5/cmd/telemetry-inventory/internal/schema"
+	"github.com/LerianStudio/lib-commons/v5/commons/security"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/passes/inspect"
 	"golang.org/x/tools/go/ast/inspector"
@@ -20,14 +20,13 @@ var LogFieldAnalyzer = &analysis.Analyzer{
 	ResultType: reflect.TypeFor[*LogFieldFindings](),
 }
 
-var piiFieldPattern = regexp.MustCompile(`(?i)(password|token|secret|apikey|api_key|email|ssn|phone|address|cpf|cnpj|card)`)
-
-// IsPIIField reports whether key matches the analyzer's canonical PII
-// pattern. Exported so that tests can pin the contract against the single
-// regex literal in this file (avoiding silent drift between a test copy and
-// the production source).
+// IsPIIField reports whether key denotes a sensitive (PII) field. It
+// delegates to commons/security.IsSensitiveField — the same predicate used
+// by the production redactor — so the audit tool and the runtime
+// sanitizer share a single source of truth. Adding a new sensitive field
+// in commons/security automatically widens what the analyzer flags.
 func IsPIIField(key string) bool {
-	return piiFieldPattern.MatchString(key)
+	return security.IsSensitiveField(key)
 }
 
 func runLogField(pass *analysis.Pass) (any, error) {

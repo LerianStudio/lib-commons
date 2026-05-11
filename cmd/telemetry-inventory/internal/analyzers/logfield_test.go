@@ -15,19 +15,34 @@ func TestLogFieldAnalyzer(t *testing.T) {
 }
 
 // TestLogFieldAnalyzer_IsPIIField pins the canonical PII keys that flip
-// PIIRiskFlag. It calls the exported analyzers.IsPIIField predicate so the
-// production regex literal at logfield.go has exactly one source of truth —
-// no second copy in the test that could drift independently.
+// PIIRiskFlag. analyzers.IsPIIField delegates to
+// commons/security.IsSensitiveField — the same predicate used by the
+// production redactor — so the audit tool and runtime sanitizer share a
+// single source of truth. The cases below cover the camelCase/snake_case
+// shapes the prior regex missed (accessToken, refresh_token, clientSecret,
+// cardNumber, cvv, dob, mfa_code) to lock in the wider coverage.
 func TestLogFieldAnalyzer_IsPIIField(t *testing.T) {
 	cases := []struct {
 		key        string
 		shouldFlag bool
 	}{
+		// Snake-case classics
 		{"password", true},
-		{"PasswordHash", true},
 		{"token", true},
 		{"secret", true},
 		{"email", true},
+		{"ssn", true},
+		{"refresh_token", true},
+		{"mfa_code", true},
+		// camelCase / PascalCase — the prior regex caught these only by luck;
+		// security.IsSensitiveField normalizes them.
+		{"PasswordHash", true},
+		{"accessToken", true},
+		{"clientSecret", true},
+		{"cardNumber", true},
+		{"cvv", true},
+		{"dob", true},
+		// Safe (non-sensitive) fields
 		{"tenant_id", false},
 		{"trace_id", false},
 		{"balance", false},
