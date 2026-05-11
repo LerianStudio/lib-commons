@@ -3,7 +3,6 @@
 package verify_test
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -58,22 +57,13 @@ func TestCompare_MissingSchemaVersion(t *testing.T) {
 	}
 }
 
-func TestRun_MissingCommittedFile(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "does-not-exist.md")
-	_, err := verify.Run("../../testdata/services/pure-tier1", missing)
-	if err == nil {
-		t.Fatalf("expected error reading missing committed file")
-	}
-	if !strings.Contains(err.Error(), missing) {
-		t.Fatalf("error did not mention missing path %q: %v", missing, err)
-	}
-}
-
 // TestRun_TargetWithNoPackages exercises the orchestrator-error path: an empty
-// directory yields ErrNoPackages and Run must surface it back to the CLI.
+// directory yields ErrNoPackages and Run must surface it back to the caller.
+// Committed bytes are nil because the orchestrator errors before any
+// comparison; missing-file behavior now lives at the CLI layer.
 func TestRun_TargetWithNoPackages(t *testing.T) {
 	emptyDir := t.TempDir()
-	_, err := verify.Run(emptyDir, "../../docs/dashboards/telemetry-dictionary.md")
+	_, err := verify.Run(emptyDir, nil)
 	if err == nil {
 		t.Fatalf("expected error inventorying empty directory")
 	}

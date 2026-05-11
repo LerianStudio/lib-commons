@@ -3,7 +3,6 @@ package verify
 
 import (
 	"fmt"
-	"os"
 	"regexp"
 	"strings"
 
@@ -24,23 +23,17 @@ type Result struct {
 	Diff    string
 }
 
-// Run regenerates a dictionary for target and compares it against committedPath.
-func Run(target, committedPath string) (Result, error) {
+// Run regenerates a dictionary for target and compares it against the
+// supplied committed bytes. File I/O is the caller's responsibility — the
+// CLI layer opens the committed dictionary inside an os.Root for path
+// containment before invoking Run.
+func Run(target string, committed []byte) (Result, error) {
 	dict, err := orchestrator.Inventory(target)
 	if err != nil {
 		return Result{}, err
 	}
 
 	generated := renderer.Render(dict)
-
-	// Path is operator-supplied via CLI; no embedded user input. ReadFile is
-	// sufficient — committed dictionaries live in the repo under predictable
-	// paths and the prior os.OpenRoot ceremony forced an unnecessary Go 1.24+
-	// floor for one read.
-	committed, err := os.ReadFile(committedPath)
-	if err != nil {
-		return Result{}, fmt.Errorf("read committed dictionary %q: %w", committedPath, err)
-	}
 
 	return Compare(string(committed), generated), nil
 }

@@ -161,6 +161,27 @@ func TestRunVerify_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRunVerify_MissingCommittedFile pins the CLI-level file-read failure
+// path. The verify library now takes []byte, so the missing-file failure
+// surfaces here (the CLI opens the committed dictionary inside an os.Root
+// for path containment). The error must mention the supplied path so
+// operators can diagnose typos without re-running with -debug.
+func TestRunVerify_MissingCommittedFile(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist.md")
+
+	var stdout, stderr bytes.Buffer
+	err := runVerify(
+		[]string{"-committed", missing, "-quiet", "testdata/services/pure-tier1"},
+		&stdout, &stderr,
+	)
+	if err == nil {
+		t.Fatalf("expected error reading missing committed file")
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Fatalf("error did not mention missing path %q: %v", missing, err)
+	}
+}
+
 // TestRunVerify_DriftReturnsExitCode1 exercises the drift path: runVerify
 // must surface an *exitError with code=1 when the committed dictionary
 // differs from the generated one.

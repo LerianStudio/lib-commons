@@ -5,6 +5,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 
 	verifycmd "github.com/LerianStudio/lib-commons/v5/cmd/telemetry-inventory/internal/verify"
 )
@@ -31,7 +33,12 @@ func runVerify(args []string, stdout, stderr io.Writer) error {
 		target = fs.Arg(0)
 	}
 
-	result, err := verifycmd.Run(target, *committed)
+	data, err := readCommittedDictionary(*committed)
+	if err != nil {
+		return err
+	}
+
+	result, err := verifycmd.Run(target, data)
 	if err != nil {
 		return err
 	}
@@ -49,4 +56,29 @@ func runVerify(args []string, stdout, stderr io.Writer) error {
 	}
 
 	return &exitError{code: result.Code, err: errors.New(result.Message)}
+}
+
+// readCommittedDictionary reads the committed dictionary inside an os.Root
+// rooted at the file's parent directory. os.Root (Go 1.24+) provides path
+// containment so a crafted --committed value cannot escape the directory it
+// names via symlink traversal.
+func readCommittedDictionary(path string) ([]byte, error) {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return nil, fmt.Errorf("read committed dictionary %q: %w", path, err)
+	}
+	defer root.Close()
+
+	f, err := root.Open(filepath.Base(path))
+	if err != nil {
+		return nil, fmt.Errorf("read committed dictionary %q: %w", path, err)
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("read committed dictionary %q: %w", path, err)
+	}
+
+	return data, nil
 }
