@@ -38,10 +38,7 @@ func runAnalyzers(pkgs []*packages.Package, analyzers []*analysis.Analyzer) (map
 		return nil, err
 	}
 
-	limit := runtime.GOMAXPROCS(0)
-	if limit < 1 {
-		limit = 1
-	}
+	limit := max(runtime.GOMAXPROCS(0), 1)
 
 	sem := make(chan struct{}, limit)
 	group, ctx := errgroup.WithContext(context.Background())
@@ -55,8 +52,6 @@ func runAnalyzers(pkgs []*packages.Package, analyzers []*analysis.Analyzer) (map
 		if pkg == nil || pkg.IllTyped {
 			continue
 		}
-
-		pkg := pkg
 
 		group.Go(func() error {
 			select {
