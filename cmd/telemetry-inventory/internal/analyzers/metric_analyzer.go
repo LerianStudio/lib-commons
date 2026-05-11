@@ -79,19 +79,31 @@ func collectMetricFindingsInBlock(pass *analysis.Pass, cfg metricKindConfig, bod
 	bound := map[string]*observedMetric{}
 	processed := map[ast.Node]bool{}
 
-	bindCall := func(call *ast.CallExpr, lhs ast.Expr) {
+	bindCall := func(call *ast.CallExpr, lhs []ast.Expr) {
 		p := matchMetricConstructor(pass, cfg, call)
 		if p == nil {
 			return
 		}
 
+		// Register the metric exactly once per call site, even when the lhs
+		// has multiple entries bound to the same call (tuple return shape:
+		// `m, err := factory.Counter(...)`). Double-appending here would
+		// double-count the metric in the findings slice.
 		processed[call] = true
 
 		findings = append(findings, p)
 		reportMetricSite(pass, cfg, call.Pos(), p)
 
-		id, ok := lhs.(*ast.Ident)
-		if ok && id.Name != "_" {
+		// Every non-blank lhs ident becomes an alias for the metric so that
+		// later record-site merging in mergeMetricRecordLabels can match
+		// either name. For the common single-lhs case this is one entry; for
+		// tuple returns it binds both.
+		for _, item := range lhs {
+			id, ok := item.(*ast.Ident)
+			if !ok || id.Name == "_" {
+				continue
+			}
+
 			bound[id.Name] = p
 		}
 	}
@@ -123,25 +135,65 @@ func collectMetricFindingsInBlock(pass *analysis.Pass, cfg metricKindConfig, bod
 	return findings
 }
 
-func bindAssignStmt(x *ast.AssignStmt, bind func(*ast.CallExpr, ast.Expr)) {
+// bindAssignStmt walks an assignment statement and dispatches each rhs call
+// to the binder with the lhs ident(s) it should alias to. Two shapes:
+//
+//	x := makeMetric(...)             → bind call to [x]
+//	x, y := makeMetric(...)          → tuple return: bind call to [x, y]
+//	x, y := makeMetric(...), other() → positional: x↔makeMetric, y↔other
+//
+// The tuple-return case (`len(Lhs)==2 && len(Rhs)==1`) mirrors the pattern
+// used by span.go's secondReturnIdent. Without binding both lhs entries, a
+// future metric helper returning (Counter, error) would lose its second
+// alias and miss subsequent record-site merging.
+func bindAssignStmt(x *ast.AssignStmt, bind func(*ast.CallExpr, []ast.Expr)) {
+	if len(x.Lhs) == 2 && len(x.Rhs) == 1 {
+		call, ok := x.Rhs[0].(*ast.CallExpr)
+		if !ok {
+			return
+		}
+
+		bind(call, x.Lhs)
+
+		return
+	}
+
 	for i, rhs := range x.Rhs {
 		call, ok := rhs.(*ast.CallExpr)
 		if !ok || i >= len(x.Lhs) {
 			continue
 		}
 
-		bind(call, x.Lhs[i])
+		bind(call, []ast.Expr{x.Lhs[i]})
 	}
 }
 
-func bindValueSpec(x *ast.ValueSpec, bind func(*ast.CallExpr, ast.Expr)) {
+func bindValueSpec(x *ast.ValueSpec, bind func(*ast.CallExpr, []ast.Expr)) {
+	// Tuple-return `var a, b = factory.Counter(...)` mirrors the AssignStmt
+	// case: a single rhs call paired with multiple lhs idents.
+	if len(x.Names) >= 2 && len(x.Values) == 1 {
+		call, ok := x.Values[0].(*ast.CallExpr)
+		if !ok {
+			return
+		}
+
+		lhs := make([]ast.Expr, len(x.Names))
+		for i, name := range x.Names {
+			lhs[i] = name
+		}
+
+		bind(call, lhs)
+
+		return
+	}
+
 	for i, value := range x.Values {
 		call, ok := value.(*ast.CallExpr)
 		if !ok || i >= len(x.Names) {
 			continue
 		}
 
-		bind(call, x.Names[i])
+		bind(call, []ast.Expr{x.Names[i]})
 	}
 }
 
