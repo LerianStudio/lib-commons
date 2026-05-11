@@ -10,36 +10,82 @@ package orchestrator
 // facts or cross-package fact propagation.
 
 import (
+	"context"
 	"fmt"
 	"go/types"
+	"runtime"
+	"sync"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/errgroup"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/packages"
 )
 
+// runAnalyzers fans out the analyzer chain across packages with bounded
+// concurrency. The chain itself is topo-sorted and runs serially within each
+// package because every analyzer reads its predecessors' results from the
+// shared prior-map — the dependency is intra-package, not inter-package, so
+// each package owns an independent goroutine.
+//
+// Concurrency uses commons/errgroup (panic-recovering wrapper) plus a
+// buffered-channel semaphore to cap parallelism at GOMAXPROCS. commons/errgroup
+// has no SetLimit so we bound manually; this is consistent with the rest of
+// the codebase, which deliberately uses commons/errgroup over the stdlib
+// variant for panic safety.
 func runAnalyzers(pkgs []*packages.Package, analyzers []*analysis.Analyzer) (map[string]map[*analysis.Analyzer]any, error) {
 	order, err := topoSort(analyzers)
 	if err != nil {
 		return nil, err
 	}
 
-	out := make(map[string]map[*analysis.Analyzer]any, len(pkgs))
+	limit := runtime.GOMAXPROCS(0)
+	if limit < 1 {
+		limit = 1
+	}
+
+	sem := make(chan struct{}, limit)
+	group, ctx := errgroup.WithContext(context.Background())
+
+	var (
+		mu  sync.Mutex
+		out = make(map[string]map[*analysis.Analyzer]any, len(pkgs))
+	)
+
 	for _, pkg := range pkgs {
 		if pkg == nil || pkg.IllTyped {
 			continue
 		}
 
-		results := make(map[*analysis.Analyzer]any, len(order))
+		pkg := pkg
 
-		out[pkg.PkgPath] = results
-		for _, analyzer := range order {
-			res, runErr := runOne(pkg, analyzer, results)
-			if runErr != nil {
-				return nil, fmt.Errorf("analyzer %s on %s: %w", analyzer.Name, pkg.PkgPath, runErr)
+		group.Go(func() error {
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				return ctx.Err()
 			}
 
-			results[analyzer] = res
-		}
+			results := make(map[*analysis.Analyzer]any, len(order))
+			for _, analyzer := range order {
+				res, runErr := runOne(pkg, analyzer, results)
+				if runErr != nil {
+					return fmt.Errorf("analyzer %s on %s: %w", analyzer.Name, pkg.PkgPath, runErr)
+				}
+
+				results[analyzer] = res
+			}
+
+			mu.Lock()
+			out[pkg.PkgPath] = results
+			mu.Unlock()
+
+			return nil
+		})
+	}
+
+	if waitErr := group.Wait(); waitErr != nil {
+		return nil, waitErr
 	}
 
 	return out, nil
