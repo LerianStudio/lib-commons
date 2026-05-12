@@ -88,7 +88,7 @@ var validCompressionCodecs = map[string]struct{}{
 // producer_kgo.go:100-104. Do NOT collapse to defaultRequiredAcks — a future
 // default change must not silently disable kafka idempotency.
 var validAcks = map[string]struct{}{
-	"all":           {},
+	"all":           {}, //nolint:goconst // see comment above — invariant literal, intentionally distinct from defaultRequiredAcks
 	"leader":        {},
 	configValueNone: {},
 }

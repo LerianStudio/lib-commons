@@ -102,7 +102,7 @@ func buildKgoOpts(cfg Config, opts emitterOptions) ([]kgo.Opt, error) {
 	// user-configurable default in config.go). They happen to be the same
 	// string today; do NOT collapse them — a future default change must
 	// not silently disable kafka idempotency.
-	if cfg.RequiredAcks != "all" {
+	if cfg.RequiredAcks != "all" { //nolint:goconst // kafka-protocol invariant literal, intentionally distinct from defaultRequiredAcks
 		kgoOpts = append(kgoOpts, kgo.DisableIdempotentWrite())
 	}
 

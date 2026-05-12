@@ -3,6 +3,7 @@ package analyzers
 import (
 	"go/ast"
 	"go/token"
+	"go/types"
 	"reflect"
 
 	"github.com/LerianStudio/lib-commons/v5/cmd/telemetry-inventory/internal/schema"
@@ -63,7 +64,11 @@ func collectSpansInBlock(pass *analysis.Pass, body *ast.BlockStmt) []schema.Span
 
 	var spans []*spanRef
 
-	byVariable := map[string]*spanRef{}
+	// Keyed by types.Object (not by lhs ident name) so that inner-block
+	// shadowing — `_, span := tr.Start(...)` redeclared in a nested block
+	// within the same function — binds the End/RecordError/etc. calls to
+	// the correct spanRef. Mirrors the keying choice in metric_analyzer.go.
+	byObject := map[types.Object]*spanRef{}
 
 	bindStart := func(call *ast.CallExpr, lhs []ast.Expr, rhsIndex int) {
 		name, attrs, ok := matchTracerStart(pass, call)
@@ -71,20 +76,47 @@ func collectSpansInBlock(pass *analysis.Pass, body *ast.BlockStmt) []schema.Span
 			return
 		}
 
-		spanVar := secondReturnIdent(lhs, rhsIndex)
+		spanIdent := secondReturnIdent(lhs, rhsIndex)
+
+		var (
+			spanVar string
+			obj     types.Object
+		)
+
+		if spanIdent != nil {
+			spanVar = spanIdent.Name
+			// Defs covers `:=`-bound idents and `var` ValueSpec names; at a
+			// binding site the symbol is being defined here, so Defs is exact.
+			obj = pass.TypesInfo.Defs[spanIdent]
+		}
+
 		ref := &spanRef{name: name, variable: spanVar, pos: call.Pos(), site: siteFor(pass, call.Pos(), 0), attrs: attrs}
 
 		spans = append(spans, ref)
-		if spanVar != "" {
-			byVariable[spanVar] = ref
+		if obj != nil {
+			byObject[obj] = ref
 		}
+	}
+
+	lookup := func(sel *ast.SelectorExpr) *spanRef {
+		id, ok := sel.X.(*ast.Ident)
+		if !ok {
+			return nil
+		}
+
+		obj := pass.TypesInfo.ObjectOf(id)
+		if obj == nil {
+			return nil
+		}
+
+		return byObject[obj]
 	}
 
 	ast.Inspect(body, func(n ast.Node) bool {
 		// Skip nested function literals: runSpan already schedules every
 		// *ast.FuncLit body for its own scan via Preorder, so descending
 		// into one here would double-emit spans and let nested End calls
-		// mutate the outer byVariable map.
+		// mutate the outer byObject map.
 		if _, ok := n.(*ast.FuncLit); ok {
 			return false
 		}
@@ -118,8 +150,8 @@ func collectSpansInBlock(pass *analysis.Pass, body *ast.BlockStmt) []schema.Span
 				bindStart(call, lhs, i)
 			}
 		case *ast.DeferStmt:
-			if variable := matchSpanMethod(x.Call, "End"); variable != "" {
-				if ref := byVariable[variable]; ref != nil {
+			if sel := matchSpanMethodSelector(x.Call, "End"); sel != nil {
+				if ref := lookup(sel); ref != nil {
 					ref.ended = true
 				}
 			}
@@ -129,20 +161,20 @@ func collectSpansInBlock(pass *analysis.Pass, body *ast.BlockStmt) []schema.Span
 			// on early-return paths, so we do NOT mark ended=true here —
 			// the caller still gets the unbounded_span finding and can
 			// review whether the End() coverage is actually total.
-			if variable := matchSpanMethod(x, "RecordError"); variable != "" {
-				if ref := byVariable[variable]; ref != nil {
+			if sel := matchSpanMethodSelector(x, "RecordError"); sel != nil {
+				if ref := lookup(sel); ref != nil {
 					ref.recorded = true
 				}
 			}
 
-			if variable := matchSpanMethod(x, "SetStatus"); variable != "" {
-				if ref := byVariable[variable]; ref != nil {
+			if sel := matchSpanMethodSelector(x, "SetStatus"); sel != nil {
+				if ref := lookup(sel); ref != nil {
 					ref.statusSet = true
 				}
 			}
 
-			if variable := matchSpanMethod(x, "SetAttributes"); variable != "" {
-				if ref := byVariable[variable]; ref != nil {
+			if sel := matchSpanMethodSelector(x, "SetAttributes"); sel != nil {
+				if ref := lookup(sel); ref != nil {
 					ref.attrs = mergeStrings(ref.attrs, extractAttributeKeys(pass, x.Args)...)
 				}
 			}
@@ -180,9 +212,9 @@ func matchTracerStart(pass *analysis.Pass, call *ast.CallExpr) (string, []string
 	return name, attrs, true
 }
 
-func secondReturnIdent(lhs []ast.Expr, rhsIndex int) string {
+func secondReturnIdent(lhs []ast.Expr, rhsIndex int) *ast.Ident {
 	if len(lhs) == 0 {
-		return ""
+		return nil
 	}
 
 	idx := rhsIndex + 1
@@ -191,31 +223,30 @@ func secondReturnIdent(lhs []ast.Expr, rhsIndex int) string {
 	}
 
 	if idx >= len(lhs) {
-		return ""
+		return nil
 	}
 
 	id, ok := lhs[idx].(*ast.Ident)
 	if !ok || id.Name == "_" {
-		return ""
+		return nil
 	}
 
-	return id.Name
+	return id
 }
 
-func matchSpanMethod(call *ast.CallExpr, method string) string {
+func matchSpanMethodSelector(call *ast.CallExpr, method string) *ast.SelectorExpr {
 	if call == nil {
-		return ""
+		return nil
 	}
 
 	sel, ok := selectorCall(call)
 	if !ok || sel.Sel.Name != method {
-		return ""
+		return nil
 	}
 
-	id, ok := sel.X.(*ast.Ident)
-	if !ok {
-		return ""
+	if _, ok := sel.X.(*ast.Ident); !ok {
+		return nil
 	}
 
-	return id.Name
+	return sel
 }

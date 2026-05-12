@@ -661,7 +661,11 @@ sec:
 		go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION); \
 	fi
 	@if find . -name "*.go" -type f -not -path './vendor/*' | grep -q .; then \
-		packages="$$(go list ./...)"; \
+		packages="$$(go list ./...)" || { printf "\n%s%sgosec package enumeration failed: go list ./... returned a non-zero exit code.%s\n\n" "$(BOLD)" "$(RED)" "$(NC)"; exit 1; }; \
+		if [ -z "$$packages" ]; then \
+			printf "\n%s%sgosec package enumeration produced no packages.%s\n\n" "$(BOLD)" "$(RED)" "$(NC)"; \
+			exit 1; \
+		fi; \
 		echo "Running security checks on all packages..."; \
 		if [ "$(SARIF)" = "1" ]; then \
 			echo "Generating SARIF output: gosec-report.sarif"; \
