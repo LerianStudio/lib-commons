@@ -76,7 +76,7 @@ endif
 # Pinned tool versions for reproducibility (update as needed)
 GOTESTSUM_VERSION ?= v1.12.0
 GOSEC_VERSION ?= v2.22.4
-GOLANGCI_LINT_VERSION ?= v2.1.6
+GOLANGCI_LINT_VERSION ?= v2.11.2
 
 TEST_REPORTS_DIR ?= ./reports
 GOTESTSUM = $(shell command -v gotestsum 2>/dev/null)
@@ -179,11 +179,13 @@ ci:
 	$(MAKE) lint-fix
 	$(MAKE) format
 	$(MAKE) tidy
+	$(MAKE) lint
 	$(MAKE) check-tests
 	$(MAKE) sec
 	$(MAKE) vet
 	$(MAKE) test-unit
 	$(MAKE) test-integration
+	$(MAKE) perfgate
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) Local CI pipeline completed successfully$(GREEN) ✔️$(NC)"
 
 #-------------------------------------------------------
@@ -325,6 +327,15 @@ test-all:
 	$(call print_title,Running integration tests)
 	$(MAKE) test-integration
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) All tests passed$(GREEN) ✔️$(NC)"
+
+.PHONY: perfgate
+perfgate:
+	$(call print_title,Running AC15 perf gate (no -race))
+	$(call check_command,go,"Install Go from https://golang.org/doc/install")
+	@# Race detector adds 10-50x latency overhead; AC15 thresholds are sub-microsecond.
+	@# This target must NEVER pass -race. Mirrors the GitHub workflow PerfGate job.
+	go test -tags=unit -run=^TestPerf_ ./commons/systemplane/...
+	@echo "$(GREEN)$(BOLD)[ok]$(NC) AC15 perf gate passed$(GREEN) ✔️$(NC)"
 
 #-------------------------------------------------------
 # Coverage Commands

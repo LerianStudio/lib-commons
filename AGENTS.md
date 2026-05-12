@@ -320,7 +320,8 @@ Build and shell:
 - `make test-unit` -- run unit tests excluding integration
 - `make test-integration` -- run integration tests with testcontainers (requires Docker)
 - `make test-all` -- run all tests (unit + integration)
-- `make ci` -- run the local fix + verify pipeline (`lint-fix`, `format`, `tidy`, `check-tests`, `sec`, `vet`, `test-unit`, `test-integration`)
+- `make perfgate` -- run AC15 systemplane perf gate (`go test -tags=unit -run=^TestPerf_`; no `-race`)
+- `make ci` -- run the local fix + verify pipeline (`lint-fix`, `format`, `tidy`, `lint`, `check-tests`, `sec`, `vet`, `test-unit`, `test-integration`, `perfgate`)
 - `make lint` -- run lint checks (read-only)
 - `make lint-fix` -- auto-fix lint issues
 - `make build` -- build all packages
