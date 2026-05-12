@@ -455,7 +455,7 @@ func isNilShutdownable(s shutdownable) bool {
 
 	v := reflect.ValueOf(s)
 
-	return v.Kind() == reflect.Ptr && v.IsNil()
+	return v.Kind() == reflect.Pointer && v.IsNil()
 }
 
 func buildShutdownHandlers(l log.Logger, components ...shutdownable) (func(), func(context.Context) error) {
@@ -502,7 +502,7 @@ func isNilSpan(span trace.Span) bool {
 
 	v := reflect.ValueOf(span)
 
-	return v.Kind() == reflect.Ptr && v.IsNil()
+	return v.Kind() == reflect.Pointer && v.IsNil()
 }
 
 // maxSpanErrorLength is the maximum length for error messages written to span status/events.

@@ -55,6 +55,23 @@ const (
 	// ObjectId-_id row sequentially; operators with large collections can
 	// raise it via Config.SchemaInitTimeout.
 	defaultSchemaInitTimeout = 30 * time.Second
+
+	mongoFieldID        = "_id"
+	mongoFieldNamespace = "namespace"
+	mongoFieldKey       = "key"
+	mongoFieldTenantID  = "tenant_id"
+	mongoFieldValue     = "value"
+	mongoFieldUpdatedAt = "updated_at"
+	mongoFieldUpdatedBy = "updated_by"
+	mongoFieldOwner     = "owner"
+	mongoFieldHeartbeat = "heartbeat"
+	mongoFieldAcquired  = "acquired_at"
+	mongoOperatorSet    = "$set"
+	mongoOperatorExists = "$exists"
+	mongoOperatorGT     = "$gt"
+	mongoOperatorIn     = "$in"
+	mongoOperatorNE     = "$ne"
+	mongoOperatorType   = "$type"
 )
 
 // Compile-time interface check. Any divergence from store.Store fails the
@@ -274,7 +291,7 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.list")
 	defer span.End()
 
-	filter := bson.D{{Key: "tenant_id", Value: store.SentinelGlobal}}
+	filter := bson.D{{Key: mongoFieldTenantID, Value: store.SentinelGlobal}}
 
 	cursor, err := s.coll.Find(ctx, filter)
 	if err != nil {

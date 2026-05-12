@@ -121,7 +121,7 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 			maxAttempts,
 			outbox.OutboxStatusInvalid,
 			outbox.OutboxStatusFailed,
-			"max dispatch attempts exceeded",
+			outbox.ErrMessageMaxDispatchExceeded,
 			errMsg,
 			time.Now().UTC(),
 			id,

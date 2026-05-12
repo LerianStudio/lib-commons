@@ -70,22 +70,27 @@ const (
 	defaultCBMinRequests         = 10
 	defaultCBTimeout             = 30 * time.Second
 	defaultCloseTimeout          = 30 * time.Second
+	configValueNone              = "none"
 )
 
 // validCompressionCodecs enumerates the accepted STREAMING_COMPRESSION values.
 var validCompressionCodecs = map[string]struct{}{
-	"snappy": {},
-	"lz4":    {},
-	"zstd":   {},
-	"gzip":   {},
-	"none":   {},
+	"snappy":        {},
+	"lz4":           {},
+	"zstd":          {},
+	"gzip":          {},
+	configValueNone: {},
 }
 
 // validAcks enumerates the accepted STREAMING_REQUIRED_ACKS values.
+//
+// Literal "all" is the kafka-protocol invariant for idempotency; see
+// producer_kgo.go:100-104. Do NOT collapse to defaultRequiredAcks — a future
+// default change must not silently disable kafka idempotency.
 var validAcks = map[string]struct{}{
-	"all":    {},
-	"leader": {},
-	"none":   {},
+	"all":           {}, //nolint:goconst // see comment above — invariant literal, intentionally distinct from defaultRequiredAcks
+	"leader":        {},
+	configValueNone: {},
 }
 
 // LoadConfig reads every STREAMING_* environment variable, applies defaults

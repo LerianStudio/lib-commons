@@ -4,19 +4,21 @@ import (
 	"context"
 )
 
+const metricUnitPercentage = "percentage"
+
 // Pre-configured system metrics for infrastructure monitoring.
 var (
 	// MetricSystemCPUUsage is a gauge that records the current CPU usage percentage.
 	MetricSystemCPUUsage = Metric{
 		Name:        "system.cpu.usage",
-		Unit:        "percentage",
+		Unit:        metricUnitPercentage,
 		Description: "Current CPU usage percentage of the process host.",
 	}
 
 	// MetricSystemMemUsage is a gauge that records the current memory usage percentage.
 	MetricSystemMemUsage = Metric{
 		Name:        "system.mem.usage",
-		Unit:        "percentage",
+		Unit:        metricUnitPercentage,
 		Description: "Current memory usage percentage of the process host.",
 	}
 )

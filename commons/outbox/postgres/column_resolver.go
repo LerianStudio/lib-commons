@@ -66,7 +66,7 @@ func NewColumnResolver(client *libPostgres.Client, opts ...ColumnResolverOption)
 
 	resolver := &ColumnResolver{
 		client:       client,
-		tableName:    "outbox_events",
+		tableName:    defaultOutboxTableName,
 		tenantColumn: "tenant_id",
 		tenantTTL:    defaultTenantDiscoveryTTL,
 	}
@@ -81,7 +81,7 @@ func NewColumnResolver(client *libPostgres.Client, opts ...ColumnResolverOption)
 	resolver.tenantColumn = strings.TrimSpace(resolver.tenantColumn)
 
 	if resolver.tableName == "" {
-		resolver.tableName = "outbox_events"
+		resolver.tableName = defaultOutboxTableName
 	}
 
 	if resolver.tenantColumn == "" {

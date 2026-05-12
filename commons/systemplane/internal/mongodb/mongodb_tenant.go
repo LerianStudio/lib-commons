@@ -189,7 +189,7 @@ func (s *Store) DeleteTenantValue(
 		return err
 	}
 
-	filter := bson.D{{Key: "_id", Value: compoundID{
+	filter := bson.D{{Key: mongoFieldID, Value: compoundID{
 		Namespace: namespace,
 		Key:       key,
 		TenantID:  tenantID,
@@ -236,8 +236,8 @@ func (s *Store) ListTenantValues(ctx context.Context) ([]store.Entry, error) {
 
 	findOpts := options.Find().SetSort(bson.D{
 		{Key: "namespace", Value: 1},
-		{Key: "key", Value: 1},
-		{Key: "tenant_id", Value: 1},
+		{Key: mongoFieldKey, Value: 1},
+		{Key: mongoFieldTenantID, Value: 1},
 	})
 
 	cursor, err := s.coll.Find(ctx, bson.D{}, findOpts)
@@ -314,20 +314,20 @@ func (s *Store) ListTenantOverrides(
 	// canonical OR-chain that matches how SQL's (a,b,c) > (x,y,z)
 	// desugars.
 	and := bson.A{
-		bson.D{{Key: "tenant_id", Value: bson.D{{Key: "$ne", Value: store.SentinelGlobal}}}},
+		bson.D{{Key: mongoFieldTenantID, Value: bson.D{{Key: mongoOperatorNE, Value: store.SentinelGlobal}}}},
 	}
 
 	if afterNamespace != "" || afterKey != "" || afterTenantID != "" {
 		and = append(and, bson.D{{Key: "$or", Value: bson.A{
-			bson.D{{Key: "namespace", Value: bson.D{{Key: "$gt", Value: afterNamespace}}}},
+			bson.D{{Key: mongoFieldNamespace, Value: bson.D{{Key: mongoOperatorGT, Value: afterNamespace}}}},
 			bson.D{
-				{Key: "namespace", Value: afterNamespace},
-				{Key: "key", Value: bson.D{{Key: "$gt", Value: afterKey}}},
+				{Key: mongoFieldNamespace, Value: afterNamespace},
+				{Key: mongoFieldKey, Value: bson.D{{Key: mongoOperatorGT, Value: afterKey}}},
 			},
 			bson.D{
-				{Key: "namespace", Value: afterNamespace},
-				{Key: "key", Value: afterKey},
-				{Key: "tenant_id", Value: bson.D{{Key: "$gt", Value: afterTenantID}}},
+				{Key: mongoFieldNamespace, Value: afterNamespace},
+				{Key: mongoFieldKey, Value: afterKey},
+				{Key: mongoFieldTenantID, Value: bson.D{{Key: mongoOperatorGT, Value: afterTenantID}}},
 			},
 		}}})
 	}
@@ -335,9 +335,9 @@ func (s *Store) ListTenantOverrides(
 	filter := bson.D{{Key: "$and", Value: and}}
 
 	findOpts := options.Find().SetSort(bson.D{
-		{Key: "namespace", Value: 1},
-		{Key: "key", Value: 1},
-		{Key: "tenant_id", Value: 1},
+		{Key: mongoFieldNamespace, Value: 1},
+		{Key: mongoFieldKey, Value: 1},
+		{Key: mongoFieldTenantID, Value: 1},
 	})
 
 	if limit > 0 {
@@ -388,9 +388,9 @@ func (s *Store) ListTenantsForKey(
 	)
 
 	filter := bson.D{
-		{Key: "namespace", Value: namespace},
-		{Key: "key", Value: key},
-		{Key: "tenant_id", Value: bson.D{{Key: "$ne", Value: store.SentinelGlobal}}},
+		{Key: mongoFieldNamespace, Value: namespace},
+		{Key: mongoFieldKey, Value: key},
+		{Key: mongoFieldTenantID, Value: bson.D{{Key: mongoOperatorNE, Value: store.SentinelGlobal}}},
 	}
 
 	// Distinct is the natural operator here: one index seek, constant memory,
@@ -399,7 +399,7 @@ func (s *Store) ListTenantsForKey(
 	// failed operation (auth error, network drop mid-flight, invalid collation)
 	// would otherwise surface as a silent empty slice. Inspecting .Err() first
 	// preserves fail-closed semantics.
-	res := s.coll.Distinct(ctx, "tenant_id", filter)
+	res := s.coll.Distinct(ctx, mongoFieldTenantID, filter)
 	if err := res.Err(); err != nil {
 		// ErrNoDocuments from a Distinct that matched nothing is benign —
 		// return an empty slice rather than propagating.

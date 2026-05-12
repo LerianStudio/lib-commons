@@ -95,7 +95,14 @@ func buildKgoOpts(cfg Config, opts emitterOptions) ([]kgo.Opt, error) {
 	// opted into acks=leader/none, they've consciously traded idempotency
 	// for lower latency — we must disable idempotent writes so the kgo
 	// client starts up instead of failing validation.
-	if cfg.RequiredAcks != "all" {
+	// kgo.DisableIdempotentWrite is needed only when acks != "all"; coupled
+	// to the kafka idempotent-write invariant, not the validation default.
+	// The literal "all" here encodes the kafka-protocol idempotent-acks
+	// invariant — intentionally distinct from defaultRequiredAcks (the
+	// user-configurable default in config.go). They happen to be the same
+	// string today; do NOT collapse them — a future default change must
+	// not silently disable kafka idempotency.
+	if cfg.RequiredAcks != "all" { //nolint:goconst // kafka-protocol invariant literal, intentionally distinct from defaultRequiredAcks
 		kgoOpts = append(kgoOpts, kgo.DisableIdempotentWrite())
 	}
 
@@ -136,7 +143,7 @@ func resolveCompression(name string) (kgo.CompressionCodec, error) {
 		return kgo.ZstdCompression(), nil
 	case "gzip":
 		return kgo.GzipCompression(), nil
-	case "none":
+	case configValueNone:
 		return kgo.NoCompression(), nil
 	default:
 		return kgo.CompressionCodec{}, fmt.Errorf("%w: %q", ErrInvalidCompression, name)
@@ -146,13 +153,17 @@ func resolveCompression(name string) (kgo.CompressionCodec, error) {
 // resolveAcks maps the Config string to a kgo.Acks value. cfg.validate()
 // already rejects anything outside the closed set; the default branch is
 // defensive.
+//
+// Literal "all" is the kafka-protocol invariant for idempotency; see
+// producer_kgo.go:100-104. Do NOT collapse to defaultRequiredAcks — a future
+// default change must not silently disable kafka idempotency.
 func resolveAcks(name string) (kgo.Acks, error) {
 	switch name {
 	case "all":
 		return kgo.AllISRAcks(), nil
 	case "leader":
 		return kgo.LeaderAck(), nil
-	case "none":
+	case configValueNone:
 		return kgo.NoAck(), nil
 	default:
 		return kgo.Acks{}, fmt.Errorf("%w: %q", ErrInvalidAcks, name)

@@ -76,7 +76,7 @@ endif
 # Pinned tool versions for reproducibility (update as needed)
 GOTESTSUM_VERSION ?= v1.12.0
 GOSEC_VERSION ?= v2.22.4
-GOLANGCI_LINT_VERSION ?= v2.1.6
+GOLANGCI_LINT_VERSION ?= v2.11.2
 
 TEST_REPORTS_DIR ?= ./reports
 GOTESTSUM = $(shell command -v gotestsum 2>/dev/null)
@@ -137,6 +137,9 @@ help:
 	@echo "  make vet                         - Run go vet on all packages"
 	@echo "  make sec                         - Run security checks using gosec"
 	@echo "  make sec SARIF=1                 - Run security checks with SARIF output"
+	@echo "  make telemetry-dictionary        - Generate docs/dashboards/telemetry-dictionary.md"
+	@echo "  make verify-telemetry            - Verify telemetry dictionary is in sync"
+	@echo "  make update-goldens              - Update telemetry-inventory golden files"
 	@echo ""
 	@echo ""
 	@echo "Git Hook Commands:"
@@ -176,11 +179,13 @@ ci:
 	$(MAKE) lint-fix
 	$(MAKE) format
 	$(MAKE) tidy
+	$(MAKE) lint
 	$(MAKE) check-tests
 	$(MAKE) sec
 	$(MAKE) vet
 	$(MAKE) test-unit
 	$(MAKE) test-integration
+	$(MAKE) perfgate
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) Local CI pipeline completed successfully$(GREEN) ✔️$(NC)"
 
 #-------------------------------------------------------
@@ -269,7 +274,7 @@ test-integration:
 	  pkgs=$$(go list $(PKG) 2>/dev/null | tr '\n' ' '); \
 	else \
 	  echo "Finding packages with *_integration_test.go files..."; \
-	  dirs=$$(find . -name '*_integration_test.go' -not -path './vendor/*' -exec dirname {} \; 2>/dev/null | sort -u | tr '\n' ' '); \
+	  dirs=$$(find . -name '*_integration_test.go' -not -path './vendor/*' -not -path './docs/*' -exec dirname {} \; 2>/dev/null | sort -u | tr '\n' ' '); \
 	  pkgs=$$(if [ -n "$$dirs" ]; then go list $$dirs 2>/dev/null | tr '\n' ' '; fi); \
 	fi; \
 	if [ -z "$$pkgs" ]; then \
@@ -322,6 +327,15 @@ test-all:
 	$(call print_title,Running integration tests)
 	$(MAKE) test-integration
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) All tests passed$(GREEN) ✔️$(NC)"
+
+.PHONY: perfgate
+perfgate:
+	$(call print_title,Running AC15 perf gate (no -race))
+	$(call check_command,go,"Install Go from https://golang.org/doc/install")
+	@# Race detector adds 10-50x latency overhead; AC15 thresholds are sub-microsecond.
+	@# This target must NEVER pass -race. Mirrors the GitHub workflow PerfGate job.
+	go test -tags=unit -run=^TestPerf_ ./commons/systemplane/...
+	@echo "$(GREEN)$(BOLD)[ok]$(NC) AC15 perf gate passed$(GREEN) ✔️$(NC)"
 
 #-------------------------------------------------------
 # Coverage Commands
@@ -394,7 +408,7 @@ coverage-integration:
 	  pkgs=$$(go list $(PKG) 2>/dev/null | tr '\n' ' '); \
 	else \
 	  echo "Finding packages with *_integration_test.go files..."; \
-	  dirs=$$(find . -name '*_integration_test.go' -not -path './vendor/*' -exec dirname {} \; 2>/dev/null | sort -u | tr '\n' ' '); \
+	  dirs=$$(find . -name '*_integration_test.go' -not -path './vendor/*' -not -path './docs/*' -exec dirname {} \; 2>/dev/null | sort -u | tr '\n' ' '); \
 	  pkgs=$$(if [ -n "$$dirs" ]; then go list $$dirs 2>/dev/null | tr '\n' ' '; fi); \
 	fi; \
 	if [ -z "$$pkgs" ]; then \
@@ -614,6 +628,27 @@ tidy:
 	go mod tidy
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) Dependencies cleaned successfully$(GREEN) ✔️$(NC)"
 
+.PHONY: telemetry-dictionary
+telemetry-dictionary:
+	$(call print_title,Generating telemetry dictionary)
+	$(call check_command,go,"Install Go from https://golang.org/doc/install")
+	go run ./cmd/telemetry-inventory inventory .
+	@echo "$(GREEN)$(BOLD)[ok]$(NC) Telemetry dictionary generated$(GREEN) ✔️$(NC)"
+
+.PHONY: verify-telemetry
+verify-telemetry:
+	$(call print_title,Verifying telemetry dictionary against committed version)
+	$(call check_command,go,"Install Go from https://golang.org/doc/install")
+	go run ./cmd/telemetry-inventory verify .
+	@echo "$(GREEN)$(BOLD)[ok]$(NC) Telemetry dictionary in sync$(GREEN) ✔️$(NC)"
+
+.PHONY: update-goldens
+update-goldens:
+	$(call print_title,Updating telemetry-inventory golden files)
+	$(call check_command,go,"Install Go from https://golang.org/doc/install")
+	UPDATE_GOLDEN=1 go test -tags=unit -count=1 -run Golden ./cmd/telemetry-inventory/...
+	@echo "$(GREEN)$(BOLD)[ok]$(NC) Goldens updated - review with git diff before committing$(GREEN) ✔️$(NC)"
+
 # SARIF output for GitHub Security tab integration (optional)
 # Usage: make sec SARIF=1
 SARIF ?= 0
@@ -626,10 +661,15 @@ sec:
 		go install github.com/securego/gosec/v2/cmd/gosec@$(GOSEC_VERSION); \
 	fi
 	@if find . -name "*.go" -type f -not -path './vendor/*' | grep -q .; then \
+		packages="$$(go list ./...)" || { printf "\n%s%sgosec package enumeration failed: go list ./... returned a non-zero exit code.%s\n\n" "$(BOLD)" "$(RED)" "$(NC)"; exit 1; }; \
+		if [ -z "$$packages" ]; then \
+			printf "\n%s%sgosec package enumeration produced no packages.%s\n\n" "$(BOLD)" "$(RED)" "$(NC)"; \
+			exit 1; \
+		fi; \
 		echo "Running security checks on all packages..."; \
 		if [ "$(SARIF)" = "1" ]; then \
 			echo "Generating SARIF output: gosec-report.sarif"; \
-			if gosec -fmt sarif -out gosec-report.sarif ./...; then \
+			if gosec -fmt sarif -out gosec-report.sarif $$packages; then \
 				echo "$(GREEN)$(BOLD)[ok]$(NC) SARIF report generated: gosec-report.sarif$(GREEN) ✔️$(NC)"; \
 			else \
 				printf "\n%s%sSecurity issues found by gosec. Please address them before proceeding.%s\n\n" "$(BOLD)" "$(RED)" "$(NC)"; \
@@ -637,7 +677,7 @@ sec:
 				exit 1; \
 			fi; \
 		else \
-			if gosec ./...; then \
+			if gosec $$packages; then \
 				echo "$(GREEN)$(BOLD)[ok]$(NC) Security checks completed$(GREEN) ✔️$(NC)"; \
 			else \
 				printf "\n%s%sSecurity issues found by gosec. Please address them before proceeding.%s\n\n" "$(BOLD)" "$(RED)" "$(NC)"; \

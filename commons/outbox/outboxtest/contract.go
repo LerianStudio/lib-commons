@@ -390,7 +390,7 @@ func testMarkFailedAtMaxAttemptsInvalidates(t *testing.T, factory Factory) {
 	require.NotNil(t, stored)
 	require.Equal(t, outbox.OutboxStatusInvalid, stored.Status)
 	require.Equal(t, 1, stored.Attempts)
-	require.Equal(t, "max dispatch attempts exceeded", stored.LastError)
+	require.Equal(t, outbox.ErrMessageMaxDispatchExceeded, stored.LastError)
 }
 
 func testListFailedForRetryReadOnly(t *testing.T, factory Factory) {
@@ -502,7 +502,7 @@ func testResetStuckProcessingReprocessesAndInvalidates(t *testing.T, factory Fac
 	require.NotNil(t, exhaustedStored)
 	require.Equal(t, outbox.OutboxStatusInvalid, exhaustedStored.Status)
 	require.Equal(t, 3, exhaustedStored.Attempts)
-	require.Equal(t, "max dispatch attempts exceeded", exhaustedStored.LastError)
+	require.Equal(t, outbox.ErrMessageMaxDispatchExceeded, exhaustedStored.LastError)
 }
 
 func testWrongTenantMutationsRejected(t *testing.T, factory Factory) {

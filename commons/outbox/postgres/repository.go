@@ -114,7 +114,7 @@ func NewRepository(
 		tenantResolver:     tenantResolver,
 		tenantDiscoverer:   tenantDiscoverer,
 		logger:             libLog.NewNop(),
-		tableName:          "outbox_events",
+		tableName:          defaultOutboxTableName,
 		transactionTimeout: defaultTransactionTimeout,
 	}
 
@@ -138,7 +138,7 @@ func NewRepository(
 
 	repo.tableName = strings.TrimSpace(repo.tableName)
 	if repo.tableName == "" {
-		repo.tableName = "outbox_events"
+		repo.tableName = defaultOutboxTableName
 	}
 
 	repo.tenantColumn = strings.TrimSpace(repo.tenantColumn)
@@ -712,7 +712,7 @@ func (repo *Repository) markStuckEventsInvalid(
 	}
 
 	args := make([]any, 0, 5+len(filterArgs))
-	args = append(args, outbox.OutboxStatusInvalid, "max dispatch attempts exceeded", now, ids, outbox.OutboxStatusProcessing)
+	args = append(args, outbox.OutboxStatusInvalid, outbox.ErrMessageMaxDispatchExceeded, now, ids, outbox.OutboxStatusProcessing)
 
 	query += filter
 

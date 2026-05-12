@@ -135,12 +135,12 @@ type Client struct {
 	metricsOnce sync.Once
 	metrics     *clientMetrics
 
-	startMu   sync.Mutex
-	started   atomic.Bool
-	closeOnce sync.Once
-	closed    atomic.Bool
-	cancel    context.CancelFunc // cancels the Subscribe goroutine
-	wg        sync.WaitGroup     // tracks the Subscribe goroutine
+	startMu    sync.Mutex
+	started    atomic.Bool
+	closeOnce  sync.Once
+	closed     atomic.Bool
+	cancelDone chan struct{}  // closed by Close to signal the Subscribe goroutine to exit
+	wg         sync.WaitGroup // tracks the Subscribe goroutine and its cancel-bridge
 }
 
 // tenantSubscription holds a single OnTenantChange callback and its monotonic
@@ -240,6 +240,10 @@ func newClient(s store.Store, cfg clientConfig) *Client {
 		subscribers:          make(map[nskey][]subscription),
 		tenantSubscribers:    make(map[nskey][]tenantSubscription),
 		tenantLoadMode:       tc.mode(),
+		// cancelDone is allocated here (not in Start) so Close is safe to call
+		// on a never-Started Client — Close just runs its sync.Once and the
+		// channel is harmlessly closed with no subscribers.
+		cancelDone: make(chan struct{}),
 	}
 }
 
@@ -336,25 +340,55 @@ func (c *Client) Start(ctx context.Context) error {
 		c.hydrateTenantCache(ctx)
 	}
 
-	// 3. Launch the Subscribe goroutine with its own cancellable context.
-	subCtx, cancel := context.WithCancel(context.Background()) //nolint:gosec // G118: cancel stored in c.cancel and invoked by Close()
-	c.cancel = cancel
-
-	c.wg.Go(func() {
-		defer runtime.RecoverAndLog(c.logger, "systemplane.subscribe")
-
-		if err := c.store.Subscribe(subCtx, c.onEvent); err != nil {
-			if subCtx.Err() == nil {
-				c.logWarn(subCtx, "subscribe returned error",
-					log.Err(err),
-				)
-			}
-		}
-	})
+	// 3. Launch the Subscribe goroutine. Lifecycle: Close → close(cancelDone)
+	// → bridge goroutine in runSubscribe takes that signal and cancels subCtx
+	// → Subscribe returns → runSubscribe returns → wg.Wait drains.
+	c.wg.Go(c.runSubscribe)
 
 	c.started.Store(true)
 
 	return nil
+}
+
+// runSubscribe owns the Subscribe goroutine's lifecycle. Its cancellable
+// context is created here so defer cancel() lives in the same function as
+// context.WithCancel — this is the structural property gosec G118 verifies.
+//
+// Shutdown is signaled via c.cancelDone (closed by Close). A short-lived
+// bridge goroutine translates that signal into ctx cancellation. The bridge
+// self-terminates on either path:
+//
+//	Path A — Close called: <-c.cancelDone fires → cancel() → bridge exits.
+//	Path B — Subscribe returns naturally: defer cancel() fires → <-subCtx.Done()
+//	         fires → bridge exits without calling cancel a second time
+//	         (idempotent anyway, but the select avoids the redundant call).
+//
+// The bridge is registered with c.wg so Close's wg.Wait drains BOTH the
+// Subscribe goroutine and the bridge; a goleak.VerifyNone immediately after
+// Close returns must observe no transient leak.
+func (c *Client) runSubscribe() {
+	defer runtime.RecoverAndLog(c.logger, "systemplane.subscribe")
+
+	subCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	c.wg.Go(func() {
+		defer runtime.RecoverAndLog(c.logger, "systemplane.cancel-bridge")
+
+		select {
+		case <-c.cancelDone:
+			cancel()
+		case <-subCtx.Done():
+		}
+	})
+
+	if err := c.store.Subscribe(subCtx, c.onEvent); err != nil {
+		if subCtx.Err() == nil {
+			c.logWarn(subCtx, "subscribe returned error",
+				log.Err(err),
+			)
+		}
+	}
 }
 
 // Close unsubscribes from the changefeed and releases backend resources.
@@ -367,10 +401,11 @@ func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
 
-		// Cancel the Subscribe goroutine if it was started.
-		if c.cancel != nil {
-			c.cancel()
-		}
+		// Signal the Subscribe goroutine to exit. cancelDone is allocated in
+		// newClient so this is safe even if Start was never called — the
+		// channel just closes with no readers. The closeOnce wrap ensures we
+		// never double-close.
+		close(c.cancelDone)
 
 		// Wait for the Subscribe goroutine with a deadline to avoid hanging.
 		done := make(chan struct{})
