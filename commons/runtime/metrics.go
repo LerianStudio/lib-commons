@@ -1,35 +1,33 @@
 package runtime
 
 import (
-	"context"
-
 	libobsruntime "github.com/LerianStudio/lib-observability/runtime"
 	libobsmetrics "github.com/LerianStudio/lib-observability/metrics"
 )
 
 // PanicMetrics provides panic-related metrics using OpenTelemetry.
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/runtime.PanicMetrics instead.
 type PanicMetrics = libobsruntime.PanicMetrics
 
 // InitPanicMetrics initializes panic metrics with the provided MetricsFactory.
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/runtime.InitPanicMetrics instead.
 func InitPanicMetrics(factory *libobsmetrics.MetricsFactory, logger ...Logger) {
 	libobsruntime.InitPanicMetrics(factory, logger...)
 }
 
 // GetPanicMetrics returns the singleton PanicMetrics instance.
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/runtime.GetPanicMetrics instead.
 func GetPanicMetrics() *PanicMetrics {
 	return libobsruntime.GetPanicMetrics()
 }
 
 // ResetPanicMetrics clears the panic metrics singleton.
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/runtime.ResetPanicMetrics instead.
 func ResetPanicMetrics() {
 	libobsruntime.ResetPanicMetrics()
 }
 
-// RecordPanicRecovered increments the panic_recovered_total counter.
-// This is a package-level helper for callers that don't have a PanicMetrics instance.
-func recordPanicMetric(ctx context.Context, component, goroutineName string) {
-	pm := GetPanicMetrics()
-	if pm != nil {
-		pm.RecordPanicRecovered(ctx, component, goroutineName)
-	}
-}
