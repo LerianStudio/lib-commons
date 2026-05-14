@@ -8,110 +8,13 @@
 
 package log
 
-import (
-	context "context"
-	reflect "reflect"
-
-	gomock "go.uber.org/mock/gomock"
-)
+import libobslog "github.com/LerianStudio/lib-observability/log"
 
 // MockLogger is a mock of Logger interface.
-type MockLogger struct {
-	ctrl     *gomock.Controller
-	recorder *MockLoggerMockRecorder
-	isgomock struct{}
-}
+type MockLogger = libobslog.MockLogger
 
 // MockLoggerMockRecorder is the mock recorder for MockLogger.
-type MockLoggerMockRecorder struct {
-	mock *MockLogger
-}
+type MockLoggerMockRecorder = libobslog.MockLoggerMockRecorder
 
 // NewMockLogger creates a new mock instance.
-func NewMockLogger(ctrl *gomock.Controller) *MockLogger {
-	mock := &MockLogger{ctrl: ctrl}
-	mock.recorder = &MockLoggerMockRecorder{mock}
-	return mock
-}
-
-// EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockLogger) EXPECT() *MockLoggerMockRecorder {
-	return m.recorder
-}
-
-// Enabled mocks base method.
-func (m *MockLogger) Enabled(level Level) bool {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Enabled", level)
-	ret0, _ := ret[0].(bool)
-	return ret0
-}
-
-// Enabled indicates an expected call of Enabled.
-func (mr *MockLoggerMockRecorder) Enabled(level any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Enabled", reflect.TypeOf((*MockLogger)(nil).Enabled), level)
-}
-
-// Log mocks base method.
-func (m *MockLogger) Log(ctx context.Context, level Level, msg string, fields ...Field) {
-	m.ctrl.T.Helper()
-	varargs := []any{ctx, level, msg}
-	for _, a := range fields {
-		varargs = append(varargs, a)
-	}
-	m.ctrl.Call(m, "Log", varargs...)
-}
-
-// Log indicates an expected call of Log.
-func (mr *MockLoggerMockRecorder) Log(ctx, level, msg any, fields ...any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	varargs := append([]any{ctx, level, msg}, fields...)
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Log", reflect.TypeOf((*MockLogger)(nil).Log), varargs...)
-}
-
-// Sync mocks base method.
-func (m *MockLogger) Sync(ctx context.Context) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Sync", ctx)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// Sync indicates an expected call of Sync.
-func (mr *MockLoggerMockRecorder) Sync(ctx any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Sync", reflect.TypeOf((*MockLogger)(nil).Sync), ctx)
-}
-
-// With mocks base method.
-func (m *MockLogger) With(fields ...Field) Logger {
-	m.ctrl.T.Helper()
-	varargs := []any{}
-	for _, a := range fields {
-		varargs = append(varargs, a)
-	}
-	ret := m.ctrl.Call(m, "With", varargs...)
-	ret0, _ := ret[0].(Logger)
-	return ret0
-}
-
-// With indicates an expected call of With.
-func (mr *MockLoggerMockRecorder) With(fields ...any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "With", reflect.TypeOf((*MockLogger)(nil).With), fields...)
-}
-
-// WithGroup mocks base method.
-func (m *MockLogger) WithGroup(name string) Logger {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "WithGroup", name)
-	ret0, _ := ret[0].(Logger)
-	return ret0
-}
-
-// WithGroup indicates an expected call of WithGroup.
-func (mr *MockLoggerMockRecorder) WithGroup(name any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "WithGroup", reflect.TypeOf((*MockLogger)(nil).WithGroup), name)
-}
+var NewMockLogger = libobslog.NewMockLogger
