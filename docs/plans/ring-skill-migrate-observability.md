@@ -32,7 +32,7 @@ description: |
 **Runs after:** (none)
 
 ## Related
-**Complementary:** ring:dev-cycle, ring:codereview, ring:lint, ring:using-lib-commons
+**Complementary:** ring:using-ring, ring:dev-cycle, ring:codereview, ring:lint, ring:using-lib-commons
 
 ---
 
@@ -291,7 +291,7 @@ go test ./...
 ```
 
 <block_condition>
-- `go build ./...` exits non-zero
+- `go build ./...`, `go vet ./...`, or `go test ./...` exits non-zero
 </block_condition>
 
 If build fails:
