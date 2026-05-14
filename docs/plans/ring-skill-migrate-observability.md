@@ -112,7 +112,14 @@ The 7 deprecated lib-commons packages and their lib-observability replacements:
 2. Extract module name from go.mod
 3. Confirm lib-commons is a dependency: grep "lib-commons" go.mod
    if not found → report "No lib-commons dependency found. Nothing to migrate." and exit PASS
-4. HARD GATE — Verify lib-commons has the delegation shims:
+4. Quick check — lib-observability already present?
+   grep "lib-observability" go.mod
+   if found → note for UX messaging; do NOT exit here.
+   lib-observability presence alone does not mean migration is complete —
+   deprecated lib-commons imports may still exist. Continue to Step 2 discovery.
+   If Step 2 finds zero deprecated imports, report "Migration already complete.
+   No deprecated lib-commons observability imports found." and exit PASS.
+5. HARD GATE — Verify lib-commons has the delegation shims:
 
    Resolve the effective lib-commons module directory (honours replace directives, workspaces, and custom GOMODCACHE):
 
@@ -228,13 +235,19 @@ If dry_run=true from input, skip this step and show diffs only.
 # Always use GONOSUMDB + GOPRIVATE to avoid sum.golang.org 404 errors.
 GONOSUMDB="github.com/LerianStudio/lib-observability" \
 GOPRIVATE="github.com/LerianStudio/lib-observability" \
-  go get github.com/LerianStudio/lib-observability@{lib_observability_version}
+  go get github.com/LerianStudio/lib-observability@v1.0.0-beta.3
+# Use the version that matches the lib-commons delegation shims.
+# Check the lib-commons release notes or go.mod require block for the minimum
+# compatible version. v1.0.0-beta.3 is the baseline for the current shims.
 ```
 
-Verify it appears in go.mod as a direct dependency:
+Verify it appears in go.mod:
 ```bash
 grep "lib-observability" go.mod
-# Expected: github.com/LerianStudio/lib-observability v... (no "// indirect")
+# Expected: github.com/LerianStudio/lib-observability v1.0.0-beta.3
+# Note: the entry may be marked "// indirect" at this stage — import paths have
+# not been updated yet (that happens in Step 5). The "// indirect" marker is
+# removed after Step 5 (import replacements) and Step 6 (go mod tidy).
 ```
 
 ---
