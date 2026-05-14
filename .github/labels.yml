@@ -1,0 +1,236 @@
+# Label definitions for lib-commons
+# Synced via .github/workflows/routine.yml -> shared labels-sync.
+
+# ── Scopes (aligned with .github/labeler.yml) ─────────────────────────────────
+
+- name: assert
+  color: "1d76db"
+  description: Assertion helpers
+
+- name: backoff
+  color: "5319e7"
+  description: Exponential backoff helpers
+
+- name: certificate
+  color: "0e8a16"
+  description: TLS certificate manager
+
+- name: circuitbreaker
+  color: "b60205"
+  description: Circuit breaker manager
+
+- name: constants
+  color: "0e8a16"
+  description: Shared constants
+
+- name: cron
+  color: "fbca04"
+  description: Cron expression parser/scheduler
+
+- name: crypto
+  color: "5319e7"
+  description: Cryptography helpers
+
+- name: dlq
+  color: "d93f0b"
+  description: Dead-letter queue
+
+- name: errgroup
+  color: "7c3aed"
+  description: Errgroup with panic recovery
+
+- name: jwt
+  color: "fef2c0"
+  description: JWT signing and verification
+
+- name: license
+  color: "d4a017"
+  description: License enforcement
+
+- name: log
+  color: "fbca04"
+  description: Logging abstraction
+
+- name: mongo
+  color: "13aa52"
+  description: MongoDB connector
+
+- name: net
+  color: "0052cc"
+  description: HTTP, gRPC and net helpers
+
+- name: opentelemetry
+  color: "c5def5"
+  description: OpenTelemetry bootstrap and metrics
+
+- name: outbox
+  color: "ededed"
+  description: Outbox pattern
+
+- name: pointers
+  color: "f9d0c4"
+  description: Pointer helpers
+
+- name: postgres
+  color: "336791"
+  description: Postgres connector
+
+- name: rabbitmq
+  color: "ff6600"
+  description: RabbitMQ connector
+
+- name: redis
+  color: "dc382d"
+  description: Redis connector and locking
+
+- name: runtime
+  color: "0052cc"
+  description: Runtime panic recovery and safe goroutines
+
+- name: safe
+  color: "a2eeef"
+  description: Panic-free math/regex/slice helpers
+
+- name: secretsmanager
+  color: "d4a017"
+  description: Secrets manager helpers
+
+- name: security
+  color: "b60205"
+  description: Security and SSRF helpers
+
+- name: server
+  color: "0db7ed"
+  description: Server lifecycle manager
+
+- name: streaming
+  color: "e99695"
+  description: Streaming (CloudEvents to Kafka/Redpanda)
+
+- name: systemplane
+  color: "1d76db"
+  description: Runtime configuration store
+
+- name: tenant-manager
+  color: "5319e7"
+  description: Tenant manager
+
+- name: transaction
+  color: "0e8a16"
+  description: Transaction planning and posting
+
+- name: webhook
+  color: "bfd4f2"
+  description: Outbound webhook delivery
+
+- name: zap
+  color: "bfd4f2"
+  description: Zap logger adapter
+
+- name: core
+  color: "0db7ed"
+  description: Top-level public API surface (app, context, errors, time, ...)
+
+- name: scripts
+  color: "fef2c0"
+  description: Build and tooling scripts
+
+- name: config
+  color: "d4a017"
+  description: Application and tooling configuration
+
+- name: ci
+  color: "2088FF"
+  description: Continuous integration pipelines
+
+- name: docs
+  color: "0075ca"
+  description: Documentation and markdown content
+
+- name: tests
+  color: "00ADD8"
+  description: Unit, integration and end-to-end tests
+
+- name: deps
+  color: "ededed"
+  description: Go module dependencies (usually opened by Dependabot)
+
+# ── Change types ──────────────────────────────────────────────────────────────
+
+- name: bug
+  color: "d73a4a"
+  description: Something is not working as expected
+
+- name: enhancement
+  color: "a2eeef"
+  description: New feature or improvement request
+
+- name: dependencies
+  color: "ededed"
+  description: Dependency updates (Dependabot)
+
+- name: github-actions
+  color: "2088FF"
+  description: Updates to GitHub Actions dependencies
+
+- name: breaking-change
+  color: "b60205"
+  description: Callers must update their integration after this change
+
+- name: skip-changelog
+  color: "ffffff"
+  description: This change does not need a changelog entry
+
+# ── PR size ───────────────────────────────────────────────────────────────────
+
+- name: size/XS
+  color: "3CBF00"
+  description: "PR changes < 50 lines"
+
+- name: size/S
+  color: "5D9801"
+  description: "PR changes 50–199 lines"
+
+- name: size/M
+  color: "7F7203"
+  description: "PR changes 200–499 lines"
+
+- name: size/L
+  color: "A14C05"
+  description: "PR changes 500–999 lines"
+
+- name: size/XL
+  color: "C32607"
+  description: "PR changes ≥ 1000 lines — consider splitting"
+
+# ── Triage and stale management ───────────────────────────────────────────────
+
+- name: triage
+  color: "e4e669"
+  description: Needs initial assessment
+
+- name: stale
+  color: "795548"
+  description: No recent activity — will be closed if not updated
+
+- name: no-stale
+  color: "fef2c0"
+  description: Exempt from stale auto-close
+
+- name: work-in-progress
+  color: "ffa500"
+  description: Active work — exempt from stale auto-close
+
+- name: pinned
+  color: "d4a017"
+  description: Pinned discussion/tracker — exempt from stale auto-close
+
+# ── Automation ────────────────────────────────────────────────────────────────
+
+- name: automated
+  color: "ededed"
+  description: Opened by automation (release backmerges, etc.)
+
+- name: backmerge
+  color: "5319e7"
+  description: Backmerge PR (main → develop after release)

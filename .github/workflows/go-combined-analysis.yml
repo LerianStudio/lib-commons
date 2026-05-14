@@ -1,76 +1,48 @@
-name: "Go Combined Analysis"
+name: Go Combined Analysis
 
 on:
   pull_request:
-    branches:
-      - develop
-      - main
-    types:
-      - opened
-      - edited
-      - synchronize
-      - reopened
+    branches: [develop, release-candidate, main]
+    types: [opened, synchronize, reopened]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/**'
+      - 'LICENSE'
+      - '.gitignore'
 
 permissions:
   id-token: write
   contents: read
-  pull-requests: read
-  actions: read
+  pull-requests: write
   security-events: write
 
 jobs:
-  GoLangCI-Lint:
-    name: Run GoLangCI-Lint to SDK
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+  go-analysis:
+    name: Go Analysis
+    uses: LerianStudio/github-actions-shared-workflows/.github/workflows/go-pr-analysis.yml@v1.30.0
+    with:
+      go_version: "1.25.9"
+      golangci_lint_version: "v2.11.2"
+      fail_on_coverage_threshold: true
+      go_private_modules: "github.com/LerianStudio/*"
+    secrets: inherit
 
-      # Using GolangCI-Lint Module
-      - name: Run GoLangCI Lint
-        uses: LerianStudio/github-actions-golangci-lint@main
-        with:
-          lerian_studio_midaz_push_bot_app_id: ${{ secrets.LERIAN_STUDIO_MIDAZ_PUSH_BOT_APP_ID }}
-          lerian_studio_midaz_push_bot_private_key: ${{ secrets.LERIAN_STUDIO_MIDAZ_PUSH_BOT_PRIVATE_KEY }}
-          lerian_ci_cd_user_gpg_key: ${{ secrets.LERIAN_CI_CD_USER_GPG_KEY }}
-          lerian_ci_cd_user_gpg_key_password: ${{ secrets.LERIAN_CI_CD_USER_GPG_KEY_PASSWORD }}
-          lerian_ci_cd_user_name: ${{ secrets.LERIAN_CI_CD_USER_NAME }}
-          lerian_ci_cd_user_email: ${{ secrets.LERIAN_CI_CD_USER_EMAIL }}
-          go_version: '1.25'
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          golangci_lint_version: 'v2.11.2'
-
-  GoSec:
-    name: Run GoSec to SDK
+  # TODO: move to shared workflow once it supports build-tagged perf gates.
+  # AC15 perf gate is build-tagged `unit && !race` because the race detector
+  # adds 10-50x latency overhead, making sub-microsecond thresholds
+  # meaningless. Run the gate explicitly without -race so a regression in
+  # GetForTenant fails CI rather than going silently unnoticed.
+  perf-gate:
+    name: AC15 Perf Gate (systemplane)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
-          cache: false
-
-      - name: Gosec Scanner
-        uses: securego/gosec@master
-        with:
-          args: ./...
-
-  PerfGate:
-    name: Run AC15 Perf Gate (systemplane)
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
+          go-version: "1.25.9"
           cache: true
 
-      # AC15 perf gate is build-tagged `unit && !race` because the race detector
-      # adds 10-50x latency overhead, making sub-microsecond thresholds
-      # meaningless. Run the gate explicitly without -race so a regression in
-      # GetForTenant fails CI rather than going silently unnoticed in the
-      # race-enabled lane.
       - name: Run AC15 perf gate (no -race)
         run: go test -tags=unit -run=^TestPerf_ ./commons/systemplane/...

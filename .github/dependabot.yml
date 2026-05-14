@@ -1,7 +1,50 @@
 version: 2
 updates:
+  # Go modules
   - package-ecosystem: "gomod"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "America/Sao_Paulo"
     target-branch: "develop"
+    open-pull-requests-limit: 10
+    labels:
+      - "deps"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      go-dependencies:
+        patterns:
+          - "*"
+
+  # Pinned third-party GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "08:00"
+      timezone: "America/Sao_Paulo"
+    target-branch: "develop"
+    open-pull-requests-limit: 10
+    labels:
+      - "deps"
+      - "ci"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    ignore:
+      # LerianStudio internal actions are pinned intentionally
+      - dependency-name: "LerianStudio/*"
+    groups:
+      actions-core:
+        patterns:
+          - "actions/*"
+      security-actions:
+        patterns:
+          - "github/codeql-action*"
+          - "aquasecurity/trivy-action"
+          - "securego/gosec"

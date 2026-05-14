@@ -1,0 +1,24 @@
+name: PR Security Scan
+
+on:
+  pull_request:
+    branches: [develop, release-candidate, main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+
+permissions:
+  actions: read
+  id-token: write
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  security:
+    uses: LerianStudio/github-actions-shared-workflows/.github/workflows/pr-security-scan.yml@v1.30.0
+    with:
+      enable_docker_scan: false
+    secrets: inherit

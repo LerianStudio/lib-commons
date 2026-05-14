@@ -1,0 +1,222 @@
+# Pull Request Labeler configuration
+#
+# Labels are aligned with the pr_title_scopes in pr-validation.yml.
+
+# Assertion helpers
+assert:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/assert/**/*'
+
+# Exponential backoff helpers
+backoff:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/backoff/**/*'
+
+# TLS certificate manager
+certificate:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/certificate/**/*'
+
+# Circuit breaker manager
+circuitbreaker:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/circuitbreaker/**/*'
+
+# Shared constants
+constants:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/constants/**/*'
+
+# Cron expression parser/scheduler
+cron:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/cron/**/*'
+
+# Cryptography helpers
+crypto:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/crypto/**/*'
+
+# Dead-letter queue
+dlq:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/dlq/**/*'
+
+# Errgroup with panic recovery
+errgroup:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/errgroup/**/*'
+
+# JWT signing/verification
+jwt:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/jwt/**/*'
+
+# License enforcement
+license:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/license/**/*'
+
+# Logging abstraction
+log:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/log/**/*'
+
+# MongoDB connector
+mongo:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/mongo/**/*'
+
+# HTTP and net helpers (Fiber, rate limit, idempotency)
+net:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/net/**/*'
+
+# OpenTelemetry bootstrap and metrics
+opentelemetry:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/opentelemetry/**/*'
+
+# Outbox pattern
+outbox:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/outbox/**/*'
+
+# Pointer helpers
+pointers:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/pointers/**/*'
+
+# Postgres connector
+postgres:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/postgres/**/*'
+
+# RabbitMQ connector
+rabbitmq:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/rabbitmq/**/*'
+
+# Redis connector and locking
+redis:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/redis/**/*'
+
+# Runtime panic recovery and safe goroutines
+runtime:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/runtime/**/*'
+
+# Panic-free math/regex/slice helpers
+safe:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/safe/**/*'
+
+# Secrets manager helpers
+secretsmanager:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/secretsmanager/**/*'
+
+# Security and SSRF helpers
+security:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/security/**/*'
+
+# Server lifecycle manager
+server:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/server/**/*'
+
+# Streaming (CloudEvents to Kafka/Redpanda)
+streaming:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/streaming/**/*'
+
+# Runtime configuration store
+systemplane:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/systemplane/**/*'
+
+# Tenant manager
+tenant-manager:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/tenant-manager/**/*'
+
+# Transaction planning and posting
+transaction:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/transaction/**/*'
+
+# Outbound webhook delivery
+webhook:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/webhook/**/*'
+
+# Zap logger adapter
+zap:
+  - changed-files:
+      - any-glob-to-any-file: 'commons/zap/**/*'
+
+# Root shared helpers (app, context, errors, time, string, os, utils)
+core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'commons/app.go'
+          - 'commons/context.go'
+          - 'commons/context_*.go'
+          - 'commons/errors.go'
+          - 'commons/environment*.go'
+          - 'commons/os.go'
+          - 'commons/time.go'
+          - 'commons/stringUtils.go'
+          - 'commons/utils.go'
+          - 'commons/doc.go'
+          - 'commons/security_override.go'
+          - 'commons/internal/**/*'
+
+# Build and tooling scripts
+scripts:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'commons/shell/**/*'
+          - 'scripts/**/*'
+          - 'Makefile'
+
+# Application and tooling configuration
+config:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.golangci.yml'
+          - '.golangci.yaml'
+          - '.releaserc.yml'
+          - '.releaserc.yaml'
+          - '.goreleaser.yml'
+          - '.goreleaser.yaml'
+          - '.ignorecoverunit'
+
+# Continuous integration pipelines and shared workflows
+ci:
+  - changed-files:
+      - any-glob-to-any-file: '.github/workflows/**/*'
+
+# Markdown docs and context files
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/*.md'
+          - 'docs/**/*'
+          - 'llms.txt'
+
+# Unit, integration and end-to-end tests
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - '**/*_test.go'
+          - 'tests/**/*'
+
+# Go module dependencies
+deps:
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'go.mod'
+          - 'go.sum'
