@@ -4,3 +4,17 @@
 
 # Auto-generated mocks
 *_mock.go
+
+# Test contract helpers exercised through consumer package tests.
+commons/outbox/outboxtest/*
+commons/systemplane/internal/storetest/*
+commons/systemplane/systemplanetest/*
+commons/tenant-manager/internal/testutil/*
+commons/tenant-manager/internal/logcompat/*
+
+# Persistence adapters are covered by integration suites; exclude them from
+# the unit coverage gate so the unit threshold tracks unit-testable code.
+commons/outbox/mongo/*
+commons/outbox/postgres/*
+commons/systemplane/internal/mongodb/*
+commons/systemplane/internal/postgres/*
