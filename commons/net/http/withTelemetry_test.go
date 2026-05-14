@@ -14,7 +14,7 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v5/commons"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
-	otelmetrics "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
+	otelmetrics "github.com/LerianStudio/lib-observability/metrics"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

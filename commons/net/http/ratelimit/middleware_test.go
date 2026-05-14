@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons"
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	libLog "github.com/LerianStudio/lib-observability/log"
 	chttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
 	"github.com/alicebob/miniredis/v2"

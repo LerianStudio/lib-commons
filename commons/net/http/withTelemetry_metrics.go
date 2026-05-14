@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons"
-	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	"github.com/LerianStudio/lib-observability/runtime"
 )
 
 // Metrics collector singleton state.

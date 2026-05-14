@@ -15,7 +15,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 )
 
 // hydrationPageSize is the keyset page size hydrateTenantCache uses when

@@ -5,7 +5,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 )
 
 // ListEntry is a single entry returned by [Client.List]. It exposes the key
