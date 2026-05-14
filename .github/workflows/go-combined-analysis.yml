@@ -2,7 +2,7 @@ name: Go Combined Analysis
 
 on:
   pull_request:
-    branches: [develop, release-candidate, main]
+    branches: [develop, main]
     types: [opened, synchronize, reopened]
     paths-ignore:
       - '**.md'

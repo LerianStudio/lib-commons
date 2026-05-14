@@ -2,7 +2,7 @@ name: PR Security Scan
 
 on:
   pull_request:
-    branches: [develop, release-candidate, main]
+    branches: [develop, main]
     paths-ignore:
       - '**.md'
       - 'docs/**'

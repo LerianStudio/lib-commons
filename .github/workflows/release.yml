@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [main, release-candidate, develop]
+    branches: [main, develop]
     paths-ignore:
       - '.github/**'
       - '**.md'

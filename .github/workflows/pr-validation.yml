@@ -2,7 +2,7 @@ name: PR Validation
 
 on:
   pull_request:
-    branches: [develop, release-candidate, main]
+    branches: [develop, main]
     types: [opened, edited, synchronize, reopened, ready_for_review]
 
 permissions:
@@ -15,7 +15,7 @@ jobs:
     uses: LerianStudio/github-actions-shared-workflows/.github/workflows/pr-validation.yml@v1.30.0
     with:
       enforce_source_branches: true
-      allowed_source_branches: 'develop|release-candidate|hotfix/*'
+      allowed_source_branches: 'develop|hotfix/*'
       target_branches_for_source_check: 'main'
       pr_title_scopes: |
         assert
