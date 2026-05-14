@@ -8,7 +8,8 @@ import libobslog "github.com/LerianStudio/lib-observability/log"
 //
 // Deprecated: Use github.com/LerianStudio/lib-observability/log.Logger instead.
 //
-//go:generate mockgen --destination=log_mock.go --package=log . Logger
+// NOTE: Mocks are now provided by github.com/LerianStudio/lib-observability/log.
+// Running mockgen here would overwrite the compatibility shims in log_mock.go.
 type Logger = libobslog.Logger
 
 // Level represents the severity of a log entry.

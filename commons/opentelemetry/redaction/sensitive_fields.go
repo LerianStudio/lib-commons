@@ -7,7 +7,8 @@ package redaction
 
 import libobsredaction "github.com/LerianStudio/lib-observability/redaction"
 
-// DefaultSensitiveFields returns a copy of the default sensitive field names.
+// DefaultSensitiveFields is an alias for the default sensitive field names defined in lib-observability.
+// It does not guarantee copy-on-access semantics; callers that need an independent copy must copy the slice explicitly.
 //
 // Deprecated: Use github.com/LerianStudio/lib-observability/redaction.DefaultSensitiveFields instead.
 var DefaultSensitiveFields = libobsredaction.DefaultSensitiveFields

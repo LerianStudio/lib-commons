@@ -49,7 +49,7 @@ func WithLogger[K comparable](l log.Logger) Option[K] {
 
 // New creates a trailing-edge debouncer with the given quiet window.
 // A zero or negative window disables debouncing: Submit invokes fn
-// synchronously inline, with panic recovery via commons/runtime.
+// synchronously inline, with panic recovery via lib-observability/runtime.
 func New[K comparable](window time.Duration, opts ...Option[K]) *Debouncer[K] {
 	d := &Debouncer[K]{
 		window: window,
