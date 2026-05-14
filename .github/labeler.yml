@@ -194,10 +194,15 @@ config:
           - '.goreleaser.yaml'
           - '.ignorecoverunit'
 
-# Continuous integration pipelines and shared workflows
+# Continuous integration pipelines and automation configs
 ci:
   - changed-files:
-      - any-glob-to-any-file: '.github/workflows/**/*'
+      - any-glob-to-any-file:
+          - '.github/workflows/**/*'
+          - '.github/labeler.yml'
+          - '.github/labels.yml'
+          - '.github/dependabot.yml'
+          - '.github/FUNDING.yml'
 
 # Markdown docs and context files
 docs:
