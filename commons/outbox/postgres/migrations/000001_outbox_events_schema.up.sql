@@ -1,18 +1,11 @@
 -- Schema-per-tenant outbox_events table template.
 -- Apply this migration inside each tenant schema.
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_type t
-        INNER JOIN pg_namespace n ON n.oid = t.typnamespace
-        WHERE t.typname = 'outbox_event_status'
-          AND n.nspname = current_schema()
-    ) THEN
-        CREATE TYPE outbox_event_status AS ENUM ('PENDING', 'PROCESSING', 'PUBLISHED', 'FAILED', 'INVALID');
-    END IF;
-END $$;
+DO $enum$ BEGIN
+    CREATE TYPE outbox_event_status AS ENUM ('PENDING', 'PROCESSING', 'PUBLISHED', 'FAILED', 'INVALID');
+EXCEPTION
+    WHEN duplicate_object THEN NULL;
+END $enum$;
 
 CREATE TABLE IF NOT EXISTS outbox_events (
     id UUID PRIMARY KEY,
