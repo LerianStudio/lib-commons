@@ -42,6 +42,8 @@ type CustomContextKeyValue struct {
 // NewLoggerFromContext extract the Logger from "logger" value inside context.
 // A nil ctx is normalized to context.Background() so callers never trigger a nil-pointer dereference.
 //
+// Deprecated: use NewLoggerFromContext from github.com/LerianStudio/lib-observability.
+//
 //nolint:ireturn
 func NewLoggerFromContext(ctx context.Context) log.Logger {
 	if ctx == nil {
@@ -78,6 +80,8 @@ func cloneContextValues(ctx context.Context) *CustomContextKeyValue {
 }
 
 // ContextWithLogger returns a context within a Logger in "logger" value.
+//
+// Deprecated: use ContextWithLogger from github.com/LerianStudio/lib-observability.
 func ContextWithLogger(ctx context.Context, logger log.Logger) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -92,6 +96,8 @@ func ContextWithLogger(ctx context.Context, logger log.Logger) context.Context {
 // ---- Tracer helpers ----
 
 // ContextWithTracer returns a context within a trace.Tracer in "tracer" value.
+//
+// Deprecated: use ContextWithTracer from github.com/LerianStudio/lib-observability.
 func ContextWithTracer(ctx context.Context, tracer trace.Tracer) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -106,6 +112,8 @@ func ContextWithTracer(ctx context.Context, tracer trace.Tracer) context.Context
 // ---- Metrics helpers ----
 
 // ContextWithMetricFactory returns a context within a MetricsFactory in "metricFactory" value.
+//
+// Deprecated: use ContextWithMetricFactory from github.com/LerianStudio/lib-observability.
 func ContextWithMetricFactory(ctx context.Context, metricFactory *metrics.MetricsFactory) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -120,6 +128,8 @@ func ContextWithMetricFactory(ctx context.Context, metricFactory *metrics.Metric
 // ---- Correlation / HeaderID helpers ----
 
 // ContextWithHeaderID returns a context within a HeaderID in "headerID" value.
+//
+// Deprecated: use ContextWithHeaderID from github.com/LerianStudio/lib-observability.
 func ContextWithHeaderID(ctx context.Context, headerID string) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -135,6 +145,8 @@ func ContextWithHeaderID(ctx context.Context, headerID string) context.Context {
 
 // TrackingComponents represents the complete set of tracking components extracted from context.
 // This struct encapsulates all telemetry-related dependencies in a single, cohesive unit.
+//
+// Deprecated: use TrackingComponents from github.com/LerianStudio/lib-observability.
 type TrackingComponents struct {
 	Logger        log.Logger
 	Tracer        trace.Tracer
@@ -144,6 +156,8 @@ type TrackingComponents struct {
 
 // NewTrackingFromContext extracts tracking components from context with intelligent fallback.
 // It follows the fail-safe principle: preserve valid components, provide sensible defaults for invalid ones.
+//
+// Deprecated: use NewTrackingFromContext from github.com/LerianStudio/lib-observability.
 //
 //nolint:ireturn
 func NewTrackingFromContext(ctx context.Context) (log.Logger, trace.Tracer, string, *metrics.MetricsFactory) {
@@ -254,6 +268,8 @@ func newDefaultTrackingComponents() TrackingComponents {
 // ContextWithSpanAttributes appends one or more attributes to the request's AttrBag.
 // Call this once at the ingress (HTTP/gRPC middleware) and avoid per-layer duplication.
 // Example keys: tenant.id, enduser.id, request.route, region, plan.
+//
+// Deprecated: use ContextWithSpanAttributes from github.com/LerianStudio/lib-observability.
 func ContextWithSpanAttributes(ctx context.Context, kv ...attribute.KeyValue) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
@@ -271,6 +287,8 @@ func ContextWithSpanAttributes(ctx context.Context, kv ...attribute.KeyValue) co
 }
 
 // AttributesFromContext returns a shallow copy of the AttrBag slice, safe to reuse by processors.
+//
+// Deprecated: use AttributesFromContext from github.com/LerianStudio/lib-observability.
 func AttributesFromContext(ctx context.Context) []attribute.KeyValue {
 	if ctx == nil {
 		return nil
@@ -287,6 +305,8 @@ func AttributesFromContext(ctx context.Context) []attribute.KeyValue {
 }
 
 // ReplaceAttributes resets the current AttrBag with a new set (rarely needed; provided for completeness).
+//
+// Deprecated: use ReplaceAttributes from github.com/LerianStudio/lib-observability.
 func ReplaceAttributes(ctx context.Context, kv ...attribute.KeyValue) context.Context {
 	if ctx == nil {
 		ctx = context.Background()

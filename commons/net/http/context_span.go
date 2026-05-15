@@ -15,6 +15,8 @@ func isNilSpan(span trace.Span) bool {
 }
 
 // SetHandlerSpanAttributes adds tenant_id and context_id attributes to a trace span.
+//
+// Deprecated: use SetHandlerSpanAttributes from github.com/LerianStudio/lib-observability/middleware.
 func SetHandlerSpanAttributes(span trace.Span, tenantID, contextID uuid.UUID) {
 	if isNilSpan(span) {
 		return
@@ -28,6 +30,8 @@ func SetHandlerSpanAttributes(span trace.Span, tenantID, contextID uuid.UUID) {
 }
 
 // SetTenantSpanAttribute adds tenant_id attribute to a trace span.
+//
+// Deprecated: use SetTenantSpanAttribute from github.com/LerianStudio/lib-observability/middleware.
 func SetTenantSpanAttribute(span trace.Span, tenantID uuid.UUID) {
 	if isNilSpan(span) {
 		return
@@ -37,6 +41,8 @@ func SetTenantSpanAttribute(span trace.Span, tenantID uuid.UUID) {
 }
 
 // SetExceptionSpanAttributes adds tenant_id and exception_id attributes to a trace span.
+//
+// Deprecated: use SetExceptionSpanAttributes from github.com/LerianStudio/lib-observability/middleware.
 func SetExceptionSpanAttributes(span trace.Span, tenantID, exceptionID uuid.UUID) {
 	if isNilSpan(span) {
 		return
@@ -47,6 +53,8 @@ func SetExceptionSpanAttributes(span trace.Span, tenantID, exceptionID uuid.UUID
 }
 
 // SetDisputeSpanAttributes adds tenant_id and dispute_id attributes to a trace span.
+//
+// Deprecated: use SetDisputeSpanAttributes from github.com/LerianStudio/lib-observability/middleware.
 func SetDisputeSpanAttributes(span trace.Span, tenantID, disputeID uuid.UUID) {
 	if isNilSpan(span) {
 		return
