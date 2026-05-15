@@ -14,11 +14,13 @@ import (
 	"sync"
 	"time"
 
+	commons "github.com/LerianStudio/lib-commons/v5/commons"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/backoff"
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
 )
@@ -44,15 +46,16 @@ const (
 // Create one with NewDeliverer and reuse it across the service lifetime —
 // the internal HTTP client maintains a connection pool.
 type Deliverer struct {
-	lister     EndpointLister
-	logger     log.Logger
-	tracer     trace.Tracer
-	metrics    DeliveryMetrics
-	client     *http.Client
-	decryptor  SecretDecryptor
-	maxConc    int
-	maxRetries int
-	sigVersion SignatureVersion
+	lister              EndpointLister
+	logger              log.Logger
+	tracer              trace.Tracer
+	metrics             DeliveryMetrics
+	client              *http.Client
+	decryptor           SecretDecryptor
+	maxConc             int
+	maxRetries          int
+	sigVersion          SignatureVersion
+	allowPrivateNetwork bool
 }
 
 // Option configures a Deliverer at construction time.
@@ -61,7 +64,7 @@ type Option func(*Deliverer)
 // WithLogger attaches a structured logger. Nil values are ignored.
 func WithLogger(l log.Logger) Option {
 	return func(d *Deliverer) {
-		if l != nil {
+		if !nilcheck.Interface(l) {
 			d.logger = l
 		}
 	}
@@ -70,7 +73,7 @@ func WithLogger(l log.Logger) Option {
 // WithTracer attaches an OpenTelemetry tracer for span creation. Nil values are ignored.
 func WithTracer(t trace.Tracer) Option {
 	return func(d *Deliverer) {
-		if t != nil {
+		if !nilcheck.Interface(t) {
 			d.tracer = t
 		}
 	}
@@ -79,7 +82,7 @@ func WithTracer(t trace.Tracer) Option {
 // WithMetrics attaches a metrics recorder for delivery outcomes. Nil values are ignored.
 func WithMetrics(m DeliveryMetrics) Option {
 	return func(d *Deliverer) {
-		if m != nil {
+		if !nilcheck.Interface(m) {
 			d.metrics = m
 		}
 	}
@@ -147,6 +150,44 @@ func WithSignatureVersion(v SignatureVersion) Option {
 	}
 }
 
+// WithAllowPrivateNetwork permits webhook delivery to loopback and RFC1918
+// private-network addresses only when the current security tier is permissive
+// (local/development) or when ALLOW_WEBHOOK_PRIVATE_NETWORK is set with a
+// non-empty reason in moderate/strict tiers. Without that guard, the option is
+// fail-closed and leaves SSRF private-IP blocking enabled.
+//
+// SECURITY: enabling this in production reintroduces SSRF risk by allowing
+// outbound delivery to the host's own network namespace and any reachable
+// internal services. Production callers must set
+// ALLOW_WEBHOOK_PRIVATE_NETWORK="reason" explicitly; SECURITY_ENFORCEMENT=true
+// makes a missing override fail closed by default.
+//
+// This option only bypasses the private/loopback IP-range gate for explicit
+// IP literal URLs (e.g., 127.0.0.1, 10.0.0.5). Hostnames that resolve to
+// private addresses still use strict DNS-pinned SSRF validation so public-
+// looking names cannot bypass the resolved-IP blocklist.
+func WithAllowPrivateNetwork() Option {
+	return func(d *Deliverer) {
+		result := commons.CheckSecurityRule(commons.RuleWebhookPrivateNet, true)
+		if commons.CurrentTier() > commons.TierPermissive && result.Override == nil {
+			d.logger.Log(context.Background(), log.LevelError,
+				"webhook private-network override rejected",
+				log.String("override_env_var", commons.EnvAllowWebhookPrivateNet),
+			)
+
+			return
+		}
+
+		if err := commons.EnforceSecurityRule(context.Background(), d.logger, "webhook", result); err != nil {
+			d.logger.Log(context.Background(), log.LevelError, "webhook private-network override rejected", log.Err(err))
+
+			return
+		}
+
+		d.allowPrivateNetwork = true
+	}
+}
+
 // defaultHTTPClient creates an http.Client optimized for webhook delivery.
 // Connection pooling avoids TCP+TLS handshake overhead on repeated deliveries
 // to the same endpoint — critical at scale where hundreds of webhooks per
@@ -174,7 +215,7 @@ func defaultHTTPClient() *http.Client {
 // safe because Deliver() and DeliverWithResults() already guard against a
 // nil receiver and return ErrNilDeliverer / nil respectively.
 func NewDeliverer(lister EndpointLister, opts ...Option) *Deliverer {
-	if lister == nil {
+	if nilcheck.Interface(lister) {
 		return nil
 	}
 
@@ -362,7 +403,7 @@ func (d *Deliverer) deliverToEndpoint(
 	result := DeliveryResult{EndpointID: ep.ID}
 
 	// --- SSRF validation + DNS pinning (single lookup, eliminates TOCTOU) ---
-	pinnedURL, originalAuthority, sniHostname, ssrfErr := resolveAndValidateIP(ctx, ep.URL)
+	pinnedURL, originalAuthority, sniHostname, ssrfErr := resolveAndValidateWebhookTarget(ctx, ep.URL, d.allowPrivateNetwork, d.ssrfOptions()...)
 	if ssrfErr != nil {
 		span.RecordError(ssrfErr)
 		span.SetStatus(codes.Error, "SSRF blocked")
@@ -526,8 +567,13 @@ func (d *Deliverer) doHTTP(
 		return 0, fmt.Errorf("webhook: http request: %w", err)
 	}
 
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseDrain))
-	_ = resp.Body.Close()
+	if _, drainErr := io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseDrain)); drainErr != nil {
+		d.log(ctx, log.LevelWarn, "webhook response body drain failed", log.Err(drainErr))
+	}
+
+	if closeErr := resp.Body.Close(); closeErr != nil {
+		d.log(ctx, log.LevelWarn, "webhook response body close failed", log.Err(closeErr))
+	}
 
 	return resp.StatusCode, nil
 }
@@ -586,7 +632,7 @@ func (d *Deliverer) startSpan(
 	name string,
 	attrs ...attribute.KeyValue,
 ) (context.Context, trace.Span) {
-	if d.tracer == nil {
+	if nilcheck.Interface(d.tracer) {
 		return ctx, trace.SpanFromContext(ctx)
 	}
 
@@ -597,7 +643,7 @@ func (d *Deliverer) startSpan(
 
 // log emits a structured log entry if a logger is configured.
 func (d *Deliverer) log(ctx context.Context, level log.Level, msg string, fields ...log.Field) {
-	if d.logger == nil {
+	if nilcheck.Interface(d.logger) {
 		return
 	}
 
@@ -606,7 +652,7 @@ func (d *Deliverer) log(ctx context.Context, level log.Level, msg string, fields
 
 // recordMetrics delegates to the configured DeliveryMetrics, if any.
 func (d *Deliverer) recordMetrics(ctx context.Context, endpointID string, success bool, statusCode, attempts int) {
-	if d.metrics == nil {
+	if nilcheck.Interface(d.metrics) {
 		return
 	}
 

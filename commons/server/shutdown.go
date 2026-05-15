@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v5/commons/license"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
@@ -19,13 +21,22 @@ import (
 	"google.golang.org/grpc"
 )
 
-// ErrNoServersConfigured indicates no servers were configured for the manager
-var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServer() or WithGRPCServer()")
+// ErrNoServersConfigured indicates no servers were configured for the manager.
+var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServer(), WithStdlibHTTPServer(), or WithGRPCServer()")
+
+// ErrConflictingHTTPServers indicates that both WithHTTPServer(*fiber.App) and
+// WithStdlibHTTPServer(*http.Server) were configured on the same ServerManager.
+// These two configurators are mutually exclusive: pick exactly one HTTP path.
+var ErrConflictingHTTPServers = errors.New("conflicting HTTP servers configured: WithHTTPServer(*fiber.App) and WithStdlibHTTPServer(*http.Server) are mutually exclusive")
+
+const defaultReadHeaderTimeout = 5 * time.Second
 
 // ServerManager handles the graceful shutdown of multiple server types.
-// It can manage HTTP servers, gRPC servers, or both simultaneously.
+// It can manage HTTP servers (either *fiber.App or stdlib *http.Server, but
+// not both), gRPC servers, or any compatible combination simultaneously.
 type ServerManager struct {
 	httpServer         *fiber.App
+	stdlibHTTPServer   *http.Server
 	grpcServer         *grpc.Server
 	licenseClient      *license.ManagerShutdown
 	telemetry          *opentelemetry.Telemetry
@@ -48,7 +59,7 @@ func (sm *ServerManager) ensureRuntimeDefaults() {
 		return
 	}
 
-	if sm.logger == nil {
+	if nilcheck.Interface(sm.logger) {
 		sm.logger = log.NewNop()
 	}
 
@@ -69,7 +80,7 @@ func NewServerManager(
 	telemetry *opentelemetry.Telemetry,
 	logger log.Logger,
 ) *ServerManager {
-	if logger == nil {
+	if nilcheck.Interface(logger) {
 		logger = log.NewNop()
 	}
 
@@ -83,7 +94,11 @@ func NewServerManager(
 	}
 }
 
-// WithHTTPServer configures the HTTP server for the ServerManager.
+// WithHTTPServer configures a Fiber HTTP server for the ServerManager.
+//
+// Mutually exclusive with WithStdlibHTTPServer: configuring both causes
+// StartWithGracefulShutdownWithError to return ErrConflictingHTTPServers
+// before any goroutine is launched.
 func (sm *ServerManager) WithHTTPServer(app *fiber.App, address string) *ServerManager {
 	if sm == nil {
 		return nil
@@ -91,6 +106,44 @@ func (sm *ServerManager) WithHTTPServer(app *fiber.App, address string) *ServerM
 
 	sm.httpServer = app
 	sm.httpAddress = address
+
+	return sm
+}
+
+// WithStdlibHTTPServer configures a stdlib *http.Server for the ServerManager.
+// The server's Addr and Handler fields are used as-is. If ReadHeaderTimeout is
+// zero, a safe 5s default is installed to avoid Slowloris-prone servers while
+// preserving any caller-supplied nonzero timeout. This is the variant for consumers that own a
+// net/http server directly (custom ServeMux dispatch, SOAP/XML handlers, mock
+// binaries) rather than a Fiber app.
+//
+// Behavior parity with WithHTTPServer:
+//   - The launch goroutine is wrapped in runtime.SafeGoWithContextAndComponent
+//     so panics route through the lib-commons panic observability trident.
+//   - A non-nil return from srv.ListenAndServe surfaces on the same
+//     startupErrors channel that the fiber path uses, and propagates as the
+//     return value of StartWithGracefulShutdownWithError.
+//   - http.ErrServerClosed (returned by ListenAndServe after a clean
+//     Shutdown) is mapped to nil, mirroring fiber.App.Listen returning nil
+//     after fiber.App.Shutdown.
+//   - Graceful drain calls srv.Shutdown(ctx) with a context bounded by the
+//     existing shutdownTimeout field (set via WithShutdownTimeout, default
+//     30s). The drain ctx is independent of any caller cancellation so a
+//     canceled parent does not abort the in-flight request drain.
+//
+// Mutually exclusive with WithHTTPServer: configuring both causes
+// StartWithGracefulShutdownWithError to return ErrConflictingHTTPServers
+// before any goroutine is launched.
+func (sm *ServerManager) WithStdlibHTTPServer(srv *http.Server) *ServerManager {
+	if sm == nil {
+		return nil
+	}
+
+	if srv != nil && srv.ReadHeaderTimeout == 0 {
+		srv.ReadHeaderTimeout = defaultReadHeaderTimeout
+	}
+
+	sm.stdlibHTTPServer = srv
 
 	return sm
 }
@@ -158,11 +211,21 @@ func (sm *ServerManager) ServersStarted() <-chan struct{} {
 		return ch
 	}
 
+	sm.ensureRuntimeDefaults()
+
 	return sm.serversStarted
 }
 
 func (sm *ServerManager) validateConfiguration() error {
-	if sm.httpServer == nil && sm.grpcServer == nil {
+	// Mutual exclusion between the two HTTP variants must be checked BEFORE
+	// the "no servers configured" check: a caller who supplied both servers
+	// has a configuration bug worth surfacing precisely, not a "no servers"
+	// false negative.
+	if sm.httpServer != nil && sm.stdlibHTTPServer != nil {
+		return ErrConflictingHTTPServers
+	}
+
+	if sm.httpServer == nil && sm.stdlibHTTPServer == nil && sm.grpcServer == nil {
 		return ErrNoServersConfigured
 	}
 
@@ -206,7 +269,7 @@ func (sm *ServerManager) StartWithGracefulShutdownWithError() error {
 // Use StartWithGracefulShutdownWithError() for proper error handling without process termination.
 func (sm *ServerManager) StartWithGracefulShutdown() {
 	if sm == nil {
-		fmt.Println("no servers configured: use WithHTTPServer() or WithGRPCServer()")
+		fmt.Println("no servers configured: use WithHTTPServer(), WithStdlibHTTPServer(), or WithGRPCServer()")
 		os.Exit(1)
 	}
 
@@ -235,68 +298,22 @@ func (sm *ServerManager) StartWithGracefulShutdown() {
 // Note: Validation is performed by validateConfiguration() before this method is called.
 // Callers using StartWithGracefulShutdown() directly will still get Fatal behavior for backward compatibility,
 // while StartWithGracefulShutdownWithError() validates first and returns an error.
+//
+// Launch order is fiber HTTP → stdlib HTTP → gRPC. The two HTTP branches are
+// mutually exclusive (enforced by validateConfiguration) so at most one of
+// them fires; the gRPC branch is independent and composes with either.
 func (sm *ServerManager) startServers() {
 	started := 0
 
-	// Start HTTP server if configured
-	if sm.httpServer != nil {
-		runtime.SafeGoWithContextAndComponent(
-			context.Background(),
-			sm.logger,
-			"server",
-			"start_http_server",
-			runtime.KeepRunning,
-			func(_ context.Context) {
-				sm.logger.Log(context.Background(), log.LevelInfo, "starting HTTP server", log.String("address", sm.httpAddress))
-
-				if err := sm.httpServer.Listen(sm.httpAddress); err != nil {
-					sm.logger.Log(context.Background(), log.LevelError, "HTTP server error", log.Err(err))
-
-					select {
-					case sm.startupErrors <- fmt.Errorf("HTTP server: %w", err):
-					default:
-					}
-				}
-			},
-		)
-
+	if sm.launchFiberHTTPServer() {
 		started++
 	}
 
-	// Start gRPC server if configured
-	if sm.grpcServer != nil {
-		runtime.SafeGoWithContextAndComponent(
-			context.Background(),
-			sm.logger,
-			"server",
-			"start_grpc_server",
-			runtime.KeepRunning,
-			func(_ context.Context) {
-				sm.logger.Log(context.Background(), log.LevelInfo, "starting gRPC server", log.String("address", sm.grpcAddress))
+	if sm.launchStdlibHTTPServer() {
+		started++
+	}
 
-				listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", sm.grpcAddress)
-				if err != nil {
-					sm.logger.Log(context.Background(), log.LevelError, "failed to listen on gRPC address", log.Err(err))
-
-					select {
-					case sm.startupErrors <- fmt.Errorf("gRPC listen: %w", err):
-					default:
-					}
-
-					return
-				}
-
-				if err := sm.grpcServer.Serve(listener); err != nil {
-					sm.logger.Log(context.Background(), log.LevelError, "gRPC server error", log.Err(err))
-
-					select {
-					case sm.startupErrors <- fmt.Errorf("gRPC serve: %w", err):
-					default:
-					}
-				}
-			},
-		)
-
+	if sm.launchGRPCServer() {
 		started++
 	}
 
@@ -308,9 +325,119 @@ func (sm *ServerManager) startServers() {
 	})
 }
 
+// launchFiberHTTPServer spawns the fiber HTTP launch goroutine. Returns true
+// if a goroutine was launched, false if no fiber server is configured.
+func (sm *ServerManager) launchFiberHTTPServer() bool {
+	if sm.httpServer == nil {
+		return false
+	}
+
+	runtime.SafeGoWithContextAndComponent(
+		context.Background(),
+		sm.logger,
+		"server",
+		"start_http_server",
+		runtime.KeepRunning,
+		func(_ context.Context) {
+			sm.logger.Log(context.Background(), log.LevelInfo, "starting HTTP server", log.String("address", sm.httpAddress))
+
+			if err := sm.httpServer.Listen(sm.httpAddress); err != nil {
+				sm.logger.Log(context.Background(), log.LevelError, "HTTP server error", log.Err(err))
+
+				select {
+				case sm.startupErrors <- fmt.Errorf("HTTP server: %w", err):
+				default:
+				}
+			}
+		},
+	)
+
+	return true
+}
+
+// launchStdlibHTTPServer spawns the stdlib HTTP launch goroutine. Returns true
+// if a goroutine was launched, false if no stdlib server is configured.
+//
+// Mutually exclusive with launchFiberHTTPServer at the configuration layer
+// (validateConfiguration rejects the combination), so at most one of the two
+// HTTP branches fires per process lifetime.
+func (sm *ServerManager) launchStdlibHTTPServer() bool {
+	if sm.stdlibHTTPServer == nil {
+		return false
+	}
+
+	runtime.SafeGoWithContextAndComponent(
+		context.Background(),
+		sm.logger,
+		"server",
+		"start_stdlib_http_server",
+		runtime.KeepRunning,
+		func(_ context.Context) {
+			sm.logger.Log(context.Background(), log.LevelInfo, "starting stdlib HTTP server", log.String("address", sm.stdlibHTTPServer.Addr))
+
+			// ListenAndServe returns http.ErrServerClosed on a clean
+			// Shutdown — that is the success signal, not an error.
+			// Parity with fiber.App.Listen returning nil after
+			// fiber.App.Shutdown.
+			if err := sm.stdlibHTTPServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				sm.logger.Log(context.Background(), log.LevelError, "stdlib HTTP server error", log.Err(err))
+
+				select {
+				case sm.startupErrors <- fmt.Errorf("HTTP server: %w", err):
+				default:
+				}
+			}
+		},
+	)
+
+	return true
+}
+
+// launchGRPCServer spawns the gRPC launch goroutine. Returns true if a
+// goroutine was launched, false if no gRPC server is configured.
+func (sm *ServerManager) launchGRPCServer() bool {
+	if sm.grpcServer == nil {
+		return false
+	}
+
+	runtime.SafeGoWithContextAndComponent(
+		context.Background(),
+		sm.logger,
+		"server",
+		"start_grpc_server",
+		runtime.KeepRunning,
+		func(_ context.Context) {
+			sm.logger.Log(context.Background(), log.LevelInfo, "starting gRPC server", log.String("address", sm.grpcAddress))
+
+			listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", sm.grpcAddress)
+			if err != nil {
+				sm.logger.Log(context.Background(), log.LevelError, "failed to listen on gRPC address", log.Err(err))
+
+				select {
+				case sm.startupErrors <- fmt.Errorf("gRPC listen: %w", err):
+				default:
+				}
+
+				return
+			}
+
+			if err := sm.grpcServer.Serve(listener); err != nil {
+				sm.logger.Log(context.Background(), log.LevelError, "gRPC server error", log.Err(err))
+
+				select {
+				case sm.startupErrors <- fmt.Errorf("gRPC serve: %w", err):
+				default:
+				}
+			}
+		},
+	)
+
+	return true
+}
+
 // logInfo safely logs an info message if logger is available
 func (sm *ServerManager) logInfo(msg string) {
-	if sm.logger != nil {
+	if !nilcheck.Interface(sm.logger) {
 		sm.logger.Log(context.Background(), log.LevelInfo, msg)
 	}
 }
@@ -319,7 +446,7 @@ func (sm *ServerManager) logInfo(msg string) {
 // Uses Error level for logging to avoid relying on logger implementations
 // that may or may not call os.Exit(1) in their Fatal method.
 func (sm *ServerManager) logFatal(msg string) {
-	if sm.logger != nil {
+	if !nilcheck.Interface(sm.logger) {
 		sm.logger.Log(context.Background(), log.LevelError, msg)
 	} else {
 		fmt.Println(msg)
@@ -347,11 +474,12 @@ func (sm *ServerManager) handleShutdown() error {
 		}
 	} else {
 		c := make(chan os.Signal, 1)
+
 		signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(c)
 
 		select {
 		case <-c:
-			signal.Stop(c)
 		case err := <-sm.startupErrors:
 			sm.logger.Log(context.Background(), log.LevelError, "server startup failed", log.Err(err))
 
@@ -382,30 +510,7 @@ func (sm *ServerManager) executeShutdown() {
 			sm.logInfo("Shutdown initiated before servers were fully started.")
 		}
 
-		// Shutdown the HTTP server if available
-		if sm.httpServer != nil {
-			sm.logInfo("Shutting down HTTP server...")
-
-			if err := sm.httpServer.Shutdown(); err != nil {
-				sm.logger.Log(context.Background(), log.LevelError, "error during HTTP server shutdown", log.Err(err))
-			}
-		}
-
-		// Execute shutdown hooks (best-effort, between HTTP and telemetry shutdown).
-		// Each hook gets its own context with an independent timeout to prevent
-		// one slow hook from consuming the entire budget.
-		for i, hook := range sm.shutdownHooks {
-			hookCtx, hookCancel := context.WithTimeout(context.Background(), sm.shutdownTimeout)
-
-			if err := hook(hookCtx); err != nil {
-				sm.logger.Log(context.Background(), log.LevelError, "shutdown hook failed",
-					log.Int("hook_index", i),
-					log.Err(err),
-				)
-			}
-
-			hookCancel()
-		}
+		sm.shutdownHTTPServer()
 
 		// Shutdown the gRPC server BEFORE telemetry to allow in-flight RPCs
 		// to complete and emit their final spans/metrics before the telemetry
@@ -436,6 +541,23 @@ func (sm *ServerManager) executeShutdown() {
 			}
 		}
 
+		// Execute shutdown hooks (best-effort) after HTTP and gRPC servers have
+		// drained/stopped, but before telemetry/logger/license shutdown. Each hook
+		// gets its own context with an independent timeout to prevent one slow hook
+		// from consuming the entire budget.
+		for i, hook := range sm.shutdownHooks {
+			hookCtx, hookCancel := context.WithTimeout(context.Background(), sm.shutdownTimeout)
+
+			if err := hook(hookCtx); err != nil {
+				sm.logger.Log(context.Background(), log.LevelError, "shutdown hook failed",
+					log.Int("hook_index", i),
+					log.Err(err),
+				)
+			}
+
+			hookCancel()
+		}
+
 		// Shutdown telemetry AFTER servers have drained, so final spans/metrics are exported.
 		if sm.telemetry != nil {
 			sm.logInfo("Shutting down telemetry...")
@@ -443,7 +565,7 @@ func (sm *ServerManager) executeShutdown() {
 		}
 
 		// Sync logger if available
-		if sm.logger != nil {
+		if !nilcheck.Interface(sm.logger) {
 			sm.logInfo("Syncing logger...")
 
 			if err := sm.logger.Sync(context.Background()); err != nil {
@@ -459,4 +581,42 @@ func (sm *ServerManager) executeShutdown() {
 
 		sm.logInfo("Graceful shutdown completed")
 	})
+}
+
+func (sm *ServerManager) shutdownHTTPServer() {
+	// Shutdown the HTTP server if available. The fiber and stdlib paths
+	// are mutually exclusive (enforced by validateConfiguration), so at
+	// most one of these branches fires per shutdown.
+	switch {
+	case sm.httpServer != nil:
+		sm.logInfo("Shutting down HTTP server...")
+
+		if err := sm.httpServer.Shutdown(); err != nil {
+			sm.logger.Log(context.Background(), log.LevelError, "error during HTTP server shutdown", log.Err(err))
+		}
+	case sm.stdlibHTTPServer != nil:
+		sm.shutdownStdlibHTTPServer()
+	}
+}
+
+func (sm *ServerManager) shutdownStdlibHTTPServer() {
+	sm.logInfo("Shutting down HTTP server...")
+
+	// Bound the drain by shutdownTimeout. Unlike fiber.App.Shutdown,
+	// stdlib http.Server.Shutdown accepts an explicit ctx — we use a
+	// fresh background-derived ctx so an earlier signal/ctx
+	// cancellation does not abort the in-flight request drain. If the
+	// drain fails or times out, fall back to Close() so active
+	// connections are forcefully released instead of leaking past the
+	// shutdown budget.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), sm.shutdownTimeout)
+	if err := sm.stdlibHTTPServer.Shutdown(shutdownCtx); err != nil {
+		sm.logger.Log(context.Background(), log.LevelError, "error during HTTP server shutdown", log.Err(err))
+
+		if closeErr := sm.stdlibHTTPServer.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+			sm.logger.Log(context.Background(), log.LevelError, "error during HTTP server hard close", log.Err(closeErr))
+		}
+	}
+
+	cancel()
 }

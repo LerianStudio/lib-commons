@@ -155,7 +155,7 @@ func SetConfigFromEnvVars(s any) error {
 	v := reflect.ValueOf(s)
 
 	t := v.Type()
-	if t.Kind() != reflect.Ptr {
+	if t.Kind() != reflect.Pointer {
 		return ErrNotPointer
 	}
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 
 	libSSRF "github.com/LerianStudio/lib-commons/v5/commons/security/ssrf"
 )
@@ -12,6 +14,10 @@ import (
 // function and maps its result back to the 4-return-value signature expected by
 // [deliverToEndpoint]. This keeps the webhook package's internal call-sites
 // stable while removing the duplicated SSRF implementation.
+//
+// Caller-supplied opts are forwarded verbatim to [libSSRF.ResolveAndValidate]
+// so per-Deliverer configuration (e.g., [WithAllowPrivateNetwork]) can loosen
+// or tighten the underlying validation without changing this signature.
 //
 // On success it returns:
 //   - pinnedURL         — original URL with the hostname replaced by the first safe resolved IP.
@@ -22,13 +28,49 @@ import (
 //   - [libSSRF.ErrBlocked]    → [ErrSSRFBlocked]
 //   - [libSSRF.ErrDNSFailed]  → [ErrSSRFBlocked]
 //   - [libSSRF.ErrInvalidURL] → [ErrInvalidURL]
-func resolveAndValidateIP(ctx context.Context, rawURL string) (pinnedURL, originalAuthority, sniHostname string, err error) {
-	result, resolveErr := libSSRF.ResolveAndValidate(ctx, rawURL)
+func resolveAndValidateIP(ctx context.Context, rawURL string, opts ...libSSRF.Option) (pinnedURL, originalAuthority, sniHostname string, err error) {
+	result, resolveErr := libSSRF.ResolveAndValidate(ctx, rawURL, opts...)
 	if resolveErr != nil {
 		return "", "", "", mapSSRFError(resolveErr)
 	}
 
 	return result.PinnedURL, result.Authority, result.SNIHostname, nil
+}
+
+func resolveAndValidateWebhookTarget(ctx context.Context, rawURL string, allowPrivateNetwork bool, opts ...libSSRF.Option) (pinnedURL, originalAuthority, sniHostname string, err error) {
+	if !allowPrivateNetwork || !isPrivateNetworkIPLiteral(rawURL) {
+		return resolveAndValidateIP(ctx, rawURL, opts...)
+	}
+
+	allowOpts := append([]libSSRF.Option{}, opts...)
+	allowOpts = append(allowOpts, libSSRF.WithAllowPrivateNetwork())
+
+	return resolveAndValidateIP(ctx, rawURL, allowOpts...)
+}
+
+func isPrivateNetworkIPLiteral(rawURL string) bool {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+
+	ip := net.ParseIP(parsed.Hostname())
+	if ip == nil {
+		return false
+	}
+
+	return ip.IsLoopback() || ip.IsPrivate()
+}
+
+// ssrfOptions builds the [libSSRF.Option] slice that reflects the Deliverer's
+// SSRF configuration toggles. The slice is empty for the default strict
+// configuration so existing callers see no behavioral change.
+//
+// Returning a nil slice when no options apply is intentional — variadic
+// expansion to [libSSRF.ResolveAndValidate] handles nil identically to an
+// empty slice and avoids an unnecessary allocation per delivery.
+func (d *Deliverer) ssrfOptions() []libSSRF.Option {
+	return nil
 }
 
 // mapSSRFError translates sentinel errors from the canonical ssrf package into

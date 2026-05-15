@@ -39,6 +39,19 @@ import (
 const (
 	defaultCollection = "systemplane_entries"
 
+	bsonFieldID         = "_id"
+	bsonFieldNamespace  = "namespace"
+	bsonFieldKey        = "key"
+	bsonFieldTenantID   = "tenant_id"
+	bsonFieldUpdatedAt  = "updated_at"
+	bsonFieldOwner      = "owner"
+	bsonFieldHeartbeat  = "heartbeat"
+	bsonFieldAcquiredAt = "acquired_at"
+
+	bsonOpSet         = "$set"
+	bsonOpSetOnInsert = "$setOnInsert"
+	bsonOpGT          = "$gt"
+
 	// reconnectBaseDelay is the base duration for exponential backoff on
 	// change-stream reconnects.
 	reconnectBaseDelay = 500 * time.Millisecond
@@ -274,7 +287,7 @@ func (s *Store) List(ctx context.Context) ([]store.Entry, error) {
 	ctx, span := s.tracer.Start(ctx, "systemplane.mongodb.list")
 	defer span.End()
 
-	filter := bson.D{{Key: "tenant_id", Value: store.SentinelGlobal}}
+	filter := bson.D{{Key: bsonFieldTenantID, Value: store.SentinelGlobal}}
 
 	cursor, err := s.coll.Find(ctx, filter)
 	if err != nil {

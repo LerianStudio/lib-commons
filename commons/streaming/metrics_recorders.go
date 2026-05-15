@@ -33,6 +33,8 @@ type labelSetCache struct {
 	m sync.Map
 }
 
+const metricLabelTopic = "topic"
+
 // recordEmitted increments streaming_emitted_total by 1 with the given
 // topic/operation/outcome label set. No-op when m is nil or factory is nil
 // (latter also emits a WARN once).
@@ -73,9 +75,9 @@ func (m *streamingMetrics) recordEmitted(ctx context.Context, topic, operation, 
 	key := topic + "\x00" + operation + "\x00" + outcome
 
 	builder := m.getOrBuildCounter(&m.emittedCache, key, m.emittedCounter, map[string]string{
-		"topic":     topic,
-		"operation": operation,
-		"outcome":   outcome,
+		metricLabelTopic: topic,
+		"operation":      operation,
+		"outcome":        outcome,
 	})
 	if builder == nil {
 		return
@@ -123,8 +125,8 @@ func (m *streamingMetrics) recordEmitDuration(ctx context.Context, topic, outcom
 	key := topic + "\x00" + outcome
 
 	builder := m.getOrBuildHistogram(&m.emitDurationCache, key, m.emitDurationHistogram, map[string]string{
-		"topic":   topic,
-		"outcome": outcome,
+		metricLabelTopic: topic,
+		"outcome":        outcome,
 	})
 	if builder == nil {
 		return
@@ -173,8 +175,8 @@ func (m *streamingMetrics) recordDLQ(ctx context.Context, topic, errorClass stri
 	key := topic + "\x00" + errorClass
 
 	builder := m.getOrBuildCounter(&m.dlqCache, key, m.dlqCounter, map[string]string{
-		"topic":       topic,
-		"error_class": errorClass,
+		metricLabelTopic: topic,
+		"error_class":    errorClass,
 	})
 	if builder == nil {
 		return
@@ -222,7 +224,7 @@ func (m *streamingMetrics) recordDLQFailed(ctx context.Context, topic string) {
 	}
 
 	builder := m.getOrBuildCounter(&m.dlqFailedCache, topic, m.dlqFailedCounter, map[string]string{
-		"topic": topic,
+		metricLabelTopic: topic,
 	})
 	if builder == nil {
 		return
@@ -271,8 +273,8 @@ func (m *streamingMetrics) recordOutboxRouted(ctx context.Context, topic, reason
 	key := topic + "\x00" + reason
 
 	builder := m.getOrBuildCounter(&m.outboxRoutedCache, key, m.outboxRoutedCounter, map[string]string{
-		"topic":  topic,
-		"reason": reason,
+		metricLabelTopic: topic,
+		"reason":         reason,
 	})
 	if builder == nil {
 		return

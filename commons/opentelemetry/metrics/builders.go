@@ -23,16 +23,41 @@ var (
 	ErrNilHistogramBuilder = errors.New("histogram builder is nil")
 )
 
-// CounterBuilder provides a fluent API for recording counter metrics with optional labels
+// CounterBuilder provides a fluent API for recording counter metrics with optional labels.
+//
+// Two attribute paths are supported:
+//
+//   - The slice path (WithLabels / WithAttributes): convenient, immutable
+//     fluent chaining. On every Add call the OTel SDK builds a fresh
+//     attribute.Set from the slice, allocating in the process.
+//
+//   - The pre-built Set path (WithAttributeSet): caller pre-builds a single
+//     attribute.Set at construction time and reuses it allocation-free on
+//     the hot path. Use this when the attribute payload is fixed at builder
+//     construction time and Add is called at high frequency (e.g. > 1k QPS).
+//
+// The two paths are mutually exclusive: when WithAttributeSet is in effect
+// the slice (c.attrs) is ignored on the hot path. See WithAttributeSet for
+// precedence details.
 type CounterBuilder struct {
 	factory *MetricsFactory
 	counter metric.Int64Counter
 	name    string
 	attrs   []attribute.KeyValue
+	// attrSet, when non-nil, is preferred over attrs on the Add hot path
+	// and causes Add to use metric.WithAttributeSet (allocation-free) rather
+	// than metric.WithAttributes (which allocates a fresh slice and Set per call).
+	attrSet *attribute.Set
 }
 
-// WithLabels adds labels/attributes to the counter metric.
+// WithLabels adds labels/attributes to the counter metric using the slice path.
 // Returns a nil-safe builder if the receiver is nil.
+//
+// Note: WithLabels clears any pre-built attribute.Set previously installed by
+// WithAttributeSet on the parent. The intent of WithLabels is to extend the
+// attribute payload; carrying the immutable Set through would silently ignore
+// the new labels. Build the full payload up front and call WithAttributeSet
+// last when you want the allocation-free path.
 func (c *CounterBuilder) WithLabels(labels map[string]string) *CounterBuilder {
 	if c == nil {
 		return nil
@@ -54,8 +79,11 @@ func (c *CounterBuilder) WithLabels(labels map[string]string) *CounterBuilder {
 	return builder
 }
 
-// WithAttributes adds OpenTelemetry attributes to the counter metric.
-// Returns a nil-safe builder if the receiver is nil.
+// WithAttributes adds OpenTelemetry attributes to the counter metric using
+// the slice path. Returns a nil-safe builder if the receiver is nil.
+//
+// Note: WithAttributes clears any pre-built attribute.Set previously installed
+// by WithAttributeSet on the parent. See WithLabels for the rationale.
 func (c *CounterBuilder) WithAttributes(attrs ...attribute.KeyValue) *CounterBuilder {
 	if c == nil {
 		return nil
@@ -75,8 +103,50 @@ func (c *CounterBuilder) WithAttributes(attrs ...attribute.KeyValue) *CounterBui
 	return builder
 }
 
+// WithAttributeSet installs a pre-built attribute.Set on the counter builder.
+// On the Add hot path the builder will use metric.WithAttributeSet rather
+// than metric.WithAttributes, avoiding per-call slice and Set allocations.
+//
+// Returns a nil-safe builder if the receiver is nil.
+//
+// Precedence: when a builder has both a pre-built Set (from WithAttributeSet)
+// and a slice (from WithLabels / WithAttributes), the pre-built Set wins on
+// the hot path and the slice is ignored. The slice is preserved on the new
+// builder for callers that branch further with WithLabels / WithAttributes
+// (those branches will return to the slice path).
+//
+// Typical usage:
+//
+//	hitAttrs := attribute.NewSet(attribute.String("result", "hit"))
+//	counter := factory.Counter(MyMetric).
+//	    WithAttributeSet(hitAttrs)
+//
+//	// Hot path:
+//	counter.Add(ctx, 1) // no per-call slice/Set allocation
+func (c *CounterBuilder) WithAttributeSet(set attribute.Set) *CounterBuilder {
+	if c == nil {
+		return nil
+	}
+
+	setCopy := set
+
+	builder := &CounterBuilder{
+		factory: c.factory,
+		counter: c.counter,
+		name:    c.name,
+		attrs:   c.attrs, // preserved but ignored on the hot path while attrSet != nil
+		attrSet: &setCopy,
+	}
+
+	return builder
+}
+
 // Add records a counter increment.
 // Returns an error if the value is negative (counters are monotonically increasing).
+//
+// When the builder has a pre-built attribute.Set installed via WithAttributeSet,
+// Add uses metric.WithAttributeSet and incurs zero per-call attribute allocations.
+// Otherwise it falls back to metric.WithAttributes over the slice path.
 func (c *CounterBuilder) Add(ctx context.Context, value int64) error {
 	if c == nil {
 		return ErrNilCounterBuilder
@@ -88,6 +158,11 @@ func (c *CounterBuilder) Add(ctx context.Context, value int64) error {
 
 	if value < 0 {
 		return ErrNegativeCounterValue
+	}
+
+	if c.attrSet != nil {
+		c.counter.Add(ctx, value, metric.WithAttributeSet(*c.attrSet))
+		return nil
 	}
 
 	c.counter.Add(ctx, value, metric.WithAttributes(c.attrs...))

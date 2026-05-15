@@ -81,19 +81,19 @@ func acquireMigrationLease(
 	// findOneAndUpdate with upsert+return-after gives us the doc as it
 	// exists after our write — either our just-written lease (acquired) or
 	// the peer's lease (lost). We check the owner field to disambiguate.
-	filter := bson.D{{Key: "_id", Value: migrationLeaseID}}
+	filter := bson.D{{Key: bsonFieldID, Value: migrationLeaseID}}
 
 	// $setOnInsert seeds owner/acquired on first write; $set refreshes the
 	// heartbeat unconditionally so a live owner re-entering its own lease
 	// (e.g., process restart that reuses the owner UUID — unlikely but
 	// cheap to tolerate) keeps the heartbeat current.
 	update := bson.D{
-		{Key: "$set", Value: bson.D{
-			{Key: "heartbeat", Value: now},
+		{Key: bsonOpSet, Value: bson.D{
+			{Key: bsonFieldHeartbeat, Value: now},
 		}},
-		{Key: "$setOnInsert", Value: bson.D{
-			{Key: "owner", Value: owner},
-			{Key: "acquired_at", Value: now},
+		{Key: bsonOpSetOnInsert, Value: bson.D{
+			{Key: bsonFieldOwner, Value: owner},
+			{Key: bsonFieldAcquiredAt, Value: now},
 		}},
 	}
 
@@ -118,8 +118,8 @@ func acquireMigrationLease(
 			defer cancel()
 
 			_, _ = coll.DeleteOne(releaseCtx, bson.D{
-				{Key: "_id", Value: migrationLeaseID},
-				{Key: "owner", Value: owner},
+				{Key: bsonFieldID, Value: migrationLeaseID},
+				{Key: bsonFieldOwner, Value: owner},
 			})
 		}
 
@@ -140,13 +140,13 @@ func acquireMigrationLease(
 		// race another stealer. If the CAS fails (peer refreshed between
 		// our read and this write), treat it as "peer is alive" and skip.
 		stealFilter := bson.D{
-			{Key: "_id", Value: migrationLeaseID},
-			{Key: "owner", Value: current.Owner},
+			{Key: bsonFieldID, Value: migrationLeaseID},
+			{Key: bsonFieldOwner, Value: current.Owner},
 		}
-		stealUpdate := bson.D{{Key: "$set", Value: bson.D{
-			{Key: "owner", Value: owner},
-			{Key: "heartbeat", Value: now},
-			{Key: "acquired_at", Value: now},
+		stealUpdate := bson.D{{Key: bsonOpSet, Value: bson.D{
+			{Key: bsonFieldOwner, Value: owner},
+			{Key: bsonFieldHeartbeat, Value: now},
+			{Key: bsonFieldAcquiredAt, Value: now},
 		}}}
 
 		res, stealErr := coll.UpdateOne(ctx, stealFilter, stealUpdate)
@@ -160,8 +160,8 @@ func acquireMigrationLease(
 				defer cancel()
 
 				_, _ = coll.DeleteOne(releaseCtx, bson.D{
-					{Key: "_id", Value: migrationLeaseID},
-					{Key: "owner", Value: owner},
+					{Key: bsonFieldID, Value: migrationLeaseID},
+					{Key: bsonFieldOwner, Value: owner},
 				})
 			}
 
@@ -212,7 +212,7 @@ type legacyDoc struct {
 // Mid-migration crashes leave a mix of old and new _id shapes, but re-
 // running ensureSchema cleans up whatever is left.
 func rewriteObjectIDDocuments(ctx context.Context, coll *mongo.Collection) error {
-	filter := bson.D{{Key: "_id", Value: bson.D{{Key: "$type", Value: "objectId"}}}}
+	filter := bson.D{{Key: bsonFieldID, Value: bson.D{{Key: "$type", Value: "objectId"}}}}
 
 	cursor, err := coll.Find(ctx, filter)
 	if err != nil {
@@ -273,12 +273,12 @@ func rewriteObjectIDDocuments(ctx context.Context, coll *mongo.Collection) error
 		// struct-tag shape so future entryDoc changes don't silently alter
 		// the persisted migration payload.
 		newDoc := bson.D{
-			{Key: "_id", Value: newID},
-			{Key: "namespace", Value: doc.Namespace},
-			{Key: "key", Value: doc.Key},
-			{Key: "tenant_id", Value: tenantID},
+			{Key: bsonFieldID, Value: newID},
+			{Key: bsonFieldNamespace, Value: doc.Namespace},
+			{Key: bsonFieldKey, Value: doc.Key},
+			{Key: bsonFieldTenantID, Value: tenantID},
 			{Key: "value", Value: doc.Value},
-			{Key: "updated_at", Value: updatedAt},
+			{Key: bsonFieldUpdatedAt, Value: updatedAt},
 			{Key: "updated_by", Value: doc.UpdatedBy},
 		}
 
@@ -318,7 +318,7 @@ func rewriteObjectIDDocuments(ctx context.Context, coll *mongo.Collection) error
 			values = append(values, id)
 		}
 
-		deleteFilter := bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: values}}}}
+		deleteFilter := bson.D{{Key: bsonFieldID, Value: bson.D{{Key: "$in", Value: values}}}}
 
 		if _, err := coll.DeleteMany(ctx, deleteFilter); err != nil {
 			return fmt.Errorf("delete legacy batch [%d:%d]: %w", start, end, err)

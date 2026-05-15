@@ -127,8 +127,8 @@ func ensureSchema(ctx context.Context, coll *mongo.Collection, logger log.Logger
 func ensureLegacySchema(ctx context.Context, coll *mongo.Collection) error {
 	model := mongo.IndexModel{
 		Keys: bson.D{
-			{Key: "namespace", Value: 1},
-			{Key: "key", Value: 1},
+			{Key: bsonFieldNamespace, Value: 1},
+			{Key: bsonFieldKey, Value: 1},
 		},
 		Options: options.Index().SetUnique(true).SetName(legacyNamespaceKeyIndex),
 	}
@@ -158,9 +158,9 @@ func verifyNoAmbiguousTenantDocs(ctx context.Context, coll *mongo.Collection) er
 		// string — into the "__missing__" bucket so both collide with
 		// "_global" the same way.
 		{{Key: "$group", Value: bson.D{
-			{Key: "_id", Value: bson.D{
-				{Key: "namespace", Value: "$namespace"},
-				{Key: "key", Value: "$key"},
+			{Key: bsonFieldID, Value: bson.D{
+				{Key: bsonFieldNamespace, Value: "$namespace"},
+				{Key: bsonFieldKey, Value: "$key"},
 			}},
 			{Key: "tenantIDs", Value: bson.D{
 				{Key: "$addToSet", Value: bson.D{
@@ -207,8 +207,8 @@ func verifyNoAmbiguousTenantDocs(ctx context.Context, coll *mongo.Collection) er
 // is absent. Safe to re-run: $exists:false matches nothing after the first
 // successful pass.
 func backfillTenantID(ctx context.Context, coll *mongo.Collection) error {
-	filter := bson.D{{Key: "tenant_id", Value: bson.D{{Key: "$exists", Value: false}}}}
-	update := bson.D{{Key: "$set", Value: bson.D{{Key: "tenant_id", Value: store.SentinelGlobal}}}}
+	filter := bson.D{{Key: bsonFieldTenantID, Value: bson.D{{Key: "$exists", Value: false}}}}
+	update := bson.D{{Key: bsonOpSet, Value: bson.D{{Key: bsonFieldTenantID, Value: store.SentinelGlobal}}}}
 
 	if _, err := coll.UpdateMany(ctx, filter, update); err != nil {
 		return err //nolint:wrapcheck // wrapped by ensureSchema
@@ -242,9 +242,9 @@ func dropLegacyIndex(ctx context.Context, coll *mongo.Collection) error {
 func createCompoundIndex(ctx context.Context, coll *mongo.Collection) error {
 	model := mongo.IndexModel{
 		Keys: bson.D{
-			{Key: "namespace", Value: 1},
-			{Key: "key", Value: 1},
-			{Key: "tenant_id", Value: 1},
+			{Key: bsonFieldNamespace, Value: 1},
+			{Key: bsonFieldKey, Value: 1},
+			{Key: bsonFieldTenantID, Value: 1},
 		},
 		Options: options.Index().SetUnique(true),
 	}

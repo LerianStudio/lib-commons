@@ -56,22 +56,6 @@ const (
 	// policyBlockedMessage is the default error message returned when the rate
 	// limiter is fail-closed by security policy.
 	policyBlockedMessage = "rate limiting is mandatory in strict tier"
-
-	// luaIncrExpire is an atomic Lua script that increments the counter, sets expiry on the
-	// first request in a window, and returns both the current count and the remaining TTL in
-	// milliseconds. Executed atomically by Redis — no other command can interleave, eliminating
-	// the race condition present in sequential INCR + EXPIRE calls. Returning the TTL from the
-	// same script avoids an extra PTTL roundtrip and ensures the value is consistent with the
-	// counter read above.
-	luaIncrExpire = `
-local count = redis.call('INCR', KEYS[1])
-if count == 1 then
-    redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[1]))
-    return {count, tonumber(ARGV[1])}
-end
-local pttl = redis.call('PTTL', KEYS[1])
-return {count, pttl}
-`
 )
 
 // hashKey returns the first 16 hex characters of the SHA-256 hash of key (64-bit prefix).
@@ -137,15 +121,17 @@ func RelaxedTier() Tier {
 //
 // A nil RateLimiter is safe to use: WithRateLimit returns a pass-through handler.
 type RateLimiter struct {
-	conn          *libRedis.Client
-	logger        log.Logger
-	keyPrefix     string
-	identityFunc  IdentityFunc
-	failOpen      bool
-	policyBlocked bool
-	policyMessage string
-	onLimited     func(c *fiber.Ctx, tier Tier)
-	redisTimeout  time.Duration
+	conn            *libRedis.Client
+	storageBackend  *RedisStorage
+	logger          log.Logger
+	keyPrefix       string
+	identityFunc    IdentityFunc
+	failOpen        bool
+	policyBlocked   bool
+	policyMessage   string
+	onLimited       func(c *fiber.Ctx, tier Tier)
+	exceededHandler func(c *fiber.Ctx, tier Tier, ttl time.Duration) error
+	redisTimeout    time.Duration
 }
 
 // New creates a RateLimiter. In permissive or warn-only modes, it returns nil when:
@@ -170,6 +156,10 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 	}
 
 	for _, opt := range opts {
+		if opt == nil {
+			continue
+		}
+
 		opt(rl)
 	}
 
@@ -212,7 +202,9 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 
 	if conn == nil {
 		asserter := assert.New(context.Background(), rl.logger, "http.ratelimit", "New")
-		_ = asserter.Never(context.Background(), "redis connection is nil; rate limiter disabled")
+		if err := asserter.Never(context.Background(), "redis connection is nil; rate limiter disabled"); err == nil {
+			rl.logger.Log(context.Background(), log.LevelWarn, "rate limiter assertion unexpectedly passed")
+		}
 
 		if strictTier && enforcementEnabled {
 			logPolicyBlockedStartup(rl.logger,
@@ -225,6 +217,7 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 	}
 
 	rl.conn = conn
+	rl.storageBackend = NewRedisStorage(conn, WithRedisStorageLogger(rl.logger))
 
 	return rl
 }
@@ -372,55 +365,54 @@ func (rl *RateLimiter) check(c *fiber.Ctx, tier Tier) error {
 	return c.Next()
 }
 
-// buildKey constructs the Redis key for the rate limit counter.
-// Format: {keyPrefix}:ratelimit:{tier.Name}:{identity} (with prefix)
-// Format: ratelimit:{tier.Name}:{identity} (without prefix)
+// buildKey constructs the Redis key for the rate limit counter. Without a custom
+// prefix, the storage layer prepends its own "ratelimit:" namespace. With a custom
+// prefix, this method preserves the historical external wire shape by placing the
+// service prefix before the ratelimit namespace.
+//
+// Wire-format examples:
+//
+//	WithKeyPrefix unset:     ratelimit:{tier.Name}:{identity}
+//	WithKeyPrefix("my-svc"): my-svc:ratelimit:{tier.Name}:{identity}
 func (rl *RateLimiter) buildKey(tier Tier, identity string) string {
 	if rl.keyPrefix != "" {
-		return fmt.Sprintf("%s:ratelimit:%s:%s", rl.keyPrefix, tier.Name, identity)
+		return fmt.Sprintf("%s:%s%s:%s", rl.keyPrefix, keyPrefix, tier.Name, identity)
 	}
 
-	return fmt.Sprintf("ratelimit:%s:%s", tier.Name, identity)
+	return fmt.Sprintf("%s:%s", tier.Name, identity)
 }
 
-// incrementCounter atomically increments the counter and sets expiry using a Lua script.
+// incrementCounter atomically increments the counter and sets expiry by delegating to the
+// storage-layer primitive RedisStorage.Increment, bounded by the limiter's configured
+// rl.redisTimeout so a slow Redis cannot stall the request beyond the middleware's budget.
 // Returns the current count and the remaining TTL of the key. On the first request of a
 // window the TTL equals the full window; on subsequent requests it reflects the actual
 // remaining time, which is used for accurate Retry-After and X-RateLimit-Reset headers.
+//
+// The key passed in here is package-owned middleware output: either the
+// tier-scoped suffix when no custom key prefix is configured, or the full
+// historical "<prefix>:ratelimit:..." wire key when WithKeyPrefix is used.
+// The unexported full-key path preserves that historical middleware shape while
+// public RedisStorage.Increment keeps arbitrary caller keys inside the default
+// storage namespace.
 func (rl *RateLimiter) incrementCounter(ctx context.Context, key string, tier Tier) (count int64, ttl time.Duration, err error) {
-	client, err := rl.conn.GetClient(ctx)
-	if err != nil {
-		return 0, 0, fmt.Errorf("get redis client: %w", err)
-	}
-
 	timeoutCtx, cancel := context.WithTimeout(ctx, rl.redisTimeout)
 	defer cancel()
 
-	vals, err := client.Eval(timeoutCtx, luaIncrExpire, []string{key}, tier.Window.Milliseconds()).Slice()
-	if err != nil {
-		return 0, 0, fmt.Errorf("redis eval failed for tier %s: %w", tier.Name, err)
+	if rl.keyPrefix != "" {
+		return rl.storage().incrementFullKey(timeoutCtx, key, tier.Window)
 	}
 
-	if len(vals) < 2 {
-		return 0, 0, fmt.Errorf("unexpected lua result length %d for tier %s", len(vals), tier.Name)
+	return rl.storage().Increment(timeoutCtx, key, tier.Window)
+}
+
+// storage returns the cached RedisStorage view onto the limiter's Redis connection.
+func (rl *RateLimiter) storage() *RedisStorage {
+	if rl.storageBackend != nil {
+		return rl.storageBackend
 	}
 
-	count, ok := vals[0].(int64)
-	if !ok {
-		return 0, 0, fmt.Errorf("unexpected lua result type %T for count (tier %s)", vals[0], tier.Name)
-	}
-
-	ttlMs, ok := vals[1].(int64)
-	if !ok {
-		return 0, 0, fmt.Errorf("unexpected lua result type %T for ttl (tier %s)", vals[1], tier.Name)
-	}
-
-	// Guard against -1 (no expiry) or -2 (key not found) from PTTL; fall back to full window.
-	if ttlMs <= 0 {
-		ttlMs = tier.Window.Milliseconds()
-	}
-
-	return count, time.Duration(ttlMs) * time.Millisecond, nil
+	return &RedisStorage{conn: rl.conn, logger: rl.logger}
 }
 
 // handleRedisError handles a Redis communication failure during rate limit check.
@@ -533,6 +525,13 @@ func (rl *RateLimiter) handleLimitExceeded(
 	c.Set(constant.RateLimitLimit, strconv.Itoa(tier.Max))
 	c.Set(constant.RateLimitRemaining, "0")
 	c.Set(constant.RateLimitReset, strconv.FormatInt(resetAt, 10))
+
+	// Consumer-controlled responder: when set, the middleware hands over body writing
+	// entirely. Headers above are already written. The handler's return value propagates
+	// to Fiber. See WithExceededHandler for the contract.
+	if rl.exceededHandler != nil {
+		return rl.exceededHandler(c, tier, ttl)
+	}
 
 	return chttp.Respond(c, http.StatusTooManyRequests, chttp.ErrorResponse{
 		Code:    http.StatusTooManyRequests,

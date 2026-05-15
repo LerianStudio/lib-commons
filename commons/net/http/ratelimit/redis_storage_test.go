@@ -52,6 +52,18 @@ func TestNewRedisStorage_ValidConnection(t *testing.T) {
 	require.NotNil(t, storage.conn)
 }
 
+func TestNewRedisStorage_NilOptionIgnored(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newTestRedisConnection(t, mr)
+
+	assert.NotPanics(t, func() {
+		storage := NewRedisStorage(conn, nil)
+		require.NotNil(t, storage)
+	})
+}
+
 func TestRedisStorage_GetSetDelete(t *testing.T) {
 	t.Parallel()
 
@@ -251,6 +263,7 @@ func TestRedisStorage_ConcurrentSetGet(t *testing.T) {
 
 	const workers = 20
 	var wg sync.WaitGroup
+	errCh := make(chan error, workers*2)
 
 	wg.Add(workers * 2) // writers + readers
 
@@ -262,7 +275,9 @@ func TestRedisStorage_ConcurrentSetGet(t *testing.T) {
 			key := "concurrent-key-" + strconv.Itoa(idx)
 			val := []byte("value-" + strconv.Itoa(idx))
 
-			_ = storage.Set(key, val, time.Minute)
+			if err := storage.Set(key, val, time.Minute); err != nil {
+				errCh <- err
+			}
 		}(i)
 	}
 
@@ -273,11 +288,18 @@ func TestRedisStorage_ConcurrentSetGet(t *testing.T) {
 
 			key := "concurrent-key-" + strconv.Itoa(idx)
 
-			_, _ = storage.Get(key)
+			if _, err := storage.Get(key); err != nil {
+				errCh <- err
+			}
 		}(i)
 	}
 
 	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		require.NoError(t, err)
+	}
 
 	// Verify all keys were written
 	for i := range workers {
