@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	semconv "go.opentelemetry.io/otel/semconv/v1.34.0"
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
 )
@@ -1306,6 +1307,36 @@ func TestNewResource(t *testing.T) {
 	}
 	r := cfg.newResource()
 	assert.NotNil(t, r)
+}
+
+func TestNewTelemetry_NormalizesDeploymentEnvironmentResourceAttribute(t *testing.T) {
+	t.Parallel()
+
+	cfg := TelemetryConfig{
+		LibraryName:     "lib",
+		ServiceName:     "svc",
+		ServiceVersion:  "1.0",
+		DeploymentEnv:   " Prod ",
+		EnableTelemetry: false,
+		Logger:          log.NewNop(),
+	}
+
+	telemetry, err := NewTelemetry(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, telemetry.ShutdownTelemetryWithContext(context.Background())) })
+
+	assert.Equal(t, "prod", telemetry.DeploymentEnv)
+
+	deploymentEnvironmentKey := semconv.DeploymentEnvironmentName("").Key
+	attrs := telemetry.TelemetryConfig.newResource().Attributes()
+	for _, attr := range attrs {
+		if attr.Key == deploymentEnvironmentKey {
+			assert.Equal(t, "prod", attr.Value.AsString())
+			return
+		}
+	}
+
+	t.Fatalf("expected %s resource attribute", deploymentEnvironmentKey)
 }
 
 // ===========================================================================

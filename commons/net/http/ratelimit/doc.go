@@ -39,4 +39,21 @@
 //
 // Keys follow the pattern: [prefix:]ratelimit:<tier>:<identity>
 // Example: "my-service:ratelimit:default:192.168.1.1"
+//
+// # Error responses
+//
+// By default, exceeded requests return the historical lib-commons
+// ErrorResponse body. WithExceededHandler lets services keep the distributed
+// rate-limit middleware while writing their own 429 envelope after the
+// middleware has set Retry-After and X-RateLimit-* headers. WithOnLimited
+// remains a side-effect hook for metrics/logging and is invoked before the
+// exceeded handler.
+//
+// # Storage primitives
+//
+// RedisStorage.Increment exposes the package's atomic fixed-window counter
+// primitive for services that need custom middleware ergonomics but still want
+// the same Redis correctness guarantees. The method performs INCR + PEXPIRE in
+// one Lua EVAL and returns the post-increment count plus the remaining TTL from
+// the same Redis round trip.
 package ratelimit

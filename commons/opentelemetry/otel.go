@@ -101,6 +101,7 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 
 	normalizeEndpoint(&cfg)
 	normalizeEndpointEnvVars()
+	cfg.DeploymentEnv = normalizeDeploymentEnvironment(cfg.DeploymentEnv)
 
 	if cfg.EnableTelemetry && strings.TrimSpace(cfg.CollectorExporterEndpoint) == "" {
 		return handleEmptyEndpoint(cfg)
@@ -114,17 +115,16 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 		return newNoopTelemetry(cfg)
 	}
 
-	normalizedDeploymentEnv := strings.ToLower(strings.TrimSpace(cfg.DeploymentEnv))
-	if cfg.InsecureExporter && normalizedDeploymentEnv != "" &&
-		normalizedDeploymentEnv != "development" && normalizedDeploymentEnv != "local" {
+	if cfg.InsecureExporter && cfg.DeploymentEnv != "" &&
+		cfg.DeploymentEnv != "development" && cfg.DeploymentEnv != "local" {
 		cfg.Logger.Log(ctx, log.LevelWarn,
 			"InsecureExporter is enabled in non-development environment",
-			log.String("environment", normalizedDeploymentEnv))
+			log.String("environment", cfg.DeploymentEnv))
 	}
 
 	policyEnv := commons.CurrentEnvironment()
-	if normalizedDeploymentEnv != "" {
-		policyEnv = commons.Environment(normalizedDeploymentEnv)
+	if cfg.DeploymentEnv != "" {
+		policyEnv = commons.Environment(cfg.DeploymentEnv)
 	}
 
 	// Security policy: insecure OTEL exporter enforcement in strict tier.
@@ -159,6 +159,10 @@ func normalizeEndpoint(cfg *TelemetryConfig) {
 		// No scheme — assume insecure (common in k8s internal comms).
 		cfg.InsecureExporter = true
 	}
+}
+
+func normalizeDeploymentEnvironment(env string) string {
+	return strings.ToLower(strings.TrimSpace(env))
 }
 
 // normalizeEndpointEnvVars ensures OTEL exporter endpoint environment variables
