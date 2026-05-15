@@ -1,3 +1,15 @@
 package metrics
-// System metrics are inherited via MetricsFactory type alias in metrics.go.
-// This file is intentionally empty to preserve the original file structure.
+
+import libobsmetrics "github.com/LerianStudio/lib-observability/metrics"
+
+var (
+	// MetricSystemCPUUsage is a gauge that records the current CPU usage percentage.
+	//
+	// Deprecated: Use github.com/LerianStudio/lib-observability/metrics.MetricSystemCPUUsage instead.
+	MetricSystemCPUUsage = libobsmetrics.MetricSystemCPUUsage
+
+	// MetricSystemMemUsage is a gauge that records the current memory usage percentage.
+	//
+	// Deprecated: Use github.com/LerianStudio/lib-observability/metrics.MetricSystemMemUsage instead.
+	MetricSystemMemUsage = libobsmetrics.MetricSystemMemUsage
+)

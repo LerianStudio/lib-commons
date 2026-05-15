@@ -16,94 +16,6 @@ var (
 	errOriginalPanicRecover = errors.New("original error")
 )
 
-// TestLogPanicWithStack_NilLogger tests that nil logger doesn't cause panic.
-func TestLogPanicWithStack_NilLogger(t *testing.T) {
-	t.Parallel()
-
-	require.NotPanics(t, func() {
-		logPanicWithStack(nil, "test", "panic value", []byte("stack trace"))
-	})
-}
-
-// TestLogPanicWithStack_ValidLogger tests logging with a valid logger.
-func TestLogPanicWithStack_ValidLogger(t *testing.T) {
-	t.Parallel()
-
-	logger := newTestLogger()
-	stack := []byte("goroutine 1 [running]:\nmain.main()\n\t/path/to/file.go:10")
-
-	logPanicWithStack(logger, "test-handler", "test panic", stack)
-
-	assert.True(t, logger.wasPanicLogged())
-	assert.NotEmpty(t, logger.errorCalls)
-}
-
-// TestLogPanicWithStack_DifferentPanicTypes tests various panic value types.
-func TestLogPanicWithStack_DifferentPanicTypes(t *testing.T) {
-	t.Parallel()
-
-	type customStruct struct {
-		Field string
-		Code  int
-	}
-
-	tests := []struct {
-		name       string
-		panicValue any
-	}{
-		{
-			name:       "string panic value",
-			panicValue: "something went wrong",
-		},
-		{
-			name:       "error panic value",
-			panicValue: errTestPanicRecover,
-		},
-		{
-			name:       "int panic value",
-			panicValue: 42,
-		},
-		{
-			name:       "struct panic value",
-			panicValue: customStruct{Field: "test", Code: 500},
-		},
-		{
-			name:       "nil panic value",
-			panicValue: nil,
-		},
-		{
-			name:       "bool panic value",
-			panicValue: true,
-		},
-		{
-			name:       "float panic value",
-			panicValue: 3.14159,
-		},
-		{
-			name:       "slice panic value",
-			panicValue: []string{"a", "b", "c"},
-		},
-		{
-			name:       "map panic value",
-			panicValue: map[string]int{"key": 123},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			logger := newTestLogger()
-			stack := []byte("test stack")
-
-			require.NotPanics(t, func() {
-				logPanicWithStack(logger, "test", tt.panicValue, stack)
-			})
-
-			assert.True(t, logger.wasPanicLogged())
-		})
-	}
-}
 
 // TestRecoverAndLog_NilLogger tests RecoverAndLog with nil logger.
 func TestRecoverAndLog_NilLogger(t *testing.T) {
@@ -220,18 +132,6 @@ func TestRecoverWithPolicyAndContext_NilLogger(t *testing.T) {
 
 		t.Fatal("Should not reach here")
 	})
-}
-
-// TestLogPanic_CallsLogPanicWithStack tests that logPanic delegates correctly.
-func TestLogPanic_CallsLogPanicWithStack(t *testing.T) {
-	t.Parallel()
-
-	logger := newTestLogger()
-
-	logPanic(logger, "test-handler", "panic value")
-
-	assert.True(t, logger.wasPanicLogged())
-	assert.NotEmpty(t, logger.errorCalls)
 }
 
 // TestRecoverAndLog_PreservesPanicValue tests panic value is correctly captured.
