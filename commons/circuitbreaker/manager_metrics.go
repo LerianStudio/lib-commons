@@ -111,6 +111,7 @@ func (m *manager) recordStateTransition(tenantID, serviceName string, from, to S
 	}
 
 	attrs := stateTransitionAttributeSet(tenantID, serviceName, from, to)
+
 	err := m.stateCounter.WithAttributeSet(attrs).AddOne(context.Background())
 	if err != nil {
 		m.logger.Log(context.Background(), log.LevelWarn, "failed to record state transition metric", log.Err(err))

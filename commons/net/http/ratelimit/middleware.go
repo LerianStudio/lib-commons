@@ -432,6 +432,7 @@ func (rl *RateLimiter) handleRedisError(
 	)
 
 	libOpentelemetry.HandleSpanError(span, "rate limiter redis error", err)
+
 	if errors.Is(err, ErrInvalidTenantContext) {
 		return chttp.Respond(c, http.StatusBadRequest, chttp.ErrorResponse{
 			Code:    http.StatusBadRequest,

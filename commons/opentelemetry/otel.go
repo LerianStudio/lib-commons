@@ -101,9 +101,11 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 	}
 
 	normalizeEndpoint(&cfg)
+
 	if err := normalizeEndpointEnvVars(); err != nil {
 		return nil, fmt.Errorf("normalize otel endpoint env vars: %w", err)
 	}
+
 	cfg.DeploymentEnv = normalizeDeploymentEnvironment(cfg.DeploymentEnv)
 
 	if cfg.EnableTelemetry && strings.TrimSpace(cfg.CollectorExporterEndpoint) == "" {
