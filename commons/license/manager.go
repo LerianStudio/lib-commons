@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/assert"
@@ -32,44 +33,28 @@ func WithLogger(l log.Logger) ManagerOption {
 	}
 }
 
-// WithFailClosed configures the manager to record an assertion failure AND
-// log the reason at error level, providing a fail-closed posture where
-// license validation failures produce observable signals (assertion events
-// + error logs) rather than being silently swallowed.
-//
-// Callers that need an actual process exit should combine this with
-// SetHandler to provide their own os.Exit or signal-based shutdown.
-//
-// Contrast with the default fail-open behavior where validation failures are
-// only recorded as assertion events.
+// WithFailClosed configures the manager to log the reason at error level and
+// terminate the process when license validation fails.
 func WithFailClosed() ManagerOption {
 	return func(m *ManagerShutdown) {
 		m.handler = func(reason string) {
-			// Record assertion event (same as DefaultHandler)
-			asserter := assert.New(context.Background(), m.Logger, "license", "FailClosed")
-			_ = asserter.Never(context.Background(), "LICENSE VALIDATION FAILED (fail-closed)", "reason", reason)
-
-			// Also log at error level if logger is available
 			if m.Logger != nil {
 				m.Logger.Log(context.Background(), log.LevelError, "license validation failed (fail-closed mode)",
 					log.String("reason", reason),
 				)
 			}
+
+			DefaultHandler(reason)
 		}
 	}
 }
 
 // DefaultHandler is the default termination behavior.
-// It records an assertion failure without panicking.
-//
-// NOTE: This intentionally implements a fail-open policy: license validation
-// failures are recorded as assertion events but do NOT terminate the process.
-// This design choice avoids unexpected shutdowns in environments where the
-// license server is unreachable. To enforce a fail-closed policy, use
-// WithFailClosed() when constructing the manager.
+// It logs the failure reason to stderr and terminates the process with exit code 1.
+// This ensures the application cannot continue running with an invalid license.
 func DefaultHandler(reason string) {
-	asserter := assert.New(context.Background(), nil, "license", "DefaultHandler")
-	_ = asserter.Never(context.Background(), "LICENSE VALIDATION FAILED", "reason", reason)
+	fmt.Fprintf(os.Stderr, "LICENSE VALIDATION FAILED: %s\n", reason)
+	os.Exit(1)
 }
 
 // DefaultHandlerWithError returns an error instead of panicking.
