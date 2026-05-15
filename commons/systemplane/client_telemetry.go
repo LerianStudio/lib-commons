@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 )
 
@@ -54,7 +55,7 @@ func (c *Client) startSpanWithAttrs(ctx context.Context, name string, attrs ...a
 
 // logWarn emits a warning-level log via the configured logger.
 func (c *Client) logWarn(ctx context.Context, msg string, fields ...log.Field) {
-	if c.logger != nil {
+	if !nilcheck.Interface(c.logger) {
 		c.logger.Log(ctx, log.LevelWarn, msg, fields...)
 	}
 }
@@ -64,7 +65,7 @@ func (c *Client) logWarn(ctx context.Context, msg string, fields ...log.Field) {
 // non-nil logger today, but the guard future-proofs against construction
 // paths that might bypass it.
 func (c *Client) logDebug(ctx context.Context, msg string, fields ...log.Field) {
-	if c.logger != nil {
+	if !nilcheck.Interface(c.logger) {
 		c.logger.Log(ctx, log.LevelDebug, msg, fields...)
 	}
 }

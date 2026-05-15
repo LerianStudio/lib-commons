@@ -245,7 +245,7 @@ func TestRedisStorage_Increment_InvalidTenantContextSanitized(t *testing.T) {
 	assert.NotContains(t, err.Error(), rawTenantID)
 }
 
-func TestRedisStorage_Increment_PTTLClearedFallback(t *testing.T) {
+func TestRedisStorage_Increment_PTTLClearedHealsExpiry(t *testing.T) {
 	t.Parallel()
 
 	mr := miniredis.RunT(t)
@@ -272,11 +272,16 @@ func TestRedisStorage_Increment_PTTLClearedFallback(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, time.Duration(-1), pttl, "PTTL must report -1 after PERSIST")
 
-	// Increment must fall back to window when the script observes the -1 sentinel.
+	// Increment must restore expiry when the script observes the -1 sentinel.
 	count, ttl, err := storage.Increment(t.Context(), key, window)
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), count)
-	assert.Equal(t, window, ttl, "Increment must fall back to window when PTTL == -1")
+	assert.Equal(t, window, ttl, "Increment must report the restored window when PTTL == -1")
+
+	pttl, err = client.PTTL(t.Context(), wireKey).Result()
+	require.NoError(t, err)
+	assert.Greater(t, pttl, time.Duration(0), "Increment must repair missing Redis expiry")
+	assert.LessOrEqual(t, pttl, window)
 }
 
 func TestRedisStorage_Increment_ConcurrentMonotonic(t *testing.T) {

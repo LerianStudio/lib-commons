@@ -33,6 +33,13 @@ func NewPassthroughManager() Manager {
 	return passthroughManager{}
 }
 
+// NewPassthroughTenantAwareManager returns the same pass-through implementation
+// with a TenantAwareManager return type for tenant-aware dependency injection
+// sites that should not need a type assertion.
+func NewPassthroughTenantAwareManager() TenantAwareManager {
+	return passthroughManager{}
+}
+
 // passthroughManager is the zero-state implementation behind
 // NewPassthroughManager. It satisfies both Manager and TenantAwareManager
 // so a single value works in both single-tenant and multi-tenant call sites.

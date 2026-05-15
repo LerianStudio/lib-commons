@@ -17,6 +17,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v5/commons"
 	"github.com/LerianStudio/lib-commons/v5/commons/assert"
 	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
 	"github.com/LerianStudio/lib-commons/v5/commons/security"
@@ -87,7 +88,7 @@ type Telemetry struct {
 
 // NewTelemetry builds telemetry providers and exporters from configuration.
 func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
-	if cfg.Logger == nil {
+	if nilcheck.Interface(cfg.Logger) {
 		return nil, ErrNilTelemetryLogger
 	}
 
@@ -100,7 +101,9 @@ func NewTelemetry(cfg TelemetryConfig) (*Telemetry, error) {
 	}
 
 	normalizeEndpoint(&cfg)
-	normalizeEndpointEnvVars()
+	if err := normalizeEndpointEnvVars(); err != nil {
+		return nil, fmt.Errorf("normalize otel endpoint env vars: %w", err)
+	}
 	cfg.DeploymentEnv = normalizeDeploymentEnvironment(cfg.DeploymentEnv)
 
 	if cfg.EnableTelemetry && strings.TrimSpace(cfg.CollectorExporterEndpoint) == "" {
@@ -169,19 +172,28 @@ func normalizeDeploymentEnvironment(env string) string {
 // contain a URL scheme. The OTEL SDK's envconfig reads these via url.Parse(),
 // which fails on bare "host:port" values. Adding "http://" prevents noisy
 // "parse url" errors from the SDK's internal logger.
-func normalizeEndpointEnvVars() {
+func normalizeEndpointEnvVars() error {
+	return normalizeEndpointEnvVarsWithFuncs(os.Getenv, os.Setenv)
+}
+
+func normalizeEndpointEnvVarsWithFuncs(getenv func(string) string, setenv func(string, string) error) error {
 	for _, key := range []string{
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
 		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
 	} {
-		v := strings.TrimSpace(os.Getenv(key))
+		v := strings.TrimSpace(getenv(key))
 		if v == "" || strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
 			continue
 		}
 
-		_ = os.Setenv(key, "http://"+v)
+		if err := setenv(key, "http://"+v); err != nil {
+			return fmt.Errorf("set %s: %w", key, err)
+		}
 	}
+
+	return nil
 }
 
 // handleEmptyEndpoint handles the case where telemetry is enabled but the collector

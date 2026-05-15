@@ -38,6 +38,7 @@ type ServerManager struct {
 	httpServer         *fiber.App
 	stdlibHTTPServer   *http.Server
 	grpcServer         *grpc.Server
+	stdlibHTTPListener net.Listener
 	licenseClient      *license.ManagerShutdown
 	telemetry          *opentelemetry.Telemetry
 	logger             log.Logger
@@ -144,6 +145,35 @@ func (sm *ServerManager) WithStdlibHTTPServer(srv *http.Server) *ServerManager {
 	}
 
 	sm.stdlibHTTPServer = srv
+	sm.stdlibHTTPListener = nil
+
+	return sm
+}
+
+// WithStdlibHTTPListener configures a stdlib *http.Server with a caller-owned,
+// pre-bound listener. It is useful for tests and socket-activation style
+// bootstraps where the listener must be acquired before ServerManager starts.
+// Shutdown semantics match WithStdlibHTTPServer: Server.Shutdown owns graceful
+// drain and closes the listener during shutdown.
+//
+// Mutually exclusive with WithHTTPServer: configuring both causes
+// StartWithGracefulShutdownWithError to return ErrConflictingHTTPServers
+// before any goroutine is launched.
+func (sm *ServerManager) WithStdlibHTTPListener(srv *http.Server, listener net.Listener) *ServerManager {
+	if sm == nil {
+		return nil
+	}
+
+	if srv == nil || listener == nil {
+		return sm
+	}
+
+	if srv.ReadHeaderTimeout == 0 {
+		srv.ReadHeaderTimeout = defaultReadHeaderTimeout
+	}
+
+	sm.stdlibHTTPServer = srv
+	sm.stdlibHTTPListener = listener
 
 	return sm
 }
@@ -185,10 +215,11 @@ func (sm *ServerManager) WithShutdownTimeout(d time.Duration) *ServerManager {
 }
 
 // WithShutdownHook registers a function to be called during graceful shutdown.
-// Hooks are executed in registration order, AFTER HTTP server shutdown and
-// BEFORE telemetry shutdown. Each hook receives a context bounded by the
-// shutdown timeout. Errors from hooks are logged but do not prevent subsequent
-// hooks or the rest of the shutdown sequence from running (best-effort cleanup).
+// Hooks are executed in registration order, AFTER HTTP and gRPC servers have
+// drained/stopped and BEFORE telemetry/logger/license shutdown. Each hook
+// receives a context bounded by the shutdown timeout. Errors from hooks are
+// logged but do not prevent subsequent hooks or the rest of the shutdown
+// sequence from running (best-effort cleanup).
 func (sm *ServerManager) WithShutdownHook(hook func(context.Context) error) *ServerManager {
 	if sm == nil || hook == nil {
 		return sm
@@ -373,13 +404,25 @@ func (sm *ServerManager) launchStdlibHTTPServer() bool {
 		"start_stdlib_http_server",
 		runtime.KeepRunning,
 		func(_ context.Context) {
-			sm.logger.Log(context.Background(), log.LevelInfo, "starting stdlib HTTP server", log.String("address", sm.stdlibHTTPServer.Addr))
+			address := sm.stdlibHTTPServer.Addr
+			if sm.stdlibHTTPListener != nil {
+				address = sm.stdlibHTTPListener.Addr().String()
+			}
+
+			sm.logger.Log(context.Background(), log.LevelInfo, "starting stdlib HTTP server", log.String("address", address))
 
 			// ListenAndServe returns http.ErrServerClosed on a clean
 			// Shutdown — that is the success signal, not an error.
 			// Parity with fiber.App.Listen returning nil after
 			// fiber.App.Shutdown.
-			if err := sm.stdlibHTTPServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			var err error
+			if sm.stdlibHTTPListener != nil {
+				err = sm.stdlibHTTPServer.Serve(sm.stdlibHTTPListener)
+			} else {
+				err = sm.stdlibHTTPServer.ListenAndServe()
+			}
+
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				sm.logger.Log(context.Background(), log.LevelError, "stdlib HTTP server error", log.Err(err))
 
 				select {

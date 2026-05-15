@@ -36,8 +36,8 @@ const (
 	// PTTL sentinels:
 	//   -1: key exists but has no TTL (e.g., TTL inadvertently cleared by an external SET).
 	//   -2: key no longer exists (e.g., deleted between INCR and PTTL).
-	// Callers of Increment must fall back to the configured window when ttlMs <= 0 so that
-	// Retry-After / X-RateLimit-Reset headers remain sane.
+	// When either sentinel is observed, the script repairs the expiry before returning so
+	// callers never report a finite Retry-After for an immortal counter.
 	luaIncrExpire = `
 local count = redis.call('INCR', KEYS[1])
 if count == 1 then
@@ -45,6 +45,10 @@ if count == 1 then
     return {count, tonumber(ARGV[1])}
 end
 local pttl = redis.call('PTTL', KEYS[1])
+if pttl < 0 then
+    redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[1]))
+    return {count, tonumber(ARGV[1])}
+end
 return {count, pttl}
 `
 )
@@ -289,8 +293,8 @@ func (storage *RedisStorage) Reset() error {
 //
 // If the underlying PTTL returns the sentinel -1 (no expiry — e.g. a TTL was inadvertently
 // cleared by an external SET) or -2 (key not found — e.g. the key was deleted between INCR
-// and PTTL), the method falls back to returning window so consumers always observe a sane
-// Retry-After value.
+// and PTTL), the Lua script restores the window expiry before returning so consumers observe
+// a finite Retry-After value backed by actual Redis state.
 //
 // The key is automatically prefixed with the package's "ratelimit:" prefix unless it
 // already starts with that exact namespace. Arbitrary keys that merely contain
@@ -385,8 +389,9 @@ func (storage *RedisStorage) increment(
 		return 0, 0, err
 	}
 
-	// Guard against -1 (no expiry) or -2 (key not found) from PTTL; fall back to full window.
-	if ttlMs <= 0 {
+	// The Lua script repairs PTTL sentinel values before returning. This branch is a final
+	// guard for Redis-compatible backends that may still return a negative TTL shape.
+	if ttlMs < 0 {
 		ttlMs = windowMs
 	}
 

@@ -159,8 +159,9 @@ func WithSignatureVersion(v SignatureVersion) Option {
 // SECURITY: enabling this in production reintroduces SSRF risk by allowing
 // outbound delivery to the host's own network namespace and any reachable
 // internal services. Production callers must set
-// ALLOW_WEBHOOK_PRIVATE_NETWORK="reason" explicitly; SECURITY_ENFORCEMENT=true
-// makes a missing override fail closed by default.
+// ALLOW_WEBHOOK_PRIVATE_NETWORK="reason" explicitly. Missing overrides always
+// fail closed outside the permissive tier; this guard does not downgrade to a
+// warn-only path.
 //
 // This option only bypasses the private/loopback IP-range gate for explicit
 // IP literal URLs (e.g., 127.0.0.1, 10.0.0.5). Hostnames that resolve to
@@ -403,7 +404,7 @@ func (d *Deliverer) deliverToEndpoint(
 	result := DeliveryResult{EndpointID: ep.ID}
 
 	// --- SSRF validation + DNS pinning (single lookup, eliminates TOCTOU) ---
-	pinnedURL, originalAuthority, sniHostname, ssrfErr := resolveAndValidateWebhookTarget(ctx, ep.URL, d.allowPrivateNetwork, d.ssrfOptions()...)
+	pinnedURL, originalAuthority, sniHostname, ssrfErr := resolveAndValidateWebhookTarget(ctx, ep.URL, d.allowPrivateNetwork)
 	if ssrfErr != nil {
 		span.RecordError(ssrfErr)
 		span.SetStatus(codes.Error, "SSRF blocked")

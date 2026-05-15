@@ -2,28 +2,16 @@ package circuitbreaker
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"reflect"
 	"sync"
-	"time"
 
-	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
-	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
 	"github.com/LerianStudio/lib-commons/v5/commons/safe"
-	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/sony/gobreaker"
 )
-
-// stateChangeListenerTimeout limits how long a state change listener notification
-// can run before the context is cancelled.
-const stateChangeListenerTimeout = 10 * time.Second
-
-const noTenantHashLabel = ""
 
 type breakerMapKey struct {
 	tenantID    string
@@ -38,6 +26,7 @@ type breakerSlot struct {
 	serviceName string
 	breaker     *gobreaker.CircuitBreaker
 	config      Config
+	metrics     breakerMetrics
 }
 
 // Compile-time guarantees that *manager satisfies both interface tiers.
@@ -55,33 +44,11 @@ type manager struct {
 	metricsFactory  *metrics.MetricsFactory
 	stateCounter    *metrics.CounterBuilder
 	execCounter     *metrics.CounterBuilder
+	listenerSem     chan struct{}
 }
 
 // ManagerOption configures optional behaviour on a circuit breaker manager.
 type ManagerOption func(*manager)
-
-// WithMetricsFactory attaches a MetricsFactory so the manager emits
-// circuit_breaker_state_transitions_total and circuit_breaker_executions_total
-// counters automatically.  When nil, metrics are silently skipped.
-func WithMetricsFactory(f *metrics.MetricsFactory) ManagerOption {
-	return func(m *manager) {
-		m.metricsFactory = f
-	}
-}
-
-// stateTransitionMetric defines the counter for circuit breaker state transitions.
-var stateTransitionMetric = metrics.Metric{
-	Name:        "circuit_breaker_state_transitions_total",
-	Unit:        "1",
-	Description: "Total number of circuit breaker state transitions",
-}
-
-// executionMetric defines the counter for circuit breaker executions.
-var executionMetric = metrics.Metric{
-	Name:        "circuit_breaker_executions_total",
-	Unit:        "1",
-	Description: "Total number of circuit breaker executions",
-}
 
 // NewManager creates a new circuit breaker manager.
 // Returns an error if logger is nil (including typed-nil interface values).
@@ -89,7 +56,7 @@ var executionMetric = metrics.Metric{
 // The returned Manager also satisfies TenantAwareManager; callers can
 // type-assert when they need the tenant-keyed overloads.
 func NewManager(logger log.Logger, opts ...ManagerOption) (Manager, error) {
-	if isNilLogger(logger) {
+	if nilcheck.Interface(logger) {
 		return nil, ErrNilLogger
 	}
 
@@ -98,6 +65,7 @@ func NewManager(logger log.Logger, opts ...ManagerOption) (Manager, error) {
 		listeners:       make([]StateChangeListener, 0),
 		tenantListeners: make([]TenantStateChangeListener, 0),
 		logger:          logger,
+		listenerSem:     make(chan struct{}, stateChangeListenerConcurrency),
 	}
 
 	for _, opt := range opts {
@@ -109,26 +77,6 @@ func NewManager(logger log.Logger, opts ...ManagerOption) (Manager, error) {
 	m.initMetricCounters()
 
 	return m, nil
-}
-
-func (m *manager) initMetricCounters() {
-	if m.metricsFactory == nil {
-		return
-	}
-
-	stateCounter, err := m.metricsFactory.Counter(stateTransitionMetric)
-	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to create state transition metric counter", log.Err(err))
-	} else {
-		m.stateCounter = stateCounter
-	}
-
-	execCounter, err := m.metricsFactory.Counter(executionMetric)
-	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to create execution metric counter", log.Err(err))
-	} else {
-		m.execCounter = execCounter
-	}
 }
 
 // GetOrCreate returns an existing breaker or creates one for the service.
@@ -204,6 +152,7 @@ func (m *manager) getOrCreate(tenantID, serviceName string, config Config, tenan
 		serviceName: serviceName,
 		breaker:     breaker,
 		config:      config,
+		metrics:     m.buildBreakerMetrics(tenantID, serviceName),
 	}
 
 	m.logger.Log(
@@ -270,7 +219,7 @@ func (m *manager) execute(ctx context.Context, tenantID, serviceName string, fn 
 				log.String("service", serviceName),
 				log.String("tenant_hash", tenantHashLabel(tenantID)),
 			)
-			m.recordExecution(tenantID, serviceName, "rejected_open")
+			m.recordExecution(slot, executionResultRejectedOpen)
 
 			return nil, fmt.Errorf("service %s is currently unavailable (circuit breaker open): %w", serviceName, err)
 		}
@@ -283,18 +232,18 @@ func (m *manager) execute(ctx context.Context, tenantID, serviceName string, fn 
 				log.String("service", serviceName),
 				log.String("tenant_hash", tenantHashLabel(tenantID)),
 			)
-			m.recordExecution(tenantID, serviceName, "rejected_half_open")
+			m.recordExecution(slot, executionResultRejectedHalfOpen)
 
 			return nil, fmt.Errorf("service %s is recovering (too many requests): %w", serviceName, err)
 		}
 
 		// The wrapped function returned an error (not a breaker rejection)
-		m.recordExecution(tenantID, serviceName, "error")
+		m.recordExecution(slot, executionResultError)
 
 		return result, err
 	}
 
-	m.recordExecution(tenantID, serviceName, "success")
+	m.recordExecution(slot, executionResultSuccess)
 
 	return result, err
 }
@@ -450,6 +399,7 @@ func (m *manager) reset(tenantID, serviceName string, tenantAware bool) {
 		serviceName: slot.serviceName,
 		breaker:     gobreaker.NewCircuitBreaker(settings),
 		config:      slot.config,
+		metrics:     m.buildBreakerMetrics(slot.tenantID, slot.serviceName),
 	}
 
 	m.logger.Log(
@@ -461,92 +411,6 @@ func (m *manager) reset(tenantID, serviceName string, tenantAware bool) {
 	)
 }
 
-// ResetTenant recreates every breaker for a given tenant with its stored Config.
-// No-op if the tenant has no registered breakers.
-func (m *manager) ResetTenant(tenantID string) {
-	if err := validateTenantID(tenantID); err != nil {
-		return
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	resetCount := 0
-
-	for key, slot := range m.slots {
-		if key.tenantID != tenantID {
-			continue
-		}
-
-		settings := m.buildSettings(slot.tenantID, slot.serviceName, slot.config)
-		m.slots[key] = &breakerSlot{
-			tenantID:    slot.tenantID,
-			serviceName: slot.serviceName,
-			breaker:     gobreaker.NewCircuitBreaker(settings),
-			config:      slot.config,
-		}
-		resetCount++
-	}
-
-	m.logger.Log(
-		context.Background(),
-		log.LevelInfo,
-		"tenant breakers reset",
-		log.String("tenant_hash", tenantHashLabel(tenantID)),
-		log.Int("reset_count", resetCount),
-	)
-}
-
-// RemoveTenant drops every breaker for the given tenant entirely. No-op if
-// the tenant has no registered breakers.
-func (m *manager) RemoveTenant(tenantID string) {
-	if err := validateTenantID(tenantID); err != nil {
-		return
-	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	removed := 0
-
-	for key := range m.slots {
-		if key.tenantID != tenantID {
-			continue
-		}
-
-		delete(m.slots, key)
-
-		removed++
-	}
-
-	m.logger.Log(
-		context.Background(),
-		log.LevelInfo,
-		"removed tenant breakers",
-		log.String("tenant_hash", tenantHashLabel(tenantID)),
-		log.Int("removed_count", removed),
-	)
-}
-
-// Inventory returns a snapshot of every (tenantID, serviceName) pair the
-// Manager currently holds. The slice is freshly allocated and safe to
-// iterate while other goroutines mutate the Manager — but the snapshot may
-// be stale by the time the caller reads it.
-func (m *manager) Inventory() []TenantBreakerKey {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	keys := make([]TenantBreakerKey, 0, len(m.slots))
-	for _, slot := range m.slots {
-		keys = append(keys, TenantBreakerKey{
-			TenantID:    slot.tenantID,
-			ServiceName: slot.serviceName,
-		})
-	}
-
-	return keys
-}
-
 // RegisterStateChangeListener registers a listener for state change notifications.
 // Both untyped nil and typed nil (e.g., (*MyListener)(nil)) are rejected.
 //
@@ -554,7 +418,7 @@ func (m *manager) Inventory() []TenantBreakerKey {
 // no-tenant scope (tenantID == ""). For multi-tenant observation, use
 // RegisterTenantStateChangeListener.
 func (m *manager) RegisterStateChangeListener(listener StateChangeListener) {
-	if isNilListener(listener) {
+	if nilcheck.Interface(listener) {
 		m.logger.Log(context.Background(), log.LevelWarn, "attempted to register a nil state change listener")
 
 		return
@@ -571,7 +435,7 @@ func (m *manager) RegisterStateChangeListener(listener StateChangeListener) {
 // breaker transition across every tenant. Both untyped nil and typed nil
 // (e.g., (*MyListener)(nil)) are rejected with a warning log.
 func (m *manager) RegisterTenantStateChangeListener(listener TenantStateChangeListener) {
-	if isNilTenantListener(listener) {
+	if nilcheck.Interface(listener) {
 		m.logger.Log(context.Background(), log.LevelWarn, "attempted to register a nil tenant state change listener")
 
 		return
@@ -582,222 +446,6 @@ func (m *manager) RegisterTenantStateChangeListener(listener TenantStateChangeLi
 
 	m.tenantListeners = append(m.tenantListeners, listener)
 	m.logger.Log(context.Background(), log.LevelDebug, "registered tenant state change listener", log.Int("total", len(m.tenantListeners)))
-}
-
-func validateBreakerIdentity(tenantID, serviceName string, tenantAware bool) (breakerMapKey, error) {
-	if err := validateServiceName(serviceName); err != nil {
-		return breakerMapKey{}, err
-	}
-
-	if tenantAware {
-		if err := validateTenantID(tenantID); err != nil {
-			return breakerMapKey{}, err
-		}
-	}
-
-	return breakerMapKey{tenantID: tenantID, serviceName: serviceName}, nil
-}
-
-func validateServiceName(serviceName string) error {
-	if serviceName == "" {
-		return fmt.Errorf("%w: service name must not be empty", ErrInvalidServiceName)
-	}
-
-	for _, r := range serviceName {
-		if r < 0x20 || r == 0x7f {
-			return fmt.Errorf("%w: service name must not contain control characters", ErrInvalidServiceName)
-		}
-	}
-
-	return nil
-}
-
-func validateTenantID(tenantID string) error {
-	if !tmcore.IsValidTenantID(tenantID) {
-		return fmt.Errorf("%w: tenant id must be non-empty and match tenant-manager constraints", ErrInvalidTenantID)
-	}
-
-	return nil
-}
-
-// isNilLogger checks for both untyped nil and typed nil log.Logger values.
-// Mirrors the isNilListener pattern to prevent panics from typed-nil loggers.
-func isNilLogger(logger log.Logger) bool {
-	if logger == nil {
-		return true
-	}
-
-	v := reflect.ValueOf(logger)
-	if !v.IsValid() {
-		return true
-	}
-
-	switch v.Kind() {
-	case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func, reflect.Interface:
-		return v.IsNil()
-	default:
-		return false
-	}
-}
-
-// isNilListener checks for both untyped nil and typed nil interface values.
-// Handles all nilable kinds: pointers, slices, maps, channels, funcs, and interfaces.
-func isNilListener(listener StateChangeListener) bool {
-	if listener == nil {
-		return true
-	}
-
-	v := reflect.ValueOf(listener)
-	if !v.IsValid() {
-		return true
-	}
-
-	switch v.Kind() {
-	case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func, reflect.Interface:
-		return v.IsNil()
-	default:
-		return false
-	}
-}
-
-// isNilTenantListener mirrors isNilListener for TenantStateChangeListener.
-func isNilTenantListener(listener TenantStateChangeListener) bool {
-	if listener == nil {
-		return true
-	}
-
-	v := reflect.ValueOf(listener)
-	if !v.IsValid() {
-		return true
-	}
-
-	switch v.Kind() {
-	case reflect.Pointer, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func, reflect.Interface:
-		return v.IsNil()
-	default:
-		return false
-	}
-}
-
-// handleStateChange processes state changes and notifies listeners.
-//
-// Notification rules:
-//   - Tenant-aware listeners (RegisterTenantStateChangeListener) fire on every
-//     transition, regardless of tenantID.
-//   - Legacy listeners (RegisterStateChangeListener) fire ONLY for transitions
-//     on no-tenant breakers (tenantID == ""). This preserves the pre-tenant
-//     semantics for v5.1.0 callers who registered legacy listeners against a
-//     single-tenant manager — they continue to see exactly the same set of
-//     events.
-func (m *manager) handleStateChange(tenantID, serviceName string, from gobreaker.State, to gobreaker.State) {
-	switch to {
-	case gobreaker.StateOpen:
-		m.logger.Log(
-			context.Background(),
-			log.LevelError,
-			"circuit breaker OPENED, requests will fast-fail",
-			log.String("service", serviceName),
-			log.String("tenant_hash", tenantHashLabel(tenantID)),
-			log.String("from", from.String()),
-		)
-	case gobreaker.StateHalfOpen:
-		m.logger.Log(
-			context.Background(),
-			log.LevelInfo,
-			"circuit breaker HALF-OPEN, testing service recovery",
-			log.String("service", serviceName),
-			log.String("tenant_hash", tenantHashLabel(tenantID)),
-			log.String("from", from.String()),
-		)
-	case gobreaker.StateClosed:
-		m.logger.Log(
-			context.Background(),
-			log.LevelInfo,
-			"circuit breaker CLOSED, service is healthy",
-			log.String("service", serviceName),
-			log.String("tenant_hash", tenantHashLabel(tenantID)),
-			log.String("from", from.String()),
-		)
-	}
-
-	// Record state transition metric
-	fromState := convertGobreakerState(from)
-	toState := convertGobreakerState(to)
-
-	m.recordStateTransition(tenantID, serviceName, fromState, toState)
-
-	m.mu.RLock()
-	tenantListeners := make([]TenantStateChangeListener, len(m.tenantListeners))
-	copy(tenantListeners, m.tenantListeners)
-
-	var legacyListeners []StateChangeListener
-	if tenantID == "" {
-		legacyListeners = make([]StateChangeListener, len(m.listeners))
-		copy(legacyListeners, m.listeners)
-	}
-
-	m.mu.RUnlock()
-
-	// Notify tenant-aware listeners for every transition.
-	for _, listener := range tenantListeners {
-		listenerCopy := listener
-
-		runtime.SafeGoWithContextAndComponent(
-			context.Background(),
-			m.logger,
-			"circuitbreaker",
-			"tenant_state_change_listener_"+serviceName,
-			runtime.KeepRunning,
-			func(ctx context.Context) {
-				m.notifyTenantStateChangeListener(ctx, listenerCopy, tenantID, serviceName, fromState, toState)
-			},
-		)
-	}
-
-	// Notify legacy listeners only for no-tenant transitions, preserving the
-	// pre-tenant contract: a single-tenant v5.1.0 service that registered a
-	// listener continues to receive exactly the same events it did before.
-	for _, listener := range legacyListeners {
-		listenerCopy := listener
-
-		runtime.SafeGoWithContextAndComponent(
-			context.Background(),
-			m.logger,
-			"circuitbreaker",
-			"state_change_listener_"+serviceName,
-			runtime.KeepRunning,
-			func(ctx context.Context) {
-				m.notifyStateChangeListener(ctx, listenerCopy, serviceName, fromState, toState)
-			},
-		)
-	}
-}
-
-func (m *manager) notifyStateChangeListener(
-	ctx context.Context,
-	listener StateChangeListener,
-	serviceName string,
-	fromState State,
-	toState State,
-) {
-	listenerCtx, listenerCancel := context.WithTimeout(ctx, stateChangeListenerTimeout)
-	defer listenerCancel()
-
-	listener.OnStateChange(listenerCtx, serviceName, fromState, toState)
-}
-
-func (m *manager) notifyTenantStateChangeListener(
-	ctx context.Context,
-	listener TenantStateChangeListener,
-	tenantID string,
-	serviceName string,
-	fromState State,
-	toState State,
-) {
-	listenerCtx, listenerCancel := context.WithTimeout(ctx, stateChangeListenerTimeout)
-	defer listenerCancel()
-
-	listener.OnTenantStateChange(listenerCtx, tenantID, serviceName, fromState, toState)
 }
 
 // readyToTrip builds the trip function for gobreaker.Settings.
@@ -839,63 +487,4 @@ func (m *manager) buildSettings(tenantID, serviceName string, config Config) gob
 			m.handleStateChange(tenantID, serviceName, from, to)
 		},
 	}
-}
-
-// recordStateTransition increments the state transition counter.
-// No-op when metricsFactory is nil.
-//
-// The tenant_hash label is "" for breakers registered via the single-tenant
-// Manager methods. Cardinality envelope: N tenants × S services × 9 pairs.
-func (m *manager) recordStateTransition(tenantID, serviceName string, from, to State) {
-	if m.stateCounter == nil {
-		return
-	}
-
-	err := m.stateCounter.
-		WithLabels(map[string]string{
-			"service":     constant.SanitizeMetricLabel(serviceName),
-			"tenant_hash": tenantHashMetricLabel(tenantID),
-			"from_state":  string(from),
-			"to_state":    string(to),
-		}).
-		AddOne(context.Background())
-	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to record state transition metric", log.Err(err))
-	}
-}
-
-// recordExecution increments the execution counter.
-// No-op when metricsFactory is nil.
-//
-// The tenant_hash label is "" for breakers registered via the single-tenant
-// Manager methods.
-func (m *manager) recordExecution(tenantID, serviceName, result string) {
-	if m.execCounter == nil {
-		return
-	}
-
-	err := m.execCounter.
-		WithLabels(map[string]string{
-			"service":     constant.SanitizeMetricLabel(serviceName),
-			"tenant_hash": tenantHashMetricLabel(tenantID),
-			"result":      result,
-		}).
-		AddOne(context.Background())
-	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to record execution metric", log.Err(err))
-	}
-}
-
-func tenantHashLabel(tenantID string) string {
-	if tenantID == "" {
-		return noTenantHashLabel
-	}
-
-	h := sha256.Sum256([]byte(tenantID))
-
-	return hex.EncodeToString(h[:8])
-}
-
-func tenantHashMetricLabel(tenantID string) string {
-	return constant.SanitizeMetricLabel(tenantHashLabel(tenantID))
 }

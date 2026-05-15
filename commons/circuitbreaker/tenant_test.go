@@ -365,6 +365,7 @@ func TestTenantManager_RemoveTenant_RaceWithExecute(t *testing.T) {
 	wg.Add(2)
 
 	executed := atomic.Int64{}
+	recreateErrs := make(chan error, iterations)
 
 	go func() {
 		defer wg.Done()
@@ -385,11 +386,17 @@ func TestTenantManager_RemoveTenant_RaceWithExecute(t *testing.T) {
 			// Re-create so the removal loop has something to remove each
 			// iteration; mirrors a tenant flap.
 			_, err := tam.GetOrCreateForTenant("tenant-A", "jd", cfg)
-			require.NoError(t, err)
+			if err != nil {
+				recreateErrs <- err
+			}
 		}
 	}()
 
 	wg.Wait()
+	close(recreateErrs)
+	for err := range recreateErrs {
+		assert.NoError(t, err)
+	}
 
 	// Every tenant-B execution should have succeeded; the breaker is
 	// closed and isolated from tenant-A removals.
@@ -504,6 +511,49 @@ func TestTenantManager_TenantListener_FiresForEveryTransition(t *testing.T) {
 	_, hasB := tenants["tenant-B"]
 	assert.True(t, hasA, "tenant-A transition must have fired")
 	assert.True(t, hasB, "tenant-B transition must have fired")
+}
+
+func TestTenantManager_TenantListener_FiresForNoTenantTransition(t *testing.T) {
+	t.Parallel()
+
+	mgr, err := NewManager(&log.NopLogger{})
+	require.NoError(t, err)
+	tam := mgr.(TenantAwareManager)
+
+	listener := newCaptureTenantListener(1)
+	tam.RegisterTenantStateChangeListener(listener)
+
+	cfg := Config{
+		MaxRequests:         1,
+		Interval:            100 * time.Millisecond,
+		Timeout:             5 * time.Second,
+		ConsecutiveFailures: 2,
+		FailureRatio:        0.5,
+		MinRequests:         2,
+	}
+
+	_, err = mgr.GetOrCreate("jd", cfg)
+	require.NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		_, err = mgr.Execute("jd", func() (any, error) {
+			return nil, errors.New("fail")
+		})
+		require.Error(t, err)
+	}
+
+	select {
+	case <-listener.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for no-tenant state-change event")
+	}
+
+	events := listener.snapshot()
+	require.NotEmpty(t, events)
+	assert.Equal(t, "", events[0].tenantID)
+	assert.Equal(t, "jd", events[0].serviceName)
+	assert.Equal(t, StateClosed, events[0].from)
+	assert.Equal(t, StateOpen, events[0].to)
 }
 
 // -----------------------------------------------------------------------------
@@ -735,7 +785,7 @@ func TestTenantManager_ObservabilityUsesTenantHash(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Metrics: tenant_hash label appears on both counters
+// Metrics: tenant_hash label appears only for tenant-aware counters
 // -----------------------------------------------------------------------------
 
 func TestTenantManager_Metrics_TenantHashLabel(t *testing.T) {
@@ -772,7 +822,7 @@ func TestTenantManager_Metrics_TenantHashLabel(t *testing.T) {
 		require.Error(t, err)
 	}
 
-	// No-tenant successful execution to confirm tenant_hash="" appears.
+	// No-tenant successful execution to confirm the legacy label set is preserved.
 	_, err = mgr.GetOrCreate("midaz", cfg)
 	require.NoError(t, err)
 	_, err = mgr.Execute("midaz", func() (any, error) {
@@ -798,14 +848,14 @@ func TestTenantManager_Metrics_TenantHashLabel(t *testing.T) {
 		}
 
 		if hasAttributeValue(dp, "service", "midaz") &&
-			hasAttributeValue(dp, "tenant_hash", "") &&
-			hasAttributeValue(dp, "result", "success") {
+			hasAttributeValue(dp, "result", "success") &&
+			!hasAttributeKey(dp, "tenant_hash") {
 			foundNoTenant = true
 		}
 	}
 
 	assert.True(t, foundTenantA, "execution metric must include tenant_hash label")
-	assert.True(t, foundNoTenant, "execution metric must include tenant_hash=\"\" label for no-tenant breakers")
+	assert.True(t, foundNoTenant, "legacy no-tenant execution metric must not gain tenant_hash label")
 
 	stateMetric := findMetricByName(rm, "circuit_breaker_state_transitions_total")
 	require.NotNil(t, stateMetric)
@@ -886,16 +936,13 @@ func TestTenantManager_ConcurrentNoTenantAndTenant(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// Metric attribute helper — ensures the empty-string tenant_hash label is present
+// Metric attribute helper — ensures legacy no-tenant metrics keep their old label set
 // -----------------------------------------------------------------------------
 
-func TestSDKMetricReader_Sanity(t *testing.T) {
+func TestTenantManager_Metrics_NoTenantOmitsTenantHashLabel(t *testing.T) {
 	t.Parallel()
-	// Sanity check that the test scaffolding (newTestMetricsFactory +
-	// collectMetrics + sumDataPoints) sees an empty-string label as a
-	// distinct attribute and doesn't lose it through some attribute-pruning
-	// optimisation in the SDK. If this ever breaks, every other tenant_hash=""
-	// assertion in this file becomes meaningless, so anchor it here.
+	// Legacy Manager users had metrics keyed only by service/result. Preserve
+	// that label shape so existing dashboards and recording rules keep working.
 	factory, reader := newTestMetricsFactory(t)
 
 	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
@@ -911,13 +958,15 @@ func TestSDKMetricReader_Sanity(t *testing.T) {
 	require.NotNil(t, em)
 
 	dps := sumDataPoints(t, em)
-	found := false
+	foundLegacyShape := false
 	for _, dp := range dps {
-		if hasAttributeValue(dp, "tenant_hash", "") {
-			found = true
+		if hasAttributeValue(dp, "service", "svc") &&
+			hasAttributeValue(dp, "result", "success") &&
+			!hasAttributeKey(dp, "tenant_hash") {
+			foundLegacyShape = true
 		}
 	}
-	assert.True(t, found, "expected tenant_hash=\"\" attribute on no-tenant emission")
+	assert.True(t, foundLegacyShape, "expected no tenant_hash attribute on no-tenant emission")
 }
 
 // Helper to silence unused-import linters in case the metrics test file

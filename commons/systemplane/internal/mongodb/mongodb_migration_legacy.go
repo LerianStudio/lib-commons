@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"github.com/google/uuid"
@@ -128,7 +129,7 @@ func acquireMigrationLease(
 
 	// Peer holds the lease. If their heartbeat is stale, forcibly steal it.
 	if time.Since(current.Heartbeat) > migrationLeaseStaleAfter {
-		if logger != nil {
+		if !nilcheck.Interface(logger) {
 			logger.Log(ctx, log.LevelWarn,
 				"systemplane/mongodb: migration lease stale, stealing",
 				log.String("previous_owner", current.Owner),

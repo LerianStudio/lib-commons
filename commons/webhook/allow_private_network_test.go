@@ -23,7 +23,7 @@ import (
 // TestWithAllowPrivateNetwork_OptionSetsFlag verifies that the option toggles
 // the internal flag without affecting any other Deliverer state. Field-level
 // access is acceptable here because the test lives in the same package and
-// the field is the contract for downstream ssrfOptions().
+// the field gates URL-aware SSRF option selection at delivery time.
 func TestWithAllowPrivateNetwork_OptionSetsFlag(t *testing.T) {
 	t.Setenv(commons.EnvSecurityTier, commons.TierPermissive.String())
 
@@ -58,39 +58,6 @@ func TestWithAllowPrivateNetwork_StrictTierAllowsDocumentedOverride(t *testing.T
 	d := NewDeliverer(&mockLister{}, WithAllowPrivateNetwork())
 	require.NotNil(t, d)
 	assert.True(t, d.allowPrivateNetwork, "explicit ALLOW_WEBHOOK_PRIVATE_NETWORK reason should enable the unsafe option")
-}
-
-// TestDeliverer_SSRFOptions verifies the helper that materializes Deliverer
-// flags into a libSSRF.Option slice for the call site.
-func TestDeliverer_SSRFOptions(t *testing.T) {
-	t.Parallel()
-
-	t.Run("strict default returns empty options", func(t *testing.T) {
-		t.Parallel()
-
-		d := NewDeliverer(&mockLister{})
-		require.NotNil(t, d)
-		assert.Empty(t, d.ssrfOptions(),
-			"strict default must produce zero SSRF options so libSSRF behaves identically to v5.1.0")
-	})
-
-	t.Run("allowPrivateNetwork=true returns empty raw SSRF options", func(t *testing.T) {
-		t.Parallel()
-
-		d := &Deliverer{allowPrivateNetwork: true}
-		require.NotNil(t, d)
-		opts := d.ssrfOptions()
-		assert.Empty(t, opts,
-			"private-network bypass is now applied only after URL host classification")
-	})
-
-	t.Run("nil Deliverer returns empty options", func(t *testing.T) {
-		t.Parallel()
-
-		var d *Deliverer
-		assert.Empty(t, d.ssrfOptions(),
-			"nil Deliverer must be safe to call ssrfOptions on")
-	})
 }
 
 // ---------------------------------------------------------------------------
@@ -381,9 +348,8 @@ func TestResolveAndValidateWebhookTarget_PrivateOverrideDoesNotAllowHostnameReso
 
 // TestResolveAndValidateIP_PassesOptionsThrough verifies that the package
 // helper [resolveAndValidateIP] forwards its variadic libSSRF options to the
-// underlying [libSSRF.ResolveAndValidate]. This is the seam that lets
-// [Deliverer.ssrfOptions] influence behavior without changing the helper's
-// 4-value return signature.
+// underlying [libSSRF.ResolveAndValidate] without changing the helper's 4-value
+// return signature.
 func TestResolveAndValidateIP_PassesOptionsThrough(t *testing.T) {
 	t.Parallel()
 

@@ -988,6 +988,20 @@ func TestOptions_ApplyCorrectly(t *testing.T) {
 	}
 }
 
+func TestOptions_WithLoggerIgnoresTypedNil(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultClientConfig()
+
+	var typedNil *log.NopLogger
+	var logger log.Logger = typedNil
+	WithLogger(logger)(&cfg)
+
+	if cfg.logger != nil {
+		t.Fatalf("typed-nil logger must not be stored in client config")
+	}
+}
+
 func TestRedaction(t *testing.T) {
 	t.Parallel()
 

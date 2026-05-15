@@ -18,6 +18,7 @@ import (
 	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
 	chttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
+	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
@@ -461,6 +462,40 @@ func TestMiddleware_FailOpen(t *testing.T) {
 
 	// Should pass through (fail-open)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+func TestMiddleware_InvalidTenantContextFailsClosedEvenWhenFailOpen(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newTestMiddlewareRedisConnection(t, mr)
+
+	tier := Tier{Name: "invalid-tenant", Max: 10, Window: 60 * time.Second}
+	rl := New(conn, WithFailOpen(true))
+
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app.Use(func(c *fiber.Ctx) error {
+		c.SetUserContext(tmcore.ContextWithTenantID(c.UserContext(), "tenant:raw-secret"))
+		return c.Next()
+	})
+	app.Use(rl.WithRateLimit(tier))
+	app.Get("/", func(c *fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "tenant:raw-secret")
+
+	var errResp chttp.ErrorResponse
+	require.NoError(t, json.Unmarshal(body, &errResp))
+	assert.Equal(t, http.StatusBadRequest, errResp.Code)
+	assert.Equal(t, invalidTenantContextTitle, errResp.Title)
 }
 
 func TestMiddleware_FailClosed(t *testing.T) {

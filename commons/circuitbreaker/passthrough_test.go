@@ -33,6 +33,14 @@ func TestPassthroughManager_SatisfiesTenantAwareManager(t *testing.T) {
 	require.NotNil(t, tam)
 }
 
+func TestNewPassthroughTenantAwareManager_ReturnsTenantAwareManager(t *testing.T) {
+	t.Parallel()
+
+	var mgr TenantAwareManager = NewPassthroughTenantAwareManager()
+	require.NotNil(t, mgr)
+	assert.Equal(t, StateClosed, mgr.GetStateForTenant("tenant-A", "svc"))
+}
+
 // -----------------------------------------------------------------------------
 // Manager-level Execute semantics
 // -----------------------------------------------------------------------------

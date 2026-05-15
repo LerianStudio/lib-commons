@@ -11,6 +11,7 @@ package systemplane
 import (
 	"context"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	lru "github.com/hashicorp/golang-lru/v2"
 )
@@ -56,7 +57,7 @@ func newTenantCacheLRU(maxEntries int, logger log.Logger) tenantCache {
 
 	cache, err := lru.New[lruKey, any](maxEntries)
 	if err != nil || cache == nil {
-		if logger != nil {
+		if !nilcheck.Interface(logger) {
 			logger.Log(context.Background(), log.LevelWarn,
 				"systemplane: bounded LRU tenant cache init failed; falling back to unbounded eager cache",
 				log.Int("max_entries", maxEntries),

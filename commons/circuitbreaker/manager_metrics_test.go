@@ -85,6 +85,18 @@ func hasAttributeValue(dp metricdata.DataPoint[int64], key, value string) bool {
 	return false
 }
 
+func hasAttributeKey(dp metricdata.DataPoint[int64], key string) bool {
+	iter := dp.Attributes.Iter()
+	for iter.Next() {
+		kv := iter.Attribute()
+		if string(kv.Key) == key {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // Test: WithMetricsFactory(nil) — manager works, no metrics emitted, no panic
 // ---------------------------------------------------------------------------
@@ -357,7 +369,7 @@ func TestMetrics_RecordExecution_NilFactory_Noop(t *testing.T) {
 
 	// Direct call with nil metricsFactory — must be a no-op, no panic
 	assert.NotPanics(t, func() {
-		m.recordExecution("", "any-service", "success")
+		m.recordExecution(&breakerSlot{serviceName: "any-service"}, executionResultSuccess)
 	})
 }
 

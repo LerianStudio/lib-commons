@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -85,7 +86,7 @@ func ensureSchema(ctx context.Context, coll *mongo.Collection, logger log.Logger
 	if !acquired {
 		// Peer is already migrating. Nothing to do; fall through to index
 		// creation only, which is idempotent under the same shape.
-		if logger != nil {
+		if !nilcheck.Interface(logger) {
 			logger.Log(ctx, log.LevelInfo,
 				"systemplane/mongodb: migration lease held by peer, skipping _id rewrite",
 			)

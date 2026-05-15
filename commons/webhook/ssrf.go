@@ -62,17 +62,6 @@ func isPrivateNetworkIPLiteral(rawURL string) bool {
 	return ip.IsLoopback() || ip.IsPrivate()
 }
 
-// ssrfOptions builds the [libSSRF.Option] slice that reflects the Deliverer's
-// SSRF configuration toggles. The slice is empty for the default strict
-// configuration so existing callers see no behavioral change.
-//
-// Returning a nil slice when no options apply is intentional — variadic
-// expansion to [libSSRF.ResolveAndValidate] handles nil identically to an
-// empty slice and avoids an unnecessary allocation per delivery.
-func (d *Deliverer) ssrfOptions() []libSSRF.Option {
-	return nil
-}
-
 // mapSSRFError translates sentinel errors from the canonical ssrf package into
 // the webhook package's error types so that existing callers (and tests) that
 // check [errors.Is] against [ErrSSRFBlocked] / [ErrInvalidURL] continue to

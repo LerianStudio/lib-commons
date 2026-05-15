@@ -4,6 +4,7 @@ package systemplane
 import (
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 )
@@ -60,7 +61,7 @@ type Option func(*clientConfig)
 // WithLogger sets the structured logger used by the Client and its backend.
 func WithLogger(l log.Logger) Option {
 	return func(cfg *clientConfig) {
-		if l != nil {
+		if !nilcheck.Interface(l) {
 			cfg.logger = l
 		}
 	}

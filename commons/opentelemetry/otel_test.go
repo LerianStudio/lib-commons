@@ -4,6 +4,7 @@ package opentelemetry
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -47,6 +48,20 @@ func TestNewTelemetry_NilLogger(t *testing.T) {
 
 	tl, err := NewTelemetry(TelemetryConfig{
 		EnableTelemetry: false,
+	})
+	require.ErrorIs(t, err, ErrNilTelemetryLogger)
+	assert.Nil(t, tl)
+}
+
+func TestNewTelemetry_TypedNilLogger(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *log.NopLogger
+	var logger log.Logger = typedNil
+
+	tl, err := NewTelemetry(TelemetryConfig{
+		EnableTelemetry: false,
+		Logger:          logger,
 	})
 	require.ErrorIs(t, err, ErrNilTelemetryLogger)
 	assert.Nil(t, tl)
@@ -265,6 +280,7 @@ func TestNormalizeEndpointEnvVars(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_ENDPOINT",
 		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
 		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
 	}
 
 	tests := []struct {
@@ -330,13 +346,26 @@ func TestNormalizeEndpointEnvVars(t *testing.T) {
 					t.Setenv(key, tt.value)
 				}
 
-				normalizeEndpointEnvVars()
+				require.NoError(t, normalizeEndpointEnvVars())
 
 				got := os.Getenv(key)
 				assert.Equal(t, tt.expected, got)
 			})
 		}
 	}
+}
+
+func TestNormalizeEndpointEnvVars_SetenvError(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("setenv failed")
+	err := normalizeEndpointEnvVarsWithFuncs(
+		func(string) string { return "otel-collector:4317" },
+		func(_, _ string) error { return wantErr },
+	)
+
+	require.ErrorIs(t, err, wantErr)
+	assert.Contains(t, err.Error(), "OTEL_EXPORTER_OTLP_ENDPOINT")
 }
 
 // ===========================================================================

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -49,6 +50,10 @@ const (
 	invalidWindowTitle = "misconfigured_rate_limiter"
 	// invalidWindowMessage is the error message returned when a tier has a zero or sub-millisecond window.
 	invalidWindowMessage = "rate limiter tier window is zero; contact the service operator"
+	// invalidTenantContextTitle is returned when the request context contains a malformed tenant ID.
+	invalidTenantContextTitle = "invalid_tenant_context"
+	// invalidTenantContextMessage is intentionally generic so raw tenant identifiers never leak.
+	invalidTenantContextMessage = "tenant context is invalid"
 
 	// policyBlockedTitle is the error title returned when strict-tier enforcement
 	// requires rate limiting but the limiter cannot be safely enabled.
@@ -408,11 +413,7 @@ func (rl *RateLimiter) incrementCounter(ctx context.Context, key string, tier Ti
 
 // storage returns the cached RedisStorage view onto the limiter's Redis connection.
 func (rl *RateLimiter) storage() *RedisStorage {
-	if rl.storageBackend != nil {
-		return rl.storageBackend
-	}
-
-	return &RedisStorage{conn: rl.conn, logger: rl.logger}
+	return rl.storageBackend
 }
 
 // handleRedisError handles a Redis communication failure during rate limit check.
@@ -431,6 +432,13 @@ func (rl *RateLimiter) handleRedisError(
 	)
 
 	libOpentelemetry.HandleSpanError(span, "rate limiter redis error", err)
+	if errors.Is(err, ErrInvalidTenantContext) {
+		return chttp.Respond(c, http.StatusBadRequest, chttp.ErrorResponse{
+			Code:    http.StatusBadRequest,
+			Title:   invalidTenantContextTitle,
+			Message: invalidTenantContextMessage,
+		})
+	}
 
 	if rl.failOpen {
 		return c.Next()
