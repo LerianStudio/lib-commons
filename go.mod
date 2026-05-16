@@ -1,6 +1,6 @@
 module github.com/LerianStudio/lib-commons/v5
 
-go 1.25.9
+go 1.25.10
 
 require (
 	cloud.google.com/go/iam v1.6.0
@@ -69,7 +69,7 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
-	github.com/LerianStudio/lib-observability v1.0.0-beta.3
+	github.com/LerianStudio/lib-observability v1.0.0
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.21 // indirect
