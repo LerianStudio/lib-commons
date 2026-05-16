@@ -11,7 +11,7 @@ import (
 	"time"
 
 	chttp "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	libHTTP "github.com/LerianStudio/lib-commons/v5/commons/net/http"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"

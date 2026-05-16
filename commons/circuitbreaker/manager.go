@@ -9,9 +9,9 @@ import (
 	"time"
 
 	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
-	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
-	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-observability/metrics"
+	"github.com/LerianStudio/lib-observability/runtime"
 	"github.com/LerianStudio/lib-commons/v5/commons/safe"
 	"github.com/sony/gobreaker"
 )

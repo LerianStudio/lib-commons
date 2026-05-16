@@ -8,7 +8,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v5/commons"
 	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
 	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"

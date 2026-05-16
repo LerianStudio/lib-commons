@@ -11,7 +11,7 @@ package systemplane
 import (
 	"context"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	lru "github.com/hashicorp/golang-lru/v2"
 )
 

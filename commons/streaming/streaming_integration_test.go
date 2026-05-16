@@ -37,7 +37,7 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 	outboxpg "github.com/LerianStudio/lib-commons/v5/commons/outbox/postgres"
 	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"

@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/v2/bson"

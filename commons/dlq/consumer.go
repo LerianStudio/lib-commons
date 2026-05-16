@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	libLog "github.com/LerianStudio/lib-observability/log"
 	libOtel "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
-	libRuntime "github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	libRuntime "github.com/LerianStudio/lib-observability/runtime"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"

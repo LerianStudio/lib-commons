@@ -16,7 +16,7 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"go.mongodb.org/mongo-driver/v2/bson"

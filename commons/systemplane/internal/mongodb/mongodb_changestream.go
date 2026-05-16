@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/backoff"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
-	libRuntime "github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	"github.com/LerianStudio/lib-observability/log"
+	libRuntime "github.com/LerianStudio/lib-observability/runtime"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"

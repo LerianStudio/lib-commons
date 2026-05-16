@@ -169,4 +169,7 @@
 //
 // Stack traces are included in logs and trace events only in non-production
 // environments (ENV != production and GO_ENV != production).
+//
+// Deprecated: This package is a compatibility shim. Import github.com/LerianStudio/lib-observability/assert instead.
+// This package will be removed in a future major version of lib-commons.
 package assert

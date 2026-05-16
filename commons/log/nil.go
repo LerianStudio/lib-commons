@@ -1,36 +1,15 @@
 package log
 
-import "context"
+import libobslog "github.com/LerianStudio/lib-observability/log"
 
 // NopLogger is a no-op logger implementation.
-type NopLogger struct{}
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/log.NopLogger instead.
+type NopLogger = libobslog.NopLogger
 
 // NewNop creates a no-op logger implementation.
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/log.NewNop instead.
 func NewNop() Logger {
-	return &NopLogger{}
+	return libobslog.NewNop()
 }
-
-// Log drops all log events.
-func (l *NopLogger) Log(_ context.Context, _ Level, _ string, _ ...Field) {}
-
-// With returns the same no-op logger.
-//
-//nolint:ireturn
-func (l *NopLogger) With(_ ...Field) Logger {
-	return l
-}
-
-// WithGroup returns the same no-op logger.
-//
-//nolint:ireturn
-func (l *NopLogger) WithGroup(_ string) Logger {
-	return l
-}
-
-// Enabled always returns false for NopLogger.
-func (l *NopLogger) Enabled(_ Level) bool {
-	return false
-}
-
-// Sync is a no-op and always returns nil.
-func (l *NopLogger) Sync(_ context.Context) error { return nil }
