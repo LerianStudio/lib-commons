@@ -23,9 +23,13 @@ type logMiddleware struct {
 }
 
 // LogMiddlewareOption represents the log middleware function as an implementation.
+//
+// Deprecated: use LogMiddlewareOption from github.com/LerianStudio/lib-observability/middleware.
 type LogMiddlewareOption func(l *logMiddleware)
 
 // WithCustomLogger is a functional option for logMiddleware.
+//
+// Deprecated: use WithCustomLogger from github.com/LerianStudio/lib-observability/middleware.
 func WithCustomLogger(logger log.Logger) LogMiddlewareOption {
 	return func(l *logMiddleware) {
 		if !nilcheck.Interface(logger) {
@@ -37,6 +41,8 @@ func WithCustomLogger(logger log.Logger) LogMiddlewareOption {
 // WithObfuscationDisabled is a functional option that disables log body obfuscation.
 // This is primarily intended for testing and local development.
 // In production, use the LOG_OBFUSCATION_DISABLED environment variable.
+//
+// Deprecated: use WithObfuscationDisabled from github.com/LerianStudio/lib-observability/middleware.
 func WithObfuscationDisabled(disabled bool) LogMiddlewareOption {
 	return func(l *logMiddleware) {
 		l.ObfuscationDisabled = disabled
@@ -60,6 +66,8 @@ func buildOpts(opts ...LogMiddlewareOption) *logMiddleware {
 // WithHTTPLogging is a middleware to log access to http server.
 // It logs access log according to Apache Standard Logs which uses Common Log Format (CLF)
 // Ref: https://httpd.apache.org/docs/trunk/logs.html#common
+//
+// Deprecated: use WithHTTPLogging from github.com/LerianStudio/lib-observability/middleware.
 func WithHTTPLogging(opts ...LogMiddlewareOption) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		if c.Path() == "/health" {
@@ -99,6 +107,8 @@ func WithHTTPLogging(opts ...LogMiddlewareOption) fiber.Handler {
 }
 
 // WithGrpcLogging is a gRPC unary interceptor to log access to gRPC server.
+//
+// Deprecated: use WithGrpcLogging from github.com/LerianStudio/lib-observability/middleware.
 func WithGrpcLogging(opts ...LogMiddlewareOption) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
