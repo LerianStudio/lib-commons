@@ -24,7 +24,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	commonshttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"

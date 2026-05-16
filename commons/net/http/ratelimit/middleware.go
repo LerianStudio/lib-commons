@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons"
-	"github.com/LerianStudio/lib-commons/v5/commons/assert"
+	"github.com/LerianStudio/lib-observability/assert"
 	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	chttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"

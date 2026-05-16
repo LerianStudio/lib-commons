@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	libLog "github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/net/http/ratelimit"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
 	"github.com/alicebob/miniredis/v2"

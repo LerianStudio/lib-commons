@@ -10,7 +10,7 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v5/commons"
 	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	libLog "github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"

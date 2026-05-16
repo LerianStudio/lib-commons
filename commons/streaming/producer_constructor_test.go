@@ -11,7 +11,7 @@ import (
 
 	"github.com/twmb/franz-go/pkg/kgo"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 )
 
 // TestProducer_New_DisabledReturnsNoop proves the fail-safe: cfg.Enabled=false

@@ -4,12 +4,13 @@ package mongo
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	libLog "github.com/LerianStudio/lib-observability/log"
 	libMongo "github.com/LerianStudio/lib-commons/v5/commons/mongo"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox/outboxtest"
@@ -21,6 +22,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 	"go.mongodb.org/mongo-driver/bson"
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
+	mongooptions "go.mongodb.org/mongo-driver/mongo/options"
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
@@ -64,6 +66,7 @@ func setupMongoContainer(t *testing.T) (string, func()) {
 
 		container, err := tcmongo.Run(ctx,
 			"mongo:7",
+			tcmongo.WithReplicaSet("rs0"),
 			testcontainers.WithWaitStrategy(
 				wait.ForLog("Waiting for connections").WithStartupTimeout(30*time.Second),
 			),
@@ -89,6 +92,9 @@ func setupMongoContainer(t *testing.T) (string, func()) {
 			continue
 		}
 
+		uri = mongoReplicaURI(uri)
+		waitForMongoPrimary(t, uri)
+
 		return uri, func() {
 			closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer closeCancel()
@@ -99,6 +105,46 @@ func setupMongoContainer(t *testing.T) (string, func()) {
 
 	require.NoError(t, lastErr)
 	return "", nil
+}
+
+func waitForMongoPrimary(t *testing.T, uri string) {
+	t.Helper()
+
+	deadline := time.Now().Add(60 * time.Second)
+	var lastErr error
+
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		client, err := mongodriver.Connect(ctx, mongooptions.Client().ApplyURI(uri))
+		if err == nil {
+			err = client.Ping(ctx, nil)
+		}
+		if client != nil {
+			_ = client.Disconnect(ctx)
+		}
+		cancel()
+
+		if err == nil {
+			return
+		}
+
+		lastErr = err
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	require.NoError(t, lastErr, "MongoDB replica set never became primary-ready")
+}
+
+func mongoReplicaURI(uri string) string {
+	if strings.Contains(uri, "directConnection=") {
+		return uri
+	}
+
+	if strings.Contains(uri, "?") {
+		return uri + "&directConnection=true"
+	}
+
+	return uri + "?directConnection=true"
 }
 
 func newIntegrationRepoFixture(t *testing.T, repoOpts ...Option) *integrationRepoFixture {
@@ -234,6 +280,69 @@ func TestIntegration_Repository_ContractSuite(t *testing.T) {
 		t.Helper()
 		return newIntegrationRepoFixtureFromClient(t, suite.ctx, suite.client).repo
 	})
+}
+
+func TestIntegration_Repository_CreateJoinsMongoTransactionContext(t *testing.T) {
+	suite := newIntegrationMongoSuite(t)
+	fx := newIntegrationRepoFixtureFromClient(t, suite.ctx, suite.client)
+	driverClient, err := suite.client.Client(suite.ctx)
+	require.NoError(t, err)
+
+	commitSession, err := driverClient.StartSession()
+	require.NoError(t, err)
+	t.Cleanup(func() { commitSession.EndSession(context.Background()) })
+
+	tenantCtx := outbox.ContextWithTenantID(suite.ctx, "tenant-a")
+	var committedID uuid.UUID
+	_, err = commitSession.WithTransaction(tenantCtx, func(sessionCtx mongodriver.SessionContext) (any, error) {
+		event, eventErr := outbox.NewOutboxEvent(sessionCtx, "payment.tx.commit", uuid.New(), []byte(`{"ok":true}`))
+		if eventErr != nil {
+			return nil, eventErr
+		}
+
+		created, createErr := fx.repo.Create(sessionCtx, event)
+		if createErr != nil {
+			return nil, createErr
+		}
+
+		committedID = created.ID
+
+		return nil, nil
+	})
+	require.NoError(t, err)
+	require.NotEqual(t, uuid.Nil, committedID)
+
+	stored, err := fx.repo.GetByID(fx.tenantCtx, committedID)
+	require.NoError(t, err)
+	require.Equal(t, committedID, stored.ID)
+
+	rollbackSession, err := driverClient.StartSession()
+	require.NoError(t, err)
+	t.Cleanup(func() { rollbackSession.EndSession(context.Background()) })
+
+	var rolledBackID uuid.UUID
+	rollbackErr := errors.New("rollback sentinel")
+	_, err = rollbackSession.WithTransaction(tenantCtx, func(sessionCtx mongodriver.SessionContext) (any, error) {
+		event, eventErr := outbox.NewOutboxEvent(sessionCtx, "payment.tx.rollback", uuid.New(), []byte(`{"ok":true}`))
+		if eventErr != nil {
+			return nil, eventErr
+		}
+
+		created, createErr := fx.repo.Create(sessionCtx, event)
+		if createErr != nil {
+			return nil, createErr
+		}
+
+		rolledBackID = created.ID
+
+		return nil, rollbackErr
+	})
+	require.ErrorIs(t, err, rollbackErr)
+	require.NotEqual(t, uuid.Nil, rolledBackID)
+
+	_, err = fx.repo.GetByID(fx.tenantCtx, rolledBackID)
+	require.Error(t, err)
+	require.ErrorIs(t, err, mongodriver.ErrNoDocuments)
 }
 
 func TestIntegration_Repository_CustomTenantFieldContractSuite(t *testing.T) {

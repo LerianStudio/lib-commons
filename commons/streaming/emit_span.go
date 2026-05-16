@@ -4,7 +4,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 )
 
 // tracerName is the instrumentation-library name used when the caller did

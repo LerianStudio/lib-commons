@@ -7,13 +7,30 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
-	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
+	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-observability/metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
+
+const postgresContainerStartupTimeout = 2 * time.Minute
+
+func postgresContainerWaitStrategy() testcontainers.CustomizeRequestOption {
+	return testcontainers.WithWaitStrategyAndDeadline(
+		postgresContainerStartupTimeout,
+		wait.ForLog("database system is ready to accept connections").
+			WithOccurrence(2).
+			WithStartupTimeout(postgresContainerStartupTimeout),
+		wait.ForListeningPort("5432/tcp").
+			WithStartupTimeout(postgresContainerStartupTimeout).
+			WithPollInterval(500*time.Millisecond),
+	)
+}
 
 // setupPostgresContainer starts a disposable PostgreSQL container and returns
 // the connection string plus a teardown function. The container is terminated
@@ -21,14 +38,15 @@ import (
 func setupPostgresContainer(t *testing.T) (string, func()) {
 	t.Helper()
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), postgresContainerStartupTimeout)
+	defer cancel()
 
 	container, err := tcpostgres.Run(ctx,
 		"postgres:16-alpine",
 		tcpostgres.WithDatabase("testdb"),
 		tcpostgres.WithUsername("test"),
 		tcpostgres.WithPassword("test"),
-		tcpostgres.BasicWaitStrategies(),
+		postgresContainerWaitStrategy(),
 	)
 	require.NoError(t, err)
 
@@ -36,7 +54,10 @@ func setupPostgresContainer(t *testing.T) (string, func()) {
 	require.NoError(t, err)
 
 	return connStr, func() {
-		require.NoError(t, container.Terminate(ctx))
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer closeCancel()
+
+		require.NoError(t, container.Terminate(closeCtx))
 	}
 }
 

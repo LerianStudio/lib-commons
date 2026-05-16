@@ -206,7 +206,7 @@ func TestCounter_ZeroValue(t *testing.T) {
 }
 
 func TestCounter_NilCounter_ReturnsError(t *testing.T) {
-	builder := &CounterBuilder{counter: nil}
+	builder := &CounterBuilder{}
 	err := builder.AddOne(context.Background())
 	assert.ErrorIs(t, err, ErrNilCounter)
 }
@@ -256,7 +256,7 @@ func TestGauge_SetOverwrite(t *testing.T) {
 }
 
 func TestGauge_NilGauge_ReturnsError(t *testing.T) {
-	builder := &GaugeBuilder{gauge: nil}
+	builder := &GaugeBuilder{}
 	err := builder.Set(context.Background(), 1)
 	assert.ErrorIs(t, err, ErrNilGauge)
 }
@@ -352,7 +352,7 @@ func TestHistogram_BucketBoundariesConfigured(t *testing.T) {
 }
 
 func TestHistogram_NilHistogram_ReturnsError(t *testing.T) {
-	builder := &HistogramBuilder{histogram: nil}
+	builder := &HistogramBuilder{}
 	err := builder.Record(context.Background(), 1)
 	assert.ErrorIs(t, err, ErrNilHistogram)
 }
@@ -653,7 +653,7 @@ func TestCounter_DifferentLabels_SeparateDataPoints(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestCounter_CachesInstrument(t *testing.T) {
-	factory, _ := newTestFactory(t)
+	factory, reader := newTestFactory(t)
 
 	m := Metric{Name: "cached_counter", Description: "test"}
 
@@ -663,12 +663,22 @@ func TestCounter_CachesInstrument(t *testing.T) {
 	counter2, err := factory.Counter(m)
 	require.NoError(t, err)
 
-	// Both builders must share the same underlying counter instrument.
-	assert.Equal(t, counter1.counter, counter2.counter, "counter must be cached")
+	// Both builders must share the same underlying counter instrument:
+	// recording from both must land in a single data point.
+	require.NoError(t, counter1.AddOne(context.Background()))
+	require.NoError(t, counter2.AddOne(context.Background()))
+
+	rm := collectMetrics(t, reader)
+	met := findMetricByName(rm, "cached_counter")
+	require.NotNil(t, met, "cached_counter metric must exist")
+
+	dps := sumDataPoints(t, met)
+	require.Len(t, dps, 1, "shared instrument must produce a single data point")
+	assert.Equal(t, int64(2), dps[0].Value, "both builders must write to the same counter")
 }
 
 func TestGauge_CachesInstrument(t *testing.T) {
-	factory, _ := newTestFactory(t)
+	factory, reader := newTestFactory(t)
 
 	m := Metric{Name: "cached_gauge"}
 
@@ -678,11 +688,21 @@ func TestGauge_CachesInstrument(t *testing.T) {
 	gauge2, err := factory.Gauge(m)
 	require.NoError(t, err)
 
-	assert.Equal(t, gauge1.gauge, gauge2.gauge, "gauge must be cached")
+	// Both builders must share the same underlying gauge instrument:
+	// setting from both must land in a single data point.
+	require.NoError(t, gauge1.Set(context.Background(), 10))
+	require.NoError(t, gauge2.Set(context.Background(), 20))
+
+	rm := collectMetrics(t, reader)
+	met := findMetricByName(rm, "cached_gauge")
+	require.NotNil(t, met, "cached_gauge metric must exist")
+
+	dps := gaugeDataPoints(t, met)
+	assert.Len(t, dps, 1, "shared instrument must produce a single data point")
 }
 
 func TestHistogram_CachesInstrument(t *testing.T) {
-	factory, _ := newTestFactory(t)
+	factory, reader := newTestFactory(t)
 
 	m := Metric{Name: "cached_hist", Buckets: []float64{1, 10, 100}}
 
@@ -692,7 +712,18 @@ func TestHistogram_CachesInstrument(t *testing.T) {
 	hist2, err := factory.Histogram(m)
 	require.NoError(t, err)
 
-	assert.Equal(t, hist1.histogram, hist2.histogram, "histogram must be cached")
+	// Both builders must share the same underlying histogram instrument:
+	// recording from both must land in a single data point.
+	require.NoError(t, hist1.Record(context.Background(), 5))
+	require.NoError(t, hist2.Record(context.Background(), 50))
+
+	rm := collectMetrics(t, reader)
+	met := findMetricByName(rm, "cached_hist")
+	require.NotNil(t, met, "cached_hist metric must exist")
+
+	dps := histDataPoints(t, met)
+	require.Len(t, dps, 1, "shared instrument must produce a single data point")
+	assert.Equal(t, uint64(2), dps[0].Count, "both builders must write to the same histogram")
 }
 
 func TestDuplicateRegistrations_ShareInstrument(t *testing.T) {
@@ -718,33 +749,8 @@ func TestDuplicateRegistrations_ShareInstrument(t *testing.T) {
 	assert.Equal(t, int64(2), dps[0].Value, "both builders must write to same counter")
 }
 
-// ---------------------------------------------------------------------------
-// 9. selectDefaultBuckets
-// ---------------------------------------------------------------------------
-
-func TestSelectDefaultBuckets(t *testing.T) {
-	tests := []struct {
-		name     string
-		expected []float64
-	}{
-		{"account_creation_rate", DefaultAccountBuckets},
-		{"AccountTotal", DefaultAccountBuckets},
-		{"transaction_volume", DefaultTransactionBuckets},
-		{"TransactionLatency", DefaultLatencyBuckets}, // "latency" checked before "transaction"
-		{"api_latency", DefaultLatencyBuckets},
-		{"request_duration", DefaultLatencyBuckets},
-		{"processing_time", DefaultLatencyBuckets},
-		{"unknown_metric", DefaultLatencyBuckets},
-		{"", DefaultLatencyBuckets},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := selectDefaultBuckets(tt.name)
-			assert.Equal(t, tt.expected, got)
-		})
-	}
-}
+// selectDefaultBuckets behavior is verified by the default-bucket
+// integration tests below (TestHistogram_DefaultBucketsApplied, etc.).
 
 func TestHistogram_DefaultBucketsApplied(t *testing.T) {
 	factory, reader := newTestFactory(t)
@@ -800,27 +806,8 @@ func TestHistogram_LatencyDefaultBuckets(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 10. histogramCacheKey
+// 10. Different bucket configs produce separate histograms
 // ---------------------------------------------------------------------------
-
-func TestHistogramCacheKey(t *testing.T) {
-	tests := []struct {
-		name     string
-		buckets  []float64
-		expected string
-	}{
-		{"metric", nil, "metric"},
-		{"metric", []float64{}, "metric"},
-		{"metric", []float64{1, 5, 10}, "metric:1,5,10"},
-		{"metric", []float64{10, 1, 5}, "metric:1,5,10"}, // sorted
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.expected, func(t *testing.T) {
-			assert.Equal(t, tt.expected, histogramCacheKey(tt.name, tt.buckets))
-		})
-	}
-}
 
 func TestHistogram_DifferentBuckets_SeparateCacheEntries(t *testing.T) {
 	factory, _ := newTestFactory(t)
@@ -836,14 +823,6 @@ func TestHistogram_DifferentBuckets_SeparateCacheEntries(t *testing.T) {
 		Buckets: []float64{5, 50, 500},
 	})
 	require.NoError(t, err)
-
-	// Different buckets => different cache entries => different histogram instruments.
-	// Note: OTel SDK may or may not return different instruments for the same name,
-	// but the cache key must be different.
-	assert.NotEqual(t,
-		histogramCacheKey("my_hist", []float64{1, 10, 100}),
-		histogramCacheKey("my_hist", []float64{5, 50, 500}),
-	)
 
 	// Both histograms should work without error.
 	require.NoError(t, hist1.Record(context.Background(), 5))
@@ -1391,87 +1370,10 @@ func TestDefaultBucketValues(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 17. addXxxOptions helpers
+// 17. Metric description and unit propagation (options behavior via behavior)
 // ---------------------------------------------------------------------------
-
-func TestAddCounterOptions(t *testing.T) {
-	factory, _ := newTestFactory(t)
-
-	t.Run("with description and unit", func(t *testing.T) {
-		opts := factory.addCounterOptions(Metric{
-			Name:        "test",
-			Description: "desc",
-			Unit:        "bytes",
-		})
-		assert.Len(t, opts, 2)
-	})
-
-	t.Run("with description only", func(t *testing.T) {
-		opts := factory.addCounterOptions(Metric{
-			Name:        "test",
-			Description: "desc",
-		})
-		assert.Len(t, opts, 1)
-	})
-
-	t.Run("with unit only", func(t *testing.T) {
-		opts := factory.addCounterOptions(Metric{
-			Name: "test",
-			Unit: "ms",
-		})
-		assert.Len(t, opts, 1)
-	})
-
-	t.Run("no options", func(t *testing.T) {
-		opts := factory.addCounterOptions(Metric{Name: "test"})
-		assert.Empty(t, opts)
-	})
-}
-
-func TestAddGaugeOptions(t *testing.T) {
-	factory, _ := newTestFactory(t)
-
-	t.Run("with description and unit", func(t *testing.T) {
-		opts := factory.addGaugeOptions(Metric{
-			Name:        "test",
-			Description: "desc",
-			Unit:        "connections",
-		})
-		assert.Len(t, opts, 2)
-	})
-
-	t.Run("no options", func(t *testing.T) {
-		opts := factory.addGaugeOptions(Metric{Name: "test"})
-		assert.Empty(t, opts)
-	})
-}
-
-func TestAddHistogramOptions(t *testing.T) {
-	factory, _ := newTestFactory(t)
-
-	t.Run("with all options", func(t *testing.T) {
-		opts := factory.addHistogramOptions(Metric{
-			Name:        "test",
-			Description: "desc",
-			Unit:        "ms",
-			Buckets:     []float64{1, 10, 100},
-		})
-		assert.Len(t, opts, 3) // description + unit + buckets
-	})
-
-	t.Run("with buckets only", func(t *testing.T) {
-		opts := factory.addHistogramOptions(Metric{
-			Name:    "test",
-			Buckets: []float64{1, 10},
-		})
-		assert.Len(t, opts, 1)
-	})
-
-	t.Run("no options and nil buckets", func(t *testing.T) {
-		opts := factory.addHistogramOptions(Metric{Name: "test"})
-		assert.Empty(t, opts)
-	})
-}
+// addXxxOptions behavior is indirectly verified by the DescriptionAndUnit tests
+// in section 13 and the end-to-end pipeline tests in section 18.
 
 // ---------------------------------------------------------------------------
 // 18. End-to-end: full recording pipeline

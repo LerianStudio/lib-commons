@@ -9,7 +9,7 @@ package systemplane
 import (
 	"context"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )

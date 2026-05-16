@@ -4,7 +4,7 @@ import (
 	"context"
 
 	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 )
 
 // Compile-time assertion: *Producer must satisfy commons.App. A missing

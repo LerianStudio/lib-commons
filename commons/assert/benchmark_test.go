@@ -121,22 +121,6 @@ func BenchmarkValidScale(b *testing.B) {
 	}
 }
 
-// --- Helper Function Benchmarks ---
-
-func BenchmarkIsNil_NonNil(b *testing.B) {
-	v := "test"
-	for i := 0; i < b.N; i++ {
-		isNil(v)
-	}
-}
-
-func BenchmarkIsNil_TypedNilPointer(b *testing.B) {
-	var ptr *int
-	for i := 0; i < b.N; i++ {
-		isNil(ptr)
-	}
-}
-
 // --- Combined Usage Benchmarks ---
 
 // BenchmarkTypicalAssertion simulates a typical assertion pattern.

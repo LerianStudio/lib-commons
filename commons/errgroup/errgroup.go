@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"sync"
 
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
-	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	libLog "github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-observability/runtime"
 )
 
 var (

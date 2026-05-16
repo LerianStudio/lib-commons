@@ -19,19 +19,27 @@ import (
 
 // DefaultMetricsCollectionInterval is the default interval for collecting system metrics.
 // Can be overridden via METRICS_COLLECTION_INTERVAL environment variable.
+//
+// Deprecated: use DefaultMetricsCollectionInterval from github.com/LerianStudio/lib-observability/middleware.
 const DefaultMetricsCollectionInterval = 5 * time.Second
 
 // TelemetryMiddleware wraps HTTP and gRPC handlers with tracing and metrics setup.
+//
+// Deprecated: use TelemetryMiddleware from github.com/LerianStudio/lib-observability/middleware.
 type TelemetryMiddleware struct {
 	Telemetry *opentelemetry.Telemetry
 }
 
 // NewTelemetryMiddleware creates a new instance of TelemetryMiddleware.
+//
+// Deprecated: use NewTelemetryMiddleware from github.com/LerianStudio/lib-observability/middleware.
 func NewTelemetryMiddleware(tl *opentelemetry.Telemetry) *TelemetryMiddleware {
 	return &TelemetryMiddleware{tl}
 }
 
 // WithTelemetry is a middleware that adds tracing to the context.
+//
+// Deprecated: use TelemetryMiddleware.WithTelemetry from github.com/LerianStudio/lib-observability/middleware.
 func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, excludedRoutes ...string) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		effectiveTelemetry := tl
@@ -118,6 +126,8 @@ func (tm *TelemetryMiddleware) WithTelemetry(tl *opentelemetry.Telemetry, exclud
 }
 
 // EndTracingSpans is a middleware that ends the tracing spans.
+//
+// Deprecated: use TelemetryMiddleware.EndTracingSpans from github.com/LerianStudio/lib-observability/middleware.
 func (tm *TelemetryMiddleware) EndTracingSpans(c *fiber.Ctx) error {
 	if c == nil {
 		return ErrContextNotFound
@@ -139,6 +149,8 @@ func (tm *TelemetryMiddleware) EndTracingSpans(c *fiber.Ctx) error {
 }
 
 // WithTelemetryInterceptor is a gRPC interceptor that adds tracing to the context.
+//
+// Deprecated: use TelemetryMiddleware.WithTelemetryInterceptor from github.com/LerianStudio/lib-observability/middleware.
 func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Telemetry) grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
@@ -213,6 +225,8 @@ func (tm *TelemetryMiddleware) WithTelemetryInterceptor(tl *opentelemetry.Teleme
 }
 
 // EndTracingSpansInterceptor is a gRPC interceptor that ends the tracing spans.
+//
+// Deprecated: use TelemetryMiddleware.EndTracingSpansInterceptor from github.com/LerianStudio/lib-observability/middleware.
 func (tm *TelemetryMiddleware) EndTracingSpansInterceptor() grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,

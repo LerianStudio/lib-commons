@@ -1,21 +1,3 @@
 package metrics
-
-import (
-	"context"
-
-	"go.opentelemetry.io/otel/attribute"
-)
-
-// RecordOperationRouteCreated increments the operation-route-created counter.
-func (f *MetricsFactory) RecordOperationRouteCreated(ctx context.Context, attributes ...attribute.KeyValue) error {
-	if f == nil {
-		return ErrNilFactory
-	}
-
-	b, err := f.Counter(MetricOperationRoutesCreated)
-	if err != nil {
-		return err
-	}
-
-	return b.WithAttributes(attributes...).AddOne(ctx)
-}
+// OperationRoutes metrics are inherited via MetricsFactory type alias in metrics.go.
+// This file is intentionally empty to preserve the original file structure.

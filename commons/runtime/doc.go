@@ -72,4 +72,7 @@
 //
 // All recovery functions capture and log the full stack trace using
 // runtime/debug.Stack() for debugging purposes.
+//
+// Deprecated: This package is a compatibility shim. Import github.com/LerianStudio/lib-observability/runtime instead.
+// This package will be removed in a future major version of lib-commons.
 package runtime

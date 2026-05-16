@@ -9,8 +9,8 @@ import (
 	"time"
 
 	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
-	"github.com/LerianStudio/lib-commons/v5/commons/assert"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/assert"
+	"github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/go-redsync/redsync/v4"
 	redsyncredis "github.com/go-redsync/redsync/v4/redis"

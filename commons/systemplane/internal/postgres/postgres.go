@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	libOTEL "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"go.opentelemetry.io/otel/attribute"

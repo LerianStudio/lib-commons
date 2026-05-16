@@ -4,7 +4,7 @@ import (
 	"context"
 
 	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
-	liblog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	liblog "github.com/LerianStudio/lib-observability/log"
 	libHTTP "github.com/LerianStudio/lib-commons/v5/commons/net/http"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"

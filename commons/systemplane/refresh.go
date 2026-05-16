@@ -20,7 +20,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 )

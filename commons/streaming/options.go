@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/circuitbreaker"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
-	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
+	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-observability/metrics"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 	"github.com/twmb/franz-go/pkg/sasl"
 	"go.opentelemetry.io/otel/trace"

@@ -12,9 +12,9 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	"github.com/LerianStudio/lib-observability/runtime"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/debounce"
 	mongoDB "github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/mongodb"
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/postgres"

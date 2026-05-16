@@ -19,8 +19,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/backoff"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
-	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-observability/runtime"
 )
 
 // Defaults for Deliverer configuration.

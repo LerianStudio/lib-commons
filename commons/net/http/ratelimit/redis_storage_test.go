@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	libLog "github.com/LerianStudio/lib-observability/log"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"

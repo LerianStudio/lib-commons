@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/assert"
+	"github.com/LerianStudio/lib-observability/assert"
 	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"

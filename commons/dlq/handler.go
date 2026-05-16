@@ -8,7 +8,7 @@ import (
 	"time"
 
 	libBackoff "github.com/LerianStudio/lib-commons/v5/commons/backoff"
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	libLog "github.com/LerianStudio/lib-observability/log"
 	libOtel "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"

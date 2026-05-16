@@ -3,7 +3,7 @@ package log
 import (
 	"context"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 )
 
