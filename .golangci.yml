@@ -152,7 +152,7 @@ linters:
         text: 'ST1000: at least one file in a package should have a package comment'
       - linters:
           - staticcheck
-        path: ^commons/
+        path: ^commons/(dlq|mongo|net/http|opentelemetry|outbox|postgres|rabbitmq|redis|server|streaming|systemplane|tenant-manager|webhook|zap)(/|$)
         text: 'SA1019: .*lib-observability'
       - linters:
           - staticcheck
@@ -161,11 +161,11 @@ linters:
       - linters:
           - modernize
         path: ^commons/os\.go$
-        text: 'stditerators: NumField/Field loop can simplified using Type\.Fields iteration'
+        text: '^stditerators:'
       - linters:
           - modernize
         path: ^commons/pointers/pointers\.go$
-        text: 'newexpr: .* can be an inlinable wrapper around new\(expr\)'
+        text: '^newexpr:'
       - linters:
           - govet
         text: '^shadow: declaration of "(err|ok)" shadows declaration'
