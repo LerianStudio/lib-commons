@@ -4,10 +4,13 @@ package license_test
 
 import (
 	"errors"
+	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/license"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNew(t *testing.T) {
@@ -43,11 +46,10 @@ func TestSetHandlerWithNil(t *testing.T) {
 }
 
 func TestDefaultHandler(t *testing.T) {
-	manager := license.New()
-
-	assert.NotPanics(t, func() {
+	assertLicenseHandlerExits(t, "default handler test", func() {
+		manager := license.New()
 		manager.Terminate("default handler test")
-	}, "Default handler should not panic")
+	})
 }
 
 func TestDefaultHandlerWithError(t *testing.T) {
@@ -140,10 +142,10 @@ func TestTerminateSafe_UninitializedManager(t *testing.T) {
 }
 
 func TestTerminateSafe_WithDefaultHandler(t *testing.T) {
-	manager := license.New()
-
-	err := manager.TerminateSafe("test")
-	assert.NoError(t, err)
+	assertLicenseHandlerExits(t, "test", func() {
+		manager := license.New()
+		_ = manager.TerminateSafe("test")
+	})
 }
 
 func TestNew_NilOptionSkipped(t *testing.T) {
@@ -174,15 +176,28 @@ func TestNew_NilOptionMixedWithValid(t *testing.T) {
 }
 
 func TestWithFailClosed(t *testing.T) {
-	t.Parallel()
-
-	// WithFailClosed should set the handler to TerminateSafe behavior.
-	manager := license.New(license.WithFailClosed())
-
-	// TerminateSafe returns nil when handler is non-nil (it invokes handler then returns nil).
-	// The WithFailClosed handler itself calls TerminateSafe internally.
-	// Since the manager IS initialized (New was called), the handler should not return errors.
-	assert.NotPanics(t, func() {
+	assertLicenseHandlerExits(t, "fail-closed test", func() {
+		manager := license.New(license.WithFailClosed())
 		manager.Terminate("fail-closed test")
 	})
+}
+
+func assertLicenseHandlerExits(t *testing.T, reason string, fn func()) {
+	t.Helper()
+
+	if os.Getenv("LIB_COMMONS_LICENSE_EXIT_SUBPROCESS") == "1" {
+		fn()
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^"+t.Name()+"$")
+	cmd.Env = append(os.Environ(), "LIB_COMMONS_LICENSE_EXIT_SUBPROCESS=1")
+
+	output, err := cmd.CombinedOutput()
+	require.Error(t, err)
+
+	var exitErr *exec.ExitError
+	require.ErrorAs(t, err, &exitErr)
+	assert.Equal(t, 1, exitErr.ExitCode())
+	assert.Contains(t, string(output), "LICENSE VALIDATION FAILED: "+reason)
 }

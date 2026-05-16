@@ -451,10 +451,10 @@ func (sm *ServerManager) executeShutdown() {
 			}
 		}
 
-		// Shutdown license background refresh if available
+		// License termination handlers are for validation failures only. Invoking
+		// them during normal graceful shutdown can turn a clean SIGTERM into exit 1.
 		if sm.licenseClient != nil {
-			sm.logInfo("Shutting down license background refresh...")
-			sm.licenseClient.Terminate("shutdown")
+			sm.logInfo("Skipping license termination handler during graceful shutdown")
 		}
 
 		sm.logInfo("Graceful shutdown completed")
