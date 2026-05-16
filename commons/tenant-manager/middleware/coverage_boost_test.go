@@ -20,18 +20,24 @@ import (
 
 // makeTenantJWT builds a minimal JWT string with the given tenantId claim
 // (no signature verification — middleware uses ParseUnverified).
-func makeTenantJWT(tenantID string) string {
+func makeTenantJWT(t *testing.T, tenantID string) string {
+	t.Helper()
+
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	claims, _ := json.Marshal(map[string]string{"tenantId": tenantID, "sub": "user-123"})
+	claims, err := json.Marshal(map[string]string{"tenantId": tenantID, "sub": "user-123"})
+	require.NoError(t, err)
 	payload := base64.RawURLEncoding.EncodeToString(claims)
 
 	return header + "." + payload + ".fake-sig"
 }
 
 // makeNoTenantJWT builds a JWT with no tenantId claim.
-func makeNoTenantJWT() string {
+func makeNoTenantJWT(t *testing.T) string {
+	t.Helper()
+
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	claims, _ := json.Marshal(map[string]string{"sub": "user-123"})
+	claims, err := json.Marshal(map[string]string{"sub": "user-123"})
+	require.NoError(t, err)
 	payload := base64.RawURLEncoding.EncodeToString(claims)
 
 	return header + "." + payload + ".fake-sig"
@@ -134,7 +140,7 @@ func TestWithTenantDB_NoTenantIDClaim_Returns401(t *testing.T) {
 	app := newFiberApp(mw)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer "+makeNoTenantJWT())
+	req.Header.Set("Authorization", "Bearer "+makeNoTenantJWT(t))
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
@@ -158,7 +164,7 @@ func TestWithTenantDB_PGGetConnectionFails_Returns500(t *testing.T) {
 	app := newFiberApp(mw)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer "+makeTenantJWT("tenant-abc"))
+	req.Header.Set("Authorization", "Bearer "+makeTenantJWT(t, "tenant-abc"))
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
@@ -181,7 +187,7 @@ func TestWithTenantDB_MongoGetConnectionFails_ReturnsError(t *testing.T) {
 	app := newFiberApp(mw)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer "+makeTenantJWT("tenant-xyz"))
+	req.Header.Set("Authorization", "Bearer "+makeTenantJWT(t, "tenant-xyz"))
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
@@ -243,7 +249,7 @@ func TestWithTenantDB_MultiModulePG_GetConnectionFails(t *testing.T) {
 	app := newFiberApp(mw)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer "+makeTenantJWT("tenant-multi"))
+	req.Header.Set("Authorization", "Bearer "+makeTenantJWT(t, "tenant-multi"))
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	// Should fail since GetConnection fails for at least one module
@@ -273,7 +279,7 @@ func TestWithTenantDB_ErrManagerClosed_Returns503(t *testing.T) {
 	app := newFiberApp(mw)
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
-	req.Header.Set("Authorization", "Bearer "+makeTenantJWT("tenant-closed"))
+	req.Header.Set("Authorization", "Bearer "+makeTenantJWT(t, "tenant-closed"))
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
