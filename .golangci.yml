@@ -152,7 +152,7 @@ linters:
         text: 'ST1000: at least one file in a package should have a package comment'
       - linters:
           - staticcheck
-        path: ^commons/(dlq|mongo|net/http|opentelemetry|outbox|postgres|rabbitmq|redis|server|streaming|systemplane|tenant-manager|webhook|zap)(/|$)
+        path: ^commons/(assert|circuitbreaker|crypto|dlq|errgroup|license|log|mongo|net|opentelemetry|outbox|postgres|rabbitmq|redis|runtime|server|streaming|systemplane|tenant-manager|webhook|zap)(/|$)
         text: 'SA1019: .*lib-observability'
       - linters:
           - staticcheck
