@@ -22,7 +22,7 @@ import (
 )
 
 // ErrNoServersConfigured indicates no servers were configured for the manager.
-var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServer(), WithStdlibHTTPServer(), or WithGRPCServer()")
+var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServer(), WithStdlibHTTPServer(), WithStdlibHTTPListener(), or WithGRPCServer()")
 
 // ErrConflictingHTTPServers indicates that both WithHTTPServer(*fiber.App) and
 // WithStdlibHTTPServer(*http.Server) were configured on the same ServerManager.
@@ -301,7 +301,7 @@ func (sm *ServerManager) StartWithGracefulShutdownWithError() error {
 // Use StartWithGracefulShutdownWithError() for proper error handling without process termination.
 func (sm *ServerManager) StartWithGracefulShutdown() {
 	if sm == nil {
-		fmt.Println("no servers configured: use WithHTTPServer(), WithStdlibHTTPServer(), or WithGRPCServer()")
+		fmt.Println(ErrNoServersConfigured.Error())
 		os.Exit(1)
 	}
 

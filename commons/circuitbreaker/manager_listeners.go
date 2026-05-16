@@ -78,7 +78,7 @@ func (m *manager) handleStateChange(tenantID, serviceName string, from gobreaker
 	for _, listener := range tenantListeners {
 		listenerCopy := listener
 
-		m.dispatchStateChangeListener("tenant_state_change_listener_"+serviceName, func(ctx context.Context) {
+		m.dispatchStateChangeListener("tenant_state_change_listener", func(ctx context.Context) {
 			m.notifyTenantStateChangeListener(ctx, listenerCopy, tenantID, serviceName, fromState, toState)
 		})
 	}
@@ -86,7 +86,7 @@ func (m *manager) handleStateChange(tenantID, serviceName string, from gobreaker
 	for _, listener := range legacyListeners {
 		listenerCopy := listener
 
-		m.dispatchStateChangeListener("state_change_listener_"+serviceName, func(ctx context.Context) {
+		m.dispatchStateChangeListener("state_change_listener", func(ctx context.Context) {
 			m.notifyStateChangeListener(ctx, listenerCopy, serviceName, fromState, toState)
 		})
 	}

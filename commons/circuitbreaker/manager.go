@@ -374,6 +374,15 @@ func (m *manager) ResetForTenant(tenantID, serviceName string) {
 func (m *manager) reset(tenantID, serviceName string, tenantAware bool) {
 	key, err := validateBreakerIdentity(tenantID, serviceName, tenantAware)
 	if err != nil {
+		m.logger.Log(
+			context.Background(),
+			log.LevelWarn,
+			"invalid breaker identity for reset; ignoring request",
+			log.String("service", serviceName),
+			log.String("tenant_hash", tenantHashLabel(tenantID)),
+			log.Err(err),
+		)
+
 		return
 	}
 

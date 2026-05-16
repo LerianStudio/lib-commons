@@ -11,6 +11,14 @@ import (
 // No-op if the tenant has no registered breakers.
 func (m *manager) ResetTenant(tenantID string) {
 	if err := validateTenantID(tenantID); err != nil {
+		m.logger.Log(
+			context.Background(),
+			log.LevelWarn,
+			"invalid tenant id for ResetTenant; ignoring request",
+			log.String("tenant_hash", tenantHashLabel(tenantID)),
+			log.Err(err),
+		)
+
 		return
 	}
 
@@ -48,6 +56,14 @@ func (m *manager) ResetTenant(tenantID string) {
 // the tenant has no registered breakers.
 func (m *manager) RemoveTenant(tenantID string) {
 	if err := validateTenantID(tenantID); err != nil {
+		m.logger.Log(
+			context.Background(),
+			log.LevelWarn,
+			"invalid tenant id for RemoveTenant; ignoring request",
+			log.String("tenant_hash", tenantHashLabel(tenantID)),
+			log.Err(err),
+		)
+
 		return
 	}
 
