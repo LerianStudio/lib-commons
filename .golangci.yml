@@ -157,7 +157,7 @@ linters:
       - linters:
           - staticcheck
         path: ^commons/certificate/certificate\.go$
-        text: 'SA1019: k\.(X|Y) has been deprecated since Go 1\.26'
+        text: 'SA1019: .*\.(X|Y) has been deprecated since Go 1\.26'
       - linters:
           - modernize
         path: ^commons/os\.go$
