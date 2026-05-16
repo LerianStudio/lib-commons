@@ -71,6 +71,7 @@ func (m *memStore) Get(_ context.Context, namespace, key string) (systemplane.Te
 func (m *memStore) Set(_ context.Context, e systemplane.TestEntry) error {
 	m.mu.Lock()
 
+	e.TenantID = "_global"
 	updated := false
 	for i, existing := range m.entries {
 		if existing.ns == e.Namespace && existing.key == e.Key && existing.tenantID == e.TenantID {

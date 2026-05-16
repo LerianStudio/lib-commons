@@ -25,20 +25,21 @@ var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServ
 // ServerManager handles the graceful shutdown of multiple server types.
 // It can manage HTTP servers, gRPC servers, or both simultaneously.
 type ServerManager struct {
-	httpServer         *fiber.App
-	grpcServer         *grpc.Server
-	licenseClient      *license.ManagerShutdown
-	telemetry          *opentelemetry.Telemetry
-	logger             log.Logger
-	httpAddress        string
-	grpcAddress        string
-	serversStarted     chan struct{}
-	serversStartedOnce sync.Once
-	shutdownChan       <-chan struct{}
-	shutdownOnce       sync.Once
-	shutdownTimeout    time.Duration
-	startupErrors      chan error
-	shutdownHooks      []func(context.Context) error
+	httpServer          *fiber.App
+	grpcServer          *grpc.Server
+	licenseClient       *license.ManagerShutdown
+	telemetry           *opentelemetry.Telemetry
+	logger              log.Logger
+	httpAddress         string
+	grpcAddress         string
+	serversStarted      chan struct{}
+	serversStartedOnce  sync.Once
+	runtimeDefaultsOnce sync.Once
+	shutdownChan        <-chan struct{}
+	shutdownOnce        sync.Once
+	shutdownTimeout     time.Duration
+	startupErrors       chan error
+	shutdownHooks       []func(context.Context) error
 }
 
 // ensureRuntimeDefaults initializes zero-value fields so exported lifecycle
@@ -158,7 +159,7 @@ func (sm *ServerManager) ServersStarted() <-chan struct{} {
 		return ch
 	}
 
-	sm.ensureRuntimeDefaults()
+	sm.runtimeDefaultsOnce.Do(sm.ensureRuntimeDefaults)
 
 	return sm.serversStarted
 }
@@ -174,7 +175,7 @@ func (sm *ServerManager) validateConfiguration() error {
 // initServers validates configuration and starts servers without blocking.
 // Returns an error if validation fails. Does not call Fatal.
 func (sm *ServerManager) initServers() error {
-	sm.ensureRuntimeDefaults()
+	sm.runtimeDefaultsOnce.Do(sm.ensureRuntimeDefaults)
 
 	if err := sm.validateConfiguration(); err != nil {
 		return err
@@ -193,7 +194,7 @@ func (sm *ServerManager) StartWithGracefulShutdownWithError() error {
 		return ErrNoServersConfigured
 	}
 
-	sm.ensureRuntimeDefaults()
+	sm.runtimeDefaultsOnce.Do(sm.ensureRuntimeDefaults)
 
 	if err := sm.initServers(); err != nil {
 		return err
@@ -212,7 +213,7 @@ func (sm *ServerManager) StartWithGracefulShutdown() {
 		os.Exit(1)
 	}
 
-	sm.ensureRuntimeDefaults()
+	sm.runtimeDefaultsOnce.Do(sm.ensureRuntimeDefaults)
 
 	if err := sm.initServers(); err != nil {
 		// logFatal exits the process via os.Exit(1); code below is unreachable on error
@@ -335,7 +336,7 @@ func (sm *ServerManager) logFatal(msg string) {
 // or when a server startup error is detected.
 // Returns the first startup error if one caused the shutdown, nil otherwise.
 func (sm *ServerManager) handleShutdown() error {
-	sm.ensureRuntimeDefaults()
+	sm.runtimeDefaultsOnce.Do(sm.ensureRuntimeDefaults)
 
 	var startupErr error
 
@@ -371,7 +372,7 @@ func (sm *ServerManager) handleShutdown() error {
 // executeShutdown performs the actual shutdown operations in the correct order for ServerManager.
 // It is idempotent: multiple calls are safe, but only the first invocation executes the shutdown sequence.
 func (sm *ServerManager) executeShutdown() {
-	sm.ensureRuntimeDefaults()
+	sm.runtimeDefaultsOnce.Do(sm.ensureRuntimeDefaults)
 
 	sm.shutdownOnce.Do(func() {
 		// Use a non-blocking read to check if servers have started.
