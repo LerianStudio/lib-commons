@@ -9,7 +9,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/aws/aws-sdk-go-v2 v1.41.5
 	github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.41.5
-	github.com/aws/smithy-go v1.24.2
+	github.com/aws/smithy-go v1.25.0
 	github.com/bxcodec/dbresolver/v2 v2.2.1
 	github.com/cloudevents/sdk-go/v2 v2.15.2
 	github.com/go-playground/validator/v10 v10.30.1
@@ -38,7 +38,7 @@ require (
 	github.com/twmb/franz-go/pkg/kfake v0.0.0-20260406064450-c0fa0a167730
 	github.com/twmb/franz-go/pkg/kmsg v1.12.0
 	go.mongodb.org/mongo-driver v1.17.9
-	go.mongodb.org/mongo-driver/v2 v2.5.0
+	go.mongodb.org/mongo-driver/v2 v2.6.0
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc v0.19.0
 	go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc v1.43.0
