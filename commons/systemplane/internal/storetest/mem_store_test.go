@@ -21,14 +21,15 @@ type memStoreEntry struct {
 
 // inMemStore is a minimal in-memory implementation of store.Store for storetest.
 type inMemStore struct {
-	mu       sync.Mutex
-	entries  []memStoreEntry
-	handlers []func(store.Event)
-	closed   bool
+	mu            sync.Mutex
+	entries       []memStoreEntry
+	handlers      map[int]func(store.Event)
+	nextHandlerID int
+	closed        bool
 }
 
 func newInMemStore() *inMemStore {
-	return &inMemStore{}
+	return &inMemStore{handlers: make(map[int]func(store.Event))}
 }
 
 func (m *inMemStore) List(_ context.Context) ([]store.Entry, error) {
@@ -88,8 +89,10 @@ func (m *inMemStore) Set(_ context.Context, e store.Entry) error {
 		})
 	}
 
-	handlers := make([]func(store.Event), len(m.handlers))
-	copy(handlers, m.handlers)
+	handlers := make([]func(store.Event), 0, len(m.handlers))
+	for _, h := range m.handlers {
+		handlers = append(handlers, h)
+	}
 	m.mu.Unlock()
 
 	evt := store.Event{Namespace: e.Namespace, Key: e.Key, TenantID: store.SentinelGlobal}
@@ -102,10 +105,16 @@ func (m *inMemStore) Set(_ context.Context, e store.Entry) error {
 
 func (m *inMemStore) Subscribe(ctx context.Context, handler func(store.Event)) error {
 	m.mu.Lock()
-	m.handlers = append(m.handlers, handler)
+	m.nextHandlerID++
+	handlerID := m.nextHandlerID
+	m.handlers[handlerID] = handler
 	m.mu.Unlock()
 
 	<-ctx.Done()
+
+	m.mu.Lock()
+	delete(m.handlers, handlerID)
+	m.mu.Unlock()
 
 	return nil
 }
@@ -158,8 +167,10 @@ func (m *inMemStore) SetTenantValue(_ context.Context, tenantID string, e store.
 		})
 	}
 
-	handlers := make([]func(store.Event), len(m.handlers))
-	copy(handlers, m.handlers)
+	handlers := make([]func(store.Event), 0, len(m.handlers))
+	for _, h := range m.handlers {
+		handlers = append(handlers, h)
+	}
 	m.mu.Unlock()
 
 	evt := store.Event{Namespace: e.Namespace, Key: e.Key, TenantID: tenantID}
@@ -184,8 +195,10 @@ func (m *inMemStore) DeleteTenantValue(_ context.Context, tenantID, namespace, k
 		}
 	}
 
-	handlers := make([]func(store.Event), len(m.handlers))
-	copy(handlers, m.handlers)
+	handlers := make([]func(store.Event), 0, len(m.handlers))
+	for _, h := range m.handlers {
+		handlers = append(handlers, h)
+	}
 	m.mu.Unlock()
 
 	// Only fire event if an entry was actually deleted

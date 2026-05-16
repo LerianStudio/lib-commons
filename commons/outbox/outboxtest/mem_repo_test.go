@@ -94,6 +94,10 @@ func (m *memOutboxRepo) ListPending(ctx context.Context, limit int) ([]*outbox.O
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if limit <= 0 {
+		return []*outbox.OutboxEvent{}, nil
+	}
+
 	tenantID := extractTenantID(ctx)
 	var result []*outbox.OutboxEvent
 
@@ -116,6 +120,10 @@ func (m *memOutboxRepo) ListPending(ctx context.Context, limit int) ([]*outbox.O
 func (m *memOutboxRepo) ListPendingByType(ctx context.Context, eventType string, limit int) ([]*outbox.OutboxEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if limit <= 0 {
+		return []*outbox.OutboxEvent{}, nil
+	}
 
 	tenantID := extractTenantID(ctx)
 	var result []*outbox.OutboxEvent
@@ -213,6 +221,10 @@ func (m *memOutboxRepo) ListFailedForRetry(ctx context.Context, limit int, _ tim
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if limit <= 0 {
+		return []*outbox.OutboxEvent{}, nil
+	}
+
 	tenantID := extractTenantID(ctx)
 	var result []*outbox.OutboxEvent
 
@@ -238,6 +250,10 @@ func (m *memOutboxRepo) ListFailedForRetry(ctx context.Context, limit int, _ tim
 func (m *memOutboxRepo) ResetForRetry(ctx context.Context, limit int, _ time.Time, maxAttempts int) ([]*outbox.OutboxEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if limit <= 0 {
+		return []*outbox.OutboxEvent{}, nil
+	}
 
 	tenantID := extractTenantID(ctx)
 	var result []*outbox.OutboxEvent
@@ -266,6 +282,10 @@ func (m *memOutboxRepo) ResetForRetry(ctx context.Context, limit int, _ time.Tim
 func (m *memOutboxRepo) ResetStuckProcessing(ctx context.Context, limit int, _ time.Time, maxAttempts int) ([]*outbox.OutboxEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if limit <= 0 {
+		return []*outbox.OutboxEvent{}, nil
+	}
 
 	tenantID := extractTenantID(ctx)
 	var result []*outbox.OutboxEvent

@@ -34,6 +34,7 @@ func TestNew_EmptyListenDSN(t *testing.T) {
 		// Skip if driver not registered; this is OK since we test the DSN guard.
 		t.Skip("postgres driver not available")
 	}
+	t.Cleanup(func() { _ = db.Close() })
 
 	_, err = New(Config{DB: db, ListenDSN: ""})
 	require.Error(t, err)

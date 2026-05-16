@@ -34,9 +34,9 @@ func TestWithTimeout_InitializesHTTPClient(t *testing.T) {
 func TestCacheTenantConfig_CacheHitOnSecondCall(t *testing.T) {
 	t.Parallel()
 
-	callCount := 0
+	var callCount int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		callCount++
+		atomic.AddInt32(&callCount, 1)
 		w.Header().Set("Content-Type", "application/json")
 		cfg := newTestTenantConfig()
 		if err := json.NewEncoder(w).Encode(cfg); err != nil {
@@ -51,13 +51,13 @@ func TestCacheTenantConfig_CacheHitOnSecondCall(t *testing.T) {
 	result, err := c.GetTenantConfig(context.Background(), "tenant-cache-boost", "ledger")
 	require.NoError(t, err)
 	require.NotNil(t, result)
-	assert.Equal(t, 1, callCount)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&callCount))
 
 	// Second call should hit the cache
 	result2, err := c.GetTenantConfig(context.Background(), "tenant-cache-boost", "ledger")
 	require.NoError(t, err)
 	require.NotNil(t, result2)
-	assert.Equal(t, 1, callCount, "second call should use cache, not make another HTTP request")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&callCount), "second call should use cache, not make another HTTP request")
 }
 
 // -------------------------------------------------------------------

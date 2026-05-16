@@ -22,14 +22,15 @@ type memEntry struct {
 
 // memStore is a minimal in-memory implementation of systemplane.TestStore for unit testing.
 type memStore struct {
-	mu       sync.Mutex
-	entries  []memEntry
-	handlers []func(systemplane.TestEvent)
-	closed   bool
+	mu            sync.Mutex
+	entries       []memEntry
+	handlers      map[int]func(systemplane.TestEvent)
+	nextHandlerID int
+	closed        bool
 }
 
 func newMemStore() *memStore {
-	return &memStore{}
+	return &memStore{handlers: make(map[int]func(systemplane.TestEvent))}
 }
 
 func (m *memStore) List(_ context.Context) ([]systemplane.TestEntry, error) {
@@ -85,8 +86,10 @@ func (m *memStore) Set(_ context.Context, e systemplane.TestEntry) error {
 		})
 	}
 
-	handlers := make([]func(systemplane.TestEvent), len(m.handlers))
-	copy(handlers, m.handlers)
+	handlers := make([]func(systemplane.TestEvent), 0, len(m.handlers))
+	for _, h := range m.handlers {
+		handlers = append(handlers, h)
+	}
 	m.mu.Unlock()
 
 	evt := systemplane.TestEvent{Namespace: e.Namespace, Key: e.Key, TenantID: e.TenantID}
@@ -99,10 +102,16 @@ func (m *memStore) Set(_ context.Context, e systemplane.TestEntry) error {
 
 func (m *memStore) Subscribe(ctx context.Context, handler func(systemplane.TestEvent)) error {
 	m.mu.Lock()
-	m.handlers = append(m.handlers, handler)
+	m.nextHandlerID++
+	handlerID := m.nextHandlerID
+	m.handlers[handlerID] = handler
 	m.mu.Unlock()
 
 	<-ctx.Done()
+
+	m.mu.Lock()
+	delete(m.handlers, handlerID)
+	m.mu.Unlock()
 
 	return nil
 }
@@ -154,8 +163,10 @@ func (m *memStore) SetTenantValue(_ context.Context, tenantID string, e systempl
 		})
 	}
 
-	handlers := make([]func(systemplane.TestEvent), len(m.handlers))
-	copy(handlers, m.handlers)
+	handlers := make([]func(systemplane.TestEvent), 0, len(m.handlers))
+	for _, h := range m.handlers {
+		handlers = append(handlers, h)
+	}
 	m.mu.Unlock()
 
 	evt := systemplane.TestEvent{Namespace: e.Namespace, Key: e.Key, TenantID: tenantID}
@@ -181,8 +192,10 @@ func (m *memStore) DeleteTenantValue(_ context.Context, tenantID, namespace, key
 
 	var handlers []func(systemplane.TestEvent)
 	if deleted {
-		handlers = make([]func(systemplane.TestEvent), len(m.handlers))
-		copy(handlers, m.handlers)
+		handlers = make([]func(systemplane.TestEvent), 0, len(m.handlers))
+		for _, h := range m.handlers {
+			handlers = append(handlers, h)
+		}
 	}
 	m.mu.Unlock()
 
@@ -200,26 +213,39 @@ func (m *memStore) ListTenantOverrides(_ context.Context, afterNS, afterKey, aft
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	var result []systemplane.TestEntry
+	var all []systemplane.TestEntry
 
 	for _, e := range m.entries {
 		if e.tenantID == "_global" {
 			continue
 		}
 
-		// Apply pagination
+		all = append(all, systemplane.TestEntry{
+			Namespace: e.ns, Key: e.key, TenantID: e.tenantID,
+			Value: e.value, UpdatedAt: e.updatedAt, UpdatedBy: e.updatedBy,
+		})
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Namespace != all[j].Namespace {
+			return all[i].Namespace < all[j].Namespace
+		}
+		if all[i].Key != all[j].Key {
+			return all[i].Key < all[j].Key
+		}
+		return all[i].TenantID < all[j].TenantID
+	})
+
+	var result []systemplane.TestEntry
+	for _, e := range all {
 		if afterNS != "" || afterKey != "" || afterTID != "" {
-			if e.ns < afterNS || (e.ns == afterNS && e.key < afterKey) ||
-				(e.ns == afterNS && e.key == afterKey && e.tenantID <= afterTID) {
+			if e.Namespace < afterNS || (e.Namespace == afterNS && e.Key < afterKey) ||
+				(e.Namespace == afterNS && e.Key == afterKey && e.TenantID <= afterTID) {
 				continue
 			}
 		}
 
-		result = append(result, systemplane.TestEntry{
-			Namespace: e.ns, Key: e.key, TenantID: e.tenantID,
-			Value: e.value, UpdatedAt: e.updatedAt, UpdatedBy: e.updatedBy,
-		})
-
+		result = append(result, e)
 		if limit > 0 && len(result) >= limit {
 			break
 		}

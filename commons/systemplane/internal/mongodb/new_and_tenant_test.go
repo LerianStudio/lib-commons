@@ -55,7 +55,7 @@ func TestListTenantValues_ClosedStore(t *testing.T) {
 	t.Parallel()
 
 	s := newMinimalMongoStore()
-	_ = s.Close()
+	require.NoError(t, s.Close())
 
 	_, err := s.ListTenantValues(context.Background())
 	require.Error(t, err)
@@ -79,7 +79,7 @@ func TestListTenantOverrides_ClosedStore(t *testing.T) {
 	t.Parallel()
 
 	s := newMinimalMongoStore()
-	_ = s.Close()
+	require.NoError(t, s.Close())
 
 	_, err := s.ListTenantOverrides(context.Background(), "", "", "", 0)
 	require.Error(t, err)
@@ -103,7 +103,7 @@ func TestListTenantsForKey_ClosedStore(t *testing.T) {
 	t.Parallel()
 
 	s := newMinimalMongoStore()
-	_ = s.Close()
+	require.NoError(t, s.Close())
 
 	_, err := s.ListTenantsForKey(context.Background(), "global", "log.level")
 	require.Error(t, err)
@@ -127,7 +127,7 @@ func TestGetTenantValue_ClosedStore(t *testing.T) {
 	t.Parallel()
 
 	s := newMinimalMongoStore()
-	_ = s.Close()
+	require.NoError(t, s.Close())
 
 	_, _, err := s.GetTenantValue(context.Background(), "tenant-1", "global", "log.level")
 	require.Error(t, err)
@@ -151,7 +151,7 @@ func TestSetTenantValue_ClosedStore(t *testing.T) {
 	t.Parallel()
 
 	s := newMinimalMongoStore()
-	_ = s.Close()
+	require.NoError(t, s.Close())
 
 	err := s.SetTenantValue(context.Background(), "tenant-1", store.Entry{})
 	require.Error(t, err)
@@ -175,10 +175,9 @@ func TestDeleteTenantValue_ClosedStore(t *testing.T) {
 	t.Parallel()
 
 	s := newMinimalMongoStore()
-	_ = s.Close()
+	require.NoError(t, s.Close())
 
 	err := s.DeleteTenantValue(context.Background(), "tenant-1", "global", "log.level", "actor")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, store.ErrClosed)
 }
-

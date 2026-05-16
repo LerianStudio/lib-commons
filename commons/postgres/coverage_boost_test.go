@@ -108,8 +108,8 @@ func TestResolver_NeverConnected_ReturnsError(t *testing.T) {
 	t.Parallel()
 
 	c, err := New(Config{
-		PrimaryDSN: "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
-		ReplicaDSN: "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
+		PrimaryDSN: "postgres://user:pass@127.0.0.1:1/testdb?sslmode=disable",
+		ReplicaDSN: "postgres://user:pass@127.0.0.1:1/testdb?sslmode=disable",
 		Logger:     log.NewNop(),
 	})
 	require.NoError(t, err)

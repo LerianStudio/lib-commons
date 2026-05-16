@@ -37,8 +37,7 @@ func TestStartWithGracefulShutdownWithError_ShutdownViaChannel(t *testing.T) {
 	}()
 
 	err := sm.StartWithGracefulShutdownWithError()
-	// May return nil or an error depending on timing; should not panic
-	_ = err
+	assert.NoError(t, err)
 }
 
 // -------------------------------------------------------------------
@@ -62,7 +61,7 @@ func TestStartWithGracefulShutdownWithError_NilLogger(t *testing.T) {
 	}()
 
 	err := sm.StartWithGracefulShutdownWithError()
-	_ = err
+	assert.NoError(t, err)
 }
 
 // -------------------------------------------------------------------
