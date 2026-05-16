@@ -1,21 +1,4 @@
 package metrics
 
-import (
-	"context"
-
-	"go.opentelemetry.io/otel/attribute"
-)
-
-// RecordTransactionProcessed increments the transaction-processed counter.
-func (f *MetricsFactory) RecordTransactionProcessed(ctx context.Context, attributes ...attribute.KeyValue) error {
-	if f == nil {
-		return ErrNilFactory
-	}
-
-	b, err := f.Counter(MetricTransactionsProcessed)
-	if err != nil {
-		return err
-	}
-
-	return b.WithAttributes(attributes...).AddOne(ctx)
-}
+// RecordTransactionProcessed is inherited via MetricsFactory type alias in metrics.go.
+// This file is intentionally empty to preserve the original file structure.

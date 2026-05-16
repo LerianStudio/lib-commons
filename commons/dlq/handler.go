@@ -8,10 +8,10 @@ import (
 	"time"
 
 	libBackoff "github.com/LerianStudio/lib-commons/v5/commons/backoff"
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
 	libOtel "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	libLog "github.com/LerianStudio/lib-observability/log"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )

@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/license"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/server"
+	"github.com/LerianStudio/lib-observability/log"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -576,7 +576,7 @@ func TestExecuteShutdown_WithLicenseClient(t *testing.T) {
 	}
 
 	msgs := logger.getMessages()
-	assert.Contains(t, msgs, "Shutting down license background refresh...")
+	assert.Contains(t, msgs, "Skipping license termination handler during graceful shutdown")
 }
 
 func TestExecuteShutdown_LoggerSyncError(t *testing.T) {
@@ -658,7 +658,7 @@ func TestExecuteShutdown_WithAllComponents(t *testing.T) {
 
 	msgs := logger.getMessages()
 	assert.Contains(t, msgs, "Shutting down telemetry...")
-	assert.Contains(t, msgs, "Shutting down license background refresh...")
+	assert.Contains(t, msgs, "Skipping license termination handler during graceful shutdown")
 	assert.Contains(t, msgs, "Graceful shutdown completed")
 }
 

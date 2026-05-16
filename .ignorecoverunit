@@ -4,3 +4,24 @@
 
 # Auto-generated mocks
 *_mock.go
+
+# Test contract suites — these are test helpers, not production code.
+# They define shared contract test suites consumed by integration tests
+# against real databases and should not count toward unit coverage.
+commons/systemplane/systemplanetest/
+commons/outbox/outboxtest/
+commons/systemplane/internal/storetest/
+
+# DB-backed internal packages — the uncovered paths in these packages
+# require real database connections (LISTEN/NOTIFY loops, change streams,
+# schema migration DDL, cursor iteration). The packages do have unit tests
+# covering pure-function and validation paths; the remaining uncovered code
+# is integration-only and is exercised by the integration test suite.
+commons/outbox/postgres/
+commons/outbox/mongo/
+commons/systemplane/internal/postgres/
+commons/systemplane/internal/mongodb/
+
+# Internal test adapters — these are internal test utilities only.
+commons/tenant-manager/internal/logcompat/
+commons/tenant-manager/internal/testutil/

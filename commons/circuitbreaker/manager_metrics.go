@@ -112,7 +112,7 @@ func (m *manager) recordStateTransition(tenantID, serviceName string, from, to S
 
 	attrs := stateTransitionAttributeSet(tenantID, serviceName, from, to)
 
-	err := m.stateCounter.WithAttributeSet(attrs).AddOne(context.Background())
+	err := m.stateCounter.WithAttributes(attrs.ToSlice()...).AddOne(context.Background())
 	if err != nil {
 		m.logger.Log(context.Background(), log.LevelWarn, "failed to record state transition metric", log.Err(err))
 	}
@@ -130,7 +130,7 @@ func (m *manager) recordExecution(slot *breakerSlot, result string) {
 		attrs = executionAttributeSet(slot.tenantID, slot.serviceName, result)
 	}
 
-	err := m.execCounter.WithAttributeSet(attrs).AddOne(context.Background())
+	err := m.execCounter.WithAttributes(attrs.ToSlice()...).AddOne(context.Background())
 	if err != nil {
 		m.logger.Log(context.Background(), log.LevelWarn, "failed to record execution metric", log.Err(err))
 	}

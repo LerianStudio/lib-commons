@@ -5,7 +5,6 @@ package log
 import (
 	"bytes"
 	"context"
-	"errors"
 	stdlog "log"
 	"strings"
 	"sync"
@@ -85,15 +84,24 @@ func TestGoLogger_LogWithFieldsAndGroup(t *testing.T) {
 }
 
 func TestGoLogger_WithIsImmutable(t *testing.T) {
+	var buf bytes.Buffer
+	withTestLoggerOutput(t, &buf)
+
 	base := &GoLogger{Level: LevelDebug}
-	withField := base.With(String("k", "v"))
+	child := base.With(String("k", "v"))
 
-	assert.NotEqual(t, base, withField)
-	assert.Empty(t, base.fields)
+	assert.NotEqual(t, base, child)
 
-	goLogger, ok := withField.(*GoLogger)
-	require.True(t, ok, "expected *GoLogger from With()")
-	assert.Len(t, goLogger.fields, 1)
+	// Log from base — the added field must NOT appear.
+	base.Log(context.Background(), LevelInfo, "from base")
+	baseOut := buf.String()
+	buf.Reset()
+	assert.NotContains(t, baseOut, "k=v", "base must not carry the field added via With()")
+
+	// Log from child — the added field MUST appear.
+	child.Log(context.Background(), LevelInfo, "from child")
+	childOut := buf.String()
+	assert.Contains(t, childOut, "k=v", "child must carry the field added via With()")
 }
 
 func TestNopLogger(t *testing.T) {
@@ -657,105 +665,5 @@ func TestLevel_String(t *testing.T) {
 
 	for _, tt := range tests {
 		assert.Equal(t, tt.expected, tt.level.String())
-	}
-}
-
-// ===========================================================================
-// renderFields Tests
-// ===========================================================================
-
-// TestRenderFields_EmptyReturnsEmpty verifies that no fields produce empty output.
-func TestRenderFields_EmptyReturnsEmpty(t *testing.T) {
-	assert.Equal(t, "", renderFields(nil))
-	assert.Equal(t, "", renderFields([]Field{}))
-}
-
-// TestRenderFields_SingleField verifies single field rendering.
-func TestRenderFields_SingleField(t *testing.T) {
-	result := renderFields([]Field{String("status", "ok")})
-	assert.Equal(t, "[status=ok]", result)
-}
-
-// TestRenderFields_MultipleFields verifies multiple field rendering.
-func TestRenderFields_MultipleFields(t *testing.T) {
-	result := renderFields([]Field{
-		String("a", "1"),
-		Int("b", 2),
-		Bool("c", true),
-	})
-	assert.Contains(t, result, "a=1")
-	assert.Contains(t, result, "b=2")
-	assert.Contains(t, result, "c=true")
-}
-
-// TestRenderFields_EmptyKeyFieldSkipped verifies empty-key fields are dropped.
-func TestRenderFields_EmptyKeyFieldSkipped(t *testing.T) {
-	result := renderFields([]Field{String("", "val")})
-	assert.Equal(t, "", result)
-}
-
-// TestRenderFields_SanitizesKeysAndValues verifies CWE-117 in field rendering.
-func TestRenderFields_SanitizesKeysAndValues(t *testing.T) {
-	result := renderFields([]Field{
-		String("status\ninjection", "value\ninjection"),
-	})
-	assert.NotContains(t, result, "\n")
-	assert.Contains(t, result, `\n`)
-}
-
-// ===========================================================================
-// sanitizeFieldValue Tests
-// ===========================================================================
-
-// testStringer is a small helper that implements fmt.Stringer for testing.
-type testStringer struct{ s string }
-
-func (ts testStringer) String() string { return ts.s }
-
-// TestSanitizeFieldValue verifies that sanitizeFieldValue handles string,
-// error, and fmt.Stringer types, sanitizing control characters in each case.
-func TestSanitizeFieldValue(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    any
-		expected any
-	}{
-		{
-			name:     "plain string passthrough",
-			input:    "hello",
-			expected: "hello",
-		},
-		{
-			name:     "string with newline is sanitized",
-			input:    "line1\nline2",
-			expected: `line1\nline2`,
-		},
-		{
-			name:     "error with newline is sanitized",
-			input:    errors.New("bad\ninput"),
-			expected: `bad\ninput`,
-		},
-		{
-			name:     "fmt.Stringer with newline is sanitized",
-			input:    testStringer{s: "hello\nworld"},
-			expected: `hello\nworld`,
-		},
-		{
-			name:     "integer passes through unchanged",
-			input:    42,
-			expected: 42,
-		},
-		{
-			name:     "nil passes through unchanged",
-			input:    nil,
-			expected: nil,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := sanitizeFieldValue(tt.input)
-			assert.Equal(t, tt.expected, result)
-		})
 	}
 }

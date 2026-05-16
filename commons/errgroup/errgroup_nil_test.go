@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/errgroup"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

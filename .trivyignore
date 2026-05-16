@@ -1,0 +1,49 @@
+# =============================================================================
+# Trivy vulnerability ignore list
+# =============================================================================
+#
+# HOW TO USE THIS FILE
+# --------------------
+# Each non-comment line is a CVE ID that trivy will skip when scanning go.mod.
+# Remove a CVE entry here once the underlying dependency has been upgraded to
+# the patched version and `go mod tidy` has been run.
+#
+# =============================================================================
+# github.com/docker/docker — CVE-2026-34040 (HIGH) & CVE-2026-33997 (MEDIUM)
+# =============================================================================
+#
+# WHY THESE ARE IGNORED
+# ---------------------
+# Both CVEs affect the Docker daemon's authorization-plugin model:
+#
+#   CVE-2026-34040 (HIGH)   – Authorization bypass that allows an API caller to
+#                             circumvent Docker daemon authorization plugins.
+#                             Patched in docker/docker v29.3.1.
+#
+#   CVE-2026-33997 (MEDIUM) – Privilege-validation bypass during Docker plugin
+#                             installation. No upstream fix published yet at the
+#                             time of writing.
+#
+# WHY WE CANNOT FIX THEM NOW
+# ---------------------------
+# docker/docker v29.3.1 (the patched release) has not been published to the Go
+# module proxy as of 2026-05-15.  Running `go get github.com/docker/docker@v29.3.1`
+# returns "invalid version: unknown revision v29.3.1".
+#
+# docker/docker is an INDIRECT dependency, pulled in transitively by
+# testcontainers-go (used only for integration tests that spin up real DB and
+# messaging containers locally). lib-commons itself never embeds or runs a
+# Docker daemon; the Go client library merely calls the Docker API from test
+# code. The authorization-bypass risk described in both CVEs is therefore
+# contained entirely within local developer/CI test environments and does not
+# affect lib-commons consumers in production.
+#
+# WHAT TO DO WHEN docker v29 IS RELEASED
+# ----------------------------------------
+# 1. Remove the two lines below (CVE-2026-34040 and CVE-2026-33997).
+# 2. Run:  go get github.com/docker/docker@v29.3.1
+# 3. Run:  go mod tidy
+# 4. Verify trivy reports zero findings:  trivy fs --scanners vuln go.mod
+#
+CVE-2026-34040
+CVE-2026-33997

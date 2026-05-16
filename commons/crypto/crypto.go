@@ -14,7 +14,7 @@ import (
 	"io"
 	"reflect"
 
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
+	libLog "github.com/LerianStudio/lib-observability/log"
 )
 
 var (

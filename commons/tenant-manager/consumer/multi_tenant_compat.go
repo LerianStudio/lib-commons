@@ -7,8 +7,8 @@ package consumer
 import (
 	"context"
 
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/rabbitmq"
+	libLog "github.com/LerianStudio/lib-observability/log"
 )
 
 // NewMultiTenantConsumerWithRabbitMQ creates a MultiTenantConsumer with the

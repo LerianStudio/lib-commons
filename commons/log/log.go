@@ -1,32 +1,21 @@
+// Package log defines the v2 logging interface and typed logging fields.
+// This package delegates to github.com/LerianStudio/lib-observability/log.
 package log
 
-import (
-	"context"
-	"fmt"
-	"strings"
-)
+import libobslog "github.com/LerianStudio/lib-observability/log"
 
 // Logger is the package interface for v2 logging.
 //
-//go:generate mockgen --destination=log_mock.go --package=log . Logger
-type Logger interface {
-	Log(ctx context.Context, level Level, msg string, fields ...Field)
-	With(fields ...Field) Logger
-	WithGroup(name string) Logger
-	Enabled(level Level) bool
-	Sync(ctx context.Context) error
-}
+// Deprecated: Use github.com/LerianStudio/lib-observability/log.Logger instead.
+//
+// NOTE: Mocks are now provided by github.com/LerianStudio/lib-observability/log.
+// Running mockgen here would overwrite the compatibility shims in log_mock.go.
+type Logger = libobslog.Logger
 
 // Level represents the severity of a log entry.
 //
-// Lower numeric values indicate higher severity (LevelError=0 is most severe,
-// LevelDebug=3 is least). This is inverted from slog/zap conventions where
-// higher numeric values mean higher severity.
-//
-// The GoLogger.Enabled comparison uses l.Level >= level, which works because
-// the logger's Level acts as a verbosity ceiling: a logger at LevelInfo (2)
-// emits Error (0), Warn (1), and Info (2) messages, but suppresses Debug (3).
-type Level uint8
+// Deprecated: Use github.com/LerianStudio/lib-observability/log.Level instead.
+type Level = libobslog.Level
 
 // Level constants define log severity. Lower numeric values indicate higher
 // severity. Setting a logger's Level to a given constant enables that level
@@ -36,83 +25,64 @@ type Level uint8
 //	LevelWarn  (1) -- errors + warnings
 //	LevelInfo  (2) -- errors + warnings + info
 //	LevelDebug (3) -- everything
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/log.LevelError, LevelWarn, LevelInfo, LevelDebug instead.
 const (
-	LevelError Level = iota
-	LevelWarn
-	LevelInfo
-	LevelDebug
+	LevelError = libobslog.LevelError
+	LevelWarn  = libobslog.LevelWarn
+	LevelInfo  = libobslog.LevelInfo
+	LevelDebug = libobslog.LevelDebug
 )
-
-const levelErrorString = "error"
 
 // LevelUnknown represents an invalid or unrecognized log level.
 // Returned by ParseLevel on error to distinguish from LevelError (the zero value).
-const LevelUnknown Level = 255
-
-// String returns the string representation of a log level.
-func (level Level) String() string {
-	switch level {
-	case LevelDebug:
-		return "debug"
-	case LevelInfo:
-		return "info"
-	case LevelWarn:
-		return "warn"
-	case LevelError:
-		return levelErrorString
-	default:
-		return "unknown"
-	}
-}
-
-// ParseLevel takes a string level and returns a Level constant.
-// Leading and trailing whitespace is trimmed before matching.
-func ParseLevel(lvl string) (Level, error) {
-	switch strings.ToLower(strings.TrimSpace(lvl)) {
-	case "debug":
-		return LevelDebug, nil
-	case "info":
-		return LevelInfo, nil
-	case "warn", "warning":
-		return LevelWarn, nil
-	case levelErrorString:
-		return LevelError, nil
-	}
-
-	return LevelUnknown, fmt.Errorf("not a valid Level: %q", lvl)
-}
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/log.LevelUnknown instead.
+const LevelUnknown = libobslog.LevelUnknown
 
 // Field is a strongly-typed key/value attribute attached to a log event.
-type Field struct {
-	Key   string
-	Value any
-}
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/log.Field instead.
+type Field = libobslog.Field
 
 // Any creates a field with an arbitrary value.
 //
-// WARNING: prefer typed constructors (String, Int, Bool, Err) to avoid
-// accidentally logging sensitive data (passwords, tokens, PII). If using
-// Any, ensure the value is sanitized or non-sensitive.
+// Deprecated: Use github.com/LerianStudio/lib-observability/log.Any instead.
 func Any(key string, value any) Field {
-	return Field{Key: key, Value: value}
+	return libobslog.Any(key, value)
 }
 
 // String creates a string field.
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/log.String instead.
 func String(key, value string) Field {
-	return Field{Key: key, Value: value}
+	return libobslog.String(key, value)
 }
 
 // Int creates an integer field.
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/log.Int instead.
 func Int(key string, value int) Field {
-	return Field{Key: key, Value: value}
+	return libobslog.Int(key, value)
 }
 
 // Bool creates a boolean field.
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/log.Bool instead.
 func Bool(key string, value bool) Field {
-	return Field{Key: key, Value: value}
+	return libobslog.Bool(key, value)
 }
 
 // Err creates the conventional `error` field.
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/log.Err instead.
 func Err(err error) Field {
-	return Field{Key: levelErrorString, Value: err}
+	return libobslog.Err(err)
+}
+
+// ParseLevel takes a string level and returns a Level constant.
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/log.ParseLevel instead.
+func ParseLevel(lvl string) (Level, error) {
+	return libobslog.ParseLevel(lvl)
 }

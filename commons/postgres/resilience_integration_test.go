@@ -41,7 +41,7 @@ func setupPostgresContainerRaw(t *testing.T) (*tcpostgres.PostgresContainer, str
 		closeCtx, closeCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer closeCancel()
 
-		_ = container.Terminate(closeCtx)
+		require.NoError(t, container.Terminate(closeCtx))
 	}
 }
 

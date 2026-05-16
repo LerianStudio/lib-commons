@@ -14,9 +14,9 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v5/commons/license"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-observability/runtime"
 	"github.com/gofiber/fiber/v2"
 	"google.golang.org/grpc"
 )
@@ -35,22 +35,23 @@ const defaultReadHeaderTimeout = 5 * time.Second
 // It can manage HTTP servers (either *fiber.App or stdlib *http.Server, but
 // not both), gRPC servers, or any compatible combination simultaneously.
 type ServerManager struct {
-	httpServer         *fiber.App
-	stdlibHTTPServer   *http.Server
-	grpcServer         *grpc.Server
-	stdlibHTTPListener net.Listener
-	licenseClient      *license.ManagerShutdown
-	telemetry          *opentelemetry.Telemetry
-	logger             log.Logger
-	httpAddress        string
-	grpcAddress        string
-	serversStarted     chan struct{}
-	serversStartedOnce sync.Once
-	shutdownChan       <-chan struct{}
-	shutdownOnce       sync.Once
-	shutdownTimeout    time.Duration
-	startupErrors      chan error
-	shutdownHooks      []func(context.Context) error
+	httpServer          *fiber.App
+	stdlibHTTPServer    *http.Server
+	stdlibHTTPListener  net.Listener
+	grpcServer          *grpc.Server
+	licenseClient       *license.ManagerShutdown
+	telemetry           *opentelemetry.Telemetry
+	logger              log.Logger
+	httpAddress         string
+	grpcAddress         string
+	serversStarted      chan struct{}
+	serversStartedOnce  sync.Once
+	runtimeDefaultsOnce sync.Once
+	shutdownChan        <-chan struct{}
+	shutdownOnce        sync.Once
+	shutdownTimeout     time.Duration
+	startupErrors       chan error
+	shutdownHooks       []func(context.Context) error
 }
 
 // ensureRuntimeDefaults initializes zero-value fields so exported lifecycle
@@ -242,7 +243,7 @@ func (sm *ServerManager) ServersStarted() <-chan struct{} {
 		return ch
 	}
 
-	sm.ensureRuntimeDefaults()
+	sm.runtimeDefaultsOnce.Do(sm.ensureRuntimeDefaults)
 
 	return sm.serversStarted
 }
@@ -266,7 +267,7 @@ func (sm *ServerManager) validateConfiguration() error {
 // initServers validates configuration and starts servers without blocking.
 // Returns an error if validation fails. Does not call Fatal.
 func (sm *ServerManager) initServers() error {
-	sm.ensureRuntimeDefaults()
+	sm.runtimeDefaultsOnce.Do(sm.ensureRuntimeDefaults)
 
 	if err := sm.validateConfiguration(); err != nil {
 		return err
@@ -285,7 +286,7 @@ func (sm *ServerManager) StartWithGracefulShutdownWithError() error {
 		return ErrNoServersConfigured
 	}
 
-	sm.ensureRuntimeDefaults()
+	sm.runtimeDefaultsOnce.Do(sm.ensureRuntimeDefaults)
 
 	if err := sm.initServers(); err != nil {
 		return err
@@ -304,7 +305,7 @@ func (sm *ServerManager) StartWithGracefulShutdown() {
 		os.Exit(1)
 	}
 
-	sm.ensureRuntimeDefaults()
+	sm.runtimeDefaultsOnce.Do(sm.ensureRuntimeDefaults)
 
 	if err := sm.initServers(); err != nil {
 		// logFatal exits the process via os.Exit(1); code below is unreachable on error
@@ -503,7 +504,7 @@ func (sm *ServerManager) logFatal(msg string) {
 // or when a server startup error is detected.
 // Returns the first startup error if one caused the shutdown, nil otherwise.
 func (sm *ServerManager) handleShutdown() error {
-	sm.ensureRuntimeDefaults()
+	sm.runtimeDefaultsOnce.Do(sm.ensureRuntimeDefaults)
 
 	var startupErr error
 
@@ -540,7 +541,7 @@ func (sm *ServerManager) handleShutdown() error {
 // executeShutdown performs the actual shutdown operations in the correct order for ServerManager.
 // It is idempotent: multiple calls are safe, but only the first invocation executes the shutdown sequence.
 func (sm *ServerManager) executeShutdown() {
-	sm.ensureRuntimeDefaults()
+	sm.runtimeDefaultsOnce.Do(sm.ensureRuntimeDefaults)
 
 	sm.shutdownOnce.Do(func() {
 		// Use a non-blocking read to check if servers have started.
@@ -616,10 +617,10 @@ func (sm *ServerManager) executeShutdown() {
 			}
 		}
 
-		// Shutdown license background refresh if available
+		// License termination handlers are for validation failures only. Invoking
+		// them during normal graceful shutdown can turn a clean SIGTERM into exit 1.
 		if sm.licenseClient != nil {
-			sm.logInfo("Shutting down license background refresh...")
-			sm.licenseClient.Terminate("shutdown")
+			sm.logInfo("Skipping license termination handler during graceful shutdown")
 		}
 
 		sm.logInfo("Graceful shutdown completed")

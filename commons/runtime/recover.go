@@ -2,228 +2,134 @@ package runtime
 
 import (
 	"context"
-	"runtime/debug"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	libobsruntime "github.com/LerianStudio/lib-observability/runtime"
 )
 
-// Logger defines the minimal logging interface required by runtime.
-// This interface is satisfied by github.com/LerianStudio/lib-commons/v5/commons/log.Logger.
-type Logger interface {
-	Log(ctx context.Context, level log.Level, msg string, fields ...log.Field)
+func safeContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+
+	return ctx
 }
 
-// RecoverAndLog recovers from a panic, logs it with the stack trace, and
-// continues execution. Use this in defer statements for handlers and workers
-// where you want to prevent crashes.
+// Logger defines the minimal logging interface required by runtime.
 //
-// Note: This function does not record metrics or span events because it lacks
-// context. For observability integration, use RecoverAndLogWithContext instead.
+// Deprecated: Use github.com/LerianStudio/lib-observability/runtime.Logger instead.
+type Logger = libobsruntime.Logger
+
+// RecoverAndLog recovers from a panic, logs it with the stack trace, and continues execution.
 //
-// Example:
+// SHIM NOTE: recover() must be called directly by the deferred function — Go's runtime
+// checks the call frame and returns nil if recover() is nested inside an intermediate
+// wrapper. Because this function is the shim that callers defer, we must call recover()
+// here rather than delegating to lib-observability's RecoverAndLog. After capturing the
+// panic value we pass it to HandlePanicValue for logging and observability.
+// This indirection will be removed once callers migrate to lib-observability directly.
 //
-//	func worker() {
-//	    defer runtime.RecoverAndLog(logger, "worker")
-//	    // ...
-//	}
+// Deprecated: Use github.com/LerianStudio/lib-observability/runtime.RecoverAndLog instead.
 func RecoverAndLog(logger Logger, name string) {
-	if r := recover(); r != nil {
-		logPanic(logger, name, r)
+	r := recover()
+	if r == nil {
+		return
 	}
+
+	libobsruntime.HandlePanicValue(context.Background(), logger, r, "", name)
 }
 
 // RecoverAndLogWithContext is like RecoverAndLog but with full observability integration.
-// It records metrics, span events, and reports to error tracking services.
 //
-// Parameters:
-//   - ctx: Context for observability (metrics, tracing, error reporting)
-//   - logger: Logger for structured logging
-//   - component: The service component (e.g., "transaction", "onboarding")
-//   - name: Descriptive name for the goroutine or handler
+// SHIM NOTE: Same recover() constraint as RecoverAndLog — must capture the panic here
+// before delegating. Will be removed once callers migrate to lib-observability directly.
 //
-// Example:
-//
-//	func handler(ctx context.Context) {
-//	    defer runtime.RecoverAndLogWithContext(ctx, logger, "transaction", "create_handler")
-//	    // ...
-//	}
+// Deprecated: Use github.com/LerianStudio/lib-observability/runtime.RecoverAndLogWithContext instead.
 func RecoverAndLogWithContext(ctx context.Context, logger Logger, component, name string) {
-	if r := recover(); r != nil {
-		stack := debug.Stack()
-		logPanicWithStack(logger, name, r, stack)
-		recordPanicObservability(ctx, r, stack, component, name)
+	r := recover()
+	if r == nil {
+		return
 	}
+
+	libobsruntime.HandlePanicValue(safeContext(ctx), logger, r, component, name)
 }
 
-// RecoverAndCrash recovers from a panic, logs it with the stack trace, and
-// re-panics to crash the process. Use this in defer statements for critical
-// operations where continuing after a panic would be dangerous.
+// RecoverAndCrash recovers from a panic, logs it, and re-panics to crash the process.
 //
-// Example:
+// SHIM NOTE: Same recover() constraint as RecoverAndLog — must capture the panic here.
+// The re-panic below is intentional and is the original contract of this function:
+// it is used in critical paths where continuing after a panic would leave the process
+// in a corrupt state. This is one of the very few places where panic is acceptable.
+// Will be removed once callers migrate to lib-observability directly.
 //
-//	func criticalOperation() {
-//	    defer runtime.RecoverAndCrash(logger, "critical-op")
-//	    // ...
-//	}
+// Deprecated: Use github.com/LerianStudio/lib-observability/runtime.RecoverAndCrash instead.
 func RecoverAndCrash(logger Logger, name string) {
-	if r := recover(); r != nil {
-		logPanic(logger, name, r)
-		panic(r)
+	r := recover()
+	if r == nil {
+		return
 	}
+
+	libobsruntime.HandlePanicValue(context.Background(), logger, r, "", name)
+	panic(r) // intentional re-panic — this function's contract requires crashing the process
 }
 
 // RecoverAndCrashWithContext is like RecoverAndCrash but with full observability integration.
-// It records metrics and span events before re-panicking.
 //
-// Parameters:
-//   - ctx: Context for observability (metrics, tracing, error reporting)
-//   - logger: Logger for structured logging
-//   - component: The service component (e.g., "transaction", "onboarding")
-//   - name: Descriptive name for the goroutine or handler
+// SHIM NOTE: Same recover() constraint as RecoverAndLog. Re-panic is intentional — see
+// RecoverAndCrash. Will be removed once callers migrate to lib-observability directly.
+//
+// Deprecated: Use github.com/LerianStudio/lib-observability/runtime.RecoverAndCrashWithContext instead.
 func RecoverAndCrashWithContext(ctx context.Context, logger Logger, component, name string) {
-	if r := recover(); r != nil {
-		stack := debug.Stack()
-		logPanicWithStack(logger, name, r, stack)
-		recordPanicObservability(ctx, r, stack, component, name)
-		panic(r)
+	r := recover()
+	if r == nil {
+		return
 	}
+
+	libobsruntime.HandlePanicValue(safeContext(ctx), logger, r, component, name)
+	panic(r) // intentional re-panic — this function's contract requires crashing the process
 }
 
-// RecoverWithPolicy recovers from a panic and handles it according to the
-// specified policy. Use this when the recovery behavior needs to be determined
-// at runtime.
+// RecoverWithPolicy recovers from a panic and handles it according to the specified policy.
 //
-// Note: This function does not record metrics or span events because it lacks
-// context. For observability integration, use RecoverWithPolicyAndContext instead.
+// SHIM NOTE: Same recover() constraint as RecoverAndLog. Re-panic only occurs when
+// policy == CrashProcess, which preserves the original crash-the-process contract.
+// Will be removed once callers migrate to lib-observability directly.
 //
-// Example:
-//
-//	func flexibleHandler(policy runtime.PanicPolicy) {
-//	    defer runtime.RecoverWithPolicy(logger, "handler", policy)
-//	    // ...
-//	}
+// Deprecated: Use github.com/LerianStudio/lib-observability/runtime.RecoverWithPolicy instead.
 func RecoverWithPolicy(logger Logger, name string, policy PanicPolicy) {
-	if r := recover(); r != nil {
-		logPanic(logger, name, r)
+	r := recover()
+	if r == nil {
+		return
+	}
 
-		if policy == CrashProcess {
-			panic(r)
-		}
+	libobsruntime.HandlePanicValue(context.Background(), logger, r, "", name)
+
+	if policy == CrashProcess {
+		panic(r) // intentional re-panic — CrashProcess policy requires crashing the process
 	}
 }
 
 // RecoverWithPolicyAndContext is like RecoverWithPolicy but with full observability integration.
-// It records metrics, span events, and reports to error tracking services.
 //
-// Parameters:
-//   - ctx: Context for observability (metrics, tracing, error reporting)
-//   - logger: Logger for structured logging
-//   - component: The service component (e.g., "transaction", "onboarding")
-//   - name: Descriptive name for the goroutine or handler
-//   - policy: How to handle the panic after logging/recording
+// SHIM NOTE: Same recover() constraint as RecoverAndLog. Re-panic only on CrashProcess.
+// Will be removed once callers migrate to lib-observability directly.
 //
-// Example:
-//
-//	func worker(ctx context.Context, policy runtime.PanicPolicy) {
-//	    defer runtime.RecoverWithPolicyAndContext(ctx, logger, "transaction", "balance_worker", policy)
-//	    // ...
-//	}
-func RecoverWithPolicyAndContext(
-	ctx context.Context,
-	logger Logger,
-	component, name string,
-	policy PanicPolicy,
-) {
-	if recovered := recover(); recovered != nil {
-		stack := debug.Stack()
-		logPanicWithStack(logger, name, recovered, stack)
-		recordPanicObservability(ctx, recovered, stack, component, name)
-
-		if policy == CrashProcess {
-			panic(recovered)
-		}
-	}
-}
-
-// logPanic logs the panic value and stack trace using the provided logger.
-// This is the legacy function that captures stack internally.
-func logPanic(logger Logger, name string, panicValue any) {
-	stack := debug.Stack()
-	logPanicWithStack(logger, name, panicValue, stack)
-}
-
-// logPanicWithStack logs the panic with a pre-captured stack trace.
-// In production mode, panic values are redacted to prevent leaking sensitive data.
-func logPanicWithStack(logger Logger, name string, panicValue any, stack []byte) {
-	if logger == nil {
-		// Last resort fallback - should never happen in production
+// Deprecated: Use github.com/LerianStudio/lib-observability/runtime.RecoverWithPolicyAndContext instead.
+func RecoverWithPolicyAndContext(ctx context.Context, logger Logger, component, name string, policy PanicPolicy) {
+	r := recover()
+	if r == nil {
 		return
 	}
 
-	if IsProductionMode() {
-		logger.Log(context.Background(), log.LevelError,
-			"panic recovered",
-			log.String("source", name),
-			log.String("value", redactedPanicMsg),
-		)
+	libobsruntime.HandlePanicValue(safeContext(ctx), logger, r, component, name)
 
-		return
+	if policy == CrashProcess {
+		panic(r) // intentional re-panic — CrashProcess policy requires crashing the process
 	}
-
-	logger.Log(context.Background(), log.LevelError,
-		"panic recovered",
-		log.String("source", name),
-		log.Any("value", panicValue),
-		log.String("stack_trace", string(stack)),
-	)
 }
 
-// recordPanicObservability records panic information to all configured observability systems.
-// This includes metrics, distributed tracing, and error reporting services.
-func recordPanicObservability(
-	ctx context.Context,
-	panicValue any,
-	stack []byte,
-	component, name string,
-) {
-	// Record metric
-	recordPanicMetric(ctx, component, name)
-
-	// Record span event
-	RecordPanicToSpanWithComponent(ctx, panicValue, stack, component, name)
-
-	// Report to error tracking service (e.g., Sentry) if configured
-	reportPanicToErrorService(ctx, panicValue, stack, component, name)
-}
-
-// HandlePanicValue processes a panic value that was already recovered by an external
-// mechanism (e.g., Fiber's recover middleware). This function logs and records
-// observability data without calling recover() itself.
+// HandlePanicValue processes a panic value that was already recovered by an external mechanism.
 //
-// Use this when integrating with frameworks that provide their own panic recovery
-// but still need our observability pipeline.
-//
-// Parameters:
-//   - ctx: Context for observability (metrics, tracing, error reporting)
-//   - logger: Logger for structured logging
-//   - panicValue: The panic value recovered by the external mechanism
-//   - component: The service component (e.g., "matcher", "ingestion")
-//   - name: Descriptive name for the handler (e.g., "http_handler")
-//
-// Example (Fiber middleware):
-//
-//	recover.New(recover.Config{
-//	    StackTraceHandler: func(c *fiber.Ctx, panicValue any) {
-//	        ctx := extractContext(c)
-//	        runtime.HandlePanicValue(ctx, logger, panicValue, "matcher", "http_handler")
-//	    },
-//	})
+// Deprecated: Use github.com/LerianStudio/lib-observability/runtime.HandlePanicValue instead.
 func HandlePanicValue(ctx context.Context, logger Logger, panicValue any, component, name string) {
-	if panicValue == nil {
-		return
-	}
-
-	stack := debug.Stack()
-	logPanicWithStack(logger, name, panicValue, stack)
-	recordPanicObservability(ctx, panicValue, stack, component, name)
+	libobsruntime.HandlePanicValue(safeContext(ctx), logger, panicValue, component, name)
 }

@@ -11,4 +11,6 @@
 //
 // The package also includes carrier utilities for HTTP, gRPC, and queue headers, plus
 // redaction-aware attribute extraction for safe span enrichment.
+//
+// Deprecated: use github.com/LerianStudio/lib-observability/tracing.
 package opentelemetry

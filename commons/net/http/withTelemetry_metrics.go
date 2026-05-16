@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons"
-	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	"github.com/LerianStudio/lib-observability/runtime"
 )
 
 // Metrics collector singleton state.
@@ -117,6 +117,8 @@ func (tm *TelemetryMiddleware) ensureMetricsCollector() error {
 // to allow the collector to be restarted after being stopped. This is an unusual but
 // intentional pattern - the mutex ensures thread-safety during the reset operation,
 // preventing race conditions between Stop and subsequent Start calls.
+//
+// Deprecated: use StopMetricsCollector from github.com/LerianStudio/lib-observability/middleware.
 func StopMetricsCollector() {
 	metricsCollectorMu.Lock()
 	defer metricsCollectorMu.Unlock()

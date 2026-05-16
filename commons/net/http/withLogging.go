@@ -28,6 +28,8 @@ func init() {
 }
 
 // RequestInfo is a struct design to store http access log data.
+//
+// Deprecated: use RequestInfo from github.com/LerianStudio/lib-observability/middleware.
 type RequestInfo struct {
 	Method        string
 	Username      string
@@ -45,6 +47,8 @@ type RequestInfo struct {
 }
 
 // ResponseMetricsWrapper is a Wrapper responsible for collecting the response data such as status code and size.
+//
+// Deprecated: use ResponseMetricsWrapper from github.com/LerianStudio/lib-observability/middleware.
 type ResponseMetricsWrapper struct {
 	Context    *fiber.Ctx
 	StatusCode int
@@ -56,6 +60,8 @@ type ResponseMetricsWrapper struct {
 // request body are obfuscated. Pass the middleware's effective setting (which
 // combines the global LOG_OBFUSCATION_DISABLED env var with per-middleware
 // overrides via WithObfuscationDisabled) to honour per-middleware configuration.
+//
+// Deprecated: use NewRequestInfo from github.com/LerianStudio/lib-observability/middleware.
 func NewRequestInfo(c *fiber.Ctx, obfuscationDisabled bool) *RequestInfo {
 	if c == nil {
 		return &RequestInfo{Date: time.Now().UTC()}
@@ -102,6 +108,8 @@ func NewRequestInfo(c *fiber.Ctx, obfuscationDisabled bool) *RequestInfo {
 
 // CLFString produces a log entry format similar to Common Log Format (CLF)
 // Ref: https://httpd.apache.org/docs/trunk/logs.html#common
+//
+// Deprecated: use RequestInfo.CLFString from github.com/LerianStudio/lib-observability/middleware.
 func (r *RequestInfo) CLFString() string {
 	return strings.Join([]string{
 		sanitizeLogValue(r.RemoteAddress),
@@ -118,12 +126,16 @@ func (r *RequestInfo) CLFString() string {
 }
 
 // String implements fmt.Stringer interface and produces a log entry using RequestInfo.CLFExtendedString.
+//
+// Deprecated: use RequestInfo.String from github.com/LerianStudio/lib-observability/middleware.
 func (r *RequestInfo) String() string {
 	return r.CLFString()
 }
 
 // FinishRequestInfo calculates the duration of RequestInfo automatically using time.Now()
 // It also set StatusCode and Size of RequestInfo passed by ResponseMetricsWrapper.
+//
+// Deprecated: use RequestInfo.FinishRequestInfo from github.com/LerianStudio/lib-observability/middleware.
 func (r *RequestInfo) FinishRequestInfo(rw *ResponseMetricsWrapper) {
 	if rw == nil {
 		return
