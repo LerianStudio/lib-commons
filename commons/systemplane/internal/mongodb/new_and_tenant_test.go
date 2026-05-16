@@ -9,6 +9,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v5/commons/systemplane/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 // ---------------------------------------------------------------------------
@@ -26,16 +27,10 @@ func TestNew_NilClient(t *testing.T) {
 func TestNew_EmptyDatabase(t *testing.T) {
 	t.Parallel()
 
-	// We need a non-nil client — but since MongoDB client construction
-	// requires a connection, test only the empty-database guard which
-	// fires before any network call.
-	// We can't easily create a *mongo.Client without a real connection,
-	// so we skip this test if we can't construct one.
-	// Instead, test that the error message would contain "database name".
-	// We just verify the guard logic: pass a non-nil client via Config.
-	// Since we can't construct *mongo.Client without a server, use the
-	// coverage_boost_test approach of testing what we can reach.
-	t.Skip("requires a real mongo.Client to test empty database guard")
+	_, err := New(Config{Client: &mongo.Client{}, Database: ""})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, store.ErrNilBackend)
+	assert.Contains(t, err.Error(), "database name")
 }
 
 // ---------------------------------------------------------------------------

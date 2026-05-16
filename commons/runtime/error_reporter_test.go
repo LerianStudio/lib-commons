@@ -12,26 +12,13 @@ import (
 )
 
 // testErrorReporter is a test implementation of ErrorReporter for these tests.
-type testErrorReporter struct {
-	mu           sync.RWMutex
-	capturedErr  error
-	capturedCtx  context.Context //nolint:containedctx
-	capturedTags map[string]string
-	callCount    int
-}
+type testErrorReporter struct{}
 
 func (reporter *testErrorReporter) CaptureException(
 	ctx context.Context,
 	err error,
 	tags map[string]string,
 ) {
-	reporter.mu.Lock()
-	defer reporter.mu.Unlock()
-
-	reporter.capturedErr = err
-	reporter.capturedCtx = ctx
-	reporter.capturedTags = tags
-	reporter.callCount++
 }
 
 // TestSetAndGetErrorReporter tests basic SetErrorReporter and GetErrorReporter functionality.

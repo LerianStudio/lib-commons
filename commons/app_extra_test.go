@@ -19,7 +19,7 @@ func TestRun_NoError(t *testing.T) {
 
 	// App that succeeds
 	successApp := &stubApp{err: nil}
-	_ = l.Add("success", successApp)
+	assert.NoError(t, l.Add("success", successApp))
 
 	// Should not panic
 	assert.NotPanics(t, func() {
@@ -34,7 +34,7 @@ func TestRun_WithError_WithLogger(t *testing.T) {
 	logger := libLog.NewNop()
 	l := NewLauncher()
 	l.Logger = logger
-	_ = l.Add("err-app", &stubApp{err: assert.AnError})
+	assert.NoError(t, l.Add("err-app", &stubApp{err: assert.AnError}))
 
 	assert.NotPanics(t, func() {
 		l.Run()

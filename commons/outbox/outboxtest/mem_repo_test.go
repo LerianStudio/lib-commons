@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -161,6 +162,8 @@ func (m *memOutboxRepo) ListTenants(_ context.Context) ([]string, error) {
 			}
 		}
 	}
+
+	sort.Strings(tenants)
 
 	return tenants, nil
 }

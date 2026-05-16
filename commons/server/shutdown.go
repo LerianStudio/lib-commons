@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/license"
-	"github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
+	"github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-observability/runtime"
 	"github.com/gofiber/fiber/v2"
 	"google.golang.org/grpc"
@@ -157,6 +157,8 @@ func (sm *ServerManager) ServersStarted() <-chan struct{} {
 
 		return ch
 	}
+
+	sm.ensureRuntimeDefaults()
 
 	return sm.serversStarted
 }

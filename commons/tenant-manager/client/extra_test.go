@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -138,11 +139,11 @@ func TestGetTenantConfig_BadRequest(t *testing.T) {
 func TestGetTenantConfig_WithSkipCache_BypassesCache(t *testing.T) {
 	t.Parallel()
 
-	callCount := 0
+	var callCount atomic.Int32
 	cfg := newTestTenantConfig()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		callCount++
+		callCount.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(cfg); err != nil {
 			t.Errorf("encode error: %v", err)
@@ -155,12 +156,12 @@ func TestGetTenantConfig_WithSkipCache_BypassesCache(t *testing.T) {
 	// First call - cache miss, fetches from server
 	_, err := c.GetTenantConfig(context.Background(), "tenant-123", "ledger")
 	require.NoError(t, err)
-	assert.Equal(t, 1, callCount)
+	assert.Equal(t, int32(1), callCount.Load())
 
 	// Second call with skip cache - should fetch again
 	_, err = c.GetTenantConfig(context.Background(), "tenant-123", "ledger", WithSkipCache())
 	require.NoError(t, err)
-	assert.Equal(t, 2, callCount, "WithSkipCache should bypass cache and fetch again")
+	assert.Equal(t, int32(2), callCount.Load(), "WithSkipCache should bypass cache and fetch again")
 }
 
 // TestGetActiveTenantsByService covers the main path.

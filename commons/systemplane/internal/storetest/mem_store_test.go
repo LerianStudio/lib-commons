@@ -39,6 +39,10 @@ func (m *inMemStore) List(_ context.Context) ([]store.Entry, error) {
 	var out []store.Entry
 
 	for _, e := range m.entries {
+		if e.tenantID != store.SentinelGlobal {
+			continue
+		}
+
 		out = append(out, store.Entry{
 			Namespace: e.ns, Key: e.key, TenantID: e.tenantID,
 			Value: e.value, UpdatedAt: e.updatedAt, UpdatedBy: e.updatedBy,
