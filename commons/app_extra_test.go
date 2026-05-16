@@ -41,15 +41,13 @@ func TestRun_WithError_WithLogger(t *testing.T) {
 	})
 }
 
-// TestRun_LogsError covers the path where error occurs and logger is nil.
-func TestRun_LogsError(t *testing.T) {
+// TestRunWithError_NilLoggerReturnsErrLoggerNil covers the nil logger guard.
+func TestRunWithError_NilLoggerReturnsErrLoggerNil(t *testing.T) {
 	t.Parallel()
 
-	// Use a launcher with nil logger to test error logging path
-	l := &Launcher{} // no logger set - RunWithError will return ErrLoggerNil
+	l := &Launcher{}
 
-	// This will return ErrLoggerNil from RunWithError
-	// Run() then tries to log the error but l.Logger is nil so it skips
+	assert.ErrorIs(t, l.RunWithError(), ErrLoggerNil)
 	assert.NotPanics(t, func() {
 		l.Run()
 	})

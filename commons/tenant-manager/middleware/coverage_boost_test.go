@@ -141,10 +141,10 @@ func TestWithTenantDB_NoTenantIDClaim_Returns401(t *testing.T) {
 }
 
 // -------------------------------------------------------------------
-// WithTenantDB — valid JWT but GetConnection fails → 503
+// WithTenantDB — valid JWT but GetConnection fails → 500
 // -------------------------------------------------------------------
 
-func TestWithTenantDB_PGGetConnectionFails_Returns503(t *testing.T) {
+func TestWithTenantDB_PGGetConnectionFails_Returns500(t *testing.T) {
 	t.Parallel()
 
 	// Tenant manager server returns 500 → GetConnection fails
@@ -299,10 +299,10 @@ func TestWithTenantDB_IsDisabled_WhenNothingConfigured(t *testing.T) {
 }
 
 // -------------------------------------------------------------------
-// mapDomainErrorToHTTP — ErrTenantNotProvisioned → 503
+// mapDomainErrorToHTTP — ErrTenantNotProvisioned → 500
 // -------------------------------------------------------------------
 
-func TestMapDomainErrorToHTTP_TenantNotProvisioned(t *testing.T) {
+func TestMapDomainErrorToHTTP_TenantNotProvisioned_Returns500(t *testing.T) {
 	t.Parallel()
 
 	app := newFiberTestApp(func(c *fiber.Ctx) error {
