@@ -37,12 +37,16 @@ func (m *memStore) List(_ context.Context) ([]systemplane.TestEntry, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	out := make([]systemplane.TestEntry, len(m.entries))
-	for i, e := range m.entries {
-		out[i] = systemplane.TestEntry{
+	var out []systemplane.TestEntry
+	for _, e := range m.entries {
+		if e.tenantID != "_global" {
+			continue
+		}
+
+		out = append(out, systemplane.TestEntry{
 			Namespace: e.ns, Key: e.key, TenantID: e.tenantID,
 			Value: e.value, UpdatedAt: e.updatedAt, UpdatedBy: e.updatedBy,
-		}
+		})
 	}
 
 	return out, nil
@@ -53,7 +57,7 @@ func (m *memStore) Get(_ context.Context, namespace, key string) (systemplane.Te
 	defer m.mu.Unlock()
 
 	for _, e := range m.entries {
-		if e.ns == namespace && e.key == key {
+		if e.ns == namespace && e.key == key && e.tenantID == "_global" {
 			return systemplane.TestEntry{
 				Namespace: e.ns, Key: e.key, TenantID: e.tenantID,
 				Value: e.value, UpdatedAt: e.updatedAt, UpdatedBy: e.updatedBy,
@@ -67,6 +71,7 @@ func (m *memStore) Get(_ context.Context, namespace, key string) (systemplane.Te
 func (m *memStore) Set(_ context.Context, e systemplane.TestEntry) error {
 	m.mu.Lock()
 
+	e.TenantID = "_global"
 	updated := false
 	for i, existing := range m.entries {
 		if existing.ns == e.Namespace && existing.key == e.Key && existing.tenantID == e.TenantID {

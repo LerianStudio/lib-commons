@@ -184,7 +184,7 @@ func TestWithTenantDB_MongoGetConnectionFails_ReturnsError(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+makeTenantJWT("tenant-xyz"))
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	assert.NotEqual(t, http.StatusOK, resp.StatusCode, "should return an error status")
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 }
 
 // -------------------------------------------------------------------
@@ -247,7 +247,7 @@ func TestWithTenantDB_MultiModulePG_GetConnectionFails(t *testing.T) {
 	resp, err := app.Test(req)
 	require.NoError(t, err)
 	// Should fail since GetConnection fails for at least one module
-	assert.NotEqual(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 }
 
 // -------------------------------------------------------------------
