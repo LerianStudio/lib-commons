@@ -52,9 +52,9 @@ func TestStartWithGracefulShutdownWithError_NilLogger(t *testing.T) {
 	shutdownCh := make(chan struct{})
 
 	sm := server.NewServerManager(nil, nil, nil). // nil logger
-						WithHTTPServer(app, ":0").
-						WithShutdownChannel(shutdownCh).
-						WithShutdownTimeout(100 * time.Millisecond)
+							WithHTTPServer(app, ":0").
+							WithShutdownChannel(shutdownCh).
+							WithShutdownTimeout(100 * time.Millisecond)
 
 	go func() {
 		time.Sleep(20 * time.Millisecond)
@@ -83,10 +83,6 @@ func TestServersStarted_ReturnsChannel(t *testing.T) {
 	ch := sm.ServersStarted()
 	assert.NotNil(t, ch)
 
-	// Trigger shutdown
-	close(shutdownCh)
-
-	// Wait for server to stop (with timeout)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -98,8 +94,10 @@ func TestServersStarted_ReturnsChannel(t *testing.T) {
 	case <-ch:
 		// started was signaled
 	case <-ctx.Done():
-		// timeout is acceptable if server hasn't started yet
+		t.Fatal("ServersStarted did not signal startup before timeout")
 	}
+
+	close(shutdownCh)
 }
 
 // -------------------------------------------------------------------
@@ -183,6 +181,5 @@ func TestStartWithGracefulShutdownWithError_StartupError(t *testing.T) {
 
 	// Should return an error because the port is invalid
 	err := sm.StartWithGracefulShutdownWithError()
-	// May get an error about the port
-	_ = err
+	assert.Error(t, err)
 }

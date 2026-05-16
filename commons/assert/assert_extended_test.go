@@ -143,11 +143,13 @@ func TestInitAssertionMetrics_DoubleInit_NoOverwrite(t *testing.T) {
 	factory2 := newTestMetricsFactory(t)
 
 	InitAssertionMetrics(factory1)
+	first := GetAssertionMetrics()
+	require.NotNil(t, first)
+
 	InitAssertionMetrics(factory2)
 
-	// Second init must not clear the first: singleton must still be non-nil.
 	am := GetAssertionMetrics()
-	require.NotNil(t, am, "second init should not overwrite first init")
+	require.Same(t, first, am, "second init should not overwrite first init")
 	// Must still be functional.
 	am.RecordAssertionFailed(context.Background(), "comp", "op", "That")
 }

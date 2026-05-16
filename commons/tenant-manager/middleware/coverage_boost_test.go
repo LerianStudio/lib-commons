@@ -161,7 +161,7 @@ func TestWithTenantDB_PGGetConnectionFails_Returns503(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+makeTenantJWT("tenant-abc"))
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	assert.NotEqual(t, http.StatusOK, resp.StatusCode, "should return an error status")
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 }
 
 // -------------------------------------------------------------------
@@ -312,6 +312,5 @@ func TestMapDomainErrorToHTTP_TenantNotProvisioned(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	resp, err := app.Test(req)
 	require.NoError(t, err)
-	// ErrTenantNotProvisioned should map to a specific status
-	assert.True(t, resp.StatusCode >= 400)
+	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 }

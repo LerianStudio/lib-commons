@@ -168,23 +168,29 @@ func (m *memStore) SetTenantValue(_ context.Context, tenantID string, e systempl
 
 func (m *memStore) DeleteTenantValue(_ context.Context, tenantID, namespace, key, _ string) error {
 	m.mu.Lock()
+	deleted := false
 
 	for i, e := range m.entries {
 		if e.ns == namespace && e.key == key && e.tenantID == tenantID {
 			m.entries = append(m.entries[:i], m.entries[i+1:]...)
+			deleted = true
 
 			break
 		}
 	}
 
-	handlers := make([]func(systemplane.TestEvent), len(m.handlers))
-	copy(handlers, m.handlers)
+	var handlers []func(systemplane.TestEvent)
+	if deleted {
+		handlers = make([]func(systemplane.TestEvent), len(m.handlers))
+		copy(handlers, m.handlers)
+	}
 	m.mu.Unlock()
 
-	// Fire delete event so subscribers can react
-	evt := systemplane.TestEvent{Namespace: namespace, Key: key, TenantID: tenantID}
-	for _, h := range handlers {
-		h(evt)
+	if deleted {
+		evt := systemplane.TestEvent{Namespace: namespace, Key: key, TenantID: tenantID}
+		for _, h := range handlers {
+			h(evt)
+		}
 	}
 
 	return nil

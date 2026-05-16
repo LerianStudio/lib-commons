@@ -178,11 +178,8 @@ func TestValidateDSN_EmptyDSN_NoError(t *testing.T) {
 func TestValidateDSN_MalformedURL(t *testing.T) {
 	t.Parallel()
 
-	// Invalid URL with postgres:// prefix should fail
-	err := validateDSN("postgres://host\ninvalid")
-	// Go's url.Parse is lenient, so only truly malformed URLs fail here
-	// This verifies the function runs without panic
-	_ = err // may or may not error depending on Go version
+	err := validateDSN("postgres://%")
+	require.Error(t, err)
 }
 
 // TestDsnSSLMode covers the dsnSSLMode function.

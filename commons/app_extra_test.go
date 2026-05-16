@@ -27,11 +27,10 @@ func TestRun_NoError(t *testing.T) {
 	})
 }
 
-// TestRun_WithError covers the Run() method when RunWithError returns an error.
-func TestRun_WithError_NilLogger(t *testing.T) {
+// TestRun_WithError_WithLogger covers Run() when an app returns an error and logger is configured.
+func TestRun_WithError_WithLogger(t *testing.T) {
 	t.Parallel()
 
-	// Logger is nil - error should be silently swallowed
 	logger := libLog.NewNop()
 	l := NewLauncher()
 	l.Logger = logger

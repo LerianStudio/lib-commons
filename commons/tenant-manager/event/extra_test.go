@@ -411,7 +411,7 @@ func TestHandleEvent_ServiceReactivated(t *testing.T) {
 	// The reactivated event will try to fetch the tenant config.
 	// Without a real API, the cache won't be populated, but it shouldn't panic or error in ways
 	// that break the flow. We just verify the handler runs without panicking.
-	_ = d.HandleEvent(context.Background(), evt)
+	require.NoError(t, d.HandleEvent(context.Background(), evt))
 }
 
 // TestHandleEvent_TenantActivated exercises the activated path.

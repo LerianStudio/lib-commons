@@ -236,7 +236,7 @@ func TestLogger_InfoWithEnabledLogger(t *testing.T) {
 	l := New(recorder)
 	l.Info("test info message")
 	// Verify that the message was actually logged (log() was called)
-	assert.True(t, len(recorder.messages) > 0 || true, "log should have been called")
+	assert.Greater(t, len(recorder.messages), 0, "log should have been called")
 }
 
 // TestLogger_InfoCtxWithEnabledLogger covers the InfoCtx path with enabled logger.

@@ -68,8 +68,11 @@ func TestSyncReturnsNoErrorForHealthyLogger(t *testing.T) {
 
 	logger := newZapLogger(t)
 	// Sync may return "bad file descriptor" when stderr is not a real tty in CI;
-	// the important thing is that the call does not panic.
-	assert.NotPanics(t, func() { _ = logger.Sync(context.Background()) })
+	// accept only that known zap/stdout sink behavior.
+	err := logger.Sync(context.Background())
+	if err != nil {
+		assert.Contains(t, err.Error(), "bad file descriptor")
+	}
 }
 
 func TestFieldHelpers(t *testing.T) {
@@ -166,7 +169,7 @@ func TestWithReturnsChildLogger(t *testing.T) {
 	child := logger.With(logpkg.String("k", "v"))
 
 	assert.NotNil(t, child)
-	assert.NotEqual(t, logger, child)
+	assert.NotSame(t, logger, child)
 }
 
 func TestWithGroupNamespacesFields(t *testing.T) {
@@ -176,7 +179,7 @@ func TestWithGroupNamespacesFields(t *testing.T) {
 	child := logger.WithGroup("http")
 
 	assert.NotNil(t, child)
-	assert.NotEqual(t, logger, child)
+	assert.NotSame(t, logger, child)
 }
 
 func TestEnabledReportsCorrectly(t *testing.T) {
@@ -202,7 +205,7 @@ func TestSyncWithCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	assert.NotPanics(t, func() { _ = logger.Sync(ctx) })
+	assert.ErrorIs(t, logger.Sync(ctx), context.Canceled)
 }
 
 func TestLevelOnNilReceiverReturnsDefault(t *testing.T) {
@@ -221,5 +224,5 @@ func TestWithGroupEmptyNameReturnsReceiver(t *testing.T) {
 	logger := newZapLogger(t)
 	same := logger.WithGroup("")
 
-	assert.Equal(t, logger, same, "WithGroup(\"\") should return the same logger")
+	assert.Same(t, logger, same, "WithGroup(\"\") should return the same logger")
 }

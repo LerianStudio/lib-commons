@@ -48,29 +48,41 @@ type Field = libobslog.Field
 // Any creates a field with an arbitrary value.
 //
 // Deprecated: Use github.com/LerianStudio/lib-observability/log.Any instead.
-var Any = libobslog.Any
+func Any(key string, value any) Field {
+	return libobslog.Any(key, value)
+}
 
 // String creates a string field.
 //
 // Deprecated: Use github.com/LerianStudio/lib-observability/log.String instead.
-var String = libobslog.String
+func String(key, value string) Field {
+	return libobslog.String(key, value)
+}
 
 // Int creates an integer field.
 //
 // Deprecated: Use github.com/LerianStudio/lib-observability/log.Int instead.
-var Int = libobslog.Int
+func Int(key string, value int) Field {
+	return libobslog.Int(key, value)
+}
 
 // Bool creates a boolean field.
 //
 // Deprecated: Use github.com/LerianStudio/lib-observability/log.Bool instead.
-var Bool = libobslog.Bool
+func Bool(key string, value bool) Field {
+	return libobslog.Bool(key, value)
+}
 
 // Err creates the conventional `error` field.
 //
 // Deprecated: Use github.com/LerianStudio/lib-observability/log.Err instead.
-var Err = libobslog.Err
+func Err(err error) Field {
+	return libobslog.Err(err)
+}
 
 // ParseLevel takes a string level and returns a Level constant.
 //
 // Deprecated: Use github.com/LerianStudio/lib-observability/log.ParseLevel instead.
-var ParseLevel = libobslog.ParseLevel
+func ParseLevel(lvl string) (Level, error) {
+	return libobslog.ParseLevel(lvl)
+}

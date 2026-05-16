@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -98,7 +99,9 @@ func TestGetActiveTenantsByService_ServerError5xx(t *testing.T) {
 func TestGetActiveTenantsByService_CircuitBreakerOpens(t *testing.T) {
 	t.Parallel()
 
+	var callCount int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&callCount, 1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()
@@ -114,6 +117,7 @@ func TestGetActiveTenantsByService_CircuitBreakerOpens(t *testing.T) {
 	// Third call should fail fast (circuit open)
 	_, err := c.GetActiveTenantsByService(context.Background(), "ledger")
 	require.Error(t, err)
+	assert.Equal(t, int32(2), atomic.LoadInt32(&callCount), "third call should fail fast without hitting upstream")
 }
 
 // -------------------------------------------------------------------

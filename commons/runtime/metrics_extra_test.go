@@ -10,8 +10,6 @@ import (
 
 // TestResetPanicMetrics covers the ResetPanicMetrics function.
 func TestResetPanicMetrics_DoesNotPanic(t *testing.T) {
-	t.Parallel()
-
 	assert.NotPanics(t, func() {
 		ResetPanicMetrics()
 	})
@@ -19,8 +17,6 @@ func TestResetPanicMetrics_DoesNotPanic(t *testing.T) {
 
 // TestGetPanicMetrics_AfterReset covers GetPanicMetrics after reset.
 func TestGetPanicMetrics_AfterReset(t *testing.T) {
-	t.Parallel()
-
 	// Reset should be safe to call
 	ResetPanicMetrics()
 

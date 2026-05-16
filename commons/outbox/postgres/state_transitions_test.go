@@ -40,7 +40,7 @@ func TestMarkFailed_NotInitialized(t *testing.T) {
 	t.Parallel()
 
 	repo := uninitializedRepo()
-	err := repo.MarkFailed(context.Background(), uuid.New(), "error", 3)
+	err := repo.MarkFailed(context.Background(), uuid.Nil, "error", 3)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrRepositoryNotInitialized)
 }

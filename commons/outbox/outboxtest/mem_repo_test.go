@@ -198,7 +198,7 @@ func (m *memOutboxRepo) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 
 	sanitized := outbox.SanitizeErrorMessageForStorage(errMsg)
 
-	if e.Attempts >= maxAttempts {
+	if maxAttempts > 0 && e.Attempts >= maxAttempts {
 		e.Status = outbox.OutboxStatusInvalid
 		e.LastError = "max dispatch attempts exceeded"
 	} else {
@@ -209,13 +209,18 @@ func (m *memOutboxRepo) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 	return nil
 }
 
-func (m *memOutboxRepo) ListFailedForRetry(_ context.Context, limit int, _ time.Time, maxAttempts int) ([]*outbox.OutboxEvent, error) {
+func (m *memOutboxRepo) ListFailedForRetry(ctx context.Context, limit int, _ time.Time, maxAttempts int) ([]*outbox.OutboxEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	tenantID := extractTenantID(ctx)
 	var result []*outbox.OutboxEvent
 
 	for _, e := range m.events {
+		if tenantID != "" && m.tenantIDs[e.ID] != tenantID {
+			continue
+		}
+
 		// Skip events at or above maxAttempts (they should be invalid, not retried)
 		if e.Status == outbox.OutboxStatusFailed && (maxAttempts <= 0 || e.Attempts < maxAttempts) {
 			cp := *e
@@ -230,13 +235,18 @@ func (m *memOutboxRepo) ListFailedForRetry(_ context.Context, limit int, _ time.
 	return result, nil
 }
 
-func (m *memOutboxRepo) ResetForRetry(_ context.Context, limit int, _ time.Time, maxAttempts int) ([]*outbox.OutboxEvent, error) {
+func (m *memOutboxRepo) ResetForRetry(ctx context.Context, limit int, _ time.Time, maxAttempts int) ([]*outbox.OutboxEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	tenantID := extractTenantID(ctx)
 	var result []*outbox.OutboxEvent
 
 	for _, e := range m.events {
+		if tenantID != "" && m.tenantIDs[e.ID] != tenantID {
+			continue
+		}
+
 		// Skip events at or above maxAttempts
 		if e.Status == outbox.OutboxStatusFailed && (maxAttempts <= 0 || e.Attempts < maxAttempts) {
 			e.Status = outbox.OutboxStatusProcessing
@@ -253,15 +263,20 @@ func (m *memOutboxRepo) ResetForRetry(_ context.Context, limit int, _ time.Time,
 	return result, nil
 }
 
-func (m *memOutboxRepo) ResetStuckProcessing(_ context.Context, limit int, _ time.Time, maxAttempts int) ([]*outbox.OutboxEvent, error) {
+func (m *memOutboxRepo) ResetStuckProcessing(ctx context.Context, limit int, _ time.Time, maxAttempts int) ([]*outbox.OutboxEvent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	tenantID := extractTenantID(ctx)
 	var result []*outbox.OutboxEvent
 
 	for _, e := range m.events {
+		if tenantID != "" && m.tenantIDs[e.ID] != tenantID {
+			continue
+		}
+
 		if e.Status == outbox.OutboxStatusProcessing {
-			if e.Attempts+1 >= maxAttempts {
+			if maxAttempts > 0 && e.Attempts+1 >= maxAttempts {
 				// Exceeded max attempts - invalidate
 				e.Attempts++
 				e.Status = outbox.OutboxStatusInvalid
@@ -317,6 +332,5 @@ func memRepoFactory(t *testing.T) outbox.OutboxRepository {
 // TestRun_WithMemRepo exercises the outboxtest contract suite using an in-memory repository.
 // Some tests are skipped due to complex semantics that need real DB behavior.
 func TestRun_WithMemRepo(t *testing.T) {
-	Run(t, memRepoFactory,
-	)
+	Run(t, memRepoFactory)
 }

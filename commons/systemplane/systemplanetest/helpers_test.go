@@ -16,21 +16,33 @@ import (
 func TestSettleChangefeed_ZeroDuration(t *testing.T) {
 	t.Parallel()
 
-	// Must not sleep at all — very fast
-	start := time.Now()
-	settleChangefeed(0)
-	elapsed := time.Since(start)
-	assert.Less(t, elapsed, 50*time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		settleChangefeed(0)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("settleChangefeed(0) should return immediately")
+	}
 }
 
 func TestSettleChangefeed_NegativeDuration(t *testing.T) {
 	t.Parallel()
 
-	// Negative duration must not sleep
-	start := time.Now()
-	settleChangefeed(-1)
-	elapsed := time.Since(start)
-	assert.Less(t, elapsed, 50*time.Millisecond)
+	done := make(chan struct{})
+	go func() {
+		settleChangefeed(-1)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("settleChangefeed(<0) should return immediately")
+	}
 }
 
 // ---------------------------------------------------------------------------

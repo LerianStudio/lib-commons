@@ -6,6 +6,14 @@ import (
 	libobsruntime "github.com/LerianStudio/lib-observability/runtime"
 )
 
+func safeContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+
+	return ctx
+}
+
 // Logger defines the minimal logging interface required by runtime.
 //
 // Deprecated: Use github.com/LerianStudio/lib-observability/runtime.Logger instead.
@@ -42,7 +50,7 @@ func RecoverAndLogWithContext(ctx context.Context, logger Logger, component, nam
 		return
 	}
 
-	libobsruntime.HandlePanicValue(ctx, logger, r, component, name)
+	libobsruntime.HandlePanicValue(safeContext(ctx), logger, r, component, name)
 }
 
 // RecoverAndCrash recovers from a panic, logs it, and re-panics to crash the process.
@@ -76,7 +84,7 @@ func RecoverAndCrashWithContext(ctx context.Context, logger Logger, component, n
 		return
 	}
 
-	libobsruntime.HandlePanicValue(ctx, logger, r, component, name)
+	libobsruntime.HandlePanicValue(safeContext(ctx), logger, r, component, name)
 	panic(r) // intentional re-panic — this function's contract requires crashing the process
 }
 
@@ -112,7 +120,7 @@ func RecoverWithPolicyAndContext(ctx context.Context, logger Logger, component, 
 		return
 	}
 
-	libobsruntime.HandlePanicValue(ctx, logger, r, component, name)
+	libobsruntime.HandlePanicValue(safeContext(ctx), logger, r, component, name)
 
 	if policy == CrashProcess {
 		panic(r) // intentional re-panic — CrashProcess policy requires crashing the process
@@ -123,5 +131,5 @@ func RecoverWithPolicyAndContext(ctx context.Context, logger Logger, component, 
 //
 // Deprecated: Use github.com/LerianStudio/lib-observability/runtime.HandlePanicValue instead.
 func HandlePanicValue(ctx context.Context, logger Logger, panicValue any, component, name string) {
-	libobsruntime.HandlePanicValue(ctx, logger, panicValue, component, name)
+	libobsruntime.HandlePanicValue(safeContext(ctx), logger, panicValue, component, name)
 }

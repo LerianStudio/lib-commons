@@ -114,11 +114,10 @@ func TestResolver_NeverConnected_ReturnsError(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	// Not connected yet — resolver should fail fast or attempt connect
-	// In backoff-based lazy connect, it will attempt but fail since no DB exists
+	// Not connected yet — resolver should fail fast or attempt connect.
+	// In backoff-based lazy connect, it will attempt but fail since no DB exists.
 	_, err = c.Resolver(context.Background())
-	// May succeed or fail — just verify no panic
-	_ = err
+	require.Error(t, err)
 }
 
 // -------------------------------------------------------------------
