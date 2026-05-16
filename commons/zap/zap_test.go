@@ -4,7 +4,11 @@ package zap
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,13 +58,42 @@ func TestStructuredLoggingMethods(t *testing.T) {
 }
 
 func TestWithZapFieldsAddsFieldsWithoutMutatingParent(t *testing.T) {
-	t.Parallel()
+	t.Setenv("LOG_ENCODING", "json")
+
+	originalStderr := os.Stderr
+	readEnd, writeEnd, err := os.Pipe()
+	require.NoError(t, err)
+
+	os.Stderr = writeEnd
+	t.Cleanup(func() {
+		os.Stderr = originalStderr
+		_ = readEnd.Close()
+		_ = writeEnd.Close()
+	})
 
 	logger := newZapLogger(t)
 	child := logger.WithZapFields(String("tenant_id", "t-1"))
 
 	assert.NotNil(t, child)
 	assert.NotSame(t, logger, child)
+
+	logger.Info("parent")
+	child.Info("child")
+
+	assertSyncAllowed(t, logger.Sync(context.Background()))
+	assertSyncAllowed(t, child.Sync(context.Background()))
+	require.NoError(t, writeEnd.Close())
+	os.Stderr = originalStderr
+
+	output, err := io.ReadAll(readEnd)
+	require.NoError(t, err)
+
+	entries := parseZapOutput(t, string(output))
+	require.Len(t, entries, 2)
+
+	_, parentHasTenant := entries[0]["tenant_id"]
+	assert.False(t, parentHasTenant)
+	assert.Equal(t, "t-1", entries[1]["tenant_id"])
 }
 
 func TestSyncReturnsNoErrorForHealthyLogger(t *testing.T) {
@@ -69,10 +102,32 @@ func TestSyncReturnsNoErrorForHealthyLogger(t *testing.T) {
 	logger := newZapLogger(t)
 	// Sync may return "bad file descriptor" when stderr is not a real tty in CI;
 	// accept only that known zap/stdout sink behavior.
-	err := logger.Sync(context.Background())
+	assertSyncAllowed(t, logger.Sync(context.Background()))
+}
+
+func assertSyncAllowed(t *testing.T, err error) {
+	t.Helper()
+
 	if err != nil {
 		assert.Contains(t, err.Error(), "bad file descriptor")
 	}
+}
+
+func parseZapOutput(t *testing.T, output string) []map[string]any {
+	t.Helper()
+
+	var entries []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		if line == "" {
+			continue
+		}
+
+		var entry map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &entry))
+		entries = append(entries, entry)
+	}
+
+	return entries
 }
 
 func TestFieldHelpers(t *testing.T) {
