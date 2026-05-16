@@ -151,6 +151,22 @@ linters:
           - staticcheck
         text: 'ST1000: at least one file in a package should have a package comment'
       - linters:
+          - staticcheck
+        path: ^commons/
+        text: 'SA1019: .*lib-observability'
+      - linters:
+          - staticcheck
+        path: ^commons/certificate/certificate\.go$
+        text: 'SA1019: k\.(X|Y) has been deprecated since Go 1\.26'
+      - linters:
+          - modernize
+        path: ^commons/os\.go$
+        text: 'stditerators: NumField/Field loop can simplified using Type\.Fields iteration'
+      - linters:
+          - modernize
+        path: ^commons/pointers/pointers\.go$
+        text: 'newexpr: .* can be an inlinable wrapper around new\(expr\)'
+      - linters:
           - govet
         text: '^shadow: declaration of "(err|ok)" shadows declaration'
       - path: (.+)\.go$
