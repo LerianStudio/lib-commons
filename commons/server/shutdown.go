@@ -654,6 +654,8 @@ func (sm *ServerManager) shutdownStdlibHTTPServer() {
 	// connections are forcefully released instead of leaking past the
 	// shutdown budget.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), sm.shutdownTimeout)
+	defer cancel()
+
 	if err := sm.stdlibHTTPServer.Shutdown(shutdownCtx); err != nil {
 		sm.logger.Log(context.Background(), log.LevelError, "error during HTTP server shutdown", log.Err(err))
 
@@ -661,6 +663,4 @@ func (sm *ServerManager) shutdownStdlibHTTPServer() {
 			sm.logger.Log(context.Background(), log.LevelError, "error during HTTP server hard close", log.Err(closeErr))
 		}
 	}
-
-	cancel()
 }
