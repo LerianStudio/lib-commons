@@ -16,14 +16,14 @@ import (
 
 func (doc document) toBSON(tenantField string) bson.M {
 	raw := bson.M{
-		"id":           doc.ID,
-		"event_type":   doc.EventType,
-		"aggregate_id": doc.AggregateID,
-		"payload":      doc.Payload,
-		"status":       doc.Status,
-		"attempts":     doc.Attempts,
-		"created_at":   doc.CreatedAt,
-		"updated_at":   doc.UpdatedAt,
+		"id":                doc.ID,
+		"event_type":        doc.EventType,
+		"aggregate_id":      doc.AggregateID,
+		"payload":           doc.Payload,
+		mongoFieldStatus:    doc.Status,
+		mongoFieldAttempts:  doc.Attempts,
+		mongoFieldCreatedAt: doc.CreatedAt,
+		mongoFieldUpdatedAt: doc.UpdatedAt,
 	}
 
 	if doc.PublishedAt != nil {
@@ -31,7 +31,7 @@ func (doc document) toBSON(tenantField string) bson.M {
 	}
 
 	if doc.LastError != "" {
-		raw["last_error"] = doc.LastError
+		raw[mongoFieldLastError] = doc.LastError
 	}
 
 	if tenantField != "" {
@@ -186,27 +186,27 @@ func documentFromBSON(raw bson.M, tenantField string) (document, error) {
 		return document{}, err
 	}
 
-	status, err := stringField(raw, "status")
+	status, err := stringField(raw, mongoFieldStatus)
 	if err != nil {
 		return document{}, err
 	}
 
-	attempts, err := intField(raw, "attempts")
+	attempts, err := intField(raw, mongoFieldAttempts)
 	if err != nil {
 		return document{}, err
 	}
 
-	createdAt, err := timeField(raw, "created_at")
+	createdAt, err := timeField(raw, mongoFieldCreatedAt)
 	if err != nil {
 		return document{}, err
 	}
 
-	updatedAt, err := timeField(raw, "updated_at")
+	updatedAt, err := timeField(raw, mongoFieldUpdatedAt)
 	if err != nil {
 		return document{}, err
 	}
 
-	lastError, err := optionalStringField(raw, "last_error")
+	lastError, err := optionalStringField(raw, mongoFieldLastError)
 	if err != nil {
 		return document{}, err
 	}
@@ -246,7 +246,7 @@ func validateDecodedDocument(doc document) (document, error) {
 	}
 
 	if doc.Attempts < 0 {
-		return document{}, fmt.Errorf("field %q must be non-negative", "attempts")
+		return document{}, fmt.Errorf("field %q must be non-negative", mongoFieldAttempts)
 	}
 
 	doc.LastError = strings.TrimSpace(doc.LastError)
@@ -261,22 +261,22 @@ func claimDocumentFromBSON(raw bson.M, tenantField string) (document, error) {
 		return document{}, err
 	}
 
-	status, err := stringField(raw, "status")
+	status, err := stringField(raw, mongoFieldStatus)
 	if err != nil {
 		return document{}, err
 	}
 
-	attempts, err := intField(raw, "attempts")
+	attempts, err := intField(raw, mongoFieldAttempts)
 	if err != nil {
 		return document{}, err
 	}
 
-	updatedAt, err := timeField(raw, "updated_at")
+	updatedAt, err := timeField(raw, mongoFieldUpdatedAt)
 	if err != nil {
 		return document{}, err
 	}
 
-	lastError, err := optionalStringField(raw, "last_error")
+	lastError, err := optionalStringField(raw, mongoFieldLastError)
 	if err != nil {
 		return document{}, err
 	}
@@ -311,11 +311,11 @@ func validateClaimDocument(doc document) (document, error) {
 	}
 
 	if doc.Attempts < 0 {
-		return document{}, fmt.Errorf("field %q must be non-negative", "attempts")
+		return document{}, fmt.Errorf("field %q must be non-negative", mongoFieldAttempts)
 	}
 
 	if doc.UpdatedAt.IsZero() {
-		return document{}, fmt.Errorf("missing field %q", "updated_at")
+		return document{}, fmt.Errorf("missing field %q", mongoFieldUpdatedAt)
 	}
 
 	doc.LastError = strings.TrimSpace(doc.LastError)

@@ -1,8 +1,8 @@
 package runtime
 
 import (
-	libobsruntime "github.com/LerianStudio/lib-observability/runtime"
 	libobsmetrics "github.com/LerianStudio/lib-observability/metrics"
+	libobsruntime "github.com/LerianStudio/lib-observability/runtime"
 )
 
 // PanicMetrics provides panic-related metrics using OpenTelemetry.
@@ -30,4 +30,3 @@ func GetPanicMetrics() *PanicMetrics {
 func ResetPanicMetrics() {
 	libobsruntime.ResetPanicMetrics()
 }
-

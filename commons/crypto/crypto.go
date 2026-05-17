@@ -38,7 +38,7 @@ func isNilInterface(i any) bool {
 
 	v := reflect.ValueOf(i)
 
-	return v.Kind() == reflect.Ptr && v.IsNil()
+	return v.Kind() == reflect.Pointer && v.IsNil()
 }
 
 // Crypto groups hashing and symmetric encryption helpers.

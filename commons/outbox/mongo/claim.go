@@ -31,13 +31,13 @@ func (repo *Repository) claimPending(ctx context.Context, limit int, eventType s
 	ctx, span := tracer.Start(ctx, spanName)
 	defer span.End()
 
-	filter := bson.M{"status": outbox.OutboxStatusPending}
+	filter := bson.M{mongoFieldStatus: outbox.OutboxStatusPending}
 	if eventType != "" {
 		filter["event_type"] = eventType
 	}
 
-	claimed, err := repo.claimMatching(ctx, filter, bson.D{{Key: "created_at", Value: 1}, {Key: "id", Value: 1}}, limit, outbox.OutboxStatusPending, outbox.OutboxStatusProcessing, func(_ document) bson.M {
-		return bson.M{"status": outbox.OutboxStatusProcessing, "updated_at": time.Now().UTC()}
+	claimed, err := repo.claimMatching(ctx, filter, bson.D{{Key: mongoFieldCreatedAt, Value: 1}, {Key: "id", Value: 1}}, limit, outbox.OutboxStatusPending, outbox.OutboxStatusProcessing, func(_ document) bson.M {
+		return bson.M{mongoFieldStatus: outbox.OutboxStatusProcessing, mongoFieldUpdatedAt: time.Now().UTC()}
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list outbox events", err)
@@ -114,8 +114,8 @@ func (repo *Repository) rollbackMissingClaims(ctx context.Context, candidates []
 		}
 
 		models = append(models, mongodriver.NewUpdateOneModel().
-			SetFilter(mergeFilters(bson.M{"id": candidate.ID, "status": returnStatus, "claim_token": claimToken}, repo.tenantMatchFilter(candidate.TenantID))).
-			SetUpdate(bson.M{"$set": bson.M{"status": fromStatus, "updated_at": time.Now().UTC()}, "$unset": bson.M{"claim_token": ""}}))
+			SetFilter(mergeFilters(bson.M{"id": candidate.ID, mongoFieldStatus: returnStatus, mongoFieldClaimToken: claimToken}, repo.tenantMatchFilter(candidate.TenantID))).
+			SetUpdate(bson.M{mongoUpdateSet: bson.M{mongoFieldStatus: fromStatus, mongoFieldUpdatedAt: time.Now().UTC()}, mongoUpdateUnset: bson.M{mongoFieldClaimToken: ""}}))
 	}
 
 	if len(models) == 0 {
@@ -158,19 +158,19 @@ func (repo *Repository) claimDocuments(
 	claimedIDs := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		set := setForCandidate(candidate)
-		if set["status"] == returnStatus {
-			set["claim_token"] = claimToken
+		if set[mongoFieldStatus] == returnStatus {
+			set[mongoFieldClaimToken] = claimToken
 
 			claimedIDs = append(claimedIDs, candidate.ID)
 		}
 
 		models = append(models, mongodriver.NewUpdateOneModel().
 			SetFilter(mergeFilters(bson.M{"id": candidate.ID}, repo.tenantMatchFilter(candidate.TenantID), bson.M{
-				"status":     fromStatus,
-				"attempts":   candidate.Attempts,
-				"updated_at": candidate.UpdatedAt,
+				mongoFieldStatus:    fromStatus,
+				mongoFieldAttempts:  candidate.Attempts,
+				mongoFieldUpdatedAt: candidate.UpdatedAt,
 			})).
-			SetUpdate(bson.M{"$set": set}))
+			SetUpdate(bson.M{mongoUpdateSet: set}))
 	}
 
 	result, err := collection.BulkWrite(ctx, models, mongooptions.BulkWrite().SetOrdered(false))
@@ -187,10 +187,10 @@ func (repo *Repository) claimDocuments(
 	}
 
 	claimedFilter := mergeFilters(
-		bson.M{"claim_token": claimToken, "id": bson.M{"$in": claimedIDs}},
+		bson.M{mongoFieldClaimToken: claimToken, "id": bson.M{"$in": claimedIDs}},
 		repo.tenantMatchFilter(candidates[0].TenantID),
 	)
-	claimedFilter["status"] = returnStatus
+	claimedFilter[mongoFieldStatus] = returnStatus
 
 	cursor, err := collection.Find(ctx, claimedFilter, mongooptions.Find().SetSort(sortSpec))
 	if err != nil {
@@ -216,11 +216,11 @@ func (repo *Repository) findClaimCandidates(ctx context.Context, filter bson.M, 
 	filter = mergeFilters(filter, repo.tenantMatchFilter(tenantID))
 
 	projection := bson.M{
-		"id":         1,
-		"status":     1,
-		"attempts":   1,
-		"updated_at": 1,
-		"last_error": 1,
+		"id":                1,
+		mongoFieldStatus:    1,
+		mongoFieldAttempts:  1,
+		mongoFieldUpdatedAt: 1,
+		mongoFieldLastError: 1,
 	}
 	if repo.tenantField != "" {
 		projection[repo.tenantField] = 1

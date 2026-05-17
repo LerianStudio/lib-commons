@@ -71,6 +71,13 @@ jobs:
       # adds 10-50x latency overhead, making sub-microsecond thresholds
       # meaningless. Run the gate explicitly without -race so a regression in
       # GetForTenant fails CI rather than going silently unnoticed in the
-      # race-enabled lane.
+      # race-enabled lane. Branches that remove systemplane keep the required
+      # check context green by skipping this legacy package-specific gate.
       - name: Run AC15 perf gate (no -race)
-        run: go test -tags=unit -run=^TestPerf_ ./commons/systemplane/...
+        run: |
+          if [ ! -d "commons/systemplane" ]; then
+            printf '%s\n' "commons/systemplane is not present; skipping AC15 perf gate."
+            exit 0
+          fi
+
+          go test -tags=unit -run=^TestPerf_ ./commons/systemplane/...

@@ -12,11 +12,11 @@ import (
 
 	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
 	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
-	libLog "github.com/LerianStudio/lib-observability/log"
 	libMongo "github.com/LerianStudio/lib-commons/v5/commons/mongo"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	libLog "github.com/LerianStudio/lib-observability/log"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
 	mongodriver "go.mongodb.org/mongo-driver/mongo"
@@ -31,6 +31,15 @@ const (
 	maxListScanMultiplier = 8
 	defaultIndexTimeout   = 10 * time.Second
 	cursorCloseTimeout    = 2 * time.Second
+	mongoFieldStatus      = "status"
+	mongoFieldAttempts    = "attempts"
+	mongoFieldCreatedAt   = "created_at"
+	mongoFieldUpdatedAt   = "updated_at"
+	mongoFieldClaimToken  = "claim_token"
+	mongoFieldLastError   = "last_error"
+	mongoUpdateSet        = "$set"
+	mongoUpdateUnset      = "$unset"
+	mongoOperatorLTE      = "$lte"
 )
 
 var (
@@ -337,7 +346,7 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 	}
 
 	values, err := collection.Distinct(ctx, repo.tenantField, bson.M{
-		"status":         bson.M{"$in": bson.A{outbox.OutboxStatusPending, outbox.OutboxStatusFailed, outbox.OutboxStatusProcessing}},
+		mongoFieldStatus: bson.M{"$in": bson.A{outbox.OutboxStatusPending, outbox.OutboxStatusFailed, outbox.OutboxStatusProcessing}},
 		repo.tenantField: bson.M{"$ne": defaultScopeTenantID},
 	})
 	if err != nil {
@@ -445,12 +454,12 @@ func (repo *Repository) MarkPublished(ctx context.Context, id uuid.UUID, publish
 	}
 
 	result, err := collection.UpdateOne(ctx,
-		mergeFilters(repo.idTenantFilter(id, tenantID), bson.M{"status": outbox.OutboxStatusProcessing}),
-		bson.M{"$set": bson.M{
-			"status":       outbox.OutboxStatusPublished,
-			"published_at": publishedAt,
-			"updated_at":   time.Now().UTC(),
-		}, "$unset": bson.M{"claim_token": ""}},
+		mergeFilters(repo.idTenantFilter(id, tenantID), bson.M{mongoFieldStatus: outbox.OutboxStatusProcessing}),
+		bson.M{mongoUpdateSet: bson.M{
+			mongoFieldStatus:    outbox.OutboxStatusPublished,
+			"published_at":      publishedAt,
+			mongoFieldUpdatedAt: time.Now().UTC(),
+		}, mongoUpdateUnset: bson.M{mongoFieldClaimToken: ""}},
 	)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to mark outbox published", err)
@@ -525,15 +534,15 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 
 	result, err := collection.UpdateOne(ctx,
 		mergeFilters(repo.idTenantFilter(id, updatedDoc.TenantID), bson.M{
-			"status":   outbox.OutboxStatusProcessing,
-			"attempts": updatedDoc.Attempts,
+			mongoFieldStatus:   outbox.OutboxStatusProcessing,
+			mongoFieldAttempts: updatedDoc.Attempts,
 		}),
-		bson.M{"$set": bson.M{
-			"status":     nextStatus,
-			"attempts":   nextAttempts,
-			"last_error": nextLastError,
-			"updated_at": time.Now().UTC(),
-		}, "$unset": bson.M{"claim_token": ""}},
+		bson.M{mongoUpdateSet: bson.M{
+			mongoFieldStatus:    nextStatus,
+			mongoFieldAttempts:  nextAttempts,
+			mongoFieldLastError: nextLastError,
+			mongoFieldUpdatedAt: time.Now().UTC(),
+		}, mongoUpdateUnset: bson.M{mongoFieldClaimToken: ""}},
 	)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to mark outbox failed", err)
@@ -571,10 +580,10 @@ func (repo *Repository) ListFailedForRetry(ctx context.Context, limit int, faile
 	defer span.End()
 
 	docs, err := repo.findCandidates(ctx, bson.M{
-		"status":     outbox.OutboxStatusFailed,
-		"attempts":   bson.M{"$lt": maxAttempts},
-		"updated_at": bson.M{"$lte": failedBefore},
-	}, bson.D{{Key: "updated_at", Value: 1}, {Key: "id", Value: 1}}, limit)
+		mongoFieldStatus:    outbox.OutboxStatusFailed,
+		mongoFieldAttempts:  bson.M{"$lt": maxAttempts},
+		mongoFieldUpdatedAt: bson.M{mongoOperatorLTE: failedBefore},
+	}, bson.D{{Key: mongoFieldUpdatedAt, Value: 1}, {Key: "id", Value: 1}}, limit)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list failed events for retry", err)
 
@@ -607,11 +616,11 @@ func (repo *Repository) ResetForRetry(ctx context.Context, limit int, failedBefo
 	defer span.End()
 
 	claimed, err := repo.claimMatching(ctx, bson.M{
-		"status":     outbox.OutboxStatusFailed,
-		"attempts":   bson.M{"$lt": maxAttempts},
-		"updated_at": bson.M{"$lte": failedBefore},
-	}, bson.D{{Key: "updated_at", Value: 1}, {Key: "id", Value: 1}}, limit, outbox.OutboxStatusFailed, outbox.OutboxStatusProcessing, func(_ document) bson.M {
-		return bson.M{"status": outbox.OutboxStatusProcessing, "updated_at": time.Now().UTC()}
+		mongoFieldStatus:    outbox.OutboxStatusFailed,
+		mongoFieldAttempts:  bson.M{"$lt": maxAttempts},
+		mongoFieldUpdatedAt: bson.M{mongoOperatorLTE: failedBefore},
+	}, bson.D{{Key: mongoFieldUpdatedAt, Value: 1}, {Key: "id", Value: 1}}, limit, outbox.OutboxStatusFailed, outbox.OutboxStatusProcessing, func(_ document) bson.M {
+		return bson.M{mongoFieldStatus: outbox.OutboxStatusProcessing, mongoFieldUpdatedAt: time.Now().UTC()}
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to reset events for retry", err)
@@ -645,9 +654,9 @@ func (repo *Repository) ResetStuckProcessing(ctx context.Context, limit int, pro
 	defer span.End()
 
 	claimed, err := repo.claimMatching(ctx, bson.M{
-		"status":     outbox.OutboxStatusProcessing,
-		"updated_at": bson.M{"$lte": processingBefore},
-	}, bson.D{{Key: "updated_at", Value: 1}, {Key: "id", Value: 1}}, limit, outbox.OutboxStatusProcessing, outbox.OutboxStatusProcessing, func(candidate document) bson.M {
+		mongoFieldStatus:    outbox.OutboxStatusProcessing,
+		mongoFieldUpdatedAt: bson.M{mongoOperatorLTE: processingBefore},
+	}, bson.D{{Key: mongoFieldUpdatedAt, Value: 1}, {Key: "id", Value: 1}}, limit, outbox.OutboxStatusProcessing, outbox.OutboxStatusProcessing, func(candidate document) bson.M {
 		nextAttempts := candidate.Attempts + 1
 		nextStatus := outbox.OutboxStatusProcessing
 		nextLastError := candidate.LastError
@@ -657,7 +666,7 @@ func (repo *Repository) ResetStuckProcessing(ctx context.Context, limit int, pro
 			nextLastError = "max dispatch attempts exceeded"
 		}
 
-		return bson.M{"status": nextStatus, "attempts": nextAttempts, "last_error": nextLastError, "updated_at": time.Now().UTC()}
+		return bson.M{mongoFieldStatus: nextStatus, mongoFieldAttempts: nextAttempts, mongoFieldLastError: nextLastError, mongoFieldUpdatedAt: time.Now().UTC()}
 	})
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to reset stuck events", err)
@@ -704,8 +713,8 @@ func (repo *Repository) MarkInvalid(ctx context.Context, id uuid.UUID, errMsg st
 	}
 
 	result, err := collection.UpdateOne(ctx,
-		mergeFilters(repo.idTenantFilter(id, tenantID), bson.M{"status": outbox.OutboxStatusProcessing}),
-		bson.M{"$set": bson.M{"status": outbox.OutboxStatusInvalid, "last_error": errMsg, "updated_at": time.Now().UTC()}, "$unset": bson.M{"claim_token": ""}},
+		mergeFilters(repo.idTenantFilter(id, tenantID), bson.M{mongoFieldStatus: outbox.OutboxStatusProcessing}),
+		bson.M{mongoUpdateSet: bson.M{mongoFieldStatus: outbox.OutboxStatusInvalid, mongoFieldLastError: errMsg, mongoFieldUpdatedAt: time.Now().UTC()}, mongoUpdateUnset: bson.M{mongoFieldClaimToken: ""}},
 	)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to mark outbox invalid", err)
@@ -739,7 +748,7 @@ func (repo *Repository) getByIDAndStatus(ctx context.Context, id uuid.UUID, stat
 		return document{}, err
 	}
 
-	filter := mergeFilters(repo.idTenantFilter(id, tenantID), bson.M{"status": status})
+	filter := mergeFilters(repo.idTenantFilter(id, tenantID), bson.M{mongoFieldStatus: status})
 
 	return repo.decodeSingle(ctx, collection, filter)
 }

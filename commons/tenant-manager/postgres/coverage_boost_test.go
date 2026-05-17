@@ -27,12 +27,14 @@ type healthyDB struct {
 
 var _ dbresolver.DB = (*healthyDB)(nil)
 
-func (h *healthyDB) Begin() (dbresolver.Tx, error)                               { return nil, nil }
-func (h *healthyDB) BeginTx(_ context.Context, _ *sql.TxOptions) (dbresolver.Tx, error) { return nil, nil }
-func (h *healthyDB) Close() error                                                 { return h.closeErr }
-func (h *healthyDB) Conn(_ context.Context) (dbresolver.Conn, error)             { return nil, nil }
-func (h *healthyDB) Driver() driver.Driver                                        { return nil }
-func (h *healthyDB) Exec(_ string, _ ...interface{}) (sql.Result, error)          { return nil, nil }
+func (h *healthyDB) Begin() (dbresolver.Tx, error) { return nil, nil }
+func (h *healthyDB) BeginTx(_ context.Context, _ *sql.TxOptions) (dbresolver.Tx, error) {
+	return nil, nil
+}
+func (h *healthyDB) Close() error                                        { return h.closeErr }
+func (h *healthyDB) Conn(_ context.Context) (dbresolver.Conn, error)     { return nil, nil }
+func (h *healthyDB) Driver() driver.Driver                               { return nil }
+func (h *healthyDB) Exec(_ string, _ ...interface{}) (sql.Result, error) { return nil, nil }
 func (h *healthyDB) ExecContext(_ context.Context, _ string, _ ...interface{}) (sql.Result, error) {
 	return nil, nil
 }
