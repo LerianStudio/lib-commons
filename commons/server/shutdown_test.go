@@ -444,7 +444,7 @@ func TestExecuteShutdown_WithLicenseClient(t *testing.T) {
 	}
 
 	msgs := logger.getMessages()
-	assert.Contains(t, msgs, "Shutting down license background refresh...")
+	assert.Contains(t, msgs, "Skipping license termination handler during graceful shutdown")
 }
 
 func TestExecuteShutdown_LoggerSyncError(t *testing.T) {
@@ -526,7 +526,7 @@ func TestExecuteShutdown_WithAllComponents(t *testing.T) {
 
 	msgs := logger.getMessages()
 	assert.Contains(t, msgs, "Shutting down telemetry...")
-	assert.Contains(t, msgs, "Shutting down license background refresh...")
+	assert.Contains(t, msgs, "Skipping license termination handler during graceful shutdown")
 	assert.Contains(t, msgs, "Graceful shutdown completed")
 }
 
