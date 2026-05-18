@@ -231,3 +231,75 @@ func TestShutdownHook_ErrorDoesNotStopSubsequentHooks(t *testing.T) {
 	assert.Contains(t, msgs, "shutdown hook failed",
 		"failing hook error should be logged")
 }
+
+func TestShutdownHook_PanicDoesNotStopSubsequentHooks(t *testing.T) {
+	t.Parallel()
+
+	logger := &recordingLogger{}
+	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	shutdownChan := make(chan struct{})
+
+	var mu sync.Mutex
+
+	var executed []int
+
+	sm := server.NewServerManager(nil, nil, logger).
+		WithHTTPServer(app, ":0").
+		WithShutdownChannel(shutdownChan).
+		WithShutdownHook(func(_ context.Context) error {
+			mu.Lock()
+			executed = append(executed, 1)
+			mu.Unlock()
+
+			panic("hook1 intentional panic")
+		}).
+		WithShutdownHook(func(_ context.Context) error {
+			mu.Lock()
+			defer mu.Unlock()
+
+			executed = append(executed, 2)
+
+			return nil
+		}).
+		WithShutdownHook(func(_ context.Context) error {
+			mu.Lock()
+			defer mu.Unlock()
+
+			executed = append(executed, 3)
+
+			return nil
+		})
+
+	done := make(chan error, 1)
+
+	go func() {
+		done <- sm.StartWithGracefulShutdownWithError()
+	}()
+
+	select {
+	case <-sm.ServersStarted():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timed out waiting for servers to start")
+	}
+
+	close(shutdownChan)
+
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Timed out waiting for shutdown")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.Equal(t, []int{1, 2, 3}, executed,
+		"panic in one hook must not stop subsequent hooks")
+
+	msgs := logger.getMessages()
+	assert.Contains(t, msgs, "shutdown hook panicked",
+		"panicking hook should be logged")
+	assert.Contains(t, msgs, "Graceful shutdown completed",
+		"shutdown should continue after a panicking hook")
+}

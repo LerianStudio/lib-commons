@@ -24,10 +24,11 @@ import (
 // ErrNoServersConfigured indicates no servers were configured for the manager.
 var ErrNoServersConfigured = errors.New("no servers configured: use WithHTTPServer(), WithStdlibHTTPServer(), WithStdlibHTTPListener(), or WithGRPCServer()")
 
-// ErrConflictingHTTPServers indicates that both WithHTTPServer(*fiber.App) and
-// WithStdlibHTTPServer(*http.Server) were configured on the same ServerManager.
-// These two configurators are mutually exclusive: pick exactly one HTTP path.
-var ErrConflictingHTTPServers = errors.New("conflicting HTTP servers configured: WithHTTPServer(*fiber.App) and WithStdlibHTTPServer(*http.Server) are mutually exclusive")
+// ErrConflictingHTTPServers indicates that Fiber HTTP and stdlib HTTP were both
+// configured on the same ServerManager. WithHTTPServer(*fiber.App) is mutually
+// exclusive with WithStdlibHTTPServer(*http.Server) and
+// WithStdlibHTTPListener(*http.Server, net.Listener).
+var ErrConflictingHTTPServers = errors.New("conflicting HTTP servers configured: WithHTTPServer(*fiber.App) is mutually exclusive with WithStdlibHTTPServer(*http.Server) and WithStdlibHTTPListener(*http.Server, net.Listener)")
 
 const defaultReadHeaderTimeout = 5 * time.Second
 
@@ -590,16 +591,26 @@ func (sm *ServerManager) executeShutdown() {
 		// gets its own context with an independent timeout to prevent one slow hook
 		// from consuming the entire budget.
 		for i, hook := range sm.shutdownHooks {
-			hookCtx, hookCancel := context.WithTimeout(context.Background(), sm.shutdownTimeout)
+			func(i int, hook func(context.Context) error) {
+				hookCtx, hookCancel := context.WithTimeout(context.Background(), sm.shutdownTimeout)
+				defer hookCancel()
+				defer func() {
+					if r := recover(); r != nil {
+						sm.logger.Log(context.Background(), log.LevelError, "shutdown hook panicked",
+							log.Int("hook_index", i),
+							log.Any("panic", r),
+						)
+						runtime.HandlePanicValue(context.Background(), sm.logger, r, "server", "shutdown_hook")
+					}
+				}()
 
-			if err := hook(hookCtx); err != nil {
-				sm.logger.Log(context.Background(), log.LevelError, "shutdown hook failed",
-					log.Int("hook_index", i),
-					log.Err(err),
-				)
-			}
-
-			hookCancel()
+				if err := hook(hookCtx); err != nil {
+					sm.logger.Log(context.Background(), log.LevelError, "shutdown hook failed",
+						log.Int("hook_index", i),
+						log.Err(err),
+					)
+				}
+			}(i, hook)
 		}
 
 		// Shutdown telemetry AFTER servers have drained, so final spans/metrics are exported.
