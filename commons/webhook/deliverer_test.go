@@ -22,6 +22,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,10 @@ func (m *mockLister) ListActiveEndpoints(_ context.Context) ([]Endpoint, error) 
 type mockMetrics struct {
 	mu    sync.Mutex
 	calls []metricCall
+}
+
+type typedNilTracer struct {
+	trace.Tracer
 }
 
 type metricCall struct {
@@ -126,6 +131,26 @@ func TestDefaultHTTPClient_BlocksRedirects(t *testing.T) {
 	err := client.CheckRedirect(nil, nil)
 	assert.Equal(t, http.ErrUseLastResponse, err,
 		"CheckRedirect should return http.ErrUseLastResponse to block redirect-following")
+}
+
+func TestWithTracer_TypedNilIgnored(t *testing.T) {
+	t.Parallel()
+
+	var typedNil *typedNilTracer
+	var tracer trace.Tracer = typedNil
+
+	d := NewDeliverer(&mockLister{}, WithTracer(tracer))
+	require.NotNil(t, d)
+	assert.Nil(t, d.tracer, "typed-nil tracer must be ignored at option time")
+
+	ctx, span := d.startSpan(context.Background(), "webhook.test.typed_nil")
+	assert.NotNil(t, ctx)
+	assert.NotNil(t, span)
+
+	d.tracer = tracer
+	ctx, span = d.startSpan(context.Background(), "webhook.test.defensive_typed_nil")
+	assert.NotNil(t, ctx)
+	assert.NotNil(t, span)
 }
 
 func TestDeliver_RedirectNotFollowed(t *testing.T) {

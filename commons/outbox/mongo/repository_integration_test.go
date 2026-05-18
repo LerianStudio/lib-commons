@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	libLog "github.com/LerianStudio/lib-observability/log"
 	libMongo "github.com/LerianStudio/lib-commons/v5/commons/mongo"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox/outboxtest"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	libLog "github.com/LerianStudio/lib-observability/log"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"

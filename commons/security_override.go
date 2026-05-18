@@ -32,6 +32,7 @@ const (
 	EnvAllowRateLimitDisabled = "ALLOW_RATELIMIT_DISABLED"
 	EnvAllowRateLimitFailOpen = "ALLOW_RATELIMIT_FAIL_OPEN"
 	EnvAllowInsecureOTEL      = "ALLOW_INSECURE_OTEL"
+	EnvAllowWebhookPrivateNet = "ALLOW_WEBHOOK_PRIVATE_NETWORK"
 	EnvSecurityEnforcement    = "SECURITY_ENFORCEMENT"
 )
 
@@ -42,6 +43,7 @@ const (
 	RuleRateLimitDisabled    = "ratelimit_disabled"
 	RuleRateLimitFailOpen    = "ratelimit_fail_open"
 	RuleOTELInsecureExporter = "otel_insecure_exporter"
+	RuleWebhookPrivateNet    = "webhook_private_network"
 )
 
 // Errors returned by security policy checks.
@@ -60,6 +62,7 @@ var envVarForRule = map[string]string{
 	RuleRateLimitDisabled:    EnvAllowRateLimitDisabled,
 	RuleRateLimitFailOpen:    EnvAllowRateLimitFailOpen,
 	RuleOTELInsecureExporter: EnvAllowInsecureOTEL,
+	RuleWebhookPrivateNet:    EnvAllowWebhookPrivateNet,
 }
 
 // SecurityEnvVarForRule returns the ALLOW_* environment variable name for a given rule.

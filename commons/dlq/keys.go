@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	libLog "github.com/LerianStudio/lib-observability/log"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	libLog "github.com/LerianStudio/lib-observability/log"
 	"github.com/redis/go-redis/v9"
 )
 

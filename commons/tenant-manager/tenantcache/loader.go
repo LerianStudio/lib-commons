@@ -12,11 +12,11 @@ import (
 	"time"
 
 	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
-	libLog "github.com/LerianStudio/lib-observability/log"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
+	libLog "github.com/LerianStudio/lib-observability/log"
 )
 
 // TenantLoader fetches tenant configurations from the tenant-manager API and

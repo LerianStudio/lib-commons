@@ -58,9 +58,42 @@ func WithFailOpen(failOpen bool) Option {
 
 // WithOnLimited sets an optional callback that is invoked when a request exceeds the rate limit.
 // This can be used for custom metrics, alerting, or logging beyond the built-in behavior.
+//
+// Anything WithOnLimited writes to c is clobbered by the subsequent 429 body write (whether
+// the default chttp.ErrorResponse responder or a WithExceededHandler responder), so this hook
+// is for side effects only. Use WithExceededHandler to replace the response body.
 func WithOnLimited(fn func(c *fiber.Ctx, tier Tier)) Option {
 	return func(rl *RateLimiter) {
 		rl.onLimited = fn
+	}
+}
+
+// WithExceededHandler installs a consumer-controlled responder for the 429 (rate-limit-exceeded)
+// path. When set, the middleware:
+//
+//  1. sets Retry-After / X-RateLimit-* headers as it does today,
+//  2. fires the WithOnLimited callback (if configured) for side-effect metrics/alerting,
+//  3. invokes fn(c, tier, ttl) to write the response body. fn's return value propagates to
+//     the Fiber chain as the handler's error return.
+//
+// When unset (default), the middleware continues to call chttp.Respond with the built-in
+// {Code, Title, Message} envelope verbatim — fully backward-compatible with v5.1.0.
+//
+// The ttl argument is the actual remaining TTL of the Redis counter key (not the configured
+// Window), so consumers that surface a retry-after-millis field in their envelope get the
+// same accuracy as the built-in Retry-After header.
+//
+// WithExceededHandler ONLY governs the 429 body. The 503 fail-closed path (handleRedisError)
+// and the 503 policy-blocked path (blockedHandler) are NOT affected and keep their built-in
+// chttp.ErrorResponse responders — those have distinct semantics (Redis unavailable vs.
+// strict-tier security violation vs. rate exceeded) and should not share a body responder.
+//
+// Passing nil is a no-op: the option leaves any previously-installed handler in place.
+func WithExceededHandler(fn func(c *fiber.Ctx, tier Tier, ttl time.Duration) error) Option {
+	return func(rl *RateLimiter) {
+		if fn != nil {
+			rl.exceededHandler = fn
+		}
 	}
 }
 

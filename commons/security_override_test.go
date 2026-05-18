@@ -159,6 +159,7 @@ func TestSecurityEnvVarForRule(t *testing.T) {
 		{RuleRateLimitDisabled, EnvAllowRateLimitDisabled},
 		{RuleRateLimitFailOpen, EnvAllowRateLimitFailOpen},
 		{RuleOTELInsecureExporter, EnvAllowInsecureOTEL},
+		{RuleWebhookPrivateNet, EnvAllowWebhookPrivateNet},
 		{"unknown", ""},
 	}
 

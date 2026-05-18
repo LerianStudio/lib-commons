@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-observability/log"
 	libSSRF "github.com/LerianStudio/lib-commons/v5/commons/security/ssrf"
+	"github.com/LerianStudio/lib-observability/log"
 )
 
 // ssrfSafeTransport wraps an http.Transport and implements http.RoundTripper.

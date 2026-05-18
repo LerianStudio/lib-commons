@@ -667,4 +667,3 @@ func TestLevel_String(t *testing.T) {
 		assert.Equal(t, tt.expected, tt.level.String())
 	}
 }
-

@@ -16,7 +16,6 @@ var (
 	errOriginalPanicRecover = errors.New("original error")
 )
 
-
 // TestRecoverAndLog_NilLogger tests RecoverAndLog with nil logger.
 func TestRecoverAndLog_NilLogger(t *testing.T) {
 	t.Parallel()

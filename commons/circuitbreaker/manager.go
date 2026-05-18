@@ -4,71 +4,68 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
 	"sync"
-	"time"
 
-	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
+	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v5/commons/safe"
 	"github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-observability/metrics"
-	"github.com/LerianStudio/lib-observability/runtime"
-	"github.com/LerianStudio/lib-commons/v5/commons/safe"
 	"github.com/sony/gobreaker"
 )
 
-// stateChangeListenerTimeout limits how long a state change listener notification
-// can run before the context is cancelled.
-const stateChangeListenerTimeout = 10 * time.Second
+type breakerMapKey struct {
+	tenantID    string
+	serviceName string
+}
+
+// breakerSlot bundles a per-(tenantID, serviceName) breaker with the
+// identifying pair so the gobreaker.OnStateChange callback can reconstruct
+// both halves of the key without re-parsing the composite string.
+type breakerSlot struct {
+	tenantID    string
+	serviceName string
+	breaker     *gobreaker.CircuitBreaker
+	config      Config
+	metrics     breakerMetrics
+}
+
+// Compile-time guarantees that *manager satisfies both interface tiers.
+var (
+	_ Manager            = (*manager)(nil)
+	_ TenantAwareManager = (*manager)(nil)
+)
 
 type manager struct {
-	breakers       map[string]*gobreaker.CircuitBreaker
-	configs        map[string]Config // Store configs for safe reset
-	listeners      []StateChangeListener
-	mu             sync.RWMutex
-	logger         log.Logger
-	metricsFactory *metrics.MetricsFactory
-	stateCounter   *metrics.CounterBuilder
-	execCounter    *metrics.CounterBuilder
+	slots           map[breakerMapKey]*breakerSlot
+	listeners       []StateChangeListener
+	tenantListeners []TenantStateChangeListener
+	mu              sync.RWMutex
+	logger          log.Logger
+	metricsFactory  *metrics.MetricsFactory
+	stateCounter    *metrics.CounterBuilder
+	execCounter     *metrics.CounterBuilder
+	listenerSem     chan struct{}
 }
 
 // ManagerOption configures optional behaviour on a circuit breaker manager.
 type ManagerOption func(*manager)
 
-// WithMetricsFactory attaches a MetricsFactory so the manager emits
-// circuit_breaker_state_transitions_total and circuit_breaker_executions_total
-// counters automatically.  When nil, metrics are silently skipped.
-func WithMetricsFactory(f *metrics.MetricsFactory) ManagerOption {
-	return func(m *manager) {
-		m.metricsFactory = f
-	}
-}
-
-// stateTransitionMetric defines the counter for circuit breaker state transitions.
-var stateTransitionMetric = metrics.Metric{
-	Name:        "circuit_breaker_state_transitions_total",
-	Unit:        "1",
-	Description: "Total number of circuit breaker state transitions",
-}
-
-// executionMetric defines the counter for circuit breaker executions.
-var executionMetric = metrics.Metric{
-	Name:        "circuit_breaker_executions_total",
-	Unit:        "1",
-	Description: "Total number of circuit breaker executions",
-}
-
 // NewManager creates a new circuit breaker manager.
 // Returns an error if logger is nil (including typed-nil interface values).
+//
+// The returned Manager also satisfies TenantAwareManager; callers can
+// type-assert when they need the tenant-keyed overloads.
 func NewManager(logger log.Logger, opts ...ManagerOption) (Manager, error) {
-	if isNilLogger(logger) {
+	if nilcheck.Interface(logger) {
 		return nil, ErrNilLogger
 	}
 
 	m := &manager{
-		breakers:  make(map[string]*gobreaker.CircuitBreaker),
-		configs:   make(map[string]Config),
-		listeners: make([]StateChangeListener, 0),
-		logger:    logger,
+		slots:           make(map[breakerMapKey]*breakerSlot),
+		listeners:       make([]StateChangeListener, 0),
+		tenantListeners: make([]TenantStateChangeListener, 0),
+		logger:          logger,
+		listenerSem:     make(chan struct{}, stateChangeListenerConcurrency),
 	}
 
 	for _, opt := range opts {
@@ -82,41 +79,42 @@ func NewManager(logger log.Logger, opts ...ManagerOption) (Manager, error) {
 	return m, nil
 }
 
-func (m *manager) initMetricCounters() {
-	if m.metricsFactory == nil {
-		return
-	}
-
-	stateCounter, err := m.metricsFactory.Counter(stateTransitionMetric)
-	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to create state transition metric counter", log.Err(err))
-	} else {
-		m.stateCounter = stateCounter
-	}
-
-	execCounter, err := m.metricsFactory.Counter(executionMetric)
-	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to create execution metric counter", log.Err(err))
-	} else {
-		m.execCounter = execCounter
-	}
-}
-
 // GetOrCreate returns an existing breaker or creates one for the service.
 // If a breaker already exists for the name with a different config, ErrConfigMismatch is returned.
+//
+// Single-tenant shim: uses the process-wide no-tenant breaker scope.
 func (m *manager) GetOrCreate(serviceName string, config Config) (CircuitBreaker, error) {
-	m.mu.RLock()
-	breaker, exists := m.breakers[serviceName]
+	return m.getOrCreate("", serviceName, config, false)
+}
 
+// GetOrCreateForTenant returns the existing breaker for (tenantID, serviceName)
+// or creates one with the supplied Config. If a breaker already exists for
+// the same pair with a different Config, ErrConfigMismatch is returned.
+func (m *manager) GetOrCreateForTenant(tenantID, serviceName string, config Config) (CircuitBreaker, error) {
+	return m.getOrCreate(tenantID, serviceName, config, true)
+}
+
+func (m *manager) getOrCreate(tenantID, serviceName string, config Config, tenantAware bool) (CircuitBreaker, error) {
+	key, err := validateBreakerIdentity(tenantID, serviceName, tenantAware)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.RLock()
+
+	slot, exists := m.slots[key]
 	if exists {
-		storedCfg := m.configs[serviceName]
+		breaker := slot.breaker
+		storedConfig := slot.config
+
 		m.mu.RUnlock()
 
-		if storedCfg != config {
+		if storedConfig != config {
 			return nil, fmt.Errorf(
-				"%w: service %q already registered with different settings",
+				"%w: service %q (tenant_hash %q) already registered with different settings",
 				ErrConfigMismatch,
 				serviceName,
+				tenantHashLabel(tenantID),
 			)
 		}
 
@@ -126,82 +124,156 @@ func (m *manager) GetOrCreate(serviceName string, config Config) (CircuitBreaker
 	m.mu.RUnlock()
 
 	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("circuit breaker config for service %s: %w", serviceName, err)
+		return nil, fmt.Errorf("circuit breaker config for service %s (tenant_hash %q): %w", serviceName, tenantHashLabel(tenantID), err)
 	}
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Double-check after acquiring write lock
-	if breaker, exists = m.breakers[serviceName]; exists {
-		storedCfg := m.configs[serviceName]
-		if storedCfg != config {
+	// Double-check after acquiring write lock.
+	if slot, exists = m.slots[key]; exists {
+		if slot.config != config {
 			return nil, fmt.Errorf(
-				"%w: service %q already registered with different settings",
+				"%w: service %q (tenant_hash %q) already registered with different settings",
 				ErrConfigMismatch,
 				serviceName,
+				tenantHashLabel(tenantID),
 			)
 		}
 
-		return &circuitBreaker{breaker: breaker}, nil
+		return &circuitBreaker{breaker: slot.breaker}, nil
 	}
 
-	settings := m.buildSettings(serviceName, config)
+	settings := m.buildSettings(tenantID, serviceName, config)
+	breaker := gobreaker.NewCircuitBreaker(settings)
 
-	breaker = gobreaker.NewCircuitBreaker(settings)
-	m.breakers[serviceName] = breaker
-	m.configs[serviceName] = config
+	m.slots[key] = &breakerSlot{
+		tenantID:    tenantID,
+		serviceName: serviceName,
+		breaker:     breaker,
+		config:      config,
+		metrics:     m.buildBreakerMetrics(tenantID, serviceName),
+	}
 
-	m.logger.Log(context.Background(), log.LevelInfo, "created circuit breaker", log.String("service", serviceName))
+	m.logger.Log(
+		context.Background(),
+		log.LevelInfo,
+		"created circuit breaker",
+		log.String("service", serviceName),
+		log.String("tenant_hash", tenantHashLabel(tenantID)),
+	)
 
 	return &circuitBreaker{breaker: breaker}, nil
 }
 
 // Execute runs fn through the named service breaker.
+//
+// Single-tenant shim: uses the process-wide no-tenant breaker scope.
 func (m *manager) Execute(serviceName string, fn func() (any, error)) (any, error) {
+	return m.execute(context.Background(), "", serviceName, fn, false)
+}
+
+// ExecuteForTenant runs fn through the (tenantID, serviceName) breaker. The
+// supplied ctx is used for logging correlation only — fn itself is invoked
+// without ctx so the existing CircuitBreaker contract is preserved. fn must
+// honour ctx itself if cancellation matters.
+func (m *manager) ExecuteForTenant(ctx context.Context, tenantID, serviceName string, fn func() (any, error)) (any, error) {
+	return m.execute(ctx, tenantID, serviceName, fn, true)
+}
+
+func (m *manager) execute(ctx context.Context, tenantID, serviceName string, fn func() (any, error), tenantAware bool) (any, error) {
 	if fn == nil {
 		return nil, ErrNilCallback
 	}
 
+	key, err := validateBreakerIdentity(tenantID, serviceName, tenantAware)
+	if err != nil {
+		return nil, err
+	}
+
 	m.mu.RLock()
-	breaker, exists := m.breakers[serviceName]
+	slot, exists := m.slots[key]
+
+	var breaker *gobreaker.CircuitBreaker
+	if exists {
+		breaker = slot.breaker
+	}
+
 	m.mu.RUnlock()
 
 	if !exists {
-		return nil, fmt.Errorf("circuit breaker not found for service: %s (call GetOrCreate first)", serviceName)
+		return nil, fmt.Errorf(
+			"circuit breaker not found for service: %s (tenant_hash %q) (call GetOrCreate first)",
+			serviceName,
+			tenantHashLabel(tenantID),
+		)
 	}
 
 	result, err := breaker.Execute(fn)
 	if err != nil {
 		if errors.Is(err, gobreaker.ErrOpenState) {
-			m.logger.Log(context.Background(), log.LevelWarn, "circuit breaker is OPEN, request rejected", log.String("service", serviceName))
-			m.recordExecution(serviceName, "rejected_open")
+			m.logger.Log(
+				ctx,
+				log.LevelWarn,
+				"circuit breaker is OPEN, request rejected",
+				log.String("service", serviceName),
+				log.String("tenant_hash", tenantHashLabel(tenantID)),
+			)
+			m.recordExecution(slot, executionResultRejectedOpen)
 
 			return nil, fmt.Errorf("service %s is currently unavailable (circuit breaker open): %w", serviceName, err)
 		}
 
 		if errors.Is(err, gobreaker.ErrTooManyRequests) {
-			m.logger.Log(context.Background(), log.LevelWarn, "circuit breaker is HALF-OPEN, too many test requests", log.String("service", serviceName))
-			m.recordExecution(serviceName, "rejected_half_open")
+			m.logger.Log(
+				ctx,
+				log.LevelWarn,
+				"circuit breaker is HALF-OPEN, too many test requests",
+				log.String("service", serviceName),
+				log.String("tenant_hash", tenantHashLabel(tenantID)),
+			)
+			m.recordExecution(slot, executionResultRejectedHalfOpen)
 
 			return nil, fmt.Errorf("service %s is recovering (too many requests): %w", serviceName, err)
 		}
 
 		// The wrapped function returned an error (not a breaker rejection)
-		m.recordExecution(serviceName, "error")
+		m.recordExecution(slot, executionResultError)
 
 		return result, err
 	}
 
-	m.recordExecution(serviceName, "success")
+	m.recordExecution(slot, executionResultSuccess)
 
 	return result, err
 }
 
 // GetState returns the current state for a service breaker.
+//
+// Single-tenant shim: reads from the process-wide no-tenant breaker scope.
 func (m *manager) GetState(serviceName string) State {
+	return m.getState("", serviceName, false)
+}
+
+// GetStateForTenant returns the current state for a (tenantID, serviceName) breaker.
+func (m *manager) GetStateForTenant(tenantID, serviceName string) State {
+	return m.getState(tenantID, serviceName, true)
+}
+
+func (m *manager) getState(tenantID, serviceName string, tenantAware bool) State {
+	key, err := validateBreakerIdentity(tenantID, serviceName, tenantAware)
+	if err != nil {
+		return StateUnknown
+	}
+
 	m.mu.RLock()
-	breaker, exists := m.breakers[serviceName]
+	slot, exists := m.slots[key]
+
+	var breaker *gobreaker.CircuitBreaker
+	if exists {
+		breaker = slot.breaker
+	}
+
 	m.mu.RUnlock()
 
 	if !exists {
@@ -212,9 +284,31 @@ func (m *manager) GetState(serviceName string) State {
 }
 
 // GetCounts returns current counters for a service breaker.
+//
+// Single-tenant shim: reads from the process-wide no-tenant breaker scope.
 func (m *manager) GetCounts(serviceName string) Counts {
+	return m.getCounts("", serviceName, false)
+}
+
+// GetCountsForTenant returns current counters for the (tenantID, serviceName) breaker.
+func (m *manager) GetCountsForTenant(tenantID, serviceName string) Counts {
+	return m.getCounts(tenantID, serviceName, true)
+}
+
+func (m *manager) getCounts(tenantID, serviceName string, tenantAware bool) Counts {
+	key, err := validateBreakerIdentity(tenantID, serviceName, tenantAware)
+	if err != nil {
+		return Counts{}
+	}
+
 	m.mu.RLock()
-	breaker, exists := m.breakers[serviceName]
+	slot, exists := m.slots[key]
+
+	var breaker *gobreaker.CircuitBreaker
+	if exists {
+		breaker = slot.breaker
+	}
+
 	m.mu.RUnlock()
 
 	if !exists {
@@ -236,45 +330,104 @@ func (m *manager) GetCounts(serviceName string) Counts {
 // Both Closed and HalfOpen states are considered healthy: Closed allows all traffic,
 // and HalfOpen allows limited probe traffic for recovery verification.
 // Open (rejecting all requests) and Unknown (unregistered breaker) are considered unhealthy.
+//
+// Single-tenant shim: reads from the process-wide no-tenant breaker scope.
 func (m *manager) IsHealthy(serviceName string) bool {
-	state := m.GetState(serviceName)
-	// Closed and HalfOpen are healthy; Open and Unknown are unhealthy.
-	// HalfOpen is healthy because it allows probe traffic for recovery.
+	return m.isHealthy("", serviceName, false)
+}
+
+// IsHealthyForTenant reports whether the (tenantID, serviceName) breaker is healthy.
+// Closed and HalfOpen are healthy; Open and Unknown are not.
+func (m *manager) IsHealthyForTenant(tenantID, serviceName string) bool {
+	return m.isHealthy(tenantID, serviceName, true)
+}
+
+func (m *manager) isHealthy(tenantID, serviceName string, tenantAware bool) bool {
+	state := m.getState(tenantID, serviceName, tenantAware)
 	isHealthy := state != StateOpen && state != StateUnknown
-	m.logger.Log(context.Background(), log.LevelDebug, "health check result", log.String("service", serviceName), log.String("state", string(state)), log.Bool("healthy", isHealthy))
+	m.logger.Log(
+		context.Background(),
+		log.LevelDebug,
+		"health check result",
+		log.String("service", serviceName),
+		log.String("tenant_hash", tenantHashLabel(tenantID)),
+		log.String("state", string(state)),
+		log.Bool("healthy", isHealthy),
+	)
 
 	return isHealthy
 }
 
 // Reset recreates the service breaker with its stored config.
+//
+// Single-tenant shim: resets the process-wide no-tenant breaker scope.
 func (m *manager) Reset(serviceName string) {
+	m.reset("", serviceName, false)
+}
+
+// ResetForTenant recreates the (tenantID, serviceName) breaker with its stored
+// Config. No-op if no breaker is registered for the pair.
+func (m *manager) ResetForTenant(tenantID, serviceName string) {
+	m.reset(tenantID, serviceName, true)
+}
+
+func (m *manager) reset(tenantID, serviceName string, tenantAware bool) {
+	key, err := validateBreakerIdentity(tenantID, serviceName, tenantAware)
+	if err != nil {
+		m.logger.Log(
+			context.Background(),
+			log.LevelWarn,
+			"invalid breaker identity for reset; ignoring request",
+			log.String("service", serviceName),
+			log.String("tenant_hash", tenantHashLabel(tenantID)),
+			log.Err(err),
+		)
+
+		return
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if _, exists := m.breakers[serviceName]; exists {
-		m.logger.Log(context.Background(), log.LevelInfo, "resetting circuit breaker", log.String("service", serviceName))
-
-		config, configExists := m.configs[serviceName]
-		if !configExists {
-			m.logger.Log(context.Background(), log.LevelWarn, "no stored config found, cannot recreate circuit breaker", log.String("service", serviceName))
-			delete(m.breakers, serviceName)
-
-			return
-		}
-
-		settings := m.buildSettings(serviceName, config)
-
-		breaker := gobreaker.NewCircuitBreaker(settings)
-		m.breakers[serviceName] = breaker
-
-		m.logger.Log(context.Background(), log.LevelInfo, "circuit breaker reset completed", log.String("service", serviceName))
+	slot, exists := m.slots[key]
+	if !exists {
+		return
 	}
+
+	m.logger.Log(
+		context.Background(),
+		log.LevelInfo,
+		"resetting circuit breaker",
+		log.String("service", serviceName),
+		log.String("tenant_hash", tenantHashLabel(tenantID)),
+	)
+
+	settings := m.buildSettings(tenantID, serviceName, slot.config)
+	m.slots[key] = &breakerSlot{
+		tenantID:    slot.tenantID,
+		serviceName: slot.serviceName,
+		breaker:     gobreaker.NewCircuitBreaker(settings),
+		config:      slot.config,
+		metrics:     m.buildBreakerMetrics(slot.tenantID, slot.serviceName),
+	}
+
+	m.logger.Log(
+		context.Background(),
+		log.LevelInfo,
+		"circuit breaker reset completed",
+		log.String("service", serviceName),
+		log.String("tenant_hash", tenantHashLabel(tenantID)),
+	)
 }
 
 // RegisterStateChangeListener registers a listener for state change notifications.
 // Both untyped nil and typed nil (e.g., (*MyListener)(nil)) are rejected.
+//
+// Listeners registered here only observe transitions for breakers in the
+// no-tenant scope (tenantID == ""). For multi-tenant observation, use
+// RegisterTenantStateChangeListener.
 func (m *manager) RegisterStateChangeListener(listener StateChangeListener) {
-	if isNilListener(listener) {
+	if nilcheck.Interface(listener) {
 		m.logger.Log(context.Background(), log.LevelWarn, "attempted to register a nil state change listener")
 
 		return
@@ -287,97 +440,21 @@ func (m *manager) RegisterStateChangeListener(listener StateChangeListener) {
 	m.logger.Log(context.Background(), log.LevelDebug, "registered state change listener", log.Int("total", len(m.listeners)))
 }
 
-// isNilLogger checks for both untyped nil and typed nil log.Logger values.
-// Mirrors the isNilListener pattern to prevent panics from typed-nil loggers.
-func isNilLogger(logger log.Logger) bool {
-	if logger == nil {
-		return true
+// RegisterTenantStateChangeListener registers a listener that fires on every
+// breaker transition across every tenant. Both untyped nil and typed nil
+// (e.g., (*MyListener)(nil)) are rejected with a warning log.
+func (m *manager) RegisterTenantStateChangeListener(listener TenantStateChangeListener) {
+	if nilcheck.Interface(listener) {
+		m.logger.Log(context.Background(), log.LevelWarn, "attempted to register a nil tenant state change listener")
+
+		return
 	}
 
-	v := reflect.ValueOf(logger)
-	if !v.IsValid() {
-		return true
-	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	switch v.Kind() {
-	case reflect.Ptr, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func, reflect.Interface:
-		return v.IsNil()
-	default:
-		return false
-	}
-}
-
-// isNilListener checks for both untyped nil and typed nil interface values.
-// Handles all nilable kinds: pointers, slices, maps, channels, funcs, and interfaces.
-func isNilListener(listener StateChangeListener) bool {
-	if listener == nil {
-		return true
-	}
-
-	v := reflect.ValueOf(listener)
-	if !v.IsValid() {
-		return true
-	}
-
-	switch v.Kind() {
-	case reflect.Ptr, reflect.Slice, reflect.Map, reflect.Chan, reflect.Func, reflect.Interface:
-		return v.IsNil()
-	default:
-		return false
-	}
-}
-
-// handleStateChange processes state changes and notifies listeners
-func (m *manager) handleStateChange(serviceName string, from gobreaker.State, to gobreaker.State) {
-	switch to {
-	case gobreaker.StateOpen:
-		m.logger.Log(context.Background(), log.LevelError, "circuit breaker OPENED, requests will fast-fail", log.String("service", serviceName), log.String("from", from.String()))
-	case gobreaker.StateHalfOpen:
-		m.logger.Log(context.Background(), log.LevelInfo, "circuit breaker HALF-OPEN, testing service recovery", log.String("service", serviceName), log.String("from", from.String()))
-	case gobreaker.StateClosed:
-		m.logger.Log(context.Background(), log.LevelInfo, "circuit breaker CLOSED, service is healthy", log.String("service", serviceName), log.String("from", from.String()))
-	}
-
-	// Record state transition metric
-	fromState := convertGobreakerState(from)
-	toState := convertGobreakerState(to)
-
-	m.recordStateTransition(serviceName, fromState, toState)
-
-	m.mu.RLock()
-	listeners := make([]StateChangeListener, len(m.listeners))
-	copy(listeners, m.listeners)
-	m.mu.RUnlock()
-
-	for _, listener := range listeners {
-		// Notify in goroutine to avoid blocking circuit breaker operations.
-		// A timeout context prevents slow or stuck listeners from leaking goroutines.
-		listenerCopy := listener
-
-		runtime.SafeGoWithContextAndComponent(
-			context.Background(),
-			m.logger,
-			"circuitbreaker",
-			"state_change_listener_"+serviceName,
-			runtime.KeepRunning,
-			func(ctx context.Context) {
-				m.notifyStateChangeListener(ctx, listenerCopy, serviceName, fromState, toState)
-			},
-		)
-	}
-}
-
-func (m *manager) notifyStateChangeListener(
-	ctx context.Context,
-	listener StateChangeListener,
-	serviceName string,
-	fromState State,
-	toState State,
-) {
-	listenerCtx, listenerCancel := context.WithTimeout(ctx, stateChangeListenerTimeout)
-	defer listenerCancel()
-
-	listener.OnStateChange(listenerCtx, serviceName, fromState, toState)
+	m.tenantListeners = append(m.tenantListeners, listener)
+	m.logger.Log(context.Background(), log.LevelDebug, "registered tenant state change listener", log.Int("total", len(m.tenantListeners)))
 }
 
 // readyToTrip builds the trip function for gobreaker.Settings.
@@ -398,53 +475,25 @@ func readyToTrip(config Config) func(counts gobreaker.Counts) bool {
 	}
 }
 
-// buildSettings creates gobreaker.Settings from a Config for the given service.
-func (m *manager) buildSettings(serviceName string, config Config) gobreaker.Settings {
+// buildSettings creates gobreaker.Settings from a Config for the given
+// (tenantID, serviceName) pair. The underlying gobreaker.Name encodes only the
+// stable tenant hash so internal gobreaker diagnostics never expose raw tenant
+// IDs; the OnStateChange callback closes over the raw tenantID for internal
+// routing and tenant-listener API delivery.
+func (m *manager) buildSettings(tenantID, serviceName string, config Config) gobreaker.Settings {
+	name := "service-" + serviceName
+	if tenantID != "" {
+		name = "tenant-" + tenantHashLabel(tenantID) + "/" + name
+	}
+
 	return gobreaker.Settings{
-		Name:        "service-" + serviceName,
+		Name:        name,
 		MaxRequests: config.MaxRequests,
 		Interval:    config.Interval,
 		Timeout:     config.Timeout,
 		ReadyToTrip: readyToTrip(config),
-		OnStateChange: func(name string, from gobreaker.State, to gobreaker.State) {
-			m.handleStateChange(serviceName, from, to)
+		OnStateChange: func(_ string, from gobreaker.State, to gobreaker.State) {
+			m.handleStateChange(tenantID, serviceName, from, to)
 		},
-	}
-}
-
-// recordStateTransition increments the state transition counter.
-// No-op when metricsFactory is nil.
-func (m *manager) recordStateTransition(serviceName string, from, to State) {
-	if m.stateCounter == nil {
-		return
-	}
-
-	err := m.stateCounter.
-		WithLabels(map[string]string{
-			"service":    constant.SanitizeMetricLabel(serviceName),
-			"from_state": string(from),
-			"to_state":   string(to),
-		}).
-		AddOne(context.Background())
-	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to record state transition metric", log.Err(err))
-	}
-}
-
-// recordExecution increments the execution counter.
-// No-op when metricsFactory is nil.
-func (m *manager) recordExecution(serviceName, result string) {
-	if m.execCounter == nil {
-		return
-	}
-
-	err := m.execCounter.
-		WithLabels(map[string]string{
-			"service": constant.SanitizeMetricLabel(serviceName),
-			"result":  result,
-		}).
-		AddOne(context.Background())
-	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to record execution metric", log.Err(err))
 	}
 }

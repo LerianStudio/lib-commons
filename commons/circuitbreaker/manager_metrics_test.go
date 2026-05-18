@@ -85,6 +85,18 @@ func hasAttributeValue(dp metricdata.DataPoint[int64], key, value string) bool {
 	return false
 }
 
+func hasAttributeKey(dp metricdata.DataPoint[int64], key string) bool {
+	iter := dp.Attributes.Iter()
+	for iter.Next() {
+		kv := iter.Attribute()
+		if string(kv.Key) == key {
+			return true
+		}
+	}
+
+	return false
+}
+
 // ---------------------------------------------------------------------------
 // Test: WithMetricsFactory(nil) — manager works, no metrics emitted, no panic
 // ---------------------------------------------------------------------------
@@ -238,9 +250,10 @@ func TestMetrics_RecordExecution_RejectedOpen(t *testing.T) {
 
 	// Trip the breaker open
 	for i := 0; i < 3; i++ {
-		_, _ = mgr.Execute("reject-svc", func() (any, error) {
+		_, err = mgr.Execute("reject-svc", func() (any, error) {
 			return nil, errors.New("fail")
 		})
+		require.Error(t, err)
 	}
 
 	require.Equal(t, StateOpen, mgr.GetState("reject-svc"))
@@ -296,9 +309,10 @@ func TestMetrics_RecordStateTransition_ClosedToOpen(t *testing.T) {
 
 	// Trip the breaker: consecutive failures → closed→open transition
 	for i := 0; i < 3; i++ {
-		_, _ = mgr.Execute("state-svc", func() (any, error) {
+		_, err = mgr.Execute("state-svc", func() (any, error) {
 			return nil, errors.New("fail")
 		})
+		require.Error(t, err)
 	}
 
 	require.Equal(t, StateOpen, mgr.GetState("state-svc"))
@@ -337,7 +351,7 @@ func TestMetrics_RecordStateTransition_NilFactory_Noop(t *testing.T) {
 
 	// Direct call with nil metricsFactory — must be a no-op, no panic
 	assert.NotPanics(t, func() {
-		m.recordStateTransition("any-service", StateClosed, StateOpen)
+		m.recordStateTransition("", "any-service", StateClosed, StateOpen)
 	})
 }
 
@@ -355,7 +369,7 @@ func TestMetrics_RecordExecution_NilFactory_Noop(t *testing.T) {
 
 	// Direct call with nil metricsFactory — must be a no-op, no panic
 	assert.NotPanics(t, func() {
-		m.recordExecution("any-service", "success")
+		m.recordExecution(&breakerSlot{serviceName: "any-service"}, executionResultSuccess)
 	})
 }
 
@@ -428,9 +442,10 @@ func TestMetrics_MultipleExecutions_Accumulate(t *testing.T) {
 	}
 
 	for i := 0; i < 2; i++ {
-		_, _ = mgr.Execute("accum-svc", func() (any, error) {
+		_, err = mgr.Execute("accum-svc", func() (any, error) {
 			return nil, errors.New("fail")
 		})
+		require.Error(t, err)
 	}
 
 	rm := collectMetrics(t, reader)
