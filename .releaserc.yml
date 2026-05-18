@@ -17,7 +17,7 @@ plugins:
         { type: "fix", release: "patch" },
         { type: "refactor", release: "minor" },
         { type: "docs", release: "patch" },
-        { breaking: true, release: "major" }
+        { breaking: true, release: "minor" }
       ]
     }]
 
