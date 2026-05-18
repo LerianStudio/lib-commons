@@ -32,6 +32,7 @@ jobs:
         dlq
         docs
         errgroup
+        github-actions
         jwt
         license
         log

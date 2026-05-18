@@ -7,20 +7,21 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
-      - '.github/**'
       - 'LICENSE'
       - '.gitignore'
 
 permissions:
-  id-token: write
   contents: read
-  pull-requests: write
-  security-events: write
 
 jobs:
   go-analysis:
     name: Go Analysis
     uses: LerianStudio/github-actions-shared-workflows/.github/workflows/go-pr-analysis.yml@v1.30.0
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+      security-events: write
     with:
       go_version: "1.26.2"
       golangci_lint_version: "v2.12.2"
@@ -36,6 +37,8 @@ jobs:
   perf-gate:
     name: AC15 Perf Gate (systemplane)
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
 

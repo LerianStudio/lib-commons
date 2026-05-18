@@ -42,7 +42,7 @@ plugins:
   # keeping develop in sync with hotfixes published from main.
   - ["@saithodev/semantic-release-backmerge", {
       backmergeBranches: [
-        { from: "main", to: "develop" }
+        {from: "main", to: "develop"}
       ],
       backmergeStrategy: "merge",
       message: "chore(release): backmerge ${nextRelease.version} into ${branch.name}",
