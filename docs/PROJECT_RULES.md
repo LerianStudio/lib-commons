@@ -1,6 +1,6 @@
 # Project Rules - lib-commons
 
-This document defines the coding standards, architecture patterns, and development guidelines for the unified `lib-commons` library.
+This document defines the coding standards, architecture patterns, and development guidelines for `lib-commons` in the v5 split-library minor line.
 
 ## Table of Contents
 
@@ -24,7 +24,6 @@ This document defines the coding standards, architecture patterns, and developme
 ```text
 lib-commons/
 ├── commons/                      # All library packages
-│   ├── assert/                     # Production-safe assertions with telemetry
 │   ├── backoff/                    # Exponential backoff with jitter
 │   ├── certificate/                # Thread-safe TLS certificate manager with hot-reload
 │   ├── circuitbreaker/             # Circuit breaker manager and health checker
@@ -37,13 +36,10 @@ lib-commons/
 │   │   └── nilcheck/               # Nil interface detection helpers
 │   ├── jwt/                        # HMAC-based JWT signing and verification
 │   ├── license/                    # License validation and enforcement
-│   ├── log/                        # Logging abstraction (Logger interface)
 │   ├── mongo/                      # MongoDB connector
 │   ├── net/http/                   # Fiber-oriented HTTP helpers and middleware
 │   │   ├── idempotency/            # Fiber idempotency middleware (Redis-backed, tenant-scoped)
 │   │   └── ratelimit/              # Redis-backed rate limit storage
-│   ├── opentelemetry/              # Telemetry bootstrap, propagation, redaction
-│   │   └── metrics/                # Metric factory and fluent builders
 │   ├── outbox/                     # Transactional outbox primitives
 │   │   ├── mongo/                  # MongoDB outbox adapter with row-scoped tenants and tenant DB resolver
 │   │   ├── outboxtest/             # Backend-agnostic outbox repository contract tests
@@ -52,20 +48,11 @@ lib-commons/
 │   ├── postgres/                   # PostgreSQL connector with migrations
 │   ├── rabbitmq/                   # RabbitMQ connector
 │   ├── redis/                      # Redis connector (standalone/sentinel/cluster)
-│   ├── runtime/                    # Panic recovery, metrics, safe goroutine wrappers
 │   ├── safe/                       # Panic-free math/regex/slice operations
 │   ├── secretsmanager/             # AWS Secrets Manager M2M credential retrieval
 │   ├── security/                   # Sensitive field detection and handling
 │   ├── server/                     # Graceful shutdown and lifecycle (ServerManager)
 │   ├── shell/                      # Makefile includes and shell utilities
-│   ├── systemplane/                # Runtime configuration plane (hot-reloadable settings)
-│   │   ├── admin/                  # Fiber HTTP routes for list/get/put with authorization
-│   │   ├── internal/               # Internal store implementations
-│   │   │   ├── debounce/           # Key-scoped trailing-edge debouncer
-│   │   │   ├── mongodb/            # MongoDB store with change streams and polling
-│   │   │   ├── postgres/           # Postgres store with LISTEN/NOTIFY
-│   │   │   └── store/              # Backend-agnostic Store interface
-│   │   └── systemplanetest/        # Public Client contract test suite for service backends
 │   ├── tenant-manager/             # Multi-tenant database-per-tenant isolation
 │   │   ├── cache/                  # In-memory tenant cache with LRU eviction
 │   │   ├── client/                 # HTTP client for tenant-manager API
@@ -83,7 +70,6 @@ lib-commons/
 │   │   └── valkey/                 # Valkey/Redis key patterns
 │   ├── transaction/                # Typed transaction validation/posting primitives
 │   ├── webhook/                    # Webhook delivery with HMAC-SHA256 signing and SSRF protection
-│   ├── zap/                        # Zap logging adapter
 │   ├── app.go                      # Application bootstrap helpers
 │   ├── context.go                  # Context utilities
 │   ├── environment.go              # Environment detection and security tier mapping
@@ -97,6 +83,19 @@ lib-commons/
 ├── reports/                        # Test and coverage reports
 └── go.mod                          # Module definition (v5)
 ```
+
+### Lerian Library Boundaries
+
+`lib-commons` is no longer the owner for every shared capability. Treat these boundaries as architectural contracts:
+
+| Library | Ownership |
+|---------|-----------|
+| `github.com/LerianStudio/lib-commons` | Core helpers, connectors, HTTP/server utilities, security, resilience, tenant-manager primitives, outbox, DLQ, certificate, JWT, transaction helpers |
+| `github.com/LerianStudio/lib-observability` | Logging, zap adapter, tracing, metrics, redaction, panic instrumentation, assertions, observability constants |
+| `github.com/LerianStudio/lib-systemplane` | Runtime configuration, hot reload, systemplane admin routes, tenant-scoped runtime knobs, systemplane contract tests |
+| `github.com/LerianStudio/lib-streaming` | CloudEvents/Kafka streaming, event emitters, streaming DLQs, outbox replay for streaming events |
+
+The former lib-commons packages that mirrored extracted observability APIs were removed. Code must import `github.com/LerianStudio/lib-observability` packages directly for logging, zap adapters, tracing, metrics, redaction, panic instrumentation, assertions, and observability constants.
 
 ### Package Design Principles
 
@@ -124,7 +123,7 @@ lib-commons/
 
 ### Go Version
 
-- **Minimum**: Go 1.25.9
+- **Minimum**: Go 1.26.3
 - Keep `go.mod` updated with latest stable Go version
 - Module path: `github.com/LerianStudio/lib-commons/v5`
 
@@ -157,7 +156,8 @@ import (
     "go.uber.org/zap"
 
     // Internal packages
-    "github.com/LerianStudio/lib-commons/v5/commons/log"
+    "github.com/LerianStudio/lib-observability/log"
+    "github.com/LerianStudio/lib-commons/v5/commons/postgres"
 )
 ```
 
@@ -376,7 +376,7 @@ func (c *Client) Connect(ctx context.Context) error {
 
 ### Migration Awareness
 
-- If a task touches renamed/removed v1 symbols, update `MIGRATION_MAP.md`
+- If a task touches renamed, removed, redesigned, or extracted APIs in the v5 split-library minor line, update live package documentation and README guidance so consumers know the owning library or replacement API.
 - If a task changes package-level behavior or API expectations, update `README.md`
 
 ---
@@ -390,9 +390,9 @@ func (c *Client) Connect(ctx context.Context) error {
 | Database | `pgx/v5`, `mongo-driver`, `mongo-driver/v2`, `go-redis/v9`, `dbresolver/v2`, `golang-migrate/v4` |
 | Messaging | `amqp091-go` |
 | HTTP | `gofiber/fiber/v2` |
-| Logging | `zap`, internal `log` package |
+| Logging | `github.com/LerianStudio/lib-observability/log`, `github.com/LerianStudio/lib-observability/zap` |
 | Testing | `testify`, `go.uber.org/mock`, `miniredis/v2`, `testcontainers-go`, `goleak` |
-| Observability | `opentelemetry/*`, `otelzap`, `grpc`, `protobuf` |
+| Observability | `github.com/LerianStudio/lib-observability`, `opentelemetry/*`, `otelzap`, `grpc`, `protobuf` |
 | Utilities | `google/uuid`, `shopspring/decimal`, `go-playground/validator/v10`, `golang.org/x/sync`, `golang.org/x/text` |
 | Resilience | `sony/gobreaker`, `go-redsync/v4` |
 | Security | `golang.org/x/oauth2`, `google.golang.org/api`, `golang-jwt/jwt/v5`, `aws-sdk-go-v2` (secretsmanager) |
@@ -402,7 +402,7 @@ func (c *Client) Connect(ctx context.Context) error {
 
 - `io/ioutil` - Deprecated, use `io` and `os` (enforced by `depguard` linter)
 - Direct database drivers without connection pooling
-- Logging packages other than `zap` (use internal `log` wrapper)
+- Logging packages outside `github.com/LerianStudio/lib-observability/log` and its zap adapter
 
 ### Adding Dependencies
 
@@ -422,16 +422,20 @@ func (c *Client) Connect(ctx context.Context) error {
 3. **Mask in errors** - Never include credentials in error messages
 
 ```go
-// Use the built-in Redactor for sensitive data
-redactor := opentelemetry.NewDefaultRedactor()
-safeValue := redactor.Redact(sensitiveField)
+// Use lib-observability redaction helpers to classify sensitive field names.
+if redaction.IsSensitiveField(fieldName) {
+    // Mask, omit, or otherwise avoid logging the value.
+}
+
+// For structured span/payload redaction, use tracing.NewDefaultRedactor()
+// with tracing.ObfuscateStruct() or the redacting span processor.
 ```
 
 ### Sensitive Field Detection
 
 - Use `commons/security` for sensitive field detection and handling
-- Use `commons/opentelemetry.Redactor` with `RedactionRule` patterns
-- Constructors: `NewDefaultRedactor()` and `NewRedactor(rules, mask)`
+- Use `github.com/LerianStudio/lib-observability/redaction` for field classification (`IsSensitiveField`, `DefaultSensitiveFields`)
+- Do not add observability redaction shims back into lib-commons; use `github.com/LerianStudio/lib-observability/redaction` directly
 
 ### Input Validation
 
@@ -442,7 +446,7 @@ safeValue := redactor.Redact(sensitiveField)
 
 ### Log Injection Prevention
 
-- Use `commons/log/sanitizer.go` for log-injection prevention
+- Use `github.com/LerianStudio/lib-observability/log` sanitizer helpers for log-injection prevention
 - Never interpolate untrusted input into log messages without sanitization
 
 ### Environment Variables
@@ -538,20 +542,16 @@ make clean                 # Clean all build artifacts
 
 ## API Invariants
 
-Key v5 API contracts that must be preserved:
+Key v5 minor-line API contracts that must be preserved:
+
+Extracted observability, systemplane, and streaming packages are not lib-commons API invariants. Their canonical APIs live in `lib-observability`, `lib-systemplane`, and `lib-streaming` respectively. The lib-commons observability/logging/runtime/assertion shim packages have been removed from the v5 split-library minor line.
 
 | Package | Invariant |
 |---------|-----------|
-| `opentelemetry` | `NewTelemetry(...)` for init; `ApplyGlobals()` opt-in for global providers |
-| `log` | `Logger` 5-method interface: `Log`, `With`, `WithGroup`, `Enabled`, `Sync` |
-| `log` | Level constants: `LevelError`, `LevelWarn`, `LevelInfo`, `LevelDebug` |
-| `log` | Field constructors: `String()`, `Int()`, `Bool()`, `Err()` |
-| `zap` | `zap.New(cfg Config)` constructor; `Logger.Raw()` for underlying access |
 | `net/http` | `Respond`, `RespondStatus`, `RespondError`, `RenderError`, `FiberErrorHandler` |
 | `net/http` | `ServeReverseProxy(target, policy, res, req)` with `ReverseProxyPolicy` |
 | `server` | `ServerManager` exclusively (no `GracefulShutdown`) |
 | `circuitbreaker` | `NewManager(logger) (Manager, error)`; `GetOrCreate` returns `(CircuitBreaker, error)` |
-| `assert` | `assert.New(ctx, logger, component, operation)` returns errors, no panics |
 | `safe` | Explicit error returns for division, slice access, regex operations |
 | `jwt` | `jwt.Parse()` / `jwt.Sign()` with `AlgHS256`, `AlgHS384`, `AlgHS512` |
 | `backoff` | `ExponentialWithJitter()` and `WaitContext()` |
@@ -561,7 +561,6 @@ Key v5 API contracts that must be preserved:
 | `mongo` | `NewClient(ctx, cfg, opts...)` constructor |
 | `transaction` | `BuildIntentPlan()` + `ValidateBalanceEligibility()` + `ApplyPosting()` |
 | `rabbitmq` | `*Context()` variants for lifecycle; `HealthCheck()` returns `(bool, error)` |
-| `opentelemetry` | `Redactor` with `RedactionRule`; `NewDefaultRedactor()` / `NewRedactor(rules, mask)` |
 | `certificate` | `NewManager(certPath, keyPath)` — empty paths return unconfigured manager (TLS optional). `Rotate(cert, key)` for zero-downtime hot-reload. `GetCertificateFunc()` for `tls.Config.GetCertificate`. All methods nil-safe. |
 | `certificate` | Private key parsing order: PKCS#8 → PKCS#1 → EC. Key file must have mode 0600 or stricter (enforced at load time). Public key match validated against cert at load and rotate. |
 | `dlq` | `New(conn, keyPrefix, maxRetries, opts...)` returns `*Handler`; `NewConsumer(handler, retryFn, opts...)` returns `(*Consumer, error)`. |
@@ -596,5 +595,5 @@ Before submitting code:
 - [ ] `make test` passes
 - [ ] `make build` passes
 - [ ] Dependencies are justified
-- [ ] `MIGRATION_MAP.md` updated if v1 symbols changed
+- [ ] Live README/package documentation updated if renamed, removed, redesigned, or extracted APIs affect consumers
 - [ ] `README.md` updated if public API changed
