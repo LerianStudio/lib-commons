@@ -1,16 +1,24 @@
-# Changelog
+# Lib-commons Changelog
 
-All notable changes to lib-commons will be documented in this file.
+## [5.2.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.2.0)
 
-## Unreleased
+- **Features:**
+  - Removed observability boundaries and deprecated commons observability shims, migrating to `lib-observability`.
+  - Added native MongoDB transaction support in the outbox module.
+  - Introduced a bridge between `AttrBag` and `lib-observability`.
 
-- Added `server.WithStdlibHTTPServer(*http.Server)` and `server.WithStdlibHTTPListener(*http.Server, net.Listener)` for caller-owned stdlib HTTP servers while preserving the existing Fiber HTTP path; Fiber and stdlib HTTP are mutually exclusive, and stdlib servers receive a safe default `ReadHeaderTimeout` when unset.
-- Added `http.ErrorEnvelope`, `http.ErrorPayload`, and `http.RespondErrorEnvelope` as a richer sibling error contract without changing the existing flat `RespondError(c, status, title, message)` API.
-- Added `ratelimit.WithExceededHandler` for caller-controlled 429 response bodies and `RedisStorage.Increment` for direct use of the package's atomic fixed-window Redis primitive.
-- Added `metrics.CounterBuilder.WithAttributeSet(attribute.Set)` for allocation-conscious hot paths with prebuilt OpenTelemetry attribute sets.
-- Added `circuitbreaker.NewPassthroughManager`, `circuitbreaker.NewPassthroughTenantAwareManager`, and additive `TenantAwareManager` methods for tenant-isolated breakers while preserving the existing `Manager` interface; tenant-aware breaker telemetry uses stable `tenant_hash` labels instead of raw tenant IDs while legacy no-tenant metric label sets remain unchanged.
-- Added `webhook.WithAllowPrivateNetwork` as a security-gated, IP-literal-only escape hatch for local/E2E webhook targets; hostnames resolving to private addresses remain blocked.
-- Fixed OpenTelemetry deployment environment handling so `TelemetryConfig.DeploymentEnv` is trimmed/lowercased before provider/resource construction and emitted as `deployment.environment.name` with the normalized value.
-- Fixed OpenTelemetry endpoint environment normalization to include logs endpoints and return `os.Setenv` failures instead of ignoring them.
-- Fixed typed-nil logger handling in OpenTelemetry and systemplane configuration paths.
-- Fixed rate-limit Redis counters with missing TTLs by repairing expiry inside the atomic Lua script, and fail-closed malformed tenant contexts instead of treating them as transient Redis failures.
+- **Fixes:**
+  - Addressed Docker CVEs in testcontainers for improved security.
+  - Enforced fail-closed termination for license compliance.
+  - Made schema-per-tenant migration parser-safe in the outbox/postgres module.
+  - Updated unit tests to validate shim contracts and improve coverage.
+
+- **Improvements:**
+  - Bumped Go toolchain to `1.26.3`.
+  - Deprecated commons telemetry and logging middleware, aligning with the new observability strategy.
+  - Improved code readability with additional blank lines.
+
+Contributors: @bedatty, @fredcamaral, @gandalf-at-lerian, @jeffersonrodrigues92, @qnen.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.1.1...v5.2.0)
+
