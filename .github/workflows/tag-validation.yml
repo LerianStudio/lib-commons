@@ -40,17 +40,21 @@ jobs:
       - name: Validate tag against main reachability
         env:
           TAG_NAME: ${{ github.ref_name }}
-          TAG_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
-          printf 'Tag: %s\nCommit: %s\n' "$TAG_NAME" "$TAG_SHA"
+          # Explicitly dereference the tag ref to its commit object.
+          # For annotated tags, github.sha already resolves to the
+          # tagged commit, but `^{commit}` is the canonical form and
+          # eliminates ambiguity if the event semantics change.
+          TAG_COMMIT="$(git rev-parse "${TAG_NAME}^{commit}")"
+          printf 'Tag: %s\nCommit: %s\n' "$TAG_NAME" "$TAG_COMMIT"
 
           # Resolve main locally so `git merge-base --is-ancestor` works
           # regardless of which branch (if any) the runner checked out.
           git fetch origin main:refs/heads/main --quiet
 
-          if git merge-base --is-ancestor "$TAG_SHA" refs/heads/main; then
+          if git merge-base --is-ancestor "$TAG_COMMIT" refs/heads/main; then
             printf '::notice::Tag %s points to a commit reachable from main; any version format is allowed.\n' "$TAG_NAME"
             exit 0
           fi
