@@ -14,7 +14,6 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/event"
@@ -23,6 +22,7 @@ import (
 	tmpostgres "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/postgres"
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/rabbitmq"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/tenantcache"
+	observability "github.com/LerianStudio/lib-observability"
 	libLog "github.com/LerianStudio/lib-observability/log"
 )
 
@@ -323,7 +323,7 @@ func (c *MultiTenantConsumer) Register(queueName string, handler HandlerFunc) er
 // The event listener is managed externally; Run() stores the parent context
 // and makes the consumer ready to receive events and lazy-load tenants.
 func (c *MultiTenantConsumer) Run(ctx context.Context) error {
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	// Fall back to constructor logger when context has no logger attached

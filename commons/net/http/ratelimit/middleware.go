@@ -14,6 +14,7 @@ import (
 	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
 	chttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
+	observability "github.com/LerianStudio/lib-observability"
 	"github.com/LerianStudio/lib-observability/assert"
 	"github.com/LerianStudio/lib-observability/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
@@ -334,7 +335,7 @@ func (rl *RateLimiter) check(c *fiber.Ctx, tier Tier) error {
 		ctx = context.Background()
 	}
 
-	_, tracer, _, _ := commons.NewTrackingFromContext(ctx) //nolint:dogsled
+	_, tracer, _, _ := observability.NewTrackingFromContext(ctx) //nolint:dogsled
 
 	ctx, span := tracer.Start(ctx, "middleware.ratelimit.check")
 	defer span.End()

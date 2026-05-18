@@ -11,10 +11,10 @@ import (
 	"sync"
 	"time"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
+	observability "github.com/LerianStudio/lib-observability"
 	libLog "github.com/LerianStudio/lib-observability/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 )
@@ -89,7 +89,7 @@ func (l *TenantLoader) SetOnTenantLoaded(fn func(ctx context.Context, tenantID s
 //   - ErrTenantNotFound: returned as-is (not cached)
 //   - Other errors: wrapped with context
 func (l *TenantLoader) LoadTenant(ctx context.Context, tenantID string) (*core.TenantConfig, error) {
-	_, tracer, _, _ := libCommons.NewTrackingFromContext(ctx) //nolint:dogsled // standard tracking extraction
+	_, tracer, _, _ := observability.NewTrackingFromContext(ctx) //nolint:dogsled // standard tracking extraction
 
 	ctx, span := tracer.Start(ctx, "tenantcache.tenant_loader.load_tenant")
 	defer span.End()
