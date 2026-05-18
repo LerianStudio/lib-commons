@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	observability "github.com/LerianStudio/lib-observability"
 	"github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-observability/metrics"
 	"github.com/google/uuid"
@@ -269,6 +270,11 @@ func newDefaultTrackingComponents() TrackingComponents {
 // Call this once at the ingress (HTTP/gRPC middleware) and avoid per-layer duplication.
 // Example keys: tenant.id, enduser.id, request.route, region, plan.
 //
+// Mirrors attributes into both the legacy lib-commons carrier and
+// github.com/LerianStudio/lib-observability so that both transitional callers
+// reading CustomContextKeyValue.AttrBag and the canonical RedactingAttrBagSpanProcessor
+// see attrs written via any lib-commons middleware.
+//
 // Deprecated: use ContextWithSpanAttributes from github.com/LerianStudio/lib-observability.
 func ContextWithSpanAttributes(ctx context.Context, kv ...attribute.KeyValue) context.Context {
 	if ctx == nil {
@@ -279,8 +285,8 @@ func ContextWithSpanAttributes(ctx context.Context, kv ...attribute.KeyValue) co
 		return ctx
 	}
 
+	ctx = observability.ContextWithSpanAttributes(ctx, kv...)
 	values := cloneContextValues(ctx)
-	// Append to the cloned (independent) slice.
 	values.AttrBag = append(values.AttrBag, kv...)
 
 	return context.WithValue(ctx, CustomContextKey, values)
@@ -288,12 +294,48 @@ func ContextWithSpanAttributes(ctx context.Context, kv ...attribute.KeyValue) co
 
 // AttributesFromContext returns a shallow copy of the AttrBag slice, safe to reuse by processors.
 //
+// Reads both the canonical lib-observability carrier and the legacy lib-commons
+// carrier — see ContextWithSpanAttributes.
+//
 // Deprecated: use AttributesFromContext from github.com/LerianStudio/lib-observability.
 func AttributesFromContext(ctx context.Context) []attribute.KeyValue {
 	if ctx == nil {
 		return nil
 	}
 
+	canonical := observability.AttributesFromContext(ctx)
+	legacy := legacyAttributesFromContext(ctx)
+
+	switch {
+	case len(canonical) == 0:
+		return legacy
+	case len(legacy) == 0:
+		return canonical
+	default:
+		return mergeAttributes(legacy, canonical)
+	}
+}
+
+// ReplaceAttributes resets the current AttrBag with a new set (rarely needed; provided for completeness).
+//
+// Replaces attributes in both the canonical lib-observability carrier and the
+// legacy lib-commons carrier — see ContextWithSpanAttributes.
+//
+// Deprecated: use ReplaceAttributes from github.com/LerianStudio/lib-observability.
+func ReplaceAttributes(ctx context.Context, kv ...attribute.KeyValue) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	ctx = observability.ReplaceAttributes(ctx, kv...)
+	values := cloneContextValues(ctx)
+
+	values.AttrBag = append([]attribute.KeyValue(nil), kv...)
+
+	return context.WithValue(ctx, CustomContextKey, values)
+}
+
+func legacyAttributesFromContext(ctx context.Context) []attribute.KeyValue {
 	if values, ok := ctx.Value(CustomContextKey).(*CustomContextKeyValue); ok && values != nil && len(values.AttrBag) > 0 {
 		out := make([]attribute.KeyValue, len(values.AttrBag))
 		copy(out, values.AttrBag)
@@ -304,20 +346,29 @@ func AttributesFromContext(ctx context.Context) []attribute.KeyValue {
 	return nil
 }
 
-// ReplaceAttributes resets the current AttrBag with a new set (rarely needed; provided for completeness).
-//
-// Deprecated: use ReplaceAttributes from github.com/LerianStudio/lib-observability.
-func ReplaceAttributes(ctx context.Context, kv ...attribute.KeyValue) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
+func mergeAttributes(base, extra []attribute.KeyValue) []attribute.KeyValue {
+	merged := make([]attribute.KeyValue, 0, len(base)+len(extra))
+	merged = append(merged, base...)
+
+	for _, attr := range extra {
+		if containsAttribute(merged, attr) {
+			continue
+		}
+
+		merged = append(merged, attr)
 	}
 
-	values := cloneContextValues(ctx)
-	// Replace with a fresh slice -- the clone already has an independent copy.
-	values.AttrBag = make([]attribute.KeyValue, len(kv))
-	copy(values.AttrBag, kv)
+	return merged
+}
 
-	return context.WithValue(ctx, CustomContextKey, values)
+func containsAttribute(attrs []attribute.KeyValue, target attribute.KeyValue) bool {
+	for _, attr := range attrs {
+		if attr.Key == target.Key && attr.Value.Type() == target.Value.Type() && attr.Value.Emit() == target.Value.Emit() {
+			return true
+		}
+	}
+
+	return false
 }
 
 // ---- Deadline Management ----

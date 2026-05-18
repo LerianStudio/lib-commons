@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	observability "github.com/LerianStudio/lib-observability"
 	"github.com/LerianStudio/lib-observability/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -320,6 +321,20 @@ func TestContextWithSpanAttributes(t *testing.T) {
 		attrs := AttributesFromContext(ctx)
 		assert.Len(t, attrs, 2)
 	})
+
+	t.Run("writes_legacy_and_canonical_attr_bags", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := ContextWithSpanAttributes(context.Background(), attribute.String("tenant.id", "t1"))
+
+		legacy := ctx.Value(CustomContextKey).(*CustomContextKeyValue)
+		require.Len(t, legacy.AttrBag, 1)
+		assert.Equal(t, "tenant.id", string(legacy.AttrBag[0].Key))
+
+		canonical := observability.AttributesFromContext(ctx)
+		require.Len(t, canonical, 1)
+		assert.Equal(t, "tenant.id", string(canonical[0].Key))
+	})
 }
 
 func TestAttributesFromContext(t *testing.T) {
@@ -346,6 +361,18 @@ func TestAttributesFromContext(t *testing.T) {
 		a3 := AttributesFromContext(ctx)
 		assert.Equal(t, "v", a3[0].Value.AsString())
 	})
+
+	t.Run("reads_legacy_attr_bag_without_canonical_carrier", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.WithValue(context.Background(), CustomContextKey, &CustomContextKeyValue{
+			AttrBag: []attribute.KeyValue{attribute.String("legacy", "v")},
+		})
+
+		attrs := AttributesFromContext(ctx)
+		require.Len(t, attrs, 1)
+		assert.Equal(t, "legacy", string(attrs[0].Key))
+	})
 }
 
 func TestReplaceAttributes(t *testing.T) {
@@ -360,4 +387,8 @@ func TestReplaceAttributes(t *testing.T) {
 	attrs := AttributesFromContext(ctx)
 	require.Len(t, attrs, 1)
 	assert.Equal(t, "new", string(attrs[0].Key))
+
+	legacy := ctx.Value(CustomContextKey).(*CustomContextKeyValue)
+	require.Len(t, legacy.AttrBag, 1)
+	assert.Equal(t, "new", string(legacy.AttrBag[0].Key))
 }

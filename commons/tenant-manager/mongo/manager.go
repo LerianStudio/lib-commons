@@ -17,12 +17,12 @@ import (
 
 	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
 	mongolib "github.com/LerianStudio/lib-commons/v5/commons/mongo"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/eviction"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
 	"github.com/LerianStudio/lib-observability/log"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.opentelemetry.io/otel/trace"

@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons"
-	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	otelmetrics "github.com/LerianStudio/lib-observability/metrics"
+	opentelemetry "github.com/LerianStudio/lib-observability/tracing"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -15,9 +15,9 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 
 	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 )
 
 // retryStateEntry holds per-tenant retry state for connection failure resilience.
