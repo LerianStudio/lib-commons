@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
 	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
 	libMongo "github.com/LerianStudio/lib-commons/v5/commons/mongo"
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	observability "github.com/LerianStudio/lib-observability"
 	libLog "github.com/LerianStudio/lib-observability/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 	"github.com/google/uuid"
@@ -952,7 +952,7 @@ func (repo *Repository) idTenantFilter(id uuid.UUID, tenantID string) bson.M {
 }
 
 func (repo *Repository) tracking(ctx context.Context) trace.Tracer {
-	logger, tracer, meter, trackingErr := libCommons.NewTrackingFromContext(ctx)
+	logger, tracer, meter, trackingErr := observability.NewTrackingFromContext(ctx)
 	_ = logger
 	_ = meter
 	_ = trackingErr

@@ -13,9 +13,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/cache"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	observability "github.com/LerianStudio/lib-observability"
 	libLog "github.com/LerianStudio/lib-observability/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 	"go.opentelemetry.io/otel/trace"
@@ -437,7 +437,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 		c.httpClientOnce.Do(func() { c.httpClient = newDefaultHTTPClient() })
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_tenant_config")
 	defer span.End()
@@ -573,7 +573,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 		c.httpClientOnce.Do(func() { c.httpClient = newDefaultHTTPClient() })
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_active_tenants")
 	defer span.End()

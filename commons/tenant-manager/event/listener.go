@@ -10,8 +10,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
+	observability "github.com/LerianStudio/lib-observability"
 	libLog "github.com/LerianStudio/lib-observability/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 )
@@ -83,7 +83,7 @@ func NewTenantEventListener(
 // read messages. Returns immediately after subscription is established.
 // The goroutine runs until Stop is called or the parent context is cancelled.
 func (l *TenantEventListener) Start(ctx context.Context) error {
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	if l.logger != nil {
@@ -155,7 +155,7 @@ func (l *TenantEventListener) listen(ctx context.Context, pubsub *redis.PubSub) 
 // handleMessage parses a single Pub/Sub message and dispatches it to the handler.
 // Parse errors and handler errors are logged and skipped (non-fatal).
 func (l *TenantEventListener) handleMessage(ctx context.Context, msg *redis.Message) {
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	if l.logger != nil {

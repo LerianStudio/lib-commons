@@ -15,12 +15,12 @@ import (
 	"sync"
 	"time"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
 	mongolib "github.com/LerianStudio/lib-commons/v5/commons/mongo"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/eviction"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
+	observability "github.com/LerianStudio/lib-observability"
 	"github.com/LerianStudio/lib-observability/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 	"go.mongodb.org/mongo-driver/mongo"
@@ -584,7 +584,7 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*mongo
 		return nil, errors.New("tenant manager client is required for multi-tenant connections")
 	}
 
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	ctx, span := tracer.Start(ctx, "mongo.create_connection")

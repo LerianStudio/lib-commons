@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
+	observability "github.com/LerianStudio/lib-observability"
 	"github.com/LerianStudio/lib-observability/assert"
 	"github.com/LerianStudio/lib-observability/log"
 	opentelemetry "github.com/LerianStudio/lib-observability/tracing"
@@ -272,7 +272,7 @@ func (dl *RedisLockManager) WithLockOptions(ctx context.Context, lockKey string,
 		return err
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 	safeLockKey := safeLockKeyForLogs(lockKey)
 
 	ctx, span := tracer.Start(ctx, "redis.lock.with_lock")
@@ -359,7 +359,7 @@ func (dl *RedisLockManager) TryLock(ctx context.Context, lockKey string) (LockHa
 		return nil, false, ErrEmptyLockKey
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 	safeLockKey := safeLockKeyForLogs(lockKey)
 
 	ctx, span := tracer.Start(ctx, "redis.lock.try_lock")
