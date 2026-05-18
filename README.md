@@ -1,25 +1,36 @@
 # lib-commons
 
-`lib-commons` is Lerian's shared Go toolkit for service primitives, connectors, observability, and runtime safety.
+`lib-commons` is Lerian's shared Go toolkit for service primitives, connectors, HTTP/server utilities, security, resilience, tenant-manager primitives, outbox, DLQ, certificate, JWT, and transaction helpers.
 
-The current major API surface is **v5**. If you are migrating from older `lib-commons` code, see `MIGRATION_MAP.md`.
+The current API surface is published on the **v5 minor line**. The v5 split-library line intentionally extracts observability/logging/runtime instrumentation to `lib-observability`, runtime configuration to `lib-systemplane`, and CloudEvents/Kafka streaming to `lib-streaming`.
 
 ---
 
 **Migrating from older packages?**  
-Use `MIGRATION_MAP.md` as the canonical map for renamed, redesigned, or removed APIs in the unified `lib-commons` line.
+Use the library boundary table below as the canonical direction for renamed, redesigned, removed, or extracted APIs in the split-library `lib-commons` line. Observability, logging, runtime, and assertion APIs are no longer exposed from `lib-commons`; import the owning library directly.
 
 ---
 
 ## Requirements
 
-- Go `1.25.9` or newer
+- Go `1.26.3` or newer
 
 ## Installation
 
 ```bash
 go get github.com/LerianStudio/lib-commons/v5
 ```
+
+## Lerian Library Boundaries
+
+Lerian's shared platform code is split across four libraries:
+
+| Library | Ownership |
+|---------|-----------|
+| `github.com/LerianStudio/lib-commons` | Core helpers, connectors, HTTP/server utilities, security, resilience, tenant-manager primitives, outbox, DLQ, certificate, JWT, transaction helpers |
+| `github.com/LerianStudio/lib-observability` | Logging, zap adapter, tracing, metrics, redaction, panic instrumentation, assertions, observability constants |
+| `github.com/LerianStudio/lib-systemplane` | Runtime configuration, hot reload, systemplane admin routes, tenant-scoped runtime knobs, systemplane contract tests |
+| `github.com/LerianStudio/lib-streaming` | CloudEvents/Kafka streaming, event emitters, streaming DLQs, outbox replay for streaming events |
 
 ## What is in this library
 
@@ -32,14 +43,13 @@ go get github.com/LerianStudio/lib-commons/v5
 - `stringUtils.go`: accent removal, case conversion, UUID placeholder replacement, SHA-256 hashing, server address validation
 - `time.go`: date/time validation, range checking, parsing with end-of-day support
 - `os.go`: environment variable helpers (`GetenvOrDefault`, `GetenvBoolOrDefault`, `GetenvIntOrDefault`), struct population from env tags via `SetConfigFromEnvVars`
-- `commons/constants`: shared constants for datasource status, errors, headers, metadata, pagination, transactions, OTEL attributes, obfuscation values, and `SanitizeMetricLabel` utility
+- `commons/constants`: shared constants for datasource status, errors, headers, metadata, pagination, transactions, and obfuscation values
 
 ### Observability and logging
 
-- `commons/opentelemetry`: telemetry bootstrap (`NewTelemetry`), normalized deployment environment resource attributes (`deployment.environment.name` after trim/lowercase), propagation (HTTP/gRPC/queue), span helpers, redaction (`Redactor` with `RedactionRule` patterns), struct-to-attribute conversion
-- `commons/opentelemetry/metrics`: fluent metrics factory (`NewMetricsFactory`, `NewNopFactory`) with Counter/Gauge/Histogram builders, explicit error returns, `CounterBuilder.WithAttributeSet(attribute.Set)` for callers that already hold a prebuilt OTel attribute set, convenience recorders for accounts/transactions
-- `commons/log`: v2 logging interface (`Logger` with `Log`/`With`/`WithGroup`/`Enabled`/`Sync`), typed `Field` constructors (`String`, `Int`, `Bool`, `Err`, `Any`), `GoLogger` with CWE-117 log-injection prevention, sanitizer (`SafeError`, `SanitizeExternalResponse`)
-- `commons/zap`: zap adapter for `commons/log` with OTEL bridge, `Config`-based construction via `New()`, direct zap convenience methods (`Debug`/`Info`/`Warn`/`Error`), underlying access via `Raw()` and `Level()`
+Observability has moved to `github.com/LerianStudio/lib-observability`. Use that library directly for logging, zap adapters, tracing, metrics, redaction, panic instrumentation, assertions, and observability constants.
+
+The former `commons/opentelemetry`, `commons/opentelemetry/metrics`, `commons/opentelemetry/constants`, `commons/opentelemetry/redaction`, `commons/log`, `commons/zap`, `commons/runtime`, and `commons/assert` packages have been removed from `lib-commons/v5`. Consumers must import `github.com/LerianStudio/lib-observability/{log,zap,assert,runtime,tracing,metrics,constants,redaction}` directly.
 
 ### Data and messaging connectors
 
@@ -47,9 +57,8 @@ go get github.com/LerianStudio/lib-commons/v5
 - `commons/mongo`: `Config`-based client with functional options (`NewClient`), URI builder (`BuildURI`), `Client(ctx)`/`ResolveClient(ctx)` for access, `EnsureIndexes` (variadic), TLS support, credential clearing
 - `commons/redis`: topology-based `Config` (standalone/sentinel/cluster), GCP IAM auth with token refresh, distributed locking via `LockManager` interface (`NewRedisLockManager`, `LockHandle`), `SetPackageLogger` for diagnostics, TLS defaults to a TLS1.2 minimum floor with `AllowLegacyMinVersion` as an explicit temporary compatibility override
 - `commons/rabbitmq`: connection/channel/health helpers for AMQP with `*Context()` variants, `HealthCheck() (bool, error)`, `Close()`/`CloseContext()`, confirmable publisher with broker acks and auto-recovery, DLQ topology utilities, and health-check hardening (`AllowInsecureHealthCheck`, `HealthCheckAllowedHosts`, `RequireHealthCheckAllowedHosts`)
-- `commons/streaming`: CloudEvents 1.0 binary-mode domain-event publisher to Redpanda/Kafka via `franz-go`, with circuit-breaker + transactional-outbox fallback and per-topic DLQ; `Emitter` interface (`Emit`/`Close`/`Healthy`) plus `*Producer` implementing `commons.App`; fail-safe `New(ctx, cfg, opts...)` returns `NoopEmitter` when disabled, strict `NewProducer(ctx, cfg, opts...)` returns `ErrMissingBrokers`; functional options `WithLogger`/`WithMetricsFactory`/`WithTracer`/`WithCircuitBreakerManager`/`WithOutboxRepository`/`WithPartitionKey`/`WithCloseTimeout`/`WithTLSConfig`/`WithSASL`; 8 error classes + 9 sentinels via `IsCallerError`; OTEL observability (6 instruments, `streaming.emit` span, bounded labels — `tenant_id` on spans only); `MockEmitter` + `AssertEventEmitted`/`AssertEventCount`/`AssertTenantID`/`AssertNoEvents`/`WaitForEvent` helpers for unit tests
 - `commons/dlq`: Redis-backed dead letter queue with `New(conn, keyPrefix, maxRetries, opts...)` returning nil when conn is nil (all methods guard nil receiver via `ErrNilHandler`); key operations: `Enqueue` (RPush, stamps `CreatedAt`/`MaxRetries` on first enqueue), `Dequeue` (LPop, at-most-once), `QueueLength`, `ScanQueues` (non-blocking SCAN for background consumers without tenant context), `PruneExhaustedMessages` (dequeue-discard-reenqueue cycle up to limit), `ExtractTenantFromKey`; tenant-scoped Redis keys (`"<prefix><tenantID>:<source>"`), backoff via exponential-with-jitter (base 30s, floor 5s, AWS Full Jitter); functional options `WithLogger`/`WithTracer`/`WithMetrics`/`WithModule`; `DLQMetrics` interface (`RecordRetried`/`RecordExhausted`, nil-safe); `NewConsumer(handler, retryFn, opts...) (*Consumer, error)` for background poll loop — `Run(ctx)` blocks until stop, `Stop()` idempotent, `ProcessOnce(ctx)` exported for tests; consumer options `WithConsumerLogger`/`WithConsumerTracer`/`WithConsumerMetrics`/`WithConsumerModule`/`WithPollInterval`/`WithBatchSize`/`WithSources`; sentinel errors `ErrNilHandler`, `ErrNilRetryFunc`, `ErrMessageExhausted`
-- `commons/systemplane`: dual-backend (Postgres LISTEN/NOTIFY, MongoDB change streams) hot-reload runtime configuration store with typed accessors, `OnChange` subscriptions, admin HTTP routes (`commons/systemplane/admin`), and a backend-agnostic contract test suite (`systemplanetest`); adds tenant-scoped keys (`RegisterTenantScoped`, `GetForTenant`, `SetForTenant`, `DeleteForTenant`, `ListTenantsForKey`, `OnTenantChange`, typed accessor mirrors) with three new admin HTTP routes under `:prefix/:namespace/:key/tenants[/:tenantID]` and the `WithTenantAuthorizer` option — additive and non-breaking; see `commons/systemplane/MIGRATION_TENANT_SCOPED.md` for the adoption guide
+- Streaming has moved to `github.com/LerianStudio/lib-streaming`; runtime configuration has moved to `github.com/LerianStudio/lib-systemplane`.
 
 ### HTTP and server utilities
 
@@ -65,8 +74,6 @@ go get github.com/LerianStudio/lib-commons/v5
 - `commons/circuitbreaker`: `Manager` interface with error-returning constructors (`NewManager`), `TenantAwareManager` tenant/service overloads for isolated per-tenant breakers (tenant-aware methods require non-empty valid tenant IDs; legacy `Manager` methods are the no-tenant/process-wide path), `NewPassthroughManager`/`NewPassthroughTenantAwareManager` for feature-flagged bypass while preserving validation contracts, config validation, preset configs (`DefaultConfig`/`AggressiveConfig`/`ConservativeConfig`/`HTTPServiceConfig`/`DatabaseConfig`), health checker (`NewHealthCheckerWithValidation`), metrics via `WithMetricsFactory` using `tenant_hash` for tenant-aware breakers instead of raw tenant IDs while preserving the legacy no-tenant metric label set
 - `commons/backoff`: exponential backoff with jitter (`ExponentialWithJitter`) and context-aware sleep (`WaitContext`)
 - `commons/errgroup`: error-group concurrency with panic recovery (`WithContext`, `Go`, `Wait`), configurable logger via `SetLogger`
-- `commons/runtime`: panic recovery (`RecoverAndLog`/`RecoverAndCrash`/`RecoverWithPolicy` with `*WithContext` variants), safe goroutines (`SafeGo`/`SafeGoWithContext`/`SafeGoWithContextAndComponent`), panic metrics (`InitPanicMetrics`), span recording (`RecordPanicToSpan`), error reporter (`SetErrorReporter`/`GetErrorReporter`), production mode (`SetProductionMode`/`IsProductionMode`)
-- `commons/assert`: production-safe assertions (`New` + `That`/`NotNil`/`NotEmpty`/`NoError`/`Never`/`Halt`), assertion metrics (`InitAssertionMetrics`), domain predicates (`Positive`/`ValidUUID`/`ValidAmount`/`DebitsEqualCredits`/`TransactionCanTransitionTo`/`BalanceSufficientForRelease` and more)
 - `commons/safe`: panic-safe math (`Divide`/`DivideRound`/`Percentage` on `decimal.Decimal`, `DivideFloat64`), regex with caching (`Compile`/`MatchString`/`FindString`), slices (`First`/`Last`/`At` with `*OrDefault` variants)
 - `commons/security`: sensitive field detection (`IsSensitiveField`), default field lists (`DefaultSensitiveFields`/`DefaultSensitiveFieldsMap`)
 
@@ -102,50 +109,31 @@ go get github.com/LerianStudio/lib-commons/v5
 
 ```go
 import (
-    "context"
-
-    "github.com/LerianStudio/lib-commons/v5/commons/log"
-    "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
+    "github.com/LerianStudio/lib-commons/v5/commons"
 )
 
-func bootstrap() error {
-    logger := log.NewNop()
-
-    tl, err := opentelemetry.NewTelemetry(opentelemetry.TelemetryConfig{
-        LibraryName:               "my-service",
-        ServiceName:               "my-service-api",
-        ServiceVersion:            "2.0.0",
-        DeploymentEnv:             "local",
-        CollectorExporterEndpoint: "localhost:4317",
-        EnableTelemetry:           false, // Set to true when collector is available
-        InsecureExporter:          true,
-        Logger:                    logger,
-    })
+func newRequestID() (string, error) {
+    id, err := commons.GenerateUUIDv7()
     if err != nil {
-        return err
+        return "", err
     }
-    defer tl.ShutdownTelemetry()
 
-    tl.ApplyGlobals()
-
-    _ = context.Background()
-
-    return nil
+    return id.String(), nil
 }
 ```
 
 ## Environment Variables
 
-The following environment variables are recognized by lib-commons:
+The following environment variables are recognized by lib-commons or by canonical sibling libraries that lib-commons integrates with. Observability variables are owned by `lib-observability`.
 
 | Variable | Type | Default | Package | Description |
 | :--- | :--- | :--- | :--- | :--- |
 | `VERSION` | `string` | `"NO-VERSION"` | `commons` | Application version, printed at startup by `InitLocalEnvConfig` |
 | `ENV_NAME` | `string` | `"local"` | `commons` | Environment name; when `"local"`, a `.env` file is loaded automatically |
-| `ENV` | `string` | _(none)_ | `commons/assert` | When set to `"production"`, stack traces are omitted from assertion failures |
-| `GO_ENV` | `string` | _(none)_ | `commons/assert` | Fallback production check (same behavior as `ENV`) |
-| `LOG_LEVEL` | `string` | `"debug"` (dev/local) / `"info"` (other) | `commons/zap` | Log level override (`debug`, `info`, `warn`, `error`); `Config.Level` takes precedence if set |
-| `LOG_ENCODING` | `string` | `"console"` (dev/local) / `"json"` (other) | `commons/zap` | Log output format: `"json"` for structured JSON, `"console"` for human-readable colored output |
+| `ENV` | `string` | _(none)_ | `lib-observability/assert` | When set to `"production"`, stack traces are omitted from assertion failures |
+| `GO_ENV` | `string` | _(none)_ | `lib-observability/assert` | Fallback production check (same behavior as `ENV`) |
+| `LOG_LEVEL` | `string` | `"debug"` (dev/local) / `"info"` (other) | `lib-observability/zap` | Log level override (`debug`, `info`, `warn`, `error`); `Config.Level` takes precedence if set |
+| `LOG_ENCODING` | `string` | `"console"` (dev/local) / `"json"` (other) | `lib-observability/zap` | Log output format: `"json"` for structured JSON, `"console"` for human-readable colored output |
 | `LOG_OBFUSCATION_DISABLED` | `bool` | `false` | `commons/net/http` | Set to `"true"` to disable sensitive-field obfuscation in HTTP access logs (**not recommended in production**) |
 | `METRICS_COLLECTION_INTERVAL` | `duration` | `"5s"` | `commons/net/http` | Background system-metrics collection interval (Go duration format, e.g. `"10s"`, `"1m"`) |
 | `ACCESS_CONTROL_ALLOW_CREDENTIALS` | `bool` | `"false"` | `commons/net/http` | CORS `Access-Control-Allow-Credentials` header value |
@@ -162,12 +150,12 @@ The following environment variables are recognized by lib-commons:
 | `RELAXED_RATE_LIMIT_WINDOW_SEC` | `int` | `60` | `commons/net/http/ratelimit` | Window duration in seconds for `RelaxedTier` |
 | `RATE_LIMIT_REDIS_TIMEOUT_MS` | `int` | `500` | `commons/net/http/ratelimit` | Timeout in milliseconds for Redis operations; exceeded requests follow fail-open/fail-closed policy |
 | `SECURITY_ENFORCEMENT` | `bool` | `false` | `commons` | Enables hard enforcement for configured security-tier checks that otherwise warn during migration phases |
-| `ALLOW_INSECURE_OTEL` | `string` | `""` | `commons/opentelemetry` | Justification override that allows insecure OTEL exporter endpoints in strict tier |
+| `ALLOW_INSECURE_OTEL` | `string` | `""` | `lib-observability/tracing` | Justification override that allows insecure OTEL exporter endpoints in strict tier |
 | `ALLOW_WEBHOOK_PRIVATE_NETWORK` | `string` | `""` | `commons/webhook` | Justification override that enables `WithAllowPrivateNetwork` outside permissive tier for explicit private IP-literal webhook targets |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `string` | _(none)_ | `commons/opentelemetry` | General OTLP endpoint read by the OTel SDK; bare `host:port` values are normalized to `http://host:port` |
-| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `string` | _(none)_ | `commons/opentelemetry` | Traces-specific OTLP endpoint; bare `host:port` values are normalized to `http://host:port` |
-| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | `string` | _(none)_ | `commons/opentelemetry` | Metrics-specific OTLP endpoint; bare `host:port` values are normalized to `http://host:port` |
-| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | `string` | _(none)_ | `commons/opentelemetry` | Logs-specific OTLP endpoint; bare `host:port` values are normalized to `http://host:port` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `string` | _(none)_ | `lib-observability/tracing` | General OTLP endpoint read by the OTel SDK; bare `host:port` values are normalized to `http://host:port` |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `string` | _(none)_ | `lib-observability/tracing` | Traces-specific OTLP endpoint; bare `host:port` values are normalized to `http://host:port` |
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | `string` | _(none)_ | `lib-observability/tracing` | Metrics-specific OTLP endpoint; bare `host:port` values are normalized to `http://host:port` |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | `string` | _(none)_ | `lib-observability/tracing` | Logs-specific OTLP endpoint; bare `host:port` values are normalized to `http://host:port` |
 
 Additionally, `commons.SetConfigFromEnvVars` populates any struct using `env:"VAR_NAME"` field tags, supporting `string`, `bool`, and integer types. Consuming applications define their own variable names through these tags.
 
