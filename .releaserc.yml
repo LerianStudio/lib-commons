@@ -38,6 +38,18 @@ plugins:
     }]
   - "@semantic-release/exec"
 
+  # Plugin to automatically backmerge main → develop after a release,
+  # keeping develop in sync with hotfixes published from main.
+  - ["@saithodev/semantic-release-backmerge", {
+      backmergeBranches: [
+        {from: "main", to: "develop"}
+      ],
+      backmergeStrategy: "merge",
+      message: "chore(release): backmerge ${nextRelease.version} into ${branch.name}",
+      clearWorkspace: true,
+      restoreWorkspace: false
+    }]
+
 branches:
   - name: main
   - name: develop

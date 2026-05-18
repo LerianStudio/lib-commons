@@ -108,9 +108,20 @@ func TestSyncReturnsNoErrorForHealthyLogger(t *testing.T) {
 func assertSyncAllowed(t *testing.T, err error) {
 	t.Helper()
 
-	if err != nil {
-		assert.Contains(t, err.Error(), "bad file descriptor")
+	if err == nil {
+		return
 	}
+
+	// Syncing stdout/stderr in CI is not a tty: Linux returns EBADF
+	// ("bad file descriptor"), GitHub-hosted runners under newer Go
+	// toolchains return EINVAL ("invalid argument"). Both are expected.
+	msg := err.Error()
+	if strings.Contains(msg, "bad file descriptor") ||
+		strings.Contains(msg, "invalid argument") {
+		return
+	}
+
+	t.Fatalf("unexpected Sync error: %v", err)
 }
 
 func parseZapOutput(t *testing.T, output string) []map[string]any {
