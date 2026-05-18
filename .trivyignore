@@ -47,3 +47,44 @@
 #
 CVE-2026-34040
 CVE-2026-33997
+
+# =============================================================================
+# github.com/docker/docker — CVE-2026-41567, CVE-2026-42306, CVE-2026-41568
+# =============================================================================
+#
+# WHY THESE ARE IGNORED
+# ---------------------
+# These CVEs affect Docker daemon archive/copy endpoints:
+#
+#   CVE-2026-41567 (HIGH)   – PUT /containers/{id}/archive may execute container
+#                             payloads during archive extraction.
+#
+#   CVE-2026-42306 (HIGH)   – Race condition in docker cp can allow bind mount
+#                             redirection.
+#
+#   CVE-2026-41568 (MEDIUM) – Race condition in docker cp can allow archive
+#                             creation in an unintended location.
+#
+# WHY WE CANNOT FIX THEM NOW
+# ---------------------------
+# Trivy reports no fixed version for github.com/docker/docker v28.5.2 as of
+# 2026-05-18. We upgraded testcontainers-go from v0.41.0 to v0.42.0 and ran
+# go mod tidy, but the latest published testcontainers release still resolves
+# github.com/docker/docker v28.5.2+incompatible.
+#
+# docker/docker is an INDIRECT dependency, pulled in transitively by
+# testcontainers-go for integration tests. lib-commons itself does not embed or
+# run a Docker daemon in production, and the affected Docker archive/copy paths
+# are not part of the library runtime surface.
+#
+# WHAT TO DO WHEN A FIXED VERSION IS RELEASED
+# -------------------------------------------
+# 1. Remove the three lines below.
+# 2. Upgrade testcontainers-go and/or github.com/docker/docker to the patched
+#    version published upstream.
+# 3. Run:  go mod tidy
+# 4. Verify trivy reports zero findings:  trivy fs --scanners vuln .
+#
+CVE-2026-41567
+CVE-2026-42306
+CVE-2026-41568
