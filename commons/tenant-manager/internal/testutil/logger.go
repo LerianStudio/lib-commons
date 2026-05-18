@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 )
 
 // NewMockLogger returns a no-op logger that satisfies log.Logger.

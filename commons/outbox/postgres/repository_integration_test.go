@@ -17,9 +17,13 @@ import (
 	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/testcontainers/testcontainers-go/wait"
 	"go.opentelemetry.io/otel/trace/noop"
 )
+
+const outboxPostgresStartupTimeout = 2 * time.Minute
 
 type integrationRepoFixture struct {
 	ctx       context.Context
@@ -134,7 +138,7 @@ CREATE TABLE %s (
 func setupOutboxPostgresContainer(t *testing.T) (string, func()) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), outboxPostgresStartupTimeout)
 	defer cancel()
 
 	container, err := tcpostgres.Run(ctx,
@@ -142,7 +146,15 @@ func setupOutboxPostgresContainer(t *testing.T) (string, func()) {
 		tcpostgres.WithDatabase("outbox_it"),
 		tcpostgres.WithUsername("outbox"),
 		tcpostgres.WithPassword("outbox"),
-		tcpostgres.BasicWaitStrategies(),
+		testcontainers.WithWaitStrategyAndDeadline(
+			outboxPostgresStartupTimeout,
+			wait.ForLog("database system is ready to accept connections").
+				WithOccurrence(2).
+				WithStartupTimeout(outboxPostgresStartupTimeout),
+			wait.ForListeningPort("5432/tcp").
+				WithStartupTimeout(outboxPostgresStartupTimeout).
+				WithPollInterval(500*time.Millisecond),
+		),
 	)
 	require.NoError(t, err)
 

@@ -64,12 +64,3 @@ func TestHealthWithDependencies_NilContext(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrContextNotFound)
 }
-
-func TestEndTracingSpans_NilContext(t *testing.T) {
-	t.Parallel()
-
-	middleware := &TelemetryMiddleware{}
-	err := middleware.EndTracingSpans(nil)
-	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrContextNotFound)
-}

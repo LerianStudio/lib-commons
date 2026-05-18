@@ -1,8 +1,8 @@
+//go:build unit
+
 // Copyright (c) 2026 Lerian Studio. All rights reserved.
 // Use of this source code is governed by the Elastic License 2.0
 // that can be found in the LICENSE file.
-
-//go:build unit
 
 package event
 
@@ -20,8 +20,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-observability/log"
 )
 
 // --------------------------------------------------------------------------

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 	"github.com/stretchr/testify/require"
 )
 
@@ -159,6 +159,7 @@ func TestSecurityEnvVarForRule(t *testing.T) {
 		{RuleRateLimitDisabled, EnvAllowRateLimitDisabled},
 		{RuleRateLimitFailOpen, EnvAllowRateLimitFailOpen},
 		{RuleOTELInsecureExporter, EnvAllowInsecureOTEL},
+		{RuleWebhookPrivateNet, EnvAllowWebhookPrivateNet},
 		{"unknown", ""},
 	}
 

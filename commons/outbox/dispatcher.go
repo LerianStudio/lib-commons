@@ -18,9 +18,10 @@ import (
 
 	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
 	"github.com/LerianStudio/lib-commons/v5/commons/backoff"
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
-	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	observability "github.com/LerianStudio/lib-observability"
+	libLog "github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-observability/runtime"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 )
 
 const overflowTenantMetricLabel = "_other"
@@ -442,7 +443,7 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 		return
 	}
 
-	logger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 	if nilcheck.Interface(logger) {
 		logger = dispatcher.logger
 	}

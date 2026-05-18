@@ -121,7 +121,7 @@ func isNilInterface(i any) bool {
 
 	v := reflect.ValueOf(i)
 
-	return v.Kind() == reflect.Ptr && v.IsNil()
+	return v.Kind() == reflect.Pointer && v.IsNil()
 }
 
 // M2MCredentials holds credentials retrieved from the Secret Vault.

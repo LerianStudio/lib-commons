@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/circuitbreaker"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
+	"github.com/LerianStudio/lib-observability/log"
 )
 
 func ExampleManager_Execute() {

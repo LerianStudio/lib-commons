@@ -13,8 +13,9 @@ import (
 	"time"
 
 	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
-	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry/metrics"
+	observability "github.com/LerianStudio/lib-observability"
+	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-observability/metrics"
 	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"
@@ -194,7 +195,7 @@ func (r *Syscmd) ExecCmd(ctx context.Context, name string, arg ...string) ([]byt
 // GetCPUUsage reads the current CPU usage and records it through the MetricsFactory gauge.
 // If factory is nil, the reading is performed but metric recording is skipped.
 func GetCPUUsage(ctx context.Context, factory *metrics.MetricsFactory) {
-	logger := NewLoggerFromContext(ctx)
+	logger := observability.NewLoggerFromContext(ctx)
 
 	out, err := cpu.Percent(100*time.Millisecond, false)
 	if err != nil {
@@ -219,7 +220,7 @@ func GetCPUUsage(ctx context.Context, factory *metrics.MetricsFactory) {
 // GetMemUsage reads the current memory usage and records it through the MetricsFactory gauge.
 // If factory is nil, the reading is performed but metric recording is skipped.
 func GetMemUsage(ctx context.Context, factory *metrics.MetricsFactory) {
-	logger := NewLoggerFromContext(ctx)
+	logger := observability.NewLoggerFromContext(ctx)
 
 	var percentageMem int64 = 0
 

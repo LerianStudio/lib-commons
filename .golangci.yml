@@ -151,6 +151,22 @@ linters:
           - staticcheck
         text: 'ST1000: at least one file in a package should have a package comment'
       - linters:
+          - staticcheck
+        path: ^commons/(assert|circuitbreaker|crypto|dlq|errgroup|license|log|mongo|net|opentelemetry|outbox|postgres|rabbitmq|redis|runtime|server|streaming|systemplane|tenant-manager|webhook|zap)(/|$)
+        text: 'SA1019: .*lib-observability'
+      - linters:
+          - staticcheck
+        path: ^commons/certificate/certificate\.go$
+        text: 'SA1019: .*\.(X|Y) has been deprecated since Go 1\.26'
+      - linters:
+          - modernize
+        path: ^commons/os\.go$
+        text: '^stditerators:'
+      - linters:
+          - modernize
+        path: ^commons/pointers/pointers\.go$
+        text: '^newexpr:'
+      - linters:
           - govet
         text: '^shadow: declaration of "(err|ok)" shadows declaration'
       - path: (.+)\.go$

@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
 	"github.com/LerianStudio/lib-commons/v5/commons/net/http/ratelimit"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
+	libLog "github.com/LerianStudio/lib-observability/log"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"

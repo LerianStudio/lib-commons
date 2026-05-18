@@ -761,6 +761,7 @@ func TestLoadFromFiles_FilePermissions(t *testing.T) {
 		require.NoError(t, createErr)
 		require.NoError(t, pem.Encode(keyFile, &pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
 		require.NoError(t, keyFile.Close())
+		require.NoError(t, os.Chmod(keyPath, 0o644))
 
 		_, _, loadErr := LoadFromFiles(certPath, keyPath)
 		require.Error(t, loadErr)

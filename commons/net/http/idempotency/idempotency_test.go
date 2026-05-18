@@ -15,9 +15,9 @@ import (
 	"time"
 
 	chttp "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	libLog "github.com/LerianStudio/lib-observability/log"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"

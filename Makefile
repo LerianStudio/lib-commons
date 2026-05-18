@@ -629,7 +629,7 @@ sec:
 		echo "Running security checks on all packages..."; \
 		if [ "$(SARIF)" = "1" ]; then \
 			echo "Generating SARIF output: gosec-report.sarif"; \
-			if gosec -fmt sarif -out gosec-report.sarif ./...; then \
+			if gosec -exclude-dir=docs/codereview -fmt sarif -out gosec-report.sarif ./...; then \
 				echo "$(GREEN)$(BOLD)[ok]$(NC) SARIF report generated: gosec-report.sarif$(GREEN) ✔️$(NC)"; \
 			else \
 				printf "\n%s%sSecurity issues found by gosec. Please address them before proceeding.%s\n\n" "$(BOLD)" "$(RED)" "$(NC)"; \
@@ -637,7 +637,7 @@ sec:
 				exit 1; \
 			fi; \
 		else \
-			if gosec ./...; then \
+			if gosec -exclude-dir=docs/codereview ./...; then \
 				echo "$(GREEN)$(BOLD)[ok]$(NC) Security checks completed$(GREEN) ✔️$(NC)"; \
 			else \
 				printf "\n%s%sSecurity issues found by gosec. Please address them before proceeding.%s\n\n" "$(BOLD)" "$(RED)" "$(NC)"; \

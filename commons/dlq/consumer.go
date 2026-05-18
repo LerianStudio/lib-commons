@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
-	libOtel "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
-	libRuntime "github.com/LerianStudio/lib-commons/v5/commons/runtime"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	libLog "github.com/LerianStudio/lib-observability/log"
+	libRuntime "github.com/LerianStudio/lib-observability/runtime"
+	libTracing "github.com/LerianStudio/lib-observability/tracing"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )
@@ -443,7 +443,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 	// Not yet time to retry — re-enqueue at the back so other messages proceed.
 	if !msg.NextRetryAt.IsZero() && now.Before(msg.NextRetryAt) {
 		if err := c.handler.Enqueue(ctx, msg); err != nil {
-			libOtel.HandleSpanError(span, "dlq message lost on re-enqueue", err)
+			libTracing.HandleSpanError(span, "dlq message lost on re-enqueue", err)
 
 			c.logger.Log(ctx, libLog.LevelError, "dlq consumer: message lost — failed to re-enqueue not-yet-ready message",
 				libLog.String("source", msg.Source),
@@ -462,7 +462,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 
 	// Message exhausted — permanently failed, discard.
 	if msg.RetryCount >= msg.MaxRetries {
-		libOtel.HandleSpanError(span, "dlq message exhausted", ErrMessageExhausted)
+		libTracing.HandleSpanError(span, "dlq message exhausted", ErrMessageExhausted)
 
 		metricSource := c.sanitizeMetricSource(msg.Source)
 		c.metrics.RecordExhausted(ctx, metricSource)
@@ -486,7 +486,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 		msg.NextRetryAt = time.Now().UTC().Add(backoffDuration(msg.RetryCount))
 
 		if requeueErr := c.handler.Enqueue(ctx, msg); requeueErr != nil {
-			libOtel.HandleSpanError(span, "dlq message lost on re-enqueue", requeueErr)
+			libTracing.HandleSpanError(span, "dlq message lost on re-enqueue", requeueErr)
 
 			c.logger.Log(ctx, libLog.LevelError, "dlq consumer: message lost — failed to re-enqueue after retry failure",
 				libLog.String("source", msg.Source),

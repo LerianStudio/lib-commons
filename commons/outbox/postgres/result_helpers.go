@@ -5,12 +5,12 @@ import (
 	"database/sql"
 	"fmt"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
+	observability "github.com/LerianStudio/lib-observability"
 	"go.opentelemetry.io/otel/trace"
 )
 
 func tracerFromContext(ctx context.Context) trace.Tracer {
-	logger, tracer, meter, trackingErr := libCommons.NewTrackingFromContext(ctx)
+	logger, tracer, meter, trackingErr := observability.NewTrackingFromContext(ctx)
 	_ = logger
 	_ = meter
 	_ = trackingErr

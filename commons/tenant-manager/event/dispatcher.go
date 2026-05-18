@@ -9,13 +9,13 @@ import (
 	"fmt"
 	"time"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	tmmongo "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/postgres"
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/rabbitmq"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/tenantcache"
+	observability "github.com/LerianStudio/lib-observability"
+	libLog "github.com/LerianStudio/lib-observability/log"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
 )
@@ -151,7 +151,7 @@ func NewEventDispatcher(
 // on the event type. Service-level events are filtered by service name before
 // dispatch. Unknown event types are logged as warnings and skipped (no error returned).
 func (d *EventDispatcher) HandleEvent(ctx context.Context, evt TenantLifecycleEvent) error {
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	if d.logger != nil {

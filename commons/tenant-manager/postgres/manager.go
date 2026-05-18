@@ -13,14 +13,14 @@ import (
 	"sync"
 	"time"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
-	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/eviction"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
+	observability "github.com/LerianStudio/lib-observability"
+	libLog "github.com/LerianStudio/lib-observability/log"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 	"github.com/bxcodec/dbresolver/v2"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.opentelemetry.io/otel/trace"
@@ -632,7 +632,7 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*Postg
 		return nil, errors.New("tenant manager client is required for multi-tenant connections")
 	}
 
-	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	ctx, span := tracer.Start(ctx, "postgres.create_connection")

@@ -3,8 +3,8 @@ package log
 import (
 	"context"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-observability/log"
 )
 
 type TenantAwareLogger struct {

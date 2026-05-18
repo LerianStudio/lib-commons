@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/assert"
-	"github.com/LerianStudio/lib-commons/v5/commons/log"
-	"github.com/LerianStudio/lib-commons/v5/commons/runtime"
+	"github.com/LerianStudio/lib-observability/assert"
+	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-observability/runtime"
 )
 
 // ErrLoggerNil is returned when the Logger is nil and cannot proceed.

@@ -9,6 +9,13 @@
 //   - HMAC-SHA256 signature in X-Webhook-Signature header (versioned format)
 //   - URL query parameters and userinfo stripped from log output to prevent credential leakage
 //
+// WithAllowPrivateNetwork is an intentionally narrow non-production escape
+// hatch. It only relaxes private/loopback blocking for explicit IP-literal
+// targets such as 127.0.0.1 or 10.0.0.5, and only when the active security tier
+// permits it or ALLOW_WEBHOOK_PRIVATE_NETWORK provides an explicit override
+// reason. Hostnames that resolve to private addresses remain blocked, so
+// public-looking names cannot bypass DNS-pinned SSRF validation.
+//
 // # Delivery model
 //
 //   - Concurrent delivery with configurable semaphore (default: 20 goroutines)
