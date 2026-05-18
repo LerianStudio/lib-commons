@@ -9,11 +9,11 @@ import (
 
 	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
 	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
-	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	tmvalkey "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/valkey"
 	"github.com/LerianStudio/lib-observability/assert"
 	"github.com/LerianStudio/lib-observability/log"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"

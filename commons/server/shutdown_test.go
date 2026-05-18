@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/license"
-	"github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/server"
 	"github.com/LerianStudio/lib-observability/log"
+	opentelemetry "github.com/LerianStudio/lib-observability/tracing"
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
