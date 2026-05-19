@@ -89,17 +89,41 @@ var (
 // validatePathSegment checks that a path segment is safe for use in secret paths.
 // It rejects segments containing path traversal characters (/, .., \) and
 // trims leading/trailing whitespace.
+//
+// This is the M2M-flavored wrapper; new code paths should use validatePathSegmentWithErrors
+// to wrap caller-specific sentinels (e.g., External*) instead of M2M*.
 func validatePathSegment(name, value string) (string, error) {
+	return validatePathSegmentWithErrors(name, value, ErrM2MInvalidInput, ErrM2MInvalidPathSegment)
+}
+
+// validatePathSegmentWithErrors is the generic validator that lets callers wrap
+// the result in their own sentinel errors. It rejects segments containing path
+// traversal characters (/, .., \) and trims leading/trailing whitespace.
+func validatePathSegmentWithErrors(name, value string, emptyErr, traversalErr error) (string, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return "", fmt.Errorf("%w: %s is required", ErrM2MInvalidInput, name)
+		return "", fmt.Errorf("%w: %s is required", emptyErr, name)
 	}
 
 	if strings.Contains(trimmed, "/") || strings.Contains(trimmed, "\\") || strings.Contains(trimmed, "..") {
-		return "", fmt.Errorf("%w: %s contains path traversal characters", ErrM2MInvalidPathSegment, name)
+		return "", fmt.Errorf("%w: %s contains path traversal characters", traversalErr, name)
 	}
 
 	return trimmed, nil
+}
+
+// validateOptionalEnv applies the same traversal check to env, accepting empty values.
+func validateOptionalEnv(env string, traversalErr error) (string, error) {
+	cleanEnv := strings.TrimSpace(env)
+	if cleanEnv == "" {
+		return "", nil
+	}
+
+	if strings.Contains(cleanEnv, "/") || strings.Contains(cleanEnv, "\\") || strings.Contains(cleanEnv, "..") {
+		return "", fmt.Errorf("%w: env contains path traversal characters", traversalErr)
+	}
+
+	return cleanEnv, nil
 }
 
 // redactPath returns a safe representation of a secret path for error messages.
@@ -194,15 +218,13 @@ func GetM2MCredentials(ctx context.Context, client SecretsManagerClient, env, te
 	}
 
 	// env is optional (empty for backward compat) but must be safe if provided
-	cleanEnv := strings.TrimSpace(env)
-	if cleanEnv != "" {
-		if strings.Contains(cleanEnv, "/") || strings.Contains(cleanEnv, "\\") || strings.Contains(cleanEnv, "..") {
-			return nil, fmt.Errorf("%w: env contains path traversal characters", ErrM2MInvalidPathSegment)
-		}
+	cleanEnv, err := validateOptionalEnv(env, ErrM2MInvalidPathSegment)
+	if err != nil {
+		return nil, err
 	}
 
 	// Build the secret path
-	secretPath := buildM2MSecretPath(cleanEnv, cleanTenantOrgID, cleanAppName, cleanTargetService)
+	secretPath := BuildM2MSecretPath(cleanEnv, cleanTenantOrgID, cleanAppName, cleanTargetService)
 	redacted := redactPath(secretPath)
 
 	// Fetch the secret from AWS Secrets Manager
@@ -243,14 +265,17 @@ func GetM2MCredentials(ctx context.Context, client SecretsManagerClient, env, te
 	return &creds, nil
 }
 
-// buildM2MSecretPath constructs the secret path for M2M credentials.
+// BuildM2MSecretPath constructs the secret path for M2M credentials.
 //
 // Format: tenants/{env}/{tenantOrgID}/{applicationName}/m2m/{targetService}/credentials
 //
 // When env is empty, the path omits the environment segment for backward compatibility:
 //
 //	tenants/{tenantOrgID}/{applicationName}/m2m/{targetService}/credentials
-func buildM2MSecretPath(env, tenantOrgID, applicationName, targetService string) string {
+//
+// This builder is exported so callers (e.g., provisioning tooling, integration tests)
+// can construct paths without duplicating the convention.
+func BuildM2MSecretPath(env, tenantOrgID, applicationName, targetService string) string {
 	envPrefix := ""
 	if env != "" {
 		envPrefix = env + "/"
@@ -259,23 +284,30 @@ func buildM2MSecretPath(env, tenantOrgID, applicationName, targetService string)
 	return fmt.Sprintf("tenants/%s%s/%s/m2m/%s/credentials", envPrefix, tenantOrgID, applicationName, targetService)
 }
 
-// classifyAWSError maps AWS SDK errors to domain-specific sentinel errors.
+// classifyAWSError maps AWS SDK errors to M2M domain-specific sentinel errors.
 // Secret paths are redacted in returned errors to prevent information leakage.
 func classifyAWSError(err error, secretPath string) error {
+	return classifyAWSErrorWithSentinels(err, secretPath, ErrM2MCredentialsNotFound, ErrM2MVaultAccessDenied, ErrM2MRetrievalFailed)
+}
+
+// classifyAWSErrorWithSentinels is the generic AWS error classifier. Callers
+// pass the sentinel set they want to wrap (M2M or External, etc.). Secret paths
+// are redacted in returned errors to prevent information leakage.
+func classifyAWSErrorWithSentinels(err error, secretPath string, notFound, accessDenied, retrievalFailed error) error {
 	redacted := redactPath(secretPath)
 
 	var notFoundErr *smtypes.ResourceNotFoundException
 	if errors.As(err, &notFoundErr) {
-		return fmt.Errorf("%w at %s", ErrM2MCredentialsNotFound, redacted)
+		return fmt.Errorf("%w at %s", notFound, redacted)
 	}
 
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.ErrorCode() {
 		case "AccessDeniedException", "ExpiredTokenException":
-			return fmt.Errorf("%w: %w", ErrM2MVaultAccessDenied, err)
+			return fmt.Errorf("%w: %w", accessDenied, err)
 		}
 	}
 
-	return fmt.Errorf("%w: %s: %w", ErrM2MRetrievalFailed, redacted, err)
+	return fmt.Errorf("%w: %s: %w", retrievalFailed, redacted, err)
 }
