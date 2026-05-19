@@ -115,7 +115,7 @@ func TestBuildM2MSecretPath(t *testing.T) {
 			t.Parallel()
 
 			// Act
-			path := buildM2MSecretPath(tt.env, tt.tenantOrgID, tt.applicationName, tt.targetService)
+			path := BuildM2MSecretPath(tt.env, tt.tenantOrgID, tt.applicationName, tt.targetService)
 
 			// Assert
 			assert.Equal(t, tt.expectedPath, path)
