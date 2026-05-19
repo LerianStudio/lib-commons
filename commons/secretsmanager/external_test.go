@@ -196,6 +196,16 @@ func TestGetExternalCredentials_InvalidJSON(t *testing.T) {
 			secretValue: `["foo","bar"]`,
 			expectedErr: ErrExternalUnmarshalFailed,
 		},
+		{
+			name:        "JSON object with number value",
+			secretValue: `{"key":123}`,
+			expectedErr: ErrExternalUnmarshalFailed,
+		},
+		{
+			name:        "JSON object with bool value",
+			secretValue: `{"key":true}`,
+			expectedErr: ErrExternalUnmarshalFailed,
+		},
 	}
 
 	for _, tt := range tests {
