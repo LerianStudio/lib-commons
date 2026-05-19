@@ -30,3 +30,12 @@ jobs:
     with:
       enable_changelog: ${{ github.ref == 'refs/heads/main' }}
     secrets: inherit
+
+  backmerge:
+    if: github.ref == 'refs/heads/main'
+    needs: release
+    uses: LerianStudio/github-actions-shared-workflows/.github/workflows/backmerge.yml@v1
+    with:
+      rules: '[{"from": "main", "to": "develop", "mode": "direct-with-pr-fallback"}]'
+      pr_labels: "backmerge,automated"
+    secrets: inherit
