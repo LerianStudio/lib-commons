@@ -3,53 +3,59 @@ package outbox
 import (
 	"fmt"
 
+	libLog "github.com/LerianStudio/lib-observability/log"
+	libMetrics "github.com/LerianStudio/lib-observability/metrics"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )
 
+const outboxMetricUnitEvent = "{event}"
+
 type dispatcherMetrics struct {
-	eventsDispatched  metric.Int64Counter
-	eventsFailed      metric.Int64Counter
-	eventsStateFailed metric.Int64Counter
+	eventsDispatched  *libMetrics.CounterBuilder
+	eventsFailed      *libMetrics.CounterBuilder
+	eventsStateFailed *libMetrics.CounterBuilder
 	dispatchLatency   metric.Float64Histogram
-	queueDepth        metric.Int64Gauge
+	queueDepth        *libMetrics.GaugeBuilder
 }
 
-func newDispatcherMetrics(provider metric.MeterProvider) (dispatcherMetrics, error) {
+func newDispatcherMetrics(provider metric.MeterProvider, logger libLog.Logger) (dispatcherMetrics, error) {
 	if provider == nil {
 		provider = otel.GetMeterProvider()
 	}
 
 	meter := provider.Meter("commons.outbox.dispatcher")
 
-	var (
-		metrics dispatcherMetrics
-		err     error
-	)
+	factory, err := libMetrics.NewMetricsFactory(meter, logger)
+	if err != nil {
+		return dispatcherMetrics{}, fmt.Errorf("create outbox metrics factory: %w", err)
+	}
 
-	metrics.eventsDispatched, err = meter.Int64Counter(
-		"outbox.events.dispatched",
-		metric.WithDescription("Number of outbox events successfully published"),
-		metric.WithUnit("{event}"),
-	)
+	var metrics dispatcherMetrics
+
+	metrics.eventsDispatched, err = factory.Counter(libMetrics.Metric{
+		Name:        "outbox.events.dispatched",
+		Description: "Number of outbox events successfully published",
+		Unit:        outboxMetricUnitEvent,
+	})
 	if err != nil {
 		return dispatcherMetrics{}, fmt.Errorf("create outbox.events.dispatched counter: %w", err)
 	}
 
-	metrics.eventsFailed, err = meter.Int64Counter(
-		"outbox.events.failed",
-		metric.WithDescription("Number of outbox events that failed to publish"),
-		metric.WithUnit("{event}"),
-	)
+	metrics.eventsFailed, err = factory.Counter(libMetrics.Metric{
+		Name:        "outbox.events.failed",
+		Description: "Number of outbox events that failed to publish",
+		Unit:        outboxMetricUnitEvent,
+	})
 	if err != nil {
 		return dispatcherMetrics{}, fmt.Errorf("create outbox.events.failed counter: %w", err)
 	}
 
-	metrics.eventsStateFailed, err = meter.Int64Counter(
-		"outbox.events.state_update_failed",
-		metric.WithDescription("Number of outbox events published but not persisted as published"),
-		metric.WithUnit("{event}"),
-	)
+	metrics.eventsStateFailed, err = factory.Counter(libMetrics.Metric{
+		Name:        "outbox.events.state_update_failed",
+		Description: "Number of outbox events published but not persisted as published",
+		Unit:        outboxMetricUnitEvent,
+	})
 	if err != nil {
 		return dispatcherMetrics{}, fmt.Errorf("create outbox.events.state_update_failed counter: %w", err)
 	}
@@ -63,11 +69,11 @@ func newDispatcherMetrics(provider metric.MeterProvider) (dispatcherMetrics, err
 		return dispatcherMetrics{}, fmt.Errorf("create outbox.dispatch.latency histogram: %w", err)
 	}
 
-	metrics.queueDepth, err = meter.Int64Gauge(
-		"outbox.queue.depth",
-		metric.WithDescription("Number of outbox events selected in a dispatch cycle (pending and reclaimed)"),
-		metric.WithUnit("{event}"),
-	)
+	metrics.queueDepth, err = factory.Gauge(libMetrics.Metric{
+		Name:        "outbox.queue.depth",
+		Description: "Number of outbox events selected in a dispatch cycle (pending and reclaimed)",
+		Unit:        outboxMetricUnitEvent,
+	})
 	if err != nil {
 		return dispatcherMetrics{}, fmt.Errorf("create outbox.queue.depth gauge: %w", err)
 	}

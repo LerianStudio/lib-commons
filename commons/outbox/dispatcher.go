@@ -121,7 +121,7 @@ func NewDispatcher(
 		)
 	}
 
-	metrics, err := newDispatcherMetrics(dispatcher.cfg.MeterProvider)
+	metrics, err := newDispatcherMetrics(dispatcher.cfg.MeterProvider, dispatcher.logger)
 	if err != nil {
 		return nil, fmt.Errorf("init outbox metrics: %w", err)
 	}
@@ -350,7 +350,7 @@ func (dispatcher *Dispatcher) DispatchOnceResult(ctx context.Context) DispatchRe
 
 	dispatcher.addDispatchedEvents(ctx, tenantKey, int64(published))
 	dispatcher.addFailedEvents(ctx, tenantKey, int64(failed))
-	dispatcher.recordDispatchLatency(ctx, tenantKey, time.Since(start).Seconds())
+	dispatcher.recordDispatchLatency(ctx, tenantKey, time.Since(start))
 
 	return DispatchResult{
 		Processed:         processed,
@@ -400,7 +400,14 @@ func (dispatcher *Dispatcher) recordQueueDepth(ctx context.Context, tenantKey st
 		return
 	}
 
-	dispatcher.metrics.queueDepth.Record(ctx, depth, dispatcher.tenantRecordOptions(tenantKey)...)
+	builder := dispatcher.metrics.queueDepth
+	if attr, ok := dispatcher.tenantMetricAttribute(tenantKey); ok {
+		builder = builder.WithAttributes(attr)
+	}
+
+	if err := builder.Set(ctx, depth); err != nil {
+		dispatcher.logMetricError(ctx, "record outbox.queue.depth", err)
+	}
 }
 
 func (dispatcher *Dispatcher) addDispatchedEvents(ctx context.Context, tenantKey string, count int64) {
@@ -408,7 +415,14 @@ func (dispatcher *Dispatcher) addDispatchedEvents(ctx context.Context, tenantKey
 		return
 	}
 
-	dispatcher.metrics.eventsDispatched.Add(ctx, count, dispatcher.tenantAddOptions(tenantKey)...)
+	builder := dispatcher.metrics.eventsDispatched
+	if attr, ok := dispatcher.tenantMetricAttribute(tenantKey); ok {
+		builder = builder.WithAttributes(attr)
+	}
+
+	if err := builder.Add(ctx, count); err != nil {
+		dispatcher.logMetricError(ctx, "record outbox.events.dispatched", err)
+	}
 }
 
 func (dispatcher *Dispatcher) addFailedEvents(ctx context.Context, tenantKey string, count int64) {
@@ -416,7 +430,14 @@ func (dispatcher *Dispatcher) addFailedEvents(ctx context.Context, tenantKey str
 		return
 	}
 
-	dispatcher.metrics.eventsFailed.Add(ctx, count, dispatcher.tenantAddOptions(tenantKey)...)
+	builder := dispatcher.metrics.eventsFailed
+	if attr, ok := dispatcher.tenantMetricAttribute(tenantKey); ok {
+		builder = builder.WithAttributes(attr)
+	}
+
+	if err := builder.Add(ctx, count); err != nil {
+		dispatcher.logMetricError(ctx, "record outbox.events.failed", err)
+	}
 }
 
 func (dispatcher *Dispatcher) addStateUpdateFailure(ctx context.Context, tenantKey string, count int64) {
@@ -424,15 +445,40 @@ func (dispatcher *Dispatcher) addStateUpdateFailure(ctx context.Context, tenantK
 		return
 	}
 
-	dispatcher.metrics.eventsStateFailed.Add(ctx, count, dispatcher.tenantAddOptions(tenantKey)...)
+	builder := dispatcher.metrics.eventsStateFailed
+	if attr, ok := dispatcher.tenantMetricAttribute(tenantKey); ok {
+		builder = builder.WithAttributes(attr)
+	}
+
+	if err := builder.Add(ctx, count); err != nil {
+		dispatcher.logMetricError(ctx, "record outbox.events.state_update_failed", err)
+	}
 }
 
-func (dispatcher *Dispatcher) recordDispatchLatency(ctx context.Context, tenantKey string, latencySeconds float64) {
+func (dispatcher *Dispatcher) recordDispatchLatency(ctx context.Context, tenantKey string, latency time.Duration) {
 	if dispatcher.metrics.dispatchLatency == nil {
 		return
 	}
 
-	dispatcher.metrics.dispatchLatency.Record(ctx, latencySeconds, dispatcher.tenantRecordOptions(tenantKey)...)
+	options := []metric.RecordOption(nil)
+	if attr, ok := dispatcher.tenantMetricAttribute(tenantKey); ok {
+		options = append(options, metric.WithAttributes(attr))
+	}
+
+	dispatcher.metrics.dispatchLatency.Record(ctx, latency.Seconds(), options...)
+}
+
+func (dispatcher *Dispatcher) logMetricError(ctx context.Context, operation string, err error) {
+	if err == nil {
+		return
+	}
+
+	logger := dispatcher.logger
+	if nilcheck.Interface(logger) {
+		logger = libLog.NewNop()
+	}
+
+	logger.Log(ctx, libLog.LevelWarn, "outbox metric recording failed", libLog.String("operation", operation), libLog.Err(err))
 }
 
 // dispatchAcrossTenants intentionally keeps tenant dispatch sequential for per-cycle
@@ -546,22 +592,6 @@ func nonEmptyTenants(tenants []string) []string {
 	}
 
 	return result
-}
-
-func (dispatcher *Dispatcher) tenantAddOptions(tenantKey string) []metric.AddOption {
-	if attr, ok := dispatcher.tenantMetricAttribute(tenantKey); ok {
-		return []metric.AddOption{metric.WithAttributes(attr)}
-	}
-
-	return nil
-}
-
-func (dispatcher *Dispatcher) tenantRecordOptions(tenantKey string) []metric.RecordOption {
-	if attr, ok := dispatcher.tenantMetricAttribute(tenantKey); ok {
-		return []metric.RecordOption{metric.WithAttributes(attr)}
-	}
-
-	return nil
 }
 
 func (dispatcher *Dispatcher) registerRun(cancel context.CancelFunc) bool {
