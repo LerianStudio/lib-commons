@@ -136,7 +136,9 @@ type StaticPasswordAuth struct {
 }
 
 // String returns a redacted representation to prevent accidental credential logging.
-func (StaticPasswordAuth) String() string { return "StaticPasswordAuth{Password:REDACTED}" }
+func (StaticPasswordAuth) String() string {
+	return "StaticPasswordAuth{Password:" + constant.ObfuscatedValue + "}"
+}
 
 // GoString returns a redacted representation for fmt %#v.
 func (a StaticPasswordAuth) GoString() string { return a.String() }
@@ -153,7 +155,7 @@ type GCPIAMAuth struct {
 
 // String returns a redacted representation to prevent accidental credential logging.
 func (a GCPIAMAuth) String() string {
-	return fmt.Sprintf("GCPIAMAuth{ServiceAccount:%s, CredentialsBase64:REDACTED}", a.ServiceAccount)
+	return fmt.Sprintf("GCPIAMAuth{ServiceAccount:%s, CredentialsBase64:%s}", a.ServiceAccount, constant.ObfuscatedValue)
 }
 
 // GoString returns a redacted representation for fmt %#v.

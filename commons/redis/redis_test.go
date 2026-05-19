@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons"
+	constant "github.com/LerianStudio/lib-observability/constants"
 	"github.com/LerianStudio/lib-observability/log"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
@@ -1119,11 +1120,11 @@ func TestValidateConfig_RefreshEveryEqualsTokenLifetime(t *testing.T) {
 func TestStaticPasswordAuth_StringRedactsPassword(t *testing.T) {
 	auth := StaticPasswordAuth{Password: "super-secret-password"}
 	s := auth.String()
-	assert.Contains(t, s, "REDACTED")
+	assert.Contains(t, s, constant.ObfuscatedValue)
 	assert.NotContains(t, s, "super-secret-password")
 
 	gs := auth.GoString()
-	assert.Contains(t, gs, "REDACTED")
+	assert.Contains(t, gs, constant.ObfuscatedValue)
 	assert.NotContains(t, gs, "super-secret-password")
 }
 
@@ -1134,11 +1135,11 @@ func TestGCPIAMAuth_StringRedactsCredentials(t *testing.T) {
 	}
 	s := auth.String()
 	assert.Contains(t, s, "svc@project.iam.gserviceaccount.com")
-	assert.Contains(t, s, "REDACTED")
+	assert.Contains(t, s, constant.ObfuscatedValue)
 	assert.NotContains(t, s, "c2VjcmV0LWtleS1tYXRlcmlhbA==")
 
 	gs := auth.GoString()
-	assert.Contains(t, gs, "REDACTED")
+	assert.Contains(t, gs, constant.ObfuscatedValue)
 	assert.NotContains(t, gs, "c2VjcmV0LWtleS1tYXRlcmlhbA==")
 }
 

@@ -52,6 +52,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/LerianStudio/lib-observability/constants"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
@@ -134,7 +135,7 @@ type M2MCredentials struct {
 
 // String redacts secret material from formatted output.
 func (c M2MCredentials) String() string {
-	return fmt.Sprintf("M2MCredentials{ClientID:%q, ClientSecret:REDACTED}", c.ClientID)
+	return fmt.Sprintf("M2MCredentials{ClientID:%q, ClientSecret:%s}", c.ClientID, constants.ObfuscatedValue)
 }
 
 // GoString redacts secret material from Go-syntax formatted output.

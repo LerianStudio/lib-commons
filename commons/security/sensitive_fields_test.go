@@ -369,37 +369,6 @@ func TestShortSensitiveTokens_ExactMatch(t *testing.T) {
 	}
 }
 
-func TestNormalizeFieldName(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"sessionToken", "session_token"},
-		{"APIKey", "api_key"},
-		{"myPrivateKey", "my_private_key"},
-		{"DateOfBirth", "date_of_birth"},
-		{"simple", "simple"},
-		{"already_snake", "already_snake"},
-		{"HTTPSProxy", "https_proxy"},
-		{"userID", "user_id"},
-		{"", ""},
-		{"X", "x"},
-		{"ABC", "abc"},
-		{"getHTTPResponse", "get_http_response"},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.input, func(t *testing.T) {
-			t.Parallel()
-			result := normalizeFieldName(tt.input)
-			assert.Equal(t, tt.expected, result, "normalizeFieldName(%q)", tt.input)
-		})
-	}
-}
-
 func TestIsSensitiveField_WordBoundaryPositivePath(t *testing.T) {
 	t.Parallel()
 
@@ -488,14 +457,6 @@ func TestIsSensitiveField_ConcurrentAccess(t *testing.T) {
 		assert.True(t, r.userPin, "concurrent: userPin should be sensitive")
 		assert.False(t, r.harmless, "concurrent: harmless should not be sensitive")
 	}
-}
-
-func TestMatchesWordBoundary_EmptyPattern(t *testing.T) {
-	t.Parallel()
-
-	// Empty pattern must return false, not loop forever
-	assert.False(t, matchesWordBoundary("anything", ""), "Empty pattern must return false")
-	assert.False(t, matchesWordBoundary("", ""), "Both empty must return false")
 }
 
 func TestIsSensitiveField_PIIFields(t *testing.T) {

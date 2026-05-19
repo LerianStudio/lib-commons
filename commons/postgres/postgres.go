@@ -788,9 +788,9 @@ func newSanitizedError(err error, prefix string) *SanitizedError {
 
 // sanitizeSensitiveString removes credentials and sensitive paths from a string.
 func sanitizeSensitiveString(s string) string {
-	s = connectionStringCredentialsPattern.ReplaceAllString(s, "://***@")
-	s = connectionStringPasswordPattern.ReplaceAllString(s, "${1}***")
-	s = sslPathPattern.ReplaceAllString(s, "${1}=***")
+	s = connectionStringCredentialsPattern.ReplaceAllString(s, "://"+constant.ObfuscatedValue+"@")
+	s = connectionStringPasswordPattern.ReplaceAllString(s, "${1}"+constant.ObfuscatedValue)
+	s = sslPathPattern.ReplaceAllString(s, "${1}="+constant.ObfuscatedValue)
 
 	return s
 }

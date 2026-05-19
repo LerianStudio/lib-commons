@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	"github.com/LerianStudio/lib-commons/v5/commons/security"
+	"github.com/LerianStudio/lib-observability/redaction"
 )
 
 // Response represents a business error with code, title, and message.
@@ -112,7 +112,7 @@ func ValidateBusinessError(err error, entityType string, args ...any) error {
 func looksLikeSensitiveArg(s string) bool {
 	if idx := strings.IndexByte(s, '='); idx > 0 {
 		key := s[:idx]
-		if security.IsSensitiveField(key) {
+		if redaction.IsSensitiveField(key) {
 			return true
 		}
 	}

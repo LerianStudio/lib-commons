@@ -755,8 +755,8 @@ func sanitizeDriverError(err error) error {
 	}
 
 	msg := err.Error()
-	msg = uriCredentialsPattern.ReplaceAllString(msg, "://***@")
-	msg = uriPasswordParamPattern.ReplaceAllString(msg, "${1}***")
+	msg = uriCredentialsPattern.ReplaceAllString(msg, "://"+constant.ObfuscatedValue+"@")
+	msg = uriPasswordParamPattern.ReplaceAllString(msg, "${1}"+constant.ObfuscatedValue)
 
 	return &SanitizedError{Message: msg, cause: err}
 }

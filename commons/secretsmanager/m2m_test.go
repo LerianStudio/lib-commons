@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/LerianStudio/lib-observability/constants"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
@@ -603,8 +604,8 @@ func TestM2MCredentials_StringRedactsSecret(t *testing.T) {
 	formatted := fmt.Sprintf("%v", creds)
 	goFormatted := fmt.Sprintf("%#v", creds)
 
-	assert.Contains(t, formatted, "ClientSecret:REDACTED")
-	assert.Contains(t, goFormatted, "ClientSecret:REDACTED")
+	assert.Contains(t, formatted, "ClientSecret:"+constants.ObfuscatedValue)
+	assert.Contains(t, goFormatted, "ClientSecret:"+constants.ObfuscatedValue)
 	assert.NotContains(t, formatted, creds.ClientSecret)
 	assert.NotContains(t, goFormatted, creds.ClientSecret)
 	assert.Contains(t, formatted, creds.ClientID)

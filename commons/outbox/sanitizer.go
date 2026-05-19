@@ -3,6 +3,8 @@ package outbox
 import (
 	"regexp"
 	"strings"
+
+	"github.com/LerianStudio/lib-observability/constants"
 )
 
 // sanitizeErrorForStorage redacts sensitive values and enforces bounded length
@@ -11,7 +13,7 @@ const maxErrorLength = 512
 
 const errorTruncatedSuffix = "... (truncated)"
 
-const redactedValue = "[REDACTED]"
+const redactedValue = constants.ObfuscatedValue
 
 type sensitiveDataPattern struct {
 	pattern     *regexp.Regexp

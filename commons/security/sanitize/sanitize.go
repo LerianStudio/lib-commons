@@ -11,7 +11,7 @@ package sanitize
 // SecretRedactionMarker is the canonical replacement literal used by
 // lib-commons packages when redacting sensitive values in strings.
 //
-// The literal is intentionally four asterisks — short enough to keep error
+// The literal is intentionally four asterisks - short enough to keep error
 // messages legible, long enough to stand out in logs. Do not shorten or
 // extend without updating every call site in the same change; the marker
 // is an implicit operator contract (dashboards and SIEM rules may key off

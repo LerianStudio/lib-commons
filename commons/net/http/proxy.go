@@ -12,6 +12,7 @@ import (
 	opentelemetry "github.com/LerianStudio/lib-observability/tracing"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.9.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -104,7 +105,7 @@ func ServeReverseProxy(target string, policy ReverseProxyPolicy, res http.Respon
 
 	span.SetAttributes(
 		attribute.String("http.url", targetURL.Host),
-		attribute.String("http.method", req.Method),
+		semconv.HTTPMethodKey.String(req.Method),
 	)
 
 	req = req.WithContext(ctx)

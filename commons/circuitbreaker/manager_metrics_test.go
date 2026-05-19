@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	constant "github.com/LerianStudio/lib-observability/constants"
 	"github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-observability/metrics"
 	"github.com/stretchr/testify/assert"
@@ -404,8 +405,8 @@ func TestMetrics_LongServiceName_Sanitized(t *testing.T) {
 	dps := sumDataPoints(t, m)
 	require.NotEmpty(t, dps)
 
-	// The service label must be truncated to 64 characters
-	truncatedName := longName[:64]
+	// The service label must be truncated to 64 runes.
+	truncatedName := constant.SanitizeMetricLabel(longName)
 
 	found := false
 

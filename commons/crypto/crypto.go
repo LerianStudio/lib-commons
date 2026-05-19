@@ -14,6 +14,7 @@ import (
 	"io"
 	"reflect"
 
+	constant "github.com/LerianStudio/lib-observability/constants"
 	libLog "github.com/LerianStudio/lib-observability/log"
 )
 
@@ -55,7 +56,7 @@ func (c *Crypto) String() string {
 		return "<nil>"
 	}
 
-	return "Crypto{keys:REDACTED}"
+	return "Crypto{keys:" + constant.ObfuscatedValue + "}"
 }
 
 // GoString implements fmt.GoStringer to prevent accidental secret key exposure in %#v formatting.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"testing"
 
+	constant "github.com/LerianStudio/lib-observability/constants"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -83,7 +84,7 @@ func TestNilReceiver(t *testing.T) {
 func TestRedaction(t *testing.T) {
 	t.Parallel()
 
-	t.Run("String returns REDACTED text", func(t *testing.T) {
+	t.Run("String returns obfuscated text", func(t *testing.T) {
 		t.Parallel()
 
 		c := Crypto{
@@ -92,12 +93,12 @@ func TestRedaction(t *testing.T) {
 		}
 
 		s := c.String()
-		assert.Contains(t, s, "REDACTED")
+		assert.Contains(t, s, constant.ObfuscatedValue)
 		assert.NotContains(t, s, "super-secret-hash-key")
 		assert.NotContains(t, s, "super-secret-encrypt-key")
 	})
 
-	t.Run("GoString returns REDACTED text", func(t *testing.T) {
+	t.Run("GoString returns obfuscated text", func(t *testing.T) {
 		t.Parallel()
 
 		c := Crypto{
@@ -106,7 +107,7 @@ func TestRedaction(t *testing.T) {
 		}
 
 		s := c.GoString()
-		assert.Contains(t, s, "REDACTED")
+		assert.Contains(t, s, constant.ObfuscatedValue)
 		assert.NotContains(t, s, "super-secret-hash-key")
 		assert.NotContains(t, s, "super-secret-encrypt-key")
 	})
@@ -122,7 +123,7 @@ func TestRedaction(t *testing.T) {
 		output := fmt.Sprintf("%v", c)
 		assert.NotContains(t, output, "secret-hash-value")
 		assert.NotContains(t, output, "secret-encrypt-value")
-		assert.Contains(t, output, "REDACTED")
+		assert.Contains(t, output, constant.ObfuscatedValue)
 	})
 
 	t.Run("fmt Sprintf %#v does not leak secrets", func(t *testing.T) {
@@ -136,6 +137,6 @@ func TestRedaction(t *testing.T) {
 		output := fmt.Sprintf("%#v", c)
 		assert.NotContains(t, output, "secret-hash-value")
 		assert.NotContains(t, output, "secret-encrypt-value")
-		assert.Contains(t, output, "REDACTED")
+		assert.Contains(t, output, constant.ObfuscatedValue)
 	})
 }

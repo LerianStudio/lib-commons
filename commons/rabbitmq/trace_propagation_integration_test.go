@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	constant "github.com/LerianStudio/lib-observability/constants"
 	libOtel "github.com/LerianStudio/lib-observability/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
@@ -199,7 +200,7 @@ func TestIntegration_TraceContext_SurvivesPublishConsume(t *testing.T) {
 
 	traceHeaders := libOtel.InjectQueueTraceContext(spanCtx)
 	// The W3C propagator uses http.Header which canonicalizes keys to Pascal-case ("Traceparent").
-	require.True(t, containsKeyInsensitive(traceHeaders, "traceparent"),
+	require.True(t, containsKeyInsensitive(traceHeaders, constant.MetadataTraceparent),
 		"trace injection should produce a traceparent header, got keys: %v", mapKeys(traceHeaders))
 
 	amqpHeaders := amqp.Table{}
@@ -277,11 +278,11 @@ func TestIntegration_TraceContext_PrepareQueueHeaders(t *testing.T) {
 	// Verify merge semantics: both base and trace keys must be present.
 	assert.Contains(t, merged, "correlation_id", "merged headers should preserve base header correlation_id")
 	assert.Equal(t, "abc", merged["correlation_id"], "correlation_id value should be unchanged")
-	assert.True(t, containsKeyInsensitive(merged, "traceparent"),
+	assert.True(t, containsKeyInsensitive(merged, constant.MetadataTraceparent),
 		"merged headers should contain injected traceparent, got keys: %v", mapKeys(merged))
 
 	// Original baseHeaders must be unmodified (PrepareQueueHeaders creates a new map).
-	assert.False(t, containsKeyInsensitive(baseHeaders, "traceparent"),
+	assert.False(t, containsKeyInsensitive(baseHeaders, constant.MetadataTraceparent),
 		"PrepareQueueHeaders should not mutate the original baseHeaders map")
 
 	// — Publish with merged headers and verify on the consumer side —
@@ -310,7 +311,7 @@ func TestIntegration_TraceContext_PrepareQueueHeaders(t *testing.T) {
 	msg := consumeOne(t, ch, q.Name)
 
 	require.NotNil(t, msg.Headers, "consumed message should have headers")
-	assert.True(t, containsKeyInsensitive(map[string]any(msg.Headers), "traceparent"),
+	assert.True(t, containsKeyInsensitive(map[string]any(msg.Headers), constant.MetadataTraceparent),
 		"consumed message headers should include traceparent from PrepareQueueHeaders")
 	assert.True(t, containsKeyInsensitive(map[string]any(msg.Headers), "correlation_id"),
 		"consumed message headers should include correlation_id from base headers")

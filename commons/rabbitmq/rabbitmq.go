@@ -1417,7 +1417,7 @@ func redactURLCredentialToken(token string) string {
 		if _, hasPassword := parsedURL.User.Password(); hasPassword {
 			// Use the fallback string-splitter rather than (*url.URL).String().
 			// The url package percent-encodes userinfo at serialize time, which
-			// would turn our marker ("****") into "%2A%2A%2A%2A" — unreadable
+			// would percent-encode our marker, making it unreadable
 			// in logs. Parse is still the authoritative detector for a
 			// userinfo-carrying URL; the replacement itself must stay literal.
 			return redactURLCredentialsFallback(token)

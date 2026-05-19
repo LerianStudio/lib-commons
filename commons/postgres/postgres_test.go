@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v5/commons"
+	constant "github.com/LerianStudio/lib-observability/constants"
 	"github.com/LerianStudio/lib-observability/log"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/golang-migrate/migrate/v4"
@@ -212,8 +213,8 @@ func TestConnectSanitizesSensitiveError(t *testing.T) {
 	err = client.Connect(context.Background())
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "supersecret")
-	assert.Contains(t, err.Error(), "://***@")
-	assert.Contains(t, err.Error(), "password=***")
+	assert.Contains(t, err.Error(), "://"+constant.ObfuscatedValue+"@")
+	assert.Contains(t, err.Error(), "password="+constant.ObfuscatedValue)
 
 	// Verify error chain preservation via SanitizedError
 	var sanitizedErr *SanitizedError
@@ -849,7 +850,7 @@ func TestSanitizeSensitiveString(t *testing.T) {
 		result := sanitizeSensitiveString("failed to connect to postgres://alice:supersecret@db.internal:5432/main")
 		assert.NotContains(t, result, "alice")
 		assert.NotContains(t, result, "supersecret")
-		assert.Contains(t, result, "://***@")
+		assert.Contains(t, result, "://"+constant.ObfuscatedValue+"@")
 	})
 
 	t.Run("masks password= param", func(t *testing.T) {
@@ -857,7 +858,7 @@ func TestSanitizeSensitiveString(t *testing.T) {
 
 		result := sanitizeSensitiveString("connection error password=mysecret host=db")
 		assert.NotContains(t, result, "mysecret")
-		assert.Contains(t, result, "password=***")
+		assert.Contains(t, result, "password="+constant.ObfuscatedValue)
 	})
 
 	t.Run("masks password containing ampersand", func(t *testing.T) {
@@ -865,7 +866,7 @@ func TestSanitizeSensitiveString(t *testing.T) {
 
 		result := sanitizeSensitiveString("connection error password=sec&ret host=db")
 		assert.NotContains(t, result, "sec&ret")
-		assert.Contains(t, result, "password=***")
+		assert.Contains(t, result, "password="+constant.ObfuscatedValue)
 	})
 
 	t.Run("masks sslkey path", func(t *testing.T) {
@@ -873,7 +874,7 @@ func TestSanitizeSensitiveString(t *testing.T) {
 
 		result := sanitizeSensitiveString("host=db sslkey=/etc/ssl/private/key.pem port=5432")
 		assert.NotContains(t, result, "/etc/ssl/private/key.pem")
-		assert.Contains(t, result, "sslkey=***")
+		assert.Contains(t, result, "sslkey="+constant.ObfuscatedValue)
 	})
 
 	t.Run("masks sslcert and sslrootcert", func(t *testing.T) {
@@ -881,8 +882,8 @@ func TestSanitizeSensitiveString(t *testing.T) {
 
 		result := sanitizeSensitiveString("sslcert=/path/cert.pem sslrootcert=/path/ca.pem")
 		assert.NotContains(t, result, "/path/cert.pem")
-		assert.Contains(t, result, "sslcert=***")
-		assert.Contains(t, result, "sslrootcert=***")
+		assert.Contains(t, result, "sslcert="+constant.ObfuscatedValue)
+		assert.Contains(t, result, "sslrootcert="+constant.ObfuscatedValue)
 	})
 
 	t.Run("error without credentials passes through", func(t *testing.T) {
@@ -1272,7 +1273,7 @@ func TestSanitizedError(t *testing.T) {
 		se := newSanitizedError(cause, "failed to open database")
 		assert.NotContains(t, se.Error(), "supersecret")
 		assert.NotContains(t, se.Error(), "alice")
-		assert.Contains(t, se.Error(), "://***@")
+		assert.Contains(t, se.Error(), "://"+constant.ObfuscatedValue+"@")
 	})
 
 	t.Run("Unwrap returns sanitized cause without credentials", func(t *testing.T) {
@@ -1284,7 +1285,7 @@ func TestSanitizedError(t *testing.T) {
 		require.NotNil(t, unwrapped, "Unwrap must return a sanitized cause for error chain traversal")
 		assert.NotContains(t, unwrapped.Error(), "supersecret", "Unwrap must not leak credentials")
 		assert.NotContains(t, unwrapped.Error(), "alice", "Unwrap must not leak credentials")
-		assert.Contains(t, unwrapped.Error(), "://***@", "Unwrap must contain sanitized URI")
+		assert.Contains(t, unwrapped.Error(), "://"+constant.ObfuscatedValue+"@", "Unwrap must contain sanitized URI")
 	})
 
 	t.Run("nil error returns nil", func(t *testing.T) {
