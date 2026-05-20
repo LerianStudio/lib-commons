@@ -29,9 +29,9 @@ import (
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.uber.org/goleak"
 )
 
@@ -41,6 +41,11 @@ func TestMain(m *testing.M) {
 		goleak.IgnoreTopFunction("internal/poll.runtime_pollWait"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
 		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),
+		// v2 driver spawns topology goroutines that wind down asynchronously
+		// after Disconnect; ignore the known shutdown/monitor stacks.
+		goleak.IgnoreAnyFunction("go.mongodb.org/mongo-driver/v2/x/mongo/driver/topology.(*Server).Disconnect"),
+		goleak.IgnoreAnyFunction("go.mongodb.org/mongo-driver/v2/x/mongo/driver/topology.(*rttMonitor).runHellos"),
+		goleak.IgnoreAnyFunction("go.mongodb.org/mongo-driver/v2/x/mongo/driver/topology.(*contextDoneListener).Listen"),
 	)
 }
 
@@ -66,9 +71,9 @@ func startFakeMongoServer(t *testing.T) (*mongo.Client, func()) {
 
 	addr := ln.Addr().String()
 
-	mongoClient, err := mongo.Connect(ctx, options.Client().
+	mongoClient, err := mongo.Connect(options.Client().
 		ApplyURI(fmt.Sprintf("mongodb://%s/?directConnection=true", addr)).
-		SetServerSelectionTimeout(2*time.Second))
+		SetServerSelectionTimeout(2 * time.Second))
 	require.NoError(t, err)
 
 	require.NoError(t, mongoClient.Ping(ctx, nil))

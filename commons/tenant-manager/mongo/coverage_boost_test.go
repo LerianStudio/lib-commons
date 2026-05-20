@@ -78,7 +78,7 @@ func TestSwapMongoConnection_UpdatesEntry(t *testing.T) {
 	m.databaseNames["tenant-swap"] = "olddb"
 
 	newConn := &MongoConnection{DB: nil}
-	m.swapMongoConnection(context.Background(), "tenant-swap", newConn, "newdb")
+	m.swapMongoConnection("tenant-swap", newConn, "newdb")
 
 	m.mu.RLock()
 	stored := m.connections["tenant-swap"]

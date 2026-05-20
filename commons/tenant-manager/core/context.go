@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/bxcodec/dbresolver/v2"
-	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 // nonNilContext returns ctx if non-nil, otherwise context.Background().

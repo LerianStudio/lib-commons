@@ -9,9 +9,8 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 	"github.com/google/uuid"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
-	mongodriver "go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	mongodriver "go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 func (doc document) toBSON(tenantField string) bson.M {
@@ -418,7 +417,7 @@ func timeField(raw bson.M, key string) (time.Time, error) {
 	switch typed := value.(type) {
 	case time.Time:
 		return typed, nil
-	case primitive.DateTime:
+	case bson.DateTime:
 		return typed.Time(), nil
 	default:
 		return time.Time{}, fmt.Errorf("field %q must be time", key)
@@ -434,7 +433,7 @@ func optionalTimeField(raw bson.M, key string) (*time.Time, error) {
 	switch typed := value.(type) {
 	case time.Time:
 		return &typed, nil
-	case primitive.DateTime:
+	case bson.DateTime:
 		timeValue := typed.Time()
 		return &timeValue, nil
 	default:

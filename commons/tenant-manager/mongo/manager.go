@@ -23,13 +23,34 @@ import (
 	observability "github.com/LerianStudio/lib-observability"
 	"github.com/LerianStudio/lib-observability/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.opentelemetry.io/otel/trace"
 )
 
 // mongoPingTimeout is the maximum duration for MongoDB connection health check pings.
 const mongoPingTimeout = 3 * time.Second
+
+// mongoDisconnectTimeout is the maximum duration allowed for a graceful Disconnect.
+// Using a value derived from context.Background() ensures the driver can tear down
+// topology and monitoring goroutines cleanly even if the surrounding request context
+// has already been canceled.
+const mongoDisconnectTimeout = 10 * time.Second
+
+// disconnectClient closes a MongoDB client using a fresh bounded context. The driver
+// requires a non-canceled context to fully shut down topology and monitoring
+// goroutines; reusing a request-scoped context risks leaving background resources
+// in an inconsistent state when the caller's context has already expired.
+func disconnectClient(c *mongo.Client) error {
+	if c == nil {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), mongoDisconnectTimeout)
+	defer cancel()
+
+	return c.Disconnect(ctx)
+}
 
 // defaultConnectionsCheckInterval is the default interval between periodic
 // connection pool settings revalidation checks. When a cached connection is
@@ -153,8 +174,13 @@ func (c *MongoConnection) connectWithTLS(ctx context.Context) error {
 
 	clientOptions.SetTLSConfig(c.tlsConfig)
 
-	mongoClient, err := mongo.Connect(ctx, clientOptions)
+	mongoClient, err := mongo.Connect(clientOptions)
 	if err != nil {
+		return fmt.Errorf("mongo connect with TLS failed: %w", err)
+	}
+
+	if err := mongoClient.Ping(ctx, nil); err != nil {
+		_ = disconnectClient(mongoClient)
 		return fmt.Errorf("mongo connect with TLS failed: %w", err)
 	}
 
@@ -509,7 +535,7 @@ func (p *Manager) reconnectMongo(ctx context.Context, tenantID string, mongoConf
 		return true
 	}
 
-	p.swapMongoConnection(ctx, tenantID, newConn, mongoConfig.Database)
+	p.swapMongoConnection(tenantID, newConn, mongoConfig.Database)
 
 	return true
 }
@@ -543,7 +569,7 @@ func (p *Manager) canStoreMongoConnection(ctx context.Context, tenantID string, 
 // swapMongoConnection replaces the cached connection with newConn under write
 // lock and disconnects the old connection after releasing the lock.
 // Caller must NOT hold p.mu.
-func (p *Manager) swapMongoConnection(ctx context.Context, tenantID string, newConn *MongoConnection, database string) {
+func (p *Manager) swapMongoConnection(tenantID string, newConn *MongoConnection, database string) {
 	p.mu.Lock()
 
 	oldConn := p.connections[tenantID]
@@ -555,12 +581,9 @@ func (p *Manager) swapMongoConnection(ctx context.Context, tenantID string, newC
 
 	// Disconnect the old connection after releasing the lock.
 	if oldConn != nil && oldConn.DB != nil {
-		discCtx, discCancel := context.WithTimeout(ctx, mongoPingTimeout)
-		if discErr := oldConn.DB.Disconnect(discCtx); discErr != nil && p.logger != nil {
+		if discErr := disconnectClient(oldConn.DB); discErr != nil && p.logger != nil {
 			p.logger.Warnf("config change: failed to disconnect old MongoDB for tenant %s: %v", tenantID, discErr)
 		}
-
-		discCancel()
 	}
 
 	if p.logger != nil {
@@ -804,7 +827,7 @@ func (p *Manager) cacheConnection(
 
 	if p.closed {
 		if conn.DB != nil {
-			if discErr := conn.DB.Disconnect(ctx); discErr != nil && p.logger != nil {
+			if discErr := disconnectClient(conn.DB); discErr != nil && p.logger != nil {
 				p.logger.Base().Log(ctx, log.LevelWarn, "failed to disconnect mongo connection on closed manager",
 					log.String("tenant_id", tenantID),
 					log.Err(discErr),
@@ -817,7 +840,7 @@ func (p *Manager) cacheConnection(
 
 	if cached, ok := p.connections[tenantID]; ok && cached != nil && cached.DB != nil {
 		if conn.DB != nil {
-			if discErr := conn.DB.Disconnect(ctx); discErr != nil && p.logger != nil {
+			if discErr := disconnectClient(conn.DB); discErr != nil && p.logger != nil {
 				p.logger.Base().Log(ctx, log.LevelWarn, "failed to disconnect excess mongo connection",
 					log.String("tenant_id", tenantID),
 					log.Err(discErr),
@@ -855,7 +878,7 @@ func (p *Manager) evictLRU(ctx context.Context, logger log.Logger) {
 	// Manager-specific cleanup: disconnect the MongoDB client and remove from all maps.
 	if conn, ok := p.connections[candidateID]; ok {
 		if conn.DB != nil {
-			if discErr := conn.DB.Disconnect(ctx); discErr != nil {
+			if discErr := disconnectClient(conn.DB); discErr != nil {
 				if logger != nil {
 					logger.Log(ctx, log.LevelWarn,
 						"failed to disconnect evicted mongo connection",
@@ -976,7 +999,7 @@ func (p *Manager) Close(ctx context.Context) error {
 
 	for _, conn := range snapshot {
 		if conn.DB != nil {
-			if err := conn.DB.Disconnect(ctx); err != nil {
+			if err := disconnectClient(conn.DB); err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -1012,11 +1035,7 @@ func (p *Manager) CloseConnection(ctx context.Context, tenantID string) error {
 	p.mu.Unlock()
 
 	// Step 2: Outside lock — disconnect the captured connection.
-	if conn.DB != nil {
-		return conn.DB.Disconnect(ctx)
-	}
-
-	return nil
+	return disconnectClient(conn.DB)
 }
 
 // Stats returns connection statistics.

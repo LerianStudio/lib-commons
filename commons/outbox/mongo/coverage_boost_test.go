@@ -9,8 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // -------------------------------------------------------------------
@@ -131,7 +130,7 @@ func TestTimeField_PrimitiveDateTime(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	raw := bson.M{"ts": primitive.NewDateTimeFromTime(now)}
+	raw := bson.M{"ts": bson.NewDateTimeFromTime(now)}
 	val, err := timeField(raw, "ts")
 	require.NoError(t, err)
 	assert.WithinDuration(t, now, val, time.Millisecond)
@@ -183,7 +182,7 @@ func TestOptionalTimeField_PrimitiveDateTime(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	raw := bson.M{"ts": primitive.NewDateTimeFromTime(now)}
+	raw := bson.M{"ts": bson.NewDateTimeFromTime(now)}
 	val, err := optionalTimeField(raw, "ts")
 	require.NoError(t, err)
 	require.NotNil(t, val)
