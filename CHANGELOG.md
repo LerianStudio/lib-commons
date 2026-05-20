@@ -3,7 +3,12 @@
 ## [5.3.0]
 
 - **Changes:**
-  - **mongo**: Migrated from `go.mongodb.org/mongo-driver` v1 to `go.mongodb.org/mongo-driver/v2` (v2.6.0) in-place across `commons/mongo/`, `commons/outbox/mongo/`, `commons/tenant-manager/core/`, and `commons/tenant-manager/mongo/`. Public function signatures are unchanged, but the concrete `*mongo.Database`/`*mongo.Client` types now resolve to v2 — consumers updating to v5.3.0 must update their own MongoDB query code (notably `options.UpdateOne()`/`options.Find()`/`options.Index()` return `*XxxOptionsBuilder`, `primitive.ObjectID` → `bson.ObjectID`, `primitive.DateTime` → `bson.DateTime`, `mongo.Connect` no longer takes `context.Context`, `Collection.Distinct` returns `*DistinctResult` instead of `([]any, error)`, and `WithTransaction` callbacks receive `context.Context` instead of `mongo.SessionContext`).
+  - **mongo**: Migrated from `go.mongodb.org/mongo-driver` v1 to `go.mongodb.org/mongo-driver/v2` (v2.6.0) in-place across `commons/mongo/`, `commons/outbox/mongo/`, `commons/tenant-manager/core/`, and `commons/tenant-manager/mongo/`. Public function signatures are unchanged, but the concrete `*mongo.Database`/`*mongo.Client` types now resolve to v2. Consumers updating to v5.3.0 must adapt their own MongoDB query code for the following v2 API changes:
+    - `options.UpdateOne()`, `options.Find()`, and `options.Index()` now return builder types (`*XxxOptionsBuilder`). Fluent `.SetX()` chains are unchanged.
+    - `primitive.ObjectID` → `bson.ObjectID`, `primitive.DateTime` → `bson.DateTime`, `primitive.NewObjectID()` → `bson.NewObjectID()` (the `primitive` package was merged into `bson` in v2).
+    - `mongo.Connect` no longer accepts a `context.Context` parameter **and no longer pings the server to validate reachability**. If you relied on `Connect` to fail on unreachable deployments, call `client.Ping(ctx, nil)` explicitly after connecting.
+    - `Collection.Distinct` returns `*DistinctResult` instead of `([]any, error)` — use `result.Err()` followed by `result.Decode(&values)`.
+    - `WithTransaction` callbacks receive `context.Context` instead of `mongo.SessionContext`. Use `mongo.SessionFromContext(ctx)` if you need the session.
 
 ## [5.2.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.2.0)
 

@@ -159,7 +159,9 @@ func (c *MongoConnection) connectWithTLS(ctx context.Context) error {
 	}
 
 	if err := mongoClient.Ping(ctx, nil); err != nil {
-		_ = mongoClient.Disconnect(ctx)
+		disconnectCtx, disconnectCancel := context.WithTimeout(context.Background(), mongoPingTimeout)
+		_ = mongoClient.Disconnect(disconnectCtx)
+		disconnectCancel()
 		return fmt.Errorf("mongo connect with TLS failed: %w", err)
 	}
 
