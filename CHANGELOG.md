@@ -1,5 +1,24 @@
 # Lib-commons Changelog
 
+## [5.3.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.3.0)
+
+- Features:
+  - Migrate from `mongo-driver` `v1` to `v2`.
+
+- Fixes:
+  - Address CodeRabbit feedback on PR review.
+  - Record metrics through builders in the outbox component.
+
+- Improvements:
+  - Use bounded context for all Disconnect call sites in the mongo module.
+  - Delegate redaction constants for better observability.
+
+Contributors: @bedatty, @fredcamaral, @jeffersonrodrigues92, @lerian-studio.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.2.1...v5.3.0)
+
+---
+
 ## [5.3.0]
 
 - **Changes:**
