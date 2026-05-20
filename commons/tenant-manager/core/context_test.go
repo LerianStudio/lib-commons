@@ -11,7 +11,7 @@ import (
 
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/assert"
-	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 func TestContextWithTenantID(t *testing.T) {

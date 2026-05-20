@@ -8,9 +8,9 @@ import (
 	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 	"github.com/google/uuid"
-	"go.mongodb.org/mongo-driver/bson"
-	mongodriver "go.mongodb.org/mongo-driver/mongo"
-	mongooptions "go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	mongodriver "go.mongodb.org/mongo-driver/v2/mongo"
+	mongooptions "go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 func (repo *Repository) claimPending(ctx context.Context, limit int, eventType string, spanName string) ([]*outbox.OutboxEvent, error) {

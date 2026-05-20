@@ -23,8 +23,8 @@ import (
 	observability "github.com/LerianStudio/lib-observability"
 	"github.com/LerianStudio/lib-observability/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -153,8 +153,13 @@ func (c *MongoConnection) connectWithTLS(ctx context.Context) error {
 
 	clientOptions.SetTLSConfig(c.tlsConfig)
 
-	mongoClient, err := mongo.Connect(ctx, clientOptions)
+	mongoClient, err := mongo.Connect(clientOptions)
 	if err != nil {
+		return fmt.Errorf("mongo connect with TLS failed: %w", err)
+	}
+
+	if err := mongoClient.Ping(ctx, nil); err != nil {
+		_ = mongoClient.Disconnect(ctx)
 		return fmt.Errorf("mongo connect with TLS failed: %w", err)
 	}
 

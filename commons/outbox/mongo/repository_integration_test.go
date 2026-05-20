@@ -20,9 +20,9 @@ import (
 	"github.com/testcontainers/testcontainers-go"
 	tcmongo "github.com/testcontainers/testcontainers-go/modules/mongodb"
 	"github.com/testcontainers/testcontainers-go/wait"
-	"go.mongodb.org/mongo-driver/bson"
-	mongodriver "go.mongodb.org/mongo-driver/mongo"
-	mongooptions "go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	mongodriver "go.mongodb.org/mongo-driver/v2/mongo"
+	mongooptions "go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
@@ -115,7 +115,7 @@ func waitForMongoPrimary(t *testing.T, uri string) {
 
 	for time.Now().Before(deadline) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		client, err := mongodriver.Connect(ctx, mongooptions.Client().ApplyURI(uri))
+		client, err := mongodriver.Connect(mongooptions.Client().ApplyURI(uri))
 		if err == nil {
 			err = client.Ping(ctx, nil)
 		}
@@ -294,7 +294,7 @@ func TestIntegration_Repository_CreateJoinsMongoTransactionContext(t *testing.T)
 
 	tenantCtx := outbox.ContextWithTenantID(suite.ctx, "tenant-a")
 	var committedID uuid.UUID
-	_, err = commitSession.WithTransaction(tenantCtx, func(sessionCtx mongodriver.SessionContext) (any, error) {
+	_, err = commitSession.WithTransaction(tenantCtx, func(sessionCtx context.Context) (any, error) {
 		event, eventErr := outbox.NewOutboxEvent(sessionCtx, "payment.tx.commit", uuid.New(), []byte(`{"ok":true}`))
 		if eventErr != nil {
 			return nil, eventErr
@@ -322,7 +322,7 @@ func TestIntegration_Repository_CreateJoinsMongoTransactionContext(t *testing.T)
 
 	var rolledBackID uuid.UUID
 	rollbackErr := errors.New("rollback sentinel")
-	_, err = rollbackSession.WithTransaction(tenantCtx, func(sessionCtx mongodriver.SessionContext) (any, error) {
+	_, err = rollbackSession.WithTransaction(tenantCtx, func(sessionCtx context.Context) (any, error) {
 		event, eventErr := outbox.NewOutboxEvent(sessionCtx, "payment.tx.rollback", uuid.New(), []byte(`{"ok":true}`))
 		if eventErr != nil {
 			return nil, eventErr

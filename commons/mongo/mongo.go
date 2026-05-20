@@ -22,9 +22,9 @@ import (
 	"github.com/LerianStudio/lib-observability/log"
 	"github.com/LerianStudio/lib-observability/metrics"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
-	"go.mongodb.org/mongo-driver/bson"
-	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -143,8 +143,8 @@ type clientDeps struct {
 
 func defaultDeps() clientDeps {
 	return clientDeps{
-		connect: func(ctx context.Context, clientOptions *options.ClientOptions) (*mongo.Client, error) {
-			return mongo.Connect(ctx, clientOptions)
+		connect: func(_ context.Context, clientOptions *options.ClientOptions) (*mongo.Client, error) {
+			return mongo.Connect(clientOptions)
 		},
 		ping: func(ctx context.Context, client *mongo.Client) error {
 			return client.Ping(ctx, nil)

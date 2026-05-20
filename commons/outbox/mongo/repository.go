@@ -18,8 +18,8 @@ import (
 	libLog "github.com/LerianStudio/lib-observability/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 	"github.com/google/uuid"
-	"go.mongodb.org/mongo-driver/bson"
-	mongodriver "go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	mongodriver "go.mongodb.org/mongo-driver/v2/mongo"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )
@@ -345,12 +345,19 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 
-	values, err := collection.Distinct(ctx, repo.tenantField, bson.M{
+	distinctResult := collection.Distinct(ctx, repo.tenantField, bson.M{
 		mongoFieldStatus: bson.M{"$in": bson.A{outbox.OutboxStatusPending, outbox.OutboxStatusFailed, outbox.OutboxStatusProcessing}},
 		repo.tenantField: bson.M{"$ne": defaultScopeTenantID},
 	})
-	if err != nil {
+	if err := distinctResult.Err(); err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list tenants", err)
+
+		return nil, fmt.Errorf("listing tenants: %w", err)
+	}
+
+	var values []any
+	if err := distinctResult.Decode(&values); err != nil {
+		libOpentelemetry.HandleSpanError(span, "failed to decode tenants", err)
 
 		return nil, fmt.Errorf("listing tenants: %w", err)
 	}

@@ -1,5 +1,10 @@
 # Lib-commons Changelog
 
+## [5.3.0]
+
+- **Changes:**
+  - **mongo**: Migrated from `go.mongodb.org/mongo-driver` v1 to `go.mongodb.org/mongo-driver/v2` (v2.6.0) in-place across `commons/mongo/`, `commons/outbox/mongo/`, `commons/tenant-manager/core/`, and `commons/tenant-manager/mongo/`. Public function signatures are unchanged, but the concrete `*mongo.Database`/`*mongo.Client` types now resolve to v2 — consumers updating to v5.3.0 must update their own MongoDB query code (notably `options.UpdateOne()`/`options.Find()`/`options.Index()` return `*XxxOptionsBuilder`, `primitive.ObjectID` → `bson.ObjectID`, `primitive.DateTime` → `bson.DateTime`, `mongo.Connect` no longer takes `context.Context`, `Collection.Distinct` returns `*DistinctResult` instead of `([]any, error)`, and `WithTransaction` callbacks receive `context.Context` instead of `mongo.SessionContext`).
+
 ## [5.2.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.2.0)
 
 - **Features:**
