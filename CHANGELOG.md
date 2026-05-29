@@ -1,5 +1,16 @@
 # Lib-commons Changelog
 
+## [5.3.2](https://github.com/LerianStudio/lib-commons/releases/tag/v5.3.2)
+
+- Fixes:
+  - Added `CACertBase64` to `TenantPubSubRedisConfig` to improve security and configuration flexibility.
+
+Contributors: @jeffersonrodrigues92, @lerian-studio.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.3.1...v5.3.2)
+
+---
+
 ## [5.3.1](https://github.com/LerianStudio/lib-commons/releases/tag/v5.3.1)
 
 - Fixes:
