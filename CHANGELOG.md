@@ -1,5 +1,16 @@
 # Lib-commons Changelog
 
+## [5.3.3](https://github.com/LerianStudio/lib-commons/releases/tag/v5.3.3)
+
+- Fixes:
+  - Equalized generic key in multi-module PG/Mongo resolution for tenant-manager middleware.
+
+Contributors: @jeffersonrodrigues92, @lerian-studio.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.3.2...v5.3.3)
+
+---
+
 ## [5.3.2](https://github.com/LerianStudio/lib-commons/releases/tag/v5.3.2)
 
 - Fixes:
