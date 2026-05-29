@@ -69,8 +69,10 @@ func WithMB(mg *tmmongo.Manager, module ...string) TenantMiddlewareOption {
 
 // resolvePostgres resolves PostgreSQL connections and stores them in context.
 // Multi-module path (pgModules) takes precedence over single-manager path (postgres).
-// With a module, ContextWithPG sets only the module-specific key; the generic key
-// is only set by the single-manager path (no module argument).
+// With a module, ContextWithPG sets only the module-specific key. When BOTH a
+// single-manager (WithPG without module) AND module-specific registrations exist,
+// the generic key is also set so generic-key consumers continue to work alongside
+// module-keyed ones.
 func (m *TenantMiddleware) resolvePostgres(ctx context.Context, tenantID string) (context.Context, error) {
 	// Multi-module path: iterate all registered modules.
 	if len(m.pgModules) > 0 {
@@ -89,6 +91,24 @@ func (m *TenantMiddleware) resolvePostgres(ctx context.Context, tenantID string)
 
 			// Sets only the module-specific key; generic key is not overwritten.
 			localCtx = core.ContextWithPG(localCtx, db, module) //nolint:fatcontext // intentional: accumulates module-specific keys across iterations
+		}
+
+		// Equalize the generic key when a single-manager registration was also
+		// made. Without this, callers registering WithPG(p) + WithPG(p, "module")
+		// silently lose the generic key — generic-key consumers
+		// (GetPGContext(ctx) without module) get nil and fail downstream.
+		if m.postgres != nil {
+			conn, err := m.postgres.GetConnection(localCtx, tenantID)
+			if err != nil {
+				return ctx, fmt.Errorf("generic single-manager: %w", err)
+			}
+
+			db, err := conn.GetDB()
+			if err != nil {
+				return ctx, fmt.Errorf("generic single-manager: failed to get database connection: %w", err)
+			}
+
+			localCtx = core.ContextWithPG(localCtx, db)
 		}
 
 		return localCtx, nil
@@ -114,8 +134,10 @@ func (m *TenantMiddleware) resolvePostgres(ctx context.Context, tenantID string)
 
 // resolveMongo resolves MongoDB connections and stores them in context.
 // Multi-module path (mongoModules) takes precedence over single-manager path (mongo).
-// With a module, ContextWithMB sets only the module-specific key; the generic key
-// is only set by the single-manager path (no module argument).
+// With a module, ContextWithMB sets only the module-specific key. When BOTH a
+// single-manager (WithMB without module) AND module-specific registrations exist,
+// the generic key is also set so generic-key consumers continue to work alongside
+// module-keyed ones.
 func (m *TenantMiddleware) resolveMongo(ctx context.Context, tenantID string) (context.Context, error) {
 	// Multi-module path: iterate all registered modules.
 	if len(m.mongoModules) > 0 {
@@ -129,6 +151,19 @@ func (m *TenantMiddleware) resolveMongo(ctx context.Context, tenantID string) (c
 
 			// Sets only the module-specific key; generic key is not overwritten.
 			localCtx = core.ContextWithMB(localCtx, mongoDB, module) //nolint:fatcontext // intentional: accumulates module-specific keys across iterations
+		}
+
+		// Equalize the generic key when a single-manager registration was also
+		// made. Without this, callers registering WithMB(m) + WithMB(m, "module")
+		// silently lose the generic key — generic-key consumers
+		// (GetMBContext(ctx) without module) get nil and fail downstream.
+		if m.mongo != nil {
+			mongoDB, err := m.mongo.GetDatabaseForTenant(localCtx, tenantID)
+			if err != nil {
+				return ctx, fmt.Errorf("generic single-manager: %w", err)
+			}
+
+			localCtx = core.ContextWithMB(localCtx, mongoDB)
 		}
 
 		return localCtx, nil
