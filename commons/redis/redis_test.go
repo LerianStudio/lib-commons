@@ -28,6 +28,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestMain configures package-wide env vars. Most tests connect to
+// miniredis (plaintext); the TLS security gate is opened here so tests
+// can call t.Parallel() safely without each test fighting over the env
+// var. Tests that explicitly exercise the security-gate behavior unset
+// ALLOW_INSECURE_TLS via unsetEnvVar.
+func TestMain(m *testing.M) {
+	if err := os.Setenv(commons.EnvAllowInsecureTLS, "true"); err != nil {
+		panic("redis tests: cannot set ALLOW_INSECURE_TLS: " + err.Error())
+	}
+
+	os.Exit(m.Run())
+}
+
 func unsetEnvVar(t *testing.T, key string) {
 	t.Helper()
 
@@ -204,12 +217,7 @@ func TestClient_New_InvalidConfig(t *testing.T) {
 	}
 }
 
-func TestClient_New_StrictTierBlocksPlaintextBeforeDial(t *testing.T) {
-	t.Setenv("ENV_NAME", commons.Production.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(commons.EnvSecurityTier, "")
-	t.Setenv(commons.EnvSecurityEnforcement, "true")
+func TestClient_New_BlocksPlaintextBeforeDial(t *testing.T) {
 	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
 
 	client, err := New(context.Background(), Config{
@@ -221,16 +229,12 @@ func TestClient_New_StrictTierBlocksPlaintextBeforeDial(t *testing.T) {
 
 	assert.Nil(t, client)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+	assert.Contains(t, err.Error(), "TLS required")
+	assert.Contains(t, err.Error(), commons.EnvAllowInsecureTLS)
 }
 
-func TestClient_New_StrictTierOverrideAllowsPlaintext(t *testing.T) {
-	t.Setenv("ENV_NAME", commons.Production.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(commons.EnvSecurityTier, "")
-	t.Setenv(commons.EnvSecurityEnforcement, "true")
-	t.Setenv(commons.EnvAllowInsecureTLS, "private trusted network")
+func TestClient_New_AllowInsecureTLSPermitsPlaintext(t *testing.T) {
+	t.Setenv(commons.EnvAllowInsecureTLS, "true")
 
 	mr := miniredis.RunT(t)
 	client, err := New(context.Background(), newStandaloneConfig(mr.Addr()))
@@ -239,6 +243,23 @@ func TestClient_New_StrictTierOverrideAllowsPlaintext(t *testing.T) {
 	t.Cleanup(func() {
 		require.NoError(t, client.Close())
 	})
+}
+
+func TestClient_New_LegacyReasonStringIsRejected(t *testing.T) {
+	// Legacy ALLOW_INSECURE_TLS="reason" deploys are NOT truthy under the new
+	// boolean semantics. Operators must migrate to ALLOW_INSECURE_TLS=true.
+	t.Setenv(commons.EnvAllowInsecureTLS, "private trusted network")
+
+	client, err := New(context.Background(), Config{
+		Topology: Topology{
+			Standalone: &StandaloneTopology{Address: "127.0.0.1:1"},
+		},
+		Logger: log.NewNop(),
+	})
+
+	assert.Nil(t, client)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "TLS required")
 }
 
 func TestBuildTLSConfig(t *testing.T) {

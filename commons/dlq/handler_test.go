@@ -4,9 +4,11 @@ package dlq
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v5/commons"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	libLog "github.com/LerianStudio/lib-observability/log"
@@ -15,6 +17,16 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
 )
+
+// TestMain configures package-wide env vars. miniredis is plaintext;
+// allow the TLS security gate to pass for all tests.
+func TestMain(m *testing.M) {
+	if err := os.Setenv(commons.EnvAllowInsecureTLS, "true"); err != nil {
+		panic("dlq tests: cannot set ALLOW_INSECURE_TLS: " + err.Error())
+	}
+
+	os.Exit(m.Run())
+}
 
 // newTestRedisClient creates a *libRedis.Client backed by miniredis.
 // Follows the exact pattern from commons/redis/lock_test.go and

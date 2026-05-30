@@ -18,7 +18,7 @@ var envTestMu sync.Mutex
 //
 //	func TestMyFeature_Production(t *testing.T) {
 //	    commons.SetEnvironmentForTest(t, commons.Production)
-//	    // CurrentTier() now returns TierStrict
+//	    // CurrentEnvironment() now returns Production
 //	}
 func SetEnvironmentForTest(t *testing.T, env Environment) {
 	t.Helper()
@@ -31,7 +31,6 @@ func SetEnvironmentForTest(t *testing.T, env Environment) {
 	prevEnv := currentEnv
 	prevSet := envSet
 	prevDetectedEnvCache := detectedEnvCache
-	prevDetectedTierOverrideCache := detectedTierOverrideCache
 	envMu.RUnlock()
 
 	// Apply the test environment.
@@ -47,7 +46,6 @@ func SetEnvironmentForTest(t *testing.T, env Environment) {
 		currentEnv = prevEnv
 		envSet = prevSet
 		detectedEnvCache = prevDetectedEnvCache
-		detectedTierOverrideCache = prevDetectedTierOverrideCache
 		envMu.Unlock()
 	})
 }
@@ -59,5 +57,4 @@ func resetEnvironment() {
 	currentEnv = ""
 	envSet = false
 	detectedEnvCache = detectedEnvironmentStateCache{}
-	detectedTierOverrideCache = tierOverrideStateCache{}
 }

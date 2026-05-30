@@ -216,14 +216,27 @@ func dsnSSLMode(dsn string) string {
 }
 
 func enforceTLSPolicy(ctx context.Context, logger log.Logger, label, dsn string) error {
-	if commons.CurrentTier() != commons.TierStrict || strings.TrimSpace(dsn) == "" {
+	if strings.TrimSpace(dsn) == "" {
 		return nil
 	}
 
-	tlsDisabled := !dsnRequiresTLS(dsn)
-	result := commons.CheckSecurityRule(commons.RuleTLSRequired, tlsDisabled)
+	if dsnRequiresTLS(dsn) {
+		return nil
+	}
 
-	return commons.EnforceSecurityRule(ctx, logger, "postgres-"+label, result)
+	if !commons.AllowInsecureTLS() {
+		return fmt.Errorf("postgres-%s: TLS required (set %s=true to bypass)", label, commons.EnvAllowInsecureTLS)
+	}
+
+	if logger != nil {
+		logger.Log(ctx, log.LevelWarn, "security bypass active",
+			log.String("feature", "postgres_tls"),
+			log.String("dsn_label", label),
+			log.String("env_var", commons.EnvAllowInsecureTLS),
+		)
+	}
+
+	return nil
 }
 
 // warnInsecureDSN logs a warning if the DSN does not guarantee TLS.

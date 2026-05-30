@@ -232,14 +232,22 @@ func (rc *RabbitMQConnection) currentConnectState() (connectSnapshot, bool, erro
 }
 
 func (rc *RabbitMQConnection) enforceTLSBeforeDial(ctx context.Context, logger log.Logger, connStr string) error {
-	if commons.CurrentTier() != commons.TierStrict {
+	if strings.HasPrefix(strings.ToLower(connStr), "amqps://") {
 		return nil
 	}
 
-	isPlaintext := !strings.HasPrefix(strings.ToLower(connStr), "amqps://")
-	result := commons.CheckSecurityRule(commons.RuleTLSRequired, isPlaintext)
+	if !commons.AllowInsecureTLS() {
+		return fmt.Errorf("rabbitmq: TLS required (set %s=true to bypass)", commons.EnvAllowInsecureTLS)
+	}
 
-	return commons.EnforceSecurityRule(ctx, logger, "rabbitmq", result)
+	if logger != nil {
+		logger.Log(ctx, log.LevelWarn, "security bypass active",
+			log.String("feature", "rabbitmq_tls"),
+			log.String("env_var", commons.EnvAllowInsecureTLS),
+		)
+	}
+
+	return nil
 }
 
 // ConnectContext keeps a singleton connection with rabbitmq.
