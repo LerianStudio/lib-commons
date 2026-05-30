@@ -7,10 +7,12 @@ package event
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/redis/go-redis/v9"
 
 	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
+	"github.com/LerianStudio/lib-commons/v5/commons/events"
 	libLog "github.com/LerianStudio/lib-commons/v5/commons/log"
 	libOpentelemetry "github.com/LerianStudio/lib-commons/v5/commons/opentelemetry"
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
@@ -79,9 +81,17 @@ func NewTenantEventListener(
 	return l, nil
 }
 
-// Start subscribes to the tenant-events pattern and spawns a goroutine to
-// read messages. Returns immediately after subscription is established.
-// The goroutine runs until Stop is called or the parent context is cancelled.
+// Start subscribes to the env-scoped tenant-events channel and spawns a
+// goroutine to read messages. Returns immediately after subscription is
+// established. The goroutine runs until Stop is called or the parent context
+// is cancelled.
+//
+// The runtime environment is resolved via commons.CurrentEnv(), which reads
+// ENVIRONMENT_NAME (preferred) or ENV_NAME (also accepted). Start returns an
+// error if neither variable is set or the value is not one of the accepted
+// environments. Multi-tenant consumers MUST set ENVIRONMENT_NAME (or
+// ENV_NAME) on the pod before this listener can start — otherwise a
+// cross-environment event leak is possible.
 func (l *TenantEventListener) Start(ctx context.Context) error {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
@@ -93,16 +103,24 @@ func (l *TenantEventListener) Start(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "event.tenant_event_listener.start")
 	defer span.End()
 
+	env, err := libCommons.CurrentEnv()
+	if err != nil {
+		libOpentelemetry.HandleSpanError(span, "tenant event listener cannot resolve runtime environment", err)
+		return fmt.Errorf("tenant event listener cannot start: %w", err)
+	}
+
+	channel := events.TenantEventsChannel(env)
+
 	ctx, cancel := context.WithCancel(ctx)
 	l.cancel = cancel
 	l.done = make(chan struct{})
 
-	pubsub := l.redisClient.PSubscribe(ctx, SubscriptionPattern)
+	pubsub := l.redisClient.Subscribe(ctx, channel)
 
 	if l.service != "" {
-		logger.InfofCtx(ctx, "tenant event listener [%s] subscribed to pattern: %s", l.service, SubscriptionPattern)
+		logger.InfofCtx(ctx, "tenant event listener [%s] subscribed to channel: %s", l.service, channel)
 	} else {
-		logger.InfofCtx(ctx, "tenant event listener subscribed to pattern: %s", SubscriptionPattern)
+		logger.InfofCtx(ctx, "tenant event listener subscribed to channel: %s", channel)
 	}
 
 	go l.listen(ctx, pubsub)
