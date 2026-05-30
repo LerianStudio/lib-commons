@@ -1,5 +1,28 @@
 # Lib-commons Changelog
 
+## [Unreleased]
+
+- Features:
+  - Added `commons.CurrentEnv()` and `commons.MustCurrentEnv()` plus `EnvStaging` / `EnvProduction` helpers for consistent environment detection across services.
+  - Added `commons/events.TenantEventsChannel(env)` and `TenantEventsChannelPrefix` to derive the canonical per-environment Redis Pub/Sub channel name for tenant lifecycle events.
+  - Added 7 boolean security toggles in `commons/security.go` replacing the prior override framework: `AllowInsecureTLS`, `RateLimitEnabled` (default true), `AllowRateLimitDisabled`, `AllowRateLimitFailOpen`, `AllowCORSWildcard`, `AllowInsecureOTEL`, `AllowWebhookPrivateNet`. Truthy values: `true`, `1`, `yes`, `on` (case-insensitive). Internal callers (`commons/redis`, `commons/postgres`, `commons/rabbitmq`, `commons/mongo`, `commons/net/http/ratelimit`, `commons/net/http/withCORS`, `commons/webhook`) now use direct boolean checks with WARN log on bypass for audit.
+
+- Removed (breaking, config-level):
+  - `commons/security_override.go` (and the historical `commons/security_tier.go`) are deleted.
+  - `CheckSecurityRule`, `EnforceSecurityRule`, `ReadSecurityOverride`, `SecurityOverride`, `ErrSecurityViolation`, `EffectiveSecurityTier`, `SecurityTier`, `TierStrict`, `TierModerate`, `TierPermissive`, `CurrentTier`, `IsSecurityEnforcementEnabled`, and the `RuleXxx` constants are removed.
+  - `SECURITY_TIER` and `SECURITY_ENFORCEMENT` environment variables are silently ignored at runtime. No warning, no fallback.
+  - Required `"reason"` text in `ALLOW_*="..."` deploys is dropped. Operators using legacy `ALLOW_*="<reason>"` MUST switch to `ALLOW_X=true`; any non-boolean value (including legacy audit strings) is now treated as `false`.
+
+- Migration notes:
+  - Code consuming the removed APIs must switch to the new boolean helpers in `commons/security.go`. No external app in the LerianStudio org references the deleted framework (verified via repo search).
+  - The `ALLOW_WEBHOOK_PRIVATE_NETWORK` env-var name is preserved; only the semantics change to boolean.
+  - `RATE_LIMIT_ENABLED` continues to default to `true` (security-by-default).
+  - TLS enforcement no longer depends on environment: every internal client now requires TLS unless `ALLOW_INSECURE_TLS=true` is set, regardless of `ENV_NAME` / `ENV` / `GO_ENV`.
+
+Contributors: @jeffersonrodrigues92, @lerian-studio.
+
+---
+
 ## [5.3.3](https://github.com/LerianStudio/lib-commons/releases/tag/v5.3.3)
 
 - Fixes:

@@ -55,13 +55,6 @@ const (
 	invalidTenantContextTitle = "invalid_tenant_context"
 	// invalidTenantContextMessage is intentionally generic so raw tenant identifiers never leak.
 	invalidTenantContextMessage = "tenant context is invalid"
-
-	// policyBlockedTitle is the error title returned when strict-tier enforcement
-	// requires rate limiting but the limiter cannot be safely enabled.
-	policyBlockedTitle = "security_policy_violation"
-	// policyBlockedMessage is the default error message returned when the rate
-	// limiter is fail-closed by security policy.
-	policyBlockedMessage = "rate limiting is mandatory in strict tier"
 )
 
 // hashKey returns the first 16 hex characters of the SHA-256 hash of key (64-bit prefix).
@@ -133,8 +126,6 @@ type RateLimiter struct {
 	keyPrefix       string
 	identityFunc    IdentityFunc
 	failOpen        bool
-	policyBlocked   bool
-	policyMessage   string
 	onLimited       func(c *fiber.Ctx, tier Tier)
 	exceededHandler func(c *fiber.Ctx, tier Tier, ttl time.Duration) error
 	redisTimeout    time.Duration
@@ -169,39 +160,33 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 		opt(rl)
 	}
 
-	strictTier := commons.CurrentTier() == commons.TierStrict
-	enforcementEnabled := commons.IsSecurityEnforcementEnabled()
+	// Security policy: fail-open is forbidden by default. Set
+	// ALLOW_RATELIMIT_FAIL_OPEN=true to permit (emits a WARN log line).
+	if rl.failOpen {
+		if !commons.AllowRateLimitFailOpen() {
+			rl.logger.Log(context.Background(), log.LevelError,
+				"rate-limit fail-open coerced to fail-closed; set "+commons.EnvAllowRateLimitFailOpen+"=true to permit fail-open")
 
-	// Security policy: in strict enforced mode, fail-open is coerced to fail-closed
-	// unless an explicit override is present.
-	if strictTier && rl.failOpen {
-		result := commons.CheckSecurityRule(commons.RuleRateLimitFailOpen, true)
-		if err := commons.EnforceSecurityRule(context.Background(), rl.logger, "ratelimit", result); err != nil {
-			rl.logger.Log(context.Background(), log.LevelError, err.Error())
 			rl.failOpen = false
+		} else {
+			rl.logger.Log(context.Background(), log.LevelWarn, "security bypass active",
+				log.String("feature", "ratelimit_fail_open"),
+				log.String("env_var", commons.EnvAllowRateLimitFailOpen),
+			)
 		}
 	}
 
-	rateLimitDisabled := commons.GetenvOrDefault("RATE_LIMIT_ENABLED", "true") == "false"
-	if rateLimitDisabled {
-		if strictTier {
-			// commons.CheckSecurityRule + commons.EnforceSecurityRule already respect
-			// the enforcement mode for the rateLimitDisabled/strictTier path, so we
-			// do not branch on enforcementEnabled here. The Redis-nil path below
-			// checks enforcementEnabled explicitly because it must choose between
-			// returning nil and newPolicyBlockedLimiter(policyBlockedMessage).
-			result := commons.CheckSecurityRule(commons.RuleRateLimitDisabled, true)
-			if err := commons.EnforceSecurityRule(context.Background(), rl.logger, "ratelimit", result); err != nil {
-				logPolicyBlockedStartup(rl.logger,
-					"CRITICAL: rate limiter fail-closed is active; all requests will be rejected with 503 until RATE_LIMIT_ENABLED is restored or an override is configured")
-				rl.logger.Log(context.Background(), log.LevelError, err.Error())
-
-				return newPolicyBlockedLimiter(rl.logger, policyBlockedMessage)
-			}
-		}
-
+	// Rate limiting is enabled by default. Operators can opt out by setting
+	// RATE_LIMIT_ENABLED=false or the legacy ALLOW_RATELIMIT_DISABLED=true.
+	// When explicitly disabled by an operator, return a pass-through limiter
+	// (nil) so existing deployments preserve behavior.
+	if !commons.RateLimitEnabled() || commons.AllowRateLimitDisabled() {
+		rl.logger.Log(context.Background(), log.LevelWarn, "security bypass active",
+			log.String("feature", "ratelimit_disabled"),
+			log.String("env_var", commons.EnvRateLimitEnabled),
+		)
 		rl.logger.Log(context.Background(), log.LevelInfo,
-			"rate limiter disabled via RATE_LIMIT_ENABLED=false; all requests will pass through")
+			"rate limiter disabled via "+commons.EnvRateLimitEnabled+"=false; all requests will pass through")
 
 		return nil
 	}
@@ -212,13 +197,11 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 			rl.logger.Log(context.Background(), log.LevelWarn, "rate limiter assertion unexpectedly passed")
 		}
 
-		if strictTier && enforcementEnabled {
-			logPolicyBlockedStartup(rl.logger,
-				"CRITICAL: rate limiter fail-closed is active; all requests will be rejected with 503 until Redis is configured")
-
-			return newPolicyBlockedLimiter(rl.logger, policyBlockedMessage)
-		}
-
+		// conn==nil means the caller did not configure Redis. Treat that as an
+		// opt-out from rate limiting and return a pass-through nil limiter so
+		// non-Redis deployments continue to work. Operators that want
+		// rate-limiting to be mandatory should fail their own startup if conn
+		// is unavailable.
 		return nil
 	}
 
@@ -235,10 +218,6 @@ func (rl *RateLimiter) WithRateLimit(tier Tier) fiber.Handler {
 		return func(c *fiber.Ctx) error {
 			return c.Next()
 		}
-	}
-
-	if rl.policyBlocked {
-		return rl.blockedHandler()
 	}
 
 	if tier.Window <= 0 || tier.Window.Milliseconds() == 0 {
@@ -294,10 +273,6 @@ func (rl *RateLimiter) WithDynamicRateLimit(fn TierFunc) fiber.Handler {
 		return func(c *fiber.Ctx) error {
 			return c.Next()
 		}
-	}
-
-	if rl.policyBlocked {
-		return rl.blockedHandler()
 	}
 
 	return func(c *fiber.Ctx) error {
@@ -451,44 +426,6 @@ func (rl *RateLimiter) handleRedisError(
 		Title:   serviceUnavailableTitle,
 		Message: serviceUnavailableMessage,
 	})
-}
-
-func newPolicyBlockedLimiter(logger log.Logger, message string) *RateLimiter {
-	if message == "" {
-		message = policyBlockedMessage
-	}
-
-	return &RateLimiter{
-		logger:        logger,
-		identityFunc:  IdentityFromIP(),
-		failOpen:      false,
-		policyBlocked: true,
-		policyMessage: message,
-		redisTimeout:  time.Duration(fallbackRedisTimeoutMS) * time.Millisecond,
-	}
-}
-
-func logPolicyBlockedStartup(logger log.Logger, message string) {
-	if message == "" {
-		return
-	}
-
-	logger.Log(context.Background(), log.LevelError, message)
-}
-
-func (rl *RateLimiter) blockedHandler() fiber.Handler {
-	message := rl.policyMessage
-	if message == "" {
-		message = policyBlockedMessage
-	}
-
-	return func(c *fiber.Ctx) error {
-		return chttp.Respond(c, http.StatusServiceUnavailable, chttp.ErrorResponse{
-			Code:    http.StatusServiceUnavailable,
-			Title:   policyBlockedTitle,
-			Message: message,
-		})
-	}
 }
 
 // handleLimitExceeded handles the case when the rate limit has been exceeded.

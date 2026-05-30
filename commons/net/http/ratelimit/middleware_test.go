@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v5/commons"
 	chttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
@@ -24,6 +26,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestMain opens the TLS security gate for the test binary. miniredis is
+// plaintext; the gate would otherwise reject every libRedis.New call from
+// these tests.
+func TestMain(m *testing.M) {
+	if err := os.Setenv(commons.EnvAllowInsecureTLS, "true"); err != nil {
+		panic("ratelimit tests: cannot set ALLOW_INSECURE_TLS: " + err.Error())
+	}
+
+	os.Exit(m.Run())
+}
 
 // warnSpy is a minimal log.Logger that captures warning messages for assertions.
 type warnSpy struct {
@@ -444,7 +457,10 @@ func TestMiddleware_TierIsolation(t *testing.T) {
 }
 
 func TestMiddleware_FailOpen(t *testing.T) {
-	t.Parallel()
+	// Not parallel: mutates ALLOW_RATELIMIT_FAIL_OPEN via t.Setenv.
+	// Fail-open is forbidden by default under the boolean security model;
+	// opt in explicitly to exercise the legacy behavior.
+	t.Setenv(commons.EnvAllowRateLimitFailOpen, "true")
 
 	mr := miniredis.RunT(t)
 	conn := newTestMiddlewareRedisConnection(t, mr)

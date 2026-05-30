@@ -7,13 +7,26 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v5/commons"
 	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/require"
 )
+
+// TestMain opens the TLS security gate for the test binary. Tests construct
+// libPostgres clients with plaintext DSNs and would otherwise be rejected
+// by the default-deny TLS policy.
+func TestMain(m *testing.M) {
+	if err := os.Setenv(commons.EnvAllowInsecureTLS, "true"); err != nil {
+		panic("outbox/postgres tests: cannot set ALLOW_INSECURE_TLS: " + err.Error())
+	}
+
+	os.Exit(m.Run())
+}
 
 type resolverProviderFunc func(context.Context) (dbresolver.DB, error)
 

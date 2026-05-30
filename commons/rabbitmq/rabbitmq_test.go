@@ -22,6 +22,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestMain opens the TLS security gate for the test binary. Most tests
+// connect to plaintext amqp:// (no AMQPS); the default-deny TLS policy
+// would otherwise reject the dial. Tests that explicitly exercise the
+// security gate unset ALLOW_INSECURE_TLS via unsetEnvVar.
+func TestMain(m *testing.M) {
+	if err := os.Setenv(commons.EnvAllowInsecureTLS, "true"); err != nil {
+		panic("rabbitmq tests: cannot set ALLOW_INSECURE_TLS: " + err.Error())
+	}
+
+	os.Exit(m.Run())
+}
+
 func unsetEnvVar(t *testing.T, key string) {
 	t.Helper()
 
@@ -301,12 +313,7 @@ func TestRabbitMQConnection_Connect(t *testing.T) {
 	})
 }
 
-func TestRabbitMQConnection_ConnectContext_StrictTierBlocksPlaintextBeforeDial(t *testing.T) {
-	t.Setenv("ENV_NAME", commons.Production.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(commons.EnvSecurityTier, "")
-	t.Setenv(commons.EnvSecurityEnforcement, "true")
+func TestRabbitMQConnection_ConnectContext_BlocksPlaintextBeforeDial(t *testing.T) {
 	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
 
 	var dialerCalls atomic.Int32
@@ -321,16 +328,12 @@ func TestRabbitMQConnection_ConnectContext_StrictTierBlocksPlaintextBeforeDial(t
 
 	err := conn.ConnectContext(context.Background())
 	require.Error(t, err)
-	assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+	assert.Contains(t, err.Error(), "TLS required")
+	assert.Contains(t, err.Error(), commons.EnvAllowInsecureTLS)
 	assert.EqualValues(t, 0, dialerCalls.Load())
 }
 
-func TestRabbitMQConnection_EnsureChannelContext_StrictTierBlocksPlaintextBeforeDial(t *testing.T) {
-	t.Setenv("ENV_NAME", commons.Production.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(commons.EnvSecurityTier, "")
-	t.Setenv(commons.EnvSecurityEnforcement, "true")
+func TestRabbitMQConnection_EnsureChannelContext_BlocksPlaintextBeforeDial(t *testing.T) {
 	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
 
 	var dialerCalls atomic.Int32
@@ -345,17 +348,13 @@ func TestRabbitMQConnection_EnsureChannelContext_StrictTierBlocksPlaintextBefore
 
 	err := conn.EnsureChannelContext(context.Background())
 	require.Error(t, err)
-	assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+	assert.Contains(t, err.Error(), "TLS required")
+	assert.Contains(t, err.Error(), commons.EnvAllowInsecureTLS)
 	assert.EqualValues(t, 0, dialerCalls.Load())
 }
 
-func TestRabbitMQConnection_EnsureChannelContext_StrictTierOverrideAllowsDial(t *testing.T) {
-	t.Setenv("ENV_NAME", commons.Production.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(commons.EnvSecurityTier, "")
-	t.Setenv(commons.EnvSecurityEnforcement, "true")
-	t.Setenv(commons.EnvAllowInsecureTLS, "edge proxy terminates TLS")
+func TestRabbitMQConnection_EnsureChannelContext_AllowInsecureTLSPermitsDial(t *testing.T) {
+	t.Setenv(commons.EnvAllowInsecureTLS, "true")
 
 	var dialerCalls atomic.Int32
 	conn := &RabbitMQConnection{

@@ -454,13 +454,18 @@ func (c *Client) connectClientLocked(ctx context.Context) error {
 		return fmt.Errorf("redis connect: build options: %w", err)
 	}
 
-	// Security policy: TLS enforcement in strict tier (production).
+	// Security policy: TLS is required by default. Set ALLOW_INSECURE_TLS=true
+	// to bypass (emits a WARN log line for audit).
 	tlsDisabled := c.cfg.TLS == nil
-	if commons.CurrentTier() == commons.TierStrict {
-		result := commons.CheckSecurityRule(commons.RuleTLSRequired, tlsDisabled)
-		if err := commons.EnforceSecurityRule(ctx, c.logger, "redis", result); err != nil {
-			return fmt.Errorf("redis connect: %w", err)
+	if tlsDisabled {
+		if !commons.AllowInsecureTLS() {
+			return fmt.Errorf("redis connect: TLS required (set %s=true to bypass)", commons.EnvAllowInsecureTLS)
 		}
+
+		c.logger.Log(ctx, log.LevelWarn, "security bypass active",
+			log.String("feature", "redis_tls"),
+			log.String("env_var", commons.EnvAllowInsecureTLS),
+		)
 	}
 
 	rdb := redis.NewUniversalClient(opts)

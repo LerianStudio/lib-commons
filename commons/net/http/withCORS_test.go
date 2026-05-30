@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v5/commons"
@@ -150,10 +151,21 @@ func TestWithCORS_WithLoggerOption(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, resp.Body.Close()) }()
 
-	// The logger should have received at least the wildcard warning
+	// The logger should have received at least the wildcard warning across
+	// all log calls (the deny-all rejection message may follow as the
+	// final entry, so check the full message history).
 	assert.True(t, logger.logCalled, "expected the logger to be called with wildcard warning")
-	assert.Equal(t, libLog.LevelWarn, logger.lastLevel)
-	assert.Contains(t, logger.lastMessage, "AllowOrigins is set to wildcard")
+
+	found := false
+
+	for _, msg := range logger.messages {
+		if strings.Contains(msg, "AllowOrigins is set to wildcard") {
+			found = true
+			break
+		}
+	}
+
+	assert.True(t, found, "expected wildcard warning in messages, got: %v", logger.messages)
 }
 
 // testCORSLogger is a test logger that records whether Log was called.
@@ -161,12 +173,14 @@ type testCORSLogger struct {
 	logCalled   bool
 	lastLevel   libLog.Level
 	lastMessage string
+	messages    []string
 }
 
 func (l *testCORSLogger) Log(_ context.Context, level libLog.Level, msg string, _ ...libLog.Field) {
 	l.logCalled = true
 	l.lastLevel = level
 	l.lastMessage = msg
+	l.messages = append(l.messages, msg)
 }
 func (l *testCORSLogger) With(_ ...libLog.Field) libLog.Logger { return l }
 func (l *testCORSLogger) WithGroup(string) libLog.Logger       { return l }
@@ -197,11 +211,7 @@ func TestWithCORS_InvalidAllowCredentialsFallsBackToDefault(t *testing.T) {
 	require.Equal(t, "", resp.Header.Get(fiber.HeaderAccessControlAllowCredentials))
 }
 
-func TestWithCORS_StrictEnforcedWildcardFallsBackToDenyAll(t *testing.T) {
-	t.Setenv("ENV_NAME", commons.Production.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(commons.EnvSecurityEnforcement, "true")
+func TestWithCORS_WildcardFallsBackToDenyAllByDefault(t *testing.T) {
 	t.Setenv("ACCESS_CONTROL_ALLOW_ORIGIN", "*")
 	t.Setenv("ACCESS_CONTROL_ALLOW_CREDENTIALS", "true")
 
@@ -224,12 +234,8 @@ func TestWithCORS_StrictEnforcedWildcardFallsBackToDenyAll(t *testing.T) {
 	assert.Empty(t, resp.Header.Get(fiber.HeaderAccessControlAllowCredentials))
 }
 
-func TestWithCORS_StrictEnforcedOverrideAllowsWildcard(t *testing.T) {
-	t.Setenv("ENV_NAME", commons.Production.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(commons.EnvSecurityEnforcement, "true")
-	t.Setenv(commons.EnvAllowCORSWildcard, "trusted gateway owns enforcement")
+func TestWithCORS_AllowCORSWildcardPermitsWildcard(t *testing.T) {
+	t.Setenv(commons.EnvAllowCORSWildcard, "true")
 	t.Setenv("ACCESS_CONTROL_ALLOW_ORIGIN", "*")
 
 	app := fiber.New()
