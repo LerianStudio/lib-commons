@@ -29,9 +29,12 @@ const (
 // log line referencing the override.
 func AllowInsecureTLS() bool { return getenvBool(EnvAllowInsecureTLS) }
 
-// RateLimitEnabled returns true unless RATE_LIMIT_ENABLED is set to a
-// falsy value. Default is true (security-by-default).
-func RateLimitEnabled() bool { return getenvBoolDefault(EnvRateLimitEnabled, true) }
+// RateLimitEnabled defaults to false. Apps that need rate limiting MUST
+// explicitly opt-in by setting RATE_LIMIT_ENABLED=true. The previous
+// security-by-default posture was reversed because the legacy framework
+// silently enforced rate limiting on apps that never configured it, which
+// caused operational surprises. Explicit opt-in is the new contract.
+func RateLimitEnabled() bool { return getenvBoolDefault(EnvRateLimitEnabled, false) }
 
 // AllowRateLimitDisabled — legacy alias retained because some apps already
 // set it. Treated identically to !RateLimitEnabled().

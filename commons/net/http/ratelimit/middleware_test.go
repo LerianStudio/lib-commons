@@ -27,12 +27,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestMain opens the TLS security gate for the test binary. miniredis is
-// plaintext; the gate would otherwise reject every libRedis.New call from
-// these tests.
+// TestMain opens the TLS security gate for the test binary and explicitly
+// enables rate limiting for the package. miniredis is plaintext; the gate
+// would otherwise reject every libRedis.New call. RATE_LIMIT_ENABLED now
+// defaults to false (explicit opt-in), so the rate-limit test suite must
+// turn it on to exercise the limiter itself. Individual tests can still
+// override via t.Setenv when verifying the disabled path.
 func TestMain(m *testing.M) {
 	if err := os.Setenv(commons.EnvAllowInsecureTLS, "true"); err != nil {
 		panic("ratelimit tests: cannot set ALLOW_INSECURE_TLS: " + err.Error())
+	}
+
+	if err := os.Setenv(commons.EnvRateLimitEnabled, "true"); err != nil {
+		panic("ratelimit tests: cannot set RATE_LIMIT_ENABLED: " + err.Error())
 	}
 
 	os.Exit(m.Run())
@@ -998,9 +1005,9 @@ func TestNew_RateLimitEnabledEnv(t *testing.T) {
 			wantNil: false,
 		},
 		{
-			name:    "enabled when RATE_LIMIT_ENABLED is empty",
+			name:    "disabled when RATE_LIMIT_ENABLED is empty (default opt-out)",
 			envVal:  "",
-			wantNil: false,
+			wantNil: true,
 		},
 	}
 

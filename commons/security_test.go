@@ -173,32 +173,32 @@ func TestSecurityToggles(t *testing.T) {
 	}
 }
 
-func TestRateLimitEnabledDefaultsTrue(t *testing.T) {
-	t.Run("unset_is_true_by_default", func(t *testing.T) {
-		unsetEnvForTest(t, EnvRateLimitEnabled)
+func TestRateLimitEnabledDefaultsFalse(t *testing.T) {
+	cases := []struct {
+		name string
+		set  bool
+		val  string
+		want bool
+	}{
+		{"unset_is_false_by_default", false, "", false},
+		{"truthy_enables", true, "true", true},
+		{"falsy_disables", true, "false", false},
+		{"garbage_falls_back_to_default_false", true, "garbage", false},
+	}
 
-		if !RateLimitEnabled() {
-			t.Error("RateLimitEnabled() unset = false, want true (security-by-default)")
-		}
-	})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			unsetEnvForTest(t, EnvRateLimitEnabled)
 
-	t.Run("falsy_disables", func(t *testing.T) {
-		unsetEnvForTest(t, EnvRateLimitEnabled)
-		t.Setenv(EnvRateLimitEnabled, "false")
+			if tc.set {
+				t.Setenv(EnvRateLimitEnabled, tc.val)
+			}
 
-		if RateLimitEnabled() {
-			t.Error("RateLimitEnabled() = true with RATE_LIMIT_ENABLED=false")
-		}
-	})
-
-	t.Run("truthy_enables", func(t *testing.T) {
-		unsetEnvForTest(t, EnvRateLimitEnabled)
-		t.Setenv(EnvRateLimitEnabled, "true")
-
-		if !RateLimitEnabled() {
-			t.Error("RateLimitEnabled() = false with RATE_LIMIT_ENABLED=true")
-		}
-	})
+			if got := RateLimitEnabled(); got != tc.want {
+				t.Errorf("RateLimitEnabled() with set=%v val=%q = %v, want %v", tc.set, tc.val, got, tc.want)
+			}
+		})
+	}
 }
 
 // unsetEnvForTest unsets the env var for the duration of the test, restoring

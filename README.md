@@ -141,7 +141,7 @@ The following environment variables are recognized by lib-commons or by canonica
 | `ACCESS_CONTROL_ALLOW_METHODS` | `string` | `"POST, GET, OPTIONS, PUT, DELETE, PATCH"` | `commons/net/http` | CORS `Access-Control-Allow-Methods` header value |
 | `ACCESS_CONTROL_ALLOW_HEADERS` | `string` | `"Accept, Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization"` | `commons/net/http` | CORS `Access-Control-Allow-Headers` header value |
 | `ACCESS_CONTROL_EXPOSE_HEADERS` | `string` | `""` | `commons/net/http` | CORS `Access-Control-Expose-Headers` header value |
-| `RATE_LIMIT_ENABLED` | `bool` | `"true"` | `commons/net/http/ratelimit` | Set to `"false"` to disable rate limiting globally; `New` returns nil and all requests pass through |
+| `RATE_LIMIT_ENABLED` | `bool` | `"false"` | `commons/net/http/ratelimit` | Explicit opt-in: set to `"true"` to enable rate limiting. When unset or falsy, `New` returns nil and all requests pass through |
 | `RATE_LIMIT_MAX` | `int` | `500` | `commons/net/http/ratelimit` | Maximum requests per window for `DefaultTier` |
 | `RATE_LIMIT_WINDOW_SEC` | `int` | `60` | `commons/net/http/ratelimit` | Window duration in seconds for `DefaultTier` |
 | `AGGRESSIVE_RATE_LIMIT_MAX` | `int` | `100` | `commons/net/http/ratelimit` | Maximum requests per window for `AggressiveTier` |

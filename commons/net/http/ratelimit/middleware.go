@@ -131,12 +131,13 @@ type RateLimiter struct {
 	redisTimeout    time.Duration
 }
 
-// New creates a RateLimiter. In permissive or warn-only modes, it returns nil when:
+// New creates a RateLimiter. It returns nil (pass-through) when:
 //   - conn is nil
-//   - RATE_LIMIT_ENABLED environment variable is set to "false"
+//   - RATE_LIMIT_ENABLED is unset or set to a non-truthy value (default)
+//   - ALLOW_RATELIMIT_DISABLED=true is set (legacy opt-out)
 //
-// In strict enforced mode, it falls back to a non-nil fail-closed limiter when
-// rate limiting is mandatory but cannot be safely enabled.
+// Rate limiting is OFF by default. Apps that want enforcement MUST explicitly
+// set RATE_LIMIT_ENABLED=true in their deploy configuration.
 //
 // A nil RateLimiter is safe to use: WithRateLimit returns a pass-through handler.
 func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
@@ -176,17 +177,14 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 		}
 	}
 
-	// Rate limiting is enabled by default. Operators can opt out by setting
-	// RATE_LIMIT_ENABLED=false or the legacy ALLOW_RATELIMIT_DISABLED=true.
-	// When explicitly disabled by an operator, return a pass-through limiter
-	// (nil) so existing deployments preserve behavior.
+	// Rate limiting is disabled by default. Apps that want enforcement MUST
+	// explicitly opt-in via RATE_LIMIT_ENABLED=true. The legacy
+	// ALLOW_RATELIMIT_DISABLED=true continues to short-circuit to nil for
+	// backward compatibility. When disabled, return a pass-through limiter
+	// (nil) so deployments without RATE_LIMIT_ENABLED set behave as no-op.
 	if !commons.RateLimitEnabled() || commons.AllowRateLimitDisabled() {
-		rl.logger.Log(context.Background(), log.LevelWarn, "security bypass active",
-			log.String("feature", "ratelimit_disabled"),
-			log.String("env_var", commons.EnvRateLimitEnabled),
-		)
 		rl.logger.Log(context.Background(), log.LevelInfo,
-			"rate limiter disabled via "+commons.EnvRateLimitEnabled+"=false; all requests will pass through")
+			"rate limiter disabled (default); set "+commons.EnvRateLimitEnabled+"=true to enable enforcement")
 
 		return nil
 	}

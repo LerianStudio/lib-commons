@@ -5,18 +5,25 @@
 - Features:
   - Added `commons.CurrentEnv()` and `commons.MustCurrentEnv()` plus `EnvStaging` / `EnvProduction` helpers for consistent environment detection across services.
   - Added `commons/events.TenantEventsChannel(env)` and `TenantEventsChannelPrefix` to derive the canonical per-environment Redis Pub/Sub channel name for tenant lifecycle events.
-  - Added 7 boolean security toggles in `commons/security.go` replacing the prior override framework: `AllowInsecureTLS`, `RateLimitEnabled` (default true), `AllowRateLimitDisabled`, `AllowRateLimitFailOpen`, `AllowCORSWildcard`, `AllowInsecureOTEL`, `AllowWebhookPrivateNet`. Truthy values: `true`, `1`, `yes`, `on` (case-insensitive). Internal callers (`commons/redis`, `commons/postgres`, `commons/rabbitmq`, `commons/mongo`, `commons/net/http/ratelimit`, `commons/net/http/withCORS`, `commons/webhook`) now use direct boolean checks with WARN log on bypass for audit.
+  - Added 7 boolean security toggles in `commons/security.go` replacing the prior override framework: `AllowInsecureTLS`, `RateLimitEnabled` (default false — explicit opt-in), `AllowRateLimitDisabled`, `AllowRateLimitFailOpen`, `AllowCORSWildcard`, `AllowInsecureOTEL`, `AllowWebhookPrivateNet`. Truthy values: `true`, `1`, `yes`, `on` (case-insensitive). Internal callers (`commons/redis`, `commons/postgres`, `commons/rabbitmq`, `commons/mongo`, `commons/net/http/ratelimit`, `commons/net/http/withCORS`, `commons/webhook`) now use direct boolean checks with WARN log on bypass for audit.
 
 - Removed (breaking, config-level):
   - `commons/security_override.go` (and the historical `commons/security_tier.go`) are deleted.
   - `CheckSecurityRule`, `EnforceSecurityRule`, `ReadSecurityOverride`, `SecurityOverride`, `ErrSecurityViolation`, `EffectiveSecurityTier`, `SecurityTier`, `TierStrict`, `TierModerate`, `TierPermissive`, `CurrentTier`, `IsSecurityEnforcementEnabled`, and the `RuleXxx` constants are removed.
   - `SECURITY_TIER` and `SECURITY_ENFORCEMENT` environment variables are silently ignored at runtime. No warning, no fallback.
   - Required `"reason"` text in `ALLOW_*="..."` deploys is dropped. Operators using legacy `ALLOW_*="<reason>"` MUST switch to `ALLOW_X=true`; any non-boolean value (including legacy audit strings) is now treated as `false`.
+  - BREAKING (operational): RATE_LIMIT_ENABLED default flipped from true to
+    false. Apps that previously relied on the silent default to enable rate
+    limiting MUST now set RATE_LIMIT_ENABLED=true in their deploy configs.
+    Affected consumers (per gh search/code): br-sfn, br-sisbajud,
+    br-spb-bc-correios, br-spb, br-spi, br-sta, go-boilerplate-ddd,
+    lerian-notification, matcher, plugin-access-manager, plugin-auth,
+    plugin-br-bank-transfer, plugin-identity, underwriter.
 
 - Migration notes:
   - Code consuming the removed APIs must switch to the new boolean helpers in `commons/security.go`. No external app in the LerianStudio org references the deleted framework (verified via repo search).
   - The `ALLOW_WEBHOOK_PRIVATE_NETWORK` env-var name is preserved; only the semantics change to boolean.
-  - `RATE_LIMIT_ENABLED` continues to default to `true` (security-by-default).
+  - `RATE_LIMIT_ENABLED` now defaults to `false`. Apps that need rate limiting MUST explicitly set `RATE_LIMIT_ENABLED=true` in their helm / `.env` configs.
   - TLS enforcement no longer depends on environment: every internal client now requires TLS unless `ALLOW_INSECURE_TLS=true` is set, regardless of `ENV_NAME` / `ENV` / `GO_ENV`.
 
 Contributors: @jeffersonrodrigues92, @lerian-studio.
