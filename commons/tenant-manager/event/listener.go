@@ -92,6 +92,10 @@ func NewTenantEventListener(
 // environments. Multi-tenant consumers MUST set ENVIRONMENT_NAME (or
 // ENV_NAME) on the pod before this listener can start — otherwise a
 // cross-environment event leak is possible.
+//
+// Wiring NewTenantEventListener IS the activation of multi-tenant mode.
+// Single-tenant apps that never wire NewTenantEventListener are unaffected
+// by this env-var requirement.
 func (l *TenantEventListener) Start(ctx context.Context) error {
 	baseLogger, tracer, _, _ := libCommons.NewTrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
