@@ -42,6 +42,13 @@ const (
 	ChannelPrefix = "tenant-events"
 
 	// SubscriptionPattern is the glob pattern to subscribe to all tenant event channels.
+	//
+	// Deprecated: The TenantEventListener no longer references this pattern; it
+	// subscribes to the env-scoped channel returned by
+	// commons/events.TenantEventsChannel(commons.CurrentEnv()) instead. The
+	// previous wildcard PSubscribe leaked events across environments. This
+	// constant is retained only for custom subscriber implementations outside
+	// the bundled listener; new code MUST NOT use it.
 	SubscriptionPattern = "tenant-events:*"
 )
 

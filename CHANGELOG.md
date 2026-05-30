@@ -1,5 +1,16 @@
 # Lib-commons Changelog
 
+## [5.4.1](https://github.com/LerianStudio/lib-commons/releases/tag/v5.4.1)
+
+- Fixes:
+  - Listener now subscribes to environment-scoped channels only.
+
+Contributors: @jeffersonrodrigues92, @lerian-studio.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.4.0...v5.4.1)
+
+---
+
 ## [5.4.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.4.0)
 
 - **Features:**
@@ -12,6 +23,12 @@
 ---
 
 ## [Unreleased]
+
+- Fixes:
+  - Multi-tenant event listener (`commons/tenant-manager/event.TenantEventListener`) now subscribes only to the env-scoped channel `tenant-events:{env}:` resolved via `commons.CurrentEnv()`. The previous wildcard `PSubscribe("tenant-events:*")` leaked events across environments (staging consumers receiving production events and vice versa) and defeated the env-scoped channel work shipped in v5.4.0.
+    - Behavior change: `Start()` now requires `ENVIRONMENT_NAME` (or `ENV_NAME`) to be set in the multi-tenant consumer process. Apps that wire `NewTenantEventListener` but do not set either env var will fail to start with an error referencing both variable names. Single-tenant apps that never wire the listener are unaffected.
+    - `event.SubscriptionPattern` is retained for backwards compatibility with custom subscriber implementations but is marked deprecated; the bundled listener no longer references it.
+    - Affected consumers (16) that wire `NewTenantEventListener`: br-ccs, br-sfn, br-sisbajud, br-spb-bc-correios, br-spi, br-sta, fetcher, flowker, go-boilerplate-ddd, lerian-notification, midaz, plugin-br-bank-transfer, plugin-fees, reporter, tracer, underwriter. Each needs `ENVIRONMENT_NAME` (or `ENV_NAME`) set to `staging` or `production` on the multi-tenant pod before bumping to v5.4.1.
 
 - Features:
   - Added `commons.CurrentEnv()` and `commons.MustCurrentEnv()` plus `EnvStaging` / `EnvProduction` helpers for consistent environment detection across services.
