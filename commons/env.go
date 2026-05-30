@@ -14,7 +14,7 @@ const (
 )
 
 // CurrentEnv reads the runtime environment from ENVIRONMENT_NAME (preferred)
-// or ENV_NAME (legacy fallback). The value is normalised to lowercase and
+// or ENV_NAME (also accepted). The value is normalised to lowercase and
 // trimmed. Returns an error if the variable is unset, empty, or not one of
 // the accepted values (staging, production).
 //

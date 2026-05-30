@@ -5,13 +5,13 @@
 - Features:
   - Added `commons.CurrentEnv()` and `commons.MustCurrentEnv()` plus `EnvStaging` / `EnvProduction` helpers for consistent environment detection across services.
   - Added `commons/events.TenantEventsChannel(env)` and `TenantEventsChannelPrefix` to derive the canonical per-environment Redis Pub/Sub channel name for tenant lifecycle events.
-  - Added 7 boolean security toggles in `commons/security.go` replacing the prior override framework: `AllowInsecureTLS`, `RateLimitEnabled` (default false — explicit opt-in), `AllowRateLimitDisabled`, `AllowRateLimitFailOpen`, `AllowCORSWildcard`, `AllowInsecureOTEL`, `AllowWebhookPrivateNet`. Truthy values: `true`, `1`, `yes`, `on` (case-insensitive). Internal callers (`commons/redis`, `commons/postgres`, `commons/rabbitmq`, `commons/mongo`, `commons/net/http/ratelimit`, `commons/net/http/withCORS`, `commons/webhook`) now use direct boolean checks with WARN log on bypass for audit.
+  - Added 6 boolean security toggles in `commons/security.go` replacing the prior override framework: `AllowInsecureTLS`, `RateLimitEnabled` (default false — explicit opt-in), `AllowRateLimitFailOpen`, `AllowCORSWildcard`, `AllowInsecureOTEL`, `AllowWebhookPrivateNet`. Truthy values: `true`, `1`, `yes`, `on` (case-insensitive). Internal callers (`commons/redis`, `commons/postgres`, `commons/rabbitmq`, `commons/mongo`, `commons/net/http/ratelimit`, `commons/net/http/withCORS`, `commons/webhook`) now use direct boolean checks with WARN log on bypass for audit.
 
 - Removed (breaking, config-level):
   - `commons/security_override.go` (and the historical `commons/security_tier.go`) are deleted.
   - `CheckSecurityRule`, `EnforceSecurityRule`, `ReadSecurityOverride`, `SecurityOverride`, `ErrSecurityViolation`, `EffectiveSecurityTier`, `SecurityTier`, `TierStrict`, `TierModerate`, `TierPermissive`, `CurrentTier`, `IsSecurityEnforcementEnabled`, and the `RuleXxx` constants are removed.
   - `SECURITY_TIER` and `SECURITY_ENFORCEMENT` environment variables are silently ignored at runtime. No warning, no fallback.
-  - Required `"reason"` text in `ALLOW_*="..."` deploys is dropped. Operators using legacy `ALLOW_*="<reason>"` MUST switch to `ALLOW_X=true`; any non-boolean value (including legacy audit strings) is now treated as `false`.
+  - Required `"reason"` text in `ALLOW_*="..."` deploys is dropped. Operators using prior `ALLOW_*="<reason>"` deploys MUST switch to `ALLOW_X=true`; any non-boolean value (including prior audit strings) is now treated as `false`.
   - BREAKING (operational): RATE_LIMIT_ENABLED default flipped from true to
     false. Apps that previously relied on the silent default to enable rate
     limiting MUST now set RATE_LIMIT_ENABLED=true in their deploy configs.
@@ -19,6 +19,23 @@
     br-spb-bc-correios, br-spb, br-spi, br-sta, go-boilerplate-ddd,
     lerian-notification, matcher, plugin-access-manager, plugin-auth,
     plugin-br-bank-transfer, plugin-identity, underwriter.
+  - BREAKING (config): ALLOW_RATELIMIT_DISABLED env var removed entirely.
+    Deployments that previously set ALLOW_RATELIMIT_DISABLED=true to bypass
+    the rate limiter MUST drop that variable (rate limit is now off by
+    default — RATE_LIMIT_ENABLED defaults to false). Affected helm/gitops
+    references (13 known):
+      helm: charts/fetcher/{worker,values}, charts/midaz/ledger,
+            charts/plugin-br-pix-indirect-btg/{inbound,outbound,pix,reconciliation},
+            charts/reporter/{manager,worker}
+      helm-internal: charts/tenant-manager/configmap
+      lerian-aws-gitops: environments/staging/helmfile/{fetcher-mt,reporter-mt,reporter}
+      midaz-firmino-gitops: environments/anacleto/.../midaz
+    Apps that previously relied on the silent default-true to enable rate
+    limiting MUST now set RATE_LIMIT_ENABLED=true. Affected (per gh
+    search/code): br-sfn, br-sisbajud, br-spb-bc-correios, br-spb, br-spi,
+    br-sta, go-boilerplate-ddd, lerian-notification, matcher,
+    plugin-access-manager, plugin-auth, plugin-br-bank-transfer,
+    plugin-identity, underwriter.
 
 - Migration notes:
   - Code consuming the removed APIs must switch to the new boolean helpers in `commons/security.go`. No external app in the LerianStudio org references the deleted framework (verified via repo search).

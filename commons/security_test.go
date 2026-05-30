@@ -137,7 +137,6 @@ func TestSecurityToggles(t *testing.T) {
 		fn   func() bool
 	}{
 		{"AllowInsecureTLS", EnvAllowInsecureTLS, AllowInsecureTLS},
-		{"AllowRateLimitDisabled", EnvAllowRateLimitDisabled, AllowRateLimitDisabled},
 		{"AllowRateLimitFailOpen", EnvAllowRateLimitFailOpen, AllowRateLimitFailOpen},
 		{"AllowCORSWildcard", EnvAllowCORSWildcard, AllowCORSWildcard},
 		{"AllowInsecureOTEL", EnvAllowInsecureOTEL, AllowInsecureOTEL},

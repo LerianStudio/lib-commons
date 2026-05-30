@@ -13,14 +13,11 @@ import (
 const (
 	EnvAllowInsecureTLS       = "ALLOW_INSECURE_TLS"
 	EnvRateLimitEnabled       = "RATE_LIMIT_ENABLED"
-	EnvAllowRateLimitDisabled = "ALLOW_RATELIMIT_DISABLED"
 	EnvAllowRateLimitFailOpen = "ALLOW_RATELIMIT_FAIL_OPEN"
 	EnvAllowCORSWildcard      = "ALLOW_CORS_WILDCARD"
 	EnvAllowInsecureOTEL      = "ALLOW_INSECURE_OTEL"
-	// EnvAllowWebhookPrivateNet keeps the legacy ALLOW_WEBHOOK_PRIVATE_NETWORK
-	// env var name to avoid breaking existing deployments. Only the semantics
-	// change: any truthy boolean value enables the bypass; any other value
-	// (including legacy "reason" audit strings) is treated as false.
+	// EnvAllowWebhookPrivateNet permits webhook destinations on private
+	// network ranges (RFC 1918, link-local, loopback) when set truthy.
 	EnvAllowWebhookPrivateNet = "ALLOW_WEBHOOK_PRIVATE_NETWORK"
 )
 
@@ -31,14 +28,10 @@ func AllowInsecureTLS() bool { return getenvBool(EnvAllowInsecureTLS) }
 
 // RateLimitEnabled defaults to false. Apps that need rate limiting MUST
 // explicitly opt-in by setting RATE_LIMIT_ENABLED=true. The previous
-// security-by-default posture was reversed because the legacy framework
+// security-by-default posture was reversed because the prior framework
 // silently enforced rate limiting on apps that never configured it, which
 // caused operational surprises. Explicit opt-in is the new contract.
 func RateLimitEnabled() bool { return getenvBoolDefault(EnvRateLimitEnabled, false) }
-
-// AllowRateLimitDisabled — legacy alias retained because some apps already
-// set it. Treated identically to !RateLimitEnabled().
-func AllowRateLimitDisabled() bool { return getenvBool(EnvAllowRateLimitDisabled) }
 
 // AllowRateLimitFailOpen returns true when the rate limiter should permit
 // requests during a backend (Redis) outage instead of fail-closed (429).
@@ -57,8 +50,8 @@ func AllowWebhookPrivateNet() bool { return getenvBool(EnvAllowWebhookPrivateNet
 
 // getenvBool reports whether the env var is set to a truthy boolean value.
 // Accepted truthy: "true", "1", "yes", "on" (case-insensitive, trimmed).
-// Any other value (including non-boolean strings like a legacy "reason"
-// audit string) is treated as false.
+// Any other value (including non-boolean strings such as "reason" audit
+// strings from older deploy configs) is treated as false.
 func getenvBool(name string) bool {
 	return parseBool(os.Getenv(name), false)
 }

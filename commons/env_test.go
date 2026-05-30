@@ -25,7 +25,7 @@ func TestCurrentEnv(t *testing.T) {
 			want:           "production",
 		},
 		{
-			name:       "falls back to ENV_NAME when ENVIRONMENT_NAME unset",
+			name:       "accepts ENV_NAME when ENVIRONMENT_NAME unset",
 			envNameVar: "staging",
 			want:       "staging",
 		},
@@ -36,7 +36,7 @@ func TestCurrentEnv(t *testing.T) {
 			want:           "production",
 		},
 		{
-			name:       "falls back to ENV_NAME for production",
+			name:       "accepts ENV_NAME for production",
 			envNameVar: "production",
 			want:       "production",
 		},

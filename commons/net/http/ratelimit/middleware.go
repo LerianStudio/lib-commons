@@ -134,7 +134,6 @@ type RateLimiter struct {
 // New creates a RateLimiter. It returns nil (pass-through) when:
 //   - conn is nil
 //   - RATE_LIMIT_ENABLED is unset or set to a non-truthy value (default)
-//   - ALLOW_RATELIMIT_DISABLED=true is set (legacy opt-out)
 //
 // Rate limiting is OFF by default. Apps that want enforcement MUST explicitly
 // set RATE_LIMIT_ENABLED=true in their deploy configuration.
@@ -178,11 +177,10 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 	}
 
 	// Rate limiting is disabled by default. Apps that want enforcement MUST
-	// explicitly opt-in via RATE_LIMIT_ENABLED=true. The legacy
-	// ALLOW_RATELIMIT_DISABLED=true continues to short-circuit to nil for
-	// backward compatibility. When disabled, return a pass-through limiter
-	// (nil) so deployments without RATE_LIMIT_ENABLED set behave as no-op.
-	if !commons.RateLimitEnabled() || commons.AllowRateLimitDisabled() {
+	// explicitly opt-in via RATE_LIMIT_ENABLED=true. When disabled, return a
+	// pass-through limiter (nil) so deployments without RATE_LIMIT_ENABLED set
+	// behave as no-op.
+	if !commons.RateLimitEnabled() {
 		rl.logger.Log(context.Background(), log.LevelInfo,
 			"rate limiter disabled (default); set "+commons.EnvRateLimitEnabled+"=true to enable enforcement")
 
