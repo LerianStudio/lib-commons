@@ -23,6 +23,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestMain opens the TLS security gate for the test binary. The unit-test
+// fixtures use plaintext DSNs (sslmode=disable / no sslmode) which the
+// default-deny TLS policy would otherwise reject. Tests that explicitly
+// verify the security gate unset ALLOW_INSECURE_TLS via unsetEnvVar.
+func TestMain(m *testing.M) {
+	if err := os.Setenv(commons.EnvAllowInsecureTLS, "true"); err != nil {
+		panic("postgres tests: cannot set ALLOW_INSECURE_TLS: " + err.Error())
+	}
+
+	os.Exit(m.Run())
+}
+
 func unsetEnvVar(t *testing.T, key string) {
 	t.Helper()
 
@@ -1529,13 +1541,8 @@ func TestDSNRequiresTLS(t *testing.T) {
 	}
 }
 
-func TestNew_StrictTierTLSEnforcement(t *testing.T) {
+func TestNew_TLSEnforcement(t *testing.T) {
 	t.Run("blocks downgrade capable sslmodes", func(t *testing.T) {
-		t.Setenv("ENV_NAME", commons.Production.String())
-		t.Setenv("ENV", "")
-		t.Setenv("GO_ENV", "")
-		t.Setenv(commons.EnvSecurityTier, "")
-		t.Setenv(commons.EnvSecurityEnforcement, "true")
 		unsetEnvVar(t, commons.EnvAllowInsecureTLS)
 
 		for _, dsn := range []string{
@@ -1549,16 +1556,13 @@ func TestNew_StrictTierTLSEnforcement(t *testing.T) {
 			client, err := New(cfg)
 			assert.Nil(t, client)
 			require.Error(t, err)
-			assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+			assert.Contains(t, err.Error(), "TLS required")
+			assert.Contains(t, err.Error(), commons.EnvAllowInsecureTLS)
 		}
 	})
 
 	t.Run("allows require and stronger modes", func(t *testing.T) {
-		t.Setenv("ENV_NAME", commons.Production.String())
-		t.Setenv("ENV", "")
-		t.Setenv("GO_ENV", "")
-		t.Setenv(commons.EnvSecurityTier, "")
-		t.Setenv(commons.EnvSecurityEnforcement, "true")
+		unsetEnvVar(t, commons.EnvAllowInsecureTLS)
 
 		for _, dsn := range []string{
 			"postgres://host/db?sslmode=require",
@@ -1595,12 +1599,7 @@ func TestMigratorUpContextAlreadyCancelled(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 }
 
-func TestMigratorUpStrictTierBlocksPlaintextBeforeOpen(t *testing.T) {
-	t.Setenv("ENV_NAME", commons.Production.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(commons.EnvSecurityTier, "")
-	t.Setenv(commons.EnvSecurityEnforcement, "true")
+func TestMigratorUpBlocksPlaintextBeforeOpen(t *testing.T) {
 	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
 
 	openCalled := false
@@ -1628,16 +1627,12 @@ func TestMigratorUpStrictTierBlocksPlaintextBeforeOpen(t *testing.T) {
 
 	err = m.Up(context.Background())
 	require.Error(t, err)
-	assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+	assert.Contains(t, err.Error(), "TLS required")
+	assert.Contains(t, err.Error(), commons.EnvAllowInsecureTLS)
 	assert.False(t, openCalled)
 }
 
-func TestMigratorUpStrictTierAllowsSecureDSN(t *testing.T) {
-	t.Setenv("ENV_NAME", commons.Production.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(commons.EnvSecurityTier, "")
-	t.Setenv(commons.EnvSecurityEnforcement, "true")
+func TestMigratorUpAllowsSecureDSN(t *testing.T) {
 	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
 
 	openCalled := false

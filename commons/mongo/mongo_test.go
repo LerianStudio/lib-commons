@@ -54,8 +54,11 @@ func unsetEnvVar(t *testing.T, key string) {
 }
 
 func baseConfig() Config {
+	// URI carries tls=true so the security gate in NewClient is satisfied
+	// for the test fixture path. Tests that explicitly exercise the
+	// plaintext/TLS-required behavior use their own config.
 	return Config{
-		URI:      "mongodb://localhost:27017",
+		URI:      "mongodb://localhost:27017/?tls=true",
 		Database: "app",
 	}
 }
@@ -835,14 +838,20 @@ func TestClient_LogsOnConnectFailure(t *testing.T) {
 }
 
 func TestClient_LogsNonTLSWarning(t *testing.T) {
-	t.Parallel()
+	// Cannot run in parallel: mutates ALLOW_INSECURE_TLS via t.Setenv.
+	t.Setenv(commons.EnvAllowInsecureTLS, "true")
 
 	spy := &spyLogger{}
-	cfg := baseConfig()
-	cfg.Logger = spy
 
-	client := newTestClientWithLogger(t, nil, spy)
-	_ = client // verify no panic, warning was logged during construction
+	cfg := Config{
+		URI:      "mongodb://localhost:27017",
+		Database: "app",
+		Logger:   spy,
+	}
+
+	deps := successDeps()
+	_, err := NewClient(context.Background(), cfg, withDeps(deps))
+	require.NoError(t, err)
 
 	spy.mu.Lock()
 	defer spy.mu.Unlock()
@@ -859,12 +868,7 @@ func TestClient_LogsNonTLSWarning(t *testing.T) {
 	assert.True(t, found, "expected non-TLS warning in log messages, got: %v", spy.messages)
 }
 
-func TestNewClient_StrictTierBlocksPlaintextBeforeConnect(t *testing.T) {
-	t.Setenv("ENV_NAME", commons.Production.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(commons.EnvSecurityTier, "")
-	t.Setenv(commons.EnvSecurityEnforcement, "true")
+func TestNewClient_BlocksPlaintextBeforeConnect(t *testing.T) {
 	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
 
 	var connectCalls atomic.Int32
@@ -880,20 +884,23 @@ func TestNewClient_StrictTierBlocksPlaintextBeforeConnect(t *testing.T) {
 		},
 	}
 
-	client, err := NewClient(context.Background(), baseConfig(), withDeps(deps))
+	// Explicit plaintext URI (does not imply TLS) — the security gate
+	// must reject this without ALLOW_INSECURE_TLS=true.
+	cfg := Config{
+		URI:      "mongodb://localhost:27017",
+		Database: "app",
+	}
+
+	client, err := NewClient(context.Background(), cfg, withDeps(deps))
 	assert.Nil(t, client)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, commons.ErrSecurityViolation)
+	assert.Contains(t, err.Error(), "TLS required")
+	assert.Contains(t, err.Error(), commons.EnvAllowInsecureTLS)
 	assert.EqualValues(t, 0, connectCalls.Load())
 }
 
-func TestNewClient_StrictTierOverrideAllowsPlaintext(t *testing.T) {
-	t.Setenv("ENV_NAME", commons.Production.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(commons.EnvSecurityTier, "")
-	t.Setenv(commons.EnvSecurityEnforcement, "true")
-	t.Setenv(commons.EnvAllowInsecureTLS, "service mesh terminates TLS")
+func TestNewClient_AllowInsecureTLSPermitsPlaintext(t *testing.T) {
+	t.Setenv(commons.EnvAllowInsecureTLS, "true")
 
 	var connectCalls atomic.Int32
 	deps := clientDeps{
@@ -908,7 +915,14 @@ func TestNewClient_StrictTierOverrideAllowsPlaintext(t *testing.T) {
 		},
 	}
 
-	client, err := NewClient(context.Background(), baseConfig(), withDeps(deps))
+	// Explicit plaintext URI (does not imply TLS) — ALLOW_INSECURE_TLS=true
+	// must permit the gate to pass and connect should be called.
+	cfg := Config{
+		URI:      "mongodb://localhost:27017",
+		Database: "app",
+	}
+
+	client, err := NewClient(context.Background(), cfg, withDeps(deps))
 	require.NoError(t, err)
 	assert.NotNil(t, client)
 	assert.EqualValues(t, 1, connectCalls.Load())

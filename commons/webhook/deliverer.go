@@ -151,17 +151,14 @@ func WithSignatureVersion(v SignatureVersion) Option {
 }
 
 // WithAllowPrivateNetwork permits webhook delivery to loopback and RFC1918
-// private-network addresses only when the current security tier is permissive
-// (local/development) or when ALLOW_WEBHOOK_PRIVATE_NETWORK is set with a
-// non-empty reason in moderate/strict tiers. Without that guard, the option is
-// fail-closed and leaves SSRF private-IP blocking enabled.
+// private-network addresses only when ALLOW_WEBHOOK_PRIVATE_NETWORK is truthy
+// ("true", "1", "yes", "on"). Without that toggle, the option is fail-closed
+// and leaves SSRF private-IP blocking enabled.
 //
 // SECURITY: enabling this in production reintroduces SSRF risk by allowing
 // outbound delivery to the host's own network namespace and any reachable
-// internal services. Production callers must set
-// ALLOW_WEBHOOK_PRIVATE_NETWORK="reason" explicitly. Missing overrides always
-// fail closed outside the permissive tier; this guard does not downgrade to a
-// warn-only path.
+// internal services. Missing or falsy values always fail closed; this guard
+// does not downgrade to a warn-only path.
 //
 // This option only bypasses the private/loopback IP-range gate for explicit
 // IP literal URLs (e.g., 127.0.0.1, 10.0.0.5). Hostnames that resolve to
@@ -169,21 +166,19 @@ func WithSignatureVersion(v SignatureVersion) Option {
 // looking names cannot bypass the resolved-IP blocklist.
 func WithAllowPrivateNetwork() Option {
 	return func(d *Deliverer) {
-		result := commons.CheckSecurityRule(commons.RuleWebhookPrivateNet, true)
-		if commons.CurrentTier() > commons.TierPermissive && result.Override == nil {
+		if !commons.AllowWebhookPrivateNet() {
 			d.logger.Log(context.Background(), log.LevelError,
-				"webhook private-network override rejected",
-				log.String("override_env_var", commons.EnvAllowWebhookPrivateNet),
+				"webhook private-network override rejected; set "+commons.EnvAllowWebhookPrivateNet+"=true to permit",
+				log.String("env_var", commons.EnvAllowWebhookPrivateNet),
 			)
 
 			return
 		}
 
-		if err := commons.EnforceSecurityRule(context.Background(), d.logger, "webhook", result); err != nil {
-			d.logger.Log(context.Background(), log.LevelError, "webhook private-network override rejected", log.Err(err))
-
-			return
-		}
+		d.logger.Log(context.Background(), log.LevelWarn, "security bypass active",
+			log.String("feature", "webhook_private_network"),
+			log.String("env_var", commons.EnvAllowWebhookPrivateNet),
+		)
 
 		d.allowPrivateNetwork = true
 	}

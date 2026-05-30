@@ -8,59 +8,6 @@ import (
 	"testing"
 )
 
-func TestEnvironment_SecurityTier(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		env  Environment
-		want SecurityTier
-	}{
-		{Local, TierPermissive},
-		{Development, TierPermissive},
-		{Staging, TierModerate},
-		{UAT, TierModerate},
-		{Production, TierStrict},
-		{Environment("unknown"), TierStrict},    // unknown = strict (fail safe)
-		{Environment(""), TierStrict},           // empty = strict (fail safe)
-		{Environment("custom-env"), TierStrict}, // custom = strict (fail safe)
-	}
-
-	for _, tc := range tests {
-		t.Run(string(tc.env), func(t *testing.T) {
-			t.Parallel()
-
-			got := tc.env.SecurityTier()
-			if got != tc.want {
-				t.Errorf("Environment(%q).SecurityTier() = %v, want %v", tc.env, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestSecurityTier_String(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		tier SecurityTier
-		want string
-	}{
-		{TierPermissive, "permissive"},
-		{TierModerate, "moderate"},
-		{TierStrict, "strict"},
-		{SecurityTier(99), "unknown"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.want, func(t *testing.T) {
-			t.Parallel()
-
-			if got := tc.tier.String(); got != tc.want {
-				t.Errorf("SecurityTier(%d).String() = %q, want %q", tc.tier, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestEnvironment_IsValid(t *testing.T) {
 	t.Parallel()
 
@@ -81,7 +28,6 @@ func TestEnvironment_IsValid(t *testing.T) {
 
 func TestSetEnvironment_HappyPath(t *testing.T) {
 	SetEnvironmentForTest(t, Local) // reset via cleanup
-	t.Setenv(EnvSecurityTier, "")
 
 	resetEnvironment()
 
@@ -93,10 +39,6 @@ func TestSetEnvironment_HappyPath(t *testing.T) {
 	got := CurrentEnvironment()
 	if got != Production {
 		t.Errorf("CurrentEnvironment() = %q, want %q", got, Production)
-	}
-
-	if tier := CurrentTier(); tier != TierStrict {
-		t.Errorf("CurrentTier() = %v, want TierStrict", tier)
 	}
 }
 
@@ -190,7 +132,7 @@ func TestDetectEnvironment_CaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestDetectEnvironment_FailsSafeOnUnrecognizedValues(t *testing.T) {
+func TestDetectEnvironment_PreservesUnrecognizedValue(t *testing.T) {
 	for _, key := range []string{"ENV_NAME", "ENV", "GO_ENV"} {
 		orig := os.Getenv(key)
 		t.Cleanup(func() { os.Setenv(key, orig) })
@@ -200,14 +142,16 @@ func TestDetectEnvironment_FailsSafeOnUnrecognizedValues(t *testing.T) {
 	os.Setenv("ENV", "staging")
 	os.Setenv("GO_ENV", "production")
 
-	// ENV_NAME is invalid and must fail safe instead of falling through.
+	// ENV_NAME is non-empty but unrecognized: the value is returned as-is
+	// (lower-cased). Callers that need a recognized value must check
+	// IsValid() before using it.
 	got := DetectEnvironment()
 	if got != Environment("custom-invalid") {
-		t.Errorf("DetectEnvironment() = %q, want invalid environment value preserved for fail-safe handling", got)
+		t.Errorf("DetectEnvironment() = %q, want %q (unrecognized values are preserved verbatim)", got, "custom-invalid")
 	}
 
-	if tier := got.SecurityTier(); tier != TierStrict {
-		t.Errorf("DetectEnvironment().SecurityTier() = %v, want %v", tier, TierStrict)
+	if got.IsValid() {
+		t.Errorf("DetectEnvironment().IsValid() = true for %q, want false", got)
 	}
 }
 
@@ -250,66 +194,6 @@ func TestCurrentEnvironment_InvalidatesCacheWhenEnvVarsChange(t *testing.T) {
 	}
 }
 
-func TestCurrentTier_UsesSecurityTierOverride(t *testing.T) {
-	SetEnvironmentForTest(t, Local)
-	resetEnvironment()
-
-	t.Setenv("ENV_NAME", Staging.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(EnvSecurityTier, TierStrict.String())
-
-	if got := CurrentEnvironment(); got != Staging {
-		t.Fatalf("CurrentEnvironment() = %q, want %q", got, Staging)
-	}
-
-	if tier := CurrentTier(); tier != TierStrict {
-		t.Fatalf("CurrentTier() = %v, want %v", tier, TierStrict)
-	}
-
-	if tier := EffectiveSecurityTier(Staging); tier != TierStrict {
-		t.Fatalf("EffectiveSecurityTier(Staging) = %v, want %v", tier, TierStrict)
-	}
-}
-
-func TestCurrentTier_InvalidOverrideFailsSafeToStrict(t *testing.T) {
-	SetEnvironmentForTest(t, Local)
-	resetEnvironment()
-
-	t.Setenv("ENV_NAME", Local.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(EnvSecurityTier, "definitely-not-a-tier")
-
-	if tier := CurrentTier(); tier != TierStrict {
-		t.Fatalf("CurrentTier() with invalid SECURITY_TIER = %v, want %v", tier, TierStrict)
-	}
-}
-
-func TestCurrentTier_InvalidatesOverrideCacheWhenEnvVarChanges(t *testing.T) {
-	SetEnvironmentForTest(t, Local)
-	resetEnvironment()
-
-	t.Setenv("ENV_NAME", Staging.String())
-	t.Setenv("ENV", "")
-	t.Setenv("GO_ENV", "")
-	t.Setenv(EnvSecurityTier, TierStrict.String())
-
-	if tier := CurrentTier(); tier != TierStrict {
-		t.Fatalf("CurrentTier() = %v, want %v", tier, TierStrict)
-	}
-
-	t.Setenv(EnvSecurityTier, TierModerate.String())
-	if tier := CurrentTier(); tier != TierModerate {
-		t.Fatalf("CurrentTier() after SECURITY_TIER change = %v, want %v", tier, TierModerate)
-	}
-
-	t.Setenv(EnvSecurityTier, "")
-	if tier := CurrentTier(); tier != TierModerate {
-		t.Fatalf("CurrentTier() after clearing SECURITY_TIER = %v, want %v", tier, TierModerate)
-	}
-}
-
 func TestSetEnvironmentForTest(t *testing.T) {
 	// Verify that SetEnvironmentForTest properly restores state.
 	resetEnvironment()
@@ -318,14 +202,9 @@ func TestSetEnvironmentForTest(t *testing.T) {
 
 	t.Run("subtest_overrides", func(t *testing.T) {
 		SetEnvironmentForTest(t, Production)
-		t.Setenv(EnvSecurityTier, "")
 
 		if got := CurrentEnvironment(); got != Production {
 			t.Errorf("inside subtest: CurrentEnvironment() = %q, want %q", got, Production)
-		}
-
-		if tier := CurrentTier(); tier != TierStrict {
-			t.Errorf("inside subtest: CurrentTier() = %v, want TierStrict", tier)
 		}
 	})
 

@@ -84,9 +84,9 @@ func WithOnLimited(fn func(c *fiber.Ctx, tier Tier)) Option {
 // same accuracy as the built-in Retry-After header.
 //
 // WithExceededHandler ONLY governs the 429 body. The 503 fail-closed path (handleRedisError)
-// and the 503 policy-blocked path (blockedHandler) are NOT affected and keep their built-in
-// chttp.ErrorResponse responders — those have distinct semantics (Redis unavailable vs.
-// strict-tier security violation vs. rate exceeded) and should not share a body responder.
+// is NOT affected and keeps its built-in chttp.ErrorResponse responder — those have
+// distinct semantics (Redis unavailable vs. rate exceeded) and should not share a body
+// responder.
 //
 // Passing nil is a no-op: the option leaves any previously-installed handler in place.
 func WithExceededHandler(fn func(c *fiber.Ctx, tier Tier, ttl time.Duration) error) Option {

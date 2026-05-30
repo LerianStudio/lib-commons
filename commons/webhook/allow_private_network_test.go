@@ -25,7 +25,7 @@ import (
 // access is acceptable here because the test lives in the same package and
 // the field gates URL-aware SSRF option selection at delivery time.
 func TestWithAllowPrivateNetwork_OptionSetsFlag(t *testing.T) {
-	t.Setenv(commons.EnvSecurityTier, commons.TierPermissive.String())
+	t.Setenv(commons.EnvAllowWebhookPrivateNet, "true")
 
 	t.Run("default is strict (flag false)", func(t *testing.T) {
 		d := NewDeliverer(&mockLister{})
@@ -42,22 +42,31 @@ func TestWithAllowPrivateNetwork_OptionSetsFlag(t *testing.T) {
 	})
 }
 
-func TestWithAllowPrivateNetwork_StrictTierRequiresExplicitOverride(t *testing.T) {
-	t.Setenv(commons.EnvSecurityTier, commons.TierStrict.String())
+func TestWithAllowPrivateNetwork_RequiresExplicitOverride(t *testing.T) {
 	t.Setenv(commons.EnvAllowWebhookPrivateNet, "")
 
 	d := NewDeliverer(&mockLister{}, WithAllowPrivateNetwork())
 	require.NotNil(t, d)
-	assert.False(t, d.allowPrivateNetwork, "strict tier must fail closed without ALLOW_WEBHOOK_PRIVATE_NETWORK")
+	assert.False(t, d.allowPrivateNetwork, "default must fail closed without ALLOW_WEBHOOK_PRIVATE_NETWORK=true")
 }
 
-func TestWithAllowPrivateNetwork_StrictTierAllowsDocumentedOverride(t *testing.T) {
-	t.Setenv(commons.EnvSecurityTier, commons.TierStrict.String())
+func TestWithAllowPrivateNetwork_LegacyReasonStringIsRejected(t *testing.T) {
+	// Legacy ALLOW_WEBHOOK_PRIVATE_NETWORK="reason" deploys are NOT truthy
+	// under the new boolean semantics. Operators must migrate to
+	// ALLOW_WEBHOOK_PRIVATE_NETWORK=true.
 	t.Setenv(commons.EnvAllowWebhookPrivateNet, "local E2E receiver")
 
 	d := NewDeliverer(&mockLister{}, WithAllowPrivateNetwork())
 	require.NotNil(t, d)
-	assert.True(t, d.allowPrivateNetwork, "explicit ALLOW_WEBHOOK_PRIVATE_NETWORK reason should enable the unsafe option")
+	assert.False(t, d.allowPrivateNetwork, "legacy reason strings must be treated as false")
+}
+
+func TestWithAllowPrivateNetwork_TruthyOverrideEnables(t *testing.T) {
+	t.Setenv(commons.EnvAllowWebhookPrivateNet, "true")
+
+	d := NewDeliverer(&mockLister{}, WithAllowPrivateNetwork())
+	require.NotNil(t, d)
+	assert.True(t, d.allowPrivateNetwork, "ALLOW_WEBHOOK_PRIVATE_NETWORK=true should enable the unsafe option")
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +119,7 @@ func startIPv6LoopbackServer(t *testing.T, handler http.Handler) *httptest.Serve
 // httptest.NewServer is delivered successfully and the receiver sees the
 // payload.
 func TestDeliver_WithAllowPrivateNetwork_DeliversToLoopback(t *testing.T) {
-	t.Setenv(commons.EnvSecurityTier, commons.TierPermissive.String())
+	t.Setenv(commons.EnvAllowWebhookPrivateNet, "true")
 
 	var hitCount atomic.Int32
 
@@ -188,7 +197,7 @@ func TestDeliver_WithoutAllowPrivateNetwork_BlocksLoopback(t *testing.T) {
 }
 
 func TestDeliver_WithAllowPrivateNetwork_IPv6Loopback(t *testing.T) {
-	t.Setenv(commons.EnvSecurityTier, commons.TierPermissive.String())
+	t.Setenv(commons.EnvAllowWebhookPrivateNet, "true")
 
 	tests := []struct {
 		name      string
@@ -264,7 +273,7 @@ func TestDeliver_WithAllowPrivateNetwork_IPv6Loopback(t *testing.T) {
 // blocklist and the cloud-metadata blocklist — the union covers the prompt's
 // intent that hostname blocking is preserved.
 func TestDeliver_WithAllowPrivateNetwork_StillBlocksHostnames(t *testing.T) {
-	t.Setenv(commons.EnvSecurityTier, commons.TierPermissive.String())
+	t.Setenv(commons.EnvAllowWebhookPrivateNet, "true")
 
 	tests := []struct {
 		name string

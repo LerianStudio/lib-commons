@@ -8,12 +8,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v5/commons"
 	chttp "github.com/LerianStudio/lib-commons/v5/commons/constants"
 	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
@@ -27,6 +29,17 @@ import (
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// TestMain configures package-wide env vars before any parallel tests run.
+// miniredis is plaintext; allow the security gate to pass for the entire
+// test binary so individual tests can call t.Parallel() safely.
+func TestMain(m *testing.M) {
+	if err := os.Setenv(commons.EnvAllowInsecureTLS, "true"); err != nil {
+		panic("idempotency tests: cannot set ALLOW_INSECURE_TLS: " + err.Error())
+	}
+
+	os.Exit(m.Run())
+}
 
 // newRedisClient creates a *libRedis.Client backed by a miniredis instance.
 // The connection is closed automatically when the test finishes.

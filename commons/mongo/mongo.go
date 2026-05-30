@@ -274,13 +274,20 @@ func (c *Client) connectLocked(ctx context.Context) error {
 		clientOptions.SetTLSConfig(tlsCfg)
 	}
 
-	// Security policy: TLS enforcement in strict tier (production).
-	// Check BEFORE connecting to avoid sending credentials over plaintext.
+	// Security policy: TLS is required by default. Set ALLOW_INSECURE_TLS=true
+	// to bypass. Check BEFORE connecting to avoid sending credentials over
+	// plaintext.
 	tlsDisabled := c.cfg.TLS == nil && !isTLSImplied(c.uri)
-	if commons.CurrentTier() == commons.TierStrict {
-		result := commons.CheckSecurityRule(commons.RuleTLSRequired, tlsDisabled)
-		if err := commons.EnforceSecurityRule(ctx, c.cfg.Logger, "mongo", result); err != nil {
-			return fmt.Errorf("mongo connect: %w", err)
+	if tlsDisabled {
+		if !commons.AllowInsecureTLS() {
+			return fmt.Errorf("mongo connect: TLS required (set %s=true to bypass)", commons.EnvAllowInsecureTLS)
+		}
+
+		if c.cfg.Logger != nil {
+			c.cfg.Logger.Log(ctx, log.LevelWarn, "security bypass active",
+				log.String("feature", "mongo_tls"),
+				log.String("env_var", commons.EnvAllowInsecureTLS),
+			)
 		}
 	}
 

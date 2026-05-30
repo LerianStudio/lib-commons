@@ -81,27 +81,25 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 		)
 	}
 
-	// Security policy: CORS wildcard origin enforcement in moderate+ tiers.
+	// Security policy: CORS wildcard origin is forbidden by default. Set
+	// ALLOW_CORS_WILDCARD=true to permit wildcard (emits a WARN log line).
 	denyAllOrigins := false
 
-	if commons.CurrentTier() >= commons.TierModerate {
-		isWildcard := origins == "*" || origins == ""
-
-		result := commons.CheckSecurityRule(commons.RuleCORSWildcardOrigin, isWildcard)
-		if err := commons.EnforceSecurityRule(context.Background(), cfg.logger, "cors", result); err != nil {
-			// Cannot return error from fiber.Handler factory — apply a deny-all fallback instead.
+	if origins == "*" || origins == "" {
+		if !commons.AllowCORSWildcard() {
 			cfg.logger.Log(context.Background(), libLog.LevelError,
-				"CORS security rule enforcement failed, applying deny-all fallback",
-				libLog.Err(err),
+				"CORS wildcard origin rejected; applying deny-all fallback (set "+
+					commons.EnvAllowCORSWildcard+"=true to permit, or set ACCESS_CONTROL_ALLOW_ORIGIN to specific trusted origins)",
 			)
 
 			denyAllOrigins = true
 			origins = ""
 			allowCredentials = false
-
-			cfg.logger.Log(context.Background(), libLog.LevelWarn,
-				"CORS: enforcement active — origins restricted to none; "+
-					"set ACCESS_CONTROL_ALLOW_ORIGIN to specific trusted origins")
+		} else {
+			cfg.logger.Log(context.Background(), libLog.LevelWarn, "security bypass active",
+				libLog.String("feature", "cors_wildcard"),
+				libLog.String("env_var", commons.EnvAllowCORSWildcard),
+			)
 		}
 	}
 
