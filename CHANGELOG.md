@@ -1,5 +1,16 @@
 # Lib-commons Changelog
 
+## [5.4.1](https://github.com/LerianStudio/lib-commons/releases/tag/v5.4.1)
+
+- Fixes:
+  - Listener now subscribes to environment-scoped channels only.
+
+Contributors: @jeffersonrodrigues92, @lerian-studio.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.4.0...v5.4.1)
+
+---
+
 ## [5.4.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.4.0)
 
 - **Features:**
