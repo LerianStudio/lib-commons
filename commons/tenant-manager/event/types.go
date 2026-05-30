@@ -41,7 +41,14 @@ const (
 	// ChannelPrefix is the base prefix for all tenant event channels.
 	ChannelPrefix = "tenant-events"
 
-	// SubscriptionPattern is the glob pattern to subscribe to all tenant event channels.
+	// SubscriptionPattern is the legacy glob pattern that subscribed to every
+	// tenant event channel regardless of environment.
+	//
+	// Deprecated: The listener no longer uses this pattern. Subscribing to it
+	// directly leaks events across environments (staging <-> production sharing a
+	// Valkey cluster will cross-deliver). Use
+	// events.TenantEventsChannel(commons.CurrentEnv()) instead. Retained only
+	// for backward compatibility with downstream callers and existing tests.
 	SubscriptionPattern = "tenant-events:*"
 )
 
