@@ -4,9 +4,11 @@ package client
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sync"
@@ -667,22 +669,43 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	return tenants, nil
 }
 
-// newDefaultHTTPClient creates an HTTP client by cloning http.DefaultTransport
-// so that Proxy, TLS, DialContext and other platform defaults are preserved.
-// HTTP/2 is explicitly disabled to prevent a known Go stdlib panic in the
-// HTTP/2 hpack encoder when multiple goroutines concurrently use the same
-// HTTP/2 connection (e.g., middleware + async revalidation goroutines).
+// newDefaultHTTPClient creates an HTTP client with a fully explicit *http.Transport.
+//
+// Historically this function cloned http.DefaultTransport to inherit platform
+// defaults (Proxy, DialContext, TLS settings). That approach was fragile:
+// OpenTelemetry (and other libraries) instrument http.DefaultTransport at boot
+// by registering HTTP/2 handlers in the TLSNextProto map. Clone() copies that
+// map, and setting ForceAttemptHTTP2 = false only prevents future auto-setup —
+// it does NOT clear handlers that are already present. The inherited "h2"
+// handler then triggers HTTP/2 negotiation via ALPN on HTTPS connections,
+// which interacts poorly with the concurrent-goroutine usage pattern of this
+// client (middleware + async revalidation) and has caused production incidents
+// (malformed response errors, 503s, circuit breaker cascade).
+//
+// Building the transport from scratch decouples the client from the mutable
+// global http.DefaultTransport entirely. HTTP/1.1 is the deliberate choice —
+// a single connection is not shared across goroutines under HTTP/1.1 (each
+// goroutine gets its own connection from the pool), avoiding a known stdlib
+// HTTP/2 hpack encoder issue under concurrent writes.
+//
+// TLSNextProto is initialized to a non-nil empty map: this is the explicit
+// opt-out signal the stdlib respects — a nil map instead triggers HTTP/2
+// auto-setup on the next HTTPS handshake.
 func newDefaultHTTPClient() *http.Client {
-	base, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		base = &http.Transport{}
+	t := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     false,
+		TLSNextProto:          map[string]func(string, *tls.Conn) http.RoundTripper{},
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 	}
-
-	t := base.Clone()
-	t.ForceAttemptHTTP2 = false
-	t.MaxIdleConns = 100
-	t.MaxIdleConnsPerHost = 10
-	t.IdleConnTimeout = 90 * time.Second
 
 	return &http.Client{
 		Timeout:   30 * time.Second,
