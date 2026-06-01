@@ -1,5 +1,20 @@
 # Lib-commons Changelog
 
+## [5.5.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.5.0)
+
+- **Features:**
+  - Added dual-driver SQLSTATE error classification to `commons/postgres`. New exported helpers `SQLState`, `Constraint`, and `DriverMessage` extract the SQLSTATE code, violated constraint name, and raw driver message from both pgx (`*pgconn.PgError`) and lib/pq (`*pq.Error`) errors, unwrapping through wrapped chains via `errors.As`. New predicates `IsUniqueViolation` (23505), `IsForeignKeyViolation` (23503), `IsCheckViolation` (23514), and `IsUndefinedTable` (42P01) classify common constraint failures. All helpers are nil-safe: nil and non-driver errors classify false and report absent. Classification does not traverse `*SanitizedError` by design, preserving its credential-scrubbing contract.
+  - Promoted `github.com/lib/pq` from an indirect to a direct dependency to support lib/pq error classification (no new modules added; already present transitively at v1.12.3).
+
+- **Improvements:**
+  - `commons/tenant-manager/core`: `IsTenantNotProvisionedError` now uses the typed `postgres.IsUndefinedTable` check (which reads the driver SQLSTATE field through both pgx and lib/pq) as its primary detection path, ahead of the existing string fallbacks. Behavior is unchanged for existing callers; the string fallbacks are retained for errors whose driver type was flattened to text upstream.
+
+- **Contributors:** @lerian-studio.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.4.1...v5.5.0)
+
+---
+
 ## [5.4.1](https://github.com/LerianStudio/lib-commons/releases/tag/v5.4.1)
 
 - Fixes:

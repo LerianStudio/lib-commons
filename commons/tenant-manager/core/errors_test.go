@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -121,6 +123,58 @@ func TestIsTenantNotProvisionedError(t *testing.T) {
 		{
 			name:     "generic error returns false",
 			err:      errors.New("connection refused"),
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := IsTenantNotProvisionedError(tt.err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// TestIsTenantNotProvisionedError_TypedDriverErrors locks the typed SQLSTATE path
+// (postgres.IsUndefinedTable) for real pgx (*pgconn.PgError) and lib/pq (*pq.Error)
+// driver errors, direct and wrapped. The pre-existing tests above only exercise the
+// string fallbacks via errors.New text; this pins the driver-type path so it keeps
+// detecting undefined_table even if the string fallbacks are ever removed, and
+// confirms a typed error carrying a different SQLSTATE is not misclassified.
+func TestIsTenantNotProvisionedError_TypedDriverErrors(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "pgx undefined_table returns true",
+			err:      &pgconn.PgError{Code: "42P01", Message: "relation does not exist"},
+			expected: true,
+		},
+		{
+			name:     "wrapped pgx undefined_table returns true",
+			err:      fmt.Errorf("query failed: %w", &pgconn.PgError{Code: "42P01", Message: "relation does not exist"}),
+			expected: true,
+		},
+		{
+			name:     "lib/pq undefined_table returns true",
+			err:      &pq.Error{Code: pq.ErrorCode("42P01"), Message: "relation does not exist"},
+			expected: true,
+		},
+		{
+			name:     "wrapped lib/pq undefined_table returns true",
+			err:      fmt.Errorf("query failed: %w", &pq.Error{Code: pq.ErrorCode("42P01"), Message: "relation does not exist"}),
+			expected: true,
+		},
+		{
+			name:     "pgx unique_violation returns false",
+			err:      &pgconn.PgError{Code: "23505", Message: "duplicate key value"},
+			expected: false,
+		},
+		{
+			name:     "lib/pq unique_violation returns false",
+			err:      &pq.Error{Code: pq.ErrorCode("23505"), Message: "duplicate key value"},
 			expected: false,
 		},
 	}
