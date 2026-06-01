@@ -43,6 +43,12 @@ endif
 #        make coverage-integration LOW_RESOURCE=1
 LOW_RESOURCE ?= 0
 
+# Minimum unit-test coverage percentage enforced by `check-tests`/`ci`.
+# Mirrors the shared CI workflow default (go-pr-analysis.yml). Coverage is
+# measured on unit tests only, filtered by .ignorecoverunit. Override with:
+#   make check-tests COVERAGE_THRESHOLD=85
+COVERAGE_THRESHOLD ?= 80
+
 # Computed flags for low-resource mode
 ifeq ($(LOW_RESOURCE),1)
   LOW_RES_P_FLAG := -p 1
@@ -176,10 +182,9 @@ ci:
 	$(MAKE) lint-fix
 	$(MAKE) format
 	$(MAKE) tidy
-	$(MAKE) check-tests
 	$(MAKE) sec
 	$(MAKE) vet
-	$(MAKE) test-unit
+	$(MAKE) check-tests
 	$(MAKE) test-integration
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) Local CI pipeline completed successfully$(GREEN) ✔️$(NC)"
 
@@ -264,6 +269,8 @@ test-integration:
 	$(call check_command,go,"Install Go from https://golang.org/doc/install")
 	$(call check_command,docker,"Install Docker from https://docs.docker.com/get-docker/")
 	@set -e; mkdir -p $(TEST_REPORTS_DIR); \
+	: "$${ALLOW_INSECURE_TLS:=true}"; export ALLOW_INSECURE_TLS; \
+	echo "Integration containers are plaintext: ALLOW_INSECURE_TLS=$$ALLOW_INSECURE_TLS"; \
 	if [ -n "$(PKG)" ]; then \
 	  echo "Using specified package: $(PKG)"; \
 	  pkgs=$$(go list $(PKG) 2>/dev/null | tr '\n' ' '); \
@@ -389,6 +396,8 @@ coverage-integration:
 	$(call check_command,go,"Install Go from https://golang.org/doc/install")
 	$(call check_command,docker,"Install Docker from https://docs.docker.com/get-docker/")
 	@set -e; mkdir -p $(TEST_REPORTS_DIR); \
+	: "$${ALLOW_INSECURE_TLS:=true}"; export ALLOW_INSECURE_TLS; \
+	echo "Integration containers are plaintext: ALLOW_INSECURE_TLS=$$ALLOW_INSECURE_TLS"; \
 	if [ -n "$(PKG)" ]; then \
 	  echo "Using specified package: $(PKG)"; \
 	  pkgs=$$(go list $(PKG) 2>/dev/null | tr '\n' ' '); \
@@ -499,16 +508,30 @@ format:
 	@gofmt -w ./
 	@echo "$(GREEN)$(BOLD)[ok]$(NC) All go files formatted$(GREEN) ✔️$(NC)"
 
+# Unit-test coverage gate. Runs the unit suite with coverage (via
+# coverage-unit, which filters by .ignorecoverunit) and fails if the total
+# is below COVERAGE_THRESHOLD. Replicates the shared CI workflow's coverage
+# check (go-pr-analysis.yml) so local `make ci` catches regressions CI would.
 .PHONY: check-tests
-check-tests:
-	$(call print_title,Verifying test coverage for packages)
-	@if [ -f "./scripts/check-tests.sh" ]; then \
-		sh ./scripts/check-tests.sh; \
-	else \
-		echo "Running basic test coverage check..."; \
-		go test -cover ./...; \
+check-tests: coverage-unit
+	$(call print_title,Enforcing unit coverage threshold)
+	$(call check_command,bc,"Install bc to enforce the coverage threshold")
+	@profile=$(TEST_REPORTS_DIR)/unit_coverage.out; \
+	if [ ! -f "$$profile" ]; then \
+		printf "$(BOLD)$(RED)[fail]$(NC) coverage profile %s not found\n" "$$profile"; \
+		exit 1; \
+	fi; \
+	total=$$(go tool cover -func=$$profile | grep '^total:' | awk '{print $$3}' | sed 's/%//'); \
+	if [ -z "$$total" ]; then \
+		printf "$(BOLD)$(RED)[fail]$(NC) could not determine total coverage from %s\n" "$$profile"; \
+		exit 1; \
+	fi; \
+	echo "Unit coverage: $$total% (threshold: $(COVERAGE_THRESHOLD)%)"; \
+	if [ "$$(echo "$$total < $(COVERAGE_THRESHOLD)" | bc -l)" -eq 1 ]; then \
+		printf "\n$(BOLD)$(RED)Coverage %s%% is below threshold %s%%. Add tests before proceeding.$(NC)\n\n" "$$total" "$(COVERAGE_THRESHOLD)"; \
+		exit 1; \
 	fi
-	@echo "$(GREEN)$(BOLD)[ok]$(NC) Test coverage verification completed$(GREEN) ✔️$(NC)"
+	@echo "$(GREEN)$(BOLD)[ok]$(NC) Unit coverage $(COVERAGE_THRESHOLD)% threshold satisfied$(GREEN) ✔️$(NC)"
 
 .PHONY: vet
 vet:
