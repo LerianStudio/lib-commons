@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+
+	"github.com/LerianStudio/lib-commons/v5/commons/postgres"
 )
 
 // ErrNilHandlerFunc is returned when a nil HandlerFunc is registered.
@@ -128,8 +130,12 @@ func IsTenantPurgedError(err error) bool {
 }
 
 // IsTenantNotProvisionedError checks if the error indicates an unprovisioned tenant database.
-// It first checks the error chain using errors.Is for the sentinel ErrTenantNotProvisioned,
-// then falls back to string matching for PostgreSQL SQLSTATE 42P01 (undefined_table).
+// It checks, in order: the sentinel ErrTenantNotProvisioned via errors.Is; the typed
+// PostgreSQL SQLSTATE 42P01 (undefined_table) via postgres.IsUndefinedTable, which unwraps
+// both pgx (*pgconn.PgError) and lib/pq (*pq.Error) driver errors without depending on the
+// driver's text format; and finally string-based fallbacks for the 42P01 code and the
+// "relation ... does not exist" message, which still catch errors whose driver type was
+// flattened to text upstream (e.g. wrapped with %s instead of %w).
 // This typically occurs when migrations have not been run on the tenant database.
 func IsTenantNotProvisionedError(err error) bool {
 	if err == nil {
@@ -141,15 +147,22 @@ func IsTenantNotProvisionedError(err error) bool {
 		return true
 	}
 
+	// Typed SQLSTATE check: reads the driver's SQLSTATE code field directly through
+	// the error chain, avoiding false positives from "42P01" appearing elsewhere in
+	// the error text (constraint/table names, echoed values).
+	if postgres.IsUndefinedTable(err) {
+		return true
+	}
+
 	errStr := err.Error()
 
-	// Check for PostgreSQL error code 42P01 (undefined_table)
-	// This is the standard SQLSTATE for "relation does not exist"
+	// String fallbacks for errors whose driver type was flattened to text upstream.
+	// Check for PostgreSQL error code 42P01 (undefined_table).
 	if strings.Contains(errStr, "42P01") {
 		return true
 	}
 
-	// Also check for the common error message pattern
+	// Also check for the common error message pattern.
 	if strings.Contains(errStr, "relation") && strings.Contains(errStr, "does not exist") {
 		return true
 	}
