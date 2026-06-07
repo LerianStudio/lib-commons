@@ -8,6 +8,7 @@ import (
 	"errors"
 	"testing"
 
+	tmpostgres "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/postgres"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/require"
 )
@@ -205,6 +206,12 @@ func TestNewManagerPoolResolver_PublicNilArgs(t *testing.T) {
 	// delegating to the seam-friendly constructor.
 	_, err := NewManagerPoolResolver(nil, nil, root, "transaction", testDefaultTenant)
 	require.ErrorIs(t, err, ErrManagerRequired)
+
+	// A nil client with a non-nil manager must report the missing client, not
+	// the manager. The zero-value Manager is never dereferenced: validation
+	// fails before any method call.
+	_, err = NewManagerPoolResolver(&tmpostgres.Manager{}, nil, root, "transaction", testDefaultTenant)
+	require.ErrorIs(t, err, ErrClientRequired)
 }
 
 func TestNewManagerPoolResolver_Validation(t *testing.T) {

@@ -34,6 +34,12 @@ type tablePresenceGuard struct {
 }
 
 func newTablePresenceGuard(probe tablePresenceProbe, ttl time.Duration) *tablePresenceGuard {
+	if probe == nil {
+		// No probe means no guard: callers nil-check repo.tablePresence and fall
+		// back to ungated dispatch, which is safer than panicking in present().
+		return nil
+	}
+
 	if ttl <= 0 {
 		ttl = defaultTablePresenceTTL
 	}

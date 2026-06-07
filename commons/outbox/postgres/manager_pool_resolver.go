@@ -19,6 +19,10 @@ var (
 	// to NewManagerPoolResolver.
 	ErrManagerRequired = errors.New("tenant-manager manager is required")
 
+	// ErrClientRequired is returned when a nil tenant-manager Client is passed
+	// to NewManagerPoolResolver.
+	ErrClientRequired = errors.New("tenant-manager client is required")
+
 	// ErrServiceRequired is returned when an empty service name is passed to
 	// NewManagerPoolResolver.
 	ErrServiceRequired = errors.New("service name is required")
@@ -132,7 +136,7 @@ func NewManagerPoolResolver(
 	}
 
 	if client == nil {
-		return nil, ErrManagerRequired
+		return nil, ErrClientRequired
 	}
 
 	return newManagerPoolResolver(managerAdapter{mgr: mgr}, clientAdapter{client: client}, rootClient, service, defaultTenantID)

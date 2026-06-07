@@ -237,6 +237,14 @@ func TestRepository_ListTenants_ExplicitDiscovererWinsOverPoolResolver(t *testin
 
 // ---- table presence guard ----
 
+func TestTablePresenceGuard_NilProbeYieldsNilGuard(t *testing.T) {
+	t.Parallel()
+
+	// A nil probe must produce a nil guard (presence check disabled) rather
+	// than a guard that panics in present(). Callers nil-check tablePresence.
+	require.Nil(t, newTablePresenceGuard(nil, time.Hour))
+}
+
 func TestTablePresenceGuard_MissingTableSkipsAndCaches(t *testing.T) {
 	t.Parallel()
 
