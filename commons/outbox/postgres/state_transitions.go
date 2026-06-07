@@ -230,6 +230,14 @@ func (repo *Repository) ResetForRetry(
 	ctx, span := tracer.Start(ctx, "postgres.reset_for_retry")
 	defer span.End()
 
+	if missing, err := repo.tenantOutboxTableMissing(ctx); err != nil {
+		libOpentelemetry.HandleSpanError(span, "failed to check outbox table presence", err)
+
+		return nil, fmt.Errorf("resetting events for retry: %w", err)
+	} else if missing {
+		return nil, nil
+	}
+
 	result, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) ([]*outbox.OutboxEvent, error) {
 		events, err := repo.listFailedForRetryRows(ctx, tx, limit, failedBefore, maxAttempts, true)
 		if err != nil {
@@ -296,6 +304,14 @@ func (repo *Repository) ResetStuckProcessing(
 
 	ctx, span := tracer.Start(ctx, "postgres.reset_outbox_processing")
 	defer span.End()
+
+	if missing, err := repo.tenantOutboxTableMissing(ctx); err != nil {
+		libOpentelemetry.HandleSpanError(span, "failed to check outbox table presence", err)
+
+		return nil, fmt.Errorf("reset stuck events: %w", err)
+	} else if missing {
+		return nil, nil
+	}
 
 	result, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) ([]*outbox.OutboxEvent, error) {
 		events, err := repo.listStuckProcessingRows(ctx, tx, limit, processingBefore)

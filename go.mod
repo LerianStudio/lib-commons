@@ -4,6 +4,7 @@ go 1.26.3
 
 require (
 	cloud.google.com/go/iam v1.11.0
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/LerianStudio/lib-observability v1.0.0
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/aws/aws-sdk-go-v2 v1.41.7
