@@ -30,16 +30,16 @@ func (*stubResolverDB) Begin() (dbresolver.Tx, error) { return nil, nil }
 func (*stubResolverDB) BeginTx(context.Context, *sql.TxOptions) (dbresolver.Tx, error) {
 	return nil, nil
 }
-func (*stubResolverDB) Close() error                                          { return nil }
-func (*stubResolverDB) Conn(context.Context) (dbresolver.Conn, error)         { return nil, nil }
-func (*stubResolverDB) Driver() driver.Driver                                 { return nil }
-func (*stubResolverDB) Exec(string, ...interface{}) (sql.Result, error)       { return nil, nil }
+func (*stubResolverDB) Close() error                                    { return nil }
+func (*stubResolverDB) Conn(context.Context) (dbresolver.Conn, error)   { return nil, nil }
+func (*stubResolverDB) Driver() driver.Driver                           { return nil }
+func (*stubResolverDB) Exec(string, ...interface{}) (sql.Result, error) { return nil, nil }
 func (*stubResolverDB) ExecContext(context.Context, string, ...interface{}) (sql.Result, error) {
 	return nil, nil
 }
-func (*stubResolverDB) Ping() error                                  { return nil }
-func (*stubResolverDB) PingContext(context.Context) error            { return nil }
-func (*stubResolverDB) Prepare(string) (dbresolver.Stmt, error)      { return nil, nil }
+func (*stubResolverDB) Ping() error                             { return nil }
+func (*stubResolverDB) PingContext(context.Context) error       { return nil }
+func (*stubResolverDB) Prepare(string) (dbresolver.Stmt, error) { return nil, nil }
 func (*stubResolverDB) PrepareContext(context.Context, string) (dbresolver.Stmt, error) {
 	return nil, nil
 }
@@ -89,7 +89,7 @@ func TestResolvePostgres_DualMode_PopulatesGenericAndModuleKeys(t *testing.T) {
 	mgrModule, _ := newPGManagerWithCachedConn(t, tenantID)
 
 	mw := NewTenantMiddleware(
-		WithPG(mgrGeneric),                // single-manager registration
+		WithPG(mgrGeneric),               // single-manager registration
 		WithPG(mgrModule, "systemplane"), // module-specific registration
 	)
 

@@ -82,8 +82,11 @@ type Repository struct {
 	client             *libPostgres.Client
 	tenantResolver     outbox.TenantResolver
 	tenantDiscoverer   outbox.TenantDiscoverer
+	poolResolver       outbox.TenantPoolResolver
 	primaryDBLookup    func(context.Context) (*sql.DB, error)
+	tablePresence      *tablePresenceGuard
 	requireTenant      bool
+	explicitDiscoverer bool
 	logger             libLog.Logger
 	tableName          string
 	tenantColumn       string
@@ -113,6 +116,7 @@ func NewRepository(
 		client:             client,
 		tenantResolver:     tenantResolver,
 		tenantDiscoverer:   tenantDiscoverer,
+		explicitDiscoverer: true,
 		logger:             libLog.NewNop(),
 		tableName:          defaultOutboxTableName,
 		transactionTimeout: defaultTransactionTimeout,
@@ -325,6 +329,14 @@ func (repo *Repository) ListPending(ctx context.Context, limit int) ([]*outbox.O
 	ctx, span := tracer.Start(ctx, "postgres.list_outbox_pending")
 	defer span.End()
 
+	if missing, err := repo.tenantOutboxTableMissing(ctx); err != nil {
+		libOpentelemetry.HandleSpanError(span, "failed to check outbox table presence", err)
+
+		return nil, fmt.Errorf("listing pending events: %w", err)
+	} else if missing {
+		return nil, nil
+	}
+
 	result, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) ([]*outbox.OutboxEvent, error) {
 		events, err := repo.listPendingRows(ctx, tx, limit)
 		if err != nil {
@@ -393,6 +405,14 @@ func (repo *Repository) ListPendingByType(
 	ctx, span := tracer.Start(ctx, "postgres.list_outbox_pending_by_type")
 	defer span.End()
 
+	if missing, err := repo.tenantOutboxTableMissing(ctx); err != nil {
+		libOpentelemetry.HandleSpanError(span, "failed to check outbox table presence", err)
+
+		return nil, fmt.Errorf("listing pending events by type: %w", err)
+	} else if missing {
+		return nil, nil
+	}
+
 	result, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) ([]*outbox.OutboxEvent, error) {
 		events, err := repo.listPendingByTypeRows(ctx, tx, eventType, limit)
 		if err != nil {
@@ -446,6 +466,20 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 
 	ctx, span := tracer.Start(ctx, "postgres.list_outbox_tenants")
 	defer span.End()
+
+	// Precedence: an explicitly injected discoverer always wins. Only when no
+	// explicit discoverer was provided does a configured pool resolver take
+	// over tenant enumeration (pool-per-tenant mode).
+	if !repo.explicitDiscoverer && repo.poolResolver != nil {
+		tenants, err := repo.poolResolver.ListTenants(ctx)
+		if err != nil {
+			libOpentelemetry.HandleSpanError(span, "failed to list tenant pools", err)
+
+			return nil, fmt.Errorf("list tenant pools: %w", err)
+		}
+
+		return tenants, nil
+	}
 
 	tenants, err := repo.tenantDiscoverer.DiscoverTenants(ctx)
 	if err != nil {

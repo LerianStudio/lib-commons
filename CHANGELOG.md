@@ -1,5 +1,20 @@
 # Lib-commons Changelog
 
+## [5.5.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.5.0)
+
+- **Features:**
+  - Added dual-driver SQLSTATE error classification to `commons/postgres`. New exported helpers `SQLState`, `Constraint`, and `DriverMessage` extract the SQLSTATE code, violated constraint name, and raw driver message from both pgx (`*pgconn.PgError`) and lib/pq (`*pq.Error`) errors, unwrapping through wrapped chains via `errors.As`. New predicates `IsUniqueViolation` (23505), `IsForeignKeyViolation` (23503), `IsCheckViolation` (23514), and `IsUndefinedTable` (42P01) classify common constraint failures. All helpers are nil-safe: nil and non-driver errors classify false and report absent. Classification does not traverse `*SanitizedError` by design, preserving its credential-scrubbing contract.
+  - Promoted `github.com/lib/pq` from an indirect to a direct dependency to support lib/pq error classification (no new modules added; already present transitively at v1.12.3).
+
+- **Improvements:**
+  - `commons/tenant-manager/core`: `IsTenantNotProvisionedError` now uses the typed `postgres.IsUndefinedTable` check (which reads the driver SQLSTATE field through both pgx and lib/pq) as its primary detection path, ahead of the existing string fallbacks. Behavior is unchanged for existing callers; the string fallbacks are retained for errors whose driver type was flattened to text upstream.
+
+- **Contributors:** @lerian-studio.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.4.1...v5.5.0)
+
+---
+
 ## [5.4.1](https://github.com/LerianStudio/lib-commons/releases/tag/v5.4.1)
 
 - Fixes:
@@ -31,6 +46,7 @@ Contributors: @jeffersonrodrigues92, @lerian-studio.
     - Affected consumers (16) that wire `NewTenantEventListener`: br-ccs, br-sfn, br-sisbajud, br-spb-bc-correios, br-spi, br-sta, fetcher, flowker, go-boilerplate-ddd, lerian-notification, midaz, plugin-br-bank-transfer, plugin-fees, reporter, tracer, underwriter. Each needs `ENVIRONMENT_NAME` (or `ENV_NAME`) set to `staging` or `production` on the multi-tenant pod before bumping to v5.4.1.
 
 - Features:
+  - Added the pool-per-tenant outbox tenancy strategy to `commons/outbox/postgres`. New `outbox.TenantPoolResolver` interface, `postgres.NewMultiTenantRepository` / `MultiTenantConfig` wiring, `postgres.NewManagerPoolResolver` (tenant-manager-backed resolver), and `postgres.NoopTenantResolver`. Each tenant's outbox rows live in a dedicated database (tenant-manager "isolated" model); the pool is the isolation boundary, so there is no schema scan and no tenant column. Pool resolution is tiered and fail-closed (context-installed pool → resolver → `ErrTenantPoolUnavailable`, never the root pool), `ListTenants` prefers an explicit `TenantDiscoverer` over the resolver, the platform default tenant routes to the root pool, and a tenant database missing the outbox table is skipped-and-logged (WARN) with a 60s TTL presence cache. The `outbox_events` table is provisioned by the consumer's per-tenant migration runner using the same DDL as the schema track. Schema-per-tenant remains supported but is now documented as legacy; new adopters should prefer pool-per-tenant.
   - Added `commons.CurrentEnv()` and `commons.MustCurrentEnv()` plus `EnvStaging` / `EnvProduction` helpers for consistent environment detection across services.
   - Added `commons/events.TenantEventsChannel(env)` and `TenantEventsChannelPrefix` to derive the canonical per-environment Redis Pub/Sub channel name for tenant lifecycle events.
   - Added 6 boolean security toggles in `commons/security.go` replacing the prior override framework: `AllowInsecureTLS`, `RateLimitEnabled` (default false — explicit opt-in), `AllowRateLimitFailOpen`, `AllowCORSWildcard`, `AllowInsecureOTEL`, `AllowWebhookPrivateNet`. Truthy values: `true`, `1`, `yes`, `on` (case-insensitive). Internal callers (`commons/redis`, `commons/postgres`, `commons/rabbitmq`, `commons/mongo`, `commons/net/http/ratelimit`, `commons/net/http/withCORS`, `commons/webhook`) now use direct boolean checks with WARN log on bypass for audit.

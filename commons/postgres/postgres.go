@@ -756,26 +756,34 @@ func resolveMigrationsPath(migrationsPath, component string) (string, error) {
 // SanitizedError wraps a database error with a credential-free message.
 // Error() returns only the sanitized text.
 //
-// Unwrap returns a sanitized copy of the original error that preserves
-// error types and sentinels (via errors.Is / errors.As) while stripping
-// connection strings and credentials from the message text.
+// Unwrap returns a fresh credential-free error carrying only the sanitized
+// message text. The original error's TYPE and sentinel identity are
+// intentionally NOT preserved: errors.Is / errors.As will not match the
+// original cause. This is deliberate — preserving a connection error's
+// concrete type would let callers reach the original error through Unwrap
+// and re-expose the DSN and credentials it carries.
 type SanitizedError struct {
 	// Message is the credential-free error description.
 	Message string
-	// cause is a sanitized version of the original error that preserves
-	// error types/sentinels but strips credentials from messages.
+	// cause is a fresh error holding only the sanitized message text.
+	// It does not preserve the original error's type or sentinel identity,
+	// by design, to avoid leaking credentials through the error chain.
 	cause error
 }
 
 func (e *SanitizedError) Error() string { return e.Message }
 
-// Unwrap returns the sanitized cause, enabling errors.Is / errors.As
-// chain traversal without leaking credentials.
+// Unwrap returns the credential-free cause. It carries only sanitized
+// message text; the original error's type and sentinel identity are NOT
+// recoverable through it (by design) — errors.Is / errors.As will not
+// match the original cause. See the type doc for the rationale.
 func (e *SanitizedError) Unwrap() error { return e.cause }
 
-// sanitizedCause creates a credential-free copy of the cause error chain.
-// It preserves the type of known sentinel errors (e.g., sql.ErrNoRows) by
-// wrapping a new error with the sanitized message around the original sentinel.
+// sanitizedCause replaces the cause with a fresh credential-free error that
+// carries only the sanitized message text. The original error's type and
+// sentinel identity are intentionally NOT preserved (errors.Is / errors.As
+// will not match the original), because keeping the original connection
+// error reachable through Unwrap would re-expose the DSN and credentials.
 func sanitizedCause(err error) error {
 	if err == nil {
 		return nil
