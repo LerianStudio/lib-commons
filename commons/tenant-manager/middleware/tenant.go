@@ -14,6 +14,7 @@ import (
 	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
+	"go.opentelemetry.io/otel/baggage"
 )
 
 // TenantMiddleware extracts tenantId from JWT token and resolves the database connection.
@@ -182,6 +183,11 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	// Store tenant ID in context
 	ctx = core.ContextWithTenantID(ctx, tenantID)
 
+	// Propagate tenant.id via the standard OTel Baggage so downstream
+	// observability components (e.g. lib-observability span processors) can
+	// attach it as a span attribute without any coupling to this library.
+	ctx = withTenantIDBaggage(ctx, tenantID)
+
 	// Cache-first path: ensure tenant is known before resolving connections.
 	if err := m.ensureTenantCached(ctx, tenantID); err != nil {
 		logger.Base().Log(ctx, liblog.LevelError, "failed to lazy-load tenant config",
@@ -241,4 +247,26 @@ func (m *TenantMiddleware) ensureTenantCached(ctx context.Context, tenantID stri
 // Enabled returns whether the middleware is enabled.
 func (m *TenantMiddleware) Enabled() bool {
 	return m.enabled
+}
+
+// withTenantIDBaggage writes tenant.id into the standard OTel Baggage carried by
+// the context. Observability components can read this baggage to enrich spans
+// automatically, keeping zero coupling between this library and lib-observability.
+// It is a no-op when tenantID is empty or when the OTel API rejects the value.
+func withTenantIDBaggage(ctx context.Context, tenantID string) context.Context {
+	if tenantID == "" {
+		return ctx
+	}
+
+	member, err := baggage.NewMember("tenant.id", tenantID)
+	if err != nil {
+		return ctx
+	}
+
+	bag, err := baggage.New(member)
+	if err != nil {
+		return ctx
+	}
+
+	return baggage.ContextWithBaggage(ctx, bag)
 }
