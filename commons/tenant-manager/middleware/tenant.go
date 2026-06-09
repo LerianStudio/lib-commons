@@ -263,7 +263,9 @@ func withTenantIDBaggage(ctx context.Context, tenantID string) context.Context {
 		return ctx
 	}
 
-	bag, err := baggage.New(member)
+	// Merge with existing baggage to preserve upstream members
+	// (e.g. trace correlation IDs, feature flags) instead of replacing them.
+	bag, err := baggage.FromContext(ctx).SetMember(member)
 	if err != nil {
 		return ctx
 	}
