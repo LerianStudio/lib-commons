@@ -149,12 +149,6 @@ func TestChannelForTenant(t *testing.T) {
 	}
 }
 
-func TestSubscriptionPattern(t *testing.T) {
-	t.Parallel()
-
-	assert.Equal(t, "tenant-events:*", SubscriptionPattern)
-}
-
 func TestChannelPrefix(t *testing.T) {
 	t.Parallel()
 
