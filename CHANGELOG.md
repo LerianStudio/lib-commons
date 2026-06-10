@@ -1,5 +1,16 @@
 # Lib-commons Changelog
 
+## [5.5.1](https://github.com/LerianStudio/lib-commons/releases/tag/v5.5.1)
+
+- Fixes:
+  - Remove wildcard retrocompat from tenant manager channel subscription.
+
+Contributors: @jeffersonrodrigues92, @lerian-studio.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.5.0...v5.5.1)
+
+---
+
 ## [5.5.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.5.0)
 
 - Features:
