@@ -39,17 +39,14 @@ const (
 // Channel constants for Valkey Streams pub/sub.
 const (
 	// ChannelPrefix is the base prefix for all tenant event channels.
-	ChannelPrefix = "tenant-events"
-
-	// SubscriptionPattern is the glob pattern to subscribe to all tenant event channels.
 	//
-	// Deprecated: The TenantEventListener no longer references this pattern; it
-	// subscribes to the env-scoped channel returned by
-	// commons/events.TenantEventsChannel(commons.CurrentEnv()) instead. The
-	// previous wildcard PSubscribe leaked events across environments. This
-	// constant is retained only for custom subscriber implementations outside
-	// the bundled listener; new code MUST NOT use it.
-	SubscriptionPattern = "tenant-events:*"
+	// Subscribers MUST subscribe to the env-scoped channel returned by
+	// commons/events.TenantEventsChannel(commons.CurrentEnv()) — ENV_NAME (or
+	// ENVIRONMENT_NAME) is mandatory. The retrocompat wildcard subscription
+	// ("tenant-events:*") has been removed: it leaked events across
+	// environments (staging events reaching production and vice versa). All
+	// services have migrated to the env-scoped channel.
+	ChannelPrefix = "tenant-events"
 )
 
 // TenantLifecycleEvent is the envelope for all tenant lifecycle events.
