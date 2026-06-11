@@ -946,8 +946,13 @@ func (dispatcher *Dispatcher) handlePublishError(
 
 		if markErr := dispatcher.repo.MarkInvalid(ctx, event.ID, sanitizeErrorForStorage(err)); markErr != nil {
 			logger.Log(ctx, libLog.LevelError, "failed to mark outbox invalid", libLog.String("error", sanitizeErrorForStorage(markErr)))
+
+			return
 		}
 
+		// Only invoke the OnInvalid callback after the event has been durably
+		// persisted as INVALID; otherwise we would emit a callback for an event
+		// that was not actually transitioned in storage.
 		dispatcher.invokeOnInvalid(ctx, event, err)
 
 		return
