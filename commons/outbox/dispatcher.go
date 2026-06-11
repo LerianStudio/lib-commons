@@ -922,17 +922,102 @@ func (dispatcher *Dispatcher) handlePublishError(
 	event *OutboxEvent,
 	err error,
 ) {
+	// Always surface the publish failure before mutating event state so that
+	// transitions to FAILED/INVALID are observable in logs.
+	logger.Log(
+		ctx,
+		libLog.LevelWarn,
+		"outbox event publish failed",
+		libLog.String("event_id", event.ID.String()),
+		libLog.String("event_type", event.EventType),
+		libLog.Err(err),
+	)
+
 	if dispatcher.isNonRetryableError(err) {
+		// Non-retryable errors send the event straight to INVALID; log at ERROR.
+		logger.Log(
+			ctx,
+			libLog.LevelError,
+			"outbox event is non-retryable; marking invalid",
+			libLog.String("event_id", event.ID.String()),
+			libLog.String("event_type", event.EventType),
+			libLog.Err(err),
+		)
+
 		if markErr := dispatcher.repo.MarkInvalid(ctx, event.ID, sanitizeErrorForStorage(err)); markErr != nil {
 			logger.Log(ctx, libLog.LevelError, "failed to mark outbox invalid", libLog.String("error", sanitizeErrorForStorage(markErr)))
 		}
+
+		dispatcher.invokeOnInvalid(ctx, event, err)
 
 		return
 	}
 
 	if markErr := dispatcher.repo.MarkFailed(ctx, event.ID, sanitizeErrorForStorage(err), dispatcher.cfg.MaxDispatchAttempts); markErr != nil {
 		logger.Log(ctx, libLog.LevelError, "failed to mark outbox failed", libLog.String("error", sanitizeErrorForStorage(markErr)))
+
+		return
 	}
+
+	// MarkFailed transitions FAILED->INVALID internally once attempts reach
+	// MaxDispatchAttempts. Mirror that decision here so the INVALID callback
+	// fires when this attempt exhausts the budget; otherwise treat as a
+	// retryable failure.
+	if event.Attempts+1 >= dispatcher.cfg.MaxDispatchAttempts {
+		dispatcher.invokeOnInvalid(ctx, event, err)
+
+		return
+	}
+
+	dispatcher.invokeOnFailed(ctx, event, err)
+}
+
+// invokeOnInvalid runs the optional OnInvalid callback best-effort, swallowing panics and errors.
+func (dispatcher *Dispatcher) invokeOnInvalid(ctx context.Context, event *OutboxEvent, err error) {
+	if dispatcher.cfg.OnInvalid == nil {
+		return
+	}
+
+	dispatcher.safeInvokeLifecycle(ctx, "OnInvalid", dispatcher.cfg.OnInvalid, event, err)
+}
+
+// invokeOnFailed runs the optional OnFailed callback best-effort, swallowing panics and errors.
+func (dispatcher *Dispatcher) invokeOnFailed(ctx context.Context, event *OutboxEvent, err error) {
+	if dispatcher.cfg.OnFailed == nil {
+		return
+	}
+
+	dispatcher.safeInvokeLifecycle(ctx, "OnFailed", dispatcher.cfg.OnFailed, event, err)
+}
+
+// safeInvokeLifecycle invokes a lifecycle callback, recovering from panics and
+// logging at WARN so a misbehaving callback never breaks the dispatch loop.
+func (dispatcher *Dispatcher) safeInvokeLifecycle(
+	ctx context.Context,
+	name string,
+	fn func(ctx context.Context, event *OutboxEvent, err error),
+	event *OutboxEvent,
+	err error,
+) {
+	logger := dispatcher.logger
+	if nilcheck.Interface(logger) {
+		logger = libLog.NewNop()
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Log(
+				ctx,
+				libLog.LevelWarn,
+				"outbox lifecycle callback panicked",
+				libLog.String("callback", name),
+				libLog.String("event_id", event.ID.String()),
+				libLog.String("panic", fmt.Sprintf("%v", r)),
+			)
+		}
+	}()
+
+	fn(ctx, event, err)
 }
 
 func (dispatcher *Dispatcher) isNonRetryableError(err error) bool {
