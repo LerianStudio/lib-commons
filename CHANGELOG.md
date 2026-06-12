@@ -1,5 +1,18 @@
 # Lib-commons Changelog
 
+## [5.5.3](https://github.com/LerianStudio/lib-commons/releases/tag/v5.5.3)
+
+- Fixes:
+  - Fix(outbox): Invoke `OnInvalid` callback only after successful `MarkInvalid`.
+  - Fix(outbox): Log publish failures and add optional `OnInvalid`/`OnFailed` lifecycle callbacks.
+  - Fix(deps): Retract `v5.5.2` published outside release flow.
+
+Contributors: @bedatty, @gandalf-at-lerian.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.5.2...v5.5.3)
+
+---
+
 ## [5.5.1](https://github.com/LerianStudio/lib-commons/releases/tag/v5.5.1)
 
 - Fixes:
