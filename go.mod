@@ -2,6 +2,10 @@ module github.com/LerianStudio/lib-commons/v5
 
 go 1.26.3
 
+// v5.5.2 was tagged manually from a develop pre-release commit, outside the
+// automated release flow, and is superseded by v5.5.3.
+retract v5.5.2
+
 require (
 	cloud.google.com/go/iam v1.11.0
 	github.com/DATA-DOG/go-sqlmock v1.5.2
