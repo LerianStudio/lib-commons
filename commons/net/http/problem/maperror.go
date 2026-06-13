@@ -10,11 +10,13 @@ import (
 // generic policy; each service supplies its own code extraction (codeOf) and
 // code->status table (statusOf):
 //
-//   - nil error, or codeOf reporting !ok -> 500 "internal error" carrying the
-//     fallbackCode (when non-empty) in the machine-readable Code + Type fields.
-//     A nil error at an error mapper is a handler bug, not success; returning a
-//     nil here would render a 200 and hide the bug, so the safe default is the
-//     canonical sanitized 500.
+//   - nil error, a nil codeOf/statusOf callback, or codeOf reporting !ok -> 500
+//     "internal error" carrying the fallbackCode (when non-empty) in the
+//     machine-readable Code + Type fields. A nil error at an error mapper is a
+//     handler bug, not success; returning a nil here would render a 200 and hide
+//     the bug, so the safe default is the canonical sanitized 500. A miswired
+//     caller passing a nil callback gets the same sanitized 500 instead of a
+//     panic.
 //   - codeOf -> (code, msg, true) -> a *Detail with Status=statusOf(code). When
 //     code is non-empty, Code holds the bare domain code and Type is the flat
 //     URI (BaseURI + "/" + code); the code is NOT appended to detail. 5xx details
@@ -35,7 +37,7 @@ func MapError(
 	statusOf func(code string) int,
 	fallbackCode string,
 ) error {
-	if err == nil {
+	if err == nil || codeOf == nil || statusOf == nil {
 		return newProblem(http.StatusInternalServerError, genericServerErrorDetail, fallbackCode)
 	}
 

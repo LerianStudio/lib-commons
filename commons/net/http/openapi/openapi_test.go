@@ -366,3 +366,49 @@ func findErrorSchema(t *testing.T, api huma.API) *huma.Schema {
 
 	return nil
 }
+
+// TestDocsHTML_EscapesInterpolatedValues proves the docs page HTML-escapes the
+// title and spec URL, so a value carrying HTML/attribute-breaking characters
+// cannot inject markup or script into /docs.
+func TestDocsHTML_EscapesInterpolatedValues(t *testing.T) {
+	t.Parallel()
+
+	out := string(docsHTML(`</title><script>alert(1)</script>`, `x"><img src=y onerror=alert(1)>`))
+
+	assert.NotContains(t, out, "<script>alert(1)</script>", "raw script must not survive into the docs HTML")
+	assert.NotContains(t, out, `x"><img`, "attribute-breaking spec URL must be escaped")
+	assert.Contains(t, out, "&lt;script&gt;", "title must be HTML-escaped")
+	assert.Contains(t, out, "&#34;&gt;&lt;img", "spec URL must be HTML-escaped")
+}
+
+// TestServeSpec_NilApp proves a nil app is a no-op and does not panic, even with
+// a valid api.
+func TestServeSpec_NilApp(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	api := New(app, app.Group("/"), testConfig())
+	registerEcho(api)
+
+	assert.NotPanics(t, func() {
+		ServeSpec(nil, api, &libLog.NopLogger{}, "/v1", "Test Docs")
+	})
+}
+
+// TestServeSpec_NilLogger_RenderFailure_NoPanic proves a nil logger falls back to
+// a no-op logger: even on a render failure (which logs), ServeSpec must not panic
+// and registers no routes.
+func TestServeSpec_NilLogger_RenderFailure_NoPanic(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	api := New(app, app.Group("/"), testConfig())
+	api.OpenAPI().Extensions = map[string]any{"x-bad": make(chan int)}
+
+	assert.NotPanics(t, func() {
+		ServeSpec(app, api, nil, "/v1", "Test Docs")
+	})
+
+	status, _ := doReq(t, app, http.MethodGet, "/v1/openapi.json")
+	assert.Equal(t, http.StatusNotFound, status, "no routes registered on render failure")
+}

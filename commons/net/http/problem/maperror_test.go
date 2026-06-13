@@ -109,3 +109,41 @@ func TestMapError_Coded_EmptyCode_BareBody(t *testing.T) {
 	assert.Empty(t, d.Code)
 	assert.Empty(t, d.Type)
 }
+
+// TestMapError_NilCallbacks_SanitizedFallback500 proves a miswired caller passing
+// a nil codeOf or statusOf gets the canonical sanitized 500 (carrying the
+// fallbackCode) instead of a panic.
+func TestMapError_NilCallbacks_SanitizedFallback500(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil codeOf", func(t *testing.T) {
+		t.Parallel()
+
+		d := mapErrDetail(t, MapError(errors.New("x"), nil, staticStatusOf, "SPB-0000"))
+
+		assert.Equal(t, http.StatusInternalServerError, d.Status)
+		assert.Equal(t, genericServerErrorDetail, d.Detail)
+		assert.Equal(t, "SPB-0000", d.Code)
+		assert.Equal(t, BaseURI+"/SPB-0000", d.Type)
+	})
+
+	t.Run("nil statusOf", func(t *testing.T) {
+		t.Parallel()
+
+		d := mapErrDetail(t, MapError(errors.New("x"), neverCodeOf, nil, "SPB-0000"))
+
+		assert.Equal(t, http.StatusInternalServerError, d.Status)
+		assert.Equal(t, genericServerErrorDetail, d.Detail)
+		assert.Equal(t, "SPB-0000", d.Code)
+	})
+
+	t.Run("both nil with empty fallback yields a bare body", func(t *testing.T) {
+		t.Parallel()
+
+		d := mapErrDetail(t, MapError(errors.New("x"), nil, nil, ""))
+
+		assert.Equal(t, http.StatusInternalServerError, d.Status)
+		assert.Empty(t, d.Code)
+		assert.Empty(t, d.Type)
+	})
+}

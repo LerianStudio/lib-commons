@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 
 	libLog "github.com/LerianStudio/lib-observability/log"
 	"github.com/danielgtaylor/huma/v2"
@@ -138,14 +139,19 @@ func DeclareBearerAuth(api huma.API) {
 // deliberately OFF the auth/tenant chain (public-within-the-gate). Callers MUST
 // gate this on their Swagger.Enabled flag; it is never registered when the flag
 // is false. If the spec fails to render the routes are skipped and the failure
-// is logged. Nil-safe on api.
+// is logged. Nil-safe: a nil app or api is a no-op, and a nil logger falls back
+// to a no-op logger so a render failure never panics.
 //
 // title is the docs page <title>; the Scalar data-url points at the
 // prefix-scoped /openapi.json route. Services share this helper; the prefix and
 // title diverge per service.
 func ServeSpec(app *fiber.App, api huma.API, logger libLog.Logger, prefix, title string) {
-	if api == nil {
+	if app == nil || api == nil {
 		return
+	}
+
+	if logger == nil {
+		logger = libLog.NewNop()
 	}
 
 	specYAML, err := api.OpenAPI().YAML()
@@ -189,6 +195,9 @@ func scalarCSPMiddleware() fiber.Handler {
 }
 
 // docsHTML renders the Scalar docs page bytes for the given title and spec URL.
+// Both values are HTML-escaped before interpolation so a title or prefix
+// carrying HTML/attribute-breaking characters cannot inject markup or script
+// into the /docs page.
 func docsHTML(title, specURL string) []byte {
-	return fmt.Appendf(nil, docsHTMLTemplate, title, specURL)
+	return fmt.Appendf(nil, docsHTMLTemplate, html.EscapeString(title), html.EscapeString(specURL))
 }
