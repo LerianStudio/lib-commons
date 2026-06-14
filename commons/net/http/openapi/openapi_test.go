@@ -246,6 +246,57 @@ func TestServeSpec_MountsThreeRoutes(t *testing.T) {
 	})
 }
 
+// TestServeSpec_NormalizesPrefix proves ServeSpec normalizes the prefix once
+// (leading slash, no trailing slash, no double slash) before using it for both
+// the served spec URL and the route group: an un-normalized prefix still mounts
+// at the clean absolute path and the docs HTML carries the absolute spec URL.
+func TestServeSpec_NormalizesPrefix(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		prefix   string
+		specPath string // expected normalized openapi.json route + served spec URL
+		docsPath string // expected normalized docs route
+	}{
+		{name: "no leading slash", prefix: "v1", specPath: "/v1/openapi.json", docsPath: "/v1/docs"},
+		{name: "trailing slash", prefix: "/v1/", specPath: "/v1/openapi.json", docsPath: "/v1/docs"},
+		{name: "leading slash already", prefix: "/v1", specPath: "/v1/openapi.json", docsPath: "/v1/docs"},
+		{name: "nested", prefix: "api/v1/spi", specPath: "/api/v1/spi/openapi.json", docsPath: "/api/v1/spi/docs"},
+		{name: "root slash", prefix: "/", specPath: "/openapi.json", docsPath: "/docs"},
+		{name: "empty", prefix: "", specPath: "/openapi.json", docsPath: "/docs"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			app := fiber.New()
+			api := New(app, app.Group("/"), testConfig())
+			registerEcho(api)
+
+			ServeSpec(app, api, &libLog.NopLogger{}, tc.prefix, "Test Docs")
+
+			status, _ := doReq(t, app, http.MethodGet, tc.specPath)
+			assert.Equalf(t, http.StatusOK, status, "spec must be reachable at normalized path %s", tc.specPath)
+
+			resp, err := app.Test(httptest.NewRequest(http.MethodGet, tc.docsPath, nil))
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+
+			require.Equalf(t, http.StatusOK, resp.StatusCode, "docs must be reachable at %s", tc.docsPath)
+
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+
+			docsHTML := string(body)
+			assert.Containsf(t, docsHTML, tc.specPath, "docs HTML must carry the normalized spec URL %s", tc.specPath)
+			assert.NotContains(t, docsHTML, "//openapi.json", "no double slash in spec URL")
+			assert.NotContains(t, docsHTML, `data-url="openapi.json"`, "spec URL must be absolute, not relative")
+		})
+	}
+}
+
 // TestServeSpec_NilAPI proves nil api mounts nothing and does not panic.
 func TestServeSpec_NilAPI(t *testing.T) {
 	t.Parallel()

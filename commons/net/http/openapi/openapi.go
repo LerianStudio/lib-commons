@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"path"
+	"strings"
 
 	libLog "github.com/LerianStudio/lib-observability/log"
 	"github.com/danielgtaylor/huma/v2"
@@ -166,7 +168,12 @@ func ServeSpec(app *fiber.App, api huma.API, logger libLog.Logger, prefix, title
 		return
 	}
 
-	specURL := prefix + "/openapi.json"
+	// Normalize prefix to a leading slash and no trailing slash so a caller
+	// passing "v1" (relative spec URL, broken Scalar link) or "/v1/" (double
+	// slash "/v1//openapi.json") still yields a clean absolute path. path.Join
+	// collapses the join cleanly and yields "/openapi.json" when prefix is "/".
+	prefix = "/" + strings.Trim(prefix, "/")
+	specURL := path.Join(prefix, "openapi.json")
 	docs := docsHTML(title, specURL)
 
 	group := app.Group(prefix)

@@ -47,6 +47,14 @@ func MapError(
 	}
 
 	status := statusOf(code)
+	// A recognized domain error must map to a 4xx/5xx. A status below 400 (0,
+	// 2xx, 3xx) means the rail's code->status table is misconfigured — a server
+	// bug, not a client success — so clamp it to 500 rather than emit a
+	// malformed or success-looking problem. The >=500 sanitization below then
+	// applies to the clamped status.
+	if status < http.StatusBadRequest {
+		status = http.StatusInternalServerError
+	}
 
 	detail := msg
 	if status >= http.StatusInternalServerError {

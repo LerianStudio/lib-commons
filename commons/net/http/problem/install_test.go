@@ -116,6 +116,46 @@ func TestNewError_HonorsErrorDetailer(t *testing.T) {
 	assert.Equal(t, "body.name", d.Errors[0].Location)
 }
 
+// nilDetailErr is a test error implementing huma.ErrorDetailer whose
+// ErrorDetail() returns a nil *huma.ErrorDetail, exercising the skip-nil guard
+// on the <500 fold path.
+type nilDetailErr struct{}
+
+func (e *nilDetailErr) Error() string                  { return "nil detail" }
+func (e *nilDetailErr) ErrorDetail() *huma.ErrorDetail { return nil }
+
+// TestNewError_SkipsNilErrorDetail proves an ErrorDetailer returning a nil
+// *huma.ErrorDetail is skipped (no null entry in Errors[]) while a valid sibling
+// is still folded.
+func TestNewError_SkipsNilErrorDetail(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil detail interspersed with a valid sibling", func(t *testing.T) {
+		t.Parallel()
+
+		carried := &huma.ErrorDetail{Message: "kept"}
+		d := asDetail(t, newError(
+			http.StatusBadRequest,
+			"msg",
+			&nilDetailErr{},
+			&detailErr{d: carried},
+		))
+
+		require.Len(t, d.Errors, 1, "nil ErrorDetail must be skipped, valid sibling kept")
+		for _, e := range d.Errors {
+			assert.NotNil(t, e, "no null entry must be folded into Errors[]")
+		}
+		assert.Same(t, carried, d.Errors[0])
+	})
+
+	t.Run("only a nil-detail error yields nil Errors", func(t *testing.T) {
+		t.Parallel()
+
+		d := asDetail(t, newError(http.StatusBadRequest, "msg", &nilDetailErr{}))
+		assert.Nil(t, d.Errors, "a sole nil ErrorDetail leaves Errors nil, not [null]")
+	})
+}
+
 // TestInstall_OverridesGlobal_Idempotent proves Install swaps the process-global
 // huma.NewError to our *Detail-producing override and that a second call is a
 // safe no-op. It restores the global afterward to avoid leaking across packages.
