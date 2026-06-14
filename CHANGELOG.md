@@ -1,5 +1,24 @@
 # Lib-commons Changelog
 
+## [5.6.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.6.0)
+
+- **Features**
+  - Added Huma OpenAPI wrapper and RFC 9457 problem model.
+  - Propagated `tenant.id` via OTel baggage.
+
+- **Fixes**
+  - Hardened Huma OpenAPI wrapper edges, including prefix normalization, nil `ErrorDetail`, and status clamping.
+  - Improved OpenAPI wrapper by escaping docs HTML and guarding against nils.
+  - Merged `tenant.id` into existing OTel baggage.
+  - Logged publish failures and added optional `OnInvalid`/`OnFailed` lifecycle callbacks in the outbox.
+  - Ensured `OnInvalid` callback is invoked only after successful `MarkInvalid`.
+
+Contributors: @augusto-draxx, @fredcamaral, @gandalf-at-lerian, @lerian-studio, @qnen.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.5.3...v5.6.0)
+
+---
+
 ## [5.5.3](https://github.com/LerianStudio/lib-commons/releases/tag/v5.5.3)
 
 - Fixes:
