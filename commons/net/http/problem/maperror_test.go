@@ -110,6 +110,30 @@ func TestMapError_Coded_EmptyCode_BareBody(t *testing.T) {
 	assert.Empty(t, d.Type)
 }
 
+// TestMapError_InvalidStatusClamped500 proves a misconfigured statusOf returning
+// a non-error status (0, 2xx, 3xx) for a recognized code is clamped up to a
+// sanitized 500 instead of emitting a malformed or success-looking problem; the
+// domain Code/Type are still carried so clients can branch.
+func TestMapError_InvalidStatusClamped500(t *testing.T) {
+	t.Parallel()
+
+	for _, badStatus := range []int{0, http.StatusOK, http.StatusFound} {
+		t.Run(http.StatusText(badStatus), func(t *testing.T) {
+			t.Parallel()
+
+			codeOf := func(error) (string, string, bool) { return "SPB-3002", "leaky raw cause", true }
+			statusOf := func(string) int { return badStatus }
+
+			d := mapErrDetail(t, MapError(errors.New("domain"), codeOf, statusOf, "SPB-0000"))
+
+			assert.Equal(t, http.StatusInternalServerError, d.Status, "invalid status must clamp to 500")
+			assert.Equal(t, genericServerErrorDetail, d.Detail, "clamped 500 detail must be sanitized")
+			assert.Equal(t, "SPB-3002", d.Code, "domain code still carried on clamped 500")
+			assert.Equal(t, BaseURI+"/SPB-3002", d.Type)
+		})
+	}
+}
+
 // TestMapError_NilCallbacks_SanitizedFallback500 proves a miswired caller passing
 // a nil codeOf or statusOf gets the canonical sanitized 500 (carrying the
 // fallbackCode) instead of a panic.

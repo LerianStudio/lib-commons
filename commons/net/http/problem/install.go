@@ -77,7 +77,12 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 		}
 
 		if converted, ok := e.(huma.ErrorDetailer); ok {
-			details = append(details, converted.ErrorDetail())
+			// ErrorDetail() may return a nil *huma.ErrorDetail; appending it
+			// would serialize a null entry into errors[]. Skip the nil one.
+			if d := converted.ErrorDetail(); d != nil {
+				details = append(details, d)
+			}
+
 			continue
 		}
 
