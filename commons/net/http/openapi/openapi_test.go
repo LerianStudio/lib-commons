@@ -389,7 +389,7 @@ func TestSchemaParity_ErrorSchemaCarriesCode(t *testing.T) {
 	// Belt-and-suspenders: the marshaled spec contains the example domain code.
 	raw, err := json.Marshal(api.OpenAPI())
 	require.NoError(t, err)
-	assert.Contains(t, string(raw), "SPB-3002", "code property example should be present in the spec")
+	assert.Contains(t, string(raw), "ERR-0001", "code property example should be present in the spec")
 }
 
 // findErrorSchema locates the registered component schema that carries the
