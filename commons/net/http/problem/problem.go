@@ -19,7 +19,7 @@ import "github.com/danielgtaylor/huma/v2"
 
 // BaseURI is the single source of truth for the RFC 9457 `type` URI shape. The
 // full `type` for a coded error is BaseURI + "/" + code (flat + versioned),
-// e.g. https://errors.lerian.studio/v1/SPB-3002. The /v1 segment versions the
+// e.g. https://errors.lerian.studio/v1/ERR-0001. The /v1 segment versions the
 // published error catalog so a `type` URI stays a stable, dereferenceable
 // identifier even if the catalog's meaning model later evolves. Never hardcode
 // the literal a second time; reference this constant.
@@ -36,5 +36,5 @@ const BaseURI = "https://errors.lerian.studio/v1"
 // is dropped by omitempty for code-less rails.
 type Detail struct {
 	huma.ErrorModel
-	Code string `json:"code,omitempty" doc:"Stable domain error code, e.g. SPB-3002" example:"SPB-3002"`
+	Code string `json:"code,omitempty" doc:"Stable, machine-readable domain error code scoped to the emitting service (format: <SERVICE>-NNNN)." example:"ERR-0001"`
 }
