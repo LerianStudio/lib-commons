@@ -19,7 +19,7 @@ import "github.com/danielgtaylor/huma/v2"
 
 // BaseURI is the single source of truth for the RFC 9457 `type` URI shape. The
 // full `type` for a coded error is BaseURI + "/" + code (flat + versioned),
-// e.g. https://errors.lerian.studio/v1/SPB-3002. The /v1 segment versions the
+// e.g. https://errors.lerian.studio/v1/ERR-0001. The /v1 segment versions the
 // published error catalog so a `type` URI stays a stable, dereferenceable
 // identifier even if the catalog's meaning model later evolves. Never hardcode
 // the literal a second time; reference this constant.
