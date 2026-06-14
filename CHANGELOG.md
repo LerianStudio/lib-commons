@@ -1,5 +1,16 @@
 # Lib-commons Changelog
 
+## [5.6.1](https://github.com/LerianStudio/lib-commons/releases/tag/v5.6.1)
+
+- Fixes:
+  - Genericize shared error-code example in network module.
+
+Contributors: @fredcamaral, @lerian-studio.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.6.0...v5.6.1)
+
+---
+
 ## [5.6.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.6.0)
 
 - **Features**
