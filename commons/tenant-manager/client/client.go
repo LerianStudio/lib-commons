@@ -435,9 +435,11 @@ func (c *Client) cacheTenantConfig(ctx context.Context, cacheKey string, config 
 // The API endpoint is: GET {baseURL}/v1/tenants/{tenantID}/associations/{service}/connections.
 // Successful responses are cached unless WithSkipCache is used.
 func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, opts ...GetConfigOption) (*core.TenantConfig, error) {
-	if c.httpClient == nil {
-		c.httpClientOnce.Do(func() { c.httpClient = newDefaultHTTPClient() })
-	}
+	c.httpClientOnce.Do(func() {
+		if c.httpClient == nil {
+			c.httpClient = newDefaultHTTPClient()
+		}
+	})
 
 	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 
@@ -571,9 +573,11 @@ func (c *Client) Close() error {
 // This is used as a fallback when Redis cache is unavailable.
 // The API endpoint is: GET {baseURL}/v1/tenants/active?service={service}
 func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) ([]*TenantSummary, error) {
-	if c.httpClient == nil {
-		c.httpClientOnce.Do(func() { c.httpClient = newDefaultHTTPClient() })
-	}
+	c.httpClientOnce.Do(func() {
+		if c.httpClient == nil {
+			c.httpClient = newDefaultHTTPClient()
+		}
+	})
 
 	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 
