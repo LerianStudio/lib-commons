@@ -25,9 +25,11 @@ import (
 // mirror GetTenantConfig / GetActiveTenantsByService: only server errors (5xx)
 // trip the circuit breaker; 4xx responses do not.
 func (c *Client) GetTenantMetadata(ctx context.Context, tenantID string) (map[string]string, error) {
-	if c.httpClient == nil {
-		c.httpClientOnce.Do(func() { c.httpClient = newDefaultHTTPClient() })
-	}
+	c.httpClientOnce.Do(func() {
+		if c.httpClient == nil {
+			c.httpClient = newDefaultHTTPClient()
+		}
+	})
 
 	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
 
