@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 )
 
 func TestClient_GetTenantMetadata_Success(t *testing.T) {
@@ -118,4 +121,50 @@ func TestClient_GetTenantMetadata_APIKeyHeader(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "secret-key", gotAPIKey)
+}
+
+func TestClient_CircuitBreaker_GetTenantMetadata(t *testing.T) {
+	t.Run("server errors (5xx) open the breaker", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		defer server.Close()
+
+		threshold := 2
+		client := mustNewClient(t, server.URL, WithCircuitBreaker(threshold, 30*time.Second))
+		ctx := context.Background()
+
+		for i := 0; i < threshold; i++ {
+			_, err := client.GetTenantMetadata(ctx, "tenant-x")
+			require.Error(t, err)
+		}
+
+		assert.Equal(t, cbOpen, client.cbState)
+
+		// Subsequent call fails fast without hitting the server.
+		_, err := client.GetTenantMetadata(ctx, "tenant-x")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, core.ErrCircuitBreakerOpen)
+	})
+
+	t.Run("client errors (404) do not trip the breaker", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer server.Close()
+
+		threshold := 2
+		client := mustNewClient(t, server.URL, WithCircuitBreaker(threshold, 30*time.Second))
+		ctx := context.Background()
+
+		// Exceed the threshold with 404s — the breaker must stay closed.
+		for i := 0; i < threshold+2; i++ {
+			_, err := client.GetTenantMetadata(ctx, "tenant-x")
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, core.ErrCircuitBreakerOpen, "a 404 must not open the breaker")
+		}
+
+		assert.NotEqual(t, cbOpen, client.cbState, "4xx must not open the breaker")
+		assert.Zero(t, client.cbFailures, "4xx must not record breaker failures")
+	})
 }
