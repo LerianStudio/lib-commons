@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -166,5 +167,29 @@ func TestClient_CircuitBreaker_GetTenantMetadata(t *testing.T) {
 
 		assert.NotEqual(t, cbOpen, client.cbState, "4xx must not open the breaker")
 		assert.Zero(t, client.cbFailures, "4xx must not record breaker failures")
+	})
+
+	t.Run("a 4xx round-trip resets failures recorded by a prior 5xx", func(t *testing.T) {
+		var calls int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			if atomic.AddInt32(&calls, 1) == 1 {
+				w.WriteHeader(http.StatusServiceUnavailable) // first call: 5xx
+				return
+			}
+			w.WriteHeader(http.StatusNotFound) // later calls: 4xx
+		}))
+		defer server.Close()
+
+		client := mustNewClient(t, server.URL, WithCircuitBreaker(3, 30*time.Second))
+		ctx := context.Background()
+
+		_, err := client.GetTenantMetadata(ctx, "tenant-x") // 5xx → failure recorded
+		require.Error(t, err)
+		require.Positive(t, client.cbFailures, "5xx must record a failure")
+
+		_, err = client.GetTenantMetadata(ctx, "tenant-x") // 4xx → resets the counter
+		require.Error(t, err)
+		assert.Zero(t, client.cbFailures, "a 4xx valid round-trip must reset consecutive failures")
+		assert.NotEqual(t, cbOpen, client.cbState)
 	})
 }

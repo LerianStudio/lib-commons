@@ -89,9 +89,14 @@ func (c *Client) GetTenantMetadata(ctx context.Context, tenantID string) (map[st
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		// Only record failure for server errors (5xx), not client errors (4xx).
+		// Server errors (5xx) count as failures; client errors (4xx) are a valid
+		// round-trip and reset the consecutive-failure counter (mirrors
+		// GetTenantConfig's 404/403 handling) so a lingering 5xx can't open the
+		// breaker after a successful exchange.
 		if isServerError(resp.StatusCode) {
 			c.recordFailure()
+		} else {
+			c.recordSuccess()
 		}
 
 		logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
