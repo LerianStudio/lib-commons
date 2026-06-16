@@ -1,5 +1,20 @@
 # Lib-commons Changelog
 
+## [5.7.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.7.0)
+
+- Features:
+  - Add `GetTenantMetadata` client method.
+
+- Fixes:
+  - Reset circuit breaker on 4xx round-trips.
+  - Remove data race in HTTP client lazy init.
+
+Contributors: @alexgarzao, @lerian-studio.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.6.1...v5.7.0)
+
+---
+
 ## [5.6.1](https://github.com/LerianStudio/lib-commons/releases/tag/v5.6.1)
 
 - Fixes:
