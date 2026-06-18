@@ -63,6 +63,16 @@ type CredentialsRotatedPayload struct {
 	NewSecretPath  string `json:"new_secret_path"`
 }
 
+// CacheInvalidatePayload is the typed payload for EventTenantCacheInvalidate events.
+// It triggers an operator-initiated per-service cache hot-reload: the targeted
+// service evicts the tenant from its local (tier-1) and client (tier-2) caches
+// and eagerly reloads when the tenant is owned locally. Reason is an optional
+// free-form annotation for audit/observability.
+type CacheInvalidatePayload struct {
+	ServiceName string `json:"service_name"`
+	Reason      string `json:"reason,omitempty"`
+}
+
 // ConnectionsUpdatedPayload is the typed payload for EventTenantConnectionsUpdated events.
 type ConnectionsUpdatedPayload struct {
 	ServiceName      string `json:"service_name"`

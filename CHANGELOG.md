@@ -1,5 +1,21 @@
 # Lib-commons Changelog
 
+## [5.8.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.8.0)
+
+- Features:
+  - Add `tenant.cache.invalidate` event type and `CacheInvalidatePayload` for operator-triggered per-service cache hot-reload.
+  - Add dispatcher `handleCacheInvalidate`: evicts the tenant from tier-1 (local) and tier-2 (client) caches and eagerly reloads when the tenant is owned locally.
+  - Add `TenantLoader.InvalidateClientCache` to evict the tenant-manager client (tier-2) config cache.
+
+- Fixes:
+  - Close the tier-2 staleness gap: `removeTenant` now also invalidates the client (tier-2) config cache, so `tenant.credentials.rotated` and `tenant.service.disassociated` no longer leave a stale tier-2 entry.
+
+Contributors: @jeffersonrodrigues92, @lerian-studio.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.7.0...v5.8.0)
+
+---
+
 ## [5.7.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.7.0)
 
 - Features:

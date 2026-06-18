@@ -75,6 +75,37 @@ func (l *TenantLoader) SetOnTenantLoaded(fn func(ctx context.Context, tenantID s
 	l.onTenantLoadedMu.Unlock()
 }
 
+// InvalidateClientCache evicts the tenant's entry from the tenant-manager
+// client (tier-2) config cache, delegating to pmClient.InvalidateConfig.
+//
+// It is nil-safe: a nil receiver returns nil without performing any work, and
+// when the loader has no pmClient configured it also returns nil. The
+// underlying client is a no-op when no cache is wired, so this is always safe
+// to call.
+func (l *TenantLoader) InvalidateClientCache(ctx context.Context, tenantID, service string) error {
+	if l == nil {
+		return nil
+	}
+
+	_, tracer, _, _ := observability.NewTrackingFromContext(ctx) //nolint:dogsled // standard tracking extraction
+
+	ctx, span := tracer.Start(ctx, "tenantcache.tenant_loader.invalidate_client_cache")
+	defer span.End()
+
+	if l.pmClient == nil {
+		return nil
+	}
+
+	if err := l.pmClient.InvalidateConfig(ctx, tenantID, service); err != nil {
+		wrappedErr := fmt.Errorf("tenantcache: failed to invalidate client cache for tenant %s: %w", tenantID, err)
+		libOpentelemetry.HandleSpanError(span, "failed to invalidate client cache", wrappedErr)
+
+		return wrappedErr
+	}
+
+	return nil
+}
+
 // LoadTenant fetches and caches a tenant's configuration.
 //
 // Behaviour:
