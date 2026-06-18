@@ -3,6 +3,20 @@
 ## [5.8.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.8.0)
 
 - Features:
+  - Add `cache.invalidate` hot-reload event in tenant-manager.
+
+- Fixes:
+  - Guard `InvalidateClientCache` against nil receiver in tenant-manager.
+
+Contributors: @jeffersonrodrigues92, @lerian-studio.
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.7.0...v5.8.0)
+
+---
+
+## [5.8.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.8.0)
+
+- Features:
   - Add `tenant.cache.invalidate` event type and `CacheInvalidatePayload` for operator-triggered per-service cache hot-reload.
   - Add dispatcher `handleCacheInvalidate`: evicts the tenant from tier-1 (local) and tier-2 (client) caches and eagerly reloads when the tenant is owned locally.
   - Add `TenantLoader.InvalidateClientCache` to evict the tenant-manager client (tier-2) config cache.
