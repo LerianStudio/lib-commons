@@ -78,10 +78,15 @@ func (l *TenantLoader) SetOnTenantLoaded(fn func(ctx context.Context, tenantID s
 // InvalidateClientCache evicts the tenant's entry from the tenant-manager
 // client (tier-2) config cache, delegating to pmClient.InvalidateConfig.
 //
-// It is nil-safe: when the loader has no pmClient configured it returns nil
-// without performing any work. The underlying client is also a no-op when no
-// cache is wired, so this is always safe to call.
+// It is nil-safe: a nil receiver returns nil without performing any work, and
+// when the loader has no pmClient configured it also returns nil. The
+// underlying client is a no-op when no cache is wired, so this is always safe
+// to call.
 func (l *TenantLoader) InvalidateClientCache(ctx context.Context, tenantID, service string) error {
+	if l == nil {
+		return nil
+	}
+
 	_, tracer, _, _ := observability.NewTrackingFromContext(ctx) //nolint:dogsled // standard tracking extraction
 
 	ctx, span := tracer.Start(ctx, "tenantcache.tenant_loader.invalidate_client_cache")

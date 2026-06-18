@@ -116,6 +116,15 @@ func TestTenantLoader_InvalidateClientCache_NilClient_NoPanic(t *testing.T) {
 	require.NoError(t, err, "nil pmClient must return nil without panic")
 }
 
+func TestTenantLoader_InvalidateClientCache_NilReceiver_NoPanic(t *testing.T) {
+	t.Parallel()
+
+	var l *TenantLoader
+
+	err := l.InvalidateClientCache(context.Background(), "tenant-x", "svc")
+	require.NoError(t, err, "nil receiver must return nil without panic")
+}
+
 // errDelConfigCache returns an error from Del to exercise the error-wrap path.
 type errDelConfigCache struct {
 	*spyConfigCache
