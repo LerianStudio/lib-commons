@@ -224,6 +224,8 @@ func (d *EventDispatcher) dispatchEvent(ctx context.Context, evt TenantLifecycle
 		return d.handleCredentialsRotated(ctx, evt, logger)
 	case EventTenantConnectionsUpdated:
 		return d.handleConnectionsUpdated(ctx, evt, logger)
+	case EventTenantCacheInvalidate:
+		return d.handleCacheInvalidate(ctx, evt, logger)
 	default:
 		logger.Base().Log(ctx, libLog.LevelWarn, "unknown event type, skipping",
 			libLog.String("event_type", evt.EventType),

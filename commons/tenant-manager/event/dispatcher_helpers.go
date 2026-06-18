@@ -44,7 +44,8 @@ func (d *EventDispatcher) matchesService(evt TenantLifecycleEvent) (bool, error)
 func isServiceScopedEvent(eventType string) bool {
 	return strings.HasPrefix(eventType, "tenant.service.") ||
 		eventType == EventTenantCredentialsRotated ||
-		eventType == EventTenantConnectionsUpdated
+		eventType == EventTenantConnectionsUpdated ||
+		eventType == EventTenantCacheInvalidate
 }
 
 // isTenantLevelEvent returns true if the event type is a tenant-level event
@@ -74,8 +75,16 @@ func (d *EventDispatcher) RemoveTenant(ctx context.Context, tenantID string) {
 func (d *EventDispatcher) removeTenant(ctx context.Context, tenantID string, logger *logcompat.Logger) {
 	logger.InfofCtx(ctx, "closing connections for tenant=%s", tenantID)
 
-	// Remove from cache first
+	// Remove from cache first (tier-1: process-local config cache)
 	d.cache.Delete(tenantID)
+
+	// Invalidate tier-2 (tenant-manager client config cache) so a subsequent
+	// lazy-load or eager reload does not resurrect a stale entry.
+	if d.loader != nil {
+		if err := d.loader.InvalidateClientCache(ctx, tenantID, d.service); err != nil {
+			logger.WarnfCtx(ctx, "failed to invalidate client (tier-2) cache for tenant %s: %v", tenantID, err)
+		}
+	}
 
 	// Close infrastructure connections (network I/O)
 	if d.rabbitmq != nil {
