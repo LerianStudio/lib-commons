@@ -246,9 +246,39 @@ func (d *EventDispatcher) handleCredentialsRotated(
 		return nil
 	}
 
-	if _, err := d.loader.LoadTenant(ctx, evt.TenantID); err != nil {
-		logger.Base().Log(ctx, libLog.LevelWarn, "tenant.credentials.rotated: eager reload failed (will retry on next request)",
-			libLog.String("tenant_id", evt.TenantID),
+	return d.reloadAndNotify(ctx, evt.TenantID, logger,
+		"tenant.credentials.rotated", "tenant.credentials.rotated: reconnected with new credentials")
+}
+
+// reloadAndNotify performs the shared tail of the eager-reload handlers
+// (handleCredentialsRotated and the owned path of handleCacheInvalidate):
+//
+//  1. loader.LoadTenant — on error, warn and return nil (non-fatal: the next
+//     inbound request triggers lazy-load as a fallback);
+//  2. invoke onTenantAdded (if set) so the consumer starts its goroutine;
+//  3. emit the per-event success log.
+//
+// evtName is the event-name prefix for the failure log and successMsg is the
+// full success message, so each caller keeps its own exact wording (the two
+// handlers' success messages differ beyond the prefix) while sharing the
+// control flow.
+//
+// IMPORTANT: callers must invoke removeTenant, the nil-loader guard, and
+// applyJitter THEMSELVES before calling this helper. Those steps are
+// intentionally left in the callers because the relative order of applyJitter
+// vs the nil-loader guard differs between the two handlers (credentials:
+// jitter then nil-check; cache.invalidate: nil-check then jitter), an ordering
+// quirk observable only when loader == nil. This helper assumes loader != nil.
+func (d *EventDispatcher) reloadAndNotify(
+	ctx context.Context,
+	tenantID string,
+	logger *logcompat.Logger,
+	evtName string,
+	successMsg string,
+) error {
+	if _, err := d.loader.LoadTenant(ctx, tenantID); err != nil {
+		logger.Base().Log(ctx, libLog.LevelWarn, evtName+": eager reload failed (will retry on next request)",
+			libLog.String("tenant_id", tenantID),
 			libLog.Err(err))
 
 		return nil // non-fatal: next request will trigger lazy-load as fallback
@@ -256,13 +286,60 @@ func (d *EventDispatcher) handleCredentialsRotated(
 
 	// LoadTenant cached the config; notify consumer to start goroutine.
 	if d.onTenantAdded != nil {
-		d.onTenantAdded(ctx, evt.TenantID)
+		d.onTenantAdded(ctx, tenantID)
 	}
 
-	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.credentials.rotated: reconnected with new credentials",
-		libLog.String("tenant_id", evt.TenantID))
+	logger.Base().Log(ctx, libLog.LevelInfo, successMsg,
+		libLog.String("tenant_id", tenantID))
 
 	return nil
+}
+
+// handleCacheInvalidate handles operator-triggered per-service cache hot-reload.
+// It evicts the tenant from both the local (tier-1) and client (tier-2) caches
+// via removeTenant, then eagerly reloads the config ONLY when the tenant is
+// owned locally. Non-owned tenants are evict-only (no reload), avoiding warming
+// caches for tenants this instance does not serve.
+//
+// Ownership is captured BEFORE removeTenant because removeTenant deletes the
+// tier-1 entry that the cache-fallback ownership check reads. Because
+// tenant.cache.invalidate is service-scoped, the service has already matched by
+// the time this handler runs (HandleEvent applies the service filter); the
+// tenant-level ownership gate does NOT apply to service-scoped events, so the
+// ownership decision is made here.
+func (d *EventDispatcher) handleCacheInvalidate(
+	ctx context.Context,
+	evt TenantLifecycleEvent,
+	logger *logcompat.Logger,
+) error {
+	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.cache.invalidate: evicting tenant",
+		libLog.String("tenant_id", evt.TenantID))
+
+	// Capture ownership before removeTenant clears the tier-1 cache entry.
+	owned := d.isOwnedLocally(evt.TenantID)
+
+	// Evict both tiers (tier-1 cache + tier-2 client cache) and close pools.
+	d.removeTenant(ctx, evt.TenantID, logger)
+
+	if !owned {
+		logger.Base().Log(ctx, libLog.LevelDebug, "tenant.cache.invalidate: tenant not owned locally, evict only",
+			libLog.String("tenant_id", evt.TenantID))
+
+		return nil
+	}
+
+	if d.loader == nil {
+		logger.Base().Log(ctx, libLog.LevelWarn, "tenant.cache.invalidate: no loader configured, skipping eager reload",
+			libLog.String("tenant_id", evt.TenantID))
+
+		return nil
+	}
+
+	// Apply jitter to prevent thundering herd when multiple pods react simultaneously.
+	d.applyJitter(ctx)
+
+	return d.reloadAndNotify(ctx, evt.TenantID, logger,
+		"tenant.cache.invalidate", "tenant.cache.invalidate: evicted and reloaded")
 }
 
 // handleConnectionsUpdated applies new pool settings from the event payload.
