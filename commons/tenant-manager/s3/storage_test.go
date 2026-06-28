@@ -35,6 +35,13 @@ type fakeObjectAPI struct {
 	getErr    error
 	deleteErr error
 	headErr   error
+
+	// getNilOutput, when true, makes GetObject return a nil *GetObjectOutput
+	// with a nil error, simulating a misbehaving custom objectAPI.
+	getNilOutput bool
+	// getNilBody, when true, makes GetObject return a non-nil output whose
+	// Body is nil, simulating a misbehaving custom objectAPI.
+	getNilBody bool
 }
 
 func newFakeObjectAPI() *fakeObjectAPI {
@@ -65,6 +72,14 @@ func (f *fakeObjectAPI) GetObject(_ context.Context, in *awss3.GetObjectInput, _
 
 	if f.getErr != nil {
 		return nil, f.getErr
+	}
+
+	if f.getNilOutput {
+		return nil, nil //nolint:nilnil // deliberately simulating a misbehaving objectAPI
+	}
+
+	if f.getNilBody {
+		return &awss3.GetObjectOutput{Body: nil}, nil
 	}
 
 	data, ok := f.objects[deref(in.Key)]
@@ -131,6 +146,28 @@ func TestNewStorage_EmptyBucket(t *testing.T) {
 	assert.Contains(t, err.Error(), "bucket")
 }
 
+func TestNewStorage_WhitespaceOnlyBucket(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewStorage(newFakeObjectAPI(), "   ")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bucket")
+}
+
+func TestNewStorage_NormalizesBucketWhitespace(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	storage, err := NewStorage(fake, "  my-bucket  ")
+	require.NoError(t, err)
+
+	// The stored bucket must be the trimmed value, so S3 calls never carry
+	// stray whitespace.
+	err = storage.Upload(context.Background(), "x.xsd", bytes.NewReader([]byte("x")), "application/xml")
+	require.NoError(t, err)
+	assert.Equal(t, "my-bucket", fake.lastBucket)
+}
+
 func TestStorage_Upload_AppliesTenantPrefix_MultiTenant(t *testing.T) {
 	t.Parallel()
 
@@ -193,6 +230,34 @@ func TestStorage_Download_NotFound(t *testing.T) {
 	_, err = storage.Download(multiTenantCtx("org_01ABC"), "missing.xsd")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrObjectNotFound)
+}
+
+func TestStorage_Download_NilOutput_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	fake.getNilOutput = true
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	rc, err := storage.Download(multiTenantCtx("org_01ABC"), "x.xsd")
+	require.Error(t, err)
+	assert.Nil(t, rc)
+	assert.NotErrorIs(t, err, ErrObjectNotFound)
+}
+
+func TestStorage_Download_NilBody_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	fake.getNilBody = true
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	rc, err := storage.Download(multiTenantCtx("org_01ABC"), "x.xsd")
+	require.Error(t, err)
+	assert.Nil(t, rc)
+	assert.NotErrorIs(t, err, ErrObjectNotFound)
 }
 
 func TestStorage_Delete_AppliesTenantPrefix(t *testing.T) {

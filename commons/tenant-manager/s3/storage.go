@@ -80,7 +80,8 @@ func NewStorage(client objectAPI, bucket string) (Storage, error) {
 		return nil, errors.New("s3 client must not be nil")
 	}
 
-	if strings.TrimSpace(bucket) == "" {
+	bucket = strings.TrimSpace(bucket)
+	if bucket == "" {
 		return nil, errors.New("bucket must not be empty")
 	}
 
@@ -132,6 +133,10 @@ func (s *storage) Download(ctx context.Context, key string) (io.ReadCloser, erro
 		}
 
 		return nil, fmt.Errorf("download object %q: %w", resolvedKey, err)
+	}
+
+	if out == nil || out.Body == nil {
+		return nil, fmt.Errorf("download object %q: nil response body", resolvedKey)
 	}
 
 	return out.Body, nil
