@@ -9,17 +9,26 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"reflect"
 	"strings"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 )
 
 // ErrObjectNotFound is returned by Download when the requested object does not
 // exist in the bucket. Callers can match it with errors.Is.
 var ErrObjectNotFound = errors.New("object not found")
+
+// ErrObjectAlreadyExists is returned by Create when the target object already
+// exists. Create uses an S3 conditional write (IfNoneMatch: "*"), so this maps
+// the HTTP 412 / "PreconditionFailed" response into a typed sentinel that
+// callers can match with errors.Is for atomic create-if-absent semantics.
+var ErrObjectAlreadyExists = errors.New("object already exists")
 
 // Storage is a tenant-scoped blob storage abstraction over an S3 bucket.
 //
@@ -33,8 +42,14 @@ var ErrObjectNotFound = errors.New("object not found")
 // All operations resolve the key the same way, so a value written under one
 // tenant context is only visible under that same tenant context.
 type Storage interface {
-	// Upload writes body to the resolved key with the given content type.
+	// Upload writes body to the resolved key with the given content type,
+	// overwriting any existing object at that key.
 	Upload(ctx context.Context, key string, body io.Reader, contentType string) error
+	// Create writes body to the resolved key only if no object already exists
+	// there, using an S3 conditional write (IfNoneMatch: "*"). This is an
+	// atomic create-if-absent with no time-of-check/time-of-use race.
+	// Returns ErrObjectAlreadyExists if the object already exists.
+	Create(ctx context.Context, key string, body io.Reader, contentType string) error
 	// Download returns a reader for the object at the resolved key.
 	// Returns ErrObjectNotFound when the object does not exist.
 	// The caller must close the returned reader.
@@ -111,6 +126,45 @@ func (s *storage) Upload(ctx context.Context, key string, body io.Reader, conten
 
 	if _, err := s.client.PutObject(ctx, input); err != nil {
 		return fmt.Errorf("upload object %q: %w", resolvedKey, err)
+	}
+
+	return nil
+}
+
+// Create writes body to the tenant-resolved key only if the object does not
+// already exist, using the S3 conditional-write header IfNoneMatch: "*".
+//
+// The conditional write is evaluated atomically by S3, so concurrent callers
+// cannot both succeed and there is no time-of-check/time-of-use window. When
+// the object already exists, S3 responds with HTTP 412 / "PreconditionFailed",
+// which is mapped to ErrObjectAlreadyExists.
+func (s *storage) Create(ctx context.Context, key string, body io.Reader, contentType string) error {
+	if body == nil {
+		return errors.New("body must not be nil")
+	}
+
+	resolvedKey, err := GetS3KeyStorageContext(ctx, key)
+	if err != nil {
+		return fmt.Errorf("resolve storage key: %w", err)
+	}
+
+	input := &awss3.PutObjectInput{
+		Bucket:      &s.bucket,
+		Key:         &resolvedKey,
+		Body:        body,
+		IfNoneMatch: aws.String("*"),
+	}
+
+	if contentType != "" {
+		input.ContentType = &contentType
+	}
+
+	if _, err := s.client.PutObject(ctx, input); err != nil {
+		if isAlreadyExists(err) {
+			return fmt.Errorf("%w: %q", ErrObjectAlreadyExists, resolvedKey)
+		}
+
+		return fmt.Errorf("create object %q: %w", resolvedKey, err)
 	}
 
 	return nil
@@ -205,6 +259,30 @@ func isNotFound(err error) bool {
 		case "NoSuchKey", "NotFound":
 			return true
 		}
+	}
+
+	return false
+}
+
+// isAlreadyExists reports whether err represents a failed conditional create,
+// i.e. an object already existing at the target key when IfNoneMatch: "*" was
+// requested. S3 surfaces this as the "PreconditionFailed" API error code,
+// returned with HTTP status 412. It matches the typed API-error code first and
+// falls back to the HTTP status so it stays correct even if the SDK changes how
+// it labels the error code.
+func isAlreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) && apiErr.ErrorCode() == "PreconditionFailed" {
+		return true
+	}
+
+	var respErr *smithyhttp.ResponseError
+	if errors.As(err, &respErr) && respErr.HTTPStatusCode() == http.StatusPreconditionFailed {
+		return true
 	}
 
 	return false
