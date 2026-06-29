@@ -7,12 +7,14 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
+	smithyhttp "github.com/aws/smithy-go/transport/http"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,11 +27,12 @@ const testBucket = "test-bucket"
 type fakeObjectAPI struct {
 	objects map[string][]byte
 
-	lastPutKey    string
-	lastGetKey    string
-	lastDeleteKey string
-	lastHeadKey   string
-	lastBucket    string
+	lastPutKey         string
+	lastGetKey         string
+	lastDeleteKey      string
+	lastHeadKey        string
+	lastBucket         string
+	lastPutIfNoneMatch string
 
 	putErr    error
 	getErr    error
@@ -51,9 +54,22 @@ func newFakeObjectAPI() *fakeObjectAPI {
 func (f *fakeObjectAPI) PutObject(_ context.Context, in *awss3.PutObjectInput, _ ...func(*awss3.Options)) (*awss3.PutObjectOutput, error) {
 	f.lastBucket = deref(in.Bucket)
 	f.lastPutKey = deref(in.Key)
+	f.lastPutIfNoneMatch = deref(in.IfNoneMatch)
 
 	if f.putErr != nil {
 		return nil, f.putErr
+	}
+
+	// Emulate S3 conditional write: IfNoneMatch "*" succeeds only when the
+	// object does not already exist; otherwise S3 returns HTTP 412 with the
+	// PreconditionFailed API error code.
+	if deref(in.IfNoneMatch) == "*" {
+		if _, ok := f.objects[deref(in.Key)]; ok {
+			return nil, &smithyhttp.ResponseError{
+				Response: &smithyhttp.Response{Response: &http.Response{StatusCode: http.StatusPreconditionFailed}},
+				Err:      &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "At least one of the pre-conditions you specified did not hold"},
+			}
+		}
 	}
 
 	data, err := io.ReadAll(in.Body)
@@ -343,4 +359,113 @@ func TestStorage_Upload_NilBody(t *testing.T) {
 	err = storage.Upload(multiTenantCtx("org_01ABC"), "x.xsd", nil, "application/xml")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "body")
+}
+
+func TestStorage_Create_FreshKey_SetsIfNoneMatchAndStores(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	ctx := multiTenantCtx("org_01ABC")
+	body := []byte("<schema/>")
+
+	err = storage.Create(ctx, "schemas/xsd/foo/v1/schema.xsd", bytes.NewReader(body), "application/xml")
+	require.NoError(t, err)
+
+	// Conditional create must set IfNoneMatch "*" so the write only succeeds
+	// when the object does not already exist.
+	assert.Equal(t, "*", fake.lastPutIfNoneMatch)
+	// The object must be present after a successful create.
+	assert.Equal(t, body, fake.objects["org_01ABC/schemas/xsd/foo/v1/schema.xsd"])
+}
+
+func TestStorage_Create_ExistingKey_ReturnsErrObjectAlreadyExists(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	ctx := multiTenantCtx("org_01ABC")
+	original := []byte("original-payload")
+
+	// Seed the object via an unconditional Upload first.
+	require.NoError(t, storage.Upload(ctx, "schemas/x.xsd", bytes.NewReader(original), "application/xml"))
+
+	// A second Create against the same key must fail with the sentinel and
+	// must NOT overwrite the original object.
+	err = storage.Create(ctx, "schemas/x.xsd", bytes.NewReader([]byte("new-payload")), "application/xml")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrObjectAlreadyExists)
+	assert.Equal(t, original, fake.objects["org_01ABC/schemas/x.xsd"])
+}
+
+func TestStorage_Create_AppliesTenantPrefix_MultiTenant(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	ctx := multiTenantCtx("org_01ABC")
+	err = storage.Create(ctx, "schemas/xsd/foo/v1/schema.xsd", bytes.NewReader([]byte("payload")), "application/xml")
+	require.NoError(t, err)
+
+	assert.Equal(t, "org_01ABC/schemas/xsd/foo/v1/schema.xsd", fake.lastPutKey)
+	assert.Equal(t, testBucket, fake.lastBucket)
+}
+
+func TestStorage_Create_BareKey_SingleTenant(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	err = storage.Create(context.Background(), "schemas/xsd/foo/v1/schema.xsd", bytes.NewReader([]byte("payload")), "application/xml")
+	require.NoError(t, err)
+
+	assert.Equal(t, "schemas/xsd/foo/v1/schema.xsd", fake.lastPutKey)
+}
+
+func TestStorage_Create_NilBody(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	err = storage.Create(multiTenantCtx("org_01ABC"), "x.xsd", nil, "application/xml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "body")
+}
+
+func TestStorage_Create_MapsPreconditionFailedAPIError(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	// Simulate a generic smithy APIError carrying the PreconditionFailed code
+	// without an HTTP ResponseError wrapper, exercising the typed-code path.
+	fake.putErr = &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "At least one of the pre-conditions you specified did not hold"}
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	err = storage.Create(multiTenantCtx("org_01ABC"), "x.xsd", bytes.NewReader([]byte("x")), "application/xml")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrObjectAlreadyExists)
+}
+
+func TestStorage_Create_PropagatesUnexpectedError(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	fake.putErr = errors.New("network blip")
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	err = storage.Create(multiTenantCtx("org_01ABC"), "x.xsd", bytes.NewReader([]byte("x")), "application/xml")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrObjectAlreadyExists)
 }
