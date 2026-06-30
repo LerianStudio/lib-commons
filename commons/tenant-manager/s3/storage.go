@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -59,6 +60,16 @@ type Storage interface {
 	Delete(ctx context.Context, key string) error
 	// Exists reports whether an object exists at the resolved key.
 	Exists(ctx context.Context, key string) (bool, error)
+	// List enumerates the LOGICAL keys of every object stored under prefix.
+	//
+	// The prefix is resolved through the same tenant key resolution the other
+	// methods use, so a tenant context lists only that tenant's space and a
+	// global/empty-tenant context lists under the bare prefix. The returned
+	// keys are logical (the tenant prefix is stripped back off), matching the
+	// keys callers passed to Upload/Create. Results are paginated internally,
+	// so a prefix with more objects than one S3 page still returns every key.
+	// Returns an empty (non-nil) slice when nothing matches.
+	List(ctx context.Context, prefix string) ([]string, error)
 }
 
 // objectAPI is the narrow seam over the AWS S3 client used by Storage.
@@ -70,6 +81,7 @@ type objectAPI interface {
 	GetObject(ctx context.Context, params *awss3.GetObjectInput, optFns ...func(*awss3.Options)) (*awss3.GetObjectOutput, error)
 	DeleteObject(ctx context.Context, params *awss3.DeleteObjectInput, optFns ...func(*awss3.Options)) (*awss3.DeleteObjectOutput, error)
 	HeadObject(ctx context.Context, params *awss3.HeadObjectInput, optFns ...func(*awss3.Options)) (*awss3.HeadObjectOutput, error)
+	ListObjectsV2(ctx context.Context, params *awss3.ListObjectsV2Input, optFns ...func(*awss3.Options)) (*awss3.ListObjectsV2Output, error)
 }
 
 // storage is the aws-sdk-go-v2 backed implementation of Storage.
@@ -232,6 +244,76 @@ func (s *storage) Exists(ctx context.Context, key string) (bool, error) {
 	}
 
 	return true, nil
+}
+
+// List enumerates the logical keys of every object stored under the
+// tenant-resolved prefix.
+//
+// The prefix is resolved with GetS3KeyStorageContext exactly like every other
+// method, so listing is tenant-scoped: a tenant context only sees that tenant's
+// objects, a global/empty-tenant context lists under the bare prefix. The
+// ListObjectsV2 response is paginated, so this follows the continuation token
+// until IsTruncated is false to collect every matching key. If S3 reports a
+// truncated page without a continuation token, this returns an error rather
+// than a silently incomplete result set. Each physical S3 key is converted
+// back to its logical form (tenant prefix stripped) so the values returned
+// match what callers passed to Upload/Create. An empty, non-nil slice is
+// returned when nothing matches.
+func (s *storage) List(ctx context.Context, prefix string) ([]string, error) {
+	resolvedPrefix, err := GetS3KeyStorageContext(ctx, prefix)
+	if err != nil {
+		return nil, fmt.Errorf("resolve storage key: %w", err)
+	}
+
+	tenantID := core.GetTenantIDContext(ctx)
+
+	keys := make([]string, 0)
+
+	var continuationToken *string
+
+	for {
+		out, err := s.client.ListObjectsV2(ctx, &awss3.ListObjectsV2Input{
+			Bucket:            &s.bucket,
+			Prefix:            &resolvedPrefix,
+			ContinuationToken: continuationToken,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("list objects under prefix %q: %w", resolvedPrefix, err)
+		}
+
+		if out == nil {
+			return nil, fmt.Errorf("list objects under prefix %q: nil response", resolvedPrefix)
+		}
+
+		for i := range out.Contents {
+			obj := out.Contents[i]
+			if obj.Key == nil {
+				continue
+			}
+
+			logicalKey, err := StripObjectStoragePrefix(tenantID, *obj.Key)
+			if err != nil {
+				return nil, fmt.Errorf("strip tenant prefix from key %q: %w", *obj.Key, err)
+			}
+
+			keys = append(keys, logicalKey)
+		}
+
+		if out.IsTruncated == nil || !*out.IsTruncated {
+			break
+		}
+
+		// S3 reported more results but gave us no continuation token to fetch
+		// them. Returning here would silently drop the remaining objects, so
+		// fail loudly rather than hand back a partial result set.
+		if out.NextContinuationToken == nil || *out.NextContinuationToken == "" {
+			return nil, fmt.Errorf("list objects under prefix %q: truncated response missing continuation token", prefix)
+		}
+
+		continuationToken = out.NextContinuationToken
+	}
+
+	return keys, nil
 }
 
 // isNotFound reports whether err represents an S3 "object does not exist"
