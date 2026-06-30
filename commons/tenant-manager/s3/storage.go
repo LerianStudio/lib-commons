@@ -253,10 +253,12 @@ func (s *storage) Exists(ctx context.Context, key string) (bool, error) {
 // method, so listing is tenant-scoped: a tenant context only sees that tenant's
 // objects, a global/empty-tenant context lists under the bare prefix. The
 // ListObjectsV2 response is paginated, so this follows the continuation token
-// until IsTruncated is false to collect every matching key. Each physical S3
-// key is converted back to its logical form (tenant prefix stripped) so the
-// values returned match what callers passed to Upload/Create. An empty,
-// non-nil slice is returned when nothing matches.
+// until IsTruncated is false to collect every matching key. If S3 reports a
+// truncated page without a continuation token, this returns an error rather
+// than a silently incomplete result set. Each physical S3 key is converted
+// back to its logical form (tenant prefix stripped) so the values returned
+// match what callers passed to Upload/Create. An empty, non-nil slice is
+// returned when nothing matches.
 func (s *storage) List(ctx context.Context, prefix string) ([]string, error) {
 	resolvedPrefix, err := GetS3KeyStorageContext(ctx, prefix)
 	if err != nil {
@@ -301,8 +303,11 @@ func (s *storage) List(ctx context.Context, prefix string) ([]string, error) {
 			break
 		}
 
-		if out.NextContinuationToken == nil {
-			break
+		// S3 reported more results but gave us no continuation token to fetch
+		// them. Returning here would silently drop the remaining objects, so
+		// fail loudly rather than hand back a partial result set.
+		if out.NextContinuationToken == nil || *out.NextContinuationToken == "" {
+			return nil, fmt.Errorf("list objects under prefix %q: truncated response missing continuation token", prefix)
 		}
 
 		continuationToken = out.NextContinuationToken

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"sort"
@@ -60,8 +61,11 @@ type fakeObjectAPI struct {
 	// exercising the nil-key skip.
 	listKeysWithNil []string
 	// listTruncatedNoToken, when true, returns a page marked truncated but with
-	// no NextContinuationToken, exercising the safety break.
+	// no NextContinuationToken, exercising the error path.
 	listTruncatedNoToken bool
+	// listTruncatedEmptyToken, when true, returns a page marked truncated with a
+	// present-but-empty NextContinuationToken, exercising the same error path.
+	listTruncatedEmptyToken bool
 
 	// getNilOutput, when true, makes GetObject return a nil *GetObjectOutput
 	// with a nil error, simulating a misbehaving custom objectAPI.
@@ -175,6 +179,12 @@ func (f *fakeObjectAPI) ListObjectsV2(_ context.Context, in *awss3.ListObjectsV2
 		return &awss3.ListObjectsV2Output{IsTruncated: aws.Bool(true)}, nil
 	}
 
+	if f.listTruncatedEmptyToken {
+		empty := ""
+
+		return &awss3.ListObjectsV2Output{IsTruncated: aws.Bool(true), NextContinuationToken: &empty}, nil
+	}
+
 	if len(f.listKeysWithNil) > 0 {
 		contents := make([]s3types.Object, 0, len(f.listKeysWithNil))
 
@@ -196,8 +206,21 @@ func (f *fakeObjectAPI) ListObjectsV2(_ context.Context, in *awss3.ListObjectsV2
 	// continuation token to collect all keys.
 	if len(f.listPages) > 0 {
 		idx := 0
+
 		if in.ContinuationToken != nil {
-			idx = pageIndexFromToken(deref(in.ContinuationToken))
+			var err error
+
+			idx, err = pageIndexFromToken(deref(in.ContinuationToken))
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		// Fail fast on an out-of-range index instead of panicking or silently
+		// serving page 0, so a malformed/unexpected continuation token is a
+		// visible test failure rather than misleading data.
+		if idx < 0 || idx >= len(f.listPages) {
+			return nil, fmt.Errorf("fake ListObjectsV2: page index %d out of range [0,%d)", idx, len(f.listPages))
 		}
 
 		page := f.listPages[idx]
@@ -238,13 +261,17 @@ func tokenForPageIndex(idx int) string {
 	return "page-" + strconv.Itoa(idx)
 }
 
-func pageIndexFromToken(token string) int {
-	idx, err := strconv.Atoi(strings.TrimPrefix(token, "page-"))
-	if err != nil {
-		return 0
+func pageIndexFromToken(token string) (int, error) {
+	if !strings.HasPrefix(token, "page-") {
+		return 0, fmt.Errorf("fake ListObjectsV2: unexpected continuation token %q", token)
 	}
 
-	return idx
+	idx, err := strconv.Atoi(strings.TrimPrefix(token, "page-"))
+	if err != nil {
+		return 0, fmt.Errorf("fake ListObjectsV2: malformed continuation token %q: %w", token, err)
+	}
+
+	return idx, nil
 }
 
 func deref(s *string) string {
@@ -721,19 +748,38 @@ func TestStorage_List_SkipsNilKeyObjects(t *testing.T) {
 	}, keys)
 }
 
-func TestStorage_List_TruncatedWithoutToken_StopsSafely(t *testing.T) {
+func TestStorage_List_TruncatedWithoutToken_ReturnsError(t *testing.T) {
 	t.Parallel()
 
 	fake := newFakeObjectAPI()
-	// A response marked truncated but missing a continuation token must not loop
-	// forever; the implementation breaks out and returns what it has.
+	// A response marked truncated but missing a continuation token means S3 has
+	// more results it cannot hand back. Returning the partial slice would
+	// silently drop data, so List must surface an error instead.
 	fake.listTruncatedNoToken = true
 	storage, err := NewStorage(fake, testBucket)
 	require.NoError(t, err)
 
 	keys, err := storage.List(multiTenantCtx("org_01ABC"), "schemas/openapi/foo/")
+	require.Error(t, err)
+	assert.Nil(t, keys)
+	assert.Contains(t, err.Error(), "truncated response missing continuation token")
+	// Only the single (truncated) page is fetched; the loop does not continue.
+	assert.Equal(t, 1, fake.listCallCount)
+}
+
+func TestStorage_List_TruncatedWithEmptyToken_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	// An empty (non-nil) continuation token is just as unusable as a nil one;
+	// List must treat it the same way and refuse to return partial data.
+	fake.listTruncatedEmptyToken = true
+	storage, err := NewStorage(fake, testBucket)
 	require.NoError(t, err)
-	assert.NotNil(t, keys)
-	assert.Empty(t, keys)
+
+	keys, err := storage.List(multiTenantCtx("org_01ABC"), "schemas/openapi/foo/")
+	require.Error(t, err)
+	assert.Nil(t, keys)
+	assert.Contains(t, err.Error(), "truncated response missing continuation token")
 	assert.Equal(t, 1, fake.listCallCount)
 }
