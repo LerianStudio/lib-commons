@@ -8,9 +8,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	"github.com/aws/aws-sdk-go-v2/aws"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
@@ -33,11 +37,31 @@ type fakeObjectAPI struct {
 	lastHeadKey        string
 	lastBucket         string
 	lastPutIfNoneMatch string
+	lastListPrefix     string
 
 	putErr    error
 	getErr    error
 	deleteErr error
 	headErr   error
+	listErr   error
+
+	// listPages, when non-empty, is returned page-by-page by ListObjectsV2
+	// instead of deriving the result from objects. Each entry is one page of
+	// full S3 keys; pages before the last are returned as truncated.
+	listPages [][]string
+	// listCallCount records how many times ListObjectsV2 was invoked, so tests
+	// can assert pagination drove more than one round trip.
+	listCallCount int
+	// listNilOutput, when true, makes ListObjectsV2 return a nil output with a
+	// nil error, simulating a misbehaving custom objectAPI.
+	listNilOutput bool
+	// listKeysWithNil, when non-empty, is returned as a single page whose
+	// Contents includes a nil-Key object (a "" entry marks the nil-Key slot),
+	// exercising the nil-key skip.
+	listKeysWithNil []string
+	// listTruncatedNoToken, when true, returns a page marked truncated but with
+	// no NextContinuationToken, exercising the safety break.
+	listTruncatedNoToken bool
 
 	// getNilOutput, when true, makes GetObject return a nil *GetObjectOutput
 	// with a nil error, simulating a misbehaving custom objectAPI.
@@ -132,6 +156,95 @@ func (f *fakeObjectAPI) HeadObject(_ context.Context, in *awss3.HeadObjectInput,
 	}
 
 	return &awss3.HeadObjectOutput{}, nil
+}
+
+func (f *fakeObjectAPI) ListObjectsV2(_ context.Context, in *awss3.ListObjectsV2Input, _ ...func(*awss3.Options)) (*awss3.ListObjectsV2Output, error) {
+	f.lastBucket = deref(in.Bucket)
+	f.lastListPrefix = deref(in.Prefix)
+	f.listCallCount++
+
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+
+	if f.listNilOutput {
+		return nil, nil //nolint:nilnil // deliberately simulating a misbehaving objectAPI
+	}
+
+	if f.listTruncatedNoToken {
+		return &awss3.ListObjectsV2Output{IsTruncated: aws.Bool(true)}, nil
+	}
+
+	if len(f.listKeysWithNil) > 0 {
+		contents := make([]s3types.Object, 0, len(f.listKeysWithNil))
+
+		for _, k := range f.listKeysWithNil {
+			if k == "" {
+				contents = append(contents, s3types.Object{Key: nil})
+				continue
+			}
+
+			key := k
+			contents = append(contents, s3types.Object{Key: &key})
+		}
+
+		return &awss3.ListObjectsV2Output{Contents: contents}, nil
+	}
+
+	// Scripted multi-page mode: return one page per call, marking every page
+	// but the last as truncated so the implementation must follow the
+	// continuation token to collect all keys.
+	if len(f.listPages) > 0 {
+		idx := 0
+		if in.ContinuationToken != nil {
+			idx = pageIndexFromToken(deref(in.ContinuationToken))
+		}
+
+		page := f.listPages[idx]
+		contents := make([]s3types.Object, 0, len(page))
+
+		for _, k := range page {
+			key := k
+			contents = append(contents, s3types.Object{Key: &key})
+		}
+
+		out := &awss3.ListObjectsV2Output{Contents: contents}
+
+		if idx < len(f.listPages)-1 {
+			next := tokenForPageIndex(idx + 1)
+			out.IsTruncated = aws.Bool(true)
+			out.NextContinuationToken = &next
+		}
+
+		return out, nil
+	}
+
+	// In-memory mode: derive the result from the stored objects, filtering by
+	// the requested prefix.
+	prefix := deref(in.Prefix)
+	contents := make([]s3types.Object, 0, len(f.objects))
+
+	for k := range f.objects {
+		if strings.HasPrefix(k, prefix) {
+			key := k
+			contents = append(contents, s3types.Object{Key: &key})
+		}
+	}
+
+	return &awss3.ListObjectsV2Output{Contents: contents}, nil
+}
+
+func tokenForPageIndex(idx int) string {
+	return "page-" + strconv.Itoa(idx)
+}
+
+func pageIndexFromToken(token string) int {
+	idx, err := strconv.Atoi(strings.TrimPrefix(token, "page-"))
+	if err != nil {
+		return 0
+	}
+
+	return idx
 }
 
 func deref(s *string) string {
@@ -468,4 +581,159 @@ func TestStorage_Create_PropagatesUnexpectedError(t *testing.T) {
 	err = storage.Create(multiTenantCtx("org_01ABC"), "x.xsd", bytes.NewReader([]byte("x")), "application/xml")
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrObjectAlreadyExists)
+}
+
+func TestStorage_List_ReturnsLogicalKeysUnderPrefix_MultiTenant(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	ctx := multiTenantCtx("org_01ABC")
+	require.NoError(t, storage.Upload(ctx, "schemas/openapi/foo/v1/spec.json", bytes.NewReader([]byte("a")), "application/json"))
+	require.NoError(t, storage.Upload(ctx, "schemas/openapi/foo/v2/spec.json", bytes.NewReader([]byte("b")), "application/json"))
+	// An object under a different prefix must NOT be returned.
+	require.NoError(t, storage.Upload(ctx, "schemas/xsd/bar/v1/schema.xsd", bytes.NewReader([]byte("c")), "application/xml"))
+
+	keys, err := storage.List(ctx, "schemas/openapi/foo/")
+	require.NoError(t, err)
+
+	sort.Strings(keys)
+	// Returned keys are LOGICAL (tenant prefix stripped), matching the keys the
+	// caller passed to Upload.
+	assert.Equal(t, []string{
+		"schemas/openapi/foo/v1/spec.json",
+		"schemas/openapi/foo/v2/spec.json",
+	}, keys)
+
+	// The S3 request must carry the tenant-RESOLVED prefix.
+	assert.Equal(t, "org_01ABC/schemas/openapi/foo/", fake.lastListPrefix)
+	assert.Equal(t, testBucket, fake.lastBucket)
+}
+
+func TestStorage_List_BarePrefix_SingleTenant(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	require.NoError(t, storage.Upload(ctx, "schemas/openapi/foo/v1/spec.json", bytes.NewReader([]byte("a")), "application/json"))
+
+	keys, err := storage.List(ctx, "schemas/openapi/foo/")
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"schemas/openapi/foo/v1/spec.json"}, keys)
+	// Global/empty-tenant context lists under the bare prefix (no tenant segment).
+	assert.Equal(t, "schemas/openapi/foo/", fake.lastListPrefix)
+}
+
+func TestStorage_List_PaginatesAcrossTruncatedResponses(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	// Two pages of full (resolved) S3 keys. The first page is truncated, so the
+	// implementation must follow the continuation token to fetch the second.
+	fake.listPages = [][]string{
+		{"org_01ABC/schemas/openapi/foo/v1/spec.json", "org_01ABC/schemas/openapi/foo/v2/spec.json"},
+		{"org_01ABC/schemas/openapi/foo/v3/spec.json"},
+	}
+
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	keys, err := storage.List(multiTenantCtx("org_01ABC"), "schemas/openapi/foo/")
+	require.NoError(t, err)
+
+	sort.Strings(keys)
+	assert.Equal(t, []string{
+		"schemas/openapi/foo/v1/spec.json",
+		"schemas/openapi/foo/v2/spec.json",
+		"schemas/openapi/foo/v3/spec.json",
+	}, keys)
+
+	// Both pages must have been fetched (>= 2 round trips).
+	assert.GreaterOrEqual(t, fake.listCallCount, 2)
+}
+
+func TestStorage_List_EmptyResult_ReturnsEmptySlice(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	keys, err := storage.List(multiTenantCtx("org_01ABC"), "schemas/openapi/none/")
+	require.NoError(t, err)
+	assert.NotNil(t, keys)
+	assert.Empty(t, keys)
+}
+
+func TestStorage_List_PropagatesUnexpectedError(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	fake.listErr = errors.New("network blip")
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	_, err = storage.List(multiTenantCtx("org_01ABC"), "schemas/openapi/foo/")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "network blip")
+}
+
+func TestStorage_List_NilOutput_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	fake.listNilOutput = true
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	_, err = storage.List(multiTenantCtx("org_01ABC"), "schemas/openapi/foo/")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nil response")
+}
+
+func TestStorage_List_SkipsNilKeyObjects(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	// The middle entry ("") is returned as an object with a nil Key, which must
+	// be skipped without producing a spurious key.
+	fake.listKeysWithNil = []string{
+		"org_01ABC/schemas/openapi/foo/v1/spec.json",
+		"",
+		"org_01ABC/schemas/openapi/foo/v2/spec.json",
+	}
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	keys, err := storage.List(multiTenantCtx("org_01ABC"), "schemas/openapi/foo/")
+	require.NoError(t, err)
+
+	sort.Strings(keys)
+	assert.Equal(t, []string{
+		"schemas/openapi/foo/v1/spec.json",
+		"schemas/openapi/foo/v2/spec.json",
+	}, keys)
+}
+
+func TestStorage_List_TruncatedWithoutToken_StopsSafely(t *testing.T) {
+	t.Parallel()
+
+	fake := newFakeObjectAPI()
+	// A response marked truncated but missing a continuation token must not loop
+	// forever; the implementation breaks out and returns what it has.
+	fake.listTruncatedNoToken = true
+	storage, err := NewStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	keys, err := storage.List(multiTenantCtx("org_01ABC"), "schemas/openapi/foo/")
+	require.NoError(t, err)
+	assert.NotNil(t, keys)
+	assert.Empty(t, keys)
+	assert.Equal(t, 1, fake.listCallCount)
 }
