@@ -122,16 +122,37 @@ func (d *EventDispatcher) handleServiceAssociated(
 		}
 	}
 
-	// Populate Databases from secret_paths
+	// Populate Databases from secret_paths.
+	//
+	// NOTE ON DUAL SOURCES (do NOT "fix" this into a single set):
+	// Databases and Messaging are intentionally built from DIFFERENT parts of the
+	// payload.
+	//   - Databases  <- payload.SecretPaths keys: databases are PER-MODULE, so a
+	//     module only appears here if it actually has a DB secret provisioned.
+	//   - Messaging  <- payload.Modules (see below): RabbitMQ is TENANT-LEVEL (one
+	//     vhost/credential per tenant), so it applies to ALL provisioned modules.
+	// The two sets are allowed to differ (e.g. a module with RabbitMQ but no DB).
+	// Aligning them would drop tenant-level RabbitMQ for modules that lack a DB
+	// secret. See TestEventDispatcher_HandleEvent_ServiceAssociated_ModulesVsSecretPathsMayDiffer.
 	config.Databases = buildDatabasesFromSecretPaths(payload.SecretPaths)
 
-	// Populate Messaging from payload
+	// Populate Messaging from payload. RabbitMQ is tenant-level, so the single
+	// secret path is mirrored per provisioned module (payload.Modules is the
+	// canonical set for this fan-out) to match the per-module messaging map
+	// contract exposed by the tenant-manager /connections endpoint.
 	if payload.MessagingConfig != nil && payload.MessagingConfig.RabbitMQSecretPath != "" {
-		config.Messaging = &core.MessagingConfig{
-			RabbitMQ: &core.RabbitMQConfig{
-				// Secret path stored in Host field; actual credentials resolved lazily
-				Host: payload.MessagingConfig.RabbitMQSecretPath,
-			},
+		messaging := make(map[string]core.MessagingConfig, len(payload.Modules))
+		for _, module := range payload.Modules {
+			messaging[module] = core.MessagingConfig{
+				RabbitMQ: &core.RabbitMQConfig{
+					// Secret path stored in Host field; actual credentials resolved lazily
+					Host: payload.MessagingConfig.RabbitMQSecretPath,
+				},
+			}
+		}
+
+		if len(messaging) > 0 {
+			config.Messaging = messaging
 		}
 	}
 

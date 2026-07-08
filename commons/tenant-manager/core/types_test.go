@@ -418,44 +418,94 @@ func TestTenantConfig_GetRabbitMQConfig(t *testing.T) {
 	tests := []struct {
 		name          string
 		config        *TenantConfig
+		module        string
 		expectNil     bool
 		expectedVHost string
 	}{
 		{
 			name:      "returns nil for nil receiver",
 			config:    nil,
+			module:    "onboarding",
 			expectNil: true,
 		},
 		{
-			name:      "returns nil when messaging is nil",
+			name:      "returns nil when messaging map is nil",
 			config:    &TenantConfig{},
+			module:    "onboarding",
 			expectNil: true,
 		},
 		{
-			name: "returns nil when rabbitmq is nil in messaging",
+			name: "returns nil when rabbitmq is nil in module messaging",
 			config: &TenantConfig{
-				Messaging: &MessagingConfig{},
+				Messaging: map[string]MessagingConfig{
+					"onboarding": {},
+				},
 			},
+			module:    "onboarding",
 			expectNil: true,
 		},
 		{
-			name: "returns config when rabbitmq is set",
+			name: "returns nil when requested module is missing",
 			config: &TenantConfig{
-				Messaging: &MessagingConfig{
-					RabbitMQ: &RabbitMQConfig{
-						Host:  "rabbitmq.example.com",
-						Port:  5672,
-						VHost: "tenant-vhost",
+				Messaging: map[string]MessagingConfig{
+					"onboarding": {
+						RabbitMQ: &RabbitMQConfig{VHost: "onboarding-vhost"},
 					},
 				},
 			},
-			expectedVHost: "tenant-vhost",
+			module:    "transaction",
+			expectNil: true,
+		},
+		{
+			name: "returns config for requested module",
+			config: &TenantConfig{
+				Messaging: map[string]MessagingConfig{
+					"onboarding": {
+						RabbitMQ: &RabbitMQConfig{
+							Host:  "rabbitmq.example.com",
+							Port:  5672,
+							VHost: "onboarding-vhost",
+						},
+					},
+					"transaction": {
+						RabbitMQ: &RabbitMQConfig{VHost: "transaction-vhost"},
+					},
+				},
+			},
+			module:        "onboarding",
+			expectedVHost: "onboarding-vhost",
+		},
+		{
+			name: "returns first module by sorted key when module is empty",
+			config: &TenantConfig{
+				Messaging: map[string]MessagingConfig{
+					"transaction": {
+						RabbitMQ: &RabbitMQConfig{VHost: "transaction-vhost"},
+					},
+					"onboarding": {
+						RabbitMQ: &RabbitMQConfig{VHost: "onboarding-vhost"},
+					},
+				},
+			},
+			module:        "",
+			expectedVHost: "onboarding-vhost",
+		},
+		{
+			name: "skips modules without rabbitmq when module is empty",
+			config: &TenantConfig{
+				Messaging: map[string]MessagingConfig{
+					"onboarding":  {},
+					"transaction": {RabbitMQ: &RabbitMQConfig{VHost: "transaction-vhost"}},
+				},
+			},
+			module:        "",
+			expectedVHost: "transaction-vhost",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := tt.config.GetRabbitMQConfig()
+			result := tt.config.GetRabbitMQConfig(tt.module)
 
 			if tt.expectNil {
 				assert.Nil(t, result)
@@ -464,6 +514,104 @@ func TestTenantConfig_GetRabbitMQConfig(t *testing.T) {
 
 			require.NotNil(t, result)
 			assert.Equal(t, tt.expectedVHost, result.VHost)
+		})
+	}
+}
+
+func TestTenantConfig_GetKafkaConfig(t *testing.T) {
+	tests := []struct {
+		name            string
+		config          *TenantConfig
+		module          string
+		expectNil       bool
+		expectedBrokers []string
+	}{
+		{
+			name:      "returns nil for nil receiver",
+			config:    nil,
+			module:    "onboarding",
+			expectNil: true,
+		},
+		{
+			name:      "returns nil when streaming map is nil",
+			config:    &TenantConfig{},
+			module:    "onboarding",
+			expectNil: true,
+		},
+		{
+			name: "returns nil when kafka is nil in module streaming",
+			config: &TenantConfig{
+				Streaming: map[string]StreamingConfig{
+					"onboarding": {},
+				},
+			},
+			module:    "onboarding",
+			expectNil: true,
+		},
+		{
+			name: "returns nil when requested module is missing",
+			config: &TenantConfig{
+				Streaming: map[string]StreamingConfig{
+					"onboarding": {Kafka: &KafkaConfig{Brokers: []string{"broker-1:9092"}}},
+				},
+			},
+			module:    "transaction",
+			expectNil: true,
+		},
+		{
+			name: "returns config for requested module",
+			config: &TenantConfig{
+				Streaming: map[string]StreamingConfig{
+					"onboarding": {
+						Kafka: &KafkaConfig{
+							Brokers:   []string{"broker-onb:9092"},
+							Username:  "onb-user",
+							Mechanism: "SCRAM-SHA-512",
+						},
+					},
+					"transaction": {
+						Kafka: &KafkaConfig{Brokers: []string{"broker-tx:9092"}},
+					},
+				},
+			},
+			module:          "onboarding",
+			expectedBrokers: []string{"broker-onb:9092"},
+		},
+		{
+			name: "returns first module by sorted key when module is empty",
+			config: &TenantConfig{
+				Streaming: map[string]StreamingConfig{
+					"transaction": {Kafka: &KafkaConfig{Brokers: []string{"broker-tx:9092"}}},
+					"onboarding":  {Kafka: &KafkaConfig{Brokers: []string{"broker-onb:9092"}}},
+				},
+			},
+			module:          "",
+			expectedBrokers: []string{"broker-onb:9092"},
+		},
+		{
+			name: "skips modules without kafka when module is empty",
+			config: &TenantConfig{
+				Streaming: map[string]StreamingConfig{
+					"onboarding":  {},
+					"transaction": {Kafka: &KafkaConfig{Brokers: []string{"broker-tx:9092"}}},
+				},
+			},
+			module:          "",
+			expectedBrokers: []string{"broker-tx:9092"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.config.GetKafkaConfig(tt.module)
+
+			if tt.expectNil {
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expectedBrokers, result.Brokers)
 		})
 	}
 }
@@ -480,25 +628,29 @@ func TestTenantConfig_HasRabbitMQ(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "returns false when messaging is nil",
+			name:     "returns false when messaging map is nil",
 			config:   &TenantConfig{},
 			expected: false,
 		},
 		{
 			name: "returns false when rabbitmq is nil in messaging",
 			config: &TenantConfig{
-				Messaging: &MessagingConfig{},
+				Messaging: map[string]MessagingConfig{
+					"onboarding": {},
+				},
 			},
 			expected: false,
 		},
 		{
-			name: "returns true when rabbitmq is configured",
+			name: "returns true when rabbitmq is configured for a module",
 			config: &TenantConfig{
-				Messaging: &MessagingConfig{
-					RabbitMQ: &RabbitMQConfig{
-						Host:  "rabbitmq.example.com",
-						Port:  5672,
-						VHost: "tenant-vhost",
+				Messaging: map[string]MessagingConfig{
+					"onboarding": {
+						RabbitMQ: &RabbitMQConfig{
+							Host:  "rabbitmq.example.com",
+							Port:  5672,
+							VHost: "tenant-vhost",
+						},
 					},
 				},
 			},
@@ -513,6 +665,132 @@ func TestTenantConfig_HasRabbitMQ(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestTenantConfig_PerModuleMessagingAndStreaming_JSON(t *testing.T) {
+	// This test is the source of truth for the tenant-manager wire contract.
+	// It asserts EVERY field present in the fixture JSON so a field rename or
+	// drop in the struct tags cannot pass silently.
+	t.Run("deserializes per-module messaging and streaming maps", func(t *testing.T) {
+		jsonData := `{
+			"id": "cfg-123",
+			"tenantSlug": "acme",
+			"isolationMode": "shared",
+			"messaging": {
+				"onboarding": {
+					"rabbitmq": {
+						"host": "rabbit.example.com",
+						"port": 5672,
+						"vhost": "onboarding-vhost",
+						"username": "onb-user",
+						"password": "onb-pass"
+					}
+				}
+			},
+			"streaming": {
+				"onboarding": {
+					"kafka": {
+						"brokers": ["broker-1:9092", "broker-2:9092"],
+						"username": "onb-kafka",
+						"password": "kafka-pass",
+						"mechanism": "SCRAM-SHA-512",
+						"tls": true
+					}
+				}
+			}
+		}`
+
+		var config TenantConfig
+		err := json.Unmarshal([]byte(jsonData), &config)
+
+		require.NoError(t, err)
+
+		require.Contains(t, config.Messaging, "onboarding")
+		rabbit := config.Messaging["onboarding"].RabbitMQ
+		require.NotNil(t, rabbit)
+		assert.Equal(t, "rabbit.example.com", rabbit.Host)
+		assert.Equal(t, 5672, rabbit.Port)
+		assert.Equal(t, "onboarding-vhost", rabbit.VHost)
+		assert.Equal(t, "onb-user", rabbit.Username)
+		assert.Equal(t, "onb-pass", rabbit.Password)
+
+		require.Contains(t, config.Streaming, "onboarding")
+		kafka := config.Streaming["onboarding"].Kafka
+		require.NotNil(t, kafka)
+		assert.Equal(t, []string{"broker-1:9092", "broker-2:9092"}, kafka.Brokers)
+		assert.Equal(t, "onb-kafka", kafka.Username)
+		assert.Equal(t, "kafka-pass", kafka.Password)
+		assert.Equal(t, "SCRAM-SHA-512", kafka.Mechanism)
+		require.NotNil(t, kafka.TLS)
+		assert.True(t, *kafka.TLS)
+	})
+
+	// KafkaConfig.TLS is a *bool where nil means "use global default", so an
+	// explicit false MUST be distinguishable from an unset value.
+	t.Run("kafka tls false is distinguishable from unset", func(t *testing.T) {
+		jsonData := `{
+			"id": "cfg-123",
+			"tenantSlug": "acme",
+			"streaming": {
+				"onboarding": {
+					"kafka": {
+						"brokers": ["broker-1:9092"],
+						"username": "onb-kafka",
+						"password": "kafka-pass",
+						"mechanism": "SCRAM-SHA-512",
+						"tls": false
+					}
+				}
+			}
+		}`
+
+		var config TenantConfig
+		err := json.Unmarshal([]byte(jsonData), &config)
+
+		require.NoError(t, err)
+		require.Contains(t, config.Streaming, "onboarding")
+		kafka := config.Streaming["onboarding"].Kafka
+		require.NotNil(t, kafka)
+		require.NotNil(t, kafka.TLS, "explicit false must produce a non-nil pointer")
+		assert.False(t, *kafka.TLS)
+	})
+
+	t.Run("kafka tls is nil when the key is omitted", func(t *testing.T) {
+		jsonData := `{
+			"id": "cfg-123",
+			"tenantSlug": "acme",
+			"streaming": {
+				"onboarding": {
+					"kafka": {
+						"brokers": ["broker-1:9092"],
+						"username": "onb-kafka",
+						"password": "kafka-pass",
+						"mechanism": "SCRAM-SHA-512"
+					}
+				}
+			}
+		}`
+
+		var config TenantConfig
+		err := json.Unmarshal([]byte(jsonData), &config)
+
+		require.NoError(t, err)
+		require.Contains(t, config.Streaming, "onboarding")
+		kafka := config.Streaming["onboarding"].Kafka
+		require.NotNil(t, kafka)
+		assert.Nil(t, kafka.TLS, "omitted tls key must leave the pointer nil (use global default)")
+	})
+
+	t.Run("messaging and streaming are nil when absent", func(t *testing.T) {
+		jsonData := `{"id": "cfg-123", "tenantSlug": "acme"}`
+
+		var config TenantConfig
+		err := json.Unmarshal([]byte(jsonData), &config)
+
+		require.NoError(t, err)
+		assert.Nil(t, config.Messaging)
+		assert.Nil(t, config.Streaming)
+	})
 }
 
 func TestTenantConfig_ConnectionSettings(t *testing.T) {
