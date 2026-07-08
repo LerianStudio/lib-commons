@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -58,6 +59,11 @@ var (
 	// ErrMigrationsNotFound is returned when the migration source directory is missing or empty.
 	// Services that intentionally skip migrations can opt in via WithAllowMissingMigrations().
 	ErrMigrationsNotFound = errors.New("migration files not found")
+	// ErrMigrationVersionAhead is returned when the database schema version is higher
+	// than (or absent from) the migration source — typically a rollback/downgrade where
+	// a newer migration file was removed. Distinct from ErrMigrationsNotFound: here the
+	// source is populated, but it does not contain the version the database is pinned to.
+	ErrMigrationVersionAhead = errors.New("database version ahead of migration source")
 
 	dbOpenFn = sql.Open
 
@@ -846,11 +852,110 @@ type migrationOutcome struct {
 	fields  []log.Field
 }
 
+// migrationState carries the database + source facts used to disambiguate an
+// os.ErrNotExist from golang-migrate, which covers both an empty/missing source
+// directory and a database pinned to a version the source no longer ships.
+// hasVersion is false when the database has no schema_migrations row yet.
+type migrationState struct {
+	currentVersion uint
+	hasVersion     bool
+	sourceCount    int
+	sourceMax      uint
+	sourcePath     string
+}
+
+// migrationVersionReader is satisfied by *migrate.Migrate; the seam lets
+// inspectMigrationState be unit-tested with a fake.
+type migrationVersionReader interface {
+	Version() (version uint, dirty bool, err error)
+}
+
+// migrationSourceStats scans the resolved migrations directory and reports how
+// many up-migration files exist and the highest version present. A missing or
+// unreadable directory yields (0, 0). Files that do not match the golang-migrate
+// "<version>_<name>.up.sql" convention are ignored.
+func migrationSourceStats(migrationsPath string) (count int, maxVersion uint) {
+	entries, err := os.ReadDir(migrationsPath)
+	if err != nil {
+		return 0, 0
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".up.sql") {
+			continue
+		}
+
+		sep := strings.IndexByte(name, '_')
+		if sep <= 0 {
+			continue
+		}
+
+		version, err := strconv.ParseUint(name[:sep], 10, 64)
+		if err != nil {
+			continue
+		}
+
+		count++
+
+		if uint(version) > maxVersion {
+			maxVersion = uint(version)
+		}
+	}
+
+	return count, maxVersion
+}
+
+// inspectMigrationState gathers the DB version and source stats used to classify
+// a failed migration. A nil reader or a Version() error leaves hasVersion false.
+func inspectMigrationState(versions migrationVersionReader, migrationsPath string) migrationState {
+	state := migrationState{sourcePath: migrationsPath}
+
+	if versions != nil {
+		if version, _, err := versions.Version(); err == nil {
+			state.currentVersion = version
+			state.hasVersion = true
+		}
+	}
+
+	state.sourceCount, state.sourceMax = migrationSourceStats(migrationsPath)
+
+	return state
+}
+
+// versionNotInSourceOutcome reports a database pinned to a version absent from a
+// populated source, distinguishing "ahead of the newest migration" from a mid-range
+// gap. Versions are logged as strings to avoid a lossy uint->int narrowing.
+func versionNotInSourceOutcome(state migrationState) migrationOutcome {
+	var cause string
+	if state.currentVersion > state.sourceMax {
+		cause = fmt.Sprintf("the database is ahead of the bundled migrations (source ships up to version %d)", state.sourceMax)
+	} else {
+		cause = fmt.Sprintf("version %d is absent from the migration source (a gap — the file was likely removed while higher versions, up to %d, remain)",
+			state.currentVersion, state.sourceMax)
+	}
+
+	return migrationOutcome{
+		err: fmt.Errorf("%w: database is pinned to version %d, which is not present in the migration source (%s); %s; "+
+			"reconcile schema_migrations or restore the missing migration file(s)",
+			ErrMigrationVersionAhead, state.currentVersion, state.sourcePath, cause),
+		level:   log.LevelError,
+		message: "database version not present in migration source",
+		fields: []log.Field{
+			log.String("db_version", strconv.FormatUint(uint64(state.currentVersion), 10)),
+			log.String("source_max_version", strconv.FormatUint(uint64(state.sourceMax), 10)),
+			log.Int("source_file_count", state.sourceCount),
+		},
+	}
+}
+
 // classifyMigrationError converts a golang-migrate error into a typed outcome.
 // Returns a zero-value outcome (err == nil) on success or benign cases (ErrNoChange).
 // When allowMissing is true, ErrNotExist is treated as benign (nil error); otherwise
-// it returns ErrMigrationsNotFound so the caller can distinguish missing files from success.
-func classifyMigrationError(err error, allowMissing bool) migrationOutcome {
+// it returns ErrMigrationsNotFound (empty source) or ErrMigrationVersionAhead (the
+// database is pinned to a version not present in a populated source), using state to
+// tell those two os.ErrNotExist cases apart.
+func classifyMigrationError(err error, allowMissing bool, state migrationState) migrationOutcome {
 	if err == nil {
 		return migrationOutcome{}
 	}
@@ -862,11 +967,29 @@ func classifyMigrationError(err error, allowMissing bool) migrationOutcome {
 		}
 	}
 
+	// Must precede the ErrDirty branch below: only correct because migrate.ErrDirty
+	// does not wrap os.ErrNotExist. Do not reorder.
 	if errors.Is(err, os.ErrNotExist) {
 		if allowMissing {
 			return migrationOutcome{
 				level:   log.LevelWarn,
 				message: "no migration files found, skipping (AllowMissingMigrations=true)",
+			}
+		}
+
+		// Populated source + known DB version: not "missing/empty" — the DB is
+		// pinned to a version the source lacks.
+		if state.sourceCount > 0 && state.hasVersion {
+			return versionNotInSourceOutcome(state)
+		}
+
+		// Populated source but the DB version couldn't be read: don't claim empty.
+		if state.sourceCount > 0 {
+			return migrationOutcome{
+				err: fmt.Errorf("%w: migration source (%s) contains %d file(s) but the database version could not be determined",
+					ErrMigrationsNotFound, state.sourcePath, state.sourceCount),
+				level:   log.LevelError,
+				message: "migration source populated but database version unknown",
 			}
 		}
 
@@ -996,7 +1119,7 @@ func runMigrations(ctx context.Context, dbPrimary *sql.DB, migrationsPath, prima
 	defer closeMigration(ctx, mig, logger)
 
 	if err := mig.Up(); err != nil {
-		outcome := classifyMigrationError(err, allowMissingMigrations)
+		outcome := classifyMigrationError(err, allowMissingMigrations, inspectMigrationState(mig, migrationsPath))
 
 		migrationLogAtLevel(ctx, logger, outcome.level, outcome.message, outcome.fields...)
 

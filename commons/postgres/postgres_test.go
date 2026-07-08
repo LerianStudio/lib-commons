@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1331,41 +1332,134 @@ func TestClassifyMigrationError(t *testing.T) {
 	t.Run("nil error returns zero outcome", func(t *testing.T) {
 		t.Parallel()
 
-		outcome := classifyMigrationError(nil, false)
+		outcome := classifyMigrationError(nil, false, migrationState{})
 		assert.Nil(t, outcome.err)
 	})
 
 	t.Run("ErrNoChange returns nil error with info level", func(t *testing.T) {
 		t.Parallel()
 
-		outcome := classifyMigrationError(migrate.ErrNoChange, false)
+		outcome := classifyMigrationError(migrate.ErrNoChange, false, migrationState{})
 		assert.Nil(t, outcome.err)
 		assert.Equal(t, log.LevelInfo, outcome.level)
 		assert.NotEmpty(t, outcome.message)
 	})
 
-	t.Run("ErrNotExist returns ErrMigrationsNotFound by default", func(t *testing.T) {
+	t.Run("ErrNotExist with empty source returns ErrMigrationsNotFound by default", func(t *testing.T) {
 		t.Parallel()
 
-		outcome := classifyMigrationError(os.ErrNotExist, false)
+		outcome := classifyMigrationError(os.ErrNotExist, false, migrationState{})
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, ErrMigrationsNotFound)
 		assert.Equal(t, log.LevelError, outcome.level)
+		assert.Contains(t, outcome.err.Error(), "missing or empty")
 	})
 
 	t.Run("ErrNotExist returns nil error when allowMissing is true", func(t *testing.T) {
 		t.Parallel()
 
-		outcome := classifyMigrationError(os.ErrNotExist, true)
+		outcome := classifyMigrationError(os.ErrNotExist, true, migrationState{})
 		assert.Nil(t, outcome.err)
 		assert.Equal(t, log.LevelWarn, outcome.level)
 		assert.NotEmpty(t, outcome.message)
 	})
 
+	t.Run("ErrNotExist with DB ahead of source max reports version ahead", func(t *testing.T) {
+		t.Parallel()
+
+		outcome := classifyMigrationError(os.ErrNotExist, false, migrationState{
+			currentVersion: 17,
+			hasVersion:     true,
+			sourceCount:    16,
+			sourceMax:      16,
+			sourcePath:     "/app/migrations",
+		})
+		require.Error(t, outcome.err)
+		assert.ErrorIs(t, outcome.err, ErrMigrationVersionAhead)
+		assert.NotErrorIs(t, outcome.err, ErrMigrationsNotFound)
+		assert.Equal(t, log.LevelError, outcome.level)
+		// Exact fragments, not bare "17"/"16".
+		assert.Contains(t, outcome.err.Error(), "pinned to version 17")
+		assert.Contains(t, outcome.err.Error(), "ahead of the bundled migrations")
+		assert.Contains(t, outcome.err.Error(), "ships up to version 16")
+		assert.Contains(t, outcome.err.Error(), "/app/migrations")
+
+		fields := fieldMap(outcome.fields)
+		assert.Equal(t, "17", fields["db_version"])
+		assert.Equal(t, "16", fields["source_max_version"])
+		assert.Equal(t, 16, fields["source_file_count"])
+	})
+
+	t.Run("ErrNotExist with a mid-range gap reports gap, not ahead", func(t *testing.T) {
+		t.Parallel()
+
+		// version 17 removed, but source still ships up to 18.
+		outcome := classifyMigrationError(os.ErrNotExist, false, migrationState{
+			currentVersion: 17,
+			hasVersion:     true,
+			sourceCount:    17,
+			sourceMax:      18,
+			sourcePath:     "/app/migrations",
+		})
+		require.Error(t, outcome.err)
+		assert.ErrorIs(t, outcome.err, ErrMigrationVersionAhead)
+		// Must NOT claim the DB is ahead when the source ships a higher version.
+		assert.NotContains(t, outcome.err.Error(), "ahead of the bundled migrations")
+		assert.Contains(t, outcome.err.Error(), "gap")
+		assert.Contains(t, outcome.err.Error(), "version 17 is absent")
+	})
+
+	t.Run("ErrNotExist at the current==max boundary reports version ahead", func(t *testing.T) {
+		t.Parallel()
+
+		// Reaching os.ErrNotExist with current == max is an inconsistent-source
+		// signal; it must not be swallowed as "source missing/empty".
+		outcome := classifyMigrationError(os.ErrNotExist, false, migrationState{
+			currentVersion: 16, hasVersion: true, sourceCount: 16, sourceMax: 16, sourcePath: "/m",
+		})
+		require.Error(t, outcome.err)
+		assert.ErrorIs(t, outcome.err, ErrMigrationVersionAhead)
+	})
+
+	t.Run("ErrNotExist with populated source but no DB version is not misreported as empty", func(t *testing.T) {
+		t.Parallel()
+
+		outcome := classifyMigrationError(os.ErrNotExist, false, migrationState{
+			hasVersion: false, sourceCount: 16, sourceMax: 16, sourcePath: "/app/migrations",
+		})
+		require.Error(t, outcome.err)
+		assert.ErrorIs(t, outcome.err, ErrMigrationsNotFound)
+		assert.NotErrorIs(t, outcome.err, ErrMigrationVersionAhead)
+		assert.NotContains(t, outcome.err.Error(), "missing or empty")
+		assert.Contains(t, outcome.err.Error(), "could not be determined")
+	})
+
+	t.Run("ErrNotExist with DB version but empty source is missing/empty", func(t *testing.T) {
+		t.Parallel()
+
+		outcome := classifyMigrationError(os.ErrNotExist, false, migrationState{
+			currentVersion: 5, hasVersion: true, sourceCount: 0,
+		})
+		require.Error(t, outcome.err)
+		assert.ErrorIs(t, outcome.err, ErrMigrationsNotFound)
+		assert.NotErrorIs(t, outcome.err, ErrMigrationVersionAhead)
+		assert.Contains(t, outcome.err.Error(), "missing or empty")
+	})
+
+	t.Run("ErrNotExist with populated source but allowMissing still skips", func(t *testing.T) {
+		t.Parallel()
+
+		outcome := classifyMigrationError(os.ErrNotExist, true, migrationState{
+			currentVersion: 17, hasVersion: true, sourceCount: 16, sourceMax: 16,
+		})
+		assert.Nil(t, outcome.err)
+		assert.Equal(t, log.LevelWarn, outcome.level)
+	})
+
 	t.Run("ErrDirty returns wrapped sentinel with version", func(t *testing.T) {
 		t.Parallel()
 
-		outcome := classifyMigrationError(migrate.ErrDirty{Version: 42}, false)
+		outcome := classifyMigrationError(migrate.ErrDirty{Version: 42}, false, migrationState{})
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, ErrMigrationDirty)
 		assert.Contains(t, outcome.err.Error(), "42")
@@ -1377,10 +1471,145 @@ func TestClassifyMigrationError(t *testing.T) {
 		t.Parallel()
 
 		cause := errors.New("disk full")
-		outcome := classifyMigrationError(cause, false)
+		outcome := classifyMigrationError(cause, false, migrationState{})
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, cause)
 		assert.Equal(t, log.LevelError, outcome.level)
+	})
+}
+
+// fieldMap turns log fields into a key->value map for assertions.
+func fieldMap(fields []log.Field) map[string]any {
+	m := make(map[string]any, len(fields))
+	for _, f := range fields {
+		m[f.Key] = f.Value
+	}
+
+	return m
+}
+
+// ---------------------------------------------------------------------------
+// migrationSourceStats
+// ---------------------------------------------------------------------------
+
+func TestMigrationSourceStats(t *testing.T) {
+	t.Parallel()
+
+	// writeFiles creates empty files with the given names inside a fresh temp dir.
+	writeFiles := func(t *testing.T, names ...string) string {
+		t.Helper()
+
+		dir := t.TempDir()
+		for _, n := range names {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, n), []byte("-- noop"), 0o600))
+		}
+
+		return dir
+	}
+
+	t.Run("missing directory yields zero", func(t *testing.T) {
+		t.Parallel()
+
+		count, max := migrationSourceStats(filepath.Join(t.TempDir(), "does-not-exist"))
+		assert.Equal(t, 0, count)
+		assert.Equal(t, uint(0), max)
+	})
+
+	t.Run("empty directory yields zero", func(t *testing.T) {
+		t.Parallel()
+
+		count, max := migrationSourceStats(t.TempDir())
+		assert.Equal(t, 0, count)
+		assert.Equal(t, uint(0), max)
+	})
+
+	t.Run("counts only up.sql and picks max regardless of order", func(t *testing.T) {
+		t.Parallel()
+
+		dir := writeFiles(t,
+			"000005_e.up.sql", "000005_e.down.sql",
+			"000002_b.up.sql", "000002_b.down.sql",
+			"000016_p.up.sql", "000016_p.down.sql",
+			"000010_j.up.sql", "000010_j.down.sql",
+		)
+		count, max := migrationSourceStats(dir)
+		assert.Equal(t, 4, count, "down.sql and duplicates must not inflate the count")
+		assert.Equal(t, uint(16), max)
+	})
+
+	t.Run("ignores non-matching and malformed names", func(t *testing.T) {
+		t.Parallel()
+
+		dir := writeFiles(t,
+			"README.md",
+			"notes.txt",
+			"_leading_underscore.up.sql", // sep <= 0 -> skipped
+			"abc_nonnumeric.up.sql",      // ParseUint fails -> skipped
+			"000007_ok.up.sql",           // the only valid one
+		)
+		count, max := migrationSourceStats(dir)
+		assert.Equal(t, 1, count)
+		assert.Equal(t, uint(7), max)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// inspectMigrationState
+// ---------------------------------------------------------------------------
+
+// fakeVersionReader is a test double for migrationVersionReader.
+type fakeVersionReader struct {
+	version uint
+	dirty   bool
+	err     error
+}
+
+func (f fakeVersionReader) Version() (uint, bool, error) { return f.version, f.dirty, f.err }
+
+func TestInspectMigrationState(t *testing.T) {
+	t.Parallel()
+
+	dirWith := func(t *testing.T, names ...string) string {
+		t.Helper()
+
+		dir := t.TempDir()
+		for _, n := range names {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, n), []byte("-- noop"), 0o600))
+		}
+
+		return dir
+	}
+
+	t.Run("reads version and source stats", func(t *testing.T) {
+		t.Parallel()
+
+		dir := dirWith(t, "000001_a.up.sql", "000002_b.up.sql")
+		state := inspectMigrationState(fakeVersionReader{version: 17}, dir)
+
+		assert.True(t, state.hasVersion)
+		assert.Equal(t, uint(17), state.currentVersion)
+		assert.Equal(t, 2, state.sourceCount)
+		assert.Equal(t, uint(2), state.sourceMax)
+		assert.Equal(t, dir, state.sourcePath)
+	})
+
+	t.Run("Version error leaves hasVersion false", func(t *testing.T) {
+		t.Parallel()
+
+		dir := dirWith(t, "000001_a.up.sql")
+		state := inspectMigrationState(fakeVersionReader{err: migrate.ErrNilVersion}, dir)
+
+		assert.False(t, state.hasVersion)
+		assert.Equal(t, uint(0), state.currentVersion)
+		assert.Equal(t, 1, state.sourceCount)
+	})
+
+	t.Run("nil reader leaves hasVersion false", func(t *testing.T) {
+		t.Parallel()
+
+		state := inspectMigrationState(nil, t.TempDir())
+		assert.False(t, state.hasVersion)
+		assert.Equal(t, 0, state.sourceCount)
 	})
 }
 
