@@ -891,7 +891,9 @@ func migrationSourceStats(migrationsPath string) (count int, maxVersion uint) {
 			continue
 		}
 
-		version, err := strconv.ParseUint(name[:sep], 10, 64)
+		// bitSize 0 = platform uint width, so values that would truncate on a
+		// 32-bit build are rejected here instead of silently wrapping below.
+		version, err := strconv.ParseUint(name[:sep], 10, 0)
 		if err != nil {
 			continue
 		}
