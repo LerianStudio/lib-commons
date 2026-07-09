@@ -213,6 +213,18 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*amqp.Con
 	return p.createConnection(ctx, tenantID)
 }
 
+// resolveRabbitMQConfig returns the RabbitMQ config for the given module,
+// preferring the per-module config (new tenant-manager shape) and falling back
+// to the legacy tenant-level single config (old tenant-manager shape).
+// Returns nil when neither is configured. config must not be nil.
+func resolveRabbitMQConfig(config *core.TenantConfig, module string) *core.RabbitMQConfig {
+	if cfg := config.GetModuleRabbitMQConfig(module); cfg != nil {
+		return cfg
+	}
+
+	return config.GetRabbitMQConfig()
+}
+
 // createConnection fetches config from Tenant Manager and creates a RabbitMQ connection.
 //
 // Network I/O (GetTenantConfig, amqp.Dial) is performed outside the mutex to
@@ -259,13 +271,7 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 		return nil, fmt.Errorf("failed to get tenant config: %w", err)
 	}
 
-	// Prefer the per-module RabbitMQ config (new tenant-manager shape); fall back
-	// to the legacy tenant-level single config (old tenant-manager shape).
-	rabbitConfig := config.GetModuleRabbitMQConfig(p.module)
-	if rabbitConfig == nil {
-		rabbitConfig = config.GetRabbitMQConfig()
-	}
-
+	rabbitConfig := resolveRabbitMQConfig(config, p.module)
 	if rabbitConfig == nil {
 		logger.Errorf("RabbitMQ not configured for tenant: %s", tenantID)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "RabbitMQ not configured", core.ErrServiceNotConfigured)
@@ -501,13 +507,7 @@ func (p *Manager) revalidatePoolSettings(tenantID string) {
 // old one is replaced and closed only after the new one is ready. If the new
 // connection fails, the old one is kept to avoid breaking existing tenants.
 func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.TenantConfig) {
-	// Prefer the per-module RabbitMQ config (new tenant-manager shape); fall back
-	// to the legacy tenant-level single config (old tenant-manager shape).
-	rabbitConfig := config.GetModuleRabbitMQConfig(p.module)
-	if rabbitConfig == nil {
-		rabbitConfig = config.GetRabbitMQConfig()
-	}
-
+	rabbitConfig := resolveRabbitMQConfig(config, p.module)
 	if rabbitConfig == nil {
 		return
 	}
