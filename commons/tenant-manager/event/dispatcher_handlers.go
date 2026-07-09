@@ -122,16 +122,49 @@ func (d *EventDispatcher) handleServiceAssociated(
 		}
 	}
 
-	// Populate Databases from secret_paths
+	// Populate Databases from secret_paths.
+	//
+	// NOTE ON DUAL SOURCES (do NOT "fix" this into a single set):
+	// Databases and Messaging are intentionally built from DIFFERENT parts of the
+	// payload.
+	//   - Databases  <- payload.SecretPaths keys: databases are PER-MODULE, so a
+	//     module only appears here if it actually has a DB secret provisioned.
+	//   - Messaging  <- payload.Modules (see below): RabbitMQ is TENANT-LEVEL (one
+	//     vhost/credential per tenant), so it applies to ALL provisioned modules.
+	// The two sets are allowed to differ (e.g. a module with RabbitMQ but no DB).
+	// Aligning them would drop tenant-level RabbitMQ for modules that lack a DB
+	// secret. See TestEventDispatcher_HandleEvent_ServiceAssociated_ModulesVsSecretPathsMayDiffer.
 	config.Databases = buildDatabasesFromSecretPaths(payload.SecretPaths)
 
-	// Populate Messaging from payload
+	// Populate messaging from payload. RabbitMQ is tenant-level (one vhost/credential
+	// per tenant), so the cache carries BOTH shapes:
+	//   - Messaging: the legacy single tenant-level object (module-agnostic).
+	//   - RabbitMQ:  the new per-module map, mirroring the tenant-level secret across
+	//     every provisioned module (payload.Modules is the canonical fan-out set) to
+	//     match the per-module "rabbitmq" contract exposed by the tenant-manager
+	//     /connections endpoint.
 	if payload.MessagingConfig != nil && payload.MessagingConfig.RabbitMQSecretPath != "" {
-		config.Messaging = &core.MessagingConfig{
-			RabbitMQ: &core.RabbitMQConfig{
-				// Secret path stored in Host field; actual credentials resolved lazily
-				Host: payload.MessagingConfig.RabbitMQSecretPath,
-			},
+		rabbit := &core.RabbitMQConfig{
+			// Secret path stored in Host field; actual credentials resolved lazily.
+			Host: payload.MessagingConfig.RabbitMQSecretPath,
+		}
+
+		// Legacy single tenant-level messaging (populated even with zero modules).
+		config.Messaging = &core.MessagingConfig{RabbitMQ: rabbit}
+
+		// New per-module map: mirror the tenant-level secret across provisioned
+		// modules as FLAT RabbitMQConfig values (matching tenant-manager's
+		// resolvedRabbitMQConfigEntry — no inner "rabbitmq" wrapper). Each value
+		// carries the same tenant-level secret path in Host as the legacy single
+		// Messaging.RabbitMQ. Stays nil (not an empty non-nil map) when there are
+		// no modules.
+		if len(payload.Modules) > 0 {
+			perModule := make(map[string]core.RabbitMQConfig, len(payload.Modules))
+			for _, module := range payload.Modules {
+				perModule[module] = *rabbit
+			}
+
+			config.RabbitMQ = perModule
 		}
 	}
 
