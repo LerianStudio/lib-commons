@@ -211,19 +211,25 @@ func TestEventDispatcher_HandleEvent_ServiceAssociated_MatchingService(t *testin
 	assert.NotNil(t, cfg.Databases["transaction"].PostgreSQL, "transaction should have postgresql config")
 	assert.NotNil(t, cfg.Databases["transaction"].PostgreSQLReplica, "transaction should have replica config")
 	assert.NotNil(t, cfg.Databases["onboarding"].PostgreSQL, "onboarding should have postgresql config")
-	require.NotNil(t, cfg.Messaging, "messaging config should be populated")
-	require.Contains(t, cfg.Messaging, "transaction", "messaging should be keyed per module")
-	require.Contains(t, cfg.Messaging, "onboarding", "messaging should be keyed per module")
-	require.NotNil(t, cfg.Messaging["transaction"].RabbitMQ, "rabbitmq config should be populated per module")
-	assert.Equal(t, "path/to/rabbitmq/secret", cfg.Messaging["transaction"].RabbitMQ.Host)
-	assert.Equal(t, "path/to/rabbitmq/secret", cfg.Messaging["onboarding"].RabbitMQ.Host)
+	// Legacy single tenant-level messaging is populated from the RabbitMQ secret.
+	require.NotNil(t, cfg.Messaging, "legacy single messaging should be populated")
+	require.NotNil(t, cfg.Messaging.RabbitMQ, "legacy single rabbitmq should be populated")
+	assert.Equal(t, "path/to/rabbitmq/secret", cfg.Messaging.RabbitMQ.Host)
+	// New per-module rabbitmq map mirrors the tenant-level secret across modules.
+	require.NotNil(t, cfg.RabbitMQ, "per-module rabbitmq map should be populated")
+	require.Contains(t, cfg.RabbitMQ, "transaction", "rabbitmq should be keyed per module")
+	require.Contains(t, cfg.RabbitMQ, "onboarding", "rabbitmq should be keyed per module")
+	// Flat per-module value: RabbitMQConfig directly, Host carries the secret path.
+	assert.Equal(t, "path/to/rabbitmq/secret", cfg.RabbitMQ["transaction"].Host)
+	assert.Equal(t, "path/to/rabbitmq/secret", cfg.RabbitMQ["onboarding"].Host)
 }
 
 // TestEventDispatcher_HandleEvent_ServiceAssociated_EmptyModules_NilMessaging
-// guards the `len(messaging) > 0` check: when a RabbitMQSecretPath is present but
-// there are NO modules to fan it out to, config.Messaging must stay nil (not an
-// empty non-nil map). A non-nil empty map would misrepresent "RabbitMQ configured
-// for zero modules" and break the nil checks in GetRabbitMQConfig/HasRabbitMQ.
+// guards the per-module fan-out: when a RabbitMQSecretPath is present but there
+// are NO modules to fan it out to, the legacy single config.Messaging is still
+// populated (RabbitMQ is tenant-level and needs no module), but the per-module
+// config.RabbitMQ map must stay nil (not an empty non-nil map). A non-nil empty
+// map would misrepresent "RabbitMQ configured for zero modules".
 func TestEventDispatcher_HandleEvent_ServiceAssociated_EmptyModules_NilMessaging(t *testing.T) {
 	t.Parallel()
 
@@ -255,15 +261,21 @@ func TestEventDispatcher_HandleEvent_ServiceAssociated_EmptyModules_NilMessaging
 	require.NotNil(t, entry)
 	require.NotNil(t, entry.Config)
 
-	assert.Nil(t, entry.Config.Messaging,
-		"messaging must be nil (not an empty non-nil map) when there are no modules")
+	// Legacy single messaging is still populated (tenant-level secret is present).
+	require.NotNil(t, entry.Config.Messaging,
+		"legacy single messaging must be populated from the tenant-level secret")
+	require.NotNil(t, entry.Config.Messaging.RabbitMQ)
+	assert.Equal(t, "path/to/rabbitmq/secret", entry.Config.Messaging.RabbitMQ.Host)
+	// Per-module map must stay nil (not an empty non-nil map) when there are no modules.
+	assert.Nil(t, entry.Config.RabbitMQ,
+		"per-module rabbitmq map must be nil (not an empty non-nil map) when there are no modules")
 }
 
 // TestEventDispatcher_HandleEvent_ServiceAssociated_ModulesVsSecretPathsMayDiffer
-// documents that config.Messaging (from payload.Modules, tenant-level RabbitMQ
+// documents that config.RabbitMQ (from payload.Modules, tenant-level RabbitMQ
 // fan-out) and config.Databases (from payload.SecretPaths, per-module DB) are
 // intentionally sourced from DIFFERENT sets. A module present in Modules but NOT
-// in SecretPaths must still get a Messaging entry (RabbitMQ is tenant-level) and
+// in SecretPaths must still get a RabbitMQ entry (RabbitMQ is tenant-level) and
 // must NOT get a Databases entry. This is by design, not drift.
 func TestEventDispatcher_HandleEvent_ServiceAssociated_ModulesVsSecretPathsMayDiffer(t *testing.T) {
 	t.Parallel()
@@ -300,13 +312,16 @@ func TestEventDispatcher_HandleEvent_ServiceAssociated_ModulesVsSecretPathsMayDi
 	require.NotNil(t, entry.Config)
 	cfg := entry.Config
 
-	// Messaging is keyed by Modules — BOTH modules get a RabbitMQ entry.
+	// Legacy single messaging is populated from the tenant-level secret.
 	require.NotNil(t, cfg.Messaging)
-	require.Contains(t, cfg.Messaging, "onboarding")
-	require.Contains(t, cfg.Messaging, "reporting",
+	require.NotNil(t, cfg.Messaging.RabbitMQ)
+	assert.Equal(t, "path/to/rabbitmq/secret", cfg.Messaging.RabbitMQ.Host)
+	// Per-module rabbitmq map is keyed by Modules — BOTH modules get a RabbitMQ entry.
+	require.NotNil(t, cfg.RabbitMQ)
+	require.Contains(t, cfg.RabbitMQ, "onboarding")
+	require.Contains(t, cfg.RabbitMQ, "reporting",
 		"a module in Modules with no DB secret must still get a tenant-level RabbitMQ entry")
-	require.NotNil(t, cfg.Messaging["reporting"].RabbitMQ)
-	assert.Equal(t, "path/to/rabbitmq/secret", cfg.Messaging["reporting"].RabbitMQ.Host)
+	assert.Equal(t, "path/to/rabbitmq/secret", cfg.RabbitMQ["reporting"].Host)
 
 	// Databases is keyed by SecretPaths — only "onboarding" has a DB entry.
 	require.NotNil(t, cfg.Databases)

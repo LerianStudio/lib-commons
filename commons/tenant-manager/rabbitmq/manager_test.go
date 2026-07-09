@@ -568,10 +568,8 @@ func TestManager_GetConnection_RevalidatesSettingsAfterInterval(t *testing.T) {
 		w.Write([]byte(`{
 			"id": "tenant-123",
 			"tenantSlug": "test-tenant",
-			"messaging": {
-				"ledger": {
-					"rabbitmq": {"host": "localhost", "port": 5672, "vhost": "tenant-abc", "username": "guest", "password": "guest"}
-				}
+			"rabbitmq": {
+				"ledger": {"host": "localhost", "port": 5672, "vhost": "tenant-abc", "username": "guest", "password": "guest"}
 			}
 		}`))
 	}))
@@ -827,10 +825,8 @@ func TestManager_RevalidateSettings_DetectsConfigChange(t *testing.T) {
 				w.Write([]byte(fmt.Sprintf(`{
 					"id": "tenant-cfg",
 					"tenantSlug": "config-test",
-					"messaging": {
-						"ledger": {
-							"rabbitmq": {"host": %q, "port": %d, "vhost": %q, "username": %q, "password": %q}
-						}
+					"rabbitmq": {
+						"ledger": {"host": %q, "port": %d, "vhost": %q, "username": %q, "password": %q}
 					}
 				}`, tt.freshHost, tt.freshPort, tt.freshVHost, tt.freshUser, tt.freshPass)))
 			}))
@@ -880,10 +876,8 @@ func TestManager_RevalidateSettings_ConfigChangeKeepsOldConnOnFailure(t *testing
 		w.Write([]byte(`{
 			"id": "tenant-fail",
 			"tenantSlug": "fail-test",
-			"messaging": {
-				"ledger": {
-					"rabbitmq": {"host": "unreachable-host", "port": 5672, "vhost": "tenant-fail", "username": "guest", "password": "guest"}
-				}
+			"rabbitmq": {
+				"ledger": {"host": "unreachable-host", "port": 5672, "vhost": "tenant-fail", "username": "guest", "password": "guest"}
 			}
 		}`))
 	}))
@@ -922,10 +916,8 @@ func TestManager_RevalidateSettings_NoReconnectWhenConfigSame(t *testing.T) {
 		w.Write([]byte(`{
 			"id": "tenant-same",
 			"tenantSlug": "same-test",
-			"messaging": {
-				"ledger": {
-					"rabbitmq": {"host": "localhost", "port": 5672, "vhost": "tenant-abc", "username": "guest", "password": "guest"}
-				}
+			"rabbitmq": {
+				"ledger": {"host": "localhost", "port": 5672, "vhost": "tenant-abc", "username": "guest", "password": "guest"}
 			}
 		}`))
 	}))
@@ -1027,10 +1019,8 @@ func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
 				"tenantSlug": "cached-tenant",
 				"service": "ledger",
 				"status": "active",
-				"messaging": {
-					"ledger": {
-						"rabbitmq": {"host": "localhost", "port": 5672, "vhost": "tenant-cache-test", "username": "guest", "password": "guest"}
-					}
+				"rabbitmq": {
+					"ledger": {"host": "localhost", "port": 5672, "vhost": "tenant-cache-test", "username": "guest", "password": "guest"}
 				}
 			}`))
 
@@ -1073,11 +1063,12 @@ func TestManager_RevalidateSettings_BypassesClientCache(t *testing.T) {
 }
 
 // TestManager_WithModule_ResolvesConfiguredModuleVHost guards the p.module
-// wiring in createConnection. When the /connections response carries TWO modules
-// with DIFFERENT vhosts, a manager built WithModule("transaction") must resolve
-// and dial the transaction vhost — never the sorted-first "onboarding" vhost that
-// GetRabbitMQConfig("") would return. This test FAILS (teeth) if manager.go ever
-// reverts GetRabbitMQConfig(p.module) back to GetRabbitMQConfig("").
+// wiring in createConnection. When the /connections response carries a per-module
+// "rabbitmq" map with TWO modules with DIFFERENT vhosts, a manager built
+// WithModule("transaction") must resolve and dial the transaction vhost — never
+// the sorted-first "onboarding" vhost that GetModuleRabbitMQConfig("") would
+// return. This test FAILS (teeth) if manager.go ever drops the per-module
+// GetModuleRabbitMQConfig(p.module) resolution.
 func TestManager_WithModule_ResolvesConfiguredModuleVHost(t *testing.T) {
 	t.Parallel()
 
@@ -1089,13 +1080,9 @@ func TestManager_WithModule_ResolvesConfiguredModuleVHost(t *testing.T) {
 		w.Write([]byte(`{
 			"id": "tenant-multi",
 			"tenantSlug": "multi-module",
-			"messaging": {
-				"onboarding": {
-					"rabbitmq": {"host": "onb-host.invalid", "port": 5672, "vhost": "onb-vhost", "username": "guest", "password": "guest"}
-				},
-				"transaction": {
-					"rabbitmq": {"host": "tx-host.invalid", "port": 5672, "vhost": "tx-vhost", "username": "guest", "password": "guest"}
-				}
+			"rabbitmq": {
+				"onboarding": {"host": "onb-host.invalid", "port": 5672, "vhost": "onb-vhost", "username": "guest", "password": "guest"},
+				"transaction": {"host": "tx-host.invalid", "port": 5672, "vhost": "tx-vhost", "username": "guest", "password": "guest"}
 			}
 		}`))
 	}))
@@ -1119,6 +1106,83 @@ func TestManager_WithModule_ResolvesConfiguredModuleVHost(t *testing.T) {
 		"manager built WithModule(transaction) must resolve the transaction vhost; got: %v", capLogger.GetMessages())
 	assert.False(t, capLogger.ContainsSubstring("vhost=onb-vhost"),
 		"manager must NOT resolve the sorted-first onboarding vhost; got: %v", capLogger.GetMessages())
+}
+
+// TestManager_ResolvesRabbitMQ_PerModulePreferredElseLegacy verifies the
+// resolution precedence in createConnection: the manager PREFERS the per-module
+// "rabbitmq" map (GetModuleRabbitMQConfig) and FALLS BACK to the legacy single
+// "messaging" object (GetRabbitMQConfig) when the per-module map is absent. This
+// guarantees compatibility with BOTH an old tenant-manager (messaging single only)
+// and a new one (rabbitmq per-module map).
+func TestManager_ResolvesRabbitMQ_PerModulePreferredElseLegacy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		body       string
+		wantVHost  string
+		otherVHost string
+	}{
+		{
+			name: "legacy single messaging only resolves via fallback",
+			body: `{
+				"id": "tenant-legacy",
+				"tenantSlug": "legacy",
+				"messaging": {
+					"rabbitmq": {"host": "legacy-host.invalid", "port": 5672, "vhost": "legacy-vhost", "username": "guest", "password": "guest"}
+				}
+			}`,
+			wantVHost: "legacy-vhost",
+		},
+		{
+			name: "per-module rabbitmq map resolves the configured module",
+			body: `{
+				"id": "tenant-permodule",
+				"tenantSlug": "permodule",
+				"messaging": {
+					"rabbitmq": {"host": "legacy-host.invalid", "port": 5672, "vhost": "legacy-vhost", "username": "guest", "password": "guest"}
+				},
+				"rabbitmq": {
+					"transaction": {"host": "tx-host.invalid", "port": 5672, "vhost": "tx-vhost", "username": "guest", "password": "guest"}
+				}
+			}`,
+			wantVHost:  "tx-vhost",
+			otherVHost: "legacy-vhost",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			capLogger := testutil.NewCapturingLogger()
+			tmClient, err := client.NewClient(server.URL, capLogger, client.WithAllowInsecureHTTP(), client.WithServiceAPIKey("test-key"))
+			require.NoError(t, err)
+
+			manager := NewManager(tmClient, "ledger",
+				WithLogger(capLogger),
+				WithModule("transaction"),
+			)
+
+			_, connErr := manager.GetConnection(context.Background(), "tenant-resolve")
+			require.Error(t, connErr, "dial to unresolvable host should fail")
+
+			assert.True(t, capLogger.ContainsSubstring("vhost="+tt.wantVHost),
+				"manager must resolve vhost=%s; got: %v", tt.wantVHost, capLogger.GetMessages())
+
+			if tt.otherVHost != "" {
+				assert.False(t, capLogger.ContainsSubstring("vhost="+tt.otherVHost),
+					"manager must prefer per-module and NOT resolve vhost=%s; got: %v", tt.otherVHost, capLogger.GetMessages())
+			}
+		})
+	}
 }
 
 func TestManager_NewManager_DefaultConnectionsCheckInterval(t *testing.T) {

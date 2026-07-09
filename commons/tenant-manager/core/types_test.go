@@ -415,6 +415,63 @@ func TestTenantConfig_IsIsolatedMode(t *testing.T) {
 }
 
 func TestTenantConfig_GetRabbitMQConfig(t *testing.T) {
+	// Legacy no-arg getter: reads the single tenant-level Messaging.RabbitMQ.
+	tests := []struct {
+		name          string
+		config        *TenantConfig
+		expectNil     bool
+		expectedVHost string
+	}{
+		{
+			name:      "returns nil for nil receiver",
+			config:    nil,
+			expectNil: true,
+		},
+		{
+			name:      "returns nil when messaging is nil",
+			config:    &TenantConfig{},
+			expectNil: true,
+		},
+		{
+			name: "returns nil when rabbitmq is nil in messaging",
+			config: &TenantConfig{
+				Messaging: &MessagingConfig{},
+			},
+			expectNil: true,
+		},
+		{
+			name: "returns the tenant-level rabbitmq config",
+			config: &TenantConfig{
+				Messaging: &MessagingConfig{
+					RabbitMQ: &RabbitMQConfig{
+						Host:  "rabbitmq.example.com",
+						Port:  5672,
+						VHost: "tenant-vhost",
+					},
+				},
+			},
+			expectedVHost: "tenant-vhost",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.config.GetRabbitMQConfig()
+
+			if tt.expectNil {
+				assert.Nil(t, result)
+				return
+			}
+
+			require.NotNil(t, result)
+			assert.Equal(t, tt.expectedVHost, result.VHost)
+		})
+	}
+}
+
+func TestTenantConfig_GetModuleRabbitMQConfig(t *testing.T) {
+	// Per-module getter over the FLAT map: reads RabbitMQ[module] (a RabbitMQConfig
+	// value) directly, empty module → first by sorted key.
 	tests := []struct {
 		name          string
 		config        *TenantConfig
@@ -429,28 +486,16 @@ func TestTenantConfig_GetRabbitMQConfig(t *testing.T) {
 			expectNil: true,
 		},
 		{
-			name:      "returns nil when messaging map is nil",
+			name:      "returns nil when rabbitmq map is nil",
 			config:    &TenantConfig{},
-			module:    "onboarding",
-			expectNil: true,
-		},
-		{
-			name: "returns nil when rabbitmq is nil in module messaging",
-			config: &TenantConfig{
-				Messaging: map[string]MessagingConfig{
-					"onboarding": {},
-				},
-			},
 			module:    "onboarding",
 			expectNil: true,
 		},
 		{
 			name: "returns nil when requested module is missing",
 			config: &TenantConfig{
-				Messaging: map[string]MessagingConfig{
-					"onboarding": {
-						RabbitMQ: &RabbitMQConfig{VHost: "onboarding-vhost"},
-					},
+				RabbitMQ: map[string]RabbitMQConfig{
+					"onboarding": {VHost: "onboarding-vhost"},
 				},
 			},
 			module:    "transaction",
@@ -459,53 +504,34 @@ func TestTenantConfig_GetRabbitMQConfig(t *testing.T) {
 		{
 			name: "returns config for requested module",
 			config: &TenantConfig{
-				Messaging: map[string]MessagingConfig{
+				RabbitMQ: map[string]RabbitMQConfig{
 					"onboarding": {
-						RabbitMQ: &RabbitMQConfig{
-							Host:  "rabbitmq.example.com",
-							Port:  5672,
-							VHost: "onboarding-vhost",
-						},
+						Host:  "rabbitmq.example.com",
+						Port:  5672,
+						VHost: "onboarding-vhost",
 					},
-					"transaction": {
-						RabbitMQ: &RabbitMQConfig{VHost: "transaction-vhost"},
-					},
+					"transaction": {VHost: "transaction-vhost"},
 				},
 			},
-			module:        "onboarding",
-			expectedVHost: "onboarding-vhost",
+			module:        "transaction",
+			expectedVHost: "transaction-vhost",
 		},
 		{
 			name: "returns first module by sorted key when module is empty",
 			config: &TenantConfig{
-				Messaging: map[string]MessagingConfig{
-					"transaction": {
-						RabbitMQ: &RabbitMQConfig{VHost: "transaction-vhost"},
-					},
-					"onboarding": {
-						RabbitMQ: &RabbitMQConfig{VHost: "onboarding-vhost"},
-					},
+				RabbitMQ: map[string]RabbitMQConfig{
+					"transaction": {VHost: "transaction-vhost"},
+					"onboarding":  {VHost: "onboarding-vhost"},
 				},
 			},
 			module:        "",
 			expectedVHost: "onboarding-vhost",
-		},
-		{
-			name: "skips modules without rabbitmq when module is empty",
-			config: &TenantConfig{
-				Messaging: map[string]MessagingConfig{
-					"onboarding":  {},
-					"transaction": {RabbitMQ: &RabbitMQConfig{VHost: "transaction-vhost"}},
-				},
-			},
-			module:        "",
-			expectedVHost: "transaction-vhost",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := tt.config.GetRabbitMQConfig(tt.module)
+			result := tt.config.GetModuleRabbitMQConfig(tt.module)
 
 			if tt.expectNil {
 				assert.Nil(t, result)
@@ -628,29 +654,25 @@ func TestTenantConfig_HasRabbitMQ(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "returns false when messaging map is nil",
+			name:     "returns false when messaging is nil",
 			config:   &TenantConfig{},
 			expected: false,
 		},
 		{
 			name: "returns false when rabbitmq is nil in messaging",
 			config: &TenantConfig{
-				Messaging: map[string]MessagingConfig{
-					"onboarding": {},
-				},
+				Messaging: &MessagingConfig{},
 			},
 			expected: false,
 		},
 		{
-			name: "returns true when rabbitmq is configured for a module",
+			name: "returns true when tenant-level rabbitmq is configured",
 			config: &TenantConfig{
-				Messaging: map[string]MessagingConfig{
-					"onboarding": {
-						RabbitMQ: &RabbitMQConfig{
-							Host:  "rabbitmq.example.com",
-							Port:  5672,
-							VHost: "tenant-vhost",
-						},
+				Messaging: &MessagingConfig{
+					RabbitMQ: &RabbitMQConfig{
+						Host:  "rabbitmq.example.com",
+						Port:  5672,
+						VHost: "tenant-vhost",
 					},
 				},
 			},
@@ -667,24 +689,79 @@ func TestTenantConfig_HasRabbitMQ(t *testing.T) {
 	}
 }
 
+// TestTenantConfig_FlatPerModuleRabbitMQ_JSON feeds the ACTUAL flat per-module
+// "rabbitmq" shape emitted by tenant-manager's /connections endpoint
+// (additionalProperties: resolvedRabbitMQConfigEntry — the rabbit fields
+// DIRECTLY, with NO inner "rabbitmq" wrapper) and asserts lib-commons resolves
+// it. Against the legacy nested map[string]MessagingConfig this FAILS because
+// the flat "host"/"vhost"/... keys do not match the inner "rabbitmq" field, so
+// the per-module getter returns nil.
+func TestTenantConfig_FlatPerModuleRabbitMQ_JSON(t *testing.T) {
+	jsonData := `{
+		"rabbitmq": {
+			"onboarding": {
+				"host": "h",
+				"port": 5672,
+				"vhost": "v",
+				"username": "u",
+				"password": "p"
+			}
+		}
+	}`
+
+	var tc TenantConfig
+	require.NoError(t, json.Unmarshal([]byte(jsonData), &tc))
+
+	// Direct flat map-value access (matches tenant-manager's resolvedRabbitMQConfigEntry).
+	require.Contains(t, tc.RabbitMQ, "onboarding")
+	assert.Equal(t, "v", tc.RabbitMQ["onboarding"].VHost)
+	assert.Equal(t, "h", tc.RabbitMQ["onboarding"].Host)
+	assert.Equal(t, "u", tc.RabbitMQ["onboarding"].Username)
+	assert.Equal(t, "p", tc.RabbitMQ["onboarding"].Password)
+
+	got := tc.GetModuleRabbitMQConfig("onboarding")
+	require.NotNil(t, got, "per-module getter must resolve the flat tenant-manager rabbitmq shape")
+	assert.Equal(t, "v", got.VHost)
+	assert.Equal(t, "h", got.Host)
+	assert.Equal(t, 5672, got.Port)
+	assert.Equal(t, "u", got.Username)
+	assert.Equal(t, "p", got.Password)
+}
+
 func TestTenantConfig_PerModuleMessagingAndStreaming_JSON(t *testing.T) {
 	// This test is the source of truth for the tenant-manager wire contract.
 	// It asserts EVERY field present in the fixture JSON so a field rename or
-	// drop in the struct tags cannot pass silently.
-	t.Run("deserializes per-module messaging and streaming maps", func(t *testing.T) {
+	// drop in the struct tags cannot pass silently. The payload carries BOTH the
+	// legacy single "messaging" object AND the new per-module "rabbitmq" map, plus
+	// the per-module "streaming" map.
+	t.Run("deserializes legacy single messaging, per-module rabbitmq, and streaming", func(t *testing.T) {
 		jsonData := `{
 			"id": "cfg-123",
 			"tenantSlug": "acme",
 			"isolationMode": "shared",
 			"messaging": {
+				"rabbitmq": {
+					"host": "rabbit.example.com",
+					"port": 5672,
+					"vhost": "tenant-vhost",
+					"username": "tenant-user",
+					"password": "tenant-pass"
+				}
+			},
+			"rabbitmq": {
+				"transaction": {
+					"host": "rabbit.example.com",
+					"port": 5672,
+					"vhost": "transaction-vhost",
+					"username": "tx-user",
+					"password": "tx-pass"
+				},
 				"onboarding": {
-					"rabbitmq": {
-						"host": "rabbit.example.com",
-						"port": 5672,
-						"vhost": "onboarding-vhost",
-						"username": "onb-user",
-						"password": "onb-pass"
-					}
+					"host": "rabbit.example.com",
+					"port": 5672,
+					"vhost": "onboarding-vhost",
+					"username": "onb-user",
+					"password": "onb-pass"
 				}
 			},
 			"streaming": {
@@ -705,14 +782,30 @@ func TestTenantConfig_PerModuleMessagingAndStreaming_JSON(t *testing.T) {
 
 		require.NoError(t, err)
 
-		require.Contains(t, config.Messaging, "onboarding")
-		rabbit := config.Messaging["onboarding"].RabbitMQ
-		require.NotNil(t, rabbit)
-		assert.Equal(t, "rabbit.example.com", rabbit.Host)
-		assert.Equal(t, 5672, rabbit.Port)
-		assert.Equal(t, "onboarding-vhost", rabbit.VHost)
-		assert.Equal(t, "onb-user", rabbit.Username)
-		assert.Equal(t, "onb-pass", rabbit.Password)
+		// Legacy single tenant-level messaging.
+		require.NotNil(t, config.Messaging)
+		require.NotNil(t, config.Messaging.RabbitMQ)
+		assert.Equal(t, "rabbit.example.com", config.Messaging.RabbitMQ.Host)
+		assert.Equal(t, 5672, config.Messaging.RabbitMQ.Port)
+		assert.Equal(t, "tenant-vhost", config.Messaging.RabbitMQ.VHost)
+		assert.Equal(t, "tenant-user", config.Messaging.RabbitMQ.Username)
+		assert.Equal(t, "tenant-pass", config.Messaging.RabbitMQ.Password)
+		require.NotNil(t, config.GetRabbitMQConfig())
+		assert.Equal(t, "tenant-vhost", config.GetRabbitMQConfig().VHost)
+
+		// New per-module rabbitmq map (FLAT: value is a RabbitMQConfig directly).
+		require.Contains(t, config.RabbitMQ, "transaction")
+		require.Contains(t, config.RabbitMQ, "onboarding")
+		txRabbit := config.RabbitMQ["transaction"]
+		assert.Equal(t, "rabbit.example.com", txRabbit.Host)
+		assert.Equal(t, 5672, txRabbit.Port)
+		assert.Equal(t, "transaction-vhost", txRabbit.VHost)
+		assert.Equal(t, "tx-user", txRabbit.Username)
+		assert.Equal(t, "tx-pass", txRabbit.Password)
+		require.NotNil(t, config.GetModuleRabbitMQConfig("transaction"))
+		assert.Equal(t, "transaction-vhost", config.GetModuleRabbitMQConfig("transaction").VHost)
+		require.NotNil(t, config.GetModuleRabbitMQConfig("onboarding"))
+		assert.Equal(t, "onboarding-vhost", config.GetModuleRabbitMQConfig("onboarding").VHost)
 
 		require.Contains(t, config.Streaming, "onboarding")
 		kafka := config.Streaming["onboarding"].Kafka
@@ -781,7 +874,7 @@ func TestTenantConfig_PerModuleMessagingAndStreaming_JSON(t *testing.T) {
 		assert.Nil(t, kafka.TLS, "omitted tls key must leave the pointer nil (use global default)")
 	})
 
-	t.Run("messaging and streaming are nil when absent", func(t *testing.T) {
+	t.Run("messaging, rabbitmq and streaming are nil when absent", func(t *testing.T) {
 		jsonData := `{"id": "cfg-123", "tenantSlug": "acme"}`
 
 		var config TenantConfig
@@ -789,6 +882,7 @@ func TestTenantConfig_PerModuleMessagingAndStreaming_JSON(t *testing.T) {
 
 		require.NoError(t, err)
 		assert.Nil(t, config.Messaging)
+		assert.Nil(t, config.RabbitMQ)
 		assert.Nil(t, config.Streaming)
 	})
 }

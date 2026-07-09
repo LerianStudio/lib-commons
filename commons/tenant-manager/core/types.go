@@ -55,7 +55,9 @@ type RabbitMQConfig struct {
 	TLSCAFile string `json:"tlsCAFile,omitempty"` // path to CA certificate file for custom CAs
 }
 
-// MessagingConfig holds messaging configuration for a single module.
+// MessagingConfig holds messaging configuration. It is the legacy single
+// tenant-level messaging object (TenantConfig.Messaging), wrapping the
+// tenant-level RabbitMQ under a "rabbitmq" key.
 type MessagingConfig struct {
 	RabbitMQ *RabbitMQConfig `json:"rabbitmq,omitempty"`
 }
@@ -95,10 +97,22 @@ type ConnectionSettings struct {
 }
 
 // TenantConfig represents the tenant configuration from Tenant Manager.
-// The Databases map is keyed by module name (e.g., "onboarding", "transaction").
-// The Messaging and Streaming maps follow the same convention: they are keyed by
-// module name, matching the flat format returned by the tenant-manager
-// /v1/.../connections endpoint.
+//
+// Field shapes intentionally differ:
+//   - Databases  is keyed by module name (e.g., "onboarding", "transaction").
+//   - Messaging  is the LEGACY single tenant-level messaging object (RabbitMQ is
+//     tenant-level: one vhost/credential per tenant). It maps to the top-level
+//     "messaging" key returned by older tenant-manager /connections responses.
+//   - RabbitMQ   is the NEW per-module map, keyed by module name. It maps to the
+//     top-level "rabbitmq" key returned by newer tenant-manager /connections
+//     responses, where each value is a FLAT RabbitMQConfig object (host, port,
+//     vhost, username, password, TLS) DIRECTLY — matching tenant-manager's
+//     resolvedRabbitMQConfigEntry (no inner "rabbitmq" wrapper).
+//   - Streaming  is keyed by module name, matching the "streaming" key.
+//
+// Both Messaging and RabbitMQ are populated so consumers on either the legacy
+// no-arg getter (GetRabbitMQConfig) or the per-module getter
+// (GetModuleRabbitMQConfig) resolve correctly.
 type TenantConfig struct {
 	ID                 string                     `json:"id"`
 	TenantSlug         string                     `json:"tenantSlug"`
@@ -107,7 +121,8 @@ type TenantConfig struct {
 	Status             string                     `json:"status,omitempty"`
 	IsolationMode      string                     `json:"isolationMode,omitempty"`
 	Databases          map[string]DatabaseConfig  `json:"databases,omitempty"`
-	Messaging          map[string]MessagingConfig `json:"messaging,omitempty"`
+	Messaging          *MessagingConfig           `json:"messaging,omitempty"`
+	RabbitMQ           map[string]RabbitMQConfig  `json:"rabbitmq,omitempty"`
 	Streaming          map[string]StreamingConfig `json:"streaming,omitempty"`
 	ConnectionSettings *ConnectionSettings        `json:"connectionSettings,omitempty"`
 	CreatedAt          time.Time                  `json:"createdAt,omitzero"`
@@ -248,11 +263,11 @@ func (tc *TenantConfig) IsIsolatedMode() bool {
 	return tc.IsolationMode == "" || tc.IsolationMode == "isolated" || tc.IsolationMode == "database"
 }
 
-// GetRabbitMQConfig returns the RabbitMQ config for a module.
-// module: e.g., "onboarding", "transaction"
-// If module is empty, returns the first RabbitMQ config found (sorted by key for determinism).
-// Returns nil if messaging or RabbitMQ is not configured for the module.
-func (tc *TenantConfig) GetRabbitMQConfig(module string) *RabbitMQConfig {
+// GetRabbitMQConfig returns the tenant-level (legacy single) RabbitMQ config.
+// RabbitMQ is tenant-level (one vhost/credential per tenant), so this getter is
+// module-agnostic and reads the single Messaging.RabbitMQ object.
+// Returns nil (nil-safe) if the receiver, Messaging, or RabbitMQ is not configured.
+func (tc *TenantConfig) GetRabbitMQConfig() *RabbitMQConfig {
 	if tc == nil {
 		return nil
 	}
@@ -261,20 +276,39 @@ func (tc *TenantConfig) GetRabbitMQConfig(module string) *RabbitMQConfig {
 		return nil
 	}
 
+	return tc.Messaging.RabbitMQ
+}
+
+// GetModuleRabbitMQConfig returns the RabbitMQ config for a module from the
+// per-module RabbitMQ map.
+// module: e.g., "onboarding", "transaction"
+// If module is empty, returns the first RabbitMQ config found (sorted by key for determinism).
+// Returns nil (nil-safe) if the receiver, the RabbitMQ map, or the module entry
+// is not configured.
+func (tc *TenantConfig) GetModuleRabbitMQConfig(module string) *RabbitMQConfig {
+	if tc == nil {
+		return nil
+	}
+
+	if tc.RabbitMQ == nil {
+		return nil
+	}
+
 	if module != "" {
-		if msg, ok := tc.Messaging[module]; ok {
-			return msg.RabbitMQ
+		if cfg, ok := tc.RabbitMQ[module]; ok {
+			// Copy the map value into a local before taking its address:
+			// &tc.RabbitMQ[module] is illegal for map values in Go.
+			return &cfg
 		}
 
 		return nil
 	}
 
-	// Return first RabbitMQ config found (deterministic: sorted by key)
-	keys := sortedKeys(tc.Messaging)
-	for _, key := range keys {
-		if msg := tc.Messaging[key]; msg.RabbitMQ != nil {
-			return msg.RabbitMQ
-		}
+	// Return first RabbitMQ config found (deterministic: sorted by key).
+	keys := sortedKeys(tc.RabbitMQ)
+	if len(keys) > 0 {
+		cfg := tc.RabbitMQ[keys[0]]
+		return &cfg
 	}
 
 	return nil
@@ -312,11 +346,11 @@ func (tc *TenantConfig) GetKafkaConfig(module string) *KafkaConfig {
 	return nil
 }
 
-// HasRabbitMQ returns true if the tenant has RabbitMQ configured for any module.
+// HasRabbitMQ returns true if the tenant has tenant-level RabbitMQ configured.
 func (tc *TenantConfig) HasRabbitMQ() bool {
 	if tc == nil {
 		return false
 	}
 
-	return tc.GetRabbitMQConfig("") != nil
+	return tc.GetRabbitMQConfig() != nil
 }

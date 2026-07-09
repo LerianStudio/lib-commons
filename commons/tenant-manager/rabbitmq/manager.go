@@ -259,7 +259,13 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 		return nil, fmt.Errorf("failed to get tenant config: %w", err)
 	}
 
-	rabbitConfig := config.GetRabbitMQConfig(p.module)
+	// Prefer the per-module RabbitMQ config (new tenant-manager shape); fall back
+	// to the legacy tenant-level single config (old tenant-manager shape).
+	rabbitConfig := config.GetModuleRabbitMQConfig(p.module)
+	if rabbitConfig == nil {
+		rabbitConfig = config.GetRabbitMQConfig()
+	}
+
 	if rabbitConfig == nil {
 		logger.Errorf("RabbitMQ not configured for tenant: %s", tenantID)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "RabbitMQ not configured", core.ErrServiceNotConfigured)
@@ -495,7 +501,13 @@ func (p *Manager) revalidatePoolSettings(tenantID string) {
 // old one is replaced and closed only after the new one is ready. If the new
 // connection fails, the old one is kept to avoid breaking existing tenants.
 func (p *Manager) detectAndReconnectRabbitMQ(tenantID string, config *core.TenantConfig) {
-	rabbitConfig := config.GetRabbitMQConfig(p.module)
+	// Prefer the per-module RabbitMQ config (new tenant-manager shape); fall back
+	// to the legacy tenant-level single config (old tenant-manager shape).
+	rabbitConfig := config.GetModuleRabbitMQConfig(p.module)
+	if rabbitConfig == nil {
+		rabbitConfig = config.GetRabbitMQConfig()
+	}
+
 	if rabbitConfig == nil {
 		return
 	}

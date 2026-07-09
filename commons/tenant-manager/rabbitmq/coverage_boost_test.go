@@ -62,7 +62,7 @@ func TestCreateConnection_GetsConfigButDialFails(t *testing.T) {
 		w.Write([]byte(`{
 			"id": "tenant-1",
 			"tenantSlug": "test-tenant",
-			"messaging": {
+			"rabbitmq": {
 				"ledger": {
 					"rabbitmq": {
 						"host": "unreachable-rabbit-host-99999",
@@ -340,15 +340,13 @@ func TestDetectAndReconnectRabbitMQ_NoCachedURI(t *testing.T) {
 	m := NewManager(c, "ledger", WithLogger(testutil.NewMockLogger()))
 
 	cfg := &core.TenantConfig{
-		Messaging: map[string]core.MessagingConfig{
-			"ledger": {
-				RabbitMQ: &core.RabbitMQConfig{
-					Host:     "localhost",
-					Port:     5672,
-					Username: "user",
-					Password: "pass",
-					VHost:    "/",
-				},
+		Messaging: &core.MessagingConfig{
+			RabbitMQ: &core.RabbitMQConfig{
+				Host:     "localhost",
+				Port:     5672,
+				Username: "user",
+				Password: "pass",
+				VHost:    "/",
 			},
 		},
 	}
@@ -379,9 +377,7 @@ func TestDetectAndReconnectRabbitMQ_ConfigUnchanged(t *testing.T) {
 	m.connections["tenant-same"] = nil
 
 	cfg := &core.TenantConfig{
-		Messaging: map[string]core.MessagingConfig{
-			"ledger": {RabbitMQ: rabbitCfg},
-		},
+		Messaging: &core.MessagingConfig{RabbitMQ: rabbitCfg},
 	}
 
 	// Config unchanged → should return early, no reconnection attempt
