@@ -88,3 +88,34 @@ CVE-2026-33997
 CVE-2026-41567
 CVE-2026-42306
 CVE-2026-41568
+
+# =============================================================================
+# golang.org/x/crypto — GO-2026-5932 (UNKNOWN)
+# =============================================================================
+#
+# WHY THIS IS IGNORED
+# -------------------
+# GO-2026-5932 is a maintenance/deprecation advisory (published 2026-07-07)
+# stating that the golang.org/x/crypto/openpgp package is unmaintained and
+# should not be used. It is scoped to the openpgp import paths only.
+#
+# WHY WE CANNOT FIX IT WITH A BUMP
+# --------------------------------
+# The advisory affects every version of golang.org/x/crypto (introduced: 0,
+# with no fixed version) because the openpgp package will not be revived.
+# Upgrading golang.org/x/crypto does not clear the finding.
+#
+# WHY IT DOES NOT AFFECT US
+# -------------------------
+# lib-commons does not import golang.org/x/crypto/openpgp. Verified with:
+#   go mod why golang.org/x/crypto/openpgp
+#   => "main module does not need package golang.org/x/crypto/openpgp"
+# The vulnerable code path is unreachable; go.mod-level scanning flags the
+# module purely because it is present in the graph for other x/crypto uses.
+#
+# WHAT TO DO
+# ----------
+# Remove the line below only if lib-commons stops depending on x/crypto, or if
+# the advisory is withdrawn. Re-check with: trivy fs --scanners vuln .
+#
+GO-2026-5932

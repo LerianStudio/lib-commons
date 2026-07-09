@@ -19,7 +19,7 @@ require (
 	github.com/danielgtaylor/huma/v2 v2.38.0
 	github.com/go-playground/validator/v10 v10.30.3
 	github.com/go-redsync/redsync/v4 v4.16.0
-	github.com/gofiber/fiber/v2 v2.52.13
+	github.com/gofiber/fiber/v2 v2.52.14
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
@@ -91,9 +91,9 @@ require (
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
-	github.com/gofiber/fiber/v3 v3.2.0 // indirect
+	github.com/gofiber/fiber/v3 v3.3.0 // indirect
 	github.com/gofiber/schema v1.7.1 // indirect
-	github.com/gofiber/utils/v2 v2.0.4 // indirect
+	github.com/gofiber/utils/v2 v2.0.6 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.16 // indirect
 	github.com/googleapis/gax-go/v2 v2.22.0 // indirect

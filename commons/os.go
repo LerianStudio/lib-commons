@@ -144,9 +144,17 @@ var ErrNilConfig = errors.New("config must not be nil")
 // ErrNotStruct indicates that the pointer target is not a struct.
 var ErrNotStruct = errors.New("pointer must reference a struct")
 
+// ErrUnsupportedFieldType indicates that a struct field carrying an "env" tag
+// has a type SetConfigFromEnvVars cannot populate (for example a non-string
+// slice, or a float/uint scalar). It is returned instead of panicking.
+var ErrUnsupportedFieldType = errors.New("unsupported field type for env tag")
+
 // SetConfigFromEnvVars builds a struct by setting its field values using the "env" tag.
 // Constraints: s must be a non-nil pointer to an initialized struct.
-// Supported types: String, Boolean, Int, Int8, Int16, Int32 and Int64.
+// Supported field types: string, bool, int/int8/int16/int32/int64, and []string
+// (comma-separated, each element whitespace-trimmed, empty elements dropped). A
+// field whose type is none of these (for example a non-string slice or a float)
+// yields ErrUnsupportedFieldType rather than a panic.
 func SetConfigFromEnvVars(s any) error {
 	if s == nil {
 		return ErrNilConfig
@@ -177,13 +185,21 @@ func SetConfigFromEnvVars(s any) error {
 			if len(values) > 0 {
 				fv := v.Elem().FieldByName(f.Name)
 				if fv.CanSet() {
-					switch k := fv.Kind(); k {
+					switch fv.Kind() {
 					case reflect.Bool:
 						fv.SetBool(GetenvBoolOrDefault(values[0], false))
 					case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 						fv.SetInt(GetenvIntOrDefault(values[0], 0))
-					default:
+					case reflect.String:
 						fv.SetString(os.Getenv(values[0]))
+					case reflect.Slice:
+						if fv.Type().Elem().Kind() != reflect.String {
+							return fmt.Errorf("%w: field %q is %s", ErrUnsupportedFieldType, f.Name, fv.Type())
+						}
+
+						fv.Set(reflect.ValueOf(parseEnvStringSlice(os.Getenv(values[0]))))
+					default:
+						return fmt.Errorf("%w: field %q is %s", ErrUnsupportedFieldType, f.Name, fv.Type())
 					}
 				}
 			}
@@ -191,4 +207,20 @@ func SetConfigFromEnvVars(s any) error {
 	}
 
 	return nil
+}
+
+// parseEnvStringSlice splits a comma-separated environment value into a
+// []string, trimming surrounding whitespace from each element and dropping
+// empty elements. An empty or whitespace-only value yields an empty (non-nil)
+// slice.
+func parseEnvStringSlice(raw string) []string {
+	out := []string{}
+
+	for part := range strings.SplitSeq(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+
+	return out
 }
