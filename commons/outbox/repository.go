@@ -31,3 +31,11 @@ type OutboxRepository interface {
 	ResetStuckProcessing(ctx context.Context, limit int, processingBefore time.Time, maxAttempts int) ([]*OutboxEvent, error)
 	MarkInvalid(ctx context.Context, id uuid.UUID, errMsg string) error
 }
+
+// IdempotentWriter is a narrow, opt-in contract for content-addressed idempotent
+// outbox writes. It is deliberately kept separate from OutboxRepository so that
+// only callers that need replay-safe upserts depend on it, and existing
+// OutboxRepository implementations are not forced to grow a new method.
+type IdempotentWriter interface {
+	CreateIdempotentWithTx(ctx context.Context, tx Tx, event *OutboxEvent) (*OutboxEvent, error)
+}
