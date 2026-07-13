@@ -62,13 +62,15 @@ func TestCreateConnection_GetsConfigButDialFails(t *testing.T) {
 		w.Write([]byte(`{
 			"id": "tenant-1",
 			"tenantSlug": "test-tenant",
-			"messaging": {
-				"rabbitMQ": {
-					"host": "unreachable-rabbit-host-99999",
-					"port": 5672,
-					"username": "user",
-					"password": "pass",
-					"vhost": "/"
+			"rabbitmq": {
+				"ledger": {
+					"rabbitmq": {
+						"host": "unreachable-rabbit-host-99999",
+						"port": 5672,
+						"username": "user",
+						"password": "pass",
+						"vhost": "/"
+					}
 				}
 			}
 		}`))

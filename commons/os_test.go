@@ -218,6 +218,63 @@ func TestSetConfigFromEnvVars_PointerToNonStruct(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotStruct)
 }
 
+func TestSetConfigFromEnvVars_StringSlice(t *testing.T) {
+	type Config struct {
+		Principals []string `env:"TEST_STRING_SLICE_FIELD"`
+	}
+
+	t.Setenv("TEST_STRING_SLICE_FIELD", "alice, bob ,carol")
+
+	config := &Config{}
+	err := SetConfigFromEnvVars(config)
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alice", "bob", "carol"}, config.Principals)
+}
+
+func TestSetConfigFromEnvVars_StringSlice_Empty(t *testing.T) {
+	type Config struct {
+		Principals []string `env:"TEST_EMPTY_SLICE_FIELD"`
+	}
+
+	t.Setenv("TEST_EMPTY_SLICE_FIELD", "")
+	os.Unsetenv("TEST_EMPTY_SLICE_FIELD")
+
+	config := &Config{}
+	err := SetConfigFromEnvVars(config)
+
+	require.NoError(t, err)
+	assert.Empty(t, config.Principals, "missing env var should yield an empty slice, not a panic")
+}
+
+func TestSetConfigFromEnvVars_UnsupportedSlice_ReturnsErrorNotPanic(t *testing.T) {
+	type Config struct {
+		Ports []int `env:"TEST_INT_SLICE_FIELD"`
+	}
+
+	t.Setenv("TEST_INT_SLICE_FIELD", "8080,9090")
+
+	config := &Config{}
+
+	var err error
+	assert.NotPanics(t, func() { err = SetConfigFromEnvVars(config) })
+	assert.ErrorIs(t, err, ErrUnsupportedFieldType)
+}
+
+func TestSetConfigFromEnvVars_UnsupportedScalar_ReturnsErrorNotPanic(t *testing.T) {
+	type Config struct {
+		Ratio float64 `env:"TEST_FLOAT_FIELD"`
+	}
+
+	t.Setenv("TEST_FLOAT_FIELD", "1.5")
+
+	config := &Config{}
+
+	var err error
+	assert.NotPanics(t, func() { err = SetConfigFromEnvVars(config) })
+	assert.ErrorIs(t, err, ErrUnsupportedFieldType)
+}
+
 func TestInitLocalEnvConfig_NonLocalReturnsNonNil(t *testing.T) {
 	t.Setenv("VERSION", "1.0.0")
 	t.Setenv("ENV_NAME", "production")
