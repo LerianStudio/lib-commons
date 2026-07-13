@@ -1,5 +1,30 @@
 # Lib-commons Changelog
 
+## [5.9.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.9.0)
+
+Features:
+- Implement per-module messaging and streaming configuration within `TenantConfig`. (@jeffersonrodrigues92)
+- Restore legacy `Messaging/GetRabbitMQConfig` alongside the new per-module configuration. (@jeffersonrodrigues92)
+- Add functionality to list S3 object keys by prefix with pagination support. (@jeffersonrodrigues92)
+- Introduce conditional S3 blob creation using `IfNoneMatch` for immutable blobs. (@jeffersonrodrigues92)
+- Enable tenant-scoped blob storage operations in S3, including upload, download, delete, and existence checks. (@jeffersonrodrigues92)
+
+Fixes:
+- Correct parsing of `[]string` environment fields to prevent panics in `SetConfigFromEnvVars`. (@fredcamaral)
+- Address panic issue in `SetConfig` slice handling. (@fredcamaral)
+- Parse migration version at `uint` width to prevent errors in Postgres. (@andreimatiazi)
+- Disambiguate version-ahead migration error messages in Postgres. (@andreimatiazi)
+- Resolve error on truncated S3 list pages without a continuation token. (@jeffersonrodrigues92)
+- Normalize S3 bucket storage and provide explicit error handling for nil downloads. (@jeffersonrodrigues92)
+
+Improvements:
+- Extract `resolveRabbitMQConfig` helper function for better code organization in tenant management. (@jeffersonrodrigues92)
+- Bump `gofiber` dependency to patch `CVE-2026-45045/44332` and ignore unreachable `x/crypto` openpgp advisory. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.8.0...v5.9.0)
+
+---
+
 ## [5.8.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.8.0)
 
 - Features:
