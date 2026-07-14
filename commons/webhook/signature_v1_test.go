@@ -107,6 +107,7 @@ func TestVerifySignatureV1WithFreshnessAt(t *testing.T) {
 		{name: "accepts upper boundary", timestamp: now.Add(tolerance).Unix()},
 		{name: "rejects stale timestamp", timestamp: now.Add(-tolerance - time.Second).Unix(), wantErr: "outside tolerance window"},
 		{name: "rejects future timestamp", timestamp: now.Add(tolerance + time.Second).Unix(), wantErr: "outside tolerance window"},
+		{name: "rejects future timestamp beyond duration range", timestamp: now.Unix() + math.MaxInt64/int64(time.Second) + 1, wantErr: "outside tolerance window"},
 		{name: "rejects timestamp beyond duration range", timestamp: math.MaxInt64, wantErr: "outside tolerance window"},
 	}
 
@@ -125,6 +126,21 @@ func TestVerifySignatureV1WithFreshnessAt(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
+}
+
+func TestVerifySignatureWithFreshnessAtRejectsFutureTimestampBeyondDurationRange(t *testing.T) {
+	t.Parallel()
+
+	payload := []byte(`{"id":"123"}`)
+	const secret = "test-secret"
+	now := time.Unix(1700000300, 0)
+	timestamp := now.Unix() + math.MaxInt64/int64(time.Second) + 1
+	signature := computeHMACv1(payload, timestamp, secret)
+
+	err := verifySignatureWithFreshnessAt(payload, timestamp, secret, signature, 5*time.Minute, now)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outside tolerance window")
 }
 
 func TestVerifySignatureV1WithFreshness(t *testing.T) {

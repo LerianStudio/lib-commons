@@ -64,5 +64,6 @@
 //  2. Once all receivers are updated, switch senders to v1 by constructing
 //     the Deliverer with WithSignatureVersion(SignatureV1).
 //  3. After a transition period, receivers can switch to VerifySignatureV1 or
-//     VerifySignatureV1WithFreshness to reject v0 and enforce replay protection.
+//     VerifySignatureV1WithFreshness to reject v0. Freshness limits the replay
+//     window; track event IDs or nonces to prevent replay.
 package webhook

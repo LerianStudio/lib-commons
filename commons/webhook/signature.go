@@ -117,6 +117,16 @@ func VerifySignatureV1(payload []byte, timestamp int64, secret, signature string
 // use VerifySignature and implement replay protection independently (e.g.,
 // idempotency keys or event-ID tracking).
 func VerifySignatureWithFreshness(payload []byte, timestamp int64, secret, signature string, tolerance time.Duration) error {
+	return verifySignatureWithFreshnessAt(payload, timestamp, secret, signature, tolerance, time.Now().UTC())
+}
+
+func verifySignatureWithFreshnessAt(
+	payload []byte,
+	timestamp int64,
+	secret, signature string,
+	tolerance time.Duration,
+	now time.Time,
+) error {
 	if err := VerifySignature(payload, timestamp, secret, signature); err != nil {
 		return err
 	}
@@ -124,11 +134,7 @@ func VerifySignatureWithFreshness(payload []byte, timestamp int64, secret, signa
 	// Freshness check only applies to v1 where the timestamp is signed.
 	if strings.HasPrefix(signature, "v1,") {
 		eventTime := time.Unix(timestamp, 0)
-		delta := time.Since(eventTime)
-
-		if delta < 0 {
-			delta = -delta
-		}
+		delta := now.Sub(eventTime).Abs()
 
 		if delta > tolerance {
 			return fmt.Errorf("webhook: timestamp outside tolerance window (%s > %s)", delta.Truncate(time.Second), tolerance)
@@ -155,10 +161,7 @@ func verifySignatureV1WithFreshnessAt(
 		return err
 	}
 
-	delta := now.Sub(time.Unix(timestamp, 0))
-	if delta < 0 {
-		delta = -delta
-	}
+	delta := now.Sub(time.Unix(timestamp, 0)).Abs()
 
 	if delta > tolerance {
 		return fmt.Errorf("webhook: timestamp outside tolerance window (%s > %s)", delta.Truncate(time.Second), tolerance)
