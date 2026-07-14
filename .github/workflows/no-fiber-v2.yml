@@ -1,0 +1,30 @@
+name: No Fiber v2
+
+# Guards the Fiber v3 migration: github.com/gofiber/fiber/v2 must not re-enter the
+# module graph. It previously slipped in transitively via huma's humafiber adapter
+# (which bundles a v2 adapter file), dragging CVE-2026-45045 with it. lib-commons now
+# vendors only huma's Fiber v3 adapter (commons/net/http/openapi/internal/humafiberv3),
+# so the graph is v2-free. This check fails loudly if that regresses.
+
+on:
+  pull_request:
+    branches: [develop, release-candidate, main]
+    paths:
+      - go.mod
+      - go.sum
+
+permissions:
+  contents: read
+
+jobs:
+  no-fiber-v2:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert Fiber v2 is absent from the module graph
+        run: |
+          if grep -qE 'github\.com/gofiber/fiber/v2' go.mod; then
+            echo "::error::github.com/gofiber/fiber/v2 is back in go.mod. The Fiber v3 migration must not reintroduce it (likely via a huma adapter that bundles the v2 binding). Vendor only the v3 adapter or drop the offending dependency."
+            exit 1
+          fi
+          echo "OK: github.com/gofiber/fiber/v2 is not in the module graph."
