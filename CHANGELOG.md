@@ -1,5 +1,17 @@
 # Lib-commons Changelog
 
+## [5.10.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.10.0)
+
+Features:
+- Add content-addressed idempotent writes to the outbox functionality. (@fredcamaral)
+
+Fixes:
+- Harden security headers in Scalar documentation to improve protection. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.9.0...v5.10.0)
+
+---
+
 ## [5.9.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.9.0)
 
 Features:
