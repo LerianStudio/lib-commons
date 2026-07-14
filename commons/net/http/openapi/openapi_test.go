@@ -227,7 +227,7 @@ func TestServeSpec_MountsThreeRoutes(t *testing.T) {
 		assert.Contains(t, string(body), "openapi:")
 	})
 
-	t.Run("docs with relaxed CSP", func(t *testing.T) {
+	t.Run("docs with security headers", func(t *testing.T) {
 		t.Parallel()
 
 		resp, err := app.Test(httptest.NewRequest(http.MethodGet, "/v1/docs", nil))
@@ -237,6 +237,8 @@ func TestServeSpec_MountsThreeRoutes(t *testing.T) {
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
 		assert.Contains(t, resp.Header.Get(fiber.HeaderContentType), "text/html")
 		assert.Equal(t, scalarCSP, resp.Header.Get("Content-Security-Policy"))
+		assert.Contains(t, resp.Header.Get("Content-Security-Policy"), "frame-ancestors 'none'")
+		assert.Equal(t, "nosniff", resp.Header.Get("X-Content-Type-Options"))
 
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err)
