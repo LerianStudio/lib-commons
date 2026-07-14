@@ -51,8 +51,9 @@
 //  4. Reject timestamps outside an acceptable clock-skew window (e.g., +/- 5 min)
 //     or track event IDs / nonces to prevent replay.
 //
-// Use VerifySignature or VerifySignatureWithFreshness for receiver-side
-// verification — both auto-detect the version from the signature string.
+// Use VerifySignature or VerifySignatureWithFreshness while receivers must
+// accept both versions. Use VerifySignatureV1 or
+// VerifySignatureV1WithFreshness to enforce v1-only ingress.
 //
 // # Migration from v0 to v1
 //
@@ -62,6 +63,7 @@
 //     VerifySignature which auto-detects the version).
 //  2. Once all receivers are updated, switch senders to v1 by constructing
 //     the Deliverer with WithSignatureVersion(SignatureV1).
-//  3. After a transition period, receivers may optionally reject v0 signatures
-//     to enforce replay protection.
+//  3. After a transition period, receivers can switch to VerifySignatureV1 or
+//     VerifySignatureV1WithFreshness to reject v0. Freshness limits the replay
+//     window; track event IDs or nonces to prevent replay.
 package webhook
