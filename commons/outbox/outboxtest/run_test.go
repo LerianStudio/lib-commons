@@ -5,7 +5,7 @@ package outboxtest
 import (
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
+	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
 )
 
 // TestRun_AllSkipped exercises the Run framework with all subtests skipped,

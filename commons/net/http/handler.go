@@ -6,17 +6,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons"
-	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	observability "github.com/LerianStudio/lib-observability"
-	libLog "github.com/LerianStudio/lib-observability/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons"
+	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	observability "github.com/LerianStudio/lib-observability/v2"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/gofiber/fiber/v3"
 	"go.opentelemetry.io/otel/trace"
 )
 
 // Ping returns HTTP Status 200 with response "healthy".
-func Ping(c *fiber.Ctx) error {
+func Ping(c fiber.Ctx) error {
 	if c == nil {
 		return ErrContextNotFound
 	}
@@ -30,7 +30,7 @@ func Ping(c *fiber.Ctx) error {
 // NOTE: This endpoint intentionally exposes the build version. Callers that
 // need to restrict visibility should gate this route behind authentication
 // or omit it from public-facing routers.
-func Version(c *fiber.Ctx) error {
+func Version(c fiber.Ctx) error {
 	return Respond(c, fiber.StatusOK, fiber.Map{
 		"version":     commons.GetenvOrDefault("VERSION", "0.0.0"),
 		"requestDate": time.Now().UTC(),
@@ -39,7 +39,7 @@ func Version(c *fiber.Ctx) error {
 
 // Welcome returns HTTP Status 200 with service info.
 func Welcome(service string, description string) fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if c == nil {
 			return ErrContextNotFound
 		}
@@ -52,13 +52,13 @@ func Welcome(service string, description string) fiber.Handler {
 }
 
 // NotImplementedEndpoint returns HTTP 501 with not implemented message.
-func NotImplementedEndpoint(c *fiber.Ctx) error {
+func NotImplementedEndpoint(c fiber.Ctx) error {
 	return RespondError(c, fiber.StatusNotImplemented, "not_implemented", "Not implemented yet")
 }
 
 // File serves a specific file.
 func File(filePath string) fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if c == nil {
 			return ErrContextNotFound
 		}
@@ -71,7 +71,7 @@ func File(filePath string) fiber.Handler {
 // It accepts `Bearer <token>` case-insensitively and also preserves the
 // legacy raw-token form when the header contains a single token with no scheme.
 // Malformed Bearer values and non-Bearer multi-part values return an empty string.
-func ExtractTokenFromHeader(c *fiber.Ctx) string {
+func ExtractTokenFromHeader(c fiber.Ctx) string {
 	if c == nil {
 		return ""
 	}
@@ -106,7 +106,7 @@ func ExtractTokenFromHeader(c *fiber.Ctx) string {
 // It uses the structured logger from the request context so that error
 // details pass through the sanitization pipeline instead of going to
 // plain stdlib log.Printf.
-func FiberErrorHandler(c *fiber.Ctx, err error) error {
+func FiberErrorHandler(c fiber.Ctx, err error) error {
 	if c == nil {
 		if err != nil {
 			return err
@@ -116,7 +116,7 @@ func FiberErrorHandler(c *fiber.Ctx, err error) error {
 	}
 
 	// Safely end spans if user context exists
-	ctx := c.UserContext()
+	ctx := c.Context()
 	if ctx != nil {
 		span := trace.SpanFromContext(ctx)
 		libOpentelemetry.HandleSpanError(span, "handler error", err)

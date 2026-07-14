@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	commons "github.com/LerianStudio/lib-commons/v5/commons"
-	libSSRF "github.com/LerianStudio/lib-commons/v5/commons/security/ssrf"
+	commons "github.com/LerianStudio/lib-commons/v6/commons"
+	libSSRF "github.com/LerianStudio/lib-commons/v6/commons/security/ssrf"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

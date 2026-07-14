@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 

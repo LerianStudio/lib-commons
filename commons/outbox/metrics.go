@@ -3,8 +3,8 @@ package outbox
 import (
 	"fmt"
 
-	libLog "github.com/LerianStudio/lib-observability/log"
-	libMetrics "github.com/LerianStudio/lib-observability/metrics"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	libMetrics "github.com/LerianStudio/lib-observability/v2/metrics"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )

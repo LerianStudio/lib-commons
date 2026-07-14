@@ -1,6 +1,6 @@
 package constant
 
-import obsconstants "github.com/LerianStudio/lib-observability/constants"
+import obsconstants "github.com/LerianStudio/lib-observability/v2/constants"
 
 const (
 	// HeaderUserAgent is the HTTP User-Agent header key.

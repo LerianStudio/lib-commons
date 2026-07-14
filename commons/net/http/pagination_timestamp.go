@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	"github.com/gofiber/fiber/v2"
+	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
 
@@ -60,7 +60,7 @@ func DecodeTimestampCursor(cursor string) (*TimestampCursor, error) {
 
 // ParseTimestampCursorPagination parses cursor/limit query params for timestamp-based cursor pagination.
 // Returns the decoded TimestampCursor (nil for first page), limit, and any error.
-func ParseTimestampCursorPagination(fiberCtx *fiber.Ctx) (*TimestampCursor, int, error) {
+func ParseTimestampCursorPagination(fiberCtx fiber.Ctx) (*TimestampCursor, int, error) {
 	if fiberCtx == nil {
 		return nil, 0, ErrContextNotFound
 	}

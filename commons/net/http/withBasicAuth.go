@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"strings"
 
-	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
+	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // BasicAuthFunc represents a func which returns if a username and password was authenticated or not.
@@ -30,7 +30,7 @@ func FixedBasicAuthFunc(username, password string) BasicAuthFunc {
 func WithBasicAuth(f BasicAuthFunc, realm string) fiber.Handler {
 	safeRealm := sanitizeBasicAuthRealm(realm)
 
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if f == nil {
 			return unauthorizedResponse(c, safeRealm)
 		}
@@ -71,7 +71,7 @@ func sanitizeBasicAuthRealm(realm string) string {
 }
 
 // unauthorizedResponse sends a 401 response with a WWW-Authenticate header.
-func unauthorizedResponse(c *fiber.Ctx, realm string) error {
+func unauthorizedResponse(c fiber.Ctx, realm string) error {
 	c.Set(constant.WWWAuthenticate, `Basic realm="`+realm+`"`)
 
 	return RespondError(c, http.StatusUnauthorized, "invalid_credentials", "The provided credentials are invalid. Please provide valid credentials and try again.")

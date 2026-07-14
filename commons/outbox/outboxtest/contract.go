@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/errgroup"
-	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
+	"github.com/LerianStudio/lib-commons/v6/commons/errgroup"
+	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"

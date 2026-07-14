@@ -3,16 +3,16 @@ package middleware
 import (
 	"context"
 
-	libHTTP "github.com/LerianStudio/lib-commons/v5/commons/net/http"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
-	tmmongo "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/mongo"
-	tmpostgres "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/postgres"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/tenantcache"
-	observability "github.com/LerianStudio/lib-observability"
-	liblog "github.com/LerianStudio/lib-observability/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
-	"github.com/gofiber/fiber/v2"
+	libHTTP "github.com/LerianStudio/lib-commons/v6/commons/net/http"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
+	tmmongo "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/mongo"
+	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/tenantcache"
+	observability "github.com/LerianStudio/lib-observability/v2"
+	liblog "github.com/LerianStudio/lib-observability/v2/log"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
 	"go.opentelemetry.io/otel/baggage"
 )
@@ -111,13 +111,13 @@ func NewTenantMiddleware(opts ...TenantMiddlewareOption) *TenantMiddleware {
 //
 //	tenantMid := middleware.NewTenantMiddleware(middleware.WithPG(pgManager))
 //	f.Use(tenantMid.WithTenantDB)
-func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
+func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 	// If middleware is disabled, pass through
 	if !m.enabled {
 		return c.Next()
 	}
 
-	ctx := c.UserContext()
+	ctx := c.Context()
 
 	if ctx == nil {
 		ctx = context.Background()
@@ -222,7 +222,7 @@ func (m *TenantMiddleware) WithTenantDB(c *fiber.Ctx) error {
 	}
 
 	// Update Fiber context
-	c.SetUserContext(ctx)
+	c.SetContext(ctx)
 
 	return c.Next()
 }

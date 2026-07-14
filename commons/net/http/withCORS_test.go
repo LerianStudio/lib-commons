@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v5/commons"
-	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	libLog "github.com/LerianStudio/lib-observability/log"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons"
+	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +42,7 @@ func TestWithCORS_UsesEnvironmentConfiguration(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(WithCORS())
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 
@@ -86,7 +86,7 @@ func TestWithCORS_ExplicitFalseCredentials(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(WithCORS())
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 
@@ -139,7 +139,7 @@ func TestWithCORS_WithLoggerOption(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(WithCORS(WithCORSLogger(logger)))
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(200)
 	})
 
@@ -195,7 +195,7 @@ func TestWithCORS_InvalidAllowCredentialsFallsBackToDefault(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(WithCORS())
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 
@@ -217,7 +217,7 @@ func TestWithCORS_WildcardFallsBackToDenyAllByDefault(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(WithCORS())
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 
@@ -240,7 +240,7 @@ func TestWithCORS_AllowCORSWildcardPermitsWildcard(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(WithCORS())
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 

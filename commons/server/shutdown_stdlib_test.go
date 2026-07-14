@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/server"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons/server"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -425,7 +425,7 @@ func TestServerManager_ServersStarted_ZeroValueReturnsNonNilChannel(t *testing.T
 func TestStdlibHTTPServer_MutualExclusionWithFiber(t *testing.T) {
 	t.Parallel()
 
-	fiberApp := fiber.New(fiber.Config{DisableStartupMessage: true})
+	fiberApp := fiber.New()
 	stdlibSrv := &http.Server{
 		Addr:              "127.0.0.1:0",
 		Handler:           http.NewServeMux(),

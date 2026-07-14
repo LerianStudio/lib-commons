@@ -1,7 +1,7 @@
-// Package openapi adapts an existing Fiber v2 application into a configured
+// Package openapi adapts an existing Fiber v3 application into a configured
 // Huma v2 API that emits OpenAPI 3.1 metadata. It is a thin adapter only: it
 // configures the document metadata, suppresses Huma's auto-mounted spec/docs
-// routes, binds the API to a Fiber group via the Fiber v2 adapter, and serves
+// routes, binds the API to a Fiber group via the Fiber v3 adapter, and serves
 // the spec + Scalar docs on explicit, caller-gated routes.
 //
 // It applies NO error policy. Error policy is the org-wide RFC 9457 model in
@@ -24,10 +24,10 @@ import (
 	"path"
 	"strings"
 
-	libLog "github.com/LerianStudio/lib-observability/log"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humafiber"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // scalarCSP relaxes the strict global CSP for the Scalar docs page so the
@@ -87,7 +87,7 @@ func New(app *fiber.App, group fiber.Router, cfg Config) huma.API {
 	humaConfig.SchemasPath = ""
 
 	// DefaultConfig leaves OpenAPIPath="/openapi" and DocsPath="/docs", which
-	// makes humafiber.NewV2WithGroup auto-mount /openapi.json, /openapi.yaml,
+	// makes humafiber.NewWithGroup auto-mount /openapi.json, /openapi.yaml,
 	// and /docs on the supplied group at construction time — un-gated and, since
 	// an API commonly binds to the app root, reachable in production. Clearing
 	// both paths disables that auto-mount: the wrapper registers NO HTTP routes,
@@ -107,7 +107,7 @@ func New(app *fiber.App, group fiber.Router, cfg Config) huma.API {
 		humaConfig.Servers = servers
 	}
 
-	return humafiber.NewV2WithGroup(app, group, humaConfig)
+	return humafiber.NewWithGroup(app, group, humaConfig)
 }
 
 // DeclareBearerAuth registers the BearerAuth HTTP bearer/JWT security scheme in
@@ -177,15 +177,15 @@ func ServeSpec(app *fiber.App, api huma.API, logger libLog.Logger, prefix, title
 	docs := docsHTML(title, specURL)
 
 	group := app.Group(prefix)
-	group.Get("/openapi.json", func(c *fiber.Ctx) error {
+	group.Get("/openapi.json", func(c fiber.Ctx) error {
 		c.Type("json")
 		return c.Send(specJSON)
 	})
-	group.Get("/openapi.yaml", func(c *fiber.Ctx) error {
+	group.Get("/openapi.yaml", func(c fiber.Ctx) error {
 		c.Set(fiber.HeaderContentType, "application/yaml; charset=utf-8")
 		return c.Send(specYAML)
 	})
-	group.Get("/docs", scalarSecurityHeadersMiddleware(), func(c *fiber.Ctx) error {
+	group.Get("/docs", scalarSecurityHeadersMiddleware(), func(c fiber.Ctx) error {
 		c.Type("html")
 		return c.Send(docs)
 	})
@@ -195,7 +195,7 @@ func ServeSpec(app *fiber.App, api huma.API, logger libLog.Logger, prefix, title
 // Scalar docs page and prevents MIME sniffing. Applied only to that route; the
 // global strict CSP is unaffected elsewhere.
 func scalarSecurityHeadersMiddleware() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		c.Set("Content-Security-Policy", scalarCSP)
 		c.Set("X-Content-Type-Options", "nosniff")
 

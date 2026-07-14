@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
-	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
-	libLog "github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
+	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )

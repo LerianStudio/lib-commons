@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	libMongo "github.com/LerianStudio/lib-commons/v5/commons/mongo"
-	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
-	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	libMongo "github.com/LerianStudio/lib-commons/v6/commons/mongo"
+	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
+	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"

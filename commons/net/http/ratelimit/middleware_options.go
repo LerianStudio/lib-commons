@@ -4,14 +4,14 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-observability/log"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/gofiber/fiber/v3"
 )
 
 // IdentityFunc extracts the client identity from a Fiber request context.
 // The returned string is used as part of the Redis key for rate limiting.
-type IdentityFunc func(c *fiber.Ctx) string
+type IdentityFunc func(c fiber.Ctx) string
 
 // Option configures a RateLimiter via functional options.
 type Option func(*RateLimiter)
@@ -62,7 +62,7 @@ func WithFailOpen(failOpen bool) Option {
 // Anything WithOnLimited writes to c is clobbered by the subsequent 429 body write (whether
 // the default chttp.ErrorResponse responder or a WithExceededHandler responder), so this hook
 // is for side effects only. Use WithExceededHandler to replace the response body.
-func WithOnLimited(fn func(c *fiber.Ctx, tier Tier)) Option {
+func WithOnLimited(fn func(c fiber.Ctx, tier Tier)) Option {
 	return func(rl *RateLimiter) {
 		rl.onLimited = fn
 	}
@@ -89,7 +89,7 @@ func WithOnLimited(fn func(c *fiber.Ctx, tier Tier)) Option {
 // responder.
 //
 // Passing nil is a no-op: the option leaves any previously-installed handler in place.
-func WithExceededHandler(fn func(c *fiber.Ctx, tier Tier, ttl time.Duration) error) Option {
+func WithExceededHandler(fn func(c fiber.Ctx, tier Tier, ttl time.Duration) error) Option {
 	return func(rl *RateLimiter) {
 		if fn != nil {
 			rl.exceededHandler = fn
@@ -100,7 +100,7 @@ func WithExceededHandler(fn func(c *fiber.Ctx, tier Tier, ttl time.Duration) err
 // IdentityFromIP returns an IdentityFunc that extracts the client IP address.
 // This is the default identity function.
 func IdentityFromIP() IdentityFunc {
-	return func(c *fiber.Ctx) string {
+	return func(c fiber.Ctx) string {
 		return c.IP()
 	}
 }
@@ -111,7 +111,7 @@ func IdentityFromIP() IdentityFunc {
 // prevents a header value that happens to equal an IP address from colliding with the
 // IP-based fallback identity.
 func IdentityFromHeader(header string) IdentityFunc {
-	return func(c *fiber.Ctx) string {
+	return func(c fiber.Ctx) string {
 		if val := c.Get(header); val != "" {
 			return "hdr:" + url.QueryEscape(val)
 		}
@@ -127,7 +127,7 @@ func IdentityFromHeader(header string) IdentityFunc {
 // raw values, making '#' an unambiguous inter-component separator. If the header is
 // empty, only the encoded IP is returned: "ip:<encodedIP>".
 func IdentityFromIPAndHeader(header string) IdentityFunc {
-	return func(c *fiber.Ctx) string {
+	return func(c fiber.Ctx) string {
 		encodedIP := url.QueryEscape(c.IP())
 		if val := c.Get(header); val != "" {
 			return "ip:" + encodedIP + "#hdr:" + url.QueryEscape(val)
@@ -152,7 +152,7 @@ func WithRedisTimeout(d time.Duration) Option {
 // TierFunc selects a rate limit Tier for the incoming request.
 // It is used with WithDynamicRateLimit to apply different limits per request attribute
 // (e.g., HTTP method, path, or authenticated identity).
-type TierFunc func(c *fiber.Ctx) Tier
+type TierFunc func(c fiber.Ctx) Tier
 
 // MethodTierSelector returns a TierFunc that applies different tiers based on HTTP method:
 //   - write: applied to POST, PUT, PATCH, DELETE (state-mutating methods)
@@ -168,7 +168,7 @@ type TierFunc func(c *fiber.Ctx) Tier
 //	    ratelimit.DefaultTier(),     // read
 //	))
 func MethodTierSelector(write, read Tier) TierFunc {
-	return func(c *fiber.Ctx) Tier {
+	return func(c fiber.Ctx) Tier {
 		switch c.Method() {
 		case fiber.MethodPost, fiber.MethodPut, fiber.MethodPatch, fiber.MethodDelete:
 			return write

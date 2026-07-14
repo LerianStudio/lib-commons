@@ -5,8 +5,8 @@ package http_test
 import (
 	"fmt"
 
-	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	uhttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
+	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	uhttp "github.com/LerianStudio/lib-commons/v6/commons/net/http"
 )
 
 func ExampleEncodeCursor() {

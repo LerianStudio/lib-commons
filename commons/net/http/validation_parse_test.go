@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -133,7 +133,7 @@ func TestParseBodyAndValidate(t *testing.T) {
 
 			app := fiber.New()
 			var gotErr error
-			app.Post("/test", func(c *fiber.Ctx) error {
+			app.Post("/test", func(c fiber.Ctx) error {
 				gotErr = ParseBodyAndValidate(c, tc.payload)
 				if gotErr != nil {
 					return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": gotErr.Error()})

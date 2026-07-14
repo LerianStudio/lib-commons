@@ -8,8 +8,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	"github.com/gofiber/fiber/v3"
 )
 
 const (
@@ -24,7 +24,7 @@ const (
 
 // mapDomainErrorToHTTP is a centralized error-to-HTTP mapping function used by
 // TenantMiddleware to ensure consistent status codes for domain errors.
-func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
+func mapDomainErrorToHTTP(c fiber.Ctx, err error, tenantID string) error {
 	// Missing token or JWT errors -> 401
 	if errors.Is(err, core.ErrAuthorizationTokenRequired) ||
 		errors.Is(err, core.ErrInvalidAuthorizationToken) ||
@@ -76,7 +76,7 @@ func mapDomainErrorToHTTP(c *fiber.Ctx, err error, tenantID string) error {
 
 // forbiddenError sends an HTTP 403 Forbidden response.
 // Used when the tenant-service association exists but is not active (suspended or purged).
-func forbiddenError(c *fiber.Ctx, code, title, message string) error {
+func forbiddenError(c fiber.Ctx, code, title, message string) error {
 	return c.Status(http.StatusForbidden).JSON(fiber.Map{
 		errorFieldCode:    code,
 		errorFieldTitle:   title,
@@ -84,7 +84,7 @@ func forbiddenError(c *fiber.Ctx, code, title, message string) error {
 	})
 }
 
-func serviceUnavailableError(c *fiber.Ctx) error {
+func serviceUnavailableError(c fiber.Ctx) error {
 	return c.Status(http.StatusServiceUnavailable).JSON(fiber.Map{
 		errorFieldCode:    errorCodeServiceUnavailable,
 		errorFieldTitle:   errorTitleServiceUnavailable,
@@ -93,7 +93,7 @@ func serviceUnavailableError(c *fiber.Ctx) error {
 }
 
 // internalServerError sends an HTTP 500 Internal Server Error response.
-func internalServerError(c *fiber.Ctx, code, title string) error {
+func internalServerError(c fiber.Ctx, code, title string) error {
 	return c.Status(http.StatusInternalServerError).JSON(fiber.Map{
 		errorFieldCode:    code,
 		errorFieldTitle:   title,
@@ -102,7 +102,7 @@ func internalServerError(c *fiber.Ctx, code, title string) error {
 }
 
 // unauthorizedError sends an HTTP 401 Unauthorized response.
-func unauthorizedError(c *fiber.Ctx, code, message string) error {
+func unauthorizedError(c fiber.Ctx, code, message string) error {
 	return c.Status(http.StatusUnauthorized).JSON(fiber.Map{
 		errorFieldCode:    code,
 		errorFieldTitle:   "Unauthorized",

@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	observability "github.com/LerianStudio/lib-observability"
+	observability "github.com/LerianStudio/lib-observability/v2"
 	"go.opentelemetry.io/otel/trace"
 )
 

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"sync"
 
-	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
+	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
 	"github.com/go-playground/validator/v10"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/shopspring/decimal"
 )
 
@@ -225,7 +225,7 @@ func toSnakeCase(s string) string {
 // Returns a bad request error if parsing or validation fails.
 // Rejects requests with explicit non-JSON Content-Type headers to provide clear
 // error messages while preserving existing parser behavior when the header is absent.
-func ParseBodyAndValidate(fiberCtx *fiber.Ctx, payload any) error {
+func ParseBodyAndValidate(fiberCtx fiber.Ctx, payload any) error {
 	if fiberCtx == nil {
 		return ErrContextNotFound
 	}
@@ -244,7 +244,7 @@ func ParseBodyAndValidate(fiberCtx *fiber.Ctx, payload any) error {
 		fiberCtx.Request().Header.SetContentType(fiber.MIMEApplicationJSON)
 	}
 
-	if err := fiberCtx.BodyParser(payload); err != nil {
+	if err := fiberCtx.Bind().Body(payload); err != nil {
 		return fmt.Errorf("%w: %w", ErrBodyParseFailed, err)
 	}
 

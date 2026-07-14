@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/server"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons/server"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	_ "github.com/stretchr/testify/require"
 )
@@ -21,7 +21,7 @@ func TestStartWithGracefulShutdownWithError_ShutdownViaChannel(t *testing.T) {
 	t.Parallel()
 
 	logger := &recordingLogger{}
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 
 	shutdownCh := make(chan struct{})
 
@@ -47,7 +47,7 @@ func TestStartWithGracefulShutdownWithError_ShutdownViaChannel(t *testing.T) {
 func TestStartWithGracefulShutdownWithError_NilLogger(t *testing.T) {
 	t.Parallel()
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownCh := make(chan struct{})
 
 	sm := server.NewServerManager(nil, nil, nil). // nil logger
@@ -71,7 +71,7 @@ func TestStartWithGracefulShutdownWithError_NilLogger(t *testing.T) {
 func TestServersStarted_ReturnsChannel(t *testing.T) {
 	t.Parallel()
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownCh := make(chan struct{})
 
 	sm := server.NewServerManager(nil, nil, nil).
@@ -107,7 +107,7 @@ func TestWithShutdownHook_IsCalledOnShutdown(t *testing.T) {
 	t.Parallel()
 
 	hookCalled := false
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownCh := make(chan struct{})
 
 	sm := server.NewServerManager(nil, nil, nil).
@@ -138,7 +138,7 @@ func TestWithShutdownHook_IsCalledOnShutdown(t *testing.T) {
 func TestStartWithGracefulShutdownWithError_IdempotentClose(t *testing.T) {
 	t.Parallel()
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownCh := make(chan struct{})
 
 	sm := server.NewServerManager(nil, nil, nil).
@@ -165,10 +165,10 @@ func TestStartWithGracefulShutdownWithError_StartupError(t *testing.T) {
 	// Use a listener to hold the port
 	logger := &recordingLogger{}
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	// Port :1 is typically blocked; use a dynamic approach: bind to :0 twice
 	// Actually, start a server on :0 and get its actual port
-	app2 := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app2 := fiber.New()
 	shutdownCh := make(chan struct{})
 	defer close(shutdownCh)
 

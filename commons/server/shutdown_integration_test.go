@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/server"
-	"github.com/LerianStudio/lib-observability/log"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons/server"
+	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -64,11 +64,9 @@ func waitForTCP(t *testing.T, addr string, timeout time.Duration) {
 func TestIntegration_ServerManager_HTTPLifecycle(t *testing.T) {
 	addr := getFreePort(t)
 
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-	})
+	app := fiber.New(fiber.Config{})
 
-	app.Get("/ping", func(c *fiber.Ctx) error {
+	app.Get("/ping", func(c fiber.Ctx) error {
 		return c.SendString("pong")
 	})
 
@@ -129,11 +127,9 @@ func TestIntegration_ServerManager_HTTPLifecycle(t *testing.T) {
 func TestIntegration_ServerManager_ShutdownHooksExecuted(t *testing.T) {
 	addr := getFreePort(t)
 
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-	})
+	app := fiber.New(fiber.Config{})
 
-	app.Get("/health", func(c *fiber.Ctx) error {
+	app.Get("/health", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
@@ -282,11 +278,9 @@ func TestIntegration_ServerManager_InFlightRequestsDrained(t *testing.T) {
 
 	var requestCompleted atomic.Bool
 
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-	})
+	app := fiber.New(fiber.Config{})
 
-	app.Get("/slow", func(c *fiber.Ctx) error {
+	app.Get("/slow", func(c fiber.Ctx) error {
 		time.Sleep(slowEndpointDuration)
 		requestCompleted.Store(true)
 

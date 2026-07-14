@@ -3,12 +3,13 @@ package http
 import (
 	"context"
 	"strconv"
+	"strings"
 
-	"github.com/LerianStudio/lib-commons/v5/commons"
-	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
-	libLog "github.com/LerianStudio/lib-observability/log"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/LerianStudio/lib-commons/v6/commons"
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/cors"
 )
 
 const (
@@ -112,11 +113,14 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 		allowCredentials = false
 	}
 
+	// Fiber v3 CORS config takes []string for origins/methods/headers (v2 took
+	// comma-separated strings). splitCSV parses the same comma-separated env
+	// values into slices, preserving the existing configuration contract.
 	config := cors.Config{
-		AllowOrigins:     origins,
-		AllowMethods:     commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_METHODS", defaultAccessControlAllowMethods),
-		AllowHeaders:     commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_HEADERS", defaultAccessControlAllowHeaders),
-		ExposeHeaders:    commons.GetenvOrDefault("ACCESS_CONTROL_EXPOSE_HEADERS", defaultAccessControlExposeHeaders),
+		AllowOrigins:     splitCSV(origins),
+		AllowMethods:     splitCSV(commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_METHODS", defaultAccessControlAllowMethods)),
+		AllowHeaders:     splitCSV(commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_HEADERS", defaultAccessControlAllowHeaders)),
+		ExposeHeaders:    splitCSV(commons.GetenvOrDefault("ACCESS_CONTROL_EXPOSE_HEADERS", defaultAccessControlExposeHeaders)),
 		AllowCredentials: allowCredentials,
 	}
 	if denyAllOrigins {
@@ -134,7 +138,28 @@ func AllowFullOptionsWithCORS(app *fiber.App, opts ...CORSOption) {
 
 	app.Use(WithCORS(opts...))
 
-	app.Options("/*", func(c *fiber.Ctx) error {
+	app.Options("/*", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
+}
+
+// splitCSV converts a comma-separated header value into the []string form that
+// Fiber v3's CORS config expects. Surrounding whitespace on each element is
+// trimmed and empty elements are dropped, so "" yields a nil slice (no origins/
+// headers configured) rather than a single empty entry.
+func splitCSV(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+
+	return result
 }

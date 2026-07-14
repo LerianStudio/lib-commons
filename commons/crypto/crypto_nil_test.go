@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	constant "github.com/LerianStudio/lib-observability/constants"
+	constant "github.com/LerianStudio/lib-observability/v2/constants"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

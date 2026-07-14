@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/LerianStudio/lib-observability/constants"
+	"github.com/LerianStudio/lib-observability/v2/constants"
 )
 
 // sanitizeErrorForStorage redacts sensitive values and enforces bounded length

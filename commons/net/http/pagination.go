@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strconv"
 
-	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	"github.com/gofiber/fiber/v2"
+	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
 
@@ -36,7 +36,7 @@ func ValidateLimitStrict(limit, maxLimit int) (int, error) {
 // Non-numeric values return an error. Negative or zero limits are coerced to
 // DefaultLimit; negative offsets are coerced to DefaultOffset; limits above
 // MaxLimit are capped.
-func ParsePagination(fiberCtx *fiber.Ctx) (int, int, error) {
+func ParsePagination(fiberCtx fiber.Ctx) (int, int, error) {
 	if fiberCtx == nil {
 		return 0, 0, ErrContextNotFound
 	}
@@ -80,7 +80,7 @@ func ParsePagination(fiberCtx *fiber.Ctx) (int, int, error) {
 // ParseOpaqueCursorPagination parses cursor/limit query params for opaque cursor pagination.
 // It validates limit but does not attempt to decode the cursor string.
 // Returns the raw cursor string (empty for first page), limit, and any error.
-func ParseOpaqueCursorPagination(fiberCtx *fiber.Ctx) (string, int, error) {
+func ParseOpaqueCursorPagination(fiberCtx fiber.Ctx) (string, int, error) {
 	if fiberCtx == nil {
 		return "", 0, ErrContextNotFound
 	}

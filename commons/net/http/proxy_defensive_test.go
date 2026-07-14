@@ -10,8 +10,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	libSSRF "github.com/LerianStudio/lib-commons/v5/commons/security/ssrf"
-	liblog "github.com/LerianStudio/lib-observability/log"
+	libSSRF "github.com/LerianStudio/lib-commons/v6/commons/security/ssrf"
+	liblog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

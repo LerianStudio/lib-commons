@@ -15,13 +15,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons"
-	chttp "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
-	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
-	libLog "github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-commons/v6/commons"
+	chttp "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
+	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/alicebob/miniredis/v2"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -68,7 +68,7 @@ func newRedisClient(t *testing.T, mr *miniredis.Miniredis) *libRedis.Client {
 // An optional pre-middleware is called before the idempotency middleware
 // to let tests inject tenant context.
 func newPostApp(mw fiber.Handler, preMiddleware ...fiber.Handler) *fiber.App {
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 
 	for _, pm := range preMiddleware {
 		app.Use(pm)
@@ -76,16 +76,16 @@ func newPostApp(mw fiber.Handler, preMiddleware ...fiber.Handler) *fiber.App {
 
 	app.Use(mw)
 
-	app.Post("/test", func(c *fiber.Ctx) error {
+	app.Post("/test", func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "created"})
 	})
 
 	// Also register GET and OPTIONS for pass-through tests.
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendString("ok-get")
 	})
 
-	app.Options("/test", func(c *fiber.Ctx) error {
+	app.Options("/test", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
 
@@ -96,9 +96,9 @@ func newPostApp(mw fiber.Handler, preMiddleware ...fiber.Handler) *fiber.App {
 // request's user context via tmcore.ContextWithTenantID, mimicking real
 // tenant-extraction middleware.
 func tenantMiddleware(tenantID string) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		ctx := tmcore.ContextWithTenantID(c.UserContext(), tenantID)
-		c.SetUserContext(ctx)
+	return func(c fiber.Ctx) error {
+		ctx := tmcore.ContextWithTenantID(c.Context(), tenantID)
+		c.SetContext(ctx)
 
 		return c.Next()
 	}
@@ -113,7 +113,7 @@ func doPost(t *testing.T, app *fiber.App, idempotencyKey string) *http.Response 
 		req.Header.Set(chttp.IdempotencyKey, idempotencyKey)
 	}
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 
 	return resp
@@ -151,16 +151,16 @@ func TestCheck_NilMiddleware(t *testing.T) {
 	require.NotNil(t, handler, "Check() on nil receiver must return a handler")
 
 	// The handler must be a pass-through.
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	app.Use(handler)
-	app.Post("/test", func(c *fiber.Ctx) error {
+	app.Post("/test", func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"ok": true})
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/test", nil)
 	req.Header.Set(chttp.IdempotencyKey, "some-key")
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -180,7 +180,7 @@ func TestCheck_GET_PassesThrough(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set(chttp.IdempotencyKey, "should-be-ignored")
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 
 	body := readBody(t, resp)
@@ -201,7 +201,7 @@ func TestCheck_OPTIONS_PassesThrough(t *testing.T) {
 	req := httptest.NewRequest(http.MethodOptions, "/test", nil)
 	req.Header.Set(chttp.IdempotencyKey, "should-be-ignored")
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -250,7 +250,7 @@ func TestCheck_KeyTooLong_CustomHandler(t *testing.T) {
 
 	m := New(conn,
 		WithMaxKeyLength(5),
-		WithRejectedHandler(func(c *fiber.Ctx) error {
+		WithRejectedHandler(func(c fiber.Ctx) error {
 			return c.Status(http.StatusUnprocessableEntity).JSON(fiber.Map{
 				"custom": "rejected",
 			})
@@ -356,10 +356,10 @@ func TestCheck_FailedRequest_KeyDeleted(t *testing.T) {
 	handlerErr := errors.New("handler boom")
 
 	// Build a custom app whose handler returns an error.
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	app.Use(tenantMiddleware("tenant-fail"))
 	app.Use(m.Check())
-	app.Post("/test", func(_ *fiber.Ctx) error {
+	app.Post("/test", func(_ fiber.Ctx) error {
 		return handlerErr
 	})
 
@@ -598,10 +598,10 @@ func TestCheck_ConcurrentSameKey(t *testing.T) {
 
 	// Build a Fiber app and start it on a real listener so many goroutines can
 	// hit it concurrently — app.Test() serialises internally.
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	app.Use(tenantMiddleware("tenant-conc"))
 	app.Use(m.Check())
-	app.Post("/test", func(c *fiber.Ctx) error {
+	app.Post("/test", func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "created"})
 	})
 
@@ -695,10 +695,10 @@ func TestCheck_WithMaxBodyCache(t *testing.T) {
 	m := New(conn, WithMaxBodyCache(10))
 
 	// Handler returns a body clearly larger than 10 bytes.
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	app.Use(tenantMiddleware("tenant-maxcache"))
 	app.Use(m.Check())
-	app.Post("/test", func(c *fiber.Ctx) error {
+	app.Post("/test", func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"result": "ok", "extra": "padding-to-exceed-limit"})
 	})
 
@@ -706,7 +706,7 @@ func TestCheck_WithMaxBodyCache(t *testing.T) {
 	req1 := httptest.NewRequest(http.MethodPost, "/test", nil)
 	req1.Header.Set(chttp.IdempotencyKey, "big-body-key")
 
-	resp1, err := app.Test(req1, -1)
+	resp1, err := app.Test(req1, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 
 	defer resp1.Body.Close()
@@ -718,7 +718,7 @@ func TestCheck_WithMaxBodyCache(t *testing.T) {
 	req2 := httptest.NewRequest(http.MethodPost, "/test", nil)
 	req2.Header.Set(chttp.IdempotencyKey, "big-body-key")
 
-	resp2, err := app.Test(req2, -1)
+	resp2, err := app.Test(req2, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 
 	body2 := readBody(t, resp2)
@@ -780,9 +780,9 @@ func TestCheck_HeadRequest_PassesThrough(t *testing.T) {
 
 	var handlerCalled atomic.Bool
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	app.Use(m.Check())
-	app.Head("/test", func(c *fiber.Ctx) error {
+	app.Head("/test", func(c fiber.Ctx) error {
 		handlerCalled.Store(true)
 		return c.SendStatus(http.StatusOK)
 	})
@@ -790,7 +790,7 @@ func TestCheck_HeadRequest_PassesThrough(t *testing.T) {
 	req := httptest.NewRequest(http.MethodHead, "/test", nil)
 	req.Header.Set(chttp.IdempotencyKey, "head-key-should-be-ignored")
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -821,10 +821,10 @@ func TestCheck_PUTRequest_Enforced(t *testing.T) {
 	conn := newRedisClient(t, mr)
 	m := New(conn)
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	app.Use(tenantMiddleware("tenant-put"))
 	app.Use(m.Check())
-	app.Put("/resource", func(c *fiber.Ctx) error {
+	app.Put("/resource", func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusOK).JSON(fiber.Map{"updated": true})
 	})
 
@@ -836,7 +836,7 @@ func TestCheck_PUTRequest_Enforced(t *testing.T) {
 			req.Header.Set(chttp.IdempotencyKey, key)
 		}
 
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 
 		return resp
@@ -911,10 +911,10 @@ func TestCheck_5xxResponse_KeysDeleted(t *testing.T) {
 
 	callCount := atomic.Int32{}
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	app.Use(tenantMiddleware("tenant-5xx"))
 	app.Use(m.Check())
-	app.Post("/test", func(c *fiber.Ctx) error {
+	app.Post("/test", func(c fiber.Ctx) error {
 		callCount.Add(1)
 		// Handler writes 503 but returns nil — a common pattern.
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "temporarily unavailable"})
@@ -924,7 +924,7 @@ func TestCheck_5xxResponse_KeysDeleted(t *testing.T) {
 	req1 := httptest.NewRequest(http.MethodPost, "/test", nil)
 	req1.Header.Set(chttp.IdempotencyKey, "retry-5xx-key")
 
-	resp1, err := app.Test(req1, -1)
+	resp1, err := app.Test(req1, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp1.Body.Close()
 
@@ -940,7 +940,7 @@ func TestCheck_5xxResponse_KeysDeleted(t *testing.T) {
 	req2 := httptest.NewRequest(http.MethodPost, "/test", nil)
 	req2.Header.Set(chttp.IdempotencyKey, "retry-5xx-key")
 
-	resp2, err := app.Test(req2, -1)
+	resp2, err := app.Test(req2, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp2.Body.Close()
 

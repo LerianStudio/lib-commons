@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	"github.com/gofiber/fiber/v2"
+	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -180,7 +180,7 @@ func TestParsePagination(t *testing.T) {
 			var limit, offset int
 			var err error
 
-			app.Get("/test", func(c *fiber.Ctx) error {
+			app.Get("/test", func(c fiber.Ctx) error {
 				limit, offset, err = ParsePagination(c)
 				return nil
 			})
@@ -248,7 +248,7 @@ func TestParsePagination_NegativeOffsetCoercesToZero(t *testing.T) {
 	var limit, offset int
 	var err error
 
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		limit, offset, err = ParsePagination(c)
 		return nil
 	})

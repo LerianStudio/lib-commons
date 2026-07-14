@@ -5,8 +5,8 @@ package license_test
 import (
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/license"
-	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/license"
+	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"net/http"
 
-	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	"github.com/gofiber/fiber/v2"
+	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	"github.com/gofiber/fiber/v3"
 )
 
 // ErrorResponse provides a consistent error structure for API responses.
@@ -25,7 +25,7 @@ func (e ErrorResponse) Error() string {
 }
 
 // RenderError writes all transport errors through a single, stable contract.
-func RenderError(ctx *fiber.Ctx, err error) error {
+func RenderError(ctx fiber.Ctx, err error) error {
 	if ctx == nil {
 		return ErrContextNotFound
 	}
@@ -50,7 +50,7 @@ func RenderError(ctx *fiber.Ctx, err error) error {
 }
 
 // renderErrorResponse normalizes and sends an ErrorResponse with safe defaults.
-func renderErrorResponse(ctx *fiber.Ctx, resp ErrorResponse) error {
+func renderErrorResponse(ctx fiber.Ctx, resp ErrorResponse) error {
 	status := fiber.StatusInternalServerError
 
 	if resp.Code >= http.StatusContinue && resp.Code <= 599 {

@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/transaction"
+	"github.com/LerianStudio/lib-commons/v6/commons/transaction"
 )
 
 func ExampleNewDomainError() {

@@ -7,7 +7,7 @@ import (
 	"net"
 	"net/url"
 
-	libSSRF "github.com/LerianStudio/lib-commons/v5/commons/security/ssrf"
+	libSSRF "github.com/LerianStudio/lib-commons/v6/commons/security/ssrf"
 )
 
 // resolveAndValidateIP delegates to the canonical [libSSRF.ResolveAndValidate]

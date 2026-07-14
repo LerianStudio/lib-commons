@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/redis"
+	"github.com/LerianStudio/lib-commons/v6/commons/redis"
 )
 
 func ExampleConfig_gcpIAM() {

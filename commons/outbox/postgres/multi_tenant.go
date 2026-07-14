@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
-	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
+	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
 )
 
 // ErrMultiTenantMisconfigured is returned when MultiTenantConfig requests
