@@ -18,4 +18,5 @@ var (
 	ErrTenantIDRequired           = errors.New("tenant id is required")
 	ErrOutboxStatusInvalid        = errors.New("invalid outbox status")
 	ErrOutboxTransitionInvalid    = errors.New("invalid outbox status transition")
+	ErrReplayConflict             = errors.New("outbox event replay conflict: same id with divergent content")
 )

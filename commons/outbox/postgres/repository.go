@@ -310,6 +310,127 @@ func (repo *Repository) create(
 	return result, nil
 }
 
+var _ outbox.IdempotentWriter = (*Repository)(nil)
+
+// CreateIdempotentWithTx stores an outbox event as a content-addressed idempotent
+// upsert inside an existing transaction.
+//
+// On a fresh id it inserts and returns the new PENDING row. On a replay of the
+// same id with matching event_type and aggregate_id, and a JSONB-equivalent payload
+// it returns the already-stored row WITHOUT touching its lifecycle columns
+// (status/attempts/published_at). On the same id with divergent content it makes
+// no change and returns outbox.ErrReplayConflict.
+//
+// Two SQL details are load-bearing:
+//   - the `AS existing` table alias keeps the content-equality WHERE clause valid
+//     even when the table name is schema-qualified;
+//   - `SET id = EXCLUDED.id` is a deliberate no-op so ON CONFLICT DO UPDATE marks
+//     the row affected (RETURNING yields it on an inert replay) while never
+//     rewinding a dispatched event's status/attempts and double-publishing it.
+func (repo *Repository) CreateIdempotentWithTx(
+	ctx context.Context,
+	tx outbox.Tx,
+	event *outbox.OutboxEvent,
+) (*outbox.OutboxEvent, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if !repo.initialized() {
+		return nil, ErrRepositoryNotInitialized
+	}
+
+	if err := validateCreateEvent(event); err != nil {
+		return nil, err
+	}
+
+	tracer := tracerFromContext(ctx)
+
+	ctx, span := tracer.Start(ctx, "postgres.create_idempotent_outbox_event")
+	defer span.End()
+
+	result, err := withTenantTxOrExisting(repo, ctx, tx, func(execTx *sql.Tx) (*outbox.OutboxEvent, error) {
+		values, valuesErr := normalizedCreateValues(event, time.Now().UTC())
+		if valuesErr != nil {
+			return nil, valuesErr
+		}
+
+		table := quoteIdentifierPath(repo.tableName)
+		query := "INSERT INTO " + table + " AS existing" + // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
+			" (id, event_type, aggregate_id, payload, status, attempts, published_at, last_error, created_at, updated_at"
+
+		args := []any{
+			values.id,
+			values.eventType,
+			values.aggregateID,
+			values.payload,
+			values.status,
+			values.attempts,
+			values.publishedAt,
+			values.lastError,
+			values.createdAt,
+			values.updatedAt,
+		}
+
+		conflictTarget := "(id)"
+
+		if repo.tenantColumn != "" {
+			tenantID, tenantErr := repo.tenantIDFromContext(ctx)
+			if tenantErr != nil {
+				return nil, tenantErr
+			}
+
+			query += ", " + quoteIdentifier(repo.tenantColumn)
+
+			args = append(args, tenantID)
+			conflictTarget = "(" + quoteIdentifier(repo.tenantColumn) + ", id)"
+		}
+
+		var placeholders strings.Builder
+
+		for i := range args {
+			if i > 0 {
+				placeholders.WriteString(", ")
+			}
+
+			fmt.Fprintf(&placeholders, "$%d", i+1)
+		}
+
+		query += ") VALUES (" + placeholders.String() + ")" +
+			" ON CONFLICT " + conflictTarget + " DO UPDATE SET id = EXCLUDED.id" +
+			" WHERE existing.event_type = EXCLUDED.event_type" +
+			" AND existing.aggregate_id = EXCLUDED.aggregate_id" +
+			" AND existing.payload = EXCLUDED.payload" +
+			" RETURNING " + outboxColumns
+
+		row := execTx.QueryRowContext(ctx, query, args...)
+
+		stored, scanErr := scanOutboxEvent(row)
+		if scanErr != nil {
+			if errors.Is(scanErr, sql.ErrNoRows) {
+				return nil, outbox.ErrReplayConflict
+			}
+
+			return nil, scanErr
+		}
+
+		return stored, nil
+	})
+	if err != nil {
+		// A replay conflict is a benign, expected outcome (caller retried with
+		// divergent content); do not pollute the span with an error for it.
+		if errors.Is(err, outbox.ErrReplayConflict) {
+			return nil, err
+		}
+
+		libOpentelemetry.HandleSpanError(span, "failed to create idempotent outbox event", err)
+
+		return nil, fmt.Errorf("creating idempotent outbox event: %w", err)
+	}
+
+	return result, nil
+}
+
 // ListPending retrieves pending outbox events up to the given limit.
 func (repo *Repository) ListPending(ctx context.Context, limit int) ([]*outbox.OutboxEvent, error) {
 	if ctx == nil {

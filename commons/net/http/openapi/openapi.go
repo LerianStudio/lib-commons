@@ -32,9 +32,9 @@ import (
 
 // scalarCSP relaxes the strict global CSP for the Scalar docs page so the
 // Scalar bundle and its assets load from the jsdelivr CDN. It is applied
-// per-route by scalarCSPMiddleware; the global strict CSP is unaffected
+// per-route by scalarSecurityHeadersMiddleware; the global strict CSP is unaffected
 // elsewhere.
-const scalarCSP = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://cdn.jsdelivr.net; font-src 'self' data: https://cdn.jsdelivr.net; connect-src 'self'"
+const scalarCSP = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://cdn.jsdelivr.net; font-src 'self' data: https://cdn.jsdelivr.net; connect-src 'self'; frame-ancestors 'none'"
 
 // docsHTMLTemplate is a minimal, dependency-free docs page that renders a Huma
 // spec via Scalar loaded from a CDN <script>. The title and the spec URL are
@@ -185,18 +185,20 @@ func ServeSpec(app *fiber.App, api huma.API, logger libLog.Logger, prefix, title
 		c.Set(fiber.HeaderContentType, "application/yaml; charset=utf-8")
 		return c.Send(specYAML)
 	})
-	group.Get("/docs", scalarCSPMiddleware(), func(c *fiber.Ctx) error {
+	group.Get("/docs", scalarSecurityHeadersMiddleware(), func(c *fiber.Ctx) error {
 		c.Type("html")
 		return c.Send(docs)
 	})
 }
 
-// scalarCSPMiddleware overrides the global strict CSP for the Scalar docs page
-// so the Scalar bundle can load from the jsdelivr CDN. Applied only to that
-// route; the global strict CSP is unaffected elsewhere.
-func scalarCSPMiddleware() fiber.Handler {
+// scalarSecurityHeadersMiddleware overrides the global strict CSP for the
+// Scalar docs page and prevents MIME sniffing. Applied only to that route; the
+// global strict CSP is unaffected elsewhere.
+func scalarSecurityHeadersMiddleware() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		c.Set("Content-Security-Policy", scalarCSP)
+		c.Set("X-Content-Type-Options", "nosniff")
+
 		return c.Next()
 	}
 }

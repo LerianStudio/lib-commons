@@ -384,6 +384,61 @@ func TestNormalizedCreateValues_NilEventReturnsError(t *testing.T) {
 	require.Zero(t, values)
 }
 
+func TestRepository_CreateIdempotentWithTx_Validation(t *testing.T) {
+	t.Parallel()
+
+	validEvent := &outbox.OutboxEvent{
+		ID:          uuid.New(),
+		EventType:   "payment.created",
+		AggregateID: uuid.New(),
+		Payload:     []byte(`{"ok":true}`),
+	}
+
+	uninitialized := &Repository{}
+	_, err := uninitialized.CreateIdempotentWithTx(context.Background(), nil, validEvent)
+	require.ErrorIs(t, err, ErrRepositoryNotInitialized)
+
+	repo := &Repository{
+		client:             &libPostgres.Client{},
+		tenantResolver:     noopTenantResolver{},
+		tenantDiscoverer:   noopTenantDiscoverer{},
+		tableName:          "outbox_events",
+		transactionTimeout: time.Second,
+	}
+
+	_, err = repo.CreateIdempotentWithTx(context.Background(), nil, nil)
+	require.ErrorIs(t, err, outbox.ErrOutboxEventRequired)
+
+	_, err = repo.CreateIdempotentWithTx(context.Background(), nil, &outbox.OutboxEvent{
+		EventType:   "payment.created",
+		AggregateID: uuid.New(),
+		Payload:     []byte(`{"ok":true}`),
+	})
+	require.ErrorIs(t, err, ErrIDRequired)
+
+	_, err = repo.CreateIdempotentWithTx(context.Background(), nil, &outbox.OutboxEvent{
+		ID:          uuid.New(),
+		EventType:   "   ",
+		AggregateID: uuid.New(),
+		Payload:     []byte(`{"ok":true}`),
+	})
+	require.ErrorIs(t, err, ErrEventTypeRequired)
+
+	_, err = repo.CreateIdempotentWithTx(context.Background(), nil, &outbox.OutboxEvent{
+		ID:          uuid.New(),
+		EventType:   "payment.created",
+		AggregateID: uuid.New(),
+		Payload:     []byte("not-json"),
+	})
+	require.ErrorIs(t, err, outbox.ErrOutboxEventPayloadNotJSON)
+}
+
+func TestRepository_ImplementsIdempotentWriter(t *testing.T) {
+	t.Parallel()
+
+	require.Implements(t, (*outbox.IdempotentWriter)(nil), (*Repository)(nil))
+}
+
 func TestRepository_RequiresTenant(t *testing.T) {
 	t.Parallel()
 

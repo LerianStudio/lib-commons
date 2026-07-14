@@ -573,6 +573,380 @@ func TestIntegration_ColumnResolver_DiscoverTenants(t *testing.T) {
 	require.Contains(t, tenants, "tenant-b")
 }
 
+// newSchemaModeIntegrationRepoFixture builds two UUID tenant schemas containing
+// the same table without a tenant column. In this shape repo.tenantColumn == ""
+// so the idempotent conflict target is (id) within each tenant schema.
+func newSchemaModeIntegrationRepoFixture(t *testing.T, dsn string) (*integrationRepoFixture, string, string) {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	fixtureCtx := context.Background()
+
+	client, err := libPostgres.New(libPostgres.Config{PrimaryDSN: dsn, ReplicaDSN: dsn})
+	require.NoError(t, err)
+	require.NoError(t, client.Connect(ctx))
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("cleanup: client close: %v", err)
+		}
+	})
+
+	primaryDB, err := client.Primary()
+	require.NoError(t, err)
+
+	_, err = primaryDB.ExecContext(ctx, `
+DO $$
+BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'outbox_event_status') THEN
+		CREATE TYPE outbox_event_status AS ENUM ('PENDING','PROCESSING','PUBLISHED','FAILED','INVALID');
+	END IF;
+END
+$$;
+`)
+	require.NoError(t, err)
+
+	tableName := "outbox_schema_it_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16]
+	tenantSchemas := []string{uuid.NewString(), uuid.NewString()}
+
+	for _, tenantSchema := range tenantSchemas {
+		_, err = primaryDB.ExecContext(ctx, fmt.Sprintf("CREATE SCHEMA %s", quoteIdentifier(tenantSchema)))
+		require.NoError(t, err)
+
+		_, err = primaryDB.ExecContext(ctx, fmt.Sprintf(`
+CREATE TABLE %s.%s (
+	id UUID PRIMARY KEY,
+	event_type VARCHAR(255) NOT NULL,
+	aggregate_id UUID NOT NULL,
+	payload JSONB NOT NULL,
+	status public.outbox_event_status NOT NULL DEFAULT 'PENDING',
+	attempts INT NOT NULL DEFAULT 0,
+	published_at TIMESTAMPTZ,
+	last_error VARCHAR(512),
+	created_at TIMESTAMPTZ NOT NULL,
+	updated_at TIMESTAMPTZ NOT NULL
+);
+`, quoteIdentifier(tenantSchema), quoteIdentifier(tableName)))
+		require.NoError(t, err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+
+		for _, tenantSchema := range tenantSchemas {
+			if _, err := primaryDB.ExecContext(cleanupCtx, fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", quoteIdentifier(tenantSchema))); err != nil {
+				t.Errorf("cleanup: drop schema %s: %v", tenantSchema, err)
+			}
+		}
+	})
+
+	resolver, err := NewSchemaResolver(client)
+	require.NoError(t, err)
+
+	repo, err := NewRepository(
+		client,
+		resolver,
+		resolver,
+		WithTableName(tableName),
+	)
+	require.NoError(t, err)
+	require.Empty(t, repo.tenantColumn, "schema-mode fixture must not carry a tenant column")
+
+	return &integrationRepoFixture{
+		ctx:       fixtureCtx,
+		client:    client,
+		primaryDB: primaryDB,
+		repo:      repo,
+		tableName: tableName,
+		tenantCtx: outbox.ContextWithTenantID(fixtureCtx, tenantSchemas[0]),
+	}, tenantSchemas[0], tenantSchemas[1]
+}
+
+func countOutboxRowsByID(t *testing.T, fx *integrationRepoFixture, id uuid.UUID) int {
+	t.Helper()
+
+	var count int
+	err := fx.primaryDB.QueryRowContext(
+		fx.ctx,
+		fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE id = $1", quoteIdentifier(fx.tableName)),
+		id,
+	).Scan(&count)
+	require.NoError(t, err)
+
+	return count
+}
+
+func countOutboxRowsByIDInSchema(
+	t *testing.T,
+	fx *integrationRepoFixture,
+	tenantSchema string,
+	id uuid.UUID,
+) int {
+	t.Helper()
+
+	var count int
+	err := fx.primaryDB.QueryRowContext(
+		fx.ctx,
+		fmt.Sprintf(
+			"SELECT COUNT(*) FROM %s.%s WHERE id = $1",
+			quoteIdentifier(tenantSchema),
+			quoteIdentifier(fx.tableName),
+		),
+		id,
+	).Scan(&count)
+	require.NoError(t, err)
+
+	return count
+}
+
+func requireOutboxLifecycle(
+	t *testing.T,
+	event *outbox.OutboxEvent,
+	status string,
+	attempts int,
+	publishedAt time.Time,
+) {
+	t.Helper()
+
+	require.Equal(t, status, event.Status)
+	require.Equal(t, attempts, event.Attempts)
+	require.NotNil(t, event.PublishedAt)
+	require.WithinDuration(t, publishedAt, event.PublishedAt.UTC(), time.Microsecond)
+}
+
+func setIdempotentEventLifecycle(
+	t *testing.T,
+	fx *integrationRepoFixture,
+	tableExpression string,
+	tenantID string,
+	id uuid.UUID,
+	status string,
+	attempts int,
+	publishedAt time.Time,
+) {
+	t.Helper()
+
+	query := fmt.Sprintf(
+		"UPDATE %s SET status = $1::public.outbox_event_status, attempts = $2, published_at = $3 WHERE id = $4",
+		tableExpression,
+	)
+	args := []any{status, attempts, publishedAt, id}
+
+	if tenantID != "" {
+		query += " AND tenant_id = $5"
+		args = append(args, tenantID)
+	}
+
+	result, err := fx.primaryDB.ExecContext(fx.ctx, query, args...)
+	require.NoError(t, err)
+	rowsAffected, err := result.RowsAffected()
+	require.NoError(t, err)
+	require.EqualValues(t, 1, rowsAffected)
+}
+
+// idempotentWriteCommitted runs CreateIdempotentWithTx inside a fresh committed
+// transaction, mirroring how each underwriter recorder writes exactly once per
+// business action.
+func idempotentWriteCommitted(
+	t *testing.T,
+	fx *integrationRepoFixture,
+	ctx context.Context,
+	id uuid.UUID,
+	aggregateID uuid.UUID,
+	payload []byte,
+) (*outbox.OutboxEvent, error) {
+	t.Helper()
+
+	tx, err := fx.primaryDB.BeginTx(ctx, nil)
+	require.NoError(t, err)
+
+	stored, writeErr := fx.repo.CreateIdempotentWithTx(ctx, tx, &outbox.OutboxEvent{
+		ID:          id,
+		EventType:   "payment.idempotent",
+		AggregateID: aggregateID,
+		Payload:     payload,
+	})
+	if writeErr != nil {
+		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
+			t.Errorf("cleanup: tx rollback: %v", rbErr)
+		}
+
+		return nil, writeErr
+	}
+
+	require.NoError(t, tx.Commit())
+
+	return stored, nil
+}
+
+func TestIntegration_Repository_CreateIdempotentWithTx_ColumnMode(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+
+	id := uuid.New()
+	aggregateID := uuid.New()
+	payload := []byte(`{"amount":100,"currency":"BRL"}`)
+
+	// 1. first write succeeds and lands a single PENDING row.
+	first, err := idempotentWriteCommitted(t, fx, fx.tenantCtx, id, aggregateID, payload)
+	require.NoError(t, err)
+	require.Equal(t, id, first.ID)
+	require.Equal(t, outbox.OutboxStatusPending, first.Status)
+	require.Equal(t, 1, countOutboxRowsByID(t, fx, id))
+
+	// 2. identical-content replay is a no-op that returns the existing row.
+	replay, err := idempotentWriteCommitted(t, fx, fx.tenantCtx, id, aggregateID, payload)
+	require.NoError(t, err)
+	require.Equal(t, id, replay.ID)
+	require.Equal(t, outbox.OutboxStatusPending, replay.Status)
+	require.Equal(t, 1, countOutboxRowsByID(t, fx, id))
+
+	// 3. same id with divergent content is rejected; the stored row is untouched.
+	_, err = idempotentWriteCommitted(t, fx, fx.tenantCtx, id, aggregateID, []byte(`{"amount":999,"currency":"BRL"}`))
+	require.ErrorIs(t, err, outbox.ErrReplayConflict)
+
+	stored, err := fx.repo.GetByID(fx.tenantCtx, id)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"amount":100,"currency":"BRL"}`, string(stored.Payload))
+	require.Equal(t, 1, countOutboxRowsByID(t, fx, id))
+
+	// 4. lifecycle columns are never reset by a semantically equivalent replay.
+	pending, err := fx.repo.ListPending(fx.tenantCtx, 10)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	require.Equal(t, outbox.OutboxStatusProcessing, pending[0].Status)
+
+	publishedAt := time.Date(2026, time.July, 13, 12, 34, 56, 123456789, time.UTC).Truncate(time.Microsecond)
+	setIdempotentEventLifecycle(
+		t,
+		fx,
+		quoteIdentifier(fx.tableName),
+		"tenant-a",
+		id,
+		outbox.OutboxStatusPublished,
+		7,
+		publishedAt,
+	)
+	beforeReplay, err := fx.repo.GetByID(fx.tenantCtx, id)
+	require.NoError(t, err)
+	requireOutboxLifecycle(t, beforeReplay, outbox.OutboxStatusPublished, 7, publishedAt)
+
+	jsonbEquivalentPayload := []byte(`{ "currency": "BRL", "amount": 100 }`)
+	require.NotEqual(t, string(payload), string(jsonbEquivalentPayload))
+	require.JSONEq(t, string(payload), string(jsonbEquivalentPayload))
+
+	afterReplay, err := idempotentWriteCommitted(t, fx, fx.tenantCtx, id, aggregateID, jsonbEquivalentPayload)
+	require.NoError(t, err)
+	requireOutboxLifecycle(t, afterReplay, outbox.OutboxStatusPublished, 7, publishedAt)
+
+	reloaded, err := fx.repo.GetByID(fx.tenantCtx, id)
+	require.NoError(t, err)
+	requireOutboxLifecycle(t, reloaded, outbox.OutboxStatusPublished, 7, publishedAt)
+
+	// 5. the same id under a different tenant is a distinct row: the conflict
+	//    target includes tenant_id, so both writes succeed.
+	tenantBCtx := outbox.ContextWithTenantID(fx.ctx, "tenant-b")
+	tenantBRow, err := idempotentWriteCommitted(t, fx, tenantBCtx, id, aggregateID, payload)
+	require.NoError(t, err)
+	require.Equal(t, id, tenantBRow.ID)
+	require.Equal(t, outbox.OutboxStatusPending, tenantBRow.Status)
+	require.Equal(t, 2, countOutboxRowsByID(t, fx, id))
+}
+
+func TestIntegration_Repository_CreateIdempotentWithTx_SchemaMode(t *testing.T) {
+	dsn, cleanup := integrationPostgresDSN(t)
+	if cleanup != nil {
+		t.Cleanup(cleanup)
+	}
+
+	fx, tenantASchema, tenantBSchema := newSchemaModeIntegrationRepoFixture(t, dsn)
+	tenantACtx := fx.tenantCtx
+	tenantBCtx := outbox.ContextWithTenantID(fx.ctx, tenantBSchema)
+
+	id := uuid.New()
+	aggregateID := uuid.New()
+	payload := []byte(`{"amount":100,"currency":"BRL"}`)
+
+	// 1. first write succeeds and lands a single PENDING row in tenant A.
+	first, err := idempotentWriteCommitted(t, fx, tenantACtx, id, aggregateID, payload)
+	require.NoError(t, err)
+	require.Equal(t, id, first.ID)
+	require.Equal(t, outbox.OutboxStatusPending, first.Status)
+	require.Equal(t, 1, countOutboxRowsByIDInSchema(t, fx, tenantASchema, id))
+	require.Equal(t, 0, countOutboxRowsByIDInSchema(t, fx, tenantBSchema, id))
+
+	// 2. identical-content replay is a no-op that returns the existing row.
+	replay, err := idempotentWriteCommitted(t, fx, tenantACtx, id, aggregateID, payload)
+	require.NoError(t, err)
+	require.Equal(t, id, replay.ID)
+	require.Equal(t, 1, countOutboxRowsByIDInSchema(t, fx, tenantASchema, id))
+
+	// 3. same id with divergent content is rejected; the stored row is untouched.
+	_, err = idempotentWriteCommitted(t, fx, tenantACtx, id, aggregateID, []byte(`{"amount":999,"currency":"BRL"}`))
+	require.ErrorIs(t, err, outbox.ErrReplayConflict)
+
+	stored, err := fx.repo.GetByID(tenantACtx, id)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"amount":100,"currency":"BRL"}`, string(stored.Payload))
+	require.Equal(t, 1, countOutboxRowsByIDInSchema(t, fx, tenantASchema, id))
+
+	// 4. lifecycle columns are never reset by a semantically equivalent replay.
+	pending, err := fx.repo.ListPending(tenantACtx, 10)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	require.Equal(t, outbox.OutboxStatusProcessing, pending[0].Status)
+
+	publishedAt := time.Date(2026, time.July, 13, 12, 34, 56, 123456789, time.UTC).Truncate(time.Microsecond)
+	setIdempotentEventLifecycle(
+		t,
+		fx,
+		fmt.Sprintf("%s.%s", quoteIdentifier(tenantASchema), quoteIdentifier(fx.tableName)),
+		"",
+		id,
+		outbox.OutboxStatusPublished,
+		7,
+		publishedAt,
+	)
+	beforeReplay, err := fx.repo.GetByID(tenantACtx, id)
+	require.NoError(t, err)
+	requireOutboxLifecycle(t, beforeReplay, outbox.OutboxStatusPublished, 7, publishedAt)
+
+	jsonbEquivalentPayload := []byte(`{ "currency": "BRL", "amount": 100 }`)
+	require.NotEqual(t, string(payload), string(jsonbEquivalentPayload))
+	require.JSONEq(t, string(payload), string(jsonbEquivalentPayload))
+
+	afterReplay, err := idempotentWriteCommitted(t, fx, tenantACtx, id, aggregateID, jsonbEquivalentPayload)
+	require.NoError(t, err)
+	requireOutboxLifecycle(t, afterReplay, outbox.OutboxStatusPublished, 7, publishedAt)
+
+	reloaded, err := fx.repo.GetByID(tenantACtx, id)
+	require.NoError(t, err)
+	requireOutboxLifecycle(t, reloaded, outbox.OutboxStatusPublished, 7, publishedAt)
+
+	// 5. the same id is independent in tenant B's schema.
+	tenantBPayload := []byte(`{"amount":200,"currency":"BRL"}`)
+	tenantBRow, err := idempotentWriteCommitted(t, fx, tenantBCtx, id, aggregateID, tenantBPayload)
+	require.NoError(t, err)
+	require.Equal(t, id, tenantBRow.ID)
+	require.Equal(t, outbox.OutboxStatusPending, tenantBRow.Status)
+	require.Equal(t, 0, tenantBRow.Attempts)
+	require.Nil(t, tenantBRow.PublishedAt)
+	require.Equal(t, 1, countOutboxRowsByIDInSchema(t, fx, tenantASchema, id))
+	require.Equal(t, 1, countOutboxRowsByIDInSchema(t, fx, tenantBSchema, id))
+
+	isolatedA, err := fx.repo.GetByID(tenantACtx, id)
+	require.NoError(t, err)
+	require.JSONEq(t, string(payload), string(isolatedA.Payload))
+	requireOutboxLifecycle(t, isolatedA, outbox.OutboxStatusPublished, 7, publishedAt)
+
+	isolatedB, err := fx.repo.GetByID(tenantBCtx, id)
+	require.NoError(t, err)
+	require.JSONEq(t, string(tenantBPayload), string(isolatedB.Payload))
+	require.Equal(t, outbox.OutboxStatusPending, isolatedB.Status)
+	require.Equal(t, 0, isolatedB.Attempts)
+	require.Nil(t, isolatedB.PublishedAt)
+}
+
 func TestIntegration_SchemaResolver_ApplyTenantAndDiscoverTenants(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 	tenantSchema := uuid.NewString()
