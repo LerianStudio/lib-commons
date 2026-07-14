@@ -24,9 +24,9 @@ import (
 	"path"
 	"strings"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/net/http/openapi/internal/humafiberv3"
 	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/danielgtaylor/huma/v2/adapters/humafiber"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -87,7 +87,7 @@ func New(app *fiber.App, group fiber.Router, cfg Config) huma.API {
 	humaConfig.SchemasPath = ""
 
 	// DefaultConfig leaves OpenAPIPath="/openapi" and DocsPath="/docs", which
-	// makes humafiber.NewWithGroup auto-mount /openapi.json, /openapi.yaml,
+	// makes humafiberv3.NewWithGroup auto-mount /openapi.json, /openapi.yaml,
 	// and /docs on the supplied group at construction time — un-gated and, since
 	// an API commonly binds to the app root, reachable in production. Clearing
 	// both paths disables that auto-mount: the wrapper registers NO HTTP routes,
@@ -107,7 +107,7 @@ func New(app *fiber.App, group fiber.Router, cfg Config) huma.API {
 		humaConfig.Servers = servers
 	}
 
-	return humafiber.NewWithGroup(app, group, humaConfig)
+	return humafiberv3.NewWithGroup(app, group, humaConfig)
 }
 
 // DeclareBearerAuth registers the BearerAuth HTTP bearer/JWT security scheme in

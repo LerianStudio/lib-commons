@@ -175,6 +175,9 @@ linters:
       - third_party$
       - builtin$
       - examples$
+      # Vendored upstream copy of huma's Fiber v3 adapter — kept byte-faithful
+      # to upstream (huma v2.38.0), so it is exempt from our style linters.
+      - commons/net/http/openapi/internal/humafiberv3
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
@@ -185,3 +188,5 @@ formatters:
       - third_party$
       - builtin$
       - examples$
+      # Vendored upstream copy of huma's Fiber v3 adapter (see linters note).
+      - commons/net/http/openapi/internal/humafiberv3
