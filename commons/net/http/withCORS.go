@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -67,7 +68,7 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 
 	origins := commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_ORIGIN", defaultAccessControlAllowOrigin)
 
-	if origins == "*" || origins == "" {
+	if hasWildcardOrigin(origins) || origins == "" {
 		cfg.logger.Log(context.Background(), libLog.LevelWarn,
 			"CORS: AllowOrigins is set to wildcard (*); "+
 				"this allows ANY website to make cross-origin requests to your API; "+
@@ -75,7 +76,7 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 		)
 	}
 
-	if origins == "*" && allowCredentials {
+	if hasWildcardOrigin(origins) && allowCredentials {
 		cfg.logger.Log(context.Background(), libLog.LevelWarn,
 			"CORS: AllowOrigins=* with AllowCredentials=true is REJECTED by browsers per the CORS spec; "+
 				"credentials will NOT work; configure specific origins via ACCESS_CONTROL_ALLOW_ORIGIN",
@@ -86,7 +87,7 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 	// ALLOW_CORS_WILDCARD=true to permit wildcard (emits a WARN log line).
 	denyAllOrigins := false
 
-	if origins == "*" || origins == "" {
+	if hasWildcardOrigin(origins) || origins == "" {
 		if !commons.AllowCORSWildcard() {
 			cfg.logger.Log(context.Background(), libLog.LevelError,
 				"CORS wildcard origin rejected; applying deny-all fallback (set "+
@@ -105,7 +106,7 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 	}
 
 	// Guard: prevent Fiber panic on wildcard + credentials (forbidden by CORS spec).
-	if origins == "*" && allowCredentials {
+	if hasWildcardOrigin(origins) && allowCredentials {
 		cfg.logger.Log(context.Background(), libLog.LevelWarn,
 			"CORS: AllowOrigins=* with AllowCredentials=true is forbidden by CORS spec "+
 				"and causes Fiber panic; forcing AllowCredentials=false")
@@ -141,6 +142,15 @@ func AllowFullOptionsWithCORS(app *fiber.App, opts ...CORSOption) {
 	app.Options("/*", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
+}
+
+// hasWildcardOrigin reports whether the comma-separated origins value contains a
+// "*" entry anywhere (e.g. "*" or "https://a.example,*"). Fiber v3 treats any "*"
+// entry in AllowOrigins as allow-all and panics when AllowCredentials is also
+// true, so the wildcard guards must inspect the parsed list rather than only
+// comparing the raw string to "*".
+func hasWildcardOrigin(origins string) bool {
+	return slices.Contains(splitCSV(origins), "*")
 }
 
 // splitCSV converts a comma-separated header value into the []string form that
