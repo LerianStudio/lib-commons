@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/log"
-	"github.com/LerianStudio/lib-observability/runtime"
+	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-observability/v2/runtime"
 )
 
 var (

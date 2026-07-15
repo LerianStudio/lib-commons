@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	"github.com/gofiber/fiber/v2"
+	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -18,7 +18,7 @@ func TestWithBasicAuth_NilAuthFunc(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/", WithBasicAuth(nil, "realm"), func(c *fiber.Ctx) error {
+	app.Get("/", WithBasicAuth(nil, "realm"), func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 
@@ -37,7 +37,7 @@ func TestWithBasicAuth_SanitizesRealmHeader(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/", WithBasicAuth(FixedBasicAuthFunc("user", "pass"), "safe\r\nrealm\"name"), func(c *fiber.Ctx) error {
+	app.Get("/", WithBasicAuth(FixedBasicAuthFunc("user", "pass"), "safe\r\nrealm\"name"), func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 
@@ -53,7 +53,7 @@ func TestWithBasicAuth_AllowsValidCredentials(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/", WithBasicAuth(FixedBasicAuthFunc("user", "pass"), "realm"), func(c *fiber.Ctx) error {
+	app.Get("/", WithBasicAuth(FixedBasicAuthFunc("user", "pass"), "realm"), func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 
@@ -72,7 +72,7 @@ func TestWithBasicAuth_RejectsMalformedAuthorization(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/", WithBasicAuth(FixedBasicAuthFunc("user", "pass"), "realm"), func(c *fiber.Ctx) error {
+	app.Get("/", WithBasicAuth(FixedBasicAuthFunc("user", "pass"), "realm"), func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 

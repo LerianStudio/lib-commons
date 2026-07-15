@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/server"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons/server"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -29,7 +29,7 @@ func TestShutdownHook_NilFunctionIgnored(t *testing.T) {
 	// Prove no hook was registered: run a full shutdown lifecycle and confirm
 	// only the standard messages appear (no "shutdown hook failed" noise).
 	logger := &recordingLogger{}
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownChan := make(chan struct{})
 
 	sm2 := server.NewServerManager(nil, nil, logger).
@@ -92,7 +92,7 @@ func TestShutdownHook_ExecuteInOrder(t *testing.T) {
 	t.Parallel()
 
 	logger := &recordingLogger{}
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownChan := make(chan struct{})
 
 	// mu + order track hook execution sequence.
@@ -160,7 +160,7 @@ func TestShutdownHook_ErrorDoesNotStopSubsequentHooks(t *testing.T) {
 	t.Parallel()
 
 	logger := &recordingLogger{}
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownChan := make(chan struct{})
 
 	hookErr := errors.New("hook1 intentional failure")
@@ -236,7 +236,7 @@ func TestShutdownHook_PanicDoesNotStopSubsequentHooks(t *testing.T) {
 	t.Parallel()
 
 	logger := &recordingLogger{}
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownChan := make(chan struct{})
 
 	var mu sync.Mutex

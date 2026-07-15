@@ -9,15 +9,15 @@ import (
 	"fmt"
 	"time"
 
-	tmmongo "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/mongo"
-	tmpostgres "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/postgres"
-	tmrabbitmq "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/rabbitmq"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/tenantcache"
-	observability "github.com/LerianStudio/lib-observability"
-	libLog "github.com/LerianStudio/lib-observability/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
+	tmmongo "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/mongo"
+	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
+	tmrabbitmq "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/rabbitmq"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/tenantcache"
+	observability "github.com/LerianStudio/lib-observability/v2"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
 )
 
 // maxJitterMillis is the upper bound in milliseconds for the random jitter

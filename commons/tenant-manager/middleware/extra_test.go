@@ -8,15 +8,15 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // newFiberTestApp creates a minimal Fiber app to test middleware response helpers.
 func newFiberTestApp(handler fiber.Handler) *fiber.App {
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	app.Get("/test", handler)
 
 	return app
@@ -26,7 +26,7 @@ func newFiberTestApp(handler fiber.Handler) *fiber.App {
 func TestMapDomainErrorToHTTP_AuthorizationTokenRequired(t *testing.T) {
 	t.Parallel()
 
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, core.ErrAuthorizationTokenRequired, "tenant-1")
 	})
 
@@ -39,7 +39,7 @@ func TestMapDomainErrorToHTTP_AuthorizationTokenRequired(t *testing.T) {
 func TestMapDomainErrorToHTTP_InvalidAuthorizationToken(t *testing.T) {
 	t.Parallel()
 
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, core.ErrInvalidAuthorizationToken, "tenant-1")
 	})
 
@@ -52,7 +52,7 @@ func TestMapDomainErrorToHTTP_InvalidAuthorizationToken(t *testing.T) {
 func TestMapDomainErrorToHTTP_InvalidTenantClaims(t *testing.T) {
 	t.Parallel()
 
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, core.ErrInvalidTenantClaims, "tenant-1")
 	})
 
@@ -65,7 +65,7 @@ func TestMapDomainErrorToHTTP_InvalidTenantClaims(t *testing.T) {
 func TestMapDomainErrorToHTTP_MissingTenantIDClaim(t *testing.T) {
 	t.Parallel()
 
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, core.ErrMissingTenantIDClaim, "tenant-1")
 	})
 
@@ -79,7 +79,7 @@ func TestMapDomainErrorToHTTP_MissingTenantIDClaim(t *testing.T) {
 func TestMapDomainErrorToHTTP_TenantNotFound(t *testing.T) {
 	t.Parallel()
 
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, core.ErrTenantNotFound, "tenant-not-found")
 	})
 
@@ -94,7 +94,7 @@ func TestMapDomainErrorToHTTP_TenantSuspended(t *testing.T) {
 	t.Parallel()
 
 	suspErr := &core.TenantSuspendedError{TenantID: "t1", Status: "suspended"}
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, suspErr, "t1")
 	})
 
@@ -108,7 +108,7 @@ func TestMapDomainErrorToHTTP_TenantSuspended(t *testing.T) {
 func TestMapDomainErrorToHTTP_GenericAccessDenied(t *testing.T) {
 	t.Parallel()
 
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, core.ErrTenantServiceAccessDenied, "t1")
 	})
 
@@ -122,7 +122,7 @@ func TestMapDomainErrorToHTTP_GenericAccessDenied(t *testing.T) {
 func TestMapDomainErrorToHTTP_ManagerClosed(t *testing.T) {
 	t.Parallel()
 
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, core.ErrManagerClosed, "t1")
 	})
 
@@ -136,7 +136,7 @@ func TestMapDomainErrorToHTTP_ManagerClosed(t *testing.T) {
 func TestMapDomainErrorToHTTP_ServiceNotConfigured(t *testing.T) {
 	t.Parallel()
 
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, core.ErrServiceNotConfigured, "t1")
 	})
 
@@ -150,7 +150,7 @@ func TestMapDomainErrorToHTTP_ServiceNotConfigured(t *testing.T) {
 func TestMapDomainErrorToHTTP_CircuitBreakerOpen(t *testing.T) {
 	t.Parallel()
 
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, core.ErrCircuitBreakerOpen, "t1")
 	})
 
@@ -164,7 +164,7 @@ func TestMapDomainErrorToHTTP_CircuitBreakerOpen(t *testing.T) {
 func TestMapDomainErrorToHTTP_ConnectionFailed(t *testing.T) {
 	t.Parallel()
 
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, core.ErrConnectionFailed, "t1")
 	})
 
@@ -178,7 +178,7 @@ func TestMapDomainErrorToHTTP_ConnectionFailed(t *testing.T) {
 func TestMapDomainErrorToHTTP_DefaultError(t *testing.T) {
 	t.Parallel()
 
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, errors.New("unexpected error"), "t1")
 	})
 
@@ -192,7 +192,7 @@ func TestMapDomainErrorToHTTP_DefaultError(t *testing.T) {
 func TestInternalServerError(t *testing.T) {
 	t.Parallel()
 
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return internalServerError(c, "TEST_CODE", "Test Title")
 	})
 

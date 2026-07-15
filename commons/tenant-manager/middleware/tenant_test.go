@@ -12,13 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
-	tmmongo "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/mongo"
-	tmpostgres "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/postgres"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/tenantcache"
-	"github.com/LerianStudio/lib-observability/log"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	tmmongo "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/mongo"
+	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/tenantcache"
+	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -189,7 +189,7 @@ func buildTestJWT(t testing.TB, claims map[string]any) string {
 // to simulate upstream lib-auth middleware having validated the request.
 // hasUpstreamAuthAssertion checks c.Locals("user_id"), not HTTP headers.
 func simulateAuthMiddleware(userID string) fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		c.Locals("user_id", userID)
 		return c.Next()
 	}
@@ -203,12 +203,12 @@ func TestTenantMiddleware_WithTenantDB(t *testing.T) {
 
 		app := fiber.New()
 		app.Use(middleware.WithTenantDB)
-		app.Get("/test", func(c *fiber.Ctx) error {
+		app.Get("/test", func(c fiber.Ctx) error {
 			return c.SendString("ok")
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -227,13 +227,13 @@ func TestTenantMiddleware_WithTenantDB(t *testing.T) {
 		app := fiber.New()
 		app.Use(simulateAuthMiddleware("user-123"))
 		app.Use(middleware.WithTenantDB)
-		app.Get("/test", func(c *fiber.Ctx) error {
+		app.Get("/test", func(c fiber.Ctx) error {
 			return c.SendString("ok")
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		req.Header.Set("Authorization", "Bearer not-a-valid-jwt")
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -257,13 +257,13 @@ func TestTenantMiddleware_WithTenantDB(t *testing.T) {
 		app := fiber.New()
 		app.Use(simulateAuthMiddleware("user-123"))
 		app.Use(middleware.WithTenantDB)
-		app.Get("/test", func(c *fiber.Ctx) error {
+		app.Get("/test", func(c fiber.Ctx) error {
 			return c.SendString("ok")
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -291,15 +291,15 @@ func TestTenantMiddleware_WithTenantDB(t *testing.T) {
 		app := fiber.New()
 		app.Use(simulateAuthMiddleware("user-123"))
 		app.Use(middleware.WithTenantDB)
-		app.Get("/test", func(c *fiber.Ctx) error {
+		app.Get("/test", func(c fiber.Ctx) error {
 			nextCalled = true
-			capturedTenantID = core.GetTenantIDContext(c.UserContext())
+			capturedTenantID = core.GetTenantIDContext(c.Context())
 			return c.SendString("ok")
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -483,14 +483,14 @@ func TestWithTenantDB_CacheHit_SkipsLazyLoad(t *testing.T) {
 	app := fiber.New()
 	app.Use(simulateAuthMiddleware("user-123"))
 	app.Use(mid.WithTenantDB)
-	app.Get("/test", func(c *fiber.Ctx) error {
-		capturedTenantID = core.GetTenantIDContext(c.UserContext())
+	app.Get("/test", func(c fiber.Ctx) error {
+		capturedTenantID = core.GetTenantIDContext(c.Context())
 		return c.SendString("ok")
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -532,14 +532,14 @@ func TestWithTenantDB_CacheMiss_LazyLoads(t *testing.T) {
 	app := fiber.New()
 	app.Use(simulateAuthMiddleware("user-123"))
 	app.Use(mid.WithTenantDB)
-	app.Get("/test", func(c *fiber.Ctx) error {
-		capturedTenantID = core.GetTenantIDContext(c.UserContext())
+	app.Get("/test", func(c fiber.Ctx) error {
+		capturedTenantID = core.GetTenantIDContext(c.Context())
 		return c.SendString("ok")
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -587,14 +587,14 @@ func TestWithTenantDB_CacheExpired_LazyLoads(t *testing.T) {
 	app := fiber.New()
 	app.Use(simulateAuthMiddleware("user-123"))
 	app.Use(mid.WithTenantDB)
-	app.Get("/test", func(c *fiber.Ctx) error {
-		capturedTenantID = core.GetTenantIDContext(c.UserContext())
+	app.Get("/test", func(c fiber.Ctx) error {
+		capturedTenantID = core.GetTenantIDContext(c.Context())
 		return c.SendString("ok")
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -638,13 +638,13 @@ func TestWithTenantDB_CacheMiss_LoadFails_Suspended(t *testing.T) {
 	app := fiber.New()
 	app.Use(simulateAuthMiddleware("user-123"))
 	app.Use(mid.WithTenantDB)
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendString("ok")
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -683,13 +683,13 @@ func TestWithTenantDB_CacheMiss_LoadFails_NotFound(t *testing.T) {
 	app := fiber.New()
 	app.Use(simulateAuthMiddleware("user-123"))
 	app.Use(mid.WithTenantDB)
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendString("ok")
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -719,15 +719,15 @@ func TestWithTenantDB_NoCacheConfigured_ExistingBehavior(t *testing.T) {
 	app := fiber.New()
 	app.Use(simulateAuthMiddleware("user-123"))
 	app.Use(mid.WithTenantDB)
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		nextCalled = true
-		capturedTenantID = core.GetTenantIDContext(c.UserContext())
+		capturedTenantID = core.GetTenantIDContext(c.Context())
 		return c.SendString("ok")
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -772,15 +772,15 @@ func TestWithPG_SingleModule(t *testing.T) {
 		app := fiber.New()
 		app.Use(simulateAuthMiddleware("user-123"))
 		app.Use(mid.WithTenantDB)
-		app.Get("/test", func(c *fiber.Ctx) error {
+		app.Get("/test", func(c fiber.Ctx) error {
 			nextCalled = true
-			capturedTenantID = core.GetTenantIDContext(c.UserContext())
+			capturedTenantID = core.GetTenantIDContext(c.Context())
 			return c.SendString("ok")
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -827,15 +827,15 @@ func TestWithPG_MultiModule(t *testing.T) {
 		app := fiber.New()
 		app.Use(simulateAuthMiddleware("user-123"))
 		app.Use(mid.WithTenantDB)
-		app.Get("/test", func(c *fiber.Ctx) error {
+		app.Get("/test", func(c fiber.Ctx) error {
 			nextCalled = true
-			capturedTenantID = core.GetTenantIDContext(c.UserContext())
+			capturedTenantID = core.GetTenantIDContext(c.Context())
 			return c.SendString("ok")
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -893,15 +893,15 @@ func TestWithMB_MultiModule(t *testing.T) {
 		app := fiber.New()
 		app.Use(simulateAuthMiddleware("user-123"))
 		app.Use(mid.WithTenantDB)
-		app.Get("/test", func(c *fiber.Ctx) error {
+		app.Get("/test", func(c fiber.Ctx) error {
 			nextCalled = true
-			capturedTenantID = core.GetTenantIDContext(c.UserContext())
+			capturedTenantID = core.GetTenantIDContext(c.Context())
 			return c.SendString("ok")
 		})
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 		defer resp.Body.Close()
 

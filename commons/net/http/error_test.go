@@ -11,7 +11,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,7 +24,7 @@ func TestRespondError_HappyPath(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondError(c, fiber.StatusBadRequest, "test_error", "test message")
 	})
 
@@ -75,7 +75,7 @@ func TestRespondError_AllStatusCodes(t *testing.T) {
 			t.Parallel()
 
 			app := fiber.New()
-			app.Get("/test", func(c *fiber.Ctx) error {
+			app.Get("/test", func(c fiber.Ctx) error {
 				return RespondError(c, tc.status, tc.title, tc.message)
 			})
 
@@ -103,7 +103,7 @@ func TestRespondError_NoLegacyField(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondError(c, fiber.StatusUnauthorized, "invalid_credentials", "invalid")
 	})
 
@@ -125,7 +125,7 @@ func TestRespondError_JSONStructureExactlyThreeFields(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondError(c, fiber.StatusUnprocessableEntity, "validation_error", "field 'name' required")
 	})
 
@@ -154,7 +154,7 @@ func TestRespondError_EmptyTitleAndMessage(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondError(c, fiber.StatusBadRequest, "", "")
 	})
 
@@ -183,7 +183,7 @@ func TestRespondError_LongMessage(t *testing.T) {
 		"Please verify the amount and retry the request."
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondError(c, fiber.StatusBadRequest, "amount_exceeded", longMsg)
 	})
 
@@ -204,7 +204,7 @@ func TestRespondError_ContentTypeIsJSON(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondError(c, fiber.StatusBadRequest, "bad", "bad request")
 	})
 
@@ -293,7 +293,7 @@ func TestRenderError_ErrorResponseWithValidCodes(t *testing.T) {
 			t.Parallel()
 
 			app := fiber.New()
-			app.Get("/test", func(c *fiber.Ctx) error {
+			app.Get("/test", func(c fiber.Ctx) error {
 				return RenderError(c, tc.err)
 			})
 
@@ -331,7 +331,7 @@ func TestRenderError_MultipleGenericErrorsSanitized(t *testing.T) {
 			t.Parallel()
 
 			app := fiber.New()
-			app.Get("/test", func(c *fiber.Ctx) error {
+			app.Get("/test", func(c fiber.Ctx) error {
 				return RenderError(c, genericErr)
 			})
 
@@ -367,7 +367,7 @@ func TestRenderError_WrappedErrorResponseConflict(t *testing.T) {
 	wrappedErr := fmt.Errorf("layer: %w", original)
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RenderError(c, wrappedErr)
 	})
 
@@ -393,7 +393,7 @@ func TestRenderError_WrappedFiberErrorForbidden(t *testing.T) {
 	wrappedErr := fmt.Errorf("context: %w", fiber.NewError(403, "forbidden resource"))
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RenderError(c, wrappedErr)
 	})
 
@@ -422,7 +422,7 @@ func TestFiberErrorHandler_FiberErrorNotFound(t *testing.T) {
 	app := fiber.New(fiber.Config{
 		ErrorHandler: FiberErrorHandler,
 	})
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return fiber.NewError(fiber.StatusNotFound, "route not found")
 	})
 
@@ -449,7 +449,7 @@ func TestFiberErrorHandler_GenericError(t *testing.T) {
 	app := fiber.New(fiber.Config{
 		ErrorHandler: FiberErrorHandler,
 	})
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return errors.New("database connection refused")
 	})
 
@@ -483,7 +483,7 @@ func TestFiberErrorHandler_FiberErrorWithVariousStatusCodes(t *testing.T) {
 				ErrorHandler: FiberErrorHandler,
 			})
 			msg := fmt.Sprintf("error with code %d", code)
-			app.Get("/test", func(c *fiber.Ctx) error {
+			app.Get("/test", func(c fiber.Ctx) error {
 				return fiber.NewError(code, msg)
 			})
 
@@ -511,7 +511,7 @@ func TestFiberErrorHandler_ErrorResponseType(t *testing.T) {
 	app := fiber.New(fiber.Config{
 		ErrorHandler: FiberErrorHandler,
 	})
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return ErrorResponse{
 			Code:    422,
 			Title:   "validation_error",
@@ -539,7 +539,7 @@ func TestFiberErrorHandler_RouteNotFound(t *testing.T) {
 	app := fiber.New(fiber.Config{
 		ErrorHandler: FiberErrorHandler,
 	})
-	app.Get("/exists", func(c *fiber.Ctx) error {
+	app.Get("/exists", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
@@ -565,7 +565,7 @@ func TestFiberErrorHandler_MethodNotAllowed(t *testing.T) {
 	app := fiber.New(fiber.Config{
 		ErrorHandler: FiberErrorHandler,
 	})
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusOK)
 	})
 
@@ -586,7 +586,7 @@ func TestRespond_ValidPayload(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return Respond(c, fiber.StatusOK, fiber.Map{"result": "ok"})
 	})
 
@@ -624,7 +624,7 @@ func TestRespond_InvalidStatusDefaultsTo500(t *testing.T) {
 			t.Parallel()
 
 			app := fiber.New()
-			app.Get("/test", func(c *fiber.Ctx) error {
+			app.Get("/test", func(c fiber.Ctx) error {
 				return Respond(c, tc.status, fiber.Map{"msg": "test"})
 			})
 
@@ -658,7 +658,7 @@ func TestRespond_BoundaryStatusCodes(t *testing.T) {
 			t.Parallel()
 
 			app := fiber.New()
-			app.Get("/test", func(c *fiber.Ctx) error {
+			app.Get("/test", func(c fiber.Ctx) error {
 				return Respond(c, tc.status, fiber.Map{"msg": "test"})
 			})
 
@@ -676,7 +676,7 @@ func TestRespondStatus_ValidStatus(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondStatus(c, fiber.StatusNoContent)
 	})
 
@@ -692,7 +692,7 @@ func TestRespondStatus_InvalidStatusDefaultsTo500(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondStatus(c, -1)
 	})
 
@@ -708,7 +708,7 @@ func TestRespond_NilPayload(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return Respond(c, fiber.StatusOK, nil)
 	})
 
@@ -735,7 +735,7 @@ func TestExtractTokenFromHeader_BearerToken(t *testing.T) {
 
 	var token string
 
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		token = ExtractTokenFromHeader(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -756,7 +756,7 @@ func TestExtractTokenFromHeader_BearerCaseInsensitive(t *testing.T) {
 
 	var token string
 
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		token = ExtractTokenFromHeader(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -777,7 +777,7 @@ func TestExtractTokenFromHeader_RawTokenPreserved(t *testing.T) {
 
 	var token string
 
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		token = ExtractTokenFromHeader(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -798,7 +798,7 @@ func TestExtractTokenFromHeader_BearerWithoutTokenRejected(t *testing.T) {
 
 	var token string
 
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		token = ExtractTokenFromHeader(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -819,7 +819,7 @@ func TestExtractTokenFromHeader_BearerWithExtraFieldsRejected(t *testing.T) {
 
 	var token string
 
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		token = ExtractTokenFromHeader(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -840,7 +840,7 @@ func TestExtractTokenFromHeader_EmptyHeader(t *testing.T) {
 
 	var token string
 
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		token = ExtractTokenFromHeader(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -860,7 +860,7 @@ func TestExtractTokenFromHeader_BearerWithExtraSpaces(t *testing.T) {
 
 	var token string
 
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		token = ExtractTokenFromHeader(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -883,7 +883,7 @@ func TestExtractTokenFromHeader_BearerLowercase(t *testing.T) {
 
 	var token string
 
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		token = ExtractTokenFromHeader(c)
 		return c.SendStatus(fiber.StatusOK)
 	})
@@ -904,7 +904,7 @@ func TestExtractTokenFromHeader_NonBearerMultiPartReturnsEmpty(t *testing.T) {
 
 	var token string
 
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		token = ExtractTokenFromHeader(c)
 		return c.SendStatus(fiber.StatusOK)
 	})

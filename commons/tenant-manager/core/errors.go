@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/postgres"
+	"github.com/LerianStudio/lib-commons/v6/commons/postgres"
 )
 
 // ErrNilHandlerFunc is returned when a nil HandlerFunc is registered.

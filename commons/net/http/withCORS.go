@@ -2,13 +2,15 @@ package http
 
 import (
 	"context"
+	"slices"
 	"strconv"
+	"strings"
 
-	"github.com/LerianStudio/lib-commons/v5/commons"
-	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
-	libLog "github.com/LerianStudio/lib-observability/log"
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/LerianStudio/lib-commons/v6/commons"
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/gofiber/fiber/v3"
+	"github.com/gofiber/fiber/v3/middleware/cors"
 )
 
 const (
@@ -66,7 +68,7 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 
 	origins := commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_ORIGIN", defaultAccessControlAllowOrigin)
 
-	if origins == "*" || origins == "" {
+	if hasWildcardOrigin(origins) || origins == "" {
 		cfg.logger.Log(context.Background(), libLog.LevelWarn,
 			"CORS: AllowOrigins is set to wildcard (*); "+
 				"this allows ANY website to make cross-origin requests to your API; "+
@@ -74,7 +76,7 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 		)
 	}
 
-	if origins == "*" && allowCredentials {
+	if hasWildcardOrigin(origins) && allowCredentials {
 		cfg.logger.Log(context.Background(), libLog.LevelWarn,
 			"CORS: AllowOrigins=* with AllowCredentials=true is REJECTED by browsers per the CORS spec; "+
 				"credentials will NOT work; configure specific origins via ACCESS_CONTROL_ALLOW_ORIGIN",
@@ -85,7 +87,7 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 	// ALLOW_CORS_WILDCARD=true to permit wildcard (emits a WARN log line).
 	denyAllOrigins := false
 
-	if origins == "*" || origins == "" {
+	if hasWildcardOrigin(origins) || origins == "" {
 		if !commons.AllowCORSWildcard() {
 			cfg.logger.Log(context.Background(), libLog.LevelError,
 				"CORS wildcard origin rejected; applying deny-all fallback (set "+
@@ -104,7 +106,7 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 	}
 
 	// Guard: prevent Fiber panic on wildcard + credentials (forbidden by CORS spec).
-	if origins == "*" && allowCredentials {
+	if hasWildcardOrigin(origins) && allowCredentials {
 		cfg.logger.Log(context.Background(), libLog.LevelWarn,
 			"CORS: AllowOrigins=* with AllowCredentials=true is forbidden by CORS spec "+
 				"and causes Fiber panic; forcing AllowCredentials=false")
@@ -112,11 +114,14 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 		allowCredentials = false
 	}
 
+	// Fiber v3 CORS config takes []string for origins/methods/headers (v2 took
+	// comma-separated strings). splitCSV parses the same comma-separated env
+	// values into slices, preserving the existing configuration contract.
 	config := cors.Config{
-		AllowOrigins:     origins,
-		AllowMethods:     commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_METHODS", defaultAccessControlAllowMethods),
-		AllowHeaders:     commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_HEADERS", defaultAccessControlAllowHeaders),
-		ExposeHeaders:    commons.GetenvOrDefault("ACCESS_CONTROL_EXPOSE_HEADERS", defaultAccessControlExposeHeaders),
+		AllowOrigins:     splitCSV(origins),
+		AllowMethods:     splitCSV(commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_METHODS", defaultAccessControlAllowMethods)),
+		AllowHeaders:     splitCSV(commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_HEADERS", defaultAccessControlAllowHeaders)),
+		ExposeHeaders:    splitCSV(commons.GetenvOrDefault("ACCESS_CONTROL_EXPOSE_HEADERS", defaultAccessControlExposeHeaders)),
 		AllowCredentials: allowCredentials,
 	}
 	if denyAllOrigins {
@@ -134,7 +139,37 @@ func AllowFullOptionsWithCORS(app *fiber.App, opts ...CORSOption) {
 
 	app.Use(WithCORS(opts...))
 
-	app.Options("/*", func(c *fiber.Ctx) error {
+	app.Options("/*", func(c fiber.Ctx) error {
 		return c.SendStatus(fiber.StatusNoContent)
 	})
+}
+
+// hasWildcardOrigin reports whether the comma-separated origins value contains a
+// "*" entry anywhere (e.g. "*" or "https://a.example,*"). Fiber v3 treats any "*"
+// entry in AllowOrigins as allow-all and panics when AllowCredentials is also
+// true, so the wildcard guards must inspect the parsed list rather than only
+// comparing the raw string to "*".
+func hasWildcardOrigin(origins string) bool {
+	return slices.Contains(splitCSV(origins), "*")
+}
+
+// splitCSV converts a comma-separated header value into the []string form that
+// Fiber v3's CORS config expects. Surrounding whitespace on each element is
+// trimmed and empty elements are dropped, so "" yields a nil slice (no origins/
+// headers configured) rather than a single empty entry.
+func splitCSV(value string) []string {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+
+	parts := strings.Split(value, ",")
+	result := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+
+	return result
 }

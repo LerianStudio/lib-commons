@@ -10,7 +10,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,7 +36,7 @@ func TestRespondErrorEnvelope_FullyPopulated(t *testing.T) {
 	}
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondErrorEnvelope(c, fiber.StatusTooManyRequests, env)
 	})
 
@@ -77,7 +77,7 @@ func TestRespondErrorEnvelope_OmitemptyDropsAbsentFields(t *testing.T) {
 	}
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondErrorEnvelope(c, fiber.StatusBadRequest, env)
 	})
 
@@ -123,7 +123,7 @@ func TestRespondErrorEnvelope_AlwaysEmittedKeysSurviveEmptyValues(t *testing.T) 
 	env := ErrorEnvelope{}
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondErrorEnvelope(c, fiber.StatusInternalServerError, env)
 	})
 
@@ -183,7 +183,7 @@ func TestRespondErrorEnvelope_NestedFieldsSerializeCorrectly(t *testing.T) {
 	}
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondErrorEnvelope(c, fiber.StatusUnprocessableEntity, env)
 	})
 
@@ -259,7 +259,7 @@ func TestRespondErrorEnvelope_GoldenWireFormat(t *testing.T) {
 	}
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondErrorEnvelope(c, fiber.StatusTooManyRequests, env)
 	})
 
@@ -298,7 +298,7 @@ func TestRespondErrorEnvelope_InvalidStatus_NormalizesToInternalServerError(t *t
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondErrorEnvelope(c, 99, ErrorEnvelope{Code: "BTF-0001", Service: "plugin"})
 	})
 
@@ -320,12 +320,12 @@ func TestRespondErrorEnvelope_JSONSerializationError_Propagates(t *testing.T) {
 		JSONEncoder: func(_ any) ([]byte, error) {
 			return nil, sentinel
 		},
-		ErrorHandler: func(c *fiber.Ctx, err error) error {
+		ErrorHandler: func(c fiber.Ctx, err error) error {
 			captured = err
 			return c.SendStatus(fiber.StatusTeapot)
 		},
 	})
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RespondErrorEnvelope(c, fiber.StatusBadRequest, ErrorEnvelope{Code: "BTF-0001", Service: "plugin"})
 	})
 

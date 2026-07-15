@@ -3,7 +3,7 @@ package circuitbreaker
 import (
 	"context"
 
-	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/sony/gobreaker"
 )
 

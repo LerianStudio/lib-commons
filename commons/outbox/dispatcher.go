@@ -9,19 +9,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
-	libCommons "github.com/LerianStudio/lib-commons/v5/commons"
-	"github.com/LerianStudio/lib-commons/v5/commons/backoff"
-	observability "github.com/LerianStudio/lib-observability"
-	libLog "github.com/LerianStudio/lib-observability/log"
-	"github.com/LerianStudio/lib-observability/runtime"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
+	libCommons "github.com/LerianStudio/lib-commons/v6/commons"
+	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
+	observability "github.com/LerianStudio/lib-observability/v2"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-observability/v2/runtime"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 )
 
 const overflowTenantMetricLabel = "_other"

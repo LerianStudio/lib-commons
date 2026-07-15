@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
+	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
 	"github.com/google/uuid"
 )
 

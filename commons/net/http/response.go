@@ -3,11 +3,11 @@ package http
 import (
 	"net/http"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // Respond sends a JSON response with explicit status.
-func Respond(c *fiber.Ctx, status int, payload any) error {
+func Respond(c fiber.Ctx, status int, payload any) error {
 	if c == nil {
 		return ErrContextNotFound
 	}
@@ -20,7 +20,7 @@ func Respond(c *fiber.Ctx, status int, payload any) error {
 }
 
 // RespondStatus sends a status-only response with no body.
-func RespondStatus(c *fiber.Ctx, status int) error {
+func RespondStatus(c fiber.Ctx, status int) error {
 	if c == nil {
 		return ErrContextNotFound
 	}

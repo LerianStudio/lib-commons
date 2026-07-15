@@ -7,9 +7,9 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
-	libSSRF "github.com/LerianStudio/lib-commons/v5/commons/security/ssrf"
-	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	libSSRF "github.com/LerianStudio/lib-commons/v6/commons/security/ssrf"
+	"github.com/LerianStudio/lib-observability/v2/log"
 )
 
 // ssrfSafeTransport wraps an http.Transport and implements http.RoundTripper.

@@ -10,12 +10,12 @@ import (
 	"net/http"
 	"time"
 
-	chttp "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	libHTTP "github.com/LerianStudio/lib-commons/v5/commons/net/http"
-	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
-	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-observability/log"
-	"github.com/gofiber/fiber/v2"
+	chttp "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	libHTTP "github.com/LerianStudio/lib-commons/v6/commons/net/http"
+	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
+	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/gofiber/fiber/v3"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -48,7 +48,7 @@ type Middleware struct {
 	maxKeyLength int
 	maxBodyCache int
 	redisTimeout time.Duration
-	onRejected   func(c *fiber.Ctx) error
+	onRejected   func(c fiber.Ctx) error
 }
 
 // New creates an idempotency middleware backed by the given Redis client.
@@ -124,7 +124,7 @@ func WithRedisTimeout(d time.Duration) Option {
 
 // WithRejectedHandler sets a custom handler for requests with oversized keys.
 // By default, a generic 400 JSON response is returned.
-func WithRejectedHandler(fn func(c *fiber.Ctx) error) Option {
+func WithRejectedHandler(fn func(c fiber.Ctx) error) Option {
 	return func(m *Middleware) {
 		m.onRejected = fn
 	}
@@ -148,7 +148,7 @@ func WithMaxBodyCache(n int) Option {
 // If the Middleware is nil, a pass-through handler is returned.
 func (m *Middleware) Check() fiber.Handler {
 	if m == nil {
-		return func(c *fiber.Ctx) error {
+		return func(c fiber.Ctx) error {
 			return c.Next()
 		}
 	}
@@ -165,7 +165,7 @@ func redactKey(key string) string {
 	return hex.EncodeToString(h[:8])
 }
 
-func (m *Middleware) handle(c *fiber.Ctx) error {
+func (m *Middleware) handle(c fiber.Ctx) error {
 	// Idempotency only applies to mutating methods.
 	switch c.Method() {
 	case fiber.MethodPost, fiber.MethodPut, fiber.MethodPatch, fiber.MethodDelete:
@@ -191,7 +191,7 @@ func (m *Middleware) handle(c *fiber.Ctx) error {
 	}
 
 	// Build a tenant-scoped Redis key for per-tenant isolation.
-	tenantID := tmcore.GetTenantIDContext(c.UserContext())
+	tenantID := tmcore.GetTenantIDContext(c.Context())
 	if tenantID == "" {
 		// No tenant context — bypass idempotency to avoid collapsing all
 		// tenant-less requests onto a shared key, which breaks isolation.
@@ -201,7 +201,7 @@ func (m *Middleware) handle(c *fiber.Ctx) error {
 
 	key := fmt.Sprintf("%s%s:%s", m.keyPrefix, tenantID, idempotencyKey)
 
-	ctx, cancel := context.WithTimeout(c.UserContext(), m.redisTimeout)
+	ctx, cancel := context.WithTimeout(c.Context(), m.redisTimeout)
 	defer cancel()
 
 	client, err := m.conn.GetClient(ctx)
@@ -229,7 +229,7 @@ func (m *Middleware) handle(c *fiber.Ctx) error {
 
 	// Create fresh context for post-handler Redis bookkeeping.
 	// The pre-handler ctx may have expired during handler execution.
-	postCtx, postCancel := context.WithTimeout(context.WithoutCancel(c.UserContext()), m.redisTimeout)
+	postCtx, postCancel := context.WithTimeout(context.WithoutCancel(c.Context()), m.redisTimeout)
 	defer postCancel()
 
 	m.saveResult(postCtx, c, client, key, responseKey, handlerErr)
@@ -243,7 +243,7 @@ func (m *Middleware) handle(c *fiber.Ctx) error {
 // "already processed" response when the key is complete but the body was not cached.
 func (m *Middleware) handleDuplicate(
 	ctx context.Context,
-	c *fiber.Ctx,
+	c fiber.Ctx,
 	client redis.UniversalClient,
 	key, responseKey string,
 ) error {
@@ -333,7 +333,7 @@ func (m *Middleware) handleDuplicate(
 // handler failure or 5xx response it deletes both keys so the client can retry with the same idempotency key.
 func (m *Middleware) saveResult(
 	ctx context.Context,
-	c *fiber.Ctx,
+	c fiber.Ctx,
 	client redis.UniversalClient,
 	key, responseKey string,
 	handlerErr error,

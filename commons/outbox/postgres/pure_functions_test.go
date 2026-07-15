@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
-	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
+	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
+	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

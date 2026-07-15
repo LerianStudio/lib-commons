@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	chttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
+	chttp "github.com/LerianStudio/lib-commons/v6/commons/net/http"
 	"github.com/alicebob/miniredis/v2"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -84,15 +84,15 @@ func TestMethodTierSelector_WriteMethods(t *testing.T) {
 	readTier := Tier{Name: "read", Max: 10, Window: 60 * time.Second}
 	rl := New(conn)
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	app.Use(rl.WithDynamicRateLimit(MethodTierSelector(writeTier, readTier)))
-	app.Post("/test", func(c *fiber.Ctx) error { return c.SendString("ok") })
-	app.Get("/test", func(c *fiber.Ctx) error { return c.SendString("ok") })
+	app.Post("/test", func(c fiber.Ctx) error { return c.SendString("ok") })
+	app.Get("/test", func(c fiber.Ctx) error { return c.SendString("ok") })
 
 	// POST uses write tier (max 2)
 	for range 2 {
 		req := httptest.NewRequest(http.MethodPost, "/test", nil)
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 		resp.Body.Close()
 		assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -100,14 +100,14 @@ func TestMethodTierSelector_WriteMethods(t *testing.T) {
 
 	// 3rd POST is blocked by write tier
 	req := httptest.NewRequest(http.MethodPost, "/test", nil)
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
 
 	// GET uses read tier (max 10) — still allowed
 	req = httptest.NewRequest(http.MethodGet, "/test", nil)
-	resp, err = app.Test(req, -1)
+	resp, err = app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
@@ -129,12 +129,12 @@ func TestMethodTierSelector_ReadMethods(t *testing.T) {
 		t.Run(method, func(t *testing.T) {
 			t.Parallel()
 
-			app := fiber.New(fiber.Config{DisableStartupMessage: true})
+			app := fiber.New()
 			app.Use(rl.WithDynamicRateLimit(MethodTierSelector(writeTier, readTier)))
-			app.Add(method, "/test", func(c *fiber.Ctx) error { return c.SendString("ok") })
+			app.Add([]string{method}, "/test", func(c fiber.Ctx) error { return c.SendString("ok") })
 
 			req := httptest.NewRequest(method, "/test", nil)
-			resp, err := app.Test(req, -1)
+			resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 			require.NoError(t, err)
 			defer resp.Body.Close()
 
@@ -281,17 +281,18 @@ func TestIdentityFromIP_IPv6(t *testing.T) {
 	fn := IdentityFromIP()
 
 	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-		ProxyHeader:           fiber.HeaderXForwardedFor,
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0/0", "::/0"}},
+		ProxyHeader:      fiber.HeaderXForwardedFor,
 	})
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendString(fn(c))
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("X-Forwarded-For", "2001:db8::1")
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -307,10 +308,11 @@ func TestIdentityFromIPAndHeader_IPv6_WithoutHeader(t *testing.T) {
 	fn := IdentityFromIPAndHeader("X-Tenant-ID")
 
 	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-		ProxyHeader:           fiber.HeaderXForwardedFor,
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0/0", "::/0"}},
+		ProxyHeader:      fiber.HeaderXForwardedFor,
 	})
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendString(fn(c))
 	})
 
@@ -318,7 +320,7 @@ func TestIdentityFromIPAndHeader_IPv6_WithoutHeader(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "2001:db8::1")
 	// No X-Tenant-ID — only the IPv6 address is used.
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -339,10 +341,11 @@ func TestIdentityFromIPAndHeader_IPv6_WithHeader(t *testing.T) {
 	fn := IdentityFromIPAndHeader("X-Tenant-ID")
 
 	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-		ProxyHeader:           fiber.HeaderXForwardedFor,
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0/0", "::/0"}},
+		ProxyHeader:      fiber.HeaderXForwardedFor,
 	})
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendString(fn(c))
 	})
 
@@ -350,7 +353,7 @@ func TestIdentityFromIPAndHeader_IPv6_WithHeader(t *testing.T) {
 	req.Header.Set("X-Forwarded-For", "2001:db8::1")
 	req.Header.Set("X-Tenant-ID", "tenant-abc")
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -379,7 +382,7 @@ func TestMiddleware_IPv6_RateLimiting(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		req.Header.Set("X-Forwarded-For", "2001:db8::1")
 
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 
 		return resp
@@ -424,7 +427,7 @@ func TestMiddleware_IPv6_Isolation(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		req.Header.Set("X-Forwarded-For", ip)
 
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 
 		return resp
@@ -498,7 +501,7 @@ func TestWithDynamicRateLimit_ZeroWindow(t *testing.T) {
 	require.NotNil(t, rl)
 
 	// TierFunc returns a zero-window tier on every request — must be rejected per request.
-	handler := rl.WithDynamicRateLimit(func(_ *fiber.Ctx) Tier {
+	handler := rl.WithDynamicRateLimit(func(_ fiber.Ctx) Tier {
 		return Tier{Name: "dynamic-bad-window", Max: 100, Window: 0}
 	})
 	app := newTestApp(handler)
@@ -571,13 +574,13 @@ func TestMethodTierSelector_OtherWriteMethods(t *testing.T) {
 		t.Run(m, func(t *testing.T) {
 			t.Parallel()
 
-			app := fiber.New(fiber.Config{DisableStartupMessage: true})
+			app := fiber.New()
 			app.Use(rl.WithDynamicRateLimit(MethodTierSelector(writeTier, readTier)))
-			app.Add(m, "/test", func(c *fiber.Ctx) error { return c.SendString("ok") })
+			app.Add([]string{m}, "/test", func(c fiber.Ctx) error { return c.SendString("ok") })
 
 			req := httptest.NewRequest(m, "/test", nil)
 
-			resp, err := app.Test(req, -1)
+			resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 			require.NoError(t, err)
 			defer resp.Body.Close()
 
@@ -651,7 +654,7 @@ func TestMiddleware_ExceededHandlerSet_CustomBody(t *testing.T) {
 	tier := Tier{Name: "custom-body", Max: 1, Window: 60 * time.Second}
 
 	customBody := `{"error":{"code":"BTF-0429","service":"plugin","message":"slow down"}}`
-	rl := New(conn, WithExceededHandler(func(c *fiber.Ctx, t Tier, ttl time.Duration) error {
+	rl := New(conn, WithExceededHandler(func(c fiber.Ctx, t Tier, ttl time.Duration) error {
 		handlerCalls.Add(1)
 		seenTier.Store(t.Name)
 		seenTTL.Store(ttl.Nanoseconds())
@@ -703,26 +706,26 @@ func TestMiddleware_ExceededHandlerSet_PropagatesError(t *testing.T) {
 	tier := Tier{Name: "propagate-err", Max: 1, Window: 60 * time.Second}
 
 	sentinelErr := fiber.NewError(http.StatusInternalServerError, "custom-error-from-handler")
-	rl := New(conn, WithExceededHandler(func(_ *fiber.Ctx, _ Tier, _ time.Duration) error {
+	rl := New(conn, WithExceededHandler(func(_ fiber.Ctx, _ Tier, _ time.Duration) error {
 		return sentinelErr
 	}))
 
 	// Use a fiber app with the default error handler so the error becomes a response.
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	app.Use(rl.WithRateLimit(tier))
-	app.Get("/test", func(c *fiber.Ctx) error { return c.SendString("ok") })
+	app.Get("/test", func(c fiber.Ctx) error { return c.SendString("ok") })
 
 	// Prime the limit.
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("X-Forwarded-For", "10.0.0.1")
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	resp.Body.Close()
 
 	// Second request triggers the handler, which returns sentinelErr.
 	req = httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("X-Forwarded-For", "10.0.0.1")
-	resp, err = app.Test(req, -1)
+	resp, err = app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -750,12 +753,12 @@ func TestMiddleware_ExceededHandler_WithOnLimited(t *testing.T) {
 
 	tier := Tier{Name: "ordering", Max: 1, Window: 60 * time.Second}
 	rl := New(conn,
-		WithOnLimited(func(_ *fiber.Ctx, _ Tier) {
+		WithOnLimited(func(_ fiber.Ctx, _ Tier) {
 			mu.Lock()
 			order = append(order, "onLimited")
 			mu.Unlock()
 		}),
-		WithExceededHandler(func(c *fiber.Ctx, _ Tier, _ time.Duration) error {
+		WithExceededHandler(func(c fiber.Ctx, _ Tier, _ time.Duration) error {
 			mu.Lock()
 			order = append(order, "exceededHandler")
 			mu.Unlock()
@@ -798,7 +801,7 @@ func TestMiddleware_ExceededHandler_FailClosedNotAffected(t *testing.T) {
 	tier := Tier{Name: "503-isolation", Max: 10, Window: 60 * time.Second}
 	rl := New(conn,
 		WithFailOpen(false),
-		WithExceededHandler(func(_ *fiber.Ctx, _ Tier, _ time.Duration) error {
+		WithExceededHandler(func(_ fiber.Ctx, _ Tier, _ time.Duration) error {
 			handlerCalls.Add(1)
 
 			return nil

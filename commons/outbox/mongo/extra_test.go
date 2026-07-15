@@ -5,7 +5,7 @@ package mongo
 import (
 	"testing"
 
-	libMongo "github.com/LerianStudio/lib-commons/v5/commons/mongo"
+	libMongo "github.com/LerianStudio/lib-commons/v6/commons/mongo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"

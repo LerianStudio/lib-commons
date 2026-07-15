@@ -14,8 +14,8 @@ import (
 	"io"
 	"reflect"
 
-	constant "github.com/LerianStudio/lib-observability/constants"
-	libLog "github.com/LerianStudio/lib-observability/log"
+	constant "github.com/LerianStudio/lib-observability/v2/constants"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
 )
 
 var (

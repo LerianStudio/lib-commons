@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -117,7 +117,7 @@ func TestRenderError_NilError(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RenderError(c, nil)
 	})
 
@@ -138,7 +138,7 @@ func TestRenderError_CodeBoundaryAt100(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RenderError(c, ErrorResponse{
 			Code:    100,
 			Title:   "continue",
@@ -158,7 +158,7 @@ func TestRenderError_CodeBoundaryAt599(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RenderError(c, ErrorResponse{
 			Code:    599,
 			Title:   "custom_error",
@@ -178,7 +178,7 @@ func TestRenderError_CodeAt99FallsBackTo500(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RenderError(c, ErrorResponse{
 			Code:    99,
 			Title:   "test_error",
@@ -198,7 +198,7 @@ func TestRenderError_CodeAt600FallsBackTo500(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RenderError(c, ErrorResponse{
 			Code:    600,
 			Title:   "test_error",
@@ -222,7 +222,7 @@ func TestRenderError_EmptyTitleAndMessageDefaultsBoth(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RenderError(c, ErrorResponse{
 			Code:    500,
 			Title:   "",
@@ -256,7 +256,7 @@ func TestRenderError_ResponseHasExactlyThreeFields(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RenderError(c, ErrorResponse{
 			Code:    409,
 			Title:   "conflict",
@@ -302,7 +302,7 @@ func TestRenderError_WorksForAllHTTPMethods(t *testing.T) {
 
 			app := fiber.New()
 
-			handler := func(c *fiber.Ctx) error {
+			handler := func(c fiber.Ctx) error {
 				return RenderError(c, ErrorResponse{
 					Code:    400,
 					Title:   "bad_request",
@@ -344,7 +344,7 @@ func TestRenderError_FiberErrorDefaultMessage(t *testing.T) {
 	fiberErr := fiber.NewError(fiber.StatusGatewayTimeout)
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RenderError(c, fiberErr)
 	})
 
@@ -371,7 +371,7 @@ func TestRenderError_ReturnsJSON(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return RenderError(c, ErrorResponse{
 			Code:    400,
 			Title:   "bad_request",
@@ -411,7 +411,7 @@ func TestRenderError_UnusualValidCodes(t *testing.T) {
 			t.Parallel()
 
 			app := fiber.New()
-			app.Get("/test", func(c *fiber.Ctx) error {
+			app.Get("/test", func(c fiber.Ctx) error {
 				return RenderError(c, ErrorResponse{
 					Code:    tt.code,
 					Title:   "test",

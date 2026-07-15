@@ -10,11 +10,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/license"
-	"github.com/LerianStudio/lib-commons/v5/commons/server"
-	"github.com/LerianStudio/lib-observability/log"
-	opentelemetry "github.com/LerianStudio/lib-observability/tracing"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons/license"
+	"github.com/LerianStudio/lib-commons/v6/commons/server"
+	"github.com/LerianStudio/lib-observability/v2/log"
+	opentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -54,9 +54,7 @@ func TestNewServerManager(t *testing.T) {
 }
 
 func TestServerManagerWithHTTPOnly(t *testing.T) {
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-	})
+	app := fiber.New(fiber.Config{})
 	sm := server.NewServerManager(nil, nil, nil).
 		WithHTTPServer(app, ":8080")
 	assert.NotNil(t, sm, "ServerManager with HTTP server should return a non-nil instance")
@@ -70,9 +68,7 @@ func TestServerManagerWithGRPCOnly(t *testing.T) {
 }
 
 func TestServerManagerWithBothServers(t *testing.T) {
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-	})
+	app := fiber.New(fiber.Config{})
 	grpcServer := grpc.NewServer()
 	sm := server.NewServerManager(nil, nil, nil).
 		WithHTTPServer(app, ":8080").
@@ -81,9 +77,7 @@ func TestServerManagerWithBothServers(t *testing.T) {
 }
 
 func TestServerManagerChaining(t *testing.T) {
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-	})
+	app := fiber.New(fiber.Config{})
 	grpcServer := grpc.NewServer()
 
 	// Test method chaining
@@ -108,9 +102,7 @@ func TestErrNoServersConfigured(t *testing.T) {
 }
 
 func TestStartWithGracefulShutdownWithError_HTTPServer_Success(t *testing.T) {
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-	})
+	app := fiber.New(fiber.Config{})
 	shutdownChan := make(chan struct{})
 
 	sm := server.NewServerManager(nil, nil, nil).
@@ -170,9 +162,7 @@ func TestStartWithGracefulShutdownWithError_GRPCServer_Success(t *testing.T) {
 }
 
 func TestStartWithGracefulShutdownWithError_BothServers_Success(t *testing.T) {
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-	})
+	app := fiber.New(fiber.Config{})
 	grpcServer := grpc.NewServer()
 	shutdownChan := make(chan struct{})
 
@@ -224,9 +214,7 @@ func TestStartWithGracefulShutdownWithError_HTTPStartupError(t *testing.T) {
 
 	occupiedAddr := ln.Addr().String()
 
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-	})
+	app := fiber.New(fiber.Config{})
 
 	sm := server.NewServerManager(nil, nil, nil).
 		WithHTTPServer(app, occupiedAddr)
@@ -248,9 +236,7 @@ func TestStartWithGracefulShutdownWithError_HTTPStartupError(t *testing.T) {
 }
 
 func TestExecuteShutdown_Idempotent(t *testing.T) {
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-	})
+	app := fiber.New(fiber.Config{})
 	shutdownChan := make(chan struct{})
 
 	sm := server.NewServerManager(nil, nil, nil).
@@ -321,9 +307,7 @@ func TestStartWithGracefulShutdownWithError_GRPCShutdownTimeout(t *testing.T) {
 }
 
 func TestServerManager_NilLoggerSafe(t *testing.T) {
-	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-	})
+	app := fiber.New(fiber.Config{})
 	shutdownChan := make(chan struct{})
 
 	// Explicitly pass nil logger
@@ -354,7 +338,7 @@ func TestServerManager_NilLoggerSafe(t *testing.T) {
 }
 
 func TestServerManager_TypedNilLoggerSafe(t *testing.T) {
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownChan := make(chan struct{})
 
 	var typedNilLogger *recordingLogger
@@ -437,7 +421,7 @@ func TestShutdownHook_RunsAfterGRPCGracefulStop(t *testing.T) {
 
 func TestShutdownHook_RunsAfterHTTPShutdown(t *testing.T) {
 	logger := &recordingLogger{}
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownChan := make(chan struct{})
 	hookObservedHTTPShutdown := make(chan bool, 1)
 
@@ -486,7 +470,7 @@ func TestShutdownHook_RunsAfterHTTPShutdown(t *testing.T) {
 }
 
 func TestStartWithGracefulShutdownWithError_ManualZeroValueManager_NoPanic(t *testing.T) {
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownChan := make(chan struct{})
 	close(shutdownChan)
 
@@ -511,7 +495,7 @@ func TestExecuteShutdown_WithTelemetry(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownChan := make(chan struct{})
 
 	sm := server.NewServerManager(nil, tel, logger).
@@ -547,7 +531,7 @@ func TestExecuteShutdown_WithLicenseClient(t *testing.T) {
 	logger := &recordingLogger{}
 	lc := license.New()
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownChan := make(chan struct{})
 
 	sm := server.NewServerManager(lc, nil, logger).
@@ -582,7 +566,7 @@ func TestExecuteShutdown_WithLicenseClient(t *testing.T) {
 func TestExecuteShutdown_LoggerSyncError(t *testing.T) {
 	logger := &recordingLogger{syncErr: errors.New("sync failed")}
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownChan := make(chan struct{})
 
 	sm := server.NewServerManager(nil, nil, logger).
@@ -626,7 +610,7 @@ func TestExecuteShutdown_WithAllComponents(t *testing.T) {
 
 	lc := license.New()
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	grpcServer := grpc.NewServer()
 	shutdownChan := make(chan struct{})
 
@@ -693,7 +677,7 @@ func TestStartWithGracefulShutdownWithError_GRPCStartupError(t *testing.T) {
 
 func TestExecuteShutdown_HTTPShutdownError(t *testing.T) {
 	logger := &recordingLogger{}
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownChan := make(chan struct{})
 
 	sm := server.NewServerManager(nil, nil, logger).
@@ -728,7 +712,7 @@ func TestExecuteShutdown_HTTPShutdownError(t *testing.T) {
 func TestStartWithGracefulShutdownWithError_WithRealLogger(t *testing.T) {
 	logger := &recordingLogger{}
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	shutdownChan := make(chan struct{})
 
 	sm := server.NewServerManager(nil, nil, logger).
@@ -772,7 +756,7 @@ func TestStartWithGracefulShutdownWithError_StartupErrorViaOSSignalPath(t *testi
 	require.NoError(t, err)
 	defer ln.Close()
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 
 	sm := server.NewServerManager(nil, nil, logger).
 		WithHTTPServer(app, ln.Addr().String())

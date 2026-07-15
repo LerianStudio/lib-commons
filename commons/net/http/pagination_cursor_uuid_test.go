@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -91,7 +91,7 @@ func TestParseOpaqueCursorPagination(t *testing.T) {
 			var limit int
 			var err error
 
-			app.Get("/test", func(c *fiber.Ctx) error {
+			app.Get("/test", func(c fiber.Ctx) error {
 				cursor, limit, err = ParseOpaqueCursorPagination(c)
 				return nil
 			})

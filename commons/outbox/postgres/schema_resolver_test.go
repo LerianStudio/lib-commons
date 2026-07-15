@@ -7,8 +7,8 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
-	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
+	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
+	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
 	"github.com/stretchr/testify/require"
 )
 

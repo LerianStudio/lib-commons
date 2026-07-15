@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // TenantExtractor extracts tenant ID string from a request context.
@@ -119,7 +119,7 @@ func RegisterResourceErrors(mapping ResourceErrorMapping) {
 	resourceErrorRegistry = append(resourceErrorRegistry, mapping)
 }
 
-func getIDValue(fiberCtx *fiber.Ctx, idName string, location IDLocation) (string, error) {
+func getIDValue(fiberCtx fiber.Ctx, idName string, location IDLocation) (string, error) {
 	if fiberCtx == nil {
 		return "", ErrContextNotFound
 	}
