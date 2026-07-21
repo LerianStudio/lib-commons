@@ -11,13 +11,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestReleasePolicy_BreakingChangesRemainMinor(t *testing.T) {
+func TestReleasePolicy_BreakingChangesTriggerMajor(t *testing.T) {
 	t.Parallel()
 
 	content, err := os.ReadFile("../.releaserc.yml")
 	require.NoError(t, err)
 
 	policy := string(content)
-	assert.Contains(t, policy, `{ breaking: true, release: "minor" }`)
-	assert.NotContains(t, strings.ReplaceAll(policy, " ", ""), `breaking:true,release:"major"`)
+	assert.Contains(t, policy, `{ breaking: true, release: "major" }`)
+	assert.NotContains(t, strings.ReplaceAll(policy, " ", ""), `breaking:true,release:"minor"`)
 }
