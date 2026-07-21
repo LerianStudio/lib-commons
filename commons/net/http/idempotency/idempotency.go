@@ -49,6 +49,12 @@ type Middleware struct {
 	maxBodyCache int
 	redisTimeout time.Duration
 	onRejected   func(c fiber.Ctx) error
+	// failClosed inverts the transient-Redis-error behavior. Default (false)
+	// fails open — requests proceed without idempotency coverage to preserve
+	// availability. When true, transient Redis errors abort with 503 so a
+	// mutation never runs without at-most-once protection.
+	failClosed    bool
+	onUnavailable func(c fiber.Ctx) error
 }
 
 // New creates an idempotency middleware backed by the given Redis client.
@@ -130,6 +136,26 @@ func WithRejectedHandler(fn func(c fiber.Ctx) error) Option {
 	}
 }
 
+// WithFailClosed controls behavior on transient Redis errors. When false
+// (the default) the middleware fails open: requests proceed without
+// idempotency coverage to preserve availability. When true it fails closed:
+// any transient Redis error — including on the duplicate/replay path — aborts
+// with 503 rather than running the mutation without at-most-once protection.
+func WithFailClosed(v bool) Option {
+	return func(m *Middleware) {
+		m.failClosed = v
+	}
+}
+
+// WithUnavailableHandler sets a custom handler invoked when fail-closed is
+// enabled and the idempotency store is unavailable. By default a generic 503
+// JSON response is returned. Has no effect unless WithFailClosed(true) is set.
+func WithUnavailableHandler(fn func(c fiber.Ctx) error) Option {
+	return func(m *Middleware) {
+		m.onUnavailable = fn
+	}
+}
+
 // WithMaxBodyCache sets the maximum response body size (in bytes) that will be
 // cached in Redis for idempotent replay (default: 1 MB). Responses larger than
 // this limit are not cached; duplicate requests will receive a generic
@@ -163,6 +189,26 @@ func (m *Middleware) Check() fiber.Handler {
 func redactKey(key string) string {
 	h := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(h[:8])
+}
+
+// onRedisError decides how to respond to a transient Redis error. By default
+// it fails open — proceeding to the handler to preserve availability. When
+// failClosed is set it aborts with 503 (or the configured unavailable handler)
+// so the request never runs without idempotency coverage. Callers must have
+// already logged the underlying error.
+func (m *Middleware) onRedisError(c fiber.Ctx) error {
+	if !m.failClosed {
+		return c.Next()
+	}
+
+	if m.onUnavailable != nil {
+		return m.onUnavailable(c)
+	}
+
+	return libHTTP.RespondError(c, http.StatusServiceUnavailable,
+		"IDEMPOTENCY_UNAVAILABLE",
+		"idempotency store unavailable; request rejected to preserve at-most-once semantics",
+	)
 }
 
 func (m *Middleware) handle(c fiber.Ctx) error {
@@ -206,16 +252,16 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 
 	client, err := m.conn.GetClient(ctx)
 	if err != nil {
-		// Redis unavailable — fail-open to preserve availability.
-		m.logger.Log(ctx, log.LevelWarn, "idempotency: redis unavailable, failing open", log.Err(err))
-		return c.Next()
+		// Redis unavailable — fail open by default, or closed if configured.
+		m.logger.Log(ctx, log.LevelWarn, "idempotency: redis unavailable", log.Err(err))
+		return m.onRedisError(c)
 	}
 
 	// SetNX atomically checks and sets — returns true only if the key was newly created.
 	set, setnxErr := client.SetNX(ctx, key, keyStateProcessing, m.keyTTL).Result()
 	if setnxErr != nil {
-		m.logger.Log(ctx, log.LevelWarn, "idempotency: setnx failed, failing open", log.Err(setnxErr))
-		return c.Next()
+		m.logger.Log(ctx, log.LevelWarn, "idempotency: setnx failed", log.Err(setnxErr))
+		return m.onRedisError(c)
 	}
 
 	responseKey := key + ":response"
@@ -250,13 +296,15 @@ func (m *Middleware) handleDuplicate(
 	// Read the current key value to distinguish in-flight from completed.
 	keyValue, keyErr := client.Get(ctx, key).Result()
 	if keyErr != nil && !errors.Is(keyErr, redis.Nil) {
-		// Unexpected Redis error (timeout, connection failure) — fail open.
+		// Unexpected Redis error (timeout, connection failure) on a known
+		// duplicate. Fail open by default, or closed if configured — failing
+		// closed avoids silently re-running an already-seen mutation.
 		m.logger.Log(ctx, log.LevelWarn,
-			"idempotency: failed to read key state, failing open",
+			"idempotency: failed to read key state",
 			log.String("key_hash", redactKey(key)), log.Err(keyErr),
 		)
 
-		return c.Next()
+		return m.onRedisError(c)
 	}
 
 	// The marker has vanished between the SetNX (which saw it) and this Get.
@@ -272,13 +320,14 @@ func (m *Middleware) handleDuplicate(
 
 	switch {
 	case cacheErr != nil && !errors.Is(cacheErr, redis.Nil):
-		// Unexpected Redis error reading cached response — fail open.
+		// Unexpected Redis error reading the cached response on a known
+		// duplicate. Fail open by default, or closed if configured.
 		m.logger.Log(ctx, log.LevelWarn,
-			"idempotency: failed to read cached response, failing open",
+			"idempotency: failed to read cached response",
 			log.String("key_hash", redactKey(responseKey)), log.Err(cacheErr),
 		)
 
-		return c.Next()
+		return m.onRedisError(c)
 	case cacheErr == nil && cached != "":
 		var resp cachedResponse
 		if unmarshalErr := json.Unmarshal([]byte(cached), &resp); unmarshalErr != nil {
