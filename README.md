@@ -18,7 +18,7 @@ Use the library boundary table below as the canonical direction for renamed, red
 ## Installation
 
 ```bash
-go get github.com/LerianStudio/lib-commons/v5
+go get github.com/LerianStudio/lib-commons/v6
 ```
 
 ## Lerian Library Boundaries
