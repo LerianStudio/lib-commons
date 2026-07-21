@@ -155,11 +155,12 @@ func (c *Client) CreateTenant(ctx context.Context, req CreateTenantRequest) (*Cr
 	return &out, nil
 }
 
-// handleCreateTenantStatus maps a non-2xx create response to a typed error,
+// handleCreateTenantStatus maps a non-success create response to a typed error,
 // mirroring handleGetTenantConfigStatus: a 409 is a conflict (ErrTenantConflict),
 // any other 4xx is a valid round-trip carrying the truncated body, and a 5xx is a
 // service failure that feeds the circuit breaker. Only 5xx records a failure; 4xx
-// resets the consecutive-failure counter.
+// resets the consecutive-failure counter. Anything else (202, 3xx, ...) is
+// out-of-contract: surfaced as an error without touching the breaker counters.
 func (c *Client) handleCreateTenantStatus(ctx context.Context, span trace.Span, logger libLog.Logger, statusCode int, body []byte) error {
 	switch {
 	case statusCode == http.StatusConflict:
@@ -179,7 +180,7 @@ func (c *Client) handleCreateTenantStatus(ctx context.Context, span trace.Span, 
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", statusCode))
 
 		return fmt.Errorf("tenant manager returned status %d for create tenant: %s", statusCode, truncateBody(body))
-	default:
+	case statusCode >= http.StatusBadRequest && statusCode < http.StatusInternalServerError:
 		// Any other 4xx: a valid round-trip (resets the breaker), surfaced with the
 		// truncated body so the caller can diagnose the rejection.
 		c.recordSuccess()
@@ -190,5 +191,16 @@ func (c *Client) handleCreateTenantStatus(ctx context.Context, span trace.Span, 
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Tenant Manager rejected create", fmt.Errorf("status %d", statusCode))
 
 		return fmt.Errorf("tenant manager returned status %d for create tenant: %s", statusCode, truncateBody(body))
+	default:
+		// Out-of-contract status (202, 3xx, ...): neither a business rejection nor a
+		// service failure — leave the breaker counters untouched (mirrors
+		// handleGetTenantConfigStatus's default branch).
+		logger.Log(ctx, libLog.LevelError, "tenant manager returned unexpected status",
+			libLog.Int("status", statusCode),
+			libLog.String("body", truncateBody(body)),
+		)
+		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned unexpected status", fmt.Errorf("status %d", statusCode))
+
+		return fmt.Errorf("tenant manager returned unexpected status %d for create tenant: %s", statusCode, truncateBody(body))
 	}
 }

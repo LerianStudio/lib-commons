@@ -215,6 +215,26 @@ func TestClient_CreateTenant_BadRequest_IncludesTruncatedBody(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid company name", "a generic 4xx error must carry the (truncated) response body")
 }
 
+func TestClient_CreateTenant_UnexpectedStatus_DoesNotTouchBreaker(t *testing.T) {
+	// An out-of-contract status (202, 3xx, ...) is neither a business rejection
+	// nor a service failure: it must not reset the consecutive-failure counter
+	// (mirrors handleGetTenantConfigStatus's default branch).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("queued"))
+	}))
+	defer server.Close()
+
+	client := mustNewClient(t, server.URL, WithCircuitBreaker(2, 30*time.Second))
+	client.cbFailures = 1 // simulate a prior 5xx
+
+	_, err := client.CreateTenant(context.Background(), validCreateTenantRequest())
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, core.ErrTenantConflict)
+	assert.Contains(t, err.Error(), "unexpected status 202")
+	assert.Equal(t, 1, client.cbFailures, "unexpected status must neither reset nor advance the breaker counter")
+}
+
 func TestClient_CreateTenant_BadRequest_NotBreaker(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)

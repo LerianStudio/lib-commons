@@ -181,8 +181,7 @@ func TestTruncateBody_LongBody(t *testing.T) {
 	}
 
 	result := truncateBody(body)
-	assert.True(t, len(result) <= 512+len("... (truncated)"))
-	assert.Contains(t, result, "truncated")
+	assert.Equal(t, string(body[:512])+"...(truncated)", result)
 }
 
 // -------------------------------------------------------------------
