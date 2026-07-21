@@ -168,7 +168,7 @@ func TestTruncateBody_ShortBody(t *testing.T) {
 	t.Parallel()
 
 	body := []byte("short body")
-	result := truncateBody(body, 512)
+	result := truncateBody(body)
 	assert.Equal(t, "short body", result)
 }
 
@@ -180,7 +180,7 @@ func TestTruncateBody_LongBody(t *testing.T) {
 		body[i] = 'x'
 	}
 
-	result := truncateBody(body, 512)
+	result := truncateBody(body)
 	assert.True(t, len(result) <= 512+len("... (truncated)"))
 	assert.Contains(t, result, "truncated")
 }

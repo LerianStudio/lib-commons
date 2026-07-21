@@ -211,18 +211,18 @@ func TestTruncateBody(t *testing.T) {
 
 	t.Run("short body is unchanged", func(t *testing.T) {
 		body := []byte("short")
-		assert.Equal(t, "short", truncateBody(body, 256))
+		assert.Equal(t, "short", truncateBody(body))
 	})
 
 	t.Run("long body is truncated", func(t *testing.T) {
-		body := make([]byte, 300)
+		body := make([]byte, 600)
 		for i := range body {
 			body[i] = 'x'
 		}
 
-		result := truncateBody(body, 256)
-		// Truncated to 256 bytes + "...(truncated)" suffix
-		assert.LessOrEqual(t, len(result), 270, "result should fit within maxLen + suffix")
+		result := truncateBody(body)
+		// Truncated to 512 bytes + "...(truncated)" suffix
+		assert.LessOrEqual(t, len(result), 512+len("...(truncated)"), "result should fit within the limit + suffix")
 		assert.Contains(t, result, "truncated", "truncated body should contain truncation marker")
 	})
 }

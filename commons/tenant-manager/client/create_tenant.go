@@ -139,7 +139,7 @@ func (c *Client) CreateTenant(ctx context.Context, req CreateTenantRequest) (*Cr
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, c.handleCreateTenantStatus(ctx, span, resp.StatusCode, body)
+		return nil, c.handleCreateTenantStatus(ctx, span, logger, resp.StatusCode, body)
 	}
 
 	var out CreateTenantResponse
@@ -160,35 +160,35 @@ func (c *Client) CreateTenant(ctx context.Context, req CreateTenantRequest) (*Cr
 // any other 4xx is a valid round-trip carrying the truncated body, and a 5xx is a
 // service failure that feeds the circuit breaker. Only 5xx records a failure; 4xx
 // resets the consecutive-failure counter.
-func (c *Client) handleCreateTenantStatus(ctx context.Context, span trace.Span, statusCode int, body []byte) error {
+func (c *Client) handleCreateTenantStatus(ctx context.Context, span trace.Span, logger libLog.Logger, statusCode int, body []byte) error {
 	switch {
 	case statusCode == http.StatusConflict:
 		c.recordSuccess()
-		c.logger.Log(ctx, libLog.LevelWarn, "tenant already exists",
-			libLog.String("body", truncateBody(body, 512)),
+		logger.Log(ctx, libLog.LevelWarn, "tenant already exists",
+			libLog.String("body", truncateBody(body)),
 		)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Tenant conflict", core.ErrTenantConflict)
 
-		return fmt.Errorf("%w: %s", core.ErrTenantConflict, truncateBody(body, 512))
+		return fmt.Errorf("%w: %s", core.ErrTenantConflict, truncateBody(body))
 	case isServerError(statusCode):
 		c.recordFailure()
-		c.logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
+		logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
 			libLog.Int("status", statusCode),
-			libLog.String("body", truncateBody(body, 512)),
+			libLog.String("body", truncateBody(body)),
 		)
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", statusCode))
 
-		return fmt.Errorf("tenant manager returned status %d for create tenant: %s", statusCode, truncateBody(body, 512))
+		return fmt.Errorf("tenant manager returned status %d for create tenant: %s", statusCode, truncateBody(body))
 	default:
 		// Any other 4xx: a valid round-trip (resets the breaker), surfaced with the
 		// truncated body so the caller can diagnose the rejection.
 		c.recordSuccess()
-		c.logger.Log(ctx, libLog.LevelError, "tenant manager rejected create",
+		logger.Log(ctx, libLog.LevelError, "tenant manager rejected create",
 			libLog.Int("status", statusCode),
-			libLog.String("body", truncateBody(body, 512)),
+			libLog.String("body", truncateBody(body)),
 		)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Tenant Manager rejected create", fmt.Errorf("status %d", statusCode))
 
-		return fmt.Errorf("tenant manager returned status %d for create tenant: %s", statusCode, truncateBody(body, 512))
+		return fmt.Errorf("tenant manager returned status %d for create tenant: %s", statusCode, truncateBody(body))
 	}
 }

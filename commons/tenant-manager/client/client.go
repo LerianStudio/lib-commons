@@ -311,12 +311,14 @@ func isServerError(statusCode int) bool {
 	return statusCode >= http.StatusInternalServerError
 }
 
-// truncateBody returns the body as a string, truncated to maxLen bytes with a
-// "...(truncated)" suffix if the body exceeds maxLen. This prevents large
+// truncateBody returns the body as a string, truncated to 512 bytes with a
+// "...(truncated)" suffix if the body exceeds that limit. This prevents large
 // response bodies from being logged or included in error messages.
 // The truncation point is adjusted to the last valid UTF-8 rune boundary
 // to avoid splitting multi-byte characters.
-func truncateBody(body []byte, maxLen int) string {
+func truncateBody(body []byte) string {
+	const maxLen = 512
+
 	if len(body) <= maxLen {
 		return string(body)
 	}
@@ -417,7 +419,7 @@ func (c *Client) handleGetTenantConfigStatus(
 
 		c.logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
 			libLog.Int("status", statusCode),
-			libLog.String("body", truncateBody(body, 512)),
+			libLog.String("body", truncateBody(body)),
 		)
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", statusCode))
 
@@ -656,7 +658,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 
 		logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
 			libLog.Int("status", resp.StatusCode),
-			libLog.String("body", truncateBody(body, 512)),
+			libLog.String("body", truncateBody(body)),
 		)
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", resp.StatusCode))
 

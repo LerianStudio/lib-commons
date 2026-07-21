@@ -101,7 +101,7 @@ func (c *Client) GetTenantMetadata(ctx context.Context, tenantID string) (map[st
 
 		logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
 			libLog.Int("status", resp.StatusCode),
-			libLog.String("body", truncateBody(body, 512)),
+			libLog.String("body", truncateBody(body)),
 		)
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", resp.StatusCode))
 
