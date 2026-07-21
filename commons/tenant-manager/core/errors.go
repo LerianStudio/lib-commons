@@ -44,6 +44,13 @@ func IsNilInterface(v any) bool {
 // ErrTenantNotFound is returned when the tenant is not found in Tenant Manager.
 var ErrTenantNotFound = errors.New("tenant not found")
 
+// ErrTenantConflict is returned when a tenant create is rejected with HTTP 409
+// (e.g., the slug or identity already belongs to a different tenant). It is a
+// valid 4xx round-trip, not a service failure, so it does not trip the circuit
+// breaker. Callers use errors.Is(err, core.ErrTenantConflict) to distinguish a
+// conflict from an opaque failure.
+var ErrTenantConflict = errors.New("tenant already exists")
+
 // ErrServiceNotConfigured is returned when the service is not configured for the tenant.
 var ErrServiceNotConfigured = errors.New("service not configured for tenant")
 

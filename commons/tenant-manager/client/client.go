@@ -62,8 +62,12 @@ type Client struct {
 	httpClientOnce sync.Once
 	logger         libLog.Logger
 	serviceAPIKey  string
-	cache          cache.ConfigCache
-	cacheTTL       time.Duration
+	// bearerTokenProvider supplies the service-account bearer token for
+	// RBAC-gated write operations (e.g. CreateTenant). When nil, no
+	// Authorization header is sent (the read methods rely on X-API-Key only).
+	bearerTokenProvider TokenProvider
+	cache               cache.ConfigCache
+	cacheTTL            time.Duration
 
 	// allowInsecureHTTP permits http:// URLs when set to true.
 	// By default, only https:// URLs are accepted unless explicitly opted in
@@ -498,7 +502,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	libOpentelemetry.InjectHTTPContext(ctx, req.Header)
 
 	// Execute request
-	// #nosec G704 -- baseURL is validated at construction time and not user-controlled
+	// #nosec G107 -- baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
@@ -618,7 +622,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	libOpentelemetry.InjectHTTPContext(ctx, req.Header)
 
 	// Execute request
-	// #nosec G704 -- baseURL is validated at construction time and not user-controlled
+	// #nosec G107 -- baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
