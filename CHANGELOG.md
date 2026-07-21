@@ -1,5 +1,14 @@
 # Lib-commons Changelog
 
+## [6.0.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.0.0)
+
+Features:
+- Release `v6` with migration to Fiber `v3` and initiate the `/v6` major version. (@rodrigodh)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.10.0...v6.0.0)
+
+---
+
 ## [5.10.0](https://github.com/LerianStudio/lib-commons/releases/tag/v5.10.0)
 
 Features:
