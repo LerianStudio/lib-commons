@@ -20,10 +20,14 @@ import (
 func TestDoHTTP_InjectsTraceContext(t *testing.T) {
 	t.Parallel()
 
-	var gotHeaders http.Header
+	// Transfer captured headers via a buffered channel (cap 1) instead of a
+	// shared variable: the channel send/receive establishes a happens-before
+	// edge, so the test reads the headers race-free under -race. HTTP
+	// round-trip completion alone does NOT synchronize the shared variable.
+	gotHeadersCh := make(chan http.Header, 1)
 
 	srv, pubURL := startTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeaders = r.Header.Clone()
+		gotHeadersCh <- r.Header.Clone()
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -60,10 +64,21 @@ func TestDoHTTP_InjectsTraceContext(t *testing.T) {
 	require.Len(t, results, 1)
 	require.True(t, results[0].Success)
 
+	gotHeaders := <-gotHeadersCh
+
 	traceparent := gotHeaders.Get("traceparent")
 	require.NotEmpty(t, traceparent, "receiver must get a traceparent header")
-	assert.True(t, strings.HasPrefix(traceparent, "00-"), "W3C traceparent version 00")
-	assert.Contains(t, traceparent, wantTraceID, "traceparent must carry the active trace ID")
+
+	// W3C traceparent = "version-traceid-spanid-flags". Assert the span id too,
+	// not just the trace id: a traceparent for a DIFFERENT span in the same
+	// trace would still carry wantTraceID, so checking the trace id alone does
+	// not prove injection used the ACTIVE span.
+	parts := strings.Split(traceparent, "-")
+	require.Len(t, parts, 4, "traceparent must have 4 dash-separated fields")
+	assert.Equal(t, "00", parts[0], "W3C traceparent version 00")
+	assert.Equal(t, wantTraceID, parts[1], "traceparent must carry the active trace ID")
+	assert.Equal(t, span.SpanContext().SpanID().String(), parts[2],
+		"traceparent must carry the ACTIVE span ID")
 
 	// Baggage must not leak — neither as a baggage header nor anywhere else.
 	assert.Empty(t, gotHeaders.Get("baggage"), "baggage must not be propagated")
