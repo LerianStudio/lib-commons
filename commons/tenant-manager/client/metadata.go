@@ -67,7 +67,7 @@ func (c *Client) GetTenantMetadata(ctx context.Context, tenantID string) (map[st
 	// Inject trace context into outgoing HTTP headers for distributed tracing.
 	libOpentelemetry.InjectHTTPContext(ctx, req.Header)
 
-	// #nosec G704 -- baseURL is validated at construction time and not user-controlled
+	// #nosec G107 -- baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
