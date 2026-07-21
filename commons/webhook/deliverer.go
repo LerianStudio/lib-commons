@@ -17,6 +17,7 @@ import (
 	commons "github.com/LerianStudio/lib-commons/v6/commons"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
@@ -551,6 +552,12 @@ func (d *Deliverer) doHTTP(
 		sig := d.computeSignature(event.Payload, event.Timestamp, secret)
 		req.Header.Set("X-Webhook-Signature", sig)
 	}
+
+	// Inject W3C trace context (traceparent/tracestate) so receivers can
+	// correlate the delivery with the originating trace. Use an explicit
+	// TraceContext propagator, not the global one, which commonly bundles
+	// Baggage — we must not leak arbitrary baggage to external receivers.
+	propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	client := d.client
 
