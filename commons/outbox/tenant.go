@@ -6,7 +6,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 )
 
 type tenantIDContextKey string

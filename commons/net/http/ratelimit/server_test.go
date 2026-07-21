@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/net/http/ratelimit"
-	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
-	libLog "github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/net/http/ratelimit"
+	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/alicebob/miniredis/v2"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -56,29 +56,28 @@ func buildAPIServer(rl *ratelimit.RateLimiter) *fiber.App {
 	read := ratelimit.Tier{Name: "read", Max: 10, Window: 60 * time.Second}
 
 	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
 		// ProxyHeader lets tests inject any IP (including IPv6) via X-Forwarded-For.
 		ProxyHeader: fiber.HeaderXForwardedFor,
 	})
 
 	public := app.Group("/public")
 	public.Use(rl.WithRateLimit(relaxed))
-	public.Get("/info", func(c *fiber.Ctx) error {
+	public.Get("/info", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"status": "ok"})
 	})
 
 	admin := app.Group("/admin")
 	admin.Use(rl.WithRateLimit(strict))
-	admin.Get("/config", func(c *fiber.Ctx) error {
+	admin.Get("/config", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"config": "redacted"})
 	})
 
 	api := app.Group("/api")
 	api.Use(rl.WithDynamicRateLimit(ratelimit.MethodTierSelector(write, read)))
-	api.Get("/items", func(c *fiber.Ctx) error {
+	api.Get("/items", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"items": []string{"a", "b", "c"}})
 	})
-	api.Post("/items", func(c *fiber.Ctx) error {
+	api.Post("/items", func(c fiber.Ctx) error {
 		return c.JSON(fiber.Map{"created": true})
 	})
 
@@ -93,7 +92,7 @@ func serverGet(t *testing.T, app *fiber.App, path, ip string) *http.Response {
 		req.Header.Set("X-Forwarded-For", ip)
 	}
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 
 	return resp
@@ -107,7 +106,7 @@ func serverPost(t *testing.T, app *fiber.App, path, ip string) *http.Response {
 		req.Header.Set("X-Forwarded-For", ip)
 	}
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 
 	return resp
@@ -159,17 +158,16 @@ func TestServer_WindowReset(t *testing.T) {
 	rl := ratelimit.New(conn)
 
 	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-		ProxyHeader:           fiber.HeaderXForwardedFor,
+		ProxyHeader: fiber.HeaderXForwardedFor,
 	})
 	app.Use(rl.WithRateLimit(shortWindow))
-	app.Get("/ping", func(c *fiber.Ctx) error { return c.SendString("pong") })
+	app.Get("/ping", func(c fiber.Ctx) error { return c.SendString("pong") })
 
 	doReq := func() *http.Response {
 		req := httptest.NewRequest(http.MethodGet, "/ping", nil)
 		req.Header.Set("X-Forwarded-For", "10.0.0.3")
 
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 
 		return resp
@@ -209,11 +207,10 @@ func TestServer_ClientIsolation(t *testing.T) {
 	rl := ratelimit.New(conn)
 
 	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-		ProxyHeader:           fiber.HeaderXForwardedFor,
+		ProxyHeader: fiber.HeaderXForwardedFor,
 	})
 	app.Use(rl.WithRateLimit(tier))
-	app.Get("/data", func(c *fiber.Ctx) error { return c.SendString("ok") })
+	app.Get("/data", func(c fiber.Ctx) error { return c.SendString("ok") })
 
 	clients := []string{
 		"10.1.1.1",    // IPv4
@@ -243,7 +240,7 @@ func TestServer_ClientIsolation(t *testing.T) {
 				req := httptest.NewRequest(http.MethodGet, "/data", nil)
 				req.Header.Set("X-Forwarded-For", ip)
 
-				resp, err := app.Test(req, -1)
+				resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 				if err != nil {
 					results[i] = result{ip: ip, err: err}
 					return
@@ -261,7 +258,7 @@ func TestServer_ClientIsolation(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/data", nil)
 			req.Header.Set("X-Forwarded-For", ip)
 
-			resp, err := app.Test(req, -1)
+			resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 			if err != nil {
 				results[i] = result{ip: ip, err: err}
 				return
@@ -293,15 +290,15 @@ func TestServer_TenantIsolation(t *testing.T) {
 		ratelimit.WithIdentityFunc(ratelimit.IdentityFromIPAndHeader("X-Tenant-ID")),
 	)
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	app.Use(rl.WithRateLimit(tier))
-	app.Get("/resource", func(c *fiber.Ctx) error { return c.SendString("ok") })
+	app.Get("/resource", func(c fiber.Ctx) error { return c.SendString("ok") })
 
 	doTenantReq := func(tenantID string) *http.Response {
 		req := httptest.NewRequest(http.MethodGet, "/resource", nil)
 		req.Header.Set("X-Tenant-ID", tenantID)
 
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 
 		return resp
@@ -338,11 +335,10 @@ func TestServer_HeadersProgression(t *testing.T) {
 	rl := ratelimit.New(conn)
 
 	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-		ProxyHeader:           fiber.HeaderXForwardedFor,
+		ProxyHeader: fiber.HeaderXForwardedFor,
 	})
 	app.Use(rl.WithRateLimit(tier))
-	app.Get("/count", func(c *fiber.Ctx) error { return c.SendString("ok") })
+	app.Get("/count", func(c fiber.Ctx) error { return c.SendString("ok") })
 
 	type snapshot struct{ limit, remaining string }
 
@@ -358,7 +354,7 @@ func TestServer_HeadersProgression(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/count", nil)
 		req.Header.Set("X-Forwarded-For", "172.16.0.1")
 
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 		resp.Body.Close()
 
@@ -372,7 +368,7 @@ func TestServer_HeadersProgression(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/count", nil)
 	req.Header.Set("X-Forwarded-For", "172.16.0.1")
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -404,17 +400,16 @@ func TestServer_RetryAfter_CeilingDivision(t *testing.T) {
 	rl := ratelimit.New(conn)
 
 	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-		ProxyHeader:           fiber.HeaderXForwardedFor,
+		ProxyHeader: fiber.HeaderXForwardedFor,
 	})
 	app.Use(rl.WithRateLimit(tier))
-	app.Get("/ping", func(c *fiber.Ctx) error { return c.SendString("pong") })
+	app.Get("/ping", func(c fiber.Ctx) error { return c.SendString("pong") })
 
 	doReq := func() *http.Response {
 		req := httptest.NewRequest(http.MethodGet, "/ping", nil)
 		req.Header.Set("X-Forwarded-For", "10.99.0.1")
 
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 
 		return resp

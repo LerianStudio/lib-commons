@@ -97,6 +97,16 @@ func VerifySignature(payload []byte, timestamp int64, secret, signature string) 
 	}
 }
 
+// VerifySignatureV1 verifies only timestamp-bound v1 webhook signatures.
+// Unlike [VerifySignature], it rejects valid legacy v0 signatures.
+func VerifySignatureV1(payload []byte, timestamp int64, secret, signature string) error {
+	if !strings.HasPrefix(signature, "v1,") {
+		return errors.New("webhook: v1 signature required")
+	}
+
+	return VerifySignature(payload, timestamp, secret, signature)
+}
+
 // VerifySignatureWithFreshness verifies a v1 webhook signature and additionally
 // checks that the timestamp is within the given tolerance window from now.
 // This provides replay protection: even if an attacker captures a valid
@@ -107,6 +117,16 @@ func VerifySignature(payload []byte, timestamp int64, secret, signature string) 
 // use VerifySignature and implement replay protection independently (e.g.,
 // idempotency keys or event-ID tracking).
 func VerifySignatureWithFreshness(payload []byte, timestamp int64, secret, signature string, tolerance time.Duration) error {
+	return verifySignatureWithFreshnessAt(payload, timestamp, secret, signature, tolerance, time.Now().UTC())
+}
+
+func verifySignatureWithFreshnessAt(
+	payload []byte,
+	timestamp int64,
+	secret, signature string,
+	tolerance time.Duration,
+	now time.Time,
+) error {
 	if err := VerifySignature(payload, timestamp, secret, signature); err != nil {
 		return err
 	}
@@ -114,15 +134,37 @@ func VerifySignatureWithFreshness(payload []byte, timestamp int64, secret, signa
 	// Freshness check only applies to v1 where the timestamp is signed.
 	if strings.HasPrefix(signature, "v1,") {
 		eventTime := time.Unix(timestamp, 0)
-		delta := time.Since(eventTime)
-
-		if delta < 0 {
-			delta = -delta
-		}
+		delta := now.Sub(eventTime).Abs()
 
 		if delta > tolerance {
 			return fmt.Errorf("webhook: timestamp outside tolerance window (%s > %s)", delta.Truncate(time.Second), tolerance)
 		}
+	}
+
+	return nil
+}
+
+// VerifySignatureV1WithFreshness verifies only timestamp-bound v1 webhook
+// signatures and rejects timestamps outside the tolerance window from now.
+func VerifySignatureV1WithFreshness(payload []byte, timestamp int64, secret, signature string, tolerance time.Duration) error {
+	return verifySignatureV1WithFreshnessAt(payload, timestamp, secret, signature, tolerance, time.Now().UTC())
+}
+
+func verifySignatureV1WithFreshnessAt(
+	payload []byte,
+	timestamp int64,
+	secret, signature string,
+	tolerance time.Duration,
+	now time.Time,
+) error {
+	if err := VerifySignatureV1(payload, timestamp, secret, signature); err != nil {
+		return err
+	}
+
+	delta := now.Sub(time.Unix(timestamp, 0)).Abs()
+
+	if delta > tolerance {
+		return fmt.Errorf("webhook: timestamp outside tolerance window (%s > %s)", delta.Truncate(time.Second), tolerance)
 	}
 
 	return nil

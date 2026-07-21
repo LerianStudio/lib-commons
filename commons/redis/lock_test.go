@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

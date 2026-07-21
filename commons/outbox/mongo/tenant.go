@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
-	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
+	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 )
 
 func normalizeTenantIDs(raw []string) ([]string, error) {

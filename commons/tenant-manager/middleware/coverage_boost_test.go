@@ -9,11 +9,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
-	tmmongo "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/mongo"
-	tmpostgres "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/postgres"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	tmmongo "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/mongo"
+	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -55,8 +55,8 @@ func newTestManagersWithServer(t *testing.T, serverURL string) (*tmpostgres.Mana
 
 // newFiberApp creates a minimal Fiber app with the middleware under test.
 func newFiberApp(mw *TenantMiddleware) *fiber.App {
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
-	app.Get("/test", mw.WithTenantDB, func(c *fiber.Ctx) error {
+	app := fiber.New()
+	app.Get("/test", mw.WithTenantDB, func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 	return app
@@ -311,7 +311,7 @@ func TestWithTenantDB_IsDisabled_WhenNothingConfigured(t *testing.T) {
 func TestMapDomainErrorToHTTP_TenantNotProvisioned_Returns500(t *testing.T) {
 	t.Parallel()
 
-	app := newFiberTestApp(func(c *fiber.Ctx) error {
+	app := newFiberTestApp(func(c fiber.Ctx) error {
 		return mapDomainErrorToHTTP(c, core.ErrTenantNotProvisioned, "tenant-1")
 	})
 

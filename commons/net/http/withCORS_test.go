@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v5/commons"
-	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	libLog "github.com/LerianStudio/lib-observability/log"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons"
+	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,7 +42,7 @@ func TestWithCORS_UsesEnvironmentConfiguration(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(WithCORS())
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 
@@ -86,7 +86,7 @@ func TestWithCORS_ExplicitFalseCredentials(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(WithCORS())
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 
@@ -139,7 +139,7 @@ func TestWithCORS_WithLoggerOption(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(WithCORS(WithCORSLogger(logger)))
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(200)
 	})
 
@@ -195,7 +195,7 @@ func TestWithCORS_InvalidAllowCredentialsFallsBackToDefault(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(WithCORS())
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 
@@ -217,12 +217,39 @@ func TestWithCORS_WildcardFallsBackToDenyAllByDefault(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(WithCORS())
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 
 	req := httptest.NewRequest(http.MethodOptions, "/", nil)
 	req.Header.Set(fiber.HeaderOrigin, "https://example.com")
+	req.Header.Set(fiber.HeaderAccessControlRequestMethod, http.MethodGet)
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer func() { require.NoError(t, resp.Body.Close()) }()
+
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+	assert.Empty(t, resp.Header.Get(fiber.HeaderAccessControlAllowOrigin))
+	assert.Empty(t, resp.Header.Get(fiber.HeaderAccessControlAllowCredentials))
+}
+
+func TestWithCORS_MixedWildcardFallsBackToDenyAllByDefault(t *testing.T) {
+	// A "*" entry anywhere in the comma-separated list (not just a bare "*") must
+	// trigger the deny-all fallback and force credentials off. Before the
+	// parsed-list wildcard check this input bypassed both guards and panicked
+	// Fiber v3 (a "*" entry in AllowOrigins with AllowCredentials=true).
+	t.Setenv("ACCESS_CONTROL_ALLOW_ORIGIN", "*,https://trusted.example")
+	t.Setenv("ACCESS_CONTROL_ALLOW_CREDENTIALS", "true")
+
+	app := fiber.New()
+	app.Use(WithCORS())
+	app.Get("/", func(c fiber.Ctx) error {
+		return c.SendStatus(http.StatusOK)
+	})
+
+	req := httptest.NewRequest(http.MethodOptions, "/", nil)
+	req.Header.Set(fiber.HeaderOrigin, "https://trusted.example")
 	req.Header.Set(fiber.HeaderAccessControlRequestMethod, http.MethodGet)
 
 	resp, err := app.Test(req)
@@ -240,7 +267,7 @@ func TestWithCORS_AllowCORSWildcardPermitsWildcard(t *testing.T) {
 
 	app := fiber.New()
 	app.Use(WithCORS())
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return c.SendStatus(http.StatusOK)
 	})
 

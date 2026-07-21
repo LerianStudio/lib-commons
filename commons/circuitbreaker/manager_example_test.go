@@ -5,8 +5,8 @@ package circuitbreaker_test
 import (
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/circuitbreaker"
-	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/circuitbreaker"
+	"github.com/LerianStudio/lib-observability/v2/log"
 )
 
 func ExampleManager_Execute() {

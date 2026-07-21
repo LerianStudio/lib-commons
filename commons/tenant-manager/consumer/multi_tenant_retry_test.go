@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/testutil"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 )

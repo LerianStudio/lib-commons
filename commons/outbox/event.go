@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/assert"
+	"github.com/LerianStudio/lib-observability/v2/assert"
 	"github.com/google/uuid"
 )
 

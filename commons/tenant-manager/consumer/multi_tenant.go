@@ -14,16 +14,16 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/event"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
-	tmmongo "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/mongo"
-	tmpostgres "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/postgres"
-	tmrabbitmq "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/rabbitmq"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/tenantcache"
-	observability "github.com/LerianStudio/lib-observability"
-	libLog "github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/event"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
+	tmmongo "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/mongo"
+	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
+	tmrabbitmq "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/rabbitmq"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/tenantcache"
+	observability "github.com/LerianStudio/lib-observability/v2"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
 )
 
 // HandlerFunc is a function that processes messages from a queue.

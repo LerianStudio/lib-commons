@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v5/commons"
-	cn "github.com/LerianStudio/lib-commons/v5/commons/constants"
+	"github.com/LerianStudio/lib-commons/v6/commons"
+	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
 )
 
 const (

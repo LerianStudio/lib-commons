@@ -17,14 +17,14 @@ import (
 
 	// File system migration source. We need to import it to be able to use it as source in migrate.NewWithSourceInstance
 
-	commons "github.com/LerianStudio/lib-commons/v5/commons"
-	"github.com/LerianStudio/lib-commons/v5/commons/backoff"
-	"github.com/LerianStudio/lib-observability/assert"
-	constant "github.com/LerianStudio/lib-observability/constants"
-	"github.com/LerianStudio/lib-observability/log"
-	"github.com/LerianStudio/lib-observability/metrics"
-	"github.com/LerianStudio/lib-observability/runtime"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
+	commons "github.com/LerianStudio/lib-commons/v6/commons"
+	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
+	"github.com/LerianStudio/lib-observability/v2/assert"
+	constant "github.com/LerianStudio/lib-observability/v2/constants"
+	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-observability/v2/metrics"
+	"github.com/LerianStudio/lib-observability/v2/runtime"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"

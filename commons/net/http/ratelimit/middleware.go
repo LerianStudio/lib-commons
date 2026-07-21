@@ -10,15 +10,15 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons"
-	constant "github.com/LerianStudio/lib-commons/v5/commons/constants"
-	chttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
-	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
-	observability "github.com/LerianStudio/lib-observability"
-	"github.com/LerianStudio/lib-observability/assert"
-	"github.com/LerianStudio/lib-observability/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons"
+	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	chttp "github.com/LerianStudio/lib-commons/v6/commons/net/http"
+	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
+	observability "github.com/LerianStudio/lib-observability/v2"
+	"github.com/LerianStudio/lib-observability/v2/assert"
+	"github.com/LerianStudio/lib-observability/v2/log"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/gofiber/fiber/v3"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -126,8 +126,8 @@ type RateLimiter struct {
 	keyPrefix       string
 	identityFunc    IdentityFunc
 	failOpen        bool
-	onLimited       func(c *fiber.Ctx, tier Tier)
-	exceededHandler func(c *fiber.Ctx, tier Tier, ttl time.Duration) error
+	onLimited       func(c fiber.Ctx, tier Tier)
+	exceededHandler func(c fiber.Ctx, tier Tier, ttl time.Duration) error
 	redisTimeout    time.Duration
 }
 
@@ -211,7 +211,7 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 // If the RateLimiter is nil, it returns a pass-through handler that calls c.Next().
 func (rl *RateLimiter) WithRateLimit(tier Tier) fiber.Handler {
 	if rl == nil {
-		return func(c *fiber.Ctx) error {
+		return func(c fiber.Ctx) error {
 			return c.Next()
 		}
 	}
@@ -223,7 +223,7 @@ func (rl *RateLimiter) WithRateLimit(tier Tier) fiber.Handler {
 			log.Int("max", tier.Max),
 		)
 
-		return func(c *fiber.Ctx) error {
+		return func(c fiber.Ctx) error {
 			return chttp.Respond(c, http.StatusInternalServerError, chttp.ErrorResponse{
 				Code:    http.StatusInternalServerError,
 				Title:   invalidWindowTitle,
@@ -241,7 +241,7 @@ func (rl *RateLimiter) WithRateLimit(tier Tier) fiber.Handler {
 		)
 	}
 
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		return rl.check(c, tier)
 	}
 }
@@ -266,16 +266,16 @@ func WithDefaultRateLimit(conn *libRedis.Client, opts ...Option) fiber.Handler {
 //	)))
 func (rl *RateLimiter) WithDynamicRateLimit(fn TierFunc) fiber.Handler {
 	if rl == nil || fn == nil {
-		return func(c *fiber.Ctx) error {
+		return func(c fiber.Ctx) error {
 			return c.Next()
 		}
 	}
 
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		tier := fn(c)
 
 		if tier.Window <= 0 || tier.Window.Milliseconds() == 0 {
-			ctx := c.UserContext()
+			ctx := c.Context()
 			if ctx == nil {
 				ctx = context.Background()
 			}
@@ -300,8 +300,8 @@ func (rl *RateLimiter) WithDynamicRateLimit(fn TierFunc) fiber.Handler {
 // check is the shared core of WithRateLimit and WithDynamicRateLimit. It runs the rate
 // limit check for the given tier and either passes the request through or returns an
 // appropriate error response.
-func (rl *RateLimiter) check(c *fiber.Ctx, tier Tier) error {
-	ctx := c.UserContext()
+func (rl *RateLimiter) check(c fiber.Ctx, tier Tier) error {
+	ctx := c.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -390,7 +390,7 @@ func (rl *RateLimiter) storage() *RedisStorage {
 
 // handleRedisError handles a Redis communication failure during rate limit check.
 func (rl *RateLimiter) handleRedisError(
-	c *fiber.Ctx,
+	c fiber.Ctx,
 	ctx context.Context,
 	span trace.Span,
 	tier Tier,
@@ -428,7 +428,7 @@ func (rl *RateLimiter) handleRedisError(
 // ttl is the actual remaining TTL of the Redis key, used for accurate Retry-After
 // and X-RateLimit-Reset headers instead of the full window duration.
 func (rl *RateLimiter) handleLimitExceeded(
-	c *fiber.Ctx,
+	c fiber.Ctx,
 	ctx context.Context,
 	span trace.Span,
 	tier Tier,

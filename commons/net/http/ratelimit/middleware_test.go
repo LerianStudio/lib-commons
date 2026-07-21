@@ -16,13 +16,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons"
-	chttp "github.com/LerianStudio/lib-commons/v5/commons/net/http"
-	libRedis "github.com/LerianStudio/lib-commons/v5/commons/redis"
-	tmcore "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/core"
-	libLog "github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-commons/v6/commons"
+	chttp "github.com/LerianStudio/lib-commons/v6/commons/net/http"
+	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
+	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/alicebob/miniredis/v2"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -138,9 +138,9 @@ func newTestMiddlewareRedisConnection(t *testing.T, mr *miniredis.Miniredis) *li
 }
 
 func newTestApp(handler fiber.Handler) *fiber.App {
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	app.Use(handler)
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendString("ok")
 	})
 
@@ -152,11 +152,12 @@ func newTestApp(handler fiber.Handler) *fiber.App {
 // depending on the synthetic RemoteAddr assigned by app.Test().
 func newTestAppWithProxyHeader(handler fiber.Handler) *fiber.App {
 	app := fiber.New(fiber.Config{
-		DisableStartupMessage: true,
-		ProxyHeader:           fiber.HeaderXForwardedFor,
+		TrustProxy:       true,
+		TrustProxyConfig: fiber.TrustProxyConfig{Proxies: []string{"0.0.0.0/0", "::/0"}},
+		ProxyHeader:      fiber.HeaderXForwardedFor,
 	})
 	app.Use(handler)
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendString("ok")
 	})
 
@@ -169,7 +170,7 @@ func doRequest(t *testing.T, app *fiber.App) *http.Response {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("X-Forwarded-For", "10.0.0.1")
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 
 	return resp
@@ -181,7 +182,7 @@ func doRequestWithHeader(t *testing.T, app *fiber.App, header, value string) *ht
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set(header, value)
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 
 	return resp
@@ -434,13 +435,13 @@ func TestMiddleware_TierIsolation(t *testing.T) {
 	tierB := Tier{Name: "tier-b", Max: 2, Window: 60 * time.Second}
 	rl := New(conn)
 
-	appA := fiber.New(fiber.Config{DisableStartupMessage: true})
+	appA := fiber.New()
 	appA.Use(rl.WithRateLimit(tierA))
-	appA.Get("/test", func(c *fiber.Ctx) error { return c.SendString("ok") })
+	appA.Get("/test", func(c fiber.Ctx) error { return c.SendString("ok") })
 
-	appB := fiber.New(fiber.Config{DisableStartupMessage: true})
+	appB := fiber.New()
 	appB.Use(rl.WithRateLimit(tierB))
-	appB.Get("/test", func(c *fiber.Ctx) error { return c.SendString("ok") })
+	appB.Get("/test", func(c fiber.Ctx) error { return c.SendString("ok") })
 
 	// Exhaust tier A
 	for range 2 {
@@ -496,13 +497,13 @@ func TestMiddleware_InvalidTenantContextFailsClosedEvenWhenFailOpen(t *testing.T
 	tier := Tier{Name: "invalid-tenant", Max: 10, Window: 60 * time.Second}
 	rl := New(conn, WithFailOpen(true))
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
-	app.Use(func(c *fiber.Ctx) error {
-		c.SetUserContext(tmcore.ContextWithTenantID(c.UserContext(), "tenant:raw-secret"))
+	app := fiber.New()
+	app.Use(func(c fiber.Ctx) error {
+		c.SetContext(tmcore.ContextWithTenantID(c.Context(), "tenant:raw-secret"))
 		return c.Next()
 	})
 	app.Use(rl.WithRateLimit(tier))
-	app.Get("/", func(c *fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
+	app.Get("/", func(c fiber.Ctx) error { return c.SendStatus(http.StatusOK) })
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	resp, err := app.Test(req)
@@ -617,20 +618,20 @@ func TestMiddleware_MultipleTiers(t *testing.T) {
 
 	rl := New(conn)
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
+	app := fiber.New()
 	app.Use(rl.WithRateLimit(globalTier))
 
 	strict := app.Group("/strict")
 	strict.Use(rl.WithRateLimit(strictTier))
-	strict.Get("/endpoint", func(c *fiber.Ctx) error { return c.SendString("ok") })
+	strict.Get("/endpoint", func(c fiber.Ctx) error { return c.SendString("ok") })
 
-	app.Get("/normal", func(c *fiber.Ctx) error { return c.SendString("ok") })
+	app.Get("/normal", func(c fiber.Ctx) error { return c.SendString("ok") })
 
 	// Strict endpoint: 2 requests allowed, 3rd blocked by strict tier
 	for range 2 {
 		req := httptest.NewRequest(http.MethodGet, "/strict/endpoint", nil)
 
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 		resp.Body.Close()
 
@@ -639,7 +640,7 @@ func TestMiddleware_MultipleTiers(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/strict/endpoint", nil)
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	resp.Body.Close()
 
@@ -648,7 +649,7 @@ func TestMiddleware_MultipleTiers(t *testing.T) {
 	// Normal endpoint should still be allowed under global tier
 	req = httptest.NewRequest(http.MethodGet, "/normal", nil)
 
-	resp, err = app.Test(req, -1)
+	resp, err = app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -660,15 +661,15 @@ func TestIdentityFromIP(t *testing.T) {
 
 	fn := IdentityFromIP()
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app := fiber.New()
+	app.Get("/test", func(c fiber.Ctx) error {
 		identity := fn(c)
 		return c.SendString(identity)
 	})
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 
-	resp, err := app.Test(req, -1)
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 	defer resp.Body.Close()
 
@@ -708,8 +709,8 @@ func TestIdentityFromHeader(t *testing.T) {
 
 			fn := IdentityFromHeader(tt.header)
 
-			app := fiber.New(fiber.Config{DisableStartupMessage: true})
-			app.Get("/test", func(c *fiber.Ctx) error {
+			app := fiber.New()
+			app.Get("/test", func(c fiber.Ctx) error {
 				return c.SendString(fn(c))
 			})
 
@@ -718,7 +719,7 @@ func TestIdentityFromHeader(t *testing.T) {
 				req.Header.Set(tt.header, tt.headerVal)
 			}
 
-			resp, err := app.Test(req, -1)
+			resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 			require.NoError(t, err)
 			defer resp.Body.Close()
 
@@ -739,8 +740,8 @@ func TestIdentityFromIPAndHeader(t *testing.T) {
 
 	fn := IdentityFromIPAndHeader("X-Tenant-ID")
 
-	app := fiber.New(fiber.Config{DisableStartupMessage: true})
-	app.Get("/test", func(c *fiber.Ctx) error {
+	app := fiber.New()
+	app.Get("/test", func(c fiber.Ctx) error {
 		return c.SendString(fn(c))
 	})
 
@@ -750,7 +751,7 @@ func TestIdentityFromIPAndHeader(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 		req.Header.Set("X-Tenant-ID", "tenant-abc")
 
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -766,7 +767,7 @@ func TestIdentityFromIPAndHeader(t *testing.T) {
 
 		req := httptest.NewRequest(http.MethodGet, "/test", nil)
 
-		resp, err := app.Test(req, -1)
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, err)
 		defer resp.Body.Close()
 
@@ -873,7 +874,7 @@ func TestMiddleware_OnLimitedCallback(t *testing.T) {
 	)
 
 	tier := Tier{Name: "test-callback", Max: 1, Window: 60 * time.Second}
-	rl := New(conn, WithOnLimited(func(_ *fiber.Ctx, t Tier) {
+	rl := New(conn, WithOnLimited(func(_ fiber.Ctx, t Tier) {
 		callbackCalled.Store(true)
 		mu.Lock()
 		callbackTier = t

@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/cache"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/cache"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

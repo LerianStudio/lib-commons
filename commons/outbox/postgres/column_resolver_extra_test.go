@@ -6,7 +6,7 @@ import (
 	"context"
 	"testing"
 
-	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
+	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

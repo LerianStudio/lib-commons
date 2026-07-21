@@ -119,3 +119,29 @@ CVE-2026-41568
 # the advisory is withdrawn. Re-check with: trivy fs --scanners vuln .
 #
 GO-2026-5932
+
+# =============================================================================
+# github.com/gofiber/fiber/v2 — CVE-2026-45045 (MEDIUM)
+# =============================================================================
+#
+# WHY THIS IS IGNORED
+# -------------------
+# CVE-2026-45045: X-Real-IP / forwarded-header spoofing via Header.Add() in
+# Fiber v2's trusted-proxy mechanism. MEDIUM, no fixed version on the v2 line.
+#
+# WHY IT DOES NOT AFFECT US
+# -------------------------
+# lib-commons/v6 runs entirely on Fiber v3. fiber/v2 is present ONLY as an
+# indirect dependency of github.com/danielgtaylor/huma/v2/adapters/humafiber,
+# whose package compiles both a v2 (NewV2*) and a v3 (New*) adapter file. This
+# module invokes ONLY the v3 binding (humafiber.NewWithGroup); the v2 adapter
+# code — and thus the vulnerable trusted-proxy path — is never reached at
+# runtime. huma v2.38.0 (latest) always pulls v2 transitively, so a bump cannot
+# clear this.
+#
+# WHAT TO DO WHEN RESOLVED
+# ------------------------
+# Remove this line once humafiber drops the v2 adapter (or lib-commons moves off
+# humafiber). Tracked separately as the "drop fiber/v2 from the graph" decision.
+#
+CVE-2026-45045

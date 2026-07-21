@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
 
@@ -17,7 +17,7 @@ type ResourceOwnershipVerifier func(ctx context.Context, resourceID uuid.UUID) e
 
 // ParseAndVerifyTenantScopedID extracts and validates tenant + resource IDs.
 func ParseAndVerifyTenantScopedID(
-	fiberCtx *fiber.Ctx,
+	fiberCtx fiber.Ctx,
 	idName string,
 	location IDLocation,
 	verifier TenantOwnershipVerifier,
@@ -59,7 +59,7 @@ func ParseAndVerifyTenantScopedID(
 // ParseAndVerifyResourceScopedID extracts and validates tenant + resource IDs,
 // then verifies resource ownership where tenant is implicit in the verifier.
 func ParseAndVerifyResourceScopedID(
-	fiberCtx *fiber.Ctx,
+	fiberCtx fiber.Ctx,
 	idName string,
 	location IDLocation,
 	verifier ResourceOwnershipVerifier,
@@ -102,14 +102,14 @@ func ParseAndVerifyResourceScopedID(
 // parseTenantAndResourceID extracts and validates both tenant and resource UUIDs
 // from the Fiber request context, returning them along with the Go context.
 func parseTenantAndResourceID(
-	fiberCtx *fiber.Ctx,
+	fiberCtx fiber.Ctx,
 	idName string,
 	location IDLocation,
 	tenantExtractor TenantExtractor,
 	missingErr error,
 	invalidErr error,
 ) (uuid.UUID, context.Context, uuid.UUID, error) {
-	ctx := fiberCtx.UserContext()
+	ctx := fiberCtx.Context()
 
 	if tenantExtractor == nil {
 		return uuid.Nil, ctx, uuid.Nil, ErrTenantExtractorNil

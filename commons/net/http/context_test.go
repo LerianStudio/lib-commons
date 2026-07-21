@@ -10,7 +10,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,7 +31,7 @@ func setupApp(t *testing.T, path string, h fiber.Handler) *fiber.App {
 }
 
 // runInFiber runs a handler inside a real Fiber context so assertions
-// that depend on Fiber's *fiber.Ctx work correctly.
+// that depend on Fiber's fiber.Ctx work correctly.
 func runInFiber(t *testing.T, path, url string, handler fiber.Handler) {
 	t.Helper()
 
@@ -53,8 +53,8 @@ func TestParseAndVerifyTenantScopedID_HappyPath_Param(t *testing.T) {
 	tenantID := uuid.New()
 	contextID := uuid.New()
 
-	app := setupApp(t, "/contexts/:contextId", func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	app := setupApp(t, "/contexts/:contextId", func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		gotContextID, gotTenantID, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -91,8 +91,8 @@ func TestParseAndVerifyTenantScopedID_HappyPath_Query(t *testing.T) {
 	tenantID := uuid.New()
 	contextID := uuid.New()
 
-	app := setupApp(t, "/search", func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	app := setupApp(t, "/search", func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		gotContextID, gotTenantID, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -146,8 +146,8 @@ func TestParseAndVerifyTenantScopedID_NilVerifier(t *testing.T) {
 
 	resourceID := uuid.New()
 
-	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
+	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
 
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -171,7 +171,7 @@ func TestParseAndVerifyTenantScopedID_NilTenantExtractor(t *testing.T) {
 
 	resourceID := uuid.New()
 
-	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c *fiber.Ctx) error {
+	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c fiber.Ctx) error {
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
 			"contextId",
@@ -193,8 +193,8 @@ func TestParseAndVerifyTenantScopedID_MissingResourceID_Param(t *testing.T) {
 	t.Parallel()
 
 	// When route param is not defined in the path, Params returns "".
-	runInFiber(t, "/contexts", "/contexts", func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
+	runInFiber(t, "/contexts", "/contexts", func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
 
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -216,8 +216,8 @@ func TestParseAndVerifyTenantScopedID_MissingResourceID_Param(t *testing.T) {
 func TestParseAndVerifyTenantScopedID_MissingResourceID_Query(t *testing.T) {
 	t.Parallel()
 
-	runInFiber(t, "/search", "/search", func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
+	runInFiber(t, "/search", "/search", func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
 
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -239,8 +239,8 @@ func TestParseAndVerifyTenantScopedID_MissingResourceID_Query(t *testing.T) {
 func TestParseAndVerifyTenantScopedID_InvalidResourceID(t *testing.T) {
 	t.Parallel()
 
-	runInFiber(t, "/contexts/:contextId", "/contexts/not-a-uuid", func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
+	runInFiber(t, "/contexts/:contextId", "/contexts/not-a-uuid", func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
 
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -263,8 +263,8 @@ func TestParseAndVerifyTenantScopedID_InvalidResourceID(t *testing.T) {
 func TestParseAndVerifyTenantScopedID_InvalidResourceID_Query(t *testing.T) {
 	t.Parallel()
 
-	runInFiber(t, "/search", "/search?contextId=garbage-value", func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
+	runInFiber(t, "/search", "/search?contextId=garbage-value", func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
 
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -290,7 +290,7 @@ func TestParseAndVerifyTenantScopedID_EmptyTenantFromExtractor(t *testing.T) {
 	resourceID := uuid.New()
 	emptyTenantExtractor := func(ctx context.Context) string { return "" }
 
-	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c *fiber.Ctx) error {
+	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c fiber.Ctx) error {
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
 			"contextId",
@@ -314,7 +314,7 @@ func TestParseAndVerifyTenantScopedID_InvalidTenantID(t *testing.T) {
 	resourceID := uuid.New()
 	badTenantExtractor := func(ctx context.Context) string { return "not-a-valid-uuid" }
 
-	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c *fiber.Ctx) error {
+	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c fiber.Ctx) error {
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
 			"contextId",
@@ -337,8 +337,8 @@ func TestParseAndVerifyTenantScopedID_InvalidIDLocation(t *testing.T) {
 
 	resourceID := uuid.New()
 
-	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
+	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
 
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -363,8 +363,8 @@ func TestParseAndVerifyTenantScopedID_VerifierReturnsContextNotFound(t *testing.
 	tenantID := uuid.New()
 	resourceID := uuid.New()
 
-	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -389,8 +389,8 @@ func TestParseAndVerifyTenantScopedID_VerifierReturnsContextNotOwned(t *testing.
 	tenantID := uuid.New()
 	resourceID := uuid.New()
 
-	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -415,8 +415,8 @@ func TestParseAndVerifyTenantScopedID_VerifierReturnsContextNotActive(t *testing
 	tenantID := uuid.New()
 	resourceID := uuid.New()
 
-	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -441,8 +441,8 @@ func TestParseAndVerifyTenantScopedID_VerifierReturnsContextAccessDenied(t *test
 	tenantID := uuid.New()
 	resourceID := uuid.New()
 
-	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -467,8 +467,8 @@ func TestParseAndVerifyTenantScopedID_VerifierReturnsUnknownError(t *testing.T) 
 	tenantID := uuid.New()
 	resourceID := uuid.New()
 
-	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -497,8 +497,8 @@ func TestParseAndVerifyTenantScopedID_WrappedVerifierError(t *testing.T) {
 	// Wrap ErrContextNotFound in another error to verify errors.Is traversal works.
 	wrappedErr := fmt.Errorf("database issue: %w", ErrContextNotFound)
 
-	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	runInFiber(t, "/contexts/:contextId", "/contexts/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		_, _, err := ParseAndVerifyTenantScopedID(
 			c,
@@ -527,8 +527,8 @@ func TestParseAndVerifyResourceScopedID_HappyPath(t *testing.T) {
 	tenantID := uuid.New()
 	exceptionID := uuid.New()
 
-	app := setupApp(t, "/exceptions/:exceptionId", func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	app := setupApp(t, "/exceptions/:exceptionId", func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		gotID, gotTenantID, err := ParseAndVerifyResourceScopedID(
 			c,
@@ -584,8 +584,8 @@ func TestParseAndVerifyResourceScopedID_NilVerifier(t *testing.T) {
 
 	resourceID := uuid.New()
 
-	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
+	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
 
 		_, _, err := ParseAndVerifyResourceScopedID(
 			c,
@@ -610,7 +610,7 @@ func TestParseAndVerifyResourceScopedID_NilTenantExtractor(t *testing.T) {
 
 	resourceID := uuid.New()
 
-	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c *fiber.Ctx) error {
+	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c fiber.Ctx) error {
 		_, _, err := ParseAndVerifyResourceScopedID(
 			c,
 			"exceptionId",
@@ -632,8 +632,8 @@ func TestParseAndVerifyResourceScopedID_NilTenantExtractor(t *testing.T) {
 func TestParseAndVerifyResourceScopedID_MissingResourceID(t *testing.T) {
 	t.Parallel()
 
-	runInFiber(t, "/exceptions", "/exceptions", func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
+	runInFiber(t, "/exceptions", "/exceptions", func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
 
 		_, _, err := ParseAndVerifyResourceScopedID(
 			c,
@@ -656,8 +656,8 @@ func TestParseAndVerifyResourceScopedID_MissingResourceID(t *testing.T) {
 func TestParseAndVerifyResourceScopedID_InvalidResourceID(t *testing.T) {
 	t.Parallel()
 
-	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/not-valid", func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
+	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/not-valid", func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
 
 		_, _, err := ParseAndVerifyResourceScopedID(
 			c,
@@ -684,7 +684,7 @@ func TestParseAndVerifyResourceScopedID_EmptyTenantFromExtractor(t *testing.T) {
 	resourceID := uuid.New()
 	emptyTenantExtractor := func(ctx context.Context) string { return "" }
 
-	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c *fiber.Ctx) error {
+	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c fiber.Ctx) error {
 		_, _, err := ParseAndVerifyResourceScopedID(
 			c,
 			"exceptionId",
@@ -709,7 +709,7 @@ func TestParseAndVerifyResourceScopedID_InvalidTenantID(t *testing.T) {
 	resourceID := uuid.New()
 	badExtractor := func(ctx context.Context) string { return "zzz-invalid" }
 
-	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c *fiber.Ctx) error {
+	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c fiber.Ctx) error {
 		_, _, err := ParseAndVerifyResourceScopedID(
 			c,
 			"exceptionId",
@@ -734,8 +734,8 @@ func TestParseAndVerifyResourceScopedID_VerifierReturnsExceptionNotFound(t *test
 	tenantID := uuid.New()
 	resourceID := uuid.New()
 
-	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		_, _, err := ParseAndVerifyResourceScopedID(
 			c,
@@ -761,8 +761,8 @@ func TestParseAndVerifyResourceScopedID_VerifierReturnsExceptionAccessDenied(t *
 	tenantID := uuid.New()
 	resourceID := uuid.New()
 
-	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		_, _, err := ParseAndVerifyResourceScopedID(
 			c,
@@ -788,8 +788,8 @@ func TestParseAndVerifyResourceScopedID_VerifierReturnsDisputeNotFound(t *testin
 	tenantID := uuid.New()
 	resourceID := uuid.New()
 
-	runInFiber(t, "/disputes/:disputeId", "/disputes/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	runInFiber(t, "/disputes/:disputeId", "/disputes/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		_, _, err := ParseAndVerifyResourceScopedID(
 			c,
@@ -815,8 +815,8 @@ func TestParseAndVerifyResourceScopedID_VerifierReturnsDisputeAccessDenied(t *te
 	tenantID := uuid.New()
 	resourceID := uuid.New()
 
-	runInFiber(t, "/disputes/:disputeId", "/disputes/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	runInFiber(t, "/disputes/:disputeId", "/disputes/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		_, _, err := ParseAndVerifyResourceScopedID(
 			c,
@@ -842,8 +842,8 @@ func TestParseAndVerifyResourceScopedID_VerifierReturnsUnknownError(t *testing.T
 	tenantID := uuid.New()
 	resourceID := uuid.New()
 
-	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
+	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, tenantID.String()))
 
 		_, _, err := ParseAndVerifyResourceScopedID(
 			c,
@@ -870,8 +870,8 @@ func TestParseAndVerifyResourceScopedID_InvalidIDLocation(t *testing.T) {
 
 	resourceID := uuid.New()
 
-	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c *fiber.Ctx) error {
-		c.SetUserContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
+	runInFiber(t, "/exceptions/:exceptionId", "/exceptions/"+resourceID.String(), func(c fiber.Ctx) error {
+		c.SetContext(context.WithValue(context.Background(), tenantKey{}, uuid.NewString()))
 
 		_, _, err := ParseAndVerifyResourceScopedID(
 			c,
@@ -908,7 +908,7 @@ func TestGetIDValue_Param(t *testing.T) {
 
 	resourceID := uuid.NewString()
 
-	runInFiber(t, "/items/:id", "/items/"+resourceID, func(c *fiber.Ctx) error {
+	runInFiber(t, "/items/:id", "/items/"+resourceID, func(c fiber.Ctx) error {
 		val, err := getIDValue(c, "id", IDLocationParam)
 		require.NoError(t, err)
 		assert.Equal(t, resourceID, val)
@@ -922,7 +922,7 @@ func TestGetIDValue_Query(t *testing.T) {
 
 	resourceID := uuid.NewString()
 
-	runInFiber(t, "/items", "/items?id="+resourceID, func(c *fiber.Ctx) error {
+	runInFiber(t, "/items", "/items?id="+resourceID, func(c fiber.Ctx) error {
 		val, err := getIDValue(c, "id", IDLocationQuery)
 		require.NoError(t, err)
 		assert.Equal(t, resourceID, val)
@@ -934,7 +934,7 @@ func TestGetIDValue_Query(t *testing.T) {
 func TestGetIDValue_InvalidLocation(t *testing.T) {
 	t.Parallel()
 
-	runInFiber(t, "/items", "/items", func(c *fiber.Ctx) error {
+	runInFiber(t, "/items", "/items", func(c fiber.Ctx) error {
 		_, err := getIDValue(c, "id", IDLocation("header"))
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrInvalidIDLocation)
@@ -946,7 +946,7 @@ func TestGetIDValue_InvalidLocation(t *testing.T) {
 func TestGetIDValue_EmptyLocationString(t *testing.T) {
 	t.Parallel()
 
-	runInFiber(t, "/items", "/items", func(c *fiber.Ctx) error {
+	runInFiber(t, "/items", "/items", func(c fiber.Ctx) error {
 		_, err := getIDValue(c, "id", IDLocation(""))
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrInvalidIDLocation)
@@ -959,7 +959,7 @@ func TestGetIDValue_SpecialCharactersInQuery(t *testing.T) {
 	t.Parallel()
 
 	// Fiber URL-decodes query params, so %20 becomes a space.
-	runInFiber(t, "/items", "/items?id=hello%20world", func(c *fiber.Ctx) error {
+	runInFiber(t, "/items", "/items?id=hello%20world", func(c fiber.Ctx) error {
 		val, err := getIDValue(c, "id", IDLocationQuery)
 		require.NoError(t, err)
 		assert.Equal(t, "hello world", val)

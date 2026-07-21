@@ -1,7 +1,7 @@
 package http
 
 import (
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 // RespondErrorEnvelope writes a richer error envelope at the supplied HTTP
@@ -21,7 +21,7 @@ import (
 // counter on every error response, or attach an OTel span event) wrap this
 // helper at their call site — keep RespondErrorEnvelope narrowly scoped to
 // the JSON write.
-func RespondErrorEnvelope(c *fiber.Ctx, status int, env ErrorEnvelope) error {
+func RespondErrorEnvelope(c fiber.Ctx, status int, env ErrorEnvelope) error {
 	if c == nil {
 		return ErrContextNotFound
 	}

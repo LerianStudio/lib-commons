@@ -7,8 +7,8 @@ import (
 	"os"
 	"sync"
 
-	"github.com/LerianStudio/lib-observability/assert"
-	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-observability/v2/assert"
+	"github.com/LerianStudio/lib-observability/v2/log"
 )
 
 var (

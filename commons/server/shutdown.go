@@ -12,12 +12,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-commons/v5/commons/license"
-	"github.com/LerianStudio/lib-observability/log"
-	"github.com/LerianStudio/lib-observability/runtime"
-	opentelemetry "github.com/LerianStudio/lib-observability/tracing"
-	"github.com/gofiber/fiber/v2"
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v6/commons/license"
+	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-observability/v2/runtime"
+	opentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/gofiber/fiber/v3"
 	"google.golang.org/grpc"
 )
 

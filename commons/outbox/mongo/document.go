@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/outbox"
+	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	mongodriver "go.mongodb.org/mongo-driver/v2/mongo"

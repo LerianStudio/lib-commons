@@ -2,8 +2,9 @@
 // Use of this source code is governed by the Elastic License 2.0
 // that can be found in the LICENSE file.
 
-// Package secretsmanager provides functions for retrieving M2M (machine-to-machine)
-// credentials from AWS Secrets Manager.
+// Package secretsmanager provides functions for retrieving M2M
+// (machine-to-machine) and external integration credentials from AWS Secrets
+// Manager.
 //
 // This package is designed to be self-contained with no dependency on internal packages,
 // making it suitable for migration to lib-commons.
@@ -40,6 +41,13 @@
 //
 // All functions in this package are safe for concurrent use.
 // No package-level mutable state is maintained.
+//
+// External credentials may be retrieved either from the conventional mutable
+// path with GetExternalCredentials or from a UUID-version-addressed SecretId
+// with GetExternalCredentialsByReference. Build references locally with
+// BuildExternalSecretVersionReference. Parse persisted references with
+// ParseExternalCredentialReference and a trusted ExternalCredentialScope before
+// retrieval.
 package secretsmanager
 
 import (
@@ -52,7 +60,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/LerianStudio/lib-observability/constants"
+	"github.com/LerianStudio/lib-observability/v2/constants"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
@@ -146,7 +154,7 @@ func isNilInterface(i any) bool {
 
 	v := reflect.ValueOf(i)
 
-	return v.Kind() == reflect.Pointer && v.IsNil()
+	return isNilableKind(v.Kind()) && v.IsNil()
 }
 
 // M2MCredentials holds credentials retrieved from the Secret Vault.

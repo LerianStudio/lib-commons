@@ -1,6 +1,6 @@
 package security
 
-import "github.com/LerianStudio/lib-observability/redaction"
+import "github.com/LerianStudio/lib-observability/v2/redaction"
 
 // DefaultSensitiveFields returns a copy of the default sensitive field names.
 // The canonical sensitive-field taxonomy is owned by lib-observability.

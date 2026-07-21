@@ -5,7 +5,7 @@ package safe_test
 import (
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/safe"
+	"github.com/LerianStudio/lib-commons/v6/commons/safe"
 	"github.com/shopspring/decimal"
 )
 

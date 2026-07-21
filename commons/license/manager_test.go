@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/license"
+	"github.com/LerianStudio/lib-commons/v6/commons/license"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

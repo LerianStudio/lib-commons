@@ -20,9 +20,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/LerianStudio/lib-commons/v5/commons/events"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/testutil"
-	"github.com/LerianStudio/lib-observability/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/events"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-observability/v2/log"
 )
 
 // setEnv sets ENVIRONMENT_NAME for the duration of the test and explicitly

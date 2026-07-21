@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	constant "github.com/LerianStudio/lib-observability/constants"
-	libOtel "github.com/LerianStudio/lib-observability/tracing"
+	constant "github.com/LerianStudio/lib-observability/v2/constants"
+	libOtel "github.com/LerianStudio/lib-observability/v2/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

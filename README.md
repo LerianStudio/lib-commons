@@ -18,7 +18,7 @@ Use the library boundary table below as the canonical direction for renamed, red
 ## Installation
 
 ```bash
-go get github.com/LerianStudio/lib-commons/v5
+go get github.com/LerianStudio/lib-commons/v6
 ```
 
 ## Lerian Library Boundaries
@@ -86,7 +86,7 @@ The former `commons/opentelemetry`, `commons/opentelemetry/metrics`, `commons/op
 - `commons/license`: license validation with functional options (`New(opts...)`, `WithLogger`, `WithFailClosed`), fail-closed default termination (`Terminate` exits with code 1 unless a custom handler is configured), handler management (`SetHandler`), error-returning validation (`TerminateWithError`/`TerminateSafe`)
 - `commons/pointers`: pointer conversion helpers (`String`, `Bool`, `Time`, `Int`, `Int64`, `Float64`)
 - `commons/cron`: cron expression parser (`Parse`) and scheduler (`Schedule.Next`)
-- `commons/secretsmanager`: AWS Secrets Manager M2M credential retrieval via `GetM2MCredentials`, typed retrieval errors, and the `SecretsManagerClient` test seam
+- `commons/secretsmanager`: AWS Secrets Manager M2M and external credential retrieval via `GetM2MCredentials` / `GetExternalCredentials`; version-addressed external credentials use the opaque `ExternalCredentialReference` capability, created by `BuildExternalSecretVersionReference` or parsed from storage with `ParseExternalCredentialReference(reference, trustedScope)` before `GetExternalCredentialsByReference`; canonical UUID-versioned SecretIds (`tenants/{env?}/{tenant}/{app}/external/{target}/credentials/versions/{uuid}`), exact scope binding, strict input validation, typed retrieval errors, non-null string-only JSON objects, and the `SecretsManagerClient` test seam
 
 ### Multi-tenant packages
 

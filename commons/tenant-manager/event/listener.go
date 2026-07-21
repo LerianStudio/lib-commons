@@ -11,12 +11,12 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/LerianStudio/lib-commons/v5/commons"
-	"github.com/LerianStudio/lib-commons/v5/commons/events"
-	"github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/internal/logcompat"
-	observability "github.com/LerianStudio/lib-observability"
-	libLog "github.com/LerianStudio/lib-observability/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
+	"github.com/LerianStudio/lib-commons/v6/commons"
+	"github.com/LerianStudio/lib-commons/v6/commons/events"
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
+	observability "github.com/LerianStudio/lib-observability/v2"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 )
 
 // EventHandler is a callback invoked for each parsed tenant lifecycle event.

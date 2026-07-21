@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +17,7 @@ func TestRespond_NegativeStatus(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return Respond(c, -1, fiber.Map{"ok": true})
 	})
 
@@ -33,7 +33,7 @@ func TestRespond_Status599IsValid(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return Respond(c, 599, fiber.Map{"ok": true})
 	})
 
@@ -49,7 +49,7 @@ func TestRespond_Status100IsValid(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return Respond(c, http.StatusContinue, fiber.Map{"data": "x"})
 	})
 
@@ -65,7 +65,7 @@ func TestRespond_EmptyPayload(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return Respond(c, http.StatusOK, fiber.Map{})
 	})
 
@@ -86,7 +86,7 @@ func TestRespondStatus_Status600ClampedTo500(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Get("/", func(c *fiber.Ctx) error {
+	app.Get("/", func(c fiber.Ctx) error {
 		return RespondStatus(c, 600)
 	})
 
@@ -122,7 +122,7 @@ func TestRespondStatus_NoContent(t *testing.T) {
 	t.Parallel()
 
 	app := fiber.New()
-	app.Delete("/", func(c *fiber.Ctx) error {
+	app.Delete("/", func(c fiber.Ctx) error {
 		return RespondStatus(c, http.StatusNoContent)
 	})
 

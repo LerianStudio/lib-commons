@@ -8,7 +8,7 @@ import (
 	"errors"
 	"testing"
 
-	tmpostgres "github.com/LerianStudio/lib-commons/v5/commons/tenant-manager/postgres"
+	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/require"
 )

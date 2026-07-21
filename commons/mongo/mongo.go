@@ -14,14 +14,14 @@ import (
 	"sync"
 	"time"
 
-	commons "github.com/LerianStudio/lib-commons/v5/commons"
-	"github.com/LerianStudio/lib-commons/v5/commons/backoff"
-	"github.com/LerianStudio/lib-commons/v5/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-observability/assert"
-	constant "github.com/LerianStudio/lib-observability/constants"
-	"github.com/LerianStudio/lib-observability/log"
-	"github.com/LerianStudio/lib-observability/metrics"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/tracing"
+	commons "github.com/LerianStudio/lib-commons/v6/commons"
+	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-observability/v2/assert"
+	constant "github.com/LerianStudio/lib-observability/v2/constants"
+	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-observability/v2/metrics"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -32,7 +32,15 @@ import (
 const (
 	defaultServerSelectionTimeout = 5 * time.Second
 	defaultHeartbeatInterval      = 10 * time.Second
-	maxMaxPoolSize                = 1000
+	// defaultTimeout is the client-level CSOT (Client Side Operation Timeout)
+	// applied as a fallback per-operation deadline. Without it, operations on
+	// callers that pass a deadline-less context would hang indefinitely.
+	defaultTimeout = 30 * time.Second
+	// ensureIndexesTimeout is a longer explicit deadline for index creation.
+	// Index builds on large collections can exceed the 30s client default, so
+	// EnsureIndexes uses this floor when the caller supplied no deadline.
+	ensureIndexesTimeout = 5 * time.Minute
+	maxMaxPoolSize       = 1000
 )
 
 var (
@@ -87,9 +95,14 @@ type Config struct {
 	MaxPoolSize            uint64
 	ServerSelectionTimeout time.Duration
 	HeartbeatInterval      time.Duration
-	TLS                    *TLSConfig
-	Logger                 log.Logger
-	MetricsFactory         *metrics.MetricsFactory
+	// Timeout is the client-level CSOT (Client Side Operation Timeout): a
+	// single bound applied as a fallback deadline to every operation whose
+	// context carries none. Zero uses defaultTimeout (30s); a caller-provided
+	// per-operation context deadline always takes precedence.
+	Timeout        time.Duration
+	TLS            *TLSConfig
+	Logger         log.Logger
+	MetricsFactory *metrics.MetricsFactory
 }
 
 func (cfg Config) validate() error {
@@ -258,8 +271,14 @@ func (c *Client) connectLocked(ctx context.Context) error {
 		heartbeatInterval = defaultHeartbeatInterval
 	}
 
+	timeout := c.cfg.Timeout
+	if timeout <= 0 {
+		timeout = defaultTimeout
+	}
+
 	clientOptions.SetServerSelectionTimeout(serverSelectionTimeout)
 	clientOptions.SetHeartbeatInterval(heartbeatInterval)
+	clientOptions.SetTimeout(timeout)
 
 	if c.cfg.MaxPoolSize > 0 {
 		clientOptions.SetMaxPoolSize(c.cfg.MaxPoolSize)
@@ -554,6 +573,18 @@ func (c *Client) EnsureIndexes(ctx context.Context, collection string, indexes .
 
 	if len(indexes) == 0 {
 		return ErrEmptyIndexes
+	}
+
+	// The client-level CSOT (defaultTimeout, 30s) applies as a fallback
+	// per-operation deadline. Index builds on large collections can exceed
+	// it, which would break bootstrap index creation. Give index creation a
+	// longer explicit deadline when the caller supplied none; a caller-
+	// provided deadline is always respected.
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+
+		ctx, cancel = context.WithTimeout(ctx, ensureIndexesTimeout)
+		defer cancel()
 	}
 
 	tracer := otel.Tracer("mongo")

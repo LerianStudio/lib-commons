@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v5/commons"
-	libPostgres "github.com/LerianStudio/lib-commons/v5/commons/postgres"
+	"github.com/LerianStudio/lib-commons/v6/commons"
+	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/require"
 )
