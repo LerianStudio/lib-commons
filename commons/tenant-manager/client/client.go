@@ -62,8 +62,12 @@ type Client struct {
 	httpClientOnce sync.Once
 	logger         libLog.Logger
 	serviceAPIKey  string
-	cache          cache.ConfigCache
-	cacheTTL       time.Duration
+	// bearerTokenProvider supplies the service-account bearer token for
+	// RBAC-gated write operations (e.g. CreateTenant). When nil, no
+	// Authorization header is sent (the read methods rely on X-API-Key only).
+	bearerTokenProvider TokenProvider
+	cache               cache.ConfigCache
+	cacheTTL            time.Duration
 
 	// allowInsecureHTTP permits http:// URLs when set to true.
 	// By default, only https:// URLs are accepted unless explicitly opted in
@@ -307,12 +311,14 @@ func isServerError(statusCode int) bool {
 	return statusCode >= http.StatusInternalServerError
 }
 
-// truncateBody returns the body as a string, truncated to maxLen bytes with a
-// "...(truncated)" suffix if the body exceeds maxLen. This prevents large
+// truncateBody returns the body as a string, truncated to 512 bytes with a
+// "...(truncated)" suffix if the body exceeds that limit. This prevents large
 // response bodies from being logged or included in error messages.
 // The truncation point is adjusted to the last valid UTF-8 rune boundary
 // to avoid splitting multi-byte characters.
-func truncateBody(body []byte, maxLen int) string {
+func truncateBody(body []byte) string {
+	const maxLen = 512
+
 	if len(body) <= maxLen {
 		return string(body)
 	}
@@ -413,7 +419,7 @@ func (c *Client) handleGetTenantConfigStatus(
 
 		c.logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
 			libLog.Int("status", statusCode),
-			libLog.String("body", truncateBody(body, 512)),
+			libLog.String("body", truncateBody(body)),
 		)
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", statusCode))
 
@@ -498,7 +504,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	libOpentelemetry.InjectHTTPContext(ctx, req.Header)
 
 	// Execute request
-	// #nosec G704 -- baseURL is validated at construction time and not user-controlled
+	// #nosec G107 -- baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
@@ -618,7 +624,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	libOpentelemetry.InjectHTTPContext(ctx, req.Header)
 
 	// Execute request
-	// #nosec G704 -- baseURL is validated at construction time and not user-controlled
+	// #nosec G107 -- baseURL is validated at construction time and not user-controlled
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
@@ -652,7 +658,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 
 		logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
 			libLog.Int("status", resp.StatusCode),
-			libLog.String("body", truncateBody(body, 512)),
+			libLog.String("body", truncateBody(body)),
 		)
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", resp.StatusCode))
 
