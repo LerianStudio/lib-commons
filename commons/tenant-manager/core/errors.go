@@ -51,6 +51,14 @@ var ErrTenantNotFound = errors.New("tenant not found")
 // conflict from an opaque failure.
 var ErrTenantConflict = errors.New("tenant already exists")
 
+// ErrAssociationConflict is returned when associating a service to a tenant is
+// rejected with HTTP 409 because the association already exists. Like
+// ErrTenantConflict it is a valid 4xx round-trip, not a service failure, so it
+// does not trip the circuit breaker. The association endpoint is idempotent by
+// identity, so callers converge on the existing association via
+// errors.Is(err, core.ErrAssociationConflict).
+var ErrAssociationConflict = errors.New("service association already exists")
+
 // ErrServiceNotConfigured is returned when the service is not configured for the tenant.
 var ErrServiceNotConfigured = errors.New("service not configured for tenant")
 
