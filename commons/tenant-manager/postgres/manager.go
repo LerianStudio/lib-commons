@@ -448,7 +448,7 @@ func (p *Manager) detectAndReconnectPostgres(ctx context.Context, tenantID strin
 		return false
 	}
 
-	freshConnStr, err := buildConnectionString(pgConfig)
+	freshConnStr, err := BuildConnectionString(pgConfig)
 	if err != nil {
 		if p.logger != nil {
 			p.logger.Warnf("config change detection: invalid connection string for tenant %s: %v", tenantID, err)
@@ -463,7 +463,7 @@ func (p *Manager) detectAndReconnectPostgres(ctx context.Context, tenantID strin
 	freshReplicaConnStr := freshConnStr // default: same as primary
 
 	if pgReplicaConfig := config.GetPostgreSQLReplicaConfig(p.service, p.module); pgReplicaConfig != nil {
-		if replicaStr, buildErr := buildConnectionString(pgReplicaConfig); buildErr == nil {
+		if replicaStr, buildErr := BuildConnectionString(pgReplicaConfig); buildErr == nil {
 			freshReplicaConnStr = replicaStr
 		}
 	}
@@ -739,7 +739,7 @@ func (p *Manager) buildTenantPostgresConnection(
 	logger *logcompat.Logger,
 	span trace.Span,
 ) (*PostgresConnection, error) {
-	primaryConnStr, err := buildConnectionString(pgConfig)
+	primaryConnStr, err := BuildConnectionString(pgConfig)
 	if err != nil {
 		logger.ErrorCtx(ctx, fmt.Sprintf("invalid connection string for tenant %s: %v", tenantID, err))
 		libOpentelemetry.HandleSpanError(span, "invalid connection string", err)
@@ -843,7 +843,7 @@ func (p *Manager) resolveReplicaConnection(
 		return primaryConnStr, pgConfig.Database, nil
 	}
 
-	replicaConnStr, buildErr := buildConnectionString(pgReplicaConfig)
+	replicaConnStr, buildErr := BuildConnectionString(pgReplicaConfig)
 	if buildErr != nil {
 		logger.Errorf("invalid replica connection string for tenant %s: %v", tenantID, buildErr)
 		return "", "", buildErr
@@ -1069,9 +1069,22 @@ func (p *Manager) Stats() Stats {
 // in the options=-csearch_path= connection string parameter.
 var validSchemaPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-func buildConnectionString(cfg *core.PostgreSQLConfig) (string, error) {
+// BuildConnectionString builds the PostgreSQL DSN for a tenant configuration.
+//
+// It is exported so external callers that open a raw *sql.DB (for example,
+// detached per-tenant migration runners) build the EXACT same DSN the tenant
+// pool builds, instead of mirroring this logic and drifting from it.
+//
+// extraSearchPathSchemas are appended, in order, to the schema search_path —
+// but ONLY when cfg.Schema != "". They keep a shared extensions schema (holding
+// pg_trgm and friends) resolvable during schema-scoped DDL such as
+// CREATE INDEX ... gin_trgm_ops, since a Postgres extension is installed
+// per-DATABASE and can only be created once. When cfg.Schema == "", the extras
+// are ignored: dedicated (non-schema-isolated) tenants keep the default
+// search_path.
+func BuildConnectionString(cfg *core.PostgreSQLConfig, extraSearchPathSchemas ...string) (string, error) {
 	if cfg == nil {
-		return "", fmt.Errorf("postgres.buildConnectionString: %w", core.ErrNilConfig)
+		return "", fmt.Errorf("postgres.BuildConnectionString: %w", core.ErrNilConfig)
 	}
 
 	sslmode := cfg.SSLMode
@@ -1119,7 +1132,20 @@ func buildConnectionString(cfg *core.PostgreSQLConfig) (string, error) {
 			return "", fmt.Errorf("invalid schema name %q: must match %s", cfg.Schema, validSchemaPattern.String())
 		}
 
-		values.Set("options", "-csearch_path="+cfg.Schema)
+		schemas := make([]string, 0, 1+len(extraSearchPathSchemas))
+		schemas = append(schemas, cfg.Schema)
+
+		// Extras land inside the options=-csearch_path= value, so each one is
+		// validated against the same injection guard as the primary schema.
+		for _, extra := range extraSearchPathSchemas {
+			if !validSchemaPattern.MatchString(extra) {
+				return "", fmt.Errorf("invalid search_path schema %q: must match %s", extra, validSchemaPattern.String())
+			}
+
+			schemas = append(schemas, extra)
+		}
+
+		values.Set("options", "-csearch_path="+strings.Join(schemas, ","))
 	}
 
 	connURL.RawQuery = values.Encode()
@@ -1296,7 +1322,7 @@ func CreateDirectConnection(ctx context.Context, cfg *core.PostgreSQLConfig) (*s
 		return nil, fmt.Errorf("postgres.CreateDirectConnection: %w", core.ErrNilConfig)
 	}
 
-	connStr, err := buildConnectionString(cfg)
+	connStr, err := BuildConnectionString(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("invalid connection config: %w", err)
 	}
