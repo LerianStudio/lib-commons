@@ -22,7 +22,9 @@ func TestReleasePolicy_BreakingChangesStayMinor(t *testing.T) {
 	content, err := os.ReadFile("../.releaserc.yml")
 	require.NoError(t, err)
 
-	policy := string(content)
-	assert.Contains(t, policy, `{ breaking: true, release: "minor" }`)
-	assert.NotContains(t, strings.ReplaceAll(policy, " ", ""), `breaking:true,release:"major"`)
+	// Collapse all whitespace (spaces, tabs, newlines) so the guard cannot be
+	// bypassed by reformatting the rule across lines or with tabs.
+	normalized := strings.Join(strings.Fields(string(content)), "")
+	assert.Contains(t, normalized, `{breaking:true,release:"minor"}`)
+	assert.NotContains(t, normalized, `{breaking:true,release:"major"}`)
 }
