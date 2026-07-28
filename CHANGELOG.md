@@ -1,5 +1,26 @@
 # Lib-commons Changelog
 
+## [6.1.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.1.0)
+
+Features:
+- Added client methods for `AssociateService`, `SuspendService`, and `ReactivateTenant` in the tenant manager. (@fredcamaral)
+- Introduced the `CreateTenant` client method in the tenant manager. (@fredcamaral)
+- Migrated to Fiber `v3` and initiated a `/v6` major release. (@rodrigodh)
+- Added scoped secret references in the secrets manager. (@fredcamaral)
+- Implemented `v1-only` verification for webhooks. (@fredcamaral)
+
+Fixes:
+- Corrected the detection of CORS wildcard in parsed origins instead of the raw string. (@rodrigodh)
+- Enhanced the freshness verification process for webhooks. (@fredcamaral)
+
+Improvements:
+- Triggered a major release cut for `lib-commons` `v6`. (@rodrigodh)
+- Bumped `lib-observability/v2` to `v2.0.0`. (@rodrigodh)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v6.0.0...v6.1.0)
+
+---
+
 ## [6.0.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.0.0)
 
 Features:
