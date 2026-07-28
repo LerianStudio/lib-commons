@@ -233,11 +233,96 @@ func TestBuildConnectionString(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result, err := buildConnectionString(tt.cfg)
+			result, err := BuildConnectionString(tt.cfg)
 			require.NoError(t, err)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestBuildConnectionString_ExtraSearchPathSchemas(t *testing.T) {
+	t.Parallel()
+
+	schemaCfg := func() *core.PostgreSQLConfig {
+		return &core.PostgreSQLConfig{
+			Host:     "localhost",
+			Port:     5432,
+			Username: "user",
+			Password: "pass",
+			Database: "testdb",
+			SSLMode:  "disable",
+			Schema:   "tenant_abc",
+		}
+	}
+
+	t.Run("appends one extra schema to the search_path", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := BuildConnectionString(schemaCfg(), "ext_shared")
+
+		require.NoError(t, err)
+		assert.Equal(t,
+			"postgres://user:pass@localhost:5432/testdb?options=-csearch_path%3Dtenant_abc%2Cext_shared&sslmode=disable",
+			result,
+		)
+	})
+
+	t.Run("appends multiple extra schemas in order", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := BuildConnectionString(schemaCfg(), "ext_a", "ext_b")
+
+		require.NoError(t, err)
+		assert.Equal(t,
+			"postgres://user:pass@localhost:5432/testdb?options=-csearch_path%3Dtenant_abc%2Cext_a%2Cext_b&sslmode=disable",
+			result,
+		)
+	})
+
+	t.Run("ignores extras when schema is empty", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := &core.PostgreSQLConfig{
+			Host:     "localhost",
+			Port:     5432,
+			Username: "user",
+			Password: "pass",
+			Database: "testdb",
+			SSLMode:  "disable",
+		}
+
+		result, err := BuildConnectionString(cfg, "ext_shared", "ext_other")
+
+		require.NoError(t, err)
+		assert.Equal(t, "postgres://user:pass@localhost:5432/testdb?sslmode=disable", result)
+		assert.NotContains(t, result, "options")
+	})
+
+	t.Run("rejects an extra schema that fails the injection guard", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := BuildConnectionString(schemaCfg(), "ext;drop")
+
+		require.Error(t, err)
+		assert.Empty(t, result)
+		assert.Contains(t, err.Error(), "invalid search_path schema")
+	})
+
+	t.Run("no-extras path is byte-identical to prior output", func(t *testing.T) {
+		t.Parallel()
+
+		cfg := schemaCfg()
+
+		withNoExtras, err := BuildConnectionString(cfg)
+		require.NoError(t, err)
+
+		// Regression pin: passing zero variadic args must produce exactly the
+		// pre-export DSN (schema-only search_path, no trailing separators).
+		assert.Equal(t,
+			"postgres://user:pass@localhost:5432/testdb?options=-csearch_path%3Dtenant_abc&sslmode=disable",
+			withNoExtras,
+		)
+	})
 }
 
 func TestBuildConnectionString_SSLCertificates(t *testing.T) {
@@ -334,7 +419,7 @@ func TestBuildConnectionString_SSLCertificates(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := buildConnectionString(tt.cfg)
+			result, err := BuildConnectionString(tt.cfg)
 
 			require.NoError(t, err)
 
@@ -413,7 +498,7 @@ func TestBuildConnectionString_SSLModeDisableWithCerts(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := buildConnectionString(tt.cfg)
+			result, err := BuildConnectionString(tt.cfg)
 
 			require.Error(t, err)
 			assert.Empty(t, result)
@@ -433,7 +518,7 @@ func TestBuildConnectionString_SSLModeDisableWithCerts(t *testing.T) {
 			SSLMode:  "disable",
 		}
 
-		result, err := buildConnectionString(cfg)
+		result, err := BuildConnectionString(cfg)
 
 		require.NoError(t, err)
 		assert.Contains(t, result, "sslmode=disable")
@@ -478,7 +563,7 @@ func TestBuildConnectionString_InvalidSchema(t *testing.T) {
 				Schema:   tt.schema,
 			}
 
-			result, err := buildConnectionString(cfg)
+			result, err := BuildConnectionString(cfg)
 
 			require.Error(t, err)
 			assert.Empty(t, result)
@@ -506,9 +591,9 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 			SSLMode:  "disable",
 		}
 
-		primaryConnStr, err := buildConnectionString(primaryConfig)
+		primaryConnStr, err := BuildConnectionString(primaryConfig)
 		require.NoError(t, err)
-		replicaConnStr, err := buildConnectionString(replicaConfig)
+		replicaConnStr, err := BuildConnectionString(replicaConfig)
 		require.NoError(t, err)
 
 		assert.Contains(t, primaryConnStr, "postgres://user:pass@primary-host:5432/")
@@ -539,13 +624,13 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 		assert.Nil(t, pgReplicaConfig)
 
 		// When replica is nil, system should use primary connection string
-		primaryConnStr, err := buildConnectionString(pgConfig)
+		primaryConnStr, err := BuildConnectionString(pgConfig)
 		require.NoError(t, err)
 
 		replicaConnStr := primaryConnStr
 		if pgReplicaConfig != nil {
 			var replicaErr error
-			replicaConnStr, replicaErr = buildConnectionString(pgReplicaConfig)
+			replicaConnStr, replicaErr = BuildConnectionString(pgReplicaConfig)
 			require.NoError(t, replicaErr)
 		}
 
@@ -580,13 +665,13 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 		assert.NotNil(t, pgConfig)
 		assert.NotNil(t, pgReplicaConfig)
 
-		primaryConnStr, err := buildConnectionString(pgConfig)
+		primaryConnStr, err := BuildConnectionString(pgConfig)
 		require.NoError(t, err)
 
 		replicaConnStr := primaryConnStr
 		if pgReplicaConfig != nil {
 			var replicaErr error
-			replicaConnStr, replicaErr = buildConnectionString(pgReplicaConfig)
+			replicaConnStr, replicaErr = BuildConnectionString(pgReplicaConfig)
 			require.NoError(t, replicaErr)
 		}
 

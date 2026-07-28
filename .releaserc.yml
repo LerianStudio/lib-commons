@@ -1,3 +1,15 @@
+# ───────────────────────────────────────────────────────────────────────────
+# Go module majors live in the import path (…/v6, …/v7) and MUST be cut by hand:
+# rename the module path, then tag vN.0.0. CI must NEVER auto-major a Go module.
+#
+# `develop` is a prerelease (beta) channel whose base is the last `main` release
+# (currently v6.0.0). The /v6 cut's breaking commits (Fiber v3, `feat(core)!: …`)
+# live in v6.0.0..HEAD, so a `breaking: major` rule re-applies them on every run
+# and cuts a phantom v7.x-beta tag — INCONSUMABLE by Go for a /v6 module.
+# Keep `breaking` at `minor`: #547 flipped it to `major` only to force the
+# one-shot v5→v6 cut, which is done. For the next real major, do the path rename
+# + manual vN.0.0 tag — do NOT re-flip this rule.
+# ───────────────────────────────────────────────────────────────────────────
 plugins:
   - ["@semantic-release/commit-analyzer", {
       preset: "conventionalcommits",
@@ -17,7 +29,7 @@ plugins:
         { type: "fix", release: "patch" },
         { type: "refactor", release: "minor" },
         { type: "docs", release: "patch" },
-        { breaking: true, release: "major" }
+        { breaking: true, release: "minor" }
       ]
     }]
 
