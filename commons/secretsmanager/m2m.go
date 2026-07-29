@@ -309,13 +309,33 @@ func classifyAWSErrorWithSentinels(err error, secretPath string, notFound, acces
 		return fmt.Errorf("%w at %s", notFound, redacted)
 	}
 
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
-		switch apiErr.ErrorCode() {
-		case "AccessDeniedException", "ExpiredTokenException":
-			return fmt.Errorf("%w: %w", accessDenied, err)
-		}
+	if isVaultAccessDeniedError(err) {
+		return fmt.Errorf("%w: %w", accessDenied, err)
 	}
 
 	return fmt.Errorf("%w: %s: %w", retrievalFailed, redacted, err)
+}
+
+// AWS API error codes that mean the caller's vault access itself is the problem,
+// rather than the secret being absent or the infrastructure being unreachable.
+const (
+	awsErrCodeAccessDenied = "AccessDeniedException"
+	awsErrCodeExpiredToken = "ExpiredTokenException"
+)
+
+// isVaultAccessDeniedError reports whether an AWS SDK error is an access-denied or
+// expired-token failure. Shared by every credential reader in this package so they
+// classify vault access failures identically.
+func isVaultAccessDeniedError(err error) bool {
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+
+	switch apiErr.ErrorCode() {
+	case awsErrCodeAccessDenied, awsErrCodeExpiredToken:
+		return true
+	default:
+		return false
+	}
 }
