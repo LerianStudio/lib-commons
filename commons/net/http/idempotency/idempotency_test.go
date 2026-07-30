@@ -1166,3 +1166,31 @@ func TestCheck_FirstRequest_StoresFingerprintWithState(t *testing.T) {
 	assert.Equal(t, requestFingerprint(http.MethodPost, "/test", []byte(`{"amount":10}`)), fingerprint,
 		"the fingerprint written on completion must be the one the next request will compare against")
 }
+
+func TestCheck_SameKey_QueryVariance_StillReplays(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newRedisClient(t, mr)
+
+	var calls atomic.Int32
+
+	mw := New(conn, WithLogger(libLog.NewNop()))
+	app := newEchoApp(mw.Check(), &calls, tenantMiddleware("tenant-a"))
+
+	// The fingerprint deliberately excludes the query string: clients append
+	// cache-busting parameters on retry, and a retry that differs only there is
+	// still the same request. Pins that decision, so a change to full-URI
+	// fingerprinting fails here instead of silently refusing legitimate retries.
+	first := doSend(t, app, http.MethodPost, "/test?attempt=1", `{"amount":10}`, "query-key")
+	require.Equal(t, http.StatusCreated, first.StatusCode)
+	require.Equal(t, `{"amount":10}`, readBody(t, first))
+
+	second := doSend(t, app, http.MethodPost, "/test?_=1764500000000", `{"amount":10}`, "query-key")
+
+	assert.Equal(t, http.StatusCreated, second.StatusCode,
+		"a retry differing only in the query string must replay, not be refused as reuse")
+	assert.Equal(t, `{"amount":10}`, readBody(t, second))
+	assert.Equal(t, "true", second.Header.Get(chttp.IdempotencyReplayed))
+	assert.Equal(t, int32(1), calls.Load())
+}
