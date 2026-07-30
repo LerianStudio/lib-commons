@@ -12,6 +12,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"fmt"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -77,7 +78,8 @@ func generateTestCert(t *testing.T, notAfter time.Time) (string, string) {
 	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
 	require.NoError(t, err)
 
-	// Key files must be 0600 or stricter — the production code enforces this.
+	// Key files must be 0640 or stricter — the production code enforces this
+	// (no group-write, no `other` bits; group-read is allowed).
 	keyFile, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	require.NoError(t, err)
 	require.NoError(t, pem.Encode(keyFile, &pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
@@ -778,6 +780,47 @@ func TestLoadFromFiles_FilePermissions(t *testing.T) {
 		assert.NotNil(t, cert)
 		assert.NotNil(t, signer)
 	})
+
+	// The mode policy is 0o027: group-READ is allowed so a Kubernetes Secret
+	// volume can be read by a non-root container through the pod's fsGroup,
+	// while group-WRITE and every other bit stay rejected. These subtests are
+	// the audit trail for that relaxation — if someone widens the mask to
+	// accept group-write or other-read, they fail.
+	acceptedModes := []os.FileMode{0o400, 0o440, 0o600, 0o640}
+	for _, mode := range acceptedModes {
+		mode := mode
+
+		t.Run(fmt.Sprintf("%04o key file is accepted", mode), func(t *testing.T) {
+			require.NoError(t, os.Chmod(keyPath, mode))
+
+			cert, signer, loadErr := LoadFromFiles(certPath, keyPath)
+			require.NoError(t, loadErr, "mode %04o must be accepted", mode)
+			assert.NotNil(t, cert)
+			assert.NotNil(t, signer)
+		})
+	}
+
+	rejectedModes := map[string]os.FileMode{
+		"group-write 0o020": 0o620,
+		"group-rw 0o060":    0o660,
+		"other-read 0o004":  0o604,
+		"other-write 0o002": 0o602,
+		"other-exec 0o001":  0o601,
+		"world-readable":    0o644,
+	}
+
+	for name, mode := range rejectedModes {
+		name, mode := name, mode
+
+		t.Run(fmt.Sprintf("%s (%04o) key file is rejected", name, mode), func(t *testing.T) {
+			require.NoError(t, os.Chmod(keyPath, mode))
+
+			_, _, loadErr := LoadFromFiles(certPath, keyPath)
+			require.Error(t, loadErr, "mode %04o must be rejected", mode)
+			assert.True(t, strings.Contains(loadErr.Error(), "permissive"),
+				"error must mention permissive mode, got: %s", loadErr)
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

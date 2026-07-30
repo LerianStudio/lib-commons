@@ -40,6 +40,12 @@ var (
 	ErrIncompleteConfig = errors.New("both certificate and key paths are required; got only one")
 )
 
+// keyModeForbiddenBits is the permission mask a private-key file must not carry:
+// group-write (0o020) plus every other bit (0o007). Group-READ is intentionally
+// absent from the mask — see [parseKeyFile] for the rationale — so 0400, 0440,
+// 0600 and 0640 are accepted while 0620, 0660, 0604 and 0644 are rejected.
+const keyModeForbiddenBits os.FileMode = 0o027
+
 // Manager manages the current certificate and key with thread-safe hot reload.
 // All public methods are safe for concurrent use.
 type Manager struct {
@@ -415,17 +421,36 @@ func parseCertPEM(certPath string) (*x509.Certificate, [][]byte, error) {
 }
 
 // parseKeyFile reads a PEM-encoded private key from keyPath after verifying that
-// file permissions are 0600 or stricter. It tries PKCS#8, PKCS#1 (RSA), and
-// SEC 1 (EC) encodings in order and returns the first successful parse as a
-// crypto.Signer.
+// file permissions grant no write access to the group and no access at all to
+// other (0640 or stricter). It tries PKCS#8, PKCS#1 (RSA), and SEC 1 (EC)
+// encodings in order and returns the first successful parse as a crypto.Signer.
+//
+// Why group-read is allowed. The previous mask (0o077) required owner-only
+// permissions, which is unsatisfiable for the deployment shape this package
+// exists to serve: a Kubernetes Secret mounted into a non-root container. The
+// kubelet owns Secret-volume files as root, so a non-root process can only read
+// them through a group bit granted via the pod's fsGroup — and fsGroup is the
+// pod's own supplementary group, not a shared one, so group-read exposes the key
+// to nothing that is not already inside the same pod. Requiring owner-only left
+// operators with two bad options: run the workload as root, or stage the key
+// through an init container into an emptyDir (which breaks in-place rotation,
+// because emptyDir is a snapshot taken at pod start).
+//
+// The mask still rejects everything that actually widens exposure:
+//   - 0o020 group-write — no peer may replace the key material
+//   - 0o007 any other bit — never readable by unrelated uids on the node
+//
+// This matches how cert-manager and Istio ship private keys (0440/0640). The
+// relaxation is deliberate and audited: see the rejection tests in
+// certificate_test.go, which fail if either bit above is ever accepted again.
 func parseKeyFile(keyPath string) (crypto.Signer, error) {
 	info, err := os.Stat(keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("stat key file: %w", err)
 	}
 
-	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		return nil, fmt.Errorf("key file %q has overly permissive mode %04o; expected 0600 or stricter", keyPath, perm)
+	if perm := info.Mode().Perm(); perm&keyModeForbiddenBits != 0 {
+		return nil, fmt.Errorf("key file %q has overly permissive mode %04o; expected 0640 or stricter (no group-write, no other access)", keyPath, perm)
 	}
 
 	keyPEM, err := os.ReadFile(keyPath) // #nosec G304 -- key path comes from trusted configuration

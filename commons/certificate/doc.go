@@ -29,6 +29,20 @@
 // then EC (SEC 1) fallback. The manager validates that the certificate's public
 // key matches the private key at load time to prevent silent misconfiguration.
 //
+// # Private key file permissions
+//
+// A private key file must not be group-writable and must grant no permission at
+// all to other: 0400, 0440, 0600 and 0640 are accepted, while 0620, 0644, 0660
+// and anything wider are rejected at load time.
+//
+// Group-READ is permitted on purpose. In Kubernetes, Secret-volume files are
+// owned by root, so a non-root container can only read them through a group bit
+// granted by the pod's fsGroup. That group is the pod's own supplementary group,
+// so group-read does not widen exposure beyond the pod itself. This matches how
+// cert-manager and Istio ship key material (0440/0640) and avoids forcing either
+// a root workload or an init-container staging step — the latter would copy the
+// key into an emptyDir and silently break in-place rotation.
+//
 // # Nil safety
 //
 // Read helpers on a nil *Manager ([Manager.GetCertificate], [Manager.GetSigner],
