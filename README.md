@@ -171,7 +171,9 @@ type Config struct {
 }
 ```
 
-An explicitly supplied value always wins, including `false` — the default only fills a gap, it does not override an operator.
+An explicit, non-blank, parseable value always wins, including `false` — the default only fills a gap, it does not override an operator.
+
+A value that is present but **unparseable** for the field's type takes the default instead, and `GetenvBoolOrDefault`/`GetenvIntOrDefault` warn to stderr when they do. That predates this tag and is deliberately unchanged: the alternative is refusing to boot on a typo in a variable the field has a working default for. It does mean `PLUGIN_AUTH_ENABLED=flase` yields `true` here rather than an error — so a guard that must reject an explicitly disabled value in production belongs in a validator that reads the raw variable, not in the default.
 
 **Without the tag a field takes its zero value, and for a bool that is `false`.** A flag that must be ON unless an operator turns it off therefore MUST declare the default; relying on the variable being present ships the feature OFF to whoever forgets it. `envDefault` is the only accepted spelling — `default` is read by nothing, and a tag that is silently ignored is worse than no tag, because a reviewer sees it and passes.
 
