@@ -3,7 +3,9 @@
 // Use this package to coordinate signal handling, shutdown deadlines, and ordered
 // resource cleanup for HTTP/gRPC service processes.
 //
-// ServerManager supports Fiber HTTP servers via WithHTTPServer, stdlib
+// ServerManager supports Fiber HTTP servers via WithHTTPServer (or
+// WithHTTPServerConfig when a fiber.ListenConfig is needed, for example to set
+// DisableStartupMessage, which Fiber v3 exposes only at Listen time), stdlib
 // *http.Server instances via WithStdlibHTTPServer, pre-bound stdlib listeners
 // via WithStdlibHTTPListener, and gRPC servers via WithGRPCServer. The Fiber
 // and stdlib HTTP variants are mutually exclusive; either HTTP variant can be

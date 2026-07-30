@@ -37,6 +37,7 @@ const defaultReadHeaderTimeout = 5 * time.Second
 // not both), gRPC servers, or any compatible combination simultaneously.
 type ServerManager struct {
 	httpServer          *fiber.App
+	httpListenConfig    *fiber.ListenConfig
 	stdlibHTTPServer    *http.Server
 	stdlibHTTPListener  net.Listener
 	grpcServer          *grpc.Server
@@ -98,6 +99,11 @@ func NewServerManager(
 }
 
 // WithHTTPServer configures a Fiber HTTP server for the ServerManager.
+// The app is started with fiber.App.Listen(address) and no fiber.ListenConfig,
+// so fiber's own defaults apply. Use WithHTTPServerConfig to supply a
+// fiber.ListenConfig (for example DisableStartupMessage, which moved from
+// fiber.Config to fiber.ListenConfig in Fiber v3 and is therefore only
+// reachable by the caller of Listen).
 //
 // Mutually exclusive with WithStdlibHTTPServer: configuring both causes
 // StartWithGracefulShutdownWithError to return ErrConflictingHTTPServers
@@ -109,6 +115,40 @@ func (sm *ServerManager) WithHTTPServer(app *fiber.App, address string) *ServerM
 
 	sm.httpServer = app
 	sm.httpAddress = address
+
+	return sm
+}
+
+// WithHTTPServerConfig configures a Fiber HTTP server started with an explicit
+// fiber.ListenConfig. It is the sibling of WithHTTPServer for consumers that
+// need listen-time settings Fiber v3 exposes only through fiber.ListenConfig
+// (DisableStartupMessage, EnablePrefork, GracefulContext, TLS material,
+// ListenerAddrFunc, BeforeServeFunc, ...), mirroring the
+// WithStdlibHTTPServer/WithStdlibHTTPListener pair.
+//
+// The config is copied by value; later mutations of the caller's value do not
+// affect the manager. Fiber applies its own listen-config defaults to the
+// supplied value, so a zero-value fiber.ListenConfig is not identical to
+// supplying none: pass no config (WithHTTPServer) to keep fiber's
+// no-config defaults verbatim.
+//
+// Nothing is defaulted on the caller's behalf; in particular
+// DisableStartupMessage stays false unless the caller sets it.
+//
+// Mutually exclusive with WithStdlibHTTPServer and WithStdlibHTTPListener on
+// the same terms as WithHTTPServer: it configures the same Fiber slot, so
+// combining it with a stdlib server causes StartWithGracefulShutdownWithError
+// to return ErrConflictingHTTPServers before any goroutine is launched. A
+// listen config can therefore never be silently ignored in favor of a stdlib
+// server.
+func (sm *ServerManager) WithHTTPServerConfig(app *fiber.App, address string, cfg fiber.ListenConfig) *ServerManager {
+	if sm == nil {
+		return nil
+	}
+
+	sm.httpServer = app
+	sm.httpAddress = address
+	sm.httpListenConfig = &cfg
 
 	return sm
 }
@@ -374,7 +414,7 @@ func (sm *ServerManager) launchFiberHTTPServer() bool {
 		func(_ context.Context) {
 			sm.logger.Log(context.Background(), log.LevelInfo, "starting HTTP server", log.String("address", sm.httpAddress))
 
-			if err := sm.httpServer.Listen(sm.httpAddress); err != nil {
+			if err := sm.listenFiber(); err != nil {
 				sm.logger.Log(context.Background(), log.LevelError, "HTTP server error", log.Err(err))
 
 				select {
@@ -386,6 +426,19 @@ func (sm *ServerManager) launchFiberHTTPServer() bool {
 	)
 
 	return true
+}
+
+// listenFiber starts the configured fiber app. When no listen config was
+// supplied it calls Listen with zero variadic arguments, byte-identical to the
+// pre-WithHTTPServerConfig behavior: fiber's own no-config defaults apply,
+// which are not the same as the defaults it derives from a zero-value
+// fiber.ListenConfig.
+func (sm *ServerManager) listenFiber() error {
+	if sm.httpListenConfig != nil {
+		return sm.httpServer.Listen(sm.httpAddress, *sm.httpListenConfig)
+	}
+
+	return sm.httpServer.Listen(sm.httpAddress)
 }
 
 // launchStdlibHTTPServer spawns the stdlib HTTP launch goroutine. Returns true
