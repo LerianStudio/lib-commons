@@ -781,12 +781,13 @@ func TestLoadFromFiles_FilePermissions(t *testing.T) {
 		assert.NotNil(t, signer)
 	})
 
-	// The mode policy is 0o027: group-READ is allowed so a Kubernetes Secret
-	// volume can be read by a non-root container through the pod's fsGroup,
-	// while group-WRITE and every other bit stay rejected. These subtests are
-	// the audit trail for that relaxation — if someone widens the mask to
-	// accept group-write or other-read, they fail.
-	acceptedModes := []os.FileMode{0o400, 0o440, 0o600, 0o640}
+	// The mode policy is a forbidden-bit mask (0o027), not a ceiling mode:
+	// group-READ is allowed so a Kubernetes Secret volume can be read by a
+	// non-root container through the pod's fsGroup, group-WRITE and every
+	// `other` bit stay rejected, and owner bits are unconstrained (0740 loads).
+	// These subtests are the audit trail for that relaxation — if someone
+	// widens the mask to accept group-write or other-read, they fail.
+	acceptedModes := []os.FileMode{0o400, 0o440, 0o600, 0o640, 0o740}
 	for _, mode := range acceptedModes {
 		mode := mode
 

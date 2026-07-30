@@ -32,8 +32,10 @@
 // # Private key file permissions
 //
 // A private key file must not be group-writable and must grant no permission at
-// all to other: 0400, 0440, 0600 and 0640 are accepted, while 0620, 0644, 0660
-// and anything wider are rejected at load time.
+// all to other. The rule is a forbidden-bit mask, not a ceiling mode: owner bits
+// are unconstrained, so 0400, 0440, 0600, 0640 and 0740 are accepted, while
+// 0620, 0644, 0660 and any other mode carrying group-write or an `other` bit is
+// rejected at load time.
 //
 // Group-READ is permitted on purpose. In Kubernetes, Secret-volume files are
 // owned by root, so a non-root container can only read them through a group bit

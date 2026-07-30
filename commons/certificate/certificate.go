@@ -42,8 +42,9 @@ var (
 
 // keyModeForbiddenBits is the permission mask a private-key file must not carry:
 // group-write (0o020) plus every other bit (0o007). Group-READ is intentionally
-// absent from the mask — see [parseKeyFile] for the rationale — so 0400, 0440,
-// 0600 and 0640 are accepted while 0620, 0660, 0604 and 0644 are rejected.
+// absent from the mask — see [parseKeyFile] for the rationale. Owner bits are
+// deliberately unconstrained, so 0400, 0440, 0600, 0640 and 0740 are accepted
+// while 0620, 0660, 0604 and 0644 are rejected.
 const keyModeForbiddenBits os.FileMode = 0o027
 
 // Manager manages the current certificate and key with thread-safe hot reload.
@@ -420,10 +421,13 @@ func parseCertPEM(certPath string) (*x509.Certificate, [][]byte, error) {
 	return cert, certChain, nil
 }
 
-// parseKeyFile reads a PEM-encoded private key from keyPath after verifying that
-// file permissions grant no write access to the group and no access at all to
-// other (0640 or stricter). It tries PKCS#8, PKCS#1 (RSA), and SEC 1 (EC)
-// encodings in order and returns the first successful parse as a crypto.Signer.
+// parseKeyFile reads a PEM-encoded private key from keyPath after verifying its
+// permissions grant no write access to the group and no access at all to other.
+// The rule is expressed as a forbidden-bit mask rather than a ceiling mode:
+// owner bits are not constrained, so 0400, 0440, 0600, 0640 and 0740 all load,
+// while 0620, 0660, 0604 and 0644 do not. It tries PKCS#8, PKCS#1 (RSA), and
+// SEC 1 (EC) encodings in order and returns the first successful parse as a
+// crypto.Signer.
 //
 // Why group-read is allowed. The previous mask (0o077) required owner-only
 // permissions, which is unsatisfiable for the deployment shape this package
@@ -450,7 +454,7 @@ func parseKeyFile(keyPath string) (crypto.Signer, error) {
 	}
 
 	if perm := info.Mode().Perm(); perm&keyModeForbiddenBits != 0 {
-		return nil, fmt.Errorf("key file %q has overly permissive mode %04o; expected 0640 or stricter (no group-write, no other access)", keyPath, perm)
+		return nil, fmt.Errorf("key file %q has overly permissive mode %04o; the group must have no write access and other must have no access at all (forbidden bits %04o)", keyPath, perm, keyModeForbiddenBits)
 	}
 
 	keyPEM, err := os.ReadFile(keyPath) // #nosec G304 -- key path comes from trusted configuration
