@@ -69,11 +69,23 @@ func ServeSpec(app *fiber.App, api huma.API, logger libLog.Logger, prefix, title
 ```go
 const BaseURI = "https://errors.lerian.studio/v1" // RFC 9457 type URI base, /v1-versioned catalog
 
-// Uniform org-wide RFC 9457 body. Embeds huma.ErrorModel; adds omitempty Code.
-// Satisfies huma.StatusError by promotion. Code stays absent for code-less rails.
+// Uniform org-wide RFC 9457 body. Embeds huma.ErrorModel; adds omitempty Code
+// and the omitempty `upstream` extension member for rails that proxy a third
+// party. Satisfies huma.StatusError by promotion. Both added fields stay absent
+// for code-less / non-proxying rails.
 type Detail struct {
     huma.ErrorModel
-    Code string `json:"code,omitempty" doc:"Stable domain error code, e.g. SPB-3002" example:"SPB-3002"`
+    Code     string    `json:"code,omitempty" doc:"Stable domain error code, e.g. SPB-3002" example:"SPB-3002"`
+    Upstream *Upstream `json:"upstream,omitempty"` // provider's own code + message
+}
+
+// The extension member. *Upstream is an error, which is how a call site attaches
+// it: pass it to huma.NewError/huma.ErrorNxx, or let it be reachable from the err
+// handed to MapError. Both fields are rune-bounded at encoding time (64/512), so
+// the member can never become a provider response-body dump.
+type Upstream struct {
+    Code    string `json:"code,omitempty"`
+    Message string `json:"message,omitempty"`
 }
 
 // Install overrides process-global huma.NewError so EVERY huma-constructed error
@@ -85,15 +97,23 @@ type Detail struct {
 //     (preserves Huma's native 422 field errors).
 //   - Code/Type stay empty here (framework errors); omitempty drops Code, Type
 //     stays at RFC default about:blank.
-// sync.Once; deterministic; MUST run before any operation is registered on the
-// runtime API or the spec-gen API or schema/runtime bodies diverge.
+//   - at ANY status an *Upstream reachable from errs is lifted into the upstream
+//     member instead of folded — the single exception to the >=500 scrub, carried
+//     by the TYPE so there is no flag to forget or set by accident.
+// Mutex-guarded, NOT sync.Once: every call republishes, so a caller can never
+// believe the override is installed when something restored the stock one.
+// Deterministic; MUST run before any operation is registered on the runtime API
+// or the spec-gen API or schema/runtime bodies diverge.
 func Install()
 
 // Generic domain mapper (br-sfn's, verbatim semantics). codeOf extracts
 // (code,msg,ok); ok=false or nil err -> canonical sanitized 500 carrying
 // fallbackCode. statusOf maps code->status. When code != "", sets Code and
 // Type = BaseURI+"/"+code; 5xx detail sanitized to "internal error". Returns a
-// concrete *Detail (independent of whether Install ran).
+// concrete *Detail (independent of whether Install ran) — which is exactly why
+// this seam lifts the upstream member ITSELF: Huma writes a handler error that
+// already satisfies huma.StatusError verbatim, so huma.NewError (and the Install
+// override) never runs on this path.
 func MapError(err error, codeOf func(error) (code, msg string, ok bool), statusOf func(code string) int, fallbackCode string) error
 ```
 
@@ -129,7 +149,7 @@ beta `v5.6.0-beta.N` released.
 
 **Context:** Port and MERGE two existing sources. br-sfn `shared/humaerr/{problemdetail,install,humaerr}.go` supplies `ProblemDetail`+`Code`, `InstallProblemDetail`/`newProblemError`, `MapDomainError`, `ProblemBaseURI`. underwriter `internal/shared/adapters/openapi/openapi.go:46-57` supplies the central ≥500 scrubber `installServerErrorScrubber`. The merge: the override (`Install`) must do BOTH — build a `*Detail` (br-sfn) AND scrub ≥500 centrally (underwriter). br-sfn's `newProblemError` does NOT scrub 5xx today; the promoted version MUST.
 
-**Implementation vision:** New package `problem` (package name `problem`). Files: `problem.go` (`Detail`, `BaseURI`), `install.go` (`Install`, unexported `newError` override), `maperror.go` (`MapError`, unexported `newProblem`). Rename br-sfn symbols to drop stutter: `ProblemDetail`→`Detail`, `ProblemBaseURI`→`BaseURI`, `InstallProblemDetail`→`Install`, `MapDomainError`→`MapError`. The `newError` override (installed over `huma.NewError`): for `status >= http.StatusInternalServerError` return a `*Detail` with `Detail:"internal error"` and NO folded errs; else fold errs[] (skip nil, honor `huma.ErrorDetailer`) and pass msg through. `sync.Once` guard. `MapError` keeps br-sfn semantics verbatim (returns concrete `*Detail`, scrubs 5xx detail, sets Code+Type when code != "").
+**Implementation vision:** New package `problem` (package name `problem`). Files: `problem.go` (`Detail`, `BaseURI`), `install.go` (`Install`, unexported `newError` override), `maperror.go` (`MapError`, unexported `newProblem`). Rename br-sfn symbols to drop stutter: `ProblemDetail`→`Detail`, `ProblemBaseURI`→`BaseURI`, `InstallProblemDetail`→`Install`, `MapDomainError`→`MapError`. The `newError` override (installed over `huma.NewError`): for `status >= http.StatusInternalServerError` return a `*Detail` with `Detail:"internal error"` and NO folded errs; else fold errs[] (skip nil, honor `huma.ErrorDetailer`) and pass msg through. Mutex guard, not `sync.Once` — every `Install()` republishes, so a restored global can never leave a caller believing the override is live. `MapError` keeps br-sfn semantics (returns concrete `*Detail`, scrubs 5xx detail, sets Code+Type when code != "") and additionally lifts the `upstream` member itself, since Huma writes a `huma.StatusError` returned by a handler verbatim and the override never sees that path.
 
 **Files:**
 - Create: `commons/net/http/problem/problem.go`
