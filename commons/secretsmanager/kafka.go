@@ -99,6 +99,7 @@ const (
 	kafkaSecretLeaf     = "kafka"
 	kafkaCSVSeparator   = ","
 	kafkaListMaxResults = 100
+	kafkaListMaxPages   = 10_000
 
 	kafkaPathSegmentCount    = 4
 	kafkaEnvPathSegmentCount = 5
@@ -314,7 +315,11 @@ func ListModuleKafkaSecrets(ctx context.Context, client SecretsListerClient, env
 
 	var token *string
 
-	for {
+	for page := 0; ; page++ {
+		if page >= kafkaListMaxPages {
+			return nil, fmt.Errorf("%w: pagination exceeded %d pages for prefix %q", ErrKafkaListFailed, kafkaListMaxPages, prefix)
+		}
+
 		output, err := client.ListSecrets(ctx, &secretsmanager.ListSecretsInput{
 			Filters:    []smtypes.Filter{{Key: smtypes.FilterNameStringTypeName, Values: []string{prefix}}},
 			MaxResults: aws.Int32(kafkaListMaxResults),

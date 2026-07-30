@@ -310,10 +310,43 @@ func classifyAWSErrorWithSentinels(err error, secretPath string, notFound, acces
 	}
 
 	if isVaultAccessDeniedError(err) {
-		return fmt.Errorf("%w: %w", accessDenied, err)
+		return fmt.Errorf("%w at %s: %w", accessDenied, redacted, newScrubbedAWSError(err, secretPath, redacted))
 	}
 
-	return fmt.Errorf("%w: %s: %w", retrievalFailed, redacted, err)
+	return fmt.Errorf("%w: %s: %w", retrievalFailed, redacted, newScrubbedAWSError(err, secretPath, redacted))
+}
+
+const minRedactableSegmentLength = 4
+
+type scrubbedAWSError struct {
+	message string
+	cause   error
+}
+
+func (e *scrubbedAWSError) Error() string { return e.message }
+
+func (e *scrubbedAWSError) Unwrap() error { return e.cause }
+
+func newScrubbedAWSError(err error, secretPath, redacted string) error {
+	return &scrubbedAWSError{
+		message: scrubSecretPath(err.Error(), secretPath, redacted),
+		cause:   err,
+	}
+}
+
+func scrubSecretPath(message, secretPath, redacted string) string {
+	scrubbed := strings.ReplaceAll(message, secretPath, redacted)
+
+	segments := strings.Split(secretPath, "/")
+	for i := 1; i < len(segments)-1; i++ {
+		if len(segments[i]) < minRedactableSegmentLength {
+			continue
+		}
+
+		scrubbed = strings.ReplaceAll(scrubbed, segments[i], constants.ObfuscatedValue)
+	}
+
+	return scrubbed
 }
 
 // AWS API error codes that mean the caller's vault access itself is the problem,

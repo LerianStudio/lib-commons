@@ -76,6 +76,33 @@ func (m *mockSecretsListerClient) recordedCalls() []secretsmanager.ListSecretsIn
 	return out
 }
 
+type cyclingTokenListerClient struct {
+	mu     sync.Mutex
+	tokens []string
+	calls  int
+}
+
+func (c *cyclingTokenListerClient) ListSecrets(
+	_ context.Context,
+	_ *secretsmanager.ListSecretsInput,
+	_ ...func(*secretsmanager.Options),
+) (*secretsmanager.ListSecretsOutput, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	token := c.tokens[c.calls%len(c.tokens)]
+	c.calls++
+
+	return &secretsmanager.ListSecretsOutput{NextToken: aws.String(token)}, nil
+}
+
+func (c *cyclingTokenListerClient) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.calls
+}
+
 func listPage(nextToken string, names ...string) *secretsmanager.ListSecretsOutput {
 	entries := make([]smtypes.SecretListEntry, 0, len(names))
 	for _, n := range names {
@@ -611,6 +638,85 @@ func TestGetModuleKafkaCredentials_AccessDenied(t *testing.T) {
 	assert.ErrorIs(t, err, ErrKafkaVaultAccessDenied)
 }
 
+func TestGetModuleKafkaCredentials_AWSErrorsDoNotLeakTenantIdentity(t *testing.T) {
+	t.Parallel()
+
+	path := BuildModuleKafkaSecretPath(kafkaTestEnv, kafkaTestTenantID, kafkaTestModule)
+	arn := "arn:aws:secretsmanager:us-east-1:123456789012:secret:" + path + "-AbCdEf"
+
+	tests := []struct {
+		name           string
+		awsErr         error
+		expectedErr    error
+		retainedSignal string
+	}{
+		{
+			name: "access denied echoes the secret arn",
+			awsErr: &smithy.GenericAPIError{
+				Code:    "AccessDeniedException",
+				Message: "User: arn:aws:sts::123456789012:assumed-role/consumer is not authorized to perform: secretsmanager:GetSecretValue on resource: " + arn,
+			},
+			expectedErr:    ErrKafkaVaultAccessDenied,
+			retainedSignal: "AccessDeniedException",
+		},
+		{
+			name: "expired token echoes the secret arn",
+			awsErr: &smithy.GenericAPIError{
+				Code:    "ExpiredTokenException",
+				Message: "The security token included in the request is expired for " + arn,
+			},
+			expectedErr:    ErrKafkaVaultAccessDenied,
+			retainedSignal: "ExpiredTokenException",
+		},
+		{
+			name:           "infrastructure failure echoes the secret arn",
+			awsErr:         errors.New("InternalServiceError while reading " + arn),
+			expectedErr:    ErrKafkaRetrievalFailed,
+			retainedSignal: "InternalServiceError",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client := &mockSecretsManagerClient{errors: map[string]error{path: tt.awsErr}}
+
+			creds, err := GetModuleKafkaCredentials(context.Background(), client, kafkaTestEnv, kafkaTestTenantID, kafkaTestModule)
+			require.Error(t, err)
+			assert.Nil(t, creds)
+			assert.ErrorIs(t, err, tt.expectedErr)
+
+			message := err.Error()
+			assert.NotContains(t, message, kafkaTestTenantNo, "the dash-stripped tenant id must never reach the error message")
+			assert.NotContains(t, message, kafkaTestTenantID, "the dashed tenant id must never reach the error message")
+			assert.NotContains(t, message, path, "the secret path must never reach the error message")
+			assert.NotContains(t, message, kafkaTestModule, "the module must never reach the error message")
+			assert.Contains(t, message, redactPath(path), "the redacted path must identify the secret instead")
+			assert.Contains(t, message, tt.retainedSignal, "redaction must not destroy the operational signal")
+		})
+	}
+}
+
+func TestGetModuleKafkaCredentials_AWSErrorChainSurvivesRedaction(t *testing.T) {
+	t.Parallel()
+
+	path := BuildModuleKafkaSecretPath(kafkaTestEnv, kafkaTestTenantID, kafkaTestModule)
+	client := &mockSecretsManagerClient{
+		errors: map[string]error{
+			path: &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "denied on " + path},
+		},
+	}
+
+	_, err := GetModuleKafkaCredentials(context.Background(), client, kafkaTestEnv, kafkaTestTenantID, kafkaTestModule)
+	require.ErrorIs(t, err, ErrKafkaVaultAccessDenied)
+
+	var apiErr smithy.APIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, "AccessDeniedException", apiErr.ErrorCode())
+}
+
 func TestGetModuleKafkaCredentials_RetrievalFailed(t *testing.T) {
 	t.Parallel()
 
@@ -729,7 +835,10 @@ func TestGetModuleKafkaCredentials_Concurrent(t *testing.T) {
 			defer wg.Done()
 
 			creds, err := GetModuleKafkaCredentials(context.Background(), client, kafkaTestEnv, kafkaTestTenantID, kafkaTestModule)
-			assert.NoError(t, err)
+			if !assert.NoError(t, err) || !assert.NotNil(t, creds) {
+				return
+			}
+
 			assert.Equal(t, []string{"ledger."}, creds.ACLPrefixes)
 		}()
 	}
@@ -929,6 +1038,19 @@ func TestListModuleKafkaSecrets_RejectsRepeatedNextToken(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, refs)
 	assert.ErrorIs(t, err, ErrKafkaListFailed)
+}
+
+func TestListModuleKafkaSecrets_RejectsCyclingNextTokens(t *testing.T) {
+	t.Parallel()
+
+	client := &cyclingTokenListerClient{tokens: []string{"A", "B"}}
+
+	refs, err := ListModuleKafkaSecrets(context.Background(), client, kafkaTestEnv)
+	require.Error(t, err)
+	assert.Nil(t, refs)
+	assert.ErrorIs(t, err, ErrKafkaListFailed)
+	assert.Equal(t, kafkaListMaxPages, client.callCount())
+	assert.Contains(t, err.Error(), strconv.Itoa(kafkaListMaxPages))
 }
 
 func TestListModuleKafkaSecrets_ClassifiesAWSErrors(t *testing.T) {
