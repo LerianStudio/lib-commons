@@ -334,3 +334,156 @@ func TestInitLocalEnvConfigPrintsVersionAndEnvironment(t *testing.T) {
 		t.Fatalf("unexpected output. got: %q", result)
 	}
 }
+
+// --- envDefault tag -------------------------------------------------------
+//
+// The loader previously had no default mechanism at all: an unset variable
+// yielded the field's zero value, and any envDefault/default struct tag was
+// read by nothing. For a bool named "...Enabled" that meant OFF, silently,
+// while a reviewer looking at the tag believed a default was in force.
+
+func TestSetConfigFromEnvVars_EnvDefault_AppliesWhenUnset(t *testing.T) {
+	type Config struct {
+		Enabled bool     `env:"TEST_ED_BOOL" envDefault:"true"`
+		Port    int      `env:"TEST_ED_INT" envDefault:"8080"`
+		Host    string   `env:"TEST_ED_STR" envDefault:"localhost"`
+		Origins []string `env:"TEST_ED_SLICE" envDefault:"a, b ,c"`
+	}
+
+	for _, k := range []string{"TEST_ED_BOOL", "TEST_ED_INT", "TEST_ED_STR", "TEST_ED_SLICE"} {
+		t.Setenv(k, "")
+		require.NoError(t, os.Unsetenv(k))
+	}
+
+	config := &Config{}
+	require.NoError(t, SetConfigFromEnvVars(config))
+
+	assert.True(t, config.Enabled, "an unset variable must take the declared default, not the zero value")
+	assert.Equal(t, 8080, config.Port)
+	assert.Equal(t, "localhost", config.Host)
+	assert.Equal(t, []string{"a", "b", "c"}, config.Origins)
+}
+
+func TestSetConfigFromEnvVars_EnvDefault_ExplicitValueWins(t *testing.T) {
+	type Config struct {
+		Enabled bool     `env:"TEST_ED_W_BOOL" envDefault:"true"`
+		Port    int      `env:"TEST_ED_W_INT" envDefault:"8080"`
+		Host    string   `env:"TEST_ED_W_STR" envDefault:"localhost"`
+		Origins []string `env:"TEST_ED_W_SLICE" envDefault:"a,b"`
+	}
+
+	t.Setenv("TEST_ED_W_BOOL", "false")
+	t.Setenv("TEST_ED_W_INT", "9090")
+	t.Setenv("TEST_ED_W_STR", "example.com")
+	t.Setenv("TEST_ED_W_SLICE", "x,y,z")
+
+	config := &Config{}
+	require.NoError(t, SetConfigFromEnvVars(config))
+
+	assert.False(t, config.Enabled, "an operator setting false explicitly must win over the default")
+	assert.Equal(t, 9090, config.Port)
+	assert.Equal(t, "example.com", config.Host)
+	assert.Equal(t, []string{"x", "y", "z"}, config.Origins)
+}
+
+func TestSetConfigFromEnvVars_EnvDefault_AppliesWhenValueIsBlank(t *testing.T) {
+	type Config struct {
+		Enabled bool     `env:"TEST_ED_B_BOOL" envDefault:"true"`
+		Host    string   `env:"TEST_ED_B_STR" envDefault:"localhost"`
+		Origins []string `env:"TEST_ED_B_SLICE" envDefault:"a,b"`
+	}
+
+	t.Setenv("TEST_ED_B_BOOL", "")
+	t.Setenv("TEST_ED_B_STR", "   ")
+	t.Setenv("TEST_ED_B_SLICE", "  ")
+
+	config := &Config{}
+	require.NoError(t, SetConfigFromEnvVars(config))
+
+	assert.True(t, config.Enabled, "a blank value means the operator supplied nothing")
+	assert.Equal(t, "localhost", config.Host)
+	assert.Equal(t, []string{"a", "b"}, config.Origins)
+}
+
+func TestSetConfigFromEnvVars_EnvDefault_AppliesWhenValueIsUnparseable(t *testing.T) {
+	type Config struct {
+		Enabled bool `env:"TEST_ED_U_BOOL" envDefault:"true"`
+		Port    int  `env:"TEST_ED_U_INT" envDefault:"8080"`
+	}
+
+	t.Setenv("TEST_ED_U_BOOL", "maybe")
+	t.Setenv("TEST_ED_U_INT", "not-a-number")
+
+	config := &Config{}
+	require.NoError(t, SetConfigFromEnvVars(config))
+
+	assert.True(t, config.Enabled, "a garbage value must fall back to the default, matching GetenvBoolOrDefault")
+	assert.Equal(t, 8080, config.Port)
+}
+
+func TestSetConfigFromEnvVars_EnvDefault_UnparseableDefaultIsAnError(t *testing.T) {
+	t.Run("bool", func(t *testing.T) {
+		type Config struct {
+			Enabled bool `env:"TEST_ED_E_BOOL" envDefault:"yes-please"`
+		}
+
+		err := SetConfigFromEnvVars(&Config{})
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidDefaultValue)
+		assert.Contains(t, err.Error(), "Enabled")
+	})
+
+	t.Run("int", func(t *testing.T) {
+		type Config struct {
+			Port int `env:"TEST_ED_E_INT" envDefault:"eight-thousand"`
+		}
+
+		err := SetConfigFromEnvVars(&Config{})
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidDefaultValue)
+		assert.Contains(t, err.Error(), "Port")
+	})
+}
+
+func TestSetConfigFromEnvVars_EnvDefault_OutOfRangeDefaultIsAnError(t *testing.T) {
+	type Config struct {
+		Retries int8 `env:"TEST_ED_O_INT" envDefault:"999"`
+	}
+
+	err := SetConfigFromEnvVars(&Config{})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidDefaultValue)
+	assert.Contains(t, err.Error(), "Retries")
+}
+
+func TestSetConfigFromEnvVars_NoEnvDefault_KeepsOriginalBehaviour(t *testing.T) {
+	type Config struct {
+		Enabled bool     `env:"TEST_ED_N_BOOL"`
+		Port    int      `env:"TEST_ED_N_INT"`
+		Host    string   `env:"TEST_ED_N_STR"`
+		Origins []string `env:"TEST_ED_N_SLICE"`
+		Spaces  string   `env:"TEST_ED_N_SPACES"`
+	}
+
+	for _, k := range []string{"TEST_ED_N_BOOL", "TEST_ED_N_INT", "TEST_ED_N_STR", "TEST_ED_N_SLICE"} {
+		t.Setenv(k, "")
+		require.NoError(t, os.Unsetenv(k))
+	}
+
+	// A whitespace-only value with no default is preserved verbatim, exactly as
+	// os.Getenv returned it before this tag existed. Trimming it here would be a
+	// silent behaviour change for every service already deployed.
+	t.Setenv("TEST_ED_N_SPACES", "   ")
+
+	config := &Config{}
+	require.NoError(t, SetConfigFromEnvVars(config))
+
+	assert.False(t, config.Enabled)
+	assert.Equal(t, 0, config.Port)
+	assert.Empty(t, config.Host)
+	assert.Equal(t, []string{}, config.Origins)
+	assert.Equal(t, "   ", config.Spaces)
+}

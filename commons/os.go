@@ -149,12 +149,35 @@ var ErrNotStruct = errors.New("pointer must reference a struct")
 // slice, or a float/uint scalar). It is returned instead of panicking.
 var ErrUnsupportedFieldType = errors.New("unsupported field type for env tag")
 
+// ErrInvalidDefaultValue indicates that a struct field's "envDefault" tag holds a
+// value that cannot be parsed into the field's type, or that is out of range for
+// it. It is returned rather than silently ignored, because a default that does not
+// apply is indistinguishable from no default at all — and that indistinguishability
+// is the whole failure mode this tag exists to remove.
+var ErrInvalidDefaultValue = errors.New("invalid envDefault value for field type")
+
+// envDefaultTag is the struct tag holding the value a field takes when its
+// environment variable is unset, blank, or unparseable for the field's type.
+//
+// The name matches the widely used github.com/caarlos0/env convention so that a
+// reader coming from any other Go codebase reads it correctly on sight. "default"
+// is NOT an accepted spelling: two spellings for one meaning is how a decorative
+// tag goes unnoticed in the first place.
+const envDefaultTag = "envDefault"
+
 // SetConfigFromEnvVars builds a struct by setting its field values using the "env" tag.
 // Constraints: s must be a non-nil pointer to an initialized struct.
 // Supported field types: string, bool, int/int8/int16/int32/int64, and []string
 // (comma-separated, each element whitespace-trimmed, empty elements dropped). A
 // field whose type is none of these (for example a non-string slice or a float)
 // yields ErrUnsupportedFieldType rather than a panic.
+//
+// A field may also carry an "envDefault" tag giving the value to use when its
+// variable is unset, blank, or unparseable for the field's type. Without that tag
+// the field takes its zero value, which for a bool is false — so a flag that must
+// be on unless an operator turns it off MUST declare the default rather than rely
+// on the variable being present. An envDefault the field's type cannot hold is an
+// error at load time, not a silent fall back to zero.
 func SetConfigFromEnvVars(s any) error {
 	if s == nil {
 		return ErrNilConfig
@@ -185,25 +208,84 @@ func SetConfigFromEnvVars(s any) error {
 			if len(values) > 0 {
 				fv := v.Elem().FieldByName(f.Name)
 				if fv.CanSet() {
-					switch fv.Kind() {
-					case reflect.Bool:
-						fv.SetBool(GetenvBoolOrDefault(values[0], false))
-					case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-						fv.SetInt(GetenvIntOrDefault(values[0], 0))
-					case reflect.String:
-						fv.SetString(os.Getenv(values[0]))
-					case reflect.Slice:
-						if fv.Type().Elem().Kind() != reflect.String {
-							return fmt.Errorf("%w: field %q is %s", ErrUnsupportedFieldType, f.Name, fv.Type())
-						}
-
-						fv.Set(reflect.ValueOf(parseEnvStringSlice(os.Getenv(values[0]))))
-					default:
-						return fmt.Errorf("%w: field %q is %s", ErrUnsupportedFieldType, f.Name, fv.Type())
+					if err := setFieldFromEnv(fv, f, values[0]); err != nil {
+						return err
 					}
 				}
 			}
 		}
+	}
+
+	return nil
+}
+
+// setFieldFromEnv populates one struct field from the environment variable named
+// name, falling back to the field's envDefault tag when the variable supplies
+// nothing usable.
+//
+// A field with no envDefault tag behaves exactly as it did before the tag existed,
+// down to a whitespace-only string being preserved verbatim: every deployed service
+// reads this loader, so the no-tag path must not shift underneath them.
+func setFieldFromEnv(fv reflect.Value, f reflect.StructField, name string) error {
+	def, hasDefault := f.Tag.Lookup(envDefaultTag)
+
+	switch fv.Kind() {
+	case reflect.Bool:
+		fallback := false
+
+		if hasDefault {
+			parsed, err := strconv.ParseBool(def)
+			if err != nil {
+				return fmt.Errorf("%w: field %q declares %s=%q, which is not a bool",
+					ErrInvalidDefaultValue, f.Name, envDefaultTag, def)
+			}
+
+			fallback = parsed
+		}
+
+		fv.SetBool(GetenvBoolOrDefault(name, fallback))
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		var fallback int64
+
+		if hasDefault {
+			parsed, err := strconv.ParseInt(def, 10, 64)
+			if err != nil {
+				return fmt.Errorf("%w: field %q declares %s=%q, which is not an integer",
+					ErrInvalidDefaultValue, f.Name, envDefaultTag, def)
+			}
+
+			if fv.OverflowInt(parsed) {
+				return fmt.Errorf("%w: field %q declares %s=%q, which does not fit in %s",
+					ErrInvalidDefaultValue, f.Name, envDefaultTag, def, fv.Type())
+			}
+
+			fallback = parsed
+		}
+
+		fv.SetInt(GetenvIntOrDefault(name, fallback))
+	case reflect.String:
+		// GetenvOrDefault treats a blank value as absent; os.Getenv does not. Only
+		// the defaulted path may take that trimming, or the no-tag path changes.
+		if hasDefault {
+			fv.SetString(GetenvOrDefault(name, def))
+
+			return nil
+		}
+
+		fv.SetString(os.Getenv(name))
+	case reflect.Slice:
+		if fv.Type().Elem().Kind() != reflect.String {
+			return fmt.Errorf("%w: field %q is %s", ErrUnsupportedFieldType, f.Name, fv.Type())
+		}
+
+		raw := os.Getenv(name)
+		if hasDefault && strings.TrimSpace(raw) == "" {
+			raw = def
+		}
+
+		fv.Set(reflect.ValueOf(parseEnvStringSlice(raw)))
+	default:
+		return fmt.Errorf("%w: field %q is %s", ErrUnsupportedFieldType, f.Name, fv.Type())
 	}
 
 	return nil
