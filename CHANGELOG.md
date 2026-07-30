@@ -1,5 +1,14 @@
 # Lib-commons Changelog
 
+## [6.1.1](https://github.com/LerianStudio/lib-commons/releases/tag/v6.1.1)
+
+Fixes:
+- Allow group-read permissions on private key files by setting the mask to `0o027`. (@gandalf-at-lerian)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v6.1.0...v6.1.1)
+
+---
+
 ## [6.1.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.1.0)
 
 Features:
