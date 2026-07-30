@@ -562,7 +562,7 @@ Extracted observability, systemplane, and streaming packages are not lib-commons
 | `transaction` | `BuildIntentPlan()` + `ValidateBalanceEligibility()` + `ApplyPosting()` |
 | `rabbitmq` | `*Context()` variants for lifecycle; `HealthCheck()` returns `(bool, error)` |
 | `certificate` | `NewManager(certPath, keyPath)` — empty paths return unconfigured manager (TLS optional). `Rotate(cert, key)` for zero-downtime hot-reload. `GetCertificateFunc()` for `tls.Config.GetCertificate`. All methods nil-safe. |
-| `certificate` | Private key parsing order: PKCS#8 → PKCS#1 → EC. Key file must have mode 0600 or stricter (enforced at load time). Public key match validated against cert at load and rotate. |
+| `certificate` | Private key parsing order: PKCS#8 → PKCS#1 → EC. Key file mode is validated by a forbidden-bit mask (`0o027`), not a ceiling mode: group-write and any `other` bit are rejected, group-read is allowed (K8s Secret + `fsGroup` for non-root pods), owner bits are unconstrained. Enforced at load time. Public key match validated against cert at load and rotate. |
 | `dlq` | `New(conn, keyPrefix, maxRetries, opts...)` returns `*Handler`; `NewConsumer(handler, retryFn, opts...)` returns `(*Consumer, error)`. |
 | `dlq` | `Handler.Enqueue(ctx, msg)`, `Dequeue(ctx, source)`, `QueueLength(ctx, source)`, `ScanQueues(ctx, source)`, `PruneExhaustedMessages(ctx, source, limit)`, `ExtractTenantFromKey(key, source)`. |
 | `dlq` | `Consumer.Run(ctx)` blocks until ctx cancelled or `Stop()` called. `ProcessOnce(ctx)` exported for testing. Tenant isolation via `tmcore.GetTenantIDContext`. |
