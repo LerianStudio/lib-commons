@@ -52,7 +52,7 @@ const (
 	// a client that genuinely exceeded its quota.
 	misconfiguredTierTitle = "misconfigured_rate_limiter"
 	// invalidWindowMessage is the error message returned when a tier has a zero or sub-millisecond window.
-	invalidWindowMessage = "rate limiter tier window is zero; contact the service operator"
+	invalidWindowMessage = "rate limiter tier window must be at least one millisecond; contact the service operator"
 	// invalidMaxMessage is the error message returned when a tier has a zero or negative max.
 	invalidMaxMessage = "rate limiter tier max is not positive; contact the service operator"
 	// invalidTenantContextTitle is returned when the request context contains a malformed tenant ID.
