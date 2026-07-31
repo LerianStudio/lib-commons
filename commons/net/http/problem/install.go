@@ -14,17 +14,27 @@ import (
 // into a client-visible 5xx body.
 const genericServerErrorDetail = "internal error"
 
-// installMu serializes writes to the process-global huma.NewError so concurrent
-// installs (e.g. several API constructions in parallel tests) cannot race on the
-// package var.
+// installMu serializes reads and writes of the process-global huma.NewError so
+// concurrent installs (e.g. several API constructions in parallel tests) cannot
+// race on the package var.
 //
-// Deliberately a mutex and not a sync.Once: a Once would make every install
-// after the first a NO-OP, which is silent and wrong the moment anything else in
-// the process has put the stock huma.NewError back — a test that saves and
-// restores the global, most commonly. The next Install() would quietly do
-// nothing and every scrub assertion after it would be measuring stock Huma while
-// looking like it measured ours. Republishing unconditionally is the same
-// deterministic end state and has no such failure mode.
+// Deliberately a mutex and not a sync.Once, and the reason is a real failure
+// mode: a Once makes every install after the first a NO-OP, which is silent and
+// wrong the moment anything else in the process has put the stock huma.NewError
+// back — a test that saves and restores the global, most commonly. The next
+// Install() would quietly do nothing and every scrub assertion after it would be
+// measuring stock Huma while looking like it measured ours.
+//
+// But republishing UNCONDITIONALLY trades that fault for a worse one, and the
+// worse one is a PII leak. Callers are documented to be able to decorate the
+// installed model — br-sfn/scr wraps it to scrub the borrower's CPF/CNPJ out of
+// Huma's request-body validation echo — and such a wrapper installs itself once,
+// after Install(). A second Install() in the same process would overwrite the
+// wrapper and NOT restore it, because the wrapper's own guard has already fired.
+// Silently, with no signal anywhere: the next validation error echoes the
+// document again.
+//
+// So the decision is BEHAVIOURAL rather than a call count, see installed().
 var installMu sync.Mutex
 
 // Install overrides the process-global huma.NewError so every error Huma
@@ -34,9 +44,17 @@ var installMu sync.Mutex
 // `code` property) with zero per-operation registration.
 //
 // It is idempotent AND re-entrant: each service's runtime bootstrap and spec-gen
-// entrypoint may call it, a double call is safe because the override is itself
-// deterministic, and every call actually republishes — so a caller can never end
-// up believing the override is installed when it is not.
+// entrypoint may call it, and a double call is safe. A call installs when the
+// model is not in place and leaves it alone when it is — including when a caller
+// has DECORATED it — so a caller can neither end up believing the override is
+// installed when it is not, nor lose a decoration by calling again.
+//
+// DECORATING THE INSTALLED MODEL is a supported pattern: read huma.NewError,
+// wrap it, assign it back. A wrapper that still returns a *Detail is recognised
+// as installed and survives every later Install(). A wrapper that returns some
+// OTHER type is not, and will be replaced — deliberately, because Huma builds the
+// generated error schema by reflecting the type this constructor returns, so a
+// different type silently breaks the spec's error shape.
 //
 // huma.NewError is a package var, so this MUST run before any operation is
 // registered on the runtime API or the spec-gen API, or the generated schema and
@@ -64,7 +82,34 @@ func Install() {
 	installMu.Lock()
 	defer installMu.Unlock()
 
+	if installed(huma.NewError) {
+		return
+	}
+
 	huma.NewError = newError
+}
+
+// installed reports whether a constructor already yields the shared model, which
+// is the question Install actually needs answered — "is our shape in place?" —
+// rather than "have I been called before?".
+//
+// It probes by construction instead of comparing function pointers, and that is
+// the whole point: a caller's decorator is a DIFFERENT function that still
+// returns a *Detail, so a pointer comparison would fail to recognise it and
+// Install would overwrite the decoration. Probing the result recognises it.
+//
+// Calling the constructor here is safe and is not a novel operation: Huma itself
+// does exactly this — NewError(0, "") — when it derives the generated error
+// schema, so any conforming constructor must tolerate it. Nothing observable
+// happens; the returned value is discarded.
+func installed(constructor func(status int, msg string, errs ...error) huma.StatusError) bool {
+	if constructor == nil {
+		return false
+	}
+
+	_, ok := constructor(0, "").(*Detail)
+
+	return ok
 }
 
 // newError is the override body installed over huma.NewError: it builds a
