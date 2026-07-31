@@ -14,12 +14,18 @@ import (
 // into a client-visible 5xx body.
 const genericServerErrorDetail = "internal error"
 
-// installOnce serializes the override of the process-global huma.NewError. The
-// override is deterministic, so installing exactly once per process is correct;
-// the Once also makes concurrent installs (e.g. several API constructions in
-// parallel tests) race-free, delivering on the idempotency this function's doc
-// contract promises.
-var installOnce sync.Once
+// installMu serializes writes to the process-global huma.NewError so concurrent
+// installs (e.g. several API constructions in parallel tests) cannot race on the
+// package var.
+//
+// Deliberately a mutex and not a sync.Once: a Once would make every install
+// after the first a NO-OP, which is silent and wrong the moment anything else in
+// the process has put the stock huma.NewError back — a test that saves and
+// restores the global, most commonly. The next Install() would quietly do
+// nothing and every scrub assertion after it would be measuring stock Huma while
+// looking like it measured ours. Republishing unconditionally is the same
+// deterministic end state and has no such failure mode.
+var installMu sync.Mutex
 
 // Install overrides the process-global huma.NewError so every error Huma
 // constructs — domain errors routed through MapError as well as the framework's
@@ -27,9 +33,10 @@ var installOnce sync.Once
 // generated OpenAPI error schema carry the shared shape (including the optional
 // `code` property) with zero per-operation registration.
 //
-// It is idempotent: each service's runtime bootstrap and spec-gen entrypoint may
-// call it once, and a double call is safe because the override is itself
-// deterministic.
+// It is idempotent AND re-entrant: each service's runtime bootstrap and spec-gen
+// entrypoint may call it, a double call is safe because the override is itself
+// deterministic, and every call actually republishes — so a caller can never end
+// up believing the override is installed when it is not.
 //
 // huma.NewError is a package var, so this MUST run before any operation is
 // registered on the runtime API or the spec-gen API, or the generated schema and
@@ -44,21 +51,30 @@ var installOnce sync.Once
 //     order (skip nil, honor huma.ErrorDetailer) — exactly like the stock
 //     huma.NewError, so native 422 validation errors keep their per-field
 //     errors[] list.
+//   - at ANY status, an *Upstream found in errs (see takeUpstream) is lifted into
+//     the upstream extension member instead of being folded. It is the single
+//     exception to the >=500 scrub, and the exception is carried by the TYPE, not
+//     by a flag: only a value a call site deliberately built as an *Upstream can
+//     land there, and its shape cannot hold a provider's raw body. Everything
+//     else about a 5xx — detail, errors[], our own code — stays scrubbed.
 //
 // For framework errors Code stays empty (dropped by omitempty) and Type stays at
 // the RFC default about:blank.
 func Install() {
-	installOnce.Do(func() {
-		huma.NewError = newError
-	})
+	installMu.Lock()
+	defer installMu.Unlock()
+
+	huma.NewError = newError
 }
 
 // newError is the override body installed over huma.NewError: it builds a
 // *Detail for every error Huma constructs, scrubbing >=500 centrally. It is a
 // named function (not an inline closure) so it can be exercised directly in
-// tests without mutating the process-global, and so installOnce.Do assigns a
-// stable reference.
+// tests without mutating the process-global, and so every Install() republishes
+// the same stable reference.
 func newError(status int, msg string, errs ...error) huma.StatusError {
+	upstream, errs := takeUpstream(errs)
+
 	if status >= http.StatusInternalServerError {
 		return &Detail{
 			ErrorModel: huma.ErrorModel{
@@ -66,6 +82,7 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 				Title:  http.StatusText(status),
 				Detail: genericServerErrorDetail,
 			},
+			Upstream: upstream,
 		}
 	}
 
@@ -101,5 +118,33 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 			Detail: msg,
 			Errors: folded,
 		},
+		Upstream: upstream,
 	}
+}
+
+// takeUpstream pulls the upstream extension member out of errs (by the shared
+// upstreamFrom rule) and returns the remaining errors to fold. An err the type
+// is found in is never folded, so upstream data lives in exactly one place on
+// the wire; the first non-empty match wins, and an empty or typed-nil *Upstream
+// is dropped as if it had not been passed.
+func takeUpstream(errs []error) (*Upstream, []error) {
+	var (
+		found *Upstream
+		rest  = make([]error, 0, len(errs))
+	)
+
+	for _, e := range errs {
+		up, matched := upstreamFrom(e)
+		if !matched {
+			rest = append(rest, e)
+
+			continue
+		}
+
+		if found == nil {
+			found = up
+		}
+	}
+
+	return found, rest
 }

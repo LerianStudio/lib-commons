@@ -3,7 +3,9 @@
 package problem
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -170,4 +172,110 @@ func TestMapError_NilCallbacks_SanitizedFallback500(t *testing.T) {
 		assert.Empty(t, d.Code)
 		assert.Empty(t, d.Type)
 	})
+}
+
+// TestMapError_5xx_CarriesUpstream is the gateway's real path: the rail error is
+// wrapped by a domain error, mapped through the per-rail seam, and the provider's
+// own code/message must reach the client even though everything of OURS on a 5xx
+// is scrubbed. MapError returns a *Detail straight to Huma, so huma.NewError —
+// and therefore the Install override that lifts the member on the other seam —
+// is never called on this path; if MapError did not lift it itself, a rail whose
+// only error path is this seam could not publish the member at all.
+func TestMapError_5xx_CarriesUpstream(t *testing.T) {
+	t.Parallel()
+
+	railErr := fmt.Errorf("consult rail: %w", &Upstream{Code: "E4001", Message: "serviço indisponível"})
+	codeOf := func(error) (string, string, bool) { return "GW-9001", "raw db cause", true }
+	statusOf := func(string) int { return http.StatusBadGateway }
+
+	d := mapErrDetail(t, MapError(railErr, codeOf, statusOf, "GW-0000"))
+
+	assert.Equal(t, http.StatusBadGateway, d.Status)
+	assert.Equal(t, genericServerErrorDetail, d.Detail, "our own 5xx detail stays scrubbed")
+	assert.Equal(t, "GW-9001", d.Code)
+	require.NotNil(t, d.Upstream, "the provider's error must survive the 5xx sanitization")
+	assert.Equal(t, "E4001", d.Upstream.Code)
+	assert.Equal(t, "serviço indisponível", d.Upstream.Message)
+}
+
+// TestMapError_4xx_CarriesUpstream proves the member is not a 5xx-only affordance:
+// a rail refusal mapped to a client-fixable status carries the provider's code
+// alongside our own passed-through detail.
+func TestMapError_4xx_CarriesUpstream(t *testing.T) {
+	t.Parallel()
+
+	railErr := fmt.Errorf("register proposal: %w", &Upstream{Code: "E22", Message: "prazo inválido"})
+	codeOf := func(error) (string, string, bool) { return "GW-3002", "rail refused the proposal", true }
+
+	d := mapErrDetail(t, MapError(railErr, codeOf, staticStatusOf, "GW-0000"))
+
+	assert.Equal(t, http.StatusUnprocessableEntity, d.Status)
+	assert.Equal(t, "rail refused the proposal", d.Detail)
+	require.NotNil(t, d.Upstream)
+	assert.Equal(t, "E22", d.Upstream.Code)
+}
+
+// TestMapError_Unrecognized_CarriesUpstream covers the case the member exists
+// for: the rail failed with something our own taxonomy does not recognize, so the
+// body is the canonical sanitized 500 and the provider's code is the ONLY
+// diagnosable information the client has.
+func TestMapError_Unrecognized_CarriesUpstream(t *testing.T) {
+	t.Parallel()
+
+	railErr := fmt.Errorf("call rail: %w", &Upstream{Code: "E500", Message: "gateway timeout"})
+
+	d := mapErrDetail(t, MapError(railErr, neverCodeOf, staticStatusOf, "GW-0000"))
+
+	assert.Equal(t, http.StatusInternalServerError, d.Status)
+	assert.Equal(t, genericServerErrorDetail, d.Detail)
+	assert.Equal(t, "GW-0000", d.Code)
+	require.NotNil(t, d.Upstream)
+	assert.Equal(t, "E500", d.Upstream.Code)
+}
+
+// TestMapError_NoUpstream_OmitsMember is the additive guarantee for every rail
+// that never proxies a third party (br-slc, the scaffolds): nothing about their
+// bodies changes, and an unrelated cause must never be promoted into the member.
+func TestMapError_NoUpstream_OmitsMember(t *testing.T) {
+	t.Parallel()
+
+	cases := map[string]error{
+		"plain error":      errors.New("some infra error"),
+		"nil error":        nil,
+		"empty member":     &Upstream{},
+		"wrapped empty":    fmt.Errorf("call rail: %w", &Upstream{}),
+		"typed-nil member": fmt.Errorf("call rail: %w", (*Upstream)(nil)),
+	}
+
+	for name, err := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			d := mapErrDetail(t, MapError(err, neverCodeOf, staticStatusOf, "GW-0000"))
+			assert.Nil(t, d.Upstream, "no curated upstream means no member on the wire")
+		})
+	}
+}
+
+// TestMapError_Upstream_JSON is the wire-level proof for this seam: the body a
+// client receives has `upstream` as a top-level RFC 9457 extension member.
+func TestMapError_Upstream_JSON(t *testing.T) {
+	t.Parallel()
+
+	railErr := fmt.Errorf("consult rail: %w", &Upstream{Code: "E4001", Message: "serviço indisponível"})
+	codeOf := func(error) (string, string, bool) { return "GW-9001", "leaky raw cause", true }
+	statusOf := func(string) int { return http.StatusServiceUnavailable }
+
+	raw, err := json.Marshal(MapError(railErr, codeOf, statusOf, "GW-0000"))
+	require.NoError(t, err)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(raw, &body))
+
+	assert.Equal(t, genericServerErrorDetail, body["detail"])
+
+	up, ok := body["upstream"].(map[string]any)
+	require.True(t, ok, "upstream must reach the wire through MapError, got %s", raw)
+	assert.Equal(t, "E4001", up["code"])
+	assert.Equal(t, "serviço indisponível", up["message"])
 }
