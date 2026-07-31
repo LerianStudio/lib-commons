@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -179,9 +180,13 @@ func TestInstall_OverridesGlobal_Idempotent(t *testing.T) {
 
 // TestInstall_ReinstallsAfterRestore is the anti-Once lock. The override is a
 // process-global that anything in a test binary can put back; if Install skipped
-// work after the first call, the next one would be a SILENT no-op and every
-// later 5xx-scrub assertion in that binary would be measuring stock Huma while
-// appearing to measure ours. Install must republish, every time.
+// work merely because it had been called before, the next one would be a SILENT
+// no-op and every later 5xx-scrub assertion in that binary would be measuring
+// stock Huma while appearing to measure ours.
+//
+// Install must therefore decide on the SHAPE currently in place, not on a call
+// count — see TestInstall_PreservesADecoratorOfTheInstalledModel for the other
+// half, where an unconditional republish is the wrong answer.
 func TestInstall_ReinstallsAfterRestore(t *testing.T) {
 	// NOT parallel: mutates the process-global huma.NewError.
 	original := huma.NewError
@@ -195,6 +200,88 @@ func TestInstall_ReinstallsAfterRestore(t *testing.T) {
 	scrubbed := asDetail(t, huma.NewError(http.StatusInternalServerError, "raw cause"))
 	assert.Equal(t, genericServerErrorDetail, scrubbed.Detail,
 		"a reinstall after a restore must take effect, not be skipped")
+}
+
+// TestInstall_PreservesADecoratorOfTheInstalledModel is a PII guard, and it is
+// modelled on a real consumer rather than an invented one.
+//
+// br-sfn/scr decorates the installed model to scrub the borrower's CPF/CNPJ out
+// of Huma's request-body validation echo: the consultation DTO carries `document`
+// as a bare string, so a JSON type mismatch is rejected by SCHEMA validation
+// before any handler runs, and Huma echoes the offending value back in
+// errors[].value. The decorator drops that value and keeps message + location.
+// It installs itself ONCE, right after Install(), inside NewServer.
+//
+// If Install() republished unconditionally, a second NewServer in the same
+// process would overwrite the decorator and NOT restore it — the decorator's own
+// guard has already fired. Nothing anywhere would say so, and the next validation
+// error would echo the document again.
+func TestInstall_PreservesADecoratorOfTheInstalledModel(t *testing.T) {
+	// NOT parallel: mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	// First construction: install, then decorate exactly once.
+	Install()
+
+	decorated := false
+
+	installDecoratorOnce := func() {
+		if decorated {
+			return
+		}
+
+		decorated = true
+		next := huma.NewError
+		huma.NewError = func(status int, msg string, errs ...error) huma.StatusError {
+			result := next(status, msg, errs...)
+			if detail, ok := result.(*Detail); ok {
+				for _, item := range detail.Errors {
+					if item != nil && strings.HasPrefix(item.Location, "body") {
+						item.Value = nil
+					}
+				}
+			}
+
+			return result
+		}
+	}
+
+	installDecoratorOnce()
+
+	borrowerEcho := func() *Detail {
+		return asDetail(t, huma.NewError(http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "expected string", Location: "body.document", Value: "12345678901"}))
+	}
+
+	require.Nil(t, borrowerEcho().Errors[0].Value, "setup: the decorator must be in effect")
+
+	// Second construction in the same process.
+	Install()
+	installDecoratorOnce()
+
+	assert.Nil(t, borrowerEcho().Errors[0].Value,
+		"a second Install must not silently drop a decoration that redacts PII")
+}
+
+// TestInstall_ReplacesADecoratorThatChangesTheReturnedType is the deliberate
+// limit of the rule above. Huma derives the generated error schema by reflecting
+// the type this constructor returns, so a wrapper returning something other than
+// a *Detail has already broken the spec's error shape — replacing it is the
+// correct outcome, not a regression.
+func TestInstall_ReplacesADecoratorThatChangesTheReturnedType(t *testing.T) {
+	// NOT parallel: mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	huma.NewError = func(status int, msg string, _ ...error) huma.StatusError {
+		return &huma.ErrorModel{Status: status, Detail: msg}
+	}
+
+	Install()
+
+	scrubbed := asDetail(t, huma.NewError(http.StatusInternalServerError, "raw cause"))
+	assert.Equal(t, genericServerErrorDetail, scrubbed.Detail)
 }
 
 // TestNewError_ServerError_PreservesUpstream is the other half of the scrub
