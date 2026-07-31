@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v6/commons"
@@ -47,10 +48,14 @@ const (
 	// maxReasonableTierMax is the threshold above which a configuration warning is logged.
 	maxReasonableTierMax = 100_000
 
-	// invalidWindowTitle is the error title returned when a tier has a zero or sub-millisecond window.
-	invalidWindowTitle = "misconfigured_rate_limiter"
+	// misconfiguredTierTitle is the error title returned when a tier cannot enforce a limit.
+	// Distinct from rateLimitTitle so an operator can tell invalid configuration apart from
+	// a client that genuinely exceeded its quota.
+	misconfiguredTierTitle = "misconfigured_rate_limiter"
 	// invalidWindowMessage is the error message returned when a tier has a zero or sub-millisecond window.
-	invalidWindowMessage = "rate limiter tier window is zero; contact the service operator"
+	invalidWindowMessage = "rate limiter tier window must be at least one millisecond; contact the service operator"
+	// invalidMaxMessage is the error message returned when a tier has a zero or negative max.
+	invalidMaxMessage = "rate limiter tier max is not positive; contact the service operator"
 	// invalidTenantContextTitle is returned when the request context contains a malformed tenant ID.
 	invalidTenantContextTitle = "invalid_tenant_context"
 	// invalidTenantContextMessage is intentionally generic so raw tenant identifiers never leak.
@@ -129,6 +134,22 @@ type RateLimiter struct {
 	onLimited       func(c fiber.Ctx, tier Tier)
 	exceededHandler func(c fiber.Ctx, tier Tier, ttl time.Duration) error
 	redisTimeout    time.Duration
+
+	// misconfigLogMu guards loggedMisconfiguredTiers and misconfigLogSaturated.
+	misconfigLogMu sync.Mutex
+	// loggedMisconfiguredTiers dedups the misconfigured-tier error log by
+	// (tier name, reason). WithDynamicRateLimit validates the tier on EVERY
+	// request, so a TierFunc that persistently returns an invalid tier would
+	// otherwise emit one error log line per request, scaling log volume 1:1
+	// with traffic. Instance-scoped (not package-level) so parallel tests and
+	// multiple limiters cannot suppress each other's diagnostics, and bounded
+	// at maxLoggedMisconfiguredTiers so a TierFunc that derives tier names
+	// from request data cannot grow it without bound; see
+	// misconfiguredTierLogDecision for the saturation behavior.
+	loggedMisconfiguredTiers map[string]struct{}
+	// misconfigLogSaturated records that the dedup set filled up and the
+	// one-time saturation notice was emitted.
+	misconfigLogSaturated bool
 }
 
 // New creates a RateLimiter. It returns nil (pass-through) when:
@@ -216,20 +237,8 @@ func (rl *RateLimiter) WithRateLimit(tier Tier) fiber.Handler {
 		}
 	}
 
-	if tier.Window <= 0 || tier.Window.Milliseconds() == 0 {
-		rl.logger.Log(context.Background(), log.LevelError,
-			"rate limit tier has invalid window; all requests will be rejected",
-			log.String("tier", tier.Name),
-			log.Int("max", tier.Max),
-		)
-
-		return func(c fiber.Ctx) error {
-			return chttp.Respond(c, http.StatusInternalServerError, chttp.ErrorResponse{
-				Code:    http.StatusInternalServerError,
-				Title:   invalidWindowTitle,
-				Message: invalidWindowMessage,
-			})
-		}
+	if handler := rl.misconfiguredTierHandler(context.Background(), tier); handler != nil {
+		return handler
 	}
 
 	if tier.Max > maxReasonableTierMax {
@@ -274,32 +283,129 @@ func (rl *RateLimiter) WithDynamicRateLimit(fn TierFunc) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		tier := fn(c)
 
-		if tier.Window <= 0 || tier.Window.Milliseconds() == 0 {
-			ctx := c.Context()
-			if ctx == nil {
-				ctx = context.Background()
-			}
+		ctx := c.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
 
-			rl.logger.Log(ctx, log.LevelError,
-				"rate limit tier has invalid window; request rejected",
-				log.String("tier", tier.Name),
-				log.Int("max", tier.Max),
-			)
-
-			return chttp.Respond(c, http.StatusInternalServerError, chttp.ErrorResponse{
-				Code:    http.StatusInternalServerError,
-				Title:   invalidWindowTitle,
-				Message: invalidWindowMessage,
-			})
+		if handler := rl.misconfiguredTierHandler(ctx, tier); handler != nil {
+			return handler(c)
 		}
 
 		return rl.check(c, tier)
 	}
 }
 
+// tierRefusalMessage reports why tier cannot enforce a limit, or "" when the tier is
+// usable. Both refusals are configuration errors the operator must fix:
+//
+//   - a zero or sub-millisecond window rounds down to PEXPIRE 0, expiring every counter
+//     key immediately, so the limit is never actually applied;
+//   - a zero or negative max makes the very first request exceed the limit, turning the
+//     counter path into a blanket 429 — total unavailability dressed up as throttling.
+func tierRefusalMessage(tier Tier) string {
+	switch {
+	case tier.Window <= 0 || tier.Window.Milliseconds() == 0:
+		return invalidWindowMessage
+	case tier.Max <= 0:
+		return invalidMaxMessage
+	default:
+		return ""
+	}
+}
+
+// misconfiguredTierHandler returns a handler that refuses every request with a named 500
+// when tier cannot enforce a limit, and nil when the tier is usable. It is the single
+// validation root for both entry points: WithRateLimit calls it once at wire-up (so the
+// error log is a startup diagnostic), WithDynamicRateLimit calls it per request because
+// the TierFunc can return a different tier each time. Deliberately NOT inside check(),
+// where the refusal would degrade into one log line per request.
+//
+// The error log is deduplicated per (tier name, reason) on this instance so a
+// TierFunc that persistently returns an invalid tier logs once per distinct
+// misconfiguration rather than once per request, and the dedup set is bounded
+// (see misconfiguredTierLogDecision); the 500 response itself is returned every
+// time.
+func (rl *RateLimiter) misconfiguredTierHandler(ctx context.Context, tier Tier) fiber.Handler {
+	message := tierRefusalMessage(tier)
+	if message == "" {
+		return nil
+	}
+
+	logTier, saturated := rl.misconfiguredTierLogDecision(tier.Name + "|" + message)
+	if logTier {
+		rl.logger.Log(ctx, log.LevelError,
+			"rate limit tier is misconfigured; every request on this tier will be rejected",
+			log.String("tier", tier.Name),
+			log.Int("max", tier.Max),
+			log.String("window", tier.Window.String()),
+			log.String("reason", message),
+		)
+	}
+
+	if saturated {
+		rl.logger.Log(ctx, log.LevelError,
+			"misconfigured-tier log dedup set is full; further distinct misconfigurations will not be logged (the TierFunc is likely deriving tier names from request data)",
+			log.Int("capacity", maxLoggedMisconfiguredTiers),
+		)
+	}
+
+	return func(c fiber.Ctx) error {
+		return chttp.Respond(c, http.StatusInternalServerError, chttp.ErrorResponse{
+			Code:    http.StatusInternalServerError,
+			Title:   misconfiguredTierTitle,
+			Message: message,
+		})
+	}
+}
+
+// maxLoggedMisconfiguredTiers bounds the per-instance misconfigured-tier log
+// dedup set. 1024 distinct (tier, reason) pairs is far beyond any hand-written
+// tier configuration; only a TierFunc deriving tier names from request data can
+// reach it, and that pathology must not translate into unbounded memory.
+const maxLoggedMisconfiguredTiers = 1024
+
+// misconfiguredTierLogDecision reports whether the (tier, reason) key should be
+// logged, recording it if so, and whether the dedup set JUST saturated (so the
+// caller can emit a one-time notice). Once the set holds
+// maxLoggedMisconfiguredTiers entries, unseen keys are no longer logged or
+// stored: memory stays bounded and log volume cannot degrade back to one line
+// per request under a request-derived tier-name flood. The 500 refusal itself is
+// unaffected by this decision.
+func (rl *RateLimiter) misconfiguredTierLogDecision(key string) (logTier, justSaturated bool) {
+	rl.misconfigLogMu.Lock()
+	defer rl.misconfigLogMu.Unlock()
+
+	if _, seen := rl.loggedMisconfiguredTiers[key]; seen {
+		return false, false
+	}
+
+	if len(rl.loggedMisconfiguredTiers) >= maxLoggedMisconfiguredTiers {
+		if rl.misconfigLogSaturated {
+			return false, false
+		}
+
+		rl.misconfigLogSaturated = true
+
+		return false, true
+	}
+
+	if rl.loggedMisconfiguredTiers == nil {
+		rl.loggedMisconfiguredTiers = make(map[string]struct{})
+	}
+
+	rl.loggedMisconfiguredTiers[key] = struct{}{}
+
+	return true, false
+}
+
 // check is the shared core of WithRateLimit and WithDynamicRateLimit. It runs the rate
 // limit check for the given tier and either passes the request through or returns an
 // appropriate error response.
+//
+// tier is expected to be enforceable — positive window, positive max. Both callers
+// screen it through misconfiguredTierHandler first; any new entry point must do the
+// same, or a misconfigured tier will surface here as a blanket 429.
 func (rl *RateLimiter) check(c fiber.Ctx, tier Tier) error {
 	ctx := c.Context()
 	if ctx == nil {

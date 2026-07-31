@@ -29,6 +29,16 @@ import (
 // maps a code to its HTTP status. fallbackCode is the code carried in the body
 // when the error is nil or unrecognized.
 //
+// An *Upstream reachable from err (wrapped or not) is lifted into the upstream
+// extension member on whatever body comes out, at every status. This seam has to
+// do that lifting itself: it returns a concrete *Detail straight to Huma, and a
+// handler error that already satisfies huma.StatusError is written verbatim
+// without huma.NewError ever being called — so the Install override never sees
+// it, and a rail whose only error path is MapError would otherwise have no way
+// to publish the member at all. As in the override, the exception to the >=500
+// sanitization is carried by the TYPE, not by a flag: only a value a call site
+// deliberately built as an *Upstream can land there.
+//
 // It returns a concrete *Detail directly rather than round-tripping through
 // huma.NewError, so the result is independent of whether Install ran.
 func MapError(
@@ -37,6 +47,23 @@ func MapError(
 	statusOf func(code string) int,
 	fallbackCode string,
 ) error {
+	pd := mapProblem(err, codeOf, statusOf, fallbackCode)
+
+	if up, _ := upstreamFrom(err); up != nil {
+		pd.Upstream = up
+	}
+
+	return pd
+}
+
+// mapProblem is MapError's status/code/detail policy, split out so the upstream
+// member can be attached to every body it can return from one place.
+func mapProblem(
+	err error,
+	codeOf func(error) (code, msg string, ok bool),
+	statusOf func(code string) int,
+	fallbackCode string,
+) *Detail {
 	if err == nil || codeOf == nil || statusOf == nil {
 		return newProblem(http.StatusInternalServerError, genericServerErrorDetail, fallbackCode)
 	}

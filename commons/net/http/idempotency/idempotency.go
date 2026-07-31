@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	chttp "github.com/LerianStudio/lib-commons/v6/commons/constants"
@@ -23,6 +24,50 @@ const (
 	keyStateProcessing = "processing"
 	keyStateComplete   = "complete"
 )
+
+// stateSeparator divides the key state from the request fingerprint in the
+// marker value: "processing:<hex>" / "complete:<hex>". A value carrying no
+// separator was written by a version that stored no fingerprint — see
+// splitKeyValue.
+const stateSeparator = ":"
+
+// requestFingerprint identifies WHICH request an idempotency key was spent on.
+//
+// It hashes the raw body bytes exactly as received, never a re-serialization:
+// re-encoding would let JSON key order, pretty-printing or charset differences
+// change the digest between a request and its own retry, and a false mismatch on
+// a money path is worse than the reuse it would catch — the caller may respond by
+// retrying under a NEW key, producing the duplicate this guard exists to prevent.
+//
+// Method and path join the digest because an identical body sent to a different
+// operation is a different request. The query string does NOT: clients append
+// cache-busting parameters on retry, and that must not read as reuse.
+func requestFingerprint(method, path string, body []byte) string {
+	h := sha256.New()
+	h.Write([]byte(method))
+	h.Write([]byte("\n"))
+	h.Write([]byte(path))
+	h.Write([]byte("\n"))
+	h.Write(body)
+
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// splitKeyValue decodes a marker value into its state and fingerprint.
+//
+// found reports whether a fingerprint was present. It is false for records
+// written before fingerprints existed, and those MUST keep the old
+// replay-on-key-alone behaviour: rejecting them would turn a legitimate
+// in-flight retry into a refusal for the length of a deploy. The exposure is
+// bounded — legacy records expire with their TTL and no new ones are written.
+func splitKeyValue(value string) (state, fingerprint string, found bool) {
+	state, fingerprint, found = strings.Cut(value, stateSeparator)
+	if !found {
+		return value, "", false
+	}
+
+	return state, fingerprint, true
+}
 
 // cachedResponse stores the full HTTP response for idempotent replay.
 // Body is stored as raw bytes (base64-encoded in JSON) so that binary and
@@ -257,8 +302,15 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 		return m.onRedisError(c)
 	}
 
+	// The fingerprint is computed BEFORE the handler runs, while the body is
+	// untouched, and carried through to saveResult — recomputing it afterwards
+	// would hash whatever the handler left behind.
+	fingerprint := requestFingerprint(c.Method(), c.Path(), c.Body())
+
 	// SetNX atomically checks and sets — returns true only if the key was newly created.
-	set, setnxErr := client.SetNX(ctx, key, keyStateProcessing, m.keyTTL).Result()
+	// The marker carries the fingerprint so a later duplicate can tell a genuine
+	// retry from the same key spent on a different request.
+	set, setnxErr := client.SetNX(ctx, key, keyStateProcessing+stateSeparator+fingerprint, m.keyTTL).Result()
 	if setnxErr != nil {
 		m.logger.Log(ctx, log.LevelWarn, "idempotency: setnx failed", log.Err(setnxErr))
 		return m.onRedisError(c)
@@ -267,7 +319,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	responseKey := key + ":response"
 
 	if !set {
-		return m.handleDuplicate(ctx, c, client, key, responseKey)
+		return m.handleDuplicate(ctx, c, client, key, responseKey, fingerprint)
 	}
 
 	// Proceed with the actual handler.
@@ -278,7 +330,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	postCtx, postCancel := context.WithTimeout(context.WithoutCancel(c.Context()), m.redisTimeout)
 	defer postCancel()
 
-	m.saveResult(postCtx, c, client, key, responseKey, handlerErr)
+	m.saveResult(postCtx, c, client, key, responseKey, fingerprint, handlerErr)
 
 	return handlerErr
 }
@@ -291,7 +343,7 @@ func (m *Middleware) handleDuplicate(
 	ctx context.Context,
 	c fiber.Ctx,
 	client redis.UniversalClient,
-	key, responseKey string,
+	key, responseKey, fingerprint string,
 ) error {
 	// Read the current key value to distinguish in-flight from completed.
 	keyValue, keyErr := client.Get(ctx, key).Result()
@@ -313,6 +365,35 @@ func (m *Middleware) handleDuplicate(
 	// be retried rather than returning a false "already processed" response.
 	if errors.Is(keyErr, redis.Nil) {
 		return c.Next()
+	}
+
+	keyState, storedFingerprint, hasFingerprint := splitKeyValue(keyValue)
+
+	switch {
+	case !hasFingerprint:
+		// Written before fingerprints existed. Replay on the key alone, as that
+		// version did, and say so — the alternative refuses legitimate retries
+		// mid-deploy. Bounded: legacy records expire and none are created.
+		m.logger.Log(ctx, log.LevelWarn,
+			"idempotency: record predates payload fingerprinting, replaying without comparison",
+			log.String("key_hash", redactKey(key)),
+		)
+	case storedFingerprint != fingerprint:
+		// The key was spent on a DIFFERENT request. Replaying here would hand
+		// this caller the other request's response: its own operation never ran
+		// and it would be told the operation succeeded. The ledger would hold no
+		// record of it and nobody would retry, because the status said success.
+		m.logger.Log(ctx, log.LevelWarn,
+			"idempotency: key reused with a different request payload, refusing",
+			log.String("key_hash", redactKey(key)),
+			log.String("key_state", keyState),
+		)
+
+		return libHTTP.RespondError(c, http.StatusUnprocessableEntity,
+			"IDEMPOTENCY_KEY_REUSE",
+			"this idempotency key was already used for a different request; "+
+				"do not retry with a new key — reconcile the original request first",
+		)
 	}
 
 	// Try to replay the cached response (true idempotency).
@@ -360,7 +441,7 @@ func (m *Middleware) handleDuplicate(
 	// No cached response available — differentiate by key state.
 	c.Set(chttp.IdempotencyReplayed, "true")
 
-	if keyValue == keyStateProcessing {
+	if keyState == keyStateProcessing {
 		// Request is still in flight — tell the client to retry later.
 		return libHTTP.RespondError(c, http.StatusConflict,
 			"IDEMPOTENCY_CONFLICT",
@@ -384,7 +465,7 @@ func (m *Middleware) saveResult(
 	ctx context.Context,
 	c fiber.Ctx,
 	client redis.UniversalClient,
-	key, responseKey string,
+	key, responseKey, fingerprint string,
 	handlerErr error,
 ) {
 	statusCode := c.Response().StatusCode()
@@ -439,7 +520,10 @@ func (m *Middleware) saveResult(
 			)
 		}
 
-		pipe.Set(ctx, key, keyStateComplete, m.keyTTL)
+		// Carry the same fingerprint forward. Dropping it here would leave a
+		// completed record indistinguishable from a legacy one, so the very next
+		// duplicate would replay without a comparison.
+		pipe.Set(ctx, key, keyStateComplete+stateSeparator+fingerprint, m.keyTTL)
 
 		if _, pipeErr := pipe.Exec(ctx); pipeErr != nil {
 			m.logger.Log(ctx, log.LevelWarn,

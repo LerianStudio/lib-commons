@@ -4,6 +4,7 @@ package ratelimit
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -510,6 +511,173 @@ func TestWithDynamicRateLimit_ZeroWindow(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
+// nonPositiveMaxCases covers the two ways a tier max can make enforcement impossible.
+var nonPositiveMaxCases = []struct {
+	name string
+	max  int
+}{
+	{name: "zero", max: 0},
+	{name: "negative", max: -5},
+}
+
+// assertMisconfiguredResponse asserts the response is the named configuration failure and
+// NOT a 429, and that the counter was never touched.
+func assertMisconfiguredResponse(t *testing.T, resp *http.Response, mr *miniredis.Miniredis) {
+	t.Helper()
+
+	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+
+	var errResp chttp.ErrorResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&errResp))
+
+	assert.Equal(t, http.StatusInternalServerError, errResp.Code)
+	assert.Equal(t, "misconfigured_rate_limiter", errResp.Title)
+	assert.NotEqual(t, "rate_limit_exceeded", errResp.Title,
+		"a misconfigured limiter must not masquerade as legitimate throttling")
+	assert.Contains(t, errResp.Message, "max")
+	assert.Empty(t, mr.Keys(), "refusal must happen before the counter is touched")
+}
+
+// TestWithRateLimit_NonPositiveMax proves a tier whose max is zero or negative is refused
+// with the same named 500 the zero-window guard returns. Without the floor, every count
+// exceeds the limit and the counter path answers 429 to every request — total
+// unavailability indistinguishable from a client genuinely over its quota.
+func TestWithRateLimit_NonPositiveMax(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range nonPositiveMaxCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mr := miniredis.RunT(t)
+			conn := newTestMiddlewareRedisConnection(t, mr)
+			spy := &errorSpy{}
+			rl := New(conn, WithLogger(spy))
+			require.NotNil(t, rl)
+
+			app := newTestApp(rl.WithRateLimit(Tier{Name: "bad-max", Max: tt.max, Window: time.Minute}))
+
+			resp := doRequest(t, app)
+			defer resp.Body.Close()
+
+			assertMisconfiguredResponse(t, resp, mr)
+			assert.True(t, spy.hasError("misconfigured"),
+				"operator needs an error log naming the misconfiguration")
+		})
+	}
+}
+
+// TestWithDynamicRateLimit_NonPositiveMax proves the dynamic tier selector shares the
+// same floor: a TierFunc returning a non-positive max is refused per request.
+func TestWithDynamicRateLimit_NonPositiveMax(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range nonPositiveMaxCases {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mr := miniredis.RunT(t)
+			conn := newTestMiddlewareRedisConnection(t, mr)
+			rl := New(conn)
+			require.NotNil(t, rl)
+
+			app := newTestApp(rl.WithDynamicRateLimit(func(_ fiber.Ctx) Tier {
+				return Tier{Name: "dynamic-bad-max", Max: tt.max, Window: time.Minute}
+			}))
+
+			resp := doRequest(t, app)
+			defer resp.Body.Close()
+
+			assertMisconfiguredResponse(t, resp, mr)
+		})
+	}
+}
+
+// TestWithDynamicRateLimit_MisconfiguredTierLogsOncePerMisconfiguration proves the
+// per-request validation in WithDynamicRateLimit does not scale error-log volume 1:1
+// with traffic: a persistently invalid tier logs once per distinct (tier, reason)
+// pair on the instance, while every request still receives the named 500.
+func TestWithDynamicRateLimit_MisconfiguredTierLogsOncePerMisconfiguration(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newTestMiddlewareRedisConnection(t, mr)
+	spy := &errorSpy{}
+	rl := New(conn, WithLogger(spy))
+	require.NotNil(t, rl)
+
+	app := newTestApp(rl.WithDynamicRateLimit(func(_ fiber.Ctx) Tier {
+		return Tier{Name: "dynamic-bad-max", Max: 0, Window: time.Minute}
+	}))
+
+	for range 5 {
+		resp := doRequest(t, app)
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode,
+			"every request on the misconfigured tier must still be refused")
+		resp.Body.Close()
+	}
+
+	assert.Equal(t, 1, spy.countErrors("misconfigured"),
+		"a persistently misconfigured tier must log once per distinct misconfiguration, not per request")
+}
+
+// TestMisconfiguredTierLogDecision_DedupSetIsBounded proves the dedup set cannot
+// grow without bound under a TierFunc that derives a distinct invalid tier name
+// from each request: past capacity, exactly one saturation notice is signalled
+// and every later unseen key is silent, while seen keys stay deduplicated.
+func TestMisconfiguredTierLogDecision_DedupSetIsBounded(t *testing.T) {
+	t.Parallel()
+
+	rl := &RateLimiter{}
+
+	for i := range maxLoggedMisconfiguredTiers {
+		logTier, saturated := rl.misconfiguredTierLogDecision(fmt.Sprintf("tier-%d|reason", i))
+		require.True(t, logTier, "each distinct misconfiguration under capacity must log")
+		require.False(t, saturated)
+	}
+
+	logTier, saturated := rl.misconfiguredTierLogDecision("tier-0|reason")
+	assert.False(t, logTier, "a seen key must stay deduplicated")
+	assert.False(t, saturated)
+
+	logTier, saturated = rl.misconfiguredTierLogDecision("overflow-a|reason")
+	assert.False(t, logTier, "an unseen key past capacity must not log")
+	assert.True(t, saturated, "the first overflow must signal the one-time saturation notice")
+
+	logTier, saturated = rl.misconfiguredTierLogDecision("overflow-b|reason")
+	assert.False(t, logTier)
+	assert.False(t, saturated, "the saturation notice must fire exactly once")
+
+	assert.Len(t, rl.loggedMisconfiguredTiers, maxLoggedMisconfiguredTiers,
+		"the dedup set must never exceed its capacity")
+}
+
+// TestWithRateLimit_MaxOneStillLimits proves the floor did not turn a legitimate,
+// very strict tier into a pass-through: max 1 allows one request and throttles the next.
+func TestWithRateLimit_MaxOneStillLimits(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newTestMiddlewareRedisConnection(t, mr)
+	rl := New(conn)
+	require.NotNil(t, rl)
+
+	app := newTestApp(rl.WithRateLimit(Tier{Name: "strict", Max: 1, Window: time.Minute}))
+
+	resp := doRequest(t, app)
+	resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	resp = doRequest(t, app)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusTooManyRequests, resp.StatusCode)
+
+	var errResp chttp.ErrorResponse
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&errResp))
+	assert.Equal(t, "rate_limit_exceeded", errResp.Title)
 }
 
 func TestNew_RedisTimeoutNonPositiveEnv(t *testing.T) {

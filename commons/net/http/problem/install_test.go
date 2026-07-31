@@ -3,8 +3,11 @@
 package problem
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -51,6 +54,7 @@ func TestNewError_ServerError_Scrubbed(t *testing.T) {
 		assert.Nil(t, d.Errors, "5xx must fold NO errs")
 		assert.Empty(t, d.Code)
 		assert.Empty(t, d.Type, "Type stays RFC default about:blank (empty)")
+		assert.Nil(t, d.Upstream, "an unrelated 5xx cause must NOT surface as an upstream member")
 	}
 }
 
@@ -172,4 +176,247 @@ func TestInstall_OverridesGlobal_Idempotent(t *testing.T) {
 	Install()
 	scrubbed := asDetail(t, huma.NewError(http.StatusInternalServerError, "raw cause"))
 	assert.Equal(t, genericServerErrorDetail, scrubbed.Detail)
+}
+
+// TestInstall_ReinstallsAfterRestore is the anti-Once lock. The override is a
+// process-global that anything in a test binary can put back; if Install skipped
+// work merely because it had been called before, the next one would be a SILENT
+// no-op and every later 5xx-scrub assertion in that binary would be measuring
+// stock Huma while appearing to measure ours.
+//
+// Install must therefore decide on the SHAPE currently in place, not on a call
+// count — see TestInstall_PreservesADecoratorOfTheInstalledModel for the other
+// half, where an unconditional republish is the wrong answer.
+func TestInstall_ReinstallsAfterRestore(t *testing.T) {
+	// NOT parallel: mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	Install()
+	huma.NewError = original // exactly what a sibling test's cleanup does
+
+	Install()
+
+	scrubbed := asDetail(t, huma.NewError(http.StatusInternalServerError, "raw cause"))
+	assert.Equal(t, genericServerErrorDetail, scrubbed.Detail,
+		"a reinstall after a restore must take effect, not be skipped")
+}
+
+// TestInstall_PreservesADecoratorOfTheInstalledModel is a PII guard, and it is
+// modelled on a real consumer rather than an invented one.
+//
+// br-sfn/scr decorates the installed model to scrub the borrower's CPF/CNPJ out
+// of Huma's request-body validation echo: the consultation DTO carries `document`
+// as a bare string, so a JSON type mismatch is rejected by SCHEMA validation
+// before any handler runs, and Huma echoes the offending value back in
+// errors[].value. The decorator drops that value and keeps message + location.
+// It installs itself ONCE, right after Install(), inside NewServer.
+//
+// If Install() republished unconditionally, a second NewServer in the same
+// process would overwrite the decorator and NOT restore it — the decorator's own
+// guard has already fired. Nothing anywhere would say so, and the next validation
+// error would echo the document again.
+func TestInstall_PreservesADecoratorOfTheInstalledModel(t *testing.T) {
+	// NOT parallel: mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	// First construction: install, then decorate exactly once.
+	Install()
+
+	decorated := false
+
+	installDecoratorOnce := func() {
+		if decorated {
+			return
+		}
+
+		decorated = true
+		next := huma.NewError
+		huma.NewError = func(status int, msg string, errs ...error) huma.StatusError {
+			result := next(status, msg, errs...)
+			if detail, ok := result.(*Detail); ok {
+				for _, item := range detail.Errors {
+					if item != nil && strings.HasPrefix(item.Location, "body") {
+						item.Value = nil
+					}
+				}
+			}
+
+			return result
+		}
+	}
+
+	installDecoratorOnce()
+
+	borrowerEcho := func() *Detail {
+		return asDetail(t, huma.NewError(http.StatusUnprocessableEntity, "validation failed",
+			&huma.ErrorDetail{Message: "expected string", Location: "body.document", Value: "12345678901"}))
+	}
+
+	require.Nil(t, borrowerEcho().Errors[0].Value, "setup: the decorator must be in effect")
+
+	// Second construction in the same process.
+	Install()
+	installDecoratorOnce()
+
+	assert.Nil(t, borrowerEcho().Errors[0].Value,
+		"a second Install must not silently drop a decoration that redacts PII")
+}
+
+// TestInstall_ReplacesADecoratorThatChangesTheReturnedType is the deliberate
+// limit of the rule above. Huma derives the generated error schema by reflecting
+// the type this constructor returns, so a wrapper returning something other than
+// a *Detail has already broken the spec's error shape — replacing it is the
+// correct outcome, not a regression.
+func TestInstall_ReplacesADecoratorThatChangesTheReturnedType(t *testing.T) {
+	// NOT parallel: mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	huma.NewError = func(status int, msg string, _ ...error) huma.StatusError {
+		return &huma.ErrorModel{Status: status, Detail: msg}
+	}
+
+	Install()
+
+	scrubbed := asDetail(t, huma.NewError(http.StatusInternalServerError, "raw cause"))
+	assert.Equal(t, genericServerErrorDetail, scrubbed.Detail)
+}
+
+// TestNewError_ServerError_PreservesUpstream is the other half of the scrub
+// contract: a curated *Upstream survives a status>=500 while everything else
+// about the body stays scrubbed. Without this, a client proxying a third party
+// gets an opaque 5xx exactly where the provider's own code is the only
+// diagnosable information it has.
+func TestNewError_ServerError_PreservesUpstream(t *testing.T) {
+	t.Parallel()
+
+	d := asDetail(t, newError(
+		http.StatusBadGateway,
+		"db password = hunter2",
+		&Upstream{Code: "E4001", Message: "CPF não encontrado na base"},
+		errors.New("leaky raw cause"),
+	))
+
+	assert.Equal(t, genericServerErrorDetail, d.Detail, "5xx detail must still be scrubbed")
+	assert.Nil(t, d.Errors, "5xx must still fold NO errs")
+	require.NotNil(t, d.Upstream, "the curated upstream member must survive the 5xx scrub")
+	assert.Equal(t, "E4001", d.Upstream.Code)
+	assert.Equal(t, "CPF não encontrado na base", d.Upstream.Message)
+}
+
+// TestNewError_UpstreamNotFoldedIntoErrors proves the member is the ONLY place
+// upstream data lands: it is never duplicated into errors[], and unrelated errs
+// keep folding exactly as before on the <500 path.
+func TestNewError_UpstreamNotFoldedIntoErrors(t *testing.T) {
+	t.Parallel()
+
+	d := asDetail(t, newError(
+		http.StatusUnprocessableEntity,
+		"rail refused the proposal",
+		errors.New("field a invalid"),
+		&Upstream{Code: "E22", Message: "prazo inválido"},
+		errors.New("field b invalid"),
+	))
+
+	assert.Equal(t, "rail refused the proposal", d.Detail, "<500 msg still passes through")
+	require.Len(t, d.Errors, 2, "only the unrelated errs fold, in order")
+	assert.Equal(t, "field a invalid", d.Errors[0].Message)
+	assert.Equal(t, "field b invalid", d.Errors[1].Message)
+	require.NotNil(t, d.Upstream)
+	assert.Equal(t, "E22", d.Upstream.Code)
+}
+
+// TestNewError_UpstreamThroughWrappedError proves detection unwraps: real call
+// sites wrap the rail error with local context before returning it.
+func TestNewError_UpstreamThroughWrappedError(t *testing.T) {
+	t.Parallel()
+
+	wrapped := fmt.Errorf("call rail: %w", &Upstream{Code: "E7", Message: "indisponível"})
+	d := asDetail(t, newError(http.StatusInternalServerError, "boom", wrapped))
+
+	require.NotNil(t, d.Upstream, "a wrapped upstream must still be found")
+	assert.Equal(t, "E7", d.Upstream.Code)
+	assert.Equal(t, genericServerErrorDetail, d.Detail)
+}
+
+// TestNewError_UpstreamEdgeCases pins the degenerate inputs: the first match
+// wins, an empty member is treated as absent, and a typed-nil *Upstream neither
+// attaches a member nor panics.
+func TestNewError_UpstreamEdgeCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("first match wins", func(t *testing.T) {
+		t.Parallel()
+
+		d := asDetail(t, newError(
+			http.StatusBadGateway, "boom",
+			&Upstream{Code: "first"},
+			&Upstream{Code: "second"},
+		))
+
+		require.NotNil(t, d.Upstream)
+		assert.Equal(t, "first", d.Upstream.Code)
+	})
+
+	t.Run("empty member is absent", func(t *testing.T) {
+		t.Parallel()
+
+		d := asDetail(t, newError(http.StatusBadGateway, "boom", &Upstream{}))
+		assert.Nil(t, d.Upstream, "a member with neither code nor message must not reach the wire")
+	})
+
+	t.Run("typed-nil upstream", func(t *testing.T) {
+		t.Parallel()
+
+		assert.NotPanics(t, func() {
+			var up *Upstream
+			d := asDetail(t, newError(http.StatusBadRequest, "boom", up))
+			assert.Nil(t, d.Upstream)
+			assert.Nil(t, d.Errors, "a typed-nil upstream must not fold a bogus errors[] entry")
+		})
+	})
+}
+
+// installForTest publishes the override on the process-global huma.NewError for
+// the duration of t and restores the previous value afterward. It drives the real
+// Install(), which is safe here only because Install is re-entrant: were it
+// guarded by a sync.Once, an earlier test that installed and then restored the
+// global would make this call a silent no-op and every assertion below would be
+// measuring stock Huma.
+func installForTest(t *testing.T) {
+	t.Helper()
+
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	Install()
+}
+
+// TestInstall_ServerError_UpstreamReachesTheWire is the end-to-end proof through
+// the installed process-global override and JSON encoding — the same path a
+// Huma handler takes when a call site returns huma.Error502BadGateway. It
+// asserts the client-visible 5xx body: provider code and message present,
+// everything of ours scrubbed.
+func TestInstall_ServerError_UpstreamReachesTheWire(t *testing.T) {
+	// NOT parallel: mutates the process-global huma.NewError.
+	installForTest(t)
+
+	se := huma.Error502BadGateway("rail refused", &Upstream{Code: "E4001", Message: "CPF não encontrado na base"})
+
+	raw, err := json.Marshal(se)
+	require.NoError(t, err)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(raw, &body))
+
+	assert.Equal(t, genericServerErrorDetail, body["detail"], "our own 5xx detail stays scrubbed")
+	_, hasErrors := body["errors"]
+	assert.False(t, hasErrors, "no errors[] on a 5xx")
+
+	up, ok := body["upstream"].(map[string]any)
+	require.True(t, ok, "upstream member must reach the wire on a 5xx, got %s", raw)
+	assert.Equal(t, "E4001", up["code"])
+	assert.Equal(t, "CPF não encontrado na base", up["message"])
 }

@@ -309,13 +309,75 @@ func classifyAWSErrorWithSentinels(err error, secretPath string, notFound, acces
 		return fmt.Errorf("%w at %s", notFound, redacted)
 	}
 
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
-		switch apiErr.ErrorCode() {
-		case "AccessDeniedException", "ExpiredTokenException":
-			return fmt.Errorf("%w: %w", accessDenied, err)
-		}
+	if isVaultAccessDeniedError(err) {
+		return fmt.Errorf("%w at %s: %w", accessDenied, redacted, newScrubbedAWSError(err, secretPath, redacted))
 	}
 
-	return fmt.Errorf("%w: %s: %w", retrievalFailed, redacted, err)
+	return fmt.Errorf("%w: %s: %w", retrievalFailed, redacted, newScrubbedAWSError(err, secretPath, redacted))
+}
+
+const minRedactableSegmentLength = 4
+
+type scrubbedAWSError struct {
+	message string
+	cause   error
+}
+
+func (e *scrubbedAWSError) Error() string { return e.message }
+
+// Unwrap returns the original, UN-scrubbed AWS error, preserved for programmatic
+// classification via errors.Is/errors.As only (retryability checks, error-code
+// switches). Callers must never log the unwrapped cause directly — including a
+// smithy.APIError extracted with errors.As and its Error()/ErrorMessage() — because
+// it can still carry the tenant path this type exists to hide. Only the top-level
+// Error() string is guaranteed to be scrubbed.
+func (e *scrubbedAWSError) Unwrap() error { return e.cause }
+
+func newScrubbedAWSError(err error, secretPath, redacted string) error {
+	return &scrubbedAWSError{
+		message: scrubSecretPath(err.Error(), secretPath, redacted),
+		cause:   err,
+	}
+}
+
+func scrubSecretPath(message, secretPath, redacted string) string {
+	scrubbed := strings.ReplaceAll(message, secretPath, redacted)
+
+	segments := strings.Split(secretPath, "/")
+	for i := 1; i < len(segments)-1; i++ {
+		if len(segments[i]) < minRedactableSegmentLength {
+			continue
+		}
+
+		scrubbed = strings.ReplaceAll(scrubbed, segments[i], constants.ObfuscatedValue)
+	}
+
+	return scrubbed
+}
+
+// AWS API error codes that mean the caller's vault access itself is the problem,
+// rather than the secret being absent or the infrastructure being unreachable.
+const (
+	awsErrCodeAccessDenied = "AccessDeniedException"
+	awsErrCodeExpiredToken = "ExpiredTokenException"
+)
+
+// isVaultAccessDeniedError reports whether an AWS SDK error is an access-denied or
+// expired-token failure. Shared by every credential reader in this package so they
+// classify vault access failures identically.
+func isVaultAccessDeniedError(err error) bool {
+	// errors.As matches a typed-nil smithy.APIError (a nil concrete pointer in the
+	// chain), and calling ErrorCode on it would panic; classify it as not
+	// access-denied instead, matching classifyExternalReferenceAWSError.
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) || isNilInterface(apiErr) {
+		return false
+	}
+
+	switch apiErr.ErrorCode() {
+	case awsErrCodeAccessDenied, awsErrCodeExpiredToken:
+		return true
+	default:
+		return false
+	}
 }

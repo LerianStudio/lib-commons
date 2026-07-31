@@ -5,6 +5,7 @@ package openapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -388,10 +389,88 @@ func TestSchemaParity_ErrorSchemaCarriesCode(t *testing.T) {
 		assert.Truef(t, ok, "error schema must carry %q", p)
 	}
 
+	// The `upstream` extension member must be published too, or a client that
+	// proxies a third-party rail has no contract to code against: it would receive
+	// a member the spec never declared.
+	_, hasUpstream := errSchema.Properties["upstream"]
+	assert.True(t, hasUpstream, "error schema must carry the optional `upstream` extension member")
+
 	// Belt-and-suspenders: the marshaled spec contains the example domain code.
 	raw, err := json.Marshal(api.OpenAPI())
 	require.NoError(t, err)
 	assert.Contains(t, string(raw), "ERR-0001", "code property example should be present in the spec")
+}
+
+// TestErrorSeams_UpstreamReachesTheClient is the end-to-end lock for BOTH error
+// seams over a real Fiber app: the provider's own code and message must arrive in
+// the `upstream` extension member of the response body, on the status the rail
+// mapped to, with everything of ours on a 5xx still scrubbed.
+//
+// The MapError case is the one that would silently regress: a handler error that
+// already satisfies huma.StatusError is written verbatim by Huma, so the
+// process-global huma.NewError override never runs on that path.
+func TestErrorSeams_UpstreamReachesTheClient(t *testing.T) {
+	// NOT parallel: mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	problem.Install()
+
+	railErr := fmt.Errorf("consult rail: %w", &problem.Upstream{
+		Code:    "E4001",
+		Message: "serviço indisponível",
+	})
+
+	cases := map[string]struct {
+		handlerErr error
+		wantStatus int
+	}{
+		"MapError seam": {
+			handlerErr: problem.MapError(railErr,
+				func(error) (string, string, bool) { return "GW-9001", "leaky raw cause", true },
+				func(string) int { return http.StatusBadGateway },
+				"GW-0000",
+			),
+			wantStatus: http.StatusBadGateway,
+		},
+		"huma.Error5xx seam": {
+			handlerErr: huma.Error502BadGateway("rail refused", railErr),
+			wantStatus: http.StatusBadGateway,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			app := fiber.New()
+			api := New(app, app.Group("/"), testConfig())
+			registerFailing(api, tc.handlerErr)
+
+			status, body := doReq(t, app, http.MethodGet, "/fail")
+			assert.Equal(t, tc.wantStatus, status)
+
+			var got map[string]any
+			require.NoError(t, json.Unmarshal([]byte(body), &got))
+
+			assert.Equal(t, "internal error", got["detail"], "our own 5xx detail stays scrubbed")
+
+			up, ok := got["upstream"].(map[string]any)
+			require.True(t, ok, "upstream member must reach the client, got %s", body)
+			assert.Equal(t, "E4001", up["code"])
+			assert.Equal(t, "serviço indisponível", up["message"])
+		})
+	}
+}
+
+// registerFailing registers a GET operation whose handler always returns err, so
+// a test can drive a real request through Huma's own error-writing path.
+func registerFailing(api huma.API, err error) {
+	huma.Register(api, huma.Operation{
+		OperationID: "fail",
+		Method:      http.MethodGet,
+		Path:        "/fail",
+	}, func(_ context.Context, _ *struct{}) (*echoOutput, error) {
+		return nil, err
+	})
 }
 
 // findErrorSchema locates the registered component schema that carries the

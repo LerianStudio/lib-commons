@@ -42,7 +42,7 @@ Lerian's shared platform code is split across four libraries:
 - `utils.go`: UUID generation (`GenerateUUIDv7` returns error), struct-to-JSON, map merging, CPU/memory metrics, internal service detection
 - `stringUtils.go`: accent removal, case conversion, UUID placeholder replacement, SHA-256 hashing, server address validation
 - `time.go`: date/time validation, range checking, parsing with end-of-day support
-- `os.go`: environment variable helpers (`GetenvOrDefault`, `GetenvBoolOrDefault`, `GetenvIntOrDefault`), struct population from env tags via `SetConfigFromEnvVars`
+- `os.go`: environment variable helpers (`GetenvOrDefault`, `GetenvBoolOrDefault`, `GetenvIntOrDefault`, `GetenvDurationOrDefault`), struct population from env tags via `SetConfigFromEnvVars`
 - `commons/constants`: shared constants for datasource status, errors, headers, metadata, pagination, transactions, and obfuscation values
 
 ### Observability and logging
@@ -157,7 +157,36 @@ The following environment variables are recognized by lib-commons or by canonica
 | `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | `string` | _(none)_ | `lib-observability/tracing` | Metrics-specific OTLP endpoint; bare `host:port` values are normalized to `http://host:port` |
 | `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | `string` | _(none)_ | `lib-observability/tracing` | Logs-specific OTLP endpoint; bare `host:port` values are normalized to `http://host:port` |
 
-Additionally, `commons.SetConfigFromEnvVars` populates any struct using `env:"VAR_NAME"` field tags, supporting `string`, `bool`, and integer types. Consuming applications define their own variable names through these tags.
+Additionally, `commons.SetConfigFromEnvVars` populates any struct using `env:"VAR_NAME"` field tags, supporting `string`, `bool`, integer types, `time.Duration` and `[]string`. Consuming applications define their own variable names through these tags.
+
+#### Defaults
+
+A field may carry an `envDefault` tag giving the value to use when its variable is unset, blank, or unparseable for the field's type:
+
+```go
+type Config struct {
+    AuthEnabled bool          `env:"PLUGIN_AUTH_ENABLED"  envDefault:"true"`
+    Port        int           `env:"SERVER_PORT"          envDefault:"8080"`
+    Timeout     time.Duration `env:"REQUEST_TIMEOUT"      envDefault:"30s"`
+    Origins     []string      `env:"CORS_ALLOWED_ORIGINS" envDefault:"https://app.example.com"`
+}
+```
+
+An explicit, non-blank, parseable value always wins, including `false` — the default only fills a gap, it does not override an operator.
+
+A value that is present but **unparseable** for the field's type takes the default instead, and `GetenvBoolOrDefault`/`GetenvIntOrDefault`/`GetenvDurationOrDefault` warn to stderr when they do. That predates this tag and is deliberately unchanged: the alternative is refusing to boot on a typo in a variable the field has a working default for. It does mean `PLUGIN_AUTH_ENABLED=flase` yields `true` here rather than an error — so a guard that must reject an explicitly disabled value in production belongs in a validator that reads the raw variable, not in the default.
+
+**Without the tag a field takes its zero value, and for a bool that is `false`.** A flag that must be ON unless an operator turns it off therefore MUST declare the default; relying on the variable being present ships the feature OFF to whoever forgets it. `envDefault` is the only accepted spelling — `default` is read by nothing, and a tag that is silently ignored is worse than no tag, because a reviewer sees it and passes.
+
+An `envDefault` the field's type cannot hold — `envDefault:"maybe"` on a bool, or `envDefault:"999"` on an `int8` — returns `ErrInvalidDefaultValue` at load time rather than falling back to zero. A default that does not apply is indistinguishable from no default at all, which is the failure mode this tag exists to remove.
+
+#### Durations
+
+A `time.Duration` field takes a value **with a unit** — `30s`, `2m`, `720h`, `150ms` — in both the environment variable and the `envDefault` tag. It is matched on its type, ahead of the integer types, because `time.Duration` is defined as an `int64`: a switch on reflect kind cannot tell the two apart, so until this was handled explicitly `envDefault:"30s"` failed the load outright and `envDefault:"30"` silently meant thirty **nanoseconds**.
+
+A unit-less integer remains a **nanosecond** count, matching `time.Duration`'s own numeric meaning and this loader's historical reading. Deployed configuration relies on it — a Helm value of `"2000000000"` means two seconds — so re-reading a bare integer as seconds would silently stretch a two-second timeout to roughly 63 years. Write the unit; the unit-less spelling is legacy that keeps working.
+
+`commons.GetenvDurationOrDefault(key, fallback)` applies the same parsing to a single variable, for code that reads one value rather than populating a struct.
 
 ## Development commands
 

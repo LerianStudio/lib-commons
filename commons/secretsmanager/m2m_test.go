@@ -345,6 +345,77 @@ func TestGetM2MCredentials_SecretNotFound(t *testing.T) {
 }
 
 // ============================================================================
+// Test: GetM2MCredentials - AWS error messages are scrubbed
+// ============================================================================
+
+func TestGetM2MCredentials_AWSErrorsDoNotLeakTenantIdentity(t *testing.T) {
+	t.Parallel()
+
+	const tenantOrgID = "org_01ABCDEFGHIJKLMNOP"
+
+	secretPath := BuildM2MSecretPath("staging", tenantOrgID, "plugin-pix", "ledger")
+	arn := "arn:aws:secretsmanager:us-east-1:123456789012:secret:" + secretPath + "-AbCdEf"
+
+	tests := []struct {
+		name        string
+		awsError    error
+		expectedErr error
+	}{
+		{
+			name:        "access denied echoes the secret arn",
+			awsError:    &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "not authorized to perform: secretsmanager:GetSecretValue on resource: " + arn},
+			expectedErr: ErrM2MVaultAccessDenied,
+		},
+		{
+			name:        "expired token echoes the secret arn",
+			awsError:    &smithy.GenericAPIError{Code: "ExpiredTokenException", Message: "token expired while reading " + arn},
+			expectedErr: ErrM2MVaultAccessDenied,
+		},
+		{
+			name:        "infrastructure failure echoes the secret arn",
+			awsError:    errors.New("InternalServiceError while reading " + arn),
+			expectedErr: ErrM2MRetrievalFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mock := &mockSecretsManagerClient{errors: map[string]error{secretPath: tt.awsError}}
+
+			creds, err := GetM2MCredentials(context.Background(), mock, "staging", tenantOrgID, "plugin-pix", "ledger")
+			require.ErrorIs(t, err, tt.expectedErr)
+			assert.Nil(t, creds)
+
+			message := err.Error()
+			assert.NotContains(t, message, tenantOrgID, "the tenant org id must never reach the error message")
+			assert.NotContains(t, message, secretPath, "the secret path must never reach the error message")
+			assert.NotContains(t, message, "plugin-pix", "the application name must never reach the error message")
+			assert.Contains(t, message, redactPath(secretPath), "the redacted path must identify the secret instead")
+		})
+	}
+}
+
+// TestClassifyAWSError_TypedNilAPIError proves the M2M classifier tolerates a
+// typed-nil smithy.APIError in the chain: errors.As matches the nil concrete
+// pointer, and ErrorCode would panic without the nil-interface guard.
+func TestClassifyAWSError_TypedNilAPIError(t *testing.T) {
+	t.Parallel()
+
+	var nilAPIError *typedNilAPIError
+
+	var err error
+
+	assert.NotPanics(t, func() {
+		err = classifyAWSError(nilAPIError, "tenants/staging/org_01ABC/plugin-pix/m2m/ledger/credentials")
+	})
+	require.ErrorIs(t, err, ErrM2MRetrievalFailed,
+		"a typed-nil API error is not an access-denied; it must classify as retrieval failure")
+}
+
+// ============================================================================
 // Test: GetM2MCredentials - AWS credentials/access missing
 // ============================================================================
 

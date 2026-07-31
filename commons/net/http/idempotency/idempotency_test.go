@@ -979,3 +979,218 @@ func TestOptions_NegativeValues(t *testing.T) {
 	assert.Equal(t, 500*time.Millisecond, m.redisTimeout,
 		"negative redisTimeout must be ignored; default (500ms) must be preserved")
 }
+
+// ---------------------------------------------------------------------------
+// Payload fingerprint
+// ---------------------------------------------------------------------------
+//
+// The middleware previously decided a duplicate purely by the idempotency key.
+// A client reusing one key across two DIFFERENT payloads had the first
+// request's response replayed to the second: the second operation never ran and
+// the caller was told it succeeded. On a money path that is a phantom success --
+// the ledger has no record, the caller's books say settled, and nobody retries
+// because the status said 201.
+
+// newEchoApp returns an app whose handler echoes the request body, so a replayed
+// response is distinguishable from a freshly produced one.
+func newEchoApp(mw fiber.Handler, calls *atomic.Int32, preMiddleware ...fiber.Handler) *fiber.App {
+	app := fiber.New()
+
+	for _, pm := range preMiddleware {
+		app.Use(pm)
+	}
+
+	app.Use(mw)
+
+	handler := func(c fiber.Ctx) error {
+		if calls != nil {
+			calls.Add(1)
+		}
+
+		// Echoed verbatim rather than JSON-wrapped, so an assertion on the body
+		// reads the payload directly instead of an escaped copy of it.
+		return c.Status(fiber.StatusCreated).SendString(string(c.Body()))
+	}
+
+	app.Post("/test", handler)
+	app.Post("/other", handler)
+	app.Put("/test", handler)
+
+	return app
+}
+
+// doSend issues a request with an explicit method, path, body and idempotency key.
+func doSend(t *testing.T, app *fiber.App, method, path, body, idempotencyKey string) *http.Response {
+	t.Helper()
+
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	if idempotencyKey != "" {
+		req.Header.Set(chttp.IdempotencyKey, idempotencyKey)
+	}
+
+	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
+	require.NoError(t, err)
+
+	return resp
+}
+
+func TestCheck_SameKey_DifferentPayload_Rejected(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newRedisClient(t, mr)
+
+	var calls atomic.Int32
+
+	mw := New(conn, WithLogger(libLog.NewNop()))
+	app := newEchoApp(mw.Check(), &calls, tenantMiddleware("tenant-a"))
+
+	first := doSend(t, app, http.MethodPost, "/test", `{"amount":10}`, "reused-key")
+	require.Equal(t, http.StatusCreated, first.StatusCode)
+	require.Contains(t, readBody(t, first), `{"amount":10}`)
+
+	second := doSend(t, app, http.MethodPost, "/test", `{"amount":10000}`, "reused-key")
+	body := readBody(t, second)
+
+	assert.Equal(t, http.StatusUnprocessableEntity, second.StatusCode,
+		"a key reused with a different payload must be refused, not answered with the first payload's response")
+	assert.NotContains(t, body, `"amount":10`,
+		"the first request's response must not leak to a different payload")
+	assert.Equal(t, int32(1), calls.Load(),
+		"the handler must not run for the rejected request")
+	assert.NotEqual(t, "true", second.Header.Get(chttp.IdempotencyReplayed),
+		"a refusal is not a replay and must not be labelled one")
+}
+
+func TestCheck_SameKey_SamePayload_StillReplays(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newRedisClient(t, mr)
+
+	var calls atomic.Int32
+
+	mw := New(conn, WithLogger(libLog.NewNop()))
+	app := newEchoApp(mw.Check(), &calls, tenantMiddleware("tenant-a"))
+
+	first := doSend(t, app, http.MethodPost, "/test", `{"amount":10}`, "same-key")
+	require.Equal(t, http.StatusCreated, first.StatusCode)
+
+	second := doSend(t, app, http.MethodPost, "/test", `{"amount":10}`, "same-key")
+
+	assert.Equal(t, http.StatusCreated, second.StatusCode)
+	assert.Contains(t, readBody(t, second), `{"amount":10}`)
+	assert.Equal(t, "true", second.Header.Get(chttp.IdempotencyReplayed))
+	assert.Equal(t, int32(1), calls.Load(), "a genuine retry must not re-run the handler")
+}
+
+func TestCheck_SameKey_DifferentTarget_Rejected(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name         string
+		method, path string
+	}{
+		{"different path", http.MethodPost, "/other"},
+		{"different method", http.MethodPut, "/test"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			mr := miniredis.RunT(t)
+			conn := newRedisClient(t, mr)
+
+			mw := New(conn, WithLogger(libLog.NewNop()))
+			app := newEchoApp(mw.Check(), nil, tenantMiddleware("tenant-a"))
+
+			first := doSend(t, app, http.MethodPost, "/test", `{"amount":10}`, "cross-target")
+			require.Equal(t, http.StatusCreated, first.StatusCode)
+			readBody(t, first)
+
+			second := doSend(t, app, tc.method, tc.path, `{"amount":10}`, "cross-target")
+			readBody(t, second)
+
+			assert.Equal(t, http.StatusUnprocessableEntity, second.StatusCode,
+				"an identical body sent to a different operation is a different request")
+		})
+	}
+}
+
+func TestCheck_LegacyRecordWithoutFingerprint_StillReplays(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newRedisClient(t, mr)
+
+	// A record written by a version that stored no fingerprint. Rejecting these
+	// would turn a legitimate in-flight retry into a 422 for the duration of the
+	// deploy, so they must keep the pre-fingerprint behaviour and expire out.
+	key := "idempotency:tenant-a:legacy-key"
+	require.NoError(t, mr.Set(key, "complete"))
+	require.NoError(t, mr.Set(key+":response",
+		`{"status_code":201,"content_type":"application/json","body":"eyJlY2hvIjoie1wiYW1vdW50XCI6MTB9In0="}`))
+
+	mw := New(conn, WithLogger(libLog.NewNop()))
+	app := newEchoApp(mw.Check(), nil, tenantMiddleware("tenant-a"))
+
+	resp := doSend(t, app, http.MethodPost, "/test", `{"amount":99999}`, "legacy-key")
+	readBody(t, resp)
+
+	assert.Equal(t, http.StatusCreated, resp.StatusCode,
+		"a pre-fingerprint record must replay as it did before, not 422")
+	assert.Equal(t, "true", resp.Header.Get(chttp.IdempotencyReplayed))
+}
+
+func TestCheck_FirstRequest_StoresFingerprintWithState(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newRedisClient(t, mr)
+
+	mw := New(conn, WithLogger(libLog.NewNop()))
+	app := newEchoApp(mw.Check(), nil, tenantMiddleware("tenant-a"))
+
+	resp := doSend(t, app, http.MethodPost, "/test", `{"amount":10}`, "fp-key")
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	readBody(t, resp)
+
+	stored, err := mr.Get("idempotency:tenant-a:fp-key")
+	require.NoError(t, err)
+
+	state, fingerprint, found := strings.Cut(stored, ":")
+	require.True(t, found, "the stored value must carry the fingerprint alongside the state, got %q", stored)
+	assert.Equal(t, keyStateComplete, state)
+	assert.NotEmpty(t, fingerprint)
+	assert.Equal(t, requestFingerprint(http.MethodPost, "/test", []byte(`{"amount":10}`)), fingerprint,
+		"the fingerprint written on completion must be the one the next request will compare against")
+}
+
+func TestCheck_SameKey_QueryVariance_StillReplays(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newRedisClient(t, mr)
+
+	var calls atomic.Int32
+
+	mw := New(conn, WithLogger(libLog.NewNop()))
+	app := newEchoApp(mw.Check(), &calls, tenantMiddleware("tenant-a"))
+
+	// The fingerprint deliberately excludes the query string: clients append
+	// cache-busting parameters on retry, and a retry that differs only there is
+	// still the same request. Pins that decision, so a change to full-URI
+	// fingerprinting fails here instead of silently refusing legitimate retries.
+	first := doSend(t, app, http.MethodPost, "/test?attempt=1", `{"amount":10}`, "query-key")
+	require.Equal(t, http.StatusCreated, first.StatusCode)
+	require.Equal(t, `{"amount":10}`, readBody(t, first))
+
+	second := doSend(t, app, http.MethodPost, "/test?_=1764500000000", `{"amount":10}`, "query-key")
+
+	assert.Equal(t, http.StatusCreated, second.StatusCode,
+		"a retry differing only in the query string must replay, not be refused as reuse")
+	assert.Equal(t, `{"amount":10}`, readBody(t, second))
+	assert.Equal(t, "true", second.Header.Get(chttp.IdempotencyReplayed))
+	assert.Equal(t, int32(1), calls.Load())
+}
