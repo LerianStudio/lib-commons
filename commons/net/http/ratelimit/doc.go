@@ -50,6 +50,12 @@
 // remains a side-effect hook for metrics/logging and is invoked before the
 // exceeded handler.
 //
+// A tier that cannot enforce a limit — window zero or sub-millisecond, or max
+// not positive — is refused with 500 "misconfigured_rate_limiter" plus an error
+// log naming the offending knob, on both the fixed and dynamic paths. That is
+// deliberate: such a tier would otherwise answer 429 to every request, which an
+// operator cannot tell apart from legitimate throttling.
+//
 // # Storage primitives
 //
 // RedisStorage.Increment exposes the package's atomic fixed-window counter
