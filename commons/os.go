@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -60,6 +61,55 @@ func GetenvIntOrDefault(key string, defaultValue int64) int64 {
 	if err != nil {
 		if str != "" {
 			fmt.Fprintf(os.Stderr, "WARN: env var %s=%q is not a valid int, using default %v\n", key, str, defaultValue)
+		}
+
+		return defaultValue
+	}
+
+	return val
+}
+
+// parseEnvDuration reads a duration the way an operator writes one: "30s", "2m",
+// "720h", "150ms". Surrounding whitespace is trimmed, because a value arriving from a
+// Helm value or a ConfigMap routinely carries a trailing newline, and silently falling
+// back on account of it is the exact failure mode a declared default exists to remove.
+//
+// A unit-less integer is deliberately read as NANOSECONDS rather than seconds. That is
+// what the numeric value of a time.Duration means, and it is what this loader has
+// always done: lerian-internal-gitops ships STREAMING_HEALTH_CHECK_TIMEOUT
+// "2000000000" for br-slc, written in raw nanoseconds precisely because of it.
+// Re-reading that as seconds would turn a two-second readiness timeout into roughly 63
+// years, and a readiness probe that never expires leaves nothing in the logs to say so.
+// Unit-less is legacy spelling that keeps working; a unit is the spelling to write.
+func parseEnvDuration(raw string) (time.Duration, error) {
+	str := strings.TrimSpace(raw)
+
+	if val, err := time.ParseDuration(str); err == nil {
+		return val, nil
+	}
+
+	nanos, err := strconv.ParseInt(str, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse duration %q: %w", raw, err)
+	}
+
+	return time.Duration(nanos), nil
+}
+
+// GetenvDurationOrDefault returns the value of os.Getenv(key string) as a time.Duration,
+// or defaultValue when the variable is undefined, blank, or not a valid duration.
+// Accepts a unit ("30s", "2m", "720h"); a unit-less integer is read as nanoseconds, for
+// the reason given on parseEnvDuration.
+// A warning is printed to stderr when a non-blank value fails to parse, matching
+// GetenvBoolOrDefault and GetenvIntOrDefault, so a misconfigured variable is visible
+// rather than merely absorbed.
+func GetenvDurationOrDefault(key string, defaultValue time.Duration) time.Duration {
+	str := os.Getenv(key)
+
+	val, err := parseEnvDuration(str)
+	if err != nil {
+		if strings.TrimSpace(str) != "" {
+			fmt.Fprintf(os.Stderr, "WARN: env var %s=%q is not a valid duration, using default %v\n", key, str, defaultValue)
 		}
 
 		return defaultValue
@@ -165,12 +215,23 @@ var ErrInvalidDefaultValue = errors.New("invalid envDefault value for field type
 // tag goes unnoticed in the first place.
 const envDefaultTag = "envDefault"
 
+// durationType is time.Duration's reflect type, held here so setFieldFromEnv can
+// recognise a duration field before it looks at Kind. time.Duration is defined as an
+// int64, so its Kind is reflect.Int64 and no Kind-based dispatch can distinguish the
+// two — which is precisely how a timeout declaring envDefault:"30" came to mean 30
+// nanoseconds.
+var durationType = reflect.TypeFor[time.Duration]()
+
 // SetConfigFromEnvVars builds a struct by setting its field values using the "env" tag.
 // Constraints: s must be a non-nil pointer to an initialized struct.
-// Supported field types: string, bool, int/int8/int16/int32/int64, and []string
-// (comma-separated, each element whitespace-trimmed, empty elements dropped). A
-// field whose type is none of these (for example a non-string slice or a float)
+// Supported field types: string, bool, int/int8/int16/int32/int64, time.Duration, and
+// []string (comma-separated, each element whitespace-trimmed, empty elements dropped).
+// A field whose type is none of these (for example a non-string slice or a float)
 // yields ErrUnsupportedFieldType rather than a panic.
+//
+// A time.Duration field reads a unit ("30s", "2m", "720h"), not a bare number of
+// seconds; a unit-less integer is read as nanoseconds, matching time.Duration's own
+// numeric meaning and this loader's historical behaviour.
 //
 // A field may also carry an "envDefault" tag giving the value to use when its
 // variable is unset, blank, or unparseable for the field's type. Without that tag
@@ -228,6 +289,15 @@ func SetConfigFromEnvVars(s any) error {
 // reads this loader, so the no-tag path must not shift underneath them.
 func setFieldFromEnv(fv reflect.Value, f reflect.StructField, name string) error {
 	def, hasDefault := f.Tag.Lookup(envDefaultTag)
+
+	// time.Duration's Kind is reflect.Int64, so a Kind-based switch cannot tell it
+	// apart from a plain integer: envDefault:"30" on a timeout field meant 30
+	// NANOSECONDS, and the unit-bearing envDefault:"30s" that every service in the
+	// fleet actually writes failed the load outright, before the environment was even
+	// read. Duration is therefore matched on its type, ahead of the Kind switch.
+	if fv.Type() == durationType {
+		return setDurationFromEnv(fv, f, name, def, hasDefault)
+	}
 
 	switch fv.Kind() {
 	case reflect.Bool:
@@ -287,6 +357,27 @@ func setFieldFromEnv(fv reflect.Value, f reflect.StructField, name string) error
 	default:
 		return fmt.Errorf("%w: field %q is %s", ErrUnsupportedFieldType, f.Name, fv.Type())
 	}
+
+	return nil
+}
+
+// setDurationFromEnv populates one time.Duration field. It mirrors the integer case
+// of setFieldFromEnv — an unparseable envDefault is an error, an unparseable
+// environment value falls back to the default — differing only in reading a unit.
+func setDurationFromEnv(fv reflect.Value, f reflect.StructField, name, def string, hasDefault bool) error {
+	var fallback time.Duration
+
+	if hasDefault {
+		parsed, err := parseEnvDuration(def)
+		if err != nil {
+			return fmt.Errorf("%w: field %q declares %s=%q, which is not a duration",
+				ErrInvalidDefaultValue, f.Name, envDefaultTag, def)
+		}
+
+		fallback = parsed
+	}
+
+	fv.SetInt(int64(GetenvDurationOrDefault(name, fallback)))
 
 	return nil
 }
