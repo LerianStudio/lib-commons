@@ -1,5 +1,23 @@
 # Lib-commons Changelog
 
+## [6.2.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.2.0)
+
+Features:
+- Carry an upstream provider's error through the RFC 9457 model. (@fredcamaral)
+- Honour `envDefault` tag when loading configuration. (@fredcamaral)
+
+Fixes:
+- Bound misconfigured-tier log deduplication and reject hyphenated tenant segments. (@fredcamaral)
+- Address findings from the `v6.2.0` release review. (@fredcamaral)
+- Ensure the install process does not silently drop a decorator of the installed model. (@fredcamaral)
+- Read a `time.Duration` field as a duration rather than a nanosecond count. (@fredcamaral)
+- Refuse a rate limit tier whose maximum value is not positive. (@fredcamaral)
+- Compare payloads before idempotent replay to ensure correctness. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v6.1.1...v6.2.0)
+
+---
+
 ## [6.1.1](https://github.com/LerianStudio/lib-commons/releases/tag/v6.1.1)
 
 Fixes:
