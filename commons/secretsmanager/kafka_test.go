@@ -325,6 +325,12 @@ func TestParseModuleKafkaSecretPath(t *testing.T) {
 			expectedOK: false,
 		},
 		{
+			name:       "hyphenated tenant segment is rejected",
+			env:        "staging",
+			path:       "tenants/staging/123-456/onboarding/kafka",
+			expectedOK: false,
+		},
+		{
 			name:       "unsanitized module segment is rejected",
 			env:        "staging",
 			path:       "tenants/staging/" + kafkaTestTenantNo + "/plugin-pix/kafka",

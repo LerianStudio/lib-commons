@@ -135,13 +135,21 @@ type RateLimiter struct {
 	exceededHandler func(c fiber.Ctx, tier Tier, ttl time.Duration) error
 	redisTimeout    time.Duration
 
+	// misconfigLogMu guards loggedMisconfiguredTiers and misconfigLogSaturated.
+	misconfigLogMu sync.Mutex
 	// loggedMisconfiguredTiers dedups the misconfigured-tier error log by
 	// (tier name, reason). WithDynamicRateLimit validates the tier on EVERY
 	// request, so a TierFunc that persistently returns an invalid tier would
 	// otherwise emit one error log line per request, scaling log volume 1:1
 	// with traffic. Instance-scoped (not package-level) so parallel tests and
-	// multiple limiters cannot suppress each other's diagnostics.
-	loggedMisconfiguredTiers sync.Map
+	// multiple limiters cannot suppress each other's diagnostics, and bounded
+	// at maxLoggedMisconfiguredTiers so a TierFunc that derives tier names
+	// from request data cannot grow it without bound; see
+	// misconfiguredTierLogDecision for the saturation behavior.
+	loggedMisconfiguredTiers map[string]struct{}
+	// misconfigLogSaturated records that the dedup set filled up and the
+	// one-time saturation notice was emitted.
+	misconfigLogSaturated bool
 }
 
 // New creates a RateLimiter. It returns nil (pass-through) when:
@@ -315,21 +323,30 @@ func tierRefusalMessage(tier Tier) string {
 //
 // The error log is deduplicated per (tier name, reason) on this instance so a
 // TierFunc that persistently returns an invalid tier logs once per distinct
-// misconfiguration rather than once per request; the 500 response itself is
-// returned every time.
+// misconfiguration rather than once per request, and the dedup set is bounded
+// (see misconfiguredTierLogDecision); the 500 response itself is returned every
+// time.
 func (rl *RateLimiter) misconfiguredTierHandler(ctx context.Context, tier Tier) fiber.Handler {
 	message := tierRefusalMessage(tier)
 	if message == "" {
 		return nil
 	}
 
-	if _, alreadyLogged := rl.loggedMisconfiguredTiers.LoadOrStore(tier.Name+"|"+message, struct{}{}); !alreadyLogged {
+	logTier, saturated := rl.misconfiguredTierLogDecision(tier.Name + "|" + message)
+	if logTier {
 		rl.logger.Log(ctx, log.LevelError,
 			"rate limit tier is misconfigured; every request on this tier will be rejected",
 			log.String("tier", tier.Name),
 			log.Int("max", tier.Max),
 			log.String("window", tier.Window.String()),
 			log.String("reason", message),
+		)
+	}
+
+	if saturated {
+		rl.logger.Log(ctx, log.LevelError,
+			"misconfigured-tier log dedup set is full; further distinct misconfigurations will not be logged (the TierFunc is likely deriving tier names from request data)",
+			log.Int("capacity", maxLoggedMisconfiguredTiers),
 		)
 	}
 
@@ -340,6 +357,46 @@ func (rl *RateLimiter) misconfiguredTierHandler(ctx context.Context, tier Tier) 
 			Message: message,
 		})
 	}
+}
+
+// maxLoggedMisconfiguredTiers bounds the per-instance misconfigured-tier log
+// dedup set. 1024 distinct (tier, reason) pairs is far beyond any hand-written
+// tier configuration; only a TierFunc deriving tier names from request data can
+// reach it, and that pathology must not translate into unbounded memory.
+const maxLoggedMisconfiguredTiers = 1024
+
+// misconfiguredTierLogDecision reports whether the (tier, reason) key should be
+// logged, recording it if so, and whether the dedup set JUST saturated (so the
+// caller can emit a one-time notice). Once the set holds
+// maxLoggedMisconfiguredTiers entries, unseen keys are no longer logged or
+// stored: memory stays bounded and log volume cannot degrade back to one line
+// per request under a request-derived tier-name flood. The 500 refusal itself is
+// unaffected by this decision.
+func (rl *RateLimiter) misconfiguredTierLogDecision(key string) (logTier, justSaturated bool) {
+	rl.misconfigLogMu.Lock()
+	defer rl.misconfigLogMu.Unlock()
+
+	if _, seen := rl.loggedMisconfiguredTiers[key]; seen {
+		return false, false
+	}
+
+	if len(rl.loggedMisconfiguredTiers) >= maxLoggedMisconfiguredTiers {
+		if rl.misconfigLogSaturated {
+			return false, false
+		}
+
+		rl.misconfigLogSaturated = true
+
+		return false, true
+	}
+
+	if rl.loggedMisconfiguredTiers == nil {
+		rl.loggedMisconfiguredTiers = make(map[string]struct{})
+	}
+
+	rl.loggedMisconfiguredTiers[key] = struct{}{}
+
+	return true, false
 }
 
 // check is the shared core of WithRateLimit and WithDynamicRateLimit. It runs the rate

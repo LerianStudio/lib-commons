@@ -4,6 +4,7 @@ package ratelimit
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -620,6 +621,37 @@ func TestWithDynamicRateLimit_MisconfiguredTierLogsOncePerMisconfiguration(t *te
 
 	assert.Equal(t, 1, spy.countErrors("misconfigured"),
 		"a persistently misconfigured tier must log once per distinct misconfiguration, not per request")
+}
+
+// TestMisconfiguredTierLogDecision_DedupSetIsBounded proves the dedup set cannot
+// grow without bound under a TierFunc that derives a distinct invalid tier name
+// from each request: past capacity, exactly one saturation notice is signalled
+// and every later unseen key is silent, while seen keys stay deduplicated.
+func TestMisconfiguredTierLogDecision_DedupSetIsBounded(t *testing.T) {
+	t.Parallel()
+
+	rl := &RateLimiter{}
+
+	for i := range maxLoggedMisconfiguredTiers {
+		logTier, saturated := rl.misconfiguredTierLogDecision(fmt.Sprintf("tier-%d|reason", i))
+		require.True(t, logTier, "each distinct misconfiguration under capacity must log")
+		require.False(t, saturated)
+	}
+
+	logTier, saturated := rl.misconfiguredTierLogDecision("tier-0|reason")
+	assert.False(t, logTier, "a seen key must stay deduplicated")
+	assert.False(t, saturated)
+
+	logTier, saturated = rl.misconfiguredTierLogDecision("overflow-a|reason")
+	assert.False(t, logTier, "an unseen key past capacity must not log")
+	assert.True(t, saturated, "the first overflow must signal the one-time saturation notice")
+
+	logTier, saturated = rl.misconfiguredTierLogDecision("overflow-b|reason")
+	assert.False(t, logTier)
+	assert.False(t, saturated, "the saturation notice must fire exactly once")
+
+	assert.Len(t, rl.loggedMisconfiguredTiers, maxLoggedMisconfiguredTiers,
+		"the dedup set must never exceed its capacity")
 }
 
 // TestWithRateLimit_MaxOneStillLimits proves the floor did not turn a legitimate,

@@ -371,11 +371,12 @@ func ListModuleKafkaSecrets(ctx context.Context, client SecretsListerClient, env
 // It is the exact inverse of BuildModuleKafkaSecretPath: the path must have the
 // expected segment count for the environment (5 with env, 4 without), start at
 // tenants, end at kafka, carry the requested environment, have non-empty tenant
-// and module segments, and carry a module segment that is already in its
-// SanitizeKafkaSegment form (the only form the builder ever writes). Sibling
-// resource secrets, the deeper m2m/external credential paths, and paths with an
-// unsanitized module segment therefore never parse, and every returned Module is
-// usable as an input to GetModuleKafkaCredentials.
+// and module segments, and carry those segments in the only forms the builder
+// ever writes: a dash-free tenant and a module already in its
+// SanitizeKafkaSegment form. Sibling resource secrets, the deeper m2m/external
+// credential paths, and paths with a hyphenated tenant or unsanitized module
+// segment therefore never parse, and every returned ref is usable as an input to
+// GetModuleKafkaCredentials.
 func ParseModuleKafkaSecretPath(env, secretPath string) (ModuleKafkaSecretRef, bool) {
 	cleanEnv := strings.TrimSpace(env)
 
@@ -404,11 +405,16 @@ func ParseModuleKafkaSecretPath(env, secretPath string) (ModuleKafkaSecretRef, b
 		return ModuleKafkaSecretRef{}, false
 	}
 
-	// BuildModuleKafkaSecretPath writes the module segment through
-	// SanitizeKafkaSegment, so a segment that does not round-trip unchanged was not
-	// written by the builder. Accepting it would hand back a Module that
-	// GetModuleKafkaCredentials re-sanitizes into a DIFFERENT path — a not-found
-	// (or wrong-module read) for a secret this parse just discovered.
+	// BuildModuleKafkaSecretPath dash-strips the tenant segment and writes the
+	// module segment through SanitizeKafkaSegment, so a segment that does not
+	// round-trip unchanged was not written by the builder. Accepting it would hand
+	// back a ref that GetModuleKafkaCredentials re-canonicalizes into a DIFFERENT
+	// path — a not-found (or wrong-tenant/wrong-module read) for a secret this
+	// parse just discovered.
+	if strings.ReplaceAll(tenantID, "-", "") != tenantID {
+		return ModuleKafkaSecretRef{}, false
+	}
+
 	if SanitizeKafkaSegment(module) != module {
 		return ModuleKafkaSecretRef{}, false
 	}
