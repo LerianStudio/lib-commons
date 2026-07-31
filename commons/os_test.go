@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -457,6 +458,191 @@ func TestSetConfigFromEnvVars_EnvDefault_OutOfRangeDefaultIsAnError(t *testing.T
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidDefaultValue)
 	assert.Contains(t, err.Error(), "Retries")
+}
+
+// --- time.Duration fields -------------------------------------------------
+//
+// time.Duration is an int64, so a Kind-based switch put it in the integer case:
+// envDefault:"30" on a timeout meant 30 NANOSECONDS, and the unit-bearing
+// envDefault:"30s" that every service in the fleet writes failed the load
+// outright, before the environment was read at all.
+
+func TestSetConfigFromEnvVars_Duration_DefaultCarriesItsUnit(t *testing.T) {
+	type Config struct {
+		Timeout   time.Duration `env:"TEST_ED_D_TIMEOUT" envDefault:"30s"`
+		Retention time.Duration `env:"TEST_ED_D_RETENTION" envDefault:"720h"`
+		Poll      time.Duration `env:"TEST_ED_D_POLL" envDefault:"150ms"`
+		Port      int           `env:"TEST_ED_D_PORT" envDefault:"30"`
+	}
+
+	for _, k := range []string{"TEST_ED_D_TIMEOUT", "TEST_ED_D_RETENTION", "TEST_ED_D_POLL", "TEST_ED_D_PORT"} {
+		t.Setenv(k, "")
+		require.NoError(t, os.Unsetenv(k))
+	}
+
+	config := &Config{}
+	require.NoError(t, SetConfigFromEnvVars(config))
+
+	// The two halves of the defect, asserted side by side: a duration keeps its unit,
+	// and a plain integer in the same struct is still a plain integer.
+	assert.Equal(t, 30*time.Second, config.Timeout, "envDefault:\"30s\" on a duration must be 30 seconds, not 30 nanoseconds")
+	assert.Equal(t, 720*time.Hour, config.Retention)
+	assert.Equal(t, 150*time.Millisecond, config.Poll)
+	assert.Equal(t, 30, config.Port, "a real int field must still read 30 as the integer 30")
+}
+
+func TestSetConfigFromEnvVars_Duration_EnvValueWinsAndCarriesItsUnit(t *testing.T) {
+	type Config struct {
+		Timeout time.Duration `env:"TEST_ED_DE_TIMEOUT" envDefault:"30s"`
+	}
+
+	t.Setenv("TEST_ED_DE_TIMEOUT", "2m")
+
+	config := &Config{}
+	require.NoError(t, SetConfigFromEnvVars(config))
+
+	assert.Equal(t, 2*time.Minute, config.Timeout)
+}
+
+// A unit-less integer stays NANOSECONDS. lerian-internal-gitops ships
+// STREAMING_HEALTH_CHECK_TIMEOUT "2000000000" for br-slc, written in raw nanoseconds
+// because that is what this loader has always read. Under an "integer means seconds"
+// convention that two-second readiness timeout becomes roughly 63 years, with nothing
+// in the logs to say so.
+func TestSetConfigFromEnvVars_Duration_UnitlessIntegerStaysNanoseconds(t *testing.T) {
+	type Config struct {
+		FromEnv     time.Duration `env:"TEST_ED_DN_ENV" envDefault:"2s"`
+		FromDefault time.Duration `env:"TEST_ED_DN_DEF" envDefault:"2000000000"`
+	}
+
+	t.Setenv("TEST_ED_DN_ENV", "2000000000")
+	require.NoError(t, os.Unsetenv("TEST_ED_DN_DEF"))
+
+	config := &Config{}
+	require.NoError(t, SetConfigFromEnvVars(config))
+
+	assert.Equal(t, 2*time.Second, config.FromEnv, "2000000000 nanoseconds is two seconds, not two billion")
+	assert.Equal(t, 2*time.Second, config.FromDefault)
+}
+
+func TestSetConfigFromEnvVars_Duration_SurroundingWhitespaceIsTolerated(t *testing.T) {
+	type Config struct {
+		Timeout time.Duration `env:"TEST_ED_DW_TIMEOUT" envDefault:"30s"`
+	}
+
+	// A Helm value or ConfigMap entry routinely arrives with a trailing newline.
+	t.Setenv("TEST_ED_DW_TIMEOUT", " 45s\n")
+
+	config := &Config{}
+	require.NoError(t, SetConfigFromEnvVars(config))
+
+	assert.Equal(t, 45*time.Second, config.Timeout)
+}
+
+func TestSetConfigFromEnvVars_Duration_UnparseableEnvValueTakesTheDefault(t *testing.T) {
+	type Config struct {
+		Timeout time.Duration `env:"TEST_ED_DU_TIMEOUT" envDefault:"30s"`
+	}
+
+	t.Setenv("TEST_ED_DU_TIMEOUT", "half a minute")
+
+	config := &Config{}
+	require.NoError(t, SetConfigFromEnvVars(config))
+
+	assert.Equal(t, 30*time.Second, config.Timeout, "a garbage value falls back to the default, as it does for bool and int")
+}
+
+func TestSetConfigFromEnvVars_Duration_UnparseableDefaultIsAnError(t *testing.T) {
+	type Config struct {
+		Timeout time.Duration `env:"TEST_ED_DX_TIMEOUT" envDefault:"half a minute"`
+	}
+
+	err := SetConfigFromEnvVars(&Config{})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidDefaultValue)
+	assert.Contains(t, err.Error(), "Timeout")
+}
+
+func TestSetConfigFromEnvVars_Duration_NoDefaultKeepsZero(t *testing.T) {
+	type Config struct {
+		Timeout time.Duration `env:"TEST_ED_DZ_TIMEOUT"`
+	}
+
+	require.NoError(t, os.Unsetenv("TEST_ED_DZ_TIMEOUT"))
+
+	config := &Config{}
+	require.NoError(t, SetConfigFromEnvVars(config))
+
+	assert.Equal(t, time.Duration(0), config.Timeout)
+}
+
+// Every distinct duration spelling declared on a time.Duration field across the
+// consuming services (audit-trail, br-slc, deepwell, go-boilerplate-ddd, the pix
+// plugins, tenant-manager, vault-lerian and the severino scaffolds) must load. The list
+// is harvested from those repositories rather than invented here: all of them carry a
+// unit, and before this fix every one of them failed the load outright.
+func TestSetConfigFromEnvVars_Duration_FleetDeclarationsAllLoad(t *testing.T) {
+	fleet := map[string]time.Duration{
+		"150ms": 150 * time.Millisecond,
+		"0s":    0,
+		"1s":    time.Second,
+		"2s":    2 * time.Second,
+		"3s":    3 * time.Second,
+		"5s":    5 * time.Second,
+		"10s":   10 * time.Second,
+		"15s":   15 * time.Second,
+		"20s":   20 * time.Second,
+		"30s":   30 * time.Second,
+		"60s":   60 * time.Second,
+		"90s":   90 * time.Second,
+		"5m":    5 * time.Minute,
+		"30m":   30 * time.Minute,
+		"1h":    time.Hour,
+		"168h":  168 * time.Hour,
+		"720h":  720 * time.Hour,
+	}
+
+	for spelling, want := range fleet {
+		t.Run(spelling, func(t *testing.T) {
+			require.NoError(t, os.Unsetenv("TEST_ED_DF_VALUE"))
+
+			got, err := parseEnvDuration(spelling)
+			require.NoError(t, err, "a duration spelling in production configuration must load")
+			assert.Equal(t, want, got)
+		})
+	}
+}
+
+func TestGetenvDurationOrDefault(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		set   bool
+		want  time.Duration
+	}{
+		{name: "unset takes the default", want: 30 * time.Second},
+		{name: "blank takes the default", value: "   ", set: true, want: 30 * time.Second},
+		{name: "unit is honoured", value: "90s", set: true, want: 90 * time.Second},
+		{name: "sub-second unit is honoured", value: "150ms", set: true, want: 150 * time.Millisecond},
+		{name: "unit-less integer is nanoseconds", value: "2000000000", set: true, want: 2 * time.Second},
+		{name: "garbage takes the default", value: "soon", set: true, want: 30 * time.Second},
+		{name: "negative duration is honoured", value: "-5m", set: true, want: -5 * time.Minute},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			const key = "TEST_GETENV_DURATION"
+
+			if tt.set {
+				t.Setenv(key, tt.value)
+			} else {
+				require.NoError(t, os.Unsetenv(key))
+			}
+
+			assert.Equal(t, tt.want, GetenvDurationOrDefault(key, 30*time.Second))
+		})
+	}
 }
 
 func TestSetConfigFromEnvVars_NoEnvDefault_KeepsOriginalBehaviour(t *testing.T) {
