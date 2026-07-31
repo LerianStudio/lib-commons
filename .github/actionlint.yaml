@@ -1,0 +1,8 @@
+# Registers non-GitHub-hosted runner labels so actionlint does not reject them
+# as unknown in `runs-on`. See
+# https://github.com/rhysd/actionlint/blob/main/docs/config.md
+self-hosted-runner:
+  labels:
+    # Blacksmith runners (https://docs.blacksmith.sh/blacksmith-runners/overview),
+    # e.g. blacksmith-4vcpu-ubuntu-2404.
+    - blacksmith-*

@@ -325,6 +325,18 @@ func TestParseModuleKafkaSecretPath(t *testing.T) {
 			expectedOK: false,
 		},
 		{
+			name:       "unsanitized module segment is rejected",
+			env:        "staging",
+			path:       "tenants/staging/" + kafkaTestTenantNo + "/plugin-pix/kafka",
+			expectedOK: false,
+		},
+		{
+			name:       "uppercase module segment is rejected",
+			env:        "staging",
+			path:       "tenants/staging/" + kafkaTestTenantNo + "/Onboarding/kafka",
+			expectedOK: false,
+		},
+		{
 			name:       "env-scoped path is rejected when env is empty",
 			env:        "",
 			path:       "tenants/staging/" + kafkaTestTenantNo + "/onboarding/kafka",

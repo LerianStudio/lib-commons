@@ -16,7 +16,13 @@ const genericServerErrorDetail = "internal error"
 
 // installMu serializes reads and writes of the process-global huma.NewError so
 // concurrent installs (e.g. several API constructions in parallel tests) cannot
-// race on the package var.
+// race with EACH OTHER on the package var.
+//
+// The mutex covers install-vs-install only. Huma READS huma.NewError on every
+// request that constructs an error, and that read is unsynchronized, so Install
+// MUST run during bootstrap, before any request can be served. An Install that
+// still needs to write while the server is serving is a data race on a plain
+// function variable.
 //
 // Deliberately a mutex and not a sync.Once, and the reason is a real failure
 // mode: a Once makes every install after the first a NO-OP, which is silent and
@@ -58,7 +64,10 @@ var installMu sync.Mutex
 //
 // huma.NewError is a package var, so this MUST run before any operation is
 // registered on the runtime API or the spec-gen API, or the generated schema and
-// the runtime bodies will diverge.
+// the runtime bodies will diverge. It equally MUST run before the server starts
+// serving: Huma reads the var unsynchronized on every error-constructing request,
+// and installMu only serializes installs against each other, not against those
+// reads.
 //
 // MERGE SEMANTICS (this is the crux of the promotion):
 //   - status >= 500: the body is scrubbed to the static genericServerErrorDetail

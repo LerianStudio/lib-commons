@@ -594,6 +594,34 @@ func TestWithDynamicRateLimit_NonPositiveMax(t *testing.T) {
 	}
 }
 
+// TestWithDynamicRateLimit_MisconfiguredTierLogsOncePerMisconfiguration proves the
+// per-request validation in WithDynamicRateLimit does not scale error-log volume 1:1
+// with traffic: a persistently invalid tier logs once per distinct (tier, reason)
+// pair on the instance, while every request still receives the named 500.
+func TestWithDynamicRateLimit_MisconfiguredTierLogsOncePerMisconfiguration(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newTestMiddlewareRedisConnection(t, mr)
+	spy := &errorSpy{}
+	rl := New(conn, WithLogger(spy))
+	require.NotNil(t, rl)
+
+	app := newTestApp(rl.WithDynamicRateLimit(func(_ fiber.Ctx) Tier {
+		return Tier{Name: "dynamic-bad-max", Max: 0, Window: time.Minute}
+	}))
+
+	for range 5 {
+		resp := doRequest(t, app)
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode,
+			"every request on the misconfigured tier must still be refused")
+		resp.Body.Close()
+	}
+
+	assert.Equal(t, 1, spy.countErrors("misconfigured"),
+		"a persistently misconfigured tier must log once per distinct misconfiguration, not per request")
+}
+
 // TestWithRateLimit_MaxOneStillLimits proves the floor did not turn a legitimate,
 // very strict tier into a pass-through: max 1 allows one request and throttles the next.
 func TestWithRateLimit_MaxOneStillLimits(t *testing.T) {

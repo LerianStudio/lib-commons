@@ -45,7 +45,9 @@ import (
 //	if err != nil {
 //	    // handle error
 //	}
-//	client := secretsmanager.NewFromConfig(cfg)
+//	// awssm is github.com/aws/aws-sdk-go-v2/service/secretsmanager, aliased so it
+//	// cannot collide with this package's import name.
+//	client := awssm.NewFromConfig(cfg)
 //
 //	refs, err := secretsmanager.ListModuleKafkaSecrets(ctx, client, "staging")
 //	if err != nil {
@@ -368,9 +370,12 @@ func ListModuleKafkaSecrets(ctx context.Context, client SecretsListerClient, env
 //
 // It is the exact inverse of BuildModuleKafkaSecretPath: the path must have the
 // expected segment count for the environment (5 with env, 4 without), start at
-// tenants, end at kafka, carry the requested environment, and have non-empty tenant
-// and module segments. Sibling resource secrets and the deeper m2m/external
-// credential paths therefore never parse.
+// tenants, end at kafka, carry the requested environment, have non-empty tenant
+// and module segments, and carry a module segment that is already in its
+// SanitizeKafkaSegment form (the only form the builder ever writes). Sibling
+// resource secrets, the deeper m2m/external credential paths, and paths with an
+// unsanitized module segment therefore never parse, and every returned Module is
+// usable as an input to GetModuleKafkaCredentials.
 func ParseModuleKafkaSecretPath(env, secretPath string) (ModuleKafkaSecretRef, bool) {
 	cleanEnv := strings.TrimSpace(env)
 
@@ -396,6 +401,15 @@ func ParseModuleKafkaSecretPath(env, secretPath string) (ModuleKafkaSecretRef, b
 
 	module := segments[len(segments)-2]
 	if tenantID == "" || module == "" {
+		return ModuleKafkaSecretRef{}, false
+	}
+
+	// BuildModuleKafkaSecretPath writes the module segment through
+	// SanitizeKafkaSegment, so a segment that does not round-trip unchanged was not
+	// written by the builder. Accepting it would hand back a Module that
+	// GetModuleKafkaCredentials re-sanitizes into a DIFFERENT path — a not-found
+	// (or wrong-module read) for a secret this parse just discovered.
+	if SanitizeKafkaSegment(module) != module {
 		return ModuleKafkaSecretRef{}, false
 	}
 

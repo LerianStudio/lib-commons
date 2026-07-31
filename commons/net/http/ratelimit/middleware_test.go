@@ -96,16 +96,22 @@ func (s *errorSpy) Enabled(_ libLog.Level) bool          { return true }
 func (s *errorSpy) Sync(_ context.Context) error         { return nil }
 
 func (s *errorSpy) hasError(substr string) bool {
+	return s.countErrors(substr) > 0
+}
+
+func (s *errorSpy) countErrors(substr string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	count := 0
+
 	for _, m := range s.msgs {
 		if strings.Contains(m, substr) {
-			return true
+			count++
 		}
 	}
 
-	return false
+	return count
 }
 
 func TestNew_NilOptionIgnored(t *testing.T) {

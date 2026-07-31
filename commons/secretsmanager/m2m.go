@@ -325,6 +325,12 @@ type scrubbedAWSError struct {
 
 func (e *scrubbedAWSError) Error() string { return e.message }
 
+// Unwrap returns the original, UN-scrubbed AWS error, preserved for programmatic
+// classification via errors.Is/errors.As only (retryability checks, error-code
+// switches). Callers must never log the unwrapped cause directly — including a
+// smithy.APIError extracted with errors.As and its Error()/ErrorMessage() — because
+// it can still carry the tenant path this type exists to hide. Only the top-level
+// Error() string is guaranteed to be scrubbed.
 func (e *scrubbedAWSError) Unwrap() error { return e.cause }
 
 func newScrubbedAWSError(err error, secretPath, redacted string) error {
@@ -360,8 +366,11 @@ const (
 // expired-token failure. Shared by every credential reader in this package so they
 // classify vault access failures identically.
 func isVaultAccessDeniedError(err error) bool {
+	// errors.As matches a typed-nil smithy.APIError (a nil concrete pointer in the
+	// chain), and calling ErrorCode on it would panic; classify it as not
+	// access-denied instead, matching classifyExternalReferenceAWSError.
 	var apiErr smithy.APIError
-	if !errors.As(err, &apiErr) {
+	if !errors.As(err, &apiErr) || isNilInterface(apiErr) {
 		return false
 	}
 

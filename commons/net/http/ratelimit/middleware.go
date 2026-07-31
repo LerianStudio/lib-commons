@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v6/commons"
@@ -133,6 +134,14 @@ type RateLimiter struct {
 	onLimited       func(c fiber.Ctx, tier Tier)
 	exceededHandler func(c fiber.Ctx, tier Tier, ttl time.Duration) error
 	redisTimeout    time.Duration
+
+	// loggedMisconfiguredTiers dedups the misconfigured-tier error log by
+	// (tier name, reason). WithDynamicRateLimit validates the tier on EVERY
+	// request, so a TierFunc that persistently returns an invalid tier would
+	// otherwise emit one error log line per request, scaling log volume 1:1
+	// with traffic. Instance-scoped (not package-level) so parallel tests and
+	// multiple limiters cannot suppress each other's diagnostics.
+	loggedMisconfiguredTiers sync.Map
 }
 
 // New creates a RateLimiter. It returns nil (pass-through) when:
@@ -303,19 +312,26 @@ func tierRefusalMessage(tier Tier) string {
 // error log is a startup diagnostic), WithDynamicRateLimit calls it per request because
 // the TierFunc can return a different tier each time. Deliberately NOT inside check(),
 // where the refusal would degrade into one log line per request.
+//
+// The error log is deduplicated per (tier name, reason) on this instance so a
+// TierFunc that persistently returns an invalid tier logs once per distinct
+// misconfiguration rather than once per request; the 500 response itself is
+// returned every time.
 func (rl *RateLimiter) misconfiguredTierHandler(ctx context.Context, tier Tier) fiber.Handler {
 	message := tierRefusalMessage(tier)
 	if message == "" {
 		return nil
 	}
 
-	rl.logger.Log(ctx, log.LevelError,
-		"rate limit tier is misconfigured; every request on this tier will be rejected",
-		log.String("tier", tier.Name),
-		log.Int("max", tier.Max),
-		log.String("window", tier.Window.String()),
-		log.String("reason", message),
-	)
+	if _, alreadyLogged := rl.loggedMisconfiguredTiers.LoadOrStore(tier.Name+"|"+message, struct{}{}); !alreadyLogged {
+		rl.logger.Log(ctx, log.LevelError,
+			"rate limit tier is misconfigured; every request on this tier will be rejected",
+			log.String("tier", tier.Name),
+			log.Int("max", tier.Max),
+			log.String("window", tier.Window.String()),
+			log.String("reason", message),
+		)
+	}
 
 	return func(c fiber.Ctx) error {
 		return chttp.Respond(c, http.StatusInternalServerError, chttp.ErrorResponse{

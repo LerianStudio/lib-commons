@@ -332,7 +332,18 @@ func setFieldFromEnv(fv reflect.Value, f reflect.StructField, name string) error
 			fallback = parsed
 		}
 
-		fv.SetInt(GetenvIntOrDefault(name, fallback))
+		// GetenvIntOrDefault parses at int64 width, so a value that fits int64 but
+		// not the field (999 into an int8) would be silently truncated by SetInt.
+		// Treat it like any other unparseable value: warn and take the fallback,
+		// which the overflow check above already proved fits.
+		value := GetenvIntOrDefault(name, fallback)
+		if fv.OverflowInt(value) {
+			fmt.Fprintf(os.Stderr, "WARN: env var %s=%d does not fit in %s, using default %d\n", name, value, fv.Type(), fallback)
+
+			value = fallback
+		}
+
+		fv.SetInt(value)
 	case reflect.String:
 		// GetenvOrDefault treats a blank value as absent; os.Getenv does not. Only
 		// the defaulted path may take that trimming, or the no-tag path changes.
@@ -353,7 +364,10 @@ func setFieldFromEnv(fv reflect.Value, f reflect.StructField, name string) error
 			raw = def
 		}
 
-		fv.Set(reflect.ValueOf(parseEnvStringSlice(raw)))
+		// Convert handles a named slice type (type Origins []string), for which the
+		// unnamed []string is not directly assignable; it is the identity for a
+		// plain []string field.
+		fv.Set(reflect.ValueOf(parseEnvStringSlice(raw)).Convert(fv.Type()))
 	default:
 		return fmt.Errorf("%w: field %q is %s", ErrUnsupportedFieldType, f.Name, fv.Type())
 	}

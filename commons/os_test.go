@@ -248,6 +248,50 @@ func TestSetConfigFromEnvVars_StringSlice_Empty(t *testing.T) {
 	assert.Empty(t, config.Principals, "missing env var should yield an empty slice, not a panic")
 }
 
+func TestSetConfigFromEnvVars_NamedStringSlice_ConvertsWithoutPanic(t *testing.T) {
+	type Origins []string
+
+	type Config struct {
+		Origins Origins `env:"TEST_NAMED_SLICE_FIELD"`
+	}
+
+	t.Setenv("TEST_NAMED_SLICE_FIELD", "https://a.example, https://b.example")
+
+	config := &Config{}
+
+	var err error
+	assert.NotPanics(t, func() { err = SetConfigFromEnvVars(config) })
+	require.NoError(t, err)
+	assert.Equal(t, Origins{"https://a.example", "https://b.example"}, config.Origins)
+}
+
+func TestSetConfigFromEnvVars_IntEnvValueOverflowsField_FallsBackToDefault(t *testing.T) {
+	type Config struct {
+		Retries int8 `env:"TEST_INT8_OVERFLOW" envDefault:"5"`
+	}
+
+	t.Setenv("TEST_INT8_OVERFLOW", "999")
+
+	config := &Config{}
+	require.NoError(t, SetConfigFromEnvVars(config))
+
+	assert.Equal(t, int8(5), config.Retries,
+		"a parseable value that does not fit the field must fall back to the default, not truncate to -25")
+}
+
+func TestSetConfigFromEnvVars_IntEnvValueOverflowsField_NoDefaultKeepsZero(t *testing.T) {
+	type Config struct {
+		Retries int8 `env:"TEST_INT8_OVERFLOW_NODEF"`
+	}
+
+	t.Setenv("TEST_INT8_OVERFLOW_NODEF", "999")
+
+	config := &Config{}
+	require.NoError(t, SetConfigFromEnvVars(config))
+
+	assert.Equal(t, int8(0), config.Retries)
+}
+
 func TestSetConfigFromEnvVars_UnsupportedSlice_ReturnsErrorNotPanic(t *testing.T) {
 	type Config struct {
 		Ports []int `env:"TEST_INT_SLICE_FIELD"`
