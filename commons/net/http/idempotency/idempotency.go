@@ -94,6 +94,8 @@ type Middleware struct {
 	maxBodyCache int
 	redisTimeout time.Duration
 	onRejected   func(c fiber.Ctx) error
+	onConflict   fiber.Handler
+	onKeyReuse   fiber.Handler
 	// failClosed inverts the transient-Redis-error behavior. Default (false)
 	// fails open — requests proceed without idempotency coverage to preserve
 	// availability. When true, transient Redis errors abort with 503 so a
@@ -155,7 +157,9 @@ func WithKeyTTL(ttl time.Duration) Option {
 	}
 }
 
-// WithMaxKeyLength sets the maximum allowed idempotency key length (default: 256).
+// WithMaxKeyLength sets the maximum allowed idempotency key length in UTF-8
+// bytes (default: 256). Multi-byte characters therefore consume more than one
+// unit of this limit.
 func WithMaxKeyLength(n int) Option {
 	return func(m *Middleware) {
 		if n > 0 {
@@ -178,6 +182,24 @@ func WithRedisTimeout(d time.Duration) Option {
 func WithRejectedHandler(fn func(c fiber.Ctx) error) Option {
 	return func(m *Middleware) {
 		m.onRejected = fn
+	}
+}
+
+// WithConflictHandler sets a custom handler for duplicate requests whose
+// original request is still processing. By default, a generic 409 JSON response
+// is returned.
+func WithConflictHandler(fn fiber.Handler) Option {
+	return func(m *Middleware) {
+		m.onConflict = fn
+	}
+}
+
+// WithKeyReuseHandler sets a custom handler for an idempotency key reused with
+// a different request method, path, or body. By default, a generic 422 JSON
+// response is returned.
+func WithKeyReuseHandler(fn fiber.Handler) Option {
+	return func(m *Middleware) {
+		m.onKeyReuse = fn
 	}
 }
 
@@ -277,7 +299,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 
 		return libHTTP.RespondError(c, http.StatusBadRequest,
 			"VALIDATION_ERROR",
-			fmt.Sprintf("%s must not exceed %d characters", chttp.IdempotencyKey, m.maxKeyLength),
+			fmt.Sprintf("%s must not exceed %d bytes", chttp.IdempotencyKey, m.maxKeyLength),
 		)
 	}
 
@@ -389,6 +411,10 @@ func (m *Middleware) handleDuplicate(
 			log.String("key_state", keyState),
 		)
 
+		if m.onKeyReuse != nil {
+			return m.onKeyReuse(c)
+		}
+
 		return libHTTP.RespondError(c, http.StatusUnprocessableEntity,
 			"IDEMPOTENCY_KEY_REUSE",
 			"this idempotency key was already used for a different request; "+
@@ -443,6 +469,10 @@ func (m *Middleware) handleDuplicate(
 
 	if keyState == keyStateProcessing {
 		// Request is still in flight — tell the client to retry later.
+		if m.onConflict != nil {
+			return m.onConflict(c)
+		}
+
 		return libHTTP.RespondError(c, http.StatusConflict,
 			"IDEMPOTENCY_CONFLICT",
 			"a request with this idempotency key is currently being processed",
