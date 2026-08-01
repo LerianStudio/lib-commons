@@ -74,21 +74,23 @@
 //     is not enforced for safe/idempotent HTTP methods.
 //   - Absent X-Idempotency header: request proceeds normally (idempotency is
 //     opt-in per request).
-//   - Header exceeds [WithMaxKeyLength] (default 256): request is passed to the
-//     configured [WithRejectedHandler]. When no custom handler is set, a 400 JSON
-//     response with code "VALIDATION_ERROR" is returned.
+//   - Header exceeds [WithMaxKeyLength] (default 256 UTF-8 bytes): request is
+//     passed to the configured [WithRejectedHandler]. When no custom handler is
+//     set, a 400 JSON response with code "VALIDATION_ERROR" is returned.
 //   - Redis unavailable (GetClient, SetNX, or Get failures): request proceeds
 //     without idempotency enforcement (fail-open), logged at WARN level.
-//   - Duplicate key whose stored fingerprint differs from this request's: 422
-//     Unprocessable Content with code "IDEMPOTENCY_KEY_REUSE". Checked before
-//     every replay path below, so no branch can answer a different payload with
-//     another request's result.
+//   - Duplicate key whose stored fingerprint differs from this request's: request
+//     is passed to [WithKeyReuseHandler], or receives 422 Unprocessable Content
+//     with code "IDEMPOTENCY_KEY_REUSE" when no custom handler is configured.
+//     Checked before every replay path below, so no branch can answer a different
+//     payload with another request's result.
 //   - Duplicate key with matching fingerprint and a cached response: the original
 //     response is replayed faithfully — status code, headers (including Location,
 //     ETag, Set-Cookie), content type, and body — with
 //     [constants.IdempotencyReplayed] set to "true".
-//   - Duplicate key still in "processing" state (in-flight): 409 Conflict with
-//     code "IDEMPOTENCY_CONFLICT" is returned.
+//   - Duplicate key still in "processing" state (in-flight): request is passed
+//     to [WithConflictHandler], or receives 409 Conflict with code
+//     "IDEMPOTENCY_CONFLICT" when no custom handler is configured.
 //   - Duplicate key in "complete" state but no cached body (e.g., body exceeded
 //     [WithMaxBodyCache]): 200 OK with code "IDEMPOTENT" and detail "request
 //     already processed" is returned.
@@ -96,6 +98,13 @@
 //     pipeline and the key is marked "complete".
 //   - Handler failure: both the lock key and response key are deleted so the
 //     client can retry with the same idempotency key.
+//
+// Every rejection branch has a callback seam so consumers can write their own
+// error format, including RFC 9457 problem details: [WithRejectedHandler] for an
+// oversized key, [WithUnavailableHandler] for fail-closed Redis failures,
+// [WithConflictHandler] for an in-flight duplicate, and [WithKeyReuseHandler]
+// for the same key used by a different request. Existing consumers that omit
+// these options retain the built-in response bodies and status codes.
 //
 // # Nil safety
 //

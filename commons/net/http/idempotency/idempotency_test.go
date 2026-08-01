@@ -267,6 +267,49 @@ func TestCheck_KeyTooLong_CustomHandler(t *testing.T) {
 	assert.Contains(t, body, "rejected")
 }
 
+func TestCheck_MaxKeyLength_MeasuresUTF8Bytes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		key        string
+		wantStatus int
+		wantDetail string
+	}{
+		{
+			name:       "four bytes across two runes accepted",
+			key:        "éé",
+			wantStatus: http.StatusCreated,
+		},
+		{
+			name:       "six bytes across three runes rejected",
+			key:        "ééé",
+			wantStatus: http.StatusBadRequest,
+			wantDetail: "4 bytes",
+		},
+	}
+
+	for _, testCase := range tests {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			mr := miniredis.RunT(t)
+			conn := newRedisClient(t, mr)
+			middleware := New(conn, WithMaxKeyLength(4))
+			app := newPostApp(middleware.Check(), tenantMiddleware("tenant-unicode"))
+
+			response := doPost(t, app, testCase.key)
+			body := readBody(t, response)
+
+			assert.Equal(t, testCase.wantStatus, response.StatusCode)
+			if testCase.wantDetail != "" {
+				assert.Contains(t, body, testCase.wantDetail)
+			}
+		})
+	}
+}
+
 func TestCheck_FirstRequest_Proceeds(t *testing.T) {
 	t.Parallel()
 
@@ -763,6 +806,77 @@ func TestCheck_InFlight_Returns409(t *testing.T) {
 	assert.Contains(t, body, "IDEMPOTENCY_CONFLICT",
 		"response body must contain IDEMPOTENCY_CONFLICT code")
 	assert.Equal(t, "true", resp.Header.Get(chttp.IdempotencyReplayed))
+}
+
+func TestCheck_CustomDuplicateRejectionHandlers_WriteProblemDetail(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		option     Option
+		prepare    func(t *testing.T, mr *miniredis.Miniredis, app *fiber.App)
+		request    func(t *testing.T, app *fiber.App) *http.Response
+		wantStatus int
+		wantDetail string
+	}{
+		{
+			name: "in-flight conflict",
+			option: WithConflictHandler(func(c fiber.Ctx) error {
+				return c.Status(http.StatusConflict).JSON(fiber.Map{
+					"detail": "canonical in-flight conflict",
+				})
+			}),
+			prepare: func(t *testing.T, mr *miniredis.Miniredis, _ *fiber.App) {
+				t.Helper()
+				require.NoError(t, mr.Set("idempotency:tenant-custom:custom-key", keyStateProcessing))
+			},
+			request: func(t *testing.T, app *fiber.App) *http.Response {
+				t.Helper()
+				return doPost(t, app, "custom-key")
+			},
+			wantStatus: http.StatusConflict,
+			wantDetail: "canonical in-flight conflict",
+		},
+		{
+			name: "same key with different request",
+			option: WithKeyReuseHandler(func(c fiber.Ctx) error {
+				return c.Status(http.StatusUnprocessableEntity).JSON(fiber.Map{
+					"detail": "canonical key reuse",
+				})
+			}),
+			prepare: func(t *testing.T, _ *miniredis.Miniredis, app *fiber.App) {
+				t.Helper()
+				first := doSend(t, app, http.MethodPost, "/test", `{"amount":10}`, "custom-key")
+				require.Equal(t, http.StatusCreated, first.StatusCode)
+				readBody(t, first)
+			},
+			request: func(t *testing.T, app *fiber.App) *http.Response {
+				t.Helper()
+				return doSend(t, app, http.MethodPost, "/test", `{"amount":11}`, "custom-key")
+			},
+			wantStatus: http.StatusUnprocessableEntity,
+			wantDetail: "canonical key reuse",
+		},
+	}
+
+	for _, testCase := range tests {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			mr := miniredis.RunT(t)
+			conn := newRedisClient(t, mr)
+			middleware := New(conn, testCase.option)
+			app := newEchoApp(middleware.Check(), nil, tenantMiddleware("tenant-custom"))
+
+			testCase.prepare(t, mr, app)
+			response := testCase.request(t, app)
+			body := readBody(t, response)
+
+			assert.Equal(t, testCase.wantStatus, response.StatusCode)
+			assert.Contains(t, body, testCase.wantDetail)
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------
