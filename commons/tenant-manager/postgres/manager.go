@@ -236,6 +236,16 @@ func WithModule(module string) Option {
 	}
 }
 
+// Module returns the tenant-manager database module handled by this manager.
+// An empty value identifies the service's generic PostgreSQL resource.
+func (p *Manager) Module() string {
+	if p == nil {
+		return ""
+	}
+
+	return p.module
+}
+
 // WithMaxTenantPools sets the soft limit for the number of tenant connections in the pool.
 // When the pool reaches this limit and a new tenant needs a connection, only connections
 // that have been idle longer than the idle timeout are eligible for eviction. If all

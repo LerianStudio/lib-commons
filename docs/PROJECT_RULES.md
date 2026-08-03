@@ -576,8 +576,10 @@ Extracted observability, systemplane, and streaming packages are not lib-commons
 | `webhook` | `EndpointLister` interface: `ListActiveEndpoints(ctx) ([]Endpoint, error)`. `DeliveryMetrics` interface: `RecordDelivery(ctx, endpointID, success, statusCode, attempts)`. |
 | `outbox` | `OutboxRepository` contract: `Create`, `CreateWithTx`, `ListPending`, `ListPendingByType`, `ListTenants`, `GetByID`, `MarkPublished`, `MarkFailed`, `ListFailedForRetry`, `ResetForRetry`, `ResetStuckProcessing`, `MarkInvalid`. |
 | `outbox` | Tenant-aware repositories validate tenant IDs with `tenant-manager/core.IsValidTenantID` and return `ErrInvalidTenantID` for invalid IDs; tenant discovery must not return malformed tenant IDs. |
+| `outbox` | Empty dispatch scopes use `ColdDispatchInterval` (default one minute); active/recent scopes retain `DispatchInterval`, topology refresh stays independent, and newly committed/retryable/stuck work is discovered within the cold interval. |
 | `outbox/mongo` | Mongo repository supports row-scoped tenant field storage by default and optional tenant Mongo database dispatch via `WithModule` plus `WithTenantDatabaseResolver`; module-scoped repositories fail closed with `ErrTenantDatabaseRequired` when no tenant database can be resolved. |
 | `outbox/postgres` | Postgres repository supports schema-per-tenant and column-per-tenant strategies; column tenant isolation uses parameterized tenant filters and composite `(tenant_id, id)` semantics. |
+| `tenant-manager/event` | `WithPostgresManagers` and `WithMongoManagers` register deduplicated module-manager fan-out while singular manager options remain supported. Removal closes every registered pool; connection-setting updates route only to the PostgreSQL manager whose `Module()` matches the event payload. |
 
 ---
 

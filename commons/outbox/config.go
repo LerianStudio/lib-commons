@@ -11,6 +11,7 @@ import (
 
 const (
 	defaultDispatchInterval             = 2 * time.Second
+	defaultColdDispatchInterval         = time.Minute
 	defaultBatchSize                    = 50
 	defaultPublishMaxAttempts           = 3
 	defaultPublishBackoff               = 200 * time.Millisecond
@@ -29,6 +30,10 @@ const (
 type DispatcherConfig struct {
 	// DispatchInterval is the periodic interval between dispatch cycles.
 	DispatchInterval time.Duration
+	// ColdDispatchInterval is the maximum polling interval for scopes with no
+	// recent outbox activity. It also defines how long a scope remains active
+	// after work is observed.
+	ColdDispatchInterval time.Duration
 	// BatchSize is the max number of events processed per cycle.
 	BatchSize int
 	// PublishMaxAttempts is the max publish attempts for one event.
@@ -71,6 +76,7 @@ type DispatcherConfig struct {
 func DefaultDispatcherConfig() DispatcherConfig {
 	return DispatcherConfig{
 		DispatchInterval:                    defaultDispatchInterval,
+		ColdDispatchInterval:                defaultColdDispatchInterval,
 		BatchSize:                           defaultBatchSize,
 		PublishMaxAttempts:                  defaultPublishMaxAttempts,
 		PublishBackoff:                      defaultPublishBackoff,
@@ -93,6 +99,14 @@ func (cfg *DispatcherConfig) normalize() {
 
 	if cfg.DispatchInterval <= 0 {
 		cfg.DispatchInterval = defaults.DispatchInterval
+	}
+
+	if cfg.ColdDispatchInterval <= 0 {
+		cfg.ColdDispatchInterval = defaults.ColdDispatchInterval
+	}
+
+	if cfg.ColdDispatchInterval < cfg.DispatchInterval {
+		cfg.ColdDispatchInterval = cfg.DispatchInterval
 	}
 
 	if cfg.BatchSize <= 0 {
@@ -157,6 +171,17 @@ func WithDispatchInterval(interval time.Duration) DispatcherOption {
 	return func(dispatcher *Dispatcher) {
 		if interval > 0 {
 			dispatcher.cfg.DispatchInterval = interval
+		}
+	}
+}
+
+// WithColdDispatchInterval sets the maximum polling interval for scopes with
+// no recent outbox activity. Values shorter than DispatchInterval are
+// normalized to DispatchInterval.
+func WithColdDispatchInterval(interval time.Duration) DispatcherOption {
+	return func(dispatcher *Dispatcher) {
+		if interval > 0 {
+			dispatcher.cfg.ColdDispatchInterval = interval
 		}
 	}
 }

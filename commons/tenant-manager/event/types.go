@@ -4,8 +4,12 @@
 
 // Package event defines the shared contract for tenant lifecycle events
 // published by tenant-manager and consumed by downstream services.
-// It provides the event envelope, typed payload structs, and channel helpers
-// for Valkey Streams-based event-driven tenant discovery.
+// It provides the event envelope, typed payload structs, channel helpers, and
+// EventDispatcher for Valkey Streams-based event-driven tenant discovery.
+// Module-aware services can register all PostgreSQL and MongoDB managers with
+// WithPostgresManagers and WithMongoManagers so connection teardown and
+// module-routed runtime pool-setting updates remain inside the canonical
+// lifecycle dispatcher.
 package event
 
 import (

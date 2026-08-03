@@ -93,14 +93,14 @@ func (d *EventDispatcher) removeTenant(ctx context.Context, tenantID string, log
 		}
 	}
 
-	if d.postgres != nil {
-		if err := d.postgres.CloseConnection(ctx, tenantID); err != nil {
+	for _, manager := range d.postgresManagers {
+		if err := manager.CloseConnection(ctx, tenantID); err != nil {
 			logger.WarnfCtx(ctx, "failed to close PostgreSQL connection for tenant %s: %v", tenantID, err)
 		}
 	}
 
-	if d.mongo != nil {
-		if err := d.mongo.CloseConnection(ctx, tenantID); err != nil {
+	for _, manager := range d.mongoManagers {
+		if err := manager.CloseConnection(ctx, tenantID); err != nil {
 			logger.WarnfCtx(ctx, "failed to close MongoDB connection for tenant %s: %v", tenantID, err)
 		}
 	}

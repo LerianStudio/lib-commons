@@ -12,7 +12,15 @@
 // metadata used only by the repository. The dispatcher trims and deduplicates
 // exact (TenantID, PoolKey) scopes before scanning them.
 //
-// This optional interface is backward compatible: repositories that do not
-// implement it continue to produce one dispatch scope for every ListTenants
-// entry, and DispatchOnceResult remains a tenant-scoped operation.
+// Dispatch scopes with work, or work observed within ColdDispatchInterval,
+// retain the normal DispatchInterval cadence. Empty scopes poll at the bounded
+// cold interval (one minute by default), while tenant topology discovery still
+// runs on every normal dispatcher tick. This avoids keeping idle tenant pools
+// hot and bounds discovery latency for newly committed, retryable, or stuck
+// rows. Scope removal also evicts its activity state.
+//
+// These optional interfaces and scheduling controls are backward compatible:
+// repositories that do not implement TenantDispatchScopeRepository continue to
+// produce one dispatch scope for every ListTenants entry, and
+// DispatchOnceResult remains a tenant-scoped operation.
 package outbox

@@ -394,9 +394,13 @@ func (d *EventDispatcher) handleConnectionsUpdated(
 		libLog.Int("max_idle_conns", payload.MaxIdleConns),
 		libLog.String("statement_timeout", payload.StatementTimeout))
 
-	if d.postgres != nil {
-		config := buildConfigFromConnectionsPayload(evt.TenantID, payload)
-		d.postgres.ApplyConnectionSettings(evt.TenantID, config)
+	config := buildConfigFromConnectionsPayload(evt.TenantID, payload)
+	for _, manager := range d.postgresManagers {
+		if manager.Module() != payload.Module {
+			continue
+		}
+
+		manager.ApplyConnectionSettings(evt.TenantID, config)
 	}
 
 	return nil

@@ -30,6 +30,11 @@ type tenantRequirementReporter interface {
 	RequiresTenant() bool
 }
 
+type dispatchScopeActivity struct {
+	lastWorkAt time.Time
+	nextPollAt time.Time
+}
+
 // Dispatcher handles publishing outbox events through registered handlers.
 type Dispatcher struct {
 	repo            OutboxRepository
@@ -43,6 +48,9 @@ type Dispatcher struct {
 	failureCountsMu          sync.Mutex
 	tenantMetricKeys         map[string]struct{}
 	tenantMetricMu           sync.Mutex
+	scopeActivity            map[TenantDispatchScope]dispatchScopeActivity
+	scopeActivityMu          sync.Mutex
+	now                      func() time.Time
 
 	stop       chan struct{}
 	stopOnce   sync.Once
@@ -97,7 +105,11 @@ func NewDispatcher(
 		cfg:                      DefaultDispatcherConfig(),
 		listPendingFailureCounts: make(map[string]int),
 		tenantMetricKeys:         make(map[string]struct{}),
-		stop:                     make(chan struct{}),
+		scopeActivity:            make(map[TenantDispatchScope]dispatchScopeActivity),
+		now: func() time.Time {
+			return time.Now().UTC()
+		},
+		stop: make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -156,6 +168,8 @@ func (dispatcher *Dispatcher) RunContext(parentCtx context.Context, launcher *li
 
 		return ErrOutboxDispatcherRunning
 	}
+
+	dispatcher.resetScopePollSchedule()
 
 	defer dispatcher.clearRun()
 
@@ -513,7 +527,10 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 		return
 	}
 
-	orderedScopes := dispatcher.tenantDispatchScopeOrder(normalizeTenantDispatchScopes(scopes))
+	normalizedScopes := normalizeTenantDispatchScopes(scopes)
+	dispatcher.reconcileScopeActivity(normalizedScopes)
+
+	orderedScopes := dispatcher.tenantDispatchScopeOrder(normalizedScopes)
 	if len(orderedScopes) == 0 {
 		dispatcher.dispatchWithoutDiscoveredTenant(ctx, tracer)
 
@@ -523,6 +540,11 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 	for _, scope := range orderedScopes {
 		if ctx.Err() != nil {
 			break
+		}
+
+		now := dispatcher.currentTime()
+		if !dispatcher.shouldDispatchScope(scope, now) {
+			continue
 		}
 
 		tenantCtx := ctx
@@ -535,6 +557,7 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 		tenantCtx = ContextWithTenantID(tenantCtx, scope.TenantID)
 		tenantCtx, tenantSpan := tracer.Start(tenantCtx, "outbox.dispatcher.tenant")
 		result := dispatcher.DispatchOnceResult(tenantCtx)
+		dispatcher.recordScopeActivity(scope, result, now)
 		// Keep tenant trace correlation without exposing raw tenant identifiers.
 		tenantSpan.SetAttributes(
 			attribute.String("tenant.id_hash", hashTenantID(scope.TenantID)),
@@ -545,6 +568,74 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 		)
 
 		tenantSpan.End()
+	}
+}
+
+func (dispatcher *Dispatcher) currentTime() time.Time {
+	if dispatcher.now == nil {
+		return time.Now().UTC()
+	}
+
+	return dispatcher.now().UTC()
+}
+
+func (dispatcher *Dispatcher) shouldDispatchScope(scope TenantDispatchScope, now time.Time) bool {
+	dispatcher.scopeActivityMu.Lock()
+	defer dispatcher.scopeActivityMu.Unlock()
+
+	activity, ok := dispatcher.scopeActivity[scope]
+	if !ok {
+		return true
+	}
+
+	return !now.Before(activity.nextPollAt)
+}
+
+func (dispatcher *Dispatcher) recordScopeActivity(
+	scope TenantDispatchScope,
+	result DispatchResult,
+	now time.Time,
+) {
+	dispatcher.scopeActivityMu.Lock()
+	defer dispatcher.scopeActivityMu.Unlock()
+
+	activity := dispatcher.scopeActivity[scope]
+	if result.Processed > 0 {
+		activity.lastWorkAt = now
+	}
+
+	interval := dispatcher.cfg.ColdDispatchInterval
+	if !activity.lastWorkAt.IsZero() && now.Sub(activity.lastWorkAt) < dispatcher.cfg.ColdDispatchInterval {
+		interval = dispatcher.cfg.DispatchInterval
+	}
+
+	activity.nextPollAt = now.Add(interval)
+	dispatcher.scopeActivity[scope] = activity
+}
+
+func (dispatcher *Dispatcher) reconcileScopeActivity(scopes []TenantDispatchScope) {
+	activeScopes := make(map[TenantDispatchScope]struct{}, len(scopes))
+	for _, scope := range scopes {
+		activeScopes[scope] = struct{}{}
+	}
+
+	dispatcher.scopeActivityMu.Lock()
+	defer dispatcher.scopeActivityMu.Unlock()
+
+	for scope := range dispatcher.scopeActivity {
+		if _, exists := activeScopes[scope]; !exists {
+			delete(dispatcher.scopeActivity, scope)
+		}
+	}
+}
+
+func (dispatcher *Dispatcher) resetScopePollSchedule() {
+	dispatcher.scopeActivityMu.Lock()
+	defer dispatcher.scopeActivityMu.Unlock()
+
+	for scope, activity := range dispatcher.scopeActivity {
+		activity.nextPollAt = time.Time{}
+		dispatcher.scopeActivity[scope] = activity
 	}
 }
 
