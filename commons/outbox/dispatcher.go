@@ -505,7 +505,7 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 	ctx, span := tracer.Start(ctx, "outbox.dispatcher.tenants")
 	defer span.End()
 
-	tenants, err := dispatcher.repo.ListTenants(ctx)
+	scopes, scopedRepo, err := dispatcher.listTenantDispatchScopes(ctx)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list tenants", err)
 		libLog.SafeError(logger, ctx, "failed to list tenants", err, false)
@@ -513,24 +513,31 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 		return
 	}
 
-	orderedTenants := dispatcher.tenantDispatchOrder(nonEmptyTenants(tenants))
-	if len(orderedTenants) == 0 {
+	orderedScopes := dispatcher.tenantDispatchScopeOrder(normalizeTenantDispatchScopes(scopes))
+	if len(orderedScopes) == 0 {
 		dispatcher.dispatchWithoutDiscoveredTenant(ctx, tracer)
 
 		return
 	}
 
-	for _, tenantID := range orderedTenants {
+	for _, scope := range orderedScopes {
 		if ctx.Err() != nil {
 			break
 		}
 
-		tenantCtx := ContextWithTenantID(ctx, tenantID)
+		tenantCtx := ctx
+		if scopedRepo != nil {
+			tenantCtx = scopedRepo.ContextForTenantDispatchScope(tenantCtx, scope)
+		}
+
+		// Stamp the authoritative identity last so repository-internal routing
+		// metadata cannot replace the real tenant in handlers or telemetry.
+		tenantCtx = ContextWithTenantID(tenantCtx, scope.TenantID)
 		tenantCtx, tenantSpan := tracer.Start(tenantCtx, "outbox.dispatcher.tenant")
 		result := dispatcher.DispatchOnceResult(tenantCtx)
 		// Keep tenant trace correlation without exposing raw tenant identifiers.
 		tenantSpan.SetAttributes(
-			attribute.String("tenant.id_hash", hashTenantID(tenantID)),
+			attribute.String("tenant.id_hash", hashTenantID(scope.TenantID)),
 			attribute.Int("outbox.dispatch.processed", result.Processed),
 			attribute.Int("outbox.dispatch.published", result.Published),
 			attribute.Int("outbox.dispatch.failed", result.Failed),
@@ -539,6 +546,31 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 
 		tenantSpan.End()
 	}
+}
+
+func (dispatcher *Dispatcher) listTenantDispatchScopes(
+	ctx context.Context,
+) ([]TenantDispatchScope, TenantDispatchScopeRepository, error) {
+	if scopedRepo, ok := dispatcher.repo.(TenantDispatchScopeRepository); ok {
+		scopes, err := scopedRepo.ListTenantDispatchScopes(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		return scopes, scopedRepo, nil
+	}
+
+	tenants, err := dispatcher.repo.ListTenants(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	scopes := make([]TenantDispatchScope, 0, len(tenants))
+	for _, tenantID := range tenants {
+		scopes = append(scopes, TenantDispatchScope{TenantID: tenantID})
+	}
+
+	return scopes, nil, nil
 }
 
 func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(ctx context.Context, tracer trace.Tracer) {
@@ -575,20 +607,28 @@ func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(ctx context.Contex
 	fallbackSpan.End()
 }
 
-func nonEmptyTenants(tenants []string) []string {
-	if len(tenants) == 0 {
+func normalizeTenantDispatchScopes(scopes []TenantDispatchScope) []TenantDispatchScope {
+	if len(scopes) == 0 {
 		return nil
 	}
 
-	result := make([]string, 0, len(tenants))
-	for _, tenantID := range tenants {
-		tenantID = strings.TrimSpace(tenantID)
+	result := make([]TenantDispatchScope, 0, len(scopes))
 
-		if tenantID == "" {
+	seen := make(map[TenantDispatchScope]struct{}, len(scopes))
+	for _, scope := range scopes {
+		scope.TenantID = strings.TrimSpace(scope.TenantID)
+
+		scope.PoolKey = strings.TrimSpace(scope.PoolKey)
+		if scope.TenantID == "" {
 			continue
 		}
 
-		result = append(result, tenantID)
+		if _, ok := seen[scope]; ok {
+			continue
+		}
+
+		seen[scope] = struct{}{}
+		result = append(result, scope)
 	}
 
 	return result
@@ -621,19 +661,19 @@ func (dispatcher *Dispatcher) clearRun() {
 	dispatcher.cancelFunc = nil
 }
 
-func (dispatcher *Dispatcher) tenantDispatchOrder(tenants []string) []string {
-	if len(tenants) <= 1 {
-		return append([]string(nil), tenants...)
+func (dispatcher *Dispatcher) tenantDispatchScopeOrder(scopes []TenantDispatchScope) []TenantDispatchScope {
+	if len(scopes) <= 1 {
+		return append([]TenantDispatchScope(nil), scopes...)
 	}
 
 	dispatcher.runStateMu.Lock()
-	start := dispatcher.tenantTurn % len(tenants)
-	dispatcher.tenantTurn = (dispatcher.tenantTurn + 1) % len(tenants)
+	start := dispatcher.tenantTurn % len(scopes)
+	dispatcher.tenantTurn = (dispatcher.tenantTurn + 1) % len(scopes)
 	dispatcher.runStateMu.Unlock()
 
-	ordered := make([]string, 0, len(tenants))
-	ordered = append(ordered, tenants[start:]...)
-	ordered = append(ordered, tenants[:start]...)
+	ordered := make([]TenantDispatchScope, 0, len(scopes))
+	ordered = append(ordered, scopes[start:]...)
+	ordered = append(ordered, scopes[:start]...)
 
 	return ordered
 }
