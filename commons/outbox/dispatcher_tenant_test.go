@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -177,8 +178,11 @@ func TestDispatcher_DispatchAcrossTenantScopes_RotatesStartingScope(t *testing.T
 		WithPublishMaxAttempts(1),
 	)
 	require.NoError(t, err)
+	now := time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
+	dispatcher.now = func() time.Time { return now }
 
 	dispatcher.dispatchAcrossTenants(context.Background())
+	now = now.Add(dispatcher.cfg.DispatchInterval)
 	dispatcher.dispatchAcrossTenants(context.Background())
 
 	seen := repo.seenScopes()
@@ -201,8 +205,11 @@ func TestDispatcher_DispatchAcrossTenantsRoundRobinStartingTenant(t *testing.T) 
 
 	dispatcher, err := NewDispatcher(repo, NewHandlerRegistry(), nil, noop.NewTracerProvider().Tracer("test"))
 	require.NoError(t, err)
+	now := time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
+	dispatcher.now = func() time.Time { return now }
 
 	dispatcher.dispatchAcrossTenants(context.Background())
+	now = now.Add(dispatcher.cfg.ColdDispatchInterval)
 	dispatcher.dispatchAcrossTenants(context.Background())
 
 	order := repo.listPendingTenantOrder()

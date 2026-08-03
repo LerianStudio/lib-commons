@@ -18,6 +18,7 @@ func TestDispatcherConfigNormalize_AppliesDefaults(t *testing.T) {
 
 	cfg := DispatcherConfig{
 		DispatchInterval:            -1,
+		ColdDispatchInterval:        -1,
 		BatchSize:                   0,
 		PublishMaxAttempts:          -2,
 		PublishBackoff:              0,
@@ -33,6 +34,7 @@ func TestDispatcherConfigNormalize_AppliesDefaults(t *testing.T) {
 
 	defaults := DefaultDispatcherConfig()
 	require.Equal(t, defaults.DispatchInterval, cfg.DispatchInterval)
+	require.Equal(t, time.Minute, cfg.ColdDispatchInterval)
 	require.Equal(t, defaults.BatchSize, cfg.BatchSize)
 	require.Equal(t, defaults.PublishMaxAttempts, cfg.PublishMaxAttempts)
 	require.Equal(t, defaults.PublishBackoff, cfg.PublishBackoff)
@@ -53,6 +55,7 @@ func TestDispatcherConfigNormalize_PreservesValidValues(t *testing.T) {
 
 	cfg := DispatcherConfig{
 		DispatchInterval:                    3 * time.Second,
+		ColdDispatchInterval:                30 * time.Second,
 		BatchSize:                           25,
 		PublishMaxAttempts:                  7,
 		PublishBackoff:                      120 * time.Millisecond,
@@ -70,6 +73,7 @@ func TestDispatcherConfigNormalize_PreservesValidValues(t *testing.T) {
 	cfg.normalize()
 
 	require.Equal(t, 3*time.Second, cfg.DispatchInterval)
+	require.Equal(t, 30*time.Second, cfg.ColdDispatchInterval)
 	require.Equal(t, 25, cfg.BatchSize)
 	require.Equal(t, 7, cfg.PublishMaxAttempts)
 	require.Equal(t, 120*time.Millisecond, cfg.PublishBackoff)
@@ -82,6 +86,19 @@ func TestDispatcherConfigNormalize_PreservesValidValues(t *testing.T) {
 	require.True(t, cfg.IncludeTenantMetrics)
 	require.Equal(t, 55, cfg.MaxTenantMetricDimensions)
 	require.Equal(t, 99, cfg.MaxTrackedListPendingFailureTenants)
+}
+
+func TestDispatcherConfigNormalize_ColdIntervalBelowActiveCadence_UsesActiveCadence(t *testing.T) {
+	t.Parallel()
+
+	cfg := DispatcherConfig{
+		DispatchInterval:     5 * time.Second,
+		ColdDispatchInterval: time.Second,
+	}
+
+	cfg.normalize()
+
+	require.Equal(t, 5*time.Second, cfg.ColdDispatchInterval)
 }
 
 func TestWithRetryClassifier_IgnoresTypedNil(t *testing.T) {
