@@ -32,6 +32,7 @@ type fakeRetainedObjectAPI struct {
 	headOutput     *awss3.HeadObjectOutput
 	lockOutput     *awss3.GetObjectLockConfigurationOutput
 	listOutput     *awss3.ListObjectVersionsOutput
+	listOutputs    []*awss3.ListObjectVersionsOutput
 	putErr         error
 	getErr         error
 	headErr        error
@@ -93,6 +94,13 @@ func (f *fakeRetainedObjectAPI) ListObjectVersions(ctx context.Context, input *a
 	f.listInput = input
 	f.listCallCount++
 	f.listContextErr = ctx.Err()
+
+	if len(f.listOutputs) > 0 {
+		output := f.listOutputs[0]
+		f.listOutputs = f.listOutputs[1:]
+
+		return output, f.listErr
+	}
 
 	return f.listOutput, f.listErr
 }
@@ -255,8 +263,8 @@ func TestRecoverableRetainedStorage_CreateOrRecoverRetained_CreatesOrReturnsExac
 		Response: &smithyhttp.Response{Response: &http.Response{StatusCode: http.StatusPreconditionFailed}},
 		Err:      &smithy.GenericAPIError{Code: "PreconditionFailed", Message: "object exists"},
 	}
-	timedOutCtx, cancelTimedOut := context.WithCancel(context.Background())
-	cancelTimedOut()
+	canceledCtx, cancelCtx := context.WithCancel(context.Background())
+	cancelCtx()
 	tests := []struct {
 		name                      string
 		ctx                       context.Context
@@ -282,7 +290,7 @@ func TestRecoverableRetainedStorage_CreateOrRecoverRetained_CreatesOrReturnsExac
 		},
 		{
 			name: "ambiguous timeout recovers completed write",
-			ctx:  timedOutCtx,
+			ctx:  canceledCtx,
 			fake: &fakeRetainedObjectAPI{
 				putErr:     context.DeadlineExceeded,
 				listOutput: retainedVersionListOutput("artifact", "version-after-timeout"),
@@ -290,6 +298,57 @@ func TestRecoverableRetainedStorage_CreateOrRecoverRetained_CreatesOrReturnsExac
 			},
 			wantListCallCount:         1,
 			wantRecoveryContextActive: true,
+		},
+		{
+			name: "canceled request recovers completed write",
+			ctx:  canceledCtx,
+			fake: &fakeRetainedObjectAPI{
+				putErr:     context.Canceled,
+				listOutput: retainedVersionListOutput("artifact", "version-after-cancel"),
+				headOutput: retainedHeadOutput("version-after-cancel", expected.ContentType, expected.ContentLength, canonicalRetainUntil),
+			},
+			wantListCallCount:         1,
+			wantRecoveryContextActive: true,
+		},
+		{
+			name: "recovery skips sibling prefix keys on truncated page",
+			fake: &fakeRetainedObjectAPI{
+				putErr: preconditionFailed,
+				listOutput: &awss3.ListObjectVersionsOutput{
+					Versions: []s3types.ObjectVersion{
+						{Key: aws.String("artifact"), VersionId: aws.String("version-existing"), IsLatest: aws.Bool(true)},
+						{Key: aws.String("artifact.bak"), VersionId: aws.String("version-sibling"), IsLatest: aws.Bool(true)},
+					},
+					IsTruncated:         aws.Bool(true),
+					NextKeyMarker:       aws.String("artifact.bak"),
+					NextVersionIdMarker: aws.String("version-sibling"),
+				},
+				headOutput: retainedHeadOutput("version-existing", expected.ContentType, expected.ContentLength, canonicalRetainUntil),
+			},
+			wantListCallCount: 1,
+		},
+		{
+			name: "recovery paginates truncated exact-key page",
+			fake: &fakeRetainedObjectAPI{
+				putErr: preconditionFailed,
+				listOutputs: []*awss3.ListObjectVersionsOutput{
+					{
+						Versions: []s3types.ObjectVersion{
+							{Key: aws.String("artifact"), VersionId: aws.String("version-existing"), IsLatest: aws.Bool(true)},
+						},
+						IsTruncated:         aws.Bool(true),
+						NextKeyMarker:       aws.String("artifact"),
+						NextVersionIdMarker: aws.String("version-existing"),
+					},
+					{
+						Versions: []s3types.ObjectVersion{
+							{Key: aws.String("artifact.bak"), VersionId: aws.String("version-sibling"), IsLatest: aws.Bool(true)},
+						},
+					},
+				},
+				headOutput: retainedHeadOutput("version-existing", expected.ContentType, expected.ContentLength, canonicalRetainUntil),
+			},
+			wantListCallCount: 2,
 		},
 	}
 
@@ -369,6 +428,19 @@ func TestRecoverableRetainedStorage_CreateOrRecoverRetained_RejectsAmbiguousOrMi
 			wantErr: ErrRetainedVersionAmbiguous,
 		},
 		{
+			name: "truncated page without continuation markers",
+			fake: &fakeRetainedObjectAPI{
+				putErr: preconditionFailed,
+				listOutput: &awss3.ListObjectVersionsOutput{
+					Versions: []s3types.ObjectVersion{
+						{Key: aws.String("artifact"), VersionId: aws.String("version-existing"), IsLatest: aws.Bool(true)},
+					},
+					IsTruncated: aws.Bool(true),
+				},
+			},
+			wantErr: ErrRetainedVersionAmbiguous,
+		},
+		{
 			name: "wrong content type",
 			fake: &fakeRetainedObjectAPI{
 				putErr:     preconditionFailed,
@@ -415,6 +487,66 @@ func TestRecoverableRetainedStorage_CreateOrRecoverRetained_RejectsAmbiguousOrMi
 			require.ErrorIs(t, err, test.wantErr)
 		})
 	}
+}
+
+func TestRecoverableRetainedStorage_CreateOrRecoverRetained_RejectsBodyLengthMismatchBeforeWrite(t *testing.T) {
+	t.Parallel()
+
+	expected := ExpectedRetainedObject{
+		ContentType:   "application/pdf",
+		ContentLength: 7,
+		Retention: Retention{
+			Mode:        RetentionModeCompliance,
+			RetainUntil: time.Date(2031, time.August, 3, 15, 30, 0, 0, time.UTC),
+		},
+	}
+	tests := []struct {
+		name string
+		body io.Reader
+	}{
+		{name: "body shorter than expected", body: bytes.NewReader([]byte("short"))},
+		{name: "body longer than expected", body: bytes.NewReader([]byte("payload-too-long"))},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			fake := &fakeRetainedObjectAPI{}
+			store, err := NewRecoverableRetainedStorage(fake, testBucket)
+			require.NoError(t, err)
+
+			_, err = store.CreateOrRecoverRetained(context.Background(), "artifact", test.body, expected)
+
+			require.ErrorIs(t, err, ErrRetainedMetadataMismatch)
+			assert.Zero(t, fake.putCallCount)
+		})
+	}
+}
+
+func TestRetainedStorage_CreateRetained_PostWriteStatFailure_ReportsCreateOperation(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeRetainedObjectAPI{
+		putOutput: &awss3.PutObjectOutput{VersionId: aws.String("version-1")},
+		headErr:   errors.New("head failed"),
+	}
+	store, err := NewRetainedStorage(fake, testBucket)
+	require.NoError(t, err)
+
+	_, err = store.CreateRetained(
+		context.Background(),
+		"artifact",
+		bytes.NewReader([]byte("payload")),
+		"application/pdf",
+		Retention{Mode: RetentionModeCompliance, RetainUntil: time.Now().UTC().AddDate(5, 0, 1)},
+	)
+
+	require.Error(t, err)
+	var retainedErr *RetainedStorageError
+	require.ErrorAs(t, err, &retainedErr)
+	assert.Equal(t, "create", retainedErr.Operation())
 }
 
 func TestRecoverableRetainedStorage_CreateOrRecoverRetained_RequiresExpectedMetadata(t *testing.T) {

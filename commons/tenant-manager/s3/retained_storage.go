@@ -5,6 +5,7 @@
 package s3
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -25,6 +26,7 @@ const (
 	objectLockTimestampPrecision       = time.Second
 	retainedRecoveryTimeout            = 10 * time.Second
 	retainedRecoveryMaxKeys      int32 = 2
+	retainedRecoveryMaxPages           = 32
 )
 
 // RetentionMode identifies the immutable retention mode applied to an object version.
@@ -243,7 +245,7 @@ func (s *retainedStorage) CreateRetained(
 		return ObjectMetadata{}, newRetainedStorageError("create", ErrVersionIDRequired, nil)
 	}
 
-	return s.statResolvedVersion(ctx, resolvedKey, *output.VersionId)
+	return s.statResolvedVersion(ctx, "create", resolvedKey, *output.VersionId)
 }
 
 func (s *recoverableRetainedStorage) CreateOrRecoverRetained(
@@ -254,6 +256,15 @@ func (s *recoverableRetainedStorage) CreateOrRecoverRetained(
 ) (ObjectMetadata, error) {
 	if err := validateExpectedRetainedObject(expected); err != nil {
 		return ObjectMetadata{}, newRetainedStorageError("create-or-recover", err, nil)
+	}
+
+	if body != nil {
+		buffered, bufferErr := bufferExpectedRetainedBody(body, expected.ContentLength)
+		if bufferErr != nil {
+			return ObjectMetadata{}, bufferErr
+		}
+
+		body = buffered
 	}
 
 	metadata, err := s.CreateRetained(ctx, key, body, expected.ContentType, expected.Retention)
@@ -291,45 +302,96 @@ func (s *recoverableRetainedStorage) CreateOrRecoverRetained(
 	return validated, nil
 }
 
+// recoverRetainedVersion selects the sole exact retained version for resolvedKey.
+// The versions listing is prefix-based, so sibling keys such as resolvedKey+".bak"
+// can share pages with the exact key; listing paginates until every entry for the
+// exact key has been evaluated and stops once the sorted listing passes it.
 func (s *recoverableRetainedStorage) recoverRetainedVersion(ctx context.Context, resolvedKey string) (ObjectMetadata, error) {
-	output, err := s.versionLister.ListObjectVersions(ctx, &awss3.ListObjectVersionsInput{
+	input := &awss3.ListObjectVersionsInput{
 		Bucket:  &s.bucket,
 		Prefix:  &resolvedKey,
 		MaxKeys: aws.Int32(retainedRecoveryMaxKeys),
-	})
-	if err != nil {
-		return ObjectMetadata{}, fmt.Errorf("list retained object versions: %w", err)
 	}
-
-	if output == nil || aws.ToBool(output.IsTruncated) {
-		return ObjectMetadata{}, ErrRetainedVersionAmbiguous
-	}
-
 	versionID := ""
 
-	for _, version := range output.Versions {
-		if aws.ToString(version.Key) != resolvedKey {
-			continue
-		}
-
-		if versionID != "" || !aws.ToBool(version.IsLatest) || aws.ToString(version.VersionId) == "" {
+	for page := 0; ; page++ {
+		if page >= retainedRecoveryMaxPages {
 			return ObjectMetadata{}, ErrRetainedVersionAmbiguous
 		}
 
-		versionID = aws.ToString(version.VersionId)
-	}
+		output, err := s.versionLister.ListObjectVersions(ctx, input)
+		if err != nil {
+			return ObjectMetadata{}, fmt.Errorf("list retained object versions: %w", err)
+		}
 
-	for _, marker := range output.DeleteMarkers {
-		if aws.ToString(marker.Key) == resolvedKey && aws.ToBool(marker.IsLatest) {
+		if output == nil {
 			return ObjectMetadata{}, ErrRetainedVersionAmbiguous
 		}
+
+		passedKey := false
+
+		for _, version := range output.Versions {
+			key := aws.ToString(version.Key)
+			if key > resolvedKey {
+				passedKey = true
+				break
+			}
+
+			if key != resolvedKey {
+				continue
+			}
+
+			if versionID != "" || !aws.ToBool(version.IsLatest) || aws.ToString(version.VersionId) == "" {
+				return ObjectMetadata{}, ErrRetainedVersionAmbiguous
+			}
+
+			versionID = aws.ToString(version.VersionId)
+		}
+
+		for _, marker := range output.DeleteMarkers {
+			key := aws.ToString(marker.Key)
+			if key > resolvedKey {
+				passedKey = true
+				continue
+			}
+
+			if key == resolvedKey && aws.ToBool(marker.IsLatest) {
+				return ObjectMetadata{}, ErrRetainedVersionAmbiguous
+			}
+		}
+
+		if passedKey || !aws.ToBool(output.IsTruncated) {
+			break
+		}
+
+		if output.NextKeyMarker == nil && output.NextVersionIdMarker == nil {
+			return ObjectMetadata{}, ErrRetainedVersionAmbiguous
+		}
+
+		input.KeyMarker = output.NextKeyMarker
+		input.VersionIdMarker = output.NextVersionIdMarker
 	}
 
 	if versionID == "" {
 		return ObjectMetadata{}, ErrRetainedVersionAmbiguous
 	}
 
-	return s.statResolvedVersion(ctx, resolvedKey, versionID)
+	return s.statResolvedVersion(ctx, "stat", resolvedKey, versionID)
+}
+
+// bufferExpectedRetainedBody rejects a body whose length differs from the
+// expectation before any immutable COMPLIANCE-retained write is issued.
+func bufferExpectedRetainedBody(body io.Reader, expectedLength int64) (io.Reader, error) {
+	content, err := io.ReadAll(io.LimitReader(body, expectedLength+1))
+	if err != nil {
+		return nil, newRetainedStorageError("create-or-recover", nil, fmt.Errorf("read retained object body: %w", err))
+	}
+
+	if int64(len(content)) != expectedLength {
+		return nil, newRetainedStorageError("create-or-recover", ErrRetainedMetadataMismatch, nil)
+	}
+
+	return bytes.NewReader(content), nil
 }
 
 func validateExpectedRetainedObject(expected ExpectedRetainedObject) error {
@@ -354,7 +416,7 @@ func validateRecoveredMetadata(metadata ObjectMetadata, expected ExpectedRetaine
 }
 
 func isAmbiguousRetainedWrite(err error) bool {
-	if errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true
 	}
 
@@ -403,10 +465,10 @@ func (s *retainedStorage) StatVersion(ctx context.Context, key, versionID string
 		return ObjectMetadata{}, newRetainedStorageError("stat", nil, err)
 	}
 
-	return s.statResolvedVersion(ctx, resolvedKey, versionID)
+	return s.statResolvedVersion(ctx, "stat", resolvedKey, versionID)
 }
 
-func (s *retainedStorage) statResolvedVersion(ctx context.Context, resolvedKey, versionID string) (ObjectMetadata, error) {
+func (s *retainedStorage) statResolvedVersion(ctx context.Context, operation, resolvedKey, versionID string) (ObjectMetadata, error) {
 	output, err := s.client.HeadObject(ctx, &awss3.HeadObjectInput{
 		Bucket:    &s.bucket,
 		Key:       &resolvedKey,
@@ -414,15 +476,15 @@ func (s *retainedStorage) statResolvedVersion(ctx context.Context, resolvedKey, 
 	})
 	if err != nil {
 		if isNotFound(err) {
-			return ObjectMetadata{}, newRetainedStorageError("stat", ErrObjectNotFound, err)
+			return ObjectMetadata{}, newRetainedStorageError(operation, ErrObjectNotFound, err)
 		}
 
-		return ObjectMetadata{}, newRetainedStorageError("stat", nil, err)
+		return ObjectMetadata{}, newRetainedStorageError(operation, nil, err)
 	}
 
 	metadata, metadataErr := metadataFromHead(output, versionID)
 	if metadataErr != nil {
-		return ObjectMetadata{}, newRetainedStorageError("stat", metadataErr, nil)
+		return ObjectMetadata{}, newRetainedStorageError(operation, metadataErr, nil)
 	}
 
 	return metadata, nil
