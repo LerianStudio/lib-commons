@@ -79,12 +79,14 @@
 //
 // # Pool resolution (tiered, fail-closed)
 //
-// Every read/write/mark operation resolves the tenant's pool in three tiers:
+// Every read/write/mark operation resolves the tenant's pool in four tiers:
 //
-//	tier-1: a pool pre-installed in the context (tmcore.GetPGContext) — used by
+//	tier-1: an opaque dispatcher scope routes through ModulePoolResolver when
+//	        module-aware topology is configured.
+//	tier-2: a pool pre-installed in the context (tmcore.GetPGContext) — used by
 //	        request/write-path callers that already hold the tenant's pool.
-//	tier-2: PoolForTenant, keyed by the tenant ID stamped on the context.
-//	tier-3: ErrTenantPoolUnavailable — fail closed, never the root pool.
+//	tier-3: PoolForTenant, keyed by the tenant ID stamped on the context.
+//	tier-4: ErrTenantPoolUnavailable — fail closed, never the root pool.
 //
 // Resolution never falls back to a shared root pool, so dispatch cannot cross
 // tenant boundaries. An event read from a tenant's pool is marked published
@@ -93,6 +95,67 @@
 // The default (platform) tenant is the one exception to Tenant Manager lookup:
 // because it is not registered in Tenant Manager, ManagerPoolResolver routes it
 // to the root pool directly via defaultTenantID.
+//
+// # Module-aware pool topology
+//
+// Services with a generic database plus named module databases compose their
+// existing pool resolvers with NewModulePoolResolver. The constructor accepts a
+// generic TenantPoolResolver, the platform default tenant ID, a
+// TenantConfigLoader, and ordered ModulePool bindings. The generic resolver
+// remains the authoritative tenant roster and the backward-compatible
+// PoolForTenant path.
+//
+//	moduleResolver, err := postgres.NewModulePoolResolver(
+//		genericResolver,
+//		defaultTenantID,
+//		func(ctx context.Context, tenantID string) (*tmcore.TenantConfig, error) {
+//			return tmClient.GetTenantConfig(ctx, tenantID, serviceName)
+//		},
+//		postgres.ModulePool{Name: "consignado", Resolver: consignadoResolver},
+//	)
+//	if err != nil {
+//		return err
+//	}
+//
+//	repo, err := postgres.NewMultiTenantRepository(postgres.MultiTenantConfig{
+//		Client:             rootClient,
+//		PoolResolver:       moduleResolver,
+//		MultiTenantEnabled: true,
+//	})
+//	if err != nil {
+//		return err
+//	}
+//
+// Each ModulePool.Name must exactly match the tenant-manager Databases map key.
+// Its Resolver must resolve that module's pool for the real tenant ID. The
+// generic resolver remains responsible for ListTenants and for writes that use
+// the legacy TenantPoolResolver path.
+//
+// ListTenantDispatchScopes keeps TenantID equal to the real tenant ID and uses
+// PoolKey only as opaque routing metadata. One tenant may therefore produce
+// several dispatch scopes. Generic and module resources with the same canonical
+// host, port, database, and schema produce one scope, so one physical outbox is
+// never scanned twice. Empty schema and public schema are equivalent.
+//
+// The default tenant follows the same topology loader as every other tenant, so
+// configured module pools are dispatched rather than silently reducing the
+// default tenant to its generic root pool. If its topology cannot be loaded and
+// no last-known-good snapshot exists, its generic scope remains available. A
+// non-default tenant with no last-known-good snapshot is skipped in isolation;
+// healthy tenants continue through the refresh.
+//
+// Concurrent topology refreshes are monotonic: a refresh that started earlier
+// cannot replace a newer snapshot when it completes later. EvictTenant removes
+// every cached scope for one real tenant immediately, so new resolutions fail
+// closed, and prevents already-running older refreshes from restoring those
+// scopes. A pool resolution that began before eviction may still complete.
+//
+// Eviction is an explicit lifecycle obligation. The resolver does not subscribe
+// to tenant events itself. The caller that accepts a tenant removal, suspension,
+// or database-topology invalidation event must call EvictTenant(tenantID) before
+// tearing down the underlying generic and module pools. If the tenant becomes
+// active again, a later successful ListTenantDispatchScopes refresh repopulates
+// its current topology.
 //
 // # Tenant enumeration (ListTenants precedence)
 //
@@ -110,8 +173,18 @@
 // means its per-tenant migration never ran. Rather than letting dispatch fail
 // with 42P01, the repository probes table presence (via to_regclass, which
 // yields a clean NULL for an absent table) and skips dispatch for that tenant,
-// logging a WARN. The probe result is cached per tenant for a 60s TTL, so the
-// warning fires at most once per TTL per tenant rather than on every cycle.
+// logging a WARN. The probe result is cached per tenant dispatch scope for a
+// 60s TTL using the exact (real tenant ID, PoolKey) scope, so a missing module
+// table cannot contaminate the generic pool's presence result (or vice versa),
+// and the warning fires at most once per TTL per scope.
+//
+// # Backward compatibility
+//
+// ModulePoolResolver still implements outbox.TenantPoolResolver. ListTenants and
+// PoolForTenant delegate to the generic resolver, so request/write paths and
+// existing callers remain unchanged. A repository wired directly with a legacy
+// ManagerPoolResolver still dispatches one pool per tenant. Only the dispatcher's
+// optional TenantDispatchScopeRepository path observes named module scopes.
 //
 // # Tenant Manager unavailable
 //

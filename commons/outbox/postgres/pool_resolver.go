@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
@@ -16,6 +17,13 @@ import (
 // fails closed on this error rather than falling back to a shared root pool,
 // which would cross tenant boundaries.
 var ErrTenantPoolUnavailable = errors.New("tenant database pool unavailable")
+
+type tenantDispatchPoolContextKey struct{}
+
+type tenantDispatchPoolResolver interface {
+	ListTenantDispatchScopes(ctx context.Context) ([]outbox.TenantDispatchScope, error)
+	PoolForTenantDispatchScope(ctx context.Context, scope outbox.TenantDispatchScope) (*sql.DB, error)
+}
 
 // NoopTenantResolver is the TenantResolver for pool-per-tenant deployments.
 //
@@ -56,6 +64,20 @@ func newTenantPoolLookup(resolver outbox.TenantPoolResolver) func(context.Contex
 			ctx = context.Background()
 		}
 
+		if _, scopePresent := ctx.Value(tenantDispatchPoolContextKey{}).(outbox.TenantDispatchScope); scopePresent {
+			scope, valid := tenantDispatchScopeFromContext(ctx)
+			if !valid {
+				return nil, ErrTenantPoolUnavailable
+			}
+
+			scopedResolver, supported := resolver.(tenantDispatchPoolResolver)
+			if !supported {
+				return nil, ErrTenantPoolUnavailable
+			}
+
+			return scopedResolver.PoolForTenantDispatchScope(ctx, scope)
+		}
+
 		// tier-1: context-installed pool, bridged via PrimaryDBs()[0] with the
 		// same nil-guards as resolvePrimaryDB. A present-but-empty resolver
 		// falls through to tier-2 rather than failing.
@@ -84,6 +106,76 @@ func newTenantPoolLookup(resolver outbox.TenantPoolResolver) func(context.Contex
 	}
 }
 
+func tenantDispatchScopeFromContext(ctx context.Context) (outbox.TenantDispatchScope, bool) {
+	if ctx == nil {
+		return outbox.TenantDispatchScope{}, false
+	}
+
+	scope, ok := ctx.Value(tenantDispatchPoolContextKey{}).(outbox.TenantDispatchScope)
+	if !ok || strings.TrimSpace(scope.TenantID) == "" {
+		return outbox.TenantDispatchScope{}, false
+	}
+
+	scope.TenantID = strings.TrimSpace(scope.TenantID)
+	scope.PoolKey = strings.TrimSpace(scope.PoolKey)
+
+	tenantID, hasTenant := outbox.TenantIDFromContext(ctx)
+	if !hasTenant || strings.TrimSpace(tenantID) != scope.TenantID {
+		return outbox.TenantDispatchScope{}, false
+	}
+
+	return scope, true
+}
+
+// ListTenantDispatchScopes returns one scope per physical tenant database when
+// the configured pool resolver supports module-aware topology. Legacy pool
+// resolvers are represented as one scope per tenant.
+func (repo *Repository) ListTenantDispatchScopes(ctx context.Context) ([]outbox.TenantDispatchScope, error) {
+	if repo == nil {
+		return nil, ErrRepositoryNotInitialized
+	}
+
+	if scopedResolver, ok := repo.poolResolver.(tenantDispatchPoolResolver); ok {
+		return scopedResolver.ListTenantDispatchScopes(ctx)
+	}
+
+	tenants, err := repo.ListTenants(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	scopes := make([]outbox.TenantDispatchScope, 0, len(tenants))
+	for _, tenantID := range tenants {
+		scopes = append(scopes, outbox.TenantDispatchScope{TenantID: tenantID})
+	}
+
+	return scopes, nil
+}
+
+// ContextForTenantDispatchScope installs opaque pool routing metadata without
+// changing the real tenant identity stored by the dispatcher.
+func (repo *Repository) ContextForTenantDispatchScope(
+	ctx context.Context,
+	scope outbox.TenantDispatchScope,
+) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if repo == nil {
+		return ctx
+	}
+
+	if _, ok := repo.poolResolver.(tenantDispatchPoolResolver); !ok {
+		return ctx
+	}
+
+	scope.TenantID = strings.TrimSpace(scope.TenantID)
+	scope.PoolKey = strings.TrimSpace(scope.PoolKey)
+
+	return context.WithValue(ctx, tenantDispatchPoolContextKey{}, scope)
+}
+
 // tenantOutboxTableMissing reports whether pool mode is active and the current
 // tenant's outbox table is absent, so the caller can skip dispatch instead of
 // issuing a query that would fail with 42P01. When no guard is configured
@@ -101,7 +193,18 @@ func (repo *Repository) tenantOutboxTableMissing(ctx context.Context) (bool, err
 		return false, nil
 	}
 
-	present, err := repo.tablePresence.present(ctx, tenantID)
+	presenceKey := tenantID
+
+	if _, scopePresent := ctx.Value(tenantDispatchPoolContextKey{}).(outbox.TenantDispatchScope); scopePresent {
+		scope, valid := tenantDispatchScopeFromContext(ctx)
+		if !valid {
+			return false, ErrTenantPoolUnavailable
+		}
+
+		presenceKey = strings.Join([]string{scope.TenantID, scope.PoolKey}, "\x00")
+	}
+
+	present, err := repo.tablePresence.present(ctx, presenceKey)
 	if err != nil {
 		return false, fmt.Errorf("outbox table presence check: %w", err)
 	}
@@ -147,7 +250,7 @@ func WithTenantPoolResolver(resolver outbox.TenantPoolResolver) Option {
 func (repo *Repository) newTablePresenceProbe(
 	lookup func(context.Context) (*sql.DB, error),
 ) tablePresenceProbe {
-	return func(ctx context.Context, tenantID string) (bool, error) {
+	return func(ctx context.Context, presenceKey string) (bool, error) {
 		db, err := lookup(ctx)
 		if err != nil {
 			return false, err
@@ -172,6 +275,14 @@ func (repo *Repository) newTablePresenceProbe(
 			// caches per tenant for the TTL, so this warns at most once per TTL
 			// per tenant rather than on every dispatch cycle.
 			if repo.logger != nil {
+				tenantID, ok := outbox.TenantIDFromContext(ctx)
+				if !ok {
+					tenantID = presenceKey
+					if tenantPrefix, _, found := strings.Cut(presenceKey, "\x00"); found {
+						tenantID = tenantPrefix
+					}
+				}
+
 				repo.logger.Log(
 					ctx,
 					libLog.LevelWarn,

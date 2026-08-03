@@ -7,11 +7,13 @@ import (
 	"database/sql"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
 	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
+	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/google/uuid"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/require"
@@ -204,6 +206,7 @@ func replaceDSNDatabase(t *testing.T, dsn, dbName string) string {
 // constructor and initialized() guard; routing still flows through the resolver).
 func newPoolRepo(t *testing.T, h *poolHarness, resolver outbox.TenantPoolResolver) *Repository {
 	t.Helper()
+	t.Setenv("ALLOW_INSECURE_TLS", "true")
 
 	rootClient, err := libPostgres.New(libPostgres.Config{PrimaryDSN: h.rootDSN, ReplicaDSN: h.rootDSN})
 	require.NoError(t, err)
@@ -263,28 +266,48 @@ func countInDB(t *testing.T, pool *sql.DB) int {
 	return n
 }
 
-// runCrossTenantCycle drives ONE cross-tenant dispatch cycle through the public
-// Dispatcher surface, mirroring Dispatcher.dispatchAcrossTenants: enumerate
-// tenants via the repository, then DispatchOnceResult per tenant under a
-// tenant-stamped context. Per-tenant errors are swallowed (skip-and-continue),
-// exactly as the unexported loop does. Returns the per-tenant results for the
-// tenants that produced a non-zero / observable outcome.
-func runCrossTenantCycle(t *testing.T, dispatcher *outbox.Dispatcher, repo *Repository) map[string]outbox.DispatchResult {
+func createEventInPool(t *testing.T, pool *sql.DB, tenantID, eventType string) *outbox.OutboxEvent {
 	t.Helper()
 
-	ctx := context.Background()
-
-	tenants, err := repo.ListTenants(ctx)
+	ctx := outbox.ContextWithTenantID(context.Background(), tenantID)
+	event, err := outbox.NewOutboxEvent(ctx, eventType, uuid.New(), []byte(`{"scope":"module"}`))
 	require.NoError(t, err)
 
-	results := make(map[string]outbox.DispatchResult, len(tenants))
+	_, err = pool.ExecContext(ctx, `
+INSERT INTO outbox_events (
+    id, event_type, aggregate_id, payload, status, attempts, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5::outbox_event_status, $6, $7, $8)
+`, event.ID, event.EventType, event.AggregateID, event.Payload, event.Status, event.Attempts, event.CreatedAt, event.UpdatedAt)
+	require.NoError(t, err)
 
-	for _, tenantID := range tenants {
-		tenantCtx := outbox.ContextWithTenantID(ctx, tenantID)
-		results[tenantID] = dispatcher.DispatchOnceResult(tenantCtx)
-	}
+	return event
+}
 
-	return results
+func integrationTenantConfigWithDatabases(genericDatabase, moduleDatabase string) *tmcore.TenantConfig {
+	return &tmcore.TenantConfig{Databases: map[string]tmcore.DatabaseConfig{
+		"aaa-generic": {
+			PostgreSQL: &tmcore.PostgreSQLConfig{Host: "postgres", Port: 5432, Database: genericDatabase},
+		},
+		"consignado": {
+			PostgreSQL: &tmcore.PostgreSQLConfig{Host: "postgres", Port: 5432, Database: moduleDatabase},
+		},
+	}}
+}
+
+// runDispatcherUntil starts the real cross-tenant dispatcher and stops it once
+// the caller-observed database state proves the initial cycle completed.
+func runDispatcherUntil(t *testing.T, dispatcher *outbox.Dispatcher, done func() bool) {
+	t.Helper()
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- dispatcher.RunContext(runCtx, nil)
+	}()
+
+	require.Eventually(t, done, 10*time.Second, 20*time.Millisecond)
+	cancel()
+	require.NoError(t, <-runDone)
 }
 
 func newPoolDispatcher(t *testing.T, repo *Repository, handlers *outbox.HandlerRegistry) *outbox.Dispatcher {
@@ -347,12 +370,12 @@ func TestIntegration_Pool_CrossDatabaseIsolation(t *testing.T) {
 	require.NoError(t, handlers.Register("evt.b", record))
 
 	dispatcher := newPoolDispatcher(t, repo, handlers)
-	results := runCrossTenantCycle(t, dispatcher, repo)
+	runDispatcherUntil(t, dispatcher, func() bool {
+		statusA, okA := statusInDB(t, h.pools["tenant_a"], evA.ID)
+		statusB, okB := statusInDB(t, h.pools["tenant_b"], evB.ID)
 
-	require.Equal(t, 1, results[poolTenantA].Published)
-	require.Equal(t, 1, results[poolTenantB].Published)
-	require.Equal(t, 0, results[poolTenantA].Failed)
-	require.Equal(t, 0, results[poolTenantB].Failed)
+		return okA && okB && statusA == outbox.OutboxStatusPublished && statusB == outbox.OutboxStatusPublished
+	})
 
 	mu.Lock()
 	require.Equal(t, []uuid.UUID{evA.ID}, seen["evt.a"], "evt.a handler saw only tenant-A event")
@@ -400,9 +423,11 @@ func TestIntegration_Pool_DefaultTenantOnRoot(t *testing.T) {
 	}))
 
 	dispatcher := newPoolDispatcher(t, repo, handlers)
-	results := runCrossTenantCycle(t, dispatcher, repo)
+	runDispatcherUntil(t, dispatcher, func() bool {
+		status, ok := statusInDB(t, h.pools["root_db"], ev.ID)
 
-	require.Equal(t, 1, results[poolDefaultTenant].Published)
+		return ok && status == outbox.OutboxStatusPublished
+	})
 	require.True(t, handled)
 
 	status, ok := statusInDB(t, h.pools["root_db"], ev.ID)
@@ -430,22 +455,23 @@ func TestIntegration_Pool_DeprovisionedTenantSkipped(t *testing.T) {
 
 	evA := createEventForTenant(t, repo, poolTenantA, "evt.a")
 
-	var handledA bool
+	var handledA atomic.Int32
 	handlers := outbox.NewHandlerRegistry()
-	require.NoError(t, handlers.Register("evt.a", func(_ context.Context, e *outbox.OutboxEvent) error {
-		require.Equal(t, evA.ID, e.ID)
-		handledA = true
+	require.NoError(t, handlers.Register("evt.a", func(_ context.Context, _ *outbox.OutboxEvent) error {
+		handledA.Add(1)
 		return nil
 	}))
 
 	dispatcher := newPoolDispatcher(t, repo, handlers)
 
-	// Must not panic; tenant-C is skipped (zero result), tenant-A still dispatches.
-	results := runCrossTenantCycle(t, dispatcher, repo)
+	// Tenant-C is skipped while tenant-A still dispatches through the real loop.
+	runDispatcherUntil(t, dispatcher, func() bool {
+		status, ok := statusInDB(t, h.pools["tenant_a"], evA.ID)
 
-	require.Equal(t, 1, results[poolTenantA].Published, "tenant-A must dispatch despite tenant-C failure")
-	require.True(t, handledA)
-	require.Equal(t, outbox.DispatchResult{}, results[poolTenantC], "deprovisioned tenant yields empty result")
+		return ok && status == outbox.OutboxStatusPublished
+	})
+
+	require.EqualValues(t, 1, handledA.Load())
 
 	statusA, ok := statusInDB(t, h.pools["tenant_a"], evA.ID)
 	require.True(t, ok)
@@ -473,22 +499,23 @@ func TestIntegration_Pool_MissingTableSkipped(t *testing.T) {
 
 	evA := createEventForTenant(t, repo, poolTenantA, "evt.a")
 
-	var handledA bool
+	var handledA atomic.Int32
 	handlers := outbox.NewHandlerRegistry()
-	require.NoError(t, handlers.Register("evt.a", func(_ context.Context, e *outbox.OutboxEvent) error {
-		require.Equal(t, evA.ID, e.ID)
-		handledA = true
+	require.NoError(t, handlers.Register("evt.a", func(_ context.Context, _ *outbox.OutboxEvent) error {
+		handledA.Add(1)
 		return nil
 	}))
 
 	dispatcher := newPoolDispatcher(t, repo, handlers)
-	results := runCrossTenantCycle(t, dispatcher, repo)
+	runDispatcherUntil(t, dispatcher, func() bool {
+		status, ok := statusInDB(t, h.pools["tenant_a"], evA.ID)
+
+		return ok && status == outbox.OutboxStatusPublished
+	})
 
 	// tenant-D's missing table must be skipped cleanly: no 42P01 surfaced as a
-	// dispatch failure, empty result, tenant-A unaffected.
-	require.Equal(t, outbox.DispatchResult{}, results[poolTenantD], "missing-table tenant yields empty result, no failure")
-	require.Equal(t, 1, results[poolTenantA].Published)
-	require.True(t, handledA)
+	// dispatch failure and tenant-A remains unaffected.
+	require.EqualValues(t, 1, handledA.Load())
 
 	// A full dispatch cycle drives ALL four per-tenant reads through
 	// collectEvents: collectPriorityEvents/ListPendingByType, ResetStuckProcessing,
@@ -508,9 +535,14 @@ func TestIntegration_Pool_MissingTableSkipped(t *testing.T) {
 	// guard: if any of the four reads (the resets in particular) bypassed the
 	// presence guard, it would call PoolForTenant again here and this assertion
 	// would fail.
-	results2 := runCrossTenantCycle(t, dispatcher, repo)
-	require.Equal(t, outbox.DispatchResult{}, results2[poolTenantD])
-	require.Equal(t, 0, results2[poolTenantA].Failed)
+	secondEvent := createEventForTenant(t, repo, poolTenantA, "evt.a")
+	secondDispatcher := newPoolDispatcher(t, repo, handlers)
+	runDispatcherUntil(t, secondDispatcher, func() bool {
+		status, ok := statusInDB(t, h.pools["tenant_a"], secondEvent.ID)
+
+		return ok && status == outbox.OutboxStatusPublished
+	})
+	require.EqualValues(t, 2, handledA.Load())
 
 	callsAfterCycle2 := resolver.poolForTenantCalls(poolTenantD)
 	require.Equal(t, callsAfterCycle1, callsAfterCycle2,
@@ -555,15 +587,130 @@ func TestIntegration_Pool_FullLifecyclePerTenant(t *testing.T) {
 	}))
 
 	dispatcher := newPoolDispatcher(t, repo, handlers)
-	results := runCrossTenantCycle(t, dispatcher, repo)
-	require.Equal(t, 1, results[poolTenantA].Published)
-	require.Equal(t, 1, results[poolTenantB].Published)
+	runDispatcherUntil(t, dispatcher, func() bool {
+		statusA, okA := statusInDB(t, h.pools["tenant_a"], evA.ID)
+		statusB, okB := statusInDB(t, h.pools["tenant_b"], evB.ID)
+
+		return okA && okB && statusA == outbox.OutboxStatusPublished && statusB == outbox.OutboxStatusPublished
+	})
 
 	// Post-dispatch: PENDING -> PUBLISHED, verified by querying each DB directly.
 	statusA, _ := statusInDB(t, h.pools["tenant_a"], evA.ID)
 	require.Equal(t, outbox.OutboxStatusPublished, statusA)
 	statusB, _ := statusInDB(t, h.pools["tenant_b"], evB.ID)
 	require.Equal(t, outbox.OutboxStatusPublished, statusB)
+}
+
+func TestIntegration_ModulePoolResolver_DispatchesGenericAndModuleRowsExactlyOnce(t *testing.T) {
+	harness := newPoolHarness(t,
+		[]string{"root_db", "tenant_generic", "tenant_consignado"},
+		map[string]bool{"root_db": true, "tenant_generic": true, "tenant_consignado": true},
+	)
+
+	generic := newMapPoolResolver(
+		map[string]*sql.DB{poolTenantA: harness.pools["tenant_generic"]},
+		[]string{poolTenantA},
+	)
+	module := newMapPoolResolver(
+		map[string]*sql.DB{poolTenantA: harness.pools["tenant_consignado"]},
+		nil,
+	)
+	resolver, err := NewModulePoolResolver(
+		generic,
+		poolDefaultTenant,
+		func(context.Context, string) (*tmcore.TenantConfig, error) {
+			return integrationTenantConfigWithDatabases("tenant_generic", "tenant_consignado"), nil
+		},
+		ModulePool{Name: "consignado", Resolver: module},
+	)
+	require.NoError(t, err)
+
+	repo := newPoolRepo(t, harness, resolver)
+	genericEvent := createEventForTenant(t, repo, poolTenantA, "evt.module-aware")
+	moduleEvent := createEventInPool(t, harness.pools["tenant_consignado"], poolTenantA, "evt.module-aware")
+
+	var seenMu sync.Mutex
+	seenByEvent := make(map[uuid.UUID][]string)
+	handlers := outbox.NewHandlerRegistry()
+	require.NoError(t, handlers.Register("evt.module-aware", func(ctx context.Context, event *outbox.OutboxEvent) error {
+		tenantID, ok := outbox.TenantIDFromContext(ctx)
+		require.True(t, ok)
+
+		seenMu.Lock()
+		seenByEvent[event.ID] = append(seenByEvent[event.ID], tenantID)
+		seenMu.Unlock()
+
+		return nil
+	}))
+
+	dispatcher := newPoolDispatcher(t, repo, handlers)
+	runDispatcherUntil(t, dispatcher, func() bool {
+		genericStatus, genericOK := statusInDB(t, harness.pools["tenant_generic"], genericEvent.ID)
+		moduleStatus, moduleOK := statusInDB(t, harness.pools["tenant_consignado"], moduleEvent.ID)
+
+		return genericOK && moduleOK && genericStatus == outbox.OutboxStatusPublished && moduleStatus == outbox.OutboxStatusPublished
+	})
+
+	seenMu.Lock()
+	require.Equal(t, []string{poolTenantA}, seenByEvent[genericEvent.ID])
+	require.Equal(t, []string{poolTenantA}, seenByEvent[moduleEvent.ID])
+	seenMu.Unlock()
+	require.Equal(t, 1, countInDB(t, harness.pools["tenant_generic"]))
+	require.Equal(t, 1, countInDB(t, harness.pools["tenant_consignado"]))
+}
+
+func TestIntegration_ModulePoolResolver_SharedPhysicalDatabaseScansOnce(t *testing.T) {
+	harness := newPoolHarness(t,
+		[]string{"root_db", "tenant_shared"},
+		map[string]bool{"root_db": true, "tenant_shared": true},
+	)
+
+	generic := newMapPoolResolver(
+		map[string]*sql.DB{poolTenantA: harness.pools["tenant_shared"]},
+		[]string{poolTenantA},
+	)
+	module := newMapPoolResolver(
+		map[string]*sql.DB{poolTenantA: harness.pools["tenant_shared"]},
+		nil,
+	)
+	resolver, err := NewModulePoolResolver(
+		generic,
+		poolDefaultTenant,
+		func(context.Context, string) (*tmcore.TenantConfig, error) {
+			return integrationTenantConfigWithDatabases("tenant_shared", "tenant_shared"), nil
+		},
+		ModulePool{Name: "consignado", Resolver: module},
+	)
+	require.NoError(t, err)
+
+	scopes, err := resolver.ListTenantDispatchScopes(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, []outbox.TenantDispatchScope{{TenantID: poolTenantA}}, scopes)
+
+	repo := newPoolRepo(t, harness, resolver)
+	event := createEventForTenant(t, repo, poolTenantA, "evt.shared")
+
+	var handled atomic.Int32
+	handlers := outbox.NewHandlerRegistry()
+	require.NoError(t, handlers.Register("evt.shared", func(ctx context.Context, handledEvent *outbox.OutboxEvent) error {
+		tenantID, ok := outbox.TenantIDFromContext(ctx)
+		require.True(t, ok)
+		require.Equal(t, poolTenantA, tenantID)
+		require.Equal(t, event.ID, handledEvent.ID)
+		handled.Add(1)
+
+		return nil
+	}))
+
+	dispatcher := newPoolDispatcher(t, repo, handlers)
+	runDispatcherUntil(t, dispatcher, func() bool {
+		status, ok := statusInDB(t, harness.pools["tenant_shared"], event.ID)
+
+		return ok && status == outbox.OutboxStatusPublished
+	})
+
+	require.EqualValues(t, 1, handled.Load())
+	require.Equal(t, 0, module.poolForTenantCalls(poolTenantA), "deduplicated module scope must not scan the shared pool again")
 }
 
 // ---- Test 6: fail-closed on unknown tenant ----

@@ -12,6 +12,45 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
+type scopedTenantRepoContextKey struct{}
+
+type scopedTenantRepo struct {
+	*fakeRepo
+	scopes []TenantDispatchScope
+	seen   []TenantDispatchScope
+}
+
+var _ TenantDispatchScopeRepository = (*scopedTenantRepo)(nil)
+
+func (repo *scopedTenantRepo) ListTenantDispatchScopes(context.Context) ([]TenantDispatchScope, error) {
+	return append([]TenantDispatchScope(nil), repo.scopes...), nil
+}
+
+func (repo *scopedTenantRepo) ContextForTenantDispatchScope(
+	ctx context.Context,
+	scope TenantDispatchScope,
+) context.Context {
+	ctx = context.WithValue(ctx, scopedTenantRepoContextKey{}, scope)
+
+	return ContextWithTenantID(ctx, scope.PoolKey)
+}
+
+func (repo *scopedTenantRepo) ListPending(ctx context.Context, _ int) ([]*OutboxEvent, error) {
+	scope, _ := ctx.Value(scopedTenantRepoContextKey{}).(TenantDispatchScope)
+	repo.seen = append(repo.seen, scope)
+
+	payload := scope.PoolKey
+	if payload == "" {
+		payload = "generic"
+	}
+
+	return []*OutboxEvent{{ID: uuid.New(), EventType: "payment.created", Payload: []byte(payload)}}, nil
+}
+
+func (repo *scopedTenantRepo) seenScopes() []TenantDispatchScope {
+	return append([]TenantDispatchScope(nil), repo.seen...)
+}
+
 func TestDispatcher_DispatchAcrossTenantsProcessesEachTenant(t *testing.T) {
 	t.Parallel()
 
@@ -46,6 +85,106 @@ func TestDispatcher_DispatchAcrossTenantsProcessesEachTenant(t *testing.T) {
 	require.True(t, handledTenants[tenantA])
 	require.True(t, handledTenants[tenantB])
 	require.ElementsMatch(t, []uuid.UUID{eventA, eventB}, repo.markedPub)
+}
+
+func TestDispatcher_DispatchAcrossTenantScopes_PreservesRealTenantIdentity(t *testing.T) {
+	t.Parallel()
+
+	repo := &scopedTenantRepo{
+		fakeRepo: &fakeRepo{},
+		scopes: []TenantDispatchScope{
+			{TenantID: "tenant-a"},
+			{TenantID: "tenant-a", PoolKey: "consignado"},
+		},
+	}
+	handledTenantIDs := make([]string, 0, 2)
+	handlers := NewHandlerRegistry()
+	require.NoError(t, handlers.Register("payment.created", func(ctx context.Context, _ *OutboxEvent) error {
+		tenantID, ok := TenantIDFromContext(ctx)
+		require.True(t, ok)
+		handledTenantIDs = append(handledTenantIDs, tenantID)
+
+		return nil
+	}))
+	dispatcher, err := NewDispatcher(
+		repo,
+		handlers,
+		nil,
+		noop.NewTracerProvider().Tracer("test"),
+		WithPublishMaxAttempts(1),
+	)
+	require.NoError(t, err)
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	seenScopes := repo.seenScopes()
+	require.Equal(t, repo.scopes, seenScopes)
+	require.Equal(t, []string{"tenant-a", "tenant-a"}, handledTenantIDs)
+}
+
+func TestDispatcher_DispatchAcrossTenantScopes_DeduplicatesExactScopes(t *testing.T) {
+	t.Parallel()
+
+	repo := &scopedTenantRepo{
+		fakeRepo: &fakeRepo{},
+		scopes: []TenantDispatchScope{
+			{TenantID: "tenant-a"},
+			{TenantID: "tenant-a"},
+			{TenantID: "tenant-a", PoolKey: "consignado"},
+		},
+	}
+	handlers := NewHandlerRegistry()
+	require.NoError(t, handlers.Register("payment.created", func(context.Context, *OutboxEvent) error {
+		return nil
+	}))
+	dispatcher, err := NewDispatcher(
+		repo,
+		handlers,
+		nil,
+		noop.NewTracerProvider().Tracer("test"),
+		WithPublishMaxAttempts(1),
+	)
+	require.NoError(t, err)
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	require.Equal(t, []TenantDispatchScope{
+		{TenantID: "tenant-a"},
+		{TenantID: "tenant-a", PoolKey: "consignado"},
+	}, repo.seenScopes())
+}
+
+func TestDispatcher_DispatchAcrossTenantScopes_RotatesStartingScope(t *testing.T) {
+	t.Parallel()
+
+	repo := &scopedTenantRepo{
+		fakeRepo: &fakeRepo{},
+		scopes: []TenantDispatchScope{
+			{TenantID: "tenant-a"},
+			{TenantID: "tenant-a", PoolKey: "consignado"},
+			{TenantID: "tenant-b"},
+		},
+	}
+	handlers := NewHandlerRegistry()
+	require.NoError(t, handlers.Register("payment.created", func(context.Context, *OutboxEvent) error {
+		return nil
+	}))
+	dispatcher, err := NewDispatcher(
+		repo,
+		handlers,
+		nil,
+		noop.NewTracerProvider().Tracer("test"),
+		WithPublishMaxAttempts(1),
+	)
+	require.NoError(t, err)
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	seen := repo.seenScopes()
+	require.Len(t, seen, 6)
+	require.Equal(t, TenantDispatchScope{TenantID: "tenant-a"}, seen[0])
+	require.Equal(t, TenantDispatchScope{TenantID: "tenant-a", PoolKey: "consignado"}, seen[3])
 }
 
 func TestDispatcher_DispatchAcrossTenantsRoundRobinStartingTenant(t *testing.T) {
@@ -284,11 +423,24 @@ func TestDispatcher_DispatchAcrossTenants_ListTenantsErrorDoesNotDispatch(t *tes
 	require.Empty(t, repo.markedPub)
 }
 
-func TestNonEmptyTenants_TrimWhitespaceEntries(t *testing.T) {
+func TestNormalizeTenantDispatchScopes_TrimsAndDropsEmptyEntries(t *testing.T) {
 	t.Parallel()
 
-	tenants := nonEmptyTenants([]string{"tenant-a", "   ", "\ttenant-b\n", "", "tenant-c"})
-	require.Equal(t, []string{"tenant-a", "tenant-b", "tenant-c"}, tenants)
+	require.Nil(t, normalizeTenantDispatchScopes(nil))
+
+	scopes := normalizeTenantDispatchScopes([]TenantDispatchScope{
+		{TenantID: "tenant-a"},
+		{TenantID: " tenant-a "},
+		{TenantID: "   "},
+		{TenantID: "\ttenant-b\n", PoolKey: " module "},
+		{},
+		{TenantID: "tenant-c"},
+	})
+	require.Equal(t, []TenantDispatchScope{
+		{TenantID: "tenant-a"},
+		{TenantID: "tenant-b", PoolKey: "module"},
+		{TenantID: "tenant-c"},
+	}, scopes)
 }
 
 func TestDispatcher_ClearListPendingFailureCount_ResetsFallbackForOverflowTenant(t *testing.T) {

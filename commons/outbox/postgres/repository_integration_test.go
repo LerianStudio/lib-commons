@@ -53,6 +53,7 @@ func integrationPostgresDSN(t *testing.T) (string, func()) {
 
 func newIntegrationRepoFixtureWithDSN(t *testing.T, dsn string) *integrationRepoFixture {
 	t.Helper()
+	t.Setenv("ALLOW_INSECURE_TLS", "true")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
@@ -578,6 +579,7 @@ func TestIntegration_ColumnResolver_DiscoverTenants(t *testing.T) {
 // so the idempotent conflict target is (id) within each tenant schema.
 func newSchemaModeIntegrationRepoFixture(t *testing.T, dsn string) (*integrationRepoFixture, string, string) {
 	t.Helper()
+	t.Setenv("ALLOW_INSECURE_TLS", "true")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
