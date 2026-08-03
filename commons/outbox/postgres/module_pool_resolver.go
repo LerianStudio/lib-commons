@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	observability "github.com/LerianStudio/lib-observability/v2"
@@ -372,7 +373,7 @@ func (resolver *ModulePoolResolver) logTopologyFailure(
 	err error,
 ) {
 	logger, _, _, _ := observability.NewTrackingFromContext(ctx) //nolint:dogsled // Standard tracking extraction; only logger is needed.
-	if logger == nil {
+	if nilcheck.Interface(logger) {
 		return
 	}
 
@@ -412,15 +413,23 @@ func postgresResourceIdentity(config *tmcore.PostgreSQLConfig) string {
 
 	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(config.Host)), ".")
 
-	schema := strings.ToLower(strings.TrimSpace(config.Schema))
+	// Database and schema names compare case-sensitively: PostgreSQL folds
+	// unquoted identifiers to lowercase, but quoted mixed-case names denote
+	// distinct catalog objects, so folding here could merge distinct databases.
+	schema := strings.TrimSpace(config.Schema)
 	if schema == "" {
 		schema = "public"
 	}
 
+	port := config.Port
+	if port == 0 {
+		port = 5432
+	}
+
 	return strings.Join([]string{
 		host,
-		strconv.Itoa(config.Port),
-		strings.ToLower(strings.TrimSpace(config.Database)),
+		strconv.Itoa(port),
+		strings.TrimSpace(config.Database),
 		schema,
 	}, "\x00")
 }

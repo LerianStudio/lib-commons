@@ -128,32 +128,75 @@ func TestModulePoolResolver_ListTenantDispatchScopes_DeduplicatesPhysicalDatabas
 func TestModulePoolResolver_ListTenantDispatchScopes_CanonicalizesPhysicalDatabaseIdentity(t *testing.T) {
 	t.Parallel()
 
-	generic := &modulePoolResolverStub{tenants: []string{"tenant-a"}}
-	resolver, err := NewModulePoolResolver(
-		generic,
-		"default-tenant",
-		func(context.Context, string) (*tmcore.TenantConfig, error) {
-			return &tmcore.TenantConfig{Databases: map[string]tmcore.DatabaseConfig{
-				"aaa-generic": {
-					PostgreSQL: &tmcore.PostgreSQLConfig{
-						Host: " POSTGRES.EXAMPLE.COM. ", Port: 5432, Database: " Ledger ", Schema: "",
-					},
-				},
-				"consignado": {
-					PostgreSQL: &tmcore.PostgreSQLConfig{
-						Host: "postgres.example.com", Port: 5432, Database: "ledger", Schema: " public ",
-					},
-				},
-			}}, nil
+	sharedScope := []outbox.TenantDispatchScope{{TenantID: "tenant-a"}}
+	distinctScopes := []outbox.TenantDispatchScope{
+		{TenantID: "tenant-a"},
+		{TenantID: "tenant-a", PoolKey: "consignado"},
+	}
+
+	tests := []struct {
+		name       string
+		genericPG  *tmcore.PostgreSQLConfig
+		modulePG   *tmcore.PostgreSQLConfig
+		wantScopes []outbox.TenantDispatchScope
+	}{
+		{
+			name: "host case, trailing dot, whitespace, default schema, and default port merge",
+			genericPG: &tmcore.PostgreSQLConfig{
+				Host: " POSTGRES.EXAMPLE.COM. ", Port: 0, Database: " ledger ", Schema: "",
+			},
+			modulePG: &tmcore.PostgreSQLConfig{
+				Host: "postgres.example.com", Port: 5432, Database: "ledger", Schema: " public ",
+			},
+			wantScopes: sharedScope,
 		},
-		ModulePool{Name: "consignado", Resolver: &modulePoolResolverStub{}},
-	)
-	require.NoError(t, err)
+		{
+			name: "differently cased database names stay distinct",
+			genericPG: &tmcore.PostgreSQLConfig{
+				Host: "postgres.example.com", Port: 5432, Database: "Ledger",
+			},
+			modulePG: &tmcore.PostgreSQLConfig{
+				Host: "postgres.example.com", Port: 5432, Database: "ledger",
+			},
+			wantScopes: distinctScopes,
+		},
+		{
+			name: "differently cased schemas stay distinct",
+			genericPG: &tmcore.PostgreSQLConfig{
+				Host: "postgres.example.com", Port: 5432, Database: "ledger", Schema: "Public",
+			},
+			modulePG: &tmcore.PostgreSQLConfig{
+				Host: "postgres.example.com", Port: 5432, Database: "ledger", Schema: "public",
+			},
+			wantScopes: distinctScopes,
+		},
+	}
 
-	scopes, err := resolver.ListTenantDispatchScopes(t.Context())
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.NoError(t, err)
-	assert.Equal(t, []outbox.TenantDispatchScope{{TenantID: "tenant-a"}}, scopes)
+			generic := &modulePoolResolverStub{tenants: []string{"tenant-a"}}
+			resolver, err := NewModulePoolResolver(
+				generic,
+				"default-tenant",
+				func(context.Context, string) (*tmcore.TenantConfig, error) {
+					return &tmcore.TenantConfig{Databases: map[string]tmcore.DatabaseConfig{
+						"aaa-generic": {PostgreSQL: test.genericPG},
+						"consignado":  {PostgreSQL: test.modulePG},
+					}}, nil
+				},
+				ModulePool{Name: "consignado", Resolver: &modulePoolResolverStub{}},
+			)
+			require.NoError(t, err)
+
+			scopes, err := resolver.ListTenantDispatchScopes(t.Context())
+
+			require.NoError(t, err)
+			assert.Equal(t, test.wantScopes, scopes)
+		})
+	}
 }
 
 func TestNewModulePoolResolver_Validation(t *testing.T) {

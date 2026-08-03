@@ -135,7 +135,9 @@
 // PoolKey only as opaque routing metadata. One tenant may therefore produce
 // several dispatch scopes. Generic and module resources with the same canonical
 // host, port, database, and schema produce one scope, so one physical outbox is
-// never scanned twice. Empty schema and public schema are equivalent.
+// never scanned twice. Empty schema and public schema are equivalent, as are an
+// unset port and 5432. Database and schema names compare case-sensitively
+// because quoted mixed-case PostgreSQL identifiers denote distinct objects.
 //
 // The default tenant follows the same topology loader as every other tenant, so
 // configured module pools are dispatched rather than silently reducing the

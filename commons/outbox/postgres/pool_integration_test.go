@@ -305,9 +305,24 @@ func runDispatcherUntil(t *testing.T, dispatcher *outbox.Dispatcher, done func()
 		runDone <- dispatcher.RunContext(runCtx, nil)
 	}()
 
+	// require.Eventually fails via t.FailNow, which skips the inline
+	// cancel/drain below. This cleanup stops the dispatcher and waits for it
+	// before t.Cleanup closes the harness pools, so an assertion failure is
+	// not followed by unrelated connection errors. The cleanup runs on the
+	// test goroutine, so reading drained is race-free.
+	drained := false
+	t.Cleanup(func() {
+		cancel()
+		if !drained {
+			<-runDone
+		}
+	})
+
 	require.Eventually(t, done, 10*time.Second, 20*time.Millisecond)
 	cancel()
-	require.NoError(t, <-runDone)
+	runErr := <-runDone
+	drained = true
+	require.NoError(t, runErr)
 }
 
 func newPoolDispatcher(t *testing.T, repo *Repository, handlers *outbox.HandlerRegistry) *outbox.Dispatcher {
