@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"golang.org/x/sync/errgroup"
 )
 
 const (
@@ -26,9 +27,10 @@ const (
 	localStackStartupTimeout = 2 * time.Minute
 	localStackTestTimeout    = 5 * time.Minute
 	localStackRegion         = "us-east-1"
+	concurrentCreateCount    = 8
 )
 
-func TestIntegration_RetainedStorage_CreateHeadReadAndDenyDelete(t *testing.T) {
+func TestIntegration_RetainedStorage_CreateRecoverConcurrentAndDenyDelete(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), localStackTestTimeout)
 	t.Cleanup(cancel)
 
@@ -57,7 +59,9 @@ func TestIntegration_RetainedStorage_CreateHeadReadAndDenyDelete(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, store.ValidateDefaultRetention(ctx))
 
-	retainedUntil := time.Now().UTC().AddDate(5, 0, 1)
+	retainedUntil := time.Now().UTC().AddDate(5, 0, 1).Truncate(time.Second).Add(123456789 * time.Nanosecond)
+	require.NotZero(t, retainedUntil.Nanosecond())
+	canonicalRetainedUntil := retainedUntil.Truncate(time.Second)
 	payload := []byte("signed-contract")
 	metadata, err := store.CreateRetained(
 		ctx,
@@ -69,7 +73,16 @@ func TestIntegration_RetainedStorage_CreateHeadReadAndDenyDelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, metadata.VersionID)
 	assert.Equal(t, RetentionModeCompliance, metadata.Retention.Mode)
-	assert.WithinDuration(t, retainedUntil, metadata.Retention.RetainUntil, time.Second)
+	assert.Equal(t, canonicalRetainedUntil, metadata.Retention.RetainUntil)
+
+	_, err = store.CreateRetained(
+		ctx,
+		"contracts/123/signed-ccb.pdf",
+		bytes.NewReader(payload),
+		"application/pdf",
+		Retention{Mode: RetentionModeCompliance, RetainUntil: retainedUntil},
+	)
+	require.ErrorIs(t, err, ErrObjectAlreadyExists)
 
 	_, err = store.CreateRetained(
 		ctx,
@@ -84,7 +97,7 @@ func TestIntegration_RetainedStorage_CreateHeadReadAndDenyDelete(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, metadata, statMetadata)
 	assert.Equal(t, RetentionModeCompliance, statMetadata.Retention.Mode)
-	assert.WithinDuration(t, retainedUntil, statMetadata.Retention.RetainUntil, time.Second)
+	assert.Equal(t, canonicalRetainedUntil, statMetadata.Retention.RetainUntil)
 
 	body, err := store.DownloadVersion(ctx, "contracts/123/signed-ccb.pdf", metadata.VersionID)
 	require.NoError(t, err)
@@ -93,6 +106,66 @@ func TestIntegration_RetainedStorage_CreateHeadReadAndDenyDelete(t *testing.T) {
 	downloaded, err := io.ReadAll(body)
 	require.NoError(t, err)
 	assert.Equal(t, payload, downloaded)
+
+	recoverableStore, err := NewRecoverableRetainedStorage(client, bucket)
+	require.NoError(t, err)
+	expected := ExpectedRetainedObject{
+		ContentType:   "application/pdf",
+		ContentLength: int64(len(payload)),
+		Retention: Retention{
+			Mode:        RetentionModeCompliance,
+			RetainUntil: retainedUntil,
+		},
+	}
+
+	firstWrite, err := recoverableStore.CreateOrRecoverRetained(
+		ctx,
+		"contracts/recoverable.pdf",
+		bytes.NewReader(payload),
+		expected,
+	)
+	require.NoError(t, err)
+
+	recoveredRetry, err := recoverableStore.CreateOrRecoverRetained(
+		ctx,
+		"contracts/recoverable.pdf",
+		bytes.NewReader(payload),
+		expected,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, firstWrite, recoveredRetry)
+	assert.Equal(t, firstWrite.VersionID, recoveredRetry.VersionID)
+
+	versionIDs := make(chan string, concurrentCreateCount)
+	group, concurrentCtx := errgroup.WithContext(ctx)
+	for range concurrentCreateCount {
+		group.Go(func() error {
+			created, createErr := recoverableStore.CreateOrRecoverRetained(
+				concurrentCtx,
+				"contracts/concurrent.pdf",
+				bytes.NewReader(payload),
+				expected,
+			)
+			if createErr != nil {
+				return createErr
+			}
+
+			versionIDs <- created.VersionID
+
+			return nil
+		})
+	}
+	require.NoError(t, group.Wait())
+	close(versionIDs)
+
+	var concurrentVersionID string
+	for versionID := range versionIDs {
+		assert.NotEmpty(t, versionID)
+		if concurrentVersionID == "" {
+			concurrentVersionID = versionID
+		}
+		assert.Equal(t, concurrentVersionID, versionID)
+	}
 
 	_, err = client.DeleteObject(ctx, &awss3.DeleteObjectInput{
 		Bucket:    aws.String(bucket),
