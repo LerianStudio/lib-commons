@@ -270,6 +270,8 @@ func TestRecoverableRetainedStorage_CreateOrRecoverRetained_CreatesOrReturnsExac
 		ctx                       context.Context
 		fake                      *fakeRetainedObjectAPI
 		wantListCallCount         int
+		wantKeyMarker             string
+		wantVersionIDMarker       string
 		wantRecoveryContextActive bool
 	}{
 		{
@@ -348,7 +350,9 @@ func TestRecoverableRetainedStorage_CreateOrRecoverRetained_CreatesOrReturnsExac
 				},
 				headOutput: retainedHeadOutput("version-existing", expected.ContentType, expected.ContentLength, canonicalRetainUntil),
 			},
-			wantListCallCount: 2,
+			wantListCallCount:   2,
+			wantKeyMarker:       "artifact",
+			wantVersionIDMarker: "version-existing",
 		},
 	}
 
@@ -382,6 +386,8 @@ func TestRecoverableRetainedStorage_CreateOrRecoverRetained_CreatesOrReturnsExac
 			if test.wantListCallCount > 0 {
 				require.NotNil(t, test.fake.listInput)
 				assert.Equal(t, "artifact", aws.ToString(test.fake.listInput.Prefix))
+				assert.Equal(t, test.wantKeyMarker, aws.ToString(test.fake.listInput.KeyMarker))
+				assert.Equal(t, test.wantVersionIDMarker, aws.ToString(test.fake.listInput.VersionIdMarker))
 			}
 			if test.wantRecoveryContextActive {
 				assert.NoError(t, test.fake.listContextErr)

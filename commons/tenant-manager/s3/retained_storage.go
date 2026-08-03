@@ -328,37 +328,12 @@ func (s *recoverableRetainedStorage) recoverRetainedVersion(ctx context.Context,
 			return ObjectMetadata{}, ErrRetainedVersionAmbiguous
 		}
 
-		passedKey := false
-
-		for _, version := range output.Versions {
-			key := aws.ToString(version.Key)
-			if key > resolvedKey {
-				passedKey = true
-				break
-			}
-
-			if key != resolvedKey {
-				continue
-			}
-
-			if versionID != "" || !aws.ToBool(version.IsLatest) || aws.ToString(version.VersionId) == "" {
-				return ObjectMetadata{}, ErrRetainedVersionAmbiguous
-			}
-
-			versionID = aws.ToString(version.VersionId)
+		pageVersionID, passedKey, scanErr := scanRetainedVersionPage(output, resolvedKey, versionID)
+		if scanErr != nil {
+			return ObjectMetadata{}, scanErr
 		}
 
-		for _, marker := range output.DeleteMarkers {
-			key := aws.ToString(marker.Key)
-			if key > resolvedKey {
-				passedKey = true
-				continue
-			}
-
-			if key == resolvedKey && aws.ToBool(marker.IsLatest) {
-				return ObjectMetadata{}, ErrRetainedVersionAmbiguous
-			}
-		}
+		versionID = pageVersionID
 
 		if passedKey || !aws.ToBool(output.IsTruncated) {
 			break
@@ -377,6 +352,50 @@ func (s *recoverableRetainedStorage) recoverRetainedVersion(ctx context.Context,
 	}
 
 	return s.statResolvedVersion(ctx, "stat", resolvedKey, versionID)
+}
+
+// scanRetainedVersionPage evaluates one versions-listing page for resolvedKey.
+// It returns the accumulated exact-key version ID and whether the sorted
+// listing already passed resolvedKey.
+func scanRetainedVersionPage(
+	output *awss3.ListObjectVersionsOutput,
+	resolvedKey, versionID string,
+) (string, bool, error) {
+	passedKey := false
+
+	for _, version := range output.Versions {
+		key := aws.ToString(version.Key)
+		if key > resolvedKey {
+			passedKey = true
+
+			break
+		}
+
+		if key != resolvedKey {
+			continue
+		}
+
+		if versionID != "" || !aws.ToBool(version.IsLatest) || aws.ToString(version.VersionId) == "" {
+			return "", false, ErrRetainedVersionAmbiguous
+		}
+
+		versionID = aws.ToString(version.VersionId)
+	}
+
+	for _, marker := range output.DeleteMarkers {
+		key := aws.ToString(marker.Key)
+		if key > resolvedKey {
+			passedKey = true
+
+			continue
+		}
+
+		if key == resolvedKey && aws.ToBool(marker.IsLatest) {
+			return "", false, ErrRetainedVersionAmbiguous
+		}
+	}
+
+	return versionID, passedKey, nil
 }
 
 // bufferExpectedRetainedBody rejects a body whose length differs from the
