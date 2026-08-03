@@ -99,7 +99,7 @@ The former `commons/opentelemetry`, `commons/opentelemetry/metrics`, `commons/op
 - `commons/tenant-manager/postgres`: tenant-scoped PostgreSQL connection manager with LRU eviction, async settings revalidation, pool controls, and `Module()` for canonical lifecycle routing (`""` identifies the generic resource)
 - `commons/tenant-manager/mongo`: tenant-scoped MongoDB connection manager with LRU eviction and idle-timeout controls
 - `commons/tenant-manager/rabbitmq`: tenant-scoped RabbitMQ connection manager with soft connection-pool limits and eviction
-- `commons/tenant-manager/s3`: tenant-prefixed S3/object-storage key helpers with delimiter validation
+- `commons/tenant-manager/s3`: tenant-prefixed S3/object storage. `NewStorage` preserves the general upload/create/download/delete/list API. `NewRetainedStorage` adds immutable version custody: `CreateRetained` performs an atomic `If-None-Match: *` write with explicit COMPLIANCE retention and returns exact-version metadata; `DownloadVersion` and `StatVersion` require a `VersionID`; `ValidateDefaultRetention` fails closed unless Object Lock is enabled with COMPLIANCE retention of at least five years (`Years >= 5` or `Days >= 1827`). The retained surface exposes no delete or retention-bypass operation.
 - `commons/tenant-manager/valkey`: tenant-prefixed Redis/Valkey key and pattern helpers with delimiter validation
 
 ### Build and shell

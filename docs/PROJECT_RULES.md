@@ -65,7 +65,7 @@ lib-commons/
 │   │   ├── postgres/               # PostgreSQL tenant manager
 │   │   ├── rabbitmq/               # RabbitMQ tenant manager
 │   │   ├── redis/                  # Redis tenant client
-│   │   ├── s3/                     # S3 object storage for tenant provisioning scripts
+│   │   ├── s3/                     # Tenant-scoped S3 storage and retained object versions
 │   │   ├── tenantcache/            # Tenant cache and loader
 │   │   └── valkey/                 # Valkey/Redis key patterns
 │   ├── transaction/                # Typed transaction validation/posting primitives
@@ -580,6 +580,7 @@ Extracted observability, systemplane, and streaming packages are not lib-commons
 | `outbox/mongo` | Mongo repository supports row-scoped tenant field storage by default and optional tenant Mongo database dispatch via `WithModule` plus `WithTenantDatabaseResolver`; module-scoped repositories fail closed with `ErrTenantDatabaseRequired` when no tenant database can be resolved. |
 | `outbox/postgres` | Postgres repository supports schema-per-tenant and column-per-tenant strategies; column tenant isolation uses parameterized tenant filters and composite `(tenant_id, id)` semantics. |
 | `tenant-manager/event` | `WithPostgresManagers` and `WithMongoManagers` register deduplicated module-manager fan-out while singular manager options remain supported. Removal closes every registered pool; connection-setting updates route only to the PostgreSQL manager whose `Module()` matches the event payload. |
+| `tenant-manager/s3` | Existing `Storage` and `NewStorage` behavior remains unchanged. `RetainedStorage` is additive: `CreateRetained` uses `IfNoneMatch: "*"`, COMPLIANCE Object Lock, and an explicit UTC retain-until time; a successful create requires and returns a non-empty `VersionID` plus immutable metadata. `DownloadVersion` and `StatVersion` always pass the exact version ID. `ValidateDefaultRetention` fails closed unless Object Lock is enabled with COMPLIANCE mode and `Years >= 5` or `Days >= 1827`. The retained API exposes no delete or governance-bypass operation. |
 
 ---
 
