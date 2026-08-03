@@ -18,7 +18,10 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-const minimumDefaultRetentionDays int32 = 1827
+const (
+	minimumDefaultRetentionDays  int32 = 1827
+	minimumDefaultRetentionYears int32 = 5
+)
 
 // RetentionMode identifies the immutable retention mode applied to an object version.
 type RetentionMode string
@@ -80,7 +83,8 @@ type RetainedStorage interface {
 	ValidateDefaultRetention(ctx context.Context) error
 }
 
-type retainedObjectAPI interface {
+// RetainedObjectAPI is the narrow S3 API required by RetainedStorage.
+type RetainedObjectAPI interface {
 	PutObject(ctx context.Context, params *awss3.PutObjectInput, optFns ...func(*awss3.Options)) (*awss3.PutObjectOutput, error)
 	GetObject(ctx context.Context, params *awss3.GetObjectInput, optFns ...func(*awss3.Options)) (*awss3.GetObjectOutput, error)
 	HeadObject(ctx context.Context, params *awss3.HeadObjectInput, optFns ...func(*awss3.Options)) (*awss3.HeadObjectOutput, error)
@@ -88,12 +92,12 @@ type retainedObjectAPI interface {
 }
 
 type retainedStorage struct {
-	client retainedObjectAPI
+	client RetainedObjectAPI
 	bucket string
 }
 
 // NewRetainedStorage constructs a tenant-scoped retained storage over a narrow S3 object API.
-func NewRetainedStorage(client retainedObjectAPI, bucket string) (RetainedStorage, error) {
+func NewRetainedStorage(client RetainedObjectAPI, bucket string) (RetainedStorage, error) {
 	if isNilRetainedObjectAPI(client) {
 		return nil, errors.New("s3 client must not be nil")
 	}
@@ -281,34 +285,24 @@ func (s *retainedStorage) ValidateDefaultRetention(ctx context.Context) error {
 		return ErrRetentionNotCompliance
 	}
 
-	if !validDefaultRetentionPeriod(defaultRetention) {
-		return defaultRetentionPeriodError(defaultRetention)
-	}
-
-	return nil
+	return checkDefaultRetentionPeriod(defaultRetention)
 }
 
-func validDefaultRetentionPeriod(retention *s3types.DefaultRetention) bool {
-	if (retention.Years == nil) == (retention.Days == nil) {
-		return false
-	}
-
-	if retention.Years != nil {
-		return *retention.Years >= 5
-	}
-
-	return *retention.Days >= minimumDefaultRetentionDays
-}
-
-func defaultRetentionPeriodError(retention *s3types.DefaultRetention) error {
-	if (retention.Years == nil) == (retention.Days == nil) {
+// checkDefaultRetentionPeriod requires exactly one period unit of at least five years.
+func checkDefaultRetentionPeriod(retention *s3types.DefaultRetention) error {
+	switch {
+	case (retention.Years == nil) == (retention.Days == nil):
 		return ErrDefaultRetentionRequired
+	case retention.Years != nil && *retention.Years < minimumDefaultRetentionYears:
+		return ErrRetentionTooShort
+	case retention.Days != nil && *retention.Days < minimumDefaultRetentionDays:
+		return ErrRetentionTooShort
+	default:
+		return nil
 	}
-
-	return ErrRetentionTooShort
 }
 
-func isNilRetainedObjectAPI(value retainedObjectAPI) bool {
+func isNilRetainedObjectAPI(value RetainedObjectAPI) bool {
 	if value == nil {
 		return true
 	}

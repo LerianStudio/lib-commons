@@ -221,6 +221,7 @@ func TestRetainedStorage_DownloadVersion_MapsErrorsAndRejectsMissingVersion(t *t
 	}{
 		{name: "missing version", fake: &fakeRetainedObjectAPI{}, wantErr: ErrVersionIDRequired},
 		{name: "not found", fake: &fakeRetainedObjectAPI{getErr: &s3types.NoSuchKey{}}, versionID: "missing-version", wantErr: ErrObjectNotFound},
+		{name: "no such version", fake: &fakeRetainedObjectAPI{getErr: &smithy.GenericAPIError{Code: "NoSuchVersion", Message: "version does not exist"}}, versionID: "missing-version", wantErr: ErrObjectNotFound},
 		{name: "nil body", fake: &fakeRetainedObjectAPI{getOutput: &awss3.GetObjectOutput{}}, versionID: "version-1", wantErr: ErrVersionMetadataRequired},
 	}
 
@@ -281,6 +282,7 @@ func TestRetainedStorage_StatVersion_FailsClosedOnMissingOrWrongVersionMetadata(
 		wantErr   error
 	}{
 		{name: "missing requested version", fake: &fakeRetainedObjectAPI{}, wantErr: ErrVersionIDRequired},
+		{name: "head not found", fake: &fakeRetainedObjectAPI{headErr: &s3types.NotFound{}}, versionID: "version-1", wantErr: ErrObjectNotFound},
 		{name: "missing response", fake: &fakeRetainedObjectAPI{}, versionID: "version-1", wantErr: ErrVersionMetadataRequired},
 		{name: "missing response version", fake: &fakeRetainedObjectAPI{headOutput: &awss3.HeadObjectOutput{ObjectLockMode: s3types.ObjectLockModeCompliance, ObjectLockRetainUntilDate: &retainUntil}}, versionID: "version-1", wantErr: ErrVersionIDRequired},
 		{name: "different response version", fake: &fakeRetainedObjectAPI{headOutput: &awss3.HeadObjectOutput{VersionId: aws.String("version-2"), ObjectLockMode: s3types.ObjectLockModeCompliance, ObjectLockRetainUntilDate: &retainUntil}}, versionID: "version-1", wantErr: ErrVersionIDMismatch},
@@ -315,12 +317,15 @@ func TestRetainedStorage_ValidateDefaultRetention_RequiresFiveYearComplianceLock
 	yearsFive := int32(5)
 	daysShort := int32(1826)
 	daysMinimum := int32(1827)
+	lockLookupErr := &smithy.GenericAPIError{Code: "ObjectLockConfigurationNotFoundError", Message: "object lock configuration does not exist"}
 	tests := []struct {
 		name    string
 		output  *awss3.GetObjectLockConfigurationOutput
+		lockErr error
 		wantErr error
 	}{
 		{name: "missing response", wantErr: ErrObjectLockConfigurationRequired},
+		{name: "configuration lookup fails", lockErr: lockLookupErr, wantErr: lockLookupErr},
 		{name: "missing configuration", output: &awss3.GetObjectLockConfigurationOutput{}, wantErr: ErrObjectLockConfigurationRequired},
 		{name: "object lock disabled", output: lockConfiguration(disabled, compliance, &yearsFive, nil), wantErr: ErrObjectLockNotEnabled},
 		{name: "missing rule", output: &awss3.GetObjectLockConfigurationOutput{ObjectLockConfiguration: &s3types.ObjectLockConfiguration{ObjectLockEnabled: enabled}}, wantErr: ErrDefaultRetentionRequired},
@@ -339,7 +344,7 @@ func TestRetainedStorage_ValidateDefaultRetention_RequiresFiveYearComplianceLock
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			fake := &fakeRetainedObjectAPI{lockOutput: test.output}
+			fake := &fakeRetainedObjectAPI{lockOutput: test.output, lockErr: test.lockErr}
 			store, err := NewRetainedStorage(fake, "  retained-bucket  ")
 			require.NoError(t, err)
 

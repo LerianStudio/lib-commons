@@ -24,14 +24,15 @@ const (
 	localStackImage          = "localstack/localstack:3.8.1@sha256:b279c01f4cfb8f985a482e4014cabc1e2697b9d7a6c8c8db2e40f4d9f93687c7"
 	localStackEdgePort       = "4566/tcp"
 	localStackStartupTimeout = 2 * time.Minute
+	localStackTestTimeout    = 5 * time.Minute
 	localStackRegion         = "us-east-1"
 )
 
 func TestIntegration_RetainedStorage_CreateHeadReadAndDenyDelete(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), localStackStartupTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), localStackTestTimeout)
 	t.Cleanup(cancel)
 
-	client := setupRetainedStorageLocalStack(t, ctx)
+	client := setupRetainedStorageLocalStack(ctx, t)
 	bucket := "retained-storage-test"
 	_, err := client.CreateBucket(ctx, &awss3.CreateBucketInput{
 		Bucket:                     aws.String(bucket),
@@ -70,6 +71,15 @@ func TestIntegration_RetainedStorage_CreateHeadReadAndDenyDelete(t *testing.T) {
 	assert.Equal(t, RetentionModeCompliance, metadata.Retention.Mode)
 	assert.WithinDuration(t, retainedUntil, metadata.Retention.RetainUntil, time.Second)
 
+	_, err = store.CreateRetained(
+		ctx,
+		"contracts/123/signed-ccb.pdf",
+		bytes.NewReader(payload),
+		"application/pdf",
+		Retention{Mode: RetentionModeCompliance, RetainUntil: retainedUntil},
+	)
+	require.ErrorIs(t, err, ErrObjectAlreadyExists)
+
 	statMetadata, err := store.StatVersion(ctx, "contracts/123/signed-ccb.pdf", metadata.VersionID)
 	require.NoError(t, err)
 	assert.Equal(t, metadata, statMetadata)
@@ -96,7 +106,7 @@ func TestIntegration_RetainedStorage_CreateHeadReadAndDenyDelete(t *testing.T) {
 	assert.Contains(t, []string{"AccessDenied", "InvalidRequest"}, apiErr.ErrorCode())
 }
 
-func setupRetainedStorageLocalStack(t *testing.T, ctx context.Context) *awss3.Client {
+func setupRetainedStorageLocalStack(ctx context.Context, t *testing.T) *awss3.Client {
 	t.Helper()
 
 	container, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{

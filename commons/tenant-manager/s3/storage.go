@@ -319,7 +319,8 @@ func (s *storage) List(ctx context.Context, prefix string) ([]string, error) {
 // isNotFound reports whether err represents an S3 "object does not exist"
 // condition. It matches the typed not-found errors (NoSuchKey from GetObject,
 // NotFound from HeadObject) as well as the generic smithy APIError codes the
-// SDK surfaces for the same conditions.
+// SDK surfaces for the same conditions, including NoSuchVersion for
+// version-addressed reads of a missing object version.
 func isNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -338,7 +339,7 @@ func isNotFound(err error) bool {
 	var apiErr smithy.APIError
 	if errors.As(err, &apiErr) {
 		switch apiErr.ErrorCode() {
-		case "NoSuchKey", "NotFound":
+		case "NoSuchKey", "NotFound", "NoSuchVersion":
 			return true
 		}
 	}
