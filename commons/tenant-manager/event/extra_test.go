@@ -166,30 +166,33 @@ func TestMatchesService(t *testing.T) {
 
 	t.Run("empty payload returns false without error", func(t *testing.T) {
 		evt := TenantLifecycleEvent{Payload: nil}
-		matched, err := d.matchesService(evt)
+		matched, received, err := d.matchesService(evt)
 		require.NoError(t, err)
 		assert.False(t, matched)
+		assert.Empty(t, received)
 	})
 
 	t.Run("matching service name returns true", func(t *testing.T) {
 		payload, _ := json.Marshal(map[string]string{"service_name": testServiceName})
 		evt := TenantLifecycleEvent{Payload: payload}
-		matched, err := d.matchesService(evt)
+		matched, received, err := d.matchesService(evt)
 		require.NoError(t, err)
 		assert.True(t, matched)
+		assert.Equal(t, testServiceName, received)
 	})
 
 	t.Run("non-matching service name returns false", func(t *testing.T) {
 		payload, _ := json.Marshal(map[string]string{"service_name": "other-service"})
 		evt := TenantLifecycleEvent{Payload: payload}
-		matched, err := d.matchesService(evt)
+		matched, received, err := d.matchesService(evt)
 		require.NoError(t, err)
 		assert.False(t, matched)
+		assert.Equal(t, "other-service", received)
 	})
 
 	t.Run("invalid JSON payload returns error", func(t *testing.T) {
 		evt := TenantLifecycleEvent{Payload: json.RawMessage(`not-json`)}
-		_, err := d.matchesService(evt)
+		_, _, err := d.matchesService(evt)
 		require.Error(t, err)
 	})
 }

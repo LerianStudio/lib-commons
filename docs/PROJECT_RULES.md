@@ -65,7 +65,7 @@ lib-commons/
 │   │   ├── postgres/               # PostgreSQL tenant manager
 │   │   ├── rabbitmq/               # RabbitMQ tenant manager
 │   │   ├── redis/                  # Redis tenant client
-│   │   ├── s3/                     # S3 object storage for tenant provisioning scripts
+│   │   ├── s3/                     # Tenant-scoped S3 storage and retained object versions
 │   │   ├── tenantcache/            # Tenant cache and loader
 │   │   └── valkey/                 # Valkey/Redis key patterns
 │   ├── transaction/                # Typed transaction validation/posting primitives
@@ -576,8 +576,11 @@ Extracted observability, systemplane, and streaming packages are not lib-commons
 | `webhook` | `EndpointLister` interface: `ListActiveEndpoints(ctx) ([]Endpoint, error)`. `DeliveryMetrics` interface: `RecordDelivery(ctx, endpointID, success, statusCode, attempts)`. |
 | `outbox` | `OutboxRepository` contract: `Create`, `CreateWithTx`, `ListPending`, `ListPendingByType`, `ListTenants`, `GetByID`, `MarkPublished`, `MarkFailed`, `ListFailedForRetry`, `ResetForRetry`, `ResetStuckProcessing`, `MarkInvalid`. |
 | `outbox` | Tenant-aware repositories validate tenant IDs with `tenant-manager/core.IsValidTenantID` and return `ErrInvalidTenantID` for invalid IDs; tenant discovery must not return malformed tenant IDs. |
+| `outbox` | Empty dispatch scopes use `ColdDispatchInterval` (default one minute); active/recent scopes retain `DispatchInterval`, and newly committed/retryable/stuck work is discovered within the cold interval. Module-aware PostgreSQL topology refresh is independently cached at a one-minute default cadence, concurrent refreshes coalesce, and services with a custom cold interval align it through `NewModulePoolResolverWithConfig`. Lifecycle additions/topology changes call `InvalidateTopology`; removals/suspensions call `EvictTenant`. Last-known-good topology remains available under the existing fail-open contract, but failures are retried every interval and failed first ownership lookups are never made permanent. |
 | `outbox/mongo` | Mongo repository supports row-scoped tenant field storage by default and optional tenant Mongo database dispatch via `WithModule` plus `WithTenantDatabaseResolver`; module-scoped repositories fail closed with `ErrTenantDatabaseRequired` when no tenant database can be resolved. |
 | `outbox/postgres` | Postgres repository supports schema-per-tenant and column-per-tenant strategies; column tenant isolation uses parameterized tenant filters and composite `(tenant_id, id)` semantics. |
+| `tenant-manager/event` | `WithPostgresManagers` and `WithMongoManagers` register deduplicated module-manager fan-out while singular manager options remain supported. Removal closes every registered pool; connection-setting updates route only to the PostgreSQL manager whose `Module()` matches the event payload. |
+| `tenant-manager/s3` | Existing `Storage` and `NewStorage` behavior remains unchanged. `RetainedStorage` is additive: `CreateRetained` uses `IfNoneMatch: "*"`, COMPLIANCE Object Lock, and a retain-until time canonicalized to S3's whole-second UTC precision; a successful create requires and returns a non-empty `VersionID` plus immutable metadata. `RecoverableRetainedStorage` is a separate additive interface and constructor: after `ErrObjectAlreadyExists` or an ambiguous PUT timeout, it may resolve with `ListObjectVersions` only when one exact-key version is sole/latest, has a non-empty exact `VersionID`, has no latest delete marker, remains under COMPLIANCE retention, and exactly matches caller-expected content type, length, and canonical retain-until. Recovery uses a detached bounded context because the original timeout is already expired; missing `s3:ListBucketVersions`, truncated/empty/ambiguous results, or metadata drift fail closed. Payload digest verification remains with the caller. `DownloadVersion` and `StatVersion` always pass the exact version ID. `ValidateDefaultRetention` fails closed unless Object Lock is enabled with COMPLIANCE mode and `Years >= 5` or `Days >= 1827`. The retained APIs expose no delete or governance-bypass operation. |
 
 ---
 

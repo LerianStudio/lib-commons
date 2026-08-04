@@ -37,6 +37,27 @@ type TenantDiscoverer interface {
 	DiscoverTenants(ctx context.Context) ([]string, error)
 }
 
+// TenantDispatchScope identifies one physical outbox database to scan while
+// preserving the owning tenant's real identity. TenantID is required and is the
+// only identity exposed to handlers and telemetry. PoolKey is optional, opaque
+// repository routing metadata; an empty PoolKey selects the legacy/default pool.
+// Exact duplicate scopes are dispatched once per cycle.
+type TenantDispatchScope struct {
+	TenantID string
+	PoolKey  string
+}
+
+// TenantDispatchScopeRepository optionally exposes more than one physical
+// outbox database for a tenant. Dispatcher implementations use TenantID for
+// identity and ContextForTenantDispatchScope only for repository-internal pool
+// routing. ContextForTenantDispatchScope must preserve the parent context and
+// return a non-nil context. Repositories that do not implement this interface
+// retain the ListTenants behavior unchanged.
+type TenantDispatchScopeRepository interface {
+	ListTenantDispatchScopes(ctx context.Context) ([]TenantDispatchScope, error)
+	ContextForTenantDispatchScope(ctx context.Context, scope TenantDispatchScope) context.Context
+}
+
 // ContextWithTenantID returns a context carrying tenantID.
 //
 // If the tenant ID contains leading or trailing whitespace, it is trimmed

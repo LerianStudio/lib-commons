@@ -7,8 +7,10 @@ package event
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
+	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	tmmongo "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/rabbitmq"
@@ -27,6 +29,16 @@ const maxJitterMillis = 5000
 // defaultCacheTTL is the default TTL for tenant cache entries when no TTL is configured.
 const defaultCacheTTL = 12 * time.Hour
 
+type tenantConnectionCloser interface {
+	CloseConnection(ctx context.Context, tenantID string) error
+}
+
+type postgresLifecycleManager interface {
+	tenantConnectionCloser
+	Module() string
+	ApplyConnectionSettings(tenantID string, config *tmcore.TenantConfig)
+}
+
 // EventDispatcher handles tenant lifecycle events independently of the consumer.
 // It manages cache operations, infrastructure connection teardown, and notifies
 // the consumer via callbacks when tenants are added or removed.
@@ -42,6 +54,9 @@ type EventDispatcher struct {
 	mongo    *tmmongo.Manager
 	rabbitmq *tmrabbitmq.Manager
 
+	postgresManagers []postgresLifecycleManager
+	mongoManagers    []tenantConnectionCloser
+
 	// Callbacks for consumer coordination.
 	onTenantAdded   func(ctx context.Context, tenantID string)
 	onTenantRemoved func(ctx context.Context, tenantID string)
@@ -56,12 +71,37 @@ type DispatcherOption func(*EventDispatcher)
 
 // WithPostgres sets the postgres Manager on the dispatcher.
 func WithPostgres(p *tmpostgres.Manager) DispatcherOption {
-	return func(d *EventDispatcher) { d.postgres = p }
+	return func(d *EventDispatcher) {
+		d.postgres = p
+		d.postgresManagers = nil
+		d.addPostgresManagers(p)
+	}
+}
+
+// WithPostgresManagers registers every module-scoped PostgreSQL manager for
+// tenant lifecycle connection cleanup and runtime connection-setting updates.
+// Nil and duplicate managers are ignored.
+func WithPostgresManagers(managers ...*tmpostgres.Manager) DispatcherOption {
+	return func(dispatcher *EventDispatcher) {
+		dispatcher.addPostgresManagers(managers...)
+	}
 }
 
 // WithMongo sets the mongo Manager on the dispatcher.
 func WithMongo(m *tmmongo.Manager) DispatcherOption {
-	return func(d *EventDispatcher) { d.mongo = m }
+	return func(d *EventDispatcher) {
+		d.mongo = m
+		d.mongoManagers = nil
+		d.addMongoManagers(m)
+	}
+}
+
+// WithMongoManagers registers every module-scoped MongoDB manager for tenant
+// lifecycle connection cleanup. Nil and duplicate managers are ignored.
+func WithMongoManagers(managers ...*tmmongo.Manager) DispatcherOption {
+	return func(dispatcher *EventDispatcher) {
+		dispatcher.addMongoManagers(managers...)
+	}
 }
 
 // WithRabbitMQ sets the rabbitmq Manager on the dispatcher.
@@ -147,6 +187,50 @@ func NewEventDispatcher(
 	return d
 }
 
+func (d *EventDispatcher) addPostgresManagers(managers ...*tmpostgres.Manager) {
+	for _, manager := range managers {
+		if manager == nil {
+			continue
+		}
+
+		if d.postgres == nil {
+			d.postgres = manager
+		}
+
+		if containsPostgresLifecycleManager(d.postgresManagers, manager) {
+			continue
+		}
+
+		d.postgresManagers = append(d.postgresManagers, manager)
+	}
+}
+
+func (d *EventDispatcher) addMongoManagers(managers ...*tmmongo.Manager) {
+	for _, manager := range managers {
+		if manager == nil {
+			continue
+		}
+
+		if d.mongo == nil {
+			d.mongo = manager
+		}
+
+		if containsTenantConnectionCloser(d.mongoManagers, manager) {
+			continue
+		}
+
+		d.mongoManagers = append(d.mongoManagers, manager)
+	}
+}
+
+func containsPostgresLifecycleManager(managers []postgresLifecycleManager, target postgresLifecycleManager) bool {
+	return slices.Contains(managers, target)
+}
+
+func containsTenantConnectionCloser(managers []tenantConnectionCloser, target tenantConnectionCloser) bool {
+	return slices.Contains(managers, target)
+}
+
 // HandleEvent dispatches a tenant lifecycle event to the appropriate handler based
 // on the event type. Service-level events are filtered by service name before
 // dispatch. Unknown event types are logged as warnings and skipped (no error returned).
@@ -168,16 +252,14 @@ func (d *EventDispatcher) HandleEvent(ctx context.Context, evt TenantLifecycleEv
 
 	// Service-level events: filter by service name before dispatching.
 	if isServiceScopedEvent(evt.EventType) {
-		match, err := d.matchesService(evt)
+		match, received, err := d.matchesService(evt)
 		if err != nil {
 			libOpentelemetry.HandleSpanError(span, "failed to unmarshal service event payload", err)
 			return fmt.Errorf("HandleEvent: failed to unmarshal payload for %s: %w", evt.EventType, err)
 		}
 
 		if !match {
-			logger.Base().Log(ctx, libLog.LevelDebug, "skipping event: service mismatch",
-				libLog.String("event_type", evt.EventType),
-				libLog.String("tenant_id", evt.TenantID))
+			d.logServiceMismatch(ctx, evt, received, logger)
 
 			return nil
 		}

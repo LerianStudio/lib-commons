@@ -30,6 +30,11 @@ type tenantRequirementReporter interface {
 	RequiresTenant() bool
 }
 
+type dispatchScopeActivity struct {
+	lastWorkAt time.Time
+	nextPollAt time.Time
+}
+
 // Dispatcher handles publishing outbox events through registered handlers.
 type Dispatcher struct {
 	repo            OutboxRepository
@@ -43,6 +48,9 @@ type Dispatcher struct {
 	failureCountsMu          sync.Mutex
 	tenantMetricKeys         map[string]struct{}
 	tenantMetricMu           sync.Mutex
+	scopeActivity            map[TenantDispatchScope]dispatchScopeActivity
+	scopeActivityMu          sync.Mutex
+	now                      func() time.Time
 
 	stop       chan struct{}
 	stopOnce   sync.Once
@@ -97,7 +105,11 @@ func NewDispatcher(
 		cfg:                      DefaultDispatcherConfig(),
 		listPendingFailureCounts: make(map[string]int),
 		tenantMetricKeys:         make(map[string]struct{}),
-		stop:                     make(chan struct{}),
+		scopeActivity:            make(map[TenantDispatchScope]dispatchScopeActivity),
+		now: func() time.Time {
+			return time.Now().UTC()
+		},
+		stop: make(chan struct{}),
 	}
 
 	for _, opt := range opts {
@@ -156,6 +168,8 @@ func (dispatcher *Dispatcher) RunContext(parentCtx context.Context, launcher *li
 
 		return ErrOutboxDispatcherRunning
 	}
+
+	dispatcher.resetScopePollSchedule()
 
 	defer dispatcher.clearRun()
 
@@ -505,7 +519,7 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 	ctx, span := tracer.Start(ctx, "outbox.dispatcher.tenants")
 	defer span.End()
 
-	tenants, err := dispatcher.repo.ListTenants(ctx)
+	scopes, scopedRepo, err := dispatcher.listTenantDispatchScopes(ctx)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list tenants", err)
 		libLog.SafeError(logger, ctx, "failed to list tenants", err, false)
@@ -513,24 +527,40 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 		return
 	}
 
-	orderedTenants := dispatcher.tenantDispatchOrder(nonEmptyTenants(tenants))
-	if len(orderedTenants) == 0 {
+	normalizedScopes := normalizeTenantDispatchScopes(scopes)
+	dispatcher.reconcileScopeActivity(normalizedScopes)
+
+	orderedScopes := dispatcher.tenantDispatchScopeOrder(normalizedScopes)
+	if len(orderedScopes) == 0 {
 		dispatcher.dispatchWithoutDiscoveredTenant(ctx, tracer)
 
 		return
 	}
 
-	for _, tenantID := range orderedTenants {
+	for _, scope := range orderedScopes {
 		if ctx.Err() != nil {
 			break
 		}
 
-		tenantCtx := ContextWithTenantID(ctx, tenantID)
+		now := dispatcher.currentTime()
+		if !dispatcher.shouldDispatchScope(scope, now) {
+			continue
+		}
+
+		tenantCtx := ctx
+		if scopedRepo != nil {
+			tenantCtx = scopedRepo.ContextForTenantDispatchScope(tenantCtx, scope)
+		}
+
+		// Stamp the authoritative identity last so repository-internal routing
+		// metadata cannot replace the real tenant in handlers or telemetry.
+		tenantCtx = ContextWithTenantID(tenantCtx, scope.TenantID)
 		tenantCtx, tenantSpan := tracer.Start(tenantCtx, "outbox.dispatcher.tenant")
 		result := dispatcher.DispatchOnceResult(tenantCtx)
+		dispatcher.recordScopeActivity(scope, result, now)
 		// Keep tenant trace correlation without exposing raw tenant identifiers.
 		tenantSpan.SetAttributes(
-			attribute.String("tenant.id_hash", hashTenantID(tenantID)),
+			attribute.String("tenant.id_hash", hashTenantID(scope.TenantID)),
 			attribute.Int("outbox.dispatch.processed", result.Processed),
 			attribute.Int("outbox.dispatch.published", result.Published),
 			attribute.Int("outbox.dispatch.failed", result.Failed),
@@ -539,6 +569,99 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 
 		tenantSpan.End()
 	}
+}
+
+func (dispatcher *Dispatcher) currentTime() time.Time {
+	if dispatcher.now == nil {
+		return time.Now().UTC()
+	}
+
+	return dispatcher.now().UTC()
+}
+
+func (dispatcher *Dispatcher) shouldDispatchScope(scope TenantDispatchScope, now time.Time) bool {
+	dispatcher.scopeActivityMu.Lock()
+	defer dispatcher.scopeActivityMu.Unlock()
+
+	activity, ok := dispatcher.scopeActivity[scope]
+	if !ok {
+		return true
+	}
+
+	return !now.Before(activity.nextPollAt)
+}
+
+func (dispatcher *Dispatcher) recordScopeActivity(
+	scope TenantDispatchScope,
+	result DispatchResult,
+	now time.Time,
+) {
+	dispatcher.scopeActivityMu.Lock()
+	defer dispatcher.scopeActivityMu.Unlock()
+
+	activity := dispatcher.scopeActivity[scope]
+	if result.Processed > 0 {
+		activity.lastWorkAt = now
+	}
+
+	interval := dispatcher.cfg.ColdDispatchInterval
+	if !activity.lastWorkAt.IsZero() && now.Sub(activity.lastWorkAt) < dispatcher.cfg.ColdDispatchInterval {
+		interval = dispatcher.cfg.DispatchInterval
+	}
+
+	activity.nextPollAt = now.Add(interval)
+	dispatcher.scopeActivity[scope] = activity
+}
+
+func (dispatcher *Dispatcher) reconcileScopeActivity(scopes []TenantDispatchScope) {
+	activeScopes := make(map[TenantDispatchScope]struct{}, len(scopes))
+	for _, scope := range scopes {
+		activeScopes[scope] = struct{}{}
+	}
+
+	dispatcher.scopeActivityMu.Lock()
+	defer dispatcher.scopeActivityMu.Unlock()
+
+	for scope := range dispatcher.scopeActivity {
+		if _, exists := activeScopes[scope]; !exists {
+			delete(dispatcher.scopeActivity, scope)
+		}
+	}
+}
+
+func (dispatcher *Dispatcher) resetScopePollSchedule() {
+	dispatcher.scopeActivityMu.Lock()
+	defer dispatcher.scopeActivityMu.Unlock()
+
+	for scope, activity := range dispatcher.scopeActivity {
+		activity.nextPollAt = time.Time{}
+		dispatcher.scopeActivity[scope] = activity
+	}
+}
+
+func (dispatcher *Dispatcher) listTenantDispatchScopes(
+	ctx context.Context,
+) ([]TenantDispatchScope, TenantDispatchScopeRepository, error) {
+	if scopedRepo, ok := dispatcher.repo.(TenantDispatchScopeRepository); ok {
+		scopes, err := scopedRepo.ListTenantDispatchScopes(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		return scopes, scopedRepo, nil
+	}
+
+	tenants, err := dispatcher.repo.ListTenants(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	scopes := make([]TenantDispatchScope, 0, len(tenants))
+	for _, tenantID := range tenants {
+		scopes = append(scopes, TenantDispatchScope{TenantID: tenantID})
+	}
+
+	return scopes, nil, nil
 }
 
 func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(ctx context.Context, tracer trace.Tracer) {
@@ -575,20 +698,28 @@ func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(ctx context.Contex
 	fallbackSpan.End()
 }
 
-func nonEmptyTenants(tenants []string) []string {
-	if len(tenants) == 0 {
+func normalizeTenantDispatchScopes(scopes []TenantDispatchScope) []TenantDispatchScope {
+	if len(scopes) == 0 {
 		return nil
 	}
 
-	result := make([]string, 0, len(tenants))
-	for _, tenantID := range tenants {
-		tenantID = strings.TrimSpace(tenantID)
+	result := make([]TenantDispatchScope, 0, len(scopes))
 
-		if tenantID == "" {
+	seen := make(map[TenantDispatchScope]struct{}, len(scopes))
+	for _, scope := range scopes {
+		scope.TenantID = strings.TrimSpace(scope.TenantID)
+
+		scope.PoolKey = strings.TrimSpace(scope.PoolKey)
+		if scope.TenantID == "" {
 			continue
 		}
 
-		result = append(result, tenantID)
+		if _, ok := seen[scope]; ok {
+			continue
+		}
+
+		seen[scope] = struct{}{}
+		result = append(result, scope)
 	}
 
 	return result
@@ -621,19 +752,19 @@ func (dispatcher *Dispatcher) clearRun() {
 	dispatcher.cancelFunc = nil
 }
 
-func (dispatcher *Dispatcher) tenantDispatchOrder(tenants []string) []string {
-	if len(tenants) <= 1 {
-		return append([]string(nil), tenants...)
+func (dispatcher *Dispatcher) tenantDispatchScopeOrder(scopes []TenantDispatchScope) []TenantDispatchScope {
+	if len(scopes) <= 1 {
+		return append([]TenantDispatchScope(nil), scopes...)
 	}
 
 	dispatcher.runStateMu.Lock()
-	start := dispatcher.tenantTurn % len(tenants)
-	dispatcher.tenantTurn = (dispatcher.tenantTurn + 1) % len(tenants)
+	start := dispatcher.tenantTurn % len(scopes)
+	dispatcher.tenantTurn = (dispatcher.tenantTurn + 1) % len(scopes)
 	dispatcher.runStateMu.Unlock()
 
-	ordered := make([]string, 0, len(tenants))
-	ordered = append(ordered, tenants[start:]...)
-	ordered = append(ordered, tenants[:start]...)
+	ordered := make([]TenantDispatchScope, 0, len(scopes))
+	ordered = append(ordered, scopes[start:]...)
+	ordered = append(ordered, scopes[:start]...)
 
 	return ordered
 }

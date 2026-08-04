@@ -53,6 +53,7 @@ func integrationPostgresDSN(t *testing.T) (string, func()) {
 
 func newIntegrationRepoFixtureWithDSN(t *testing.T, dsn string) *integrationRepoFixture {
 	t.Helper()
+	t.Setenv("ALLOW_INSECURE_TLS", "true")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
@@ -384,6 +385,116 @@ func TestIntegration_Repository_CreateWithTx(t *testing.T) {
 	require.Equal(t, created.ID, stored.ID)
 }
 
+func TestIntegration_Repository_CreateManyWithTx(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	first, err := outbox.NewOutboxEventWithID(
+		fx.tenantCtx,
+		uuid.New(),
+		"  payment.batch.first  ",
+		uuid.New(),
+		[]byte(`{"sequence":1}`),
+	)
+	require.NoError(t, err)
+	first.Status = outbox.OutboxStatusPublished
+	first.Attempts = 4
+	first.LastError = "must not persist"
+	first.CreatedAt = now
+	first.UpdatedAt = now.Add(-time.Minute)
+
+	second, err := outbox.NewOutboxEventWithID(
+		fx.tenantCtx,
+		uuid.New(),
+		"payment.batch.second",
+		uuid.New(),
+		[]byte(`{"sequence":2}`),
+	)
+	require.NoError(t, err)
+	second.Status = outbox.OutboxStatusFailed
+	second.Attempts = 7
+	second.LastError = "must not persist either"
+	second.CreatedAt = now.Add(time.Second)
+	second.UpdatedAt = now.Add(2 * time.Second)
+
+	tx, err := fx.primaryDB.BeginTx(fx.tenantCtx, nil)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil && !errors.Is(rollbackErr, sql.ErrTxDone) {
+			t.Errorf("cleanup: batch tx rollback: %v", rollbackErr)
+		}
+	})
+
+	created, err := fx.repo.CreateManyWithTx(fx.tenantCtx, tx, []*outbox.OutboxEvent{first, second})
+	require.NoError(t, err)
+	require.Len(t, created, 2)
+	require.Equal(t, first.ID, created[0].ID)
+	require.Equal(t, second.ID, created[1].ID)
+	require.NoError(t, tx.Commit())
+
+	storedFirst, err := fx.repo.GetByID(fx.tenantCtx, first.ID)
+	require.NoError(t, err)
+	require.Equal(t, "payment.batch.first", storedFirst.EventType)
+	require.Equal(t, first.AggregateID, storedFirst.AggregateID)
+	require.JSONEq(t, string(first.Payload), string(storedFirst.Payload))
+	require.Equal(t, outbox.OutboxStatusPending, storedFirst.Status)
+	require.Zero(t, storedFirst.Attempts)
+	require.Nil(t, storedFirst.PublishedAt)
+	require.Empty(t, storedFirst.LastError)
+	require.True(t, first.CreatedAt.Equal(storedFirst.CreatedAt))
+	require.True(t, first.CreatedAt.Equal(storedFirst.UpdatedAt))
+
+	storedSecond, err := fx.repo.GetByID(fx.tenantCtx, second.ID)
+	require.NoError(t, err)
+	require.Equal(t, second.EventType, storedSecond.EventType)
+	require.Equal(t, second.AggregateID, storedSecond.AggregateID)
+	require.JSONEq(t, string(second.Payload), string(storedSecond.Payload))
+	require.Equal(t, outbox.OutboxStatusPending, storedSecond.Status)
+	require.Zero(t, storedSecond.Attempts)
+	require.Nil(t, storedSecond.PublishedAt)
+	require.Empty(t, storedSecond.LastError)
+	require.True(t, second.CreatedAt.Equal(storedSecond.CreatedAt))
+	require.True(t, second.UpdatedAt.Equal(storedSecond.UpdatedAt))
+
+	rolledBackEvents := []*outbox.OutboxEvent{
+		{ID: uuid.New(), EventType: "payment.batch.rollback.first", AggregateID: uuid.New(), Payload: []byte(`{"sequence":3}`)},
+		{ID: uuid.New(), EventType: "payment.batch.rollback.second", AggregateID: uuid.New(), Payload: []byte(`{"sequence":4}`)},
+	}
+	rollbackTx, err := fx.primaryDB.BeginTx(fx.tenantCtx, nil)
+	require.NoError(t, err)
+
+	rolledBack, err := fx.repo.CreateManyWithTx(fx.tenantCtx, rollbackTx, rolledBackEvents)
+	require.NoError(t, err)
+	require.Len(t, rolledBack, len(rolledBackEvents))
+	require.NoError(t, rollbackTx.Rollback())
+
+	for _, event := range rolledBackEvents {
+		_, getErr := fx.repo.GetByID(fx.tenantCtx, event.ID)
+		require.Error(t, getErr)
+	}
+
+	empty, err := fx.repo.CreateManyWithTx(fx.tenantCtx, nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, empty)
+	require.Empty(t, empty)
+
+	validBeforeInvalid := &outbox.OutboxEvent{
+		ID:          uuid.New(),
+		EventType:   "payment.batch.before-invalid",
+		AggregateID: uuid.New(),
+		Payload:     []byte(`{"sequence":5}`),
+	}
+	_, err = fx.repo.CreateManyWithTx(
+		fx.tenantCtx,
+		nil,
+		[]*outbox.OutboxEvent{validBeforeInvalid, nil},
+	)
+	require.ErrorIs(t, err, outbox.ErrOutboxEventRequired)
+
+	_, err = fx.repo.GetByID(fx.tenantCtx, validBeforeInvalid.ID)
+	require.Error(t, err)
+}
+
 func TestIntegration_Repository_MarkPublishedRequiresProcessingState(t *testing.T) {
 	fx := newIntegrationRepoFixture(t)
 
@@ -578,6 +689,7 @@ func TestIntegration_ColumnResolver_DiscoverTenants(t *testing.T) {
 // so the idempotent conflict target is (id) within each tenant schema.
 func newSchemaModeIntegrationRepoFixture(t *testing.T, dsn string) (*integrationRepoFixture, string, string) {
 	t.Helper()
+	t.Setenv("ALLOW_INSECURE_TLS", "true")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)

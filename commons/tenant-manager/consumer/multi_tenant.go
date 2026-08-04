@@ -274,6 +274,15 @@ func NewMultiTenantConsumerWithError(
 
 	consumer.loader = tenantcache.NewTenantLoader(pmClient, consumer.cache, config.Service, cacheTTL, consumer.logger.Base())
 
+	// Any layer that lazy-loads through this loader (the HTTP middleware included)
+	// registers the tenant as known, so the dispatcher's ownership gate does not
+	// drop that tenant's lifecycle events.
+	consumer.loader.SetOnTenantLoaded(func(_ context.Context, tenantID string) {
+		consumer.mu.Lock()
+		consumer.knownTenants[tenantID] = true
+		consumer.mu.Unlock()
+	})
+
 	// Only build the dispatcher internally if one was not injected via WithEventDispatcher.
 	if consumer.dispatcher == nil {
 		consumer.dispatcher = consumer.buildEventDispatcher(cacheTTL)
@@ -289,6 +298,20 @@ func NewMultiTenantConsumerWithError(
 	}
 
 	return consumer, nil
+}
+
+// Loader returns the consumer's shared TenantLoader. Pass it to
+// middleware.WithTenantLoader so HTTP-path lazy-loads share this consumer's
+// cache and register the tenant as known instead of building a second,
+// unregistered loader.
+func (c *MultiTenantConsumer) Loader() *tenantcache.TenantLoader {
+	return c.loader
+}
+
+// Cache returns the consumer's shared tenant config cache. Pass it to
+// middleware.WithTenantCache so both layers read and evict the same entries.
+func (c *MultiTenantConsumer) Cache() *tenantcache.TenantCache {
+	return c.cache
 }
 
 // Register adds a queue handler for all tenant vhosts.
