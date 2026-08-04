@@ -168,9 +168,10 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 		return unauthorizedError(c, "MISSING_TENANT", "tenantId is required in JWT token")
 	}
 
-	if !core.IsValidTenantID(tenantID) {
+	tenantID, err = core.CanonicalTenantID(tenantID)
+	if err != nil {
 		logger.Base().Log(ctx, liblog.LevelError, "invalid tenantId format in JWT",
-			liblog.String("tenant_id", tenantID))
+			liblog.Err(err))
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "invalid tenantId format",
 			core.ErrInvalidTenantClaims)
 

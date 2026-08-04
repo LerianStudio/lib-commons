@@ -344,9 +344,7 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*Postgres
 					p.logger.WarnCtx(ctx, fmt.Sprintf("cached postgres connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr))
 				}
 
-				if closeErr := p.CloseConnection(ctx, tenantID); closeErr != nil && p.logger != nil {
-					p.logger.WarnCtx(ctx, fmt.Sprintf("failed to close stale postgres connection for tenant %s: %v", tenantID, closeErr))
-				}
+				p.closeUnhealthyConnection(ctx, tenantID, conn)
 
 				// Fall through to create a new connection with fresh credentials
 				return p.createConnection(ctx, tenantID)
@@ -358,10 +356,11 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*Postgres
 
 		p.mu.Lock()
 
-		// TOCTOU re-check: connection may have been evicted while we were pinging.
-		if _, stillExists := p.connections[tenantID]; !stillExists {
+		// TOCTOU re-check: the entry may have been evicted -- or evicted AND
+		// rebuilt -- while we were pinging, so compare identity, not presence.
+		if current, stillExists := p.connections[tenantID]; !stillExists || current != conn {
 			p.mu.Unlock()
-			// Connection was evicted while we were pinging; create fresh.
+			// Connection was replaced while we were pinging; resolve the current one.
 			return p.createConnection(ctx, tenantID)
 		}
 
@@ -715,7 +714,7 @@ func (p *Manager) getPostgresConfigForTenant(
 	logger *logcompat.Logger,
 	span trace.Span,
 ) (*core.TenantConfig, *core.PostgreSQLConfig, error) {
-	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
+	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service, client.WithSkipCache())
 	if err != nil {
 		var suspErr *core.TenantSuspendedError
 		if errors.As(err, &suspErr) {
@@ -1014,6 +1013,31 @@ func (p *Manager) ConnectedTenantIDs() []string {
 	}
 
 	return ids
+}
+
+// closeUnhealthyConnection closes the supplied connection, which failed its
+// health check, and removes the cache entry only if it still points at that same
+// connection. Closing by key alone would tear down a healthy pool another
+// goroutine installed under the tenant key while the ping was failing.
+func (p *Manager) closeUnhealthyConnection(ctx context.Context, tenantID string, cachedConn *PostgresConnection) {
+	p.mu.Lock()
+
+	if current, ok := p.connections[tenantID]; ok && current == cachedConn {
+		delete(p.connections, tenantID)
+		delete(p.lastAccessed, tenantID)
+		delete(p.lastConnectionsCheck, tenantID)
+		delete(p.lastAppliedSettings, tenantID)
+	}
+
+	p.mu.Unlock()
+
+	if cachedConn.ConnectionDB == nil {
+		return
+	}
+
+	if closeErr := (*cachedConn.ConnectionDB).Close(); closeErr != nil && p.logger != nil {
+		p.logger.WarnCtx(ctx, fmt.Sprintf("failed to close stale postgres connection for tenant %s: %v", tenantID, closeErr))
+	}
 }
 
 // CloseConnection closes the connection for a specific tenant.

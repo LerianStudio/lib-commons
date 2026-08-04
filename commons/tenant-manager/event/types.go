@@ -17,6 +17,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 )
 
 // Event type constants for all tenant lifecycle events.
@@ -95,6 +97,13 @@ func ParseEvent(data []byte) (*TenantLifecycleEvent, error) {
 	if event.TenantID == "" {
 		return nil, errors.New("tenant_id must not be empty")
 	}
+
+	canonical, err := core.CanonicalTenantID(event.TenantID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid tenant_id in tenant lifecycle event: %w", err)
+	}
+
+	event.TenantID = canonical
 
 	return &event, nil
 }

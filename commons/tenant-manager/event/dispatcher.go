@@ -252,16 +252,14 @@ func (d *EventDispatcher) HandleEvent(ctx context.Context, evt TenantLifecycleEv
 
 	// Service-level events: filter by service name before dispatching.
 	if isServiceScopedEvent(evt.EventType) {
-		match, err := d.matchesService(evt)
+		match, received, err := d.matchesService(evt)
 		if err != nil {
 			libOpentelemetry.HandleSpanError(span, "failed to unmarshal service event payload", err)
 			return fmt.Errorf("HandleEvent: failed to unmarshal payload for %s: %w", evt.EventType, err)
 		}
 
 		if !match {
-			logger.Base().Log(ctx, libLog.LevelDebug, "skipping event: service mismatch",
-				libLog.String("event_type", evt.EventType),
-				libLog.String("tenant_id", evt.TenantID))
+			d.logServiceMismatch(ctx, evt, received, logger)
 
 			return nil
 		}
