@@ -3,6 +3,8 @@
 package commons
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -174,6 +176,52 @@ func TestHashSHA256(t *testing.T) {
 
 	assert.Equal(t, h1, h2)
 	assert.Len(t, h1, 64) // SHA-256 hex is 64 chars
+}
+
+func TestHashSHA256Bytes_Input_ReturnsLowercaseHexDigest(t *testing.T) {
+	t.Parallel()
+
+	largeInput := bytes.Repeat([]byte{0x00, 0x7f, 0x80, 0xff}, 256*1024)
+	tests := []struct {
+		name  string
+		input []byte
+		want  string
+	}{
+		{name: "text parity", input: []byte("hello")},
+		{name: "binary data with NUL bytes", input: []byte{0x00, 0x01, 0x02, 0xff, 0x00}},
+		{name: "nil input", input: nil, want: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+		{name: "empty input", input: []byte{}, want: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+		{name: "large buffer", input: largeInput},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			before := bytes.Clone(test.input)
+			got := HashSHA256Bytes(test.input)
+
+			assert.Equal(t, HashSHA256(string(test.input)), got)
+			assert.Len(t, got, 64)
+			assert.Equal(t, strings.ToLower(got), got)
+			assert.Equal(t, before, test.input)
+			if test.want != "" {
+				assert.Equal(t, test.want, got)
+			}
+		})
+	}
+}
+
+func BenchmarkHashSHA256Bytes_LargeBuffer_NoBodySizeCopy(b *testing.B) {
+	input := bytes.Repeat([]byte{0xa5}, 1024*1024)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(input)))
+	b.ResetTimer()
+
+	for b.Loop() {
+		HashSHA256Bytes(input)
+	}
 }
 
 func TestStringToInt(t *testing.T) {

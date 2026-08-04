@@ -199,7 +199,12 @@ func ValidateServerAddress(value string) string {
 
 // HashSHA256 generate a hash sha-256 to create idempotency on redis
 func HashSHA256(input string) string {
-	hash := sha256.Sum256([]byte(input))
+	return HashSHA256Bytes([]byte(input))
+}
+
+// HashSHA256Bytes returns the lowercase hexadecimal SHA-256 digest of input.
+func HashSHA256Bytes(input []byte) string {
+	hash := sha256.Sum256(input)
 	return hex.EncodeToString(hash[:])
 }
 
