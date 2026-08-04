@@ -263,7 +263,7 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 	p.mu.Unlock()
 
 	// Step 2: Outside lock — perform network I/O (HTTP call + TCP dial).
-	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
+	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service, client.WithSkipCache())
 	if err != nil {
 		logger.Errorf("failed to get tenant config: %v", err)
 		libOpentelemetry.HandleSpanError(span, "failed to get tenant config", err)

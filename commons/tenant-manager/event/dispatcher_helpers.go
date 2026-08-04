@@ -15,6 +15,7 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
+	libLog "github.com/LerianStudio/lib-observability/v2/log"
 )
 
 // serviceNamePayload is a minimal struct used to extract the service_name field
@@ -24,19 +25,46 @@ type serviceNamePayload struct {
 }
 
 // matchesService extracts the service_name from the event payload and compares
-// it to the dispatcher's configured service. Returns (true, nil) if the service
-// matches, (false, nil) if it does not, or (false, err) if unmarshaling fails.
-func (d *EventDispatcher) matchesService(evt TenantLifecycleEvent) (bool, error) {
+// it to the dispatcher's configured service. It returns whether the service
+// matches, the service name carried by the payload (empty when the payload is
+// absent or omits the field) and an unmarshal error.
+func (d *EventDispatcher) matchesService(evt TenantLifecycleEvent) (bool, string, error) {
 	if len(evt.Payload) == 0 {
-		return false, nil
+		return false, "", nil
 	}
 
 	var p serviceNamePayload
 	if err := json.Unmarshal(evt.Payload, &p); err != nil {
-		return false, fmt.Errorf("unmarshal service_name: %w", err)
+		return false, "", fmt.Errorf("unmarshal service_name: %w", err)
 	}
 
-	return p.ServiceName == d.service, nil
+	return p.ServiceName == d.service, p.ServiceName, nil
+}
+
+// logServiceMismatch reports a service-scoped event skipped because the payload's
+// service_name did not match this dispatcher's service.
+//
+// tenant.cache.invalidate is operator-triggered and is the one event whose skip
+// is a dead end: nothing retries it, so a wrong or missing service_name leaves
+// the tenant serving stale config with no other trace. That case warns with both
+// names. The remaining service-scoped events reach every service in the fleet by
+// design, so their skips stay at debug to keep the routine fan-out quiet.
+func (d *EventDispatcher) logServiceMismatch(
+	ctx context.Context,
+	evt TenantLifecycleEvent,
+	received string,
+	logger *logcompat.Logger,
+) {
+	level := libLog.LevelDebug
+	if evt.EventType == EventTenantCacheInvalidate {
+		level = libLog.LevelWarn
+	}
+
+	logger.Base().Log(ctx, level, "skipping event: service mismatch",
+		libLog.String("event_type", evt.EventType),
+		libLog.String("tenant_id", evt.TenantID),
+		libLog.String("expected_service_name", d.service),
+		libLog.String("received_service_name", received))
 }
 
 // isServiceScopedEvent returns true if the event type targets a specific service
@@ -112,15 +140,16 @@ func (d *EventDispatcher) removeTenant(ctx context.Context, tenantID string, log
 }
 
 // isOwnedLocally reports whether the tenant is considered "owned" by this instance.
-// When an ownsTenant checker is set (via WithTenantOwnershipChecker), it delegates
-// to that function. Otherwise it falls back to a cache lookup, which may miss
-// tenants whose cache entries have expired.
+// A tenant is owned when the ownsTenant checker (set via
+// WithTenantOwnershipChecker) claims it, OR when it is present in the shared
+// config cache. Both are needed: the checker covers tenants whose cache entry
+// has expired, and the cache covers tenants lazy-loaded by another layer (the
+// HTTP middleware) that never registered with the consumer.
 func (d *EventDispatcher) isOwnedLocally(tenantID string) bool {
-	if d.ownsTenant != nil {
-		return d.ownsTenant(tenantID)
+	if d.ownsTenant != nil && d.ownsTenant(tenantID) {
+		return true
 	}
 
-	// Fallback: check cache (may miss expired entries).
 	_, ok := d.cache.Get(tenantID)
 
 	return ok

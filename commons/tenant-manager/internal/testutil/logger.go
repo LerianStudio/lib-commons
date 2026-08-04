@@ -93,3 +93,82 @@ func (cl *CapturingLogger) Sync(_ context.Context) error   { return nil }
 func NewCapturingLogger() *CapturingLogger {
 	return &CapturingLogger{}
 }
+
+// LogEntry is a single captured log record with its level.
+type LogEntry struct {
+	Level   log.Level
+	Message string
+}
+
+// LevelCapturingLogger implements log.Logger and captures both the level and the
+// rendered message of every record, so tests can assert that a diagnostic was
+// emitted at the intended severity and not swallowed at debug level.
+type LevelCapturingLogger struct {
+	mu      sync.Mutex
+	entries []LogEntry
+}
+
+// NewLevelCapturingLogger returns a LevelCapturingLogger recording all records.
+func NewLevelCapturingLogger() *LevelCapturingLogger {
+	return &LevelCapturingLogger{}
+}
+
+// Entries returns a thread-safe copy of all captured entries.
+func (l *LevelCapturingLogger) Entries() []LogEntry {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	copied := make([]LogEntry, len(l.entries))
+	copy(copied, l.entries)
+
+	return copied
+}
+
+// ContainsAtLevel reports whether any record logged at the given level contains
+// every one of the supplied substrings.
+func (l *LevelCapturingLogger) ContainsAtLevel(level log.Level, subs ...string) bool {
+	for _, entry := range l.Entries() {
+		if entry.Level != level {
+			continue
+		}
+
+		matched := true
+
+		for _, sub := range subs {
+			if !strings.Contains(entry.Message, sub) {
+				matched = false
+
+				break
+			}
+		}
+
+		if matched {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (l *LevelCapturingLogger) Log(_ context.Context, level log.Level, msg string, fields ...log.Field) {
+	rendered := msg
+
+	if len(fields) > 0 {
+		parts := make([]string, 0, len(fields))
+		for _, field := range fields {
+			parts = append(parts, fmt.Sprintf("%s=%v", field.Key, field.Value))
+		}
+
+		rendered = fmt.Sprintf("%s %s", msg, strings.Join(parts, " "))
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	l.entries = append(l.entries, LogEntry{Level: level, Message: rendered})
+}
+
+func (l *LevelCapturingLogger) With(_ ...log.Field) log.Logger { return l }
+func (l *LevelCapturingLogger) WithGroup(_ string) log.Logger  { return l }
+func (l *LevelCapturingLogger) Enabled(_ log.Level) bool       { return true }
+func (l *LevelCapturingLogger) Sync(_ context.Context) error   { return nil }

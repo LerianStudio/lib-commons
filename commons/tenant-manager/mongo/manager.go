@@ -789,7 +789,7 @@ func (p *Manager) getMongoConfigForTenant(
 	logger *logcompat.Logger,
 	span trace.Span,
 ) (*core.MongoDBConfig, error) {
-	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
+	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service, client.WithSkipCache())
 	if err != nil {
 		var suspErr *core.TenantSuspendedError
 		if errors.As(err, &suspErr) {
@@ -946,7 +946,7 @@ func (p *Manager) GetDatabaseForTenant(ctx context.Context, tenantID string) (*m
 		return nil, errors.New("tenant manager client is required for multi-tenant connections")
 	}
 
-	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service)
+	config, err := p.client.GetTenantConfig(ctx, tenantID, p.service, client.WithSkipCache())
 	if err != nil {
 		// Propagate TenantSuspendedError directly so the middleware can
 		// return a specific 403 response instead of a generic 503.
