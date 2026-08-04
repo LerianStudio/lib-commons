@@ -1,5 +1,17 @@
 # Lib-commons Changelog
 
+## [6.4.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.4.0)
+
+Features:
+- Add a byte-oriented SHA-256 helper to enhance cryptographic operations. (@fredcamaral)
+
+Fixes:
+- Resolve an issue with SHA-256 byte handling in version `v6.3`. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v6.3.0...v6.4.0)
+
+---
+
 ## [6.3.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.3.0)
 
 Features:
