@@ -970,6 +970,20 @@ func findHistogramDataPoint(t *testing.T, reader *sdkmetric.ManualReader, metric
 	return metricdata.HistogramDataPoint[int64]{}
 }
 
+func assertHasAttribute(t *testing.T, dp metricdata.HistogramDataPoint[int64], key, value string) {
+	t.Helper()
+
+	iter := dp.Attributes.Iter()
+	for iter.Next() {
+		kv := iter.Attribute()
+		if string(kv.Key) == key && kv.Value.AsString() == value {
+			return
+		}
+	}
+
+	t.Errorf("data point missing attribute %s=%s", key, value)
+}
+
 func TestRecordConnectionCreateTime_NilMetricsFactory(t *testing.T) {
 	t.Parallel()
 
@@ -1036,6 +1050,7 @@ func TestClient_GetClient_RecordsOperationDurationHistogram(t *testing.T) {
 
 	dp := findHistogramDataPoint(t, reader, "db.client.operation.duration", "db.operation.name", "reconnect")
 	assert.Equal(t, uint64(1), dp.Count)
+	assertHasAttribute(t, dp, "db.system.name", "redis")
 }
 
 // TestRecordConnectionCreateTime_RecordsMilliseconds and
@@ -1067,6 +1082,7 @@ func TestRecordOperationDuration_RecordsMilliseconds(t *testing.T) {
 	dp := findHistogramDataPoint(t, reader, "db.client.operation.duration", "db.operation.name", "reconnect")
 	assert.Equal(t, uint64(1), dp.Count)
 	assert.Equal(t, int64(250), dp.Sum)
+	assertHasAttribute(t, dp, "db.system.name", "redis")
 }
 
 func TestClient_RetrieveToken_NilClient(t *testing.T) {

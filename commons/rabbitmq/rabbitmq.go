@@ -285,9 +285,6 @@ func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemRabbitMQ))
 
-	start := time.Now()
-	defer func() { rc.recordConnectionCreateTime(time.Since(start)) }()
-
 	snap, fullyConnected, err := rc.currentConnectState()
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "Failed to prepare connect state", err)
@@ -304,6 +301,9 @@ func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 	if fullyConnected {
 		return nil
 	}
+
+	start := time.Now()
+	defer func() { rc.recordConnectionCreateTime(time.Since(start)) }()
 
 	snap.logger.Log(ctx, log.LevelInfo, "connecting to rabbitmq")
 
@@ -489,7 +489,11 @@ func (rc *RabbitMQConnection) EnsureChannelContext(ctx context.Context) error {
 		rc.lastReconnectAttempt = time.Now()
 		rc.mu.Unlock()
 
+		connectionStart := time.Now()
 		conn, err = snap.dialer(ctx, snap.connStr)
+
+		rc.recordConnectionCreateTime(time.Since(connectionStart))
+
 		if err != nil {
 			snap.logger.Log(ctx, log.LevelError, "failed to connect to rabbitmq", log.String("error_detail", sanitizeAMQPErr(err, snap.connStr)))
 			rc.recordConnectionFailure("ensure_channel_connect")

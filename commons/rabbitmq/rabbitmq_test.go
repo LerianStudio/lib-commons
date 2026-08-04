@@ -437,6 +437,38 @@ func TestRabbitMQConnection_ConnectContext_RecordsConnectionCreateTimeHistogram(
 	assert.GreaterOrEqual(t, dp.Sum, int64(5), "recorded duration should be at least the injected 5ms delay")
 }
 
+func TestRabbitMQConnection_ConnectContext_FastPathDoesNotRecordConnectionCreateTime(t *testing.T) {
+	factory, reader := newTestMetricsFactory(t)
+
+	healthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte(`{"status":"ok"}`))
+		assert.NoError(t, err)
+	}))
+	defer healthServer.Close()
+
+	conn := &RabbitMQConnection{
+		ConnectionStringSource: "amqp://guest:guest@localhost:5672",
+		HealthCheckURL:         healthServer.URL,
+		Logger:                 &log.NopLogger{},
+		MetricsFactory:         factory,
+		dialer: func(string) (*amqp.Connection, error) {
+			return &amqp.Connection{}, nil
+		},
+		channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+			return &amqp.Channel{}, nil
+		},
+		connectionClosedFn: func(*amqp.Connection) bool { return false },
+		channelClosedFn:    func(*amqp.Channel) bool { return false },
+	}
+
+	require.NoError(t, conn.Connect())
+	require.NoError(t, conn.Connect(), "second call should hit the already-connected fast path")
+
+	dp := findHistogramDataPoint(t, reader, "messaging.client.connection.create_time", "messaging.system.name", "rabbitmq")
+	assert.Equal(t, uint64(1), dp.Count, "fast-path re-connects must not record a spurious connection-create sample")
+}
+
 func TestRabbitMQConnection_ConnectContext_BlocksPlaintextBeforeDial(t *testing.T) {
 	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
 
@@ -705,6 +737,12 @@ func TestRabbitMQConnection_EnsureChannelContext_RecordsOperationDurationHistogr
 	dp := findHistogramDataPoint(t, reader, "messaging.client.operation.duration", "messaging.operation.name", "ensure_channel")
 	assert.Equal(t, uint64(1), dp.Count)
 	assert.GreaterOrEqual(t, dp.Sum, int64(5), "recorded duration should be at least the injected 5ms delay")
+
+	// EnsureChannel dialed a new connection above, so it must also be reflected
+	// in the connection-create histogram, not just operation-duration.
+	connDP := findHistogramDataPoint(t, reader, "messaging.client.connection.create_time", "messaging.system.name", "rabbitmq")
+	assert.Equal(t, uint64(1), connDP.Count)
+	assert.GreaterOrEqual(t, connDP.Sum, int64(5), "recorded duration should be at least the injected 5ms delay")
 }
 
 func TestRabbitMQConnection_GetNewConnect(t *testing.T) {

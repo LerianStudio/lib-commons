@@ -249,7 +249,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemMongoDB))
 
 	start := time.Now()
-	defer func() { c.recordConnectionCreateTime(time.Since(start)) }()
+	defer func() { c.recordConnectionCreateTime(ctx, time.Since(start)) }()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -444,7 +444,7 @@ func (c *Client) ResolveClient(ctx context.Context) (*mongo.Client, error) {
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemMongoDB))
 
 	start := time.Now()
-	defer func() { c.recordOperationDuration("resolve", time.Since(start)) }()
+	defer func() { c.recordOperationDuration(ctx, "resolve", time.Since(start)) }()
 
 	if err := c.connectLocked(ctx); err != nil {
 		c.connectAttempts++
@@ -854,15 +854,15 @@ func (c *Client) recordConnectionFailure(operation string) {
 }
 
 // recordConnectionCreateTime records how long establishing a mongo connection took.
-// No-op when metricsFactory is nil.
-func (c *Client) recordConnectionCreateTime(duration time.Duration) {
+// No-op when metricsFactory is nil. ctx is used for metric recording.
+func (c *Client) recordConnectionCreateTime(ctx context.Context, duration time.Duration) {
 	if c == nil || c.metricsFactory == nil {
 		return
 	}
 
 	histogram, err := c.metricsFactory.Histogram(connectionCreateTimeMetric)
 	if err != nil {
-		c.logAtLevel(context.Background(), log.LevelWarn, "failed to create mongo metric histogram", log.Err(err))
+		c.logAtLevel(ctx, log.LevelWarn, "failed to create mongo metric histogram", log.Err(err))
 		return
 	}
 
@@ -870,22 +870,22 @@ func (c *Client) recordConnectionCreateTime(duration time.Duration) {
 		WithLabels(map[string]string{
 			"db.system.name": constant.DBSystemMongoDB,
 		}).
-		Record(context.Background(), duration.Milliseconds())
+		Record(ctx, duration.Milliseconds())
 	if err != nil {
-		c.logAtLevel(context.Background(), log.LevelWarn, "failed to record mongo metric", log.Err(err))
+		c.logAtLevel(ctx, log.LevelWarn, "failed to record mongo metric", log.Err(err))
 	}
 }
 
 // recordOperationDuration records how long a mongo client operation took.
-// No-op when metricsFactory is nil.
-func (c *Client) recordOperationDuration(operation string, duration time.Duration) {
+// No-op when metricsFactory is nil. ctx is used for metric recording.
+func (c *Client) recordOperationDuration(ctx context.Context, operation string, duration time.Duration) {
 	if c == nil || c.metricsFactory == nil {
 		return
 	}
 
 	histogram, err := c.metricsFactory.Histogram(operationDurationMetric)
 	if err != nil {
-		c.logAtLevel(context.Background(), log.LevelWarn, "failed to create mongo metric histogram", log.Err(err))
+		c.logAtLevel(ctx, log.LevelWarn, "failed to create mongo metric histogram", log.Err(err))
 		return
 	}
 
@@ -894,9 +894,9 @@ func (c *Client) recordOperationDuration(operation string, duration time.Duratio
 			"db.system.name":    constant.DBSystemMongoDB,
 			"db.operation.name": constant.SanitizeMetricLabel(operation),
 		}).
-		Record(context.Background(), duration.Milliseconds())
+		Record(ctx, duration.Milliseconds())
 	if err != nil {
-		c.logAtLevel(context.Background(), log.LevelWarn, "failed to record mongo metric", log.Err(err))
+		c.logAtLevel(ctx, log.LevelWarn, "failed to record mongo metric", log.Err(err))
 	}
 }
 

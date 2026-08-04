@@ -647,7 +647,7 @@ func TestRecordConnectionCreateTime_NilClient(t *testing.T) {
 
 	var c *Client
 	assert.NotPanics(t, func() {
-		c.recordConnectionCreateTime(time.Millisecond)
+		c.recordConnectionCreateTime(context.Background(), time.Millisecond)
 	})
 }
 
@@ -656,7 +656,7 @@ func TestRecordConnectionCreateTime_NilMetricsFactory(t *testing.T) {
 
 	c := &Client{}
 	assert.NotPanics(t, func() {
-		c.recordConnectionCreateTime(time.Millisecond)
+		c.recordConnectionCreateTime(context.Background(), time.Millisecond)
 	})
 }
 
@@ -665,7 +665,7 @@ func TestRecordOperationDuration_NilClient(t *testing.T) {
 
 	var c *Client
 	assert.NotPanics(t, func() {
-		c.recordOperationDuration("resolve", time.Millisecond)
+		c.recordOperationDuration(context.Background(), "resolve", time.Millisecond)
 	})
 }
 
@@ -674,7 +674,7 @@ func TestRecordOperationDuration_NilMetricsFactory(t *testing.T) {
 
 	c := &Client{}
 	assert.NotPanics(t, func() {
-		c.recordOperationDuration("resolve", time.Millisecond)
+		c.recordOperationDuration(context.Background(), "resolve", time.Millisecond)
 	})
 }
 

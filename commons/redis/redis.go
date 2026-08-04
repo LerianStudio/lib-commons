@@ -273,11 +273,16 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemRedis))
 
-	start := time.Now()
+	// start is set after the lock is acquired (below) so the recorded duration
+	// reflects only connection setup, not mutex wait; the defer is registered
+	// here so it fires after c.mu.Unlock() (LIFO), not while still holding it.
+	var start time.Time
 	defer func() { c.recordConnectionCreateTime(time.Since(start)) }()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	start = time.Now()
 
 	if c.logger == nil {
 		c.logger = &log.NopLogger{}
