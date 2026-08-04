@@ -1,5 +1,29 @@
 # Lib-commons Changelog
 
+## [6.3.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.3.0)
+
+Features:
+- Introduced batch transactional writes to the outbox system to enhance performance and reliability. (@fredcamaral)
+- Added functionality for retained S3 storage in the tenant manager, enabling more efficient data handling and storage management. (@fredcamaral)
+- Implemented a module pool resolver for the outbox, improving resource allocation and management. (@fredcamaral)
+- Provided idempotency rejection handlers in the network module to ensure consistent request processing. (@fredcamaral)
+
+Fixes:
+- Enhanced the eviction recovery process and improved tenant ID handling in the tenant manager to prevent data loss and ensure stability. (@jeffersonrodrigues92)
+- Improved the cache mechanism for tenant topology refresh in the outbox, reducing unnecessary data retrieval and improving performance. (@fredcamaral)
+- Addressed issues in retained storage recovery paths in the tenant manager to ensure data integrity and reliability. (@fredcamaral)
+- Corrected the handling of retained S3 writes in the tenant manager to prevent data inconsistencies. (@fredcamaral)
+- Resolved feedback-related issues in retained storage management within the tenant manager to enhance system robustness. (@fredcamaral)
+- Ensured case-sensitive comparison of database identities in the outbox and strengthened resolver guards to prevent errors. (@fredcamaral)
+
+Improvements:
+- Implemented a back-off mechanism for idle tenant scopes in the outbox to optimize resource usage and system performance. (@fredcamaral)
+- Refactored the tenant manager to extract retained version page scans, improving code maintainability and readability. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v6.2.0...v6.3.0)
+
+---
+
 ## [6.2.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.2.0)
 
 Features:
