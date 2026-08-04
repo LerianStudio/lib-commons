@@ -326,6 +326,7 @@ func TestModulePoolResolver_ListTenantDispatchScopes_GlobalListFailureUsesLastKn
 	generic.mu.Lock()
 	generic.listErr = errors.New("tenant manager unavailable")
 	generic.mu.Unlock()
+	resolver.InvalidateTopology()
 
 	cached, err := resolver.ListTenantDispatchScopes(t.Context())
 
@@ -403,6 +404,7 @@ func TestModulePoolResolver_ListTenantDispatchScopes_IsolatesTenantFailureAndUse
 	require.Len(t, initial, 4)
 
 	failTenantA = true
+	resolver.InvalidateTopology()
 	withFailure, err := resolver.ListTenantDispatchScopes(t.Context())
 
 	require.NoError(t, err)
@@ -460,12 +462,14 @@ func TestModulePoolResolver_ListTenantDispatchScopes_RemovalEvictsEveryScope(t *
 	require.Len(t, beforeRemoval, 2)
 
 	generic.setTenants(nil)
+	resolver.InvalidateTopology()
 	afterRemoval, err := resolver.ListTenantDispatchScopes(t.Context())
 	require.NoError(t, err)
 	require.Empty(t, afterRemoval)
 
 	generic.setTenants([]string{"tenant-a"})
 	failLoad = true
+	resolver.InvalidateTopology()
 	afterReappearanceWithFailure, err := resolver.ListTenantDispatchScopes(t.Context())
 
 	require.NoError(t, err)
@@ -496,59 +500,6 @@ func TestModulePoolResolver_EvictTenant_RemovesEveryScopeImmediately(t *testing.
 		outbox.TenantDispatchScope{TenantID: "tenant-a", PoolKey: "consignado"},
 	)
 	require.ErrorIs(t, err, ErrTenantPoolUnavailable)
-}
-
-func TestModulePoolResolver_ListTenantDispatchScopes_ConcurrentRefreshDoesNotOverwriteNewerTopology(t *testing.T) {
-	t.Parallel()
-
-	generic := &modulePoolResolverStub{tenants: []string{"tenant-a"}}
-	moduleDB := &sql.DB{}
-	module := &modulePoolResolverStub{pools: map[string]*sql.DB{"tenant-a": moduleDB}}
-	firstLoadStarted := make(chan struct{})
-	releaseFirstLoad := make(chan struct{})
-	var loadCalls atomic.Int32
-	resolver, err := NewModulePoolResolver(
-		generic,
-		"default-tenant",
-		func(context.Context, string) (*tmcore.TenantConfig, error) {
-			if loadCalls.Add(1) == 1 {
-				close(firstLoadStarted)
-				<-releaseFirstLoad
-
-				return tenantConfigWithDatabases("shared", "shared"), nil
-			}
-
-			return tenantConfigWithDatabases("generic", "consignado"), nil
-		},
-		ModulePool{Name: "consignado", Resolver: module},
-	)
-	require.NoError(t, err)
-
-	type refreshResult struct {
-		scopes []outbox.TenantDispatchScope
-		err    error
-	}
-	olderResult := make(chan refreshResult, 1)
-	go func() {
-		scopes, listErr := resolver.ListTenantDispatchScopes(t.Context())
-		olderResult <- refreshResult{scopes: scopes, err: listErr}
-	}()
-	<-firstLoadStarted
-
-	newerScopes, err := resolver.ListTenantDispatchScopes(t.Context())
-	require.NoError(t, err)
-	require.Len(t, newerScopes, 2)
-	close(releaseFirstLoad)
-	completedOlder := <-olderResult
-	require.NoError(t, completedOlder.err)
-	assert.Equal(t, newerScopes, completedOlder.scopes)
-
-	pool, err := resolver.PoolForTenantDispatchScope(
-		t.Context(),
-		outbox.TenantDispatchScope{TenantID: "tenant-a", PoolKey: "consignado"},
-	)
-	require.NoError(t, err)
-	assert.Same(t, moduleDB, pool)
 }
 
 func TestModulePoolResolver_PoolForTenantDispatchScope_RoutesWithoutChangingTenantIdentity(t *testing.T) {
@@ -618,6 +569,7 @@ func TestModulePoolResolver_PoolForTenantDispatchScope_FailsClosedForUnknownRemo
 	require.ErrorIs(t, err, moduleFailure)
 
 	generic.setTenants(nil)
+	resolver.InvalidateTopology()
 	_, err = resolver.ListTenantDispatchScopes(t.Context())
 	require.NoError(t, err)
 
@@ -736,6 +688,7 @@ func TestModulePoolResolver_EvictTenant_StaleRefreshCannotRestoreScopes(t *testi
 	require.NoError(t, err)
 	_, err = resolver.ListTenantDispatchScopes(t.Context())
 	require.NoError(t, err)
+	resolver.InvalidateTopology()
 
 	refreshDone := make(chan error, 1)
 	go func() {

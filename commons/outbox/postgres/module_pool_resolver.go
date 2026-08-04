@@ -2,6 +2,10 @@
 // Use of this source code is governed by the Elastic License 2.0
 // that can be found in the LICENSE file.
 
+// Copyright (c) 2026 Lerian Studio. All rights reserved.
+// Use of this source code is governed by the Elastic License 2.0
+// that can be found in the LICENSE file.
+
 package postgres
 
 import (
@@ -14,6 +18,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
@@ -21,6 +26,8 @@ import (
 	observability "github.com/LerianStudio/lib-observability/v2"
 	libLog "github.com/LerianStudio/lib-observability/v2/log"
 )
+
+const defaultTopologyRefreshInterval = time.Minute
 
 var (
 	// ErrGenericPoolResolverRequired is returned when module-aware composition
@@ -55,6 +62,24 @@ type ModulePool struct {
 	Resolver outbox.TenantPoolResolver
 }
 
+// ModulePoolResolverConfig controls tenant topology refresh behavior.
+type ModulePoolResolverConfig struct {
+	// TopologyRefreshInterval is the maximum age of the cached tenant and
+	// physical-database topology. Non-positive values use one minute.
+	TopologyRefreshInterval time.Duration
+}
+
+// DefaultModulePoolResolverConfig returns the default topology refresh policy.
+func DefaultModulePoolResolverConfig() ModulePoolResolverConfig {
+	return ModulePoolResolverConfig{TopologyRefreshInterval: defaultTopologyRefreshInterval}
+}
+
+func (config *ModulePoolResolverConfig) normalize() {
+	if config.TopologyRefreshInterval <= 0 {
+		config.TopologyRefreshInterval = defaultTopologyRefreshInterval
+	}
+}
+
 type modulePoolBinding struct {
 	name     string
 	resolver outbox.TenantPoolResolver
@@ -64,10 +89,11 @@ type modulePoolBinding struct {
 // resolvers. It enumerates each physical tenant database once while keeping
 // pool routing separate from the real tenant identity.
 //
-// Topology is refreshed from TenantConfig on each enumeration. A failed refresh
-// uses that tenant's last-known-good topology when available; otherwise only
-// the failed tenant is skipped. A tenant absent from the authoritative generic
-// list is removed from the cache with all module scopes.
+// Topology is refreshed from TenantConfig at the configured interval. A failed
+// refresh uses that tenant's last-known-good topology when available and is
+// retried after the same interval; otherwise only the failed tenant is skipped.
+// A tenant absent from the authoritative generic list is removed from the cache
+// with all module scopes.
 type ModulePoolResolver struct {
 	generic         outbox.TenantPoolResolver
 	defaultTenantID string
@@ -75,8 +101,15 @@ type ModulePoolResolver struct {
 	modules         []modulePoolBinding
 	moduleByName    map[string]outbox.TenantPoolResolver
 
+	refreshMu sync.Mutex
+
 	topologyMu         sync.RWMutex
 	topology           map[string][]outbox.TenantDispatchScope
+	orderedScopes      []outbox.TenantDispatchScope
+	topologyRefreshed  time.Time
+	topologyValid      bool
+	refreshInterval    time.Duration
+	now                func() time.Time
 	refreshID          atomic.Uint64
 	committedRefreshID uint64
 }
@@ -91,6 +124,24 @@ func NewModulePoolResolver(
 	loadConfig TenantConfigLoader,
 	modules ...ModulePool,
 ) (*ModulePoolResolver, error) {
+	return NewModulePoolResolverWithConfig(
+		generic,
+		defaultTenantID,
+		loadConfig,
+		DefaultModulePoolResolverConfig(),
+		modules...,
+	)
+}
+
+// NewModulePoolResolverWithConfig builds a module-aware resolver with an
+// explicit topology refresh policy.
+func NewModulePoolResolverWithConfig(
+	generic outbox.TenantPoolResolver,
+	defaultTenantID string,
+	loadConfig TenantConfigLoader,
+	config ModulePoolResolverConfig,
+	modules ...ModulePool,
+) (*ModulePoolResolver, error) {
 	if generic == nil {
 		return nil, ErrGenericPoolResolverRequired
 	}
@@ -103,6 +154,8 @@ func NewModulePoolResolver(
 	if loadConfig == nil {
 		return nil, ErrTenantConfigLoaderRequired
 	}
+
+	config.normalize()
 
 	bindings := make([]modulePoolBinding, 0, len(modules))
 	moduleByName := make(map[string]outbox.TenantPoolResolver, len(modules))
@@ -132,6 +185,10 @@ func NewModulePoolResolver(
 		modules:         bindings,
 		moduleByName:    moduleByName,
 		topology:        make(map[string][]outbox.TenantDispatchScope),
+		refreshInterval: config.TopologyRefreshInterval,
+		now: func() time.Time {
+			return time.Now().UTC()
+		},
 	}, nil
 }
 
@@ -165,12 +222,26 @@ func (resolver *ModulePoolResolver) ListTenantDispatchScopes(
 		return nil, ErrTenantPoolUnavailable
 	}
 
+	now := resolver.currentTime()
+	if scopes, fresh := resolver.cachedFreshScopes(now); fresh {
+		return scopes, nil
+	}
+
+	resolver.refreshMu.Lock()
+	defer resolver.refreshMu.Unlock()
+
+	now = resolver.currentTime()
+	if scopes, fresh := resolver.cachedFreshScopes(now); fresh {
+		return scopes, nil
+	}
+
 	refreshID := resolver.refreshID.Add(1)
 
 	tenantIDs, err := resolver.generic.ListTenants(ctx)
 	if err != nil {
-		cached := resolver.cachedScopes()
-		if len(cached) > 0 {
+		cached, initialized := resolver.cachedScopesWithState()
+		if initialized {
+			resolver.commitRefreshAttempt(refreshID, now)
 			resolver.logTopologyFailure(ctx, "tenant list refresh failed; using last-known-good outbox topology", "", err)
 
 			return cached, nil
@@ -207,11 +278,32 @@ func (resolver *ModulePoolResolver) ListTenantDispatchScopes(
 		orderedScopes = resolver.cachedScopesLocked()
 	} else {
 		resolver.topology = nextTopology
+		resolver.orderedScopes = slices.Clone(orderedScopes)
+		resolver.topologyRefreshed = now
+		resolver.topologyValid = true
 		resolver.committedRefreshID = refreshID
 	}
 	resolver.topologyMu.Unlock()
 
 	return orderedScopes, nil
+}
+
+// InvalidateTopology expires the cached tenant topology. The next enumeration
+// performs one coalesced refresh while retaining last-known-good scopes for the
+// existing fail-open behavior if that refresh fails.
+func (resolver *ModulePoolResolver) InvalidateTopology() {
+	if resolver == nil {
+		return
+	}
+
+	invalidationID := resolver.refreshID.Add(1)
+	resolver.topologyMu.Lock()
+
+	resolver.topologyValid = false
+	if invalidationID > resolver.committedRefreshID {
+		resolver.committedRefreshID = invalidationID
+	}
+	resolver.topologyMu.Unlock()
 }
 
 // PoolForTenantDispatchScope resolves a scope generated by
@@ -288,6 +380,10 @@ func (resolver *ModulePoolResolver) EvictTenant(tenantID string) {
 	evictionID := resolver.refreshID.Add(1)
 	resolver.topologyMu.Lock()
 	delete(resolver.topology, tenantID)
+	resolver.orderedScopes = slices.DeleteFunc(resolver.orderedScopes, func(scope outbox.TenantDispatchScope) bool {
+		return scope.TenantID == tenantID
+	})
+	resolver.topologyValid = false
 
 	if evictionID > resolver.committedRefreshID {
 		resolver.committedRefreshID = evictionID
@@ -343,27 +439,47 @@ func (resolver *ModulePoolResolver) cachedTenantScopes(tenantID string) []outbox
 	return slices.Clone(resolver.topology[tenantID])
 }
 
-func (resolver *ModulePoolResolver) cachedScopes() []outbox.TenantDispatchScope {
+func (resolver *ModulePoolResolver) cachedScopesWithState() ([]outbox.TenantDispatchScope, bool) {
 	resolver.topologyMu.RLock()
 	defer resolver.topologyMu.RUnlock()
 
-	return resolver.cachedScopesLocked()
+	return resolver.cachedScopesLocked(), resolver.topologyValid || !resolver.topologyRefreshed.IsZero()
+}
+
+func (resolver *ModulePoolResolver) cachedFreshScopes(now time.Time) ([]outbox.TenantDispatchScope, bool) {
+	resolver.topologyMu.RLock()
+	defer resolver.topologyMu.RUnlock()
+
+	if !resolver.topologyValid || !now.Before(resolver.topologyRefreshed.Add(resolver.refreshInterval)) {
+		return nil, false
+	}
+
+	return resolver.cachedScopesLocked(), true
+}
+
+func (resolver *ModulePoolResolver) commitRefreshAttempt(refreshID uint64, now time.Time) {
+	resolver.topologyMu.Lock()
+	defer resolver.topologyMu.Unlock()
+
+	if refreshID <= resolver.committedRefreshID {
+		return
+	}
+
+	resolver.topologyRefreshed = now
+	resolver.topologyValid = true
+	resolver.committedRefreshID = refreshID
+}
+
+func (resolver *ModulePoolResolver) currentTime() time.Time {
+	if resolver.now == nil {
+		return time.Now().UTC()
+	}
+
+	return resolver.now().UTC()
 }
 
 func (resolver *ModulePoolResolver) cachedScopesLocked() []outbox.TenantDispatchScope {
-	tenantIDs := make([]string, 0, len(resolver.topology))
-	for tenantID := range resolver.topology {
-		tenantIDs = append(tenantIDs, tenantID)
-	}
-
-	slices.Sort(tenantIDs)
-
-	var scopes []outbox.TenantDispatchScope
-	for _, tenantID := range tenantIDs {
-		scopes = append(scopes, resolver.topology[tenantID]...)
-	}
-
-	return scopes
+	return slices.Clone(resolver.orderedScopes)
 }
 
 func (resolver *ModulePoolResolver) logTopologyFailure(
