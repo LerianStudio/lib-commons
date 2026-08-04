@@ -18,10 +18,13 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
 	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // TestMain opens the TLS security gate for the test binary. The unit-test
@@ -643,6 +646,115 @@ func TestResolverCachesResolver(t *testing.T) {
 	assert.Equal(t, r1, r2)
 
 	assert.NoError(t, client.Close())
+}
+
+// ---------------------------------------------------------------------------
+// Duration histograms - db.client.connection.create_time / db.client.operation.duration
+// ---------------------------------------------------------------------------
+
+// newTestMetricsFactory creates a MetricsFactory backed by a real SDK meter
+// provider with a ManualReader, so recorded histogram values can be asserted.
+func newTestMetricsFactory(t *testing.T) (*metrics.MetricsFactory, *sdkmetric.ManualReader) {
+	t.Helper()
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	factory, err := metrics.NewMetricsFactory(provider.Meter("postgres-test"), log.NewNop())
+	require.NoError(t, err)
+
+	return factory, reader
+}
+
+// findHistogramDataPoint collects metrics from reader and returns the first
+// int64 histogram data point for metricName carrying attrKey=attrValue.
+func findHistogramDataPoint(t *testing.T, reader *sdkmetric.ManualReader, metricName, attrKey, attrValue string) metricdata.HistogramDataPoint[int64] {
+	t.Helper()
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != metricName {
+				continue
+			}
+
+			hist, ok := m.Data.(metricdata.Histogram[int64])
+			require.True(t, ok, "metric %q has unexpected data type %T", metricName, m.Data)
+
+			for _, dp := range hist.DataPoints {
+				iter := dp.Attributes.Iter()
+				for iter.Next() {
+					kv := iter.Attribute()
+					if string(kv.Key) == attrKey && kv.Value.AsString() == attrValue {
+						return dp
+					}
+				}
+			}
+		}
+	}
+
+	t.Fatalf("histogram %q with attribute %s=%s not found", metricName, attrKey, attrValue)
+
+	return metricdata.HistogramDataPoint[int64]{}
+}
+
+func TestConnect_RecordsConnectionCreateTimeHistogram(t *testing.T) {
+	resolver := &fakeResolver{}
+
+	withPatchedDependencies(
+		t,
+		func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
+		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) {
+			time.Sleep(5 * time.Millisecond)
+			return resolver, nil
+		},
+		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+	)
+
+	factory, reader := newTestMetricsFactory(t)
+
+	cfg := validConfig()
+	cfg.MetricsFactory = factory
+
+	client, err := New(cfg)
+	require.NoError(t, err)
+
+	require.NoError(t, client.Connect(context.Background()))
+
+	dp := findHistogramDataPoint(t, reader, "db.client.connection.create_time", "db.system.name", "postgresql")
+	assert.Equal(t, uint64(1), dp.Count)
+	assert.GreaterOrEqual(t, dp.Sum, int64(5), "recorded duration should be at least the injected 5ms delay")
+}
+
+func TestResolver_RecordsOperationDurationHistogram(t *testing.T) {
+	resolver := &fakeResolver{}
+
+	withPatchedDependencies(
+		t,
+		func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
+		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) {
+			time.Sleep(5 * time.Millisecond)
+			return resolver, nil
+		},
+		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+	)
+
+	factory, reader := newTestMetricsFactory(t)
+
+	cfg := validConfig()
+	cfg.MetricsFactory = factory
+
+	client, err := New(cfg)
+	require.NoError(t, err)
+
+	_, err = client.Resolver(context.Background())
+	require.NoError(t, err)
+
+	dp := findHistogramDataPoint(t, reader, "db.client.operation.duration", "db.operation.name", "resolve")
+	assert.Equal(t, uint64(1), dp.Count)
+	assert.GreaterOrEqual(t, dp.Sum, int64(5), "recorded duration should be at least the injected 5ms delay")
 }
 
 // ---------------------------------------------------------------------------

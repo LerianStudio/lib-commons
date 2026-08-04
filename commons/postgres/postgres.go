@@ -270,6 +270,20 @@ var connectionFailuresMetric = metrics.Metric{
 	Description: "Total number of postgres connection failures",
 }
 
+// connectionCreateTimeMetric defines the histogram for postgres connection setup duration.
+var connectionCreateTimeMetric = metrics.Metric{
+	Name:        "db.client.connection.create_time",
+	Unit:        "ms",
+	Description: "Time taken to establish a postgres client connection",
+}
+
+// operationDurationMetric defines the histogram for postgres client operation duration.
+var operationDurationMetric = metrics.Metric{
+	Name:        "db.client.operation.duration",
+	Unit:        "ms",
+	Description: "Duration of a postgres client operation",
+}
+
 // Client is the v2 postgres connection manager.
 type Client struct {
 	mu             sync.RWMutex
@@ -337,6 +351,9 @@ func (c *Client) Connect(ctx context.Context) error {
 	defer span.End()
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemPostgreSQL))
+
+	start := time.Now()
+	defer func() { c.recordConnectionCreateTime(ctx, time.Since(start)) }()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -494,6 +511,9 @@ func (c *Client) Resolver(ctx context.Context) (dbresolver.DB, error) {
 	defer span.End()
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemPostgreSQL))
+
+	start := time.Now()
+	defer func() { c.recordOperationDuration(ctx, "resolve", time.Since(start)) }()
 
 	if err := c.connectLocked(ctx); err != nil {
 		c.connectAttempts++
@@ -1038,6 +1058,53 @@ func (c *Client) recordConnectionFailure(ctx context.Context, operation string) 
 			"operation": constant.SanitizeMetricLabel(operation),
 		}).
 		AddOne(ctx)
+	if err != nil {
+		c.logAtLevel(ctx, log.LevelWarn, "failed to record postgres metric", log.Err(err))
+	}
+}
+
+// recordConnectionCreateTime records how long establishing a postgres connection took.
+// No-op when metricsFactory is nil. ctx is used for metric recording.
+func (c *Client) recordConnectionCreateTime(ctx context.Context, duration time.Duration) {
+	if c == nil || c.metricsFactory == nil {
+		return
+	}
+
+	histogram, err := c.metricsFactory.Histogram(connectionCreateTimeMetric)
+	if err != nil {
+		c.logAtLevel(ctx, log.LevelWarn, "failed to create postgres metric histogram", log.Err(err))
+		return
+	}
+
+	err = histogram.
+		WithLabels(map[string]string{
+			"db.system.name": constant.DBSystemPostgreSQL,
+		}).
+		Record(ctx, duration.Milliseconds())
+	if err != nil {
+		c.logAtLevel(ctx, log.LevelWarn, "failed to record postgres metric", log.Err(err))
+	}
+}
+
+// recordOperationDuration records how long a postgres client operation took.
+// No-op when metricsFactory is nil. ctx is used for metric recording.
+func (c *Client) recordOperationDuration(ctx context.Context, operation string, duration time.Duration) {
+	if c == nil || c.metricsFactory == nil {
+		return
+	}
+
+	histogram, err := c.metricsFactory.Histogram(operationDurationMetric)
+	if err != nil {
+		c.logAtLevel(ctx, log.LevelWarn, "failed to create postgres metric histogram", log.Err(err))
+		return
+	}
+
+	err = histogram.
+		WithLabels(map[string]string{
+			"db.system.name":    constant.DBSystemPostgreSQL,
+			"db.operation.name": constant.SanitizeMetricLabel(operation),
+		}).
+		Record(ctx, duration.Milliseconds())
 	if err != nil {
 		c.logAtLevel(ctx, log.LevelWarn, "failed to record postgres metric", log.Err(err))
 	}

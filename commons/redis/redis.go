@@ -200,6 +200,20 @@ var reconnectionsMetric = metrics.Metric{
 	Description: "Total number of redis reconnection attempts",
 }
 
+// connectionCreateTimeMetric defines the histogram for redis connection setup duration.
+var connectionCreateTimeMetric = metrics.Metric{
+	Name:        "db.client.connection.create_time",
+	Unit:        "ms",
+	Description: "Time taken to establish a redis client connection",
+}
+
+// operationDurationMetric defines the histogram for redis client operation duration.
+var operationDurationMetric = metrics.Metric{
+	Name:        "db.client.operation.duration",
+	Unit:        "ms",
+	Description: "Duration of a redis client operation",
+}
+
 // Client wraps a redis.UniversalClient with reconnection and IAM token refresh logic.
 type Client struct {
 	mu             sync.RWMutex
@@ -258,6 +272,9 @@ func (c *Client) Connect(ctx context.Context) error {
 	defer span.End()
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemRedis))
+
+	start := time.Now()
+	defer func() { c.recordConnectionCreateTime(time.Since(start)) }()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -327,6 +344,9 @@ func (c *Client) GetClient(ctx context.Context) (redis.UniversalClient, error) {
 	defer span.End()
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemRedis))
+
+	start := time.Now()
+	defer func() { c.recordOperationDuration("reconnect", time.Since(start)) }()
 
 	if err := c.connectLocked(ctx); err != nil {
 		c.reconnectAttempts++
@@ -1107,6 +1127,53 @@ func (c *Client) recordConnectionFailure(operation string) {
 			"operation": constant.SanitizeMetricLabel(operation),
 		}).
 		AddOne(context.Background())
+	if err != nil {
+		c.logger.Log(context.Background(), log.LevelWarn, "failed to record redis metric", log.Err(err))
+	}
+}
+
+// recordConnectionCreateTime records how long establishing a redis connection took.
+// No-op when metricsFactory is nil.
+func (c *Client) recordConnectionCreateTime(duration time.Duration) {
+	if c.metricsFactory == nil {
+		return
+	}
+
+	histogram, err := c.metricsFactory.Histogram(connectionCreateTimeMetric)
+	if err != nil {
+		c.logger.Log(context.Background(), log.LevelWarn, "failed to create redis metric histogram", log.Err(err))
+		return
+	}
+
+	err = histogram.
+		WithLabels(map[string]string{
+			"db.system.name": constant.DBSystemRedis,
+		}).
+		Record(context.Background(), duration.Milliseconds())
+	if err != nil {
+		c.logger.Log(context.Background(), log.LevelWarn, "failed to record redis metric", log.Err(err))
+	}
+}
+
+// recordOperationDuration records how long a redis client operation took.
+// No-op when metricsFactory is nil.
+func (c *Client) recordOperationDuration(operation string, duration time.Duration) {
+	if c.metricsFactory == nil {
+		return
+	}
+
+	histogram, err := c.metricsFactory.Histogram(operationDurationMetric)
+	if err != nil {
+		c.logger.Log(context.Background(), log.LevelWarn, "failed to create redis metric histogram", log.Err(err))
+		return
+	}
+
+	err = histogram.
+		WithLabels(map[string]string{
+			"db.system.name":    constant.DBSystemRedis,
+			"db.operation.name": constant.SanitizeMetricLabel(operation),
+		}).
+		Record(context.Background(), duration.Milliseconds())
 	if err != nil {
 		c.logger.Log(context.Background(), log.LevelWarn, "failed to record redis metric", log.Err(err))
 	}

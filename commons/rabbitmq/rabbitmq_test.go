@@ -17,9 +17,12 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-observability/v2/metrics"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // TestMain opens the TLS security gate for the test binary. Most tests
@@ -313,6 +316,127 @@ func TestRabbitMQConnection_Connect(t *testing.T) {
 	})
 }
 
+// ---------------------------------------------------------------------------
+// Duration histograms - messaging.client.connection.create_time / messaging.client.operation.duration
+// ---------------------------------------------------------------------------
+
+// newTestMetricsFactory creates a MetricsFactory backed by a real SDK meter
+// provider with a ManualReader, so recorded histogram values can be asserted.
+func newTestMetricsFactory(t *testing.T) (*metrics.MetricsFactory, *sdkmetric.ManualReader) {
+	t.Helper()
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	factory, err := metrics.NewMetricsFactory(provider.Meter("rabbitmq-test"), log.NewNop())
+	require.NoError(t, err)
+
+	return factory, reader
+}
+
+// findHistogramDataPoint collects metrics from reader and returns the first
+// int64 histogram data point for metricName carrying attrKey=attrValue.
+func findHistogramDataPoint(t *testing.T, reader *sdkmetric.ManualReader, metricName, attrKey, attrValue string) metricdata.HistogramDataPoint[int64] {
+	t.Helper()
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != metricName {
+				continue
+			}
+
+			hist, ok := m.Data.(metricdata.Histogram[int64])
+			require.True(t, ok, "metric %q has unexpected data type %T", metricName, m.Data)
+
+			for _, dp := range hist.DataPoints {
+				iter := dp.Attributes.Iter()
+				for iter.Next() {
+					kv := iter.Attribute()
+					if string(kv.Key) == attrKey && kv.Value.AsString() == attrValue {
+						return dp
+					}
+				}
+			}
+		}
+	}
+
+	t.Fatalf("histogram %q with attribute %s=%s not found", metricName, attrKey, attrValue)
+
+	return metricdata.HistogramDataPoint[int64]{}
+}
+
+func TestRecordConnectionCreateTime_NilConnection(t *testing.T) {
+	t.Parallel()
+
+	var rc *RabbitMQConnection
+	assert.NotPanics(t, func() {
+		rc.recordConnectionCreateTime(time.Millisecond)
+	})
+}
+
+func TestRecordConnectionCreateTime_NilMetricsFactory(t *testing.T) {
+	t.Parallel()
+
+	rc := &RabbitMQConnection{}
+	assert.NotPanics(t, func() {
+		rc.recordConnectionCreateTime(time.Millisecond)
+	})
+}
+
+func TestRecordOperationDuration_NilConnection(t *testing.T) {
+	t.Parallel()
+
+	var rc *RabbitMQConnection
+	assert.NotPanics(t, func() {
+		rc.recordOperationDuration("ensure_channel", time.Millisecond)
+	})
+}
+
+func TestRecordOperationDuration_NilMetricsFactory(t *testing.T) {
+	t.Parallel()
+
+	rc := &RabbitMQConnection{}
+	assert.NotPanics(t, func() {
+		rc.recordOperationDuration("ensure_channel", time.Millisecond)
+	})
+}
+
+func TestRabbitMQConnection_ConnectContext_RecordsConnectionCreateTimeHistogram(t *testing.T) {
+	factory, reader := newTestMetricsFactory(t)
+
+	healthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write([]byte(`{"status":"ok"}`))
+		assert.NoError(t, err)
+	}))
+	defer healthServer.Close()
+
+	conn := &RabbitMQConnection{
+		ConnectionStringSource: "amqp://guest:guest@localhost:5672",
+		HealthCheckURL:         healthServer.URL,
+		Logger:                 &log.NopLogger{},
+		MetricsFactory:         factory,
+		dialer: func(string) (*amqp.Connection, error) {
+			time.Sleep(5 * time.Millisecond)
+			return &amqp.Connection{}, nil
+		},
+		channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+			return &amqp.Channel{}, nil
+		},
+		connectionClosedFn: func(*amqp.Connection) bool { return false },
+		channelClosedFn:    func(*amqp.Channel) bool { return false },
+	}
+
+	require.NoError(t, conn.Connect())
+
+	dp := findHistogramDataPoint(t, reader, "messaging.client.connection.create_time", "messaging.system.name", "rabbitmq")
+	assert.Equal(t, uint64(1), dp.Count)
+	assert.GreaterOrEqual(t, dp.Sum, int64(5), "recorded duration should be at least the injected 5ms delay")
+}
+
 func TestRabbitMQConnection_ConnectContext_BlocksPlaintextBeforeDial(t *testing.T) {
 	unsetEnvVar(t, commons.EnvAllowInsecureTLS)
 
@@ -557,6 +681,30 @@ func TestRabbitMQConnection_EnsureChannel(t *testing.T) {
 		assert.Equal(t, 1, dialerCalls)
 		assert.Equal(t, 1, closeCalls)
 	})
+}
+
+func TestRabbitMQConnection_EnsureChannelContext_RecordsOperationDurationHistogram(t *testing.T) {
+	factory, reader := newTestMetricsFactory(t)
+
+	conn := &RabbitMQConnection{
+		Logger:         &log.NopLogger{},
+		MetricsFactory: factory,
+		dialer: func(string) (*amqp.Connection, error) {
+			time.Sleep(5 * time.Millisecond)
+			return &amqp.Connection{}, nil
+		},
+		channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+			return &amqp.Channel{}, nil
+		},
+		connectionClosedFn: func(connection *amqp.Connection) bool { return connection == nil },
+		channelClosedFn:    func(ch *amqp.Channel) bool { return ch == nil },
+	}
+
+	require.NoError(t, conn.EnsureChannel())
+
+	dp := findHistogramDataPoint(t, reader, "messaging.client.operation.duration", "messaging.operation.name", "ensure_channel")
+	assert.Equal(t, uint64(1), dp.Count)
+	assert.GreaterOrEqual(t, dp.Sum, int64(5), "recorded duration should be at least the injected 5ms delay")
 }
 
 func TestRabbitMQConnection_GetNewConnect(t *testing.T) {

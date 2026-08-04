@@ -21,11 +21,14 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 // ---------------------------------------------------------------------------
@@ -585,6 +588,153 @@ func TestClient_Close(t *testing.T) {
 		assert.ErrorIs(t, err, ErrClientClosed)
 		assert.EqualValues(t, initialConnects, connectCalls.Load(), "no reconnection attempt after Close")
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Duration histograms - db.client.connection.create_time / db.client.operation.duration
+// ---------------------------------------------------------------------------
+
+// newTestMetricsFactory creates a MetricsFactory backed by a real SDK meter
+// provider with a ManualReader, so recorded histogram values can be asserted.
+func newTestMetricsFactory(t *testing.T) (*metrics.MetricsFactory, *sdkmetric.ManualReader) {
+	t.Helper()
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	factory, err := metrics.NewMetricsFactory(provider.Meter("mongo-test"), log.NewNop())
+	require.NoError(t, err)
+
+	return factory, reader
+}
+
+// findHistogramDataPoint collects metrics from reader and returns the first
+// int64 histogram data point for metricName carrying attrKey=attrValue.
+func findHistogramDataPoint(t *testing.T, reader *sdkmetric.ManualReader, metricName, attrKey, attrValue string) metricdata.HistogramDataPoint[int64] {
+	t.Helper()
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != metricName {
+				continue
+			}
+
+			hist, ok := m.Data.(metricdata.Histogram[int64])
+			require.True(t, ok, "metric %q has unexpected data type %T", metricName, m.Data)
+
+			for _, dp := range hist.DataPoints {
+				iter := dp.Attributes.Iter()
+				for iter.Next() {
+					kv := iter.Attribute()
+					if string(kv.Key) == attrKey && kv.Value.AsString() == attrValue {
+						return dp
+					}
+				}
+			}
+		}
+	}
+
+	t.Fatalf("histogram %q with attribute %s=%s not found", metricName, attrKey, attrValue)
+
+	return metricdata.HistogramDataPoint[int64]{}
+}
+
+func TestRecordConnectionCreateTime_NilClient(t *testing.T) {
+	t.Parallel()
+
+	var c *Client
+	assert.NotPanics(t, func() {
+		c.recordConnectionCreateTime(time.Millisecond)
+	})
+}
+
+func TestRecordConnectionCreateTime_NilMetricsFactory(t *testing.T) {
+	t.Parallel()
+
+	c := &Client{}
+	assert.NotPanics(t, func() {
+		c.recordConnectionCreateTime(time.Millisecond)
+	})
+}
+
+func TestRecordOperationDuration_NilClient(t *testing.T) {
+	t.Parallel()
+
+	var c *Client
+	assert.NotPanics(t, func() {
+		c.recordOperationDuration("resolve", time.Millisecond)
+	})
+}
+
+func TestRecordOperationDuration_NilMetricsFactory(t *testing.T) {
+	t.Parallel()
+
+	c := &Client{}
+	assert.NotPanics(t, func() {
+		c.recordOperationDuration("resolve", time.Millisecond)
+	})
+}
+
+func TestClient_Connect_RecordsConnectionCreateTimeHistogram(t *testing.T) {
+	t.Parallel()
+
+	factory, reader := newTestMetricsFactory(t)
+
+	deps := successDeps()
+	deps.connect = func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+		time.Sleep(5 * time.Millisecond)
+		return &mongo.Client{}, nil
+	}
+
+	cfg := baseConfig()
+	cfg.MetricsFactory = factory
+
+	_, err := NewClient(context.Background(), cfg, withDeps(deps))
+	require.NoError(t, err)
+
+	dp := findHistogramDataPoint(t, reader, "db.client.connection.create_time", "db.system.name", "mongodb")
+	assert.Equal(t, uint64(1), dp.Count)
+	assert.GreaterOrEqual(t, dp.Sum, int64(5), "recorded duration should be at least the injected 5ms delay")
+}
+
+func TestClient_ResolveClient_RecordsOperationDurationHistogram(t *testing.T) {
+	t.Parallel()
+
+	factory, reader := newTestMetricsFactory(t)
+
+	reconnectedClient := &mongo.Client{}
+	var connectCalls atomic.Int32
+
+	deps := successDeps()
+	deps.connect = func(context.Context, *options.ClientOptions) (*mongo.Client, error) {
+		if connectCalls.Add(1) == 1 {
+			return &mongo.Client{}, nil
+		}
+
+		time.Sleep(5 * time.Millisecond)
+
+		return reconnectedClient, nil
+	}
+
+	cfg := baseConfig()
+	cfg.MetricsFactory = factory
+
+	client, err := NewClient(context.Background(), cfg, withDeps(deps))
+	require.NoError(t, err)
+
+	client.mu.Lock()
+	client.client = nil
+	client.mu.Unlock()
+
+	_, err = client.ResolveClient(context.Background())
+	require.NoError(t, err)
+
+	dp := findHistogramDataPoint(t, reader, "db.client.operation.duration", "db.operation.name", "resolve")
+	assert.Equal(t, uint64(1), dp.Count)
+	assert.GreaterOrEqual(t, dp.Sum, int64(5), "recorded duration should be at least the injected 5ms delay")
 }
 
 // ---------------------------------------------------------------------------
