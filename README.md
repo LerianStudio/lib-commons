@@ -40,7 +40,7 @@ Lerian's shared platform code is split across four libraries:
 - `context.go`: request-scoped logger/tracer/metrics/header-id tracking via `ContextWith*` helpers, safe timeout with `WithTimeoutSafe`, span attribute propagation
 - `errors.go`: standardized business error mapping with `ValidateBusinessError`
 - `utils.go`: UUID generation (`GenerateUUIDv7` returns error), struct-to-JSON, map merging, CPU/memory metrics, internal service detection
-- `stringUtils.go`: accent removal, case conversion, UUID placeholder replacement, SHA-256 hashing, server address validation
+- `stringUtils.go`: accent removal, case conversion, UUID placeholder replacement, lowercase hexadecimal SHA-256 hashing for strings (`HashSHA256`) and byte slices (`HashSHA256Bytes`), server address validation
 - `time.go`: date/time validation, range checking, parsing with end-of-day support
 - `os.go`: environment variable helpers (`GetenvOrDefault`, `GetenvBoolOrDefault`, `GetenvIntOrDefault`, `GetenvDurationOrDefault`), struct population from env tags via `SetConfigFromEnvVars`
 - `commons/constants`: shared constants for datasource status, errors, headers, metadata, pagination, transactions, and obfuscation values
