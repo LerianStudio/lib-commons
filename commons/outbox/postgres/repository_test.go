@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
 	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
 	libLog "github.com/LerianStudio/lib-observability/v2/log"
@@ -382,6 +383,168 @@ func TestNormalizedCreateValues_NilEventReturnsError(t *testing.T) {
 	values, err := normalizedCreateValues(nil, time.Now().UTC())
 	require.ErrorIs(t, err, outbox.ErrOutboxEventRequired)
 	require.Zero(t, values)
+}
+
+func TestRepository_CreateManyWithTx_Validation(t *testing.T) {
+	t.Parallel()
+
+	initialized, err := NewRepository(
+		&libPostgres.Client{},
+		noopTenantResolver{},
+		noopTenantDiscoverer{},
+	)
+	require.NoError(t, err)
+
+	valid := &outbox.OutboxEvent{
+		ID:          uuid.New(),
+		EventType:   "payment.created",
+		AggregateID: uuid.New(),
+		Payload:     []byte(`{"ok":true}`),
+	}
+
+	tests := []struct {
+		name       string
+		repo       *Repository
+		events     []*outbox.OutboxEvent
+		wantErr    error
+		wantLen    int
+		wantNonNil bool
+	}{
+		{
+			name:    "uninitialized repository takes precedence",
+			repo:    &Repository{},
+			events:  []*outbox.OutboxEvent{valid},
+			wantErr: ErrRepositoryNotInitialized,
+		},
+		{
+			name:       "nil batch is an empty no-op",
+			repo:       initialized,
+			wantNonNil: true,
+		},
+		{
+			name:       "empty batch is a no-op",
+			repo:       initialized,
+			events:     []*outbox.OutboxEvent{},
+			wantNonNil: true,
+		},
+		{
+			name:    "nil event uses create validation",
+			repo:    initialized,
+			events:  []*outbox.OutboxEvent{valid, nil},
+			wantErr: outbox.ErrOutboxEventRequired,
+		},
+		{
+			name: "invalid event uses create validation",
+			repo: initialized,
+			events: []*outbox.OutboxEvent{
+				valid,
+				{EventType: "payment.invalid", AggregateID: uuid.New(), Payload: []byte(`{"ok":true}`)},
+			},
+			wantErr: ErrIDRequired,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			created, createErr := tt.repo.CreateManyWithTx(context.Background(), nil, tt.events)
+			if tt.wantErr != nil {
+				require.ErrorIs(t, createErr, tt.wantErr)
+				require.Nil(t, created)
+				return
+			}
+
+			require.NoError(t, createErr)
+			require.Len(t, created, tt.wantLen)
+			if tt.wantNonNil {
+				require.NotNil(t, created)
+			}
+		})
+	}
+}
+
+func TestRepository_CreateManyWithTx_UsesSingleInsertAndPreservesInputOrder(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+
+	repo, err := NewRepository(
+		&libPostgres.Client{},
+		noopTenantResolver{},
+		noopTenantDiscoverer{},
+	)
+	require.NoError(t, err)
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	events := []*outbox.OutboxEvent{
+		{
+			ID:          uuid.New(),
+			EventType:   "  payment.first  ",
+			AggregateID: uuid.New(),
+			Payload:     []byte(`{"sequence":1}`),
+			Status:      outbox.OutboxStatusPublished,
+			Attempts:    4,
+			LastError:   "must not persist",
+			CreatedAt:   now,
+			UpdatedAt:   now.Add(-time.Minute),
+		},
+		{
+			ID:          uuid.New(),
+			EventType:   "payment.second",
+			AggregateID: uuid.New(),
+			Payload:     []byte(`{"sequence":2}`),
+			Status:      outbox.OutboxStatusFailed,
+			Attempts:    7,
+			LastError:   "must not persist either",
+			CreatedAt:   now.Add(time.Second),
+			UpdatedAt:   now.Add(2 * time.Second),
+		},
+	}
+
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+
+	mock.ExpectQuery(`INSERT INTO "outbox_events"`).
+		WithArgs(
+			events[0].ID, "payment.first", events[0].AggregateID, events[0].Payload,
+			outbox.OutboxStatusPending, 0, nil, "", events[0].CreatedAt, events[0].CreatedAt,
+			events[1].ID, events[1].EventType, events[1].AggregateID, events[1].Payload,
+			outbox.OutboxStatusPending, 0, nil, "", events[1].CreatedAt, events[1].UpdatedAt,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "event_type", "aggregate_id", "payload", "status", "attempts",
+			"published_at", "last_error", "created_at", "updated_at",
+		}).
+			AddRow(
+				events[1].ID, events[1].EventType, events[1].AggregateID, events[1].Payload,
+				outbox.OutboxStatusPending, 0, nil, "", events[1].CreatedAt, events[1].UpdatedAt,
+			).
+			AddRow(
+				events[0].ID, "payment.first", events[0].AggregateID, events[0].Payload,
+				outbox.OutboxStatusPending, 0, nil, "", events[0].CreatedAt, events[0].CreatedAt,
+			))
+
+	created, err := repo.CreateManyWithTx(context.Background(), tx, events)
+	require.NoError(t, err)
+	require.Len(t, created, len(events))
+	require.Equal(t, events[0].ID, created[0].ID)
+	require.Equal(t, events[1].ID, created[1].ID)
+	require.Equal(t, "payment.first", created[0].EventType)
+	require.Equal(t, outbox.OutboxStatusPending, created[0].Status)
+	require.Zero(t, created[0].Attempts)
+	require.Nil(t, created[0].PublishedAt)
+	require.Empty(t, created[0].LastError)
+	require.Equal(t, events[0].CreatedAt, created[0].UpdatedAt)
+
+	mock.ExpectCommit()
+	require.NoError(t, tx.Commit())
+	mock.ExpectClose()
+	require.NoError(t, db.Close())
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestRepository_CreateIdempotentWithTx_Validation(t *testing.T) {
