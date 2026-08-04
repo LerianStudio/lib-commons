@@ -39,3 +39,11 @@ type OutboxRepository interface {
 type IdempotentWriter interface {
 	CreateIdempotentWithTx(ctx context.Context, tx Tx, event *OutboxEvent) (*OutboxEvent, error)
 }
+
+// TransactionalBatchWriter is a narrow, opt-in contract for storing multiple
+// outbox events atomically in one set-wise statement inside a caller transaction.
+// Implementations preserve input order in the returned slice. An empty input is
+// a no-op that returns a non-nil empty slice.
+type TransactionalBatchWriter interface {
+	CreateManyWithTx(ctx context.Context, tx Tx, events []*OutboxEvent) ([]*OutboxEvent, error)
+}
