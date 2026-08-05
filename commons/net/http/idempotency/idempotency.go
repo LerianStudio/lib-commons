@@ -502,6 +502,10 @@ func usesIdentityResponseCodec(codec ResponseCodec) bool {
 }
 
 func (m *Middleware) respondBridgeConfigurationError(c fiber.Ctx, message string) error {
+	if m.onUnavailable != nil {
+		return m.onUnavailable(c)
+	}
+
 	return libHTTP.RespondError(c, http.StatusServiceUnavailable, "IDEMPOTENCY_UNAVAILABLE", message)
 }
 
@@ -809,6 +813,18 @@ func (m *Middleware) handleBridgeAcquired(
 	response, err := m.captureResponsePlaintext(c)
 	if err != nil {
 		m.logger.Log(postCtx, log.LevelWarn, "idempotency: failed to capture legacy bridge response", log.Err(err))
+
+		return m.respondPostHandlerStoreError(c)
+	}
+
+	// Mirror captureResponse's bound on the whole envelope: headers can push a
+	// small body past the replay limit, and a stored-but-unreplayable record
+	// would return 503 on every retry until the key expires.
+	if len(response) == 0 || len(response) > m.maxEncodedResponseBytes() {
+		m.logger.Log(postCtx, log.LevelWarn, "idempotency: legacy bridge replay response exceeds the size limit",
+			log.Int("response_size", len(response)),
+			log.Int("max_encoded_bytes", m.maxEncodedResponseBytes()),
+		)
 
 		return m.respondPostHandlerStoreError(c)
 	}

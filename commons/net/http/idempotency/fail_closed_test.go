@@ -140,7 +140,7 @@ func TestCheck_TransientRedisError(t *testing.T) {
 				assert.False(t, called.Load(), "handler must NOT run when failing closed")
 			})
 
-			t.Run("default_fails_open", func(t *testing.T) {
+			t.Run("default_classifies_ambiguous_failures_closed", func(t *testing.T) {
 				t.Parallel()
 
 				mr := miniredis.RunT(t)

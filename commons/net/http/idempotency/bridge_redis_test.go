@@ -113,12 +113,12 @@ func TestCheck_RedisLegacyBridgeWrite_V62ReaderUnderstandsProcessingAndComplete(
 		require.NoError(t, <-result)
 	})
 
-	t.Run("complete record replays through old reader with small body limit and headers", func(t *testing.T) {
+	t.Run("complete record replays through old reader with headers preserved", func(t *testing.T) {
 		t.Parallel()
 
 		miniRedis := miniredis.RunT(t)
 		client := newRedisClient(t, miniRedis)
-		middleware := New(client, WithRedisLegacyBridge(), WithMaxBodyCache(4))
+		middleware := New(client, WithRedisLegacyBridge(), WithMaxBodyCache(256))
 		app := fiber.New()
 		app.Use(tenantIdentityMiddleware(bridgeDashlessTenant, bridgeDashedTenant))
 		app.Use(middleware.Check())
@@ -160,6 +160,40 @@ func TestCheck_RedisLegacyBridgeWrite_V62ReaderUnderstandsProcessingAndComplete(
 		legacyResponse, err := miniRedis.Get(key + ":response")
 		require.NoError(t, err)
 		assert.Equal(t, []byte(legacyResponse), canonicalRecord.Response)
+	})
+
+	// A small body with large headers can push the plaintext envelope past the
+	// replay bound. Storing it would poison the key: after the bridge is
+	// disabled, replay of the canonical record returns 503 until the TTL
+	// expires. The bridge must fail closed before completion instead.
+	t.Run("oversized replay envelope fails closed before completion", func(t *testing.T) {
+		t.Parallel()
+
+		miniRedis := miniredis.RunT(t)
+		client := newRedisClient(t, miniRedis)
+		middleware := New(client, WithRedisLegacyBridge(), WithMaxBodyCache(4))
+		app := fiber.New()
+		app.Use(tenantIdentityMiddleware(bridgeDashlessTenant, bridgeDashedTenant))
+		app.Use(middleware.Check())
+		app.Post("/test", func(c fiber.Ctx) error {
+			c.Set("X-Bridge-Padding", strings.Repeat("h", 64))
+
+			return c.Status(http.StatusAccepted).SendString("tiny")
+		})
+
+		response := doSend(t, app, http.MethodPost, "/test", requestBody, "oversized-key")
+		body := readBody(t, response)
+		assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
+		assert.Contains(t, body, "IDEMPOTENCY_UNAVAILABLE")
+
+		key := "idempotency:" + bridgeDashedTenant + ":oversized-key"
+		stored, err := miniRedis.Get(key)
+		require.NoError(t, err)
+		state, _, valid := parseLegacyRecord([]byte(stored))
+		assert.True(t, valid)
+		assert.Equal(t, keyStateProcessing, state,
+			"an unreplayable response must never be persisted as complete")
+		assert.NotContains(t, miniRedis.Keys(), key+":response")
 	})
 }
 
