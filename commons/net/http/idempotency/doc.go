@@ -113,6 +113,9 @@
 //   - Header exceeds [WithMaxKeyLength] (default 256 UTF-8 bytes): request is
 //     passed to the configured [WithRejectedHandler]. When no custom handler is
 //     set, a 400 JSON response with code "VALIDATION_ERROR" is returned.
+//   - Header ends with a reserved suffix (":response" or ":bridge-owner"): same
+//     rejection path. Such keys would collide with the companion Redis keys
+//     derived from another idempotency key.
 //   - The built-in Redis store unavailable: request proceeds without idempotency
 //     enforcement by default, or receives 503 with [WithFailClosed].
 //   - A caller-provided store missing, errored, or returning an invalid state:

@@ -390,12 +390,21 @@ func (s *redisStore) ReleaseBridge(
 	return applied == 1, nil
 }
 
+// Reserved suffixes derive companion Redis keys from a primary idempotency
+// key. Client-supplied keys ending in one of these would collide with the
+// derived keys of another idempotency key, so the middleware rejects them
+// before any Redis access.
+const (
+	legacyResponseKeySuffix = ":response"
+	bridgeOwnerKeySuffix    = ":bridge-owner"
+)
+
 func legacyResponseKey(key string) string {
-	return key + ":response"
+	return key + legacyResponseKeySuffix
 }
 
 func bridgeOwnerKey(key string) string {
-	return key + ":bridge-owner"
+	return key + bridgeOwnerKeySuffix
 }
 
 func parseRedisBridgeAcquireResult(value any) (bridgeRecordPair, bool, error) {

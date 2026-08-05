@@ -1,5 +1,12 @@
 # Lib-commons Changelog
 
+## [Unreleased]
+
+Fixes:
+- Add an opt-in standalone/sentinel Redis bridge that atomically writes v6.2 records in the validated original-tenant namespace and owner-fenced current JSON in the canonical namespace; malformed state, mismatched tenant identity, custom response codecs, and Redis Cluster fail closed before mutation. Disable bridge writes only after v6.2 is drained and its maximum TTL has elapsed. (@fredcamaral)
+
+---
+
 ## [6.7.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.7.0)
 
 Features:
@@ -15,7 +22,6 @@ Features:
 - Add a Redis-backed outbound pacing round tripper. (@fredcamaral)
 
 Fixes:
-- Add an opt-in standalone/sentinel Redis bridge that atomically writes v6.2 records in the validated original-tenant namespace and owner-fenced current JSON in the canonical namespace; malformed state, mismatched tenant identity, custom response codecs, and Redis Cluster fail closed before mutation. Disable bridge writes only after v6.2 is drained and its maximum TTL has elapsed. (@fredcamaral)
 - Classify context ends as aborted waits and log rate refusals. (@fredcamaral)
 - Validate max rate floor, refuse `nil` requests, and document backend version. (@fredcamaral)
 - Correct clock tolerance comment and assert poll interval sentinel. (@fredcamaral)

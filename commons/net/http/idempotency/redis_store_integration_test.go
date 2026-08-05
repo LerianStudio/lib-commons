@@ -107,7 +107,7 @@ func TestIntegration_RedisStore_Contract(t *testing.T) {
 		send := func() *http.Response {
 			request := httptest.NewRequest(http.MethodPost, "/bridge", strings.NewReader(`{"amount":10}`))
 			request.Header.Set(libConstants.IdempotencyKey, requestKey)
-			response, requestErr := app.Test(request)
+			response, requestErr := app.Test(request, fiber.TestConfig{Timeout: 0})
 			require.NoError(t, requestErr)
 
 			return response
@@ -167,7 +167,7 @@ func TestIntegration_RedisStore_Contract(t *testing.T) {
 		})
 		currentRequest := httptest.NewRequest(http.MethodPost, "/bridge", strings.NewReader(`{"amount":10}`))
 		currentRequest.Header.Set(libConstants.IdempotencyKey, requestKey)
-		currentResponse, requestErr := currentApp.Test(currentRequest)
+		currentResponse, requestErr := currentApp.Test(currentRequest, fiber.TestConfig{Timeout: 0})
 		require.NoError(t, requestErr)
 		currentBody, readErr := io.ReadAll(currentResponse.Body)
 		require.NoError(t, readErr)

@@ -409,6 +409,22 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 		)
 	}
 
+	// Keys ending in a reserved suffix would collide with the companion Redis
+	// keys derived from another idempotency key ("<key>:response",
+	// "<key>:bridge-owner") and could corrupt its replay response or bridge
+	// owner fence.
+	if strings.HasSuffix(idempotencyKey, legacyResponseKeySuffix) ||
+		strings.HasSuffix(idempotencyKey, bridgeOwnerKeySuffix) {
+		if m.onRejected != nil {
+			return m.onRejected(c)
+		}
+
+		return libHTTP.RespondError(c, http.StatusBadRequest,
+			"VALIDATION_ERROR",
+			fmt.Sprintf("%s must not end with a reserved suffix", chttp.IdempotencyKey),
+		)
+	}
+
 	// Build a tenant-scoped Redis key for per-tenant isolation.
 	tenantID := tmcore.GetTenantIDContext(c.Context())
 	if tenantID == "" {
