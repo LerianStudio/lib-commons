@@ -168,6 +168,8 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 		return unauthorizedError(c, "MISSING_TENANT", "tenantId is required in JWT token")
 	}
 
+	originalTenantID := tenantID
+
 	tenantID, err = core.CanonicalTenantID(tenantID)
 	if err != nil {
 		logger.Base().Log(ctx, liblog.LevelError, "invalid tenantId format in JWT",
@@ -183,6 +185,7 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 
 	// Store tenant ID in context
 	ctx = core.ContextWithTenantID(ctx, tenantID)
+	ctx = core.ContextWithOriginalTenantID(ctx, originalTenantID)
 
 	// Propagate tenant.id via the standard OTel Baggage so downstream
 	// observability components (e.g. lib-observability span processors) can

@@ -251,6 +251,33 @@ func TestCheck_KeyTooLong_Rejected(t *testing.T) {
 	assert.Contains(t, body, chttp.IdempotencyKey)
 }
 
+func TestCheck_ReservedKeySuffix_Rejected(t *testing.T) {
+	t.Parallel()
+
+	// Keys ending in a reserved suffix collide with the companion Redis keys
+	// derived from another idempotency key: "abc:response" is the replay
+	// sidecar of "abc", and "abc:bridge-owner" is its bridge owner fence.
+	for _, suffix := range []string{legacyResponseKeySuffix, bridgeOwnerKeySuffix} {
+		suffix := suffix
+		t.Run(suffix, func(t *testing.T) {
+			t.Parallel()
+
+			mr := miniredis.RunT(t)
+			conn := newRedisClient(t, mr)
+			m := New(conn)
+
+			app := newPostApp(m.Check())
+			resp := doPost(t, app, "abc"+suffix)
+			body := readBody(t, resp)
+
+			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+			assert.Contains(t, body, "VALIDATION_ERROR")
+			assert.Contains(t, body, chttp.IdempotencyKey)
+			assert.Empty(t, mr.Keys(), "a reserved-suffix key must be rejected before Redis access")
+		})
+	}
+}
+
 func TestCheck_KeyTooLong_CustomHandler(t *testing.T) {
 	t.Parallel()
 
@@ -575,10 +602,10 @@ func TestOptions_Custom(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Redis failure — fail-open behavior
+// Redis failure classification
 // ---------------------------------------------------------------------------
 
-func TestCheck_RedisDown_FailsOpen(t *testing.T) {
+func TestCheck_RedisConnectionLostDuringAcquire_FailsClosed(t *testing.T) {
 	t.Parallel()
 
 	mr := miniredis.RunT(t)
@@ -593,9 +620,9 @@ func TestCheck_RedisDown_FailsOpen(t *testing.T) {
 	resp := doPost(t, app, "key-while-redis-down")
 	defer resp.Body.Close()
 
-	// fail-open: handler proceeds despite Redis being unreachable.
-	assert.Equal(t, http.StatusCreated, resp.StatusCode,
-		"must fail open when Redis is unavailable")
+	// A closed live server may receive the command before the connection ends.
+	// Execution is ambiguous, so the mutation must not run.
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
 // ---------------------------------------------------------------------------
