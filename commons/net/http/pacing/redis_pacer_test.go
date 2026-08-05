@@ -286,6 +286,9 @@ func TestNewPacer_Validation(t *testing.T) {
 	_, err = pacing.NewPacer(conn, testPrefix, pacing.WithMaxRate(0))
 	require.ErrorIs(t, err, pacing.ErrInvalidRate)
 
+	_, err = pacing.NewPacer(conn, testPrefix, pacing.WithMaxRate(1e-9))
+	require.ErrorIs(t, err, pacing.ErrInvalidRate, "a maximum rate below one call per day must be rejected at construction")
+
 	_, err = pacing.NewPacer(conn, testPrefix, pacing.WithPollInterval(0))
 	require.ErrorIs(t, err, pacing.ErrInvalidPollInterval)
 

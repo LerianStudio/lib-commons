@@ -30,6 +30,10 @@
 // a failover onto a lagging node, or an NTP step backwards — refuses, because a
 // backwards clock re-issues a budget that was already spent.
 //
+// Because the script calls TIME before writing keys, the backend must replicate
+// script effects rather than the script itself: Redis 5.0+ (where effects
+// replication is the default) or Valkey 7.2.5+ is required.
+//
 // # Usage
 //
 //	pacer, err := pacing.NewPacer(redisConn, "dataprev", pacing.WithMaxRate(50))

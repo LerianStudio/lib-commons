@@ -355,6 +355,10 @@ func NewPacer(conn *libRedis.Client, prefix string, opts ...Option) (*Pacer, err
 		return nil, fmt.Errorf("%w: maximum rate must be a positive number", ErrInvalidRate)
 	}
 
+	if pacer.maxRate < minRate {
+		return nil, fmt.Errorf("%w: maximum rate must be at least one call per day", ErrInvalidRate)
+	}
+
 	if pacer.pollInterval < minRetrySleep {
 		return nil, fmt.Errorf("%w: poll interval must be at least %s", ErrInvalidPollInterval, minRetrySleep)
 	}

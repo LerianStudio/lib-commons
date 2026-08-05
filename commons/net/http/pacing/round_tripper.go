@@ -47,6 +47,10 @@ func NewRoundTripper(next http.RoundTripper, pacer *Pacer, buckets BucketsFunc) 
 // an error, and it closes the request body on every path that does not reach the
 // next transport, as the http.RoundTripper contract requires.
 func (rt *RoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req == nil {
+		return nil, errors.New("pacing: request is nil")
+	}
+
 	if rt == nil || rt.pacer == nil || rt.buckets == nil || rt.next == nil {
 		return nil, refuse(req, ErrPacerUnavailable)
 	}

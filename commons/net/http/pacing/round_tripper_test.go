@@ -244,3 +244,17 @@ func TestRoundTripper_NilReceiverFailsClosed(t *testing.T) {
 	require.ErrorIs(t, roundErr, pacing.ErrPacerUnavailable)
 	require.Nil(t, resp)
 }
+
+func TestRoundTripper_NilRequestIsRefused(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	p := newPacer(t, mr)
+
+	rt, err := pacing.NewRoundTripper(http.DefaultTransport, p, staticBuckets())
+	require.NoError(t, err)
+
+	resp, roundErr := rt.RoundTrip(nil) //nolint:bodyclose // the error path returns no response
+	require.Error(t, roundErr)
+	require.Nil(t, resp)
+}
