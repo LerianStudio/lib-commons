@@ -1,5 +1,22 @@
 # Lib-commons Changelog
 
+## [6.6.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.6.0)
+
+Features:
+- Add a Redis-backed outbound pacing round tripper. (@fredcamaral)
+
+Fixes:
+- Classify context ends as aborted waits and log rate refusals. (@fredcamaral)
+- Validate max rate floor, refuse `nil` requests, and document backend version. (@fredcamaral)
+- Correct clock tolerance comment and assert poll interval sentinel. (@fredcamaral)
+
+Improvements:
+- Drop stale `redactKey` tests orphaned by the idempotency rewrite. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v6.5.1...v6.6.0)
+
+---
+
 ## [6.5.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.5.0)
 
 Features:
