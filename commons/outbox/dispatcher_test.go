@@ -803,6 +803,39 @@ func TestDispatcher_CollectPriorityEventsUsesAtomicMultiTypeCapability(t *testin
 	require.Equal(t, []uuid.UUID{highID, lowID}, []uuid.UUID{collected[0].ID, collected[1].ID})
 }
 
+func TestDispatcher_CollectEvents_MultiTypeClaimsDoNotFallBackToUnscopedEvents(t *testing.T) {
+	t.Parallel()
+
+	ownedID := uuid.New()
+	repo := &multiTypeFakeRepo{
+		fakeRepo: &fakeRepo{
+			stuck:          []*OutboxEvent{{ID: uuid.New(), EventType: "foreign.stuck"}},
+			failedForRetry: []*OutboxEvent{{ID: uuid.New(), EventType: "foreign.failed"}},
+			pending:        []*OutboxEvent{{ID: uuid.New(), EventType: "foreign.pending"}},
+		},
+		events: []*OutboxEvent{{ID: ownedID, EventType: "scr.consulta.created"}},
+	}
+
+	dispatcher, err := NewDispatcher(
+		repo,
+		NewHandlerRegistry(),
+		nil,
+		noop.NewTracerProvider().Tracer("test"),
+		WithBatchSize(4),
+		WithPriorityBudget(4),
+		WithPriorityEventTypes("scr.consulta.created", "scr.consulta.failed"),
+	)
+	require.NoError(t, err)
+
+	ctx, span := dispatcher.tracer.Start(context.Background(), "test.collect_scoped_events")
+	defer span.End()
+
+	collected := dispatcher.collectEvents(ctx, span)
+	require.Len(t, collected, 1)
+	require.Equal(t, ownedID, collected[0].ID)
+	require.Zero(t, repo.listPendingCallCount())
+}
+
 func TestDispatcher_CollectEvents_ContinuesWhenResetStuckProcessingFails(t *testing.T) {
 	t.Parallel()
 

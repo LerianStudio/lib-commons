@@ -53,6 +53,8 @@ type DispatcherConfig struct {
 	// MaxFailedPerBatch limits how many failed events are reclaimed in one cycle.
 	MaxFailedPerBatch int
 	// PriorityEventTypes defines ordered event types to pull first each cycle.
+	// For MultiTypePendingRepository implementations, these types are the
+	// exclusive claim scope and unscoped fallback claims are disabled.
 	PriorityEventTypes []string
 	// IncludeTenantMetrics enables tenant metric attributes and can increase cardinality.
 	IncludeTenantMetrics bool
@@ -259,6 +261,8 @@ func WithMaxFailedPerBatch(maxFailed int) DispatcherOption {
 }
 
 // WithPriorityEventTypes sets the ordered event types selected before generic pending events.
+// Repositories implementing MultiTypePendingRepository treat them as an exclusive
+// claim scope and do not fall back to unscoped stuck, failed, or pending events.
 func WithPriorityEventTypes(eventTypes ...string) DispatcherOption {
 	return func(dispatcher *Dispatcher) {
 		types := make([]string, 0, len(eventTypes))
