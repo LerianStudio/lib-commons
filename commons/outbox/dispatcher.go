@@ -769,8 +769,9 @@ func (dispatcher *Dispatcher) tenantDispatchScopeOrder(scopes []TenantDispatchSc
 	return ordered
 }
 
-// collectEvents gathers events for a single dispatch cycle using a priority-layered
-// strategy. Events are collected in this order:
+// collectEvents gathers events for a single dispatch cycle. Repositories with the
+// atomic multi-type capability use PriorityEventTypes as an exclusive claim scope
+// and do not fall back to unscoped claims. Other repositories use this order:
 //
 //  1. Priority events: pending events matching PriorityEventTypes (up to PriorityBudget)
 //  2. Stuck events: PROCESSING events older than ProcessingTimeout (reclaimed for retry)
@@ -786,7 +787,12 @@ func (dispatcher *Dispatcher) collectEvents(ctx context.Context, span trace.Span
 	processingBefore := time.Now().UTC().Add(-dispatcher.cfg.ProcessingTimeout)
 
 	priorityBudget := min(dispatcher.cfg.PriorityBudget, dispatcher.cfg.BatchSize)
+
 	priorityEvents := dispatcher.collectPriorityEvents(ctx, span, priorityBudget)
+	if _, scoped := dispatcher.repo.(MultiTypePendingRepository); scoped && len(dispatcher.cfg.PriorityEventTypes) > 0 {
+		return deduplicateEvents(priorityEvents)
+	}
+
 	collected := len(priorityEvents)
 
 	stuckLimit := dispatcher.cfg.BatchSize - collected
