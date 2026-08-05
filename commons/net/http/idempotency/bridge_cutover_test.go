@@ -117,16 +117,26 @@ func TestCheck_RedisLegacyBridge_RaceWithBridgeDisabledCurrentExecutesOneHandler
 	case <-time.After(time.Second):
 		require.FailNow(t, "neither contender reached the handler")
 	}
-	time.Sleep(50 * time.Millisecond)
-	close(release)
-	firstResult := <-results
-	secondResult := <-results
 
-	require.NoError(t, firstResult.err)
-	require.NoError(t, secondResult.err)
+	// The winner is parked on release, so the loser's conflict response is the
+	// only result that can arrive here. Draining it before releasing proves the
+	// loser already resolved without a handler execution; no sleep is needed to
+	// order the contenders.
+	var loserResult bridgeRaceResult
+	select {
+	case loserResult = <-results:
+	case <-time.After(time.Second):
+		require.FailNow(t, "the losing contender never resolved while the winner held the claim")
+	}
+
+	close(release)
+	winnerResult := <-results
+
+	require.NoError(t, loserResult.err)
+	require.NoError(t, winnerResult.err)
 	assert.Equal(t, int32(1), handlerCalls.Load())
-	assert.ElementsMatch(t, []int{http.StatusCreated, http.StatusConflict},
-		[]int{firstResult.status, secondResult.status})
+	assert.Equal(t, http.StatusConflict, loserResult.status)
+	assert.Equal(t, http.StatusCreated, winnerResult.status)
 }
 
 func TestCheck_RedisLegacyBridge_RaceWithV62ClaimExecutesOneHandler(t *testing.T) {
@@ -190,16 +200,26 @@ func TestCheck_RedisLegacyBridge_RaceWithV62ClaimExecutesOneHandler(t *testing.T
 	case <-time.After(time.Second):
 		require.FailNow(t, "neither contender reached the handler")
 	}
-	time.Sleep(50 * time.Millisecond)
-	close(release)
-	firstResult := <-results
-	secondResult := <-results
 
-	require.NoError(t, firstResult.err)
-	require.NoError(t, secondResult.err)
+	// The winner is parked on release, so the loser's conflict response is the
+	// only result that can arrive here. Draining it before releasing proves the
+	// loser already resolved without a handler execution; no sleep is needed to
+	// order the contenders.
+	var loserResult bridgeRaceResult
+	select {
+	case loserResult = <-results:
+	case <-time.After(time.Second):
+		require.FailNow(t, "the losing contender never resolved while the winner held the claim")
+	}
+
+	close(release)
+	winnerResult := <-results
+
+	require.NoError(t, loserResult.err)
+	require.NoError(t, winnerResult.err)
 	assert.Equal(t, int32(1), handlerCalls.Load())
-	assert.ElementsMatch(t, []int{http.StatusCreated, http.StatusConflict},
-		[]int{firstResult.status, secondResult.status})
+	assert.Equal(t, http.StatusConflict, loserResult.status)
+	assert.Equal(t, http.StatusCreated, winnerResult.status)
 }
 
 func TestCheck_RedisLegacyBridge_RejectsUntrustedOriginalTenantBeforeRedis(t *testing.T) {
@@ -322,16 +342,26 @@ func TestCheck_RedisLegacyBridge_LuaFailuresNeverRunOrReopenHandler(t *testing.T
 			app := fiber.New()
 			app.Use(tenantIdentityMiddleware(bridgeDashlessTenant, bridgeDashedTenant))
 			app.Use(middleware.Check())
+			// The handler runs on a goroutine app.Test owns, where require's
+			// FailNow cannot stop the test; the seed error is asserted on the
+			// test goroutine after the response arrives.
+			seedErr := make(chan error, 1)
 			app.Post("/test", func(c fiber.Ctx) error {
 				miniRedis.Del(bridgeOwnerKey(legacyKey))
 				_, err := miniRedis.Lpush(bridgeOwnerKey(legacyKey), "wrong-type")
-				require.NoError(t, err)
+				seedErr <- err
 
 				return c.Status(testCase.statusCode).SendString("handled")
 			})
 
 			response := doPost(t, app, "transition-key")
 			body := readBody(t, response)
+			select {
+			case err := <-seedErr:
+				require.NoError(t, err)
+			case <-time.After(time.Second):
+				require.FailNow(t, "the handler never seeded the owner-key corruption")
+			}
 			assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
 			assert.Contains(t, body, "IDEMPOTENCY_UNAVAILABLE")
 			legacy, err := miniRedis.Get(legacyKey)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	chttp "github.com/LerianStudio/lib-commons/v6/commons/constants"
 	"github.com/alicebob/miniredis/v2"
@@ -62,7 +63,11 @@ func TestCheck_RedisLegacyBridge_SingleNamespaceReadsCurrentRecords(t *testing.T
 
 					currentResult <- bridgeRaceResult{status: response.StatusCode, err: response.Body.Close()}
 				}()
-				<-started
+				select {
+				case <-started:
+				case <-time.After(time.Second):
+					require.FailNow(t, "the current middleware never reached the handler")
+				}
 
 				var bridgeHandlerCalled atomic.Bool
 				bridge := New(client, WithRedisLegacyBridge())
