@@ -60,10 +60,10 @@ const (
 	stateTTLMillis = 24 * 60 * 60 * 1000
 
 	// clockToleranceMicros is how far the backend clock may step backwards before
-	// the primitive refuses to issue permits. NTP slew never moves backwards, so
-	// this only absorbs sub-millisecond noise; a real backwards step (a failover
-	// onto a lagging node) is rejected, because a backwards clock re-issues a
-	// budget that was already spent.
+	// the primitive refuses to issue permits. It is 5 milliseconds: NTP slew never
+	// moves backwards, so this only absorbs measurement noise. A real backwards
+	// step (a failover onto a lagging node) is larger and is rejected, because a
+	// backwards clock re-issues a budget that was already spent.
 	clockToleranceMicros = 5000
 
 	// digestBytes is the truncated SHA-256 length used for bucket identities.

@@ -287,7 +287,7 @@ func TestNewPacer_Validation(t *testing.T) {
 	require.ErrorIs(t, err, pacing.ErrInvalidRate)
 
 	_, err = pacing.NewPacer(conn, testPrefix, pacing.WithPollInterval(0))
-	require.Error(t, err)
+	require.ErrorIs(t, err, pacing.ErrInvalidPollInterval)
 
 	p, err := pacing.NewPacer(conn, testPrefix, pacing.WithLogger(&libLog.NopLogger{}), nil)
 	require.NoError(t, err)
