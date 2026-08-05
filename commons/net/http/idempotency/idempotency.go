@@ -421,7 +421,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 
 		return libHTTP.RespondError(c, http.StatusBadRequest,
 			"VALIDATION_ERROR",
-			fmt.Sprintf("%s must not end with a reserved suffix", chttp.IdempotencyKey),
+			chttp.IdempotencyKey+" must not end with a reserved suffix",
 		)
 	}
 
