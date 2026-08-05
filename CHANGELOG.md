@@ -1,5 +1,14 @@
 # Lib-commons Changelog
 
+## [6.7.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.7.0)
+
+Features:
+- Add optional `TargetBaseURL` to the M2M credential contract, enhancing flexibility in specifying target endpoints. (@jeffersonrodrigues92)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v6.6.0...v6.7.0)
+
+---
+
 ## [6.6.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.6.0)
 
 Features:
