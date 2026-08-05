@@ -66,6 +66,13 @@
 // runtime takes effect without a restart, and a provider reporting zero pauses
 // the bucket until it reports a positive rate or the context ends.
 //
+// That read frequency is the contract a provider must be built for: with the
+// default poll interval a waiting call reads every provider four times per
+// second, multiplied by concurrent waiters and buckets. A provider must
+// therefore serve from a cached or hot-reloaded in-process value and must not
+// block on a network call; a provider that read a remote source on every
+// invocation would amplify one waiting request into a stream of remote reads.
+//
 // # Known ceilings
 //
 // A permit is issued for one instant and is not refundable: a caller that

@@ -402,6 +402,7 @@ func (p *Pacer) Acquire(ctx context.Context, buckets ...Bucket) error {
 
 		intervals, paused, err := p.intervalsFor(ctx, buckets)
 		if err != nil {
+			p.logWarn(ctx, "pacing refused an outbound call", err)
 			libTracing.HandleSpanError(span, "pacing rate evaluation failed", err)
 
 			return err
@@ -417,7 +418,12 @@ func (p *Pacer) Acquire(ctx context.Context, buckets ...Bucket) error {
 
 		granted, retryAfter, err := p.evaluate(ctx, keys, intervals)
 		if err != nil {
-			p.logWarn(ctx, "pacing refused an outbound call", err)
+			// An aborted wait is the caller's own context ending, not a refusal
+			// worth an operator's attention, so it stays out of the warning log.
+			if !errors.Is(err, ErrWaitAborted) {
+				p.logWarn(ctx, "pacing refused an outbound call", err)
+			}
+
 			libTracing.HandleSpanError(span, "pacing backend evaluation failed", err)
 
 			return err
@@ -528,7 +534,7 @@ func intervalMicros(rate float64) int64 {
 func (p *Pacer) evaluate(ctx context.Context, keys []string, intervals []int64) (bool, time.Duration, error) {
 	client, err := p.conn.GetClient(ctx)
 	if err != nil {
-		return false, 0, fmt.Errorf("%w: %w", ErrBackendUnavailable, err)
+		return false, 0, classifyBackendError(ctx, err)
 	}
 
 	args := make([]any, 0, len(intervals)+2)
@@ -540,16 +546,23 @@ func (p *Pacer) evaluate(ctx context.Context, keys []string, intervals []int64) 
 
 	result, err := pacingScript.Run(ctx, client, keys, args...).Slice()
 	if err != nil {
-		return false, 0, classifyBackendError(err)
+		return false, 0, classifyBackendError(ctx, err)
 	}
 
 	return parseEvaluation(result)
 }
 
-// classifyBackendError separates a backwards backend clock from every other
-// backend failure. Both refuse the call; only the message differs, and it is the
-// one signal an operator needs to go look at the Redis node's clock.
-func classifyBackendError(err error) error {
+// classifyBackendError separates a context that ended, a backwards backend
+// clock, and every other backend failure. All three refuse the call; only the
+// message differs. A context end is the caller's own doing and is reported as
+// an aborted wait rather than a false backend-health signal, and the clock
+// message is the one signal an operator needs to go look at the Redis node's
+// clock.
+func classifyBackendError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return abortedWait(ctxErr)
+	}
+
 	if strings.Contains(err.Error(), markerClockBackwards) {
 		return fmt.Errorf("%w: %w", ErrClockWentBackwards, err)
 	}

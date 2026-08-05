@@ -4,11 +4,13 @@ package pacing_test
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons"
 	"github.com/LerianStudio/lib-commons/v6/commons/net/http/pacing"
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
 	"github.com/stretchr/testify/assert"
@@ -107,7 +109,7 @@ func integrationRate(r float64) pacing.RateProvider {
 }
 
 func TestIntegration_RedisPacer(t *testing.T) {
-	t.Setenv("ALLOW_INSECURE_TLS", "true")
+	t.Setenv(commons.EnvAllowInsecureTLS, "true")
 
 	client := newIntegrationClient(t, startRedis(t).endpoint)
 
@@ -287,7 +289,7 @@ func TestIntegration_RedisPacer(t *testing.T) {
 // working pacer. Closing the lib-commons client would not do: GetClient
 // reconnects on demand, so a closed client over a live server keeps granting.
 func TestIntegration_RedisPacer_BackendLossFailsClosed(t *testing.T) {
-	t.Setenv("ALLOW_INSECURE_TLS", "true")
+	t.Setenv(commons.EnvAllowInsecureTLS, "true")
 
 	container := startRedis(t)
 	client := newIntegrationClient(t, container.endpoint)
@@ -334,7 +336,7 @@ func snapshotBuckets(t *testing.T, client *libRedis.Client) map[string]string {
 	out := make(map[string]string, len(keys))
 
 	for _, k := range keys {
-		if len(k) >= len(":clock") && k[len(k)-len(":clock"):] == ":clock" {
+		if strings.HasSuffix(k, ":clock") {
 			continue
 		}
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -297,16 +298,45 @@ func TestNewPacer_Validation(t *testing.T) {
 	require.NotNil(t, p, "a nil option must be skipped, not dereferenced")
 }
 
+// recordingLogger captures warn-level records so a test can assert that a
+// fail-closed refusal was actually reported, not just returned.
+type recordingLogger struct {
+	libLog.NopLogger
+
+	mu   sync.Mutex
+	warn []string
+}
+
+func (r *recordingLogger) Log(_ context.Context, level libLog.Level, msg string, _ ...libLog.Field) {
+	if level != libLog.LevelWarn {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.warn = append(r.warn, msg)
+}
+
+func (r *recordingLogger) warnings() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]string(nil), r.warn...)
+}
+
 func TestPacer_Acquire_BackendFailureIsLogged(t *testing.T) {
 	t.Parallel()
 
 	mr := miniredis.RunT(t)
-	p := newPacer(t, mr, pacing.WithLogger(&libLog.NopLogger{}))
+	rec := &recordingLogger{}
+	p := newPacer(t, mr, pacing.WithLogger(rec))
 
 	mr.SetError("LOADING Redis is loading the dataset in memory")
 
 	err := p.Acquire(boundedCtx(t), mustTenantBucket(t, "default", constRate(1000)))
 	require.ErrorIs(t, err, pacing.ErrBackendUnavailable)
+	assert.NotEmpty(t, rec.warnings(), "a refused outbound call must be logged")
 }
 
 func TestPacer_Acquire_RejectsEmptyAndDuplicateAndZeroBuckets(t *testing.T) {
