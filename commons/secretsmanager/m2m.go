@@ -16,6 +16,18 @@
 //
 //	tenants/{env}/{tenantOrgID}/{applicationName}/m2m/{targetService}/credentials
 //
+// The secret value is a JSON object written by Tenant Manager at provisioning time:
+//
+//	{
+//	  "clientId":      "...",  // required
+//	  "clientSecret":  "...",  // required
+//	  "targetBaseUrl": "..."   // optional; absent when the target has no registered base URL
+//	}
+//
+// Unknown fields are ignored, so the payload can grow without breaking readers.
+// Only clientId and clientSecret are required; see M2MCredentials.TargetBaseURL
+// for the optionality semantics of the target location.
+//
 // # Usage
 //
 // A plugin retrieves credentials to authenticate with a product service:
@@ -163,11 +175,33 @@ func isNilInterface(i any) bool {
 type M2MCredentials struct {
 	ClientID     string `json:"clientId"`
 	ClientSecret string `json:"clientSecret"` // #nosec G117 -- secret payload is intentionally deserialized from AWS Secrets Manager and redacted by String/GoString
+
+	// TargetBaseURL is where the target service of this credential lives, in the
+	// environment the secret belongs to: scheme://host[:port], carrying NO path —
+	// consumers append their own route. It exists so an M2M consumer can stop
+	// carrying its targets' locations in its own environment config; the location
+	// travels with the credential that grants access to it.
+	//
+	// Tenant Manager writes it at provisioning time, taken from the target
+	// service's registration for that tenant's environment, and omits it when the
+	// registration carries no base URL. Absence is therefore a VALID state meaning
+	// "target location not registered" — never an error, and never treated as an
+	// incomplete credential. Consumers decide what to do without it (fall back to
+	// their own config, or fail closed); this layer does not decide for them.
+	//
+	// The value is passed through VERBATIM: not trimmed, normalized, or parsed
+	// here. It is configuration, not secret material, so it is printed in clear by
+	// String/GoString. A consumer that dials this URL must validate it against its
+	// own threat model — at minimum scheme and host — before use.
+	TargetBaseURL string `json:"targetBaseUrl,omitempty"`
 }
 
 // String redacts secret material from formatted output.
 func (c M2MCredentials) String() string {
-	return fmt.Sprintf("M2MCredentials{ClientID:%q, ClientSecret:%s}", c.ClientID, constants.ObfuscatedValue)
+	return fmt.Sprintf(
+		"M2MCredentials{ClientID:%q, ClientSecret:%s, TargetBaseURL:%q}",
+		c.ClientID, constants.ObfuscatedValue, c.TargetBaseURL,
+	)
 }
 
 // GoString redacts secret material from Go-syntax formatted output.

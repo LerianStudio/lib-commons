@@ -900,3 +900,183 @@ func TestValidatePathSegment(t *testing.T) {
 		})
 	}
 }
+
+// ============================================================================
+// Test: TargetBaseURL (optional target location carried by the credential)
+// ============================================================================
+
+func TestM2MCredentials_TargetBaseURLDeserialization(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		json     string
+		expected M2MCredentials
+	}{
+		{
+			name: "targetBaseUrl is read when present",
+			json: `{"clientId":"id1","clientSecret":"sec1","targetBaseUrl":"https://ledger.staging.svc:8080"}`,
+			expected: M2MCredentials{
+				ClientID:      "id1",
+				ClientSecret:  "sec1",
+				TargetBaseURL: "https://ledger.staging.svc:8080",
+			},
+		},
+		{
+			name: "absent targetBaseUrl deserializes exactly as before, without error",
+			json: `{"clientId":"id2","clientSecret":"sec2"}`,
+			expected: M2MCredentials{
+				ClientID:     "id2",
+				ClientSecret: "sec2",
+			},
+		},
+		{
+			name: "explicit empty targetBaseUrl is accepted as absent",
+			json: `{"clientId":"id3","clientSecret":"sec3","targetBaseUrl":""}`,
+			expected: M2MCredentials{
+				ClientID:     "id3",
+				ClientSecret: "sec3",
+			},
+		},
+		{
+			name: "unknown extra fields are still ignored alongside targetBaseUrl",
+			json: `{"clientId":"id4","clientSecret":"sec4","targetBaseUrl":"http://localhost:3000","tokenUrl":"https://example.com/token","tenantId":"t1","futureField":42}`,
+			expected: M2MCredentials{
+				ClientID:      "id4",
+				ClientSecret:  "sec4",
+				TargetBaseURL: "http://localhost:3000",
+			},
+		},
+		{
+			name: "value is passed through verbatim without normalization",
+			json: `{"clientId":"id5","clientSecret":"sec5","targetBaseUrl":"  HTTPS://Ledger.Example.COM:8080/  "}`,
+			expected: M2MCredentials{
+				ClientID:      "id5",
+				ClientSecret:  "sec5",
+				TargetBaseURL: "  HTTPS://Ledger.Example.COM:8080/  ",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var creds M2MCredentials
+			err := json.Unmarshal([]byte(tt.json), &creds)
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, creds)
+		})
+	}
+}
+
+// TestM2MCredentials_TargetBaseURLWireContract pins the serialized key so the
+// json tag cannot be dropped or renamed silently: without the tag Go would emit
+// the Go field name, and without omitempty an absent value would emit an empty key.
+func TestM2MCredentials_TargetBaseURLWireContract(t *testing.T) {
+	t.Parallel()
+
+	t.Run("present value serializes under the camelCase key", func(t *testing.T) {
+		t.Parallel()
+
+		encoded, err := json.Marshal(M2MCredentials{
+			ClientID:      "id1",
+			ClientSecret:  "sec1",
+			TargetBaseURL: "https://ledger.staging.svc:8080",
+		})
+		require.NoError(t, err)
+
+		assert.JSONEq(t, `{"clientId":"id1","clientSecret":"sec1","targetBaseUrl":"https://ledger.staging.svc:8080"}`, string(encoded))
+		assert.Contains(t, string(encoded), `"targetBaseUrl":`)
+		assert.NotContains(t, string(encoded), "TargetBaseURL")
+	})
+
+	t.Run("absent value is omitted from the payload", func(t *testing.T) {
+		t.Parallel()
+
+		encoded, err := json.Marshal(M2MCredentials{ClientID: "id2", ClientSecret: "sec2"})
+		require.NoError(t, err)
+
+		assert.JSONEq(t, `{"clientId":"id2","clientSecret":"sec2"}`, string(encoded))
+		assert.NotContains(t, string(encoded), "argetBaseURL")
+		assert.NotContains(t, string(encoded), "targetBaseUrl")
+	})
+
+	t.Run("round trip preserves the value", func(t *testing.T) {
+		t.Parallel()
+
+		original := M2MCredentials{
+			ClientID:      "id3",
+			ClientSecret:  "sec3",
+			TargetBaseURL: "https://ledger.example.com:9090",
+		}
+
+		encoded, err := json.Marshal(original)
+		require.NoError(t, err)
+
+		var decoded M2MCredentials
+		require.NoError(t, json.Unmarshal(encoded, &decoded))
+		assert.Equal(t, original, decoded)
+	})
+}
+
+func TestM2MCredentials_StringShowsTargetBaseURLInClear(t *testing.T) {
+	t.Parallel()
+
+	creds := M2MCredentials{
+		ClientID:      "client-visible-id",
+		ClientSecret:  "sec_super-secret-value",
+		TargetBaseURL: "https://ledger.staging.svc:8080",
+	}
+
+	formatted := fmt.Sprintf("%v", creds)
+	goFormatted := fmt.Sprintf("%#v", creds)
+
+	for _, out := range []string{formatted, goFormatted} {
+		assert.Contains(t, out, creds.TargetBaseURL)
+		assert.Contains(t, out, "ClientSecret:"+constants.ObfuscatedValue)
+		assert.NotContains(t, out, creds.ClientSecret)
+	}
+}
+
+func TestGetM2MCredentials_TargetBaseURL(t *testing.T) {
+	t.Parallel()
+
+	const (
+		withURLPath    = "tenants/staging/tenant-with-url/plugin-hub/m2m/ledger/credentials"
+		withoutURLPath = "tenants/staging/tenant-no-url/plugin-hub/m2m/ledger/credentials"
+	)
+
+	mock := &mockSecretsManagerClient{
+		secrets: map[string]string{
+			withURLPath:    `{"clientId":"id1","clientSecret":"sec1","targetBaseUrl":"https://ledger.staging.svc:8080"}`,
+			withoutURLPath: `{"clientId":"id2","clientSecret":"sec2"}`,
+		},
+	}
+
+	t.Run("returns the registered base URL", func(t *testing.T) {
+		t.Parallel()
+
+		creds, err := GetM2MCredentials(context.Background(), mock, "staging", "tenant-with-url", "plugin-hub", "ledger")
+
+		require.NoError(t, err)
+		require.NotNil(t, creds)
+		assert.Equal(t, "https://ledger.staging.svc:8080", creds.TargetBaseURL)
+		assert.Equal(t, "id1", creds.ClientID)
+		assert.Equal(t, "sec1", creds.ClientSecret)
+	})
+
+	t.Run("absence is a valid state, not an incomplete credential", func(t *testing.T) {
+		t.Parallel()
+
+		creds, err := GetM2MCredentials(context.Background(), mock, "staging", "tenant-no-url", "plugin-hub", "ledger")
+
+		require.NoError(t, err)
+		require.NotNil(t, creds)
+		assert.Empty(t, creds.TargetBaseURL)
+		assert.Equal(t, "id2", creds.ClientID)
+		assert.Equal(t, "sec2", creds.ClientSecret)
+	})
+}
