@@ -101,7 +101,9 @@ func TestCheck_InjectedStore_StoredStates(t *testing.T) {
 		{
 			name: "key reuse returns unprocessable content",
 			stored: encodeStoreRecord(t, storeRecord{
-				State: keyStateComplete, Fingerprint: "different-fingerprint", Owner: "owner-a",
+				State:       keyStateComplete,
+				Fingerprint: requestFingerprint(http.MethodPost, "/test", []byte("different")),
+				Owner:       "owner-a", Response: []byte("encoded"),
 			}),
 			wantStatus: http.StatusUnprocessableEntity, wantBody: "IDEMPOTENCY_KEY_REUSE",
 		},

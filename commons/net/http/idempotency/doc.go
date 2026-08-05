@@ -24,6 +24,40 @@
 // implementations preserve those bytes and provide only atomic acquisition and
 // compare-safe replacement or deletion; they do not implement HTTP semantics.
 //
+// During rolling upgrades, [New] also reads v6.2 Redis records whose primary
+// value is "processing:<fingerprint>" or "complete:<fingerprint>" and whose
+// replay response is stored under the companion "<key>:response" key.
+// [WithRedisLegacyBridge] makes new pods write that layout too, so v6.2 pods can
+// read records created by new pods. When the validated original tenant spelling
+// differs from the trusted canonical spelling, one Lua transition observes or
+// creates both namespaces: the original namespace receives the v6.2 marker and
+// companion response, while the canonical namespace receives the current JSON
+// record with its owner and exact replay envelope. Completion and release also
+// compare and mutate both namespaces atomically.
+//
+// The original spelling is untrusted at this sink. The bridge canonicalizes it
+// and requires its normalized value to equal the trusted canonical tenant in
+// context before any Redis command or protected handler can run.
+//
+// The bridge is private to the built-in Redis constructor. [NewWithStore], Redis
+// Cluster, and any non-default [ResponseCodec] return 503 before the protected
+// handler runs. Cluster cannot atomically mutate the legacy keys across hash
+// slots, and v6.2 cannot decode encrypted or transformed replay envelopes.
+// Standalone and sentinel Redis with the default plaintext codec are supported.
+//
+// Roll out in two deployments. First, enable [WithRedisLegacyBridge] on every
+// new pod while any v6.2 pod remains. Drain all v6.2 pods, then wait the maximum
+// configured idempotency TTL so no v6.2-only record remains. Every dual-namespace
+// bridge operation already has canonical JSON, so the second deployment can
+// disable the bridge without reopening acquisition. New writes then use only the
+// current JSON format. Keep the legacy reader until another maximum TTL has
+// elapsed since the last bridge writer stopped.
+//
+// The bridge owner side-key fences stale completion and release attempts made by
+// new pods. It cannot fence a stale v6.2 pod because v6.2 never wrote an owner
+// token. The configured minimum TTL must therefore remain longer than the
+// protected operation and retry window throughout the mixed-version deployment.
+//
 // # Payload fingerprint
 //
 // An idempotency key alone does not identify a request — it identifies the
@@ -98,16 +132,16 @@
 //   - Duplicate key in "complete" state without an exact replay response, or a
 //     response that [ResponseCodec] cannot decode: 503 "IDEMPOTENCY_UNAVAILABLE"
 //     is returned. The middleware never fabricates a generic success response.
-//   - Duplicate key holding the plain-text record written by lib-commons v6.4.0
-//     and earlier ("processing:<fingerprint>" / "complete:<fingerprint>"): treated
-//     as an EXISTING record, never an absent one, so a legitimate retry is never
+//   - Duplicate key holding the plain-text v6.2 record
+//     ("processing:<fingerprint>" / "complete:<fingerprint>"): treated as an
+//     EXISTING record, never an absent one, so a legitimate retry is never
 //     executed a second time during the rolling deploy that crosses the format
 //     change. The same fingerprint gate applies; a matching "processing" record
-//     returns 409, and a matching "complete" record returns 200 "IDEMPOTENT"
-//     because v6.4.0 kept the response body in a sidecar key that [Store] cannot
-//     read. Any other undecodable value keeps the store-error path above. This
-//     branch is bounded and removable: no new legacy records are written and
-//     existing ones expire with their TTL.
+//     returns 409, and a matching "complete" record replays the companion
+//     "<key>:response" value through [New]'s legacy reader, or returns 503 when
+//     that response is missing. Any other undecodable value returns 503. This
+//     branch is bounded and removable: outside bridge mode no new legacy records
+//     are written and existing ones expire with their TTL.
 //   - Handler success: response status, headers, content type, and body are
 //     compare-safely completed only by the acquisition owner. Capture, encoding,
 //     persistence, or stale-owner failures return 503 and retain processing

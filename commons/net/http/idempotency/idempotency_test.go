@@ -575,10 +575,10 @@ func TestOptions_Custom(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Redis failure — fail-open behavior
+// Redis failure classification
 // ---------------------------------------------------------------------------
 
-func TestCheck_RedisDown_FailsOpen(t *testing.T) {
+func TestCheck_RedisConnectionLostDuringAcquire_FailsClosed(t *testing.T) {
 	t.Parallel()
 
 	mr := miniredis.RunT(t)
@@ -593,9 +593,9 @@ func TestCheck_RedisDown_FailsOpen(t *testing.T) {
 	resp := doPost(t, app, "key-while-redis-down")
 	defer resp.Body.Close()
 
-	// fail-open: handler proceeds despite Redis being unreachable.
-	assert.Equal(t, http.StatusCreated, resp.StatusCode,
-		"must fail open when Redis is unavailable")
+	// A closed live server may receive the command before the connection ends.
+	// Execution is ambiguous, so the mutation must not run.
+	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 }
 
 // ---------------------------------------------------------------------------

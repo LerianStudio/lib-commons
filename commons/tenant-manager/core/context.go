@@ -39,6 +39,10 @@ var (
 	// tenantIDKey is the context key for storing the tenant ID.
 	// Pointer-valued to keep ctx.Value lookups allocation-free on the hot path.
 	tenantIDKey = &tenantCtxKey{name: "tenantID"}
+	// originalTenantIDKey stores the validated spelling received at the HTTP
+	// boundary before UUID canonicalization. It exists for bounded rolling-
+	// upgrade compatibility with keys written by older middleware versions.
+	originalTenantIDKey = &tenantCtxKey{name: "originalTenantID"}
 	// pgConnectionKey is the context key for storing the resolved dbresolver.DB connection.
 	pgConnectionKey = contextKey{name: "pgConnection"}
 	// mongoKey is the context key for storing the tenant MongoDB database.
@@ -65,6 +69,29 @@ func GetTenantIDContext(ctx context.Context) string {
 	}
 
 	if id, ok := ctx.Value(tenantIDKey).(string); ok {
+		return id
+	}
+
+	return ""
+}
+
+// ContextWithOriginalTenantID stores the validated tenant spelling received at
+// the request boundary before canonicalization. Callers must validate the value
+// before setting it; ordinary background contexts should use ContextWithTenantID.
+func ContextWithOriginalTenantID(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(nonNilContext(ctx), originalTenantIDKey, tenantID)
+}
+
+// GetOriginalTenantIDContext returns the validated pre-canonical tenant spelling.
+// It returns an empty string for direct/background contexts that set only the
+// canonical tenant ID, allowing compatibility callers to choose an explicit
+// deterministic fallback.
+func GetOriginalTenantIDContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+
+	if id, ok := ctx.Value(originalTenantIDKey).(string); ok {
 		return id
 	}
 
