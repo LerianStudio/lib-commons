@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -319,6 +320,102 @@ func TestIntegration_Repository_ListPendingByType(t *testing.T) {
 	require.Len(t, priorityEvents, 1)
 	require.Equal(t, target.ID, priorityEvents[0].ID)
 	require.Equal(t, outbox.OutboxStatusProcessing, priorityEvents[0].Status)
+}
+
+func TestIntegration_Repository_ListPendingByTypes_PreservesPriorityFIFOAndTenantScope(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+
+	highFirst := createFixtureEvent(t, fx, "dict.high")
+	highSecond := createFixtureEvent(t, fx, "dict.high")
+	low := createFixtureEvent(t, fx, "dict.low")
+	ignored := createFixtureEvent(t, fx, "dict.ignored")
+	tenantB := createFixtureEventForTenant(t, fx, "tenant-b", "dict.high")
+
+	base := time.Now().UTC().Add(-time.Hour)
+	createdAt := map[uuid.UUID]time.Time{
+		highFirst.ID:  base.Add(2 * time.Minute),
+		highSecond.ID: base.Add(3 * time.Minute),
+		low.ID:        base,
+		ignored.ID:    base.Add(-time.Minute),
+		tenantB.ID:    base.Add(-2 * time.Minute),
+	}
+
+	for id, timestamp := range createdAt {
+		_, err := fx.primaryDB.ExecContext(
+			fx.ctx,
+			fmt.Sprintf("UPDATE %s SET created_at = $1, updated_at = $1 WHERE id = $2", quoteIdentifier(fx.tableName)),
+			timestamp,
+			id,
+		)
+		require.NoError(t, err)
+	}
+
+	claimed, err := fx.repo.ListPendingByTypes(fx.tenantCtx, []string{"dict.high", "dict.low"}, 3)
+	require.NoError(t, err)
+	require.Len(t, claimed, 3)
+	require.Equal(t, []uuid.UUID{highFirst.ID, highSecond.ID, low.ID}, []uuid.UUID{
+		claimed[0].ID,
+		claimed[1].ID,
+		claimed[2].ID,
+	})
+
+	ignoredStored, err := fx.repo.GetByID(fx.tenantCtx, ignored.ID)
+	require.NoError(t, err)
+	require.Equal(t, outbox.OutboxStatusPending, ignoredStored.Status)
+
+	tenantBContext := outbox.ContextWithTenantID(fx.ctx, "tenant-b")
+	tenantBStored, err := fx.repo.GetByID(tenantBContext, tenantB.ID)
+	require.NoError(t, err)
+	require.Equal(t, outbox.OutboxStatusPending, tenantBStored.Status)
+}
+
+func TestIntegration_Repository_ListPendingByTypes_ConcurrentClaimsAreDisjoint(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+
+	const eventCount = 6
+	for index := range eventCount {
+		eventType := "dict.low"
+		if index%2 == 0 {
+			eventType = "dict.high"
+		}
+
+		createFixtureEvent(t, fx, eventType)
+	}
+
+	type claimResult struct {
+		events []*outbox.OutboxEvent
+		err    error
+	}
+
+	start := make(chan struct{})
+	results := make(chan claimResult, 2)
+
+	var group sync.WaitGroup
+	for range 2 {
+		group.Go(func() {
+			<-start
+			events, err := fx.repo.ListPendingByTypes(fx.tenantCtx, []string{"dict.high", "dict.low"}, eventCount/2)
+			results <- claimResult{events: events, err: err}
+		})
+	}
+
+	close(start)
+	group.Wait()
+	close(results)
+
+	claimedIDs := make(map[uuid.UUID]struct{}, eventCount)
+	for result := range results {
+		require.NoError(t, result.err)
+		require.Len(t, result.events, eventCount/2)
+
+		for _, event := range result.events {
+			_, duplicate := claimedIDs[event.ID]
+			require.False(t, duplicate, "event claimed by more than one transaction")
+			claimedIDs[event.ID] = struct{}{}
+		}
+	}
+
+	require.Len(t, claimedIDs, eventCount)
 }
 
 func TestIntegration_Repository_ResetForRetry(t *testing.T) {

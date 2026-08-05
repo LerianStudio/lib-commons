@@ -883,6 +883,18 @@ func (dispatcher *Dispatcher) collectPriorityEvents(
 		return nil
 	}
 
+	if repo, ok := dispatcher.repo.(MultiTypePendingRepository); ok {
+		events, err := repo.ListPendingByTypes(ctx, dispatcher.cfg.PriorityEventTypes, budget)
+		if err != nil {
+			libOpentelemetry.HandleSpanError(span, "failed to list priority events", err)
+			libLog.SafeError(dispatcher.logger, ctx, "failed to list priority events", err, false)
+
+			return nil
+		}
+
+		return events
+	}
+
 	var result []*OutboxEvent
 
 	for _, eventType := range dispatcher.cfg.PriorityEventTypes {

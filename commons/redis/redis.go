@@ -119,6 +119,8 @@ type ClusterTopology struct {
 
 // TLSConfig configures TLS validation for Redis connections.
 type TLSConfig struct {
+	// CACertBase64 optionally supplies a custom PEM CA bundle. When empty, the
+	// operating system certificate pool is used.
 	CACertBase64          string
 	MinVersion            uint16
 	AllowLegacyMinVersion bool
@@ -163,9 +165,12 @@ func (a GCPIAMAuth) GoString() string { return a.String() }
 
 // ConnectionOptions configures protocol, timeouts, pools, and retries.
 type ConnectionOptions struct {
-	DB              int
-	Protocol        int
-	PoolSize        int
+	DB       int
+	Protocol int
+	PoolSize int
+	// MaxActiveConns caps the total number of active pool connections.
+	// Zero leaves go-redis's derived default in effect.
+	MaxActiveConns  int
 	MinIdleConns    int
 	ReadTimeout     time.Duration
 	WriteTimeout    time.Duration
@@ -527,6 +532,7 @@ func (c *Client) buildUniversalOptionsLocked() (*redis.UniversalOptions, error) 
 		DB:              o.DB,
 		Protocol:        o.Protocol,
 		PoolSize:        o.PoolSize,
+		MaxActiveConns:  o.MaxActiveConns,
 		MinIdleConns:    o.MinIdleConns,
 		ReadTimeout:     o.ReadTimeout,
 		WriteTimeout:    o.WriteTimeout,
@@ -982,10 +988,6 @@ func validateConfig(cfg Config) error {
 		return configError("only one auth strategy can be configured")
 	}
 
-	if cfg.TLS != nil && strings.TrimSpace(cfg.TLS.CACertBase64) == "" {
-		return configError("TLS CA cert is required when TLS is configured")
-	}
-
 	if cfg.Auth.GCPIAM == nil {
 		return nil
 	}
@@ -1064,14 +1066,29 @@ func validateTopology(topology Topology) error {
 }
 
 func buildTLSConfig(cfg TLSConfig) (*tls.Config, error) {
-	caCert, err := base64.StdEncoding.DecodeString(cfg.CACertBase64)
-	if err != nil {
-		return nil, err
-	}
+	var caCertPool *x509.CertPool
 
-	caCertPool := x509.NewCertPool()
-	if !caCertPool.AppendCertsFromPEM(caCert) {
-		return nil, errors.New("adding CA cert failed")
+	if strings.TrimSpace(cfg.CACertBase64) == "" {
+		systemPool, err := x509.SystemCertPool()
+		if err != nil {
+			return nil, fmt.Errorf("loading system CA pool: %w", err)
+		}
+
+		if systemPool == nil {
+			return nil, errors.New("loading system CA pool returned nil")
+		}
+
+		caCertPool = systemPool
+	} else {
+		caCert, err := base64.StdEncoding.DecodeString(cfg.CACertBase64)
+		if err != nil {
+			return nil, err
+		}
+
+		caCertPool = x509.NewCertPool()
+		if !caCertPool.AppendCertsFromPEM(caCert) {
+			return nil, errors.New("adding CA cert failed")
+		}
 	}
 
 	// Enforce a TLS 1.2 floor. normalizeTLSDefaults already applies this

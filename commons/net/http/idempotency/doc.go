@@ -1,10 +1,10 @@
-// Package idempotency provides Fiber middleware for best-effort idempotency
-// backed by Redis.
+// Package idempotency provides Fiber middleware for atomic, tenant-scoped
+// idempotency backed by Redis or a caller-provided [Store].
 //
-// The middleware enforces at-most-once semantics when Redis is available. On
-// Redis outages, it fails open to preserve service availability — duplicate
-// requests may execute more than once. Callers that require strict at-most-once
-// guarantees must pair this middleware with application-level safeguards.
+// [New] preserves the shipped go-redis API and its fail-open default. Callers
+// that require strict storage availability can still use [WithFailClosed].
+// [NewWithStore] is always fail-closed: a missing store, store error, or invalid
+// stored record rejects the mutation with 503 before its handler runs.
 //
 // # Key composition
 //
@@ -19,16 +19,17 @@
 // global namespace, which would collapse every tenant-less request onto a shared
 // key and break isolation.
 //
-// A companion response key at <prefix><tenantID>:<idempotencyKey>:response stores
-// the cached response body and headers for replay.
+// The middleware encodes state, fingerprint, acquisition owner, and optional
+// replay response into one opaque value stored atomically under that key. Store
+// implementations preserve those bytes and provide only atomic acquisition and
+// compare-safe replacement or deletion; they do not implement HTTP semantics.
 //
 // # Payload fingerprint
 //
 // An idempotency key alone does not identify a request — it identifies the
-// caller's claim that two requests are the same one. So the marker value carries
-// a fingerprint of the request beside its state:
-//
-//	<state>:<sha256 of method, path and raw body>
+// caller's claim that two requests are the same one. Every processing and
+// completed record therefore carries a SHA-256 fingerprint of method, path, and
+// raw body.
 //
 // Every duplicate compares its own fingerprint against the stored one before any
 // replay path is reachable. A match is a genuine retry and replays. A MISMATCH
@@ -42,11 +43,6 @@
 // JSON key order and formatting cannot drift between a request and its own retry.
 // The query string is excluded: clients append cache-busting parameters on retry,
 // and that must not read as reuse.
-//
-// Marker values written before fingerprints existed carry no separator. Those
-// replay on the key alone, as they did, and log at WARN — refusing them would
-// turn a legitimate in-flight retry into a 422 for the length of a deploy. The
-// exposure is bounded: legacy records expire with their TTL and none are created.
 //
 // The default prefix is "idempotency:" and can be overridden via [WithKeyPrefix].
 // This namespacing convention is consistent with other lib-commons packages that
@@ -65,6 +61,12 @@
 //	idem := idempotency.New(conn)
 //	app.Post("/orders", idem.Check(), createOrderHandler)
 //
+// A caller-provided backend implements Store and uses the fail-closed
+// constructor:
+//
+//	idem := idempotency.NewWithStore(valkeyStore)
+//	app.Post("/orders", idem.Check(), createOrderHandler)
+//
 // # Behavior branches
 //
 // The [Middleware.Check] handler evaluates requests through the following
@@ -77,8 +79,10 @@
 //   - Header exceeds [WithMaxKeyLength] (default 256 UTF-8 bytes): request is
 //     passed to the configured [WithRejectedHandler]. When no custom handler is
 //     set, a 400 JSON response with code "VALIDATION_ERROR" is returned.
-//   - Redis unavailable (GetClient, SetNX, or Get failures): request proceeds
-//     without idempotency enforcement (fail-open), logged at WARN level.
+//   - The built-in Redis store unavailable: request proceeds without idempotency
+//     enforcement by default, or receives 503 with [WithFailClosed].
+//   - A caller-provided store missing, errored, or returning an invalid state:
+//     request receives 503 and the mutation handler does not run.
 //   - Duplicate key whose stored fingerprint differs from this request's: request
 //     is passed to [WithKeyReuseHandler], or receives 422 Unprocessable Content
 //     with code "IDEMPOTENCY_KEY_REUSE" when no custom handler is configured.
@@ -90,14 +94,25 @@
 //     [constants.IdempotencyReplayed] set to "true".
 //   - Duplicate key still in "processing" state (in-flight): request is passed
 //     to [WithConflictHandler], or receives 409 Conflict with code
-//     "IDEMPOTENCY_CONFLICT" when no custom handler is configured.
-//   - Duplicate key in "complete" state but no cached body (e.g., body exceeded
-//     [WithMaxBodyCache]): 200 OK with code "IDEMPOTENT" and detail "request
-//     already processed" is returned.
-//   - Handler success: response (status, headers, body) is cached via a Redis
-//     pipeline and the key is marked "complete".
-//   - Handler failure: both the lock key and response key are deleted so the
-//     client can retry with the same idempotency key.
+//     "IDEMPOTENCY_CONFLICT" and Retry-After: 1 when no custom handler is configured.
+//   - Duplicate key in "complete" state without an exact replay response, or a
+//     response that [ResponseCodec] cannot decode: 503 "IDEMPOTENCY_UNAVAILABLE"
+//     is returned. The middleware never fabricates a generic success response.
+//   - Handler success: response status, headers, content type, and body are
+//     compare-safely completed only by the acquisition owner. Capture, encoding,
+//     persistence, or stale-owner failures return 503 and retain processing
+//     ownership so callers reconcile instead of retrying under a new key.
+//   - Handler 4xx: cached and replayed by default. Use
+//     [WithClientErrorPolicy] with [ClientErrorPolicyRelease] to compare-safely
+//     release the record and allow a corrected request to reuse the key.
+//   - Handler failure or 5xx: the acquisition is compare-safely released only
+//     by its owner, allowing a retry without deleting a replacement lock.
+//
+// [WithTTLProvider] resolves retention for each keyed mutation, allowing runtime
+// policy changes without rebuilding middleware. [WithResponseCodec] transforms
+// serialized replay responses before storage; use authenticated encryption for
+// sensitive bodies. [WithMaxBodyCache] bounds raw response bodies, and encoded
+// output is additionally bounded to twice that value.
 //
 // Every rejection branch has a callback seam so consumers can write their own
 // error format, including RFC 9457 problem details: [WithRejectedHandler] for an
@@ -109,5 +124,7 @@
 // # Nil safety
 //
 // [New] returns nil when conn is nil. A nil [*Middleware] returns a pass-through
-// handler from [Middleware.Check].
+// handler from [Middleware.Check]. [NewWithStore] returns a non-nil middleware
+// even for a nil or typed-nil store so keyed mutations fail closed instead of
+// silently bypassing idempotency.
 package idempotency
