@@ -163,7 +163,7 @@ func TestCheck_LegacyPlainTextRecord_FailClosedStoreAlsoRefuses(t *testing.T) {
 
 			var calls atomic.Int64
 
-			middleware := NewWithStore(store)
+			middleware := NewWithStore(store, WithFailClosed(true))
 			response := doPost(t, countingApp(middleware.Check(), "tenant-legacy-fc", &calls), "legacy-fc")
 			body := readBody(t, response)
 
