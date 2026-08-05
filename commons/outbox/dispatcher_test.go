@@ -46,6 +46,27 @@ type tenantAwareFakeRepo struct {
 	requiresTenant bool
 }
 
+type multiTypeFakeRepo struct {
+	*fakeRepo
+	events     []*OutboxEvent
+	err        error
+	calls      int
+	eventTypes []string
+	limit      int
+}
+
+func (repo *multiTypeFakeRepo) ListPendingByTypes(
+	_ context.Context,
+	eventTypes []string,
+	limit int,
+) ([]*OutboxEvent, error) {
+	repo.calls++
+	repo.eventTypes = append([]string(nil), eventTypes...)
+	repo.limit = limit
+
+	return repo.events, repo.err
+}
+
 func (repo *tenantAwareFakeRepo) RequiresTenant() bool {
 	if repo == nil {
 		return true
@@ -746,6 +767,40 @@ func TestDispatcher_CollectEventsPipelinePrioritizesAndDeduplicates(t *testing.T
 	require.Equal(t, priorityID, collected[0].ID)
 	require.Equal(t, stuckID, collected[1].ID)
 	require.Equal(t, failedID, collected[2].ID)
+}
+
+func TestDispatcher_CollectPriorityEventsUsesAtomicMultiTypeCapability(t *testing.T) {
+	t.Parallel()
+
+	highID := uuid.New()
+	lowID := uuid.New()
+	repo := &multiTypeFakeRepo{
+		fakeRepo: &fakeRepo{},
+		events: []*OutboxEvent{
+			{ID: highID, EventType: "dict.high", Payload: []byte("high")},
+			{ID: lowID, EventType: "dict.low", Payload: []byte("low")},
+		},
+	}
+
+	dispatcher, err := NewDispatcher(
+		repo,
+		NewHandlerRegistry(),
+		nil,
+		noop.NewTracerProvider().Tracer("test"),
+		WithBatchSize(10),
+		WithPriorityBudget(4),
+		WithPriorityEventTypes("dict.high", "dict.low"),
+	)
+	require.NoError(t, err)
+
+	ctx, span := dispatcher.tracer.Start(context.Background(), "test.collect_priority_events")
+	defer span.End()
+
+	collected := dispatcher.collectPriorityEvents(ctx, span, 4)
+	require.Equal(t, 1, repo.calls)
+	require.Equal(t, []string{"dict.high", "dict.low"}, repo.eventTypes)
+	require.Equal(t, 4, repo.limit)
+	require.Equal(t, []uuid.UUID{highID, lowID}, []uuid.UUID{collected[0].ID, collected[1].ID})
 }
 
 func TestDispatcher_CollectEvents_ContinuesWhenResetStuckProcessingFails(t *testing.T) {

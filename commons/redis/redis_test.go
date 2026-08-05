@@ -195,15 +195,6 @@ func TestClient_New_InvalidConfig(t *testing.T) {
 			},
 			errText: "credentials are required",
 		},
-		{
-			name: "tls requires ca cert",
-			cfg: Config{
-				Topology: Topology{Standalone: &StandaloneTopology{Address: "127.0.0.1:6379"}},
-				TLS:      &TLSConfig{},
-				Logger:   &log.NopLogger{},
-			},
-			errText: "TLS CA cert is required",
-		},
 	}
 
 	for _, test := range tests {
@@ -215,6 +206,25 @@ func TestClient_New_InvalidConfig(t *testing.T) {
 			assert.Contains(t, err.Error(), test.errText)
 		})
 	}
+}
+
+func TestClient_New_TLSWithoutCustomCA_UsesSystemPool(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := normalizeConfig(Config{
+		Topology: Topology{Standalone: &StandaloneTopology{Address: "redis.example:6379"}},
+		TLS:      &TLSConfig{},
+		Logger:   &log.NopLogger{},
+	})
+	require.NoError(t, err)
+
+	client := &Client{cfg: cfg, logger: cfg.Logger}
+
+	options, err := client.buildUniversalOptionsLocked()
+	require.NoError(t, err)
+	require.NotNil(t, options.TLSConfig)
+	assert.NotNil(t, options.TLSConfig.RootCAs)
+	assert.Equal(t, uint16(tls.VersionTLS12), options.TLSConfig.MinVersion)
 }
 
 func TestClient_New_BlocksPlaintextBeforeDial(t *testing.T) {
@@ -833,6 +843,19 @@ func TestBuildUniversalOptionsLocked_Topologies(t *testing.T) {
 		opts, err := c.buildUniversalOptionsLocked()
 		require.NoError(t, err)
 		assert.Equal(t, []string{mr.Addr(), "127.0.0.1:7001"}, opts.Addrs)
+	})
+
+	t.Run("max active connections", func(t *testing.T) {
+		cfg, err := normalizeConfig(Config{
+			Topology: Topology{Standalone: &StandaloneTopology{Address: mr.Addr()}},
+			Options:  ConnectionOptions{MaxActiveConns: 37},
+		})
+		require.NoError(t, err)
+
+		c := &Client{cfg: cfg, logger: cfg.Logger}
+		opts, err := c.buildUniversalOptionsLocked()
+		require.NoError(t, err)
+		assert.Equal(t, 37, opts.MaxActiveConns)
 	})
 
 	t.Run("static password auth", func(t *testing.T) {

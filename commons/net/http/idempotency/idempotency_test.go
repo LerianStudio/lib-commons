@@ -3,6 +3,7 @@
 package idempotency
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -129,6 +130,14 @@ func readBody(t *testing.T, resp *http.Response) string {
 	require.NoError(t, err)
 
 	return string(b)
+}
+
+func seedStoreRecord(t *testing.T, mr *miniredis.Miniredis, key string, record storeRecord) {
+	t.Helper()
+
+	data, err := json.Marshal(record)
+	require.NoError(t, err)
+	require.NoError(t, mr.Set(key, string(data)))
 }
 
 // ---------------------------------------------------------------------------
@@ -325,11 +334,9 @@ func TestCheck_FirstRequest_Proceeds(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
 	assert.Contains(t, body, "created")
 
-	// Verify the response was cached in Redis.
+	// Verify the completed record was cached in Redis.
 	keys := mr.Keys()
-	// Expect two keys: the lock key and the :response key.
-	assert.GreaterOrEqual(t, len(keys), 2,
-		"expected lock key + response key in Redis, got: %v", keys)
+	assert.Len(t, keys, 1, "expected one atomic idempotency record in Redis, got: %v", keys)
 }
 
 func TestCheck_DuplicateRequest_ReplaysResponse(t *testing.T) {
@@ -372,7 +379,11 @@ func TestCheck_DuplicateRequest_StillProcessing(t *testing.T) {
 	idempotencyKey := "processing-key"
 	lockKey := "idempotency:" + tenantID + ":" + idempotencyKey
 
-	require.NoError(t, mr.Set(lockKey, keyStateProcessing))
+	seedStoreRecord(t, mr, lockKey, storeRecord{
+		State:       keyStateProcessing,
+		Fingerprint: requestFingerprint(http.MethodPost, "/test", nil),
+		Owner:       "owner-processing",
+	})
 	mr.SetTTL(lockKey, 7*24*time.Hour)
 
 	app := newPostApp(m.Check(), tenantMiddleware(tenantID))
@@ -604,24 +615,18 @@ func TestCheck_RedisKeyFormat(t *testing.T) {
 	resp.Body.Close()
 
 	keys := mr.Keys()
-	require.Len(t, keys, 2, "expected lock + response keys")
+	require.Len(t, keys, 1, "expected one atomic idempotency record")
 
 	// Verify the key format: prefix + tenantID + idempotency key.
 	foundLock := false
-	foundResp := false
 
 	for _, k := range keys {
 		if k == "idem:t1:my-key" {
 			foundLock = true
 		}
-
-		if k == "idem:t1:my-key:response" {
-			foundResp = true
-		}
 	}
 
 	assert.True(t, foundLock, "lock key must match expected format, got: %v", keys)
-	assert.True(t, foundResp, "response key must match expected format, got: %v", keys)
 }
 
 // ---------------------------------------------------------------------------
@@ -721,13 +726,12 @@ func TestCheck_ConcurrentSameKey(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Max body cache limit — oversized response falls back to IDEMPOTENT reply
+// Max body cache limit — oversized response fails closed
 // ---------------------------------------------------------------------------
 
-// TestCheck_WithMaxBodyCache verifies that when a response body exceeds the
-// configured maxBodyCache, the first request still succeeds (201) but a
-// duplicate request receives the generic "IDEMPOTENT" 200 response (the body
-// was too large to cache).
+// TestCheck_WithMaxBodyCache verifies that an oversized response never creates
+// a completion marker without an exact replay payload. The original call fails
+// closed after the handler, and the retained processing record blocks retries.
 func TestCheck_WithMaxBodyCache(t *testing.T) {
 	t.Parallel()
 
@@ -754,10 +758,10 @@ func TestCheck_WithMaxBodyCache(t *testing.T) {
 
 	defer resp1.Body.Close()
 
-	assert.Equal(t, http.StatusCreated, resp1.StatusCode, "first request must reach the handler")
+	assert.Equal(t, http.StatusServiceUnavailable, resp1.StatusCode)
 
-	// Second request — same key. Body was not cached (too large), so must get
-	// the generic IDEMPOTENT fallback, not the original 201 body.
+	// Second request — same key. The processing marker remains so the mutation
+	// cannot execute again without reconciliation.
 	req2 := httptest.NewRequest(http.MethodPost, "/test", nil)
 	req2.Header.Set(chttp.IdempotencyKey, "big-body-key")
 
@@ -766,10 +770,10 @@ func TestCheck_WithMaxBodyCache(t *testing.T) {
 
 	body2 := readBody(t, resp2)
 
-	assert.Equal(t, http.StatusOK, resp2.StatusCode,
-		"duplicate request with uncached body must get the generic 200 IDEMPOTENT response")
-	assert.Contains(t, body2, "IDEMPOTENT")
+	assert.Equal(t, http.StatusConflict, resp2.StatusCode)
+	assert.Contains(t, body2, "IDEMPOTENCY_CONFLICT")
 	assert.Equal(t, "true", resp2.Header.Get(chttp.IdempotencyReplayed))
+	assert.Equal(t, retryAfterSeconds, resp2.Header.Get(fiber.HeaderRetryAfter))
 }
 
 // ---------------------------------------------------------------------------
@@ -792,7 +796,11 @@ func TestCheck_InFlight_Returns409(t *testing.T) {
 	idempotencyKey := "inflight-key"
 	lockKey := "idempotency:" + tenantID + ":" + idempotencyKey
 
-	require.NoError(t, mr.Set(lockKey, keyStateProcessing))
+	seedStoreRecord(t, mr, lockKey, storeRecord{
+		State:       keyStateProcessing,
+		Fingerprint: requestFingerprint(http.MethodPost, "/test", nil),
+		Owner:       "owner-inflight",
+	})
 	mr.SetTTL(lockKey, 7*24*time.Hour)
 
 	// Build an app and send a duplicate — no response key exists.
@@ -828,7 +836,11 @@ func TestCheck_CustomDuplicateRejectionHandlers_WriteProblemDetail(t *testing.T)
 			}),
 			prepare: func(t *testing.T, mr *miniredis.Miniredis, _ *fiber.App) {
 				t.Helper()
-				require.NoError(t, mr.Set("idempotency:tenant-custom:custom-key", keyStateProcessing))
+				seedStoreRecord(t, mr, "idempotency:tenant-custom:custom-key", storeRecord{
+					State:       keyStateProcessing,
+					Fingerprint: requestFingerprint(http.MethodPost, "/test", nil),
+					Owner:       "owner-custom",
+				})
 			},
 			request: func(t *testing.T, app *fiber.App) *http.Response {
 				t.Helper()
@@ -1232,31 +1244,6 @@ func TestCheck_SameKey_DifferentTarget_Rejected(t *testing.T) {
 	}
 }
 
-func TestCheck_LegacyRecordWithoutFingerprint_StillReplays(t *testing.T) {
-	t.Parallel()
-
-	mr := miniredis.RunT(t)
-	conn := newRedisClient(t, mr)
-
-	// A record written by a version that stored no fingerprint. Rejecting these
-	// would turn a legitimate in-flight retry into a 422 for the duration of the
-	// deploy, so they must keep the pre-fingerprint behaviour and expire out.
-	key := "idempotency:tenant-a:legacy-key"
-	require.NoError(t, mr.Set(key, "complete"))
-	require.NoError(t, mr.Set(key+":response",
-		`{"status_code":201,"content_type":"application/json","body":"eyJlY2hvIjoie1wiYW1vdW50XCI6MTB9In0="}`))
-
-	mw := New(conn, WithLogger(libLog.NewNop()))
-	app := newEchoApp(mw.Check(), nil, tenantMiddleware("tenant-a"))
-
-	resp := doSend(t, app, http.MethodPost, "/test", `{"amount":99999}`, "legacy-key")
-	readBody(t, resp)
-
-	assert.Equal(t, http.StatusCreated, resp.StatusCode,
-		"a pre-fingerprint record must replay as it did before, not 422")
-	assert.Equal(t, "true", resp.Header.Get(chttp.IdempotencyReplayed))
-}
-
 func TestCheck_FirstRequest_StoresFingerprintWithState(t *testing.T) {
 	t.Parallel()
 
@@ -1273,11 +1260,11 @@ func TestCheck_FirstRequest_StoresFingerprintWithState(t *testing.T) {
 	stored, err := mr.Get("idempotency:tenant-a:fp-key")
 	require.NoError(t, err)
 
-	state, fingerprint, found := strings.Cut(stored, ":")
-	require.True(t, found, "the stored value must carry the fingerprint alongside the state, got %q", stored)
-	assert.Equal(t, keyStateComplete, state)
-	assert.NotEmpty(t, fingerprint)
-	assert.Equal(t, requestFingerprint(http.MethodPost, "/test", []byte(`{"amount":10}`)), fingerprint,
+	var record storeRecord
+	require.NoError(t, json.Unmarshal([]byte(stored), &record))
+	assert.Equal(t, keyStateComplete, record.State)
+	assert.NotEmpty(t, record.Fingerprint)
+	assert.Equal(t, requestFingerprint(http.MethodPost, "/test", []byte(`{"amount":10}`)), record.Fingerprint,
 		"the fingerprint written on completion must be the one the next request will compare against")
 }
 
