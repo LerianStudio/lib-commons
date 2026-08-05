@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	chttp "github.com/LerianStudio/lib-commons/v6/commons/constants"
@@ -424,9 +425,18 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 	}
 
 	if err := json.Unmarshal(stored, &record); err != nil {
-		m.logger.Log(ctx, log.LevelWarn, "idempotency: failed to unmarshal stored record", log.Err(err))
+		legacy, isLegacy := decodeLegacyRecord(stored)
+		if !isLegacy {
+			m.logger.Log(ctx, log.LevelWarn, "idempotency: failed to unmarshal stored record", log.Err(err))
 
-		return m.onStoreError(c)
+			return m.onStoreError(c)
+		}
+
+		m.logger.Log(ctx, log.LevelWarn,
+			"idempotency: stored record predates the atomic record format, answering from it without replay",
+			log.String("record_state", legacy.State))
+
+		return m.respondLegacy(c, legacy, fingerprint)
 	}
 
 	if record.Fingerprint != fingerprint {
@@ -608,6 +618,71 @@ func (m *Middleware) replay(c fiber.Ctx, encoded []byte) error {
 	c.Set("Content-Type", response.ContentType)
 
 	return c.Status(response.StatusCode).Send(response.Body)
+}
+
+// legacyStateSeparator divides the key state from the request fingerprint in
+// the plain-text record lib-commons v6.4.0 and earlier wrote under the primary
+// key: "processing:<hex>" / "complete:<hex>".
+//
+// DELETABLE — and the condition is nameable. Nothing writes this shape any
+// more: since v6.5.0 the primary key holds one atomic JSON record. Existing
+// legacy values expire with their own TTL, so this branch and everything it
+// reaches (decodeLegacyRecord, respondLegacy, and their tests) can be removed
+// once no deployment is running lib-commons v6.4.0 or earlier against a shared
+// store. Until then, removing it re-executes a legitimate retry's mutation
+// during the rolling deploy that crosses the format change.
+const legacyStateSeparator = ":"
+
+// decodeLegacyRecord recognises the v6.4.0 plain-text record and reports
+// whether stored actually is one.
+//
+// The detector is deliberately CLOSED: the value must split on the separator
+// AND its state part must equal one of the two known states exactly. Any other
+// undecodable value is left to the store-error path, unchanged. A permissive
+// detector would be a second version of the defect this branch fixes — unknown
+// bytes granting permission to answer a mutation without running it, or worse,
+// to run it a second time.
+//
+// The returned record carries no Owner and no Response: a legacy value stored
+// neither. The cached body lived in a separate "<key>:response" sidecar that
+// the [Store] interface exposes no way to read, which is why the complete case
+// reports "already processed" rather than replaying — see respondLegacy.
+func decodeLegacyRecord(stored []byte) (storeRecord, bool) {
+	state, fingerprint, found := strings.Cut(string(stored), legacyStateSeparator)
+	if !found || (state != keyStateProcessing && state != keyStateComplete) {
+		return storeRecord{}, false
+	}
+
+	return storeRecord{State: state, Fingerprint: fingerprint}, true
+}
+
+// respondLegacy answers a request whose key already holds a v6.4.0 record. The
+// record is an EXISTING record, never an absent one: falling through to the
+// handler would execute the mutation a second time.
+//
+// The fingerprint gate runs first, before the state routing, exactly as it does
+// for the JSON record and as v6.4.0 itself did. Answering a differing payload
+// with "already processed" would report success for an operation that never ran.
+//
+// A complete record cannot be replayed exactly: v6.4.0 kept the response body in
+// a separate sidecar key that [Store] cannot read. This is v6.4.0's own answer
+// for its own complete-but-uncached case, reused rather than reinvented.
+func (m *Middleware) respondLegacy(c fiber.Ctx, legacy storeRecord, fingerprint string) error {
+	if legacy.Fingerprint != fingerprint {
+		return m.respondKeyReuse(c)
+	}
+
+	if legacy.State == keyStateProcessing {
+		return m.respondConflict(c)
+	}
+
+	c.Set(chttp.IdempotencyReplayed, "true")
+
+	return libHTTP.Respond(c, http.StatusOK, libHTTP.ErrorResponse{
+		Code:    http.StatusOK,
+		Title:   "IDEMPOTENT",
+		Message: "request already processed",
+	})
 }
 
 func (m *Middleware) respondConflict(c fiber.Ctx) error {
