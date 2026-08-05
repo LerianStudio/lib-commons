@@ -554,10 +554,6 @@ func (c *Client) buildUniversalOptionsLocked() (*redis.UniversalOptions, error) 
 
 	if c.cfg.Topology.Cluster != nil {
 		opts.Addrs = c.cfg.Topology.Cluster.Addresses
-		// A single configuration endpoint (e.g. ElastiCache) would otherwise
-		// yield a single-node *redis.Client that cannot follow MOVED redirects
-		// and slips past cluster-specific guards downstream.
-		opts.IsClusterMode = true
 	}
 
 	// Guard against zero-value Config producing Addrs: nil, which causes

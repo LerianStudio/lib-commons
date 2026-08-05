@@ -190,9 +190,7 @@ func TestCheck_RetryAfter_IsExclusiveToInFlightConflict(t *testing.T) {
 		{
 			name: "key reuse never advertises retry",
 			record: storeRecord{
-				State:       keyStateComplete,
-				Fingerprint: requestFingerprint(http.MethodPost, "/test", []byte("different")),
-				Owner:       "owner-a", Response: []byte("encoded"),
+				State: keyStateComplete, Fingerprint: "different", Owner: "owner-a", Response: []byte("encoded"),
 			},
 			wantStatus: http.StatusUnprocessableEntity,
 		},
