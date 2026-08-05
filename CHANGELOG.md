@@ -1,5 +1,15 @@
 # Lib-commons Changelog
 
+## [6.5.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.5.0)
+
+Features:
+- Hardened idempotency and Redis primitives to improve reliability and consistency. (@fredcamaral)
+- Added a byte-oriented SHA-256 helper to facilitate cryptographic operations. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v6.4.0...v6.5.0)
+
+---
+
 ## [6.4.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.4.0)
 
 Features:
