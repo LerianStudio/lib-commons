@@ -98,6 +98,16 @@
 //   - Duplicate key in "complete" state without an exact replay response, or a
 //     response that [ResponseCodec] cannot decode: 503 "IDEMPOTENCY_UNAVAILABLE"
 //     is returned. The middleware never fabricates a generic success response.
+//   - Duplicate key holding the plain-text record written by lib-commons v6.4.0
+//     and earlier ("processing:<fingerprint>" / "complete:<fingerprint>"): treated
+//     as an EXISTING record, never an absent one, so a legitimate retry is never
+//     executed a second time during the rolling deploy that crosses the format
+//     change. The same fingerprint gate applies; a matching "processing" record
+//     returns 409, and a matching "complete" record returns 200 "IDEMPOTENT"
+//     because v6.4.0 kept the response body in a sidecar key that [Store] cannot
+//     read. Any other undecodable value keeps the store-error path above. This
+//     branch is bounded and removable: no new legacy records are written and
+//     existing ones expire with their TTL.
 //   - Handler success: response status, headers, content type, and body are
 //     compare-safely completed only by the acquisition owner. Capture, encoding,
 //     persistence, or stale-owner failures return 503 and retain processing
