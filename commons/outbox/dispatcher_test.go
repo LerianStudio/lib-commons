@@ -38,6 +38,8 @@ type fakeRepo struct {
 	listPendingBlocked <-chan struct{}
 	blockIgnoresCtx    bool
 	listPendingCalls   int32
+	resetStuckCalls    int32
+	resetForRetryCalls int32
 	listPendingTenants []string
 }
 
@@ -191,6 +193,8 @@ func (repo *fakeRepo) ListFailedForRetry(context.Context, int, time.Time, int) (
 }
 
 func (repo *fakeRepo) ResetForRetry(context.Context, int, time.Time, int) ([]*OutboxEvent, error) {
+	atomic.AddInt32(&repo.resetForRetryCalls, 1)
+
 	if repo.resetForRetryErr != nil {
 		return nil, repo.resetForRetryErr
 	}
@@ -199,6 +203,8 @@ func (repo *fakeRepo) ResetForRetry(context.Context, int, time.Time, int) ([]*Ou
 }
 
 func (repo *fakeRepo) ResetStuckProcessing(context.Context, int, time.Time, int) ([]*OutboxEvent, error) {
+	atomic.AddInt32(&repo.resetStuckCalls, 1)
+
 	if repo.resetStuckErr != nil {
 		return nil, repo.resetStuckErr
 	}
@@ -831,8 +837,47 @@ func TestDispatcher_CollectEvents_MultiTypeClaimsDoNotFallBackToUnscopedEvents(t
 	defer span.End()
 
 	collected := dispatcher.collectEvents(ctx, span)
+	require.Equal(t, 1, repo.calls)
+	require.Equal(t, []string{"scr.consulta.created", "scr.consulta.failed"}, repo.eventTypes)
+	require.Equal(t, 4, repo.limit)
 	require.Len(t, collected, 1)
 	require.Equal(t, ownedID, collected[0].ID)
+	require.Zero(t, atomic.LoadInt32(&repo.resetStuckCalls))
+	require.Zero(t, atomic.LoadInt32(&repo.resetForRetryCalls))
+	require.Zero(t, repo.listPendingCallCount())
+}
+
+func TestDispatcher_CollectEvents_MultiTypeClaimErrorFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	repo := &multiTypeFakeRepo{
+		fakeRepo: &fakeRepo{
+			stuck:          []*OutboxEvent{{ID: uuid.New(), EventType: "foreign.stuck"}},
+			failedForRetry: []*OutboxEvent{{ID: uuid.New(), EventType: "foreign.failed"}},
+			pending:        []*OutboxEvent{{ID: uuid.New(), EventType: "foreign.pending"}},
+		},
+		err: errors.New("claim failed"),
+	}
+
+	dispatcher, err := NewDispatcher(
+		repo,
+		NewHandlerRegistry(),
+		nil,
+		noop.NewTracerProvider().Tracer("test"),
+		WithBatchSize(4),
+		WithPriorityBudget(4),
+		WithPriorityEventTypes("scr.consulta.created", "scr.consulta.failed"),
+	)
+	require.NoError(t, err)
+
+	ctx, span := dispatcher.tracer.Start(context.Background(), "test.collect_scoped_events_error")
+	defer span.End()
+
+	collected := dispatcher.collectEvents(ctx, span)
+	require.Equal(t, 1, repo.calls)
+	require.Empty(t, collected)
+	require.Zero(t, atomic.LoadInt32(&repo.resetStuckCalls))
+	require.Zero(t, atomic.LoadInt32(&repo.resetForRetryCalls))
 	require.Zero(t, repo.listPendingCallCount())
 }
 
