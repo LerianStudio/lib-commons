@@ -40,6 +40,13 @@ type IdempotentWriter interface {
 	CreateIdempotentWithTx(ctx context.Context, tx Tx, event *OutboxEvent) (*OutboxEvent, error)
 }
 
+// MultiTypePendingRepository is an additive capability for atomically claiming
+// pending events from several event types. Implementations preserve the caller's
+// event-type priority and FIFO order within each type.
+type MultiTypePendingRepository interface {
+	ListPendingByTypes(ctx context.Context, eventTypes []string, limit int) ([]*OutboxEvent, error)
+}
+
 // TransactionalBatchWriter is a narrow, opt-in contract for storing multiple
 // outbox events atomically in one set-wise statement inside a caller transaction.
 // Implementations preserve input order in the returned slice. An empty input is

@@ -8,28 +8,29 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	chttp "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	libHTTP "github.com/LerianStudio/lib-commons/v6/commons/net/http"
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/gofiber/fiber/v3"
-	"github.com/redis/go-redis/v9"
+	"github.com/google/uuid"
 )
 
 const (
 	keyStateProcessing = "processing"
 	keyStateComplete   = "complete"
+	retryAfterSeconds  = "1"
 )
 
-// stateSeparator divides the key state from the request fingerprint in the
-// marker value: "processing:<hex>" / "complete:<hex>". A value carrying no
-// separator was written by a version that stored no fingerprint — see
-// splitKeyValue.
-const stateSeparator = ":"
+var (
+	errInvalidTTL            = errors.New("idempotency TTL must be positive")
+	errResponseTooLarge      = errors.New("idempotency replay response exceeds configured limit")
+	errInvalidReplayResponse = errors.New("idempotency replay response is invalid")
+)
 
 // requestFingerprint identifies WHICH request an idempotency key was spent on.
 //
@@ -53,49 +54,42 @@ func requestFingerprint(method, path string, body []byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// splitKeyValue decodes a marker value into its state and fingerprint.
-//
-// found reports whether a fingerprint was present. It is false for records
-// written before fingerprints existed, and those MUST keep the old
-// replay-on-key-alone behaviour: rejecting them would turn a legitimate
-// in-flight retry into a refusal for the length of a deploy. The exposure is
-// bounded — legacy records expire with their TTL and no new ones are written.
-func splitKeyValue(value string) (state, fingerprint string, found bool) {
-	state, fingerprint, found = strings.Cut(value, stateSeparator)
-	if !found {
-		return value, "", false
-	}
-
-	return state, fingerprint, true
-}
-
-// cachedResponse stores the full HTTP response for idempotent replay.
-// Body is stored as raw bytes (base64-encoded in JSON) so that binary and
-// non-UTF-8 payloads survive a marshal/unmarshal round-trip. Headers preserves
-// response headers that must be faithfully replayed (e.g., Location, ETag,
-// Set-Cookie).
-type cachedResponse struct {
-	StatusCode  int                 `json:"status_code"`
-	ContentType string              `json:"content_type"`
-	Body        []byte              `json:"body"`
-	Headers     map[string][]string `json:"headers,omitempty"`
-}
-
 // Option configures the idempotency middleware.
 type Option func(*Middleware)
 
-// Middleware provides at-most-once request semantics using Redis SetNX.
+// TTLProvider resolves the retention window for the current request. It is
+// evaluated for every keyed mutating request, allowing one middleware instance
+// to follow hot-reloaded application policy.
+type TTLProvider func(c fiber.Ctx) (time.Duration, error)
+
+// ClientErrorPolicy controls whether successful handler returns with a 4xx
+// status are replayed or release their owned idempotency record.
+type ClientErrorPolicy uint8
+
+const (
+	// ClientErrorPolicyCache preserves the default behavior and replays 4xx
+	// responses exactly.
+	ClientErrorPolicyCache ClientErrorPolicy = iota
+	// ClientErrorPolicyRelease removes the owned processing record for 4xx
+	// responses, allowing corrected requests to reuse the same key.
+	ClientErrorPolicyRelease
+)
+
+// Middleware provides at-most-once request semantics using an atomic [Store].
 type Middleware struct {
-	conn         *libRedis.Client
-	logger       log.Logger
-	keyPrefix    string
-	keyTTL       time.Duration
-	maxKeyLength int
-	maxBodyCache int
-	redisTimeout time.Duration
-	onRejected   func(c fiber.Ctx) error
-	onConflict   fiber.Handler
-	onKeyReuse   fiber.Handler
+	store             Store
+	logger            log.Logger
+	keyPrefix         string
+	keyTTL            time.Duration
+	maxKeyLength      int
+	maxBodyCache      int
+	redisTimeout      time.Duration
+	ttlProvider       TTLProvider
+	responseCodec     ResponseCodec
+	clientErrorPolicy ClientErrorPolicy
+	onRejected        func(c fiber.Ctx) error
+	onConflict        fiber.Handler
+	onKeyReuse        fiber.Handler
 	// failClosed inverts the transient-Redis-error behavior. Default (false)
 	// fails open — requests proceed without idempotency coverage to preserve
 	// availability. When true, transient Redis errors abort with 503 so a
@@ -111,14 +105,32 @@ func New(conn *libRedis.Client, opts ...Option) *Middleware {
 		return nil
 	}
 
+	m := newMiddleware(opts...)
+	m.store = newRedisStore(conn)
+
+	return m
+}
+
+// NewWithStore creates fail-closed idempotency middleware backed by store.
+// A missing or errored store rejects keyed mutating requests with 503.
+func NewWithStore(store Store, opts ...Option) *Middleware {
+	m := newMiddleware(opts...)
+	m.store = store
+	m.failClosed = true
+
+	return m
+}
+
+func newMiddleware(opts ...Option) *Middleware {
 	m := &Middleware{
-		conn:         conn,
-		logger:       log.NewNop(),
-		keyPrefix:    "idempotency:",
-		keyTTL:       7 * 24 * time.Hour,
-		maxKeyLength: 256,
-		maxBodyCache: 1 << 20, // 1 MB default
-		redisTimeout: 500 * time.Millisecond,
+		logger:            log.NewNop(),
+		keyPrefix:         "idempotency:",
+		keyTTL:            7 * 24 * time.Hour,
+		maxKeyLength:      256,
+		maxBodyCache:      1 << 20, // 1 MB default
+		redisTimeout:      500 * time.Millisecond,
+		responseCodec:     identityResponseCodec{},
+		clientErrorPolicy: ClientErrorPolicyCache,
 	}
 
 	for _, opt := range opts {
@@ -139,7 +151,7 @@ func WithLogger(l log.Logger) Option {
 	}
 }
 
-// WithKeyPrefix sets the Redis key prefix (default: "idempotency:").
+// WithKeyPrefix sets the storage key prefix (default: "idempotency:").
 func WithKeyPrefix(prefix string) Option {
 	return func(m *Middleware) {
 		if prefix != "" {
@@ -157,6 +169,37 @@ func WithKeyTTL(ttl time.Duration) Option {
 	}
 }
 
+// WithTTLProvider resolves the key TTL for every request. A provider error or
+// non-positive TTL fails closed before the protected handler runs.
+func WithTTLProvider(provider TTLProvider) Option {
+	return func(m *Middleware) {
+		if provider != nil {
+			m.ttlProvider = provider
+		}
+	}
+}
+
+// WithResponseCodec installs an application-provided response transformation.
+// Use an authenticated-encryption codec for sensitive response bodies. A nil or
+// typed-nil codec leaves the default identity codec in place.
+func WithResponseCodec(codec ResponseCodec) Option {
+	return func(m *Middleware) {
+		if !nilcheck.Interface(codec) {
+			m.responseCodec = codec
+		}
+	}
+}
+
+// WithClientErrorPolicy controls completion of 4xx responses. The default is
+// ClientErrorPolicyCache. Invalid values leave the default unchanged.
+func WithClientErrorPolicy(policy ClientErrorPolicy) Option {
+	return func(m *Middleware) {
+		if policy == ClientErrorPolicyCache || policy == ClientErrorPolicyRelease {
+			m.clientErrorPolicy = policy
+		}
+	}
+}
+
 // WithMaxKeyLength sets the maximum allowed idempotency key length in UTF-8
 // bytes (default: 256). Multi-byte characters therefore consume more than one
 // unit of this limit.
@@ -168,7 +211,8 @@ func WithMaxKeyLength(n int) Option {
 	}
 }
 
-// WithRedisTimeout sets the timeout for Redis operations (default: 500ms).
+// WithRedisTimeout sets the timeout for storage operations (default: 500ms).
+// The name is preserved for compatibility with the shipped Redis API.
 func WithRedisTimeout(d time.Duration) Option {
 	return func(m *Middleware) {
 		if d > 0 {
@@ -203,30 +247,31 @@ func WithKeyReuseHandler(fn fiber.Handler) Option {
 	}
 }
 
-// WithFailClosed controls behavior on transient Redis errors. When false
-// (the default) the middleware fails open: requests proceed without
-// idempotency coverage to preserve availability. When true it fails closed:
-// any transient Redis error — including on the duplicate/replay path — aborts
-// with 503 rather than running the mutation without at-most-once protection.
+// WithFailClosed controls behavior on transient errors from the built-in Redis
+// store. When false (the default) the middleware fails open: requests proceed
+// without idempotency coverage to preserve availability. When true it fails
+// closed with 503. [NewWithStore] always fails closed and does not allow this
+// option to weaken caller-provided storage.
 func WithFailClosed(v bool) Option {
 	return func(m *Middleware) {
 		m.failClosed = v
 	}
 }
 
-// WithUnavailableHandler sets a custom handler invoked when fail-closed is
-// enabled and the idempotency store is unavailable. By default a generic 503
-// JSON response is returned. Has no effect unless WithFailClosed(true) is set.
+// WithUnavailableHandler sets a custom handler invoked when the middleware is
+// fail-closed and the idempotency store is unavailable. By default a generic
+// 503 JSON response is returned. It applies to [NewWithStore] and to [New] when
+// [WithFailClosed] is enabled.
 func WithUnavailableHandler(fn func(c fiber.Ctx) error) Option {
 	return func(m *Middleware) {
 		m.onUnavailable = fn
 	}
 }
 
-// WithMaxBodyCache sets the maximum response body size (in bytes) that will be
-// cached in Redis for idempotent replay (default: 1 MB). Responses larger than
-// this limit are not cached; duplicate requests will receive a generic
-// "already processed" response instead.
+// WithMaxBodyCache sets the maximum raw response body size (in bytes) that can
+// be persisted for exact replay (default: 1 MB). The encoded replay payload is
+// bounded to twice this value. A response exceeding either bound fails closed
+// with 503 after the handler returns; no generic success response is stored.
 // Values <= 0 are ignored.
 func WithMaxBodyCache(n int) Option {
 	return func(m *Middleware) {
@@ -249,21 +294,9 @@ func (m *Middleware) Check() fiber.Handler {
 	return m.handle
 }
 
-// redactKey returns a truncated SHA-256 hash of a Redis key for safe logging.
-// Idempotency keys are client-controlled and tenant-scoped, so logging them
-// verbatim would emit high-cardinality identifiers and potentially leak tenant
-// or client information during incidents.
-func redactKey(key string) string {
-	h := sha256.Sum256([]byte(key))
-	return hex.EncodeToString(h[:8])
-}
-
-// onRedisError decides how to respond to a transient Redis error. By default
-// it fails open — proceeding to the handler to preserve availability. When
-// failClosed is set it aborts with 503 (or the configured unavailable handler)
-// so the request never runs without idempotency coverage. Callers must have
-// already logged the underlying error.
-func (m *Middleware) onRedisError(c fiber.Ctx) error {
+// onStoreError decides how to respond to a transient store error. Callers must
+// have already logged the underlying error.
+func (m *Middleware) onStoreError(c fiber.Ctx) error {
 	if !m.failClosed {
 		return c.Next()
 	}
@@ -275,6 +308,18 @@ func (m *Middleware) onRedisError(c fiber.Ctx) error {
 	return libHTTP.RespondError(c, http.StatusServiceUnavailable,
 		"IDEMPOTENCY_UNAVAILABLE",
 		"idempotency store unavailable; request rejected to preserve at-most-once semantics",
+	)
+}
+
+func (m *Middleware) respondPostHandlerStoreError(c fiber.Ctx) error {
+	if m.onUnavailable != nil {
+		return m.onUnavailable(c)
+	}
+
+	return libHTTP.RespondError(c, http.StatusServiceUnavailable,
+		"IDEMPOTENCY_UNAVAILABLE",
+		"request processing finished but its replay response could not be persisted; "+
+			"do not retry with a new key — reconcile the original request first",
 	)
 }
 
@@ -313,264 +358,280 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	}
 
 	key := fmt.Sprintf("%s%s:%s", m.keyPrefix, tenantID, idempotencyKey)
+	if nilcheck.Interface(m.store) {
+		m.logger.Log(c.Context(), log.LevelWarn, "idempotency: store unavailable")
+
+		return m.onStoreError(c)
+	}
 
 	ctx, cancel := context.WithTimeout(c.Context(), m.redisTimeout)
 	defer cancel()
 
-	client, err := m.conn.GetClient(ctx)
-	if err != nil {
-		// Redis unavailable — fail open by default, or closed if configured.
-		m.logger.Log(ctx, log.LevelWarn, "idempotency: redis unavailable", log.Err(err))
-		return m.onRedisError(c)
-	}
-
-	// The fingerprint is computed BEFORE the handler runs, while the body is
-	// untouched, and carried through to saveResult — recomputing it afterwards
-	// would hash whatever the handler left behind.
 	fingerprint := requestFingerprint(c.Method(), c.Path(), c.Body())
 
-	// SetNX atomically checks and sets — returns true only if the key was newly created.
-	// The marker carries the fingerprint so a later duplicate can tell a genuine
-	// retry from the same key spent on a different request.
-	set, setnxErr := client.SetNX(ctx, key, keyStateProcessing+stateSeparator+fingerprint, m.keyTTL).Result()
-	if setnxErr != nil {
-		m.logger.Log(ctx, log.LevelWarn, "idempotency: setnx failed", log.Err(setnxErr))
-		return m.onRedisError(c)
+	ttl, err := m.resolveTTL(c)
+	if err != nil {
+		m.logger.Log(c.Context(), log.LevelWarn, "idempotency: TTL provider failed", log.Err(err))
+
+		return m.respondPostHandlerStoreError(c)
 	}
 
-	responseKey := key + ":response"
+	return m.handleStore(ctx, c, key, fingerprint, ttl)
+}
 
-	if !set {
-		return m.handleDuplicate(ctx, c, client, key, responseKey, fingerprint)
+func (m *Middleware) resolveTTL(c fiber.Ctx) (time.Duration, error) {
+	ttl := m.keyTTL
+	if m.ttlProvider != nil {
+		var err error
+
+		ttl, err = m.ttlProvider(c)
+		if err != nil {
+			return 0, err
+		}
 	}
 
-	// Proceed with the actual handler.
+	if ttl <= 0 {
+		return 0, errInvalidTTL
+	}
+
+	return ttl, nil
+}
+
+func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerprint string, ttl time.Duration) error {
+	owner := uuid.NewString()
+	record := storeRecord{
+		State:       keyStateProcessing,
+		Fingerprint: fingerprint,
+		Owner:       owner,
+	}
+
+	processing, err := json.Marshal(record)
+	if err != nil {
+		m.logger.Log(ctx, log.LevelWarn, "idempotency: failed to marshal processing record", log.Err(err))
+
+		return m.onStoreError(c)
+	}
+
+	stored, acquired, err := m.store.Acquire(ctx, key, processing, ttl)
+	if err != nil {
+		m.logger.Log(ctx, log.LevelWarn, "idempotency: store acquire failed", log.Err(err))
+
+		return m.onStoreError(c)
+	}
+
+	if acquired {
+		return m.handleStoreAcquired(c, key, processing, record, ttl)
+	}
+
+	if err := json.Unmarshal(stored, &record); err != nil {
+		m.logger.Log(ctx, log.LevelWarn, "idempotency: failed to unmarshal stored record", log.Err(err))
+
+		return m.onStoreError(c)
+	}
+
+	if record.Fingerprint != fingerprint {
+		return m.respondKeyReuse(c)
+	}
+
+	switch record.State {
+	case keyStateProcessing:
+		return m.respondConflict(c)
+	case keyStateComplete:
+		return m.replay(c, record.Response)
+	default:
+		m.logger.Log(ctx, log.LevelWarn, "idempotency: store returned invalid record state")
+
+		return m.onStoreError(c)
+	}
+}
+
+func (m *Middleware) handleStoreAcquired(
+	c fiber.Ctx,
+	key string,
+	processing []byte,
+	record storeRecord,
+	ttl time.Duration,
+) error {
 	handlerErr := c.Next()
 
-	// Create fresh context for post-handler Redis bookkeeping.
-	// The pre-handler ctx may have expired during handler execution.
-	postCtx, postCancel := context.WithTimeout(context.WithoutCancel(c.Context()), m.redisTimeout)
-	defer postCancel()
+	postCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), m.redisTimeout)
+	defer cancel()
 
-	m.saveResult(postCtx, c, client, key, responseKey, fingerprint, handlerErr)
+	statusCode := c.Response().StatusCode()
+	if handlerErr != nil || statusCode >= http.StatusInternalServerError {
+		applied, err := m.store.Release(postCtx, key, processing)
+		if err != nil {
+			m.logger.Log(postCtx, log.LevelWarn, "idempotency: store release failed", log.Err(err))
+		} else if !applied {
+			m.logger.Log(postCtx, log.LevelWarn, "idempotency: store release rejected stale owner")
+		}
+
+		return handlerErr
+	}
+
+	if statusCode >= http.StatusBadRequest && m.clientErrorPolicy == ClientErrorPolicyRelease {
+		applied, err := m.store.Release(postCtx, key, processing)
+		if err != nil {
+			m.logger.Log(postCtx, log.LevelWarn, "idempotency: client-error cleanup failed", log.Err(err))
+		} else if !applied {
+			m.logger.Log(postCtx, log.LevelWarn, "idempotency: client-error cleanup rejected stale owner")
+		}
+
+		return handlerErr
+	}
+
+	response, err := m.captureResponse(postCtx, c)
+	if err != nil {
+		m.logger.Log(postCtx, log.LevelWarn, "idempotency: failed to capture replay response", log.Err(err))
+
+		return m.respondPostHandlerStoreError(c)
+	}
+
+	record.State = keyStateComplete
+	record.Response = response
+
+	completed, err := json.Marshal(record)
+	if err != nil {
+		m.logger.Log(postCtx, log.LevelWarn, "idempotency: failed to marshal completed record", log.Err(err))
+
+		return m.respondPostHandlerStoreError(c)
+	}
+
+	applied, err := m.store.Complete(postCtx, key, processing, completed, ttl)
+	if err != nil {
+		m.logger.Log(postCtx, log.LevelWarn, "idempotency: store completion failed", log.Err(err))
+
+		return m.respondPostHandlerStoreError(c)
+	}
+
+	if !applied {
+		m.logger.Log(postCtx, log.LevelWarn, "idempotency: store completion rejected stale owner")
+
+		return m.respondPostHandlerStoreError(c)
+	}
 
 	return handlerErr
 }
 
-// handleDuplicate processes a duplicate request (one whose idempotency key already exists
-// in Redis). It attempts to replay the cached response when available, falls back to a
-// conflict response when the original request is still in flight, or returns a generic
-// "already processed" response when the key is complete but the body was not cached.
-func (m *Middleware) handleDuplicate(
-	ctx context.Context,
-	c fiber.Ctx,
-	client redis.UniversalClient,
-	key, responseKey, fingerprint string,
-) error {
-	// Read the current key value to distinguish in-flight from completed.
-	keyValue, keyErr := client.Get(ctx, key).Result()
-	if keyErr != nil && !errors.Is(keyErr, redis.Nil) {
-		// Unexpected Redis error (timeout, connection failure) on a known
-		// duplicate. Fail open by default, or closed if configured — failing
-		// closed avoids silently re-running an already-seen mutation.
-		m.logger.Log(ctx, log.LevelWarn,
-			"idempotency: failed to read key state",
-			log.String("key_hash", redactKey(key)), log.Err(keyErr),
+func (m *Middleware) captureResponse(ctx context.Context, c fiber.Ctx) ([]byte, error) {
+	body := c.Response().Body()
+	if len(body) > m.maxBodyCache {
+		m.logger.Log(c.Context(), log.LevelWarn,
+			"idempotency: response body exceeds maxBodyCache, skipping cache",
+			log.Int("body_size", len(body)),
+			log.Int("max_body_cache", m.maxBodyCache),
 		)
 
-		return m.onRedisError(c)
+		return nil, errResponseTooLarge
 	}
 
-	// The marker has vanished between the SetNX (which saw it) and this Get.
-	// This happens when the original request failed and deleted the key, or
-	// the TTL expired in the narrow window. Fail open so the duplicate can
-	// be retried rather than returning a false "already processed" response.
-	if errors.Is(keyErr, redis.Nil) {
-		return c.Next()
-	}
+	headers := make(map[string][]string)
 
-	keyState, storedFingerprint, hasFingerprint := splitKeyValue(keyValue)
-
-	switch {
-	case !hasFingerprint:
-		// Written before fingerprints existed. Replay on the key alone, as that
-		// version did, and say so — the alternative refuses legitimate retries
-		// mid-deploy. Bounded: legacy records expire and none are created.
-		m.logger.Log(ctx, log.LevelWarn,
-			"idempotency: record predates payload fingerprinting, replaying without comparison",
-			log.String("key_hash", redactKey(key)),
-		)
-	case storedFingerprint != fingerprint:
-		// The key was spent on a DIFFERENT request. Replaying here would hand
-		// this caller the other request's response: its own operation never ran
-		// and it would be told the operation succeeded. The ledger would hold no
-		// record of it and nobody would retry, because the status said success.
-		m.logger.Log(ctx, log.LevelWarn,
-			"idempotency: key reused with a different request payload, refusing",
-			log.String("key_hash", redactKey(key)),
-			log.String("key_state", keyState),
-		)
-
-		if m.onKeyReuse != nil {
-			return m.onKeyReuse(c)
+	for hdrKey, value := range c.Response().Header.All() {
+		name := string(hdrKey)
+		switch name {
+		case "Content-Type", "Content-Length", "Transfer-Encoding", chttp.IdempotencyReplayed:
+			continue
 		}
 
-		return libHTTP.RespondError(c, http.StatusUnprocessableEntity,
-			"IDEMPOTENCY_KEY_REUSE",
-			"this idempotency key was already used for a different request; "+
-				"do not retry with a new key — reconcile the original request first",
-		)
+		headers[name] = append(headers[name], string(value))
 	}
 
-	// Try to replay the cached response (true idempotency).
-	cached, cacheErr := client.Get(ctx, responseKey).Result()
-
-	switch {
-	case cacheErr != nil && !errors.Is(cacheErr, redis.Nil):
-		// Unexpected Redis error reading the cached response on a known
-		// duplicate. Fail open by default, or closed if configured.
-		m.logger.Log(ctx, log.LevelWarn,
-			"idempotency: failed to read cached response",
-			log.String("key_hash", redactKey(responseKey)), log.Err(cacheErr),
-		)
-
-		return m.onRedisError(c)
-	case cacheErr == nil && cached != "":
-		var resp cachedResponse
-		if unmarshalErr := json.Unmarshal([]byte(cached), &resp); unmarshalErr != nil {
-			// Cache entry is corrupt or written by an incompatible version.
-			// Log a warning so operators can investigate, then fall through
-			// to the generic "already processed" response (fail-open).
-			m.logger.Log(ctx, log.LevelWarn,
-				"idempotency: failed to unmarshal cached response, falling through to generic reply",
-				log.String("key_hash", redactKey(responseKey)), log.Err(unmarshalErr),
-			)
-		} else {
-			// Replay persisted headers first so the caller sees
-			// Location, ETag, Set-Cookie, etc. exactly as sent originally.
-			// Use Header.Add (not c.Set) so multi-value headers such as
-			// Set-Cookie are appended rather than silently overwritten.
-			for name, values := range resp.Headers {
-				for _, v := range values {
-					c.Response().Header.Add(name, v)
-				}
-			}
-
-			c.Set(chttp.IdempotencyReplayed, "true")
-			c.Set("Content-Type", resp.ContentType)
-
-			// Send (not SendString) preserves binary/non-UTF-8 bodies.
-			return c.Status(resp.StatusCode).Send(resp.Body)
-		}
+	response := cachedResponse{
+		StatusCode:  c.Response().StatusCode(),
+		ContentType: string(c.Response().Header.ContentType()),
+		Body:        append([]byte(nil), body...),
+		Headers:     headers,
 	}
 
-	// No cached response available — differentiate by key state.
-	c.Set(chttp.IdempotencyReplayed, "true")
-
-	if keyState == keyStateProcessing {
-		// Request is still in flight — tell the client to retry later.
-		if m.onConflict != nil {
-			return m.onConflict(c)
-		}
-
-		return libHTTP.RespondError(c, http.StatusConflict,
-			"IDEMPOTENCY_CONFLICT",
-			"a request with this idempotency key is currently being processed",
-		)
+	plaintext, err := json.Marshal(response)
+	if err != nil {
+		return nil, fmt.Errorf("marshal replay response: %w", err)
 	}
 
-	// Key is "complete" but the response body was not cached
-	// (e.g., body exceeded maxBodyCache limit).
-	return libHTTP.Respond(c, http.StatusOK, libHTTP.ErrorResponse{
-		Code:    http.StatusOK,
-		Title:   "IDEMPOTENT",
-		Message: "request already processed",
-	})
+	encoded, err := m.responseCodec.Encode(ctx, plaintext)
+	if err != nil {
+		return nil, fmt.Errorf("encode replay response: %w", err)
+	}
+
+	if len(encoded) == 0 || len(encoded) > m.maxEncodedResponseBytes() {
+		return nil, errResponseTooLarge
+	}
+
+	return encoded, nil
 }
 
-// saveResult performs post-handler Redis bookkeeping: on success it caches the response
-// body and marks the key as complete in a single round-trip via a Redis pipeline; on
-// handler failure or 5xx response it deletes both keys so the client can retry with the same idempotency key.
-func (m *Middleware) saveResult(
-	ctx context.Context,
-	c fiber.Ctx,
-	client redis.UniversalClient,
-	key, responseKey, fingerprint string,
-	handlerErr error,
-) {
-	statusCode := c.Response().StatusCode()
+func (m *Middleware) maxEncodedResponseBytes() int {
+	maxInt := int(^uint(0) >> 1)
+	if m.maxBodyCache > maxInt/2 {
+		return maxInt
+	}
 
-	// Treat handler errors and 5xx responses the same way: delete keys so the
-	// client can retry. Fiber handlers commonly write a 5xx and return nil, so
-	// checking handlerErr alone is not sufficient — caching a transient 5xx
-	// would make it non-retriable for the full TTL.
-	if handlerErr == nil && statusCode < http.StatusInternalServerError {
-		body := c.Response().Body()
+	return m.maxBodyCache * 2
+}
 
-		pipe := client.Pipeline()
+func (m *Middleware) replay(c fiber.Ctx, encoded []byte) error {
+	if len(encoded) == 0 || len(encoded) > m.maxEncodedResponseBytes() {
+		m.logger.Log(c.Context(), log.LevelWarn, "idempotency: completed record has no replay response")
 
-		if len(body) <= m.maxBodyCache {
-			// Capture response headers for faithful replay.
-			headers := make(map[string][]string)
+		return m.respondPostHandlerStoreError(c)
+	}
 
-			for hdrKey, value := range c.Response().Header.All() {
-				name := string(hdrKey)
-				// Skip headers managed by the middleware itself and
-				// transfer-encoding / content-length which Fiber sets on send.
-				switch name {
-				case "Content-Type", "Content-Length", "Transfer-Encoding",
-					chttp.IdempotencyReplayed:
-					continue
-				}
+	plaintext, err := m.responseCodec.Decode(c.Context(), encoded)
+	if err != nil || len(plaintext) == 0 || len(plaintext) > m.maxEncodedResponseBytes() {
+		m.logger.Log(c.Context(), log.LevelWarn, "idempotency: failed to decode replay response", log.Err(err))
 
-				headers[name] = append(headers[name], string(value))
-			}
+		return m.respondPostHandlerStoreError(c)
+	}
 
-			resp := cachedResponse{
-				StatusCode:  statusCode,
-				ContentType: string(c.Response().Header.ContentType()),
-				Body:        body,
-				Headers:     headers,
-			}
+	var response cachedResponse
+	if err := json.Unmarshal(plaintext, &response); err != nil {
+		m.logger.Log(c.Context(), log.LevelWarn, "idempotency: failed to unmarshal replay response", log.Err(err))
 
-			if data, marshalErr := json.Marshal(resp); marshalErr == nil {
-				pipe.Set(ctx, responseKey, string(data), m.keyTTL)
-			} else {
-				m.logger.Log(ctx, log.LevelWarn,
-					"idempotency: failed to marshal cached response",
-					log.Err(marshalErr),
-					log.String("idempotency_key_hash", redactKey(key)),
-				)
-			}
-		} else {
-			m.logger.Log(ctx, log.LevelWarn,
-				"idempotency: response body exceeds maxBodyCache, skipping cache",
-				log.Int("body_size", len(body)),
-				log.Int("max_body_cache", m.maxBodyCache),
-			)
-		}
+		return m.respondPostHandlerStoreError(c)
+	}
 
-		// Carry the same fingerprint forward. Dropping it here would leave a
-		// completed record indistinguishable from a legacy one, so the very next
-		// duplicate would replay without a comparison.
-		pipe.Set(ctx, key, keyStateComplete+stateSeparator+fingerprint, m.keyTTL)
+	if response.StatusCode < http.StatusContinue || response.StatusCode > 599 || len(response.Body) > m.maxBodyCache {
+		m.logger.Log(c.Context(), log.LevelWarn, "idempotency: decoded replay response is invalid", log.Err(errInvalidReplayResponse))
 
-		if _, pipeErr := pipe.Exec(ctx); pipeErr != nil {
-			m.logger.Log(ctx, log.LevelWarn,
-				"idempotency: failed to atomically cache response and mark complete",
-				log.Err(pipeErr),
-			)
-		}
-	} else {
-		pipe := client.Pipeline()
-		pipe.Del(ctx, key)
-		pipe.Del(ctx, responseKey)
+		return m.respondPostHandlerStoreError(c)
+	}
 
-		if _, pipeErr := pipe.Exec(ctx); pipeErr != nil {
-			m.logger.Log(ctx, log.LevelWarn,
-				"idempotency: failed to delete keys after handler failure or 5xx response",
-				log.Err(pipeErr),
-			)
+	c.Set(chttp.IdempotencyReplayed, "true")
+
+	for name, values := range response.Headers {
+		for _, value := range values {
+			c.Response().Header.Add(name, value)
 		}
 	}
+
+	c.Set("Content-Type", response.ContentType)
+
+	return c.Status(response.StatusCode).Send(response.Body)
+}
+
+func (m *Middleware) respondConflict(c fiber.Ctx) error {
+	c.Set(chttp.IdempotencyReplayed, "true")
+	c.Set(fiber.HeaderRetryAfter, retryAfterSeconds)
+
+	if m.onConflict != nil {
+		return m.onConflict(c)
+	}
+
+	return libHTTP.RespondError(c, http.StatusConflict,
+		"IDEMPOTENCY_CONFLICT",
+		"a request with this idempotency key is currently being processed",
+	)
+}
+
+func (m *Middleware) respondKeyReuse(c fiber.Ctx) error {
+	if m.onKeyReuse != nil {
+		return m.onKeyReuse(c)
+	}
+
+	return libHTTP.RespondError(c, http.StatusUnprocessableEntity,
+		"IDEMPOTENCY_KEY_REUSE",
+		"this idempotency key was already used for a different request; "+
+			"do not retry with a new key — reconcile the original request first",
+	)
 }
