@@ -424,7 +424,14 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 		return m.handleStoreAcquired(c, key, processing, record, ttl)
 	}
 
-	if err := json.Unmarshal(stored, &record); err != nil {
+	// Decoded into a FRESH struct, never into the candidate record above.
+	// encoding/json leaves absent fields untouched, so unmarshalling over the
+	// candidate would let a stored object that omits "fingerprint" inherit this
+	// request's own fingerprint and sail through the mismatch gate, and one that
+	// omits "state" inherit "processing" and answer 409. Routing must observe
+	// only what the store actually holds.
+	var current storeRecord
+	if err := json.Unmarshal(stored, &current); err != nil {
 		legacy, isLegacy := decodeLegacyRecord(stored)
 		if !isLegacy {
 			m.logger.Log(ctx, log.LevelWarn, "idempotency: failed to unmarshal stored record", log.Err(err))
@@ -439,15 +446,15 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 		return m.respondLegacy(c, legacy, fingerprint)
 	}
 
-	if record.Fingerprint != fingerprint {
+	if current.Fingerprint != fingerprint {
 		return m.respondKeyReuse(c)
 	}
 
-	switch record.State {
+	switch current.State {
 	case keyStateProcessing:
 		return m.respondConflict(c)
 	case keyStateComplete:
-		return m.replay(c, record.Response)
+		return m.replay(c, current.Response)
 	default:
 		m.logger.Log(ctx, log.LevelWarn, "idempotency: store returned invalid record state")
 

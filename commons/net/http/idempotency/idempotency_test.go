@@ -366,6 +366,64 @@ func TestCheck_DuplicateRequest_ReplaysResponse(t *testing.T) {
 		"replayed response must set X-Idempotency-Replayed: true")
 }
 
+// TestCheck_PartialStoredRecord_RoutesOnStoredFieldsOnly pins the stored record
+// as the ONLY source of routing input. Decoding into the candidate record this
+// request just built would let encoding/json leave absent fields at the
+// caller's own values: a stored object without "fingerprint" would inherit this
+// request's fingerprint and pass the mismatch gate, and one without "state"
+// would inherit "processing" and answer 409 for a record that claims neither.
+func TestCheck_PartialStoredRecord_RoutesOnStoredFieldsOnly(t *testing.T) {
+	t.Parallel()
+
+	current := requestFingerprint(http.MethodPost, "/test", nil)
+
+	tests := []struct {
+		name       string
+		stored     string
+		wantStatus int
+		wantBody   string
+		wantCalls  int64
+	}{
+		{
+			// Without the fix this inherits the caller's fingerprint, clears the
+			// gate, and replays a nil response as a fabricated success.
+			name:       "complete without fingerprint is key reuse, never a replay",
+			stored:     `{"state":"complete"}`,
+			wantStatus: http.StatusUnprocessableEntity,
+			wantBody:   "IDEMPOTENCY_KEY_REUSE",
+		},
+		{
+			// Without the fix both state and fingerprint are inherited, so this
+			// answers 409 for a record that carries neither.
+			name:       "owner only is key reuse, never an in-flight conflict",
+			stored:     `{"owner":"someone-else"}`,
+			wantStatus: http.StatusUnprocessableEntity,
+			wantBody:   "IDEMPOTENCY_KEY_REUSE",
+		},
+		{
+			// Fingerprint matches, so routing reaches the state switch: an empty
+			// state must fall to the store-error path, not inherit "processing".
+			name:       "matching fingerprint without state takes the store-error path",
+			stored:     `{"fingerprint":"` + current + `"}`,
+			wantStatus: http.StatusServiceUnavailable,
+			wantBody:   "IDEMPOTENCY_UNAVAILABLE",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			calls, response, body := runWithSeededValue(t, "tenant-partial", testCase.stored, true)
+
+			assert.Equal(t, testCase.wantCalls, calls,
+				"a duplicate key must never re-execute the mutation")
+			assert.Equal(t, testCase.wantStatus, response.StatusCode)
+			assert.Contains(t, body, testCase.wantBody)
+		})
+	}
+}
+
 func TestCheck_DuplicateRequest_StillProcessing(t *testing.T) {
 	t.Parallel()
 

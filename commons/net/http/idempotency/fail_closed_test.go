@@ -28,12 +28,13 @@ func spyApp(mw fiber.Handler, tenantID string, called *atomic.Bool) *fiber.App {
 	return app
 }
 
-// TestCheck_TransientRedisError covers all four fail-open branches: the
-// pre-duplicate GetClient/SetNX errors (redis down) and the two
-// duplicate/replay read errors (wrong-type key forces a WRONGTYPE GET while
-// SET NX still reports the key exists). With WithFailClosed(true) each returns
-// 503 without running the handler; with the default each falls through to the
-// handler (unchanged behavior).
+// TestCheck_TransientRedisError covers the store-error branches the posture
+// switch governs: the pre-duplicate GetClient/SetNX errors (redis down), the
+// duplicate read error (wrong-type key forces a WRONGTYPE GET while SET NX
+// still reports the key exists), and a duplicate whose stored value decodes as
+// neither the atomic JSON record nor a recognised legacy record. With
+// WithFailClosed(true) each returns 503 without running the handler; with the
+// default each falls through to the handler (unchanged behavior).
 func TestCheck_TransientRedisError(t *testing.T) {
 	t.Parallel()
 
@@ -41,13 +42,13 @@ func TestCheck_TransientRedisError(t *testing.T) {
 
 	cases := []struct {
 		name string
-		// seed drives redis into the state that triggers one transient-error branch.
-		seed func(t *testing.T, mr *miniredis.Miniredis, key, responseKey string)
+		// seed drives redis into the state that triggers one store-error branch.
+		seed func(t *testing.T, mr *miniredis.Miniredis, key string)
 	}{
 		{
 			// Branches 1 & 2: GetClient / SetNX fail because Redis is down.
 			name: "redis_down_before_setnx",
-			seed: func(_ *testing.T, mr *miniredis.Miniredis, _, _ string) {
+			seed: func(_ *testing.T, mr *miniredis.Miniredis, _ string) {
 				mr.Close()
 			},
 		},
@@ -55,19 +56,18 @@ func TestCheck_TransientRedisError(t *testing.T) {
 			// Branch 3: SET NX sees the key exists (returns false), but the
 			// follow-up GET on the wrong-type key returns WRONGTYPE.
 			name: "duplicate_key_state_read_error",
-			seed: func(t *testing.T, mr *miniredis.Miniredis, key, _ string) {
+			seed: func(t *testing.T, mr *miniredis.Miniredis, key string) {
 				_, err := mr.Lpush(key, "x")
 				require.NoError(t, err)
 			},
 		},
 		{
-			// Branch 4: key-state GET succeeds ("complete"), but the GET on the
-			// wrong-type response key returns WRONGTYPE.
-			name: "duplicate_response_read_error",
-			seed: func(t *testing.T, mr *miniredis.Miniredis, key, responseKey string) {
+			// Branch 4: Acquire returns an existing value that is neither the
+			// atomic JSON record nor a recognised legacy record, so routing
+			// falls to the store-error path rather than answering from it.
+			name: "duplicate_undecodable_record",
+			seed: func(t *testing.T, mr *miniredis.Miniredis, key string) {
 				require.NoError(t, mr.Set(key, keyStateComplete))
-				_, err := mr.Lpush(responseKey, "x")
-				require.NoError(t, err)
 			},
 		},
 	}
@@ -85,7 +85,7 @@ func TestCheck_TransientRedisError(t *testing.T) {
 
 				idemKey := "fc-" + tc.name
 				key := fmt.Sprintf("idempotency:%s:%s", tenant, idemKey)
-				tc.seed(t, mr, key, key+":response")
+				tc.seed(t, mr, key)
 
 				var called atomic.Bool
 
@@ -105,7 +105,7 @@ func TestCheck_TransientRedisError(t *testing.T) {
 
 				idemKey := "fo-" + tc.name
 				key := fmt.Sprintf("idempotency:%s:%s", tenant, idemKey)
-				tc.seed(t, mr, key, key+":response")
+				tc.seed(t, mr, key)
 
 				var called atomic.Bool
 
