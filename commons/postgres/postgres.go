@@ -24,6 +24,7 @@ import (
 	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
+	"github.com/LerianStudio/lib-observability/v2/sqlobs"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/golang-migrate/migrate/v4"
@@ -32,6 +33,8 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -132,6 +135,14 @@ type Config struct {
 	MaxIdleConnections int
 	ConnMaxLifetime    time.Duration
 	ConnMaxIdleTime    time.Duration
+
+	// MeterProvider and TracerProvider, when set, enable real per-query
+	// instrumentation (db.client.operation.duration, connection pool stats)
+	// via lib-observability's sqlobs, on top of the connection_failures_total
+	// counter already covered by MetricsFactory. Nil-safe: leaving these unset
+	// keeps the connection uninstrumented by sqlobs.
+	MeterProvider  metric.MeterProvider
+	TracerProvider trace.TracerProvider
 }
 
 func (c Config) withDefaults() Config {
@@ -270,20 +281,6 @@ var connectionFailuresMetric = metrics.Metric{
 	Description: "Total number of postgres connection failures",
 }
 
-// connectionCreateTimeMetric defines the histogram for postgres connection setup duration.
-var connectionCreateTimeMetric = metrics.Metric{
-	Name:        "db.client.connection.create_time",
-	Unit:        "ms",
-	Description: "Time taken to establish a postgres client connection",
-}
-
-// operationDurationMetric defines the histogram for postgres client operation duration.
-var operationDurationMetric = metrics.Metric{
-	Name:        "db.client.operation.duration",
-	Unit:        "ms",
-	Description: "Duration of a postgres client operation",
-}
-
 // Client is the v2 postgres connection manager.
 type Client struct {
 	mu             sync.RWMutex
@@ -352,9 +349,6 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemPostgreSQL))
 
-	start := time.Now()
-	defer func() { c.recordConnectionCreateTime(ctx, time.Since(start)) }()
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -412,12 +406,12 @@ func (c *Client) buildConnection(ctx context.Context) (*sql.DB, *sql.DB, dbresol
 	warnInsecureDSN(ctx, c.cfg.Logger, c.cfg.PrimaryDSN, "primary")
 	warnInsecureDSN(ctx, c.cfg.Logger, c.cfg.ReplicaDSN, "replica")
 
-	primary, err := c.newSQLDB(ctx, c.cfg.PrimaryDSN)
+	primary, err := c.newSQLDB(ctx, c.cfg.PrimaryDSN, sqlobs.PoolRolePrimary)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("postgres connect: %w", err)
 	}
 
-	replica, err := c.newSQLDB(ctx, c.cfg.ReplicaDSN)
+	replica, err := c.newSQLDB(ctx, c.cfg.ReplicaDSN, sqlobs.PoolRoleReplica)
 	if err != nil {
 		_ = closeDB(primary)
 		return nil, nil, nil, fmt.Errorf("postgres connect: %w", err)
@@ -446,13 +440,35 @@ func (c *Client) buildConnection(ctx context.Context) (*sql.DB, *sql.DB, dbresol
 	return primary, replica, resolver, nil
 }
 
-func (c *Client) newSQLDB(ctx context.Context, dsn string) (*sql.DB, error) {
+func (c *Client) newSQLDB(ctx context.Context, dsn string, poolRole sqlobs.PoolRole) (*sql.DB, error) {
 	db, err := dbOpenFn("pgx", dsn)
 	if err != nil {
 		sanitized := newSanitizedError(err, "failed to open database")
 		c.logAtLevel(ctx, log.LevelError, "failed to open database", log.Err(sanitized))
 
 		return nil, sanitized
+	}
+
+	if c.cfg.MeterProvider != nil {
+		instrumented, instrErr := sqlobs.InstrumentDB(db, sqlobs.SystemPostgreSQL,
+			sqlobs.WithMeterProvider(c.cfg.MeterProvider),
+			sqlobs.WithTracerProvider(c.cfg.TracerProvider),
+			sqlobs.WithPoolRole(poolRole),
+			sqlobs.WithDSN(dsn),
+		)
+		if instrErr != nil {
+			_ = db.Close()
+
+			sanitized := newSanitizedError(instrErr, "failed to instrument database")
+			c.logAtLevel(ctx, log.LevelError, "failed to instrument database", log.Err(sanitized))
+
+			return nil, sanitized
+		}
+
+		// InstrumentDB returns a handle backed by a fresh pool; the original
+		// must be closed and all pool tuning re-applied to the new handle.
+		_ = db.Close()
+		db = instrumented
 	}
 
 	db.SetMaxOpenConns(c.cfg.MaxOpenConnections)
@@ -511,9 +527,6 @@ func (c *Client) Resolver(ctx context.Context) (dbresolver.DB, error) {
 	defer span.End()
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemPostgreSQL))
-
-	start := time.Now()
-	defer func() { c.recordOperationDuration(ctx, "resolve", time.Since(start)) }()
 
 	if err := c.connectLocked(ctx); err != nil {
 		c.connectAttempts++
@@ -1058,53 +1071,6 @@ func (c *Client) recordConnectionFailure(ctx context.Context, operation string) 
 			"operation": constant.SanitizeMetricLabel(operation),
 		}).
 		AddOne(ctx)
-	if err != nil {
-		c.logAtLevel(ctx, log.LevelWarn, "failed to record postgres metric", log.Err(err))
-	}
-}
-
-// recordConnectionCreateTime records how long establishing a postgres connection took.
-// No-op when metricsFactory is nil. ctx is used for metric recording.
-func (c *Client) recordConnectionCreateTime(ctx context.Context, duration time.Duration) {
-	if c == nil || c.metricsFactory == nil {
-		return
-	}
-
-	histogram, err := c.metricsFactory.Histogram(connectionCreateTimeMetric)
-	if err != nil {
-		c.logAtLevel(ctx, log.LevelWarn, "failed to create postgres metric histogram", log.Err(err))
-		return
-	}
-
-	err = histogram.
-		WithLabels(map[string]string{
-			"db.system.name": constant.DBSystemPostgreSQL,
-		}).
-		Record(ctx, duration.Milliseconds())
-	if err != nil {
-		c.logAtLevel(ctx, log.LevelWarn, "failed to record postgres metric", log.Err(err))
-	}
-}
-
-// recordOperationDuration records how long a postgres client operation took.
-// No-op when metricsFactory is nil. ctx is used for metric recording.
-func (c *Client) recordOperationDuration(ctx context.Context, operation string, duration time.Duration) {
-	if c == nil || c.metricsFactory == nil {
-		return
-	}
-
-	histogram, err := c.metricsFactory.Histogram(operationDurationMetric)
-	if err != nil {
-		c.logAtLevel(ctx, log.LevelWarn, "failed to create postgres metric histogram", log.Err(err))
-		return
-	}
-
-	err = histogram.
-		WithLabels(map[string]string{
-			"db.system.name":    constant.DBSystemPostgreSQL,
-			"db.operation.name": constant.SanitizeMetricLabel(operation),
-		}).
-		Record(ctx, duration.Milliseconds())
 	if err != nil {
 		c.logAtLevel(ctx, log.LevelWarn, "failed to record postgres metric", log.Err(err))
 	}

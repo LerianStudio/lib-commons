@@ -13,7 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-observability/v2/metrics"
+	"github.com/LerianStudio/lib-observability/v2/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
 type mockConfirmableChannel struct {
@@ -195,6 +199,50 @@ func TestConfirmablePublisher_PublishAndWaitConfirm_Success(t *testing.T) {
 		amqp.Publishing{Body: []byte("ok")},
 	)
 	require.NoError(t, err)
+}
+
+func TestConfirmablePublisher_Publish_InstrumentsWithMessagingobsWhenTelemetrySet(t *testing.T) {
+	t.Parallel()
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	factory, err := metrics.NewMetricsFactory(provider.Meter("rabbitmq-test"), libLog.NewNop())
+	require.NoError(t, err)
+
+	tl := &tracing.Telemetry{MeterProvider: provider, MetricsFactory: factory}
+
+	ch := newMockChannel()
+	publisher, err := NewConfirmablePublisherFromChannel(ch, WithTelemetry(tl))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if closeErr := publisher.Close(); closeErr != nil {
+			t.Errorf("cleanup: publisher close: %v", closeErr)
+		}
+	})
+
+	go func() {
+		ch.waitForPublish(t)
+		ch.sendConfirm(true)
+	}()
+
+	err = publisher.Publish(context.Background(), "exchange", "route", false, false, amqp.Publishing{Body: []byte("ok")})
+	require.NoError(t, err)
+
+	var rm metricdata.ResourceMetrics
+	require.NoError(t, reader.Collect(context.Background(), &rm))
+
+	var found bool
+
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "messaging.client.operation.duration" {
+				found = true
+			}
+		}
+	}
+
+	assert.True(t, found, "expected messagingobs to record messaging.client.operation.duration")
 }
 
 func TestConfirmablePublisher_Publish_Nack(t *testing.T) {

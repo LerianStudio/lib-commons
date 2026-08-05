@@ -20,11 +20,14 @@ import (
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
 	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/metrics"
+	"github.com/LerianStudio/lib-observability/v2/redisobs"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 	"google.golang.org/protobuf/types/known/durationpb"
@@ -92,6 +95,14 @@ type Config struct {
 	Options        ConnectionOptions
 	Logger         log.Logger
 	MetricsFactory *metrics.MetricsFactory
+
+	// MeterProvider and TracerProvider, when set, enable real per-command
+	// instrumentation (db.client.connections.create_time/use_time) via
+	// lib-observability's redisobs, on top of the connection_failures_total /
+	// reconnections_total counters already covered by MetricsFactory. Nil-safe:
+	// leaving these unset keeps the client uninstrumented by redisobs.
+	MeterProvider  metric.MeterProvider
+	TracerProvider trace.TracerProvider
 }
 
 // Topology selects exactly one Redis deployment mode.
@@ -200,20 +211,6 @@ var reconnectionsMetric = metrics.Metric{
 	Description: "Total number of redis reconnection attempts",
 }
 
-// connectionCreateTimeMetric defines the histogram for redis connection setup duration.
-var connectionCreateTimeMetric = metrics.Metric{
-	Name:        "db.client.connection.create_time",
-	Unit:        "ms",
-	Description: "Time taken to establish a redis client connection",
-}
-
-// operationDurationMetric defines the histogram for redis client operation duration.
-var operationDurationMetric = metrics.Metric{
-	Name:        "db.client.operation.duration",
-	Unit:        "ms",
-	Description: "Duration of a redis client operation",
-}
-
 // Client wraps a redis.UniversalClient with reconnection and IAM token refresh logic.
 type Client struct {
 	mu             sync.RWMutex
@@ -273,16 +270,8 @@ func (c *Client) Connect(ctx context.Context) error {
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemRedis))
 
-	// start is set after the lock is acquired (below) so the recorded duration
-	// reflects only connection setup, not mutex wait; the defer is registered
-	// here so it fires after c.mu.Unlock() (LIFO), not while still holding it.
-	var start time.Time
-	defer func() { c.recordConnectionCreateTime(time.Since(start)) }()
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	start = time.Now()
 
 	if c.logger == nil {
 		c.logger = &log.NopLogger{}
@@ -349,9 +338,6 @@ func (c *Client) GetClient(ctx context.Context) (redis.UniversalClient, error) {
 	defer span.End()
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemRedis))
-
-	start := time.Now()
-	defer func() { c.recordOperationDuration("reconnect", time.Since(start)) }()
 
 	if err := c.connectLocked(ctx); err != nil {
 		c.reconnectAttempts++
@@ -494,6 +480,16 @@ func (c *Client) connectClientLocked(ctx context.Context) error {
 	}
 
 	rdb := redis.NewUniversalClient(opts)
+
+	if c.cfg.MeterProvider != nil {
+		if instrErr := redisobs.Instrument(rdb,
+			redisobs.WithMeterProvider(c.cfg.MeterProvider),
+			redisobs.WithTracerProvider(c.cfg.TracerProvider),
+		); instrErr != nil {
+			c.logger.Log(ctx, log.LevelWarn, "failed to instrument redis client", log.Err(instrErr))
+		}
+	}
+
 	if _, err := rdb.Ping(ctx).Result(); err != nil {
 		_ = rdb.Close()
 
@@ -1132,53 +1128,6 @@ func (c *Client) recordConnectionFailure(operation string) {
 			"operation": constant.SanitizeMetricLabel(operation),
 		}).
 		AddOne(context.Background())
-	if err != nil {
-		c.logger.Log(context.Background(), log.LevelWarn, "failed to record redis metric", log.Err(err))
-	}
-}
-
-// recordConnectionCreateTime records how long establishing a redis connection took.
-// No-op when metricsFactory is nil.
-func (c *Client) recordConnectionCreateTime(duration time.Duration) {
-	if c.metricsFactory == nil {
-		return
-	}
-
-	histogram, err := c.metricsFactory.Histogram(connectionCreateTimeMetric)
-	if err != nil {
-		c.logger.Log(context.Background(), log.LevelWarn, "failed to create redis metric histogram", log.Err(err))
-		return
-	}
-
-	err = histogram.
-		WithLabels(map[string]string{
-			"db.system.name": constant.DBSystemRedis,
-		}).
-		Record(context.Background(), duration.Milliseconds())
-	if err != nil {
-		c.logger.Log(context.Background(), log.LevelWarn, "failed to record redis metric", log.Err(err))
-	}
-}
-
-// recordOperationDuration records how long a redis client operation took.
-// No-op when metricsFactory is nil.
-func (c *Client) recordOperationDuration(operation string, duration time.Duration) {
-	if c.metricsFactory == nil {
-		return
-	}
-
-	histogram, err := c.metricsFactory.Histogram(operationDurationMetric)
-	if err != nil {
-		c.logger.Log(context.Background(), log.LevelWarn, "failed to create redis metric histogram", log.Err(err))
-		return
-	}
-
-	err = histogram.
-		WithLabels(map[string]string{
-			"db.system.name":    constant.DBSystemRedis,
-			"db.operation.name": constant.SanitizeMetricLabel(operation),
-		}).
-		Record(context.Background(), duration.Milliseconds())
 	if err != nil {
 		c.logger.Log(context.Background(), log.LevelWarn, "failed to record redis metric", log.Err(err))
 	}

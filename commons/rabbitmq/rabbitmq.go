@@ -44,12 +44,6 @@ var connectionCreateTimeMetric = metrics.Metric{
 	Description: "Time taken to establish a rabbitmq client connection",
 }
 
-// operationDurationMetric defines the histogram for rabbitmq client operation duration.
-var operationDurationMetric = metrics.Metric{
-	Name:        "messaging.client.operation.duration",
-	Unit:        "ms",
-	Description: "Duration of a rabbitmq client operation",
-}
 
 // RabbitMQConnection is a hub which deal with rabbitmq connections.
 type RabbitMQConnection struct {
@@ -460,9 +454,6 @@ func (rc *RabbitMQConnection) EnsureChannelContext(ctx context.Context) error {
 	defer span.End()
 
 	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemRabbitMQ))
-
-	start := time.Now()
-	defer func() { rc.recordOperationDuration("ensure_channel", time.Since(start)) }()
 
 	snap, err := rc.snapshotEnsureChannelState()
 	if err != nil {
@@ -1561,30 +1552,6 @@ func (rc *RabbitMQConnection) recordConnectionCreateTime(duration time.Duration)
 	err = histogram.
 		WithLabels(map[string]string{
 			"messaging.system.name": constant.DBSystemRabbitMQ,
-		}).
-		Record(context.Background(), duration.Milliseconds())
-	if err != nil {
-		rc.logger().Log(context.Background(), log.LevelWarn, "failed to record rabbitmq metric", log.Err(err))
-	}
-}
-
-// recordOperationDuration records how long a rabbitmq client operation took.
-// No-op when MetricsFactory is nil.
-func (rc *RabbitMQConnection) recordOperationDuration(operation string, duration time.Duration) {
-	if rc == nil || rc.MetricsFactory == nil {
-		return
-	}
-
-	histogram, err := rc.MetricsFactory.Histogram(operationDurationMetric)
-	if err != nil {
-		rc.logger().Log(context.Background(), log.LevelWarn, "failed to create rabbitmq metric histogram", log.Err(err))
-		return
-	}
-
-	err = histogram.
-		WithLabels(map[string]string{
-			"messaging.system.name":    constant.DBSystemRabbitMQ,
-			"messaging.operation.name": constant.SanitizeMetricLabel(operation),
 		}).
 		Record(context.Background(), duration.Milliseconds())
 	if err != nil {

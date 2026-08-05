@@ -386,24 +386,6 @@ func TestRecordConnectionCreateTime_NilMetricsFactory(t *testing.T) {
 	})
 }
 
-func TestRecordOperationDuration_NilConnection(t *testing.T) {
-	t.Parallel()
-
-	var rc *RabbitMQConnection
-	assert.NotPanics(t, func() {
-		rc.recordOperationDuration("ensure_channel", time.Millisecond)
-	})
-}
-
-func TestRecordOperationDuration_NilMetricsFactory(t *testing.T) {
-	t.Parallel()
-
-	rc := &RabbitMQConnection{}
-	assert.NotPanics(t, func() {
-		rc.recordOperationDuration("ensure_channel", time.Millisecond)
-	})
-}
-
 func TestRabbitMQConnection_ConnectContext_RecordsConnectionCreateTimeHistogram(t *testing.T) {
 	factory, reader := newTestMetricsFactory(t)
 
@@ -715,7 +697,7 @@ func TestRabbitMQConnection_EnsureChannel(t *testing.T) {
 	})
 }
 
-func TestRabbitMQConnection_EnsureChannelContext_RecordsOperationDurationHistogram(t *testing.T) {
+func TestRabbitMQConnection_EnsureChannelContext_RecordsConnectionCreateTimeWhenDialing(t *testing.T) {
 	factory, reader := newTestMetricsFactory(t)
 
 	conn := &RabbitMQConnection{
@@ -734,12 +716,10 @@ func TestRabbitMQConnection_EnsureChannelContext_RecordsOperationDurationHistogr
 
 	require.NoError(t, conn.EnsureChannel())
 
-	dp := findHistogramDataPoint(t, reader, "messaging.client.operation.duration", "messaging.operation.name", "ensure_channel")
-	assert.Equal(t, uint64(1), dp.Count)
-	assert.GreaterOrEqual(t, dp.Sum, int64(5), "recorded duration should be at least the injected 5ms delay")
-
-	// EnsureChannel dialed a new connection above, so it must also be reflected
-	// in the connection-create histogram, not just operation-duration.
+	// EnsureChannel dialed a new connection above, so it must be reflected in
+	// the connection-create histogram (messagingobs, wired in separately, owns
+	// publish/consume operation.duration - this is the one metric messagingobs
+	// never touches, since it doesn't wrap AMQP connection dialing).
 	connDP := findHistogramDataPoint(t, reader, "messaging.client.connection.create_time", "messaging.system.name", "rabbitmq")
 	assert.Equal(t, uint64(1), connDP.Count)
 	assert.GreaterOrEqual(t, connDP.Sum, int64(5), "recorded duration should be at least the injected 5ms delay")

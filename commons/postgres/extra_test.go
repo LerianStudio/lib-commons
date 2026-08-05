@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
@@ -131,44 +130,6 @@ func TestRecordConnectionFailure_NilMetricsFactory(t *testing.T) {
 	// metricsFactory is nil by default - should be a no-op
 	assert.NotPanics(t, func() {
 		c.recordConnectionFailure(context.Background(), "connect")
-	})
-}
-
-// TestRecordConnectionCreateTime covers the nil receiver and nil metricsFactory guards.
-func TestRecordConnectionCreateTime_NilClient(t *testing.T) {
-	t.Parallel()
-
-	var c *Client
-	assert.NotPanics(t, func() {
-		c.recordConnectionCreateTime(context.Background(), time.Millisecond)
-	})
-}
-
-func TestRecordConnectionCreateTime_NilMetricsFactory(t *testing.T) {
-	t.Parallel()
-
-	c := &Client{}
-	assert.NotPanics(t, func() {
-		c.recordConnectionCreateTime(context.Background(), time.Millisecond)
-	})
-}
-
-// TestRecordOperationDuration covers the nil receiver and nil metricsFactory guards.
-func TestRecordOperationDuration_NilClient(t *testing.T) {
-	t.Parallel()
-
-	var c *Client
-	assert.NotPanics(t, func() {
-		c.recordOperationDuration(context.Background(), "resolve", time.Millisecond)
-	})
-}
-
-func TestRecordOperationDuration_NilMetricsFactory(t *testing.T) {
-	t.Parallel()
-
-	c := &Client{}
-	assert.NotPanics(t, func() {
-		c.recordOperationDuration(context.Background(), "resolve", time.Millisecond)
 	})
 }
 

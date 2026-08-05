@@ -4,13 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-observability/v2/messagingobs"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
+	"github.com/LerianStudio/lib-observability/v2/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -150,6 +153,9 @@ type ConfirmablePublisher struct {
 	closed            bool
 	shutdown          bool
 	recoveryExhausted bool
+
+	telemetry *tracing.Telemetry
+	producer  *messagingobs.Publisher
 }
 
 // ConfirmablePublisherOption configures a ConfirmablePublisher.
@@ -163,6 +169,17 @@ func WithLogger(logger libLog.Logger) ConfirmablePublisherOption {
 		}
 
 		pub.logger = logger
+	}
+}
+
+// WithTelemetry enables real producer instrumentation (messaging.client.operation.duration,
+// trace-context propagation into published message headers) via lib-observability's
+// messagingobs. Nil-safe: omitting this leaves Publish uninstrumented by messagingobs
+// (the connection_failures_total / connection.create_time metrics on RabbitMQConnection
+// are unaffected either way).
+func WithTelemetry(tl *tracing.Telemetry) ConfirmablePublisherOption {
+	return func(pub *ConfirmablePublisher) {
+		pub.telemetry = tl
 	}
 }
 
@@ -296,6 +313,10 @@ func NewConfirmablePublisherFromChannel(
 		if opt != nil {
 			opt(publisher)
 		}
+	}
+
+	if publisher.telemetry != nil {
+		publisher.producer = messagingobs.NewPublisher(publisher.telemetry)
 	}
 
 	publisher.logDeferredOptionWarnings()
@@ -571,13 +592,35 @@ func (pub *ConfirmablePublisher) PublishAndWaitConfirm(
 	exchange, routingKey string,
 	mandatory, immediate bool,
 	msg amqp.Publishing,
-) error {
+) (err error) {
 	if pub == nil {
 		return ErrPublisherRequired
 	}
 
 	if ctx == nil {
 		ctx = context.Background()
+	}
+
+	if pub.producer != nil {
+		var headers map[string]any
+
+		var finish messagingobs.FinishFunc
+
+		ctx, headers, finish = pub.producer.Produce(ctx, messagingobs.ProduceParams{
+			// exchange, not routingKey: exchanges are a small, bounded, service-declared
+			// set, while routing keys can carry per-tenant/per-entity values that would
+			// blow up metric cardinality if used as the destination template.
+			DestinationTemplate: exchange,
+			OperationName:       "publish",
+			RoutingKey:          routingKey,
+		})
+		defer func() { finish(err) }()
+
+		if msg.Headers == nil {
+			msg.Headers = amqp.Table{}
+		}
+
+		maps.Copy(msg.Headers, headers)
 	}
 
 	pub.publishMu.Lock()
@@ -611,7 +654,7 @@ func (pub *ConfirmablePublisher) PublishAndWaitConfirm(
 		return fmt.Errorf("publish: %w", err)
 	}
 
-	err := waitForConfirm(ctx, confirms, closedCh, confirmTimeout)
+	err = waitForConfirm(ctx, confirms, closedCh, confirmTimeout)
 	if err != nil && isConfirmStreamCorrupted(err) {
 		// The pending confirmation will corrupt the next waitForConfirm call.
 		// Invalidate the channel so the close monitor triggers auto-recovery

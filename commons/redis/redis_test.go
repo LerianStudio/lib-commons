@@ -23,7 +23,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
 	"github.com/LerianStudio/lib-observability/v2/log"
-	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -919,170 +918,44 @@ func TestClient_GetClient_ReconnectsWhenNil(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Duration histograms - db.client.connection.create_time / db.client.operation.duration
+// redisobs instrumentation wiring
 // ---------------------------------------------------------------------------
 
-// newTestMetricsFactory creates a MetricsFactory backed by a real SDK meter
-// provider with a ManualReader, so recorded histogram values can be asserted.
-func newTestMetricsFactory(t *testing.T) (*metrics.MetricsFactory, *sdkmetric.ManualReader) {
-	t.Helper()
+func TestConnect_InstrumentsWithRedisobsWhenMeterProviderSet(t *testing.T) {
+	mr := miniredis.RunT(t)
 
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
-	factory, err := metrics.NewMetricsFactory(provider.Meter("redis-test"), log.NewNop())
+	cfg := newStandaloneConfig(mr.Addr())
+	cfg.MeterProvider = provider
+
+	client, err := New(context.Background(), cfg)
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		if closeErr := client.Close(); closeErr != nil {
+			t.Errorf("cleanup: client close: %v", closeErr)
+		}
+	})
 
-	return factory, reader
-}
-
-// findHistogramDataPoint collects metrics from reader and returns the first
-// int64 histogram data point for metricName carrying attrKey=attrValue.
-func findHistogramDataPoint(t *testing.T, reader *sdkmetric.ManualReader, metricName, attrKey, attrValue string) metricdata.HistogramDataPoint[int64] {
-	t.Helper()
+	rdb, err := client.GetClient(context.Background())
+	require.NoError(t, err)
+	require.NoError(t, rdb.Set(context.Background(), "instrumented:key", "ok", 0).Err())
 
 	var rm metricdata.ResourceMetrics
 	require.NoError(t, reader.Collect(context.Background(), &rm))
 
+	var found bool
+
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			if m.Name != metricName {
-				continue
-			}
-
-			hist, ok := m.Data.(metricdata.Histogram[int64])
-			require.True(t, ok, "metric %q has unexpected data type %T", metricName, m.Data)
-
-			for _, dp := range hist.DataPoints {
-				iter := dp.Attributes.Iter()
-				for iter.Next() {
-					kv := iter.Attribute()
-					if string(kv.Key) == attrKey && kv.Value.AsString() == attrValue {
-						return dp
-					}
-				}
+			if m.Name == "db.client.connections.create_time" || m.Name == "db.client.connections.use_time" {
+				found = true
 			}
 		}
 	}
 
-	t.Fatalf("histogram %q with attribute %s=%s not found", metricName, attrKey, attrValue)
-
-	return metricdata.HistogramDataPoint[int64]{}
-}
-
-func assertHasAttribute(t *testing.T, dp metricdata.HistogramDataPoint[int64], key, value string) {
-	t.Helper()
-
-	iter := dp.Attributes.Iter()
-	for iter.Next() {
-		kv := iter.Attribute()
-		if string(kv.Key) == key && kv.Value.AsString() == value {
-			return
-		}
-	}
-
-	t.Errorf("data point missing attribute %s=%s", key, value)
-}
-
-func TestRecordConnectionCreateTime_NilMetricsFactory(t *testing.T) {
-	t.Parallel()
-
-	c := &Client{logger: &log.NopLogger{}}
-	assert.NotPanics(t, func() {
-		c.recordConnectionCreateTime(time.Millisecond)
-	})
-}
-
-func TestRecordOperationDuration_NilMetricsFactory(t *testing.T) {
-	t.Parallel()
-
-	c := &Client{logger: &log.NopLogger{}}
-	assert.NotPanics(t, func() {
-		c.recordOperationDuration("reconnect", time.Millisecond)
-	})
-}
-
-func TestClient_Connect_RecordsConnectionCreateTimeHistogram(t *testing.T) {
-	mr := miniredis.RunT(t)
-
-	factory, reader := newTestMetricsFactory(t)
-
-	cfg := newStandaloneConfig(mr.Addr())
-	cfg.MetricsFactory = factory
-
-	client, err := New(context.Background(), cfg)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		if closeErr := client.Close(); closeErr != nil {
-			t.Errorf("cleanup: client close: %v", closeErr)
-		}
-	})
-
-	dp := findHistogramDataPoint(t, reader, "db.client.connection.create_time", "db.system.name", "redis")
-	assert.Equal(t, uint64(1), dp.Count)
-}
-
-func TestClient_GetClient_RecordsOperationDurationHistogram(t *testing.T) {
-	mr := miniredis.RunT(t)
-
-	factory, reader := newTestMetricsFactory(t)
-
-	cfg := newStandaloneConfig(mr.Addr())
-	cfg.MetricsFactory = factory
-
-	client, err := New(context.Background(), cfg)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		if closeErr := client.Close(); closeErr != nil {
-			t.Errorf("cleanup: client close: %v", closeErr)
-		}
-	})
-
-	// Force a nil internal client to exercise the reconnect (slow) path.
-	client.mu.Lock()
-	old := client.client
-	client.client = nil
-	client.mu.Unlock()
-	require.NoError(t, old.Close())
-
-	_, err = client.GetClient(context.Background())
-	require.NoError(t, err)
-
-	dp := findHistogramDataPoint(t, reader, "db.client.operation.duration", "db.operation.name", "reconnect")
-	assert.Equal(t, uint64(1), dp.Count)
-	assertHasAttribute(t, dp, "db.system.name", "redis")
-}
-
-// TestRecordConnectionCreateTime_RecordsMilliseconds and
-// TestRecordOperationDuration_RecordsMilliseconds call the helpers directly
-// with a known duration, since the Connect/GetClient wiring tests above go
-// through a real miniredis dial that completes too fast (sub-millisecond)
-// to reliably assert on the recorded value.
-func TestRecordConnectionCreateTime_RecordsMilliseconds(t *testing.T) {
-	t.Parallel()
-
-	factory, reader := newTestMetricsFactory(t)
-
-	c := &Client{logger: &log.NopLogger{}, metricsFactory: factory}
-	c.recordConnectionCreateTime(250 * time.Millisecond)
-
-	dp := findHistogramDataPoint(t, reader, "db.client.connection.create_time", "db.system.name", "redis")
-	assert.Equal(t, uint64(1), dp.Count)
-	assert.Equal(t, int64(250), dp.Sum)
-}
-
-func TestRecordOperationDuration_RecordsMilliseconds(t *testing.T) {
-	t.Parallel()
-
-	factory, reader := newTestMetricsFactory(t)
-
-	c := &Client{logger: &log.NopLogger{}, metricsFactory: factory}
-	c.recordOperationDuration("reconnect", 250*time.Millisecond)
-
-	dp := findHistogramDataPoint(t, reader, "db.client.operation.duration", "db.operation.name", "reconnect")
-	assert.Equal(t, uint64(1), dp.Count)
-	assert.Equal(t, int64(250), dp.Sum)
-	assertHasAttribute(t, dp, "db.system.name", "redis")
+	assert.True(t, found, "expected redisobs to record at least one db.client.connections.* metric")
 }
 
 func TestClient_RetrieveToken_NilClient(t *testing.T) {
