@@ -1,12 +1,5 @@
 # Lib-commons Changelog
 
-## [Unreleased]
-
-Fixes:
-- Add an opt-in standalone/sentinel Redis bridge that atomically writes v6.2 records in the validated original-tenant namespace and owner-fenced current JSON in the canonical namespace; malformed state, mismatched tenant identity, custom response codecs, and Redis Cluster fail closed before mutation. Disable bridge writes only after v6.2 is drained and its maximum TTL has elapsed. (@fredcamaral)
-
----
-
 ## [6.7.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.7.0)
 
 Features:
@@ -466,3 +459,4 @@ Contributors: @bedatty, @fredcamaral, @jeffersonrodrigues92, @lerian-studio.
 Contributors: @bedatty, @fredcamaral, @gandalf-at-lerian, @jeffersonrodrigues92, @qnen.
 
 [Compare changes](https://github.com/LerianStudio/lib-commons/compare/v5.1.1...v5.2.0)
+

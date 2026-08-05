@@ -38,38 +38,6 @@ func TestContextWithTenantID_Roundtrip(t *testing.T) {
 	assert.Equal(t, "tenant-456", GetTenantIDContext(ctx))
 }
 
-func TestOriginalTenantIDContext_RoundtripAndAbsence(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		ctx      context.Context
-		expected string
-	}{
-		{
-			name: "preserves original validated spelling beside canonical tenant",
-			ctx: ContextWithOriginalTenantID(
-				ContextWithTenantID(context.Background(), "550e8400e29b41d4a716446655440000"),
-				"550e8400-e29b-41d4-a716-446655440000",
-			),
-			expected: "550e8400-e29b-41d4-a716-446655440000",
-		},
-		{
-			name:     "direct context without original identity stays absent",
-			ctx:      ContextWithTenantID(context.Background(), "tenant-direct"),
-			expected: "",
-		},
-	}
-
-	for _, testCase := range tests {
-		testCase := testCase
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, testCase.expected, GetOriginalTenantIDContext(testCase.ctx))
-		})
-	}
-}
-
 // mockDB implements dbresolver.DB interface for testing purposes.
 type mockDB struct {
 	name string

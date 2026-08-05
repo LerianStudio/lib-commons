@@ -251,33 +251,6 @@ func TestCheck_KeyTooLong_Rejected(t *testing.T) {
 	assert.Contains(t, body, chttp.IdempotencyKey)
 }
 
-func TestCheck_ReservedKeySuffix_Rejected(t *testing.T) {
-	t.Parallel()
-
-	// Keys ending in a reserved suffix collide with the companion Redis keys
-	// derived from another idempotency key: "abc:response" is the replay
-	// sidecar of "abc", and "abc:bridge-owner" is its bridge owner fence.
-	for _, suffix := range []string{legacyResponseKeySuffix, bridgeOwnerKeySuffix} {
-		suffix := suffix
-		t.Run(suffix, func(t *testing.T) {
-			t.Parallel()
-
-			mr := miniredis.RunT(t)
-			conn := newRedisClient(t, mr)
-			m := New(conn)
-
-			app := newPostApp(m.Check())
-			resp := doPost(t, app, "abc"+suffix)
-			body := readBody(t, resp)
-
-			assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-			assert.Contains(t, body, "VALIDATION_ERROR")
-			assert.Contains(t, body, chttp.IdempotencyKey)
-			assert.Empty(t, mr.Keys(), "a reserved-suffix key must be rejected before Redis access")
-		})
-	}
-}
-
 func TestCheck_KeyTooLong_CustomHandler(t *testing.T) {
 	t.Parallel()
 
@@ -391,6 +364,64 @@ func TestCheck_DuplicateRequest_ReplaysResponse(t *testing.T) {
 		"replayed response must have the original body")
 	assert.Equal(t, "true", resp2.Header.Get(chttp.IdempotencyReplayed),
 		"replayed response must set X-Idempotency-Replayed: true")
+}
+
+// TestCheck_PartialStoredRecord_RoutesOnStoredFieldsOnly pins the stored record
+// as the ONLY source of routing input. Decoding into the candidate record this
+// request just built would let encoding/json leave absent fields at the
+// caller's own values: a stored object without "fingerprint" would inherit this
+// request's fingerprint and pass the mismatch gate, and one without "state"
+// would inherit "processing" and answer 409 for a record that claims neither.
+func TestCheck_PartialStoredRecord_RoutesOnStoredFieldsOnly(t *testing.T) {
+	t.Parallel()
+
+	current := requestFingerprint(http.MethodPost, "/test", nil)
+
+	tests := []struct {
+		name       string
+		stored     string
+		wantStatus int
+		wantBody   string
+		wantCalls  int64
+	}{
+		{
+			// Without the fix this inherits the caller's fingerprint, clears the
+			// gate, and replays a nil response as a fabricated success.
+			name:       "complete without fingerprint is key reuse, never a replay",
+			stored:     `{"state":"complete"}`,
+			wantStatus: http.StatusUnprocessableEntity,
+			wantBody:   "IDEMPOTENCY_KEY_REUSE",
+		},
+		{
+			// Without the fix both state and fingerprint are inherited, so this
+			// answers 409 for a record that carries neither.
+			name:       "owner only is key reuse, never an in-flight conflict",
+			stored:     `{"owner":"someone-else"}`,
+			wantStatus: http.StatusUnprocessableEntity,
+			wantBody:   "IDEMPOTENCY_KEY_REUSE",
+		},
+		{
+			// Fingerprint matches, so routing reaches the state switch: an empty
+			// state must fall to the store-error path, not inherit "processing".
+			name:       "matching fingerprint without state takes the store-error path",
+			stored:     `{"fingerprint":"` + current + `"}`,
+			wantStatus: http.StatusServiceUnavailable,
+			wantBody:   "IDEMPOTENCY_UNAVAILABLE",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			calls, response, body := runWithSeededValue(t, "tenant-partial", testCase.stored, true)
+
+			assert.Equal(t, testCase.wantCalls, calls,
+				"a duplicate key must never re-execute the mutation")
+			assert.Equal(t, testCase.wantStatus, response.StatusCode)
+			assert.Contains(t, body, testCase.wantBody)
+		})
+	}
 }
 
 func TestCheck_DuplicateRequest_StillProcessing(t *testing.T) {
@@ -602,10 +633,10 @@ func TestOptions_Custom(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Redis failure classification
+// Redis failure — fail-open behavior
 // ---------------------------------------------------------------------------
 
-func TestCheck_RedisConnectionLostDuringAcquire_FailsClosed(t *testing.T) {
+func TestCheck_RedisDown_FailsOpen(t *testing.T) {
 	t.Parallel()
 
 	mr := miniredis.RunT(t)
@@ -620,9 +651,9 @@ func TestCheck_RedisConnectionLostDuringAcquire_FailsClosed(t *testing.T) {
 	resp := doPost(t, app, "key-while-redis-down")
 	defer resp.Body.Close()
 
-	// A closed live server may receive the command before the connection ends.
-	// Execution is ambiguous, so the mutation must not run.
-	assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
+	// fail-open: handler proceeds despite Redis being unreachable.
+	assert.Equal(t, http.StatusCreated, resp.StatusCode,
+		"must fail open when Redis is unavailable")
 }
 
 // ---------------------------------------------------------------------------

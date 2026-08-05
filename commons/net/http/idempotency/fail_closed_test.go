@@ -3,57 +3,16 @@
 package idempotency
 
 import (
-	"context"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"sync/atomic"
-	"syscall"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v3"
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestClassifyStoreFailure_FailsOpenOnlyWhenNonExecutionIsDemonstrable(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name           string
-		err            error
-		recordObserved bool
-		want           storeFailureClass
-	}{
-		{
-			name: "dial refused before command reaches Redis",
-			err:  &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
-			want: storeFailureTransientBeforeObservation,
-		},
-		{name: "closed client cannot execute", err: redis.ErrClosed, want: storeFailureTransientBeforeObservation},
-		{name: "EOF may follow command execution", err: io.EOF, want: storeFailureUnsafe},
-		{name: "timeout may follow command execution", err: context.DeadlineExceeded, want: storeFailureUnsafe},
-		{name: "invalid script response", err: errInvalidStoreResult, want: storeFailureUnsafe},
-		{
-			name:           "observed claim makes dial error unsafe",
-			err:            &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED},
-			recordObserved: true,
-			want:           storeFailureUnsafe,
-		},
-	}
-
-	for _, testCase := range tests {
-		testCase := testCase
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-
-			assert.Equal(t, testCase.want, classifyStoreFailure(testCase.err, testCase.recordObserved))
-		})
-	}
-}
 
 // spyApp builds a POST /test app whose handler records whether it ran and
 // returns 201. Tenant context is injected ahead of the idempotency middleware.
@@ -69,49 +28,46 @@ func spyApp(mw fiber.Handler, tenantID string, called *atomic.Bool) *fiber.App {
 	return app
 }
 
-// TestCheck_TransientRedisError distinguishes a connectivity failure before
-// observation from WRONGTYPE failures that prove persisted state exists.
+// TestCheck_TransientRedisError covers the store-error branches the posture
+// switch governs: the pre-duplicate GetClient/SetNX errors (redis down), the
+// duplicate read error (wrong-type key forces a WRONGTYPE GET while SET NX
+// still reports the key exists), and a duplicate whose stored value decodes as
+// neither the atomic JSON record nor a recognised legacy record. With
+// WithFailClosed(true) each returns 503 without running the handler; with the
+// default each falls through to the handler (unchanged behavior).
 func TestCheck_TransientRedisError(t *testing.T) {
 	t.Parallel()
 
 	const tenant = "t-fc"
 
 	cases := []struct {
-		name                  string
-		wantDefaultStatus     int
-		wantDefaultHandlerRun bool
-		// seed drives redis into the state that triggers one transient-error branch.
-		seed func(t *testing.T, mr *miniredis.Miniredis, key, responseKey string)
+		name string
+		// seed drives redis into the state that triggers one store-error branch.
+		seed func(t *testing.T, mr *miniredis.Miniredis, key string)
 	}{
 		{
-			// Closing a live server can produce EOF after a command was written,
-			// so execution is ambiguous and must fail closed.
-			name:              "redis_connection_lost_during_acquire",
-			wantDefaultStatus: http.StatusServiceUnavailable,
-			seed: func(_ *testing.T, mr *miniredis.Miniredis, _, _ string) {
+			// Branches 1 & 2: GetClient / SetNX fail because Redis is down.
+			name: "redis_down_before_setnx",
+			seed: func(_ *testing.T, mr *miniredis.Miniredis, _ string) {
 				mr.Close()
 			},
 		},
 		{
 			// Branch 3: SET NX sees the key exists (returns false), but the
 			// follow-up GET on the wrong-type key returns WRONGTYPE.
-			name:              "duplicate_key_state_read_error",
-			wantDefaultStatus: http.StatusServiceUnavailable,
-			seed: func(t *testing.T, mr *miniredis.Miniredis, key, _ string) {
+			name: "duplicate_key_state_read_error",
+			seed: func(t *testing.T, mr *miniredis.Miniredis, key string) {
 				_, err := mr.Lpush(key, "x")
 				require.NoError(t, err)
 			},
 		},
 		{
-			// Branch 4: a valid v6.2 marker is recognized, but the GET on the
-			// wrong-type legacy response key returns WRONGTYPE.
-			name:              "duplicate_response_read_error",
-			wantDefaultStatus: http.StatusServiceUnavailable,
-			seed: func(t *testing.T, mr *miniredis.Miniredis, key, responseKey string) {
-				fingerprint := requestFingerprint(http.MethodPost, "/test", nil)
-				require.NoError(t, mr.Set(key, keyStateComplete+stateSeparator+fingerprint))
-				_, err := mr.Lpush(responseKey, "x")
-				require.NoError(t, err)
+			// Branch 4: Acquire returns an existing value that is neither the
+			// atomic JSON record nor a recognised legacy record, so routing
+			// falls to the store-error path rather than answering from it.
+			name: "duplicate_undecodable_record",
+			seed: func(t *testing.T, mr *miniredis.Miniredis, key string) {
+				require.NoError(t, mr.Set(key, keyStateComplete))
 			},
 		},
 	}
@@ -129,7 +85,7 @@ func TestCheck_TransientRedisError(t *testing.T) {
 
 				idemKey := "fc-" + tc.name
 				key := fmt.Sprintf("idempotency:%s:%s", tenant, idemKey)
-				tc.seed(t, mr, key, key+":response")
+				tc.seed(t, mr, key)
 
 				var called atomic.Bool
 
@@ -140,7 +96,7 @@ func TestCheck_TransientRedisError(t *testing.T) {
 				assert.False(t, called.Load(), "handler must NOT run when failing closed")
 			})
 
-			t.Run("default_classifies_ambiguous_failures_closed", func(t *testing.T) {
+			t.Run("default_fails_open", func(t *testing.T) {
 				t.Parallel()
 
 				mr := miniredis.RunT(t)
@@ -149,32 +105,16 @@ func TestCheck_TransientRedisError(t *testing.T) {
 
 				idemKey := "fo-" + tc.name
 				key := fmt.Sprintf("idempotency:%s:%s", tenant, idemKey)
-				tc.seed(t, mr, key, key+":response")
+				tc.seed(t, mr, key)
 
 				var called atomic.Bool
 
 				resp := doPost(t, spyApp(m.Check(), tenant, &called), idemKey)
 				resp.Body.Close()
 
-				assert.Equal(t, tc.wantDefaultStatus, resp.StatusCode)
-				assert.Equal(t, tc.wantDefaultHandlerRun, called.Load(),
-					"only connectivity failure before persisted state is observed may run the handler")
+				assert.Equal(t, http.StatusCreated, resp.StatusCode)
+				assert.True(t, called.Load(), "handler must run when failing open")
 			})
 		})
 	}
-}
-
-func TestOnStoreError_ClosedClientBeforeObservationFailsOpen(t *testing.T) {
-	t.Parallel()
-
-	middleware := newMiddleware()
-	var handlerCalled atomic.Bool
-	app := spyApp(func(c fiber.Ctx) error {
-		return middleware.onStoreError(c, redis.ErrClosed, false)
-	}, "tenant-safe-connectivity", &handlerCalled)
-
-	response := doPost(t, app, "safe-connectivity")
-	readBody(t, response)
-	assert.Equal(t, http.StatusCreated, response.StatusCode)
-	assert.True(t, handlerCalled.Load())
 }

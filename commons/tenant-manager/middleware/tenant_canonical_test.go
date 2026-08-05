@@ -35,7 +35,7 @@ func runMiddlewareWithClaim(
 	t *testing.T,
 	claim string,
 	cache *tenantcache.TenantCache,
-) (contextTenantID, originalTenantID string, requestedPaths []string, status int) {
+) (contextTenantID string, requestedPaths []string, status int) {
 	t.Helper()
 
 	var (
@@ -68,7 +68,6 @@ func runMiddlewareWithClaim(
 	app.Use(mid.WithTenantDB)
 	app.Get("/test", func(c fiber.Ctx) error {
 		contextTenantID = core.GetTenantIDContext(c.Context())
-		originalTenantID = core.GetOriginalTenantIDContext(c.Context())
 
 		return c.SendString("ok")
 	})
@@ -84,19 +83,17 @@ func runMiddlewareWithClaim(
 	mu.Lock()
 	defer mu.Unlock()
 
-	return contextTenantID, originalTenantID, requested, resp.StatusCode
+	return contextTenantID, requested, resp.StatusCode
 }
 
 func TestWithTenantDB_CanonicalizesDashedClaim(t *testing.T) {
 	cache := tenantcache.NewTenantCache()
 
-	contextTenantID, originalTenantID, requested, status := runMiddlewareWithClaim(t, dashedTenantID, cache)
+	contextTenantID, requested, status := runMiddlewareWithClaim(t, dashedTenantID, cache)
 
 	assert.Equal(t, http.StatusOK, status)
 	assert.Equal(t, dashlessTenantID, contextTenantID,
 		"a dashed JWT claim must be canonicalized before it reaches the request context")
-	assert.Equal(t, dashedTenantID, originalTenantID,
-		"the validated JWT spelling must remain available for rolling-upgrade key compatibility")
 
 	_, found := cache.Get(dashlessTenantID)
 	assert.True(t, found, "tenant must be cached under the canonical dashless key")
@@ -112,29 +109,26 @@ func TestWithTenantDB_CanonicalizesDashedClaim(t *testing.T) {
 func TestWithTenantDB_CanonicalizesUppercaseClaim(t *testing.T) {
 	cache := tenantcache.NewTenantCache()
 
-	contextTenantID, originalTenantID, _, status := runMiddlewareWithClaim(t,
-		"550E8400-E29B-41D4-A716-446655440000", cache)
+	contextTenantID, _, status := runMiddlewareWithClaim(t, "550E8400-E29B-41D4-A716-446655440000", cache)
 
 	assert.Equal(t, http.StatusOK, status)
 	assert.Equal(t, dashlessTenantID, contextTenantID)
-	assert.Equal(t, "550E8400-E29B-41D4-A716-446655440000", originalTenantID)
 }
 
 func TestWithTenantDB_PassesNonUUIDClaimThrough(t *testing.T) {
 	cache := tenantcache.NewTenantCache()
 
-	contextTenantID, originalTenantID, _, status := runMiddlewareWithClaim(t, "tenant-cache-slug", cache)
+	contextTenantID, _, status := runMiddlewareWithClaim(t, "tenant-cache-slug", cache)
 
 	assert.Equal(t, http.StatusOK, status)
 	assert.Equal(t, "tenant-cache-slug", contextTenantID,
 		"non-UUID tenant IDs remain supported and must pass through verbatim")
-	assert.Equal(t, "tenant-cache-slug", originalTenantID)
 }
 
 func TestWithTenantDB_RejectsInvalidClaimFormat(t *testing.T) {
 	cache := tenantcache.NewTenantCache()
 
-	_, _, _, status := runMiddlewareWithClaim(t, "tenant/../../etc", cache)
+	_, _, status := runMiddlewareWithClaim(t, "tenant/../../etc", cache)
 
 	assert.Equal(t, http.StatusUnauthorized, status)
 }
@@ -146,7 +140,7 @@ func TestWithTenantDB_RejectsInvalidClaimFormat(t *testing.T) {
 func TestDashedJWTAndDashlessEventShareOneKeyNamespace(t *testing.T) {
 	cache := tenantcache.NewTenantCache()
 
-	contextTenantID, _, _, status := runMiddlewareWithClaim(t, dashedTenantID, cache)
+	contextTenantID, _, status := runMiddlewareWithClaim(t, dashedTenantID, cache)
 	require.Equal(t, http.StatusOK, status)
 	require.NotEmpty(t, contextTenantID)
 
