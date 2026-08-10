@@ -5,6 +5,7 @@ package idempotency
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -616,6 +617,24 @@ func TestOptions_Custom(t *testing.T) {
 				assert.NotNil(t, m.logger, "nil logger must keep the default nop logger")
 			},
 		},
+		{
+			name: "WithFingerprintScopeProvider",
+			opts: []Option{WithFingerprintScopeProvider(func(fiber.Ctx) string {
+				return "scope-a"
+			})},
+			checkFn: func(t *testing.T, m *Middleware) {
+				t.Helper()
+				assert.NotNil(t, m.fingerprintScopeProvider)
+			},
+		},
+		{
+			name: "WithFingerprintScopeProvider nil ignored",
+			opts: []Option{WithFingerprintScopeProvider(nil)},
+			checkFn: func(t *testing.T, m *Middleware) {
+				t.Helper()
+				assert.Nil(t, m.fingerprintScopeProvider)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -700,7 +719,14 @@ func TestCheck_ConcurrentSameKey(t *testing.T) {
 
 	mr := miniredis.RunT(t)
 	conn := newRedisClient(t, mr)
-	m := New(conn)
+
+	var scopeProviderCalls atomic.Int32
+
+	m := New(conn, WithFingerprintScopeProvider(func(c fiber.Ctx) string {
+		scopeProviderCalls.Add(1)
+
+		return c.Get("X-Test-Fingerprint-Scope")
+	}))
 
 	// Build a Fiber app and start it on a real listener so many goroutines can
 	// hit it concurrently — app.Test() serialises internally.
@@ -714,8 +740,14 @@ func TestCheck_ConcurrentSameKey(t *testing.T) {
 	ln, listenErr := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, listenErr)
 
-	go func() { _ = app.Listener(ln) }()
-	t.Cleanup(func() { _ = app.Shutdown() })
+	listenerErr := make(chan error, 1)
+	go func() {
+		listenerErr <- app.Listener(ln)
+	}()
+	t.Cleanup(func() {
+		require.NoError(t, app.Shutdown())
+		require.NoError(t, <-listenerErr)
+	})
 
 	addr := ln.Addr().String()
 
@@ -725,6 +757,7 @@ func TestCheck_ConcurrentSameKey(t *testing.T) {
 		status   int
 		replayed string
 		body     string
+		err      error
 	}
 
 	results := make([]result, goroutines)
@@ -739,19 +772,30 @@ func TestCheck_ConcurrentSameKey(t *testing.T) {
 
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+addr+"/test", nil)
 			if err != nil {
+				results[idx].err = fmt.Errorf("create concurrent request: %w", err)
+
 				return
 			}
 
 			req.Header.Set(chttp.IdempotencyKey, "shared-concurrent-key")
+			req.Header.Set("X-Test-Fingerprint-Scope", "scope-a")
 
 			resp, doErr := http.DefaultClient.Do(req)
 			if doErr != nil {
+				results[idx].err = fmt.Errorf("send concurrent request: %w", doErr)
+
 				return
 			}
 
 			defer resp.Body.Close()
 
-			b, _ := io.ReadAll(resp.Body)
+			b, readErr := io.ReadAll(resp.Body)
+			if readErr != nil {
+				results[idx].err = fmt.Errorf("read concurrent response: %w", readErr)
+
+				return
+			}
+
 			results[idx] = result{
 				status:   resp.StatusCode,
 				replayed: resp.Header.Get(chttp.IdempotencyReplayed),
@@ -767,6 +811,8 @@ func TestCheck_ConcurrentSameKey(t *testing.T) {
 	originals := 0
 
 	for _, r := range results {
+		require.NoError(t, r.err)
+
 		if r.status == http.StatusCreated && r.replayed == "" {
 			originals++
 		} else {
@@ -781,6 +827,8 @@ func TestCheck_ConcurrentSameKey(t *testing.T) {
 
 	assert.Equal(t, 1, originals,
 		"exactly one goroutine must receive the original 201 from the handler")
+	assert.Equal(t, int32(goroutines), scopeProviderCalls.Load(),
+		"the scope provider must be evaluated independently for every request")
 }
 
 // ---------------------------------------------------------------------------
@@ -1204,7 +1252,12 @@ func newEchoApp(mw fiber.Handler, calls *atomic.Int32, preMiddleware ...fiber.Ha
 }
 
 // doSend issues a request with an explicit method, path, body and idempotency key.
-func doSend(t *testing.T, app *fiber.App, method, path, body, idempotencyKey string) *http.Response {
+func doSend(
+	t *testing.T,
+	app *fiber.App,
+	method, path, body, idempotencyKey string,
+	fingerprintScope ...string,
+) *http.Response {
 	t.Helper()
 
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -1213,11 +1266,79 @@ func doSend(t *testing.T, app *fiber.App, method, path, body, idempotencyKey str
 	if idempotencyKey != "" {
 		req.Header.Set(chttp.IdempotencyKey, idempotencyKey)
 	}
+	if len(fingerprintScope) > 0 {
+		req.Header.Set("X-Test-Fingerprint-Scope", fingerprintScope[0])
+	}
 
 	resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 
 	return resp
+}
+
+func TestCheck_FingerprintScope_IsolatesSameRequest(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		firstScope    string
+		secondScope   string
+		wantStatus    int
+		wantReplayed  string
+		wantCallCount int32
+	}{
+		{
+			name:          "same scope replays",
+			firstScope:    "scope-a",
+			secondScope:   "scope-a",
+			wantStatus:    http.StatusCreated,
+			wantReplayed:  "true",
+			wantCallCount: 1,
+		},
+		{
+			name:          "different scope rejects key reuse",
+			firstScope:    "scope-a",
+			secondScope:   "scope-b",
+			wantStatus:    http.StatusUnprocessableEntity,
+			wantCallCount: 1,
+		},
+		{
+			name:          "empty scope remains deterministic",
+			wantStatus:    http.StatusCreated,
+			wantReplayed:  "true",
+			wantCallCount: 1,
+		},
+	}
+
+	for _, testCase := range tests {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			mr := miniredis.RunT(t)
+			conn := newRedisClient(t, mr)
+
+			var calls atomic.Int32
+
+			middleware := New(conn, WithFingerprintScopeProvider(func(c fiber.Ctx) string {
+				return c.Get("X-Test-Fingerprint-Scope")
+			}))
+			app := newEchoApp(middleware.Check(), &calls, tenantMiddleware("tenant-scope"))
+
+			first := doSend(t, app, http.MethodPost, "/test", `{"amount":10}`, "scope-key", testCase.firstScope)
+			require.Equal(t, http.StatusCreated, first.StatusCode)
+			readBody(t, first)
+
+			second := doSend(t, app, http.MethodPost, "/test", `{"amount":10}`, "scope-key", testCase.secondScope)
+			readBody(t, second)
+
+			assert.Equal(t, testCase.wantStatus, second.StatusCode)
+			assert.Equal(t, testCase.wantReplayed, second.Header.Get(chttp.IdempotencyReplayed))
+			assert.Equal(t, testCase.wantCallCount, calls.Load())
+			assert.Equal(t, []string{"idempotency:tenant-scope:scope-key"}, mr.Keys(),
+				"fingerprint scope must not change the storage keyspace")
+		})
+	}
 }
 
 func TestCheck_SameKey_DifferentPayload_Rejected(t *testing.T) {
