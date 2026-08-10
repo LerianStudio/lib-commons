@@ -3,6 +3,7 @@ package idempotency
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -22,9 +23,10 @@ import (
 )
 
 const (
-	keyStateProcessing = "processing"
-	keyStateComplete   = "complete"
-	retryAfterSeconds  = "1"
+	fingerprintScopeDomain = "lib-commons:idempotency:fingerprint-scope:v1\x00"
+	keyStateProcessing     = "processing"
+	keyStateComplete       = "complete"
+	retryAfterSeconds      = "1"
 )
 
 var (
@@ -45,14 +47,36 @@ var (
 // operation is a different request. The query string does NOT: clients append
 // cache-busting parameters on retry, and that must not read as reuse.
 func requestFingerprint(method, path string, body []byte) string {
-	h := sha256.New()
-	h.Write([]byte(method))
-	h.Write([]byte("\n"))
-	h.Write([]byte(path))
-	h.Write([]byte("\n"))
-	h.Write(body)
+	sum := sha256.Sum256(requestFingerprintInput(method, path, body))
 
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(sum[:])
+}
+
+func requestFingerprintWithScope(scope, method, path string, body []byte) string {
+	var scopeLength [8]byte
+	binary.BigEndian.PutUint64(scopeLength[:], uint64(len(scope)))
+
+	legacyInput := requestFingerprintInput(method, path, body)
+	input := make([]byte, 0, len(fingerprintScopeDomain)+len(scopeLength)+len(scope)+len(legacyInput))
+	input = append(input, fingerprintScopeDomain...)
+	input = append(input, scopeLength[:]...)
+	input = append(input, scope...)
+	input = append(input, legacyInput...)
+
+	sum := sha256.Sum256(input)
+
+	return hex.EncodeToString(sum[:])
+}
+
+func requestFingerprintInput(method, path string, body []byte) []byte {
+	input := make([]byte, 0, len(method)+len(path)+len(body)+2)
+	input = append(input, method...)
+	input = append(input, '\n')
+	input = append(input, path...)
+	input = append(input, '\n')
+	input = append(input, body...)
+
+	return input
 }
 
 // Option configures the idempotency middleware.
@@ -62,6 +86,13 @@ type Option func(*Middleware)
 // evaluated for every keyed mutating request, allowing one middleware instance
 // to follow hot-reloaded application policy.
 type TTLProvider func(c fiber.Ctx) (time.Duration, error)
+
+// FingerprintScopeProvider resolves an application-defined namespace for the
+// current request fingerprint. The scope changes fingerprint comparison only;
+// it never changes the storage key. A configured provider opts into scoped
+// fingerprinting even when it returns an empty string. Providers must be safe
+// for concurrent use.
+type FingerprintScopeProvider func(c fiber.Ctx) string
 
 // ClientErrorPolicy controls whether successful handler returns with a 4xx
 // status are replayed or release their owned idempotency record.
@@ -78,19 +109,20 @@ const (
 
 // Middleware provides at-most-once request semantics using an atomic [Store].
 type Middleware struct {
-	store             Store
-	logger            log.Logger
-	keyPrefix         string
-	keyTTL            time.Duration
-	maxKeyLength      int
-	maxBodyCache      int
-	redisTimeout      time.Duration
-	ttlProvider       TTLProvider
-	responseCodec     ResponseCodec
-	clientErrorPolicy ClientErrorPolicy
-	onRejected        func(c fiber.Ctx) error
-	onConflict        fiber.Handler
-	onKeyReuse        fiber.Handler
+	store                    Store
+	logger                   log.Logger
+	keyPrefix                string
+	keyTTL                   time.Duration
+	maxKeyLength             int
+	maxBodyCache             int
+	redisTimeout             time.Duration
+	ttlProvider              TTLProvider
+	fingerprintScopeProvider FingerprintScopeProvider
+	responseCodec            ResponseCodec
+	clientErrorPolicy        ClientErrorPolicy
+	onRejected               func(c fiber.Ctx) error
+	onConflict               fiber.Handler
+	onKeyReuse               fiber.Handler
 	// failClosed inverts the transient-Redis-error behavior. Default (false)
 	// fails open — requests proceed without idempotency coverage to preserve
 	// availability. When true, transient Redis errors abort with 503 so a
@@ -176,6 +208,18 @@ func WithTTLProvider(provider TTLProvider) Option {
 	return func(m *Middleware) {
 		if provider != nil {
 			m.ttlProvider = provider
+		}
+	}
+}
+
+// WithFingerprintScopeProvider namespaces request fingerprints with a scope
+// resolved for every keyed mutating request. The scope is domain-separated and
+// length-prefixed before hashing. A nil provider leaves the legacy fingerprint
+// bytes unchanged.
+func WithFingerprintScopeProvider(provider FingerprintScopeProvider) Option {
+	return func(m *Middleware) {
+		if provider != nil {
+			m.fingerprintScopeProvider = provider
 		}
 	}
 }
@@ -369,6 +413,14 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	defer cancel()
 
 	fingerprint := requestFingerprint(c.Method(), c.Path(), c.Body())
+	if m.fingerprintScopeProvider != nil {
+		fingerprint = requestFingerprintWithScope(
+			m.fingerprintScopeProvider(c),
+			c.Method(),
+			c.Path(),
+			c.Body(),
+		)
+	}
 
 	ttl, err := m.resolveTTL(c)
 	if err != nil {

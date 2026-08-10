@@ -29,7 +29,10 @@
 // An idempotency key alone does not identify a request — it identifies the
 // caller's claim that two requests are the same one. Every processing and
 // completed record therefore carries a SHA-256 fingerprint of method, path, and
-// raw body.
+// raw body. [WithFingerprintScopeProvider] can opt into an additional
+// application-defined scope without changing the storage key. Scoped
+// fingerprints use a versioned domain plus the scope's byte length and bytes;
+// even an empty scope remains distinct from the legacy unscoped fingerprint.
 //
 // Every duplicate compares its own fingerprint against the stored one before any
 // replay path is reachable. A match is a genuine retry and replays. A MISMATCH
@@ -121,10 +124,13 @@
 //     by its owner, allowing a retry without deleting a replacement lock.
 //
 // [WithTTLProvider] resolves retention for each keyed mutation, allowing runtime
-// policy changes without rebuilding middleware. [WithResponseCodec] transforms
-// serialized replay responses before storage; use authenticated encryption for
-// sensitive bodies. [WithMaxBodyCache] bounds raw response bodies, and encoded
-// output is additionally bounded to twice that value.
+// policy changes without rebuilding middleware. [WithFingerprintScopeProvider]
+// resolves a concurrency-safe application namespace for fingerprint comparison;
+// callers that omit it retain byte-identical legacy fingerprints and Redis keys.
+// [WithResponseCodec] transforms serialized replay responses before storage; use
+// authenticated encryption for sensitive bodies. [WithMaxBodyCache] bounds raw
+// response bodies, and encoded output is additionally bounded to twice that
+// value.
 //
 // Every rejection branch has a callback seam so consumers can write their own
 // error format, including RFC 9457 problem details: [WithRejectedHandler] for an
