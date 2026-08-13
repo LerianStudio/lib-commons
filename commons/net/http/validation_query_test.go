@@ -103,7 +103,7 @@ func TestValidateQueryParamLength(t *testing.T) {
 			paramName:   "action",
 			maxLen:      50,
 			wantErr:     true,
-			errContains: "'action' must be at most 50 characters",
+			errContains: "'action' must be at most 50 bytes",
 		},
 		{
 			name:      "empty value always valid",
@@ -118,7 +118,15 @@ func TestValidateQueryParamLength(t *testing.T) {
 			paramName:   "entity_type",
 			maxLen:      255,
 			wantErr:     true,
-			errContains: "'entity_type' must be at most 255 characters",
+			errContains: "'entity_type' must be at most 255 bytes",
+		},
+		{
+			name:        "multi-byte UTF-8 value validated by byte length",
+			value:       strings.Repeat("é", 26), // 26 runes, 52 bytes
+			paramName:   "action",
+			maxLen:      50,
+			wantErr:     true,
+			errContains: "'action' must be at most 50 bytes",
 		},
 	}
 
