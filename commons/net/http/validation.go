@@ -288,7 +288,7 @@ const MaxQueryParamLengthLong = 255
 // Returns nil if the value is within bounds, or a descriptive error if it exceeds the limit.
 func ValidateQueryParamLength(value, name string, maxLen int) error {
 	if len(value) > maxLen {
-		return fmt.Errorf("%w: '%s' must be at most %d characters", ErrQueryParamTooLong, name, maxLen)
+		return fmt.Errorf("%w: '%s' must be at most %d bytes", ErrQueryParamTooLong, name, maxLen)
 	}
 
 	return nil
