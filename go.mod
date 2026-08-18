@@ -6,7 +6,7 @@ require (
 	cloud.google.com/go/iam v1.12.0
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/LerianStudio/lib-observability/v2 v2.1.0
-	github.com/LerianStudio/lib-observability/v3 v3.0.1-beta.1.0.20260817181135-5b2cc2533b3f
+	github.com/LerianStudio/lib-observability/v3 v3.0.1-beta.1.0.20260818005903-45ea359c7a02
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/aws/aws-sdk-go-v2 v1.43.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.106.0
@@ -121,6 +121,8 @@ require (
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/power-devops/perfstat v0.0.0-20240221224432-82ca36839d55 // indirect
+	github.com/redis/go-redis/extra/rediscmd/v9 v9.17.2 // indirect
+	github.com/redis/go-redis/extra/redisotel/v9 v9.17.2 // indirect
 	github.com/shirou/gopsutil/v4 v4.26.5 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
