@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 
@@ -11,6 +12,8 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
+	v3messagingobs "github.com/LerianStudio/lib-observability/v3/messagingobs"
+	v3tracing "github.com/LerianStudio/lib-observability/v3/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -55,6 +58,12 @@ const (
 
 	// DefaultRecoveryBackoffMax is the maximum backoff duration between recovery retries.
 	DefaultRecoveryBackoffMax = 30 * time.Second
+
+	// produceOperationName is the messaging.operation.name reported for every
+	// publish. It is a constant on purpose: the label set of
+	// messaging.client.operation.duration must stay bounded, so nothing derived
+	// from the message may reach it.
+	produceOperationName = "publish"
 )
 
 // HealthState represents the current connection health of a ConfirmablePublisher.
@@ -144,6 +153,7 @@ type ConfirmablePublisher struct {
 		value time.Duration
 	}
 	recovery          *recoveryConfig
+	producer          *v3messagingobs.Publisher
 	mu                sync.RWMutex
 	publishMu         sync.Mutex
 	health            HealthState
@@ -163,6 +173,48 @@ func WithLogger(logger libLog.Logger) ConfirmablePublisherOption {
 		}
 
 		pub.logger = logger
+	}
+}
+
+// WithTelemetry enables producer-side OpenTelemetry instrumentation for this
+// publisher: every publish gets a PRODUCER span, the W3C trace context injected
+// into the outgoing message headers, and a messaging.client.operation.duration
+// observation (lib-observability docs/metrics-contract.md). Wiring it here is
+// the point: a service gets the same series, with the same names, labels and
+// buckets, by bumping lib-commons and passing its Telemetry.
+//
+// # Why this option takes a lib-observability v3 Telemetry, and why it is optional
+//
+// messagingobs is the only lib-observability helper that takes a
+// lib-observability type (*v3/tracing.Telemetry) instead of plain OpenTelemetry
+// core interfaces, so this option cannot be expressed against otel primitives.
+// lib-commons still imports lib-observability v2 elsewhere (see libLog above),
+// and today's consumers build their Telemetry from v2. A *v2 Telemetry and a
+// *v3 Telemetry are distinct, non-convertible types, and there is deliberately
+// no bridge between them here: constructing a v3 Telemetry out of v2 parts
+// would fabricate providers the service never installed.
+//
+// The accepted consequence, which this option encodes rather than solves:
+//
+//   - the option is OPTIONAL. Omitted (or given nil), the publish path behaves
+//     exactly as before — no telemetry, no headers touched, no error;
+//   - a consumer still on lib-observability v2 simply cannot supply it yet and
+//     therefore gets nothing, which is the pre-existing behavior;
+//   - a consumer on lib-observability v3 passes its Telemetry once here and
+//     gets the full producer telemetry.
+//
+// The instrument is built once, here at construction (messagingobs.NewPublisher
+// creates the duration histogram eagerly), and the resulting producer is never
+// reassigned afterwards — not even by Reconnect, since it is bound to the
+// Telemetry and not to the AMQP channel. That immutability is what allows
+// PublishAndWaitConfirm to read it without holding a lock.
+func WithTelemetry(tl *v3tracing.Telemetry) ConfirmablePublisherOption {
+	return func(pub *ConfirmablePublisher) {
+		if tl == nil {
+			return
+		}
+
+		pub.producer = v3messagingobs.NewPublisher(tl)
 	}
 }
 
@@ -571,7 +623,7 @@ func (pub *ConfirmablePublisher) PublishAndWaitConfirm(
 	exchange, routingKey string,
 	mandatory, immediate bool,
 	msg amqp.Publishing,
-) error {
+) (err error) {
 	if pub == nil {
 		return ErrPublisherRequired
 	}
@@ -579,6 +631,15 @@ func (pub *ConfirmablePublisher) PublishAndWaitConfirm(
 	if ctx == nil {
 		ctx = context.Background()
 	}
+
+	// Telemetry opens before the serialization lock so the recorded duration is
+	// the latency the caller actually observes, queueing behind other publishers
+	// included. finish is deferred first and therefore runs LAST (defers are
+	// LIFO), after publishMu is released, and it runs on every return path —
+	// including the closed/not-ready early returns below, which are real publish
+	// failures and must be counted as such.
+	ctx, finish := pub.startProduce(ctx, exchange, routingKey, &msg)
+	defer func() { finish(err) }()
 
 	pub.publishMu.Lock()
 	defer pub.publishMu.Unlock()
@@ -611,7 +672,7 @@ func (pub *ConfirmablePublisher) PublishAndWaitConfirm(
 		return fmt.Errorf("publish: %w", err)
 	}
 
-	err := waitForConfirm(ctx, confirms, closedCh, confirmTimeout)
+	err = waitForConfirm(ctx, confirms, closedCh, confirmTimeout)
 	if err != nil && isConfirmStreamCorrupted(err) {
 		// The pending confirmation will corrupt the next waitForConfirm call.
 		// Invalidate the channel so the close monitor triggers auto-recovery
@@ -620,6 +681,72 @@ func (pub *ConfirmablePublisher) PublishAndWaitConfirm(
 	}
 
 	return err
+}
+
+// startProduce opens producer telemetry for a single publish and stamps the
+// outgoing message with the trace context, returning the span-bearing context
+// and the FinishFunc that closes the operation.
+//
+// Without a telemetry-backed producer (the default — see WithTelemetry) this is
+// a no-op: the original context is handed back, msg is left untouched, and the
+// returned FinishFunc does nothing, so the publish path stays exactly what it
+// was before this instrumentation existed.
+//
+// Reading pub.producer without a lock is safe: it is written once, while the
+// options are applied in the constructor, and never reassigned.
+//
+// Cardinality guardrail: the destination template is the EXCHANGE, which is a
+// bounded set fixed by the service's topology. The routing key is unbounded
+// (it routinely carries ids or tenants), so it is passed in the field
+// messagingobs deliberately never emits as a label, purely for the caller's own
+// span/log use. Nothing else is added here.
+func (pub *ConfirmablePublisher) startProduce(
+	ctx context.Context,
+	exchange, routingKey string,
+	msg *amqp.Publishing,
+) (context.Context, v3messagingobs.FinishFunc) {
+	if pub.producer == nil {
+		return ctx, noopProduceFinish
+	}
+
+	ctx, headers, finish := pub.producer.Produce(ctx, v3messagingobs.ProduceParams{
+		DestinationTemplate: exchange,
+		OperationName:       produceOperationName,
+		RoutingKey:          routingKey,
+		MessageID:           msg.MessageId,
+	})
+
+	msg.Headers = mergeTraceHeaders(msg.Headers, headers)
+
+	return ctx, finish
+}
+
+// noopProduceFinish is the FinishFunc handed back when no telemetry is
+// configured. A shared, capture-free func value keeps the uninstrumented path
+// allocation-free.
+func noopProduceFinish(error) {
+	// Intentionally empty: nothing to record without telemetry.
+}
+
+// mergeTraceHeaders returns the publishing headers carrying the injected trace
+// context on top of whatever the caller already set.
+//
+// It copies instead of writing into existing because that map belongs to the
+// caller's amqp.Publishing: amqp.Publishing is passed by value but its Headers
+// are a reference, so writing in place would mutate the caller's message (and
+// race with a caller reusing one Publishing across goroutines). Injected keys
+// win on collision — a traceparent left over from an earlier hop is stale by
+// definition and must not survive into this publish.
+func mergeTraceHeaders(existing amqp.Table, injected map[string]any) amqp.Table {
+	if len(injected) == 0 {
+		return existing
+	}
+
+	merged := make(amqp.Table, len(existing)+len(injected))
+	maps.Copy(merged, existing)
+	maps.Copy(merged, injected)
+
+	return merged
 }
 
 // isConfirmStreamCorrupted reports whether the error indicates the
