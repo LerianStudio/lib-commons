@@ -5,6 +5,7 @@ package rabbitmq
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,7 +14,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	v3metrics "github.com/LerianStudio/lib-observability/v3/metrics"
+	v3tracing "github.com/LerianStudio/lib-observability/v3/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type mockConfirmableChannel struct {
@@ -22,6 +33,7 @@ type mockConfirmableChannel struct {
 	publishErr      error
 	confirms        chan amqp.Confirmation
 	closeNotify     chan *amqp.Error
+	lastPublishing  amqp.Publishing
 	confirmCalled   bool
 	publishCalled   bool
 	closeCalled     bool
@@ -85,14 +97,23 @@ func (m *mockConfirmableChannel) PublishWithContext(
 	_ context.Context,
 	_, _ string,
 	_, _ bool,
-	_ amqp.Publishing,
+	msg amqp.Publishing,
 ) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.publishCalled = true
 	m.deliveryCounter++
+	m.lastPublishing = msg
 
 	return m.publishErr
+}
+
+// publishedMessage returns the message the publisher handed to the broker.
+func (m *mockConfirmableChannel) publishedMessage() amqp.Publishing {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	return m.lastPublishing
 }
 
 func (m *mockConfirmableChannel) Close() error {
@@ -831,4 +852,321 @@ func TestConfirmablePublisher_NilReceiverGuards(t *testing.T) {
 
 	require.Nil(t, publisher.Channel())
 	require.Equal(t, HealthStateDisconnected, publisher.HealthState())
+}
+
+// --- producer instrumentation (WithTelemetry) --------------------------------
+
+const (
+	// telemetryLibraryName is the instrumentation scope of the test telemetry.
+	telemetryLibraryName = "lib-commons-rabbitmq-test"
+
+	// produceDurationMetric is the metric messagingobs emits for a produce
+	// operation. Asserted by name so the test fails loudly if the upstream
+	// metrics contract ever drifts.
+	produceDurationMetric = "messaging.client.operation.duration"
+
+	// telemetryExchange and telemetryRoutingKey model the cardinality guardrail:
+	// the exchange is bounded by the service topology and may become a label,
+	// the routing key carries ids and must never become one.
+	telemetryExchange   = "transactions"
+	telemetryRoutingKey = "tenant-42.account.7f3a9c.created"
+)
+
+// telemetryForTest builds a v3 Telemetry whose metrics and spans are collectable
+// in-process.
+//
+// WARNING: it installs the global text-map propagator (header injection funnels
+// through it, and OTel leaves it a no-op until a service installs one at
+// bootstrap), so tests using it must NOT call t.Parallel().
+func telemetryForTest(t *testing.T) (*v3tracing.Telemetry, *sdkmetric.ManualReader, *tracetest.InMemoryExporter) {
+	t.Helper()
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	spans := tracetest.NewInMemoryExporter()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(spans))
+
+	previousPropagator := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+
+	t.Cleanup(func() {
+		otel.SetTextMapPropagator(previousPropagator)
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	})
+
+	telemetry := &v3tracing.Telemetry{
+		TelemetryConfig: v3tracing.TelemetryConfig{LibraryName: telemetryLibraryName},
+		TracerProvider:  tracerProvider,
+		MeterProvider:   meterProvider,
+		MetricsFactory:  v3metrics.NewNopFactory(),
+	}
+
+	return telemetry, reader, spans
+}
+
+// produceDataPoints returns every data point currently collected for the
+// producer duration histogram.
+func produceDataPoints(t *testing.T, reader *sdkmetric.ManualReader) []metricdata.HistogramDataPoint[float64] {
+	t.Helper()
+
+	rm := &metricdata.ResourceMetrics{}
+	require.NoError(t, reader.Collect(context.Background(), rm))
+
+	var points []metricdata.HistogramDataPoint[float64]
+
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != produceDurationMetric {
+				continue
+			}
+
+			hist, ok := m.Data.(metricdata.Histogram[float64])
+			require.True(t, ok, "expected float64 histogram for %s, got %T", m.Name, m.Data)
+
+			points = append(points, hist.DataPoints...)
+		}
+	}
+
+	return points
+}
+
+// requiredAttr returns a data point attribute, failing when it is absent.
+func requiredAttr(t *testing.T, dp metricdata.HistogramDataPoint[float64], key string) string {
+	t.Helper()
+
+	value, found := dp.Attributes.Value(attribute.Key(key))
+	require.True(t, found, "missing attribute %s", key)
+
+	return value.AsString()
+}
+
+// headerKeyPresent reports whether the table carries key, case-insensitively:
+// the W3C propagator writes through an http.Header carrier, which canonicalizes
+// "traceparent" into "Traceparent".
+func headerKeyPresent(headers amqp.Table, key string) bool {
+	for name := range headers {
+		if strings.EqualFold(name, key) {
+			return true
+		}
+	}
+
+	return false
+}
+
+// confirmNextPublish acks the next message the publisher hands to the broker.
+func confirmNextPublish(t *testing.T, ch *mockConfirmableChannel) {
+	t.Helper()
+
+	go func() {
+		ch.waitForPublish(t)
+		ch.sendConfirm(true)
+	}()
+}
+
+func TestWithTelemetry_NilTelemetryLeavesPublisherUninstrumented(t *testing.T) {
+	t.Parallel()
+
+	publisher, err := NewConfirmablePublisherFromChannel(newMockChannel(), WithTelemetry(nil))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := publisher.Close(); err != nil {
+			t.Errorf("cleanup: publisher close: %v", err)
+		}
+	})
+
+	assert.Nil(t, publisher.producer)
+}
+
+// TestConfirmablePublisher_PublishWithoutTelemetryDoesNotTouchTheMessage pins
+// the degradation contract: a publisher built without WithTelemetry (every
+// consumer still on lib-observability v2) publishes exactly what it did before
+// the instrumentation existed.
+func TestConfirmablePublisher_PublishWithoutTelemetryDoesNotTouchTheMessage(t *testing.T) {
+	t.Parallel()
+
+	ch := newMockChannel()
+	publisher, err := NewConfirmablePublisherFromChannel(ch)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := publisher.Close(); err != nil {
+			t.Errorf("cleanup: publisher close: %v", err)
+		}
+	})
+
+	require.Nil(t, publisher.producer)
+
+	callerHeaders := amqp.Table{"x-caller": "value"}
+
+	confirmNextPublish(t, ch)
+
+	err = publisher.Publish(context.Background(), telemetryExchange, telemetryRoutingKey, false, false,
+		amqp.Publishing{Headers: callerHeaders, Body: []byte("ok")})
+	require.NoError(t, err)
+
+	assert.Equal(t, amqp.Table{"x-caller": "value"}, ch.publishedMessage().Headers,
+		"an uninstrumented publish must not add or drop headers")
+}
+
+// TestConfirmablePublisher_PublishWithTelemetryMergesTraceHeaders verifies the
+// merge is additive: the trace context reaches the broker without evicting what
+// the caller set, and without mutating the caller's own map.
+func TestConfirmablePublisher_PublishWithTelemetryMergesTraceHeaders(t *testing.T) {
+	telemetry, _, _ := telemetryForTest(t)
+
+	ch := newMockChannel()
+	publisher, err := NewConfirmablePublisherFromChannel(ch, WithTelemetry(telemetry))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := publisher.Close(); err != nil {
+			t.Errorf("cleanup: publisher close: %v", err)
+		}
+	})
+
+	require.NotNil(t, publisher.producer)
+
+	callerHeaders := amqp.Table{"x-caller": "value"}
+
+	confirmNextPublish(t, ch)
+
+	err = publisher.Publish(context.Background(), telemetryExchange, telemetryRoutingKey, false, false,
+		amqp.Publishing{Headers: callerHeaders, Body: []byte("ok")})
+	require.NoError(t, err)
+
+	published := ch.publishedMessage()
+
+	assert.Equal(t, "value", published.Headers["x-caller"], "caller headers must survive the merge")
+	assert.True(t, headerKeyPresent(published.Headers, "traceparent"),
+		"trace context must be injected, got %v", published.Headers)
+	assert.Equal(t, amqp.Table{"x-caller": "value"}, callerHeaders,
+		"the caller's own header map must not be mutated")
+}
+
+// TestConfirmablePublisher_PublishWithTelemetryEmitsProducerSpan verifies the
+// span kind and name, and that the routing key never reaches a span attribute.
+func TestConfirmablePublisher_PublishWithTelemetryEmitsProducerSpan(t *testing.T) {
+	telemetry, _, spans := telemetryForTest(t)
+
+	ch := newMockChannel()
+	publisher, err := NewConfirmablePublisherFromChannel(ch, WithTelemetry(telemetry))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := publisher.Close(); err != nil {
+			t.Errorf("cleanup: publisher close: %v", err)
+		}
+	})
+
+	confirmNextPublish(t, ch)
+
+	err = publisher.Publish(context.Background(), telemetryExchange, telemetryRoutingKey, false, false,
+		amqp.Publishing{Body: []byte("ok")})
+	require.NoError(t, err)
+
+	recorded := spans.GetSpans()
+	require.Len(t, recorded, 1, "Publish delegates to PublishAndWaitConfirm: exactly one span, never two")
+
+	assert.Equal(t, trace.SpanKindProducer, recorded[0].SpanKind)
+	assert.Equal(t, "publish "+telemetryExchange, recorded[0].Name)
+
+	for _, attr := range recorded[0].Attributes {
+		assert.NotContains(t, attr.Value.AsString(), telemetryRoutingKey,
+			"the routing key must never reach a span attribute")
+	}
+}
+
+// TestConfirmablePublisher_PublishWithTelemetryRecordsDuration verifies the
+// success path records one observation with the bounded label set.
+func TestConfirmablePublisher_PublishWithTelemetryRecordsDuration(t *testing.T) {
+	telemetry, reader, _ := telemetryForTest(t)
+
+	ch := newMockChannel()
+	publisher, err := NewConfirmablePublisherFromChannel(ch, WithTelemetry(telemetry))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := publisher.Close(); err != nil {
+			t.Errorf("cleanup: publisher close: %v", err)
+		}
+	})
+
+	confirmNextPublish(t, ch)
+
+	err = publisher.Publish(context.Background(), telemetryExchange, telemetryRoutingKey, false, false,
+		amqp.Publishing{Body: []byte("ok")})
+	require.NoError(t, err)
+
+	points := produceDataPoints(t, reader)
+	require.Len(t, points, 1, "one publish must produce exactly one observation")
+
+	dp := points[0]
+
+	assert.Equal(t, uint64(1), dp.Count)
+	assert.Equal(t, "rabbitmq", requiredAttr(t, dp, "messaging.system"))
+	assert.Equal(t, produceOperationName, requiredAttr(t, dp, "messaging.operation.name"))
+	assert.Equal(t, telemetryExchange, requiredAttr(t, dp, "messaging.destination.template"),
+		"the destination template must be the exchange, which is bounded")
+
+	_, hasErrorType := dp.Attributes.Value(attribute.Key("error.type"))
+	assert.False(t, hasErrorType, "a successful publish carries no error.type")
+
+	for _, attr := range dp.Attributes.ToSlice() {
+		assert.NotContains(t, attr.Value.AsString(), telemetryRoutingKey,
+			"the routing key must never become a metric label")
+	}
+}
+
+// TestConfirmablePublisher_PublishWithTelemetryRecordsBrokerFailure verifies
+// finish also runs when the broker call itself fails.
+func TestConfirmablePublisher_PublishWithTelemetryRecordsBrokerFailure(t *testing.T) {
+	telemetry, reader, _ := telemetryForTest(t)
+
+	ch := newMockChannel()
+	ch.publishErr = errors.New("publish failed")
+
+	publisher, err := NewConfirmablePublisherFromChannel(ch, WithTelemetry(telemetry))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := publisher.Close(); err != nil {
+			t.Errorf("cleanup: publisher close: %v", err)
+		}
+	})
+
+	err = publisher.Publish(context.Background(), telemetryExchange, telemetryRoutingKey, false, false,
+		amqp.Publishing{Body: []byte("x")})
+	require.Error(t, err)
+
+	points := produceDataPoints(t, reader)
+	require.Len(t, points, 1)
+
+	assert.Equal(t, uint64(1), points[0].Count)
+
+	errorType, found := points[0].Attributes.Value(attribute.Key("error.type"))
+	require.True(t, found, "a failed publish must be recorded with error.type")
+	assert.NotEmpty(t, errorType.AsString())
+}
+
+// TestConfirmablePublisher_PublishWithTelemetryRecordsEarlyReturn covers the
+// return path that never reaches the broker at all. A publisher closed by a
+// broker outage must still show up as errors on the series; recording only the
+// paths that reach PublishWithContext would turn an outage into a silent hole.
+func TestConfirmablePublisher_PublishWithTelemetryRecordsEarlyReturn(t *testing.T) {
+	telemetry, reader, _ := telemetryForTest(t)
+
+	ch := newMockChannel()
+	publisher, err := NewConfirmablePublisherFromChannel(ch, WithTelemetry(telemetry))
+	require.NoError(t, err)
+	require.NoError(t, publisher.Close())
+
+	err = publisher.Publish(context.Background(), telemetryExchange, telemetryRoutingKey, false, false,
+		amqp.Publishing{Body: []byte("x")})
+	require.ErrorIs(t, err, ErrPublisherClosed)
+
+	assert.False(t, ch.publishCalled, "the message never reached the broker")
+
+	points := produceDataPoints(t, reader)
+	require.Len(t, points, 1)
+
+	errorType, found := points[0].Attributes.Value(attribute.Key("error.type"))
+	require.True(t, found, "an early-return failure must still be recorded")
+	assert.NotEmpty(t, errorType.AsString())
 }
