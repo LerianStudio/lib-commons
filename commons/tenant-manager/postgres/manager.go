@@ -149,8 +149,11 @@ func (c *PostgresConnection) Connect(ctx context.Context) error {
 	}
 
 	pgClient, err := libPostgres.New(libPostgres.Config{
-		PrimaryDSN:         c.ConnectionStringPrimary,
-		ReplicaDSN:         c.ConnectionStringReplica,
+		PrimaryDSN: c.ConnectionStringPrimary,
+		ReplicaDSN: c.ConnectionStringReplica,
+		// Without this, every tenant's pool gauges share one label set and
+		// overwrite each other.
+		DatabaseName:       c.PrimaryDBName,
 		Logger:             c.Logger,
 		MaxOpenConnections: c.MaxOpenConnections,
 		MaxIdleConnections: c.MaxIdleConnections,

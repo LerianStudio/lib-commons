@@ -6,7 +6,13 @@ import (
 
 	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v3/sqlobs"
+	"go.opentelemetry.io/otel/attribute"
 )
+
+// dbNamespaceAttrKey is the OpenTelemetry semantic-convention attribute for the
+// logical database name. It is an allowed label for db.client.operation.duration
+// in the lib-observability metrics contract.
+const dbNamespaceAttrKey = "db.namespace"
 
 // instrumentPool applies the platform's default SQL telemetry to a freshly
 // opened pool: db.client.operation.duration plus the db.sql.connection.* pool
@@ -34,10 +40,20 @@ func (c *Client) instrumentPool(
 	dsn string,
 	role sqlobs.PoolRole,
 ) (*sql.DB, sqlobs.CleanupFunc) {
-	db, cleanup, err := sqlobs.Setup(raw, sqlobs.SystemPostgreSQL,
+	opts := []sqlobs.Option{
 		sqlobs.WithDSN(dsn),
 		sqlobs.WithPoolRole(role),
-	)
+	}
+
+	// db.namespace keeps pools of different databases in separate series. Without
+	// it they share one label set, and because the pool gauges are asynchronous
+	// instruments the last callback of the collection cycle simply wins.
+	if c.cfg.DatabaseName != "" {
+		opts = append(opts, sqlobs.WithAttributes(
+			attribute.String(dbNamespaceAttrKey, c.cfg.DatabaseName)))
+	}
+
+	db, cleanup, err := sqlobs.Setup(raw, sqlobs.SystemPostgreSQL, opts...)
 	if err != nil {
 		c.logAtLevel(ctx, log.LevelWarn,
 			"postgres auto-instrumentation degraded; continuing", log.Err(err))

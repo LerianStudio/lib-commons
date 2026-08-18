@@ -125,8 +125,14 @@ func nilMigratorAssert(operation string) error {
 
 // Config stores immutable connection options for a postgres client.
 type Config struct {
-	PrimaryDSN         string
-	ReplicaDSN         string
+	PrimaryDSN string
+	ReplicaDSN string
+	// DatabaseName is the logical database this client talks to, emitted as the
+	// db.namespace metric label. Without it, pools from different databases (or
+	// different tenants) share one label set and their pool gauges overwrite each
+	// other, since those are asynchronous instruments. Optional: empty omits the
+	// label and keeps the previous behavior.
+	DatabaseName       string
 	Logger             log.Logger
 	MetricsFactory     *metrics.MetricsFactory
 	MaxOpenConnections int

@@ -83,17 +83,57 @@ func poolRoles(t *testing.T, reader *sdkmetric.ManualReader) []string {
 func connectedClient(t *testing.T) *Client {
 	t.Helper()
 
+	return connectedClientNamed(t, "")
+}
+
+// connectedClientNamed is connectedClient with an explicit Config.DatabaseName.
+func connectedClientNamed(t *testing.T, databaseName string) *Client {
+	t.Helper()
+
 	withPatchedDependencies(t,
 		func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
 		func(_, _ *sql.DB, _ log.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
 		nil,
 	)
 
-	client, err := New(validConfig())
+	cfg := validConfig()
+	cfg.DatabaseName = databaseName
+
+	client, err := New(cfg)
 	require.NoError(t, err)
 	require.NoError(t, client.Connect(context.Background()))
 
 	return client
+}
+
+// poolSeries returns a "role/namespace" identity for every connection-gauge data
+// point, so a test can assert that distinct databases stay in distinct series.
+func poolSeries(t *testing.T, reader *sdkmetric.ManualReader) []string {
+	t.Helper()
+
+	rm := &metricdata.ResourceMetrics{}
+	require.NoError(t, reader.Collect(context.Background(), rm))
+
+	var series []string
+
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != connectionMaxOpenMetric {
+				continue
+			}
+
+			gauge, ok := m.Data.(metricdata.Gauge[int64])
+			require.True(t, ok, "expected int64 gauge for %s, got %T", m.Name, m.Data)
+
+			for _, dp := range gauge.DataPoints {
+				role, _ := dp.Attributes.Value(attribute.Key(poolRoleAttr))
+				ns, _ := dp.Attributes.Value(attribute.Key(dbNamespaceAttrKey))
+				series = append(series, role.AsString()+"/"+ns.AsString())
+			}
+		}
+	}
+
+	return series
 }
 
 // TestConnectRegistersPoolMetricsForBothRoles verifies the default pool metrics
@@ -140,6 +180,40 @@ func TestReconnectDoesNotAccumulatePoolMetrics(t *testing.T) {
 
 	assert.Len(t, poolRoles(t, reader), 2,
 		"reconnect must swap the registrations, not add to them")
+}
+
+// TestDatabaseNameSeparatesPoolSeries pins the failure found on a real midaz
+// ledger: two clients against different databases share the {system, role} label
+// set, and because the pool gauges are asynchronous instruments one silently
+// overwrites the other. Config.DatabaseName keeps them apart.
+func TestDatabaseNameSeparatesPoolSeries(t *testing.T) {
+	reader := withGlobalMeterProvider(t)
+
+	onboarding := connectedClientNamed(t, "onboarding")
+	t.Cleanup(func() { _ = onboarding.Close() })
+
+	transaction := connectedClientNamed(t, "transaction")
+	t.Cleanup(func() { _ = transaction.Close() })
+
+	assert.ElementsMatch(t,
+		[]string{
+			"primary/onboarding", "replica/onboarding",
+			"primary/transaction", "replica/transaction",
+		},
+		poolSeries(t, reader),
+		"each database must own its pool series")
+}
+
+// TestWithoutDatabaseNameNamespaceIsOmitted verifies the label is opt-in: an
+// unset DatabaseName keeps the pre-existing label set.
+func TestWithoutDatabaseNameNamespaceIsOmitted(t *testing.T) {
+	reader := withGlobalMeterProvider(t)
+
+	client := connectedClient(t)
+	t.Cleanup(func() { _ = client.Close() })
+
+	assert.ElementsMatch(t, []string{"primary/", "replica/"}, poolSeries(t, reader),
+		"db.namespace must be absent when DatabaseName is empty")
 }
 
 // TestInstrumentPoolNeverBreaksTheCaller verifies the degradation contract: a
