@@ -48,9 +48,18 @@ func (c *Client) instrumentPool(
 	// db.namespace keeps pools of different databases in separate series. Without
 	// it they share one label set, and because the pool gauges are asynchronous
 	// instruments the last callback of the collection cycle simply wins.
-	if c.cfg.DatabaseName != "" {
+	//
+	// Config wins when set; otherwise it is read off this pool's own DSN, so
+	// primary and replica stay correct even when they point at different
+	// databases.
+	namespace := c.cfg.DatabaseName
+	if namespace == "" {
+		namespace = dsnDatabaseName(dsn)
+	}
+
+	if namespace != "" {
 		opts = append(opts, sqlobs.WithAttributes(
-			attribute.String(dbNamespaceAttrKey, c.cfg.DatabaseName)))
+			attribute.String(dbNamespaceAttrKey, namespace)))
 	}
 
 	db, cleanup, err := sqlobs.Setup(raw, sqlobs.SystemPostgreSQL, opts...)

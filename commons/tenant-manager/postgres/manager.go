@@ -182,6 +182,29 @@ func (c *PostgresConnection) GetDB() (dbresolver.DB, error) {
 	return *c.ConnectionDB, nil
 }
 
+// Close releases the connection. It closes the underlying client, which owns the
+// resolver AND the telemetry registrations bound to the pools -- closing only the
+// resolver leaves those registrations observing a dead pool for the lifetime of
+// the process, which for a per-tenant manager accumulates on every eviction.
+//
+// A connection with no client (one injected directly, as tests do) falls back to
+// closing the resolver. Nil-safe and safe to call more than once.
+func (c *PostgresConnection) Close() error {
+	if c == nil {
+		return nil
+	}
+
+	if c.client != nil {
+		return c.client.Close()
+	}
+
+	if c.ConnectionDB != nil {
+		return (*c.ConnectionDB).Close()
+	}
+
+	return nil
+}
+
 // Stats contains statistics for the Manager.
 type Stats struct {
 	TotalConnections  int      `json:"totalConnections"`
@@ -630,7 +653,7 @@ func (p *Manager) closePostgresConn(conn *PostgresConnection, msgFmt string, ten
 		return
 	}
 
-	if closeErr := (*conn.ConnectionDB).Close(); closeErr != nil && p.logger != nil {
+	if closeErr := conn.Close(); closeErr != nil && p.logger != nil {
 		p.logger.Warnf(msgFmt+": %v", tenantID, closeErr)
 	}
 }
@@ -697,7 +720,7 @@ func (p *Manager) tryReuseOrEvictCachedConnectionLocked(
 
 		logger.WarnCtx(ctx, fmt.Sprintf("cached postgres connection unhealthy for tenant %s after lock, reconnecting: %v", tenantID, pingErr))
 
-		_ = (*conn.ConnectionDB).Close()
+		_ = conn.Close()
 	}
 
 	delete(p.connections, tenantID)
@@ -811,7 +834,7 @@ func (p *Manager) cacheConnection(
 
 	if p.closed {
 		if conn.ConnectionDB != nil {
-			_ = (*conn.ConnectionDB).Close()
+			_ = conn.Close()
 		}
 
 		return nil, core.ErrManagerClosed
@@ -819,7 +842,7 @@ func (p *Manager) cacheConnection(
 
 	if cached, ok := p.connections[tenantID]; ok && cached != nil && cached.ConnectionDB != nil {
 		if conn.ConnectionDB != nil {
-			_ = (*conn.ConnectionDB).Close()
+			_ = conn.Close()
 		}
 
 		p.lastAccessed[tenantID] = time.Now()
@@ -948,7 +971,7 @@ func (p *Manager) evictLRU(_ context.Context, logger libLog.Logger) {
 	// Manager-specific cleanup: close the postgres connection and remove from all maps.
 	if conn, ok := p.connections[candidateID]; ok {
 		if conn.ConnectionDB != nil {
-			_ = (*conn.ConnectionDB).Close()
+			_ = conn.Close()
 		}
 
 		delete(p.connections, candidateID)
@@ -981,7 +1004,7 @@ func (p *Manager) Close(_ context.Context) error {
 
 	for tenantID, conn := range p.connections {
 		if conn.ConnectionDB != nil {
-			if err := (*conn.ConnectionDB).Close(); err != nil {
+			if err := conn.Close(); err != nil {
 				errs = append(errs, err)
 			}
 		}
@@ -1035,7 +1058,7 @@ func (p *Manager) closeUnhealthyConnection(ctx context.Context, tenantID string,
 		return
 	}
 
-	if closeErr := (*cachedConn.ConnectionDB).Close(); closeErr != nil && p.logger != nil {
+	if closeErr := cachedConn.Close(); closeErr != nil && p.logger != nil {
 		p.logger.WarnCtx(ctx, fmt.Sprintf("failed to close stale postgres connection for tenant %s: %v", tenantID, closeErr))
 	}
 }
@@ -1052,7 +1075,7 @@ func (p *Manager) CloseConnection(_ context.Context, tenantID string) error {
 
 	var err error
 	if conn.ConnectionDB != nil {
-		err = (*conn.ConnectionDB).Close()
+		err = conn.Close()
 	}
 
 	delete(p.connections, tenantID)

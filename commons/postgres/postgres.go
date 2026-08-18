@@ -228,6 +228,39 @@ func dsnSSLMode(dsn string) string {
 	return ""
 }
 
+// dsnDatabaseName extracts the logical database name from a DSN, covering the
+// same two forms as dsnSSLMode: the URL form (the path segment) and the
+// key-value form (dbname=). It is used as the db.namespace metric label when
+// Config.DatabaseName is not set.
+//
+// Best-effort by design: an unparseable or nameless DSN returns "", which simply
+// omits the label. It never returns anything but the database name, so no
+// credential from the DSN can reach a metric.
+func dsnDatabaseName(dsn string) string {
+	trimmed := strings.TrimSpace(dsn)
+
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "postgres://") || strings.HasPrefix(lower, "postgresql://") {
+		parsed, err := url.Parse(trimmed)
+		if err != nil {
+			return ""
+		}
+
+		return strings.Trim(strings.TrimPrefix(parsed.Path, "/"), " '\"")
+	}
+
+	for field := range strings.FieldsSeq(trimmed) {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok || !strings.EqualFold(key, "dbname") {
+			continue
+		}
+
+		return strings.Trim(value, " '\"")
+	}
+
+	return ""
+}
+
 func enforceTLSPolicy(ctx context.Context, logger log.Logger, label, dsn string) error {
 	if strings.TrimSpace(dsn) == "" {
 		return nil

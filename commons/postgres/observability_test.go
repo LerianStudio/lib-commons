@@ -204,16 +204,52 @@ func TestDatabaseNameSeparatesPoolSeries(t *testing.T) {
 		"each database must own its pool series")
 }
 
-// TestWithoutDatabaseNameNamespaceIsOmitted verifies the label is opt-in: an
-// unset DatabaseName keeps the pre-existing label set.
-func TestWithoutDatabaseNameNamespaceIsOmitted(t *testing.T) {
+// TestNamespaceFallsBackToDSN verifies a caller that sets no DatabaseName still
+// gets the label, derived from the DSN of each pool.
+func TestNamespaceFallsBackToDSN(t *testing.T) {
 	reader := withGlobalMeterProvider(t)
 
 	client := connectedClient(t)
 	t.Cleanup(func() { _ = client.Close() })
 
-	assert.ElementsMatch(t, []string{"primary/", "replica/"}, poolSeries(t, reader),
-		"db.namespace must be absent when DatabaseName is empty")
+	// validConfig points both pools at the "postgres" database.
+	assert.ElementsMatch(t, []string{"primary/postgres", "replica/postgres"},
+		poolSeries(t, reader), "db.namespace must be derived from the DSN")
+}
+
+// TestDSNDatabaseName covers both DSN forms the library accepts, plus the
+// degenerate inputs that must simply yield no label.
+func TestDSNDatabaseName(t *testing.T) {
+	cases := []struct {
+		name string
+		dsn  string
+		want string
+	}{
+		{"url form", "postgres://user:pw@host:5432/onboarding?sslmode=disable", "onboarding"},
+		{"url form postgresql scheme", "postgresql://user:pw@host:5432/transaction", "transaction"},
+		{"url form without database", "postgres://user:pw@host:5432", ""},
+		{"key-value form", "host=h user=u password=p dbname=onboarding port=5432 sslmode=disable", "onboarding"},
+		{"key-value form quoted", "host=h dbname='transaction' port=5432", "transaction"},
+		{"key-value form without dbname", "host=h user=u port=5432", ""},
+		{"empty", "", ""},
+		{"garbage", "%%not-a-dsn%%", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, dsnDatabaseName(tc.dsn))
+		})
+	}
+}
+
+// TestDSNDatabaseNameLeaksNoCredential pins the guardrail: whatever the DSN
+// carries, only the database name may come out.
+func TestDSNDatabaseNameLeaksNoCredential(t *testing.T) {
+	got := dsnDatabaseName("postgres://admin:sup3rs3cret@host:5432/ledger?sslmode=require")
+
+	assert.Equal(t, "ledger", got)
+	assert.NotContains(t, got, "sup3rs3cret")
+	assert.NotContains(t, got, "admin")
 }
 
 // TestInstrumentPoolNeverBreaksTheCaller verifies the degradation contract: a
