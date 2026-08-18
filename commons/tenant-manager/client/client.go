@@ -116,7 +116,11 @@ func WithHTTPClient(client *http.Client) ClientOption {
 func WithTimeout(timeout time.Duration) ClientOption {
 	return func(c *Client) {
 		if c.httpClient == nil {
-			c.httpClient = &http.Client{}
+			// A client built here is still lib-commons' own outbound traffic, so it
+			// carries the same telemetry as newDefaultHTTPClient. The nil base is
+			// deliberate and valid: it keeps the stdlib default transport (what a
+			// bare &http.Client{} would have used) and only adds the wrapper.
+			c.httpClient = &http.Client{Transport: instrumentedTransport(nil)}
 		}
 
 		c.httpClient.Timeout = timeout
@@ -683,7 +687,8 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	return tenants, nil
 }
 
-// newDefaultHTTPClient creates an HTTP client with a fully explicit *http.Transport.
+// newDefaultTransport builds the fully explicit *http.Transport this client dials
+// through.
 //
 // Historically this function cloned http.DefaultTransport to inherit platform
 // defaults (Proxy, DialContext, TLS settings). That approach was fragile:
@@ -705,8 +710,12 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 // TLSNextProto is initialized to a non-nil empty map: this is the explicit
 // opt-out signal the stdlib respects — a nil map instead triggers HTTP/2
 // auto-setup on the next HTTPS handshake.
-func newDefaultHTTPClient() *http.Client {
-	t := &http.Transport{
+//
+// It is kept separate from newDefaultHTTPClient so the tuning above stays
+// directly assertable: the client's transport is the instrumented wrapper, which
+// is deliberately opaque and cannot be type-asserted back to *http.Transport.
+func newDefaultTransport() *http.Transport {
+	return &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
 			Timeout:   30 * time.Second,
@@ -720,9 +729,16 @@ func newDefaultHTTPClient() *http.Client {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
+}
 
+// newDefaultHTTPClient creates the instrumented HTTP client this package dials
+// the Tenant Manager with.
+func newDefaultHTTPClient() *http.Client {
+	// The wrapper sits ON TOP of the tuned transport, so every field above still
+	// governs dialing, pooling and HTTP/1.1-only negotiation; only telemetry is
+	// added. See instrumentedTransport for the degradation contract.
 	return &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: t,
+		Transport: instrumentedTransport(newDefaultTransport()),
 	}
 }
