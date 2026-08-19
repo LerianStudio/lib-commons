@@ -2563,3 +2563,39 @@ func TestManager_RevalidateSettings_NoReconnectWhenConfigSame(t *testing.T) {
 		return tDB.MaxOpenConns() == int32(30) && tDB.MaxIdleConns() == int32(10)
 	}, 500*time.Millisecond, 20*time.Millisecond, "pool settings should be applied even without config change")
 }
+
+// TestPostgresConnectionClose covers the connection-level Close added so that
+// evicting a tenant also releases the telemetry registrations its pools own.
+// Closing only the resolver, as the manager used to, leaves those registrations
+// alive for the life of the process.
+func TestPostgresConnectionClose(t *testing.T) {
+	t.Run("closes the resolver when there is no client", func(t *testing.T) {
+		resolver := &pingableDB{}
+
+		var db dbresolver.DB = resolver
+		conn := &PostgresConnection{ConnectionDB: &db}
+
+		require.NoError(t, conn.Close())
+		assert.True(t, resolver.closed, "the resolver must be closed")
+	})
+
+	t.Run("is idempotent", func(t *testing.T) {
+		resolver := &pingableDB{}
+
+		var db dbresolver.DB = resolver
+		conn := &PostgresConnection{ConnectionDB: &db}
+
+		require.NoError(t, conn.Close())
+		assert.NoError(t, conn.Close())
+	})
+
+	t.Run("is nil safe", func(t *testing.T) {
+		var conn *PostgresConnection
+
+		assert.NoError(t, conn.Close())
+	})
+
+	t.Run("tolerates an unconnected connection", func(t *testing.T) {
+		assert.NoError(t, (&PostgresConnection{}).Close())
+	})
+}

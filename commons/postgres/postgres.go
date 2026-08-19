@@ -25,6 +25,7 @@ import (
 	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-observability/v3/sqlobs"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -124,8 +125,14 @@ func nilMigratorAssert(operation string) error {
 
 // Config stores immutable connection options for a postgres client.
 type Config struct {
-	PrimaryDSN         string
-	ReplicaDSN         string
+	PrimaryDSN string
+	ReplicaDSN string
+	// DatabaseName is the logical database this client talks to, emitted as the
+	// db.namespace metric label. Without it, pools from different databases (or
+	// different tenants) share one label set and their pool gauges overwrite each
+	// other, since those are asynchronous instruments. Optional: empty omits the
+	// label and keeps the previous behavior.
+	DatabaseName       string
 	Logger             log.Logger
 	MetricsFactory     *metrics.MetricsFactory
 	MaxOpenConnections int
@@ -221,6 +228,39 @@ func dsnSSLMode(dsn string) string {
 	return ""
 }
 
+// dsnDatabaseName extracts the logical database name from a DSN, covering the
+// same two forms as dsnSSLMode: the URL form (the path segment) and the
+// key-value form (dbname=). It is used as the db.namespace metric label when
+// Config.DatabaseName is not set.
+//
+// Best-effort by design: an unparseable or nameless DSN returns "", which simply
+// omits the label. It never returns anything but the database name, so no
+// credential from the DSN can reach a metric.
+func dsnDatabaseName(dsn string) string {
+	trimmed := strings.TrimSpace(dsn)
+
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "postgres://") || strings.HasPrefix(lower, "postgresql://") {
+		parsed, err := url.Parse(trimmed)
+		if err != nil {
+			return ""
+		}
+
+		return strings.Trim(strings.TrimPrefix(parsed.Path, "/"), " '\"")
+	}
+
+	for field := range strings.FieldsSeq(trimmed) {
+		key, value, ok := strings.Cut(field, "=")
+		if !ok || !strings.EqualFold(key, "dbname") {
+			continue
+		}
+
+		return strings.Trim(value, " '\"")
+	}
+
+	return ""
+}
+
 func enforceTLSPolicy(ctx context.Context, logger log.Logger, label, dsn string) error {
 	if strings.TrimSpace(dsn) == "" {
 		return nil
@@ -278,6 +318,11 @@ type Client struct {
 	resolver       dbresolver.DB
 	primary        *sql.DB
 	replica        *sql.DB
+
+	// statsCleanups releases the telemetry registrations bound to the CURRENT
+	// primary/replica pools. Swapped together with the pools on reconnect and
+	// drained on Close, so gauge callbacks never outlive the pool they observe.
+	statsCleanups []sqlobs.CleanupFunc
 
 	// Lazy-connect rate-limiting: prevents thundering-herd reconnect storms
 	// when the database is down by enforcing exponential backoff between attempts.
@@ -355,7 +400,7 @@ func (c *Client) Connect(ctx context.Context) error {
 // connectLocked performs the actual connection logic.
 // The caller MUST hold c.mu (write lock) before calling this method.
 func (c *Client) connectLocked(ctx context.Context) error {
-	primary, replica, resolver, err := c.buildConnection(ctx)
+	built, err := c.buildConnection(ctx)
 	if err != nil {
 		return err
 	}
@@ -363,10 +408,15 @@ func (c *Client) connectLocked(ctx context.Context) error {
 	oldResolver := c.resolver
 	oldPrimary := c.primary
 	oldReplica := c.replica
+	oldCleanups := c.statsCleanups
 
-	c.resolver = resolver
-	c.primary = primary
-	c.replica = replica
+	c.resolver = built.resolver
+	c.primary = built.primary
+	c.replica = built.replica
+	c.statsCleanups = built.cleanups
+
+	// Release the metrics bound to the pools being replaced before closing them.
+	c.releaseCleanups(ctx, oldCleanups)
 
 	if oldResolver != nil {
 		if err := oldResolver.Close(); err != nil {
@@ -389,61 +439,94 @@ func (c *Client) connectLocked(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) buildConnection(ctx context.Context) (*sql.DB, *sql.DB, dbresolver.DB, error) {
+// pools is a freshly built connection set together with the telemetry
+// registrations tied to it, so a failed build or a swap releases both together
+// and a gauge can never outlive the pool it observes.
+type pools struct {
+	resolver dbresolver.DB
+	primary  *sql.DB
+	replica  *sql.DB
+	cleanups []sqlobs.CleanupFunc
+}
+
+func (c *Client) buildConnection(ctx context.Context) (pools, error) {
 	c.logAtLevel(ctx, log.LevelInfo, "connecting to primary and replica databases")
 
 	warnInsecureDSN(ctx, c.cfg.Logger, c.cfg.PrimaryDSN, "primary")
 	warnInsecureDSN(ctx, c.cfg.Logger, c.cfg.ReplicaDSN, "replica")
 
-	primary, err := c.newSQLDB(ctx, c.cfg.PrimaryDSN)
+	primary, primaryCleanup, err := c.newSQLDB(ctx, c.cfg.PrimaryDSN, sqlobs.PoolRolePrimary)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("postgres connect: %w", err)
+		return pools{}, fmt.Errorf("postgres connect: %w", err)
 	}
 
-	replica, err := c.newSQLDB(ctx, c.cfg.ReplicaDSN)
+	built := pools{primary: primary, cleanups: []sqlobs.CleanupFunc{primaryCleanup}}
+
+	replica, replicaCleanup, err := c.newSQLDB(ctx, c.cfg.ReplicaDSN, sqlobs.PoolRoleReplica)
 	if err != nil {
+		c.releaseCleanups(ctx, built.cleanups)
+
 		_ = closeDB(primary)
-		return nil, nil, nil, fmt.Errorf("postgres connect: %w", err)
+
+		return pools{}, fmt.Errorf("postgres connect: %w", err)
 	}
+
+	built.replica = replica
+	built.cleanups = append(built.cleanups, replicaCleanup)
 
 	resolver, err := createResolverFn(primary, replica, c.cfg.Logger)
 	if err != nil {
+		c.releaseCleanups(ctx, built.cleanups)
+
 		_ = closeDB(primary)
 		_ = closeDB(replica)
 
 		c.logAtLevel(ctx, log.LevelError, "failed to create resolver", log.Err(err))
 
-		return nil, nil, nil, fmt.Errorf("postgres connect: failed to create resolver: %w", err)
+		return pools{}, fmt.Errorf("postgres connect: failed to create resolver: %w", err)
 	}
 
+	built.resolver = resolver
+
 	if err := resolver.PingContext(ctx); err != nil {
+		c.releaseCleanups(ctx, built.cleanups)
+
 		_ = resolver.Close()
 		_ = closeDB(primary)
 		_ = closeDB(replica)
 
 		c.logAtLevel(ctx, log.LevelError, "failed to ping database", log.Err(err))
 
-		return nil, nil, nil, fmt.Errorf("postgres connect: failed to ping database: %w", err)
+		return pools{}, fmt.Errorf("postgres connect: failed to ping database: %w", err)
 	}
 
-	return primary, replica, resolver, nil
+	return built, nil
 }
 
-func (c *Client) newSQLDB(ctx context.Context, dsn string) (*sql.DB, error) {
+// newSQLDB opens a pool, instruments it, and applies the configured pool tuning
+// — in that order: the instrumented handle is backed by its own pool, so the
+// tuning must land on the handle actually kept (see instrumentPool).
+func (c *Client) newSQLDB(
+	ctx context.Context,
+	dsn string,
+	role sqlobs.PoolRole,
+) (*sql.DB, sqlobs.CleanupFunc, error) {
 	db, err := dbOpenFn("pgx", dsn)
 	if err != nil {
 		sanitized := newSanitizedError(err, "failed to open database")
 		c.logAtLevel(ctx, log.LevelError, "failed to open database", log.Err(sanitized))
 
-		return nil, sanitized
+		return nil, nil, sanitized
 	}
+
+	db, cleanup := c.instrumentPool(ctx, db, dsn, role)
 
 	db.SetMaxOpenConns(c.cfg.MaxOpenConnections)
 	db.SetMaxIdleConns(c.cfg.MaxIdleConnections)
 	db.SetConnMaxLifetime(c.cfg.ConnMaxLifetime)
 	db.SetConnMaxIdleTime(c.cfg.ConnMaxIdleTime)
 
-	return db, nil
+	return db, cleanup, nil
 }
 
 // Resolver returns the resolver, connecting lazily if needed.
@@ -551,11 +634,16 @@ func (c *Client) Close() error {
 	resolver := c.resolver
 	primary := c.primary
 	replica := c.replica
+	cleanups := c.statsCleanups
 
 	c.resolver = nil
 	c.primary = nil
 	c.replica = nil
+	c.statsCleanups = nil
 	c.mu.Unlock()
+
+	// Unregister the pool gauges before the pools they observe go away.
+	c.releaseCleanups(context.Background(), cleanups)
 
 	var errs []error
 
