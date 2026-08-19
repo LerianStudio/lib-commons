@@ -49,6 +49,9 @@ type ServerManager struct {
 	serversStartedOnce  sync.Once
 	runtimeDefaultsOnce sync.Once
 	shutdownChan        <-chan struct{}
+	lifecycleMu         sync.Mutex
+	shuttingDown        bool
+	fiberListenDone     chan struct{}
 	shutdownOnce        sync.Once
 	shutdownTimeout     time.Duration
 	startupErrors       chan error
@@ -365,6 +368,24 @@ func (sm *ServerManager) launchFiberHTTPServer() bool {
 		return false
 	}
 
+	// Publish the listen-goroutine lifecycle signal under the lifecycle lock
+	// so a concurrent executeShutdown either observes the channel (and waits
+	// on it) or has already set shuttingDown (and this launch is refused).
+	// Without this ordering a shutdown racing startup could miss the channel
+	// and let a later Listen keep serving after graceful shutdown completed.
+	sm.lifecycleMu.Lock()
+
+	if sm.shuttingDown {
+		sm.lifecycleMu.Unlock()
+		sm.logInfo("Skipping HTTP server launch: shutdown already initiated")
+
+		return false
+	}
+
+	sm.fiberListenDone = make(chan struct{})
+	listenDone := sm.fiberListenDone
+	sm.lifecycleMu.Unlock()
+
 	runtime.SafeGoWithContextAndComponent(
 		context.Background(),
 		sm.logger,
@@ -372,9 +393,15 @@ func (sm *ServerManager) launchFiberHTTPServer() bool {
 		"start_http_server",
 		runtime.KeepRunning,
 		func(_ context.Context) {
+			defer close(listenDone)
+
 			sm.logger.Log(context.Background(), log.LevelInfo, "starting HTTP server", log.String("address", sm.httpAddress))
 
-			if err := sm.httpServer.Listen(sm.httpAddress); err != nil {
+			// DisableStartupMessage: fiber v3 moved banner suppression from
+			// fiber.Config to ListenConfig, and this Listen call is the only
+			// one the fleet reaches — without it every service prints the
+			// fiber ASCII banner into its JSON-only stdout stream.
+			if err := sm.httpServer.Listen(sm.httpAddress, fiber.ListenConfig{DisableStartupMessage: true}); err != nil {
 				sm.logger.Log(context.Background(), log.LevelError, "HTTP server error", log.Err(err))
 
 				select {
@@ -545,6 +572,13 @@ func (sm *ServerManager) executeShutdown() {
 	sm.runtimeDefaultsOnce.Do(sm.ensureRuntimeDefaults)
 
 	sm.shutdownOnce.Do(func() {
+		// Mark shutdown as initiated under the lifecycle lock: any server
+		// launch that has not published its lifecycle signal yet is refused
+		// from this point on, and any signal published before is visible here.
+		sm.lifecycleMu.Lock()
+		sm.shuttingDown = true
+		sm.lifecycleMu.Unlock()
+
 		// Use a non-blocking read to check if servers have started.
 		// This prevents a deadlock if a panic occurs before startServers() completes.
 		select {
@@ -649,8 +683,55 @@ func (sm *ServerManager) shutdownHTTPServer() {
 		if err := sm.httpServer.Shutdown(); err != nil {
 			sm.logger.Log(context.Background(), log.LevelError, "error during HTTP server shutdown", log.Err(err))
 		}
+
+		sm.awaitFiberListenExit()
 	case sm.stdlibHTTPServer != nil:
 		sm.shutdownStdlibHTTPServer()
+	}
+}
+
+// awaitFiberListenExit blocks until the fiber Listen goroutine has returned,
+// re-issuing Shutdown while it waits. fiber's Shutdown is a silent no-op when
+// it runs before Listen has registered its listener with the underlying
+// fasthttp server (registration happens inside Serve), so a shutdown that
+// races server startup would otherwise leave the Listen goroutine serving
+// forever. That leaked goroutine outlives shutdown and, under the race
+// detector, trips on process globals such as os.Stdout that fiber's startup
+// path reads and the test harness swaps between tests and examples.
+func (sm *ServerManager) awaitFiberListenExit() {
+	sm.lifecycleMu.Lock()
+	listenDone := sm.fiberListenDone
+	sm.lifecycleMu.Unlock()
+
+	// Nil means the fiber launch goroutine was never spawned (and, with
+	// shuttingDown now set, never will be), so there is nothing to wait for.
+	if listenDone == nil {
+		return
+	}
+
+	timeout := sm.shutdownTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+
+	retry := time.NewTicker(10 * time.Millisecond)
+	defer retry.Stop()
+
+	for {
+		select {
+		case <-listenDone:
+			return
+		case <-deadline.C:
+			sm.logInfo("Timed out waiting for the HTTP listen goroutine to exit")
+			return
+		case <-retry.C:
+			// Listen may not have reached Serve when the first Shutdown ran;
+			// re-issue it so the bound listener is closed once registered.
+			_ = sm.httpServer.Shutdown()
+		}
 	}
 }
 
