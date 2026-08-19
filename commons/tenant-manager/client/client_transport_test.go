@@ -31,12 +31,13 @@ func TestNewDefaultHTTPClient_UsesHTTP1Only(t *testing.T) {
 	}
 	http.DefaultTransport = contaminated
 
-	client := newDefaultHTTPClient()
-	require.NotNil(t, client)
-	require.NotNil(t, client.Transport)
+	require.NotNil(t, newDefaultHTTPClient().Transport)
 
-	transport, ok := client.Transport.(*http.Transport)
-	require.True(t, ok, "transport must be *http.Transport")
+	// Assert on the base transport: the client's transport is now the httpobs
+	// wrapper, which cannot be type-asserted back to *http.Transport. The
+	// invariant is a property of the transport the wrapper dials through.
+	transport := newDefaultTransport()
+	require.NotNil(t, transport)
 
 	// TLSNextProto must be non-nil (explicit opt-out) and must NOT contain h2.
 	// A nil map would trigger stdlib's HTTP/2 auto-setup; an "h2" entry would
@@ -53,9 +54,7 @@ func TestNewDefaultHTTPClient_UsesHTTP1Only(t *testing.T) {
 // does not share memory with http.DefaultTransport. A future mutation of the
 // global must not leak into an already-constructed client.
 func TestNewDefaultHTTPClient_TransportIsIsolated(t *testing.T) {
-	client := newDefaultHTTPClient()
-	transport, ok := client.Transport.(*http.Transport)
-	require.True(t, ok)
+	transport := newDefaultTransport()
 
 	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
 	require.True(t, ok)
@@ -73,8 +72,7 @@ func TestNewDefaultHTTPClient_ExpectedDefaults(t *testing.T) {
 
 	assert.Equal(t, 30*time.Second, client.Timeout, "Client.Timeout")
 
-	transport, ok := client.Transport.(*http.Transport)
-	require.True(t, ok)
+	transport := newDefaultTransport()
 
 	assert.NotNil(t, transport.Proxy, "Proxy must be set (http.ProxyFromEnvironment)")
 	assert.NotNil(t, transport.DialContext, "DialContext must be set via net.Dialer")
