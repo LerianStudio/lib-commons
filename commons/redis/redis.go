@@ -22,6 +22,7 @@ import (
 	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-observability/v3/redisobs"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -216,6 +217,12 @@ type Client struct {
 	token          string
 	lastRefresh    time.Time
 	refreshErr     error
+
+	// statsCleanup releases the telemetry registrations bound to the CURRENT
+	// client. Swapped together with the client on every reconnect and drained on
+	// Close, so the asynchronous pool-stat callbacks never outlive the client
+	// they observe.
+	statsCleanup redisobs.CleanupFunc
 
 	refreshCancel      context.CancelFunc
 	refreshLoopRunning bool
@@ -474,7 +481,15 @@ func (c *Client) connectClientLocked(ctx context.Context) error {
 	}
 
 	rdb := redis.NewUniversalClient(opts)
+
+	// Instrument before the verification PING, so that first command is measured
+	// too and so the discard path below already has a cleanup to run.
+	cleanup := c.instrumentClient(ctx, rdb)
+
 	if _, err := rdb.Ping(ctx).Result(); err != nil {
+		// The client is thrown away here, so its registrations must go with it.
+		c.releaseInstrumentation(ctx, cleanup)
+
 		_ = rdb.Close()
 
 		c.logger.Log(ctx, log.LevelError, "redis ping failed", log.Err(err))
@@ -485,10 +500,15 @@ func (c *Client) connectClientLocked(ctx context.Context) error {
 
 	// New client verified. Close old client (if any) AFTER new one is confirmed healthy.
 	oldClient := c.client
+	oldCleanup := c.statsCleanup
 
 	c.client = rdb
+	c.statsCleanup = cleanup
 	c.connected = true
 	c.refreshErr = nil
+
+	// Release the telemetry bound to the client being replaced before closing it.
+	c.releaseInstrumentation(ctx, oldCleanup)
 
 	if oldClient != nil {
 		if err := oldClient.Close(); err != nil {
@@ -515,6 +535,12 @@ func (c *Client) connectClientLocked(ctx context.Context) error {
 }
 
 func (c *Client) closeClientLocked() error {
+	// Unregister before the client goes away. This runs unconditionally: a
+	// registration can exist even when there is no client left to close, and it
+	// is the MeterProvider — not the client — that holds it.
+	c.releaseInstrumentation(context.Background(), c.statsCleanup)
+	c.statsCleanup = nil
+
 	if c.client == nil {
 		return nil
 	}
@@ -767,7 +793,16 @@ func (c *Client) reconnectLocked(ctx context.Context) error {
 	// Create and verify the new client BEFORE touching the old one.
 	newClient := redis.NewUniversalClient(opts)
 
+	// Instrument before the verification PING, so that first command is measured
+	// too and so the discard path below already has a cleanup to run.
+	cleanup := c.instrumentClient(ctx, newClient)
+
 	if _, err := newClient.Ping(ctx).Result(); err != nil {
+		// The client is thrown away here and the previous one is kept, so the
+		// registrations of this one must not survive the attempt. A server that is
+		// merely down would otherwise leave one dead set per retry.
+		c.releaseInstrumentation(ctx, cleanup)
+
 		_ = newClient.Close()
 
 		c.logger.Log(ctx, log.LevelError, "new client ping failed during reconnect, keeping existing client", log.Err(err))
@@ -777,10 +812,17 @@ func (c *Client) reconnectLocked(ctx context.Context) error {
 
 	// New client is verified. Swap atomically: close old, assign new.
 	oldClient := c.client
+	oldCleanup := c.statsCleanup
 
 	c.client = newClient
+	c.statsCleanup = cleanup
 	c.connected = true
 	c.refreshErr = nil
+
+	// Release the telemetry bound to the client being replaced before closing it:
+	// its pool-stat callbacks are owned by the MeterProvider and would otherwise
+	// keep observing a dead client for the life of the process.
+	c.releaseInstrumentation(ctx, oldCleanup)
 
 	if oldClient != nil {
 		if err := oldClient.Close(); err != nil {
