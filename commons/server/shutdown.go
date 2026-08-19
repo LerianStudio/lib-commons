@@ -374,7 +374,11 @@ func (sm *ServerManager) launchFiberHTTPServer() bool {
 		func(_ context.Context) {
 			sm.logger.Log(context.Background(), log.LevelInfo, "starting HTTP server", log.String("address", sm.httpAddress))
 
-			if err := sm.httpServer.Listen(sm.httpAddress); err != nil {
+			// DisableStartupMessage: fiber v3 moved banner suppression from
+			// fiber.Config to ListenConfig, and this Listen call is the only
+			// one the fleet reaches — without it every service prints the
+			// fiber ASCII banner into its JSON-only stdout stream.
+			if err := sm.httpServer.Listen(sm.httpAddress, fiber.ListenConfig{DisableStartupMessage: true}); err != nil {
 				sm.logger.Log(context.Background(), log.LevelError, "HTTP server error", log.Err(err))
 
 				select {
