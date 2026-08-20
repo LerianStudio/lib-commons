@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 	"sync"
 	"time"
 
@@ -736,16 +737,40 @@ func newProducerInstrument(opts ...v3messagingobs.Option) *v3messagingobs.Publis
 // race with a caller reusing one Publishing across goroutines). Injected keys
 // win on collision — a traceparent left over from an earlier hop is stale by
 // definition and must not survive into this publish.
+//
+// The collision check is case-INSENSITIVE. The W3C propagator writes through an
+// http.Header carrier, which canonicalizes "traceparent" into "Traceparent",
+// while a caller (or an upstream hop that copied a Delivery's headers) may carry
+// the lowercase spelling. Copying both would ship two conflicting trace contexts
+// and let the consumer join the stale one.
 func mergeTraceHeaders(existing amqp.Table, injected map[string]any) amqp.Table {
 	if len(injected) == 0 {
 		return existing
 	}
 
 	merged := make(amqp.Table, len(existing)+len(injected))
-	maps.Copy(merged, existing)
+
+	for name, value := range existing {
+		if !collidesWithInjected(name, injected) {
+			merged[name] = value
+		}
+	}
+
 	maps.Copy(merged, injected)
 
 	return merged
+}
+
+// collidesWithInjected reports whether a caller header name matches an injected
+// one under case folding.
+func collidesWithInjected(name string, injected map[string]any) bool {
+	for injectedName := range injected {
+		if strings.EqualFold(name, injectedName) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // isConfirmStreamCorrupted reports whether the error indicates the

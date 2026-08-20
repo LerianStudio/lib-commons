@@ -1239,3 +1239,54 @@ func TestConfirmablePublisher_PublishWithNoOptionsUsesGlobalProviders(t *testing
 	require.Len(t, recorded, 1, "the globally installed TracerProvider must receive the PRODUCER span")
 	assert.Equal(t, producerLibraryName, recorded[0].InstrumentationScope.Name)
 }
+
+// TestConfirmablePublisher_ZeroValuePublishIsSafe covers a ConfirmablePublisher
+// built as a zero value rather than through a constructor, so its producer is
+// nil: instrumentation opens before the readiness check, and it must degrade
+// instead of panicking on the way to ErrPublisherNotReady.
+func TestConfirmablePublisher_ZeroValuePublishIsSafe(t *testing.T) {
+	t.Parallel()
+
+	publisher := &ConfirmablePublisher{}
+
+	var err error
+
+	require.NotPanics(t, func() {
+		err = publisher.PublishAndWaitConfirm(context.Background(),
+			telemetryExchange, telemetryRoutingKey, false, false, amqp.Publishing{Body: []byte("ok")})
+	})
+
+	assert.ErrorIs(t, err, ErrPublisherNotReady)
+}
+
+// TestMergeTraceHeaders_CaseInsensitiveCollision pins the propagation contract:
+// a caller (or a hop that copied a Delivery's headers) carrying a lowercase
+// "traceparent" must not survive alongside the canonicalized one the propagator
+// injects, or the consumer could join the stale trace.
+func TestMergeTraceHeaders_CaseInsensitiveCollision(t *testing.T) {
+	t.Parallel()
+
+	existing := amqp.Table{
+		"traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+		"x-caller":    "value",
+	}
+
+	merged := mergeTraceHeaders(existing, map[string]any{
+		"Traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+	})
+
+	var found []string
+
+	for name, value := range merged {
+		if strings.EqualFold(name, "traceparent") {
+			found = append(found, name)
+			assert.Equal(t, "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", value,
+				"the injected trace context must win")
+		}
+	}
+
+	assert.Len(t, found, 1, "exactly one traceparent may reach the broker, got %v", found)
+	assert.Equal(t, "value", merged["x-caller"], "unrelated caller headers survive")
+	assert.Equal(t, "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01", existing["traceparent"],
+		"the caller's own map must not be mutated")
+}
