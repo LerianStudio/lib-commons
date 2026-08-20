@@ -1771,6 +1771,13 @@ func TestDSNRequiresTLS(t *testing.T) {
 			dsn:  "host=h password='p sslmode=require' sslmode=disable",
 			want: false,
 		},
+		// pgx keeps the LAST duplicate setting. Reading the first would pass
+		// the policy on "require" while pgx connects with "disable".
+		{name: "keyword repeated sslmode last wins", dsn: "host=h sslmode=require sslmode=disable", want: false},
+		{name: "keyword repeated sslmode last wins reversed", dsn: "host=h sslmode=disable sslmode=require", want: true},
+		// pgx also splits pairs on \v and \f.
+		{name: "keyword vertical tab separator", dsn: "host=h\vsslmode=require", want: true},
+		{name: "keyword form feed separator", dsn: "host=h\fsslmode=require", want: true},
 	}
 
 	for _, tt := range tests {

@@ -234,6 +234,11 @@ func dsnSSLMode(dsn string) string {
 // because tooling emits dbname="x" and libpq would read the quotes as part of
 // the name.
 func dsnKeywordValue(dsn, keyword string) string {
+	// pgx keeps the LAST duplicate setting, so this parser must too: returning
+	// the first would let "sslmode=require sslmode=disable" pass the TLS policy
+	// while pgx connects in plaintext.
+	var found string
+
 	for i := 0; i < len(dsn); {
 		for i < len(dsn) && isDSNSpace(dsn[i]) {
 			i++
@@ -266,11 +271,11 @@ func dsnKeywordValue(dsn, keyword string) string {
 		i = next
 
 		if strings.EqualFold(key, keyword) {
-			return value
+			found = value
 		}
 	}
 
-	return ""
+	return found
 }
 
 // scanDSNValue reads the value starting at i and returns it unescaped, plus the
@@ -304,7 +309,7 @@ func scanDSNValue(dsn string, i int) (string, int) {
 }
 
 func isDSNSpace(c byte) bool {
-	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'
 }
 
 // dsnDatabaseName extracts the logical database name from a DSN, covering the

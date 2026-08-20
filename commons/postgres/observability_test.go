@@ -241,6 +241,10 @@ func TestDSNDatabaseName(t *testing.T) {
 		{"double quoted", `host=h dbname="ledger" port=5432`, "ledger"},
 		{"spaces around equals", "host = h dbname = ledger port=5432", "ledger"},
 		{"unterminated quote", "host=h dbname='ledger", "ledger"},
+		// pgx keeps the LAST duplicate setting; the label must name the
+		// database pgx actually connects to.
+		{"repeated dbname last wins", "host=h dbname=old dbname=new port=5432", "new"},
+		{"form feed separator", "host=h\fdbname=ledger", "ledger"},
 		// Guardrail: the label may only ever come from the real dbname keyword,
 		// never from text carried inside another value.
 		{"dbname inside a quoted value", "host=h password='p dbname=leaked' dbname=ledger", "ledger"},
