@@ -1,5 +1,32 @@
 # Lib-commons Changelog
 
+## [6.8.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.8.0)
+
+Features:
+- Introduce auto-instrumentation for Redis clients, ensuring the client is released on every swap. (@rodrigodh)
+- Implement outbound HTTP instrumentation in the tenant-manager using `httpobs`. (@rodrigodh)
+- Enable auto-instrumentation of PostgreSQL connection pools with default SQL metrics. (@rodrigodh)
+- Enhance idempotency fingerprint to learn an application scope. (@fredcamaral)
+
+Fixes:
+- Synchronize the Fiber server's listen lifecycle signal with the shutdown process. (@fredcamaral)
+- Ensure the Fiber server waits for the Listen goroutine to exit during shutdown. (@fredcamaral)
+- Suppress the Fiber `v3` startup banner on the managed Listen. (@fredcamaral)
+- Update query-param length error messages to correctly reference bytes, matching the actual measurement. (@fredcamaral)
+- Route duplicate idempotency records based solely on stored fields to prevent conflicts. (@fredcamaral)
+- Reject reserved key suffixes and enforce the use of a cluster client for cluster topology. (@fredcamaral)
+- Preserve idempotency during system upgrades to maintain consistency. (@fredcamaral)
+- Address pre-`v6.5.0` idempotency records by responding to them instead of re-running mutations. (@fredcamaral)
+
+Improvements:
+- Adopt `lib-observability` `v3.1.0` stable version for enhanced dependency management. (@fredcamaral)
+- Bump `moby/go-archive` to `v0.3.3` to fix extraction regressions and resolve CVE-2026-17106. (@fredcamaral)
+- Add a multi-byte UTF-8 test case for query-param byte-length validation to improve test coverage. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v6.7.0...v6.8.0)
+
+---
+
 ## [6.7.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.7.0)
 
 Features:
