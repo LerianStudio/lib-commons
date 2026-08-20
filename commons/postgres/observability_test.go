@@ -233,6 +233,33 @@ func TestDSNDatabaseName(t *testing.T) {
 		{"key-value form without dbname", "host=h user=u port=5432", ""},
 		{"empty", "", ""},
 		{"garbage", "%%not-a-dsn%%", ""},
+		// libpq quoting rules: a quoted value keeps its spaces, and a backslash
+		// escapes the next character. Splitting on whitespace truncates these.
+		{"quoted with spaces", "host=h dbname='tenant alpha' port=5432", "tenant alpha"},
+		{"quoted with escaped quote", `host=h dbname='tenant\'s db' port=5432`, "tenant's db"},
+		{"quoted with escaped backslash", `host=h dbname='tenant\\db' port=5432`, `tenant\db`},
+		// pgx recognizes only single quotes: the double quotes are part of the
+		// value, and the label must name what pgx actually connects to.
+		{"double quoted kept verbatim like pgx", `host=h dbname="ledger" port=5432`, `"ledger"`},
+		// pgx unescapes only \\ and \' — any other backslash stays.
+		{"unquoted backslash kept like pgx", `host=h dbname=tenant\q port=5432`, `tenant\q`},
+		// Case-sensitive keywords: pgx does not read DBNAME.
+		{"uppercase DBNAME ignored like pgx", "host=h DBNAME=ledger port=5432", ""},
+		{"spaces around equals", "host = h dbname = ledger port=5432", "ledger"},
+		// pgx errors on an unterminated quote — no connection ever exists, so
+		// there is nothing to label.
+		{"unterminated quote is malformed", "host=h dbname='ledger", ""},
+		{"stray token is malformed", "host dbname=ledger", ""},
+		{"missing equals entirely", "hostonly", ""},
+		{"empty key is malformed", "=ledger dbname=ledger", ""},
+		{"trailing backslash is malformed", `host=h dbname=ledger\`, ""},
+		// pgx keeps the LAST duplicate setting; the label must name the
+		// database pgx actually connects to.
+		{"repeated dbname last wins", "host=h dbname=old dbname=new port=5432", "new"},
+		{"form feed separator", "host=h\fdbname=ledger", "ledger"},
+		// Guardrail: the label may only ever come from the real dbname keyword,
+		// never from text carried inside another value.
+		{"dbname inside a quoted value", "host=h password='p dbname=leaked' dbname=ledger", "ledger"},
 	}
 
 	for _, tc := range cases {
@@ -263,6 +290,23 @@ func TestInstrumentPoolNeverBreaksTheCaller(t *testing.T) {
 	db, cleanup := client.instrumentPool(context.Background(), raw, validConfig().PrimaryDSN, "primary")
 
 	require.NotNil(t, db)
+	require.NotNil(t, cleanup)
+	assert.NoError(t, cleanup())
+}
+
+// TestInstrumentPoolDegradesToTheRawPool covers the failing half of that
+// contract. sqlobs refuses to swap a pool it cannot re-open by DSN (an empty DSN
+// returns ErrDSNRequired), and the caller must come out with its own working
+// handle and a callable no-op cleanup — telemetry is never worth connectivity.
+func TestInstrumentPoolDegradesToTheRawPool(t *testing.T) {
+	client, err := New(validConfig())
+	require.NoError(t, err)
+
+	raw := testDB(t)
+
+	db, cleanup := client.instrumentPool(context.Background(), raw, "", "primary")
+
+	assert.Same(t, raw, db, "a degraded instrumentation must hand back the caller's own pool")
 	require.NotNil(t, cleanup)
 	assert.NoError(t, cleanup())
 }

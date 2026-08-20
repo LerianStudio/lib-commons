@@ -1760,6 +1760,41 @@ func TestDSNRequiresTLS(t *testing.T) {
 		{name: "keyword require", dsn: "host=localhost dbname=ledger sslmode=require", want: true},
 		{name: "keyword prefer", dsn: "host=localhost dbname=ledger sslmode=prefer", want: false},
 		{name: "keyword missing mode", dsn: "host=localhost dbname=ledger", want: false},
+		{name: "keyword quoted require", dsn: "host=localhost sslmode='require'", want: true},
+		// libpq accepts spaces around "=". Reading this DSN as "no sslmode"
+		// refuses a connection the operator did configure for TLS.
+		{name: "keyword spaced equals require", dsn: "host=localhost sslmode = require", want: true},
+		// Fail-open guard: another value that happens to contain "sslmode="
+		// must never decide the TLS policy. This DSN says disable.
+		{
+			name: "keyword sslmode inside a quoted value",
+			dsn:  "host=h password='p sslmode=require' sslmode=disable",
+			want: false,
+		},
+		// pgx keeps the LAST duplicate setting. Reading the first would pass
+		// the policy on "require" while pgx connects with "disable".
+		{name: "keyword repeated sslmode last wins", dsn: "host=h sslmode=require sslmode=disable", want: false},
+		{name: "keyword repeated sslmode last wins reversed", dsn: "host=h sslmode=disable sslmode=require", want: true},
+		// pgx also splits pairs on \v and \f.
+		{name: "keyword vertical tab separator", dsn: "host=h\vsslmode=require", want: true},
+		{name: "keyword form feed separator", dsn: "host=h\fsslmode=require", want: true},
+		// pgx keyword matching is case-sensitive: it ignores SSLMODE and falls
+		// back to sslmode=prefer (plaintext fallback allowed), so the policy
+		// must not read it as "require".
+		{name: "keyword uppercase SSLMODE ignored like pgx", dsn: "host=h SSLMODE=require", want: false},
+		// pgx treats a double quote as an ordinary character: the value is
+		// literally `"require"`, which pgx rejects — never a TLS guarantee.
+		{name: "keyword double quoted require is not require", dsn: `host=h sslmode="require"`, want: false},
+		// pgx reads "host sslmode" as ONE key here and leaves sslmode at the
+		// prefer default; a parser that skips the stray token and reads
+		// "require" approves TLS pgx never guarantees.
+		{name: "keyword stray token is malformed", dsn: "host sslmode=require", want: false},
+		// pgx refuses these outright (no connection at all), so no reading of
+		// them may satisfy the policy.
+		{name: "keyword unterminated quote is malformed", dsn: "host=h sslmode='require", want: false},
+		{name: "keyword trailing backslash is malformed", dsn: `host=h sslmode=require\`, want: false},
+		{name: "keyword missing equals entirely", dsn: "hostonly", want: false},
+		{name: "keyword empty key is malformed", dsn: "=require sslmode=require", want: false},
 	}
 
 	for _, tt := range tests {

@@ -130,8 +130,9 @@ type Config struct {
 	// DatabaseName is the logical database this client talks to, emitted as the
 	// db.namespace metric label. Without it, pools from different databases (or
 	// different tenants) share one label set and their pool gauges overwrite each
-	// other, since those are asynchronous instruments. Optional: empty omits the
-	// label and keeps the previous behavior.
+	// other, since those are asynchronous instruments. Optional: when empty, the
+	// label is read off each pool's own DSN instead, and it is omitted only when
+	// the DSN carries no database name either.
 	DatabaseName       string
 	Logger             log.Logger
 	MetricsFactory     *metrics.MetricsFactory
@@ -216,16 +217,115 @@ func dsnSSLMode(dsn string) string {
 		return strings.Trim(parsed.Query().Get("sslmode"), " '\"")
 	}
 
-	for field := range strings.FieldsSeq(trimmed) {
-		key, value, ok := strings.Cut(field, "=")
-		if !ok || !strings.EqualFold(key, "sslmode") {
-			continue
+	return dsnKeywordValue(trimmed, "sslmode")
+}
+
+// dsnKeywordValue reads one keyword out of a libpq keyword/value DSN.
+//
+// Splitting on whitespace cannot read these DSNs: libpq allows spaces around
+// "=", quoted values that contain spaces, and backslash escapes. A whitespace
+// split truncates dbname='tenant alpha' to "tenant", and worse, it can pick a
+// keyword out of the MIDDLE of another value -- password='p sslmode=require'
+// then decides the TLS policy, and password='p dbname=x' decides a metric
+// label. Scanning is the only correct read.
+// https://www.postgresql.org/docs/current/libpq-connect.html
+//
+// Deliberate superset of libpq: double quotes are honoured like single quotes,
+// because tooling emits dbname="x" and libpq would read the quotes as part of
+// the name.
+// dsnSpaceCutset is pgx's asciiSpace set (pgconn/config.go, v5.10.0).
+const dsnSpaceCutset = " \t\n\r\v\f"
+
+// dsnKeywordValue is a structural mirror of pgx v5.10.0's
+// parseKeywordValueSettings (pgconn/config.go): key is everything up to the
+// next "=" (trimmed, case-sensitive, so a malformed "host sslmode=require"
+// yields the single key "host sslmode" and never a stray "require"); the LAST
+// duplicate setting wins; only a single quote delimits a value; unescaping
+// rewrites exactly `\\` and `\'`. Where pgx returns an error — no "=", empty
+// key, trailing backslash, unterminated quote — this helper returns "" for
+// the WHOLE string: pgx would refuse to connect at all, so no reading of a
+// malformed DSN may ever satisfy the TLS policy or label a metric.
+func dsnKeywordValue(dsn, keyword string) string {
+	var found string
+
+	s := strings.TrimLeft(dsn, dsnSpaceCutset)
+	for len(s) > 0 {
+		eq := strings.IndexByte(s, '=')
+		if eq < 0 {
+			return ""
 		}
 
-		return strings.Trim(value, " '\"")
+		key := strings.Trim(s[:eq], dsnSpaceCutset)
+		if key == "" {
+			return ""
+		}
+
+		s = strings.TrimLeft(s[eq+1:], dsnSpaceCutset)
+
+		value, rest, ok := scanDSNValue(s)
+		if !ok {
+			return ""
+		}
+
+		s = rest
+
+		if key == keyword {
+			found = value
+		}
 	}
 
-	return ""
+	return found
+}
+
+// scanDSNValue reads one value from the head of s and returns it unescaped,
+// with the remaining input already left-trimmed. ok is false exactly where pgx
+// errors: a trailing backslash, or an unterminated single quote.
+func scanDSNValue(s string) (value, rest string, ok bool) {
+	if len(s) == 0 {
+		return "", "", true
+	}
+
+	if s[0] != '\'' {
+		end := 0
+		for ; end < len(s); end++ {
+			if strings.IndexByte(dsnSpaceCutset, s[end]) >= 0 {
+				break
+			}
+
+			if s[end] == '\\' {
+				end++
+				if end == len(s) {
+					return "", "", false
+				}
+			}
+		}
+
+		return unescapeDSNValue(s[:end]), strings.TrimLeft(s[end:], dsnSpaceCutset), true
+	}
+
+	s = s[1:]
+
+	end := 0
+	for ; end < len(s); end++ {
+		if s[end] == '\'' {
+			break
+		}
+
+		if s[end] == '\\' {
+			end++
+		}
+	}
+
+	if end >= len(s) {
+		return "", "", false
+	}
+
+	return unescapeDSNValue(s[:end]), strings.TrimLeft(s[end+1:], dsnSpaceCutset), true
+}
+
+// unescapeDSNValue applies pgx's exact unescape: `\\` -> `\` then `\'` -> `'`.
+func unescapeDSNValue(v string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(v, `\\`, `\`), `\'`, `'`)
 }
 
 // dsnDatabaseName extracts the logical database name from a DSN, covering the
@@ -249,16 +349,7 @@ func dsnDatabaseName(dsn string) string {
 		return strings.Trim(strings.TrimPrefix(parsed.Path, "/"), " '\"")
 	}
 
-	for field := range strings.FieldsSeq(trimmed) {
-		key, value, ok := strings.Cut(field, "=")
-		if !ok || !strings.EqualFold(key, "dbname") {
-			continue
-		}
-
-		return strings.Trim(value, " '\"")
-	}
-
-	return ""
+	return dsnKeywordValue(trimmed, "dbname")
 }
 
 func enforceTLSPolicy(ctx context.Context, logger log.Logger, label, dsn string) error {
