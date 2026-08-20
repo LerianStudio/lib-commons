@@ -3,11 +3,13 @@ package idempotency
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	chttp "github.com/LerianStudio/lib-commons/v6/commons/constants"
@@ -21,9 +23,10 @@ import (
 )
 
 const (
-	keyStateProcessing = "processing"
-	keyStateComplete   = "complete"
-	retryAfterSeconds  = "1"
+	fingerprintScopeDomain = "lib-commons:idempotency:fingerprint-scope:v1\x00"
+	keyStateProcessing     = "processing"
+	keyStateComplete       = "complete"
+	retryAfterSeconds      = "1"
 )
 
 var (
@@ -44,14 +47,36 @@ var (
 // operation is a different request. The query string does NOT: clients append
 // cache-busting parameters on retry, and that must not read as reuse.
 func requestFingerprint(method, path string, body []byte) string {
-	h := sha256.New()
-	h.Write([]byte(method))
-	h.Write([]byte("\n"))
-	h.Write([]byte(path))
-	h.Write([]byte("\n"))
-	h.Write(body)
+	sum := sha256.Sum256(requestFingerprintInput(method, path, body))
 
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(sum[:])
+}
+
+func requestFingerprintWithScope(scope, method, path string, body []byte) string {
+	var scopeLength [8]byte
+	binary.BigEndian.PutUint64(scopeLength[:], uint64(len(scope)))
+
+	legacyInput := requestFingerprintInput(method, path, body)
+	input := make([]byte, 0, len(fingerprintScopeDomain)+len(scopeLength)+len(scope)+len(legacyInput))
+	input = append(input, fingerprintScopeDomain...)
+	input = append(input, scopeLength[:]...)
+	input = append(input, scope...)
+	input = append(input, legacyInput...)
+
+	sum := sha256.Sum256(input)
+
+	return hex.EncodeToString(sum[:])
+}
+
+func requestFingerprintInput(method, path string, body []byte) []byte {
+	input := make([]byte, 0, len(method)+len(path)+len(body)+2)
+	input = append(input, method...)
+	input = append(input, '\n')
+	input = append(input, path...)
+	input = append(input, '\n')
+	input = append(input, body...)
+
+	return input
 }
 
 // Option configures the idempotency middleware.
@@ -61,6 +86,13 @@ type Option func(*Middleware)
 // evaluated for every keyed mutating request, allowing one middleware instance
 // to follow hot-reloaded application policy.
 type TTLProvider func(c fiber.Ctx) (time.Duration, error)
+
+// FingerprintScopeProvider resolves an application-defined namespace for the
+// current request fingerprint. The scope changes fingerprint comparison only;
+// it never changes the storage key. A configured provider opts into scoped
+// fingerprinting even when it returns an empty string. Providers must be safe
+// for concurrent use.
+type FingerprintScopeProvider func(c fiber.Ctx) string
 
 // ClientErrorPolicy controls whether successful handler returns with a 4xx
 // status are replayed or release their owned idempotency record.
@@ -77,19 +109,20 @@ const (
 
 // Middleware provides at-most-once request semantics using an atomic [Store].
 type Middleware struct {
-	store             Store
-	logger            log.Logger
-	keyPrefix         string
-	keyTTL            time.Duration
-	maxKeyLength      int
-	maxBodyCache      int
-	redisTimeout      time.Duration
-	ttlProvider       TTLProvider
-	responseCodec     ResponseCodec
-	clientErrorPolicy ClientErrorPolicy
-	onRejected        func(c fiber.Ctx) error
-	onConflict        fiber.Handler
-	onKeyReuse        fiber.Handler
+	store                    Store
+	logger                   log.Logger
+	keyPrefix                string
+	keyTTL                   time.Duration
+	maxKeyLength             int
+	maxBodyCache             int
+	redisTimeout             time.Duration
+	ttlProvider              TTLProvider
+	fingerprintScopeProvider FingerprintScopeProvider
+	responseCodec            ResponseCodec
+	clientErrorPolicy        ClientErrorPolicy
+	onRejected               func(c fiber.Ctx) error
+	onConflict               fiber.Handler
+	onKeyReuse               fiber.Handler
 	// failClosed inverts the transient-Redis-error behavior. Default (false)
 	// fails open — requests proceed without idempotency coverage to preserve
 	// availability. When true, transient Redis errors abort with 503 so a
@@ -175,6 +208,18 @@ func WithTTLProvider(provider TTLProvider) Option {
 	return func(m *Middleware) {
 		if provider != nil {
 			m.ttlProvider = provider
+		}
+	}
+}
+
+// WithFingerprintScopeProvider namespaces request fingerprints with a scope
+// resolved for every keyed mutating request. The scope is domain-separated and
+// length-prefixed before hashing. A nil provider leaves the legacy fingerprint
+// bytes unchanged.
+func WithFingerprintScopeProvider(provider FingerprintScopeProvider) Option {
+	return func(m *Middleware) {
+		if provider != nil {
+			m.fingerprintScopeProvider = provider
 		}
 	}
 }
@@ -368,6 +413,14 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	defer cancel()
 
 	fingerprint := requestFingerprint(c.Method(), c.Path(), c.Body())
+	if m.fingerprintScopeProvider != nil {
+		fingerprint = requestFingerprintWithScope(
+			m.fingerprintScopeProvider(c),
+			c.Method(),
+			c.Path(),
+			c.Body(),
+		)
+	}
 
 	ttl, err := m.resolveTTL(c)
 	if err != nil {
@@ -423,21 +476,37 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 		return m.handleStoreAcquired(c, key, processing, record, ttl)
 	}
 
-	if err := json.Unmarshal(stored, &record); err != nil {
-		m.logger.Log(ctx, log.LevelWarn, "idempotency: failed to unmarshal stored record", log.Err(err))
+	// Decoded into a FRESH struct, never into the candidate record above.
+	// encoding/json leaves absent fields untouched, so unmarshalling over the
+	// candidate would let a stored object that omits "fingerprint" inherit this
+	// request's own fingerprint and sail through the mismatch gate, and one that
+	// omits "state" inherit "processing" and answer 409. Routing must observe
+	// only what the store actually holds.
+	var current storeRecord
+	if err := json.Unmarshal(stored, &current); err != nil {
+		legacy, isLegacy := decodeLegacyRecord(stored)
+		if !isLegacy {
+			m.logger.Log(ctx, log.LevelWarn, "idempotency: failed to unmarshal stored record", log.Err(err))
 
-		return m.onStoreError(c)
+			return m.onStoreError(c)
+		}
+
+		m.logger.Log(ctx, log.LevelWarn,
+			"idempotency: stored record predates the atomic record format, answering from it without replay",
+			log.String("record_state", legacy.State))
+
+		return m.respondLegacy(c, legacy, fingerprint)
 	}
 
-	if record.Fingerprint != fingerprint {
+	if current.Fingerprint != fingerprint {
 		return m.respondKeyReuse(c)
 	}
 
-	switch record.State {
+	switch current.State {
 	case keyStateProcessing:
 		return m.respondConflict(c)
 	case keyStateComplete:
-		return m.replay(c, record.Response)
+		return m.replay(c, current.Response)
 	default:
 		m.logger.Log(ctx, log.LevelWarn, "idempotency: store returned invalid record state")
 
@@ -608,6 +677,71 @@ func (m *Middleware) replay(c fiber.Ctx, encoded []byte) error {
 	c.Set("Content-Type", response.ContentType)
 
 	return c.Status(response.StatusCode).Send(response.Body)
+}
+
+// legacyStateSeparator divides the key state from the request fingerprint in
+// the plain-text record lib-commons v6.4.0 and earlier wrote under the primary
+// key: "processing:<hex>" / "complete:<hex>".
+//
+// DELETABLE — and the condition is nameable. Nothing writes this shape any
+// more: since v6.5.0 the primary key holds one atomic JSON record. Existing
+// legacy values expire with their own TTL, so this branch and everything it
+// reaches (decodeLegacyRecord, respondLegacy, and their tests) can be removed
+// once no deployment is running lib-commons v6.4.0 or earlier against a shared
+// store. Until then, removing it re-executes a legitimate retry's mutation
+// during the rolling deploy that crosses the format change.
+const legacyStateSeparator = ":"
+
+// decodeLegacyRecord recognises the v6.4.0 plain-text record and reports
+// whether stored actually is one.
+//
+// The detector is deliberately CLOSED: the value must split on the separator
+// AND its state part must equal one of the two known states exactly. Any other
+// undecodable value is left to the store-error path, unchanged. A permissive
+// detector would be a second version of the defect this branch fixes — unknown
+// bytes granting permission to answer a mutation without running it, or worse,
+// to run it a second time.
+//
+// The returned record carries no Owner and no Response: a legacy value stored
+// neither. The cached body lived in a separate "<key>:response" sidecar that
+// the [Store] interface exposes no way to read, which is why the complete case
+// reports "already processed" rather than replaying — see respondLegacy.
+func decodeLegacyRecord(stored []byte) (storeRecord, bool) {
+	state, fingerprint, found := strings.Cut(string(stored), legacyStateSeparator)
+	if !found || (state != keyStateProcessing && state != keyStateComplete) {
+		return storeRecord{}, false
+	}
+
+	return storeRecord{State: state, Fingerprint: fingerprint}, true
+}
+
+// respondLegacy answers a request whose key already holds a v6.4.0 record. The
+// record is an EXISTING record, never an absent one: falling through to the
+// handler would execute the mutation a second time.
+//
+// The fingerprint gate runs first, before the state routing, exactly as it does
+// for the JSON record and as v6.4.0 itself did. Answering a differing payload
+// with "already processed" would report success for an operation that never ran.
+//
+// A complete record cannot be replayed exactly: v6.4.0 kept the response body in
+// a separate sidecar key that [Store] cannot read. This is v6.4.0's own answer
+// for its own complete-but-uncached case, reused rather than reinvented.
+func (m *Middleware) respondLegacy(c fiber.Ctx, legacy storeRecord, fingerprint string) error {
+	if legacy.Fingerprint != fingerprint {
+		return m.respondKeyReuse(c)
+	}
+
+	if legacy.State == keyStateProcessing {
+		return m.respondConflict(c)
+	}
+
+	c.Set(chttp.IdempotencyReplayed, "true")
+
+	return libHTTP.Respond(c, http.StatusOK, libHTTP.ErrorResponse{
+		Code:    http.StatusOK,
+		Title:   "IDEMPOTENT",
+		Message: "request already processed",
+	})
 }
 
 func (m *Middleware) respondConflict(c fiber.Ctx) error {

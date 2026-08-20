@@ -29,7 +29,10 @@
 // An idempotency key alone does not identify a request — it identifies the
 // caller's claim that two requests are the same one. Every processing and
 // completed record therefore carries a SHA-256 fingerprint of method, path, and
-// raw body.
+// raw body. [WithFingerprintScopeProvider] can opt into an additional
+// application-defined scope without changing the storage key. Scoped
+// fingerprints use a versioned domain plus the scope's byte length and bytes;
+// even an empty scope remains distinct from the legacy unscoped fingerprint.
 //
 // Every duplicate compares its own fingerprint against the stored one before any
 // replay path is reachable. A match is a genuine retry and replays. A MISMATCH
@@ -95,9 +98,21 @@
 //   - Duplicate key still in "processing" state (in-flight): request is passed
 //     to [WithConflictHandler], or receives 409 Conflict with code
 //     "IDEMPOTENCY_CONFLICT" and Retry-After: 1 when no custom handler is configured.
-//   - Duplicate key in "complete" state without an exact replay response, or a
-//     response that [ResponseCodec] cannot decode: 503 "IDEMPOTENCY_UNAVAILABLE"
-//     is returned. The middleware never fabricates a generic success response.
+//   - Duplicate key holding a canonical JSON record in "complete" state without
+//     an exact replay response, or a response that [ResponseCodec] cannot decode:
+//     503 "IDEMPOTENCY_UNAVAILABLE" is returned. For canonical records the
+//     middleware never fabricates a generic success response.
+//   - Exception to the rule above: a duplicate key holding the plain-text record
+//     written by lib-commons v6.4.0
+//     and earlier ("processing:<fingerprint>" / "complete:<fingerprint>"): treated
+//     as an EXISTING record, never an absent one, so a legitimate retry is never
+//     executed a second time during the rolling deploy that crosses the format
+//     change. The same fingerprint gate applies; a matching "processing" record
+//     returns 409, and a matching "complete" record returns 200 "IDEMPOTENT"
+//     because v6.4.0 kept the response body in a sidecar key that [Store] cannot
+//     read. Any other undecodable value keeps the store-error path above. This
+//     branch is bounded and removable: no new legacy records are written and
+//     existing ones expire with their TTL.
 //   - Handler success: response status, headers, content type, and body are
 //     compare-safely completed only by the acquisition owner. Capture, encoding,
 //     persistence, or stale-owner failures return 503 and retain processing
@@ -109,10 +124,13 @@
 //     by its owner, allowing a retry without deleting a replacement lock.
 //
 // [WithTTLProvider] resolves retention for each keyed mutation, allowing runtime
-// policy changes without rebuilding middleware. [WithResponseCodec] transforms
-// serialized replay responses before storage; use authenticated encryption for
-// sensitive bodies. [WithMaxBodyCache] bounds raw response bodies, and encoded
-// output is additionally bounded to twice that value.
+// policy changes without rebuilding middleware. [WithFingerprintScopeProvider]
+// resolves a concurrency-safe application namespace for fingerprint comparison;
+// callers that omit it retain byte-identical legacy fingerprints and Redis keys.
+// [WithResponseCodec] transforms serialized replay responses before storage; use
+// authenticated encryption for sensitive bodies. [WithMaxBodyCache] bounds raw
+// response bodies, and encoded output is additionally bounded to twice that
+// value.
 //
 // Every rejection branch has a callback seam so consumers can write their own
 // error format, including RFC 9457 problem details: [WithRejectedHandler] for an
