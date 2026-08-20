@@ -250,6 +250,9 @@ func TestDSNDatabaseName(t *testing.T) {
 		// there is nothing to label.
 		{"unterminated quote is malformed", "host=h dbname='ledger", ""},
 		{"stray token is malformed", "host dbname=ledger", ""},
+		{"missing equals entirely", "hostonly", ""},
+		{"empty key is malformed", "=ledger dbname=ledger", ""},
+		{"trailing backslash is malformed", `host=h dbname=ledger\`, ""},
 		// pgx keeps the LAST duplicate setting; the label must name the
 		// database pgx actually connects to.
 		{"repeated dbname last wins", "host=h dbname=old dbname=new port=5432", "new"},

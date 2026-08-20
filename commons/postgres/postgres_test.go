@@ -1793,6 +1793,8 @@ func TestDSNRequiresTLS(t *testing.T) {
 		// them may satisfy the policy.
 		{name: "keyword unterminated quote is malformed", dsn: "host=h sslmode='require", want: false},
 		{name: "keyword trailing backslash is malformed", dsn: `host=h sslmode=require\`, want: false},
+		{name: "keyword missing equals entirely", dsn: "hostonly", want: false},
+		{name: "keyword empty key is malformed", dsn: "=require sslmode=require", want: false},
 	}
 
 	for _, tt := range tests {
