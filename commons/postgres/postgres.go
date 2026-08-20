@@ -130,8 +130,9 @@ type Config struct {
 	// DatabaseName is the logical database this client talks to, emitted as the
 	// db.namespace metric label. Without it, pools from different databases (or
 	// different tenants) share one label set and their pool gauges overwrite each
-	// other, since those are asynchronous instruments. Optional: empty omits the
-	// label and keeps the previous behavior.
+	// other, since those are asynchronous instruments. Optional: when empty, the
+	// label is read off each pool's own DSN instead, and it is omitted only when
+	// the DSN carries no database name either.
 	DatabaseName       string
 	Logger             log.Logger
 	MetricsFactory     *metrics.MetricsFactory
@@ -216,16 +217,94 @@ func dsnSSLMode(dsn string) string {
 		return strings.Trim(parsed.Query().Get("sslmode"), " '\"")
 	}
 
-	for field := range strings.FieldsSeq(trimmed) {
-		key, value, ok := strings.Cut(field, "=")
-		if !ok || !strings.EqualFold(key, "sslmode") {
+	return dsnKeywordValue(trimmed, "sslmode")
+}
+
+// dsnKeywordValue reads one keyword out of a libpq keyword/value DSN.
+//
+// Splitting on whitespace cannot read these DSNs: libpq allows spaces around
+// "=", quoted values that contain spaces, and backslash escapes. A whitespace
+// split truncates dbname='tenant alpha' to "tenant", and worse, it can pick a
+// keyword out of the MIDDLE of another value -- password='p sslmode=require'
+// then decides the TLS policy, and password='p dbname=x' decides a metric
+// label. Scanning is the only correct read.
+// https://www.postgresql.org/docs/current/libpq-connect.html
+//
+// Deliberate superset of libpq: double quotes are honoured like single quotes,
+// because tooling emits dbname="x" and libpq would read the quotes as part of
+// the name.
+func dsnKeywordValue(dsn, keyword string) string {
+	for i := 0; i < len(dsn); {
+		for i < len(dsn) && isDSNSpace(dsn[i]) {
+			i++
+		}
+
+		start := i
+		for i < len(dsn) && dsn[i] != '=' && !isDSNSpace(dsn[i]) {
+			i++
+		}
+
+		key := dsn[start:i]
+
+		for i < len(dsn) && isDSNSpace(dsn[i]) {
+			i++
+		}
+
+		// A token with no "=" is malformed; skip it rather than reading the
+		// next pair's value as its own.
+		if i >= len(dsn) || dsn[i] != '=' {
 			continue
 		}
 
-		return strings.Trim(value, " '\"")
+		i++
+
+		for i < len(dsn) && isDSNSpace(dsn[i]) {
+			i++
+		}
+
+		value, next := scanDSNValue(dsn, i)
+		i = next
+
+		if strings.EqualFold(key, keyword) {
+			return value
+		}
 	}
 
 	return ""
+}
+
+// scanDSNValue reads the value starting at i and returns it unescaped, plus the
+// offset just past it. An unterminated quote yields what was read so far --
+// best-effort, since a caller of this parser only ever labels or advises.
+func scanDSNValue(dsn string, i int) (string, int) {
+	var value strings.Builder
+
+	quote := byte(0)
+	if i < len(dsn) && (dsn[i] == '\'' || dsn[i] == '"') {
+		quote = dsn[i]
+		i++
+	}
+
+	for i < len(dsn) {
+		switch {
+		case dsn[i] == '\\' && i+1 < len(dsn):
+			value.WriteByte(dsn[i+1])
+			i += 2
+		case quote != 0 && dsn[i] == quote:
+			return value.String(), i + 1
+		case quote == 0 && isDSNSpace(dsn[i]):
+			return value.String(), i
+		default:
+			value.WriteByte(dsn[i])
+			i++
+		}
+	}
+
+	return value.String(), i
+}
+
+func isDSNSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
 }
 
 // dsnDatabaseName extracts the logical database name from a DSN, covering the
@@ -249,16 +328,7 @@ func dsnDatabaseName(dsn string) string {
 		return strings.Trim(strings.TrimPrefix(parsed.Path, "/"), " '\"")
 	}
 
-	for field := range strings.FieldsSeq(trimmed) {
-		key, value, ok := strings.Cut(field, "=")
-		if !ok || !strings.EqualFold(key, "dbname") {
-			continue
-		}
-
-		return strings.Trim(value, " '\"")
-	}
-
-	return ""
+	return dsnKeywordValue(trimmed, "dbname")
 }
 
 func enforceTLSPolicy(ctx context.Context, logger log.Logger, label, dsn string) error {

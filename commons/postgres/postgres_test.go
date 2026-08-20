@@ -1760,6 +1760,17 @@ func TestDSNRequiresTLS(t *testing.T) {
 		{name: "keyword require", dsn: "host=localhost dbname=ledger sslmode=require", want: true},
 		{name: "keyword prefer", dsn: "host=localhost dbname=ledger sslmode=prefer", want: false},
 		{name: "keyword missing mode", dsn: "host=localhost dbname=ledger", want: false},
+		{name: "keyword quoted require", dsn: "host=localhost sslmode='require'", want: true},
+		// libpq accepts spaces around "=". Reading this DSN as "no sslmode"
+		// refuses a connection the operator did configure for TLS.
+		{name: "keyword spaced equals require", dsn: "host=localhost sslmode = require", want: true},
+		// Fail-open guard: another value that happens to contain "sslmode="
+		// must never decide the TLS policy. This DSN says disable.
+		{
+			name: "keyword sslmode inside a quoted value",
+			dsn:  "host=h password='p sslmode=require' sslmode=disable",
+			want: false,
+		},
 	}
 
 	for _, tt := range tests {
