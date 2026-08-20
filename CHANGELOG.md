@@ -1,5 +1,15 @@
 # Lib-commons Changelog
 
+## [6.8.1](https://github.com/LerianStudio/lib-commons/releases/tag/v6.8.1)
+
+Fixes:
+- Refused malformed DSNs similar to pgx and ensured proper client-backed closure. (@fredcamaral)
+- Parsed quoted keyword DSNs for `sslmode` and `db.namespace`. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v6.8.0...v6.8.1)
+
+---
+
 ## [6.8.0](https://github.com/LerianStudio/lib-commons/releases/tag/v6.8.0)
 
 Features:
