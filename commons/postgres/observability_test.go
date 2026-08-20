@@ -238,7 +238,13 @@ func TestDSNDatabaseName(t *testing.T) {
 		{"quoted with spaces", "host=h dbname='tenant alpha' port=5432", "tenant alpha"},
 		{"quoted with escaped quote", `host=h dbname='tenant\'s db' port=5432`, "tenant's db"},
 		{"quoted with escaped backslash", `host=h dbname='tenant\\db' port=5432`, `tenant\db`},
-		{"double quoted", `host=h dbname="ledger" port=5432`, "ledger"},
+		// pgx recognizes only single quotes: the double quotes are part of the
+		// value, and the label must name what pgx actually connects to.
+		{"double quoted kept verbatim like pgx", `host=h dbname="ledger" port=5432`, `"ledger"`},
+		// pgx unescapes only \\ and \' — any other backslash stays.
+		{"unquoted backslash kept like pgx", `host=h dbname=tenant\q port=5432`, `tenant\q`},
+		// Case-sensitive keywords: pgx does not read DBNAME.
+		{"uppercase DBNAME ignored like pgx", "host=h DBNAME=ledger port=5432", ""},
 		{"spaces around equals", "host = h dbname = ledger port=5432", "ledger"},
 		{"unterminated quote", "host=h dbname='ledger", "ledger"},
 		// pgx keeps the LAST duplicate setting; the label must name the

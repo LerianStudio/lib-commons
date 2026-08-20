@@ -270,7 +270,11 @@ func dsnKeywordValue(dsn, keyword string) string {
 		value, next := scanDSNValue(dsn, i)
 		i = next
 
-		if strings.EqualFold(key, keyword) {
+		// pgx keyword matching is case-sensitive (canonicalConnStringKey only
+		// maps aliases, it never folds case): pgx ignores `SSLMODE=require`
+		// and falls back to sslmode=prefer, so reading it as "require" here
+		// would pass the TLS policy on a connection that can go plaintext.
+		if key == keyword {
 			found = value
 		}
 	}
@@ -282,30 +286,36 @@ func dsnKeywordValue(dsn, keyword string) string {
 // offset just past it. An unterminated quote yields what was read so far --
 // best-effort, since a caller of this parser only ever labels or advises.
 func scanDSNValue(dsn string, i int) (string, int) {
-	var value strings.Builder
-
-	quote := byte(0)
-	if i < len(dsn) && (dsn[i] == '\'' || dsn[i] == '"') {
-		quote = dsn[i]
+	// Mirrors pgx parseKeywordValueSettings (pgconn/config.go, v5.10.0): only a
+	// single quote delimits a value (a double quote is an ordinary character),
+	// a backslash keeps the next byte in the token, and unescaping rewrites
+	// exactly `\\` and `\'` — any other backslash sequence stays verbatim.
+	quoted := false
+	if i < len(dsn) && dsn[i] == '\'' {
+		quoted = true
 		i++
 	}
 
+	start := i
 	for i < len(dsn) {
 		switch {
 		case dsn[i] == '\\' && i+1 < len(dsn):
-			value.WriteByte(dsn[i+1])
 			i += 2
-		case quote != 0 && dsn[i] == quote:
-			return value.String(), i + 1
-		case quote == 0 && isDSNSpace(dsn[i]):
-			return value.String(), i
+		case quoted && dsn[i] == '\'':
+			return unescapeDSNValue(dsn[start:i]), i + 1
+		case !quoted && isDSNSpace(dsn[i]):
+			return unescapeDSNValue(dsn[start:i]), i
 		default:
-			value.WriteByte(dsn[i])
 			i++
 		}
 	}
 
-	return value.String(), i
+	return unescapeDSNValue(dsn[start:]), i
+}
+
+// unescapeDSNValue applies pgx's exact unescape: `\\` -> `\` then `\'` -> `'`.
+func unescapeDSNValue(v string) string {
+	return strings.ReplaceAll(strings.ReplaceAll(v, `\\`, `\`), `\'`, `'`)
 }
 
 func isDSNSpace(c byte) bool {

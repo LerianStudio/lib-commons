@@ -1778,6 +1778,13 @@ func TestDSNRequiresTLS(t *testing.T) {
 		// pgx also splits pairs on \v and \f.
 		{name: "keyword vertical tab separator", dsn: "host=h\vsslmode=require", want: true},
 		{name: "keyword form feed separator", dsn: "host=h\fsslmode=require", want: true},
+		// pgx keyword matching is case-sensitive: it ignores SSLMODE and falls
+		// back to sslmode=prefer (plaintext fallback allowed), so the policy
+		// must not read it as "require".
+		{name: "keyword uppercase SSLMODE ignored like pgx", dsn: "host=h SSLMODE=require", want: false},
+		// pgx treats a double quote as an ordinary character: the value is
+		// literally `"require"`, which pgx rejects — never a TLS guarantee.
+		{name: "keyword double quoted require is not require", dsn: `host=h sslmode="require"`, want: false},
 	}
 
 	for _, tt := range tests {
