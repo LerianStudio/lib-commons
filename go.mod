@@ -6,7 +6,7 @@ require (
 	cloud.google.com/go/iam v1.12.0
 	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/LerianStudio/lib-observability/v2 v2.1.0
-	github.com/LerianStudio/lib-observability/v3 v3.1.0-beta.2
+	github.com/LerianStudio/lib-observability/v3 v3.1.0
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/aws/aws-sdk-go-v2 v1.43.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.106.0
