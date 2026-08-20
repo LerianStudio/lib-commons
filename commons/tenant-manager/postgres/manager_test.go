@@ -2592,16 +2592,27 @@ func TestPostgresConnectionClose(t *testing.T) {
 
 	t.Run("closes the client and leaves the resolver alone", func(t *testing.T) {
 		resolver := &pingableDB{}
+		spy := &clientCloseSpy{}
 
 		var db dbresolver.DB = resolver
-		conn := &PostgresConnection{ConnectionDB: &db, client: unconnectedPGClient(t)}
+		conn := &PostgresConnection{ConnectionDB: &db, client: spy}
 
 		require.NoError(t, conn.Close())
+		assert.Equal(t, 1, spy.closed, "Close must go THROUGH the client — it owns the pools and their telemetry registrations")
 		assert.False(t, resolver.closed,
 			"the client owns the pools AND their telemetry registrations; going around it to the resolver leaves those registrations observing a dead pool")
 	})
 
 	t.Run("is idempotent when backed by a client", func(t *testing.T) {
+		spy := &clientCloseSpy{}
+		conn := &PostgresConnection{client: spy}
+
+		require.NoError(t, conn.Close())
+		require.NoError(t, conn.Close())
+		assert.Equal(t, 2, spy.closed, "Close passes through every time; repeat-tolerance is the client's own contract")
+	})
+
+	t.Run("the real client tolerates Close without Connect", func(t *testing.T) {
 		conn := &PostgresConnection{client: unconnectedPGClient(t)}
 
 		require.NoError(t, conn.Close())
@@ -2617,6 +2628,17 @@ func TestPostgresConnectionClose(t *testing.T) {
 	t.Run("tolerates an unconnected connection", func(t *testing.T) {
 		assert.NoError(t, (&PostgresConnection{}).Close())
 	})
+}
+
+// clientCloseSpy witnesses that PostgresConnection.Close reaches its client —
+// the unconnected real client has nothing observable, so a test using it would
+// pass even if Close never called it.
+type clientCloseSpy struct{ closed int }
+
+func (s *clientCloseSpy) Close() error {
+	s.closed++
+
+	return nil
 }
 
 // testDSN is never dialed: sql.Open is lazy and Close never reaches the server.

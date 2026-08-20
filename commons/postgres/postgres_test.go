@@ -1785,6 +1785,14 @@ func TestDSNRequiresTLS(t *testing.T) {
 		// pgx treats a double quote as an ordinary character: the value is
 		// literally `"require"`, which pgx rejects — never a TLS guarantee.
 		{name: "keyword double quoted require is not require", dsn: `host=h sslmode="require"`, want: false},
+		// pgx reads "host sslmode" as ONE key here and leaves sslmode at the
+		// prefer default; a parser that skips the stray token and reads
+		// "require" approves TLS pgx never guarantees.
+		{name: "keyword stray token is malformed", dsn: "host sslmode=require", want: false},
+		// pgx refuses these outright (no connection at all), so no reading of
+		// them may satisfy the policy.
+		{name: "keyword unterminated quote is malformed", dsn: "host=h sslmode='require", want: false},
+		{name: "keyword trailing backslash is malformed", dsn: `host=h sslmode=require\`, want: false},
 	}
 
 	for _, tt := range tests {

@@ -140,7 +140,11 @@ type PostgresConnection struct {
 	Logger                  libLog.Logger  `json:"-"`
 	ConnectionDB            *dbresolver.DB `json:"-"`
 
-	client *libPostgres.Client
+	// client is the lib-commons postgres client this connection owns. Close()
+	// is the only capability the connection uses, and the interface keeps the
+	// close path observable in tests. Assigned only from Connect, which never
+	// stores a nil — a typed-nil here would defeat the nil check in Close.
+	client interface{ Close() error }
 }
 
 func (c *PostgresConnection) Connect(ctx context.Context) error {
