@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/testutil"
@@ -2589,6 +2590,24 @@ func TestPostgresConnectionClose(t *testing.T) {
 		assert.NoError(t, conn.Close())
 	})
 
+	t.Run("closes the client and leaves the resolver alone", func(t *testing.T) {
+		resolver := &pingableDB{}
+
+		var db dbresolver.DB = resolver
+		conn := &PostgresConnection{ConnectionDB: &db, client: unconnectedPGClient(t)}
+
+		require.NoError(t, conn.Close())
+		assert.False(t, resolver.closed,
+			"the client owns the pools AND their telemetry registrations; going around it to the resolver leaves those registrations observing a dead pool")
+	})
+
+	t.Run("is idempotent when backed by a client", func(t *testing.T) {
+		conn := &PostgresConnection{client: unconnectedPGClient(t)}
+
+		require.NoError(t, conn.Close())
+		assert.NoError(t, conn.Close())
+	})
+
 	t.Run("is nil safe", func(t *testing.T) {
 		var conn *PostgresConnection
 
@@ -2598,4 +2617,43 @@ func TestPostgresConnectionClose(t *testing.T) {
 	t.Run("tolerates an unconnected connection", func(t *testing.T) {
 		assert.NoError(t, (&PostgresConnection{}).Close())
 	})
+}
+
+// testDSN is never dialed: sql.Open is lazy and Close never reaches the server.
+// sslmode=require keeps libPostgres.New from refusing it under the TLS policy.
+const testDSN = "postgres://user:pass@localhost:5432/testdb?sslmode=require"
+
+// unconnectedPGClient builds the lib-commons postgres client that a connected
+// PostgresConnection owns. Connect needs a live server; Close, which is what
+// these tests exercise, does not.
+func unconnectedPGClient(t *testing.T) *libPostgres.Client {
+	t.Helper()
+
+	client, err := libPostgres.New(libPostgres.Config{
+		PrimaryDSN: testDSN,
+		ReplicaDSN: testDSN,
+	})
+	require.NoError(t, err)
+
+	return client
+}
+
+// TestDBResolverToleratesRepeatedClose pins the dependency contract behind the
+// idempotence of PostgresConnection.Close on its resolver fallback. The
+// pingableDB fake cannot prove it — its Close always returns nil — so this uses
+// the real dbresolver over lazily opened pools.
+func TestDBResolverToleratesRepeatedClose(t *testing.T) {
+	primary, err := sql.Open("pgx", testDSN)
+	require.NoError(t, err)
+
+	replica, err := sql.Open("pgx", testDSN)
+	require.NoError(t, err)
+
+	resolver := dbresolver.New(
+		dbresolver.WithPrimaryDBs(primary),
+		dbresolver.WithReplicaDBs(replica),
+	)
+
+	require.NoError(t, resolver.Close())
+	assert.NoError(t, resolver.Close(), "dbresolver must tolerate a repeated Close")
 }
