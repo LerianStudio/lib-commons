@@ -13,8 +13,9 @@ import (
 	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
 	v3messagingobs "github.com/LerianStudio/lib-observability/v3/messagingobs"
-	v3tracing "github.com/LerianStudio/lib-observability/v3/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // recoveryAttemptResult indicates the outcome of a single recovery attempt.
@@ -64,6 +65,10 @@ const (
 	// messaging.client.operation.duration must stay bounded, so nothing derived
 	// from the message may reach it.
 	produceOperationName = "publish"
+
+	// producerLibraryName is the instrumentation scope reported on the producer
+	// span and duration metric, so the series is attributable to this package.
+	producerLibraryName = "lib-commons/rabbitmq"
 )
 
 // HealthState represents the current connection health of a ConfirmablePublisher.
@@ -176,45 +181,35 @@ func WithLogger(logger libLog.Logger) ConfirmablePublisherOption {
 	}
 }
 
-// WithTelemetry enables producer-side OpenTelemetry instrumentation for this
-// publisher: every publish gets a PRODUCER span, the W3C trace context injected
-// into the outgoing message headers, and a messaging.client.operation.duration
-// observation (lib-observability docs/metrics-contract.md). Wiring it here is
-// the point: a service gets the same series, with the same names, labels and
-// buckets, by bumping lib-commons and passing its Telemetry.
+// WithTelemetryProviders binds explicit OpenTelemetry providers to this
+// publisher's producer instrumentation, overriding the global providers used by
+// default.
 //
-// # Why this option takes a lib-observability v3 Telemetry, and why it is optional
+// It is NOT required. The publisher is instrumented unconditionally against the
+// OTel globals, so a service that installed its providers at bootstrap
+// (lib-observability Telemetry.ApplyGlobals) starts emitting the producer span,
+// the trace-context headers and messaging.client.operation.duration by bumping
+// lib-commons alone, with no change here. This option exists for the service
+// that deliberately keeps its providers off the globals.
 //
-// messagingobs is the only lib-observability helper that takes a
-// lib-observability type (*v3/tracing.Telemetry) instead of plain OpenTelemetry
-// core interfaces, so this option cannot be expressed against otel primitives.
-// lib-commons still imports lib-observability v2 elsewhere (see libLog above),
-// and today's consumers build their Telemetry from v2. A *v2 Telemetry and a
-// *v3 Telemetry are distinct, non-convertible types, and there is deliberately
-// no bridge between them here: constructing a v3 Telemetry out of v2 parts
-// would fabricate providers the service never installed.
+// The parameters are the OpenTelemetry core interfaces, not lib-observability
+// types, so a consumer on either lib-observability major can pass its own
+// providers. Nil values are ignored and leave the global default in place.
 //
-// The accepted consequence, which this option encodes rather than solves:
-//
-//   - the option is OPTIONAL. Omitted (or given nil), the publish path behaves
-//     exactly as before — no telemetry, no headers touched, no error;
-//   - a consumer still on lib-observability v2 simply cannot supply it yet and
-//     therefore gets nothing, which is the pre-existing behavior;
-//   - a consumer on lib-observability v3 passes its Telemetry once here and
-//     gets the full producer telemetry.
-//
-// The instrument is built once, here at construction (messagingobs.NewPublisher
-// creates the duration histogram eagerly), and the resulting producer is never
-// reassigned afterwards — not even by Reconnect, since it is bound to the
-// Telemetry and not to the AMQP channel. That immutability is what allows
-// PublishAndWaitConfirm to read it without holding a lock.
-func WithTelemetry(tl *v3tracing.Telemetry) ConfirmablePublisherOption {
+// The instrument is built once, here at construction, and never reassigned
+// afterwards — not even by Reconnect, since it binds to the providers and not to
+// the AMQP channel. That immutability is what allows PublishAndWaitConfirm to
+// read it without holding a lock.
+func WithTelemetryProviders(mp metric.MeterProvider, tp trace.TracerProvider) ConfirmablePublisherOption {
 	return func(pub *ConfirmablePublisher) {
-		if tl == nil {
+		if mp == nil && tp == nil {
 			return
 		}
 
-		pub.producer = v3messagingobs.NewPublisher(tl)
+		pub.producer = newProducerInstrument(
+			v3messagingobs.WithMeterProvider(mp),
+			v3messagingobs.WithTracerProvider(tp),
+		)
 	}
 }
 
@@ -342,6 +337,7 @@ func NewConfirmablePublisherFromChannel(
 		logger:         libLog.NewNop(),
 		confirmTimeout: DefaultConfirmTimeout,
 		health:         HealthStateConnected,
+		producer:       newProducerInstrument(),
 	}
 
 	for _, opt := range opts {
@@ -687,13 +683,14 @@ func (pub *ConfirmablePublisher) PublishAndWaitConfirm(
 // outgoing message with the trace context, returning the span-bearing context
 // and the FinishFunc that closes the operation.
 //
-// Without a telemetry-backed producer (the default — see WithTelemetry) this is
-// a no-op: the original context is handed back, msg is left untouched, and the
-// returned FinishFunc does nothing, so the publish path stays exactly what it
-// was before this instrumentation existed.
+// The producer is always present, bound to the OTel globals unless
+// WithTelemetryProviders overrode them. Until the service installs its
+// providers those globals are no-op implementations: no span is recorded, the
+// injected header map comes back empty and msg is therefore left untouched, so
+// the publish path stays what it was before this instrumentation existed.
 //
-// Reading pub.producer without a lock is safe: it is written once, while the
-// options are applied in the constructor, and never reassigned.
+// Reading pub.producer without a lock is safe: it is written once, in the
+// constructor and while the options are applied, and never reassigned.
 //
 // Cardinality guardrail: the destination template is the EXCHANGE, which is a
 // bounded set fixed by the service's topology. The routing key is unbounded
@@ -705,10 +702,6 @@ func (pub *ConfirmablePublisher) startProduce(
 	exchange, routingKey string,
 	msg *amqp.Publishing,
 ) (context.Context, v3messagingobs.FinishFunc) {
-	if pub.producer == nil {
-		return ctx, noopProduceFinish
-	}
-
 	ctx, headers, finish := pub.producer.Produce(ctx, v3messagingobs.ProduceParams{
 		DestinationTemplate: exchange,
 		OperationName:       produceOperationName,
@@ -716,16 +709,22 @@ func (pub *ConfirmablePublisher) startProduce(
 		MessageID:           msg.MessageId,
 	})
 
-	msg.Headers = mergeTraceHeaders(msg.Headers, headers)
+	// Leave the caller's map alone when the propagator produced nothing, so the
+	// uninstrumented path allocates no table.
+	if len(headers) > 0 {
+		msg.Headers = mergeTraceHeaders(msg.Headers, headers)
+	}
 
 	return ctx, finish
 }
 
-// noopProduceFinish is the FinishFunc handed back when no telemetry is
-// configured. A shared, capture-free func value keeps the uninstrumented path
-// allocation-free.
-func noopProduceFinish(error) {
-	// Intentionally empty: nothing to record without telemetry.
+// newProducerInstrument builds the messagingobs producer for this package's
+// instrumentation scope. Options resolve over the OTel globals, which is what
+// makes the instrumentation arrive on a lib-commons bump alone.
+func newProducerInstrument(opts ...v3messagingobs.Option) *v3messagingobs.Publisher {
+	return v3messagingobs.NewPublisherWithOptions(
+		append([]v3messagingobs.Option{v3messagingobs.WithLibraryName(producerLibraryName)}, opts...)...,
+	)
 }
 
 // mergeTraceHeaders returns the publishing headers carrying the injected trace

@@ -14,8 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	libLog "github.com/LerianStudio/lib-observability/v2/log"
-	v3metrics "github.com/LerianStudio/lib-observability/v3/metrics"
-	v3tracing "github.com/LerianStudio/lib-observability/v3/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -854,7 +852,7 @@ func TestConfirmablePublisher_NilReceiverGuards(t *testing.T) {
 	require.Equal(t, HealthStateDisconnected, publisher.HealthState())
 }
 
-// --- producer instrumentation (WithTelemetry) --------------------------------
+// --- producer instrumentation ------------------------------------------------
 
 const (
 	// telemetryLibraryName is the instrumentation scope of the test telemetry.
@@ -872,13 +870,13 @@ const (
 	telemetryRoutingKey = "tenant-42.account.7f3a9c.created"
 )
 
-// telemetryForTest builds a v3 Telemetry whose metrics and spans are collectable
-// in-process.
+// telemetryForTest builds OpenTelemetry providers whose metrics and spans are
+// collectable in-process, returning the option that binds them to a publisher.
 //
 // WARNING: it installs the global text-map propagator (header injection funnels
 // through it, and OTel leaves it a no-op until a service installs one at
 // bootstrap), so tests using it must NOT call t.Parallel().
-func telemetryForTest(t *testing.T) (*v3tracing.Telemetry, *sdkmetric.ManualReader, *tracetest.InMemoryExporter) {
+func telemetryForTest(t *testing.T) (ConfirmablePublisherOption, *sdkmetric.ManualReader, *tracetest.InMemoryExporter) {
 	t.Helper()
 
 	reader := sdkmetric.NewManualReader()
@@ -896,14 +894,39 @@ func telemetryForTest(t *testing.T) (*v3tracing.Telemetry, *sdkmetric.ManualRead
 		_ = tracerProvider.Shutdown(context.Background())
 	})
 
-	telemetry := &v3tracing.Telemetry{
-		TelemetryConfig: v3tracing.TelemetryConfig{LibraryName: telemetryLibraryName},
-		TracerProvider:  tracerProvider,
-		MeterProvider:   meterProvider,
-		MetricsFactory:  v3metrics.NewNopFactory(),
-	}
+	return WithTelemetryProviders(meterProvider, tracerProvider), reader, spans
+}
 
-	return telemetry, reader, spans
+// globalTelemetryForTest installs the collectable providers as the OTel globals,
+// exactly as a service does at bootstrap with Telemetry.ApplyGlobals, and
+// restores the previous globals afterwards. Tests using it must NOT call
+// t.Parallel().
+func globalTelemetryForTest(t *testing.T) (*sdkmetric.ManualReader, *tracetest.InMemoryExporter) {
+	t.Helper()
+
+	reader := sdkmetric.NewManualReader()
+	meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+	spans := tracetest.NewInMemoryExporter()
+	tracerProvider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(spans))
+
+	previousPropagator := otel.GetTextMapPropagator()
+	previousMeterProvider := otel.GetMeterProvider()
+	previousTracerProvider := otel.GetTracerProvider()
+
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	otel.SetMeterProvider(meterProvider)
+	otel.SetTracerProvider(tracerProvider)
+
+	t.Cleanup(func() {
+		otel.SetTextMapPropagator(previousPropagator)
+		otel.SetMeterProvider(previousMeterProvider)
+		otel.SetTracerProvider(previousTracerProvider)
+		_ = meterProvider.Shutdown(context.Background())
+		_ = tracerProvider.Shutdown(context.Background())
+	})
+
+	return reader, spans
 }
 
 // produceDataPoints returns every data point currently collected for the
@@ -965,10 +988,13 @@ func confirmNextPublish(t *testing.T, ch *mockConfirmableChannel) {
 	}()
 }
 
-func TestWithTelemetry_NilTelemetryLeavesPublisherUninstrumented(t *testing.T) {
+// TestWithTelemetryProviders_NilProvidersKeepTheGlobalDefault verifies the
+// option never downgrades the publisher: passing nothing usable leaves the
+// global-backed instrument that the constructor already installed.
+func TestWithTelemetryProviders_NilProvidersKeepTheGlobalDefault(t *testing.T) {
 	t.Parallel()
 
-	publisher, err := NewConfirmablePublisherFromChannel(newMockChannel(), WithTelemetry(nil))
+	publisher, err := NewConfirmablePublisherFromChannel(newMockChannel(), WithTelemetryProviders(nil, nil))
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		if err := publisher.Close(); err != nil {
@@ -976,15 +1002,20 @@ func TestWithTelemetry_NilTelemetryLeavesPublisherUninstrumented(t *testing.T) {
 		}
 	})
 
-	assert.Nil(t, publisher.producer)
+	assert.NotNil(t, publisher.producer)
 }
 
 // TestConfirmablePublisher_PublishWithoutTelemetryDoesNotTouchTheMessage pins
-// the degradation contract: a publisher built without WithTelemetry (every
-// consumer still on lib-observability v2) publishes exactly what it did before
-// the instrumentation existed.
+// the degradation contract: with no providers installed anywhere, the publisher
+// is still instrumented but every OTel global is a no-op, so it publishes
+// exactly what it did before the instrumentation existed.
+//
+// Not parallel: it asserts on the state of the global propagator.
 func TestConfirmablePublisher_PublishWithoutTelemetryDoesNotTouchTheMessage(t *testing.T) {
-	t.Parallel()
+	previousPropagator := otel.GetTextMapPropagator()
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
+
+	t.Cleanup(func() { otel.SetTextMapPropagator(previousPropagator) })
 
 	ch := newMockChannel()
 	publisher, err := NewConfirmablePublisherFromChannel(ch)
@@ -995,7 +1026,7 @@ func TestConfirmablePublisher_PublishWithoutTelemetryDoesNotTouchTheMessage(t *t
 		}
 	})
 
-	require.Nil(t, publisher.producer)
+	require.NotNil(t, publisher.producer, "the publisher is always instrumented")
 
 	callerHeaders := amqp.Table{"x-caller": "value"}
 
@@ -1013,10 +1044,10 @@ func TestConfirmablePublisher_PublishWithoutTelemetryDoesNotTouchTheMessage(t *t
 // merge is additive: the trace context reaches the broker without evicting what
 // the caller set, and without mutating the caller's own map.
 func TestConfirmablePublisher_PublishWithTelemetryMergesTraceHeaders(t *testing.T) {
-	telemetry, _, _ := telemetryForTest(t)
+	telemetryOption, _, _ := telemetryForTest(t)
 
 	ch := newMockChannel()
-	publisher, err := NewConfirmablePublisherFromChannel(ch, WithTelemetry(telemetry))
+	publisher, err := NewConfirmablePublisherFromChannel(ch, telemetryOption)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		if err := publisher.Close(); err != nil {
@@ -1046,10 +1077,10 @@ func TestConfirmablePublisher_PublishWithTelemetryMergesTraceHeaders(t *testing.
 // TestConfirmablePublisher_PublishWithTelemetryEmitsProducerSpan verifies the
 // span kind and name, and that the routing key never reaches a span attribute.
 func TestConfirmablePublisher_PublishWithTelemetryEmitsProducerSpan(t *testing.T) {
-	telemetry, _, spans := telemetryForTest(t)
+	telemetryOption, _, spans := telemetryForTest(t)
 
 	ch := newMockChannel()
-	publisher, err := NewConfirmablePublisherFromChannel(ch, WithTelemetry(telemetry))
+	publisher, err := NewConfirmablePublisherFromChannel(ch, telemetryOption)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		if err := publisher.Close(); err != nil {
@@ -1078,10 +1109,10 @@ func TestConfirmablePublisher_PublishWithTelemetryEmitsProducerSpan(t *testing.T
 // TestConfirmablePublisher_PublishWithTelemetryRecordsDuration verifies the
 // success path records one observation with the bounded label set.
 func TestConfirmablePublisher_PublishWithTelemetryRecordsDuration(t *testing.T) {
-	telemetry, reader, _ := telemetryForTest(t)
+	telemetryOption, reader, _ := telemetryForTest(t)
 
 	ch := newMockChannel()
-	publisher, err := NewConfirmablePublisherFromChannel(ch, WithTelemetry(telemetry))
+	publisher, err := NewConfirmablePublisherFromChannel(ch, telemetryOption)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		if err := publisher.Close(); err != nil {
@@ -1118,12 +1149,12 @@ func TestConfirmablePublisher_PublishWithTelemetryRecordsDuration(t *testing.T) 
 // TestConfirmablePublisher_PublishWithTelemetryRecordsBrokerFailure verifies
 // finish also runs when the broker call itself fails.
 func TestConfirmablePublisher_PublishWithTelemetryRecordsBrokerFailure(t *testing.T) {
-	telemetry, reader, _ := telemetryForTest(t)
+	telemetryOption, reader, _ := telemetryForTest(t)
 
 	ch := newMockChannel()
 	ch.publishErr = errors.New("publish failed")
 
-	publisher, err := NewConfirmablePublisherFromChannel(ch, WithTelemetry(telemetry))
+	publisher, err := NewConfirmablePublisherFromChannel(ch, telemetryOption)
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		if err := publisher.Close(); err != nil {
@@ -1150,10 +1181,10 @@ func TestConfirmablePublisher_PublishWithTelemetryRecordsBrokerFailure(t *testin
 // broker outage must still show up as errors on the series; recording only the
 // paths that reach PublishWithContext would turn an outage into a silent hole.
 func TestConfirmablePublisher_PublishWithTelemetryRecordsEarlyReturn(t *testing.T) {
-	telemetry, reader, _ := telemetryForTest(t)
+	telemetryOption, reader, _ := telemetryForTest(t)
 
 	ch := newMockChannel()
-	publisher, err := NewConfirmablePublisherFromChannel(ch, WithTelemetry(telemetry))
+	publisher, err := NewConfirmablePublisherFromChannel(ch, telemetryOption)
 	require.NoError(t, err)
 	require.NoError(t, publisher.Close())
 
@@ -1169,4 +1200,42 @@ func TestConfirmablePublisher_PublishWithTelemetryRecordsEarlyReturn(t *testing.
 	errorType, found := points[0].Attributes.Value(attribute.Key("error.type"))
 	require.True(t, found, "an early-return failure must still be recorded")
 	assert.NotEmpty(t, errorType.AsString())
+}
+
+// TestConfirmablePublisher_PublishWithNoOptionsUsesGlobalProviders is the
+// contract this instrumentation exists for: a service that installed its
+// providers at bootstrap gets the producer span, the trace headers and the
+// duration metric by bumping lib-commons alone — the publisher is built with NO
+// telemetry option at all.
+//
+// Not parallel: it installs the OTel globals.
+func TestConfirmablePublisher_PublishWithNoOptionsUsesGlobalProviders(t *testing.T) {
+	reader, spans := globalTelemetryForTest(t)
+
+	ch := newMockChannel()
+
+	publisher, err := NewConfirmablePublisherFromChannel(ch)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		if err := publisher.Close(); err != nil {
+			t.Errorf("cleanup: publisher close: %v", err)
+		}
+	})
+
+	confirmNextPublish(t, ch)
+
+	err = publisher.Publish(context.Background(), telemetryExchange, telemetryRoutingKey, false, false,
+		amqp.Publishing{Body: []byte("ok")})
+	require.NoError(t, err)
+
+	assert.True(t, headerKeyPresent(ch.publishedMessage().Headers, "traceparent"),
+		"trace context must be injected without any option")
+
+	points := produceDataPoints(t, reader)
+	require.Len(t, points, 1, "the globally installed MeterProvider must receive the duration")
+	assert.Equal(t, telemetryExchange, requiredAttr(t, points[0], "messaging.destination.template"))
+
+	recorded := spans.GetSpans()
+	require.Len(t, recorded, 1, "the globally installed TracerProvider must receive the PRODUCER span")
+	assert.Equal(t, producerLibraryName, recorded[0].InstrumentationScope.Name)
 }
