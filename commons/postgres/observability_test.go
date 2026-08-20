@@ -246,7 +246,13 @@ func TestDSNDatabaseName(t *testing.T) {
 		// Case-sensitive keywords: pgx does not read DBNAME.
 		{"uppercase DBNAME ignored like pgx", "host=h DBNAME=ledger port=5432", ""},
 		{"spaces around equals", "host = h dbname = ledger port=5432", "ledger"},
-		{"unterminated quote", "host=h dbname='ledger", "ledger"},
+		// pgx errors on an unterminated quote — no connection ever exists, so
+		// there is nothing to label.
+		{"unterminated quote is malformed", "host=h dbname='ledger", ""},
+		{"stray token is malformed", "host dbname=ledger", ""},
+		{"missing equals entirely", "hostonly", ""},
+		{"empty key is malformed", "=ledger dbname=ledger", ""},
+		{"trailing backslash is malformed", `host=h dbname=ledger\`, ""},
 		// pgx keeps the LAST duplicate setting; the label must name the
 		// database pgx actually connects to.
 		{"repeated dbname last wins", "host=h dbname=old dbname=new port=5432", "new"},
