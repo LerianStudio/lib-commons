@@ -16,6 +16,8 @@ github.com/DATA-DOG/go-sqlmock v1.5.2 h1:OcvFkGmslmlZibjAjaHm3L//6LiuBgolP7Oputl
 github.com/DATA-DOG/go-sqlmock v1.5.2/go.mod h1:88MAG/4G7SMwSE3CeA0ZKzrT5CiOU3OJ+JlNzwDqpNU=
 github.com/LerianStudio/lib-observability/v2 v2.1.0 h1:/w5u44Zpe9R+R3d/Ti3//OdJRUL0M17bWNDe74QjRH4=
 github.com/LerianStudio/lib-observability/v2 v2.1.0/go.mod h1:iXspGM6PRTf6BDtkTc0Z69R2HEv1GtjBsI/YSvewDgA=
+github.com/LerianStudio/lib-observability/v3 v3.1.0-beta.6.0.20260824134451-faa2da628104 h1:tlLpmfUWTxs8YraoqHcGZ9D+R33VY5xCKKpcM6IQRW8=
+github.com/LerianStudio/lib-observability/v3 v3.1.0-beta.6.0.20260824134451-faa2da628104/go.mod h1:3wiIk6QdAIgH8/ecYcs/HnmalktLMP0QbQzfvGzOaGI=
 github.com/LerianStudio/lib-observability/v3 v3.1.0 h1:NP29WDBeCPkz0AxzWO+yULR7OaGQc0lIDt2HqYhmwqg=
 github.com/LerianStudio/lib-observability/v3 v3.1.0/go.mod h1:3wiIk6QdAIgH8/ecYcs/HnmalktLMP0QbQzfvGzOaGI=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
