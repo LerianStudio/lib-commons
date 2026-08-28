@@ -17,7 +17,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v6/commons/license"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
-	opentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"github.com/gofiber/fiber/v3"
 	"google.golang.org/grpc"
 )
@@ -42,7 +41,7 @@ type ServerManager struct {
 	stdlibHTTPListener  net.Listener
 	grpcServer          *grpc.Server
 	licenseClient       *license.ManagerShutdown
-	telemetry           *opentelemetry.Telemetry
+	telemetry           obs.TelemetryShutdowner
 	logger              obs.Logger
 	httpAddress         string
 	grpcAddress         string
@@ -82,9 +81,13 @@ func (sm *ServerManager) ensureRuntimeDefaults() {
 // NewServerManager creates a new instance of ServerManager.
 // If logger is nil, a no-op logger is used to ensure nil-safe operation
 // throughout the server lifecycle.
+//
+// telemetry is an obs.TelemetryShutdowner. Because that interface names no
+// nominal type at all, *tracing.Telemetry from ANY lib-observability major
+// satisfies it directly - pass yours as-is, no adapter needed.
 func NewServerManager(
 	licenseClient *license.ManagerShutdown,
-	telemetry *opentelemetry.Telemetry,
+	telemetry obs.TelemetryShutdowner,
 	logger obs.Logger,
 ) *ServerManager {
 	if nilcheck.Interface(logger) {
@@ -649,7 +652,7 @@ func (sm *ServerManager) executeShutdown() {
 		}
 
 		// Shutdown telemetry AFTER servers have drained, so final spans/metrics are exported.
-		if sm.telemetry != nil {
+		if !nilcheck.Interface(sm.telemetry) {
 			sm.logInfo("Shutting down telemetry...")
 			sm.telemetry.ShutdownTelemetry()
 		}
