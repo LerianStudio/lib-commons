@@ -4,7 +4,6 @@ package commons
 
 import (
 	"context"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"math"
 	"reflect"
 	"testing"
@@ -156,32 +155,29 @@ func TestSafeUintToInt(t *testing.T) {
 func TestSafeIntToUint32(t *testing.T) {
 	t.Parallel()
 
-	t.Run("negative_returns_default", func(t *testing.T) {
-		t.Parallel()
-		assert.Equal(t, uint32(99), SafeIntToUint32(-1, 99, nil, "test"))
-	})
+	tests := []struct {
+		name          string
+		value         int
+		wantConverted uint32
+		wantOK        bool
+	}{
+		{name: "negative is rejected", value: -1},
+		{name: "overflow is rejected", value: math.MaxInt},
+		{name: "zero converts", value: 0, wantConverted: 0, wantOK: true},
+		{name: "normal value converts", value: 42, wantConverted: 42, wantOK: true},
+		{name: "max uint32 converts", value: math.MaxUint32, wantConverted: math.MaxUint32, wantOK: true},
+		{name: "one past max uint32 is rejected", value: math.MaxUint32 + 1},
+	}
 
-	t.Run("overflow_returns_default", func(t *testing.T) {
-		t.Parallel()
-		assert.Equal(t, uint32(99), SafeIntToUint32(math.MaxInt, 99, nil, "test"))
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	t.Run("normal", func(t *testing.T) {
-		t.Parallel()
-		assert.Equal(t, uint32(42), SafeIntToUint32(42, 0, nil, "test"))
-	})
-
-	t.Run("negative_with_logger", func(t *testing.T) {
-		t.Parallel()
-		logger := obs.Nop()
-		assert.Equal(t, uint32(99), SafeIntToUint32(-1, 99, logger, "field"))
-	})
-
-	t.Run("overflow_with_logger", func(t *testing.T) {
-		t.Parallel()
-		logger := obs.Nop()
-		assert.Equal(t, uint32(99), SafeIntToUint32(math.MaxInt, 99, logger, "field"))
-	})
+			converted, ok := SafeIntToUint32(tt.value)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.wantConverted, converted)
+		})
+	}
 }
 
 func TestIsUUID(t *testing.T) {
@@ -311,7 +307,7 @@ func TestIsInternalLerianService(t *testing.T) {
 	})
 }
 
-func TestGetCPUUsage_NilFactory(t *testing.T) {
+func TestGetCPUUsage_NilRecorder(t *testing.T) {
 	t.Parallel()
 
 	// Should not panic when factory is nil; metrics recording is skipped.
@@ -320,7 +316,7 @@ func TestGetCPUUsage_NilFactory(t *testing.T) {
 	})
 }
 
-func TestGetMemUsage_NilFactory(t *testing.T) {
+func TestGetMemUsage_NilRecorder(t *testing.T) {
 	t.Parallel()
 
 	// Should not panic when factory is nil; metrics recording is skipped.

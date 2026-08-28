@@ -15,7 +15,6 @@ import (
 	"time"
 
 	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
-	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"
@@ -93,44 +92,17 @@ func SafeUintToInt(val uint) int {
 	return int(val)
 }
 
-// SafeIntToUint32 safely converts int to uint32 with overflow protection.
-// Returns the converted value if in valid range [0, MaxUint32], otherwise returns defaultVal.
-// This prevents G115 (CWE-190) integer overflow vulnerabilities.
-func SafeIntToUint32(value int, defaultVal uint32, logger obs.Logger, fieldName string) uint32 {
-	if value < 0 {
-		if logger != nil {
-			logger.Log(
-				context.Background(),
-				obs.LevelDebug,
-				"invalid uint32 source value, using default",
-				"field_name", fieldName,
-				"value", value,
-				"default", int(defaultVal),
-			)
-		}
-
-		return defaultVal
+// SafeIntToUint32 safely converts an int to uint32 with overflow protection,
+// preventing G115 (CWE-190) integer overflow vulnerabilities.
+//
+// It reports ok=false when value is negative or exceeds math.MaxUint32; the
+// caller decides what default to use and whether to log the rejection.
+func SafeIntToUint32(value int) (converted uint32, ok bool) {
+	if value < 0 || uint64(value) > uint64(math.MaxUint32) {
+		return 0, false
 	}
 
-	uv := uint64(value)
-
-	if uv > uint64(math.MaxUint32) {
-		if logger != nil {
-			logger.Log(
-				context.Background(),
-				obs.LevelDebug,
-				"uint32 source value exceeds max, using default",
-				"field_name", fieldName,
-				"value", value,
-				"max", uint64(math.MaxUint32),
-				"default", int(defaultVal),
-			)
-		}
-
-		return defaultVal
-	}
-
-	return uint32(uv)
+	return uint32(value), true
 }
 
 // IsUUID Validate if the string pass through is an uuid
@@ -192,9 +164,12 @@ func (r *Syscmd) ExecCmd(ctx context.Context, name string, arg ...string) ([]byt
 	return exec.CommandContext(ctx, name, arg...).Output()
 }
 
-// GetCPUUsage reads the current CPU usage and records it through the MetricsFactory gauge.
-// If factory is nil, the reading is performed but metric recording is skipped.
-func GetCPUUsage(ctx context.Context, factory *metrics.MetricsFactory) {
+// GetCPUUsage reads the current CPU usage and hands the percentage to record.
+//
+// record is a plain function so that no metrics type from a versioned module
+// appears here: pass factory.RecordSystemCPUUsage from any lib-observability
+// major. If record is nil, the reading is performed but nothing is recorded.
+func GetCPUUsage(ctx context.Context, record func(ctx context.Context, percentage int64) error) {
 	logger := obsbridge.LoggerFromContext(ctx)
 
 	out, err := cpu.Percent(100*time.Millisecond, false)
@@ -207,19 +182,24 @@ func GetCPUUsage(ctx context.Context, factory *metrics.MetricsFactory) {
 		percentageCPU = int64(out[0])
 	}
 
-	if factory == nil {
-		logger.Log(ctx, obs.LevelWarn, "metrics factory is nil, skipping CPU usage recording")
+	if record == nil {
+		logger.Log(ctx, obs.LevelWarn, "no CPU recorder provided, skipping CPU usage recording")
+
 		return
 	}
 
-	if err := factory.RecordSystemCPUUsage(ctx, percentageCPU); err != nil {
+	if err := record(ctx, percentageCPU); err != nil {
 		logger.Log(ctx, obs.LevelWarn, "error recording CPU gauge", "error", err)
 	}
 }
 
-// GetMemUsage reads the current memory usage and records it through the MetricsFactory gauge.
-// If factory is nil, the reading is performed but metric recording is skipped.
-func GetMemUsage(ctx context.Context, factory *metrics.MetricsFactory) {
+// GetMemUsage reads the current memory usage and hands the percentage to
+// record.
+//
+// record is a plain function so that no metrics type from a versioned module
+// appears here: pass factory.RecordSystemMemUsage from any lib-observability
+// major. If record is nil, the reading is performed but nothing is recorded.
+func GetMemUsage(ctx context.Context, record func(ctx context.Context, percentage int64) error) {
 	logger := obsbridge.LoggerFromContext(ctx)
 
 	var percentageMem int64 = 0
@@ -231,12 +211,13 @@ func GetMemUsage(ctx context.Context, factory *metrics.MetricsFactory) {
 		percentageMem = int64(out.UsedPercent)
 	}
 
-	if factory == nil {
-		logger.Log(ctx, obs.LevelWarn, "metrics factory is nil, skipping memory usage recording")
+	if record == nil {
+		logger.Log(ctx, obs.LevelWarn, "no memory recorder provided, skipping memory usage recording")
+
 		return
 	}
 
-	if err := factory.RecordSystemMemUsage(ctx, percentageMem); err != nil {
+	if err := record(ctx, percentageMem); err != nil {
 		logger.Log(ctx, obs.LevelWarn, "error recording memory gauge", "error", err)
 	}
 }
