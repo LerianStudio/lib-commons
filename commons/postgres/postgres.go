@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -21,7 +23,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
 	"github.com/LerianStudio/lib-observability/v2/assert"
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
@@ -68,14 +69,14 @@ var (
 
 	dbOpenFn = sql.Open
 
-	createResolverFn = func(primaryDB, replicaDB *sql.DB, logger log.Logger) (_ dbresolver.DB, err error) {
+	createResolverFn = func(primaryDB, replicaDB *sql.DB, logger obs.Logger) (_ dbresolver.DB, err error) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				if logger == nil {
-					logger = log.NewNop()
+					logger = obs.Nop()
 				}
 
-				runtime.HandlePanicValue(context.Background(), logger, recovered, "postgres", "create_resolver")
+				runtime.HandlePanicValue(context.Background(), obsbridge.LibLogger(logger), recovered, "postgres", "create_resolver")
 				err = fmt.Errorf("failed to create resolver: %w", fmt.Errorf("recovered panic: %v", recovered))
 			}
 		}()
@@ -134,7 +135,7 @@ type Config struct {
 	// label is read off each pool's own DSN instead, and it is omitted only when
 	// the DSN carries no database name either.
 	DatabaseName       string
-	Logger             log.Logger
+	Logger             obs.Logger
 	MetricsFactory     *metrics.MetricsFactory
 	MaxOpenConnections int
 	MaxIdleConnections int
@@ -144,7 +145,7 @@ type Config struct {
 
 func (c Config) withDefaults() Config {
 	if c.Logger == nil {
-		c.Logger = log.NewNop()
+		c.Logger = obs.Nop()
 	}
 
 	if c.MaxOpenConnections <= 0 {
@@ -352,7 +353,7 @@ func dsnDatabaseName(dsn string) string {
 	return dsnKeywordValue(trimmed, "dbname")
 }
 
-func enforceTLSPolicy(ctx context.Context, logger log.Logger, label, dsn string) error {
+func enforceTLSPolicy(ctx context.Context, logger obs.Logger, label, dsn string) error {
 	if strings.TrimSpace(dsn) == "" {
 		return nil
 	}
@@ -366,10 +367,10 @@ func enforceTLSPolicy(ctx context.Context, logger log.Logger, label, dsn string)
 	}
 
 	if logger != nil {
-		logger.Log(ctx, log.LevelWarn, "security bypass active",
-			log.String("feature", "postgres_tls"),
-			log.String("dsn_label", label),
-			log.String("env_var", commons.EnvAllowInsecureTLS),
+		logger.Log(ctx, obs.LevelWarn, "security bypass active",
+			"feature", "postgres_tls",
+			"dsn_label", label,
+			"env_var", commons.EnvAllowInsecureTLS,
 		)
 	}
 
@@ -378,15 +379,15 @@ func enforceTLSPolicy(ctx context.Context, logger log.Logger, label, dsn string)
 
 // warnInsecureDSN logs a warning if the DSN does not guarantee TLS.
 // This is advisory -- development environments commonly use sslmode=disable.
-func warnInsecureDSN(ctx context.Context, logger log.Logger, dsn, label string) {
-	if logger == nil || !logger.Enabled(log.LevelWarn) {
+func warnInsecureDSN(ctx context.Context, logger obs.Logger, dsn, label string) {
+	if logger == nil || !logger.Enabled(obs.LevelWarn) {
 		return
 	}
 
 	if !dsnRequiresTLS(dsn) {
-		logger.Log(ctx, log.LevelWarn,
+		logger.Log(ctx, obs.LevelWarn,
 			"TLS is not guaranteed in database connection; production deployments should use sslmode=require or stronger",
-			log.String("dsn_label", label),
+			"dsn_label", label,
 		)
 	}
 }
@@ -445,7 +446,7 @@ func New(cfg Config) (*Client, error) {
 }
 
 // logAtLevel emits a structured log entry at the specified level.
-func (c *Client) logAtLevel(ctx context.Context, level log.Level, msg string, fields ...log.Field) {
+func (c *Client) logAtLevel(ctx context.Context, level int, msg string, fields ...any) {
 	if c == nil || c.cfg.Logger == nil {
 		return
 	}
@@ -511,21 +512,21 @@ func (c *Client) connectLocked(ctx context.Context) error {
 
 	if oldResolver != nil {
 		if err := oldResolver.Close(); err != nil {
-			c.logAtLevel(ctx, log.LevelWarn, "failed to close previous resolver after swap", log.Err(err))
+			c.logAtLevel(ctx, obs.LevelWarn, "failed to close previous resolver after swap", "error", err)
 		}
 	}
 
 	// Always close old primary/replica explicitly to prevent leaks.
 	// The resolver may not own the underlying sql.DB connections.
 	if err := closeDB(oldPrimary); err != nil {
-		c.logAtLevel(ctx, log.LevelWarn, "failed to close old primary during swap", log.Err(err))
+		c.logAtLevel(ctx, obs.LevelWarn, "failed to close old primary during swap", "error", err)
 	}
 
 	if err := closeDB(oldReplica); err != nil {
-		c.logAtLevel(ctx, log.LevelWarn, "failed to close old replica during swap", log.Err(err))
+		c.logAtLevel(ctx, obs.LevelWarn, "failed to close old replica during swap", "error", err)
 	}
 
-	c.logAtLevel(ctx, log.LevelInfo, "connected to postgres")
+	c.logAtLevel(ctx, obs.LevelInfo, "connected to postgres")
 
 	return nil
 }
@@ -541,7 +542,7 @@ type pools struct {
 }
 
 func (c *Client) buildConnection(ctx context.Context) (pools, error) {
-	c.logAtLevel(ctx, log.LevelInfo, "connecting to primary and replica databases")
+	c.logAtLevel(ctx, obs.LevelInfo, "connecting to primary and replica databases")
 
 	warnInsecureDSN(ctx, c.cfg.Logger, c.cfg.PrimaryDSN, "primary")
 	warnInsecureDSN(ctx, c.cfg.Logger, c.cfg.ReplicaDSN, "replica")
@@ -572,7 +573,7 @@ func (c *Client) buildConnection(ctx context.Context) (pools, error) {
 		_ = closeDB(primary)
 		_ = closeDB(replica)
 
-		c.logAtLevel(ctx, log.LevelError, "failed to create resolver", log.Err(err))
+		c.logAtLevel(ctx, obs.LevelError, "failed to create resolver", "error", err)
 
 		return pools{}, fmt.Errorf("postgres connect: failed to create resolver: %w", err)
 	}
@@ -586,7 +587,7 @@ func (c *Client) buildConnection(ctx context.Context) (pools, error) {
 		_ = closeDB(primary)
 		_ = closeDB(replica)
 
-		c.logAtLevel(ctx, log.LevelError, "failed to ping database", log.Err(err))
+		c.logAtLevel(ctx, obs.LevelError, "failed to ping database", "error", err)
 
 		return pools{}, fmt.Errorf("postgres connect: failed to ping database: %w", err)
 	}
@@ -605,7 +606,7 @@ func (c *Client) newSQLDB(
 	db, err := dbOpenFn("pgx", dsn)
 	if err != nil {
 		sanitized := newSanitizedError(err, "failed to open database")
-		c.logAtLevel(ctx, log.LevelError, "failed to open database", log.Err(sanitized))
+		c.logAtLevel(ctx, obs.LevelError, "failed to open database", "error", sanitized)
 
 		return nil, nil, sanitized
 	}
@@ -798,12 +799,12 @@ type MigrationConfig struct {
 	// when the migration source directory does not exist. Use this for services that
 	// intentionally have no migrations (e.g., worker-only services sharing a database).
 	AllowMissingMigrations bool
-	Logger                 log.Logger
+	Logger                 obs.Logger
 }
 
 func (c MigrationConfig) withDefaults() MigrationConfig {
 	if c.Logger == nil {
-		c.Logger = log.NewNop()
+		c.Logger = obs.Nop()
 	}
 
 	return c
@@ -841,7 +842,7 @@ func NewMigrator(cfg MigrationConfig) (*Migrator, error) {
 	return &Migrator{cfg: cfg}, nil
 }
 
-func (m *Migrator) logAtLevel(ctx context.Context, level log.Level, msg string, fields ...log.Field) {
+func (m *Migrator) logAtLevel(ctx context.Context, level int, msg string, fields ...any) {
 	if m == nil || m.cfg.Logger == nil {
 		return
 	}
@@ -893,7 +894,7 @@ func (m *Migrator) Up(ctx context.Context) error {
 	db, err := dbOpenFn("pgx", m.cfg.PrimaryDSN)
 	if err != nil {
 		sanitized := newSanitizedError(err, "failed to open migration database")
-		m.logAtLevel(ctx, log.LevelError, "failed to open migration database", log.Err(sanitized))
+		m.logAtLevel(ctx, obs.LevelError, "failed to open migration database", "error", sanitized)
 
 		libOpentelemetry.HandleSpanError(span, "Failed to open migration database", sanitized)
 
@@ -903,7 +904,7 @@ func (m *Migrator) Up(ctx context.Context) error {
 
 	migrationsPath, err := resolveMigrationsPath(m.cfg.MigrationsPath, m.cfg.Component)
 	if err != nil {
-		m.logAtLevel(ctx, log.LevelError, "failed to resolve migration path", log.Err(err))
+		m.logAtLevel(ctx, obs.LevelError, "failed to resolve migration path", "error", err)
 
 		libOpentelemetry.HandleSpanError(span, "Failed to resolve migration path", err)
 
@@ -1026,9 +1027,9 @@ func validateDBName(name string) error {
 // migrationOutcome describes the result of classifying a migration error.
 type migrationOutcome struct {
 	err     error
-	level   log.Level
+	level   int
 	message string
-	fields  []log.Field
+	fields  []any
 }
 
 // migrationState carries the database + source facts used to disambiguate an
@@ -1120,12 +1121,12 @@ func versionNotInSourceOutcome(state migrationState) migrationOutcome {
 		err: fmt.Errorf("%w: database is pinned to version %d, which is not present in the migration source (%s); %s; "+
 			"reconcile schema_migrations or restore the missing migration file(s)",
 			ErrMigrationVersionAhead, state.currentVersion, state.sourcePath, cause),
-		level:   log.LevelError,
+		level:   obs.LevelError,
 		message: "database version not present in migration source",
-		fields: []log.Field{
-			log.String("db_version", strconv.FormatUint(uint64(state.currentVersion), 10)),
-			log.String("source_max_version", strconv.FormatUint(uint64(state.sourceMax), 10)),
-			log.Int("source_file_count", state.sourceCount),
+		fields: []any{
+			"db_version", strconv.FormatUint(uint64(state.currentVersion), 10),
+			"source_max_version", strconv.FormatUint(uint64(state.sourceMax), 10),
+			"source_file_count", state.sourceCount,
 		},
 	}
 }
@@ -1143,7 +1144,7 @@ func classifyMigrationError(err error, allowMissing bool, state migrationState) 
 
 	if errors.Is(err, migrate.ErrNoChange) {
 		return migrationOutcome{
-			level:   log.LevelInfo,
+			level:   obs.LevelInfo,
 			message: "no new migrations found, skipping",
 		}
 	}
@@ -1153,7 +1154,7 @@ func classifyMigrationError(err error, allowMissing bool, state migrationState) 
 	if errors.Is(err, os.ErrNotExist) {
 		if allowMissing {
 			return migrationOutcome{
-				level:   log.LevelWarn,
+				level:   obs.LevelWarn,
 				message: "no migration files found, skipping (AllowMissingMigrations=true)",
 			}
 		}
@@ -1169,14 +1170,14 @@ func classifyMigrationError(err error, allowMissing bool, state migrationState) 
 			return migrationOutcome{
 				err: fmt.Errorf("%w: migration source (%s) contains %d file(s) but the database version could not be determined",
 					ErrMigrationsNotFound, state.sourcePath, state.sourceCount),
-				level:   log.LevelError,
+				level:   obs.LevelError,
 				message: "migration source populated but database version unknown",
 			}
 		}
 
 		return migrationOutcome{
 			err:     fmt.Errorf("%w: source directory missing or empty", ErrMigrationsNotFound),
-			level:   log.LevelError,
+			level:   obs.LevelError,
 			message: "no migration files found",
 		}
 	}
@@ -1185,17 +1186,17 @@ func classifyMigrationError(err error, allowMissing bool, state migrationState) 
 	if errors.As(err, &dirtyErr) {
 		return migrationOutcome{
 			err:     fmt.Errorf("%w: database version %d", ErrMigrationDirty, dirtyErr.Version),
-			level:   log.LevelError,
+			level:   obs.LevelError,
 			message: "migration failed with dirty version",
-			fields:  []log.Field{log.Int("dirty_version", dirtyErr.Version)},
+			fields:  []any{"dirty_version", dirtyErr.Version},
 		}
 	}
 
 	return migrationOutcome{
 		err:     fmt.Errorf("migration failed: %w", err),
-		level:   log.LevelError,
+		level:   obs.LevelError,
 		message: "migration failed",
-		fields:  []log.Field{log.Err(err)},
+		fields:  []any{"error", err},
 	}
 }
 
@@ -1208,7 +1209,7 @@ func (c *Client) recordConnectionFailure(ctx context.Context, operation string) 
 
 	counter, err := c.metricsFactory.Counter(connectionFailuresMetric)
 	if err != nil {
-		c.logAtLevel(ctx, log.LevelWarn, "failed to create postgres metric counter", log.Err(err))
+		c.logAtLevel(ctx, obs.LevelWarn, "failed to create postgres metric counter", "error", err)
 		return
 	}
 
@@ -1218,13 +1219,13 @@ func (c *Client) recordConnectionFailure(ctx context.Context, operation string) 
 		}).
 		AddOne(ctx)
 	if err != nil {
-		c.logAtLevel(ctx, log.LevelWarn, "failed to record postgres metric", log.Err(err))
+		c.logAtLevel(ctx, obs.LevelWarn, "failed to record postgres metric", "error", err)
 	}
 }
 
 // migrationLogAtLevel logs at the given level if logger is non-nil and the level is enabled.
 // This eliminates repeated nil-check + level-check branches in migration helpers.
-func migrationLogAtLevel(ctx context.Context, logger log.Logger, level log.Level, msg string, fields ...log.Field) {
+func migrationLogAtLevel(ctx context.Context, logger obs.Logger, level int, msg string, fields ...any) {
 	if logger == nil || !logger.Enabled(level) {
 		return
 	}
@@ -1265,34 +1266,34 @@ func createMigrationInstance(dbPrimary *sql.DB, sourceURL, primaryDBName string,
 
 // closeMigration releases source and database driver resources. Errors are logged
 // but not propagated since the migration itself already ran (or failed).
-func closeMigration(ctx context.Context, mig *migrate.Migrate, logger log.Logger) {
+func closeMigration(ctx context.Context, mig *migrate.Migrate, logger obs.Logger) {
 	sourceErr, dbErr := mig.Close()
 	if sourceErr != nil {
-		migrationLogAtLevel(ctx, logger, log.LevelWarn, "failed to close migration source driver", log.Err(sourceErr))
+		migrationLogAtLevel(ctx, logger, obs.LevelWarn, "failed to close migration source driver", "error", sourceErr)
 	}
 
 	if dbErr != nil {
-		migrationLogAtLevel(ctx, logger, log.LevelWarn, "failed to close migration database driver", log.Err(dbErr))
+		migrationLogAtLevel(ctx, logger, obs.LevelWarn, "failed to close migration database driver", "error", dbErr)
 	}
 }
 
-func runMigrations(ctx context.Context, dbPrimary *sql.DB, migrationsPath, primaryDBName string, allowMultiStatements, allowMissingMigrations bool, logger log.Logger) error {
+func runMigrations(ctx context.Context, dbPrimary *sql.DB, migrationsPath, primaryDBName string, allowMultiStatements, allowMissingMigrations bool, logger obs.Logger) error {
 	if err := validateDBName(primaryDBName); err != nil {
-		migrationLogAtLevel(ctx, logger, log.LevelError, "invalid primary database name", log.Err(err))
+		migrationLogAtLevel(ctx, logger, obs.LevelError, "invalid primary database name", "error", err)
 
 		return fmt.Errorf("migrations: %w", err)
 	}
 
 	primaryURL, err := resolveMigrationSource(migrationsPath)
 	if err != nil {
-		migrationLogAtLevel(ctx, logger, log.LevelError, "failed to parse migrations url", log.Err(err))
+		migrationLogAtLevel(ctx, logger, obs.LevelError, "failed to parse migrations url", "error", err)
 
 		return err
 	}
 
 	mig, err := createMigrationInstance(dbPrimary, primaryURL.String(), primaryDBName, allowMultiStatements)
 	if err != nil {
-		migrationLogAtLevel(ctx, logger, log.LevelError, err.Error())
+		migrationLogAtLevel(ctx, logger, obs.LevelError, err.Error())
 
 		return err
 	}

@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"sync"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
@@ -137,7 +138,7 @@ type ConfirmablePublisher struct {
 	closedCh              chan struct{}
 	closeOnce             *sync.Once
 	done                  chan struct{}
-	logger                libLog.Logger
+	logger                obs.Logger
 	confirmTimeout        time.Duration
 	invalidConfirmTimeout struct {
 		set   bool
@@ -156,7 +157,7 @@ type ConfirmablePublisher struct {
 type ConfirmablePublisherOption func(*ConfirmablePublisher)
 
 // WithLogger sets a structured logger for the publisher.
-func WithLogger(logger libLog.Logger) ConfirmablePublisherOption {
+func WithLogger(logger obs.Logger) ConfirmablePublisherOption {
 	return func(pub *ConfirmablePublisher) {
 		if nilcheck.Interface(logger) {
 			return
@@ -218,7 +219,7 @@ func WithRecoveryBackoff(initial, maxBackoff time.Duration) ConfirmablePublisher
 		if initial > maxBackoff {
 			logIfConfigured(
 				pub.logger,
-				libLog.LevelWarn,
+				obs.LevelWarn,
 				fmt.Sprintf("rabbitmq: ignoring invalid recovery backoff initial=%v max=%v", initial, maxBackoff),
 			)
 
@@ -287,7 +288,7 @@ func NewConfirmablePublisherFromChannel(
 		closedCh:       make(chan struct{}),
 		closeOnce:      &sync.Once{},
 		done:           make(chan struct{}),
-		logger:         libLog.NewNop(),
+		logger:         obs.Nop(),
 		confirmTimeout: DefaultConfirmTimeout,
 		health:         HealthStateConnected,
 	}
@@ -310,7 +311,7 @@ func (pub *ConfirmablePublisher) startCloseMonitor(closeNotify chan *amqp.Error)
 	monitorDone := pub.done
 	monitorLogger := pub.logger
 
-	runtime.SafeGo(monitorLogger, "confirmable-publisher-close-monitor", runtime.KeepRunning, func() {
+	runtime.SafeGo(obsbridge.LibLogger(monitorLogger), "confirmable-publisher-close-monitor", runtime.KeepRunning, func() {
 		select {
 		case amqpErr := <-closeNotify:
 			pub.handleMonitoredClose(amqpErr)
@@ -354,7 +355,7 @@ func (pub *ConfirmablePublisher) attemptAutoRecovery(amqpErr *amqp.Error) {
 	pub.logChannelClosed(logger, amqpErr, recovery.maxAttempts)
 
 	if !pub.prepareForRecovery() {
-		logIfConfigured(logger, libLog.LevelInfo, "rabbitmq: recovery aborted, publisher is shutting down")
+		logIfConfigured(logger, obs.LevelInfo, "rabbitmq: recovery aborted, publisher is shutting down")
 		pub.emitHealthState(HealthStateDisconnected)
 
 		return
@@ -373,7 +374,7 @@ func (pub *ConfirmablePublisher) attemptAutoRecovery(amqpErr *amqp.Error) {
 
 	logIfConfigured(
 		logger,
-		libLog.LevelError,
+		obs.LevelError,
 		fmt.Sprintf("rabbitmq: auto-recovery failed after %d attempts, publisher is disconnected", recovery.maxAttempts),
 	)
 
@@ -384,7 +385,7 @@ func (pub *ConfirmablePublisher) attemptAutoRecovery(amqpErr *amqp.Error) {
 	pub.emitHealthState(HealthStateDisconnected)
 }
 
-func (pub *ConfirmablePublisher) logChannelClosed(logger libLog.Logger, amqpErr *amqp.Error, maxAttempts int) {
+func (pub *ConfirmablePublisher) logChannelClosed(logger obs.Logger, amqpErr *amqp.Error, maxAttempts int) {
 	if nilcheck.Interface(logger) {
 		return
 	}
@@ -394,19 +395,19 @@ func (pub *ConfirmablePublisher) logChannelClosed(logger libLog.Logger, amqpErr 
 		errMsg = sanitizeAMQPErr(amqpErr, "")
 	}
 
-	logger.Log(context.Background(), libLog.LevelWarn,
+	logger.Log(context.Background(), obs.LevelWarn,
 		fmt.Sprintf("rabbitmq: channel closed (%s), starting auto-recovery (max %d attempts)", errMsg, maxAttempts))
 }
 
 func (pub *ConfirmablePublisher) executeRecoveryAttempt(
 	recovery *recoveryConfig,
-	logger libLog.Logger,
+	logger obs.Logger,
 	recoveryStop <-chan struct{},
 	attempt int,
 ) recoveryAttemptResult {
 	select {
 	case <-recoveryStop:
-		logIfConfigured(logger, libLog.LevelInfo, "rabbitmq: recovery aborted (publisher closed externally)")
+		logIfConfigured(logger, obs.LevelInfo, "rabbitmq: recovery aborted (publisher closed externally)")
 		pub.emitHealthState(HealthStateDisconnected)
 
 		return recoveryAttemptAborted
@@ -422,7 +423,7 @@ func (pub *ConfirmablePublisher) executeRecoveryAttempt(
 
 func (pub *ConfirmablePublisher) waitRecoveryBackoff(
 	recovery *recoveryConfig,
-	logger libLog.Logger,
+	logger obs.Logger,
 	recoveryStop <-chan struct{},
 	attempt int,
 ) bool {
@@ -433,7 +434,7 @@ func (pub *ConfirmablePublisher) waitRecoveryBackoff(
 
 	logIfConfigured(
 		logger,
-		libLog.LevelInfo,
+		obs.LevelInfo,
 		fmt.Sprintf("rabbitmq: recovery attempt %d/%d, backoff %v", attempt+1, recovery.maxAttempts, delay),
 	)
 
@@ -444,7 +445,7 @@ func (pub *ConfirmablePublisher) waitRecoveryBackoff(
 	case <-timer.C:
 		return false
 	case <-recoveryStop:
-		logIfConfigured(logger, libLog.LevelInfo, "rabbitmq: recovery aborted during backoff (publisher closed)")
+		logIfConfigured(logger, obs.LevelInfo, "rabbitmq: recovery aborted during backoff (publisher closed)")
 		pub.emitHealthState(HealthStateDisconnected)
 
 		return true
@@ -453,7 +454,7 @@ func (pub *ConfirmablePublisher) waitRecoveryBackoff(
 
 func (pub *ConfirmablePublisher) tryReconnectChannel(
 	recovery *recoveryConfig,
-	logger libLog.Logger,
+	logger obs.Logger,
 	attempt int,
 ) recoveryAttemptResult {
 	newCh, err := recovery.provider()
@@ -461,7 +462,7 @@ func (pub *ConfirmablePublisher) tryReconnectChannel(
 		sanitizedErr := sanitizeAMQPErr(err, "")
 		logIfConfigured(
 			logger,
-			libLog.LevelWarn,
+			obs.LevelWarn,
 			fmt.Sprintf("rabbitmq: recovery attempt %d/%d failed: %s", attempt+1, recovery.maxAttempts, sanitizedErr),
 		)
 
@@ -472,7 +473,7 @@ func (pub *ConfirmablePublisher) tryReconnectChannel(
 		sanitizedErr := sanitizeAMQPErr(err, "")
 		logIfConfigured(
 			logger,
-			libLog.LevelWarn,
+			obs.LevelWarn,
 			fmt.Sprintf("rabbitmq: recovery attempt %d/%d reconnect failed: %s", attempt+1, recovery.maxAttempts, sanitizedErr),
 		)
 
@@ -485,7 +486,7 @@ func (pub *ConfirmablePublisher) tryReconnectChannel(
 
 	logIfConfigured(
 		logger,
-		libLog.LevelInfo,
+		obs.LevelInfo,
 		fmt.Sprintf("rabbitmq: auto-recovery succeeded on attempt %d/%d", attempt+1, recovery.maxAttempts),
 	)
 
@@ -883,7 +884,7 @@ func (pub *ConfirmablePublisher) logDeferredOptionWarnings() {
 		return
 	}
 
-	logIfConfigured(pub.logger, libLog.LevelWarn,
+	logIfConfigured(pub.logger, obs.LevelWarn,
 		fmt.Sprintf("rabbitmq: ignoring invalid confirm timeout %v, using default", pub.invalidConfirmTimeout.value))
 }
 
@@ -934,7 +935,7 @@ func drainConfirms(confirms <-chan amqp.Confirmation, timeout time.Duration) {
 	}
 }
 
-func logIfConfigured(logger libLog.Logger, level libLog.Level, message string) {
+func logIfConfigured(logger obs.Logger, level int, message string) {
 	if nilcheck.Interface(logger) {
 		return
 	}

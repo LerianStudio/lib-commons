@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"time"
 
 	libBackoff "github.com/LerianStudio/lib-commons/v6/commons/backoff"
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	libOtel "github.com/LerianStudio/lib-observability/v2/tracing"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
@@ -55,7 +55,7 @@ type Handler struct {
 	conn       *libRedis.Client
 	keyPrefix  string
 	maxRetries int
-	logger     libLog.Logger
+	logger     obs.Logger
 	tracer     trace.Tracer
 	metrics    DLQMetrics
 	module     string
@@ -65,7 +65,7 @@ type Handler struct {
 type Option func(*Handler)
 
 // WithLogger sets the logger used by the Handler.
-func WithLogger(l libLog.Logger) Option {
+func WithLogger(l obs.Logger) Option {
 	return func(h *Handler) {
 		if l != nil {
 			h.logger = l
@@ -120,7 +120,7 @@ func New(conn *libRedis.Client, keyPrefix string, maxRetries int, opts ...Option
 		conn:       conn,
 		keyPrefix:  keyPrefix,
 		maxRetries: maxRetries,
-		logger:     libLog.NewNop(),
+		logger:     obs.Nop(),
 		tracer:     noop.NewTracerProvider().Tracer("dlq.noop"),
 	}
 
@@ -277,13 +277,13 @@ func (h *Handler) resolveAndValidateTenant(ctx context.Context, msg *FailedMessa
 // logEnqueueFallback logs message metadata when Redis is unreachable. The
 // payload is redacted to prevent PII leakage into log aggregators.
 func (h *Handler) logEnqueueFallback(ctx context.Context, key string, msg *FailedMessage, err error) {
-	h.logger.Log(ctx, libLog.LevelError,
+	h.logger.Log(ctx, obs.LevelError,
 		"dlq: failed to enqueue message to Redis — payload redacted for PII safety",
-		libLog.String("dlq_key", key),
-		libLog.String("msg_source", msg.Source),
-		libLog.Int("retry_count", msg.RetryCount),
-		libLog.String("original_error", truncateString(msg.ErrorMessage, 200)),
-		libLog.Err(err),
+		"dlq_key", key,
+		"msg_source", msg.Source,
+		"retry_count", msg.RetryCount,
+		"original_error", truncateString(msg.ErrorMessage, 200),
+		"error", err,
 	)
 }
 
@@ -338,9 +338,9 @@ func (h *Handler) Dequeue(ctx context.Context, source string) (*FailedMessage, e
 	// key being dequeued. A mismatch can occur if a message was manually moved
 	// between queues or if Source was corrupted in transit.
 	if msg.Source != source {
-		h.logger.Log(ctx, libLog.LevelWarn, "dlq: dequeue: message source mismatch, normalizing to queue source",
-			libLog.String("message_source", msg.Source),
-			libLog.String("queue_source", source),
+		h.logger.Log(ctx, obs.LevelWarn, "dlq: dequeue: message source mismatch, normalizing to queue source",
+			"message_source", msg.Source,
+			"queue_source", source,
 		)
 
 		msg.Source = source
@@ -477,10 +477,10 @@ func (h *Handler) PruneExhaustedMessages(ctx context.Context, source string, lim
 		if msg.RetryCount >= msg.MaxRetries {
 			pruned++
 
-			h.logger.Log(ctx, libLog.LevelWarn, "dlq: pruned exhausted message",
-				libLog.String("source", msg.Source),
-				libLog.Int("retry_count", msg.RetryCount),
-				libLog.String("tenant_id", msg.TenantID),
+			h.logger.Log(ctx, obs.LevelWarn, "dlq: pruned exhausted message",
+				"source", msg.Source,
+				"retry_count", msg.RetryCount,
+				"tenant_id", msg.TenantID,
 			)
 
 			continue
@@ -500,10 +500,10 @@ func (h *Handler) PruneExhaustedMessages(ctx context.Context, source string, lim
 		}
 
 		if err := h.Enqueue(enqueueCtx, msg); err != nil {
-			h.logger.Log(ctx, libLog.LevelError, "dlq: failed to re-enqueue non-exhausted message during prune",
-				libLog.String("source", msg.Source),
-				libLog.String("tenant_id", msg.TenantID),
-				libLog.Err(err),
+			h.logger.Log(ctx, obs.LevelError, "dlq: failed to re-enqueue non-exhausted message during prune",
+				"source", msg.Source,
+				"tenant_id", msg.TenantID,
+				"error", err,
 			)
 
 			return pruned, fmt.Errorf("dlq: prune: re-enqueue: %w", err)

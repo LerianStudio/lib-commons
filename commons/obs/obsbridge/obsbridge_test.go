@@ -5,6 +5,7 @@ package obsbridge_test
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/obs"
@@ -164,4 +165,68 @@ func TestFromContext_ReturnsUsableAdapters(t *testing.T) {
 	assert.NotNil(t, logger)
 	assert.NotNil(t, tracer)
 	assert.NotNil(t, recorder)
+}
+
+func TestLogger_OutOfRangeLevelIsFlaggedNotDropped(t *testing.T) {
+	t.Parallel()
+
+	base := &capturingLibLogger{}
+
+	obsbridge.Logger(base).Log(context.Background(), 99, "msg", "key", "value")
+
+	require.Len(t, base.levels, 1)
+	assert.Equal(t, liblog.LevelError, base.levels[0])
+	assert.Equal(t, []liblog.Field{
+		liblog.Int("!BADLEVEL", 99),
+		liblog.String("key", "value"),
+	}, base.fields[0])
+}
+
+func TestLogger_EnabledIsFalseForOutOfRangeLevels(t *testing.T) {
+	t.Parallel()
+
+	logger := obsbridge.Logger(&capturingLibLogger{enabled: true})
+
+	assert.True(t, logger.Enabled(obs.LevelDebug))
+	assert.False(t, logger.Enabled(99))
+	assert.False(t, logger.Enabled(-1))
+}
+
+func TestMetrics_RecordHistogramRoundsAndRejectsUnrepresentableValues(t *testing.T) {
+	t.Parallel()
+
+	recorder := obsbridge.Metrics(libmetrics.NewNopFactory())
+	ctx := context.Background()
+
+	tests := []struct {
+		name    string
+		value   float64
+		wantErr error
+	}{
+		// Pinned: lib-observability has no float64 histogram instrument, so a
+		// sub-integer value rounds. 0.004 seconds becomes 0 - callers must
+		// record milliseconds.
+		{name: "sub integer value rounds", value: 0.004},
+		{name: "half rounds away from zero", value: 2.5},
+		{name: "negative value is accepted", value: -3.4},
+		{name: "NaN is rejected", value: math.NaN(), wantErr: obsbridge.ErrHistogramValueNotRepresentable},
+		{name: "positive infinity is rejected", value: math.Inf(1), wantErr: obsbridge.ErrHistogramValueNotRepresentable},
+		{name: "negative infinity is rejected", value: math.Inf(-1), wantErr: obsbridge.ErrHistogramValueNotRepresentable},
+		{name: "overflow is rejected", value: 1e30, wantErr: obsbridge.ErrHistogramValueNotRepresentable},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := recorder.RecordHistogram(ctx, "latency", "desc", "ms", nil, tt.value, nil)
+			if tt.wantErr != nil {
+				assert.ErrorIs(t, err, tt.wantErr)
+
+				return
+			}
+
+			assert.NoError(t, err)
+		})
+	}
 }

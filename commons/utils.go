@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"math"
 	"os/exec"
 	"reflect"
@@ -13,8 +15,6 @@ import (
 	"time"
 
 	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/cpu"
@@ -96,16 +96,16 @@ func SafeUintToInt(val uint) int {
 // SafeIntToUint32 safely converts int to uint32 with overflow protection.
 // Returns the converted value if in valid range [0, MaxUint32], otherwise returns defaultVal.
 // This prevents G115 (CWE-190) integer overflow vulnerabilities.
-func SafeIntToUint32(value int, defaultVal uint32, logger log.Logger, fieldName string) uint32 {
+func SafeIntToUint32(value int, defaultVal uint32, logger obs.Logger, fieldName string) uint32 {
 	if value < 0 {
 		if logger != nil {
 			logger.Log(
 				context.Background(),
-				log.LevelDebug,
+				obs.LevelDebug,
 				"invalid uint32 source value, using default",
-				log.String("field_name", fieldName),
-				log.Int("value", value),
-				log.Int("default", int(defaultVal)),
+				"field_name", fieldName,
+				"value", value,
+				"default", int(defaultVal),
 			)
 		}
 
@@ -118,12 +118,12 @@ func SafeIntToUint32(value int, defaultVal uint32, logger log.Logger, fieldName 
 		if logger != nil {
 			logger.Log(
 				context.Background(),
-				log.LevelDebug,
+				obs.LevelDebug,
 				"uint32 source value exceeds max, using default",
-				log.String("field_name", fieldName),
-				log.Int("value", value),
-				log.Any("max", uint64(math.MaxUint32)),
-				log.Int("default", int(defaultVal)),
+				"field_name", fieldName,
+				"value", value,
+				"max", uint64(math.MaxUint32),
+				"default", int(defaultVal),
 			)
 		}
 
@@ -195,11 +195,11 @@ func (r *Syscmd) ExecCmd(ctx context.Context, name string, arg ...string) ([]byt
 // GetCPUUsage reads the current CPU usage and records it through the MetricsFactory gauge.
 // If factory is nil, the reading is performed but metric recording is skipped.
 func GetCPUUsage(ctx context.Context, factory *metrics.MetricsFactory) {
-	logger := observability.NewLoggerFromContext(ctx)
+	logger := obsbridge.LoggerFromContext(ctx)
 
 	out, err := cpu.Percent(100*time.Millisecond, false)
 	if err != nil {
-		logger.Log(ctx, log.LevelWarn, "error getting CPU usage", log.Err(err))
+		logger.Log(ctx, obs.LevelWarn, "error getting CPU usage", "error", err)
 	}
 
 	var percentageCPU int64 = 0
@@ -208,36 +208,36 @@ func GetCPUUsage(ctx context.Context, factory *metrics.MetricsFactory) {
 	}
 
 	if factory == nil {
-		logger.Log(ctx, log.LevelWarn, "metrics factory is nil, skipping CPU usage recording")
+		logger.Log(ctx, obs.LevelWarn, "metrics factory is nil, skipping CPU usage recording")
 		return
 	}
 
 	if err := factory.RecordSystemCPUUsage(ctx, percentageCPU); err != nil {
-		logger.Log(ctx, log.LevelWarn, "error recording CPU gauge", log.Err(err))
+		logger.Log(ctx, obs.LevelWarn, "error recording CPU gauge", "error", err)
 	}
 }
 
 // GetMemUsage reads the current memory usage and records it through the MetricsFactory gauge.
 // If factory is nil, the reading is performed but metric recording is skipped.
 func GetMemUsage(ctx context.Context, factory *metrics.MetricsFactory) {
-	logger := observability.NewLoggerFromContext(ctx)
+	logger := obsbridge.LoggerFromContext(ctx)
 
 	var percentageMem int64 = 0
 
 	out, err := mem.VirtualMemory()
 	if err != nil {
-		logger.Log(ctx, log.LevelWarn, "error getting memory info", log.Err(err))
+		logger.Log(ctx, obs.LevelWarn, "error getting memory info", "error", err)
 	} else {
 		percentageMem = int64(out.UsedPercent)
 	}
 
 	if factory == nil {
-		logger.Log(ctx, log.LevelWarn, "metrics factory is nil, skipping memory usage recording")
+		logger.Log(ctx, obs.LevelWarn, "metrics factory is nil, skipping memory usage recording")
 		return
 	}
 
 	if err := factory.RecordSystemMemUsage(ctx, percentageMem); err != nil {
-		logger.Log(ctx, log.LevelWarn, "error recording memory gauge", log.Err(err))
+		logger.Log(ctx, obs.LevelWarn, "error recording memory gauge", "error", err)
 	}
 }
 

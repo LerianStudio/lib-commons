@@ -5,10 +5,10 @@ package outbox
 import (
 	"context"
 	"errors"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 	"time"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -111,7 +111,7 @@ func TestDispatcherMetrics_RecordValuesAndTenantAttributes(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
-	metrics, err := newDispatcherMetrics(provider, libLog.NewNop())
+	metrics, err := newDispatcherMetrics(provider, obs.Nop())
 	require.NoError(t, err)
 
 	dispatcher := &Dispatcher{
@@ -119,7 +119,7 @@ func TestDispatcherMetrics_RecordValuesAndTenantAttributes(t *testing.T) {
 			IncludeTenantMetrics:      true,
 			MaxTenantMetricDimensions: 1,
 		},
-		logger:  libLog.NewNop(),
+		logger:  obs.Nop(),
 		metrics: metrics,
 	}
 

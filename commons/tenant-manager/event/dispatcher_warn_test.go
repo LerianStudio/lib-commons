@@ -8,11 +8,11 @@ package event
 
 import (
 	"context"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/testutil"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/tenantcache"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -67,7 +67,7 @@ func TestHandleEvent_CacheInvalidateServiceMismatchWarns(t *testing.T) {
 			require.NoError(t, dispatcher.HandleEvent(context.Background(), evt))
 
 			assert.True(t,
-				logger.ContainsAtLevel(libLog.LevelWarn,
+				logger.ContainsAtLevel(obs.LevelWarn,
 					EventTenantCacheInvalidate, "expected_service_name=ledger",
 					"received_service_name="+tt.received),
 				"skipped cache invalidation must warn with expected and received service names; got: %v",
@@ -93,9 +93,9 @@ func TestHandleEvent_ServiceScopedMismatchStaysDebug(t *testing.T) {
 		Payload:   []byte(`{"service_name":"transaction"}`),
 	}))
 
-	assert.False(t, logger.ContainsAtLevel(libLog.LevelWarn, "service mismatch"),
+	assert.False(t, logger.ContainsAtLevel(obs.LevelWarn, "service mismatch"),
 		"routine service-scoped fan-out must not warn; got: %v", logger.Entries())
-	assert.True(t, logger.ContainsAtLevel(libLog.LevelDebug, "service mismatch"),
+	assert.True(t, logger.ContainsAtLevel(obs.LevelDebug, "service mismatch"),
 		"the skip must still be traceable at debug level; got: %v", logger.Entries())
 }
 
@@ -115,6 +115,6 @@ func TestHandleEvent_UnknownEventTypeWarns(t *testing.T) {
 	}))
 
 	assert.True(t,
-		logger.ContainsAtLevel(libLog.LevelWarn, "unknown event type", "tenant.invented.by.nobody"),
+		logger.ContainsAtLevel(obs.LevelWarn, "unknown event type", "tenant.invented.by.nobody"),
 		"unknown event types must warn with the type; got: %v", logger.Entries())
 }

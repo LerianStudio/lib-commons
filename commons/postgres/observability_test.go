@@ -5,9 +5,9 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -92,7 +92,7 @@ func connectedClientNamed(t *testing.T, databaseName string) *Client {
 
 	withPatchedDependencies(t,
 		func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
-		func(_, _ *sql.DB, _ log.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
+		func(_, _ *sql.DB, _ obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
 		nil,
 	)
 

@@ -4,13 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 
-	observability "github.com/LerianStudio/lib-observability/v2"
 	"go.opentelemetry.io/otel/trace"
 )
 
 func tracerFromContext(ctx context.Context) trace.Tracer {
-	logger, tracer, meter, trackingErr := observability.NewTrackingFromContext(ctx)
+	logger, tracer, meter, trackingErr := obsbridge.TrackingFromContext(ctx)
 	_ = logger
 	_ = meter
 	_ = trackingErr

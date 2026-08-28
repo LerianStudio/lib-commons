@@ -5,11 +5,11 @@ package rabbitmq
 import (
 	"context"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -90,7 +90,7 @@ func newTestConnection(amqpURL, mgmtURL string) *RabbitMQConnection {
 		User:                     testRabbitMQUser,
 		Pass:                     testRabbitMQPass,
 		AllowInsecureHealthCheck: true,
-		Logger:                   log.NewNop(),
+		Logger:                   obs.Nop(),
 	}
 }
 

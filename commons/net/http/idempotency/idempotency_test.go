@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"io"
 	"net"
 	"net/http"
@@ -21,7 +22,6 @@ import (
 	chttp "github.com/LerianStudio/lib-commons/v6/commons/constants"
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
@@ -52,7 +52,7 @@ func newRedisClient(t *testing.T, mr *miniredis.Miniredis) *libRedis.Client {
 		Topology: libRedis.Topology{
 			Standalone: &libRedis.StandaloneTopology{Address: mr.Addr()},
 		},
-		Logger: &libLog.NopLogger{},
+		Logger: obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -1349,7 +1349,7 @@ func TestCheck_SameKey_DifferentPayload_Rejected(t *testing.T) {
 
 	var calls atomic.Int32
 
-	mw := New(conn, WithLogger(libLog.NewNop()))
+	mw := New(conn, WithLogger(obs.Nop()))
 	app := newEchoApp(mw.Check(), &calls, tenantMiddleware("tenant-a"))
 
 	first := doSend(t, app, http.MethodPost, "/test", `{"amount":10}`, "reused-key")
@@ -1377,7 +1377,7 @@ func TestCheck_SameKey_SamePayload_StillReplays(t *testing.T) {
 
 	var calls atomic.Int32
 
-	mw := New(conn, WithLogger(libLog.NewNop()))
+	mw := New(conn, WithLogger(obs.Nop()))
 	app := newEchoApp(mw.Check(), &calls, tenantMiddleware("tenant-a"))
 
 	first := doSend(t, app, http.MethodPost, "/test", `{"amount":10}`, "same-key")
@@ -1407,7 +1407,7 @@ func TestCheck_SameKey_DifferentTarget_Rejected(t *testing.T) {
 			mr := miniredis.RunT(t)
 			conn := newRedisClient(t, mr)
 
-			mw := New(conn, WithLogger(libLog.NewNop()))
+			mw := New(conn, WithLogger(obs.Nop()))
 			app := newEchoApp(mw.Check(), nil, tenantMiddleware("tenant-a"))
 
 			first := doSend(t, app, http.MethodPost, "/test", `{"amount":10}`, "cross-target")
@@ -1429,7 +1429,7 @@ func TestCheck_FirstRequest_StoresFingerprintWithState(t *testing.T) {
 	mr := miniredis.RunT(t)
 	conn := newRedisClient(t, mr)
 
-	mw := New(conn, WithLogger(libLog.NewNop()))
+	mw := New(conn, WithLogger(obs.Nop()))
 	app := newEchoApp(mw.Check(), nil, tenantMiddleware("tenant-a"))
 
 	resp := doSend(t, app, http.MethodPost, "/test", `{"amount":10}`, "fp-key")
@@ -1455,7 +1455,7 @@ func TestCheck_SameKey_QueryVariance_StillReplays(t *testing.T) {
 
 	var calls atomic.Int32
 
-	mw := New(conn, WithLogger(libLog.NewNop()))
+	mw := New(conn, WithLogger(obs.Nop()))
 	app := newEchoApp(mw.Check(), &calls, tenantMiddleware("tenant-a"))
 
 	// The fingerprint deliberately excludes the query string: clients append

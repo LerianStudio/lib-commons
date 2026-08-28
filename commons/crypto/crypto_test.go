@@ -3,10 +3,11 @@
 package crypto
 
 import (
+	"context"
 	"encoding/base64"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,7 +20,7 @@ func newTestCrypto(t *testing.T) *Crypto {
 	c := &Crypto{
 		HashSecretKey:    "hash-secret",
 		EncryptSecretKey: validHexKey,
-		Logger:           libLog.NewNop(),
+		Logger:           obs.Nop(),
 	}
 
 	require.NoError(t, c.InitializeCipher())
@@ -58,7 +59,7 @@ func TestGenerateHash(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			c := &Crypto{HashSecretKey: "test-key", Logger: libLog.NewNop()}
+			c := &Crypto{HashSecretKey: "test-key", Logger: obs.Nop()}
 			result := c.GenerateHash(tt.input)
 
 			if tt.input == nil {
@@ -73,7 +74,7 @@ func TestGenerateHash(t *testing.T) {
 func TestGenerateHash_Consistency(t *testing.T) {
 	t.Parallel()
 
-	c := &Crypto{HashSecretKey: "test-key", Logger: libLog.NewNop()}
+	c := &Crypto{HashSecretKey: "test-key", Logger: obs.Nop()}
 	input := ptr("hello")
 
 	hash1 := c.GenerateHash(input)
@@ -85,7 +86,7 @@ func TestGenerateHash_Consistency(t *testing.T) {
 func TestGenerateHash_DifferentInputs(t *testing.T) {
 	t.Parallel()
 
-	c := &Crypto{HashSecretKey: "test-key", Logger: libLog.NewNop()}
+	c := &Crypto{HashSecretKey: "test-key", Logger: obs.Nop()}
 
 	hash1 := c.GenerateHash(ptr("hello"))
 	hash2 := c.GenerateHash(ptr("world"))
@@ -122,7 +123,7 @@ func TestInitializeCipher(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			c := &Crypto{EncryptSecretKey: tt.key, Logger: libLog.NewNop()}
+			c := &Crypto{EncryptSecretKey: tt.key, Logger: obs.Nop()}
 			err := c.InitializeCipher()
 
 			if tt.expectErr {
@@ -197,7 +198,7 @@ func TestEncrypt(t *testing.T) {
 
 			c := &Crypto{
 				EncryptSecretKey: validHexKey,
-				Logger:           libLog.NewNop(),
+				Logger:           obs.Nop(),
 			}
 			if tt.initCipher {
 				require.NoError(t, c.InitializeCipher())
@@ -277,7 +278,7 @@ func TestDecrypt(t *testing.T) {
 
 			c := &Crypto{
 				EncryptSecretKey: validHexKey,
-				Logger:           libLog.NewNop(),
+				Logger:           obs.Nop(),
 			}
 			if tt.initCipher {
 				require.NoError(t, c.InitializeCipher())
@@ -349,7 +350,7 @@ func TestEncrypt_ProducesUniqueOutputs(t *testing.T) {
 func TestGenerateHash_EmptyKey(t *testing.T) {
 	t.Parallel()
 
-	c := &Crypto{HashSecretKey: "", Logger: libLog.NewNop()}
+	c := &Crypto{HashSecretKey: "", Logger: obs.Nop()}
 	input := ptr("hello")
 
 	result := c.GenerateHash(input)
@@ -362,7 +363,7 @@ func TestLogger(t *testing.T) {
 	t.Run("returns configured logger", func(t *testing.T) {
 		t.Parallel()
 
-		nop := libLog.NewNop()
+		nop := obs.Nop()
 		c := &Crypto{Logger: nop}
 
 		assert.Equal(t, nop, c.logger())
@@ -375,19 +376,29 @@ func TestLogger(t *testing.T) {
 		l := c.logger()
 
 		assert.NotNil(t, l)
-		assert.IsType(t, &libLog.NopLogger{}, l)
+		assert.IsType(t, obs.Nop(), l)
 	})
 
 	t.Run("returns NopLogger for typed-nil Logger", func(t *testing.T) {
 		t.Parallel()
 
-		// Simulate a typed-nil: interface holds (*NopLogger)(nil).
-		// This exercises the isNilInterface reflection path.
-		var nilLogger *libLog.NopLogger
+		// Simulate a typed-nil: the interface holds a nil pointer of a
+		// concrete logger type. This exercises the isNilInterface path.
+		var nilLogger *typedNilLogger
 		c := &Crypto{Logger: nilLogger}
 		l := c.logger()
 
 		assert.NotNil(t, l)
-		assert.IsType(t, &libLog.NopLogger{}, l)
+		assert.IsType(t, obs.Nop(), l)
 	})
 }
+
+// typedNilLogger exists only so a test can put a typed nil into an obs.Logger
+// interface value.
+type typedNilLogger struct{}
+
+func (*typedNilLogger) Log(context.Context, int, string, ...any) {}
+
+func (*typedNilLogger) Enabled(int) bool { return false }
+
+func (*typedNilLogger) Sync(context.Context) error { return nil }

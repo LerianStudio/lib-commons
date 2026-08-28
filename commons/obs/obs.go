@@ -60,6 +60,12 @@ type MetricsRecorder interface {
 	// SetGauge sets the named gauge to value.
 	SetGauge(ctx context.Context, name, description, unit string, attrs map[string]string, value int64) error
 	// RecordHistogram records value in the named histogram.
+	//
+	// Record durations in MILLISECONDS and set unit accordingly. value is
+	// float64 for call-site convenience, but adapters are expected to back
+	// this with an integer histogram instrument and round: a duration
+	// expressed in seconds (0.004) is recorded as 0. An adapter must reject a
+	// value it cannot represent rather than cast it blindly.
 	RecordHistogram(ctx context.Context, name, description, unit string, attrs map[string]string, value float64, buckets []float64) error
 }
 

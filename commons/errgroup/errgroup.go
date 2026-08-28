@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"sync"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
 )
 
@@ -28,13 +29,13 @@ type Group struct {
 	errOnce  sync.Once
 	err      error
 	loggerMu sync.RWMutex
-	logger   libLog.Logger
+	logger   obs.Logger
 }
 
 // SetLogger sets an optional logger for panic recovery observability.
 // When set, panics recovered in goroutines will be logged before the
 // error is propagated via Wait. Safe for concurrent use.
-func (grp *Group) SetLogger(logger libLog.Logger) {
+func (grp *Group) SetLogger(logger obs.Logger) {
 	if grp == nil {
 		return
 	}
@@ -45,7 +46,7 @@ func (grp *Group) SetLogger(logger libLog.Logger) {
 }
 
 // getLogger returns the current logger in a concurrency-safe manner.
-func (grp *Group) getLogger() libLog.Logger {
+func (grp *Group) getLogger() obs.Logger {
 	grp.loggerMu.RLock()
 	l := grp.logger
 	grp.loggerMu.RUnlock()
@@ -83,7 +84,7 @@ func (grp *Group) Go(fn func() error) {
 	grp.wg.Go(func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				runtime.HandlePanicValue(grp.effectiveCtx(), grp.getLogger(), recovered, "errgroup", "group.Go")
+				runtime.HandlePanicValue(grp.effectiveCtx(), obsbridge.LibLogger(grp.getLogger()), recovered, "errgroup", "group.Go")
 
 				grp.errOnce.Do(func() {
 					grp.err = fmt.Errorf("%w: %v", ErrPanicRecovered, recovered)

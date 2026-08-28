@@ -5,13 +5,13 @@ package circuitbreaker
 import (
 	"context"
 	"errors"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -19,7 +19,7 @@ import (
 
 type circuitLogEntry struct {
 	msg    string
-	fields []log.Field
+	fields []any
 }
 
 type captureCircuitLogger struct {
@@ -27,17 +27,17 @@ type captureCircuitLogger struct {
 	entries []circuitLogEntry
 }
 
-func (l *captureCircuitLogger) Log(_ context.Context, _ log.Level, msg string, fields ...log.Field) {
+func (l *captureCircuitLogger) Log(_ context.Context, _ int, msg string, fields ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	l.entries = append(l.entries, circuitLogEntry{msg: msg, fields: append([]log.Field(nil), fields...)})
+	l.entries = append(l.entries, circuitLogEntry{msg: msg, fields: append([]any(nil), fields...)})
 }
 
-func (l *captureCircuitLogger) With(...log.Field) log.Logger { return l }
-func (l *captureCircuitLogger) WithGroup(string) log.Logger  { return l }
-func (l *captureCircuitLogger) Enabled(log.Level) bool       { return true }
-func (l *captureCircuitLogger) Sync(context.Context) error   { return nil }
+func (l *captureCircuitLogger) With(...any) obs.Logger      { return l }
+func (l *captureCircuitLogger) WithGroup(string) obs.Logger { return l }
+func (l *captureCircuitLogger) Enabled(int) bool            { return true }
+func (l *captureCircuitLogger) Sync(context.Context) error  { return nil }
 
 func (l *captureCircuitLogger) snapshot() []circuitLogEntry {
 	l.mu.Lock()
@@ -53,7 +53,7 @@ func (l *captureCircuitLogger) snapshot() []circuitLogEntry {
 func TestNewManager_SatisfiesTenantAwareManager(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 
 	// The returned Manager must always be assertable to TenantAwareManager;
@@ -70,7 +70,7 @@ func TestNewManager_SatisfiesTenantAwareManager(t *testing.T) {
 func TestTenantManager_NoTenantAndTenantAreDistinct(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -117,7 +117,7 @@ func TestTenantManager_NoTenantAndTenantAreDistinct(t *testing.T) {
 func TestTenantManager_TenantTripDoesNotAffectNeighbor(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -174,7 +174,7 @@ func TestTenantManager_TenantTripDoesNotAffectNeighbor(t *testing.T) {
 func TestTenantManager_ResetForTenant_Scoped(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -218,7 +218,7 @@ func TestTenantManager_ResetForTenant_Scoped(t *testing.T) {
 func TestTenantManager_ResetTenant_AllBreakers(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -273,7 +273,7 @@ func TestTenantManager_ResetTenant_AllBreakers(t *testing.T) {
 func TestTenantManager_RemoveTenant(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -316,7 +316,7 @@ func TestTenantManager_RemoveTenant(t *testing.T) {
 func TestTenantManager_Inventory_IsSnapshot(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -348,7 +348,7 @@ func TestTenantManager_Inventory_IsSnapshot(t *testing.T) {
 func TestTenantManager_RemoveTenant_RaceWithExecute(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -462,7 +462,7 @@ func (l *captureTenantListener) snapshot() []capturedTenantEvent {
 func TestTenantManager_TenantListener_FiresForEveryTransition(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -516,7 +516,7 @@ func TestTenantManager_TenantListener_FiresForEveryTransition(t *testing.T) {
 func TestTenantManager_TenantListener_FiresForNoTenantTransition(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -563,7 +563,7 @@ func TestTenantManager_TenantListener_FiresForNoTenantTransition(t *testing.T) {
 func TestTenantManager_NilTenantListenerRegistration(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -611,7 +611,7 @@ func (l *captureLegacyListener) snapshot() []capturedTenantEvent {
 func TestTenantManager_LegacyListener_OnlyFiresForNoTenant(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -666,7 +666,7 @@ func TestTenantManager_LegacyListener_OnlyFiresForNoTenant(t *testing.T) {
 func TestTenantManager_ExecuteForTenant_NilCallback(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -682,7 +682,7 @@ func TestTenantManager_ExecuteForTenant_NilCallback(t *testing.T) {
 func TestTenantManager_GetOrCreateForTenant_ConfigMismatch(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -707,7 +707,7 @@ func TestTenantManager_GetOrCreateForTenant_ConfigMismatch(t *testing.T) {
 func TestTenantManager_GetOrCreateForTenant_InvalidIdentity(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -738,7 +738,7 @@ func TestTenantManager_GetOrCreateForTenant_InvalidIdentity(t *testing.T) {
 func TestManager_GetOrCreate_LegacyAllowsEmptyTenantButRejectsControlServiceName(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 
 	cb, err := mgr.GetOrCreate("svc", DefaultConfig())
@@ -770,13 +770,18 @@ func TestTenantManager_ObservabilityUsesTenantHash(t *testing.T) {
 	foundHash := false
 	for _, entry := range logger.snapshot() {
 		assert.NotContains(t, entry.msg, rawTenantID)
-		for _, field := range entry.fields {
-			assert.NotEqual(t, "tenant_id", field.Key)
-			assert.NotEqual(t, rawTenantID, field.Value)
-			assert.False(t, strings.Contains(field.Key, rawTenantID))
-			if field.Key == "tenant_hash" {
+		fields := obs.NormalizeKV(entry.fields...)
+		for i := 0; i < len(fields); i += 2 {
+			key, _ := fields[i].(string)
+			value := fields[i+1]
+
+			assert.NotEqual(t, "tenant_id", key)
+			assert.NotEqual(t, rawTenantID, value)
+			assert.False(t, strings.Contains(key, rawTenantID))
+
+			if key == "tenant_hash" {
 				foundHash = true
-				assert.Equal(t, tenantHashLabel(rawTenantID), field.Value)
+				assert.Equal(t, tenantHashLabel(rawTenantID), value)
 			}
 		}
 	}
@@ -793,7 +798,7 @@ func TestTenantManager_Metrics_TenantHashLabel(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsFactory(factory))
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -879,7 +884,7 @@ func TestTenantManager_Metrics_TenantHashLabel(t *testing.T) {
 func TestTenantManager_ConcurrentNoTenantAndTenant(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -945,7 +950,7 @@ func TestTenantManager_Metrics_NoTenantOmitsTenantHashLabel(t *testing.T) {
 	// that label shape so existing dashboards and recording rules keep working.
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsFactory(factory))
 	require.NoError(t, err)
 
 	_, err = mgr.GetOrCreate("svc", DefaultConfig())

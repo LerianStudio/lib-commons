@@ -3,9 +3,9 @@
 package ratelimit
 
 import (
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -13,7 +13,7 @@ import (
 func TestWithRedisStorageLogger_SetsLogger(t *testing.T) {
 	t.Parallel()
 
-	logger := libLog.NewNop()
+	logger := obs.Nop()
 	s := &RedisStorage{}
 	opt := WithRedisStorageLogger(logger)
 	opt(s)
@@ -23,7 +23,7 @@ func TestWithRedisStorageLogger_SetsLogger(t *testing.T) {
 func TestWithRedisStorageLogger_NilDoesNotOverwrite(t *testing.T) {
 	t.Parallel()
 
-	logger := libLog.NewNop()
+	logger := obs.Nop()
 	s := &RedisStorage{logger: logger}
 	opt := WithRedisStorageLogger(nil)
 	opt(s)
@@ -46,7 +46,7 @@ func TestLogError_NilStorage(t *testing.T) {
 func TestLogError_WithLogger(t *testing.T) {
 	t.Parallel()
 
-	logger := libLog.NewNop()
+	logger := obs.Nop()
 	s := &RedisStorage{logger: logger}
 	// Should not panic with a logger
 	assert.NotPanics(t, func() {

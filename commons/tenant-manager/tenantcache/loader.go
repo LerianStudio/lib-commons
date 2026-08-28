@@ -8,14 +8,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"sync"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 )
 
@@ -50,7 +50,7 @@ func NewTenantLoader(
 	cache *TenantCache,
 	service string,
 	cacheTTL time.Duration,
-	logger libLog.Logger,
+	logger obs.Logger,
 ) *TenantLoader {
 	if cacheTTL <= 0 {
 		cacheTTL = DefaultTenantCacheTTL
@@ -87,7 +87,7 @@ func (l *TenantLoader) InvalidateClientCache(ctx context.Context, tenantID, serv
 		return nil
 	}
 
-	_, tracer, _, _ := observability.NewTrackingFromContext(ctx) //nolint:dogsled // standard tracking extraction
+	_, tracer, _, _ := obsbridge.TrackingFromContext(ctx) //nolint:dogsled // standard tracking extraction
 
 	ctx, span := tracer.Start(ctx, "tenantcache.tenant_loader.invalidate_client_cache")
 	defer span.End()
@@ -120,7 +120,7 @@ func (l *TenantLoader) InvalidateClientCache(ctx context.Context, tenantID, serv
 //   - ErrTenantNotFound: returned as-is (not cached)
 //   - Other errors: wrapped with context
 func (l *TenantLoader) LoadTenant(ctx context.Context, tenantID string) (*core.TenantConfig, error) {
-	_, tracer, _, _ := observability.NewTrackingFromContext(ctx) //nolint:dogsled // standard tracking extraction
+	_, tracer, _, _ := obsbridge.TrackingFromContext(ctx) //nolint:dogsled // standard tracking extraction
 
 	ctx, span := tracer.Start(ctx, "tenantcache.tenant_loader.load_tenant")
 	defer span.End()

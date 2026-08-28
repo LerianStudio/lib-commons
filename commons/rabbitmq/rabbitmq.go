@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"io"
 	"net"
 	"net/http"
@@ -21,7 +22,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons/security/sanitize"
 	"github.com/LerianStudio/lib-observability/v2/assert"
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/metrics"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -50,7 +50,7 @@ type RabbitMQConnection struct {
 	Pass                   string `json:"-"`
 	VHost                  string
 	Channel                *amqp.Channel
-	Logger                 log.Logger
+	Logger                 obs.Logger
 	MetricsFactory         *metrics.MetricsFactory
 	Connected              bool
 
@@ -181,7 +181,7 @@ type connectSnapshot struct {
 	channelFactory     func(context.Context, *amqp.Connection) (*amqp.Channel, error)
 	connectionClosedFn func(*amqp.Connection) bool
 	connCloser         func(*amqp.Connection) error
-	logger             log.Logger
+	logger             obs.Logger
 }
 
 // snapshotConnectState captures connect-time state under the lock.
@@ -231,7 +231,7 @@ func (rc *RabbitMQConnection) currentConnectState() (connectSnapshot, bool, erro
 	return rc.snapshotConnectState(), rc.isFullyConnected(), nil
 }
 
-func (rc *RabbitMQConnection) enforceTLSBeforeDial(ctx context.Context, logger log.Logger, connStr string) error {
+func (rc *RabbitMQConnection) enforceTLSBeforeDial(ctx context.Context, logger obs.Logger, connStr string) error {
 	if strings.HasPrefix(strings.ToLower(connStr), "amqps://") {
 		return nil
 	}
@@ -241,9 +241,9 @@ func (rc *RabbitMQConnection) enforceTLSBeforeDial(ctx context.Context, logger l
 	}
 
 	if logger != nil {
-		logger.Log(ctx, log.LevelWarn, "security bypass active",
-			log.String("feature", "rabbitmq_tls"),
-			log.String("env_var", commons.EnvAllowInsecureTLS),
+		logger.Log(ctx, obs.LevelWarn, "security bypass active",
+			"feature", "rabbitmq_tls",
+			"env_var", commons.EnvAllowInsecureTLS,
 		)
 	}
 
@@ -288,7 +288,7 @@ func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 		return nil
 	}
 
-	snap.logger.Log(ctx, log.LevelInfo, "connecting to rabbitmq")
+	snap.logger.Log(ctx, obs.LevelInfo, "connecting to rabbitmq")
 
 	conn, ch, err := rc.dialAndOpenChannel(ctx, span, snap)
 	if err != nil {
@@ -299,12 +299,12 @@ func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 		rc.closeConnectionWith(conn, snap.connCloser)
 		rc.clearConnectionState()
 
-		snap.logger.Log(ctx, log.LevelError, "rabbitmq health check failed")
+		snap.logger.Log(ctx, obs.LevelError, "rabbitmq health check failed")
 
 		return fmt.Errorf("rabbitmq health check failed: %w", healthErr)
 	}
 
-	snap.logger.Log(ctx, log.LevelInfo, "connected to rabbitmq")
+	snap.logger.Log(ctx, obs.LevelInfo, "connected to rabbitmq")
 
 	rc.mu.Lock()
 	if rc.Connection != nil && rc.Connection != conn && !snap.connectionClosedFn(rc.Connection) {
@@ -328,7 +328,7 @@ func (rc *RabbitMQConnection) ConnectContext(ctx context.Context) error {
 func (rc *RabbitMQConnection) dialAndOpenChannel(ctx context.Context, span trace.Span, snap connectSnapshot) (*amqp.Connection, *amqp.Channel, error) {
 	conn, err := snap.dialer(ctx, snap.connStr)
 	if err != nil {
-		snap.logger.Log(ctx, log.LevelError, "failed to connect to rabbitmq", log.String("error_detail", sanitizeAMQPErr(err, snap.connStr)))
+		snap.logger.Log(ctx, obs.LevelError, "failed to connect to rabbitmq", "error_detail", sanitizeAMQPErr(err, snap.connStr))
 		rc.recordConnectionFailure("connect")
 		rc.clearConnectionState()
 
@@ -343,7 +343,7 @@ func (rc *RabbitMQConnection) dialAndOpenChannel(ctx context.Context, span trace
 		rc.closeConnectionWith(conn, snap.connCloser)
 		rc.clearConnectionState()
 
-		snap.logger.Log(ctx, log.LevelError, "failed to open channel on rabbitmq", log.Err(err))
+		snap.logger.Log(ctx, obs.LevelError, "failed to open channel on rabbitmq", "error", err)
 
 		libOpentelemetry.HandleSpanError(span, "Failed to open channel on rabbitmq", err)
 
@@ -356,7 +356,7 @@ func (rc *RabbitMQConnection) dialAndOpenChannel(ctx context.Context, span trace
 
 		err = errors.New("can't connect rabbitmq")
 
-		snap.logger.Log(ctx, log.LevelError, "rabbitmq health check failed")
+		snap.logger.Log(ctx, obs.LevelError, "rabbitmq health check failed")
 
 		libOpentelemetry.HandleSpanError(span, "RabbitMQ health check failed", err)
 
@@ -374,7 +374,7 @@ func (rc *RabbitMQConnection) EnsureChannel() error {
 // ensureChannelSnapshot captures state needed by EnsureChannelContext under the lock.
 type ensureChannelSnapshot struct {
 	connStr            string
-	logger             log.Logger
+	logger             obs.Logger
 	dialer             func(context.Context, string) (*amqp.Connection, error)
 	channelFactory     func(context.Context, *amqp.Connection) (*amqp.Channel, error)
 	connCloser         func(*amqp.Connection) error
@@ -471,7 +471,7 @@ func (rc *RabbitMQConnection) EnsureChannelContext(ctx context.Context) error {
 
 		conn, err = snap.dialer(ctx, snap.connStr)
 		if err != nil {
-			snap.logger.Log(ctx, log.LevelError, "failed to connect to rabbitmq", log.String("error_detail", sanitizeAMQPErr(err, snap.connStr)))
+			snap.logger.Log(ctx, obs.LevelError, "failed to connect to rabbitmq", "error_detail", sanitizeAMQPErr(err, snap.connStr))
 			rc.recordConnectionFailure("ensure_channel_connect")
 
 			rc.mu.Lock()
@@ -499,7 +499,7 @@ func (rc *RabbitMQConnection) EnsureChannelContext(ctx context.Context) error {
 		rc.handleChannelFailure(conn, snap.existingConn, newConnection, snap.connCloser)
 		rc.recordConnectionFailure("ensure_channel")
 
-		snap.logger.Log(ctx, log.LevelError, "failed to open channel on rabbitmq", log.Err(err))
+		snap.logger.Log(ctx, obs.LevelError, "failed to open channel on rabbitmq", "error", err)
 
 		libOpentelemetry.HandleSpanError(span, "Failed to open channel on rabbitmq", err)
 
@@ -572,7 +572,7 @@ func (rc *RabbitMQConnection) commitChannelOnExistingConnection(ch *amqp.Channel
 
 		if chCloser != nil {
 			if err := chCloser(ch); err != nil {
-				rc.logger().Log(context.Background(), log.LevelWarn, "failed to close orphaned rabbitmq channel", log.Err(err))
+				rc.logger().Log(context.Background(), obs.LevelWarn, "failed to close orphaned rabbitmq channel", "error", err)
 			}
 		}
 
@@ -591,7 +591,7 @@ func (rc *RabbitMQConnection) commitChannelOnExistingConnection(ch *amqp.Channel
 	// channel panics inside the driver.
 	if oldCh != nil && oldCh != ch && chCloser != nil && (chClosed == nil || !chClosed(oldCh)) {
 		if err := chCloser(oldCh); err != nil {
-			rc.logger().Log(context.Background(), log.LevelWarn, "failed to close replaced rabbitmq channel", log.Err(err))
+			rc.logger().Log(context.Background(), obs.LevelWarn, "failed to close replaced rabbitmq channel", "error", err)
 		}
 	}
 }
@@ -632,7 +632,7 @@ func (rc *RabbitMQConnection) GetNewConnectContext(ctx context.Context) (*amqp.C
 	rc.mu.Unlock()
 
 	if err := rc.EnsureChannelContext(ctx); err != nil {
-		rc.logger().Log(ctx, log.LevelError, "failed to ensure channel", log.Err(err))
+		rc.logger().Log(ctx, obs.LevelError, "failed to ensure channel", "error", err)
 
 		return nil, err
 	}
@@ -716,14 +716,14 @@ func (rc *RabbitMQConnection) healthCheck(
 	rawHealthURL, user, pass string,
 	client *http.Client,
 	policy healthCheckURLConfig,
-	logger log.Logger,
+	logger obs.Logger,
 ) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	if err := ctx.Err(); err != nil {
-		logger.Log(ctx, log.LevelError, "context canceled during rabbitmq health check", log.Err(err))
+		logger.Log(ctx, obs.LevelError, "context canceled during rabbitmq health check", "error", err)
 
 		return fmt.Errorf("rabbitmq health check context: %w", err)
 	}
@@ -736,7 +736,7 @@ func (rc *RabbitMQConnection) healthCheck(
 		rc.warnMissingAllowlistOnce.Do(func() {
 			logger.Log(
 				ctx,
-				log.LevelWarn,
+				obs.LevelWarn,
 				"rabbitmq health check explicit host allowlist is empty; compatibility mode may skip host validation. Configure HealthCheckAllowedHosts and set RequireHealthCheckAllowedHosts=true to enforce strict SSRF hardening",
 			)
 		})
@@ -744,14 +744,14 @@ func (rc *RabbitMQConnection) healthCheck(
 
 	healthURL, err := validateHealthCheckURLWithConfig(rawHealthURL, policy)
 	if err != nil {
-		logger.Log(ctx, log.LevelError, "invalid rabbitmq health check URL", log.Err(err))
+		logger.Log(ctx, obs.LevelError, "invalid rabbitmq health check URL", "error", err)
 
 		return err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 	if err != nil {
-		logger.Log(ctx, log.LevelError, "failed to create rabbitmq health check request", log.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to create rabbitmq health check request", "error", err)
 
 		return fmt.Errorf("building rabbitmq health check request: %w", err)
 	}
@@ -765,7 +765,7 @@ func (rc *RabbitMQConnection) healthCheck(
 	// #nosec G704 -- URL is validated via validateHealthCheckURLWithConfig before request; host allowlist and IP safety checks prevent SSRF
 	resp, err := client.Do(req)
 	if err != nil {
-		logger.Log(ctx, log.LevelError, "failed to execute rabbitmq health check request", log.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to execute rabbitmq health check request", "error", err)
 
 		return fmt.Errorf("executing rabbitmq health check request: %w", err)
 	}
@@ -774,20 +774,20 @@ func (rc *RabbitMQConnection) healthCheck(
 	return parseHealthCheckResponse(ctx, resp, logger)
 }
 
-func parseHealthCheckResponse(ctx context.Context, resp *http.Response, logger log.Logger) error {
+func parseHealthCheckResponse(ctx context.Context, resp *http.Response, logger obs.Logger) error {
 	if resp == nil {
 		return errors.New("rabbitmq health check response is empty")
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		logger.Log(ctx, log.LevelError, "rabbitmq health check failed", log.String("status", resp.Status))
+		logger.Log(ctx, obs.LevelError, "rabbitmq health check failed", "status", resp.Status)
 
 		return fmt.Errorf("rabbitmq health check status %q", resp.Status)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		logger.Log(ctx, log.LevelError, "failed to read rabbitmq health check response", log.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to read rabbitmq health check response", "error", err)
 
 		return fmt.Errorf("reading rabbitmq health check response: %w", err)
 	}
@@ -796,13 +796,13 @@ func parseHealthCheckResponse(ctx context.Context, resp *http.Response, logger l
 
 	err = json.Unmarshal(body, &result)
 	if err != nil {
-		logger.Log(ctx, log.LevelError, "failed to parse rabbitmq health check response", log.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to parse rabbitmq health check response", "error", err)
 
 		return fmt.Errorf("parsing rabbitmq health check response: %w", err)
 	}
 
 	if result == nil {
-		logger.Log(ctx, log.LevelError, "rabbitmq health check response is empty or null")
+		logger.Log(ctx, obs.LevelError, "rabbitmq health check response is empty or null")
 
 		return errors.New("rabbitmq health check response is empty")
 	}
@@ -811,7 +811,7 @@ func parseHealthCheckResponse(ctx context.Context, resp *http.Response, logger l
 		return nil
 	}
 
-	logger.Log(ctx, log.LevelError, "rabbitmq is not healthy")
+	logger.Log(ctx, obs.LevelError, "rabbitmq is not healthy")
 
 	return errors.New("rabbitmq is not healthy")
 }
@@ -930,7 +930,7 @@ func (rc *RabbitMQConnection) closeConnectionWith(connection *amqp.Connection, c
 	}
 
 	if err := closer(connection); err != nil {
-		rc.logger().Log(context.Background(), log.LevelWarn, "failed to close rabbitmq connection during cleanup", log.Err(err))
+		rc.logger().Log(context.Background(), obs.LevelWarn, "failed to close rabbitmq connection during cleanup", "error", err)
 	}
 }
 
@@ -1005,7 +1005,7 @@ func (rc *RabbitMQConnection) CloseContext(ctx context.Context) error {
 	if channel != nil {
 		if err := chCloser(ctx, channel); err != nil {
 			closeErr = fmt.Errorf("failed to close rabbitmq channel: %w", err)
-			logger.Log(ctx, log.LevelWarn, "failed to close rabbitmq channel", log.Err(err))
+			logger.Log(ctx, obs.LevelWarn, "failed to close rabbitmq channel", "error", err)
 		}
 	}
 
@@ -1017,7 +1017,7 @@ func (rc *RabbitMQConnection) CloseContext(ctx context.Context) error {
 				closeErr = errors.Join(closeErr, fmt.Errorf("failed to close rabbitmq connection: %w", err))
 			}
 
-			logger.Log(ctx, log.LevelWarn, "failed to close rabbitmq connection", log.Err(err))
+			logger.Log(ctx, obs.LevelWarn, "failed to close rabbitmq connection", "error", err)
 		}
 	}
 
@@ -1028,16 +1028,16 @@ func (rc *RabbitMQConnection) CloseContext(ctx context.Context) error {
 	return closeErr
 }
 
-func (rc *RabbitMQConnection) logger() log.Logger {
+func (rc *RabbitMQConnection) logger() obs.Logger {
 	if rc == nil {
-		return &log.NopLogger{}
+		return obs.Nop()
 	}
 
 	// Use reflect-based typed-nil detection: an interface can be non-nil at the
 	// interface level while holding a nil concrete pointer (typed-nil). Calling
 	// methods on a typed-nil logger will panic. The nilcheck package handles this.
 	if nilcheck.Interface(rc.Logger) {
-		return &log.NopLogger{}
+		return obs.Nop()
 	}
 
 	return rc.Logger
@@ -1507,7 +1507,7 @@ func (rc *RabbitMQConnection) recordConnectionFailure(operation string) {
 
 	counter, err := rc.MetricsFactory.Counter(connectionFailuresMetric)
 	if err != nil {
-		rc.logger().Log(context.Background(), log.LevelWarn, "failed to create rabbitmq metric counter", log.Err(err))
+		rc.logger().Log(context.Background(), obs.LevelWarn, "failed to create rabbitmq metric counter", "error", err)
 		return
 	}
 
@@ -1517,7 +1517,7 @@ func (rc *RabbitMQConnection) recordConnectionFailure(operation string) {
 		}).
 		AddOne(context.Background())
 	if err != nil {
-		rc.logger().Log(context.Background(), log.LevelWarn, "failed to record rabbitmq metric", log.Err(err))
+		rc.logger().Log(context.Background(), obs.LevelWarn, "failed to record rabbitmq metric", "error", err)
 	}
 }
 

@@ -4,6 +4,7 @@ package dlq
 
 import (
 	"context"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"os"
 	"testing"
 	"time"
@@ -11,7 +12,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,7 +38,7 @@ func newTestRedisClient(t *testing.T, mr *miniredis.Miniredis) *libRedis.Client 
 		Topology: libRedis.Topology{
 			Standalone: &libRedis.StandaloneTopology{Address: mr.Addr()},
 		},
-		Logger: &libLog.NopLogger{},
+		Logger: obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -101,7 +101,7 @@ func TestNew_WithOptions(t *testing.T) {
 	mr := miniredis.RunT(t)
 	conn := newTestRedisClient(t, mr)
 
-	logger := libLog.NewNop()
+	logger := obs.Nop()
 	tracer := noop.NewTracerProvider().Tracer("test")
 	m := &mockMetrics{}
 

@@ -6,13 +6,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
 	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -35,19 +35,19 @@ type panicLogger struct {
 	seen bool
 }
 
-func (logger *panicLogger) Log(context.Context, libLog.Level, string, ...libLog.Field) {
+func (logger *panicLogger) Log(context.Context, int, string, ...any) {
 	logger.seen = true
 }
 
-func (logger *panicLogger) With(...libLog.Field) libLog.Logger {
+func (logger *panicLogger) With(...any) obs.Logger {
 	return logger
 }
 
-func (logger *panicLogger) WithGroup(string) libLog.Logger {
+func (logger *panicLogger) WithGroup(string) obs.Logger {
 	return logger
 }
 
-func (logger *panicLogger) Enabled(libLog.Level) bool {
+func (logger *panicLogger) Enabled(int) bool {
 	return true
 }
 

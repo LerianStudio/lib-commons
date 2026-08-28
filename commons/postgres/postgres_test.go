@@ -8,6 +8,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,7 +18,6 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/stretchr/testify/assert"
@@ -146,8 +146,8 @@ func testDB(t *testing.T) *sql.DB {
 func withPatchedDependencies(
 	t *testing.T,
 	openFn func(string, string) (*sql.DB, error),
-	resolverFn func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error),
-	migrateFn func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error,
+	resolverFn func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error),
+	migrateFn func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error,
 ) {
 	t.Helper()
 
@@ -216,8 +216,8 @@ func TestConnectSanitizesSensitiveError(t *testing.T) {
 		func(string, string) (*sql.DB, error) {
 			return nil, errors.New("parse postgres://alice:supersecret@db.internal:5432/main failed password=supersecret")
 		},
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return nil, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return nil, nil },
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -241,8 +241,8 @@ func TestConnectAtomicSwapKeepsOldOnFailure(t *testing.T) {
 	withPatchedDependencies(
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return newResolver, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return newResolver, nil },
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -263,8 +263,8 @@ func TestConnectAtomicSwapClosesPreviousOnSuccess(t *testing.T) {
 	withPatchedDependencies(
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return newResolver, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return newResolver, nil },
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -287,8 +287,8 @@ func TestDBLazyConnect(t *testing.T) {
 	withPatchedDependencies(
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return resolver, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return resolver, nil },
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -339,8 +339,8 @@ func TestMigratorUpRunsExplicitly(t *testing.T) {
 	withPatchedDependencies(
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error {
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error {
 			migrationCalls.Add(1)
 			return nil
 		},
@@ -389,7 +389,7 @@ func TestConfigWithDefaults(t *testing.T) {
 	t.Run("custom values preserved", func(t *testing.T) {
 		t.Parallel()
 
-		logger := log.NewNop()
+		logger := obs.Nop()
 		cfg := Config{
 			PrimaryDSN:         "dsn",
 			ReplicaDSN:         "dsn",
@@ -559,8 +559,8 @@ func TestConnectDbOpenError(t *testing.T) {
 			func(_, _ string) (*sql.DB, error) {
 				return nil, errors.New("connection refused")
 			},
-			func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-			func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+			func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
+			func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 		)
 
 		client, err := New(validConfig())
@@ -584,8 +584,8 @@ func TestConnectDbOpenError(t *testing.T) {
 
 				return nil, errors.New("replica down")
 			},
-			func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-			func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+			func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
+			func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 		)
 
 		client, err := New(validConfig())
@@ -600,10 +600,10 @@ func TestConnectDbOpenError(t *testing.T) {
 		withPatchedDependencies(
 			t,
 			func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
-			func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) {
+			func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) {
 				return nil, errors.New("resolver error")
 			},
-			func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+			func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 		)
 
 		client, err := New(validConfig())
@@ -625,8 +625,8 @@ func TestResolverCachesResolver(t *testing.T) {
 	withPatchedDependencies(
 		t,
 		func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return resolver, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return resolver, nil },
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -785,8 +785,8 @@ func TestMigratorUpDbOpenError(t *testing.T) {
 		func(_, _ string) (*sql.DB, error) {
 			return nil, errors.New("parse postgres://alice:supersecret@db:5432/main failed")
 		},
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return nil, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return nil, nil },
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 	)
 
 	m, err := NewMigrator(MigrationConfig{
@@ -807,8 +807,8 @@ func TestMigratorUpResolvesPathFromComponent(t *testing.T) {
 	withPatchedDependencies(
 		t,
 		func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-		func(_ context.Context, _ *sql.DB, path, _ string, _, _ bool, _ log.Logger) error {
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
+		func(_ context.Context, _ *sql.DB, path, _ string, _, _ bool, _ obs.Logger) error {
 			capturedPath = path
 			return nil
 		},
@@ -832,8 +832,8 @@ func TestMigratorUpMigrationError(t *testing.T) {
 	withPatchedDependencies(
 		t,
 		func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-		func(_ context.Context, _ *sql.DB, _, _ string, _, _ bool, _ log.Logger) error {
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
+		func(_ context.Context, _ *sql.DB, _, _ string, _, _ bool, _ obs.Logger) error {
 			return errors.New("migration failed")
 		},
 	)
@@ -1089,8 +1089,8 @@ func TestConnectLockedOldResolverCloseError(t *testing.T) {
 	withPatchedDependencies(
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return newResolver, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return newResolver, nil },
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -1115,8 +1115,8 @@ func TestResolverLazyConnectError(t *testing.T) {
 		func(string, string) (*sql.DB, error) {
 			return nil, errors.New("cannot connect")
 		},
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -1137,8 +1137,8 @@ func TestResolverDoubleCheckReturnsExisting(t *testing.T) {
 	withPatchedDependencies(
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return resolver, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return resolver, nil },
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -1168,8 +1168,8 @@ func TestPrimaryReturnsDBWhenConnected(t *testing.T) {
 	withPatchedDependencies(
 		t,
 		func(string, string) (*sql.DB, error) { return testDB(t), nil },
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 	)
 
 	client, err := New(validConfig())
@@ -1193,8 +1193,8 @@ func TestMigratorUpResolveMigrationsPathError(t *testing.T) {
 	withPatchedDependencies(
 		t,
 		func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 	)
 
 	m, err := NewMigrator(MigrationConfig{
@@ -1232,7 +1232,7 @@ func TestClientLogAtLevelNilSafety(t *testing.T) {
 
 		var c *Client
 		assert.NotPanics(t, func() {
-			c.logAtLevel(context.Background(), log.LevelInfo, "test")
+			c.logAtLevel(context.Background(), obs.LevelInfo, "test")
 		})
 	})
 
@@ -1241,7 +1241,7 @@ func TestClientLogAtLevelNilSafety(t *testing.T) {
 
 		c := &Client{}
 		assert.NotPanics(t, func() {
-			c.logAtLevel(context.Background(), log.LevelInfo, "test")
+			c.logAtLevel(context.Background(), obs.LevelInfo, "test")
 		})
 	})
 }
@@ -1258,7 +1258,7 @@ func TestMigratorLogAtLevelNilSafety(t *testing.T) {
 
 		var m *Migrator
 		assert.NotPanics(t, func() {
-			m.logAtLevel(context.Background(), log.LevelInfo, "test")
+			m.logAtLevel(context.Background(), obs.LevelInfo, "test")
 		})
 	})
 
@@ -1267,7 +1267,7 @@ func TestMigratorLogAtLevelNilSafety(t *testing.T) {
 
 		m := &Migrator{}
 		assert.NotPanics(t, func() {
-			m.logAtLevel(context.Background(), log.LevelError, "test")
+			m.logAtLevel(context.Background(), obs.LevelError, "test")
 		})
 	})
 }
@@ -1341,7 +1341,7 @@ func TestClassifyMigrationError(t *testing.T) {
 
 		outcome := classifyMigrationError(migrate.ErrNoChange, false, migrationState{})
 		assert.Nil(t, outcome.err)
-		assert.Equal(t, log.LevelInfo, outcome.level)
+		assert.Equal(t, obs.LevelInfo, outcome.level)
 		assert.NotEmpty(t, outcome.message)
 	})
 
@@ -1351,7 +1351,7 @@ func TestClassifyMigrationError(t *testing.T) {
 		outcome := classifyMigrationError(os.ErrNotExist, false, migrationState{})
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, ErrMigrationsNotFound)
-		assert.Equal(t, log.LevelError, outcome.level)
+		assert.Equal(t, obs.LevelError, outcome.level)
 		assert.Contains(t, outcome.err.Error(), "missing or empty")
 	})
 
@@ -1360,7 +1360,7 @@ func TestClassifyMigrationError(t *testing.T) {
 
 		outcome := classifyMigrationError(os.ErrNotExist, true, migrationState{})
 		assert.Nil(t, outcome.err)
-		assert.Equal(t, log.LevelWarn, outcome.level)
+		assert.Equal(t, obs.LevelWarn, outcome.level)
 		assert.NotEmpty(t, outcome.message)
 	})
 
@@ -1377,7 +1377,7 @@ func TestClassifyMigrationError(t *testing.T) {
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, ErrMigrationVersionAhead)
 		assert.NotErrorIs(t, outcome.err, ErrMigrationsNotFound)
-		assert.Equal(t, log.LevelError, outcome.level)
+		assert.Equal(t, obs.LevelError, outcome.level)
 		// Exact fragments, not bare "17"/"16".
 		assert.Contains(t, outcome.err.Error(), "pinned to version 17")
 		assert.Contains(t, outcome.err.Error(), "ahead of the bundled migrations")
@@ -1453,7 +1453,7 @@ func TestClassifyMigrationError(t *testing.T) {
 			currentVersion: 17, hasVersion: true, sourceCount: 16, sourceMax: 16,
 		})
 		assert.Nil(t, outcome.err)
-		assert.Equal(t, log.LevelWarn, outcome.level)
+		assert.Equal(t, obs.LevelWarn, outcome.level)
 	})
 
 	t.Run("ErrDirty returns wrapped sentinel with version", func(t *testing.T) {
@@ -1463,7 +1463,7 @@ func TestClassifyMigrationError(t *testing.T) {
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, ErrMigrationDirty)
 		assert.Contains(t, outcome.err.Error(), "42")
-		assert.Equal(t, log.LevelError, outcome.level)
+		assert.Equal(t, obs.LevelError, outcome.level)
 		assert.NotEmpty(t, outcome.fields)
 	})
 
@@ -1474,15 +1474,19 @@ func TestClassifyMigrationError(t *testing.T) {
 		outcome := classifyMigrationError(cause, false, migrationState{})
 		require.Error(t, outcome.err)
 		assert.ErrorIs(t, outcome.err, cause)
-		assert.Equal(t, log.LevelError, outcome.level)
+		assert.Equal(t, obs.LevelError, outcome.level)
 	})
 }
 
-// fieldMap turns log fields into a key->value map for assertions.
-func fieldMap(fields []log.Field) map[string]any {
-	m := make(map[string]any, len(fields))
-	for _, f := range fields {
-		m[f.Key] = f.Value
+// fieldMap turns alternating key/value log attributes into a key->value map
+// for assertions.
+func fieldMap(fields []any) map[string]any {
+	normalized := obs.NormalizeKV(fields...)
+
+	m := make(map[string]any, len(normalized)/2)
+	for i := 0; i < len(normalized); i += 2 {
+		key, _ := normalized[i].(string)
+		m[key] = normalized[i+1]
 	}
 
 	return m
@@ -1629,7 +1633,7 @@ func TestCreateResolverFnPanicRecovery(t *testing.T) {
 	})
 
 	dbOpenFn = func(_, _ string) (*sql.DB, error) { return testDB(t), nil }
-	createResolverFn = func(_ *sql.DB, _ *sql.DB, logger log.Logger) (_ dbresolver.DB, err error) {
+	createResolverFn = func(_ *sql.DB, _ *sql.DB, logger obs.Logger) (_ dbresolver.DB, err error) {
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				err = fmt.Errorf("failed to create resolver: %v", recovered)
@@ -1733,13 +1737,13 @@ func TestWarnInsecureDSN(t *testing.T) {
 	t.Run("no panic with secure DSN", func(t *testing.T) {
 		t.Parallel()
 
-		warnInsecureDSN(context.Background(), log.NewNop(), "postgres://host/db?sslmode=require", "primary")
+		warnInsecureDSN(context.Background(), obs.Nop(), "postgres://host/db?sslmode=require", "primary")
 	})
 
 	t.Run("no panic with insecure DSN", func(t *testing.T) {
 		t.Parallel()
 
-		warnInsecureDSN(context.Background(), log.NewNop(), "postgres://host/db?sslmode=disable", "primary")
+		warnInsecureDSN(context.Background(), obs.Nop(), "postgres://host/db?sslmode=disable", "primary")
 	})
 }
 
@@ -1873,10 +1877,10 @@ func TestMigratorUpBlocksPlaintextBeforeOpen(t *testing.T) {
 			openCalled = true
 			return testDB(t), nil
 		},
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) {
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) {
 			return nil, nil
 		},
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error {
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error {
 			return nil
 		},
 	)
@@ -1885,7 +1889,7 @@ func TestMigratorUpBlocksPlaintextBeforeOpen(t *testing.T) {
 		PrimaryDSN:     "postgres://localhost/db?sslmode=disable",
 		DatabaseName:   "ledger",
 		MigrationsPath: "/migrations",
-		Logger:         log.NewNop(),
+		Logger:         obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -1907,10 +1911,10 @@ func TestMigratorUpAllowsSecureDSN(t *testing.T) {
 			openCalled = true
 			return testDB(t), nil
 		},
-		func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) {
+		func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) {
 			return nil, nil
 		},
-		func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error {
+		func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error {
 			migrateCalled = true
 			return nil
 		},
@@ -1920,7 +1924,7 @@ func TestMigratorUpAllowsSecureDSN(t *testing.T) {
 		PrimaryDSN:     "postgres://localhost/db?sslmode=require",
 		DatabaseName:   "ledger",
 		MigrationsPath: "/migrations",
-		Logger:         log.NewNop(),
+		Logger:         obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -1941,8 +1945,8 @@ func TestCloseDefensiveCleanup(t *testing.T) {
 		withPatchedDependencies(
 			t,
 			func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
-			func(*sql.DB, *sql.DB, log.Logger) (dbresolver.DB, error) { return resolver, nil },
-			func(context.Context, *sql.DB, string, string, bool, bool, log.Logger) error { return nil },
+			func(*sql.DB, *sql.DB, obs.Logger) (dbresolver.DB, error) { return resolver, nil },
+			func(context.Context, *sql.DB, string, string, bool, bool, obs.Logger) error { return nil },
 		)
 
 		client, err := New(validConfig())

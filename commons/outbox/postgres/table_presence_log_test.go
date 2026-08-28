@@ -5,39 +5,39 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"sync"
 	"testing"
 	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/require"
 )
 
 // recordingLogger captures Log calls for assertions. It satisfies
-// libLog.Logger and is safe for the single-goroutine probe path here.
+// obs.Logger and is safe for the single-goroutine probe path here.
 type recordingLogger struct {
 	mu      sync.Mutex
 	entries []recordedEntry
 }
 
 type recordedEntry struct {
-	level  libLog.Level
+	level  int
 	msg    string
-	fields []libLog.Field
+	fields []any
 }
 
-func (l *recordingLogger) Log(_ context.Context, level libLog.Level, msg string, fields ...libLog.Field) {
+func (l *recordingLogger) Log(_ context.Context, level int, msg string, fields ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	l.entries = append(l.entries, recordedEntry{level: level, msg: msg, fields: fields})
 }
 
-func (l *recordingLogger) With(...libLog.Field) libLog.Logger { return l }
-func (l *recordingLogger) WithGroup(string) libLog.Logger     { return l }
-func (l *recordingLogger) Enabled(libLog.Level) bool          { return true }
-func (l *recordingLogger) Sync(context.Context) error         { return nil }
+func (l *recordingLogger) With(...any) obs.Logger      { return l }
+func (l *recordingLogger) WithGroup(string) obs.Logger { return l }
+func (l *recordingLogger) Enabled(int) bool            { return true }
+func (l *recordingLogger) Sync(context.Context) error  { return nil }
 
 func (l *recordingLogger) warnCount() int {
 	l.mu.Lock()
@@ -46,7 +46,7 @@ func (l *recordingLogger) warnCount() int {
 	count := 0
 
 	for _, e := range l.entries {
-		if e.level == libLog.LevelWarn {
+		if e.level == obs.LevelWarn {
 			count++
 		}
 	}
@@ -59,7 +59,7 @@ func (l *recordingLogger) lastWarn() (recordedEntry, bool) {
 	defer l.mu.Unlock()
 
 	for i := len(l.entries) - 1; i >= 0; i-- {
-		if l.entries[i].level == libLog.LevelWarn {
+		if l.entries[i].level == obs.LevelWarn {
 			return l.entries[i], true
 		}
 	}
@@ -149,12 +149,14 @@ func TestTablePresenceProbe_NoWarnWhenTablePresent(t *testing.T) {
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
-func requireFieldValue(t *testing.T, fields []libLog.Field, key, want string) {
+func requireFieldValue(t *testing.T, fields []any, key, want string) {
 	t.Helper()
 
-	for _, f := range fields {
-		if f.Key == key {
-			require.Equal(t, want, f.Value)
+	normalized := obs.NormalizeKV(fields...)
+	for i := 0; i < len(normalized); i += 2 {
+		if normalized[i] == key {
+			require.Equal(t, want, normalized[i+1])
+
 			return
 		}
 	}

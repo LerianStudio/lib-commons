@@ -5,15 +5,15 @@ package circuitbreaker_test
 import (
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"strings"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/circuitbreaker"
-	"github.com/LerianStudio/lib-observability/v2/log"
 )
 
 func ExampleManager_Execute_fallbackOnOpen() {
-	mgr, err := circuitbreaker.NewManager(&log.NopLogger{})
+	mgr, err := circuitbreaker.NewManager(obs.Nop())
 	if err != nil {
 		return
 	}

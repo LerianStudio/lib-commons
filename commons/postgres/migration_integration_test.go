@@ -7,11 +7,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -70,7 +70,7 @@ ALTER TABLE nonexistent_table ADD COLUMN foo TEXT;`
 		MigrationsPath:       migDir,
 		Component:            "dirty_state_test",
 		AllowMultiStatements: true,
-		Logger:               log.NewNop(),
+		Logger:               obs.Nop(),
 	})
 	require.NoError(t, err, "NewMigrator() should succeed")
 
@@ -92,7 +92,7 @@ ALTER TABLE nonexistent_table ADD COLUMN foo TEXT;`
 		MigrationsPath:       migDir,
 		Component:            "dirty_state_test",
 		AllowMultiStatements: true,
-		Logger:               log.NewNop(),
+		Logger:               obs.Nop(),
 	})
 	require.NoError(t, err, "NewMigrator() for second attempt should succeed")
 
@@ -167,7 +167,7 @@ func TestIntegration_Migration_NoChange(t *testing.T) {
 		DatabaseName:   "testdb",
 		MigrationsPath: migDir,
 		Component:      "no_change_test",
-		Logger:         log.NewNop(),
+		Logger:         obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -230,7 +230,7 @@ CREATE TABLE multi_b (id SERIAL PRIMARY KEY);`
 		MigrationsPath:       migDir,
 		Component:            "multi_stmt_test",
 		AllowMultiStatements: true,
-		Logger:               log.NewNop(),
+		Logger:               obs.Nop(),
 	})
 	require.NoError(t, err, "NewMigrator() should succeed with AllowMultiStatements")
 

@@ -2,9 +2,9 @@ package circuitbreaker
 
 import (
 	"context"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -50,14 +50,14 @@ func (m *manager) initMetricCounters() {
 
 	stateCounter, err := m.metricsFactory.Counter(stateTransitionMetric)
 	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to create state transition metric counter", log.Err(err))
+		m.logger.Log(context.Background(), obs.LevelWarn, "failed to create state transition metric counter", "error", err)
 	} else {
 		m.stateCounter = stateCounter
 	}
 
 	execCounter, err := m.metricsFactory.Counter(executionMetric)
 	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to create execution metric counter", log.Err(err))
+		m.logger.Log(context.Background(), obs.LevelWarn, "failed to create execution metric counter", "error", err)
 	} else {
 		m.execCounter = execCounter
 	}
@@ -114,7 +114,7 @@ func (m *manager) recordStateTransition(tenantID, serviceName string, from, to S
 
 	err := m.stateCounter.WithAttributes(attrs.ToSlice()...).AddOne(context.Background())
 	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to record state transition metric", log.Err(err))
+		m.logger.Log(context.Background(), obs.LevelWarn, "failed to record state transition metric", "error", err)
 	}
 }
 
@@ -132,6 +132,6 @@ func (m *manager) recordExecution(slot *breakerSlot, result string) {
 
 	err := m.execCounter.WithAttributes(attrs.ToSlice()...).AddOne(context.Background())
 	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to record execution metric", log.Err(err))
+		m.logger.Log(context.Background(), obs.LevelWarn, "failed to record execution metric", "error", err)
 	}
 }

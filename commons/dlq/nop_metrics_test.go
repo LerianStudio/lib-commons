@@ -5,9 +5,9 @@ package dlq
 import (
 	"context"
 	"errors"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -44,7 +44,7 @@ func TestLogEnqueueFallback_DoesNotPanic(t *testing.T) {
 	t.Parallel()
 
 	h := &Handler{
-		logger: libLog.NewNop(),
+		logger: obs.Nop(),
 	}
 
 	msg := &FailedMessage{

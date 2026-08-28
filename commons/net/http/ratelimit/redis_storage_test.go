@@ -4,6 +4,7 @@ package ratelimit
 
 import (
 	"context"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -25,7 +25,7 @@ func newTestRedisConnection(t *testing.T, mr *miniredis.Miniredis) *libRedis.Cli
 		Topology: libRedis.Topology{
 			Standalone: &libRedis.StandaloneTopology{Address: mr.Addr()},
 		},
-		Logger: &libLog.NopLogger{},
+		Logger: obs.Nop(),
 	})
 	require.NoError(t, err)
 

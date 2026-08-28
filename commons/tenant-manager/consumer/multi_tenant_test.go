@@ -10,6 +10,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -23,7 +25,6 @@ import (
 	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/rabbitmq"
 	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,7 +36,7 @@ import (
 func NewMultiTenantConsumer(
 	rabbitmq *tmrabbitmq.Manager,
 	config MultiTenantConfig,
-	logger libLog.Logger,
+	logger obs.Logger,
 	opts ...Option,
 ) *MultiTenantConsumer {
 	if rabbitmq != nil {
@@ -56,7 +57,7 @@ func mustNewConsumer(
 	t *testing.T,
 	rabbitmq *tmrabbitmq.Manager,
 	config MultiTenantConfig,
-	logger libLog.Logger,
+	logger obs.Logger,
 	opts ...Option,
 ) *MultiTenantConsumer {
 	t.Helper()
@@ -1028,7 +1029,7 @@ func TestMultiTenantConsumer_StructuredLogEvents(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			ctx = observability.ContextWithLogger(ctx, logger)
+			ctx = observability.ContextWithLogger(ctx, obsbridge.LibLogger(logger))
 
 			consumer.parentCtx = ctx
 

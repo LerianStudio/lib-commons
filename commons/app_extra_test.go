@@ -3,9 +3,9 @@
 package commons
 
 import (
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -13,7 +13,7 @@ import (
 func TestRun_NoError(t *testing.T) {
 	t.Parallel()
 
-	logger := libLog.NewNop()
+	logger := obs.Nop()
 	l := NewLauncher()
 	l.Logger = logger
 
@@ -31,7 +31,7 @@ func TestRun_NoError(t *testing.T) {
 func TestRun_WithError_WithLogger(t *testing.T) {
 	t.Parallel()
 
-	logger := libLog.NewNop()
+	logger := obs.Nop()
 	l := NewLauncher()
 	l.Logger = logger
 	assert.NoError(t, l.Add("err-app", &stubApp{err: assert.AnError}))

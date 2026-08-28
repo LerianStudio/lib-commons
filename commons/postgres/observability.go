@@ -3,8 +3,8 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v3/sqlobs"
 	"go.opentelemetry.io/otel/attribute"
 )
@@ -64,8 +64,8 @@ func (c *Client) instrumentPool(
 
 	db, cleanup, err := sqlobs.Setup(raw, sqlobs.SystemPostgreSQL, opts...)
 	if err != nil {
-		c.logAtLevel(ctx, log.LevelWarn,
-			"postgres auto-instrumentation degraded; continuing", log.Err(err))
+		c.logAtLevel(ctx, obs.LevelWarn,
+			"postgres auto-instrumentation degraded; continuing", "error", err)
 	}
 
 	// Setup contracts a usable handle and a non-nil cleanup even on error, but
@@ -90,8 +90,8 @@ func (c *Client) releaseCleanups(ctx context.Context, cleanups []sqlobs.CleanupF
 		}
 
 		if err := cleanup(); err != nil {
-			c.logAtLevel(ctx, log.LevelWarn,
-				"failed to unregister postgres pool metrics", log.Err(err))
+			c.logAtLevel(ctx, obs.LevelWarn,
+				"failed to unregister postgres pool metrics", "error", err)
 		}
 	}
 }

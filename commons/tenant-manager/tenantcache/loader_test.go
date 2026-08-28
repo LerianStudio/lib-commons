@@ -9,6 +9,7 @@ package tenantcache
 import (
 	"context"
 	"encoding/json"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -18,7 +19,6 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -115,7 +115,7 @@ func newTestClient(t *testing.T, serverURL string) *client.Client {
 
 	c, err := client.NewClient(
 		serverURL,
-		log.NewNop(),
+		obs.Nop(),
 		client.WithAllowInsecureHTTP(),
 		client.WithServiceAPIKey(testServiceAPIKey),
 	)
@@ -141,7 +141,7 @@ func TestLoadTenant_Success(t *testing.T) {
 
 	pmClient := newTestClient(t, server.URL)
 	cache := NewTenantCache()
-	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, log.NewNop())
+	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, obs.Nop())
 
 	ctx := context.Background()
 
@@ -171,7 +171,7 @@ func TestLoadTenant_Suspended(t *testing.T) {
 
 	pmClient := newTestClient(t, server.URL)
 	cache := NewTenantCache()
-	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, log.NewNop())
+	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, obs.Nop())
 
 	ctx := context.Background()
 
@@ -193,7 +193,7 @@ func TestLoadTenant_NotFound(t *testing.T) {
 
 	pmClient := newTestClient(t, server.URL)
 	cache := NewTenantCache()
-	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, log.NewNop())
+	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, obs.Nop())
 
 	ctx := context.Background()
 
@@ -218,7 +218,7 @@ func TestLoadTenant_AlreadyCached(t *testing.T) {
 
 	pmClient := newTestClient(t, server.URL)
 	cache := NewTenantCache()
-	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, log.NewNop())
+	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, obs.Nop())
 
 	// Pre-populate the cache
 	cache.Set(tenantID, config, 1*time.Hour)
@@ -246,7 +246,7 @@ func TestLoadTenant_ConcurrentLoads(t *testing.T) {
 
 	pmClient := newTestClient(t, server.URL)
 	cache := NewTenantCache()
-	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, log.NewNop())
+	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, obs.Nop())
 
 	ctx := context.Background()
 
@@ -294,7 +294,7 @@ func TestTenantLoader_OnTenantLoaded_CalledAfterSuccess(t *testing.T) {
 
 	pmClient := newTestClient(t, server.URL)
 	cache := NewTenantCache()
-	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, log.NewNop())
+	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, obs.Nop())
 
 	var callbackTenantID string
 	var callbackCalled atomic.Bool
@@ -322,7 +322,7 @@ func TestTenantLoader_OnTenantLoaded_NotCalledOnError(t *testing.T) {
 
 	pmClient := newTestClient(t, server.URL)
 	cache := NewTenantCache()
-	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, log.NewNop())
+	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, obs.Nop())
 
 	var callbackCalled atomic.Bool
 
@@ -349,7 +349,7 @@ func TestTenantLoader_OnTenantLoaded_NotCalledWhenNil(t *testing.T) {
 
 	pmClient := newTestClient(t, server.URL)
 	cache := NewTenantCache()
-	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, log.NewNop())
+	loader := NewTenantLoader(pmClient, cache, testServiceName, DefaultTenantCacheTTL, obs.Nop())
 
 	ctx := context.Background()
 
@@ -372,7 +372,7 @@ func TestNewTenantLoader_DefaultTTL(t *testing.T) {
 	cache := NewTenantCache()
 
 	// Pass 0 TTL -- loader should use DefaultTenantCacheTTL
-	loader := NewTenantLoader(pmClient, cache, testServiceName, 0, log.NewNop())
+	loader := NewTenantLoader(pmClient, cache, testServiceName, 0, obs.Nop())
 
 	ctx := context.Background()
 

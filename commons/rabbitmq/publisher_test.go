@@ -5,6 +5,7 @@ package rabbitmq
 import (
 	"context"
 	"errors"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"sync"
 	"testing"
 	"time"
@@ -12,7 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -32,19 +32,19 @@ type panicPublisherLogger struct {
 	used bool
 }
 
-func (logger *panicPublisherLogger) Log(context.Context, libLog.Level, string, ...libLog.Field) {
+func (logger *panicPublisherLogger) Log(context.Context, int, string, ...any) {
 	logger.used = true
 }
 
-func (logger *panicPublisherLogger) With(...libLog.Field) libLog.Logger {
+func (logger *panicPublisherLogger) With(...any) obs.Logger {
 	return logger
 }
 
-func (logger *panicPublisherLogger) WithGroup(string) libLog.Logger {
+func (logger *panicPublisherLogger) WithGroup(string) obs.Logger {
 	return logger
 }
 
-func (logger *panicPublisherLogger) Enabled(libLog.Level) bool {
+func (logger *panicPublisherLogger) Enabled(int) bool {
 	return true
 }
 
@@ -441,7 +441,7 @@ func TestConfirmablePublisher_AutoRecovery(t *testing.T) {
 	recovered := make(chan struct{})
 	publisher, err := NewConfirmablePublisherFromChannel(
 		ch1,
-		WithLogger(&libLog.NopLogger{}),
+		WithLogger(obs.Nop()),
 		WithAutoRecovery(func() (ConfirmableChannel, error) { return ch2, nil }),
 		WithRecoveryBackoff(1*time.Millisecond, 5*time.Millisecond),
 		WithMaxRecoveryAttempts(3),

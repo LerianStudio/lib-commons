@@ -4,9 +4,9 @@ package commons
 
 import (
 	"errors"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -88,7 +88,7 @@ func TestRunAppOption(t *testing.T) {
 	t.Run("failure_nil_app", func(t *testing.T) {
 		t.Parallel()
 
-		l := NewLauncher(WithLogger(&log.NopLogger{}))
+		l := NewLauncher(WithLogger(obs.Nop()))
 		opt := RunApp("myapp", nil)
 		opt(l)
 		assert.NotEmpty(t, l.configErrors)
@@ -99,7 +99,7 @@ func TestWithLoggerOption_NilLauncher(t *testing.T) {
 	t.Parallel()
 
 	// WithLogger option applied to nil launcher must not panic.
-	opt := WithLogger(&log.NopLogger{})
+	opt := WithLogger(obs.Nop())
 	assert.NotPanics(t, func() { opt(nil) })
 }
 
@@ -114,7 +114,7 @@ func TestRunAppOption_NilLauncher(t *testing.T) {
 func TestWithLoggerOption(t *testing.T) {
 	t.Parallel()
 
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	l := NewLauncher(WithLogger(logger))
 	assert.Equal(t, logger, l.Logger)
 }
@@ -133,7 +133,7 @@ func TestRunWithError(t *testing.T) {
 	t.Run("config_errors_surface", func(t *testing.T) {
 		t.Parallel()
 
-		l := NewLauncher(WithLogger(&log.NopLogger{}))
+		l := NewLauncher(WithLogger(obs.Nop()))
 		l.configErrors = append(l.configErrors, errors.New("bad config"))
 
 		err := l.RunWithError()
@@ -143,7 +143,7 @@ func TestRunWithError(t *testing.T) {
 	t.Run("no_apps_finishes", func(t *testing.T) {
 		t.Parallel()
 
-		l := NewLauncher(WithLogger(&log.NopLogger{}))
+		l := NewLauncher(WithLogger(obs.Nop()))
 		err := l.RunWithError()
 		assert.NoError(t, err)
 	})
@@ -153,7 +153,7 @@ func TestRunWithError(t *testing.T) {
 
 		sentinel := errors.New("boom")
 
-		l := NewLauncher(WithLogger(&log.NopLogger{}))
+		l := NewLauncher(WithLogger(obs.Nop()))
 		require.NoError(t, l.Add("failing", &stubApp{err: sentinel}))
 
 		// RunWithError launches apps in goroutines; app errors are logged

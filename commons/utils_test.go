@@ -4,11 +4,11 @@ package commons
 
 import (
 	"context"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"math"
 	"reflect"
 	"testing"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -173,13 +173,13 @@ func TestSafeIntToUint32(t *testing.T) {
 
 	t.Run("negative_with_logger", func(t *testing.T) {
 		t.Parallel()
-		logger := &log.NopLogger{}
+		logger := obs.Nop()
 		assert.Equal(t, uint32(99), SafeIntToUint32(-1, 99, logger, "field"))
 	})
 
 	t.Run("overflow_with_logger", func(t *testing.T) {
 		t.Parallel()
-		logger := &log.NopLogger{}
+		logger := obs.Nop()
 		assert.Equal(t, uint32(99), SafeIntToUint32(math.MaxInt, 99, logger, "field"))
 	})
 }

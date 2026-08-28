@@ -2,8 +2,8 @@ package redis
 
 import (
 	"context"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v3/redisobs"
 	"github.com/redis/go-redis/v9"
 )
@@ -37,8 +37,8 @@ import (
 func (c *Client) instrumentClient(ctx context.Context, rdb redis.UniversalClient) redisobs.CleanupFunc {
 	cleanup, err := redisobs.Setup(rdb)
 	if err != nil {
-		c.logTelemetry(ctx, log.LevelWarn,
-			"redis auto-instrumentation degraded; continuing", log.Err(err))
+		c.logTelemetry(ctx, obs.LevelWarn,
+			"redis auto-instrumentation degraded; continuing", "error", err)
 	}
 
 	// Setup contracts a callable cleanup even on error, but stay defensive: a nil
@@ -71,15 +71,15 @@ func (c *Client) releaseInstrumentation(ctx context.Context, cleanup redisobs.Cl
 	}
 
 	if err := cleanup(); err != nil {
-		c.logTelemetry(ctx, log.LevelWarn,
-			"failed to unregister redis client metrics", log.Err(err))
+		c.logTelemetry(ctx, obs.LevelWarn,
+			"failed to unregister redis client metrics", "error", err)
 	}
 }
 
 // logTelemetry emits a telemetry-related log entry. It tolerates a nil logger on
 // purpose: telemetry reporting must not be the thing that panics a hand-built
 // Client that reached the reconnect path without going through New.
-func (c *Client) logTelemetry(ctx context.Context, level log.Level, msg string, fields ...log.Field) {
+func (c *Client) logTelemetry(ctx context.Context, level int, msg string, fields ...any) {
 	if c == nil || c.logger == nil {
 		return
 	}

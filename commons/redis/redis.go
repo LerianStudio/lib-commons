@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,7 +20,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
 	"github.com/LerianStudio/lib-observability/v2/assert"
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
@@ -49,37 +50,37 @@ var (
 
 	// pkgLogger holds the package-level logger for nil-receiver diagnostics.
 	// Defaults to NopLogger; consumers can override via SetPackageLogger.
-	pkgLogger atomic.Value // stores log.Logger
+	pkgLogger atomic.Value // stores obs.Logger
 )
 
 func init() {
-	pkgLogger.Store(log.Logger(&log.NopLogger{}))
+	pkgLogger.Store(obs.Logger(obs.Nop()))
 }
 
 // SetPackageLogger configures a package-level logger used for nil-receiver
 // assertion diagnostics and telemetry reporting. This is typically called
 // once during application bootstrap. If l is nil, a NopLogger is used.
-func SetPackageLogger(l log.Logger) {
+func SetPackageLogger(l obs.Logger) {
 	if l == nil {
-		l = &log.NopLogger{}
+		l = obs.Nop()
 	}
 
 	pkgLogger.Store(l)
 }
 
-func resolvePackageLogger() log.Logger {
+func resolvePackageLogger() obs.Logger {
 	if v := pkgLogger.Load(); v != nil {
-		if l, ok := v.(log.Logger); ok {
+		if l, ok := v.(obs.Logger); ok {
 			return l
 		}
 	}
 
-	return &log.NopLogger{}
+	return obs.Nop()
 }
 
 // nilClientAssert fires a nil-receiver assertion and returns ErrNilClient.
 func nilClientAssert(ctx context.Context, operation string) error {
-	a := assert.New(ctx, resolvePackageLogger(), "redis.Client", operation)
+	a := assert.New(ctx, obsbridge.LibLogger(resolvePackageLogger()), "redis.Client", operation)
 	_ = a.Never(ctx, "nil receiver on *redis.Client")
 
 	return ErrNilClient
@@ -91,7 +92,7 @@ type Config struct {
 	TLS            *TLSConfig
 	Auth           Auth
 	Options        ConnectionOptions
-	Logger         log.Logger
+	Logger         obs.Logger
 	MetricsFactory *metrics.MetricsFactory
 }
 
@@ -210,7 +211,7 @@ var reconnectionsMetric = metrics.Metric{
 type Client struct {
 	mu             sync.RWMutex
 	cfg            Config
-	logger         log.Logger
+	logger         obs.Logger
 	metricsFactory *metrics.MetricsFactory
 	client         redis.UniversalClient
 	connected      bool
@@ -275,7 +276,7 @@ func (c *Client) Connect(ctx context.Context) error {
 	defer c.mu.Unlock()
 
 	if c.logger == nil {
-		c.logger = &log.NopLogger{}
+		c.logger = obs.Nop()
 	}
 
 	if err := c.connectLocked(ctx); err != nil {
@@ -313,7 +314,7 @@ func (c *Client) GetClient(ctx context.Context) (redis.UniversalClient, error) {
 	defer c.mu.Unlock()
 
 	if c.logger == nil {
-		c.logger = &log.NopLogger{}
+		c.logger = obs.Nop()
 	}
 
 	if c.client != nil {
@@ -431,12 +432,12 @@ func (c *Client) LastRefreshError() error {
 func (c *Client) connectLocked(ctx context.Context) error {
 	// Config validation is performed by New/normalizeConfig at construction time.
 	// Direct Connect() callers should only use properly-constructed Clients.
-	c.logger.Log(ctx, log.LevelInfo, "connecting to Redis/Valkey")
+	c.logger.Log(ctx, obs.LevelInfo, "connecting to Redis/Valkey")
 
 	if c.usesGCPIAM() && c.token == "" {
 		token, err := c.retrieveToken(ctx)
 		if err != nil {
-			c.logger.Log(ctx, log.LevelError, "initial token retrieval failed", log.Err(err))
+			c.logger.Log(ctx, obs.LevelError, "initial token retrieval failed", "error", err)
 
 			return fmt.Errorf("redis connect: token retrieval: %w", err)
 		}
@@ -474,9 +475,9 @@ func (c *Client) connectClientLocked(ctx context.Context) error {
 			return fmt.Errorf("redis connect: TLS required (set %s=true to bypass)", commons.EnvAllowInsecureTLS)
 		}
 
-		c.logger.Log(ctx, log.LevelWarn, "security bypass active",
-			log.String("feature", "redis_tls"),
-			log.String("env_var", commons.EnvAllowInsecureTLS),
+		c.logger.Log(ctx, obs.LevelWarn, "security bypass active",
+			"feature", "redis_tls",
+			"env_var", commons.EnvAllowInsecureTLS,
 		)
 	}
 
@@ -492,7 +493,7 @@ func (c *Client) connectClientLocked(ctx context.Context) error {
 
 		_ = rdb.Close()
 
-		c.logger.Log(ctx, log.LevelError, "redis ping failed", log.Err(err))
+		c.logger.Log(ctx, obs.LevelError, "redis ping failed", "error", err)
 		c.connected = false
 
 		return fmt.Errorf("redis connect: ping: %w", err)
@@ -512,23 +513,23 @@ func (c *Client) connectClientLocked(ctx context.Context) error {
 
 	if oldClient != nil {
 		if err := oldClient.Close(); err != nil {
-			c.logger.Log(ctx, log.LevelWarn, "failed to close previous client after successful connect", log.Err(err))
+			c.logger.Log(ctx, obs.LevelWarn, "failed to close previous client after successful connect", "error", err)
 		}
 	}
 
 	switch rdb.(type) {
 	case *redis.ClusterClient:
-		c.logger.Log(ctx, log.LevelInfo, "connected to Redis/Valkey in cluster mode")
+		c.logger.Log(ctx, obs.LevelInfo, "connected to Redis/Valkey in cluster mode")
 	case *redis.Client:
-		c.logger.Log(ctx, log.LevelInfo, "connected to Redis/Valkey in standalone mode")
+		c.logger.Log(ctx, obs.LevelInfo, "connected to Redis/Valkey in standalone mode")
 	case *redis.Ring:
-		c.logger.Log(ctx, log.LevelInfo, "connected to Redis/Valkey in ring mode")
+		c.logger.Log(ctx, obs.LevelInfo, "connected to Redis/Valkey in ring mode")
 	default:
-		c.logger.Log(ctx, log.LevelWarn, "connected to Redis/Valkey in unknown mode")
+		c.logger.Log(ctx, obs.LevelWarn, "connected to Redis/Valkey in unknown mode")
 	}
 
 	if tlsDisabled {
-		c.logger.Log(ctx, log.LevelWarn, "redis connection established without TLS; consider configuring TLS for production use")
+		c.logger.Log(ctx, obs.LevelWarn, "redis connection established without TLS; consider configuring TLS for production use")
 	}
 
 	return nil
@@ -626,7 +627,7 @@ func (c *Client) retrieveToken(ctx context.Context) (string, error) {
 
 	credentialsJSON, err := base64.StdEncoding.DecodeString(auth.CredentialsBase64)
 	if err != nil {
-		c.logger.Log(ctx, log.LevelError, "failed to decode base64 credentials", log.Err(err))
+		c.logger.Log(ctx, obs.LevelError, "failed to decode base64 credentials", "error", err)
 
 		return "", fmt.Errorf("redis: generate IAM token: %w", err)
 	}
@@ -739,7 +740,7 @@ func (c *Client) refreshTick(ctx context.Context, auth *GCPIAMAuth) bool {
 	if err != nil {
 		c.mu.Lock()
 		c.refreshErr = err
-		c.logger.Log(refreshCtx, log.LevelWarn, "IAM token refresh failed", log.Err(err))
+		c.logger.Log(refreshCtx, obs.LevelWarn, "IAM token refresh failed", "error", err)
 		c.mu.Unlock()
 
 		libOpentelemetry.HandleSpanError(span, "IAM token refresh failed", err)
@@ -769,14 +770,14 @@ func (c *Client) applyTokenAndReconnect(ctx context.Context, token string) bool 
 		// Restore old token: reconnect failed, so the new token is useless
 		// and the old client (if any) is still using the previous token.
 		c.token = oldToken
-		c.logger.Log(ctx, log.LevelError, "failed to reconnect after IAM token refresh, keeping existing client", log.Err(err))
+		c.logger.Log(ctx, obs.LevelError, "failed to reconnect after IAM token refresh, keeping existing client", "error", err)
 
 		return false
 	}
 
 	c.lastRefresh = time.Now()
 	c.refreshErr = nil
-	c.logger.Log(ctx, log.LevelInfo, "IAM token refreshed")
+	c.logger.Log(ctx, obs.LevelInfo, "IAM token refreshed")
 
 	return true
 }
@@ -785,7 +786,7 @@ func (c *Client) reconnectLocked(ctx context.Context) error {
 	// Build new client options with the refreshed token.
 	opts, err := c.buildUniversalOptionsLocked()
 	if err != nil {
-		c.logger.Log(ctx, log.LevelError, "failed to build options for reconnect", log.Err(err))
+		c.logger.Log(ctx, obs.LevelError, "failed to build options for reconnect", "error", err)
 
 		return err
 	}
@@ -805,7 +806,7 @@ func (c *Client) reconnectLocked(ctx context.Context) error {
 
 		_ = newClient.Close()
 
-		c.logger.Log(ctx, log.LevelError, "new client ping failed during reconnect, keeping existing client", log.Err(err))
+		c.logger.Log(ctx, obs.LevelError, "new client ping failed during reconnect, keeping existing client", "error", err)
 
 		return err
 	}
@@ -826,7 +827,7 @@ func (c *Client) reconnectLocked(ctx context.Context) error {
 
 	if oldClient != nil {
 		if err := oldClient.Close(); err != nil {
-			c.logger.Log(ctx, log.LevelWarn, "failed to close previous client after successful reconnect", log.Err(err))
+			c.logger.Log(ctx, obs.LevelWarn, "failed to close previous client after successful reconnect", "error", err)
 		}
 	}
 
@@ -846,7 +847,7 @@ func (c *Client) startRefreshLoopLocked() {
 
 	runtime.SafeGoWithContextAndComponent(
 		refreshCtx,
-		c.logger,
+		obsbridge.LibLogger(c.logger),
 		"redis",
 		"iam_refresh_loop",
 		runtime.KeepRunning,
@@ -893,13 +894,13 @@ func normalizeConfig(cfg Config) (Config, error) {
 		if originalTLSMinVersion == 0 {
 			cfg.Logger.Log(
 				context.Background(),
-				log.LevelInfo,
+				obs.LevelInfo,
 				"redis TLS MinVersion was not set and has been defaulted to tls.VersionTLS12",
 			)
 		} else {
 			cfg.Logger.Log(
 				context.Background(),
-				log.LevelWarn,
+				obs.LevelWarn,
 				"redis TLS MinVersion was below TLS1.2 and has been upgraded to tls.VersionTLS12",
 			)
 		}
@@ -908,7 +909,7 @@ func normalizeConfig(cfg Config) (Config, error) {
 	if legacyTLSAllowed {
 		cfg.Logger.Log(
 			context.Background(),
-			log.LevelWarn,
+			obs.LevelWarn,
 			"redis TLS MinVersion below TLS1.2 retained because AllowLegacyMinVersion=true; this is insecure and should be temporary",
 		)
 	}
@@ -922,7 +923,7 @@ func normalizeConfig(cfg Config) (Config, error) {
 
 func normalizeLoggerDefault(cfg *Config) {
 	if cfg.Logger == nil {
-		cfg.Logger = &log.NopLogger{}
+		cfg.Logger = obs.Nop()
 	}
 }
 
@@ -1157,7 +1158,7 @@ func (c *Client) recordConnectionFailure(operation string) {
 
 	counter, err := c.metricsFactory.Counter(connectionFailuresMetric)
 	if err != nil {
-		c.logger.Log(context.Background(), log.LevelWarn, "failed to create redis metric counter", log.Err(err))
+		c.logger.Log(context.Background(), obs.LevelWarn, "failed to create redis metric counter", "error", err)
 		return
 	}
 
@@ -1167,7 +1168,7 @@ func (c *Client) recordConnectionFailure(operation string) {
 		}).
 		AddOne(context.Background())
 	if err != nil {
-		c.logger.Log(context.Background(), log.LevelWarn, "failed to record redis metric", log.Err(err))
+		c.logger.Log(context.Background(), obs.LevelWarn, "failed to record redis metric", "error", err)
 	}
 }
 
@@ -1180,7 +1181,7 @@ func (c *Client) recordReconnection(result string) {
 
 	counter, err := c.metricsFactory.Counter(reconnectionsMetric)
 	if err != nil {
-		c.logger.Log(context.Background(), log.LevelWarn, "failed to create redis reconnection metric counter", log.Err(err))
+		c.logger.Log(context.Background(), obs.LevelWarn, "failed to create redis reconnection metric counter", "error", err)
 		return
 	}
 
@@ -1190,7 +1191,7 @@ func (c *Client) recordReconnection(result string) {
 		}).
 		AddOne(context.Background())
 	if err != nil {
-		c.logger.Log(context.Background(), log.LevelWarn, "failed to record redis reconnection metric", log.Err(err))
+		c.logger.Log(context.Background(), obs.LevelWarn, "failed to record redis reconnection metric", "error", err)
 	}
 }
 

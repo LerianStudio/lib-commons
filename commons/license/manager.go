@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"os"
 	"sync"
 
 	"github.com/LerianStudio/lib-observability/v2/assert"
-	"github.com/LerianStudio/lib-observability/v2/log"
 )
 
 var (
@@ -25,7 +26,7 @@ type Handler func(reason string)
 type ManagerOption func(*ManagerShutdown)
 
 // WithLogger provides a structured logger for assertion and validation logging.
-func WithLogger(l log.Logger) ManagerOption {
+func WithLogger(l obs.Logger) ManagerOption {
 	return func(m *ManagerShutdown) {
 		if l != nil {
 			m.Logger = l
@@ -39,8 +40,8 @@ func WithFailClosed() ManagerOption {
 	return func(m *ManagerShutdown) {
 		m.handler = func(reason string) {
 			if m.Logger != nil {
-				m.Logger.Log(context.Background(), log.LevelError, "license validation failed (fail-closed mode)",
-					log.String("reason", reason),
+				m.Logger.Log(context.Background(), obs.LevelError, "license validation failed (fail-closed mode)",
+					"reason", reason,
 				)
 			}
 
@@ -66,7 +67,7 @@ func DefaultHandlerWithError(reason string) error {
 // ManagerShutdown handles termination behavior
 type ManagerShutdown struct {
 	handler Handler
-	Logger  log.Logger
+	Logger  obs.Logger
 	mu      sync.RWMutex
 }
 
@@ -120,7 +121,7 @@ func (m *ManagerShutdown) Terminate(reason string) {
 	m.mu.RUnlock()
 
 	if handler == nil {
-		asserter := assert.New(context.Background(), logger, "license", "Terminate")
+		asserter := assert.New(context.Background(), obsbridge.LibLogger(logger), "license", "Terminate")
 		_ = asserter.NoError(context.Background(), ErrManagerNotInitialized,
 			"license terminate called without initialization",
 			"reason", reason,
@@ -148,8 +149,8 @@ func (m *ManagerShutdown) TerminateWithError(reason string) error {
 	}
 
 	if m.Logger != nil {
-		m.Logger.Log(context.Background(), log.LevelWarn, "license validation failed",
-			log.String("reason", reason),
+		m.Logger.Log(context.Background(), obs.LevelWarn, "license validation failed",
+			"reason", reason,
 		)
 	}
 
@@ -175,8 +176,8 @@ func (m *ManagerShutdown) TerminateSafe(reason string) error {
 
 	if handler == nil {
 		if logger != nil {
-			logger.Log(context.Background(), log.LevelWarn, "license terminate called without initialization",
-				log.String("reason", reason),
+			logger.Log(context.Background(), obs.LevelWarn, "license terminate called without initialization",
+				"reason", reason,
 			)
 		}
 

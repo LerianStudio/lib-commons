@@ -13,6 +13,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,8 +25,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 )
 
 const defaultTopologyRefreshInterval = time.Minute
@@ -488,17 +488,17 @@ func (resolver *ModulePoolResolver) logTopologyFailure(
 	tenantID string,
 	err error,
 ) {
-	logger, _, _, _ := observability.NewTrackingFromContext(ctx) //nolint:dogsled // Standard tracking extraction; only logger is needed.
+	logger, _, _, _ := obsbridge.TrackingFromContext(ctx) //nolint:dogsled // Standard tracking extraction; only logger is needed.
 	if nilcheck.Interface(logger) {
 		return
 	}
 
-	fields := []libLog.Field{libLog.Err(err)}
+	fields := []any{"error", err}
 	if tenantID != "" {
-		fields = append(fields, libLog.String("tenant.id", tenantID))
+		fields = append(fields, "tenant.id", tenantID)
 	}
 
-	logger.Log(ctx, libLog.LevelWarn, message, fields...)
+	logger.Log(ctx, obs.LevelWarn, message, fields...)
 }
 
 func uniqueTenantIDs(tenantIDs []string) []string {

@@ -4,12 +4,12 @@ package postgres
 
 import (
 	"context"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -68,7 +68,7 @@ func newTestConfig(dsn string) Config {
 	return Config{
 		PrimaryDSN:     dsn,
 		ReplicaDSN:     dsn,
-		Logger:         log.NewNop(),
+		Logger:         obs.Nop(),
 		MetricsFactory: metrics.NewNopFactory(),
 	}
 }
@@ -233,7 +233,7 @@ func TestIntegration_Postgres_Migration(t *testing.T) {
 		DatabaseName:   "testdb",
 		MigrationsPath: migDir,
 		Component:      "integration_test",
-		Logger:         log.NewNop(),
+		Logger:         obs.Nop(),
 	})
 	require.NoError(t, err, "NewMigrator() should succeed")
 

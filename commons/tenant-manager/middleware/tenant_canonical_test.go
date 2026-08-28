@@ -8,6 +8,7 @@ package middleware
 
 import (
 	"encoding/json"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -17,7 +18,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/event"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/tenantcache"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -56,7 +56,7 @@ func runMiddlewareWithClaim(
 	pmClient := newCacheTestClient(t, server.URL)
 	loader := tenantcache.NewTenantLoader(
 		pmClient, cache, "test-service",
-		tenantcache.DefaultTenantCacheTTL, log.NewNop(),
+		tenantcache.DefaultTenantCacheTTL, obs.Nop(),
 	)
 
 	mid := &TenantMiddleware{enabled: true, cache: cache, loader: loader}

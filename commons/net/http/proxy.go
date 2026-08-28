@@ -2,13 +2,13 @@ package http
 
 import (
 	"errors"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 
 	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	opentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -49,7 +49,7 @@ type ReverseProxyPolicy struct {
 	AllowUnsafeDestinations bool
 	// Logger is an optional structured logger for security-relevant events.
 	// When nil, no logging is performed.
-	Logger log.Logger
+	Logger obs.Logger
 }
 
 // DefaultReverseProxyPolicy returns a strict-by-default reverse proxy policy.
@@ -86,10 +86,10 @@ func ServeReverseProxy(target string, policy ReverseProxyPolicy, res http.Respon
 
 	if err := validateProxyTarget(targetURL, policy); err != nil {
 		if !nilcheck.Interface(policy.Logger) {
-			policy.Logger.Log(req.Context(), log.LevelWarn, "reverse proxy target rejected",
-				log.String("target_host", targetURL.Host),
-				log.String("target_scheme", targetURL.Scheme),
-				log.Err(err),
+			policy.Logger.Log(req.Context(), obs.LevelWarn, "reverse proxy target rejected",
+				"target_host", targetURL.Host,
+				"target_scheme", targetURL.Scheme,
+				"error", err,
 			)
 		}
 

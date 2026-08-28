@@ -5,11 +5,11 @@ package redis
 import (
 	"context"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -94,7 +94,7 @@ func newTestConfig(addr string) Config {
 		Topology: Topology{
 			Standalone: &StandaloneTopology{Address: addr},
 		},
-		Logger: &log.NopLogger{},
+		Logger: obs.Nop(),
 	}
 }
 
@@ -290,7 +290,7 @@ func TestIntegration_Redis_StaticPassword(t *testing.T) {
 		Auth: Auth{
 			StaticPassword: &StaticPasswordAuth{Password: password},
 		},
-		Logger: &log.NopLogger{},
+		Logger: obs.Nop(),
 	}
 
 	client, err := New(ctx, cfg)
@@ -316,7 +316,7 @@ func TestIntegration_Redis_StaticPassword(t *testing.T) {
 		Topology: Topology{
 			Standalone: &StandaloneTopology{Address: addr},
 		},
-		Logger: &log.NopLogger{},
+		Logger: obs.Nop(),
 	}
 
 	badClient, err := New(ctx, badCfg)
@@ -331,7 +331,7 @@ func TestIntegration_Redis_StaticPassword(t *testing.T) {
 		Auth: Auth{
 			StaticPassword: &StaticPasswordAuth{Password: "wrong-password"},
 		},
-		Logger: &log.NopLogger{},
+		Logger: obs.Nop(),
 	}
 
 	wrongClient, err := New(ctx, wrongCfg)

@@ -3,11 +3,12 @@ package circuitbreaker
 import (
 	"context"
 	"errors"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"maps"
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
 )
 
@@ -26,7 +27,7 @@ type healthChecker struct {
 	services       map[string]HealthCheckFunc
 	interval       time.Duration
 	checkTimeout   time.Duration // Timeout for individual health check operations
-	logger         log.Logger
+	logger         obs.Logger
 	stopChan       chan struct{}
 	immediateCheck chan string // Channel to trigger immediate health check for a service
 	wg             sync.WaitGroup
@@ -39,7 +40,7 @@ type healthChecker struct {
 // Returns an error if interval or checkTimeout are not positive.
 // interval: how often to run health checks
 // checkTimeout: timeout for each individual health check operation
-func NewHealthCheckerWithValidation(manager Manager, interval, checkTimeout time.Duration, logger log.Logger) (HealthChecker, error) {
+func NewHealthCheckerWithValidation(manager Manager, interval, checkTimeout time.Duration, logger obs.Logger) (HealthChecker, error) {
 	if manager == nil {
 		return nil, ErrNilManager
 	}
@@ -70,7 +71,7 @@ func NewHealthCheckerWithValidation(manager Manager, interval, checkTimeout time
 // Register adds a service to health check
 func (hc *healthChecker) Register(serviceName string, healthCheckFn HealthCheckFunc) {
 	if healthCheckFn == nil {
-		hc.logger.Log(context.Background(), log.LevelWarn, "attempted to register nil health check function", log.String("service", serviceName))
+		hc.logger.Log(context.Background(), obs.LevelWarn, "attempted to register nil health check function", "service", serviceName)
 		return
 	}
 
@@ -78,7 +79,7 @@ func (hc *healthChecker) Register(serviceName string, healthCheckFn HealthCheckF
 	defer hc.mu.Unlock()
 
 	hc.services[serviceName] = healthCheckFn
-	hc.logger.Log(context.Background(), log.LevelInfo, "registered health check for service", log.String("service", serviceName))
+	hc.logger.Log(context.Background(), obs.LevelInfo, "registered health check for service", "service", serviceName)
 }
 
 // Start begins the health check loop
@@ -87,7 +88,7 @@ func (hc *healthChecker) Start() {
 
 	if hc.started {
 		hc.mu.Unlock()
-		hc.logger.Log(context.Background(), log.LevelWarn, "health checker already started, ignoring duplicate Start() call")
+		hc.logger.Log(context.Background(), obs.LevelWarn, "health checker already started, ignoring duplicate Start() call")
 
 		return
 	}
@@ -98,7 +99,7 @@ func (hc *healthChecker) Start() {
 
 	runtime.SafeGoWithContextAndComponent(
 		context.Background(),
-		hc.logger,
+		obsbridge.LibLogger(hc.logger),
 		"circuitbreaker",
 		"health_check_loop",
 		runtime.KeepRunning,
@@ -107,7 +108,7 @@ func (hc *healthChecker) Start() {
 		},
 	)
 
-	hc.logger.Log(context.Background(), log.LevelInfo, "health checker started", log.String("interval", hc.interval.String()))
+	hc.logger.Log(context.Background(), obs.LevelInfo, "health checker started", "interval", hc.interval.String())
 }
 
 // Stop gracefully stops the health checker
@@ -116,7 +117,7 @@ func (hc *healthChecker) Stop() {
 		close(hc.stopChan)
 	})
 	hc.wg.Wait()
-	hc.logger.Log(context.Background(), log.LevelInfo, "Health checker stopped")
+	hc.logger.Log(context.Background(), obs.LevelInfo, "Health checker stopped")
 }
 
 func (hc *healthChecker) healthCheckLoop(ctx context.Context) {
@@ -133,7 +134,7 @@ func (hc *healthChecker) healthCheckLoop(ctx context.Context) {
 			hc.performHealthChecks()
 		case serviceName := <-hc.immediateCheck:
 			// Immediate health check for a specific service
-			hc.logger.Log(context.Background(), log.LevelDebug, "triggering immediate health check", log.String("service", serviceName))
+			hc.logger.Log(context.Background(), obs.LevelDebug, "triggering immediate health check", "service", serviceName)
 			hc.checkServiceHealth(serviceName)
 		case <-ctx.Done():
 			return
@@ -151,7 +152,7 @@ func (hc *healthChecker) performHealthChecks() {
 
 	hc.mu.RUnlock()
 
-	hc.logger.Log(context.Background(), log.LevelDebug, "performing health checks on registered services")
+	hc.logger.Log(context.Background(), obs.LevelDebug, "performing health checks on registered services")
 
 	unhealthyCount := 0
 	recoveredCount := 0
@@ -164,7 +165,7 @@ func (hc *healthChecker) performHealthChecks() {
 
 		unhealthyCount++
 
-		hc.logger.Log(context.Background(), log.LevelInfo, "attempting to heal service", log.String("service", serviceName), log.String("reason", "circuit breaker open"))
+		hc.logger.Log(context.Background(), obs.LevelInfo, "attempting to heal service", "service", serviceName, "reason", "circuit breaker open")
 
 		ctx, cancel := context.WithTimeout(context.Background(), hc.checkTimeout)
 		err := healthCheckFn(ctx)
@@ -172,19 +173,19 @@ func (hc *healthChecker) performHealthChecks() {
 		cancel()
 
 		if err == nil {
-			hc.logger.Log(context.Background(), log.LevelInfo, "service recovered, resetting circuit breaker", log.String("service", serviceName))
+			hc.logger.Log(context.Background(), obs.LevelInfo, "service recovered, resetting circuit breaker", "service", serviceName)
 			hc.manager.Reset(serviceName)
 
 			recoveredCount++
 		} else {
-			hc.logger.Log(context.Background(), log.LevelWarn, "service still unhealthy", log.String("service", serviceName), log.Err(err), log.String("retry_in", hc.interval.String()))
+			hc.logger.Log(context.Background(), obs.LevelWarn, "service still unhealthy", "service", serviceName, "error", err, "retry_in", hc.interval.String())
 		}
 	}
 
 	if unhealthyCount > 0 {
-		hc.logger.Log(context.Background(), log.LevelInfo, "health check complete", log.Int("unhealthy", unhealthyCount), log.Int("recovered", recoveredCount))
+		hc.logger.Log(context.Background(), obs.LevelInfo, "health check complete", "unhealthy", unhealthyCount, "recovered", recoveredCount)
 	} else {
-		hc.logger.Log(context.Background(), log.LevelDebug, "all services healthy")
+		hc.logger.Log(context.Background(), obs.LevelDebug, "all services healthy")
 	}
 }
 
@@ -208,18 +209,18 @@ func (hc *healthChecker) GetHealthStatus() map[string]string {
 // The provided context carries a deadline; the health checker uses it for logging
 // but schedules checks independently.
 func (hc *healthChecker) OnStateChange(_ context.Context, serviceName string, from State, to State) {
-	hc.logger.Log(context.Background(), log.LevelDebug, "health checker notified of state change", log.String("service", serviceName), log.String("from", string(from)), log.String("to", string(to)))
+	hc.logger.Log(context.Background(), obs.LevelDebug, "health checker notified of state change", "service", serviceName, "from", string(from), "to", string(to))
 
 	// If circuit just opened, trigger immediate health check
 	if to == StateOpen {
-		hc.logger.Log(context.Background(), log.LevelInfo, "circuit breaker opened, scheduling immediate health check", log.String("service", serviceName))
+		hc.logger.Log(context.Background(), obs.LevelInfo, "circuit breaker opened, scheduling immediate health check", "service", serviceName)
 
 		// Non-blocking send to avoid deadlock
 		select {
 		case hc.immediateCheck <- serviceName:
-			hc.logger.Log(context.Background(), log.LevelDebug, "immediate health check scheduled", log.String("service", serviceName))
+			hc.logger.Log(context.Background(), obs.LevelDebug, "immediate health check scheduled", "service", serviceName)
 		default:
-			hc.logger.Log(context.Background(), log.LevelWarn, "immediate health check channel full, will check on next interval", log.String("service", serviceName))
+			hc.logger.Log(context.Background(), obs.LevelWarn, "immediate health check channel full, will check on next interval", "service", serviceName)
 		}
 	}
 }
@@ -231,17 +232,17 @@ func (hc *healthChecker) checkServiceHealth(serviceName string) {
 	hc.mu.RUnlock()
 
 	if !exists {
-		hc.logger.Log(context.Background(), log.LevelWarn, "no health check function registered", log.String("service", serviceName))
+		hc.logger.Log(context.Background(), obs.LevelWarn, "no health check function registered", "service", serviceName)
 		return
 	}
 
 	// Skip if circuit breaker is already healthy
 	if hc.manager.IsHealthy(serviceName) {
-		hc.logger.Log(context.Background(), log.LevelDebug, "service already healthy, skipping check", log.String("service", serviceName))
+		hc.logger.Log(context.Background(), obs.LevelDebug, "service already healthy, skipping check", "service", serviceName)
 		return
 	}
 
-	hc.logger.Log(context.Background(), log.LevelInfo, "attempting to heal service", log.String("service", serviceName), log.String("reason", "circuit breaker open"))
+	hc.logger.Log(context.Background(), obs.LevelInfo, "attempting to heal service", "service", serviceName, "reason", "circuit breaker open")
 
 	ctx, cancel := context.WithTimeout(context.Background(), hc.checkTimeout)
 	err := healthCheckFn(ctx)
@@ -249,9 +250,9 @@ func (hc *healthChecker) checkServiceHealth(serviceName string) {
 	cancel()
 
 	if err == nil {
-		hc.logger.Log(context.Background(), log.LevelInfo, "service recovered, resetting circuit breaker", log.String("service", serviceName))
+		hc.logger.Log(context.Background(), obs.LevelInfo, "service recovered, resetting circuit breaker", "service", serviceName)
 		hc.manager.Reset(serviceName)
 	} else {
-		hc.logger.Log(context.Background(), log.LevelWarn, "service still unhealthy", log.String("service", serviceName), log.Err(err), log.String("retry_in", hc.interval.String()))
+		hc.logger.Log(context.Background(), obs.LevelWarn, "service still unhealthy", "service", serviceName, "error", err, "retry_in", hc.interval.String())
 	}
 }

@@ -4,9 +4,9 @@ package testutil
 
 import (
 	"context"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 
-	liblog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +31,7 @@ func TestCapturingLogger_Log_Simple(t *testing.T) {
 	t.Parallel()
 
 	logger := NewCapturingLogger()
-	logger.Log(context.Background(), liblog.LevelInfo, "test message")
+	logger.Log(context.Background(), obs.LevelInfo, "test message")
 
 	msgs := logger.GetMessages()
 	require.Len(t, msgs, 1)
@@ -42,8 +42,8 @@ func TestCapturingLogger_Log_WithFields(t *testing.T) {
 	t.Parallel()
 
 	logger := NewCapturingLogger()
-	logger.Log(context.Background(), liblog.LevelInfo, "test message",
-		liblog.String("key1", "value1"),
+	logger.Log(context.Background(), obs.LevelInfo, "test message",
+		"key1", "value1",
 	)
 
 	msgs := logger.GetMessages()
@@ -56,7 +56,7 @@ func TestCapturingLogger_ContainsSubstring(t *testing.T) {
 	t.Parallel()
 
 	logger := NewCapturingLogger()
-	logger.Log(context.Background(), liblog.LevelInfo, "hello world")
+	logger.Log(context.Background(), obs.LevelInfo, "hello world")
 
 	assert.True(t, logger.ContainsSubstring("hello"))
 	assert.False(t, logger.ContainsSubstring("goodbye"))
@@ -66,35 +66,19 @@ func TestCapturingLogger_Clear(t *testing.T) {
 	t.Parallel()
 
 	logger := NewCapturingLogger()
-	logger.Log(context.Background(), liblog.LevelInfo, "message 1")
-	logger.Log(context.Background(), liblog.LevelInfo, "message 2")
+	logger.Log(context.Background(), obs.LevelInfo, "message 1")
+	logger.Log(context.Background(), obs.LevelInfo, "message 2")
 
 	logger.Clear()
 	msgs := logger.GetMessages()
 	assert.Empty(t, msgs)
 }
 
-func TestCapturingLogger_With(t *testing.T) {
-	t.Parallel()
-
-	logger := NewCapturingLogger()
-	result := logger.With(liblog.String("k", "v"))
-	assert.Same(t, logger, result)
-}
-
-func TestCapturingLogger_WithGroup(t *testing.T) {
-	t.Parallel()
-
-	logger := NewCapturingLogger()
-	result := logger.WithGroup("group")
-	assert.Same(t, logger, result)
-}
-
 func TestCapturingLogger_Enabled(t *testing.T) {
 	t.Parallel()
 
 	logger := NewCapturingLogger()
-	assert.True(t, logger.Enabled(liblog.LevelInfo))
+	assert.True(t, logger.Enabled(obs.LevelInfo))
 }
 
 func TestCapturingLogger_Sync(t *testing.T) {

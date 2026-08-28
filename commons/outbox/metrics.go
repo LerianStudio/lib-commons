@@ -2,8 +2,9 @@ package outbox
 
 import (
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	libMetrics "github.com/LerianStudio/lib-observability/v2/metrics"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -19,14 +20,14 @@ type dispatcherMetrics struct {
 	queueDepth        *libMetrics.GaugeBuilder
 }
 
-func newDispatcherMetrics(provider metric.MeterProvider, logger libLog.Logger) (dispatcherMetrics, error) {
+func newDispatcherMetrics(provider metric.MeterProvider, logger obs.Logger) (dispatcherMetrics, error) {
 	if provider == nil {
 		provider = otel.GetMeterProvider()
 	}
 
 	meter := provider.Meter("commons.outbox.dispatcher")
 
-	factory, err := libMetrics.NewMetricsFactory(meter, logger)
+	factory, err := libMetrics.NewMetricsFactory(meter, obsbridge.LibLogger(logger))
 	if err != nil {
 		return dispatcherMetrics{}, fmt.Errorf("create outbox metrics factory: %w", err)
 	}

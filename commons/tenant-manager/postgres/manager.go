@@ -7,6 +7,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"net/url"
 	"regexp"
 	"strings"
@@ -18,8 +20,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/eviction"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"github.com/bxcodec/dbresolver/v2"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -137,7 +137,7 @@ type PostgresConnection struct {
 	MaxOpenConnections      int            `json:"maxOpenConnections,omitempty"`
 	MaxIdleConnections      int            `json:"maxIdleConnections,omitempty"`
 	SkipMigrations          bool           `json:"skipMigrations,omitempty"`
-	Logger                  libLog.Logger  `json:"-"`
+	Logger                  obs.Logger     `json:"-"`
 	ConnectionDB            *dbresolver.DB `json:"-"`
 
 	// client is the lib-commons postgres client this connection owns. Close()
@@ -222,7 +222,7 @@ type Stats struct {
 type Option func(*Manager)
 
 // WithLogger sets the logger for the Manager.
-func WithLogger(logger libLog.Logger) Option {
+func WithLogger(logger obs.Logger) Option {
 	return func(p *Manager) {
 		p.logger = logcompat.New(logger)
 	}
@@ -668,7 +668,7 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*Postg
 		return nil, errors.New("tenant manager client is required for multi-tenant connections")
 	}
 
-	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	ctx, span := tracer.Start(ctx, "postgres.create_connection")
@@ -964,7 +964,7 @@ func (p *Manager) resolveConnectionPoolSettings(config *core.TenantConfig, tenan
 // eligible for eviction. If all connections are active (used within the idle timeout),
 // the pool is allowed to grow beyond the soft limit.
 // Caller MUST hold p.mu write lock.
-func (p *Manager) evictLRU(_ context.Context, logger libLog.Logger) {
+func (p *Manager) evictLRU(_ context.Context, logger obs.Logger) {
 	candidateID, shouldEvict := eviction.FindLRUEvictionCandidate(
 		len(p.connections), p.maxConnections, p.lastAccessed, p.idleTimeout, logger,
 	)

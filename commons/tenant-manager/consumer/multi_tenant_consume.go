@@ -8,6 +8,7 @@ import (
 	"context"
 	crand "crypto/rand"
 	"encoding/binary"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"maps"
 	"sync"
 	"time"
@@ -16,7 +17,6 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
-	observability "github.com/LerianStudio/lib-observability/v2"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 )
 
@@ -67,7 +67,7 @@ func (e *retryStateEntry) incRetryAndMaybeMarkDegraded(maxBeforeDegraded int) (d
 // startTenantConsumer spawns a consumer goroutine for a tenant.
 // MUST be called with c.mu held.
 func (c *MultiTenantConsumer) startTenantConsumer(parentCtx context.Context, tenantID string) {
-	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(parentCtx)
+	baseLogger, tracer, _, _ := obsbridge.TrackingFromContext(parentCtx)
 	logger := logcompat.New(baseLogger)
 
 	parentCtx, span := tracer.Start(parentCtx, "consumer.multi_tenant_consumer.start_tenant_consumer")
@@ -90,7 +90,7 @@ func (c *MultiTenantConsumer) superviseTenantQueues(ctx context.Context, tenantI
 	// Set tenantID in context for handlers
 	ctx = core.ContextWithTenantID(ctx, tenantID)
 
-	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.consume_for_tenant")
@@ -127,7 +127,7 @@ func (c *MultiTenantConsumer) consumeTenantQueue(
 	handler HandlerFunc,
 	_ *logcompat.Logger,
 ) {
-	baseLogger, _, _, _ := observability.NewTrackingFromContext(ctx) //nolint:dogsled
+	baseLogger, _, _, _ := obsbridge.TrackingFromContext(ctx) //nolint:dogsled
 	logger := logcompat.New(baseLogger).WithFields("tenant_id", tenantID, "queue", queueName)
 
 	// Guard against nil RabbitMQ manager (e.g., during lazy mode testing)
@@ -163,7 +163,7 @@ func (c *MultiTenantConsumer) attemptConsumeConnection(
 	handler HandlerFunc,
 	logger *logcompat.Logger,
 ) bool {
-	_, tracer, _, _ := observability.NewTrackingFromContext(ctx) //nolint:dogsled
+	_, tracer, _, _ := obsbridge.TrackingFromContext(ctx) //nolint:dogsled
 
 	connCtx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.consume_connection")
 	defer span.End()
@@ -277,7 +277,7 @@ func (c *MultiTenantConsumer) processMessages(
 	notifyClose <-chan *amqp.Error,
 	_ *logcompat.Logger,
 ) {
-	baseLogger, _, _, _ := observability.NewTrackingFromContext(ctx) //nolint:dogsled
+	baseLogger, _, _, _ := obsbridge.TrackingFromContext(ctx) //nolint:dogsled
 	logger := logcompat.New(baseLogger).WithFields("tenant_id", tenantID, "queue", queueName)
 
 	for {
@@ -310,7 +310,7 @@ func (c *MultiTenantConsumer) handleMessage(
 	msg amqp.Delivery,
 	logger *logcompat.Logger,
 ) {
-	_, tracer, _, _ := observability.NewTrackingFromContext(ctx) //nolint:dogsled
+	_, tracer, _, _ := obsbridge.TrackingFromContext(ctx) //nolint:dogsled
 
 	// Process message with tenant context
 	msgCtx := core.ContextWithTenantID(ctx, tenantID)
@@ -404,7 +404,7 @@ func (c *MultiTenantConsumer) resetRetryState(tenantID string) {
 // Unknown tenants trigger a lazy-load via the shared TenantLoader. Additionally,
 // tenants with expired cache entries are re-loaded to keep configuration fresh.
 func (c *MultiTenantConsumer) EnsureConsumerStarted(ctx context.Context, tenantID string) {
-	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	ctx, span := tracer.Start(ctx, "consumer.multi_tenant_consumer.ensure_consumer_started")

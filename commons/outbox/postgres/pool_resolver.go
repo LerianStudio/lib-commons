@@ -5,11 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"strings"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 )
 
 // ErrTenantPoolUnavailable is returned when a per-tenant pool cannot be
@@ -285,10 +285,10 @@ func (repo *Repository) newTablePresenceProbe(
 
 				repo.logger.Log(
 					ctx,
-					libLog.LevelWarn,
+					obs.LevelWarn,
 					"outbox table absent in tenant database; skipping dispatch (migration likely not applied)",
-					libLog.String("tenant.id", tenantID),
-					libLog.String("outbox.table", repo.tableName),
+					"tenant.id", tenantID,
+					"outbox.table", repo.tableName,
 				)
 			}
 		}

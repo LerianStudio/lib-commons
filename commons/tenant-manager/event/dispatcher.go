@@ -7,6 +7,8 @@ package event
 import (
 	"context"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"slices"
 	"time"
 
@@ -15,8 +17,6 @@ import (
 	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/rabbitmq"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/tenantcache"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
@@ -110,7 +110,7 @@ func WithRabbitMQ(r *tmrabbitmq.Manager) DispatcherOption {
 }
 
 // WithDispatcherLogger sets the logger for the dispatcher.
-func WithDispatcherLogger(l libLog.Logger) DispatcherOption {
+func WithDispatcherLogger(l obs.Logger) DispatcherOption {
 	return func(d *EventDispatcher) { d.logger = logcompat.New(l) }
 }
 
@@ -235,7 +235,7 @@ func containsTenantConnectionCloser(managers []tenantConnectionCloser, target te
 // on the event type. Service-level events are filtered by service name before
 // dispatch. Unknown event types are logged as warnings and skipped (no error returned).
 func (d *EventDispatcher) HandleEvent(ctx context.Context, evt TenantLifecycleEvent) error {
-	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	if d.logger != nil {
@@ -245,10 +245,10 @@ func (d *EventDispatcher) HandleEvent(ctx context.Context, evt TenantLifecycleEv
 	ctx, span := tracer.Start(ctx, "event.event_dispatcher.handle_event")
 	defer span.End()
 
-	logger.Base().Log(ctx, libLog.LevelInfo, "handling lifecycle event",
-		libLog.String("event_type", evt.EventType),
-		libLog.String("tenant_id", evt.TenantID),
-		libLog.String("event_id", evt.EventID))
+	logger.Base().Log(ctx, obs.LevelInfo, "handling lifecycle event",
+		"event_type", evt.EventType,
+		"tenant_id", evt.TenantID,
+		"event_id", evt.EventID)
 
 	// Service-level events: filter by service name before dispatching.
 	if isServiceScopedEvent(evt.EventType) {
@@ -268,9 +268,9 @@ func (d *EventDispatcher) HandleEvent(ctx context.Context, evt TenantLifecycleEv
 	// Tenant-level events: only act for tenants already owned locally.
 	if isTenantLevelEvent(evt.EventType) && evt.EventType != EventTenantCreated {
 		if !d.isOwnedLocally(evt.TenantID) {
-			logger.Base().Log(ctx, libLog.LevelDebug, "skipping tenant-level event: tenant not owned locally",
-				libLog.String("event_type", evt.EventType),
-				libLog.String("tenant_id", evt.TenantID))
+			logger.Base().Log(ctx, obs.LevelDebug, "skipping tenant-level event: tenant not owned locally",
+				"event_type", evt.EventType,
+				"tenant_id", evt.TenantID)
 
 			return nil
 		}
@@ -309,10 +309,10 @@ func (d *EventDispatcher) dispatchEvent(ctx context.Context, evt TenantLifecycle
 	case EventTenantCacheInvalidate:
 		return d.handleCacheInvalidate(ctx, evt, logger)
 	default:
-		logger.Base().Log(ctx, libLog.LevelWarn, "unknown event type, skipping",
-			libLog.String("event_type", evt.EventType),
-			libLog.String("tenant_id", evt.TenantID),
-			libLog.String("event_id", evt.EventID))
+		logger.Base().Log(ctx, obs.LevelWarn, "unknown event type, skipping",
+			"event_type", evt.EventType,
+			"tenant_id", evt.TenantID,
+			"event_id", evt.EventID)
 
 		return nil
 	}

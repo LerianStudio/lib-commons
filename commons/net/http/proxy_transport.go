@@ -2,6 +2,7 @@ package http
 
 import (
 	"errors"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net"
 	"net/http"
 	"net/url"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	libSSRF "github.com/LerianStudio/lib-commons/v6/commons/security/ssrf"
-	"github.com/LerianStudio/lib-observability/v2/log"
 )
 
 // ssrfSafeTransport wraps an http.Transport and implements http.RoundTripper.
@@ -80,9 +80,9 @@ func (t *ssrfSafeTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		policyLogger := t.policy.Logger
 
 		if !nilcheck.Interface(policyLogger) {
-			policyLogger.Log(req.Context(), log.LevelWarn, "proxy SSRF validation failed",
-				log.String("host", req.URL.Host),
-				log.Err(err),
+			policyLogger.Log(req.Context(), obs.LevelWarn, "proxy SSRF validation failed",
+				"host", req.URL.Host,
+				"error", err,
 			)
 		}
 

@@ -2,8 +2,8 @@ package circuitbreaker
 
 import (
 	"context"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/sony/gobreaker"
 )
 
@@ -13,10 +13,10 @@ func (m *manager) ResetTenant(tenantID string) {
 	if err := validateTenantID(tenantID); err != nil {
 		m.logger.Log(
 			context.Background(),
-			log.LevelWarn,
+			obs.LevelWarn,
 			"invalid tenant id for ResetTenant; ignoring request",
-			log.String("tenant_hash", tenantHashLabel(tenantID)),
-			log.Err(err),
+			"tenant_hash", tenantHashLabel(tenantID),
+			"error", err,
 		)
 
 		return
@@ -45,10 +45,10 @@ func (m *manager) ResetTenant(tenantID string) {
 
 	m.logger.Log(
 		context.Background(),
-		log.LevelInfo,
+		obs.LevelInfo,
 		"tenant breakers reset",
-		log.String("tenant_hash", tenantHashLabel(tenantID)),
-		log.Int("reset_count", resetCount),
+		"tenant_hash", tenantHashLabel(tenantID),
+		"reset_count", resetCount,
 	)
 }
 
@@ -58,10 +58,10 @@ func (m *manager) RemoveTenant(tenantID string) {
 	if err := validateTenantID(tenantID); err != nil {
 		m.logger.Log(
 			context.Background(),
-			log.LevelWarn,
+			obs.LevelWarn,
 			"invalid tenant id for RemoveTenant; ignoring request",
-			log.String("tenant_hash", tenantHashLabel(tenantID)),
-			log.Err(err),
+			"tenant_hash", tenantHashLabel(tenantID),
+			"error", err,
 		)
 
 		return
@@ -84,10 +84,10 @@ func (m *manager) RemoveTenant(tenantID string) {
 
 	m.logger.Log(
 		context.Background(),
-		log.LevelInfo,
+		obs.LevelInfo,
 		"removed tenant breakers",
-		log.String("tenant_hash", tenantHashLabel(tenantID)),
-		log.Int("removed_count", removed),
+		"tenant_hash", tenantHashLabel(tenantID),
+		"removed_count", removed,
 	)
 }
 

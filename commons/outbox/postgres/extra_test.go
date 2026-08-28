@@ -3,11 +3,11 @@
 package postgres
 
 import (
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 	"time"
 
 	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -170,8 +170,7 @@ func TestNewRepository_WithNilTypedLogger(t *testing.T) {
 		WithLogger(nilLogger),
 	)
 	require.NoError(t, err)
-	// Typed-nil should be replaced with Nop logger
+	// Typed-nil should be replaced with the obs Nop logger.
 	assert.NotNil(t, repo.logger)
-	_, isNop := repo.logger.(*libLog.NopLogger)
-	assert.True(t, isNop)
+	assert.Equal(t, obs.Nop(), repo.logger)
 }

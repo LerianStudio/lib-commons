@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"context"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 
 	libHTTP "github.com/LerianStudio/lib-commons/v6/commons/net/http"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
@@ -9,8 +11,6 @@ import (
 	tmmongo "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/tenantcache"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	liblog "github.com/LerianStudio/lib-observability/v2/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"github.com/gofiber/fiber/v3"
 	"github.com/golang-jwt/jwt/v5"
@@ -123,7 +123,7 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 		ctx = context.Background()
 	}
 
-	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	ctx, span := tracer.Start(ctx, "middleware.tenant.resolve_db")
@@ -143,7 +143,7 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 	// Token signature is validated by upstream auth middleware before this point.
 	token, _, err := new(jwt.Parser).ParseUnverified(accessToken, jwt.MapClaims{})
 	if err != nil {
-		logger.Base().Log(ctx, liblog.LevelError, "failed to parse JWT token", liblog.Err(err))
+		logger.Base().Log(ctx, obs.LevelError, "failed to parse JWT token", "error", err)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "failed to parse token", err)
 
 		return unauthorizedError(c, "INVALID_TOKEN", "Failed to parse authorization token")
@@ -170,16 +170,16 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 
 	tenantID, err = core.CanonicalTenantID(tenantID)
 	if err != nil {
-		logger.Base().Log(ctx, liblog.LevelError, "invalid tenantId format in JWT",
-			liblog.Err(err))
+		logger.Base().Log(ctx, obs.LevelError, "invalid tenantId format in JWT",
+			"error", err)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "invalid tenantId format",
 			core.ErrInvalidTenantClaims)
 
 		return unauthorizedError(c, "INVALID_TENANT", "tenantId has invalid format")
 	}
 
-	logger.Base().Log(ctx, liblog.LevelDebug, "tenant context resolved",
-		liblog.String("tenant_id", tenantID))
+	logger.Base().Log(ctx, obs.LevelDebug, "tenant context resolved",
+		"tenant_id", tenantID)
 
 	// Store tenant ID in context
 	ctx = core.ContextWithTenantID(ctx, tenantID)
@@ -191,8 +191,8 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 
 	// Cache-first path: ensure tenant is known before resolving connections.
 	if err := m.ensureTenantCached(ctx, tenantID); err != nil {
-		logger.Base().Log(ctx, liblog.LevelError, "failed to lazy-load tenant config",
-			liblog.String("tenant_id", tenantID), liblog.Err(err))
+		logger.Base().Log(ctx, obs.LevelError, "failed to lazy-load tenant config",
+			"tenant_id", tenantID, "error", err)
 		libOpentelemetry.HandleSpanError(span, "failed to lazy-load tenant config", err)
 
 		return mapDomainErrorToHTTP(c, err, tenantID)
@@ -203,8 +203,8 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 
 	ctx, pgErr = m.resolvePostgres(ctx, tenantID)
 	if pgErr != nil {
-		logger.Base().Log(ctx, liblog.LevelError, "failed to resolve tenant PostgreSQL connection",
-			liblog.String("tenant_id", tenantID), liblog.Err(pgErr))
+		logger.Base().Log(ctx, obs.LevelError, "failed to resolve tenant PostgreSQL connection",
+			"tenant_id", tenantID, "error", pgErr)
 		libOpentelemetry.HandleSpanError(span, "failed to resolve tenant PostgreSQL connection", pgErr)
 
 		return mapDomainErrorToHTTP(c, pgErr, tenantID)
@@ -215,8 +215,8 @@ func (m *TenantMiddleware) WithTenantDB(c fiber.Ctx) error {
 
 	ctx, mongoErr = m.resolveMongo(ctx, tenantID)
 	if mongoErr != nil {
-		logger.Base().Log(ctx, liblog.LevelError, "failed to resolve tenant MongoDB connection",
-			liblog.String("tenant_id", tenantID), liblog.Err(mongoErr))
+		logger.Base().Log(ctx, obs.LevelError, "failed to resolve tenant MongoDB connection",
+			"tenant_id", tenantID, "error", mongoErr)
 		libOpentelemetry.HandleSpanError(span, "failed to resolve tenant MongoDB connection", mongoErr)
 
 		return mapDomainErrorToHTTP(c, mongoErr, tenantID)

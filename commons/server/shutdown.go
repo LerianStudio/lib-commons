@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"net"
 	"net/http"
 	"os"
@@ -14,7 +16,6 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v6/commons/license"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
 	opentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"github.com/gofiber/fiber/v3"
@@ -42,7 +43,7 @@ type ServerManager struct {
 	grpcServer          *grpc.Server
 	licenseClient       *license.ManagerShutdown
 	telemetry           *opentelemetry.Telemetry
-	logger              log.Logger
+	logger              obs.Logger
 	httpAddress         string
 	grpcAddress         string
 	serversStarted      chan struct{}
@@ -66,7 +67,7 @@ func (sm *ServerManager) ensureRuntimeDefaults() {
 	}
 
 	if nilcheck.Interface(sm.logger) {
-		sm.logger = log.NewNop()
+		sm.logger = obs.Nop()
 	}
 
 	if sm.serversStarted == nil {
@@ -84,10 +85,10 @@ func (sm *ServerManager) ensureRuntimeDefaults() {
 func NewServerManager(
 	licenseClient *license.ManagerShutdown,
 	telemetry *opentelemetry.Telemetry,
-	logger log.Logger,
+	logger obs.Logger,
 ) *ServerManager {
 	if nilcheck.Interface(logger) {
-		logger = log.NewNop()
+		logger = obs.Nop()
 	}
 
 	return &ServerManager{
@@ -319,7 +320,7 @@ func (sm *ServerManager) StartWithGracefulShutdown() {
 	// Run everything in a recover block
 	defer func() {
 		if r := recover(); r != nil {
-			runtime.HandlePanicValue(context.Background(), sm.logger, r, "server", "StartWithGracefulShutdown")
+			runtime.HandlePanicValue(context.Background(), obsbridge.LibLogger(sm.logger), r, "server", "StartWithGracefulShutdown")
 
 			sm.executeShutdown()
 
@@ -353,7 +354,7 @@ func (sm *ServerManager) startServers() {
 		started++
 	}
 
-	sm.logger.Log(context.Background(), log.LevelInfo, "launched server goroutines", log.Int("count", started))
+	sm.logger.Log(context.Background(), obs.LevelInfo, "launched server goroutines", "count", started)
 
 	// Signal that server goroutines have been launched (not that sockets are bound).
 	sm.serversStartedOnce.Do(func() {
@@ -388,21 +389,21 @@ func (sm *ServerManager) launchFiberHTTPServer() bool {
 
 	runtime.SafeGoWithContextAndComponent(
 		context.Background(),
-		sm.logger,
+		obsbridge.LibLogger(sm.logger),
 		"server",
 		"start_http_server",
 		runtime.KeepRunning,
 		func(_ context.Context) {
 			defer close(listenDone)
 
-			sm.logger.Log(context.Background(), log.LevelInfo, "starting HTTP server", log.String("address", sm.httpAddress))
+			sm.logger.Log(context.Background(), obs.LevelInfo, "starting HTTP server", "address", sm.httpAddress)
 
 			// DisableStartupMessage: fiber v3 moved banner suppression from
 			// fiber.Config to ListenConfig, and this Listen call is the only
 			// one the fleet reaches — without it every service prints the
 			// fiber ASCII banner into its JSON-only stdout stream.
 			if err := sm.httpServer.Listen(sm.httpAddress, fiber.ListenConfig{DisableStartupMessage: true}); err != nil {
-				sm.logger.Log(context.Background(), log.LevelError, "HTTP server error", log.Err(err))
+				sm.logger.Log(context.Background(), obs.LevelError, "HTTP server error", "error", err)
 
 				select {
 				case sm.startupErrors <- fmt.Errorf("HTTP server: %w", err):
@@ -428,7 +429,7 @@ func (sm *ServerManager) launchStdlibHTTPServer() bool {
 
 	runtime.SafeGoWithContextAndComponent(
 		context.Background(),
-		sm.logger,
+		obsbridge.LibLogger(sm.logger),
 		"server",
 		"start_stdlib_http_server",
 		runtime.KeepRunning,
@@ -438,7 +439,7 @@ func (sm *ServerManager) launchStdlibHTTPServer() bool {
 				address = sm.stdlibHTTPListener.Addr().String()
 			}
 
-			sm.logger.Log(context.Background(), log.LevelInfo, "starting stdlib HTTP server", log.String("address", address))
+			sm.logger.Log(context.Background(), obs.LevelInfo, "starting stdlib HTTP server", "address", address)
 
 			// ListenAndServe returns http.ErrServerClosed on a clean
 			// Shutdown — that is the success signal, not an error.
@@ -452,7 +453,7 @@ func (sm *ServerManager) launchStdlibHTTPServer() bool {
 			}
 
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				sm.logger.Log(context.Background(), log.LevelError, "stdlib HTTP server error", log.Err(err))
+				sm.logger.Log(context.Background(), obs.LevelError, "stdlib HTTP server error", "error", err)
 
 				select {
 				case sm.startupErrors <- fmt.Errorf("HTTP server: %w", err):
@@ -474,16 +475,16 @@ func (sm *ServerManager) launchGRPCServer() bool {
 
 	runtime.SafeGoWithContextAndComponent(
 		context.Background(),
-		sm.logger,
+		obsbridge.LibLogger(sm.logger),
 		"server",
 		"start_grpc_server",
 		runtime.KeepRunning,
 		func(_ context.Context) {
-			sm.logger.Log(context.Background(), log.LevelInfo, "starting gRPC server", log.String("address", sm.grpcAddress))
+			sm.logger.Log(context.Background(), obs.LevelInfo, "starting gRPC server", "address", sm.grpcAddress)
 
 			listener, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", sm.grpcAddress)
 			if err != nil {
-				sm.logger.Log(context.Background(), log.LevelError, "failed to listen on gRPC address", log.Err(err))
+				sm.logger.Log(context.Background(), obs.LevelError, "failed to listen on gRPC address", "error", err)
 
 				select {
 				case sm.startupErrors <- fmt.Errorf("gRPC listen: %w", err):
@@ -494,7 +495,7 @@ func (sm *ServerManager) launchGRPCServer() bool {
 			}
 
 			if err := sm.grpcServer.Serve(listener); err != nil {
-				sm.logger.Log(context.Background(), log.LevelError, "gRPC server error", log.Err(err))
+				sm.logger.Log(context.Background(), obs.LevelError, "gRPC server error", "error", err)
 
 				select {
 				case sm.startupErrors <- fmt.Errorf("gRPC serve: %w", err):
@@ -510,7 +511,7 @@ func (sm *ServerManager) launchGRPCServer() bool {
 // logInfo safely logs an info message if logger is available
 func (sm *ServerManager) logInfo(msg string) {
 	if !nilcheck.Interface(sm.logger) {
-		sm.logger.Log(context.Background(), log.LevelInfo, msg)
+		sm.logger.Log(context.Background(), obs.LevelInfo, msg)
 	}
 }
 
@@ -519,7 +520,7 @@ func (sm *ServerManager) logInfo(msg string) {
 // that may or may not call os.Exit(1) in their Fatal method.
 func (sm *ServerManager) logFatal(msg string) {
 	if !nilcheck.Interface(sm.logger) {
-		sm.logger.Log(context.Background(), log.LevelError, msg)
+		sm.logger.Log(context.Background(), obs.LevelError, msg)
 	} else {
 		fmt.Println(msg)
 	}
@@ -540,7 +541,7 @@ func (sm *ServerManager) handleShutdown() error {
 		select {
 		case <-sm.shutdownChan:
 		case err := <-sm.startupErrors:
-			sm.logger.Log(context.Background(), log.LevelError, "server startup failed", log.Err(err))
+			sm.logger.Log(context.Background(), obs.LevelError, "server startup failed", "error", err)
 
 			startupErr = err
 		}
@@ -553,7 +554,7 @@ func (sm *ServerManager) handleShutdown() error {
 		select {
 		case <-c:
 		case err := <-sm.startupErrors:
-			sm.logger.Log(context.Background(), log.LevelError, "server startup failed", log.Err(err))
+			sm.logger.Log(context.Background(), obs.LevelError, "server startup failed", "error", err)
 
 			startupErr = err
 		}
@@ -601,7 +602,7 @@ func (sm *ServerManager) executeShutdown() {
 
 			runtime.SafeGoWithContextAndComponent(
 				context.Background(),
-				sm.logger,
+				obsbridge.LibLogger(sm.logger),
 				"server",
 				"grpc_graceful_stop",
 				runtime.KeepRunning,
@@ -630,18 +631,18 @@ func (sm *ServerManager) executeShutdown() {
 				defer hookCancel()
 				defer func() {
 					if r := recover(); r != nil {
-						sm.logger.Log(context.Background(), log.LevelError, "shutdown hook panicked",
-							log.Int("hook_index", i),
-							log.Any("panic", r),
+						sm.logger.Log(context.Background(), obs.LevelError, "shutdown hook panicked",
+							"hook_index", i,
+							"panic", r,
 						)
-						runtime.HandlePanicValue(context.Background(), sm.logger, r, "server", "shutdown_hook")
+						runtime.HandlePanicValue(context.Background(), obsbridge.LibLogger(sm.logger), r, "server", "shutdown_hook")
 					}
 				}()
 
 				if err := hook(hookCtx); err != nil {
-					sm.logger.Log(context.Background(), log.LevelError, "shutdown hook failed",
-						log.Int("hook_index", i),
-						log.Err(err),
+					sm.logger.Log(context.Background(), obs.LevelError, "shutdown hook failed",
+						"hook_index", i,
+						"error", err,
 					)
 				}
 			}(i, hook)
@@ -658,7 +659,7 @@ func (sm *ServerManager) executeShutdown() {
 			sm.logInfo("Syncing logger...")
 
 			if err := sm.logger.Sync(context.Background()); err != nil {
-				sm.logger.Log(context.Background(), log.LevelError, "failed to sync logger", log.Err(err))
+				sm.logger.Log(context.Background(), obs.LevelError, "failed to sync logger", "error", err)
 			}
 		}
 
@@ -681,7 +682,7 @@ func (sm *ServerManager) shutdownHTTPServer() {
 		sm.logInfo("Shutting down HTTP server...")
 
 		if err := sm.httpServer.Shutdown(); err != nil {
-			sm.logger.Log(context.Background(), log.LevelError, "error during HTTP server shutdown", log.Err(err))
+			sm.logger.Log(context.Background(), obs.LevelError, "error during HTTP server shutdown", "error", err)
 		}
 
 		sm.awaitFiberListenExit()
@@ -749,10 +750,10 @@ func (sm *ServerManager) shutdownStdlibHTTPServer() {
 	defer cancel()
 
 	if err := sm.stdlibHTTPServer.Shutdown(shutdownCtx); err != nil {
-		sm.logger.Log(context.Background(), log.LevelError, "error during HTTP server shutdown", log.Err(err))
+		sm.logger.Log(context.Background(), obs.LevelError, "error during HTTP server shutdown", "error", err)
 
 		if closeErr := sm.stdlibHTTPServer.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
-			sm.logger.Log(context.Background(), log.LevelError, "error during HTTP server hard close", log.Err(closeErr))
+			sm.logger.Log(context.Background(), obs.LevelError, "error during HTTP server hard close", "error", closeErr)
 		}
 	}
 }

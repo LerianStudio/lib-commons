@@ -6,10 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"unicode/utf8"
 
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -27,9 +27,9 @@ func (h *Handler) tenantScopedKeyForTenant(tenantID, source string) string {
 			// to the global key, which would mix tenant-scoped messages into
 			// the global queue. Return an empty string so callers can detect
 			// the failure and skip the operation.
-			h.logger.Log(context.Background(), libLog.LevelError, "dlq: tenantScopedKeyForTenant: invalid tenantID, rejecting operation",
-				libLog.String("tenant_id", tenantID),
-				libLog.Err(err),
+			h.logger.Log(context.Background(), obs.LevelError, "dlq: tenantScopedKeyForTenant: invalid tenantID, rejecting operation",
+				"tenant_id", tenantID,
+				"error", err,
 			)
 
 			return ""

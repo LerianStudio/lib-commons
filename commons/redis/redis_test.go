@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"math/big"
 	"os"
 	"sync"
@@ -22,7 +23,6 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,8 +61,8 @@ type recordingLogger struct {
 	warnings []string
 }
 
-func (logger *recordingLogger) Log(_ context.Context, level log.Level, msg string, _ ...log.Field) {
-	if level != log.LevelWarn {
+func (logger *recordingLogger) Log(_ context.Context, level int, msg string, _ ...any) {
+	if level != obs.LevelWarn {
 		return
 	}
 
@@ -71,11 +71,11 @@ func (logger *recordingLogger) Log(_ context.Context, level log.Level, msg strin
 	logger.mu.Unlock()
 }
 
-func (logger *recordingLogger) With(...log.Field) log.Logger { return logger }
+func (logger *recordingLogger) With(...any) obs.Logger { return logger }
 
-func (logger *recordingLogger) WithGroup(string) log.Logger { return logger }
+func (logger *recordingLogger) WithGroup(string) obs.Logger { return logger }
 
-func (logger *recordingLogger) Enabled(log.Level) bool { return true }
+func (logger *recordingLogger) Enabled(int) bool { return true }
 
 func (logger *recordingLogger) Sync(context.Context) error { return nil }
 
@@ -91,7 +91,7 @@ func newStandaloneConfig(addr string) Config {
 		Topology: Topology{
 			Standalone: &StandaloneTopology{Address: addr},
 		},
-		Logger: &log.NopLogger{},
+		Logger: obs.Nop(),
 	}
 }
 
@@ -128,7 +128,7 @@ func TestClient_New_InvalidConfig(t *testing.T) {
 	}{
 		{
 			name:    "missing topology",
-			cfg:     Config{Logger: &log.NopLogger{}},
+			cfg:     Config{Logger: obs.Nop()},
 			errText: "exactly one topology",
 		},
 		{
@@ -138,7 +138,7 @@ func TestClient_New_InvalidConfig(t *testing.T) {
 					Standalone: &StandaloneTopology{Address: "127.0.0.1:6379"},
 					Cluster:    &ClusterTopology{Addresses: []string{"127.0.0.1:6379"}},
 				},
-				Logger: &log.NopLogger{},
+				Logger: obs.Nop(),
 			},
 			errText: "exactly one topology",
 		},
@@ -152,7 +152,7 @@ func TestClient_New_InvalidConfig(t *testing.T) {
 						ServiceAccount:    "svc@project.iam.gserviceaccount.com",
 					},
 				},
-				Logger: &log.NopLogger{},
+				Logger: obs.Nop(),
 			},
 			errText: "TLS must be configured",
 		},
@@ -164,7 +164,7 @@ func TestClient_New_InvalidConfig(t *testing.T) {
 				Auth: Auth{
 					GCPIAM: &GCPIAMAuth{CredentialsBase64: "abc"},
 				},
-				Logger: &log.NopLogger{},
+				Logger: obs.Nop(),
 			},
 			errText: "service account is required",
 		},
@@ -179,7 +179,7 @@ func TestClient_New_InvalidConfig(t *testing.T) {
 						ServiceAccount:    "projects/-/serviceAccounts/svc@project.iam.gserviceaccount.com",
 					},
 				},
-				Logger: &log.NopLogger{},
+				Logger: obs.Nop(),
 			},
 			errText: "cannot contain '/'",
 		},
@@ -191,7 +191,7 @@ func TestClient_New_InvalidConfig(t *testing.T) {
 				Auth: Auth{
 					GCPIAM: &GCPIAMAuth{ServiceAccount: "svc@project.iam.gserviceaccount.com"},
 				},
-				Logger: &log.NopLogger{},
+				Logger: obs.Nop(),
 			},
 			errText: "credentials are required",
 		},
@@ -214,7 +214,7 @@ func TestClient_New_TLSWithoutCustomCA_UsesSystemPool(t *testing.T) {
 	cfg, err := normalizeConfig(Config{
 		Topology: Topology{Standalone: &StandaloneTopology{Address: "redis.example:6379"}},
 		TLS:      &TLSConfig{},
-		Logger:   &log.NopLogger{},
+		Logger:   obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -234,7 +234,7 @@ func TestClient_New_BlocksPlaintextBeforeDial(t *testing.T) {
 		Topology: Topology{
 			Standalone: &StandaloneTopology{Address: "127.0.0.1:1"},
 		},
-		Logger: log.NewNop(),
+		Logger: obs.Nop(),
 	})
 
 	assert.Nil(t, client)
@@ -264,7 +264,7 @@ func TestClient_New_LegacyReasonStringIsRejected(t *testing.T) {
 		Topology: Topology{
 			Standalone: &StandaloneTopology{Address: "127.0.0.1:1"},
 		},
-		Logger: log.NewNop(),
+		Logger: obs.Nop(),
 	})
 
 	assert.Nil(t, client)
@@ -368,7 +368,7 @@ func TestClient_RefreshLoop_DoesNotDuplicateGoroutines(t *testing.T) {
 			RefreshCheckInterval:    time.Millisecond,
 			RefreshOperationTimeout: time.Second,
 		}},
-		Logger: &log.NopLogger{},
+		Logger: obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -411,7 +411,7 @@ func TestClient_RefreshStatusErrorAndRecovery(t *testing.T) {
 			RefreshCheckInterval:    time.Millisecond,
 			RefreshOperationTimeout: time.Second,
 		}},
-		Logger: &log.NopLogger{},
+		Logger: obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -462,7 +462,7 @@ func TestClient_RefreshTick_ReconnectFailureReturnsFalse(t *testing.T) {
 			RefreshCheckInterval:    time.Millisecond,
 			RefreshOperationTimeout: time.Second,
 		}},
-		Logger: &log.NopLogger{},
+		Logger: obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -578,7 +578,7 @@ func TestClient_ReconnectFailure_IAMRefreshLoopPreservesClient(t *testing.T) {
 			RefreshCheckInterval:    time.Millisecond,
 			RefreshOperationTimeout: time.Second,
 		}},
-		Logger: &log.NopLogger{},
+		Logger: obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -893,7 +893,7 @@ func TestBuildUniversalOptionsLocked_Topologies(t *testing.T) {
 }
 
 func TestBuildUniversalOptionsLocked_NoTopology(t *testing.T) {
-	c := &Client{logger: &log.NopLogger{}}
+	c := &Client{logger: obs.Nop()}
 	_, err := c.buildUniversalOptionsLocked()
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidConfig)
@@ -947,7 +947,7 @@ func TestClient_RetrieveToken_NilClient(t *testing.T) {
 func TestClient_RetrieveToken_NoGCPIAM(t *testing.T) {
 	c := &Client{
 		cfg:    Config{},
-		logger: &log.NopLogger{},
+		logger: obs.Nop(),
 	}
 	_, err := c.retrieveToken(context.Background())
 	require.Error(t, err)
@@ -1212,11 +1212,11 @@ func TestSetPackageLogger_NilDefaultsToNop(t *testing.T) {
 	require.NotNil(t, logger)
 
 	// Reset to NopLogger
-	SetPackageLogger(&log.NopLogger{})
+	SetPackageLogger(obs.Nop())
 }
 
 func TestSetPackageLogger_CustomLogger(t *testing.T) {
-	SetPackageLogger(&log.NopLogger{})
+	SetPackageLogger(obs.Nop())
 	logger := resolvePackageLogger()
 	require.NotNil(t, logger)
 }
@@ -1225,7 +1225,7 @@ func TestClient_RefreshTokenLoop_NilGCPIAM(t *testing.T) {
 	// refreshTokenLoop with non-nil client but nil GCPIAM should return immediately.
 	c := &Client{
 		cfg:    Config{},
-		logger: &log.NopLogger{},
+		logger: obs.Nop(),
 	}
 	// Should return immediately without panic.
 	c.refreshTokenLoop(context.Background())

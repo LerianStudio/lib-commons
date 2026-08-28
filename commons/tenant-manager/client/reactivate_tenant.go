@@ -3,9 +3,8 @@ package client
 import (
 	"context"
 	"fmt"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"net/url"
-
-	observability "github.com/LerianStudio/lib-observability/v2"
 )
 
 // ReactivateTenant reactivates a suspended tenant via the Tenant Manager's
@@ -25,7 +24,7 @@ func (c *Client) ReactivateTenant(ctx context.Context, tenantID string) error {
 		}
 	})
 
-	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.reactivate_tenant")
 	defer span.End()

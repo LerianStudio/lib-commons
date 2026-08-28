@@ -1,11 +1,11 @@
 package ratelimit
 
 import (
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net/url"
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/gofiber/fiber/v3"
 )
 
@@ -18,7 +18,7 @@ type Option func(*RateLimiter)
 
 // WithLogger provides a structured logger for rate limiter warnings and errors.
 // When not provided, a no-op logger is used.
-func WithLogger(l log.Logger) Option {
+func WithLogger(l obs.Logger) Option {
 	return func(rl *RateLimiter) {
 		if !nilcheck.Interface(l) {
 			rl.logger = l

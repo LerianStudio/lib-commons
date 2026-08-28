@@ -3,12 +3,12 @@ package client
 import (
 	"context"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"io"
 	"net/http"
 	"net/url"
 
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -31,7 +31,7 @@ func (c *Client) SuspendService(ctx context.Context, tenantID, serviceName strin
 		}
 	})
 
-	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.suspend_service")
 	defer span.End()
@@ -50,9 +50,9 @@ func (c *Client) SuspendService(ctx context.Context, tenantID, serviceName strin
 // service-account bearer plus X-API-Key headers, a size-limited response body,
 // and trace-context injection. Response classification is delegated to
 // handleStateTransitionStatus.
-func (c *Client) doStateTransition(ctx context.Context, span trace.Span, logger libLog.Logger, requestURL, op string) error {
+func (c *Client) doStateTransition(ctx context.Context, span trace.Span, logger obs.Logger, requestURL, op string) error {
 	if err := c.checkCircuitBreaker(); err != nil {
-		logger.Log(ctx, libLog.LevelWarn, "circuit breaker open, failing fast")
+		logger.Log(ctx, obs.LevelWarn, "circuit breaker open, failing fast")
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Circuit breaker open", err)
 
 		return err
@@ -114,31 +114,31 @@ func (c *Client) doStateTransition(ctx context.Context, span trace.Span, logger 
 // service failure that feeds the circuit breaker; any other 4xx is a valid
 // round-trip carrying the truncated body; anything else (3xx, ...) is
 // out-of-contract and leaves the breaker counters untouched.
-func (c *Client) handleStateTransitionStatus(ctx context.Context, span trace.Span, logger libLog.Logger, op string, statusCode int, body []byte) error {
+func (c *Client) handleStateTransitionStatus(ctx context.Context, span trace.Span, logger obs.Logger, op string, statusCode int, body []byte) error {
 	switch {
 	case statusCode >= http.StatusOK && statusCode < http.StatusMultipleChoices:
 		c.recordSuccess()
-		logger.Log(ctx, libLog.LevelInfo, "tenant manager state transition succeeded",
-			libLog.String("op", op),
-			libLog.Int("status", statusCode),
+		logger.Log(ctx, obs.LevelInfo, "tenant manager state transition succeeded",
+			"op", op,
+			"status", statusCode,
 		)
 
 		return nil
 	case statusCode == http.StatusConflict:
 		// Idempotency tolerance: already in the target state is success.
 		c.recordSuccess()
-		logger.Log(ctx, libLog.LevelWarn, "tenant manager reported already in target state (tolerated)",
-			libLog.String("op", op),
-			libLog.String("body", truncateBody(body)),
+		logger.Log(ctx, obs.LevelWarn, "tenant manager reported already in target state (tolerated)",
+			"op", op,
+			"body", truncateBody(body),
 		)
 
 		return nil
 	case isServerError(statusCode):
 		c.recordFailure()
-		logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
-			libLog.String("op", op),
-			libLog.Int("status", statusCode),
-			libLog.String("body", truncateBody(body)),
+		logger.Log(ctx, obs.LevelError, "tenant manager returned error",
+			"op", op,
+			"status", statusCode,
+			"body", truncateBody(body),
 		)
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", statusCode))
 
@@ -147,10 +147,10 @@ func (c *Client) handleStateTransitionStatus(ctx context.Context, span trace.Spa
 		// Any other 4xx: a valid round-trip (resets the breaker), surfaced with the
 		// truncated body so the caller can diagnose the rejection.
 		c.recordSuccess()
-		logger.Log(ctx, libLog.LevelError, "tenant manager rejected state transition",
-			libLog.String("op", op),
-			libLog.Int("status", statusCode),
-			libLog.String("body", truncateBody(body)),
+		logger.Log(ctx, obs.LevelError, "tenant manager rejected state transition",
+			"op", op,
+			"status", statusCode,
+			"body", truncateBody(body),
 		)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Tenant Manager rejected state transition", fmt.Errorf("status %d", statusCode))
 
@@ -159,10 +159,10 @@ func (c *Client) handleStateTransitionStatus(ctx context.Context, span trace.Spa
 		// Out-of-contract status (3xx, ...): neither success nor a service failure —
 		// leave the breaker counters untouched (mirrors handleCreateTenantStatus's
 		// default branch).
-		logger.Log(ctx, libLog.LevelError, "tenant manager returned unexpected status",
-			libLog.String("op", op),
-			libLog.Int("status", statusCode),
-			libLog.String("body", truncateBody(body)),
+		logger.Log(ctx, obs.LevelError, "tenant manager returned unexpected status",
+			"op", op,
+			"status", statusCode,
+			"body", truncateBody(body),
 		)
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned unexpected status", fmt.Errorf("status %d", statusCode))
 

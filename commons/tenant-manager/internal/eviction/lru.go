@@ -8,9 +8,8 @@ package eviction
 import (
 	"context"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"time"
-
-	"github.com/LerianStudio/lib-observability/v2/log"
 )
 
 // DefaultIdleTimeout is the default duration before a tenant connection becomes
@@ -35,7 +34,7 @@ func FindLRUEvictionCandidate(
 	maxConnections int,
 	lastAccessed map[string]time.Time,
 	idleTimeout time.Duration,
-	logger log.Logger,
+	logger obs.Logger,
 ) (string, bool) {
 	if maxConnections <= 0 || connectionCount < maxConnections {
 		return "", false
@@ -65,10 +64,10 @@ func FindLRUEvictionCandidate(
 
 	if oldestID == "" {
 		if logger != nil {
-			logger.Log(context.Background(), log.LevelWarn,
+			logger.Log(context.Background(), obs.LevelWarn,
 				"connection pool at capacity but no idle connections to evict",
-				log.Int("connection_count", connectionCount),
-				log.Int("max_connections", maxConnections),
+				"connection_count", connectionCount,
+				"max_connections", maxConnections,
 			)
 		}
 
@@ -76,11 +75,11 @@ func FindLRUEvictionCandidate(
 	}
 
 	if logger != nil {
-		logger.Log(context.Background(), log.LevelInfo,
+		logger.Log(context.Background(), obs.LevelInfo,
 			"evicting idle tenant connection",
-			log.String("tenant_id", oldestID),
-			log.String("idle_duration", fmt.Sprintf("%v", now.Sub(oldestTime))),
-			log.String("idle_timeout", fmt.Sprintf("%v", idleTimeout)),
+			"tenant_id", oldestID,
+			"idle_duration", fmt.Sprintf("%v", now.Sub(oldestTime)),
+			"idle_timeout", fmt.Sprintf("%v", idleTimeout),
 		)
 	}
 

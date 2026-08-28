@@ -5,12 +5,13 @@ package circuitbreaker
 import (
 	"context"
 	"errors"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"strings"
 	"testing"
 	"time"
 
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -31,7 +32,7 @@ func newTestMetricsFactory(t *testing.T) (*metrics.MetricsFactory, *sdkmetric.Ma
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	meter := provider.Meter("test-circuitbreaker")
 
-	factory, err := metrics.NewMetricsFactory(meter, &log.NopLogger{})
+	factory, err := metrics.NewMetricsFactory(meter, obsbridge.LibLogger(obs.Nop()))
 	require.NoError(t, err)
 
 	return factory, reader
@@ -105,7 +106,7 @@ func hasAttributeKey(dp metricdata.DataPoint[int64], key string) bool {
 func TestMetrics_WithNilFactory_NoPanic(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(nil))
+	mgr, err := NewManager(obs.Nop(), WithMetricsFactory(nil))
 	require.NoError(t, err)
 
 	// Verify the metricsFactory field is nil on the concrete manager
@@ -138,7 +139,7 @@ func TestMetrics_WithFactory_Applied(t *testing.T) {
 
 	factory, _ := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsFactory(factory))
 	require.NoError(t, err)
 
 	m := mgr.(*manager)
@@ -154,7 +155,7 @@ func TestMetrics_RecordExecution_Success(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsFactory(factory))
 	require.NoError(t, err)
 
 	_, err = mgr.GetOrCreate("exec-svc", DefaultConfig())
@@ -195,7 +196,7 @@ func TestMetrics_RecordExecution_Error(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsFactory(factory))
 	require.NoError(t, err)
 
 	_, err = mgr.GetOrCreate("err-svc", DefaultConfig())
@@ -234,7 +235,7 @@ func TestMetrics_RecordExecution_RejectedOpen(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsFactory(factory))
 	require.NoError(t, err)
 
 	cfg := Config{
@@ -293,7 +294,7 @@ func TestMetrics_RecordStateTransition_ClosedToOpen(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsFactory(factory))
 	require.NoError(t, err)
 
 	cfg := Config{
@@ -345,7 +346,7 @@ func TestMetrics_RecordStateTransition_ClosedToOpen(t *testing.T) {
 func TestMetrics_RecordStateTransition_NilFactory_Noop(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 
 	m := mgr.(*manager)
@@ -363,7 +364,7 @@ func TestMetrics_RecordStateTransition_NilFactory_Noop(t *testing.T) {
 func TestMetrics_RecordExecution_NilFactory_Noop(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 
 	m := mgr.(*manager)
@@ -383,7 +384,7 @@ func TestMetrics_LongServiceName_Sanitized(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsFactory(factory))
 	require.NoError(t, err)
 
 	// Create a service name that exceeds 64 characters
@@ -428,7 +429,7 @@ func TestMetrics_MultipleExecutions_Accumulate(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsFactory(factory))
 	require.NoError(t, err)
 
 	_, err = mgr.GetOrCreate("accum-svc", DefaultConfig())

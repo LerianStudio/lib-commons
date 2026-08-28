@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	neturl "net/url"
 	"regexp"
 	"sort"
@@ -19,7 +21,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-observability/v2/assert"
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/LerianStudio/lib-observability/v2/metrics"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -101,7 +102,7 @@ type Config struct {
 	// per-operation context deadline always takes precedence.
 	Timeout        time.Duration
 	TLS            *TLSConfig
-	Logger         log.Logger
+	Logger         obs.Logger
 	MetricsFactory *metrics.MetricsFactory
 }
 
@@ -189,7 +190,7 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 
 	for _, opt := range opts {
 		if opt == nil {
-			asserter := assert.New(ctx, cfg.Logger, "mongo", "NewClient")
+			asserter := assert.New(ctx, obsbridge.LibLogger(cfg.Logger), "mongo", "NewClient")
 			_ = asserter.Never(ctx, "nil mongo option received; skipping")
 
 			continue
@@ -303,9 +304,9 @@ func (c *Client) connectLocked(ctx context.Context) error {
 		}
 
 		if c.cfg.Logger != nil {
-			c.cfg.Logger.Log(ctx, log.LevelWarn, "security bypass active",
-				log.String("feature", "mongo_tls"),
-				log.String("env_var", commons.EnvAllowInsecureTLS),
+			c.cfg.Logger.Log(ctx, obs.LevelWarn, "security bypass active",
+				"feature", "mongo_tls",
+				"env_var", commons.EnvAllowInsecureTLS,
 			)
 		}
 	}
@@ -313,7 +314,7 @@ func (c *Client) connectLocked(ctx context.Context) error {
 	mongoClient, err := c.deps.connect(ctx, clientOptions)
 	if err != nil {
 		sanitized := sanitizeDriverError(err)
-		c.log(ctx, "mongo connect failed", log.Err(sanitized))
+		c.log(ctx, "mongo connect failed", "error", sanitized)
 
 		return fmt.Errorf("%w: %w", ErrConnect, sanitized)
 	}
@@ -324,11 +325,11 @@ func (c *Client) connectLocked(ctx context.Context) error {
 
 	if err := c.deps.ping(ctx, mongoClient); err != nil {
 		if disconnectErr := c.deps.disconnect(ctx, mongoClient); disconnectErr != nil {
-			c.log(ctx, "failed to disconnect after ping failure", log.Err(sanitizeDriverError(disconnectErr)))
+			c.log(ctx, "failed to disconnect after ping failure", "error", sanitizeDriverError(disconnectErr))
 		}
 
 		sanitized := sanitizeDriverError(err)
-		c.log(ctx, "mongo ping failed", log.Err(sanitized))
+		c.log(ctx, "mongo ping failed", "error", sanitized)
 
 		return fmt.Errorf("%w: %w", ErrPing, sanitized)
 	}
@@ -336,7 +337,7 @@ func (c *Client) connectLocked(ctx context.Context) error {
 	c.client = mongoClient
 
 	if tlsDisabled {
-		c.logAtLevel(ctx, log.LevelWarn, "mongo connection established without TLS; "+
+		c.logAtLevel(ctx, obs.LevelWarn, "mongo connection established without TLS; "+
 			"consider configuring TLS for production use")
 	}
 
@@ -546,7 +547,7 @@ func (c *Client) Close(ctx context.Context) error {
 
 	if err != nil {
 		sanitized := sanitizeDriverError(err)
-		c.log(ctx, "mongo disconnect failed", log.Err(sanitized))
+		c.log(ctx, "mongo disconnect failed", "error", sanitized)
 
 		disconnectErr := fmt.Errorf("%w: %w", ErrDisconnect, sanitized)
 		libOpentelemetry.HandleSpanError(span, "Failed to disconnect from mongo", disconnectErr)
@@ -623,17 +624,17 @@ func (c *Client) EnsureIndexes(ctx context.Context, collection string, indexes .
 		fields := indexKeysString(index.Keys)
 
 		if fields == "<unknown>" {
-			c.logAtLevel(ctx, log.LevelWarn, "unrecognized index key type; expected bson.D or bson.M",
-				log.String("collection", collection))
+			c.logAtLevel(ctx, obs.LevelWarn, "unrecognized index key type; expected bson.D or bson.M",
+				"collection", collection)
 		}
 
-		c.log(ctx, "ensuring mongo index", log.String("collection", collection), log.String("fields", fields))
+		c.log(ctx, "ensuring mongo index", "collection", collection, "fields", fields)
 
 		if err := c.deps.createIndex(ctx, client, databaseName, collection, index); err != nil {
-			c.logAtLevel(ctx, log.LevelWarn, "failed to create mongo index",
-				log.String("collection", collection),
-				log.String("fields", fields),
-				log.Err(err),
+			c.logAtLevel(ctx, obs.LevelWarn, "failed to create mongo index",
+				"collection", collection,
+				"fields", fields,
+				"error", err,
 			)
 
 			indexErrors = append(indexErrors, fmt.Errorf("%w: collection=%s fields=%s: %w", ErrCreateIndex, collection, fields, err))
@@ -650,11 +651,11 @@ func (c *Client) EnsureIndexes(ctx context.Context, collection string, indexes .
 	return nil
 }
 
-func (c *Client) log(ctx context.Context, message string, fields ...log.Field) {
-	c.logAtLevel(ctx, log.LevelDebug, message, fields...)
+func (c *Client) log(ctx context.Context, message string, fields ...any) {
+	c.logAtLevel(ctx, obs.LevelDebug, message, fields...)
 }
 
-func (c *Client) logAtLevel(ctx context.Context, level log.Level, message string, fields ...log.Field) {
+func (c *Client) logAtLevel(ctx context.Context, level int, message string, fields ...any) {
 	if c == nil || c.cfg.Logger == nil {
 		return
 	}
@@ -672,7 +673,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.Database = strings.TrimSpace(cfg.Database)
 
 	if nilcheck.Interface(cfg.Logger) {
-		cfg.Logger = log.NewNop()
+		cfg.Logger = obs.Nop()
 	}
 
 	if cfg.MaxPoolSize > maxMaxPoolSize {
@@ -819,7 +820,7 @@ func (c *Client) recordConnectionFailure(operation string) {
 
 	counter, err := c.metricsFactory.Counter(connectionFailuresMetric)
 	if err != nil {
-		c.logAtLevel(context.Background(), log.LevelWarn, "failed to create mongo metric counter", log.Err(err))
+		c.logAtLevel(context.Background(), obs.LevelWarn, "failed to create mongo metric counter", "error", err)
 		return
 	}
 
@@ -829,7 +830,7 @@ func (c *Client) recordConnectionFailure(operation string) {
 		}).
 		AddOne(context.Background())
 	if err != nil {
-		c.logAtLevel(context.Background(), log.LevelWarn, "failed to record mongo metric", log.Err(err))
+		c.logAtLevel(context.Background(), obs.LevelWarn, "failed to record mongo metric", "error", err)
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"sync"
 	"time"
 
@@ -22,8 +24,6 @@ import (
 	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/rabbitmq"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/tenantcache"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 )
 
 // HandlerFunc is a function that processes messages from a queue.
@@ -203,7 +203,7 @@ type MultiTenantConsumer struct {
 // Returns an error if MultiTenantURL/Service are not configured.
 func NewMultiTenantConsumerWithError(
 	config MultiTenantConfig,
-	logger libLog.Logger,
+	logger obs.Logger,
 	opts ...Option,
 ) (*MultiTenantConsumer, error) {
 	if config.MultiTenantURL == "" {
@@ -220,7 +220,7 @@ func NewMultiTenantConsumerWithError(
 
 	// Guard against nil logger to prevent panics downstream
 	if logger == nil {
-		logger = libLog.NewNop()
+		logger = obs.Nop()
 	}
 
 	// Apply defaults
@@ -292,9 +292,9 @@ func NewMultiTenantConsumerWithError(
 	}
 
 	if config.WorkersPerQueue > 0 {
-		consumer.logger.Base().Log(context.Background(), libLog.LevelWarn,
+		consumer.logger.Base().Log(context.Background(), obs.LevelWarn,
 			"WorkersPerQueue is deprecated and has no effect; the field is reserved for future use",
-			libLog.Int("workers_per_queue", config.WorkersPerQueue))
+			"workers_per_queue", config.WorkersPerQueue)
 	}
 
 	return consumer, nil
@@ -346,7 +346,7 @@ func (c *MultiTenantConsumer) Register(queueName string, handler HandlerFunc) er
 // The event listener is managed externally; Run() stores the parent context
 // and makes the consumer ready to receive events and lazy-load tenants.
 func (c *MultiTenantConsumer) Run(ctx context.Context) error {
-	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	// Fall back to constructor logger when context has no logger attached
