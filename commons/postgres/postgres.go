@@ -23,7 +23,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
 	"github.com/LerianStudio/lib-observability/v2/assert"
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"github.com/LerianStudio/lib-observability/v3/sqlobs"
@@ -136,7 +135,7 @@ type Config struct {
 	// the DSN carries no database name either.
 	DatabaseName       string
 	Logger             obs.Logger
-	MetricsFactory     *metrics.MetricsFactory
+	MetricsRecorder    obs.MetricsRecorder
 	MaxOpenConnections int
 	MaxIdleConnections int
 	ConnMaxLifetime    time.Duration
@@ -396,20 +395,20 @@ func warnInsecureDSN(ctx context.Context, logger obs.Logger, dsn, label string) 
 const connectBackoffCap = 30 * time.Second
 
 // connectionFailuresMetric defines the counter for postgres connection failures.
-var connectionFailuresMetric = metrics.Metric{
-	Name:        "postgres_connection_failures_total",
-	Unit:        "1",
-	Description: "Total number of postgres connection failures",
-}
+const (
+	connectionFailuresMetricName        = "postgres_connection_failures_total"
+	connectionFailuresMetricUnit        = "1"
+	connectionFailuresMetricDescription = "Total number of postgres connection failures"
+)
 
 // Client is the v2 postgres connection manager.
 type Client struct {
-	mu             sync.RWMutex
-	cfg            Config
-	metricsFactory *metrics.MetricsFactory
-	resolver       dbresolver.DB
-	primary        *sql.DB
-	replica        *sql.DB
+	mu              sync.RWMutex
+	cfg             Config
+	metricsRecorder obs.MetricsRecorder
+	resolver        dbresolver.DB
+	primary         *sql.DB
+	replica         *sql.DB
 
 	// statsCleanups releases the telemetry registrations bound to the CURRENT
 	// primary/replica pools. Swapped together with the pools on reconnect and
@@ -442,7 +441,7 @@ func New(cfg Config) (*Client, error) {
 		}
 	}
 
-	return &Client{cfg: cfg, metricsFactory: cfg.MetricsFactory}, nil
+	return &Client{cfg: cfg, metricsRecorder: cfg.MetricsRecorder}, nil
 }
 
 // logAtLevel emits a structured log entry at the specified level.
@@ -1201,23 +1200,20 @@ func classifyMigrationError(err error, allowMissing bool, state migrationState) 
 }
 
 // recordConnectionFailure increments the postgres connection failure counter.
-// No-op when metricsFactory is nil. ctx is used for metric recording and tracing.
+// No-op when metricsRecorder is nil. ctx is used for metric recording and tracing.
 func (c *Client) recordConnectionFailure(ctx context.Context, operation string) {
-	if c == nil || c.metricsFactory == nil {
+	if c == nil || c.metricsRecorder == nil {
 		return
 	}
 
-	counter, err := c.metricsFactory.Counter(connectionFailuresMetric)
-	if err != nil {
-		c.logAtLevel(ctx, obs.LevelWarn, "failed to create postgres metric counter", "error", err)
-		return
-	}
-
-	err = counter.
-		WithLabels(map[string]string{
-			"operation": constant.SanitizeMetricLabel(operation),
-		}).
-		AddOne(ctx)
+	err := c.metricsRecorder.AddCounter(
+		ctx,
+		connectionFailuresMetricName,
+		connectionFailuresMetricDescription,
+		connectionFailuresMetricUnit,
+		map[string]string{"operation": constant.SanitizeMetricLabel(operation)},
+		1,
+	)
 	if err != nil {
 		c.logAtLevel(ctx, obs.LevelWarn, "failed to record postgres metric", "error", err)
 	}

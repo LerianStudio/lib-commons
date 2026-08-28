@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -798,7 +799,7 @@ func TestTenantManager_Metrics_TenantHashLabel(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(obs.Nop(), WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(obsbridge.Metrics(factory)))
 	require.NoError(t, err)
 	tam := mgr.(TenantAwareManager)
 
@@ -950,7 +951,7 @@ func TestTenantManager_Metrics_NoTenantOmitsTenantHashLabel(t *testing.T) {
 	// that label shape so existing dashboards and recording rules keep working.
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(obs.Nop(), WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(obsbridge.Metrics(factory)))
 	require.NoError(t, err)
 
 	_, err = mgr.GetOrCreate("svc", DefaultConfig())

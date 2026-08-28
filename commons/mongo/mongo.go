@@ -21,7 +21,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-observability/v2/assert"
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/metrics"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -100,10 +99,10 @@ type Config struct {
 	// single bound applied as a fallback deadline to every operation whose
 	// context carries none. Zero uses defaultTimeout (30s); a caller-provided
 	// per-operation context deadline always takes precedence.
-	Timeout        time.Duration
-	TLS            *TLSConfig
-	Logger         obs.Logger
-	MetricsFactory *metrics.MetricsFactory
+	Timeout         time.Duration
+	TLS             *TLSConfig
+	Logger          obs.Logger
+	MetricsRecorder obs.MetricsRecorder
 }
 
 func (cfg Config) validate() error {
@@ -125,22 +124,22 @@ type Option func(*clientDeps)
 const connectBackoffCap = 30 * time.Second
 
 // connectionFailuresMetric defines the counter for mongo connection failures.
-var connectionFailuresMetric = metrics.Metric{
-	Name:        "mongo_connection_failures_total",
-	Unit:        "1",
-	Description: "Total number of mongo connection failures",
-}
+const (
+	connectionFailuresMetricName        = "mongo_connection_failures_total"
+	connectionFailuresMetricUnit        = "1"
+	connectionFailuresMetricDescription = "Total number of mongo connection failures"
+)
 
 // Client wraps a MongoDB client with lifecycle and index helpers.
 type Client struct {
-	mu             sync.RWMutex
-	client         *mongo.Client
-	closed         bool // terminal flag; set by Close(), prevents reconnection
-	databaseName   string
-	cfg            Config
-	metricsFactory *metrics.MetricsFactory
-	uri            string // private copy for reconnection; cfg.URI cleared after connect
-	deps           clientDeps
+	mu              sync.RWMutex
+	client          *mongo.Client
+	closed          bool // terminal flag; set by Close(), prevents reconnection
+	databaseName    string
+	cfg             Config
+	metricsRecorder obs.MetricsRecorder
+	uri             string // private copy for reconnection; cfg.URI cleared after connect
+	deps            clientDeps
 
 	// Lazy-connect rate-limiting: prevents thundering-herd reconnect storms
 	// when the database is down by enforcing exponential backoff between attempts.
@@ -204,11 +203,11 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 	}
 
 	client := &Client{
-		databaseName:   cfg.Database,
-		cfg:            cfg,
-		metricsFactory: cfg.MetricsFactory,
-		uri:            cfg.URI,
-		deps:           deps,
+		databaseName:    cfg.Database,
+		cfg:             cfg,
+		metricsRecorder: cfg.MetricsRecorder,
+		uri:             cfg.URI,
+		deps:            deps,
 	}
 
 	if err := client.Connect(ctx); err != nil {
@@ -812,23 +811,20 @@ func configError(msg string) error {
 }
 
 // recordConnectionFailure increments the mongo connection failure counter.
-// No-op when metricsFactory is nil.
+// No-op when metricsRecorder is nil.
 func (c *Client) recordConnectionFailure(operation string) {
-	if c == nil || c.metricsFactory == nil {
+	if c == nil || c.metricsRecorder == nil {
 		return
 	}
 
-	counter, err := c.metricsFactory.Counter(connectionFailuresMetric)
-	if err != nil {
-		c.logAtLevel(context.Background(), obs.LevelWarn, "failed to create mongo metric counter", "error", err)
-		return
-	}
-
-	err = counter.
-		WithLabels(map[string]string{
-			"operation": constant.SanitizeMetricLabel(operation),
-		}).
-		AddOne(context.Background())
+	err := c.metricsRecorder.AddCounter(
+		context.Background(),
+		connectionFailuresMetricName,
+		connectionFailuresMetricDescription,
+		connectionFailuresMetricUnit,
+		map[string]string{"operation": constant.SanitizeMetricLabel(operation)},
+		1,
+	)
 	if err != nil {
 		c.logAtLevel(context.Background(), obs.LevelWarn, "failed to record mongo metric", "error", err)
 	}

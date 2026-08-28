@@ -22,7 +22,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons/security/sanitize"
 	"github.com/LerianStudio/lib-observability/v2/assert"
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/metrics"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"go.opentelemetry.io/otel"
@@ -31,11 +30,11 @@ import (
 )
 
 // connectionFailuresMetric defines the counter for rabbitmq connection failures.
-var connectionFailuresMetric = metrics.Metric{
-	Name:        "rabbitmq_connection_failures_total",
-	Unit:        "1",
-	Description: "Total number of rabbitmq connection failures",
-}
+const (
+	connectionFailuresMetricName        = "rabbitmq_connection_failures_total"
+	connectionFailuresMetricUnit        = "1"
+	connectionFailuresMetricDescription = "Total number of rabbitmq connection failures"
+)
 
 // RabbitMQConnection is a hub which deal with rabbitmq connections.
 type RabbitMQConnection struct {
@@ -51,7 +50,7 @@ type RabbitMQConnection struct {
 	VHost                  string
 	Channel                *amqp.Channel
 	Logger                 obs.Logger
-	MetricsFactory         *metrics.MetricsFactory
+	MetricsRecorder        obs.MetricsRecorder
 	Connected              bool
 
 	dialer                  func(string) (*amqp.Connection, error)
@@ -1499,23 +1498,20 @@ func allDigits(value string) bool {
 }
 
 // recordConnectionFailure increments the rabbitmq connection failure counter.
-// No-op when MetricsFactory is nil.
+// No-op when MetricsRecorder is nil.
 func (rc *RabbitMQConnection) recordConnectionFailure(operation string) {
-	if rc == nil || rc.MetricsFactory == nil {
+	if rc == nil || rc.MetricsRecorder == nil {
 		return
 	}
 
-	counter, err := rc.MetricsFactory.Counter(connectionFailuresMetric)
-	if err != nil {
-		rc.logger().Log(context.Background(), obs.LevelWarn, "failed to create rabbitmq metric counter", "error", err)
-		return
-	}
-
-	err = counter.
-		WithLabels(map[string]string{
-			"operation": constant.SanitizeMetricLabel(operation),
-		}).
-		AddOne(context.Background())
+	err := rc.MetricsRecorder.AddCounter(
+		context.Background(),
+		connectionFailuresMetricName,
+		connectionFailuresMetricDescription,
+		connectionFailuresMetricUnit,
+		map[string]string{"operation": constant.SanitizeMetricLabel(operation)},
+		1,
+	)
 	if err != nil {
 		rc.logger().Log(context.Background(), obs.LevelWarn, "failed to record rabbitmq metric", "error", err)
 	}

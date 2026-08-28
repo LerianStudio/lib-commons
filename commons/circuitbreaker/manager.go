@@ -9,7 +9,6 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v6/commons/safe"
-	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/sony/gobreaker"
 )
 
@@ -41,9 +40,7 @@ type manager struct {
 	tenantListeners []TenantStateChangeListener
 	mu              sync.RWMutex
 	logger          obs.Logger
-	metricsFactory  *metrics.MetricsFactory
-	stateCounter    *metrics.CounterBuilder
-	execCounter     *metrics.CounterBuilder
+	metricsRecorder obs.MetricsRecorder
 	listenerSem     chan struct{}
 }
 
@@ -73,8 +70,6 @@ func NewManager(logger obs.Logger, opts ...ManagerOption) (Manager, error) {
 			opt(m)
 		}
 	}
-
-	m.initMetricCounters()
 
 	return m, nil
 }

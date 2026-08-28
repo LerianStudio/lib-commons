@@ -20,7 +20,6 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
 	"github.com/LerianStudio/lib-observability/v2/assert"
 	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/LerianStudio/lib-observability/v2/runtime"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
 	"github.com/LerianStudio/lib-observability/v3/redisobs"
@@ -54,7 +53,7 @@ var (
 )
 
 func init() {
-	pkgLogger.Store(obs.Logger(obs.Nop()))
+	pkgLogger.Store(obs.Nop())
 }
 
 // SetPackageLogger configures a package-level logger used for nil-receiver
@@ -88,12 +87,12 @@ func nilClientAssert(ctx context.Context, operation string) error {
 
 // Config defines Redis client topology, auth, TLS, and connection settings.
 type Config struct {
-	Topology       Topology
-	TLS            *TLSConfig
-	Auth           Auth
-	Options        ConnectionOptions
-	Logger         obs.Logger
-	MetricsFactory *metrics.MetricsFactory
+	Topology        Topology
+	TLS             *TLSConfig
+	Auth            Auth
+	Options         ConnectionOptions
+	Logger          obs.Logger
+	MetricsRecorder obs.MetricsRecorder
 }
 
 // Topology selects exactly one Redis deployment mode.
@@ -194,30 +193,30 @@ type Status struct {
 }
 
 // connectionFailuresMetric defines the counter for redis connection failures.
-var connectionFailuresMetric = metrics.Metric{
-	Name:        "redis_connection_failures_total",
-	Unit:        "1",
-	Description: "Total number of redis connection failures",
-}
+const (
+	connectionFailuresMetricName        = "redis_connection_failures_total"
+	connectionFailuresMetricUnit        = "1"
+	connectionFailuresMetricDescription = "Total number of redis connection failures"
+)
 
 // reconnectionsMetric defines the counter for redis reconnection attempts.
-var reconnectionsMetric = metrics.Metric{
-	Name:        "redis_reconnections_total",
-	Unit:        "1",
-	Description: "Total number of redis reconnection attempts",
-}
+const (
+	reconnectionsMetricName        = "redis_reconnections_total"
+	reconnectionsMetricUnit        = "1"
+	reconnectionsMetricDescription = "Total number of redis reconnection attempts"
+)
 
 // Client wraps a redis.UniversalClient with reconnection and IAM token refresh logic.
 type Client struct {
-	mu             sync.RWMutex
-	cfg            Config
-	logger         obs.Logger
-	metricsFactory *metrics.MetricsFactory
-	client         redis.UniversalClient
-	connected      bool
-	token          string
-	lastRefresh    time.Time
-	refreshErr     error
+	mu              sync.RWMutex
+	cfg             Config
+	logger          obs.Logger
+	metricsRecorder obs.MetricsRecorder
+	client          redis.UniversalClient
+	connected       bool
+	token           string
+	lastRefresh     time.Time
+	refreshErr      error
 
 	// statsCleanup releases the telemetry registrations bound to the CURRENT
 	// client. Swapped together with the client on every reconnect and drained on
@@ -247,9 +246,9 @@ func New(ctx context.Context, cfg Config) (*Client, error) {
 	}
 
 	c := &Client{
-		cfg:            normalized,
-		logger:         normalized.Logger,
-		metricsFactory: normalized.MetricsFactory,
+		cfg:             normalized,
+		logger:          normalized.Logger,
+		metricsRecorder: normalized.MetricsRecorder,
 	}
 
 	if err := c.Connect(ctx); err != nil {
@@ -1150,46 +1149,40 @@ func buildTLSConfig(cfg TLSConfig) (*tls.Config, error) {
 }
 
 // recordConnectionFailure increments the redis connection failure counter.
-// No-op when metricsFactory is nil.
+// No-op when metricsRecorder is nil.
 func (c *Client) recordConnectionFailure(operation string) {
-	if c.metricsFactory == nil {
+	if c.metricsRecorder == nil {
 		return
 	}
 
-	counter, err := c.metricsFactory.Counter(connectionFailuresMetric)
-	if err != nil {
-		c.logger.Log(context.Background(), obs.LevelWarn, "failed to create redis metric counter", "error", err)
-		return
-	}
-
-	err = counter.
-		WithLabels(map[string]string{
-			"operation": constant.SanitizeMetricLabel(operation),
-		}).
-		AddOne(context.Background())
+	err := c.metricsRecorder.AddCounter(
+		context.Background(),
+		connectionFailuresMetricName,
+		connectionFailuresMetricDescription,
+		connectionFailuresMetricUnit,
+		map[string]string{"operation": constant.SanitizeMetricLabel(operation)},
+		1,
+	)
 	if err != nil {
 		c.logger.Log(context.Background(), obs.LevelWarn, "failed to record redis metric", "error", err)
 	}
 }
 
 // recordReconnection increments the redis reconnection counter.
-// No-op when metricsFactory is nil.
+// No-op when metricsRecorder is nil.
 func (c *Client) recordReconnection(result string) {
-	if c.metricsFactory == nil {
+	if c.metricsRecorder == nil {
 		return
 	}
 
-	counter, err := c.metricsFactory.Counter(reconnectionsMetric)
-	if err != nil {
-		c.logger.Log(context.Background(), obs.LevelWarn, "failed to create redis reconnection metric counter", "error", err)
-		return
-	}
-
-	err = counter.
-		WithLabels(map[string]string{
-			"result": result,
-		}).
-		AddOne(context.Background())
+	err := c.metricsRecorder.AddCounter(
+		context.Background(),
+		reconnectionsMetricName,
+		reconnectionsMetricDescription,
+		reconnectionsMetricUnit,
+		map[string]string{"result": result},
+		1,
+	)
 	if err != nil {
 		c.logger.Log(context.Background(), obs.LevelWarn, "failed to record redis reconnection metric", "error", err)
 	}
