@@ -171,26 +171,3 @@ func (l *Logger) Base() obs.Logger {
 
 	return l.base
 }
-
-func toFields(kv ...any) []any {
-	if len(kv) == 0 {
-		return nil
-	}
-
-	fields := make([]any, 0, (len(kv)+1)/2)
-	for i := 0; i < len(kv); i += 2 {
-		key := fmt.Sprintf("arg_%d", i)
-		if ks, ok := kv[i].(string); ok && ks != "" {
-			key = ks
-		}
-
-		if i+1 >= len(kv) {
-			fields = append(fields, key, nil)
-			continue
-		}
-
-		fields = append(fields, key, kv[i+1])
-	}
-
-	return fields
-}

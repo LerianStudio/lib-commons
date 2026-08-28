@@ -53,7 +53,7 @@ func LoggerFromContext(ctx context.Context) obs.Logger {
 // MetricsFromContext returns the context metrics factory as an
 // obs.MetricsRecorder.
 func MetricsFromContext(ctx context.Context) obs.MetricsRecorder {
-	_, _, _, factory := libobs.NewTrackingFromContext(ctx)
+	_, _, _, factory := libobs.NewTrackingFromContext(ctx) //nolint:dogsled // only the metrics factory is needed here
 
 	return Metrics(factory)
 }
