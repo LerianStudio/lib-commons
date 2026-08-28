@@ -34,10 +34,8 @@ func (l *captureStorageLogger) Log(_ context.Context, level int, msg string, fie
 	l.entries = append(l.entries, storageLogEntry{level: level, msg: msg, fields: entryFields})
 }
 
-func (l *captureStorageLogger) With(...any) obs.Logger      { return l }
-func (l *captureStorageLogger) WithGroup(string) obs.Logger { return l }
-func (l *captureStorageLogger) Enabled(int) bool            { return true }
-func (l *captureStorageLogger) Sync(context.Context) error  { return nil }
+func (l *captureStorageLogger) Enabled(int) bool           { return true }
+func (l *captureStorageLogger) Sync(context.Context) error { return nil }
 
 func (l *captureStorageLogger) snapshot() []storageLogEntry {
 	l.mu.Lock()
@@ -49,8 +47,6 @@ func (l *captureStorageLogger) snapshot() []storageLogEntry {
 type typedNilStorageLogger struct{}
 
 func (*typedNilStorageLogger) Log(context.Context, int, string, ...any) {}
-func (*typedNilStorageLogger) With(...any) obs.Logger                   { return nil }
-func (*typedNilStorageLogger) WithGroup(string) obs.Logger              { return nil }
 func (*typedNilStorageLogger) Enabled(int) bool                         { return false }
 func (*typedNilStorageLogger) Sync(context.Context) error               { return nil }
 

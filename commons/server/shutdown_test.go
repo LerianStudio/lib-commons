@@ -35,10 +35,8 @@ func (l *recordingLogger) Log(_ context.Context, _ int, msg string, _ ...any) {
 	l.messages = append(l.messages, msg)
 }
 
-func (l *recordingLogger) With(_ ...any) obs.Logger      { return l }
-func (l *recordingLogger) WithGroup(_ string) obs.Logger { return l }
-func (l *recordingLogger) Enabled(_ int) bool            { return true }
-func (l *recordingLogger) Sync(_ context.Context) error  { return l.syncErr }
+func (l *recordingLogger) Enabled(_ int) bool           { return true }
+func (l *recordingLogger) Sync(_ context.Context) error { return l.syncErr }
 func (l *recordingLogger) getMessages() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()

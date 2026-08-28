@@ -121,10 +121,8 @@ func (s *spyLogger) Log(_ context.Context, level int, msg string, _ ...any) {
 	s.levels = append(s.levels, level)
 }
 
-func (s *spyLogger) With(_ ...any) obs.Logger      { return s }
-func (s *spyLogger) WithGroup(_ string) obs.Logger { return s }
-func (s *spyLogger) Enabled(_ int) bool            { return true }
-func (s *spyLogger) Sync(_ context.Context) error  { return nil }
+func (s *spyLogger) Enabled(_ int) bool           { return true }
+func (s *spyLogger) Sync(_ context.Context) error { return nil }
 
 func generateTestCertificatePEM(t *testing.T) []byte {
 	t.Helper()

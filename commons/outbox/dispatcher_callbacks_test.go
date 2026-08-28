@@ -32,10 +32,8 @@ func (l *recordingLogger) Log(_ context.Context, level int, msg string, fields .
 	l.entries = append(l.entries, logEntry{level: level, msg: msg, fields: fields})
 }
 
-func (l *recordingLogger) With(...any) obs.Logger      { return l }
-func (l *recordingLogger) WithGroup(string) obs.Logger { return l }
-func (l *recordingLogger) Enabled(int) bool            { return true }
-func (l *recordingLogger) Sync(context.Context) error  { return nil }
+func (l *recordingLogger) Enabled(int) bool           { return true }
+func (l *recordingLogger) Sync(context.Context) error { return nil }
 
 func (l *recordingLogger) hasLevel(level int) bool {
 	l.mu.Lock()

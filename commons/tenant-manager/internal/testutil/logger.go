@@ -78,7 +78,6 @@ func (cl *CapturingLogger) Log(_ context.Context, _ int, msg string, fields ...a
 
 	cl.record(fmt.Sprintf("%s %s", msg, renderKV(fields)))
 }
-func (cl *CapturingLogger) With(_ ...any) obs.Logger     { return cl }
 func (cl *CapturingLogger) Enabled(_ int) bool           { return true }
 func (cl *CapturingLogger) Sync(_ context.Context) error { return nil }
 
@@ -156,7 +155,6 @@ func (l *LevelCapturingLogger) Log(_ context.Context, level int, msg string, fie
 	l.entries = append(l.entries, LogEntry{Level: level, Message: rendered})
 }
 
-func (l *LevelCapturingLogger) With(_ ...any) obs.Logger     { return l }
 func (l *LevelCapturingLogger) Enabled(_ int) bool           { return true }
 func (l *LevelCapturingLogger) Sync(_ context.Context) error { return nil }
 

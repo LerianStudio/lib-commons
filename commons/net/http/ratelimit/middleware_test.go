@@ -59,10 +59,8 @@ func (s *warnSpy) Log(_ context.Context, level int, msg string, _ ...any) {
 	}
 }
 
-func (s *warnSpy) With(_ ...any) obs.Logger      { return s }
-func (s *warnSpy) WithGroup(_ string) obs.Logger { return s }
-func (s *warnSpy) Enabled(_ int) bool            { return true }
-func (s *warnSpy) Sync(_ context.Context) error  { return nil }
+func (s *warnSpy) Enabled(_ int) bool           { return true }
+func (s *warnSpy) Sync(_ context.Context) error { return nil }
 
 func (s *warnSpy) hasWarn(substr string) bool {
 	s.mu.Lock()
@@ -90,10 +88,8 @@ func (s *errorSpy) Log(_ context.Context, level int, msg string, _ ...any) {
 	}
 }
 
-func (s *errorSpy) With(_ ...any) obs.Logger      { return s }
-func (s *errorSpy) WithGroup(_ string) obs.Logger { return s }
-func (s *errorSpy) Enabled(_ int) bool            { return true }
-func (s *errorSpy) Sync(_ context.Context) error  { return nil }
+func (s *errorSpy) Enabled(_ int) bool           { return true }
+func (s *errorSpy) Sync(_ context.Context) error { return nil }
 
 func (s *errorSpy) hasError(substr string) bool {
 	return s.countErrors(substr) > 0

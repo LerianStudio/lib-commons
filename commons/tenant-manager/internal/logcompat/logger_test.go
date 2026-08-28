@@ -223,10 +223,8 @@ type recordingLogCompat struct {
 func (r *recordingLogCompat) Log(_ context.Context, _ int, msg string, _ ...any) {
 	r.messages = append(r.messages, msg)
 }
-func (r *recordingLogCompat) With(_ ...any) obs.Logger      { return r }
-func (r *recordingLogCompat) WithGroup(_ string) obs.Logger { return r }
-func (r *recordingLogCompat) Enabled(_ int) bool            { return true }
-func (r *recordingLogCompat) Sync(_ context.Context) error  { return nil }
+func (r *recordingLogCompat) Enabled(_ int) bool           { return true }
+func (r *recordingLogCompat) Sync(_ context.Context) error { return nil }
 
 // TestLogger_InfoWithEnabledLogger covers the path where logger is enabled.
 func TestLogger_InfoWithEnabledLogger(t *testing.T) {

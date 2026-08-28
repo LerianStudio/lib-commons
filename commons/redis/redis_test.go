@@ -71,10 +71,6 @@ func (logger *recordingLogger) Log(_ context.Context, level int, msg string, _ .
 	logger.mu.Unlock()
 }
 
-func (logger *recordingLogger) With(...any) obs.Logger { return logger }
-
-func (logger *recordingLogger) WithGroup(string) obs.Logger { return logger }
-
 func (logger *recordingLogger) Enabled(int) bool { return true }
 
 func (logger *recordingLogger) Sync(context.Context) error { return nil }

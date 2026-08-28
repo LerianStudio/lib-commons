@@ -35,10 +35,8 @@ func (l *captureCircuitLogger) Log(_ context.Context, _ int, msg string, fields 
 	l.entries = append(l.entries, circuitLogEntry{msg: msg, fields: append([]any(nil), fields...)})
 }
 
-func (l *captureCircuitLogger) With(...any) obs.Logger      { return l }
-func (l *captureCircuitLogger) WithGroup(string) obs.Logger { return l }
-func (l *captureCircuitLogger) Enabled(int) bool            { return true }
-func (l *captureCircuitLogger) Sync(context.Context) error  { return nil }
+func (l *captureCircuitLogger) Enabled(int) bool           { return true }
+func (l *captureCircuitLogger) Sync(context.Context) error { return nil }
 
 func (l *captureCircuitLogger) snapshot() []circuitLogEntry {
 	l.mu.Lock()

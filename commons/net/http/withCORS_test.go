@@ -4,7 +4,6 @@ package http
 
 import (
 	"context"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -182,10 +181,8 @@ func (l *testCORSLogger) Log(_ context.Context, level int, msg string, _ ...any)
 	l.lastMessage = msg
 	l.messages = append(l.messages, msg)
 }
-func (l *testCORSLogger) With(_ ...any) obs.Logger    { return l }
-func (l *testCORSLogger) WithGroup(string) obs.Logger { return l }
-func (l *testCORSLogger) Enabled(int) bool            { return true }
-func (l *testCORSLogger) Sync(context.Context) error  { return nil }
+func (l *testCORSLogger) Enabled(int) bool           { return true }
+func (l *testCORSLogger) Sync(context.Context) error { return nil }
 
 func TestWithCORS_InvalidAllowCredentialsFallsBackToDefault(t *testing.T) {
 	require.NoError(t, os.Setenv("ACCESS_CONTROL_ALLOW_CREDENTIALS", "not-a-bool"))

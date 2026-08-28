@@ -4,7 +4,6 @@ package webhook
 
 import (
 	"context"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -20,8 +19,6 @@ func (*typedNilEndpointLister) ListActiveEndpoints(context.Context) ([]Endpoint,
 type typedNilWebhookLogger struct{}
 
 func (*typedNilWebhookLogger) Log(context.Context, int, string, ...any) {}
-func (*typedNilWebhookLogger) With(...any) obs.Logger                   { return nil }
-func (*typedNilWebhookLogger) WithGroup(string) obs.Logger              { return nil }
 func (*typedNilWebhookLogger) Enabled(int) bool                         { return false }
 func (*typedNilWebhookLogger) Sync(context.Context) error               { return nil }
 
