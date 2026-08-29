@@ -132,6 +132,17 @@ func NewVaultClientFrom(client *vaultapi.Client, mount string) (*VaultClient, er
 	return &VaultClient{api: client, mount: cleanMount}, nil
 }
 
+// apiClient validates the exported client's otherwise-unconstructible state.
+// A consumer can still create the zero value, so every operation must reject it
+// rather than dereference its nil API handle.
+func (client *VaultClient) apiClient() (*vaultapi.Client, string, error) {
+	if client == nil || client.api == nil {
+		return nil, "", fmt.Errorf("%w: vault client is required", ErrBackendMisconfigured)
+	}
+
+	return client.api, client.mount, nil
+}
+
 // GetSecretValue reads the secret at params.SecretId from Vault KV v2 and
 // returns it in the shape SecretsManagerClient promises.
 //
@@ -147,6 +158,11 @@ func (client *VaultClient) GetSecretValue(
 	params *awssm.GetSecretValueInput,
 	optFns ...func(*awssm.Options),
 ) (*awssm.GetSecretValueOutput, error) {
+	api, mount, err := client.apiClient()
+	if err != nil {
+		return nil, err
+	}
+
 	if len(optFns) > 0 {
 		return nil, fmt.Errorf("%w: backend %q", ErrBackendOptionsUnsupported, BackendVault)
 	}
@@ -157,7 +173,7 @@ func (client *VaultClient) GetSecretValue(
 
 	secretPath := strings.Trim(strings.TrimSpace(*params.SecretId), "/")
 
-	secret, err := client.api.KVv2(client.mount).Get(ctx, secretPath)
+	secret, err := api.KVv2(mount).Get(ctx, secretPath)
 	if err != nil {
 		return nil, classifyVaultError(err)
 	}
@@ -185,22 +201,41 @@ func (client *VaultClient) GetSecretValue(
 // every reader above.
 func classifyVaultError(err error) error {
 	if errors.Is(err, vaultapi.ErrSecretNotFound) {
-		return fmt.Errorf("%w: %w", ErrBackendSecretNotFound, err)
+		return ErrBackendSecretNotFound
 	}
 
 	var responseErr *vaultapi.ResponseError
 	if errors.As(err, &responseErr) && responseErr != nil {
 		switch responseErr.StatusCode {
 		case http.StatusNotFound:
-			return fmt.Errorf("%w: %w", ErrBackendSecretNotFound, err)
+			return fmt.Errorf("%w: vault response status %d", ErrBackendSecretNotFound, responseErr.StatusCode)
 		case http.StatusForbidden, http.StatusUnauthorized:
 			// 403 is Vault's answer both to "no policy grants this path"
 			// and to an expired or revoked token; 401 covers a missing
 			// one. All three are the caller's access to the vault, not
 			// the secret's existence.
-			return fmt.Errorf("%w: %w", ErrBackendAccessDenied, err)
+			return fmt.Errorf("%w: vault response status %d", ErrBackendAccessDenied, responseErr.StatusCode)
 		}
 	}
 
-	return err
+	return newScrubbedVaultError(err)
+}
+
+// newScrubbedVaultError keeps Vault's request URL and server-controlled error
+// text out of returned errors. Both may contain the tenant-bearing secret path.
+func newScrubbedVaultError(err error) error {
+	var responseErr *vaultapi.ResponseError
+	if errors.As(err, &responseErr) && responseErr != nil {
+		return fmt.Errorf("vault request failed with status %d", responseErr.StatusCode)
+	}
+
+	if errors.Is(err, context.Canceled) {
+		return fmt.Errorf("vault request failed: %w", context.Canceled)
+	}
+
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("vault request failed: %w", context.DeadlineExceeded)
+	}
+
+	return errors.New("vault request failed")
 }

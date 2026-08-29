@@ -44,7 +44,8 @@ gap is now closed, so the gateway can delete its local writer and take
 
 **The reference carries the environment, and no backend re-derives it.** A
 secret is addressed by
-`tenants/{ENV_NAME}/{tenantId}/{app}/external/{target}/credentials/versions/{uuid}`.
+`tenants/{env?}/{tenantId}/{app}/external/{target}/credentials/versions/{uuid}`,
+where the environment segment is omitted when `env` is empty.
 `ParseExternalCredentialReference` rejects a scope mismatch, so material written
 under one `ENV_NAME` and read under another does not resolve — and that refusal
 is *not* the not-found sentinel, so the caller's fallback to static

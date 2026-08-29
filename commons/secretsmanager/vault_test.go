@@ -161,6 +161,14 @@ func TestVaultClient_RefusesMissingSecretID(t *testing.T) {
 	require.ErrorIs(t, err, ErrBackendMisconfigured)
 }
 
+func TestVaultClient_RefusesZeroValue(t *testing.T) {
+	_, err := (&VaultClient{}).GetSecretValue(
+		context.Background(),
+		&awssm.GetSecretValueInput{SecretId: aws.String(testSecretID)},
+	)
+	require.ErrorIs(t, err, ErrBackendMisconfigured)
+}
+
 // A Vault backend selected without any credential must refuse to build. The
 // alternative — an unauthenticated client that 403s on every read — would look
 // identical to a policy problem and send an operator hunting in the wrong place.
@@ -202,11 +210,17 @@ func TestNewVaultClientFrom_DefaultsMountAndRejectsNilClient(t *testing.T) {
 }
 
 func TestVaultClient_ErrorsNeverCarryTheSecretPath(t *testing.T) {
-	client := newFakeVaultClient(t, fakeVault{status: http.StatusForbidden, body: `{"errors":["permission denied"]}`})
 	tenant := "org_supersecret_tenant"
 
-	_, err := GetM2MCredentials(context.Background(), client, "production", tenant, "lender", "matcher")
-	require.Error(t, err)
-	require.NotContains(t, err.Error(), tenant, "a refused read must not leak the tenant it was refused for")
-	require.False(t, strings.Contains(err.Error(), "tenants/production/"+tenant))
+	for _, status := range []int{http.StatusForbidden, http.StatusInternalServerError} {
+		client := newFakeVaultClient(t, fakeVault{
+			status: status,
+			body:   `{"errors":["failure at tenants/production/` + tenant + `"]}`,
+		})
+
+		_, err := getSecret(t, client, "tenants/production/"+tenant+"/lender/m2m/matcher/credentials")
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), tenant, "a Vault response must not leak the tenant path")
+		require.False(t, strings.Contains(err.Error(), "tenants/production/"+tenant))
+	}
 }

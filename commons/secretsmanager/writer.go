@@ -23,7 +23,6 @@ import (
 type AWSSecretsManagerWriter interface {
 	CreateSecret(ctx context.Context, params *awssm.CreateSecretInput, optFns ...func(*awssm.Options)) (*awssm.CreateSecretOutput, error)
 	DeleteSecret(ctx context.Context, params *awssm.DeleteSecretInput, optFns ...func(*awssm.Options)) (*awssm.DeleteSecretOutput, error)
-	DescribeSecret(ctx context.Context, params *awssm.DescribeSecretInput, optFns ...func(*awssm.Options)) (*awssm.DescribeSecretOutput, error)
 }
 
 // SecretWriter is the custody write port, the counterpart to the read side of
@@ -147,8 +146,9 @@ func NewVaultSecretWriter(client *VaultClient) SecretWriter {
 // concurrent rotations both believe they won, and one tenant's credential would
 // silently replace another write's.
 func (writer *vaultSecretWriter) CreateSecretString(ctx context.Context, secretID, secretJSON string) error {
-	if writer.client == nil {
-		return fmt.Errorf("%w: vault client is required", ErrBackendMisconfigured)
+	api, mount, err := writer.client.apiClient()
+	if err != nil {
+		return err
 	}
 
 	if err := validateWritableSecret(secretID, secretJSON); err != nil {
@@ -162,7 +162,7 @@ func (writer *vaultSecretWriter) CreateSecretString(ctx context.Context, secretI
 
 	secretPath := strings.Trim(strings.TrimSpace(secretID), "/")
 
-	_, err := writer.client.api.KVv2(writer.client.mount).Put(ctx, secretPath, data, vaultapi.WithCheckAndSet(0))
+	_, err = api.KVv2(mount).Put(ctx, secretPath, data, vaultapi.WithCheckAndSet(0))
 	if err != nil {
 		return classifyVaultWriteError(err, secretID)
 	}
@@ -175,8 +175,9 @@ func (writer *vaultSecretWriter) CreateSecretString(ctx context.Context, secretI
 // readable by version — not a deletion of secret material, which is what a
 // credential cleanup has to guarantee.
 func (writer *vaultSecretWriter) DeleteSecret(ctx context.Context, secretID string) error {
-	if writer.client == nil {
-		return fmt.Errorf("%w: vault client is required", ErrBackendMisconfigured)
+	api, mount, err := writer.client.apiClient()
+	if err != nil {
+		return err
 	}
 
 	cleanID := strings.TrimSpace(secretID)
@@ -184,7 +185,7 @@ func (writer *vaultSecretWriter) DeleteSecret(ctx context.Context, secretID stri
 		return fmt.Errorf("%w: secret id is required", ErrBackendMisconfigured)
 	}
 
-	err := writer.client.api.KVv2(writer.client.mount).DeleteMetadata(ctx, strings.Trim(cleanID, "/"))
+	err = api.KVv2(mount).DeleteMetadata(ctx, strings.Trim(cleanID, "/"))
 	if err == nil {
 		return nil
 	}
@@ -239,5 +240,5 @@ func classifyVaultWriteError(err error, secretID string) error {
 		}
 	}
 
-	return fmt.Errorf("write secret at %s: %w", redactPath(secretID), err)
+	return fmt.Errorf("write secret at %s: %w", redactPath(secretID), newScrubbedVaultError(err))
 }

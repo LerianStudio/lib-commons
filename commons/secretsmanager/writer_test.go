@@ -67,14 +67,6 @@ func (f *fakeAWSWriter) DeleteSecret(
 	return &awssm.DeleteSecretOutput{}, nil
 }
 
-func (f *fakeAWSWriter) DescribeSecret(
-	_ context.Context,
-	_ *awssm.DescribeSecretInput,
-	_ ...func(*awssm.Options),
-) (*awssm.DescribeSecretOutput, error) {
-	return &awssm.DescribeSecretOutput{}, nil
-}
-
 const testSecretID = "tenants/production/org_1/gw/external/dataprev-cert/credentials/versions/" +
 	"6f1a2b3c-4d5e-4f60-8a9b-0c1d2e3f4a5b"
 
@@ -163,10 +155,13 @@ func TestSecretWriter_RefusesEmptySecretID(t *testing.T) {
 }
 
 func TestVaultSecretWriter_RequiresClient(t *testing.T) {
-	writer := NewVaultSecretWriter(nil)
-
-	require.ErrorIs(t, writer.CreateSecretString(context.Background(), testSecretID, `{"k":"v"}`), ErrBackendMisconfigured)
-	require.ErrorIs(t, writer.DeleteSecret(context.Background(), testSecretID), ErrBackendMisconfigured)
+	for name, client := range map[string]*VaultClient{"nil": nil, "zero value": {}} {
+		t.Run(name, func(t *testing.T) {
+			writer := NewVaultSecretWriter(client)
+			require.ErrorIs(t, writer.CreateSecretString(context.Background(), testSecretID, `{"k":"v"}`), ErrBackendMisconfigured)
+			require.ErrorIs(t, writer.DeleteSecret(context.Background(), testSecretID), ErrBackendMisconfigured)
+		})
+	}
 }
 
 // Vault reports a lost check-and-set as a 400 whose body names the check; a 400
@@ -190,4 +185,15 @@ func TestClassifyVaultWriteError_OnlyCASConflictMeansExists(t *testing.T) {
 
 	denied := &vaultapi.ResponseError{StatusCode: http.StatusForbidden, Errors: []string{"permission denied"}}
 	require.ErrorIs(t, classifyVaultWriteError(denied, testSecretID), ErrBackendAccessDenied)
+}
+
+func TestClassifyVaultWriteError_RedactsResponseDetails(t *testing.T) {
+	tenant := "org_supersecret_tenant"
+	err := &vaultapi.ResponseError{
+		StatusCode: http.StatusInternalServerError,
+		Errors:     []string{"failure at tenants/production/" + tenant},
+	}
+
+	classified := classifyVaultWriteError(err, "tenants/production/"+tenant+"/credentials")
+	require.NotContains(t, classified.Error(), tenant)
 }
