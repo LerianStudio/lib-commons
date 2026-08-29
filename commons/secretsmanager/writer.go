@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -70,7 +71,7 @@ func (writer *awsSecretWriter) CreateSecretString(ctx context.Context, secretID,
 		return fmt.Errorf("%w: AWS Secrets Manager client is required", ErrBackendMisconfigured)
 	}
 
-	if err := validateWritableSecret(secretID, secretJSON); err != nil {
+	if _, err := validateWritableSecret(secretID, secretJSON); err != nil {
 		return err
 	}
 
@@ -151,13 +152,9 @@ func (writer *vaultSecretWriter) CreateSecretString(ctx context.Context, secretI
 		return err
 	}
 
-	if err := validateWritableSecret(secretID, secretJSON); err != nil {
+	data, err := validateWritableSecret(secretID, secretJSON)
+	if err != nil {
 		return err
-	}
-
-	var data map[string]any
-	if err := json.Unmarshal([]byte(secretJSON), &data); err != nil {
-		return fmt.Errorf("%w: secret payload must be a JSON object: %w", ErrBackendMisconfigured, err)
 	}
 
 	secretPath := strings.Trim(strings.TrimSpace(secretID), "/")
@@ -198,26 +195,42 @@ func (writer *vaultSecretWriter) DeleteSecret(ctx context.Context, secretID stri
 }
 
 // validateWritableSecret enforces the boundary contract both writers share.
-func validateWritableSecret(secretID, secretJSON string) error {
+func validateWritableSecret(secretID, secretJSON string) (map[string]any, error) {
 	if strings.TrimSpace(secretID) == "" {
-		return fmt.Errorf("%w: secret id is required", ErrBackendMisconfigured)
+		return nil, fmt.Errorf("%w: secret id is required", ErrBackendMisconfigured)
 	}
 
 	if strings.TrimSpace(secretJSON) == "" {
-		return fmt.Errorf("%w: secret payload is required", ErrBackendMisconfigured)
+		return nil, fmt.Errorf("%w: secret payload is required", ErrBackendMisconfigured)
 	}
 
 	// Both backends must accept the same payloads, so the narrower backend
 	// sets the contract: Vault KV stores key/value members and cannot hold a
 	// bare scalar or array. Refusing those here means a payload that writes on
 	// AWS also writes on Vault, instead of a deployment discovering the
-	// difference the day it migrates.
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(secretJSON), &probe); err != nil {
-		return fmt.Errorf("%w: secret payload must be a JSON object: %w", ErrBackendMisconfigured, err)
+	// difference the day it migrates. UseNumber prevents Vault from rounding
+	// integer-valued fields while decoding the document for KV storage.
+	decoder := json.NewDecoder(strings.NewReader(secretJSON))
+	decoder.UseNumber()
+
+	var data map[string]any
+	if err := decoder.Decode(&data); err != nil {
+		return nil, fmt.Errorf("%w: secret payload must be a JSON object: %w", ErrBackendMisconfigured, err)
 	}
 
-	return nil
+	// Decode must consume the complete input just as json.Unmarshal did before
+	// this validator began returning the parsed object.
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w: secret payload must be a JSON object", ErrBackendMisconfigured)
+	}
+
+	// JSON null decodes into a nil map without an error, but it is not an object
+	// and Vault cannot store it as KV members.
+	if data == nil {
+		return nil, fmt.Errorf("%w: secret payload must be a JSON object", ErrBackendMisconfigured)
+	}
+
+	return data, nil
 }
 
 // classifyVaultWriteError maps Vault write failures onto the backend-neutral

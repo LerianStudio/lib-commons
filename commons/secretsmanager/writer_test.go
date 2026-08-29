@@ -8,6 +8,7 @@ package secretsmanager
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"testing"
@@ -127,6 +128,7 @@ func TestSecretWriter_RefusesPayloadsVaultCannotHold(t *testing.T) {
 		"bare string": `"just a string"`,
 		"array":       `[1,2,3]`,
 		"number":      `42`,
+		"null":        `null`,
 		"empty":       ``,
 		"not json":    `certPem=x`,
 	}
@@ -138,6 +140,18 @@ func TestSecretWriter_RefusesPayloadsVaultCannotHold(t *testing.T) {
 			})
 		}
 	}
+}
+
+func TestValidateWritableSecret_ParsesOnceWithoutLosingNumberPrecision(t *testing.T) {
+	data, err := validateWritableSecret(testSecretID, `{"serial":9007199254740993}`)
+	require.NoError(t, err)
+	require.Equal(t, json.Number("9007199254740993"), data["serial"])
+
+	_, err = validateWritableSecret(testSecretID, `null`)
+	require.ErrorIs(t, err, ErrBackendMisconfigured)
+
+	_, err = validateWritableSecret(testSecretID, `{"first":1} {"second":2}`)
+	require.ErrorIs(t, err, ErrBackendMisconfigured)
 }
 
 func TestSecretWriter_RefusesEmptySecretID(t *testing.T) {
