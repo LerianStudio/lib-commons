@@ -117,7 +117,17 @@ func (cfg Config) NewReader(awsClient SecretsManagerClient) (SecretsManagerClien
 
 	switch backend {
 	case BackendVault:
-		return NewVaultClient(cfg.Vault)
+		// Assigned and returned explicitly rather than `return
+		// NewVaultClient(...)`: on failure that form hands back a typed-nil
+		// *VaultClient wrapped in a NON-nil interface, so a caller checking
+		// the returned reader for nil would sail past a failed construction
+		// and only discover it on the first credential read.
+		client, vaultErr := NewVaultClient(cfg.Vault)
+		if vaultErr != nil {
+			return nil, vaultErr
+		}
+
+		return client, nil
 	case BackendAWS:
 		if isNilInterface(awsClient) {
 			return nil, fmt.Errorf("%w: backend %q requires an AWS Secrets Manager client", ErrBackendMisconfigured, BackendAWS)

@@ -83,13 +83,18 @@ func TestConfig_NeverFallsBackBetweenBackends(t *testing.T) {
 
 	// Vault selected but unusable: must fail, must NOT return the AWS client
 	// that was handed in and is perfectly healthy.
+	//
+	// The nil assertions compare the INTERFACE directly rather than using
+	// require.Nil, which reflects into the interface and would accept a
+	// typed-nil *VaultClient wrapped in a non-nil interface — the exact
+	// failure a caller checking `if reader != nil` would trip over.
 	reader, err := Config{Backend: BackendVault}.NewReader(stubAWSReader{})
 	require.ErrorIs(t, err, ErrBackendMisconfigured)
-	require.Nil(t, reader)
+	require.True(t, reader == nil, "a failed construction must return a nil interface, not a typed nil")
 
 	writer, err := Config{Backend: BackendVault}.NewWriter(&fakeAWSWriter{})
 	require.ErrorIs(t, err, ErrBackendMisconfigured)
-	require.Nil(t, writer)
+	require.True(t, writer == nil, "a failed construction must return a nil interface, not a typed nil")
 
 	// AWS selected without a client: must fail, must NOT reach for Vault even
 	// though Vault settings are present and valid.
