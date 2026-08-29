@@ -9,6 +9,7 @@
 # They define shared contract test suites consumed by integration tests
 # against real databases and should not count toward unit coverage.
 commons/outbox/outboxtest/
+commons/secretsmanager/secretsmanagertest/
 
 # DB-backed internal packages — the uncovered paths in these packages
 # require real database connections (schema migration DDL, cursor
