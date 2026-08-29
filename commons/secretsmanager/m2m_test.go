@@ -409,7 +409,7 @@ func TestClassifyAWSError_TypedNilAPIError(t *testing.T) {
 	var err error
 
 	assert.NotPanics(t, func() {
-		err = classifyAWSError(nilAPIError, "tenants/staging/org_01ABC/plugin-pix/m2m/ledger/credentials")
+		err = classifyBackendError(nilAPIError, "tenants/staging/org_01ABC/plugin-pix/m2m/ledger/credentials")
 	})
 	require.ErrorIs(t, err, ErrM2MRetrievalFailed,
 		"a typed-nil API error is not an access-denied; it must classify as retrieval failure")

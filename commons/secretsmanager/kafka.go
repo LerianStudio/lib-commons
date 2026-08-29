@@ -259,7 +259,7 @@ func GetModuleKafkaCredentials(ctx context.Context, client SecretsManagerClient,
 
 	output, err := client.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(secretPath)})
 	if err != nil {
-		return nil, classifyAWSErrorWithSentinels(err, secretPath, ErrKafkaCredentialsNotFound, ErrKafkaVaultAccessDenied, ErrKafkaRetrievalFailed)
+		return nil, classifyBackendErrorWithSentinels(err, secretPath, ErrKafkaCredentialsNotFound, ErrKafkaVaultAccessDenied, ErrKafkaRetrievalFailed)
 	}
 
 	if output == nil || output.SecretString == nil {
