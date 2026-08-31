@@ -32,15 +32,16 @@ import (
 // libObservability is the module whose types must not reach the public API.
 const libObservability = "github.com/LerianStudio/lib-observability"
 
-// allowedPackages are the only packages permitted to name a lib-observability
-// type on their exported surface.
+// allowedPackages are the packages permitted to name a lib-observability type
+// on their exported surface.
 //
-// commons/obs/obsbridge is the single demarcated adapter: naming those types
-// IS its job. Every other package must speak commons/obs. Adding an entry here
-// re-opens the coupling this package exists to close.
-var allowedPackages = map[string]bool{
-	"commons/obs/obsbridge": true,
-}
+// It is empty, and that is the point. Since lib-observability v4 every
+// parameter position of that library is declared with universal types, so
+// commons/obs/obsbridge - the one package here that imports it - hands its
+// values straight back as commons/obs contracts and names nothing. No package
+// of lib-commons has an excuse. Adding an entry re-opens the coupling
+// commons/obs exists to close.
+var allowedPackages = map[string]bool{}
 
 // violation is one exported symbol that mentions a lib-observability type.
 type violation struct {
