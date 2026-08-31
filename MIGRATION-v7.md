@@ -69,41 +69,50 @@ the local type freely, so `obs.With` returns a lib-commons wrapper that
 
 lib-observability has no float64 histogram instrument; `MetricsFactory`
 produces an OTEL `Int64Histogram`. The parameter is `float64` for call-site
-convenience, but adapters round. **Record durations in milliseconds, not
-seconds** — `0.004` becomes `0`. `commons/obs/obsbridge` rejects NaN, ±Inf and
-out-of-range values with `ErrHistogramValueNotRepresentable` instead of casting
-blindly.
+convenience, but the recorder rounds. **Record durations in milliseconds, not
+seconds** — `0.004` becomes `0`. `*metrics.MetricsFactory` rejects NaN, ±Inf
+and out-of-range values with `metrics.ErrHistogramValueNotRepresentable`
+instead of casting blindly.
 
 ---
 
 ## 2. Getting an `obs.Logger` from a lib-observability logger
 
-Preferred, once available: use the adapter published by **your** major of
-lib-observability (`UniversalLogger` / `UniversalMetrics`). It returns something
-that satisfies `obs.Logger` / `obs.MetricsRecorder` directly, and lib-commons
-never learns which major you are on.
+There is nothing to get. Since **lib-observability v4** every logger that
+library produces — `log.NewNop()`, `*log.GoLogger`, the zap adapter, the value
+returned by `NewLoggerFromContext` — carries `Log(ctx, int, string, ...any)`,
+`Enabled(int)` and `Sync(ctx)`, so it satisfies `obs.Logger` **directly**.
+`*metrics.MetricsFactory` carries the three flattened recorder methods, so it
+satisfies `obs.MetricsRecorder` directly. No adapter, no wrapper, no import of
+lib-commons' internals:
 
 ```go
-import obslog "github.com/LerianStudio/lib-observability/vN/log"
+cfg.Logger          = myLibObsLogger   // log.Logger      -> obs.Logger
+cfg.MetricsRecorder = myLibObsFactory  // *MetricsFactory -> obs.MetricsRecorder
 
-logger := obslog.UniversalLogger(myLogger) // satisfies commons/obs.Logger
+sm := server.NewServerManager(licenseClient, telemetry, myLibObsLogger)
 ```
 
-Transitional, pinned to **v2**: lib-commons ships its own adapter in
-`commons/obs/obsbridge`. It is the single package in lib-commons that names
-lib-observability types, and it exists so lib-commons can bootstrap itself.
+The same holds for a logger declared in **your** package that has never
+imported lib-observability. Three methods and it goes in.
+
+`commons/obs/obsbridge` still exists, but it is no longer an adapter: it holds
+three helpers that read the ambient telemetry out of a `context.Context` and
+hand it back typed as the `commons/obs` contracts. It is the only package that
+reaches lib-observability for *that* — every other importer of the library in
+lib-commons is calling real functionality (`tracing`, `constants`, `assert`,
+`runtime`, `redaction`, `sqlobs`/`redisobs`/`httpobs`), never converting a
+type.
 
 ```go
 import "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 
-cfg.Logger          = obsbridge.Logger(myV2Logger)          // liblog.Logger  -> obs.Logger
-cfg.MetricsRecorder = obsbridge.Metrics(myV2Factory)        // *MetricsFactory -> obs.MetricsRecorder
-logger             := obsbridge.LoggerFromContext(ctx)      // context logger  -> obs.Logger
-libLogger          := obsbridge.LibLogger(myObsLogger)      // obs.Logger      -> liblog.Logger
+logger := obsbridge.LoggerFromContext(ctx)                     // obs.Logger
+rec    := obsbridge.MetricsFromContext(ctx)                     // obs.MetricsRecorder
+l, tracer, headerID, r := obsbridge.TrackingFromContext(ctx)    // all four at once
 ```
 
-Do not reach for `obsbridge` if you are on a different major — use that major's
-own adapter. Nothing in lib-commons outside `obsbridge` requires it.
+Nothing outside `obsbridge` requires you to go through it, on any major.
 
 ### Writing your own adapter
 
@@ -223,10 +232,10 @@ mig := postgres.MigrationConfig{Logger: libLogger}
 
 // AFTER
 cfg := postgres.Config{
-	Logger:          obsbridge.Logger(libLogger),
-	MetricsRecorder: obsbridge.Metrics(libFactory),
+	Logger:          libLogger,   // unchanged: it satisfies obs.Logger as-is
+	MetricsRecorder: libFactory,  // unchanged: only the FIELD was renamed
 }
-mig := postgres.MigrationConfig{Logger: obsbridge.Logger(libLogger)}
+mig := postgres.MigrationConfig{Logger: libLogger}
 ```
 
 ### `mongo.Config` and `redis.Config`
@@ -237,8 +246,8 @@ mongoCfg := mongo.Config{Logger: libLogger, MetricsFactory: libFactory}
 redisCfg := redis.Config{Logger: libLogger, MetricsFactory: libFactory}
 
 // AFTER
-mongoCfg := mongo.Config{Logger: obsbridge.Logger(libLogger), MetricsRecorder: obsbridge.Metrics(libFactory)}
-redisCfg := redis.Config{Logger: obsbridge.Logger(libLogger), MetricsRecorder: obsbridge.Metrics(libFactory)}
+mongoCfg := mongo.Config{Logger: libLogger, MetricsRecorder: libFactory}
+redisCfg := redis.Config{Logger: libLogger, MetricsRecorder: libFactory}
 ```
 
 ### `rabbitmq.RabbitMQConnection`
@@ -254,8 +263,8 @@ conn := &rabbitmq.RabbitMQConnection{
 // AFTER
 conn := &rabbitmq.RabbitMQConnection{
 	ConnectionStringSource: uri,
-	Logger:                 obsbridge.Logger(libLogger),
-	MetricsRecorder:        obsbridge.Metrics(libFactory),
+	Logger:                 libLogger,
+	MetricsRecorder:        libFactory,
 }
 ```
 
@@ -270,7 +279,7 @@ launcher := commons.NewLauncher(
 
 // AFTER
 launcher := commons.NewLauncher(
-	commons.WithLogger(obsbridge.Logger(libLogger)),
+	commons.WithLogger(libLogger),
 	commons.RunApp("api", server),
 )
 ```
@@ -283,7 +292,7 @@ sm := server.NewServerManager(licenseClient, telemetry, libLogger)
 
 // AFTER — telemetry is passed UNCHANGED; *tracing.Telemetry satisfies
 // obs.TelemetryShutdowner from any major with no adapter.
-sm := server.NewServerManager(licenseClient, telemetry, obsbridge.Logger(libLogger))
+sm := server.NewServerManager(licenseClient, telemetry, libLogger)
 ```
 
 ### Your own logging calls into lib-commons contracts
@@ -353,8 +362,9 @@ go mod tidy
 ## 6. The boundary is enforced
 
 `commons/obs/boundary` walks every non-test file with `go/ast` and fails if any
-exported symbol mentions a lib-observability type. The allowlist has exactly one
-entry — `commons/obs/obsbridge`, the demarcated adapter.
+exported symbol mentions a lib-observability type. The allowlist is **empty**:
+since lib-observability v4 declares every logger and recorder parameter with
+universal types, not even `commons/obs/obsbridge` needs to name one.
 
 ```bash
 go test -tags unit ./commons/obs/boundary/
