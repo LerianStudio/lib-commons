@@ -5,11 +5,12 @@ package http
 import (
 	"context"
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	libSSRF "github.com/LerianStudio/lib-commons/v6/commons/security/ssrf"
 	"github.com/stretchr/testify/assert"

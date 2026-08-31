@@ -3,8 +3,9 @@
 package webhook
 
 import (
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/trace/noop"

@@ -5,10 +5,11 @@ package rabbitmq
 import (
 	"context"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"

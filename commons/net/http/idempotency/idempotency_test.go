@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	chttp "github.com/LerianStudio/lib-commons/v6/commons/constants"

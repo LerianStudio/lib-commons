@@ -6,19 +6,20 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"net/http"
 	"strconv"
 	"sync"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
 	chttp "github.com/LerianStudio/lib-commons/v6/commons/net/http"
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
-	"github.com/LerianStudio/lib-observability/v2/assert"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-observability/v4/assert"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/gofiber/fiber/v3"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -209,7 +210,7 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 	}
 
 	if conn == nil {
-		asserter := assert.New(context.Background(), obsbridge.LibLogger(rl.logger), "http.ratelimit", "New")
+		asserter := assert.New(context.Background(), rl.logger, "http.ratelimit", "New")
 		if err := asserter.Never(context.Background(), "redis connection is nil; rate limiter disabled"); err == nil {
 			rl.logger.Log(context.Background(), obs.LevelWarn, "rate limiter assertion unexpectedly passed")
 		}

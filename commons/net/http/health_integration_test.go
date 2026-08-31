@@ -5,11 +5,12 @@ package http
 import (
 	"encoding/json"
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/circuitbreaker"
 	"github.com/gofiber/fiber/v3"

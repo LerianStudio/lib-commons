@@ -2,11 +2,11 @@ package circuitbreaker
 
 import (
 	"context"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/runtime"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
+	"github.com/LerianStudio/lib-observability/v4/runtime"
 	"github.com/sony/gobreaker"
 )
 
@@ -107,7 +107,7 @@ func (m *manager) dispatchStateChangeListener(operation string, notify func(cont
 
 	runtime.SafeGoWithContextAndComponent(
 		context.Background(),
-		obsbridge.LibLogger(m.logger),
+		m.logger,
 		"circuitbreaker",
 		operation,
 		runtime.KeepRunning,

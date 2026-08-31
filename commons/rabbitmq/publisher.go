@@ -4,14 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"sync"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-observability/v2/runtime"
+	"github.com/LerianStudio/lib-observability/v4/runtime"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -311,7 +311,7 @@ func (pub *ConfirmablePublisher) startCloseMonitor(closeNotify chan *amqp.Error)
 	monitorDone := pub.done
 	monitorLogger := pub.logger
 
-	runtime.SafeGo(obsbridge.LibLogger(monitorLogger), "confirmable-publisher-close-monitor", runtime.KeepRunning, func() {
+	runtime.SafeGo(monitorLogger, "confirmable-publisher-close-monitor", runtime.KeepRunning, func() {
 		select {
 		case amqpErr := <-closeNotify:
 			pub.handleMonitoredClose(amqpErr)

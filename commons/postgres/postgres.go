@@ -5,8 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -17,15 +15,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	// File system migration source. We need to import it to be able to use it as source in migrate.NewWithSourceInstance
 
 	commons "github.com/LerianStudio/lib-commons/v6/commons"
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
-	"github.com/LerianStudio/lib-observability/v2/assert"
-	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/runtime"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
-	"github.com/LerianStudio/lib-observability/v3/sqlobs"
+	"github.com/LerianStudio/lib-observability/v4/assert"
+	constant "github.com/LerianStudio/lib-observability/v4/constants"
+	"github.com/LerianStudio/lib-observability/v4/runtime"
+	"github.com/LerianStudio/lib-observability/v4/sqlobs"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -75,7 +75,7 @@ var (
 					logger = obs.Nop()
 				}
 
-				runtime.HandlePanicValue(context.Background(), obsbridge.LibLogger(logger), recovered, "postgres", "create_resolver")
+				runtime.HandlePanicValue(context.Background(), logger, recovered, "postgres", "create_resolver")
 				err = fmt.Errorf("failed to create resolver: %w", fmt.Errorf("recovered panic: %v", recovered))
 			}
 		}()

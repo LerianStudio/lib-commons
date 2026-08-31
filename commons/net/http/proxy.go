@@ -2,14 +2,15 @@ package http
 
 import (
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	opentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	opentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.9.0"

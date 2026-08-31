@@ -5,8 +5,9 @@ package crypto
 import (
 	"context"
 	"encoding/base64"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -5,8 +5,9 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/assert"

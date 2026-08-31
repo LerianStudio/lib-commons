@@ -6,9 +6,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/LerianStudio/lib-commons/v6/commons/outbox"

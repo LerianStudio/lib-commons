@@ -9,10 +9,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"sync"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 

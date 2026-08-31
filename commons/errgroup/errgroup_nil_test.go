@@ -4,8 +4,9 @@ package errgroup_test
 
 import (
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/errgroup"
 	"github.com/stretchr/testify/assert"

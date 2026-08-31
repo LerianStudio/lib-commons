@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"os"
 	"sync"
 
-	"github.com/LerianStudio/lib-observability/v2/assert"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
+	"github.com/LerianStudio/lib-observability/v4/assert"
 )
 
 var (
@@ -121,7 +121,7 @@ func (m *ManagerShutdown) Terminate(reason string) {
 	m.mu.RUnlock()
 
 	if handler == nil {
-		asserter := assert.New(context.Background(), obsbridge.LibLogger(logger), "license", "Terminate")
+		asserter := assert.New(context.Background(), logger, "license", "Terminate")
 		_ = asserter.NoError(context.Background(), ErrManagerNotInitialized,
 			"license terminate called without initialization",
 			"reason", reason,

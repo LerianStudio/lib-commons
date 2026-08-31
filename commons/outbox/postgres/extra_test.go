@@ -3,9 +3,10 @@
 package postgres
 
 import (
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
 	"github.com/stretchr/testify/assert"

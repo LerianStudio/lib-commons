@@ -2,15 +2,15 @@ package http
 
 import (
 	"context"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	libLog "github.com/LerianStudio/lib-observability/v4/log"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"
 )
@@ -59,7 +59,7 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 
 	// Default to GoLogger so CORS warnings are always emitted, even without explicit logger.
 	if nilcheck.Interface(cfg.logger) {
-		cfg.logger = obsbridge.Logger(&libLog.GoLogger{Level: libLog.LevelWarn})
+		cfg.logger = &libLog.GoLogger{Level: libLog.LevelWarn}
 	}
 
 	allowCredentials := defaultAllowCredentials

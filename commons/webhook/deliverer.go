@@ -6,8 +6,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"io"
 	"net/http"
 	"net/url"
@@ -15,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	commons "github.com/LerianStudio/lib-commons/v6/commons"
 	"go.opentelemetry.io/otel/attribute"
@@ -24,7 +24,7 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-observability/v2/runtime"
+	"github.com/LerianStudio/lib-observability/v4/runtime"
 )
 
 // Defaults for Deliverer configuration.
@@ -334,7 +334,7 @@ func (d *Deliverer) fanOut(ctx context.Context, endpoints []Endpoint, event *Eve
 			defer wg.Done()
 			defer func() { <-sem }()
 			defer runtime.RecoverWithPolicyAndContext(
-				dlvCtx, obsbridge.LibLogger(d.logger), "webhook", "deliver-to-"+ep.ID, runtime.KeepRunning,
+				dlvCtx, d.logger, "webhook", "deliver-to-"+ep.ID, runtime.KeepRunning,
 			)
 
 			d.deliverToEndpoint(dlvCtx, ep, event)
@@ -374,7 +374,7 @@ func (d *Deliverer) fanOutWithResults(
 			defer wg.Done()
 			defer func() { <-sem }()
 			defer runtime.RecoverWithPolicyAndContext(
-				dlvCtx, obsbridge.LibLogger(d.logger), "webhook", "deliver-to-"+ep.ID, runtime.KeepRunning,
+				dlvCtx, d.logger, "webhook", "deliver-to-"+ep.ID, runtime.KeepRunning,
 			)
 
 			results[idx] = d.deliverToEndpoint(dlvCtx, ep, event)

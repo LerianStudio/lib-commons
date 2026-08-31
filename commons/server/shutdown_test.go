@@ -5,16 +5,16 @@ package server_test
 import (
 	"context"
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"net"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/license"
 	"github.com/LerianStudio/lib-commons/v6/commons/server"
-	opentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	opentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -489,7 +489,7 @@ func TestExecuteShutdown_WithTelemetry(t *testing.T) {
 
 	tel, err := opentelemetry.NewTelemetry(opentelemetry.TelemetryConfig{
 		EnableTelemetry: false,
-		Logger:          obsbridge.LibLogger(logger),
+		Logger:          logger,
 		LibraryName:     "test",
 	})
 	require.NoError(t, err)
@@ -602,7 +602,7 @@ func TestExecuteShutdown_WithAllComponents(t *testing.T) {
 
 	tel, err := opentelemetry.NewTelemetry(opentelemetry.TelemetryConfig{
 		EnableTelemetry: false,
-		Logger:          obsbridge.LibLogger(logger),
+		Logger:          logger,
 		LibraryName:     "test",
 	})
 	require.NoError(t, err)

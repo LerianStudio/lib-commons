@@ -11,11 +11,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"io"
 	"reflect"
 
-	constant "github.com/LerianStudio/lib-observability/v2/constants"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
+	constant "github.com/LerianStudio/lib-observability/v4/constants"
 )
 
 var (

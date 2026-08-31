@@ -9,9 +9,10 @@ package testutil
 import (
 	"context"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"strings"
 	"sync"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 )
 
 // NewMockLogger returns a no-op logger that satisfies obs.Logger.

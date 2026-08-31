@@ -10,9 +10,10 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"strings"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"

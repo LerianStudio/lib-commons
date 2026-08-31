@@ -3,15 +3,15 @@ package dlq
 import (
 	"context"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"slices"
 	"sync"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	libRuntime "github.com/LerianStudio/lib-observability/v2/runtime"
-	libTracing "github.com/LerianStudio/lib-observability/v2/tracing"
+	libRuntime "github.com/LerianStudio/lib-observability/v4/runtime"
+	libTracing "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )
@@ -170,7 +170,7 @@ func (c *Consumer) Run(ctx context.Context) {
 		return
 	}
 
-	defer libRuntime.RecoverWithPolicyAndContext(ctx, obsbridge.LibLogger(c.logger), c.module, "dlq-consumer-loop", libRuntime.KeepRunning)
+	defer libRuntime.RecoverWithPolicyAndContext(ctx, c.logger, c.module, "dlq-consumer-loop", libRuntime.KeepRunning)
 
 	c.stopMu.Lock()
 	if c.stopCh != nil {
@@ -252,7 +252,7 @@ func (c *Consumer) ProcessOnce(ctx context.Context) {
 
 // safeProcessOnce wraps processOnce with panic recovery.
 func (c *Consumer) safeProcessOnce(ctx context.Context) {
-	defer libRuntime.RecoverWithPolicyAndContext(ctx, obsbridge.LibLogger(c.logger), c.module, "dlq-poll-cycle", libRuntime.KeepRunning)
+	defer libRuntime.RecoverWithPolicyAndContext(ctx, c.logger, c.module, "dlq-poll-cycle", libRuntime.KeepRunning)
 
 	c.processOnce(ctx)
 }

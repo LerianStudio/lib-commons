@@ -5,8 +5,6 @@ go 1.26.3
 require (
 	cloud.google.com/go/iam v1.12.0
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/LerianStudio/lib-observability/v2 v2.1.0
-	github.com/LerianStudio/lib-observability/v3 v3.1.0
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/aws/aws-sdk-go-v2 v1.43.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.106.0
@@ -44,11 +42,13 @@ require (
 	go.uber.org/mock v0.6.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.22.0
-	golang.org/x/text v0.40.0
+	golang.org/x/text v0.41.0
 	google.golang.org/api v0.287.1
 	google.golang.org/grpc v1.82.1
 	google.golang.org/protobuf v1.36.11
 )
+
+require go.opentelemetry.io/contrib/instrumentation/runtime v0.69.0 // indirect
 
 require (
 	cloud.google.com/go/auth v0.20.0 // indirect
@@ -56,6 +56,7 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
+	github.com/LerianStudio/lib-observability/v4 v4.0.0
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/XSAM/otelsql v0.43.0 // indirect
 	github.com/andybalholm/brotli v1.2.2 // indirect
@@ -148,11 +149,13 @@ require (
 	go.opentelemetry.io/proto/otlp v1.10.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
-	golang.org/x/crypto v0.53.0 // indirect
-	golang.org/x/net v0.56.0 // indirect
+	golang.org/x/crypto v0.55.0 // indirect
+	golang.org/x/net v0.57.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260630182238-925bb5da69e7 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260630182238-925bb5da69e7 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/LerianStudio/lib-observability/v4 => /home/rodrigodh/Development/lo-v4

@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	libBackoff "github.com/LerianStudio/lib-commons/v6/commons/backoff"
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	libOtel "github.com/LerianStudio/lib-observability/v2/tracing"
+	libOtel "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )

@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"net"
 	"net/http"
 	"os"
@@ -14,9 +12,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v6/commons/license"
-	"github.com/LerianStudio/lib-observability/v2/runtime"
+	"github.com/LerianStudio/lib-observability/v4/runtime"
 	"github.com/gofiber/fiber/v3"
 	"google.golang.org/grpc"
 )
@@ -323,7 +323,7 @@ func (sm *ServerManager) StartWithGracefulShutdown() {
 	// Run everything in a recover block
 	defer func() {
 		if r := recover(); r != nil {
-			runtime.HandlePanicValue(context.Background(), obsbridge.LibLogger(sm.logger), r, "server", "StartWithGracefulShutdown")
+			runtime.HandlePanicValue(context.Background(), sm.logger, r, "server", "StartWithGracefulShutdown")
 
 			sm.executeShutdown()
 
@@ -392,7 +392,7 @@ func (sm *ServerManager) launchFiberHTTPServer() bool {
 
 	runtime.SafeGoWithContextAndComponent(
 		context.Background(),
-		obsbridge.LibLogger(sm.logger),
+		sm.logger,
 		"server",
 		"start_http_server",
 		runtime.KeepRunning,
@@ -432,7 +432,7 @@ func (sm *ServerManager) launchStdlibHTTPServer() bool {
 
 	runtime.SafeGoWithContextAndComponent(
 		context.Background(),
-		obsbridge.LibLogger(sm.logger),
+		sm.logger,
 		"server",
 		"start_stdlib_http_server",
 		runtime.KeepRunning,
@@ -478,7 +478,7 @@ func (sm *ServerManager) launchGRPCServer() bool {
 
 	runtime.SafeGoWithContextAndComponent(
 		context.Background(),
-		obsbridge.LibLogger(sm.logger),
+		sm.logger,
 		"server",
 		"start_grpc_server",
 		runtime.KeepRunning,
@@ -605,7 +605,7 @@ func (sm *ServerManager) executeShutdown() {
 
 			runtime.SafeGoWithContextAndComponent(
 				context.Background(),
-				obsbridge.LibLogger(sm.logger),
+				sm.logger,
 				"server",
 				"grpc_graceful_stop",
 				runtime.KeepRunning,
@@ -638,7 +638,7 @@ func (sm *ServerManager) executeShutdown() {
 							"hook_index", i,
 							"panic", r,
 						)
-						runtime.HandlePanicValue(context.Background(), obsbridge.LibLogger(sm.logger), r, "server", "shutdown_hook")
+						runtime.HandlePanicValue(context.Background(), sm.logger, r, "server", "shutdown_hook")
 					}
 				}()
 

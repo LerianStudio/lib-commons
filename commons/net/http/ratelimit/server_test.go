@@ -7,12 +7,13 @@
 package ratelimit_test
 
 import (
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/net/http/ratelimit"
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"

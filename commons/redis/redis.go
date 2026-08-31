@@ -7,22 +7,22 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	iamcredentials "cloud.google.com/go/iam/credentials/apiv1"
 	iamcredentialspb "cloud.google.com/go/iam/credentials/apiv1/credentialspb"
 	commons "github.com/LerianStudio/lib-commons/v6/commons"
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
-	"github.com/LerianStudio/lib-observability/v2/assert"
-	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/runtime"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
-	"github.com/LerianStudio/lib-observability/v3/redisobs"
+	"github.com/LerianStudio/lib-observability/v4/assert"
+	constant "github.com/LerianStudio/lib-observability/v4/constants"
+	"github.com/LerianStudio/lib-observability/v4/redisobs"
+	"github.com/LerianStudio/lib-observability/v4/runtime"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -79,7 +79,7 @@ func resolvePackageLogger() obs.Logger {
 
 // nilClientAssert fires a nil-receiver assertion and returns ErrNilClient.
 func nilClientAssert(ctx context.Context, operation string) error {
-	a := assert.New(ctx, obsbridge.LibLogger(resolvePackageLogger()), "redis.Client", operation)
+	a := assert.New(ctx, resolvePackageLogger(), "redis.Client", operation)
 	_ = a.Never(ctx, "nil receiver on *redis.Client")
 
 	return ErrNilClient
@@ -846,7 +846,7 @@ func (c *Client) startRefreshLoopLocked() {
 
 	runtime.SafeGoWithContextAndComponent(
 		refreshCtx,
-		obsbridge.LibLogger(c.logger),
+		c.logger,
 		"redis",
 		"iam_refresh_loop",
 		runtime.KeepRunning,

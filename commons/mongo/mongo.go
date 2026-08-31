@@ -7,8 +7,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	neturl "net/url"
 	"regexp"
 	"sort"
@@ -16,12 +14,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	commons "github.com/LerianStudio/lib-commons/v6/commons"
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-observability/v2/assert"
-	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-observability/v4/assert"
+	constant "github.com/LerianStudio/lib-observability/v4/constants"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
@@ -189,7 +189,7 @@ func NewClient(ctx context.Context, cfg Config, opts ...Option) (*Client, error)
 
 	for _, opt := range opts {
 		if opt == nil {
-			asserter := assert.New(ctx, obsbridge.LibLogger(cfg.Logger), "mongo", "NewClient")
+			asserter := assert.New(ctx, cfg.Logger, "mongo", "NewClient")
 			_ = asserter.Never(ctx, "nil mongo option received; skipping")
 
 			continue

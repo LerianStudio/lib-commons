@@ -3,13 +3,13 @@ package circuitbreaker
 import (
 	"context"
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"maps"
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/runtime"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
+	"github.com/LerianStudio/lib-observability/v4/runtime"
 )
 
 var (
@@ -99,7 +99,7 @@ func (hc *healthChecker) Start() {
 
 	runtime.SafeGoWithContextAndComponent(
 		context.Background(),
-		obsbridge.LibLogger(hc.logger),
+		hc.logger,
 		"circuitbreaker",
 		"health_check_loop",
 		runtime.KeepRunning,

@@ -5,13 +5,14 @@ package server_test
 import (
 	"context"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"io"
 	"net"
 	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/server"
 	"github.com/gofiber/fiber/v3"

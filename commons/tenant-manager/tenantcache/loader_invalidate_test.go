@@ -8,10 +8,11 @@ package tenantcache
 
 import (
 	"context"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/cache"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"

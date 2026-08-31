@@ -5,10 +5,11 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/require"

@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	amqp "github.com/rabbitmq/amqp091-go"

@@ -5,9 +5,10 @@ package outbox
 import (
 	"context"
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/attribute"

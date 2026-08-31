@@ -2,9 +2,10 @@ package redis
 
 import (
 	"context"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
-	"github.com/LerianStudio/lib-observability/v3/redisobs"
+	"github.com/LerianStudio/lib-observability/v4/redisobs"
 	"github.com/redis/go-redis/v9"
 )
 

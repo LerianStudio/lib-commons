@@ -5,9 +5,10 @@ package circuitbreaker
 import (
 	"context"
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/sony/gobreaker"
 	"github.com/stretchr/testify/assert"

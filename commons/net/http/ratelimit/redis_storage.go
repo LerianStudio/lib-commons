@@ -4,17 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"strings"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	tmvalkey "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/valkey"
-	"github.com/LerianStudio/lib-observability/v2/assert"
-	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-observability/v4/assert"
+	constant "github.com/LerianStudio/lib-observability/v4/constants"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -87,7 +87,7 @@ func (storage *RedisStorage) unavailableStorageError(operation string) error {
 		logger = storage.logger
 	}
 
-	asserter := assert.New(context.Background(), obsbridge.LibLogger(logger), "http.ratelimit", operation)
+	asserter := assert.New(context.Background(), logger, "http.ratelimit", operation)
 	if err := asserter.Never(context.Background(), "ratelimit redis storage is unavailable"); err != nil {
 		return ErrStorageUnavailable
 	}
@@ -116,7 +116,7 @@ func NewRedisStorage(conn *libRedis.Client, opts ...RedisStorageOption) *RedisSt
 	}
 
 	if conn == nil {
-		asserter := assert.New(context.Background(), obsbridge.LibLogger(storage.logger), "http.ratelimit", "NewRedisStorage")
+		asserter := assert.New(context.Background(), storage.logger, "http.ratelimit", "NewRedisStorage")
 		if err := asserter.Never(context.Background(), "redis connection is nil; ratelimit storage disabled"); err != nil {
 			return nil
 		}

@@ -5,11 +5,12 @@ package mongo
 import (
 	"context"
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	libMongo "github.com/LerianStudio/lib-commons/v6/commons/mongo"
 	"github.com/LerianStudio/lib-commons/v6/commons/outbox"

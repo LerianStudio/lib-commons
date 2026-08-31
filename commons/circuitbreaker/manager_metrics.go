@@ -4,7 +4,7 @@ import (
 	"context"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	constant "github.com/LerianStudio/lib-observability/v2/constants"
+	constant "github.com/LerianStudio/lib-observability/v4/constants"
 )
 
 const (

@@ -1,9 +1,10 @@
 package ratelimit
 
 import (
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net/url"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/gofiber/fiber/v3"

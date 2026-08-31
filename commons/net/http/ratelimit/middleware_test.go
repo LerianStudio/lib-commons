@@ -5,7 +5,6 @@ package ratelimit
 import (
 	"context"
 	"encoding/json"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	chttp "github.com/LerianStudio/lib-commons/v6/commons/net/http"

@@ -9,13 +9,14 @@ package tenantcache
 import (
 	"context"
 	"encoding/json"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"

@@ -5,11 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/google/uuid"
@@ -20,9 +21,9 @@ import (
 
 	libCommons "github.com/LerianStudio/lib-commons/v6/commons"
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
-	"github.com/LerianStudio/lib-observability/v2/runtime"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	libLog "github.com/LerianStudio/lib-observability/v4/log"
+	"github.com/LerianStudio/lib-observability/v4/runtime"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 )
 
 const overflowTenantMetricLabel = "_other"
@@ -181,7 +182,7 @@ func (dispatcher *Dispatcher) RunContext(parentCtx context.Context, launcher *li
 
 	defer runtime.RecoverAndLogWithContext(
 		ctx,
-		obsbridge.LibLogger(dispatcher.logger),
+		dispatcher.logger,
 		"outbox",
 		"dispatcher_run",
 	)
@@ -195,7 +196,7 @@ func (dispatcher *Dispatcher) RunContext(parentCtx context.Context, launcher *li
 
 		initCtx, span := dispatcher.tracer.Start(ctx, "outbox.dispatcher.initial_dispatch")
 		defer span.End()
-		defer runtime.RecoverAndLogWithContext(initCtx, obsbridge.LibLogger(dispatcher.logger), "outbox", "dispatcher_initial")
+		defer runtime.RecoverAndLogWithContext(initCtx, dispatcher.logger, "outbox", "dispatcher_initial")
 
 		dispatcher.dispatchAcrossTenants(initCtx)
 	}()
@@ -221,7 +222,7 @@ func (dispatcher *Dispatcher) RunContext(parentCtx context.Context, launcher *li
 
 				tickCtx, span := dispatcher.tracer.Start(ctx, "outbox.dispatcher.dispatch_once")
 				defer span.End()
-				defer runtime.RecoverAndLogWithContext(tickCtx, obsbridge.LibLogger(dispatcher.logger), "outbox", "dispatcher_tick")
+				defer runtime.RecoverAndLogWithContext(tickCtx, dispatcher.logger, "outbox", "dispatcher_tick")
 
 				dispatcher.dispatchAcrossTenants(tickCtx)
 			}()
@@ -268,7 +269,7 @@ func (dispatcher *Dispatcher) Shutdown(ctx context.Context) error {
 
 	done := make(chan struct{})
 
-	runtime.SafeGo(obsbridge.LibLogger(dispatcher.logger), "outbox.dispatcher_shutdown_wait", runtime.KeepRunning, func() {
+	runtime.SafeGo(dispatcher.logger, "outbox.dispatcher_shutdown_wait", runtime.KeepRunning, func() {
 		dispatcher.dispatchWg.Wait()
 		close(done)
 	})
@@ -523,7 +524,7 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 	scopes, scopedRepo, err := dispatcher.listTenantDispatchScopes(ctx)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to list tenants", err)
-		libLog.SafeError(obsbridge.LibLogger(logger), ctx, "failed to list tenants", err, false)
+		libLog.SafeError(logger, ctx, "failed to list tenants", err, false)
 
 		return
 	}
@@ -809,7 +810,7 @@ func (dispatcher *Dispatcher) collectEvents(ctx context.Context, span trace.Span
 	)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to reset stuck events", err)
-		libLog.SafeError(obsbridge.LibLogger(logger), ctx, "failed to reset stuck events", err, false)
+		libLog.SafeError(logger, ctx, "failed to reset stuck events", err, false)
 	}
 
 	collected += len(stuckEvents)
@@ -827,7 +828,7 @@ func (dispatcher *Dispatcher) collectEvents(ctx context.Context, span trace.Span
 	)
 	if err != nil {
 		libOpentelemetry.HandleSpanError(span, "failed to reset failed events for retry", err)
-		libLog.SafeError(obsbridge.LibLogger(logger), ctx, "failed to reset failed events for retry", err, false)
+		libLog.SafeError(logger, ctx, "failed to reset failed events for retry", err, false)
 	}
 
 	collected += len(failedEvents)
@@ -894,7 +895,7 @@ func (dispatcher *Dispatcher) collectPriorityEvents(
 		events, err := repo.ListPendingByTypes(ctx, dispatcher.cfg.PriorityEventTypes, budget)
 		if err != nil {
 			libOpentelemetry.HandleSpanError(span, "failed to list priority events", err)
-			libLog.SafeError(obsbridge.LibLogger(dispatcher.logger), ctx, "failed to list priority events", err, false)
+			libLog.SafeError(dispatcher.logger, ctx, "failed to list priority events", err, false)
 
 			return nil
 		}
@@ -913,7 +914,7 @@ func (dispatcher *Dispatcher) collectPriorityEvents(
 		events, err := dispatcher.repo.ListPendingByType(ctx, eventType, remaining)
 		if err != nil {
 			libOpentelemetry.HandleSpanError(span, "failed to list priority events", err)
-			libLog.SafeError(obsbridge.LibLogger(dispatcher.logger), ctx, "failed to list priority events", err, false)
+			libLog.SafeError(dispatcher.logger, ctx, "failed to list priority events", err, false)
 
 			continue
 		}
@@ -971,7 +972,7 @@ func (dispatcher *Dispatcher) handleListPendingError(ctx context.Context, span t
 	logger := dispatcher.logger
 
 	libOpentelemetry.HandleSpanError(span, "failed to list outbox events", err)
-	libLog.SafeError(obsbridge.LibLogger(logger), ctx, "failed to list outbox events", err, false)
+	libLog.SafeError(logger, ctx, "failed to list outbox events", err, false)
 
 	counterTenantKey := tenantKey
 

@@ -5,12 +5,13 @@ package ratelimit
 import (
 	"context"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
 	"github.com/stretchr/testify/assert"

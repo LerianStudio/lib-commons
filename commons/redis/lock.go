@@ -4,14 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/assert"
-	opentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+
+	"github.com/LerianStudio/lib-observability/v4/assert"
+	opentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/go-redsync/redsync/v4"
 	redsyncredis "github.com/go-redsync/redsync/v4/redis"
 	"github.com/go-redsync/redsync/v4/redis/goredis/v9"
@@ -173,7 +174,7 @@ func (h *lockHandle) Unlock(ctx context.Context) error {
 
 // nilLockAssert fires a nil-receiver assertion and returns an error.
 func nilLockAssert(ctx context.Context, operation string) error {
-	a := assert.New(ctx, obsbridge.LibLogger(resolvePackageLogger()), "redis.RedisLockManager", operation)
+	a := assert.New(ctx, resolvePackageLogger(), "redis.RedisLockManager", operation)
 	_ = a.Never(ctx, "nil receiver on *redis.RedisLockManager")
 
 	return ErrNilLockManager

@@ -5,7 +5,7 @@ package constant
 import (
 	"testing"
 
-	obsconstants "github.com/LerianStudio/lib-observability/v2/constants"
+	obsconstants "github.com/LerianStudio/lib-observability/v4/constants"
 	"github.com/stretchr/testify/require"
 )
 

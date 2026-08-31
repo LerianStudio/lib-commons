@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"sync"
 
-	"github.com/LerianStudio/lib-observability/v2/runtime"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
+	"github.com/LerianStudio/lib-observability/v4/runtime"
 )
 
 var (
@@ -84,7 +84,7 @@ func (grp *Group) Go(fn func() error) {
 	grp.wg.Go(func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
-				runtime.HandlePanicValue(grp.effectiveCtx(), obsbridge.LibLogger(grp.getLogger()), recovered, "errgroup", "group.Go")
+				runtime.HandlePanicValue(grp.effectiveCtx(), grp.getLogger(), recovered, "errgroup", "group.Go")
 
 				grp.errOnce.Do(func() {
 					grp.err = fmt.Errorf("%w: %v", ErrPanicRecovered, recovered)

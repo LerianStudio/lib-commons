@@ -10,8 +10,10 @@
 // satisfies them, and consumers are free to move between lib-observability
 // majors without waiting for lib-commons.
 //
-// See MIGRATION-v7.md for how to obtain an obs.Logger from a
-// lib-observability logger.
+// Since lib-observability v4 no adapter is needed in either direction: its
+// loggers satisfy Logger and its *metrics.MetricsFactory satisfies
+// MetricsRecorder as they are, and every lib-observability entry point that
+// takes a logger accepts a Logger declared here. See MIGRATION-v7.md.
 package obs
 
 import "context"

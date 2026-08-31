@@ -8,8 +8,9 @@ package event
 
 import (
 	"context"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"testing"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/testutil"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/tenantcache"

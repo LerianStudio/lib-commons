@@ -6,12 +6,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/net/http/problem"
 	"github.com/danielgtaylor/huma/v2"

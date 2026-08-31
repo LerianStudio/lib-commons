@@ -3,9 +3,10 @@ package postgres
 import (
 	"context"
 	"database/sql"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
-	"github.com/LerianStudio/lib-observability/v3/sqlobs"
+	"github.com/LerianStudio/lib-observability/v4/sqlobs"
 	"go.opentelemetry.io/otel/attribute"
 )
 

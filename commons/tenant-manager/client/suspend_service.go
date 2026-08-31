@@ -3,13 +3,14 @@ package client
 import (
 	"context"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"io"
 	"net/http"
 	"net/url"
 
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.opentelemetry.io/otel/trace"
 )
 

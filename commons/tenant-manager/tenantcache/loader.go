@@ -8,15 +8,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"sync"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 )
 
 // TenantLoader fetches tenant configurations from the tenant-manager API and

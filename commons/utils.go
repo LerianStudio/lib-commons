@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"math"
 	"os/exec"
 	"reflect"
@@ -13,6 +11,9 @@ import (
 	"slices"
 	"strconv"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 
 	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
 	"github.com/google/uuid"

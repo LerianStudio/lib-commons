@@ -10,13 +10,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
@@ -24,7 +24,7 @@ import (
 	tmmongo "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/rabbitmq"
-	observability "github.com/LerianStudio/lib-observability/v2"
+	observability "github.com/LerianStudio/lib-observability/v4"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1029,7 +1029,7 @@ func TestMultiTenantConsumer_StructuredLogEvents(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			ctx = observability.ContextWithLogger(ctx, obsbridge.LibLogger(logger))
+			ctx = observability.ContextWithLogger(ctx, logger)
 
 			consumer.parentCtx = ctx
 

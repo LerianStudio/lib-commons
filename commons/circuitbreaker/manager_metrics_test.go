@@ -5,14 +5,14 @@ package circuitbreaker
 import (
 	"context"
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"strings"
 	"testing"
 	"time"
 
-	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/metrics"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
+	constant "github.com/LerianStudio/lib-observability/v4/constants"
+	"github.com/LerianStudio/lib-observability/v4/metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -32,7 +32,7 @@ func newTestMetricsFactory(t *testing.T) (*metrics.MetricsFactory, *sdkmetric.Ma
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	meter := provider.Meter("test-circuitbreaker")
 
-	factory, err := metrics.NewMetricsFactory(meter, obsbridge.LibLogger(obs.Nop()))
+	factory, err := metrics.NewMetricsFactory(meter, obs.Nop())
 	require.NoError(t, err)
 
 	return factory, reader
@@ -131,14 +131,14 @@ func TestMetrics_WithNilFactory_NoPanic(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: WithMetricsRecorder(obsbridge.Metrics(factory)) — option is applied to manager
+// Test: WithMetricsRecorder(factory) — option is applied to manager
 // ---------------------------------------------------------------------------
 
 func TestMetrics_WithFactory_Applied(t *testing.T) {
 	t.Parallel()
 
 	factory, _ := newTestMetricsFactory(t)
-	recorder := obsbridge.Metrics(factory)
+	recorder := factory
 
 	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(recorder))
 	require.NoError(t, err)
@@ -157,7 +157,7 @@ func TestMetrics_RecordExecution_Success(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(obsbridge.Metrics(factory)))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(factory))
 	require.NoError(t, err)
 
 	_, err = mgr.GetOrCreate("exec-svc", DefaultConfig())
@@ -198,7 +198,7 @@ func TestMetrics_RecordExecution_Error(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(obsbridge.Metrics(factory)))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(factory))
 	require.NoError(t, err)
 
 	_, err = mgr.GetOrCreate("err-svc", DefaultConfig())
@@ -237,7 +237,7 @@ func TestMetrics_RecordExecution_RejectedOpen(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(obsbridge.Metrics(factory)))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(factory))
 	require.NoError(t, err)
 
 	cfg := Config{
@@ -296,7 +296,7 @@ func TestMetrics_RecordStateTransition_ClosedToOpen(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(obsbridge.Metrics(factory)))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(factory))
 	require.NoError(t, err)
 
 	cfg := Config{
@@ -386,7 +386,7 @@ func TestMetrics_LongServiceName_Sanitized(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(obsbridge.Metrics(factory)))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(factory))
 	require.NoError(t, err)
 
 	// Create a service name that exceeds 64 characters
@@ -431,7 +431,7 @@ func TestMetrics_MultipleExecutions_Accumulate(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(obsbridge.Metrics(factory)))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(factory))
 	require.NoError(t, err)
 
 	_, err = mgr.GetOrCreate("accum-svc", DefaultConfig())

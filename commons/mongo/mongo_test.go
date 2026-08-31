@@ -12,13 +12,14 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"math/big"
 	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	"github.com/stretchr/testify/assert"

@@ -5,13 +5,14 @@ package middleware
 import (
 	"encoding/base64"
 	"encoding/json"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
 	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 
 	"go.opentelemetry.io/otel/trace"

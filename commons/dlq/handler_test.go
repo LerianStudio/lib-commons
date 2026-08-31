@@ -4,10 +4,11 @@ package dlq
 
 import (
 	"context"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"os"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"

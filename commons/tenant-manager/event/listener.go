@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 
@@ -16,7 +17,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	"github.com/LerianStudio/lib-commons/v6/commons/events"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 )
 
 // EventHandler is a callback invoked for each parsed tenant lifecycle event.

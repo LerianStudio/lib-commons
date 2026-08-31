@@ -6,6 +6,7 @@ package consumer
 
 import (
 	"context"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/rabbitmq"

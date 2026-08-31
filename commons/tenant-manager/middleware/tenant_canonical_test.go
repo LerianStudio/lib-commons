@@ -8,12 +8,13 @@ package middleware
 
 import (
 	"encoding/json"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/event"

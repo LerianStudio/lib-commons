@@ -8,8 +8,9 @@ package eviction
 import (
 	"context"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 )
 
 // DefaultIdleTimeout is the default duration before a tenant connection becomes

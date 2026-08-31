@@ -4,13 +4,14 @@ package postgres
 
 import (
 	"context"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/metrics"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
+	"github.com/LerianStudio/lib-observability/v4/metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"

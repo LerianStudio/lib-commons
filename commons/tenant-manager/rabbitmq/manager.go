@@ -6,19 +6,20 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/eviction"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 

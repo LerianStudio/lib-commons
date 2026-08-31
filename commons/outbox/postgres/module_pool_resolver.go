@@ -13,14 +13,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v6/commons/outbox"

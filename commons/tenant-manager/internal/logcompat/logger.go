@@ -3,6 +3,7 @@ package logcompat
 import (
 	"context"
 	"fmt"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	tmlog "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/log"

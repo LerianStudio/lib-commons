@@ -3,8 +3,9 @@ package client
 import (
 	"context"
 	"fmt"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"net/url"
+
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 )
 
 // ReactivateTenant reactivates a suspended tenant via the Tenant Manager's

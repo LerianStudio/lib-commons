@@ -6,8 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"unicode/utf8"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/redis/go-redis/v9"

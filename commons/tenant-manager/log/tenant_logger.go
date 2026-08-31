@@ -2,6 +2,7 @@ package log
 
 import (
 	"context"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"

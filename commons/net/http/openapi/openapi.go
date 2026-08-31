@@ -20,10 +20,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"html"
 	"path"
 	"strings"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humafiber"

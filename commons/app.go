@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
 	"strings"
 	"sync"
 
-	"github.com/LerianStudio/lib-observability/v2/assert"
-	"github.com/LerianStudio/lib-observability/v2/runtime"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
+	"github.com/LerianStudio/lib-observability/v4/assert"
+	"github.com/LerianStudio/lib-observability/v4/runtime"
 )
 
 // ErrLoggerNil is returned when the Logger is nil and cannot proceed.
@@ -99,14 +99,14 @@ func (l *Launcher) Add(appName string, a App) error {
 	}
 
 	if strings.TrimSpace(appName) == "" {
-		asserter := assert.New(context.Background(), obsbridge.LibLogger(l.Logger), "launcher", "Add")
+		asserter := assert.New(context.Background(), l.Logger, "launcher", "Add")
 		_ = asserter.Never(context.Background(), "app name must not be empty")
 
 		return ErrEmptyApp
 	}
 
 	if a == nil {
-		asserter := assert.New(context.Background(), obsbridge.LibLogger(l.Logger), "launcher", "Add")
+		asserter := assert.New(context.Background(), l.Logger, "launcher", "Add")
 		_ = asserter.Never(context.Background(), "app must not be nil", "app_name", appName)
 
 		return ErrNilApp
@@ -166,7 +166,7 @@ func (l *Launcher) RunWithError() error {
 
 		runtime.SafeGoWithContextAndComponent(
 			context.Background(),
-			obsbridge.LibLogger(l.Logger),
+			l.Logger,
 			"launcher",
 			"run_app_"+nameCopy,
 			runtime.KeepRunning,

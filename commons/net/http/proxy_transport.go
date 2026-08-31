@@ -2,11 +2,12 @@ package http
 
 import (
 	"errors"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 	"net"
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	libSSRF "github.com/LerianStudio/lib-commons/v6/commons/security/ssrf"

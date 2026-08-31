@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/google/uuid"
 )
 
