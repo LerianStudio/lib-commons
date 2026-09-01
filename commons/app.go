@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	"github.com/LerianStudio/lib-observability/v4/assert"
@@ -42,9 +43,12 @@ type LauncherOption func(l *Launcher)
 // WithLogger adds a obs.Logger component to launcher.
 // If the launcher is nil the option is a no-op, preventing panics when
 // option closures are invoked on a nil receiver.
+// A nil logger is ignored, typed nils included: storing a Logger that holds a
+// nil pointer would satisfy the "Logger == nil" guard on every use site and
+// then panic on the first call, instead of returning ErrLoggerNil.
 func WithLogger(logger obs.Logger) LauncherOption {
 	return func(l *Launcher) {
-		if l == nil {
+		if l == nil || nilcheck.Interface(logger) {
 			return
 		}
 
@@ -65,7 +69,7 @@ func RunApp(name string, app App) LauncherOption {
 		if err := l.Add(name, app); err != nil {
 			l.configErrors = append(l.configErrors, fmt.Errorf("add app %q: %w", name, err))
 
-			if l.Logger != nil {
+			if !nilcheck.Interface(l.Logger) {
 				l.Logger.Log(context.Background(), obs.LevelError, "launcher add app error", "error", err)
 			}
 		}
@@ -122,7 +126,7 @@ func (l *Launcher) Add(appName string, a App) error {
 // available. For explicit error handling, use RunWithError instead.
 func (l *Launcher) Run() {
 	if err := l.RunWithError(); err != nil {
-		if l.Logger != nil {
+		if !nilcheck.Interface(l.Logger) {
 			l.Logger.Log(context.Background(), obs.LevelError, "launcher error", "error", err)
 		}
 	}
@@ -137,7 +141,9 @@ func (l *Launcher) RunWithError() error {
 		return ErrNilLauncher
 	}
 
-	if l.Logger == nil {
+	// Logger is an exported field, so a caller can bypass WithLogger and assign
+	// a typed nil straight into it. Reject that here too.
+	if nilcheck.Interface(l.Logger) {
 		return ErrLoggerNil
 	}
 

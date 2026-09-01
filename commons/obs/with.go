@@ -3,6 +3,8 @@ package obs
 import (
 	"context"
 	"fmt"
+
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 )
 
 // With returns a Logger that attaches kv to every event it emits.
@@ -12,9 +14,12 @@ import (
 // implementation outside the declaring package, which would reintroduce
 // exactly the nominal coupling this package removes.
 //
-// A nil logger yields Nop(). Empty kv yields the logger unchanged.
+// A nil logger yields Nop(), including a Logger holding a typed nil pointer:
+// an adapter whose methods dereference their receiver would panic on the first
+// delegated call, and "l == nil" alone does not reject it. Empty kv yields the
+// logger unchanged.
 func With(l Logger, kv ...any) Logger {
-	if l == nil {
+	if nilcheck.Interface(l) {
 		l = Nop()
 	}
 
@@ -29,9 +34,10 @@ func With(l Logger, kv ...any) Logger {
 // emits under name, joined with a dot. Attributes bound before the group is
 // opened are not namespaced; attributes bound after it are.
 //
-// A nil logger yields Nop(). An empty name yields the logger unchanged.
+// A nil logger yields Nop(), typed nils included, on the same grounds as With.
+// An empty name yields the logger unchanged.
 func WithGroup(l Logger, name string) Logger {
-	if l == nil {
+	if nilcheck.Interface(l) {
 		l = Nop()
 	}
 
@@ -52,7 +58,7 @@ type boundLogger struct {
 }
 
 func (l *boundLogger) Log(ctx context.Context, level int, msg string, kv ...any) {
-	if l == nil || l.base == nil {
+	if l == nil || nilcheck.Interface(l.base) {
 		return
 	}
 
@@ -64,7 +70,7 @@ func (l *boundLogger) Log(ctx context.Context, level int, msg string, kv ...any)
 }
 
 func (l *boundLogger) Enabled(level int) bool {
-	if l == nil || l.base == nil {
+	if l == nil || nilcheck.Interface(l.base) {
 		return false
 	}
 
@@ -72,7 +78,7 @@ func (l *boundLogger) Enabled(level int) bool {
 }
 
 func (l *boundLogger) Sync(ctx context.Context) error {
-	if l == nil || l.base == nil {
+	if l == nil || nilcheck.Interface(l.base) {
 		return nil
 	}
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 
 	libBackoff "github.com/LerianStudio/lib-commons/v6/commons/backoff"
@@ -66,9 +67,11 @@ type Handler struct {
 type Option func(*Handler)
 
 // WithLogger sets the logger used by the Handler.
+// A nil logger is ignored, typed nils included, so the Nop default installed by
+// the constructor survives and h.logger is never a panicking receiver.
 func WithLogger(l obs.Logger) Option {
 	return func(h *Handler) {
-		if l != nil {
+		if !nilcheck.Interface(l) {
 			h.logger = l
 		}
 	}
