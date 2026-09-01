@@ -680,7 +680,7 @@ func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(ctx context.Contex
 	}
 
 	if requiresTenant {
-		dispatcher.logger.Log(
+		dispatcher.resolvedLogger().Log(
 			ctx,
 			obs.LevelWarn,
 			"outbox tenant discovery returned no tenants; skipping dispatch because repository requires tenant context",
@@ -968,8 +968,21 @@ func (dispatcher *Dispatcher) ensureFailureCounterFallback() {
 	dispatcher.listPendingFailureCounts[defaultTenantFailureCounterFallback] = 0
 }
 
+// resolvedLogger returns the dispatcher logger, substituting a nop when it is
+// absent. NewDispatcher already normalises the field, so this only matters for
+// a Dispatcher assembled as a struct literal inside the package, but the
+// alternative is an unguarded Log call on a nil interface and the substitution
+// costs nothing.
+func (dispatcher *Dispatcher) resolvedLogger() obs.Logger {
+	if nilcheck.Interface(dispatcher.logger) {
+		return obs.Nop()
+	}
+
+	return dispatcher.logger
+}
+
 func (dispatcher *Dispatcher) handleListPendingError(ctx context.Context, span trace.Span, tenantKey string, err error) {
-	logger := dispatcher.logger
+	logger := dispatcher.resolvedLogger()
 
 	libOpentelemetry.HandleSpanError(span, "failed to list outbox events", err)
 	libLog.SafeError(logger, ctx, "failed to list outbox events", err, false)
