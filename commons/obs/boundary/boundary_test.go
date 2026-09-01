@@ -115,12 +115,25 @@ func scanFile(path, rel string) ([]violation, error) {
 		return nil, err
 	}
 
-	aliases := observabilityAliases(file)
-	if len(aliases) == 0 {
+	aliases, dotImports := observabilityAliases(file)
+	if len(aliases) == 0 && len(dotImports) == 0 {
 		return nil, nil
 	}
 
 	var violations []violation
+
+	// A dot import puts lib-observability's exported identifiers into the
+	// file scope unqualified, so no SelectorExpr marks their use and the AST
+	// alone cannot attribute them. Rather than let that blind the scan, the
+	// dot import is itself the violation.
+	for _, path := range dotImports {
+		violations = append(violations, violation{
+			file:   rel,
+			line:   fset.Position(file.Pos()).Line,
+			symbol: "(file)",
+			typ:    path + " (dot import)",
+		})
+	}
 
 	report := func(node ast.Node, symbol string) {
 		for _, typ := range referencedAliases(node, aliases) {
@@ -151,11 +164,7 @@ func scanFile(path, rel string) ([]violation, error) {
 
 					reportExportedFields(s, report)
 				case *ast.ValueSpec:
-					for _, name := range s.Names {
-						if name.IsExported() && s.Type != nil {
-							report(s.Type, name.Name)
-						}
-					}
+					reportExportedValues(d.Tok, s, report)
 				}
 			}
 		}
@@ -192,6 +201,52 @@ func reportExportedFields(spec *ast.TypeSpec, report func(ast.Node, string)) {
 		}
 	default:
 		report(spec.Type, spec.Name.Name)
+	}
+}
+
+// reportExportedValues reports the exported names of a var or const spec.
+//
+// When the spec declares a type, that type is what lands on the API. When it
+// does not, the type is inferred from the initializer, so the initializer is
+// what decides: an exported "var X = log.NewNop()" publishes log.Logger just
+// as surely as "var X log.Logger" would.
+//
+// The inferred case is checked for var only. A Go constant can hold nothing
+// but a basic type, and the alias pattern this module actually uses -
+// "const MetadataTraceparent = obsconstants.MetadataTraceparent" over an
+// untyped upstream constant - copies a value, not a nominal type, so a
+// consumer of it is bound to no lib-observability major. Flagging those would
+// be a false positive; only a constant aliasing a NAMED basic type
+// (log.LevelInfo, were it typed) would leak, and separating the two needs
+// full type resolution, which would put golang.org/x/tools in the dependency
+// graph of every consumer of this library. That trade is not worth it: the
+// shapes that carry interfaces and structs across the boundary are var, field,
+// parameter and result, and all four are covered here.
+func reportExportedValues(tok token.Token, spec *ast.ValueSpec, report func(ast.Node, string)) {
+	for i, name := range spec.Names {
+		if !name.IsExported() {
+			continue
+		}
+
+		if spec.Type != nil {
+			report(spec.Type, name.Name)
+
+			continue
+		}
+
+		if tok != token.VAR {
+			continue
+		}
+
+		if len(spec.Values) == len(spec.Names) {
+			report(spec.Values[i], name.Name)
+
+			continue
+		}
+
+		for _, value := range spec.Values {
+			report(value, name.Name)
+		}
 	}
 }
 
@@ -233,9 +288,12 @@ func symbolName(decl *ast.FuncDecl) string {
 }
 
 // observabilityAliases maps each local import alias to the lib-observability
-// package path it refers to.
-func observabilityAliases(file *ast.File) map[string]string {
+// package path it refers to, and separately returns the lib-observability
+// paths brought in by a dot import, which bind no alias at all.
+func observabilityAliases(file *ast.File) (map[string]string, []string) {
 	aliases := map[string]string{}
+
+	var dotImports []string
 
 	for _, imp := range file.Imports {
 		path, err := strconv.Unquote(imp.Path.Value)
@@ -248,10 +306,16 @@ func observabilityAliases(file *ast.File) map[string]string {
 			alias = imp.Name.Name
 		}
 
+		if alias == "." {
+			dotImports = append(dotImports, path)
+
+			continue
+		}
+
 		aliases[alias] = path
 	}
 
-	return aliases
+	return aliases, dotImports
 }
 
 // referencedAliases returns the lib-observability package paths referenced
