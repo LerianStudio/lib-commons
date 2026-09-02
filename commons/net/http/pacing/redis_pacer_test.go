@@ -15,10 +15,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	"github.com/LerianStudio/lib-commons/v6/commons/net/http/pacing"
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -48,7 +49,7 @@ func newRedisClient(t *testing.T, mr *miniredis.Miniredis) *libRedis.Client {
 		Topology: libRedis.Topology{
 			Standalone: &libRedis.StandaloneTopology{Address: mr.Addr()},
 		},
-		Logger: &libLog.NopLogger{},
+		Logger: obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -293,7 +294,7 @@ func TestNewPacer_Validation(t *testing.T) {
 	_, err = pacing.NewPacer(conn, testPrefix, pacing.WithPollInterval(0))
 	require.ErrorIs(t, err, pacing.ErrInvalidPollInterval)
 
-	p, err := pacing.NewPacer(conn, testPrefix, pacing.WithLogger(&libLog.NopLogger{}), nil)
+	p, err := pacing.NewPacer(conn, testPrefix, pacing.WithLogger(obs.Nop()), nil)
 	require.NoError(t, err)
 	require.NotNil(t, p, "a nil option must be skipped, not dereferenced")
 }
@@ -301,14 +302,12 @@ func TestNewPacer_Validation(t *testing.T) {
 // recordingLogger captures warn-level records so a test can assert that a
 // fail-closed refusal was actually reported, not just returned.
 type recordingLogger struct {
-	libLog.NopLogger
-
 	mu   sync.Mutex
 	warn []string
 }
 
-func (r *recordingLogger) Log(_ context.Context, level libLog.Level, msg string, _ ...libLog.Field) {
-	if level != libLog.LevelWarn {
+func (r *recordingLogger) Log(_ context.Context, level int, msg string, _ ...any) {
+	if level != obs.LevelWarn {
 		return
 	}
 
@@ -766,3 +765,7 @@ func TestPacer_Acquire_AlreadyCancelledContextNeverReachesRedis(t *testing.T) {
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Empty(t, mr.Keys())
 }
+
+func (*recordingLogger) Enabled(int) bool { return true }
+
+func (*recordingLogger) Sync(context.Context) error { return nil }

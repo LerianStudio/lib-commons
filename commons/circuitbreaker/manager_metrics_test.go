@@ -9,9 +9,10 @@ import (
 	"testing"
 	"time"
 
-	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/log"
-	"github.com/LerianStudio/lib-observability/v2/metrics"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
+	constant "github.com/LerianStudio/lib-observability/v4/constants"
+	"github.com/LerianStudio/lib-observability/v4/metrics"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -31,7 +32,7 @@ func newTestMetricsFactory(t *testing.T) (*metrics.MetricsFactory, *sdkmetric.Ma
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	meter := provider.Meter("test-circuitbreaker")
 
-	factory, err := metrics.NewMetricsFactory(meter, &log.NopLogger{})
+	factory, err := metrics.NewMetricsFactory(meter, obs.Nop())
 	require.NoError(t, err)
 
 	return factory, reader
@@ -99,18 +100,18 @@ func hasAttributeKey(dp metricdata.DataPoint[int64], key string) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Test: WithMetricsFactory(nil) — manager works, no metrics emitted, no panic
+// Test: WithMetricsRecorder(nil) — manager works, no metrics emitted, no panic
 // ---------------------------------------------------------------------------
 
 func TestMetrics_WithNilFactory_NoPanic(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(nil))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(nil))
 	require.NoError(t, err)
 
-	// Verify the metricsFactory field is nil on the concrete manager
+	// Verify the metricsRecorder field is nil on the concrete manager
 	m := mgr.(*manager)
-	assert.Nil(t, m.metricsFactory, "metricsFactory should be nil when WithMetricsFactory(nil) is used")
+	assert.Nil(t, m.metricsRecorder, "metricsRecorder should be nil when WithMetricsRecorder(nil) is used")
 
 	// Create a breaker and execute — must not panic even without metrics
 	_, err = mgr.GetOrCreate("no-metrics-svc", DefaultConfig())
@@ -130,19 +131,21 @@ func TestMetrics_WithNilFactory_NoPanic(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Test: WithMetricsFactory(factory) — option is applied to manager
+// Test: WithMetricsRecorder(factory) — option is applied to manager
 // ---------------------------------------------------------------------------
 
 func TestMetrics_WithFactory_Applied(t *testing.T) {
 	t.Parallel()
 
 	factory, _ := newTestMetricsFactory(t)
+	recorder := factory
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(recorder))
 	require.NoError(t, err)
 
 	m := mgr.(*manager)
-	assert.Same(t, factory, m.metricsFactory, "metricsFactory should be the factory passed via option")
+	assert.Equal(t, recorder, m.metricsRecorder)
+	assert.NotNil(t, m.metricsRecorder, "metricsRecorder should be the recorder passed via option")
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +157,7 @@ func TestMetrics_RecordExecution_Success(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(factory))
 	require.NoError(t, err)
 
 	_, err = mgr.GetOrCreate("exec-svc", DefaultConfig())
@@ -195,7 +198,7 @@ func TestMetrics_RecordExecution_Error(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(factory))
 	require.NoError(t, err)
 
 	_, err = mgr.GetOrCreate("err-svc", DefaultConfig())
@@ -234,7 +237,7 @@ func TestMetrics_RecordExecution_RejectedOpen(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(factory))
 	require.NoError(t, err)
 
 	cfg := Config{
@@ -293,7 +296,7 @@ func TestMetrics_RecordStateTransition_ClosedToOpen(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(factory))
 	require.NoError(t, err)
 
 	cfg := Config{
@@ -345,7 +348,7 @@ func TestMetrics_RecordStateTransition_ClosedToOpen(t *testing.T) {
 func TestMetrics_RecordStateTransition_NilFactory_Noop(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 
 	m := mgr.(*manager)
@@ -363,7 +366,7 @@ func TestMetrics_RecordStateTransition_NilFactory_Noop(t *testing.T) {
 func TestMetrics_RecordExecution_NilFactory_Noop(t *testing.T) {
 	t.Parallel()
 
-	mgr, err := NewManager(&log.NopLogger{})
+	mgr, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 
 	m := mgr.(*manager)
@@ -383,7 +386,7 @@ func TestMetrics_LongServiceName_Sanitized(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(factory))
 	require.NoError(t, err)
 
 	// Create a service name that exceeds 64 characters
@@ -428,7 +431,7 @@ func TestMetrics_MultipleExecutions_Accumulate(t *testing.T) {
 
 	factory, reader := newTestMetricsFactory(t)
 
-	mgr, err := NewManager(&log.NopLogger{}, WithMetricsFactory(factory))
+	mgr, err := NewManager(obs.Nop(), WithMetricsRecorder(factory))
 	require.NoError(t, err)
 
 	_, err = mgr.GetOrCreate("accum-svc", DefaultConfig())
@@ -480,11 +483,11 @@ func TestMetrics_MultipleExecutions_Accumulate(t *testing.T) {
 func TestMetrics_MetricDefinitions(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, "circuit_breaker_state_transitions_total", stateTransitionMetric.Name)
-	assert.Equal(t, "1", stateTransitionMetric.Unit)
-	assert.NotEmpty(t, stateTransitionMetric.Description)
+	assert.Equal(t, "circuit_breaker_state_transitions_total", stateTransitionMetricName)
+	assert.Equal(t, "1", stateTransitionMetricUnit)
+	assert.NotEmpty(t, stateTransitionMetricDescription)
 
-	assert.Equal(t, "circuit_breaker_executions_total", executionMetric.Name)
-	assert.Equal(t, "1", executionMetric.Unit)
-	assert.NotEmpty(t, executionMetric.Description)
+	assert.Equal(t, "circuit_breaker_executions_total", executionMetricName)
+	assert.Equal(t, "1", executionMetricUnit)
+	assert.NotEmpty(t, executionMetricDescription)
 }

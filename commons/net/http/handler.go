@@ -6,11 +6,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/gofiber/fiber/v3"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -136,12 +137,12 @@ func FiberErrorHandler(c fiber.Ctx, err error) error {
 		ctx = context.Background()
 	}
 
-	logger := observability.NewLoggerFromContext(ctx)
-	logger.Log(ctx, libLog.LevelError,
+	logger := obsbridge.LoggerFromContext(ctx)
+	logger.Log(ctx, obs.LevelError,
 		"handler error",
-		libLog.String("method", c.Method()),
-		libLog.String("path", c.Path()),
-		libLog.Err(err),
+		"method", c.Method(),
+		"path", c.Path(),
+		"error", err,
 	)
 
 	return RenderError(c, err)

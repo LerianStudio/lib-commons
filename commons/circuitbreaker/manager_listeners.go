@@ -4,8 +4,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
-	"github.com/LerianStudio/lib-observability/v2/runtime"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
+	"github.com/LerianStudio/lib-observability/v4/runtime"
 	"github.com/sony/gobreaker"
 )
 
@@ -32,29 +33,29 @@ func (m *manager) handleStateChange(tenantID, serviceName string, from gobreaker
 	case gobreaker.StateOpen:
 		m.logger.Log(
 			context.Background(),
-			log.LevelError,
+			obs.LevelError,
 			"circuit breaker OPENED, requests will fast-fail",
-			log.String("service", serviceName),
-			log.String("tenant_hash", tenantHashLabel(tenantID)),
-			log.String("from", from.String()),
+			"service", serviceName,
+			"tenant_hash", tenantHashLabel(tenantID),
+			"from", from.String(),
 		)
 	case gobreaker.StateHalfOpen:
 		m.logger.Log(
 			context.Background(),
-			log.LevelInfo,
+			obs.LevelInfo,
 			"circuit breaker HALF-OPEN, testing service recovery",
-			log.String("service", serviceName),
-			log.String("tenant_hash", tenantHashLabel(tenantID)),
-			log.String("from", from.String()),
+			"service", serviceName,
+			"tenant_hash", tenantHashLabel(tenantID),
+			"from", from.String(),
 		)
 	case gobreaker.StateClosed:
 		m.logger.Log(
 			context.Background(),
-			log.LevelInfo,
+			obs.LevelInfo,
 			"circuit breaker CLOSED, service is healthy",
-			log.String("service", serviceName),
-			log.String("tenant_hash", tenantHashLabel(tenantID)),
-			log.String("from", from.String()),
+			"service", serviceName,
+			"tenant_hash", tenantHashLabel(tenantID),
+			"from", from.String(),
 		)
 	}
 
@@ -96,9 +97,9 @@ func (m *manager) dispatchStateChangeListener(operation string, notify func(cont
 	select {
 	case m.listenerSem <- struct{}{}:
 	default:
-		m.logger.Log(context.Background(), log.LevelWarn,
+		m.logger.Log(context.Background(), obs.LevelWarn,
 			"circuit breaker state-change listener queue saturated; dropping notification",
-			log.String("operation", operation),
+			"operation", operation,
 		)
 
 		return

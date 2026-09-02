@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"sync"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
-	"github.com/LerianStudio/lib-observability/v2/runtime"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
+	"github.com/LerianStudio/lib-observability/v4/runtime"
 )
 
 var (
@@ -28,13 +29,13 @@ type Group struct {
 	errOnce  sync.Once
 	err      error
 	loggerMu sync.RWMutex
-	logger   libLog.Logger
+	logger   obs.Logger
 }
 
 // SetLogger sets an optional logger for panic recovery observability.
 // When set, panics recovered in goroutines will be logged before the
 // error is propagated via Wait. Safe for concurrent use.
-func (grp *Group) SetLogger(logger libLog.Logger) {
+func (grp *Group) SetLogger(logger obs.Logger) {
 	if grp == nil {
 		return
 	}
@@ -45,7 +46,7 @@ func (grp *Group) SetLogger(logger libLog.Logger) {
 }
 
 // getLogger returns the current logger in a concurrency-safe manner.
-func (grp *Group) getLogger() libLog.Logger {
+func (grp *Group) getLogger() obs.Logger {
 	grp.loggerMu.RLock()
 	l := grp.logger
 	grp.loggerMu.RUnlock()

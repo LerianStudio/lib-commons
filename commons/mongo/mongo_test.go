@@ -19,8 +19,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -106,14 +107,14 @@ func newTestClient(t *testing.T, overrides *clientDeps) *Client {
 	return client
 }
 
-// spyLogger implements log.Logger and records messages for verification.
+// spyLogger implements obs.Logger and records messages for verification.
 type spyLogger struct {
 	mu       sync.Mutex
 	messages []string
-	levels   []log.Level
+	levels   []int
 }
 
-func (s *spyLogger) Log(_ context.Context, level log.Level, msg string, _ ...log.Field) {
+func (s *spyLogger) Log(_ context.Context, level int, msg string, _ ...any) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -121,10 +122,8 @@ func (s *spyLogger) Log(_ context.Context, level log.Level, msg string, _ ...log
 	s.levels = append(s.levels, level)
 }
 
-func (s *spyLogger) With(_ ...log.Field) log.Logger { return s }
-func (s *spyLogger) WithGroup(_ string) log.Logger  { return s }
-func (s *spyLogger) Enabled(_ log.Level) bool       { return true }
-func (s *spyLogger) Sync(_ context.Context) error   { return nil }
+func (s *spyLogger) Enabled(_ int) bool           { return true }
+func (s *spyLogger) Sync(_ context.Context) error { return nil }
 
 func generateTestCertificatePEM(t *testing.T) []byte {
 	t.Helper()
@@ -928,7 +927,7 @@ func TestNewClient_AllowInsecureTLSPermitsPlaintext(t *testing.T) {
 	assert.EqualValues(t, 1, connectCalls.Load())
 }
 
-func newTestClientWithLogger(t *testing.T, overrides *clientDeps, logger log.Logger) *Client {
+func newTestClientWithLogger(t *testing.T, overrides *clientDeps, logger obs.Logger) *Client {
 	t.Helper()
 
 	deps := successDeps()

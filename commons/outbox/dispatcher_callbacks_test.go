@@ -8,16 +8,17 @@ import (
 	"sync"
 	"testing"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
 type logEntry struct {
-	level  libLog.Level
+	level  int
 	msg    string
-	fields []libLog.Field
+	fields []any
 }
 
 // recordingLogger captures emitted log entries for assertions.
@@ -26,18 +27,16 @@ type recordingLogger struct {
 	entries []logEntry
 }
 
-func (l *recordingLogger) Log(_ context.Context, level libLog.Level, msg string, fields ...libLog.Field) {
+func (l *recordingLogger) Log(_ context.Context, level int, msg string, fields ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.entries = append(l.entries, logEntry{level: level, msg: msg, fields: fields})
 }
 
-func (l *recordingLogger) With(...libLog.Field) libLog.Logger { return l }
-func (l *recordingLogger) WithGroup(string) libLog.Logger     { return l }
-func (l *recordingLogger) Enabled(libLog.Level) bool          { return true }
-func (l *recordingLogger) Sync(context.Context) error         { return nil }
+func (l *recordingLogger) Enabled(int) bool           { return true }
+func (l *recordingLogger) Sync(context.Context) error { return nil }
 
-func (l *recordingLogger) hasLevel(level libLog.Level) bool {
+func (l *recordingLogger) hasLevel(level int) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, e := range l.entries {
@@ -99,7 +98,7 @@ func TestDispatcher_HandlePublishError_CallbackPanicIsSwallowed(t *testing.T) {
 	require.NotPanics(t, func() {
 		_ = dispatcher.DispatchOnce(context.Background())
 	})
-	require.True(t, logger.hasLevel(libLog.LevelWarn))
+	require.True(t, logger.hasLevel(obs.LevelWarn))
 }
 
 func TestDispatcher_HandlePublishError_LogsWarnOnFailure(t *testing.T) {
@@ -132,16 +131,22 @@ func TestDispatcher_HandlePublishError_LogsWarnOnFailure(t *testing.T) {
 
 	var found bool
 	for _, e := range logger.entries {
-		if e.level != libLog.LevelWarn || e.msg != "outbox event publish failed" {
+		if e.level != obs.LevelWarn || e.msg != "outbox event publish failed" {
 			continue
 		}
 
 		var sawEventID, sawEventType bool
-		for _, f := range e.fields {
-			if f.Key == "event_id" && f.Value == eventID.String() {
+
+		fields := obs.NormalizeKV(e.fields...)
+		for i := 0; i < len(fields); i += 2 {
+			key, _ := fields[i].(string)
+			value := fields[i+1]
+
+			if key == "event_id" && value == eventID.String() {
 				sawEventID = true
 			}
-			if f.Key == "event_type" && f.Value == "payment.created" {
+
+			if key == "event_type" && value == "payment.created" {
 				sawEventType = true
 			}
 		}

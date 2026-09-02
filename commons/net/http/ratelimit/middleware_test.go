@@ -16,11 +16,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	chttp "github.com/LerianStudio/lib-commons/v6/commons/net/http"
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
@@ -51,18 +52,16 @@ type warnSpy struct {
 	msgs []string
 }
 
-func (s *warnSpy) Log(_ context.Context, level libLog.Level, msg string, _ ...libLog.Field) {
-	if level == libLog.LevelWarn {
+func (s *warnSpy) Log(_ context.Context, level int, msg string, _ ...any) {
+	if level == obs.LevelWarn {
 		s.mu.Lock()
 		s.msgs = append(s.msgs, msg)
 		s.mu.Unlock()
 	}
 }
 
-func (s *warnSpy) With(_ ...libLog.Field) libLog.Logger { return s }
-func (s *warnSpy) WithGroup(_ string) libLog.Logger     { return s }
-func (s *warnSpy) Enabled(_ libLog.Level) bool          { return true }
-func (s *warnSpy) Sync(_ context.Context) error         { return nil }
+func (s *warnSpy) Enabled(_ int) bool           { return true }
+func (s *warnSpy) Sync(_ context.Context) error { return nil }
 
 func (s *warnSpy) hasWarn(substr string) bool {
 	s.mu.Lock()
@@ -82,18 +81,16 @@ type errorSpy struct {
 	msgs []string
 }
 
-func (s *errorSpy) Log(_ context.Context, level libLog.Level, msg string, _ ...libLog.Field) {
-	if level == libLog.LevelError {
+func (s *errorSpy) Log(_ context.Context, level int, msg string, _ ...any) {
+	if level == obs.LevelError {
 		s.mu.Lock()
 		s.msgs = append(s.msgs, msg)
 		s.mu.Unlock()
 	}
 }
 
-func (s *errorSpy) With(_ ...libLog.Field) libLog.Logger { return s }
-func (s *errorSpy) WithGroup(_ string) libLog.Logger     { return s }
-func (s *errorSpy) Enabled(_ libLog.Level) bool          { return true }
-func (s *errorSpy) Sync(_ context.Context) error         { return nil }
+func (s *errorSpy) Enabled(_ int) bool           { return true }
+func (s *errorSpy) Sync(_ context.Context) error { return nil }
 
 func (s *errorSpy) hasError(substr string) bool {
 	return s.countErrors(substr) > 0
@@ -134,7 +131,7 @@ func newTestMiddlewareRedisConnection(t *testing.T, mr *miniredis.Miniredis) *li
 		Topology: libRedis.Topology{
 			Standalone: &libRedis.StandaloneTopology{Address: mr.Addr()},
 		},
-		Logger: &libLog.NopLogger{},
+		Logger: obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -241,7 +238,7 @@ func TestNew(t *testing.T) {
 				return newTestMiddlewareRedisConnection(t, mr)
 			}(),
 			opts: []Option{
-				WithLogger(&libLog.NopLogger{}),
+				WithLogger(obs.Nop()),
 			},
 			wantNil: false,
 		},

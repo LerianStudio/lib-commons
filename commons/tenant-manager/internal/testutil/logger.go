@@ -12,16 +12,16 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
 )
 
-// NewMockLogger returns a no-op logger that satisfies log.Logger.
-// It delegates to log.NewNop() to avoid duplicating the standard no-op implementation.
-func NewMockLogger() log.Logger {
-	return log.NewNop()
+// NewMockLogger returns a no-op logger that satisfies obs.Logger.
+// It delegates to obs.Nop() to avoid duplicating the standard no-op implementation.
+func NewMockLogger() obs.Logger {
+	return obs.Nop()
 }
 
-// CapturingLogger implements log.Logger and captures log messages for assertion.
+// CapturingLogger implements obs.Logger and captures log messages for assertion.
 // This enables verifying log output content in tests (e.g., connection_mode=lazy).
 // Messages are private to prevent unsafe concurrent access; use GetMessages() or
 // ContainsSubstring() for thread-safe reads.
@@ -70,24 +70,17 @@ func (cl *CapturingLogger) ContainsSubstring(sub string) bool {
 	return false
 }
 
-func (cl *CapturingLogger) Log(_ context.Context, _ log.Level, msg string, fields ...log.Field) {
+func (cl *CapturingLogger) Log(_ context.Context, _ int, msg string, fields ...any) {
 	if len(fields) == 0 {
 		cl.record(msg)
 
 		return
 	}
 
-	parts := make([]string, 0, len(fields))
-	for _, field := range fields {
-		parts = append(parts, fmt.Sprintf("%s=%v", field.Key, field.Value))
-	}
-
-	cl.record(fmt.Sprintf("%s %s", msg, strings.Join(parts, " ")))
+	cl.record(fmt.Sprintf("%s %s", msg, renderKV(fields)))
 }
-func (cl *CapturingLogger) With(_ ...log.Field) log.Logger { return cl }
-func (cl *CapturingLogger) WithGroup(_ string) log.Logger  { return cl }
-func (cl *CapturingLogger) Enabled(_ log.Level) bool       { return true }
-func (cl *CapturingLogger) Sync(_ context.Context) error   { return nil }
+func (cl *CapturingLogger) Enabled(_ int) bool           { return true }
+func (cl *CapturingLogger) Sync(_ context.Context) error { return nil }
 
 // NewCapturingLogger returns a new CapturingLogger that records all log messages.
 func NewCapturingLogger() *CapturingLogger {
@@ -96,11 +89,11 @@ func NewCapturingLogger() *CapturingLogger {
 
 // LogEntry is a single captured log record with its level.
 type LogEntry struct {
-	Level   log.Level
+	Level   int
 	Message string
 }
 
-// LevelCapturingLogger implements log.Logger and captures both the level and the
+// LevelCapturingLogger implements obs.Logger and captures both the level and the
 // rendered message of every record, so tests can assert that a diagnostic was
 // emitted at the intended severity and not swallowed at debug level.
 type LevelCapturingLogger struct {
@@ -126,7 +119,7 @@ func (l *LevelCapturingLogger) Entries() []LogEntry {
 
 // ContainsAtLevel reports whether any record logged at the given level contains
 // every one of the supplied substrings.
-func (l *LevelCapturingLogger) ContainsAtLevel(level log.Level, subs ...string) bool {
+func (l *LevelCapturingLogger) ContainsAtLevel(level int, subs ...string) bool {
 	for _, entry := range l.Entries() {
 		if entry.Level != level {
 			continue
@@ -150,16 +143,11 @@ func (l *LevelCapturingLogger) ContainsAtLevel(level log.Level, subs ...string) 
 	return false
 }
 
-func (l *LevelCapturingLogger) Log(_ context.Context, level log.Level, msg string, fields ...log.Field) {
+func (l *LevelCapturingLogger) Log(_ context.Context, level int, msg string, fields ...any) {
 	rendered := msg
 
 	if len(fields) > 0 {
-		parts := make([]string, 0, len(fields))
-		for _, field := range fields {
-			parts = append(parts, fmt.Sprintf("%s=%v", field.Key, field.Value))
-		}
-
-		rendered = fmt.Sprintf("%s %s", msg, strings.Join(parts, " "))
+		rendered = fmt.Sprintf("%s %s", msg, renderKV(fields))
 	}
 
 	l.mu.Lock()
@@ -168,7 +156,18 @@ func (l *LevelCapturingLogger) Log(_ context.Context, level log.Level, msg strin
 	l.entries = append(l.entries, LogEntry{Level: level, Message: rendered})
 }
 
-func (l *LevelCapturingLogger) With(_ ...log.Field) log.Logger { return l }
-func (l *LevelCapturingLogger) WithGroup(_ string) log.Logger  { return l }
-func (l *LevelCapturingLogger) Enabled(_ log.Level) bool       { return true }
-func (l *LevelCapturingLogger) Sync(_ context.Context) error   { return nil }
+func (l *LevelCapturingLogger) Enabled(_ int) bool           { return true }
+func (l *LevelCapturingLogger) Sync(_ context.Context) error { return nil }
+
+// renderKV renders alternating key/value pairs as "key=value" separated by
+// spaces, so assertions can match on a stable textual form.
+func renderKV(kv []any) string {
+	normalized := obs.NormalizeKV(kv...)
+
+	parts := make([]string, 0, len(normalized)/2)
+	for i := 0; i < len(normalized); i += 2 {
+		parts = append(parts, fmt.Sprintf("%v=%v", normalized[i], normalized[i+1]))
+	}
+
+	return strings.Join(parts, " ")
+}

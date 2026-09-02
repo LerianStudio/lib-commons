@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	commons "github.com/LerianStudio/lib-commons/v6/commons"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -22,8 +24,7 @@ import (
 
 	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-observability/v2/log"
-	"github.com/LerianStudio/lib-observability/v2/runtime"
+	"github.com/LerianStudio/lib-observability/v4/runtime"
 )
 
 // Defaults for Deliverer configuration.
@@ -48,7 +49,7 @@ const (
 // the internal HTTP client maintains a connection pool.
 type Deliverer struct {
 	lister              EndpointLister
-	logger              log.Logger
+	logger              obs.Logger
 	tracer              trace.Tracer
 	metrics             DeliveryMetrics
 	client              *http.Client
@@ -63,7 +64,7 @@ type Deliverer struct {
 type Option func(*Deliverer)
 
 // WithLogger attaches a structured logger. Nil values are ignored.
-func WithLogger(l log.Logger) Option {
+func WithLogger(l obs.Logger) Option {
 	return func(d *Deliverer) {
 		if !nilcheck.Interface(l) {
 			d.logger = l
@@ -168,17 +169,17 @@ func WithSignatureVersion(v SignatureVersion) Option {
 func WithAllowPrivateNetwork() Option {
 	return func(d *Deliverer) {
 		if !commons.AllowWebhookPrivateNet() {
-			d.logger.Log(context.Background(), log.LevelError,
+			d.logger.Log(context.Background(), obs.LevelError,
 				"webhook private-network override rejected; set "+commons.EnvAllowWebhookPrivateNet+"=true to permit",
-				log.String("env_var", commons.EnvAllowWebhookPrivateNet),
+				"env_var", commons.EnvAllowWebhookPrivateNet,
 			)
 
 			return
 		}
 
-		d.logger.Log(context.Background(), log.LevelWarn, "security bypass active",
-			log.String("feature", "webhook_private_network"),
-			log.String("env_var", commons.EnvAllowWebhookPrivateNet),
+		d.logger.Log(context.Background(), obs.LevelWarn, "security bypass active",
+			"feature", "webhook_private_network",
+			"env_var", commons.EnvAllowWebhookPrivateNet,
 		)
 
 		d.allowPrivateNetwork = true
@@ -218,7 +219,7 @@ func NewDeliverer(lister EndpointLister, opts ...Option) *Deliverer {
 
 	d := &Deliverer{
 		lister:     lister,
-		logger:     log.NewNop(),
+		logger:     obs.Nop(),
 		client:     defaultHTTPClient(),
 		maxConc:    defaultMaxConcurrency,
 		maxRetries: defaultMaxRetries,
@@ -263,8 +264,8 @@ func (d *Deliverer) Deliver(ctx context.Context, event *Event) error {
 	// but guard against faulty implementations.
 	active := filterActive(endpoints)
 	if len(active) == 0 {
-		d.log(ctx, log.LevelDebug, "no active endpoints for event",
-			log.String("event_type", event.Type),
+		d.log(ctx, obs.LevelDebug, "no active endpoints for event",
+			"event_type", event.Type,
 		)
 
 		return nil
@@ -405,9 +406,9 @@ func (d *Deliverer) deliverToEndpoint(
 		span.RecordError(ssrfErr)
 		span.SetStatus(codes.Error, "SSRF blocked")
 
-		d.log(ctx, log.LevelError, "webhook delivery blocked by SSRF check",
-			log.String("url", sanitizeURL(ep.URL)),
-			log.Err(ssrfErr),
+		d.log(ctx, obs.LevelError, "webhook delivery blocked by SSRF check",
+			"url", sanitizeURL(ep.URL),
+			"error", ssrfErr,
 		)
 
 		result.Error = fmt.Errorf("%w: %w", ErrSSRFBlocked, ssrfErr)
@@ -421,9 +422,9 @@ func (d *Deliverer) deliverToEndpoint(
 		span.RecordError(secretErr)
 		span.SetStatus(codes.Error, "secret decryption failed")
 
-		d.log(ctx, log.LevelError, "webhook secret decryption failed, skipping delivery",
-			log.String("endpoint_id", ep.ID),
-			log.Err(secretErr),
+		d.log(ctx, obs.LevelError, "webhook secret decryption failed, skipping delivery",
+			"endpoint_id", ep.ID,
+			"error", secretErr,
 		)
 
 		result.Error = secretErr
@@ -450,10 +451,10 @@ func (d *Deliverer) deliverToEndpoint(
 		if err != nil {
 			result.Error = err // preserve last transport error for diagnostics
 
-			d.log(ctx, log.LevelWarn, "webhook delivery failed",
-				log.String("url", sanitizeURL(ep.URL)),
-				log.Int("attempt", attempt+1),
-				log.Err(err),
+			d.log(ctx, obs.LevelWarn, "webhook delivery failed",
+				"url", sanitizeURL(ep.URL),
+				"attempt", attempt+1,
+				"error", err,
 			)
 
 			continue
@@ -463,10 +464,10 @@ func (d *Deliverer) deliverToEndpoint(
 			result.Success = true
 			d.recordMetrics(ctx, ep.ID, true, statusCode, result.Attempts)
 
-			d.log(ctx, log.LevelInfo, "webhook delivered",
-				log.String("url", sanitizeURL(ep.URL)),
-				log.String("event_type", event.Type),
-				log.Int("status", statusCode),
+			d.log(ctx, obs.LevelInfo, "webhook delivered",
+				"url", sanitizeURL(ep.URL),
+				"event_type", event.Type,
+				"status", statusCode,
 			)
 
 			return result
@@ -488,10 +489,10 @@ func (d *Deliverer) deliverToEndpoint(
 			return result
 		}
 
-		d.log(ctx, log.LevelWarn, "webhook non-2xx response",
-			log.String("url", sanitizeURL(ep.URL)),
-			log.Int("status", statusCode),
-			log.Int("attempt", attempt+1),
+		d.log(ctx, obs.LevelWarn, "webhook non-2xx response",
+			"url", sanitizeURL(ep.URL),
+			"status", statusCode,
+			"attempt", attempt+1,
 		)
 	}
 
@@ -507,10 +508,10 @@ func (d *Deliverer) deliverToEndpoint(
 	span.RecordError(result.Error)
 	span.SetStatus(codes.Error, "delivery exhausted retries")
 
-	d.log(ctx, log.LevelError, "webhook delivery exhausted retries",
-		log.String("url", sanitizeURL(ep.URL)),
-		log.String("event_type", event.Type),
-		log.Int("attempts", result.Attempts),
+	d.log(ctx, obs.LevelError, "webhook delivery exhausted retries",
+		"url", sanitizeURL(ep.URL),
+		"event_type", event.Type,
+		"attempts", result.Attempts,
 	)
 
 	return result
@@ -571,11 +572,11 @@ func (d *Deliverer) doHTTP(
 	}
 
 	if _, drainErr := io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseDrain)); drainErr != nil {
-		d.log(ctx, log.LevelWarn, "webhook response body drain failed", log.Err(drainErr))
+		d.log(ctx, obs.LevelWarn, "webhook response body drain failed", "error", drainErr)
 	}
 
 	if closeErr := resp.Body.Close(); closeErr != nil {
-		d.log(ctx, log.LevelWarn, "webhook response body close failed", log.Err(closeErr))
+		d.log(ctx, obs.LevelWarn, "webhook response body close failed", "error", closeErr)
 	}
 
 	return resp.StatusCode, nil
@@ -645,7 +646,7 @@ func (d *Deliverer) startSpan(
 }
 
 // log emits a structured log entry if a logger is configured.
-func (d *Deliverer) log(ctx context.Context, level log.Level, msg string, fields ...log.Field) {
+func (d *Deliverer) log(ctx context.Context, level int, msg string, fields ...any) {
 	if nilcheck.Interface(d.logger) {
 		return
 	}

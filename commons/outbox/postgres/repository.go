@@ -8,12 +8,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
 	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/google/uuid"
 )
 
@@ -47,7 +48,7 @@ type tenantRequirementProvider interface {
 
 type Option func(*Repository)
 
-func WithLogger(logger libLog.Logger) Option {
+func WithLogger(logger obs.Logger) Option {
 	return func(repo *Repository) {
 		if nilcheck.Interface(logger) {
 			return
@@ -87,7 +88,7 @@ type Repository struct {
 	tablePresence      *tablePresenceGuard
 	requireTenant      bool
 	explicitDiscoverer bool
-	logger             libLog.Logger
+	logger             obs.Logger
 	tableName          string
 	tenantColumn       string
 	transactionTimeout time.Duration
@@ -117,7 +118,7 @@ func NewRepository(
 		tenantResolver:     tenantResolver,
 		tenantDiscoverer:   tenantDiscoverer,
 		explicitDiscoverer: true,
-		logger:             libLog.NewNop(),
+		logger:             obs.Nop(),
 		tableName:          defaultOutboxTableName,
 		transactionTimeout: defaultTransactionTimeout,
 	}
@@ -137,7 +138,7 @@ func NewRepository(
 	}
 
 	if nilcheck.Interface(repo.logger) {
-		repo.logger = libLog.NewNop()
+		repo.logger = obs.Nop()
 	}
 
 	repo.tableName = strings.TrimSpace(repo.tableName)

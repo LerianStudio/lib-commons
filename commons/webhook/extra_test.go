@@ -5,7 +5,8 @@ package webhook
 import (
 	"testing"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/trace/noop"
 )
@@ -17,7 +18,7 @@ func TestWithLogger_SetsLogger(t *testing.T) {
 	lister := &mockLister{endpoints: []Endpoint{}}
 	d := NewDeliverer(lister)
 
-	logger := libLog.NewNop()
+	logger := obs.Nop()
 	opt := WithLogger(logger)
 	opt(d)
 	assert.Equal(t, logger, d.logger)

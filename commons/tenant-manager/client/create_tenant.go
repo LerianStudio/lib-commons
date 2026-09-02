@@ -8,10 +8,11 @@ import (
 	"io"
 	"net/http"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -74,13 +75,13 @@ func (c *Client) CreateTenant(ctx context.Context, req CreateTenantRequest) (*Cr
 		}
 	})
 
-	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.create_tenant")
 	defer span.End()
 
 	if err := c.checkCircuitBreaker(); err != nil {
-		logger.Log(ctx, libLog.LevelWarn, "circuit breaker open, failing fast")
+		logger.Log(ctx, obs.LevelWarn, "circuit breaker open, failing fast")
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Circuit breaker open", err)
 
 		return nil, err
@@ -150,7 +151,7 @@ func (c *Client) CreateTenant(ctx context.Context, req CreateTenantRequest) (*Cr
 	}
 
 	c.recordSuccess()
-	logger.Log(ctx, libLog.LevelInfo, "successfully created tenant", libLog.String("slug", out.Slug))
+	logger.Log(ctx, obs.LevelInfo, "successfully created tenant", "slug", out.Slug)
 
 	return &out, nil
 }
@@ -161,21 +162,21 @@ func (c *Client) CreateTenant(ctx context.Context, req CreateTenantRequest) (*Cr
 // service failure that feeds the circuit breaker. Only 5xx records a failure; 4xx
 // resets the consecutive-failure counter. Anything else (202, 3xx, ...) is
 // out-of-contract: surfaced as an error without touching the breaker counters.
-func (c *Client) handleCreateTenantStatus(ctx context.Context, span trace.Span, logger libLog.Logger, statusCode int, body []byte) error {
+func (c *Client) handleCreateTenantStatus(ctx context.Context, span trace.Span, logger obs.Logger, statusCode int, body []byte) error {
 	switch {
 	case statusCode == http.StatusConflict:
 		c.recordSuccess()
-		logger.Log(ctx, libLog.LevelWarn, "tenant already exists",
-			libLog.String("body", truncateBody(body)),
+		logger.Log(ctx, obs.LevelWarn, "tenant already exists",
+			"body", truncateBody(body),
 		)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Tenant conflict", core.ErrTenantConflict)
 
 		return fmt.Errorf("%w: %s", core.ErrTenantConflict, truncateBody(body))
 	case isServerError(statusCode):
 		c.recordFailure()
-		logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
-			libLog.Int("status", statusCode),
-			libLog.String("body", truncateBody(body)),
+		logger.Log(ctx, obs.LevelError, "tenant manager returned error",
+			"status", statusCode,
+			"body", truncateBody(body),
 		)
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", statusCode))
 
@@ -184,9 +185,9 @@ func (c *Client) handleCreateTenantStatus(ctx context.Context, span trace.Span, 
 		// Any other 4xx: a valid round-trip (resets the breaker), surfaced with the
 		// truncated body so the caller can diagnose the rejection.
 		c.recordSuccess()
-		logger.Log(ctx, libLog.LevelError, "tenant manager rejected create",
-			libLog.Int("status", statusCode),
-			libLog.String("body", truncateBody(body)),
+		logger.Log(ctx, obs.LevelError, "tenant manager rejected create",
+			"status", statusCode,
+			"body", truncateBody(body),
 		)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Tenant Manager rejected create", fmt.Errorf("status %d", statusCode))
 
@@ -195,9 +196,9 @@ func (c *Client) handleCreateTenantStatus(ctx context.Context, span trace.Span, 
 		// Out-of-contract status (202, 3xx, ...): neither a business rejection nor a
 		// service failure — leave the breaker counters untouched (mirrors
 		// handleGetTenantConfigStatus's default branch).
-		logger.Log(ctx, libLog.LevelError, "tenant manager returned unexpected status",
-			libLog.Int("status", statusCode),
-			libLog.String("body", truncateBody(body)),
+		logger.Log(ctx, obs.LevelError, "tenant manager returned unexpected status",
+			"status", statusCode,
+			"body", truncateBody(body),
 		)
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned unexpected status", fmt.Errorf("status %d", statusCode))
 

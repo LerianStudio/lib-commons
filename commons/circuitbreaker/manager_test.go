@@ -8,14 +8,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/sony/gobreaker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestCircuitBreaker_InitialState(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	manager, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -29,7 +30,7 @@ func TestCircuitBreaker_InitialState(t *testing.T) {
 }
 
 func TestCircuitBreaker_OpenState(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	manager, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -71,7 +72,7 @@ func TestCircuitBreaker_OpenState(t *testing.T) {
 }
 
 func TestCircuitBreaker_SuccessfulExecution(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	manager, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -89,7 +90,7 @@ func TestCircuitBreaker_SuccessfulExecution(t *testing.T) {
 }
 
 func TestCircuitBreaker_GetCounts(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	manager, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -120,7 +121,7 @@ func TestCircuitBreaker_GetCounts(t *testing.T) {
 }
 
 func TestCircuitBreaker_Reset(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	manager, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -163,7 +164,7 @@ func TestCircuitBreaker_Reset(t *testing.T) {
 }
 
 func TestCircuitBreaker_UnknownService(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	manager, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -200,7 +201,7 @@ func TestCircuitBreaker_ConfigPresets(t *testing.T) {
 }
 
 func TestCircuitBreaker_StateChangeListenerPanicRecovery(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	manager, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -286,7 +287,7 @@ func TestCircuitBreaker_StateChangeListenerPanicRecovery(t *testing.T) {
 }
 
 func TestCircuitBreaker_NilListenerRegistration(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	manager, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -336,7 +337,7 @@ func TestNewManager_NilLogger(t *testing.T) {
 }
 
 func TestGetOrCreate_InvalidConfig(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	m, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -353,7 +354,7 @@ func TestGetOrCreate_InvalidConfig(t *testing.T) {
 }
 
 func TestGetOrCreate_ReturnExistingBreaker(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	m, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -370,7 +371,7 @@ func TestGetOrCreate_ReturnExistingBreaker(t *testing.T) {
 }
 
 func TestExecute_OpenStateRejection(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	m, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -424,7 +425,7 @@ func TestExecute_OpenStateRejection(t *testing.T) {
 }
 
 func TestGetCounts_NonExistentService(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	m, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -433,7 +434,7 @@ func TestGetCounts_NonExistentService(t *testing.T) {
 }
 
 func TestIsHealthy_NonExistentService(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	m, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -442,7 +443,7 @@ func TestIsHealthy_NonExistentService(t *testing.T) {
 }
 
 func TestReset_NonExistentService(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	m, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -453,7 +454,7 @@ func TestReset_NonExistentService(t *testing.T) {
 }
 
 func TestCircuitBreaker_Wrapper_Execute(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	m, err := NewManager(logger)
 	require.NoError(t, err)
 

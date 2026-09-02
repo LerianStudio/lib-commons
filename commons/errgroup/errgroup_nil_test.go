@@ -6,8 +6,9 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/errgroup"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +22,7 @@ func TestNilReceiver_SetLogger(t *testing.T) {
 		var g *errgroup.Group
 
 		assert.NotPanics(t, func() {
-			g.SetLogger(log.NewNop())
+			g.SetLogger(obs.Nop())
 		})
 	})
 

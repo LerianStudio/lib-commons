@@ -5,8 +5,9 @@ package license_test
 import (
 	"testing"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/license"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -65,7 +66,7 @@ func TestNilReceiver_WithLogger(t *testing.T) {
 	t.Run("WithLogger configures logger on new manager", func(t *testing.T) {
 		t.Parallel()
 
-		nop := log.NewNop()
+		nop := obs.Nop()
 		m := license.New(license.WithLogger(nop))
 
 		// Verify the manager works — logger is used internally by TerminateWithError
@@ -90,7 +91,7 @@ func TestNilReceiver_WithLogger(t *testing.T) {
 	t.Run("WithLogger can be combined with SetHandler", func(t *testing.T) {
 		t.Parallel()
 
-		nop := log.NewNop()
+		nop := obs.Nop()
 		handlerCalled := false
 
 		m := license.New(license.WithLogger(nop))

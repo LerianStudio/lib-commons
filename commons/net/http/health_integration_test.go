@@ -10,8 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/circuitbreaker"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -88,7 +89,7 @@ func tripCircuitBreaker(t *testing.T, mgr circuitbreaker.Manager, serviceName st
 // ---------------------------------------------------------------------------
 
 func TestIntegration_Health_AllDependenciesHealthy(t *testing.T) {
-	logger := log.NewNop()
+	logger := obs.Nop()
 
 	mgr, err := circuitbreaker.NewManager(logger)
 	require.NoError(t, err)
@@ -138,7 +139,7 @@ func TestIntegration_Health_AllDependenciesHealthy(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIntegration_Health_DependencyUnhealthy_CircuitOpen(t *testing.T) {
-	logger := log.NewNop()
+	logger := obs.Nop()
 	cfg := testConfig()
 
 	mgr, err := circuitbreaker.NewManager(logger)
@@ -249,7 +250,7 @@ func TestIntegration_Health_CustomHealthCheck(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIntegration_Health_BothChecks_ANDSemantics(t *testing.T) {
-	logger := log.NewNop()
+	logger := obs.Nop()
 
 	mgr, err := circuitbreaker.NewManager(logger)
 	require.NoError(t, err)
@@ -303,7 +304,7 @@ func TestIntegration_Health_BothChecks_ANDSemantics(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIntegration_Health_MultipleDependencies(t *testing.T) {
-	logger := log.NewNop()
+	logger := obs.Nop()
 	cfg := testConfig()
 
 	mgr, err := circuitbreaker.NewManager(logger)
@@ -382,7 +383,7 @@ func TestIntegration_Health_MultipleDependencies(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIntegration_Health_CircuitRecovery(t *testing.T) {
-	logger := log.NewNop()
+	logger := obs.Nop()
 	cfg := testConfig() // Timeout is 1s — the breaker moves to half-open after this.
 
 	mgr, err := circuitbreaker.NewManager(logger)

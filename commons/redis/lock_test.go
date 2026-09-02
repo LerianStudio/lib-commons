@@ -11,7 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,7 +27,7 @@ func setupTestClient(t *testing.T) *Client {
 		Topology: Topology{
 			Standalone: &StandaloneTopology{Address: mr.Addr()},
 		},
-		Logger: &log.NopLogger{},
+		Logger: obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -912,7 +913,7 @@ func TestRedisLockManager_Unlock_ExpiredMutex(t *testing.T) {
 		Topology: Topology{
 			Standalone: &StandaloneTopology{Address: mr.Addr()},
 		},
-		Logger: &log.NopLogger{},
+		Logger: obs.Nop(),
 	})
 	require.NoError(t, err)
 

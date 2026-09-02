@@ -13,9 +13,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 )
 
 // serviceNamePayload is a minimal struct used to extract the service_name field
@@ -55,16 +56,16 @@ func (d *EventDispatcher) logServiceMismatch(
 	received string,
 	logger *logcompat.Logger,
 ) {
-	level := libLog.LevelDebug
+	level := obs.LevelDebug
 	if evt.EventType == EventTenantCacheInvalidate {
-		level = libLog.LevelWarn
+		level = obs.LevelWarn
 	}
 
 	logger.Base().Log(ctx, level, "skipping event: service mismatch",
-		libLog.String("event_type", evt.EventType),
-		libLog.String("tenant_id", evt.TenantID),
-		libLog.String("expected_service_name", d.service),
-		libLog.String("received_service_name", received))
+		"event_type", evt.EventType,
+		"tenant_id", evt.TenantID,
+		"expected_service_name", d.service,
+		"received_service_name", received)
 }
 
 // isServiceScopedEvent returns true if the event type targets a specific service

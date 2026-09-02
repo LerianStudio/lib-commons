@@ -10,10 +10,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/license"
 	"github.com/LerianStudio/lib-commons/v6/commons/server"
-	"github.com/LerianStudio/lib-observability/v2/log"
-	opentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	opentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,17 +28,15 @@ type recordingLogger struct {
 	syncErr  error
 }
 
-func (l *recordingLogger) Log(_ context.Context, _ log.Level, msg string, _ ...log.Field) {
+func (l *recordingLogger) Log(_ context.Context, _ int, msg string, _ ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	l.messages = append(l.messages, msg)
 }
 
-func (l *recordingLogger) With(_ ...log.Field) log.Logger { return l }
-func (l *recordingLogger) WithGroup(_ string) log.Logger  { return l }
-func (l *recordingLogger) Enabled(_ log.Level) bool       { return true }
-func (l *recordingLogger) Sync(_ context.Context) error   { return l.syncErr }
+func (l *recordingLogger) Enabled(_ int) bool           { return true }
+func (l *recordingLogger) Sync(_ context.Context) error { return l.syncErr }
 func (l *recordingLogger) getMessages() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -342,7 +341,7 @@ func TestServerManager_TypedNilLoggerSafe(t *testing.T) {
 	shutdownChan := make(chan struct{})
 
 	var typedNilLogger *recordingLogger
-	var logger log.Logger = typedNilLogger
+	var logger obs.Logger = typedNilLogger
 
 	sm := server.NewServerManager(nil, nil, logger).
 		WithHTTPServer(app, ":0").

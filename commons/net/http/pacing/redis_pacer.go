@@ -10,12 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/log"
-	libTracing "github.com/LerianStudio/lib-observability/v2/tracing"
+	constant "github.com/LerianStudio/lib-observability/v4/constants"
+	libTracing "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -296,7 +297,7 @@ type Pacer struct {
 	prefix       string
 	maxRate      float64
 	pollInterval time.Duration
-	logger       log.Logger
+	logger       obs.Logger
 }
 
 // Option configures a Pacer.
@@ -316,7 +317,7 @@ func WithPollInterval(interval time.Duration) Option {
 }
 
 // WithLogger attaches a structured logger used to report fail-closed refusals.
-func WithLogger(logger log.Logger) Option {
+func WithLogger(logger obs.Logger) Option {
 	return func(p *Pacer) {
 		if !nilcheck.Interface(logger) {
 			p.logger = logger
@@ -616,9 +617,9 @@ func (p *Pacer) logWarn(ctx context.Context, msg string, err error) {
 		return
 	}
 
-	p.logger.Log(ctx, log.LevelWarn, msg,
-		log.Err(err),
-		log.String("pacing_prefix", p.prefix),
+	p.logger.Log(ctx, obs.LevelWarn, msg,
+		"error", err,
+		"pacing_prefix", p.prefix,
 	)
 }
 

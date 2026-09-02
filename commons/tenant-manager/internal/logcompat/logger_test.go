@@ -6,7 +6,8 @@ import (
 	"context"
 	"testing"
 
-	liblog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +23,7 @@ func TestNew_NilLogger(t *testing.T) {
 func TestNew_WithLogger(t *testing.T) {
 	t.Parallel()
 
-	logger := liblog.NewNop()
+	logger := obs.Nop()
 	l := New(logger)
 	require.NotNil(t, l)
 	assert.NotNil(t, l.base)
@@ -32,7 +33,7 @@ func TestNew_WithLogger(t *testing.T) {
 func TestLogger_Info(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.Info("test message")
 	})
@@ -41,7 +42,7 @@ func TestLogger_Info(t *testing.T) {
 func TestLogger_Infof(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.Infof("test %s", "message")
 	})
@@ -50,7 +51,7 @@ func TestLogger_Infof(t *testing.T) {
 func TestLogger_InfoCtx(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.InfoCtx(context.Background(), "test message")
 	})
@@ -59,7 +60,7 @@ func TestLogger_InfoCtx(t *testing.T) {
 func TestLogger_InfofCtx(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.InfofCtx(context.Background(), "test %s", "message")
 	})
@@ -69,7 +70,7 @@ func TestLogger_InfofCtx(t *testing.T) {
 func TestLogger_Warn(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.Warn("test warning")
 	})
@@ -78,7 +79,7 @@ func TestLogger_Warn(t *testing.T) {
 func TestLogger_Warnf(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.Warnf("test %s", "warning")
 	})
@@ -87,7 +88,7 @@ func TestLogger_Warnf(t *testing.T) {
 func TestLogger_WarnCtx(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.WarnCtx(context.Background(), "test warning")
 	})
@@ -96,7 +97,7 @@ func TestLogger_WarnCtx(t *testing.T) {
 func TestLogger_WarnfCtx(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.WarnfCtx(context.Background(), "test %s", "warning")
 	})
@@ -106,7 +107,7 @@ func TestLogger_WarnfCtx(t *testing.T) {
 func TestLogger_Error(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.Error("test error")
 	})
@@ -115,7 +116,7 @@ func TestLogger_Error(t *testing.T) {
 func TestLogger_Errorf(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.Errorf("test %s", "error")
 	})
@@ -124,7 +125,7 @@ func TestLogger_Errorf(t *testing.T) {
 func TestLogger_ErrorCtx(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.ErrorCtx(context.Background(), "test error")
 	})
@@ -134,7 +135,7 @@ func TestLogger_ErrorCtx(t *testing.T) {
 func TestLogger_Base(t *testing.T) {
 	t.Parallel()
 
-	logger := liblog.NewNop()
+	logger := obs.Nop()
 	l := New(logger)
 	result := l.Base()
 	require.NotNil(t, result)
@@ -154,7 +155,7 @@ func TestLogger_Info_NilReceiver(t *testing.T) {
 func TestWithFields_BasicCall(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	child := l.WithFields("key", "value")
 	require.NotNil(t, child)
 }
@@ -171,7 +172,7 @@ func TestWithFields_NilReceiver(t *testing.T) {
 func TestLogger_Debug(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.Debug("debug message")
 	})
@@ -181,7 +182,7 @@ func TestLogger_Debug(t *testing.T) {
 func TestLogger_Debugf(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.Debugf("debug %s", "message")
 	})
@@ -191,7 +192,7 @@ func TestLogger_Debugf(t *testing.T) {
 func TestLogger_ErrorfCtx(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	assert.NotPanics(t, func() {
 		l.ErrorfCtx(context.Background(), "error %s", "message")
 	})
@@ -201,7 +202,7 @@ func TestLogger_ErrorfCtx(t *testing.T) {
 func TestLogger_Sync(t *testing.T) {
 	t.Parallel()
 
-	l := New(liblog.NewNop())
+	l := New(obs.Nop())
 	err := l.Sync()
 	assert.NoError(t, err)
 }
@@ -220,13 +221,11 @@ type recordingLogCompat struct {
 	messages []string
 }
 
-func (r *recordingLogCompat) Log(_ context.Context, _ liblog.Level, msg string, _ ...liblog.Field) {
+func (r *recordingLogCompat) Log(_ context.Context, _ int, msg string, _ ...any) {
 	r.messages = append(r.messages, msg)
 }
-func (r *recordingLogCompat) With(_ ...liblog.Field) liblog.Logger { return r }
-func (r *recordingLogCompat) WithGroup(_ string) liblog.Logger     { return r }
-func (r *recordingLogCompat) Enabled(_ liblog.Level) bool          { return true }
-func (r *recordingLogCompat) Sync(_ context.Context) error         { return nil }
+func (r *recordingLogCompat) Enabled(_ int) bool           { return true }
+func (r *recordingLogCompat) Sync(_ context.Context) error { return nil }
 
 // TestLogger_InfoWithEnabledLogger covers the path where logger is enabled.
 func TestLogger_InfoWithEnabledLogger(t *testing.T) {
@@ -345,5 +344,5 @@ func TestLogger_log_NilCtxBranch(t *testing.T) {
 	recorder := &recordingLogCompat{}
 	l := New(recorder)
 	// Call log directly with nil context - should handle gracefully
-	l.log(nil, liblog.LevelInfo, "nil ctx test")
+	l.log(nil, obs.LevelInfo, "nil ctx test")
 }

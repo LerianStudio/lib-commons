@@ -7,9 +7,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/LerianStudio/lib-observability/v2/assert"
-	"github.com/LerianStudio/lib-observability/v2/log"
-	"github.com/LerianStudio/lib-observability/v2/runtime"
+	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
+	"github.com/LerianStudio/lib-observability/v4/assert"
+	"github.com/LerianStudio/lib-observability/v4/runtime"
 )
 
 // ErrLoggerNil is returned when the Logger is nil and cannot proceed.
@@ -38,12 +40,15 @@ type App interface {
 // LauncherOption defines a function option for Launcher.
 type LauncherOption func(l *Launcher)
 
-// WithLogger adds a log.Logger component to launcher.
+// WithLogger adds a obs.Logger component to launcher.
 // If the launcher is nil the option is a no-op, preventing panics when
 // option closures are invoked on a nil receiver.
-func WithLogger(logger log.Logger) LauncherOption {
+// A nil logger is ignored, typed nils included: storing a Logger that holds a
+// nil pointer would satisfy the "Logger == nil" guard on every use site and
+// then panic on the first call, instead of returning ErrLoggerNil.
+func WithLogger(logger obs.Logger) LauncherOption {
 	return func(l *Launcher) {
-		if l == nil {
+		if l == nil || nilcheck.Interface(logger) {
 			return
 		}
 
@@ -64,8 +69,8 @@ func RunApp(name string, app App) LauncherOption {
 		if err := l.Add(name, app); err != nil {
 			l.configErrors = append(l.configErrors, fmt.Errorf("add app %q: %w", name, err))
 
-			if l.Logger != nil {
-				l.Logger.Log(context.Background(), log.LevelError, "launcher add app error", log.Err(err))
+			if !nilcheck.Interface(l.Logger) {
+				l.Logger.Log(context.Background(), obs.LevelError, "launcher add app error", "error", err)
 			}
 		}
 	}
@@ -73,7 +78,7 @@ func RunApp(name string, app App) LauncherOption {
 
 // Launcher manages apps.
 type Launcher struct {
-	Logger       log.Logger
+	Logger       obs.Logger
 	apps         map[string]App
 	wg           *sync.WaitGroup
 	configErrors []error
@@ -121,8 +126,8 @@ func (l *Launcher) Add(appName string, a App) error {
 // available. For explicit error handling, use RunWithError instead.
 func (l *Launcher) Run() {
 	if err := l.RunWithError(); err != nil {
-		if l.Logger != nil {
-			l.Logger.Log(context.Background(), log.LevelError, "launcher error", log.Err(err))
+		if !nilcheck.Interface(l.Logger) {
+			l.Logger.Log(context.Background(), obs.LevelError, "launcher error", "error", err)
 		}
 	}
 }
@@ -136,7 +141,9 @@ func (l *Launcher) RunWithError() error {
 		return ErrNilLauncher
 	}
 
-	if l.Logger == nil {
+	// Logger is an exported field, so a caller can bypass WithLogger and assign
+	// a typed nil straight into it. Reject that here too.
+	if nilcheck.Interface(l.Logger) {
 		return ErrLoggerNil
 	}
 
@@ -157,7 +164,7 @@ func (l *Launcher) RunWithError() error {
 	count := len(l.apps)
 	l.wg.Add(count)
 
-	l.Logger.Log(context.Background(), log.LevelInfo, "starting apps", log.Int("count", count))
+	l.Logger.Log(context.Background(), obs.LevelInfo, "starting apps", "count", count)
 
 	for name, app := range l.apps {
 		nameCopy := name
@@ -172,20 +179,20 @@ func (l *Launcher) RunWithError() error {
 			func(_ context.Context) {
 				defer l.wg.Done()
 
-				l.Logger.Log(context.Background(), log.LevelInfo, "app starting", log.String("app", nameCopy))
+				l.Logger.Log(context.Background(), obs.LevelInfo, "app starting", "app", nameCopy)
 
 				if err := appCopy.Run(l); err != nil {
-					l.Logger.Log(context.Background(), log.LevelError, "app error", log.String("app", nameCopy), log.Err(err))
+					l.Logger.Log(context.Background(), obs.LevelError, "app error", "app", nameCopy, "error", err)
 				}
 
-				l.Logger.Log(context.Background(), log.LevelInfo, "app finished", log.String("app", nameCopy))
+				l.Logger.Log(context.Background(), obs.LevelInfo, "app finished", "app", nameCopy)
 			},
 		)
 	}
 
 	l.wg.Wait()
 
-	l.Logger.Log(context.Background(), log.LevelInfo, "launcher terminated")
+	l.Logger.Log(context.Background(), obs.LevelInfo, "launcher terminated")
 
 	return nil
 }

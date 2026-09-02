@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -62,7 +63,7 @@ func newIntegrationClient(t *testing.T, uri string) *Client {
 	client, err := NewClient(ctx, Config{
 		URI:      uri,
 		Database: testDatabase,
-		Logger:   log.NewNop(),
+		Logger:   obs.Nop(),
 	})
 	require.NoError(t, err)
 

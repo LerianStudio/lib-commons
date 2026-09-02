@@ -15,8 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,7 +72,7 @@ func TestRabbitMQConnection_Connect(t *testing.T) {
 
 		conn := &RabbitMQConnection{
 			ConnectionStringSource: "amqp://guest:guest@localhost:5672",
-			Logger:                 &log.NopLogger{},
+			Logger:                 obs.Nop(),
 			dialerContext: func(context.Context, string) (*amqp.Connection, error) {
 				dialerCalls++
 
@@ -92,7 +93,7 @@ func TestRabbitMQConnection_Connect(t *testing.T) {
 
 		conn := &RabbitMQConnection{
 			ConnectionStringSource: "amqp://guest:guest@localhost:5672",
-			Logger:                 &log.NopLogger{},
+			Logger:                 obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				dialerCalls++
 
@@ -118,7 +119,7 @@ func TestRabbitMQConnection_Connect(t *testing.T) {
 
 		conn := &RabbitMQConnection{
 			ConnectionStringSource: "amqp://guest:guest@localhost:5672",
-			Logger:                 &log.NopLogger{},
+			Logger:                 obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				dialerCalls++
 
@@ -160,7 +161,7 @@ func TestRabbitMQConnection_Connect(t *testing.T) {
 		conn := &RabbitMQConnection{
 			ConnectionStringSource: "amqp://guest:guest@localhost:5672",
 			HealthCheckURL:         healthServer.URL,
-			Logger:                 &log.NopLogger{},
+			Logger:                 obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				dialerCalls++
 
@@ -200,7 +201,7 @@ func TestRabbitMQConnection_Connect(t *testing.T) {
 		conn := &RabbitMQConnection{
 			ConnectionStringSource: "amqp://guest:guest@localhost:5672",
 			HealthCheckURL:         healthServer.URL,
-			Logger:                 &log.NopLogger{},
+			Logger:                 obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				dialerCalls++
 
@@ -242,7 +243,7 @@ func TestRabbitMQConnection_Connect(t *testing.T) {
 		conn := &RabbitMQConnection{
 			ConnectionStringSource: "amqp://guest:guest@localhost:5672",
 			HealthCheckURL:         healthServer.URL,
-			Logger:                 &log.NopLogger{},
+			Logger:                 obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				atomic.AddInt32(&dialerCalls, 1)
 
@@ -319,7 +320,7 @@ func TestRabbitMQConnection_ConnectContext_BlocksPlaintextBeforeDial(t *testing.
 	var dialerCalls atomic.Int32
 	conn := &RabbitMQConnection{
 		ConnectionStringSource: "amqp://guest:guest@localhost:5672",
-		Logger:                 log.NewNop(),
+		Logger:                 obs.Nop(),
 		dialer: func(string) (*amqp.Connection, error) {
 			dialerCalls.Add(1)
 			return nil, errors.New("dial should not be called")
@@ -339,7 +340,7 @@ func TestRabbitMQConnection_EnsureChannelContext_BlocksPlaintextBeforeDial(t *te
 	var dialerCalls atomic.Int32
 	conn := &RabbitMQConnection{
 		ConnectionStringSource: "amqp://guest:guest@localhost:5672",
-		Logger:                 log.NewNop(),
+		Logger:                 obs.Nop(),
 		dialerContext: func(context.Context, string) (*amqp.Connection, error) {
 			dialerCalls.Add(1)
 			return nil, errors.New("dial should not be called")
@@ -359,7 +360,7 @@ func TestRabbitMQConnection_EnsureChannelContext_AllowInsecureTLSPermitsDial(t *
 	var dialerCalls atomic.Int32
 	conn := &RabbitMQConnection{
 		ConnectionStringSource: "amqp://guest:guest@localhost:5672",
-		Logger:                 log.NewNop(),
+		Logger:                 obs.Nop(),
 		dialerContext: func(context.Context, string) (*amqp.Connection, error) {
 			dialerCalls.Add(1)
 			return &amqp.Connection{}, nil
@@ -393,7 +394,7 @@ func TestRabbitMQConnection_EnsureChannel(t *testing.T) {
 		channelCalls := 0
 
 		conn := &RabbitMQConnection{
-			Logger: &log.NopLogger{},
+			Logger: obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				dialerCalls++
 
@@ -428,7 +429,7 @@ func TestRabbitMQConnection_EnsureChannel(t *testing.T) {
 			Connection: &amqp.Connection{},
 			Channel:    &amqp.Channel{},
 			Connected:  true,
-			Logger:     &log.NopLogger{},
+			Logger:     obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				dialerCalls++
 
@@ -459,7 +460,7 @@ func TestRabbitMQConnection_EnsureChannel(t *testing.T) {
 		conn := &RabbitMQConnection{
 			Connection: &amqp.Connection{},
 			Channel:    &amqp.Channel{},
-			Logger:     &log.NopLogger{},
+			Logger:     obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				return nil, nil
 			},
@@ -489,7 +490,7 @@ func TestRabbitMQConnection_EnsureChannel(t *testing.T) {
 		cancel()
 
 		conn := &RabbitMQConnection{
-			Logger: &log.NopLogger{},
+			Logger: obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				dialerCalls++
 
@@ -510,7 +511,7 @@ func TestRabbitMQConnection_EnsureChannel(t *testing.T) {
 			Connection:         &amqp.Connection{},
 			Channel:            &amqp.Channel{},
 			Connected:          true,
-			Logger:             &log.NopLogger{},
+			Logger:             obs.Nop(),
 			connectionClosedFn: func(*amqp.Connection) bool { return false },
 			channelClosedFn:    func(*amqp.Channel) bool { return false },
 		}
@@ -530,7 +531,7 @@ func TestRabbitMQConnection_EnsureChannel(t *testing.T) {
 
 		connection := &amqp.Connection{}
 		conn := &RabbitMQConnection{
-			Logger: &log.NopLogger{},
+			Logger: obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				dialerCalls++
 
@@ -592,7 +593,7 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 		dialerCalls := int32(0)
 
 		conn := &RabbitMQConnection{
-			Logger: &log.NopLogger{},
+			Logger: obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				atomic.AddInt32(&dialerCalls, 1)
 
@@ -623,7 +624,7 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 			Connection: &amqp.Connection{},
 			Channel:    existing,
 			Connected:  true,
-			Logger:     &log.NopLogger{},
+			Logger:     obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				dialerCalls++
 
@@ -655,7 +656,7 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 			Connection: connection,
 			Channel:    nil,
 			Connected:  true,
-			Logger:     &log.NopLogger{},
+			Logger:     obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				return connection, nil
 			},
@@ -685,7 +686,7 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 		dialerCalls := int32(0)
 
 		conn := &RabbitMQConnection{
-			Logger: &log.NopLogger{},
+			Logger: obs.Nop(),
 			dialer: func(string) (*amqp.Connection, error) {
 				atomic.AddInt32(&dialerCalls, 1)
 
@@ -748,7 +749,7 @@ func TestRabbitMQConnection_GetNewConnect(t *testing.T) {
 		deadConn := &amqp.Connection{}
 
 		conn := &RabbitMQConnection{
-			Logger:    &log.NopLogger{},
+			Logger:    obs.Nop(),
 			Connected: true,
 			// Simulate an existing dead connection (force-closed by RabbitMQ).
 			Connection: deadConn,
@@ -872,7 +873,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 
 		conn := &RabbitMQConnection{
 			HealthCheckURL: healthServer.URL,
-			Logger:         &log.NopLogger{},
+			Logger:         obs.Nop(),
 		}
 
 		healthy, err := conn.HealthCheck()
@@ -885,7 +886,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 
 		conn := &RabbitMQConnection{
 			HealthCheckURL: "https://localhost:15672",
-			Logger:         &log.NopLogger{},
+			Logger:         obs.Nop(),
 			healthHTTPClient: &http.Client{
 				Transport: &http.Transport{
 					TLSClientConfig: &tls.Config{
@@ -910,7 +911,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 		}))
 		defer healthServer.Close()
 
-		conn := &RabbitMQConnection{HealthCheckURL: healthServer.URL, Logger: &log.NopLogger{}}
+		conn := &RabbitMQConnection{HealthCheckURL: healthServer.URL, Logger: obs.Nop()}
 
 		healthy, err := conn.HealthCheck()
 		assert.Error(t, err)
@@ -928,7 +929,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 		}))
 		defer healthServer.Close()
 
-		conn := &RabbitMQConnection{HealthCheckURL: healthServer.URL, Logger: &log.NopLogger{}}
+		conn := &RabbitMQConnection{HealthCheckURL: healthServer.URL, Logger: obs.Nop()}
 
 		healthy, err := conn.HealthCheck()
 		assert.Error(t, err)
@@ -945,7 +946,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 		}))
 		defer healthServer.Close()
 
-		conn := &RabbitMQConnection{HealthCheckURL: healthServer.URL, Logger: &log.NopLogger{}}
+		conn := &RabbitMQConnection{HealthCheckURL: healthServer.URL, Logger: obs.Nop()}
 
 		healthy, err := conn.HealthCheck()
 		assert.Error(t, err)
@@ -963,7 +964,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 		}))
 		defer healthServer.Close()
 
-		conn := &RabbitMQConnection{HealthCheckURL: healthServer.URL, Logger: &log.NopLogger{}}
+		conn := &RabbitMQConnection{HealthCheckURL: healthServer.URL, Logger: obs.Nop()}
 
 		healthy, err := conn.HealthCheck()
 		assert.Error(t, err)
@@ -973,7 +974,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 	t.Run("invalid URL returns false", func(t *testing.T) {
 		t.Parallel()
 
-		conn := &RabbitMQConnection{HealthCheckURL: "http://[::1", Logger: &log.NopLogger{}}
+		conn := &RabbitMQConnection{HealthCheckURL: "http://[::1", Logger: obs.Nop()}
 
 		healthy, err := conn.HealthCheck()
 		assert.Error(t, err)
@@ -985,7 +986,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 
 		conn := &RabbitMQConnection{
 			HealthCheckURL:                 "http://localhost:15672",
-			Logger:                         &log.NopLogger{},
+			Logger:                         obs.Nop(),
 			RequireHealthCheckAllowedHosts: true,
 		}
 
@@ -997,7 +998,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 	t.Run("invalid URL scheme is rejected", func(t *testing.T) {
 		t.Parallel()
 
-		conn := &RabbitMQConnection{HealthCheckURL: "ftp://localhost:15672", Logger: &log.NopLogger{}}
+		conn := &RabbitMQConnection{HealthCheckURL: "ftp://localhost:15672", Logger: obs.Nop()}
 
 		healthy, err := conn.HealthCheck()
 		assert.Error(t, err)
@@ -1019,7 +1020,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 
 		conn := &RabbitMQConnection{
 			HealthCheckURL: healthServer.URL,
-			Logger:         &log.NopLogger{},
+			Logger:         obs.Nop(),
 		}
 
 		healthy, err := conn.HealthCheckContext(ctx)
@@ -1048,7 +1049,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 			HealthCheckURL:           healthServer.URL,
 			User:                     "wrong",
 			Pass:                     "wrong",
-			Logger:                   &log.NopLogger{},
+			Logger:                   obs.Nop(),
 			AllowInsecureHealthCheck: true,
 		}
 
@@ -1056,7 +1057,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 			HealthCheckURL:           healthServer.URL,
 			User:                     "correct",
 			Pass:                     "correct",
-			Logger:                   &log.NopLogger{},
+			Logger:                   obs.Nop(),
 			AllowInsecureHealthCheck: true,
 		}
 
@@ -1094,7 +1095,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 			HealthCheckURL:         healthServer.URL,
 			User:                   "correct",
 			Pass:                   "correct",
-			Logger:                 &log.NopLogger{},
+			Logger:                 obs.Nop(),
 			healthHTTPClient:       healthServer.Client(),
 			AllowInsecureTLS:       true,
 		}
@@ -1120,7 +1121,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 		conn := &RabbitMQConnection{
 			AllowInsecureHealthCheck: false,
 			HealthCheckAllowedHosts:  []string{"blocked.example:15672"},
-			Logger:                   &log.NopLogger{},
+			Logger:                   obs.Nop(),
 		}
 
 		err = conn.healthCheck(
@@ -1134,7 +1135,7 @@ func TestRabbitMQConnection_HealthCheck(t *testing.T) {
 				hasBasicAuth:  true,
 				allowedHosts:  []string{parsed.Host},
 			},
-			&log.NopLogger{},
+			obs.Nop(),
 		)
 
 		assert.NoError(t, err)
@@ -1148,7 +1149,7 @@ func TestApplyDefaults_InsecureTLS(t *testing.T) {
 		t.Parallel()
 
 		conn := &RabbitMQConnection{
-			Logger: &log.NopLogger{},
+			Logger: obs.Nop(),
 			healthHTTPClient: &http.Client{
 				Transport: &http.Transport{
 					TLSClientConfig: &tls.Config{
@@ -1169,7 +1170,7 @@ func TestApplyDefaults_InsecureTLS(t *testing.T) {
 		t.Parallel()
 
 		conn := &RabbitMQConnection{
-			Logger: &log.NopLogger{},
+			Logger: obs.Nop(),
 			healthHTTPClient: &http.Client{
 				Transport: &http.Transport{
 					TLSClientConfig: &tls.Config{
@@ -1191,7 +1192,7 @@ func TestApplyDefaults_InsecureTLS(t *testing.T) {
 		t.Parallel()
 
 		conn := &RabbitMQConnection{
-			Logger: &log.NopLogger{},
+			Logger: obs.Nop(),
 		}
 
 		conn.mu.Lock()
@@ -1205,7 +1206,7 @@ func TestApplyDefaults_InsecureTLS(t *testing.T) {
 		t.Parallel()
 
 		conn := &RabbitMQConnection{
-			Logger: &log.NopLogger{},
+			Logger: obs.Nop(),
 			healthHTTPClient: &http.Client{
 				Transport: &http.Transport{
 					TLSClientConfig: &tls.Config{
@@ -1231,7 +1232,7 @@ func TestValidateHealthCheckURL(t *testing.T) {
 
 		conn := &RabbitMQConnection{
 			HealthCheckURL: "  http://localhost:15672  ",
-			Logger:         &log.NopLogger{},
+			Logger:         obs.Nop(),
 		}
 
 		normalized, err := validateHealthCheckURLWithConfig(conn.HealthCheckURL, healthCheckURLConfig{})
@@ -1422,7 +1423,7 @@ func TestRabbitMQConnection_HealthCheck_UsesConfiguredPath(t *testing.T) {
 
 	conn := &RabbitMQConnection{
 		HealthCheckURL: healthServer.URL + "/custom/alerts",
-		Logger:         &log.NopLogger{},
+		Logger:         obs.Nop(),
 	}
 
 	healthy, err := conn.HealthCheck()
@@ -1917,7 +1918,7 @@ func TestRabbitMQConnection_Close(t *testing.T) {
 
 				return nil
 			},
-			Logger: &log.NopLogger{},
+			Logger: obs.Nop(),
 		}
 
 		err := conn.Close()
@@ -1943,7 +1944,7 @@ func TestRabbitMQConnection_Close(t *testing.T) {
 			connectionCloser: func(*amqp.Connection) error {
 				return errors.New("connection close failed")
 			},
-			Logger: &log.NopLogger{},
+			Logger: obs.Nop(),
 		}
 
 		err := conn.Close()
@@ -1969,7 +1970,7 @@ func TestRabbitMQConnection_Close(t *testing.T) {
 			connectionCloser: func(*amqp.Connection) error {
 				return errors.New("connection close failed")
 			},
-			Logger: &log.NopLogger{},
+			Logger: obs.Nop(),
 		}
 
 		err := conn.Close()

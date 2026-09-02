@@ -8,9 +8,10 @@ import (
 	"net/http"
 	"net/url"
 
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 )
 
 // GetTenantMetadata fetches a tenant's free-form metadata map from the Tenant
@@ -31,14 +32,14 @@ func (c *Client) GetTenantMetadata(ctx context.Context, tenantID string) (map[st
 		}
 	})
 
-	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_tenant_metadata")
 	defer span.End()
 
 	// Check circuit breaker before making the HTTP request.
 	if err := c.checkCircuitBreaker(); err != nil {
-		logger.Log(ctx, libLog.LevelWarn, "circuit breaker open, failing fast", libLog.String("tenant_id", tenantID))
+		logger.Log(ctx, obs.LevelWarn, "circuit breaker open, failing fast", "tenant_id", tenantID)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Circuit breaker open", err)
 
 		return nil, err
@@ -47,11 +48,11 @@ func (c *Client) GetTenantMetadata(ctx context.Context, tenantID string) (map[st
 	// Build the URL with a properly escaped path segment to prevent injection.
 	requestURL := fmt.Sprintf("%s/v1/tenants/%s", c.baseURL, url.PathEscape(tenantID))
 
-	logger.Log(ctx, libLog.LevelInfo, "fetching tenant metadata", libLog.String("tenant_id", tenantID))
+	logger.Log(ctx, obs.LevelInfo, "fetching tenant metadata", "tenant_id", tenantID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		logger.Log(ctx, libLog.LevelError, "failed to create request", libLog.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to create request", "error", err)
 		libOpentelemetry.HandleSpanError(span, "Failed to create HTTP request", err)
 
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -71,7 +72,7 @@ func (c *Client) GetTenantMetadata(ctx context.Context, tenantID string) (map[st
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
-		logger.Log(ctx, libLog.LevelError, "failed to execute request", libLog.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to execute request", "error", err)
 		libOpentelemetry.HandleSpanError(span, "HTTP request failed", err)
 
 		return nil, fmt.Errorf("failed to execute request: %w", err)
@@ -82,7 +83,7 @@ func (c *Client) GetTenantMetadata(ctx context.Context, tenantID string) (map[st
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		c.recordFailure()
-		logger.Log(ctx, libLog.LevelError, "failed to read response body", libLog.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to read response body", "error", err)
 		libOpentelemetry.HandleSpanError(span, "Failed to read response body", err)
 
 		return nil, fmt.Errorf("failed to read response body: %w", err)
@@ -99,9 +100,9 @@ func (c *Client) GetTenantMetadata(ctx context.Context, tenantID string) (map[st
 			c.recordSuccess()
 		}
 
-		logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
-			libLog.Int("status", resp.StatusCode),
-			libLog.String("body", truncateBody(body)),
+		logger.Log(ctx, obs.LevelError, "tenant manager returned error",
+			"status", resp.StatusCode,
+			"body", truncateBody(body),
 		)
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", resp.StatusCode))
 
@@ -115,16 +116,16 @@ func (c *Client) GetTenantMetadata(ctx context.Context, tenantID string) (map[st
 	}
 
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		logger.Log(ctx, libLog.LevelError, "failed to parse response", libLog.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to parse response", "error", err)
 		libOpentelemetry.HandleSpanError(span, "Failed to parse response", err)
 
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	c.recordSuccess()
-	logger.Log(ctx, libLog.LevelInfo, "successfully fetched tenant metadata",
-		libLog.Int("keys", len(parsed.Metadata)),
-		libLog.String("tenant_id", tenantID),
+	logger.Log(ctx, obs.LevelInfo, "successfully fetched tenant metadata",
+		"keys", len(parsed.Metadata),
+		"tenant_id", tenantID,
 	)
 
 	return parsed.Metadata, nil

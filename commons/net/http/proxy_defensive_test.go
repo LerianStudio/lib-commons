@@ -10,8 +10,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	libSSRF "github.com/LerianStudio/lib-commons/v6/commons/security/ssrf"
-	liblog "github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,19 +33,19 @@ func (*typedNilProxyResponseWriter) WriteHeader(int) {
 
 type typedNilProxyLogger struct{}
 
-func (*typedNilProxyLogger) Log(context.Context, liblog.Level, string, ...liblog.Field) {
+func (*typedNilProxyLogger) Log(context.Context, int, string, ...any) {
 	panic("typedNilProxyLogger should not be used")
 }
 
-func (*typedNilProxyLogger) With(...liblog.Field) liblog.Logger {
+func (*typedNilProxyLogger) With(...any) obs.Logger {
 	panic("typedNilProxyLogger should not be used")
 }
 
-func (*typedNilProxyLogger) WithGroup(string) liblog.Logger {
+func (*typedNilProxyLogger) WithGroup(string) obs.Logger {
 	panic("typedNilProxyLogger should not be used")
 }
 
-func (*typedNilProxyLogger) Enabled(liblog.Level) bool {
+func (*typedNilProxyLogger) Enabled(int) bool {
 	panic("typedNilProxyLogger should not be used")
 }
 

@@ -8,13 +8,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func TestNewHealthCheckerWithValidation_Success(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	manager, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -25,7 +26,7 @@ func TestNewHealthCheckerWithValidation_Success(t *testing.T) {
 }
 
 func TestNewHealthCheckerWithValidation_InvalidInterval(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	manager, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -37,7 +38,7 @@ func TestNewHealthCheckerWithValidation_InvalidInterval(t *testing.T) {
 }
 
 func TestNewHealthCheckerWithValidation_NegativeInterval(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	manager, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -49,7 +50,7 @@ func TestNewHealthCheckerWithValidation_NegativeInterval(t *testing.T) {
 }
 
 func TestNewHealthCheckerWithValidation_InvalidTimeout(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	manager, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -61,7 +62,7 @@ func TestNewHealthCheckerWithValidation_InvalidTimeout(t *testing.T) {
 }
 
 func TestNewHealthCheckerWithValidation_NegativeTimeout(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	manager, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -73,7 +74,7 @@ func TestNewHealthCheckerWithValidation_NegativeTimeout(t *testing.T) {
 }
 
 func TestNewHealthCheckerWithValidation_NilManager(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 
 	hc, err := NewHealthCheckerWithValidation(nil, 1*time.Second, 500*time.Millisecond, logger)
 
@@ -83,7 +84,7 @@ func TestNewHealthCheckerWithValidation_NilManager(t *testing.T) {
 }
 
 func TestNewHealthCheckerWithValidation_NilLogger(t *testing.T) {
-	manager, err := NewManager(&log.NopLogger{})
+	manager, err := NewManager(obs.Nop())
 	require.NoError(t, err)
 
 	hc, err := NewHealthCheckerWithValidation(manager, 1*time.Second, 500*time.Millisecond, nil)
@@ -98,7 +99,7 @@ func TestNewHealthCheckerWithValidation_NilLogger(t *testing.T) {
 func newTestHealthChecker(t *testing.T) (HealthChecker, Manager) {
 	t.Helper()
 
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	mgr, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -256,7 +257,7 @@ func TestCheckServiceHealth_AlreadyHealthy(t *testing.T) {
 }
 
 func TestCheckServiceHealth_SuccessfulRecovery(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	mgr, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -295,7 +296,7 @@ func TestCheckServiceHealth_SuccessfulRecovery(t *testing.T) {
 }
 
 func TestCheckServiceHealth_FailedRecovery(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	mgr, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -334,7 +335,7 @@ func TestCheckServiceHealth_FailedRecovery(t *testing.T) {
 }
 
 func TestPerformHealthChecks_MixedServices(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	mgr, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -387,7 +388,7 @@ func TestPerformHealthChecks_MixedServices(t *testing.T) {
 }
 
 func TestPerformHealthChecks_UnhealthyStaysUnhealthy(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	mgr, err := NewManager(logger)
 	require.NoError(t, err)
 
@@ -425,7 +426,7 @@ func TestPerformHealthChecks_UnhealthyStaysUnhealthy(t *testing.T) {
 }
 
 func TestHealthCheckLoop_PeriodicChecks(t *testing.T) {
-	logger := &log.NopLogger{}
+	logger := obs.Nop()
 	mgr, err := NewManager(logger)
 	require.NoError(t, err)
 

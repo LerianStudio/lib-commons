@@ -8,10 +8,11 @@ import (
 	"strings"
 	"time"
 
-	observability "github.com/LerianStudio/lib-observability/v2"
-	"github.com/LerianStudio/lib-observability/v2/assert"
-	"github.com/LerianStudio/lib-observability/v2/log"
-	opentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+
+	"github.com/LerianStudio/lib-observability/v4/assert"
+	opentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/go-redsync/redsync/v4"
 	redsyncredis "github.com/go-redsync/redsync/v4/redis"
 	"github.com/go-redsync/redsync/v4/redis/goredis/v9"
@@ -148,7 +149,7 @@ func (p *clientPool) Get(ctx context.Context) (redsyncredis.Conn, error) {
 // It is returned by TryLock and provides a self-contained Unlock method.
 type lockHandle struct {
 	mutex  *redsync.Mutex
-	logger log.Logger
+	logger obs.Logger
 }
 
 // Unlock releases the distributed lock.
@@ -159,12 +160,12 @@ func (h *lockHandle) Unlock(ctx context.Context) error {
 
 	ok, err := h.mutex.UnlockContext(ctx)
 	if err != nil {
-		h.logger.Log(ctx, log.LevelError, "failed to release lock", log.Err(err))
+		h.logger.Log(ctx, obs.LevelError, "failed to release lock", "error", err)
 		return fmt.Errorf("distributed lock: unlock: %w", err)
 	}
 
 	if !ok {
-		h.logger.Log(ctx, log.LevelWarn, "lock was not held or already expired")
+		h.logger.Log(ctx, obs.LevelWarn, "lock was not held or already expired")
 		return ErrLockNotHeld
 	}
 
@@ -272,7 +273,7 @@ func (dl *RedisLockManager) WithLockOptions(ctx context.Context, lockKey string,
 		return err
 	}
 
-	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	safeLockKey := safeLockKeyForLogs(lockKey)
 
 	ctx, span := tracer.Start(ctx, "redis.lock.with_lock")
@@ -287,17 +288,17 @@ func (dl *RedisLockManager) WithLockOptions(ctx context.Context, lockKey string,
 		redsync.WithDriftFactor(opts.DriftFactor),
 	)
 
-	logger.Log(ctx, log.LevelDebug, "attempting to acquire lock", log.String("lock_key", safeLockKey))
+	logger.Log(ctx, obs.LevelDebug, "attempting to acquire lock", "lock_key", safeLockKey)
 
 	// Try to acquire the lock
 	if err := mutex.LockContext(ctx); err != nil {
-		logger.Log(ctx, log.LevelError, "failed to acquire lock", log.String("lock_key", safeLockKey), log.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to acquire lock", "lock_key", safeLockKey, "error", err)
 		opentelemetry.HandleSpanError(span, "Failed to acquire lock", err)
 
 		return fmt.Errorf("failed to acquire lock %s: %w", safeLockKey, err)
 	}
 
-	logger.Log(ctx, log.LevelDebug, "lock acquired", log.String("lock_key", safeLockKey))
+	logger.Log(ctx, obs.LevelDebug, "lock acquired", "lock_key", safeLockKey)
 
 	// Ensure lock is released even if function panics.
 	// Use a detached context with a timeout so that the unlock is not blocked
@@ -308,23 +309,23 @@ func (dl *RedisLockManager) WithLockOptions(ctx context.Context, lockKey string,
 		defer unlockCancel()
 
 		if ok, unlockErr := mutex.UnlockContext(unlockCtx); !ok || unlockErr != nil {
-			logger.Log(ctx, log.LevelError, "failed to release lock", log.String("lock_key", safeLockKey), log.Bool("unlock_ok", ok), log.Err(unlockErr))
+			logger.Log(ctx, obs.LevelError, "failed to release lock", "lock_key", safeLockKey, "unlock_ok", ok, "error", unlockErr)
 		} else {
-			logger.Log(ctx, log.LevelDebug, "lock released", log.String("lock_key", safeLockKey))
+			logger.Log(ctx, obs.LevelDebug, "lock released", "lock_key", safeLockKey)
 		}
 	}()
 
 	// Execute the function while holding the lock
-	logger.Log(ctx, log.LevelDebug, "executing function under lock", log.String("lock_key", safeLockKey))
+	logger.Log(ctx, obs.LevelDebug, "executing function under lock", "lock_key", safeLockKey)
 
 	if err := fn(ctx); err != nil {
-		logger.Log(ctx, log.LevelError, "function execution failed under lock", log.String("lock_key", safeLockKey), log.Err(err))
+		logger.Log(ctx, obs.LevelError, "function execution failed under lock", "lock_key", safeLockKey, "error", err)
 		opentelemetry.HandleSpanError(span, "Function execution failed", err)
 
 		return fmt.Errorf("distributed lock: function execution: %w", err)
 	}
 
-	logger.Log(ctx, log.LevelDebug, "function completed successfully under lock", log.String("lock_key", safeLockKey))
+	logger.Log(ctx, obs.LevelDebug, "function completed successfully under lock", "lock_key", safeLockKey)
 
 	return nil
 }
@@ -359,7 +360,7 @@ func (dl *RedisLockManager) TryLock(ctx context.Context, lockKey string) (LockHa
 		return nil, false, ErrEmptyLockKey
 	}
 
-	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	safeLockKey := safeLockKeyForLogs(lockKey)
 
 	ctx, span := tracer.Start(ctx, "redis.lock.try_lock")
@@ -383,19 +384,19 @@ func (dl *RedisLockManager) TryLock(ctx context.Context, lockKey string) (LockHa
 		isLockContention := errors.Is(err, redsync.ErrFailed) || errors.As(err, &errTaken)
 
 		if isLockContention {
-			logger.Log(ctx, log.LevelDebug, "lock already held by another process", log.String("lock_key", safeLockKey))
+			logger.Log(ctx, obs.LevelDebug, "lock already held by another process", "lock_key", safeLockKey)
 			return nil, false, nil
 		}
 
 		// Any other error (e.g., network, context cancellation, RedisError)
 		// is an actual infrastructure fault and must be propagated.
-		logger.Log(ctx, log.LevelDebug, "could not acquire lock", log.String("lock_key", safeLockKey), log.Err(err))
+		logger.Log(ctx, obs.LevelDebug, "could not acquire lock", "lock_key", safeLockKey, "error", err)
 		opentelemetry.HandleSpanError(span, "Failed to attempt lock acquisition", err)
 
 		return nil, false, fmt.Errorf("failed to attempt lock acquisition for %s: %w", safeLockKey, err)
 	}
 
-	logger.Log(ctx, log.LevelDebug, "lock acquired", log.String("lock_key", safeLockKey))
+	logger.Log(ctx, obs.LevelDebug, "lock acquired", "lock_key", safeLockKey)
 
 	return &lockHandle{mutex: mutex, logger: logger}, true, nil
 }

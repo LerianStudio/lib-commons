@@ -7,8 +7,9 @@ package consumer
 import (
 	"context"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/rabbitmq"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
 )
 
 // NewMultiTenantConsumerWithRabbitMQ creates a MultiTenantConsumer with the
@@ -20,7 +21,7 @@ import (
 func NewMultiTenantConsumerWithRabbitMQ(
 	rabbitmq *tmrabbitmq.Manager,
 	config MultiTenantConfig,
-	logger libLog.Logger,
+	logger obs.Logger,
 	opts ...Option,
 ) (*MultiTenantConsumer, error) {
 	allOpts := make([]Option, 0, len(opts)+1)
@@ -45,7 +46,7 @@ func NewMultiTenantConsumerWithRedis(
 	rabbitmq *tmrabbitmq.Manager,
 	_ any, // redisClient accepted and silently ignored for backward compat
 	config MultiTenantConfig,
-	logger libLog.Logger,
+	logger obs.Logger,
 	opts ...Option,
 ) (*MultiTenantConsumer, error) {
 	allOpts := make([]Option, 0, len(opts)+1)

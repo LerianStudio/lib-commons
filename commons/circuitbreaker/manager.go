@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-commons/v6/commons/safe"
-	"github.com/LerianStudio/lib-observability/v2/log"
-	"github.com/LerianStudio/lib-observability/v2/metrics"
 	"github.com/sony/gobreaker"
 )
 
@@ -40,10 +40,8 @@ type manager struct {
 	listeners       []StateChangeListener
 	tenantListeners []TenantStateChangeListener
 	mu              sync.RWMutex
-	logger          log.Logger
-	metricsFactory  *metrics.MetricsFactory
-	stateCounter    *metrics.CounterBuilder
-	execCounter     *metrics.CounterBuilder
+	logger          obs.Logger
+	metricsRecorder obs.MetricsRecorder
 	listenerSem     chan struct{}
 }
 
@@ -55,7 +53,7 @@ type ManagerOption func(*manager)
 //
 // The returned Manager also satisfies TenantAwareManager; callers can
 // type-assert when they need the tenant-keyed overloads.
-func NewManager(logger log.Logger, opts ...ManagerOption) (Manager, error) {
+func NewManager(logger obs.Logger, opts ...ManagerOption) (Manager, error) {
 	if nilcheck.Interface(logger) {
 		return nil, ErrNilLogger
 	}
@@ -73,8 +71,6 @@ func NewManager(logger log.Logger, opts ...ManagerOption) (Manager, error) {
 			opt(m)
 		}
 	}
-
-	m.initMetricCounters()
 
 	return m, nil
 }
@@ -157,10 +153,10 @@ func (m *manager) getOrCreate(tenantID, serviceName string, config Config, tenan
 
 	m.logger.Log(
 		context.Background(),
-		log.LevelInfo,
+		obs.LevelInfo,
 		"created circuit breaker",
-		log.String("service", serviceName),
-		log.String("tenant_hash", tenantHashLabel(tenantID)),
+		"service", serviceName,
+		"tenant_hash", tenantHashLabel(tenantID),
 	)
 
 	return &circuitBreaker{breaker: breaker}, nil
@@ -214,10 +210,10 @@ func (m *manager) execute(ctx context.Context, tenantID, serviceName string, fn 
 		if errors.Is(err, gobreaker.ErrOpenState) {
 			m.logger.Log(
 				ctx,
-				log.LevelWarn,
+				obs.LevelWarn,
 				"circuit breaker is OPEN, request rejected",
-				log.String("service", serviceName),
-				log.String("tenant_hash", tenantHashLabel(tenantID)),
+				"service", serviceName,
+				"tenant_hash", tenantHashLabel(tenantID),
 			)
 			m.recordExecution(slot, executionResultRejectedOpen)
 
@@ -227,10 +223,10 @@ func (m *manager) execute(ctx context.Context, tenantID, serviceName string, fn 
 		if errors.Is(err, gobreaker.ErrTooManyRequests) {
 			m.logger.Log(
 				ctx,
-				log.LevelWarn,
+				obs.LevelWarn,
 				"circuit breaker is HALF-OPEN, too many test requests",
-				log.String("service", serviceName),
-				log.String("tenant_hash", tenantHashLabel(tenantID)),
+				"service", serviceName,
+				"tenant_hash", tenantHashLabel(tenantID),
 			)
 			m.recordExecution(slot, executionResultRejectedHalfOpen)
 
@@ -347,12 +343,12 @@ func (m *manager) isHealthy(tenantID, serviceName string, tenantAware bool) bool
 	isHealthy := state != StateOpen && state != StateUnknown
 	m.logger.Log(
 		context.Background(),
-		log.LevelDebug,
+		obs.LevelDebug,
 		"health check result",
-		log.String("service", serviceName),
-		log.String("tenant_hash", tenantHashLabel(tenantID)),
-		log.String("state", string(state)),
-		log.Bool("healthy", isHealthy),
+		"service", serviceName,
+		"tenant_hash", tenantHashLabel(tenantID),
+		"state", string(state),
+		"healthy", isHealthy,
 	)
 
 	return isHealthy
@@ -376,11 +372,11 @@ func (m *manager) reset(tenantID, serviceName string, tenantAware bool) {
 	if err != nil {
 		m.logger.Log(
 			context.Background(),
-			log.LevelWarn,
+			obs.LevelWarn,
 			"invalid breaker identity for reset; ignoring request",
-			log.String("service", serviceName),
-			log.String("tenant_hash", tenantHashLabel(tenantID)),
-			log.Err(err),
+			"service", serviceName,
+			"tenant_hash", tenantHashLabel(tenantID),
+			"error", err,
 		)
 
 		return
@@ -396,10 +392,10 @@ func (m *manager) reset(tenantID, serviceName string, tenantAware bool) {
 
 	m.logger.Log(
 		context.Background(),
-		log.LevelInfo,
+		obs.LevelInfo,
 		"resetting circuit breaker",
-		log.String("service", serviceName),
-		log.String("tenant_hash", tenantHashLabel(tenantID)),
+		"service", serviceName,
+		"tenant_hash", tenantHashLabel(tenantID),
 	)
 
 	settings := m.buildSettings(tenantID, serviceName, slot.config)
@@ -413,10 +409,10 @@ func (m *manager) reset(tenantID, serviceName string, tenantAware bool) {
 
 	m.logger.Log(
 		context.Background(),
-		log.LevelInfo,
+		obs.LevelInfo,
 		"circuit breaker reset completed",
-		log.String("service", serviceName),
-		log.String("tenant_hash", tenantHashLabel(tenantID)),
+		"service", serviceName,
+		"tenant_hash", tenantHashLabel(tenantID),
 	)
 }
 
@@ -428,7 +424,7 @@ func (m *manager) reset(tenantID, serviceName string, tenantAware bool) {
 // RegisterTenantStateChangeListener.
 func (m *manager) RegisterStateChangeListener(listener StateChangeListener) {
 	if nilcheck.Interface(listener) {
-		m.logger.Log(context.Background(), log.LevelWarn, "attempted to register a nil state change listener")
+		m.logger.Log(context.Background(), obs.LevelWarn, "attempted to register a nil state change listener")
 
 		return
 	}
@@ -437,7 +433,7 @@ func (m *manager) RegisterStateChangeListener(listener StateChangeListener) {
 	defer m.mu.Unlock()
 
 	m.listeners = append(m.listeners, listener)
-	m.logger.Log(context.Background(), log.LevelDebug, "registered state change listener", log.Int("total", len(m.listeners)))
+	m.logger.Log(context.Background(), obs.LevelDebug, "registered state change listener", "total", len(m.listeners))
 }
 
 // RegisterTenantStateChangeListener registers a listener that fires on every
@@ -445,7 +441,7 @@ func (m *manager) RegisterStateChangeListener(listener StateChangeListener) {
 // (e.g., (*MyListener)(nil)) are rejected with a warning log.
 func (m *manager) RegisterTenantStateChangeListener(listener TenantStateChangeListener) {
 	if nilcheck.Interface(listener) {
-		m.logger.Log(context.Background(), log.LevelWarn, "attempted to register a nil tenant state change listener")
+		m.logger.Log(context.Background(), obs.LevelWarn, "attempted to register a nil tenant state change listener")
 
 		return
 	}
@@ -454,7 +450,7 @@ func (m *manager) RegisterTenantStateChangeListener(listener TenantStateChangeLi
 	defer m.mu.Unlock()
 
 	m.tenantListeners = append(m.tenantListeners, listener)
-	m.logger.Log(context.Background(), log.LevelDebug, "registered tenant state change listener", log.Int("total", len(m.tenantListeners)))
+	m.logger.Log(context.Background(), obs.LevelDebug, "registered tenant state change listener", "total", len(m.tenantListeners))
 }
 
 // readyToTrip builds the trip function for gobreaker.Settings.

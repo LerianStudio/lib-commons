@@ -7,7 +7,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,7 +27,7 @@ func TestWarnInsecureDSN_DisabledLogger(t *testing.T) {
 	t.Parallel()
 
 	// A nop logger has all levels disabled
-	logger := log.NewNop()
+	logger := obs.Nop()
 	assert.NotPanics(t, func() {
 		warnInsecureDSN(context.Background(), logger, "postgres://user:pass@localhost/db?sslmode=disable", "primary")
 	})
@@ -38,17 +39,17 @@ func TestMigrationLogAtLevel_NilLogger(t *testing.T) {
 
 	// Should not panic with nil logger
 	assert.NotPanics(t, func() {
-		migrationLogAtLevel(context.Background(), nil, log.LevelInfo, "test message")
+		migrationLogAtLevel(context.Background(), nil, obs.LevelInfo, "test message")
 	})
 }
 
 func TestMigrationLogAtLevel_NopLogger(t *testing.T) {
 	t.Parallel()
 
-	logger := log.NewNop()
+	logger := obs.Nop()
 	// Should not panic; nop logger Enabled() returns false
 	assert.NotPanics(t, func() {
-		migrationLogAtLevel(context.Background(), logger, log.LevelInfo, "test message", log.String("k", "v"))
+		migrationLogAtLevel(context.Background(), logger, obs.LevelInfo, "test message", "k", "v")
 	})
 }
 
@@ -210,6 +211,6 @@ func TestLogAtLevel_NilReceiver(t *testing.T) {
 
 	var c *Client
 	assert.NotPanics(t, func() {
-		c.logAtLevel(context.Background(), log.LevelInfo, "message")
+		c.logAtLevel(context.Background(), obs.LevelInfo, "message")
 	})
 }

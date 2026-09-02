@@ -11,14 +11,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
 	chttp "github.com/LerianStudio/lib-commons/v6/commons/net/http"
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	"github.com/LerianStudio/lib-observability/v2/assert"
-	"github.com/LerianStudio/lib-observability/v2/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-observability/v4/assert"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/gofiber/fiber/v3"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -127,7 +128,7 @@ func RelaxedTier() Tier {
 type RateLimiter struct {
 	conn            *libRedis.Client
 	storageBackend  *RedisStorage
-	logger          log.Logger
+	logger          obs.Logger
 	keyPrefix       string
 	identityFunc    IdentityFunc
 	failOpen        bool
@@ -167,7 +168,7 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 	}
 
 	rl := &RateLimiter{
-		logger:       log.NewNop(),
+		logger:       obs.Nop(),
 		identityFunc: IdentityFromIP(),
 		failOpen:     true,
 		redisTimeout: time.Duration(timeoutMS) * time.Millisecond,
@@ -185,14 +186,14 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 	// ALLOW_RATELIMIT_FAIL_OPEN=true to permit (emits a WARN log line).
 	if rl.failOpen {
 		if !commons.AllowRateLimitFailOpen() {
-			rl.logger.Log(context.Background(), log.LevelError,
+			rl.logger.Log(context.Background(), obs.LevelError,
 				"rate-limit fail-open coerced to fail-closed; set "+commons.EnvAllowRateLimitFailOpen+"=true to permit fail-open")
 
 			rl.failOpen = false
 		} else {
-			rl.logger.Log(context.Background(), log.LevelWarn, "security bypass active",
-				log.String("feature", "ratelimit_fail_open"),
-				log.String("env_var", commons.EnvAllowRateLimitFailOpen),
+			rl.logger.Log(context.Background(), obs.LevelWarn, "security bypass active",
+				"feature", "ratelimit_fail_open",
+				"env_var", commons.EnvAllowRateLimitFailOpen,
 			)
 		}
 	}
@@ -202,7 +203,7 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 	// pass-through limiter (nil) so deployments without RATE_LIMIT_ENABLED set
 	// behave as no-op.
 	if !commons.RateLimitEnabled() {
-		rl.logger.Log(context.Background(), log.LevelInfo,
+		rl.logger.Log(context.Background(), obs.LevelInfo,
 			"rate limiter disabled (default); set "+commons.EnvRateLimitEnabled+"=true to enable enforcement")
 
 		return nil
@@ -211,7 +212,7 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 	if conn == nil {
 		asserter := assert.New(context.Background(), rl.logger, "http.ratelimit", "New")
 		if err := asserter.Never(context.Background(), "redis connection is nil; rate limiter disabled"); err == nil {
-			rl.logger.Log(context.Background(), log.LevelWarn, "rate limiter assertion unexpectedly passed")
+			rl.logger.Log(context.Background(), obs.LevelWarn, "rate limiter assertion unexpectedly passed")
 		}
 
 		// conn==nil means the caller did not configure Redis. Treat that as an
@@ -242,11 +243,11 @@ func (rl *RateLimiter) WithRateLimit(tier Tier) fiber.Handler {
 	}
 
 	if tier.Max > maxReasonableTierMax {
-		rl.logger.Log(context.Background(), log.LevelWarn,
+		rl.logger.Log(context.Background(), obs.LevelWarn,
 			"rate limit tier max is unusually high; verify configuration",
-			log.String("tier", tier.Name),
-			log.Int("max", tier.Max),
-			log.Int("threshold", maxReasonableTierMax),
+			"tier", tier.Name,
+			"max", tier.Max,
+			"threshold", maxReasonableTierMax,
 		)
 	}
 
@@ -334,19 +335,19 @@ func (rl *RateLimiter) misconfiguredTierHandler(ctx context.Context, tier Tier) 
 
 	logTier, saturated := rl.misconfiguredTierLogDecision(tier.Name + "|" + message)
 	if logTier {
-		rl.logger.Log(ctx, log.LevelError,
+		rl.logger.Log(ctx, obs.LevelError,
 			"rate limit tier is misconfigured; every request on this tier will be rejected",
-			log.String("tier", tier.Name),
-			log.Int("max", tier.Max),
-			log.String("window", tier.Window.String()),
-			log.String("reason", message),
+			"tier", tier.Name,
+			"max", tier.Max,
+			"window", tier.Window.String(),
+			"reason", message,
 		)
 	}
 
 	if saturated {
-		rl.logger.Log(ctx, log.LevelError,
+		rl.logger.Log(ctx, obs.LevelError,
 			"misconfigured-tier log dedup set is full; further distinct misconfigurations will not be logged (the TierFunc is likely deriving tier names from request data)",
-			log.Int("capacity", maxLoggedMisconfiguredTiers),
+			"capacity", maxLoggedMisconfiguredTiers,
 		)
 	}
 
@@ -412,7 +413,7 @@ func (rl *RateLimiter) check(c fiber.Ctx, tier Tier) error {
 		ctx = context.Background()
 	}
 
-	_, tracer, _, _ := observability.NewTrackingFromContext(ctx) //nolint:dogsled
+	_, tracer, _, _ := obsbridge.TrackingFromContext(ctx) //nolint:dogsled
 
 	ctx, span := tracer.Start(ctx, "middleware.ratelimit.check")
 	defer span.End()
@@ -503,10 +504,10 @@ func (rl *RateLimiter) handleRedisError(
 	keyHash string,
 	err error,
 ) error {
-	rl.logger.Log(ctx, log.LevelWarn, "rate limiter redis error",
-		log.String("tier", tier.Name),
-		log.String("key_hash", keyHash),
-		log.Err(err),
+	rl.logger.Log(ctx, obs.LevelWarn, "rate limiter redis error",
+		"tier", tier.Name,
+		"key_hash", keyHash,
+		"error", err,
 	)
 
 	libOpentelemetry.HandleSpanError(span, "rate limiter redis error", err)
@@ -541,10 +542,10 @@ func (rl *RateLimiter) handleLimitExceeded(
 	keyHash string,
 	ttl time.Duration,
 ) error {
-	rl.logger.Log(ctx, log.LevelWarn, "rate limit exceeded",
-		log.String("tier", tier.Name),
-		log.String("key_hash", keyHash),
-		log.Int("max", tier.Max),
+	rl.logger.Log(ctx, obs.LevelWarn, "rate limit exceeded",
+		"tier", tier.Name,
+		"key_hash", keyHash,
+		"max", tier.Max,
 	)
 
 	libOpentelemetry.HandleSpanBusinessErrorEvent(

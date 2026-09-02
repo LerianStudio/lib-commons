@@ -3,7 +3,7 @@ package client
 import (
 	"net/http"
 
-	"github.com/LerianStudio/lib-observability/v3/httpobs"
+	"github.com/LerianStudio/lib-observability/v4/httpobs"
 	"go.opentelemetry.io/otel"
 )
 

@@ -11,8 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -39,7 +40,7 @@ func setupRedisContainer(t *testing.T) (*libRedis.Client, func()) {
 		Topology: libRedis.Topology{
 			Standalone: &libRedis.StandaloneTopology{Address: endpoint},
 		},
-		Logger: log.NewNop(),
+		Logger: obs.Nop(),
 	})
 	require.NoError(t, err, "failed to create libRedis.Client")
 
@@ -62,7 +63,7 @@ func TestIntegration_RateLimitStorage_SetAndGet(t *testing.T) {
 	client, cleanup := setupRedisContainer(t)
 	t.Cleanup(cleanup)
 
-	storage := NewRedisStorage(client, WithRedisStorageLogger(log.NewNop()))
+	storage := NewRedisStorage(client, WithRedisStorageLogger(obs.Nop()))
 	require.NotNil(t, storage, "storage must not be nil with a valid connection")
 
 	key := "integration-test-key"
@@ -91,7 +92,7 @@ func TestIntegration_RateLimitStorage_Expiration(t *testing.T) {
 	client, cleanup := setupRedisContainer(t)
 	t.Cleanup(cleanup)
 
-	storage := NewRedisStorage(client, WithRedisStorageLogger(log.NewNop()))
+	storage := NewRedisStorage(client, WithRedisStorageLogger(obs.Nop()))
 	require.NotNil(t, storage)
 
 	key := "expiring-key"
@@ -124,7 +125,7 @@ func TestIntegration_RateLimitStorage_Delete(t *testing.T) {
 	client, cleanup := setupRedisContainer(t)
 	t.Cleanup(cleanup)
 
-	storage := NewRedisStorage(client, WithRedisStorageLogger(log.NewNop()))
+	storage := NewRedisStorage(client, WithRedisStorageLogger(obs.Nop()))
 	require.NotNil(t, storage)
 
 	key := "delete-me"
@@ -157,7 +158,7 @@ func TestIntegration_RateLimitStorage_Reset(t *testing.T) {
 	client, cleanup := setupRedisContainer(t)
 	t.Cleanup(cleanup)
 
-	storage := NewRedisStorage(client, WithRedisStorageLogger(log.NewNop()))
+	storage := NewRedisStorage(client, WithRedisStorageLogger(obs.Nop()))
 	require.NotNil(t, storage)
 
 	// Populate multiple keys.
@@ -194,7 +195,7 @@ func TestIntegration_RateLimitStorage_ConcurrentAccess(t *testing.T) {
 	client, cleanup := setupRedisContainer(t)
 	t.Cleanup(cleanup)
 
-	storage := NewRedisStorage(client, WithRedisStorageLogger(log.NewNop()))
+	storage := NewRedisStorage(client, WithRedisStorageLogger(obs.Nop()))
 	require.NotNil(t, storage)
 
 	const goroutines = 20

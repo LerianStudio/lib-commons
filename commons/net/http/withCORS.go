@@ -6,9 +6,11 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	libLog "github.com/LerianStudio/lib-observability/v4/log"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"
 )
@@ -30,12 +32,12 @@ const (
 type CORSOption func(*corsConfig)
 
 type corsConfig struct {
-	logger libLog.Logger
+	logger obs.Logger
 }
 
 // WithCORSLogger provides a structured logger for CORS security warnings.
 // When not provided, warnings are logged via stdlib log.
-func WithCORSLogger(logger libLog.Logger) CORSOption {
+func WithCORSLogger(logger obs.Logger) CORSOption {
 	return func(c *corsConfig) {
 		if !nilcheck.Interface(logger) {
 			c.logger = logger
@@ -69,7 +71,7 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 	origins := commons.GetenvOrDefault("ACCESS_CONTROL_ALLOW_ORIGIN", defaultAccessControlAllowOrigin)
 
 	if hasWildcardOrigin(origins) || origins == "" {
-		cfg.logger.Log(context.Background(), libLog.LevelWarn,
+		cfg.logger.Log(context.Background(), obs.LevelWarn,
 			"CORS: AllowOrigins is set to wildcard (*); "+
 				"this allows ANY website to make cross-origin requests to your API; "+
 				"for financial services, set ACCESS_CONTROL_ALLOW_ORIGIN to specific trusted origins",
@@ -77,7 +79,7 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 	}
 
 	if hasWildcardOrigin(origins) && allowCredentials {
-		cfg.logger.Log(context.Background(), libLog.LevelWarn,
+		cfg.logger.Log(context.Background(), obs.LevelWarn,
 			"CORS: AllowOrigins=* with AllowCredentials=true is REJECTED by browsers per the CORS spec; "+
 				"credentials will NOT work; configure specific origins via ACCESS_CONTROL_ALLOW_ORIGIN",
 		)
@@ -89,7 +91,7 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 
 	if hasWildcardOrigin(origins) || origins == "" {
 		if !commons.AllowCORSWildcard() {
-			cfg.logger.Log(context.Background(), libLog.LevelError,
+			cfg.logger.Log(context.Background(), obs.LevelError,
 				"CORS wildcard origin rejected; applying deny-all fallback (set "+
 					commons.EnvAllowCORSWildcard+"=true to permit, or set ACCESS_CONTROL_ALLOW_ORIGIN to specific trusted origins)",
 			)
@@ -98,16 +100,16 @@ func WithCORS(opts ...CORSOption) fiber.Handler {
 			origins = ""
 			allowCredentials = false
 		} else {
-			cfg.logger.Log(context.Background(), libLog.LevelWarn, "security bypass active",
-				libLog.String("feature", "cors_wildcard"),
-				libLog.String("env_var", commons.EnvAllowCORSWildcard),
+			cfg.logger.Log(context.Background(), obs.LevelWarn, "security bypass active",
+				"feature", "cors_wildcard",
+				"env_var", commons.EnvAllowCORSWildcard,
 			)
 		}
 	}
 
 	// Guard: prevent Fiber panic on wildcard + credentials (forbidden by CORS spec).
 	if hasWildcardOrigin(origins) && allowCredentials {
-		cfg.logger.Log(context.Background(), libLog.LevelWarn,
+		cfg.logger.Log(context.Background(), obs.LevelWarn,
 			"CORS: AllowOrigins=* with AllowCredentials=true is forbidden by CORS spec "+
 				"and causes Fiber panic; forcing AllowCredentials=false")
 

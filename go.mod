@@ -5,8 +5,6 @@ go 1.26.3
 require (
 	cloud.google.com/go/iam v1.12.0
 	github.com/DATA-DOG/go-sqlmock v1.5.2
-	github.com/LerianStudio/lib-observability/v2 v2.1.0
-	github.com/LerianStudio/lib-observability/v3 v3.1.0
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/aws/aws-sdk-go-v2 v1.45.1
 	github.com/aws/aws-sdk-go-v2/credentials v1.20.1
@@ -53,12 +51,15 @@ require (
 	google.golang.org/protobuf v1.36.11
 )
 
+require go.opentelemetry.io/contrib/instrumentation/runtime v0.69.0 // indirect
+
 require (
 	cloud.google.com/go/auth v0.20.0 // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	dario.cat/mergo v1.0.2 // indirect
 	github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c // indirect
+	github.com/LerianStudio/lib-observability/v4 v4.0.0-beta.1
 	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/XSAM/otelsql v0.43.0 // indirect
 	github.com/andybalholm/brotli v1.2.2 // indirect

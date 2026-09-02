@@ -16,14 +16,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/testutil"
 	tmmongo "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/mongo"
 	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
 	tmrabbitmq "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/rabbitmq"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	observability "github.com/LerianStudio/lib-observability/v4"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,7 +36,7 @@ import (
 func NewMultiTenantConsumer(
 	rabbitmq *tmrabbitmq.Manager,
 	config MultiTenantConfig,
-	logger libLog.Logger,
+	logger obs.Logger,
 	opts ...Option,
 ) *MultiTenantConsumer {
 	if rabbitmq != nil {
@@ -56,7 +57,7 @@ func mustNewConsumer(
 	t *testing.T,
 	rabbitmq *tmrabbitmq.Manager,
 	config MultiTenantConfig,
-	logger libLog.Logger,
+	logger obs.Logger,
 	opts ...Option,
 ) *MultiTenantConsumer {
 	t.Helper()

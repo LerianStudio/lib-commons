@@ -12,9 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/cache"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -83,7 +84,7 @@ func TestTenantLoader_InvalidateClientCache_DelegatesToClient(t *testing.T) {
 
 	pmClient, err := client.NewClient(
 		"http://localhost:8080",
-		log.NewNop(),
+		obs.Nop(),
 		client.WithAllowInsecureHTTP(),
 		client.WithServiceAPIKey(testServiceAPIKey),
 		client.WithCache(spy),
@@ -93,7 +94,7 @@ func TestTenantLoader_InvalidateClientCache_DelegatesToClient(t *testing.T) {
 	t.Cleanup(func() { _ = pmClient.Close() })
 
 	cacheStore := NewTenantCache()
-	loader := NewTenantLoader(pmClient, cacheStore, testServiceName, DefaultTenantCacheTTL, log.NewNop())
+	loader := NewTenantLoader(pmClient, cacheStore, testServiceName, DefaultTenantCacheTTL, obs.Nop())
 
 	tenantID := "tenant-invalidate-001"
 	// Seed tier-2 directly so the Del has something to remove.
@@ -142,7 +143,7 @@ func TestTenantLoader_InvalidateClientCache_PropagatesDelError(t *testing.T) {
 
 	pmClient, err := client.NewClient(
 		"http://localhost:8080",
-		log.NewNop(),
+		obs.Nop(),
 		client.WithAllowInsecureHTTP(),
 		client.WithServiceAPIKey(testServiceAPIKey),
 		client.WithCache(errCache),
@@ -151,7 +152,7 @@ func TestTenantLoader_InvalidateClientCache_PropagatesDelError(t *testing.T) {
 
 	t.Cleanup(func() { _ = pmClient.Close() })
 
-	loader := NewTenantLoader(pmClient, NewTenantCache(), testServiceName, DefaultTenantCacheTTL, log.NewNop())
+	loader := NewTenantLoader(pmClient, NewTenantCache(), testServiceName, DefaultTenantCacheTTL, obs.Nop())
 
 	err = loader.InvalidateClientCache(context.Background(), "tenant-delerr", testServiceName)
 	require.Error(t, err, "Del error must propagate")

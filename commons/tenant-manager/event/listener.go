@@ -9,14 +9,15 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+
 	"github.com/redis/go-redis/v9"
 
 	"github.com/LerianStudio/lib-commons/v6/commons"
 	"github.com/LerianStudio/lib-commons/v6/commons/events"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 )
 
 // EventHandler is a callback invoked for each parsed tenant lifecycle event.
@@ -28,7 +29,7 @@ type ListenerOption func(*TenantEventListener)
 
 // WithListenerLogger sets the logger for the listener.
 // If logger is nil, a no-op logger is used.
-func WithListenerLogger(logger libLog.Logger) ListenerOption {
+func WithListenerLogger(logger obs.Logger) ListenerOption {
 	return func(l *TenantEventListener) {
 		l.logger = logcompat.New(logger)
 	}
@@ -93,7 +94,7 @@ func NewTenantEventListener(
 // Multi-tenant consumers MUST set ENVIRONMENT_NAME (or ENV_NAME) on the pod
 // before this listener can start.
 func (l *TenantEventListener) Start(ctx context.Context) error {
-	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	if l.logger != nil {
@@ -173,7 +174,7 @@ func (l *TenantEventListener) listen(ctx context.Context, pubsub *redis.PubSub) 
 // handleMessage parses a single Pub/Sub message and dispatches it to the handler.
 // Parse errors and handler errors are logged and skipped (non-fatal).
 func (l *TenantEventListener) handleMessage(ctx context.Context, msg *redis.Message) {
-	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	if l.logger != nil {

@@ -15,11 +15,12 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/cache"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -60,7 +61,7 @@ type Client struct {
 	baseURL        string
 	httpClient     *http.Client
 	httpClientOnce sync.Once
-	logger         libLog.Logger
+	logger         obs.Logger
 	serviceAPIKey  string
 	// bearerTokenProvider supplies the service-account bearer token for
 	// RBAC-gated write operations (e.g. CreateTenant). When nil, no
@@ -199,9 +200,9 @@ func WithServiceAPIKey(key string) ClientOption {
 // The baseURL is validated at construction time to ensure it is a well-formed URL with a scheme.
 // This prevents SSRF risks by ensuring only trusted, pre-configured URLs are used for HTTP requests.
 // By default, only https:// URLs are accepted. Use WithAllowInsecureHTTP() to permit http://.
-func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) (*Client, error) {
+func NewClient(baseURL string, logger obs.Logger, opts ...ClientOption) (*Client, error) {
 	if logger == nil {
-		logger = libLog.NewNop()
+		logger = obs.Nop()
 	}
 
 	// Validate baseURL to ensure it is a well-formed URL with a scheme.
@@ -209,8 +210,8 @@ func NewClient(baseURL string, logger libLog.Logger, opts ...ClientOption) (*Cli
 	// (not user-controlled), but we validate it to fail fast on misconfiguration.
 	parsedURL, err := url.Parse(baseURL)
 	if err != nil || parsedURL.Scheme == "" || parsedURL.Host == "" {
-		logger.Log(context.Background(), libLog.LevelError, "invalid tenant manager baseURL",
-			libLog.String("base_url", baseURL),
+		logger.Log(context.Background(), obs.LevelError, "invalid tenant manager baseURL",
+			"base_url", baseURL,
 		)
 
 		return nil, fmt.Errorf("invalid tenant manager baseURL: %q", baseURL)
@@ -349,9 +350,9 @@ func (c *Client) getCachedTenantConfig(ctx context.Context, cacheKey, tenantID, 
 
 	var config core.TenantConfig
 	if jsonErr := json.Unmarshal([]byte(cached), &config); jsonErr == nil {
-		c.logger.Log(ctx, libLog.LevelDebug, "tenant config cache hit",
-			libLog.String("tenant_id", tenantID),
-			libLog.String("service", service),
+		c.logger.Log(ctx, obs.LevelDebug, "tenant config cache hit",
+			"tenant_id", tenantID,
+			"service", service,
 		)
 
 		return &config, true
@@ -359,9 +360,9 @@ func (c *Client) getCachedTenantConfig(ctx context.Context, cacheKey, tenantID, 
 
 	// Malformed cache entry: evict before refetching to prevent repeated
 	// deserialization failures on the same corrupt data.
-	c.logger.Log(ctx, libLog.LevelWarn, "invalid tenant config cache entry; evicting before refetch",
-		libLog.String("tenant_id", tenantID),
-		libLog.String("service", service),
+	c.logger.Log(ctx, obs.LevelWarn, "invalid tenant config cache entry; evicting before refetch",
+		"tenant_id", tenantID,
+		"service", service,
 	)
 
 	_ = c.cache.Del(ctx, cacheKey)
@@ -381,18 +382,18 @@ func (c *Client) handleGetTenantConfigStatus(
 		return nil
 	case http.StatusNotFound:
 		c.recordSuccess()
-		c.logger.Log(ctx, libLog.LevelWarn, "tenant not found",
-			libLog.String("tenant_id", tenantID),
-			libLog.String("service", service),
+		c.logger.Log(ctx, obs.LevelWarn, "tenant not found",
+			"tenant_id", tenantID,
+			"service", service,
 		)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Tenant not found", core.ErrTenantNotFound)
 
 		return core.ErrTenantNotFound
 	case http.StatusForbidden:
 		c.recordSuccess()
-		c.logger.Log(ctx, libLog.LevelWarn, "tenant service access denied",
-			libLog.String("tenant_id", tenantID),
-			libLog.String("service", service),
+		c.logger.Log(ctx, obs.LevelWarn, "tenant service access denied",
+			"tenant_id", tenantID,
+			"service", service,
 		)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Tenant service suspended or purged", core.ErrTenantServiceAccessDenied)
 
@@ -421,9 +422,9 @@ func (c *Client) handleGetTenantConfigStatus(
 			c.recordFailure()
 		}
 
-		c.logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
-			libLog.Int("status", statusCode),
-			libLog.String("body", truncateBody(body)),
+		c.logger.Log(ctx, obs.LevelError, "tenant manager returned error",
+			"status", statusCode,
+			"body", truncateBody(body),
 		)
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", statusCode))
 
@@ -451,7 +452,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 		}
 	})
 
-	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_tenant_config")
 	defer span.End()
@@ -470,9 +471,9 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 
 	// Check circuit breaker before making the HTTP request
 	if err := c.checkCircuitBreaker(); err != nil {
-		logger.Log(ctx, libLog.LevelWarn, "circuit breaker open, failing fast",
-			libLog.String("tenant_id", tenantID),
-			libLog.String("service", service),
+		logger.Log(ctx, obs.LevelWarn, "circuit breaker open, failing fast",
+			"tenant_id", tenantID,
+			"service", service,
 		)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Circuit breaker open", err)
 
@@ -483,15 +484,15 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	requestURL := fmt.Sprintf("%s/v1/tenants/%s/associations/%s/connections",
 		c.baseURL, url.PathEscape(tenantID), url.PathEscape(service))
 
-	logger.Log(ctx, libLog.LevelInfo, "fetching tenant config",
-		libLog.String("tenant_id", tenantID),
-		libLog.String("service", service),
+	logger.Log(ctx, obs.LevelInfo, "fetching tenant config",
+		"tenant_id", tenantID,
+		"service", service,
 	)
 
 	// Create request with context
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		logger.Log(ctx, libLog.LevelError, "failed to create request", libLog.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to create request", "error", err)
 		libOpentelemetry.HandleSpanError(span, "Failed to create HTTP request", err)
 
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -512,7 +513,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
-		logger.Log(ctx, libLog.LevelError, "failed to execute request", libLog.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to execute request", "error", err)
 		libOpentelemetry.HandleSpanError(span, "HTTP request failed", err)
 
 		return nil, fmt.Errorf("failed to execute request: %w", err)
@@ -523,7 +524,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		c.recordFailure()
-		logger.Log(ctx, libLog.LevelError, "failed to read response body", libLog.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to read response body", "error", err)
 		libOpentelemetry.HandleSpanError(span, "Failed to read response body", err)
 
 		return nil, fmt.Errorf("failed to read response body: %w", err)
@@ -538,16 +539,16 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	// Parse response
 	var config core.TenantConfig
 	if err := json.Unmarshal(body, &config); err != nil {
-		logger.Log(ctx, libLog.LevelError, "failed to parse response", libLog.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to parse response", "error", err)
 		libOpentelemetry.HandleSpanError(span, "Failed to parse response", err)
 
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	c.recordSuccess()
-	logger.Log(ctx, libLog.LevelInfo, "successfully fetched tenant config",
-		libLog.String("tenant_id", tenantID),
-		libLog.String("slug", config.TenantSlug),
+	logger.Log(ctx, obs.LevelInfo, "successfully fetched tenant config",
+		"tenant_id", tenantID,
+		"slug", config.TenantSlug,
 	)
 
 	c.cacheTenantConfig(ctx, cacheKey, &config)
@@ -589,14 +590,14 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 		}
 	})
 
-	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 
 	ctx, span := tracer.Start(ctx, "tenantmanager.client.get_active_tenants")
 	defer span.End()
 
 	// Check circuit breaker before making the HTTP request
 	if err := c.checkCircuitBreaker(); err != nil {
-		logger.Log(ctx, libLog.LevelWarn, "circuit breaker open, failing fast", libLog.String("service", service))
+		logger.Log(ctx, obs.LevelWarn, "circuit breaker open, failing fast", "service", service)
 		libOpentelemetry.HandleSpanBusinessErrorEvent(span, "Circuit breaker open", err)
 
 		return nil, err
@@ -606,12 +607,12 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 
 	requestURL := fmt.Sprintf("%s/v1/tenants/active?service=%s", c.baseURL, url.QueryEscape(service))
 
-	logger.Log(ctx, libLog.LevelInfo, "fetching active tenants", libLog.String("service", service))
+	logger.Log(ctx, obs.LevelInfo, "fetching active tenants", "service", service)
 
 	// Create request with context
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
-		logger.Log(ctx, libLog.LevelError, "failed to create request", libLog.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to create request", "error", err)
 		libOpentelemetry.HandleSpanError(span, "Failed to create HTTP request", err)
 
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -632,7 +633,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.recordFailure()
-		logger.Log(ctx, libLog.LevelError, "failed to execute request", libLog.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to execute request", "error", err)
 		libOpentelemetry.HandleSpanError(span, "HTTP request failed", err)
 
 		return nil, fmt.Errorf("failed to execute request: %w", err)
@@ -643,7 +644,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodySize))
 	if err != nil {
 		c.recordFailure()
-		logger.Log(ctx, libLog.LevelError, "failed to read response body", libLog.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to read response body", "error", err)
 		libOpentelemetry.HandleSpanError(span, "Failed to read response body", err)
 
 		return nil, fmt.Errorf("failed to read response body: %w", err)
@@ -660,9 +661,9 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 			c.recordSuccess()
 		}
 
-		logger.Log(ctx, libLog.LevelError, "tenant manager returned error",
-			libLog.Int("status", resp.StatusCode),
-			libLog.String("body", truncateBody(body)),
+		logger.Log(ctx, obs.LevelError, "tenant manager returned error",
+			"status", resp.StatusCode,
+			"body", truncateBody(body),
 		)
 		libOpentelemetry.HandleSpanError(span, "Tenant Manager returned error", fmt.Errorf("status %d", resp.StatusCode))
 
@@ -672,16 +673,16 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	// Parse response
 	var tenants []*TenantSummary
 	if err := json.Unmarshal(body, &tenants); err != nil {
-		logger.Log(ctx, libLog.LevelError, "failed to parse response", libLog.Err(err))
+		logger.Log(ctx, obs.LevelError, "failed to parse response", "error", err)
 		libOpentelemetry.HandleSpanError(span, "Failed to parse response", err)
 
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	c.recordSuccess()
-	logger.Log(ctx, libLog.LevelInfo, "successfully fetched active tenants",
-		libLog.Int("count", len(tenants)),
-		libLog.String("service", service),
+	logger.Log(ctx, obs.LevelInfo, "successfully fetched active tenants",
+		"count", len(tenants),
+		"service", service,
 	)
 
 	return tenants, nil

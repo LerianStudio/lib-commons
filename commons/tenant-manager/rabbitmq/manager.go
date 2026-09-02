@@ -12,13 +12,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/eviction"
 	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	"github.com/LerianStudio/lib-observability/v2/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
@@ -74,7 +75,7 @@ func WithModule(module string) Option {
 }
 
 // WithLogger sets the logger for the RabbitMQ manager.
-func WithLogger(logger log.Logger) Option {
+func WithLogger(logger obs.Logger) Option {
 	return func(p *Manager) {
 		p.logger = logcompat.New(logger)
 	}
@@ -237,7 +238,7 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 		return nil, errors.New("tenant manager client is required for multi-tenant connections")
 	}
 
-	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	ctx, span := tracer.Start(ctx, "rabbitmq.create_connection")
@@ -346,7 +347,7 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*amqp.
 // eligible for eviction. If all connections are active (used within the idle timeout),
 // the pool is allowed to grow beyond the soft limit.
 // Caller MUST hold p.mu write lock.
-func (p *Manager) evictLRU(logger log.Logger) {
+func (p *Manager) evictLRU(logger obs.Logger) {
 	candidateID, shouldEvict := eviction.FindLRUEvictionCandidate(
 		len(p.connections), p.maxConnections, p.lastAccessed, p.idleTimeout, logger,
 	)
@@ -358,9 +359,9 @@ func (p *Manager) evictLRU(logger log.Logger) {
 	if conn, ok := p.connections[candidateID]; ok {
 		if conn != nil && !conn.IsClosed() {
 			if err := conn.Close(); err != nil && logger != nil {
-				logger.Log(context.Background(), log.LevelWarn, "failed to close evicted rabbitmq connection",
-					log.String("tenant_id", candidateID),
-					log.Err(err),
+				logger.Log(context.Background(), obs.LevelWarn, "failed to close evicted rabbitmq connection",
+					"tenant_id", candidateID,
+					"error", err,
 				)
 			}
 		}
