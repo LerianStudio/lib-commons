@@ -85,7 +85,13 @@ func TestServersStarted_ReturnsChannel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
+	// The server goroutine must be joined before the test returns: Fiber prints its
+	// startup banner from that goroutine AFTER signalling ServersStarted, and a
+	// goroutine that outlives the test races with the testing package swapping
+	// os.Stdout for the Example runs ("race detected outside of test execution").
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		_ = sm.StartWithGracefulShutdownWithError()
 	}()
 
@@ -97,6 +103,12 @@ func TestServersStarted_ReturnsChannel(t *testing.T) {
 	}
 
 	close(shutdownCh)
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("server goroutine did not return after shutdown before timeout")
+	}
 }
 
 // -------------------------------------------------------------------
