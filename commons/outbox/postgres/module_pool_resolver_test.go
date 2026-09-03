@@ -334,49 +334,74 @@ func TestModulePoolResolver_ListTenantDispatchScopes_GlobalListFailureUsesLastKn
 	assert.Equal(t, initial, cached)
 }
 
-func TestModulePoolResolver_ListTenantDispatchScopes_DefaultTenantIncludesConfiguredModulePools(t *testing.T) {
+func TestModulePoolResolver_ListTenantDispatchScopes_DefaultTenantNeverConsultsTheLoader(t *testing.T) {
 	t.Parallel()
 
-	generic := &modulePoolResolverStub{tenants: []string{"default-tenant", "default-tenant", " "}}
-	resolver, err := NewModulePoolResolver(
-		generic,
-		"default-tenant",
-		func(_ context.Context, tenantID string) (*tmcore.TenantConfig, error) {
-			require.Equal(t, "default-tenant", tenantID)
-
-			return tenantConfigWithDatabases("generic", "consignado"), nil
+	tests := []struct {
+		name       string
+		roster     []string
+		wantScopes []outbox.TenantDispatchScope
+		wantLoaded []string
+	}{
+		{
+			name:   "default tenant first, deduplicated and trimmed",
+			roster: []string{"default-tenant", "default-tenant", " ", "real-1"},
+			wantScopes: []outbox.TenantDispatchScope{
+				{TenantID: "default-tenant"},
+				{TenantID: "real-1"},
+				{TenantID: "real-1", PoolKey: "consignado"},
+			},
+			wantLoaded: []string{"real-1"},
 		},
-		ModulePool{Name: "consignado", Resolver: &modulePoolResolverStub{}},
-	)
-	require.NoError(t, err)
-
-	scopes, err := resolver.ListTenantDispatchScopes(t.Context())
-
-	require.NoError(t, err)
-	assert.Equal(t, []outbox.TenantDispatchScope{
-		{TenantID: "default-tenant"},
-		{TenantID: "default-tenant", PoolKey: "consignado"},
-	}, scopes)
-}
-
-func TestModulePoolResolver_ListTenantDispatchScopes_DefaultTenantLoadFailureKeepsGenericPool(t *testing.T) {
-	t.Parallel()
-
-	generic := &modulePoolResolverStub{tenants: []string{"default-tenant"}}
-	resolver, err := NewModulePoolResolver(
-		generic,
-		"default-tenant",
-		func(context.Context, string) (*tmcore.TenantConfig, error) {
-			return nil, errors.New("default module topology unavailable")
+		{
+			name:   "default tenant appended last, as ManagerPoolResolver.ListTenants does",
+			roster: []string{"real-1", "default-tenant"},
+			wantScopes: []outbox.TenantDispatchScope{
+				{TenantID: "real-1"},
+				{TenantID: "real-1", PoolKey: "consignado"},
+				{TenantID: "default-tenant"},
+			},
+			wantLoaded: []string{"real-1"},
 		},
-		ModulePool{Name: "consignado", Resolver: &modulePoolResolverStub{}},
-	)
-	require.NoError(t, err)
+		{
+			name:       "default tenant alone never reaches the loader",
+			roster:     []string{"default-tenant"},
+			wantScopes: []outbox.TenantDispatchScope{{TenantID: "default-tenant"}},
+			wantLoaded: nil,
+		},
+	}
 
-	scopes, err := resolver.ListTenantDispatchScopes(t.Context())
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 
-	require.NoError(t, err)
-	assert.Equal(t, []outbox.TenantDispatchScope{{TenantID: "default-tenant"}}, scopes)
+			generic := &modulePoolResolverStub{tenants: test.roster}
+			var loadedTenants []string
+			resolver, err := NewModulePoolResolver(
+				generic,
+				"default-tenant",
+				func(_ context.Context, tenantID string) (*tmcore.TenantConfig, error) {
+					loadedTenants = append(loadedTenants, tenantID)
+
+					if tenantID == "default-tenant" {
+						t.Errorf("tenant config loader must never be consulted for the platform default tenant")
+
+						return nil, errors.New("tenant not found")
+					}
+
+					return tenantConfigWithDatabases("generic", "consignado"), nil
+				},
+				ModulePool{Name: "consignado", Resolver: &modulePoolResolverStub{}},
+			)
+			require.NoError(t, err)
+
+			scopes, err := resolver.ListTenantDispatchScopes(t.Context())
+
+			require.NoError(t, err)
+			assert.Equal(t, test.wantScopes, scopes)
+			assert.Equal(t, test.wantLoaded, loadedTenants)
+		})
+	}
 }
 
 func TestModulePoolResolver_ListTenantDispatchScopes_IsolatesTenantFailureAndUsesLastKnownGood(t *testing.T) {

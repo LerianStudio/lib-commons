@@ -1,5 +1,15 @@
 # Lib-commons Changelog
 
+## [6.8.2](https://github.com/LerianStudio/lib-commons/releases/tag/v6.8.2)
+
+Fixes:
+- Updated dependencies to bump `x/crypto` to `0.56.0` and `grpc` to `1.83.1`. (@fredcamaral)
+- Resolved an issue where the tenant configuration was incorrectly loaded for the platform default tenant. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v6.8.1...v6.8.2)
+
+---
+
 ## [6.8.1](https://github.com/LerianStudio/lib-commons/releases/tag/v6.8.1)
 
 Fixes:

@@ -139,12 +139,12 @@
 // unset port and 5432. Database and schema names compare case-sensitively
 // because quoted mixed-case PostgreSQL identifiers denote distinct objects.
 //
-// The default tenant follows the same topology loader as every other tenant, so
-// configured module pools are dispatched rather than silently reducing the
-// default tenant to its generic root pool. If its topology cannot be loaded and
-// no last-known-good snapshot exists, its generic scope remains available. A
-// non-default tenant with no last-known-good snapshot is skipped in isolation;
-// healthy tenants continue through the refresh.
+// The platform default tenant never reaches the topology loader. ListTenants
+// appends it to the roster precisely because Tenant Manager does not enumerate
+// it, so looking it up is a guaranteed not-found answer and one WARN per
+// refresh. It always resolves to exactly one generic scope. A non-default
+// tenant with no last-known-good snapshot is skipped in isolation; healthy
+// tenants continue through the refresh.
 //
 // Concurrent topology refreshes are monotonic: a refresh that started earlier
 // cannot replace a newer snapshot when it completes later. EvictTenant removes

@@ -216,6 +216,9 @@ func (resolver *ModulePoolResolver) ListTenants(ctx context.Context) ([]string, 
 // ListTenantDispatchScopes returns one dispatch scope per physical tenant
 // database. It isolates per-tenant topology failures and atomically replaces
 // cached topology so removed tenants lose every module scope.
+//
+// The platform default tenant is never looked up in tenant configuration: it is
+// not registered in Tenant Manager, so it always resolves to the generic pool.
 func (resolver *ModulePoolResolver) ListTenantDispatchScopes(
 	ctx context.Context,
 ) ([]outbox.TenantDispatchScope, error) {
@@ -256,12 +259,21 @@ func (resolver *ModulePoolResolver) ListTenantDispatchScopes(
 	orderedScopes := make([]outbox.TenantDispatchScope, 0, len(uniqueTenantIDs)*(len(resolver.modules)+1))
 
 	for _, tenantID := range uniqueTenantIDs {
+		// The platform default tenant lives in the generic pool by definition.
+		// ListTenants appends it to the roster precisely because Tenant Manager
+		// does not enumerate it, so loading its config is a guaranteed
+		// not-found answer and one WARN per topology refresh.
+		if tenantID == resolver.defaultTenantID {
+			scope := outbox.TenantDispatchScope{TenantID: tenantID}
+			nextTopology[tenantID] = []outbox.TenantDispatchScope{scope}
+			orderedScopes = append(orderedScopes, scope)
+
+			continue
+		}
+
 		scopes, topologyErr := resolver.scopesForTenant(ctx, tenantID)
 		if topologyErr != nil {
 			scopes = resolver.cachedTenantScopes(tenantID)
-			if len(scopes) == 0 && tenantID == resolver.defaultTenantID {
-				scopes = []outbox.TenantDispatchScope{{TenantID: tenantID}}
-			}
 
 			resolver.logTopologyFailure(ctx, "tenant outbox topology refresh failed", tenantID, topologyErr)
 		}
