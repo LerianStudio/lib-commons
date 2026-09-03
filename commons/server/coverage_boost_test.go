@@ -4,6 +4,7 @@ package server_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -95,6 +96,18 @@ func TestServersStarted_ReturnsChannel(t *testing.T) {
 		_ = sm.StartWithGracefulShutdownWithError()
 	}()
 
+	// Every exit of this test, including a t.Fatal on the timeout branches below,
+	// must stop the server and join its goroutine, or the leak outlives the test.
+	var stopOnce sync.Once
+	stop := func() { stopOnce.Do(func() { close(shutdownCh) }) }
+	t.Cleanup(func() {
+		stop()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+		}
+	})
+
 	select {
 	case <-ch:
 		// started was signaled
@@ -102,7 +115,7 @@ func TestServersStarted_ReturnsChannel(t *testing.T) {
 		t.Fatal("ServersStarted did not signal startup before timeout")
 	}
 
-	close(shutdownCh)
+	stop()
 
 	select {
 	case <-done:
