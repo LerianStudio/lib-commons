@@ -12,12 +12,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	tmmongo "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/mongo"
-	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/tenantcache"
-	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
+	tmmongo "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/mongo"
+	tmpostgres "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/postgres"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/tenantcache"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -390,7 +391,7 @@ func newCacheTestClient(t *testing.T, serverURL string) *client.Client {
 
 	c, err := client.NewClient(
 		serverURL,
-		log.NewNop(),
+		obs.Nop(),
 		client.WithAllowInsecureHTTP(),
 		client.WithServiceAPIKey("test-api-key"),
 	)
@@ -427,7 +428,7 @@ func TestNewTenantMiddleware_WithCacheOptions(t *testing.T) {
 
 		loader := tenantcache.NewTenantLoader(
 			pmClient, cache, "test-service",
-			tenantcache.DefaultTenantCacheTTL, log.NewNop(),
+			tenantcache.DefaultTenantCacheTTL, obs.Nop(),
 		)
 
 		mid := NewTenantMiddleware(
@@ -459,7 +460,7 @@ func TestWithTenantDB_CacheHit_SkipsLazyLoad(t *testing.T) {
 	cache := tenantcache.NewTenantCache()
 	loader := tenantcache.NewTenantLoader(
 		pmClient, cache, "test-service",
-		tenantcache.DefaultTenantCacheTTL, log.NewNop(),
+		tenantcache.DefaultTenantCacheTTL, obs.Nop(),
 	)
 
 	// Pre-populate cache so it is a HIT
@@ -511,7 +512,7 @@ func TestWithTenantDB_CacheMiss_LazyLoads(t *testing.T) {
 	cache := tenantcache.NewTenantCache()
 	loader := tenantcache.NewTenantLoader(
 		pmClient, cache, "test-service",
-		tenantcache.DefaultTenantCacheTTL, log.NewNop(),
+		tenantcache.DefaultTenantCacheTTL, obs.Nop(),
 	)
 
 	// Cache is empty -- this is a cache MISS
@@ -565,7 +566,7 @@ func TestWithTenantDB_CacheExpired_LazyLoads(t *testing.T) {
 	cache := tenantcache.NewTenantCache()
 	loader := tenantcache.NewTenantLoader(
 		pmClient, cache, "test-service",
-		tenantcache.DefaultTenantCacheTTL, log.NewNop(),
+		tenantcache.DefaultTenantCacheTTL, obs.Nop(),
 	)
 
 	// Pre-populate cache with an already-expired entry
@@ -621,7 +622,7 @@ func TestWithTenantDB_CacheMiss_LoadFails_Suspended(t *testing.T) {
 	cache := tenantcache.NewTenantCache()
 	loader := tenantcache.NewTenantLoader(
 		pmClient, cache, "test-service",
-		tenantcache.DefaultTenantCacheTTL, log.NewNop(),
+		tenantcache.DefaultTenantCacheTTL, obs.Nop(),
 	)
 
 	mid := &TenantMiddleware{
@@ -666,7 +667,7 @@ func TestWithTenantDB_CacheMiss_LoadFails_NotFound(t *testing.T) {
 	cache := tenantcache.NewTenantCache()
 	loader := tenantcache.NewTenantLoader(
 		pmClient, cache, "test-service",
-		tenantcache.DefaultTenantCacheTTL, log.NewNop(),
+		tenantcache.DefaultTenantCacheTTL, obs.Nop(),
 	)
 
 	mid := &TenantMiddleware{

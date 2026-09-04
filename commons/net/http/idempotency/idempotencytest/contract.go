@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/net/http/idempotency"
+	"github.com/LerianStudio/lib-commons/v7/commons/net/http/idempotency"
 	"github.com/stretchr/testify/require"
 )
 

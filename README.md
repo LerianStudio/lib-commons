@@ -18,7 +18,7 @@ Use the library boundary table below as the canonical direction for renamed, red
 ## Installation
 
 ```bash
-go get github.com/LerianStudio/lib-commons/v6
+go get github.com/LerianStudio/lib-commons/v7
 ```
 
 ## Lerian Library Boundaries
@@ -88,7 +88,11 @@ The former `commons/opentelemetry`, `commons/opentelemetry/metrics`, `commons/op
 - `commons/license`: license validation with functional options (`New(opts...)`, `WithLogger`, `WithFailClosed`), fail-closed default termination (`Terminate` exits with code 1 unless a custom handler is configured), handler management (`SetHandler`), error-returning validation (`TerminateWithError`/`TerminateSafe`)
 - `commons/pointers`: pointer conversion helpers (`String`, `Bool`, `Time`, `Int`, `Int64`, `Float64`)
 - `commons/cron`: cron expression parser (`Parse`) and scheduler (`Schedule.Next`)
-- `commons/secretsmanager`: AWS Secrets Manager M2M and external credential retrieval via `GetM2MCredentials` / `GetExternalCredentials`; version-addressed external credentials use the opaque `ExternalCredentialReference` capability, created by `BuildExternalSecretVersionReference` or parsed from storage with `ParseExternalCredentialReference(reference, trustedScope)` before `GetExternalCredentialsByReference`; canonical UUID-versioned SecretIds (`tenants/{env?}/{tenant}/{app}/external/{target}/credentials/versions/{uuid}`), exact scope binding, strict input validation, typed retrieval errors, non-null string-only JSON objects, and the `SecretsManagerClient` test seam
+- `commons/secretsmanager`: M2M and external credential custody over a selectable backend — AWS Secrets Manager (default) or HashiCorp Vault KV v2, for deployments outside AWS. Retrieval via `GetM2MCredentials` / `GetExternalCredentials`; version-addressed external credentials use the opaque `ExternalCredentialReference` capability, created by `BuildExternalSecretVersionReference` or parsed from storage with `ParseExternalCredentialReference(reference, trustedScope)` before `GetExternalCredentialsByReference`; canonical UUID-versioned SecretIds (`tenants/{env?}/{tenant}/{app}/external/{target}/credentials/versions/{uuid}`), exact scope binding, strict input validation, typed retrieval errors, non-null string-only JSON objects, and the `SecretsManagerClient` test seam
+  - Backend selection: `Config{Backend: BackendVault, Vault: VaultConfig{...}}.NewReader(awsClient)` and `.NewWriter(awsClient)`. The zero `Config` keeps AWS, so existing deployments change nothing. Selection never falls back between backends: a misconfigured or unreachable backend is an error, never a silent switch to the other one.
+  - Writes: `SecretWriter` (`CreateSecretString` / `DeleteSecret`) is create-only on both backends — rotation allocates a new versioned reference instead of overwriting — and deletion leaves no recovery window.
+  - Vault auth: `VaultConfig` takes a static token (or `VAULT_TOKEN`); deployments using AppRole or Kubernetes auth authenticate their own `*vaultapi.Client` and pass it to `NewVaultClientFrom`, keeping token renewal where they can see it.
+  - `commons/secretsmanager/secretsmanagertest`: the backend-agnostic contract suite both backends must pass, so "the backend is an infrastructure choice" stays a measured claim
 
 ### Multi-tenant packages
 

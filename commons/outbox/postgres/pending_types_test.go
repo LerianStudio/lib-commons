@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
-	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
+	libPostgres "github.com/LerianStudio/lib-commons/v7/commons/postgres"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

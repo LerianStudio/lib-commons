@@ -9,7 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -90,7 +91,7 @@ func newTestConnection(amqpURL, mgmtURL string) *RabbitMQConnection {
 		User:                     testRabbitMQUser,
 		Pass:                     testRabbitMQPass,
 		AllowInsecureHealthCheck: true,
-		Logger:                   log.NewNop(),
+		Logger:                   obs.Nop(),
 	}
 }
 

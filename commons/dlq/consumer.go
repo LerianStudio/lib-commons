@@ -7,10 +7,11 @@ import (
 	"sync"
 	"time"
 
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
-	libRuntime "github.com/LerianStudio/lib-observability/v2/runtime"
-	libTracing "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
+	libRuntime "github.com/LerianStudio/lib-observability/v4/runtime"
+	libTracing "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 )
@@ -39,7 +40,7 @@ type ConsumerConfig struct {
 type Consumer struct {
 	handler   *Handler
 	retryFunc RetryFunc
-	logger    libLog.Logger
+	logger    obs.Logger
 	tracer    trace.Tracer
 	metrics   DLQMetrics
 	module    string
@@ -53,7 +54,7 @@ type Consumer struct {
 type ConsumerOption func(*Consumer)
 
 // WithConsumerLogger sets the logger used by the Consumer.
-func WithConsumerLogger(l libLog.Logger) ConsumerOption {
+func WithConsumerLogger(l obs.Logger) ConsumerOption {
 	return func(c *Consumer) {
 		if l != nil {
 			c.logger = l
@@ -131,7 +132,7 @@ func NewConsumer(handler *Handler, retryFn RetryFunc, opts ...ConsumerOption) (*
 	c := &Consumer{
 		handler:   handler,
 		retryFunc: retryFn,
-		logger:    libLog.NewNop(),
+		logger:    obs.Nop(),
 		tracer:    noop.NewTracerProvider().Tracer("dlq.consumer.noop"),
 		cfg: ConsumerConfig{
 			PollInterval: 30 * time.Second,
@@ -178,7 +179,7 @@ func (c *Consumer) Run(ctx context.Context) {
 		// goroutine will nil c.stopCh once it fully exits.
 		c.stopMu.Unlock()
 
-		c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: Run() called while already running, ignoring")
+		c.logger.Log(ctx, obs.LevelWarn, "dlq consumer: Run() called while already running, ignoring")
 
 		return
 	}
@@ -198,20 +199,20 @@ func (c *Consumer) Run(ctx context.Context) {
 	ticker := time.NewTicker(c.cfg.PollInterval)
 	defer ticker.Stop()
 
-	c.logger.Log(ctx, libLog.LevelInfo, "dlq consumer started",
-		libLog.String("sources", fmt.Sprintf("%v", c.cfg.Sources)),
-		libLog.String("interval", c.cfg.PollInterval.String()),
-		libLog.Int("batch_size", c.cfg.BatchSize),
+	c.logger.Log(ctx, obs.LevelInfo, "dlq consumer started",
+		"sources", fmt.Sprintf("%v", c.cfg.Sources),
+		"interval", c.cfg.PollInterval.String(),
+		"batch_size", c.cfg.BatchSize,
 	)
 
 	for {
 		select {
 		case <-ctx.Done():
-			c.logger.Log(ctx, libLog.LevelInfo, "dlq consumer stopped")
+			c.logger.Log(ctx, obs.LevelInfo, "dlq consumer stopped")
 
 			return
 		case <-runStopCh:
-			c.logger.Log(ctx, libLog.LevelInfo, "dlq consumer stopped")
+			c.logger.Log(ctx, obs.LevelInfo, "dlq consumer stopped")
 
 			return
 		case <-ticker.C:
@@ -273,9 +274,9 @@ func (c *Consumer) processSource(ctx context.Context, source string) {
 	// Discover tenant-scoped keys (e.g. "dlq:tenant-A:outbound").
 	tenantKeys, err := c.handler.ScanQueues(ctx, source)
 	if err != nil {
-		c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: tenant key scan failed",
-			libLog.String("source", source),
-			libLog.Err(err),
+		c.logger.Log(ctx, obs.LevelWarn, "dlq consumer: tenant key scan failed",
+			"source", source,
+			"error", err,
 		)
 
 		return
@@ -354,9 +355,9 @@ func (c *Consumer) drainSource(ctx context.Context, source string, limit int) in
 		// infinite loop when every message in the queue is future-dated.
 		qLen, err := c.handler.QueueLength(ctx, source)
 		if err != nil {
-			c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: queue length check failed",
-				libLog.String("source", source),
-				libLog.Err(err),
+			c.logger.Log(ctx, obs.LevelWarn, "dlq consumer: queue length check failed",
+				"source", source,
+				"error", err,
 			)
 
 			return processed
@@ -385,9 +386,9 @@ func (c *Consumer) drainSource(ctx context.Context, source string, limit int) in
 					return processed
 				}
 
-				c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: dequeue failed",
-					libLog.String("source", source),
-					libLog.Err(deqErr),
+				c.logger.Log(ctx, obs.LevelWarn, "dlq consumer: dequeue failed",
+					"source", source,
+					"error", deqErr,
 				)
 
 				return processed
@@ -427,10 +428,10 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 		ctxTenant := tmcore.GetTenantIDContext(ctx)
 		if ctxTenant != msg.TenantID {
 			if ctxTenant != "" {
-				c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: tenant mismatch, restoring message tenant",
-					libLog.String("queue_tenant", ctxTenant),
-					libLog.String("message_tenant", msg.TenantID),
-					libLog.String("source", msg.Source),
+				c.logger.Log(ctx, obs.LevelWarn, "dlq consumer: tenant mismatch, restoring message tenant",
+					"queue_tenant", ctxTenant,
+					"message_tenant", msg.TenantID,
+					"source", msg.Source,
 				)
 			}
 
@@ -445,10 +446,10 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 		if err := c.handler.Enqueue(ctx, msg); err != nil {
 			libTracing.HandleSpanError(span, "dlq message lost on re-enqueue", err)
 
-			c.logger.Log(ctx, libLog.LevelError, "dlq consumer: message lost — failed to re-enqueue not-yet-ready message",
-				libLog.String("source", msg.Source),
-				libLog.Int("retry_count", msg.RetryCount),
-				libLog.Err(err),
+			c.logger.Log(ctx, obs.LevelError, "dlq consumer: message lost — failed to re-enqueue not-yet-ready message",
+				"source", msg.Source,
+				"retry_count", msg.RetryCount,
+				"error", err,
 			)
 
 			metricSource := c.sanitizeMetricSource(msg.Source)
@@ -467,11 +468,11 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 		metricSource := c.sanitizeMetricSource(msg.Source)
 		c.metrics.RecordExhausted(ctx, metricSource)
 
-		c.logger.Log(ctx, libLog.LevelError, "dlq consumer: message permanently failed, discarding",
-			libLog.String("source", msg.Source),
-			libLog.Int("retry_count", msg.RetryCount),
-			libLog.Int("max_retries", msg.MaxRetries),
-			libLog.String("last_error", truncateString(msg.ErrorMessage, 200)),
+		c.logger.Log(ctx, obs.LevelError, "dlq consumer: message permanently failed, discarding",
+			"source", msg.Source,
+			"retry_count", msg.RetryCount,
+			"max_retries", msg.MaxRetries,
+			"last_error", truncateString(msg.ErrorMessage, 200),
 		)
 
 		return true
@@ -488,10 +489,10 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 		if requeueErr := c.handler.Enqueue(ctx, msg); requeueErr != nil {
 			libTracing.HandleSpanError(span, "dlq message lost on re-enqueue", requeueErr)
 
-			c.logger.Log(ctx, libLog.LevelError, "dlq consumer: message lost — failed to re-enqueue after retry failure",
-				libLog.String("source", msg.Source),
-				libLog.Int("retry_count", msg.RetryCount),
-				libLog.Err(requeueErr),
+			c.logger.Log(ctx, obs.LevelError, "dlq consumer: message lost — failed to re-enqueue after retry failure",
+				"source", msg.Source,
+				"retry_count", msg.RetryCount,
+				"error", requeueErr,
 			)
 
 			metricSource := c.sanitizeMetricSource(msg.Source)
@@ -500,10 +501,10 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 			return true
 		}
 
-		c.logger.Log(ctx, libLog.LevelWarn, "dlq consumer: retry failed, re-enqueued",
-			libLog.String("source", msg.Source),
-			libLog.Int("retry_count", msg.RetryCount),
-			libLog.Err(retryErr),
+		c.logger.Log(ctx, obs.LevelWarn, "dlq consumer: retry failed, re-enqueued",
+			"source", msg.Source,
+			"retry_count", msg.RetryCount,
+			"error", retryErr,
 		)
 
 		return true
@@ -513,9 +514,9 @@ func (c *Consumer) processMessage(ctx context.Context, msg *FailedMessage) bool 
 	metricSource := c.sanitizeMetricSource(msg.Source)
 	c.metrics.RecordRetried(ctx, metricSource)
 
-	c.logger.Log(ctx, libLog.LevelInfo, "dlq consumer: message retry succeeded",
-		libLog.String("source", msg.Source),
-		libLog.Int("retry_count", msg.RetryCount),
+	c.logger.Log(ctx, obs.LevelInfo, "dlq consumer: message retry succeeded",
+		"source", msg.Source,
+		"retry_count", msg.RetryCount,
 	)
 
 	return true
@@ -529,9 +530,9 @@ func (c *Consumer) safeRetryFunc(ctx context.Context, msg *FailedMessage) (retry
 		if r := recover(); r != nil {
 			retryErr = fmt.Errorf("dlq consumer: retryFunc panicked: %v", r)
 
-			c.logger.Log(ctx, libLog.LevelError, "dlq consumer: retryFunc panic recovered",
-				libLog.String("source", msg.Source),
-				libLog.String("panic", fmt.Sprintf("%v", r)),
+			c.logger.Log(ctx, obs.LevelError, "dlq consumer: retryFunc panic recovered",
+				"source", msg.Source,
+				"panic", fmt.Sprintf("%v", r),
 			)
 		}
 	}()

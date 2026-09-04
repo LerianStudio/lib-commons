@@ -14,8 +14,9 @@ import (
 	"io"
 	"reflect"
 
-	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
+	constant "github.com/LerianStudio/lib-observability/v4/constants"
 )
 
 var (
@@ -46,7 +47,7 @@ func isNilInterface(i any) bool {
 type Crypto struct {
 	HashSecretKey    string
 	EncryptSecretKey string
-	Logger           libLog.Logger
+	Logger           obs.Logger
 	Cipher           cipher.AEAD
 }
 
@@ -66,9 +67,9 @@ func (c *Crypto) GoString() string {
 
 // logger returns the configured Logger, falling back to a NopLogger if nil.
 // Uses isNilInterface to detect typed nils (e.g. (*MyLogger)(nil)).
-func (c *Crypto) logger() libLog.Logger {
+func (c *Crypto) logger() obs.Logger {
 	if c == nil || isNilInterface(c.Logger) {
-		return libLog.NewNop()
+		return obs.Nop()
 	}
 
 	return c.Logger
@@ -88,7 +89,7 @@ func (c *Crypto) GenerateHash(plaintext *string) string {
 	}
 
 	if c.HashSecretKey == "" {
-		c.logger().Log(context.Background(), libLog.LevelError, "GenerateHash called with empty HashSecretKey")
+		c.logger().Log(context.Background(), obs.LevelError, "GenerateHash called with empty HashSecretKey")
 		return ""
 	}
 
@@ -109,25 +110,25 @@ func (c *Crypto) InitializeCipher() error {
 	}
 
 	if !isNilInterface(c.Cipher) {
-		c.logger().Log(context.Background(), libLog.LevelInfo, "Cipher already initialized")
+		c.logger().Log(context.Background(), obs.LevelInfo, "Cipher already initialized")
 		return nil
 	}
 
 	decodedKey, err := hex.DecodeString(c.EncryptSecretKey)
 	if err != nil {
-		c.logger().Log(context.Background(), libLog.LevelError, "Failed to decode hex private key", libLog.Err(err))
+		c.logger().Log(context.Background(), obs.LevelError, "Failed to decode hex private key", "error", err)
 		return fmt.Errorf("crypto: hex decode key: %w", err)
 	}
 
 	blockCipher, err := aes.NewCipher(decodedKey)
 	if err != nil {
-		c.logger().Log(context.Background(), libLog.LevelError, "Error creating AES block cipher with the private key", libLog.Err(err))
+		c.logger().Log(context.Background(), obs.LevelError, "Error creating AES block cipher with the private key", "error", err)
 		return fmt.Errorf("crypto: create AES block cipher: %w", err)
 	}
 
 	aesGcm, err := cipher.NewGCM(blockCipher)
 	if err != nil {
-		c.logger().Log(context.Background(), libLog.LevelError, "Error creating GCM cipher", libLog.Err(err))
+		c.logger().Log(context.Background(), obs.LevelError, "Error creating GCM cipher", "error", err)
 		return fmt.Errorf("crypto: create GCM cipher: %w", err)
 	}
 
@@ -156,7 +157,7 @@ func (c *Crypto) Encrypt(plainText *string) (*string, error) {
 	// Generates random nonce with a size of 12 bytes
 	nonce := make([]byte, c.Cipher.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		c.logger().Log(context.Background(), libLog.LevelError, "Failed to generate nonce", libLog.Err(err))
+		c.logger().Log(context.Background(), obs.LevelError, "Failed to generate nonce", "error", err)
 		return nil, fmt.Errorf("crypto: generate nonce: %w", err)
 	}
 
@@ -185,13 +186,13 @@ func (c *Crypto) Decrypt(encryptedText *string) (*string, error) {
 
 	decodedEncryptedText, err := base64.StdEncoding.DecodeString(*encryptedText)
 	if err != nil {
-		c.logger().Log(context.Background(), libLog.LevelError, "Failed to decode encrypted text", libLog.Err(err))
+		c.logger().Log(context.Background(), obs.LevelError, "Failed to decode encrypted text", "error", err)
 		return nil, fmt.Errorf("crypto: decode base64: %w", err)
 	}
 
 	nonceSize := c.Cipher.NonceSize()
 	if len(decodedEncryptedText) < nonceSize {
-		c.logger().Log(context.Background(), libLog.LevelError, "Failed to decrypt ciphertext", libLog.Err(ErrCiphertextTooShort))
+		c.logger().Log(context.Background(), obs.LevelError, "Failed to decrypt ciphertext", "error", ErrCiphertextTooShort)
 
 		return nil, ErrCiphertextTooShort
 	}
@@ -203,7 +204,7 @@ func (c *Crypto) Decrypt(encryptedText *string) (*string, error) {
 	// False positive described at https://github.com/securego/gosec/issues/1209
 	plainText, err := c.Cipher.Open(nil, nonce, cipherText, nil)
 	if err != nil {
-		c.logger().Log(context.Background(), libLog.LevelError, "Failed to decrypt ciphertext", libLog.Err(err))
+		c.logger().Log(context.Background(), obs.LevelError, "Failed to decrypt ciphertext", "error", err)
 		return nil, fmt.Errorf("crypto: decrypt: %w", err)
 	}
 

@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
@@ -16,9 +17,9 @@ import (
 )
 
 type storageLogEntry struct {
-	level  libLog.Level
+	level  int
 	msg    string
-	fields []libLog.Field
+	fields []any
 }
 
 type captureStorageLogger struct {
@@ -26,18 +27,16 @@ type captureStorageLogger struct {
 	entries []storageLogEntry
 }
 
-func (l *captureStorageLogger) Log(_ context.Context, level libLog.Level, msg string, fields ...libLog.Field) {
+func (l *captureStorageLogger) Log(_ context.Context, level int, msg string, fields ...any) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	entryFields := append([]libLog.Field(nil), fields...)
+	entryFields := append([]any(nil), fields...)
 	l.entries = append(l.entries, storageLogEntry{level: level, msg: msg, fields: entryFields})
 }
 
-func (l *captureStorageLogger) With(...libLog.Field) libLog.Logger { return l }
-func (l *captureStorageLogger) WithGroup(string) libLog.Logger     { return l }
-func (l *captureStorageLogger) Enabled(libLog.Level) bool          { return true }
-func (l *captureStorageLogger) Sync(context.Context) error         { return nil }
+func (l *captureStorageLogger) Enabled(int) bool           { return true }
+func (l *captureStorageLogger) Sync(context.Context) error { return nil }
 
 func (l *captureStorageLogger) snapshot() []storageLogEntry {
 	l.mu.Lock()
@@ -48,11 +47,9 @@ func (l *captureStorageLogger) snapshot() []storageLogEntry {
 
 type typedNilStorageLogger struct{}
 
-func (*typedNilStorageLogger) Log(context.Context, libLog.Level, string, ...libLog.Field) {}
-func (*typedNilStorageLogger) With(...libLog.Field) libLog.Logger                         { return nil }
-func (*typedNilStorageLogger) WithGroup(string) libLog.Logger                             { return nil }
-func (*typedNilStorageLogger) Enabled(libLog.Level) bool                                  { return false }
-func (*typedNilStorageLogger) Sync(context.Context) error                                 { return nil }
+func (*typedNilStorageLogger) Log(context.Context, int, string, ...any) {}
+func (*typedNilStorageLogger) Enabled(int) bool                         { return false }
+func (*typedNilStorageLogger) Sync(context.Context) error               { return nil }
 
 func TestRedisStorage_ResetRemovesTenantScopedRateLimitKeys(t *testing.T) {
 	t.Parallel()
@@ -100,12 +97,17 @@ func TestRedisStorage_LogError_HashesKeyAndOmitsRawKey(t *testing.T) {
 
 	foundHash := false
 	for _, entry := range entries {
-		for _, field := range entry.fields {
-			assert.NotEqual(t, "key", field.Key, "raw key field must not be logged")
-			assert.NotEqual(t, rawKey, field.Value, "raw key value must not be logged")
-			if field.Key == "key_hash" {
+		fields := obs.NormalizeKV(entry.fields...)
+		for i := 0; i < len(fields); i += 2 {
+			key, _ := fields[i].(string)
+			value := fields[i+1]
+
+			assert.NotEqual(t, "key", key, "raw key field must not be logged")
+			assert.NotEqual(t, rawKey, value, "raw key value must not be logged")
+
+			if key == "key_hash" {
 				foundHash = true
-				assert.Equal(t, hashKey(rawKey), field.Value)
+				assert.Equal(t, hashKey(rawKey), value)
 			}
 		}
 	}

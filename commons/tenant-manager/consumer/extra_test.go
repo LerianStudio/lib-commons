@@ -6,10 +6,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/testutil"
-	tmrabbitmq "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/rabbitmq"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/testutil"
+	tmrabbitmq "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/rabbitmq"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,64 +32,6 @@ func newTestConsumerConfig() MultiTenantConfig {
 	cfg.AllowInsecureHTTP = true
 
 	return cfg
-}
-
-// TestNewMultiTenantConsumerWithRabbitMQ_NilRabbitMQ covers the compat constructor (was 0%).
-func TestNewMultiTenantConsumerWithRabbitMQ_NilRabbitMQ(t *testing.T) {
-	t.Parallel()
-
-	cfg := newTestConsumerConfig()
-	logger := testutil.NewMockLogger()
-
-	// nil rabbitmq - should still create consumer
-	c, err := NewMultiTenantConsumerWithRabbitMQ(nil, cfg, logger)
-	require.NoError(t, err)
-	require.NotNil(t, c)
-}
-
-func TestNewMultiTenantConsumerWithRabbitMQ_WithRabbitMQ(t *testing.T) {
-	t.Parallel()
-
-	cfg := newTestConsumerConfig()
-	logger := testutil.NewMockLogger()
-
-	rmqClient, err := newTestClientFor(t, "http://localhost:8080")
-	require.NoError(t, err)
-
-	manager := tmrabbitmq.NewManager(rmqClient, "ledger")
-
-	c, err := NewMultiTenantConsumerWithRabbitMQ(manager, cfg, logger)
-	require.NoError(t, err)
-	require.NotNil(t, c)
-}
-
-// TestNewMultiTenantConsumerWithRedis covers the compat constructor (was 0%).
-func TestNewMultiTenantConsumerWithRedis_NilRabbitMQ(t *testing.T) {
-	t.Parallel()
-
-	cfg := newTestConsumerConfig()
-	logger := testutil.NewMockLogger()
-
-	c, err := NewMultiTenantConsumerWithRedis(nil, nil, cfg, logger)
-	require.NoError(t, err)
-	require.NotNil(t, c)
-}
-
-func TestNewMultiTenantConsumerWithRedis_WithRabbitMQ(t *testing.T) {
-	t.Parallel()
-
-	cfg := newTestConsumerConfig()
-	logger := testutil.NewMockLogger()
-
-	rmqClient, err := newTestClientFor(t, "http://localhost:8080")
-	require.NoError(t, err)
-
-	manager := tmrabbitmq.NewManager(rmqClient, "ledger")
-
-	// redisClient is silently ignored
-	c, err := NewMultiTenantConsumerWithRedis(manager, "ignored-redis-client", cfg, logger)
-	require.NoError(t, err)
-	require.NotNil(t, c)
 }
 
 // TestIsDegraded_NotInState covers IsDegraded when tenant has no retry state.

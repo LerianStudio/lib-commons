@@ -6,7 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -31,7 +32,7 @@ func TestValidate_EmptyPrimaryDSN(t *testing.T) {
 func TestWarnInsecureDSN_EnabledLoggerSecureDSN(t *testing.T) {
 	t.Parallel()
 
-	logger := log.NewNop()
+	logger := obs.Nop()
 	assert.NotPanics(t, func() {
 		warnInsecureDSN(context.Background(), logger, "postgres://user:pass@localhost/db?sslmode=require", "primary")
 	})
@@ -40,7 +41,7 @@ func TestWarnInsecureDSN_EnabledLoggerSecureDSN(t *testing.T) {
 func TestWarnInsecureDSN_EnabledLoggerInsecureDSN(t *testing.T) {
 	t.Parallel()
 
-	logger := log.NewNop()
+	logger := obs.Nop()
 	assert.NotPanics(t, func() {
 		warnInsecureDSN(context.Background(), logger, "postgres://user:pass@localhost/db?sslmode=disable", "primary")
 	})
@@ -73,16 +74,16 @@ func TestClient_LogAtLevel_NilLogger(t *testing.T) {
 
 	c := &Client{}
 	assert.NotPanics(t, func() {
-		c.logAtLevel(context.Background(), log.LevelInfo, "test message")
+		c.logAtLevel(context.Background(), obs.LevelInfo, "test message")
 	})
 }
 
 func TestClient_LogAtLevel_NopLogger(t *testing.T) {
 	t.Parallel()
 
-	c := &Client{cfg: Config{Logger: log.NewNop()}}
+	c := &Client{cfg: Config{Logger: obs.Nop()}}
 	assert.NotPanics(t, func() {
-		c.logAtLevel(context.Background(), log.LevelInfo, "test message")
+		c.logAtLevel(context.Background(), obs.LevelInfo, "test message")
 	})
 }
 
@@ -110,7 +111,7 @@ func TestResolver_NeverConnected_ReturnsError(t *testing.T) {
 	c, err := New(Config{
 		PrimaryDSN: "postgres://user:pass@127.0.0.1:1/testdb?sslmode=disable",
 		ReplicaDSN: "postgres://user:pass@127.0.0.1:1/testdb?sslmode=disable",
-		Logger:     log.NewNop(),
+		Logger:     obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -130,7 +131,7 @@ func TestClose_NotConnected_NoError(t *testing.T) {
 	c, err := New(Config{
 		PrimaryDSN: "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
 		ReplicaDSN: "postgres://user:pass@localhost:5432/testdb?sslmode=disable",
-		Logger:     log.NewNop(),
+		Logger:     obs.Nop(),
 	})
 	require.NoError(t, err)
 
@@ -184,8 +185,8 @@ func TestMigrationLogAtLevel_NopLoggerEnabled(t *testing.T) {
 	t.Parallel()
 
 	// NewNop logger has Enabled returning false — no log should happen
-	logger := log.NewNop()
+	logger := obs.Nop()
 	assert.NotPanics(t, func() {
-		migrationLogAtLevel(context.Background(), logger, log.LevelWarn, "warn msg")
+		migrationLogAtLevel(context.Background(), logger, obs.LevelWarn, "warn msg")
 	})
 }

@@ -50,7 +50,7 @@ lib-commons/
 │   ├── rabbitmq/                   # RabbitMQ connector
 │   ├── redis/                      # Redis connector (standalone/sentinel/cluster)
 │   ├── safe/                       # Panic-free math/regex/slice operations
-│   ├── secretsmanager/             # AWS Secrets Manager M2M credential retrieval
+│   ├── secretsmanager/             # M2M/external credential custody (AWS Secrets Manager or Vault KV v2)
 │   ├── security/                   # Sensitive field detection and handling
 │   ├── server/                     # Graceful shutdown and lifecycle (ServerManager)
 │   ├── shell/                      # Makefile includes and shell utilities

@@ -4,153 +4,155 @@ package log
 
 import (
 	"context"
+	"errors"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 )
 
-func TestTenantAwareLogger_Log(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	t.Run("injects tenant_id when present in context", func(t *testing.T) {
-		mockLogger := log.NewMockLogger(ctrl)
-
-		var capturedFields []log.Field
-
-		mockLogger.EXPECT().
-			Log(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(ctx context.Context, level log.Level, msg string, fields ...log.Field) {
-				capturedFields = fields
-			})
-
-		logger := NewTenantAwareLogger(mockLogger)
-		ctx := core.ContextWithTenantID(context.Background(), "tenant-123")
-
-		logger.Log(ctx, log.LevelInfo, "test message", log.String("key", "value"))
-
-		require.Len(t, capturedFields, 2)
-		assert.Equal(t, "key", capturedFields[0].Key)
-		assert.Equal(t, "value", capturedFields[0].Value)
-		assert.Equal(t, "tenant_id", capturedFields[1].Key)
-		assert.Equal(t, "tenant-123", capturedFields[1].Value)
-	})
-
-	t.Run("works normally when tenant_id is not in context", func(t *testing.T) {
-		mockLogger := log.NewMockLogger(ctrl)
-
-		var capturedFields []log.Field
-
-		mockLogger.EXPECT().
-			Log(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(ctx context.Context, level log.Level, msg string, fields ...log.Field) {
-				capturedFields = fields
-			})
-
-		logger := NewTenantAwareLogger(mockLogger)
-		ctx := context.Background()
-
-		logger.Log(ctx, log.LevelInfo, "test message", log.String("key", "value"))
-
-		require.Len(t, capturedFields, 1)
-		assert.Equal(t, "key", capturedFields[0].Key)
-		assert.Equal(t, "value", capturedFields[0].Value)
-	})
-
-	t.Run("does not overwrite caller-provided tenant_id field", func(t *testing.T) {
-		mockLogger := log.NewMockLogger(ctrl)
-
-		var capturedFields []log.Field
-
-		mockLogger.EXPECT().
-			Log(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(ctx context.Context, level log.Level, msg string, fields ...log.Field) {
-				capturedFields = fields
-			})
-
-		logger := NewTenantAwareLogger(mockLogger)
-		ctx := core.ContextWithTenantID(context.Background(), "tenant-123")
-
-		logger.Log(ctx, log.LevelInfo, "test message",
-			log.String("tenant_id", "caller-tenant"),
-			log.String("key", "value"),
-		)
-
-		require.Len(t, capturedFields, 3)
-		assert.Equal(t, "tenant_id", capturedFields[0].Key)
-		assert.Equal(t, "caller-tenant", capturedFields[0].Value)
-		assert.Equal(t, "key", capturedFields[1].Key)
-		assert.Equal(t, "value", capturedFields[1].Value)
-		assert.Equal(t, "tenant_id", capturedFields[2].Key)
-		assert.Equal(t, "tenant-123", capturedFields[2].Value)
-	})
-
-	t.Run("nil context handled gracefully", func(t *testing.T) {
-		mockLogger := log.NewMockLogger(ctrl)
-
-		mockLogger.EXPECT().
-			Log(gomock.Any(), gomock.Any(), gomock.Any()).
-			DoAndReturn(func(ctx context.Context, level log.Level, msg string, fields ...log.Field) {
-				assert.NotNil(t, ctx, "base logger should receive non-nil context")
-			})
-
-		logger := NewTenantAwareLogger(mockLogger)
-
-		logger.Log(nil, log.LevelInfo, "test message")
-	})
+// captureLogger records what reaches the underlying logger.
+type captureLogger struct {
+	entries []captured
+	enabled bool
+	syncErr error
 }
 
-func TestTenantAwareLogger_OtherMethods(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
+type captured struct {
+	level int
+	msg   string
+	kv    []any
+}
 
-	t.Run("With delegates to base logger", func(t *testing.T) {
-		mockLogger := log.NewMockLogger(ctrl)
-		wrappedLogger := log.NewMockLogger(ctrl)
+func (l *captureLogger) Log(_ context.Context, level int, msg string, kv ...any) {
+	l.entries = append(l.entries, captured{level: level, msg: msg, kv: kv})
+}
 
-		mockLogger.EXPECT().With(log.String("key", "value")).Return(wrappedLogger)
+func (l *captureLogger) Enabled(int) bool { return l.enabled }
 
-		logger := NewTenantAwareLogger(mockLogger)
-		result := logger.With(log.String("key", "value"))
+func (l *captureLogger) Sync(context.Context) error { return l.syncErr }
 
-		assert.Equal(t, wrappedLogger, result)
+func (l *captureLogger) last() captured { return l.entries[len(l.entries)-1] }
+
+func TestTenantAwareLogger_Log(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		ctx    context.Context
+		kv     []any
+		wantKV []any
+	}{
+		{
+			name:   "appends tenant_id when the context carries one",
+			ctx:    core.ContextWithTenantID(context.Background(), "tenant-123"),
+			kv:     []any{"key", "value"},
+			wantKV: []any{"key", "value", "tenant_id", "tenant-123"},
+		},
+		{
+			name:   "leaves attributes untouched without a tenant",
+			ctx:    context.Background(),
+			kv:     []any{"key", "value"},
+			wantKV: []any{"key", "value"},
+		},
+		{
+			name:   "adds tenant_id even with no attributes",
+			ctx:    core.ContextWithTenantID(context.Background(), "tenant-123"),
+			wantKV: []any{"tenant_id", "tenant-123"},
+		},
+		{
+			name:   "nil context is treated as an empty context",
+			ctx:    nil,
+			kv:     []any{"key", "value"},
+			wantKV: []any{"key", "value"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			base := &captureLogger{}
+			logger := NewTenantAwareLogger(base)
+
+			logger.Log(tt.ctx, obs.LevelInfo, "test message", tt.kv...)
+
+			require.Len(t, base.entries, 1)
+			assert.Equal(t, obs.LevelInfo, base.last().level)
+			assert.Equal(t, "test message", base.last().msg)
+			assert.Equal(t, tt.wantKV, base.last().kv)
+		})
+	}
+}
+
+func TestTenantAwareLogger_SatisfiesTheObsContract(t *testing.T) {
+	t.Parallel()
+
+	var _ obs.Logger = NewTenantAwareLogger(obs.Nop())
+}
+
+func TestNewTenantAwareLogger_NilBaseIsSafe(t *testing.T) {
+	t.Parallel()
+
+	logger := NewTenantAwareLogger(nil)
+	require.NotNil(t, logger)
+
+	assert.NotPanics(t, func() {
+		logger.Log(context.Background(), obs.LevelError, "dropped")
+	})
+	assert.False(t, logger.Enabled(obs.LevelError))
+	assert.NoError(t, logger.Sync(context.Background()))
+}
+
+func TestTenantAwareLogger_DelegatesEnabledAndSync(t *testing.T) {
+	t.Parallel()
+
+	base := &captureLogger{enabled: true, syncErr: errors.New("flush failed")}
+	logger := NewTenantAwareLogger(base)
+
+	assert.True(t, logger.Enabled(obs.LevelDebug))
+	assert.ErrorIs(t, logger.Sync(context.Background()), base.syncErr)
+}
+
+// Regression: the removed (TenantAwareLogger).With / .WithGroup methods
+// returned l.base.With(...), which handed back the UNDECORATED base logger and
+// silently dropped tenant_id from every derived logger. The free functions
+// obs.With / obs.WithGroup wrap the tenant-aware logger instead, so the
+// decoration survives.
+func TestObsWithAndWithGroup_KeepTenantIDOnDerivedLoggers(t *testing.T) {
+	t.Parallel()
+
+	ctx := core.ContextWithTenantID(context.Background(), "tenant-123")
+
+	t.Run("With", func(t *testing.T) {
+		t.Parallel()
+
+		base := &captureLogger{}
+
+		obs.With(NewTenantAwareLogger(base), "component", "consumer").
+			Log(ctx, obs.LevelInfo, "derived")
+
+		assert.Equal(
+			t,
+			[]any{"component", "consumer", "tenant_id", "tenant-123"},
+			base.last().kv,
+		)
 	})
 
-	t.Run("WithGroup delegates to base logger", func(t *testing.T) {
-		mockLogger := log.NewMockLogger(ctrl)
-		wrappedLogger := log.NewMockLogger(ctrl)
+	t.Run("WithGroup", func(t *testing.T) {
+		t.Parallel()
 
-		mockLogger.EXPECT().WithGroup("group").Return(wrappedLogger)
+		base := &captureLogger{}
 
-		logger := NewTenantAwareLogger(mockLogger)
-		result := logger.WithGroup("group")
+		obs.WithGroup(NewTenantAwareLogger(base), "db").
+			Log(ctx, obs.LevelInfo, "derived", "table", "accounts")
 
-		assert.Equal(t, wrappedLogger, result)
-	})
-
-	t.Run("Enabled delegates to base logger", func(t *testing.T) {
-		mockLogger := log.NewMockLogger(ctrl)
-
-		mockLogger.EXPECT().Enabled(log.LevelInfo).Return(true)
-
-		logger := NewTenantAwareLogger(mockLogger)
-		result := logger.Enabled(log.LevelInfo)
-
-		assert.True(t, result)
-	})
-
-	t.Run("Sync delegates to base logger", func(t *testing.T) {
-		mockLogger := log.NewMockLogger(ctrl)
-
-		mockLogger.EXPECT().Sync(gomock.Any()).Return(nil)
-
-		logger := NewTenantAwareLogger(mockLogger)
-		err := logger.Sync(context.Background())
-
-		assert.NoError(t, err)
+		assert.Equal(
+			t,
+			[]any{"db.table", "accounts", "tenant_id", "tenant-123"},
+			base.last().kv,
+		)
 	})
 }

@@ -24,7 +24,8 @@ import (
 	"path"
 	"strings"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humafiber"
 	"github.com/gofiber/fiber/v3"
@@ -147,24 +148,24 @@ func DeclareBearerAuth(api huma.API) {
 // title is the docs page <title>; the Scalar data-url points at the
 // prefix-scoped /openapi.json route. Services share this helper; the prefix and
 // title diverge per service.
-func ServeSpec(app *fiber.App, api huma.API, logger libLog.Logger, prefix, title string) {
+func ServeSpec(app *fiber.App, api huma.API, logger obs.Logger, prefix, title string) {
 	if app == nil || api == nil {
 		return
 	}
 
 	if logger == nil {
-		logger = libLog.NewNop()
+		logger = obs.Nop()
 	}
 
 	specYAML, err := api.OpenAPI().YAML()
 	if err != nil {
-		logger.Log(context.Background(), libLog.LevelError, "failed to render Huma spec yaml", libLog.Err(err))
+		logger.Log(context.Background(), obs.LevelError, "failed to render Huma spec yaml", "error", err)
 		return
 	}
 
 	specJSON, err := json.Marshal(api.OpenAPI())
 	if err != nil {
-		logger.Log(context.Background(), libLog.LevelError, "failed to marshal Huma spec json", libLog.Err(err))
+		logger.Log(context.Background(), obs.LevelError, "failed to marshal Huma spec json", "error", err)
 		return
 	}
 

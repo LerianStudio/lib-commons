@@ -4,17 +4,18 @@ import (
 	"context"
 	"fmt"
 
-	tmlog "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/log"
-	liblog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
+	tmlog "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/log"
 )
 
 type Logger struct {
-	base liblog.Logger
+	base obs.Logger
 }
 
-func New(logger liblog.Logger) *Logger {
+func New(logger obs.Logger) *Logger {
 	if logger == nil {
-		logger = liblog.NewNop()
+		logger = obs.Nop()
 	}
 
 	return &Logger{base: tmlog.NewTenantAwareLogger(logger)}
@@ -25,14 +26,14 @@ func (l *Logger) WithFields(kv ...any) *Logger {
 		return New(nil)
 	}
 
-	return &Logger{base: l.base.With(toFields(kv...)...)}
+	return &Logger{base: obs.With(l.base, kv...)}
 }
 
-func (l *Logger) enabled(level liblog.Level) bool {
+func (l *Logger) enabled(level int) bool {
 	return l != nil && l.base != nil && l.base.Enabled(level)
 }
 
-func (l *Logger) log(ctx context.Context, level liblog.Level, msg string) {
+func (l *Logger) log(ctx context.Context, level int, msg string) {
 	if l == nil || l.base == nil {
 		return
 	}
@@ -45,115 +46,115 @@ func (l *Logger) log(ctx context.Context, level liblog.Level, msg string) {
 }
 
 func (l *Logger) InfoCtx(ctx context.Context, args ...any) {
-	if !l.enabled(liblog.LevelInfo) {
+	if !l.enabled(obs.LevelInfo) {
 		return
 	}
 
-	l.log(ctx, liblog.LevelInfo, fmt.Sprint(args...))
+	l.log(ctx, obs.LevelInfo, fmt.Sprint(args...))
 }
 
 func (l *Logger) WarnCtx(ctx context.Context, args ...any) {
-	if !l.enabled(liblog.LevelWarn) {
+	if !l.enabled(obs.LevelWarn) {
 		return
 	}
 
-	l.log(ctx, liblog.LevelWarn, fmt.Sprint(args...))
+	l.log(ctx, obs.LevelWarn, fmt.Sprint(args...))
 }
 
 func (l *Logger) ErrorCtx(ctx context.Context, args ...any) {
-	if !l.enabled(liblog.LevelError) {
+	if !l.enabled(obs.LevelError) {
 		return
 	}
 
-	l.log(ctx, liblog.LevelError, fmt.Sprint(args...))
+	l.log(ctx, obs.LevelError, fmt.Sprint(args...))
 }
 
 func (l *Logger) InfofCtx(ctx context.Context, f string, args ...any) {
-	if !l.enabled(liblog.LevelInfo) {
+	if !l.enabled(obs.LevelInfo) {
 		return
 	}
 
-	l.log(ctx, liblog.LevelInfo, fmt.Sprintf(f, args...))
+	l.log(ctx, obs.LevelInfo, fmt.Sprintf(f, args...))
 }
 
 func (l *Logger) WarnfCtx(ctx context.Context, f string, args ...any) {
-	if !l.enabled(liblog.LevelWarn) {
+	if !l.enabled(obs.LevelWarn) {
 		return
 	}
 
-	l.log(ctx, liblog.LevelWarn, fmt.Sprintf(f, args...))
+	l.log(ctx, obs.LevelWarn, fmt.Sprintf(f, args...))
 }
 
 func (l *Logger) ErrorfCtx(ctx context.Context, f string, args ...any) {
-	if !l.enabled(liblog.LevelError) {
+	if !l.enabled(obs.LevelError) {
 		return
 	}
 
-	l.log(ctx, liblog.LevelError, fmt.Sprintf(f, args...))
+	l.log(ctx, obs.LevelError, fmt.Sprintf(f, args...))
 }
 
 func (l *Logger) Info(args ...any) {
-	if !l.enabled(liblog.LevelInfo) {
+	if !l.enabled(obs.LevelInfo) {
 		return
 	}
 
-	l.log(context.Background(), liblog.LevelInfo, fmt.Sprint(args...))
+	l.log(context.Background(), obs.LevelInfo, fmt.Sprint(args...))
 }
 
 func (l *Logger) Warn(args ...any) {
-	if !l.enabled(liblog.LevelWarn) {
+	if !l.enabled(obs.LevelWarn) {
 		return
 	}
 
-	l.log(context.Background(), liblog.LevelWarn, fmt.Sprint(args...))
+	l.log(context.Background(), obs.LevelWarn, fmt.Sprint(args...))
 }
 
 func (l *Logger) Error(args ...any) {
-	if !l.enabled(liblog.LevelError) {
+	if !l.enabled(obs.LevelError) {
 		return
 	}
 
-	l.log(context.Background(), liblog.LevelError, fmt.Sprint(args...))
+	l.log(context.Background(), obs.LevelError, fmt.Sprint(args...))
 }
 
 func (l *Logger) Debug(args ...any) {
-	if !l.enabled(liblog.LevelDebug) {
+	if !l.enabled(obs.LevelDebug) {
 		return
 	}
 
-	l.log(context.Background(), liblog.LevelDebug, fmt.Sprint(args...))
+	l.log(context.Background(), obs.LevelDebug, fmt.Sprint(args...))
 }
 
 func (l *Logger) Infof(f string, args ...any) {
-	if !l.enabled(liblog.LevelInfo) {
+	if !l.enabled(obs.LevelInfo) {
 		return
 	}
 
-	l.log(context.Background(), liblog.LevelInfo, fmt.Sprintf(f, args...))
+	l.log(context.Background(), obs.LevelInfo, fmt.Sprintf(f, args...))
 }
 
 func (l *Logger) Warnf(f string, args ...any) {
-	if !l.enabled(liblog.LevelWarn) {
+	if !l.enabled(obs.LevelWarn) {
 		return
 	}
 
-	l.log(context.Background(), liblog.LevelWarn, fmt.Sprintf(f, args...))
+	l.log(context.Background(), obs.LevelWarn, fmt.Sprintf(f, args...))
 }
 
 func (l *Logger) Errorf(f string, args ...any) {
-	if !l.enabled(liblog.LevelError) {
+	if !l.enabled(obs.LevelError) {
 		return
 	}
 
-	l.log(context.Background(), liblog.LevelError, fmt.Sprintf(f, args...))
+	l.log(context.Background(), obs.LevelError, fmt.Sprintf(f, args...))
 }
 
 func (l *Logger) Debugf(f string, args ...any) {
-	if !l.enabled(liblog.LevelDebug) {
+	if !l.enabled(obs.LevelDebug) {
 		return
 	}
 
-	l.log(context.Background(), liblog.LevelDebug, fmt.Sprintf(f, args...))
+	l.log(context.Background(), obs.LevelDebug, fmt.Sprintf(f, args...))
 }
 
 func (l *Logger) Sync() error {
@@ -164,33 +165,10 @@ func (l *Logger) Sync() error {
 	return l.base.Sync(context.Background())
 }
 
-func (l *Logger) Base() liblog.Logger {
+func (l *Logger) Base() obs.Logger {
 	if l == nil || l.base == nil {
-		return liblog.NewNop()
+		return obs.Nop()
 	}
 
 	return l.base
-}
-
-func toFields(kv ...any) []liblog.Field {
-	if len(kv) == 0 {
-		return nil
-	}
-
-	fields := make([]liblog.Field, 0, (len(kv)+1)/2)
-	for i := 0; i < len(kv); i += 2 {
-		key := fmt.Sprintf("arg_%d", i)
-		if ks, ok := kv[i].(string); ok && ks != "" {
-			key = ks
-		}
-
-		if i+1 >= len(kv) {
-			fields = append(fields, liblog.Any(key, nil))
-			continue
-		}
-
-		fields = append(fields, liblog.Any(key, kv[i+1]))
-	}
-
-	return fields
 }

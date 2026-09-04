@@ -9,19 +9,21 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
+
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
-	libCommons "github.com/LerianStudio/lib-commons/v6/commons"
-	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
-	"github.com/LerianStudio/lib-observability/v2/runtime"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	libCommons "github.com/LerianStudio/lib-commons/v7/commons"
+	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
+	libLog "github.com/LerianStudio/lib-observability/v4/log"
+	"github.com/LerianStudio/lib-observability/v4/runtime"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 )
 
 const overflowTenantMetricLabel = "_other"
@@ -40,7 +42,7 @@ type Dispatcher struct {
 	repo            OutboxRepository
 	handlers        *HandlerRegistry
 	retryClassifier RetryClassifier
-	logger          libLog.Logger
+	logger          obs.Logger
 	tracer          trace.Tracer
 	cfg             DispatcherConfig
 
@@ -77,7 +79,7 @@ type DispatchResult struct {
 func NewDispatcher(
 	repo OutboxRepository,
 	handlers *HandlerRegistry,
-	logger libLog.Logger,
+	logger obs.Logger,
 	tracer trace.Tracer,
 	opts ...DispatcherOption,
 ) (*Dispatcher, error) {
@@ -94,7 +96,7 @@ func NewDispatcher(
 	}
 
 	if nilcheck.Interface(logger) {
-		logger = libLog.NewNop()
+		logger = obs.Nop()
 	}
 
 	dispatcher := &Dispatcher{
@@ -124,7 +126,7 @@ func NewDispatcher(
 	if dispatcher.cfg.IncludeTenantMetrics {
 		dispatcher.logger.Log(
 			context.Background(),
-			libLog.LevelWarn,
+			obs.LevelWarn,
 			fmt.Sprintf(
 				"outbox tenant metric attributes enabled; cardinality capped at %d with overflow label %q",
 				dispatcher.cfg.MaxTenantMetricDimensions,
@@ -174,8 +176,8 @@ func (dispatcher *Dispatcher) RunContext(parentCtx context.Context, launcher *li
 	defer dispatcher.clearRun()
 
 	if launcher != nil && launcher.Logger != nil {
-		launcher.Logger.Log(context.Background(), libLog.LevelInfo, "outbox dispatcher started")
-		defer launcher.Logger.Log(context.Background(), libLog.LevelInfo, "outbox dispatcher stopped")
+		launcher.Logger.Log(context.Background(), obs.LevelInfo, "outbox dispatcher started")
+		defer launcher.Logger.Log(context.Background(), obs.LevelInfo, "outbox dispatcher stopped")
 	}
 
 	defer runtime.RecoverAndLogWithContext(
@@ -301,7 +303,7 @@ func (dispatcher *Dispatcher) DispatchOnceResult(ctx context.Context) DispatchRe
 
 	logger := dispatcher.logger
 	if nilcheck.Interface(logger) {
-		logger = libLog.NewNop()
+		logger = obs.Nop()
 	}
 
 	tracer := dispatcher.tracer
@@ -349,10 +351,10 @@ func (dispatcher *Dispatcher) DispatchOnceResult(ctx context.Context) DispatchRe
 		if err := dispatcher.repo.MarkPublished(ctx, event.ID, time.Now().UTC()); err != nil {
 			logger.Log(
 				ctx,
-				libLog.LevelError,
+				obs.LevelError,
 				"outbox event published to broker but failed to persist PUBLISHED state; event may be retried",
-				libLog.String("event_id", event.ID.String()),
-				libLog.String("error", sanitizeErrorForStorage(err)),
+				"event_id", event.ID.String(),
+				"error", sanitizeErrorForStorage(err),
 			)
 			dispatcher.addStateUpdateFailure(ctx, tenantKey, 1)
 
@@ -489,10 +491,10 @@ func (dispatcher *Dispatcher) logMetricError(ctx context.Context, operation stri
 
 	logger := dispatcher.logger
 	if nilcheck.Interface(logger) {
-		logger = libLog.NewNop()
+		logger = obs.Nop()
 	}
 
-	logger.Log(ctx, libLog.LevelWarn, "outbox metric recording failed", libLog.String("operation", operation), libLog.Err(err))
+	logger.Log(ctx, obs.LevelWarn, "outbox metric recording failed", "operation", operation, "error", err)
 }
 
 // dispatchAcrossTenants intentionally keeps tenant dispatch sequential for per-cycle
@@ -503,7 +505,7 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 		return
 	}
 
-	logger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	if nilcheck.Interface(logger) {
 		logger = dispatcher.logger
 	}
@@ -678,9 +680,9 @@ func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(ctx context.Contex
 	}
 
 	if requiresTenant {
-		dispatcher.logger.Log(
+		dispatcher.resolvedLogger().Log(
 			ctx,
-			libLog.LevelWarn,
+			obs.LevelWarn,
 			"outbox tenant discovery returned no tenants; skipping dispatch because repository requires tenant context",
 		)
 
@@ -966,8 +968,21 @@ func (dispatcher *Dispatcher) ensureFailureCounterFallback() {
 	dispatcher.listPendingFailureCounts[defaultTenantFailureCounterFallback] = 0
 }
 
+// resolvedLogger returns the dispatcher logger, substituting a nop when it is
+// absent. NewDispatcher already normalises the field, so this only matters for
+// a Dispatcher assembled as a struct literal inside the package, but the
+// alternative is an unguarded Log call on a nil interface and the substitution
+// costs nothing.
+func (dispatcher *Dispatcher) resolvedLogger() obs.Logger {
+	if nilcheck.Interface(dispatcher.logger) {
+		return obs.Nop()
+	}
+
+	return dispatcher.logger
+}
+
 func (dispatcher *Dispatcher) handleListPendingError(ctx context.Context, span trace.Span, tenantKey string, err error) {
-	logger := dispatcher.logger
+	logger := dispatcher.resolvedLogger()
 
 	libOpentelemetry.HandleSpanError(span, "failed to list outbox events", err)
 	libLog.SafeError(logger, ctx, "failed to list outbox events", err, false)
@@ -989,14 +1004,14 @@ func (dispatcher *Dispatcher) handleListPendingError(ctx context.Context, span t
 	dispatcher.failureCountsMu.Unlock()
 
 	if count >= dispatcher.cfg.ListPendingFailureThreshold {
-		fields := []libLog.Field{libLog.Int("count", count)}
+		fields := []any{"count", count}
 		if counterTenantKey == "" || counterTenantKey == defaultTenantFailureCounterFallback {
-			fields = append(fields, libLog.String("tenant_bucket", defaultTenantFailureCounterFallback))
+			fields = append(fields, "tenant_bucket", defaultTenantFailureCounterFallback)
 		} else {
-			fields = append(fields, libLog.String("tenant_hash", hashTenantID(counterTenantKey)))
+			fields = append(fields, "tenant_hash", hashTenantID(counterTenantKey))
 		}
 
-		logger.Log(ctx, libLog.LevelError, "outbox list pending failures exceeded threshold", fields...)
+		logger.Log(ctx, obs.LevelError, "outbox list pending failures exceeded threshold", fields...)
 	}
 }
 
@@ -1067,7 +1082,7 @@ func (dispatcher *Dispatcher) publishEvent(ctx context.Context, event *OutboxEve
 
 func (dispatcher *Dispatcher) handlePublishError(
 	ctx context.Context,
-	logger libLog.Logger,
+	logger obs.Logger,
 	event *OutboxEvent,
 	err error,
 ) {
@@ -1075,26 +1090,26 @@ func (dispatcher *Dispatcher) handlePublishError(
 	// transitions to FAILED/INVALID are observable in logs.
 	logger.Log(
 		ctx,
-		libLog.LevelWarn,
+		obs.LevelWarn,
 		"outbox event publish failed",
-		libLog.String("event_id", event.ID.String()),
-		libLog.String("event_type", event.EventType),
-		libLog.Err(err),
+		"event_id", event.ID.String(),
+		"event_type", event.EventType,
+		"error", err,
 	)
 
 	if dispatcher.isNonRetryableError(err) {
 		// Non-retryable errors send the event straight to INVALID; log at ERROR.
 		logger.Log(
 			ctx,
-			libLog.LevelError,
+			obs.LevelError,
 			"outbox event is non-retryable; marking invalid",
-			libLog.String("event_id", event.ID.String()),
-			libLog.String("event_type", event.EventType),
-			libLog.Err(err),
+			"event_id", event.ID.String(),
+			"event_type", event.EventType,
+			"error", err,
 		)
 
 		if markErr := dispatcher.repo.MarkInvalid(ctx, event.ID, sanitizeErrorForStorage(err)); markErr != nil {
-			logger.Log(ctx, libLog.LevelError, "failed to mark outbox invalid", libLog.String("error", sanitizeErrorForStorage(markErr)))
+			logger.Log(ctx, obs.LevelError, "failed to mark outbox invalid", "error", sanitizeErrorForStorage(markErr))
 
 			return
 		}
@@ -1108,7 +1123,7 @@ func (dispatcher *Dispatcher) handlePublishError(
 	}
 
 	if markErr := dispatcher.repo.MarkFailed(ctx, event.ID, sanitizeErrorForStorage(err), dispatcher.cfg.MaxDispatchAttempts); markErr != nil {
-		logger.Log(ctx, libLog.LevelError, "failed to mark outbox failed", libLog.String("error", sanitizeErrorForStorage(markErr)))
+		logger.Log(ctx, obs.LevelError, "failed to mark outbox failed", "error", sanitizeErrorForStorage(markErr))
 
 		return
 	}
@@ -1155,18 +1170,18 @@ func (dispatcher *Dispatcher) safeInvokeLifecycle(
 ) {
 	logger := dispatcher.logger
 	if nilcheck.Interface(logger) {
-		logger = libLog.NewNop()
+		logger = obs.Nop()
 	}
 
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Log(
 				ctx,
-				libLog.LevelWarn,
+				obs.LevelWarn,
 				"outbox lifecycle callback panicked",
-				libLog.String("callback", name),
-				libLog.String("event_id", event.ID.String()),
-				libLog.String("panic", fmt.Sprintf("%v", r)),
+				"callback", name,
+				"event_id", event.ID.String(),
+				"panic", fmt.Sprintf("%v", r),
 			)
 		}
 	}()

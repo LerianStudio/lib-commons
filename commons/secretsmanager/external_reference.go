@@ -159,7 +159,7 @@ func GetExternalCredentialsByReference(ctx context.Context, client SecretsManage
 
 	output, err := client.GetSecretValue(ctx, &awssm.GetSecretValueInput{SecretId: aws.String(reference.secretID)})
 	if err != nil {
-		return nil, classifyExternalReferenceAWSError(err)
+		return nil, classifyExternalReferenceError(err)
 	}
 
 	if output == nil || output.SecretString == nil {
@@ -310,10 +310,24 @@ func validateCanonicalExternalVersion(version string) error {
 	return nil
 }
 
-func classifyExternalReferenceAWSError(err error) error {
+// classifyExternalReferenceError maps a custody backend's errors onto the
+// external-credential sentinels. Like classifyBackendErrorWithSentinels it
+// checks the backend-neutral sentinels first, because a non-AWS backend cannot
+// produce an AWS SDK error type.
+//
+// This is the classifier behind the per-tenant credential custody read, so the
+// not-found branch is load-bearing: a caller reads a persisted reference and
+// falls back to its static configuration when the material is absent. A backend
+// whose absence arrived here as a retrieval failure would suppress that
+// fallback and fail every outbound call for the tenant instead.
+func classifyExternalReferenceError(err error) error {
 	var notFoundErr *smtypes.ResourceNotFoundException
-	if errors.As(err, &notFoundErr) {
+	if errors.Is(err, ErrBackendSecretNotFound) || errors.As(err, &notFoundErr) {
 		return fmt.Errorf("retrieve external credentials by reference: %w", ErrExternalCredentialsNotFound)
+	}
+
+	if errors.Is(err, ErrBackendAccessDenied) {
+		return fmt.Errorf("retrieve external credentials by reference: %w", ErrExternalVaultAccessDenied)
 	}
 
 	var apiErr smithy.APIError

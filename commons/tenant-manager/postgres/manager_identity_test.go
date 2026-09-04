@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/testutil"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

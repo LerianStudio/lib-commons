@@ -10,9 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v6/commons"
-	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons"
+	constant "github.com/LerianStudio/lib-commons/v7/commons/constants"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -171,21 +170,19 @@ func TestWithCORS_WithLoggerOption(t *testing.T) {
 // testCORSLogger is a test logger that records whether Log was called.
 type testCORSLogger struct {
 	logCalled   bool
-	lastLevel   libLog.Level
+	lastLevel   int
 	lastMessage string
 	messages    []string
 }
 
-func (l *testCORSLogger) Log(_ context.Context, level libLog.Level, msg string, _ ...libLog.Field) {
+func (l *testCORSLogger) Log(_ context.Context, level int, msg string, _ ...any) {
 	l.logCalled = true
 	l.lastLevel = level
 	l.lastMessage = msg
 	l.messages = append(l.messages, msg)
 }
-func (l *testCORSLogger) With(_ ...libLog.Field) libLog.Logger { return l }
-func (l *testCORSLogger) WithGroup(string) libLog.Logger       { return l }
-func (l *testCORSLogger) Enabled(libLog.Level) bool            { return true }
-func (l *testCORSLogger) Sync(context.Context) error           { return nil }
+func (l *testCORSLogger) Enabled(int) bool           { return true }
+func (l *testCORSLogger) Sync(context.Context) error { return nil }
 
 func TestWithCORS_InvalidAllowCredentialsFallsBackToDefault(t *testing.T) {
 	require.NoError(t, os.Setenv("ACCESS_CONTROL_ALLOW_CREDENTIALS", "not-a-bool"))

@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/errgroup"
+	"github.com/LerianStudio/lib-commons/v7/commons/errgroup"
 )
 
 func TestWithContext_AllSucceed(t *testing.T) {

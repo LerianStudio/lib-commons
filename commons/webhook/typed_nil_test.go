@@ -6,7 +6,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/LerianStudio/lib-observability/v2/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,11 +18,9 @@ func (*typedNilEndpointLister) ListActiveEndpoints(context.Context) ([]Endpoint,
 
 type typedNilWebhookLogger struct{}
 
-func (*typedNilWebhookLogger) Log(context.Context, log.Level, string, ...log.Field) {}
-func (*typedNilWebhookLogger) With(...log.Field) log.Logger                         { return nil }
-func (*typedNilWebhookLogger) WithGroup(string) log.Logger                          { return nil }
-func (*typedNilWebhookLogger) Enabled(log.Level) bool                               { return false }
-func (*typedNilWebhookLogger) Sync(context.Context) error                           { return nil }
+func (*typedNilWebhookLogger) Log(context.Context, int, string, ...any) {}
+func (*typedNilWebhookLogger) Enabled(int) bool                         { return false }
+func (*typedNilWebhookLogger) Sync(context.Context) error               { return nil }
 
 type typedNilDeliveryMetrics struct{}
 

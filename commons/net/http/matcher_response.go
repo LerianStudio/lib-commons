@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	cn "github.com/LerianStudio/lib-commons/v7/commons/constants"
 	"github.com/gofiber/fiber/v3"
 )
 

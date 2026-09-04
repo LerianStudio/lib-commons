@@ -9,9 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/logcompat"
 )
 
 // handleTenantCreated is a no-op: new tenants are lazy-loaded on first request.
@@ -20,8 +21,8 @@ func (d *EventDispatcher) handleTenantCreated(
 	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
-	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.created received: no-op (lazy-load on first request)",
-		libLog.String("tenant_id", evt.TenantID))
+	logger.Base().Log(ctx, obs.LevelInfo, "tenant.created received: no-op (lazy-load on first request)",
+		"tenant_id", evt.TenantID)
 
 	return nil
 }
@@ -36,11 +37,11 @@ func (d *EventDispatcher) handleTenantActivated(
 
 	touched := d.cache.Touch(evt.TenantID, ttl)
 	if touched {
-		logger.Base().Log(ctx, libLog.LevelInfo, "tenant.activated: refreshed TTL",
-			libLog.String("tenant_id", evt.TenantID))
+		logger.Base().Log(ctx, obs.LevelInfo, "tenant.activated: refreshed TTL",
+			"tenant_id", evt.TenantID)
 	} else {
-		logger.Base().Log(ctx, libLog.LevelDebug, "tenant.activated: tenant not in cache, skipping TTL refresh",
-			libLog.String("tenant_id", evt.TenantID))
+		logger.Base().Log(ctx, obs.LevelDebug, "tenant.activated: tenant not in cache, skipping TTL refresh",
+			"tenant_id", evt.TenantID)
 	}
 
 	return nil
@@ -52,8 +53,8 @@ func (d *EventDispatcher) handleTenantSuspended(
 	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
-	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.suspended: evicting tenant",
-		libLog.String("tenant_id", evt.TenantID))
+	logger.Base().Log(ctx, obs.LevelInfo, "tenant.suspended: evicting tenant",
+		"tenant_id", evt.TenantID)
 	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
@@ -61,8 +62,8 @@ func (d *EventDispatcher) handleTenantSuspended(
 
 // handleTenantDeleted removes the tenant from cache and closes all pools.
 func (d *EventDispatcher) handleTenantDeleted(ctx context.Context, evt TenantLifecycleEvent, logger *logcompat.Logger) error {
-	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.deleted: evicting tenant",
-		libLog.String("tenant_id", evt.TenantID))
+	logger.Base().Log(ctx, obs.LevelInfo, "tenant.deleted: evicting tenant",
+		"tenant_id", evt.TenantID)
 	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
@@ -78,11 +79,11 @@ func (d *EventDispatcher) handleTenantUpdated(
 
 	touched := d.cache.Touch(evt.TenantID, ttl)
 	if touched {
-		logger.Base().Log(ctx, libLog.LevelInfo, "tenant.updated: refreshed TTL",
-			libLog.String("tenant_id", evt.TenantID))
+		logger.Base().Log(ctx, obs.LevelInfo, "tenant.updated: refreshed TTL",
+			"tenant_id", evt.TenantID)
 	} else {
-		logger.Base().Log(ctx, libLog.LevelDebug, "tenant.updated: tenant not in cache, skipping TTL refresh",
-			libLog.String("tenant_id", evt.TenantID))
+		logger.Base().Log(ctx, obs.LevelDebug, "tenant.updated: tenant not in cache, skipping TTL refresh",
+			"tenant_id", evt.TenantID)
 	}
 
 	return nil
@@ -101,9 +102,9 @@ func (d *EventDispatcher) handleServiceAssociated(
 		return fmt.Errorf("handleServiceAssociated: unmarshal payload: %w", err)
 	}
 
-	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.service.associated: adding tenant",
-		libLog.String("tenant_id", evt.TenantID),
-		libLog.String("service", payload.ServiceName))
+	logger.Base().Log(ctx, obs.LevelInfo, "tenant.service.associated: adding tenant",
+		"tenant_id", evt.TenantID,
+		"service", payload.ServiceName)
 
 	// Build TenantConfig from payload with connection settings, databases, and messaging
 	config := &core.TenantConfig{
@@ -181,8 +182,8 @@ func (d *EventDispatcher) handleServiceAssociated(
 
 // handleServiceDisassociated removes the tenant from cache and closes all pools.
 func (d *EventDispatcher) handleServiceDisassociated(ctx context.Context, evt TenantLifecycleEvent, logger *logcompat.Logger) error {
-	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.service.disassociated: evicting tenant",
-		libLog.String("tenant_id", evt.TenantID))
+	logger.Base().Log(ctx, obs.LevelInfo, "tenant.service.disassociated: evicting tenant",
+		"tenant_id", evt.TenantID)
 	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
@@ -190,8 +191,8 @@ func (d *EventDispatcher) handleServiceDisassociated(ctx context.Context, evt Te
 
 // handleServiceSuspended removes the tenant from cache and closes all pools.
 func (d *EventDispatcher) handleServiceSuspended(ctx context.Context, evt TenantLifecycleEvent, logger *logcompat.Logger) error {
-	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.service.suspended: evicting tenant",
-		libLog.String("tenant_id", evt.TenantID))
+	logger.Base().Log(ctx, obs.LevelInfo, "tenant.service.suspended: evicting tenant",
+		"tenant_id", evt.TenantID)
 	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
@@ -199,8 +200,8 @@ func (d *EventDispatcher) handleServiceSuspended(ctx context.Context, evt Tenant
 
 // handleServicePurged removes the tenant from cache and closes all pools.
 func (d *EventDispatcher) handleServicePurged(ctx context.Context, evt TenantLifecycleEvent, logger *logcompat.Logger) error {
-	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.service.purged: evicting tenant",
-		libLog.String("tenant_id", evt.TenantID))
+	logger.Base().Log(ctx, obs.LevelInfo, "tenant.service.purged: evicting tenant",
+		"tenant_id", evt.TenantID)
 	d.removeTenant(ctx, evt.TenantID, logger)
 
 	return nil
@@ -218,8 +219,8 @@ func (d *EventDispatcher) handleServiceReactivated(
 		return fmt.Errorf("handleServiceReactivated: unmarshal payload: %w", err)
 	}
 
-	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.service.reactivated: re-adding tenant with jitter",
-		libLog.String("tenant_id", evt.TenantID))
+	logger.Base().Log(ctx, obs.LevelInfo, "tenant.service.reactivated: re-adding tenant with jitter",
+		"tenant_id", evt.TenantID)
 
 	d.applyJitter(ctx)
 
@@ -263,8 +264,8 @@ func (d *EventDispatcher) handleCredentialsRotated(
 	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
-	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.credentials.rotated: closing pools",
-		libLog.String("tenant_id", evt.TenantID))
+	logger.Base().Log(ctx, obs.LevelInfo, "tenant.credentials.rotated: closing pools",
+		"tenant_id", evt.TenantID)
 
 	// Close existing pools and remove from cache
 	d.removeTenant(ctx, evt.TenantID, logger)
@@ -273,8 +274,8 @@ func (d *EventDispatcher) handleCredentialsRotated(
 	d.applyJitter(ctx)
 
 	if d.loader == nil {
-		logger.Base().Log(ctx, libLog.LevelWarn, "tenant.credentials.rotated: no loader configured, skipping eager reload",
-			libLog.String("tenant_id", evt.TenantID))
+		logger.Base().Log(ctx, obs.LevelWarn, "tenant.credentials.rotated: no loader configured, skipping eager reload",
+			"tenant_id", evt.TenantID)
 
 		return nil
 	}
@@ -310,9 +311,9 @@ func (d *EventDispatcher) reloadAndNotify(
 	successMsg string,
 ) error {
 	if _, err := d.loader.LoadTenant(ctx, tenantID); err != nil {
-		logger.Base().Log(ctx, libLog.LevelWarn, evtName+": eager reload failed (will retry on next request)",
-			libLog.String("tenant_id", tenantID),
-			libLog.Err(err))
+		logger.Base().Log(ctx, obs.LevelWarn, evtName+": eager reload failed (will retry on next request)",
+			"tenant_id", tenantID,
+			"error", err)
 
 		return nil // non-fatal: next request will trigger lazy-load as fallback
 	}
@@ -322,8 +323,8 @@ func (d *EventDispatcher) reloadAndNotify(
 		d.onTenantAdded(ctx, tenantID)
 	}
 
-	logger.Base().Log(ctx, libLog.LevelInfo, successMsg,
-		libLog.String("tenant_id", tenantID))
+	logger.Base().Log(ctx, obs.LevelInfo, successMsg,
+		"tenant_id", tenantID)
 
 	return nil
 }
@@ -345,8 +346,8 @@ func (d *EventDispatcher) handleCacheInvalidate(
 	evt TenantLifecycleEvent,
 	logger *logcompat.Logger,
 ) error {
-	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.cache.invalidate: evicting tenant",
-		libLog.String("tenant_id", evt.TenantID))
+	logger.Base().Log(ctx, obs.LevelInfo, "tenant.cache.invalidate: evicting tenant",
+		"tenant_id", evt.TenantID)
 
 	// Capture ownership before removeTenant clears the tier-1 cache entry.
 	owned := d.isOwnedLocally(evt.TenantID)
@@ -355,15 +356,15 @@ func (d *EventDispatcher) handleCacheInvalidate(
 	d.removeTenant(ctx, evt.TenantID, logger)
 
 	if !owned {
-		logger.Base().Log(ctx, libLog.LevelDebug, "tenant.cache.invalidate: tenant not owned locally, evict only",
-			libLog.String("tenant_id", evt.TenantID))
+		logger.Base().Log(ctx, obs.LevelDebug, "tenant.cache.invalidate: tenant not owned locally, evict only",
+			"tenant_id", evt.TenantID)
 
 		return nil
 	}
 
 	if d.loader == nil {
-		logger.Base().Log(ctx, libLog.LevelWarn, "tenant.cache.invalidate: no loader configured, skipping eager reload",
-			libLog.String("tenant_id", evt.TenantID))
+		logger.Base().Log(ctx, obs.LevelWarn, "tenant.cache.invalidate: no loader configured, skipping eager reload",
+			"tenant_id", evt.TenantID)
 
 		return nil
 	}
@@ -387,12 +388,12 @@ func (d *EventDispatcher) handleConnectionsUpdated(
 		return fmt.Errorf("handleConnectionsUpdated: unmarshal payload: %w", err)
 	}
 
-	logger.Base().Log(ctx, libLog.LevelInfo, "tenant.connections.updated: applying new pool settings",
-		libLog.String("tenant_id", evt.TenantID),
-		libLog.String("module", payload.Module),
-		libLog.Int("max_open_conns", payload.MaxOpenConns),
-		libLog.Int("max_idle_conns", payload.MaxIdleConns),
-		libLog.String("statement_timeout", payload.StatementTimeout))
+	logger.Base().Log(ctx, obs.LevelInfo, "tenant.connections.updated: applying new pool settings",
+		"tenant_id", evt.TenantID,
+		"module", payload.Module,
+		"max_open_conns", payload.MaxOpenConns,
+		"max_idle_conns", payload.MaxIdleConns,
+		"statement_timeout", payload.StatementTimeout)
 
 	config := buildConfigFromConnectionsPayload(evt.TenantID, payload)
 	for _, manager := range d.postgresManagers {

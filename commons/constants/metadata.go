@@ -1,6 +1,6 @@
 package constant
 
-import obsconstants "github.com/LerianStudio/lib-observability/v2/constants"
+import obsconstants "github.com/LerianStudio/lib-observability/v4/constants"
 
 const (
 	// MetadataID is the metadata key that carries the request context identifier.

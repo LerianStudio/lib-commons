@@ -10,13 +10,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	libMongo "github.com/LerianStudio/lib-commons/v6/commons/mongo"
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
+
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	libMongo "github.com/LerianStudio/lib-commons/v7/commons/mongo"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/v2/bson"
 	mongodriver "go.mongodb.org/mongo-driver/v2/mongo"
@@ -72,7 +73,7 @@ type TenantDatabaseResolver interface {
 }
 
 // WithLogger configures the logger used for sanitized repository error logs.
-func WithLogger(logger libLog.Logger) Option {
+func WithLogger(logger obs.Logger) Option {
 	return func(repo *Repository) {
 		if nilcheck.Interface(logger) {
 			return
@@ -146,7 +147,7 @@ type Repository struct {
 	collectionName         string
 	tenantField            string
 	requireTenant          bool
-	logger                 libLog.Logger
+	logger                 obs.Logger
 	tracer                 trace.Tracer
 	tenantModule           string
 	tenantDatabaseResolver TenantDatabaseResolver
@@ -195,7 +196,7 @@ func NewRepositoryWithContext(ctx context.Context, client *libMongo.Client, opts
 		collectionName: defaultCollectionName,
 		tenantField:    defaultTenantField,
 		requireTenant:  true,
-		logger:         libLog.NewNop(),
+		logger:         obs.Nop(),
 		tracer:         noop.NewTracerProvider().Tracer("outbox.mongo"),
 	}
 
@@ -206,7 +207,7 @@ func NewRepositoryWithContext(ctx context.Context, client *libMongo.Client, opts
 	}
 
 	if nilcheck.Interface(repo.logger) {
-		repo.logger = libLog.NewNop()
+		repo.logger = obs.Nop()
 	}
 
 	repo.collectionName = strings.TrimSpace(repo.collectionName)
@@ -959,7 +960,7 @@ func (repo *Repository) idTenantFilter(id uuid.UUID, tenantID string) bson.M {
 }
 
 func (repo *Repository) tracking(ctx context.Context) trace.Tracer {
-	logger, tracer, meter, trackingErr := observability.NewTrackingFromContext(ctx)
+	logger, tracer, meter, trackingErr := obsbridge.TrackingFromContext(ctx)
 	_ = logger
 	_ = meter
 	_ = trackingErr

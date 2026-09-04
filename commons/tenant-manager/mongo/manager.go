@@ -15,14 +15,15 @@ import (
 	"sync"
 	"time"
 
-	mongolib "github.com/LerianStudio/lib-commons/v6/commons/mongo"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/eviction"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
-	observability "github.com/LerianStudio/lib-observability/v2"
-	"github.com/LerianStudio/lib-observability/v2/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
+
+	mongolib "github.com/LerianStudio/lib-commons/v7/commons/mongo"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/eviction"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/logcompat"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.opentelemetry.io/otel/trace"
@@ -115,7 +116,7 @@ type MongoConnection struct {
 	// tenant-manager migration contract and upstream lib-commons adapter semantics.
 	ConnectionStringSource string
 	Database               string
-	Logger                 log.Logger
+	Logger                 obs.Logger
 	MaxPoolSize            uint64
 	DB                     *mongo.Client
 
@@ -200,7 +201,7 @@ func WithModule(module string) Option {
 }
 
 // WithLogger sets the logger for the MongoDB manager.
-func WithLogger(logger log.Logger) Option {
+func WithLogger(logger obs.Logger) Option {
 	return func(p *Manager) {
 		p.logger = logcompat.New(logger)
 	}
@@ -607,7 +608,7 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*mongo
 		return nil, errors.New("tenant manager client is required for multi-tenant connections")
 	}
 
-	baseLogger, tracer, _, _ := observability.NewTrackingFromContext(ctx)
+	baseLogger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	logger := logcompat.New(baseLogger)
 
 	ctx, span := tracer.Start(ctx, "mongo.create_connection")
@@ -820,7 +821,7 @@ func (p *Manager) cacheConnection(
 	tenantID string,
 	conn *MongoConnection,
 	databaseName string,
-	baseLogger log.Logger,
+	baseLogger obs.Logger,
 ) (*mongo.Client, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -828,9 +829,9 @@ func (p *Manager) cacheConnection(
 	if p.closed {
 		if conn.DB != nil {
 			if discErr := disconnectClient(conn.DB); discErr != nil && p.logger != nil {
-				p.logger.Base().Log(ctx, log.LevelWarn, "failed to disconnect mongo connection on closed manager",
-					log.String("tenant_id", tenantID),
-					log.Err(discErr),
+				p.logger.Base().Log(ctx, obs.LevelWarn, "failed to disconnect mongo connection on closed manager",
+					"tenant_id", tenantID,
+					"error", discErr,
 				)
 			}
 		}
@@ -841,9 +842,9 @@ func (p *Manager) cacheConnection(
 	if cached, ok := p.connections[tenantID]; ok && cached != nil && cached.DB != nil {
 		if conn.DB != nil {
 			if discErr := disconnectClient(conn.DB); discErr != nil && p.logger != nil {
-				p.logger.Base().Log(ctx, log.LevelWarn, "failed to disconnect excess mongo connection",
-					log.String("tenant_id", tenantID),
-					log.Err(discErr),
+				p.logger.Base().Log(ctx, obs.LevelWarn, "failed to disconnect excess mongo connection",
+					"tenant_id", tenantID,
+					"error", discErr,
 				)
 			}
 		}
@@ -867,7 +868,7 @@ func (p *Manager) cacheConnection(
 // eligible for eviction. If all connections are active (used within the idle timeout),
 // the pool is allowed to grow beyond the soft limit.
 // Caller MUST hold p.mu write lock.
-func (p *Manager) evictLRU(ctx context.Context, logger log.Logger) {
+func (p *Manager) evictLRU(ctx context.Context, logger obs.Logger) {
 	candidateID, shouldEvict := eviction.FindLRUEvictionCandidate(
 		len(p.connections), p.maxConnections, p.lastAccessed, p.idleTimeout, logger,
 	)
@@ -880,10 +881,10 @@ func (p *Manager) evictLRU(ctx context.Context, logger log.Logger) {
 		if conn.DB != nil {
 			if discErr := disconnectClient(conn.DB); discErr != nil {
 				if logger != nil {
-					logger.Log(ctx, log.LevelWarn,
+					logger.Log(ctx, obs.LevelWarn,
 						"failed to disconnect evicted mongo connection",
-						log.String("tenant_id", candidateID),
-						log.String("error", discErr.Error()),
+						"tenant_id", candidateID,
+						"error", discErr.Error(),
 					)
 				}
 			}

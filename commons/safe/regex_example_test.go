@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/safe"
+	"github.com/LerianStudio/lib-commons/v7/commons/safe"
 )
 
 func ExampleCompile_errorHandling() {

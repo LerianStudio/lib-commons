@@ -3,10 +3,8 @@ package circuitbreaker
 import (
 	"context"
 
-	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/log"
-	"github.com/LerianStudio/lib-observability/v2/metrics"
-	"go.opentelemetry.io/otel/attribute"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	constant "github.com/LerianStudio/lib-observability/v4/constants"
 )
 
 const (
@@ -16,122 +14,113 @@ const (
 	executionResultRejectedHalfOpen = "rejected_half_open"
 )
 
-// stateTransitionMetric defines the counter for circuit breaker state transitions.
-var stateTransitionMetric = metrics.Metric{
-	Name:        "circuit_breaker_state_transitions_total",
-	Unit:        "1",
-	Description: "Total number of circuit breaker state transitions",
-}
+// Counter definitions emitted by the manager.
+const (
+	stateTransitionMetricName        = "circuit_breaker_state_transitions_total"
+	stateTransitionMetricUnit        = "1"
+	stateTransitionMetricDescription = "Total number of circuit breaker state transitions"
 
-// executionMetric defines the counter for circuit breaker executions.
-var executionMetric = metrics.Metric{
-	Name:        "circuit_breaker_executions_total",
-	Unit:        "1",
-	Description: "Total number of circuit breaker executions",
-}
+	executionMetricName        = "circuit_breaker_executions_total"
+	executionMetricUnit        = "1"
+	executionMetricDescription = "Total number of circuit breaker executions"
+)
 
+// breakerMetrics caches the attribute maps for each execution result, so the
+// hot path does not rebuild them per emission.
 type breakerMetrics struct {
-	executionAttrs map[string]attribute.Set
+	executionAttrs map[string]map[string]string
 }
 
-// WithMetricsFactory attaches a MetricsFactory so the manager emits
+// WithMetricsRecorder attaches a recorder so the manager emits
 // circuit_breaker_state_transitions_total and circuit_breaker_executions_total
 // counters automatically. When nil, metrics are silently skipped.
-func WithMetricsFactory(f *metrics.MetricsFactory) ManagerOption {
+func WithMetricsRecorder(recorder obs.MetricsRecorder) ManagerOption {
 	return func(m *manager) {
-		m.metricsFactory = f
-	}
-}
-
-func (m *manager) initMetricCounters() {
-	if m.metricsFactory == nil {
-		return
-	}
-
-	stateCounter, err := m.metricsFactory.Counter(stateTransitionMetric)
-	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to create state transition metric counter", log.Err(err))
-	} else {
-		m.stateCounter = stateCounter
-	}
-
-	execCounter, err := m.metricsFactory.Counter(executionMetric)
-	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to create execution metric counter", log.Err(err))
-	} else {
-		m.execCounter = execCounter
+		m.metricsRecorder = recorder
 	}
 }
 
 func (m *manager) buildBreakerMetrics(tenantID, serviceName string) breakerMetrics {
-	if m.execCounter == nil {
+	if m.metricsRecorder == nil {
 		return breakerMetrics{}
 	}
 
-	return breakerMetrics{executionAttrs: map[string]attribute.Set{
-		executionResultSuccess:          executionAttributeSet(tenantID, serviceName, executionResultSuccess),
-		executionResultError:            executionAttributeSet(tenantID, serviceName, executionResultError),
-		executionResultRejectedOpen:     executionAttributeSet(tenantID, serviceName, executionResultRejectedOpen),
-		executionResultRejectedHalfOpen: executionAttributeSet(tenantID, serviceName, executionResultRejectedHalfOpen),
+	return breakerMetrics{executionAttrs: map[string]map[string]string{
+		executionResultSuccess:          executionAttributes(tenantID, serviceName, executionResultSuccess),
+		executionResultError:            executionAttributes(tenantID, serviceName, executionResultError),
+		executionResultRejectedOpen:     executionAttributes(tenantID, serviceName, executionResultRejectedOpen),
+		executionResultRejectedHalfOpen: executionAttributes(tenantID, serviceName, executionResultRejectedHalfOpen),
 	}}
 }
 
-func executionAttributeSet(tenantID, serviceName, result string) attribute.Set {
-	attrs := []attribute.KeyValue{
-		attribute.String("service", constant.SanitizeMetricLabel(serviceName)),
-		attribute.String("result", result),
+func executionAttributes(tenantID, serviceName, result string) map[string]string {
+	attrs := map[string]string{
+		"service": constant.SanitizeMetricLabel(serviceName),
+		"result":  result,
 	}
 
 	if tenantID != "" {
-		attrs = append(attrs, attribute.String("tenant_hash", constant.SanitizeMetricLabel(tenantHashMetricLabel(tenantID))))
+		attrs["tenant_hash"] = constant.SanitizeMetricLabel(tenantHashMetricLabel(tenantID))
 	}
 
-	return attribute.NewSet(attrs...)
+	return attrs
 }
 
-func stateTransitionAttributeSet(tenantID, serviceName string, from, to State) attribute.Set {
-	attrs := []attribute.KeyValue{
-		attribute.String("service", constant.SanitizeMetricLabel(serviceName)),
-		attribute.String("from_state", string(from)),
-		attribute.String("to_state", string(to)),
+func stateTransitionAttributes(tenantID, serviceName string, from, to State) map[string]string {
+	attrs := map[string]string{
+		"service":    constant.SanitizeMetricLabel(serviceName),
+		"from_state": string(from),
+		"to_state":   string(to),
 	}
 
 	if tenantID != "" {
-		attrs = append(attrs, attribute.String("tenant_hash", constant.SanitizeMetricLabel(tenantHashMetricLabel(tenantID))))
+		attrs["tenant_hash"] = constant.SanitizeMetricLabel(tenantHashMetricLabel(tenantID))
 	}
 
-	return attribute.NewSet(attrs...)
+	return attrs
 }
 
 // recordStateTransition increments the state transition counter.
-// No-op when metricsFactory is nil.
+// No-op when metricsRecorder is nil.
 func (m *manager) recordStateTransition(tenantID, serviceName string, from, to State) {
-	if m.stateCounter == nil {
+	if m.metricsRecorder == nil {
 		return
 	}
 
-	attrs := stateTransitionAttributeSet(tenantID, serviceName, from, to)
-
-	err := m.stateCounter.WithAttributes(attrs.ToSlice()...).AddOne(context.Background())
+	err := m.metricsRecorder.AddCounter(
+		context.Background(),
+		stateTransitionMetricName,
+		stateTransitionMetricDescription,
+		stateTransitionMetricUnit,
+		stateTransitionAttributes(tenantID, serviceName, from, to),
+		1,
+	)
 	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to record state transition metric", log.Err(err))
+		m.logger.Log(context.Background(), obs.LevelWarn, "failed to record state transition metric", "error", err)
 	}
 }
 
 // recordExecution increments the execution counter.
-// No-op when metricsFactory is nil.
+// No-op when metricsRecorder is nil.
 func (m *manager) recordExecution(slot *breakerSlot, result string) {
-	if m.execCounter == nil || slot == nil {
+	if m.metricsRecorder == nil || slot == nil {
 		return
 	}
 
 	attrs, ok := slot.metrics.executionAttrs[result]
 	if !ok {
-		attrs = executionAttributeSet(slot.tenantID, slot.serviceName, result)
+		attrs = executionAttributes(slot.tenantID, slot.serviceName, result)
 	}
 
-	err := m.execCounter.WithAttributes(attrs.ToSlice()...).AddOne(context.Background())
+	err := m.metricsRecorder.AddCounter(
+		context.Background(),
+		executionMetricName,
+		executionMetricDescription,
+		executionMetricUnit,
+		attrs,
+		1,
+	)
 	if err != nil {
-		m.logger.Log(context.Background(), log.LevelWarn, "failed to record execution metric", log.Err(err))
+		m.logger.Log(context.Background(), obs.LevelWarn, "failed to record execution metric", "error", err)
 	}
 }

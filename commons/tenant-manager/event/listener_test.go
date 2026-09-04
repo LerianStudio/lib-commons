@@ -15,14 +15,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/events"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/testutil"
-	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/events"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/testutil"
 )
 
 // setEnv sets ENVIRONMENT_NAME for the duration of the test and explicitly
@@ -624,7 +625,7 @@ func TestWithListenerLogger_NilLogger(t *testing.T) {
 }
 
 // --------------------------------------------------------------------------
-// Ensure the listener ignores the correct log.Logger import
+// Ensure the listener ignores the correct obs.Logger import
 // --------------------------------------------------------------------------
 
 func TestNewTenantEventListener_UsesLogInterface(t *testing.T) {
@@ -635,8 +636,8 @@ func TestNewTenantEventListener_UsesLogInterface(t *testing.T) {
 
 	t.Cleanup(func() { rdb.Close() })
 
-	// Verify the listener works with log.NewNop()
-	nop := log.NewNop()
+	// Verify the listener works with obs.Nop()
+	nop := obs.Nop()
 	handler := func(_ context.Context, _ TenantLifecycleEvent) error { return nil }
 
 	listener, err := NewTenantEventListener(rdb, handler, WithListenerLogger(nop))

@@ -12,8 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/net/http/problem"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
+	"github.com/LerianStudio/lib-commons/v7/commons/net/http/problem"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
@@ -193,7 +194,7 @@ func TestServeSpec_MountsThreeRoutes(t *testing.T) {
 	api := New(app, app.Group("/"), testConfig())
 	registerEcho(api)
 
-	ServeSpec(app, api, &libLog.NopLogger{}, "/v1", "Test Docs")
+	ServeSpec(app, api, obs.Nop(), "/v1", "Test Docs")
 
 	t.Run("openapi.json", func(t *testing.T) {
 		t.Parallel()
@@ -278,7 +279,7 @@ func TestServeSpec_NormalizesPrefix(t *testing.T) {
 			api := New(app, app.Group("/"), testConfig())
 			registerEcho(api)
 
-			ServeSpec(app, api, &libLog.NopLogger{}, tc.prefix, "Test Docs")
+			ServeSpec(app, api, obs.Nop(), tc.prefix, "Test Docs")
 
 			status, _ := doReq(t, app, http.MethodGet, tc.specPath)
 			assert.Equalf(t, http.StatusOK, status, "spec must be reachable at normalized path %s", tc.specPath)
@@ -307,7 +308,7 @@ func TestServeSpec_NilAPI(t *testing.T) {
 	app := fiber.New()
 
 	assert.NotPanics(t, func() {
-		ServeSpec(app, nil, &libLog.NopLogger{}, "/v1", "Test Docs")
+		ServeSpec(app, nil, obs.Nop(), "/v1", "Test Docs")
 	})
 
 	status, _ := doReq(t, app, http.MethodGet, "/v1/openapi.json")
@@ -317,12 +318,11 @@ func TestServeSpec_NilAPI(t *testing.T) {
 // recordingLogger captures the last Log call so the skip-on-failure path can be
 // asserted.
 type recordingLogger struct {
-	libLog.NopLogger
 	called bool
 	msg    string
 }
 
-func (l *recordingLogger) Log(_ context.Context, _ libLog.Level, msg string, _ ...libLog.Field) {
+func (l *recordingLogger) Log(_ context.Context, _ int, msg string, _ ...any) {
 	l.called = true
 	l.msg = msg
 }
@@ -523,7 +523,7 @@ func TestServeSpec_NilApp(t *testing.T) {
 	registerEcho(api)
 
 	assert.NotPanics(t, func() {
-		ServeSpec(nil, api, &libLog.NopLogger{}, "/v1", "Test Docs")
+		ServeSpec(nil, api, obs.Nop(), "/v1", "Test Docs")
 	})
 }
 
@@ -544,3 +544,7 @@ func TestServeSpec_NilLogger_RenderFailure_NoPanic(t *testing.T) {
 	status, _ := doReq(t, app, http.MethodGet, "/v1/openapi.json")
 	assert.Equal(t, http.StatusNotFound, status, "no routes registered on render failure")
 }
+
+func (*recordingLogger) Enabled(int) bool { return true }
+
+func (*recordingLogger) Sync(context.Context) error { return nil }

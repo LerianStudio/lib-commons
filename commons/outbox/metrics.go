@@ -3,8 +3,9 @@ package outbox
 import (
 	"fmt"
 
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
-	libMetrics "github.com/LerianStudio/lib-observability/v2/metrics"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
+	libMetrics "github.com/LerianStudio/lib-observability/v4/metrics"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -19,7 +20,7 @@ type dispatcherMetrics struct {
 	queueDepth        *libMetrics.GaugeBuilder
 }
 
-func newDispatcherMetrics(provider metric.MeterProvider, logger libLog.Logger) (dispatcherMetrics, error) {
+func newDispatcherMetrics(provider metric.MeterProvider, logger obs.Logger) (dispatcherMetrics, error) {
 	if provider == nil {
 		provider = otel.GetMeterProvider()
 	}

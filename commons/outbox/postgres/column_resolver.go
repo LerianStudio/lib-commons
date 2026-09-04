@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
-	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
+	libPostgres "github.com/LerianStudio/lib-commons/v7/commons/postgres"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"golang.org/x/sync/singleflight"
 )
 

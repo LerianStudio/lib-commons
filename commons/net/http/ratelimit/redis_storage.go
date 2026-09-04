@@ -7,19 +7,20 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	tmvalkey "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/valkey"
-	"github.com/LerianStudio/lib-observability/v2/assert"
-	constant "github.com/LerianStudio/lib-observability/v2/constants"
-	"github.com/LerianStudio/lib-observability/v2/log"
-	libOpentelemetry "github.com/LerianStudio/lib-observability/v2/tracing"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
+	tmvalkey "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/valkey"
+	"github.com/LerianStudio/lib-observability/v4/assert"
+	constant "github.com/LerianStudio/lib-observability/v4/constants"
+	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/redis/go-redis/v9"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
+	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
 )
 
 const (
@@ -72,7 +73,7 @@ var ErrInvalidTenantContext = errors.New("ratelimit tenant context is invalid")
 type RedisStorageOption func(*RedisStorage)
 
 // WithRedisStorageLogger provides a structured logger for assertion and error logging.
-func WithRedisStorageLogger(l log.Logger) RedisStorageOption {
+func WithRedisStorageLogger(l obs.Logger) RedisStorageOption {
 	return func(s *RedisStorage) {
 		if !nilcheck.Interface(l) {
 			s.logger = l
@@ -81,7 +82,7 @@ func WithRedisStorageLogger(l log.Logger) RedisStorageOption {
 }
 
 func (storage *RedisStorage) unavailableStorageError(operation string) error {
-	var logger log.Logger
+	var logger obs.Logger
 	if storage != nil {
 		logger = storage.logger
 	}
@@ -98,7 +99,7 @@ func (storage *RedisStorage) unavailableStorageError(operation string) error {
 // This enables distributed rate limiting across multiple application instances.
 type RedisStorage struct {
 	conn   *libRedis.Client
-	logger log.Logger
+	logger obs.Logger
 }
 
 // NewRedisStorage creates a new Redis-backed storage for Fiber rate limiting.
@@ -498,27 +499,27 @@ func (storage *RedisStorage) logError(_ context.Context, msg string, err error, 
 		return
 	}
 
-	fields := make([]log.Field, 0, 1+(len(kv)+1)/2)
-	fields = append(fields, log.Err(err))
+	fields := make([]any, 0, 1+(len(kv)+1)/2)
+	fields = append(fields, "error", err)
 
 	for i := 0; i+1 < len(kv); i += 2 {
 		if kv[i] == "key" {
-			fields = append(fields, log.String("key_hash", hashKey(kv[i+1])))
+			fields = append(fields, "key_hash", hashKey(kv[i+1]))
 
 			continue
 		}
 
-		fields = append(fields, log.String(kv[i], kv[i+1]))
+		fields = append(fields, kv[i], kv[i+1])
 	}
 
 	// Defensively handle odd-length kv: use a sentinel so missing values are obvious in logs.
 	if len(kv)%2 != 0 {
 		const missingValue = "<missing>"
 
-		fields = append(fields, log.String(kv[len(kv)-1], missingValue))
+		fields = append(fields, kv[len(kv)-1], missingValue)
 	}
 
-	storage.logger.Log(context.Background(), log.LevelWarn, msg, fields...)
+	storage.logger.Log(context.Background(), obs.LevelWarn, msg, fields...)
 }
 
 // Close is a no-op as the Redis connection is managed by the application lifecycle.

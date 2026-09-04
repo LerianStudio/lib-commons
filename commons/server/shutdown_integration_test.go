@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/server"
-	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
+	"github.com/LerianStudio/lib-commons/v7/commons/server"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -71,7 +72,7 @@ func TestIntegration_ServerManager_HTTPLifecycle(t *testing.T) {
 	})
 
 	shutdownChan := make(chan struct{})
-	logger := log.NewNop()
+	logger := obs.Nop()
 
 	sm := server.NewServerManager(nil, nil, logger).
 		WithHTTPServer(app, addr).
@@ -134,7 +135,7 @@ func TestIntegration_ServerManager_ShutdownHooksExecuted(t *testing.T) {
 	})
 
 	shutdownChan := make(chan struct{})
-	logger := log.NewNop()
+	logger := obs.Nop()
 
 	var hook1Called atomic.Int64
 	var hook2Called atomic.Int64
@@ -193,7 +194,7 @@ func TestIntegration_ServerManager_GRPCLifecycle(t *testing.T) {
 
 	grpcServer := grpc.NewServer()
 	shutdownChan := make(chan struct{})
-	logger := log.NewNop()
+	logger := obs.Nop()
 
 	sm := server.NewServerManager(nil, nil, logger).
 		WithGRPCServer(grpcServer, addr).
@@ -257,7 +258,7 @@ func TestIntegration_ServerManager_GRPCLifecycle(t *testing.T) {
 // ServerManager with no configured servers returns ErrNoServersConfigured
 // immediately and synchronously.
 func TestIntegration_ServerManager_NoServersError(t *testing.T) {
-	logger := log.NewNop()
+	logger := obs.Nop()
 	sm := server.NewServerManager(nil, nil, logger)
 
 	err := sm.StartWithGracefulShutdownWithError()
@@ -288,7 +289,7 @@ func TestIntegration_ServerManager_InFlightRequestsDrained(t *testing.T) {
 	})
 
 	shutdownChan := make(chan struct{})
-	logger := log.NewNop()
+	logger := obs.Nop()
 
 	sm := server.NewServerManager(nil, nil, logger).
 		WithHTTPServer(app, addr).

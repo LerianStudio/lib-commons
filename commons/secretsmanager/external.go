@@ -163,7 +163,7 @@ func GetExternalCredentials(ctx context.Context, client SecretsManagerClient, en
 
 	output, err := client.GetSecretValue(ctx, input)
 	if err != nil {
-		return nil, classifyAWSErrorWithSentinels(err, secretPath, ErrExternalCredentialsNotFound, ErrExternalVaultAccessDenied, ErrExternalRetrievalFailed)
+		return nil, classifyBackendErrorWithSentinels(err, secretPath, ErrExternalCredentialsNotFound, ErrExternalVaultAccessDenied, ErrExternalRetrievalFailed)
 	}
 
 	// Check for binary secret FIRST (before attempting JSON unmarshal)

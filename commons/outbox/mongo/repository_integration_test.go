@@ -10,11 +10,12 @@ import (
 	"testing"
 	"time"
 
-	libMongo "github.com/LerianStudio/lib-commons/v6/commons/mongo"
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox/outboxtest"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	libLog "github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
+	libMongo "github.com/LerianStudio/lib-commons/v7/commons/mongo"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox/outboxtest"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
@@ -159,7 +160,7 @@ func newIntegrationRepoFixture(t *testing.T, repoOpts ...Option) *integrationRep
 	client, err := libMongo.NewClient(setupCtx, libMongo.Config{
 		URI:      uri,
 		Database: "outbox_integration_db",
-		Logger:   libLog.NewNop(),
+		Logger:   obs.Nop(),
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -179,7 +180,7 @@ func newIntegrationRepoFixtureFromClient(t *testing.T, ctx context.Context, clie
 	indexCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	repo, err := NewRepositoryWithContext(indexCtx, client, append([]Option{WithLogger(libLog.NewNop()), WithCollectionName(collectionName)}, repoOpts...)...)
+	repo, err := NewRepositoryWithContext(indexCtx, client, append([]Option{WithLogger(obs.Nop()), WithCollectionName(collectionName)}, repoOpts...)...)
 	require.NoError(t, err)
 
 	return &integrationRepoFixture{
@@ -203,7 +204,7 @@ func newIntegrationMongoSuite(t *testing.T) *integrationMongoSuite {
 	client, err := libMongo.NewClient(setupCtx, libMongo.Config{
 		URI:      uri,
 		Database: "outbox_integration_db",
-		Logger:   libLog.NewNop(),
+		Logger:   obs.Nop(),
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {

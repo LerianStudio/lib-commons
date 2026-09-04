@@ -2,17 +2,29 @@
 // Use of this source code is governed by the Elastic License 2.0
 // that can be found in the LICENSE file.
 
-// Package secretsmanager provides functions for retrieving M2M
-// (machine-to-machine) and external integration credentials from AWS Secrets
-// Manager.
+// Package secretsmanager retrieves and custodies M2M (machine-to-machine) and
+// external integration credentials.
+//
+// # Custody backends
+//
+// Two backends hold the material: AWS Secrets Manager (the default) and
+// HashiCorp Vault's KV v2 engine, which exists so a client running outside AWS
+// can custody its own credentials. Config selects between them; see Backend.
+//
+// The backend is an infrastructure choice, never a semantic one. Both address a
+// secret by the SAME reference this package builds, both return the same
+// document to the readers below, and both classify an absence onto the same
+// sentinel — which matters because callers branch on that sentinel to fall back
+// to static configuration. The secretsmanagertest package holds the contract
+// suite that measures this rather than assuming it.
 //
 // This package is designed to be self-contained with no dependency on internal packages,
 // making it suitable for migration to lib-commons.
 //
 // # M2M Credentials
 //
-// M2M credentials are OAuth2 client credentials stored in AWS Secrets Manager
-// following the path convention:
+// M2M credentials are OAuth2 client credentials stored under the path
+// convention:
 //
 //	tenants/{env}/{tenantOrgID}/{applicationName}/m2m/{targetService}/credentials
 //
@@ -72,7 +84,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/LerianStudio/lib-observability/v2/constants"
+	"github.com/LerianStudio/lib-observability/v4/constants"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
@@ -276,7 +288,7 @@ func GetM2MCredentials(ctx context.Context, client SecretsManagerClient, env, te
 
 	output, err := client.GetSecretValue(ctx, input)
 	if err != nil {
-		return nil, classifyAWSError(err, secretPath)
+		return nil, classifyBackendError(err, secretPath)
 	}
 
 	// Check for binary secret FIRST (before attempting JSON unmarshal)
@@ -326,24 +338,32 @@ func BuildM2MSecretPath(env, tenantOrgID, applicationName, targetService string)
 	return fmt.Sprintf("tenants/%s%s/%s/m2m/%s/credentials", envPrefix, tenantOrgID, applicationName, targetService)
 }
 
-// classifyAWSError maps AWS SDK errors to M2M domain-specific sentinel errors.
-// Secret paths are redacted in returned errors to prevent information leakage.
-func classifyAWSError(err error, secretPath string) error {
-	return classifyAWSErrorWithSentinels(err, secretPath, ErrM2MCredentialsNotFound, ErrM2MVaultAccessDenied, ErrM2MRetrievalFailed)
+// classifyBackendError maps a custody backend's errors to M2M domain-specific
+// sentinel errors. Secret paths are redacted in returned errors to prevent
+// information leakage.
+func classifyBackendError(err error, secretPath string) error {
+	return classifyBackendErrorWithSentinels(err, secretPath, ErrM2MCredentialsNotFound, ErrM2MVaultAccessDenied, ErrM2MRetrievalFailed)
 }
 
-// classifyAWSErrorWithSentinels is the generic AWS error classifier. Callers
-// pass the sentinel set they want to wrap (M2M or External, etc.). Secret paths
-// are redacted in returned errors to prevent information leakage.
-func classifyAWSErrorWithSentinels(err error, secretPath string, notFound, accessDenied, retrievalFailed error) error {
+// classifyBackendErrorWithSentinels is the generic classifier shared by every
+// reader in this package. Callers pass the sentinel set they want to wrap (M2M,
+// External, Kafka). Secret paths are redacted in returned errors to prevent
+// information leakage.
+//
+// It classifies BOTH backends. The backend-neutral sentinels are checked first
+// because a non-AWS backend cannot produce an AWS SDK error type: without this,
+// a Vault absence would fall through to retrievalFailed, and every caller that
+// branches on the notFound sentinel to fall back to static configuration would
+// instead fail closed on a secret that is merely absent.
+func classifyBackendErrorWithSentinels(err error, secretPath string, notFound, accessDenied, retrievalFailed error) error {
 	redacted := redactPath(secretPath)
 
 	var notFoundErr *smtypes.ResourceNotFoundException
-	if errors.As(err, &notFoundErr) {
+	if errors.Is(err, ErrBackendSecretNotFound) || errors.As(err, &notFoundErr) {
 		return fmt.Errorf("%w at %s", notFound, redacted)
 	}
 
-	if isVaultAccessDeniedError(err) {
+	if errors.Is(err, ErrBackendAccessDenied) || isVaultAccessDeniedError(err) {
 		return fmt.Errorf("%w at %s: %w", accessDenied, redacted, newScrubbedAWSError(err, secretPath, redacted))
 	}
 
@@ -402,7 +422,7 @@ const (
 func isVaultAccessDeniedError(err error) bool {
 	// errors.As matches a typed-nil smithy.APIError (a nil concrete pointer in the
 	// chain), and calling ErrorCode on it would panic; classify it as not
-	// access-denied instead, matching classifyExternalReferenceAWSError.
+	// access-denied instead, matching classifyExternalReferenceError.
 	var apiErr smithy.APIError
 	if !errors.As(err, &apiErr) || isNilInterface(apiErr) {
 		return false

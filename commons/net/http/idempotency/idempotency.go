@@ -12,12 +12,13 @@ import (
 	"strings"
 	"time"
 
-	chttp "github.com/LerianStudio/lib-commons/v6/commons/constants"
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	libHTTP "github.com/LerianStudio/lib-commons/v6/commons/net/http"
-	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-observability/v2/log"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+
+	chttp "github.com/LerianStudio/lib-commons/v7/commons/constants"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	libHTTP "github.com/LerianStudio/lib-commons/v7/commons/net/http"
+	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )
@@ -110,7 +111,7 @@ const (
 // Middleware provides at-most-once request semantics using an atomic [Store].
 type Middleware struct {
 	store                    Store
-	logger                   log.Logger
+	logger                   obs.Logger
 	keyPrefix                string
 	keyTTL                   time.Duration
 	maxKeyLength             int
@@ -156,7 +157,7 @@ func NewWithStore(store Store, opts ...Option) *Middleware {
 
 func newMiddleware(opts ...Option) *Middleware {
 	m := &Middleware{
-		logger:            log.NewNop(),
+		logger:            obs.Nop(),
 		keyPrefix:         "idempotency:",
 		keyTTL:            7 * 24 * time.Hour,
 		maxKeyLength:      256,
@@ -176,7 +177,7 @@ func newMiddleware(opts ...Option) *Middleware {
 }
 
 // WithLogger sets a structured logger.
-func WithLogger(l log.Logger) Option {
+func WithLogger(l obs.Logger) Option {
 	return func(m *Middleware) {
 		if l != nil {
 			m.logger = l
@@ -404,7 +405,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 
 	key := fmt.Sprintf("%s%s:%s", m.keyPrefix, tenantID, idempotencyKey)
 	if nilcheck.Interface(m.store) {
-		m.logger.Log(c.Context(), log.LevelWarn, "idempotency: store unavailable")
+		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: store unavailable")
 
 		return m.onStoreError(c)
 	}
@@ -424,7 +425,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 
 	ttl, err := m.resolveTTL(c)
 	if err != nil {
-		m.logger.Log(c.Context(), log.LevelWarn, "idempotency: TTL provider failed", log.Err(err))
+		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: TTL provider failed", "error", err)
 
 		return m.respondPostHandlerStoreError(c)
 	}
@@ -460,14 +461,14 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 
 	processing, err := json.Marshal(record)
 	if err != nil {
-		m.logger.Log(ctx, log.LevelWarn, "idempotency: failed to marshal processing record", log.Err(err))
+		m.logger.Log(ctx, obs.LevelWarn, "idempotency: failed to marshal processing record", "error", err)
 
 		return m.onStoreError(c)
 	}
 
 	stored, acquired, err := m.store.Acquire(ctx, key, processing, ttl)
 	if err != nil {
-		m.logger.Log(ctx, log.LevelWarn, "idempotency: store acquire failed", log.Err(err))
+		m.logger.Log(ctx, obs.LevelWarn, "idempotency: store acquire failed", "error", err)
 
 		return m.onStoreError(c)
 	}
@@ -486,14 +487,14 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 	if err := json.Unmarshal(stored, &current); err != nil {
 		legacy, isLegacy := decodeLegacyRecord(stored)
 		if !isLegacy {
-			m.logger.Log(ctx, log.LevelWarn, "idempotency: failed to unmarshal stored record", log.Err(err))
+			m.logger.Log(ctx, obs.LevelWarn, "idempotency: failed to unmarshal stored record", "error", err)
 
 			return m.onStoreError(c)
 		}
 
-		m.logger.Log(ctx, log.LevelWarn,
+		m.logger.Log(ctx, obs.LevelWarn,
 			"idempotency: stored record predates the atomic record format, answering from it without replay",
-			log.String("record_state", legacy.State))
+			"record_state", legacy.State)
 
 		return m.respondLegacy(c, legacy, fingerprint)
 	}
@@ -508,7 +509,7 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 	case keyStateComplete:
 		return m.replay(c, current.Response)
 	default:
-		m.logger.Log(ctx, log.LevelWarn, "idempotency: store returned invalid record state")
+		m.logger.Log(ctx, obs.LevelWarn, "idempotency: store returned invalid record state")
 
 		return m.onStoreError(c)
 	}
@@ -530,9 +531,9 @@ func (m *Middleware) handleStoreAcquired(
 	if handlerErr != nil || statusCode >= http.StatusInternalServerError {
 		applied, err := m.store.Release(postCtx, key, processing)
 		if err != nil {
-			m.logger.Log(postCtx, log.LevelWarn, "idempotency: store release failed", log.Err(err))
+			m.logger.Log(postCtx, obs.LevelWarn, "idempotency: store release failed", "error", err)
 		} else if !applied {
-			m.logger.Log(postCtx, log.LevelWarn, "idempotency: store release rejected stale owner")
+			m.logger.Log(postCtx, obs.LevelWarn, "idempotency: store release rejected stale owner")
 		}
 
 		return handlerErr
@@ -541,9 +542,9 @@ func (m *Middleware) handleStoreAcquired(
 	if statusCode >= http.StatusBadRequest && m.clientErrorPolicy == ClientErrorPolicyRelease {
 		applied, err := m.store.Release(postCtx, key, processing)
 		if err != nil {
-			m.logger.Log(postCtx, log.LevelWarn, "idempotency: client-error cleanup failed", log.Err(err))
+			m.logger.Log(postCtx, obs.LevelWarn, "idempotency: client-error cleanup failed", "error", err)
 		} else if !applied {
-			m.logger.Log(postCtx, log.LevelWarn, "idempotency: client-error cleanup rejected stale owner")
+			m.logger.Log(postCtx, obs.LevelWarn, "idempotency: client-error cleanup rejected stale owner")
 		}
 
 		return handlerErr
@@ -551,7 +552,7 @@ func (m *Middleware) handleStoreAcquired(
 
 	response, err := m.captureResponse(postCtx, c)
 	if err != nil {
-		m.logger.Log(postCtx, log.LevelWarn, "idempotency: failed to capture replay response", log.Err(err))
+		m.logger.Log(postCtx, obs.LevelWarn, "idempotency: failed to capture replay response", "error", err)
 
 		return m.respondPostHandlerStoreError(c)
 	}
@@ -561,20 +562,20 @@ func (m *Middleware) handleStoreAcquired(
 
 	completed, err := json.Marshal(record)
 	if err != nil {
-		m.logger.Log(postCtx, log.LevelWarn, "idempotency: failed to marshal completed record", log.Err(err))
+		m.logger.Log(postCtx, obs.LevelWarn, "idempotency: failed to marshal completed record", "error", err)
 
 		return m.respondPostHandlerStoreError(c)
 	}
 
 	applied, err := m.store.Complete(postCtx, key, processing, completed, ttl)
 	if err != nil {
-		m.logger.Log(postCtx, log.LevelWarn, "idempotency: store completion failed", log.Err(err))
+		m.logger.Log(postCtx, obs.LevelWarn, "idempotency: store completion failed", "error", err)
 
 		return m.respondPostHandlerStoreError(c)
 	}
 
 	if !applied {
-		m.logger.Log(postCtx, log.LevelWarn, "idempotency: store completion rejected stale owner")
+		m.logger.Log(postCtx, obs.LevelWarn, "idempotency: store completion rejected stale owner")
 
 		return m.respondPostHandlerStoreError(c)
 	}
@@ -585,10 +586,10 @@ func (m *Middleware) handleStoreAcquired(
 func (m *Middleware) captureResponse(ctx context.Context, c fiber.Ctx) ([]byte, error) {
 	body := c.Response().Body()
 	if len(body) > m.maxBodyCache {
-		m.logger.Log(c.Context(), log.LevelWarn,
+		m.logger.Log(c.Context(), obs.LevelWarn,
 			"idempotency: response body exceeds maxBodyCache, skipping cache",
-			log.Int("body_size", len(body)),
-			log.Int("max_body_cache", m.maxBodyCache),
+			"body_size", len(body),
+			"max_body_cache", m.maxBodyCache,
 		)
 
 		return nil, errResponseTooLarge
@@ -641,27 +642,27 @@ func (m *Middleware) maxEncodedResponseBytes() int {
 
 func (m *Middleware) replay(c fiber.Ctx, encoded []byte) error {
 	if len(encoded) == 0 || len(encoded) > m.maxEncodedResponseBytes() {
-		m.logger.Log(c.Context(), log.LevelWarn, "idempotency: completed record has no replay response")
+		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: completed record has no replay response")
 
 		return m.respondPostHandlerStoreError(c)
 	}
 
 	plaintext, err := m.responseCodec.Decode(c.Context(), encoded)
 	if err != nil || len(plaintext) == 0 || len(plaintext) > m.maxEncodedResponseBytes() {
-		m.logger.Log(c.Context(), log.LevelWarn, "idempotency: failed to decode replay response", log.Err(err))
+		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: failed to decode replay response", "error", err)
 
 		return m.respondPostHandlerStoreError(c)
 	}
 
 	var response cachedResponse
 	if err := json.Unmarshal(plaintext, &response); err != nil {
-		m.logger.Log(c.Context(), log.LevelWarn, "idempotency: failed to unmarshal replay response", log.Err(err))
+		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: failed to unmarshal replay response", "error", err)
 
 		return m.respondPostHandlerStoreError(c)
 	}
 
 	if response.StatusCode < http.StatusContinue || response.StatusCode > 599 || len(response.Body) > m.maxBodyCache {
-		m.logger.Log(c.Context(), log.LevelWarn, "idempotency: decoded replay response is invalid", log.Err(errInvalidReplayResponse))
+		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: decoded replay response is invalid", "error", errInvalidReplayResponse)
 
 		return m.respondPostHandlerStoreError(c)
 	}
