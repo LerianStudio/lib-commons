@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/url"
 
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
 )
 
 // ReactivateTenant reactivates a suspended tenant via the Tenant Manager's

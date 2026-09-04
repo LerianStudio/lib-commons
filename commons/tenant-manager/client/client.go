@@ -15,11 +15,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/cache"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/cache"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.opentelemetry.io/otel/trace"
 )

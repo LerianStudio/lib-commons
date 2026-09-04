@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/secretsmanager"
-	"github.com/LerianStudio/lib-commons/v6/commons/secretsmanager/secretsmanagertest"
+	"github.com/LerianStudio/lib-commons/v7/commons/secretsmanager"
+	"github.com/LerianStudio/lib-commons/v7/commons/secretsmanager/secretsmanagertest"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awscreds "github.com/aws/aws-sdk-go-v2/credentials"
 	awssm "github.com/aws/aws-sdk-go-v2/service/secretsmanager"

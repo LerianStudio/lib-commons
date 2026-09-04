@@ -6,9 +6,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/errgroup"
+	"github.com/LerianStudio/lib-commons/v7/commons/errgroup"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

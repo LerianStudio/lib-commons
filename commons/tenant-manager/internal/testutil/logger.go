@@ -12,7 +12,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 )
 
 // NewMockLogger returns a no-op logger that satisfies obs.Logger.

@@ -20,12 +20,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 )
 
 const defaultTopologyRefreshInterval = time.Minute

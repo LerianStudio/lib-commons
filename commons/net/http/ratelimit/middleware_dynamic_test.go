@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	chttp "github.com/LerianStudio/lib-commons/v6/commons/net/http"
+	chttp "github.com/LerianStudio/lib-commons/v7/commons/net/http"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"

@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-commons/v6/commons"
+	"github.com/LerianStudio/lib-commons/v7/commons"
 	constant "github.com/LerianStudio/lib-observability/v4/constants"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/golang-migrate/migrate/v4"

@@ -6,11 +6,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
 
-	"github.com/LerianStudio/lib-commons/v6/commons"
-	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	"github.com/LerianStudio/lib-commons/v7/commons"
+	cn "github.com/LerianStudio/lib-commons/v7/commons/constants"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/gofiber/fiber/v3"
 	"go.opentelemetry.io/otel/trace"

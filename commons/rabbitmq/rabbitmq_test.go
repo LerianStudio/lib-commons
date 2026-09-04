@@ -15,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-commons/v6/commons"
+	"github.com/LerianStudio/lib-commons/v7/commons"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

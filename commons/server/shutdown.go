@@ -12,10 +12,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-commons/v6/commons/license"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/license"
 	"github.com/LerianStudio/lib-observability/v4/runtime"
 	"github.com/gofiber/fiber/v3"
 	"google.golang.org/grpc"

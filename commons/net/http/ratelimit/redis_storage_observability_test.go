@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"

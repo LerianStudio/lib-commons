@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
+	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"

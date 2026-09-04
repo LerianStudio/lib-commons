@@ -15,12 +15,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
 	// File system migration source. We need to import it to be able to use it as source in migrate.NewWithSourceInstance
 
-	commons "github.com/LerianStudio/lib-commons/v6/commons"
-	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
+	commons "github.com/LerianStudio/lib-commons/v7/commons"
+	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
 	"github.com/LerianStudio/lib-observability/v4/assert"
 	constant "github.com/LerianStudio/lib-observability/v4/constants"
 	"github.com/LerianStudio/lib-observability/v4/runtime"

@@ -9,18 +9,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"
 
-	libCommons "github.com/LerianStudio/lib-commons/v6/commons"
-	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
+	libCommons "github.com/LerianStudio/lib-commons/v7/commons"
+	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
 	libLog "github.com/LerianStudio/lib-observability/v4/log"
 	"github.com/LerianStudio/lib-observability/v4/runtime"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"

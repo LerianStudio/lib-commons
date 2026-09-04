@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	libCommons "github.com/LerianStudio/lib-commons/v6/commons"
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
-	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
+	libCommons "github.com/LerianStudio/lib-commons/v7/commons"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
+	libPostgres "github.com/LerianStudio/lib-commons/v7/commons/postgres"
 )
 
 const uuidSchemaRegex = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"

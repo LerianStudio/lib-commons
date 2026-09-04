@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
 	"github.com/LerianStudio/lib-observability/v4/assert"
 	"github.com/LerianStudio/lib-observability/v4/runtime"

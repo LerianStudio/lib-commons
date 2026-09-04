@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"

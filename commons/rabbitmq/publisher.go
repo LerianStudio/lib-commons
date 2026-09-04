@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-observability/v4/runtime"
 	amqp "github.com/rabbitmq/amqp091-go"
 )

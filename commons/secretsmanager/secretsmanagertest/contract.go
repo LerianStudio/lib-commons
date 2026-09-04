@@ -20,7 +20,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/secretsmanager"
+	"github.com/LerianStudio/lib-commons/v7/commons/secretsmanager"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )

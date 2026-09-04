@@ -9,14 +9,14 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/LerianStudio/lib-commons/v6/commons"
-	"github.com/LerianStudio/lib-commons/v6/commons/events"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
+	"github.com/LerianStudio/lib-commons/v7/commons"
+	"github.com/LerianStudio/lib-commons/v7/commons/events"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/logcompat"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 )
 

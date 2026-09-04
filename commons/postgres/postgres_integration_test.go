@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
 	"github.com/LerianStudio/lib-observability/v4/metrics"
 	"github.com/stretchr/testify/assert"

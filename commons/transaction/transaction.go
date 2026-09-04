@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	constant "github.com/LerianStudio/lib-commons/v7/commons/constants"
 	"github.com/shopspring/decimal"
 )
 

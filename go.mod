@@ -1,4 +1,4 @@
-module github.com/LerianStudio/lib-commons/v6
+module github.com/LerianStudio/lib-commons/v7
 
 go 1.26.3
 

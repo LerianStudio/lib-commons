@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
 )
 
 // With returns a Logger that attaches kv to every event it emits.

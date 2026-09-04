@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	constant "github.com/LerianStudio/lib-commons/v7/commons/constants"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

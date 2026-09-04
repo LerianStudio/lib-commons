@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	tmvalkey "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/valkey"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
+	tmvalkey "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/valkey"
 	"github.com/LerianStudio/lib-observability/v4/assert"
 	constant "github.com/LerianStudio/lib-observability/v4/constants"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
@@ -20,7 +20,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
+	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
 )
 
 const (

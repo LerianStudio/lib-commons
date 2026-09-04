@@ -12,19 +12,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/client"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/event"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
-	tmmongo "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/mongo"
-	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
-	tmrabbitmq "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/rabbitmq"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/tenantcache"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/client"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/event"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/logcompat"
+	tmmongo "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/mongo"
+	tmpostgres "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/postgres"
+	tmrabbitmq "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/rabbitmq"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/tenantcache"
 )
 
 // HandlerFunc is a function that processes messages from a queue.

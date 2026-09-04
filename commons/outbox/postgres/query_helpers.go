@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
 )
 
 func queryOutboxEvents(

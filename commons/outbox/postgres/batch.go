@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/google/uuid"
 )

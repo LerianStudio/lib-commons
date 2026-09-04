@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	constant "github.com/LerianStudio/lib-commons/v7/commons/constants"
 	"github.com/LerianStudio/lib-observability/v4/redaction"
 )
 

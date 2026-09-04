@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
+	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"

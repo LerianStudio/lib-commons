@@ -7,8 +7,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

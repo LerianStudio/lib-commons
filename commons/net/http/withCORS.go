@@ -6,10 +6,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-commons/v6/commons"
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
 	libLog "github.com/LerianStudio/lib-observability/v4/log"
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"

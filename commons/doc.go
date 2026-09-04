@@ -1,6 +1,6 @@
 // Package commons provides shared infrastructure helpers used across Lerian services.
 //
-// As of v6, the module path is github.com/LerianStudio/lib-commons/v6 and the
+// As of v7, the module path is github.com/LerianStudio/lib-commons/v7 and the
 // HTTP/server helpers target Fiber v3.
 //
 // The package includes validation utilities, error adapters, and cross-cutting

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
 
 	"github.com/LerianStudio/lib-observability/v4/assert"
 	opentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"

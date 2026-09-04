@@ -3,9 +3,9 @@ package http
 import (
 	"errors"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/circuitbreaker"
-	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/circuitbreaker"
+	constant "github.com/LerianStudio/lib-commons/v7/commons/constants"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
 	"github.com/gofiber/fiber/v3"
 )
 

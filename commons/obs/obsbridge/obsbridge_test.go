@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
 	libobs "github.com/LerianStudio/lib-observability/v4"
 	liblog "github.com/LerianStudio/lib-observability/v4/log"
 	libmetrics "github.com/LerianStudio/lib-observability/v4/metrics"

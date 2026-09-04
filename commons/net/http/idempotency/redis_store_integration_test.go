@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/net/http/idempotency"
-	"github.com/LerianStudio/lib-commons/v6/commons/net/http/idempotency/idempotencytest"
-	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
+	"github.com/LerianStudio/lib-commons/v7/commons/net/http/idempotency"
+	"github.com/LerianStudio/lib-commons/v7/commons/net/http/idempotency/idempotencytest"
+	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"
 	tcredis "github.com/testcontainers/testcontainers-go/modules/redis"

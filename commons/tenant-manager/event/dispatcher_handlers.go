@@ -9,10 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/logcompat"
 )
 
 // handleTenantCreated is a no-op: new tenants are lazy-loaded on first request.

@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	tmlog "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/log"
+	tmlog "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/log"
 )
 
 type Logger struct {
