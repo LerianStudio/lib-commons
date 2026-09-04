@@ -1,14 +1,20 @@
 # ───────────────────────────────────────────────────────────────────────────
-# Go module majors live in the import path (…/v6, …/v7) and MUST be cut by hand:
-# rename the module path, then tag vN.0.0. CI must NEVER auto-major a Go module.
+# `breaking: major` is ON for the /v7 cut and MUST be returned to `minor` once
+# v7.0.0-beta.1 is published. #547 flipped it for the v5→v6 cut and #558 flipped
+# it back; this is the same one-shot manoeuvre for v6→v7.
 #
-# `develop` is a prerelease (beta) channel whose base is the last `main` release
-# (currently v6.0.0). The /v6 cut's breaking commits (Fiber v3, `feat(core)!: …`)
-# live in v6.0.0..HEAD, so a `breaking: major` rule re-applies them on every run
-# and cuts a phantom v7.x-beta tag — INCONSUMABLE by Go for a /v6 module.
-# Keep `breaking` at `minor`: #547 flipped it to `major` only to force the
-# one-shot v5→v6 cut, which is done. For the next real major, do the path rename
-# + manual vN.0.0 tag — do NOT re-flip this rule.
+# Why it cannot stay on `major`: a Go module's major lives in the import path,
+# so a tag whose major disagrees with the path is unconsumable — `go get` fails
+# with "go.mod has non-.../vN module path". Left on `major`, the next `!` commit
+# after this cut would compute v8.0.0-beta.1 against a /v7 path and publish a
+# tag nobody can resolve.
+#
+# Why the manual-tag route in the previous version of this comment does not
+# work: semantic-release only adopts a tag as `lastRelease` when it carries its
+# own channel record. A hand-made tag is invisible for that purpose yet still
+# feeds `getNextVersion`'s `highest()` second term, so it recomputes its own
+# version and collides with itself — `fatal: tag 'v7.0.0-beta.1' already
+# exists`, on every run, permanently. Observed on run 33907401438.
 # ───────────────────────────────────────────────────────────────────────────
 plugins:
   - ["@semantic-release/commit-analyzer", {
@@ -29,7 +35,7 @@ plugins:
         { type: "fix", release: "patch" },
         { type: "refactor", release: "minor" },
         { type: "docs", release: "patch" },
-        { breaking: true, release: "minor" }
+        { breaking: true, release: "major" }
       ]
     }]
 
