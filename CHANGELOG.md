@@ -1,5 +1,36 @@
 # Lib-commons Changelog
 
+## [7.0.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.0.0)
+
+Features:
+- Dropped the deprecated `v4` consumer constructors. (@rodrigodh)
+- Renamed the module path to `/v7`. (@rodrigodh)
+- Added `commons/obs` stdlib-only observability contracts. (@rodrigodh)
+
+Fixes:
+- Bumped `lib-observability` to `v4.0.1`. (@rodrigodh)
+- Pinned `lib-observability` to the stable `v4.0.0`. (@rodrigodh)
+- Substituted a no-operation logger on the list-pending failure path in the outbox. (@rodrigodh)
+- Treated a typed-nil `obs.Logger` as absent. (@rodrigodh)
+
+Improvements:
+- Rescoped the release-policy guard to the `v7` cut. (@rodrigodh)
+- Matched the version label in the package documentation to `/v7`. (@rodrigodh)
+- Closed two blind spots in the `lib-observability` boundary guard. (@rodrigodh)
+- Emptied the `lib-observability` allowlist on the API boundary. (@rodrigodh)
+- Refactored to ride `lib-observability` `v4` and deleted the obsbridge adapters. (@rodrigodh)
+- Dropped the `With/WithGroup` methods that the observability contract no longer has. (@rodrigodh)
+- Dropped dead `toFields` helper and silenced two linter nits. (@rodrigodh)
+- Failed the build if `lib-observability` returns to the public API. (@rodrigodh)
+- Dropped observability types from the utils entry points. (@rodrigodh)
+- Replaced `metrics.MetricsFactory` with `obs.MetricsRecorder`. (@rodrigodh)
+- Accepted `obs.TelemetryShutdowner` in `NewServerManager`. (@rodrigodh)
+- Replaced `log.Logger` with `obs.Logger` across the public API. (@rodrigodh)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v6.8.2...v7.0.0)
+
+---
+
 ## [6.8.2](https://github.com/LerianStudio/lib-commons/releases/tag/v6.8.2)
 
 Fixes:
