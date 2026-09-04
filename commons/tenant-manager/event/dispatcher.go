@@ -10,17 +10,17 @@ import (
 	"slices"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
 
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
-	tmmongo "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/mongo"
-	tmpostgres "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/postgres"
-	tmrabbitmq "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/rabbitmq"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/tenantcache"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
+	tmmongo "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/mongo"
+	tmpostgres "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/postgres"
+	tmrabbitmq "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/rabbitmq"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/tenantcache"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/logcompat"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/logcompat"
 )
 
 // maxJitterMillis is the upper bound in milliseconds for the random jitter

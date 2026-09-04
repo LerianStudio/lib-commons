@@ -12,13 +12,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	chttp "github.com/LerianStudio/lib-commons/v6/commons/constants"
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	libHTTP "github.com/LerianStudio/lib-commons/v6/commons/net/http"
-	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	chttp "github.com/LerianStudio/lib-commons/v7/commons/constants"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	libHTTP "github.com/LerianStudio/lib-commons/v7/commons/net/http"
+	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
 )

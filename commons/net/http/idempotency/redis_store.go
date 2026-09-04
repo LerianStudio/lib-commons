@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
+	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
 	"github.com/redis/go-redis/v9"
 )
 

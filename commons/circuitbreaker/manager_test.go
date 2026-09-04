@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
 	"github.com/sony/gobreaker"
 	"github.com/stretchr/testify/assert"

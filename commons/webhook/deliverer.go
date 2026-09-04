@@ -14,16 +14,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	commons "github.com/LerianStudio/lib-commons/v6/commons"
+	commons "github.com/LerianStudio/lib-commons/v7/commons"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-observability/v4/runtime"
 )
 

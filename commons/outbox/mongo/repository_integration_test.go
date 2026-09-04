@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	libMongo "github.com/LerianStudio/lib-commons/v6/commons/mongo"
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox/outboxtest"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	libMongo "github.com/LerianStudio/lib-commons/v7/commons/mongo"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox/outboxtest"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"

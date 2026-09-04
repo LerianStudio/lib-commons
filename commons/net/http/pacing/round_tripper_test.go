@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/net/http/pacing"
+	"github.com/LerianStudio/lib-commons/v7/commons/net/http/pacing"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

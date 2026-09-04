@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
 	"go.opentelemetry.io/otel/metric"
 )
 

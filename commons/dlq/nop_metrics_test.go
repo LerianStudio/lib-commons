@@ -7,7 +7,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
 	"github.com/stretchr/testify/assert"
 )

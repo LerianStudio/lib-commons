@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 )
 
 // ErrTenantPoolUnavailable is returned when a per-tenant pool cannot be

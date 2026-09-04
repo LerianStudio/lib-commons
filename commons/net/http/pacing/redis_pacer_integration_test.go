@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons"
-	"github.com/LerianStudio/lib-commons/v6/commons/net/http/pacing"
-	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
+	"github.com/LerianStudio/lib-commons/v7/commons"
+	"github.com/LerianStudio/lib-commons/v7/commons/net/http/pacing"
+	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/testcontainers/testcontainers-go"

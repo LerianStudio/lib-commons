@@ -12,10 +12,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
-	obsbridge "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	obsbridge "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
 
-	cn "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	cn "github.com/LerianStudio/lib-commons/v7/commons/constants"
 	"github.com/google/uuid"
 	"github.com/shirou/gopsutil/cpu"
 	"github.com/shirou/gopsutil/mem"

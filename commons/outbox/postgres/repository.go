@@ -8,12 +8,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
-	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
+	libPostgres "github.com/LerianStudio/lib-commons/v7/commons/postgres"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/google/uuid"
 )

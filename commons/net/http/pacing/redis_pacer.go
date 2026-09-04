@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	constant "github.com/LerianStudio/lib-observability/v4/constants"
 	libTracing "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/redis/go-redis/v9"

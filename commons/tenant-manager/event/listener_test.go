@@ -15,15 +15,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/events"
-	"github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/internal/testutil"
+	"github.com/LerianStudio/lib-commons/v7/commons/events"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/testutil"
 )
 
 // setEnv sets ENVIRONMENT_NAME for the duration of the test and explicitly

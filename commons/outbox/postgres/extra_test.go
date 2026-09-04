@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	libPostgres "github.com/LerianStudio/lib-commons/v6/commons/postgres"
+	libPostgres "github.com/LerianStudio/lib-commons/v7/commons/postgres"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

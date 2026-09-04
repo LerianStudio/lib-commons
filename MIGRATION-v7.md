@@ -105,7 +105,7 @@ lib-commons is calling real functionality (`tracing`, `constants`, `assert`,
 type.
 
 ```go
-import "github.com/LerianStudio/lib-commons/v6/commons/obs/obsbridge"
+import "github.com/LerianStudio/lib-commons/v7/commons/obs/obsbridge"
 
 logger := obsbridge.LoggerFromContext(ctx)                     // obs.Logger
 rec    := obsbridge.MetricsFromContext(ctx)                     // obs.MetricsRecorder

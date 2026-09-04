@@ -3,9 +3,9 @@ package log
 import (
 	"context"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 )
 
 // TenantAwareLogger decorates every event with the tenant_id carried by the

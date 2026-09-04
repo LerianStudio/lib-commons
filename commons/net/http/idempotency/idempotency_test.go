@@ -17,12 +17,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-commons/v6/commons"
-	chttp "github.com/LerianStudio/lib-commons/v6/commons/constants"
-	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons"
+	chttp "github.com/LerianStudio/lib-commons/v7/commons/constants"
+	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"

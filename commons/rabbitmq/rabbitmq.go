@@ -15,12 +15,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	commons "github.com/LerianStudio/lib-commons/v6/commons"
-	"github.com/LerianStudio/lib-commons/v6/commons/backoff"
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-commons/v6/commons/security/sanitize"
+	commons "github.com/LerianStudio/lib-commons/v7/commons"
+	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/security/sanitize"
 	"github.com/LerianStudio/lib-observability/v4/assert"
 	constant "github.com/LerianStudio/lib-observability/v4/constants"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"

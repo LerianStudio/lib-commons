@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/license"
-	"github.com/LerianStudio/lib-commons/v6/commons/server"
+	"github.com/LerianStudio/lib-commons/v7/commons/license"
+	"github.com/LerianStudio/lib-commons/v7/commons/server"
 	opentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"

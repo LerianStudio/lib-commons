@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	libBackoff "github.com/LerianStudio/lib-commons/v6/commons/backoff"
-	libRedis "github.com/LerianStudio/lib-commons/v6/commons/redis"
-	tmcore "github.com/LerianStudio/lib-commons/v6/commons/tenant-manager/core"
+	libBackoff "github.com/LerianStudio/lib-commons/v7/commons/backoff"
+	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
+	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	libOtel "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.opentelemetry.io/otel/trace"
 	"go.opentelemetry.io/otel/trace/noop"

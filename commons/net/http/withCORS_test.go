@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v6/commons"
-	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
+	"github.com/LerianStudio/lib-commons/v7/commons"
+	constant "github.com/LerianStudio/lib-commons/v7/commons/constants"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

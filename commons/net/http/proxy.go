@@ -6,10 +6,10 @@ import (
 	"net/http/httputil"
 	"net/url"
 
-	"github.com/LerianStudio/lib-commons/v6/commons/obs"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
-	constant "github.com/LerianStudio/lib-commons/v6/commons/constants"
-	"github.com/LerianStudio/lib-commons/v6/commons/internal/nilcheck"
+	constant "github.com/LerianStudio/lib-commons/v7/commons/constants"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
 	opentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"

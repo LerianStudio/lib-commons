@@ -9,7 +9,7 @@ import (
 	"time"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
-	"github.com/LerianStudio/lib-commons/v6/commons/outbox"
+	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
 	"github.com/stretchr/testify/require"
 )
 
