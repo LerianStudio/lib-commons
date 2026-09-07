@@ -7,8 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -548,3 +551,266 @@ func TestServeSpec_NilLogger_RenderFailure_NoPanic(t *testing.T) {
 func (*recordingLogger) Enabled(int) bool { return true }
 
 func (*recordingLogger) Sync(context.Context) error { return nil }
+
+// baselinePathInput backs the baseline-response operations that read a path
+// parameter. echoInput (a body) and *struct{} (neither) cover the other two
+// input shapes the 422 rule branches on.
+type baselinePathInput struct {
+	ID string `path:"id"`
+}
+
+// registerBaseline registers a no-op operation so a test can inspect what the
+// wrapper wrote into the emitted document for it. It declares no Errors, which
+// is the shape every Lerian service currently ships.
+func registerBaseline[I any](api huma.API, id, method, path string) {
+	huma.Register(api, huma.Operation{
+		OperationID: id,
+		Method:      method,
+		Path:        path,
+	}, func(context.Context, *I) (*echoOutput, error) {
+		return &echoOutput{}, nil
+	})
+}
+
+// responseKeys lists the statuses documented on op, so a test can assert the
+// COMPLETE set and therefore that nothing unexpected was added.
+func responseKeys(op *huma.Operation) []string {
+	return slices.Collect(maps.Keys(op.Responses))
+}
+
+// TestBaselineErrors_AddedWhenServiceDeclaresNone proves the statuses a service
+// gets without writing any error declaration of its own: 500 always, 422 for an
+// operation that reads input, and the catch-all untouched beside them. It also
+// locks C2 — every added status reuses the schema pointer Huma already
+// registered for the catch-all, so components carries one error schema, not two.
+func TestBaselineErrors_AddedWhenServiceDeclaresNone(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	api := New(app, app.Group("/"), testConfig())
+
+	registerBaseline[echoInput](api, "baseline-body", http.MethodPost, "/baseline/body")
+	registerBaseline[baselinePathInput](api, "baseline-path", http.MethodGet, "/baseline/path/{id}")
+	registerBaseline[struct{}](api, "baseline-bare", http.MethodGet, "/baseline/bare")
+
+	cases := map[string]struct {
+		op   *huma.Operation
+		want []string
+	}{
+		"reads a body":           {op: api.OpenAPI().Paths["/baseline/body"].Post, want: []string{"200", "422", "500", "default"}},
+		"reads a path parameter": {op: api.OpenAPI().Paths["/baseline/path/{id}"].Get, want: []string{"200", "422", "500", "default"}},
+		"reads neither":          {op: api.OpenAPI().Paths["/baseline/bare"].Get, want: []string{"200", "500", "default"}},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			require.NotNil(t, tc.op)
+			assert.ElementsMatch(t, tc.want, responseKeys(tc.op), "exact documented status set")
+
+			catchAll := tc.op.Responses["default"]
+			require.NotNil(t, catchAll)
+			require.NotEmpty(t, catchAll.Content)
+
+			for _, status := range tc.want {
+				if status == "200" || status == "default" {
+					continue
+				}
+
+				added := tc.op.Responses[status]
+				require.NotNil(t, added)
+				assert.Equal(t, http.StatusText(mustAtoi(t, status)), added.Description)
+
+				for mediaType, media := range catchAll.Content {
+					require.Containsf(t, added.Content, mediaType, "%s must answer with the error media type", status)
+					assert.Samef(t, media.Schema, added.Content[mediaType].Schema,
+						"%s must reference the catch-all's schema, not a second one", status)
+				}
+			}
+		})
+	}
+}
+
+// mustAtoi converts a documented status key back to an int for a description
+// comparison, failing the test rather than swallowing a malformed key.
+func mustAtoi(t *testing.T, s string) int {
+	t.Helper()
+
+	n, err := strconv.Atoi(s)
+	require.NoError(t, err)
+
+	return n
+}
+
+// TestBaselineErrors_DeclaredErrorsLeftAlone proves an operation that enumerates
+// its own errors is untouched. Huma writes no catch-all for it, so there is no
+// registered error schema to clone from and the wrapper adds nothing: the whole
+// documented set is Huma's own (the declared 404, plus the 422/500 Huma appends
+// once Errors is non-empty).
+func TestBaselineErrors_DeclaredErrorsLeftAlone(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	api := New(app, app.Group("/"), testConfig())
+
+	huma.Register(api, huma.Operation{
+		OperationID: "baseline-declared",
+		Method:      http.MethodGet,
+		Path:        "/baseline/declared/{id}",
+		Errors:      []int{http.StatusNotFound},
+	}, func(context.Context, *baselinePathInput) (*echoOutput, error) {
+		return &echoOutput{}, nil
+	})
+
+	op := api.OpenAPI().Paths["/baseline/declared/{id}"].Get
+	require.NotNil(t, op)
+
+	assert.ElementsMatch(t, []string{"200", "404", "422", "500"}, responseKeys(op))
+	assert.NotContains(t, op.Responses, "default", "Huma writes no catch-all once the service enumerates its errors")
+	assert.Equal(t, http.StatusText(http.StatusNotFound), op.Responses["404"].Description)
+}
+
+// TestBaselineErrors_DoesNotOverwriteADeclaredStatus proves C3 and C4 together:
+// a status the service described itself keeps its own description, the catch-all
+// the service wrote survives, and the missing baseline status is still added
+// beside them with the catch-all's schema.
+func TestBaselineErrors_DoesNotOverwriteADeclaredStatus(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	api := New(app, app.Group("/"), testConfig())
+
+	// The service supplies both its own catch-all and its own 500. Supplying any
+	// response at all stops Huma from writing a catch-all, so the catch-all here
+	// has to come from the service for the wrapper to have a schema to clone.
+	serviceSchema := &huma.Schema{Type: "object"}
+	huma.Register(api, huma.Operation{
+		OperationID: "baseline-preset",
+		Method:      http.MethodPost,
+		Path:        "/baseline/preset",
+		Responses: map[string]*huma.Response{
+			"default": {
+				Description: "Service catch-all",
+				Content:     map[string]*huma.MediaType{"application/problem+json": {Schema: serviceSchema}},
+			},
+			"500": {Description: "Service-specific server error"},
+		},
+	}, func(context.Context, *echoInput) (*echoOutput, error) {
+		return &echoOutput{}, nil
+	})
+
+	op := api.OpenAPI().Paths["/baseline/preset"].Post
+	require.NotNil(t, op)
+
+	assert.Equal(t, "Service-specific server error", op.Responses["500"].Description, "a declared status is never rewritten")
+	assert.Equal(t, "Service catch-all", op.Responses["default"].Description, "the catch-all is never rewritten")
+
+	added := op.Responses["422"]
+	require.NotNil(t, added, "the missing baseline status is still added")
+	assert.Same(t, serviceSchema, added.Content["application/problem+json"].Schema)
+}
+
+// TestBaselineErrors_ConfigAddsExtraStatuses proves the per-service additions:
+// a status listed in Config.BaselineErrors is documented on every operation,
+// a repeat of it is harmless, and nothing else arrives uninvited.
+func TestBaselineErrors_ConfigAddsExtraStatuses(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.BaselineErrors = []int{http.StatusUnauthorized, http.StatusUnauthorized}
+
+	app := fiber.New()
+	api := New(app, app.Group("/"), cfg)
+
+	registerBaseline[struct{}](api, "baseline-configured", http.MethodGet, "/baseline/configured")
+
+	op := api.OpenAPI().Paths["/baseline/configured"].Get
+	require.NotNil(t, op)
+
+	assert.ElementsMatch(t, []string{"200", "401", "500", "default"}, responseKeys(op))
+	assert.Equal(t, http.StatusText(http.StatusUnauthorized), op.Responses["401"].Description)
+}
+
+// TestBaselineErrors_EmittedDocumentForAServiceShapedAPI is the end-to-end lock:
+// an API built the way a service builds one — openapi.New plus problem.Install()
+// for the RFC 9457 envelope — emits the baseline statuses in the marshalled
+// document, and every one of them points at the SAME error schema as the
+// catch-all, which is what C2 exists to guarantee.
+func TestBaselineErrors_EmittedDocumentForAServiceShapedAPI(t *testing.T) {
+	// NOT parallel: problem.Install mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	problem.Install()
+
+	app := fiber.New()
+	api := New(app, app.Group("/"), testConfig())
+
+	registerBaseline[baselinePathInput](api, "doc-get-one", http.MethodGet, "/doc/items/{id}")
+	registerBaseline[echoInput](api, "doc-create", http.MethodPost, "/doc/items")
+	registerBaseline[struct{}](api, "doc-list", http.MethodGet, "/doc/items")
+
+	raw, err := json.Marshal(api.OpenAPI())
+	require.NoError(t, err)
+
+	// Decoded from the marshalled bytes rather than read off the in-memory
+	// objects: the emitted document is the artefact a caller reads, and only it
+	// shows whether the added statuses resolved to one $ref or to several.
+	var doc struct {
+		Paths map[string]map[string]struct {
+			Responses map[string]struct {
+				Content map[string]struct {
+					Schema struct {
+						Ref string `json:"$ref"`
+					} `json:"schema"`
+				} `json:"content"`
+			} `json:"responses"`
+		} `json:"paths"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &doc))
+
+	// Each entry is "<media type> -> <$ref>". One distinct entry across every
+	// error response of every operation means one shared error schema.
+	shapes := map[string]struct{}{}
+
+	cases := []struct {
+		name    string
+		path    string
+		method  string
+		want422 bool
+	}{
+		{name: "path parameter", path: "/doc/items/{id}", method: "get", want422: true},
+		{name: "request body", path: "/doc/items", method: "post", want422: true},
+		{name: "neither", path: "/doc/items", method: "get", want422: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			responses := doc.Paths[tc.path][tc.method].Responses
+			require.NotEmpty(t, responses)
+
+			require.Contains(t, responses, "500")
+			require.Contains(t, responses, "default", "the catch-all still covers a status nobody enumerated")
+
+			statuses := []string{"500", "default"}
+
+			if tc.want422 {
+				require.Contains(t, responses, "422")
+
+				statuses = append(statuses, "422")
+			} else {
+				assert.NotContains(t, responses, "422", "an operation that reads no input cannot fail request validation")
+			}
+
+			for _, status := range statuses {
+				for mediaType, media := range responses[status].Content {
+					assert.NotEmptyf(t, media.Schema.Ref, "%s must reference a schema component", status)
+					shapes[mediaType+" -> "+media.Schema.Ref] = struct{}{}
+				}
+			}
+		})
+	}
+
+	assert.Len(t, shapes, 1, "every documented error must share one media type and one schema reference, got %v", shapes)
+}
