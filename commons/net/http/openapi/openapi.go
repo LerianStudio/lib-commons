@@ -147,7 +147,8 @@ func baselineResponses(extra []int) huma.AddOpFunc {
 		// non-default response does not get that catch-all, so derive the same
 		// registered error content Huma uses rather than dropping the baseline
 		// statuses for that valid operation shape.
-		errorContent := map[string]*huma.MediaType(nil)
+		var errorContent map[string]*huma.MediaType
+
 		if catchAll := op.Responses["default"]; catchAll != nil {
 			errorContent = catchAll.Content
 		} else {
@@ -197,6 +198,7 @@ func registeredErrorContent(oapi *huma.OpenAPI) map[string]*huma.MediaType {
 
 	example := huma.NewError(0, "")
 	contentType := "application/json"
+
 	if filter, ok := example.(huma.ContentTypeFilter); ok {
 		contentType = filter.ContentType(contentType)
 	}

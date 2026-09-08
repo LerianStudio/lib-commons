@@ -793,11 +793,44 @@ func TestBaselineErrors_NonDefaultResponseStillGetsBaselineStatuses(t *testing.T
 		response := op.Responses[status]
 		require.NotNil(t, response)
 		require.NotEmpty(t, response.Content)
+
 		for _, media := range response.Content {
 			require.NotNil(t, media)
 			assert.NotNil(t, media.Schema)
 		}
 	}
+
+	// The derived path must reuse the schema Huma already registered rather than
+	// register a second, divergent one. Compare it against an operation on the
+	// same API that DOES receive the catch-all.
+	registerBaseline[struct{}](api, "baseline-catch-all-peer", http.MethodGet, "/baseline/catch-all-peer")
+
+	peer := api.OpenAPI().Paths["/baseline/catch-all-peer"].Get
+	require.NotNil(t, peer)
+
+	derived := singleErrorSchemaRef(t, op.Responses["500"])
+	fromCatchAll := singleErrorSchemaRef(t, peer.Responses["500"])
+
+	assert.Equal(t, fromCatchAll, derived)
+	assert.NotEmpty(t, derived)
+}
+
+// singleErrorSchemaRef returns the schema reference of a response that carries
+// exactly one media type, failing the test on any other shape.
+func singleErrorSchemaRef(t *testing.T, response *huma.Response) string {
+	t.Helper()
+
+	require.NotNil(t, response)
+	require.Len(t, response.Content, 1)
+
+	for _, media := range response.Content {
+		require.NotNil(t, media)
+		require.NotNil(t, media.Schema)
+
+		return media.Schema.Ref
+	}
+
+	return ""
 }
 
 // TestBaselineErrors_ConfigAddsExtraStatuses proves the per-service additions:
