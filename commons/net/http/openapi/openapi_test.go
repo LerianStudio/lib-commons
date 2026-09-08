@@ -559,6 +559,10 @@ type baselinePathInput struct {
 	ID string `path:"id"`
 }
 
+type baselineRawBodyInput struct {
+	RawBody []byte
+}
+
 // registerBaseline registers a no-op operation so a test can inspect what the
 // wrapper wrote into the emitted document for it. It declares no Errors, which
 // is the shape every Lerian service currently ships.
@@ -630,6 +634,44 @@ func TestBaselineErrors_AddedWhenServiceDeclaresNone(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBaselineErrors_BinaryRawBodyDoesNotAdd422(t *testing.T) {
+	t.Parallel()
+
+	app := fiber.New()
+	api := New(app, app.Group("/"), testConfig())
+
+	registerBaseline[baselineRawBodyInput](api, "baseline-raw-body", http.MethodPost, "/baseline/raw-body")
+
+	op := api.OpenAPI().Paths["/baseline/raw-body"].Post
+	require.NotNil(t, op)
+
+	assert.ElementsMatch(t, []string{"200", "500", "default"}, responseKeys(op))
+}
+
+func TestBaselineResponses_MalformedCatchAllDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	hook := baselineResponses(nil)
+
+	t.Run("nil catch-all", func(t *testing.T) {
+		op := &huma.Operation{Responses: map[string]*huma.Response{"default": nil}}
+
+		assert.NotPanics(t, func() { hook(nil, op) })
+	})
+
+	t.Run("nil media type", func(t *testing.T) {
+		op := &huma.Operation{Responses: map[string]*huma.Response{
+			"default": {
+				Content: map[string]*huma.MediaType{"application/problem+json": nil},
+			},
+		}}
+
+		assert.NotPanics(t, func() { hook(nil, op) })
+		require.NotNil(t, op.Responses["500"])
+		assert.NotContains(t, op.Responses["500"].Content, "application/problem+json")
+	})
 }
 
 // mustAtoi converts a documented status key back to an int for a description

@@ -149,7 +149,7 @@ func baselineResponses(extra []int) huma.AddOpFunc {
 		// there is nothing to clone: registering a schema here instead would put a
 		// SECOND, divergent error schema in components. Leave that operation be.
 		catchAll, ok := op.Responses["default"]
-		if !ok {
+		if !ok || catchAll == nil {
 			return
 		}
 
@@ -157,8 +157,8 @@ func baselineResponses(extra []int) huma.AddOpFunc {
 		statuses = append(statuses, http.StatusInternalServerError)
 
 		// Mirrors huma.Register's own rule: an operation that reads a parameter or
-		// a body can fail request validation, and Huma answers that with 422.
-		if len(op.Parameters) > 0 || op.RequestBody != nil {
+		// a body with a validation schema can fail request validation with 422.
+		if len(op.Parameters) > 0 || hasValidationBody(op.RequestBody) {
 			statuses = append(statuses, http.StatusUnprocessableEntity)
 		}
 
@@ -189,6 +189,28 @@ func baselineResponses(extra []int) huma.AddOpFunc {
 	}
 }
 
+func hasValidationBody(body *huma.RequestBody) bool {
+	if body == nil {
+		return false
+	}
+
+	if media := body.Content["application/json"]; media != nil && media.Schema != nil {
+		return true
+	}
+
+	for _, media := range body.Content {
+		if media == nil || media.Schema == nil {
+			continue
+		}
+
+		if media.Schema.Type != "string" && media.Schema.Format != "binary" {
+			return true
+		}
+	}
+
+	return false
+}
+
 // cloneErrorContent copies the catch-all's content map so each added status owns
 // its own map rather than aliasing one. The *huma.Schema pointer is shared on
 // purpose: it is the reference Huma already registered, so every added status
@@ -200,6 +222,10 @@ func cloneErrorContent(src map[string]*huma.MediaType) map[string]*huma.MediaTyp
 
 	out := make(map[string]*huma.MediaType, len(src))
 	for mediaType, media := range src {
+		if media == nil {
+			continue
+		}
+
 		out[mediaType] = &huma.MediaType{Schema: media.Schema}
 	}
 
