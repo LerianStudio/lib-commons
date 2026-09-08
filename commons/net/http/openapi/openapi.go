@@ -21,7 +21,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"net/http"
 	"path"
+	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
@@ -65,6 +69,14 @@ type Config struct {
 	Description string
 	// Servers lists the server URLs advertised in the spec.
 	Servers []string
+	// BaselineErrors lists extra statuses this service's middleware stack can
+	// return on ANY operation, documented on every operation alongside the 500
+	// (and the 422 for an operation that reads input) the wrapper always adds.
+	// 401 and 403 belong here only when authentication runs inside this Huma
+	// API; a service that authenticates ahead of Huma answers them before an
+	// operation is ever reached, so they are not this document's to promise.
+	// Nil adds nothing.
+	BaselineErrors []int
 }
 
 // New wraps an existing Fiber app/group with a Huma v2 API that emits OpenAPI
@@ -86,6 +98,14 @@ func New(app *fiber.App, group fiber.Router, cfg Config) huma.API {
 	humaConfig.OnAddOperation = nil
 	humaConfig.CreateHooks = nil
 	humaConfig.SchemasPath = ""
+
+	// Reinstate the (now empty) hook slice with the baseline-response hook. This
+	// is the ONLY seam that can still add a status: huma.Register materializes
+	// op.Responses from op.Errors and only THEN calls AddOperation, which fires
+	// this slice, so appending to op.Errors here would change nothing.
+	// Clone so a caller that reuses or mutates its Config slice after New cannot
+	// change what later operations document.
+	humaConfig.OnAddOperation = []huma.AddOpFunc{baselineResponses(slices.Clone(cfg.BaselineErrors))}
 
 	// DefaultConfig leaves OpenAPIPath="/openapi" and DocsPath="/docs", which
 	// makes humafiber.NewWithGroup auto-mount /openapi.json, /openapi.yaml,
@@ -109,6 +129,144 @@ func New(app *fiber.App, group fiber.Router, cfg Config) huma.API {
 	}
 
 	return humafiber.NewWithGroup(app, group, humaConfig)
+}
+
+// baselineResponses returns the OnAddOperation hook that documents the statuses
+// every operation can answer with but that Huma leaves out. A Lerian service
+// declares no huma.Operation.Errors, so Huma writes only the success status and
+// a single "default" catch-all: the contract never names 500, and a caller
+// generating a client from it gets no branch for the failures it will actually
+// receive. The hook fills that in without the service writing a line.
+//
+// extra carries Config.BaselineErrors, the statuses this service's own
+// middleware stack can return on any operation.
+func baselineResponses(extra []int) huma.AddOpFunc {
+	return func(oapi *huma.OpenAPI, op *huma.Operation) {
+		if op.Responses == nil {
+			return
+		}
+
+		// Prefer Huma's catch-all when it exists. An operation with a custom
+		// non-default response does not get that catch-all, so derive the same
+		// registered error content Huma uses rather than dropping the baseline
+		// statuses for that valid operation shape.
+		var errorContent map[string]*huma.MediaType
+
+		if catchAll := op.Responses["default"]; catchAll != nil {
+			errorContent = catchAll.Content
+		} else {
+			errorContent = registeredErrorContent(oapi)
+		}
+
+		statuses := make([]int, 0, len(extra)+2)
+		statuses = append(statuses, http.StatusInternalServerError)
+
+		// Follows huma.Register's rule: an operation that reads a parameter or a
+		// body with a validation schema can fail request validation with 422.
+		//
+		// One deliberate divergence. This reads the RENDERED parameters, while
+		// Register reads its internal input metadata, which still counts a field
+		// tagged hidden. An operation whose only input is a hidden header plus a
+		// raw body therefore gets 422 from Register and not from here. Neither a
+		// hidden header nor a raw body is schema-validated, so that 422 cannot
+		// occur, and documenting a status the operation never returns is the worse
+		// error. Reproducing the internal metadata would also mean duplicating the
+		// framework's field walk and re-syncing it on every upgrade.
+		if len(op.Parameters) > 0 || hasValidationBody(op.RequestBody) {
+			statuses = append(statuses, http.StatusUnprocessableEntity)
+		}
+
+		statuses = append(statuses, extra...)
+
+		for _, status := range statuses {
+			key := strconv.Itoa(status)
+
+			// A status already present is one the service said something specific
+			// about, and its wording wins. This is also what makes a repeated entry
+			// in extra harmless.
+			if _, exists := op.Responses[key]; exists {
+				continue
+			}
+
+			op.Responses[key] = &huma.Response{
+				// http.StatusText is empty for a status outside the registered
+				// range. That is deliberately not filtered: an empty description in
+				// the emitted document is a visible defect in the caller's
+				// BaselineErrors, where a dropped status would be a silent one.
+				Description: http.StatusText(status),
+				Content:     cloneErrorContent(errorContent),
+			}
+		}
+
+		// op.Responses["default"] is never touched: a status nobody enumerated is
+		// still documented by it.
+	}
+}
+
+func registeredErrorContent(oapi *huma.OpenAPI) map[string]*huma.MediaType {
+	if oapi == nil || oapi.Components.Schemas == nil {
+		return nil
+	}
+
+	example := huma.NewError(0, "")
+	contentType := "application/json"
+
+	if filter, ok := example.(huma.ContentTypeFilter); ok {
+		contentType = filter.ContentType(contentType)
+	}
+
+	t := reflect.TypeOf(example)
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+
+	return map[string]*huma.MediaType{
+		contentType: {Schema: oapi.Components.Schemas.Schema(t, true, "Error")},
+	}
+}
+
+func hasValidationBody(body *huma.RequestBody) bool {
+	if body == nil {
+		return false
+	}
+
+	if media := body.Content["application/json"]; media != nil && media.Schema != nil {
+		return true
+	}
+
+	for _, media := range body.Content {
+		if media == nil || media.Schema == nil {
+			continue
+		}
+
+		if media.Schema.Type != "string" && media.Schema.Format != "binary" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// cloneErrorContent copies the catch-all's content map and media-type values so
+// each added status can be changed independently while preserving the complete
+// documented media metadata. Referenced schemas and nested metadata are shared
+// on purpose; this helper does not mutate them.
+func cloneErrorContent(src map[string]*huma.MediaType) map[string]*huma.MediaType {
+	if len(src) == 0 {
+		return nil
+	}
+
+	out := make(map[string]*huma.MediaType, len(src))
+	for mediaType, media := range src {
+		if media == nil {
+			continue
+		}
+
+		cloned := *media
+		out[mediaType] = &cloned
+	}
+
+	return out
 }
 
 // DeclareBearerAuth registers the BearerAuth HTTP bearer/JWT security scheme in
