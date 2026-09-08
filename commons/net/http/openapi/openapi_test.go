@@ -650,6 +650,37 @@ func TestBaselineErrors_BinaryRawBodyDoesNotAdd422(t *testing.T) {
 	assert.ElementsMatch(t, []string{"200", "500", "default"}, responseKeys(op))
 }
 
+func TestBaselineResponses_AddedStatusesPreserveMediaMetadata(t *testing.T) {
+	t.Parallel()
+
+	schema := &huma.Schema{Type: "object"}
+	example := map[string]any{"title": "example"}
+	extensions := map[string]any{"x-contract": "kept"}
+	op := &huma.Operation{Responses: map[string]*huma.Response{
+		"default": {
+			Content: map[string]*huma.MediaType{
+				"application/problem+json": {
+					Schema:     schema,
+					Example:    example,
+					Extensions: extensions,
+				},
+			},
+		},
+	}}
+
+	baselineResponses(nil)(nil, op)
+
+	added := op.Responses["500"]
+	require.NotNil(t, added)
+
+	media := added.Content["application/problem+json"]
+	require.NotNil(t, media)
+	assert.Same(t, schema, media.Schema)
+	assert.Equal(t, example, media.Example)
+	assert.Equal(t, extensions, media.Extensions)
+	assert.NotSame(t, op.Responses["default"].Content["application/problem+json"], media)
+}
+
 func TestBaselineResponses_MalformedCatchAllDoesNotPanic(t *testing.T) {
 	t.Parallel()
 

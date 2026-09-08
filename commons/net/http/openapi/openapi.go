@@ -247,10 +247,10 @@ func hasValidationBody(body *huma.RequestBody) bool {
 	return false
 }
 
-// cloneErrorContent copies the catch-all's content map so each added status owns
-// its own map rather than aliasing one. The *huma.Schema pointer is shared on
-// purpose: it is the reference Huma already registered, so every added status
-// resolves to the one error component instead of duplicating it.
+// cloneErrorContent copies the catch-all's content map and media-type values so
+// each added status can be changed independently while preserving the complete
+// documented media metadata. Referenced schemas and nested metadata are shared
+// on purpose; this helper does not mutate them.
 func cloneErrorContent(src map[string]*huma.MediaType) map[string]*huma.MediaType {
 	if len(src) == 0 {
 		return nil
@@ -262,7 +262,8 @@ func cloneErrorContent(src map[string]*huma.MediaType) map[string]*huma.MediaTyp
 			continue
 		}
 
-		out[mediaType] = &huma.MediaType{Schema: media.Schema}
+		cloned := *media
+		out[mediaType] = &cloned
 	}
 
 	return out
