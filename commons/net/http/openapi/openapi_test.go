@@ -964,5 +964,7 @@ func TestBaselineErrors_ConfigSliceMutationAfterNewDoesNotLeak(t *testing.T) {
 	require.NotNil(t, after)
 
 	assert.ElementsMatch(t, responseKeys(before), responseKeys(after))
+	assert.Contains(t, responseKeys(before), "401")
+	assert.Contains(t, responseKeys(after), "401")
 	assert.NotContains(t, responseKeys(after), "403")
 }

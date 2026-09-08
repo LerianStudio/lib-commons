@@ -161,8 +161,17 @@ func baselineResponses(extra []int) huma.AddOpFunc {
 		statuses := make([]int, 0, len(extra)+2)
 		statuses = append(statuses, http.StatusInternalServerError)
 
-		// Mirrors huma.Register's own rule: an operation that reads a parameter or
-		// a body with a validation schema can fail request validation with 422.
+		// Follows huma.Register's rule: an operation that reads a parameter or a
+		// body with a validation schema can fail request validation with 422.
+		//
+		// One deliberate divergence. This reads the RENDERED parameters, while
+		// Register reads its internal input metadata, which still counts a field
+		// tagged hidden. An operation whose only input is a hidden header plus a
+		// raw body therefore gets 422 from Register and not from here. Neither a
+		// hidden header nor a raw body is schema-validated, so that 422 cannot
+		// occur, and documenting a status the operation never returns is the worse
+		// error. Reproducing the internal metadata would also mean duplicating the
+		// framework's field walk and re-syncing it on every upgrade.
 		if len(op.Parameters) > 0 || hasValidationBody(op.RequestBody) {
 			statuses = append(statuses, http.StatusUnprocessableEntity)
 		}
