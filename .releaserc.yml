@@ -1,20 +1,21 @@
 # ───────────────────────────────────────────────────────────────────────────
-# `breaking: major` is ON for the /v7 cut and MUST be returned to `minor` once
-# v7.0.0-beta.1 is published. #547 flipped it for the v5→v6 cut and #558 flipped
-# it back; this is the same one-shot manoeuvre for v6→v7.
+# `breaking` is anchored to `minor`. A Go module's major lives in the import
+# path, so a tag whose major disagrees with the path is unconsumable — `go get`
+# fails with "go.mod has non-.../vN module path". Left on `major`, the next
+# breaking commit would compute v8.0.0-beta.1 against this /v7 path and publish
+# a tag nobody can resolve.
 #
-# Why it cannot stay on `major`: a Go module's major lives in the import path,
-# so a tag whose major disagrees with the path is unconsumable — `go get` fails
-# with "go.mod has non-.../vN module path". Left on `major`, the next `!` commit
-# after this cut would compute v8.0.0-beta.1 against a /v7 path and publish a
-# tag nobody can resolve.
+# Cutting the NEXT major (v8) is a one-shot manoeuvre, done three times now
+# (#547 for v5→v6, #633 for v6→v7): rename the module path, flip this rule to
+# `major` in the same PR as a breaking commit that touches a non-ignored path,
+# let CI publish vN.0.0-beta.1, then revert this rule immediately. commons/
+# release_policy_test.go enforces the reverted state.
 #
-# Why the manual-tag route in the previous version of this comment does not
-# work: semantic-release only adopts a tag as `lastRelease` when it carries its
-# own channel record. A hand-made tag is invisible for that purpose yet still
-# feeds `getNextVersion`'s `highest()` second term, so it recomputes its own
-# version and collides with itself — `fatal: tag 'v7.0.0-beta.1' already
-# exists`, on every run, permanently. Observed on run 33907401438.
+# What does NOT work, tried on #630..#633: tagging vN.0.0 by hand. semantic-
+# release adopts a tag as `lastRelease` only when it carries its own channel
+# record, so a hand-made tag stays invisible for that purpose while still
+# feeding getNextVersion's highest() second term — it recomputes its own
+# version and collides with itself, on every run. Run 33907401438 shows it.
 # ───────────────────────────────────────────────────────────────────────────
 plugins:
   - ["@semantic-release/commit-analyzer", {
@@ -35,7 +36,7 @@ plugins:
         { type: "fix", release: "patch" },
         { type: "refactor", release: "minor" },
         { type: "docs", release: "patch" },
-        { breaking: true, release: "major" }
+        { breaking: true, release: "minor" }
       ]
     }]
 

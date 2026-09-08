@@ -11,28 +11,26 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestReleasePolicy_BreakingChangesMapToMajorForTheV7Cut pins the release rule
-// during the /v7 bootstrap, and is the inverse of the guard it replaces.
+// TestReleasePolicy_BreakingChangesStayMinor keeps `breaking` anchored to
+// `minor` between majors. A Go module's major lives in the import path, so a
+// tag whose major disagrees with the path is unconsumable: left on `major`, the
+// next breaking commit computes v8.0.0-beta.1 against this /v7 path and
+// publishes a tag `go get` refuses.
 //
-// The rule it used to enforce — breaking commits map to `minor`, majors cut by
-// hand — was written for the /v6 line by #558. Its premise was that a hand-made
-// vN.0.0 tag is a viable substitute for letting CI compute the major. It is not:
-// semantic-release only adopts a tag as `lastRelease` when the tag carries its
-// own channel record, so a hand-made tag stays invisible for that purpose while
-// still feeding getNextVersion's highest() second term. The result is a version
-// that collides with the very tag that produced it — `fatal: tag
-// 'v7.0.0-beta.1' already exists`, on every run (observed on run 33907401438,
-// twice). Removing the manual tag then let CI publish v6.9.0-beta.5 against a
-// /v7 module path, which `go get` rejects outright.
+// #633 flipped the rule to `major` for exactly one release to let CI publish
+// v7.0.0-beta.1, and this restores it. Cutting v8 follows the same one-shot:
+// rename the path, flip to `major` alongside a breaking commit on a
+// non-ignored path, let CI publish, revert here immediately.
 //
-// So the rule is flipped to `major` for exactly one release, the same one-shot
-// #547 used for v5→v6 and #558 reverted afterwards.
+// Do NOT replace that with a hand-made tag. It was tried across #630..#633 and
+// cannot work: semantic-release adopts a tag as `lastRelease` only when the tag
+// carries its own channel record, so a hand-made tag is invisible for that
+// while still feeding getNextVersion's highest() second term — it recomputes
+// its own version and collides with itself on every run.
 //
-// THIS TEST MUST BE RESTORED TO ITS `minor` FORM once v7.0.0-beta.1 is
-// published. Left on `major`, the next breaking commit computes v8.0.0-beta.1
-// against a /v7 path and publishes another tag nobody can resolve. The guard
-// exists so that reverting is a deliberate act rather than something forgotten.
-func TestReleasePolicy_BreakingChangesMapToMajorForTheV7Cut(t *testing.T) {
+// The whitespace normalization below exists so the rule cannot be bypassed by
+// reformatting it across lines or with tabs.
+func TestReleasePolicy_BreakingChangesStayMinor(t *testing.T) {
 	t.Parallel()
 
 	content, err := os.ReadFile("../.releaserc.yml")
@@ -41,6 +39,6 @@ func TestReleasePolicy_BreakingChangesMapToMajorForTheV7Cut(t *testing.T) {
 	// Collapse all whitespace (spaces, tabs, newlines) so the guard cannot be
 	// bypassed by reformatting the rule across lines or with tabs.
 	normalized := strings.Join(strings.Fields(string(content)), "")
-	assert.Contains(t, normalized, `{breaking:true,release:"major"}`)
-	assert.NotContains(t, normalized, `{breaking:true,release:"minor"}`)
+	assert.Contains(t, normalized, `{breaking:true,release:"minor"}`)
+	assert.NotContains(t, normalized, `{breaking:true,release:"major"}`)
 }
