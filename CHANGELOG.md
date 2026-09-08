@@ -1,5 +1,23 @@
 # Lib-commons Changelog
 
+## [7.1.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.1.0)
+
+Features:
+- Document a baseline of error responses on every operation. (@fredcamaral)
+
+Fixes:
+- Guard the pointer before reading the components registry to prevent errors. (@fredcamaral)
+- Close a test hole and record the reason for divergence in the `422` predicate. (@fredcamaral)
+- Copy the caller's baseline slice to ensure later edits do not change a document. (@fredcamaral)
+- Clear the lint failure and pin the `single-error-schema` property. (@fredcamaral)
+
+Improvements:
+- Restore the minor anchor now that `v7.0.0-beta.1` is released. (@rodrigodh)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.0.0...v7.1.0)
+
+---
+
 ## [7.0.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.0.0)
 
 Features:
