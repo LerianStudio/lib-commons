@@ -936,3 +936,33 @@ func TestBaselineErrors_EmittedDocumentForAServiceShapedAPI(t *testing.T) {
 
 	assert.Len(t, shapes, 1, "every documented error must share one media type and one schema reference, got %v", shapes)
 }
+
+// TestBaselineErrors_ConfigSliceMutationAfterNewDoesNotLeak proves the hook does
+// not read the caller's slice at registration time. A service that reuses one
+// Config value, or edits the slice it built, must not change what an operation
+// registered later documents.
+func TestBaselineErrors_ConfigSliceMutationAfterNewDoesNotLeak(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.BaselineErrors = []int{http.StatusUnauthorized}
+
+	app := fiber.New()
+	api := New(app, app.Group("/"), cfg)
+
+	registerBaseline[struct{}](api, "baseline-before-mutation", http.MethodGet, "/baseline/before")
+
+	// The caller edits the slice it owns, after New returned.
+	cfg.BaselineErrors[0] = http.StatusForbidden
+
+	registerBaseline[struct{}](api, "baseline-after-mutation", http.MethodGet, "/baseline/after")
+
+	before := api.OpenAPI().Paths["/baseline/before"].Get
+	require.NotNil(t, before)
+
+	after := api.OpenAPI().Paths["/baseline/after"].Get
+	require.NotNil(t, after)
+
+	assert.ElementsMatch(t, responseKeys(before), responseKeys(after))
+	assert.NotContains(t, responseKeys(after), "403")
+}

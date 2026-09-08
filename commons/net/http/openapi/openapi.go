@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"path"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -102,7 +103,9 @@ func New(app *fiber.App, group fiber.Router, cfg Config) huma.API {
 	// is the ONLY seam that can still add a status: huma.Register materializes
 	// op.Responses from op.Errors and only THEN calls AddOperation, which fires
 	// this slice, so appending to op.Errors here would change nothing.
-	humaConfig.OnAddOperation = []huma.AddOpFunc{baselineResponses(cfg.BaselineErrors)}
+	// Clone so a caller that reuses or mutates its Config slice after New cannot
+	// change what later operations document.
+	humaConfig.OnAddOperation = []huma.AddOpFunc{baselineResponses(slices.Clone(cfg.BaselineErrors))}
 
 	// DefaultConfig leaves OpenAPIPath="/openapi" and DocsPath="/docs", which
 	// makes humafiber.NewWithGroup auto-mount /openapi.json, /openapi.yaml,
