@@ -23,6 +23,7 @@ import (
 	"html"
 	"net/http"
 	"path"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -137,20 +138,20 @@ func New(app *fiber.App, group fiber.Router, cfg Config) huma.API {
 // extra carries Config.BaselineErrors, the statuses this service's own
 // middleware stack can return on any operation.
 func baselineResponses(extra []int) huma.AddOpFunc {
-	return func(_ *huma.OpenAPI, op *huma.Operation) {
+	return func(oapi *huma.OpenAPI, op *huma.Operation) {
 		if op.Responses == nil {
 			return
 		}
 
-		// The catch-all is the hook's only source of an error schema. Huma writes
-		// it exactly when the operation declared no errors, and it already holds
-		// the registered error content type and schema. Absent means the service
-		// enumerated its own errors and Huma built named responses instead, so
-		// there is nothing to clone: registering a schema here instead would put a
-		// SECOND, divergent error schema in components. Leave that operation be.
-		catchAll, ok := op.Responses["default"]
-		if !ok || catchAll == nil {
-			return
+		// Prefer Huma's catch-all when it exists. An operation with a custom
+		// non-default response does not get that catch-all, so derive the same
+		// registered error content Huma uses rather than dropping the baseline
+		// statuses for that valid operation shape.
+		errorContent := map[string]*huma.MediaType(nil)
+		if catchAll := op.Responses["default"]; catchAll != nil {
+			errorContent = catchAll.Content
+		} else {
+			errorContent = registeredErrorContent(oapi)
 		}
 
 		statuses := make([]int, 0, len(extra)+2)
@@ -180,12 +181,33 @@ func baselineResponses(extra []int) huma.AddOpFunc {
 				// the emitted document is a visible defect in the caller's
 				// BaselineErrors, where a dropped status would be a silent one.
 				Description: http.StatusText(status),
-				Content:     cloneErrorContent(catchAll.Content),
+				Content:     cloneErrorContent(errorContent),
 			}
 		}
 
 		// op.Responses["default"] is never touched: a status nobody enumerated is
 		// still documented by it.
+	}
+}
+
+func registeredErrorContent(oapi *huma.OpenAPI) map[string]*huma.MediaType {
+	if oapi == nil || oapi.Components.Schemas == nil {
+		return nil
+	}
+
+	example := huma.NewError(0, "")
+	contentType := "application/json"
+	if filter, ok := example.(huma.ContentTypeFilter); ok {
+		contentType = filter.ContentType(contentType)
+	}
+
+	t := reflect.TypeOf(example)
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+
+	return map[string]*huma.MediaType{
+		contentType: {Schema: oapi.Components.Schemas.Schema(t, true, "Error")},
 	}
 }
 

@@ -753,6 +753,53 @@ func TestBaselineErrors_DoesNotOverwriteADeclaredStatus(t *testing.T) {
 	assert.Same(t, serviceSchema, added.Content["application/problem+json"].Schema)
 }
 
+// TestBaselineErrors_NonDefaultResponseStillGetsBaselineStatuses proves a
+// service-defined success response does not suppress the baseline errors. Huma
+// omits its catch-all for this operation shape, so the hook must source the
+// registered error schema without replacing the service response or inventing a
+// default response.
+func TestBaselineErrors_NonDefaultResponseStillGetsBaselineStatuses(t *testing.T) {
+	// NOT parallel: problem.Install mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	problem.Install()
+
+	cfg := testConfig()
+	cfg.BaselineErrors = []int{http.StatusUnauthorized}
+
+	app := fiber.New()
+	api := New(app, app.Group("/"), cfg)
+
+	huma.Register(api, huma.Operation{
+		OperationID: "baseline-service-response",
+		Method:      http.MethodGet,
+		Path:        "/baseline/service-response",
+		Responses: map[string]*huma.Response{
+			"201": {Description: "Service-created response"},
+		},
+	}, func(context.Context, *struct{}) (*echoOutput, error) {
+		return &echoOutput{}, nil
+	})
+
+	op := api.OpenAPI().Paths["/baseline/service-response"].Get
+	require.NotNil(t, op)
+
+	assert.ElementsMatch(t, []string{"200", "201", "401", "500"}, responseKeys(op))
+	assert.Equal(t, "Service-created response", op.Responses["201"].Description)
+	assert.NotContains(t, op.Responses, "default")
+
+	for _, status := range []string{"401", "500"} {
+		response := op.Responses[status]
+		require.NotNil(t, response)
+		require.NotEmpty(t, response.Content)
+		for _, media := range response.Content {
+			require.NotNil(t, media)
+			assert.NotNil(t, media.Schema)
+		}
+	}
+}
+
 // TestBaselineErrors_ConfigAddsExtraStatuses proves the per-service additions:
 // a status listed in Config.BaselineErrors is documented on every operation,
 // a repeat of it is harmless, and nothing else arrives uninvited.
