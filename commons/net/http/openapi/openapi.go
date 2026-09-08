@@ -204,7 +204,7 @@ func baselineResponses(extra []int) huma.AddOpFunc {
 }
 
 func registeredErrorContent(oapi *huma.OpenAPI) map[string]*huma.MediaType {
-	if oapi == nil || oapi.Components.Schemas == nil {
+	if oapi == nil || oapi.Components == nil || oapi.Components.Schemas == nil {
 		return nil
 	}
 

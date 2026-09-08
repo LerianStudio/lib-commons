@@ -681,6 +681,32 @@ func TestBaselineResponses_AddedStatusesPreserveMediaMetadata(t *testing.T) {
 	assert.NotSame(t, op.Responses["default"].Content["application/problem+json"], media)
 }
 
+// An operation with no catch-all sends the hook down the derive path, which
+// reads the registered error schema off the document's components. Components is
+// a pointer on huma.OpenAPI, so a document built without one must return early
+// rather than dereference it. huma.DefaultConfig always populates Components, so
+// New never produces this document; the guard is here because the hook reads a
+// pointer it does not own.
+func TestBaselineResponses_NilComponentsDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	op := &huma.Operation{
+		Method:    http.MethodGet,
+		Path:      "/derive",
+		Responses: map[string]*huma.Response{"200": {Description: "ok"}},
+	}
+
+	require.NotPanics(t, func() {
+		baselineResponses(nil)(&huma.OpenAPI{}, op)
+	})
+
+	// The status is still documented; only the body schema is missing, because
+	// there is no registered error schema to point at.
+	assert.ElementsMatch(t, []string{"200", "500"}, responseKeys(op))
+	require.NotNil(t, op.Responses["500"])
+	assert.Nil(t, op.Responses["500"].Content)
+}
+
 func TestBaselineResponses_MalformedCatchAllDoesNotPanic(t *testing.T) {
 	t.Parallel()
 
