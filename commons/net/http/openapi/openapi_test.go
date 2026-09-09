@@ -383,8 +383,20 @@ func TestSchemaParity_ErrorSchemaCarriesCode(t *testing.T) {
 	errSchema := findErrorSchema(t, api)
 	require.NotNil(t, errSchema, "an error component schema must be generated")
 
-	_, hasCode := errSchema.Properties["code"]
-	assert.True(t, hasCode, "error schema must carry the optional `code` property")
+	codeSchema, hasCode := errSchema.Properties["code"]
+	require.True(t, hasCode, "error schema must carry the optional `code` property")
+
+	// The shared model is published verbatim into EVERY Lerian service's spec, so
+	// an example on `code` is a per-service value asserted platform-wide: whatever
+	// literal sits here, no service but (at most) one allocates it, and a reader
+	// building a fixture from it builds a code no response can carry. The format
+	// template in the description is the portable contract; concrete codes belong
+	// to each service's own catalog.
+	assert.Emptyf(t, codeSchema.Examples,
+		"`code` must publish NO example (found %v) — any literal is wrong for every service that does not allocate it",
+		codeSchema.Examples)
+	assert.Contains(t, codeSchema.Description, "<SERVICE>-NNNN",
+		"`code` must still state its format template, since it no longer carries an example")
 
 	// The RFC 9457 quartet must remain.
 	for _, p := range []string{"status", "title", "detail"} {
@@ -398,10 +410,14 @@ func TestSchemaParity_ErrorSchemaCarriesCode(t *testing.T) {
 	_, hasUpstream := errSchema.Properties["upstream"]
 	assert.True(t, hasUpstream, "error schema must carry the optional `upstream` extension member")
 
-	// Belt-and-suspenders: the marshaled spec contains the example domain code.
+	// Belt-and-suspenders over the marshaled document, because that is what ships:
+	// no product-shaped error code may appear anywhere in the generated spec. The
+	// pattern is the one the description advertises, so it catches a reintroduced
+	// literal whatever prefix someone reaches for (ERR-0001, SPB-3002, PIX-0030).
 	raw, err := json.Marshal(api.OpenAPI())
 	require.NoError(t, err)
-	assert.Contains(t, string(raw), "ERR-0001", "code property example should be present in the spec")
+	assert.NotRegexp(t, `[A-Z]{2,6}-[0-9]{3,4}`, string(raw),
+		"the shared error schema must not publish a service-specific error code literal")
 }
 
 // TestErrorSeams_UpstreamReachesTheClient is the end-to-end lock for BOTH error
