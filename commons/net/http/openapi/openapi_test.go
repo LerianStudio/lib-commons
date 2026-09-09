@@ -5,6 +5,7 @@ package openapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -18,10 +19,12 @@ import (
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/net/http/problem"
+	"github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 // echoInput / echoOutput back a throwaway operation used to force schema and
@@ -1040,4 +1043,233 @@ func TestBaselineErrors_ConfigSliceMutationAfterNewDoesNotLeak(t *testing.T) {
 	assert.Contains(t, responseKeys(before), "401")
 	assert.Contains(t, responseKeys(after), "401")
 	assert.NotContains(t, responseKeys(after), "403")
+}
+
+// ---------------------------------------------------------------------------
+// RFC 9457 `instance`: the per-occurrence reference a customer quotes to support
+// ---------------------------------------------------------------------------
+
+// tracedApp returns a Fiber app whose requests carry a real OpenTelemetry span,
+// plus a pointer that receives the trace id of the span that served the request —
+// read back through lib-observability's OWN accessor, so the assertion compares
+// what the error body published against what the observability path reports for
+// the same request, not against a value the test computed twice.
+func tracedApp(t *testing.T) (*fiber.App, *string) {
+	t.Helper()
+
+	provider := sdktrace.NewTracerProvider()
+	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+
+	observed := new(string)
+	app := fiber.New()
+
+	app.Use(func(c fiber.Ctx) error {
+		ctx, span := provider.Tracer("test").Start(c.Context(), "request")
+		defer span.End()
+
+		*observed = tracing.GetTraceIDFromContext(ctx)
+		c.SetContext(ctx)
+
+		return c.Next()
+	})
+
+	return app, observed
+}
+
+// bodyKeys decodes a problem body and returns its sorted top-level key set, which
+// is how "the field is absent" is proven: absence is a key that is not there, not
+// a value that is empty.
+func bodyKeys(t *testing.T, body string) []string {
+	t.Helper()
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(body), &got), "body: %s", body)
+
+	return slices.Sorted(maps.Keys(got))
+}
+
+// TestInstance_CarriesTheTraceID drives a real request through a traced app and
+// proves the published `instance` is exactly the trace id the observability path
+// reports for that same request — the value a customer quotes and support greps.
+func TestInstance_CarriesTheTraceID(t *testing.T) {
+	// NOT parallel: problem.Install mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	problem.Install()
+
+	seams := map[string]error{
+		// The MapError seam returns a value that already satisfies
+		// huma.StatusError, so Huma writes it verbatim and no error constructor
+		// runs. It is the path a transformer must cover and an error-constructor
+		// hook cannot.
+		"MapError seam": problem.MapError(
+			errors.New("domain failure"),
+			func(error) (string, string, bool) { return "GW-9001", "account not found", true },
+			func(string) int { return http.StatusNotFound },
+			"GW-0000",
+		),
+		"huma.ErrorNNN seam": huma.Error404NotFound("account not found"),
+	}
+
+	for name, handlerErr := range seams {
+		t.Run(name, func(t *testing.T) {
+			app, observed := tracedApp(t)
+			registerFailing(New(app, app.Group("/"), testConfig()), handlerErr)
+
+			_, body := doReq(t, app, http.MethodGet, "/fail")
+
+			var got map[string]any
+			require.NoError(t, json.Unmarshal([]byte(body), &got))
+
+			t.Logf("instance published to the client: %v", got["instance"])
+			t.Logf("trace id reported by observability: %s", *observed)
+
+			require.NotEmpty(t, *observed, "the request must have carried a trace")
+			assert.Equal(t, *observed, got["instance"],
+				"the quoted value must be the id support finds in traces and logs")
+			assert.Regexp(t, `^[0-9a-f]{32}$`, got["instance"],
+				"an OpenTelemetry trace id, which encodes nothing about the tenant or the host")
+		})
+	}
+}
+
+// TestInstance_AbsentWithoutATrace proves that with no span on the request the
+// member is ABSENT from the JSON rather than present and empty. An empty
+// `instance` would look like an answer a customer could quote; there is none.
+func TestInstance_AbsentWithoutATrace(t *testing.T) {
+	// NOT parallel: problem.Install mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	problem.Install()
+
+	app := fiber.New() // no tracing middleware
+	registerFailing(New(app, app.Group("/"), testConfig()), huma.Error404NotFound("account not found"))
+
+	_, body := doReq(t, app, http.MethodGet, "/fail")
+
+	keys := bodyKeys(t, body)
+	t.Logf("key set without a trace: %v", keys)
+	assert.NotContains(t, keys, "instance")
+}
+
+// TestInstance_OnEveryStatusTheLibraryEmits walks every status Huma exposes a
+// constructor for — the full range this library can put on the wire, 4xx and 5xx —
+// and proves the occurrence reference reaches the client on all of them, including
+// the >=500 bodies whose detail and causes are scrubbed.
+func TestInstance_OnEveryStatusTheLibraryEmits(t *testing.T) {
+	// NOT parallel: problem.Install mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	problem.Install()
+
+	statuses := []int{
+		400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414,
+		415, 416, 417, 418, 421, 422, 423, 424, 425, 426, 428, 429, 431, 451,
+		500, 501, 502, 503, 504, 505, 506, 507, 508, 510, 511,
+	}
+
+	for _, status := range statuses {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			app, observed := tracedApp(t)
+			registerFailing(
+				New(app, app.Group("/"), testConfig()),
+				huma.NewError(status, "failed"),
+			)
+
+			gotStatus, body := doReq(t, app, http.MethodGet, "/fail")
+			require.Equal(t, status, gotStatus)
+
+			var got map[string]any
+			require.NoError(t, json.Unmarshal([]byte(body), &got))
+
+			assert.Equal(t, *observed, got["instance"], "status %d body: %s", status, body)
+		})
+	}
+}
+
+// TestInstance_FrameworkErrorAlsoCarriesIt covers the errors Huma builds itself,
+// which no handler ever returns: a request Huma rejects before any handler runs
+// must still hand the caller something to quote.
+func TestInstance_FrameworkErrorAlsoCarriesIt(t *testing.T) {
+	// NOT parallel: problem.Install mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	problem.Install()
+
+	app, observed := tracedApp(t)
+	registerEcho(New(app, app.Group("/"), testConfig()))
+
+	// A POST with no body: Huma's own request-body precondition rejects it.
+	resp, err := app.Test(httptest.NewRequest(http.MethodPost, "/echo", nil))
+	require.NoError(t, err)
+
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(raw, &got), "body: %s", raw)
+
+	t.Logf("framework error %d, key set: %v", resp.StatusCode, slices.Sorted(maps.Keys(got)))
+	assert.Equal(t, *observed, got["instance"])
+}
+
+// TestInstance_DoesNotOverwriteACallerSetValue proves a service that fills the
+// member itself keeps its own value: the transformer supplies a reference where
+// there is none, it does not impose one.
+func TestInstance_DoesNotOverwriteACallerSetValue(t *testing.T) {
+	// NOT parallel: problem.Install mutates the process-global huma.NewError.
+	original := huma.NewError
+	t.Cleanup(func() { huma.NewError = original })
+
+	problem.Install()
+
+	handlerErr := &problem.Detail{
+		ErrorModel: huma.ErrorModel{
+			Status:   http.StatusConflict,
+			Title:    http.StatusText(http.StatusConflict),
+			Detail:   "already settled",
+			Instance: "/audit/9f2c",
+		},
+	}
+
+	app, _ := tracedApp(t)
+	registerFailing(New(app, app.Group("/"), testConfig()), handlerErr)
+
+	_, body := doReq(t, app, http.MethodGet, "/fail")
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(body), &got))
+	assert.Equal(t, "/audit/9f2c", got["instance"])
+	assert.Empty(t, handlerErr.Instance == "", "caller's own value must survive")
+	assert.Equal(t, "/audit/9f2c", handlerErr.Instance,
+		"the transformer must not write through the caller's pointer")
+}
+
+// TestInstance_SuccessBodiesAreUntouched proves the transformer is inert on
+// anything that is not the shared error model, so registering it on every API
+// cannot reshape a success response.
+func TestInstance_SuccessBodiesAreUntouched(t *testing.T) {
+	t.Parallel()
+
+	app, _ := tracedApp(t)
+	registerEcho(New(app, app.Group("/"), testConfig()))
+
+	req := httptest.NewRequest(http.MethodPost, "/echo", strings.NewReader(`{"name":"abc"}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+
+	defer func() { _ = resp.Body.Close() }()
+
+	raw, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	assert.JSONEq(t, `{"name":"abc"}`, string(raw))
 }

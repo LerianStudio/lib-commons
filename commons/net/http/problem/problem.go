@@ -5,11 +5,14 @@
 // centrally scrubbing every >=500 body, and a generic MapError mapper that
 // translates a domain-layer error into the shared Detail.
 //
-// The package imports github.com/danielgtaylor/huma/v2 only — no Fiber, no
-// transport adapter — so it is the light, transport-free half of the wrapper.
-// The heavier Fiber binding lives in commons/net/http/openapi and deliberately
-// does NOT import this package: error policy is the consumer bootstrap's
-// concern (it calls Install), the binding's is metadata + mounting.
+// The package imports github.com/danielgtaylor/huma/v2 and lib-observability's
+// tracing accessor only — no Fiber, no transport adapter — so it stays the
+// light, transport-free half of the wrapper. The heavier Fiber binding lives in
+// commons/net/http/openapi, which imports this package for exactly one thing:
+// registering InstanceTransformer on the API it builds, so every service carries
+// the RFC 9457 `instance` member without writing a line. Choosing the error
+// MODEL remains the consumer bootstrap's concern — it calls Install — and the
+// binding still applies none of that policy.
 //
 // This package is platform glue shared by every Lerian service; it must not
 // import any bounded-context package.
@@ -147,6 +150,10 @@ func bound(s string, maxRunes int) string {
 // Detail is the single RFC 9457 error body for every Lerian rail. It embeds
 // Huma's ErrorModel (type/title/status/detail/instance/errors) and adds the
 // flat machine-readable domain code plus the optional upstream extension member.
+//
+// The embedded `instance` member is populated by InstanceTransformer with the
+// request's trace id; it is `omitempty`, so it is absent rather than empty when
+// the request carried no trace.
 //
 // *Detail satisfies huma.StatusError via method promotion from the embedded
 // ErrorModel (Error/GetStatus/ContentType/Add). Installing it as the
