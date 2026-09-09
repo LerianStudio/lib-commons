@@ -555,6 +555,13 @@ func (c *Client) closeClientLocked() error {
 func (c *Client) buildUniversalOptionsLocked() (*redis.UniversalOptions, error) {
 	o := c.cfg.Options
 	opts := &redis.UniversalOptions{
+		// Without this, go-redis hands context.Background() to every socket
+		// read and write, so a caller's deadline is ignored and a stalled
+		// server blocks until ReadTimeout instead. There is no other deadline
+		// source on this path: ReadTimeout/WriteTimeout below are socket
+		// bounds, not the caller's budget.
+		ContextTimeoutEnabled: true,
+
 		DB:              o.DB,
 		Protocol:        o.Protocol,
 		PoolSize:        o.PoolSize,
