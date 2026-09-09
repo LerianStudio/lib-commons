@@ -69,6 +69,11 @@ func BuildOptions(cfg TenantPubSubRedisConfig) (*redis.Options, error) {
 
 	opts := &redis.Options{
 		Addr: net.JoinHostPort(cfg.Host, port),
+
+		// This client exposes no timeout knob of its own, so go-redis' 3s
+		// ReadTimeout default is the only bound unless the caller's context
+		// deadline is honoured — and go-redis only honours it when this is set.
+		ContextTimeoutEnabled: true,
 	}
 
 	if cfg.Password != "" {
