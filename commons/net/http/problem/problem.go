@@ -24,7 +24,7 @@ import (
 
 // BaseURI is the single source of truth for the RFC 9457 `type` URI shape. The
 // full `type` for a coded error is BaseURI + "/" + code (flat + versioned),
-// e.g. https://errors.lerian.studio/v1/ERR-0001. The /v1 segment versions the
+// e.g. https://errors.lerian.studio/v1/<SERVICE>-NNNN. The /v1 segment versions the
 // published error catalog so a `type` URI stays a stable, dereferenceable
 // identifier even if the catalog's meaning model later evolves. Never hardcode
 // the literal a second time; reference this constant.
@@ -156,6 +156,16 @@ func bound(s string, maxRunes int) string {
 // for every service that does not proxy a third party.
 type Detail struct {
 	huma.ErrorModel
-	Code     string    `json:"code,omitempty" doc:"Stable, machine-readable domain error code scoped to the emitting service (format: <SERVICE>-NNNN)." example:"ERR-0001"`
+	// No example: tag on Code, deliberately. This one struct is the error model
+	// of every Huma-served Lerian API, so any literal here is published verbatim
+	// into every one of their specs — and no literal can be right for more than
+	// one of them, because the prefix is per-service by definition. A previous
+	// example leaked one rail's namespace (SPB-3002) into every other rail's
+	// spec; replacing it with a neutral-looking ERR-0001 only made the same value
+	// wrong everywhere at once, since no service allocates that prefix. A reader
+	// building a fixture from it built a code no response can ever carry. The
+	// format below is the contract; the concrete codes belong to each service's
+	// own error catalog.
+	Code     string    `json:"code,omitempty" doc:"Stable, machine-readable domain error code scoped to the emitting service (format: <SERVICE>-NNNN)."`
 	Upstream *Upstream `json:"upstream,omitempty" doc:"RFC 9457 extension member: the error a proxied third-party provider reported. Absent unless the emitting service explicitly surfaced one."`
 }
