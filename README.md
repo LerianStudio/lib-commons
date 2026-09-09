@@ -2,7 +2,7 @@
 
 `lib-commons` is Lerian's shared Go toolkit for service primitives, connectors, HTTP/server utilities, security, resilience, tenant-manager primitives, outbox, DLQ, certificate, JWT, and transaction helpers.
 
-The current API surface is published on the **v5 minor line**. The v5 split-library line intentionally extracts observability/logging/runtime instrumentation to `lib-observability`, runtime configuration to `lib-systemplane`, and CloudEvents/Kafka streaming to `lib-streaming`.
+The current API surface is published on the **v7 line**. This split-library line intentionally extracts observability/logging/runtime instrumentation to `lib-observability`, runtime configuration to `lib-systemplane`, and CloudEvents/Kafka streaming to `lib-streaming`.
 
 ---
 
@@ -49,7 +49,7 @@ Lerian's shared platform code is split across four libraries:
 
 Observability has moved to `github.com/LerianStudio/lib-observability`. Use that library directly for logging, zap adapters, tracing, metrics, redaction, panic instrumentation, assertions, and observability constants.
 
-The former `commons/opentelemetry`, `commons/opentelemetry/metrics`, `commons/opentelemetry/constants`, `commons/opentelemetry/redaction`, `commons/log`, `commons/zap`, `commons/runtime`, and `commons/assert` packages have been removed from `lib-commons/v5`. Consumers must import `github.com/LerianStudio/lib-observability/{log,zap,assert,runtime,tracing,metrics,constants,redaction}` directly.
+The former `commons/opentelemetry`, `commons/opentelemetry/metrics`, `commons/opentelemetry/constants`, `commons/opentelemetry/redaction`, `commons/log`, `commons/zap`, `commons/runtime`, and `commons/assert` packages are not part of lib-commons. Consumers must import `github.com/LerianStudio/lib-observability/{log,zap,assert,runtime,tracing,metrics,constants,redaction}` directly.
 
 ### Data and messaging connectors
 
@@ -112,11 +112,11 @@ The former `commons/opentelemetry`, `commons/opentelemetry/metrics`, `commons/op
 
 - `commons/shell/`: Makefile include helpers (`makefile_colors.mk`, `makefile_utils.mk`), shell scripts (`colors.sh`, `ascii.sh`), ASCII art (`logo.txt`)
 
-## Minimal v5 usage
+## Minimal usage
 
 ```go
 import (
-    "github.com/LerianStudio/lib-commons/v5/commons"
+    "github.com/LerianStudio/lib-commons/v7/commons"
 )
 
 func newRequestID() (string, error) {
