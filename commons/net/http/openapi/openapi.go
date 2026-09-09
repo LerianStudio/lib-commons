@@ -4,13 +4,16 @@
 // routes, binds the API to a Fiber group via the Fiber v3 adapter, and serves
 // the spec + Scalar docs on explicit, caller-gated routes.
 //
-// It applies NO error policy. Error policy is the org-wide RFC 9457 model in
-// commons/net/http/problem, installed by the consumer's bootstrap via
-// problem.Install(). This package deliberately does NOT import problem: the
-// binding layer must not depend on the error model. Until a consumer calls
-// problem.Install(), Huma emits its native RFC 9457 application/problem+json
-// error model, which handlers select via the package-level huma.ErrorNNN
-// constructors.
+// It CHOOSES no error model. Which model a service serves is the consumer
+// bootstrap's call, made by calling problem.Install(); until it does, Huma emits
+// its native RFC 9457 application/problem+json model, which handlers select via
+// the package-level huma.ErrorNNN constructors.
+//
+// It does import commons/net/http/problem, for one thing only: registering
+// problem.InstanceTransformer on the API it builds, so every error body carries
+// the RFC 9457 `instance` member (the request's trace id) with no per-service
+// wiring. That transformer leaves any body that is not the shared model
+// untouched, so importing it neither selects a model nor changes one.
 //
 // This package is platform glue shared by every Lerian service; it must not
 // import any bounded-context package.
@@ -28,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/LerianStudio/lib-commons/v7/commons/net/http/problem"
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -81,10 +85,10 @@ type Config struct {
 
 // New wraps an existing Fiber app/group with a Huma v2 API that emits OpenAPI
 // 3.1. It starts from huma.DefaultConfig, configures the Info metadata and
-// servers, then clears auto-mount + transformers and applies no error policy
-// (native RFC 9457 until the consumer calls problem.Install). Serving the
-// spec/docs is the caller's concern (see ServeSpec). Operations are registered
-// by callers, not here.
+// servers, clears auto-mount, replaces Huma's transformers with the single
+// `instance`-stamping one, and selects no error model (native RFC 9457 until the
+// consumer calls problem.Install). Serving the spec/docs is the caller's concern
+// (see ServeSpec). Operations are registered by callers, not here.
 func New(app *fiber.App, group fiber.Router, cfg Config) huma.API {
 	humaConfig := huma.DefaultConfig(cfg.Title, cfg.Version)
 	humaConfig.Info.Description = cfg.Description
@@ -93,8 +97,14 @@ func New(app *fiber.App, group fiber.Router, cfg Config) huma.API {
 	// rebuilds every response body into a new struct carrying a `$schema` field
 	// plus copies of the original's exported fields. That bypasses custom
 	// json.Marshaler implementations and leaks an internal schema URL into every
-	// response body. Strip it so bodies serialize exactly as written.
-	humaConfig.Transformers = nil
+	// response body. Drop it so bodies serialize exactly as written, and keep
+	// exactly one transformer: the one that stamps the RFC 9457 `instance` member
+	// with the request's trace id. It is registered here because this is the only
+	// seam that sees BOTH the request context and the outgoing body on every
+	// status, and because a service must not have to opt in to get an occurrence
+	// reference on its errors. It leaves a body that is not the shared model
+	// untouched, so it applies no error policy of its own.
+	humaConfig.Transformers = []huma.Transformer{problem.InstanceTransformer}
 	humaConfig.OnAddOperation = nil
 	humaConfig.CreateHooks = nil
 	humaConfig.SchemasPath = ""
