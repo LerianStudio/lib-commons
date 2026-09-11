@@ -32,6 +32,20 @@ func newMockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
 // what is under test.
 func noopFn(context.Context, *sql.Tx) error { return nil }
 
+// awaitDeadline blocks until the transaction's deadline fires, and FAILS rather
+// than blocking forever if it never does. A bare <-ctx.Done() turns "the code
+// stopped applying the deadline" — the exact regression these tests watch for —
+// into a ten-minute CI hang with no useful output.
+func awaitDeadline(t *testing.T, ctx context.Context) {
+	t.Helper()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("the transaction deadline never fired")
+	}
+}
+
 func TestReadOnlyTxOptionsPosture(t *testing.T) {
 	t.Parallel()
 
@@ -273,7 +287,7 @@ func TestRunReadOnlyDistinguishesStatementTimeoutFromDeadline(t *testing.T) {
 			err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: time.Second, TransactionTimeout: tt.txTimeout},
 				func(ctx context.Context, _ *sql.Tx) error {
 					if tt.waitForCtx {
-						<-ctx.Done()
+						awaitDeadline(t, ctx)
 					}
 
 					return tt.bodyErr
@@ -305,7 +319,7 @@ func TestRunReadOnlyDeadlineFiresWithNoBodyError(t *testing.T) {
 
 	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: time.Second, TransactionTimeout: 20 * time.Millisecond},
 		func(ctx context.Context, _ *sql.Tx) error {
-			<-ctx.Done()
+			awaitDeadline(t, ctx)
 
 			return ctx.Err()
 		})
@@ -347,7 +361,7 @@ func TestRunReadOnlyHonoursAParentDeadline(t *testing.T) {
 	defer cancel()
 
 	err := RunReadOnly(ctx, db, ReadOnlyOptions{StatementTimeout: time.Second}, func(ctx context.Context, _ *sql.Tx) error {
-		<-ctx.Done()
+		awaitDeadline(t, ctx)
 
 		return ctx.Err()
 	})

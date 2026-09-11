@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -465,13 +466,27 @@ func TestFingerprintSeparatesTermsUnambiguously(t *testing.T) {
 func TestDecodeUnsupportedVersion(t *testing.T) {
 	t.Parallel()
 
-	codec := newTestCodec(t, 19)
+	// ZERO IS THE ONE THAT MATTERS. It is the JSON zero value, so a body that
+	// simply OMITS the version field decodes as version 0 — and a check written
+	// to catch only "a version greater than ours" lets that body through and
+	// parses it under today's layout.
+	versions := []int{0, 2, 99}
 
-	token, err := signedcursor.EncodeAtVersion(codec, []byte("p"), tenantBinding(), signedcursor.Version+1)
-	require.NoError(t, err)
+	for _, v := range versions {
+		t.Run(fmt.Sprintf("version %d", v), func(t *testing.T) {
+			t.Parallel()
 
-	_, err = codec.Decode(token, tenantBinding())
-	require.ErrorIs(t, err, signedcursor.ErrVersion)
+			require.NotEqual(t, signedcursor.Version, v, "this case must not be the supported version")
+
+			codec := newTestCodec(t, 19)
+
+			token, err := signedcursor.EncodeAtVersion(codec, []byte("p"), tenantBinding(), v)
+			require.NoError(t, err)
+
+			_, err = codec.Decode(token, tenantBinding())
+			require.ErrorIs(t, err, signedcursor.ErrVersion)
+		})
+	}
 }
 
 func TestZeroValueCodecIsRefused(t *testing.T) {

@@ -32,6 +32,21 @@ func TestStringRedactsURLUserinfo(t *testing.T) {
 			keeps: []string{"db.internal:5432", "ledger", "sslmode=require"},
 		},
 		{
+			// An unescaped '@' is legal in a password and common in generated
+			// ones. The authority's LAST at-sign is the userinfo separator; take
+			// the first and the tail of the password walks out in the clear.
+			name:  "password containing a literal at-sign",
+			in:    "dial postgres://user:p@ssw0rd@db.internal:5432/ledger",
+			want:  "dial postgres://" + marker + ":" + marker + "@db.internal:5432/ledger",
+			keeps: []string{"db.internal:5432", "ledger"},
+		},
+		{
+			name:  "username containing a literal at-sign",
+			in:    "dial postgres://user@corp:hunter2@db.internal:5432/ledger",
+			want:  "dial postgres://" + marker + ":" + marker + "@db.internal:5432/ledger",
+			keeps: []string{"db.internal:5432"},
+		},
+		{
 			name: "amqp broker URL",
 			in:   "amqp://guest:guest@rabbit:5672/%2f",
 			want: "amqp://" + marker + ":" + marker + "@rabbit:5672/%2f",
@@ -149,6 +164,18 @@ func TestStringRedactsCredentialsByShape(t *testing.T) {
 			in:      "https://acct.blob.core.windows.net/c/b?sv=2021-08-06&sig=abc%2Fdef%3D&se=2026-01-01",
 			absent:  []string{"abc%2Fdef%3D"},
 			present: []string{"sig=" + marker, "sv=2021-08-06", "se=2026-01-01"},
+		},
+		{
+			// THIS ONE PINS THE PASS ORDER. The armored block is the VALUE of a
+			// sensitive key, which is how a config-loading error echoes a key.
+			// Run key=value first and it eats "-----BEGIN" as the value, leaving
+			// no BEGIN marker for the PEM rule to anchor on — so the whole base64
+			// body survives into the log. PEM has to go first.
+			name: "PEM block as the value of a sensitive key",
+			in: "loading signer: private_key=-----BEGIN RSA PRIVATE KEY-----\n" +
+				"MIIEowIBAAKCAQEA1234\nabcd+/==\n-----END RSA PRIVATE KEY----- rejected",
+			absent:  []string{"MIIEowIBAAKCAQEA1234", "abcd+/=="},
+			present: []string{"loading signer:", "rejected", marker},
 		},
 		{
 			name: "PEM private key block",
