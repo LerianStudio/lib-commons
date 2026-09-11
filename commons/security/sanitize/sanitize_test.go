@@ -567,3 +567,264 @@ func TestErrorHidesAValueTypedCauseFromGoSyntaxFormatting(t *testing.T) {
 
 	require.ErrorAs(t, got, &found, "classification must still reach a value-typed cause")
 }
+
+func TestStringRedactsBrazilianDocumentAndAccountFields(t *testing.T) {
+	t.Parallel()
+
+	// A denylist only covers the shapes someone enumerated, and the shared
+	// taxonomy was enumerated in English. The document and bank-account field
+	// names a Brazilian ledger actually emits — in a unique-constraint violation,
+	// a validator message, a marshaled payload — were not on it.
+	tests := []struct {
+		name    string
+		in      string
+		secret  string
+		present []string
+	}{
+		{
+			name:    "CPF in a key=value driver error",
+			in:      "cpf=12345678909 duplicate key value violates unique constraint",
+			secret:  "12345678909",
+			present: []string{"duplicate key value", marker},
+		},
+		{
+			name:    "CPF as a JSON key in an echoed body",
+			in:      `{"cpf":"123.456.789-09","name":"Maria"}`,
+			secret:  "123.456.789-09",
+			present: []string{`"name":"Maria"`, marker},
+		},
+		{
+			name:    "CNPJ",
+			in:      "cnpj=12345678000195 not found",
+			secret:  "12345678000195",
+			present: []string{"not found", marker},
+		},
+		{
+			name:    "RG",
+			in:      "rg=123456789 failed validation",
+			secret:  "123456789",
+			present: []string{"failed validation", marker},
+		},
+		{
+			name:    "bank account and branch",
+			in:      "conta=00012345 agencia=0001 rejected",
+			secret:  "00012345",
+			present: []string{"rejected", "conta=" + marker, "agencia=" + marker},
+		},
+		{
+			name:    "account holder name",
+			in:      "holder_name=Maria Silva mismatch",
+			secret:  "holder_name=Maria",
+			present: []string{marker},
+		},
+		{
+			name:    "account holder name in Portuguese",
+			in:      "nome_titular=Maria mismatch",
+			secret:  "nome_titular=Maria",
+			present: []string{marker},
+		},
+		{
+			name:    "generic document field",
+			in:      "document=12345678909 invalid",
+			secret:  "document=12345678909",
+			present: []string{marker},
+		},
+		{
+			name:    "generic document field in Portuguese",
+			in:      "documento=12345678909 invalid",
+			secret:  "documento=12345678909",
+			present: []string{marker},
+		},
+		{
+			// A RANDOM Pix key, not the e-mail or CPF forms: those are already
+			// redacted by the bare e-mail pattern and by cpf, so only this shape
+			// tells us the field name itself is covered.
+			name:    "Pix key",
+			in:      "chave_pix=7f3a9b2c-1d4e-4a5b-8c6d-9e0f1a2b3c4d not registered",
+			secret:  "7f3a9b2c-1d4e-4a5b-8c6d-9e0f1a2b3c4d",
+			present: []string{"not registered", marker},
+		},
+		{
+			name:    "birthdate",
+			in:      "birthdate=1988-04-02 mismatch",
+			secret:  "birthdate=1988-04-02",
+			present: []string{marker},
+		},
+		{
+			name:    "birthdate in Portuguese",
+			in:      "data_nascimento=1988-04-02 mismatch",
+			secret:  "data_nascimento=1988-04-02",
+			present: []string{marker},
+		},
+		{
+			name:    "session id in a Cookie header",
+			in:      "upstream refused: Cookie: session=abc123def",
+			secret:  "abc123def",
+			present: []string{"Cookie", marker},
+		},
+		{
+			name:    "servlet session id",
+			in:      "jsessionid=0A1B2C3D4E rejected",
+			secret:  "0A1B2C3D4E",
+			present: []string{"rejected", marker},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.NotContains(t, got, tt.secret)
+
+			for _, want := range tt.present {
+				assert.Contains(t, got, want)
+			}
+		})
+	}
+}
+
+func TestStringRedactsApiKeyHeaders(t *testing.T) {
+	t.Parallel()
+
+	// An API key travels in its own header at least as often as in
+	// Authorization, and the header form carries no '=' for the key=value pass
+	// to key on.
+	tests := []struct {
+		name   string
+		in     string
+		secret string
+		keep   string
+	}{
+		{name: "X-Api-Key header", in: "GET /v1/x: X-Api-Key: sk-abcdefghij", secret: "sk-abcdefghij", keep: "X-Api-Key"},
+		{name: "api-key header", in: "rejected api-key: abcdefghij", secret: "abcdefghij", keep: "api-key"},
+		{name: "Proxy-Authorization header", in: "Proxy-Authorization: Basic dXNlcjpwdw==", secret: "dXNlcjpwdw", keep: "Basic"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.NotContains(t, got, tt.secret)
+			assert.Contains(t, got, tt.keep)
+			assert.Contains(t, got, marker)
+		})
+	}
+}
+
+func TestStringRedactsEscapedQuoteForms(t *testing.T) {
+	t.Parallel()
+
+	// A body that has been through %q, or nested one JSON document inside
+	// another's string value, arrives with every quote backslash-escaped. Both
+	// the JSON pass and the Authorization pass anchored on a BARE quote and let
+	// the whole shape through.
+	tests := []struct {
+		name   string
+		in     string
+		secret string
+	}{
+		{
+			name:   "escaped Authorization with an opaque token",
+			in:     `upstream rejected "{\"Authorization\": \"9f2c4b6a8d0e\"}"`,
+			secret: "9f2c4b6a8d0e",
+		},
+		{
+			name:   "escaped Authorization with a Bearer scheme",
+			in:     `upstream rejected "{\"Authorization\": \"Bearer tok123abc\"}"`,
+			secret: "tok123abc",
+		},
+		{
+			name:   "escaped Authorization with a Basic scheme",
+			in:     `upstream rejected "{\"Authorization\": \"Basic dXNlcjpwdw==\"}"`,
+			secret: "dXNlcjpwdw",
+		},
+		{
+			name:   "escaped around the key only",
+			in:     `body {\"password\":"hunter2"}`,
+			secret: "hunter2",
+		},
+		{
+			name:   "escaped around the value only",
+			in:     `body {"password":\"hunter2\"}`,
+			secret: "hunter2",
+		},
+		{
+			name:   "fully escaped JSON body",
+			in:     `POST /v1/x body "{\"client_secret\":\"s3cr3tvalue\",\"grant_type\":\"client_credentials\"}" rejected`,
+			secret: "s3cr3tvalue",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.NotContains(t, got, tt.secret)
+			assert.Contains(t, got, marker)
+		})
+	}
+}
+
+func TestStringRedactsSeparatedCardNumbers(t *testing.T) {
+	t.Parallel()
+
+	// A PAN is written the way it is printed on the card at least as often as
+	// unbroken. Worse than missing it: behind a field name the key=value pass
+	// stopped at the first space and redacted ONE group, leaving twelve of
+	// sixteen digits in the log and a marker suggesting the line was scrubbed.
+	tests := []struct {
+		name   string
+		in     string
+		secret string
+		keep   []string
+	}{
+		{name: "space-separated PAN", in: "charge declined for 4741 8529 6307 4182 at acquirer", secret: "8529", keep: []string{"charge declined", "at acquirer"}},
+		{name: "dash-separated PAN", in: "charge declined for 4741-8529-6307-4182 at acquirer", secret: "8529", keep: []string{"at acquirer"}},
+		{name: "dot-separated PAN", in: "charge declined for 4741.8529.6307.4182 at acquirer", secret: "8529", keep: []string{"at acquirer"}},
+		{name: "separated PAN behind a field name", in: "card_number=4741 8529 6307 4182", secret: "8529", keep: []string{"card_number="}},
+		{name: "Amex grouping", in: "amex 3782 822463 10005 declined", secret: "822463", keep: []string{"declined"}},
+		{name: "Diners grouping", in: "diners 3852 000002 3237 declined", secret: "000002", keep: []string{"declined"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.NotContains(t, got, tt.secret)
+			assert.Equal(t, 1, strings.Count(got, marker), "the PAN must be consumed whole, as ONE marker: %q", got)
+
+			for _, want := range tt.keep {
+				assert.Contains(t, got, want)
+			}
+		})
+	}
+}
+
+func TestStringKeepsSeparatedNumbersThatAreNotCards(t *testing.T) {
+	t.Parallel()
+
+	// Same gate as the unbroken run: a grouped number that fails Luhn is an
+	// order id, a reference, an invoice — and redacting it silently empties the
+	// message this package exists to keep diagnosable.
+	tests := []string{
+		"order 1234 5678 9012 3456 pending",
+		"reference 1234-5678-9012-3456 not found",
+		"balance 12345.67 does not settle",
+	}
+
+	for _, in := range tests {
+		t.Run(in, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, in, sanitize.String(in))
+		})
+	}
+}

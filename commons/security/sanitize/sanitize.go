@@ -66,11 +66,22 @@ import (
 const SecretRedactionMarker = "****"
 
 // sensitiveFieldExtras augments the centralized lib-observability taxonomy with
-// the AWS-specific access/secret/session key names and the SASL and signature
-// fields that show up in broker and SDK error strings but are not part of the
+// the key names that show up in Lerian error strings but are not part of the
 // generic default list. Field sensitivity itself is decided by
 // redaction.IsSensitiveField; this is only the addendum.
+//
+// Two groups, and the second is the one worth explaining. The AWS/SASL names are
+// what broker clients and SDKs echo. The BRAZILIAN document and bank-account
+// names are what a ledger echoes: the shared taxonomy was enumerated in English,
+// so it knows "ssn" and "account_number" and has never heard of "cpf" or
+// "agencia" — and those are the exact spellings a unique-constraint violation, a
+// validator message or a marshaled payload carries here.
+//
+// Matching is by whole word, so an entry also covers its compounds
+// ("conta_corrente", "cpf_titular") without covering an unrelated word that
+// merely contains the letters.
 var sensitiveFieldExtras = []string{
+	// AWS, SASL and signature material.
 	"accesskey",
 	"access_key",
 	"accesskeyid",
@@ -83,6 +94,29 @@ var sensitiveFieldExtras = []string{
 	"sasl_password",
 	"passwd",
 	"pwd",
+
+	// Brazilian tax and identity documents.
+	"cpf",
+	"cnpj",
+	"rg",
+	"document",
+	"documento",
+
+	// Bank account, branch and Pix addressing.
+	"conta",
+	"agencia",
+	"chave_pix",
+	"holder_name",
+	"nome_titular",
+
+	// Date of birth, in both spellings this codebase sees.
+	"birthdate",
+	"data_nascimento",
+
+	// Session identifiers. The taxonomy carries "session_id" and "sessionid",
+	// neither of which matches a bare "session" or a servlet "jsessionid".
+	"session",
+	"jsessionid",
 }
 
 // urlPattern matches scheme://rest-of-URL tokens so embedded userinfo
@@ -102,27 +136,50 @@ var keyValuePattern = regexp.MustCompile(`(?i)\b([a-z][a-z0-9._-]*)([[:space:]]*
 // marshaled config, or a request body echoed into an error) is redacted by field
 // name just like a key=value pair. Only string-valued keys are matched: a
 // numeric or boolean value is not a credential.
-var jsonKeyValuePattern = regexp.MustCompile(`"([a-zA-Z][a-zA-Z0-9._-]*)"([[:space:]]*:[[:space:]]*)"([^"]*)"`)
-
-// authHeaderPattern matches "Authorization: ..." header forms, including
-// Proxy-Authorization, and redacts EVERYTHING after the colon to the end of the
-// line (or to the first ',' or '"', which end a header value inside a JSON or
-// struct dump).
 //
-// TWO THINGS ARE DELIBERATE HERE. The scheme is optional, because
+// EVERY QUOTE IS OPTIONALLY ESCAPED, AND EACH ONE INDEPENDENTLY. A body that has
+// been through %q, or that was nested inside another JSON document's string
+// value, arrives as \"password\": \"hunter2\" — and a pattern anchored on a bare
+// quote matches none of it, so the whole body went to the log untouched. The
+// escaping can also be one-sided (a template that quoted the key but
+// interpolated the value), so the four quotes are four separate optional
+// backslashes rather than one mode flag.
+//
+// The delimiters are CAPTURED, not assumed, because the replacement has to put
+// back exactly what it found: reconstructing with a bare quote where the input
+// had an escaped one produces a string that is no longer valid JSON.
+//
+// The value admits an escape sequence (\\, \/, \n) but NOT an escaped quote,
+// which is the value's terminator in the escaped form exactly as a bare quote is
+// in the plain one.
+var jsonKeyValuePattern = regexp.MustCompile(
+	`(\\?")([a-zA-Z][a-zA-Z0-9._-]*)(\\?")([[:space:]]*:[[:space:]]*)(\\?")((?:[^"\\]|\\[^"])*)(\\?")`)
+
+// authHeaderPattern matches credential-bearing header forms — Authorization,
+// Proxy-Authorization, Cookie and the X-Api-Key family — and redacts EVERYTHING
+// after the colon to the end of the line (or to the first ',' or '"', which end a
+// header value inside a JSON or struct dump).
+//
+// THREE THINGS ARE DELIBERATE HERE. The scheme is optional, because
 // `Authorization: <bare-opaque-token>` is a real header and requiring a scheme
-// let it through untouched unless some other pattern happened to catch it. And
-// the scheme is matched from a CLOSED LIST rather than as "the first word",
-// because "the first word" is indistinguishable from the first word OF an opaque
-// token: `Authorization: sessiontoken abc123` would keep "sessiontoken" as a
-// scheme and redact only what follows. An unrecognised leading word is treated
-// as credential material, which is the safe reading.
+// let it through untouched unless some other pattern happened to catch it. The
+// scheme is matched from a CLOSED LIST rather than as "the first word", because
+// "the first word" is indistinguishable from the first word OF an opaque token:
+// `Authorization: sessiontoken abc123` would keep "sessiontoken" as a scheme and
+// redact only what follows. An unrecognised leading word is treated as credential
+// material, which is the safe reading. And the separator tolerates an escaped or
+// bare quote on either side of the colon, so the header survives %q and JSON
+// nesting — see jsonKeyValuePattern for the same reasoning at length.
+//
+// Cookie and X-Api-Key carry a credential in a header that has no '=' for the
+// key=value pass to key on, and no scheme for this one to keep: the WHOLE value
+// goes.
 //
 // Running to end of line rather than to the next space redacts a word or two of
 // surrounding prose when the header sits mid-sentence. That is the correct
 // direction of error for a credential.
 var authHeaderPattern = regexp.MustCompile(
-	`(?i)\b((?:proxy-)?authorization|auth)([[:space:]]*:[[:space:]]*)` +
+	`(?i)\b((?:proxy-)?authorization|auth|cookie|(?:x-)?api-key)(\\?"?[[:space:]]*:[[:space:]]*\\?"?)` +
 		`((?:bearer|basic|digest|negotiate|ntlm|token|apikey|hmac|aws4-hmac-sha256)[[:space:]]+)?` +
 		`[^\r\n,"]+`)
 
@@ -154,10 +211,40 @@ var bareSecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b`),
 }
 
-// cardNumberPattern is the CANDIDATE shape for a bare card number: an unbroken
-// run of 12 to 19 digits. It is a candidate and not a verdict — see
-// redactCardNumbers, where the Luhn check decides.
-var cardNumberPattern = regexp.MustCompile(`\b\d{12,19}\b`)
+// Card numbers carry 12 to 19 digits once their separators are stripped. The
+// bounds are applied to the DIGITS, not to the matched text, so a grouped PAN and
+// an unbroken one are judged the same way.
+const (
+	minCardDigits = 12
+	maxCardDigits = 19
+)
+
+// cardCandidatePatterns are the CANDIDATE shapes for a card number. They are
+// candidates and not verdicts — see redactCardNumbers, where the Luhn check
+// decides.
+//
+// A PAN is written the way it is printed on the card at least as often as
+// unbroken, and the grouped form was worse than merely missed: behind a field
+// name, the key=value pass stopped at the first space and redacted ONE group,
+// leaving twelve of sixteen digits in the log under a marker that said the line
+// had been scrubbed.
+//
+// GROUPED SHAPES COME FIRST so a PAN is consumed whole. The unbroken pattern
+// cannot match a four-digit group anyway, but the order also says which reading
+// wins if that ever changes.
+var cardCandidatePatterns = []*regexp.Regexp{
+	// Grouped as printed: 4-4-4 (12 digits) through 4-4-4-4-4 (20, which the
+	// digit bound below then rejects).
+	regexp.MustCompile(`\b\d{4}(?:[ .-]\d{4}){2,4}\b`),
+	// Amex (4-6-5) and Diners (4-6-4), which group unevenly.
+	regexp.MustCompile(`\b\d{4}[ .-]\d{6}[ .-]\d{4,5}\b`),
+	// One unbroken run.
+	regexp.MustCompile(`\b\d{12,19}\b`),
+}
+
+// cardSeparators strips the grouping characters before the checksum runs. Luhn is
+// defined over digits; the separators are presentation.
+var cardSeparators = strings.NewReplacer(" ", "", ".", "", "-", "")
 
 // azureSASSignaturePattern redacts the Azure SAS `sig=` parameter inside a query
 // string. The token is URL-encoded, so the value runs to the next delimiter.
@@ -205,17 +292,25 @@ func String(s string) string {
 		return parts[1] + parts[2] + parts[3] + SecretRedactionMarker
 	})
 
-	// 5. Sensitive JSON "key":"value" pairs, by field name.
+	// 5. Sensitive JSON "key":"value" pairs, by field name. The quote characters
+	// are put back exactly as they were found, escaped or bare.
 	s = jsonKeyValuePattern.ReplaceAllStringFunc(s, func(match string) string {
 		parts := jsonKeyValuePattern.FindStringSubmatch(match)
-		if len(parts) != 4 || !isSensitiveFieldName(parts[1]) {
+		if len(parts) != 8 || !isSensitiveFieldName(parts[2]) {
 			return match
 		}
 
-		return `"` + parts[1] + `"` + parts[2] + `"` + SecretRedactionMarker + `"`
+		return parts[1] + parts[2] + parts[3] + parts[4] + parts[5] + SecretRedactionMarker + parts[7]
 	})
 
-	// 6. Sensitive key=value pairs, by field name.
+	// 6. Card numbers, BEFORE key=value. A grouped PAN behind a field name is the
+	// reason for the order: the key=value value class stops at the first space,
+	// so it would redact one four-digit group and leave the remaining twelve
+	// digits behind a marker claiming the line was scrubbed. Consuming the PAN
+	// whole here leaves key=value nothing but a marker to redact again.
+	s = redactCardNumbers(s)
+
+	// 7. Sensitive key=value pairs, by field name.
 	s = keyValuePattern.ReplaceAllStringFunc(s, func(match string) string {
 		parts := keyValuePattern.FindStringSubmatch(match)
 		if len(parts) != 4 || !isSensitiveFieldName(parts[1]) {
@@ -225,32 +320,37 @@ func String(s string) string {
 		return parts[1] + parts[2] + SecretRedactionMarker
 	})
 
-	// 7. Bare credential values, with no surrounding field name.
+	// 8. Bare credential values, with no surrounding field name. Last, so a
+	// vendor token is matched against the text as it was written rather than
+	// against a version some earlier pass has already carved into.
 	for _, pattern := range bareSecretPatterns {
 		s = pattern.ReplaceAllString(s, SecretRedactionMarker)
 	}
 
-	// 8. Bare card numbers, last, so a vendor token that happens to contain a
-	// long digit run has already been consumed as a whole.
-	return redactCardNumbers(s)
+	return s
 }
 
 // redactCardNumbers redacts digit runs that pass the Luhn check, and ONLY those.
 //
-// THE GATE IS THE POINT. A bare 12-to-19-digit run is also an order number, a
-// ledger id, an epoch-millisecond timestamp and half the correlation ids in a
-// fintech error string. Redacting the shape unconditionally would empty out the
-// messages this package exists to keep diagnosable, and it would do it silently.
-// Luhn is what a card number satisfies and an arbitrary identifier satisfies
-// only one time in ten.
+// THE GATE IS THE POINT. A 12-to-19-digit run, grouped or not, is also an order
+// number, a ledger id, an epoch-millisecond timestamp and half the correlation
+// ids in a fintech error string. Redacting the shape unconditionally would empty
+// out the messages this package exists to keep diagnosable, and it would do it
+// silently. Luhn is what a card number satisfies and an arbitrary identifier
+// satisfies only one time in ten.
 func redactCardNumbers(s string) string {
-	return cardNumberPattern.ReplaceAllStringFunc(s, func(candidate string) string {
-		if !passesLuhn(candidate) {
-			return candidate
-		}
+	for _, pattern := range cardCandidatePatterns {
+		s = pattern.ReplaceAllStringFunc(s, func(candidate string) string {
+			digits := cardSeparators.Replace(candidate)
+			if len(digits) < minCardDigits || len(digits) > maxCardDigits || !passesLuhn(digits) {
+				return candidate
+			}
 
-		return SecretRedactionMarker
-	})
+			return SecretRedactionMarker
+		})
+	}
+
+	return s
 }
 
 // passesLuhn reports whether the digits satisfy the Luhn checksum every payment
