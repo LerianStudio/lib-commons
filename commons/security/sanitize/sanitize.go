@@ -25,17 +25,30 @@
 // are layered ON TOP of that field check.
 //
 // That taxonomy classifies PII (email, phone, address, iban, swift, ...) as
-// sensitive in addition to secrets, so PII embedded in an error string is
-// redacted BY DESIGN. For a tenant-isolated fintech service that is the intended
-// consequence of adopting the shared taxonomy, not over-redaction.
+// sensitive in addition to secrets, so a PII field NAME is redacted BY DESIGN.
+// For a tenant-isolated fintech service that is the intended consequence of
+// adopting the shared taxonomy, not over-redaction.
+//
+// A field name only helps when there is one. Two kinds of PII show up in error
+// strings BARE, with nothing around them to key on, and both are handled by
+// value instead: an e-mail address, and a card number (12 to 19 digits, gated on
+// Luhn so an order id or an epoch-millisecond timestamp of the same length stays
+// readable). Nothing else is inferred from shape alone.
 //
 // # What it is not
 //
-// It does not bound length. commons/outbox owns the length-bounded variant for
-// the last_error column, which is a storage concern rather than a redaction one.
+// It does not bound length, deliberately. commons/outbox owns the length-bounded
+// variant for the last_error column, which is a storage concern rather than a
+// redaction one — and truncating BEFORE redaction is actively unsafe, because a
+// cut landing mid-secret strands a readable prefix ("postgres://user:pas") that
+// no later pattern can recognise. The patterns are RE2, so they are linear in
+// the input: ten passes over even a multi-megabyte string is tens of
+// milliseconds, which is not worth a correctness hazard.
 package sanitize
 
 import (
+	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -91,10 +104,27 @@ var keyValuePattern = regexp.MustCompile(`(?i)\b([a-z][a-z0-9._-]*)([[:space:]]*
 // numeric or boolean value is not a credential.
 var jsonKeyValuePattern = regexp.MustCompile(`"([a-zA-Z][a-zA-Z0-9._-]*)"([[:space:]]*:[[:space:]]*)"([^"]*)"`)
 
-// authHeaderPattern matches "Authorization: <scheme> <credential>" header forms,
-// keeping the scheme for readability while redacting the credential after it.
+// authHeaderPattern matches "Authorization: ..." header forms, including
+// Proxy-Authorization, and redacts EVERYTHING after the colon to the end of the
+// line (or to the first ',' or '"', which end a header value inside a JSON or
+// struct dump).
+//
+// TWO THINGS ARE DELIBERATE HERE. The scheme is optional, because
+// `Authorization: <bare-opaque-token>` is a real header and requiring a scheme
+// let it through untouched unless some other pattern happened to catch it. And
+// the scheme is matched from a CLOSED LIST rather than as "the first word",
+// because "the first word" is indistinguishable from the first word OF an opaque
+// token: `Authorization: sessiontoken abc123` would keep "sessiontoken" as a
+// scheme and redact only what follows. An unrecognised leading word is treated
+// as credential material, which is the safe reading.
+//
+// Running to end of line rather than to the next space redacts a word or two of
+// surrounding prose when the header sits mid-sentence. That is the correct
+// direction of error for a credential.
 var authHeaderPattern = regexp.MustCompile(
-	`(?i)\b(authorization|auth)([[:space:]]*:[[:space:]]*)([a-z][a-z0-9._~+/-]*)([[:space:]]+)[^\s,;&]+`)
+	`(?i)\b((?:proxy-)?authorization|auth)([[:space:]]*:[[:space:]]*)` +
+		`((?:bearer|basic|digest|negotiate|ntlm|token|apikey|hmac|aws4-hmac-sha256)[[:space:]]+)?` +
+		`[^\r\n,"]+`)
 
 // bareSecretPatterns match credential material appearing WITHOUT a surrounding
 // field name — SDKs and broker clients routinely echo the bare token. Each is
@@ -117,7 +147,17 @@ var bareSecretPatterns = []*regexp.Regexp{
 	// Bare JWTs, anchored on the "eyJ" header so it does not eat an ordinary
 	// dotted identifier.
 	regexp.MustCompile(`\beyJ[0-9A-Za-z_-]+\.[0-9A-Za-z_-]+\.[0-9A-Za-z_-]+\b`),
+	// Bare e-mail addresses. PII the taxonomy already calls sensitive by field
+	// name, appearing with no field name — which is how a validator, an SMTP
+	// client or a unique-constraint violation echoes it. Same expression
+	// commons/outbox has redacted before storing last_error.
+	regexp.MustCompile(`(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b`),
 }
+
+// cardNumberPattern is the CANDIDATE shape for a bare card number: an unbroken
+// run of 12 to 19 digits. It is a candidate and not a verdict — see
+// redactCardNumbers, where the Luhn check decides.
+var cardNumberPattern = regexp.MustCompile(`\b\d{12,19}\b`)
 
 // azureSASSignaturePattern redacts the Azure SAS `sig=` parameter inside a query
 // string. The token is URL-encoded, so the value runs to the next delimiter.
@@ -154,11 +194,12 @@ func String(s string) string {
 	// 4. Authorization header forms: keep the scheme, redact the credential.
 	s = authHeaderPattern.ReplaceAllStringFunc(s, func(match string) string {
 		parts := authHeaderPattern.FindStringSubmatch(match)
-		if len(parts) != 5 {
+		if len(parts) != 4 {
 			return match
 		}
 
-		return parts[1] + parts[2] + parts[3] + parts[4] + SecretRedactionMarker
+		// parts[3] is the recognised scheme WITH its trailing space, or empty.
+		return parts[1] + parts[2] + parts[3] + SecretRedactionMarker
 	})
 
 	// 5. Sensitive JSON "key":"value" pairs, by field name.
@@ -186,7 +227,58 @@ func String(s string) string {
 		s = pattern.ReplaceAllString(s, SecretRedactionMarker)
 	}
 
-	return s
+	// 8. Bare card numbers, last, so a vendor token that happens to contain a
+	// long digit run has already been consumed as a whole.
+	return redactCardNumbers(s)
+}
+
+// redactCardNumbers redacts digit runs that pass the Luhn check, and ONLY those.
+//
+// THE GATE IS THE POINT. A bare 12-to-19-digit run is also an order number, a
+// ledger id, an epoch-millisecond timestamp and half the correlation ids in a
+// fintech error string. Redacting the shape unconditionally would empty out the
+// messages this package exists to keep diagnosable, and it would do it silently.
+// Luhn is what a card number satisfies and an arbitrary identifier satisfies
+// only one time in ten.
+func redactCardNumbers(s string) string {
+	return cardNumberPattern.ReplaceAllStringFunc(s, func(candidate string) string {
+		if !passesLuhn(candidate) {
+			return candidate
+		}
+
+		return SecretRedactionMarker
+	})
+}
+
+// passesLuhn reports whether the digits satisfy the Luhn checksum every payment
+// card number carries.
+//
+// It is implemented here rather than shared with commons/outbox's copy because
+// sanitize is a leaf package and outbox is not: importing outbox to reach one
+// checksum would hang a broker, a dispatcher and two database adapters off every
+// service that only wanted to redact a log line. Consolidating the two belongs
+// with the replacement of the outbox redactor, not here.
+func passesLuhn(number string) bool {
+	sum := 0
+	double := false
+
+	for i := len(number) - 1; i >= 0; i-- {
+		digit := int(number[i] - '0')
+		if digit < 0 || digit > 9 {
+			return false
+		}
+
+		if double {
+			if digit *= 2; digit > 9 {
+				digit -= 9
+			}
+		}
+
+		sum += digit
+		double = !double
+	}
+
+	return sum%10 == 0
 }
 
 // Error wraps err so its MESSAGE is redacted while its CHAIN stays intact.
@@ -200,11 +292,15 @@ func String(s string) string {
 //	    return sanitize.Error(fmt.Errorf("ping ledger pool: %w", err))
 //	}
 //
-// errors.Is and errors.As still reach everything underneath, deliberately: a
-// caller must still be able to classify the driver error it may no longer print.
-// THAT IS ALSO THE ONE SHARP EDGE — a cause recovered with errors.As carries its
-// own unredacted Error(), so classify with it, never print it. Print only the
-// wrapper.
+// CLASSIFICATION SURVIVES, THE RAW TEXT DOES NOT. errors.Is and errors.As still
+// reach everything underneath, because a caller must still be able to classify
+// the driver error it may no longer print. What is deliberately NOT provided is
+// Unwrap: with it, errors.Unwrap(sanitized).Error() hands any caller the raw DSN
+// straight back, and every redaction above is decorative.
+//
+// errors.As remains the one door to a printable cause, and it is a narrow one: a
+// caller must already know the concrete type it is asking for. Ask, classify, and
+// print only the wrapper.
 //
 // Returns nil for a nil error, so it composes at a return site without a guard.
 func Error(err error) error {
@@ -223,9 +319,19 @@ type redactedError struct {
 
 func (e *redactedError) Error() string { return e.message }
 
-// Unwrap exposes the cause to errors.Is and errors.As without exposing it to
-// anything that formats the error.
-func (e *redactedError) Unwrap() error { return e.cause }
+// Is and As delegate to the cause so errors.Is and errors.As keep classifying,
+// while the absence of Unwrap means no caller can obtain the cause itself and
+// print it. Both are the hooks errors.Is/As look for before they walk Unwrap.
+func (e *redactedError) Is(target error) bool { return errors.Is(e.cause, target) }
+
+func (e *redactedError) As(target any) bool { return errors.As(e.cause, target) }
+
+// GoString stops %#v from doing what Unwrap no longer allows. Without it, the
+// default struct formatting prints the cause field, and for a cause whose
+// concrete type is a struct VALUE that means printing its unredacted contents.
+func (e *redactedError) GoString() string {
+	return fmt.Sprintf("sanitize.redactedError{message: %q}", e.message)
+}
 
 // isSensitiveFieldName delegates to the centralized lib-observability taxonomy,
 // extended with the AWS/SASL addendum.

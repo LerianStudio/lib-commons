@@ -47,9 +47,18 @@ func TestStringRedactsURLUserinfo(t *testing.T) {
 			want: "https://api.lerian.studio/v1/ledgers",
 		},
 		{
+			// The fixture deliberately is NOT an e-mail address: an at-sign after
+			// the authority is not userinfo, and this row is about that rule
+			// alone. An e-mail in the same position is redacted, by the bare-PII
+			// pass rather than by this one — see the case below.
 			name: "an at-sign in the path is not userinfo",
+			in:   "https://api.example.com/users/a@b/x",
+			want: "https://api.example.com/users/a@b/x",
+		},
+		{
+			name: "an e-mail address in a path is PII and goes, host and route stay",
 			in:   "https://api.example.com/users/a@b.com/x",
-			want: "https://api.example.com/users/a@b.com/x",
+			want: "https://api.example.com/users/" + marker + "/x",
 		},
 		{
 			name: "trailing sentence punctuation stays outside the redaction",
@@ -333,4 +342,201 @@ func TestStringHandlesLongInputWithoutTruncating(t *testing.T) {
 
 	assert.Len(t, got, 4096+len(" password=")+len(marker))
 	assert.NotContains(t, got, "hunter2")
+}
+
+func TestStringRedactsBareCardNumbers(t *testing.T) {
+	t.Parallel()
+
+	// Fixtures from commons/outbox's own sanitizer tests: what the outbox
+	// already scrubs before writing last_error, this must scrub before the same
+	// text reaches a log line or a span.
+	tests := []struct {
+		name    string
+		in      string
+		secret  string
+		present []string
+	}{
+		{
+			name:    "the outbox's own kitchen-sink fixture",
+			in:      "bearer eyJabc.def.ghi api_key=secret123 user@mail.com 4111111111111111",
+			secret:  "4111111111111111",
+			present: []string{marker},
+		},
+		{
+			name:    "a bare PAN with no field name around it",
+			in:      "charge declined for 5500005555555559 at acquirer",
+			secret:  "5500005555555559",
+			present: []string{"charge declined", "at acquirer", marker},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.NotContains(t, got, tt.secret)
+
+			for _, want := range tt.present {
+				assert.Contains(t, got, want)
+			}
+		})
+	}
+}
+
+func TestStringKeepsLongNumbersThatAreNotCards(t *testing.T) {
+	t.Parallel()
+
+	// The Luhn gate is the whole reason a bare 12-to-19-digit run may be touched
+	// at all. Without it every epoch-millisecond timestamp, order number and
+	// ledger id in an error string disappears, and the message stops being
+	// diagnosable — which is a worse failure than the one being fixed, because
+	// it is silent.
+	tests := []string{
+		"failed at unix_ms=1700000000000 while parsing request",
+		"order 4111111111111112 not found",
+		"balance 12345.67 does not settle",
+	}
+
+	for _, in := range tests {
+		t.Run(in, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, in, sanitize.String(in))
+		})
+	}
+}
+
+func TestStringRedactsBareEmailAddresses(t *testing.T) {
+	t.Parallel()
+
+	// PII the taxonomy classifies as sensitive by FIELD NAME, appearing with no
+	// field name at all — which is how a driver or a validator echoes it.
+	tests := []struct {
+		in     string
+		secret string
+	}{
+		{in: "erro de autenticacao usuario=test@example.com senha=segredo", secret: "test@example.com"},
+		{in: "no ledger for operator maria.silva+ops@lerian.studio", secret: "maria.silva+ops@lerian.studio"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.secret, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.NotContains(t, got, tt.secret)
+			assert.Contains(t, got, marker)
+		})
+	}
+}
+
+func TestStringRedactsAnAuthorizationHeaderWithNoScheme(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		in      string
+		secret  string
+		present []string
+	}{
+		{
+			name:    "bare opaque token, no scheme at all",
+			in:      "GET /v1/x failed: Authorization: 9f2c4b6a8d0e1f3a5c7b9d0e",
+			secret:  "9f2c4b6a8d0e1f3a5c7b9d0e",
+			present: []string{"Authorization", marker},
+		},
+		{
+			// The token here STARTS WITH A LETTER, which is what makes this case
+			// discriminating: read as "the first word is the scheme", the token
+			// itself survives in the clear and only the prose after it is
+			// redacted.
+			name:    "an opaque token that starts with a letter is not a scheme",
+			in:      "Authorization: abc123token456 retried after 3s",
+			secret:  "abc123token456",
+			present: []string{"Authorization", marker},
+		},
+		{
+			name:    "proxy-authorization is the same header",
+			in:      "Proxy-Authorization: Basic dXNlcjpwYXNz",
+			secret:  "dXNlcjpwYXNz",
+			present: []string{"Proxy-Authorization", "Basic", marker},
+		},
+		{
+			name:    "a known scheme is still kept for readability",
+			in:      "GET /v1/x failed: Authorization: Bearer abc.def.ghi",
+			secret:  "abc.def.ghi",
+			present: []string{"Authorization", "Bearer", marker},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.NotContains(t, got, tt.secret)
+
+			for _, want := range tt.present {
+				assert.Contains(t, got, want)
+			}
+		})
+	}
+}
+
+func TestErrorHidesTheRawCauseFromEveryPrinter(t *testing.T) {
+	t.Parallel()
+
+	dsn := "postgres://svc:s3cr3t@db.internal:5432/ledger"
+	cause := errors.New("dial " + dsn + ": refused")
+	got := sanitize.Error(cause)
+
+	// errors.Unwrap is the hole: it hands a caller the cause, whose own Error()
+	// is the raw DSN. Classification must survive; the raw text must not.
+	assert.Nil(t, errors.Unwrap(got), "no caller may reach a printable cause")
+
+	for _, format := range []string{"%v", "%s", "%+v", "%#v"} {
+		assert.NotContains(t, fmt.Sprintf(format, got), "s3cr3t", "format %s leaked the cause", format)
+	}
+
+	assert.NotContains(t, fmt.Errorf("querying ledger: %w", got).Error(), "s3cr3t")
+}
+
+func TestErrorStillClassifiesWithoutUnwrap(t *testing.T) {
+	t.Parallel()
+
+	sentinel := errors.New("upstream refused")
+	pgErr := &pgconn.PgError{Code: "28P01", Message: `password authentication failed for user "svc"`}
+
+	got := sanitize.Error(fmt.Errorf("connect postgres://svc:s3cr3t@db/ledger: %w: %w", sentinel, pgErr))
+
+	require.ErrorIs(t, got, sentinel, "errors.Is must keep reaching the cause")
+
+	var found *pgconn.PgError
+
+	require.ErrorAs(t, got, &found, "errors.As must keep reaching the cause")
+	assert.Equal(t, "28P01", found.Code)
+}
+
+// dsnError is an error whose concrete type is a struct VALUE, not a pointer —
+// the shape that makes %#v dangerous, because default struct formatting prints
+// the field contents rather than an address.
+type dsnError struct{ DSN string }
+
+func (e dsnError) Error() string { return "dial " + e.DSN + ": refused" }
+
+func TestErrorHidesAValueTypedCauseFromGoSyntaxFormatting(t *testing.T) {
+	t.Parallel()
+
+	got := sanitize.Error(dsnError{DSN: "postgres://svc:s3cr3t@db.internal:5432/ledger"})
+
+	assert.NotContains(t, fmt.Sprintf("%#v", got), "s3cr3t")
+	assert.NotContains(t, got.Error(), "s3cr3t")
+
+	var found dsnError
+
+	require.ErrorAs(t, got, &found, "classification must still reach a value-typed cause")
 }
