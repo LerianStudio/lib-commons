@@ -633,12 +633,50 @@ func TestSentinelMessagesAreBare(t *testing.T) {
 
 	// Sentinels across lib-commons carry no package prefix; the call site adds
 	// the context it has. A prefixed message reads twice in a wrapped chain.
+	//
+	// The assertion anchors on the PACKAGE NAME, which is what a prefixed
+	// sentinel would actually start with. Asserting the absence of an import
+	// path instead passed for every string ever written, including
+	// "signedcursor: invalid cursor" — the one shape it was meant to catch.
 	for _, err := range []error{
 		signedcursor.ErrInvalidKey,
 		signedcursor.ErrPayloadTooLarge,
 		signedcursor.ErrInvalidCursor,
 		signedcursor.ErrEmptyIdentity,
+		signedcursor.ErrMalformed,
+		signedcursor.ErrSignature,
+		signedcursor.ErrVersion,
+		signedcursor.ErrIdentityMismatch,
+		signedcursor.ErrContextMismatch,
 	} {
-		assert.NotContains(t, err.Error(), "lib-commons/")
+		assert.False(t, strings.HasPrefix(err.Error(), "signedcursor"),
+			"sentinel carries a package prefix: %q", err.Error())
 	}
+}
+
+func TestDecodeChecksIdentityBeforeContext(t *testing.T) {
+	t.Parallel()
+
+	// The ORDER is a documented adoption difference, not an implementation
+	// detail: a token replayed across tenants must be named a cross-tenant
+	// replay whatever window it also carries, because that is the answer an
+	// operator acts on. With both bindings wrong, only the order decides which
+	// sentinel comes back, and a service that maps the two to different status
+	// codes sees the swap.
+	codec := newTestCodec(t, 1)
+
+	token, err := codec.Encode([]byte(`{"rank":7}`), signedcursor.Binding{
+		Identity: []string{"tenant-a"},
+		Context:  []string{"window-1"},
+	})
+	require.NoError(t, err)
+
+	_, err = codec.Decode(token, signedcursor.Binding{
+		Identity: []string{"tenant-b"},
+		Context:  []string{"window-2"},
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, signedcursor.ErrIdentityMismatch, "identity is answered first")
+	assert.NotErrorIs(t, err, signedcursor.ErrContextMismatch)
 }
