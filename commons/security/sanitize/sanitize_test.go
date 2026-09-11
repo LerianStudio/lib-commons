@@ -3,6 +3,7 @@
 package sanitize_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -790,6 +791,17 @@ func TestStringRedactsSeparatedCardNumbers(t *testing.T) {
 		{name: "separated PAN behind a field name", in: "card_number=4741 8529 6307 4182", secret: "8529", keep: []string{"card_number="}},
 		{name: "Amex grouping", in: "amex 3782 822463 10005 declined", secret: "822463", keep: []string{"declined"}},
 		{name: "Diners grouping", in: "diners 3852 000002 3237 declined", secret: "000002", keep: []string{"declined"}},
+		{
+			// A PAN behind a leading four-digit group, where the FIRST twelve
+			// digits of the run also satisfy Luhn. Taking the longest window at
+			// the earliest offset redacts those twelve and leaves the last eight
+			// digits of the real card in the clear; preferring the widest window
+			// anywhere in the run takes the card itself.
+			name:   "a leading group whose own window also passes Luhn",
+			in:     "declined 0001 4741 8529 6307 4182 at acquirer",
+			secret: "6307 4182",
+			keep:   []string{"0001", "at acquirer"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -825,6 +837,301 @@ func TestStringKeepsSeparatedNumbersThatAreNotCards(t *testing.T) {
 			t.Parallel()
 
 			assert.Equal(t, in, sanitize.String(in))
+		})
+	}
+}
+
+func TestStringRedactsEveryURLInARun(t *testing.T) {
+	t.Parallel()
+
+	// A broker DSN is routinely a LIST — commons/secretsmanager hands Kafka a
+	// comma-separated Brokers string — and the URL token pattern runs to the
+	// next whitespace, so the whole list is ONE match. Redacting only its first
+	// authority let every later credential through, and a list whose FIRST entry
+	// carried no userinfo came back completely untouched: no marker, nothing to
+	// tell an operator the line had not been scrubbed.
+	tests := []struct {
+		name   string
+		in     string
+		absent []string
+		keep   []string
+	}{
+		{
+			name:   "comma-separated list, both entries carry credentials",
+			in:     "dial brokers amqp://u1:p1@a:5672,amqp://u2:p2@b:5672 refused",
+			absent: []string{"u1", "p1", "u2", "p2"},
+			keep:   []string{"a:5672", "b:5672", "refused"},
+		},
+		{
+			name:   "semicolon-separated list",
+			in:     "dial amqp://u1:p1@a:5672;amqp://u2:p2@b:5672 refused",
+			absent: []string{"u1", "p1", "u2", "p2"},
+			keep:   []string{"a:5672", "b:5672"},
+		},
+		{
+			name:   "the first entry has no credentials and the second does",
+			in:     "dial amqp://a:5672,amqp://svc:s3cr3t@b:5672 refused",
+			absent: []string{"svc:s3cr3t", "s3cr3t"},
+			keep:   []string{"a:5672", "b:5672", marker},
+		},
+		{
+			name:   "JSON array of URLs",
+			in:     `brokers ["amqp://u1:p1@a:5672","amqp://u2:p2@b:5672"] refused`,
+			absent: []string{"u1", "p1", "u2", "p2"},
+			keep:   []string{"a:5672", "b:5672"},
+		},
+		{
+			name:   "a URL glued to the tail of a previous one",
+			in:     "dial redis://h:6379-redis://u:p@h2 refused",
+			absent: []string{"u:p@"},
+			keep:   []string{"h2", marker},
+		},
+		{
+			name:   "a scheme preceded by a non-URL host:port pair",
+			in:     "dial cache:6379-redis://u:p@h refused",
+			absent: []string{"u:p@"},
+			keep:   []string{"@h", marker},
+		},
+		{
+			name:   "two URLs inside one JSON object, only the second with credentials",
+			in:     `config {"a":"https://x/h","db":"postgres://svc:s3cr3t@db/ledger"}`,
+			absent: []string{"s3cr3t"},
+			keep:   []string{"https://x/h", "@db/ledger", marker},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			for _, secret := range tt.absent {
+				assert.NotContains(t, got, secret, "got %q", got)
+			}
+
+			for _, want := range tt.keep {
+				assert.Contains(t, got, want)
+			}
+		})
+	}
+}
+
+func TestStringRedactsSensitiveQueryParameters(t *testing.T) {
+	t.Parallel()
+
+	// The key=value value class admits '=', so a URL carrying a credential in
+	// its query string is ONE match keyed on the OUTER field name. With
+	// "endpoint" or "broker" outside, the pair is judged not sensitive and the
+	// inner apikey= is never a candidate at all.
+	tests := []struct {
+		name   string
+		in     string
+		secret string
+		keep   []string
+	}{
+		{
+			name:   "api key in the query string of a non-sensitive field",
+			in:     "call failed endpoint=https://api.example.com/v1?apikey=s3cr3tvalue",
+			secret: "s3cr3tvalue",
+			keep:   []string{"endpoint=", "api.example.com", "apikey=" + marker},
+		},
+		{
+			name:   "password in the query string",
+			in:     "retry_url=https://h/cb?password=s3cr3tvalue failed",
+			secret: "s3cr3tvalue",
+			keep:   []string{"retry_url=", "password=" + marker},
+		},
+		{
+			name:   "auth token in a broker URL query string",
+			in:     "broker=amqps://h/?auth_token=s3cr3tvalue refused",
+			secret: "s3cr3tvalue",
+			keep:   []string{"broker=", "auth_token=" + marker},
+		},
+		{
+			name:   "libpq sslpassword connection parameter",
+			in:     "open postgres://svc@db/ledger?sslmode=verify-full&sslpassword=s3cr3tvalue",
+			secret: "s3cr3tvalue",
+			keep:   []string{"sslmode=verify-full", "sslpassword=" + marker},
+		},
+		{
+			name:   "access token as a second parameter",
+			in:     "GET https://api/v1?page=2&access_token=s3cr3tvalue rejected",
+			secret: "s3cr3tvalue",
+			keep:   []string{"page=2", "access_token=" + marker},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.NotContains(t, got, tt.secret)
+
+			for _, want := range tt.keep {
+				assert.Contains(t, got, want, "got %q", got)
+			}
+		})
+	}
+}
+
+func TestStringKeepsNonSensitiveQueryParameters(t *testing.T) {
+	t.Parallel()
+
+	// The query-parameter pass is keyed on the field name exactly like the
+	// others. A paging or filter parameter is what makes a failed request
+	// diagnosable and must survive.
+	in := "GET https://api/v1/accounts?page=2&limit=50&sort=rank rejected"
+
+	assert.Equal(t, in, sanitize.String(in))
+}
+
+// fuzzSecrets is one representative of every credential family the package
+// claims to redact. Each is whitespace-delimited in the generated input, which
+// is what makes the property TOTAL: every pattern here is anchored on a word
+// boundary, so a space on either side is the only context any of them needs.
+var fuzzSecrets = []string{
+	"postgres://svc:s3cr3t@db.internal:5432/ledger",
+	"AKIAIOSFODNN7EXAMPLE",
+	"AIzaSyD-1234567890abcdefghijklmnopqrstu",
+	"ghp_1234567890abcdefghijklmnopqrstuvwxyzAB",
+	"sk_live_1234567890abcdefghij",
+	"xoxb-12345678901-abcdefghijkl",
+	"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW",
+	"maria.silva+ops@lerian.studio",
+	"4111111111111111",
+	"4741 8529 6307 4182",
+}
+
+// FuzzString fuzzes the TEXT AROUND a credential rather than the credential
+// itself, which is the only shape in which "the secret must not survive" is a
+// property and not a guess: fuzzing the secret too would mostly generate strings
+// that are no longer credentials, and every pass would be a false alarm.
+//
+// What it hunts is a pass INTERACTION — surrounding text that steers an earlier
+// pass into carving up the input so a later pattern no longer recognises what is
+// left. That is exactly how the grouped-PAN and multi-URL defects behaved, and
+// neither was reachable from a hand-written fixture.
+func FuzzString(f *testing.F) {
+	seeds := []string{
+		"",
+		"dial tcp:",
+		`{"host":"db","password":`,
+		"Authorization: Bearer",
+		`"{\"Authorization\": \"Bearer`,
+		"endpoint=https://api/v1?apikey=",
+		"amqp://a:5672,",
+		"-----BEGIN RSA PRIVATE KEY-----",
+		"cpf=12345678909",
+		strings.Repeat("a", 300),
+	}
+
+	for _, seed := range seeds {
+		f.Add(seed, " refused")
+	}
+
+	f.Fuzz(func(t *testing.T, prefix, suffix string) {
+		// Bounded so the fuzzer spends its budget on shapes rather than on
+		// length; the cost of a pass is linear in the input.
+		if len(prefix) > 512 {
+			prefix = prefix[:512]
+		}
+
+		if len(suffix) > 512 {
+			suffix = suffix[:512]
+		}
+
+		for _, secret := range fuzzSecrets {
+			in := prefix + " " + secret + " " + suffix
+
+			got := sanitize.String(in)
+
+			require.NotContains(t, got, secret, "credential survived with prefix %q suffix %q", prefix, suffix)
+			require.Equal(t, got, sanitize.String(got), "re-running the sanitizer must not change an already-sanitized string")
+		}
+	})
+}
+
+func TestStringKeepsTheRestOfTheLineAroundAnAuthHeader(t *testing.T) {
+	t.Parallel()
+
+	// The Authorization value runs to the end of the line, which is right when
+	// the header sits in prose and wrong when it sits inside a structure: a map
+	// dump or a JSON object puts the fields an operator needs — request id, host
+	// — AFTER the header, and they were all being consumed with it.
+	tests := []struct {
+		name   string
+		in     string
+		secret string
+		keep   []string
+	}{
+		{
+			name:   "Go map dump keeps the sibling fields",
+			in:     "upstream map[Authorization:[Bearer tok123] X-Request-Id:[7f3a] Host:[api.internal]]",
+			secret: "tok123",
+			keep:   []string{"X-Request-Id:[7f3a]", "Host:[api.internal]"},
+		},
+		{
+			name:   "semicolon-separated header pairs",
+			in:     "Cookie: session=abc123; Path=/; HttpOnly",
+			secret: "abc123",
+			keep:   []string{"Path=/", "HttpOnly"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.NotContains(t, got, tt.secret)
+
+			for _, want := range tt.keep {
+				assert.Contains(t, got, want, "got %q", got)
+			}
+		})
+	}
+}
+
+func TestStringLeavesRedactedJSONParsable(t *testing.T) {
+	t.Parallel()
+
+	// Redaction that breaks the escaping produces a dangling quote, and the log
+	// pipeline that was going to parse this line drops it — turning a redacted
+	// record into no record at all.
+	tests := []struct {
+		name   string
+		in     string
+		secret string
+	}{
+		{
+			name:   "header inside a JSON object",
+			in:     `{"a":"1","Authorization":"Bearer tok123","b":"2"}`,
+			secret: "tok123",
+		},
+		{
+			name:   "JSON body nested in a JSON string value",
+			in:     `{"msg":"upstream rejected {\"Authorization\": \"Bearer tok123\"}","id":"7f3a"}`,
+			secret: "tok123",
+		},
+		{
+			name:   "credential field inside a JSON object",
+			in:     `{"host":"db","password":"hunter2","port":"5432"}`,
+			secret: "hunter2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.NotContains(t, got, tt.secret)
+			assert.True(t, json.Valid([]byte(got)), "redaction left unparsable JSON: %q", got)
 		})
 	}
 }

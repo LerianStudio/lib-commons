@@ -94,6 +94,10 @@ var sensitiveFieldExtras = []string{
 	"sasl_password",
 	"passwd",
 	"pwd",
+	// libpq/pgx connection parameter carrying the client key's passphrase. The
+	// taxonomy's "password" does not reach it: the match is by whole word, and
+	// "sslpassword" has no boundary in front of "password".
+	"sslpassword",
 
 	// Brazilian tax and identity documents.
 	"cpf",
@@ -121,7 +125,29 @@ var sensitiveFieldExtras = []string{
 
 // urlPattern matches scheme://rest-of-URL tokens so embedded userinfo
 // credentials can be stripped.
+//
+// The tail runs to the next whitespace, which means ONE match can span a whole
+// comma- or semicolon-separated list of URLs — a broker DSN is routinely written
+// that way. redactURLUserinfo therefore splits what it is given rather than
+// assuming one authority per match.
 var urlPattern = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+`)
+
+// queryParameterPattern finds one ?name=value or &name=value pair inside a query
+// string, so a credential carried as a URL parameter is redacted by field name.
+//
+// IT EXISTS BECAUSE THE key=value PASS CANNOT SEE THESE. That pattern's value
+// class admits '=', so "endpoint=https://api/v1?apikey=s3cr3t" is a SINGLE pair
+// keyed on "endpoint" — judged not sensitive, and the inner apikey= is never a
+// candidate at all. The same swallowing hides sslpassword= on a Postgres DSN and
+// auth_token= on a broker URL.
+//
+// The value stops at the next parameter, whitespace, quote, fragment, comma or
+// semicolon, so only the one credential goes and the rest of the query string
+// stays diagnosable. Comma and semicolon are in that set for the same reason
+// keyValuePattern has them: they separate the next URL in a broker list, and
+// swallowing one merged two entries — which also made the pass non-idempotent,
+// since a second run then ate the separator the first had left.
+var queryParameterPattern = regexp.MustCompile(`([?&])([A-Za-z0-9_.-]+)=([^&\s,;"'#]+)`)
 
 // keyValuePattern finds key=value fragments in config dumps and driver errors.
 // Sensitivity is decided by the field name, not by a package-local taxonomy.
@@ -178,10 +204,21 @@ var jsonKeyValuePattern = regexp.MustCompile(
 // Running to end of line rather than to the next space redacts a word or two of
 // surrounding prose when the header sits mid-sentence. That is the correct
 // direction of error for a credential.
+//
+// THE TERMINATOR SET IS WHAT KEEPS THE REST OF THE LINE READABLE. A header
+// rarely sits alone: it arrives inside a map dump or a JSON object, and running
+// to end of line there consumed every sibling field — the request id and host an
+// operator needs in order to find the call at all. ']' and '}' close the
+// structure and ';' separates the next pair, so each ends the value.
+//
+// '\' ends it too, and that one is about correctness rather than volume: a
+// backslash immediately before a quote is the quote's ESCAPE, so swallowing it
+// leaves a dangling quote and a string that is no longer valid JSON. It also made
+// the function non-idempotent, which is how it was found.
 var authHeaderPattern = regexp.MustCompile(
 	`(?i)\b((?:proxy-)?authorization|auth|cookie|(?:x-)?api-key)(\\?"?[[:space:]]*:[[:space:]]*\\?"?)` +
 		`((?:bearer|basic|digest|negotiate|ntlm|token|apikey|hmac|aws4-hmac-sha256)[[:space:]]+)?` +
-		`[^\r\n,"]+`)
+		`[^\r\n,"\]};\\]+`)
 
 // bareSecretPatterns match credential material appearing WITHOUT a surrounding
 // field name — SDKs and broker clients routinely echo the bare token. Each is
@@ -233,9 +270,12 @@ const (
 // cannot match a four-digit group anyway, but the order also says which reading
 // wins if that ever changes.
 var cardCandidatePatterns = []*regexp.Regexp{
-	// Grouped as printed: 4-4-4 (12 digits) through 4-4-4-4-4 (20, which the
-	// digit bound below then rejects).
-	regexp.MustCompile(`\b\d{4}(?:[ .-]\d{4}){2,4}\b`),
+	// Grouped as printed: 4-4-4, 4-4-4-4, and any longer run. THE REPEAT IS
+	// UNBOUNDED ON PURPOSE. Capping it truncates the run mid-way, and a card
+	// that straddles the cut is then invisible to the window scan that would
+	// otherwise find it — which is how a PAN behind two leading four-digit
+	// groups survived. Length is judged on the digits, below, not here.
+	regexp.MustCompile(`\b\d{4}(?:[ .-]\d{4}){2,}\b`),
 	// Amex (4-6-5) and Diners (4-6-4), which group unevenly.
 	regexp.MustCompile(`\b\d{4}[ .-]\d{6}[ .-]\d{4,5}\b`),
 	// One unbroken run.
@@ -245,6 +285,10 @@ var cardCandidatePatterns = []*regexp.Regexp{
 // cardSeparators strips the grouping characters before the checksum runs. Luhn is
 // defined over digits; the separators are presentation.
 var cardSeparators = strings.NewReplacer(" ", "", ".", "", "-", "")
+
+// digitGroupPattern locates the individual groups inside a candidate, so an
+// over-long run can be searched a whole group at a time.
+var digitGroupPattern = regexp.MustCompile(`\d+`)
 
 // azureSASSignaturePattern redacts the Azure SAS `sig=` parameter inside a query
 // string. The token is URL-encoded, so the value runs to the next delimiter.
@@ -275,13 +319,26 @@ func String(s string) string {
 	// rule to anchor on — and the entire base64 body survives into the log.
 	s = pemBlockPattern.ReplaceAllString(s, SecretRedactionMarker)
 
-	// 2. URL-shaped tokens: strip userinfo, keep scheme and host.
+	// 2. URL-shaped tokens: strip userinfo from EVERY URL in the match, keep
+	// scheme and host.
 	s = urlPattern.ReplaceAllStringFunc(s, redactURLUserinfo)
 
-	// 3. Azure SAS signature parameter inside a query string.
+	// 3. Sensitive query parameters, by field name. Before the key=value pass,
+	// which would otherwise swallow the whole URL as one non-sensitive pair.
+	s = queryParameterPattern.ReplaceAllStringFunc(s, func(match string) string {
+		parts := queryParameterPattern.FindStringSubmatch(match)
+		if len(parts) != 4 || !isSensitiveFieldName(parts[2]) {
+			return match
+		}
+
+		return parts[1] + parts[2] + "=" + SecretRedactionMarker
+	})
+
+	// 4. Azure SAS signature parameter inside a query string. After the pass
+	// above, which does not classify "sig" as a field name and leaves it here.
 	s = azureSASSignaturePattern.ReplaceAllString(s, "${1}"+SecretRedactionMarker)
 
-	// 4. Authorization header forms: keep the scheme, redact the credential.
+	// 5. Authorization header forms: keep the scheme, redact the credential.
 	s = authHeaderPattern.ReplaceAllStringFunc(s, func(match string) string {
 		parts := authHeaderPattern.FindStringSubmatch(match)
 		if len(parts) != 4 {
@@ -292,7 +349,7 @@ func String(s string) string {
 		return parts[1] + parts[2] + parts[3] + SecretRedactionMarker
 	})
 
-	// 5. Sensitive JSON "key":"value" pairs, by field name. The quote characters
+	// 6. Sensitive JSON "key":"value" pairs, by field name. The quote characters
 	// are put back exactly as they were found, escaped or bare.
 	s = jsonKeyValuePattern.ReplaceAllStringFunc(s, func(match string) string {
 		parts := jsonKeyValuePattern.FindStringSubmatch(match)
@@ -303,14 +360,14 @@ func String(s string) string {
 		return parts[1] + parts[2] + parts[3] + parts[4] + parts[5] + SecretRedactionMarker + parts[7]
 	})
 
-	// 6. Card numbers, BEFORE key=value. A grouped PAN behind a field name is the
+	// 7. Card numbers, BEFORE key=value. A grouped PAN behind a field name is the
 	// reason for the order: the key=value value class stops at the first space,
 	// so it would redact one four-digit group and leave the remaining twelve
 	// digits behind a marker claiming the line was scrubbed. Consuming the PAN
 	// whole here leaves key=value nothing but a marker to redact again.
 	s = redactCardNumbers(s)
 
-	// 7. Sensitive key=value pairs, by field name.
+	// 8. Sensitive key=value pairs, by field name.
 	s = keyValuePattern.ReplaceAllStringFunc(s, func(match string) string {
 		parts := keyValuePattern.FindStringSubmatch(match)
 		if len(parts) != 4 || !isSensitiveFieldName(parts[1]) {
@@ -320,7 +377,7 @@ func String(s string) string {
 		return parts[1] + parts[2] + SecretRedactionMarker
 	})
 
-	// 8. Bare credential values, with no surrounding field name. Last, so a
+	// 9. Bare credential values, with no surrounding field name. Last, so a
 	// vendor token is matched against the text as it was written rather than
 	// against a version some earlier pass has already carved into.
 	for _, pattern := range bareSecretPatterns {
@@ -339,18 +396,85 @@ func String(s string) string {
 // silently. Luhn is what a card number satisfies and an arbitrary identifier
 // satisfies only one time in ten.
 func redactCardNumbers(s string) string {
-	for _, pattern := range cardCandidatePatterns {
-		s = pattern.ReplaceAllStringFunc(s, func(candidate string) string {
-			digits := cardSeparators.Replace(candidate)
-			if len(digits) < minCardDigits || len(digits) > maxCardDigits || !passesLuhn(digits) {
-				return candidate
-			}
+	// REPEATED TO A FIXED POINT. The candidates run in sequence, and a span one
+	// pattern rejected — and therefore skipped past — can be re-partitioned by a
+	// later one, leaving behind a run that nobody looks at again. That is not
+	// hypothetical: an uneven grouping matched the Amex shape, and redacting it
+	// exposed three four-digit groups the uniform pattern had already walked
+	// over, so the card sitting in them survived until something ran the
+	// sanitizer a second time.
+	//
+	// Each round that changes anything replaces at least twelve characters with
+	// four, so the string strictly shrinks and this terminates. In practice it
+	// settles on the first or second round.
+	for {
+		next := s
+		for _, pattern := range cardCandidatePatterns {
+			next = pattern.ReplaceAllStringFunc(next, redactCardCandidate)
+		}
 
-			return SecretRedactionMarker
-		})
+		if next == s {
+			return s
+		}
+
+		s = next
+	}
+}
+
+// redactCardCandidate decides one candidate.
+func redactCardCandidate(candidate string) string {
+	digits := cardSeparators.Replace(candidate)
+
+	// TOO LONG TO BE ONE CARD, so the run necessarily holds something BESIDES a
+	// card and has to be searched rather than dismissed. Found by fuzzing: the
+	// grouped pattern is greedy, so "0000 4741 8529 6307 4182" matched as twenty
+	// digits, failed the bound, and was handed back whole — the PAN inside it
+	// never became a candidate of its own, and a four-digit code in front of a
+	// card number is an ordinary thing for an acquirer error to print.
+	if len(digits) > maxCardDigits {
+		return redactCardInsideRun(candidate)
 	}
 
-	return s
+	if len(digits) < minCardDigits || !passesLuhn(digits) {
+		return candidate
+	}
+
+	return SecretRedactionMarker
+}
+
+// redactCardInsideRun looks for a card-length window of whole groups inside a run
+// that is too long to be one card, and redacts the first it finds.
+//
+// IT IS DELIBERATELY NOT APPLIED to a run that is already card-length and merely
+// fails Luhn. That run is an ordinary identifier, and hunting sub-windows inside
+// one would redact roughly one identifier in ten — silently emptying the messages
+// this package exists to keep diagnosable, which is the worse failure of the two.
+func redactCardInsideRun(run string) string {
+	groups := digitGroupPattern.FindAllStringIndex(run, -1)
+
+	// WIDEST WINDOW FIRST, ACROSS THE WHOLE RUN, rather than longest-at-each-
+	// starting-point. Scanning per start position would let a shorter window
+	// that happens to satisfy Luhn win at an earlier offset and redact a span
+	// only partly overlapping the real card, leaving the rest of its digits in
+	// the clear. Preferring width means a sixteen-digit reading always beats a
+	// twelve-digit one, wherever each begins.
+	for width := len(groups); width >= 2; width-- {
+		for i := 0; i+width <= len(groups); i++ {
+			start, end := groups[i][0], groups[i+width-1][1]
+
+			digits := cardSeparators.Replace(run[start:end])
+			if len(digits) < minCardDigits || len(digits) > maxCardDigits || !passesLuhn(digits) {
+				continue
+			}
+
+			// Only the tail is rescanned here. The head is left to the next round
+			// of the fixed-point loop in redactCardNumbers, which sees it as a
+			// run of its own.
+			return run[:start] + SecretRedactionMarker + redactCardInsideRun(run[end:])
+		}
+	}
+
+	return run
 }
 
 // passesLuhn reports whether the digits satisfy the Luhn checksum every payment
@@ -442,8 +566,90 @@ func isSensitiveFieldName(fieldName string) bool {
 	return redaction.IsSensitiveField(fieldName, sensitiveFieldExtras...)
 }
 
-// redactURLUserinfo replaces the userinfo portion of one URL-shaped token,
-// preserving scheme and host so the destination stays diagnosable.
+// redactURLUserinfo replaces the userinfo portion of EVERY URL inside one
+// matched token.
+//
+// ONE MATCH IS NOT ONE URL. urlPattern's tail runs to the next whitespace, and a
+// broker DSN is routinely a comma- or semicolon-separated list —
+// commons/secretsmanager hands Kafka its brokers as exactly that string. Treating
+// the match as a single authority had two failure modes, and the second is the
+// bad one: with credentials on every entry, only the first was redacted; with the
+// FIRST entry carrying no userinfo, the lookup for an at-sign failed and the
+// whole run was returned untouched, no marker anywhere to tell an operator the
+// line had not been scrubbed. The redactor commons/outbox already ships anchors
+// per URL and is correct on both, so this was a regression against the thing it
+// replaces.
+func redactURLUserinfo(token string) string {
+	starts := schemeStarts(token)
+	if len(starts) <= 1 {
+		return redactOneURL(token)
+	}
+
+	var out strings.Builder
+
+	out.WriteString(token[:starts[0]])
+
+	for i, start := range starts {
+		end := len(token)
+		if i+1 < len(starts) {
+			end = starts[i+1]
+		}
+
+		out.WriteString(redactOneURL(token[start:end]))
+	}
+
+	return out.String()
+}
+
+// schemeStarts reports the offset at which each URL inside token begins.
+//
+// It anchors on "://" and rewinds over the scheme character class, then steps
+// FORWARD to the first letter. The forward step is what keeps a glued run from
+// mis-anchoring: rewinding out of "redis://h:6379-redis://u:p@h2" reaches back
+// through "6379-redis", and a scheme starts with a letter, so the second URL
+// begins at the "r" and not at the "6" that belongs to the first one's port.
+func schemeStarts(token string) []int {
+	var starts []int
+
+	for i := 0; i+3 <= len(token); i++ {
+		if token[i:i+3] != "://" {
+			continue
+		}
+
+		start := i
+		for start > 0 && isSchemeByte(token[start-1]) {
+			start--
+		}
+
+		for start < i && !isLetter(token[start]) {
+			start++
+		}
+
+		// No scheme letters in front of the separator: not a URL start.
+		if start == i {
+			continue
+		}
+
+		if len(starts) > 0 && start <= starts[len(starts)-1] {
+			continue
+		}
+
+		starts = append(starts, start)
+	}
+
+	return starts
+}
+
+func isSchemeByte(c byte) bool {
+	return isLetter(c) || (c >= '0' && c <= '9') || c == '+' || c == '.' || c == '-'
+}
+
+func isLetter(c byte) bool {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+// redactOneURL replaces the userinfo portion of one URL-shaped token, preserving
+// scheme and host so the destination stays diagnosable.
 //
 // Done at the string level rather than through url.URL.String, which
 // percent-escapes the marker.
@@ -455,7 +661,7 @@ func isSensitiveFieldName(fieldName string) bool {
 // and re-appending it produces the same string. A differential run over ~12k
 // generated scheme/userinfo/host/path/punctuation combinations found zero
 // inputs where the two differ.
-func redactURLUserinfo(token string) string {
+func redactOneURL(token string) string {
 	schemeSep := strings.Index(token, "://")
 	if schemeSep == -1 {
 		return token
