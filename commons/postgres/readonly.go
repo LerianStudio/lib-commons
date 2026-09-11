@@ -133,10 +133,22 @@ type TxBeginner interface {
 // client-side cancellation also reaches the server as a cancelled query and would
 // otherwise be reported as both.
 //
+// A CALLER CANCEL IS NEITHER of those. It reaches PostgreSQL as the same
+// SQLSTATE a statement timeout does, and it gets no sentinel: the cause comes
+// back as it stands, so errors.Is(err, context.Canceled) holds and a caller can
+// tell "the client walked away" from "this read is too slow".
+//
 // fn's error is always left in the chain, wrapped, so a caller can still classify
 // the driver error underneath with errors.As. Nothing here redacts it: use
 // commons/security/sanitize at the logging boundary, which preserves the chain
 // while redacting the message.
+//
+// FN MUST PROPAGATE ctx.Err(). A body that catches its own cancellation and
+// returns nil is reported as a SUCCESSFUL read, because a nil error is the only
+// thing this function has to go on — a partially-filled result then travels on as
+// if it were complete. There is deliberately no ctx.Err() guard before the nil
+// return: it would fail reads that legitimately finished just as the deadline
+// landed, and a false failure on a completed read costs more than this rule does.
 //
 // # What is not verified here
 //
@@ -209,6 +221,11 @@ func RunReadOnly(
 // should never occupy the write pool, and Primary() is the only *sql.DB the
 // client hands out — so the package-level helper, called with what the client
 // makes convenient, sends every dashboard query to the primary.
+//
+// The fallback to the primary is DEFENSIVE and unreachable through New: Config
+// refuses an empty ReplicaDSN, so a client built by the constructor always has a
+// replica. It is reachable only from an in-package struct literal, and it stays
+// because a read served from the primary is better than one that panics.
 //
 // It connects lazily on first use, exactly like Resolver.
 func (c *Client) RunReadOnly(
