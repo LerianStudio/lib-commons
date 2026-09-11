@@ -6,6 +6,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"regexp"
 	"testing"
 	"time"
@@ -560,4 +561,40 @@ func TestClientRunReadOnlyOnANilClient(t *testing.T) {
 	var client *Client
 
 	require.ErrorIs(t, client.RunReadOnly(t.Context(), ReadOnlyOptions{StatementTimeout: time.Second}, noopFn), ErrNilClient)
+}
+
+func TestRunReadOnlyReportsACallerCancelAsACancel(t *testing.T) {
+	t.Parallel()
+
+	// A caller cancel and a server-side statement timeout arrive as the SAME
+	// SQLSTATE — PostgreSQL answers 57014 for both — and they are opposite
+	// operational facts. A statement timeout says the plan is too slow and wants
+	// an index; a cancel says the caller walked away, and the read was fine.
+	// Labelling the cancel a statement timeout points on-call at a query that
+	// never had a problem, and it also buries context.Canceled, which is what
+	// a caller checks before deciding whether to retry.
+	canceledByServer := &pgconn.PgError{Code: "57014", Message: "canceling statement due to user request"}
+
+	db, mock := newMockDB(t)
+
+	mock.MatchExpectationsInOrder(false)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	err := RunReadOnly(ctx, db, ReadOnlyOptions{StatementTimeout: time.Second},
+		func(ctx context.Context, _ *sql.Tx) error {
+			cancel()
+
+			return fmt.Errorf("scan ledger rows: %w: %w", context.Canceled, canceledByServer)
+		})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled, "a cancel must stay a cancel for the caller to see")
+	assert.NotErrorIs(t, err, ErrReadOnlyStatementTimeout, "a caller cancel is not a slow plan")
+	assert.NotErrorIs(t, err, ErrReadOnlyTxDeadline, "a caller cancel is not a deadline either")
+	assert.ErrorIs(t, err, canceledByServer, "the driver error must stay in the chain")
 }

@@ -286,13 +286,25 @@ func applyStatementTimeout(ctx context.Context, tx *sql.Tx, timeout time.Duratio
 // classifyReadOnly tags cause with the sentinel that says WHERE the read ran out
 // of time, leaving cause itself in the chain.
 //
-// The deadline is checked before the SQLSTATE because it subsumes it: when the
-// transaction's context expires, database/sql cancels the running query and
-// PostgreSQL answers 57014 for that too. Testing the SQLSTATE first would report
-// a statement timeout for every deadline.
+// THE CONTEXT IS ASKED FIRST, AND ABOUT BOTH OF ITS ANSWERS. PostgreSQL answers
+// SQLSTATE 57014 to three different events: a statement that exceeded the cap,
+// a transaction whose deadline fired, and a caller who cancelled. Only the first
+// is a statement timeout. Reading the SQLSTATE before the context reported a
+// deadline as a statement timeout; reading only the deadline reported a CANCEL as
+// one — which points on-call at a query plan that never had a problem, and buries
+// context.Canceled under a sentinel, so a caller cannot tell "the client walked
+// away" from "this read is too slow" and retries something it should drop.
+//
+// A cancel is neither timeout, so it gets no sentinel: the cause is returned as
+// it stands, and errors.Is(err, context.Canceled) still holds for the caller that
+// has to decide whether to retry.
 func classifyReadOnly(ctx context.Context, cause error) error {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("%w: %w", ErrReadOnlyTxDeadline, cause)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
+			return fmt.Errorf("%w: %w", ErrReadOnlyTxDeadline, cause)
+		}
+
+		return cause
 	}
 
 	if matchesSQLState(cause, queryCanceled) {
