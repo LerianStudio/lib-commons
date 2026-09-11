@@ -72,9 +72,11 @@ import (
 // truncated.
 const KeySize = sha256.Size
 
-// Version is the current cursor layout. It lives INSIDE the signed body, so a
-// caller cannot present a forged version to select a different parse.
-const Version = 1
+// version is the current cursor layout. It lives INSIDE the signed body, so a
+// caller cannot present a forged version to select a different parse. It is
+// unexported because it is this package's own wire detail: a caller has nothing
+// to do with it, and exporting it invites a service to branch on it.
+const version = 1
 
 // MaxPayloadLen bounds the caller's ordering tuple at mint time. An ordering
 // tuple is a handful of columns and never grows with the result set, so two
@@ -119,15 +121,22 @@ const (
 var (
 	// ErrInvalidKey — the configured HMAC key is not exactly KeySize raw bytes.
 	// A CONSTRUCTION failure, not a request failure.
-	ErrInvalidKey = errors.New("lib-commons/signedcursor: HMAC key must be exactly 32 bytes")
+	ErrInvalidKey = errors.New("HMAC key must be exactly 32 bytes")
+
+	// ErrEmptyIdentity — the Binding's identity reduced to nothing: no terms, or
+	// only empty ones. A SERVER fault, and the reason it sits outside
+	// ErrInvalidCursor: the request never resolved who it was reading as, so the
+	// caller has no token to fix. Every holder who lost their identity would
+	// fingerprint identically and could resume each other's page.
+	ErrEmptyIdentity = errors.New("cursor identity has no non-empty term")
 
 	// ErrPayloadTooLarge — the ordering tuple handed to Encode exceeds
 	// MaxPayloadLen. A PROGRAMMING failure: the token would be unmintable-then-
 	// unreadable, so it is refused at the mint rather than at the next page.
-	ErrPayloadTooLarge = errors.New("lib-commons/signedcursor: payload exceeds the maximum cursor payload size")
+	ErrPayloadTooLarge = errors.New("payload exceeds the maximum cursor payload size")
 
 	// ErrInvalidCursor is the parent of every cursor rejection.
-	ErrInvalidCursor = errors.New("lib-commons/signedcursor: invalid cursor")
+	ErrInvalidCursor = errors.New("invalid cursor")
 
 	// ErrMalformed — the token is not unpadded base64url, is longer than
 	// MaxTokenLen, or is too short to carry a signature at all.
@@ -163,10 +172,16 @@ var (
 // are two different contexts here. Render timestamps in UTC at a fixed precision,
 // and normalize case and ordering, before binding them.
 //
-// An EMPTY list is legitimate and means "bound to nothing on this axis" — every
-// holder with the same other axis can present the token. It fingerprints
-// differently from every non-empty list, so it is a distinct binding rather than a
-// wildcard.
+// IDENTITY IS MANDATORY: a list with no term, or only empty terms, is refused
+// with ErrEmptyIdentity on BOTH Encode and Decode. It is not a wildcard and not
+// an anonymous read — it is an identity the request failed to resolve, and
+// signing it would give every caller who lost theirs the same fingerprint, so
+// each could resume the others' page. One non-empty term is enough; an empty term
+// beside a real one is fine and still binds distinctly.
+//
+// CONTEXT MAY BE EMPTY. A read with no window is legitimate, and an empty context
+// fingerprints differently from every non-empty one, so it is a distinct binding
+// rather than a wildcard.
 type Binding struct {
 	// Identity is the ordered list of terms identifying who the page was read as.
 	Identity []string
@@ -223,18 +238,22 @@ func (c *Codec) Encode(payload []byte, binding Binding) (string, error) {
 		return "", err
 	}
 
+	if !hasIdentity(binding.Identity) {
+		return "", ErrEmptyIdentity
+	}
+
 	if len(payload) > MaxPayloadLen {
 		return "", fmt.Errorf("%w (got %d bytes, limit %d)", ErrPayloadTooLarge, len(payload), MaxPayloadLen)
 	}
 
 	body, err := json.Marshal(envelope{
-		Version:  Version,
+		Version:  version,
 		Payload:  payload,
 		Identity: c.fingerprint(identityDomain, binding.Identity),
 		Context:  c.fingerprint(contextDomain, binding.Context),
 	})
 	if err != nil {
-		return "", fmt.Errorf("lib-commons/signedcursor: encode cursor: %w", err)
+		return "", fmt.Errorf("encode cursor: %w", err)
 	}
 
 	return base64.RawURLEncoding.EncodeToString(append(body, c.mac(bodyDomain, body)...)), nil
@@ -255,6 +274,10 @@ func (c *Codec) Encode(payload []byte, binding Binding) (string, error) {
 func (c *Codec) Decode(token string, binding Binding) ([]byte, error) {
 	if err := c.usable(); err != nil {
 		return nil, err
+	}
+
+	if !hasIdentity(binding.Identity) {
+		return nil, ErrEmptyIdentity
 	}
 
 	if len(token) > MaxTokenLen {
@@ -280,8 +303,8 @@ func (c *Codec) Decode(token string, binding Binding) ([]byte, error) {
 		return nil, ErrMalformed
 	}
 
-	if env.Version != Version {
-		return nil, fmt.Errorf("%w (got %d, want %d)", ErrVersion, env.Version, Version)
+	if env.Version != version {
+		return nil, fmt.Errorf("%w (got %d, want %d)", ErrVersion, env.Version, version)
 	}
 
 	// Constant-time: each fingerprint is a truncated MAC under the signing key, so
@@ -306,6 +329,20 @@ func (c *Codec) usable() error {
 	}
 
 	return nil
+}
+
+// hasIdentity reports whether the terms say WHO, rather than merely being a list.
+// A nil list, an empty list and a list of empty strings are the same fact — the
+// identity was never resolved — and each would otherwise mint a perfectly valid
+// token that every other caller in the same state could also present.
+func hasIdentity(terms []string) bool {
+	for _, term := range terms {
+		if term != "" {
+			return true
+		}
+	}
+
+	return false
 }
 
 // fingerprint is the one-way binding between a cursor and one axis of the state

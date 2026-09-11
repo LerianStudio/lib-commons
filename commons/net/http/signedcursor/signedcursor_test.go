@@ -109,16 +109,15 @@ func TestRoundTrip(t *testing.T) {
 		{name: "nil payload", payload: nil, binding: tenantBinding()},
 		{name: "binary payload", payload: []byte{0x00, 0xFF, 0x7B, 0x0A}, binding: tenantBinding()},
 		{
-			name:    "no identity terms",
-			payload: []byte("p"),
-			binding: signedcursor.Binding{Context: []string{"w1"}},
-		},
-		{
 			name:    "no context terms",
 			payload: []byte("p"),
 			binding: signedcursor.Binding{Identity: []string{"tenant-a"}},
 		},
-		{name: "no binding at all", payload: []byte("p"), binding: signedcursor.Binding{}},
+		{
+			name:    "an empty term beside a real one is still an identity",
+			payload: []byte("p"),
+			binding: signedcursor.Binding{Identity: []string{"tenant-a", ""}},
+		},
 		{
 			name:    "terms containing the separator characters",
 			payload: []byte("p"),
@@ -442,11 +441,17 @@ func TestFingerprintSeparatesTermsUnambiguously(t *testing.T) {
 	_, err = codec.Decode(token, signedcursor.Binding{Identity: []string{"a", "bc"}})
 	require.ErrorIs(t, err, signedcursor.ErrIdentityMismatch)
 
-	// Same trap on the context axis.
-	token, err = codec.Encode([]byte("p"), signedcursor.Binding{Context: []string{"ab", "c"}})
+	// Same trap on the context axis, under one fixed identity.
+	token, err = codec.Encode([]byte("p"), signedcursor.Binding{
+		Identity: []string{"tenant-a"},
+		Context:  []string{"ab", "c"},
+	})
 	require.NoError(t, err)
 
-	_, err = codec.Decode(token, signedcursor.Binding{Context: []string{"a", "bc"}})
+	_, err = codec.Decode(token, signedcursor.Binding{
+		Identity: []string{"tenant-a"},
+		Context:  []string{"a", "bc"},
+	})
 	require.ErrorIs(t, err, signedcursor.ErrContextMismatch)
 
 	// And an empty trailing term is a different binding from no term at all.
@@ -515,4 +520,110 @@ func TestDecodeAuthenticBodyThatIsNotAnEnvelope(t *testing.T) {
 
 	_, err := codec.Decode(token, tenantBinding())
 	require.ErrorIs(t, err, signedcursor.ErrMalformed)
+}
+
+func TestEncodeAndDecodeRefuseAnEmptyIdentity(t *testing.T) {
+	t.Parallel()
+
+	codec := newTestCodec(t, 31)
+
+	// A token is the server's statement about WHO read the page. An identity
+	// that reduces to nothing is not "a page anyone may read" — it is a LOST
+	// identity, and every caller who lost theirs would fingerprint the same, so
+	// each could resume the others' page. Both paths refuse it.
+	empty := [][]string{nil, {}, {""}, {"", ""}}
+
+	valid, err := codec.Encode([]byte("p"), tenantBinding())
+	require.NoError(t, err)
+
+	for _, identity := range empty {
+		binding := signedcursor.Binding{Identity: identity, Context: []string{"window"}}
+
+		_, err := codec.Encode([]byte("p"), binding)
+		require.ErrorIs(t, err, signedcursor.ErrEmptyIdentity, "Encode must refuse %#v", identity)
+
+		_, err = codec.Decode(valid, binding)
+		require.ErrorIs(t, err, signedcursor.ErrEmptyIdentity, "Decode must refuse %#v", identity)
+	}
+}
+
+func TestOneNonEmptyTermIsEnoughOfAnIdentity(t *testing.T) {
+	t.Parallel()
+
+	codec := newTestCodec(t, 37)
+
+	// The rule is "at least one non-empty term", not "no empty terms": a padded
+	// tuple whose optional scope is blank is still a real identity.
+	binding := signedcursor.Binding{Identity: []string{"", "tenant-a"}}
+
+	token, err := codec.Encode([]byte("p"), binding)
+	require.NoError(t, err)
+
+	payload, err := codec.Decode(token, binding)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("p"), payload)
+}
+
+func TestEmptyContextStaysLegitimate(t *testing.T) {
+	t.Parallel()
+
+	codec := newTestCodec(t, 41)
+
+	// A read with no window is a real read. Only identity is mandatory.
+	binding := signedcursor.Binding{Identity: []string{"tenant-a"}}
+
+	token, err := codec.Encode([]byte("p"), binding)
+	require.NoError(t, err)
+
+	payload, err := codec.Decode(token, binding)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("p"), payload)
+}
+
+func TestEmptyIdentityIsAServerFaultNotACallerFault(t *testing.T) {
+	t.Parallel()
+
+	// A lost identity is the SERVER's bug: the request never resolved a tenant.
+	// Mapped to 422 through ErrInvalidCursor it would tell the caller to fix a
+	// token that is not the problem; it belongs on the 500 side.
+	assert.False(t, errors.Is(signedcursor.ErrEmptyIdentity, signedcursor.ErrInvalidCursor))
+}
+
+func TestDomainLabelsArePrefixFree(t *testing.T) {
+	t.Parallel()
+
+	// Each MAC input is a domain label followed by length-prefixed parts. The
+	// LABEL itself carries no length prefix, so the three constructions are only
+	// disjoint while no label is a prefix of another — otherwise the longer
+	// label's bytes could be read as the shorter label plus the start of its
+	// first part. Asserting the property is cheaper than length-prefixing the
+	// label, and this test is what keeps a fourth label honest.
+	labels := signedcursor.DomainLabels
+
+	require.Len(t, labels, 3)
+
+	for i, a := range labels {
+		for j, b := range labels {
+			if i == j {
+				continue
+			}
+
+			assert.False(t, strings.HasPrefix(a, b), "%q must not be a prefix of %q", a, b)
+		}
+	}
+}
+
+func TestSentinelMessagesAreBare(t *testing.T) {
+	t.Parallel()
+
+	// Sentinels across lib-commons carry no package prefix; the call site adds
+	// the context it has. A prefixed message reads twice in a wrapped chain.
+	for _, err := range []error{
+		signedcursor.ErrInvalidKey,
+		signedcursor.ErrPayloadTooLarge,
+		signedcursor.ErrInvalidCursor,
+		signedcursor.ErrEmptyIdentity,
+	} {
+		assert.NotContains(t, err.Error(), "lib-commons/")
+	}
 }

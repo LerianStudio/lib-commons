@@ -7,6 +7,15 @@ import (
 	"encoding/json"
 )
 
+// Version re-exports the unexported layout version so a test can mint a token
+// one version off the current one. It is not part of the public API.
+const Version = version
+
+// DomainLabels re-exports the three constant MAC domain labels so a test can
+// assert they are prefix-free, which is what keeps the three constructions
+// disjoint. It is not part of the public API.
+var DomainLabels = []string{bodyDomain, identityDomain, contextDomain}
+
 // EncodeAtVersion mints an AUTHENTIC token carrying an arbitrary layout version.
 // It exists only so the version check can be tested with a token that passes the
 // signature check first — forging one from outside the package is impossible by
