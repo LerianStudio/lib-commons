@@ -14,6 +14,9 @@ const (
 	foreignKeyViolation = "23503"
 	checkViolation      = "23514"
 	undefinedTable      = "42P01"
+	// queryCanceled is what PostgreSQL answers when it cancels a running
+	// statement — under statement_timeout, or on a client cancel request.
+	queryCanceled = "57014"
 )
 
 // SQLState returns the PostgreSQL SQLSTATE code carried by err, unwrapping
