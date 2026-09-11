@@ -228,6 +228,23 @@ func TestStringRedactsByFieldName(t *testing.T) {
 		{name: "addendum only: sessiontoken", in: "sessiontoken=abc123", want: "sessiontoken=" + marker},
 		{name: "addendum only: accesskey", in: "accesskey=abc123", want: "accesskey=" + marker},
 		{name: "addendum only: secretaccesskey", in: "secretaccesskey=abc123", want: "secretaccesskey=" + marker},
+		// The API-key header names are classified by the SHARED taxonomy, which
+		// splits on non-alphanumerics and treats "key" as a whole token — so the
+		// addendum deliberately does NOT repeat them. These rows are what makes
+		// that omission safe: if the upstream list ever stops covering them, this
+		// fails here rather than silently in a log line.
+		{name: "taxonomy covers x-api-key", in: "x-api-key=abc123", want: "x-api-key=" + marker},
+		{name: "taxonomy covers api-key", in: "api-key=abc123", want: "api-key=" + marker},
+		{name: "taxonomy covers apikey", in: "apikey=abc123", want: "apikey=" + marker},
+
+		// THE ADDENDUM'S SHORT ENTRIES CUT BOTH WAYS. "rg", "conta" and
+		// "document" are two to eight characters and match by whole word, so
+		// these rows pin that they do not swallow the ordinary field names that
+		// merely contain those letters — which is how a denylist starts emptying
+		// the messages it was added to protect.
+		{name: "conta does not match contact", in: "contact=maria", want: "contact=maria"},
+		{name: "rg does not match org_id", in: "org_id=abc123", want: "org_id=abc123"},
+		{name: "document does not match documents_count", in: "documents_count=12", want: "documents_count=12"},
 		{name: "non-sensitive field is left alone", in: "timeout=30s", want: "timeout=30s"},
 		{name: "non-sensitive field with a number", in: "max_retries=5", want: "max_retries=5"},
 		{
