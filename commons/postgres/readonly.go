@@ -142,6 +142,19 @@ type TxBeginner interface {
 //
 // fn receives the transaction and can run anything on it. A write inside a READ
 // ONLY transaction is refused by PostgreSQL, not by this function.
+//
+// # Adopting from a local implementation
+//
+// The error returned here carries the DRIVER's own text, which for a connection
+// failure includes the DSN. This package does not redact it, deliberately:
+// coupling postgres to the redaction rules would make every service that opens a
+// pool depend on them. Wrap at the LOGGING boundary instead, with
+// commons/security/sanitize.Error, which redacts the message while errors.Is and
+// errors.As keep classifying the driver error underneath.
+//
+// A service moving off its own helper should also expect StatementTimeout to be
+// mandatory now: a call that previously passed a zero value and ran uncapped
+// returns ErrReadOnlyStatementTimeoutRequired instead of opening a transaction.
 func RunReadOnly(
 	ctx context.Context,
 	db TxBeginner,
@@ -217,6 +230,7 @@ func (c *Client) RunReadOnly(
 	if db == nil {
 		db = c.primary
 	}
+
 	c.mu.RUnlock()
 
 	return RunReadOnly(ctx, db, opts, fn)

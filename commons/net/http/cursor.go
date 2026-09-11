@@ -21,6 +21,16 @@ const (
 var ErrInvalidCursorDirection = errors.New("invalid cursor direction")
 
 // Cursor is the cursor contract for keyset navigation.
+//
+// It is UNSIGNED: the encoded body is plain base64 JSON that the holder can read
+// and rewrite, so the id and direction it carries are effectively a query
+// predicate the CALLER supplies. That is fine for a single-column page over a
+// list the caller is already entitled to read in full.
+//
+// When an edited cursor would let a caller steer the ordering, skip rows, or
+// resume a page under an identity or a window that is not the one it was issued
+// for, use the signed sibling: commons/net/http/signedcursor mints an
+// HMAC-signed, identity-bound token over a caller-defined ordering tuple.
 type Cursor struct {
 	ID        string `json:"id"`
 	Direction string `json:"direction"`

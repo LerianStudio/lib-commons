@@ -46,6 +46,25 @@
 // package is the signed sibling, for a multi-term ordering tuple over a
 // tenant-scoped aggregate. Nothing here changes those.
 //
+// # Adopting from a local implementation
+//
+// A service replacing its own codec with this one should expect three visible
+// differences, none of them accidental.
+//
+// The checks run IDENTITY BEFORE CONTEXT, so a token replayed across tenants is
+// named as a cross-tenant replay whatever window it also carries. That is the
+// more useful first answer, and it means a service whose tests assert a specific
+// 422 error code for a mixed-up cursor will see the identity code where it used
+// to see the context one.
+//
+// The error VOCABULARY is closed and wraps one parent, so a handler maps the
+// family once rather than matching on message text.
+//
+// An identity that reduces to nothing is refused rather than signed, on both
+// Encode and Decode, and ErrEmptyIdentity is deliberately OUTSIDE that parent: it
+// is a 500, not a 422. A service that previously minted cursors with an empty
+// identity in some code path will find that path failing loudly.
+//
 // It is a SIBLING package rather than more files in commons/net/http because that
 // package is Fiber-oriented (its handlers, middleware and error rendering import
 // github.com/gofiber/fiber/v3), while this codec is pure crypto with no transport
@@ -293,6 +312,10 @@ func (c *Codec) Decode(token string, binding Binding) ([]byte, error) {
 		return nil, ErrMalformed
 	}
 
+	// hmac.Equal rather than bytes.Equal or ==, and NO TEST CAN TELL THEM APART:
+	// all three agree on every input, and the difference is only in how long the
+	// comparison takes when it fails. Timing is the property, so review is the
+	// only gate on this line.
 	body, tag := raw[:len(raw)-sha256.Size], raw[len(raw)-sha256.Size:]
 	if !hmac.Equal(tag, c.mac(bodyDomain, body)) {
 		return nil, ErrSignature

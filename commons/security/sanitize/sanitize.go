@@ -181,8 +181,11 @@ func String(s string) string {
 		return ""
 	}
 
-	// 1. PEM blocks first: an armored body contains '=' padding and would
-	// otherwise be partly mangled by the key=value pass.
+	// 1. PEM BLOCKS FIRST, AND THE ORDER IS LOAD-BEARING. An armored block is
+	// often the VALUE of a sensitive key ("private_key=-----BEGIN ..."), which is
+	// how a config-loading error echoes one. Let the key=value pass run first and
+	// it consumes "-----BEGIN" as that key's value, leaving no marker for this
+	// rule to anchor on — and the entire base64 body survives into the log.
 	s = pemBlockPattern.ReplaceAllString(s, SecretRedactionMarker)
 
 	// 2. URL-shaped tokens: strip userinfo, keep scheme and host.
