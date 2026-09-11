@@ -67,10 +67,11 @@ func ExampleRunReadOnly_timeouts() {
 
 	mock.MatchExpectationsInOrder(false)
 	mock.ExpectBegin()
+	mock.ExpectExec("SET LOCAL statement_timeout").WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback()
 
 	err = postgres.RunReadOnly(context.Background(), db,
-		postgres.ReadOnlyOptions{TransactionTimeout: 20 * time.Millisecond},
+		postgres.ReadOnlyOptions{StatementTimeout: time.Second, TransactionTimeout: 20 * time.Millisecond},
 		func(ctx context.Context, _ *sql.Tx) error {
 			<-ctx.Done()
 

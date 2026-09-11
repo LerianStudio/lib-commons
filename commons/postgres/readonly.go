@@ -21,6 +21,16 @@ var (
 	// ErrNilReadOnlyFunc — RunReadOnly was called with no body to run.
 	ErrNilReadOnlyFunc = errors.New("read-only transaction function is nil")
 
+	// ErrReadOnlyStatementTimeoutRequired — ReadOnlyOptions carried no positive
+	// StatementTimeout. A zero cap is not an opt-out, it is the uncapped read
+	// this helper exists to prevent, so it is refused before the transaction
+	// opens rather than honoured silently.
+	//
+	// It is neither of the two timeout sentinels below: those say a read RAN OUT
+	// of time, which is an operational fact; this says the caller never set a
+	// bound, which is a programming fault.
+	ErrReadOnlyStatementTimeoutRequired = errors.New("read-only statement timeout is required")
+
 	// ErrReadOnlyTxDeadline — the transaction's context deadline fired, whether
 	// it came from ReadOnlyOptions.TransactionTimeout or from the caller's own
 	// context. It bounds the whole transaction: every statement, plus BEGIN and
@@ -35,12 +45,18 @@ var (
 	ErrReadOnlyStatementTimeout = errors.New("read-only statement timeout")
 )
 
-// ReadOnlyOptions bounds one read-only transaction in time. Both fields are
-// optional; a zero value opens the snapshot with no bound of its own, which is
-// appropriate only when the caller's context already carries one.
+// ReadOnlyOptions bounds one read-only transaction in time.
+//
+// StatementTimeout is MANDATORY and must be positive. TransactionTimeout is
+// optional and zero means "inherit whatever deadline the caller's context
+// already carries", which is the common case for a read already bounded by its
+// request.
 type ReadOnlyOptions struct {
 	// StatementTimeout caps EACH statement, server-side, for the life of this
-	// transaction only.
+	// transaction only. It is REQUIRED: zero or negative is refused with
+	// ErrReadOnlyStatementTimeoutRequired before the transaction opens, because
+	// zero is how PostgreSQL spells "no timeout" and a silently uncapped snapshot
+	// read is exactly the runaway this helper exists to stop.
 	//
 	// WHY SERVER-SIDE AND NOT ONLY A CONTEXT: a context deadline cancels from the
 	// client — the driver must notice, open a second connection and send a cancel
@@ -60,8 +76,25 @@ type ReadOnlyOptions struct {
 	// connection and a snapshot for minutes.
 	//
 	// When the caller's context already has an earlier deadline, that one wins;
-	// this never extends a deadline.
+	// this never extends a deadline. ZERO IS AN OPT-OUT HERE, unlike
+	// StatementTimeout: it means the transaction inherits the caller's deadline
+	// and adds none of its own, which is what a read already bounded by its
+	// request wants. The per-statement cap still applies either way, so zero here
+	// never leaves the read unbounded.
 	TransactionTimeout time.Duration
+}
+
+// TxBeginner is the slice of database/sql that RunReadOnly actually needs: the
+// ability to open a transaction. *sql.DB and *sql.Conn both satisfy it.
+//
+// It is an interface rather than *sql.DB because this package hands callers a
+// dbresolver.DB and a Client, and a signature demanding *sql.DB left every
+// adopter reaching for Primary() — routing snapshot reads, the one workload that
+// should never touch the write pool, onto the primary. Client.RunReadOnly is the
+// direct answer; this widening is what lets a caller pass any pool it already
+// holds.
+type TxBeginner interface {
+	BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, error)
 }
 
 // RunReadOnly runs fn inside a REPEATABLE READ, READ ONLY transaction bounded in
@@ -111,16 +144,20 @@ type ReadOnlyOptions struct {
 // ONLY transaction is refused by PostgreSQL, not by this function.
 func RunReadOnly(
 	ctx context.Context,
-	db *sql.DB,
+	db TxBeginner,
 	opts ReadOnlyOptions,
 	fn func(ctx context.Context, tx *sql.Tx) error,
 ) (err error) {
-	if db == nil {
+	if isNilBeginner(db) {
 		return ErrNilClient
 	}
 
 	if fn == nil {
 		return ErrNilReadOnlyFunc
+	}
+
+	if opts.StatementTimeout <= 0 {
+		return ErrReadOnlyStatementTimeoutRequired
 	}
 
 	if opts.TransactionTimeout > 0 {
@@ -151,6 +188,56 @@ func RunReadOnly(
 	return nil
 }
 
+// RunReadOnly runs fn against this client's READ pool under the same bounded
+// snapshot contract as the package-level RunReadOnly, preferring the configured
+// replica and falling back to the primary when none is configured.
+//
+// This is the method to reach for. A snapshot read is the one workload that
+// should never occupy the write pool, and Primary() is the only *sql.DB the
+// client hands out — so the package-level helper, called with what the client
+// makes convenient, sends every dashboard query to the primary.
+//
+// It connects lazily on first use, exactly like Resolver.
+func (c *Client) RunReadOnly(
+	ctx context.Context,
+	opts ReadOnlyOptions,
+	fn func(ctx context.Context, tx *sql.Tx) error,
+) error {
+	if c == nil {
+		return nilClientAssert("run read-only")
+	}
+
+	if _, err := c.Resolver(ctx); err != nil {
+		return err
+	}
+
+	c.mu.RLock()
+	db := c.replica
+
+	if db == nil {
+		db = c.primary
+	}
+	c.mu.RUnlock()
+
+	return RunReadOnly(ctx, db, opts, fn)
+}
+
+// isNilBeginner reports whether db carries nothing to begin a transaction on. A
+// nil *sql.DB inside an interface is a NON-nil interface, so the plain nil check
+// misses it and BeginTx panics instead of returning the guard's error.
+func isNilBeginner(db TxBeginner) bool {
+	switch typed := db.(type) {
+	case nil:
+		return true
+	case *sql.DB:
+		return typed == nil
+	case *sql.Conn:
+		return typed == nil
+	default:
+		return false
+	}
+}
+
 // readOnlyTxOptions is the isolation posture every RunReadOnly transaction opens
 // under. It is a function of its own so the posture is decided in exactly one
 // place: sqlmock discards driver.TxOptions, so no behaviour test can observe what
@@ -166,11 +253,9 @@ func readOnlyTxOptions() *sql.TxOptions {
 // leak onto the next user of a pooled connection. It is also a utility command
 // and takes no snapshot, so under REPEATABLE READ the first statement fn runs is
 // still what fixes the snapshot.
+// The timeout is already known positive: RunReadOnly refuses a non-positive one
+// before the transaction opens.
 func applyStatementTimeout(ctx context.Context, tx *sql.Tx, timeout time.Duration) error {
-	if timeout <= 0 {
-		return nil
-	}
-
 	milliseconds := max(timeout.Milliseconds(), 1)
 
 	// The interpolated value is an int64 derived from a time.Duration, so no

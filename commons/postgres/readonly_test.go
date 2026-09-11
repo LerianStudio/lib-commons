@@ -78,18 +78,14 @@ func TestRunReadOnlySendsStatementTimeout(t *testing.T) {
 		name      string
 		timeout   time.Duration
 		wantQuery string
-		wantSent  bool
 	}{
-		{name: "seconds", timeout: 10 * time.Second, wantQuery: "SET LOCAL statement_timeout = 10000", wantSent: true},
-		{name: "milliseconds", timeout: 250 * time.Millisecond, wantQuery: "SET LOCAL statement_timeout = 250", wantSent: true},
+		{name: "seconds", timeout: 10 * time.Second, wantQuery: "SET LOCAL statement_timeout = 10000"},
+		{name: "milliseconds", timeout: 250 * time.Millisecond, wantQuery: "SET LOCAL statement_timeout = 250"},
 		{
 			name:      "sub-millisecond rounds up, never to the disabling zero",
 			timeout:   100 * time.Microsecond,
 			wantQuery: "SET LOCAL statement_timeout = 1",
-			wantSent:  true,
 		},
-		{name: "zero sends nothing", timeout: 0, wantSent: false},
-		{name: "negative sends nothing", timeout: -time.Second, wantSent: false},
 	}
 
 	for _, tt := range tests {
@@ -99,11 +95,7 @@ func TestRunReadOnlySendsStatementTimeout(t *testing.T) {
 			db, mock := newMockDB(t)
 
 			mock.ExpectBegin()
-
-			if tt.wantSent {
-				mock.ExpectExec(regexp.QuoteMeta(tt.wantQuery)).WillReturnResult(sqlmock.NewResult(0, 0))
-			}
-
+			mock.ExpectExec(regexp.QuoteMeta(tt.wantQuery)).WillReturnResult(sqlmock.NewResult(0, 0))
 			mock.ExpectRollback()
 
 			err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: tt.timeout}, noopFn)
@@ -173,9 +165,10 @@ func TestRunReadOnlyRollsBackOnSuccess(t *testing.T) {
 	// pins the oldest visible row version for as long as the connection sits in
 	// the pool.
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback()
 
-	require.NoError(t, RunReadOnly(t.Context(), db, ReadOnlyOptions{}, noopFn))
+	require.NoError(t, RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: time.Second}, noopFn))
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
@@ -185,11 +178,12 @@ func TestRunReadOnlyRollsBackOnBodyError(t *testing.T) {
 	db, mock := newMockDB(t)
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback()
 
 	bodyErr := errors.New("aggregate failed")
 
-	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{}, func(context.Context, *sql.Tx) error {
+	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: time.Second}, func(context.Context, *sql.Tx) error {
 		return bodyErr
 	})
 
@@ -207,7 +201,7 @@ func TestRunReadOnlyBeginFailure(t *testing.T) {
 
 	called := false
 
-	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{}, func(context.Context, *sql.Tx) error {
+	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: time.Second}, func(context.Context, *sql.Tx) error {
 		called = true
 
 		return nil
@@ -273,9 +267,10 @@ func TestRunReadOnlyDistinguishesStatementTimeoutFromDeadline(t *testing.T) {
 
 			mock.MatchExpectationsInOrder(false)
 			mock.ExpectBegin()
+			mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 			mock.ExpectRollback()
 
-			err := RunReadOnly(t.Context(), db, ReadOnlyOptions{TransactionTimeout: tt.txTimeout},
+			err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: time.Second, TransactionTimeout: tt.txTimeout},
 				func(ctx context.Context, _ *sql.Tx) error {
 					if tt.waitForCtx {
 						<-ctx.Done()
@@ -305,9 +300,10 @@ func TestRunReadOnlyDeadlineFiresWithNoBodyError(t *testing.T) {
 
 	mock.MatchExpectationsInOrder(false)
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback()
 
-	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{TransactionTimeout: 20 * time.Millisecond},
+	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: time.Second, TransactionTimeout: 20 * time.Millisecond},
 		func(ctx context.Context, _ *sql.Tx) error {
 			<-ctx.Done()
 
@@ -324,9 +320,10 @@ func TestRunReadOnlyDeadlineIsNotAppliedWhenZero(t *testing.T) {
 	db, mock := newMockDB(t)
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback()
 
-	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{}, func(ctx context.Context, _ *sql.Tx) error {
+	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: time.Second}, func(ctx context.Context, _ *sql.Tx) error {
 		_, hasDeadline := ctx.Deadline()
 		assert.False(t, hasDeadline, "a zero TransactionTimeout must not invent a deadline")
 
@@ -343,12 +340,13 @@ func TestRunReadOnlyHonoursAParentDeadline(t *testing.T) {
 
 	mock.MatchExpectationsInOrder(false)
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback()
 
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
 
-	err := RunReadOnly(ctx, db, ReadOnlyOptions{}, func(ctx context.Context, _ *sql.Tx) error {
+	err := RunReadOnly(ctx, db, ReadOnlyOptions{StatementTimeout: time.Second}, func(ctx context.Context, _ *sql.Tx) error {
 		<-ctx.Done()
 
 		return ctx.Err()
@@ -377,7 +375,7 @@ func TestRunReadOnlyGuards(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			require.ErrorIs(t, RunReadOnly(t.Context(), tt.db, ReadOnlyOptions{}, tt.fn), tt.wantErr)
+			require.ErrorIs(t, RunReadOnly(t.Context(), tt.db, ReadOnlyOptions{StatementTimeout: time.Second}, tt.fn), tt.wantErr)
 		})
 	}
 }
@@ -391,9 +389,10 @@ func TestRunReadOnlyRollbackFailureIsReportedAlongsideTheCause(t *testing.T) {
 	rollbackErr := errors.New("connection reset")
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback().WillReturnError(rollbackErr)
 
-	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{}, func(context.Context, *sql.Tx) error {
+	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: time.Second}, func(context.Context, *sql.Tx) error {
 		return bodyErr
 	})
 
@@ -410,9 +409,10 @@ func TestRunReadOnlySuccessfulReadReportsARollbackFailure(t *testing.T) {
 	rollbackErr := errors.New("connection reset")
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback().WillReturnError(rollbackErr)
 
-	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{}, noopFn)
+	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: time.Second}, noopFn)
 
 	require.ErrorIs(t, err, rollbackErr,
 		"a read whose transaction would not close did not cleanly release its snapshot")
@@ -424,13 +424,126 @@ func TestRunReadOnlyAlreadyClosedTransactionIsNotASecondFault(t *testing.T) {
 	db, mock := newMockDB(t)
 
 	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectRollback().WillReturnError(sql.ErrTxDone)
 
 	// database/sql rolls the transaction back itself once its context is done,
 	// so the explicit rollback then reports "already committed or rolled back".
 	// Appending that to every timeout would point on-call at a leaked
 	// transaction to hunt.
-	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{}, noopFn)
+	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: time.Second}, noopFn)
 
 	require.NoError(t, err)
+}
+
+func TestRunReadOnlyRequiresAStatementTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		timeout time.Duration
+	}{
+		{name: "zero", timeout: 0},
+		{name: "negative", timeout: -time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			db, mock := newMockDB(t)
+
+			// No expectations at all: the refusal must land BEFORE BeginTx, so an
+			// uncapped snapshot is never opened even for the instant it takes to
+			// discover the option is missing.
+			err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: tt.timeout}, noopFn)
+
+			require.ErrorIs(t, err, ErrReadOnlyStatementTimeoutRequired)
+			assert.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestStatementTimeoutRequiredIsItsOwnFault(t *testing.T) {
+	t.Parallel()
+
+	// A missing cap is a CALLER's programming fault, not a read that ran out of
+	// time. Folded into either timeout sentinel it would show up on a dashboard
+	// as a slow query and send someone looking for an index.
+	assert.False(t, errors.Is(ErrReadOnlyStatementTimeoutRequired, ErrReadOnlyStatementTimeout))
+	assert.False(t, errors.Is(ErrReadOnlyStatementTimeoutRequired, ErrReadOnlyTxDeadline))
+}
+
+func TestRunReadOnlyAcceptsAnyTxBeginner(t *testing.T) {
+	t.Parallel()
+
+	db, mock := newMockDB(t)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+
+	// A *sql.Conn, not a *sql.DB. The pool a service hands out for reads is not
+	// always the pool type the helper was first written against.
+	conn, err := db.Conn(t.Context())
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = conn.Close() })
+
+	require.NoError(t, RunReadOnly(t.Context(), conn, ReadOnlyOptions{StatementTimeout: time.Second}, noopFn))
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestRunReadOnlyRefusesATypedNilBeginner(t *testing.T) {
+	t.Parallel()
+
+	// A nil *sql.DB in an interface is a non-nil interface. Left to reach
+	// BeginTx it panics instead of returning the guard's error.
+	var (
+		nilDB   *sql.DB
+		nilConn *sql.Conn
+	)
+
+	require.ErrorIs(t, RunReadOnly(t.Context(), nilDB, ReadOnlyOptions{StatementTimeout: time.Second}, noopFn), ErrNilClient)
+	require.ErrorIs(t, RunReadOnly(t.Context(), nilConn, ReadOnlyOptions{StatementTimeout: time.Second}, noopFn), ErrNilClient)
+}
+
+func TestClientRunReadOnlyPrefersTheReplica(t *testing.T) {
+	t.Parallel()
+
+	primary, primaryMock := newMockDB(t)
+	replica, replicaMock := newMockDB(t)
+
+	replicaMock.ExpectBegin()
+	replicaMock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	replicaMock.ExpectRollback()
+
+	client := &Client{resolver: &fakeResolver{}, primary: primary, replica: replica}
+
+	require.NoError(t, client.RunReadOnly(t.Context(), ReadOnlyOptions{StatementTimeout: time.Second}, noopFn))
+	assert.NoError(t, replicaMock.ExpectationsWereMet())
+	assert.NoError(t, primaryMock.ExpectationsWereMet(), "a snapshot read must not land on the primary when a replica exists")
+}
+
+func TestClientRunReadOnlyFallsBackToThePrimary(t *testing.T) {
+	t.Parallel()
+
+	primary, primaryMock := newMockDB(t)
+
+	primaryMock.ExpectBegin()
+	primaryMock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	primaryMock.ExpectRollback()
+
+	client := &Client{resolver: &fakeResolver{}, primary: primary}
+
+	require.NoError(t, client.RunReadOnly(t.Context(), ReadOnlyOptions{StatementTimeout: time.Second}, noopFn))
+	assert.NoError(t, primaryMock.ExpectationsWereMet())
+}
+
+func TestClientRunReadOnlyOnANilClient(t *testing.T) {
+	t.Parallel()
+
+	var client *Client
+
+	require.ErrorIs(t, client.RunReadOnly(t.Context(), ReadOnlyOptions{StatementTimeout: time.Second}, noopFn), ErrNilClient)
 }
