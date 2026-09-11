@@ -1135,3 +1135,136 @@ func TestStringLeavesRedactedJSONParsable(t *testing.T) {
 		})
 	}
 }
+
+// stringerError is a cause that implements fmt.Stringer and fmt.Formatter on top
+// of error, which is ordinary for a driver or SDK type. Each extra interface is
+// another way for errors.As to hand a caller something whose own printing is the
+// raw text.
+type stringerError struct{ dsn string }
+
+func (e *stringerError) Error() string  { return "dial " + e.dsn + ": refused" }
+func (e *stringerError) String() string { return "dial " + e.dsn }
+func (e *stringerError) Format(f fmt.State, _ rune) {
+	_, _ = fmt.Fprintf(f, "dial %s", e.dsn)
+}
+
+func TestErrorClosesTheInterfaceDoorsToTheCause(t *testing.T) {
+	t.Parallel()
+
+	// Withholding Unwrap is not enough on its own. errors.As walks the chain and
+	// assigns the FIRST value assignable to the target — so a target naming an
+	// interface the wrapper did not implement, but the cause did, reached the
+	// cause and printed it. The wrapper now implements the printing interfaces
+	// itself, so it is what gets assigned.
+	got := sanitize.Error(&stringerError{dsn: "postgres://svc:s3cr3t@db.internal:5432/ledger"})
+
+	t.Run("Stringer target yields the wrapper", func(t *testing.T) {
+		t.Parallel()
+
+		var target fmt.Stringer
+
+		require.True(t, errors.As(got, &target))
+		assert.NotContains(t, target.String(), "s3cr3t")
+	})
+
+	t.Run("Formatter target yields the wrapper", func(t *testing.T) {
+		t.Parallel()
+
+		var target fmt.Formatter
+
+		require.True(t, errors.As(got, &target))
+		assert.NotContains(t, fmt.Sprintf("%v", target), "s3cr3t")
+	})
+
+	t.Run("every print verb stays redacted", func(t *testing.T) {
+		t.Parallel()
+
+		for _, verb := range []string{"%v", "%s", "%q", "%+v", "%#v"} {
+			assert.NotContains(t, fmt.Sprintf(verb, got), "s3cr3t", "verb %s leaked the cause", verb)
+		}
+	})
+
+	t.Run("the Unwrap interface target is the documented residual door", func(t *testing.T) {
+		t.Parallel()
+
+		// PINNED BECAUSE IT IS A GAP, not because it is desirable. Closing it
+		// would mean refusing every interface target, which takes legitimate
+		// classification (interface{ SQLState() string } and its kin) down with
+		// it. The package doc states the same thing; this keeps the two from
+		// drifting apart silently in either direction.
+		// The cause is wrapped, which is the ordinary shape: anything that has
+		// been through fmt.Errorf("...: %w", err) implements Unwrap.
+		wrapped := sanitize.Error(fmt.Errorf("query ledger: %w",
+			errors.New("dial postgres://svc:s3cr3t@db.internal:5432/ledger: refused")))
+
+		var target interface{ Unwrap() error }
+
+		require.True(t, errors.As(wrapped, &target), "still reachable: the doc says so")
+
+		reached, ok := target.(error)
+		require.True(t, ok)
+		assert.Contains(t, reached.Error(), "s3cr3t",
+			"this is the gap the doc names: the value reached is the cause, printing raw")
+	})
+
+	t.Run("naming the concrete type still classifies", func(t *testing.T) {
+		t.Parallel()
+
+		var target *stringerError
+
+		require.ErrorAs(t, got, &target, "a caller that names the type must still reach it")
+		assert.Contains(t, target.dsn, "s3cr3t", "classification is the point; this caller asked for it")
+	})
+}
+
+func TestStringRefusesInputAboveTheBound(t *testing.T) {
+	t.Parallel()
+
+	// Every pass is linear, but there are eighteen of them plus the card pass's
+	// fixed-point rounds, and the constant is ~400ms per megabyte. An error
+	// string that large is a bug upstream, not a message anyone will read, and
+	// scanning it stalls whatever goroutine is logging.
+	//
+	// It is REFUSED, never truncated: a cut landing mid-secret strands a readable
+	// prefix that no later pattern can recognise, which is the hazard this
+	// package documents at length.
+	oversized := strings.Repeat("a", sanitize.MaxInputLen) + " password=hunter2"
+
+	got := sanitize.String(oversized)
+
+	assert.NotContains(t, got, "hunter2")
+	assert.Contains(t, got, marker)
+	assert.Contains(t, got, fmt.Sprintf("%d", len(oversized)))
+	assert.Less(t, len(got), 128, "the refusal is a marker sentence, not a copy of the input")
+}
+
+func TestStringAcceptsInputAtTheBound(t *testing.T) {
+	t.Parallel()
+
+	filler := strings.Repeat("a", sanitize.MaxInputLen-len(" password=hunter2"))
+
+	got := sanitize.String(filler + " password=hunter2")
+
+	assert.NotContains(t, got, "hunter2")
+	assert.Contains(t, got, "password="+marker)
+}
+
+// nilDerefError dereferences its receiver, so a typed nil of this type panics on
+// Error(). That is the ordinary shape: any method reading a field does it.
+type nilDerefError struct{ dsn string }
+
+func (e *nilDerefError) Error() string { return "dial " + e.dsn }
+
+func TestErrorOnTypedNilCause(t *testing.T) {
+	t.Parallel()
+
+	// A nil POINTER inside a non-nil error interface is not caught by err == nil,
+	// and calling Error() on it panics — inside a redaction helper that exists to
+	// be called on an error path, where a panic is the second failure on top of
+	// the first.
+	var cause error = (*nilDerefError)(nil)
+
+	assert.NotPanics(t, func() {
+		assert.Nil(t, sanitize.Error(cause), "a typed nil is a nil error")
+	})
+}

@@ -49,6 +49,8 @@ package sanitize
 import (
 	"errors"
 	"fmt"
+	"io"
+	"reflect"
 	"regexp"
 	"strings"
 
@@ -64,6 +66,24 @@ import (
 // is an implicit operator contract (dashboards and SIEM rules may key off
 // it).
 const SecretRedactionMarker = "****"
+
+// MaxInputLen is the largest string String will scan. Above it the input is
+// REFUSED — never truncated — and a marker sentence naming the size is returned
+// instead.
+//
+// Refusing rather than cutting is the same rule the package doc states for
+// length generally: a cut landing mid-secret strands a readable prefix
+// ("postgres://user:pas") that no later pattern can recognise, so truncation
+// turns a redactor into a leak. A refusal loses the message and keeps the
+// guarantee.
+//
+// The bound exists because the cost is real: the passes are linear, but there
+// are eighteen of them plus the card pass's fixed-point rounds, measured at
+// roughly 400 milliseconds per megabyte on an ordinary devbox — 8 MB of digit
+// runs takes about 3.4 seconds, on whatever goroutine happened to be writing a
+// log line. 64 KiB is far above any error string worth reading and far below the
+// point where that matters.
+const MaxInputLen = 64 << 10
 
 // sensitiveFieldExtras augments the centralized lib-observability taxonomy with
 // the key names that show up in Lerian error strings but are not part of the
@@ -312,6 +332,11 @@ func String(s string) string {
 		return ""
 	}
 
+	if len(s) > MaxInputLen {
+		return fmt.Sprintf("%s (input of %d bytes exceeds the sanitizer bound; not scanned)",
+			SecretRedactionMarker, len(s))
+	}
+
 	// 1. PEM BLOCKS FIRST, AND THE ORDER IS LOAD-BEARING. An armored block is
 	// often the VALUE of a sensitive key ("private_key=-----BEGIN ..."), which is
 	// how a config-loading error echoes one. Let the key=value pass run first and
@@ -525,13 +550,35 @@ func passesLuhn(number string) bool {
 // Unwrap: with it, errors.Unwrap(sanitized).Error() hands any caller the raw DSN
 // straight back, and every redaction above is decorative.
 //
-// errors.As remains the one door to a printable cause, and it is a narrow one: a
-// caller must already know the concrete type it is asking for. Ask, classify, and
-// print only the wrapper.
+// # What errors.As can still reach, measured
 //
-// Returns nil for a nil error, so it composes at a return site without a guard.
+// Withholding Unwrap is NOT by itself a seal, and the earlier claim here that no
+// caller could obtain the cause was wrong. errors.As assigns the first value in
+// the chain assignable to its target, so a target naming an INTERFACE that the
+// cause implements and the wrapper does not skips the redaction entirely. The
+// printing interfaces are closed for that reason — the wrapper now implements
+// fmt.Stringer and fmt.Formatter itself, so those targets are assigned the
+// wrapper and print the redacted message.
+//
+// ONE DOOR IS LEFT OPEN ON PURPOSE: a target of interface{ Unwrap() error }
+// still reaches a wrapper inside the cause, and that value's Error() is the raw
+// text. Closing it would mean refusing every interface target, which would take
+// down legitimate classification (interface{ SQLState() string } and its kin)
+// along with it. So the rule for callers is behavioural, not enforced: ASK,
+// CLASSIFY, AND PRINT ONLY THE WRAPPER.
+//
+// Returns nil for a nil error — including a typed nil pointer inside a non-nil
+// interface — so it composes at a return site without a guard.
 func Error(err error) error {
 	if err == nil {
+		return nil
+	}
+
+	// A NIL POINTER INSIDE A NON-NIL INTERFACE is not caught above, and calling
+	// Error() on it panics for any implementation that reads a field — which is
+	// most of them. A panic here lands on an error path, on top of the failure
+	// being reported, in a helper whose whole job is to be safe to call.
+	if v := reflect.ValueOf(err); v.Kind() == reflect.Ptr && v.IsNil() {
 		return nil
 	}
 
@@ -546,18 +593,29 @@ type redactedError struct {
 
 func (e *redactedError) Error() string { return e.message }
 
-// Is and As delegate to the cause so errors.Is and errors.As keep classifying,
-// while the absence of Unwrap means no caller can obtain the cause itself and
-// print it. Both are the hooks errors.Is/As look for before they walk Unwrap.
+// Is and As delegate to the cause so errors.Is and errors.As keep classifying.
+// Both are the hooks errors.Is/As look for before they walk Unwrap.
 func (e *redactedError) Is(target error) bool { return errors.Is(e.cause, target) }
 
 func (e *redactedError) As(target any) bool { return errors.As(e.cause, target) }
 
-// GoString stops %#v from doing what Unwrap no longer allows. Without it, the
-// default struct formatting prints the cause field, and for a cause whose
-// concrete type is a struct VALUE that means printing its unredacted contents.
-func (e *redactedError) GoString() string {
-	return fmt.Sprintf("sanitize.redactedError{message: %q}", e.message)
+// String and Format CLOSE THE PRINTING DOORS THAT WITHHOLDING Unwrap LEFT OPEN.
+//
+// errors.As assigns the first value in the chain assignable to the target, and
+// only falls through to the As method above when nothing matched. So a target
+// naming an interface the WRAPPER did not implement but the CAUSE did —
+// fmt.Stringer and fmt.Formatter, which driver and SDK error types routinely
+// implement — skipped straight past the redaction and handed back a value whose
+// own printing is the raw text. Implementing both here means the wrapper is what
+// gets assigned.
+//
+// Format also replaces the GoString this type used to carry: writing the
+// redacted message for EVERY verb covers %#v along with the rest, rather than
+// patching one verb at a time.
+func (e *redactedError) String() string { return e.message }
+
+func (e *redactedError) Format(f fmt.State, _ rune) {
+	_, _ = io.WriteString(f, e.message)
 }
 
 // isSensitiveFieldName delegates to the centralized lib-observability taxonomy,
