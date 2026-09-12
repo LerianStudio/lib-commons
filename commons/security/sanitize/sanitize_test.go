@@ -1813,6 +1813,78 @@ func TestStringReadsAHashBeforeAnAtSignAsUserinfo(t *testing.T) {
 	}
 }
 
+func TestStringRedactsAFieldNameStolenIntoTheValueSlot(t *testing.T) {
+	t.Parallel()
+
+	// A TOKEN IN FRONT OF A SENSITIVE FIELD NAME STOLE THE KEY SLOT, AND THE
+	// FIELD NAME ENDED UP IN THE VALUE SLOT WITH ITS OWN VALUE ORPHANED.
+	//
+	// The key=value scanner read "AKIAIOSFODNN7EXAMPLE =Rg" as one pair: key
+	// "AKIAIOSFODNN7EXAMPLE", value "Rg". That key is not a sensitive name, so
+	// the pair was left alone, and the " =0" behind it belonged to nothing. The
+	// RG went to the log in the clear.
+	//
+	// It surfaced as non-idempotence because the bare-credential pass then
+	// replaced the stealing token with a marker, and a marker cannot start a
+	// key, so a SECOND run tokenised "Rg =0" correctly and redacted it. The
+	// second run's output was the right answer all along; the first run was a
+	// miss. Pinning the fixed point is therefore pinning the correct redaction.
+	tests := []struct{ name, in, want string }{
+		{
+			name: "an AWS key id steals the slot in front of a sensitive name",
+			in:   "0 AKIAIOSFODNN7EXAMPLE =Rg =0",
+			want: "0 " + marker + " =Rg =" + marker,
+		},
+		{
+			name: "a GitHub token steals the slot",
+			in:   "0 ghp_abcdefghijklmnopqrstuvwxyz0123456789 =Rg =0",
+			want: "0 " + marker + " =Rg =" + marker,
+		},
+		{
+			// THE THIEF DOES NOT HAVE TO BE A CREDENTIAL. This is the row that
+			// separates a structural fix from one that only rescues the shapes
+			// the bare-credential pass happens to recognise: an ordinary word
+			// steals the slot just as well, and no later pass rewrites it.
+			name: "an ordinary word steals the slot",
+			in:   "plainword =cpf =0",
+			want: "plainword =cpf =" + marker,
+		},
+		{
+			name: "no separating space",
+			in:   "0 AKIAIOSFODNN7EXAMPLE =cpf=0",
+			want: "0 " + marker + " =cpf=" + marker,
+		},
+
+		// ONE ROW PER BYTE [[:space:]] ADMITS. The lookahead that decides
+		// whether a value is really the next key is built from the pattern's own
+		// separator class for exactly this reason: the first cut hand-wrote
+		// " \t", and \n, \v, \f and \r kept leaking. The fuzzer found the form
+		// feed in eleven seconds.
+		{name: "separated by a space", in: "0 AKIAIOSFODNN7EXAMPLE =Rg =0", want: "0 " + marker + " =Rg =" + marker},
+		{name: "separated by a tab", in: "0 AKIAIOSFODNN7EXAMPLE =Rg\t=0", want: "0 " + marker + " =Rg\t=" + marker},
+		{name: "separated by a form feed", in: "0 AKIAIOSFODNN7EXAMPLE =Rg\f=0", want: "0 " + marker + " =Rg\f=" + marker},
+		{name: "separated by a newline", in: "0 AKIAIOSFODNN7EXAMPLE =Rg\n=0", want: "0 " + marker + " =Rg\n=" + marker},
+		{name: "separated by a carriage return", in: "0 AKIAIOSFODNN7EXAMPLE =Rg\r=0", want: "0 " + marker + " =Rg\r=" + marker},
+		{name: "separated by a vertical tab", in: "0 AKIAIOSFODNN7EXAMPLE =Rg\v=0", want: "0 " + marker + " =Rg\v=" + marker},
+
+		// CONTROLS. Both were already fixed points and must stay ones.
+		{name: "control: the pair on its own", in: "Rg =0", want: "Rg =" + marker},
+		{name: "control: already-redacted thief", in: "0 **** =Rg =0", want: "0 **** =Rg =" + marker},
+		{name: "control: ordinary pair is untouched", in: "ref =abc", want: "ref =abc"},
+		{name: "control: sensitive pair is redacted", in: "password =abc", want: "password =" + marker},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
+		})
+	}
+}
+
 func TestStringScrubsAGroupedCardInsideAQueryString(t *testing.T) {
 	t.Parallel()
 

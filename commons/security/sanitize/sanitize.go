@@ -158,7 +158,21 @@ var queryParameterPattern = regexp.MustCompile(
 // means a trailing colon is swallowed into the redaction ("token=abc: refused"
 // becomes "token=**** refused"). That errs toward redacting one character too
 // many rather than one too few, which is the correct direction here.
-var keyValuePattern = regexp.MustCompile(`(?i)\b([a-z][a-z0-9._-]*)([[:space:]]*=[[:space:]]*)([^\s,;&]+)`)
+// keyValueSeparator is the optional spaces, '=', optional spaces that joins a
+// key to its value. IT IS WRITTEN ONCE. keyValuePattern is built from it and so
+// is the anchored lookahead below, because a hand-written copy of this class
+// drifted the moment it existed: " \t" missed the \n, \v, \f and \r that
+// [[:space:]] also holds, and three of the five separators stayed
+// non-idempotent. That is the same failure queryValueTerminators exists to
+// prevent one pass down, repeated here, which is why this constant exists
+// rather than a second spelling of the class.
+const keyValueSeparator = `[[:space:]]*=[[:space:]]*`
+
+var keyValuePattern = regexp.MustCompile(`(?i)\b([a-z][a-z0-9._-]*)(` + keyValueSeparator + `)([^\s,;&]+)`)
+
+// nextPairSeparatorPattern is keyValueSeparator anchored at the start of the
+// text, for asking whether what follows a value is the next pair's separator.
+var nextPairSeparatorPattern = regexp.MustCompile(`^` + keyValueSeparator)
 
 // jsonKeyValuePattern finds "key":"value" fragments so a JSON-shaped secret (a
 // marshaled config, or a request body echoed into an error) is redacted by field
@@ -441,7 +455,7 @@ func String(s string) string {
 	s = redactCardNumbers(s)
 
 	// 8. Sensitive key=value pairs, by field name.
-	s = keyValuePattern.ReplaceAllStringFunc(s, redactKeyValuePair)
+	s = redactKeyValuePairs(s)
 
 	// 9. Bare credential values, with no surrounding field name. Last, so a
 	// vendor token is matched against the text as it was written rather than
@@ -479,6 +493,68 @@ func String(s string) string {
 // "00ſ00ſ00ſ=0" lost four bytes, and the next pass lost four more, so the output
 // was not even stable. keyValuePattern is the only pass that can hit this, being
 // the only one whose match can begin on a non-ASCII rune.
+// redactKeyValuePairs walks the pairs so a "value" that is really the next
+// pair's key can be handed back to the scanner instead of being consumed.
+func redactKeyValuePairs(s string) string {
+	var out strings.Builder
+
+	pos := 0
+
+	for pos < len(s) {
+		loc := keyValuePattern.FindStringSubmatchIndex(s[pos:])
+		if loc == nil {
+			break
+		}
+
+		for i := range loc {
+			if loc[i] >= 0 {
+				loc[i] += pos
+			}
+		}
+
+		key, valueStart, valueEnd := s[loc[2]:loc[3]], loc[6], loc[7]
+		sensitive := isSensitiveFieldName(key)
+
+		// THE VALUE IS REALLY THE NEXT PAIR'S KEY. "tok =rg =0" reads as key
+		// "tok", value "rg" — and the " =0" behind it is then orphaned, so a
+		// sensitive name sitting in the value slot never gets its own value
+		// redacted. Rewind to the value and let it be matched as a key instead.
+		//
+		// ONLY WHEN THIS KEY IS NOT SENSITIVE. On a sensitive key the value is
+		// genuinely the secret and must be redacted here; rewinding past it left
+		// "password=hunter2 =Rg =0" with the password in the clear, which the
+		// committed fuzz corpus caught. Redacting and carrying on from the end
+		// of the value still lets the following pair be matched on its own.
+		//
+		// The lookahead uses the pattern's OWN separator class. Any whitespace
+		// [[:space:]] admits can sit between the value and the next '=', so a
+		// form feed or a newline there is the same shape as a space.
+		if !sensitive {
+			if nextPairSeparatorPattern.MatchString(s[valueEnd:]) {
+				out.WriteString(s[pos:valueStart])
+
+				pos = valueStart
+
+				continue
+			}
+		}
+
+		replacement := SecretRedactionMarker
+		if !sensitive {
+			replacement = keyValuePattern.ReplaceAllStringFunc(s[valueStart:valueEnd], redactKeyValuePair)
+		}
+
+		out.WriteString(s[pos:valueStart])
+		out.WriteString(replacement)
+
+		pos = valueEnd
+	}
+
+	out.WriteString(s[pos:])
+
+	return out.String()
+}
+
 func redactKeyValuePair(match string) string {
 	loc := keyValuePattern.FindStringSubmatchIndex(match)
 	if loc == nil {
