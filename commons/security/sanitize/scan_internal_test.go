@@ -783,9 +783,10 @@ const (
 	// directionOriginalBase is the ONE base with exemption rows. It is a head
 	// from before this branch, so it redacts several shapes differently rather
 	// than less, and those differences are carried by name. Every other base is
-	// a head this branch shipped clean, so nothing about it needs excusing: the
-	// gate against it is a bare zero, and a row that ever needs excusing there
-	// is a finding, not a row to add.
+	// a floor this branch holds without excuses (directionRequiredBases says
+	// why a head that was not faultless is still a floor): the gate against it
+	// is a bare zero, and a row that ever needs excusing there is a finding,
+	// not a row to add.
 	directionOriginalBase = "base-714ca9e.txt"
 )
 
@@ -793,11 +794,12 @@ const (
 //
 // TO THE GLOB, A DELETED FILE AND A FILE NEVER ADDED ARE THE SAME THING, which
 // leaves the multi-base gate one `rm` away from the single-base hole it exists
-// to close. Measured: with base-5278f15.txt moved aside and pass 15's clause
-// reverted, the gate reports 0 narrowed against base-714ca9e.txt and PASSES
-// while seven credentials come back in the clear. Nothing else in the repo
-// names a base file, so nothing else would notice. A name goes in here and a
-// file goes in testdata/direction in the same commit, and neither is removed.
+// to close. Measured: with base-5278f15.txt moved aside and the
+// padded-separator clause dropped from introducesAValue, the gate reports 0
+// narrowed against base-714ca9e.txt and PASSES while ten rows come back in the
+// clear. Nothing else in the repo names a base file, so nothing else would
+// notice. A name goes in here and a file goes in testdata/direction in the same
+// commit, and neither is removed.
 var directionRequiredBases = []string{"base-714ca9e.txt", "base-5278f15.txt"}
 
 // directionInputs assembles the input set for the direction harness.

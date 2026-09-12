@@ -223,10 +223,14 @@
 //
 // A whole pair behind the name is the exception, and only for one of the two
 // spellings. When the value ENDS in the separator it is already a complete
-// value, so "password=abc_token= rc=200" keeps its response code. When the
-// separator sits OUTSIDE the value there is no second reading to weigh — the
-// value is whatever follows — so "password=secret = rc=200" takes the response
-// code under the marker as well.
+// value, so "password=abc_token= rc=200" keeps its response code. The kept
+// pair is whatever followed, credential or not: "password=session_token=
+// sid=9f3ca82b1d4e" keeps the session id beside the marker, the
+// false-assurance shape one pair wide, and it is pinned as a known gap. The
+// exception holds for the FIRST token only; a token the chain reached takes
+// the pair behind it (below). When the separator sits OUTSIDE the value there
+// is no second reading to weigh, the value is whatever follows, so
+// "password=secret = rc=200" takes the response code under the marker as well.
 //
 // IT TAKES ONE PAIR ALWAYS, PLUS ONE MORE PER PADDED " = " THAT FOLLOWS A
 // NAME-BEARING TOKEN. The first token behind the separator goes under the
@@ -247,6 +251,15 @@
 // back as "password=**** hunter2", the response code and three repetitions of
 // the name gone under the marker with it. Reading the price as one pair per
 // LINE understates it on exactly the lines that carry the most of them.
+//
+// THE CHAIN HOLDS FOR SENSITIVE NAMES ONLY. A token the chain reached is
+// judged by what it introduced, and a harmless name introduces nothing, so
+// the span still ends between a HARMLESS key the chain swallowed and that
+// key's value: "password=cpf= = cpf= = host= c2VjcmV0cGF5bG9hZA==" comes back
+// as "password=**** c2VjcmV0cGF5bG9hZA==". The base64 was printed before this
+// branch and is printed now; what this branch changed is that "host=", once
+// left beside the marker as the hint that redaction stopped early, is now
+// under it. That row is pinned as a known gap too.
 //
 // THE PAIRS THIS EATS ARE REAL DIAGNOSTICS, not hypothetical ones. "column=cpf",
 // "index=cpf", "op=token", "handler=session" and "table=documento" are all
@@ -288,8 +301,8 @@
 //
 // Closing this one would be IN doctrine — the same whole-token question, asked
 // on the harmless-key path before the rewind — but it is not a line of code: it
-// closes leaks and eats one word of prose, the same price per line the
-// sensitive-key path already pays, and it moves the reference oracle that the
+// closes leaks and eats one word of prose, the same price the sensitive-key
+// path already pays, and it moves the reference oracle that the
 // recursion differential holds the walk to. It is a follow-up with its own measurement.
 //
 // A VERTICAL TAB IS WHITESPACE, on both sides of the separator. It is in

@@ -826,16 +826,20 @@ func bareValueFollows(s string, valueEnd int) bool {
 // reading of the line.
 //
 // A TOKEN THE CHAIN REACHED HAS NO SECOND READING LEFT, AND THAT IS WHAT
-// chained SAYS. The bare-value requirement above belongs to the FIRST token of
-// a value: there the value has already ended, so a pair behind it is genuinely
-// the next pair and "password=abc_token= rc=200" keeps its response code. A
-// token the chain STEPPED ONTO is already inside the redaction, and refusing
-// there ends the span between a key the chain swallowed and the value that key
-// was protecting: "password=cpf= = cpf= sig=abc" printed sig=abc in the clear
-// on a line carrying a marker that said it had been scrubbed, which is the
-// false-assurance shape, not a kept diagnostic. So on a chained token the
-// question is only what it introduced, and the answer goes under the marker
-// with it.
+// chained SAYS. The bare-value requirement above is kept for the FIRST token
+// of a value, and that is a choice, not a derivation: the first token and a
+// chained one are both a maximal run that stopped on whitespace, so a
+// pair-shaped tail is "the next pair" behind either of them. On the first
+// token the package keeps that pair, whatever it carries:
+// "password=abc_token= rc=200" keeps its response code, and
+// "password=session_token= sid=9f3ca82b1d4e" keeps the session id beside the
+// marker just the same. That row is pinned as a known gap. On a token the
+// chain STEPPED ONTO the same refusal ended the span between a key the chain
+// swallowed and the value that key was protecting: "password=cpf= = cpf=
+// sig=abc" printed sig=abc in the clear on a line carrying a marker that said
+// it had been scrubbed. That half is closed, and it is the only half this
+// flag closes: on a chained token the question is only what it introduced,
+// and the answer goes under the marker with it.
 func introducesAValue(s string, start, end int, chained bool) int {
 	// THE SPACED SHAPE ASKED FIRST, WHICH IS WHAT THIS CLAUSE IS: the same
 	// question as the last one, with a lookahead, and it is here rather than
