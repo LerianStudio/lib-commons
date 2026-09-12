@@ -199,6 +199,13 @@
 // nothing. The two readings end in different places, and taking the shorter of
 // them put the marker over the lone '=' and printed the credential beside it.
 //
+// THAT HOLDS ONE PADDED SEPARATOR DEEP. A second one puts the marker back on a
+// lone '=': the value class admits '=', so a lone one IS a bare value, the
+// chain steps onto it, and isSensitiveFieldName("") is false on every clause,
+// so the chain stops there. "password=secret = = hunter2" and
+// "password=\"cpf\"= = = hunter2" both print the word behind the second
+// separator.
+//
 // The chain stops at the first covered token that is NOT followed by a
 // separator, so "cpf=cpf =cpf 12345678901" prints the eleven digits: the third
 // "cpf" is a bare word, nothing introduces anything behind it, and eleven digits

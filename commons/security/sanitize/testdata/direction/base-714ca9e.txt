@@ -899,6 +899,8 @@
 "a digit run in front of a name is not that name"
 "secret=**** =hunter2"
 " =hunter2"
+"a second padded separator stalls the chain"
+"password=**** = = hunter2"
 "a punctuated name under a harmless key"
 "pgx: opt=\"password\"= hunter2"
 "a validator that names the field in its own pair"

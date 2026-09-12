@@ -2684,6 +2684,14 @@ func TestStringKnownGapsPrintTheCredential(t *testing.T) {
 		{"a one-letter name carries no evidence", "password=x= hunter2", "password=" + marker + " hunter2", "hunter2"},
 		{"a digit run in front of a name is not that name", "secret=0cpf =hunter2", "secret=" + marker + " =hunter2", "hunter2"},
 
+		// A SECOND PADDED SEPARATOR STALLS THE CHAIN, one link short of the
+		// word behind it. The value class admits '=', so a lone one IS a bare
+		// value: the chain steps onto it, every clause then asks
+		// isSensitiveFieldName("") and gets false, and the chain stops with the
+		// credential outside the marker. 714ca9e printed both separators as
+		// well; every head since this branch began prints just the word.
+		{"a second padded separator stalls the chain", "password=secret = = hunter2", "password=" + marker + " hunter2", "hunter2"},
+
 		// UNDER A HARMLESS KEY the rewind is all there is, and a quote is not a
 		// name byte.
 		{"a punctuated name under a harmless key", `pgx: opt="password"= hunter2`, `pgx: opt="password"= hunter2`, "hunter2"},
