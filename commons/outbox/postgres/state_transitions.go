@@ -102,7 +102,10 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 		return ErrMaxAttemptsMustBePositive
 	}
 
-	errMsg = outbox.SanitizeErrorMessageForStorage(errMsg)
+	// Bounded here, in Go, so the UPDATE below never has to truncate: it either
+	// stores a whole cause or appends the marker. Slicing text in SQL cannot
+	// respect rune boundaries and would risk storing invalid UTF-8.
+	errMsg = outbox.BoundErrorCause(outbox.SanitizeErrorMessageForStorage(errMsg))
 
 	tracer := tracerFromContext(ctx)
 
@@ -111,18 +114,36 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 
 	_, err := withTenantTxOrExisting(repo, ctx, nil, func(tx *sql.Tx) (struct{}, error) {
 		table := quoteIdentifierPath(repo.tableName)
+		// last_error ACCUMULATES the distinct causes instead of being
+		// overwritten, and the exhaustion branch is gone entirely. Previously
+		// the terminal write replaced whatever was there with "max dispatch
+		// attempts exceeded" — a tautology, since attempts and status already
+		// say the budget ran out — and every earlier attempt had already
+		// overwritten the column with its own message, so a quarantined row
+		// carried no diagnosis at all.
+		//
+		// The expression mirrors outbox.AppendErrorCause, which is the single
+		// definition of the rule; see the drift note there. It runs in SQL
+		// rather than in Go because accumulating in Go would need a
+		// read-modify-write and lose the atomicity of one UPDATE.
 		query := "UPDATE " + table + " SET " + // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
 			"status = CASE WHEN attempts + 1 >= $1 THEN $2 ELSE $3 END::outbox_event_status, " +
 			"attempts = attempts + 1, " +
-			"last_error = CASE WHEN attempts + 1 >= $1 THEN $4 ELSE $5 END, " +
-			"updated_at = $6 WHERE id = $7 AND status = $8::outbox_event_status"
+			"last_error = CASE " +
+			"WHEN last_error IS NULL OR btrim(last_error) = '' THEN $4 " +
+			"WHEN position($4 IN last_error) > 0 THEN last_error " +
+			"WHEN position($5 IN last_error) > 0 THEN last_error " +
+			"WHEN octet_length(last_error) + 1 + octet_length($4) <= $6 THEN last_error || chr(10) || $4 " +
+			"ELSE last_error || $5 END, " +
+			"updated_at = $7 WHERE id = $8 AND status = $9::outbox_event_status"
 
 		args := []any{
 			maxAttempts,
 			outbox.OutboxStatusInvalid,
 			outbox.OutboxStatusFailed,
-			"max dispatch attempts exceeded",
 			errMsg,
+			outbox.LastErrorTruncationMarker,
+			outbox.MaxLastErrorBytes - len(outbox.LastErrorTruncationMarker),
 			time.Now().UTC(),
 			id,
 			outbox.OutboxStatusProcessing,
@@ -133,7 +154,7 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 			return struct{}{}, tenantErr
 		}
 
-		filter, filterArgs, filterErr := repo.tenantFilterClause(9, tenantID)
+		filter, filterArgs, filterErr := repo.tenantFilterClause(10, tenantID)
 		if filterErr != nil {
 			return struct{}{}, filterErr
 		}

@@ -209,12 +209,12 @@ func (m *memOutboxRepo) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 
 	sanitized := outbox.SanitizeErrorMessageForStorage(errMsg)
 
+	e.LastError = outbox.AppendErrorCause(e.LastError, sanitized)
+
 	if maxAttempts > 0 && e.Attempts >= maxAttempts {
 		e.Status = outbox.OutboxStatusInvalid
-		e.LastError = "max dispatch attempts exceeded"
 	} else {
 		e.Status = outbox.OutboxStatusFailed
-		e.LastError = sanitized
 	}
 
 	return nil
@@ -303,7 +303,7 @@ func (m *memOutboxRepo) ResetStuckProcessing(ctx context.Context, limit int, _ t
 				// Exceeded max attempts - invalidate
 				e.Attempts++
 				e.Status = outbox.OutboxStatusInvalid
-				e.LastError = "max dispatch attempts exceeded"
+				e.LastError = outbox.AppendErrorCause(e.LastError, outbox.StuckInProcessingCause)
 				e.UpdatedAt = time.Now().UTC()
 			} else {
 				// Reset to processing (increment attempts for the stuck attempt)
