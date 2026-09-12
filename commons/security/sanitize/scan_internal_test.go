@@ -1205,10 +1205,12 @@ func keyChainLines(t *testing.T, n int) []string {
 
 	names := []string{"a", "b", "opt", "ref", "cpf", "password", "rg", "token", "x.y", "k-1", "aGVsbG8", "abc_token"}
 	tails := []string{
-		"", "=", " hunter2", "hunter2", " ", "= 0", "&x", ",y", ";z", " =0",
-		// The chain ending in the separator, in the separator plus the one
-		// whitespace byte the two patterns disagree about, and with a non-word
-		// byte in front of the field name in the value slot.
+		"", "=", " hunter2", "hunter2", " ", "= 0", "&x", ",y", ";z", " =0", "\t",
+		// The chain ending in the separator, in the separator plus one of the
+		// whitespace bytes the two patterns used to disagree about, and with a
+		// non-word byte in front of the field name in the value slot. The tab
+		// is here because the shipped operator line "pgx: opt=password= cpf\t="
+		// was unreachable from this generator's separator set.
 		"\v", "=\v", "!password= hunter2", "= hunter2", "=,next=1", "= rc=200",
 	}
 
@@ -1219,7 +1221,9 @@ func keyChainLines(t *testing.T, n int) []string {
 
 		for links := rng.Intn(12) + 1; links > 0; links-- {
 			b.WriteString(names[rng.Intn(len(names))])
-			b.WriteString([]string{"=", " =", "= ", " = ", "=\v", "\v="}[rng.Intn(6)])
+			separators := []string{"=", " =", "= ", " = ", "=\v", "\v=", "=\t", "\t=", " \t="}
+
+			b.WriteString(separators[rng.Intn(len(separators))])
 		}
 
 		b.WriteString(tails[rng.Intn(len(tails))])
@@ -1395,6 +1399,13 @@ func TestRedactPemBlocksMatchesThePatternItReplaced(t *testing.T) {
 		strings.ToLower(begin) + body,
 		"-----BEGIN A-----", "-----BEGIN A----------END A-----",
 		"-----BEGIN A-----END A-----", "-----END A----------BEGIN B-----",
+		// The two shapes the cost fix was measured on and its commit body did
+		// not name: a stray END in front of a run of BEGIN lines, and armor as
+		// the value of a key=value pair, repeated. Both cost 6.3 s before the
+		// pairing walk and 0.015 s after, and a row here is cheaper than two
+		// more wall-clock bound tests.
+		"-----END A-----" + strings.Repeat("-----BEGIN A-----", 8),
+		strings.Repeat("k=-----BEGIN A----- ", 8),
 		"host=db " + begin + body + " password=hunter2",
 		strings.Repeat("-----BEGIN A-----", 8),
 		strings.Repeat(begin+body+end, 4),

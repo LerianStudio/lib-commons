@@ -1167,6 +1167,17 @@ func assertNoSecretSurvives(t *testing.T, prefix, before, after, suffix string) 
 	}
 
 	for _, secret := range fuzzSecrets {
+		// THE PROPERTY CANNOT TELL A SURVIVING SECRET FROM ONE THE FUZZER WROTE
+		// ITSELF. It reached prefix="41111111111111110" against the planted card
+		// and failed on a NotContains the planted card had already satisfied:
+		// those bytes were the fuzzer's, they are a 17-digit non-Luhn run, and a
+		// bare digit run glued to its neighbours is the gap doc.go names. Skip
+		// the secret the fuzzer has already spelled out rather than assert
+		// something this property does not measure.
+		if strings.Contains(prefix, secret) || strings.Contains(suffix, secret) {
+			continue
+		}
+
 		in := prefix + before + secret + after + suffix
 
 		got := sanitize.String(in)
