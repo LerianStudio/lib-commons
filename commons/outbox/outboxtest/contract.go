@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/errgroup"
 	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
@@ -97,6 +98,8 @@ func Run(t *testing.T, factory Factory, opts ...RunOption) {
 	run("MarkFailedRedactsSensitiveData", func(t *testing.T) { testMarkFailedRedactsSensitiveData(t, factory) })
 	run("MarkFailedAtMaxAttemptsInvalidates", func(t *testing.T) { testMarkFailedAtMaxAttemptsInvalidates(t, factory) })
 	run("MarkFailedAccumulatesDistinctCauses", func(t *testing.T) { testMarkFailedAccumulatesDistinctCauses(t, factory) })
+	run("MarkFailedBoundsAccumulatedCauses", func(t *testing.T) { testMarkFailedBoundsAccumulatedCauses(t, factory) })
+	run("MarkFailedKeepsCauseContainedInAnother", func(t *testing.T) { testMarkFailedKeepsCauseContainedInAnother(t, factory) })
 	run("ListFailedForRetryReadOnly", func(t *testing.T) { testListFailedForRetryReadOnly(t, factory) })
 	run("RetryScansSkipRowsAtMaxAttempts", func(t *testing.T) { testRetryScansSkipRowsAtMaxAttempts(t, factory) })
 	run("ResetForRetryMovesFailedToProcessing", func(t *testing.T) { testResetForRetryMovesFailedToProcessing(t, factory) })
@@ -558,7 +561,77 @@ func testMarkFailedAccumulatesDistinctCauses(t *testing.T, factory Factory) {
 	require.NotContains(t, stored.LastError, "max dispatch attempts exceeded")
 	require.Equal(t, 1, strings.Count(stored.LastError, "handler not registered"),
 		"a repeated cause is recorded once, not once per attempt")
-	require.LessOrEqual(t, len(stored.LastError), outbox.MaxLastErrorBytes)
+	require.LessOrEqual(t, utf8.RuneCountInString(stored.LastError), outbox.MaxLastErrorLength)
+}
+
+// testMarkFailedBoundsAccumulatedCauses drives the value PAST its ceiling.
+//
+// Without this, a backend could omit the cap entirely and still pass: the
+// short causes above never approach the limit. That matters more than a
+// missing assertion usually would, because the column this library ships is
+// `last_error VARCHAR(512)` and Postgres REJECTS an oversized value (SQLSTATE
+// 22001) instead of truncating it — an uncapped backend would not store a long
+// value, it would fail MarkFailed and strand the row in PROCESSING, retrying
+// for ever.
+func testMarkFailedBoundsAccumulatedCauses(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+	ctx := outbox.ContextWithTenantID(contractContext(t), "tenant-a")
+	created := createEvent(t, repo, ctx, "payment.failed.saturating")
+
+	first := "first cause: " + strings.Repeat("a", 200)
+
+	claimSinglePending(t, repo, ctx, created.ID)
+	require.NoError(t, repo.MarkFailed(ctx, created.ID, first, 8))
+
+	for i := range 6 {
+		resetSingleFailed(t, repo, ctx, created.ID)
+
+		cause := "later cause " + string(rune('A'+i)) + ": " + strings.Repeat("b", 200)
+
+		require.NoError(t, repo.MarkFailed(ctx, created.ID, cause, 8))
+	}
+
+	stored, err := repo.GetByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+
+	require.LessOrEqual(t, utf8.RuneCountInString(stored.LastError), outbox.MaxLastErrorLength,
+		"the stored value must fit the column the library ships, or the write fails outright")
+	require.Contains(t, stored.LastError, "first cause:",
+		"saturating drops the NEWEST causes; the first is the diagnosis and stays")
+	require.Equal(t, 1, strings.Count(stored.LastError, outbox.LastErrorTruncationMarker),
+		"the marker is appended once, not once per further attempt")
+	require.NotContains(t, stored.LastError, "later cause F:",
+		"a cause that did not fit must be dropped, not silently squeezed in")
+}
+
+// testMarkFailedKeepsCauseContainedInAnother pins whole-cause duplicate
+// detection. A substring test would drop the second cause here, because it is
+// contained in the first — and losing a distinct diagnosis is the defect this
+// suite exists to catch.
+func testMarkFailedKeepsCauseContainedInAnother(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+	ctx := outbox.ContextWithTenantID(contractContext(t), "tenant-a")
+	created := createEvent(t, repo, ctx, "payment.failed.substring")
+
+	claimSinglePending(t, repo, ctx, created.ID)
+	require.NoError(t, repo.MarkFailed(ctx, created.ID, "request timeout while calling broker", 4))
+
+	resetSingleFailed(t, repo, ctx, created.ID)
+	require.NoError(t, repo.MarkFailed(ctx, created.ID, "timeout", 4))
+
+	stored, err := repo.GetByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+
+	require.Contains(t, stored.LastError, "request timeout while calling broker")
+	require.Equal(t, []string{"request timeout while calling broker", "timeout"},
+		strings.Split(stored.LastError, "\n"),
+		"a distinct cause contained in an earlier one is still its own cause")
 }
 
 func testWrongTenantMutationsRejected(t *testing.T, factory Factory) {

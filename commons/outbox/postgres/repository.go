@@ -868,9 +868,9 @@ func (repo *Repository) markStuckEventsInvalid(
 		" SET status = $1::outbox_event_status, attempts = attempts + 1, " +
 		"last_error = CASE " +
 		"WHEN last_error IS NULL OR btrim(last_error) = '' THEN $2 " +
-		"WHEN position($2 IN last_error) > 0 THEN last_error " +
+		"WHEN position(chr(10) || $2 || chr(10) IN chr(10) || last_error || chr(10)) > 0 THEN last_error " +
 		"WHEN position($6 IN last_error) > 0 THEN last_error " +
-		"WHEN octet_length(last_error) + 1 + octet_length($2) <= $7 THEN last_error || chr(10) || $2 " +
+		"WHEN char_length(last_error) + 1 + char_length($2) <= $7 THEN last_error || chr(10) || $2 " +
 		"ELSE last_error || $6 END, " +
 		"updated_at = $3 WHERE id = ANY($4::uuid[]) AND status = $5::outbox_event_status"
 
@@ -887,7 +887,7 @@ func (repo *Repository) markStuckEventsInvalid(
 		ids,
 		outbox.OutboxStatusProcessing,
 		outbox.LastErrorTruncationMarker,
-		outbox.MaxLastErrorBytes-len(outbox.LastErrorTruncationMarker),
+		outbox.LastErrorCauseBudget(),
 	)
 
 	query += filter

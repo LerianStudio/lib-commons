@@ -131,9 +131,9 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 			"attempts = attempts + 1, " +
 			"last_error = CASE " +
 			"WHEN last_error IS NULL OR btrim(last_error) = '' THEN $4 " +
-			"WHEN position($4 IN last_error) > 0 THEN last_error " +
+			"WHEN position(chr(10) || $4 || chr(10) IN chr(10) || last_error || chr(10)) > 0 THEN last_error " +
 			"WHEN position($5 IN last_error) > 0 THEN last_error " +
-			"WHEN octet_length(last_error) + 1 + octet_length($4) <= $6 THEN last_error || chr(10) || $4 " +
+			"WHEN char_length(last_error) + 1 + char_length($4) <= $6 THEN last_error || chr(10) || $4 " +
 			"ELSE last_error || $5 END, " +
 			"updated_at = $7 WHERE id = $8 AND status = $9::outbox_event_status"
 
@@ -143,7 +143,7 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 			outbox.OutboxStatusFailed,
 			errMsg,
 			outbox.LastErrorTruncationMarker,
-			outbox.MaxLastErrorBytes - len(outbox.LastErrorTruncationMarker),
+			outbox.LastErrorCauseBudget(),
 			time.Now().UTC(),
 			id,
 			outbox.OutboxStatusProcessing,

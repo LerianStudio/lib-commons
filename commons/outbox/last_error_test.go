@@ -48,26 +48,26 @@ func TestAppendErrorCauseDoesNotRepeatTheSameCause(t *testing.T) {
 func TestAppendErrorCauseIsBoundedAndMarksTruncation(t *testing.T) {
 	got := ""
 	for i := range 200 {
-		got = AppendErrorCause(got, strings.Repeat("x", 400)+string(rune('a'+i%26)))
+		got = AppendErrorCause(got, strings.Repeat("x", 120)+string(rune('a'+i%26)))
 	}
 
-	require.LessOrEqual(t, len(got), MaxLastErrorBytes,
+	require.LessOrEqual(t, utf8.RuneCountInString(got), MaxLastErrorLength,
 		"the column must never grow without bound")
 	require.Contains(t, got, LastErrorTruncationMarker,
 		"dropping causes must be explicit, never silent")
-	require.True(t, strings.HasPrefix(got, strings.Repeat("x", 400)),
+	require.True(t, strings.HasPrefix(got, strings.Repeat("x", 120)),
 		"truncation drops the NEWEST causes, never the first one")
 }
 
 func TestAppendErrorCauseStopsGrowingOnceTruncated(t *testing.T) {
 	got := ""
 	for i := range 200 {
-		got = AppendErrorCause(got, strings.Repeat("y", 400)+string(rune('a'+i%26)))
+		got = AppendErrorCause(got, strings.Repeat("y", 120)+string(rune('a'+i%26)))
 	}
 
 	saturated := got
 	for i := range 50 {
-		got = AppendErrorCause(got, strings.Repeat("z", 400)+string(rune('a'+i%26)))
+		got = AppendErrorCause(got, strings.Repeat("z", 120)+string(rune('a'+i%26)))
 	}
 
 	require.Equal(t, saturated, got,
@@ -91,7 +91,7 @@ func TestAppendErrorCauseHoldsTheCapForEveryCauseSize(t *testing.T) {
 			got = AppendErrorCause(got, strings.Repeat("x", size)+string(rune('a'+i%26)))
 		}
 
-		require.LessOrEqualf(t, len(got), MaxLastErrorBytes,
+		require.LessOrEqualf(t, utf8.RuneCountInString(got), MaxLastErrorLength,
 			"cause size %d pushed the column past the cap", size)
 	}
 }
@@ -100,9 +100,9 @@ func TestAppendErrorCauseNeverSplitsAMultiByteRune(t *testing.T) {
 	// A cause is bounded in RUNES upstream, so a message of 4-byte characters
 	// can still exceed a BYTE budget. Cutting it mid-rune would store invalid
 	// UTF-8 in the column.
-	got := AppendErrorCause("", strings.Repeat("日", MaxLastErrorBytes))
+	got := AppendErrorCause("", strings.Repeat("日", MaxLastErrorLength*2))
 
-	require.LessOrEqual(t, len(got), MaxLastErrorBytes)
+	require.LessOrEqual(t, utf8.RuneCountInString(got), MaxLastErrorLength)
 	require.True(t, utf8.ValidString(got), "the stored value must remain valid UTF-8")
 }
 

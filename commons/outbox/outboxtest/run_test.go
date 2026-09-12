@@ -32,6 +32,8 @@ func TestRun_AllSkipped(t *testing.T) {
 		SkipSubtest("MarkFailedRedactsSensitiveData"),
 		SkipSubtest("MarkFailedAtMaxAttemptsInvalidates"),
 		SkipSubtest("MarkFailedAccumulatesDistinctCauses"),
+		SkipSubtest("MarkFailedBoundsAccumulatedCauses"),
+		SkipSubtest("MarkFailedKeepsCauseContainedInAnother"),
 		SkipSubtest("ListFailedForRetryReadOnly"),
 		SkipSubtest("RetryScansSkipRowsAtMaxAttempts"),
 		SkipSubtest("ResetForRetryMovesFailedToProcessing"),
