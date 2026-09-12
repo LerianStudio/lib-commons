@@ -131,6 +131,13 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 			"attempts = attempts + 1, " +
 			"last_error = CASE " +
 			"WHEN last_error IS NULL OR btrim(last_error) = '' THEN $4 " +
+			// An attempt can arrive with nothing to say: an error whose message
+			// is blank, or one redaction empties. Without this the append branch
+			// below still fires and writes a bare separator, so the row collects
+			// a stray delimiter per attempt and eventually saturates on padding
+			// instead of on diagnosis. AppendErrorCause returns early on the
+			// same input; the contract suite asks both expressions this question.
+			"WHEN $4 = '' THEN last_error " +
 			"WHEN position(chr(10) || $4 || chr(10) IN chr(10) || last_error || chr(10)) > 0 THEN last_error " +
 			"WHEN position($5 IN last_error) > 0 THEN last_error " +
 			"WHEN char_length(last_error) + 1 + char_length($4) <= $6 THEN last_error || chr(10) || $4 " +

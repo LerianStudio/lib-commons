@@ -34,6 +34,7 @@ func TestRun_AllSkipped(t *testing.T) {
 		SkipSubtest("MarkFailedAccumulatesDistinctCauses"),
 		SkipSubtest("MarkFailedBoundsAccumulatedCauses"),
 		SkipSubtest("MarkFailedKeepsCauseContainedInAnother"),
+		SkipSubtest("MarkFailedKeepsExistingCauseWhenNewOneIsEmpty"),
 		SkipSubtest("ListFailedForRetryReadOnly"),
 		SkipSubtest("RetryScansSkipRowsAtMaxAttempts"),
 		SkipSubtest("ResetForRetryMovesFailedToProcessing"),

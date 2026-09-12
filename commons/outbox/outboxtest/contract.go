@@ -100,6 +100,7 @@ func Run(t *testing.T, factory Factory, opts ...RunOption) {
 	run("MarkFailedAccumulatesDistinctCauses", func(t *testing.T) { testMarkFailedAccumulatesDistinctCauses(t, factory) })
 	run("MarkFailedBoundsAccumulatedCauses", func(t *testing.T) { testMarkFailedBoundsAccumulatedCauses(t, factory) })
 	run("MarkFailedKeepsCauseContainedInAnother", func(t *testing.T) { testMarkFailedKeepsCauseContainedInAnother(t, factory) })
+	run("MarkFailedKeepsExistingCauseWhenNewOneIsEmpty", func(t *testing.T) { testMarkFailedKeepsExistingCauseWhenNewOneIsEmpty(t, factory) })
 	run("ListFailedForRetryReadOnly", func(t *testing.T) { testListFailedForRetryReadOnly(t, factory) })
 	run("RetryScansSkipRowsAtMaxAttempts", func(t *testing.T) { testRetryScansSkipRowsAtMaxAttempts(t, factory) })
 	run("ResetForRetryMovesFailedToProcessing", func(t *testing.T) { testResetForRetryMovesFailedToProcessing(t, factory) })
@@ -562,6 +563,37 @@ func testMarkFailedAccumulatesDistinctCauses(t *testing.T, factory Factory) {
 	require.Equal(t, 1, strings.Count(stored.LastError, "handler not registered"),
 		"a repeated cause is recorded once, not once per attempt")
 	require.LessOrEqual(t, utf8.RuneCountInString(stored.LastError), outbox.MaxLastErrorLength)
+}
+
+// testMarkFailedKeepsExistingCauseWhenNewOneIsEmpty pins the one input every
+// backend must IGNORE.
+//
+// An attempt can arrive with nothing to say — an error whose message is blank,
+// or one redaction leaves empty. Go returns the stored value untouched. A SQL
+// mirror that forgets the guard appends its separator anyway, so the row grows
+// a stray delimiter per attempt and eventually saturates on padding rather than
+// on diagnosis. Nothing about the two expressions makes that drift visible
+// except a contract that asks both of them the same question.
+func testMarkFailedKeepsExistingCauseWhenNewOneIsEmpty(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+	ctx := outbox.ContextWithTenantID(contractContext(t), "tenant-a")
+	created := createEvent(t, repo, ctx, "payment.failed.emptycause")
+
+	claimSinglePending(t, repo, ctx, created.ID)
+	require.NoError(t, repo.MarkFailed(ctx, created.ID, "handler not registered", 6))
+
+	// Blank, then whitespace-only: both carry no diagnosis.
+	for _, empty := range []string{"", "   "} {
+		resetSingleFailed(t, repo, ctx, created.ID)
+		require.NoError(t, repo.MarkFailed(ctx, created.ID, empty, 6))
+
+		stored, err := repo.GetByID(ctx, created.ID)
+		require.NoError(t, err)
+		require.Equal(t, "handler not registered", stored.LastError,
+			"an attempt with no cause must leave the stored diagnosis exactly as it was")
+	}
 }
 
 // testMarkFailedBoundsAccumulatedCauses drives the value PAST its ceiling.
