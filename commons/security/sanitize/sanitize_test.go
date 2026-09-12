@@ -2823,6 +2823,64 @@ func TestStringRedactsBothReadingsOfANameShapedValue(t *testing.T) {
 			want: "password=" + marker,
 		},
 
+		// A KEY THE CHAIN SWALLOWED ALWAYS CARRIES ITS VALUE. Behind the padded
+		// separator the chain can land on a SECOND key, and that key is then
+		// inside the outer marker. Stopping there ends the span between a key
+		// and the value that key was protecting: the credential is printed
+		// beside a marker, on a line that reads as scrubbed, which is strictly
+		// worse than a line with no marker on it at all.
+		//
+		// THE REFUSAL THAT KEEPS A PAIR DIAGNOSABLE BELONGS TO THE FIRST TOKEN.
+		// At the first token the value has already ended, so a pair behind it
+		// is the next pair and "password=\"cpf\"= rc=200" keeps its response
+		// code. A token the chain REACHED has no such second reading left: it
+		// is already inside the redaction, so the only question left is what it
+		// introduced, and the answer is under the marker with it.
+		{
+			name: "a swallowed key carries its base64 value",
+			in:   "password=cpf= = cpf= c2VjcmV0cGF5bG9hZA==",
+			want: "password=" + marker,
+		},
+		{
+			name: "a swallowed key carries a pair-shaped value",
+			in:   "password=cpf= = cpf= sig=abc",
+			want: "password=" + marker,
+		},
+		{
+			name: "a swallowed key carries a session subject",
+			in:   "password=cpf= = cpf= user=alice",
+			want: "password=" + marker,
+		},
+		{
+			name: "a quoted name in front of the swallowed key",
+			in:   `password="cpf"= = cpf= a=1`,
+			want: "password=" + marker,
+		},
+		{
+			name: "a swallowed token key under authorization",
+			in:   `authorization="token"= = secret= c2VjcmV0cGF5bG9hZA==`,
+			want: "authorization=" + marker,
+		},
+		{
+			// THE CONTROL FOR THE REFUSAL, and the row that says the refusal is
+			// kept where it belongs. One separator, so "cpf=" is the FIRST
+			// token of the outer value rather than one the chain reached: the
+			// pair behind it is the next pair, the scanner redacts it on its
+			// own terms, and the answer is the same on every head this branch
+			// pins.
+			name: "a single separator leaves the next pair to the scanner",
+			in:   "password=cpf= cpf= a=1",
+			want: "password=" + marker + " cpf= " + marker,
+		},
+		{
+			// A bare value behind the swallowed key, which was never the
+			// leaking half: the whole line is one marker here and on 5278f15.
+			// Kept so a change that reaches this shape shows up as a change.
+			name: "a swallowed key whose own value is bare",
+			in:   `authorization="token"= = secret= c2VjcmV0`,
+			want: "authorization=" + marker,
+		},
+
 		// Kept: a pair behind the name is the next pair, base64 padding is not a
 		// name, and a credential that is not a name is only itself.
 		{"a pair behind the name", "password=abc_token= rc=200", "password=" + marker + " rc=200"},
