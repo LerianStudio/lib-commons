@@ -824,7 +824,19 @@ func bareValueFollows(s string, valueEnd int) bool {
 // redacted by the first shape. Under redact-both the substring question can
 // only cost one over-redacted token; demanding the whole name cost the other
 // reading of the line.
-func introducesAValue(s string, start, end int) int {
+//
+// A TOKEN THE CHAIN REACHED HAS NO SECOND READING LEFT, AND THAT IS WHAT
+// chained SAYS. The bare-value requirement above belongs to the FIRST token of
+// a value: there the value has already ended, so a pair behind it is genuinely
+// the next pair and "password=abc_token= rc=200" keeps its response code. A
+// token the chain STEPPED ONTO is already inside the redaction, and refusing
+// there ends the span between a key the chain swallowed and the value that key
+// was protecting: "password=cpf= = cpf= sig=abc" printed sig=abc in the clear
+// on a line carrying a marker that said it had been scrubbed, which is the
+// false-assurance shape, not a kept diagnostic. So on a chained token the
+// question is only what it introduced, and the answer goes under the marker
+// with it.
+func introducesAValue(s string, start, end int, chained bool) int {
 	// THE SPACED SHAPE ASKED FIRST, WHICH IS WHAT THIS CLAUSE IS: the same
 	// question as the last one, with a lookahead, and it is here rather than
 	// there because first-match-wins decides between two readings that DISAGREE
@@ -852,11 +864,13 @@ func introducesAValue(s string, start, end int) int {
 	}
 
 	if loc := prefixInsideValue(s, start, end); loc != nil && start+loc[1] == end &&
-		isSensitiveFieldName(s[start+loc[2]:start+loc[3]]) && bareValueFollows(s, end) {
+		isSensitiveFieldName(s[start+loc[2]:start+loc[3]]) &&
+		(chained || bareValueFollows(s, end)) {
 		return end
 	}
 
-	if s[end-1] == '=' && isSensitiveFieldName(s[start:end-1]) && bareValueFollows(s, end) {
+	if s[end-1] == '=' && isSensitiveFieldName(s[start:end-1]) &&
+		(chained || bareValueFollows(s, end)) {
 		return end
 	}
 
@@ -896,9 +910,10 @@ func introducesAValue(s string, start, end int) int {
 // by the length of the string.
 func sensitiveValueEnd(s string, valueStart, valueEnd int) int {
 	start, end := valueStart, valueEnd
+	chained := false
 
 	for {
-		after := introducesAValue(s, start, end)
+		after := introducesAValue(s, start, end, chained)
 		if after < 0 {
 			return end
 		}
@@ -908,7 +923,7 @@ func sensitiveValueEnd(s string, valueStart, valueEnd int) int {
 			return end
 		}
 
-		start, end = after+ahead[2], after+ahead[3]
+		start, end, chained = after+ahead[2], after+ahead[3], true
 	}
 }
 
