@@ -62,10 +62,15 @@
 // URL as one non-sensitive pair. Card numbers go BEFORE key=value too, whose
 // value class stops at the first space and would otherwise redact one group of a
 // grouped PAN and leave the remaining twelve digits behind a marker claiming the
-// line was scrubbed. The query-parameter pass stops at whitespace for the same
-// reason and had the same failure, but it runs BEFORE the card pass and cannot
-// be reordered without leaving the remainder of a sensitive non-card value in
-// the clear, so it takes a grouped digit run whole instead. The bare patterns go LAST so a vendor token is matched
+// line was scrubbed. The query-parameter pass ends a value at the bytes in
+// queryValueTerminators — space, tab, CR, LF, FF, '&', '#', both quotes, comma
+// and semicolon — for the same reason and had the same failure, but it runs
+// BEFORE the card pass and cannot be reordered without leaving the remainder of
+// a sensitive non-card value in the clear, so it takes a grouped digit run whole
+// instead. That list is deliberately spelled out rather than called
+// "whitespace": RE2's \s does not contain a vertical tab, a hand-written copy of
+// the class said it did, and a sanitizer that changed its own output on a second
+// run was the result. The bare patterns go LAST so a vendor token is matched
 // against the text as written rather than one an earlier pass has carved into.
 //
 // # What it does not cover
@@ -87,6 +92,22 @@
 // and ledger ids it exists to keep readable. A PAN printed glued to a neighbour
 // is a shape this package does not undertake to find; do not let one be written
 // that way.
+//
+// A SENSITIVE VALUE THAT IS NOT A DIGIT RUN KEEPS ITS REMAINDER. The
+// query-parameter pass ends the value at the first space and then grows it back
+// over following groups only while those groups are bare digits, so
+// "?cpf=1234 abcd efgh" is redacted to "?cpf=**** abcd efgh". The pass cannot
+// tell a value that continues after a space from a value followed by prose, and
+// growing over non-digits would swallow the sentence after every sensitive
+// parameter. A non-digit secret written with spaces in it is not covered.
+//
+// A PARTIALLY PERCENT-ENCODED GROUPED CARD KEEPS TWELVE DIGITS.
+// "?pan=4111%20 1111 1111 1111" leaves "?pan=**** 1111 1111 1111": the encoded
+// first separator makes the value one token that is not a bare digit group, so
+// the run is not grown over, and the remaining three groups are only twelve
+// digits — below the card minimum — so the card pass does not take them either.
+// A fully encoded value and a fully unencoded one are both handled; only the
+// mixture falls between them.
 //
 // A PEM BLOCK WITH NO CLOSING LINE IS OVER-REDACTED ON PURPOSE. A block that
 // kept its -----END is consumed exactly to that line. One that lost it — a key
