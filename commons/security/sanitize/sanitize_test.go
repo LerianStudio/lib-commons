@@ -2065,7 +2065,7 @@ func TestStringRedactsTheSecretWhoseKeyTheValueSlotAbsorbed(t *testing.T) {
 			// asserts it was scrubbed.
 			name:   "a validator message naming the field twice",
 			in:     "validator: field=cpf =cpf= 12345678901",
-			want:   "validator: field=cpf =cpf= " + marker,
+			want:   "validator: field=cpf =" + marker,
 			secret: "12345678901",
 		},
 		{
@@ -2535,7 +2535,14 @@ func TestStringRedactsWhenANonWordByteLeadsTheFieldNameInTheValue(t *testing.T) 
 			want: "pwd=" + marker,
 		},
 		{"a bracket", "secret=[cpf= 12345678901", "secret=" + marker},
-		{"a second separator", "password= =cpf= 12345678901", "password=" + marker},
+		{
+			// The separator is "= " here — its trailing whitespace belongs to
+			// the separator, not to the value — so those bytes are carried
+			// across and the marker starts where the value does.
+			name: "a second separator",
+			in:   "password= =cpf= 12345678901",
+			want: "password= " + marker,
+		},
 
 		// A WORD byte in front is not a boundary: "0password" is not the field
 		// "password", and a value that merely holds a name is still a value.

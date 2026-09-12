@@ -903,6 +903,37 @@ var directionBaseOverReach = []struct{ input, credential string }{
 	{input: "postgres://tok#en@example.com/v1/charge?a=1", credential: "tok#en"},
 }
 
+// directionBaseKeptNoCredential lists the pinned-base lines where the base
+// redacted text that is NOT a credential, so the head printing it is not a
+// narrowing however the residue rule reads it.
+//
+// Every one of them is "<sensitive key>=<name>=\v<pair>". 714ca9e admitted '\v'
+// as an ordinary value byte, so the whole tail was ONE value and went under the
+// marker — the response code with it. '\v' is whitespace on both sides of the
+// separator now, which makes "rc=200" the next pair, exactly as it is in
+// "password=abc_token= rc=200": a value that ends in the separator is a
+// complete value, and the pair behind it stays diagnosable.
+//
+// THE ROW ASSERTS THE CLEAR TEXT IS STILL THERE, which is the opposite
+// assertion to directionBaseOverReach and exists for the same reason — an
+// exemption that asserts nothing is a hole. A later pass that redacts the pair
+// after all turns these red, and they are deleted rather than left to rot.
+var directionBaseKeptNoCredential = []struct{ input, kept string }{
+	{input: "password=password=\vrc=200", kept: "rc=200"},
+	{input: "password=secret=\vrc=200", kept: "rc=200"},
+	{input: "password=token=\vrc=200", kept: "rc=200"},
+	{input: "password=cpf=\vrc=200", kept: "rc=200"},
+	{input: "password=rg=\vrc=200", kept: "rc=200"},
+	{input: "password=my-password=\vrc=200", kept: "rc=200"},
+	{input: "password=myPassword=\vrc=200", kept: "rc=200"},
+	{input: "password=myKey=\vrc=200", kept: "rc=200"},
+	{input: "password=hunter2.rg=\vrc=200", kept: "rc=200"},
+	{input: "password=s3cr3t.pin=\vrc=200", kept: "rc=200"},
+	{input: "password=aGVsbG8.cvc=\vrc=200", kept: "rc=200"},
+	{input: "password=xY9_key=\vrc=200", kept: "rc=200"},
+	{input: "password=abc_token=\vrc=200", kept: "rc=200"},
+}
+
 // TestStringNeverNarrowsAgainstThePinnedBase IS THE GATE THAT WOULD HAVE CAUGHT
 // THE REGRESSION IN 340fb0d, AND THE ONE THIS PACKAGE DID NOT HAVE.
 //
@@ -987,7 +1018,12 @@ func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
 		exempt[row.input] = row.credential
 	}
 
-	narrowed, widened, exempted := 0, 0, 0
+	keep := make(map[string]string, len(directionBaseKeptNoCredential))
+	for _, row := range directionBaseKeptNoCredential {
+		keep[row.input] = row.kept
+	}
+
+	narrowed, widened, exempted, keptClear := 0, 0, 0, 0
 
 	for i, in := range inputs {
 		got := String(in)
@@ -997,6 +1033,20 @@ func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
 
 		if isTokenSubsequence(redactionResidue(got), redactionResidue(base[i])) {
 			widened++
+
+			continue
+		}
+
+		if text, ok := keep[in]; ok {
+			keptClear++
+
+			// THE ROW ASSERTS THE NON-CREDENTIAL IS STILL PRINTED. The base
+			// removed it and the head does not, which is the one direction this
+			// harness refuses by default, so the row has to say what it is
+			// covering and go red when that stops being true.
+			require.Contains(t, got, text,
+				"%q is exempt only because the head keeps a non-credential the base redacted; it no longer keeps it, so delete the row",
+				in)
 
 			continue
 		}
@@ -1024,9 +1074,11 @@ func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
 	require.Zero(t, narrowed, "String must never leave clear text the pinned base removed")
 	require.Len(t, directionBaseOverReach, exempted,
 		"every exemption must still be a live difference; a stale row hides nothing and must be deleted")
+	require.Len(t, directionBaseKeptNoCredential, keptClear,
+		"every kept-clear row must still be a live difference; a stale row hides nothing and must be deleted")
 
-	t.Logf("DIRECTION %d inputs against the pinned 714ca9e base: %d narrowed, %d widened, %d exempt",
-		len(inputs), narrowed, widened, exempted)
+	t.Logf("DIRECTION %d inputs against the pinned 714ca9e base: %d narrowed, %d widened, %d exempt, %d kept-clear",
+		len(inputs), narrowed, widened, exempted, keptClear)
 }
 
 func firstOrEmpty(s []string) string {
@@ -1046,6 +1098,11 @@ func firstOrEmpty(s []string) string {
 // instead of re-deriving it, and walk the nested keys instead of rewinding or
 // recursing into them — and neither is allowed to change which span is redacted.
 // That claim is worth nothing asserted; this is where it is measured.
+//
+// THE EXTENSION IS CALLED, NOT COPIED. sensitiveValueEnd decides how far a
+// sensitive key's redaction reaches, and it is a decision rather than a shape,
+// so both sides ask it the same question. What this test measures is the walk:
+// which span each shape redacts, given the same answers.
 //
 // WHICH IS WHY THE DECISIONS ARE COPIED, NOT FROZEN, AND WHY THE NAME SAYS
 // "THE SAME SPANS" RATHER THAN "THE IMPLEMENTATION IT REPLACED". This is a
@@ -1076,25 +1133,12 @@ func legacyRedactKeyValuePairs(s string) string {
 		key, valueStart, valueEnd := s[loc[2]:loc[3]], loc[6], loc[7]
 		sensitive := isSensitiveFieldName(key)
 
-		rewind := false
-
-		if s[valueEnd-1] == '=' {
-			loc := keyPrefixPattern.FindStringSubmatchIndex(s[valueStart:valueEnd])
-
-			switch {
-			case loc == nil:
-			case valueStart+loc[1] < valueEnd:
-				rewind = !sensitive
-			default:
-				name := s[valueStart+loc[2] : valueStart+loc[3]]
-				rewind = !sensitive || (!wordBytePattern.MatchString(s[valueStart:valueStart+loc[0]]) &&
-					isSensitiveFieldName(name) && bareValueFollows(s, valueEnd))
-			}
-		}
-
-		if !rewind && nextPairSeparatorPattern.MatchString(s[valueEnd:]) {
-			rewind = !sensitive || isSensitiveFieldNameOnly(s[valueStart:valueEnd])
-		}
+		// Nothing is handed back from under a sensitive key: its value is the
+		// credential under one reading of the line and the next pair's key
+		// under the other, and both go under the marker.
+		rewind := !sensitive &&
+			((s[valueEnd-1] == '=' && keyPrefixPattern.MatchString(s[valueStart:valueEnd])) ||
+				nextPairSeparatorPattern.MatchString(s[valueEnd:]))
 
 		if rewind {
 			out.WriteString(s[pos:valueStart])
@@ -1104,15 +1148,19 @@ func legacyRedactKeyValuePairs(s string) string {
 			continue
 		}
 
+		end := valueEnd
+
 		replacement := SecretRedactionMarker
-		if !sensitive {
+		if sensitive {
+			end = sensitiveValueEnd(s, valueStart, valueEnd)
+		} else {
 			replacement = keyValuePattern.ReplaceAllStringFunc(s[valueStart:valueEnd], legacyRedactKeyValuePair)
 		}
 
 		out.WriteString(s[pos:valueStart])
 		out.WriteString(replacement)
 
-		pos = valueEnd
+		pos = end
 	}
 
 	out.WriteString(s[pos:])
