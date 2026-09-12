@@ -483,10 +483,12 @@ func urlAndPairLines(t *testing.T, n int) []string {
 //
 // THE NAMES CARRY PUNCTUATION AND VENDOR WORDS BECAUSE A WHOLE-NAME TEST AND A
 // SUBSTRING TEST AGREE ON EVERY CLEAN NAME. A value of "[cpf" or "hunter2@CVC"
-// is the only shape that tells the two apart, and the corpus does not hold one:
-// no input file line matches "=<non-word><name> =" at all, so a rule that
-// demanded the whole value be a field name sat under a green harness while it
-// printed the credential behind the spaced separator.
+// is the only shape that tells the two apart, and nothing but this function
+// ever wrote one: before pass 14 no line of testdata/direction/inputs.txt
+// matched "=<non-word><name> =" at all, so a rule that demanded the whole value
+// be a field name sat under a green harness while it printed the credential
+// behind the spaced separator. The lines that match that spelling today are the
+// ones written here, which is why the claim is in the past tense.
 func nameShapedValueLines() []string {
 	spaces := []string{" ", "\t", "\n", "\v", "\f", "\r"}
 	names := []string{
@@ -497,7 +499,8 @@ func nameShapedValueLines() []string {
 		// whether the value IS a name and a rule that asks whether it HOLDS one
 		// answer the same on all thirteen. A driver, a validator or a
 		// constraint prints the bracket, the quote or the bang in front of the
-		// name routinely, and no corpus line reaches the spelling at all.
+		// name routinely, and the committed fuzz corpus still reaches the
+		// spelling nowhere (measured: 0 of its 34 entries).
 		"[cpf", "!password", `"cpf"`, "(cpf", "<cvc", "{secret", "hunter2@CVC",
 	}
 	keys := []string{"password", "opt"}
