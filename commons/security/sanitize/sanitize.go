@@ -146,7 +146,16 @@ var urlPattern = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+`)
 // one value and redacted further — a sanitizer whose output changed when it was
 // run twice. A hand-copied character class drifting from its source is exactly
 // the failure this helper exists to prevent one level down.
-const queryValueTerminators = "&\t\n\f\r ,;\"'#"
+//
+// '\v' IS IN THE SET, AND IT IS THE WHOLE OF [[:space:]] THAT IS. Keeping it
+// out left this pass the last place in the file where a vertical tab was an
+// ordinary value byte, and once the key=value pass stopped at one the two
+// disagreed about a marker's right-hand edge: "&Cpf=****\v postgres://..."
+// came back as "&Cpf=**** postgres://...", the '\v' swallowed into the query
+// value and deleted with it. A sanitizer whose output changes on the second run
+// is the same defect as the drift above, arrived at from the other side, and
+// FuzzString found it in ninety seconds.
+const queryValueTerminators = "&\t\n\v\f\r ,;\"'#"
 
 var queryParameterPattern = regexp.MustCompile(
 	`([?&])([A-Za-z0-9_.-]+)=([^` + regexp.QuoteMeta(queryValueTerminators) + `]+)`)

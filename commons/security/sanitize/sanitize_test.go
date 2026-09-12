@@ -2369,24 +2369,27 @@ func TestStringScrubsAGroupedCardInsideAQueryString(t *testing.T) {
 			want: "&cpf=" + marker + " ",
 		},
 		{
-			// CONTROL, AND THE ONE THAT WAS WRONG. A vertical tab is NOT in
-			// RE2's \s, so the pattern admits it as ordinary value material and
-			// "5678\v" is one token rather than a bare group of digits. Nothing
-			// extends over it and the \v is kept — which is the same visible
-			// rule as the tab above, reached the other way round.
+			// CONTROL, AND THE ONE THAT MOVED. A vertical tab is a TERMINATOR
+			// here now, exactly as it is in the key=value pass, so "5678" is a
+			// bare group of digits and the value grows over it the way it grows
+			// over the groups of a printed card. The \v stays outside the
+			// marker, which is what a terminator means.
 			//
-			// The byte test used to disagree with the pattern here and call the
-			// token complete, so the value swallowed the \v, and a second run
-			// then took "****\v" as one value and redacted further. A sanitizer
-			// whose output changes when it is run twice.
-			name: "control: a vertical tab is value material, not a terminator",
+			// It was value material until pass 13, on the reasoning that RE2's
+			// \s does not hold it. That left this pass the last place in the
+			// file where a vertical tab was an ordinary byte: once the
+			// key=value pass stopped at one, "&Cpf=****\v postgres://..." came
+			// back from a SECOND run as "&Cpf=**** postgres://...", the \v
+			// swallowed into the query value and deleted with the marker.
+			// FuzzString found it; the seed is in the committed corpus.
+			name: "control: a vertical tab is a terminator, like every space",
 			in:   "&cpf=1234 5678\v",
-			want: "&cpf=" + marker + " 5678\v",
+			want: "&cpf=" + marker + "\v",
 		},
 		{
-			name: "control: a vertical tab mid-token is value material too",
+			name: "control: a vertical tab mid-token terminates there too",
 			in:   "&cpf=1234 5678\vx",
-			want: "&cpf=" + marker + " 5678\vx",
+			want: "&cpf=" + marker + "\vx",
 		},
 	}
 

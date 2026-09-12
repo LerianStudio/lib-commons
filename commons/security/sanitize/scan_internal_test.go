@@ -939,6 +939,13 @@ var directionBaseKeptNoCredential = []struct{ input, kept string }{
 	{input: "password=aGVsbG8.cvc=\vrc=200", kept: "rc=200"},
 	{input: "password=xY9_key=\vrc=200", kept: "rc=200"},
 	{input: "password=abc_token=\vrc=200", kept: "rc=200"},
+
+	// The FuzzString seed for the query pass's own vertical tab, which is a
+	// direction input because the corpus file is a test source. There is no
+	// credential on this line at all: 714ca9e read the whole run of quotes and
+	// vertical tabs as ONE value and put a marker over it, and the head stops
+	// at the first '\v' like every other whitespace byte.
+	{input: "&Cpf=\"\v\"\v\"\v\"\v", kept: "\v\""},
 }
 
 // TestStringNeverNarrowsAgainstThePinnedBase IS THE GATE THAT WOULD HAVE CAUGHT
