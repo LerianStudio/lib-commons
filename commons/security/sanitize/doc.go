@@ -170,10 +170,14 @@
 // The chain stops at the first covered token that is NOT followed by a
 // separator, so "cpf=cpf =cpf 12345678901" prints the eleven digits: the third
 // "cpf" is a bare word, nothing introduces anything behind it, and eleven digits
-// are not a card. The extension also fires only for a SENSITIVE name, so
-// "password=x= hunter2" prints hunter2 — extending through a bare word behind
-// any "<x>=" would swallow the text behind an ordinary base64 value that merely
-// ends in its padding.
+// are not a card. The extension also fires only for a token that carries name
+// evidence, so "password=x= hunter2" and "secret=0cpf =hunter2" both print the
+// trailing word beside a marker — "x" is not a name and "0cpf" is a digit run
+// with letters after it, not the word "cpf". That is the FALSE-ASSURANCE SHAPE
+// and it is the one to know about: the line says it was scrubbed and the
+// credential is on it. Extending through any "<x>=" instead would swallow the
+// prose behind every ordinary base64 value that merely ends in its padding
+// ("a=c2VjcmV0cGF5bG9hZA== <text>"), which is why the evidence is required.
 //
 // A whole pair behind the name is the exception, and only for one of the two
 // spellings. When the value ENDS in the separator it is already a complete
@@ -191,6 +195,33 @@
 // diagnostic pair per such token is the price of not choosing between the two
 // readings, and choosing is what leaked a credential in four consecutive
 // passes.
+//
+// POSTGRES' OWN UNIQUE-CONSTRAINT DETAIL LINE IS NOT COVERED, and it is the
+// spelling this package added "cpf" and "agencia" for. pgx echoes
+// "DETAIL: Key (cpf)=(12345678901) already exists." and the document is
+// printed: keyValueName stops at the ')' that sits between the name and the
+// '=', so there is no pair to find. The same holds for "Key (password)=(...)",
+// for a compound key "Key (cpf, agencia)=(...)" and for the quoted
+// "Key (\"cpf\")=(...)". "Key (cardnumber)=(4111111111111111)" IS redacted, by
+// the card pass rather than by any of this. The synthesised line
+// "unique constraint: key=cpf =(cpf =12345678901" that the tests carry is a
+// pair-shaped stand-in, NOT the string pgx emits. A pattern for the real
+// DETAIL line is a follow-up.
+//
+// A VALIDATOR THAT NAMES THE FIELD IN ITS OWN PAIR IS NOT COVERED.
+// "validation failed on field=cpf value=12345678901" prints the document: the
+// sensitive word is the VALUE of "field", and what holds the document is the
+// next pair, whose key is the harmless "value". Closing it means letting a
+// name-shaped value poison the following pair, which would also swallow the
+// count in "name=cpf count=3".
+//
+// UNDER A HARMLESS KEY, A NAME SEPARATED FROM ITS '=' BY PUNCTUATION IS NOT
+// SEEN. "pgx: opt=\"password\"= hunter2" and
+// "validation failed: field=\"cpf\"= 12345678901" both print their credential.
+// A harmless key is handled by rewinding into the value and letting the scanner
+// re-match the pair it finds there, and "\"password\"= hunter2" is not a pair to
+// the scanner because a quote is not a name byte. The sensitive-key spelling of
+// the same shape IS covered.
 //
 // A VERTICAL TAB IS WHITESPACE, on both sides of the separator. It is in
 // [[:space:]] and not in RE2's \s, and a value class written from the wrong one
