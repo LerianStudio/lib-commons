@@ -231,23 +231,6 @@ var nextPairPattern = regexp.MustCompile(`(?i)^` + keyValuePair)
 // redact". Built from the same classes as the pair above so it cannot drift.
 var bareValueAheadPattern = regexp.MustCompile(`^[` + keyValueValueSpace + `]*(` + keyValueValue + `+)`)
 
-// wholeFieldNamePattern is keyValueName and NOTHING ELSE, for asking whether a
-// value IS a field name rather than whether it holds one.
-//
-// ASKING isSensitiveFieldName OF RAW TEXT IS NOT THE SAME QUESTION, and the
-// fuzzer charges for the difference in seconds. That helper reports whether a
-// name it is GIVEN is sensitive, and it matches on substrings, so
-// "hunter2@CVC" reads as sensitive because "cvc" is in it — and a credential
-// whose text happens to hold a vendor word was handed back to the scanner
-// instead of being redacted: "0 =password=hunter2@CVC =" went to the log whole.
-var wholeFieldNamePattern = regexp.MustCompile(`(?i)^` + keyValueName + `$`)
-
-// isSensitiveFieldNameOnly reports whether a value IS a sensitive field name,
-// with nothing else in it.
-func isSensitiveFieldNameOnly(value string) bool {
-	return wholeFieldNamePattern.MatchString(value) && isSensitiveFieldName(value)
-}
-
 // nextPairSeparatorPattern is keyValueSeparator anchored at the start of the
 // text, for asking whether what follows a value is the next pair's separator.
 var nextPairSeparatorPattern = regexp.MustCompile(`^` + keyValueSeparator)
@@ -797,10 +780,22 @@ func bareValueFollows(s string, valueEnd int) bool {
 // ("abc_token=") is already a complete value, so a pair behind it
 // ("password=abc_token= rc=200") is the next pair and the value was the literal
 // text: a bare value is required there, and bareValueFollows refuses one that
-// starts a pair. A token that IS the name, with the separator behind it and
-// outside the value ("password=secret =0"), leaves a separator with no value at
-// all unless what follows it is one — there is no second reading to weigh, so
-// whatever follows is that value, pair-shaped or not.
+// starts a pair. A token with the separator BEHIND it and outside the value
+// ("password=secret =0") leaves a separator with no value at all unless what
+// follows it is one — there is no second reading to weigh, so whatever follows
+// is that value, pair-shaped or not.
+//
+// BOTH SHAPES ASK THE SAME QUESTION OF THE NAME, AND IT IS THE LOOSEST ONE THE
+// PACKAGE HAS. The second used to require the token to BE a field name and
+// nothing else, and a driver that pads its '=' prints the pair the other way
+// round often enough to matter: "secret=[cpf =12345678901",
+// "pgx: opt=password =!password =hunter2", "unique constraint: key=cpf =(cpf
+// =12345678901". None of those values is a clean name, so each introduced
+// nothing, and the credential behind the spaced separator was copied out
+// whole — while "secret=[cpf= 12345678901", one space to the left, was already
+// redacted by the first shape. Under redact-both the substring question can
+// only cost one over-redacted token; demanding the whole name cost the other
+// reading of the line.
 func introducesAValue(s string, start, end int) int {
 	if loc := prefixInsideValue(s, start, end); loc != nil && start+loc[1] == end &&
 		isSensitiveFieldName(s[start+loc[2]:start+loc[3]]) && bareValueFollows(s, end) {
@@ -808,7 +803,7 @@ func introducesAValue(s string, start, end int) int {
 	}
 
 	if sep := nextPairSeparatorPattern.FindString(s[end:]); sep != "" &&
-		isSensitiveFieldNameOnly(s[start:end]) {
+		isSensitiveFieldName(s[start:end]) {
 		return end + len(sep)
 	}
 

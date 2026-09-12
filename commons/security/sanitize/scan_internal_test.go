@@ -924,22 +924,34 @@ var directionBaseOverReach = []struct{ input, credential string }{
 	{input: "postgres://tok#en@example.com/v1/charge?a=1", credential: "tok#en"},
 }
 
-// directionBaseKeptNoCredential lists the pinned-base lines where the base
-// redacted text that is NOT a credential, so the head printing it is not a
-// narrowing however the residue rule reads it.
+// directionBaseKept lists the pinned-base lines where the base removed text the
+// head prints, for a reason that is not the head redacting less of a credential.
 //
-// Every one of them is "<sensitive key>=<name>=\v<pair>". 714ca9e admitted '\v'
+// MOST OF THEM ARE "<sensitive key>=<name>=\v<pair>". 714ca9e admitted '\v'
 // as an ordinary value byte, so the whole tail was ONE value and went under the
 // marker — the response code with it. '\v' is whitespace on both sides of the
 // separator now, which makes "rc=200" the next pair, exactly as it is in
 // "password=abc_token= rc=200": a value that ends in the separator is a
 // complete value, and the pair behind it stays diagnosable.
 //
+// ONE ROW IS A KNOWN GAP RATHER THAN A NON-CREDENTIAL, and it is named as one
+// because an exemption list that blurs the two is how a leak gets a green
+// harness. "password=\"cpf\"=\vhunter2" prints hunter2, and the yardstick for a
+// '\v' row is the SPACE analogue, not the pinned base: "password=\"cpf\"= hunter2"
+// prints it too, on this head and on 714ca9e and b84b1e7 alike. The value
+// '"cpf"=' ends in the separator but holds no field name ABUTTING it — the
+// closing quote sits between — so neither shape of introducesAValue reaches it,
+// and the base removed the credential only by the same accident that removed
+// the response codes above. Closing it means believing a name anywhere inside a
+// value that ends in '=', which is a choice between readings of the line and
+// not this pass's to make.
+//
 // THE ROW ASSERTS THE CLEAR TEXT IS STILL THERE, which is the opposite
 // assertion to directionBaseOverReach and exists for the same reason — an
-// exemption that asserts nothing is a hole. A later pass that redacts the pair
-// after all turns these red, and they are deleted rather than left to rot.
-var directionBaseKeptNoCredential = []struct{ input, kept string }{
+// exemption that asserts nothing is a hole. A later pass that redacts the pair,
+// or closes the gap, turns these red, and they are deleted rather than left to
+// rot.
+var directionBaseKept = []struct{ input, kept string }{
 	{input: "password=password=\vrc=200", kept: "rc=200"},
 	{input: "password=secret=\vrc=200", kept: "rc=200"},
 	{input: "password=token=\vrc=200", kept: "rc=200"},
@@ -953,6 +965,19 @@ var directionBaseKeptNoCredential = []struct{ input, kept string }{
 	{input: "password=aGVsbG8.cvc=\vrc=200", kept: "rc=200"},
 	{input: "password=xY9_key=\vrc=200", kept: "rc=200"},
 	{input: "password=abc_token=\vrc=200", kept: "rc=200"},
+
+	// The punctuation-led and vendor-word names, same shape and same reason.
+	{input: "password=[cpf=\vrc=200", kept: "rc=200"},
+	{input: "password=!password=\vrc=200", kept: "rc=200"},
+	{input: `password="cpf"=` + "\vrc=200", kept: "rc=200"},
+	{input: "password=(cpf=\vrc=200", kept: "rc=200"},
+	{input: "password=<cvc=\vrc=200", kept: "rc=200"},
+	{input: "password={secret=\vrc=200", kept: "rc=200"},
+	{input: "password=hunter2@CVC=\vrc=200", kept: "rc=200"},
+
+	// THE KNOWN GAP, spelled out above: a credential the head prints and the
+	// space analogue prints on every head.
+	{input: `password="cpf"=` + "\vhunter2", kept: "hunter2"},
 
 	// The FuzzString seed for the query pass's own vertical tab, which is a
 	// direction input because the corpus file is a test source. There is no
@@ -1046,8 +1071,8 @@ func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
 		exempt[row.input] = row.credential
 	}
 
-	keep := make(map[string]string, len(directionBaseKeptNoCredential))
-	for _, row := range directionBaseKeptNoCredential {
+	keep := make(map[string]string, len(directionBaseKept))
+	for _, row := range directionBaseKept {
 		keep[row.input] = row.kept
 	}
 
@@ -1102,7 +1127,7 @@ func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
 	require.Zero(t, narrowed, "String must never leave clear text the pinned base removed")
 	require.Len(t, directionBaseOverReach, exempted,
 		"every exemption must still be a live difference; a stale row hides nothing and must be deleted")
-	require.Len(t, directionBaseKeptNoCredential, keptClear,
+	require.Len(t, directionBaseKept, keptClear,
 		"every kept-clear row must still be a live difference; a stale row hides nothing and must be deleted")
 
 	t.Logf("DIRECTION %d inputs against the pinned 714ca9e base: %d narrowed, %d widened, %d exempt, %d kept-clear",
