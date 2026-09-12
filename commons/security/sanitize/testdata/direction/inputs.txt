@@ -1150,7 +1150,6 @@
 "password=<cvc=\vrc=200"
 "password={secret=\vrc=200"
 "password=hunter2@CVC=\vrc=200"
-"\vhunter2"
 "&Cpf="
 "\v\"\v\"\v\"\v"
 "the input generators contributed nothing"

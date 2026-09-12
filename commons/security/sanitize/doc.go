@@ -160,7 +160,12 @@
 // "password=password =0" are each a credential under one reading and a pair
 // boundary under the other, and both readings go under one marker rather than
 // the package picking between them — so a weak password that happens to be a
-// field word, and a document behind a name-shaped value, are both gone.
+// field word, and a document behind a name-shaped value, are both gone. A name
+// separated from its '=' by punctuation introduces a value the same way:
+// "password=\"cpf\"= hunter2", "password=cpf]= hunter2" and
+// "password=(cpf)= hunter2" are how a driver, a validator and a
+// unique-constraint violation print the same pair, and the credential behind
+// each of them goes under the marker too.
 //
 // The chain stops at the first covered token that is NOT followed by a
 // separator, so "cpf=cpf =cpf 12345678901" prints the eleven digits: the third

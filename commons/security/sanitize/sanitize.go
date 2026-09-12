@@ -802,8 +802,19 @@ func bareValueFollows(s string, valueEnd int) bool {
 // follows it is one — there is no second reading to weigh, so whatever follows
 // is that value, pair-shaped or not.
 //
-// BOTH SHAPES ASK THE SAME QUESTION OF THE NAME, AND IT IS THE LOOSEST ONE THE
-// PACKAGE HAS. The second used to require the token to BE a field name and
+// THE FIRST SHAPE ASKS ITS QUESTION TWICE, AND THE SECOND ASKING IS THE LOOSE
+// ONE. keyPrefixPattern needs the name to ABUT the separator, so a name the
+// writer quoted, bracketed or parenthesised slips past the rewind entirely:
+// "password=\"cpf\"= hunter2", "password=cpf]= hunter2" and
+// "password=(cpf)= hunter2" each put the marker over the value and copied the
+// password out beside it. Asking isSensitiveFieldName of the whole token in
+// front of the '=' reaches those, and it is ADDED beside the rewind rather than
+// replacing it: U+212A folds to 'k' but is not an ASCII word byte, so
+// "secret=\u212Acpf=" is a name to the rewind and not to the whole-token
+// question, and substituting one for the other reopened that whole family.
+//
+// ALL THREE SHAPES ASK THE SAME QUESTION OF THE NAME, AND IT IS THE LOOSEST ONE
+// THE PACKAGE HAS. The second used to require the token to BE a field name and
 // nothing else, and a driver that pads its '=' prints the pair the other way
 // round often enough to matter: "secret=[cpf =12345678901",
 // "pgx: opt=password =!password =hunter2", "unique constraint: key=cpf =(cpf
@@ -816,6 +827,10 @@ func bareValueFollows(s string, valueEnd int) bool {
 func introducesAValue(s string, start, end int) int {
 	if loc := prefixInsideValue(s, start, end); loc != nil && start+loc[1] == end &&
 		isSensitiveFieldName(s[start+loc[2]:start+loc[3]]) && bareValueFollows(s, end) {
+		return end
+	}
+
+	if s[end-1] == '=' && isSensitiveFieldName(s[start:end-1]) && bareValueFollows(s, end) {
 		return end
 	}
 

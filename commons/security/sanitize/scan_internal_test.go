@@ -941,26 +941,13 @@ var directionBaseOverReach = []struct{ input, credential string }{
 // directionBaseKept lists the pinned-base lines where the base removed text the
 // head prints, for a reason that is not the head redacting less of a credential.
 //
-// TWENTY OF THE TWENTY-TWO ARE "<sensitive key>=<name>=\v<pair>", one is the
-// FuzzString seed for the query pass's own vertical tab, and one is the known
-// gap named below. 714ca9e admitted '\v'
+// TWENTY OF THE TWENTY-ONE ARE "<sensitive key>=<name>=\v<pair>" and one is the
+// FuzzString seed for the query pass's own vertical tab. 714ca9e admitted '\v'
 // as an ordinary value byte, so the whole tail was ONE value and went under the
 // marker — the response code with it. '\v' is whitespace on both sides of the
 // separator now, which makes "rc=200" the next pair, exactly as it is in
 // "password=abc_token= rc=200": a value that ends in the separator is a
 // complete value, and the pair behind it stays diagnosable.
-//
-// ONE ROW IS A KNOWN GAP RATHER THAN A NON-CREDENTIAL, and it is named as one
-// because an exemption list that blurs the two is how a leak gets a green
-// harness. "password=\"cpf\"=\vhunter2" prints hunter2, and the yardstick for a
-// '\v' row is the SPACE analogue, not the pinned base: "password=\"cpf\"= hunter2"
-// prints it too, on this head and on 714ca9e and b84b1e7 alike. The value
-// '"cpf"=' ends in the separator but holds no field name ABUTTING it — the
-// closing quote sits between — so neither shape of introducesAValue reaches it,
-// and the base removed the credential only by the same accident that removed
-// the response codes above. Closing it means believing a name anywhere inside a
-// value that ends in '=', which is a choice between readings of the line and
-// not this pass's to make.
 //
 // THE ROW ASSERTS THE CLEAR TEXT IS STILL THERE, which is the opposite
 // assertion to directionBaseOverReach and exists for the same reason — an
@@ -990,10 +977,6 @@ var directionBaseKept = []struct{ input, want string }{
 	{input: "password=<cvc=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
 	{input: "password={secret=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
 	{input: "password=hunter2@CVC=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
-
-	// THE KNOWN GAP, spelled out above: a credential the head prints and the
-	// space analogue prints on every head.
-	{input: `password="cpf"=` + "\vhunter2", want: "password=" + SecretRedactionMarker + "\vhunter2"},
 
 	// The FuzzString seed for the query pass's own vertical tab, which is a
 	// direction input because the corpus file is a test source. There is no
