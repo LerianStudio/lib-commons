@@ -166,26 +166,35 @@ var queryParameterPattern = regexp.MustCompile(
 // non-idempotent. That is the same failure queryValueTerminators exists to
 // prevent one pass down, repeated here, which is why this constant exists
 // rather than a second spelling of the class.
-const keyValueSeparator = `[[:space:]]*=` + keyValueValueSpace + `*`
+const keyValueSeparator = `[` + keyValueValueSpace + `]*=[` + keyValueValueSpace + `]*`
 
-// keyValueValueSpace is the whitespace a VALUE refuses, and the separator's
-// trailing class IS that set rather than a second one that looks like it.
+// keyValueValueSpace is the whitespace a VALUE refuses, and the class the
+// separator's trailing run is built from rather than a second one that looks
+// like it.
 //
 // THE TWO CLASSES HAVE TO BE COMPLEMENTS OR THE PATTERNS DISAGREE ABOUT ONE
-// BYTE. [[:space:]] holds '\v' and RE2's \s ([\t\n\f\r ]) does not, so a value
-// class of [^\s,;&] admits '\v' while a separator ending in [[:space:]]* eats
-// it. In the full pattern the value's '+' makes the separator give that byte
-// back; keyPrefixPattern has nothing after the separator to force it, so its
-// match ended ONE BYTE PAST where the full pattern's value starts. Every offset
-// the walker compares against the value's end was then off by one on a line
-// ending in "<name>=\v": the chain read as finished and "k=k=pwd=\v" went to
+// BYTE, AND THAT BYTE IS '\v'. [[:space:]] holds it and RE2's \s ([\t\n\f\r ])
+// does not — over all 256 bytes it is the only place the two sets differ — and
+// the disagreement leaked in BOTH directions, one per side of the separator.
+//
+// On the key side, a value class of [^\s,;&] admitted '\v' while a separator
+// ending in [[:space:]]* ate it. In the full pattern the value's '+' makes the
+// separator give that byte back; keyPrefixPattern has nothing after the
+// separator to force it, so its match ended ONE BYTE PAST where the full
+// pattern's value starts, every offset the walker compares against the value's
+// end was off by one on a line ending in "<name>=\v", and "k=k=pwd=\v" went to
 // the log untouched.
 //
-// Written as the complement rather than as [\t\n\f\r]* so the relationship is
-// the definition and cannot drift back. This is the THIRD appearance of this
-// asymmetry in this file — queryValueTerminators and this separator both carry
-// the story of the previous two.
-const keyValueValueSpace = `\s`
+// On the value side, a lone '\v' WAS a value. "password=\v hunter2" put the
+// marker over the whitespace byte and printed the credential behind it, under a
+// line asserting it had been scrubbed — which is the worse half, and the half a
+// value class written as the complement of \s could not avoid.
+//
+// [[:space:]] IS THE WHITESPACE, once, written as the body of a class so both
+// sides spell the same set. This is the THIRD appearance of this asymmetry in
+// this file — queryValueTerminators and the separator above both carry the
+// story of the previous two.
+const keyValueValueSpace = `[:space:]`
 
 // keyValueValue is one byte of a key=value value: anything but the whitespace
 // above and the separators that start the next entry in a list.
@@ -221,7 +230,7 @@ var nextPairPattern = regexp.MustCompile(`(?i)^` + keyValuePair)
 // bareValueAheadPattern is the separator's whitespace followed by one byte the
 // value class admits: "is there a bare value behind this one for the scanner to
 // redact". Built from the same classes as the pair above so it cannot drift.
-var bareValueAheadPattern = regexp.MustCompile(`^[[:space:]]*(` + keyValueValue + `)`)
+var bareValueAheadPattern = regexp.MustCompile(`^[` + keyValueValueSpace + `]*(` + keyValueValue + `)`)
 
 // wordBytePattern is \b's own word class, for asking what sits in front of a
 // name found inside a value.

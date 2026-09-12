@@ -2650,14 +2650,19 @@ func TestStringRedactsBothReadingsOfANameShapedValue(t *testing.T) {
 }
 
 // TestStringRedactsAcrossAVerticalTabSeparator pins the ONE byte on which the
-// two key=value patterns disagree.
+// two key=value patterns used to disagree, from both sides of the separator.
 //
-// keyValuePattern's value class is [^\s,;&]+ and RE2's \s is [\t\n\f\r ], which
-// does not hold '\v'; the separator both patterns are built from ends in
-// [[:space:]]*, which does. So on "pwd=\v" the full pattern gives the '\v' back
-// to the value and keyPrefixPattern keeps it, and every offset the walker
-// compares against the value's end is then one byte long — the chain is judged
-// finished and the credential is copied across.
+// keyValuePattern's value class was [^\s,;&]+ and RE2's \s is [\t\n\f\r ],
+// which does not hold '\v'; the separator both patterns are built from ends in
+// [[:space:]]*, which does. On the key side that made keyPrefixPattern's match
+// end one byte past where the full pattern's value starts, so a chain ending in
+// "<name>=\v" read as finished and was copied across. On the value side it made
+// a lone '\v' a VALUE, so "password=\v hunter2" put the marker over a
+// whitespace byte and printed the credential behind it.
+//
+// Both classes are [[:space:]] now, so a '\v' is whitespace wherever it sits:
+// the chains below have no value to redact and come back unchanged, and the
+// credential behind the whitespace is the value.
 func TestStringRedactsAcrossAVerticalTabSeparator(t *testing.T) {
 	t.Parallel()
 
