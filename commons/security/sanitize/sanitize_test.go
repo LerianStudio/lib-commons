@@ -2703,24 +2703,46 @@ func TestStringRedactsBothReadingsOfANameShapedValue(t *testing.T) {
 		// name, and a credential that is not a name is only itself.
 		{"a pair behind the name", "password=abc_token= rc=200", "password=" + marker + " rc=200"},
 		{
-			// THE OTHER SHAPE PAYS ONE DIAGNOSTIC PAIR, AND THAT IS PINNED
-			// RATHER THAN FIXED. Above, the value ENDS in the separator, so it
-			// is already a complete value and the pair behind it is the next
-			// pair. Here the separator is outside the value, which leaves it
-			// with no value at all unless what follows is one — so "rc=200" is
-			// that value and goes under the marker. Exactly one pair, never
-			// two: "password=secret = host=db rc=200" keeps both of the pairs
-			// behind the first.
+			// THE OTHER SHAPE PAYS ONE DIAGNOSTIC PAIR PER NAME-SHAPED TOKEN,
+			// AND THAT IS PINNED RATHER THAN FIXED. Above, the value ENDS in
+			// the separator, so it is already a complete value and the pair
+			// behind it is the next pair. Here the separator is outside the
+			// value, which leaves it with no value at all unless what follows
+			// is one — so "rc=200" is that value and goes under the marker.
 			//
-			// Teaching this shape to refuse a pair is the choice-between-
-			// readings that leaked a credential in four consecutive passes, and
-			// the price of not choosing is a lost response code. The row exists
-			// so the price is visible and a future change to it is deliberate.
+			// THE CHAIN IS NOT BOUNDED TO ONE PAIR, whatever this row used to
+			// say, and the four rows below say what it does instead: it
+			// continues while the token it just covered itself reads as a field
+			// name in front of a spaced separator, and stops at the first that
+			// does not.
+			//
+			// Bounding it to one pair is the choice-between-readings that
+			// leaked a credential in four consecutive passes. Under the reading
+			// where "token" is the KEY of "token = hunter2" rather than rc's
+			// value, stopping at the complete pair prints hunter2. The price of
+			// not choosing is a lost diagnostic pair per name-shaped token, and
+			// these rows exist so the price is visible and a future change to
+			// it is deliberate.
 			name: "one diagnostic pair is the price of not choosing",
 			in:   "password=secret = rc=200",
 			want: "password=" + marker,
 		},
-		{"never two pairs", "password=secret = host=db rc=200", "password=" + marker + " rc=200"},
+		{"a pair that holds no field name stops the chain", "password=secret = host=db rc=200", "password=" + marker + " rc=200"},
+		{
+			name: "a pair that holds a field name continues it",
+			in:   "password=secret = rc=token = host=db port=5432",
+			want: "password=" + marker + " port=5432",
+		},
+		{"the chain stops at the first name-free pair", "password=secret = rc=200 = host=db", "password=" + marker + " = host=db"},
+		{
+			// THE GUARD. A bound on the chain turns this row RED, which is the
+			// whole reason it is here: behind a pair whose value is itself a
+			// field name, the token after it is a credential under one reading,
+			// and stopping early prints it.
+			name: "the credential behind a name-bearing pair is under the marker",
+			in:   "password=secret = rc=token = hunter2",
+			want: "password=" + marker,
+		},
 		{"nothing behind the name", "password=abc_token=", "password=" + marker},
 		{"base64 padding", "password=aGVsbG8=", "password=" + marker},
 		{"base64 padding and a word", "token=aGVsbG8= more", "token=" + marker + " more"},

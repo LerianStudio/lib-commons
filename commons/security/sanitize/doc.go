@@ -175,10 +175,17 @@
 // value, so "password=abc_token= rc=200" keeps its response code. When the
 // separator sits OUTSIDE the value there is no second reading to weigh — the
 // value is whatever follows — so "password=secret = rc=200" takes the response
-// code under the marker as well. It takes exactly one pair, never two:
-// "password=secret = host=db rc=200" keeps rc=200. One diagnostic pair is the
-// price of not choosing between the two readings, and choosing is what leaked a
-// credential in four consecutive passes.
+// code under the marker as well.
+//
+// It takes one pair per name-shaped token: the chain continues while the token
+// it just covered itself reads as a field name in front of a spaced separator
+// ("rc=token", "code=secret") and stops at the first that does not, so
+// "password=secret = host=db rc=200" keeps rc=200 and
+// "password=secret = rc=token = host=db port=5432" keeps only port=5432. Every
+// pair it takes is one a reader could take for "<name> = <secret>". One
+// diagnostic pair per such token is the price of not choosing between the two
+// readings, and choosing is what leaked a credential in four consecutive
+// passes.
 //
 // A VERTICAL TAB IS WHITESPACE, on both sides of the separator. It is in
 // [[:space:]] and not in RE2's \s, and a value class written from the wrong one
