@@ -527,7 +527,13 @@ func nameShapedValueLines() []string {
 				out = append(out,
 					key+"="+name+space+"=hunter2",
 					key+"="+name+"="+space+"hunter2",
-					key+"="+name+"="+space+"rc=200")
+					key+"="+name+"="+space+"rc=200",
+					// THE SECOND SHAPE WITH A PAIR BEHIND IT, which the three
+					// above do not build: the separator is outside the value
+					// here, so what follows is that value whether it is
+					// pair-shaped or not, and one diagnostic pair goes under
+					// the marker. That is a decision, so it is generated.
+					key+"="+name+space+"=rc=200")
 			}
 		}
 	}
@@ -956,40 +962,40 @@ var directionBaseOverReach = []struct{ input, credential string }{
 // exemption that asserts nothing is a hole. A later pass that redacts the pair,
 // or closes the gap, turns these red, and they are deleted rather than left to
 // rot.
-var directionBaseKept = []struct{ input, kept string }{
-	{input: "password=password=\vrc=200", kept: "rc=200"},
-	{input: "password=secret=\vrc=200", kept: "rc=200"},
-	{input: "password=token=\vrc=200", kept: "rc=200"},
-	{input: "password=cpf=\vrc=200", kept: "rc=200"},
-	{input: "password=rg=\vrc=200", kept: "rc=200"},
-	{input: "password=my-password=\vrc=200", kept: "rc=200"},
-	{input: "password=myPassword=\vrc=200", kept: "rc=200"},
-	{input: "password=myKey=\vrc=200", kept: "rc=200"},
-	{input: "password=hunter2.rg=\vrc=200", kept: "rc=200"},
-	{input: "password=s3cr3t.pin=\vrc=200", kept: "rc=200"},
-	{input: "password=aGVsbG8.cvc=\vrc=200", kept: "rc=200"},
-	{input: "password=xY9_key=\vrc=200", kept: "rc=200"},
-	{input: "password=abc_token=\vrc=200", kept: "rc=200"},
+var directionBaseKept = []struct{ input, want string }{
+	{input: "password=password=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=secret=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=token=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=cpf=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=rg=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=my-password=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=myPassword=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=myKey=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=hunter2.rg=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=s3cr3t.pin=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=aGVsbG8.cvc=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=xY9_key=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=abc_token=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
 
 	// The punctuation-led and vendor-word names, same shape and same reason.
-	{input: "password=[cpf=\vrc=200", kept: "rc=200"},
-	{input: "password=!password=\vrc=200", kept: "rc=200"},
-	{input: `password="cpf"=` + "\vrc=200", kept: "rc=200"},
-	{input: "password=(cpf=\vrc=200", kept: "rc=200"},
-	{input: "password=<cvc=\vrc=200", kept: "rc=200"},
-	{input: "password={secret=\vrc=200", kept: "rc=200"},
-	{input: "password=hunter2@CVC=\vrc=200", kept: "rc=200"},
+	{input: "password=[cpf=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=!password=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: `password="cpf"=` + "\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=(cpf=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=<cvc=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password={secret=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
+	{input: "password=hunter2@CVC=\vrc=200", want: "password=" + SecretRedactionMarker + "\vrc=200"},
 
 	// THE KNOWN GAP, spelled out above: a credential the head prints and the
 	// space analogue prints on every head.
-	{input: `password="cpf"=` + "\vhunter2", kept: "hunter2"},
+	{input: `password="cpf"=` + "\vhunter2", want: "password=" + SecretRedactionMarker + "\vhunter2"},
 
 	// The FuzzString seed for the query pass's own vertical tab, which is a
 	// direction input because the corpus file is a test source. There is no
 	// credential on this line at all: 714ca9e read the whole run of quotes and
 	// vertical tabs as ONE value and put a marker over it, and the head stops
 	// at the first '\v' like every other whitespace byte.
-	{input: "&Cpf=\"\v\"\v\"\v\"\v", kept: "\v\""},
+	{input: "&Cpf=\"\v\"\v\"\v\"\v", want: "&Cpf=" + SecretRedactionMarker + "\v\"\v\"\v\"\v"},
 }
 
 // TestStringNeverNarrowsAgainstThePinnedBase IS THE GATE THAT WOULD HAVE CAUGHT
@@ -1078,7 +1084,7 @@ func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
 
 	keep := make(map[string]string, len(directionBaseKept))
 	for _, row := range directionBaseKept {
-		keep[row.input] = row.kept
+		keep[row.input] = row.want
 	}
 
 	narrowed, widened, exempted, keptClear := 0, 0, 0, 0
@@ -1095,15 +1101,18 @@ func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
 			continue
 		}
 
-		if text, ok := keep[in]; ok {
+		if want, ok := keep[in]; ok {
 			keptClear++
 
-			// THE ROW ASSERTS THE NON-CREDENTIAL IS STILL PRINTED. The base
-			// removed it and the head does not, which is the one direction this
-			// harness refuses by default, so the row has to say what it is
-			// covering and go red when that stops being true.
-			require.Contains(t, got, text,
-				"%q is exempt only because the head keeps a non-credential the base redacted; it no longer keeps it, so delete the row",
+			// THE ROW CARRIES THE WHOLE OUTPUT, NOT THE TEXT IT KEEPS.
+			// "contains" was the first form and it was a hole: a mutant that
+			// printed a credential-shaped value WHOLE on this family left all
+			// thirteen rows of the day still containing their response code,
+			// and the exemption absorbed the leak it was written beside. An
+			// equality fails on one byte too few and on one byte too many, and
+			// these are fixed inputs, so it costs nothing to demand it.
+			require.Equal(t, want, got,
+				"%q is exempt only because the head's output is this exact string; it changed, so re-read the row and delete or update it",
 				in)
 
 			continue
@@ -1263,6 +1272,11 @@ func keyChainLines(t *testing.T, n int) []string {
 		// is here because the shipped operator line "pgx: opt=password= cpf\t="
 		// was unreachable from this generator's separator set.
 		"\v", "=\v", "!password= hunter2", "= hunter2", "=,next=1", "= rc=200",
+		// A value that is nothing but the separator twice, and one with a byte
+		// in front of it. The chain step asks whether the nested key's match
+		// ends BEFORE the value ends, and with no "k=a==" shape anywhere in the
+		// corpus an off-by-one there survived all of this differential.
+		"==", "a==",
 	}
 
 	out := make([]string, 0, n)

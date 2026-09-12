@@ -2700,6 +2700,25 @@ func TestStringRedactsBothReadingsOfANameShapedValue(t *testing.T) {
 		// Kept: a pair behind the name is the next pair, base64 padding is not a
 		// name, and a credential that is not a name is only itself.
 		{"a pair behind the name", "password=abc_token= rc=200", "password=" + marker + " rc=200"},
+		{
+			// THE OTHER SHAPE PAYS ONE DIAGNOSTIC PAIR, AND THAT IS PINNED
+			// RATHER THAN FIXED. Above, the value ENDS in the separator, so it
+			// is already a complete value and the pair behind it is the next
+			// pair. Here the separator is outside the value, which leaves it
+			// with no value at all unless what follows is one — so "rc=200" is
+			// that value and goes under the marker. Exactly one pair, never
+			// two: "password=secret = host=db rc=200" keeps both of the pairs
+			// behind the first.
+			//
+			// Teaching this shape to refuse a pair is the choice-between-
+			// readings that leaked a credential in four consecutive passes, and
+			// the price of not choosing is a lost response code. The row exists
+			// so the price is visible and a future change to it is deliberate.
+			name: "one diagnostic pair is the price of not choosing",
+			in:   "password=secret = rc=200",
+			want: "password=" + marker,
+		},
+		{"never two pairs", "password=secret = host=db rc=200", "password=" + marker + " rc=200"},
 		{"nothing behind the name", "password=abc_token=", "password=" + marker},
 		{"base64 padding", "password=aGVsbG8=", "password=" + marker},
 		{"base64 padding and a word", "token=aGVsbG8= more", "token=" + marker + " more"},
