@@ -722,10 +722,44 @@ func readQuotedLines(t *testing.T, path string) []string {
 }
 
 // redactionResidue is the clear text an output still carries: the output with
-// every marker removed. Direction is measured on it rather than on the output,
-// because a redaction that grows the string is still a redaction.
+// every marker replaced by a SPACE. Direction is measured on it rather than on
+// the output, because a redaction that grows the string is still a redaction.
+//
+// A SPACE AND NOT AN EMPTY STRING, because the residue is compared token by
+// token and removing material cannot join two tokens that were written apart.
+// Deleting the marker instead made "&cpf=**** 5678&9012" (base) and
+// "&cpf=****&9012" (head, which redacts the whole grouped run) look like a head
+// token spanning two base tokens, which is what a LEAK looks like — the head
+// there redacts strictly more.
 func redactionResidue(s string) string {
-	return strings.ReplaceAll(s, SecretRedactionMarker, "")
+	return strings.ReplaceAll(s, SecretRedactionMarker, " ")
+}
+
+// isTokenSubsequence reports whether every whitespace-delimited token of a can
+// be read out of the tokens of b, in order, one token inside one token.
+//
+// BYTE-LEVEL IS TOO WEAK TO BE THE MEASURE OF A CREDENTIAL. Run over the whole
+// residue, "hunter2" is a subsequence of an ordinary operator line — h-u-n-t-e-r
+// out of "user=hunter" and the 2 out of "ledger=2" — so a head that LEAKED a
+// short credential read as an ordinary widening. Whitespace is where a
+// credential ends, so requiring each head token to sit inside ONE base token
+// keeps the widenings that matter ("password=" inside the base's
+// "password=hunter2") and refuses the ones assembled out of unrelated words.
+func isTokenSubsequence(a, b string) bool {
+	base := strings.Fields(b)
+	next := 0
+
+	for _, token := range strings.Fields(a) {
+		for next < len(base) && !isSubsequence(token, base[next]) {
+			next++
+		}
+
+		if next == len(base) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // isSubsequence reports whether a can be read out of b in order.
@@ -903,7 +937,7 @@ func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
 			continue
 		}
 
-		if isSubsequence(redactionResidue(got), redactionResidue(base[i])) {
+		if isTokenSubsequence(redactionResidue(got), redactionResidue(base[i])) {
 			widened++
 
 			continue
