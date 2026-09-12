@@ -194,7 +194,20 @@ const keyValueValue = `[^` + keyValueValueSpace + `,;&]`
 // keyValuePair is the pair itself — key, separator, value — and it is written
 // ONCE for the same reason the separator is: the anchored form below has to be
 // the SAME question asked at a known offset, not a second spelling of it.
-const keyValuePair = `\b([a-z][a-z0-9._-]*)(` + keyValueSeparator + `)(` + keyValueValue + `+)`
+const keyValuePair = `\b(` + keyValueName + `)(` + keyValueSeparator + `)(` + keyValueValue + `+)`
+
+// keyValueName is the shape of a field name: what a key is allowed to be.
+const keyValueName = `[a-z][a-z0-9._-]*`
+
+// wholeFieldNamePattern is that shape and NOTHING ELSE, for asking whether a
+// value IS a field name rather than whether it holds one.
+//
+// ASKING isSensitiveFieldName OF RAW TEXT IS NOT THE SAME QUESTION, and the
+// fuzzer charges for the difference in seconds. That helper reports whether a
+// name it is GIVEN is sensitive, and it matches on substrings, so
+// "hunter2@CVC" reads as sensitive because "cvc" is in it — and a credential
+// whose text happens to hold a vendor word was handed back to the scanner
+// instead of being redacted: "0 =password=hunter2@CVC =" went to the log whole.
 
 var keyValuePattern = regexp.MustCompile(`(?i)` + keyValuePair)
 
@@ -209,6 +222,14 @@ var nextPairPattern = regexp.MustCompile(`(?i)^` + keyValuePair)
 // value class admits: "is there a bare value behind this one for the scanner to
 // redact". Built from the same classes as the pair above so it cannot drift.
 var bareValueAheadPattern = regexp.MustCompile(`^[[:space:]]*(` + keyValueValue + `)`)
+
+var wholeFieldNamePattern = regexp.MustCompile(`(?i)^` + keyValueName + `$`)
+
+// isSensitiveFieldNameOnly reports whether a value IS a sensitive field name,
+// with nothing else in it.
+func isSensitiveFieldNameOnly(value string) bool {
+	return wholeFieldNamePattern.MatchString(value) && isSensitiveFieldName(value)
+}
 
 // nextPairSeparatorPattern is keyValueSeparator anchored at the start of the
 // text, for asking whether what follows a value is the next pair's separator.
@@ -820,13 +841,15 @@ func resolvePair(s, key string, valueStart, valueEnd int) (start int, sensitive,
 		// credential that is orphaned. "a=password= rg =hunter2" rewinds onto
 		// "password", whose value is then the token "rg" — so the marker landed
 		// on a token and the credential behind the spaced separator was printed.
-		// "hunter2" is not a field name, which is what keeps the line above.
+		// "hunter2" is not a field name, which is what keeps the line above, and
+		// the value must BE a name rather than hold one: "hunter2@CVC" holds a
+		// vendor word and is a credential.
 		//
 		// The lookahead uses the pattern's OWN separator class. Any whitespace
 		// [[:space:]] admits can sit between the value and the next '=', so a
 		// form feed or a newline there is the same shape as a space.
 		if nextPairSeparatorPattern.MatchString(s[valueEnd:]) &&
-			(!sensitive || isSensitiveFieldName(s[valueStart:valueEnd])) {
+			(!sensitive || isSensitiveFieldNameOnly(s[valueStart:valueEnd])) {
 			return valueStart, sensitive, true
 		}
 

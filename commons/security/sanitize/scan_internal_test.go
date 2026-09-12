@@ -1034,7 +1034,7 @@ func legacyRedactKeyValuePairs(s string) string {
 		}
 
 		if !rewind && nextPairSeparatorPattern.MatchString(s[valueEnd:]) {
-			rewind = !sensitive || isSensitiveFieldName(s[valueStart:valueEnd])
+			rewind = !sensitive || isSensitiveFieldNameOnly(s[valueStart:valueEnd])
 		}
 
 		if rewind {
