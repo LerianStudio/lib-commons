@@ -668,6 +668,11 @@ func TestQueryValueClassAgreesWithItsByteTest(t *testing.T) {
 // already known to live in; these are the shapes an operator sees. They are
 // listed here so the direction harness below carries them permanently.
 var operatorDiagnosticLines = []string{
+	// A key pasted out of a kubectl output with its END line lost and a
+	// vertical tab where the newline was: the one whitespace byte RE2's \s does
+	// not hold, in the position a headless body starts at.
+	"loading signer: private_key=-----BEGIN RSA PRIVATE KEY-----\vMIIBAgEAAoIBAQDLVtBjTm3x",
+
 	// Connection strings, as the drivers echo them back on failure.
 	"pgx: host=db =password= hunter2 sslmode=require",
 	"host=db password=s3cr3t sslmode=require",

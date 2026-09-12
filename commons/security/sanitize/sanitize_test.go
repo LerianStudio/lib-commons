@@ -1672,6 +1672,39 @@ func TestStringRedactsAPEMBlockWhoseEndLineIsMissing(t *testing.T) {
 				"-----END RSA PRIVATE KEY-----",
 			absent: []string{"MIIEvQIBADANBgkq", "DEK-Info", "ENCRYPTED"},
 		},
+
+		// A VERTICAL TAB IS WHITESPACE HERE TOO, and it was the last class in
+		// the file written from RE2's \s. The body of a headless block stopped
+		// dead at the one byte [[:space:]] holds and \s does not, so the base64
+		// behind it went to the log under a marker asserting the line had been
+		// scrubbed. The first row is only redacted at all because the key=value
+		// pass owns the tail; the second has no key and printed its body on
+		// every head this package has shipped.
+		{
+			name:   "headless private key whose body starts after a vertical tab",
+			in:     "private_key=-----BEGIN RSA PRIVATE KEY-----\vMIIBAgEAAoIBAQDLVtBjTm3x",
+			absent: []string{"MIIBAgEAAoIBAQDLVtBjTm3x"},
+		},
+		{
+			name:   "headless armor whose body starts after a vertical tab",
+			in:     "-----BEGIN A-----\vMIIBkTCBLVtBjTm3x",
+			absent: []string{"MIIBkTCBLVtBjTm3x"},
+		},
+
+		// The same two positions with the whitespace bytes \s already holds,
+		// which are the control: these have always been covered, and naming
+		// them is what says the vertical tab was an asymmetry rather than a
+		// choice.
+		{
+			name:   "control: a space in that position is covered",
+			in:     "-----BEGIN A----- MIIBkTCBLVtBjTm3x",
+			absent: []string{"MIIBkTCBLVtBjTm3x"},
+		},
+		{
+			name:   "control: a tab in that position is covered",
+			in:     "-----BEGIN A-----\tMIIBkTCBLVtBjTm3x",
+			absent: []string{"MIIBkTCBLVtBjTm3x"},
+		},
 	}
 
 	for _, tt := range tests {
