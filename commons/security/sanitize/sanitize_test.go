@@ -2409,8 +2409,8 @@ func TestStringScrubsAGroupedCardInsideAQueryString(t *testing.T) {
 			// marker, which is what a terminator means.
 			//
 			// It was value material until pass 13, on the reasoning that RE2's
-			// \s does not hold it. That left this pass the last place in the
-			// file where a vertical tab was an ordinary byte: once the
+			// \s does not hold it. That left this pass disagreeing with the
+			// key=value pass about a marker's right-hand edge: once the
 			// key=value pass stopped at one, "&Cpf=****\v postgres://..." came
 			// back from a SECOND run as "&Cpf=**** postgres://...", the \v
 			// swallowed into the query value and deleted with the marker.
@@ -2662,8 +2662,10 @@ func TestStringRedactsWhenANonWordByteLeadsTheFieldNameInTheValue(t *testing.T) 
 // and when a sensitive name sits at the end of it, the redaction extends
 // through the bare value that name would introduce, and through the chain
 // behind that. A false positive costs one over-redacted word, which is the
-// direction this package already errs in; a false negative costs nothing,
-// because the value went under the marker either way.
+// direction this package already errs in; a false negative costs the token the
+// name introduces, which under the second reading IS the credential. So the
+// trigger is the loosest test the package has, not the strictest: demanding a
+// clean whole name printed "secret=[cpf =12345678901" in full.
 //
 // A WHOLE PAIR BEHIND THE NAME STOPS THE EXTENSION, and only there: a value
 // that ends in "<name>=" is a complete value, so "rc=200" behind it is the next

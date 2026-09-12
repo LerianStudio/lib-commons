@@ -110,6 +110,38 @@ var sensitiveFieldExtras = []string{
 // assuming one authority per match.
 var urlPattern = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+`)
 
+// queryValueTerminators are the bytes a query parameter's value does NOT admit.
+//
+// IT IS THE ONLY COPY, AND THAT IS THE POINT. The pattern's value class is built
+// from this constant and redactQueryParameters' byte test reads the same
+// constant, because the two were written out by hand once and drifted: the
+// helper listed '\v' as a terminator and RE2's \s does not contain it
+// ([\t\n\f\r ] only), so the regexp admitted '\v' as an ordinary value byte
+// while the helper called a token ending there complete. The helper then
+// extended a sensitive value over the run, and the next pass took "****\v" as
+// one value and redacted further — a sanitizer whose output changed when it was
+// run twice. A hand-copied character class drifting from its source is exactly
+// the failure this helper exists to prevent one level down.
+//
+// '\v' IS IN THE SET, AND IT IS THE WHOLE OF [[:space:]] THAT IS. Keeping it
+// out left this pass disagreeing with the key=value pass about a marker's
+// right-hand edge once that one stopped at a vertical tab: "&Cpf=****\v postgres://..."
+// came back as "&Cpf=**** postgres://...", the '\v' swallowed into the query
+// value and deleted with it. A sanitizer whose output changes on the second run
+// is the same defect as the drift above, arrived at from the other side, and
+// FuzzString found it in ninety seconds.
+//
+// TWO CLASSES IN THIS FILE STILL SPELL \s, AND BOTH ARE ON THE OVER-REDACTING
+// SIDE. urlPattern's tail and azureSASSignaturePattern's value run past a
+// vertical tab instead of stopping at one, so "?sig=abc\vrc=200" comes back as
+// "?sig=****" with the response code eaten, and a URL's authority is looked for
+// across a longer span. Neither prints a credential, which is why they are left
+// alone: a class that over-redacts on a byte is a diagnosability cost, and a
+// class that under-redacts on it is a leak. The value and body classes — this
+// one, the key=value separator and value, and the headless PEM body — are the
+// ones that had to change, and they are the ones that did.
+const queryValueTerminators = "&\t\n\v\f\r ,;\"'#"
+
 // queryParameterPattern finds one ?name=value or &name=value pair inside a query
 // string, so a credential carried as a URL parameter is redacted by field name.
 //
@@ -134,39 +166,9 @@ var urlPattern = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+`)
 // by the time the card pass ran. The line reached the log as
 // "?pan=**** 1111 1111 1111" — a marker asserting it had been scrubbed, with an
 // ordinary sixteen-digit card beside it. Any URL-shaped log line carried it.
-// queryValueTerminators are the bytes a query parameter's value does NOT admit.
-//
-// IT IS THE ONLY COPY, AND THAT IS THE POINT. The pattern's value class is built
-// from this constant and redactQueryParameters' byte test reads the same
-// constant, because the two were written out by hand once and drifted: the
-// helper listed '\v' as a terminator and RE2's \s does not contain it
-// ([\t\n\f\r ] only), so the regexp admitted '\v' as an ordinary value byte
-// while the helper called a token ending there complete. The helper then
-// extended a sensitive value over the run, and the next pass took "****\v" as
-// one value and redacted further — a sanitizer whose output changed when it was
-// run twice. A hand-copied character class drifting from its source is exactly
-// the failure this helper exists to prevent one level down.
-//
-// '\v' IS IN THE SET, AND IT IS THE WHOLE OF [[:space:]] THAT IS. Keeping it
-// out left this pass the last place in the file where a vertical tab was an
-// ordinary value byte, and once the key=value pass stopped at one the two
-// disagreed about a marker's right-hand edge: "&Cpf=****\v postgres://..."
-// came back as "&Cpf=**** postgres://...", the '\v' swallowed into the query
-// value and deleted with it. A sanitizer whose output changes on the second run
-// is the same defect as the drift above, arrived at from the other side, and
-// FuzzString found it in ninety seconds.
-const queryValueTerminators = "&\t\n\v\f\r ,;\"'#"
-
 var queryParameterPattern = regexp.MustCompile(
 	`([?&])([A-Za-z0-9_.-]+)=([^` + regexp.QuoteMeta(queryValueTerminators) + `]+)`)
 
-// keyValuePattern finds key=value fragments in config dumps and driver errors.
-// Sensitivity is decided by the field name, not by a package-local taxonomy.
-//
-// The value runs to the next whitespace, comma, semicolon or ampersand, which
-// means a trailing colon is swallowed into the redaction ("token=abc: refused"
-// becomes "token=**** refused"). That errs toward redacting one character too
-// many rather than one too few, which is the correct direction here.
 // keyValueSeparator is the optional spaces, '=', optional spaces that joins a
 // key to its value. IT IS WRITTEN ONCE. keyValuePattern is built from it and so
 // is the anchored lookahead below, because a hand-written copy of this class
@@ -217,6 +219,13 @@ const keyValuePair = `\b(` + keyValueName + `)(` + keyValueSeparator + `)(` + ke
 // keyValueName is the shape of a field name: what a key is allowed to be.
 const keyValueName = `[a-z][a-z0-9._-]*`
 
+// keyValuePattern finds key=value fragments in config dumps and driver errors.
+// Sensitivity is decided by the field name, not by a package-local taxonomy.
+//
+// The value runs to the next whitespace, comma, semicolon or ampersand, which
+// means a trailing colon is swallowed into the redaction ("token=abc: refused"
+// becomes "token=**** refused"). That errs toward redacting one character too
+// many rather than one too few, which is the correct direction here.
 var keyValuePattern = regexp.MustCompile(`(?i)` + keyValuePair)
 
 // nextPairPattern is keyValuePattern anchored, for asking whether a whole pair
@@ -226,9 +235,17 @@ var keyValuePattern = regexp.MustCompile(`(?i)` + keyValuePair)
 // the quadratic the walker exists to avoid.
 var nextPairPattern = regexp.MustCompile(`(?i)^` + keyValuePair)
 
-// bareValueAheadPattern is the separator's whitespace followed by one byte the
-// value class admits: "is there a bare value behind this one for the scanner to
-// redact". Built from the same classes as the pair above so it cannot drift.
+// bareValueAheadPattern is the separator's whitespace followed by a RUN of the
+// bytes the value class admits: where the bare value behind this one starts,
+// and where it ends. Built from the same classes as the pair above so it cannot
+// drift.
+//
+// THE RUN IS CAPTURED BECAUSE THE REDACTION REACHES THROUGH IT. sensitiveValueEnd
+// reads the run's END and carries the marker to it, so a capture of one byte
+// would end the redaction one byte into the token it is covering.
+// bareValueFollows asks only whether the run exists, and could have made do with
+// a single byte; there is one pattern rather than two because a second spelling
+// of this class is how every other drift in this file started.
 var bareValueAheadPattern = regexp.MustCompile(`^[` + keyValueValueSpace + `]*(` + keyValueValue + `+)`)
 
 // nextPairSeparatorPattern is keyValueSeparator anchored at the start of the
@@ -750,18 +767,6 @@ func redactKeyValuePairs(s string) string {
 	return out.String()
 }
 
-// resolvePair decides which pair the match at [valueStart, valueEnd) really is.
-// It returns where that value starts, whether the key that owns it is sensitive
-// — which it has already had to decide, and which is all the walker wanted the
-// key for — and whether the walker should hand the position back to the scanner
-// instead of redacting here.
-//
-// IT WALKS THE CHAIN RATHER THAN REWINDING ONCE PER KEY, and that is the whole
-// cost story. Every key nested inside a value ends its own value at the byte
-// this one does — a value is a run with no terminator in it, by construction —
-// so keyPrefixPattern finds the next key without measuring the tail again.
-// Rewinding into the value and re-running the FULL pattern re-measured that tail
-// once per key instead: 64 KiB of "a=b=" cost 50 seconds inside one log call.
 // prefixInsideValue finds the key of a pair nested inside a value, and only
 // when the value ends in the separator that pair would be introduced by.
 func prefixInsideValue(s string, valueStart, valueEnd int) []int {
@@ -836,11 +841,14 @@ func introducesAValue(s string, start, end int) int {
 // the name introduced, orphaned outside the match and copied across verbatim.
 //
 // So the value is redacted, always, and the redaction EXTENDS over the other
-// reading instead of picking it. The extension trigger may stay the substring
-// and camelCase question isSensitiveFieldName asks, because under redact-both a
-// false positive costs ONE over-redacted word — the direction this file already
-// declares safe — and a false negative costs nothing at all: the value went
-// under the marker either way.
+// reading instead of picking it. The extension trigger is the substring and
+// camelCase question isSensitiveFieldName asks, and it has to be the LOOSEST
+// test in the package rather than the tightest: a false positive costs ONE
+// over-redacted word, the direction this file already declares safe, and a
+// false negative costs the token the name introduces — which under the second
+// reading IS the credential. The value goes under the marker either way, but
+// the other reading does not, and "secret=[cpf =12345678901" is what a trigger
+// that demanded a clean whole name printed.
 //
 // It terminates because each step starts at or after the previous end and the
 // value class needs at least one byte, so end strictly increases and is bounded
@@ -869,6 +877,11 @@ func sensitiveValueEnd(s string, valueStart, valueEnd int) int {
 // which it has already had to decide and which is all the walker wanted the key
 // for, and whether the walker should hand the position back to the scanner
 // instead of redacting here.
+//
+// end IS MEANINGLESS WHEN rewind IS TRUE. The caller reads it only on the path
+// that redacts, and the rewind paths return the match's own end because there
+// is nothing else to return, not because it means anything. A mutant that
+// returns -1 from both of them leaves the suite green.
 //
 // EVERY REWIND IS ON A HARMLESS KEY. A sensitive key's value is the credential
 // under one reading of the line and the next pair's key under the other, and

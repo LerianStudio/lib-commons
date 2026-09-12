@@ -160,9 +160,25 @@
 // "password=password =0" are each a credential under one reading and a pair
 // boundary under the other, and both readings go under one marker rather than
 // the package picking between them — so a weak password that happens to be a
-// field word, and a document behind a name-shaped value, are both gone. A whole
-// pair behind the name is the exception: "password=abc_token= rc=200" keeps its
-// response code.
+// field word, and a document behind a name-shaped value, are both gone.
+//
+// The chain stops at the first covered token that is NOT followed by a
+// separator, so "cpf=cpf =cpf 12345678901" prints the eleven digits: the third
+// "cpf" is a bare word, nothing introduces anything behind it, and eleven digits
+// are not a card. The extension also fires only for a SENSITIVE name, so
+// "password=x= hunter2" prints hunter2 — extending through a bare word behind
+// any "<x>=" would swallow the text behind an ordinary base64 value that merely
+// ends in its padding.
+//
+// A whole pair behind the name is the exception, and only for one of the two
+// spellings. When the value ENDS in the separator it is already a complete
+// value, so "password=abc_token= rc=200" keeps its response code. When the
+// separator sits OUTSIDE the value there is no second reading to weigh — the
+// value is whatever follows — so "password=secret = rc=200" takes the response
+// code under the marker as well. It takes exactly one pair, never two:
+// "password=secret = host=db rc=200" keeps rc=200. One diagnostic pair is the
+// price of not choosing between the two readings, and choosing is what leaked a
+// credential in four consecutive passes.
 //
 // A VERTICAL TAB IS WHITESPACE, on both sides of the separator. It is in
 // [[:space:]] and not in RE2's \s, and a value class written from the wrong one

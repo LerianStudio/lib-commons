@@ -938,7 +938,9 @@ var directionBaseOverReach = []struct{ input, credential string }{
 // directionBaseKept lists the pinned-base lines where the base removed text the
 // head prints, for a reason that is not the head redacting less of a credential.
 //
-// MOST OF THEM ARE "<sensitive key>=<name>=\v<pair>". 714ca9e admitted '\v'
+// TWENTY OF THE TWENTY-TWO ARE "<sensitive key>=<name>=\v<pair>", one is the
+// FuzzString seed for the query pass's own vertical tab, and one is the known
+// gap named below. 714ca9e admitted '\v'
 // as an ordinary value byte, so the whole tail was ONE value and went under the
 // marker — the response code with it. '\v' is whitespace on both sides of the
 // separator now, which makes "rc=200" the next pair, exactly as it is in
