@@ -1052,6 +1052,13 @@ func FuzzString(f *testing.F) {
 		// A non-sensitive key and a dangling '=', which is what makes the pair
 		// after it the VALUE of this one instead of a pair of its own.
 		"opt =",
+		// One seed in unicode territory: a non-breaking space where the parser
+		// expects an ordinary one, a zero-width space inside a field name, and a
+		// long s — which folds to ASCII 's' under (?i) while \b, an ASCII rule,
+		// does not count it as a word character. That disagreement is what made
+		// the key=value rebuild drop bytes, and nothing in the seed set went
+		// anywhere near it.
+		"cpf\u00a0=\u200bpassword=\u017f",
 		strings.Repeat("a", 300),
 	}
 
@@ -1517,4 +1524,67 @@ func TestStringLeavesACardGluedToItsNeighbourAlone(t *testing.T) {
 	// The same digits with a boundary around them ARE redacted, which is what
 	// makes the three above a boundary gap rather than a broken Luhn gate.
 	assert.NotContains(t, sanitize.String("pan 4111111111111111 9999"), "4111111111111111")
+}
+
+func TestStringRedactsTheVendorShapesTheFirstPassMissed(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		in     string
+		secret string
+	}{
+		{
+			// Base64url padding is legal and libraries emit it. The class did not
+			// admit '=', so a padded token matched up to the pad and the pattern
+			// then failed its closing boundary — the whole JWT survived.
+			name:   "JWT with base64 padding",
+			in:     "verify: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0=.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW= rejected",
+			secret: "eyJzdWIiOiIxIn0=",
+		},
+		{
+			// alg:none carries an EMPTY signature, and it is the token shape most
+			// worth catching: it is what an attacker sends. The third segment was
+			// required to be non-empty, so this one was never matched at all.
+			name:   "alg:none JWT with an empty signature",
+			in:     "token eyJhbGciOiJub25lIn0.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJyb290In0. refused",
+			secret: "eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJyb290In0",
+		},
+		{
+			// Fine-grained PATs replaced the ghp_ family and have a different
+			// prefix entirely, so the ghp_/gho_/ghu_/ghs_/ghr_ rule never saw one.
+			name:   "GitHub fine-grained personal access token",
+			in:     "clone failed: github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz1234567890 denied",
+			secret: "github_pat_11ABCDEFG0abcdefghijklmnopqrstuvwxyz1234567890",
+		},
+		{
+			name:   "Slack app-level token",
+			in:     "socket mode: xapp-1-A01234567-1234567890123-abcdef0123456789 invalid",
+			secret: "xapp-1-A01234567-1234567890123-abcdef0123456789",
+		},
+		{
+			name:   "Slack token-rotation refresh token",
+			in:     "refresh: xoxe-1-My01234567890abcdefghijklmn expired",
+			secret: "xoxe-1-My01234567890abcdefghijklmn",
+		},
+		{
+			// Tools that lowercase their output exist, and the armor is still a
+			// private key whatever case the label is written in.
+			name:   "PEM block with a lowercase label",
+			in:     "-----begin rsa private key-----\nMIIEvQIBADANBgkqhkiG9w0\n-----end rsa private key-----",
+			secret: "MIIEvQIBADANBgkqhkiG9w0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.NotContains(t, got, tt.secret, "got %q", got)
+			assert.Contains(t, got, marker)
+			assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
+		})
+	}
 }

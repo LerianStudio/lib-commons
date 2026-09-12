@@ -211,13 +211,29 @@ var bareSecretPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`),
 	// GitHub tokens (ghp_/gho_/ghu_/ghs_/ghr_ + 36 or more chars).
 	regexp.MustCompile(`\bgh[pousr]_[0-9A-Za-z]{36,}\b`),
+	// GitHub FINE-GRAINED personal access tokens, which are the ones GitHub now
+	// issues and carry a prefix the rule above does not cover at all. The body
+	// admits '_' and is much longer than the floor here; the floor only has to
+	// be past the point where an ordinary identifier could reach it.
+	regexp.MustCompile(`\bgithub_pat_[0-9A-Za-z_]{20,}\b`),
 	// Stripe secret and restricted keys, live and test.
 	regexp.MustCompile(`\b(sk|rk)_(live|test)_[0-9A-Za-z]{16,}\b`),
-	// Slack tokens (xoxb-/xoxp-/xoxa-/xoxr-/xoxs- + dash-delimited segments).
-	regexp.MustCompile(`\bxox[baprs]-[0-9A-Za-z-]{10,}\b`),
+	// Slack tokens: the xox* family, plus xoxe- (the refresh token issued under
+	// token rotation) and xapp- (an app-level token, which is what a Socket Mode
+	// client echoes when it fails to connect). Both were outside the xox[baprs]
+	// class entirely.
+	regexp.MustCompile(`\b(?:xox[baprse]|xapp)-[0-9A-Za-z-]{10,}\b`),
 	// Bare JWTs, anchored on the "eyJ" header so it does not eat an ordinary
 	// dotted identifier.
-	regexp.MustCompile(`\beyJ[0-9A-Za-z_-]+\.[0-9A-Za-z_-]+\.[0-9A-Za-z_-]+\b`),
+	//
+	// THE SEGMENTS ADMIT '=' AND THE SIGNATURE MAY BE EMPTY. Base64url padding
+	// is legal and libraries emit it, and a class without '=' matched up to the
+	// pad and then failed its closing boundary, so a padded token survived
+	// whole. The empty signature is the alg:none shape - two segments and a
+	// trailing dot - which is the one token worth catching most, because it is
+	// what an attacker sends. The closing \b goes with it: a match ending on the
+	// dot has no word character behind it for the boundary to hold on.
+	regexp.MustCompile(`\beyJ[0-9A-Za-z_=-]+\.[0-9A-Za-z_=-]+\.[0-9A-Za-z_=-]*`),
 	// Bare e-mail addresses. PII the taxonomy already calls sensitive by field
 	// name, appearing with no field name — which is how a validator, an SMTP
 	// client or a unique-constraint violation echoes it. Same expression
@@ -296,8 +312,14 @@ var azureSASSignaturePattern = regexp.MustCompile(`(?i)([?&]sig=)[^&\s]+`)
 // runs past the end of the armor into whatever prose follows on the same lines.
 // That over-redaction is accepted: the alternative is leaving a private key in a
 // log, and the shape only arises on a block that is already malformed.
+// THE ARMOR LINE IS MATCHED CASE-INSENSITIVELY, scoped to the keyword and label
+// so the body class is not: a pipeline that lowercases what it stores exists,
+// canonical PEM is uppercase so nothing valid is lost, and the armor is still a
+// private key whatever case "BEGIN RSA PRIVATE KEY" is written in. Redacting a
+// lowercased block is the safe direction and the shape is distinctive enough
+// that it costs nothing else.
 var pemBlockPattern = regexp.MustCompile(
-	`(?s)-----BEGIN [A-Z0-9 ]+-----(?:.*?-----END [A-Z0-9 ]+-----|[\sA-Za-z0-9+/=]*)`)
+	`(?s)-----(?i:BEGIN [A-Z0-9 ]+)-----(?:.*?-----(?i:END [A-Z0-9 ]+)-----|[\sA-Za-z0-9+/=]*)`)
 
 // String strips credential material from a free-form string so DSNs, broker
 // URLs, SASL passwords, bearer tokens, AWS/GCP/GitHub/Stripe/Slack keys, JWTs
