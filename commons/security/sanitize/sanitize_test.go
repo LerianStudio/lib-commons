@@ -1469,6 +1469,37 @@ func TestStringStaysBoundedOnBackToBackCardNumbersAtTheLimit(t *testing.T) {
 	assertStringReturnsWithin(t, fillToBound("4111 1111 1111 1111 "), "back-to-back card numbers")
 }
 
+// TestStringStaysBoundedOnANestedKeyChainAtTheLimit is the OTHER quadratic in
+// this package, and it has nothing to do with card numbers.
+//
+// The key=value value class runs to the next whitespace, comma, semicolon or
+// ampersand, so a line with none of those is ONE value however many '=' it
+// holds: every key in "a=b=a=b=..." owns a value reaching the end of the input.
+// Re-running the full pattern for each of them re-measured the same tail every
+// time. 64 KiB of this shape cost 50 seconds inside one log call -- 96 before
+// the walker learned to step past a key it had already judged -- on whatever
+// goroutine happened to be writing the line.
+func TestStringStaysBoundedOnANestedKeyChainAtTheLimit(t *testing.T) {
+	t.Parallel()
+
+	assertStringReturnsWithin(t, fillToBound("a=b="), "a chain of nested keys")
+}
+
+// TestStringStaysBoundedOnAKeyChainInFrontOfACredentialAtTheLimit is the same
+// shape with something to find at the end of it, which is the expensive half.
+//
+// With no field name in the chain the walk gives up at the first key it cannot
+// use; with one at the end it descends the whole way, which is what the old
+// recursion did once per level over the whole remaining value. 64 KiB of it took
+// three minutes and eleven seconds.
+func TestStringStaysBoundedOnAKeyChainInFrontOfACredentialAtTheLimit(t *testing.T) {
+	t.Parallel()
+
+	assertStringReturnsWithin(t,
+		fillToBound("a=")[:sanitize.MaxInputLen-16]+"password=hunter2",
+		"a chain of nested keys in front of a credential")
+}
+
 func TestStringRedactsASensitivePairInsideANonSensitiveValue(t *testing.T) {
 	t.Parallel()
 

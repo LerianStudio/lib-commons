@@ -174,6 +174,21 @@ var keyValuePattern = regexp.MustCompile(`(?i)\b([a-z][a-z0-9._-]*)(` + keyValue
 // text, for asking whether what follows a value is the next pair's separator.
 var nextPairSeparatorPattern = regexp.MustCompile(`^` + keyValueSeparator)
 
+// keyPrefixPattern is keyValuePattern WITHOUT its value class: the same key and
+// the same separator, built from the same constant, so it finds a nested pair's
+// key at exactly the offset the full pattern would.
+//
+// IT IS WHAT MAKES A CHAIN OF KEYS LINEAR. The value class runs to the next
+// whitespace, comma, semicolon or ampersand, so on a line with none of those
+// every key in "a=b=c=...=password=hunter2" owns a value reaching the end of the
+// input. Re-running the full pattern for each key in that chain re-measured the
+// same tail every time, which is quadratic: 64 KiB of it cost 50 seconds inside
+// one log call, and 96 seconds before the walker short-circuited part of the
+// chain. This pattern stops at the separator, and the value's end is carried
+// along instead of re-derived, because it cannot move: a value is a run with no
+// terminator in it, so every key nested inside one ends at the same byte.
+var keyPrefixPattern = regexp.MustCompile(`(?i)\b([a-z][a-z0-9._-]*)` + keyValueSeparator)
+
 // jsonKeyValuePattern finds "key":"value" fragments so a JSON-shaped secret (a
 // marshaled config, or a request body echoed into an error) is redacted by field
 // name just like a key=value pair. Only string-valued keys are matched: a
@@ -401,6 +416,19 @@ func String(s string) string {
 		return ""
 	}
 
+	// THE BOUND IS CHECKED ONCE, ON THE WAY IN, AND A ROUND CAN GROW THE STRING
+	// PAST IT. "keY=#" becomes "keY=****", so 64 KiB of that shape settles at
+	// 98,302 bytes, and 64 KiB of "=Rg =0 " at 93,622 — 1.5 and 1.43 times the
+	// bound.
+	//
+	// A per-round check would buy nothing. The growth is ONE-SHOT: a site grows
+	// when its value is first replaced by the marker, and the marker is a fixed
+	// point of every pass that can match it, so the second round of both shapes
+	// above is already the fixed point and adds nothing. The ceiling is
+	// therefore a property of the input, not of the number of rounds, and the
+	// rounds after the first cost what a scan of that settled string costs —
+	// which the bound tests measure at the limit. Re-checking would only turn a
+	// completed redaction into a refusal that names a size.
 	if len(s) > MaxInputLen {
 		return fmt.Sprintf("%s (input of %d bytes exceeds the sanitizer bound; not scanned)",
 			SecretRedactionMarker, len(s))
@@ -570,49 +598,8 @@ func redactKeyValuePairs(s string) string {
 		}
 
 		key, valueStart, valueEnd := s[loc[2]:loc[3]], loc[6], loc[7]
-		sensitive := isSensitiveFieldName(key)
 
-		// A VALUE NEVER ENDS IN THE SEPARATOR.
-		//
-		// The value class admits '=' and stops at whitespace, so "opt =
-		// password= hunter2" and "host=db =password= hunter2" both match a value
-		// of "password=" — a field NAME and the separator that introduces the
-		// credential. The credential itself sits after the space, OUTSIDE the
-		// match, and is copied across verbatim: redacting that value scrubs the
-		// name and prints the secret. With a sensitive name in the key slot too
-		// ("field=cpf =cpf= 12345678901") the line even carries a marker
-		// asserting it was scrubbed.
-		//
-		// Hand the name back to the scanner as well. "<name>=" plus the
-		// whitespace behind it is exactly what keyValueSeparator admits, so the
-		// next iteration matches "password= hunter2" as one pair.
-		//
-		// THE ONE CASE WHERE THE '=' IS NOT A BOUNDARY is a sensitive key whose
-		// value merely ends in one: "token=aGVsbG8= more" is base64 padding, and
-		// rewinding there would put the token in the clear. It is told apart by
-		// the name the value would become — "password" and "cpf" are field
-		// names, "aGVsbG8" is not — which is the same question this pass already
-		// asks about every key.
-		rewind := s[valueEnd-1] == '=' &&
-			(!sensitive || isSensitiveFieldName(s[valueStart:valueEnd-1]))
-
-		// THE VALUE IS REALLY THE NEXT PAIR'S KEY. "tok =rg =0" reads as key
-		// "tok", value "rg" — and the " =0" behind it is then orphaned, so a
-		// sensitive name sitting in the value slot never gets its own value
-		// redacted. Rewind to the value and let it be matched as a key instead.
-		//
-		// ONLY WHEN THIS KEY IS NOT SENSITIVE. On a sensitive key the value is
-		// genuinely the secret and must be redacted here; rewinding past it left
-		// "password=hunter2 =Rg =0" with the password in the clear, which the
-		// committed fuzz corpus caught. Redacting and carrying on from the end
-		// of the value still lets the following pair be matched on its own.
-		//
-		// The lookahead uses the pattern's OWN separator class. Any whitespace
-		// [[:space:]] admits can sit between the value and the next '=', so a
-		// form feed or a newline there is the same shape as a space.
-		if !rewind && !sensitive {
-			rewind = nextPairSeparatorPattern.MatchString(s[valueEnd:])
-		}
+		key, valueStart, rewind := resolvePair(s, key, valueStart, valueEnd)
 
 		// Every rewind moves past at least the key and the separator, so pos
 		// strictly increases and the walk still terminates.
@@ -625,7 +612,7 @@ func redactKeyValuePairs(s string) string {
 		}
 
 		replacement := SecretRedactionMarker
-		if !sensitive {
+		if !isSensitiveFieldName(key) {
 			replacement = keyValuePattern.ReplaceAllStringFunc(s[valueStart:valueEnd], redactKeyValuePair)
 		}
 
@@ -640,20 +627,105 @@ func redactKeyValuePairs(s string) string {
 	return out.String()
 }
 
+// resolvePair decides which pair the match at [valueStart, valueEnd) really is.
+// It returns the key that owns the value, where that value starts, and whether
+// the walker should hand the position back to the scanner instead of redacting
+// here.
+//
+// IT WALKS THE CHAIN RATHER THAN REWINDING ONCE PER KEY, and that is the whole
+// cost story. Every key nested inside a value ends its own value at the byte
+// this one does — a value is a run with no terminator in it, by construction —
+// so keyPrefixPattern finds the next key without measuring the tail again.
+// Rewinding into the value and re-running the FULL pattern re-measured that tail
+// once per key instead: 64 KiB of "a=b=" cost 50 seconds inside one log call.
+func resolvePair(s, key string, valueStart, valueEnd int) (string, int, bool) {
+	for {
+		sensitive := isSensitiveFieldName(key)
+
+		// A VALUE NEVER ENDS IN THE SEPARATOR.
+		//
+		// The value class admits '=' and stops at whitespace, so "opt =
+		// password= hunter2" and "host=db =password= hunter2" both match a value
+		// of "password=" — a field NAME and the separator that introduces the
+		// credential. The credential itself sits after the space, OUTSIDE the
+		// match, and is copied across verbatim: redacting that value scrubs the
+		// name and prints the secret. With a sensitive name in the key slot too
+		// ("field=cpf =cpf= 12345678901") the line even carries a marker
+		// asserting it was scrubbed.
+		//
+		// THE ONE CASE WHERE THE '=' IS NOT A BOUNDARY is a sensitive key whose
+		// value merely ends in one: "token=aGVsbG8= more" is base64 padding, and
+		// stepping past it would put the token in the clear. It is told apart by
+		// the name the value would become — "password" and "cpf" are field
+		// names, "aGVsbG8" is not — which is the same question this pass already
+		// asks about every key.
+		if s[valueEnd-1] == '=' &&
+			(!sensitive || isSensitiveFieldName(s[valueStart:valueEnd-1])) {
+			loc := keyPrefixPattern.FindStringSubmatchIndex(s[valueStart:valueEnd])
+
+			// The separator IS that trailing '=', so the value it introduces
+			// sits past the whitespace behind it and outside this span. Only
+			// the scanner matches across that, and keyValueSeparator admits
+			// exactly the whitespace involved.
+			if loc == nil || valueStart+loc[1] >= valueEnd {
+				return key, valueStart, true
+			}
+
+			key, valueStart = s[valueStart+loc[2]:valueStart+loc[3]], valueStart+loc[1]
+
+			continue
+		}
+
+		// THE VALUE IS REALLY THE NEXT PAIR'S KEY. "tok =rg =0" reads as key
+		// "tok", value "rg" — and the " =0" behind it is then orphaned, so a
+		// sensitive name sitting in the value slot never gets its own value
+		// redacted. Hand the value back and let it be matched as a key instead.
+		//
+		// ONLY WHEN THIS KEY IS NOT SENSITIVE. On a sensitive key the value is
+		// genuinely the secret and must be redacted here; rewinding past it left
+		// "password=hunter2 =Rg =0" with the password in the clear, which the
+		// committed fuzz corpus caught. Redacting and carrying on from the end
+		// of the value still lets the following pair be matched on its own.
+		//
+		// The lookahead uses the pattern's OWN separator class. Any whitespace
+		// [[:space:]] admits can sit between the value and the next '=', so a
+		// form feed or a newline there is the same shape as a space.
+		if !sensitive && nextPairSeparatorPattern.MatchString(s[valueEnd:]) {
+			return key, valueStart, true
+		}
+
+		return key, valueStart, false
+	}
+}
+
 func redactKeyValuePair(match string) string {
 	loc := keyValuePattern.FindStringSubmatchIndex(match)
 	if loc == nil {
 		return match
 	}
 
-	key, value := match[loc[2]:loc[3]], match[loc[6]:loc[7]]
+	key, valueStart, valueEnd := match[loc[2]:loc[3]], loc[6], loc[7]
 
-	replacement := SecretRedactionMarker
-	if !isSensitiveFieldName(key) {
-		replacement = keyValuePattern.ReplaceAllStringFunc(value, redactKeyValuePair)
+	// THE NESTED PAIRS ARE WALKED, NOT RECURSED, for the reason resolvePair
+	// gives: the value's end never moves, so only the next key has to be found.
+	// Recursing re-ran the full pattern over the whole remaining value at every
+	// level, which turned 64 KiB of "a=" in front of one credential into three
+	// minutes of CPU on whatever goroutine was writing the log line.
+	//
+	// At most one pair can start inside a value, because the value class is
+	// greedy and every match it can hold therefore reaches the same end. The
+	// walk is that chain: step over each key that is not a field name, and
+	// redact the value of the first one that is.
+	for !isSensitiveFieldName(key) {
+		inner := keyPrefixPattern.FindStringSubmatchIndex(match[valueStart:valueEnd])
+		if inner == nil || valueStart+inner[1] >= valueEnd {
+			return match
+		}
+
+		key, valueStart = match[valueStart+inner[2]:valueStart+inner[3]], valueStart+inner[1]
 	}
 
-	return match[:loc[6]] + replacement + match[loc[7]:]
+	return match[:valueStart] + SecretRedactionMarker + match[valueEnd:]
 }
 
 // redactQueryParameters redacts sensitive query parameters by field name, and

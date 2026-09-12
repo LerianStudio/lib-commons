@@ -896,3 +896,145 @@ func firstOrEmpty(s []string) string {
 
 	return s[0]
 }
+
+// legacyRedactKeyValuePairs and legacyRedactKeyValuePair are the implementations
+// the linear chain walk replaced, kept verbatim so the rewrite can be held to
+// them input for input.
+//
+// The rewrite is two transformations of one idea — carry the value's end along
+// instead of re-deriving it, and walk the nested keys instead of rewinding or
+// recursing into them — and neither is allowed to change which span is redacted.
+// That claim is worth nothing asserted; this is where it is measured.
+func legacyRedactKeyValuePairs(s string) string {
+	var out strings.Builder
+
+	pos := 0
+
+	for pos < len(s) {
+		loc := keyValuePattern.FindStringSubmatchIndex(s[pos:])
+		if loc == nil {
+			break
+		}
+
+		for i := range loc {
+			if loc[i] >= 0 {
+				loc[i] += pos
+			}
+		}
+
+		key, valueStart, valueEnd := s[loc[2]:loc[3]], loc[6], loc[7]
+		sensitive := isSensitiveFieldName(key)
+
+		rewind := s[valueEnd-1] == '=' &&
+			(!sensitive || isSensitiveFieldName(s[valueStart:valueEnd-1]))
+
+		if !rewind && !sensitive {
+			rewind = nextPairSeparatorPattern.MatchString(s[valueEnd:])
+		}
+
+		if rewind {
+			out.WriteString(s[pos:valueStart])
+
+			pos = valueStart
+
+			continue
+		}
+
+		replacement := SecretRedactionMarker
+		if !sensitive {
+			replacement = keyValuePattern.ReplaceAllStringFunc(s[valueStart:valueEnd], legacyRedactKeyValuePair)
+		}
+
+		out.WriteString(s[pos:valueStart])
+		out.WriteString(replacement)
+
+		pos = valueEnd
+	}
+
+	out.WriteString(s[pos:])
+
+	return out.String()
+}
+
+func legacyRedactKeyValuePair(match string) string {
+	loc := keyValuePattern.FindStringSubmatchIndex(match)
+	if loc == nil {
+		return match
+	}
+
+	key, value := match[loc[2]:loc[3]], match[loc[6]:loc[7]]
+
+	replacement := SecretRedactionMarker
+	if !isSensitiveFieldName(key) {
+		replacement = keyValuePattern.ReplaceAllStringFunc(value, legacyRedactKeyValuePair)
+	}
+
+	return match[:loc[6]] + replacement + match[loc[7]:]
+}
+
+// keyChainLines builds the shape the rewrite exists for: a separator-free run of
+// nested keys, with and without a field name somewhere down the chain.
+//
+// THE CHAIN IS THE AXIS THE OTHER GENERATORS DO NOT HAVE. urlAndPairLines
+// produces at most two keys in a row, so it never reaches the level where the
+// old code re-measured the same tail; every difference between the two
+// implementations, if there is one, lives here.
+func keyChainLines(t *testing.T, n int) []string {
+	t.Helper()
+
+	rng := rand.New(rand.NewSource(20260912))
+
+	names := []string{"a", "b", "opt", "ref", "cpf", "password", "rg", "token", "x.y", "k-1", "aGVsbG8"}
+	tails := []string{"", "=", " hunter2", "hunter2", " ", "= 0", "&x", ",y", ";z", " =0"}
+
+	out := make([]string, 0, n)
+
+	for range n {
+		var b strings.Builder
+
+		for links := rng.Intn(12) + 1; links > 0; links-- {
+			b.WriteString(names[rng.Intn(len(names))])
+			b.WriteString([]string{"=", " =", "= ", " = "}[rng.Intn(4)])
+		}
+
+		b.WriteString(tails[rng.Intn(len(tails))])
+
+		out = append(out, b.String())
+	}
+
+	return out
+}
+
+func TestRedactKeyValuePairsMatchesTheImplementationItReplaced(t *testing.T) {
+	t.Parallel()
+
+	groups := []struct {
+		name   string
+		inputs []string
+	}{
+		{"committed fuzz corpus", corpusEntries(t)},
+		{"every string literal in the test sources", literalsFromTestSources(t)},
+		{"the pinned direction inputs", readQuotedLines(t, directionInputPath)},
+		{"URL authorities and key=value chains", urlAndPairLines(t, 5000)},
+		{"seeded nested key chains", keyChainLines(t, 5000)},
+		{"the six measurement shapes at 1 KiB", measurementShapes(1024)},
+	}
+
+	total := 0
+
+	for _, g := range groups {
+		require.NotEmpty(t, g.inputs, "%s contributed no inputs; the differential would be vacuous", g.name)
+
+		for _, in := range g.inputs {
+			if got, want := redactKeyValuePairs(in), legacyRedactKeyValuePairs(in); got != want {
+				t.Fatalf("%s: redactKeyValuePairs(%q)\n got  %q\n want %q", g.name, in, got, want)
+			}
+
+			total++
+		}
+
+		t.Logf("DIFFERENTIAL %-44s %5d inputs, 0 diffs", g.name, len(g.inputs))
+	}
+
+	t.Logf("DIFFERENTIAL TOTAL %d inputs, 0 diffs", total)
+}
