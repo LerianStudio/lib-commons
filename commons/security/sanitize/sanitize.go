@@ -685,7 +685,7 @@ func redactKeyValuePairs(s string) string {
 
 		key, valueStart, valueEnd := s[loc[2]:loc[3]], loc[6], loc[7]
 
-		key, valueStart, sensitive, rewind := resolvePair(s, key, valueStart, valueEnd)
+		valueStart, sensitive, rewind := resolvePair(s, key, valueStart, valueEnd)
 
 		// Every rewind moves past at least the key and the separator, so pos
 		// strictly increases and the walk still terminates.
@@ -714,10 +714,10 @@ func redactKeyValuePairs(s string) string {
 }
 
 // resolvePair decides which pair the match at [valueStart, valueEnd) really is.
-// It returns the key that owns the value, where that value starts, whether that
-// key is sensitive — which it has already had to decide — and whether the
-// walker should hand the position back to the scanner instead of redacting
-// here.
+// It returns where that value starts, whether the key that owns it is sensitive
+// — which it has already had to decide, and which is all the walker wanted the
+// key for — and whether the walker should hand the position back to the scanner
+// instead of redacting here.
 //
 // IT WALKS THE CHAIN RATHER THAN REWINDING ONCE PER KEY, and that is the whole
 // cost story. Every key nested inside a value ends its own value at the byte
@@ -735,7 +735,7 @@ func prefixInsideValue(s string, valueStart, valueEnd int) []int {
 	return keyPrefixPattern.FindStringSubmatchIndex(s[valueStart:valueEnd])
 }
 
-func resolvePair(s, key string, valueStart, valueEnd int) (owner string, start int, sensitive, rewind bool) {
+func resolvePair(s, key string, valueStart, valueEnd int) (start int, sensitive, rewind bool) {
 	for {
 		sensitive = isSensitiveFieldName(key)
 
@@ -799,7 +799,7 @@ func resolvePair(s, key string, valueStart, valueEnd int) (owner string, start i
 				// separator — and printed the credential behind each.
 				name := s[valueStart+loc[2] : valueStart+loc[3]]
 				if !sensitive || (isSensitiveFieldName(name) && bareValueFollows(s, valueEnd)) {
-					return key, valueStart, sensitive, true
+					return valueStart, sensitive, true
 				}
 			}
 		}
@@ -827,10 +827,10 @@ func resolvePair(s, key string, valueStart, valueEnd int) (owner string, start i
 		// form feed or a newline there is the same shape as a space.
 		if nextPairSeparatorPattern.MatchString(s[valueEnd:]) &&
 			(!sensitive || isSensitiveFieldName(s[valueStart:valueEnd])) {
-			return key, valueStart, sensitive, true
+			return valueStart, sensitive, true
 		}
 
-		return key, valueStart, sensitive, false
+		return valueStart, sensitive, false
 	}
 }
 
