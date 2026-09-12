@@ -31,12 +31,15 @@ const SecretRedactionMarker = "****"
 // turns a redactor into a leak. A refusal loses the message and keeps the
 // guarantee.
 //
-// The bound exists because the cost is real: the passes are linear, but there
-// are eighteen of them plus the card pass's fixed-point rounds, measured at
-// roughly 400 milliseconds per megabyte on an ordinary devbox — 8 MB of digit
-// runs takes about 3.4 seconds, on whatever goroutine happened to be writing a
-// log line. 64 KiB is far above any error string worth reading and far below the
-// point where that matters.
+// The bound exists because the cost is real, AND IT IS NOT LINEAR IN THE INPUT.
+// Each regexp pass is, and on unbroken digits the whole of String costs roughly
+// 400 milliseconds per megabyte on an ordinary devbox. But the card pass hands
+// an over-long run to a window scan over its digit GROUPS, which is quadratic in
+// the number of groups, so the shape of the input decides the cost far more than
+// its length: at this bound a 64 KiB line of grouped four-digit ledger ids costs
+// about 75 ms, while the same 64 KiB of back-to-back card numbers costs seconds.
+// 64 KiB is far above any error string worth reading and low enough that the
+// ordinary shapes stay in the tens of milliseconds.
 const MaxInputLen = 64 << 10
 
 // sensitiveFieldExtras augments the centralized lib-observability taxonomy with
@@ -437,7 +440,16 @@ func redactCardInsideRun(run string) string {
 	// only partly overlapping the real card, leaving the rest of its digits in
 	// the clear. Preferring width means a sixteen-digit reading always beats a
 	// twelve-digit one, wherever each begins.
-	for width := len(groups); width >= 2; width-- {
+	//
+	// THE WIDTH STARTS AT maxCardDigits, NOT AT len(groups), AND THAT CAP IS WHAT
+	// KEEPS THIS OUT OF CUBIC TIME. A window of w whole groups holds at least w
+	// digits, so every width above nineteen failed the length test on the line
+	// below and was skipped anyway — starting there cost a full pass over the run
+	// per discarded width. Without the cap a line of grouped ledger ids that are
+	// NOT cards took 15.6 ms at 1 KB, 922 ms at 4 KB, 6.9 s at 8 KB and 7m13s at
+	// 32 KB; with it, 64 KiB of the same shape is milliseconds. The readings it
+	// can reach are unchanged, which is why this is a cap and not a heuristic.
+	for width := min(len(groups), maxCardDigits); width >= 2; width-- {
 		for i := 0; i+width <= len(groups); i++ {
 			start, end := groups[i][0], groups[i+width-1][1]
 

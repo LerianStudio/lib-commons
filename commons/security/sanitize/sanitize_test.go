@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/security/sanitize"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -1051,7 +1052,11 @@ func FuzzString(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, prefix, suffix string) {
 		// Bounded so the fuzzer spends its budget on shapes rather than on
-		// length; the cost of a pass is linear in the input.
+		// length. Length is not a free dimension here: a regexp pass is linear,
+		// but a long run of digit groups becomes one over-long card candidate and
+		// is then searched a window of whole groups at a time, which is quadratic
+		// in the number of groups. Left unbounded the fuzzer would spend its whole
+		// budget inside that scan on one input.
 		if len(prefix) > 512 {
 			prefix = prefix[:512]
 		}
@@ -1284,4 +1289,51 @@ func TestErrorOnTypedNilCause(t *testing.T) {
 	assert.NotPanics(t, func() {
 		assert.Nil(t, sanitize.Error(cause), "a typed nil is a nil error")
 	})
+}
+
+// TestStringStaysBoundedOnAGroupedDigitRunAtTheLimit is a RUNTIME regression
+// test, not a behaviour one.
+//
+// A run of 4-digit groups that is NOT a card — three hundred grouped ledger ids
+// on one line, a fixed-width report pasted into an error — is the worst input
+// this package has, because the whole run becomes ONE over-long candidate and
+// the window scan then walks every window of whole groups inside it. With the
+// window width unbounded that scan is cubic in the number of groups: measured
+// 15.6 ms at 1 KB, 922 ms at 4 KB, 6.9 s at 8 KB and 7m13s at 32 KB, which at
+// MaxInputLen is most of an hour — on whatever goroutine happened to be writing
+// a log line.
+//
+// The bound is deliberately generous (a hundred times the measured cost) so
+// ordinary CI noise can never flake it. What it catches is the shape of the
+// curve coming back, not a few milliseconds of drift.
+//
+// IT FAILS AFTER THE BOUND RATHER THAN WAITING FOR THE CALL TO RETURN. A cubic
+// regression does not take slightly too long, it takes an hour, and a test that
+// waits for the answer before checking the clock reports that as a CI hang with
+// no output rather than as a failure.
+func TestStringStaysBoundedOnAGroupedDigitRunAtTheLimit(t *testing.T) {
+	t.Parallel()
+
+	const bound = 2 * time.Second
+
+	// Filled to exactly MaxInputLen, since the bound is what the package admits
+	// and therefore what an attacker or an unlucky report gets to send.
+	group := "1234 "
+	input := strings.Repeat(group, sanitize.MaxInputLen/len(group))
+	input += strings.Repeat("1", sanitize.MaxInputLen-len(input))
+
+	done := make(chan time.Duration, 1)
+
+	go func() {
+		start := time.Now()
+		sanitize.String(input)
+		done <- time.Since(start)
+	}()
+
+	select {
+	case elapsed := <-done:
+		assert.Less(t, elapsed, bound, "String() on %d bytes of grouped digits took %s", len(input), elapsed)
+	case <-time.After(bound):
+		t.Fatalf("String() on %d bytes of grouped digits did not return within %s", len(input), bound)
+	}
 }

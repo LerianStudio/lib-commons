@@ -73,7 +73,7 @@
 // TLD-less intranet address (user@localhost). Widening any of them costs more
 // false positives in ordinary prose than the shapes are worth here; a service
 // that handles them should not be relying on this package for that PII anyway.
-//
+
 // # Length is bounded, and the bound refuses rather than cuts
 //
 // Truncating BEFORE redaction is actively unsafe: a cut landing mid-secret
@@ -83,9 +83,13 @@
 // variant for the last_error column, which is a storage concern rather than a
 // redaction one.
 //
-// The bound exists because the cost is real. The patterns are RE2 and each pass
-// is linear, but there are eighteen of them plus the card pass's fixed-point
-// rounds, measured at roughly 400 milliseconds per megabyte on an ordinary
-// devbox — 8 MB of digit runs takes about 3.4 seconds, on whatever goroutine
-// happened to be writing a log line.
+// The bound exists because the cost is real, AND THE COST IS DECIDED BY THE
+// SHAPE OF THE INPUT RATHER THAN BY ITS LENGTH. The patterns are RE2 and each
+// pass is linear; on unbroken digits — the one shape that never enters the card
+// window scan — the whole of String costs roughly 400 milliseconds per megabyte
+// on an ordinary devbox. A run of digit GROUPS is different: it becomes one
+// over-long card candidate and is then searched a window of whole groups at a
+// time, which is quadratic in the number of groups. At MaxInputLen that is about
+// 75 ms for 64 KiB of grouped four-digit ledger ids, and seconds for 64 KiB of
+// back-to-back card numbers — see "# What it does not cover" for the residual.
 package sanitize
