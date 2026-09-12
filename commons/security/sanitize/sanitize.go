@@ -6,6 +6,7 @@ import (
 	"io"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/LerianStudio/lib-observability/v4/redaction"
@@ -521,8 +522,8 @@ func redactPemBlocks(s string) string {
 
 	next := -1
 
-	for i := len(armor) - 1; i >= 0; i-- {
-		if strings.EqualFold(s[armor[i][2]:armor[i][3]], "END") {
+	for i, a := range slices.Backward(armor) {
+		if strings.EqualFold(s[a[2]:a[3]], "END") {
 			next = i
 		}
 
@@ -1446,7 +1447,7 @@ func Error(err error) error {
 	// Error() on it panics for any implementation that reads a field — which is
 	// most of them. A panic here lands on an error path, on top of the failure
 	// being reported, in a helper whose whole job is to be safe to call.
-	if v := reflect.ValueOf(err); v.Kind() == reflect.Ptr && v.IsNil() {
+	if v := reflect.ValueOf(err); v.Kind() == reflect.Pointer && v.IsNil() {
 		return nil
 	}
 
