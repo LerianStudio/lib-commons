@@ -731,16 +731,24 @@ func resolvePair(s, key string, valueStart, valueEnd int) (string, int, bool) {
 		// sensitive name sitting in the value slot never gets its own value
 		// redacted. Hand the value back and let it be matched as a key instead.
 		//
-		// ONLY WHEN THIS KEY IS NOT SENSITIVE. On a sensitive key the value is
-		// genuinely the secret and must be redacted here; rewinding past it left
-		// "password=hunter2 =Rg =0" with the password in the clear, which the
-		// committed fuzz corpus caught. Redacting and carrying on from the end
-		// of the value still lets the following pair be matched on its own.
+		// ONLY WHEN THIS KEY'S VALUE IS NOT THE SECRET. On a sensitive key the
+		// value is normally the credential and must be redacted here; rewinding
+		// past it left "password=hunter2 =Rg =0" with the password in the clear,
+		// which the committed fuzz corpus caught. Redacting and carrying on from
+		// the end of the value still lets the following pair be matched on its
+		// own.
+		//
+		// EXCEPT WHEN THE VALUE IS ITSELF A FIELD NAME, and then it is the
+		// credential that is orphaned. "a=password= rg =hunter2" rewinds onto
+		// "password", whose value is then the token "rg" — so the marker landed
+		// on a token and the credential behind the spaced separator was printed.
+		// "hunter2" is not a field name, which is what keeps the line above.
 		//
 		// The lookahead uses the pattern's OWN separator class. Any whitespace
 		// [[:space:]] admits can sit between the value and the next '=', so a
 		// form feed or a newline there is the same shape as a space.
-		if !sensitive && nextPairSeparatorPattern.MatchString(s[valueEnd:]) {
+		if nextPairSeparatorPattern.MatchString(s[valueEnd:]) &&
+			(!sensitive || isSensitiveFieldName(s[valueStart:valueEnd])) {
 			return key, valueStart, true
 		}
 
