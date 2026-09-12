@@ -701,7 +701,7 @@ func redactKeyValuePairs(s string) string {
 
 		key, valueStart, valueEnd := s[loc[2]:loc[3]], loc[6], loc[7]
 
-		key, valueStart, rewind := resolvePair(s, key, valueStart, valueEnd)
+		key, valueStart, sensitive, rewind := resolvePair(s, key, valueStart, valueEnd)
 
 		// Every rewind moves past at least the key and the separator, so pos
 		// strictly increases and the walk still terminates.
@@ -714,7 +714,7 @@ func redactKeyValuePairs(s string) string {
 		}
 
 		replacement := SecretRedactionMarker
-		if !isSensitiveFieldName(key) {
+		if !sensitive {
 			replacement = keyValuePattern.ReplaceAllStringFunc(s[valueStart:valueEnd], redactKeyValuePair)
 		}
 
@@ -730,8 +730,9 @@ func redactKeyValuePairs(s string) string {
 }
 
 // resolvePair decides which pair the match at [valueStart, valueEnd) really is.
-// It returns the key that owns the value, where that value starts, and whether
-// the walker should hand the position back to the scanner instead of redacting
+// It returns the key that owns the value, where that value starts, whether that
+// key is sensitive — which it has already had to decide — and whether the
+// walker should hand the position back to the scanner instead of redacting
 // here.
 //
 // IT WALKS THE CHAIN RATHER THAN REWINDING ONCE PER KEY, and that is the whole
@@ -740,9 +741,19 @@ func redactKeyValuePairs(s string) string {
 // so keyPrefixPattern finds the next key without measuring the tail again.
 // Rewinding into the value and re-running the FULL pattern re-measured that tail
 // once per key instead: 64 KiB of "a=b=" cost 50 seconds inside one log call.
-func resolvePair(s, key string, valueStart, valueEnd int) (string, int, bool) {
+// prefixInsideValue finds the key of a pair nested inside a value, and only
+// when the value ends in the separator that pair would be introduced by.
+func prefixInsideValue(s string, valueStart, valueEnd int) []int {
+	if s[valueEnd-1] != '=' {
+		return nil
+	}
+
+	return keyPrefixPattern.FindStringSubmatchIndex(s[valueStart:valueEnd])
+}
+
+func resolvePair(s, key string, valueStart, valueEnd int) (owner string, start int, sensitive, rewind bool) {
 	for {
-		sensitive := isSensitiveFieldName(key)
+		sensitive = isSensitiveFieldName(key)
 
 		// A VALUE NEVER ENDS IN THE SEPARATOR.
 		//
@@ -763,14 +774,12 @@ func resolvePair(s, key string, valueStart, valueEnd int) (string, int, bool) {
 		// sensitive is what let it through. The question is whether the value IS
 		// a name, which is what keyPrefixPattern answers: it has to match at the
 		// front of the value and reach the '=' with nothing left over.
-		if s[valueEnd-1] == '=' {
-			loc := keyPrefixPattern.FindStringSubmatchIndex(s[valueStart:valueEnd])
-
+		// Nothing key-shaped in front of the '=' means it is not a pair boundary
+		// and the value is an ordinary value, so there is nothing to ask here.
+		// The scan stays behind the '=' test: it is a pass over the value, and
+		// the value is the whole line on the chains this walk exists for.
+		if loc := prefixInsideValue(s, valueStart, valueEnd); loc != nil {
 			switch {
-			case loc == nil:
-				// Nothing key-shaped in front of the '=', so it is not a pair
-				// boundary. Fall through and treat the value as a value.
-
 			case valueStart+loc[1] < valueEnd:
 				// A pair nested inside this value, owning the rest of it. Step
 				// onto its key; a sensitive key's own value is the secret and
@@ -806,7 +815,7 @@ func resolvePair(s, key string, valueStart, valueEnd int) (string, int, bool) {
 				// separator — and printed the credential behind each.
 				name := s[valueStart+loc[2] : valueStart+loc[3]]
 				if !sensitive || (isSensitiveFieldName(name) && bareValueFollows(s, valueEnd)) {
-					return key, valueStart, true
+					return key, valueStart, sensitive, true
 				}
 			}
 		}
@@ -834,10 +843,10 @@ func resolvePair(s, key string, valueStart, valueEnd int) (string, int, bool) {
 		// form feed or a newline there is the same shape as a space.
 		if nextPairSeparatorPattern.MatchString(s[valueEnd:]) &&
 			(!sensitive || isSensitiveFieldName(s[valueStart:valueEnd])) {
-			return key, valueStart, true
+			return key, valueStart, sensitive, true
 		}
 
-		return key, valueStart, false
+		return key, valueStart, sensitive, false
 	}
 }
 

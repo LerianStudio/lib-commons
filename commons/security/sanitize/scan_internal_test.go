@@ -989,11 +989,15 @@ func firstOrEmpty(s []string) string {
 // recursing into them — and neither is allowed to change which span is redacted.
 // That claim is worth nothing asserted; this is where it is measured.
 //
-// WHICH IS WHY THE DECISIONS ARE COPIED, NOT FROZEN. This is a differential on
-// the WALK, so when the rule about a value ending in the separator changes it
-// changes here too. Freezing the old rule instead would make this test pin the
-// defect that rule was corrected for, and it duly went red the moment one was:
-// "b=aGVsbG8 = rg=x.y=password=" kept its value under the frozen version.
+// WHICH IS WHY THE DECISIONS ARE COPIED, NOT FROZEN, AND WHY THE NAME SAYS
+// "THE SAME SPANS" RATHER THAN "THE IMPLEMENTATION IT REPLACED". This is a
+// differential on the WALK — it proves the two shapes agree GIVEN the same
+// decisions, and nothing more. Freezing the old decisions instead would make
+// this test pin the defects they have since been corrected for, and it duly
+// went red the moment one was: "b=aGVsbG8 = rg=x.y=password=" kept its value
+// under the frozen version. What guards the decisions themselves is the pinned
+// direction harness, which compares String's output against a base this
+// worktree cannot edit.
 func legacyRedactKeyValuePairs(s string) string {
 	var out strings.Builder
 
@@ -1112,7 +1116,7 @@ func keyChainLines(t *testing.T, n int) []string {
 	return out
 }
 
-func TestRedactKeyValuePairsMatchesTheImplementationItReplaced(t *testing.T) {
+func TestTheWalkRedactsTheSameSpansTheRecursionDid(t *testing.T) {
 	t.Parallel()
 
 	groups := []struct {
