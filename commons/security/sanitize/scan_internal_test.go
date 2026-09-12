@@ -414,14 +414,6 @@ func TestTheShortTailShapeRedactsNothingElse(t *testing.T) {
 	}
 }
 
-// TestQueryValueClassAgreesWithItsByteTest pins the compiled pattern's value
-// class against isQueryValueByte for every byte there is.
-//
-// The two were separate hand-written lists once, and they drifted on exactly one
-// byte: the helper called '\v' a terminator, RE2's \s does not contain it, and a
-// sanitizer that changed its own output on a second run was the result. They are
-// built from one constant now; this is what says so out loud, and what fails if
-// anyone writes the set out a second time.
 // urlAndPairLines builds the two shapes that produced every idempotence defect:
 // URLs whose authority holds a boundary byte a later pass can rewrite, and
 // chains of "<token> =<key> =<value>" where a token can steal the key slot.
@@ -647,6 +639,14 @@ func TestEveryCorpusInputSettlesWithinThreeRounds(t *testing.T) {
 	}
 }
 
+// TestQueryValueClassAgreesWithItsByteTest pins the compiled pattern's value
+// class against isQueryValueByte for every byte there is.
+//
+// The two were separate hand-written lists once, and they drifted on exactly one
+// byte: the helper called '\v' a terminator, RE2's \s does not contain it, and a
+// sanitizer that changed its own output on a second run was the result. They are
+// built from one constant now; this is what says so out loud, and what fails if
+// anyone writes the set out a second time.
 func TestQueryValueClassAgreesWithItsByteTest(t *testing.T) {
 	t.Parallel()
 

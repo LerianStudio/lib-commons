@@ -14,6 +14,11 @@ import (
 )
 
 func main() {
+	if len(os.Args) != 3 {
+		fmt.Fprintln(os.Stderr, "usage: direction_base_main <inputs.txt> <base-<sha>.txt>")
+		os.Exit(2)
+	}
+
 	in, err := os.Open(os.Args[1])
 	if err != nil {
 		panic(err)
@@ -26,8 +31,14 @@ func main() {
 	}
 	defer out.Close()
 
+	// A base file that is silently short is a gate that silently passes: a
+	// flush that fails (full disk) has to stop the run, not truncate the oracle.
 	w := bufio.NewWriter(out)
-	defer w.Flush()
+	defer func() {
+		if err := w.Flush(); err != nil {
+			panic(err)
+		}
+	}()
 
 	sc := bufio.NewScanner(in)
 	sc.Buffer(make([]byte, 0, 1<<20), 1<<22)
