@@ -1039,6 +1039,17 @@ var fuzzSecrets = []string{
 	// list can find that, since every other entry is anchored on a vendor shape
 	// that the bare-value pass catches whatever an earlier pass did to the text.
 	"password=hunter2",
+
+	// TWO PAIRS WHOSE SEPARATOR CARRIES WHITESPACE, AND WHOSE VALUE NOTHING ELSE
+	// WOULD SAVE. Every entry above is either anchored on a vendor shape or glued
+	// to its key, so the bare-value pass rescues it however an earlier pass has
+	// carved the text up. "hunter2" is an ordinary word and "12345678901" an
+	// ordinary digit run: the field name is the ONLY thing that redacts either,
+	// so a mis-parse that loses the name prints the value, which is exactly the
+	// defect this list could not see. The space after the '=' is the half that
+	// puts the value outside a match the key was absorbed into.
+	"password= hunter2",
+	"cpf= 12345678901",
 }
 
 // FuzzString fuzzes the TEXT AROUND a credential rather than the credential
@@ -1051,7 +1062,18 @@ var fuzzSecrets = []string{
 // left. That is exactly how the grouped-PAN and multi-URL defects behaved, and
 // neither was reachable from a hand-written fixture.
 func FuzzString(f *testing.F) {
-	seeds := []string{
+	for _, seed := range fuzzSeeds() {
+		f.Add(seed, " refused")
+	}
+
+	f.Fuzz(func(t *testing.T, prefix, suffix string) {
+		assertNoSecretSurvives(t, prefix, " ", " ", suffix)
+	})
+}
+
+// fuzzSeeds is the seed set both fuzz targets start from.
+func fuzzSeeds() []string {
+	return []string{
 		"",
 		"dial tcp:",
 		`{"host":"db","password":`,
@@ -1070,38 +1092,79 @@ func FuzzString(f *testing.F) {
 		// does not count it as a word character. That disagreement is what made
 		// the key=value rebuild drop bytes, and nothing in the seed set went
 		// anywhere near it.
-		"cpf\u00a0=\u200bpassword=\u017f",
+		"cpf =​password=ſ",
 		strings.Repeat("a", 300),
 	}
+}
 
-	for _, seed := range seeds {
-		f.Add(seed, " refused")
+// fuzzSeparators are the joins a credential is actually written against: the
+// '=' of a pair, the '@' of an authority, the '://' of a scheme, the '&' of a
+// query, the '#' a fragment is mistaken for, a path '/'. FuzzStringGlued picks
+// one for each side of the secret.
+//
+// THE EMPTY STRING IS DELIBERATELY NOT IN THE SET, and leaving it out is what
+// keeps the property total rather than a guess. Every pattern in this package
+// anchors on a word boundary, so gluing fuzzer-chosen text straight onto the
+// secret makes a DIFFERENT word: "xAKIAIOSFODNN7EXAMPLE" is not an access key
+// id and "apassword=hunter2" is not the field "password". Asserting that those
+// must be redacted would be asserting something false. Every entry here is a
+// non-word byte, which is the boundary the anchors need and the only context
+// any of them gets.
+var fuzzSeparators = []string{" ", "=", " =", "= ", "@", "://", "&", "#", "/"}
+
+// FuzzStringGlued is FuzzString with the two joins around the credential under
+// the fuzzer's control instead of fixed at a space.
+//
+// IT EXISTS BECAUSE THE SPACES WERE HIDING A WHOLE CLASS. With " " on both
+// sides, "<prefix>=<key>= <secret>" and "<key>=<secret>@host" were unreachable,
+// so the key=value walker's habit of absorbing the next pair's key into a value
+// was invisible to the fuzzer even after it shipped as a leak. It is a second
+// target rather than two more arguments on the first so the sixteen committed
+// FuzzString corpus files keep loading unchanged; the property body is shared.
+func FuzzStringGlued(f *testing.F) {
+	for _, seed := range fuzzSeeds() {
+		f.Add(seed, " refused", byte(0), byte(0))
 	}
 
-	f.Fuzz(func(t *testing.T, prefix, suffix string) {
-		// Bounded so the fuzzer spends its budget on shapes rather than on
-		// length. Length is not a free dimension here: a regexp pass is linear,
-		// but a long run of digit groups becomes one over-long card candidate and
-		// is then searched a window of whole groups at a time, which is quadratic
-		// in the number of groups. Left unbounded the fuzzer would spend its whole
-		// budget inside that scan on one input.
-		if len(prefix) > 512 {
-			prefix = prefix[:512]
-		}
-
-		if len(suffix) > 512 {
-			suffix = suffix[:512]
-		}
-
-		for _, secret := range fuzzSecrets {
-			in := prefix + " " + secret + " " + suffix
-
-			got := sanitize.String(in)
-
-			require.NotContains(t, got, secret, "credential survived with prefix %q suffix %q", prefix, suffix)
-			require.Equal(t, got, sanitize.String(got), "re-running the sanitizer must not change an already-sanitized string")
-		}
+	f.Fuzz(func(t *testing.T, prefix, suffix string, before, after byte) {
+		assertNoSecretSurvives(t,
+			prefix,
+			fuzzSeparators[int(before)%len(fuzzSeparators)],
+			fuzzSeparators[int(after)%len(fuzzSeparators)],
+			suffix)
 	})
+}
+
+// assertNoSecretSurvives is the property both fuzz targets assert: every
+// credential family planted in fuzzer-chosen text goes, and the output is a
+// fixed point.
+func assertNoSecretSurvives(t *testing.T, prefix, before, after, suffix string) {
+	t.Helper()
+
+	// Bounded so the fuzzer spends its budget on shapes rather than on
+	// length. Length is not a free dimension here: a regexp pass is linear,
+	// but a long run of digit groups becomes one over-long card candidate and
+	// is then searched a window of whole groups at a time, which is quadratic
+	// in the number of groups. Left unbounded the fuzzer would spend its whole
+	// budget inside that scan on one input.
+	if len(prefix) > 512 {
+		prefix = prefix[:512]
+	}
+
+	if len(suffix) > 512 {
+		suffix = suffix[:512]
+	}
+
+	for _, secret := range fuzzSecrets {
+		in := prefix + before + secret + after + suffix
+
+		got := sanitize.String(in)
+
+		require.NotContains(t, got, secret,
+			"credential survived with prefix %q before %q after %q suffix %q", prefix, before, after, suffix)
+		require.Equal(t, got, sanitize.String(got),
+			"re-running the sanitizer must not change an already-sanitized string")
+	}
 }
 
 func TestStringKeepsTheRestOfTheLineAroundAnAuthHeader(t *testing.T) {
