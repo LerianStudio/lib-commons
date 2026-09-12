@@ -857,18 +857,38 @@ func (repo *Repository) markStuckEventsInvalid(
 		return fmt.Errorf("stuck invalid transition: %w", err)
 	}
 
+	// Same accumulation rule as MarkFailed, for the same reason: a row that
+	// already failed nine times with real causes and is then reclaimed as
+	// stuck must not have that diagnosis replaced. This path has no per-row
+	// error of its own — the row was abandoned mid-PROCESSING rather than
+	// returning one — so the cause it contributes names that condition.
+	// Mirrors outbox.AppendErrorCause.
 	table := quoteIdentifierPath(repo.tableName)
 	query := "UPDATE " + table + // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
 		" SET status = $1::outbox_event_status, attempts = attempts + 1, " +
-		"last_error = $2, updated_at = $3 WHERE id = ANY($4::uuid[]) AND status = $5::outbox_event_status"
+		"last_error = CASE " +
+		"WHEN last_error IS NULL OR btrim(last_error) = '' THEN $2 " +
+		"WHEN position(chr(10) || $2 || chr(10) IN chr(10) || last_error || chr(10)) > 0 THEN last_error " +
+		"WHEN position($6 IN last_error) > 0 THEN last_error " +
+		"WHEN char_length(last_error) + 1 + char_length($2) <= $7 THEN last_error || chr(10) || $2 " +
+		"ELSE left(last_error, $7) || $6 END, " +
+		"updated_at = $3 WHERE id = ANY($4::uuid[]) AND status = $5::outbox_event_status"
 
-	filter, filterArgs, filterErr := repo.tenantFilterClause(6, tenantID)
+	filter, filterArgs, filterErr := repo.tenantFilterClause(8, tenantID)
 	if filterErr != nil {
 		return filterErr
 	}
 
-	args := make([]any, 0, 5+len(filterArgs))
-	args = append(args, outbox.OutboxStatusInvalid, "max dispatch attempts exceeded", now, ids, outbox.OutboxStatusProcessing)
+	args := make([]any, 0, 7+len(filterArgs))
+	args = append(args,
+		outbox.OutboxStatusInvalid,
+		outbox.StuckInProcessingCause,
+		now,
+		ids,
+		outbox.OutboxStatusProcessing,
+		outbox.LastErrorTruncationMarker,
+		outbox.LastErrorCauseBudget(),
+	)
 
 	query += filter
 
