@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -597,4 +598,71 @@ func TestRunReadOnlyReportsACallerCancelAsACancel(t *testing.T) {
 	assert.NotErrorIs(t, err, ErrReadOnlyStatementTimeout, "a caller cancel is not a slow plan")
 	assert.NotErrorIs(t, err, ErrReadOnlyTxDeadline, "a caller cancel is not a deadline either")
 	assert.ErrorIs(t, err, canceledByServer, "the driver error must stay in the chain")
+}
+
+func TestRunReadOnlyReportsACallerCancelWhenOnlyTheServerErrorComesBack(t *testing.T) {
+	t.Parallel()
+
+	// WHICH ERROR THE DRIVER RETURNS ON A CANCEL IS A RACE, and the doc's
+	// promise has to hold on both outcomes. When the client notices the
+	// cancellation first, the chain carries context.Canceled and the caller can
+	// see it. When PostgreSQL acts on the cancel request first, the driver
+	// returns only its own 57014 — and the classifier handed that back bare, so
+	// errors.Is(err, context.Canceled) was FALSE and the caller that was told to
+	// check it retried a read the client had already walked away from.
+	canceledByServer := &pgconn.PgError{Code: "57014", Message: "canceling statement due to user request"}
+
+	db, mock := newMockDB(t)
+
+	mock.MatchExpectationsInOrder(false)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	err := RunReadOnly(ctx, db, ReadOnlyOptions{StatementTimeout: time.Second},
+		func(ctx context.Context, _ *sql.Tx) error {
+			cancel()
+
+			return canceledByServer
+		})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled, "a cancel must stay a cancel however the driver reported it")
+	assert.ErrorIs(t, err, canceledByServer, "the driver error must stay in the chain")
+	assert.NotErrorIs(t, err, ErrReadOnlyStatementTimeout, "a caller cancel is not a slow plan")
+	assert.NotErrorIs(t, err, ErrReadOnlyTxDeadline, "a caller cancel is not a deadline either")
+}
+
+func TestRunReadOnlyDoesNotDoubleWrapACancelTheChainAlreadyCarries(t *testing.T) {
+	t.Parallel()
+
+	// The other half of the race: when the driver already reported the
+	// cancellation, adding a second context.Canceled in front of it says the
+	// same thing twice in the message an operator reads.
+	canceledByServer := &pgconn.PgError{Code: "57014", Message: "canceling statement due to user request"}
+
+	db, mock := newMockDB(t)
+
+	mock.MatchExpectationsInOrder(false)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	err := RunReadOnly(ctx, db, ReadOnlyOptions{StatementTimeout: time.Second},
+		func(ctx context.Context, _ *sql.Tx) error {
+			cancel()
+
+			return fmt.Errorf("scan ledger rows: %w: %w", context.Canceled, canceledByServer)
+		})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, strings.Count(err.Error(), context.Canceled.Error()),
+		"the cancel is reported once, not once per layer: %q", err)
 }

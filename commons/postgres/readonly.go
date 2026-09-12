@@ -134,9 +134,11 @@ type TxBeginner interface {
 // otherwise be reported as both.
 //
 // A CALLER CANCEL IS NEITHER of those. It reaches PostgreSQL as the same
-// SQLSTATE a statement timeout does, and it gets no sentinel: the cause comes
-// back as it stands, so errors.Is(err, context.Canceled) holds and a caller can
-// tell "the client walked away" from "this read is too slow".
+// SQLSTATE a statement timeout does, and it gets no sentinel: it is reported as
+// context.Canceled with the driver's error behind it, so errors.Is(err,
+// context.Canceled) holds — whether or not the driver itself noticed the
+// cancellation — and a caller can tell "the client walked away" from "this read
+// is too slow".
 //
 // fn's error is always left in the chain, wrapped, so a caller can still classify
 // the driver error underneath with errors.As. Nothing here redacts it: use
@@ -312,16 +314,27 @@ func applyStatementTimeout(ctx context.Context, tx *sql.Tx, timeout time.Duratio
 // context.Canceled under a sentinel, so a caller cannot tell "the client walked
 // away" from "this read is too slow" and retries something it should drop.
 //
-// A cancel is neither timeout, so it gets no sentinel: the cause is returned as
-// it stands, and errors.Is(err, context.Canceled) still holds for the caller that
-// has to decide whether to retry.
+// A cancel is neither timeout, so it gets no SENTINEL. It does get the context
+// error itself in front of the cause, and that is not decoration: WHICH ERROR THE
+// DRIVER RETURNS ON A CANCEL IS A RACE. When the client notices first the chain
+// already carries context.Canceled; when PostgreSQL acts on the cancel request
+// first the driver returns only its own 57014, and handing that back bare made
+// errors.Is(err, context.Canceled) FALSE — so the caller this doc tells to check
+// it retried a read the client had already walked away from, on the outcome that
+// depends on which side won a race it cannot see. Wrapping is skipped when the
+// cause already carries the context error, so the cancel is reported once rather
+// than once per layer.
 func classifyReadOnly(ctx context.Context, cause error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if errors.Is(ctxErr, context.DeadlineExceeded) {
 			return fmt.Errorf("%w: %w", ErrReadOnlyTxDeadline, cause)
 		}
 
-		return cause
+		if errors.Is(cause, ctxErr) {
+			return cause
+		}
+
+		return fmt.Errorf("%w: %w", ctxErr, cause)
 	}
 
 	if matchesSQLState(cause, queryCanceled) {
