@@ -762,6 +762,18 @@ func isSubsequence(a, b string) bool {
 // remove, and the harness asserts it — so a future change that leaks the
 // userinfo on these lines fails here rather than being covered by this list.
 var directionBaseOverReach = []struct{ input, credential string }{
+	// The field name in the value slot, which 714ca9e redacted while printing
+	// the credential behind it. The head does the opposite: the name is
+	// diagnostic and the credential is gone. Neither residue is a subsequence of
+	// the other, so the rule cannot see which way round it is — the exemption
+	// below asserts CREDENTIAL ABSENCE in the head, which is the only direction
+	// that matters, and never output equality.
+	{input: "token=!password= hunter2", credential: "hunter2"},
+	{input: `pwd="password= hunter2"`, credential: "hunter2"},
+	{input: "secret=[cpf= 12345678901", credential: "12345678901"},
+	{input: "password= =cpf= 12345678901", credential: "12345678901"},
+	{input: "password=cpf= 12345678901", credential: "12345678901"},
+
 	{input: "A://tok#en@db.internal:5432/", credential: "tok#en"},
 	{input: "A://tok#en@db.internal:5432/v1/charge?a=1", credential: "tok#en"},
 	{input: "A://tok#en@db.internal:5432?x=@y", credential: "tok#en"},
@@ -900,8 +912,13 @@ func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
 		if credential, ok := exempt[in]; ok {
 			exempted++
 
+			// THE EXEMPTION ASSERTS CREDENTIAL ABSENCE, NOT OUTPUT EQUALITY.
+			// These are the rows where the base removed different bytes than
+			// the head does, so neither residue contains the other; what the
+			// exemption is worth is that the credential is not in the head's
+			// output at all.
 			require.NotContains(t, got, credential,
-				"%q is exempt from the direction rule only because the head redacts the whole userinfo; it no longer does",
+				"%q is exempt from the direction rule only because the head still redacts the credential; it no longer does",
 				in)
 
 			continue
@@ -974,12 +991,12 @@ func legacyRedactKeyValuePairs(s string) string {
 				rewind = !sensitive
 			default:
 				name := s[valueStart+loc[2] : valueStart+loc[3]]
-				rewind = !sensitive || (loc[0] == 0 && isSensitiveFieldName(name))
+				rewind = !sensitive || (isSensitiveFieldName(name) && bareValueFollows(s, valueEnd))
 			}
 		}
 
-		if !rewind && !sensitive {
-			rewind = nextPairSeparatorPattern.MatchString(s[valueEnd:])
+		if !rewind && nextPairSeparatorPattern.MatchString(s[valueEnd:]) {
+			rewind = !sensitive || isSensitiveFieldName(s[valueStart:valueEnd])
 		}
 
 		if rewind {
@@ -1093,4 +1110,85 @@ func TestRedactKeyValuePairsMatchesTheImplementationItReplaced(t *testing.T) {
 	}
 
 	t.Logf("DIFFERENTIAL TOTAL %d inputs, 0 diffs", total)
+}
+
+// TestTheTwoKeyPatternsAgreeOnWhereTheValueStarts pins the invariant the walk
+// RESTS ON and that nothing else measures: keyPrefixPattern ends exactly where
+// keyValuePattern's value begins.
+//
+// The walker carries a value's end along and asks keyPrefixPattern for the next
+// key inside it, comparing that match's END against that end. The two patterns
+// are built from one separator constant so they cannot disagree about the
+// separator — but the full pattern's value class is what forces the separator to
+// give back a trailing whitespace byte, and keyPrefixPattern has nothing to
+// force it with. One byte of drift there ('\v', which [[:space:]] holds and
+// RE2's \s does not) made every comparison off by one and left
+// "k=k=pwd=\v" in the log in full.
+//
+// IT ALSO PINS THE WORD BOUNDARY. Remove \b from keyPrefixPattern and it finds
+// "password=" inside "0password=hunter2", where the full pattern finds no pair
+// at all — the walker would then step onto a key that is not a key and redact a
+// value nothing owns. That mutant survives every other test in this package.
+func TestTheTwoKeyPatternsAgreeOnWhereTheValueStarts(t *testing.T) {
+	t.Parallel()
+
+	// A key must start on a word boundary, so a word byte in front of a name
+	// means there is no pair. The long s and the Kelvin sign fold to ASCII under
+	// (?i) while \b, an ASCII rule, does not count them as word characters.
+	boundary := []string{
+		"0password=", "0password=hunter2", "1cpf=", "1cpf=12345678901",
+		"00\u017f00\u017f=", "00\u017f00\u017f=0", "\u212a=", "\u212a=hunter2",
+		"pwd=\v", "pwd=\v ", "a=b=pwd=\v", "password=\vhunter2",
+	}
+
+	groups := [][]string{
+		boundary,
+		corpusEntries(t),
+		literalsFromTestSources(t),
+		readQuotedLines(t, directionInputPath),
+		urlAndPairLines(t, 2000),
+		keyChainLines(t, 2000),
+	}
+
+	valueByte := regexp.MustCompile(`^` + keyValueValue)
+	checked := 0
+
+	for _, group := range groups {
+		for _, in := range group {
+			// Every value is strictly shorter than the text holding it — a key
+			// and a separator are at least two bytes — so the walk terminates.
+			queue := []string{in}
+
+			for len(queue) > 0 {
+				text := queue[0]
+				queue = queue[1:]
+
+				prefix := keyPrefixPattern.FindStringSubmatchIndex(text)
+				if prefix == nil {
+					continue
+				}
+
+				checked++
+
+				pair := keyValuePattern.FindStringSubmatchIndex(text)
+				if pair != nil && pair[0] == prefix[0] {
+					require.Equal(t, pair[6], prefix[1],
+						"%q: keyPrefixPattern ends at %d, the value starts at %d",
+						text, prefix[1], pair[6])
+					require.Equal(t, text[pair[2]:pair[3]], text[prefix[2]:prefix[3]],
+						"%q: the two patterns read a different key", text)
+				} else {
+					require.False(t, valueByte.MatchString(text[prefix[1]:]),
+						"%q: keyPrefixPattern found a key at %d where the full pattern finds no pair",
+						text, prefix[0])
+				}
+
+				if pair != nil {
+					queue = append(queue, text[pair[6]:pair[7]])
+				}
+			}
+		}
+	}
+
+	t.Logf("AGREEMENT %d texts carrying a key", checked)
 }
