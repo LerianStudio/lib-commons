@@ -1110,7 +1110,7 @@ func fuzzSeeds() []string {
 // must be redacted would be asserting something false. Every entry here is a
 // non-word byte, which is the boundary the anchors need and the only context
 // any of them gets.
-var fuzzSeparators = []string{" ", "=", " =", "= ", "@", "://", "&", "#", "/"}
+var fuzzSeparators = []string{" ", "=", " =", "= ", "@", "://", "&", "#", "/", "\t", "\v"}
 
 // FuzzStringGlued is FuzzString with the two joins around the credential under
 // the fuzzer's control instead of fixed at a space.
@@ -2346,6 +2346,197 @@ func TestStringScrubsAGroupedCardInsideAQueryString(t *testing.T) {
 				assert.NotContains(t, got, group, "a group of the card survived in %q", got)
 			}
 
+			assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
+		})
+	}
+}
+
+// TestStringRedactsWhenTheValueIsAFieldNameWithNothingAfterIt is the FIRST half
+// of "a value never ends in the separator", and the half that rule got wrong.
+//
+// The rule reads "<name>=" in a value slot as a pair boundary and hands the
+// position back to the scanner, because the credential normally sits past the
+// whitespace behind it. When NOTHING claimable follows, there is no such
+// credential: the scanner needs at least one value byte, finds none, and the
+// bytes it was handed are copied across verbatim — so a SENSITIVE key whose
+// value happens to end in '=' printed its value instead of redacting it.
+//
+// The question the rewind has to ask on a sensitive key is therefore not "is
+// this value a field name" but "is there a bare value after it to redact
+// instead". A pair after it answers no as well: "password=abc_token= rc=200"
+// has a pair behind the value, so "abc_token=" was the literal value.
+func TestStringRedactsWhenTheValueIsAFieldNameWithNothingAfterIt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"a field name and nothing else", "password=abc_token=", "password=" + marker},
+		{"the key's own name in its value", "password=my-password=", "password=" + marker},
+		{"a dotted field name", "password=user.password.old=", "password=" + marker},
+		{"an underscore breaks the name", "authorization=Bearer_token=", "authorization=" + marker},
+		{"a terminator follows", "accesskey=access_key=,next=1", "accesskey=" + marker + ",next=1"},
+		{"nested under a harmless key", "a=accesskey=access_key=", "a=accesskey=" + marker},
+		{"a non-word byte in front of it", "token=!password=", "token=" + marker},
+		{
+			// A pair follows, so the value really was the literal text.
+			name: "a pair follows the value",
+			in:   "password=abc_token= rc=200",
+			want: "password=" + marker + " rc=200",
+		},
+
+		// Base64 padding is not a pair boundary, and neither is an '=' inside a
+		// value that merely holds a name. These are the shapes the rule was
+		// written for and must keep.
+		{"base64 padding", "password=aGVsbG8=", "password=" + marker},
+		{"base64 padding with a tail", "token=aGVsbG8= more", "token=" + marker + " more"},
+		{"a name inside a value", "password=hunter2://CVC!0=", "password=" + marker},
+		{"a bare value does follow", "password=cpf= 12345678901", "password=cpf= " + marker},
+		{
+			name: "the field name printed twice",
+			in:   "validator: field=cpf =cpf= 12345678901",
+			want: "validator: field=cpf =cpf= " + marker,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
+		})
+	}
+}
+
+// TestStringRedactsTheValueBehindAFieldNameUnderAHarmlessKey is the same rule
+// read from the other side: the key is harmless, so the walker rewinds onto the
+// name in the value slot — but only when what FOLLOWS that value is the next
+// pair's separator, and that test was never asked on a sensitive key.
+//
+// "a=password= rg =hunter2" is one pair keyed on "a" whose value is the field
+// name "password". The walker rewinds onto "password", whose own value is then
+// "rg" — a token, not the credential — and the secret after the spaced '='
+// behind it is orphaned and printed. The value that is itself a field name has
+// to be handed back a second time.
+func TestStringRedactsTheValueBehindAFieldNameUnderAHarmlessKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "a token steals the sensitive key's value slot",
+			in:   "a=password= rg =hunter2",
+			want: "a=password= rg =" + marker,
+		},
+		{
+			name: "a tab separator on a driver option list",
+			in:   "pgx: opt=password= cpf\t=12345678901 sslmode=require",
+			want: "pgx: opt=password= cpf\t=" + marker + " sslmode=require",
+		},
+
+		// The credential is the value here, not a name, so the rewind must not
+		// fire and these keep the answers they have.
+		{"a real secret then a pair", "password=hunter2 =Rg =0", "password=" + marker + " =Rg =" + marker},
+		{"a token in the value slot", "tok =rg =0", "tok =rg =" + marker},
+		{"a harmless key in front", "opt = password=hunter2", "opt = password=" + marker},
+		{
+			name: "a driver option list",
+			in:   "host=db =password= hunter2 sslmode=require",
+			want: "host=db =password= " + marker + " sslmode=require",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
+		})
+	}
+}
+
+// TestStringRedactsWhenANonWordByteLeadsTheFieldNameInTheValue closes the last
+// hole in the same rule: the field name in the value slot was only believed
+// when it began at the first byte of the value.
+//
+// A quote, a bracket, a bang or a second '=' in front of it is an ordinary way
+// for a driver or a validator to print the pair, and on a SENSITIVE key the
+// offset test turned the whole shape back into a value: the name was redacted
+// and the credential behind it printed. The offset test also buys nothing that
+// the word boundary does not already buy — a key starts with a letter, so any
+// match past the first byte already has a non-word byte in front of it.
+func TestStringRedactsWhenANonWordByteLeadsTheFieldNameInTheValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"a bang", "token=!password= hunter2", "token=!password= " + marker},
+		{"a quote", `pwd="password= hunter2"`, `pwd="password= ` + marker + `"`},
+		{"a bracket", "secret=[cpf= 12345678901", "secret=[cpf= " + marker},
+		{"a second separator", "password= =cpf= 12345678901", "password= =cpf= " + marker},
+
+		// A WORD byte in front is not a boundary: "0password" is not the field
+		// "password", and a value that merely holds a name is still a value.
+		{"a digit in front is not a boundary", "k=0password= hunter2", "k=0password= hunter2"},
+		{"already right under a harmless key", "x=b=!password= hunter2", "x=b=!password= " + marker},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
+		})
+	}
+}
+
+// TestStringRedactsAcrossAVerticalTabSeparator pins the ONE byte on which the
+// two key=value patterns disagree.
+//
+// keyValuePattern's value class is [^\s,;&]+ and RE2's \s is [\t\n\f\r ], which
+// does not hold '\v'; the separator both patterns are built from ends in
+// [[:space:]]*, which does. So on "pwd=\v" the full pattern gives the '\v' back
+// to the value and keyPrefixPattern keeps it, and every offset the walker
+// compares against the value's end is then one byte long — the chain is judged
+// finished and the credential is copied across.
+func TestStringRedactsAcrossAVerticalTabSeparator(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"a chain ending in the separator", "k=k=pwd=\v", "k=k=pwd=" + marker},
+		{"a credential behind it", "a=b=password=\v hunter2", "a=b=password=" + marker + " hunter2"},
+		{"a key chain", "t=b=key=\v", "t=b=key=" + marker},
+		{"a nested secret", "b=s=secret=\v", "b=s=secret=" + marker},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.Equal(t, tt.want, got)
 			assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
 		})
 	}

@@ -437,8 +437,14 @@ func urlAndPairLines(t *testing.T, n int) []string {
 
 	tokens := []string{"AKIAIOSFODNN7EXAMPLE", "ghp_abcdefghijklmnopqrstuvwxyz0123456789", "plainword", "0"}
 	keys := []string{"rg", "cpf", "password", "token", "ref", "status"}
-	seps := []string{" =", "\t=", "\n=", "\f=", "\r=", "=", "= "}
-	values := []string{"0", "abc", "hunter2", "4111 1111 1111 1111"}
+	// '\v' is in [[:space:]] and NOT in RE2's \s, so it is the one byte the
+	// separator class and the value class disagree about; without it here the
+	// generators cannot reach the shape at all. A value that is a field NAME and
+	// the separator, and a value that ENDS in the separator with nothing
+	// claimable behind it, are the two halves of "a value never ends in the
+	// separator" — both unreachable from the sets this list held.
+	seps := []string{" =", "\t=", "\n=", "\v=", "\f=", "\r=", "=", "= "}
+	values := []string{"0", "abc", "hunter2", "4111 1111 1111 1111", "password=", "cpf=", "abc_token=", "!password=", "\v"}
 
 	out := make([]string, 0, n)
 
@@ -617,6 +623,31 @@ var operatorDiagnosticLines = []string{
 	`{\"aws_secret_access_key\": \"wJalrXUtnFEMI\"}`,
 	"endpoint=https://api.internal/v1?apikey=s3cr3t&page=2",
 	"webhook=https://hooks.example.com/t/abc?sig=Zm9vYmFy&ts=1",
+
+	// A value that IS a field name and the separator, with nothing claimable
+	// behind it: the rewind that reads it as a pair boundary has nothing to hand
+	// the scanner, so the value was copied across in the clear.
+	"password=abc_token=",
+	"accesskey=access_key=,next=1",
+	"password=abc_token= rc=200",
+	"a=accesskey=access_key=",
+	"authorization=Bearer_token=",
+
+	// The field name in the value slot with a non-word byte in front of it, and
+	// with the credential a spaced separator further on.
+	"token=!password= hunter2",
+	`pwd="password= hunter2"`,
+	"secret=[cpf= 12345678901",
+	"password= =cpf= 12345678901",
+	"a=password= rg =hunter2",
+	"pgx: opt=password= cpf\t=12345678901 sslmode=require",
+
+	// '\v' as the separator's trailing whitespace, which the value class admits
+	// and the separator class does not.
+	"k=k=pwd=\v",
+	"a=b=password=\v hunter2",
+	"t=b=key=\v",
+	"b=s=secret=\v",
 
 	// Base64 padding in a value, which is NOT a pair boundary.
 	"token=aGVsbG8= more",
@@ -1003,8 +1034,14 @@ func keyChainLines(t *testing.T, n int) []string {
 
 	rng := rand.New(rand.NewSource(20260912))
 
-	names := []string{"a", "b", "opt", "ref", "cpf", "password", "rg", "token", "x.y", "k-1", "aGVsbG8"}
-	tails := []string{"", "=", " hunter2", "hunter2", " ", "= 0", "&x", ",y", ";z", " =0"}
+	names := []string{"a", "b", "opt", "ref", "cpf", "password", "rg", "token", "x.y", "k-1", "aGVsbG8", "abc_token"}
+	tails := []string{
+		"", "=", " hunter2", "hunter2", " ", "= 0", "&x", ",y", ";z", " =0",
+		// The chain ending in the separator, in the separator plus the one
+		// whitespace byte the two patterns disagree about, and with a non-word
+		// byte in front of the field name in the value slot.
+		"\v", "=\v", "!password= hunter2", "= hunter2", "=,next=1", "= rc=200",
+	}
 
 	out := make([]string, 0, n)
 
@@ -1013,7 +1050,7 @@ func keyChainLines(t *testing.T, n int) []string {
 
 		for links := rng.Intn(12) + 1; links > 0; links-- {
 			b.WriteString(names[rng.Intn(len(names))])
-			b.WriteString([]string{"=", " =", "= ", " = "}[rng.Intn(4)])
+			b.WriteString([]string{"=", " =", "= ", " = ", "=\v", "\v="}[rng.Intn(6)])
 		}
 
 		b.WriteString(tails[rng.Intn(len(tails))])
