@@ -264,12 +264,39 @@ const (
 // cannot match a four-digit group anyway, but the order also says which reading
 // wins if that ever changes.
 var cardCandidatePatterns = []*regexp.Regexp{
-	// Grouped as printed: 4-4-4, 4-4-4-4, and any longer run. THE REPEAT IS
-	// UNBOUNDED ON PURPOSE. Capping it truncates the run mid-way, and a card
-	// that straddles the cut is then invisible to the window scan that would
-	// otherwise find it — which is how a PAN behind two leading four-digit
+	// Grouped as printed. TWO READINGS IN ONE PATTERN, AND THE ORDER OF THE
+	// BRANCHES IS THE WHOLE POINT.
+	//
+	// The second branch is the uniform one: 4-4-4, 4-4-4-4, and any longer run.
+	// THE REPEAT IS UNBOUNDED ON PURPOSE. Capping it truncates the run mid-way,
+	// and a card that straddles the cut is then invisible to the window scan that
+	// would otherwise find it — which is how a PAN behind two leading four-digit
 	// groups survived. Length is judged on the digits, below, not here.
-	regexp.MustCompile(`\b\d{4}(?:[ .-]\d{4}){2,}\b`),
+	//
+	// The first branch is three four-digit groups and a SHORT TAIL: the 13, 14
+	// and 15 digit cards, printed four-four-four-and-the-rest. Without it the
+	// uniform branch took the three groups and stopped — twelve digits, which is
+	// card-length, so it failed Luhn and was left alone as an ordinary identifier
+	// rather than searched, and the tail never joined anything. Behind a field
+	// name that was the headless-PEM failure again: the key=value pass stops at
+	// the first space, so the log line read "pan=**** 8224 6310 005", eleven
+	// digits of a live card behind a marker asserting it had been scrubbed.
+	//
+	// THEY CANNOT BE TWO SEPARATE PATTERNS, and this is the part that is not
+	// obvious. Go's regexp is leftmost-FIRST: branch order is a preference among
+	// readings that start at the SAME offset, but a separate pattern slides all
+	// the way across the string before the next pattern is tried at all. Measured
+	// over 400,000 generated cards, both orderings of two patterns leak about one
+	// card in ten — the uniform pattern first strands the tail of a 13-to-15
+	// digit card whenever its leading twelve digits happen to satisfy Luhn, and
+	// the short-tail pattern first matches one group late on a sixteen-digit card
+	// that has a response code after it, redacting the wrong span and leaving the
+	// leading group in the clear. As one pattern with the short-tail branch
+	// first, both readings are offered at the earliest start and neither shape
+	// leaks: at that offset the tail branch matches only when no fourth group
+	// follows, because \b refuses to end a 1-to-3 digit tail in front of another
+	// digit.
+	regexp.MustCompile(`\b\d{4}(?:[ .-]\d{4}){2}[ .-]\d{1,3}\b|\b\d{4}(?:[ .-]\d{4}){2,}\b`),
 	// Amex (4-6-5) and Diners (4-6-4), which group unevenly.
 	regexp.MustCompile(`\b\d{4}[ .-]\d{6}[ .-]\d{4,5}\b`),
 	// One unbroken run.

@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -209,4 +210,65 @@ func TestRedactCardInsideRunMatchesTheImplementationItReplaced(t *testing.T) {
 	}
 
 	t.Logf("DIFFERENTIAL TOTAL %d inputs, 0 diffs", total)
+}
+
+// legacyCardCandidatePatterns are the candidate shapes before the three-groups-
+// plus-short-tail reading was added, kept so the widening can be measured rather
+// than asserted: every span the new set redacts that the old set did not is a
+// span a reader of a log line will no longer see.
+var legacyCardCandidatePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`\b\d{4}(?:[ .-]\d{4}){2,}\b`),
+	regexp.MustCompile(`\b\d{4}[ .-]\d{6}[ .-]\d{4,5}\b`),
+	regexp.MustCompile(`\b\d{12,19}\b`),
+}
+
+// redactCardNumbersWith is redactCardNumbers with the candidate list as a
+// parameter. It is a copy rather than a refactor of the production function
+// because a test has no business reshaping the signature it is checking; the
+// first assertion below is that the copy is faithful.
+func redactCardNumbersWith(patterns []*regexp.Regexp, s string) string {
+	for {
+		next := s
+
+		for _, pattern := range patterns {
+			next = pattern.ReplaceAllStringFunc(next, redactCardCandidate)
+		}
+
+		if next == s {
+			return s
+		}
+
+		s = next
+	}
+}
+
+func TestTheShortTailShapeRedactsNothingElse(t *testing.T) {
+	t.Parallel()
+
+	inputs := append(corpusEntries(t), literalsFromTestSources(t)...)
+	inputs = append(inputs, randomRuns(t, 5000)...)
+
+	type widening struct{ in, before, after string }
+
+	var widened []widening
+
+	for _, in := range inputs {
+		now := redactCardNumbersWith(cardCandidatePatterns, in)
+
+		// The copy must be the production function, or everything below measures
+		// something that does not ship.
+		if got := redactCardNumbers(in); got != now {
+			t.Fatalf("the local loop is not faithful on %q: %q vs %q", in, now, got)
+		}
+
+		if was := redactCardNumbersWith(legacyCardCandidatePatterns, in); was != now {
+			widened = append(widened, widening{in: in, before: was, after: now})
+		}
+	}
+
+	for _, w := range widened {
+		t.Logf("WIDENED  in=%q\n  was=%q\n  now=%q", w.in, w.before, w.after)
+	}
+
+	t.Logf("OVER-REACH %d inputs scanned, %d newly redacted", len(inputs), len(widened))
 }

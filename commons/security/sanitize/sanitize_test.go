@@ -1629,3 +1629,58 @@ func TestStringRedactsTheVendorShapesTheFirstPassMissed(t *testing.T) {
 		})
 	}
 }
+
+func TestStringRedactsACardPrintedAsThreeGroupsAndAShortTail(t *testing.T) {
+	t.Parallel()
+
+	// A 13, 14 or 15 digit card is printed four-four-four-and-the-rest, which is
+	// how the shorter Visa, Diners and Amex numbers sit on the card. The uniform
+	// grouped shape took the first THREE groups greedily — twelve digits, which
+	// is card-length, so it failed Luhn and was left alone as an ordinary
+	// identifier rather than searched — and the short tail never joined anything.
+	//
+	// Behind a field name that is the headless-PEM failure again: the key=value
+	// pass stops at the first space, so the line went to the log as
+	// "pan=**** 8224 6310 005" — eleven digits of a live card behind a marker
+	// asserting the line had been scrubbed.
+	cards := []struct{ name, pan string }{
+		{name: "Amex 15 as 4-4-4-3", pan: "3782 8224 6310 005"},
+		{name: "Diners 14 as 4-4-4-2", pan: "3056 9309 0259 04"},
+		{name: "Visa 13 as 4-4-4-1", pan: "4222 2222 2222 2"},
+	}
+
+	contexts := []struct{ name, before, after string }{
+		{name: "bare"},
+		{name: "behind pan=", before: "pan="},
+		{name: "behind card=", before: "card="},
+		{name: "mid-sentence", before: "declined ", after: " at 12:00"},
+	}
+
+	for _, card := range cards {
+		for _, ctx := range contexts {
+			t.Run(card.name+" "+ctx.name, func(t *testing.T) {
+				t.Parallel()
+
+				got := sanitize.String(ctx.before + card.pan + ctx.after)
+
+				// Exact equality is the assertion that no digit of the PAN
+				// survives AND that the rest of the line is untouched. Checking
+				// only for absence would pass on a line that redacted the
+				// timestamp too.
+				assert.Equal(t, ctx.before+marker+ctx.after, got)
+
+				// The equality above is what asserts no digit of the card
+				// survives; this names WHICH group leaked when one does. Groups
+				// of a single digit are skipped because a lone digit occurs in
+				// ordinary surrounding text — the timestamp in this very table.
+				for _, group := range strings.Fields(card.pan) {
+					if len(group) > 1 {
+						assert.NotContains(t, got, group, "a group of the card survived in %q", got)
+					}
+				}
+
+				assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
+			})
+		}
+	}
+}
