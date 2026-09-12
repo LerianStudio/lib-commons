@@ -379,19 +379,24 @@ func TestRunReadOnlyGuards(t *testing.T) {
 
 	tests := []struct {
 		name    string
+		ctx     context.Context
 		db      *sql.DB
 		fn      func(context.Context, *sql.Tx) error
 		wantErr error
 	}{
-		{name: "nil db", db: nil, fn: noopFn, wantErr: ErrNilClient},
-		{name: "nil fn", db: db, fn: nil, wantErr: ErrNilReadOnlyFunc},
+		{name: "nil db", ctx: t.Context(), db: nil, fn: noopFn, wantErr: ErrNilClient},
+		{name: "nil fn", ctx: t.Context(), db: db, fn: nil, wantErr: ErrNilReadOnlyFunc},
+		// A nil context reached context.WithTimeout, which panics, whenever a
+		// transaction timeout was set; the other guarded inputs already answered
+		// with a sentinel, so this one does too.
+		{name: "nil ctx", ctx: nil, db: db, fn: noopFn, wantErr: ErrNilContext},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			require.ErrorIs(t, RunReadOnly(t.Context(), tt.db, ReadOnlyOptions{StatementTimeout: time.Second}, tt.fn), tt.wantErr)
+			require.ErrorIs(t, RunReadOnly(tt.ctx, tt.db, ReadOnlyOptions{StatementTimeout: time.Second, TransactionTimeout: time.Second}, tt.fn), tt.wantErr)
 		})
 	}
 }

@@ -195,6 +195,10 @@ func RunReadOnly(
 		return ErrNilReadOnlyFunc
 	}
 
+	if ctx == nil {
+		return fmt.Errorf("postgres run read-only: %w", ErrNilContext)
+	}
+
 	if opts.StatementTimeout <= 0 {
 		return ErrReadOnlyStatementTimeoutRequired
 	}
