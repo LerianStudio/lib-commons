@@ -591,11 +591,12 @@ func passesLuhn(number string) bool {
 //	    return sanitize.Error(fmt.Errorf("ping ledger pool: %w", err))
 //	}
 //
-// CLASSIFICATION SURVIVES, THE RAW TEXT DOES NOT. errors.Is and errors.As still
-// reach everything underneath, because a caller must still be able to classify
-// the driver error it may no longer print. What is deliberately NOT provided is
+// CLASSIFICATION SURVIVES, AND THE RAW TEXT SURVIVES WITH IT — inside the chain,
+// not in anything this value prints. errors.Is and errors.As still reach
+// everything underneath, because a caller must still be able to classify the
+// driver error it may no longer print. What is deliberately NOT provided is
 // Unwrap: with it, errors.Unwrap(sanitized).Error() hands any caller the raw DSN
-// straight back, and every redaction above is decorative.
+// straight back from the most obvious call there is.
 //
 // # What errors.As can still reach, measured
 //
@@ -607,12 +608,26 @@ func passesLuhn(number string) bool {
 // fmt.Stringer and fmt.Formatter itself, so those targets are assigned the
 // wrapper and print the redacted message.
 //
-// ONE DOOR IS LEFT OPEN ON PURPOSE: a target of interface{ Unwrap() error }
-// still reaches a wrapper inside the cause, and that value's Error() is the raw
-// text. Closing it would mean refusing every interface target, which would take
-// down legitimate classification (interface{ SQLState() string } and its kin)
-// along with it. So the rule for callers is behavioural, not enforced: ASK,
-// CLASSIFY, AND PRINT ONLY THE WRAPPER.
+// SO THE RULE IS: THIS REDACTS WHAT PRINTS, NOT WHAT THE CHAIN CONTAINS. The
+// cause is still in there, and any errors.As target that reaches it hands back a
+// value that prints the raw text — verified reachable, all of them:
+//
+//   - interface{ Unwrap() error } and interface{ Unwrap() []error }
+//   - json.Marshaler and encoding.TextMarshaler
+//   - fmt.GoStringer
+//   - the concrete driver type (*pgconn.PgError and its kin)
+//
+// THESE ARE OPEN ON PURPOSE. Closing the interface ones means refusing every
+// interface target, which takes legitimate classification down with it
+// (interface{ SQLState() string }, Timeout(), Temporary()), and the concrete
+// target is the whole reason the chain is kept intact. Closing them would also
+// buy less than it looks: errors.As on the concrete driver type reaches the raw
+// text regardless, so the interface doors are not the last lock on the door.
+//
+// The rule for callers is therefore behavioural, not enforced: ASK, CLASSIFY,
+// AND PRINT ONLY THE WRAPPER. What this type guarantees is that every ordinary
+// way of printing IT — Error, String, and Format for every verb including %#v —
+// is redacted.
 //
 // Returns nil for a nil error — including a typed nil pointer inside a non-nil
 // interface — so it composes at a return site without a guard.

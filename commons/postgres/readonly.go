@@ -249,6 +249,22 @@ func RunReadOnly(
 // replica. It is reachable only from an in-package struct literal, and it stays
 // because a read served from the primary is better than one that panics.
 //
+// THE REPLICA DOES NOT READ YOUR OWN WRITES, and that is the one thing to decide
+// before calling this. A streaming replica applies WAL behind the primary, so a
+// read here can legitimately miss a row this same request committed a moment
+// ago: a handler that posts a transaction and then reads the balance back
+// through this method can show the balance from before its own write, and
+// nothing about the result says so. Lag is normally milliseconds and is not
+// bounded by anything — it grows with write volume, a long-running query on the
+// replica, or a network stall.
+//
+// So this method is for reads whose answer is allowed to be slightly old:
+// dashboards, reports, reconciliation sweeps, exports. A read that must observe
+// what the caller just wrote — a read-after-write check, a balance read inside
+// the flow that changed it, anything a decision is then taken on — belongs on
+// the primary: pass Primary() to the package-level RunReadOnly, which gives the
+// same bounded snapshot contract without the lag.
+//
 // It connects lazily on first use, exactly like Resolver.
 func (c *Client) RunReadOnly(
 	ctx context.Context,
