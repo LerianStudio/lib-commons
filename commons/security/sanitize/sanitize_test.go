@@ -1092,7 +1092,7 @@ func fuzzSeeds() []string {
 		// does not count it as a word character. That disagreement is what made
 		// the key=value rebuild drop bytes, and nothing in the seed set went
 		// anywhere near it.
-		"cpf =​password=ſ",
+		"cpf\u00a0=\u200bpassword=\u017f",
 		strings.Repeat("a", 300),
 	}
 }
@@ -1122,8 +1122,14 @@ var fuzzSeparators = []string{" ", "=", " =", "= ", "@", "://", "&", "#", "/", "
 // target rather than two more arguments on the first so the sixteen committed
 // FuzzString corpus files keep loading unchanged; the property body is shared.
 func FuzzStringGlued(f *testing.F) {
-	for _, seed := range fuzzSeeds() {
-		f.Add(seed, " refused", byte(0), byte(0))
+	// THE JOINS ARE PART OF THE SEED CORPUS, NOT ONLY OF THE MUTATION SPACE.
+	// CI runs the seeds without fuzzing, so seeding every one of them with
+	// byte(0) — a space on both sides — left the shape this target exists for,
+	// "<prefix>=<key>= <secret>", resting on whichever entries the fuzzer had
+	// already found and committed. Spreading the two indices over the separator
+	// set puts '=' and ' =' in the seeds themselves.
+	for i, seed := range fuzzSeeds() {
+		f.Add(seed, " refused", byte(i%len(fuzzSeparators)), byte((i+2)%len(fuzzSeparators)))
 	}
 
 	f.Fuzz(func(t *testing.T, prefix, suffix string, before, after byte) {
