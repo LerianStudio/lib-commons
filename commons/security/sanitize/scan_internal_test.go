@@ -1424,6 +1424,24 @@ func TestTheTwoKeyPatternsAgreeOnWhereTheValueStarts(t *testing.T) {
 var legacyPemBlockPattern = regexp.MustCompile(
 	`(?s)-----(?i:BEGIN [A-Z0-9 ]+)-----(?:.*?-----(?i:END [A-Z0-9 ]+)-----|[\sA-Za-z0-9+/=]*)`)
 
+// legacyPemBlockPatternVerticalTab is the same pattern with the headless body's
+// whitespace corrected from RE2's \s to the whole of [[:space:]], and it is the
+// ONE deliberate difference between redactPemBlocks and the pattern it replaced.
+//
+// THE DIFFERENTIAL MEASURES THE WALK, NOT THE CLASS. Its claim is that finding
+// both armor lines once and pairing them is the same READING as the lazy run —
+// and on a headless body that begins after a vertical tab the old reading
+// stopped at the armor line and printed the base64, which is the defect the
+// production class was corrected for. Comparing those inputs against the old
+// class would pin the leak; comparing them against a lazy run that reads the
+// body the corrected way keeps the differential asking about the walk.
+//
+// Inputs where the two agree are compared against the original, so the
+// exemption cannot spread past the class it names, and the count below goes red
+// if the shape ever stops being reachable.
+var legacyPemBlockPatternVerticalTab = regexp.MustCompile(
+	`(?s)-----(?i:BEGIN [A-Z0-9 ]+)-----(?:.*?-----(?i:END [A-Z0-9 ]+)-----|[[:space:]A-Za-z0-9+/=]*)`)
+
 // TestRedactPemBlocksMatchesThePatternItReplaced measures the claim that finding
 // both armor lines once and pairing them is the SAME reading as the lazy run,
 // only without its cost. The generated shapes are the ones where a merge walk
@@ -1469,7 +1487,7 @@ func TestRedactPemBlocksMatchesThePatternItReplaced(t *testing.T) {
 		readQuotedLines(t, directionInputPath),
 	}
 
-	total := 0
+	total, bodyClass := 0, 0
 
 	for _, group := range groups {
 		for _, in := range group {
@@ -1478,6 +1496,12 @@ func TestRedactPemBlocksMatchesThePatternItReplaced(t *testing.T) {
 			}
 
 			want := legacyPemBlockPattern.ReplaceAllString(in, SecretRedactionMarker)
+
+			if corrected := legacyPemBlockPatternVerticalTab.ReplaceAllString(in, SecretRedactionMarker); corrected != want {
+				want = corrected
+				bodyClass++
+			}
+
 			if got := redactPemBlocks(in); got != want {
 				t.Fatalf("redactPemBlocks(%q)\n got  %q\n want %q", in, got, want)
 			}
@@ -1486,5 +1510,9 @@ func TestRedactPemBlocksMatchesThePatternItReplaced(t *testing.T) {
 		}
 	}
 
-	t.Logf("PEM DIFFERENTIAL %d armor-shaped inputs, 0 diffs", total)
+	require.NotZero(t, bodyClass,
+		"no input reaches a headless body behind a vertical tab any more; the exemption is stale and must be deleted")
+
+	t.Logf("PEM DIFFERENTIAL %d armor-shaped inputs, 0 diffs, %d compared against the corrected body class",
+		total, bodyClass)
 }

@@ -435,7 +435,19 @@ var pemArmorPattern = regexp.MustCompile(`-----(?i:(BEGIN|END) [A-Z0-9 ]+)-----`
 
 // pemHeadlessBodyPattern is the body of a block whose END line never arrives:
 // base64-legal bytes AND whitespace, anchored where the armor line ended.
-var pemHeadlessBodyPattern = regexp.MustCompile(`^[\sA-Za-z0-9+/=]*`)
+//
+// THE WHITESPACE IS keyValueValueSpace, WHICH IS WHY IT IS NOT SPELLED HERE.
+// This class was written as RE2's \s, and \s is [[:space:]] without the
+// vertical tab — so a body that began after one ended at the armor line and the
+// base64 behind it reached the log under a marker asserting the line had been
+// scrubbed. "-----BEGIN A-----\vMIIB..." printed its body on every head this
+// package has shipped; the key=value pass hid the keyed spelling for as long as
+// a vertical tab was a value byte for it, and stopped hiding it when that was
+// corrected. A space or a tab in the same position was always covered, which is
+// what makes this an asymmetry between two spellings of one set rather than a
+// decision about PEM. It is the fourth time that asymmetry has cost this file a
+// leak, and the last class that had it.
+var pemHeadlessBodyPattern = regexp.MustCompile(`^[` + keyValueValueSpace + `A-Za-z0-9+/=]*`)
 
 // redactPemBlocks replaces each PEM block — armor lines and body — with the
 // marker, so the base64 payload between the BEGIN and END lines never reaches a
