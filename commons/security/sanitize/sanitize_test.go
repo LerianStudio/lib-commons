@@ -1429,13 +1429,27 @@ func fillToBound(unit string) string {
 }
 
 // coverageBoundFactor is how much slower the instrumented build is, rounded up
-// and then some. Measured at the bound on this package's five shapes: the card
-// scan is 11.5x slower under -race -covermode=atomic than under -race alone
-// (42.3 s worst, against 3.7), the other four 1.3-1.5x, and without -race the
-// worst of the five is 1.77 s against the ordinary 2 s ceiling. Six keeps the
-// doctrine's margin on both builds — 120 s against 42.3, 12 s against 1.77 —
-// without turning either into a ceiling that catches nothing.
-const coverageBoundFactor = 6
+// and then some.
+//
+// MEASURED ON MORDOR, AND CI'S RUNNER IS UNMEASURED. The card scan is the shape
+// that pays. Under -race -covermode=atomic it cost 40.12 s and 40.16 s isolated
+// here and 45.20 s inside the package suite, against 3.7 s under -race alone;
+// two runs of the same test on the same machine earlier gave 40.99 s and
+// 57.46 s. That spread is load — 256 cores shared with other work — rather than
+// a second curve, and 57.46 is the worst anyone has measured. The other four
+// shapes are 1.42-1.66x, and without -race the worst of the five is 1.76 s
+// against the ordinary 2 s ceiling.
+//
+// TEN, NOT SIX, AND THE ARITHMETIC IS WHY. The doctrine wants the worst
+// measured cost under the ceiling by a factor of at least 2.5, and 57.46 x 2.5
+// is 144 s — above the 120 s that six buys. Six left 2.1x at the observed
+// worst, on a machine whose numbers already vary by 40%, and the runner the
+// shared workflow gets is slower than this box and has never been measured at
+// all. So the factor comes from the worst number seen rather than the median:
+// 200 s against 57.5 is 3.5x. On the plain-coverage build it is 20 s against
+// 1.76, or 11x — the same order of headroom the ordinary build has, and still a
+// guard against the 200x and 450x regressions this package has shipped.
+const coverageBoundFactor = 10
 
 // assertStringReturnsWithin FAILS AFTER THE BOUND RATHER THAN WAITING FOR THE
 // CALL TO RETURN. A regression in the card scan does not take slightly too long,
