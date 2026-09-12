@@ -557,6 +557,11 @@ func redactKeyValuePairs(s string) string {
 
 	pos := 0
 
+	// rewound says the previous iteration handed this position back to the
+	// scanner as a key instead of consuming it as a value. The invariant below
+	// applies only to such a position.
+	rewound := false
+
 	for pos < len(s) {
 		loc := keyValuePattern.FindStringSubmatchIndex(s[pos:])
 		if loc == nil {
@@ -572,6 +577,26 @@ func redactKeyValuePairs(s string) string {
 		key, valueStart, valueEnd := s[loc[2]:loc[3]], loc[6], loc[7]
 		sensitive := isSensitiveFieldName(key)
 
+		// A VALUE NEVER ENDS IN THE SEPARATOR, AND A REWIND IS WHERE ONE DID.
+		//
+		// Rewinding into "host=db =password= hunter2" matches key "db" with the
+		// value "password=" — a field NAME and the separator that introduces the
+		// credential, because the value class admits '=' and stops at the space.
+		// The credential is then outside the match and copied across verbatim,
+		// so redacting that value scrubs the name and prints the secret. With a
+		// sensitive name in the key slot too ("field=cpf =cpf= 12345678901") the
+		// line even carries a marker asserting it was scrubbed.
+		//
+		// Hand the name back as well: "<name>=" plus the whitespace behind it is
+		// exactly what keyValueSeparator admits, so the next iteration matches
+		// "password= hunter2" as one pair and redacts the right half.
+		//
+		// ONLY AFTER A REWIND, AND ONLY AT THE POSITION THE REWIND CHOSE. A key
+		// the scanner reached on its own owns its value, trailing '=' and all:
+		// "token=aGVsbG8= more" is base64 padding, not a pair boundary, and
+		// rewinding there would put the token itself in the clear.
+		rewind := rewound && loc[0] == pos && s[valueEnd-1] == '='
+
 		// THE VALUE IS REALLY THE NEXT PAIR'S KEY. "tok =rg =0" reads as key
 		// "tok", value "rg" — and the " =0" behind it is then orphaned, so a
 		// sensitive name sitting in the value slot never gets its own value
@@ -586,14 +611,19 @@ func redactKeyValuePairs(s string) string {
 		// The lookahead uses the pattern's OWN separator class. Any whitespace
 		// [[:space:]] admits can sit between the value and the next '=', so a
 		// form feed or a newline there is the same shape as a space.
-		if !sensitive {
-			if nextPairSeparatorPattern.MatchString(s[valueEnd:]) {
-				out.WriteString(s[pos:valueStart])
+		if !rewind && !sensitive {
+			rewind = nextPairSeparatorPattern.MatchString(s[valueEnd:])
+		}
 
-				pos = valueStart
+		// Every rewind moves past at least the key and the separator, so pos
+		// strictly increases and the walk still terminates.
+		if rewind {
+			out.WriteString(s[pos:valueStart])
 
-				continue
-			}
+			pos = valueStart
+			rewound = true
+
+			continue
 		}
 
 		replacement := SecretRedactionMarker
@@ -605,6 +635,7 @@ func redactKeyValuePairs(s string) string {
 		out.WriteString(replacement)
 
 		pos = valueEnd
+		rewound = false
 	}
 
 	out.WriteString(s[pos:])

@@ -1885,6 +1885,86 @@ func TestStringRedactsAFieldNameStolenIntoTheValueSlot(t *testing.T) {
 	}
 }
 
+func TestStringRedactsTheSecretWhoseKeyTheValueSlotAbsorbed(t *testing.T) {
+	t.Parallel()
+
+	// THE REWIND HANDED THE VALUE BACK AS A KEY, AND THE VALUE CLASS THEN ATE
+	// THE NEXT PAIR'S KEY AND SEPARATOR, LEAVING THE SECRET OUTSIDE THE MATCH.
+	//
+	// "host=db =password= hunter2" reads as key "host", value "db"; the value is
+	// followed by a separator, so "db" is handed back to the scanner as a key.
+	// Its value class admits '=' and stops at whitespace, so the pair becomes
+	// key "db", value "password=" — A NAME AND THE SEPARATOR THAT INTRODUCES THE
+	// CREDENTIAL. The credential sits after the space, outside the match, and is
+	// copied across verbatim. Redacting that value scrubs the field name and
+	// prints the secret.
+	//
+	// It is silent by construction. The output is a fixed point, so the round
+	// loop and the fuzz idempotence assertion both agree with it, and every
+	// secret the fuzzer plants is either vendor-anchored or a self-contained
+	// pair, so "the credential must not survive" never sees this shape.
+	//
+	// THE INVARIANT IS THAT A VALUE NEVER ENDS IN THE SEPARATOR. When a rewound
+	// value reads as "<name>=", the pair is "<name>" plus the separator plus the
+	// token after it — which is exactly what keyValueSeparator admits, since it
+	// takes whitespace on both sides of the '='.
+	tests := []struct{ name, in, want, secret string }{
+		{
+			name:   "a pgx DSN with a spaced password parameter",
+			in:     "pgx: host=db =password= hunter2 sslmode=require",
+			want:   "pgx: host=db =password= " + marker + " sslmode=require",
+			secret: "hunter2",
+		},
+		{
+			name:   "an acquirer response carrying a CPF",
+			in:     "op=charge =cpf= 12345678901 rc=200",
+			want:   "op=charge =cpf= " + marker + " rc=200",
+			secret: "12345678901",
+		},
+		{
+			name:   "a broker option list carrying an AWS secret",
+			in:     "kafka: acks=all =aws_secret_access_key= wJalrXUtnFEMI",
+			want:   "kafka: acks=all =aws_secret_access_key= " + marker,
+			secret: "wJalrXUtnFEMI",
+		},
+		{
+			name:   "a one-letter key in front of the pair",
+			in:     "k=v =cpf= hunter2 refused",
+			want:   "k=v =cpf= " + marker + " refused",
+			secret: "hunter2",
+		},
+		{
+			// THE ROW THAT SHOWS THE DAMAGE IN BOTH DIRECTIONS: the sensitive
+			// name in the value slot was redacted as though it were the secret,
+			// and the document it introduces was printed. A marker on the line
+			// asserts it was scrubbed.
+			name:   "a validator message naming the field twice",
+			in:     "validator: field=cpf =cpf= 12345678901",
+			want:   "validator: field=cpf =cpf= " + marker,
+			secret: "12345678901",
+		},
+		{
+			// The shape the Go security standard prints as the example of a DSN
+			// worth redacting. It has no spaced separator and must be unaffected.
+			name:   "control: an ordinary DSN password stays redacted",
+			in:     "host=db password=s3cr3t sslmode=require",
+			want:   "host=db password=" + marker + " sslmode=require",
+			secret: "s3cr3t",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+			assert.Equal(t, tt.want, got)
+			assert.NotContains(t, got, tt.secret, "the credential survived")
+			assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
+		})
+	}
+}
+
 func TestStringSettlesOnTheFixedPoint(t *testing.T) {
 	t.Parallel()
 
