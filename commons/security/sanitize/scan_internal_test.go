@@ -483,12 +483,19 @@ func urlAndPairLines(t *testing.T, n int) []string {
 //
 // THE NAMES CARRY PUNCTUATION AND VENDOR WORDS BECAUSE A WHOLE-NAME TEST AND A
 // SUBSTRING TEST AGREE ON EVERY CLEAN NAME. A value of "[cpf" or "hunter2@CVC"
-// is the only shape that tells the two apart, and nothing but this function
-// ever wrote one: before pass 14 no line of testdata/direction/inputs.txt
-// matched "=<non-word><name> =" at all, so a rule that demanded the whole value
-// be a field name sat under a green harness while it printed the credential
-// behind the spaced separator. The lines that match that spelling today are the
-// ones written here, which is why the claim is in the past tense.
+// is the only shape that tells the two apart, and before pass 14 nothing in the
+// corpus carried one: no line of testdata/direction/inputs.txt matched
+// "=<non-word><name> =" at all (measured: 0 of 3,871 at 8941f3a), so a rule
+// that demanded the whole value be a field name sat under a green harness while
+// it printed the credential behind the spaced separator.
+//
+// The lines that match it TODAY are written here AND in the tables of
+// sanitize_test.go, which is the half of the provenance a reader must not lose:
+// five of them predate this function and stand in for the shapes doc.go leans
+// on — pgx, a validator and a unique-constraint violation. Deleting those as
+// redundant would take the stand-ins with them. Measured on this commit with
+// `=[^A-Za-z0-9_[:space:]][A-Za-z0-9_.@-]+[[:space:]]=`: 125 lines match, 120
+// from here and 5 from sanitize_test.go.
 func nameShapedValueLines() []string {
 	spaces := []string{" ", "\t", "\n", "\v", "\f", "\r"}
 	names := []string{
