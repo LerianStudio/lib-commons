@@ -749,6 +749,18 @@ var operatorDiagnosticLines = []string{
 	// Base64 padding in a value, which is NOT a pair boundary.
 	"token=aGVsbG8= more",
 	"token=aGVsbG8=",
+
+	// BOTH SEPARATOR SPELLINGS ON ONE LINE: a name-shaped value that ends in a
+	// bare '=' AND carries a padded " = " behind it. The two readings end in
+	// different places, so one of them prints the credential; these lines are
+	// here so the direction harness sees the family rather than the one row a
+	// test table happens to carry.
+	`password=cpf]= = hunter2`,
+	`password=(cpf)= = hunter2`,
+	`password=cpf'= = hunter2`,
+	`password=!cpf"= = hunter2`,
+	"secret=\"cpf\"=\v= hunter2",
+	`password="cpf"= = 12345678901`,
 }
 
 // directionInputPath and directionBasePath hold the pinned pair the direction

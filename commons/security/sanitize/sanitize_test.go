@@ -2731,6 +2731,24 @@ func TestStringRedactsBothReadingsOfANameShapedValue(t *testing.T) {
 			want: "secret=" + marker,
 		},
 
+		// A PADDED SEPARATOR BEHIND THE NAME OUTRANKS THE NAME'S OWN '='.
+		// "password=\"cpf\"= = hunter2" carries BOTH spellings at once: the
+		// token ends in a bare '=', and a padded " = " follows it. The two
+		// readings end in different places — one after the bare '=', one after
+		// the padded separator — and the shorter one leaves hunter2 outside the
+		// match, printed beside a marker. The longer one is the reading that
+		// covers the credential, so it is the one asked first.
+		{"a spaced separator behind a punctuated name still introduces its value", `password="cpf"= = hunter2`, "password=" + marker},
+		{"a spaced separator behind an abutting name still introduces its value", "password=cpf= = hunter2", "password=" + marker},
+		{
+			// THE BOUNDARY THE LONGER READING MUST NOT CROSS. There is no bare
+			// value behind the padded separator here, so the padded reading has
+			// nothing to cover and the short one stands.
+			name: "a punctuated name with nothing behind its separator keeps the short reading",
+			in:   `password="cpf"= =`,
+			want: "password=" + marker,
+		},
+
 		// Kept: a pair behind the name is the next pair, base64 padding is not a
 		// name, and a credential that is not a name is only itself.
 		{"a pair behind the name", "password=abc_token= rc=200", "password=" + marker + " rc=200"},
