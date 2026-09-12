@@ -2424,11 +2424,19 @@ func TestStringRedactsWhenTheValueIsAFieldNameWithNothingAfterIt(t *testing.T) {
 		{"base64 padding", "password=aGVsbG8=", "password=" + marker},
 		{"base64 padding with a tail", "token=aGVsbG8= more", "token=" + marker + " more"},
 		{"a name inside a value", "password=hunter2://CVC!0=", "password=" + marker},
-		{"a bare value does follow", "password=cpf= 12345678901", "password=cpf= " + marker},
+		{
+			// The name is sensitive and a BARE value follows it, so the
+			// redaction runs through that value too: neither reading of
+			// "cpf=" — padding on the credential, or the key of the number
+			// behind it — leaves anything in the clear.
+			name: "a bare value does follow",
+			in:   "password=cpf= 12345678901",
+			want: "password=" + marker,
+		},
 		{
 			name: "the field name printed twice",
 			in:   "validator: field=cpf =cpf= 12345678901",
-			want: "validator: field=cpf =cpf= " + marker,
+			want: "validator: field=cpf =" + marker,
 		},
 	}
 
@@ -2465,12 +2473,12 @@ func TestStringRedactsTheValueBehindAFieldNameUnderAHarmlessKey(t *testing.T) {
 		{
 			name: "a token steals the sensitive key's value slot",
 			in:   "a=password= rg =hunter2",
-			want: "a=password= rg =" + marker,
+			want: "a=password= " + marker,
 		},
 		{
 			name: "a tab separator on a driver option list",
 			in:   "pgx: opt=password= cpf\t=12345678901 sslmode=require",
-			want: "pgx: opt=password= cpf\t=" + marker + " sslmode=require",
+			want: "pgx: opt=password= " + marker + " sslmode=require",
 		},
 
 		// The credential is the value here, not a name, so the rewind must not
@@ -2515,7 +2523,7 @@ func TestStringRedactsWhenANonWordByteLeadsTheFieldNameInTheValue(t *testing.T) 
 		in   string
 		want string
 	}{
-		{"a bang", "token=!password= hunter2", "token=!password= " + marker},
+		{"a bang", "token=!password= hunter2", "token=" + marker},
 		{
 			// The value class stops at whitespace, a comma, a semicolon and an
 			// ampersand — not at a quote — so the credential's own closing
@@ -2524,10 +2532,10 @@ func TestStringRedactsWhenANonWordByteLeadsTheFieldNameInTheValue(t *testing.T) 
 			// colon too): one character too many, never one too few.
 			name: "a quote",
 			in:   `pwd="password= hunter2"`,
-			want: `pwd="password= ` + marker,
+			want: "pwd=" + marker,
 		},
-		{"a bracket", "secret=[cpf= 12345678901", "secret=[cpf= " + marker},
-		{"a second separator", "password= =cpf= 12345678901", "password= =cpf= " + marker},
+		{"a bracket", "secret=[cpf= 12345678901", "secret=" + marker},
+		{"a second separator", "password= =cpf= 12345678901", "password=" + marker},
 
 		// A WORD byte in front is not a boundary: "0password" is not the field
 		// "password", and a value that merely holds a name is still a value.
@@ -2538,9 +2546,95 @@ func TestStringRedactsWhenANonWordByteLeadsTheFieldNameInTheValue(t *testing.T) 
 			// whole thing is the value. FuzzStringGlued found this one.
 			name: "a credential ending in a name",
 			in:   "0= password=hunter2@CVC= 0",
-			want: "0= password=" + marker + " 0",
+			want: "0= password=" + marker,
 		},
 		{"already right under a harmless key", "x=b=!password= hunter2", "x=b=!password= " + marker},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
+		})
+	}
+}
+
+// TestStringRedactsBothReadingsOfANameShapedValue is the answer this package
+// gives when the value under a SENSITIVE key is itself a field name.
+//
+// IT IS A CREDENTIAL UNDER ONE READING AND THE NEXT PAIR'S KEY UNDER THE OTHER,
+// AND EVERY RULE THAT PICKED ONE OF THEM PRINTED THE OTHER. "password=password
+// =0" is a weak password whose text happens to be a field word; it is also,
+// byte for byte, a key whose value is behind the spaced '='. Four passes in a
+// row shipped a sharper test of which one it was — is the value a whole name,
+// is it sensitive, does a word byte precede it — and each one leaked the
+// reading it had ruled out: the credential itself, or the credential the name
+// introduced.
+//
+// So the rule stops deciding. On a sensitive key the value is redacted, ALWAYS;
+// and when a sensitive name sits at the end of it, the redaction extends
+// through the bare value that name would introduce, and through the chain
+// behind that. A false positive costs one over-redacted word, which is the
+// direction this package already errs in; a false negative costs nothing,
+// because the value went under the marker either way.
+//
+// A WHOLE PAIR BEHIND THE NAME STOPS THE EXTENSION, and only there: a value
+// that ends in "<name>=" is a complete value, so "rc=200" behind it is the next
+// pair and stays diagnosable. A name with the separator OUTSIDE the value has
+// no such reading — that separator has no value unless the token behind it is
+// one — so the chain runs through it.
+func TestStringRedactsBothReadingsOfANameShapedValue(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// The value is a whole field name and the separator follows it.
+		{"a password that is a field word", "password=password =0", "password=" + marker},
+		{"a spaced value behind the name", "password=secret = hunter2", "password=" + marker},
+		{"the name introduces nothing", "password=secret =", "password=" + marker + " ="},
+		{"camelCase folds to a field name", "password=myPassword = 1", "password=" + marker},
+		{"a credential holding a vendor word", "password=hunter2.rg =", "password=" + marker + " ="},
+		{"a dotted credential reads as a name", "token=s3cr3t.pin =0", "token=" + marker},
+		{"a chain of names", "password=password =password =0", "password=" + marker},
+		{"the key's own name in the value slot", "cpf=cpf =0", "cpf=" + marker},
+
+		// The value ENDS in a sensitive name and the separator.
+		{"base64 one dot from padding", "token=aGVsbG8.cvc= more", "token=" + marker},
+		{"base64url with an underscore", "token=xY9_key= expired", "token=" + marker},
+		{"camelCase and the separator", "password=myPassword= 0", "password=" + marker},
+		{"a bare word behind the name", "password=abc_token= rc", "password=" + marker},
+		{"a document behind the name", "password=cpf= 12345678901", "password=" + marker},
+		{"a vendor word behind a non-word byte", "password=hunter2@CVC= 0", "password=" + marker},
+		{"punctuation in front of the name", "password=!@#$%^*()password= hunter2", "password=" + marker},
+
+		// Kept: a pair behind the name is the next pair, base64 padding is not a
+		// name, and a credential that is not a name is only itself.
+		{"a pair behind the name", "password=abc_token= rc=200", "password=" + marker + " rc=200"},
+		{"nothing behind the name", "password=abc_token=", "password=" + marker},
+		{"base64 padding", "password=aGVsbG8=", "password=" + marker},
+		{"base64 padding and a word", "token=aGVsbG8= more", "token=" + marker + " more"},
+		{"a credential then a pair", "password=hunter2 =Rg =0", "password=" + marker + " =Rg =" + marker},
+		{"a name inside a value", "password=hunter2://CVC!0=", "password=" + marker},
+		{"a credential is not a name", "password=Tr0ub4dor =1", "password=" + marker + " =1"},
+
+		// A harmless key keeps every rewind it has: the name in the value slot
+		// is diagnostic there, and the credential it introduces is what goes.
+		{"a harmless key rewinds", "a=password= rg =hunter2", "a=password= " + marker},
+		{"a token in the value slot", "tok =rg =0", "tok =rg =" + marker},
+		{"a non-word byte under a harmless key", "x=b=!password= hunter2", "x=b=!password= " + marker},
+		{
+			name: "a driver option list",
+			in:   "host=db =password= hunter2 sslmode=require",
+			want: "host=db =password= " + marker + " sslmode=require",
+		},
+		{"a digit in front is not a name", "k=0password= hunter2", "k=0password= hunter2"},
 	}
 
 	for _, tt := range tests {
@@ -2572,10 +2666,21 @@ func TestStringRedactsAcrossAVerticalTabSeparator(t *testing.T) {
 		in   string
 		want string
 	}{
-		{"a chain ending in the separator", "k=k=pwd=\v", "k=k=pwd=" + marker},
-		{"a credential behind it", "a=b=password=\v hunter2", "a=b=password=" + marker + " hunter2"},
-		{"a key chain", "t=b=key=\v", "t=b=key=" + marker},
-		{"a nested secret", "b=s=secret=\v", "b=s=secret=" + marker},
+		// A LONE '\v' IS NOT A VALUE. It is whitespace on both sides of the
+		// separator now, so a chain that ends in one ends in the separator and
+		// its trailing space: there is no value here to redact, and the marker
+		// these lines used to carry was a marker over a whitespace byte.
+		{"a chain ending in the separator", "k=k=pwd=\v", "k=k=pwd=\v"},
+		{"a key chain", "t=b=key=\v", "t=b=key=\v"},
+		{"a nested secret", "b=s=secret=\v", "b=s=secret=\v"},
+
+		// And the credential behind that whitespace is the value, which is what
+		// the value side of the disagreement was hiding.
+		{"a credential behind it", "a=b=password=\v hunter2", "a=b=password=\v " + marker},
+		{"a lone vertical tab separator", "password=\v hunter2", "password=\v " + marker},
+		{"a document behind one", "cpf=\v 12345678901", "cpf=\v " + marker},
+		{"a space then a vertical tab", "password= \v hunter2", "password= \v " + marker},
+		{"two whitespace bytes, no space", "password=\v\thunter2", "password=\v\t" + marker},
 	}
 
 	for _, tt := range tests {

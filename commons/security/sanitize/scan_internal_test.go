@@ -466,6 +466,75 @@ func urlAndPairLines(t *testing.T, n int) []string {
 	return out
 }
 
+// nameShapedValueLines builds the shape pass 13 exists for: a value that is
+// itself a field name, under a sensitive key and under a harmless one, in every
+// position from which that name could introduce the credential instead of being
+// it — plus the credential sitting behind the separator's own whitespace.
+//
+// THE GENERATORS COULD NOT REACH THE FAMILY AT ALL. urlAndPairLines draws its
+// values from a fixed list of tokens, none of which parses as a field name in
+// the value slot, and inputs.txt held two lines of "=<whitespace>" with no
+// credential behind either. So a rule that handed a name-shaped credential back
+// to the scanner, and a separator class that made a lone '\v' the value, both
+// shipped under a green direction harness.
+//
+// It is a full enumeration rather than a seeded draw: the axes are small, and a
+// draw over them leaves the same holes to luck.
+func nameShapedValueLines() []string {
+	spaces := []string{" ", "\t", "\n", "\v", "\f", "\r"}
+	names := []string{
+		"password", "secret", "token", "cpf", "rg", "my-password", "myPassword",
+		"myKey", "hunter2.rg", "s3cr3t.pin", "aGVsbG8.cvc", "xY9_key", "abc_token",
+	}
+	keys := []string{"password", "opt"}
+
+	out := make([]string, 0, 1024)
+
+	// The credential behind the separator's own whitespace, one byte of it and
+	// two: "password=\v hunter2" is the shape that made a lone '\v' a value.
+	for _, key := range []string{"password", "cpf", "token"} {
+		for _, first := range spaces {
+			out = append(out, key+"="+first+"hunter2")
+
+			for _, second := range spaces {
+				out = append(out, key+"="+first+second+"hunter2")
+			}
+		}
+	}
+
+	// The name in the value slot: at end of line, introducing a bare value
+	// across a spaced separator, introducing one behind its own separator, and
+	// followed by a whole pair instead.
+	for _, key := range keys {
+		for _, name := range names {
+			out = append(out, key+"="+name+"=")
+
+			for _, space := range spaces {
+				out = append(out,
+					key+"="+name+space+"=hunter2",
+					key+"="+name+"="+space+"hunter2",
+					key+"="+name+"="+space+"rc=200")
+			}
+		}
+	}
+
+	// Chains of names to depth three, which is where a rule that stops at the
+	// first one leaves the credential at the end of the chain in the clear.
+	for _, key := range keys {
+		for _, name := range names[:5] {
+			chain := key + "="
+
+			for range 3 {
+				chain += name + " ="
+
+				out = append(out, chain+"0")
+			}
+		}
+	}
+
+	return out
+}
+
 // roundsNeeded counts the sanitizeOnce calls String would make: one that finds
 // nothing to change is still a round, so an input that is already settled costs
 // one and an input that changes once costs two.
@@ -676,6 +745,7 @@ func directionInputs(t *testing.T) []string {
 		operatorDiagnosticLines,
 		literalsFromTestSources(t),
 		urlAndPairLines(t, 2000),
+		nameShapedValueLines(),
 		luhnCards(t, 250),
 		randomRuns(t, 250),
 	}
@@ -796,18 +866,6 @@ func isSubsequence(a, b string) bool {
 // remove, and the harness asserts it — so a future change that leaks the
 // userinfo on these lines fails here rather than being covered by this list.
 var directionBaseOverReach = []struct{ input, credential string }{
-	// The field name in the value slot, which 714ca9e redacted while printing
-	// the credential behind it. The head does the opposite: the name is
-	// diagnostic and the credential is gone. Neither residue is a subsequence of
-	// the other, so the rule cannot see which way round it is — the exemption
-	// below asserts CREDENTIAL ABSENCE in the head, which is the only direction
-	// that matters, and never output equality.
-	{input: "token=!password= hunter2", credential: "hunter2"},
-	{input: `pwd="password= hunter2"`, credential: "hunter2"},
-	{input: "secret=[cpf= 12345678901", credential: "12345678901"},
-	{input: "password= =cpf= 12345678901", credential: "12345678901"},
-	{input: "password=cpf= 12345678901", credential: "12345678901"},
-
 	{input: "A://tok#en@db.internal:5432/", credential: "tok#en"},
 	{input: "A://tok#en@db.internal:5432/v1/charge?a=1", credential: "tok#en"},
 	{input: "A://tok#en@db.internal:5432?x=@y", credential: "tok#en"},
