@@ -422,6 +422,123 @@ func TestTheShortTailShapeRedactsNothingElse(t *testing.T) {
 // sanitizer that changed its own output on a second run was the result. They are
 // built from one constant now; this is what says so out loud, and what fails if
 // anyone writes the set out a second time.
+// urlAndPairLines builds the two shapes that produced every idempotence defect:
+// URLs whose authority holds a boundary byte a later pass can rewrite, and
+// chains of "<token> =<key> =<value>" where a token can steal the key slot.
+func urlAndPairLines(t *testing.T, n int) []string {
+	t.Helper()
+
+	rng := rand.New(rand.NewSource(1010))
+
+	schemes := []string{"http", "https", "postgres", "A", "amqp"}
+	hosts := []string{"h", "host", "db.internal:5432", "example.com"}
+	users := []string{"u", "u:p", "keY=#&", "keY=/&", "keY=?&", "key=v&", "x=****&", "tok#en"}
+	tails := []string{"", "/", "/p", "/v1/charge?a=1", "#frag", "#frag@x", "?x=@y"}
+
+	tokens := []string{"AKIAIOSFODNN7EXAMPLE", "ghp_abcdefghijklmnopqrstuvwxyz0123456789", "plainword", "0"}
+	keys := []string{"rg", "cpf", "password", "token", "ref", "status"}
+	seps := []string{" =", "\t=", "\n=", "\f=", "\r=", "=", "= "}
+	values := []string{"0", "abc", "hunter2", "4111 1111 1111 1111"}
+
+	out := make([]string, 0, n)
+
+	for i := range n {
+		if i%2 == 0 {
+			out = append(out, schemes[rng.Intn(len(schemes))]+"://"+
+				users[rng.Intn(len(users))]+"@"+
+				hosts[rng.Intn(len(hosts))]+
+				tails[rng.Intn(len(tails))])
+
+			continue
+		}
+
+		out = append(out, tokens[rng.Intn(len(tokens))]+
+			seps[rng.Intn(len(seps))]+keys[rng.Intn(len(keys))]+
+			seps[rng.Intn(len(seps))]+values[rng.Intn(len(values))])
+	}
+
+	return out
+}
+
+// roundsNeeded counts the sanitizeOnce calls String would make: one that finds
+// nothing to change is still a round, so an input that is already settled costs
+// one and an input that changes once costs two.
+func roundsNeeded(s string) int {
+	for i := 1; i <= 32; i++ {
+		next := sanitizeOnce(s)
+		if next == s {
+			return i
+		}
+
+		s = next
+	}
+
+	return 33
+}
+
+// TestEveryCorpusInputSettlesWithinThreeRounds is the measured half of the
+// termination argument in String.
+//
+// THERE IS NO SHRINKING MEASURE TO APPEAL TO. A round can make the string
+// longer ("keY=#" becomes "keY=****"), so the loop is not bounded by descent; it
+// is bounded by maxSanitizeRounds. What makes that cap a fact rather than a hope
+// is measurement, and the measurement is THREE, not two: "A://keY=/&@" needs the
+// key=value pass to redact the value and delete the '/' (round one), the URL
+// pass to then see an '@' inside the authority (round two), and a third round to
+// confirm nothing more changes. Two changing rounds plus its confirmation.
+//
+// Across the committed fuzz corpus, every string literal in the test sources,
+// the generated card corpus, the random grouped runs and the URL and key=value
+// chains that produced all four defects, nothing has ever needed a fourth. Most
+// inputs need one or two; the three-round shapes are roughly one in seven of the
+// URL and pair chains and rarer everywhere else.
+//
+// If this ever fails, the cap is still correct — the fuzz harness asserts
+// idempotence under it, so an input needing more rounds surfaces there — but the
+// number in the name is then wrong and the cost of String has changed.
+func TestEveryCorpusInputSettlesWithinThreeRounds(t *testing.T) {
+	t.Parallel()
+
+	groups := []struct {
+		name   string
+		inputs []string
+	}{
+		{"committed fuzz corpus", corpusEntries(t)},
+		{"every string literal in the test sources", literalsFromTestSources(t)},
+		{"generated Luhn-valid cards", luhnCards(t, 4000)},
+		{"seeded random grouped runs", randomRuns(t, 5000)},
+		{"URL authorities and key=value chains", urlAndPairLines(t, 5000)},
+	}
+
+	for _, g := range groups {
+		require.NotEmpty(t, g.inputs, "%s contributed no inputs", g.name)
+
+		worst, worstIn, total := 0, "", 0
+		dist := map[int]int{}
+
+		for _, in := range g.inputs {
+			if in == "" || len(in) > MaxInputLen {
+				continue
+			}
+
+			total++
+
+			n := roundsNeeded(in)
+			dist[n]++
+
+			if n > worst {
+				worst, worstIn = n, in
+			}
+		}
+
+		require.LessOrEqual(t, worst, 3,
+			"%s: %q needed %d rounds; the cap is %d and the cost of String has changed",
+			g.name, worstIn, worst, maxSanitizeRounds)
+
+		t.Logf("ROUNDS %-42s %5d inputs, worst %d, rounds->count %v", g.name, total, worst, dist)
+	}
+}
+
 func TestQueryValueClassAgreesWithItsByteTest(t *testing.T) {
 	t.Parallel()
 

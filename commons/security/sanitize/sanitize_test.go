@@ -1885,6 +1885,60 @@ func TestStringRedactsAFieldNameStolenIntoTheValueSlot(t *testing.T) {
 	}
 }
 
+func TestStringSettlesOnTheFixedPoint(t *testing.T) {
+	t.Parallel()
+
+	// THE FOUR DEFECTS THAT MADE THE PIPELINE ITERATE, PLUS THE TWO CONTROLS
+	// THAT SAY IT DID NOT COST ANYTHING.
+	//
+	// Each of the first four is the same family: a later pass rewrote or deleted
+	// a byte an earlier pass had used as a token boundary, so a second run
+	// parsed a different string and reached a different answer. In every one the
+	// SECOND answer was the correct redaction and the first was a miss, which is
+	// why running to a fixed point is the redaction rather than a tidy-up.
+	tests := []struct{ name, in, want string }{
+		{
+			name: "a hash deleted from inside an authority",
+			in:   "A://keY=#&@ postgres://u:p@db.internal:5432/ledger 0",
+			want: "A://" + marker + "@ postgres://" + marker + ":" + marker + "@db.internal:5432/ledger 0",
+		},
+		{
+			name: "a slash deleted from inside an authority",
+			in:   "A://keY=/&@ postgres://u:p@db.internal:5432/ledger 0",
+			want: "A://" + marker + "@ postgres://" + marker + ":" + marker + "@db.internal:5432/ledger 0",
+		},
+		{
+			name: "a credential steals the key slot",
+			in:   "0 AKIAIOSFODNN7EXAMPLE =Rg =0",
+			want: "0 " + marker + " =Rg =" + marker,
+		},
+		{
+			// The value class admits '=', so "Rg=" was swallowed whole as one
+			// value and the pair behind it was never seen. Only once the thief
+			// became a marker did the second run read "Rg= 0" as a pair.
+			name: "a value absorbs the equals sign before a space",
+			in:   "0 AKIAIOSFODNN7EXAMPLE =Rg= 0",
+			want: "0 " + marker + " =Rg= " + marker,
+		},
+
+		// CONTROLS. Neither moved when the loop went in, and both are shapes a
+		// fixed point could plausibly have damaged: one holds two secrets that
+		// must BOTH go, the other holds no secret at all and must survive whole.
+		{name: "control: two secrets on one line", in: "password=hunter2 =Rg =0", want: "password=" + marker + " =Rg =" + marker},
+		{name: "control: a real fragment is not userinfo", in: "http://h/p#frag@x", want: "http://h/p#frag@x"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, got, sanitize.String(got), "the settled output must be a fixed point")
+		})
+	}
+}
+
 func TestStringScrubsAGroupedCardInsideAQueryString(t *testing.T) {
 	t.Parallel()
 

@@ -73,6 +73,38 @@
 // run was the result. The bare patterns go LAST so a vendor token is matched
 // against the text as written rather than one an earlier pass has carved into.
 //
+// # The pipeline runs to a fixed point
+//
+// The nine passes above do not run once. String repeats them until a round
+// changes nothing, capped at four rounds.
+//
+// This is not defensive tidying, it is the redaction. Four separate defects
+// turned out to be one family: a later pass rewrites or deletes a byte an
+// EARLIER pass used as a token boundary, so a second run parses a different
+// string and finds a secret the first run missed. The URL pass ended an
+// authority at '#', the key=value pass then redacted "keY=#" to "keY=****" and
+// deleted that '#', and the second run found an '@' inside the authority and
+// collapsed the userinfo; the same shape occurs with '/' and '?', which unlike
+// '#' cannot simply be dropped from the terminator set. Separately, a
+// credential-shaped token stole the key slot in front of "=Rg =0", so the RG
+// was never seen until the bare-credential pass replaced the thief with a
+// marker and the second run tokenised the pair correctly. In every one of them
+// the second run's answer was the correct redaction and the first was a miss.
+//
+// TERMINATION IS THE CAP, NOT A SHRINKING ARGUMENT. A round can lengthen the
+// string, so there is no measure to descend. The cap is what bounds it, and
+// measurement is what makes the cap adequate: the worst input found so far
+// needs three rounds, most need one or two, and nothing has needed four. An
+// input that needed more would fail the fuzz harness, which asserts idempotence
+// under the cap, rather than pass silently.
+//
+// THE COST IS LESS THAN DOUBLE, because the second round runs over text the
+// first has already emptied. At MaxInputLen a line of nothing but card numbers
+// costs 290 ms against 285 ms for a single pass, and a line with nothing to
+// redact costs one round, since the first round changes nothing and the loop
+// stops. The expensive work is scanning digits, and after the first round there
+// are none left to scan.
+//
 // # What it does not cover
 //
 // The e-mail pattern is ASCII and requires a dotted TLD, so three shapes are

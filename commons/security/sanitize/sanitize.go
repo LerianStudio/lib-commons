@@ -406,6 +406,63 @@ func String(s string) string {
 			SecretRedactionMarker, len(s))
 	}
 
+	// THE PIPELINE RUNS TO A FIXED POINT, AND THAT IS THE CONTRACT, NOT A TIDINESS.
+	//
+	// Four separate defects in two passes were one family: a later pass rewrites
+	// or deletes a byte an EARLIER pass used as a token boundary, so a second run
+	// parses a different string than the first and produces a different answer.
+	// The URL pass ended an authority at '#', the key=value pass then redacted
+	// "keY=#" to "keY=****" and deleted that '#', and the second run found an '@'
+	// inside the authority and collapsed the userinfo. Same shape with '/' and
+	// '?'. Separately, a credential-shaped token stole the key slot in front of
+	// "=Rg =0" so the RG was never seen, until the bare pass replaced the thief
+	// with a marker and the second run tokenised it correctly.
+	//
+	// In EVERY one of those the second run's answer was the right one: the first
+	// run had missed a secret. Iterating is therefore not belt and braces, it is
+	// the redaction the package already promised — the fuzz harness has asserted
+	// String(String(x)) == String(x) all along, so the fixed point is simply what
+	// that assertion says the answer is.
+	//
+	// TERMINATION IS THE CAP, NOT A SHRINKING ARGUMENT. Do not read this loop as
+	// "each round is strictly smaller": it is not. "keY=#" becomes "keY=****",
+	// which is longer, so there is no monotone measure to descend. What bounds it
+	// is maxSanitizeRounds, plus measurement — and the measurement is THREE, not
+	// two. "A://keY=/&@" needs the key=value pass to redact the value and delete
+	// the '/' (one), the URL pass to then see the '@' that is suddenly inside the
+	// authority (two), and a third round to confirm nothing further moves. Most
+	// inputs need one or two; about one in seven of the URL and key=value shapes
+	// needs three, and nothing measured has ever needed four.
+	//
+	// TestEveryCorpusInputSettlesWithinThreeRounds pins that across the committed
+	// corpus, every string literal in the test sources and the card, query, URL
+	// and key=value generators. The fuzz harness still asserts idempotence under
+	// the cap, so an input needing more rounds than the cap surfaces as a fuzz
+	// failure rather than as silence.
+	for range maxSanitizeRounds {
+		next := sanitizeOnce(s)
+		if next == s {
+			break
+		}
+
+		s = next
+	}
+
+	return s
+}
+
+// maxSanitizeRounds bounds the fixed-point loop in String.
+//
+// Three rounds is what the worst measured input needs, and most need one or two.
+// Four leaves exactly one round of headroom for a shape nobody has generated yet
+// without letting a pathological input spin: the cost of the cap is paid only by
+// an input that keeps changing, and such an input gets the fourth round's
+// output, which is more redacted than the first round's, never less.
+const maxSanitizeRounds = 4
+
+// sanitizeOnce is one pass of the pipeline. String calls it until it stops
+// changing its input; see the termination note there.
+func sanitizeOnce(s string) string {
 	// 1. PEM BLOCKS FIRST, AND THE ORDER IS LOAD-BEARING. An armored block is
 	// often the VALUE of a sensitive key ("private_key=-----BEGIN ..."), which is
 	// how a config-loading error echoes one. Let the key=value pass run first and
