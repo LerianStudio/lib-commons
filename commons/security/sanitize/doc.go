@@ -125,6 +125,20 @@
 // is a shape this package does not undertake to find; do not let one be written
 // that way.
 //
+// A URL PASSWORD CONTAINING '/' OR '?' IS NOT REDACTED. The userinfo of
+// "postgres://user:hun?ter2@db" is read as ending at the '?', so the authority
+// is "user:hun", the at-sign belongs to the query, and no credential is found;
+// the same happens with a '/' in the password. That reading is what RFC 3986
+// says: a '?' or a '/' ends the authority, and a password carrying either has to
+// percent-encode it to be a valid URL at all. Taking the LAST at-sign on the line
+// instead would find these, and would also collapse the host out of every URL
+// whose query carries an address or a pair — "http://h:8080/p?next=user@e.com"
+// becomes "http://****@e.com", which loses the host and port an operator needs
+// while the address it swallows is already redacted by the bare e-mail pass
+// today, as "http://h:8080/p?next=****". A DSN whose password holds one of those bytes
+// unencoded is a shape this package does not undertake to find; encode it, as the
+// grammar already requires.
+//
 // A SENSITIVE VALUE THAT IS NOT A DIGIT RUN KEEPS ITS REMAINDER. The
 // query-parameter pass ends the value at the first space and then grows it back
 // over following groups only while those groups are bare digits, so
