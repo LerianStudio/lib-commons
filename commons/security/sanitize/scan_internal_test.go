@@ -768,7 +768,15 @@ var operatorDiagnosticLines = []string{
 // commit named in the file name.
 const (
 	directionInputPath = "testdata/direction/inputs.txt"
-	directionBasePath  = "testdata/direction/base-714ca9e.txt"
+	directionBaseGlob  = "testdata/direction/base-*.txt"
+
+	// directionOriginalBase is the ONE base with exemption rows. It is a head
+	// from before this branch, so it redacts several shapes differently rather
+	// than less, and those differences are carried by name. Every other base is
+	// a head this branch shipped clean, so nothing about it needs excusing: the
+	// gate against it is a bare zero, and a row that ever needs excusing there
+	// is a finding, not a row to add.
+	directionOriginalBase = "base-714ca9e.txt"
 )
 
 // directionInputs assembles the input set for the direction harness.
@@ -1008,9 +1016,20 @@ var directionBaseKept = []struct{ input, want string }{
 // redacted to printed in the clear, under a green suite, a green fuzzer and a
 // stable fixed point.
 //
-// The reference is 714ca9e, the last head with no known regression. String's
-// output for every input is pinned in a file produced from a PRISTINE COPY of
-// that commit, never from this worktree:
+// ONE FILE PER HEAD THIS BRANCH HAS SHIPPED CLEAN, AND THE GATE IS ZERO
+// NARROWED AGAINST EVERY ONE OF THEM. Pinning a single old commit was itself a
+// hole: pass 15 traded a leak for a leak, and because its regression was a
+// WIDENING against 714ca9e and a NARROWING against the head before it, all
+// 110,160 instances of it passed this gate as progress. A base file is ADDED
+// when a head ships clean and is NEVER EDITED: editing one is how a head's
+// answers get rewritten to match the answers that replaced them, which is the
+// one thing the file exists to prevent. Exemption rows belong to 714ca9e alone,
+// for the reasons those rows give; against a head this branch shipped, a
+// difference that is not a widening is a finding.
+//
+// The oldest reference is 714ca9e, the last head before this branch with no
+// known regression. String's output for every input is pinned in a file
+// produced from a PRISTINE COPY of that commit, never from this worktree:
 //
 //	d=/tmp/dir-base
 //	GIT_INDEX_FILE=$d.idx git read-tree 714ca9e
@@ -1021,9 +1040,14 @@ var directionBaseKept = []struct{ input, want string }{
 //	   <inputs.txt> <base-714ca9e.txt>)
 //	rm -rf $d $d.idx
 //
+// Every other base-*.txt is produced the same way from its own commit, which
+// unlike 714ca9e already carries testdata/direction, so only the build tag on
+// direction_base_main.go has to be stripped.
+//
 // To regenerate the inputs after adding a test literal or an operator line, run
-// this test once with SANITIZE_DIRECTION_REGEN=1, then redo the command above.
-// Both files are regenerated in full; nothing is edited by hand.
+// this test once with SANITIZE_DIRECTION_REGEN=1, then redo the command above
+// for EVERY base file. All of them are regenerated in full over the new inputs;
+// nothing is edited by hand.
 //
 // THE ASSERTION IS DIRECTION, NOT EQUALITY. Later passes are meant to redact
 // more, so an output that differs from the base is only a defect when clear text
@@ -1051,10 +1075,6 @@ func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
 	}
 
 	inputs := readQuotedLines(t, directionInputPath)
-	base := readQuotedLines(t, directionBasePath)
-
-	require.Len(t, base, len(inputs),
-		"the pinned base has one output per input; regenerate both files together")
 
 	// THE PINNED SET MUST STILL COVER THE SOURCES IT WAS BUILT FROM. A harness
 	// that quietly stops seeing the shapes a test file added is the failure this
@@ -1077,21 +1097,57 @@ func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
 		"%d generated input(s) are not in the pinned set, first %q; re-run with SANITIZE_DIRECTION_REGEN=1 and redo the base command",
 		len(missing), firstOrEmpty(missing))
 
-	exempt := make(map[string]string, len(directionBaseOverReach))
-	for _, row := range directionBaseOverReach {
+	bases, err := filepath.Glob(directionBaseGlob)
+	if err != nil {
+		t.Fatalf("glob %s: %v", directionBaseGlob, err)
+	}
+
+	require.NotEmpty(t, bases, "no pinned base found under %s", directionBaseGlob)
+
+	for _, path := range bases {
+		t.Run(filepath.Base(path), func(t *testing.T) {
+			t.Parallel()
+			directionAgainstBase(t, inputs, path)
+		})
+	}
+}
+
+// directionAgainstBase holds the head's output for every pinned input to ONE
+// base: nothing that base redacted may come back in the clear.
+func directionAgainstBase(t *testing.T, inputs []string, path string) {
+	t.Helper()
+
+	base := readQuotedLines(t, path)
+
+	require.Len(t, base, len(inputs),
+		"%s has one output per input; regenerate it over the current inputs.txt", path)
+
+	var (
+		overReach []struct{ input, credential string }
+		kept      []struct{ input, want string }
+	)
+
+	if filepath.Base(path) == directionOriginalBase {
+		overReach, kept = directionBaseOverReach, directionBaseKept
+	}
+
+	exempt := make(map[string]string, len(overReach))
+	for _, row := range overReach {
 		exempt[row.input] = row.credential
 	}
 
-	keep := make(map[string]string, len(directionBaseKept))
-	for _, row := range directionBaseKept {
+	keep := make(map[string]string, len(kept))
+	for _, row := range kept {
 		keep[row.input] = row.want
 	}
 
-	narrowed, widened, exempted, keptClear := 0, 0, 0, 0
+	same, narrowed, widened, exempted, keptClear := 0, 0, 0, 0, 0
 
 	for i, in := range inputs {
 		got := String(in)
 		if got == base[i] {
+			same++
+
 			continue
 		}
 
@@ -1135,17 +1191,17 @@ func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
 
 		narrowed++
 
-		t.Errorf("NARROWED in=%q\n  base=%q\n  head=%q", in, base[i], got)
+		t.Errorf("NARROWED against %s in=%q\n  base=%q\n  head=%q", filepath.Base(path), in, base[i], got)
 	}
 
-	require.Zero(t, narrowed, "String must never leave clear text the pinned base removed")
-	require.Len(t, directionBaseOverReach, exempted,
+	require.Zero(t, narrowed, "String must never leave clear text %s removed", filepath.Base(path))
+	require.Len(t, overReach, exempted,
 		"every exemption must still be a live difference; a stale row hides nothing and must be deleted")
-	require.Len(t, directionBaseKept, keptClear,
+	require.Len(t, kept, keptClear,
 		"every kept-clear row must still be a live difference; a stale row hides nothing and must be deleted")
 
-	t.Logf("DIRECTION %d inputs against the pinned 714ca9e base: %d narrowed, %d widened, %d exempt, %d kept-clear",
-		len(inputs), narrowed, widened, exempted, keptClear)
+	t.Logf("DIRECTION %d inputs against %s: %d same, %d widened, %d narrowed, %d exempt, %d kept-clear",
+		len(inputs), filepath.Base(path), same, widened, narrowed, exempted, keptClear)
 }
 
 func firstOrEmpty(s []string) string {
