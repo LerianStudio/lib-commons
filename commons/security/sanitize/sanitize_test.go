@@ -1404,6 +1404,46 @@ func TestErrorOnTypedNilCause(t *testing.T) {
 	})
 }
 
+// nilFuncError is an error whose dynamic type is a FUNC, the shape a handler
+// adapter or a lazily-built error takes; a nil one panics on Error() when it
+// calls itself, and a pointer-only nil check lets it through.
+type nilFuncError func() string
+
+func (f nilFuncError) Error() string { return f() }
+
+// nilMapError is the same defect on a MAP kind: Error() writes through the
+// receiver and a nil map panics on the write.
+type nilMapError map[string]string
+
+func (m nilMapError) Error() string {
+	m["k"] = "v"
+
+	return m["k"]
+}
+
+func TestErrorOnTypedNilOfEveryNilableKind(t *testing.T) {
+	t.Parallel()
+
+	// The pointer case above was fixed with a pointer-only check, which is the
+	// obvious spelling and the wrong one: a nil func, map, slice, chan or
+	// interface inside a non-nil error interface panics on Error() exactly the
+	// same way, and none of them is reflect.Pointer.
+	cases := map[string]error{
+		"nil func": nilFuncError(nil),
+		"nil map":  nilMapError(nil),
+	}
+
+	for name, cause := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.NotPanics(t, func() {
+				assert.Nil(t, sanitize.Error(cause), "a typed nil of any nilable kind is a nil error")
+			})
+		})
+	}
+}
+
 // TestStringStaysBoundedOnAGroupedDigitRunAtTheLimit is a RUNTIME regression
 // test, not a behaviour one.
 //

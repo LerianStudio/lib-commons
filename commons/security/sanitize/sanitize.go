@@ -4,11 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
 	"github.com/LerianStudio/lib-observability/v4/redaction"
 )
 
@@ -1443,11 +1443,13 @@ func Error(err error) error {
 		return nil
 	}
 
-	// A NIL POINTER INSIDE A NON-NIL INTERFACE is not caught above, and calling
-	// Error() on it panics for any implementation that reads a field — which is
-	// most of them. A panic here lands on an error path, on top of the failure
-	// being reported, in a helper whose whole job is to be safe to call.
-	if v := reflect.ValueOf(err); v.Kind() == reflect.Pointer && v.IsNil() {
+	// A NIL VALUE INSIDE A NON-NIL INTERFACE is not caught above, and calling
+	// Error() on it panics for any implementation that reads through it: a nil
+	// pointer reading a field, a nil func calling itself, a nil map being
+	// written. A panic here lands on an error path, on top of the failure being
+	// reported, in a helper whose whole job is to be safe to call. The check is
+	// the one the rest of lib-commons uses, over every nilable kind.
+	if nilcheck.Interface(err) {
 		return nil
 	}
 
