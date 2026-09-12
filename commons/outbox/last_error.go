@@ -105,18 +105,35 @@ func AppendErrorCause(existing, cause string) string {
 		return existing + lastErrorCauseSeparator + cause
 	}
 
-	return existing + LastErrorTruncationMarker
+	// The value is trimmed before the marker is appended, because `existing`
+	// is not guaranteed to be within budget: a row written BEFORE this rule
+	// existed can hold a full-width value (the old code wrote one message of up
+	// to maxErrorLength straight into the column). Appending to that blindly
+	// would breach VARCHAR(512) and strand the row — the same failure this cap
+	// exists to prevent. Trimming is a no-op for any value this rule produced.
+	return truncateToRuneBudget(existing, LastErrorCauseBudget()) + LastErrorTruncationMarker
 }
 
 // BoundErrorCause trims ONE cause to the largest size that can be stored on its
-// own without breaching MaxLastErrorLength.
+// own without breaching MaxLastErrorLength, and MARKS it when trimming actually
+// dropped text.
+//
+// The marker matters here for the same reason it matters when later causes are
+// dropped: a reader must be able to tell a complete cause from a cut one.
+// Without it a truncated first cause reads as the whole diagnosis, which is a
+// quieter version of the bug this file removes.
 //
 // The SQL backends call this before handing the cause to their UPDATE, so the
 // statement never has to truncate: it either stores a whole cause or appends
 // the marker, and never has to slice text it cannot inspect for character
 // boundaries.
 func BoundErrorCause(cause string) string {
-	return truncateToRuneBudget(normalizeCause(cause), LastErrorCauseBudget())
+	cause = normalizeCause(cause)
+	if utf8.RuneCountInString(cause) <= LastErrorCauseBudget() {
+		return cause
+	}
+
+	return truncateToRuneBudget(cause, LastErrorCauseBudget()) + LastErrorTruncationMarker
 }
 
 // hasCause reports whether cause is already recorded as a WHOLE entry. The

@@ -1197,3 +1197,74 @@ func TestIntegration_SchemaResolver_ApplyTenantAndDiscoverTenants(t *testing.T) 
 	require.Contains(t, tenants, tenantSchema)
 	require.NotContains(t, tenants, defaultTenant)
 }
+
+// seedLegacyLastError writes a last_error value straight into the column,
+// bypassing the repository. The repository can no longer PRODUCE a full-width
+// value — it bounds every cause it stores — so a row written before that rule
+// existed is unreachable through the public API and can only be staged here.
+func seedLegacyLastError(t *testing.T, fx *integrationRepoFixture, id uuid.UUID, lastError string) {
+	t.Helper()
+
+	_, err := fx.primaryDB.ExecContext(
+		fx.ctx,
+		fmt.Sprintf(
+			"UPDATE %s SET last_error = $1 WHERE id = $2 AND tenant_id = $3",
+			quoteIdentifier(fx.tableName),
+		),
+		lastError,
+		id,
+		"tenant-a",
+	)
+	require.NoError(t, err, "seeding a full-width last_error must be accepted by the column itself")
+}
+
+// TestIntegration_Repository_MarkFailedFitsALegacyFullWidthLastError proves the
+// accumulate expression cannot breach the column it writes to.
+//
+// A row written before causes accumulated can hold the full 512 characters the
+// column allows. Appending the truncation marker to that without shrinking it
+// first would make Postgres reject the UPDATE outright (SQLSTATE 22001), and
+// MarkFailed would return an error instead of quarantining the row: it would
+// stay in PROCESSING and be retried for ever, which is worse than the
+// overwriting this whole change removes.
+//
+// Only a real Postgres can fail this way. sqlmock accepts any string.
+func TestIntegration_Repository_MarkFailedFitsALegacyFullWidthLastError(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+
+	event := createFixtureEvent(t, fx, "payment.legacy.fullwidth")
+	updateFixtureEventState(t, fx, event.ID, outbox.OutboxStatusProcessing, 1, time.Now().UTC())
+	seedLegacyLastError(t, fx, event.ID, strings.Repeat("L", outbox.MaxLastErrorLength))
+
+	require.NoError(t, fx.repo.MarkFailed(fx.tenantCtx, event.ID, "a brand new cause", 5))
+
+	stored, err := fx.repo.GetByID(fx.tenantCtx, event.ID)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len([]rune(stored.LastError)), outbox.MaxLastErrorLength)
+	require.Contains(t, stored.LastError, outbox.LastErrorTruncationMarker,
+		"an operator must be able to tell a saturated value from a complete one")
+	require.True(t, strings.HasPrefix(stored.LastError, "LLLL"),
+		"truncation drops the newest causes; the earliest diagnosis is the one kept")
+}
+
+// TestIntegration_Repository_StuckInvalidationFitsALegacyFullWidthLastError is
+// the same proof for the second place the rule is written in SQL: the stuck
+// reclaim, which invalidates a row abandoned mid-PROCESSING with no attempts
+// left. It contributes its own cause, so it can breach the column the same way.
+func TestIntegration_Repository_StuckInvalidationFitsALegacyFullWidthLastError(t *testing.T) {
+	fx := newIntegrationRepoFixture(t)
+
+	event := createFixtureEvent(t, fx, "payment.legacy.stuck")
+	updateFixtureEventState(t, fx, event.ID, outbox.OutboxStatusProcessing, 2, time.Now().UTC().Add(-time.Hour))
+	seedLegacyLastError(t, fx, event.ID, strings.Repeat("S", outbox.MaxLastErrorLength))
+
+	_, err := fx.repo.ResetStuckProcessing(fx.tenantCtx, 10, time.Now().UTC(), 3)
+	require.NoError(t, err)
+
+	stored, err := fx.repo.GetByID(fx.tenantCtx, event.ID)
+	require.NoError(t, err)
+	require.Equal(t, outbox.OutboxStatusInvalid, stored.Status)
+	require.LessOrEqual(t, len([]rune(stored.LastError)), outbox.MaxLastErrorLength)
+	require.Contains(t, stored.LastError, outbox.LastErrorTruncationMarker)
+	require.True(t, strings.HasPrefix(stored.LastError, "SSSS"))
+}

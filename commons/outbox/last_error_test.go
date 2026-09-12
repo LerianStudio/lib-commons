@@ -113,3 +113,31 @@ func TestAppendErrorCauseNeverEmitsTheExhaustionTautology(t *testing.T) {
 	require.NotContains(t, got, "max dispatch attempts exceeded",
 		"exhaustion is carried by attempts and status, not by the column that holds the why")
 }
+
+func TestAppendErrorCauseFitsALegacyFullWidthValue(t *testing.T) {
+	// A row written BEFORE this rule existed can hold a full-width value: the
+	// old code wrote one sanitized message straight into the column. Appending
+	// the marker to that blindly would breach VARCHAR(512) and strand the row
+	// in PROCESSING for ever — the exact failure the cap exists to prevent.
+	legacy := strings.Repeat("L", MaxLastErrorLength)
+	require.Equal(t, MaxLastErrorLength, utf8.RuneCountInString(legacy))
+
+	got := AppendErrorCause(legacy, "a brand new cause")
+
+	require.LessOrEqual(t, utf8.RuneCountInString(got), MaxLastErrorLength,
+		"a legacy full-width value must not overflow when the marker is appended")
+	require.Contains(t, got, LastErrorTruncationMarker)
+	require.True(t, strings.HasPrefix(got, "LLLL"), "the legacy diagnosis is still what leads")
+}
+
+func TestBoundErrorCauseMarksAnOversizedFirstCause(t *testing.T) {
+	// A single cause too long to store must not read as if it were complete.
+	got := BoundErrorCause(strings.Repeat("q", MaxLastErrorLength*2))
+
+	require.LessOrEqual(t, utf8.RuneCountInString(got), MaxLastErrorLength)
+	require.Contains(t, got, LastErrorTruncationMarker,
+		"a first cause that was cut must say so, not read as the whole diagnosis")
+
+	// A cause that fits is returned untouched, with no marker noise.
+	require.Equal(t, "short cause", BoundErrorCause("short cause"))
+}
