@@ -480,11 +480,25 @@ func urlAndPairLines(t *testing.T, n int) []string {
 //
 // It is a full enumeration rather than a seeded draw: the axes are small, and a
 // draw over them leaves the same holes to luck.
+//
+// THE NAMES CARRY PUNCTUATION AND VENDOR WORDS BECAUSE A WHOLE-NAME TEST AND A
+// SUBSTRING TEST AGREE ON EVERY CLEAN NAME. A value of "[cpf" or "hunter2@CVC"
+// is the only shape that tells the two apart, and the corpus does not hold one:
+// no input file line matches "=<non-word><name> =" at all, so a rule that
+// demanded the whole value be a field name sat under a green harness while it
+// printed the credential behind the spaced separator.
 func nameShapedValueLines() []string {
 	spaces := []string{" ", "\t", "\n", "\v", "\f", "\r"}
 	names := []string{
 		"password", "secret", "token", "cpf", "rg", "my-password", "myPassword",
 		"myKey", "hunter2.rg", "s3cr3t.pin", "aGVsbG8.cvc", "xY9_key", "abc_token",
+		// PUNCTUATION-LED AND VENDOR-WORD NAMES, which the thirteen above are
+		// not: every one of them is a WHOLE field name, so a rule that asks
+		// whether the value IS a name and a rule that asks whether it HOLDS one
+		// answer the same on all thirteen. A driver, a validator or a
+		// constraint prints the bracket, the quote or the bang in front of the
+		// name routinely, and no corpus line reaches the spelling at all.
+		"[cpf", "!password", `"cpf"`, "(cpf", "<cvc", "{secret", "hunter2@CVC",
 	}
 	keys := []string{"password", "opt"}
 

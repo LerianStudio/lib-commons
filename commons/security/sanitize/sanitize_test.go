@@ -2584,6 +2584,21 @@ func TestStringRedactsWhenANonWordByteLeadsTheFieldNameInTheValue(t *testing.T) 
 			want: "0= password=" + marker,
 		},
 		{"already right under a harmless key", "x=b=!password= hunter2", "x=b=!password= " + marker},
+
+		// THE SEPARATOR ONE SPACE FURTHER LEFT IS THE SAME SHAPE. Above, the
+		// value ENDS in the separator ("!password=") and the credential sits
+		// behind the whitespace; here the separator is outside the value
+		// ("!password ="), which is how a driver that pads its '=' prints the
+		// very same pair. Believing the name only when the value is a field
+		// name and NOTHING else left every one of these printing the
+		// credential, because none of them is a clean name.
+		{"a bracket behind a spaced separator", "secret=[cpf =12345678901", "secret=" + marker},
+		{"a bracket under a harmless key", "a=cpf =[cpf =12345678901", "a=cpf =" + marker},
+		{"a bang behind a spaced separator", "pgx: opt=password =!password =hunter2", "pgx: opt=password =" + marker},
+		{"a vendor word inside the credential", "a=token =hunter2@CVC =hunter2", "a=token =" + marker},
+		{"an angle bracket", "a=cvc =<cvc =999", "a=cvc =" + marker},
+		{"a parenthesis in a constraint", "unique constraint: key=cpf =(cpf =12345678901", "unique constraint: key=" + marker},
+		{"a quoted name in a validator", `validation failed: field=cpf ="cpf" =12345678901`, "validation failed: field=cpf =" + marker},
 	}
 
 	for _, tt := range tests {
