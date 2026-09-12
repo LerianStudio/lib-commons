@@ -62,7 +62,10 @@
 // URL as one non-sensitive pair. Card numbers go BEFORE key=value too, whose
 // value class stops at the first space and would otherwise redact one group of a
 // grouped PAN and leave the remaining twelve digits behind a marker claiming the
-// line was scrubbed. The bare patterns go LAST so a vendor token is matched
+// line was scrubbed. The query-parameter pass stops at whitespace for the same
+// reason and had the same failure, but it runs BEFORE the card pass and cannot
+// be reordered without leaving the remainder of a sensitive non-card value in
+// the clear, so it takes a grouped digit run whole instead. The bare patterns go LAST so a vendor token is matched
 // against the text as written rather than one an earlier pass has carved into.
 //
 // # What it does not cover

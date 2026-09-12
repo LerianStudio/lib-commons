@@ -1684,3 +1684,93 @@ func TestStringRedactsACardPrintedAsThreeGroupsAndAShortTail(t *testing.T) {
 		}
 	}
 }
+
+func TestStringScrubsAGroupedCardInsideAQueryString(t *testing.T) {
+	t.Parallel()
+
+	// The query-parameter pass stops its value at the first whitespace, so a
+	// space-grouped PAN behind a sensitive parameter was scrubbed ONE GROUP at a
+	// time: "?pan=4111 1111 1111 1111" went to the log as "?pan=**** 1111 1111
+	// 1111", twelve live digits behind a marker asserting the line was clean.
+	//
+	// It is the headless-PEM and the 4-4-4-N failure one level up: a pass that
+	// carves a credential into pieces before the pass that would have recognised
+	// it whole ever runs. Any URL-shaped log line carries it, and unlike the
+	// 4-4-4-N gap it bites the ordinary sixteen-digit card.
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "sensitive parameter, trailing prose",
+			in:   "GET /charge?pan=4111 1111 1111 1111 failed",
+			want: "GET /charge?pan=" + marker + " failed",
+		},
+		{
+			name: "value glued to the next parameter",
+			in:   "GET /charge?card_number=4111 1111 1111 1111&rc=05",
+			want: "GET /charge?card_number=" + marker + "&rc=05",
+		},
+		{
+			name: "card is the last query value",
+			in:   "GET /charge?token=abc&pan=4111 1111 1111 1111",
+			want: "GET /charge?token=" + marker + "&pan=" + marker,
+		},
+		{
+			name: "the three-groups-and-a-short-tail shape through the query path",
+			in:   "GET /charge?pan=3782 8224 6310 005 failed",
+			want: "GET /charge?pan=" + marker + " failed",
+		},
+		{
+			name: "inside a full URL",
+			in:   "https://api/v1/charge?pan=4111 1111 1111 1111",
+			want: "https://api/v1/charge?pan=" + marker,
+		},
+		{
+			// Dash grouping never split, because the value class admits '-'.
+			// Here to catch a fix that trades one grouping for another.
+			name: "dash-grouped value was already whole",
+			in:   "GET /charge?pan=4111-1111-1111-1111 failed",
+			want: "GET /charge?pan=" + marker + " failed",
+		},
+		{
+			// CONTROL. No '?', so this is the key=value pass at step 8, which
+			// already runs after the card pass. Must not change.
+			name: "control: no query string",
+			in:   "pan=4111 1111 1111 1111 failed",
+			want: "pan=" + marker + " failed",
+		},
+		{
+			// CONTROL. A percent-encoded value is one token with no whitespace
+			// to split on, and is redacted by field name. Must not change.
+			name: "control: percent-encoded value",
+			in:   "?pan=4111%201111%201111%201111",
+			want: "?pan=" + marker,
+		},
+		{
+			// CONTROL. "ref" is not a sensitive field name, so the query pass
+			// leaves the value alone and the card pass redacts the PAN whole.
+			// Must not change.
+			name: "control: non-sensitive parameter still loses the card",
+			in:   "GET /charge?ref=4111 1111 1111 1111 failed",
+			want: "GET /charge?ref=" + marker + " failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.Equal(t, tt.want, got)
+
+			for _, group := range []string{"4111", "1111", "3782", "8224", "6310"} {
+				assert.NotContains(t, got, group, "a group of the card survived in %q", got)
+			}
+
+			assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
+		})
+	}
+}

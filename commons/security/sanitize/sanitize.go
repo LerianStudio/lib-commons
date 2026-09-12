@@ -125,6 +125,15 @@ var urlPattern = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+`)
 // keyValuePattern has them: they separate the next URL in a broker list, and
 // swallowing one merged two entries — which also made the pass non-idempotent,
 // since a second run then ate the separator the first had left.
+//
+// A GROUPED DIGIT RUN IS TAKEN WHOLE, and redactQueryParameters is where that
+// happens rather than here. Stopping at whitespace is right for a credential and
+// wrong for a card number printed the way it is printed on the card:
+// "?pan=4111 1111 1111 1111" was ONE pair keyed on a value of "4111", so the
+// pass scrubbed that group and the twelve digits after it were already orphaned
+// by the time the card pass ran. The line reached the log as
+// "?pan=**** 1111 1111 1111" — a marker asserting it had been scrubbed, with an
+// ordinary sixteen-digit card beside it. Any URL-shaped log line carried it.
 var queryParameterPattern = regexp.MustCompile(`([?&])([A-Za-z0-9_.-]+)=([^&\s,;"'#]+)`)
 
 // keyValuePattern finds key=value fragments in config dumps and driver errors.
@@ -381,14 +390,7 @@ func String(s string) string {
 
 	// 3. Sensitive query parameters, by field name. Before the key=value pass,
 	// which would otherwise swallow the whole URL as one non-sensitive pair.
-	s = queryParameterPattern.ReplaceAllStringFunc(s, func(match string) string {
-		parts := queryParameterPattern.FindStringSubmatch(match)
-		if len(parts) != 4 || !isSensitiveFieldName(parts[2]) {
-			return match
-		}
-
-		return parts[1] + parts[2] + "=" + SecretRedactionMarker
-	})
+	s = redactQueryParameters(s)
 
 	// 4. Azure SAS signature parameter inside a query string. After the pass
 	// above, which does not classify "sig" as a field name and leaves it here.
@@ -476,6 +478,116 @@ func redactKeyValuePair(match string) string {
 	}
 
 	return match[:loc[6]] + replacement + match[loc[7]:]
+}
+
+// redactQueryParameters redacts sensitive query parameters by field name, and
+// EXTENDS A SENSITIVE VALUE ACROSS A SPACE-GROUPED DIGIT RUN.
+//
+// queryParameterPattern's value stops at whitespace, which is right for a
+// credential and wrong for a card printed the way it is printed on the card:
+// "?pan=4111 1111 1111 1111" was one pair with a value of "4111", so this pass
+// scrubbed that one group and the twelve digits after it were already orphaned
+// before the card pass ran. What reached the log was "?pan=**** 1111 1111 1111",
+// a marker asserting the line had been scrubbed with an ordinary sixteen-digit
+// card beside it, on any URL-shaped line.
+//
+// THE EXTENSION CANNOT LIVE IN THE PATTERN, and that is not for want of trying.
+// A value that runs across spaces has to stop at a character the value class
+// itself would not take, or the marker it leaves is absorbed on the next run and
+// the pass is no longer idempotent — the fuzzer found both spellings of that in
+// under fifteen seconds ("&cpf=0 <card> 0A" and "...0!"). RE2 has no lookahead,
+// and CONSUMING the terminator eats the '&' that the following parameter needs
+// as its own delimiter, so "&apikey=..." after a grouped card would stop being
+// matched at all. Reading the next byte here costs a helper and is exact.
+//
+// Each extension step takes " " + digits, and only when that token is COMPLETE —
+// followed by end of input or by a character the value class excludes. A token
+// that continues into non-digits is left alone, which is what keeps "?page=2
+// rejected" and "&cpf=0 <card> 0!" intact. The first value must itself be all
+// digits, so nothing extends off the back of an ordinary credential.
+func redactQueryParameters(s string) string {
+	matches := queryParameterPattern.FindAllStringSubmatchIndex(s, -1)
+	if matches == nil {
+		return s
+	}
+
+	var out strings.Builder
+
+	written := 0
+
+	for _, m := range matches {
+		// A previous match may have been extended past where this one starts.
+		if m[0] < written {
+			continue
+		}
+
+		name := s[m[4]:m[5]]
+		if !isSensitiveFieldName(name) {
+			continue
+		}
+
+		valueStart, valueEnd := m[6], m[7]
+
+		out.WriteString(s[written:valueStart])
+		out.WriteString(SecretRedactionMarker)
+
+		written = extendOverGroupedDigits(s, valueStart, valueEnd)
+	}
+
+	if written == 0 {
+		return s
+	}
+
+	out.WriteString(s[written:])
+
+	return out.String()
+}
+
+// extendOverGroupedDigits returns the end of the value at [start, end), grown
+// over any following space-separated groups of digits that are whole tokens.
+func extendOverGroupedDigits(s string, start, end int) int {
+	if !allDigits(s[start:end]) {
+		return end
+	}
+
+	for end < len(s) && s[end] == ' ' {
+		next := end + 1
+		for next < len(s) && s[next] >= '0' && s[next] <= '9' {
+			next++
+		}
+
+		// No digits after the space, or a token that carries on into something
+		// else: either way this is not another group of the same run.
+		if next == end+1 || (next < len(s) && isQueryValueByte(s[next])) {
+			return end
+		}
+
+		end = next
+	}
+
+	return end
+}
+
+func allDigits(s string) bool {
+	for i := range len(s) {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+
+	return s != ""
+}
+
+// isQueryValueByte reports whether b is a byte queryParameterPattern's value
+// class admits, and therefore a byte that would make the token before it
+// something other than a bare group of digits.
+func isQueryValueByte(b byte) bool {
+	switch b {
+	case '&', ' ', '\t', '\n', '\v', '\f', '\r', ',', ';', '"', '\'', '#':
+		return false
+	default:
+		return true
+	}
 }
 
 // redactCardNumbers redacts digit runs that pass the Luhn check, and ONLY those.
