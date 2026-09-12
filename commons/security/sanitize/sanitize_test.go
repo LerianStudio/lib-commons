@@ -1754,6 +1754,65 @@ func TestStringRedactsATwelveDigitCardFollowedByAShortTail(t *testing.T) {
 	}
 }
 
+func TestStringReadsAHashBeforeAnAtSignAsUserinfo(t *testing.T) {
+	t.Parallel()
+
+	// TWO PASSES DISAGREED ABOUT WHETHER '#' ENDS AN AUTHORITY, AND ONE OF THEM
+	// REWROTE THE BYTE THAT DECIDED IT.
+	//
+	// redactOneURL ended the authority at the first '/', '?' or '#', so in
+	// "A://keY=#&@" there was no '@' inside the authority and the URL pass left
+	// the line alone. The key=value pass then redacted "keY=#" to "keY=****",
+	// deleting the '#'. On a SECOND run the authority was "keY=****&", the '@'
+	// was found, and the userinfo collapsed to a marker.
+	//
+	// A sanitizer whose output is not a fixed point rewrites evidence every time
+	// anything sanitizes twice: a retry, a second handler, a log shipper. The
+	// second run's output is the one that redacts, so it is the one pinned here.
+	tests := []struct{ name, in, want string }{
+		{
+			name: "hash before the at-sign",
+			in:   "A://keY=#&@",
+			want: "A://" + marker + "@",
+		},
+		{
+			name: "hash before the at-sign, followed by a real credential URL",
+			in:   "A://keY=#&@ next http://u:p@h",
+			want: "A://" + marker + "@ next http://" + marker + ":" + marker + "@h",
+		},
+
+		// CONTROLS. Each was already a fixed point and must stay one.
+		{name: "control: no hash", in: "A://key=v&@", want: "A://" + marker + "@"},
+		{name: "control: plain userinfo", in: "A://key=v@", want: "A://" + marker + "@"},
+		{name: "control: already redacted value", in: "A://x=****&@", want: "A://" + marker + "@"},
+		{name: "control: named host", in: "http://key=****&@host", want: "http://" + marker + "@host"},
+
+		// CONTROL. A real fragment, after a path, that happens to contain '@'.
+		// The authority ended at the '/' long before the '#', so this must not
+		// move: the host is not userinfo and nothing here is a credential.
+		{name: "control: at-sign inside a real fragment", in: "http://h/p#frag@x", want: "http://h/p#frag@x"},
+
+		// THE PRICE, RECORDED RATHER THAN DISCOVERED LATER. With no path or
+		// query before it, a fragment holding an '@' now reads as userinfo and
+		// the host is redacted with it. RFC 3986 does not allow '#' inside an
+		// authority at all, so this shape is already malformed as a URL, and the
+		// cost is a hostname lost from a log line rather than a credential kept
+		// in one. Measured at 994 lines of 5,024 changing verdict, none of them
+		// a new leak.
+		{name: "accepted over-reach: fragment with an at-sign and no path", in: "http://h#frag@x", want: "http://" + marker + "@x"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
+		})
+	}
+}
+
 func TestStringScrubsAGroupedCardInsideAQueryString(t *testing.T) {
 	t.Parallel()
 

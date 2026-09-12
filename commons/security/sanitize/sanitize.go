@@ -1032,12 +1032,24 @@ func redactOneURL(token string) string {
 
 	rest := token[schemeSep+3:]
 
-	// The authority ends at the first '/', '?' or '#'; an '@' after that is part
-	// of a path or query and is not userinfo.
+	// The authority ends at the first '/' or '?'; an '@' after that is part of a
+	// path or query and is not userinfo.
+	//
+	// '#' DELIBERATELY DOES NOT END IT, THOUGH RFC 3986 SAYS IT WOULD. This pass
+	// used to stop there too, and it disagreed with the key=value pass about
+	// what that byte meant: "A://keY=#&@" has no '@' inside an authority that
+	// stops at the '#', so this pass left the line alone, the key=value pass
+	// then redacted "keY=#" to "keY=****" and DELETED the '#', and a second run
+	// found the '@' and collapsed the userinfo. The sanitizer's output was not a
+	// fixed point, which means anything that sanitizes twice rewrites the
+	// evidence. A '#' before an '@' with no path or query between them is not a
+	// real fragment boundary anyway: RFC 3986 does not permit '#' inside an
+	// authority at all, so the text is already malformed and reading those bytes
+	// as userinfo errs toward redaction.
 	authorityEnd := len(rest)
 
 	for i := range len(rest) {
-		if c := rest[i]; c == '/' || c == '?' || c == '#' {
+		if c := rest[i]; c == '/' || c == '?' {
 			authorityEnd = i
 
 			break
