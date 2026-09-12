@@ -2646,8 +2646,10 @@ func TestStringRedactsWhenANonWordByteLeadsTheFieldNameInTheValue(t *testing.T) 
 	}
 }
 
-// TestStringKnownGapsPrintTheCredential PINS THE LEAKS THIS PACKAGE KNOWS
-// ABOUT AND HAS NOT CLOSED, by their exact output.
+// TestStringKnownGapsPrintTheCredential PINS LEAKS THIS PACKAGE KNOWS ABOUT
+// AND HAS NOT CLOSED, by their exact output. Not all of them: a row is here
+// because someone measured the shape and wrote it down, and doc.go still
+// names shapes no row pins.
 //
 // Every row here is a line whose credential reaches the log, and every one of
 // them is written down in doc.go's "# What it does not cover". A prose gap list
@@ -2712,6 +2714,17 @@ func TestStringKnownGapsPrintTheCredential(t *testing.T) {
 			want:       "DETAIL: Key (cpf)=(12345678901) already exists.",
 			credential: "12345678901",
 		},
+
+		// THE FIRST TOKEN KEEPS A PAIR-SHAPED TAIL, whatever that pair carries.
+		// The bare-value refusal is what lets "password=abc_token= rc=200" keep
+		// its response code, and it cannot tell rc=200 from a session id. The
+		// chained spelling, "password=cpf= = cpf= sid=9f3ca82b1d4e", is closed
+		// (the whole line goes under the marker); the depth-zero one stands.
+		{"a pair-shaped tail behind the first token is kept", "password=session_token= sid=9f3ca82b1d4e", "password=" + marker + " sid=9f3ca82b1d4e", "9f3ca82b1d4e"},
+
+		// A HARMLESS KEY THE CHAIN SWALLOWED INTRODUCES NOTHING, so the chain
+		// stops on it and the value it carried is printed behind the marker.
+		{"a harmless key the chain swallowed keeps its value", "password=cpf= = cpf= = host= c2VjcmV0cGF5bG9hZA==", "password=" + marker + " c2VjcmV0cGF5bG9hZA==", "c2VjcmV0cGF5bG9hZA=="},
 	}
 
 	for _, tt := range tests {
