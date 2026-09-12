@@ -1447,6 +1447,12 @@ var legacyPemBlockPattern = regexp.MustCompile(
 // whitespace corrected from RE2's \s to the whole of [[:space:]], and it is the
 // ONE deliberate difference between redactPemBlocks and the pattern it replaced.
 //
+// THE CORRECTED CLASS IS BUILT FROM keyValueValueSpace RATHER THAN SPELLED
+// HERE, for the reason this file has already paid for four times: a hand-copied
+// whitespace class is a second spelling of one set, and every leak named above
+// came from the two spellings drifting apart. The OLD pattern keeps its literal
+// \s, because documenting what was replaced is its whole job.
+//
 // THE DIFFERENTIAL MEASURES THE WALK, NOT THE CLASS. Its claim is that finding
 // both armor lines once and pairing them is the same READING as the lazy run —
 // and on a headless body that begins after a vertical tab the old reading
@@ -1459,7 +1465,8 @@ var legacyPemBlockPattern = regexp.MustCompile(
 // exemption cannot spread past the class it names, and the count below goes red
 // if the shape ever stops being reachable.
 var legacyPemBlockPatternVerticalTab = regexp.MustCompile(
-	`(?s)-----(?i:BEGIN [A-Z0-9 ]+)-----(?:.*?-----(?i:END [A-Z0-9 ]+)-----|[[:space:]A-Za-z0-9+/=]*)`)
+	`(?s)-----(?i:BEGIN [A-Z0-9 ]+)-----(?:.*?-----(?i:END [A-Z0-9 ]+)-----|[` +
+		keyValueValueSpace + `A-Za-z0-9+/=]*)`)
 
 // TestRedactPemBlocksMatchesThePatternItReplaced measures the claim that finding
 // both armor lines once and pairing them is the SAME reading as the lazy run,
@@ -1517,6 +1524,15 @@ func TestRedactPemBlocksMatchesThePatternItReplaced(t *testing.T) {
 			want := legacyPemBlockPattern.ReplaceAllString(in, SecretRedactionMarker)
 
 			if corrected := legacyPemBlockPatternVerticalTab.ReplaceAllString(in, SecretRedactionMarker); corrected != want {
+				// THE EXEMPTION IS GRANTED BY DISAGREEMENT, NOT BY THE SHAPE IT
+				// NAMES. What puts an input here is the two patterns differing;
+				// what the exemption claims is that they differ because the body
+				// begins after a vertical tab. Any other input that made them
+				// disagree would take the exemption in silence, so the shape is
+				// asserted rather than assumed.
+				require.Contains(t, in, "\v",
+					"the body-class exemption is for \\v bodies only; %q reached it for another reason", in)
+
 				want = corrected
 				bodyClass++
 			}
@@ -1529,8 +1545,13 @@ func TestRedactPemBlocksMatchesThePatternItReplaced(t *testing.T) {
 		}
 	}
 
-	require.NotZero(t, bodyClass,
-		"no input reaches a headless body behind a vertical tab any more; the exemption is stale and must be deleted")
+	// THE COUNT IS PINNED, NOT MERELY NON-ZERO. NotZero passes on one input as
+	// happily as on all of them, so a change that stopped five of these six
+	// headless-'\v' bodies from reaching the exemption read as green -- the same
+	// hole dc0ce38 closed by turning a Contains into an Equal, and the same shape
+	// as the require.Len on the kept list.
+	require.Equal(t, 6, bodyClass,
+		"the headless-body exemption covers exactly this many inputs; the count moved, so either a new shape is being absorbed by it or the old ones stopped reaching it -- re-read the exemption instead of re-pinning the number")
 
 	t.Logf("PEM DIFFERENTIAL %d armor-shaped inputs, 0 diffs, %d compared against the corrected body class",
 		total, bodyClass)
