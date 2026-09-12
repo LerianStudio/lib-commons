@@ -557,11 +557,6 @@ func redactKeyValuePairs(s string) string {
 
 	pos := 0
 
-	// rewound says the previous iteration handed this position back to the
-	// scanner as a key instead of consuming it as a value. The invariant below
-	// applies only to such a position.
-	rewound := false
-
 	for pos < len(s) {
 		loc := keyValuePattern.FindStringSubmatchIndex(s[pos:])
 		if loc == nil {
@@ -577,25 +572,29 @@ func redactKeyValuePairs(s string) string {
 		key, valueStart, valueEnd := s[loc[2]:loc[3]], loc[6], loc[7]
 		sensitive := isSensitiveFieldName(key)
 
-		// A VALUE NEVER ENDS IN THE SEPARATOR, AND A REWIND IS WHERE ONE DID.
+		// A VALUE NEVER ENDS IN THE SEPARATOR.
 		//
-		// Rewinding into "host=db =password= hunter2" matches key "db" with the
-		// value "password=" — a field NAME and the separator that introduces the
-		// credential, because the value class admits '=' and stops at the space.
-		// The credential is then outside the match and copied across verbatim,
-		// so redacting that value scrubs the name and prints the secret. With a
-		// sensitive name in the key slot too ("field=cpf =cpf= 12345678901") the
-		// line even carries a marker asserting it was scrubbed.
+		// The value class admits '=' and stops at whitespace, so "opt =
+		// password= hunter2" and "host=db =password= hunter2" both match a value
+		// of "password=" — a field NAME and the separator that introduces the
+		// credential. The credential itself sits after the space, OUTSIDE the
+		// match, and is copied across verbatim: redacting that value scrubs the
+		// name and prints the secret. With a sensitive name in the key slot too
+		// ("field=cpf =cpf= 12345678901") the line even carries a marker
+		// asserting it was scrubbed.
 		//
-		// Hand the name back as well: "<name>=" plus the whitespace behind it is
-		// exactly what keyValueSeparator admits, so the next iteration matches
-		// "password= hunter2" as one pair and redacts the right half.
+		// Hand the name back to the scanner as well. "<name>=" plus the
+		// whitespace behind it is exactly what keyValueSeparator admits, so the
+		// next iteration matches "password= hunter2" as one pair.
 		//
-		// ONLY AFTER A REWIND, AND ONLY AT THE POSITION THE REWIND CHOSE. A key
-		// the scanner reached on its own owns its value, trailing '=' and all:
-		// "token=aGVsbG8= more" is base64 padding, not a pair boundary, and
-		// rewinding there would put the token itself in the clear.
-		rewind := rewound && loc[0] == pos && s[valueEnd-1] == '='
+		// THE ONE CASE WHERE THE '=' IS NOT A BOUNDARY is a sensitive key whose
+		// value merely ends in one: "token=aGVsbG8= more" is base64 padding, and
+		// rewinding there would put the token in the clear. It is told apart by
+		// the name the value would become — "password" and "cpf" are field
+		// names, "aGVsbG8" is not — which is the same question this pass already
+		// asks about every key.
+		rewind := s[valueEnd-1] == '=' &&
+			(!sensitive || isSensitiveFieldName(s[valueStart:valueEnd-1]))
 
 		// THE VALUE IS REALLY THE NEXT PAIR'S KEY. "tok =rg =0" reads as key
 		// "tok", value "rg" — and the " =0" behind it is then orphaned, so a
@@ -621,7 +620,6 @@ func redactKeyValuePairs(s string) string {
 			out.WriteString(s[pos:valueStart])
 
 			pos = valueStart
-			rewound = true
 
 			continue
 		}
@@ -635,7 +633,6 @@ func redactKeyValuePairs(s string) string {
 		out.WriteString(replacement)
 
 		pos = valueEnd
-		rewound = false
 	}
 
 	out.WriteString(s[pos:])

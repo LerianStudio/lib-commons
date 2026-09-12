@@ -1944,12 +1944,45 @@ func TestStringRedactsTheSecretWhoseKeyTheValueSlotAbsorbed(t *testing.T) {
 			secret: "12345678901",
 		},
 		{
+			// NO REWIND IN FRONT OF IT AT ALL, which is what says the defect is
+			// the absorbed key and not the rewind that exposed it. This shape
+			// leaked on every head back to the one the direction harness pins,
+			// and the committed corpus entry "opt =" found it the moment the
+			// fuzzer was given a credential the field name alone can save.
+			name:   "a broker option list with no token in front",
+			in:     "opt = password= hunter2 rc=05",
+			want:   "opt = password= " + marker + " rc=05",
+			secret: "hunter2",
+		},
+		{
+			name:   "a dangling equals on the first key",
+			in:     "tok= password= hunter2",
+			want:   "tok= password= " + marker,
+			secret: "hunter2",
+		},
+		{
+			name:   "an ordinary word in front of a document field",
+			in:     "plainword =cpf= abc",
+			want:   "plainword =cpf= " + marker,
+			secret: "abc",
+		},
+		{
 			// The shape the Go security standard prints as the example of a DSN
 			// worth redacting. It has no spaced separator and must be unaffected.
 			name:   "control: an ordinary DSN password stays redacted",
 			in:     "host=db password=s3cr3t sslmode=require",
 			want:   "host=db password=" + marker + " sslmode=require",
 			secret: "s3cr3t",
+		},
+		{
+			// THE ONE SHAPE WHERE A TRAILING '=' IS NOT A BOUNDARY. "token" is a
+			// sensitive key, "aGVsbG8" is not a field name, so the '=' is base64
+			// padding and the value stays the secret. Rewinding here would print
+			// the token.
+			name:   "control: base64 padding is not a pair boundary",
+			in:     "token=aGVsbG8= more",
+			want:   "token=" + marker + " more",
+			secret: "aGVsbG8",
 		},
 	}
 
