@@ -1417,6 +1417,15 @@ func fillToBound(unit string) string {
 	return filled[:sanitize.MaxInputLen]
 }
 
+// coverageBoundFactor is how much slower the instrumented build is, rounded up
+// and then some. Measured at the bound on this package's five shapes: the card
+// scan is 11.5x slower under -race -covermode=atomic than under -race alone
+// (42.3 s worst, against 3.7), the other four 1.3-1.5x, and without -race the
+// worst of the five is 1.77 s against the ordinary 2 s ceiling. Six keeps the
+// doctrine's margin on both builds — 120 s against 42.3, 12 s against 1.77 —
+// without turning either into a ceiling that catches nothing.
+const coverageBoundFactor = 6
+
 // assertStringReturnsWithin FAILS AFTER THE BOUND RATHER THAN WAITING FOR THE
 // CALL TO RETURN. A regression in the card scan does not take slightly too long,
 // it takes minutes to an hour, and a test that waits for the answer before
@@ -1429,15 +1438,26 @@ func fillToBound(unit string) string {
 func assertStringReturnsWithin(t *testing.T, input, shape string) {
 	t.Helper()
 
-	// A FUZZING BUILD IS COVERAGE-INSTRUMENTED and runs this package several
-	// times slower, so a wall-clock ceiling there measures the instrumentation
-	// rather than the scan. The seed corpus still runs these tests on every
-	// ordinary and -race build, which is what CI gates on.
+	// A FUZZING BUILD runs this package under its own instrumentation and for as
+	// long as the fuzzer wants, so a wall-clock ceiling there measures neither
+	// the scan nor a fixed factor over it.
 	if f := flag.Lookup("test.fuzz"); f != nil && f.Value.String() != "" {
 		t.Skip("wall-clock bounds are not meaningful under the instrumented fuzzing build")
 	}
 
 	bound := stringTimingBound
+
+	// COVERAGE IS A CONSTANT FACTOR, NOT A DIFFERENT CURVE, AND CI ONLY EVER
+	// RUNS THIS PACKAGE UNDER IT. `make coverage-unit` is the shared workflow's
+	// ONLY unit run and it passes -race AND -covermode=atomic; counting every
+	// statement of the card scan's innermost loop then took the back-to-back
+	// card shape from 3.7 s to past 20, so the ceiling that exists to catch a
+	// curve coming back was failing on the instrumentation instead. The bound is
+	// raised rather than skipped: a skip would have removed every bound guard
+	// this package has from the only build CI runs.
+	if testing.CoverMode() != "" {
+		bound *= coverageBoundFactor
+	}
 
 	done := make(chan time.Duration, 1)
 
