@@ -492,8 +492,11 @@ func urlAndPairLines(t *testing.T, n int) []string {
 // The lines that match it TODAY are written here AND in the tables of
 // sanitize_test.go, which is the half of the provenance a reader must not lose:
 // five of them predate this function and stand in for the shapes doc.go leans
-// on — pgx, a validator and a unique-constraint violation. Deleting those as
-// redundant would take the stand-ins with them. Measured on this commit with
+// on — pgx and a unique-constraint violation. Deleting those as redundant
+// would take the stand-ins with them. The validator stand-in is NOT among the
+// five: `validation failed: field=cpf ="cpf" =12345678901` puts a quote where
+// this spelling wants whitespace, so it lives in sanitize_test.go without
+// matching. Measured on this commit with
 // `=[^A-Za-z0-9_[:space:]][A-Za-z0-9_.@-]+[[:space:]]=`: 125 lines match, 120
 // from here and 5 from sanitize_test.go.
 func nameShapedValueLines() []string {

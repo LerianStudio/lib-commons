@@ -192,6 +192,9 @@
 // it takes can belong to the NEXT log record:
 // "password=\"cpf\"=\nrefused by acquirer" comes back as
 // "password=**** by acquirer", two records merged into one.
+// The same lookahead finds the value a key the chain SWALLOWED carries, so that
+// value crosses a record boundary too: "password=cpf= = cpf=\nrefused by
+// acquirer" comes back as "password=**** by acquirer".
 //
 // When a name-shaped token is followed by BOTH a bare '=' and a padded " = ",
 // the padded one is the pair separator and the value behind it is under the
@@ -238,6 +241,13 @@
 // "password=secret = rc=token = host=db port=5432" keeps only port=5432, and
 // "password=secret = host=db rc=200" keeps rc=200.
 //
+// SO THE PRICE GROWS WITH CHAIN DEPTH, NOT PER LINE. Each link takes its own
+// pair or its own word, and a line that offers four links loses four:
+// "password=\"cpf\"= = \"cpf\"= = \"cpf\"= = \"cpf\"= = rc=200 hunter2" comes
+// back as "password=**** hunter2", the response code and three repetitions of
+// the name gone under the marker with it. Reading the price as one pair per
+// LINE understates it on exactly the lines that carry the most of them.
+//
 // THE PAIRS THIS EATS ARE REAL DIAGNOSTICS, not hypothetical ones. "column=cpf",
 // "index=cpf", "op=token", "handler=session" and "table=documento" are all
 // field names to the taxonomy, so a Postgres 23505 that names the column it
@@ -278,9 +288,9 @@
 //
 // Closing this one would be IN doctrine — the same whole-token question, asked
 // on the harmless-key path before the rewind — but it is not a line of code: it
-// closes leaks and eats one word of prose in the same ratio the sensitive-key
-// path already pays, and it moves the reference oracle that the recursion
-// differential holds the walk to. It is a follow-up with its own measurement.
+// closes leaks and eats one word of prose, the same price per line the
+// sensitive-key path already pays, and it moves the reference oracle that the
+// recursion differential holds the walk to. It is a follow-up with its own measurement.
 //
 // A VERTICAL TAB IS WHITESPACE, on both sides of the separator. It is in
 // [[:space:]] and not in RE2's \s, and a value class written from the wrong one
