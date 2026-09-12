@@ -439,8 +439,70 @@ var azureSASSignaturePattern = regexp.MustCompile(`(?i)([?&]sig=)[^&\s]+`)
 // private key whatever case "BEGIN RSA PRIVATE KEY" is written in. Redacting a
 // lowercased block is the safe direction and the shape is distinctive enough
 // that it costs nothing else.
-var pemBlockPattern = regexp.MustCompile(
-	`(?s)-----(?i:BEGIN [A-Z0-9 ]+)-----(?:.*?-----(?i:END [A-Z0-9 ]+)-----|[\sA-Za-z0-9+/=]*)`)
+// THE TWO ARMOR LINES ARE FOUND ONCE AND PAIRED, rather than searched for per
+// block, and that is a cost fix rather than a taste one. Written as one pattern,
+// the well-formed reading is a LAZY run to the first END line, so a BEGIN line
+// with no END behind it anywhere scanned to the end of the input before falling
+// back to the headless body — once per BEGIN line. 64 KiB of armor with no END
+// line cost 6.5 seconds on the goroutine writing the log line, against 0.02 for
+// a well-formed block of the same size, and the armor is trivial to write.
+var pemArmorPattern = regexp.MustCompile(`-----(?i:(BEGIN|END) [A-Z0-9 ]+)-----`)
+
+// pemHeadlessBodyPattern is the body of a block whose END line never arrives:
+// base64-legal bytes AND whitespace, anchored where the armor line ended.
+var pemHeadlessBodyPattern = regexp.MustCompile(`^[\sA-Za-z0-9+/=]*`)
+
+// redactPemBlocks replaces each PEM block — armor lines and body — with the
+// marker, preferring the well-formed reading for the reasons above it.
+func redactPemBlocks(s string) string {
+	armor := pemArmorPattern.FindAllStringSubmatchIndex(s, -1)
+	if armor == nil {
+		return s
+	}
+
+	// The next END line at or after each armor line, walked once from the back.
+	// A BEGIN line is never an END line, so this is the END line strictly behind
+	// it — which is the one the lazy run would have stopped at.
+	nextEnd := make([]int, len(armor))
+
+	next := -1
+
+	for i := len(armor) - 1; i >= 0; i-- {
+		if strings.EqualFold(s[armor[i][2]:armor[i][3]], "END") {
+			next = i
+		}
+
+		nextEnd[i] = next
+	}
+
+	var out strings.Builder
+
+	pos := 0
+
+	for i, line := range armor {
+		// A stray END line is not a block, and an armor line inside a block
+		// already replaced is not a second one.
+		if line[0] < pos || nextEnd[i] == i {
+			continue
+		}
+
+		end := line[1]
+		if nextEnd[i] >= 0 {
+			end = armor[nextEnd[i]][1]
+		} else {
+			end += len(pemHeadlessBodyPattern.FindString(s[line[1]:]))
+		}
+
+		out.WriteString(s[pos:line[0]])
+		out.WriteString(SecretRedactionMarker)
+
+		pos = end
+	}
+
+	out.WriteString(s[pos:])
+
+	return out.String()
+}
 
 // String strips credential material from a free-form string so DSNs, broker
 // URLs, SASL passwords, bearer tokens, AWS/GCP/GitHub/Stripe/Slack keys, JWTs
@@ -536,7 +598,7 @@ func sanitizeOnce(s string) string {
 	// how a config-loading error echoes one. Let the key=value pass run first and
 	// it consumes "-----BEGIN" as that key's value, leaving no marker for this
 	// rule to anchor on — and the entire base64 body survives into the log.
-	s = pemBlockPattern.ReplaceAllString(s, SecretRedactionMarker)
+	s = redactPemBlocks(s)
 
 	// 2. URL-shaped tokens: strip userinfo from EVERY URL in the match, keep
 	// scheme and host.

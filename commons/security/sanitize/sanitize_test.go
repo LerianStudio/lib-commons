@@ -2550,3 +2550,19 @@ func TestStringRedactsAcrossAVerticalTabSeparator(t *testing.T) {
 		})
 	}
 }
+
+// TestStringStaysBoundedOnHeadlessPemArmorAtTheLimit is the cost of a PEM block
+// whose END line never arrives, which is what a truncated log line is.
+//
+// The well-formed reading is tried first and has to be, so for every BEGIN line
+// the scan looked for an END line anywhere behind it before falling back to the
+// headless body — and with no END line in the input at all, that search ran to
+// the end of the string once per BEGIN. 64 KiB of armor lines cost 6.5 seconds
+// on the goroutine writing the log line, against 0.02 for a well-formed block of
+// the same size: an attacker-shaped input, since the armor is trivial to write
+// and the bound is what the package admits.
+func TestStringStaysBoundedOnHeadlessPemArmorAtTheLimit(t *testing.T) {
+	t.Parallel()
+
+	assertStringReturnsWithin(t, fillToBound("-----BEGIN A-----"), "headless PEM armor")
+}

@@ -1192,3 +1192,67 @@ func TestTheTwoKeyPatternsAgreeOnWhereTheValueStarts(t *testing.T) {
 
 	t.Logf("AGREEMENT %d texts carrying a key", checked)
 }
+
+// legacyPemBlockPattern is the single pattern redactPemBlocks replaced: one
+// block, with the well-formed reading preferred as a lazy run to the first END
+// line and the headless body as the fallback.
+var legacyPemBlockPattern = regexp.MustCompile(
+	`(?s)-----(?i:BEGIN [A-Z0-9 ]+)-----(?:.*?-----(?i:END [A-Z0-9 ]+)-----|[\sA-Za-z0-9+/=]*)`)
+
+// TestRedactPemBlocksMatchesThePatternItReplaced measures the claim that finding
+// both armor lines once and pairing them is the SAME reading as the lazy run,
+// only without its cost. The generated shapes are the ones where a merge walk
+// and a per-block search could plausibly differ: a block with no END line, an
+// END line before any BEGIN, a BEGIN nested inside a block, two blocks on one
+// line, RFC 1421 headers whose '-' the body class refuses, and lowercase armor.
+func TestRedactPemBlocksMatchesThePatternItReplaced(t *testing.T) {
+	t.Parallel()
+
+	const (
+		begin = "-----BEGIN RSA PRIVATE KEY-----"
+		end   = "-----END RSA PRIVATE KEY-----"
+		body  = "MIIEpAIBAAKCAQEA7Zx+\nQ2l0Zg==\n"
+	)
+
+	generated := []string{
+		begin, end, begin + body + end, begin + body, body + end,
+		end + begin, end + begin + body, begin + begin + body + end,
+		begin + body + end + " rc=200 " + begin + body + end,
+		begin + body + end + begin + body,
+		begin + "Proc-Type: 4,ENCRYPTED\nDEK-Info: DES-EDE3-CBC,0A1B\n\n" + body + end,
+		begin + "Proc-Type: 4,ENCRYPTED\n" + body,
+		strings.ToLower(begin) + body + strings.ToLower(end),
+		strings.ToLower(begin) + body,
+		"-----BEGIN A-----", "-----BEGIN A----------END A-----",
+		"-----BEGIN A-----END A-----", "-----END A----------BEGIN B-----",
+		"host=db " + begin + body + " password=hunter2",
+		strings.Repeat("-----BEGIN A-----", 8),
+		strings.Repeat(begin+body+end, 4),
+	}
+
+	groups := [][]string{
+		generated,
+		corpusEntries(t),
+		literalsFromTestSources(t),
+		readQuotedLines(t, directionInputPath),
+	}
+
+	total := 0
+
+	for _, group := range groups {
+		for _, in := range group {
+			if !strings.Contains(in, "-----") {
+				continue
+			}
+
+			want := legacyPemBlockPattern.ReplaceAllString(in, SecretRedactionMarker)
+			if got := redactPemBlocks(in); got != want {
+				t.Fatalf("redactPemBlocks(%q)\n got  %q\n want %q", in, got, want)
+			}
+
+			total++
+		}
+	}
+
+	t.Logf("PEM DIFFERENTIAL %d armor-shaped inputs, 0 diffs", total)
+}
