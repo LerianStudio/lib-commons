@@ -73,6 +73,16 @@
 // TLD-less intranet address (user@localhost). Widening any of them costs more
 // false positives in ordinary prose than the shapes are worth here; a service
 // that handles them should not be relying on this package for that PII anyway.
+//
+// A PEM BLOCK WITH NO CLOSING LINE IS OVER-REDACTED ON PURPOSE. A block that
+// kept its -----END is consumed exactly to that line. One that lost it — a key
+// pasted out of a kubectl output, a value a config loader cut — is consumed as
+// far as base64-legal bytes and whitespace run, which carries on past the end of
+// the armor and into any prose that happens to be made of letters and digits on
+// the same lines. That text is lost from the log. The alternative was the block
+// matching nothing at all and the whole armored body reaching the log behind a
+// marker claiming the line had been scrubbed, so this is the cheaper error, and
+// it only arises on a block that is already malformed.
 
 // # Length is bounded, and the bound refuses rather than cuts
 //

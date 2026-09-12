@@ -1420,3 +1420,63 @@ func TestStringKeepsANonSensitivePairInsideANonSensitiveValue(t *testing.T) {
 		assert.Equal(t, in, sanitize.String(in))
 	}
 }
+
+func TestStringRedactsAPEMBlockWhoseEndLineIsMissing(t *testing.T) {
+	t.Parallel()
+
+	// The rule required a closing -----END line, and a block that lost one is
+	// the ORDINARY accident, not an exotic case: a secret pasted out of a
+	// kubectl output, a value truncated by a config loader, a key read from a
+	// file that ended without its last line. The BEGIN line then matched no
+	// rule of its own, the key=value pass took "-----BEGIN" as the value of
+	// private_key= and stopped at the first space, and what reached the log was
+	// the entire armored body behind a marker asserting the line had been
+	// scrubbed — worse than no redaction, because it tells the reader there is
+	// nothing left to find.
+	tests := []struct {
+		name   string
+		in     string
+		absent []string
+	}{
+		{
+			name: "headless private key behind a field name",
+			in: "loading signer: private_key=-----BEGIN RSA PRIVATE KEY-----\n" +
+				"MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ\n" +
+				"hkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDLVtBjTm3xEOtq8H\n",
+			absent: []string{"MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ", "DLVtBjTm3xEOtq8H"},
+		},
+		{
+			name:   "headless certificate followed by prose",
+			in:     "-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAKZLVtBjTm3x\n dial failed",
+			absent: []string{"MIIBkTCB+wIJAKZLVtBjTm3x"},
+		},
+		{
+			// An ENCRYPTED key carries RFC 1421 headers, and those headers carry
+			// '-'. Any rule that reads the body as a run of base64-legal bytes
+			// stops dead on the first one and leaves everything after it —
+			// including the whole armored payload — in the clear, which is the
+			// same failure this test exists to close, on a block that is not
+			// even malformed.
+			name: "encrypted key whose headers contain dashes",
+			in: "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n" +
+				"DEK-Info: DES-EDE3-CBC,0123456789ABCDEF\n\nMIIEvQIBADANBgkq\n" +
+				"-----END RSA PRIVATE KEY-----",
+			absent: []string{"MIIEvQIBADANBgkq", "DEK-Info", "ENCRYPTED"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			for _, secret := range tt.absent {
+				assert.NotContains(t, got, secret, "got %q", got)
+			}
+
+			assert.Contains(t, got, marker)
+			assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
+		})
+	}
+}
