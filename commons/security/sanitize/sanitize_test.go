@@ -1021,6 +1021,12 @@ var fuzzSecrets = []string{
 	"maria.silva+ops@lerian.studio",
 	"4111111111111111",
 	"4741 8529 6307 4182",
+	// A SENSITIVE PAIR, not a bare value, and it is here because the value class
+	// of the key=value pass admits '=': a non-sensitive key in front of this one
+	// swallowed it whole and the property never saw it go. Nothing else in this
+	// list can find that, since every other entry is anchored on a vendor shape
+	// that the bare-value pass catches whatever an earlier pass did to the text.
+	"password=hunter2",
 }
 
 // FuzzString fuzzes the TEXT AROUND a credential rather than the credential
@@ -1043,6 +1049,9 @@ func FuzzString(f *testing.F) {
 		"amqp://a:5672,",
 		"-----BEGIN RSA PRIVATE KEY-----",
 		"cpf=12345678909",
+		// A non-sensitive key and a dangling '=', which is what makes the pair
+		// after it the VALUE of this one instead of a pair of its own.
+		"opt =",
 		strings.Repeat("a", 300),
 	}
 
@@ -1335,5 +1344,79 @@ func TestStringStaysBoundedOnAGroupedDigitRunAtTheLimit(t *testing.T) {
 		assert.Less(t, elapsed, bound, "String() on %d bytes of grouped digits took %s", len(input), elapsed)
 	case <-time.After(bound):
 		t.Fatalf("String() on %d bytes of grouped digits did not return within %s", len(input), bound)
+	}
+}
+
+func TestStringRedactsASensitivePairInsideANonSensitiveValue(t *testing.T) {
+	t.Parallel()
+
+	// The key=value value class admits '=', so a NON-sensitive key immediately
+	// before a sensitive pair swallows it: "opt = password=hunter2" is one pair
+	// keyed on "opt", judged harmless, and the credential travels on under a
+	// marker-free line nobody looks at twice. An acquirer response or a driver
+	// message that puts any word and an '=' in front of the real field is enough.
+	tests := []struct {
+		name   string
+		in     string
+		secret string
+		want   string
+	}{
+		{
+			name:   "a config key in front of a password",
+			in:     "opt = password=hunter2",
+			secret: "hunter2",
+			want:   "opt = password=" + marker,
+		},
+		{
+			name:   "an acquirer response in front of a card verification code",
+			in:     "POST /charge =cvc=999 rc=05",
+			secret: "=999",
+			want:   "POST /charge =cvc=" + marker + " rc=05",
+		},
+		{
+			name:   "prose in front of a Brazilian tax id",
+			in:     "charge declined =cpf=12345678909",
+			secret: "12345678909",
+			want:   "charge declined =cpf=" + marker,
+		},
+		{
+			name:   "a broker option in front of the SASL password",
+			in:     "opt=sasl_password=s3cr3t",
+			secret: "s3cr3t",
+			want:   "opt=sasl_password=" + marker,
+		},
+		{
+			name:   "several non-sensitive keys deep",
+			in:     "a=b=c=password=hunter2",
+			secret: "hunter2",
+			want:   "a=b=c=password=" + marker,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			assert.NotContains(t, got, tt.secret)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, got, sanitize.String(got), "the rescan must stay idempotent")
+		})
+	}
+}
+
+func TestStringKeepsANonSensitivePairInsideANonSensitiveValue(t *testing.T) {
+	t.Parallel()
+
+	// The rescan looks for a SENSITIVE inner name and nothing else. A paging
+	// parameter, a filter or a status code carried inside another value is what
+	// makes the line diagnosable and must come back verbatim.
+	for _, in := range []string{
+		"opt = page=2",
+		"GET https://api/v1/accounts?page=2&limit=50&sort=rank rejected",
+		"retry = backoff=250ms attempt=3",
+	} {
+		assert.Equal(t, in, sanitize.String(in))
 	}
 }

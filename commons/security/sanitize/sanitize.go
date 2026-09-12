@@ -350,14 +350,7 @@ func String(s string) string {
 	s = redactCardNumbers(s)
 
 	// 8. Sensitive key=value pairs, by field name.
-	s = keyValuePattern.ReplaceAllStringFunc(s, func(match string) string {
-		parts := keyValuePattern.FindStringSubmatch(match)
-		if len(parts) != 4 || !isSensitiveFieldName(parts[1]) {
-			return match
-		}
-
-		return parts[1] + parts[2] + SecretRedactionMarker
-	})
+	s = keyValuePattern.ReplaceAllStringFunc(s, redactKeyValuePair)
 
 	// 9. Bare credential values, with no surrounding field name. Last, so a
 	// vendor token is matched against the text as it was written rather than
@@ -367,6 +360,48 @@ func String(s string) string {
 	}
 
 	return s
+}
+
+// redactKeyValuePair redacts one key=value fragment when its key is sensitive,
+// and otherwise LOOKS INSIDE THE VALUE FOR A PAIR THAT IS.
+//
+// The inner scan is the whole point. keyValuePattern's value class admits '=',
+// so "opt = password=hunter2" is ONE pair keyed on "opt" — judged harmless, and
+// the credential after it never became a candidate at all. Any word and an '='
+// in front of the real field is enough to do it, which is an ordinary shape for
+// an acquirer response ("POST /charge =cvc=999 rc=05"), a broker option list or
+// a validator message to print. The same swallowing is why the query-parameter
+// pass runs ahead of this one; this closes the rest of it.
+//
+// It terminates because each round recurses on the VALUE, which is shorter than
+// the match around it by at least the inner key. It is idempotent because the
+// marker it leaves is itself a value with no inner pair.
+//
+// THE RESULT IS SPLICED BY INDEX, AND EVERYTHING OUTSIDE THE PAIR IS CARRIED
+// ACROSS VERBATIM, because re-finding the pattern inside the match it produced
+// does not always land where the match began. \b is an ASCII word boundary while
+// (?i) folds Unicode, so a key starting with a letter that folds to ASCII — ſ
+// (U+017F) folds to s, K (U+212A) to k — matches in the full string, where the
+// preceding ASCII digit supplies the boundary, and does NOT match at offset zero
+// of the same text in isolation, where there is no preceding character at all.
+// Rebuilding from the submatches then silently dropped the head: one pass over
+// "00ſ00ſ00ſ=0" lost four bytes, and the next pass lost four more, so the output
+// was not even stable. keyValuePattern is the only pass that can hit this, being
+// the only one whose match can begin on a non-ASCII rune.
+func redactKeyValuePair(match string) string {
+	loc := keyValuePattern.FindStringSubmatchIndex(match)
+	if loc == nil {
+		return match
+	}
+
+	key, value := match[loc[2]:loc[3]], match[loc[6]:loc[7]]
+
+	replacement := SecretRedactionMarker
+	if !isSensitiveFieldName(key) {
+		replacement = keyValuePattern.ReplaceAllStringFunc(value, redactKeyValuePair)
+	}
+
+	return match[:loc[6]] + replacement + match[loc[7]:]
 }
 
 // redactCardNumbers redacts digit runs that pass the Luhn check, and ONLY those.
