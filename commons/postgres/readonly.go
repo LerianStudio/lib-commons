@@ -145,12 +145,24 @@ type TxBeginner interface {
 // commons/security/sanitize at the logging boundary, which preserves the chain
 // while redacting the message.
 //
-// FN MUST PROPAGATE ctx.Err(). A body that catches its own cancellation and
-// returns nil is reported as a SUCCESSFUL read, because a nil error is the only
-// thing this function has to go on — a partially-filled result then travels on as
-// if it were complete. There is deliberately no ctx.Err() guard before the nil
-// return: it would fail reads that legitimately finished just as the deadline
-// landed, and a false failure on a completed read costs more than this rule does.
+// A NIL FROM fn IS NOT TAKEN AS A COMPLETE READ. The context is asked as well,
+// and a read whose budget expired is reported as a failure even when the body
+// had nothing to report. The classic body is `for rows.Next() { ... }` with no
+// rows.Err() after it: the loop stops early because the context died, fn returns
+// nil, and a partially-filled result travels on as if it were complete — a
+// dashboard short by whatever did not arrive, with nothing anywhere saying the
+// read was cut off.
+//
+// This costs a false failure on a read that finished in the microseconds between
+// its last statement and its return, and that trade is not close. The false
+// SUCCESS window is fn's whole duration; the false-failure window is those
+// microseconds, and a caller whose budget expired inside them has already been
+// answered by its own deadline. closeReadOnly can produce a false failure on a
+// rollback hiccup in any case, so callers cannot have been treating a failure
+// from this helper as proof that no rows were read.
+//
+// fn should still propagate ctx.Err() when it has it: this guard reports THAT
+// the read was cut off, while fn is the only thing that knows where.
 //
 // # What is not verified here
 //
@@ -210,6 +222,14 @@ func RunReadOnly(
 
 	if fnErr := fn(ctx, tx); fnErr != nil {
 		return classifyReadOnly(ctx, fnErr)
+	}
+
+	// A NIL FROM fn IS NOT ENOUGH TO CALL THE READ COMPLETE. The classic body is
+	// `for rows.Next() { ... }` with no rows.Err() after it: the loop stops early
+	// because the context died, the body has nothing to report, and a partially
+	// filled result was labelled a successful read and travelled on as one.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return classifyReadOnly(ctx, ctxErr)
 	}
 
 	return nil

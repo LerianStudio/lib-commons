@@ -666,3 +666,93 @@ func TestRunReadOnlyDoesNotDoubleWrapACancelTheChainAlreadyCarries(t *testing.T)
 	assert.Equal(t, 1, strings.Count(err.Error(), context.Canceled.Error()),
 		"the cancel is reported once, not once per layer: %q", err)
 }
+
+func TestRunReadOnlyFailsAReadWhoseBudgetExpiredEvenWhenTheBodyReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	// THE CLASSIC SHAPE IS `for rows.Next() { ... }` WITH NO rows.Err() AFTER IT.
+	// The loop stops early because the context died, the body has nothing to
+	// report, and it returns nil — so a partially-filled slice left this helper
+	// labelled a complete read and travelled on as one. A dashboard shows a
+	// balance short by whatever did not arrive, with nothing anywhere saying the
+	// read was cut off.
+	//
+	// The window this closes is fn's WHOLE duration. The window it costs is the
+	// microseconds between fn's last statement and its return, and a caller whose
+	// budget expired in that gap has already been answered by its own deadline.
+	tests := []struct {
+		name   string
+		run    func(t *testing.T, db *sql.DB) error
+		assert func(t *testing.T, err error)
+	}{
+		{
+			name: "the transaction budget fires while the body is still reading",
+			run: func(t *testing.T, db *sql.DB) error {
+				return RunReadOnly(t.Context(), db,
+					ReadOnlyOptions{StatementTimeout: time.Second, TransactionTimeout: 20 * time.Millisecond},
+					func(ctx context.Context, _ *sql.Tx) error {
+						awaitDeadline(t, ctx)
+
+						return nil
+					})
+			},
+			assert: func(t *testing.T, err error) {
+				assert.ErrorIs(t, err, ErrReadOnlyTxDeadline, "a read cut off by its own budget is not a success")
+			},
+		},
+		{
+			name: "the caller walks away while the body is still reading",
+			run: func(t *testing.T, db *sql.DB) error {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+
+				return RunReadOnly(ctx, db, ReadOnlyOptions{StatementTimeout: time.Second},
+					func(context.Context, *sql.Tx) error {
+						cancel()
+
+						return nil
+					})
+			},
+			assert: func(t *testing.T, err error) {
+				assert.ErrorIs(t, err, context.Canceled, "a read the caller abandoned is not a success")
+				assert.NotErrorIs(t, err, ErrReadOnlyTxDeadline, "a cancel is not a deadline")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			db, mock := newMockDB(t)
+
+			mock.MatchExpectationsInOrder(false)
+			mock.ExpectBegin()
+			mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectRollback()
+
+			err := tt.run(t, db)
+
+			require.Error(t, err, "a read that ran out of time must not be reported as a success")
+			tt.assert(t, err)
+		})
+	}
+}
+
+func TestRunReadOnlyStillReportsSuccessWhenTheBudgetIsIntact(t *testing.T) {
+	t.Parallel()
+
+	// The guard reads the context, not the clock, so an ordinary read that
+	// finished with budget to spare is untouched.
+	db, mock := newMockDB(t)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+
+	err := RunReadOnly(t.Context(), db,
+		ReadOnlyOptions{StatementTimeout: time.Second, TransactionTimeout: time.Minute}, noopFn)
+
+	require.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
