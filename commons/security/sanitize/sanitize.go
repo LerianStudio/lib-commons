@@ -653,11 +653,37 @@ func redactCardCandidate(candidate string) string {
 	}
 
 	if len(digits) < minCardDigits || !passesLuhn(digits) {
+		// THE SHORT-TAIL BRANCH CONSUMED THE OFFSET, SO THIS IS THE ONLY PLACE
+		// THE SHORTER READING CAN STILL BE OFFERED.
+		//
+		// 4-4-4-N matches before the uniform branch at the same offset, so a
+		// twelve-digit card followed by an unrelated one-to-three digit number —
+		// an acquirer response code after the PAN, which is ordinary — was read
+		// as one thirteen-to-fifteen digit number, failed Luhn, and was handed
+		// back whole. The twelve-digit reading is card-length, so
+		// redactCardInsideRun deliberately does not search it either, and the
+		// card reached the log.
+		//
+		// One more Luhn check on the head, no window search: a 4-4-4 head is
+		// exactly minCardDigits digits, so this admits precisely the shape the
+		// uniform branch admitted before the tail was added, and the documented
+		// false-positive posture is unchanged. The tail is kept because it is
+		// not part of the card.
+		if head := cardShortTailPattern.FindStringSubmatch(candidate); head != nil &&
+			passesLuhn(cardSeparators.Replace(head[1])) {
+			return SecretRedactionMarker + candidate[len(head[1]):]
+		}
+
 		return candidate
 	}
 
 	return SecretRedactionMarker
 }
+
+// cardShortTailPattern splits a 4-4-4-N candidate into its twelve-digit head and
+// its tail. It is anchored because it is applied to a whole candidate that
+// cardCandidatePatterns already matched, never used to search.
+var cardShortTailPattern = regexp.MustCompile(`^(\d{4}[ .-]\d{4}[ .-]\d{4})[ .-]\d{1,3}$`)
 
 // redactCardInsideRun redacts every card-length window of whole groups inside a
 // run that is too long to be one card.

@@ -1685,6 +1685,64 @@ func TestStringRedactsACardPrintedAsThreeGroupsAndAShortTail(t *testing.T) {
 	}
 }
 
+func TestStringRedactsATwelveDigitCardFollowedByAShortTail(t *testing.T) {
+	t.Parallel()
+
+	// THE SHORT-TAIL BRANCH TOOK THE OFFSET AND GAVE NOTHING BACK.
+	//
+	// Widening the candidate shape to 4-4-4-N so a 13, 14 or 15 digit card is
+	// caught whole cost the reading underneath it. The branch matches first at a
+	// given offset, so "4222 2222 2222 999" is offered to Luhn as fifteen
+	// digits; that fails; the candidate is handed back unchanged AND the offset
+	// is consumed, so the twelve-digit reading — which is card-length and passes
+	// Luhn — is never offered at all. redactCardInsideRun does not rescue it
+	// either: it deliberately skips runs that are already card-length.
+	//
+	// A response code after the PAN is what an acquirer decline looks like, so
+	// this is not an exotic shape. Behind a field name it was the documented
+	// failure once more: "pan=4222 2222 2222 123" reached the log as
+	// "pan=**** 2222 2222 123", eight digits of a live card sitting beside a
+	// marker asserting the line had been scrubbed.
+	tests := []struct{ name, in, want string }{
+		{
+			name: "decline with a response code after the PAN",
+			in:   "declined 4222 2222 2222 999 at 12:00",
+			want: "declined " + marker + " 999 at 12:00",
+		},
+		{
+			name: "behind a field name",
+			in:   "pan=4222 2222 2222 123",
+			want: "pan=" + marker + " 123",
+		},
+		{
+			name: "no tail at all still redacts",
+			in:   "card 4222 2222 2222 paid",
+			want: "card " + marker + " paid",
+		},
+		{name: "one-digit tail", in: "4222 2222 2222 1", want: marker + " 1"},
+		{name: "two-digit tail", in: "4222 2222 2222 12", want: marker + " 12"},
+		{name: "three-digit tail", in: "4222 2222 2222 123", want: marker + " 123"},
+		{name: "dash separated", in: "4222-2222-2222-999", want: marker + "-999"},
+		{name: "dot separated", in: "4222.2222.2222.999", want: marker + ".999"},
+
+		// BOTH READINGS VALID: the longer one wins and the tail goes with it.
+		// This is the row that stops the retry from being written as "always
+		// prefer the head", which would leave the last three digits of a live
+		// 15-digit card in the log.
+		{name: "fifteen-digit reading also passes Luhn", in: "4222 2222 2222 101", want: marker},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, got, sanitize.String(got), "re-running must not change it")
+		})
+	}
+}
+
 func TestStringScrubsAGroupedCardInsideAQueryString(t *testing.T) {
 	t.Parallel()
 
