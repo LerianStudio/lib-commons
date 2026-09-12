@@ -244,35 +244,174 @@ func redactCardNumbersWith(patterns []*regexp.Regexp, s string) string {
 	}
 }
 
+// luhnCards builds Luhn-valid cards of every accepted length, grouped as they
+// are printed, half of them followed by a one-to-three digit tail.
+//
+// THE TAIL IS THE POINT. An acquirer prints a response code after the PAN, and
+// that shape is what made the 4-4-4-N branch swallow the twelve-digit reading
+// underneath it. A corpus of bare cards would have missed it, and did.
+func luhnCards(t *testing.T, n int) []string {
+	t.Helper()
+
+	rng := rand.New(rand.NewSource(20260912))
+	heads := []string{"4", "51", "55", "34", "37", "6011", "3056"}
+	separators := []string{" ", "-", "."}
+
+	out := make([]string, 0, n)
+
+	for range n {
+		length := 12 + rng.Intn(8)
+
+		body := []byte(heads[rng.Intn(len(heads))])
+		for len(body) < length-1 {
+			body = append(body, byte('0'+rng.Intn(10)))
+		}
+
+		body = body[:length-1]
+
+		sum, alt := 0, true
+		for i := len(body) - 1; i >= 0; i-- {
+			d := int(body[i] - '0')
+			if alt {
+				if d *= 2; d > 9 {
+					d -= 9
+				}
+			}
+
+			sum += d
+			alt = !alt
+		}
+
+		pan := string(body) + string(rune('0'+(10-sum%10)%10))
+		sep := separators[rng.Intn(len(separators))]
+
+		groups := []string{pan[0:4], pan[4:8], pan[8:12]}
+		if len(pan) > 12 {
+			groups = append(groups, pan[12:])
+		}
+
+		card := strings.Join(groups, sep)
+
+		if rng.Intn(2) == 0 {
+			tail := make([]byte, rng.Intn(3)+1)
+			for i := range tail {
+				tail[i] = byte('0' + rng.Intn(10))
+			}
+
+			card += sep + string(tail)
+		}
+
+		out = append(out, card)
+	}
+
+	return out
+}
+
+// leakedDigitRuns returns the four-or-more digit runs that survive in b and do
+// not survive in a — the digits one reading removed and the other kept.
+func leakedDigitRuns(a, b string) []string {
+	strip := func(s string) string {
+		return cardSeparators.Replace(s)
+	}
+
+	kept := map[string]bool{}
+	for _, run := range digitRunPattern.FindAllString(strip(a), -1) {
+		kept[run] = true
+	}
+
+	var leaked []string
+
+	for _, run := range digitRunPattern.FindAllString(strip(b), -1) {
+		if !kept[run] {
+			leaked = append(leaked, run)
+		}
+	}
+
+	return leaked
+}
+
+var digitRunPattern = regexp.MustCompile(`\d{4,}`)
+
+// TestTheShortTailShapeRedactsNothingElse holds the widened candidate shape to
+// being strictly a widening.
+//
+// IT USED TO ASSERT NOTHING. Every difference, in either direction, went into a
+// slice named "widened" and was printed with t.Logf, so the test passed on any
+// result at all — and it duly reported the regression that shipped in ac0c905
+// as four spans "newly redacted" when one of them was a twelve-digit card that
+// had STOPPED being redacted. A harness that cannot fail is not evidence, and
+// this one actively laundered the defect it existed to catch. Direction is now
+// the assertion.
 func TestTheShortTailShapeRedactsNothingElse(t *testing.T) {
 	t.Parallel()
 
-	inputs := append(corpusEntries(t), literalsFromTestSources(t)...)
-	inputs = append(inputs, randomRuns(t, 5000)...)
+	type change struct{ in, before, after string }
 
-	type widening struct{ in, before, after string }
+	// The generated cards are kept separate because they are seeded and so their
+	// count is stable, which lets the widening be pinned to a number. The other
+	// corpora grow whenever a test string is added, and pinning a count against
+	// them would fail on every unrelated test.
+	cards := luhnCards(t, 4000)
+	mixed := append(corpusEntries(t), literalsFromTestSources(t)...)
+	mixed = append(mixed, randomRuns(t, 5000)...)
 
-	var widened []widening
+	for _, corpus := range []struct {
+		name   string
+		inputs []string
+		pin    int
+	}{
+		{name: "generated Luhn-valid cards, lengths 12-19", inputs: cards, pin: 1492},
+		{name: "committed corpus, test literals and random runs", inputs: mixed, pin: -1},
+	} {
+		var narrowed, widened []change
 
-	for _, in := range inputs {
-		now := redactCardNumbersWith(cardCandidatePatterns, in)
+		for _, in := range corpus.inputs {
+			now := redactCardNumbersWith(cardCandidatePatterns, in)
 
-		// The copy must be the production function, or everything below measures
-		// something that does not ship.
-		if got := redactCardNumbers(in); got != now {
-			t.Fatalf("the local loop is not faithful on %q: %q vs %q", in, now, got)
+			// The copy must be the production function, or everything below
+			// measures something that does not ship.
+			if got := redactCardNumbers(in); got != now {
+				t.Fatalf("the local loop is not faithful on %q: %q vs %q", in, now, got)
+			}
+
+			was := redactCardNumbersWith(legacyCardCandidatePatterns, in)
+			if was == now {
+				continue
+			}
+
+			// DIRECTION, NOT DIFFERENCE. A span that stopped being redacted is a
+			// leak; one that started is the win the shape was widened for. Where
+			// both readings redact something, the verdict is which digits
+			// survive, not which output is longer.
+			switch {
+			case was != in && now == in:
+				narrowed = append(narrowed, change{in, was, now})
+			case was == in && now != in:
+				widened = append(widened, change{in, was, now})
+			case len(leakedDigitRuns(was, now)) > 0:
+				narrowed = append(narrowed, change{in, was, now})
+			default:
+				widened = append(widened, change{in, was, now})
+			}
 		}
 
-		if was := redactCardNumbersWith(legacyCardCandidatePatterns, in); was != now {
-			widened = append(widened, widening{in: in, before: was, after: now})
+		for _, c := range narrowed {
+			t.Errorf("NARROWED in=%q\n  was=%q\n  now=%q", c.in, c.before, c.after)
 		}
-	}
 
-	for _, w := range widened {
-		t.Logf("WIDENED  in=%q\n  was=%q\n  now=%q", w.in, w.before, w.after)
-	}
+		require.Empty(t, narrowed,
+			"%s: the short-tail shape must only ever redact MORE; these stopped being redacted",
+			corpus.name)
 
-	t.Logf("OVER-REACH %d inputs scanned, %d newly redacted", len(inputs), len(widened))
+		if corpus.pin >= 0 {
+			require.Len(t, widened, corpus.pin,
+				"%s: the widening is pinned; re-measure deliberately if the shape changes",
+				corpus.name)
+		}
+
+		t.Logf("OVER-REACH %s: %d inputs, %d narrowed, %d newly redacted",
+			corpus.name, len(corpus.inputs), len(narrowed), len(widened))
+	}
 }
 
 // TestQueryValueClassAgreesWithItsByteTest pins the compiled pattern's value

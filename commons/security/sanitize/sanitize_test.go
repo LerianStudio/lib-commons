@@ -811,6 +811,17 @@ func TestStringRedactsSeparatedCardNumbers(t *testing.T) {
 		{name: "Amex grouping", in: "amex 3782 822463 10005 declined", secret: "822463", keep: []string{"declined"}},
 		{name: "Diners grouping", in: "diners 3852 000002 3237 declined", secret: "000002", keep: []string{"declined"}},
 		{
+			// TWELVE DIGITS, THE SHORTEST CARD THE PACKAGE ACCEPTS. Every other
+			// card in these tables is 13 to 19 digits long, and the blind spot
+			// that left was exactly where a regression lived: widening the
+			// candidate shape to 4-4-4-N stopped twelve-digit cards being
+			// redacted at all, and nothing here noticed.
+			name:   "twelve-digit PAN, the shortest accepted",
+			in:     "declined 4222 2222 2222 at acquirer",
+			secret: "2222 2222",
+			keep:   []string{"declined", "at acquirer"},
+		},
+		{
 			// A PAN behind a leading four-digit group, where the FIRST twelve
 			// digits of the run also satisfy Luhn. Taking the longest window at
 			// the earliest offset redacts those twelve and leaves the last eight
@@ -1821,6 +1832,75 @@ func TestStringScrubsAGroupedCardInsideAQueryString(t *testing.T) {
 			name: "control: a tab ends the run and survives",
 			in:   "&cpf=1234 5678\t",
 			want: "&cpf=" + marker + "\t",
+		},
+
+		// ONE ROW PER BYTE IN queryValueTerminators.
+		//
+		// The agreement test pins the compiled pattern against isQueryValueByte,
+		// but both are derived from the same constant, so deleting a byte from
+		// the constant moves them together and that test stays green. Only
+		// behaviour notices. Dropping '#' widened the value across a URL
+		// fragment and left four digits of a card in the log with every other
+		// test still passing, which is what these rows exist to stop.
+		{name: "terminator &", in: "&cpf=1234 5678&9012", want: "&cpf=" + marker + "&9012"},
+		{name: "terminator comma", in: "&cpf=1234 5678,9012", want: "&cpf=" + marker + ",9012"},
+		{name: "terminator semicolon", in: "&cpf=1234 5678;9012", want: "&cpf=" + marker + ";9012"},
+		{name: "terminator newline", in: "&cpf=1234 5678\n9012", want: "&cpf=" + marker + "\n9012"},
+		{name: "terminator form feed", in: "&cpf=1234 5678\f9012", want: "&cpf=" + marker + "\f9012"},
+		{name: "terminator carriage return", in: "&cpf=1234 5678\r9012", want: "&cpf=" + marker + "\r9012"},
+
+		// THESE THREE LOSE THE REMAINDER, AND THAT IS OVER-REACH, NOT A LEAK.
+		// The byte ends the query value correctly; what follows is then eaten by
+		// the key=value pass at step 8, which stops at whitespace and so takes
+		// the rest of the token once the value ahead of it is a bare marker. It
+		// is the same loss already documented for a trailing quote. Recorded as
+		// measured so that a change in either direction has to be deliberate.
+		{name: "terminator hash loses the fragment", in: "&cpf=1234 5678#9012", want: "&cpf=" + marker},
+		{name: "terminator double quote", in: "&cpf=1234 5678\"9012", want: "&cpf=" + marker},
+		{name: "terminator single quote", in: "&cpf=1234 5678'9012", want: "&cpf=" + marker},
+
+		// The fragment case on a full sixteen-digit card, which is the line the
+		// dropped-'#' mutant leaked through.
+		{
+			name: "url fragment after a grouped card",
+			in:   "GET /charge?pan=4111 1111 1111 1111#frag",
+			want: "GET /charge?pan=" + marker,
+		},
+
+		// A space is a terminator too; here the whole run is grouped digits, so
+		// the extension takes all three groups and nothing is left over.
+		{name: "terminator space", in: "&cpf=1234 5678 9012", want: "&cpf=" + marker},
+
+		// THE TWO GUARDS THAT DECIDE HOW FAR THE EXTENSION REACHES. Both are
+		// one condition each, both change behaviour when removed, and neither
+		// had a row: removing either over-redacts, which is the failure that
+		// does not announce itself because the output still looks scrubbed.
+		//
+		// A value that is not itself all digits is not the head of a grouped
+		// run, so the extension must not start. Without that guard the marker
+		// swallows the prose after any sensitive parameter.
+		{
+			name: "guard: a non-digit value does not start an extension",
+			in:   "?apikey=abc 1234 5678",
+			want: "?apikey=" + marker + " 1234 5678",
+		},
+		{
+			// Arabic-Indic digits are digits to a reader and not to allDigits,
+			// which is ASCII. The value is therefore not a run head, the
+			// extension does not start, and the grouped ASCII card after it is
+			// redacted on its own by the card pass.
+			name: "guard: non-ASCII digits are not a run head",
+			in:   "?cpf=١٢٣٤ 5678 9012 3456",
+			want: "?cpf=" + marker + " " + marker,
+		},
+		{
+			// A space with no digit after it ends the run. Without that guard
+			// the trailing space is eaten, and a value that merely ends the line
+			// loses the character that separates it from whatever is appended
+			// next.
+			name: "guard: a trailing space with no group after it is kept",
+			in:   "&cpf=1 ",
+			want: "&cpf=" + marker + " ",
 		},
 		{
 			// CONTROL, AND THE ONE THAT WAS WRONG. A vertical tab is NOT in
