@@ -166,6 +166,11 @@
 // "password=(cpf)= hunter2" are how a driver, a validator and a
 // unique-constraint violation print the same pair, and the credential behind
 // each of them goes under the marker too.
+// When a name-shaped token is followed by BOTH a bare '=' and a padded " = ",
+// the padded one is the pair separator and the value behind it is under the
+// marker: "password=\"cpf\"= = hunter2" and "password=cpf= = hunter2" keep
+// nothing. The two readings end in different places, and taking the shorter of
+// them put the marker over the lone '=' and printed the credential beside it.
 //
 // The chain stops at the first covered token that is NOT followed by a
 // separator, so "cpf=cpf =cpf 12345678901" prints the eleven digits: the third

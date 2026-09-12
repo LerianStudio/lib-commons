@@ -825,6 +825,32 @@ func bareValueFollows(s string, valueEnd int) bool {
 // only cost one over-redacted token; demanding the whole name cost the other
 // reading of the line.
 func introducesAValue(s string, start, end int) int {
+	// THE SPACED SHAPE ASKED FIRST, WHICH IS WHAT THIS CLAUSE IS: the same
+	// question as the last one, with a lookahead, and it is here rather than
+	// there because first-match-wins decides between two readings that DISAGREE
+	// ON THE END. A token can carry both spellings at once:
+	// "password=\"cpf\"= = hunter2" ends in a bare '=' AND has a padded " = "
+	// behind it. The bare-'=' clause below returns the end of the token; the
+	// spaced clause returns the end of the separator, one reading further
+	// along. The shorter end is a PREFIX of the longer one, so whichever is
+	// asked first wins, and the shorter one leaves the credential outside the
+	// match: the marker lands on the lone '=' and hunter2 is copied out beside
+	// it, which is what 90b10a1 printed. The longer reading is the one that
+	// covers the credential, so it is the one asked first, and the lookahead is
+	// what keeps it from firing where there is no value to cover
+	// ("password=\"cpf\"= =") and where the text behind the separator is not a
+	// bare value at all.
+	//
+	// The bare-'=' clause asks isSensitiveFieldName of s[start:end-1] and this
+	// one asks it of s[start:end]; on the current taxonomy those are the same
+	// question, because a trailing '=' is a boundary byte on every path of
+	// IsSensitiveField — do not "fix" either one into the other.
+	if sep := nextPairSeparatorPattern.FindString(s[end:]); sep != "" &&
+		isSensitiveFieldName(s[start:end]) &&
+		bareValueAheadPattern.MatchString(s[end+len(sep):]) {
+		return end + len(sep)
+	}
+
 	if loc := prefixInsideValue(s, start, end); loc != nil && start+loc[1] == end &&
 		isSensitiveFieldName(s[start+loc[2]:start+loc[3]]) && bareValueFollows(s, end) {
 		return end
