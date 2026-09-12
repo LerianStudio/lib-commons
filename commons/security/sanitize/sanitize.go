@@ -208,16 +208,6 @@ const keyValuePair = `\b(` + keyValueName + `)(` + keyValueSeparator + `)(` + ke
 // keyValueName is the shape of a field name: what a key is allowed to be.
 const keyValueName = `[a-z][a-z0-9._-]*`
 
-// wholeFieldNamePattern is that shape and NOTHING ELSE, for asking whether a
-// value IS a field name rather than whether it holds one.
-//
-// ASKING isSensitiveFieldName OF RAW TEXT IS NOT THE SAME QUESTION, and the
-// fuzzer charges for the difference in seconds. That helper reports whether a
-// name it is GIVEN is sensitive, and it matches on substrings, so
-// "hunter2@CVC" reads as sensitive because "cvc" is in it — and a credential
-// whose text happens to hold a vendor word was handed back to the scanner
-// instead of being redacted: "0 =password=hunter2@CVC =" went to the log whole.
-
 var keyValuePattern = regexp.MustCompile(`(?i)` + keyValuePair)
 
 // nextPairPattern is keyValuePattern anchored, for asking whether a whole pair
@@ -232,6 +222,15 @@ var nextPairPattern = regexp.MustCompile(`(?i)^` + keyValuePair)
 // redact". Built from the same classes as the pair above so it cannot drift.
 var bareValueAheadPattern = regexp.MustCompile(`^[` + keyValueValueSpace + `]*(` + keyValueValue + `+)`)
 
+// wholeFieldNamePattern is keyValueName and NOTHING ELSE, for asking whether a
+// value IS a field name rather than whether it holds one.
+//
+// ASKING isSensitiveFieldName OF RAW TEXT IS NOT THE SAME QUESTION, and the
+// fuzzer charges for the difference in seconds. That helper reports whether a
+// name it is GIVEN is sensitive, and it matches on substrings, so
+// "hunter2@CVC" reads as sensitive because "cvc" is in it — and a credential
+// whose text happens to hold a vendor word was handed back to the scanner
+// instead of being redacted: "0 =password=hunter2@CVC =" went to the log whole.
 var wholeFieldNamePattern = regexp.MustCompile(`(?i)^` + keyValueName + `$`)
 
 // isSensitiveFieldNameOnly reports whether a value IS a sensitive field name,
@@ -438,44 +437,8 @@ var digitGroupPattern = regexp.MustCompile(`\d+`)
 // string. The token is URL-encoded, so the value runs to the next delimiter.
 var azureSASSignaturePattern = regexp.MustCompile(`(?i)([?&]sig=)[^&\s]+`)
 
-// pemBlockPattern matches a whole PEM block and replaces the armored body, so
-// the base64 payload between the BEGIN and END lines never reaches a log line.
-//
-// THE CLOSING LINE IS NOT REQUIRED, and that is the second branch. A block whose
-// -----END went missing is the ordinary accident — a key pasted out of a kubectl
-// output, a value a config loader cut, a file that ended a line early — and with
-// the END mandatory that block matched nothing here at all. What reached the log
-// then was "private_key=**** RSA PRIVATE KEY-----" followed by the entire body:
-// the key=value pass had taken "-----BEGIN" as the value and stopped at the
-// first space, so the line carried a marker asserting it had been scrubbed and
-// the whole armored payload behind it. That is worse than no redaction, because
-// it tells the reader there is nothing left to look for.
-//
-// THE WELL-FORMED READING IS TRIED FIRST, and it has to be. Go's regexp is
-// leftmost-first, so the alternation is a preference: a block that HAS its END
-// line is consumed to that line whatever it contains, which is what keeps an
-// ENCRYPTED key intact — RFC 1421 headers ("Proc-Type: 4,ENCRYPTED",
-// "DEK-Info: DES-EDE3-CBC,...") carry '-', and a body read as a run of
-// base64-legal bytes stops on the first one and leaves the payload after it in
-// the clear.
-//
-// The headless branch reads the body as base64-legal bytes AND WHITESPACE, so it
-// runs past the end of the armor into whatever prose follows on the same lines.
-// That over-redaction is accepted: the alternative is leaving a private key in a
-// log, and the shape only arises on a block that is already malformed.
-// THE ARMOR LINE IS MATCHED CASE-INSENSITIVELY, scoped to the keyword and label
-// so the body class is not: a pipeline that lowercases what it stores exists,
-// canonical PEM is uppercase so nothing valid is lost, and the armor is still a
-// private key whatever case "BEGIN RSA PRIVATE KEY" is written in. Redacting a
-// lowercased block is the safe direction and the shape is distinctive enough
-// that it costs nothing else.
-// THE TWO ARMOR LINES ARE FOUND ONCE AND PAIRED, rather than searched for per
-// block, and that is a cost fix rather than a taste one. Written as one pattern,
-// the well-formed reading is a LAZY run to the first END line, so a BEGIN line
-// with no END behind it anywhere scanned to the end of the input before falling
-// back to the headless body — once per BEGIN line. 64 KiB of armor with no END
-// line cost 6.5 seconds on the goroutine writing the log line, against 0.02 for
-// a well-formed block of the same size, and the armor is trivial to write.
+// pemArmorPattern matches one PEM armor line, BEGIN or END, with the keyword
+// and label folded so a lowercased block is still found; see redactPemBlocks.
 var pemArmorPattern = regexp.MustCompile(`-----(?i:(BEGIN|END) [A-Z0-9 ]+)-----`)
 
 // pemHeadlessBodyPattern is the body of a block whose END line never arrives:
@@ -483,7 +446,47 @@ var pemArmorPattern = regexp.MustCompile(`-----(?i:(BEGIN|END) [A-Z0-9 ]+)-----`
 var pemHeadlessBodyPattern = regexp.MustCompile(`^[\sA-Za-z0-9+/=]*`)
 
 // redactPemBlocks replaces each PEM block — armor lines and body — with the
-// marker, preferring the well-formed reading for the reasons above it.
+// marker, so the base64 payload between the BEGIN and END lines never reaches a
+// log line.
+//
+// THE CLOSING LINE IS NOT REQUIRED. A block whose -----END went missing is the
+// ordinary accident — a key pasted out of a kubectl output, a value a config
+// loader cut, a file that ended a line early — and with the END mandatory that
+// block matched nothing here at all. What reached the log then was
+// "private_key=**** RSA PRIVATE KEY-----" followed by the entire body: the
+// key=value pass had taken "-----BEGIN" as the value and stopped at the first
+// space, so the line carried a marker asserting it had been scrubbed and the
+// whole armored payload behind it. That is worse than no redaction, because it
+// tells the reader there is nothing left to look for.
+//
+// THE WELL-FORMED READING WINS, AND IT HAS TO. Each BEGIN line is paired with
+// the next END line at or after it, so a block that HAS its END line is
+// consumed to that line whatever it contains — which is what keeps an ENCRYPTED
+// key intact. RFC 1421 headers ("Proc-Type: 4,ENCRYPTED", "DEK-Info:
+// DES-EDE3-CBC,...") carry '-', and a body read as a run of base64-legal bytes
+// stops on the first one and leaves the payload after it in the clear.
+//
+// A BEGIN WITH NO END BEHIND IT ANYWHERE falls back to pemHeadlessBodyPattern,
+// base64-legal bytes AND whitespace, which runs past the end of the armor into
+// whatever prose follows on the same lines. That over-redaction is accepted:
+// the alternative is leaving a private key in a log, and the shape only arises
+// on a block that is already malformed.
+//
+// THE ARMOR IS MATCHED CASE-INSENSITIVELY, scoped to the keyword and label so
+// the body class is not: a pipeline that lowercases what it stores exists,
+// canonical PEM is uppercase so nothing valid is lost, and the armor is still a
+// private key whatever case "BEGIN RSA PRIVATE KEY" is written in. Redacting a
+// lowercased block is the safe direction and the shape is distinctive enough
+// that it costs nothing else.
+//
+// THE TWO ARMOR LINES ARE FOUND ONCE AND PAIRED, rather than searched for once
+// per block, and that is a cost fix rather than a taste one. Asked as one
+// pattern with the END line optional, the well-formed reading is a LAZY run to
+// the first END line, so a BEGIN line with no END behind it scanned to the end
+// of the input before falling back to the body class — once per BEGIN line.
+// 64 KiB of armor with no END line cost 6.5 seconds on the goroutine writing
+// the log line, against 0.02 for a well-formed block of the same size, and the
+// armor is trivial to write.
 func redactPemBlocks(s string) string {
 	armor := pemArmorPattern.FindAllStringSubmatchIndex(s, -1)
 	if armor == nil {
@@ -545,7 +548,7 @@ func redactPemBlocks(s string) string {
 // sanitized (re-running it does not mangle the marker).
 //
 // RE-RUNNING IS SAFE UP TO THE BOUND, NOT PAST IT. A pass can grow what it
-// returns by up to 1.60x, so an input of roughly 41 KiB or more of URL userinfo
+// returns by up to 1.60x, so an input of 40 KiB or more of URL userinfo
 // comes back longer than MaxInputLen and the SECOND call answers with the
 // over-bound refusal instead of the redacted text. That is the safe direction —
 // a refusal naming a size, never a credential — and the bound is unchanged

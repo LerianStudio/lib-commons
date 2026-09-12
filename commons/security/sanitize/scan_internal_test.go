@@ -808,13 +808,20 @@ func redactionResidue(s string) string {
 // isTokenSubsequence reports whether every whitespace-delimited token of a can
 // be read out of the tokens of b, in order, one token inside one token.
 //
-// BYTE-LEVEL IS TOO WEAK TO BE THE MEASURE OF A CREDENTIAL. Run over the whole
-// residue, "hunter2" is a subsequence of an ordinary operator line — h-u-n-t-e-r
-// out of "user=hunter" and the 2 out of "ledger=2" — so a head that LEAKED a
-// short credential read as an ordinary widening. Whitespace is where a
-// credential ends, so requiring each head token to sit inside ONE base token
-// keeps the widenings that matter ("password=" inside the base's
-// "password=hunter2") and refuses the ones assembled out of unrelated words.
+// BYTE-LEVEL IS TOO WEAK TO BE THE MEASURE OF A CREDENTIAL, AND THE HOLE IS
+// NARROWER THAN IT LOOKS. A head that ONLY leaks returns a longer residue than
+// the base, and a longer string is never a subsequence of a shorter one, so a
+// pure leak-against-redaction pair is caught either way. The hole opens when
+// the same output also redacts MORE somewhere else on the line — the ordinary
+// case here, since every marker becomes a space and a grouped run the head
+// takes whole gives several of them back. The residue is then short enough to
+// fit, and "hunter2" reads out of an ordinary operator line byte by byte:
+// h-u-n-t-e-r from "user=hunter" and the 2 from "ledger=2".
+//
+// Whitespace is where a credential ends, so requiring each head token to sit
+// inside ONE base token keeps the widenings that matter ("password=" inside the
+// base's "password=hunter2") and refuses the ones assembled out of unrelated
+// words.
 func isTokenSubsequence(a, b string) bool {
 	base := strings.Fields(b)
 	next := 0

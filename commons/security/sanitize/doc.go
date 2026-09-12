@@ -155,6 +155,23 @@
 // A fully encoded value and a fully unencoded one are both handled; only the
 // mixture falls between them.
 //
+// ON A SENSITIVE KEY, A VALUE THAT READS AS A FIELD NAME IS REDACTED TOGETHER
+// WITH THE TOKEN THAT NAME WOULD INTRODUCE. "password=cpf= 12345678901" and
+// "password=password =0" are each a credential under one reading and a pair
+// boundary under the other, and both readings go under one marker rather than
+// the package picking between them — so a weak password that happens to be a
+// field word, and a document behind a name-shaped value, are both gone. A whole
+// pair behind the name is the exception: "password=abc_token= rc=200" keeps its
+// response code.
+//
+// A VERTICAL TAB IS WHITESPACE, on both sides of the separator. It is in
+// [[:space:]] and not in RE2's \s, and a value class written from the wrong one
+// of those made a lone '\v' a value: "password=\v hunter2" put the marker over
+// the whitespace byte and printed the credential behind it. The cost of the
+// correction is that a pair whose entire value was one '\v' has no value at
+// all, so "k=k=pwd=\v" comes back unchanged — there is no credential on that
+// line to redact.
+//
 // A PEM BLOCK WITH NO CLOSING LINE IS OVER-REDACTED ON PURPOSE. A block that
 // kept its -----END is consumed exactly to that line. One that lost it — a key
 // pasted out of a kubectl output, a value a config loader cut — is consumed as
