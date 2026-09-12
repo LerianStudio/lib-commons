@@ -794,12 +794,14 @@ const (
 //
 // TO THE GLOB, A DELETED FILE AND A FILE NEVER ADDED ARE THE SAME THING, which
 // leaves the multi-base gate one `rm` away from the single-base hole it exists
-// to close. Measured: with base-5278f15.txt moved aside and the
-// padded-separator clause dropped from introducesAValue, the gate reports 0
-// narrowed against base-714ca9e.txt and PASSES while ten rows come back in the
-// clear. Nothing else in the repo names a base file, so nothing else would
-// notice. A name goes in here and a file goes in testdata/direction in the same
-// commit, and neither is removed.
+// to close. Measured over the 4,514-row inputs.txt with the padded-separator
+// clause dropped from introducesAValue: with both bases present the gate FAILS,
+// 10 narrowed against base-5278f15.txt; with base-5278f15.txt moved aside and
+// this list's assertion removed it reports 0 narrowed against base-714ca9e.txt
+// and PASSES, while 15 inputs change output and 8 of them print a credential
+// the unmutated head redacts. Nothing else in the repo names a base file, so
+// nothing else would notice. A name goes in here and a file goes in
+// testdata/direction in the same commit, and neither is removed.
 var directionRequiredBases = []string{"base-714ca9e.txt", "base-5278f15.txt"}
 
 // directionInputs assembles the input set for the direction harness.

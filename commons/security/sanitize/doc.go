@@ -302,8 +302,8 @@
 // Closing this one would be IN doctrine — the same whole-token question, asked
 // on the harmless-key path before the rewind — but it is not a line of code: it
 // closes leaks and eats one word of prose, the same price the sensitive-key
-// path already pays, and it moves the reference oracle that the
-// recursion differential holds the walk to. It is a follow-up with its own measurement.
+// path already pays, and it moves the reference oracle that the recursion
+// differential holds the walk to. It is a follow-up with its own measurement.
 //
 // A VERTICAL TAB IS WHITESPACE, on both sides of the separator. It is in
 // [[:space:]] and not in RE2's \s, and a value class written from the wrong one
