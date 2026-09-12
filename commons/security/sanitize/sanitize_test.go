@@ -2699,6 +2699,38 @@ func TestStringRedactsBothReadingsOfANameShapedValue(t *testing.T) {
 		{"a vendor word behind a non-word byte", "password=hunter2@CVC= 0", "password=" + marker},
 		{"punctuation in front of the name", "password=!@#$%^*()password= hunter2", "password=" + marker},
 
+		// A NAME SEPARATED FROM ITS '=' BY PUNCTUATION IS STILL A NAME. The
+		// first form of the rule rewinds through keyPrefixPattern, which needs
+		// the name to ABUT the separator, so a quote, a bracket or a
+		// parenthesis sitting between them left the credential behind the pair
+		// in the clear. A driver, a validator and a unique-constraint
+		// violation all print the name that way.
+		{"a quoted name and its separator", `password="cpf"= hunter2`, "password=" + marker},
+		{"a bracket after the name", "password=cpf]= hunter2", "password=" + marker},
+		{"the name in parentheses", "password=(cpf)= hunter2", "password=" + marker},
+		{"a pair behind the quoted name is the next pair", `password="cpf"= rc=200`, "password=" + marker + " rc=200"},
+		{
+			// ONE OVER-REDACTED WORD IS THE PRICE, and it is the price the
+			// second form of the rule has paid since pass 14. The token behind
+			// the separator is a bare value under one reading and the first
+			// word of a sentence under the other; the package does not choose,
+			// so the word goes.
+			name: "one over-redacted word is the price",
+			in:   `password="cpf"= refused by acquirer`,
+			want: "password=" + marker + " by acquirer",
+		},
+		{
+			// THE FOLD GUARD. The clause that closes the four rows above is
+			// ADDITIVE, and this row is why. U+212A folds to 'k' but is not an
+			// ASCII word byte, so "\u212Acpf=" is reached by the rewind form
+			// 1 does and not by the whole-token question the new clause asks.
+			// Replacing form 1 instead of adding beside it printed this
+			// credential, along with the rest of the Unicode-fold family.
+			name: "a unicode fold keeps the rewind",
+			in:   "secret=\u212Acpf= hunter2",
+			want: "secret=" + marker,
+		},
+
 		// Kept: a pair behind the name is the next pair, base64 padding is not a
 		// name, and a credential that is not a name is only itself.
 		{"a pair behind the name", "password=abc_token= rc=200", "password=" + marker + " rc=200"},
