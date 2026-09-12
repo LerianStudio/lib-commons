@@ -1029,7 +1029,8 @@ func legacyRedactKeyValuePairs(s string) string {
 				rewind = !sensitive
 			default:
 				name := s[valueStart+loc[2] : valueStart+loc[3]]
-				rewind = !sensitive || (isSensitiveFieldName(name) && bareValueFollows(s, valueEnd))
+				rewind = !sensitive || (!wordBytePattern.MatchString(s[valueStart:valueStart+loc[0]]) &&
+					isSensitiveFieldName(name) && bareValueFollows(s, valueEnd))
 			}
 		}
 

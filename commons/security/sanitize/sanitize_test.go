@@ -2532,6 +2532,14 @@ func TestStringRedactsWhenANonWordByteLeadsTheFieldNameInTheValue(t *testing.T) 
 		// A WORD byte in front is not a boundary: "0password" is not the field
 		// "password", and a value that merely holds a name is still a value.
 		{"a digit in front is not a boundary", "k=0password= hunter2", "k=0password= hunter2"},
+		{
+			// The credential itself is word-shaped and a vendor word follows it
+			// behind a non-word byte, which is not a pair boundary either: the
+			// whole thing is the value. FuzzStringGlued found this one.
+			name: "a credential ending in a name",
+			in:   "0= password=hunter2@CVC= 0",
+			want: "0= password=" + marker + " 0",
+		},
 		{"already right under a harmless key", "x=b=!password= hunter2", "x=b=!password= " + marker},
 	}
 

@@ -223,6 +223,10 @@ var nextPairPattern = regexp.MustCompile(`(?i)^` + keyValuePair)
 // redact". Built from the same classes as the pair above so it cannot drift.
 var bareValueAheadPattern = regexp.MustCompile(`^[[:space:]]*(` + keyValueValue + `)`)
 
+// wordBytePattern is \b's own word class, for asking what sits in front of a
+// name found inside a value.
+var wordBytePattern = regexp.MustCompile(`\w`)
+
 var wholeFieldNamePattern = regexp.MustCompile(`(?i)^` + keyValueName + `$`)
 
 // isSensitiveFieldNameOnly reports whether a value IS a sensitive field name,
@@ -812,14 +816,20 @@ func resolvePair(s, key string, valueStart, valueEnd int) (start int, sensitive,
 				// rc=200" has its own pair to follow, so the value was the
 				// literal text and belongs under the marker.
 				//
-				// The offset of the name inside the value is NOT part of the
-				// question. \b already refuses a name with a word byte in front
-				// of it ("0password=" is not the field), so testing that the
-				// name started at the first byte only refused the ordinary ways
-				// an option list writes one — a quote, a bracket, a second
-				// separator — and printed the credential behind each.
+				// NOTHING WORD-SHAPED MAY PRECEDE THE NAME INSIDE THE VALUE.
+				// Requiring the name to start at the value's first byte refused
+				// every ordinary way an option list writes one — a quote, a
+				// bracket, a bang, a second separator — and printed the
+				// credential behind each. Allowing ANY offset is worse: \b takes
+				// a non-word byte as the boundary, and a non-word byte is
+				// exactly what separates a credential from a word that follows
+				// it, so "password=hunter2@CVC=" read as the pair "CVC" and the
+				// password was handed back unredacted. The fuzzer found that in
+				// under two minutes. What is safe is a run of non-word bytes:
+				// punctuation cannot be a credential on its own.
 				name := s[valueStart+loc[2] : valueStart+loc[3]]
-				if !sensitive || (isSensitiveFieldName(name) && bareValueFollows(s, valueEnd)) {
+				if !sensitive || (!wordBytePattern.MatchString(s[valueStart:valueStart+loc[0]]) &&
+					isSensitiveFieldName(name) && bareValueFollows(s, valueEnd)) {
 					return valueStart, sensitive, true
 				}
 			}
