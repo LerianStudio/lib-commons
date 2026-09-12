@@ -1274,8 +1274,22 @@ func TestTheWalkRedactsTheSameSpansTheRecursionDid(t *testing.T) {
 // "password=" inside "0password=hunter2", where the full pattern finds no pair
 // at all — the walker would then step onto a key that is not a key and redact a
 // value nothing owns. That mutant survives every other test in this package.
+//
+// AND IT PINS THE NAME CLASS TEXTUALLY, which the inputs cannot. Both patterns
+// are built from keyValueName now, and a behavioural row can only catch a copy
+// that has already drifted from it — by which time the drift is the defect. The
+// assertion below is what goes red at the moment someone widens the constant
+// (admitting ':', say) and leaves a hand-spelled copy behind: the copy no
+// longer contains the constant's text. Spelling today's class out by hand is
+// behaviourally identical and nothing can catch it, which is the honest limit
+// of this guard.
 func TestTheTwoKeyPatternsAgreeOnWhereTheValueStarts(t *testing.T) {
 	t.Parallel()
+
+	require.Contains(t, keyPrefixPattern.String(), keyValueName,
+		"keyPrefixPattern must be built from keyValueName, not from a copy of it")
+	require.Contains(t, keyValuePattern.String(), keyValueName,
+		"keyValuePattern must be built from keyValueName, not from a copy of it")
 
 	// A key must start on a word boundary, so a word byte in front of a name
 	// means there is no pair. The long s and the Kelvin sign fold to ASCII under
@@ -1284,6 +1298,10 @@ func TestTheTwoKeyPatternsAgreeOnWhereTheValueStarts(t *testing.T) {
 		"0password=", "0password=hunter2", "1cpf=", "1cpf=12345678901",
 		"00\u017f00\u017f=", "00\u017f00\u017f=0", "\u212a=", "\u212a=hunter2",
 		"pwd=\v", "pwd=\v ", "a=b=pwd=\v", "password=\vhunter2",
+
+		// One row per byte the shared name class admits, so a narrowed
+		// keyValueName moves both patterns or fails here.
+		"a9=0", "a.b=0", "a_b=0", "a-b=0", "k=a_b=0", "k=a.b=hunter2",
 	}
 
 	groups := [][]string{

@@ -245,8 +245,8 @@ func isSensitiveFieldNameOnly(value string) bool {
 var nextPairSeparatorPattern = regexp.MustCompile(`^` + keyValueSeparator)
 
 // keyPrefixPattern is keyValuePattern WITHOUT its value class: the same key and
-// the same separator, built from the same constant, so it finds a nested pair's
-// key at exactly the offset the full pattern would.
+// the same separator, both built from the constants keyValuePair is built from,
+// so it finds a nested pair's key at exactly the offset the full pattern would.
 //
 // IT IS WHAT MAKES A CHAIN OF KEYS LINEAR. The value class runs to the next
 // whitespace, comma, semicolon or ampersand, so on a line with none of those
@@ -257,7 +257,7 @@ var nextPairSeparatorPattern = regexp.MustCompile(`^` + keyValueSeparator)
 // chain. This pattern stops at the separator, and the value's end is carried
 // along instead of re-derived, because it cannot move: a value is a run with no
 // terminator in it, so every key nested inside one ends at the same byte.
-var keyPrefixPattern = regexp.MustCompile(`(?i)\b([a-z][a-z0-9._-]*)` + keyValueSeparator)
+var keyPrefixPattern = regexp.MustCompile(`(?i)\b(` + keyValueName + `)` + keyValueSeparator)
 
 // jsonKeyValuePattern finds "key":"value" fragments so a JSON-shaped secret (a
 // marshaled config, or a request body echoed into an error) is redacted by field
