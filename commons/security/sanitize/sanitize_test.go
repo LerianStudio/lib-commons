@@ -2078,6 +2078,24 @@ func TestStringRedactsTheSecretWhoseKeyTheValueSlotAbsorbed(t *testing.T) {
 			want:   "token=" + marker + " more",
 			secret: "aGVsbG8",
 		},
+		{
+			// THE VALUE IS NOT A NAME, IT MERELY HOLDS ONE. FuzzStringGlued
+			// found this: the first cut of the rule above asked whether the raw
+			// text between the key and the trailing '=' looked sensitive, and
+			// "hunter2://CVC!0" does, on the "CVC" inside it. Stepping past it
+			// then printed the password. The question is whether the value IS a
+			// field name, front to back.
+			name:   "control: a value holding a field name is still a value",
+			in:     "0=password=hunter2://CVC!0=",
+			want:   "0=password=" + marker,
+			secret: "hunter2",
+		},
+		{
+			name:   "control: a nested chain under a sensitive key is its value",
+			in:     "password=b=c=",
+			want:   "password=" + marker,
+			secret: "b=c",
+		},
 	}
 
 	for _, tt := range tests {

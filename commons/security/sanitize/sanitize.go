@@ -653,27 +653,42 @@ func resolvePair(s, key string, valueStart, valueEnd int) (string, int, bool) {
 		// ("field=cpf =cpf= 12345678901") the line even carries a marker
 		// asserting it was scrubbed.
 		//
-		// THE ONE CASE WHERE THE '=' IS NOT A BOUNDARY is a sensitive key whose
-		// value merely ends in one: "token=aGVsbG8= more" is base64 padding, and
-		// stepping past it would put the token in the clear. It is told apart by
-		// the name the value would become — "password" and "cpf" are field
-		// names, "aGVsbG8" is not — which is the same question this pass already
-		// asks about every key.
-		if s[valueEnd-1] == '=' &&
-			(!sensitive || isSensitiveFieldName(s[valueStart:valueEnd-1])) {
+		// ON A SENSITIVE KEY THE '=' IS ONLY A BOUNDARY WHEN THE WHOLE VALUE IS A
+		// FIELD NAME. "token=aGVsbG8= more" is base64 padding, and stepping past
+		// it would print the token. So would "password=hunter2://CVC!0=", where
+		// the value is not a name at all but holds one — the fuzzer found that
+		// one, and asking whether the raw text between the key and the '=' looks
+		// sensitive is what let it through. The question is whether the value IS
+		// a name, which is what keyPrefixPattern answers: it has to match at the
+		// front of the value and reach the '=' with nothing left over.
+		if s[valueEnd-1] == '=' {
 			loc := keyPrefixPattern.FindStringSubmatchIndex(s[valueStart:valueEnd])
 
-			// The separator IS that trailing '=', so the value it introduces
-			// sits past the whitespace behind it and outside this span. Only
-			// the scanner matches across that, and keyValueSeparator admits
-			// exactly the whitespace involved.
-			if loc == nil || valueStart+loc[1] >= valueEnd {
-				return key, valueStart, true
+			switch {
+			case loc == nil:
+				// Nothing key-shaped in front of the '=', so it is not a pair
+				// boundary. Fall through and treat the value as a value.
+
+			case valueStart+loc[1] < valueEnd:
+				// A pair nested inside this value, owning the rest of it. Step
+				// onto its key; a sensitive key's own value is the secret and
+				// is not stepped over.
+				if !sensitive {
+					key, valueStart = s[valueStart+loc[2]:valueStart+loc[3]], valueStart+loc[1]
+
+					continue
+				}
+
+			default:
+				// The value is a name and the separator, and the value THAT
+				// introduces sits past the whitespace behind it, outside this
+				// match. Only the scanner matches across that, and
+				// keyValueSeparator admits exactly the whitespace involved.
+				name := s[valueStart+loc[2] : valueStart+loc[3]]
+				if !sensitive || (loc[0] == 0 && isSensitiveFieldName(name)) {
+					return key, valueStart, true
+				}
 			}
-
-			key, valueStart = s[valueStart+loc[2]:valueStart+loc[3]], valueStart+loc[1]
-
-			continue
 		}
 
 		// THE VALUE IS REALLY THE NEXT PAIR'S KEY. "tok =rg =0" reads as key

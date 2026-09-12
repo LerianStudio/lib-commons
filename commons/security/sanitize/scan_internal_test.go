@@ -897,14 +897,21 @@ func firstOrEmpty(s []string) string {
 	return s[0]
 }
 
-// legacyRedactKeyValuePairs and legacyRedactKeyValuePair are the implementations
-// the linear chain walk replaced, kept verbatim so the rewrite can be held to
-// them input for input.
+// legacyRedactKeyValuePairs and legacyRedactKeyValuePair are the SAME DECISIONS
+// the production pair makes, expressed the way they were expressed before the
+// chain walk: rewind to the value and re-run the full pattern, recurse into it
+// with ReplaceAllStringFunc.
 //
 // The rewrite is two transformations of one idea — carry the value's end along
 // instead of re-deriving it, and walk the nested keys instead of rewinding or
 // recursing into them — and neither is allowed to change which span is redacted.
 // That claim is worth nothing asserted; this is where it is measured.
+//
+// WHICH IS WHY THE DECISIONS ARE COPIED, NOT FROZEN. This is a differential on
+// the WALK, so when the rule about a value ending in the separator changes it
+// changes here too. Freezing the old rule instead would make this test pin the
+// defect that rule was corrected for, and it duly went red the moment one was:
+// "b=aGVsbG8 = rg=x.y=password=" kept its value under the frozen version.
 func legacyRedactKeyValuePairs(s string) string {
 	var out strings.Builder
 
@@ -925,8 +932,20 @@ func legacyRedactKeyValuePairs(s string) string {
 		key, valueStart, valueEnd := s[loc[2]:loc[3]], loc[6], loc[7]
 		sensitive := isSensitiveFieldName(key)
 
-		rewind := s[valueEnd-1] == '=' &&
-			(!sensitive || isSensitiveFieldName(s[valueStart:valueEnd-1]))
+		rewind := false
+
+		if s[valueEnd-1] == '=' {
+			loc := keyPrefixPattern.FindStringSubmatchIndex(s[valueStart:valueEnd])
+
+			switch {
+			case loc == nil:
+			case valueStart+loc[1] < valueEnd:
+				rewind = !sensitive
+			default:
+				name := s[valueStart+loc[2] : valueStart+loc[3]]
+				rewind = !sensitive || (loc[0] == 0 && isSensitiveFieldName(name))
+			}
+		}
 
 		if !rewind && !sensitive {
 			rewind = nextPairSeparatorPattern.MatchString(s[valueEnd:])
