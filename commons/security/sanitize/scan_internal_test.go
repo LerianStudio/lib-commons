@@ -51,7 +51,7 @@ func literalsFromTestSources(t *testing.T) []string {
 
 	var out []string
 
-	for _, name := range []string{"sanitize_test.go", "sanitize_example_test.go"} {
+	for _, name := range []string{"sanitize_test.go", "sanitize_example_test.go", "scan_internal_test.go"} {
 		file, err := parser.ParseFile(token.NewFileSet(), name, nil, 0)
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
@@ -568,4 +568,331 @@ func TestQueryValueClassAgreesWithItsByteTest(t *testing.T) {
 		// decodes to and the helper must agree that it is value material.
 		require.True(t, isQueryValueByte(byte(b)), "byte %#02x must be value material", b)
 	}
+}
+
+// operatorDiagnosticLines are the log and error shapes the reviewers of this
+// package ran by hand: the ones a driver, an acquirer, a broker client or a
+// validator actually prints, rather than the ones a pattern was written for.
+//
+// EVERY DEFECT IN THIS PACKAGE SINCE ROUND FOUR WAS FOUND ON A LINE OF THIS
+// KIND AND ON NO GENERATED ONE. The generators build the shapes a defect was
+// already known to live in; these are the shapes an operator sees. They are
+// listed here so the direction harness below carries them permanently.
+var operatorDiagnosticLines = []string{
+	// Connection strings, as the drivers echo them back on failure.
+	"pgx: host=db =password= hunter2 sslmode=require",
+	"host=db password=s3cr3t sslmode=require",
+	"host=db port=5432 user=svc password=s3cr3t dbname=ledger sslmode=verify-full",
+	"failed to connect to `host=db user=svc database=ledger`: server error",
+	"postgres://svc:hunter2@db.internal:5432/ledger?sslmode=require",
+	"mongodb://svc:hunter2@mongo-0:27017,mongo-1:27017/ledger?replicaSet=rs0",
+	"amqp://svc:hunter2@rabbit:5672/%2f",
+	"redis://default:hunter2@valkey:6379/0",
+	"dsn = postgres://svc:hunter2@db:5432/ledger sslpassword=keypass",
+
+	// Acquirer and card-network responses.
+	"op=charge =cpf= 12345678901 rc=200",
+	"POST /charge =cvc=999 rc=05",
+	"auth denied pan=4111 1111 1111 1111 rc=51",
+	"capture id=abc123 =card= 4111111111111111 amount=1000",
+	"settlement row rejected: conta=12345-6 agencia=0001 valor=100",
+
+	// Broker and cloud SDK option dumps.
+	"kafka: acks=all =aws_secret_access_key= wJalrXUtnFEMI",
+	"kafka: bootstrap.servers=b1:9092 sasl_password=hunter2 acks=all",
+	"sqs: region=us-east-1 aws_access_key_id=AKIAIOSFODNN7EXAMPLE aws_secret_access_key=wJalrXUtnFEMI",
+	"rabbit consumer opts: prefetch=10 =password= hunter2 heartbeat=60",
+
+	// Validator and constraint messages, which name the field twice.
+	"validator: field=cpf =cpf= 12345678901",
+	"validation failed on field=cpf value=12345678901",
+	`ERROR: duplicate key value violates unique constraint "accounts_document_key" (SQLSTATE 23505) document=12345678901`,
+	"k=v =cpf= hunter2 refused",
+	"tok =rg =0",
+
+	// Headers and tokens as a proxy or a gateway logs them.
+	"Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW",
+	"x-api-key: sk_live_1234567890abcdefghij upstream=502",
+	`{"password":"hunter2","host":"db"}`,
+	`{\"aws_secret_access_key\": \"wJalrXUtnFEMI\"}`,
+	"endpoint=https://api.internal/v1?apikey=s3cr3t&page=2",
+	"webhook=https://hooks.example.com/t/abc?sig=Zm9vYmFy&ts=1",
+
+	// Base64 padding in a value, which is NOT a pair boundary.
+	"token=aGVsbG8= more",
+	"token=aGVsbG8=",
+}
+
+// directionInputPath and directionBasePath hold the pinned pair the direction
+// harness runs on: the inputs, and String's output for each of them at the
+// commit named in the file name.
+const (
+	directionInputPath = "testdata/direction/inputs.txt"
+	directionBasePath  = "testdata/direction/base-714ca9e.txt"
+)
+
+// directionInputs assembles the input set for the direction harness.
+//
+// It is DETERMINISTIC: the corpus glob is sorted, the AST walk follows file
+// order, and every generator is seeded, so regenerating produces the same file
+// byte for byte. Duplicates are dropped in first-seen order, which is what lets
+// an operator line also live in this file's literals without being run twice.
+func directionInputs(t *testing.T) []string {
+	t.Helper()
+
+	groups := [][]string{
+		corpusEntries(t),
+		operatorDiagnosticLines,
+		literalsFromTestSources(t),
+		urlAndPairLines(t, 2000),
+		luhnCards(t, 250),
+		randomRuns(t, 250),
+	}
+
+	seen := map[string]bool{}
+	out := make([]string, 0, 4096)
+
+	for _, group := range groups {
+		for _, in := range group {
+			if in == "" || len(in) > MaxInputLen || seen[in] {
+				continue
+			}
+
+			seen[in] = true
+
+			out = append(out, in)
+		}
+	}
+
+	return out
+}
+
+// readQuotedLines reads a file of strconv.Quote'd strings, one per line.
+func readQuotedLines(t *testing.T, path string) []string {
+	t.Helper()
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	var out []string
+
+	for _, line := range strings.Split(strings.TrimSuffix(string(body), "\n"), "\n") {
+		value, err := strconv.Unquote(line)
+		if err != nil {
+			t.Fatalf("%s: unquote %q: %v", path, line, err)
+		}
+
+		out = append(out, value)
+	}
+
+	return out
+}
+
+// redactionResidue is the clear text an output still carries: the output with
+// every marker removed. Direction is measured on it rather than on the output,
+// because a redaction that grows the string is still a redaction.
+func redactionResidue(s string) string {
+	return strings.ReplaceAll(s, SecretRedactionMarker, "")
+}
+
+// isSubsequence reports whether a can be read out of b in order.
+func isSubsequence(a, b string) bool {
+	i := 0
+
+	for j := 0; i < len(a) && j < len(b); j++ {
+		if a[i] == b[j] {
+			i++
+		}
+	}
+
+	return i == len(a)
+}
+
+// directionBaseOverReach lists the pinned-base lines the head redacts LESS of,
+// deliberately, and it is the only exemption the direction harness grants.
+//
+// Every one of them is the same shape: a URL whose userinfo carries a '#'.
+// 714ca9e read that '#' as the start of a fragment, so the authority ended at
+// "tok" and the credential was never treated as userinfo at all — what removed
+// "en@db.internal" from the output was the bare-EMAIL pass, which saw an address
+// spanning the rest of the credential and the HOST. The base therefore printed
+// "postgres://tok#****:5432/..." : half the credential in the clear, and the
+// hostname gone.
+//
+// a0f664a ("a hash before the at-sign is userinfo, not a fragment") reads the
+// authority correctly, so the head prints "postgres://****@db.internal:5432/...":
+// the whole credential redacted, the host kept, which is what this package
+// promises for every other URL. The residue rule sees only that a hostname came
+// back and calls it a narrowing.
+//
+// THE EXEMPTION IS NOT A PASS. Each row names the credential the head must still
+// remove, and the harness asserts it — so a future change that leaks the
+// userinfo on these lines fails here rather than being covered by this list.
+var directionBaseOverReach = []struct{ input, credential string }{
+	{input: "A://tok#en@db.internal:5432/", credential: "tok#en"},
+	{input: "A://tok#en@db.internal:5432/v1/charge?a=1", credential: "tok#en"},
+	{input: "A://tok#en@db.internal:5432?x=@y", credential: "tok#en"},
+	{input: "A://tok#en@example.com#frag", credential: "tok#en"},
+	{input: "A://tok#en@example.com/", credential: "tok#en"},
+	{input: "A://tok#en@example.com/p", credential: "tok#en"},
+	{input: "A://tok#en@example.com/v1/charge?a=1", credential: "tok#en"},
+	{input: "A://tok#en@example.com?x=@y", credential: "tok#en"},
+	{input: "amqp://tok#en@db.internal:5432", credential: "tok#en"},
+	{input: "amqp://tok#en@db.internal:5432#frag", credential: "tok#en"},
+	{input: "amqp://tok#en@db.internal:5432/", credential: "tok#en"},
+	{input: "amqp://tok#en@db.internal:5432/p", credential: "tok#en"},
+	{input: "amqp://tok#en@example.com#frag", credential: "tok#en"},
+	{input: "amqp://tok#en@example.com/", credential: "tok#en"},
+	{input: "amqp://tok#en@example.com/p", credential: "tok#en"},
+	{input: "amqp://tok#en@example.com?x=@y", credential: "tok#en"},
+	{input: "http://tok#en@db.internal:5432/p", credential: "tok#en"},
+	{input: "http://tok#en@example.com#frag", credential: "tok#en"},
+	{input: "http://tok#en@example.com/", credential: "tok#en"},
+	{input: "http://tok#en@example.com/v1/charge?a=1", credential: "tok#en"},
+	{input: "http://tok#en@example.com?x=@y", credential: "tok#en"},
+	{input: "https://tok#en@db.internal:5432#frag", credential: "tok#en"},
+	{input: "https://tok#en@db.internal:5432/v1/charge?a=1", credential: "tok#en"},
+	{input: "https://tok#en@db.internal:5432?x=@y", credential: "tok#en"},
+	{input: "https://tok#en@example.com#frag", credential: "tok#en"},
+	{input: "https://tok#en@example.com/p", credential: "tok#en"},
+	{input: "https://tok#en@example.com/v1/charge?a=1", credential: "tok#en"},
+	{input: "postgres://tok#en@db.internal:5432/", credential: "tok#en"},
+	{input: "postgres://tok#en@db.internal:5432/p", credential: "tok#en"},
+	{input: "postgres://tok#en@db.internal:5432/v1/charge?a=1", credential: "tok#en"},
+	{input: "postgres://tok#en@db.internal:5432?x=@y", credential: "tok#en"},
+	{input: "postgres://tok#en@example.com", credential: "tok#en"},
+	{input: "postgres://tok#en@example.com#frag", credential: "tok#en"},
+	{input: "postgres://tok#en@example.com/p", credential: "tok#en"},
+	{input: "postgres://tok#en@example.com/v1/charge?a=1", credential: "tok#en"},
+}
+
+// TestStringNeverNarrowsAgainstThePinnedBase IS THE GATE THAT WOULD HAVE CAUGHT
+// THE REGRESSION IN 340fb0d, AND THE ONE THIS PACKAGE DID NOT HAVE.
+//
+// The only direction assertion here before it compared redactCardNumbers
+// against an in-file copy of the older card patterns. It never calls String, so
+// "narrowed == 0" said nothing about the URL pass, the key=value walker or the
+// round loop — and 340fb0d duly shipped five operator shapes that went from
+// redacted to printed in the clear, under a green suite, a green fuzzer and a
+// stable fixed point.
+//
+// The reference is 714ca9e, the last head with no known regression. String's
+// output for every input is pinned in a file produced from a PRISTINE COPY of
+// that commit, never from this worktree:
+//
+//	d=/tmp/dir-base
+//	GIT_INDEX_FILE=$d.idx git read-tree 714ca9e
+//	GIT_INDEX_FILE=$d.idx git checkout-index -a --prefix=$d/
+//	cp commons/security/sanitize/testdata/direction/direction_base_main.go \
+//	   $d/commons/security/sanitize/
+//	(cd $d && go run ./commons/security/sanitize/direction_base_main.go \
+//	   <inputs.txt> <base-714ca9e.txt>)
+//	rm -rf $d $d.idx
+//
+// To regenerate the inputs after adding a test literal or an operator line, run
+// this test once with SANITIZE_DIRECTION_REGEN=1, then redo the command above.
+// Both files are regenerated in full; nothing is edited by hand.
+//
+// THE ASSERTION IS DIRECTION, NOT EQUALITY. Later passes are meant to redact
+// more, so an output that differs from the base is only a defect when clear text
+// the base had removed comes back — that is, when the head's residue is not a
+// subsequence of the base's.
+func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
+	t.Parallel()
+
+	generated := directionInputs(t)
+	require.NotEmpty(t, generated, "the input generators contributed nothing")
+
+	if os.Getenv("SANITIZE_DIRECTION_REGEN") != "" {
+		var b strings.Builder
+		for _, in := range generated {
+			b.WriteString(strconv.Quote(in))
+			b.WriteByte('\n')
+		}
+
+		if err := os.WriteFile(directionInputPath, []byte(b.String()), 0o600); err != nil {
+			t.Fatalf("write %s: %v", directionInputPath, err)
+		}
+
+		t.Fatalf("regenerated %s with %d inputs; now redo the base command in this test's comment",
+			directionInputPath, len(generated))
+	}
+
+	inputs := readQuotedLines(t, directionInputPath)
+	base := readQuotedLines(t, directionBasePath)
+
+	require.Len(t, base, len(inputs),
+		"the pinned base has one output per input; regenerate both files together")
+
+	// THE PINNED SET MUST STILL COVER THE SOURCES IT WAS BUILT FROM. A harness
+	// that quietly stops seeing the shapes a test file added is the failure this
+	// package has already shipped once, under the name "a harness that cannot
+	// fail is not evidence".
+	pinned := make(map[string]bool, len(inputs))
+	for _, in := range inputs {
+		pinned[in] = true
+	}
+
+	var missing []string
+
+	for _, in := range generated {
+		if !pinned[in] {
+			missing = append(missing, in)
+		}
+	}
+
+	require.Empty(t, missing,
+		"%d generated input(s) are not in the pinned set, first %q; re-run with SANITIZE_DIRECTION_REGEN=1 and redo the base command",
+		len(missing), firstOrEmpty(missing))
+
+	exempt := make(map[string]string, len(directionBaseOverReach))
+	for _, row := range directionBaseOverReach {
+		exempt[row.input] = row.credential
+	}
+
+	narrowed, widened, exempted := 0, 0, 0
+
+	for i, in := range inputs {
+		got := String(in)
+		if got == base[i] {
+			continue
+		}
+
+		if isSubsequence(redactionResidue(got), redactionResidue(base[i])) {
+			widened++
+
+			continue
+		}
+
+		if credential, ok := exempt[in]; ok {
+			exempted++
+
+			require.NotContains(t, got, credential,
+				"%q is exempt from the direction rule only because the head redacts the whole userinfo; it no longer does",
+				in)
+
+			continue
+		}
+
+		narrowed++
+
+		t.Errorf("NARROWED in=%q\n  base=%q\n  head=%q", in, base[i], got)
+	}
+
+	require.Zero(t, narrowed, "String must never leave clear text the pinned base removed")
+	require.Len(t, directionBaseOverReach, exempted,
+		"every exemption must still be a live difference; a stale row hides nothing and must be deleted")
+
+	t.Logf("DIRECTION %d inputs against the pinned 714ca9e base: %d narrowed, %d widened, %d exempt",
+		len(inputs), narrowed, widened, exempted)
+}
+
+func firstOrEmpty(s []string) string {
+	if len(s) == 0 {
+		return ""
+	}
+
+	return s[0]
 }
