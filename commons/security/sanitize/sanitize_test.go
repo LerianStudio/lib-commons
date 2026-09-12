@@ -1121,6 +1121,11 @@ var fuzzSeparators = []string{" ", "=", " =", "= ", "@", "://", "&", "#", "/", "
 // was invisible to the fuzzer even after it shipped as a leak. It is a second
 // target rather than two more arguments on the first so the sixteen committed
 // FuzzString corpus files keep loading unchanged; the property body is shared.
+//
+// BOTH TARGETS NEED AN ANCHORED -fuzz FLAG. The flag takes a regexp, so
+// `-fuzz=FuzzString` now matches this target as well as FuzzString and go test
+// refuses to run either. Spell them `-fuzz='^FuzzString$'` and
+// `-fuzz='^FuzzStringGlued$'`.
 func FuzzStringGlued(f *testing.F) {
 	// THE JOINS ARE PART OF THE SEED CORPUS, NOT ONLY OF THE MUTATION SPACE.
 	// CI runs the seeds without fuzzing, so seeding every one of them with

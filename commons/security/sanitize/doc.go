@@ -166,6 +166,10 @@
 // it only arises on a block that is already malformed.
 
 // # Length is bounded, and the bound refuses rather than cuts
+// Both armor lines are found in ONE pass and paired, rather than each BEGIN
+// searching the rest of the input for an END: written the second way, armor with
+// no END line at all cost 6.5 seconds at MaxInputLen against 0.02 for a
+// well-formed block of the same size.
 //
 // Truncating BEFORE redaction is actively unsafe: a cut landing mid-secret
 // strands a readable prefix ("postgres://user:pas") that no later pattern can

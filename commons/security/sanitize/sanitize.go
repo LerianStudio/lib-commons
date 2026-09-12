@@ -513,15 +513,25 @@ func redactPemBlocks(s string) string {
 // database, non-sensitive parameters — and is safe on an empty string, on a
 // string with no credentials (returned verbatim), and on a string it has already
 // sanitized (re-running it does not mangle the marker).
+//
+// RE-RUNNING IS SAFE UP TO THE BOUND, NOT PAST IT. A pass can grow what it
+// returns by up to 1.60x, so an input of roughly 41 KiB or more of URL userinfo
+// comes back longer than MaxInputLen and the SECOND call answers with the
+// over-bound refusal instead of the redacted text. That is the safe direction —
+// a refusal naming a size, never a credential — and the bound is unchanged
+// here; a caller that re-sanitizes at that size is asking twice for work the
+// first call already did.
 func String(s string) string {
 	if s == "" {
 		return ""
 	}
 
 	// THE BOUND IS CHECKED ONCE, ON THE WAY IN, AND A ROUND CAN GROW THE STRING
-	// PAST IT. "keY=#" becomes "keY=****", so 64 KiB of that shape settles at
-	// 98,302 bytes, and 64 KiB of "=Rg =0 " at 93,622 — 1.5 and 1.43 times the
-	// bound.
+	// PAST IT. 64 KiB of "cpf=# " settles at 98,302 bytes and 64 KiB of
+	// "=Rg =0 " at 93,622 — 1.50 and 1.43 times the bound — and the worst
+	// measured shape is a URL, "A://a:b@h ", at 1.60 (65,530 in, 104,848 out).
+	// "keY=#" is NOT one of them: it collapses to eight bytes, since the whole
+	// separator-free run is one value.
 	//
 	// A per-round check would buy nothing. The growth is ONE-SHOT: a site grows
 	// when its value is first replaced by the marker, and the marker is a fixed
@@ -654,32 +664,6 @@ func sanitizeOnce(s string) string {
 	return s
 }
 
-// redactKeyValuePair redacts one key=value fragment when its key is sensitive,
-// and otherwise LOOKS INSIDE THE VALUE FOR A PAIR THAT IS.
-//
-// The inner scan is the whole point. keyValuePattern's value class admits '=',
-// so "opt = password=hunter2" is ONE pair keyed on "opt" — judged harmless, and
-// the credential after it never became a candidate at all. Any word and an '='
-// in front of the real field is enough to do it, which is an ordinary shape for
-// an acquirer response ("POST /charge =cvc=999 rc=05"), a broker option list or
-// a validator message to print. The same swallowing is why the query-parameter
-// pass runs ahead of this one; this closes the rest of it.
-//
-// It terminates because each round recurses on the VALUE, which is shorter than
-// the match around it by at least the inner key. It is idempotent because the
-// marker it leaves is itself a value with no inner pair.
-//
-// THE RESULT IS SPLICED BY INDEX, AND EVERYTHING OUTSIDE THE PAIR IS CARRIED
-// ACROSS VERBATIM, because re-finding the pattern inside the match it produced
-// does not always land where the match began. \b is an ASCII word boundary while
-// (?i) folds Unicode, so a key starting with a letter that folds to ASCII — ſ
-// (U+017F) folds to s, K (U+212A) to k — matches in the full string, where the
-// preceding ASCII digit supplies the boundary, and does NOT match at offset zero
-// of the same text in isolation, where there is no preceding character at all.
-// Rebuilding from the submatches then silently dropped the head: one pass over
-// "00ſ00ſ00ſ=0" lost four bytes, and the next pass lost four more, so the output
-// was not even stable. keyValuePattern is the only pass that can hit this, being
-// the only one whose match can begin on a non-ASCII rune.
 // redactKeyValuePairs walks the pairs so a "value" that is really the next
 // pair's key can be handed back to the scanner instead of being consumed.
 func redactKeyValuePairs(s string) string {
@@ -861,6 +845,33 @@ func bareValueFollows(s string, valueEnd int) bool {
 	return !nextPairPattern.MatchString(s[valueEnd+ahead[2]:])
 }
 
+// redactKeyValuePair redacts one key=value fragment when its key is sensitive,
+// and otherwise LOOKS INSIDE THE VALUE FOR A PAIR THAT IS.
+//
+// The inner scan is the whole point. keyValuePattern's value class admits '=',
+// so "opt = password=hunter2" is ONE pair keyed on "opt" — judged harmless, and
+// the credential after it never became a candidate at all. Any word and an '='
+// in front of the real field is enough to do it, which is an ordinary shape for
+// an acquirer response ("POST /charge =cvc=999 rc=05"), a broker option list or
+// a validator message to print. The same swallowing is why the query-parameter
+// pass runs ahead of this one; this closes the rest of it.
+//
+// It terminates because the scan is a WALK rather than a recursion: each step
+// moves valueStart forward by at least a key and a separator, and valueEnd never
+// moves, so the two meet. It is idempotent because the marker it leaves is
+// itself a value with no inner pair.
+//
+// THE RESULT IS SPLICED BY INDEX, AND EVERYTHING OUTSIDE THE PAIR IS CARRIED
+// ACROSS VERBATIM, because re-finding the pattern inside the match it produced
+// does not always land where the match began. \b is an ASCII word boundary while
+// (?i) folds Unicode, so a key starting with a letter that folds to ASCII — ſ
+// (U+017F) folds to s, K (U+212A) to k — matches in the full string, where the
+// preceding ASCII digit supplies the boundary, and does NOT match at offset zero
+// of the same text in isolation, where there is no preceding character at all.
+// Rebuilding from the submatches then silently dropped the head: one pass over
+// "00ſ00ſ00ſ=0" lost four bytes, and the next pass lost four more, so the output
+// was not even stable. keyValuePattern is the only pass that can hit this, being
+// the only one whose match can begin on a non-ASCII rune.
 func redactKeyValuePair(match string) string {
 	loc := keyValuePattern.FindStringSubmatchIndex(match)
 	if loc == nil {
@@ -875,8 +886,9 @@ func redactKeyValuePair(match string) string {
 	// level, which turned 64 KiB of "a=" in front of one credential into three
 	// minutes of CPU on whatever goroutine was writing the log line.
 	//
-	// At most one pair can start inside a value, because the value class is
-	// greedy and every match it can hold therefore reaches the same end. The
+	// At most one NON-OVERLAPPING match can start inside a value, because the
+	// value class is greedy and every match it can hold therefore reaches the
+	// same end. Nested keys are found by the prefix pattern instead, and the
 	// walk is that chain: step over each key that is not a field name, and
 	// redact the value of the first one that is.
 	for !isSensitiveFieldName(key) {
