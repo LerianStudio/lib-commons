@@ -168,7 +168,24 @@ var queryParameterPattern = regexp.MustCompile(
 // rather than a second spelling of the class.
 const keyValueSeparator = `[[:space:]]*=[[:space:]]*`
 
-var keyValuePattern = regexp.MustCompile(`(?i)\b([a-z][a-z0-9._-]*)(` + keyValueSeparator + `)([^\s,;&]+)`)
+// keyValuePair is the pair itself — key, separator, value — and it is written
+// ONCE for the same reason the separator is: the anchored form below has to be
+// the SAME question asked at a known offset, not a second spelling of it.
+const keyValuePair = `\b([a-z][a-z0-9._-]*)(` + keyValueSeparator + `)([^\s,;&]+)`
+
+var keyValuePattern = regexp.MustCompile(`(?i)` + keyValuePair)
+
+// nextPairPattern is keyValuePattern anchored, for asking whether a whole pair
+// begins exactly here rather than somewhere ahead. Anchored because the
+// unanchored search scans to the end of the line on failure, and this question
+// is asked once per redacted pair: on a line that is nothing but pairs that is
+// the quadratic the walker exists to avoid.
+var nextPairPattern = regexp.MustCompile(`(?i)^` + keyValuePair)
+
+// bareValueAheadPattern is the separator's whitespace followed by one byte the
+// value class admits: "is there a bare value behind this one for the scanner to
+// redact". Built from the same classes as the pair above so it cannot drift.
+var bareValueAheadPattern = regexp.MustCompile(`^[[:space:]]*([^\s,;&])`)
 
 // nextPairSeparatorPattern is keyValueSeparator anchored at the start of the
 // text, for asking whether what follows a value is the next pair's separator.
@@ -684,8 +701,26 @@ func resolvePair(s, key string, valueStart, valueEnd int) (string, int, bool) {
 				// introduces sits past the whitespace behind it, outside this
 				// match. Only the scanner matches across that, and
 				// keyValueSeparator admits exactly the whitespace involved.
+				//
+				// ON A SENSITIVE KEY THERE HAS TO BE SOMETHING BEHIND IT TO
+				// REDACT INSTEAD. Handing the position back costs nothing when
+				// the scanner can match there and everything when it cannot: it
+				// needs at least one value byte, so "password=abc_token=" —
+				// a value that merely ENDS in the separator, with nothing
+				// claimable after it — came back unmatched and was copied out
+				// in the clear, credential and all. A pair behind the
+				// whitespace answers the same way: "password=abc_token=
+				// rc=200" has its own pair to follow, so the value was the
+				// literal text and belongs under the marker.
+				//
+				// The offset of the name inside the value is NOT part of the
+				// question. \b already refuses a name with a word byte in front
+				// of it ("0password=" is not the field), so testing that the
+				// name started at the first byte only refused the ordinary ways
+				// an option list writes one — a quote, a bracket, a second
+				// separator — and printed the credential behind each.
 				name := s[valueStart+loc[2] : valueStart+loc[3]]
-				if !sensitive || (loc[0] == 0 && isSensitiveFieldName(name)) {
+				if !sensitive || (isSensitiveFieldName(name) && bareValueFollows(s, valueEnd)) {
 					return key, valueStart, true
 				}
 			}
@@ -711,6 +746,17 @@ func resolvePair(s, key string, valueStart, valueEnd int) (string, int, bool) {
 
 		return key, valueStart, false
 	}
+}
+
+// bareValueFollows reports whether the text behind a value that ended in the
+// separator holds a value the scanner can redact in its place.
+func bareValueFollows(s string, valueEnd int) bool {
+	ahead := bareValueAheadPattern.FindStringSubmatchIndex(s[valueEnd:])
+	if ahead == nil {
+		return false
+	}
+
+	return !nextPairPattern.MatchString(s[valueEnd+ahead[2]:])
 }
 
 func redactKeyValuePair(match string) string {

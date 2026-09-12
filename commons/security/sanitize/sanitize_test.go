@@ -2485,7 +2485,16 @@ func TestStringRedactsWhenANonWordByteLeadsTheFieldNameInTheValue(t *testing.T) 
 		want string
 	}{
 		{"a bang", "token=!password= hunter2", "token=!password= " + marker},
-		{"a quote", `pwd="password= hunter2"`, `pwd="password= ` + marker + `"`},
+		{
+			// The value class stops at whitespace, a comma, a semicolon and an
+			// ampersand — not at a quote — so the credential's own closing
+			// quote goes under the marker with it. That is the direction this
+			// package errs in everywhere else ("token=abc: refused" loses the
+			// colon too): one character too many, never one too few.
+			name: "a quote",
+			in:   `pwd="password= hunter2"`,
+			want: `pwd="password= ` + marker,
+		},
 		{"a bracket", "secret=[cpf= 12345678901", "secret=[cpf= " + marker},
 		{"a second separator", "password= =cpf= 12345678901", "password= =cpf= " + marker},
 
