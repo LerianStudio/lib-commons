@@ -197,7 +197,7 @@
 // matching nothing at all and the whole armored body reaching the log behind a
 // marker claiming the line had been scrubbed, so this is the cheaper error, and
 // it only arises on a block that is already malformed.
-
+//
 // # Length is bounded, and the bound refuses rather than cuts
 // Both armor lines are found in ONE pass and paired, rather than each BEGIN
 // searching the rest of the input for an END: written the second way, armor with
