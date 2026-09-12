@@ -786,6 +786,17 @@ const (
 	directionOriginalBase = "base-714ca9e.txt"
 )
 
+// directionRequiredBases names every base file that must be on disk.
+//
+// TO THE GLOB, A DELETED FILE AND A FILE NEVER ADDED ARE THE SAME THING, which
+// leaves the multi-base gate one `rm` away from the single-base hole it exists
+// to close. Measured: with base-5278f15.txt moved aside and pass 15's clause
+// reverted, the gate reports 0 narrowed against base-714ca9e.txt and PASSES
+// while seven credentials come back in the clear. Nothing else in the repo
+// names a base file, so nothing else would notice. A name goes in here and a
+// file goes in testdata/direction in the same commit, and neither is removed.
+var directionRequiredBases = []string{"base-714ca9e.txt", "base-5278f15.txt"}
+
 // directionInputs assembles the input set for the direction harness.
 //
 // It is DETERMINISTIC: the corpus glob is sorted, the AST walk follows file
@@ -1023,16 +1034,21 @@ var directionBaseKept = []struct{ input, want string }{
 // redacted to printed in the clear, under a green suite, a green fuzzer and a
 // stable fixed point.
 //
-// ONE FILE PER HEAD THIS BRANCH HAS SHIPPED CLEAN, AND THE GATE IS ZERO
-// NARROWED AGAINST EVERY ONE OF THEM. Pinning a single old commit was itself a
-// hole: pass 15 traded a leak for a leak, and because its regression was a
-// WIDENING against 714ca9e and a NARROWING against the head before it, all
-// 110,160 instances of it passed this gate as progress. A base file is ADDED
-// when a head ships clean and is NEVER EDITED: editing one is how a head's
-// answers get rewritten to match the answers that replaced them, which is the
-// one thing the file exists to prevent. Exemption rows belong to 714ca9e alone,
-// for the reasons those rows give; against a head this branch shipped, a
-// difference that is not a widening is a finding.
+// ONE FILE PER HEAD WHOSE OUTPUTS THIS BRANCH COMMITS TO NEVER NARROWING
+// AGAINST, AND THE GATE IS ZERO NARROWED AGAINST EVERY ONE OF THEM. Not "one
+// file per head this branch has shipped clean", which is what this said and is
+// not true of the set: 5278f15 is pinned here and its own review round found a
+// defect in it. A file is here because its answers are a floor worth holding,
+// not because the head that wrote them was found faultless. Pinning a single
+// old commit was itself a hole: pass 15 traded a leak for a leak, and because
+// its regression was a WIDENING against 714ca9e and a NARROWING against the
+// head before it, all 110,160 instances of it passed this gate as progress. A
+// NAME IN directionRequiredBases AND A FILE IN testdata/direction GO IN
+// TOGETHER, and neither is removed or edited in place afterwards: editing one
+// is how a head's answers get rewritten to match the answers that replaced
+// them, which is the one thing the file exists to prevent. Exemption rows
+// belong to 714ca9e alone, for the reasons those rows give; against a head this
+// branch pins, a difference that is not a widening is a finding.
 //
 // The oldest reference is 714ca9e, the last head before this branch with no
 // known regression. String's output for every input is pinned in a file
@@ -1110,6 +1126,17 @@ func TestStringNeverNarrowsAgainstThePinnedBase(t *testing.T) {
 	}
 
 	require.NotEmpty(t, bases, "no pinned base found under %s", directionBaseGlob)
+
+	found := make(map[string]bool, len(bases))
+	for _, path := range bases {
+		found[filepath.Base(path)] = true
+	}
+
+	for _, name := range directionRequiredBases {
+		require.True(t, found[name],
+			"%s is missing from %s; a base file is never removed, and to the glob a deleted one and one that was never added are the same thing",
+			name, directionBaseGlob)
+	}
 
 	for _, path := range bases {
 		t.Run(filepath.Base(path), func(t *testing.T) {
