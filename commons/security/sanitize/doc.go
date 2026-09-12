@@ -166,6 +166,33 @@
 // "password=(cpf)= hunter2" are how a driver, a validator and a
 // unique-constraint violation print the same pair, and the credential behind
 // each of them goes under the marker too.
+//
+// ONLY WHEN THE PUNCTUATION IS A BYTE THE VALUE CLASS ADMITS, WHICH '&', ';'
+// AND ',' ARE NOT. Those three end a value, so in "password=cpf&= hunter2" the
+// value is "cpf" and the '=' behind it is not part of it at all: there is no
+// name-plus-separator to see, and "password=****&= hunter2" prints the
+// credential. The same holds for "password=cpf;= hunter2" and
+// "password=cpf,= hunter2".
+//
+// AND ONLY WHEN THE NAME'S FIRST LETTER IS AN ASCII ONE. The punctuated form
+// asks whether the WHOLE token in front of the '=' holds a field name, and the
+// abutting form rewinds to a name that touches its '='; a Unicode fold defeats
+// the first and punctuation defeats the second, so
+// "password=\u212Acpf]= hunter2" prints its credential while
+// "secret=\u212Acpf= hunter2", one byte of punctuation lighter, does not. A
+// fold that REPLACES the first letter rather than preceding it is not reached
+// either way: "secret=\u017Fecret= hunter2" leaves "ecret", which is no name,
+// and prints "secret=**** hunter2".
+//
+// ONE WORD BEHIND THE SEPARATOR IS THE PRICE, AND THE WORD MAY COME FROM THE
+// NEXT LINE. The token behind the separator is a bare value under one reading
+// and the first word of a sentence under the other, so it goes either way:
+// "password=\"cpf\"= refused by acquirer" keeps " by acquirer". The
+// separator's whitespace is [[:space:]], which holds the newline, so the word
+// it takes can belong to the NEXT log record:
+// "password=\"cpf\"=\nrefused by acquirer" comes back as
+// "password=**** by acquirer", two records merged into one.
+//
 // When a name-shaped token is followed by BOTH a bare '=' and a padded " = ",
 // the padded one is the pair separator and the value behind it is under the
 // marker: "password=\"cpf\"= = hunter2" and "password=cpf= = hunter2" keep
@@ -191,15 +218,26 @@
 // value is whatever follows — so "password=secret = rc=200" takes the response
 // code under the marker as well.
 //
-// It takes one pair per name-shaped token: the chain continues while the token
-// it just covered itself reads as a field name in front of a spaced separator
-// ("rc=token", "code=secret") and stops at the first that does not, so
-// "password=secret = host=db rc=200" keeps rc=200 and
-// "password=secret = rc=token = host=db port=5432" keeps only port=5432. Every
-// pair it takes is one a reader could take for "<name> = <secret>". One
-// diagnostic pair per such token is the price of not choosing between the two
-// readings, and choosing is what leaked a credential in four consecutive
-// passes.
+// IT TAKES ONE PAIR ALWAYS, PLUS ONE MORE PER PADDED " = " THAT FOLLOWS A
+// NAME-BEARING TOKEN. The first token behind the separator goes under the
+// marker unconditionally, name or no name:
+// "password=secret = code=42 rc=200" keeps only rc=200, and nothing about
+// "code=42" had to be sensitive for it to go. Only the CONTINUATION asks for
+// evidence, and it asks for two things at once — the token it just covered must
+// read as a field name AND a padded '=' must follow it — so
+// "password=secret = index=cpf constraint=cpf_unique rc=23505" stops after one
+// pair even though "index=cpf" is name-bearing, because nothing pads an '='
+// behind it. Where both hold, the chain runs:
+// "password=secret = rc=token = host=db port=5432" keeps only port=5432, and
+// "password=secret = host=db rc=200" keeps rc=200.
+//
+// THE PAIRS THIS EATS ARE REAL DIAGNOSTICS, not hypothetical ones. "column=cpf",
+// "index=cpf", "op=token", "handler=session" and "table=documento" are all
+// field names to the taxonomy, so a Postgres 23505 that names the column it
+// tripped over and an OAuth service that logs its operation each lose that pair
+// when they follow a sensitive value across a padded separator. That is the
+// price of not choosing between the two readings, and choosing is what leaked a
+// credential in four consecutive passes.
 //
 // POSTGRES' OWN UNIQUE-CONSTRAINT DETAIL LINE IS NOT COVERED, and it is the
 // spelling this package added "cpf" and "agencia" for. pgx echoes
@@ -210,8 +248,11 @@
 // "Key (\"cpf\")=(...)". "Key (cardnumber)=(4111111111111111)" IS redacted, by
 // the card pass rather than by any of this. The synthesised line
 // "unique constraint: key=cpf =(cpf =12345678901" that the tests carry is a
-// pair-shaped stand-in, NOT the string pgx emits. A pattern for the real
-// DETAIL line is a follow-up.
+// pair-shaped stand-in, NOT the string pgx emits. This gap is closable WITHOUT
+// choosing between two readings — "(name)=(value)" is a pair with brackets, and
+// redacting the whole value tuple means a comma inside a value never forces a
+// pairing — so it is deferred to its own pass rather than left undecided: one
+// behaviour change per pass, each with its own differential.
 //
 // A VALIDATOR THAT NAMES THE FIELD IN ITS OWN PAIR IS NOT COVERED.
 // "validation failed on field=cpf value=12345678901" prints the document: the
@@ -226,7 +267,13 @@
 // A harmless key is handled by rewinding into the value and letting the scanner
 // re-match the pair it finds there, and "\"password\"= hunter2" is not a pair to
 // the scanner because a quote is not a name byte. The sensitive-key spelling of
-// the same shape IS covered.
+// the same shape is covered, within the two limits named above.
+//
+// Closing this one would be IN doctrine — the same whole-token question, asked
+// on the harmless-key path before the rewind — but it is not a line of code: it
+// closes leaks and eats one word of prose in the same ratio the sensitive-key
+// path already pays, and it moves the reference oracle that the recursion
+// differential holds the walk to. It is a follow-up with its own measurement.
 //
 // A VERTICAL TAB IS WHITESPACE, on both sides of the separator. It is in
 // [[:space:]] and not in RE2's \s, and a value class written from the wrong one

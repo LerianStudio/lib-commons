@@ -2646,6 +2646,80 @@ func TestStringRedactsWhenANonWordByteLeadsTheFieldNameInTheValue(t *testing.T) 
 	}
 }
 
+// TestStringKnownGapsPrintTheCredential PINS THE LEAKS THIS PACKAGE KNOWS
+// ABOUT AND HAS NOT CLOSED, by their exact output.
+//
+// Every row here is a line whose credential reaches the log, and every one of
+// them is written down in doc.go's "# What it does not cover". A prose gap list
+// rots: it is asserted by nobody, so a gap that closes stays listed and a gap
+// that widens stays unlisted. These rows cannot rot. Closing one turns its row
+// RED, and the row is then DELETED rather than updated — an entry here is a
+// confession, not a specification, and the only correct edit to it is removal.
+//
+// THE ROW CARRIES THE WHOLE OUTPUT AND THE CREDENTIAL SEPARATELY. The equality
+// is what turns red when the gap closes; the credential field is what says why
+// the row is here at all, and it fails if someone ever rewrites a want into a
+// redacted string instead of deleting the row.
+func TestStringKnownGapsPrintTheCredential(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name, in, want, credential string
+	}{
+		// THE VALUE CLASS ENDS AT THESE THREE BYTES, so the '=' behind the name
+		// is not part of the value and there is no pair to see.
+		{"an ampersand ends the value before its separator", "password=cpf&= hunter2", "password=" + marker + "&= hunter2", "hunter2"},
+		{"a semicolon ends the value before its separator", "password=cpf;= hunter2", "password=" + marker + ";= hunter2", "hunter2"},
+		{"a comma ends the value before its separator", "password=cpf,= hunter2", "password=" + marker + ",= hunter2", "hunter2"},
+
+		// A FOLD IS NOT AN ASCII WORD BYTE. The rewind reaches a fold-prefixed
+		// name only when it abuts its '=', and the whole-token question does
+		// not reach it at all, so punctuation and a fold together defeat both.
+		{"a fold in front of a punctuated name", "password=\u212Acpf]= hunter2", "password=" + marker + " hunter2", "hunter2"},
+		{"a fold that replaces the first letter", "secret=\u017Fecret= hunter2", "secret=" + marker + " hunter2", "hunter2"},
+
+		// THE FALSE-ASSURANCE SHAPE: the marker is on the line and so is the
+		// credential, because the token in front of the separator carries no
+		// name evidence.
+		{"a one-letter name carries no evidence", "password=x= hunter2", "password=" + marker + " hunter2", "hunter2"},
+		{"a digit run in front of a name is not that name", "secret=0cpf =hunter2", "secret=" + marker + " =hunter2", "hunter2"},
+
+		// UNDER A HARMLESS KEY the rewind is all there is, and a quote is not a
+		// name byte.
+		{"a punctuated name under a harmless key", `pgx: opt="password"= hunter2`, `pgx: opt="password"= hunter2`, "hunter2"},
+
+		// THE FIELD NAME IS THE VALUE OF ANOTHER PAIR, and the document is in
+		// the pair behind it.
+		{
+			name:       "a validator that names the field in its own pair",
+			in:         "validation failed on field=cpf value=12345678901",
+			want:       "validation failed on field=cpf value=12345678901",
+			credential: "12345678901",
+		},
+
+		// POSTGRES' OWN DETAIL SPELLING, the one this package added "cpf" for.
+		{
+			name:       "the unique-constraint DETAIL line",
+			in:         "DETAIL: Key (cpf)=(12345678901) already exists.",
+			want:       "DETAIL: Key (cpf)=(12345678901) already exists.",
+			credential: "12345678901",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := sanitize.String(tt.in)
+
+			require.Equal(t, tt.want, got,
+				"this row records a KNOWN GAP by its exact output; the output changed, so read it — if the credential is gone the gap is closed and this row must be DELETED, not updated")
+			require.Contains(t, got, tt.credential,
+				"a row in this table exists because the credential is still printed; it no longer is, so delete the row and the doc.go entry with it")
+		})
+	}
+}
+
 // TestStringRedactsBothReadingsOfANameShapedValue is the answer this package
 // gives when the value under a SENSITIVE key is itself a field name.
 //
