@@ -1756,6 +1756,34 @@ func TestStringScrubsAGroupedCardInsideAQueryString(t *testing.T) {
 			in:   "GET /charge?ref=4111 1111 1111 1111 failed",
 			want: "GET /charge?ref=" + marker + " failed",
 		},
+		{
+			// CONTROL. A tab ends the value for the pattern AND for the byte
+			// test, so the grouped run is taken whole and the tab itself is
+			// kept. \n, \f, \r and a plain space behave the same way.
+			name: "control: a tab ends the run and survives",
+			in:   "&cpf=1234 5678\t",
+			want: "&cpf=" + marker + "\t",
+		},
+		{
+			// CONTROL, AND THE ONE THAT WAS WRONG. A vertical tab is NOT in
+			// RE2's \s, so the pattern admits it as ordinary value material and
+			// "5678\v" is one token rather than a bare group of digits. Nothing
+			// extends over it and the \v is kept — which is the same visible
+			// rule as the tab above, reached the other way round.
+			//
+			// The byte test used to disagree with the pattern here and call the
+			// token complete, so the value swallowed the \v, and a second run
+			// then took "****\v" as one value and redacted further. A sanitizer
+			// whose output changes when it is run twice.
+			name: "control: a vertical tab is value material, not a terminator",
+			in:   "&cpf=1234 5678\v",
+			want: "&cpf=" + marker + " 5678\v",
+		},
+		{
+			name: "control: a vertical tab mid-token is value material too",
+			in:   "&cpf=1234 5678\vx",
+			want: "&cpf=" + marker + " 5678\vx",
+		},
 	}
 
 	for _, tt := range tests {

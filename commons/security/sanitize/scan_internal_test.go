@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // legacyRedactCardInsideRun is the implementation redactCardInsideRun replaced,
@@ -271,4 +273,43 @@ func TestTheShortTailShapeRedactsNothingElse(t *testing.T) {
 	}
 
 	t.Logf("OVER-REACH %d inputs scanned, %d newly redacted", len(inputs), len(widened))
+}
+
+// TestQueryValueClassAgreesWithItsByteTest pins the compiled pattern's value
+// class against isQueryValueByte for every byte there is.
+//
+// The two were separate hand-written lists once, and they drifted on exactly one
+// byte: the helper called '\v' a terminator, RE2's \s does not contain it, and a
+// sanitizer that changed its own output on a second run was the result. They are
+// built from one constant now; this is what says so out loud, and what fails if
+// anyone writes the set out a second time.
+func TestQueryValueClassAgreesWithItsByteTest(t *testing.T) {
+	t.Parallel()
+
+	// The class as the CONSTANT describes it, re-derived here so a mistake in
+	// how the pattern is assembled from the constant shows up as a disagreement.
+	oneValueByte := regexp.MustCompile("^[^" + regexp.QuoteMeta(queryValueTerminators) + "]$")
+
+	for b := range 256 {
+		raw := string([]byte{byte(b)})
+
+		// What the PRODUCTION pattern does with this byte in a value position:
+		// "1<b>2" survives as one value only if the class admits b.
+		match := queryParameterPattern.FindStringSubmatch("?k=1" + raw + "2")
+		patternTakesIt := match != nil && len(match[3]) > 1
+
+		require.Equal(t, isQueryValueByte(byte(b)), patternTakesIt,
+			"byte %#02x (%q): the compiled pattern and isQueryValueByte disagree", b, raw)
+
+		if b < 0x80 {
+			require.Equal(t, isQueryValueByte(byte(b)), oneValueByte.MatchString(string(rune(b))),
+				"byte %#02x (%q): the constant and isQueryValueByte disagree", b, raw)
+
+			continue
+		}
+
+		// 0x80-0xFF is never a rune of its own, so the class admits whatever it
+		// decodes to and the helper must agree that it is value material.
+		require.True(t, isQueryValueByte(byte(b)), "byte %#02x must be value material", b)
+	}
 }

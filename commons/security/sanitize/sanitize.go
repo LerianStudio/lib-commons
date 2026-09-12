@@ -134,7 +134,22 @@ var urlPattern = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]+`)
 // by the time the card pass ran. The line reached the log as
 // "?pan=**** 1111 1111 1111" — a marker asserting it had been scrubbed, with an
 // ordinary sixteen-digit card beside it. Any URL-shaped log line carried it.
-var queryParameterPattern = regexp.MustCompile(`([?&])([A-Za-z0-9_.-]+)=([^&\s,;"'#]+)`)
+// queryValueTerminators are the bytes a query parameter's value does NOT admit.
+//
+// IT IS THE ONLY COPY, AND THAT IS THE POINT. The pattern's value class is built
+// from this constant and redactQueryParameters' byte test reads the same
+// constant, because the two were written out by hand once and drifted: the
+// helper listed '\v' as a terminator and RE2's \s does not contain it
+// ([\t\n\f\r ] only), so the regexp admitted '\v' as an ordinary value byte
+// while the helper called a token ending there complete. The helper then
+// extended a sensitive value over the run, and the next pass took "****\v" as
+// one value and redacted further — a sanitizer whose output changed when it was
+// run twice. A hand-copied character class drifting from its source is exactly
+// the failure this helper exists to prevent one level down.
+const queryValueTerminators = "&\t\n\f\r ,;\"'#"
+
+var queryParameterPattern = regexp.MustCompile(
+	`([?&])([A-Za-z0-9_.-]+)=([^` + regexp.QuoteMeta(queryValueTerminators) + `]+)`)
 
 // keyValuePattern finds key=value fragments in config dumps and driver errors.
 // Sensitivity is decided by the field name, not by a package-local taxonomy.
@@ -581,13 +596,12 @@ func allDigits(s string) bool {
 // isQueryValueByte reports whether b is a byte queryParameterPattern's value
 // class admits, and therefore a byte that would make the token before it
 // something other than a bare group of digits.
+//
+// It reads queryValueTerminators, which is also what the pattern's class is
+// built from, so the two cannot disagree. A test pins that for all 256 byte
+// values.
 func isQueryValueByte(b byte) bool {
-	switch b {
-	case '&', ' ', '\t', '\n', '\v', '\f', '\r', ',', ';', '"', '\'', '#':
-		return false
-	default:
-		return true
-	}
+	return strings.IndexByte(queryValueTerminators, b) < 0
 }
 
 // redactCardNumbers redacts digit runs that pass the Luhn check, and ONLY those.
