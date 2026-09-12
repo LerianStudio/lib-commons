@@ -74,6 +74,17 @@
 // false positives in ordinary prose than the shapes are worth here; a service
 // that handles them should not be relying on this package for that PII anyway.
 //
+// A CARD NUMBER GLUED TO OTHER ALPHANUMERICS IS NOT FOUND. Every card shape is
+// anchored on a word boundary, so "41111111111111119999" — a PAN with an
+// acquirer's four-digit code run onto the end of it — and "refA4111111111111111B"
+// pass through in the clear. The boundary is what keeps the Luhn gate meaningful:
+// without it every 12-to-19-digit window inside every longer identifier becomes a
+// candidate, and roughly one arbitrary identifier in ten satisfies Luhn by
+// chance, so the package would start silently emptying out the correlation ids
+// and ledger ids it exists to keep readable. A PAN printed glued to a neighbour
+// is a shape this package does not undertake to find; do not let one be written
+// that way.
+//
 // A PEM BLOCK WITH NO CLOSING LINE IS OVER-REDACTED ON PURPOSE. A block that
 // kept its -----END is consumed exactly to that line. One that lost it — a key
 // pasted out of a kubectl output, a value a config loader cut — is consumed as

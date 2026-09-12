@@ -1480,3 +1480,41 @@ func TestStringRedactsAPEMBlockWhoseEndLineIsMissing(t *testing.T) {
 		})
 	}
 }
+
+func TestStringLeavesACardGluedToItsNeighbourAlone(t *testing.T) {
+	t.Parallel()
+
+	// PINNED BECAUSE IT IS A GAP, not because it is desirable, exactly like the
+	// Unwrap residual door above. Every card shape is anchored on a word
+	// boundary, so a PAN with an acquirer's response code run onto the end of it
+	// is never a candidate at all.
+	//
+	// Closing it means dropping the boundary, and that is worse than the gap:
+	// every 12-to-19-digit window inside every longer identifier becomes a
+	// candidate, and roughly one arbitrary identifier in ten satisfies Luhn by
+	// chance — so the package would start silently emptying out the correlation
+	// ids and ledger ids it exists to keep readable, which is the failure it was
+	// written to avoid. The package doc states the same gap; this keeps the two
+	// from drifting apart silently in either direction.
+	tests := []struct {
+		name string
+		in   string
+	}{
+		{name: "digits run onto the end of the PAN", in: "41111111111111119999"},
+		{name: "letters on both sides of the PAN", in: "refA4111111111111111B"},
+		{name: "the PAN glued to a field value with no separator", in: "txn=ORD4111111111111111"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.in, sanitize.String(tt.in),
+				"this is the gap the doc names: a glued PAN is not a candidate")
+		})
+	}
+
+	// The same digits with a boundary around them ARE redacted, which is what
+	// makes the three above a boundary gap rather than a broken Luhn gate.
+	assert.NotContains(t, sanitize.String("pan 4111111111111111 9999"), "4111111111111111")
+}
