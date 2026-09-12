@@ -5,6 +5,7 @@ package sanitize_test
 import (
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"strings"
 	"testing"
@@ -1330,13 +1331,39 @@ func TestErrorOnTypedNilCause(t *testing.T) {
 func TestStringStaysBoundedOnAGroupedDigitRunAtTheLimit(t *testing.T) {
 	t.Parallel()
 
-	const bound = 2 * time.Second
+	assertStringReturnsWithin(t, fillToBound("1234 "), "grouped four-digit ledger ids")
+}
 
-	// Filled to exactly MaxInputLen, since the bound is what the package admits
-	// and therefore what an attacker or an unlucky report gets to send.
-	group := "1234 "
-	input := strings.Repeat(group, sanitize.MaxInputLen/len(group))
-	input += strings.Repeat("1", sanitize.MaxInputLen-len(input))
+// fillToBound builds exactly MaxInputLen bytes of the given shape, since the
+// bound is what the package admits and therefore what an attacker or an unlucky
+// report gets to send.
+func fillToBound(unit string) string {
+	filled := strings.Repeat(unit, sanitize.MaxInputLen/len(unit)+1)
+
+	return filled[:sanitize.MaxInputLen]
+}
+
+// assertStringReturnsWithin FAILS AFTER THE BOUND RATHER THAN WAITING FOR THE
+// CALL TO RETURN. A regression in the card scan does not take slightly too long,
+// it takes minutes to an hour, and a test that waits for the answer before
+// checking the clock reports that as a CI hang with no output rather than as a
+// failure.
+//
+// The bound is deliberately generous — two orders of magnitude above the
+// measured cost — so ordinary CI noise can never flake it. What it catches is
+// the shape of the curve coming back, not a few milliseconds of drift.
+func assertStringReturnsWithin(t *testing.T, input, shape string) {
+	t.Helper()
+
+	// A FUZZING BUILD IS COVERAGE-INSTRUMENTED and runs this package several
+	// times slower, so a wall-clock ceiling there measures the instrumentation
+	// rather than the scan. The seed corpus still runs these tests on every
+	// ordinary and -race build, which is what CI gates on.
+	if f := flag.Lookup("test.fuzz"); f != nil && f.Value.String() != "" {
+		t.Skip("wall-clock bounds are not meaningful under the instrumented fuzzing build")
+	}
+
+	bound := stringTimingBound
 
 	done := make(chan time.Duration, 1)
 
@@ -1348,10 +1375,24 @@ func TestStringStaysBoundedOnAGroupedDigitRunAtTheLimit(t *testing.T) {
 
 	select {
 	case elapsed := <-done:
-		assert.Less(t, elapsed, bound, "String() on %d bytes of grouped digits took %s", len(input), elapsed)
+		assert.Less(t, elapsed, bound, "String() on %d bytes of %s took %s", len(input), shape, elapsed)
 	case <-time.After(bound):
-		t.Fatalf("String() on %d bytes of grouped digits did not return within %s", len(input), bound)
+		t.Fatalf("String() on %d bytes of %s did not return within %s", len(input), shape, bound)
 	}
+}
+
+// TestStringStaysBoundedOnBackToBackCardNumbersAtTheLimit is the OTHER end of the
+// card scan's cost, and the one the width cap did not reach.
+//
+// A line that is nothing but card numbers — a batch import echoing the rows it
+// rejected, a reconciliation dump — makes every window the scan tries a real
+// card, so it redacts, then starts again on what is left. Re-grouping the
+// remainder and re-walking every width once per card found turned 64 KiB of this
+// shape into a minute of CPU on whatever goroutine was writing the log line.
+func TestStringStaysBoundedOnBackToBackCardNumbersAtTheLimit(t *testing.T) {
+	t.Parallel()
+
+	assertStringReturnsWithin(t, fillToBound("4111 1111 1111 1111 "), "back-to-back card numbers")
 }
 
 func TestStringRedactsASensitivePairInsideANonSensitiveValue(t *testing.T) {

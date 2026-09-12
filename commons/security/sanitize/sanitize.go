@@ -31,15 +31,16 @@ const SecretRedactionMarker = "****"
 // turns a redactor into a leak. A refusal loses the message and keeps the
 // guarantee.
 //
-// The bound exists because the cost is real, AND IT IS NOT LINEAR IN THE INPUT.
-// Each regexp pass is, and on unbroken digits the whole of String costs roughly
-// 400 milliseconds per megabyte on an ordinary devbox. But the card pass hands
-// an over-long run to a window scan over its digit GROUPS, which is quadratic in
-// the number of groups, so the shape of the input decides the cost far more than
-// its length: at this bound a 64 KiB line of grouped four-digit ledger ids costs
-// about 75 ms, while the same 64 KiB of back-to-back card numbers costs seconds.
-// 64 KiB is far above any error string worth reading and low enough that the
-// ordinary shapes stay in the tens of milliseconds.
+// The bound exists because the cost is real, AND THE SHAPE OF THE INPUT DECIDES
+// IT FAR MORE THAN THE LENGTH. Each regexp pass is linear, and on unbroken digits
+// the whole of String costs roughly 400 milliseconds per megabyte on an ordinary
+// devbox. The card pass is what varies: an over-long run goes to a window scan
+// over its digit GROUPS, which costs one walk of the remaining groups for each
+// card it finds. At this bound a 64 KiB line of grouped four-digit ledger ids
+// that are not cards costs about 42 ms, and the worst shape there is — 64 KiB of
+// back-to-back card numbers, where every window the scan tries is a real card —
+// costs about 283 ms. 64 KiB is far above any error string worth reading and low
+// enough that the ordinary shapes stay in the tens of milliseconds.
 const MaxInputLen = 64 << 10
 
 // sensitiveFieldExtras augments the centralized lib-observability taxonomy with
@@ -505,48 +506,111 @@ func redactCardCandidate(candidate string) string {
 	return SecretRedactionMarker
 }
 
-// redactCardInsideRun looks for a card-length window of whole groups inside a run
-// that is too long to be one card, and redacts the first it finds.
+// redactCardInsideRun redacts every card-length window of whole groups inside a
+// run that is too long to be one card.
 //
 // IT IS DELIBERATELY NOT APPLIED to a run that is already card-length and merely
 // fails Luhn. That run is an ordinary identifier, and hunting sub-windows inside
 // one would redact roughly one identifier in ten — silently emptying the messages
 // this package exists to keep diagnosable, which is the worse failure of the two.
+//
+// THE RUN IS GROUPED ONCE AND WALKED ONCE. It used to re-run the group regexp
+// over the remainder, re-walk every width, and rebuild the string, once per card
+// it found — so a line that is nothing but card numbers, which is what a batch
+// import echoing its rejected rows looks like, cost a minute of CPU at
+// MaxInputLen on whatever goroutine was writing the log line. Grouping once,
+// deciding window length from prefix sums, and appending into one builder leaves
+// exactly the same spans redacted for 283 ms — measured against the
+// implementation it replaced over the committed corpus, every string literal in
+// the test sources, and five thousand seeded random runs, with no difference.
 func redactCardInsideRun(run string) string {
 	groups := digitGroupPattern.FindAllStringIndex(run, -1)
+	if len(groups) < 2 {
+		return run
+	}
 
-	// WIDEST WINDOW FIRST, ACROSS THE WHOLE RUN, rather than longest-at-each-
-	// starting-point. Scanning per start position would let a shorter window
-	// that happens to satisfy Luhn win at an earlier offset and redact a span
-	// only partly overlapping the real card, leaving the rest of its digits in
-	// the clear. Preferring width means a sixteen-digit reading always beats a
-	// twelve-digit one, wherever each begins.
-	//
-	// THE WIDTH STARTS AT maxCardDigits, NOT AT len(groups), AND THAT CAP IS WHAT
-	// KEEPS THIS OUT OF CUBIC TIME. A window of w whole groups holds at least w
-	// digits, so every width above nineteen failed the length test on the line
-	// below and was skipped anyway — starting there cost a full pass over the run
-	// per discarded width. Without the cap a line of grouped ledger ids that are
-	// NOT cards took 15.6 ms at 1 KB, 922 ms at 4 KB, 6.9 s at 8 KB and 7m13s at
-	// 32 KB; with it, 64 KiB of the same shape is milliseconds. The readings it
-	// can reach are unchanged, which is why this is a cap and not a heuristic.
-	for width := min(len(groups), maxCardDigits); width >= 2; width-- {
-		for i := 0; i+width <= len(groups); i++ {
-			start, end := groups[i][0], groups[i+width-1][1]
+	// digitsBefore[j] is how many digits the first j groups hold, so the digit
+	// count of any window of whole groups is one subtraction. It is computed once
+	// for the whole run, not once per card found.
+	digitsBefore := make([]int, len(groups)+1)
+	for j, g := range groups {
+		digitsBefore[j+1] = digitsBefore[j] + g[1] - g[0]
+	}
 
-			digits := cardSeparators.Replace(run[start:end])
-			if len(digits) < minCardDigits || len(digits) > maxCardDigits || !passesLuhn(digits) {
+	var out strings.Builder
+
+	written, first := 0, 0
+
+	for first < len(groups) {
+		start, end, next := findCardWindow(run, groups, digitsBefore, first)
+		if next < 0 {
+			break
+		}
+
+		// Only what follows the card is scanned again. The head is left to the
+		// next round of the fixed-point loop in redactCardNumbers, which sees it
+		// as a run of its own — and that asymmetry is deliberate, because a
+		// card-length head that fails Luhn is an ordinary identifier that
+		// redactCardCandidate leaves alone.
+		out.WriteString(run[written:start])
+		out.WriteString(SecretRedactionMarker)
+
+		written, first = end, next
+	}
+
+	if written == 0 {
+		return run
+	}
+
+	out.WriteString(run[written:])
+
+	return out.String()
+}
+
+// findCardWindow returns the span of the widest card-length window of whole
+// groups at or after group `from`, and the index of the first group past it.
+// next is -1 when there is none.
+//
+// WIDEST WINDOW FIRST, ACROSS THE WHOLE REMAINDER, rather than longest-at-each-
+// starting-point. Scanning per start position would let a shorter window that
+// happens to satisfy Luhn win at an earlier offset and redact a span only partly
+// overlapping the real card, leaving the rest of its digits in the clear.
+// Preferring width means a sixteen-digit reading always beats a twelve-digit
+// one, wherever each begins.
+//
+// THE WIDTH STARTS AT maxCardDigits, NOT AT THE NUMBER OF GROUPS. A window of w
+// whole groups holds at least w digits, so every width above nineteen fails the
+// length test below and was only ever costing a full pass over the run per
+// discarded width.
+//
+// THE LENGTH TEST IS A SUBTRACTION AND LUHN RUNS ONLY BEHIND IT. The length used
+// to be measured by stripping the window's separators and taking what was left,
+// which allocated a string for every window at every width — and all but a
+// handful of those windows were about to fail on length. Counting digits from the
+// prefix sums decides the same windows without touching the run.
+//
+// The two readings differ on exactly one shape: a window holding a character
+// that is neither a digit nor one of the three separators stripped here, which
+// the old length counted and this one does not. Every such window fails Luhn,
+// which rejects any byte outside '0'-'9', so the verdict is the same either way.
+func findCardWindow(run string, groups [][]int, digitsBefore []int, from int) (int, int, int) {
+	for width := min(len(groups)-from, maxCardDigits); width >= 2; width-- {
+		for i := from; i+width <= len(groups); i++ {
+			if count := digitsBefore[i+width] - digitsBefore[i]; count < minCardDigits || count > maxCardDigits {
 				continue
 			}
 
-			// Only the tail is rescanned here. The head is left to the next round
-			// of the fixed-point loop in redactCardNumbers, which sees it as a
-			// run of its own.
-			return run[:start] + SecretRedactionMarker + redactCardInsideRun(run[end:])
+			start, end := groups[i][0], groups[i+width-1][1]
+
+			if !passesLuhn(cardSeparators.Replace(run[start:end])) {
+				continue
+			}
+
+			return start, end, i + width
 		}
 	}
 
-	return run
+	return 0, 0, -1
 }
 
 // passesLuhn reports whether the digits satisfy the Luhn checksum every payment

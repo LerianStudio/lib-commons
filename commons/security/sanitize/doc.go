@@ -110,7 +110,9 @@
 // window scan — the whole of String costs roughly 400 milliseconds per megabyte
 // on an ordinary devbox. A run of digit GROUPS is different: it becomes one
 // over-long card candidate and is then searched a window of whole groups at a
-// time, which is quadratic in the number of groups. At MaxInputLen that is about
-// 75 ms for 64 KiB of grouped four-digit ledger ids, and seconds for 64 KiB of
-// back-to-back card numbers — see "# What it does not cover" for the residual.
+// time, one walk of the remaining groups per card found. Measured at MaxInputLen
+// on an ordinary devbox: 27 ms for unbroken digits, 42 ms for grouped
+// four-digit ledger ids that are not cards, 20 ms for Amex grouping, and 283 ms
+// for the worst shape there is — 64 KiB of back-to-back card numbers, where
+// every window the scan tries is a real card.
 package sanitize
