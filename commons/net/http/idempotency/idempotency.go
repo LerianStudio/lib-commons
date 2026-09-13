@@ -114,6 +114,7 @@ type Middleware struct {
 	logger                   obs.Logger
 	keyPrefix                string
 	keyTTL                   time.Duration
+	processingTTL            time.Duration
 	maxKeyLength             int
 	maxBodyCache             int
 	redisTimeout             time.Duration
@@ -137,6 +138,9 @@ type Middleware struct {
 	// mutation never runs without at-most-once protection.
 	failClosed    bool
 	onUnavailable func(c fiber.Ctx) error
+	// onPostHandlerUnavailable answers only failures observed AFTER the
+	// handler ran. Unset, the post-handler path falls back to onUnavailable.
+	onPostHandlerUnavailable func(c fiber.Ctx) error
 }
 
 // New creates an idempotency middleware backed by the given Redis client.
@@ -206,6 +210,28 @@ func WithKeyTTL(ttl time.Duration) Option {
 	return func(m *Middleware) {
 		if ttl > 0 {
 			m.keyTTL = ttl
+		}
+	}
+}
+
+// WithProcessingTTL sets how long the in-flight lease taken before the handler
+// runs is held, independently of how long a completed record is retained for
+// replay. Unset (the default), the lease borrows the retention TTL.
+//
+// The two are different lifetimes and only look like one. The lease must
+// outlive the SLOWEST handler it guards: when it expires mid-flight, a
+// redelivery under the same key acquires the key again and the handler runs a
+// SECOND time, and the first request's completion is then rejected because the
+// record it owned is gone. Retention is unrelated — it is how long a client may
+// still replay the receipt, and a caller that wants a short replay window (say
+// five minutes) must not have that window silently cap its handlers.
+//
+// The lease may therefore be longer than the retention, and usually is.
+// Non-positive values are ignored, as in [WithKeyTTL].
+func WithProcessingTTL(d time.Duration) Option {
+	return func(m *Middleware) {
+		if d > 0 {
+			m.processingTTL = d
 		}
 	}
 }
@@ -367,6 +393,24 @@ func WithUnavailableHandler(fn func(c fiber.Ctx) error) Option {
 	}
 }
 
+// WithPostHandlerUnavailableHandler sets a custom handler invoked when the
+// store fails AFTER the protected handler already ran: the mutation happened
+// and only its replay receipt could not be persisted or decoded. Unset, the
+// post-handler path falls back to [WithUnavailableHandler] and then to the
+// built-in body.
+//
+// It exists because the two failures carry opposite instructions for the
+// caller. Before the handler, nothing ran and retrying is correct. After it,
+// the side effect is already committed and a retry under a new key duplicates
+// it; the caller must reconcile the original request instead. A single
+// [WithUnavailableHandler] override cannot tell an operator which of the two
+// happened.
+func WithPostHandlerUnavailableHandler(fn func(c fiber.Ctx) error) Option {
+	return func(m *Middleware) {
+		m.onPostHandlerUnavailable = fn
+	}
+}
+
 // WithMaxBodyCache sets the maximum raw response body size (in bytes) that can
 // be persisted for exact replay (default: 1 MB). The encoded replay payload is
 // bounded to twice this value. A response exceeding either bound fails closed
@@ -400,6 +444,13 @@ func (m *Middleware) onStoreError(c fiber.Ctx) error {
 		return c.Next()
 	}
 
+	return m.respondUnavailable(c)
+}
+
+// respondUnavailable answers a failure observed BEFORE the handler ran: nothing
+// executed, so retrying the same request is the correct instruction. It always
+// refuses; onStoreError owns the fail-open decision, this does not.
+func (m *Middleware) respondUnavailable(c fiber.Ctx) error {
 	if m.onUnavailable != nil {
 		return m.onUnavailable(c)
 	}
@@ -434,7 +485,14 @@ func (m *Middleware) respondTenantRequired(c fiber.Ctx) error {
 	)
 }
 
+// respondPostHandlerStoreError answers a failure observed AFTER the handler
+// ran, or one where a completed record exists and cannot be replayed: the
+// mutation is committed and a retry under a new key would duplicate it.
 func (m *Middleware) respondPostHandlerStoreError(c fiber.Ctx) error {
+	if m.onPostHandlerUnavailable != nil {
+		return m.onPostHandlerUnavailable(c)
+	}
+
 	if m.onUnavailable != nil {
 		return m.onUnavailable(c)
 	}
@@ -512,7 +570,9 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	if err != nil {
 		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: TTL provider failed", "error", err)
 
-		return m.respondPostHandlerStoreError(c)
+		// Nothing has run yet: this refusal must not tell the caller to
+		// reconcile a mutation that never happened.
+		return m.respondUnavailable(c)
 	}
 
 	return m.handleStore(ctx, c, key, fingerprint, ttl)
@@ -551,7 +611,14 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 		return m.onStoreError(c)
 	}
 
-	stored, acquired, err := m.store.Acquire(ctx, key, processing, ttl)
+	// ttl is the RETENTION window and stays with Complete below. Acquire takes
+	// the in-flight lease, which must outlive the handler it guards.
+	lease := m.processingTTL
+	if lease <= 0 {
+		lease = ttl
+	}
+
+	stored, acquired, err := m.store.Acquire(ctx, key, processing, lease)
 	if err != nil {
 		m.logger.Log(ctx, obs.LevelWarn, "idempotency: store acquire failed", "error", err)
 
