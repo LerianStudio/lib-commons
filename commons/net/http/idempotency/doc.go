@@ -17,7 +17,10 @@
 // Keys are scoped per-tenant to prevent cross-tenant collisions. When no tenant
 // is in context, idempotency is BYPASSED entirely rather than falling back to a
 // global namespace, which would collapse every tenant-less request onto a shared
-// key and break isolation.
+// key and break isolation. [WithRequireTenant] refuses such a request instead of
+// bypassing; it is never keyed either way. The tenant check sits AFTER the
+// header check, so it only ever sees a KEYED request: an unkeyed one has already
+// taken the branch above. Pair it with [WithRequireKey] to refuse both.
 //
 // The middleware encodes state, fingerprint, acquisition owner, and optional
 // replay response into one opaque value stored atomically under that key. Store
@@ -78,7 +81,9 @@
 //   - GET, HEAD, and OPTIONS requests pass through unconditionally — idempotency
 //     is not enforced for safe/idempotent HTTP methods.
 //   - Absent X-Idempotency header: request proceeds normally (idempotency is
-//     opt-in per request).
+//     opt-in per request), unless [WithRequireKey] is set, in which case the
+//     request is refused with 400 "IDEMPOTENCY_KEY_REQUIRED" before its handler
+//     runs.
 //   - Header exceeds [WithMaxKeyLength] (default 256 UTF-8 bytes): request is
 //     passed to the configured [WithRejectedHandler]. When no custom handler is
 //     set, a 400 JSON response with code "VALIDATION_ERROR" is returned.
@@ -132,9 +137,46 @@
 // response bodies, and encoded output is additionally bounded to twice that
 // value.
 //
+// # Requiring a key or a tenant
+//
+// Both bypasses above — an absent header and an absent tenant — let a mutation
+// run with no at-most-once protection at all. That is the right default for an
+// opt-in header on a general-purpose API, and it is what every existing caller
+// gets. It is the wrong default for a route where an unkeyed retry duplicates an
+// irreversible side effect, such as a money movement: there the request should be
+// refused, not silently unprotected.
+//
+// [WithRequireKey] and [WithRequireTenant] turn each bypass into a refusal, per
+// middleware instance, so a caller can mount a strict middleware on money routes
+// and the permissive default elsewhere. Both are off by default and neither
+// changes any other branch. Each refuses with 400 before the handler runs, coded
+// "IDEMPOTENCY_KEY_REQUIRED" and "IDEMPOTENCY_TENANT_REQUIRED", and each has its
+// own callback seam:
+//
+//	idem := idempotency.New(conn,
+//	    idempotency.WithRequireKey(),
+//	    idempotency.WithRequireTenant(),
+//	    idempotency.WithFailClosed(true),
+//	)
+//	app.Post("/transactions", idem.Check(), createTransactionHandler)
+//
+// The two are ORDERED, not independent guarantees: the header check runs first,
+// so [WithRequireTenant] on its own never sees an unkeyed request and lets it
+// through. Enabling only [WithRequireTenant] therefore does NOT mean "every
+// tenant-less mutation is refused" — an unkeyed one still passes. A route that
+// must never run a mutation without both takes both options, as above.
+//
+// Neither option survives a nil middleware. [New] returns nil for a nil
+// connection and [Middleware.Check] on a nil receiver is an unconditional
+// pass-through, so options are never applied and every request proceeds. A
+// caller that cannot tolerate that must verify [New] returned non-nil, or use
+// [NewWithStore], which returns a usable middleware even for a nil store.
+//
 // Every rejection branch has a callback seam so consumers can write their own
 // error format, including RFC 9457 problem details: [WithRejectedHandler] for an
-// oversized key, [WithUnavailableHandler] for fail-closed Redis failures,
+// oversized key, [WithKeyRequiredHandler] for a missing key under
+// [WithRequireKey], [WithTenantRequiredHandler] for a missing tenant under
+// [WithRequireTenant], [WithUnavailableHandler] for fail-closed Redis failures,
 // [WithConflictHandler] for an in-flight duplicate, and [WithKeyReuseHandler]
 // for the same key used by a different request. Existing consumers that omit
 // these options retain the built-in response bodies and status codes.

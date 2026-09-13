@@ -124,6 +124,13 @@ type Middleware struct {
 	onRejected               func(c fiber.Ctx) error
 	onConflict               fiber.Handler
 	onKeyReuse               fiber.Handler
+	// requireKey and requireTenant are opt-in refusals. Default (false)
+	// preserves the shipped bypasses: a request without the X-Idempotency
+	// header, or without tenant context, proceeds unprotected.
+	requireKey       bool
+	requireTenant    bool
+	onKeyRequired    func(c fiber.Ctx) error
+	onTenantRequired func(c fiber.Ctx) error
 	// failClosed inverts the transient-Redis-error behavior. Default (false)
 	// fails open — requests proceed without idempotency coverage to preserve
 	// availability. When true, transient Redis errors abort with 503 so a
@@ -293,6 +300,52 @@ func WithKeyReuseHandler(fn fiber.Handler) Option {
 	}
 }
 
+// WithRequireKey refuses a mutating request that carries no X-Idempotency
+// header, before its handler runs. The default is off: an absent header lets
+// the request proceed unprotected, which is per-request opt-in idempotency.
+// Turn it on for routes where an unkeyed retry would duplicate a side effect
+// that cannot be undone, such as a money movement. The refusal is a 400 with
+// code "IDEMPOTENCY_KEY_REQUIRED"; use [WithKeyRequiredHandler] to change it.
+func WithRequireKey() Option {
+	return func(m *Middleware) {
+		m.requireKey = true
+	}
+}
+
+// WithKeyRequiredHandler sets a custom handler for requests refused by
+// [WithRequireKey]. By default, a generic 400 JSON response is returned.
+func WithKeyRequiredHandler(fn func(c fiber.Ctx) error) Option {
+	return func(m *Middleware) {
+		m.onKeyRequired = fn
+	}
+}
+
+// WithRequireTenant refuses a keyed mutating request whose tenant context is
+// empty, before its handler runs. The default is off: a tenant-less request
+// bypasses idempotency rather than keying every tenant onto a shared namespace,
+// which would break isolation. That reasoning still holds for callers that do
+// not opt in; an opted-in caller refuses the request instead, and it is never
+// keyed either way. The refusal is a 400 with code
+// "IDEMPOTENCY_TENANT_REQUIRED"; use [WithTenantRequiredHandler] to change it.
+//
+// This check runs AFTER the header check, so on its own it never sees an
+// unkeyed request: enabling it alone does NOT refuse every tenant-less
+// mutation, because an unkeyed one takes the earlier bypass. Combine it with
+// [WithRequireKey] to refuse both.
+func WithRequireTenant() Option {
+	return func(m *Middleware) {
+		m.requireTenant = true
+	}
+}
+
+// WithTenantRequiredHandler sets a custom handler for requests refused by
+// [WithRequireTenant]. By default, a generic 400 JSON response is returned.
+func WithTenantRequiredHandler(fn func(c fiber.Ctx) error) Option {
+	return func(m *Middleware) {
+		m.onTenantRequired = fn
+	}
+}
+
 // WithFailClosed controls behavior on transient errors from the built-in Redis
 // store. When false (the default) the middleware fails open: requests proceed
 // without idempotency coverage to preserve availability. When true it fails
@@ -357,6 +410,30 @@ func (m *Middleware) onStoreError(c fiber.Ctx) error {
 	)
 }
 
+// respondKeyRequired answers a request refused by [WithRequireKey].
+func (m *Middleware) respondKeyRequired(c fiber.Ctx) error {
+	if m.onKeyRequired != nil {
+		return m.onKeyRequired(c)
+	}
+
+	return libHTTP.RespondError(c, http.StatusBadRequest,
+		"IDEMPOTENCY_KEY_REQUIRED",
+		chttp.IdempotencyKey+" header is required for this request",
+	)
+}
+
+// respondTenantRequired answers a request refused by [WithRequireTenant].
+func (m *Middleware) respondTenantRequired(c fiber.Ctx) error {
+	if m.onTenantRequired != nil {
+		return m.onTenantRequired(c)
+	}
+
+	return libHTTP.RespondError(c, http.StatusBadRequest,
+		"IDEMPOTENCY_TENANT_REQUIRED",
+		"tenant context is required for this request",
+	)
+}
+
 func (m *Middleware) respondPostHandlerStoreError(c fiber.Ctx) error {
 	if m.onUnavailable != nil {
 		return m.onUnavailable(c)
@@ -380,6 +457,10 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 
 	idempotencyKey := c.Get(chttp.IdempotencyKey)
 	if idempotencyKey == "" {
+		if m.requireKey {
+			return m.respondKeyRequired(c)
+		}
+
 		return c.Next()
 	}
 
@@ -397,6 +478,10 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	// Build a tenant-scoped Redis key for per-tenant isolation.
 	tenantID := tmcore.GetTenantIDContext(c.Context())
 	if tenantID == "" {
+		if m.requireTenant {
+			return m.respondTenantRequired(c)
+		}
+
 		// No tenant context — bypass idempotency to avoid collapsing all
 		// tenant-less requests onto a shared key, which breaks isolation.
 		// This is consistent with the middleware's fail-open philosophy.
