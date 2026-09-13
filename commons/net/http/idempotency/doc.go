@@ -132,23 +132,33 @@
 //
 // # Lease and retention are two lifetimes
 //
-// The record under a key has two jobs with different clocks. Before the handler
-// runs it is an in-flight LEASE, and it must outlive the slowest handler it
-// guards: when it expires mid-flight, a redelivery under the same key acquires
-// the key again and the handler runs a SECOND time, while the first request's
-// completion is rejected because the record it owned is gone. After the handler
-// returns, the same key is a RETENTION window — how long the client may still
-// replay the receipt — and that is a client-facing policy, not a handler budget.
+// The record under a key has two jobs with different clocks. From acquisition
+// until the completed record is stored it is an in-flight LEASE, and it must
+// cover that WHOLE span: the handler, then the response capture, serialization
+// and [WithResponseCodec] encoding, and finally the Store.Complete round-trip.
+// Nothing but the lease holds the key through any of it, so a lease sized to
+// the handler alone can lapse in the tail after the handler already returned
+// and the mutation already committed.
+//
+// Wherever in that span it lapses, the damage is identical: a redelivery under
+// the same key acquires the key again and the mutation runs a SECOND time,
+// while the original request's completion is rejected because the record it
+// owned is gone. Once the completed record IS stored, the same key becomes a
+// RETENTION window — how long the client may still replay the receipt — and
+// that is a client-facing policy, not a budget for the work.
 //
 // [WithKeyTTL] and [WithTTLProvider] set the retention. [WithProcessingTTL] sets
 // the lease independently; unset, the lease borrows the retention, which is the
 // shipped behaviour. Set them apart whenever a caller wants a short replay
-// window on a route whose handler can run longer than it, so the retention
-// choice never silently caps the handler:
+// window on a route whose protected operation can run longer than it, so the
+// retention choice never silently caps that work. Size the lease against the
+// slowest handler PLUS capture, encoding and the store round-trip, with
+// headroom:
 //
 //	idem := idempotency.New(conn,
-//	    idempotency.WithKeyTTL(5*time.Minute),      // how long a client may replay
-//	    idempotency.WithProcessingTTL(30*time.Minute), // how long the handler may run
+//	    idempotency.WithKeyTTL(5*time.Minute), // how long a client may replay
+//	    // how long the handler AND its completion may take, with margin
+//	    idempotency.WithProcessingTTL(30*time.Minute),
 //	)
 //
 // [WithTTLProvider] resolves retention for each keyed mutation, allowing runtime

@@ -218,13 +218,23 @@ func WithKeyTTL(ttl time.Duration) Option {
 // runs is held, independently of how long a completed record is retained for
 // replay. Unset (the default), the lease borrows the retention TTL.
 //
-// The two are different lifetimes and only look like one. The lease must
-// outlive the SLOWEST handler it guards: when it expires mid-flight, a
-// redelivery under the same key acquires the key again and the handler runs a
-// SECOND time, and the first request's completion is then rejected because the
-// record it owned is gone. Retention is unrelated — it is how long a client may
-// still replay the receipt, and a caller that wants a short replay window (say
-// five minutes) must not have that window silently cap its handlers.
+// The two are different lifetimes and only look like one. The lease must cover
+// the ENTIRE protected operation, with margin — not just handler execution.
+// The handler returning is not the end of it: the middleware then captures the
+// response, serializes it, runs it through [WithResponseCodec], and only then
+// calls Store.Complete, and the key is held by nothing but this lease for all
+// of it. A lease sized to the handler alone can therefore lapse in that tail,
+// after the mutation has already committed.
+//
+// Whenever it lapses, wherever it lapses, the damage is the same: a redelivery
+// under the same key acquires the key again and the mutation runs a SECOND
+// time, and the original request's completion is then rejected because the
+// record it owned is gone. Size it against the slowest handler PLUS capture,
+// encoding and the store round-trip, and leave headroom.
+//
+// Retention is unrelated — it is how long a client may still replay the
+// receipt, and a caller that wants a short replay window (say five minutes)
+// must not have that window silently cap the work it protects.
 //
 // The lease may therefore be longer than the retention, and usually is.
 // Non-positive values are ignored, as in [WithKeyTTL].
@@ -612,7 +622,9 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 	}
 
 	// ttl is the RETENTION window and stays with Complete below. Acquire takes
-	// the in-flight lease, which must outlive the handler it guards.
+	// the in-flight lease, which has to survive everything between here and
+	// that Complete: the handler, the response capture and encoding, and the
+	// store round-trip. Nothing else holds the key for any of it.
 	lease := m.processingTTL
 	if lease <= 0 {
 		lease = ttl
