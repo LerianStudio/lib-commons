@@ -121,12 +121,45 @@
 //   - Handler success: response status, headers, content type, and body are
 //     compare-safely completed only by the acquisition owner. Capture, encoding,
 //     persistence, or stale-owner failures return 503 and retain processing
-//     ownership so callers reconcile instead of retrying under a new key.
+//     ownership so callers reconcile instead of retrying under a new key. That
+//     503 is the one branch [WithPostHandlerUnavailableHandler] answers, because
+//     the mutation already happened.
 //   - Handler 4xx: cached and replayed by default. Use
 //     [WithClientErrorPolicy] with [ClientErrorPolicyRelease] to compare-safely
 //     release the record and allow a corrected request to reuse the key.
 //   - Handler failure or 5xx: the acquisition is compare-safely released only
 //     by its owner, allowing a retry without deleting a replacement lock.
+//
+// # Lease and retention are two lifetimes
+//
+// The record under a key has two jobs with different clocks. From acquisition
+// until the completed record is stored it is an in-flight LEASE, and it must
+// cover that WHOLE span: the handler, then the response capture, serialization
+// and [WithResponseCodec] encoding, and finally the Store.Complete round-trip.
+// Nothing but the lease holds the key through any of it, so a lease sized to
+// the handler alone can lapse in the tail after the handler already returned
+// and the mutation already committed.
+//
+// Wherever in that span it lapses, the damage is identical: a redelivery under
+// the same key acquires the key again and the mutation runs a SECOND time,
+// while the original request's completion is rejected because the record it
+// owned is gone. Once the completed record IS stored, the same key becomes a
+// RETENTION window — how long the client may still replay the receipt — and
+// that is a client-facing policy, not a budget for the work.
+//
+// [WithKeyTTL] and [WithTTLProvider] set the retention. [WithProcessingTTL] sets
+// the lease independently; unset, the lease borrows the retention, which is the
+// shipped behaviour. Set them apart whenever a caller wants a short replay
+// window on a route whose protected operation can run longer than it, so the
+// retention choice never silently caps that work. Size the lease against the
+// slowest handler PLUS capture, encoding and the store round-trip, with
+// headroom:
+//
+//	idem := idempotency.New(conn,
+//	    idempotency.WithKeyTTL(5*time.Minute), // how long a client may replay
+//	    // how long the handler AND its completion may take, with margin
+//	    idempotency.WithProcessingTTL(30*time.Minute),
+//	)
 //
 // [WithTTLProvider] resolves retention for each keyed mutation, allowing runtime
 // policy changes without rebuilding middleware. [WithFingerprintScopeProvider]
@@ -176,9 +209,18 @@
 // error format, including RFC 9457 problem details: [WithRejectedHandler] for an
 // oversized key, [WithKeyRequiredHandler] for a missing key under
 // [WithRequireKey], [WithTenantRequiredHandler] for a missing tenant under
-// [WithRequireTenant], [WithUnavailableHandler] for fail-closed Redis failures,
-// [WithConflictHandler] for an in-flight duplicate, and [WithKeyReuseHandler]
-// for the same key used by a different request. Existing consumers that omit
+// [WithRequireTenant], [WithUnavailableHandler] for fail-closed store failures
+// observed BEFORE the handler runs, [WithPostHandlerUnavailableHandler] for the
+// ones observed AFTER it ran, [WithConflictHandler] for an in-flight duplicate,
+// and [WithKeyReuseHandler] for the same key used by a different request.
+//
+// The last two 503s are one status carrying opposite instructions, which is why
+// they have separate seams. Before the handler, nothing ran and the caller
+// should retry the same request. After it, the side effect is committed and a
+// retry under a new key duplicates it; the caller must reconcile instead. The
+// built-in bodies already say different things; an override of
+// [WithUnavailableHandler] alone would answer both with one message, so the
+// post-handler seam falls back to it only until it is set. Existing consumers that omit
 // these options retain the built-in response bodies and status codes.
 //
 // # Nil safety
