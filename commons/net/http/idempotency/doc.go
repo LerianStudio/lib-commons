@@ -18,7 +18,9 @@
 // is in context, idempotency is BYPASSED entirely rather than falling back to a
 // global namespace, which would collapse every tenant-less request onto a shared
 // key and break isolation. [WithRequireTenant] refuses such a request instead of
-// bypassing; it is never keyed either way.
+// bypassing; it is never keyed either way. The tenant check sits AFTER the
+// header check, so it only ever sees a KEYED request: an unkeyed one has already
+// taken the branch above. Pair it with [WithRequireKey] to refuse both.
 //
 // The middleware encodes state, fingerprint, acquisition owner, and optional
 // replay response into one opaque value stored atomically under that key. Store
@@ -157,6 +159,18 @@
 //	    idempotency.WithFailClosed(true),
 //	)
 //	app.Post("/transactions", idem.Check(), createTransactionHandler)
+//
+// The two are ORDERED, not independent guarantees: the header check runs first,
+// so [WithRequireTenant] on its own never sees an unkeyed request and lets it
+// through. Enabling only [WithRequireTenant] therefore does NOT mean "every
+// tenant-less mutation is refused" — an unkeyed one still passes. A route that
+// must never run a mutation without both takes both options, as above.
+//
+// Neither option survives a nil middleware. [New] returns nil for a nil
+// connection and [Middleware.Check] on a nil receiver is an unconditional
+// pass-through, so options are never applied and every request proceeds. A
+// caller that cannot tolerate that must verify [New] returned non-nil, or use
+// [NewWithStore], which returns a usable middleware even for a nil store.
 //
 // Every rejection branch has a callback seam so consumers can write their own
 // error format, including RFC 9457 problem details: [WithRejectedHandler] for an

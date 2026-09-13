@@ -327,6 +327,11 @@ func WithKeyRequiredHandler(fn func(c fiber.Ctx) error) Option {
 // not opt in; an opted-in caller refuses the request instead, and it is never
 // keyed either way. The refusal is a 400 with code
 // "IDEMPOTENCY_TENANT_REQUIRED"; use [WithTenantRequiredHandler] to change it.
+//
+// This check runs AFTER the header check, so on its own it never sees an
+// unkeyed request: enabling it alone does NOT refuse every tenant-less
+// mutation, because an unkeyed one takes the earlier bypass. Combine it with
+// [WithRequireKey] to refuse both.
 func WithRequireTenant() Option {
 	return func(m *Middleware) {
 		m.requireTenant = true
