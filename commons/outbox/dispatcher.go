@@ -54,13 +54,18 @@ type Dispatcher struct {
 	scopeActivityMu          sync.Mutex
 	now                      func() time.Time
 
-	stop       chan struct{}
-	stopOnce   sync.Once
-	runStateMu sync.Mutex
-	running    bool
-	cancelFunc context.CancelFunc
-	dispatchWg sync.WaitGroup
-	tenantTurn int
+	stop chan struct{}
+	// stopSignalled records that Stop has already closed `stop` for the CURRENT
+	// run. It replaces a sync.Once that registerRun reassigned wholesale: a Once's
+	// internal atomics synchronise Do against Do, never Do against an assignment of
+	// the Once value itself, so the reset raced every concurrent Stop. Guarded by
+	// runStateMu, like every other field of the run state it belongs to.
+	stopSignalled bool
+	runStateMu    sync.Mutex
+	running       bool
+	cancelFunc    context.CancelFunc
+	dispatchWg    sync.WaitGroup
+	tenantTurn    int
 
 	metrics dispatcherMetrics
 }
@@ -236,23 +241,35 @@ func (dispatcher *Dispatcher) Stop() {
 		return
 	}
 
-	dispatcher.stopOnce.Do(func() {
-		dispatcher.runStateMu.Lock()
-		cancel := dispatcher.cancelFunc
+	dispatcher.runStateMu.Lock()
 
-		stop := dispatcher.stop
-		if stop == nil {
-			stop = make(chan struct{})
-			dispatcher.stop = stop
-		}
+	if dispatcher.stopSignalled {
 		dispatcher.runStateMu.Unlock()
 
-		if cancel != nil {
-			cancel()
-		}
+		return
+	}
 
-		close(stop)
-	})
+	dispatcher.stopSignalled = true
+
+	cancel := dispatcher.cancelFunc
+
+	stop := dispatcher.stop
+	if stop == nil {
+		stop = make(chan struct{})
+		dispatcher.stop = stop
+	}
+
+	dispatcher.runStateMu.Unlock()
+
+	// Cancelling and closing happen OUTSIDE the lock, on values read under it. Only
+	// the caller that flipped stopSignalled reaches here, so `stop` is closed once
+	// even if registerRun installs a fresh channel in the meantime -- closing the
+	// channel the previous run listened to is exactly what the old code did.
+	if cancel != nil {
+		cancel()
+	}
+
+	close(stop)
 }
 
 // Shutdown waits for in-flight dispatch cycle completion.
@@ -737,7 +754,7 @@ func (dispatcher *Dispatcher) registerRun(cancel context.CancelFunc) bool {
 
 	if dispatcher.stop == nil || isClosedSignal(dispatcher.stop) {
 		dispatcher.stop = make(chan struct{})
-		dispatcher.stopOnce = sync.Once{}
+		dispatcher.stopSignalled = false
 	}
 
 	dispatcher.running = true
