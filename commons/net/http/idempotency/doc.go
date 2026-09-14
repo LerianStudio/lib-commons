@@ -89,11 +89,15 @@
 //     set, a 400 JSON response with code "VALIDATION_ERROR" is returned.
 //   - The built-in Redis store unavailable: request proceeds without idempotency
 //     enforcement by default, or receives 503 with [WithFailClosed].
-//   - A caller-provided store missing, errored, or returning an invalid state:
-//     request receives 503 and the mutation handler does not run. An invalid
-//     state is logged at ERROR level naming the record, because under the
-//     fail-open default that log line is the only trace that a mutation is
-//     about to run unprotected against a key that already holds something.
+//   - A caller-provided store missing or errored: request receives 503 and the
+//     mutation handler does not run.
+//   - An EXISTING record whose state this version does not recognise: refused
+//     with 422 "IDEMPOTENCY_STATE_UNRECOGNISED" — or the
+//     [WithPostHandlerUnavailableHandler] document — REGARDLESS of
+//     [WithFailClosed], and logged at ERROR naming the state. Nothing is
+//     written, so the record survives for a reader that understands it. This is
+//     the only branch where the fail-open default is overruled, and the reason
+//     is in "Mixed versions during a rolling upgrade" below.
 //   - Duplicate key whose stored fingerprint differs from this request's: request
 //     is passed to [WithKeyReuseHandler], or receives 422 Unprocessable Content
 //     with code "IDEMPOTENCY_KEY_REUSE" when no custom handler is configured.
@@ -123,16 +127,19 @@
 //     existing ones expire with their TTL.
 //   - Duplicate key whose record is marked with an unrecorded outcome: request
 //     receives 422 Unprocessable Content with code
-//     "IDEMPOTENCY_OUTCOME_UNKNOWN", or the
+//     "IDEMPOTENCY_OUTCOME_UNRECORDED", or the
 //     [WithPostHandlerUnavailableHandler] document when that seam is set. The
 //     mark is checked before the state routing below, and no captured body is
 //     replayed because none was ever stored.
 //   - Handler success: response status, headers, content type, and body are
 //     compare-safely completed only by the acquisition owner. Capture, encoding,
-//     persistence, or stale-owner failures return 503, and the key is fenced in
-//     the terminal state above so callers reconcile instead of retrying under a
-//     new key. That 503 is the one branch [WithPostHandlerUnavailableHandler]
-//     answers, because the mutation already happened.
+//     persistence, or stale-owner failures return 503, and the key is marked
+//     terminal (see below) so callers reconcile instead of retrying under a new
+//     key. That 503 is the one branch [WithPostHandlerUnavailableHandler]
+//     answers, because the mutation already happened — but ONLY when the mark
+//     was actually persisted. When it was not, the answer is 503
+//     "IDEMPOTENCY_UNFENCED" instead, which says the key is unprotected and a
+//     resend may execute the operation again.
 //   - Handler 4xx: cached and replayed by default. Use
 //     [WithClientErrorPolicy] with [ClientErrorPolicyRelease] to compare-safely
 //     release the record and allow a corrected request to reuse the key.
@@ -191,9 +198,12 @@
 // SECOND time, and the only thing between the two executions is the
 // instruction in a refusal body that no client is obliged to read.
 //
-// The key now holds a third, TERMINAL state instead: the request that spent it
-// left no recorded outcome, and the key says so for the RETENTION TTL rather
-// than for the lease. A duplicate inside that window is refused by the key.
+// The record under the key is now MARKED terminal instead: the request that
+// spent it left no recorded outcome, and the key says so for the RETENTION TTL
+// rather than for the lease. The mark is a field ("outcome"), and the state
+// field keeps "complete" — see "Mixed versions during a rolling upgrade" below
+// for why that is load-bearing rather than cosmetic. A duplicate inside that
+// window is refused by the key.
 // Because the refusal is terminal it answers 422, not the 409 that carries
 // Retry-After and invites a retry the state can never satisfy, and not 503,
 // which says the store is unavailable when it is the key that is spent. It
@@ -225,6 +235,25 @@
 // outside this package must read the outcome field to tell a real completion
 // from a fence.
 //
+// The same problem points FORWARD, and is closed the same way. This encoding
+// protects a future reader from what this version writes; nothing in it
+// protects THIS reader from what a future version writes. So an existing record
+// whose state this version does not recognise is refused outright, regardless
+// of [WithFailClosed] — see the branch list above. Fail-open is right when the
+// middleware learned nothing; it is wrong once the middleware knows the key
+// holds somebody's record, because proceeding there is not running unprotected,
+// it is running on top of an outcome sitting in the store. Without that arm the
+// next state value anyone adds would reintroduce this same double execution on
+// the older half of the next rolling upgrade.
+//
+// One rollout wrinkle, and its remedy: mid-rollout the same key answers 422
+// from an upgraded pod and 503 from one that is not. Neither executes, so this
+// is a consistency wrinkle and not a safety one, and it disappears entirely for
+// a service that wires [WithPostHandlerUnavailableHandler] — then both pods
+// answer that service's own document. Wire the seam before rolling out if a
+// uniform answer during the rollout matters; a client with a blanket
+// retry-on-503 policy would otherwise retry and then meet a terminal 422.
+//
 // The completion-failure branch is unconditional — no route wants a key it has
 // already spent to come back. The handler-failure branch is opt-in through
 // [WithServerErrorPolicy], because releasing there is right for a route whose
@@ -242,6 +271,30 @@
 // compare-and-set is not incidental either: a write lands only while the
 // request still owns the key, so a stale owner leaves the current owner's
 // record untouched instead of stamping a fence over it.
+//
+// # Saying whether the fence landed
+//
+// Best-effort is acceptable. Being unable to tell which effort failed is not:
+// "reconcile the original request" answered for both outcomes hides whether a
+// resend under this key would be refused or would arm the operation a second
+// time, and no client can be asked to guess that. So the middleware says so,
+// three ways:
+//
+//   - [constants.IdempotencyFenced] is set on every response where a fence was
+//     attempted, "true" or "false". It is a header rather than a body field
+//     because the handler-failure branch writes no body of its own — the
+//     application's error handler owns that response — and a header reaches the
+//     client through it either way.
+//   - A completion failure whose fence did NOT land answers 503
+//     "IDEMPOTENCY_UNFENCED" instead of the ordinary post-handler 503, and it
+//     does not route through [WithPostHandlerUnavailableHandler]: a service
+//     wired that seam for the fenced case, and reusing it here would put the
+//     indistinguishability straight back. Neither answer carries Retry-After.
+//   - A failed fence logs at ERROR naming the key, so the alert is actionable.
+//     The key appears as a SHA-256 digest of the store key, never raw, because
+//     an idempotency key is client-supplied and services put business
+//     references in it; the digest is reproducible from the key the client
+//     holds. The tenant ID and the acquisition owner are logged as they are.
 //
 // The retention TTL is therefore also an operational choice: it is how long an
 // operator or a reconciliation job has before a fenced key frees itself.
@@ -287,9 +340,12 @@
 // [WithRequireKey], [WithTenantRequiredHandler] for a missing tenant under
 // [WithRequireTenant], [WithUnavailableHandler] for fail-closed store failures
 // observed BEFORE the handler runs, [WithPostHandlerUnavailableHandler] for the
-// ones observed AFTER it ran and for a duplicate that finds the terminal
-// outcome-unknown state, [WithConflictHandler] for an in-flight duplicate,
-// and [WithKeyReuseHandler] for the same key used by a different request.
+// ones observed AFTER it ran and for a duplicate that finds a record marked
+// terminal or written in an unrecognised state, [WithConflictHandler] for an
+// in-flight duplicate, and [WithKeyReuseHandler] for the same key used by a
+// different request. The one refusal with no seam is 503
+// "IDEMPOTENCY_UNFENCED": it exists precisely to be distinguishable from the
+// seam a service already wired.
 //
 // The last two 503s are one status carrying opposite instructions, which is why
 // they have separate seams. Before the handler, nothing ran and the caller

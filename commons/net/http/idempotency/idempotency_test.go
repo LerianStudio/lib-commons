@@ -404,11 +404,14 @@ func TestCheck_PartialStoredRecord_RoutesOnStoredFieldsOnly(t *testing.T) {
 		},
 		{
 			// Fingerprint matches, so routing reaches the state switch: an empty
-			// state must fall to the store-error path, not inherit "processing".
-			name:       "matching fingerprint without state takes the store-error path",
+			// state must NOT inherit "processing" and must not reach the
+			// handler. It is an existing record this version cannot interpret,
+			// so it is refused outright — and refused whatever [WithFailClosed]
+			// says, which is why this row no longer names the store-error path.
+			name:       "matching fingerprint without state is refused, never inherited",
 			stored:     `{"fingerprint":"` + current + `"}`,
-			wantStatus: http.StatusServiceUnavailable,
-			wantBody:   "IDEMPOTENCY_UNAVAILABLE",
+			wantStatus: http.StatusUnprocessableEntity,
+			wantBody:   "IDEMPOTENCY_STATE_UNRECOGNISED",
 		},
 	}
 
@@ -888,7 +891,7 @@ func TestCheck_WithMaxBodyCache(t *testing.T) {
 	body2 := readBody(t, resp2)
 
 	assert.Equal(t, http.StatusUnprocessableEntity, resp2.StatusCode)
-	assert.Contains(t, body2, "IDEMPOTENCY_OUTCOME_UNKNOWN")
+	assert.Contains(t, body2, "IDEMPOTENCY_OUTCOME_UNRECORDED")
 	assert.Empty(t, resp2.Header.Get(fiber.HeaderRetryAfter),
 		"the answer never changes inside the retention window, so it must not advertise a retry")
 }

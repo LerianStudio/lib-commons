@@ -4,14 +4,18 @@ package idempotency
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	chttp "github.com/LerianStudio/lib-commons/v7/commons/constants"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
@@ -130,7 +134,7 @@ func TestCheck_CompletionFailure_FencesTheKeyForTheRetentionWindow(t *testing.T)
 
 	assert.Equal(t, http.StatusUnprocessableEntity, second.StatusCode,
 		"the key is terminal, so the refusal must be terminal too — not the 409 that invites a retry")
-	assert.Contains(t, secondBody, "IDEMPOTENCY_OUTCOME_UNKNOWN")
+	assert.Contains(t, secondBody, "IDEMPOTENCY_OUTCOME_UNRECORDED")
 	assert.Empty(t, second.Header.Get(fiber.HeaderRetryAfter),
 		"no Retry-After: waiting inside the retention window never changes this answer")
 	assert.NotContains(t, secondBody, "payoff armed",
@@ -144,7 +148,7 @@ func TestCheck_CompletionFailure_FencesTheKeyForTheRetentionWindow(t *testing.T)
 
 	assert.Equal(t, http.StatusUnprocessableEntity, third.StatusCode,
 		"the fence holds for the retention window, not for the lease that used to lapse")
-	assert.Contains(t, readBody(t, third), "IDEMPOTENCY_OUTCOME_UNKNOWN")
+	assert.Contains(t, readBody(t, third), "IDEMPOTENCY_OUTCOME_UNRECORDED")
 	assert.Equal(t, int64(1), calls.Load(),
 		"one idempotency key must never arm the payoff twice")
 }
@@ -233,7 +237,7 @@ func TestCheck_ServerErrorPolicy_DecidesWhetherA5xxFreesTheKey(t *testing.T) {
 				WithProcessingTTL(fenceLease),
 				WithPostHandlerUnavailableHandler(func(c fiber.Ctx) error {
 					return c.Status(fiber.StatusServiceUnavailable).
-						JSON(fiber.Map{"code": "IDEMPOTENCY_OUTCOME_UNKNOWN"})
+						JSON(fiber.Map{"code": "IDEMPOTENCY_OUTCOME_UNRECORDED"})
 				}),
 			}, testCase.opts...)
 
@@ -270,7 +274,7 @@ func TestCheck_ServerErrorPolicy_DecidesWhetherA5xxFreesTheKey(t *testing.T) {
 				"how many times one idempotency key executed the mutation")
 
 			if testCase.callsAfterLease == 1 {
-				assert.Contains(t, secondBody, "IDEMPOTENCY_OUTCOME_UNKNOWN",
+				assert.Contains(t, secondBody, "IDEMPOTENCY_OUTCOME_UNRECORDED",
 					"the fenced resend is answered by the service's own post-handler document")
 				assert.Equal(t, http.StatusServiceUnavailable, third.StatusCode)
 			}
@@ -364,45 +368,339 @@ func TestCheck_ServerErrorPolicy_LeavesTheHappyAndConflictPathsAlone(t *testing.
 // rolling-upgrade fence, and it is a money test rather than a compatibility
 // nicety.
 //
-// Both versions share one store during an upgrade, so a record written here is
-// read by a middleware that predates the outcome field. encoding/json drops an
-// unknown field silently, so that reader sees exactly the record below: state
-// "complete", no response. This walks its decision path through the same switch
-// — routing on state alone — and pins that it REFUSES.
+// It is a ROUND TRIP on purpose. It drives the real writer — a handler that
+// commits, a completion that fails — reads the bytes that writer actually
+// stored, strips the "outcome" field exactly as a middleware predating that
+// field drops it while decoding, and feeds the result back. Hand-seeding the
+// record instead would pin only the reader, and reverting the writer to a third
+// state value would leave this test green while reintroducing the hazard it is
+// named for.
 //
-// A third state value would have gone to the unknown-state branch instead,
-// which under the shipped fail-open default calls the handler: the duplicate
-// would execute while the fence sat in the store unread. Measured against the
-// pre-change middleware, that shape answered 201 and ran the handler a second
-// time, and this shape answered 503 and ran nothing.
-//
-// If this test ever goes red because a completed record with no response starts
-// fabricating a success, the compatibility encoding is broken and every
-// in-flight upgrade can duplicate a mutation.
+// Both versions share one store during an upgrade. A third state value would
+// reach the unknown-state branch, which under the shipped fail-open default
+// calls the handler: the duplicate would execute while the fence sat in the
+// store unread. Measured against the pre-change middleware, that shape answered
+// 201 and ran the handler a second time, and this shape answered 503 and ran
+// nothing.
 func TestCheck_FencedRecord_IsRefusedByAReaderThatIgnoresTheOutcomeField(t *testing.T) {
 	t.Parallel()
 
-	mr := miniredis.RunT(t)
-	middleware := NewWithStore(newRedisStore(newRedisClient(t, mr)))
+	const key = "idempotency:tenant-upgrade:upgrade-key"
 
-	// The fenced record as a pre-outcome reader decodes it: the marker gone.
-	seedStoreRecord(t, mr, "idempotency:tenant-upgrade:upgrade-key", storeRecord{
-		State:       keyStateComplete,
-		Fingerprint: requestFingerprint(http.MethodPost, "/test", nil),
-		Owner:       "owner-from-the-fenced-request",
+	store, mr := realRedisStore(t)
+	writer := NewWithStore(&transientCompleteFailure{Store: store},
+		WithKeyTTL(fenceRetention), WithProcessingTTL(fenceLease))
+
+	var written atomic.Int64
+
+	writerApp := countingMoneyApp(writer.Check(), "tenant-upgrade", &written, func(c fiber.Ctx) error {
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "payoff armed"})
 	})
+
+	doPost(t, writerApp, "upgrade-key").Body.Close()
+	require.Equal(t, int64(1), written.Load())
+
+	stored, err := mr.Get(key)
+	require.NoError(t, err, "the writer must have left a record to upgrade across")
+
+	// What the writer stored has to be routable by a reader that predates the
+	// marker, which routes on state alone.
+	require.Contains(t, stored, `"state":"`+keyStateComplete+`"`,
+		"a state an older reader does not know sends it to the fail-open branch, which re-executes")
+	require.Contains(t, stored, `"outcome":"`+outcomeUnrecorded+`"`)
+
+	// Decode and re-encode without the marker: byte for byte what an older
+	// middleware's storeRecord holds after json.Unmarshal drops the field.
+	var asOldReaderSeesIt map[string]any
+
+	require.NoError(t, json.Unmarshal([]byte(stored), &asOldReaderSeesIt))
+	delete(asOldReaderSeesIt, "outcome")
+
+	downgraded, err := json.Marshal(asOldReaderSeesIt)
+	require.NoError(t, err)
+	require.NoError(t, mr.Set(key, string(downgraded)))
 
 	var calls atomic.Int64
 
-	app := countingMoneyApp(middleware.Check(), "tenant-upgrade", &calls, func(c fiber.Ctx) error {
+	readerApp := countingMoneyApp(NewWithStore(store).Check(), "tenant-upgrade", &calls, func(c fiber.Ctx) error {
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "executed again"})
 	})
 
-	response := doPost(t, app, "upgrade-key")
+	response := doPost(t, readerApp, "upgrade-key")
 	body := readBody(t, response)
 
 	assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
 	assert.Contains(t, body, "reconcile the original request first")
 	assert.Equal(t, int64(0), calls.Load(),
-		"a reader that cannot see the marker must still refuse, never re-run the mutation")
+		"a reader that cannot see the marker must still refuse, never re-run the operation")
+}
+
+// alwaysFailingComplete fails EVERY Complete: the receipt write and the fence
+// that follows it. This is the total-outage case the fence explicitly cannot
+// close, so the contract under test is not that the key survives — it does not
+// — but that the response says so.
+type alwaysFailingComplete struct {
+	Store
+}
+
+func (s *alwaysFailingComplete) Complete(
+	_ context.Context, _ string, _, _ []byte, _ time.Duration,
+) (bool, error) {
+	return false, errReceiptWrite
+}
+
+// recordingLogger captures log lines so a test can assert on the one that wakes
+// an operator at 3am. The package tests no other logs; this one is load-bearing
+// because it is the ONLY per-key trace of an unfenced money request.
+type recordingLogger struct {
+	mu    sync.Mutex
+	lines []loggedLine
+}
+
+type loggedLine struct {
+	level int
+	msg   string
+	kv    map[string]any
+}
+
+func (l *recordingLogger) Log(_ context.Context, level int, msg string, kv ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	fields := make(map[string]any, len(kv)/2)
+	for i := 0; i+1 < len(kv); i += 2 {
+		name, ok := kv[i].(string)
+		if !ok {
+			continue
+		}
+
+		fields[name] = kv[i+1]
+	}
+
+	l.lines = append(l.lines, loggedLine{level: level, msg: msg, kv: fields})
+}
+
+func (l *recordingLogger) Enabled(int) bool           { return true }
+func (l *recordingLogger) Sync(context.Context) error { return nil }
+
+func (l *recordingLogger) find(t *testing.T, level int, substring string) loggedLine {
+	t.Helper()
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for _, line := range l.lines {
+		if line.level == level && strings.Contains(line.msg, substring) {
+			return line
+		}
+	}
+
+	t.Fatalf("no log line at level %d containing %q; got %+v", level, substring, l.lines)
+
+	return loggedLine{}
+}
+
+// TestCheck_FenceFailure_SaysTheKeyIsUnprotected covers the case the fence
+// cannot close: the store is down for the receipt AND for the fence.
+//
+// Best-effort is fine. Answering as if it had worked is not. Without a separate
+// document the caller gets the same "reconcile the original request" whether
+// the key is held or free, and a client that resends is refused in one case and
+// arms the operation a SECOND time in the other, with nothing in the response
+// telling it which. Here the key really is free — measured below, the resend
+// executes — so the first answer has to say so.
+func TestCheck_FenceFailure_SaysTheKeyIsUnprotected(t *testing.T) {
+	t.Parallel()
+
+	store, mr := realRedisStore(t)
+	logger := &recordingLogger{}
+
+	middleware := NewWithStore(&alwaysFailingComplete{Store: store},
+		WithKeyTTL(fenceRetention),
+		WithProcessingTTL(fenceLease),
+		WithLogger(logger),
+		// The seam a real consumer wires for the FENCED case. It must not
+		// answer this one, or the two become indistinguishable again.
+		WithPostHandlerUnavailableHandler(func(c fiber.Ctx) error {
+			return c.Status(fiber.StatusServiceUnavailable).
+				JSON(fiber.Map{"code": "SERVICE_RECEIPT_LOST"})
+		}),
+	)
+
+	var calls atomic.Int64
+
+	app := countingMoneyApp(middleware.Check(), "tenant-unfenced", &calls, func(c fiber.Ctx) error {
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "payoff armed"})
+	})
+
+	response := doPost(t, app, "unfenced-key")
+	body := readBody(t, response)
+
+	assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
+	assert.Contains(t, body, "IDEMPOTENCY_UNFENCED")
+	assert.NotContains(t, body, "SERVICE_RECEIPT_LOST",
+		"the seam wired for a fenced key must not answer an unfenced one")
+	assert.Contains(t, body, "NOT protected")
+	assert.Equal(t, "false", response.Header.Get(chttp.IdempotencyFenced),
+		"machine-readable, and the only signal the handler-failure branch can carry")
+	assert.Empty(t, response.Header.Get(fiber.HeaderRetryAfter),
+		"retrying is exactly what the caller must not do before reconciling")
+
+	// The alert an operator is woken by has to name the money request.
+	line := logger.find(t, obs.LevelError, "UNFENCED")
+
+	assert.Equal(t, keyDigest("idempotency:tenant-unfenced:unfenced-key"), line.kv["idempotency_key_digest"],
+		"the digest must be reproducible from the key the client holds")
+	assert.Equal(t, "tenant-unfenced", line.kv["tenant_id"])
+	assert.NotEmpty(t, line.kv["owner"])
+
+	// And the honesty is warranted. The residual is exactly the shape this PR
+	// removes everywhere the fence DOES land: the key still holds the processing
+	// record, so an immediate resend meets the false in-flight...
+	assert.Equal(t, int64(1), calls.Load())
+
+	immediate := doPost(t, app, "unfenced-key")
+	immediate.Body.Close()
+
+	assert.Equal(t, http.StatusConflict, immediate.StatusCode,
+		"nothing is in flight — the handler returned — but without a fence the lease is all that is left")
+
+	// ...and once that lease lapses the key is free and the operation runs a
+	// second time. Unpreventable here by construction: writing anything durable
+	// is what failed. Which is the whole reason the first answer had to say the
+	// key was not protected.
+	mr.FastForward(pastTheLease)
+
+	doPost(t, app, "unfenced-key").Body.Close()
+	assert.Equal(t, int64(2), calls.Load(),
+		"the store never took the fence, so the resend runs — which is why the first answer said so")
+}
+
+// TestCheck_FenceSuccess_SaysTheKeyIsHeld is the other half of the pair. Same
+// shape, a store that fails only the receipt, and every signal inverts.
+func TestCheck_FenceSuccess_SaysTheKeyIsHeld(t *testing.T) {
+	t.Parallel()
+
+	store, _ := realRedisStore(t)
+	logger := &recordingLogger{}
+
+	middleware := NewWithStore(&transientCompleteFailure{Store: store},
+		WithKeyTTL(fenceRetention),
+		WithProcessingTTL(fenceLease),
+		WithLogger(logger),
+		WithPostHandlerUnavailableHandler(func(c fiber.Ctx) error {
+			return c.Status(fiber.StatusServiceUnavailable).
+				JSON(fiber.Map{"code": "SERVICE_RECEIPT_LOST"})
+		}),
+	)
+
+	var calls atomic.Int64
+
+	app := countingMoneyApp(middleware.Check(), "tenant-fenced", &calls, func(c fiber.Ctx) error {
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "payoff armed"})
+	})
+
+	response := doPost(t, app, "fenced-key")
+	body := readBody(t, response)
+
+	assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
+	assert.Contains(t, body, "SERVICE_RECEIPT_LOST",
+		"a fenced key is the case the post-handler seam exists for")
+	assert.NotContains(t, body, "IDEMPOTENCY_UNFENCED")
+	assert.Equal(t, "true", response.Header.Get(chttp.IdempotencyFenced))
+	assert.Empty(t, response.Header.Get(fiber.HeaderRetryAfter))
+
+	logger.find(t, obs.LevelWarn, "key fenced with an unrecorded outcome")
+
+	assert.Equal(t, int64(1), calls.Load())
+	doPost(t, app, "fenced-key").Body.Close()
+	assert.Equal(t, int64(1), calls.Load(), "the fence holds, so the resend does not run")
+}
+
+// TestCheck_UnrecognisedRecordState_IsRefusedEvenWhenFailOpen is the
+// mixed-version fence pointed FORWARD.
+//
+// The rest of this change makes a record THIS version writes safe for an older
+// reader. This is the other direction: a record a FUTURE version writes must not
+// make this reader execute. Before the refusal, an existing record carrying an
+// unknown state reached the store-error path, whose fail-open default — the one
+// every consumer of New(conn) gets — calls the handler. So the next new state
+// value anyone adds would reintroduce the exact double execution this package
+// was changed to prevent, on the older half of every rolling upgrade.
+//
+// Fail-open is right when the middleware learned nothing. Here it learned that
+// the key demonstrably holds somebody's record, so the refusal is unconditional
+// in BOTH constructors, and nothing is written so the record survives for a
+// reader that does understand it.
+func TestCheck_UnrecognisedRecordState_IsRefusedEvenWhenFailOpen(t *testing.T) {
+	t.Parallel()
+
+	const (
+		key         = "idempotency:tenant-future:future-key"
+		futureState = "fenced-by-some-later-version"
+	)
+
+	tests := []struct {
+		name       string
+		middleware func(t *testing.T, mr *miniredis.Miniredis, logger obs.Logger) *Middleware
+	}{
+		{
+			// The load-bearing row: this is the shipped default, and it is the
+			// configuration that used to execute.
+			name: "New, the fail-OPEN shipped default",
+			middleware: func(t *testing.T, mr *miniredis.Miniredis, logger obs.Logger) *Middleware {
+				return New(newRedisClient(t, mr), WithLogger(logger))
+			},
+		},
+		{
+			name: "NewWithStore, fail-closed",
+			middleware: func(t *testing.T, mr *miniredis.Miniredis, logger obs.Logger) *Middleware {
+				return NewWithStore(newRedisStore(newRedisClient(t, mr)), WithLogger(logger))
+			},
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			mr := miniredis.RunT(t)
+			logger := &recordingLogger{}
+
+			seeded := storeRecord{
+				State:       futureState,
+				Fingerprint: requestFingerprint(http.MethodPost, "/test", nil),
+				Owner:       "owner-from-the-future",
+			}
+			seedStoreRecord(t, mr, key, seeded)
+
+			before, err := mr.Get(key)
+			require.NoError(t, err)
+
+			var calls atomic.Int64
+
+			app := countingMoneyApp(testCase.middleware(t, mr, logger).Check(), "tenant-future", &calls,
+				func(c fiber.Ctx) error {
+					return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "executed again"})
+				})
+
+			response := doPost(t, app, "future-key")
+			body := readBody(t, response)
+
+			assert.Equal(t, int64(0), calls.Load(),
+				"the key already holds somebody's record; running on top of it is the duplicate this package prevents")
+			assert.Equal(t, http.StatusUnprocessableEntity, response.StatusCode)
+			assert.Contains(t, body, "IDEMPOTENCY_STATE_UNRECOGNISED")
+			assert.Empty(t, response.Header.Get(fiber.HeaderRetryAfter),
+				"waiting does not teach this instance a state it does not have")
+
+			after, err := mr.Get(key)
+			require.NoError(t, err)
+			assert.Equal(t, before, after,
+				"the record must survive untouched for a reader that understands it")
+
+			line := logger.find(t, obs.LevelError, "does not recognise")
+			assert.Equal(t, futureState, line.kv["record_state"])
+		})
+	}
 }
