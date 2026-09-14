@@ -100,10 +100,9 @@
 //     the legacy one: refused the same way, with 422
 //     "IDEMPOTENCY_RECORD_UNREADABLE" and an ERROR log. A separate code because
 //     damaged bytes are not version skew and an operator triaging the two needs
-//     to tell them apart.
-//
-// Those two are the only branches where the fail-open default is overruled, and
-// the reason is in "Mixed versions during a rolling upgrade" below.
+//     to tell them apart. This bullet and the one above it are the only two
+//     branches where the fail-open default is overruled; the reason is in
+//     "Mixed versions during a rolling upgrade" below.
 //   - Duplicate key whose stored fingerprint differs from this request's: request
 //     is passed to [WithKeyReuseHandler], or receives 422 Unprocessable Content
 //     with code "IDEMPOTENCY_KEY_REUSE" when no custom handler is configured.
@@ -133,9 +132,11 @@
 //     change. The same fingerprint gate applies; a matching "processing" record
 //     returns 409, and a matching "complete" record returns 200 "IDEMPOTENT"
 //     because v6.4.0 kept the response body in a sidecar key that [Store] cannot
-//     read. Any other undecodable value keeps the store-error path above. This
-//     branch is bounded and removable: no new legacy records are written and
-//     existing ones expire with their TTL.
+//     read. Any other undecodable value is refused as an unreadable record, per
+//     the bullet above: the detector is closed, and what it turns away is an
+//     existing record this version cannot read, never a request free to run.
+//     This branch is bounded and removable: no new legacy records are written
+//     and existing ones expire with their TTL.
 //   - Duplicate key whose record is marked with an unrecorded outcome: request
 //     receives 422 Unprocessable Content with code
 //     "IDEMPOTENCY_OUTCOME_UNRECORDED", or the

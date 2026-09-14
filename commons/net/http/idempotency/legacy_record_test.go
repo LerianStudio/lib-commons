@@ -174,11 +174,12 @@ func TestCheck_LegacyPlainTextRecord_FailClosedStoreAlsoRefuses(t *testing.T) {
 	}
 }
 
-// TestCheck_UndecodableNonLegacyRecord_KeepsStoreErrorPath pins the detector
-// closed. Only "processing:" or "complete:" prefixed plain text is legacy;
-// every other undecodable value keeps today's store-error path in BOTH
-// postures. A permissive detector would be a second version of the same bug:
-// unknown bytes granting permission to act on the money path.
+// TestCheck_UndecodableNonLegacyRecord_IsRefusedWhateverThePolicy pins the
+// detector closed. Only "processing:" or "complete:" prefixed plain text is
+// legacy; every other undecodable value is refused as an unreadable record in
+// BOTH postures, fail-open included. A permissive detector would be a second
+// version of the same bug: unknown bytes granting permission to act on the
+// money path.
 func TestCheck_UndecodableNonLegacyRecord_IsRefusedWhateverThePolicy(t *testing.T) {
 	t.Parallel()
 
