@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -67,6 +68,15 @@ func countingMoneyApp(mw fiber.Handler, tenantID string, calls *atomic.Int64, ha
 	})
 
 	return app
+}
+
+// newKeyedPost builds the POST /test request doPost sends, without doPost's
+// require: callers on a spawned goroutine must not abort the test from there.
+func newKeyedPost(idempotencyKey string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/test", nil)
+	req.Header.Set(chttp.IdempotencyKey, idempotencyKey)
+
+	return req
 }
 
 // realRedisStore builds the shipped Redis store over miniredis, so the Lua
@@ -166,7 +176,7 @@ func TestCheck_CompletionFailure_FenceIsWrittenForRetentionNotForTheLease(t *tes
 
 	stored, err := mr.Get(key)
 	require.NoError(t, err, "the key must still hold a record, not have lapsed")
-	assert.Contains(t, stored, `"state":"`+keyStateOutcomeUnknown+`"`)
+	assert.Contains(t, stored, `"outcome":"`+outcomeUnrecorded+`"`)
 	assert.NotContains(t, stored, `"response"`,
 		"the fence stores no body: capture or persistence is exactly what failed")
 
@@ -299,13 +309,29 @@ func TestCheck_ServerErrorPolicy_LeavesTheHappyAndConflictPathsAlone(t *testing.
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "created"})
 	})
 
-	firstStatus := make(chan int, 1)
+	// The in-flight request cannot go through doPost: its require.NoError would
+	// run on this goroutine, and a failure there calls runtime.Goexit, so
+	// nothing would ever be sent and the test would block on <-entered or
+	// <-first until the package timeout. The error travels back instead and is
+	// asserted on the test goroutine.
+	type result struct {
+		status int
+		err    error
+	}
+
+	first := make(chan result, 1)
 
 	go func() {
-		response := doPost(t, app, "happy-key")
+		response, err := app.Test(newKeyedPost("happy-key"), fiber.TestConfig{Timeout: 0})
+		if err != nil {
+			first <- result{err: err}
+
+			return
+		}
+
 		defer response.Body.Close()
 
-		firstStatus <- response.StatusCode
+		first <- result{status: response.StatusCode}
 	}()
 
 	<-entered
@@ -319,7 +345,10 @@ func TestCheck_ServerErrorPolicy_LeavesTheHappyAndConflictPathsAlone(t *testing.
 	assert.Equal(t, retryAfterSeconds, conflict.Header.Get(fiber.HeaderRetryAfter))
 
 	close(release)
-	assert.Equal(t, http.StatusCreated, <-firstStatus)
+
+	firstResult := <-first
+	require.NoError(t, firstResult.err)
+	assert.Equal(t, http.StatusCreated, firstResult.status)
 
 	// Happy path: the completed receipt still replays byte for byte.
 	replayed := doPost(t, app, "happy-key")
@@ -329,4 +358,51 @@ func TestCheck_ServerErrorPolicy_LeavesTheHappyAndConflictPathsAlone(t *testing.
 	assert.Contains(t, body, "created")
 	assert.Equal(t, "true", replayed.Header.Get(chttp.IdempotencyReplayed))
 	assert.Equal(t, int64(1), calls.Load())
+}
+
+// TestCheck_FencedRecord_IsRefusedByAReaderThatIgnoresTheOutcomeField is the
+// rolling-upgrade fence, and it is a money test rather than a compatibility
+// nicety.
+//
+// Both versions share one store during an upgrade, so a record written here is
+// read by a middleware that predates the outcome field. encoding/json drops an
+// unknown field silently, so that reader sees exactly the record below: state
+// "complete", no response. This walks its decision path through the same switch
+// — routing on state alone — and pins that it REFUSES.
+//
+// A third state value would have gone to the unknown-state branch instead,
+// which under the shipped fail-open default calls the handler: the duplicate
+// would execute while the fence sat in the store unread. Measured against the
+// pre-change middleware, that shape answered 201 and ran the handler a second
+// time, and this shape answered 503 and ran nothing.
+//
+// If this test ever goes red because a completed record with no response starts
+// fabricating a success, the compatibility encoding is broken and every
+// in-flight upgrade can duplicate a mutation.
+func TestCheck_FencedRecord_IsRefusedByAReaderThatIgnoresTheOutcomeField(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	middleware := NewWithStore(newRedisStore(newRedisClient(t, mr)))
+
+	// The fenced record as a pre-outcome reader decodes it: the marker gone.
+	seedStoreRecord(t, mr, "idempotency:tenant-upgrade:upgrade-key", storeRecord{
+		State:       keyStateComplete,
+		Fingerprint: requestFingerprint(http.MethodPost, "/test", nil),
+		Owner:       "owner-from-the-fenced-request",
+	})
+
+	var calls atomic.Int64
+
+	app := countingMoneyApp(middleware.Check(), "tenant-upgrade", &calls, func(c fiber.Ctx) error {
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "executed again"})
+	})
+
+	response := doPost(t, app, "upgrade-key")
+	body := readBody(t, response)
+
+	assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
+	assert.Contains(t, body, "reconcile the original request first")
+	assert.Equal(t, int64(0), calls.Load(),
+		"a reader that cannot see the marker must still refuse, never re-run the mutation")
 }

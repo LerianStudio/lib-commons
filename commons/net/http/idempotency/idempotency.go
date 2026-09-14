@@ -27,14 +27,26 @@ const (
 	fingerprintScopeDomain = "lib-commons:idempotency:fingerprint-scope:v1\x00"
 	keyStateProcessing     = "processing"
 	keyStateComplete       = "complete"
-	// keyStateOutcomeUnknown is TERMINAL: the key was spent by a request whose
-	// outcome was never recorded under it. It is written where the middleware
-	// would otherwise leave the key free — a completion that failed after the
-	// handler already ran, and (opt-in) a handler failure or 5xx that the route
-	// declares ambiguous. It holds the RETENTION TTL, not the in-flight lease,
-	// so the fence outlives the lease that used to lapse into a re-execution.
-	keyStateOutcomeUnknown = "outcome_unknown"
-	retryAfterSeconds      = "1"
+	// outcomeUnrecorded is TERMINAL: the key was spent by a request that left no
+	// recorded outcome. It is written where the middleware would otherwise leave
+	// the key free — a completion that failed after the handler already ran, and
+	// (opt-in) a handler failure or 5xx that the route declares ambiguous. It
+	// holds the RETENTION TTL, not the in-flight lease, so the fence outlives
+	// the lease that used to lapse into a re-execution.
+	//
+	// It is a FIELD on the record rather than a third State value, and that is
+	// load-bearing rather than stylistic. A new State value is unknown to every
+	// reader that predates it, and the unknown-state branch below ends at
+	// onStoreError, which for the shipped fail-open default calls c.Next() and
+	// RE-EXECUTES the mutation. Measured against the pre-change reader: a third
+	// state answered 201 and ran the handler again, while the encoding used here
+	// answered 503 "reconcile the original request first" and ran nothing. So
+	// the record keeps keyStateComplete for readers that route on State, and
+	// those that know this field route on it first. A pre-change reader finds a
+	// completed record with no replay response, which it already refuses through
+	// the post-handler seam — the same instruction, from the same seam.
+	outcomeUnrecorded = "unrecorded"
+	retryAfterSeconds = "1"
 )
 
 var (
@@ -760,15 +772,28 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 		return m.respondKeyReuse(c)
 	}
 
+	// Before State, never after: the fenced record deliberately carries
+	// keyStateComplete so older readers refuse it, and routing on State first
+	// would replay this reader straight past its own fence.
+	if current.Outcome == outcomeUnrecorded {
+		return m.respondOutcomeUnknown(c)
+	}
+
 	switch current.State {
 	case keyStateProcessing:
 		return m.respondConflict(c)
 	case keyStateComplete:
 		return m.replay(c, current.Response)
-	case keyStateOutcomeUnknown:
-		return m.respondOutcomeUnknown(c)
 	default:
-		m.logger.Log(ctx, obs.LevelWarn, "idempotency: store returned invalid record state")
+		// Error, not warn, and it names the value. Under the fail-open default
+		// this line is the ONLY trace that a mutation is about to run a second
+		// time against a key that already holds something.
+		m.logger.Log(ctx, obs.LevelError,
+			"idempotency: store returned invalid record state; the request proceeds unprotected unless fail-closed",
+			"record_state", current.State,
+			"record_outcome", current.Outcome,
+			"fail_closed", m.failClosed,
+		)
 
 		return m.onStoreError(c)
 	}
@@ -909,7 +934,8 @@ func (m *Middleware) markOutcomeUnknown(
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), m.redisTimeout)
 	defer cancel()
 
-	record.State = keyStateOutcomeUnknown
+	record.State = keyStateComplete
+	record.Outcome = outcomeUnrecorded
 	record.Response = nil
 
 	unknown, err := json.Marshal(record)
@@ -932,7 +958,7 @@ func (m *Middleware) markOutcomeUnknown(
 		return
 	}
 
-	m.logger.Log(ctx, obs.LevelWarn, "idempotency: key fenced with an unrecorded outcome", "key_state", keyStateOutcomeUnknown)
+	m.logger.Log(ctx, obs.LevelWarn, "idempotency: key fenced with an unrecorded outcome", "record_outcome", outcomeUnrecorded)
 }
 
 func (m *Middleware) captureResponse(ctx context.Context, c fiber.Ctx) ([]byte, error) {

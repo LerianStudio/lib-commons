@@ -183,8 +183,10 @@ func TestCheck_OversizedResponse_FailsClosedWithoutCompletionMarker(t *testing.T
 	assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
 	assert.Contains(t, body, "IDEMPOTENCY_UNAVAILABLE")
 
-	assert.Contains(t, string(fenced), `"state":"`+keyStateOutcomeUnknown+`"`,
+	assert.Contains(t, string(fenced), `"outcome":"`+outcomeUnrecorded+`"`,
 		"the handler committed and its receipt could not be captured: the key must not come back")
+	assert.Contains(t, string(fenced), `"state":"`+keyStateComplete+`"`,
+		"the state field stays readable by a middleware that predates the outcome field, which refuses it")
 	assert.NotContains(t, string(fenced), `"response"`,
 		"no completion marker — a duplicate is refused, never answered with a fabricated success")
 }

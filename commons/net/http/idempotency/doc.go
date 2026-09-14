@@ -90,7 +90,10 @@
 //   - The built-in Redis store unavailable: request proceeds without idempotency
 //     enforcement by default, or receives 503 with [WithFailClosed].
 //   - A caller-provided store missing, errored, or returning an invalid state:
-//     request receives 503 and the mutation handler does not run.
+//     request receives 503 and the mutation handler does not run. An invalid
+//     state is logged at ERROR level naming the record, because under the
+//     fail-open default that log line is the only trace that a mutation is
+//     about to run unprotected against a key that already holds something.
 //   - Duplicate key whose stored fingerprint differs from this request's: request
 //     is passed to [WithKeyReuseHandler], or receives 422 Unprocessable Content
 //     with code "IDEMPOTENCY_KEY_REUSE" when no custom handler is configured.
@@ -118,10 +121,12 @@
 //     read. Any other undecodable value keeps the store-error path above. This
 //     branch is bounded and removable: no new legacy records are written and
 //     existing ones expire with their TTL.
-//   - Duplicate key in the terminal "outcome unknown" state: request receives
-//     422 Unprocessable Content with code "IDEMPOTENCY_OUTCOME_UNKNOWN", or the
-//     [WithPostHandlerUnavailableHandler] document when that seam is set. No
-//     body is replayed, because none was ever stored.
+//   - Duplicate key whose record is marked with an unrecorded outcome: request
+//     receives 422 Unprocessable Content with code
+//     "IDEMPOTENCY_OUTCOME_UNKNOWN", or the
+//     [WithPostHandlerUnavailableHandler] document when that seam is set. The
+//     mark is checked before the state routing below, and no captured body is
+//     replayed because none was ever stored.
 //   - Handler success: response status, headers, content type, and body are
 //     compare-safely completed only by the acquisition owner. Capture, encoding,
 //     persistence, or stale-owner failures return 503, and the key is fenced in
@@ -192,8 +197,33 @@
 // Because the refusal is terminal it answers 422, not the 409 that carries
 // Retry-After and invites a retry the state can never satisfy, and not 503,
 // which says the store is unavailable when it is the key that is spent. It
-// carries no body: capture or persistence is exactly what failed, so answering
-// with a response document would report an outcome nobody recorded.
+// answers with a refusal document and never replays a captured success body,
+// because none was ever stored: capture or persistence is exactly what failed,
+// so replaying anything here would report an outcome nobody recorded.
+//
+// # Mixed versions during a rolling upgrade
+//
+// The terminal mark is a FIELD on the stored record, not a third state value,
+// and that choice is load-bearing on a money path. During a rolling upgrade both
+// versions share one store, so a record this version writes is read by one that
+// predates it. A third STATE value is unknown to that reader, and the
+// unknown-state branch ends at the fail-open default, which calls the handler:
+// the duplicate would execute while the fence sat in the store unread. Measured
+// against the pre-change reader, a third state answered 201 and ran the handler
+// a second time.
+//
+// So the fenced record keeps "complete" in its state field, which a pre-change
+// reader resolves as a completed record holding no replay response — a case it
+// already refuses through [WithPostHandlerUnavailableHandler], with the same
+// instruction this version gives. Readers that know the field route on it
+// first. Both upgrade directions are therefore safe and no upgrade ordering is
+// required, including a rollback: a record written by this version is refused,
+// not executed, by the version before it.
+//
+// The cost is that the state field of a fenced record is a compatibility
+// encoding rather than the plain truth, and anything reading these records
+// outside this package must read the outcome field to tell a real completion
+// from a fence.
 //
 // The completion-failure branch is unconditional — no route wants a key it has
 // already spent to come back. The handler-failure branch is opt-in through
