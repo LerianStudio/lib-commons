@@ -119,7 +119,12 @@
 //   - Duplicate key holding a canonical JSON record in "complete" state without
 //     an exact replay response, or a response that [ResponseCodec] cannot decode:
 //     503 "IDEMPOTENCY_UNAVAILABLE" is returned. For canonical records the
-//     middleware never fabricates a generic success response.
+//     middleware never fabricates a generic success response. This branch
+//     writes NOTHING: the completed record is already under the key and stays
+//     byte for byte as it is, so no fence is written and no
+//     [constants.IdempotencyFenced] header is set. Fencing belongs to the
+//     post-handler failures below, which is a different branch reached by a
+//     different request — the one whose own handler just ran.
 //   - Exception to the rule above: a duplicate key holding the plain-text record
 //     written by lib-commons v6.4.0
 //     and earlier ("processing:<fingerprint>" / "complete:<fingerprint>"): treated
