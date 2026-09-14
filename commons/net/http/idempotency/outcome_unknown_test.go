@@ -704,3 +704,158 @@ func TestCheck_UnrecognisedRecordState_IsRefusedEvenWhenFailOpen(t *testing.T) {
 		})
 	}
 }
+
+// TestCheck_UnreadableRecord_IsRefusedEvenWhenFailOpen closes the last
+// fail-open-on-an-existing-record path in the package.
+//
+// The discriminator was never whether the bytes parse. Acquire returned
+// acquired=false, which is proof the key is occupied by a live record with an
+// unexpired TTL; corrupt bytes say nothing about that, and leave this reader
+// with strictly LESS information than an unrecognised state, not more. Before
+// this, all three shapes below ran the operation under New(conn) — the
+// constructor the README calls the default.
+//
+// decodeLegacyRecord, three arms above, is deliberately closed for this exact
+// reason: "unknown bytes granting permission to answer a mutation without
+// running it, or worse, to run it a second time". This is where its rejects
+// land, so landing them anywhere that executes would defeat that detector.
+func TestCheck_UnreadableRecord_IsRefusedEvenWhenFailOpen(t *testing.T) {
+	t.Parallel()
+
+	const key = "idempotency:tenant-corrupt:corrupt-key"
+
+	shapes := []struct {
+		name   string
+		stored string
+	}{
+		{"not json at all", `}{ garbage not json`},
+		{"truncated mid-record", `{"state":"complete","fingerp`},
+		{"json, but not an object", `["state","complete"]`},
+	}
+
+	policies := []struct {
+		name string
+		opts []Option
+	}{
+		// The load-bearing row: the shipped default, and the one that executed.
+		{"New, the fail-OPEN shipped default", nil},
+		{"New with FailClosed", []Option{WithFailClosed(true)}},
+	}
+
+	for _, shape := range shapes {
+		for _, policy := range policies {
+			t.Run(shape.name+"/"+policy.name, func(t *testing.T) {
+				t.Parallel()
+
+				mr := miniredis.RunT(t)
+				logger := &recordingLogger{}
+				require.NoError(t, mr.Set(key, shape.stored))
+
+				opts := append([]Option{WithLogger(logger)}, policy.opts...)
+
+				var calls atomic.Int64
+
+				app := countingMoneyApp(New(newRedisClient(t, mr), opts...).Check(), "tenant-corrupt", &calls,
+					func(c fiber.Ctx) error {
+						return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "executed again"})
+					})
+
+				response := doPost(t, app, "corrupt-key")
+				body := readBody(t, response)
+
+				assert.Equal(t, int64(0), calls.Load(),
+					"the key is occupied by a live record; running on top of it is the duplicate this package prevents")
+				assert.Equal(t, http.StatusUnprocessableEntity, response.StatusCode)
+				assert.Contains(t, body, "IDEMPOTENCY_RECORD_UNREADABLE")
+				assert.NotContains(t, body, "IDEMPOTENCY_STATE_UNRECOGNISED",
+					"damaged bytes are not version skew, and an operator triaging the two must tell them apart")
+
+				after, err := mr.Get(key)
+				require.NoError(t, err)
+				assert.Equal(t, shape.stored, after, "the bytes must survive for inspection")
+
+				line := logger.find(t, obs.LevelError, "could not be decoded")
+				assert.Equal(t, keyDigest(key), line.kv["idempotency_key_digest"])
+				assert.Equal(t, "tenant-corrupt", line.kv["tenant_id"])
+			})
+		}
+	}
+}
+
+// TestCheck_ServerErrorPolicyFence_AlwaysReportsWhetherTheKeyIsHeld covers the
+// one branch where the header is the SOLE carrier.
+//
+// Under the Fence policy the middleware must return the handler's error so the
+// application's error handler owns the response; it writes no document of its
+// own, so nothing but [constants.IdempotencyFenced] can say whether the fence
+// landed. The other header assertions in this file sit on the
+// completion-failure path, where the body carries the same fact — they would
+// stay green if this branch reported the wrong value, which is precisely the
+// mutation this test exists to catch.
+func TestCheck_ServerErrorPolicyFence_AlwaysReportsWhetherTheKeyIsHeld(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// wrap decides whether the fence write can land.
+		wrap       func(Store) Store
+		wantFenced string
+		// callsAfterLease is the fact the header is reporting.
+		callsAfterLease int64
+	}{
+		{
+			name:            "fence lands",
+			wrap:            func(s Store) Store { return s },
+			wantFenced:      "true",
+			callsAfterLease: 1,
+		},
+		{
+			// 2, not 3: the fence never landed, but the processing record it
+			// failed to replace is still there, so the immediate resend meets
+			// the false in-flight and only the one after the lease executes.
+			// Which is the whole point of the header — that leftover lease is
+			// not a fence and expires without one.
+			name:            "fence write fails",
+			wrap:            func(s Store) Store { return &alwaysFailingComplete{Store: s} },
+			wantFenced:      "false",
+			callsAfterLease: 2,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			store, mr := realRedisStore(t)
+			middleware := NewWithStore(testCase.wrap(store),
+				WithServerErrorPolicy(ServerErrorPolicyFence),
+				WithKeyTTL(fenceRetention),
+				WithProcessingTTL(fenceLease),
+			)
+
+			var calls atomic.Int64
+
+			// A handler cut off by its deadline: the framework answers 500
+			// while the handler is still running and may still commit.
+			app := countingMoneyApp(middleware.Check(), "tenant-fence-header", &calls, func(c fiber.Ctx) error {
+				return c.SendStatus(fiber.StatusInternalServerError)
+			})
+
+			first := doPost(t, app, "fence-header-key")
+			first.Body.Close()
+
+			require.Equal(t, http.StatusInternalServerError, first.StatusCode,
+				"this branch must leave the response to the application's error handler")
+			assert.Equal(t, testCase.wantFenced, first.Header.Get(chttp.IdempotencyFenced),
+				"the only thing that can say whether a resend is refused or arms the operation again")
+
+			// And the header has to be telling the truth.
+			doPost(t, app, "fence-header-key").Body.Close()
+			mr.FastForward(pastTheLease)
+			doPost(t, app, "fence-header-key").Body.Close()
+
+			assert.Equal(t, testCase.callsAfterLease, calls.Load(),
+				"how many times one idempotency key executed the operation")
+		})
+	}
+}

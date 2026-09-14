@@ -95,9 +95,15 @@
 //     with 422 "IDEMPOTENCY_STATE_UNRECOGNISED" — or the
 //     [WithPostHandlerUnavailableHandler] document — REGARDLESS of
 //     [WithFailClosed], and logged at ERROR naming the state. Nothing is
-//     written, so the record survives for a reader that understands it. This is
-//     the only branch where the fail-open default is overruled, and the reason
-//     is in "Mixed versions during a rolling upgrade" below.
+//     written, so the record survives for a reader that understands it.
+//   - An EXISTING record whose bytes decode as neither the current format nor
+//     the legacy one: refused the same way, with 422
+//     "IDEMPOTENCY_RECORD_UNREADABLE" and an ERROR log. A separate code because
+//     damaged bytes are not version skew and an operator triaging the two needs
+//     to tell them apart.
+//
+// Those two are the only branches where the fail-open default is overruled, and
+// the reason is in "Mixed versions during a rolling upgrade" below.
 //   - Duplicate key whose stored fingerprint differs from this request's: request
 //     is passed to [WithKeyReuseHandler], or receives 422 Unprocessable Content
 //     with code "IDEMPOTENCY_KEY_REUSE" when no custom handler is configured.
@@ -238,13 +244,21 @@
 // The same problem points FORWARD, and is closed the same way. This encoding
 // protects a future reader from what this version writes; nothing in it
 // protects THIS reader from what a future version writes. So an existing record
-// whose state this version does not recognise is refused outright, regardless
-// of [WithFailClosed] — see the branch list above. Fail-open is right when the
-// middleware learned nothing; it is wrong once the middleware knows the key
+// this version cannot interpret — an unrecognised state, or bytes that do not
+// decode at all — is refused outright, regardless of [WithFailClosed]; see the
+// branch list above. Without that the next state value anyone adds would
+// reintroduce this same double execution on the older half of the next rolling
+// upgrade.
+//
+// The line is drawn at whether the store handed back an EXISTING value, not at
+// whether this version can parse it. Acquire reporting the key already taken is
+// proof that it holds a live record with an unexpired TTL, and damaged bytes
+// say nothing about that — they leave this reader with less information, not
+// more. Fail-open is right when the middleware learned nothing: no store, a
+// store error, no value at all. It is wrong once the middleware knows the key
 // holds somebody's record, because proceeding there is not running unprotected,
-// it is running on top of an outcome sitting in the store. Without that arm the
-// next state value anyone adds would reintroduce this same double execution on
-// the older half of the next rolling upgrade.
+// it is running on top of an outcome sitting in the store. A store that
+// actually errors keeps its configured policy, unchanged.
 //
 // One rollout wrinkle, and its remedy: mid-rollout the same key answers 422
 // from an upgraded pod and 503 from one that is not. Neither executes, so this
@@ -284,7 +298,9 @@
 //     attempted, "true" or "false". It is a header rather than a body field
 //     because the handler-failure branch writes no body of its own — the
 //     application's error handler owns that response — and a header reaches the
-//     client through it either way.
+//     client through it either way. On that branch it is the SOLE carrier, so a
+//     consumer rewriting the 5xx there must read it; see
+//     [WithServerErrorPolicy].
 //   - A completion failure whose fence did NOT land answers 503
 //     "IDEMPOTENCY_UNFENCED" instead of the ordinary post-handler 503, and it
 //     does not route through [WithPostHandlerUnavailableHandler]: a service

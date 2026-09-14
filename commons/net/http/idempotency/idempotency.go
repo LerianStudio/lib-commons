@@ -352,6 +352,22 @@ func WithClientErrorPolicy(policy ClientErrorPolicy) Option {
 // is refused by the key rather than by the instruction in a refusal body. The
 // window is therefore a deliberate choice — it is how long an operator or a
 // reconciliation job has to clear the key before it frees itself.
+//
+// # This option puts one obligation on the consumer
+//
+// The fence is best-effort, so it can fail, and on THIS branch the middleware
+// cannot tell you so in the body: it must return the handler's error for your
+// own Fiber error handler to own the response. The single carrier is the
+// [constants.IdempotencyFenced] response header, "true" or "false".
+//
+// An error handler that rewrites this 5xx into its own document — which is the
+// reason most services adopt this option — MUST read that header and carry the
+// distinction into what it writes. Rewriting both outcomes into one document
+// puts back exactly the indistinguishability this reports: the client is told
+// "this may have executed, reconcile" in both cases and cannot tell whether a
+// resend under the same key will be refused or will execute the operation a
+// second time. The library cannot discharge that for you without seizing your
+// error handling, so it is stated here instead of assumed.
 func WithServerErrorPolicy(policy ServerErrorPolicy) Option {
 	return func(m *Middleware) {
 		if policy == ServerErrorPolicyRelease || policy == ServerErrorPolicyFence {
@@ -637,6 +653,40 @@ func (m *Middleware) respondUnrecognisedState(c fiber.Ctx) error {
 	)
 }
 
+// respondUnreadableRecord answers a duplicate whose key holds bytes that decode
+// as neither the current record format nor the legacy one.
+//
+// It refuses regardless of [WithFailClosed], for the reason spelled out on
+// [Middleware.respondUnrecognisedState], and the reason transfers without
+// weakening: the discriminator was never whether the bytes parse, it is whether
+// the store handed back an existing value at all. Acquire returning
+// acquired=false is proof the key is occupied by a live record with an
+// unexpired TTL, and corrupt bytes say nothing about that. The key is spent and
+// its outcome is unknowable — which is strictly less information than the
+// unrecognised-state case, not more.
+//
+// Reading it the other way is the exact failure decodeLegacyRecord was written
+// to prevent: unknown bytes granting permission to run a mutation a second
+// time. That detector is deliberately closed; this is where its rejects land,
+// and it would be self-defeating for them to land somewhere that executes.
+//
+// It carries its own code rather than reusing the unrecognised-state one. That
+// message says "written by a newer version", which is true for version skew and
+// false here: these bytes are damaged, truncated, or were written by something
+// that is not this middleware, and an operator triaging the two needs to tell
+// them apart. Nothing is written, so the bytes survive for inspection.
+func (m *Middleware) respondUnreadableRecord(c fiber.Ctx) error {
+	if m.onPostHandlerUnavailable != nil {
+		return m.onPostHandlerUnavailable(c)
+	}
+
+	return libHTTP.RespondError(c, http.StatusUnprocessableEntity,
+		"IDEMPOTENCY_RECORD_UNREADABLE",
+		"this idempotency key holds a record that cannot be decoded; "+
+			"do not retry with a new key — reconcile the original request first",
+	)
+}
+
 // respondUnfenced answers a request whose operation may already have committed
 // and whose key could NOT be fenced: the store failed twice, once on the
 // receipt and once on the fence.
@@ -834,9 +884,15 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 	if err := json.Unmarshal(stored, &current); err != nil {
 		legacy, isLegacy := decodeLegacyRecord(stored)
 		if !isLegacy {
-			m.logger.Log(ctx, obs.LevelWarn, "idempotency: failed to unmarshal stored record", "error", err)
+			m.logger.Log(ctx, obs.LevelError,
+				"idempotency: stored record could not be decoded; refusing the request",
+				"idempotency_key_digest", keyDigest(key),
+				"tenant_id", tmcore.GetTenantIDContext(ctx),
+				"record_bytes", len(stored),
+				"error", err,
+			)
 
-			return m.onStoreError(c)
+			return m.respondUnreadableRecord(c)
 		}
 
 		m.logger.Log(ctx, obs.LevelWarn,

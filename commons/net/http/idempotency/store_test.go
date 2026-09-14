@@ -130,10 +130,13 @@ func TestCheck_InjectedStore_StoredStates(t *testing.T) {
 			wantStatus: http.StatusServiceUnavailable, wantBody: "IDEMPOTENCY_UNAVAILABLE",
 		},
 		{
-			name:       "invalid backend record fails closed",
+			// An EXISTING record that cannot be decoded. The key is occupied,
+			// so this is refused whatever the policy says — not routed to the
+			// store-error path, which exists for learning nothing at all.
+			name:       "undecodable backend record is refused outright",
 			stored:     []byte("invalid"),
-			wantStatus: http.StatusServiceUnavailable,
-			wantBody:   "IDEMPOTENCY_UNAVAILABLE",
+			wantStatus: http.StatusUnprocessableEntity,
+			wantBody:   "IDEMPOTENCY_RECORD_UNREADABLE",
 		},
 	}
 

@@ -179,7 +179,7 @@ func TestCheck_LegacyPlainTextRecord_FailClosedStoreAlsoRefuses(t *testing.T) {
 // every other undecodable value keeps today's store-error path in BOTH
 // postures. A permissive detector would be a second version of the same bug:
 // unknown bytes granting permission to act on the money path.
-func TestCheck_UndecodableNonLegacyRecord_KeepsStoreErrorPath(t *testing.T) {
+func TestCheck_UndecodableNonLegacyRecord_IsRefusedWhateverThePolicy(t *testing.T) {
 	t.Parallel()
 
 	values := map[string]string{
@@ -198,25 +198,35 @@ func TestCheck_UndecodableNonLegacyRecord_KeepsStoreErrorPath(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			t.Run("fail_open_runs_handler_once", func(t *testing.T) {
-				t.Parallel()
+			// Both policies, one expectation. This used to be two: fail-open
+			// ran the handler and fail-closed answered 503. The fail-open half
+			// was the defect — every value here is an EXISTING record, returned
+			// by an Acquire that reported the key already taken, so the key is
+			// occupied by something with an unexpired TTL and running on top of
+			// it is the duplicate this package exists to prevent. Fail-open is
+			// for learning nothing; here the middleware learned the key is
+			// spent and merely cannot read by whom.
+			//
+			// This is also where decodeLegacyRecord's rejects land, and that
+			// detector is closed precisely so unknown bytes cannot grant
+			// permission to run a mutation a second time.
+			for _, policy := range []struct {
+				name       string
+				failClosed bool
+			}{
+				{"fail_open", false},
+				{"fail_closed", true},
+			} {
+				t.Run(policy.name, func(t *testing.T) {
+					t.Parallel()
 
-				calls, response, body := runWithSeededValue(t, "tenant-nonlegacy-fo", stored, false)
+					calls, response, body := runWithSeededValue(t, "tenant-nonlegacy-"+policy.name, stored, policy.failClosed)
 
-				assert.Equal(t, int64(1), calls, "fail-open behaviour must be unchanged")
-				assert.Equal(t, http.StatusCreated, response.StatusCode)
-				assert.Contains(t, body, `"status":"created"`)
-			})
-
-			t.Run("fail_closed_rejects_with_503", func(t *testing.T) {
-				t.Parallel()
-
-				calls, response, body := runWithSeededValue(t, "tenant-nonlegacy-fc", stored, true)
-
-				assert.Equal(t, int64(0), calls, "fail-closed behaviour must be unchanged")
-				assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
-				assert.Contains(t, body, "IDEMPOTENCY_UNAVAILABLE")
-			})
+					assert.Equal(t, int64(0), calls, "an occupied key must never re-run the operation")
+					assert.Equal(t, http.StatusUnprocessableEntity, response.StatusCode)
+					assert.Contains(t, body, "IDEMPOTENCY_RECORD_UNREADABLE")
+				})
+			}
 		})
 	}
 }
