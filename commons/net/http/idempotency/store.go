@@ -15,10 +15,20 @@ type cachedResponse struct {
 }
 
 type storeRecord struct {
+	// State is what EVERY version of the middleware routes on, including the
+	// versions that predate Outcome. It is therefore a compatibility encoding,
+	// not always the plain truth: a fenced record carries keyStateComplete so a
+	// pre-Outcome reader sharing this store answers "finished, no receipt,
+	// reconcile" instead of falling through to an unknown-state branch that
+	// fails OPEN and re-executes the mutation. Outcome carries the truth.
 	State       string `json:"state"`
 	Fingerprint string `json:"fingerprint"`
 	Owner       string `json:"owner"`
 	Response    []byte `json:"response,omitempty"`
+	// Outcome is empty for an ordinary record. outcomeUnrecorded marks a key
+	// spent by a request that left no recorded outcome, and readers that know
+	// the field route on it BEFORE State.
+	Outcome string `json:"outcome,omitempty"`
 }
 
 // Store provides exactly the three atomic byte operations required by the

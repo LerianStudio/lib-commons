@@ -156,6 +156,19 @@ func TestCheck_OversizedResponse_FailsClosedWithoutCompletionMarker(t *testing.T
 	store.EXPECT().Acquire(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(nil, true, nil)
 
+	// The one write the key receives is the terminal fence, and the assertion
+	// is on its BYTES. "Without completion marker" is about what a duplicate
+	// could be answered with: no captured response means no replayable success
+	// document, so nothing may later report an outcome that was never recorded.
+	var fenced []byte
+
+	store.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ string, _, completed []byte, _ time.Duration) (bool, error) {
+			fenced = append([]byte(nil), completed...)
+
+			return true, nil
+		})
+
 	middleware := NewWithStore(store, WithMaxBodyCache(8))
 	app := fiber.New()
 	app.Use(tenantMiddleware("tenant-size"))
@@ -169,6 +182,13 @@ func TestCheck_OversizedResponse_FailsClosedWithoutCompletionMarker(t *testing.T
 
 	assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
 	assert.Contains(t, body, "IDEMPOTENCY_UNAVAILABLE")
+
+	assert.Contains(t, string(fenced), `"outcome":"`+outcomeUnrecorded+`"`,
+		"the handler committed and its receipt could not be captured: the key must not come back")
+	assert.Contains(t, string(fenced), `"state":"`+keyStateComplete+`"`,
+		"the state field stays readable by a middleware that predates the outcome field, which refuses it")
+	assert.NotContains(t, string(fenced), `"response"`,
+		"no completion marker — a duplicate is refused, never answered with a fabricated success")
 }
 
 func TestCheck_RetryAfter_IsExclusiveToInFlightConflict(t *testing.T) {

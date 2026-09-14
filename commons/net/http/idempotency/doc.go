@@ -89,8 +89,20 @@
 //     set, a 400 JSON response with code "VALIDATION_ERROR" is returned.
 //   - The built-in Redis store unavailable: request proceeds without idempotency
 //     enforcement by default, or receives 503 with [WithFailClosed].
-//   - A caller-provided store missing, errored, or returning an invalid state:
-//     request receives 503 and the mutation handler does not run.
+//   - A caller-provided store missing or errored: request receives 503 and the
+//     mutation handler does not run.
+//   - An EXISTING record whose state this version does not recognise: refused
+//     with 422 "IDEMPOTENCY_STATE_UNRECOGNISED" — or the
+//     [WithPostHandlerUnavailableHandler] document — REGARDLESS of
+//     [WithFailClosed], and logged at ERROR naming the state. Nothing is
+//     written, so the record survives for a reader that understands it.
+//   - An EXISTING record whose bytes decode as neither the current format nor
+//     the legacy one: refused the same way, with 422
+//     "IDEMPOTENCY_RECORD_UNREADABLE" and an ERROR log. A separate code because
+//     damaged bytes are not version skew and an operator triaging the two needs
+//     to tell them apart. This bullet and the one above it are the only two
+//     branches where the fail-open default is overruled; the reason is in
+//     "Mixed versions during a rolling upgrade" below.
 //   - Duplicate key whose stored fingerprint differs from this request's: request
 //     is passed to [WithKeyReuseHandler], or receives 422 Unprocessable Content
 //     with code "IDEMPOTENCY_KEY_REUSE" when no custom handler is configured.
@@ -106,7 +118,12 @@
 //   - Duplicate key holding a canonical JSON record in "complete" state without
 //     an exact replay response, or a response that [ResponseCodec] cannot decode:
 //     503 "IDEMPOTENCY_UNAVAILABLE" is returned. For canonical records the
-//     middleware never fabricates a generic success response.
+//     middleware never fabricates a generic success response. This branch
+//     writes NOTHING: the completed record is already under the key and stays
+//     byte for byte as it is, so no fence is written and no
+//     [constants.IdempotencyFenced] header is set. Fencing belongs to the
+//     post-handler failures below, which is a different branch reached by a
+//     different request — the one whose own handler just ran.
 //   - Exception to the rule above: a duplicate key holding the plain-text record
 //     written by lib-commons v6.4.0
 //     and earlier ("processing:<fingerprint>" / "complete:<fingerprint>"): treated
@@ -115,20 +132,33 @@
 //     change. The same fingerprint gate applies; a matching "processing" record
 //     returns 409, and a matching "complete" record returns 200 "IDEMPOTENT"
 //     because v6.4.0 kept the response body in a sidecar key that [Store] cannot
-//     read. Any other undecodable value keeps the store-error path above. This
-//     branch is bounded and removable: no new legacy records are written and
-//     existing ones expire with their TTL.
+//     read. Any other undecodable value is refused as an unreadable record, per
+//     the bullet above: the detector is closed, and what it turns away is an
+//     existing record this version cannot read, never a request free to run.
+//     This branch is bounded and removable: no new legacy records are written
+//     and existing ones expire with their TTL.
+//   - Duplicate key whose record is marked with an unrecorded outcome: request
+//     receives 422 Unprocessable Content with code
+//     "IDEMPOTENCY_OUTCOME_UNRECORDED", or the
+//     [WithPostHandlerUnavailableHandler] document when that seam is set. The
+//     mark is checked before the state routing below, and no captured body is
+//     replayed because none was ever stored.
 //   - Handler success: response status, headers, content type, and body are
 //     compare-safely completed only by the acquisition owner. Capture, encoding,
-//     persistence, or stale-owner failures return 503 and retain processing
-//     ownership so callers reconcile instead of retrying under a new key. That
-//     503 is the one branch [WithPostHandlerUnavailableHandler] answers, because
-//     the mutation already happened.
+//     persistence, or stale-owner failures return 503, and the key is marked
+//     terminal (see below) so callers reconcile instead of retrying under a new
+//     key. That 503 is the one branch [WithPostHandlerUnavailableHandler]
+//     answers, because the mutation already happened — but ONLY when the mark
+//     was actually persisted. When it was not, the answer is 503
+//     "IDEMPOTENCY_UNFENCED" instead, which says the key is unprotected and a
+//     resend may execute the operation again.
 //   - Handler 4xx: cached and replayed by default. Use
 //     [WithClientErrorPolicy] with [ClientErrorPolicyRelease] to compare-safely
 //     release the record and allow a corrected request to reuse the key.
 //   - Handler failure or 5xx: the acquisition is compare-safely released only
-//     by its owner, allowing a retry without deleting a replacement lock.
+//     by its owner, allowing a retry without deleting a replacement lock. Use
+//     [WithServerErrorPolicy] with [ServerErrorPolicyFence] on routes where a
+//     failure there may still have committed, so the key is fenced instead.
 //
 // # Lease and retention are two lifetimes
 //
@@ -169,6 +199,127 @@
 // authenticated encryption for sensitive bodies. [WithMaxBodyCache] bounds raw
 // response bodies, and encoded output is additionally bounded to twice that
 // value.
+//
+// # A key whose outcome was never recorded
+//
+// Two branches used to leave a key FREE while its handler had already run, or
+// might still be running. A completion that fails after the handler returned
+// leaves nothing but the processing record, which lapses with the in-flight
+// lease. A handler failure or 5xx releases the record outright. Either way a
+// resend under the same key acquires it again and executes the mutation a
+// SECOND time, and the only thing between the two executions is the
+// instruction in a refusal body that no client is obliged to read.
+//
+// The record under the key is now MARKED terminal instead: the request that
+// spent it left no recorded outcome, and the key says so for the RETENTION TTL
+// rather than for the lease. The mark is a field ("outcome"), and the state
+// field keeps "complete" — see "Mixed versions during a rolling upgrade" below
+// for why that is load-bearing rather than cosmetic. A duplicate inside that
+// window is refused by the key.
+// Because the refusal is terminal it answers 422, not the 409 that carries
+// Retry-After and invites a retry the state can never satisfy, and not 503,
+// which says the store is unavailable when it is the key that is spent. It
+// answers with a refusal document and never replays a captured success body,
+// because none was ever stored: capture or persistence is exactly what failed,
+// so replaying anything here would report an outcome nobody recorded.
+//
+// # Mixed versions during a rolling upgrade
+//
+// The terminal mark is a FIELD on the stored record, not a third state value,
+// and that choice is load-bearing on a money path. During a rolling upgrade both
+// versions share one store, so a record this version writes is read by one that
+// predates it. A third STATE value is unknown to that reader, and the
+// unknown-state branch ends at the fail-open default, which calls the handler:
+// the duplicate would execute while the fence sat in the store unread. Measured
+// against the pre-change reader, a third state answered 201 and ran the handler
+// a second time.
+//
+// So the fenced record keeps "complete" in its state field, which a pre-change
+// reader resolves as a completed record holding no replay response — a case it
+// already refuses through [WithPostHandlerUnavailableHandler], with the same
+// instruction this version gives. Readers that know the field route on it
+// first. Both upgrade directions are therefore safe and no upgrade ordering is
+// required, including a rollback: a record written by this version is refused,
+// not executed, by the version before it.
+//
+// The cost is that the state field of a fenced record is a compatibility
+// encoding rather than the plain truth, and anything reading these records
+// outside this package must read the outcome field to tell a real completion
+// from a fence.
+//
+// The same problem points FORWARD, and is closed the same way. This encoding
+// protects a future reader from what this version writes; nothing in it
+// protects THIS reader from what a future version writes. So an existing record
+// this version cannot interpret — an unrecognised state, or bytes that do not
+// decode at all — is refused outright, regardless of [WithFailClosed]; see the
+// branch list above. Without that the next state value anyone adds would
+// reintroduce this same double execution on the older half of the next rolling
+// upgrade.
+//
+// The line is drawn at whether the store handed back an EXISTING value, not at
+// whether this version can parse it. Acquire reporting the key already taken is
+// proof that it holds a live record with an unexpired TTL, and damaged bytes
+// say nothing about that — they leave this reader with less information, not
+// more. Fail-open is right when the middleware learned nothing: no store, a
+// store error, no value at all. It is wrong once the middleware knows the key
+// holds somebody's record, because proceeding there is not running unprotected,
+// it is running on top of an outcome sitting in the store. A store that
+// actually errors keeps its configured policy, unchanged.
+//
+// One rollout wrinkle, and its remedy: mid-rollout the same key answers 422
+// from an upgraded pod and 503 from one that is not. Neither executes, so this
+// is a consistency wrinkle and not a safety one, and it disappears entirely for
+// a service that wires [WithPostHandlerUnavailableHandler] — then both pods
+// answer that service's own document. Wire the seam before rolling out if a
+// uniform answer during the rollout matters; a client with a blanket
+// retry-on-503 policy would otherwise retry and then meet a terminal 422.
+//
+// The completion-failure branch is unconditional — no route wants a key it has
+// already spent to come back. The handler-failure branch is opt-in through
+// [WithServerErrorPolicy], because releasing there is right for a route whose
+// 5xx are refusals and wrong for one whose handler can commit before its
+// response is written; only the route's owner knows which it is. At that point
+// a handler error has not even reached the application's Fiber error handler,
+// so the status the caller will finally see does not exist yet and the
+// middleware cannot infer the meaning for itself.
+//
+// The fence is BEST-EFFORT by construction and the limit is nameable: it writes
+// through Store.Complete to the same store whose failure brought it there. It
+// therefore closes a transient failure — a timeout, a dropped connection, a
+// failover — and not a total store outage, during which nothing durable can be
+// written under the key at all and the key still lapses with its lease. The
+// compare-and-set is not incidental either: a write lands only while the
+// request still owns the key, so a stale owner leaves the current owner's
+// record untouched instead of stamping a fence over it.
+//
+// # Saying whether the fence landed
+//
+// Best-effort is acceptable. Being unable to tell which effort failed is not:
+// "reconcile the original request" answered for both outcomes hides whether a
+// resend under this key would be refused or would arm the operation a second
+// time, and no client can be asked to guess that. So the middleware says so,
+// three ways:
+//
+//   - [constants.IdempotencyFenced] is set on every response where a fence was
+//     attempted, "true" or "false". It is a header rather than a body field
+//     because the handler-failure branch writes no body of its own — the
+//     application's error handler owns that response — and a header reaches the
+//     client through it either way. On that branch it is the SOLE carrier, so a
+//     consumer rewriting the 5xx there must read it; see
+//     [WithServerErrorPolicy].
+//   - A completion failure whose fence did NOT land answers 503
+//     "IDEMPOTENCY_UNFENCED" instead of the ordinary post-handler 503, and it
+//     does not route through [WithPostHandlerUnavailableHandler]: a service
+//     wired that seam for the fenced case, and reusing it here would put the
+//     indistinguishability straight back. Neither answer carries Retry-After.
+//   - A failed fence logs at ERROR naming the key, so the alert is actionable.
+//     The key appears as a SHA-256 digest of the store key, never raw, because
+//     an idempotency key is client-supplied and services put business
+//     references in it; the digest is reproducible from the key the client
+//     holds. The tenant ID and the acquisition owner are logged as they are.
+//
+// The retention TTL is therefore also an operational choice: it is how long an
+// operator or a reconciliation job has before a fenced key frees itself.
 //
 // # Requiring a key or a tenant
 //
@@ -211,8 +362,12 @@
 // [WithRequireKey], [WithTenantRequiredHandler] for a missing tenant under
 // [WithRequireTenant], [WithUnavailableHandler] for fail-closed store failures
 // observed BEFORE the handler runs, [WithPostHandlerUnavailableHandler] for the
-// ones observed AFTER it ran, [WithConflictHandler] for an in-flight duplicate,
-// and [WithKeyReuseHandler] for the same key used by a different request.
+// ones observed AFTER it ran and for a duplicate that finds a record marked
+// terminal or written in an unrecognised state, [WithConflictHandler] for an
+// in-flight duplicate, and [WithKeyReuseHandler] for the same key used by a
+// different request. The one refusal with no seam is 503
+// "IDEMPOTENCY_UNFENCED": it exists precisely to be distinguishable from the
+// seam a service already wired.
 //
 // The last two 503s are one status carrying opposite instructions, which is why
 // they have separate seams. Before the handler, nothing ran and the caller

@@ -404,11 +404,14 @@ func TestCheck_PartialStoredRecord_RoutesOnStoredFieldsOnly(t *testing.T) {
 		},
 		{
 			// Fingerprint matches, so routing reaches the state switch: an empty
-			// state must fall to the store-error path, not inherit "processing".
-			name:       "matching fingerprint without state takes the store-error path",
+			// state must NOT inherit "processing" and must not reach the
+			// handler. It is an existing record this version cannot interpret,
+			// so it is refused outright — and refused whatever [WithFailClosed]
+			// says, which is why this row no longer names the store-error path.
+			name:       "matching fingerprint without state is refused, never inherited",
 			stored:     `{"fingerprint":"` + current + `"}`,
-			wantStatus: http.StatusServiceUnavailable,
-			wantBody:   "IDEMPOTENCY_UNAVAILABLE",
+			wantStatus: http.StatusUnprocessableEntity,
+			wantBody:   "IDEMPOTENCY_STATE_UNRECOGNISED",
 		},
 	}
 
@@ -838,7 +841,17 @@ func TestCheck_ConcurrentSameKey(t *testing.T) {
 
 // TestCheck_WithMaxBodyCache verifies that an oversized response never creates
 // a completion marker without an exact replay payload. The original call fails
-// closed after the handler, and the retained processing record blocks retries.
+// closed after the handler, and the key blocks every retry for the retention
+// window rather than for the in-flight lease. (The two are equal here, since
+// neither TTL is overridden; the gap between them is exercised where they
+// differ, in TestCheck_CompletionFailure_FencesTheKeyForTheRetentionWindow.)
+//
+// The refusal is terminal, not the in-flight 409 this used to answer. That 409
+// was a FALSE in-flight: nothing was in flight, the handler had already
+// returned and committed, and "still processing, retry in 1 second" described a
+// request that would never complete. A client that took the invitation retried
+// until the lease lapsed and then executed the mutation a second time under the
+// same key.
 func TestCheck_WithMaxBodyCache(t *testing.T) {
 	t.Parallel()
 
@@ -867,7 +880,7 @@ func TestCheck_WithMaxBodyCache(t *testing.T) {
 
 	assert.Equal(t, http.StatusServiceUnavailable, resp1.StatusCode)
 
-	// Second request — same key. The processing marker remains so the mutation
+	// Second request — same key. The terminal record holds, so the mutation
 	// cannot execute again without reconciliation.
 	req2 := httptest.NewRequest(http.MethodPost, "/test", nil)
 	req2.Header.Set(chttp.IdempotencyKey, "big-body-key")
@@ -877,10 +890,10 @@ func TestCheck_WithMaxBodyCache(t *testing.T) {
 
 	body2 := readBody(t, resp2)
 
-	assert.Equal(t, http.StatusConflict, resp2.StatusCode)
-	assert.Contains(t, body2, "IDEMPOTENCY_CONFLICT")
-	assert.Equal(t, "true", resp2.Header.Get(chttp.IdempotencyReplayed))
-	assert.Equal(t, retryAfterSeconds, resp2.Header.Get(fiber.HeaderRetryAfter))
+	assert.Equal(t, http.StatusUnprocessableEntity, resp2.StatusCode)
+	assert.Contains(t, body2, "IDEMPOTENCY_OUTCOME_UNRECORDED")
+	assert.Empty(t, resp2.Header.Get(fiber.HeaderRetryAfter),
+		"the answer never changes inside the retention window, so it must not advertise a retry")
 }
 
 // ---------------------------------------------------------------------------
