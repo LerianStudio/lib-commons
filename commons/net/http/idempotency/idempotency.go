@@ -27,6 +27,13 @@ const (
 	fingerprintScopeDomain = "lib-commons:idempotency:fingerprint-scope:v1\x00"
 	keyStateProcessing     = "processing"
 	keyStateComplete       = "complete"
+	// keyStateOutcomeUnknown is TERMINAL: the key was spent by a request whose
+	// outcome was never recorded under it. It is written where the middleware
+	// would otherwise leave the key free — a completion that failed after the
+	// handler already ran, and (opt-in) a handler failure or 5xx that the route
+	// declares ambiguous. It holds the RETENTION TTL, not the in-flight lease,
+	// so the fence outlives the lease that used to lapse into a re-execution.
+	keyStateOutcomeUnknown = "outcome_unknown"
 	retryAfterSeconds      = "1"
 )
 
@@ -108,6 +115,20 @@ const (
 	ClientErrorPolicyRelease
 )
 
+// ServerErrorPolicy controls what a handler failure or a 5xx response does to
+// the owned idempotency record.
+type ServerErrorPolicy uint8
+
+const (
+	// ServerErrorPolicyRelease preserves the shipped behavior: the record is
+	// compare-safely released, so the same key may be retried immediately.
+	ServerErrorPolicyRelease ServerErrorPolicy = iota
+	// ServerErrorPolicyFence replaces the record with a terminal
+	// outcome-unknown record held for the retention TTL, so the same key is
+	// refused for the whole retry window instead of freed.
+	ServerErrorPolicyFence
+)
+
 // Middleware provides at-most-once request semantics using an atomic [Store].
 type Middleware struct {
 	store                    Store
@@ -122,6 +143,7 @@ type Middleware struct {
 	fingerprintScopeProvider FingerprintScopeProvider
 	responseCodec            ResponseCodec
 	clientErrorPolicy        ClientErrorPolicy
+	serverErrorPolicy        ServerErrorPolicy
 	onRejected               func(c fiber.Ctx) error
 	onConflict               fiber.Handler
 	onKeyReuse               fiber.Handler
@@ -285,6 +307,42 @@ func WithClientErrorPolicy(policy ClientErrorPolicy) Option {
 	return func(m *Middleware) {
 		if policy == ClientErrorPolicyCache || policy == ClientErrorPolicyRelease {
 			m.clientErrorPolicy = policy
+		}
+	}
+}
+
+// WithServerErrorPolicy controls what a handler failure or a 5xx response does
+// to the owned record. The default is [ServerErrorPolicyRelease], the shipped
+// behavior. Invalid values leave the default unchanged.
+//
+// Releasing reads "the handler refused, nothing happened, retry the same key".
+// That inference is right for a route whose failures are refusals and wrong for
+// one whose handler can commit before its response is written. A request cut off
+// by a deadline is the clearest case: the framework answers 500 while the
+// handler is still running, so the key is freed for a redelivery that executes
+// the mutation a SECOND time, and the effect of the first is never reconciled.
+//
+// The middleware cannot tell those apart. At this point a handler error has not
+// even reached the application's Fiber error handler yet, so the status the
+// caller will finally see does not exist: only the route's owner knows whether a
+// failure there means "nothing ran" or "this may have moved money". Mount
+// [ServerErrorPolicyFence] on the routes where the answer is the second one:
+//
+//	money := idempotency.New(conn,
+//	    idempotency.WithServerErrorPolicy(idempotency.ServerErrorPolicyFence),
+//	    idempotency.WithKeyTTL(24*time.Hour), // how long the key stays fenced
+//	)
+//	app.Post("/payoffs", money.Check(), createPayoffHandler)
+//
+// Under it the key is neither released nor left to lapse: it holds a terminal
+// outcome-unknown record for the retention TTL, and a resend inside that window
+// is refused by the key rather than by the instruction in a refusal body. The
+// window is therefore a deliberate choice — it is how long an operator or a
+// reconciliation job has to clear the key before it frees itself.
+func WithServerErrorPolicy(policy ServerErrorPolicy) Option {
+	return func(m *Middleware) {
+		if policy == ServerErrorPolicyRelease || policy == ServerErrorPolicyFence {
+			m.serverErrorPolicy = policy
 		}
 	}
 }
@@ -514,6 +572,41 @@ func (m *Middleware) respondPostHandlerStoreError(c fiber.Ctx) error {
 	)
 }
 
+// respondOutcomeUnknown answers a request whose key holds the terminal
+// outcome-unknown record: an earlier request under this exact key ran without
+// leaving a recorded outcome, and this one must not run.
+//
+// It answers 422, not 409 and not 503, following what the two statuses already
+// mean here. 409 is the in-flight duplicate and carries Retry-After: 1 — an
+// invitation to retry that this state can never satisfy, since no amount of
+// waiting inside the retention window changes the answer. 503 says the store is
+// unavailable, and it is not; the store is answering, the KEY is terminal.
+// That leaves 422, which the package already spends on the other terminal
+// "this key is spent, reconcile the original request" refusal
+// ([respondKeyReuse]), and which no client retries on a timer.
+//
+// It does NOT replay a body. No response was ever stored for this key — on the
+// completion-failure path capture or persistence is exactly what failed, and on
+// the fenced-5xx path the handler never produced one. Fabricating a success
+// document here would report an outcome nobody recorded.
+//
+// [WithPostHandlerUnavailableHandler] answers it when set, because the
+// instruction is identical to the one that seam already exists for: the side
+// effect is committed or unknown, reconcile it, do not retry under a new key.
+// It deliberately does not fall through to [WithUnavailableHandler], which
+// carries the opposite instruction — nothing ran, retry.
+func (m *Middleware) respondOutcomeUnknown(c fiber.Ctx) error {
+	if m.onPostHandlerUnavailable != nil {
+		return m.onPostHandlerUnavailable(c)
+	}
+
+	return libHTTP.RespondError(c, http.StatusUnprocessableEntity,
+		"IDEMPOTENCY_OUTCOME_UNKNOWN",
+		"an earlier request with this idempotency key ran without recording its outcome; "+
+			"do not retry with a new key — reconcile the original request first",
+	)
+}
+
 func (m *Middleware) handle(c fiber.Ctx) error {
 	// Idempotency only applies to mutating methods.
 	switch c.Method() {
@@ -672,6 +765,8 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 		return m.respondConflict(c)
 	case keyStateComplete:
 		return m.replay(c, current.Response)
+	case keyStateOutcomeUnknown:
+		return m.respondOutcomeUnknown(c)
 	default:
 		m.logger.Log(ctx, obs.LevelWarn, "idempotency: store returned invalid record state")
 
@@ -693,6 +788,17 @@ func (m *Middleware) handleStoreAcquired(
 
 	statusCode := c.Response().StatusCode()
 	if handlerErr != nil || statusCode >= http.StatusInternalServerError {
+		// Releasing here frees the key BEFORE the application's Fiber error
+		// handler has even seen handlerErr, so a route that rewrites this into
+		// "executed, receipt lost" is rewriting a refusal whose key is already
+		// gone. Fencing skips the release entirely rather than trying to order
+		// it after a seam the middleware does not own.
+		if m.serverErrorPolicy == ServerErrorPolicyFence {
+			m.markOutcomeUnknown(c, key, processing, record, ttl)
+
+			return handlerErr
+		}
+
 		applied, err := m.store.Release(postCtx, key, processing)
 		if err != nil {
 			m.logger.Log(postCtx, obs.LevelWarn, "idempotency: store release failed", "error", err)
@@ -718,7 +824,7 @@ func (m *Middleware) handleStoreAcquired(
 	if err != nil {
 		m.logger.Log(postCtx, obs.LevelWarn, "idempotency: failed to capture replay response", "error", err)
 
-		return m.respondPostHandlerStoreError(c)
+		return m.failPostHandler(c, key, processing, record, ttl)
 	}
 
 	record.State = keyStateComplete
@@ -728,23 +834,105 @@ func (m *Middleware) handleStoreAcquired(
 	if err != nil {
 		m.logger.Log(postCtx, obs.LevelWarn, "idempotency: failed to marshal completed record", "error", err)
 
-		return m.respondPostHandlerStoreError(c)
+		return m.failPostHandler(c, key, processing, record, ttl)
 	}
 
 	applied, err := m.store.Complete(postCtx, key, processing, completed, ttl)
 	if err != nil {
 		m.logger.Log(postCtx, obs.LevelWarn, "idempotency: store completion failed", "error", err)
 
-		return m.respondPostHandlerStoreError(c)
+		return m.failPostHandler(c, key, processing, record, ttl)
 	}
 
 	if !applied {
 		m.logger.Log(postCtx, obs.LevelWarn, "idempotency: store completion rejected stale owner")
 
-		return m.respondPostHandlerStoreError(c)
+		return m.failPostHandler(c, key, processing, record, ttl)
 	}
 
 	return handlerErr
+}
+
+// failPostHandler answers a failure observed after the handler already ran, and
+// fences the key before answering.
+//
+// The handler committed its mutation and the only thing that failed is the
+// receipt. Without the fence the key holds nothing but the processing record,
+// which lapses with the in-flight lease and leaves the key free: a resend after
+// the lease then executes the mutation a SECOND time under the same key, and
+// the only thing standing between the two executions is the prose in this
+// refusal. Fencing makes the key itself the refusal for the retention window.
+//
+// This is unconditional, unlike the handler-failure fence, because there is
+// nothing to weigh: no route wants a key it has already spent to come back.
+func (m *Middleware) failPostHandler(
+	c fiber.Ctx,
+	key string,
+	processing []byte,
+	record storeRecord,
+	ttl time.Duration,
+) error {
+	m.markOutcomeUnknown(c, key, processing, record, ttl)
+
+	return m.respondPostHandlerStoreError(c)
+}
+
+// markOutcomeUnknown replaces this request's processing record with the
+// terminal outcome-unknown record, held for the retention TTL.
+//
+// BEST-EFFORT BY CONSTRUCTION, and the limit is nameable: on the
+// completion-failure path this writes to the very store that just failed. It
+// therefore closes the transient failure — a timeout, a dropped connection, a
+// failover — and not a total store outage, during which nothing durable can be
+// written under the key at all and the key still lapses with its lease. The
+// transient case is the common one and the one that was measured.
+//
+// It reuses Store.Complete rather than adding a fourth store operation: the
+// compare-and-set it already provides is exactly the guard this needs. A write
+// lands only while this request still owns the key, so a stale owner — the
+// failure mode that brought us here in one of the four cases — leaves the
+// current owner's record untouched instead of stamping a fence over it.
+//
+// The record carries NO response. On this path capture or persistence is what
+// failed, and on the fenced-handler-failure path no response exists; storing a
+// body here would promise a replay the middleware cannot honour.
+func (m *Middleware) markOutcomeUnknown(
+	c fiber.Ctx,
+	key string,
+	processing []byte,
+	record storeRecord,
+	ttl time.Duration,
+) {
+	// A fresh deadline, not the caller's: the post-handler context may already
+	// be spent by the store call that failed, and an expired context would make
+	// this fence unwritable in precisely the timeout case it exists for.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), m.redisTimeout)
+	defer cancel()
+
+	record.State = keyStateOutcomeUnknown
+	record.Response = nil
+
+	unknown, err := json.Marshal(record)
+	if err != nil {
+		m.logger.Log(ctx, obs.LevelWarn, "idempotency: failed to marshal outcome-unknown record", "error", err)
+
+		return
+	}
+
+	applied, err := m.store.Complete(ctx, key, processing, unknown, ttl)
+	if err != nil {
+		m.logger.Log(ctx, obs.LevelWarn, "idempotency: failed to fence key after unrecorded outcome", "error", err)
+
+		return
+	}
+
+	if !applied {
+		m.logger.Log(ctx, obs.LevelWarn, "idempotency: outcome-unknown fence rejected stale owner")
+
+		return
+	}
+
+	m.logger.Log(ctx, obs.LevelWarn, "idempotency: key fenced with an unrecorded outcome", "key_state", keyStateOutcomeUnknown)
 }
 
 func (m *Middleware) captureResponse(ctx context.Context, c fiber.Ctx) ([]byte, error) {

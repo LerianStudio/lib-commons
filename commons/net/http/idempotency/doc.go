@@ -118,17 +118,23 @@
 //     read. Any other undecodable value keeps the store-error path above. This
 //     branch is bounded and removable: no new legacy records are written and
 //     existing ones expire with their TTL.
+//   - Duplicate key in the terminal "outcome unknown" state: request receives
+//     422 Unprocessable Content with code "IDEMPOTENCY_OUTCOME_UNKNOWN", or the
+//     [WithPostHandlerUnavailableHandler] document when that seam is set. No
+//     body is replayed, because none was ever stored.
 //   - Handler success: response status, headers, content type, and body are
 //     compare-safely completed only by the acquisition owner. Capture, encoding,
-//     persistence, or stale-owner failures return 503 and retain processing
-//     ownership so callers reconcile instead of retrying under a new key. That
-//     503 is the one branch [WithPostHandlerUnavailableHandler] answers, because
-//     the mutation already happened.
+//     persistence, or stale-owner failures return 503, and the key is fenced in
+//     the terminal state above so callers reconcile instead of retrying under a
+//     new key. That 503 is the one branch [WithPostHandlerUnavailableHandler]
+//     answers, because the mutation already happened.
 //   - Handler 4xx: cached and replayed by default. Use
 //     [WithClientErrorPolicy] with [ClientErrorPolicyRelease] to compare-safely
 //     release the record and allow a corrected request to reuse the key.
 //   - Handler failure or 5xx: the acquisition is compare-safely released only
-//     by its owner, allowing a retry without deleting a replacement lock.
+//     by its owner, allowing a retry without deleting a replacement lock. Use
+//     [WithServerErrorPolicy] with [ServerErrorPolicyFence] on routes where a
+//     failure there may still have committed, so the key is fenced instead.
 //
 // # Lease and retention are two lifetimes
 //
@@ -169,6 +175,46 @@
 // authenticated encryption for sensitive bodies. [WithMaxBodyCache] bounds raw
 // response bodies, and encoded output is additionally bounded to twice that
 // value.
+//
+// # A key whose outcome was never recorded
+//
+// Two branches used to leave a key FREE while its handler had already run, or
+// might still be running. A completion that fails after the handler returned
+// leaves nothing but the processing record, which lapses with the in-flight
+// lease. A handler failure or 5xx releases the record outright. Either way a
+// resend under the same key acquires it again and executes the mutation a
+// SECOND time, and the only thing between the two executions is the
+// instruction in a refusal body that no client is obliged to read.
+//
+// The key now holds a third, TERMINAL state instead: the request that spent it
+// left no recorded outcome, and the key says so for the RETENTION TTL rather
+// than for the lease. A duplicate inside that window is refused by the key.
+// Because the refusal is terminal it answers 422, not the 409 that carries
+// Retry-After and invites a retry the state can never satisfy, and not 503,
+// which says the store is unavailable when it is the key that is spent. It
+// carries no body: capture or persistence is exactly what failed, so answering
+// with a response document would report an outcome nobody recorded.
+//
+// The completion-failure branch is unconditional — no route wants a key it has
+// already spent to come back. The handler-failure branch is opt-in through
+// [WithServerErrorPolicy], because releasing there is right for a route whose
+// 5xx are refusals and wrong for one whose handler can commit before its
+// response is written; only the route's owner knows which it is. At that point
+// a handler error has not even reached the application's Fiber error handler,
+// so the status the caller will finally see does not exist yet and the
+// middleware cannot infer the meaning for itself.
+//
+// The fence is BEST-EFFORT by construction and the limit is nameable: it writes
+// through Store.Complete to the same store whose failure brought it there. It
+// therefore closes a transient failure — a timeout, a dropped connection, a
+// failover — and not a total store outage, during which nothing durable can be
+// written under the key at all and the key still lapses with its lease. The
+// compare-and-set is not incidental either: a write lands only while the
+// request still owns the key, so a stale owner leaves the current owner's
+// record untouched instead of stamping a fence over it.
+//
+// The retention TTL is therefore also an operational choice: it is how long an
+// operator or a reconciliation job has before a fenced key frees itself.
 //
 // # Requiring a key or a tenant
 //
@@ -211,7 +257,8 @@
 // [WithRequireKey], [WithTenantRequiredHandler] for a missing tenant under
 // [WithRequireTenant], [WithUnavailableHandler] for fail-closed store failures
 // observed BEFORE the handler runs, [WithPostHandlerUnavailableHandler] for the
-// ones observed AFTER it ran, [WithConflictHandler] for an in-flight duplicate,
+// ones observed AFTER it ran and for a duplicate that finds the terminal
+// outcome-unknown state, [WithConflictHandler] for an in-flight duplicate,
 // and [WithKeyReuseHandler] for the same key used by a different request.
 //
 // The last two 503s are one status carrying opposite instructions, which is why

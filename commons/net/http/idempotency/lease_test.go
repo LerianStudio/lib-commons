@@ -340,6 +340,11 @@ func TestCheck_PostHandlerUnavailable_RoutesByWhetherTheHandlerRan(t *testing.T)
 					Return(nil, true, nil)
 				store.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(false, errors.New("backend unavailable"))
+				// The receipt write failed, so the key is fenced terminally
+				// before the seam answers. Which seam answers is what this
+				// table is about, and the fence must not change it.
+				store.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(true, nil)
 			},
 			installPost: true,
 			wantPost:    true,
@@ -375,6 +380,11 @@ func TestCheck_PostHandlerUnavailable_RoutesByWhetherTheHandlerRan(t *testing.T)
 					Return(nil, true, nil)
 				store.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 					Return(false, errors.New("backend unavailable"))
+				// The receipt write failed, so the key is fenced terminally
+				// before the seam answers. Which seam answers is what this
+				// table is about, and the fence must not change it.
+				store.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(true, nil)
 			},
 			wantPre:     true,
 			wantHandler: true,
@@ -454,6 +464,8 @@ func TestCheck_UnavailableDefaults_DifferInRetryGuidance(t *testing.T) {
 			Return(nil, true, nil)
 		store.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 			Return(false, errors.New("backend unavailable"))
+		store.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+			Return(true, nil) // the terminal fence written before the refusal
 
 		var calls atomic.Int64
 
