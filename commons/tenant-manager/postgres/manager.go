@@ -494,18 +494,9 @@ func (p *Manager) detectAndReconnectPostgres(ctx context.Context, tenantID strin
 		return false
 	}
 
-	// Also resolve the fresh replica DSN for comparison. When no dedicated
-	// replica is configured, the replica DSN defaults to the primary (matching
-	// the behavior of resolveReplicaConnection used during createConnection).
-	freshReplicaConnStr := freshConnStr // default: same as primary
-
-	if pgReplicaConfig := config.GetPostgreSQLReplicaConfig(p.service, p.module); pgReplicaConfig != nil {
-		if replicaStr, buildErr := BuildConnectionString(pgReplicaConfig); buildErr == nil {
-			freshReplicaConnStr = replicaStr
-		}
-	}
-
-	changed := p.hasPostgresConfigChanged(tenantID, freshConnStr, freshReplicaConnStr)
+	// Also resolve the fresh replica DSN for comparison: "" when no dedicated
+	// replica is configured, matching what resolveReplicaConnection stores.
+	changed := p.hasPostgresConfigChanged(tenantID, freshConnStr, p.freshReplicaConnStr(config))
 	if !changed {
 		return false
 	}
@@ -518,8 +509,31 @@ func (p *Manager) detectAndReconnectPostgres(ctx context.Context, tenantID strin
 	return p.reconnectPostgres(ctx, tenantID, config, pgConfig, freshConnStr)
 }
 
+// freshReplicaConnStr resolves the replica DSN the tenant config describes
+// right now, for change detection. No replica configured (or an unbuildable
+// one) yields "", the same value resolveReplicaConnection stores at connection
+// time, so the two sides of the comparison speak the same language.
+func (p *Manager) freshReplicaConnStr(config *core.TenantConfig) string {
+	pgReplicaConfig := config.GetPostgreSQLReplicaConfig(p.service, p.module)
+	if pgReplicaConfig == nil {
+		return ""
+	}
+
+	replicaStr, err := BuildConnectionString(pgReplicaConfig)
+	if err != nil {
+		return ""
+	}
+
+	return replicaStr
+}
+
 // hasPostgresConfigChanged reads the cached connection strings under read lock
 // and returns true if either the primary or replica DSN differs from the fresh values.
+//
+// A replica DSN that is empty or equal to its primary means "no replica" on
+// both sides -- the same rule the lib-commons client applies when deciding
+// whether to open a second pool -- so a connection cached with the legacy
+// primary copy compares equal to a fresh config with no replica.
 func (p *Manager) hasPostgresConfigChanged(tenantID, freshPrimaryConnStr, freshReplicaConnStr string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -533,24 +547,20 @@ func (p *Manager) hasPostgresConfigChanged(tenantID, freshPrimaryConnStr, freshR
 		return true
 	}
 
-	// Compare replica DSN. When the cached replica is empty (connection was set
-	// up without an explicit replica) or equals the primary (default behavior of
-	// resolveReplicaConnection), normalize both sides to the primary for comparison.
-	cachedReplica := conn.ConnectionStringReplica
-	if cachedReplica == "" || cachedReplica == conn.ConnectionStringPrimary {
-		cachedReplica = freshPrimaryConnStr
+	cachedReplica := normalizeReplicaConnStr(conn.ConnectionStringReplica, conn.ConnectionStringPrimary)
+	freshReplica := normalizeReplicaConnStr(freshReplicaConnStr, freshPrimaryConnStr)
+
+	return cachedReplica != freshReplica
+}
+
+// normalizeReplicaConnStr maps every spelling of "no replica" (empty, or a copy
+// of the primary) to "", so replica DSNs can be compared for real change.
+func normalizeReplicaConnStr(replica, primary string) string {
+	if replica == primary {
+		return ""
 	}
 
-	freshReplica := freshReplicaConnStr
-	if freshReplica == "" || freshReplica == freshPrimaryConnStr {
-		freshReplica = freshPrimaryConnStr
-	}
-
-	if cachedReplica != freshReplica {
-		return true
-	}
-
-	return false
+	return replica
 }
 
 // reconnectPostgres builds a new connection from the fresh config and replaces
@@ -867,17 +877,20 @@ func (p *Manager) cacheConnection(
 
 // resolveReplicaConnection resolves the replica connection string and database name.
 // If a dedicated replica config exists for the service/module, it builds a separate
-// connection string; otherwise it falls back to the primary connection string and database.
+// connection string; otherwise it returns empty values, which the lib-commons client
+// reads as "no replica" and serves with a single pool. Handing it the primary DSN
+// instead would open a second pool against the same primary and double the
+// tenant's effective connection budget.
 func (p *Manager) resolveReplicaConnection(
 	config *core.TenantConfig,
-	pgConfig *core.PostgreSQLConfig,
-	primaryConnStr string,
+	_ *core.PostgreSQLConfig,
+	_ string,
 	tenantID string,
 	logger *logcompat.Logger,
 ) (connStr string, dbName string, err error) {
 	pgReplicaConfig := config.GetPostgreSQLReplicaConfig(p.service, p.module)
 	if pgReplicaConfig == nil {
-		return primaryConnStr, pgConfig.Database, nil
+		return "", "", nil
 	}
 
 	replicaConnStr, buildErr := BuildConnectionString(pgReplicaConfig)
