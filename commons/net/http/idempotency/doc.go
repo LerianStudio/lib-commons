@@ -14,6 +14,16 @@
 //
 //	<prefix><tenantID>:<idempotencyKey>
 //
+// [WithKeyProvider] replaces the header read when a service must partition
+// deduplication by something the library does not know — the authenticated
+// principal, a channel, a device. The provider's value is what both the storage
+// key and the fingerprint record use, and the middleware NEVER writes the
+// request header, so a route whose handler binds the caller's raw key still
+// reads exactly what the caller sent. Without it, scoping a key means
+// overwriting the published header and putting it back before the handler runs:
+// one header carrying two values at two moments, correct only while the chain
+// is assembled in the right order.
+//
 // Keys are scoped per-tenant to prevent cross-tenant collisions. When no tenant
 // is in context, idempotency is BYPASSED entirely rather than falling back to a
 // global namespace, which would collapse every tenant-less request onto a shared
@@ -80,13 +90,17 @@
 //
 //   - GET, HEAD, and OPTIONS requests pass through unconditionally — idempotency
 //     is not enforced for safe/idempotent HTTP methods.
-//   - Absent X-Idempotency header: request proceeds normally (idempotency is
-//     opt-in per request), unless [WithRequireKey] is set, in which case the
-//     request is refused with 400 "IDEMPOTENCY_KEY_REQUIRED" before its handler
-//     runs.
-//   - Header exceeds [WithMaxKeyLength] (default 256 UTF-8 bytes): request is
-//     passed to the configured [WithRejectedHandler]. When no custom handler is
-//     set, a 400 JSON response with code "VALIDATION_ERROR" is returned.
+//   - A [WithKeyProvider] error: request is refused with 503
+//     "IDEMPOTENCY_UNAVAILABLE", or the [WithUnavailableHandler] document,
+//     before its handler runs. Nothing executed, so the instruction is retry.
+//   - Absent X-Idempotency header — or an empty [WithKeyProvider] return:
+//     request proceeds normally (idempotency is opt-in per request), unless
+//     [WithRequireKey] is set, in which case the request is refused with 400
+//     "IDEMPOTENCY_KEY_REQUIRED" before its handler runs.
+//   - Key exceeds [WithMaxKeyLength] (default 256 UTF-8 bytes), from the header
+//     or from [WithKeyProvider]: request is passed to the configured
+//     [WithRejectedHandler]. When no custom handler is set, a 400 JSON response
+//     with code "VALIDATION_ERROR" is returned.
 //   - The built-in Redis store unavailable: request proceeds without idempotency
 //     enforcement by default, or receives 503 with [WithFailClosed].
 //   - A caller-provided store missing or errored: request receives 503 and the
@@ -191,8 +205,12 @@
 //	    idempotency.WithProcessingTTL(30*time.Minute),
 //	)
 //
-// [WithTTLProvider] resolves retention for each keyed mutation, allowing runtime
-// policy changes without rebuilding middleware. [WithFingerprintScopeProvider]
+// [WithKeyProvider] resolves the key itself for each mutating request; unset,
+// the middleware reads the X-Idempotency header, which is the shipped
+// behaviour. An empty return takes the unkeyed branch and a provider error
+// refuses with the pre-handler 503. [WithTTLProvider] resolves retention for
+// each keyed mutation, allowing runtime policy changes without rebuilding
+// middleware. [WithFingerprintScopeProvider]
 // resolves a concurrency-safe application namespace for fingerprint comparison;
 // callers that omit it retain byte-identical legacy fingerprints and Redis keys.
 // [WithResponseCodec] transforms serialized replay responses before storage; use
