@@ -19,7 +19,6 @@ import (
 	libPostgres "github.com/LerianStudio/lib-commons/v7/commons/postgres"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
-	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/logcompat"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/testutil"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/assert"
@@ -635,7 +634,7 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 		m := NewManager(c, "ledger", WithModule("onboarding"))
 
 		replicaConnStr, replicaDBName, err := m.resolveReplicaConnection(
-			config, pgConfig, primaryConnStr, "tenant-1", logcompat.New(testutil.NewMockLogger()))
+			config, pgConfig, primaryConnStr, "tenant-1", m.logger)
 		require.NoError(t, err)
 		assert.Empty(t, replicaConnStr)
 		assert.Empty(t, replicaDBName)
