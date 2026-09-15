@@ -304,11 +304,14 @@ func TestResolveReplicaConnection_NoReplicaConfig(t *testing.T) {
 		SSLMode:  "disable",
 	}
 
+	// No replica configured => empty replica DSN and database name. The
+	// lib-commons client reads that as "no replica" and opens a single pool;
+	// handing it the primary DSN would open a second pool against the primary.
 	primaryStr := "postgres://user:pass@localhost:5432/testdb?sslmode=disable"
 	connStr, dbName, err := m.resolveReplicaConnection(cfg, pgConfig, primaryStr, "tenant-1", logger)
 	require.NoError(t, err)
-	assert.Equal(t, primaryStr, connStr)
-	assert.Equal(t, "testdb", dbName)
+	assert.Empty(t, connStr)
+	assert.Empty(t, dbName)
 }
 
 func TestResolveReplicaConnection_WithReplicaConfig(t *testing.T) {
