@@ -103,6 +103,13 @@ func requestFingerprintInput(method, path string, body []byte) []byte {
 // Option configures the idempotency middleware.
 type Option func(*Middleware)
 
+// KeyProvider resolves the idempotency key for the current request from
+// somewhere other than the X-Idempotency header — request-scoped state, an
+// authenticated principal, a derived namespace. Returning an empty string means
+// the request carries no key and takes the unkeyed branch, exactly as a missing
+// header does. Providers must be safe for concurrent use.
+type KeyProvider func(c fiber.Ctx) (string, error)
+
 // TTLProvider resolves the retention window for the current request. It is
 // evaluated for every keyed mutating request, allowing one middleware instance
 // to follow hot-reloaded application policy.
@@ -146,6 +153,7 @@ const (
 type Middleware struct {
 	store                    Store
 	logger                   obs.Logger
+	keyProvider              KeyProvider
 	keyPrefix                string
 	keyTTL                   time.Duration
 	processingTTL            time.Duration
@@ -227,6 +235,37 @@ func WithLogger(l obs.Logger) Option {
 	return func(m *Middleware) {
 		if l != nil {
 			m.logger = l
+		}
+	}
+}
+
+// WithKeyProvider resolves the idempotency key from somewhere other than the
+// X-Idempotency header. Unset, the middleware reads the header, which is the
+// shipped behaviour and stays byte-identical.
+//
+// It exists so a service can partition deduplication by something the library
+// does not know — most often the authenticated principal — WITHOUT rewriting
+// the published request header, which is otherwise the only lever available.
+// That rewrite is not a stylistic problem: routes whose handler binds the
+// caller's raw key (it becomes an upstream correlation id, or a persisted
+// column) then need the original value put back before the handler runs, so one
+// published header carries two different values at two different moments and is
+// correct only while the chain is assembled in the right order. The middleware
+// NEVER writes the request header, so the handler always sees exactly what the
+// caller sent.
+//
+// The resolved value is the key for both the storage key and the fingerprint
+// record. An empty return takes the unkeyed branch — pass-through, or the
+// [WithRequireKey] refusal — and the value is still subject to
+// [WithMaxKeyLength], which bounds the storage key regardless of its source. A
+// provider error refuses the request with 503 "IDEMPOTENCY_UNAVAILABLE", or the
+// [WithUnavailableHandler] document — the same pre-handler refusal a
+// [WithTTLProvider] error takes: nothing has run, so retrying is the correct
+// instruction and the caller must not be told to reconcile.
+func WithKeyProvider(provider KeyProvider) Option {
+	return func(m *Middleware) {
+		if provider != nil {
+			m.keyProvider = provider
 		}
 	}
 }
@@ -756,7 +795,15 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 		return c.Next()
 	}
 
-	idempotencyKey := c.Get(chttp.IdempotencyKey)
+	idempotencyKey, err := m.resolveKey(c)
+	if err != nil {
+		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: key provider failed", "error", err)
+
+		// Nothing has run yet: this refusal must not tell the caller to
+		// reconcile a mutation that never happened.
+		return m.respondUnavailable(c)
+	}
+
 	if idempotencyKey == "" {
 		if m.requireKey {
 			return m.respondKeyRequired(c)
@@ -819,6 +866,16 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	}
 
 	return m.handleStore(ctx, c, key, fingerprint, ttl)
+}
+
+// resolveKey reads the idempotency key for this request. Without a provider it
+// is the X-Idempotency header, which is the shipped behaviour.
+func (m *Middleware) resolveKey(c fiber.Ctx) (string, error) {
+	if m.keyProvider != nil {
+		return m.keyProvider(c)
+	}
+
+	return c.Get(chttp.IdempotencyKey), nil
 }
 
 func (m *Middleware) resolveTTL(c fiber.Ctx) (time.Duration, error) {
