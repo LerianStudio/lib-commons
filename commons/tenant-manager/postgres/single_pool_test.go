@@ -3,13 +3,17 @@
 package postgres
 
 import (
+	"context"
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/testutil"
 
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -74,7 +78,9 @@ func TestFreshReplicaConnStr_NoReplicaConfig_IsEmpty(t *testing.T) {
 			"onboarding": {PostgreSQL: &core.PostgreSQLConfig{Host: "primary-host", Port: 5432, Database: "testdb"}},
 		},
 	}
-	assert.Empty(t, m.freshReplicaConnStr(withoutReplica))
+	freshReplica, err := m.freshReplicaConnStr(withoutReplica)
+	require.NoError(t, err)
+	assert.Empty(t, freshReplica)
 
 	withReplica := &core.TenantConfig{
 		Databases: map[string]core.DatabaseConfig{
@@ -84,5 +90,92 @@ func TestFreshReplicaConnStr_NoReplicaConfig_IsEmpty(t *testing.T) {
 			},
 		},
 	}
-	assert.Contains(t, m.freshReplicaConnStr(withReplica), "replica-host")
+	freshReplica, err = m.freshReplicaConnStr(withReplica)
+	require.NoError(t, err)
+	assert.Contains(t, freshReplica, "replica-host")
+}
+
+// malformedReplicaTenantConfig returns a tenant config whose primary builds
+// the given DSN and whose replica is unbuildable: sslmode=disable together
+// with a root certificate is the contradiction BuildConnectionString rejects.
+func malformedReplicaTenantConfig() *core.TenantConfig {
+	return &core.TenantConfig{
+		Databases: map[string]core.DatabaseConfig{
+			"onboarding": {
+				PostgreSQL: &core.PostgreSQLConfig{
+					Host: "primary-host", Port: 5432, Database: "testdb",
+					Username: "user", Password: "pass", SSLMode: "disable",
+				},
+				PostgreSQLReplica: &core.PostgreSQLConfig{
+					Host: "replica-host", Port: 5433, Database: "testdb",
+					Username: "user", Password: "pass", SSLMode: "disable", SSLRootCert: "/certs/root.pem",
+				},
+			},
+		},
+	}
+}
+
+// TestFreshReplicaConnStr_MalformedReplica_ReturnsError pins that an
+// unbuildable replica is reported as an error, not collapsed into "" -- the
+// spelling of "no replica" -- which would make it invisible to change
+// detection.
+func TestFreshReplicaConnStr_MalformedReplica_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	c := mustNewTestClient(t, "http://localhost:8080")
+	m := NewManager(c, "ledger", WithModule("onboarding"))
+
+	freshReplica, err := m.freshReplicaConnStr(malformedReplicaTenantConfig())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sslrootcert")
+	assert.Empty(t, freshReplica)
+}
+
+// TestDetectAndReconnectPostgres_MalformedReplicaOnSinglePoolTenant_WarnsAndKeepsConnection
+// is the regression for a cached single-pool tenant whose config later gains a
+// MALFORMED replica. Before the fix the build error was swallowed into "", the
+// detector saw "no replica before, no replica after", and the operator never
+// learned their replica config was being ignored. Now the detector warns at
+// WARN level naming the tenant and keeps the current connection: the same
+// treatment an unbuildable primary DSN already receives on this path.
+func TestDetectAndReconnectPostgres_MalformedReplicaOnSinglePoolTenant_WarnsAndKeepsConnection(t *testing.T) {
+	t.Parallel()
+
+	logger := testutil.NewLevelCapturingLogger()
+	c := mustNewTestClient(t, "http://localhost:8080")
+	m := NewManager(c, "ledger", WithModule("onboarding"), WithLogger(logger))
+
+	var db dbresolver.DB = &pingableDB{}
+
+	cached := &PostgresConnection{
+		ConnectionStringPrimary: singlePoolPrimaryDSN,
+		ConnectionStringReplica: "",
+		ConnectionDB:            &db,
+	}
+	m.connections["tenant-1"] = cached
+	m.lastAccessed["tenant-1"] = time.Now()
+
+	reconnected := m.detectAndReconnectPostgres(context.Background(), "tenant-1", malformedReplicaTenantConfig())
+
+	assert.False(t, reconnected, "an unbuildable replica must not be reported as a reconnection attempt")
+	assert.Same(t, cached, m.connections["tenant-1"], "the current connection must be kept")
+	assert.True(t, logger.ContainsAtLevel(obs.LevelWarn, "invalid replica connection string", "tenant-1"),
+		"operator must be told the replica config is being ignored; got %v", logger.Entries())
+
+	// Positive control: with the replica config removed the same detector on the
+	// same tenant stays silent, proving the warning above is tied to the
+	// malformed replica and not to the fixture.
+	logger2 := testutil.NewLevelCapturingLogger()
+	m2 := NewManager(c, "ledger", WithModule("onboarding"), WithLogger(logger2))
+	m2.connections["tenant-1"] = cached
+	m2.lastAccessed["tenant-1"] = time.Now()
+
+	withoutReplica := malformedReplicaTenantConfig()
+	dbCfg := withoutReplica.Databases["onboarding"]
+	dbCfg.PostgreSQLReplica = nil
+	withoutReplica.Databases["onboarding"] = dbCfg
+
+	assert.False(t, m2.detectAndReconnectPostgres(context.Background(), "tenant-1", withoutReplica))
+	assert.False(t, logger2.ContainsAtLevel(obs.LevelWarn, "invalid replica connection string"),
+		"no warning expected without a replica; got %v", logger2.Entries())
 }

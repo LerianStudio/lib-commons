@@ -496,7 +496,21 @@ func (p *Manager) detectAndReconnectPostgres(ctx context.Context, tenantID strin
 
 	// Also resolve the fresh replica DSN for comparison: "" when no dedicated
 	// replica is configured, matching what resolveReplicaConnection stores.
-	changed := p.hasPostgresConfigChanged(tenantID, freshConnStr, p.freshReplicaConnStr(config))
+	// A replica that IS configured but cannot be built is not "absent": it is
+	// reported and the current connection is kept, exactly like an unbuildable
+	// primary above. Forcing a reconnect instead would fail on the same error
+	// inside resolveReplicaConnection while reporting a reconnection attempt
+	// that never reached the database.
+	freshReplicaConnStr, err := p.freshReplicaConnStr(config)
+	if err != nil {
+		if p.logger != nil {
+			p.logger.Warnf("config change detection: invalid replica connection string for tenant %s, keeping current connection: %v", tenantID, err)
+		}
+
+		return false
+	}
+
+	changed := p.hasPostgresConfigChanged(tenantID, freshConnStr, freshReplicaConnStr)
 	if !changed {
 		return false
 	}
@@ -510,21 +524,23 @@ func (p *Manager) detectAndReconnectPostgres(ctx context.Context, tenantID strin
 }
 
 // freshReplicaConnStr resolves the replica DSN the tenant config describes
-// right now, for change detection. No replica configured (or an unbuildable
-// one) yields "", the same value resolveReplicaConnection stores at connection
-// time, so the two sides of the comparison speak the same language.
-func (p *Manager) freshReplicaConnStr(config *core.TenantConfig) string {
+// right now, for change detection. No replica configured yields "" and no
+// error, the same value resolveReplicaConnection stores at connection time,
+// so the two sides of the comparison speak the same language. A configured
+// replica that cannot be built returns the build error so the caller can
+// distinguish "no replica" from "broken replica".
+func (p *Manager) freshReplicaConnStr(config *core.TenantConfig) (string, error) {
 	pgReplicaConfig := config.GetPostgreSQLReplicaConfig(p.service, p.module)
 	if pgReplicaConfig == nil {
-		return ""
+		return "", nil
 	}
 
 	replicaStr, err := BuildConnectionString(pgReplicaConfig)
 	if err != nil {
-		return ""
+		return "", err
 	}
 
-	return replicaStr
+	return replicaStr, nil
 }
 
 // hasPostgresConfigChanged reads the cached connection strings under read lock
