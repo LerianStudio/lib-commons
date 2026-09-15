@@ -80,11 +80,20 @@ var (
 			}
 		}()
 
-		connectionDB := dbresolver.New(
+		opts := []dbresolver.OptionFunc{
 			dbresolver.WithPrimaryDBs(primaryDB),
-			dbresolver.WithReplicaDBs(replicaDB),
 			dbresolver.WithLoadBalancer(dbresolver.RoundRobinLB),
-		)
+		}
+
+		// A nil replica means "no replica": leave the replica set empty so
+		// dbresolver serves reads from the primary. Registering the nil handle
+		// (or the primary twice) would make the resolver close, ping and read
+		// through a handle it does not own -- a nil replica panics on Close.
+		if replicaDB != nil {
+			opts = append(opts, dbresolver.WithReplicaDBs(replicaDB))
+		}
+
+		connectionDB := dbresolver.New(opts...)
 
 		if connectionDB == nil {
 			return nil, errors.New("resolver returned nil connection")
@@ -126,6 +135,12 @@ func nilMigratorAssert(operation string) error {
 // Config stores immutable connection options for a postgres client.
 type Config struct {
 	PrimaryDSN string
+	// ReplicaDSN is the optional read replica. Leave it empty when the service
+	// has no replica: the client then opens a SINGLE pool and serves reads and
+	// writes from it, so MaxOpenConnections is the real connection ceiling. A
+	// ReplicaDSN equal to PrimaryDSN is treated the same way -- passing the
+	// primary twice used to open two pools against the same server and double
+	// the budget silently.
 	ReplicaDSN string
 	// DatabaseName is the logical database this client talks to, emitted as the
 	// db.namespace metric label. Without it, pools from different databases (or
@@ -166,6 +181,17 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
+// hasReplica reports whether the config names a read replica DISTINCT from
+// the primary. An empty ReplicaDSN, or one equal to PrimaryDSN (after trimming
+// whitespace), means "no replica": the client then opens a single pool and
+// serves reads and writes from it. Callers that had no replica used to pass
+// the primary DSN twice, which silently doubled the connection budget.
+func (c Config) hasReplica() bool {
+	replica := strings.TrimSpace(c.ReplicaDSN)
+
+	return replica != "" && replica != strings.TrimSpace(c.PrimaryDSN)
+}
+
 func (c Config) validate() error {
 	if strings.TrimSpace(c.PrimaryDSN) == "" {
 		return fmt.Errorf("%w: primary dsn cannot be empty", ErrInvalidConfig)
@@ -175,12 +201,12 @@ func (c Config) validate() error {
 		return fmt.Errorf("%w: primary dsn: %w", ErrInvalidConfig, err)
 	}
 
-	if strings.TrimSpace(c.ReplicaDSN) == "" {
-		return fmt.Errorf("%w: replica dsn cannot be empty", ErrInvalidConfig)
-	}
-
-	if err := validateDSN(c.ReplicaDSN); err != nil {
-		return fmt.Errorf("%w: replica dsn: %w", ErrInvalidConfig, err)
+	// The replica is optional (see Config.ReplicaDSN); when present it must
+	// still be well-formed.
+	if strings.TrimSpace(c.ReplicaDSN) != "" {
+		if err := validateDSN(c.ReplicaDSN); err != nil {
+			return fmt.Errorf("%w: replica dsn: %w", ErrInvalidConfig, err)
+		}
 	}
 
 	return nil
@@ -408,7 +434,9 @@ type Client struct {
 	metricsRecorder obs.MetricsRecorder
 	resolver        dbresolver.DB
 	primary         *sql.DB
-	replica         *sql.DB
+	// replica is nil when the config names no distinct replica: the client
+	// then runs a single pool and the resolver reads from primary.
+	replica *sql.DB
 
 	// statsCleanups releases the telemetry registrations bound to the CURRENT
 	// primary/replica pools. Swapped together with the pools on reconnect and
@@ -430,12 +458,15 @@ func New(cfg Config) (*Client, error) {
 	}
 
 	// Security policy: TLS enforcement in strict tier (production).
-	// Check both primary and replica DSNs — data from an unencrypted replica
-	// is equally sensitive.
-	for _, dsn := range []struct{ label, value string }{
-		{"primary", cfg.PrimaryDSN},
-		{"replica", cfg.ReplicaDSN},
-	} {
+	// Check every DSN a pool will be opened for — data from an unencrypted
+	// replica is equally sensitive. Without a replica there is one pool, so a
+	// second check would only duplicate the primary's warning.
+	dsns := []struct{ label, value string }{{"primary", cfg.PrimaryDSN}}
+	if cfg.hasReplica() {
+		dsns = append(dsns, struct{ label, value string }{"replica", cfg.ReplicaDSN})
+	}
+
+	for _, dsn := range dsns {
 		if err := enforceTLSPolicy(context.Background(), cfg.Logger, dsn.label, dsn.value); err != nil {
 			return nil, fmt.Errorf("postgres new: %w", err)
 		}
@@ -540,11 +571,14 @@ type pools struct {
 	cleanups []sqlobs.CleanupFunc
 }
 
+// buildConnection opens the pools the config calls for and wires them into a
+// resolver. With a distinct replica that is two pools (primary + replica, each
+// with its own telemetry role); without one it is a SINGLE pool registered as
+// primary only, and the resolver is built with an empty replica set so reads
+// fall through to it. built.replica stays nil in that case, and every cleanup
+// path below relies on closeDB(nil) being a no-op.
 func (c *Client) buildConnection(ctx context.Context) (pools, error) {
-	c.logAtLevel(ctx, obs.LevelInfo, "connecting to primary and replica databases")
-
 	warnInsecureDSN(ctx, c.cfg.Logger, c.cfg.PrimaryDSN, "primary")
-	warnInsecureDSN(ctx, c.cfg.Logger, c.cfg.ReplicaDSN, "replica")
 
 	primary, primaryCleanup, err := c.newSQLDB(ctx, c.cfg.PrimaryDSN, sqlobs.PoolRolePrimary)
 	if err != nil {
@@ -553,17 +587,28 @@ func (c *Client) buildConnection(ctx context.Context) (pools, error) {
 
 	built := pools{primary: primary, cleanups: []sqlobs.CleanupFunc{primaryCleanup}}
 
-	replica, replicaCleanup, err := c.newSQLDB(ctx, c.cfg.ReplicaDSN, sqlobs.PoolRoleReplica)
-	if err != nil {
-		c.releaseCleanups(ctx, built.cleanups)
+	var replica *sql.DB
 
-		_ = closeDB(primary)
+	if c.cfg.hasReplica() {
+		c.logAtLevel(ctx, obs.LevelInfo, "connecting to primary and replica databases")
+		warnInsecureDSN(ctx, c.cfg.Logger, c.cfg.ReplicaDSN, "replica")
 
-		return pools{}, fmt.Errorf("postgres connect: %w", err)
+		var replicaCleanup sqlobs.CleanupFunc
+
+		replica, replicaCleanup, err = c.newSQLDB(ctx, c.cfg.ReplicaDSN, sqlobs.PoolRoleReplica)
+		if err != nil {
+			c.releaseCleanups(ctx, built.cleanups)
+
+			_ = closeDB(primary)
+
+			return pools{}, fmt.Errorf("postgres connect: %w", err)
+		}
+
+		built.replica = replica
+		built.cleanups = append(built.cleanups, replicaCleanup)
+	} else {
+		c.logAtLevel(ctx, obs.LevelInfo, "connecting to primary database (no replica configured, single pool)")
 	}
-
-	built.replica = replica
-	built.cleanups = append(built.cleanups, replicaCleanup)
 
 	resolver, err := createResolverFn(primary, replica, c.cfg.Logger)
 	if err != nil {
@@ -707,8 +752,11 @@ func (c *Client) Primary() (*sql.DB, error) {
 }
 
 // Close releases database resources.
-// All three handles (resolver, primary, replica) are always explicitly closed
-// to prevent leaks -- the resolver may not own the underlying sql.DB connections.
+// Every handle held (resolver, primary, and the replica when one exists) is
+// explicitly closed to prevent leaks -- the resolver may not own the underlying
+// sql.DB connections. sql.DB.Close is idempotent, so a pool the resolver has
+// already closed is not closed "again" in any harmful sense, and a single-pool
+// client (replica == nil) closes exactly its one pool.
 func (c *Client) Close() error {
 	if c == nil {
 		return nilClientAssert("close")

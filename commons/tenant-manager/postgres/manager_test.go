@@ -602,7 +602,7 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 		assert.NotEqual(t, primaryConnStr, replicaConnStr)
 	})
 
-	t.Run("fallback to primary when replica not configured", func(t *testing.T) {
+	t.Run("no replica configured resolves an empty replica DSN", func(t *testing.T) {
 		config := &core.TenantConfig{
 			Databases: map[string]core.DatabaseConfig{
 				"onboarding": {
@@ -624,18 +624,20 @@ func TestBuildConnectionStrings_PrimaryAndReplica(t *testing.T) {
 		assert.NotNil(t, pgConfig)
 		assert.Nil(t, pgReplicaConfig)
 
-		// When replica is nil, system should use primary connection string
+		// When replica is nil the manager resolves an EMPTY replica DSN: the
+		// lib-commons client then opens a single pool instead of a second
+		// pool against the same primary.
 		primaryConnStr, err := BuildConnectionString(pgConfig)
 		require.NoError(t, err)
 
-		replicaConnStr := primaryConnStr
-		if pgReplicaConfig != nil {
-			var replicaErr error
-			replicaConnStr, replicaErr = BuildConnectionString(pgReplicaConfig)
-			require.NoError(t, replicaErr)
-		}
+		c := mustNewTestClient(t, "http://localhost:8080")
+		m := NewManager(c, "ledger", WithModule("onboarding"))
 
-		assert.Equal(t, primaryConnStr, replicaConnStr)
+		replicaConnStr, replicaDBName, err := m.resolveReplicaConnection(
+			config, pgConfig, primaryConnStr, "tenant-1", m.logger)
+		require.NoError(t, err)
+		assert.Empty(t, replicaConnStr)
+		assert.Empty(t, replicaDBName)
 	})
 
 	t.Run("uses replica config when available", func(t *testing.T) {
