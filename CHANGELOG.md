@@ -1,5 +1,14 @@
 # Lib-commons Changelog
 
+## [7.1.1](https://github.com/LerianStudio/lib-commons/releases/tag/v7.1.1)
+
+Fixes:
+- Addressed an issue in the `postgres` module to ensure a single pool is opened when no replica is configured. (@jeffersonrodrigues92)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.1.0...v7.1.1)
+
+---
+
 ## [7.1.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.1.0)
 
 Features:
