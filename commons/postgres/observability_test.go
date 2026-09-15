@@ -311,3 +311,46 @@ func TestInstrumentPoolDegradesToTheRawPool(t *testing.T) {
 	require.NotNil(t, cleanup)
 	assert.NoError(t, cleanup())
 }
+
+// TestSinglePoolRegistersOnlyThePrimaryRole pins the "no replica => one pool"
+// rule on the telemetry side: a client without a replica must emit pool gauges
+// for the primary only. A "replica" series for a pool that does not exist would
+// double the apparent connection budget on every dashboard.
+func TestSinglePoolRegistersOnlyThePrimaryRole(t *testing.T) {
+	tests := []struct {
+		name       string
+		replicaDSN string
+		wantRoles  []string
+	}{
+		{name: "empty replica", replicaDSN: "", wantRoles: []string{"primary"}},
+		{name: "replica equal to primary", replicaDSN: primaryTestDSN, wantRoles: []string{"primary"}},
+		// Positive control: a distinct replica keeps both series.
+		{name: "distinct replica", replicaDSN: replicaTestDSN, wantRoles: []string{"primary", "replica"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reader := withGlobalMeterProvider(t)
+
+			withPatchedDependencies(t,
+				func(_, _ string) (*sql.DB, error) { return testDB(t), nil },
+				func(_, _ *sql.DB, _ obs.Logger) (dbresolver.DB, error) { return &fakeResolver{}, nil },
+				nil,
+			)
+
+			client, err := New(Config{PrimaryDSN: primaryTestDSN, ReplicaDSN: tt.replicaDSN})
+			require.NoError(t, err)
+			require.NoError(t, client.Connect(context.Background()))
+			t.Cleanup(func() { _ = client.Close() })
+
+			assert.ElementsMatch(t, tt.wantRoles, poolRoles(t, reader))
+
+			// A reconnect swaps the registration; it must not grow the series.
+			require.NoError(t, client.Connect(context.Background()))
+			assert.ElementsMatch(t, tt.wantRoles, poolRoles(t, reader))
+
+			require.NoError(t, client.Close())
+			assert.Empty(t, poolRoles(t, reader))
+		})
+	}
+}

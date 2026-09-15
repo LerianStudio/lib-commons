@@ -167,10 +167,13 @@ func withPatchedDependencies(
 	})
 }
 
+// validConfig is a two-pool config: the replica DSN is DISTINCT from the
+// primary on purpose. A replica equal to the primary (or empty) now means "no
+// replica" and opens a single pool — see single_pool_test.go for that path.
 func validConfig() Config {
 	return Config{
 		PrimaryDSN: "postgres://postgres:secret@localhost:5432/postgres?sslmode=disable",
-		ReplicaDSN: "postgres://postgres:secret@localhost:5432/postgres?sslmode=disable",
+		ReplicaDSN: "postgres://postgres:secret@localhost:5433/postgres?sslmode=disable",
 	}
 }
 
@@ -428,12 +431,11 @@ func TestConfigValidate(t *testing.T) {
 		assert.ErrorIs(t, err, ErrInvalidConfig)
 	})
 
-	t.Run("empty replica DSN", func(t *testing.T) {
+	t.Run("empty replica DSN is valid and means no replica", func(t *testing.T) {
 		t.Parallel()
 
 		err := Config{PrimaryDSN: "dsn", ReplicaDSN: ""}.validate()
-		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrInvalidConfig)
+		require.NoError(t, err)
 	})
 
 	t.Run("valid config", func(t *testing.T) {
