@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/testutil"
 
+	liblog "github.com/LerianStudio/lib-observability/v4/log"
 	"github.com/bxcodec/dbresolver/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -159,7 +159,7 @@ func TestDetectAndReconnectPostgres_MalformedReplicaOnSinglePoolTenant_WarnsAndK
 
 	assert.False(t, reconnected, "an unbuildable replica must not be reported as a reconnection attempt")
 	assert.Same(t, cached, m.connections["tenant-1"], "the current connection must be kept")
-	assert.True(t, logger.ContainsAtLevel(obs.LevelWarn, "invalid replica connection string", "tenant-1"),
+	assert.True(t, logger.ContainsAtLevel(liblog.LevelWarn, "invalid replica connection string", "tenant-1"),
 		"operator must be told the replica config is being ignored; got %v", logger.Entries())
 
 	// Positive control: with the replica config removed the same detector on the
@@ -176,6 +176,6 @@ func TestDetectAndReconnectPostgres_MalformedReplicaOnSinglePoolTenant_WarnsAndK
 	withoutReplica.Databases["onboarding"] = dbCfg
 
 	assert.False(t, m2.detectAndReconnectPostgres(context.Background(), "tenant-1", withoutReplica))
-	assert.False(t, logger2.ContainsAtLevel(obs.LevelWarn, "invalid replica connection string"),
+	assert.False(t, logger2.ContainsAtLevel(liblog.LevelWarn, "invalid replica connection string"),
 		"no warning expected without a replica; got %v", logger2.Entries())
 }
