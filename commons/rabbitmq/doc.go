@@ -5,6 +5,13 @@
 // (serialized publish+confirm per publisher instance for deterministic confirms),
 // and DLQ topology declaration helpers.
 //
+// Publisher delivery guarantee: ConfirmablePublisher reports success only when
+// the broker both acknowledged the message AND routed it to at least one queue.
+// Every publish is mandatory and a returned (unroutable) message surfaces as
+// ErrPublishReturned. This closes a silent-loss path, because a broker ACKs a
+// message it discarded for want of a bound queue, so waiting on the
+// acknowledgement alone reports success for a message nobody received.
+//
 // Health-check security defaults:
 //   - Basic auth over plain HTTP is rejected unless AllowInsecureHealthCheck=true.
 //   - Basic-auth health checks require HealthCheckAllowedHosts unless

@@ -33,11 +33,17 @@ var (
 	ErrPublisherNotReady      = errors.New("confirmable publisher not initialized")
 	ErrConfirmModeUnavailable = errors.New("channel does not support confirm mode")
 	ErrPublishNacked          = errors.New("message was nacked by broker")
+	ErrPublishReturned        = errors.New("message was returned as unroutable by broker")
 	ErrConfirmTimeout         = errors.New("confirmation timed out")
-	ErrPublisherClosed        = errors.New("publisher is closed")
-	ErrReconnectAfterClose    = errors.New("cannot reconnect: publisher was explicitly closed")
-	ErrReconnectWhileOpen     = errors.New("cannot reconnect: publisher is still open, call Close first")
-	ErrRecoveryExhausted      = errors.New("automatic recovery exhausted all attempts")
+	// ErrReturnNotificationUnsupported is returned when the supplied channel
+	// cannot report unroutable messages. Construction fails closed rather than
+	// publishing without return detection, because a broker ACKs a message it
+	// discarded for want of a queue: confirms alone would report success.
+	ErrReturnNotificationUnsupported = errors.New("channel does not support return notifications")
+	ErrPublisherClosed               = errors.New("publisher is closed")
+	ErrReconnectAfterClose           = errors.New("cannot reconnect: publisher was explicitly closed")
+	ErrReconnectWhileOpen            = errors.New("cannot reconnect: publisher is still open, call Close first")
+	ErrRecoveryExhausted             = errors.New("automatic recovery exhausted all attempts")
 )
 
 const (
@@ -131,10 +137,69 @@ type ConfirmableChannel interface {
 	Close() error
 }
 
+// returnNotifier is the capability used to observe unroutable messages.
+//
+// It is asserted on the dynamic type rather than declared on ConfirmableChannel
+// so adding return detection does not break every caller-side implementation of
+// that interface. *amqp.Channel satisfies it; a test double must add the method
+// or publisher construction fails with ErrReturnNotificationUnsupported.
+type returnNotifier interface {
+	NotifyReturn(c chan amqp.Return) chan amqp.Return
+}
+
+// registerReturnListener subscribes a fresh buffered return channel.
+//
+// Fails closed: a channel that cannot report returns cannot prove a message
+// was routed, and publishing over it would silently lose unroutable messages.
+func registerReturnListener(ch ConfirmableChannel) (chan amqp.Return, error) {
+	notifier, ok := ch.(returnNotifier)
+	if !ok || nilcheck.Interface(notifier) {
+		return nil, ErrReturnNotificationUnsupported
+	}
+
+	returns := make(chan amqp.Return, confirmChannelBuffer)
+	notifier.NotifyReturn(returns)
+
+	return returns, nil
+}
+
+// takeReturn reports whether a return is already buffered, without blocking.
+//
+// Correlation rests on two facts. AMQP delivers basic.return before the
+// basic.ack for the same message, and amqp091-go dispatches both from one
+// goroutine into buffered channels, so a return for the message just published
+// is queued by the time its confirmation is received. Publishes are serialized
+// by publishMu, so at most one message is in flight per publisher and the
+// buffered return can only belong to it.
+func takeReturn(returns <-chan amqp.Return) (amqp.Return, bool) {
+	select {
+	case ret, ok := <-returns:
+		return ret, ok
+	default:
+		return amqp.Return{}, false
+	}
+}
+
+// drainReturns discards returns left over from an aborted publish so a stale
+// one is never attributed to the next message.
+func drainReturns(returns <-chan amqp.Return) {
+	for {
+		select {
+		case _, ok := <-returns:
+			if !ok {
+				return
+			}
+		default:
+			return
+		}
+	}
+}
+
 // ConfirmablePublisher wraps an AMQP channel with publisher confirms enabled.
 type ConfirmablePublisher struct {
 	ch                    ConfirmableChannel
 	confirms              chan amqp.Confirmation
+	returns               chan amqp.Return
 	closedCh              chan struct{}
 	closeOnce             *sync.Once
 	done                  chan struct{}
@@ -280,11 +345,17 @@ func NewConfirmablePublisherFromChannel(
 	confirms := make(chan amqp.Confirmation, confirmChannelBuffer)
 	ch.NotifyPublish(confirms)
 
+	returns, err := registerReturnListener(ch)
+	if err != nil {
+		return nil, err
+	}
+
 	closeNotify := ch.NotifyClose(make(chan *amqp.Error, 1))
 
 	publisher := &ConfirmablePublisher{
 		ch:             ch,
 		confirms:       confirms,
+		returns:        returns,
 		closedCh:       make(chan struct{}),
 		closeOnce:      &sync.Once{},
 		done:           make(chan struct{}),
@@ -550,27 +621,43 @@ func (pub *ConfirmablePublisher) emitHealthState(state HealthState) {
 // publish+confirm flow is in-flight at a time. For explicit naming, prefer
 // PublishAndWaitConfirm. For higher throughput, shard publishing across
 // multiple publisher instances.
+// Publish sends a message and waits for the broker to confirm it was both
+// accepted and routed.
+//
+// The mandatory argument is ignored: every publish is mandatory. See
+// PublishAndWaitConfirm for why routability cannot be opted out of.
 func (pub *ConfirmablePublisher) Publish(
 	ctx context.Context,
 	exchange, routingKey string,
-	mandatory, immediate bool,
+	_, immediate bool,
 	msg amqp.Publishing,
 ) error {
 	if pub == nil {
 		return ErrPublisherRequired
 	}
 
-	return pub.PublishAndWaitConfirm(ctx, exchange, routingKey, mandatory, immediate, msg)
+	return pub.PublishAndWaitConfirm(ctx, exchange, routingKey, true, immediate, msg)
 }
 
-// PublishAndWaitConfirm sends a message and synchronously waits for broker confirmation.
+// PublishAndWaitConfirm sends a message and synchronously waits for the broker
+// to confirm it was accepted AND routed to at least one queue.
 //
 // Calls are serialized per publisher instance to preserve confirm ordering
 // without delivery-tag correlation state.
+//
+// Every publish is mandatory and the mandatory argument is ignored. A broker
+// ACKs a message it discarded because no queue was bound to the routing key,
+// so waiting on the confirmation alone reports success for a message nobody
+// received. Such a message now fails with ErrPublishReturned. There is no
+// option to restore the silent behaviour: a caller that cannot tolerate the
+// error is a caller publishing into a void.
+//
+// A returned error means the message is not safely delivered; the caller must
+// retry it or persist it, never mark it done.
 func (pub *ConfirmablePublisher) PublishAndWaitConfirm(
 	ctx context.Context,
 	exchange, routingKey string,
-	mandatory, immediate bool,
+	_, immediate bool,
 	msg amqp.Publishing,
 ) error {
 	if pub == nil {
@@ -604,23 +691,41 @@ func (pub *ConfirmablePublisher) PublishAndWaitConfirm(
 
 	publishChannel := pub.ch
 	confirms := pub.confirms
+	returns := pub.returns
 	closedCh := pub.closedCh
 	confirmTimeout := pub.confirmTimeout
 	pub.mu.RUnlock()
 
-	if err := publishChannel.PublishWithContext(ctx, exchange, routingKey, mandatory, immediate, msg); err != nil {
+	// A return left behind by an aborted publish would otherwise be blamed on
+	// this message.
+	drainReturns(returns)
+
+	if err := publishChannel.PublishWithContext(ctx, exchange, routingKey, true, immediate, msg); err != nil {
 		return fmt.Errorf("publish: %w", err)
 	}
 
 	err := waitForConfirm(ctx, confirms, closedCh, confirmTimeout)
-	if err != nil && isConfirmStreamCorrupted(err) {
-		// The pending confirmation will corrupt the next waitForConfirm call.
-		// Invalidate the channel so the close monitor triggers auto-recovery
-		// after publishMu is released by the deferred unlock above.
-		pub.invalidateChannel(publishChannel)
+	if err != nil {
+		if isConfirmStreamCorrupted(err) {
+			// The pending confirmation will corrupt the next waitForConfirm
+			// call. Invalidate the channel so the close monitor triggers
+			// auto-recovery after publishMu is released by the deferred
+			// unlock above.
+			pub.invalidateChannel(publishChannel)
+		}
+
+		return err
 	}
 
-	return err
+	// The broker acknowledged the message. It returned it first if no queue
+	// was bound to the routing key, which makes the ACK a receipt for a
+	// discard rather than for a delivery.
+	if ret, ok := takeReturn(returns); ok {
+		return fmt.Errorf("%w: exchange=%q routing_key=%q code=%d reason=%q",
+			ErrPublishReturned, ret.Exchange, ret.RoutingKey, ret.ReplyCode, ret.ReplyText)
+	}
+
+	return nil
 }
 
 // isConfirmStreamCorrupted reports whether the error indicates the
@@ -784,10 +889,18 @@ func (pub *ConfirmablePublisher) Reconnect(ch ConfirmableChannel) error {
 	confirms := make(chan amqp.Confirmation, confirmChannelBuffer)
 	ch.NotifyPublish(confirms)
 
+	returns, err := registerReturnListener(ch)
+	if err != nil {
+		pub.mu.Unlock()
+
+		return err
+	}
+
 	closeNotify := ch.NotifyClose(make(chan *amqp.Error, 1))
 
 	pub.ch = ch
 	pub.confirms = confirms
+	pub.returns = returns
 	pub.closedCh = make(chan struct{})
 
 	pub.closeOnce = &sync.Once{}

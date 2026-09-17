@@ -22,12 +22,36 @@ type mockConfirmableChannel struct {
 	confirmErr      error
 	publishErr      error
 	confirms        chan amqp.Confirmation
+	returns         chan amqp.Return
 	closeNotify     chan *amqp.Error
 	confirmCalled   bool
 	publishCalled   bool
 	closeCalled     bool
+	lastMandatory   bool
 	deliveryCounter uint64
 }
+
+// noReturnChannel satisfies ConfirmableChannel but cannot report unroutable
+// messages. Publisher construction must refuse it rather than publish blind.
+type noReturnChannel struct {
+	closeNotify chan *amqp.Error
+}
+
+func (*noReturnChannel) Confirm(bool) error { return nil }
+
+func (*noReturnChannel) NotifyPublish(confirm chan amqp.Confirmation) chan amqp.Confirmation {
+	return confirm
+}
+
+func (m *noReturnChannel) NotifyClose(chan *amqp.Error) chan *amqp.Error { return m.closeNotify }
+
+func (*noReturnChannel) PublishWithContext(
+	context.Context, string, string, bool, bool, amqp.Publishing,
+) error {
+	return nil
+}
+
+func (*noReturnChannel) Close() error { return nil }
 
 type panicPublisherLogger struct {
 	used bool
@@ -75,6 +99,14 @@ func (m *mockConfirmableChannel) NotifyPublish(confirm chan amqp.Confirmation) c
 	return confirm
 }
 
+func (m *mockConfirmableChannel) NotifyReturn(c chan amqp.Return) chan amqp.Return {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.returns = c
+
+	return c
+}
+
 func (m *mockConfirmableChannel) NotifyClose(_ chan *amqp.Error) chan *amqp.Error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -85,12 +117,13 @@ func (m *mockConfirmableChannel) NotifyClose(_ chan *amqp.Error) chan *amqp.Erro
 func (m *mockConfirmableChannel) PublishWithContext(
 	_ context.Context,
 	_, _ string,
-	_, _ bool,
+	mandatory, _ bool,
 	_ amqp.Publishing,
 ) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.publishCalled = true
+	m.lastMandatory = mandatory
 	m.deliveryCounter++
 
 	return m.publishErr
@@ -118,6 +151,21 @@ func (m *mockConfirmableChannel) sendConfirm(ack bool) {
 	m.mu.Unlock()
 
 	confirms <- amqp.Confirmation{DeliveryTag: tag, Ack: ack}
+}
+
+// sendReturn queues a basic.return for the in-flight message. Callers must
+// invoke it before sendConfirm: the broker emits the return before the ack.
+func (m *mockConfirmableChannel) sendReturn(exchange, routingKey string) {
+	m.mu.Lock()
+	returns := m.returns
+	m.mu.Unlock()
+
+	returns <- amqp.Return{
+		ReplyCode:  amqp.NoRoute,
+		ReplyText:  "NO_ROUTE",
+		Exchange:   exchange,
+		RoutingKey: routingKey,
+	}
 }
 
 func (m *mockConfirmableChannel) waitForPublish(t *testing.T) {
@@ -832,4 +880,99 @@ func TestConfirmablePublisher_NilReceiverGuards(t *testing.T) {
 
 	require.Nil(t, publisher.Channel())
 	require.Equal(t, HealthStateDisconnected, publisher.HealthState())
+}
+
+func TestNewConfirmablePublisherFromChannel_RejectsChannelWithoutReturns(t *testing.T) {
+	t.Parallel()
+
+	publisher, err := NewConfirmablePublisherFromChannel(&noReturnChannel{closeNotify: make(chan *amqp.Error, 1)})
+	assert.Nil(t, publisher, "a channel that cannot report unroutable messages must not yield a publisher")
+	assert.ErrorIs(t, err, ErrReturnNotificationUnsupported)
+}
+
+func TestConfirmablePublisher_Publish_AlwaysMandatory(t *testing.T) {
+	t.Parallel()
+
+	ch := newMockChannel()
+	publisher, err := NewConfirmablePublisherFromChannel(ch)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = publisher.Close() })
+
+	go func() {
+		ch.waitForPublish(t)
+		ch.sendConfirm(true)
+	}()
+
+	// The caller opts out of mandatory; the publisher must override it,
+	// otherwise the broker never reports an unroutable message.
+	require.NoError(t, publisher.PublishAndWaitConfirm(
+		context.Background(), "exchange", "route", false, false, amqp.Publishing{Body: []byte("ok")}))
+
+	ch.mu.Lock()
+	defer ch.mu.Unlock()
+	assert.True(t, ch.lastMandatory, "every publish must be mandatory regardless of the caller's argument")
+}
+
+func TestConfirmablePublisher_PublishAndWaitConfirm_ReturnedMessageIsAnError(t *testing.T) {
+	t.Parallel()
+
+	ch := newMockChannel()
+	publisher, err := NewConfirmablePublisherFromChannel(ch)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = publisher.Close() })
+
+	go func() {
+		ch.waitForPublish(t)
+		// The broker returns the message, then ACKs it. The ACK alone would
+		// read as success.
+		ch.sendReturn("exchange", "nobody.listens")
+		ch.sendConfirm(true)
+	}()
+
+	err = publisher.PublishAndWaitConfirm(
+		context.Background(), "exchange", "nobody.listens", false, false, amqp.Publishing{Body: []byte("lost")})
+
+	require.ErrorIs(t, err, ErrPublishReturned)
+	assert.Contains(t, err.Error(), "NO_ROUTE")
+	assert.Contains(t, err.Error(), "nobody.listens")
+}
+
+func TestConfirmablePublisher_PublishAndWaitConfirm_StaleReturnDoesNotFailNextPublish(t *testing.T) {
+	t.Parallel()
+
+	ch := newMockChannel()
+	publisher, err := NewConfirmablePublisherFromChannel(ch)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = publisher.Close() })
+
+	// A return that arrived after its publish already gave up must not be
+	// charged to the next message.
+	ch.sendReturn("exchange", "orphaned.key")
+
+	go func() {
+		ch.waitForPublish(t)
+		ch.sendConfirm(true)
+	}()
+
+	require.NoError(t, publisher.PublishAndWaitConfirm(
+		context.Background(), "exchange", "route", false, false, amqp.Publishing{Body: []byte("ok")}),
+		"a stale return must be drained, not blamed on a routable publish")
+}
+
+func TestConfirmablePublisher_PublishAndWaitConfirm_NackStillWins(t *testing.T) {
+	t.Parallel()
+
+	ch := newMockChannel()
+	publisher, err := NewConfirmablePublisherFromChannel(ch)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = publisher.Close() })
+
+	go func() {
+		ch.waitForPublish(t)
+		ch.sendConfirm(false)
+	}()
+
+	err = publisher.PublishAndWaitConfirm(
+		context.Background(), "exchange", "route", false, false, amqp.Publishing{Body: []byte("nacked")})
+	assert.ErrorIs(t, err, ErrPublishNacked)
 }
