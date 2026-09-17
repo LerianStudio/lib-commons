@@ -34,12 +34,20 @@ type mockConfirmableChannel struct {
 // noReturnChannel satisfies ConfirmableChannel but cannot report unroutable
 // messages. Publisher construction must refuse it rather than publish blind.
 type noReturnChannel struct {
-	closeNotify chan *amqp.Error
+	closeNotify    chan *amqp.Error
+	confirmCalled  bool
+	notifyRegister bool
 }
 
-func (*noReturnChannel) Confirm(bool) error { return nil }
+func (m *noReturnChannel) Confirm(bool) error {
+	m.confirmCalled = true
 
-func (*noReturnChannel) NotifyPublish(confirm chan amqp.Confirmation) chan amqp.Confirmation {
+	return nil
+}
+
+func (m *noReturnChannel) NotifyPublish(confirm chan amqp.Confirmation) chan amqp.Confirmation {
+	m.notifyRegister = true
+
 	return confirm
 }
 
@@ -885,9 +893,39 @@ func TestConfirmablePublisher_NilReceiverGuards(t *testing.T) {
 func TestNewConfirmablePublisherFromChannel_RejectsChannelWithoutReturns(t *testing.T) {
 	t.Parallel()
 
-	publisher, err := NewConfirmablePublisherFromChannel(&noReturnChannel{closeNotify: make(chan *amqp.Error, 1)})
+	ch := &noReturnChannel{closeNotify: make(chan *amqp.Error, 1)}
+
+	publisher, err := NewConfirmablePublisherFromChannel(ch)
 	assert.Nil(t, publisher, "a channel that cannot report unroutable messages must not yield a publisher")
 	assert.ErrorIs(t, err, ErrReturnNotificationUnsupported)
+
+	// The channel belongs to the caller. Confirm mode cannot be undone, and a
+	// confirmation listener nobody drains would eventually block the
+	// connection's dispatch loop, so a rejected channel must go back untouched.
+	assert.False(t, ch.confirmCalled, "a rejected channel must not be left in confirm mode")
+	assert.False(t, ch.notifyRegister, "a rejected channel must not be left with an undrained confirmation listener")
+}
+
+func TestConfirmablePublisher_Reconnect_RejectsChannelWithoutReturnsUntouched(t *testing.T) {
+	t.Parallel()
+
+	ch := newMockChannel()
+	publisher, err := NewConfirmablePublisherFromChannel(ch)
+	require.NoError(t, err)
+
+	// Drive the publisher into the operationally-closed state Reconnect expects.
+	ch.closeNotify <- amqp.ErrClosed
+
+	require.Eventually(t, func() bool {
+		return publisher.HealthState() != HealthStateConnected
+	}, time.Second, 5*time.Millisecond)
+
+	replacement := &noReturnChannel{closeNotify: make(chan *amqp.Error, 1)}
+
+	err = publisher.Reconnect(replacement)
+	assert.ErrorIs(t, err, ErrReturnNotificationUnsupported)
+	assert.False(t, replacement.confirmCalled, "a rejected replacement channel must not be left in confirm mode")
+	assert.False(t, replacement.notifyRegister, "a rejected replacement channel must not be left with an undrained listener")
 }
 
 func TestConfirmablePublisher_Publish_AlwaysMandatory(t *testing.T) {

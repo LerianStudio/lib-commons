@@ -147,20 +147,31 @@ type returnNotifier interface {
 	NotifyReturn(c chan amqp.Return) chan amqp.Return
 }
 
-// registerReturnListener subscribes a fresh buffered return channel.
+// returnNotifierFor reports whether the channel can announce unroutable
+// messages, WITHOUT touching it.
 //
-// Fails closed: a channel that cannot report returns cannot prove a message
-// was routed, and publishing over it would silently lose unroutable messages.
-func registerReturnListener(ch ConfirmableChannel) (chan amqp.Return, error) {
+// Fails closed: a channel that cannot report returns cannot prove a message was
+// routed, and publishing over it would silently lose unroutable messages.
+//
+// The check is separate from registration, and runs before Confirm, so a
+// rejected channel goes back to its owner exactly as it arrived. Enabling
+// confirm mode is irreversible and registering a confirmation listener nobody
+// drains would eventually block the connection's dispatch loop.
+func returnNotifierFor(ch ConfirmableChannel) (returnNotifier, error) {
 	notifier, ok := ch.(returnNotifier)
 	if !ok || nilcheck.Interface(notifier) {
 		return nil, ErrReturnNotificationUnsupported
 	}
 
+	return notifier, nil
+}
+
+// registerReturnListener subscribes a fresh buffered return channel.
+func registerReturnListener(notifier returnNotifier) chan amqp.Return {
 	returns := make(chan amqp.Return, confirmChannelBuffer)
 	notifier.NotifyReturn(returns)
 
-	return returns, nil
+	return returns
 }
 
 // takeReturn reports whether a return is already buffered, without blocking.
@@ -338,6 +349,11 @@ func NewConfirmablePublisherFromChannel(
 		return nil, ErrChannelRequired
 	}
 
+	notifier, err := returnNotifierFor(ch)
+	if err != nil {
+		return nil, err
+	}
+
 	if err := ch.Confirm(false); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrConfirmModeUnavailable, err)
 	}
@@ -345,10 +361,7 @@ func NewConfirmablePublisherFromChannel(
 	confirms := make(chan amqp.Confirmation, confirmChannelBuffer)
 	ch.NotifyPublish(confirms)
 
-	returns, err := registerReturnListener(ch)
-	if err != nil {
-		return nil, err
-	}
+	returns := registerReturnListener(notifier)
 
 	closeNotify := ch.NotifyClose(make(chan *amqp.Error, 1))
 
@@ -880,6 +893,13 @@ func (pub *ConfirmablePublisher) Reconnect(ch ConfirmableChannel) error {
 		return ErrReconnectAfterClose
 	}
 
+	notifier, err := returnNotifierFor(ch)
+	if err != nil {
+		pub.mu.Unlock()
+
+		return err
+	}
+
 	if err := ch.Confirm(false); err != nil {
 		pub.mu.Unlock()
 
@@ -889,12 +909,7 @@ func (pub *ConfirmablePublisher) Reconnect(ch ConfirmableChannel) error {
 	confirms := make(chan amqp.Confirmation, confirmChannelBuffer)
 	ch.NotifyPublish(confirms)
 
-	returns, err := registerReturnListener(ch)
-	if err != nil {
-		pub.mu.Unlock()
-
-		return err
-	}
+	returns := registerReturnListener(notifier)
 
 	closeNotify := ch.NotifyClose(make(chan *amqp.Error, 1))
 
