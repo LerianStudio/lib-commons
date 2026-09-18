@@ -62,10 +62,16 @@ func startFakeMongoServer(t *testing.T) (*mongo.Client, func()) {
 // test releases it, and whether it answers one with a command error. Handshake and
 // heartbeat commands are always answered at once, so the driver's view of the
 // server stays healthy no matter what a test does to pings.
+//
+// Every field is safe to touch while the server goroutine is running: gate is
+// written once before that goroutine exists and afterwards only closed, and the
+// flags are atomic. A plain bool or a reassigned channel here would be a data race
+// with the server's own read of it.
 type fakeMongoServer struct {
 	pings    atomic.Int32
 	started  chan struct{} // one token per ping received
-	gate     chan struct{} // nil answers immediately; otherwise a ping waits for it
+	gate     chan struct{} // closing it releases pings the server is holding
+	hold     atomic.Bool   // whether a ping waits for the gate before being answered
 	failPing atomic.Bool   // answer the released ping with ok:0 instead of ok:1
 }
 
@@ -75,7 +81,7 @@ type fakeMongoServer struct {
 func startCountingFakeMongoServer(t *testing.T) (*mongo.Client, *fakeMongoServer, func()) {
 	t.Helper()
 
-	return startControllableFakeMongoServer(t, nil)
+	return startControllableFakeMongoServer(t, false)
 }
 
 // startBlockingFakeMongoServer holds every `ping` until the returned server's gate
@@ -84,15 +90,15 @@ func startCountingFakeMongoServer(t *testing.T) (*mongo.Client, *fakeMongoServer
 func startBlockingFakeMongoServer(t *testing.T) (*mongo.Client, *fakeMongoServer, func()) {
 	t.Helper()
 
-	return startControllableFakeMongoServer(t, make(chan struct{}))
+	return startControllableFakeMongoServer(t, true)
 }
 
-func startControllableFakeMongoServer(t *testing.T, gate chan struct{}) (*mongo.Client, *fakeMongoServer, func()) {
+func startControllableFakeMongoServer(t *testing.T, holdPings bool) (*mongo.Client, *fakeMongoServer, func()) {
 	t.Helper()
 
 	srv := &fakeMongoServer{
 		started: make(chan struct{}, 8),
-		gate:    gate,
+		gate:    make(chan struct{}),
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -119,13 +125,11 @@ func startControllableFakeMongoServer(t *testing.T, gate chan struct{}) (*mongo.
 		SetServerSelectionTimeout(2 * time.Second))
 	require.NoError(t, err)
 
-	// The handshake ping must not be held, whatever this server does to later ones.
-	held := srv.gate
-	srv.gate = nil
-
+	// The handshake ping runs with holding still off, whatever this server does to
+	// later ones: holding it would deadlock the client before any test starts.
 	require.NoError(t, mongoClient.Ping(ctx, nil))
 
-	srv.gate = held
+	srv.hold.Store(holdPings)
 	srv.pings.Store(0)
 
 	drainStarted(srv)
@@ -193,8 +197,8 @@ func serveFakeMongoConn(conn net.Conn, srv *fakeMongoServer) {
 			default:
 			}
 
-			if gate := srv.gate; gate != nil {
-				<-gate
+			if srv.hold.Load() {
+				<-srv.gate
 			}
 		}
 
