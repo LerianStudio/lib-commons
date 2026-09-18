@@ -52,6 +52,19 @@ func TestMain(m *testing.M) {
 func startFakeMongoServer(t *testing.T) (*mongo.Client, func()) {
 	t.Helper()
 
+	client, _, cleanup := startCountingFakeMongoServer(t)
+
+	return client, cleanup
+}
+
+// startCountingFakeMongoServer is startFakeMongoServer plus a counter of the
+// `ping` commands the server has answered, for tests that assert how often a
+// cached client is health-checked. Driver heartbeats are not counted.
+func startCountingFakeMongoServer(t *testing.T) (*mongo.Client, *atomic.Int32, func()) {
+	t.Helper()
+
+	pings := &atomic.Int32{}
+
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
@@ -62,7 +75,7 @@ func startFakeMongoServer(t *testing.T) (*mongo.Client, func()) {
 				return
 			}
 
-			go serveFakeMongoConn(conn)
+			go serveFakeMongoConn(conn, pings)
 		}
 	}()
 
@@ -83,10 +96,28 @@ func startFakeMongoServer(t *testing.T) (*mongo.Client, func()) {
 		ln.Close()
 	}
 
-	return mongoClient, cleanup
+	return mongoClient, pings, cleanup
 }
 
-func serveFakeMongoConn(conn net.Conn) {
+// fakeMongoCommandName reads the command name out of an OP_MSG body: 4 flag
+// bytes, one section-kind byte, then the command document whose first element
+// is the command itself.
+func fakeMongoCommandName(body []byte) string {
+	const headerLen = 5
+
+	if len(body) <= headerLen {
+		return ""
+	}
+
+	elements, err := bson.Raw(body[headerLen:]).Elements()
+	if err != nil || len(elements) == 0 {
+		return ""
+	}
+
+	return elements[0].Key()
+}
+
+func serveFakeMongoConn(conn net.Conn, pings *atomic.Int32) {
 	defer conn.Close()
 
 	for {
@@ -101,6 +132,10 @@ func serveFakeMongoConn(conn net.Conn) {
 		body := make([]byte, msgLen-16)
 		if _, err := io.ReadFull(conn, body); err != nil {
 			return
+		}
+
+		if fakeMongoCommandName(body) == "ping" {
+			pings.Add(1)
 		}
 
 		resp := bson.D{

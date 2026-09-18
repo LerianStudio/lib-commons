@@ -58,9 +58,12 @@ func newIdentityTestManager(t *testing.T) *Manager {
 	tmClient := mustNewTestClient(t, server.URL)
 	t.Cleanup(func() { _ = tmClient.Close() })
 
+	// WithHealthCheckInterval(0) keeps the ping on every cache hit, which is the
+	// window these tests are about; the interval gate would skip it.
 	return NewManager(tmClient, "ledger",
 		WithLogger(testutil.NewCapturingLogger()),
 		WithConnectionsCheckInterval(0),
+		WithHealthCheckInterval(0),
 	)
 }
 
