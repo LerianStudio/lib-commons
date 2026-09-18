@@ -48,7 +48,7 @@ func (c *Client) GetTenantMetadata(ctx context.Context, tenantID string) (map[st
 	// Build the URL with a properly escaped path segment to prevent injection.
 	requestURL := fmt.Sprintf("%s/v1/tenants/%s", c.baseURL, url.PathEscape(tenantID))
 
-	logger.Log(ctx, obs.LevelInfo, "fetching tenant metadata", "tenant_id", tenantID)
+	logger.Log(ctx, obs.LevelDebug, "fetching tenant metadata", "tenant_id", tenantID)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
 	if err != nil {
@@ -123,7 +123,7 @@ func (c *Client) GetTenantMetadata(ctx context.Context, tenantID string) (map[st
 	}
 
 	c.recordSuccess()
-	logger.Log(ctx, obs.LevelInfo, "successfully fetched tenant metadata",
+	logger.Log(ctx, obs.LevelDebug, "successfully fetched tenant metadata",
 		"keys", len(parsed.Metadata),
 		"tenant_id", tenantID,
 	)
