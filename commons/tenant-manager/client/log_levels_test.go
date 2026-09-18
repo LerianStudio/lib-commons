@@ -12,9 +12,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/testutil"
 	observability "github.com/LerianStudio/lib-observability/v4"
+	obslog "github.com/LerianStudio/lib-observability/v4/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -78,13 +78,13 @@ func TestClient_RoutineFetchesLogAtDebug(t *testing.T) {
 
 			require.NoError(t, tt.call(ctx, client))
 
-			assert.True(t, logger.ContainsAtLevel(obs.LevelDebug, tt.fetchMsg),
+			assert.True(t, logger.ContainsAtLevel(obslog.LevelDebug, tt.fetchMsg),
 				"%q must be emitted at debug, entries: %v", tt.fetchMsg, logger.Entries())
-			assert.True(t, logger.ContainsAtLevel(obs.LevelDebug, tt.successMsg),
+			assert.True(t, logger.ContainsAtLevel(obslog.LevelDebug, tt.successMsg),
 				"%q must be emitted at debug, entries: %v", tt.successMsg, logger.Entries())
-			assert.False(t, logger.ContainsAtLevel(obs.LevelInfo, tt.fetchMsg),
+			assert.False(t, logger.ContainsAtLevel(obslog.LevelInfo, tt.fetchMsg),
 				"%q must no longer be emitted at info", tt.fetchMsg)
-			assert.False(t, logger.ContainsAtLevel(obs.LevelInfo, tt.successMsg),
+			assert.False(t, logger.ContainsAtLevel(obslog.LevelInfo, tt.successMsg),
 				"%q must no longer be emitted at info", tt.successMsg)
 		})
 
@@ -95,7 +95,7 @@ func TestClient_RoutineFetchesLogAtDebug(t *testing.T) {
 
 			require.Error(t, tt.call(ctx, client))
 
-			assert.True(t, logger.ContainsAtLevel(obs.LevelError, "tenant manager returned error"),
+			assert.True(t, logger.ContainsAtLevel(obslog.LevelError, "tenant manager returned error"),
 				"a 500 from the tenant manager must stay at error, entries: %v", logger.Entries())
 		})
 	}
