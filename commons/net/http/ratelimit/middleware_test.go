@@ -1051,3 +1051,53 @@ func TestNew_RateLimitDisabled_PassThrough(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 }
+
+// unsetRateLimitEnabled makes RATE_LIMIT_ENABLED genuinely absent for the
+// duration of the test. TestMain sets it for the whole binary, so tests that
+// exercise the "operator never configured rate limiting" path must remove it;
+// t.Setenv registers the restore, os.Unsetenv performs the removal.
+func unsetRateLimitEnabled(t *testing.T) {
+	t.Helper()
+
+	t.Setenv(commons.EnvRateLimitEnabled, "")
+	require.NoError(t, os.Unsetenv(commons.EnvRateLimitEnabled))
+}
+
+func TestNew_NoEnabledOption_EnvUnset_ReturnsNil(t *testing.T) {
+	unsetRateLimitEnabled(t)
+
+	mr := miniredis.RunT(t)
+	conn := newTestMiddlewareRedisConnection(t, mr)
+
+	assert.Nil(t, New(conn))
+}
+
+func TestNew_WithEnabledTrue_EnforcesWhenEnvUnset(t *testing.T) {
+	unsetRateLimitEnabled(t)
+
+	mr := miniredis.RunT(t)
+	conn := newTestMiddlewareRedisConnection(t, mr)
+
+	rl := New(conn, WithEnabled(true))
+	require.NotNil(t, rl)
+
+	tier := Tier{Name: "test-with-enabled", Max: 1, Window: 60 * time.Second}
+	app := newTestApp(rl.WithRateLimit(tier))
+
+	first := doRequest(t, app)
+	first.Body.Close()
+	assert.Equal(t, http.StatusOK, first.StatusCode)
+
+	second := doRequest(t, app)
+	defer second.Body.Close()
+	assert.Equal(t, http.StatusTooManyRequests, second.StatusCode)
+}
+
+func TestNew_WithEnabledFalse_OverridesTruthyEnv(t *testing.T) {
+	t.Setenv(commons.EnvRateLimitEnabled, "true")
+
+	mr := miniredis.RunT(t)
+	conn := newTestMiddlewareRedisConnection(t, mr)
+
+	assert.Nil(t, New(conn, WithEnabled(false)))
+}
