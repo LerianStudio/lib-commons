@@ -343,7 +343,12 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Cl
 
 			continue
 		case healthcheck.Run:
-			if !p.runHealthCheck(ctx, tenantID, conn) {
+			usable, err := p.runHealthCheck(ctx, tenantID, conn)
+			if err != nil {
+				return nil, err
+			}
+
+			if !usable {
 				// Connection was unhealthy and has been evicted; create fresh.
 				return p.createConnection(ctx, tenantID)
 			}
@@ -401,11 +406,13 @@ func (p *Manager) touchCachedConnection(tenantID string, conn *MongoConnection) 
 
 // runHealthCheck pings the cached client and reports whether it may still be used.
 // An unhealthy client is evicted so the caller rebuilds it with fresh credentials.
+// A non-nil error means the caller's own context ended: the client is left alone and
+// the error belongs to that caller, not to the client.
 // Ping is slow I/O, so it intentionally runs outside any lock. The verdict is
 // published last, in a defer: waiting callers are released only after a condemned
 // client has left the cache, so they cannot pick it back up, and they are released
 // even if the ping panics.
-func (p *Manager) runHealthCheck(ctx context.Context, tenantID string, conn *MongoConnection) bool {
+func (p *Manager) runHealthCheck(ctx context.Context, tenantID string, conn *MongoConnection) (bool, error) {
 	healthy := false
 
 	defer func() { p.healthGate.End(tenantID, healthy) }()
@@ -418,14 +425,21 @@ func (p *Manager) runHealthCheck(ctx context.Context, tenantID string, conn *Mon
 	if pingErr == nil {
 		healthy = true
 
-		return true
+		return true, nil
+	}
+
+	// The client is shared: a caller that went away mid-check has learnt nothing
+	// about it, so disconnecting it here would punish every other caller for one
+	// dead request.
+	if healthcheck.CallerAbandoned(ctx, pingErr) {
+		return false, pingErr
 	}
 
 	// Evicting by tenant id alone would tear down whatever client is cached, including
 	// a healthy one the async reconnect installed while this ping was failing.
 	p.disconnectUnhealthyConnection(ctx, tenantID, conn, pingErr)
 
-	return false
+	return false, nil
 }
 
 // revalidatePoolSettings fetches fresh config from the Tenant Manager and detects
@@ -698,7 +712,12 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*mongo
 	}
 
 	if hasCached {
-		if reusedDB, reused := p.tryReuseCachedConnection(ctx, tenantID, cachedConn); reused {
+		reusedDB, reused, reuseErr := p.tryReuseCachedConnection(ctx, tenantID, cachedConn)
+		if reuseErr != nil {
+			return nil, reuseErr
+		}
+
+		if reused {
 			return reusedDB, nil
 		}
 	}
@@ -724,16 +743,18 @@ func (p *Manager) snapshotCachedConnection(tenantID string) (*MongoConnection, b
 // tryReuseCachedConnection validates a previously cached connection by pinging it.
 // If the connection is healthy and still in the cache, it updates the LRU timestamp
 // and returns it. If unhealthy or evicted, it cleans up and returns reused=false so
-// the caller falls through to create a new connection.
+// the caller falls through to create a new connection. A non-nil error means the
+// caller's own context ended: the cached connection is left alone, because a
+// cancelled request says nothing about a connection the other callers share.
 func (p *Manager) tryReuseCachedConnection(
 	ctx context.Context,
 	tenantID string,
 	cachedConn *MongoConnection,
-) (*mongo.Client, bool) {
+) (*mongo.Client, bool, error) {
 	if cachedConn == nil || cachedConn.DB == nil {
 		p.removeStaleCacheEntry(tenantID, cachedConn)
 
-		return nil, false
+		return nil, false, nil
 	}
 
 	pingCtx, cancel := context.WithTimeout(ctx, mongoPingTimeout)
@@ -742,12 +763,18 @@ func (p *Manager) tryReuseCachedConnection(
 	cancel()
 
 	if pingErr == nil {
-		return p.reuseHealthyConnection(tenantID, cachedConn)
+		reusedDB, reused := p.reuseHealthyConnection(tenantID, cachedConn)
+
+		return reusedDB, reused, nil
+	}
+
+	if healthcheck.CallerAbandoned(ctx, pingErr) {
+		return nil, false, pingErr
 	}
 
 	p.disconnectUnhealthyConnection(ctx, tenantID, cachedConn, pingErr)
 
-	return nil, false
+	return nil, false, nil
 }
 
 // reuseHealthyConnection updates the LRU timestamp for a healthy cached connection.

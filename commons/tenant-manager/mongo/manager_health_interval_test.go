@@ -123,10 +123,15 @@ type clientResult struct {
 
 // resolveAsync resolves healthIntervalTenant on its own goroutine.
 func resolveAsync(manager *Manager) <-chan clientResult {
+	return resolveAsyncCtx(context.Background(), manager)
+}
+
+// resolveAsyncCtx is resolveAsync for a caller whose context the test controls.
+func resolveAsyncCtx(ctx context.Context, manager *Manager) <-chan clientResult {
 	out := make(chan clientResult, 1)
 
 	go func() {
-		client, err := manager.GetConnection(context.Background(), healthIntervalTenant)
+		client, err := manager.GetConnection(ctx, healthIntervalTenant)
 		out <- clientResult{client: client, err: err}
 	}()
 
@@ -199,6 +204,86 @@ func TestManager_GetConnection_ConcurrentCallersSharePassedCheck(t *testing.T) {
 	assert.Same(t, conn.DB, firstResult.client)
 	assert.Same(t, conn.DB, secondResult.client, "both callers must get the client that passed the check")
 	assert.Equal(t, int32(1), srv.pings.Load(), "the pair must cost one health check, not one each")
+}
+
+// TestManager_GetConnection_CancelledCallerKeepsTheClient covers whose failure a
+// failed health check is. The ping runs on the caller's context, so a caller that
+// cancels or times out makes its own check fail -- and the client it was checking is
+// shared with every other caller of that tenant. Evicting on that error disconnects
+// a perfectly good client because one request went away.
+func TestManager_GetConnection_CancelledCallerKeepsTheClient(t *testing.T) {
+	t.Parallel()
+
+	manager, srv, conn := newBlockingHealthIntervalManager(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	result := resolveAsyncCtx(ctx, manager)
+
+	<-srv.started // the caller's health check is in flight
+
+	cancel() // the caller gives up; the driver fails the ping with its context error
+
+	got := <-result
+
+	require.ErrorIs(t, got.err, context.Canceled, "the cancelled caller must get its own error back")
+	assert.Nil(t, got.client)
+
+	close(srv.gate) // let the abandoned ping through; nobody is waiting for it now
+
+	manager.mu.RLock()
+	stillCached := manager.connections[healthIntervalTenant]
+	manager.mu.RUnlock()
+
+	require.Same(t, conn, stillCached, "a cancelled caller must not evict the client the other callers share")
+
+	// The next caller with a live context checks the client itself and gets it back,
+	// with no rebuild: the cancelled check left no verdict behind.
+	live := <-resolveAsync(manager)
+
+	require.NoError(t, live.err)
+	assert.Same(t, conn.DB, live.client)
+}
+
+// TestManager_TryReuseCachedConnection_CancelledCallerKeepsTheClient is the same
+// rule on the rebuild path, which pings the cached client a second time.
+func TestManager_TryReuseCachedConnection_CancelledCallerKeepsTheClient(t *testing.T) {
+	t.Parallel()
+
+	fakeDB, _, cleanupFake := startCountingFakeMongoServer(t)
+	t.Cleanup(cleanupFake)
+
+	manager := NewManager(nil, "ledger",
+		WithLogger(testutil.NewMockLogger()),
+		WithConnectionsCheckInterval(0),
+	)
+	t.Cleanup(func() { require.NoError(t, manager.Close(context.Background())) })
+
+	conn := &MongoConnection{DB: fakeDB}
+
+	manager.mu.Lock()
+	manager.connections[healthIntervalTenant] = conn
+	manager.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	client, reused, err := manager.tryReuseCachedConnection(ctx, healthIntervalTenant, conn)
+
+	require.ErrorIs(t, err, context.Canceled, "the cancelled caller must get its own error back")
+	assert.False(t, reused)
+	assert.Nil(t, client)
+
+	manager.mu.RLock()
+	stillCached := manager.connections[healthIntervalTenant]
+	manager.mu.RUnlock()
+
+	require.Same(t, conn, stillCached, "a cancelled caller must not evict the client the other callers share")
+
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), time.Second)
+	defer pingCancel()
+
+	assert.NoError(t, conn.DB.Ping(pingCtx, nil), "the client must still be connected")
 }
 
 // TestManager_GetConnection_UnhealthyCheckSparesRebuiltClient covers the eviction

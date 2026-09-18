@@ -201,6 +201,62 @@ func TestManager_GetConnection_HealthCheckRunsAfterInterval(t *testing.T) {
 		"a cache hit after the health-check window must ping the tenant database again")
 }
 
+// TestManager_GetConnection_CancelledCallerKeepsThePool covers whose failure a
+// failed health check is. The ping runs on the caller's context, so a caller that
+// cancels or times out makes its own check fail -- and the pool it was checking is
+// shared with every other caller of that tenant. Evicting on that error closes a
+// perfectly good pool because one request went away.
+func TestManager_GetConnection_CancelledCallerKeepsThePool(t *testing.T) {
+	t.Parallel()
+
+	db := newBlockingDB()
+	manager := newHealthIntervalManagerWithDB(t, db)
+
+	manager.mu.RLock()
+	cached := manager.connections[healthIntervalTenant]
+	manager.mu.RUnlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	result := make(chan connResult, 1)
+
+	go func() {
+		conn, err := manager.GetConnection(ctx, healthIntervalTenant)
+		result <- connResult{conn: conn, err: err}
+	}()
+
+	<-db.started // the caller's health check is in flight
+
+	// The caller gives up. database/sql hands back the context's own error.
+	cancel()
+
+	db.pingErr = context.Canceled
+	close(db.release)
+
+	got := <-result
+
+	require.ErrorIs(t, got.err, context.Canceled, "the cancelled caller must get its own error back")
+	assert.Nil(t, got.conn)
+
+	manager.mu.RLock()
+	stillCached := manager.connections[healthIntervalTenant]
+	manager.mu.RUnlock()
+
+	assert.Same(t, cached, stillCached, "a cancelled caller must not evict the pool the other callers share")
+	assert.False(t, db.closed, "a cancelled caller must not close the pool the other callers share")
+	assert.Equal(t, int32(1), db.pingCount())
+
+	// The next caller with a live context checks the pool itself and gets it back,
+	// with no rebuild: the cancelled check left no verdict behind.
+	db.pingErr = nil
+
+	conn, err := manager.GetConnection(context.Background(), healthIntervalTenant)
+
+	require.NoError(t, err)
+	assert.Same(t, cached, conn)
+	assert.Equal(t, int32(2), db.pingCount(), "the live caller runs the check the cancelled one could not finish")
+}
+
 // TestManager_GetConnection_HealthCheckDisabledPingsEveryCall covers the escape
 // hatch: a non-positive interval restores a ping on every resolution.
 func TestManager_GetConnection_HealthCheckDisabledPingsEveryCall(t *testing.T) {

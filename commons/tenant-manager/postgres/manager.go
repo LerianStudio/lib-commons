@@ -414,7 +414,12 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*Postgres
 
 				continue
 			case healthcheck.Run:
-				if !p.runHealthCheck(ctx, tenantID, conn) {
+				usable, err := p.runHealthCheck(ctx, tenantID, conn)
+				if err != nil {
+					return nil, err
+				}
+
+				if !usable {
 					// Fall through to create a new connection with fresh credentials
 					return p.createConnection(ctx, tenantID)
 				}
@@ -471,10 +476,12 @@ func (p *Manager) touchCachedConnection(tenantID string, conn *PostgresConnectio
 
 // runHealthCheck pings the cached pool and reports whether it may still be used.
 // An unhealthy pool is evicted so the caller rebuilds it with fresh credentials.
+// A non-nil error means the caller's own context ended: the pool is left alone and
+// the error belongs to that caller, not to the pool.
 // The verdict is published last, in a defer: waiting callers are released only after
 // a condemned pool has left the cache, so they cannot pick it back up, and they are
 // released even if the ping panics.
-func (p *Manager) runHealthCheck(ctx context.Context, tenantID string, conn *PostgresConnection) bool {
+func (p *Manager) runHealthCheck(ctx context.Context, tenantID string, conn *PostgresConnection) (bool, error) {
 	healthy := false
 
 	defer func() { p.healthGate.End(tenantID, healthy) }()
@@ -488,7 +495,13 @@ func (p *Manager) runHealthCheck(ctx context.Context, tenantID string, conn *Pos
 	if pingErr == nil {
 		healthy = true
 
-		return true
+		return true, nil
+	}
+
+	// The pool is shared: a caller that went away mid-check has learnt nothing about
+	// it, so closing it here would punish every other caller for one dead request.
+	if healthcheck.CallerAbandoned(ctx, pingErr) {
+		return false, pingErr
 	}
 
 	if p.logger != nil {
@@ -497,7 +510,7 @@ func (p *Manager) runHealthCheck(ctx context.Context, tenantID string, conn *Pos
 
 	p.closeUnhealthyConnection(ctx, tenantID, conn)
 
-	return false
+	return false, nil
 }
 
 // revalidatePoolSettings fetches fresh config from the Tenant Manager and applies

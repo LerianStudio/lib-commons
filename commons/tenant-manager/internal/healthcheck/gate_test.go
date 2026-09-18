@@ -4,6 +4,8 @@ package healthcheck
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -255,4 +257,40 @@ func TestGate_KeysAreIndependent(t *testing.T) {
 
 	assert.Equal(t, Run, action, "a check in flight for one tenant must not gate another")
 	assert.Nil(t, done)
+}
+
+func TestCallerAbandoned(t *testing.T) {
+	t.Parallel()
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	expired, expire := context.WithTimeout(context.Background(), time.Nanosecond)
+	defer expire()
+
+	<-expired.Done()
+
+	dbDown := errors.New("connection refused")
+
+	tests := []struct {
+		name     string
+		ctx      context.Context
+		checkErr error
+		want     bool
+	}{
+		{"live caller, database error", context.Background(), dbDown, false},
+		{"live caller, manager ping timeout", context.Background(), context.DeadlineExceeded, false},
+		{"cancelled caller, its own error", cancelled, context.Canceled, true},
+		{"cancelled caller, wrapped error", cancelled, fmt.Errorf("incomplete read: %w", context.Canceled), true},
+		{"cancelled caller, unrelated error", cancelled, dbDown, false},
+		{"expired caller, its own error", expired, context.DeadlineExceeded, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			assert.Equal(t, tt.want, CallerAbandoned(tt.ctx, tt.checkErr))
+		})
+	}
 }

@@ -9,6 +9,7 @@ package healthcheck
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"time"
 )
@@ -145,6 +146,19 @@ func (g *Gate) ForgetAll() {
 	for _, inflight := range g.inflight {
 		inflight.invalid = true
 	}
+}
+
+// CallerAbandoned reports whether a health check failed because the caller's own
+// context ended rather than because the connection is unusable. The check runs on
+// the caller's context but the connection is shared with every other caller of that
+// tenant, so a cancelled or timed-out request tells us nothing about the connection
+// and must not get it evicted. The manager's own ping timeout is a different thing:
+// the caller's context is still live there, so that failure does condemn the
+// connection.
+func CallerAbandoned(ctx context.Context, checkErr error) bool {
+	ctxErr := ctx.Err()
+
+	return ctxErr != nil && errors.Is(checkErr, ctxErr)
 }
 
 // Await blocks until the in-flight check publishes its verdict, or the caller's
