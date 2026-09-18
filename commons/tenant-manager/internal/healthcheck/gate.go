@@ -33,7 +33,15 @@ type Gate struct {
 	mu       sync.Mutex
 	interval time.Duration
 	last     map[string]time.Time
-	inflight map[string]chan struct{}
+	inflight map[string]*check
+}
+
+// check is one health check in flight. It is invalidated when the connection it is
+// about is evicted, because its verdict then says nothing about the connection that
+// takes that tenant's place.
+type check struct {
+	done    chan struct{}
+	invalid bool
 }
 
 // NewGate returns a gate that allows one check per interval per tenant. An interval
@@ -43,7 +51,7 @@ func NewGate(interval time.Duration) *Gate {
 	return &Gate{
 		interval: max(interval, 0),
 		last:     make(map[string]time.Time),
-		inflight: make(map[string]chan struct{}),
+		inflight: make(map[string]*check),
 	}
 }
 
@@ -58,24 +66,25 @@ func (g *Gate) Begin(key string) (Action, <-chan struct{}) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if done, ok := g.inflight[key]; ok {
-		return Wait, done
+	if inflight, ok := g.inflight[key]; ok {
+		return Wait, inflight.done
 	}
 
 	if last, ok := g.last[key]; ok && time.Since(last) <= g.interval {
 		return Skip, nil
 	}
 
-	g.inflight[key] = make(chan struct{})
+	g.inflight[key] = &check{done: make(chan struct{})}
 
 	return Run, nil
 }
 
 // End publishes the verdict of a check the caller owned and releases everyone
-// waiting on it. The check time is recorded only when the connection passed, so a
-// failure leaves the next caller due to check whatever connection replaces it.
-// Callers must call End for every Begin that returned Run, including when the check
-// panics, or waiting callers never wake.
+// waiting on it. The check time is recorded only when the connection passed AND the
+// check is still about the connection that is cached: a failure, or an eviction
+// while the check was in flight, leaves the next caller due to check whatever
+// connection replaces it. Callers must call End for every Begin that returned Run,
+// including when the check panics, or waiting callers never wake.
 func (g *Gate) End(key string, healthy bool) {
 	if g == nil || g.interval <= 0 {
 		return
@@ -83,26 +92,29 @@ func (g *Gate) End(key string, healthy bool) {
 
 	g.mu.Lock()
 
-	done := g.inflight[key]
+	inflight, ok := g.inflight[key]
 	delete(g.inflight, key)
 
-	if healthy {
-		g.last[key] = time.Now()
-	} else {
-		delete(g.last, key)
+	if ok {
+		if healthy && !inflight.invalid {
+			g.last[key] = time.Now()
+		} else {
+			delete(g.last, key)
+		}
 	}
 
 	g.mu.Unlock()
 
-	if done != nil {
-		close(done)
+	if ok {
+		close(inflight.done)
 	}
 }
 
 // Forget drops the recorded check time for a key, so the connection that replaces
 // it is checked on its first use. Managers call this wherever they evict a tenant.
-// An in-flight check is left alone: its owner still has to publish a verdict to the
-// callers waiting on it.
+// A check in flight for that key is invalidated rather than removed: its owner still
+// has to wake the callers waiting on it, but its verdict no longer counts, since the
+// connection it was about is the one being evicted.
 func (g *Gate) Forget(key string) {
 	if g == nil {
 		return
@@ -112,9 +124,14 @@ func (g *Gate) Forget(key string) {
 	defer g.mu.Unlock()
 
 	delete(g.last, key)
+
+	if inflight, ok := g.inflight[key]; ok {
+		inflight.invalid = true
+	}
 }
 
-// ForgetAll drops every recorded check time, for a manager closing all its tenants.
+// ForgetAll drops every recorded check time and invalidates every check in flight,
+// for a manager closing or evicting all its tenants.
 func (g *Gate) ForgetAll() {
 	if g == nil {
 		return
@@ -124,6 +141,10 @@ func (g *Gate) ForgetAll() {
 	defer g.mu.Unlock()
 
 	clear(g.last)
+
+	for _, inflight := range g.inflight {
+		inflight.invalid = true
+	}
 }
 
 // Await blocks until the in-flight check publishes its verdict, or the caller's

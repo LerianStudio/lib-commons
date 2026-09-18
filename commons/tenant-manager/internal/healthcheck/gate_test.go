@@ -164,7 +164,45 @@ func TestGate_ForgetAllMakesEveryCallerCheck(t *testing.T) {
 	}
 }
 
-func TestGate_ForgetLeavesTheCheckInFlightAlone(t *testing.T) {
+func TestGate_ForgetInvalidatesTheCheckInFlight(t *testing.T) {
+	t.Parallel()
+
+	gate := NewGate(time.Hour)
+
+	action, _ := gate.Begin(tenant)
+	require.Equal(t, Run, action)
+
+	// The connection this check is about is evicted while the check is in flight,
+	// so its verdict is about a connection that no longer exists.
+	gate.Forget(tenant)
+
+	gate.End(tenant, true)
+
+	action, _ = gate.Begin(tenant)
+
+	assert.Equal(t, Run, action,
+		"a check that passed after its connection was evicted must not vouch for the replacement")
+}
+
+func TestGate_ForgetAllInvalidatesTheCheckInFlight(t *testing.T) {
+	t.Parallel()
+
+	gate := NewGate(time.Hour)
+
+	action, _ := gate.Begin(tenant)
+	require.Equal(t, Run, action)
+
+	gate.ForgetAll()
+
+	gate.End(tenant, true)
+
+	action, _ = gate.Begin(tenant)
+
+	assert.Equal(t, Run, action,
+		"a check that passed after its connection was evicted must not vouch for the replacement")
+}
+
+func TestGate_ForgetStillWakesWaiters(t *testing.T) {
 	t.Parallel()
 
 	gate := NewGate(time.Hour)
@@ -175,13 +213,17 @@ func TestGate_ForgetLeavesTheCheckInFlightAlone(t *testing.T) {
 	_, done := gate.Begin(tenant)
 	require.NotNil(t, done)
 
-	// An eviction elsewhere must not orphan the caller waiting on this check.
+	// An eviction elsewhere invalidates the verdict but must not orphan the caller
+	// waiting on it.
 	gate.Forget(tenant)
 	gate.ForgetAll()
 
-	gate.End(tenant, false)
+	gate.End(tenant, true)
 
 	require.NoError(t, Await(context.Background(), done))
+
+	action, _ = gate.Begin(tenant)
+	assert.Equal(t, Run, action, "the woken caller must check the connection it finds")
 }
 
 func TestGate_NilGateIsUsable(t *testing.T) {
