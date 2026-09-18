@@ -8,7 +8,6 @@ package mongo
 
 import (
 	"context"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,10 +24,10 @@ const healthIntervalTenant = "tenant-health-interval"
 // healthIntervalTenant, pointed at a fake MongoDB server that counts the `ping`
 // commands it answers. Async settings revalidation is switched off so the
 // assertions observe health-check pings and nothing else.
-func newHealthIntervalManager(t *testing.T, opts ...Option) (*Manager, *atomic.Int32) {
+func newHealthIntervalManager(t *testing.T, opts ...Option) (*Manager, *fakeMongoServer) {
 	t.Helper()
 
-	fakeDB, pings, cleanupFake := startCountingFakeMongoServer(t)
+	fakeDB, srv, cleanupFake := startCountingFakeMongoServer(t)
 
 	base := []Option{
 		WithLogger(testutil.NewMockLogger()),
@@ -46,10 +45,7 @@ func newHealthIntervalManager(t *testing.T, opts ...Option) (*Manager, *atomic.I
 	manager.connections[healthIntervalTenant] = &MongoConnection{DB: fakeDB}
 	manager.mu.Unlock()
 
-	// The handshake this client already completed is not a health check.
-	pings.Store(0)
-
-	return manager, pings
+	return manager, srv
 }
 
 // getCachedConnection resolves the cached client n times, failing on any error.
@@ -69,11 +65,11 @@ func getCachedConnection(t *testing.T, manager *Manager, n int) {
 func TestManager_GetConnection_HealthCheckIsIntervalGated(t *testing.T) {
 	t.Parallel()
 
-	manager, pings := newHealthIntervalManager(t)
+	manager, srv := newHealthIntervalManager(t)
 
 	getCachedConnection(t, manager, 2)
 
-	assert.Equal(t, int32(1), pings.Load(),
+	assert.Equal(t, int32(1), srv.pings.Load(),
 		"a cache hit inside the health-check window must not ping the tenant database")
 }
 
@@ -82,12 +78,127 @@ func TestManager_GetConnection_HealthCheckIsIntervalGated(t *testing.T) {
 func TestManager_GetConnection_HealthCheckRunsAfterInterval(t *testing.T) {
 	t.Parallel()
 
-	manager, pings := newHealthIntervalManager(t, WithHealthCheckInterval(time.Nanosecond))
+	manager, srv := newHealthIntervalManager(t, WithHealthCheckInterval(time.Nanosecond))
 
 	getCachedConnection(t, manager, 2)
 
-	assert.Equal(t, int32(2), pings.Load(),
+	assert.Equal(t, int32(2), srv.pings.Load(),
 		"a cache hit after the health-check window must ping the tenant database again")
+}
+
+// newBlockingHealthIntervalManager caches a client whose every health-check ping is
+// held by the fake server until the test releases it, so a check can be kept in
+// flight while a second caller resolves the same tenant.
+func newBlockingHealthIntervalManager(t *testing.T, opts ...Option) (*Manager, *fakeMongoServer, *MongoConnection) {
+	t.Helper()
+
+	fakeDB, srv, cleanupFake := startBlockingFakeMongoServer(t)
+
+	base := []Option{
+		WithLogger(testutil.NewMockLogger()),
+		WithConnectionsCheckInterval(0),
+	}
+
+	manager := NewManager(nil, "ledger", append(base, opts...)...)
+
+	t.Cleanup(func() {
+		require.NoError(t, manager.Close(context.Background()))
+		cleanupFake()
+	})
+
+	conn := &MongoConnection{DB: fakeDB}
+
+	manager.mu.Lock()
+	manager.connections[healthIntervalTenant] = conn
+	manager.mu.Unlock()
+
+	return manager, srv, conn
+}
+
+// clientResult is what a concurrent GetConnection call handed back.
+type clientResult struct {
+	client *mongo.Client
+	err    error
+}
+
+// resolveAsync resolves healthIntervalTenant on its own goroutine.
+func resolveAsync(manager *Manager) <-chan clientResult {
+	out := make(chan clientResult, 1)
+
+	go func() {
+		client, err := manager.GetConnection(context.Background(), healthIntervalTenant)
+		out <- clientResult{client: client, err: err}
+	}()
+
+	return out
+}
+
+// TestManager_GetConnection_ConcurrentCallerWaitsForFailedCheck is the client-pulled-
+// from-under-you case: while one caller's health check is in flight, a second caller
+// for the same tenant must not be handed that client, because the check may still
+// condemn it. Before the interval gate every caller ran its own check and saw the
+// failure itself; a caller that skips the check must therefore wait for the verdict.
+func TestManager_GetConnection_ConcurrentCallerWaitsForFailedCheck(t *testing.T) {
+	t.Parallel()
+
+	manager, srv, _ := newBlockingHealthIntervalManager(t)
+
+	first := resolveAsync(manager)
+
+	<-srv.started // the health check is in flight
+
+	second := resolveAsync(manager)
+
+	select {
+	case got := <-second:
+		t.Fatalf("second caller returned before the in-flight health check resolved: client=%p err=%v", got.client, got.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	srv.failPing.Store(true)
+	close(srv.gate)
+
+	firstResult := <-first
+	secondResult := <-second
+
+	require.Error(t, firstResult.err, "the caller that ran the failed check has no Tenant Manager to rebuild from")
+
+	require.Error(t, secondResult.err,
+		"the waiting caller must be pushed onto the rebuild path, not handed the client that just failed")
+	assert.Nil(t, secondResult.client)
+
+	assert.Equal(t, int32(1), srv.pings.Load(), "the pair must cost one health check, not one each")
+
+	manager.mu.RLock()
+	_, cached := manager.connections[healthIntervalTenant]
+	manager.mu.RUnlock()
+
+	assert.False(t, cached, "the client that failed its health check must be evicted")
+}
+
+// TestManager_GetConnection_ConcurrentCallersSharePassedCheck is the happy half of
+// the same window: one check, both callers served the client it passed.
+func TestManager_GetConnection_ConcurrentCallersSharePassedCheck(t *testing.T) {
+	t.Parallel()
+
+	manager, srv, conn := newBlockingHealthIntervalManager(t)
+
+	first := resolveAsync(manager)
+
+	<-srv.started
+
+	second := resolveAsync(manager)
+
+	close(srv.gate)
+
+	firstResult := <-first
+	secondResult := <-second
+
+	require.NoError(t, firstResult.err)
+	require.NoError(t, secondResult.err)
+	assert.Same(t, conn.DB, firstResult.client)
+	assert.Same(t, conn.DB, secondResult.client, "both callers must get the client that passed the check")
+	assert.Equal(t, int32(1), srv.pings.Load(), "the pair must cost one health check, not one each")
 }
 
 // TestManager_GetConnection_UnhealthyCacheEvicts proves the interval gate did not
@@ -143,11 +254,11 @@ func TestManager_GetConnection_HealthCheckDisabledPingsEveryCall(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			manager, pings := newHealthIntervalManager(t, WithHealthCheckInterval(interval))
+			manager, srv := newHealthIntervalManager(t, WithHealthCheckInterval(interval))
 
 			getCachedConnection(t, manager, 3)
 
-			assert.Equal(t, int32(3), pings.Load(),
+			assert.Equal(t, int32(3), srv.pings.Load(),
 				"a non-positive health-check interval must ping on every cache hit")
 		})
 	}
