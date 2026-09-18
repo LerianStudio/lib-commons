@@ -421,13 +421,9 @@ func (p *Manager) runHealthCheck(ctx context.Context, tenantID string, conn *Mon
 		return true
 	}
 
-	if p.logger != nil {
-		p.logger.WarnCtx(ctx, fmt.Sprintf("cached mongo connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr))
-	}
-
-	if closeErr := p.CloseConnection(ctx, tenantID); closeErr != nil && p.logger != nil {
-		p.logger.WarnCtx(ctx, fmt.Sprintf("failed to close stale mongo connection for tenant %s: %v", tenantID, closeErr))
-	}
+	// Evicting by tenant id alone would tear down whatever client is cached, including
+	// a healthy one the async reconnect installed while this ping was failing.
+	p.disconnectUnhealthyConnection(ctx, tenantID, conn, pingErr)
 
 	return false
 }
@@ -770,8 +766,12 @@ func (p *Manager) reuseHealthyConnection(tenantID string, cachedConn *MongoConne
 	return nil, false
 }
 
-// disconnectUnhealthyConnection disconnects a cached connection that failed its
-// health check and removes the stale cache entry.
+// disconnectUnhealthyConnection drops the cache entry for a connection that failed
+// its health check and disconnects that connection. The entry is dropped first, so
+// no other goroutine can pick up a client that is being torn down, and only if the
+// tenant key still holds this very connection: another goroutine may have installed
+// a healthy replacement while the ping was failing, and that one must survive.
+// The disconnect itself runs outside the lock, since it is network I/O.
 func (p *Manager) disconnectUnhealthyConnection(
 	ctx context.Context,
 	tenantID string,
@@ -782,14 +782,14 @@ func (p *Manager) disconnectUnhealthyConnection(
 		p.logger.WarnCtx(ctx, fmt.Sprintf("cached mongo connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr))
 	}
 
+	p.removeStaleCacheEntry(tenantID, cachedConn)
+
 	discCtx, discCancel := context.WithTimeout(ctx, mongoPingTimeout)
 	if discErr := cachedConn.DB.Disconnect(discCtx); discErr != nil && p.logger != nil {
 		p.logger.WarnCtx(ctx, fmt.Sprintf("failed to disconnect unhealthy mongo connection for tenant %s: %v", tenantID, discErr))
 	}
 
 	discCancel()
-
-	p.removeStaleCacheEntry(tenantID, cachedConn)
 }
 
 // removeStaleCacheEntry removes a cache entry only if it still points to the

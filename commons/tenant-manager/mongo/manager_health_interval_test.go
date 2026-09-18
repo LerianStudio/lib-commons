@@ -201,6 +201,51 @@ func TestManager_GetConnection_ConcurrentCallersSharePassedCheck(t *testing.T) {
 	assert.Equal(t, int32(1), srv.pings.Load(), "the pair must cost one health check, not one each")
 }
 
+// TestManager_GetConnection_UnhealthyCheckSparesRebuiltClient covers the eviction
+// path's identity: the failed client is disconnected outside the lock, so another
+// goroutine (the async settings revalidation, which reconnects a tenant whose
+// credentials or host changed) can swap a healthy client under the same tenant key
+// while the ping is failing. Evicting by tenant id alone tears that replacement
+// down and leaves the tenant with no client at all.
+func TestManager_GetConnection_UnhealthyCheckSparesRebuiltClient(t *testing.T) {
+	t.Parallel()
+
+	// Built before the manager so the manager's Close runs first and this client is
+	// still connected when it does; cleanups run last-registered-first.
+	freshDB, _, cleanupFresh := startCountingFakeMongoServer(t)
+	t.Cleanup(cleanupFresh)
+
+	freshConn := &MongoConnection{DB: freshDB}
+
+	manager, srv, staleConn := newBlockingHealthIntervalManager(t)
+
+	result := resolveAsync(manager)
+
+	<-srv.started // the stale client's health check is in flight
+
+	// Stand in for reconnectMongo swapping in a healthy client mid-ping.
+	manager.mu.Lock()
+	manager.connections[healthIntervalTenant] = freshConn
+	manager.mu.Unlock()
+
+	srv.failPing.Store(true)
+	close(srv.gate)
+
+	<-result
+
+	manager.mu.RLock()
+	current := manager.connections[healthIntervalTenant]
+	manager.mu.RUnlock()
+
+	assert.Same(t, freshConn, current, "the client installed while the ping was failing must survive the eviction")
+
+	pingCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	assert.NoError(t, freshConn.DB.Ping(pingCtx, nil), "the rebuilt client must still be connected")
+	assert.Error(t, staleConn.DB.Ping(pingCtx, nil), "the client that failed its health check must be disconnected")
+}
+
 // TestManager_GetConnection_UnhealthyCacheEvicts proves the interval gate did not
 // soften the failure path: when a due health check fails, the cached client is
 // evicted and the caller is pushed onto the rebuild path. Mongo had no coverage
