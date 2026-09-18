@@ -153,7 +153,8 @@ func TestTryReuseCachedConnection_NilDB_ReturnsFalse(t *testing.T) {
 	m := NewManager(c, "ledger")
 
 	conn := &MongoConnection{DB: nil}
-	db, ok := m.tryReuseCachedConnection(context.Background(), "tenant-nildb", conn)
+	db, ok, err := m.tryReuseCachedConnection(context.Background(), "tenant-nildb", conn)
+	assert.NoError(t, err)
 	assert.False(t, ok)
 	assert.Nil(t, db)
 }

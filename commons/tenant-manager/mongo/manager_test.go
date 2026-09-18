@@ -52,6 +52,55 @@ func TestMain(m *testing.M) {
 func startFakeMongoServer(t *testing.T) (*mongo.Client, func()) {
 	t.Helper()
 
+	client, _, cleanup := startCountingFakeMongoServer(t)
+
+	return client, cleanup
+}
+
+// fakeMongoServer is the test-side control surface of the fake MongoDB server:
+// how many `ping` commands it has answered, whether it holds each ping until the
+// test releases it, and whether it answers one with a command error. Handshake and
+// heartbeat commands are always answered at once, so the driver's view of the
+// server stays healthy no matter what a test does to pings.
+//
+// Every field is safe to touch while the server goroutine is running: gate is
+// written once before that goroutine exists and afterwards only closed, and the
+// flags are atomic. A plain bool or a reassigned channel here would be a data race
+// with the server's own read of it.
+type fakeMongoServer struct {
+	pings    atomic.Int32
+	started  chan struct{} // one token per ping received
+	gate     chan struct{} // closing it releases pings the server is holding
+	hold     atomic.Bool   // whether a ping waits for the gate before being answered
+	failPing atomic.Bool   // answer the released ping with ok:0 instead of ok:1
+}
+
+// startCountingFakeMongoServer is startFakeMongoServer plus a counter of the
+// `ping` commands the server has answered, for tests that assert how often a
+// cached client is health-checked. Driver heartbeats are not counted.
+func startCountingFakeMongoServer(t *testing.T) (*mongo.Client, *fakeMongoServer, func()) {
+	t.Helper()
+
+	return startControllableFakeMongoServer(t, false)
+}
+
+// startBlockingFakeMongoServer holds every `ping` until the returned server's gate
+// is closed, so a test can keep a health check in flight. Set failPing before
+// releasing the gate to make that ping fail.
+func startBlockingFakeMongoServer(t *testing.T) (*mongo.Client, *fakeMongoServer, func()) {
+	t.Helper()
+
+	return startControllableFakeMongoServer(t, true)
+}
+
+func startControllableFakeMongoServer(t *testing.T, holdPings bool) (*mongo.Client, *fakeMongoServer, func()) {
+	t.Helper()
+
+	srv := &fakeMongoServer{
+		started: make(chan struct{}, 8),
+		gate:    make(chan struct{}),
+	}
+
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
@@ -62,7 +111,7 @@ func startFakeMongoServer(t *testing.T) (*mongo.Client, func()) {
 				return
 			}
 
-			go serveFakeMongoConn(conn)
+			go serveFakeMongoConn(conn, srv)
 		}
 	}()
 
@@ -76,17 +125,53 @@ func startFakeMongoServer(t *testing.T) (*mongo.Client, func()) {
 		SetServerSelectionTimeout(2 * time.Second))
 	require.NoError(t, err)
 
+	// The handshake ping runs with holding still off, whatever this server does to
+	// later ones: holding it would deadlock the client before any test starts.
 	require.NoError(t, mongoClient.Ping(ctx, nil))
+
+	srv.hold.Store(holdPings)
+	srv.pings.Store(0)
+
+	drainStarted(srv)
 
 	cleanup := func() {
 		_ = mongoClient.Disconnect(context.Background())
 		ln.Close()
 	}
 
-	return mongoClient, cleanup
+	return mongoClient, srv, cleanup
 }
 
-func serveFakeMongoConn(conn net.Conn) {
+// drainStarted empties the ping-received tokens left by the handshake.
+func drainStarted(srv *fakeMongoServer) {
+	for {
+		select {
+		case <-srv.started:
+		default:
+			return
+		}
+	}
+}
+
+// fakeMongoCommandName reads the command name out of an OP_MSG body: 4 flag
+// bytes, one section-kind byte, then the command document whose first element
+// is the command itself.
+func fakeMongoCommandName(body []byte) string {
+	const headerLen = 5
+
+	if len(body) <= headerLen {
+		return ""
+	}
+
+	elements, err := bson.Raw(body[headerLen:]).Elements()
+	if err != nil || len(elements) == 0 {
+		return ""
+	}
+
+	return elements[0].Key()
+}
+
+func serveFakeMongoConn(conn net.Conn, srv *fakeMongoServer) {
 	defer conn.Close()
 
 	for {
@@ -103,6 +188,31 @@ func serveFakeMongoConn(conn net.Conn) {
 			return
 		}
 
+		isPing := fakeMongoCommandName(body) == "ping"
+		if isPing {
+			srv.pings.Add(1)
+
+			select {
+			case srv.started <- struct{}{}:
+			default:
+			}
+
+			if srv.hold.Load() {
+				<-srv.gate
+			}
+		}
+
+		if isPing && srv.failPing.Load() {
+			writeFakeMongoResponse(conn, reqID, bson.D{
+				{Key: "ok", Value: 0.0},
+				{Key: "errmsg", Value: "simulated ping failure"},
+				{Key: "code", Value: int32(13)},
+				{Key: "codeName", Value: "Unauthorized"},
+			})
+
+			continue
+		}
+
 		resp := bson.D{
 			{Key: "ismaster", Value: true},
 			{Key: "ok", Value: 1.0},
@@ -115,23 +225,28 @@ func serveFakeMongoConn(conn net.Conn) {
 			{Key: "connectionId", Value: int32(1)},
 		}
 
-		respBytes, _ := bson.Marshal(resp)
-
-		var payload []byte
-		payload = append(payload, 0, 0, 0, 0)
-		payload = append(payload, 0)
-		payload = append(payload, respBytes...)
-
-		totalLen := uint32(16 + len(payload))
-		respHeader := make([]byte, 16)
-		binary.LittleEndian.PutUint32(respHeader[0:4], totalLen)
-		binary.LittleEndian.PutUint32(respHeader[4:8], reqID+1)
-		binary.LittleEndian.PutUint32(respHeader[8:12], reqID)
-		binary.LittleEndian.PutUint32(respHeader[12:16], 2013)
-
-		_, _ = conn.Write(respHeader)
-		_, _ = conn.Write(payload)
+		writeFakeMongoResponse(conn, reqID, resp)
 	}
+}
+
+// writeFakeMongoResponse frames one OP_MSG reply for the request id.
+func writeFakeMongoResponse(conn net.Conn, reqID uint32, resp bson.D) {
+	respBytes, _ := bson.Marshal(resp)
+
+	var payload []byte
+	payload = append(payload, 0, 0, 0, 0)
+	payload = append(payload, 0)
+	payload = append(payload, respBytes...)
+
+	totalLen := uint32(16 + len(payload))
+	respHeader := make([]byte, 16)
+	binary.LittleEndian.PutUint32(respHeader[0:4], totalLen)
+	binary.LittleEndian.PutUint32(respHeader[4:8], reqID+1)
+	binary.LittleEndian.PutUint32(respHeader[8:12], reqID)
+	binary.LittleEndian.PutUint32(respHeader[12:16], 2013)
+
+	_, _ = conn.Write(respHeader)
+	_, _ = conn.Write(payload)
 }
 
 // mustNewTestClient creates a test client or fails the test immediately.
