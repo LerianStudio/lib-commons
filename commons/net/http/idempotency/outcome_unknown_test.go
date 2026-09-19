@@ -441,11 +441,15 @@ func TestCheck_FencedRecord_IsRefusedByAReaderThatIgnoresTheOutcomeField(t *test
 // — but that the response says so.
 type alwaysFailingComplete struct {
 	Store
+
+	completes atomic.Int64
 }
 
 func (s *alwaysFailingComplete) Complete(
 	_ context.Context, _ string, _, _ []byte, _ time.Duration,
 ) (bool, error) {
+	s.completes.Add(1)
+
 	return false, errReceiptWrite
 }
 
@@ -615,6 +619,106 @@ func TestCheck_FenceSuccess_SaysTheKeyIsHeld(t *testing.T) {
 	assert.Equal(t, int64(1), calls.Load())
 	doPost(t, app, "fenced-key").Body.Close()
 	assert.Equal(t, int64(1), calls.Load(), "the fence holds, so the resend does not run")
+}
+
+// TestCheck_FenceFailure_UnfencedHandlerAnswersWhenWired covers the seam this
+// case has of its own.
+//
+// The built-in refusal is right for a route whose handler can be re-run: the
+// key is free, so "reconcile before resending" is the only safe instruction.
+// It is wrong for a route whose handler already committed something the
+// service cannot take back — an averbação accepted by a rail, a bid placed —
+// because reporting failure for an operation that SUCCEEDED is itself what
+// makes the client resend, which is the double execution this package exists
+// to prevent. Only the route knows which of the two it is, so the answer is
+// handed there while the header keeps telling the truth about the key.
+func TestCheck_FenceFailure_UnfencedHandlerAnswersWhenWired(t *testing.T) {
+	t.Parallel()
+
+	store, _ := realRedisStore(t)
+	faulty := &alwaysFailingComplete{Store: store}
+
+	middleware := NewWithStore(faulty,
+		WithKeyTTL(fenceRetention),
+		WithProcessingTTL(fenceLease),
+		// Both post-handler seams are wired. Only the unfenced one may answer.
+		WithPostHandlerUnavailableHandler(func(c fiber.Ctx) error {
+			return c.Status(fiber.StatusServiceUnavailable).
+				JSON(fiber.Map{"code": "SERVICE_RECEIPT_LOST"})
+		}),
+		WithUnfencedHandler(func(c fiber.Ctx) error {
+			return c.Status(fiber.StatusCreated).
+				JSON(fiber.Map{"code": "SERVICE_COMMITTED_UNPROTECTED"})
+		}),
+	)
+
+	var calls atomic.Int64
+
+	app := countingMoneyApp(middleware.Check(), "tenant-unfenced-seam", &calls, func(c fiber.Ctx) error {
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "payoff armed"})
+	})
+
+	response := doPost(t, app, "unfenced-seam-key")
+	body := readBody(t, response)
+
+	assert.Equal(t, http.StatusCreated, response.StatusCode,
+		"once the route wires the seam, the route owns what its client hears")
+	assert.Contains(t, body, "SERVICE_COMMITTED_UNPROTECTED")
+	assert.NotContains(t, body, "IDEMPOTENCY_UNFENCED",
+		"the built-in refusal is the default, not a floor the seam sits under")
+	assert.NotContains(t, body, "SERVICE_RECEIPT_LOST",
+		"the seam wired for a fenced key must still not answer an unfenced one")
+	assert.Equal(t, "false", response.Header.Get(chttp.IdempotencyFenced),
+		"the key is unprotected whatever the handler answers, including under a 2xx")
+
+	assert.Equal(t, int64(1), calls.Load())
+	assert.Equal(t, int64(2), faulty.completes.Load(),
+		"this is the two-failure case: the receipt write, then the fence write")
+}
+
+// TestCheck_FenceSuccess_DoesNotCallTheUnfencedHandler holds the two apart from
+// the other side. A fence that LANDED is not this seam's case: the key is held,
+// a resend is refused, and a route that asked to answer for an UNPROTECTED key
+// must never be handed a protected one — it would report "unprotected, go
+// reconcile" about a key that is doing its job.
+func TestCheck_FenceSuccess_DoesNotCallTheUnfencedHandler(t *testing.T) {
+	t.Parallel()
+
+	store, _ := realRedisStore(t)
+
+	var unfenced atomic.Int64
+
+	middleware := NewWithStore(&transientCompleteFailure{Store: store},
+		WithKeyTTL(fenceRetention),
+		WithProcessingTTL(fenceLease),
+		WithPostHandlerUnavailableHandler(func(c fiber.Ctx) error {
+			return c.Status(fiber.StatusServiceUnavailable).
+				JSON(fiber.Map{"code": "SERVICE_RECEIPT_LOST"})
+		}),
+		WithUnfencedHandler(func(c fiber.Ctx) error {
+			unfenced.Add(1)
+
+			return c.Status(fiber.StatusCreated).
+				JSON(fiber.Map{"code": "SERVICE_COMMITTED_UNPROTECTED"})
+		}),
+	)
+
+	var calls atomic.Int64
+
+	app := countingMoneyApp(middleware.Check(), "tenant-fenced-seam", &calls, func(c fiber.Ctx) error {
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "payoff armed"})
+	})
+
+	response := doPost(t, app, "fenced-seam-key")
+	body := readBody(t, response)
+
+	assert.Equal(t, int64(0), unfenced.Load(),
+		"the fence landed, so this is not the unfenced seam's case")
+	assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
+	assert.Contains(t, body, "SERVICE_RECEIPT_LOST")
+	assert.NotContains(t, body, "SERVICE_COMMITTED_UNPROTECTED")
+	assert.Equal(t, "true", response.Header.Get(chttp.IdempotencyFenced))
+	assert.Equal(t, int64(1), calls.Load())
 }
 
 // TestCheck_UnrecognisedRecordState_IsRefusedEvenWhenFailOpen is the

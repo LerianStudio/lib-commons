@@ -184,6 +184,10 @@ type Middleware struct {
 	// onPostHandlerUnavailable answers only failures observed AFTER the
 	// handler ran. Unset, the post-handler path falls back to onUnavailable.
 	onPostHandlerUnavailable func(c fiber.Ctx) error
+	// onUnfenced answers the post-handler failure whose FENCE also failed, so
+	// the key is not protected. Unset, that case keeps the built-in 503; it
+	// never falls back to either seam above.
+	onUnfenced func(c fiber.Ctx) error
 }
 
 // New creates an idempotency middleware backed by the given Redis client.
@@ -547,6 +551,30 @@ func WithPostHandlerUnavailableHandler(fn func(c fiber.Ctx) error) Option {
 	}
 }
 
+// WithUnfencedHandler sets a custom handler invoked when the store failed TWICE
+// after the protected handler already ran: once on the replay receipt and once
+// on the fence that would have held the key. Unset, that case keeps the
+// built-in 503 "IDEMPOTENCY_UNFENCED". It never falls back to
+// [WithUnavailableHandler] or [WithPostHandlerUnavailableHandler], which a
+// service wires for cases where the key IS protected.
+//
+// It exists because this is the one branch the library cannot decide. The key
+// is unprotected and a resend may execute the operation again, which is why the
+// default refuses — but on a route whose handler already committed something
+// irreversible, answering "failed" for an operation that succeeded is itself
+// what makes the client resend. Only that route's owner can weigh the two, so
+// the seam hands the answer over there and leaves every other route's 503
+// exactly as it was.
+//
+// The middleware still sets [constants.IdempotencyFenced] to "false" whatever
+// this handler answers, so a client can read that the key is unprotected even
+// from a success.
+func WithUnfencedHandler(fn func(c fiber.Ctx) error) Option {
+	return func(m *Middleware) {
+		m.onUnfenced = fn
+	}
+}
+
 // WithMaxBodyCache sets the maximum raw response body size (in bytes) that can
 // be persisted for exact replay (default: 1 MB). The encoded replay payload is
 // bounded to twice this value. A response exceeding either bound fails closed
@@ -737,12 +765,22 @@ func (m *Middleware) respondUnreadableRecord(c fiber.Ctx) error {
 // unavailable, and carries no Retry-After: retrying is precisely what the
 // caller must not do until it has reconciled.
 //
-// It does not route through [WithPostHandlerUnavailableHandler]. A service that
-// wired that seam wired it for the fenced case, and answering this case with
-// that document would put the indistinguishability straight back. A service
-// that wants one document for both can still produce it, from the
-// [constants.IdempotencyFenced] header the middleware sets either way.
+// It does not route through [WithPostHandlerUnavailableHandler], nor through
+// [WithUnavailableHandler]. A service that wired either one wired it for a case
+// where the key IS protected, and answering this case with that document would
+// put the indistinguishability straight back.
+//
+// [WithUnfencedHandler] is the seam for this case and this case alone, because
+// a route whose handler already committed something irreversible may owe its
+// client the committed outcome rather than a failure the client will resend,
+// and only that route's owner can weigh it. Unset, the 503 below stands. Either
+// way [constants.IdempotencyFenced] carries "false", so a service that wants
+// one document for both cases can still produce it.
 func (m *Middleware) respondUnfenced(c fiber.Ctx) error {
+	if m.onUnfenced != nil {
+		return m.onUnfenced(c)
+	}
+
 	return libHTTP.RespondError(c, http.StatusServiceUnavailable,
 		"IDEMPOTENCY_UNFENCED",
 		"request processing finished but neither its replay response nor a fence could be persisted; "+
