@@ -963,3 +963,230 @@ func TestCheck_ServerErrorPolicyFence_AlwaysReportsWhetherTheKeyIsHeld(t *testin
 		})
 	}
 }
+
+// terminalRefusals enumerates the three refusals answered BEFORE the protected
+// handler runs, when a DUPLICATE's key holds a record this version cannot act
+// on. They are the cases [WithTerminalRefusalHandler] exists for, and each is
+// seeded here the way the tests above reach it one at a time.
+var terminalRefusals = []struct {
+	name   string
+	code   string
+	tenant string
+	key    string
+	// message is the tail of the built-in 422 body, asserted verbatim on the
+	// row where neither seam is wired: the default is what must not move.
+	message string
+	seed    func(t *testing.T, mr *miniredis.Miniredis, storeKey string)
+}{
+	{
+		name:    "unrecognised state",
+		code:    RefusalCodeStateUnrecognised,
+		tenant:  "tenant-seam-state",
+		key:     "seam-state-key",
+		message: "this idempotency key holds a record written by a newer version and cannot be interpreted here",
+		seed: func(t *testing.T, mr *miniredis.Miniredis, storeKey string) {
+			seedStoreRecord(t, mr, storeKey, storeRecord{
+				State:       "fenced-by-some-later-version",
+				Fingerprint: requestFingerprint(http.MethodPost, "/test", nil),
+				Owner:       "owner-from-the-future",
+			})
+		},
+	},
+	{
+		name:    "unreadable record",
+		code:    RefusalCodeRecordUnreadable,
+		tenant:  "tenant-seam-corrupt",
+		key:     "seam-corrupt-key",
+		message: "this idempotency key holds a record that cannot be decoded",
+		seed: func(t *testing.T, mr *miniredis.Miniredis, storeKey string) {
+			require.NoError(t, mr.Set(storeKey, `}{ garbage not json`))
+		},
+	},
+	{
+		name:    "outcome unrecorded",
+		code:    RefusalCodeOutcomeUnrecorded,
+		tenant:  "tenant-seam-fenced",
+		key:     "seam-fenced-key",
+		message: "an earlier request with this idempotency key ran without recording its outcome",
+		seed: func(t *testing.T, mr *miniredis.Miniredis, storeKey string) {
+			seedStoreRecord(t, mr, storeKey, storeRecord{
+				State:       keyStateComplete,
+				Fingerprint: requestFingerprint(http.MethodPost, "/test", nil),
+				Owner:       "owner-that-left-no-outcome",
+				Outcome:     outcomeUnrecorded,
+			})
+		},
+	},
+}
+
+// seedTerminalRefusal seeds the record that produces one refusal and returns an
+// app whose handler counts executions.
+func seedTerminalRefusal(
+	t *testing.T, tenant, key string,
+	seed func(*testing.T, *miniredis.Miniredis, string),
+	calls *atomic.Int64,
+	opts ...Option,
+) *fiber.App {
+	t.Helper()
+
+	mr := miniredis.RunT(t)
+	seed(t, mr, "idempotency:"+tenant+":"+key)
+
+	middleware := New(newRedisClient(t, mr), append([]Option{WithLogger(obs.Nop())}, opts...)...)
+
+	return countingMoneyApp(middleware.Check(), tenant, calls, func(c fiber.Ctx) error {
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "executed again"})
+	})
+}
+
+// TestCheck_TerminalRefusalHandler_AnswersTheThreeRecordStateRefusals is the
+// seam's own case: a route that needs these three in its own error envelope.
+//
+// It could not have them before. The only seam that answered them,
+// [WithPostHandlerUnavailableHandler], also answers the post-handler receipt
+// failure, where the mutation is COMMITTED — so taking it to reformat these
+// three rewrote the committed-mutation answer too, turning a request that moved
+// money into a pre-handler refusal. The code is passed so one handler can still
+// tell the three apart, and the answer is returned verbatim: status and body
+// belong to the route once it wires this.
+func TestCheck_TerminalRefusalHandler_AnswersTheThreeRecordStateRefusals(t *testing.T) {
+	t.Parallel()
+
+	for _, refusal := range terminalRefusals {
+		t.Run(refusal.name, func(t *testing.T) {
+			t.Parallel()
+
+			var (
+				calls atomic.Int64
+				seen  []string
+			)
+
+			app := seedTerminalRefusal(t, refusal.tenant, refusal.key, refusal.seed, &calls,
+				WithTerminalRefusalHandler(func(c fiber.Ctx, code string) error {
+					seen = append(seen, code)
+
+					return c.Status(fiber.StatusConflict).
+						JSON(fiber.Map{"code": "SERVICE_KEY_SPENT", "refusal": code})
+				}),
+			)
+
+			response := doPost(t, app, refusal.key)
+			body := readBody(t, response)
+
+			assert.Equal(t, []string{refusal.code}, seen,
+				"the handler is consulted once, and told which of the three this is")
+			assert.Equal(t, http.StatusConflict, response.StatusCode,
+				"the route owns the answer once it wires the seam")
+			assert.Contains(t, body, "SERVICE_KEY_SPENT")
+			assert.Contains(t, body, refusal.code)
+			assert.NotContains(t, body, "reconcile the original request first",
+				"the built-in body is the default, not a floor the seam sits under")
+			assert.Equal(t, int64(0), calls.Load(),
+				"the key holds somebody's record; a custom envelope must not buy an execution")
+		})
+	}
+}
+
+// TestCheck_TerminalRefusalHandler_Unset_KeepsThePostHandlerSeam is the
+// compatibility half. A service that already wires
+// [WithPostHandlerUnavailableHandler] for these three must keep being answered
+// by it, byte for byte, until it opts into the new one.
+func TestCheck_TerminalRefusalHandler_Unset_KeepsThePostHandlerSeam(t *testing.T) {
+	t.Parallel()
+
+	for _, refusal := range terminalRefusals {
+		t.Run(refusal.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls atomic.Int64
+
+			app := seedTerminalRefusal(t, refusal.tenant+"-old", refusal.key, refusal.seed, &calls,
+				WithPostHandlerUnavailableHandler(func(c fiber.Ctx) error {
+					return c.Status(fiber.StatusServiceUnavailable).
+						JSON(fiber.Map{"code": "SERVICE_RECEIPT_LOST"})
+				}),
+			)
+
+			response := doPost(t, app, refusal.key)
+			body := readBody(t, response)
+
+			assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
+			assert.Contains(t, body, "SERVICE_RECEIPT_LOST",
+				"the old routing is unchanged for a service that has not opted in")
+			assert.NotContains(t, body, refusal.code)
+			assert.Equal(t, int64(0), calls.Load())
+		})
+	}
+}
+
+// TestCheck_TerminalRefusalHandler_Unset_KeepsTheBuiltIn422 pins the shipped
+// default for a service that wires neither seam: same status, same code, same
+// instruction.
+func TestCheck_TerminalRefusalHandler_Unset_KeepsTheBuiltIn422(t *testing.T) {
+	t.Parallel()
+
+	for _, refusal := range terminalRefusals {
+		t.Run(refusal.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls atomic.Int64
+
+			app := seedTerminalRefusal(t, refusal.tenant+"-default", refusal.key, refusal.seed, &calls)
+
+			response := doPost(t, app, refusal.key)
+			body := readBody(t, response)
+
+			assert.Equal(t, http.StatusUnprocessableEntity, response.StatusCode)
+			assert.Contains(t, body, refusal.code)
+			assert.Contains(t, body, refusal.message)
+			assert.Contains(t, body, "do not retry with a new key — reconcile the original request first")
+			assert.Equal(t, int64(0), calls.Load())
+		})
+	}
+}
+
+// TestCheck_TerminalRefusalHandler_IsNotConsultedAfterTheHandlerRan is the
+// whole reason the seam is separate.
+//
+// Here the protected handler RAN and committed, and only its receipt write
+// failed. That answer must stay with [WithPostHandlerUnavailableHandler]: a
+// route wiring the terminal seam asked to reformat three refusals where NOTHING
+// ran, and answering a committed mutation with one of those is exactly the
+// confusion that made the shared seam unusable.
+func TestCheck_TerminalRefusalHandler_IsNotConsultedAfterTheHandlerRan(t *testing.T) {
+	t.Parallel()
+
+	store, _ := realRedisStore(t)
+
+	var terminal atomic.Int64
+
+	middleware := NewWithStore(&transientCompleteFailure{Store: store},
+		WithKeyTTL(fenceRetention),
+		WithProcessingTTL(fenceLease),
+		WithPostHandlerUnavailableHandler(func(c fiber.Ctx) error {
+			return c.Status(fiber.StatusServiceUnavailable).
+				JSON(fiber.Map{"code": "SERVICE_RECEIPT_LOST"})
+		}),
+		WithTerminalRefusalHandler(func(c fiber.Ctx, code string) error {
+			terminal.Add(1)
+
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"code": "SERVICE_KEY_SPENT"})
+		}),
+	)
+
+	var calls atomic.Int64
+
+	app := countingMoneyApp(middleware.Check(), "tenant-seam-committed", &calls, func(c fiber.Ctx) error {
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "payoff armed"})
+	})
+
+	response := doPost(t, app, "seam-committed-key")
+	body := readBody(t, response)
+
+	assert.Equal(t, int64(1), calls.Load(), "the mutation committed")
+	assert.Equal(t, int64(0), terminal.Load(),
+		"the terminal seam answers refusals where nothing ran, never a committed mutation")
+	assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
+	assert.Contains(t, body, "SERVICE_RECEIPT_LOST")
+	assert.NotContains(t, body, "SERVICE_KEY_SPENT")
+}
