@@ -107,7 +107,8 @@
 //     mutation handler does not run.
 //   - An EXISTING record whose state this version does not recognise: refused
 //     with 422 "IDEMPOTENCY_STATE_UNRECOGNISED" — or the
-//     [WithPostHandlerUnavailableHandler] document — REGARDLESS of
+//     [WithTerminalRefusalHandler] document, then the
+//     [WithPostHandlerUnavailableHandler] one — REGARDLESS of
 //     [WithFailClosed], and logged at ERROR naming the state. Nothing is
 //     written, so the record survives for a reader that understands it.
 //   - An EXISTING record whose bytes decode as neither the current format nor
@@ -153,8 +154,9 @@
 //     and existing ones expire with their TTL.
 //   - Duplicate key whose record is marked with an unrecorded outcome: request
 //     receives 422 Unprocessable Content with code
-//     "IDEMPOTENCY_OUTCOME_UNRECORDED", or the
-//     [WithPostHandlerUnavailableHandler] document when that seam is set. The
+//     "IDEMPOTENCY_OUTCOME_UNRECORDED", or the [WithTerminalRefusalHandler]
+//     document, or the [WithPostHandlerUnavailableHandler] one when only that
+//     seam is set. The
 //     mark is checked before the state routing below, and no captured body is
 //     replayed because none was ever stored.
 //   - Handler success: response status, headers, content type, and body are
@@ -392,6 +394,19 @@
 // never a fallback: 503 "IDEMPOTENCY_UNFENCED" exists to be distinguishable
 // from the seam a service already wired, so it stays the default until a route
 // asks for something else in those exact words.
+//
+// [WithTerminalRefusalHandler] is the seam for the three 422 refusals a
+// DUPLICATE receives when its key holds a record this version cannot act on —
+// an unrecognised state, undecodable bytes, a key already fenced with an
+// unrecorded outcome — and it receives the code
+// ([RefusalCodeStateUnrecognised], [RefusalCodeRecordUnreadable],
+// [RefusalCodeOutcomeUnrecorded]) so one handler can tell the three apart. They
+// share [WithPostHandlerUnavailableHandler] today with a case they do not
+// belong with: that seam also answers the post-handler receipt failure, where
+// the mutation is COMMITTED, so a service reformatting only these three cannot
+// take it without also answering a committed mutation with a pre-handler
+// refusal. Consulted first and never a fallback for anything else; unset, all
+// three keep the routing they have.
 //
 // The last two 503s are one status carrying opposite instructions, which is why
 // they have separate seams. Before the handler, nothing ran and the caller

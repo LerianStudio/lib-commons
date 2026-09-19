@@ -149,6 +149,22 @@ const (
 	ServerErrorPolicyFence
 )
 
+// The three terminal refusals answered BEFORE the protected handler runs, when
+// a duplicate's key holds a record this version cannot act on. Each is the code
+// in the built-in 422 body, and the value handed to
+// [WithTerminalRefusalHandler] so one handler can tell the three apart.
+const (
+	// RefusalCodeStateUnrecognised: the record decodes, but carries a state
+	// this version does not know. Version skew, pointed forward.
+	RefusalCodeStateUnrecognised = "IDEMPOTENCY_STATE_UNRECOGNISED"
+	// RefusalCodeRecordUnreadable: the bytes decode as neither the current
+	// record format nor the legacy one. Damage, which is not version skew.
+	RefusalCodeRecordUnreadable = "IDEMPOTENCY_RECORD_UNREADABLE"
+	// RefusalCodeOutcomeUnrecorded: an earlier request under this exact key ran
+	// without leaving a recorded outcome, so this one must not run.
+	RefusalCodeOutcomeUnrecorded = "IDEMPOTENCY_OUTCOME_UNRECORDED"
+)
+
 // Middleware provides at-most-once request semantics using an atomic [Store].
 type Middleware struct {
 	store                    Store
@@ -188,6 +204,10 @@ type Middleware struct {
 	// the key is not protected. Unset, that case keeps the built-in 503; it
 	// never falls back to either seam above.
 	onUnfenced func(c fiber.Ctx) error
+	// onTerminalRefusal answers ONLY the three pre-handler refusals where the
+	// key holds a record this version cannot act on. Unset, each keeps the
+	// routing it had: onPostHandlerUnavailable, then the built-in 422.
+	onTerminalRefusal func(c fiber.Ctx, code string) error
 }
 
 // New creates an idempotency middleware backed by the given Redis client.
@@ -575,6 +595,35 @@ func WithUnfencedHandler(fn func(c fiber.Ctx) error) Option {
 	}
 }
 
+// WithTerminalRefusalHandler sets a custom handler invoked for the three
+// terminal refusals answered BEFORE the protected handler runs, when a
+// duplicate's key holds a record this version cannot act on: an unrecognised
+// state, undecodable bytes, or a key already fenced with an unrecorded outcome.
+// The code is passed as [RefusalCodeStateUnrecognised],
+// [RefusalCodeRecordUnreadable] or [RefusalCodeOutcomeUnrecorded], so one
+// handler can tell the three apart. Unset, each refusal keeps the routing it
+// has — [WithPostHandlerUnavailableHandler] when that seam is set, then the
+// built-in 422 — so existing callers are unchanged.
+//
+// It exists because those three currently share a seam with a case they do not
+// belong with. [WithPostHandlerUnavailableHandler] answers them, and it also
+// answers the post-handler receipt failure, where the mutation is COMMITTED. A
+// service that wants only its own envelope on these three cannot take that seam
+// without also rewriting the committed-mutation answer, turning a request that
+// already moved money into one of these refusals.
+//
+// Nothing ran on any of the three: they are decided before the protected
+// handler. The instruction is still "reconcile the original request", because
+// an EARLIER request spent this key and may have committed — not this one.
+//
+// It never answers the post-handler receipt failure, nor [WithUnfencedHandler]'s
+// case. Both of those belong to a request whose own handler already ran.
+func WithTerminalRefusalHandler(fn func(c fiber.Ctx, code string) error) Option {
+	return func(m *Middleware) {
+		m.onTerminalRefusal = fn
+	}
+}
+
 // WithMaxBodyCache sets the maximum raw response body size (in bytes) that can
 // be persisted for exact replay (default: 1 MB). The encoded replay payload is
 // bounded to twice this value. A response exceeding either bound fails closed
@@ -701,7 +750,8 @@ func (m *Middleware) respondPostHandlerStoreError(c fiber.Ctx) error {
 // still answers from it correctly.
 //
 // The answer is terminal rather than a retry invitation: waiting does not teach
-// this instance a state it does not have. It routes through
+// this instance a state it does not have. [WithTerminalRefusalHandler] answers
+// it when wired; otherwise it routes through
 // [WithPostHandlerUnavailableHandler] when set, because the instruction is the
 // one that seam already carries — an earlier request spent this key and may
 // have committed, so reconcile it rather than resending.
@@ -709,12 +759,16 @@ func (m *Middleware) respondPostHandlerStoreError(c fiber.Ctx) error {
 // A store that actually errors is unchanged and keeps the configured policy:
 // that path has no record to reason about.
 func (m *Middleware) respondUnrecognisedState(c fiber.Ctx) error {
+	if m.onTerminalRefusal != nil {
+		return m.onTerminalRefusal(c, RefusalCodeStateUnrecognised)
+	}
+
 	if m.onPostHandlerUnavailable != nil {
 		return m.onPostHandlerUnavailable(c)
 	}
 
 	return libHTTP.RespondError(c, http.StatusUnprocessableEntity,
-		"IDEMPOTENCY_STATE_UNRECOGNISED",
+		RefusalCodeStateUnrecognised,
 		"this idempotency key holds a record written by a newer version and cannot be interpreted here; "+
 			"do not retry with a new key — reconcile the original request first",
 	)
@@ -742,13 +796,20 @@ func (m *Middleware) respondUnrecognisedState(c fiber.Ctx) error {
 // false here: these bytes are damaged, truncated, or were written by something
 // that is not this middleware, and an operator triaging the two needs to tell
 // them apart. Nothing is written, so the bytes survive for inspection.
+//
+// [WithTerminalRefusalHandler] answers it when wired, and otherwise it routes
+// through [WithPostHandlerUnavailableHandler] like the branch above.
 func (m *Middleware) respondUnreadableRecord(c fiber.Ctx) error {
+	if m.onTerminalRefusal != nil {
+		return m.onTerminalRefusal(c, RefusalCodeRecordUnreadable)
+	}
+
 	if m.onPostHandlerUnavailable != nil {
 		return m.onPostHandlerUnavailable(c)
 	}
 
 	return libHTTP.RespondError(c, http.StatusUnprocessableEntity,
-		"IDEMPOTENCY_RECORD_UNREADABLE",
+		RefusalCodeRecordUnreadable,
 		"this idempotency key holds a record that cannot be decoded; "+
 			"do not retry with a new key — reconcile the original request first",
 	)
@@ -807,18 +868,24 @@ func (m *Middleware) respondUnfenced(c fiber.Ctx) error {
 // the fenced-5xx path the handler never produced one. Fabricating a success
 // document here would report an outcome nobody recorded.
 //
-// [WithPostHandlerUnavailableHandler] answers it when set, because the
-// instruction is identical to the one that seam already exists for: the side
-// effect is committed or unknown, reconcile it, do not retry under a new key.
-// It deliberately does not fall through to [WithUnavailableHandler], which
+// [WithTerminalRefusalHandler] answers it when wired, ahead of everything
+// below, because it is one of the three refusals that seam exists for.
+// Otherwise [WithPostHandlerUnavailableHandler] answers it when set, because
+// the instruction is identical to the one that seam already exists for: the
+// side effect is committed or unknown, reconcile it, do not retry under a new
+// key. It deliberately does not fall through to [WithUnavailableHandler], which
 // carries the opposite instruction — nothing ran, retry.
 func (m *Middleware) respondOutcomeUnknown(c fiber.Ctx) error {
+	if m.onTerminalRefusal != nil {
+		return m.onTerminalRefusal(c, RefusalCodeOutcomeUnrecorded)
+	}
+
 	if m.onPostHandlerUnavailable != nil {
 		return m.onPostHandlerUnavailable(c)
 	}
 
 	return libHTTP.RespondError(c, http.StatusUnprocessableEntity,
-		"IDEMPOTENCY_OUTCOME_UNRECORDED",
+		RefusalCodeOutcomeUnrecorded,
 		"an earlier request with this idempotency key ran without recording its outcome; "+
 			"do not retry with a new key — reconcile the original request first",
 	)
