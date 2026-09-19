@@ -165,7 +165,8 @@
 //     answers, because the mutation already happened — but ONLY when the mark
 //     was actually persisted. When it was not, the answer is 503
 //     "IDEMPOTENCY_UNFENCED" instead, which says the key is unprotected and a
-//     resend may execute the operation again.
+//     resend may execute the operation again, or the [WithUnfencedHandler]
+//     document when that separate seam is set.
 //   - Handler 4xx: cached and replayed by default. Use
 //     [WithClientErrorPolicy] with [ClientErrorPolicyRelease] to compare-safely
 //     release the record and allow a corrected request to reuse the key.
@@ -330,6 +331,9 @@
 //     does not route through [WithPostHandlerUnavailableHandler]: a service
 //     wired that seam for the fenced case, and reusing it here would put the
 //     indistinguishability straight back. Neither answer carries Retry-After.
+//     This case has its own seam, [WithUnfencedHandler], for the route that
+//     would rather report its committed outcome than a failure its client will
+//     resend; the header still says "false" whatever that handler answers.
 //   - A failed fence logs at ERROR naming the key, so the alert is actionable.
 //     The key appears as a SHA-256 digest of the store key, never raw, because
 //     an idempotency key is client-supplied and services put business
@@ -382,10 +386,12 @@
 // observed BEFORE the handler runs, [WithPostHandlerUnavailableHandler] for the
 // ones observed AFTER it ran and for a duplicate that finds a record marked
 // terminal or written in an unrecognised state, [WithConflictHandler] for an
-// in-flight duplicate, and [WithKeyReuseHandler] for the same key used by a
-// different request. The one refusal with no seam is 503
-// "IDEMPOTENCY_UNFENCED": it exists precisely to be distinguishable from the
-// seam a service already wired.
+// in-flight duplicate, [WithKeyReuseHandler] for the same key used by a
+// different request, and [WithUnfencedHandler] for the post-handler failure
+// whose fence also failed. That last one is deliberately a seam of its own and
+// never a fallback: 503 "IDEMPOTENCY_UNFENCED" exists to be distinguishable
+// from the seam a service already wired, so it stays the default until a route
+// asks for something else in those exact words.
 //
 // The last two 503s are one status carrying opposite instructions, which is why
 // they have separate seams. Before the handler, nothing ran and the caller
