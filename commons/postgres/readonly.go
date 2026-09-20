@@ -364,10 +364,21 @@ func applyStatementTimeout(ctx context.Context, tx *sql.Tx, timeout time.Duratio
 // depends on which side won a race it cannot see. Wrapping is skipped when the
 // cause already carries the context error, so the cancel is reported once rather
 // than once per layer.
+//
+// THE DEADLINE RUNS THE SAME RACE. When PostgreSQL acts on the deadline's cancel
+// request before the client notices, the driver returns only its 57014 and the
+// chain would carry ErrReadOnlyTxDeadline but not context.DeadlineExceeded, so a
+// generic timeout check keyed on the context error answered differently for the
+// identical event. The context error is put in front of the cause here too, and
+// skipped when the cause already carries it.
 func classifyReadOnly(ctx context.Context, cause error) error {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if errors.Is(ctxErr, context.DeadlineExceeded) {
-			return fmt.Errorf("%w: %w", ErrReadOnlyTxDeadline, cause)
+			if errors.Is(cause, ctxErr) {
+				return fmt.Errorf("%w: %w", ErrReadOnlyTxDeadline, cause)
+			}
+
+			return fmt.Errorf("%w: %w: %w", ErrReadOnlyTxDeadline, ctxErr, cause)
 		}
 
 		if errors.Is(cause, ctxErr) {

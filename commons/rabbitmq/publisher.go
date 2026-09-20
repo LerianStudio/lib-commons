@@ -27,23 +27,35 @@ const (
 // Publisher confirm errors.
 var (
 	// ErrConnectionRequired aliases ErrNilConnection for naming consistency in publisher constructors.
-	ErrConnectionRequired     = ErrNilConnection
-	ErrPublisherRequired      = errors.New("confirmable publisher is required")
-	ErrChannelRequired        = errors.New("rabbitmq channel is required")
-	ErrPublisherNotReady      = errors.New("confirmable publisher not initialized")
+	ErrConnectionRequired = ErrNilConnection
+	// ErrPublisherRequired is returned by a constructor handed a nil confirmable publisher.
+	ErrPublisherRequired = errors.New("confirmable publisher is required")
+	// ErrChannelRequired is returned by a constructor handed a nil channel.
+	ErrChannelRequired = errors.New("rabbitmq channel is required")
+	// ErrPublisherNotReady is returned when a publish is attempted before the publisher holds a channel.
+	ErrPublisherNotReady = errors.New("confirmable publisher not initialized")
+	// ErrConfirmModeUnavailable is returned when the broker refuses to put the channel in confirm mode.
 	ErrConfirmModeUnavailable = errors.New("channel does not support confirm mode")
-	ErrPublishNacked          = errors.New("message was nacked by broker")
-	ErrPublishReturned        = errors.New("message was returned as unroutable by broker")
-	ErrConfirmTimeout         = errors.New("confirmation timed out")
+	// ErrPublishNacked is returned when the broker negatively acknowledges a published message.
+	ErrPublishNacked = errors.New("message was nacked by broker")
+	// ErrPublishReturned is returned when the broker hands a message back as unroutable:
+	// no queue was bound to its routing key, so it would otherwise have been discarded.
+	ErrPublishReturned = errors.New("message was returned as unroutable by broker")
+	// ErrConfirmTimeout is returned when the broker does not confirm a publish within the timeout.
+	ErrConfirmTimeout = errors.New("confirmation timed out")
 	// ErrReturnNotificationUnsupported is returned when the supplied channel
 	// cannot report unroutable messages. Construction fails closed rather than
 	// publishing without return detection, because a broker ACKs a message it
 	// discarded for want of a queue: confirms alone would report success.
 	ErrReturnNotificationUnsupported = errors.New("channel does not support return notifications")
-	ErrPublisherClosed               = errors.New("publisher is closed")
-	ErrReconnectAfterClose           = errors.New("cannot reconnect: publisher was explicitly closed")
-	ErrReconnectWhileOpen            = errors.New("cannot reconnect: publisher is still open, call Close first")
-	ErrRecoveryExhausted             = errors.New("automatic recovery exhausted all attempts")
+	// ErrPublisherClosed is returned when a publish is attempted after Close.
+	ErrPublisherClosed = errors.New("publisher is closed")
+	// ErrReconnectAfterClose is returned when Reconnect is called on a publisher that was explicitly closed.
+	ErrReconnectAfterClose = errors.New("cannot reconnect: publisher was explicitly closed")
+	// ErrReconnectWhileOpen is returned when Reconnect is called while the publisher still holds an open channel.
+	ErrReconnectWhileOpen = errors.New("cannot reconnect: publisher is still open, call Close first")
+	// ErrRecoveryExhausted is returned when automatic recovery gave up after its last attempt.
+	ErrRecoveryExhausted = errors.New("automatic recovery exhausted all attempts")
 )
 
 const (

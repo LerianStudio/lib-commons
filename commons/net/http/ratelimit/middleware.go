@@ -210,7 +210,7 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 	// variable. When disabled, return a pass-through limiter (nil) so
 	// deployments that opted out behave as no-op.
 	enabled := commons.RateLimitEnabled()
-	disabledMsg := "rate limiter disabled (default); set " + commons.EnvRateLimitEnabled + "=true to enable enforcement"
+	disabledMsg := "rate limiter disabled; set " + commons.EnvRateLimitEnabled + "=true to enable enforcement"
 
 	if rl.enabled != nil {
 		enabled = *rl.enabled

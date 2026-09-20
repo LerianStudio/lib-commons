@@ -330,6 +330,59 @@ func TestRunReadOnlyDeadlineFiresWithNoBodyError(t *testing.T) {
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
+func TestRunReadOnlyDeadlineKeepsTheContextErrorWhenOnlyTheServerErrorComesBack(t *testing.T) {
+	t.Parallel()
+
+	// The deadline runs the same driver race as a cancel: when PostgreSQL acts
+	// on the deadline's cancel request first, fn sees only the server's 57014.
+	// The chain must still answer errors.Is(err, context.DeadlineExceeded), or a
+	// generic timeout check behaves differently for the identical event
+	// depending on which side of the race won.
+	canceledByServer := &pgconn.PgError{Code: "57014", Message: "canceling statement due to user request"}
+
+	db, mock := newMockDB(t)
+
+	mock.MatchExpectationsInOrder(false)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+
+	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: time.Second, TransactionTimeout: 20 * time.Millisecond},
+		func(ctx context.Context, _ *sql.Tx) error {
+			awaitDeadline(t, ctx)
+
+			return canceledByServer
+		})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrReadOnlyTxDeadline)
+	assert.ErrorIs(t, err, context.DeadlineExceeded, "a deadline must stay a deadline however the driver reported it")
+	assert.ErrorIs(t, err, canceledByServer, "the driver error must stay in the chain")
+	assert.Equal(t, 1, strings.Count(err.Error(), context.DeadlineExceeded.Error()), "the context error is reported once")
+}
+
+func TestRunReadOnlyDoesNotDoubleWrapADeadlineTheChainAlreadyCarries(t *testing.T) {
+	t.Parallel()
+
+	db, mock := newMockDB(t)
+
+	mock.MatchExpectationsInOrder(false)
+	mock.ExpectBegin()
+	mock.ExpectExec(`SET LOCAL statement_timeout`).WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+
+	err := RunReadOnly(t.Context(), db, ReadOnlyOptions{StatementTimeout: time.Second, TransactionTimeout: 20 * time.Millisecond},
+		func(ctx context.Context, _ *sql.Tx) error {
+			awaitDeadline(t, ctx)
+
+			return fmt.Errorf("query: %w", ctx.Err())
+		})
+
+	require.ErrorIs(t, err, ErrReadOnlyTxDeadline)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Equal(t, 1, strings.Count(err.Error(), context.DeadlineExceeded.Error()), "the context error is reported once")
+}
+
 func TestRunReadOnlyDeadlineIsNotAppliedWhenZero(t *testing.T) {
 	t.Parallel()
 
