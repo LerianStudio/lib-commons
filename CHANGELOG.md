@@ -1,5 +1,44 @@
 # Lib-commons Changelog
 
+## [7.2.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.2.0)
+
+Features:
+- Added `WithTerminalRefusalHandler` for handling record-state refusals. (@fredcamaral)
+- Introduced `WithUnfencedHandler` for unfenced idempotency answers. (@fredcamaral)
+- Enabled explicit rate-limit enablement for callers. (@fredcamaral)
+- Added a configurable provider for idempotency key sources. (@fredcamaral)
+- Introduced opt-in refusal for missing idempotency key or tenant. (@fredcamaral)
+- Added `sanitize.String` and `sanitize.Error` for redaction purposes. (@fredcamaral)
+- Implemented a signed, identity-bound keyset cursor codec. (@fredcamaral)
+- Added `RunReadOnly`, a bounded snapshot read helper for PostgreSQL. (@fredcamaral)
+- Introduced the ability to carry the trace ID as the RFC 9457 instance member in problem instances. (@fredcamaral)
+
+Fixes:
+- Neutralized wording on the rate-limiter disabled log line. (@fredcamaral)
+- Ensured deadline is maintained in the read-only error chain for PostgreSQL. (@fredcamaral)
+- Adjusted log levels in tenant-manager to use debug instead of info for routine fetches. (@fredcamaral)
+- Fixed eviction to only target the Mongo client that failed its ping in tenant-manager. (@fredcamaral)
+- Corrected health check stamping to occur only after success in tenant-manager. (@fredcamaral)
+- Addressed issues with RabbitMQ by ensuring rejected channels are returned untouched and failing publishes the broker could not route. (@fredcamaral)
+- Resolved issues with idempotency by refusing occupied keys with unreadable records and making fences readable by pre-upgrade middleware. (@fredcamaral)
+- Corrected handling of typed-nil driver errors in PostgreSQL SQLSTATE helpers. (@fredcamaral)
+- Ensured outbox failures maintain causes through quarantine and bound `last_error` to the appropriate column. (@fredcamaral)
+- Improved security by redacting sensitive information, adjusting handling of PEM blocks, and enforcing separator invariants. (@fredcamaral)
+- Honored caller's context deadline on Redis commands. (@fredcamaral)
+- Stopped publishing unallocated error-code examples in the network module. (@fredcamaral)
+
+Improvements:
+- Documented exported publisher errors for RabbitMQ. (@fredcamaral)
+- Aligned idempotency package documentation with the unreadable-record refusal. (@fredcamaral)
+- Updated OpenTelemetry exporters to address CVEs `2026-81870` and `2026-81871`. (@fredcamaral)
+- Bumped Fiber `v2` to `2.52.15` to fix idempotency lock leaks and to `2.52.14` to close CVE `2026-45045`. (@fredcamaral)
+- Bumped shared `pr-security-scan` workflow to `@v1.66.3`. (@fredcamaral)
+- Named the current module version in documentation. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.1.1...v7.2.0)
+
+---
+
 ## [7.1.1](https://github.com/LerianStudio/lib-commons/releases/tag/v7.1.1)
 
 Fixes:
