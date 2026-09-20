@@ -2003,3 +2003,281 @@ func TestRabbitMQConnection_Close(t *testing.T) {
 		assert.ErrorIs(t, err, context.Canceled)
 	})
 }
+
+// errOpenChannelFactory is the sentinel the dedicated-channel tests wrap, so
+// the %w contract is pinned: callers detect a torn-down connection with
+// errors.Is(err, amqp.ErrClosed).
+var errOpenChannelFactory = errors.New("broker refused the channel")
+
+// errOpenChannelDial is the sentinel returned by a failing dial in the
+// dedicated-channel tests.
+var errOpenChannelDial = errors.New("broker unreachable")
+
+func TestRabbitMQConnection_OpenChannelContext(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil receiver", func(t *testing.T) {
+		t.Parallel()
+
+		var conn *RabbitMQConnection
+
+		ch, err := conn.OpenChannelContext(context.Background())
+		assert.Nil(t, ch)
+		assert.ErrorIs(t, err, ErrNilConnection)
+	})
+
+	t.Run("cancelled context returns before touching the connection", func(t *testing.T) {
+		t.Parallel()
+
+		var dialerCalls, channelCalls atomic.Int32
+
+		conn := &RabbitMQConnection{
+			Logger: obs.Nop(),
+			dialer: func(string) (*amqp.Connection, error) {
+				dialerCalls.Add(1)
+
+				return nil, errors.New("should not be called")
+			},
+			channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+				channelCalls.Add(1)
+
+				return nil, errors.New("should not be called")
+			},
+		}
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		ch, err := conn.OpenChannelContext(ctx)
+
+		assert.Nil(t, ch)
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.EqualValues(t, 0, dialerCalls.Load())
+		assert.EqualValues(t, 0, channelCalls.Load())
+	})
+
+	t.Run("returns a dedicated channel without replacing the shared one", func(t *testing.T) {
+		t.Parallel()
+
+		shared := &amqp.Channel{}
+
+		var dialerCalls, channelCalls atomic.Int32
+
+		conn := &RabbitMQConnection{
+			Connection: &amqp.Connection{},
+			Channel:    shared,
+			Connected:  true,
+			Logger:     obs.Nop(),
+			dialer: func(string) (*amqp.Connection, error) {
+				dialerCalls.Add(1)
+
+				return nil, errors.New("should not be called")
+			},
+			channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+				channelCalls.Add(1)
+
+				return &amqp.Channel{}, nil
+			},
+			connectionClosedFn: func(connection *amqp.Connection) bool { return connection == nil },
+			channelClosedFn:    func(ch *amqp.Channel) bool { return ch == nil },
+		}
+
+		dedicated, err := conn.OpenChannelContext(context.Background())
+
+		require.NoError(t, err)
+		require.NotNil(t, dedicated)
+		assert.NotSame(t, shared, dedicated, "dedicated channel must not be the shared channel")
+		assert.Same(t, shared, conn.ChannelSnapshot(), "shared channel must not be replaced")
+		assert.EqualValues(t, 0, dialerCalls.Load(), "a live connection must not be redialled")
+		assert.EqualValues(t, 1, channelCalls.Load())
+	})
+
+	t.Run("reconnects when the connection is down, then opens", func(t *testing.T) {
+		t.Parallel()
+
+		var dialerCalls, channelCalls atomic.Int32
+
+		conn := &RabbitMQConnection{
+			Logger: obs.Nop(),
+			dialer: func(string) (*amqp.Connection, error) {
+				dialerCalls.Add(1)
+
+				return &amqp.Connection{}, nil
+			},
+			channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+				channelCalls.Add(1)
+
+				return &amqp.Channel{}, nil
+			},
+			connectionClosedFn: func(connection *amqp.Connection) bool { return connection == nil },
+			channelClosedFn:    func(ch *amqp.Channel) bool { return ch == nil },
+		}
+
+		dedicated, err := conn.OpenChannelContext(context.Background())
+
+		require.NoError(t, err)
+		require.NotNil(t, dedicated)
+		assert.EqualValues(t, 1, dialerCalls.Load(), "a down connection must be redialled once")
+		// One channel for the managed connection, one dedicated for the caller.
+		assert.EqualValues(t, 2, channelCalls.Load())
+		assert.True(t, conn.Connected, "a successful open must leave the connection marked connected")
+		assert.NotNil(t, conn.ChannelSnapshot())
+		assert.NotSame(t, conn.ChannelSnapshot(), dedicated)
+	})
+
+	t.Run("propagates a channel factory failure", func(t *testing.T) {
+		t.Parallel()
+
+		conn := &RabbitMQConnection{
+			Connection: &amqp.Connection{},
+			Channel:    &amqp.Channel{},
+			Connected:  true,
+			Logger:     obs.Nop(),
+			channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+				return nil, errOpenChannelFactory
+			},
+			connectionClosedFn: func(connection *amqp.Connection) bool { return connection == nil },
+			channelClosedFn:    func(ch *amqp.Channel) bool { return ch == nil },
+		}
+
+		ch, err := conn.OpenChannelContext(context.Background())
+
+		assert.Nil(t, ch)
+		require.ErrorIs(t, err, errOpenChannelFactory, "the factory error must stay unwrapped-reachable via %w")
+		assert.Contains(t, err.Error(), "rabbitmq open channel")
+	})
+
+	t.Run("propagates an ensure failure when the dial fails", func(t *testing.T) {
+		t.Parallel()
+
+		var dialerCalls, channelCalls atomic.Int32
+
+		conn := &RabbitMQConnection{
+			Logger: obs.Nop(),
+			dialer: func(string) (*amqp.Connection, error) {
+				dialerCalls.Add(1)
+
+				return nil, errOpenChannelDial
+			},
+			channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+				channelCalls.Add(1)
+
+				return &amqp.Channel{}, nil
+			},
+			connectionClosedFn: func(connection *amqp.Connection) bool { return connection == nil },
+			channelClosedFn:    func(ch *amqp.Channel) bool { return ch == nil },
+		}
+
+		ch, err := conn.OpenChannelContext(context.Background())
+
+		assert.Nil(t, ch)
+		require.ErrorIs(t, err, errOpenChannelDial, "the dial error must survive the ensure wrap")
+		assert.Contains(t, err.Error(), "rabbitmq open channel")
+		assert.EqualValues(t, 1, dialerCalls.Load())
+		assert.EqualValues(t, 0, channelCalls.Load(), "no channel may be opened when the dial fails")
+		assert.False(t, conn.Connected)
+		assert.Nil(t, conn.ChannelSnapshot())
+	})
+
+	t.Run("rejects a nil channel from the factory", func(t *testing.T) {
+		t.Parallel()
+
+		shared := &amqp.Channel{}
+
+		var channelCalls atomic.Int32
+
+		conn := &RabbitMQConnection{
+			Connection: &amqp.Connection{},
+			Channel:    shared,
+			Connected:  true,
+			Logger:     obs.Nop(),
+			channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+				channelCalls.Add(1)
+
+				return nil, nil
+			},
+			connectionClosedFn: func(connection *amqp.Connection) bool { return connection == nil },
+			channelClosedFn:    func(ch *amqp.Channel) bool { return ch == nil },
+		}
+
+		ch, err := conn.OpenChannelContext(context.Background())
+
+		assert.Nil(t, ch)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "returned nil channel")
+		assert.EqualValues(t, 1, channelCalls.Load())
+		assert.Same(t, shared, conn.ChannelSnapshot(), "a nil dedicated channel must not disturb the shared one")
+	})
+
+	t.Run("nil context is normalised to background", func(t *testing.T) {
+		t.Parallel()
+
+		shared := &amqp.Channel{}
+
+		var nilCtx context.Context
+
+		conn := &RabbitMQConnection{
+			Connection: &amqp.Connection{},
+			Channel:    shared,
+			Connected:  true,
+			Logger:     obs.Nop(),
+			channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+				return &amqp.Channel{}, nil
+			},
+			connectionClosedFn: func(connection *amqp.Connection) bool { return connection == nil },
+			channelClosedFn:    func(ch *amqp.Channel) bool { return ch == nil },
+		}
+
+		dedicated, err := conn.OpenChannelContext(nilCtx)
+
+		require.NoError(t, err)
+		assert.NotSame(t, shared, dedicated)
+	})
+
+	t.Run("rejects a nil connection surviving the ensure", func(t *testing.T) {
+		t.Parallel()
+
+		// A dialer handing back (nil, nil) makes ensure commit a nil
+		// connection, which is the only way past the ensure into the guard.
+		conn := &RabbitMQConnection{
+			Logger: obs.Nop(),
+			dialer: func(string) (*amqp.Connection, error) {
+				return nil, nil
+			},
+			channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+				return &amqp.Channel{}, nil
+			},
+			connectionClosedFn: func(connection *amqp.Connection) bool { return false },
+			channelClosedFn:    func(ch *amqp.Channel) bool { return ch == nil },
+		}
+
+		ch, err := conn.OpenChannelContext(context.Background())
+
+		assert.Nil(t, ch)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "connection is nil after ensure")
+	})
+
+	t.Run("bare variant delegates to the context variant", func(t *testing.T) {
+		t.Parallel()
+
+		shared := &amqp.Channel{}
+		conn := &RabbitMQConnection{
+			Connection: &amqp.Connection{},
+			Channel:    shared,
+			Connected:  true,
+			Logger:     obs.Nop(),
+			channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+				return &amqp.Channel{}, nil
+			},
+			connectionClosedFn: func(connection *amqp.Connection) bool { return connection == nil },
+			channelClosedFn:    func(ch *amqp.Channel) bool { return ch == nil },
+		}
+
+		dedicated, err := conn.OpenChannel()
+
+		require.NoError(t, err)
+		assert.NotSame(t, shared, dedicated)
+		assert.Same(t, shared, conn.ChannelSnapshot())
+	})
+}

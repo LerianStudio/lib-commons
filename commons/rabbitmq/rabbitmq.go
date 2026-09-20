@@ -649,6 +649,109 @@ func (rc *RabbitMQConnection) GetNewConnectContext(ctx context.Context) (*amqp.C
 	return rc.Channel, nil
 }
 
+// OpenChannel opens a dedicated channel using a background context.
+func (rc *RabbitMQConnection) OpenChannel() (*amqp.Channel, error) {
+	return rc.OpenChannelContext(context.Background())
+}
+
+// OpenChannelContext opens a NEW channel on the managed connection and hands
+// ownership to the caller: lib-commons never tracks, reuses, reconnects or
+// closes it, and it is NOT rc.Channel. Use it when a component needs channel
+// state the shared channel must not carry (publisher confirms, a distinct
+// prefetch). It reconnects first when the connection is down, exactly like
+// EnsureChannelContext, and reads the connection under rc.mu.
+//
+// Lifetime. Closing the returned channel is the caller's responsibility, and
+// two events outside the caller's control invalidate it:
+//   - Close or CloseContext on this connection tears down the socket.
+//   - A successful reconnect. EnsureChannelContext dials a replacement and
+//     commitNewConnection closes the connection it replaced, and amqp091 tears
+//     down every channel opened on it. The returned channel is therefore bound
+//     to the connection that was live when it was opened, not to the
+//     RabbitMQConnection. Pair it with auto-recovery rather than holding it
+//     for the life of the process.
+//
+// Side effect. This routes through EnsureChannelContext, so when the
+// connection is live but the SHARED channel is nil or closed it may repair the
+// shared channel on the way, which is the invariant every other method on this
+// type assumes; it never returns it. The repair is idempotent and safe under
+// concurrent callers.
+//
+// Auto-recovering publisher on a dedicated channel, the composition this
+// method exists for, so confirm mode never touches the shared channel:
+//
+//	provider := func() (ConfirmableChannel, error) { return conn.OpenChannel() }
+//
+//	ch, err := conn.OpenChannelContext(ctx)
+//	if err != nil {
+//		return err
+//	}
+//
+//	pub, err := NewConfirmablePublisherFromChannel(ch, WithAutoRecovery(provider))
+func (rc *RabbitMQConnection) OpenChannelContext(ctx context.Context) (*amqp.Channel, error) {
+	if rc == nil {
+		return nil, nilConnectionAssert("open_channel_context")
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("rabbitmq open channel: %w", err)
+	}
+
+	tracer := otel.Tracer("rabbitmq")
+
+	ctx, span := tracer.Start(ctx, "rabbitmq.open_channel")
+	defer span.End()
+
+	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemRabbitMQ))
+
+	// Guarantees a live connection (dialing if needed) and that applyDefaults
+	// has populated channelFactoryContext.
+	if err := rc.EnsureChannelContext(ctx); err != nil {
+		wrapped := fmt.Errorf("rabbitmq open channel: %w", err)
+		libOpentelemetry.HandleSpanError(span, "Failed to ensure connection before opening dedicated channel", wrapped)
+
+		return nil, wrapped
+	}
+
+	rc.mu.RLock()
+	conn := rc.Connection
+	channelFactory := rc.channelFactoryContext
+	rc.mu.RUnlock()
+
+	if conn == nil {
+		err := errors.New("rabbitmq open channel: connection is nil after ensure")
+		libOpentelemetry.HandleSpanError(span, "Failed to open dedicated channel on rabbitmq", err)
+
+		return nil, err
+	}
+
+	// Opening a channel is a broker round trip; never hold rc.mu across it.
+	ch, err := channelFactory(ctx, conn)
+	if err != nil {
+		rc.recordConnectionFailure("open_channel")
+
+		wrapped := fmt.Errorf("rabbitmq open channel: %w", err)
+		libOpentelemetry.HandleSpanError(span, "Failed to open dedicated channel on rabbitmq", wrapped)
+
+		return nil, wrapped
+	}
+
+	if ch == nil {
+		rc.recordConnectionFailure("open_channel")
+
+		err := errors.New("rabbitmq open channel: channel factory returned nil channel")
+		libOpentelemetry.HandleSpanError(span, "Failed to open dedicated channel on rabbitmq", err)
+
+		return nil, err
+	}
+
+	return ch, nil
+}
+
 // HealthCheck rabbitmq when the server is started.
 func (rc *RabbitMQConnection) HealthCheck() (bool, error) {
 	return rc.HealthCheckContext(context.Background())
