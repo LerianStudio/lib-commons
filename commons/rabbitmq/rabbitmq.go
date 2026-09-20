@@ -701,10 +701,20 @@ func (rc *RabbitMQConnection) OpenChannelContext(ctx context.Context) (*amqp.Cha
 		return nil, fmt.Errorf("rabbitmq open channel: %w", err)
 	}
 
+	tracer := otel.Tracer("rabbitmq")
+
+	ctx, span := tracer.Start(ctx, "rabbitmq.open_channel")
+	defer span.End()
+
+	span.SetAttributes(attribute.String(constant.AttrDBSystem, constant.DBSystemRabbitMQ))
+
 	// Guarantees a live connection (dialing if needed) and that applyDefaults
 	// has populated channelFactoryContext.
 	if err := rc.EnsureChannelContext(ctx); err != nil {
-		return nil, fmt.Errorf("rabbitmq open channel: %w", err)
+		wrapped := fmt.Errorf("rabbitmq open channel: %w", err)
+		libOpentelemetry.HandleSpanError(span, "Failed to ensure connection before opening dedicated channel", wrapped)
+
+		return nil, wrapped
 	}
 
 	rc.mu.RLock()
@@ -713,21 +723,30 @@ func (rc *RabbitMQConnection) OpenChannelContext(ctx context.Context) (*amqp.Cha
 	rc.mu.RUnlock()
 
 	if conn == nil {
-		return nil, errors.New("rabbitmq open channel: connection is nil after ensure")
-	}
+		err := errors.New("rabbitmq open channel: connection is nil after ensure")
+		libOpentelemetry.HandleSpanError(span, "Failed to open dedicated channel on rabbitmq", err)
 
-	if channelFactory == nil {
-		return nil, errors.New("rabbitmq open channel: channel factory is nil")
+		return nil, err
 	}
 
 	// Opening a channel is a broker round trip; never hold rc.mu across it.
 	ch, err := channelFactory(ctx, conn)
 	if err != nil {
-		return nil, fmt.Errorf("rabbitmq open channel: %w", err)
+		rc.recordConnectionFailure("open_channel")
+
+		wrapped := fmt.Errorf("rabbitmq open channel: %w", err)
+		libOpentelemetry.HandleSpanError(span, "Failed to open dedicated channel on rabbitmq", wrapped)
+
+		return nil, wrapped
 	}
 
 	if ch == nil {
-		return nil, errors.New("rabbitmq open channel: channel factory returned nil channel")
+		rc.recordConnectionFailure("open_channel")
+
+		err := errors.New("rabbitmq open channel: channel factory returned nil channel")
+		libOpentelemetry.HandleSpanError(span, "Failed to open dedicated channel on rabbitmq", err)
+
+		return nil, err
 	}
 
 	return ch, nil
