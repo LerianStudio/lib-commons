@@ -661,8 +661,33 @@ func (rc *RabbitMQConnection) OpenChannel() (*amqp.Channel, error) {
 // prefetch). It reconnects first when the connection is down, exactly like
 // EnsureChannelContext, and reads the connection under rc.mu.
 //
-// Closing the returned channel is the caller's responsibility. Close() on the
-// connection tears down the underlying socket, which invalidates it too.
+// Lifetime. Closing the returned channel is the caller's responsibility, and
+// two events outside the caller's control invalidate it:
+//   - Close or CloseContext on this connection tears down the socket.
+//   - A successful reconnect. EnsureChannelContext dials a replacement and
+//     commitNewConnection closes the connection it replaced, and amqp091 tears
+//     down every channel opened on it. The returned channel is therefore bound
+//     to the connection that was live when it was opened, not to the
+//     RabbitMQConnection. Pair it with auto-recovery rather than holding it
+//     for the life of the process.
+//
+// Side effect. This routes through EnsureChannelContext, so when the
+// connection is live but the SHARED channel is nil or closed it may repair the
+// shared channel on the way, which is the invariant every other method on this
+// type assumes; it never returns it. The repair is idempotent and safe under
+// concurrent callers.
+//
+// Auto-recovering publisher on a dedicated channel, the composition this
+// method exists for, so confirm mode never touches the shared channel:
+//
+//	provider := func() (ConfirmableChannel, error) { return conn.OpenChannel() }
+//
+//	ch, err := conn.OpenChannelContext(ctx)
+//	if err != nil {
+//		return err
+//	}
+//
+//	pub, err := NewConfirmablePublisherFromChannel(ch, WithAutoRecovery(provider))
 func (rc *RabbitMQConnection) OpenChannelContext(ctx context.Context) (*amqp.Channel, error) {
 	if rc == nil {
 		return nil, nilConnectionAssert("open_channel_context")

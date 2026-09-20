@@ -335,6 +335,11 @@ func WithHealthCallback(fn HealthCallback) ConfirmablePublisherOption {
 }
 
 // NewConfirmablePublisher creates a publisher with confirms enabled.
+//
+// It puts the connection's SHARED channel (ChannelSnapshot) into confirm mode,
+// which is irreversible for the life of that channel, so when another producer
+// shares this connection use OpenChannelContext plus
+// NewConfirmablePublisherFromChannel instead.
 func NewConfirmablePublisher(
 	conn *RabbitMQConnection,
 	opts ...ConfirmablePublisherOption,
