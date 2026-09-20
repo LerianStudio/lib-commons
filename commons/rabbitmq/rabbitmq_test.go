@@ -2209,6 +2209,55 @@ func TestRabbitMQConnection_OpenChannelContext(t *testing.T) {
 		assert.Same(t, shared, conn.ChannelSnapshot(), "a nil dedicated channel must not disturb the shared one")
 	})
 
+	t.Run("nil context is normalised to background", func(t *testing.T) {
+		t.Parallel()
+
+		shared := &amqp.Channel{}
+
+		var nilCtx context.Context
+
+		conn := &RabbitMQConnection{
+			Connection: &amqp.Connection{},
+			Channel:    shared,
+			Connected:  true,
+			Logger:     obs.Nop(),
+			channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+				return &amqp.Channel{}, nil
+			},
+			connectionClosedFn: func(connection *amqp.Connection) bool { return connection == nil },
+			channelClosedFn:    func(ch *amqp.Channel) bool { return ch == nil },
+		}
+
+		dedicated, err := conn.OpenChannelContext(nilCtx)
+
+		require.NoError(t, err)
+		assert.NotSame(t, shared, dedicated)
+	})
+
+	t.Run("rejects a nil connection surviving the ensure", func(t *testing.T) {
+		t.Parallel()
+
+		// A dialer handing back (nil, nil) makes ensure commit a nil
+		// connection, which is the only way past the ensure into the guard.
+		conn := &RabbitMQConnection{
+			Logger: obs.Nop(),
+			dialer: func(string) (*amqp.Connection, error) {
+				return nil, nil
+			},
+			channelFactory: func(*amqp.Connection) (*amqp.Channel, error) {
+				return &amqp.Channel{}, nil
+			},
+			connectionClosedFn: func(connection *amqp.Connection) bool { return false },
+			channelClosedFn:    func(ch *amqp.Channel) bool { return ch == nil },
+		}
+
+		ch, err := conn.OpenChannelContext(context.Background())
+
+		assert.Nil(t, ch)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "connection is nil after ensure")
+	})
+
 	t.Run("bare variant delegates to the context variant", func(t *testing.T) {
 		t.Parallel()
 
