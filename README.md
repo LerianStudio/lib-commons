@@ -179,7 +179,7 @@ The chain survives; the credential does not.
 
 ```go
 if err := db.PingContext(ctx); err != nil {
-    // "dial postgres://****:****@db.internal:5432/ledger: refused"
+    // "ping ledger pool: dial postgres://****:****@db.internal:5432/ledger: refused"
     return sanitize.Error(fmt.Errorf("ping ledger pool: %w", err))
 }
 ```
