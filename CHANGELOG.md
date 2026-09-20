@@ -1,5 +1,22 @@
 # Lib-commons Changelog
 
+## [7.3.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.3.0)
+
+Features:
+- Open a dedicated channel under the connection lock to improve concurrency management. (@fredcamaral)
+
+Fixes:
+- Trace and count the number of dedicated channel opens to ensure accurate monitoring and debugging. (@fredcamaral)
+
+Improvements:
+- Document the lifecycle of a dedicated channel to provide better clarity on its usage and management. (@fredcamaral)
+- Pin the error contract for dedicated channels to ensure consistent error handling. (@fredcamaral)
+- Cover the remaining dedicated channel guards with tests to enhance reliability and prevent regressions. (@fredcamaral)
+
+[Compare changes](https://github.com/LerianStudio/lib-commons/compare/v7.2.0...v7.3.0)
+
+---
+
 ## [7.2.0](https://github.com/LerianStudio/lib-commons/releases/tag/v7.2.0)
 
 Features:
