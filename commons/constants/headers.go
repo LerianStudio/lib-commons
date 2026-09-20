@@ -27,6 +27,10 @@ const (
 	IdempotencyTTL = "X-TTL"
 	// IdempotencyReplayed signals whether a request was replayed.
 	IdempotencyReplayed = "X-Idempotency-Replayed"
+	// IdempotencyFenced signals whether a request whose outcome could not be
+	// recorded left its key durably fenced. "false" means a resend under the
+	// same key MAY execute the operation again.
+	IdempotencyFenced = "X-Idempotency-Fenced"
 	// Authorization is the HTTP Authorization header key.
 	Authorization = "Authorization"
 	// Basic is the HTTP Basic auth scheme token.

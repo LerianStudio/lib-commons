@@ -6,8 +6,10 @@ package outboxtest
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/errgroup"
 	"github.com/LerianStudio/lib-commons/v7/commons/outbox"
@@ -95,6 +97,10 @@ func Run(t *testing.T, factory Factory, opts ...RunOption) {
 	run("StateTransitionsRequireProcessing", func(t *testing.T) { testStateTransitionsRequireProcessing(t, factory) })
 	run("MarkFailedRedactsSensitiveData", func(t *testing.T) { testMarkFailedRedactsSensitiveData(t, factory) })
 	run("MarkFailedAtMaxAttemptsInvalidates", func(t *testing.T) { testMarkFailedAtMaxAttemptsInvalidates(t, factory) })
+	run("MarkFailedAccumulatesDistinctCauses", func(t *testing.T) { testMarkFailedAccumulatesDistinctCauses(t, factory) })
+	run("MarkFailedBoundsAccumulatedCauses", func(t *testing.T) { testMarkFailedBoundsAccumulatedCauses(t, factory) })
+	run("MarkFailedKeepsCauseContainedInAnother", func(t *testing.T) { testMarkFailedKeepsCauseContainedInAnother(t, factory) })
+	run("MarkFailedKeepsExistingCauseWhenNewOneIsEmpty", func(t *testing.T) { testMarkFailedKeepsExistingCauseWhenNewOneIsEmpty(t, factory) })
 	run("ListFailedForRetryReadOnly", func(t *testing.T) { testListFailedForRetryReadOnly(t, factory) })
 	run("RetryScansSkipRowsAtMaxAttempts", func(t *testing.T) { testRetryScansSkipRowsAtMaxAttempts(t, factory) })
 	run("ResetForRetryMovesFailedToProcessing", func(t *testing.T) { testResetForRetryMovesFailedToProcessing(t, factory) })
@@ -390,7 +396,11 @@ func testMarkFailedAtMaxAttemptsInvalidates(t *testing.T, factory Factory) {
 	require.NotNil(t, stored)
 	require.Equal(t, outbox.OutboxStatusInvalid, stored.Status)
 	require.Equal(t, 1, stored.Attempts)
-	require.Equal(t, "max dispatch attempts exceeded", stored.LastError)
+	// Exhausting the budget must NOT replace the cause with a restatement of
+	// the exhaustion: status and attempts above already carry that. The column
+	// answers why, and a quarantined row that cannot say why is the defect.
+	require.Equal(t, "terminal failure", stored.LastError)
+	require.NotContains(t, stored.LastError, "max dispatch attempts exceeded")
 }
 
 func testListFailedForRetryReadOnly(t *testing.T, factory Factory) {
@@ -502,7 +512,158 @@ func testResetStuckProcessingReprocessesAndInvalidates(t *testing.T, factory Fac
 	require.NotNil(t, exhaustedStored)
 	require.Equal(t, outbox.OutboxStatusInvalid, exhaustedStored.Status)
 	require.Equal(t, 3, exhaustedStored.Attempts)
-	require.Equal(t, "max dispatch attempts exceeded", exhaustedStored.LastError)
+	// The stuck reclaim has no error of its own, so it names the condition —
+	// and it accumulates rather than replacing whatever diagnosis the row
+	// already earned from its earlier attempts.
+	require.Contains(t, exhaustedStored.LastError, outbox.StuckInProcessingCause)
+	require.NotContains(t, exhaustedStored.LastError, "max dispatch attempts exceeded")
+}
+
+// testMarkFailedAccumulatesDistinctCauses is the guard against the two
+// expressions drifting. The Postgres backend mirrors outbox.AppendErrorCause in
+// SQL (accumulating in Go there would need a read-modify-write and lose the
+// atomicity of one UPDATE), while Mongo calls the function. This asserts the
+// resulting BEHAVIOUR against every backend, so a divergence fails the contract
+// instead of surviving as two rules that disagree.
+func testMarkFailedAccumulatesDistinctCauses(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+	ctx := outbox.ContextWithTenantID(contractContext(t), "tenant-a")
+	created := createEvent(t, repo, ctx, "payment.failed.accumulating")
+
+	// First attempt: the cause that actually diagnoses the row.
+	claimSinglePending(t, repo, ctx, created.ID)
+	require.NoError(t, repo.MarkFailed(ctx, created.ID, "handler not registered", 4))
+
+	// A repeat of the same cause must not be stored twice, or ten identical
+	// timeouts would evict the first cause from a bounded column.
+	resetSingleFailed(t, repo, ctx, created.ID)
+	require.NoError(t, repo.MarkFailed(ctx, created.ID, "handler not registered", 4))
+
+	// A later, DIFFERENT cause is what shows the degradation.
+	resetSingleFailed(t, repo, ctx, created.ID)
+	require.NoError(t, repo.MarkFailed(ctx, created.ID, "context deadline exceeded", 4))
+
+	// Final attempt: the budget runs out here.
+	resetSingleFailed(t, repo, ctx, created.ID)
+	require.NoError(t, repo.MarkFailed(ctx, created.ID, "broker unreachable", 4))
+
+	stored, err := repo.GetByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, outbox.OutboxStatusInvalid, stored.Status)
+	require.Equal(t, 4, stored.Attempts)
+
+	require.Contains(t, stored.LastError, "handler not registered",
+		"the FIRST cause is the diagnosis and must survive to the terminal row")
+	require.Contains(t, stored.LastError, "context deadline exceeded")
+	require.Contains(t, stored.LastError, "broker unreachable")
+	require.NotContains(t, stored.LastError, "max dispatch attempts exceeded")
+	require.Equal(t, 1, strings.Count(stored.LastError, "handler not registered"),
+		"a repeated cause is recorded once, not once per attempt")
+	require.LessOrEqual(t, utf8.RuneCountInString(stored.LastError), outbox.MaxLastErrorLength)
+}
+
+// testMarkFailedKeepsExistingCauseWhenNewOneIsEmpty pins the one input every
+// backend must IGNORE.
+//
+// An attempt can arrive with nothing to say — an error whose message is blank,
+// or one redaction leaves empty. Go returns the stored value untouched. A SQL
+// mirror that forgets the guard appends its separator anyway, so the row grows
+// a stray delimiter per attempt and eventually saturates on padding rather than
+// on diagnosis. Nothing about the two expressions makes that drift visible
+// except a contract that asks both of them the same question.
+func testMarkFailedKeepsExistingCauseWhenNewOneIsEmpty(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+	ctx := outbox.ContextWithTenantID(contractContext(t), "tenant-a")
+	created := createEvent(t, repo, ctx, "payment.failed.emptycause")
+
+	claimSinglePending(t, repo, ctx, created.ID)
+	require.NoError(t, repo.MarkFailed(ctx, created.ID, "handler not registered", 6))
+
+	// Blank, then whitespace-only: both carry no diagnosis.
+	for _, empty := range []string{"", "   "} {
+		resetSingleFailed(t, repo, ctx, created.ID)
+		require.NoError(t, repo.MarkFailed(ctx, created.ID, empty, 6))
+
+		stored, err := repo.GetByID(ctx, created.ID)
+		require.NoError(t, err)
+		require.Equal(t, "handler not registered", stored.LastError,
+			"an attempt with no cause must leave the stored diagnosis exactly as it was")
+	}
+}
+
+// testMarkFailedBoundsAccumulatedCauses drives the value PAST its ceiling.
+//
+// Without this, a backend could omit the cap entirely and still pass: the
+// short causes above never approach the limit. That matters more than a
+// missing assertion usually would, because the column this library ships is
+// `last_error VARCHAR(512)` and Postgres REJECTS an oversized value (SQLSTATE
+// 22001) instead of truncating it — an uncapped backend would not store a long
+// value, it would fail MarkFailed and strand the row in PROCESSING, retrying
+// for ever.
+func testMarkFailedBoundsAccumulatedCauses(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+	ctx := outbox.ContextWithTenantID(contractContext(t), "tenant-a")
+	created := createEvent(t, repo, ctx, "payment.failed.saturating")
+
+	first := "first cause: " + strings.Repeat("a", 200)
+
+	claimSinglePending(t, repo, ctx, created.ID)
+	require.NoError(t, repo.MarkFailed(ctx, created.ID, first, 8))
+
+	for i := range 6 {
+		resetSingleFailed(t, repo, ctx, created.ID)
+
+		cause := "later cause " + string(rune('A'+i)) + ": " + strings.Repeat("b", 200)
+
+		require.NoError(t, repo.MarkFailed(ctx, created.ID, cause, 8))
+	}
+
+	stored, err := repo.GetByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+
+	require.LessOrEqual(t, utf8.RuneCountInString(stored.LastError), outbox.MaxLastErrorLength,
+		"the stored value must fit the column the library ships, or the write fails outright")
+	require.Contains(t, stored.LastError, "first cause:",
+		"saturating drops the NEWEST causes; the first is the diagnosis and stays")
+	require.Equal(t, 1, strings.Count(stored.LastError, outbox.LastErrorTruncationMarker),
+		"the marker is appended once, not once per further attempt")
+	require.NotContains(t, stored.LastError, "later cause F:",
+		"a cause that did not fit must be dropped, not silently squeezed in")
+}
+
+// testMarkFailedKeepsCauseContainedInAnother pins whole-cause duplicate
+// detection. A substring test would drop the second cause here, because it is
+// contained in the first — and losing a distinct diagnosis is the defect this
+// suite exists to catch.
+func testMarkFailedKeepsCauseContainedInAnother(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+	ctx := outbox.ContextWithTenantID(contractContext(t), "tenant-a")
+	created := createEvent(t, repo, ctx, "payment.failed.substring")
+
+	claimSinglePending(t, repo, ctx, created.ID)
+	require.NoError(t, repo.MarkFailed(ctx, created.ID, "request timeout while calling broker", 4))
+
+	resetSingleFailed(t, repo, ctx, created.ID)
+	require.NoError(t, repo.MarkFailed(ctx, created.ID, "timeout", 4))
+
+	stored, err := repo.GetByID(ctx, created.ID)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+
+	require.Contains(t, stored.LastError, "request timeout while calling broker")
+	require.Equal(t, []string{"request timeout while calling broker", "timeout"},
+		strings.Split(stored.LastError, "\n"),
+		"a distinct cause contained in an earlier one is still its own cause")
 }
 
 func testWrongTenantMutationsRejected(t *testing.T, factory Factory) {
@@ -632,6 +793,19 @@ func claimSinglePending(t *testing.T, repo outbox.OutboxRepository, ctx context.
 	require.Len(t, events, 1)
 	require.Equal(t, id, events[0].ID)
 	require.Equal(t, outbox.OutboxStatusProcessing, events[0].Status)
+}
+
+// resetSingleFailed moves one FAILED row back to PROCESSING so the next
+// MarkFailed is legal. The generous maxAttempts keeps the reset itself from
+// skipping the row; what the caller is exercising is MarkFailed's own budget.
+func resetSingleFailed(t *testing.T, repo outbox.OutboxRepository, ctx context.Context, id uuid.UUID) {
+	t.Helper()
+
+	retried, err := repo.ResetForRetry(ctx, 10, time.Now().UTC(), 1000)
+	require.NoError(t, err)
+	require.Len(t, retried, 1)
+	require.Equal(t, id, retried[0].ID)
+	require.Equal(t, outbox.OutboxStatusProcessing, retried[0].Status)
 }
 
 func claimAllPending(t *testing.T, repo outbox.OutboxRepository, ctx context.Context, limit int) []*outbox.OutboxEvent {

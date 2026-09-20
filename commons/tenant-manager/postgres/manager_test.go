@@ -36,11 +36,16 @@ func mustNewTestClient(t testing.TB, baseURL string) *client.Client {
 }
 
 // pingableDB implements dbresolver.DB with configurable PingContext behavior
-// for testing connection health check logic.
+// for testing connection health check logic. pings counts PingContext calls and
+// is read with atomics, since the manager may ping from several goroutines.
 type pingableDB struct {
 	pingErr error
 	closed  bool
+	pings   int32
 }
+
+// pingCount returns how many times PingContext has been called.
+func (m *pingableDB) pingCount() int32 { return atomic.LoadInt32(&m.pings) }
 
 var _ dbresolver.DB = (*pingableDB)(nil)
 
@@ -55,8 +60,12 @@ func (m *pingableDB) Exec(_ string, _ ...interface{}) (sql.Result, error) { retu
 func (m *pingableDB) ExecContext(_ context.Context, _ string, _ ...interface{}) (sql.Result, error) {
 	return nil, nil
 }
-func (m *pingableDB) Ping() error                               { return m.pingErr }
-func (m *pingableDB) PingContext(_ context.Context) error       { return m.pingErr }
+func (m *pingableDB) Ping() error { return m.pingErr }
+func (m *pingableDB) PingContext(_ context.Context) error {
+	atomic.AddInt32(&m.pings, 1)
+
+	return m.pingErr
+}
 func (m *pingableDB) Prepare(_ string) (dbresolver.Stmt, error) { return nil, nil }
 func (m *pingableDB) PrepareContext(_ context.Context, _ string) (dbresolver.Stmt, error) {
 	return nil, nil
@@ -744,7 +753,12 @@ func TestManager_GetConnection_UnhealthyCacheEvicts(t *testing.T) {
 		defer server.Close()
 
 		tmClient := mustNewTestClient(t, server.URL)
-		manager := NewManager(tmClient, "ledger", WithLogger(testutil.NewMockLogger()))
+		// WithHealthCheckInterval(0) keeps the ping on every cache hit: this test is
+		// about the eviction the ping failure triggers, not about the interval gate.
+		manager := NewManager(tmClient, "ledger",
+			WithLogger(testutil.NewMockLogger()),
+			WithHealthCheckInterval(0),
+		)
 
 		// Pre-populate cache with an unhealthy connection (simulates auth failure after credential rotation)
 		unhealthyDB := &pingableDB{pingErr: errors.New("FATAL: password authentication failed (SQLSTATE 28P01)")}

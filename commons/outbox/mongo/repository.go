@@ -525,13 +525,17 @@ func (repo *Repository) MarkFailed(ctx context.Context, id uuid.UUID, errMsg str
 		return fmt.Errorf("loading outbox event: %w", err)
 	}
 
+	// last_error accumulates the distinct causes rather than being overwritten,
+	// and exhaustion no longer replaces the diagnosis with a tautology — status
+	// and attempts already carry that fact. Same rule as the Postgres backend;
+	// outbox.AppendErrorCause is the single definition and the shared contract
+	// suite holds both backends to it.
 	nextAttempts := updatedDoc.Attempts + 1
 	nextStatus := outbox.OutboxStatusFailed
-	nextLastError := errMsg
+	nextLastError := outbox.AppendErrorCause(updatedDoc.LastError, errMsg)
 
 	if nextAttempts >= maxAttempts {
 		nextStatus = outbox.OutboxStatusInvalid
-		nextLastError = "max dispatch attempts exceeded"
 	}
 
 	collection, err := repo.collection(ctx)
@@ -671,7 +675,7 @@ func (repo *Repository) ResetStuckProcessing(ctx context.Context, limit int, pro
 
 		if nextAttempts >= maxAttempts {
 			nextStatus = outbox.OutboxStatusInvalid
-			nextLastError = "max dispatch attempts exceeded"
+			nextLastError = outbox.AppendErrorCause(candidate.LastError, outbox.StuckInProcessingCause)
 		}
 
 		return bson.M{mongoFieldStatus: nextStatus, mongoFieldAttempts: nextAttempts, mongoFieldLastError: nextLastError, mongoFieldUpdatedAt: time.Now().UTC()}

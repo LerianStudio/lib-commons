@@ -22,6 +22,7 @@ import (
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/client"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/eviction"
+	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/healthcheck"
 	"github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/internal/logcompat"
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -58,6 +59,10 @@ func disconnectClient(c *mongo.Client) error {
 // returned by GetConnection and this interval has elapsed since the last check,
 // fresh config is fetched from the Tenant Manager asynchronously.
 const defaultConnectionsCheckInterval = 30 * time.Second
+
+// defaultHealthCheckInterval is the default minimum interval between health-check
+// pings of a cached tenant client on the GetConnection cache-hit path.
+const defaultHealthCheckInterval = 30 * time.Second
 
 // settingsRevalidationTimeout is the maximum duration for the HTTP call
 // to the Tenant Manager during async settings revalidation.
@@ -104,6 +109,9 @@ type Manager struct {
 
 	lastConnectionsCheck     map[string]time.Time // tracks per-tenant last settings revalidation time
 	connectionsCheckInterval time.Duration        // configurable interval between settings revalidation checks
+
+	healthCheckInterval time.Duration     // minimum interval between cache-hit health-check pings (0 = ping every call)
+	healthGate          *healthcheck.Gate // one health check per interval per tenant, one in flight at a time
 
 	// revalidateWG tracks in-flight revalidatePoolSettings goroutines so Close()
 	// can wait for them to finish before returning. Without this, goroutines
@@ -233,6 +241,28 @@ func WithConnectionsCheckInterval(d time.Duration) Option {
 	}
 }
 
+// WithHealthCheckInterval sets the minimum interval between health-check pings of a
+// cached tenant client. GetConnection pings a cached client only once per interval
+// per tenant; inside the window it returns the cached client with no round trip. A
+// client that was evicted and recreated is always pinged on its first use.
+//
+// The ping buys less than it looks like it does. MongoDB authenticates when a
+// connection is opened, not per command, so a ping over an already-open pooled
+// connection succeeds even with rotated credentials. Changed credentials, host,
+// database or TLS settings are detected by the async settings revalidation
+// (WithConnectionsCheckInterval), which is itself interval-gated, and that path is
+// also what evicts suspended and purged tenants. What the ping uniquely catches is
+// a fully dead client, which the driver's own server monitoring and retryable
+// reads/writes already handle.
+//
+// If d <= 0, every cache hit pings, which is the behaviour from before this gate.
+// Default: 30 seconds (defaultHealthCheckInterval).
+func WithHealthCheckInterval(d time.Duration) Option {
+	return func(p *Manager) {
+		p.healthCheckInterval = max(d, 0)
+	}
+}
+
 // WithIdleTimeout sets the duration after which an unused tenant connection becomes
 // eligible for eviction. Only connections idle longer than this duration will be evicted
 // when the pool exceeds the soft limit (maxConnections). If all connections are active
@@ -255,11 +285,15 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 		lastAccessed:             make(map[string]time.Time),
 		lastConnectionsCheck:     make(map[string]time.Time),
 		connectionsCheckInterval: defaultConnectionsCheckInterval,
+		healthCheckInterval:      defaultHealthCheckInterval,
 	}
 
 	for _, opt := range opts {
 		opt(p)
 	}
+
+	// Built after the options so WithHealthCheckInterval is already applied.
+	p.healthGate = healthcheck.NewGate(p.healthCheckInterval)
 
 	return p
 }
@@ -268,7 +302,7 @@ func NewManager(c *client.Client, service string, opts ...Option) *Manager {
 // If a cached client fails a health check (e.g., due to credential rotation
 // after a tenant purge+re-associate), the stale client is evicted and a new
 // one is created with fresh credentials from the Tenant Manager.
-func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Client, error) { //nolint:gocognit // complexity from connection lifecycle (ping, revalidate, evict) is inherent
+func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Client, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -277,80 +311,135 @@ func (p *Manager) GetConnection(ctx context.Context, tenantID string) (*mongo.Cl
 		return nil, errors.New("tenant ID is required")
 	}
 
-	p.mu.RLock()
+	// Loops only when another caller's health check was in flight: once it publishes
+	// its verdict this caller has to resolve the tenant again, because the client it
+	// found may have been evicted in the meantime.
+	for {
+		p.mu.RLock()
 
-	if p.closed {
+		if p.closed {
+			p.mu.RUnlock()
+			return nil, core.ErrManagerClosed
+		}
+
+		conn, cached := p.connections[tenantID]
+
 		p.mu.RUnlock()
-		return nil, core.ErrManagerClosed
-	}
 
-	if conn, ok := p.connections[tenantID]; ok {
-		p.mu.RUnlock()
+		// No entry, or a cached entry with no client: both are unusable, create one.
+		if !cached || conn.DB == nil {
+			return p.createConnection(ctx, tenantID)
+		}
 
-		// Validate cached connection is still healthy (e.g., credentials may have changed).
-		// Ping is slow I/O, so we intentionally run it outside any lock.
-		if conn.DB != nil {
-			pingCtx, cancel := context.WithTimeout(ctx, mongoPingTimeout)
-			pingErr := conn.DB.Ping(pingCtx, nil)
+		// Validate cached connection is still healthy (e.g., credentials may have changed),
+		// at most once per healthCheckInterval per tenant and never twice at once.
+		action, inflight := p.healthGate.Begin(tenantID)
 
-			cancel()
+		switch action {
+		case healthcheck.Wait:
+			if err := healthcheck.Await(ctx, inflight); err != nil {
+				return nil, err
+			}
 
-			if pingErr != nil {
-				if p.logger != nil {
-					p.logger.WarnCtx(ctx, fmt.Sprintf("cached mongo connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr))
-				}
+			continue
+		case healthcheck.Run:
+			usable, err := p.runHealthCheck(ctx, tenantID, conn)
+			if err != nil {
+				return nil, err
+			}
 
-				if closeErr := p.CloseConnection(ctx, tenantID); closeErr != nil && p.logger != nil {
-					p.logger.WarnCtx(ctx, fmt.Sprintf("failed to close stale mongo connection for tenant %s: %v", tenantID, closeErr))
-				}
-
+			if !usable {
 				// Connection was unhealthy and has been evicted; create fresh.
 				return p.createConnection(ctx, tenantID)
 			}
+		case healthcheck.Skip:
+		}
 
-			// Ping succeeded. Re-acquire write lock to update LRU tracking,
-			// but re-check that the connection was not evicted while we were
-			// pinging (another goroutine may have called CloseConnection,
-			// Close, or evictLRU in the meantime).
-			now := time.Now()
-
-			p.mu.Lock()
-			if current, stillExists := p.connections[tenantID]; stillExists && current == conn {
-				p.lastAccessed[tenantID] = now
-
-				shouldRevalidate := p.client != nil && p.connectionsCheckInterval > 0 && time.Since(p.lastConnectionsCheck[tenantID]) > p.connectionsCheckInterval
-				if shouldRevalidate {
-					p.lastConnectionsCheck[tenantID] = now
-					p.revalidateWG.Add(1)
-				}
-
-				p.mu.Unlock()
-
-				if shouldRevalidate {
-					go func() { //#nosec G118 -- intentional: revalidatePoolSettings creates its own timeout context; must not use request-scoped context as this outlives the request
-						defer p.revalidateWG.Done()
-
-						p.revalidatePoolSettings(tenantID)
-					}()
-				}
-
-				return conn.DB, nil
-			}
-
-			p.mu.Unlock()
-
+		if !p.touchCachedConnection(tenantID, conn) {
 			// Connection was evicted while we were pinging; fall through
 			// to createConnection which will fetch fresh credentials.
 			return p.createConnection(ctx, tenantID)
 		}
 
-		// conn.DB is nil -- cached entry is unusable, create a new connection.
-		return p.createConnection(ctx, tenantID)
+		return conn.DB, nil
+	}
+}
+
+// touchCachedConnection updates LRU tracking for a cache hit and starts an async
+// settings revalidation when one is due. It reports false when the tenant key no
+// longer holds conn, in which case the caller must resolve the tenant again.
+func (p *Manager) touchCachedConnection(tenantID string, conn *MongoConnection) bool {
+	// Health check passed or was skipped inside the window. Re-acquire write lock to
+	// update LRU tracking, but re-check that the connection was not evicted while we
+	// were pinging (another goroutine may have called CloseConnection, Close, or
+	// evictLRU in the meantime).
+	now := time.Now()
+
+	p.mu.Lock()
+
+	if current, stillExists := p.connections[tenantID]; !stillExists || current != conn {
+		p.mu.Unlock()
+
+		return false
 	}
 
-	p.mu.RUnlock()
+	p.lastAccessed[tenantID] = now
 
-	return p.createConnection(ctx, tenantID)
+	shouldRevalidate := p.client != nil && p.connectionsCheckInterval > 0 && time.Since(p.lastConnectionsCheck[tenantID]) > p.connectionsCheckInterval
+	if shouldRevalidate {
+		p.lastConnectionsCheck[tenantID] = now
+		p.revalidateWG.Add(1)
+	}
+
+	p.mu.Unlock()
+
+	if shouldRevalidate {
+		go func() { //#nosec G118 -- intentional: revalidatePoolSettings creates its own timeout context; must not use request-scoped context as this outlives the request
+			defer p.revalidateWG.Done()
+
+			p.revalidatePoolSettings(tenantID)
+		}()
+	}
+
+	return true
+}
+
+// runHealthCheck pings the cached client and reports whether it may still be used.
+// An unhealthy client is evicted so the caller rebuilds it with fresh credentials.
+// A non-nil error means the caller's own context ended: the client is left alone and
+// the error belongs to that caller, not to the client.
+// Ping is slow I/O, so it intentionally runs outside any lock. The verdict is
+// published last, in a defer: waiting callers are released only after a condemned
+// client has left the cache, so they cannot pick it back up, and they are released
+// even if the ping panics.
+func (p *Manager) runHealthCheck(ctx context.Context, tenantID string, conn *MongoConnection) (bool, error) {
+	healthy := false
+
+	defer func() { p.healthGate.End(tenantID, healthy) }()
+
+	pingCtx, cancel := context.WithTimeout(ctx, mongoPingTimeout)
+	pingErr := conn.DB.Ping(pingCtx, nil)
+
+	cancel()
+
+	if pingErr == nil {
+		healthy = true
+
+		return true, nil
+	}
+
+	// The client is shared: a caller that went away mid-check has learnt nothing
+	// about it, so disconnecting it here would punish every other caller for one
+	// dead request.
+	if healthcheck.CallerAbandoned(ctx, pingErr) {
+		return false, pingErr
+	}
+
+	// Evicting by tenant id alone would tear down whatever client is cached, including
+	// a healthy one the async reconnect installed while this ping was failing.
+	p.disconnectUnhealthyConnection(ctx, tenantID, conn, pingErr)
+
+	return false, nil
 }
 
 // revalidatePoolSettings fetches fresh config from the Tenant Manager and detects
@@ -623,7 +712,12 @@ func (p *Manager) createConnection(ctx context.Context, tenantID string) (*mongo
 	}
 
 	if hasCached {
-		if reusedDB, reused := p.tryReuseCachedConnection(ctx, tenantID, cachedConn); reused {
+		reusedDB, reused, reuseErr := p.tryReuseCachedConnection(ctx, tenantID, cachedConn)
+		if reuseErr != nil {
+			return nil, reuseErr
+		}
+
+		if reused {
 			return reusedDB, nil
 		}
 	}
@@ -649,16 +743,18 @@ func (p *Manager) snapshotCachedConnection(tenantID string) (*MongoConnection, b
 // tryReuseCachedConnection validates a previously cached connection by pinging it.
 // If the connection is healthy and still in the cache, it updates the LRU timestamp
 // and returns it. If unhealthy or evicted, it cleans up and returns reused=false so
-// the caller falls through to create a new connection.
+// the caller falls through to create a new connection. A non-nil error means the
+// caller's own context ended: the cached connection is left alone, because a
+// cancelled request says nothing about a connection the other callers share.
 func (p *Manager) tryReuseCachedConnection(
 	ctx context.Context,
 	tenantID string,
 	cachedConn *MongoConnection,
-) (*mongo.Client, bool) {
+) (*mongo.Client, bool, error) {
 	if cachedConn == nil || cachedConn.DB == nil {
 		p.removeStaleCacheEntry(tenantID, cachedConn)
 
-		return nil, false
+		return nil, false, nil
 	}
 
 	pingCtx, cancel := context.WithTimeout(ctx, mongoPingTimeout)
@@ -667,12 +763,18 @@ func (p *Manager) tryReuseCachedConnection(
 	cancel()
 
 	if pingErr == nil {
-		return p.reuseHealthyConnection(tenantID, cachedConn)
+		reusedDB, reused := p.reuseHealthyConnection(tenantID, cachedConn)
+
+		return reusedDB, reused, nil
+	}
+
+	if healthcheck.CallerAbandoned(ctx, pingErr) {
+		return nil, false, pingErr
 	}
 
 	p.disconnectUnhealthyConnection(ctx, tenantID, cachedConn, pingErr)
 
-	return nil, false
+	return nil, false, nil
 }
 
 // reuseHealthyConnection updates the LRU timestamp for a healthy cached connection.
@@ -691,8 +793,12 @@ func (p *Manager) reuseHealthyConnection(tenantID string, cachedConn *MongoConne
 	return nil, false
 }
 
-// disconnectUnhealthyConnection disconnects a cached connection that failed its
-// health check and removes the stale cache entry.
+// disconnectUnhealthyConnection drops the cache entry for a connection that failed
+// its health check and disconnects that connection. The entry is dropped first, so
+// no other goroutine can pick up a client that is being torn down, and only if the
+// tenant key still holds this very connection: another goroutine may have installed
+// a healthy replacement while the ping was failing, and that one must survive.
+// The disconnect itself runs outside the lock, since it is network I/O.
 func (p *Manager) disconnectUnhealthyConnection(
 	ctx context.Context,
 	tenantID string,
@@ -703,14 +809,14 @@ func (p *Manager) disconnectUnhealthyConnection(
 		p.logger.WarnCtx(ctx, fmt.Sprintf("cached mongo connection unhealthy for tenant %s, reconnecting: %v", tenantID, pingErr))
 	}
 
+	p.removeStaleCacheEntry(tenantID, cachedConn)
+
 	discCtx, discCancel := context.WithTimeout(ctx, mongoPingTimeout)
 	if discErr := cachedConn.DB.Disconnect(discCtx); discErr != nil && p.logger != nil {
 		p.logger.WarnCtx(ctx, fmt.Sprintf("failed to disconnect unhealthy mongo connection for tenant %s: %v", tenantID, discErr))
 	}
 
 	discCancel()
-
-	p.removeStaleCacheEntry(tenantID, cachedConn)
 }
 
 // removeStaleCacheEntry removes a cache entry only if it still points to the
@@ -724,6 +830,7 @@ func (p *Manager) removeStaleCacheEntry(tenantID string, cachedConn *MongoConnec
 		delete(p.databaseNames, tenantID)
 		delete(p.lastAccessed, tenantID)
 		delete(p.lastConnectionsCheck, tenantID)
+		p.healthGate.Forget(tenantID)
 	}
 }
 
@@ -894,6 +1001,7 @@ func (p *Manager) evictLRU(ctx context.Context, logger obs.Logger) {
 		delete(p.databaseNames, candidateID)
 		delete(p.lastAccessed, candidateID)
 		delete(p.lastConnectionsCheck, candidateID)
+		p.healthGate.Forget(candidateID)
 	}
 }
 
@@ -992,6 +1100,7 @@ func (p *Manager) Close(ctx context.Context) error {
 	clear(p.databaseNames)
 	clear(p.lastAccessed)
 	clear(p.lastConnectionsCheck)
+	p.healthGate.ForgetAll()
 
 	p.mu.Unlock()
 
@@ -1032,6 +1141,7 @@ func (p *Manager) CloseConnection(ctx context.Context, tenantID string) error {
 	delete(p.databaseNames, tenantID)
 	delete(p.lastAccessed, tenantID)
 	delete(p.lastConnectionsCheck, tenantID)
+	p.healthGate.Forget(tenantID)
 
 	p.mu.Unlock()
 

@@ -390,7 +390,10 @@ func TestIntegration_Repository_ResetStuckProcessing(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, outbox.OutboxStatusInvalid, exhausted.Status)
 	require.Equal(t, 3, exhausted.Attempts)
-	require.Equal(t, "max dispatch attempts exceeded", exhausted.LastError)
+	// The stuck reclaim names the condition it found instead of restating that
+	// attempts ran out, which status and Attempts above already say.
+	require.Contains(t, exhausted.LastError, outbox.StuckInProcessingCause)
+	require.NotContains(t, exhausted.LastError, "max dispatch attempts exceeded")
 }
 
 func TestIntegration_Repository_TenantIsolation(t *testing.T) {

@@ -290,6 +290,81 @@ func TestClassification_PlainError(t *testing.T) {
 	assert.Empty(t, msg)
 }
 
+// typedNilPgxError returns a nil *pgconn.PgError carried in a non-nil error
+// interface — the shape a caller produces by returning a typed nil pointer.
+func typedNilPgxError() error {
+	var pgErr *pgconn.PgError
+
+	return pgErr
+}
+
+// typedNilPqError returns a nil *pq.Error carried in a non-nil error interface.
+func typedNilPqError() error {
+	var pqe *pq.Error
+
+	return pqe
+}
+
+// TestClassification_TypedNilDriverError pins that a typed-nil driver error —
+// a nil *pgconn.PgError or *pq.Error stored in the error interface, which
+// errors.As matches because the dynamic type is assignable — is treated as
+// carrying nothing, instead of panicking on the field access that follows the
+// match.
+func TestClassification_TypedNilDriverError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		build func() error
+	}{
+		{
+			name:  "pgx typed nil",
+			build: typedNilPgxError,
+		},
+		{
+			name:  "lib/pq typed nil",
+			build: typedNilPqError,
+		},
+		{
+			name: "pgx typed nil wrapped once",
+			build: func() error {
+				return fmt.Errorf("query failed: %w", typedNilPgxError())
+			},
+		},
+		{
+			name: "lib/pq typed nil wrapped once",
+			build: func() error {
+				return fmt.Errorf("query failed: %w", typedNilPqError())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tt.build()
+
+			code, ok := SQLState(err)
+			assert.False(t, ok, "a typed-nil driver error carries no SQLSTATE")
+			assert.Empty(t, code)
+
+			name, ok := Constraint(err)
+			assert.False(t, ok, "a typed-nil driver error carries no constraint name")
+			assert.Empty(t, name)
+
+			msg, ok := DriverMessage(err)
+			assert.False(t, ok, "a typed-nil driver error carries no driver message")
+			assert.Empty(t, msg)
+
+			assert.False(t, IsUniqueViolation(err))
+			assert.False(t, IsForeignKeyViolation(err))
+			assert.False(t, IsCheckViolation(err))
+			assert.False(t, IsUndefinedTable(err))
+		})
+	}
+}
+
 // TestSQLState_DoesNotTraverseSanitizedError asserts — by design, NOT as a bug —
 // that classification does not see through a *SanitizedError. newSanitizedError
 // flattens its cause to a fresh errors.New(sanitizedMsg) (see sanitizedCause in

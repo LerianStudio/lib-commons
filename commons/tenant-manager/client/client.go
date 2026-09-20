@@ -484,7 +484,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	requestURL := fmt.Sprintf("%s/v1/tenants/%s/associations/%s/connections",
 		c.baseURL, url.PathEscape(tenantID), url.PathEscape(service))
 
-	logger.Log(ctx, obs.LevelInfo, "fetching tenant config",
+	logger.Log(ctx, obs.LevelDebug, "fetching tenant config",
 		"tenant_id", tenantID,
 		"service", service,
 	)
@@ -546,7 +546,7 @@ func (c *Client) GetTenantConfig(ctx context.Context, tenantID, service string, 
 	}
 
 	c.recordSuccess()
-	logger.Log(ctx, obs.LevelInfo, "successfully fetched tenant config",
+	logger.Log(ctx, obs.LevelDebug, "successfully fetched tenant config",
 		"tenant_id", tenantID,
 		"slug", config.TenantSlug,
 	)
@@ -607,7 +607,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 
 	requestURL := fmt.Sprintf("%s/v1/tenants/active?service=%s", c.baseURL, url.QueryEscape(service))
 
-	logger.Log(ctx, obs.LevelInfo, "fetching active tenants", "service", service)
+	logger.Log(ctx, obs.LevelDebug, "fetching active tenants", "service", service)
 
 	// Create request with context
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
@@ -680,7 +680,7 @@ func (c *Client) GetActiveTenantsByService(ctx context.Context, service string) 
 	}
 
 	c.recordSuccess()
-	logger.Log(ctx, obs.LevelInfo, "successfully fetched active tenants",
+	logger.Log(ctx, obs.LevelDebug, "successfully fetched active tenants",
 		"count", len(tenants),
 		"service", service,
 	)

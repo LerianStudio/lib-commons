@@ -14,23 +14,27 @@ const (
 	foreignKeyViolation = "23503"
 	checkViolation      = "23514"
 	undefinedTable      = "42P01"
+	// queryCanceled is what PostgreSQL answers when it cancels a running
+	// statement — under statement_timeout, or on a client cancel request.
+	queryCanceled = "57014"
 )
 
 // SQLState returns the PostgreSQL SQLSTATE code carried by err, unwrapping
 // both pgx (*pgconn.PgError) and lib/pq (*pq.Error) errors. The bool is false
-// for nil errors and for errors that carry no SQLSTATE.
+// for nil errors and for errors that carry no SQLSTATE. A typed-nil driver
+// error is treated as carrying nothing.
 func SQLState(err error) (string, bool) {
 	if err == nil {
 		return "", false
 	}
 
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
+	if errors.As(err, &pgErr) && pgErr != nil {
 		return pgErr.Code, true
 	}
 
 	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
+	if errors.As(err, &pqErr) && pqErr != nil {
 		return string(pqErr.Code), true
 	}
 
@@ -38,14 +42,15 @@ func SQLState(err error) (string, bool) {
 }
 
 // Constraint returns the violated constraint name from err (pgx or lib/pq).
-// The bool is false when nil / absent.
+// The bool is false when nil / absent. A typed-nil driver error is treated as
+// carrying nothing.
 func Constraint(err error) (string, bool) {
 	if err == nil {
 		return "", false
 	}
 
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
+	if errors.As(err, &pgErr) && pgErr != nil {
 		if pgErr.ConstraintName == "" {
 			return "", false
 		}
@@ -54,7 +59,7 @@ func Constraint(err error) (string, bool) {
 	}
 
 	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
+	if errors.As(err, &pqErr) && pqErr != nil {
 		if pqErr.Constraint == "" {
 			return "", false
 		}
@@ -66,7 +71,8 @@ func Constraint(err error) (string, bool) {
 }
 
 // DriverMessage returns the raw driver message from err (pgx or lib/pq).
-// The bool is false when nil / absent.
+// The bool is false when nil / absent. A typed-nil driver error is treated as
+// carrying nothing.
 //
 // The raw message can embed row or parameter values (e.g. the duplicated key
 // in a unique_violation), which may be PII or financial data. Do NOT log it or
@@ -77,7 +83,7 @@ func DriverMessage(err error) (string, bool) {
 	}
 
 	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
+	if errors.As(err, &pgErr) && pgErr != nil {
 		if pgErr.Message == "" {
 			return "", false
 		}
@@ -86,7 +92,7 @@ func DriverMessage(err error) (string, bool) {
 	}
 
 	var pqErr *pq.Error
-	if errors.As(err, &pqErr) {
+	if errors.As(err, &pqErr) && pqErr != nil {
 		if pqErr.Message == "" {
 			return "", false
 		}

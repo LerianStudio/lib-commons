@@ -27,6 +27,29 @@ func WithLogger(l obs.Logger) Option {
 	}
 }
 
+// WithEnabled states the enablement decision explicitly and takes precedence
+// over the RATE_LIMIT_ENABLED environment variable, which New then ignores.
+//
+// Use it when the caller owns the enforcement switch — for example when the
+// switch is a runtime-mutable knob (lib-systemplane) that operators flip
+// without restarting the process. Such a caller must be able to construct a
+// real limiter unconditionally and gate enforcement itself; with the decision
+// left to the environment there is no limiter object at all while the variable
+// is unset.
+//
+// Semantics:
+//   - option absent: RATE_LIMIT_ENABLED decides (nil pass-through when unset or
+//     non-truthy). This is the default for deployments that do not own the switch.
+//   - WithEnabled(true): a real limiter is built regardless of the environment.
+//   - WithEnabled(false): nil pass-through regardless of the environment.
+//
+// The limiter still returns nil when conn is nil, whatever WithEnabled says.
+func WithEnabled(enabled bool) Option {
+	return func(rl *RateLimiter) {
+		rl.enabled = &enabled
+	}
+}
+
 // WithKeyPrefix sets a service-specific prefix for Redis keys.
 // For example, WithKeyPrefix("tenant-manager") produces keys like
 // "tenant-manager:ratelimit:default:192.168.1.1".

@@ -24,8 +24,8 @@
 // # Nil-safe usage
 //
 // New returns nil when the rate limiter is disabled (the default — apps must
-// explicitly set RATE_LIMIT_ENABLED=true to enable enforcement) or when the
-// Redis connection is nil. A nil *RateLimiter is always safe to use:
+// explicitly set RATE_LIMIT_ENABLED=true, or pass WithEnabled(true) to decide
+// in code, to enable enforcement) or when the Redis connection is nil. A nil *RateLimiter is always safe to use:
 // WithRateLimit and WithDynamicRateLimit return a pass-through handler that
 // calls c.Next() without enforcing any limit.
 //

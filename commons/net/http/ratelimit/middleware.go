@@ -135,6 +135,10 @@ type RateLimiter struct {
 	onLimited       func(c fiber.Ctx, tier Tier)
 	exceededHandler func(c fiber.Ctx, tier Tier, ttl time.Duration) error
 	redisTimeout    time.Duration
+	// enabled holds the caller's explicit enablement decision from
+	// WithEnabled. nil means the caller did not decide and
+	// RATE_LIMIT_ENABLED governs.
+	enabled *bool
 
 	// misconfigLogMu guards loggedMisconfiguredTiers and misconfigLogSaturated.
 	misconfigLogMu sync.Mutex
@@ -155,10 +159,12 @@ type RateLimiter struct {
 
 // New creates a RateLimiter. It returns nil (pass-through) when:
 //   - conn is nil
-//   - RATE_LIMIT_ENABLED is unset or set to a non-truthy value (default)
+//   - rate limiting is disabled
 //
 // Rate limiting is OFF by default. Apps that want enforcement MUST explicitly
-// set RATE_LIMIT_ENABLED=true in their deploy configuration.
+// set RATE_LIMIT_ENABLED=true in their deploy configuration, or pass
+// WithEnabled(true) to decide in code. WithEnabled takes precedence over the
+// environment variable; without it, RATE_LIMIT_ENABLED alone decides.
 //
 // A nil RateLimiter is safe to use: WithRateLimit returns a pass-through handler.
 func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
@@ -199,12 +205,20 @@ func New(conn *libRedis.Client, opts ...Option) *RateLimiter {
 	}
 
 	// Rate limiting is disabled by default. Apps that want enforcement MUST
-	// explicitly opt-in via RATE_LIMIT_ENABLED=true. When disabled, return a
-	// pass-through limiter (nil) so deployments without RATE_LIMIT_ENABLED set
-	// behave as no-op.
-	if !commons.RateLimitEnabled() {
-		rl.logger.Log(context.Background(), obs.LevelInfo,
-			"rate limiter disabled (default); set "+commons.EnvRateLimitEnabled+"=true to enable enforcement")
+	// explicitly opt-in via RATE_LIMIT_ENABLED=true, or via WithEnabled(true)
+	// when the caller owns the switch. WithEnabled wins over the environment
+	// variable. When disabled, return a pass-through limiter (nil) so
+	// deployments that opted out behave as no-op.
+	enabled := commons.RateLimitEnabled()
+	disabledMsg := "rate limiter disabled; set " + commons.EnvRateLimitEnabled + "=true to enable enforcement"
+
+	if rl.enabled != nil {
+		enabled = *rl.enabled
+		disabledMsg = "rate limiter disabled by caller via WithEnabled(false); " + commons.EnvRateLimitEnabled + " is ignored"
+	}
+
+	if !enabled {
+		rl.logger.Log(context.Background(), obs.LevelInfo, disabledMsg)
 
 		return nil
 	}

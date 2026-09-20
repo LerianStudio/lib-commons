@@ -61,15 +61,15 @@ func TestCheck_TransientRedisError(t *testing.T) {
 				require.NoError(t, err)
 			},
 		},
-		{
-			// Branch 4: Acquire returns an existing value that is neither the
-			// atomic JSON record nor a recognised legacy record, so routing
-			// falls to the store-error path rather than answering from it.
-			name: "duplicate_undecodable_record",
-			seed: func(t *testing.T, mr *miniredis.Miniredis, key string) {
-				require.NoError(t, mr.Set(key, keyStateComplete))
-			},
-		},
+		// An existing-but-undecodable record used to be a fourth row here. It
+		// is no longer a store-error branch: the key is occupied, so it is
+		// refused whatever the policy says, and this table only covers branches
+		// where the middleware learned NOTHING and the policy still decides.
+		// Its coverage moved to TestCheck_UnreadableRecord_IsRefusedEvenWhenFailOpen
+		// and TestCheck_UndecodableNonLegacyRecord_IsRefusedWhateverThePolicy.
+		//
+		// The two rows above stay: Redis being down and a WRONGTYPE read both
+		// make Acquire ERROR, so no record comes back to reason about.
 	}
 
 	for _, tc := range cases {
