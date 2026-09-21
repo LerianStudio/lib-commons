@@ -821,8 +821,8 @@ func (m *Middleware) runChain(c fiber.Ctx) error {
 // middleware answered WITHOUT running the handler and the body is still a
 // stream. A replay under a [WithFingerprintProvider] is one such answer; so is
 // any refusal that returns before resolveFingerprint — an over-length key, a
-// missing required key, a missing required tenant, a key or TTL provider that
-// failed — because the deferred call is registered above all of them and
+// missing required key, a missing required tenant, a key provider that failed,
+// an absent store — because the deferred call is registered above all of them and
 // resolveFingerprint is the only site that calls c.Body(). A refusal with NO
 // provider configured therefore retires the connection too, and correctly:
 // nothing read that upload either. It stays silent on the two cases that leave
