@@ -43,7 +43,7 @@ This lane owns `commons/net/http/idempotency/**` and this file. Nothing else.
 
 #### Task 1.1.1: An application-supplied request fingerprint
 
-- [ ] Done
+- [x] Done
 
 **Context:** `Middleware.handle` computes `requestFingerprint(c.Method(), c.Path(), c.Body())` unconditionally (`idempotency.go:954`), and `requestFingerprintWithScope` re-reads `c.Body()` for the scoped form. Two consumer facts break on that. (a) An application running Fiber with `StreamRequestBody: true` streams large uploads to its handler; fasthttp's `Body()` on a streamed request copies the whole body into memory and closes the stream, so mounting this middleware on such a route silently buffers up to the route's limit (Matcher: 1 GiB) per request and the handler's `IsBodyStream()` branch is never taken. (b) For `multipart/form-data`, `mime/multipart.NewWriter` and every browser pick a fresh random boundary per request, so a byte-identical logical retry of a file upload never matches its own stored fingerprint and is refused `422 IDEMPOTENCY_KEY_REUSE`; the published "retry with the same key" contract cannot be honoured on any multipart route. Both need the same thing: a way for the application to say what identifies the request, instead of the raw body.
 

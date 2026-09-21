@@ -122,6 +122,11 @@ type TTLProvider func(c fiber.Ctx) (time.Duration, error)
 // for concurrent use.
 type FingerprintScopeProvider func(c fiber.Ctx) string
 
+// FingerprintProvider resolves the bytes that identify the current request,
+// replacing the raw body in the fingerprint. See [WithFingerprintProvider] for
+// what those bytes must satisfy. Providers must be safe for concurrent use.
+type FingerprintProvider func(c fiber.Ctx) ([]byte, error)
+
 // ClientErrorPolicy controls whether successful handler returns with a 4xx
 // status are replayed or release their owned idempotency record.
 type ClientErrorPolicy uint8
@@ -178,6 +183,7 @@ type Middleware struct {
 	redisTimeout             time.Duration
 	ttlProvider              TTLProvider
 	fingerprintScopeProvider FingerprintScopeProvider
+	fingerprintProvider      FingerprintProvider
 	responseCodec            ResponseCodec
 	clientErrorPolicy        ClientErrorPolicy
 	serverErrorPolicy        ServerErrorPolicy
@@ -362,6 +368,44 @@ func WithFingerprintScopeProvider(provider FingerprintScopeProvider) Option {
 	return func(m *Middleware) {
 		if provider != nil {
 			m.fingerprintScopeProvider = provider
+		}
+	}
+}
+
+// WithFingerprintProvider replaces the raw request body in the fingerprint with
+// bytes the application supplies. Unset, the fingerprint covers the body
+// exactly as received, which is the shipped behaviour and stays byte-identical
+// — the raw body is the default because it is the strictest identity available.
+//
+// The provider must return the SAME bytes for two requests the application
+// considers the same one, and different bytes for two it does not. For a
+// multipart upload that is typically the declared part names, filenames and
+// sizes plus whatever fields carry identity; for a streamed body it is whatever
+// the application can read without consuming the stream. Anything the transport
+// re-randomises per request must stay out of it.
+//
+// Two consumer facts make the raw body unusable on some routes, and both need
+// this option. A route served with Fiber's StreamRequestBody hands the handler
+// a live body stream; reading the body to fingerprint it drains that stream
+// into memory and closes it, so every upload is buffered whole and the
+// handler's streaming branch is unreachable. And a multipart encoder picks a
+// fresh random boundary per request, so a byte-identical logical retry never
+// matches its own stored fingerprint and is refused
+// "IDEMPOTENCY_KEY_REUSE" — the published "retry with the same key" contract
+// cannot be honoured on any multipart route.
+//
+// When set, the middleware NEVER calls c.Body(). The provider's bytes take the
+// body's place in the digest, under the same method and path, and under the
+// [WithFingerprintScopeProvider] scope when one is configured.
+//
+// A provider error refuses the request with 503 "IDEMPOTENCY_UNAVAILABLE", or
+// the [WithUnavailableHandler] document: nothing has run, so retrying is the
+// correct instruction, and a request whose identity cannot be established must
+// not run unprotected.
+func WithFingerprintProvider(provider FingerprintProvider) Option {
+	return func(m *Middleware) {
+		if provider != nil {
+			m.fingerprintProvider = provider
 		}
 	}
 }
@@ -951,14 +995,13 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), m.redisTimeout)
 	defer cancel()
 
-	fingerprint := requestFingerprint(c.Method(), c.Path(), c.Body())
-	if m.fingerprintScopeProvider != nil {
-		fingerprint = requestFingerprintWithScope(
-			m.fingerprintScopeProvider(c),
-			c.Method(),
-			c.Path(),
-			c.Body(),
-		)
+	fingerprint, err := m.resolveFingerprint(c)
+	if err != nil {
+		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: fingerprint provider failed", "error", err)
+
+		// Nothing has run yet, and the request's identity is unknown: it must
+		// neither proceed unprotected nor be told to reconcile.
+		return m.respondUnavailable(c)
 	}
 
 	ttl, err := m.resolveTTL(c)
@@ -981,6 +1024,33 @@ func (m *Middleware) resolveKey(c fiber.Ctx) (string, error) {
 	}
 
 	return c.Get(chttp.IdempotencyKey), nil
+}
+
+// resolveFingerprint builds the digest that identifies WHICH request spent this
+// key. Without a [WithFingerprintProvider] the identity bytes are the raw body,
+// which is the shipped behaviour down to the legacy input layout used by the
+// scoped form; with one, they are the provider's and c.Body() is never called.
+func (m *Middleware) resolveFingerprint(c fiber.Ctx) (string, error) {
+	var identity []byte
+
+	if m.fingerprintProvider != nil {
+		var err error
+
+		identity, err = m.fingerprintProvider(c)
+		if err != nil {
+			return "", err
+		}
+	} else {
+		// Only reachable without a provider: c.Body() drains and closes a
+		// streamed request body, which is the defect the provider exists for.
+		identity = c.Body()
+	}
+
+	if m.fingerprintScopeProvider != nil {
+		return requestFingerprintWithScope(m.fingerprintScopeProvider(c), c.Method(), c.Path(), identity), nil
+	}
+
+	return requestFingerprint(c.Method(), c.Path(), identity), nil
 }
 
 func (m *Middleware) resolveTTL(c fiber.Ctx) (time.Duration, error) {

@@ -60,6 +60,20 @@
 // The query string is excluded: clients append cache-busting parameters on retry,
 // and that must not read as reuse.
 //
+// [WithFingerprintProvider] replaces the body in that digest with bytes the
+// application supplies, and is required on two shapes of route the raw body
+// cannot serve. Under Fiber's StreamRequestBody the handler receives a live body
+// stream, and reading the body to fingerprint it drains that stream into memory
+// and closes it, so every upload is buffered whole and the handler's streaming
+// branch is unreachable; with a provider the middleware never calls c.Body() and
+// the stream reaches the handler intact. And a multipart encoder picks a fresh
+// random boundary per request, so a byte-identical logical retry never matches
+// its own stored fingerprint and is refused "IDEMPOTENCY_KEY_REUSE"; a provider
+// over the declared part names, filenames and sizes is stable across that
+// boundary. The raw body remains the default because it is the strictest
+// identity available, and a provider error refuses the request before the
+// handler runs, exactly as a [WithKeyProvider] error does.
+//
 // The default prefix is "idempotency:" and can be overridden via [WithKeyPrefix].
 // This namespacing convention is consistent with other lib-commons packages that
 // use Redis (e.g., rate limiting uses "ratelimit:<tenantID>:..."). Per-tenant
