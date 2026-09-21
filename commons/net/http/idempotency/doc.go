@@ -206,9 +206,10 @@
 //     [WithClientErrorPolicy] with [ClientErrorPolicyRelease] to compare-safely
 //     release the record and allow a corrected request to reuse the key. A 4xx
 //     body above [WithMaxBodyCache] also reaches its client unchanged, but its
-//     record is marked with an UNRECORDED outcome rather than the completed one
-//     above: a rejection committed nothing, so a resend is never told the
-//     operation succeeded.
+//     key is RELEASED whatever the policy says, because a rejection committed
+//     nothing: there is no outcome to protect, and holding the key would answer
+//     the resend with a refusal that claims one. The resend re-runs the handler
+//     and collects the same rejection.
 //   - Handler failure or 5xx: the acquisition is compare-safely released only
 //     by its owner, allowing a retry without deleting a replacement lock. Use
 //     [WithServerErrorPolicy] with [ServerErrorPolicyFence] on routes where a

@@ -1297,23 +1297,13 @@ func (m *Middleware) handleStoreAcquired(
 			return handlerErr
 		}
 
-		applied, err := m.store.Release(postCtx, key, processing)
-		if err != nil {
-			m.logger.Log(postCtx, obs.LevelWarn, "idempotency: store release failed", "error", err)
-		} else if !applied {
-			m.logger.Log(postCtx, obs.LevelWarn, "idempotency: store release rejected stale owner")
-		}
+		m.releaseOwned(postCtx, key, processing, "store release")
 
 		return handlerErr
 	}
 
 	if statusCode >= http.StatusBadRequest && m.clientErrorPolicy == ClientErrorPolicyRelease {
-		applied, err := m.store.Release(postCtx, key, processing)
-		if err != nil {
-			m.logger.Log(postCtx, obs.LevelWarn, "idempotency: client-error cleanup failed", "error", err)
-		} else if !applied {
-			m.logger.Log(postCtx, obs.LevelWarn, "idempotency: client-error cleanup rejected stale owner")
-		}
+		m.releaseOwned(postCtx, key, processing, "client-error cleanup")
 
 		return handlerErr
 	}
@@ -1328,24 +1318,34 @@ func (m *Middleware) handleStoreAcquired(
 	// a resend from executing the mutation a second time once the in-flight
 	// lease lapses. The alternative shipped before this was strictly worse: the
 	// committed mutation was reported to its client as a 503 store failure.
+	//
+	// That reasoning holds for a SUCCESS and only for a success. A 4xx over the
+	// same bound is a rejection: nothing committed, so there is no outcome the
+	// key has to protect, and every refusal the middleware could hold it with
+	// makes a false claim about money — "already completed successfully" books a
+	// mutation that never happened, "ran without recording its outcome" sends an
+	// operator to reconcile one. So an over-cap rejection RELEASES the key, as
+	// [ClientErrorPolicyRelease] would, and a resend re-runs the handler and
+	// collects the same rejection.
 	case errors.Is(err, errResponseTooLarge):
+		if statusCode >= http.StatusBadRequest {
+			m.logger.Log(postCtx, obs.LevelInfo,
+				"idempotency: rejection exceeds the configured limit; releasing the key so a resend re-runs the handler",
+				"status_code", statusCode,
+				"body_size", len(c.Response().Body()))
+
+			m.releaseOwned(postCtx, key, processing, "over-cap client-error cleanup")
+
+			return handlerErr
+		}
+
 		m.logger.Log(postCtx, obs.LevelWarn,
 			"idempotency: replay response exceeds the configured limit; completing the key without a replayable receipt",
 			"error", err,
 			"status_code", statusCode)
 
 		response = nil
-		// Which outcome the record carries is decided by the status, because the
-		// two refusals they produce say opposite things. outcomeNotReplayable
-		// reports a KNOWN success, which is true only for a 2xx. A 4xx cached
-		// under the default client-error policy committed NOTHING, and telling
-		// its resend the operation "already completed successfully" is a false
-		// claim about money: the client books a mutation that never happened and
-		// can never reach the rejection document that explains it.
 		record.Outcome = outcomeNotReplayable
-		if statusCode >= http.StatusBadRequest {
-			record.Outcome = outcomeUnrecorded
-		}
 	case err != nil:
 		m.logger.Log(postCtx, obs.LevelWarn, "idempotency: failed to capture replay response", "error", err)
 
@@ -1376,6 +1376,20 @@ func (m *Middleware) handleStoreAcquired(
 	}
 
 	return handlerErr
+}
+
+// releaseOwned compare-safely frees the key this request holds, so the next
+// request under it runs. cause names the branch that asked for the release, and
+// is the only thing that differs between the two ways it can go wrong: the
+// store refusing the call, and the call landing on a key this request no longer
+// owns.
+func (m *Middleware) releaseOwned(ctx context.Context, key string, processing []byte, cause string) {
+	applied, err := m.store.Release(ctx, key, processing)
+	if err != nil {
+		m.logger.Log(ctx, obs.LevelWarn, "idempotency: "+cause+" failed", "error", err)
+	} else if !applied {
+		m.logger.Log(ctx, obs.LevelWarn, "idempotency: "+cause+" rejected stale owner")
+	}
 }
 
 // failPostHandler answers a failure observed after the handler already ran, and

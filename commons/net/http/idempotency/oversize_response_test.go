@@ -242,11 +242,16 @@ func TestOversizeResponse_UnderCapStillReplays(t *testing.T) {
 
 // TestOversizeResponse_ClientErrorNeverClaimsSuccess pins the half of the
 // over-cap contract a status code decides. A 4xx is a REJECTION: the mutation
-// committed nothing, so a resend must never be answered with the refusal that
-// reports a KNOWN success. A client told "already completed successfully" for a
-// payment its own service refused books one that does not exist, and the
-// validation report that would explain the refusal is unreachable for the whole
-// retention window.
+// committed nothing, so there is no outcome to protect and nothing to report.
+// The key is RELEASED, exactly as [ClientErrorPolicyRelease] would release it,
+// and a resend simply runs the handler again and collects the same rejection.
+//
+// Both of the refusals the middleware could reach for here are false claims
+// about money. "Already completed successfully" books a payment its own service
+// refused; "ran without recording its outcome" sends an operator to reconcile a
+// mutation that never happened — and either one holds the key, so the
+// validation report that would explain the rejection stays unreachable for the
+// whole retention window.
 func TestOversizeResponse_ClientErrorNeverClaimsSuccess(t *testing.T) {
 	t.Parallel()
 
@@ -258,16 +263,22 @@ func TestOversizeResponse_ClientErrorNeverClaimsSuccess(t *testing.T) {
 	require.Equal(t, http.StatusUnprocessableEntity, first.StatusCode,
 		"the handler rejected the request; the client is owed that rejection unchanged")
 	require.JSONEq(t, oversizeBody, firstBody)
+	require.Empty(t, first.Header.Get(chttp.IdempotencyFenced),
+		"a rejection committed nothing, so there is no outcome to fence")
 
 	second := postBodyWithKey(t, app, "oversize-key", `{"amount":"1250.00"}`)
 	secondBody := readBody(t, second)
 
-	assert.Equal(t, int32(1), calls.Load(), "the handler must not run a second time")
+	assert.Equal(t, int32(2), calls.Load(),
+		"the key was released, so the resend must reach the handler")
+	assert.Equal(t, http.StatusUnprocessableEntity, second.StatusCode)
+	assert.JSONEq(t, oversizeBody, secondBody,
+		"the resend collects the same rejection, not a refusal about it")
 	assert.NotContains(t, secondBody, RefusalCodeReplayUnavailable,
 		"that refusal reports a known success; this request committed nothing")
-	assert.NotContains(t, secondBody, "already completed successfully")
-	assert.Contains(t, secondBody, RefusalCodeOutcomeUnrecorded,
-		"with no receipt for a rejection the honest answer is that the outcome was not recorded")
+	assert.NotContains(t, secondBody, RefusalCodeOutcomeUnrecorded,
+		"nothing about a delivered rejection is unrecorded")
+	assert.Empty(t, second.Header.Get(chttp.IdempotencyFenced))
 }
 
 // TestOversizeResponse_EmptyEncodingIsAFaultNotASize separates the two
