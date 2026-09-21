@@ -476,3 +476,67 @@ func TestReplay_HandlerDeletesHeaderSetAbove_ReplayHasItGoneToo(t *testing.T) {
 	assert.Equal(t, []string{"nosniff"}, resp2.Header.Values(fiber.HeaderXContentTypeOptions),
 		"a header set above that the handler left alone still belongs to THIS request")
 }
+
+// TestReplay_LiveCookieCollidesWithCapturedName_ReplacedNotDuplicated is the
+// case the cookie-aware clearing exists for, and the only one that can fail if
+// it is removed.
+//
+// fasthttp appends on Header.Add("Set-Cookie", …) and does not dedupe by cookie
+// name, so a session rotator mounted above that mints session=live-N on the
+// duplicate, on a route whose handler also mints session, would have the replay
+// answer with TWO Set-Cookie headers both named session. Which one the browser
+// keeps is unspecified, and one of the two is a session token belonging to a
+// different request — a duplicated correlation id is cosmetic, this is not.
+//
+// Every other cookie assertion in this file mints names that never collide, so
+// the DelCookie loop is invisible to them: deleting it leaves them all green.
+func TestReplay_LiveCookieCollidesWithCapturedName_ReplacedNotDuplicated(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newRedisClient(t, mr)
+	m := New(conn)
+
+	var requests, runs atomic.Int32
+
+	app := fiber.New()
+	app.Use(tenantMiddleware("tenant-cookie-collision"))
+	app.Use(func(c fiber.Ctx) error {
+		// A session rotator: same cookie NAME the handler below uses, a fresh
+		// value per request, mounted above the middleware so it runs on the
+		// duplicate too.
+		c.Cookie(&fiber.Cookie{Name: "session", Value: fmt.Sprintf("live-%d", requests.Add(1)), Path: "/"})
+
+		return c.Next()
+	})
+	app.Use(m.Check())
+	app.Post("/test", func(c fiber.Ctx) error {
+		runs.Add(1)
+		c.Cookie(&fiber.Cookie{Name: "session", Value: "captured", Path: "/"})
+
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "created"})
+	})
+
+	resp1 := doPost(t, app, "cookie-collision-key")
+	readBody(t, resp1)
+	require.Equal(t, http.StatusCreated, resp1.StatusCode)
+	require.Len(t, resp1.Cookies(), 1, "the handler's cookie replaced the rotator's on the original response")
+	require.Equal(t, "captured", resp1.Cookies()[0].Value)
+
+	resp2 := doPost(t, app, "cookie-collision-key")
+	readBody(t, resp2)
+
+	require.Equal(t, "true", resp2.Header.Get(chttp.IdempotencyReplayed))
+	require.Equal(t, int32(1), runs.Load(), "the handler must have run exactly once")
+
+	var session []string
+
+	for _, cookie := range resp2.Cookies() {
+		if cookie.Name == "session" {
+			session = append(session, cookie.Value)
+		}
+	}
+
+	assert.Equal(t, []string{"captured"}, session,
+		"exactly one session cookie, carrying the captured value: two would let the client keep a token from the other request")
+}
