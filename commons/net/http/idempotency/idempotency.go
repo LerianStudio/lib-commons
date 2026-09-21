@@ -66,6 +66,7 @@ const (
 var (
 	errInvalidTTL            = errors.New("idempotency TTL must be positive")
 	errResponseTooLarge      = errors.New("idempotency replay response exceeds configured limit")
+	errEmptyEncodedResponse  = errors.New("idempotency response codec produced no bytes")
 	errInvalidReplayResponse = errors.New("idempotency replay response is invalid")
 )
 
@@ -1316,10 +1317,21 @@ func (m *Middleware) handleStoreAcquired(
 	case errors.Is(err, errResponseTooLarge):
 		m.logger.Log(postCtx, obs.LevelWarn,
 			"idempotency: replay response exceeds the configured limit; completing the key without a replayable receipt",
-			"error", err)
+			"error", err,
+			"status_code", statusCode)
 
 		response = nil
+		// Which outcome the record carries is decided by the status, because the
+		// two refusals they produce say opposite things. outcomeNotReplayable
+		// reports a KNOWN success, which is true only for a 2xx. A 4xx cached
+		// under the default client-error policy committed NOTHING, and telling
+		// its resend the operation "already completed successfully" is a false
+		// claim about money: the client books a mutation that never happened and
+		// can never reach the rejection document that explains it.
 		record.Outcome = outcomeNotReplayable
+		if statusCode >= http.StatusBadRequest {
+			record.Outcome = outcomeUnrecorded
+		}
 	case err != nil:
 		m.logger.Log(postCtx, obs.LevelWarn, "idempotency: failed to capture replay response", "error", err)
 
@@ -1542,7 +1554,16 @@ func (m *Middleware) captureResponse(ctx context.Context, c fiber.Ctx) ([]byte, 
 		return nil, fmt.Errorf("encode replay response: %w", err)
 	}
 
-	if len(encoded) == 0 || len(encoded) > m.maxEncodedResponseBytes() {
+	// Two different conditions, deliberately two different errors. An empty
+	// encoding is a MALFUNCTION of the codec — nothing about it is a size, and
+	// folding it into the bound would complete every response on the route as
+	// non-replayable while the log names a cap the operator can raise forever
+	// without moving the symptom. It keeps the loud post-handler failure path.
+	if len(encoded) == 0 {
+		return nil, errEmptyEncodedResponse
+	}
+
+	if len(encoded) > m.maxEncodedResponseBytes() {
 		return nil, errResponseTooLarge
 	}
 
@@ -1556,6 +1577,29 @@ func (m *Middleware) maxEncodedResponseBytes() int {
 	}
 
 	return m.maxBodyCache * 2
+}
+
+// clearCapturedHeader removes what the capture is about to re-apply, and only
+// that.
+//
+// Set-Cookie is the one captured name whose unit of identity is not the header
+// name: fasthttp's ResponseHeader.Del("Set-Cookie") empties the WHOLE cookie
+// jar, so clearing it that way also discards a cookie some other middleware
+// minted on this request — a rotated session, a fresh CSRF token — and hands the
+// client the captured one instead, whose next mutation the CSRF check then
+// refuses. DelCookie removes only the cookie name the capture is replacing.
+func clearCapturedHeader(c fiber.Ctx, name string, values []string) {
+	if name != fiber.HeaderSetCookie {
+		c.Response().Header.Del(name)
+
+		return
+	}
+
+	for _, value := range values {
+		if cookieName, _, found := strings.Cut(value, "="); found {
+			c.Response().Header.DelCookie(strings.TrimSpace(cookieName))
+		}
+	}
 }
 
 func (m *Middleware) replay(c fiber.Ctx, encoded []byte) error {
@@ -1596,11 +1640,11 @@ func (m *Middleware) replay(c fiber.Ctx, encoded []byte) error {
 		// multiple values", so without this Del a double-clicked mutation that
 		// committed is reported to the user as a network failure.
 		//
-		// Del is scoped to the captured names: a header the app set on this
-		// request that the capture does not hold is left alone, and a captured
-		// header with several values (two Set-Cookie, two Link) is re-applied
-		// whole, in order.
-		c.Response().Header.Del(name)
+		// The clearing is scoped to what the capture owns: a header the app set
+		// on this request that the capture does not hold is left alone, and a
+		// captured header with several values (two Set-Cookie, two Link) is
+		// re-applied whole, in order.
+		clearCapturedHeader(c, name, values)
 
 		for _, value := range values {
 			c.Response().Header.Add(name, value)

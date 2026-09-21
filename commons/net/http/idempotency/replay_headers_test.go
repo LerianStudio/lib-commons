@@ -168,3 +168,63 @@ func TestReplay_UncapturedLiveHeader_Survives(t *testing.T) {
 	assert.Equal(t, "yes", resp2.Header.Get("X-Live-Only"),
 		"a header the app set on this request but never captured must survive the replay")
 }
+
+// TestReplay_LiveCookieFromOtherMiddleware_Survives pins the one captured name
+// whose unit of identity is not the header name. fasthttp clears the entire
+// cookie jar when a response header called "Set-Cookie" is deleted, so clearing
+// it before re-applying the capture also throws away a cookie another
+// middleware minted on THIS request: a service running csrf.New() or a session
+// rotator with app.Use answers a double-clicked mutation by dropping the fresh
+// token and reinstalling the captured one, and the user's next mutation is
+// refused as a CSRF failure.
+func TestReplay_LiveCookieFromOtherMiddleware_Survives(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newRedisClient(t, mr)
+	m := New(conn)
+
+	var requests atomic.Int32
+
+	app := fiber.New()
+	app.Use(tenantMiddleware("tenant-cookies"))
+	app.Use(func(c fiber.Ctx) error {
+		// A fresh per-request token, exactly as a CSRF middleware mints one, and
+		// a cookie that appears only on the replayed request, so the capture
+		// cannot hold its name.
+		c.Response().Header.Add(fiber.HeaderSetCookie, "csrf=minted; Path=/")
+
+		if requests.Add(1) > 1 {
+			c.Response().Header.Add(fiber.HeaderSetCookie, "locale=pt; Path=/")
+		}
+
+		return c.Next()
+	})
+	app.Use(m.Check())
+	app.Post("/test", func(c fiber.Ctx) error {
+		c.Response().Header.Add(fiber.HeaderSetCookie, "session=captured; Path=/")
+
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "created"})
+	})
+
+	resp1 := doPost(t, app, "cookie-key")
+	readBody(t, resp1)
+	require.Equal(t, http.StatusCreated, resp1.StatusCode)
+	require.Len(t, resp1.Header.Values(fiber.HeaderSetCookie), 2,
+		"the capture must hold the csrf and session cookies, and nothing else")
+
+	resp2 := doPost(t, app, "cookie-key")
+	readBody(t, resp2)
+
+	require.Equal(t, "true", resp2.Header.Get(chttp.IdempotencyReplayed))
+
+	cookies := make(map[string]int)
+	for _, cookie := range resp2.Cookies() {
+		cookies[cookie.Name]++
+	}
+
+	assert.Equal(t, 1, cookies["locale"],
+		"a cookie this request minted that the capture never held must survive the replay")
+	assert.Equal(t, 1, cookies["session"], "the captured cookie replays exactly once")
+	assert.Equal(t, 1, cookies["csrf"], "a captured cookie name must not be duplicated")
+}

@@ -183,7 +183,8 @@
 //     operation a second time. No Retry-After, and
 //     [constants.IdempotencyReplayed] stays unset because nothing was replayed.
 //   - Handler success: response status, headers, content type, and body are
-//     compare-safely completed only by the acquisition owner. Encoding,
+//     compare-safely completed only by the acquisition owner. Encoding
+//     failures, including a [WithResponseCodec] that produces no bytes at all,
 //     persistence, or stale-owner failures return 503, and the key is marked
 //     terminal (see below) so callers reconcile instead of retrying under a new
 //     key. That 503 is the one branch [WithPostHandlerUnavailableHandler]
@@ -200,7 +201,11 @@
 //     itself what makes a client resend.
 //   - Handler 4xx: cached and replayed by default. Use
 //     [WithClientErrorPolicy] with [ClientErrorPolicyRelease] to compare-safely
-//     release the record and allow a corrected request to reuse the key.
+//     release the record and allow a corrected request to reuse the key. A 4xx
+//     body above [WithMaxBodyCache] also reaches its client unchanged, but its
+//     record is marked with an UNRECORDED outcome rather than the completed one
+//     above: a rejection committed nothing, so a resend is never told the
+//     operation succeeded.
 //   - Handler failure or 5xx: the acquisition is compare-safely released only
 //     by its owner, allowing a retry without deleting a replacement lock. Use
 //     [WithServerErrorPolicy] with [ServerErrorPolicyFence] on routes where a
