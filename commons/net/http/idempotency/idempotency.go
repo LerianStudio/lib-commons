@@ -49,12 +49,16 @@ const (
 	// the post-handler seam — the same instruction, from the same seam.
 	outcomeUnrecorded = "unrecorded"
 	// outcomeNotReplayable is terminal for the RECEIPT and for nothing else:
-	// the handler succeeded, the client received that success unchanged, and
-	// only the stored response is missing because it exceeded
+	// the handler ran to completion, the client received its response
+	// unchanged, and only the stored copy is missing because it exceeded
 	// [WithMaxBodyCache]. A body size is not a fault, so this is not a fence —
 	// the record is a real completion — but the key still cannot answer a
 	// resend with a replay it never stored, so a duplicate is refused by
-	// respondReplayUnavailable rather than executing the mutation again.
+	// respondReplayUnavailable rather than executing the handler again.
+	//
+	// It marks a rejection the same way it marks a success, because the status
+	// is not what decides whether a 4xx may re-execute: [ClientErrorPolicy] is,
+	// and it is consulted before the capture ever runs.
 	//
 	// It rides the same field as outcomeUnrecorded, and for the same
 	// compatibility reason spelled out above: a reader that predates this value
@@ -148,7 +152,10 @@ type ClientErrorPolicy uint8
 
 const (
 	// ClientErrorPolicyCache preserves the default behavior and replays 4xx
-	// responses exactly.
+	// responses exactly. A 4xx whose body exceeded [WithMaxBodyCache] has no
+	// stored copy to replay, so a duplicate is refused with 409
+	// [RefusalCodeReplayUnavailable] instead — still without re-executing,
+	// which is what this policy buys.
 	ClientErrorPolicyCache ClientErrorPolicy = iota
 	// ClientErrorPolicyRelease removes the owned processing record for 4xx
 	// responses, allowing corrected requests to reuse the same key.
@@ -185,7 +192,7 @@ const (
 	RefusalCodeOutcomeUnrecorded = "IDEMPOTENCY_OUTCOME_UNRECORDED"
 
 	// RefusalCodeReplayUnavailable is the fourth refusal, and deliberately not
-	// one of the three above: it reports a KNOWN success whose response exceeded
+	// one of the three above: it reports a KNOWN outcome whose response exceeded
 	// [WithMaxBodyCache] and was therefore never stored. It travels in a 409
 	// body, is answered by [WithReplayUnavailableHandler] rather than
 	// [WithTerminalRefusalHandler], and is exported for the same reason the
@@ -736,19 +743,24 @@ func WithTerminalRefusalHandler(fn func(c fiber.Ctx, code string) error) Option 
 // be persisted for exact replay (default: 1 MB). The encoded replay payload is
 // bounded to twice this value. Values <= 0 are ignored.
 //
-// A successful response exceeding either bound is DELIVERED TO ITS CLIENT
-// UNCHANGED — status, headers and body, exactly as the handler wrote them — and
-// its key completes carrying no receipt. A size is not a fault: the handler ran
-// and committed, so answering it with a failure would report a store problem for
-// a mutation that succeeded, and the client would resend on it.
+// A response exceeding either bound is DELIVERED TO ITS CLIENT UNCHANGED —
+// status, headers and body, exactly as the handler wrote them — and its key
+// completes carrying no receipt. A size is not a fault: the handler ran, so
+// answering it with a failure would report a store problem for a request that
+// was actually served, and the client would resend on it.
 //
 // What the key loses is the replay, not the protection. A duplicate inside the
 // retention window is refused with 409 [RefusalCodeReplayUnavailable], or the
-// [WithReplayUnavailableHandler] document, and the mutation never runs a second
+// [WithReplayUnavailableHandler] document, and the handler never runs a second
 // time; a duplicate carrying a DIFFERENT payload is still the ordinary key-reuse
-// refusal. This is unconditional, not gated by any option, and it applies to
-// every route this middleware covers. Size the bound for the largest response
-// you mean to hand out twice.
+// refusal. Size the bound for the largest response you mean to hand out twice.
+//
+// This holds whatever the status was. A 4xx over the bound is not treated as a
+// release: whether a rejection may re-execute is [WithClientErrorPolicy]'s
+// question, answered before the response is ever captured, so a route on
+// [ClientErrorPolicyRelease] has already released and one on the default
+// [ClientErrorPolicyCache] keeps its key here too. Otherwise the length of a
+// validation report would decide whether a rejection path runs twice.
 func WithMaxBodyCache(n int) Option {
 	return func(m *Middleware) {
 		if n > 0 {
@@ -1004,12 +1016,17 @@ func (m *Middleware) respondOutcomeUnknown(c fiber.Ctx) error {
 // respondReplayUnavailable answers a duplicate whose key holds a COMPLETED
 // operation whose response was never stored, because it exceeded maxBodyCache.
 //
-// This is the only refusal in the package that reports a KNOWN success. The
-// original request's handler ran, committed, and its response went to its
+// This is the only refusal in the package that reports a KNOWN outcome. The
+// original request's handler ran to completion and its response went to its
 // client unchanged — the middleware simply has no copy to hand out again. So
 // the document says "completed, not replayable" and not "reconcile": there is
 // nothing ambiguous to reconcile, and telling an operator to go and find out
 // would send them after an outcome that is already settled.
+//
+// What it must never say is which WAY it completed. The same branch answers an
+// over-cap success and an over-cap rejection held by [ClientErrorPolicyCache],
+// and "already completed successfully" would book a mutation the route itself
+// refused. "Ran, and its answer was delivered" is true of both.
 //
 // It answers 409, unlike the other terminal refusals' 422. 422 says the request
 // itself cannot be acted on — a spent key used for a different payload, a record
@@ -1030,9 +1047,9 @@ func (m *Middleware) respondReplayUnavailable(c fiber.Ctx) error {
 
 	return libHTTP.RespondError(c, http.StatusConflict,
 		RefusalCodeReplayUnavailable,
-		"the request with this idempotency key already completed successfully, but its response was too large "+
-			"to store for replay; resending under this key will not execute the operation again and will not "+
-			"reproduce that response",
+		"the request with this idempotency key already ran and its response was delivered, but that response "+
+			"was too large to store for replay; resending under this key will not execute the operation again "+
+			"and will not reproduce that response",
 	)
 }
 
@@ -1329,34 +1346,23 @@ func (m *Middleware) handleStoreAcquired(
 	response, err := m.captureResponse(postCtx, c, beforeHandler)
 
 	switch {
-	// A response over the bound is not a fault. The handler ran and committed,
-	// and the client is owed that success exactly as written — so this path
-	// neither authors a document of its own nor fences the key. It COMPLETES
-	// the record, marked as carrying no replayable receipt, which is what stops
-	// a resend from executing the mutation a second time once the in-flight
-	// lease lapses. The alternative shipped before this was strictly worse: the
-	// committed mutation was reported to its client as a 503 store failure.
+	// A response over the bound is not a fault. The handler ran, the client is
+	// owed that response exactly as written — so this path neither authors a
+	// document of its own nor fences the key. It COMPLETES the record, marked as
+	// carrying no replayable receipt, which is what stops a resend from
+	// executing the handler a second time once the in-flight lease lapses. The
+	// alternative shipped before this was strictly worse: a committed mutation
+	// was reported to its client as a 503 store failure.
 	//
-	// That reasoning holds for a SUCCESS and only for a success. A 4xx over the
-	// same bound is a rejection: nothing committed, so there is no outcome the
-	// key has to protect, and every refusal the middleware could hold it with
-	// makes a false claim about money — "already completed successfully" books a
-	// mutation that never happened, "ran without recording its outcome" sends an
-	// operator to reconcile one. So an over-cap rejection RELEASES the key, as
-	// [ClientErrorPolicyRelease] would, and a resend re-runs the handler and
-	// collects the same rejection.
+	// The status decides nothing here, and that is the point. Whether a 4xx may
+	// re-execute is [ClientErrorPolicyCache] versus [ClientErrorPolicyRelease],
+	// a question only the route owner can answer, and one it answers BEFORE this
+	// switch — a route on the release policy has already released and returned.
+	// Reaching for the release here would apply that policy to a route that
+	// declined it, so a validation report one byte over the bound would
+	// re-execute a rejection path the owner asked to have cached, while the
+	// shorter report would not. A body size must not decide it.
 	case errors.Is(err, errResponseTooLarge):
-		if statusCode >= http.StatusBadRequest {
-			m.logger.Log(postCtx, obs.LevelInfo,
-				"idempotency: rejection exceeds the configured limit; releasing the key so a resend re-runs the handler",
-				"status_code", statusCode,
-				"body_size", len(c.Response().Body()))
-
-			m.releaseOwned(postCtx, key, processing, "over-cap client-error cleanup")
-
-			return handlerErr
-		}
-
 		m.logger.Log(postCtx, obs.LevelWarn,
 			"idempotency: replay response exceeds the configured limit; completing the key without a replayable receipt",
 			"error", err,

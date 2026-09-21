@@ -19,9 +19,9 @@ import (
 // unknown reason: "the mutation may or may not have happened, reconcile it".
 // [WithTerminalRefusalHandler] owns the three refusals for a record this version
 // cannot act on. Here the record is perfectly readable and the outcome is known
-// — the operation succeeded and its response was simply too large to keep — so
-// routing it through either seam would hand a service that wired one of them a
-// reconciliation instruction for an operation that is already settled.
+// — the operation ran to completion and its response was simply too large to
+// keep — so routing it through either seam would hand a service that wired one
+// of them a reconciliation instruction for an operation that is already settled.
 //
 // The seams are therefore wired to fail the test if they are reached at all, and
 // the assertion is the built-in 409 document.
@@ -53,6 +53,8 @@ func TestReplayUnavailable_BypassesTheOtherRefusalSeams(t *testing.T) {
 	assert.Equal(t, int32(1), calls.Load())
 	assert.Equal(t, http.StatusConflict, second.StatusCode)
 	assert.Contains(t, body, RefusalCodeReplayUnavailable)
-	assert.Contains(t, body, "already completed successfully",
-		"the built-in document reports the known success, which is the whole reason it is not one of the other two")
+	assert.Contains(t, body, "already ran and its response was delivered",
+		"the built-in document reports the known outcome, which is the whole reason it is not one of the other two")
+	assert.NotContains(t, body, "reconcile",
+		"nothing here is in doubt, so the document must not send anyone looking")
 }

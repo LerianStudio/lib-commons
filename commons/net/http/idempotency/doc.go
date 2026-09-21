@@ -181,10 +181,12 @@
 //     without being stored: request receives 409 Conflict with code
 //     [RefusalCodeReplayUnavailable], or the [WithReplayUnavailableHandler]
 //     document. Checked in the same place as the mark above, and unlike it this
-//     one reports a KNOWN success: the operation completed, its response cannot
-//     be handed out again, and resending neither reproduces it nor runs the
-//     operation a second time. No Retry-After, and
-//     [constants.IdempotencyReplayed] stays unset because nothing was replayed.
+//     one reports a KNOWN outcome: the operation ran to completion, its response
+//     cannot be handed out again, and resending neither reproduces it nor runs
+//     the operation a second time. The document never says WHICH way it
+//     completed, because the same mark covers an over-cap success and an
+//     over-cap rejection. No Retry-After, and [constants.IdempotencyReplayed]
+//     stays unset because nothing was replayed.
 //   - Handler success: response status, headers, content type, and body are
 //     compare-safely completed only by the acquisition owner. Encoding
 //     failures, including a [WithResponseCodec] that produces no bytes at all,
@@ -196,20 +198,22 @@
 //     "IDEMPOTENCY_UNFENCED" instead, which says the key is unprotected and a
 //     resend may execute the operation again, or the [WithUnfencedHandler]
 //     document when that separate seam is set.
-//   - Handler success whose body exceeds [WithMaxBodyCache]: the response is
+//   - Handler response whose body exceeds [WithMaxBodyCache]: the response is
 //     delivered to the client UNCHANGED and the record completes carrying no
 //     receipt, so the duplicate branch above answers a resend. A size is not a
-//     fault: the handler ran and committed, and answering it with a failure
-//     would report a store problem for a mutation that succeeded — which is
-//     itself what makes a client resend.
+//     fault: the handler ran, and answering it with a failure would report a
+//     store problem for a request that was actually served — which is itself
+//     what makes a client resend.
 //   - Handler 4xx: cached and replayed by default. Use
 //     [WithClientErrorPolicy] with [ClientErrorPolicyRelease] to compare-safely
-//     release the record and allow a corrected request to reuse the key. A 4xx
-//     body above [WithMaxBodyCache] also reaches its client unchanged, but its
-//     key is RELEASED whatever the policy says, because a rejection committed
-//     nothing: there is no outcome to protect, and holding the key would answer
-//     the resend with a refusal that claims one. The resend re-runs the handler
-//     and collects the same rejection.
+//     release the record and allow a corrected request to reuse the key. That
+//     policy is the ONLY thing that decides whether a rejection may re-execute,
+//     and it is applied before the response is captured, so a rejection above
+//     [WithMaxBodyCache] reaches its client unchanged and then follows the same
+//     policy as a short one: released under [ClientErrorPolicyRelease], and
+//     under the default kept, with the resend refused 409
+//     [RefusalCodeReplayUnavailable] rather than re-running a rejection path the
+//     route asked to have cached.
 //   - Handler failure or 5xx: the acquisition is compare-safely released only
 //     by its owner, allowing a retry without deleting a replacement lock. Use
 //     [WithServerErrorPolicy] with [ServerErrorPolicyFence] on routes where a
@@ -343,9 +347,9 @@
 // from a fence.
 //
 // The outcome field carries a second value on the same terms: a request whose
-// response exceeded [WithMaxBodyCache] completed for real, and only its receipt
-// is missing, so the record is a completion marked as unreplayable rather than a
-// fence. A reader that predates the value finds the same shape — state
+// response exceeded [WithMaxBodyCache] completed for real — whatever status it
+// completed WITH — and only its receipt is missing, so the record is a
+// completion marked as unreplayable rather than a fence. A reader that predates the value finds the same shape — state
 // "complete", no replay response — and refuses it through the same seam, which
 // is why it rides this field instead of a state value of its own.
 //

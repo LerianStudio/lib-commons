@@ -240,19 +240,19 @@ func TestOversizeResponse_UnderCapStillReplays(t *testing.T) {
 	assert.Equal(t, "true", second.Header.Get(chttp.IdempotencyReplayed))
 }
 
-// TestOversizeResponse_ClientErrorNeverClaimsSuccess pins the half of the
-// over-cap contract a status code decides. A 4xx is a REJECTION: the mutation
-// committed nothing, so there is no outcome to protect and nothing to report.
-// The key is RELEASED, exactly as [ClientErrorPolicyRelease] would release it,
-// and a resend simply runs the handler again and collects the same rejection.
+// TestOversizeResponse_ClientErrorHonoursTheCachePolicy pins the half of the
+// over-cap contract a configured POLICY decides, not a byte count.
 //
-// Both of the refusals the middleware could reach for here are false claims
-// about money. "Already completed successfully" books a payment its own service
-// refused; "ran without recording its outcome" sends an operator to reconcile a
-// mutation that never happened — and either one holds the key, so the
-// validation report that would explain the rejection stays unreachable for the
-// whole retention window.
-func TestOversizeResponse_ClientErrorNeverClaimsSuccess(t *testing.T) {
+// [ClientErrorPolicyCache] is the default, and it is the route owner saying "a
+// rejection under this key is answered from the record, never re-executed" —
+// because only the route owner knows whether its 4xx path writes anything (a
+// declined-attempt audit row, a quota decrement, a fraud counter). Letting the
+// SIZE of the rejection document decide that instead means the same route
+// re-executes or does not depending on how many rows a validation report
+// happens to carry, and the shorter report is the one that behaves as
+// configured. So an over-cap rejection completes exactly like an over-cap
+// success: delivered unchanged, key held, receipt missing.
+func TestOversizeResponse_ClientErrorHonoursTheCachePolicy(t *testing.T) {
 	t.Parallel()
 
 	app, calls := newOversizeStatusApp(t, "tenant-oversize-4xx", fiber.StatusUnprocessableEntity)
@@ -264,21 +264,46 @@ func TestOversizeResponse_ClientErrorNeverClaimsSuccess(t *testing.T) {
 		"the handler rejected the request; the client is owed that rejection unchanged")
 	require.JSONEq(t, oversizeBody, firstBody)
 	require.Empty(t, first.Header.Get(chttp.IdempotencyFenced),
-		"a rejection committed nothing, so there is no outcome to fence")
+		"a size is not a fault, so nothing is fenced")
+
+	second := postBodyWithKey(t, app, "oversize-key", `{"amount":"1250.00"}`)
+	secondBody := readBody(t, second)
+
+	assert.Equal(t, int32(1), calls.Load(),
+		"the configured policy caches 4xx, so the resend must not reach the handler")
+	assert.Equal(t, http.StatusConflict, second.StatusCode)
+	assert.Contains(t, secondBody, RefusalCodeReplayUnavailable)
+	assert.NotContains(t, secondBody, "successfully",
+		"this request was REJECTED; the refusal must not book a success that never happened")
+	assert.NotContains(t, secondBody, RefusalCodeOutcomeUnrecorded,
+		"the outcome is recorded: the handler answered and the client received it")
+	assert.Empty(t, second.Header.Get(chttp.IdempotencyFenced))
+	assert.Empty(t, second.Header.Get(chttp.IdempotencyReplayed),
+		"nothing was replayed; claiming otherwise tells the client it holds the original response")
+}
+
+// TestOversizeResponse_ClientErrorReleasePolicyStillReleases is the other half
+// of the same contract. A route that wants a corrected resend to re-run its
+// rejection path already has the option for it, and an over-cap document must
+// not change that answer either.
+func TestOversizeResponse_ClientErrorReleasePolicyStillReleases(t *testing.T) {
+	t.Parallel()
+
+	app, calls := newOversizeStatusApp(t, "tenant-oversize-4xx-release",
+		fiber.StatusUnprocessableEntity, WithClientErrorPolicy(ClientErrorPolicyRelease))
+
+	first := postBodyWithKey(t, app, "oversize-key", `{"amount":"1250.00"}`)
+	require.Equal(t, http.StatusUnprocessableEntity, first.StatusCode)
+	require.NoError(t, first.Body.Close())
 
 	second := postBodyWithKey(t, app, "oversize-key", `{"amount":"1250.00"}`)
 	secondBody := readBody(t, second)
 
 	assert.Equal(t, int32(2), calls.Load(),
-		"the key was released, so the resend must reach the handler")
+		"the route released the key on 4xx, so the resend re-runs the handler")
 	assert.Equal(t, http.StatusUnprocessableEntity, second.StatusCode)
 	assert.JSONEq(t, oversizeBody, secondBody,
 		"the resend collects the same rejection, not a refusal about it")
-	assert.NotContains(t, secondBody, RefusalCodeReplayUnavailable,
-		"that refusal reports a known success; this request committed nothing")
-	assert.NotContains(t, secondBody, RefusalCodeOutcomeUnrecorded,
-		"nothing about a delivered rejection is unrecorded")
-	assert.Empty(t, second.Header.Get(chttp.IdempotencyFenced))
 }
 
 // TestOversizeResponse_EmptyEncodingIsAFaultNotASize separates the two
