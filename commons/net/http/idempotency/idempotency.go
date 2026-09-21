@@ -432,6 +432,12 @@ func WithFingerprintScopeProvider(provider FingerprintScopeProvider) Option {
 // body's place in the digest, under the same method and path, and under the
 // [WithFingerprintScopeProvider] scope when one is configured.
 //
+// Because nothing here reads the body, a request this middleware answers itself
+// — a replay, or any refusal — leaves the upload unread, and that response
+// carries "Connection: close" so the next request on the connection is not
+// parsed from the middle of this one's body. A pooled client dials again and
+// loses no request; the package documentation states the rule in full.
+//
 // A provider error refuses the request with 503 "IDEMPOTENCY_UNAVAILABLE", or
 // the [WithUnavailableHandler] document: nothing has run, so retrying is the
 // correct instruction, and a request whose identity cannot be established must
@@ -811,9 +817,17 @@ func (m *Middleware) runChain(c fiber.Ctx) error {
 // understands. Draining instead would mean reading up to the route's body limit,
 // a gigabyte on the upload routes this option exists for, to answer a 409.
 //
-// Nothing fires without a provider: there c.Body() has already drained the
-// stream, which is the defect the provider exists to avoid and the reason this
-// guard is new.
+// The rule is the two checks below and nothing narrower: it fires whenever this
+// middleware answered WITHOUT running the handler and the body is still a
+// stream. A replay under a [WithFingerprintProvider] is one such answer; so is
+// any refusal that returns before resolveFingerprint — an over-length key, a
+// missing required key, a missing required tenant, a key or TTL provider that
+// failed — because the deferred call is registered above all of them and
+// resolveFingerprint is the only site that calls c.Body(). A refusal with NO
+// provider configured therefore retires the connection too, and correctly:
+// nothing read that upload either. It stays silent on the two cases that leave
+// nothing behind — the handler ran and owns the body, or c.Body() already
+// drained the stream.
 func (m *Middleware) retireUnreadRequestStream(c fiber.Ctx) {
 	if ran, _ := c.Locals(chainRanKey{}).(bool); ran {
 		return

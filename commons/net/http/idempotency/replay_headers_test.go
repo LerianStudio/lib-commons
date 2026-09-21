@@ -257,7 +257,9 @@ func TestReplay_LiveCookieFromOtherMiddleware_Survives(t *testing.T) {
 	assert.Equal(t, 1, counts["locale"],
 		"a cookie this request minted that the capture never held must survive the replay")
 	assert.Equal(t, 1, counts["session"], "the captured cookie replays exactly once")
-	assert.Equal(t, 1, counts["csrf"], "a captured cookie name must not be duplicated")
+	assert.Equal(t, 1, counts["csrf"],
+		"the csrf cookie is minted above this middleware and left alone by the handler, so the delta "+
+			"capture never holds it and the replay leaves this request's own token exactly as it is")
 	assert.Equal(t, "token-2", values["csrf"],
 		"the token minted on THIS request must reach the client; the captured one is stale and its next mutation is refused as a CSRF failure")
 	assert.Equal(t, "captured", values["session"], "a cookie the handler minted is part of the receipt")

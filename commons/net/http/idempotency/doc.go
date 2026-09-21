@@ -74,6 +74,18 @@
 // identity available, and a provider error refuses the request before the
 // handler runs, exactly as a [WithKeyProvider] error does.
 //
+// On a streamed route the middleware's own answers cost the connection. Whenever
+// it answers without running the handler — a replay, or any refusal that returns
+// before the fingerprint is read, with or without a provider — nobody read the
+// upload, so that response carries "Connection: close". Otherwise fasthttp
+// recycles the stream struct without draining the reader and parses the next
+// request on that keep-alive connection from the middle of this one's body, then
+// resets it. Closing is what net/http does with an unread body and what a pooled
+// client understands: it dials again, one reconnect per answer the middleware
+// gave itself, and loses no request. Draining instead would mean reading up to
+// the route's body limit — a gigabyte on the upload routes this option exists
+// for — to answer a 409.
+//
 // The default prefix is "idempotency:" and can be overridden via [WithKeyPrefix].
 // This namespacing convention is consistent with other lib-commons packages that
 // use Redis (e.g., rate limiting uses "ratelimit:<tenantID>:..."). Per-tenant
