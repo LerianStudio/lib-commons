@@ -29,7 +29,7 @@ This lane owns `commons/net/http/idempotency/**` and this file, plus the `common
 
 | Phase | Milestone | Epics | Status |
 |-------|-----------|-------|--------|
-| 1 | a consumer with streamed or multipart requests, global response-header middleware, or success bodies above the cache cap can mount the middleware without re-executing a mutation or duplicating headers | 1.1, 1.2, 1.3, 1.4 | In progress — Epic 1.4 (review round 3 residue) |
+| 1 | a consumer with streamed or multipart requests, global response-header middleware, or success bodies above the cache cap can mount the middleware without re-executing a mutation or duplicating headers | 1.1, 1.2, 1.3, 1.4 | Complete |
 
 ## Phase 1
 
@@ -235,13 +235,14 @@ The same mutation against the test as it stood at `f8188a5` printed `ok` — mea
 **Scope:** `commons/net/http/idempotency/{idempotency.go,doc.go,fingerprint_provider_test.go,replay_headers_test.go}`, `README.md:67`, this plan.
 **Dependencies:** Epic 1.3 (landed).
 **Done when:** `go test -tags=unit -race -count=1 ./commons/net/http/idempotency/...` green; the task ticked; the Phase Overview row for Phase 1 reads `Complete`.
-**Status:** Pending
+
+**Status:** Done
 
 **Stop rule (orchestrator, 2026-09-21):** this is the last harness round for this branch. Findings after it that change no behaviour — comments, records, messages — are fixed by the orchestrator directly or accepted with a written reason, and the pull request opens.
 
 #### Task 1.4.1: The retirement guard's contract is stated, tested on the refusal half, and documented for consumers
 
-- [ ] Done
+- [x] Done
 
 **Context:** commit `03f8fb1` added `retireUnreadRequestStream` (`idempotency.go:~814-830`): when the middleware answers instead of the handler while the request body is still a stream, it sets `Connection: close`, because nothing downstream will ever drain that body and the next request on the keep-alive connection would read it as its own. Its doc comment says "nothing fires without a provider". That is false and the behaviour is right: `handle()` registers the deferred guard (`:~1103`) BEFORE the five refusal paths that return without reaching `resolveFingerprint` (`:~1161`, the only site that calls `c.Body()` and thereby drains the stream) — over-length key, missing required key, and their siblings — so on a `StreamRequestBody` route with no provider a refusal also retires the connection, correctly, and no test covers that half (F1/F2/F4, measured by the reviewers over a real keep-alive connection with a 70 KiB body and an over-length key). Two small items: `TestReplay_LiveCookieFromOtherMiddleware_Survives`'s csrf assertion message (`replay_headers_test.go:~260`) claims to guard captured-cookie-name de-duplication, but under the delta capture the csrf cookie is never captured (F3); and `Connection: close` on a replay or refusal of a streamed request is consumer-visible behaviour stated in no consumer-facing document (F5).
 
@@ -258,6 +259,20 @@ The same mutation against the test as it stood at `f8188a5` printed `ok` — mea
 **Verification:** `go test -tags=unit -race -count=1 ./commons/net/http/idempotency/...` green; the RED excerpt for (b) recorded below this task.
 
 **Done when:** the guard's comment, its two tests and the consumer docs agree on one rule.
+
+**RED for (b), measured 2026-09-21** with `defer m.retireUnreadRequestStream(c)` removed from `handle()`, `go test -tags=unit -race -count=1 -run TestRefusal_StreamedBodyUnread_RetiresTheConnection ./commons/net/http/idempotency/...`:
+
+```
+--- FAIL: TestRefusal_StreamedBodyUnread_RetiresTheConnection (0.00s)
+    fingerprint_provider_test.go:744: Should be true
+        the refusal answered without running the handler, so the upload was never read;
+        keeping the connection leaves the next request parsed from the middle of it
+    fingerprint_provider_test.go:748: Received unexpected error:
+        write tcp 127.0.0.1:39456->127.0.0.1:36231: write: connection reset by peer
+        the connection died before this request was even sent
+```
+
+The second assertion is the one that matters: with the guard gone the refusal keeps the connection, and the request that follows it on that connection is reset. The guard restored, the whole package is green and the client dials exactly twice — one connection per answer the middleware gave itself, no request lost.
 
 
 ## Bugs found
