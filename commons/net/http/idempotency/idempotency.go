@@ -1487,6 +1487,20 @@ func (m *Middleware) replay(c fiber.Ctx, encoded []byte) error {
 	c.Set(chttp.IdempotencyReplayed, "true")
 
 	for name, values := range response.Headers {
+		// The capture is the authority for the names it holds, so clear each one
+		// before re-applying it. Adding blind duplicates every header that a
+		// globally mounted middleware (cors, helmet, the common app.Use shape)
+		// has already put on THIS response and that the capture also holds. A
+		// browser rejects a response whose Access-Control-Allow-Origin "contains
+		// multiple values", so without this Del a double-clicked mutation that
+		// committed is reported to the user as a network failure.
+		//
+		// Del is scoped to the captured names: a header the app set on this
+		// request that the capture does not hold is left alone, and a captured
+		// header with several values (two Set-Cookie, two Link) is re-applied
+		// whole, in order.
+		c.Response().Header.Del(name)
+
 		for _, value := range values {
 			c.Response().Header.Add(name, value)
 		}

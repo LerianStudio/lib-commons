@@ -59,7 +59,7 @@ This lane owns `commons/net/http/idempotency/**` and this file. Nothing else.
 
 #### Task 1.1.2: A replay replaces the headers it captured instead of adding to them
 
-- [ ] Done
+- [x] Done
 
 **Context:** `captureResponse` stores every response header except `Content-Type`, `Content-Length`, `Transfer-Encoding` and the replayed marker (`idempotency.go:1355-1365`), and `replay` re-applies them with `c.Response().Header.Add(name, value)` (`idempotency.go:1419-1423`) without clearing first. A consumer that mounts header-setting middleware globally (`cors.New()`, `helmet.New()` via `app.Use`, the common shape) has those headers on the response BEFORE the idempotency middleware runs, and again inside the captured set. A replayed response therefore leaves with two `Access-Control-Allow-Origin`, two `X-Frame-Options`, two `X-Content-Type-Options`, two `Vary`. Browsers refuse a CORS response whose `Access-Control-Allow-Origin` "contains multiple values", so a double-clicked mutation that succeeded is reported to the user as a network failure.
 
