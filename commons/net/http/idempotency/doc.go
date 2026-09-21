@@ -179,7 +179,7 @@
 //   - Duplicate key whose record is marked as carrying no replayable receipt —
 //     the original response exceeded [WithMaxBodyCache] and was delivered
 //     without being stored: request receives 409 Conflict with code
-//     "IDEMPOTENCY_REPLAY_UNAVAILABLE", or the [WithReplayUnavailableHandler]
+//     [RefusalCodeReplayUnavailable], or the [WithReplayUnavailableHandler]
 //     document. Checked in the same place as the mark above, and unlike it this
 //     one reports a KNOWN success: the operation completed, its response cannot
 //     be handed out again, and resending neither reproduces it nor runs the

@@ -183,6 +183,14 @@ const (
 	// RefusalCodeOutcomeUnrecorded: an earlier request under this exact key ran
 	// without leaving a recorded outcome, so this one must not run.
 	RefusalCodeOutcomeUnrecorded = "IDEMPOTENCY_OUTCOME_UNRECORDED"
+
+	// RefusalCodeReplayUnavailable is the fourth refusal, and deliberately not
+	// one of the three above: it reports a KNOWN success whose response exceeded
+	// [WithMaxBodyCache] and was therefore never stored. It travels in a 409
+	// body, is answered by [WithReplayUnavailableHandler] rather than
+	// [WithTerminalRefusalHandler], and is exported for the same reason the
+	// others are — a client routes on the code, so it must be nameable.
+	RefusalCodeReplayUnavailable = "IDEMPOTENCY_REPLAY_UNAVAILABLE"
 )
 
 // Middleware provides at-most-once request semantics using an atomic [Store].
@@ -552,7 +560,7 @@ func WithKeyReuseHandler(fn fiber.Handler) Option {
 // WithReplayUnavailableHandler sets a custom handler for a duplicate whose key
 // holds a COMPLETED operation with no replayable receipt: the original response
 // exceeded [WithMaxBodyCache], so it was delivered to its client and never
-// stored. By default a 409 with code "IDEMPOTENCY_REPLAY_UNAVAILABLE" is
+// stored. By default a 409 with code [RefusalCodeReplayUnavailable] is
 // returned.
 //
 // It is its own seam because the case is its own thing, and every neighbouring
@@ -724,7 +732,7 @@ func WithTerminalRefusalHandler(fn func(c fiber.Ctx, code string) error) Option 
 // a mutation that succeeded, and the client would resend on it.
 //
 // What the key loses is the replay, not the protection. A duplicate inside the
-// retention window is refused with 409 "IDEMPOTENCY_REPLAY_UNAVAILABLE", or the
+// retention window is refused with 409 [RefusalCodeReplayUnavailable], or the
 // [WithReplayUnavailableHandler] document, and the mutation never runs a second
 // time; a duplicate carrying a DIFFERENT payload is still the ordinary key-reuse
 // refusal. This is unconditional, not gated by any option, and it applies to
@@ -1010,7 +1018,7 @@ func (m *Middleware) respondReplayUnavailable(c fiber.Ctx) error {
 	}
 
 	return libHTTP.RespondError(c, http.StatusConflict,
-		"IDEMPOTENCY_REPLAY_UNAVAILABLE",
+		RefusalCodeReplayUnavailable,
 		"the request with this idempotency key already completed successfully, but its response was too large "+
 			"to store for replay; resending under this key will not execute the operation again and will not "+
 			"reproduce that response",

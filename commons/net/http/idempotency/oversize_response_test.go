@@ -155,7 +155,7 @@ func TestOversizeResponse_ResendIsRefusedWithoutReExecuting(t *testing.T) {
 	assert.Equal(t, int32(1), calls.Load(),
 		"the mutation must never execute twice under one key")
 	assert.Equal(t, http.StatusConflict, second.StatusCode)
-	assert.Contains(t, body, "IDEMPOTENCY_REPLAY_UNAVAILABLE")
+	assert.Contains(t, body, RefusalCodeReplayUnavailable)
 	assert.Empty(t, second.Header.Get(fiber.HeaderRetryAfter),
 		"the answer never changes inside the retention window, so it must not advertise a retry")
 	assert.Empty(t, second.Header.Get(chttp.IdempotencyReplayed),
@@ -263,7 +263,7 @@ func TestOversizeResponse_ClientErrorNeverClaimsSuccess(t *testing.T) {
 	secondBody := readBody(t, second)
 
 	assert.Equal(t, int32(1), calls.Load(), "the handler must not run a second time")
-	assert.NotContains(t, secondBody, "IDEMPOTENCY_REPLAY_UNAVAILABLE",
+	assert.NotContains(t, secondBody, RefusalCodeReplayUnavailable,
 		"that refusal reports a known success; this request committed nothing")
 	assert.NotContains(t, secondBody, "already completed successfully")
 	assert.Contains(t, secondBody, RefusalCodeOutcomeUnrecorded,
@@ -311,5 +311,5 @@ func TestOversizeResponse_EncodedOutputOverTheBoundCompletes(t *testing.T) {
 
 	assert.Equal(t, int32(1), calls.Load())
 	assert.Equal(t, http.StatusConflict, second.StatusCode)
-	assert.Contains(t, secondBody, "IDEMPOTENCY_REPLAY_UNAVAILABLE")
+	assert.Contains(t, secondBody, RefusalCodeReplayUnavailable)
 }

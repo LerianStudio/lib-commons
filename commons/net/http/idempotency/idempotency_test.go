@@ -894,7 +894,7 @@ func TestCheck_WithMaxBodyCache(t *testing.T) {
 	body2 := readBody(t, resp2)
 
 	assert.Equal(t, http.StatusConflict, resp2.StatusCode)
-	assert.Contains(t, body2, "IDEMPOTENCY_REPLAY_UNAVAILABLE")
+	assert.Contains(t, body2, RefusalCodeReplayUnavailable)
 	assert.Empty(t, resp2.Header.Get(fiber.HeaderRetryAfter),
 		"the answer never changes inside the retention window, so it must not advertise a retry")
 }
