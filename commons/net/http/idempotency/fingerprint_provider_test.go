@@ -3,12 +3,14 @@
 package idempotency
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -504,4 +506,195 @@ func TestFingerprintProvider_SlowProviderIsNotChargedToTheStoreDeadline(t *testi
 	assert.JSONEq(t, `{"id":"9f1c"}`, body)
 	assert.Equal(t, "true", second.Header.Get(chttp.IdempotencyReplayed),
 		"the first request left a record, which is what proves its store call was never timed out")
+}
+
+// keepAliveConn drives raw HTTP/1.1 over one connection at a time, the way a
+// pooled client does: it reuses the connection until the server says
+// "Connection: close", and dials again only then.
+//
+// It is the only instrument that can see the defect below. app.Test is a
+// one-shot in-memory conn with no reuse at all, and net/http's Transport
+// silently retries a POST with a rewindable body onto a fresh connection — which
+// turns a corrupted connection into a green test.
+type keepAliveConn struct {
+	t     *testing.T
+	addr  string
+	conn  net.Conn
+	br    *bufio.Reader
+	dials int
+}
+
+func newKeepAliveConn(t *testing.T, addr string) *keepAliveConn {
+	t.Helper()
+
+	k := &keepAliveConn{t: t, addr: addr}
+	t.Cleanup(k.close)
+
+	return k
+}
+
+func (k *keepAliveConn) close() {
+	if k.conn != nil {
+		_ = k.conn.Close()
+		k.conn = nil
+	}
+}
+
+// post sends one request and reads its response. It returns the status, the
+// replayed marker and whether the server retired the connection.
+func (k *keepAliveConn) post(key string, body []byte) (status int, replayed string, retired bool) {
+	k.t.Helper()
+
+	if k.conn == nil {
+		conn, err := net.Dial("tcp", k.addr)
+		require.NoError(k.t, err)
+
+		k.conn, k.br, k.dials = conn, bufio.NewReader(conn), k.dials+1
+	}
+
+	require.NoError(k.t, k.conn.SetDeadline(time.Now().Add(10*time.Second)))
+
+	head := fmt.Sprintf("POST /test HTTP/1.1\r\nHost: idempotency.test\r\n%s: %s\r\n"+
+		"Content-Type: %s\r\nContent-Length: %d\r\n\r\n",
+		chttp.IdempotencyKey, key, fiber.MIMEOctetStream, len(body))
+
+	_, err := k.conn.Write(append([]byte(head), body...))
+	require.NoError(k.t, err, "the connection died before this request was even sent")
+
+	resp, err := http.ReadResponse(k.br, nil)
+	require.NoError(k.t, err, "the connection died before this request was answered")
+
+	_, err = io.Copy(io.Discard, resp.Body)
+	require.NoError(k.t, err)
+	require.NoError(k.t, resp.Body.Close())
+
+	if resp.Close {
+		k.close()
+	}
+
+	return resp.StatusCode, resp.Header.Get(chttp.IdempotencyReplayed), resp.Close
+}
+
+// serveStreamProbe starts app on a real TCP listener, which app.Test cannot
+// stand in for: the defect below lives in how fasthttp parses the NEXT request
+// off a connection this one left unread.
+func serveStreamProbe(t *testing.T, app *fiber.App) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+
+	listenerErr := make(chan error, 1)
+	go func() { listenerErr <- app.Listener(ln, fiber.ListenConfig{DisableStartupMessage: true}) }()
+
+	t.Cleanup(func() {
+		require.NoError(t, app.Shutdown())
+		require.NoError(t, <-listenerErr)
+	})
+
+	return ln.Addr().String()
+}
+
+// TestFingerprintProvider_StreamedDuplicate_LeavesTheConnectionUsable is the
+// other half of the streamed-body contract, and the one the provider broke.
+//
+// A provider exists so the middleware never calls c.Body(). But a duplicate is
+// answered WITHOUT running the handler, so on that request nobody reads the
+// upload at all — and fasthttp recycles the stream struct without draining the
+// connection reader. The next request on a keep-alive connection is then parsed
+// from the middle of this one's 70 KiB body, and the server resets it: measured
+// before the fix, the client's third POST failed with "connection reset by peer"
+// while the same three requests without a provider all answered. A client
+// retrying a large upload under the same key — the published contract — got its
+// replay and lost the pooled connection, and whatever request the pool
+// multiplexed onto it next died as a network error.
+//
+// The middleware retires the connection instead: "Connection: close" is what
+// net/http sends when a handler leaves a body unread, and what a client's pool
+// understands. Draining would mean reading a gigabyte to answer a 409.
+func TestFingerprintProvider_StreamedDuplicate_LeavesTheConnectionUsable(t *testing.T) {
+	t.Parallel()
+
+	const (
+		bodySize = 70 << 10
+		key      = "streamed-upload-key"
+	)
+
+	body := bytes.Repeat([]byte("x"), bodySize)
+
+	newApp := func(t *testing.T, opts ...Option) (*fiber.App, *atomic.Int32) {
+		t.Helper()
+
+		m := New(newRedisClient(t, miniredis.RunT(t)), opts...)
+
+		var called atomic.Int32
+
+		app := fiber.New(fiber.Config{StreamRequestBody: true})
+		app.Use(tenantMiddleware("t1"))
+		app.Use(m.Check())
+		app.Post("/test", func(c fiber.Ctx) error {
+			called.Add(1)
+
+			if c.Request().IsBodyStream() {
+				if _, err := io.Copy(io.Discard, c.Request().BodyStream()); err != nil {
+					return err
+				}
+			}
+
+			return c.Status(fiber.StatusCreated).SendString("ok")
+		})
+
+		return app, &called
+	}
+
+	t.Run("with_provider_every_duplicate_is_still_answered", func(t *testing.T) {
+		t.Parallel()
+
+		app, called := newApp(t, WithFingerprintProvider(func(c fiber.Ctx) ([]byte, error) {
+			return []byte(c.Get(fiber.HeaderContentLength)), nil
+		}))
+
+		client := newKeepAliveConn(t, serveStreamProbe(t, app))
+
+		status, replayed, retired := client.post(key, body)
+		require.Equal(t, http.StatusCreated, status)
+		assert.Empty(t, replayed, "the first request runs the handler")
+		assert.False(t, retired,
+			"the handler ran and owns the body: a healthy connection must not be thrown away")
+
+		for i := 2; i <= 3; i++ {
+			status, replayed, retired = client.post(key, body)
+
+			require.Equal(t, http.StatusCreated, status, "duplicate %d must be answered", i)
+			assert.Equal(t, "true", replayed, "duplicate %d must be a replay", i)
+			assert.True(t, retired,
+				"duplicate %d answered without running the handler, so its body was never read; "+
+					"keeping the connection leaves the next request parsed from the middle of it", i)
+		}
+
+		assert.Equal(t, int32(1), called.Load(), "the upload must be handled exactly once")
+		assert.Equal(t, 2, client.dials,
+			"requests 1 and 2 share the first connection; only the one request 2 retired is redialled, "+
+				"and no request is lost to it")
+	})
+
+	t.Run("without_provider_the_connection_is_reused", func(t *testing.T) {
+		t.Parallel()
+
+		app, called := newApp(t)
+
+		client := newKeepAliveConn(t, serveStreamProbe(t, app))
+
+		for i := 1; i <= 3; i++ {
+			status, _, retired := client.post(key, body)
+
+			require.Equal(t, http.StatusCreated, status, "request %d must be answered", i)
+			assert.False(t, retired,
+				"without a provider the middleware reads the body itself, so nothing is left "+
+					"unread and request %d must not cost the connection", i)
+		}
+
+		assert.Equal(t, int32(1), called.Load())
+		assert.Equal(t, 1, client.dials, "one connection must carry all three requests")
+	})
 }

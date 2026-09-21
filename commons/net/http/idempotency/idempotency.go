@@ -782,11 +782,55 @@ func (m *Middleware) Check() fiber.Handler {
 	return m.handle
 }
 
+// chainRanKey marks, for this request only, that the rest of the chain ran. Its
+// zero-size private type cannot collide with an application's own locals.
+type chainRanKey struct{}
+
+// runChain hands the request on and records that it did, which is the one fact
+// retireUnreadRequestStream needs: from here the handler, and not this
+// middleware, owns the request body.
+func (m *Middleware) runChain(c fiber.Ctx) error {
+	c.Locals(chainRanKey{}, true)
+
+	return c.Next()
+}
+
+// retireUnreadRequestStream ends the connection when this middleware answered a
+// request whose body is still an unread stream.
+//
+// With a [WithFingerprintProvider] nothing here calls c.Body(), which is the
+// whole point of the option: the handler owns the upload. But a refusal and a
+// replay both answer WITHOUT running the handler, so on those the body nobody
+// read is still sitting in the connection. fasthttp recycles the stream struct
+// without draining the reader, so the next request on a keep-alive connection is
+// parsed from the middle of this one's body and the connection is reset — the
+// client retrying a large upload under the same key gets its replay and loses
+// the pooled connection under it.
+//
+// Closing is what net/http does with an unread body and what a client's pool
+// understands. Draining instead would mean reading up to the route's body limit,
+// a gigabyte on the upload routes this option exists for, to answer a 409.
+//
+// Nothing fires without a provider: there c.Body() has already drained the
+// stream, which is the defect the provider exists to avoid and the reason this
+// guard is new.
+func (m *Middleware) retireUnreadRequestStream(c fiber.Ctx) {
+	if ran, _ := c.Locals(chainRanKey{}).(bool); ran {
+		return
+	}
+
+	if !c.Request().IsBodyStream() {
+		return
+	}
+
+	c.Response().Header.SetConnectionClose()
+}
+
 // onStoreError decides how to respond to a transient store error. Callers must
 // have already logged the underlying error.
 func (m *Middleware) onStoreError(c fiber.Ctx) error {
 	if !m.failClosed {
-		return c.Next()
+		return m.runChain(c)
 	}
 
 	return m.respondUnavailable(c)
@@ -1054,12 +1098,16 @@ func (m *Middleware) respondReplayUnavailable(c fiber.Ctx) error {
 }
 
 func (m *Middleware) handle(c fiber.Ctx) error {
+	// Answering instead of the handler leaves a streamed request body unread;
+	// see retireUnreadRequestStream for what that costs the connection.
+	defer m.retireUnreadRequestStream(c)
+
 	// Idempotency only applies to mutating methods.
 	switch c.Method() {
 	case fiber.MethodPost, fiber.MethodPut, fiber.MethodPatch, fiber.MethodDelete:
 		// Apply idempotency to mutating methods only.
 	default:
-		return c.Next()
+		return m.runChain(c)
 	}
 
 	idempotencyKey, err := m.resolveKey(c)
@@ -1076,7 +1124,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 			return m.respondKeyRequired(c)
 		}
 
-		return c.Next()
+		return m.runChain(c)
 	}
 
 	if len(idempotencyKey) > m.maxKeyLength {
@@ -1100,7 +1148,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 		// No tenant context — bypass idempotency to avoid collapsing all
 		// tenant-less requests onto a shared key, which breaks isolation.
 		// This is consistent with the middleware's fail-open philosophy.
-		return c.Next()
+		return m.runChain(c)
 	}
 
 	key := fmt.Sprintf("%s%s:%s", m.keyPrefix, tenantID, idempotencyKey)
@@ -1308,7 +1356,7 @@ func (m *Middleware) handleStoreAcquired(
 	// wrong thing to store.
 	beforeHandler := snapshotResponseHeaders(c)
 
-	handlerErr := c.Next()
+	handlerErr := m.runChain(c)
 
 	postCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), m.redisTimeout)
 	defer cancel()
