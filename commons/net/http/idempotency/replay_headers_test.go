@@ -28,8 +28,8 @@ const requestIDHeader = "X-Request-Id"
 
 // postWithOrigin sends POST /test carrying an Origin, so the globally mounted
 // cors middleware treats it as a CORS request on both the live and the replayed
-// call — which is the whole point: those headers are on the response BEFORE the
-// idempotency middleware runs, and again inside the captured set.
+// call — which is the whole point: those headers are back on the response, from
+// the live middleware, before the replay re-applies anything.
 func postWithOrigin(t *testing.T, app *fiber.App, key string) *http.Response {
 	t.Helper()
 
@@ -47,12 +47,19 @@ func postWithOrigin(t *testing.T, app *fiber.App, key string) *http.Response {
 }
 
 // TestReplay_GlobalHeaderMiddleware_NoDuplicatedHeaders pins the shape every
-// service that mounts cors and helmet with app.Use actually deploys: those
-// headers are already on the response when the idempotency middleware replays,
-// and they are also inside the captured set. A browser refuses a CORS response
-// whose Access-Control-Allow-Origin "contains multiple values", so a duplicated
-// header turns a double-clicked mutation that SUCCEEDED into a reported network
-// failure.
+// service that mounts cors and helmet with app.Use actually deploys, against
+// the capture as it is since the capture narrowed to the handler's delta.
+//
+// cors and helmet write before c.Next(), so their names are in the pre-handler
+// snapshot and NOT in the capture: on the replay they are live, written again by
+// the same middleware on the duplicate, and the replay must leave them alone.
+// The duplication risk therefore only exists on a name the handler itself
+// touched — here the handler overrides helmet's X-Frame-Options — because that
+// name IS captured and the live middleware sets it again above. Re-applying it
+// without clearing first leaves two values, and a browser refuses a CORS
+// response whose Access-Control-Allow-Origin "contains multiple values", so the
+// same defect on a cors name turns a double-clicked mutation that SUCCEEDED
+// into a reported network failure.
 func TestReplay_GlobalHeaderMiddleware_NoDuplicatedHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -70,12 +77,20 @@ func TestReplay_GlobalHeaderMiddleware_NoDuplicatedHeaders(t *testing.T) {
 	app.Post("/test", func(c fiber.Ctx) error {
 		called.Add(1)
 
+		// The one name this route shares with the middleware above it: helmet
+		// has already written SAMEORIGIN, the handler overrides it so the
+		// receipt can render in a partner iframe. It is the only name in this
+		// app that is both captured and live on the replay.
+		c.Set(fiber.HeaderXFrameOptions, "ALLOWALL")
+
 		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "created"})
 	})
 
 	resp1 := postWithOrigin(t, app, "cors-key")
 	readBody(t, resp1)
 	require.Equal(t, http.StatusCreated, resp1.StatusCode)
+	require.Equal(t, []string{"ALLOWALL"}, resp1.Header.Values(fiber.HeaderXFrameOptions),
+		"the live response must carry the handler's override, not helmet's default")
 
 	resp2 := postWithOrigin(t, app, "cors-key")
 	readBody(t, resp2)
@@ -85,15 +100,17 @@ func TestReplay_GlobalHeaderMiddleware_NoDuplicatedHeaders(t *testing.T) {
 		"the second request must be a replay, not a re-execution")
 	require.Equal(t, int32(1), called.Load(), "the handler must have run exactly once")
 
+	assert.Equal(t, []string{"ALLOWALL"}, resp2.Header.Values(fiber.HeaderXFrameOptions),
+		"a captured name the middleware above sets again must be REPLACED on the replay, not appended to")
+
 	for name, want := range map[string]string{
 		fiber.HeaderAccessControlAllowOrigin: testOrigin,
-		fiber.HeaderXFrameOptions:            "SAMEORIGIN",
 		fiber.HeaderXContentTypeOptions:      "nosniff",
 		fiber.HeaderVary:                     fiber.HeaderOrigin,
 	} {
 		values := resp2.Header.Values(name)
 		assert.Equal(t, []string{want}, values,
-			"replay must carry exactly one %s; a duplicate is what browsers reject", name)
+			"%s is written above the middleware and never captured; the replay must leave the live value alone", name)
 	}
 }
 
