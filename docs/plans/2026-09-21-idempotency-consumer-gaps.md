@@ -73,6 +73,8 @@ This lane owns `commons/net/http/idempotency/**` and this file, plus the `common
 
 **Done when:** a replay never carries a duplicated header, multi-valued captured headers survive, and the three tests are green.
 
+**Corrected by Task 1.2.1 (Epic 1.2):** this task's title and vision are now one word wrong. The replay does not replace "the headers it captured" — it replaces the HANDLER'S DELTA. Capturing the whole response set meant the replace semantics landed on per-request values set ABOVE the middleware too, so a duplicate answered with the original request's correlation id and with a stale CSRF cookie in place of the fresh one another middleware had just minted. The capture is now the delta against a snapshot taken immediately before the handler runs; everything else on the response stays live. Read this task as "a replay replaces the handler's delta instead of adding to the live response".
+
 #### Task 1.1.3: A success above the body cap reaches the client, and its key stays completed
 
 - [x] Done
@@ -98,7 +100,7 @@ This lane owns `commons/net/http/idempotency/**` and this file, plus the `common
 **Scope:** `commons/net/http/idempotency/**`, the `commons/net/http/idempotency` bullet of `README.md`, this file.
 **Dependencies:** Epic 1.1 (landed on this branch).
 **Done when:** the package suite is green; the four decisions below are in code with a RED each; the README bullet has no false clause; exactly one `feat(net)` commit exists in the range.
-**Status:** Pending
+**Status:** Done
 
 #### Task 1.2.1: A replay applies the handler's header delta, and live headers win elsewhere
 
@@ -144,7 +146,9 @@ This lane owns `commons/net/http/idempotency/**` and this file, plus the `common
 
 #### Task 1.2.3: The README bullet says what ships
 
-- [ ] Done
+- [x] Done
+
+**Result:** the bullet's false clauses are rewritten in place (one line, one bullet, same register). "cannot be captured" is gone from the fail-closed clause: a size is not a capture fault, so an over-cap response takes its own two branches — a 2xx delivered unchanged and completed with no receipt, a 4xx delivered unchanged with the key RELEASED — and neither 503s nor fences. The duplicate-outcome list gains 409 `IDEMPOTENCY_REPLAY_UNAVAILABLE` through `WithReplayUnavailableHandler` alone, the replay clause now says it re-applies the HANDLER's header delta (captured names replaced, not appended) while headers set above on this request stay live, the fingerprint clause names `WithFingerprintProvider` with its pre-handler 503 and its digest-change warning, `WithReplayUnavailableHandler` joins the rejection-handler list, and `RefusalCodeReplayUnavailable` joins the refusal-code list as the fourth code, deliberately outside the terminal trio.
 
 **Context:** F3/F7/F15 — `README.md:67`, the `commons/net/http/idempotency` bullet, still says an uncapturable response fails closed with 503 and fences the key; omits `WithFingerprintProvider`, `WithReplayUnavailableHandler` and `IDEMPOTENCY_REPLAY_UNAVAILABLE`; the previous carve-out excluded README, so the lane recorded the contradiction instead of fixing it. The carve-out is widened (see `## Ownership carve-outs`).
 
@@ -171,4 +175,4 @@ This lane owns `commons/net/http/idempotency/**` and this file, plus the `common
 
 | File | Symptom | Evidence |
 |---|---|---|
-| `README.md` (the `commons/net/http/idempotency` bullet) | The repo's canonical contract for this middleware contradicts the shipped behaviour in four places after this lane: it still says an exact response that "cannot be captured" fails closed with 503 `IDEMPOTENCY_UNAVAILABLE` and that response-capture failure "additionally fences the key", both now false for an over-cap body; its exhaustive list of customizable rejection bodies omits `WithReplayUnavailableHandler`; its duplicate-outcome list omits `IDEMPOTENCY_REPLAY_UNAVAILABLE`; and its fingerprint paragraph names only `WithKeyProvider` and `WithFingerprintScopeProvider`, with `WithFingerprintProvider` absent. An integrator wiring from the README wires `WithPostHandlerUnavailableHandler` expecting it to own the over-cap resend and ships the library's raw 409 envelope instead; a consumer with a multipart or streamed-upload route never learns the option that unblocks it. | `README.md:67`, read against `commons/net/http/idempotency/doc.go` and `idempotency.go` on this branch. The file is outside this lane's carve-out (`commons/net/http/idempotency/**` and this plan), so it is recorded rather than edited — a lane-scoping gap, not an implementer slip. |
+| `README.md` (the `commons/net/http/idempotency` bullet) | The repo's canonical contract for this middleware contradicts the shipped behaviour in four places after this lane: it still says an exact response that "cannot be captured" fails closed with 503 `IDEMPOTENCY_UNAVAILABLE` and that response-capture failure "additionally fences the key", both now false for an over-cap body; its exhaustive list of customizable rejection bodies omits `WithReplayUnavailableHandler`; its duplicate-outcome list omits `IDEMPOTENCY_REPLAY_UNAVAILABLE`; and its fingerprint paragraph names only `WithKeyProvider` and `WithFingerprintScopeProvider`, with `WithFingerprintProvider` absent. An integrator wiring from the README wires `WithPostHandlerUnavailableHandler` expecting it to own the over-cap resend and ships the library's raw 409 envelope instead; a consumer with a multipart or streamed-upload route never learns the option that unblocks it. | `README.md:67`, read against `commons/net/http/idempotency/doc.go` and `idempotency.go` on this branch. The file is outside this lane's carve-out (`commons/net/http/idempotency/**` and this plan), so it is recorded rather than edited — a lane-scoping gap, not an implementer slip. **FIXED HERE by Task 1.2.3**, after the orchestrator widened the carve-out to include this bullet on 2026-09-21. |
