@@ -176,7 +176,24 @@ This lane owns `commons/net/http/idempotency/**` and this file, plus the `common
 
 #### Task 1.3.1: The code says what it does, and the global-middleware test bites again
 
-- [ ] Done
+- [x] Done
+
+**Measured RED (e)** (`go test -tags=unit -count=1 -run TestReplay_GlobalHeaderMiddleware_NoDuplicatedHeaders ./commons/net/http/idempotency/`, with the `clearCapturedHeader` call deleted from the replay loop):
+
+```
+--- FAIL: TestReplay_GlobalHeaderMiddleware_NoDuplicatedHeaders (0.01s)
+    replay_headers_test.go:103:
+        Error:      Not equal:
+                    expected: []string{"ALLOWALL"}
+                    actual  : []string{"SAMEORIGIN", "ALLOWALL"}
+        Messages:   a captured name the middleware above sets again must be REPLACED on the replay, not appended to
+```
+
+The same mutation against the test as it stood at `f8188a5` printed `ok` — measured, not assumed: cors and helmet write before `c.Next()`, so that app's capture was empty and the replay's header loop never ran. The handler now overrides helmet's `X-Frame-Options`, which puts one name in the delta that the live middleware also sets on the duplicate; the cors and helmet names it does not touch are asserted to stay live at one value each, which is where the "no duplicate" claim really lives now.
+
+**Measured RED (d)** (`grep -n -A5 'replay response exceeds the configured limit\|exceeds maxBodyCache' commons/net/http/idempotency/idempotency.go`): the completion WARN carried `error` and `status_code`, its companion in `captureResponse` carried `body_size` and `max_body_cache`, and neither named the tenant or the key — for the one branch that makes a key unreplayable for its whole retention.
+
+**Result:** (a) `outcomeNotReplayable` now reads "a request whose response was DELIVERED but exceeded the body cap — a success, or a rejection the client-error policy chose to hold". (b) doc.go's mixed-version paragraph no longer claims a full-capture record replayed with replace semantics under the version that wrote it: that version added blindly and could duplicate a live header, so the upgrade removes the duplicate and not the staleness. (c) one sentence before the consequence table defines "above" as mounted before `Middleware.Check`, and says everything written during `c.Next()` is the handler's, whoever wrote it — a middleware mounted below `Check` included. (d) both WARN lines gained `idempotency_key_digest` and `tenant_id`, the pair the fence logs already use; `captureResponse` takes the key for that line alone. (e) above.
 
 **Context:** four sentences and one test fell behind the self-heal. (a) `store.go:28-33` says `outcomeNotReplayable` "marks a request that SUCCEEDED"; since `d058590` the same mark is stamped on an over-cap 4xx held under `ClientErrorPolicyCache` (`idempotency.go:~1372`) (F3/F9). (b) `doc.go:~364-370` says a record written by a full-capture version "replays under this version exactly as it did under the one that wrote it: replace semantics"; the only released version that writes full captures replays with a bare `Header.Add` loop (`origin/develop` `idempotency.go:1419-1423`) — replace semantics were never released (F4). (c) `doc.go:~228-240`, the consequence table, promises a per-request header stays live without the precondition that makes it true: the snapshot is taken at `idempotency.go:~1309` immediately before `c.Next()`, so only middleware mounted ABOVE `m.Check()` is "above"; anything written during `c.Next()`, including middleware mounted below `Check()`, lands in the handler delta (F8). (d) the over-cap WARN at `idempotency.go:~1367` logs `error` and `status_code`, and the companion line in `captureResponse` (~`:1571`) logs `body_size` and `max_body_cache`; neither names the tenant or the key, although the branch makes that key permanently unreplayable for its retention (F6). (e) `TestReplay_GlobalHeaderMiddleware_NoDuplicatedHeaders` (`replay_headers_test.go:~52-70`): cors and helmet set their headers before `c.Next()`, so after Task 1.2.1 that app's capture is EMPTY, the replay's header loop never runs, the 8-line comment ("also inside the captured set") is false, and deleting `clearCapturedHeader` leaves the test green (F2/F5).
 

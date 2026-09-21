@@ -229,6 +229,12 @@
 // is REPLACED (cleared, then re-applied whole and in order) and every other live
 // header stays.
 //
+// "Above" here means mounted before [Middleware.Check], because the snapshot is
+// taken immediately before the handler is called: everything written during that
+// call is the handler's contribution, whoever wrote it — including a middleware
+// mounted BELOW Check, whose headers are captured and replayed exactly as the
+// handler's own.
+//
 // The split is by authorship, and these are its consequences:
 //
 //   - Set above on THIS request and untouched by the handler — a correlation id
@@ -363,12 +369,15 @@
 //
 // The response capture narrowed on the same terms, and needs no encoding trick
 // at all. A record written by a version that captured the WHOLE response holds
-// names this version would never store, and replays under this version exactly
-// as it did under the one that wrote it: replace semantics over the names the
-// record holds. A duplicate answered from such a record therefore still receives
-// the original request's correlation id and its captured CSRF token. The
-// population self-heals within one retention window, as those records expire and
-// every new one holds only the handler's delta.
+// names this version would never store, and this version replays it with REPLACE
+// semantics over every name it holds — which is not what the version that wrote
+// it did: that one re-applied the captured names with a bare Add, so it could
+// hand the duplicate a live header twice. The upgrade therefore removes the
+// duplicate but not the staleness: a duplicate answered from such a record still
+// receives the original request's correlation id and its captured CSRF token,
+// each exactly once, until the record expires. The population self-heals within
+// one retention window, as those records expire and every new one holds only the
+// handler's delta.
 //
 // [WithFingerprintProvider] crosses a rolling upgrade differently, because what
 // changes is not the record's shape but the DIGEST inside it. Turning the option
