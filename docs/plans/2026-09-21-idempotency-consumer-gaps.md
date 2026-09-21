@@ -39,7 +39,7 @@ This lane owns `commons/net/http/idempotency/**` and this file. Nothing else.
 **Scope:** `commons/net/http/idempotency/`
 **Dependencies:** none
 **Done when:** the three tasks below are green, each with a test that failed before its change.
-**Status:** Pending
+**Status:** Done
 
 #### Task 1.1.1: An application-supplied request fingerprint
 
@@ -75,7 +75,11 @@ This lane owns `commons/net/http/idempotency/**` and this file. Nothing else.
 
 #### Task 1.1.3: A success above the body cap reaches the client, and its key stays completed
 
-- [ ] Done
+- [x] Done
+
+**Measured RED** (`go test -tags=unit -run TestOversizeResponse ./commons/net/http/idempotency/`, before the change): the over-cap success answered `503` instead of the handler's `201`, with the body `{"code":503,"title":"IDEMPOTENCY_UNAVAILABLE","message":"request processing finished but its replay response could not be persisted; do not retry with a new key - reconcile the original request first"}`, and `X-Idempotency-Fenced: true`; the resend answered `422 IDEMPOTENCY_OUTCOME_UNRECORDED`. So a mutation that HAD committed was reported to its client as a store failure, and the key was fenced as if the outcome were unknown. **Answer to the measurement:** the key was fenced (not released, not left on the lease), so a resend was refused for the whole retention window - the double-execution was already closed; what was wrong was the document, on both requests.
+
+**Result:** an over-cap success is now delivered unchanged and the record completes with `outcome: "not-replayable"` and no stored body; a resend with the same fingerprint gets `409 IDEMPOTENCY_REPLAY_UNAVAILABLE` (no `Retry-After`, no replay header, overridable through `WithReplayUnavailableHandler`), a resend with a different fingerprint still gets the key-reuse refusal, and the handler runs exactly once. Two pre-existing tests asserted the old 503-and-fence contract and were updated to the new one: `TestCheck_WithMaxBodyCache` (`idempotency_test.go`) and `TestCheck_OversizedResponse_FailsClosedWithoutCompletionMarker`, renamed `..._CompletesWithoutAReplayableReceipt` (`policy_test.go`).
 
 **Context:** `captureResponse` returns `errResponseTooLarge` when the success body exceeds `maxBodyCache` (`idempotency.go:1342`, default 1 MB), and the caller at `idempotency.go:1151` routes that into `failPostHandler(c, key, processing, record, ttl)`, the same path as a storage failure after the handler ran. Measure what that does to (a) the response the client receives for a mutation that HAS committed, and (b) the key: is it released (a resend re-executes the mutation), left as the processing lease until its TTL (a resend answers the in-flight conflict until then), or fenced. Whatever the answer, a body size is not a fault: the handler succeeded, the client must receive that success unchanged, and a resend under the same key must never execute the mutation a second time.
 

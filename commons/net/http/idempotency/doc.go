@@ -173,8 +173,17 @@
 //     seam is set. The
 //     mark is checked before the state routing below, and no captured body is
 //     replayed because none was ever stored.
+//   - Duplicate key whose record is marked as carrying no replayable receipt —
+//     the original response exceeded [WithMaxBodyCache] and was delivered
+//     without being stored: request receives 409 Conflict with code
+//     "IDEMPOTENCY_REPLAY_UNAVAILABLE", or the [WithReplayUnavailableHandler]
+//     document. Checked in the same place as the mark above, and unlike it this
+//     one reports a KNOWN success: the operation completed, its response cannot
+//     be handed out again, and resending neither reproduces it nor runs the
+//     operation a second time. No Retry-After, and
+//     [constants.IdempotencyReplayed] stays unset because nothing was replayed.
 //   - Handler success: response status, headers, content type, and body are
-//     compare-safely completed only by the acquisition owner. Capture, encoding,
+//     compare-safely completed only by the acquisition owner. Encoding,
 //     persistence, or stale-owner failures return 503, and the key is marked
 //     terminal (see below) so callers reconcile instead of retrying under a new
 //     key. That 503 is the one branch [WithPostHandlerUnavailableHandler]
@@ -183,6 +192,12 @@
 //     "IDEMPOTENCY_UNFENCED" instead, which says the key is unprotected and a
 //     resend may execute the operation again, or the [WithUnfencedHandler]
 //     document when that separate seam is set.
+//   - Handler success whose body exceeds [WithMaxBodyCache]: the response is
+//     delivered to the client UNCHANGED and the record completes carrying no
+//     receipt, so the duplicate branch above answers a resend. A size is not a
+//     fault: the handler ran and committed, and answering it with a failure
+//     would report a store problem for a mutation that succeeded — which is
+//     itself what makes a client resend.
 //   - Handler 4xx: cached and replayed by default. Use
 //     [WithClientErrorPolicy] with [ClientErrorPolicyRelease] to compare-safely
 //     release the record and allow a corrected request to reuse the key.
@@ -233,7 +248,8 @@
 // [WithResponseCodec] transforms serialized replay responses before storage; use
 // authenticated encryption for sensitive bodies. [WithMaxBodyCache] bounds raw
 // response bodies, and encoded output is additionally bounded to twice that
-// value.
+// value; a success over the bound still reaches its client unchanged and loses
+// only its replay, which [WithReplayUnavailableHandler] answers.
 //
 // # A key whose outcome was never recorded
 //
@@ -281,6 +297,13 @@
 // encoding rather than the plain truth, and anything reading these records
 // outside this package must read the outcome field to tell a real completion
 // from a fence.
+//
+// The outcome field carries a second value on the same terms: a request whose
+// response exceeded [WithMaxBodyCache] completed for real, and only its receipt
+// is missing, so the record is a completion marked as unreplayable rather than a
+// fence. A reader that predates the value finds the same shape — state
+// "complete", no replay response — and refuses it through the same seam, which
+// is why it rides this field instead of a state value of its own.
 //
 // The same problem points FORWARD, and is closed the same way. This encoding
 // protects a future reader from what this version writes; nothing in it
@@ -403,8 +426,9 @@
 // ones observed AFTER it ran and for a duplicate that finds a record marked
 // terminal or written in an unrecognised state, [WithConflictHandler] for an
 // in-flight duplicate, [WithKeyReuseHandler] for the same key used by a
-// different request, and [WithUnfencedHandler] for the post-handler failure
-// whose fence also failed. That last one is deliberately a seam of its own and
+// different request, [WithReplayUnavailableHandler] for a duplicate whose
+// original response was too large to store, and [WithUnfencedHandler] for the
+// post-handler failure whose fence also failed. That last one is deliberately a seam of its own and
 // never a fallback: 503 "IDEMPOTENCY_UNFENCED" exists to be distinguishable
 // from the seam a service already wired, so it stays the default until a route
 // asks for something else in those exact words.

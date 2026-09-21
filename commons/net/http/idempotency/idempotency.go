@@ -47,7 +47,20 @@ const (
 	// completed record with no replay response, which it already refuses through
 	// the post-handler seam — the same instruction, from the same seam.
 	outcomeUnrecorded = "unrecorded"
-	retryAfterSeconds = "1"
+	// outcomeNotReplayable is terminal for the RECEIPT and for nothing else:
+	// the handler succeeded, the client received that success unchanged, and
+	// only the stored response is missing because it exceeded
+	// [WithMaxBodyCache]. A body size is not a fault, so this is not a fence —
+	// the record is a real completion — but the key still cannot answer a
+	// resend with a replay it never stored, so a duplicate is refused by
+	// respondReplayUnavailable rather than executing the mutation again.
+	//
+	// It rides the same field as outcomeUnrecorded, and for the same
+	// compatibility reason spelled out above: a reader that predates this value
+	// finds a completed record with no replay response and refuses it through
+	// the post-handler seam. It never re-executes.
+	outcomeNotReplayable = "not-replayable"
+	retryAfterSeconds    = "1"
 )
 
 var (
@@ -190,6 +203,10 @@ type Middleware struct {
 	onRejected               func(c fiber.Ctx) error
 	onConflict               fiber.Handler
 	onKeyReuse               fiber.Handler
+	// onReplayUnavailable answers a duplicate whose key holds a real
+	// completion with no stored receipt, because the response exceeded
+	// maxBodyCache. Unset, the built-in 409 stands.
+	onReplayUnavailable fiber.Handler
 	// requireKey and requireTenant are opt-in refusals. Default (false)
 	// preserves the shipped bypasses: a request without the X-Idempotency
 	// header, or without tenant context, proceeds unprotected.
@@ -530,6 +547,32 @@ func WithKeyReuseHandler(fn fiber.Handler) Option {
 	}
 }
 
+// WithReplayUnavailableHandler sets a custom handler for a duplicate whose key
+// holds a COMPLETED operation with no replayable receipt: the original response
+// exceeded [WithMaxBodyCache], so it was delivered to its client and never
+// stored. By default a 409 with code "IDEMPOTENCY_REPLAY_UNAVAILABLE" is
+// returned.
+//
+// It is its own seam because the case is its own thing, and every neighbouring
+// document would misreport it. It is not the in-flight conflict: nothing is
+// running, and Retry-After would invite a retry that can never succeed. It is
+// not [WithKeyReuseHandler]'s refusal: the payload matches, this IS the same
+// request. It is not [WithPostHandlerUnavailableHandler]'s 503: the store is
+// healthy and the operation is not in doubt — it completed, and the client of
+// the original request was told so. And it is emphatically not a replay: no
+// body exists to send, so [constants.IdempotencyReplayed] stays unset.
+//
+// What the caller needs to learn is narrow: the operation under this key
+// finished, its response cannot be handed out again, and resending will neither
+// produce it nor run the operation a second time. A route that returns bodies
+// over the bound on purpose can answer that in its own words here — or raise
+// [WithMaxBodyCache] so the receipt fits and an ordinary replay answers instead.
+func WithReplayUnavailableHandler(fn fiber.Handler) Option {
+	return func(m *Middleware) {
+		m.onReplayUnavailable = fn
+	}
+}
+
 // WithRequireKey refuses a mutating request that carries no X-Idempotency
 // header, before its handler runs. The default is off: an absent header lets
 // the request proceed unprotected, which is per-request opt-in idempotency.
@@ -670,19 +713,21 @@ func WithTerminalRefusalHandler(fn func(c fiber.Ctx, code string) error) Option 
 
 // WithMaxBodyCache sets the maximum raw response body size (in bytes) that can
 // be persisted for exact replay (default: 1 MB). The encoded replay payload is
-// bounded to twice this value. A response exceeding either bound fails closed
-// with 503 after the handler returns; no generic success response is stored.
-// Values <= 0 are ignored.
+// bounded to twice this value. Values <= 0 are ignored.
 //
-// Exceeding the bound also FENCES THE KEY for the retention TTL, because the
-// handler already ran and its receipt is gone — see [WithServerErrorPolicy] for
-// what a fenced key answers. This is unconditional, not gated by any option,
-// and it applies to every route this middleware covers. A route that
-// legitimately returns bodies over the bound therefore burns each idempotency
-// key for the whole retention window, rather than failing and freeing it: size
-// the bound for the largest response you mean to replay. The alternative is
-// worse — before the fence such a route answered 503 forever AND re-executed
-// the operation on every resend once the in-flight lease lapsed.
+// A successful response exceeding either bound is DELIVERED TO ITS CLIENT
+// UNCHANGED — status, headers and body, exactly as the handler wrote them — and
+// its key completes carrying no receipt. A size is not a fault: the handler ran
+// and committed, so answering it with a failure would report a store problem for
+// a mutation that succeeded, and the client would resend on it.
+//
+// What the key loses is the replay, not the protection. A duplicate inside the
+// retention window is refused with 409 "IDEMPOTENCY_REPLAY_UNAVAILABLE", or the
+// [WithReplayUnavailableHandler] document, and the mutation never runs a second
+// time; a duplicate carrying a DIFFERENT payload is still the ordinary key-reuse
+// refusal. This is unconditional, not gated by any option, and it applies to
+// every route this middleware covers. Size the bound for the largest response
+// you mean to hand out twice.
 func WithMaxBodyCache(n int) Option {
 	return func(m *Middleware) {
 		if n > 0 {
@@ -935,6 +980,41 @@ func (m *Middleware) respondOutcomeUnknown(c fiber.Ctx) error {
 	)
 }
 
+// respondReplayUnavailable answers a duplicate whose key holds a COMPLETED
+// operation whose response was never stored, because it exceeded maxBodyCache.
+//
+// This is the only refusal in the package that reports a KNOWN success. The
+// original request's handler ran, committed, and its response went to its
+// client unchanged — the middleware simply has no copy to hand out again. So
+// the document says "completed, not replayable" and not "reconcile": there is
+// nothing ambiguous to reconcile, and telling an operator to go and find out
+// would send them after an outcome that is already settled.
+//
+// It answers 409, unlike the other terminal refusals' 422. 422 says the request
+// itself cannot be acted on — a spent key used for a different payload, a record
+// nobody can read. Here the request is perfectly valid and would be answered
+// from the store if a receipt existed; what conflicts is its arrival after an
+// identical one already completed. It carries NO Retry-After for the same
+// reason [respondOutcomeUnknown] carries none: no amount of waiting inside the
+// retention window produces the missing body.
+//
+// It does not set [constants.IdempotencyReplayed]: nothing was replayed, and
+// claiming otherwise would tell the client it just received the original
+// response. It never falls through to [WithPostHandlerUnavailableHandler],
+// whose instruction is the one this case must not give.
+func (m *Middleware) respondReplayUnavailable(c fiber.Ctx) error {
+	if m.onReplayUnavailable != nil {
+		return m.onReplayUnavailable(c)
+	}
+
+	return libHTTP.RespondError(c, http.StatusConflict,
+		"IDEMPOTENCY_REPLAY_UNAVAILABLE",
+		"the request with this idempotency key already completed successfully, but its response was too large "+
+			"to store for replay; resending under this key will not execute the operation again and will not "+
+			"reproduce that response",
+	)
+}
+
 func (m *Middleware) handle(c fiber.Ctx) error {
 	// Idempotency only applies to mutating methods.
 	switch c.Method() {
@@ -1143,8 +1223,13 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 	// it would hand the record to m.replay. (Checking it here rather than
 	// inside the complete arm is placement, not the invariant: what must not
 	// happen is a replay attempt on a record whose outcome was never recorded.)
-	if current.Outcome == outcomeUnrecorded {
+	switch current.Outcome {
+	case outcomeUnrecorded:
 		return m.respondOutcomeUnknown(c)
+	case outcomeNotReplayable:
+		// A real completion with no receipt: the original response was over the
+		// body-cache bound and was delivered without being stored.
+		return m.respondReplayUnavailable(c)
 	}
 
 	switch current.State {
@@ -1219,7 +1304,23 @@ func (m *Middleware) handleStoreAcquired(
 	}
 
 	response, err := m.captureResponse(postCtx, c)
-	if err != nil {
+
+	switch {
+	// A response over the bound is not a fault. The handler ran and committed,
+	// and the client is owed that success exactly as written — so this path
+	// neither authors a document of its own nor fences the key. It COMPLETES
+	// the record, marked as carrying no replayable receipt, which is what stops
+	// a resend from executing the mutation a second time once the in-flight
+	// lease lapses. The alternative shipped before this was strictly worse: the
+	// committed mutation was reported to its client as a 503 store failure.
+	case errors.Is(err, errResponseTooLarge):
+		m.logger.Log(postCtx, obs.LevelWarn,
+			"idempotency: replay response exceeds the configured limit; completing the key without a replayable receipt",
+			"error", err)
+
+		response = nil
+		record.Outcome = outcomeNotReplayable
+	case err != nil:
 		m.logger.Log(postCtx, obs.LevelWarn, "idempotency: failed to capture replay response", "error", err)
 
 		return m.failPostHandler(c, key, processing, record, ttl)

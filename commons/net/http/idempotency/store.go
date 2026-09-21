@@ -26,8 +26,10 @@ type storeRecord struct {
 	Owner       string `json:"owner"`
 	Response    []byte `json:"response,omitempty"`
 	// Outcome is empty for an ordinary record. outcomeUnrecorded marks a key
-	// spent by a request that left no recorded outcome, and readers that know
-	// the field route on it BEFORE State.
+	// spent by a request that left no recorded outcome; outcomeNotReplayable
+	// marks a request that SUCCEEDED and whose response was too large to store,
+	// so the completion is real and only the receipt is missing. Readers that
+	// know the field route on it BEFORE State.
 	Outcome string `json:"outcome,omitempty"`
 }
 
