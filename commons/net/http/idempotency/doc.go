@@ -336,6 +336,24 @@
 // because none was ever stored: capture or persistence is exactly what failed,
 // so replaying anything here would report an outcome nobody recorded.
 //
+// # What changed for an over-cap response
+//
+// This is the one behaviour in this package a v7 minor changed under a consumer
+// that was already wired, so it is called out rather than left to be discovered.
+// Before it, a response whose body exceeded [WithMaxBodyCache] was treated as a
+// capture FAILURE: the original request was answered 503
+// "IDEMPOTENCY_UNAVAILABLE" with the [constants.IdempotencyFenced] header set,
+// and its resend 422 "IDEMPOTENCY_OUTCOME_UNRECORDED" — both of them through
+// [WithPostHandlerUnavailableHandler], so a service that wired that seam
+// answered both with its own document.
+//
+// Now the handler's response is delivered unchanged and the resend is 409
+// [RefusalCodeReplayUnavailable], which deliberately never reaches that seam:
+// [WithReplayUnavailableHandler] is the only thing that owns it. A service with
+// a route whose responses can exceed the cap must wire the new seam, or its
+// clients meet the library's raw envelope on a status and code pair the old
+// behaviour never produced.
+//
 // # Mixed versions during a rolling upgrade
 //
 // The terminal mark is a FIELD on the stored record, not a third state value,
