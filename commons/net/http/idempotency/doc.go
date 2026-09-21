@@ -358,6 +358,16 @@
 // population self-heals within one retention window, as those records expire and
 // every new one holds only the handler's delta.
 //
+// [WithFingerprintProvider] crosses a rolling upgrade differently, because what
+// changes is not the record's shape but the DIGEST inside it. Turning the option
+// on — or changing the bytes an existing provider returns — makes the same
+// logical request hash differently on the two halves of the rollout, so a retry
+// whose original was recorded by the old half is refused "IDEMPOTENCY_KEY_REUSE"
+// by the new one. That is the safe side of the gate and nothing executes twice,
+// but a caller retrying a large upload is turned away until the original record
+// expires. Give the route a retention TTL shorter than the rollout, or accept
+// one retention window of that refusal on retries that straddle the deploy.
+//
 // The same problem points FORWARD, and is closed the same way. This encoding
 // protects a future reader from what this version writes; nothing in it
 // protects THIS reader from what a future version writes. So an existing record

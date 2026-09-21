@@ -429,6 +429,17 @@ func WithFingerprintScopeProvider(provider FingerprintScopeProvider) Option {
 // the [WithUnavailableHandler] document: nothing has run, so retrying is the
 // correct instruction, and a request whose identity cannot be established must
 // not run unprotected.
+//
+// TURNING THIS ON CHANGES THE DIGEST of the same logical request, so a retry
+// that straddles the deploy is refused "IDEMPOTENCY_KEY_REUSE": the original
+// was fingerprinted by a pod that hashed the body, the retry by one that hashes
+// the provider's bytes, and the fingerprint gate reads that as a different
+// request under a spent key. Nothing executes twice — the refusal is the safe
+// side — but a caller retrying a large upload is turned away until the original
+// record expires. Either give the route a retention TTL shorter than the
+// rollout (see [WithKeyTTL] and [WithTTLProvider]) or accept one retention
+// window of that refusal on retries crossing the deploy. Changing the bytes an
+// existing provider returns has exactly the same effect, for the same reason.
 func WithFingerprintProvider(provider FingerprintProvider) Option {
 	return func(m *Middleware) {
 		if provider != nil {
