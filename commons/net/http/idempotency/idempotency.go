@@ -1343,7 +1343,7 @@ func (m *Middleware) handleStoreAcquired(
 		return handlerErr
 	}
 
-	response, err := m.captureResponse(postCtx, c, beforeHandler)
+	response, err := m.captureResponse(postCtx, c, key, beforeHandler)
 
 	switch {
 	// A response over the bound is not a fault. The handler ran, the client is
@@ -1363,10 +1363,18 @@ func (m *Middleware) handleStoreAcquired(
 	// re-execute a rejection path the owner asked to have cached, while the
 	// shorter report would not. A body size must not decide it.
 	case errors.Is(err, errResponseTooLarge):
+		// Named the same way as the fence logs, and for the same reason: this
+		// branch makes the key permanently unreplayable for its whole retention,
+		// so every resend under it is refused 409. An operator asked why has to
+		// find the one record, and "a response was too large" with no key is not
+		// an answer. The key travels as a digest; see logFenceFailure.
 		m.logger.Log(postCtx, obs.LevelWarn,
 			"idempotency: replay response exceeds the configured limit; completing the key without a replayable receipt",
 			"error", err,
-			"status_code", statusCode)
+			"status_code", statusCode,
+			"idempotency_key_digest", keyDigest(key),
+			"tenant_id", tmcore.GetTenantIDContext(postCtx),
+		)
 
 		response = nil
 		record.Outcome = outcomeNotReplayable
@@ -1565,13 +1573,18 @@ func keyDigest(key string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (m *Middleware) captureResponse(ctx context.Context, c fiber.Ctx, beforeHandler headerSnapshot) ([]byte, error) {
+// captureResponse encodes what the replay will re-send. key is carried for the
+// log line alone: the size branch below is the one place this function can end a
+// key's replayability, and the caller's companion WARN names the same record.
+func (m *Middleware) captureResponse(ctx context.Context, c fiber.Ctx, key string, beforeHandler headerSnapshot) ([]byte, error) {
 	body := c.Response().Body()
 	if len(body) > m.maxBodyCache {
 		m.logger.Log(c.Context(), obs.LevelWarn,
 			"idempotency: response body exceeds maxBodyCache, skipping cache",
 			"body_size", len(body),
 			"max_body_cache", m.maxBodyCache,
+			"idempotency_key_digest", keyDigest(key),
+			"tenant_id", tmcore.GetTenantIDContext(c.Context()),
 		)
 
 		return nil, errResponseTooLarge
