@@ -423,3 +423,56 @@ func TestReplay_FullCaptureFromOlderVersion_ReplacesLiveHeaders(t *testing.T) {
 		"an older full capture replays with replace semantics, unchanged by this version")
 	assert.Equal(t, "/jobs/7", resp.Header.Get(fiber.HeaderLocation))
 }
+
+// TestReplay_HandlerDeletesHeaderSetAbove_ReplayHasItGoneToo covers the
+// authorship case the delta cannot see by looking only at what is live after
+// the handler: a name the handler REMOVED.
+//
+// helmet mounted with app.Use sets X-Frame-Options on every response, and a
+// route serving a receipt meant to render inside a partner iframe deletes it.
+// The original response therefore carries no X-Frame-Options and the iframe
+// renders. On the duplicate, helmet sets the header again above the middleware,
+// and unless the capture records the deletion nothing clears it — so the replay
+// of a response that ALLOWED framing arrives forbidding it, and the partner's
+// page breaks on the retry and not on the first attempt.
+func TestReplay_HandlerDeletesHeaderSetAbove_ReplayHasItGoneToo(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	conn := newRedisClient(t, mr)
+	m := New(conn)
+
+	var runs atomic.Int32
+
+	app := fiber.New()
+	app.Use(tenantMiddleware("tenant-deleted-header"))
+	app.Use(func(c fiber.Ctx) error {
+		c.Set(fiber.HeaderXFrameOptions, "SAMEORIGIN")
+		c.Set(fiber.HeaderXContentTypeOptions, "nosniff")
+
+		return c.Next()
+	})
+	app.Use(m.Check())
+	app.Post("/test", func(c fiber.Ctx) error {
+		runs.Add(1)
+		c.Response().Header.Del(fiber.HeaderXFrameOptions)
+
+		return c.Status(fiber.StatusCreated).JSON(fiber.Map{"status": "created"})
+	})
+
+	resp1 := doPost(t, app, "deleted-header-key")
+	readBody(t, resp1)
+	require.Equal(t, http.StatusCreated, resp1.StatusCode)
+	require.Empty(t, resp1.Header.Get(fiber.HeaderXFrameOptions),
+		"the handler deleted it, so the original response never carried it")
+
+	resp2 := doPost(t, app, "deleted-header-key")
+	readBody(t, resp2)
+
+	require.Equal(t, "true", resp2.Header.Get(chttp.IdempotencyReplayed))
+	require.Equal(t, int32(1), runs.Load(), "the handler must have run exactly once")
+	assert.Empty(t, resp2.Header.Get(fiber.HeaderXFrameOptions),
+		"the replay must reproduce the response the handler wrote, including what it removed")
+	assert.Equal(t, []string{"nosniff"}, resp2.Header.Values(fiber.HeaderXContentTypeOptions),
+		"a header set above that the handler left alone still belongs to THIS request")
+}

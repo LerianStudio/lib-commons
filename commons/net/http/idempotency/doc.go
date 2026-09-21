@@ -223,8 +223,8 @@
 //
 // The capture is the HANDLER's contribution to the response, not the whole
 // response. The middleware snapshots the response headers immediately before
-// calling the handler and stores only what changed: the names the handler added
-// or overwrote, and — Set-Cookie being identified by cookie name rather than by
+// calling the handler and stores only what changed: the names the handler added,
+// overwrote or removed, and — Set-Cookie being identified by cookie name rather than by
 // header name — the cookies it added or changed. On a replay each captured name
 // is REPLACED (cleared, then re-applied whole and in order) and every other live
 // header stays.
@@ -243,6 +243,14 @@
 //     turned into "no-store" on a receipt route: CAPTURED, and the replay
 //     applies the handler's value over the live one, because that is what the
 //     original response carried.
+//   - Set above and then DELETED by the handler — helmet's X-Frame-Options
+//     removed so a receipt can render in a partner iframe: captured as a
+//     removal, and the replay clears the name the middleware above has just set
+//     again on the duplicate. Removing a header is as much the handler's
+//     contribution as setting one. The one exception is a COOKIE the handler
+//     deleted: Set-Cookie is identified by cookie name rather than header name
+//     and a removal has no value to re-apply, so a cookie minted above and
+//     deleted by the handler stays live on the replay.
 //   - Content-Type, Content-Length, Transfer-Encoding and
 //     [constants.IdempotencyReplayed] are never captured: the content type
 //     travels as its own field, and the other three describe the transfer of

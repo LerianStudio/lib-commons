@@ -1630,6 +1630,21 @@ type headerSnapshot struct {
 	cookies map[string]string
 }
 
+// isUncapturedHeader names what the capture never stores, on either side of the
+// handler: the content type travels as its own field, and the other three
+// describe the transfer of one particular response rather than its content.
+//
+// The snapshot honours the same list, so a name excluded from the post-handler
+// walk can never look DELETED to the delta below.
+func isUncapturedHeader(name string) bool {
+	switch name {
+	case "Content-Type", "Content-Length", "Transfer-Encoding", chttp.IdempotencyReplayed:
+		return true
+	default:
+		return false
+	}
+}
+
 func snapshotResponseHeaders(c fiber.Ctx) headerSnapshot {
 	snapshot := headerSnapshot{
 		headers: make(map[string][]string),
@@ -1638,6 +1653,10 @@ func snapshotResponseHeaders(c fiber.Ctx) headerSnapshot {
 
 	for hdrKey, value := range c.Response().Header.All() {
 		name := string(hdrKey)
+		if isUncapturedHeader(name) {
+			continue
+		}
+
 		if name == fiber.HeaderSetCookie {
 			if cookieName, ok := capturedCookieName(string(value)); ok {
 				snapshot.cookies[cookieName] = string(value)
@@ -1674,8 +1693,7 @@ func captureHeaderDelta(c fiber.Ctx, beforeHandler headerSnapshot) map[string][]
 
 	for hdrKey, value := range c.Response().Header.All() {
 		name := string(hdrKey)
-		switch name {
-		case "Content-Type", "Content-Length", "Transfer-Encoding", chttp.IdempotencyReplayed:
+		if isUncapturedHeader(name) {
 			continue
 		}
 
@@ -1697,6 +1715,25 @@ func captureHeaderDelta(c fiber.Ctx, beforeHandler headerSnapshot) map[string][]
 	for name, values := range live {
 		if !slices.Equal(values, beforeHandler.headers[name]) {
 			delta[name] = values
+		}
+	}
+
+	// Removing a name is a contribution too, and the loop above cannot see it:
+	// a header the handler DELETED is absent from live, so nothing compares it
+	// against the snapshot. Left unrecorded, the replay never clears it and a
+	// duplicate receives a header the original response did not carry — helmet's
+	// X-Frame-Options back on a receipt the handler deliberately made
+	// embeddable, a Cache-Control the handler stripped. An empty value list is
+	// the record of that: the replay clears the name and re-applies nothing.
+	//
+	// Cookie removals are deliberately NOT tracked. Set-Cookie is identified by
+	// cookie name rather than header name, so a removal would have to store a
+	// name with no value to re-apply, and every value in this map is also an Add
+	// on replay. A handler that deletes a cookie another middleware minted keeps
+	// the live one on the duplicate; doc.go says so.
+	for name := range beforeHandler.headers {
+		if _, stillLive := live[name]; !stillLive {
+			delta[name] = nil
 		}
 	}
 
