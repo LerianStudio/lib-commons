@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	chttp "github.com/LerianStudio/lib-commons/v7/commons/constants"
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
@@ -348,4 +349,49 @@ func TestOversizeResponse_EncodedOutputOverTheBoundCompletes(t *testing.T) {
 	assert.Equal(t, int32(1), calls.Load())
 	assert.Equal(t, http.StatusConflict, second.StatusCode)
 	assert.Contains(t, secondBody, RefusalCodeReplayUnavailable)
+}
+
+// TestOversizeResponse_BothWarningsNameTheRecord pins the only per-key trace an
+// operator has of a key that will refuse every resend for its whole retention.
+//
+// This branch completes the record with no receipt, so once it fires every
+// resend under that key is answered 409 IDEMPOTENCY_REPLAY_UNAVAILABLE until the
+// record expires. Someone paged because a settlement route is answering a stream
+// of those has to find the one record behind them, and "a response was too
+// large" with neither a tenant nor a key is not an answer. Both WARN lines
+// therefore carry the pair the fence logs already use, and the pair is what this
+// test holds: measured, deleting it from either line left the whole package
+// green.
+func TestOversizeResponse_BothWarningsNameTheRecord(t *testing.T) {
+	t.Parallel()
+
+	const (
+		tenantID  = "tenant-oversize-warnings"
+		clientKey = "oversize-key"
+	)
+
+	logger := &recordingLogger{}
+
+	app, calls := newOversizeApp(t, tenantID, WithLogger(logger))
+
+	response := postBodyWithKey(t, app, clientKey, `{"amount":"1250.00"}`)
+	require.Equal(t, http.StatusCreated, response.StatusCode)
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, int32(1), calls.Load())
+
+	digest := keyDigest("idempotency:" + tenantID + ":" + clientKey)
+
+	for _, substring := range []string{
+		// captureResponse, where the size is measured.
+		"response body exceeds maxBodyCache",
+		// handleStoreAcquired, where the key is completed without a receipt.
+		"completing the key without a replayable receipt",
+	} {
+		line := logger.find(t, obs.LevelWarn, substring)
+
+		assert.Equal(t, digest, line.kv["idempotency_key_digest"],
+			"%q must name the record it made unreplayable, as a digest and never the raw key", substring)
+		assert.Equal(t, tenantID, line.kv["tenant_id"],
+			"%q must name the tenant whose key it spent", substring)
+	}
 }
