@@ -29,7 +29,7 @@ This lane owns `commons/net/http/idempotency/**` and this file, plus the `common
 
 | Phase | Milestone | Epics | Status |
 |-------|-----------|-------|--------|
-| 1 | a consumer with streamed or multipart requests, global response-header middleware, or success bodies above the cache cap can mount the middleware without re-executing a mutation or duplicating headers | 1.1 | Detailed |
+| 1 | a consumer with streamed or multipart requests, global response-header middleware, or success bodies above the cache cap can mount the middleware without re-executing a mutation or duplicating headers | 1.1, 1.2, 1.3 | In progress — Epic 1.3 (review round 2 residue) |
 
 ## Phase 1
 
@@ -162,6 +162,52 @@ This lane owns `commons/net/http/idempotency/**` and this file, plus the `common
 **Verification:** `grep -o 'WithFingerprintProvider\|WithReplayUnavailableHandler\|IDEMPOTENCY_REPLAY_UNAVAILABLE' README.md | sort -u | wc -l` prints 3; `grep -n 'cannot be captured' README.md` prints nothing.
 
 **Done when:** no clause of the bullet contradicts the package; the record carries the correction.
+
+
+### Epic 1.3: Review round 2 residue (added by the orchestrator, 2026-09-21)
+
+**Goal:** every comment, doc table and record in this branch states the behaviour that ships after the round-2 self-heal (`d058590`, `a14b4cc`, `408486a`), the one test that went vacuous when the capture narrowed to a delta bites again, and an over-cap completion is traceable from its WARN line to the 409 it will cause.
+**Scope:** `commons/net/http/idempotency/{store.go,doc.go,idempotency.go,replay_headers_test.go}`, `README.md:67`, this plan, and — carve-out widened by the orchestrator 2026-09-21 — the `net/http/idempotency` rows of `docs/PROJECT_RULES.md` (nothing else in that file).
+**Dependencies:** Epic 1.2 (landed).
+**Done when:** `go test -tags=unit -race -count=1 ./commons/net/http/idempotency/...` green; `go vet -tags=unit ./commons/net/http/...` clean; the two tasks ticked; no sentence in the tree says an over-cap 4xx releases the key.
+**Status:** Pending
+
+**Orchestrator ruling recorded here (2026-09-21):** decision (a) of Task 1.2.2 — "an over-cap 4xx releases the key whatever the policy" — is REVERSED and the self-heal's `d058590` stands. `WithClientErrorPolicy` is the one knob that decides whether a rejection may re-execute; a size arm that overrode it under the default `ClientErrorPolicyCache` was the library second-guessing the application. An over-cap response of any status is delivered unchanged and completes its key with no receipt; a resend is refused 409 `IDEMPOTENCY_REPLAY_UNAVAILABLE`; `ClientErrorPolicyRelease` still releases every 4xx before capture. The consumer chooses: Matcher's lib-swap branch decides its policy with Fred.
+
+#### Task 1.3.1: The code says what it does, and the global-middleware test bites again
+
+- [ ] Done
+
+**Context:** four sentences and one test fell behind the self-heal. (a) `store.go:28-33` says `outcomeNotReplayable` "marks a request that SUCCEEDED"; since `d058590` the same mark is stamped on an over-cap 4xx held under `ClientErrorPolicyCache` (`idempotency.go:~1372`) (F3/F9). (b) `doc.go:~364-370` says a record written by a full-capture version "replays under this version exactly as it did under the one that wrote it: replace semantics"; the only released version that writes full captures replays with a bare `Header.Add` loop (`origin/develop` `idempotency.go:1419-1423`) — replace semantics were never released (F4). (c) `doc.go:~228-240`, the consequence table, promises a per-request header stays live without the precondition that makes it true: the snapshot is taken at `idempotency.go:~1309` immediately before `c.Next()`, so only middleware mounted ABOVE `m.Check()` is "above"; anything written during `c.Next()`, including middleware mounted below `Check()`, lands in the handler delta (F8). (d) the over-cap WARN at `idempotency.go:~1367` logs `error` and `status_code`, and the companion line in `captureResponse` (~`:1571`) logs `body_size` and `max_body_cache`; neither names the tenant or the key, although the branch makes that key permanently unreplayable for its retention (F6). (e) `TestReplay_GlobalHeaderMiddleware_NoDuplicatedHeaders` (`replay_headers_test.go:~52-70`): cors and helmet set their headers before `c.Next()`, so after Task 1.2.1 that app's capture is EMPTY, the replay's header loop never runs, the 8-line comment ("also inside the captured set") is false, and deleting `clearCapturedHeader` leaves the test green (F2/F5).
+
+**Implementation vision:** (a) rewrite the `Outcome` comment: `outcomeNotReplayable` marks a request whose response was delivered but exceeded the body cap — a success, or a rejection the client-error policy chose to hold — so the completion is real and only the receipt is missing. (b) rewrite the mixed-version sentence: such a record replays under this version with replace semantics over the names it holds, where the version that wrote it added blindly and could duplicate a live header; the duplicate still receives the original request's correlation id and captured CSRF token until the record expires. (c) add one sentence before the table: "above" means mounted before `m.Check()`; everything written during `c.Next()` is the handler's, whoever wrote it. (d) both WARN lines gain the fields the rest of the file already uses to identify a record (`grep -n '"key"\|key_digest\|tenant' idempotency.go` and reuse the existing name; if none exists, log `tenant_id` and `key_digest` = the first 16 hex of SHA-256 over the storage key, never the raw client key). (e) rewrite the test so its handler ALSO sets one header helmet already set (e.g. `X-Frame-Options: ALLOWALL`) — that name now enters the delta — and assert the replay carries exactly one value of it (the handler's) while the untouched cors/helmet names stay live with one value each; rewrite the comment to that mechanism. RED first: with `clearCapturedHeader` removed, the replay carries two `X-Frame-Options` values and the test fails; restore, green.
+
+**Files:**
+- Modify: `commons/net/http/idempotency/store.go:28-33`
+- Modify: `commons/net/http/idempotency/doc.go` (the two passages)
+- Modify: `commons/net/http/idempotency/idempotency.go` (the two WARN lines)
+- Modify: `commons/net/http/idempotency/replay_headers_test.go`
+
+**Verification:** `go test -tags=unit -race -count=1 ./commons/net/http/idempotency/...` green; the RED excerpt for (e) recorded below this task.
+
+**Done when:** the four passages are true at HEAD and the global-middleware test fails when the clear step is deleted.
+
+#### Task 1.3.2: The records say what shipped
+
+- [ ] Done
+
+**Context:** three places in this plan still carry decision (a) as landed: Task 1.2.2's Result paragraph (`:~133`: over-cap 4xx releases; `outcomeNotReplayable` 2xx-only; three release sites share `releaseOwned`), Task 1.2.3's Result (`:~153`: README rewritten to "RELEASED"), and bug row B1 (`:~171`, ends "so an over-cap 4xx now RELEASES the key"); only the self-heal note and row B5 carry the correction (F1/F7/F10). `README.md:67` must be read at HEAD and made to state the shipped behaviour if `38a3ebc` (written before the reversal) still says "RELEASES". `docs/PROJECT_RULES.md`'s `net/http/idempotency` row beginning "Exact replay is mandatory after a handler succeeds" says every capture fault returns 503 `IDEMPOTENCY_UNAVAILABLE` and lists options without `WithFingerprintProvider`, `WithReplayUnavailableHandler`, `WithMaxBodyCache`, `WithClientErrorPolicy` or the fourth refusal code (round-2 finding 2, outside the old carve-out; carve-out widened to these rows only).
+
+**Implementation vision:** in the plan, correct each of the three passages IN PLACE with a dated clause ("reversed 2026-09-21 by `d058590`: …"), so the lowest-numbered row a reader finds is already right; do not move the correction elsewhere. README:67: the over-cap clause reads "an over-cap response of any status is delivered unchanged and completes its key with no receipt; the resend is refused 409 `IDEMPOTENCY_REPLAY_UNAVAILABLE`; `ClientErrorPolicyRelease` still releases every 4xx before capture". PROJECT_RULES: rewrite that one row to the same truth — marshalling, codec, completion, stale-owner, missing-response and decode faults return 503 `IDEMPOTENCY_UNAVAILABLE`; a response above `WithMaxBodyCache` is not a fault; the four refusal codes; the options list complete — and touch no other row. Close the "## Bugs found outside this package" row for PROJECT_RULES as fixed by this task.
+
+**Files:**
+- Modify: `docs/plans/2026-09-21-idempotency-consumer-gaps.md` (the three passages, this epic's ticks)
+- Modify: `README.md:67`
+- Modify: `docs/PROJECT_RULES.md` (the `net/http/idempotency` rows only — carve-out)
+
+**Verification:** `grep -rn -i 'releases the key\|RELEASES' README.md docs/PROJECT_RULES.md docs/plans/2026-09-21-idempotency-consumer-gaps.md` returns only sentences that name the reversal or `ClientErrorPolicyRelease`.
+
+**Done when:** a reader of any of the three documents learns the shipped behaviour on first contact.
 
 
 ## Bugs found
