@@ -29,7 +29,7 @@ This lane owns `commons/net/http/idempotency/**` and this file, plus the `common
 
 | Phase | Milestone | Epics | Status |
 |-------|-----------|-------|--------|
-| 1 | a consumer with streamed or multipart requests, global response-header middleware, or success bodies above the cache cap can mount the middleware without re-executing a mutation or duplicating headers | 1.1, 1.2, 1.3 | In progress — Epic 1.3 (review round 2 residue) |
+| 1 | a consumer with streamed or multipart requests, global response-header middleware, or success bodies above the cache cap can mount the middleware without re-executing a mutation or duplicating headers | 1.1, 1.2, 1.3, 1.4 | In progress — Epic 1.4 (review round 3 residue) |
 
 ## Phase 1
 
@@ -227,6 +227,37 @@ The same mutation against the test as it stood at `f8188a5` printed `ok` — mea
 **Verification:** `grep -rn -i 'releases the key\|RELEASES' README.md docs/PROJECT_RULES.md docs/plans/2026-09-21-idempotency-consumer-gaps.md` returns only sentences that name the reversal or `ClientErrorPolicyRelease`.
 
 **Done when:** a reader of any of the three documents learns the shipped behaviour on first contact.
+
+
+### Epic 1.4: Review round 3 residue (added by the orchestrator, 2026-09-21)
+
+**Goal:** the connection-retirement guard that round 3 added says when it fires and is tested on both halves — a replay with a provider, and a refusal with none — and the behaviour it adds is written where a consumer reads.
+**Scope:** `commons/net/http/idempotency/{idempotency.go,doc.go,fingerprint_provider_test.go,replay_headers_test.go}`, `README.md:67`, this plan.
+**Dependencies:** Epic 1.3 (landed).
+**Done when:** `go test -tags=unit -race -count=1 ./commons/net/http/idempotency/...` green; the task ticked; the Phase Overview row for Phase 1 reads `Complete`.
+**Status:** Pending
+
+**Stop rule (orchestrator, 2026-09-21):** this is the last harness round for this branch. Findings after it that change no behaviour — comments, records, messages — are fixed by the orchestrator directly or accepted with a written reason, and the pull request opens.
+
+#### Task 1.4.1: The retirement guard's contract is stated, tested on the refusal half, and documented for consumers
+
+- [ ] Done
+
+**Context:** commit `03f8fb1` added `retireUnreadRequestStream` (`idempotency.go:~814-830`): when the middleware answers instead of the handler while the request body is still a stream, it sets `Connection: close`, because nothing downstream will ever drain that body and the next request on the keep-alive connection would read it as its own. Its doc comment says "nothing fires without a provider". That is false and the behaviour is right: `handle()` registers the deferred guard (`:~1103`) BEFORE the five refusal paths that return without reaching `resolveFingerprint` (`:~1161`, the only site that calls `c.Body()` and thereby drains the stream) — over-length key, missing required key, and their siblings — so on a `StreamRequestBody` route with no provider a refusal also retires the connection, correctly, and no test covers that half (F1/F2/F4, measured by the reviewers over a real keep-alive connection with a 70 KiB body and an over-length key). Two small items: `TestReplay_LiveCookieFromOtherMiddleware_Survives`'s csrf assertion message (`replay_headers_test.go:~260`) claims to guard captured-cookie-name de-duplication, but under the delta capture the csrf cookie is never captured (F3); and `Connection: close` on a replay or refusal of a streamed request is consumer-visible behaviour stated in no consumer-facing document (F5).
+
+**Implementation vision:** (a) rewrite the guard's doc comment to the true rule: it fires whenever the middleware answers without running the handler and the body is still a stream — a replay under a fingerprint provider, or any refusal that returns before the fingerprint read — and stays silent when the handler ran or when `c.Body()` already drained the stream. (b) extend `TestFingerprintProvider_StreamedDuplicate_LeavesTheConnectionUsable`'s raw HTTP/1.1 harness with the refusal half: a `StreamRequestBody: true` app, NO provider, `WithMaxKeyLength(8)`, a 70 KiB POST under an over-length key on a keep-alive connection, then a second well-formed request on the same connection — assert the refusal carries `Connection: close`, the client reconnects and the second request is answered, and (RED) with the guard's deferred call removed the second request is reset or misparsed. Name the test for what it pins (`TestRefusal_StreamedBodyUnread_RetiresTheConnection`). (c) csrf message: say what it asserts — the live, per-request csrf value survives because the cookie is never captured — and nothing about de-duplication; the DelCookie loop is pinned by `TestReplay_LiveCookieCollidesWithCapturedName_ReplacedNotDuplicated`. (d) document the behaviour once in `doc.go` (a short paragraph under the streamed/multipart discussion: what happens, why, what a pooled client sees — one reconnect, no lost request) and one clause in `WithFingerprintProvider`'s godoc pointing at it; the README bullet gains the words "answers to a streamed request that the middleware refuses or replays close the connection". Then flip the Phase Overview row to `Complete` and tick this task.
+
+**Files:**
+- Modify: `commons/net/http/idempotency/idempotency.go` (the doc comment only)
+- Modify: `commons/net/http/idempotency/fingerprint_provider_test.go`
+- Modify: `commons/net/http/idempotency/replay_headers_test.go:~260`
+- Modify: `commons/net/http/idempotency/doc.go`
+- Modify: `README.md:67`
+- Modify: `docs/plans/2026-09-21-idempotency-consumer-gaps.md`
+
+**Verification:** `go test -tags=unit -race -count=1 ./commons/net/http/idempotency/...` green; the RED excerpt for (b) recorded below this task.
+
+**Done when:** the guard's comment, its two tests and the consumer docs agree on one rule.
 
 
 ## Bugs found
