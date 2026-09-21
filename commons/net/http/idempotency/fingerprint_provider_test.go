@@ -389,3 +389,66 @@ func TestWithFingerprintProvider_NilIsIgnored(t *testing.T) {
 	assert.Equal(t, "IDEMPOTENCY_KEY_REUSE", decodeErrorBody(t, resp).Title)
 	assert.Equal(t, int32(1), called.Load())
 }
+
+// TestFingerprintProvider_DifferentIdentityIsReuse pins the direction every
+// other provider test leaves open: the provider's bytes must actually REACH the
+// digest. Without this, a refactor that called the provider for its error and
+// then dropped its result would keep the whole suite green, and a client
+// uploading june.csv and then july.csv under one key would be answered with the
+// first upload's receipt without the handler ever running — a statement file
+// silently discarded and reported as ingested.
+//
+// The raw body is identical in both requests, so the provider's bytes are the
+// only thing that can tell them apart.
+func TestFingerprintProvider_DifferentIdentityIsReuse(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name         string
+		secondUpload string
+		wantStatus   int
+	}{
+		{name: "same_identity_replays", secondUpload: "june.csv", wantStatus: http.StatusCreated},
+		{name: "different_identity_is_reuse", secondUpload: "july.csv", wantStatus: http.StatusUnprocessableEntity},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			conn := newRedisClient(t, miniredis.RunT(t))
+
+			var called atomic.Int32
+
+			m := New(conn, WithFingerprintProvider(func(c fiber.Ctx) ([]byte, error) {
+				return []byte(c.Get("X-Upload")), nil
+			}))
+
+			app := uploadApp(m.Check(), &called)
+
+			upload := func(filename string) *http.Response {
+				req := httptest.NewRequest(http.MethodPost, "/test",
+					strings.NewReader(`{"ledger":"main"}`))
+				req.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+				req.Header.Set(chttp.IdempotencyKey, "k1")
+				req.Header.Set("X-Upload", filename)
+
+				resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
+				require.NoError(t, err)
+
+				return resp
+			}
+
+			first := upload("june.csv")
+			require.Equal(t, http.StatusCreated, first.StatusCode)
+			require.NoError(t, first.Body.Close())
+
+			second := upload(testCase.secondUpload)
+			defer second.Body.Close()
+
+			assert.Equal(t, testCase.wantStatus, second.StatusCode)
+			assert.Equal(t, int32(1), called.Load(),
+				"the handler runs once whichever way the second request is answered")
+		})
+	}
+}
