@@ -1082,9 +1082,6 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 		return m.onStoreError(c)
 	}
 
-	ctx, cancel := context.WithTimeout(c.Context(), m.redisTimeout)
-	defer cancel()
-
 	fingerprint, err := m.resolveFingerprint(c)
 	if err != nil {
 		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: fingerprint provider failed", "error", err)
@@ -1102,6 +1099,16 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 		// reconcile a mutation that never happened.
 		return m.respondUnavailable(c)
 	}
+
+	// The deadline opens HERE, after the application's providers have run and
+	// not before them. [WithRedisTimeout] is a budget for the store, and a
+	// [WithFingerprintProvider] that walks a multipart request or reads an
+	// upload manifest is the application's own I/O: charging it to the store
+	// left a slow provider's first store call timing out against a healthy
+	// store, and under the fail-open default the mutation then ran with no key
+	// held at all.
+	ctx, cancel := context.WithTimeout(c.Context(), m.redisTimeout)
+	defer cancel()
 
 	return m.handleStore(ctx, c, key, fingerprint, ttl)
 }

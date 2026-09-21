@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	chttp "github.com/LerianStudio/lib-commons/v7/commons/constants"
 	"github.com/alicebob/miniredis/v2"
@@ -451,4 +452,56 @@ func TestFingerprintProvider_DifferentIdentityIsReuse(t *testing.T) {
 				"the handler runs once whichever way the second request is answered")
 		})
 	}
+}
+
+// TestFingerprintProvider_SlowProviderIsNotChargedToTheStoreDeadline pins whose
+// clock the provider runs on.
+//
+// The provider is the application's code and it reads the request: a multipart
+// identity walks the parts, a streamed upload reads its manifest. That work
+// belongs to the request, not to the store — but the middleware used to open the
+// store's deadline before calling it, so a provider slower than
+// [WithRedisTimeout] left nothing of the budget for the first store call. That
+// call then failed on a perfectly healthy store, and the fail-open default did
+// what it exists to do: it ran the mutation UNPROTECTED. Every request on the
+// route took that path, so no key was ever held and a duplicate executed again.
+func TestFingerprintProvider_SlowProviderIsNotChargedToTheStoreDeadline(t *testing.T) {
+	t.Parallel()
+
+	conn := newRedisClient(t, miniredis.RunT(t))
+	m := New(conn,
+		WithRedisTimeout(50*time.Millisecond),
+		WithFingerprintProvider(func(fiber.Ctx) ([]byte, error) {
+			// Not CPU work: this stands in for reading the request's identity,
+			// which is I/O the store's budget must not be charged for.
+			time.Sleep(150 * time.Millisecond)
+
+			return []byte("upload:june.csv:4096"), nil
+		}),
+	)
+
+	var calls atomic.Int32
+
+	app := fiber.New()
+	app.Use(tenantMiddleware("t1"))
+	app.Use(m.Check())
+	app.Post("/test", func(c fiber.Ctx) error {
+		calls.Add(1)
+
+		return c.Status(fiber.StatusCreated).SendString(`{"id":"9f1c"}`)
+	})
+
+	first := postBody(t, app, "slow-provider-key", fiber.MIMEApplicationJSON, []byte(`{"amount":"1250.00"}`))
+	require.Equal(t, http.StatusCreated, first.StatusCode)
+	require.NoError(t, first.Body.Close())
+
+	second := postBody(t, app, "slow-provider-key", fiber.MIMEApplicationJSON, []byte(`{"amount":"1250.00"}`))
+	body := readBody(t, second)
+
+	assert.Equal(t, int32(1), calls.Load(),
+		"the store was healthy and the key was held, so the duplicate must not reach the handler")
+	assert.Equal(t, http.StatusCreated, second.StatusCode)
+	assert.JSONEq(t, `{"id":"9f1c"}`, body)
+	assert.Equal(t, "true", second.Header.Get(chttp.IdempotencyReplayed),
+		"the first request left a record, which is what proves its store call was never timed out")
 }
