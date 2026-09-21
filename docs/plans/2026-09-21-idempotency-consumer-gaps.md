@@ -23,7 +23,7 @@ A defect in this package found while working: RED test, fix, `fix(net):` commit 
 
 ## Ownership carve-outs
 
-This lane owns `commons/net/http/idempotency/**` and this file. Nothing else.
+This lane owns `commons/net/http/idempotency/**` and this file, plus the `commons/net/http/idempotency` bullet of `README.md` (widened by the orchestrator on 2026-09-21 after review round 1). Nothing else.
 
 ## Phase Overview
 
@@ -92,6 +92,62 @@ This lane owns `commons/net/http/idempotency/**` and this file. Nothing else.
 **Verification:** `go test -tags=unit -race ./commons/net/http/idempotency/...` green including `legacy_record_test.go`; the measurement test's RED output is quoted in this task's Result.
 
 **Done when:** an over-cap success is delivered unchanged, its key cannot re-execute the mutation, the refusal is documented and overridable, and every pre-existing test is unchanged and green.
+### Epic 1.2: Review round 1 residue (added by the orchestrator, 2026-09-21)
+
+**Goal:** the replay reproduces the handler's response and nothing else; an over-cap 4xx never claims an unknown outcome; the fingerprint provider's time is not charged to the store; the README says what ships.
+**Scope:** `commons/net/http/idempotency/**`, the `commons/net/http/idempotency` bullet of `README.md`, this file.
+**Dependencies:** Epic 1.1 (landed on this branch).
+**Done when:** the package suite is green; the four decisions below are in code with a RED each; the README bullet has no false clause; exactly one `feat(net)` commit exists in the range.
+**Status:** Pending
+
+#### Task 1.2.1: A replay applies the handler's header delta, and live headers win elsewhere
+
+- [ ] Done
+
+**Context:** Task 1.1.2 made the replay Del-then-Add every captured header name. Reviewers measured (findings F1, F2, F6, F9, F11, F12, F13) that this discards a per-request value set ABOVE the middleware on the duplicate: `X-Request-Id` from a requestid middleware (the duplicate answers with the ORIGINAL request's id), a rotated session or a fresh CSRF cookie minted by `app.Use` above (the cookie NAME is in the capture, so `DelCookie` removes the fresh one and re-adds the stale one). `TestReplay_LiveCookieFromOtherMiddleware_Survives` mints the same value on both requests, so it cannot see the overwrite. `captureResponse` (`idempotency.go:1516`) captures EVERY response header except Content-Type, Content-Length, Transfer-Encoding and X-Idempotency-Replayed.
+
+**Decision (orchestrator):** the capture is the HANDLER's contribution, not the whole response. Snapshot the response headers immediately before `c.Next()` (name → value list; cookies keyed by cookie name). After the handler, capture only the names whose value list differs from the snapshot (added or changed) and, for Set-Cookie, only the cookie names added or changed. On replay, for each captured name: replace it (Del, or DelCookie per captured cookie name, then Add each value); every other live header — set by middleware above on THIS request — stays. Write the consequence table into doc.go: X-Request-Id, CORS, helmet, CSRF and session rotation from above → live on the replay; Location, ETag, Cache-Control and a Set-Cookie minted by the handler → replayed byte-identical; a header helmet sets above and the handler overrides (`Cache-Control: no-store`) → captured and replayed, overriding the live one, because that is what the original response carried. Mixed versions: a record captured by an older version holds the full header set and replays under this version with replace semantics, exactly as Task 1.1.2 shipped; it self-heals within retention. State that in doc.go's mixed-version list. Keep the existing exclusions (Content-Type stays a separate field).
+
+**Tests, RED first, each with DIFFERENT values on the two requests so the assertion can fail:** an X-Request-Id minted above differs per request and the replay carries the second; a csrf cookie minted above with a new value per request survives the replay with the second value; a Location header and a session cookie set by the HANDLER replay byte-identical; a header helmet sets above and the handler overrides replays with the handler's value; an old-format full capture (record built by hand) replays with replace semantics; `TestReplay_LiveCookieFromOtherMiddleware_Survives` rewritten to mint distinct values.
+
+**Files:**
+- Modify: `commons/net/http/idempotency/idempotency.go`, `commons/net/http/idempotency/doc.go`, `commons/net/http/idempotency/replay_headers_test.go`, this file
+
+**Verification:** `go test -tags=unit -count=1 ./commons/net/http/idempotency/...` green; `go vet -tags=unit ./commons/net/http/idempotency/...` exits 0; the repo's lint target scoped to the package if the Makefile offers one (read it).
+
+**Done when:** the five scenarios above pass, the doc table exists, and the capture holds only the handler's delta.
+
+#### Task 1.2.2: Over-cap 4xx releases the key; the provider runs before the store deadline; the fourth refusal code is exported
+
+- [ ] Done
+
+**Context:** (a) F4/F8 — `idempotency.go:1333`: an over-cap 4xx completes the record with `outcomeUnrecorded` through `store.Complete`, bypassing `markOutcomeUnknown`: no `X-Idempotency-Fenced` header, and a resend is routed to `WithPostHandlerUnavailableHandler` ("committed or unknown, reconcile") for a request that committed nothing. (b) F5 — `idempotency.go:1076-1079`: `context.WithTimeout(c.Context(), m.redisTimeout)` is created BEFORE `resolveFingerprint` runs, so a provider that reads a multipart body is charged against the store's 500 ms deadline; a slow provider times out the first store call and, under the fail-open default, the mutation runs unprotected. (c) F14 — nothing tests that `respondReplayUnavailable` bypasses `WithPostHandlerUnavailableHandler` and `WithTerminalRefusalHandler`. (d) F16 — `"IDEMPOTENCY_REPLAY_UNAVAILABLE"` is a bare literal while the other three refusal codes are exported constants (`idempotency.go:176-184`). (e) F17 — neither `WithFingerprintProvider`'s doc nor doc.go warns that enabling the provider changes the digest of the same logical request, so a retry across a rolling deploy is refused as key reuse.
+
+**Decision (orchestrator):** (a) an over-cap 4xx RELEASES the key, exactly as `ClientErrorPolicyRelease` would, logged at INFO with status and size; the client receives its rejection unchanged; a resend re-executes the handler, which answers the same rejection. Nothing about it is "unrecorded". Delete the `outcomeUnrecorded` assignment on that arm; `outcomeNotReplayable` stays for 2xx only. RED: rewrite `TestOversizeResponse_ClientErrorNeverClaimsSuccess` to assert the resend runs the handler again (handler counter 2), no fence header, no 409. (b) resolve fingerprint and TTL BEFORE `context.WithTimeout`; RED: a provider that sleeps longer than `redisTimeout` against a healthy in-memory store must NOT reach the store-error path (handler ran once, key held afterwards). (c) one test with both seams wired to `t.Fatal` if called, asserting the built-in 409 body. (d) `RefusalCodeReplayUnavailable = "IDEMPOTENCY_REPLAY_UNAVAILABLE"` in the const block with a doc line, the literal replaced. It is a new exported symbol: commit it alone as `feat(net): export the replay-unavailable refusal code` — the only `feat` in the range, so semantic-release cuts a MINOR for a branch that adds three options (`.releaserc.yml` maps `fix` → patch, `feat` → minor; finding F10). (e) one paragraph on the option's doc and one bullet in doc.go's mixed-version list: enable the provider with a retention-TTL gap, or accept one retention window of `IDEMPOTENCY_KEY_REUSE` on retries that straddle the deploy.
+
+**Files:**
+- Modify: `commons/net/http/idempotency/idempotency.go`, `commons/net/http/idempotency/doc.go`, `commons/net/http/idempotency/oversize_response_test.go`, `commons/net/http/idempotency/fingerprint_provider_test.go`, this file
+- Create: `commons/net/http/idempotency/replay_unavailable_test.go`
+
+**Verification:** package tests green; `grep -n '"IDEMPOTENCY_REPLAY_UNAVAILABLE"' commons/net/http/idempotency/*.go` prints only the const line; `git log --oneline origin/develop..HEAD | grep -c ' feat(net)'` prints 1.
+
+**Done when:** the four decisions are in code with their RED recorded; the feat commit exists.
+
+#### Task 1.2.3: The README bullet says what ships
+
+- [ ] Done
+
+**Context:** F3/F7/F15 — `README.md:67`, the `commons/net/http/idempotency` bullet, still says an uncapturable response fails closed with 503 and fences the key; omits `WithFingerprintProvider`, `WithReplayUnavailableHandler` and `IDEMPOTENCY_REPLAY_UNAVAILABLE`; the previous carve-out excluded README, so the lane recorded the contradiction instead of fixing it. The carve-out is widened (see `## Ownership carve-outs`).
+
+**Implementation vision:** rewrite only the clauses that are false after Epics 1.1 and 1.2, in the bullet's existing register (one long bullet; do not restructure it): an over-cap 2xx completes without a receipt and its resend is 409 `IDEMPOTENCY_REPLAY_UNAVAILABLE` via `WithReplayUnavailableHandler`, never through the post-handler seam; an over-cap 4xx releases; the fingerprint may come from `WithFingerprintProvider`; a replay applies the handler's header delta and preserves live headers; the fourth code joins the rejection-handler list and the refusal-code list with its exported name. Then the record: append the Epic 1.2 correction under Task 1.1.2's write-back ("replaces the headers it captured" is now "replaces the handler's delta"), and mark the README row in `## Bugs found outside this package` as fixed here.
+
+**Files:**
+- Modify: `README.md` (that bullet only), this file
+
+**Verification:** `grep -o 'WithFingerprintProvider\|WithReplayUnavailableHandler\|IDEMPOTENCY_REPLAY_UNAVAILABLE' README.md | sort -u | wc -l` prints 3; `grep -n 'cannot be captured' README.md` prints nothing.
+
+**Done when:** no clause of the bullet contradicts the package; the record carries the correction.
+
 
 ## Bugs found
 
