@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1259,6 +1260,11 @@ func (m *Middleware) handleStoreAcquired(
 	record storeRecord,
 	ttl time.Duration,
 ) error {
+	// Taken BEFORE the handler so the capture can be reduced to the handler's
+	// own contribution; see captureHeaderDelta for why the whole response is the
+	// wrong thing to store.
+	beforeHandler := snapshotResponseHeaders(c)
+
 	handlerErr := c.Next()
 
 	postCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), m.redisTimeout)
@@ -1304,7 +1310,7 @@ func (m *Middleware) handleStoreAcquired(
 		return handlerErr
 	}
 
-	response, err := m.captureResponse(postCtx, c)
+	response, err := m.captureResponse(postCtx, c, beforeHandler)
 
 	switch {
 	// A response over the bound is not a fault. The handler ran and committed,
@@ -1513,7 +1519,7 @@ func keyDigest(key string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (m *Middleware) captureResponse(ctx context.Context, c fiber.Ctx) ([]byte, error) {
+func (m *Middleware) captureResponse(ctx context.Context, c fiber.Ctx, beforeHandler headerSnapshot) ([]byte, error) {
 	body := c.Response().Body()
 	if len(body) > m.maxBodyCache {
 		m.logger.Log(c.Context(), obs.LevelWarn,
@@ -1525,23 +1531,11 @@ func (m *Middleware) captureResponse(ctx context.Context, c fiber.Ctx) ([]byte, 
 		return nil, errResponseTooLarge
 	}
 
-	headers := make(map[string][]string)
-
-	for hdrKey, value := range c.Response().Header.All() {
-		name := string(hdrKey)
-		switch name {
-		case "Content-Type", "Content-Length", "Transfer-Encoding", chttp.IdempotencyReplayed:
-			continue
-		}
-
-		headers[name] = append(headers[name], string(value))
-	}
-
 	response := cachedResponse{
 		StatusCode:  c.Response().StatusCode(),
 		ContentType: string(c.Response().Header.ContentType()),
 		Body:        append([]byte(nil), body...),
-		Headers:     headers,
+		Headers:     captureHeaderDelta(c, beforeHandler),
 	}
 
 	plaintext, err := json.Marshal(response)
@@ -1579,6 +1573,102 @@ func (m *Middleware) maxEncodedResponseBytes() int {
 	return m.maxBodyCache * 2
 }
 
+// headerSnapshot is the response header state immediately before the handler
+// runs: whatever every middleware mounted above has already written.
+//
+// Set-Cookie is held apart and keyed by COOKIE name, because that is its unit
+// of identity. Two Set-Cookie values are not two values of one header, they are
+// two cookies, and rotating a session is a change to exactly one of them.
+type headerSnapshot struct {
+	headers map[string][]string
+	cookies map[string]string
+}
+
+func snapshotResponseHeaders(c fiber.Ctx) headerSnapshot {
+	snapshot := headerSnapshot{
+		headers: make(map[string][]string),
+		cookies: make(map[string]string),
+	}
+
+	for hdrKey, value := range c.Response().Header.All() {
+		name := string(hdrKey)
+		if name == fiber.HeaderSetCookie {
+			if cookieName, ok := capturedCookieName(string(value)); ok {
+				snapshot.cookies[cookieName] = string(value)
+			}
+
+			continue
+		}
+
+		snapshot.headers[name] = append(snapshot.headers[name], string(value))
+	}
+
+	return snapshot
+}
+
+// captureHeaderDelta keeps only the HANDLER's contribution to the response: the
+// names whose value list differs from the snapshot taken before it ran, and the
+// cookies it added or changed.
+//
+// Capturing the whole response instead stores a PER-REQUEST value minted above
+// the middleware — a correlation id, a rotated session, a fresh CSRF token —
+// and the replay, which replaces every name it holds, then hands the duplicate
+// a value belonging to a different request. A stale CSRF token is worse than
+// cosmetic: the user's next mutation is refused.
+//
+// The split is therefore by authorship, not by header name. What the handler
+// set IS the receipt and replaces whatever is live on the replay, including a
+// value it deliberately overrode (a helmet Cache-Control the handler turns into
+// no-store is captured, because that is what the original response carried).
+// Everything else on the replayed response belongs to this request.
+func captureHeaderDelta(c fiber.Ctx, beforeHandler headerSnapshot) map[string][]string {
+	live := make(map[string][]string)
+
+	var cookies []string
+
+	for hdrKey, value := range c.Response().Header.All() {
+		name := string(hdrKey)
+		switch name {
+		case "Content-Type", "Content-Length", "Transfer-Encoding", chttp.IdempotencyReplayed:
+			continue
+		}
+
+		if name == fiber.HeaderSetCookie {
+			// A value that is not shaped like a cookie has no identity to
+			// compare, so it is treated as the handler's: captured and replayed.
+			if cookieName, ok := capturedCookieName(string(value)); !ok || beforeHandler.cookies[cookieName] != string(value) {
+				cookies = append(cookies, string(value))
+			}
+
+			continue
+		}
+
+		live[name] = append(live[name], string(value))
+	}
+
+	delta := make(map[string][]string)
+
+	for name, values := range live {
+		if !slices.Equal(values, beforeHandler.headers[name]) {
+			delta[name] = values
+		}
+	}
+
+	if len(cookies) > 0 {
+		delta[fiber.HeaderSetCookie] = cookies
+	}
+
+	return delta
+}
+
+// capturedCookieName reports the cookie name a Set-Cookie value carries, and
+// whether the value is shaped like one at all.
+func capturedCookieName(value string) (string, bool) {
+	name, _, found := strings.Cut(value, "=")
+
+	return strings.TrimSpace(name), found
+}
+
 // clearCapturedHeader removes what the capture is about to re-apply, and only
 // that.
 //
@@ -1596,8 +1686,8 @@ func clearCapturedHeader(c fiber.Ctx, name string, values []string) {
 	}
 
 	for _, value := range values {
-		if cookieName, _, found := strings.Cut(value, "="); found {
-			c.Response().Header.DelCookie(strings.TrimSpace(cookieName))
+		if cookieName, ok := capturedCookieName(value); ok {
+			c.Response().Header.DelCookie(cookieName)
 		}
 	}
 }

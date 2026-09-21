@@ -102,7 +102,7 @@ This lane owns `commons/net/http/idempotency/**` and this file, plus the `common
 
 #### Task 1.2.1: A replay applies the handler's header delta, and live headers win elsewhere
 
-- [ ] Done
+- [x] Done
 
 **Context:** Task 1.1.2 made the replay Del-then-Add every captured header name. Reviewers measured (findings F1, F2, F6, F9, F11, F12, F13) that this discards a per-request value set ABOVE the middleware on the duplicate: `X-Request-Id` from a requestid middleware (the duplicate answers with the ORIGINAL request's id), a rotated session or a fresh CSRF cookie minted by `app.Use` above (the cookie NAME is in the capture, so `DelCookie` removes the fresh one and re-adds the stale one). `TestReplay_LiveCookieFromOtherMiddleware_Survives` mints the same value on both requests, so it cannot see the overwrite. `captureResponse` (`idempotency.go:1516`) captures EVERY response header except Content-Type, Content-Length, Transfer-Encoding and X-Idempotency-Replayed.
 

@@ -140,7 +140,10 @@
 //   - Duplicate key with matching fingerprint and a cached response: the original
 //     response is replayed faithfully — status code, headers (including Location,
 //     ETag, Set-Cookie), content type, and body — with
-//     [constants.IdempotencyReplayed] set to "true".
+//     [constants.IdempotencyReplayed] set to "true". What the capture holds is
+//     the HANDLER's contribution, so a per-request header set above the
+//     middleware stays live on the duplicate; see "What a replay does to
+//     response headers" below.
 //   - Duplicate key still in "processing" state (in-flight): request is passed
 //     to [WithConflictHandler], or receives 409 Conflict with code
 //     "IDEMPOTENCY_CONFLICT" and Retry-After: 1 when no custom handler is configured.
@@ -210,6 +213,41 @@
 //     by its owner, allowing a retry without deleting a replacement lock. Use
 //     [WithServerErrorPolicy] with [ServerErrorPolicyFence] on routes where a
 //     failure there may still have committed, so the key is fenced instead.
+//
+// # What a replay does to response headers
+//
+// The capture is the HANDLER's contribution to the response, not the whole
+// response. The middleware snapshots the response headers immediately before
+// calling the handler and stores only what changed: the names the handler added
+// or overwrote, and — Set-Cookie being identified by cookie name rather than by
+// header name — the cookies it added or changed. On a replay each captured name
+// is REPLACED (cleared, then re-applied whole and in order) and every other live
+// header stays.
+//
+// The split is by authorship, and these are its consequences:
+//
+//   - Set above on THIS request and untouched by the handler — a correlation id
+//     from a requestid middleware, cors, helmet, a rotated session cookie, a
+//     freshly minted CSRF token: LIVE on the replay, because it was never
+//     captured. Handing back the original request's correlation id would
+//     misattribute the duplicate, and handing back the captured CSRF token gets
+//     the user's NEXT mutation refused.
+//   - Set by the handler — Location, ETag, Cache-Control, a Set-Cookie the
+//     handler minted: REPLAYED byte-identical. That is the receipt.
+//   - Set above and then overridden by the handler — helmet's Cache-Control
+//     turned into "no-store" on a receipt route: CAPTURED, and the replay
+//     applies the handler's value over the live one, because that is what the
+//     original response carried.
+//   - Content-Type, Content-Length, Transfer-Encoding and
+//     [constants.IdempotencyReplayed] are never captured: the content type
+//     travels as its own field, and the other three describe the transfer of
+//     one particular response rather than its content.
+//
+// A multi-valued captured name (two Link headers, two cookies the handler set)
+// replays whole and in order; clearing before re-applying is what stops a
+// globally mounted middleware and the capture from both putting the same header
+// on the duplicate, which a browser rejects for
+// Access-Control-Allow-Origin as "contains multiple values".
 //
 // # Lease and retention are two lifetimes
 //
@@ -309,6 +347,15 @@
 // fence. A reader that predates the value finds the same shape — state
 // "complete", no replay response — and refuses it through the same seam, which
 // is why it rides this field instead of a state value of its own.
+//
+// The response capture narrowed on the same terms, and needs no encoding trick
+// at all. A record written by a version that captured the WHOLE response holds
+// names this version would never store, and replays under this version exactly
+// as it did under the one that wrote it: replace semantics over the names the
+// record holds. A duplicate answered from such a record therefore still receives
+// the original request's correlation id and its captured CSRF token. The
+// population self-heals within one retention window, as those records expire and
+// every new one holds only the handler's delta.
 //
 // The same problem points FORWARD, and is closed the same way. This encoding
 // protects a future reader from what this version writes; nothing in it
