@@ -432,11 +432,13 @@ func WithFingerprintScopeProvider(provider FingerprintScopeProvider) Option {
 // body's place in the digest, under the same method and path, and under the
 // [WithFingerprintScopeProvider] scope when one is configured.
 //
-// Because nothing here reads the body, a request this middleware answers itself
-// — a replay, or any refusal — leaves the upload unread, and that response
-// carries "Connection: close" so the next request on the connection is not
-// parsed from the middle of this one's body. A pooled client dials again and
-// loses no request; the package documentation states the rule in full.
+// Because nothing here reads the body, a LARGE request this middleware answers
+// itself — a replay, or any refusal — leaves the upload unread, and that
+// response carries "Connection: close" so the next request on the connection is
+// not parsed from the middle of this one's body. A pooled client dials again and
+// loses no request. A body fasthttp had already buffered in full before the
+// chain started keeps its connection instead; the package documentation states
+// the rule and the bound in full.
 //
 // A provider error refuses the request with 503 "IDEMPOTENCY_UNAVAILABLE", or
 // the [WithUnavailableHandler] document: nothing has run, so retrying is the
@@ -801,39 +803,61 @@ func (m *Middleware) runChain(c fiber.Ctx) error {
 	return c.Next()
 }
 
+// fasthttpStreamPreRead is how much of a declared-length body fasthttp lifts out
+// of the connection before it hands over a stream: readBodyWithStreaming copies
+// min(bodyLimit, Content-Length, 8 KiB) into the request buffer and then creates
+// the stream whatever it copied, so a body at or under that bound reports as a
+// stream with an empty reader behind it. The number is fasthttp's, not this
+// package's, and no exported symbol carries it —
+// TestRefusal_StreamedBodyBuffered_KeepsTheConnection walks the boundary over a
+// real socket so a change to it fails loudly here instead of silently letting
+// the next request be parsed from a remainder.
+const fasthttpStreamPreRead = 8 << 10
+
 // retireUnreadRequestStream ends the connection when this middleware answered a
-// request whose body is still an unread stream.
+// request whose body is still sitting unread in that connection.
 //
 // With a [WithFingerprintProvider] nothing here calls c.Body(), which is the
 // whole point of the option: the handler owns the upload. But a refusal and a
-// replay both answer WITHOUT running the handler, so on those the body nobody
-// read is still sitting in the connection. fasthttp recycles the stream struct
-// without draining the reader, so the next request on a keep-alive connection is
-// parsed from the middle of this one's body and the connection is reset — the
-// client retrying a large upload under the same key gets its replay and loses
-// the pooled connection under it.
+// replay both answer WITHOUT running the handler, so on those nobody read the
+// upload. fasthttp recycles the stream struct without draining the reader, so
+// the next request on a keep-alive connection is parsed from the middle of this
+// one's body and the connection is reset — the client retrying a large upload
+// under the same key gets its replay and loses the pooled connection under it.
 //
 // Closing is what net/http does with an unread body and what a client's pool
 // understands. Draining instead would mean reading up to the route's body limit,
 // a gigabyte on the upload routes this option exists for, to answer a 409.
 //
-// The rule is the two checks below and nothing narrower: it fires whenever this
-// middleware answered WITHOUT running the handler and the body is still a
-// stream. A replay under a [WithFingerprintProvider] is one such answer; so is
-// any refusal that returns before resolveFingerprint — an over-length key, a
-// missing required key, a missing required tenant, a key provider that failed,
-// an absent store — because the deferred call is registered above all of them and
-// resolveFingerprint is the only site that calls c.Body(). A refusal with NO
-// provider configured therefore retires the connection too, and correctly:
-// nothing read that upload either. It stays silent on the two cases that leave
-// nothing behind — the handler ran and owns the body, or c.Body() already
-// drained the stream.
+// The rule is the three checks below. It fires whenever this middleware answered
+// WITHOUT running the handler and the connection still holds part of the body. A
+// replay under a [WithFingerprintProvider] is one such answer; so is any refusal
+// that returns before resolveFingerprint — an over-length key, a missing required
+// key, a missing required tenant, a key provider that failed, an absent store —
+// because the deferred call is registered above all of them and resolveFingerprint
+// is the only site that calls c.Body(). A refusal with NO provider configured
+// therefore retires the connection too, and correctly: nothing read that upload
+// either.
+//
+// It stays silent on the three cases that leave nothing behind: the handler ran
+// and owns the body, c.Body() already drained the stream, or fasthttp had
+// already lifted the whole declared body out of the connection before the chain
+// started (see [fasthttpStreamPreRead]) — a stream by fasthttp's accounting, but
+// an empty one, and retiring there charges a pooled client a fresh handshake per
+// duplicate while protecting nothing. A chunked body (Content-Length -1) is
+// never that case: none of it is pre-read.
 func (m *Middleware) retireUnreadRequestStream(c fiber.Ctx) {
 	if ran, _ := c.Locals(chainRanKey{}).(bool); ran {
 		return
 	}
 
 	if !c.Request().IsBodyStream() {
+		return
+	}
+
+	contentLength := c.Request().Header.ContentLength()
+	if contentLength >= 0 && contentLength <= fasthttpStreamPreRead &&
+		contentLength <= c.App().Config().BodyLimit {
 		return
 	}
 

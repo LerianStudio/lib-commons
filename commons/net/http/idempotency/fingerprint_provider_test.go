@@ -755,3 +755,75 @@ func TestRefusal_StreamedBodyUnread_RetiresTheConnection(t *testing.T) {
 	assert.Equal(t, 2, client.dials,
 		"one dial for the refused request and one for the request that follows it")
 }
+
+// TestRefusal_StreamedBodyBuffered_KeepsTheConnection walks the boundary that
+// decides whether an unread stream has actually left anything in the connection.
+//
+// "IsBodyStream" is not that question. fasthttp copies min(bodyLimit,
+// Content-Length, 8 KiB) of a declared-length body out of the connection BEFORE
+// it hands over a stream (readBodyWithStreaming), and then hands over a stream
+// whatever it copied — so a body at or under that bound reports as a stream with
+// an empty reader behind it. Retiring there threw away a connection that was
+// provably clean: since Fiber's StreamRequestBody is an APP-WIDE setting, a
+// service that turns it on for its one large-upload route charged a mobile
+// client a fresh TCP (and TLS) handshake for every duplicate of a 200-byte JSON
+// mutation, and turned a retry storm into connection churn at its pool.
+//
+// The oracle here is the requests that FOLLOW a kept connection, not the header:
+// if fasthttp stopped pre-reading the whole of an 8192-byte body, the next
+// request on the socket would be parsed from the leftovers and this test fails
+// loudly — which is the point of walking the boundary rather than trusting a
+// constant nobody exported.
+func TestRefusal_StreamedBodyBuffered_KeepsTheConnection(t *testing.T) {
+	t.Parallel()
+
+	m := New(newRedisClient(t, miniredis.RunT(t)), WithMaxKeyLength(8))
+
+	var called atomic.Int32
+
+	app := fiber.New(fiber.Config{StreamRequestBody: true})
+	app.Use(tenantMiddleware("t1"))
+	app.Use(m.Check())
+	app.Post("/test", func(c fiber.Ctx) error {
+		called.Add(1)
+
+		if c.Request().IsBodyStream() {
+			if _, err := io.Copy(io.Discard, c.Request().BodyStream()); err != nil {
+				return err
+			}
+		}
+
+		return c.Status(fiber.StatusCreated).SendString("ok")
+	})
+
+	client := newKeepAliveConn(t, serveStreamProbe(t, app))
+
+	// Every one of these is fully buffered out of the connection before the
+	// handler chain even starts, so the refusal leaves nothing behind.
+	for _, bodySize := range []int{0, 200, 8 << 10} {
+		status, _, retired := client.post("this-key-is-far-too-long", bytes.Repeat([]byte("x"), bodySize))
+
+		require.Equal(t, http.StatusBadRequest, status,
+			"the %d-byte request is refused for its over-length key", bodySize)
+		assert.False(t, retired,
+			"fasthttp already copied the whole %d-byte body out of the connection, so this refusal "+
+				"read nothing only because there was nothing left to read: closing here costs the "+
+				"client a handshake per duplicate and protects nothing", bodySize)
+	}
+
+	// One byte past the pre-read: the remainder really is sitting in the
+	// connection, and the next request would be parsed from the middle of it.
+	status, _, retired := client.post("this-key-is-far-too-long", bytes.Repeat([]byte("x"), (8<<10)+1))
+	require.Equal(t, http.StatusBadRequest, status)
+	assert.True(t, retired,
+		"one byte past what fasthttp buffers, the refusal leaves an unread remainder in the connection")
+
+	status, _, retired = client.post("short", []byte("small"))
+	require.Equal(t, http.StatusCreated, status,
+		"the client reconnects and its next request is answered: a retirement costs a connection, never a request")
+	assert.False(t, retired, "the handler ran and owns the body")
+
+	assert.Equal(t, int32(1), called.Load(), "only the well-formed request reaches the handler")
+	assert.Equal(t, 2, client.dials,
+		"one connection carries all four refusals; only the one that left a remainder is redialled")
+}
