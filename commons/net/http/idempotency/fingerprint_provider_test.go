@@ -698,3 +698,60 @@ func TestFingerprintProvider_StreamedDuplicate_LeavesTheConnectionUsable(t *test
 		assert.Equal(t, 1, client.dials, "one connection must carry all three requests")
 	})
 }
+
+// TestRefusal_StreamedBodyUnread_RetiresTheConnection is the other half of the
+// same guard, and the half that fires with no provider configured anywhere.
+//
+// The deferred retirement is registered at the TOP of handle(), before the
+// refusals that return without ever reaching resolveFingerprint — the only site
+// that calls c.Body() and so the only thing that drains a streamed request. An
+// over-length key is one of those refusals: on a StreamRequestBody route the
+// 400 leaves 70 KiB sitting unread in the connection, and the next request on it
+// is parsed from the middle of that body. The guard is therefore right to fire
+// with no provider in sight, and narrowing it to the provider would put the same
+// reset back on every refused upload.
+func TestRefusal_StreamedBodyUnread_RetiresTheConnection(t *testing.T) {
+	t.Parallel()
+
+	const bodySize = 70 << 10
+
+	body := bytes.Repeat([]byte("x"), bodySize)
+
+	m := New(newRedisClient(t, miniredis.RunT(t)), WithMaxKeyLength(8))
+
+	var called atomic.Int32
+
+	app := fiber.New(fiber.Config{StreamRequestBody: true})
+	app.Use(tenantMiddleware("t1"))
+	app.Use(m.Check())
+	app.Post("/test", func(c fiber.Ctx) error {
+		called.Add(1)
+
+		if c.Request().IsBodyStream() {
+			if _, err := io.Copy(io.Discard, c.Request().BodyStream()); err != nil {
+				return err
+			}
+		}
+
+		return c.Status(fiber.StatusCreated).SendString("ok")
+	})
+
+	client := newKeepAliveConn(t, serveStreamProbe(t, app))
+
+	status, replayed, retired := client.post("this-key-is-far-too-long", body)
+	require.Equal(t, http.StatusBadRequest, status, "the key is longer than WithMaxKeyLength(8)")
+	assert.Empty(t, replayed, "nothing was replayed: the request was refused before any record was read")
+	assert.True(t, retired,
+		"the refusal answered without running the handler, so the upload was never read; "+
+			"keeping the connection leaves the next request parsed from the middle of it")
+
+	status, replayed, retired = client.post("short", body)
+	require.Equal(t, http.StatusCreated, status,
+		"the client reconnects and its next request is answered: the refusal costs a connection, never a request")
+	assert.Empty(t, replayed, "a fresh key on a fresh connection is not a duplicate")
+	assert.False(t, retired, "the handler ran and drained the body, so this connection stays usable")
+
+	assert.Equal(t, int32(1), called.Load(), "the refused upload must never reach the handler")
+	assert.Equal(t, 2, client.dials,
+		"one dial for the refused request and one for the request that follows it")
+}
