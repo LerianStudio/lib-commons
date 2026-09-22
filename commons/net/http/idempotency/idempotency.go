@@ -162,6 +162,12 @@ const (
 	ClientErrorPolicyRelease
 )
 
+// ClientErrorPolicyFunc decides the [ClientErrorPolicy] for one response,
+// consulted only for a 4xx the handler chain wrote. See
+// [WithClientErrorPolicyFunc] for what status carries and what it does not.
+// Functions must be safe for concurrent use.
+type ClientErrorPolicyFunc func(c fiber.Ctx, status int) ClientErrorPolicy
+
 // ServerErrorPolicy controls what a handler failure or a 5xx response does to
 // the owned idempotency record.
 type ServerErrorPolicy uint8
@@ -175,6 +181,13 @@ const (
 	// refused for the whole retry window instead of freed.
 	ServerErrorPolicyFence
 )
+
+// ServerErrorPolicyFunc decides the [ServerErrorPolicy] for one response,
+// consulted for a handler failure or a 5xx. err is the error the handler
+// returned, nil when it only wrote the status; status is the effective status
+// described in [WithServerErrorPolicyFunc]. Functions must be safe for
+// concurrent use.
+type ServerErrorPolicyFunc func(c fiber.Ctx, status int, err error) ServerErrorPolicy
 
 // The three terminal refusals answered BEFORE the protected handler runs, when
 // a duplicate's key holds a record this version cannot act on. Each is the code
@@ -218,8 +231,8 @@ type Middleware struct {
 	responseCodec            ResponseCodec
 	clientErrorPolicy        ClientErrorPolicy
 	serverErrorPolicy        ServerErrorPolicy
-	clientErrorPolicyFunc    func(c fiber.Ctx, status int) ClientErrorPolicy
-	serverErrorPolicyFunc    func(c fiber.Ctx, status int, err error) ServerErrorPolicy
+	clientErrorPolicyFunc    ClientErrorPolicyFunc
+	serverErrorPolicyFunc    ServerErrorPolicyFunc
 	onRejected               func(c fiber.Ctx) error
 	onConflict               fiber.Handler
 	onKeyReuse               fiber.Handler
@@ -574,7 +587,7 @@ func WithClientErrorPolicy(policy ClientErrorPolicy) Option {
 // The function runs on the request goroutine with the response already written,
 // so it may read the response the chain produced, and it must be safe for
 // concurrent use.
-func WithClientErrorPolicyFunc(fn func(c fiber.Ctx, status int) ClientErrorPolicy) Option {
+func WithClientErrorPolicyFunc(fn ClientErrorPolicyFunc) Option {
 	return func(m *Middleware) {
 		if fn != nil {
 			m.clientErrorPolicyFunc = fn
@@ -685,7 +698,7 @@ func WithServerErrorPolicy(policy ServerErrorPolicy) Option {
 //
 // The function runs on the request goroutine and must be safe for concurrent
 // use.
-func WithServerErrorPolicyFunc(fn func(c fiber.Ctx, status int, err error) ServerErrorPolicy) Option {
+func WithServerErrorPolicyFunc(fn ServerErrorPolicyFunc) Option {
 	return func(m *Middleware) {
 		if fn != nil {
 			m.serverErrorPolicyFunc = fn
