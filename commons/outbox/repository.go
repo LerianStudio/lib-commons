@@ -30,6 +30,14 @@ type OutboxRepository interface {
 	ResetForRetry(ctx context.Context, limit int, failedBefore time.Time, maxAttempts int) ([]*OutboxEvent, error)
 	ResetStuckProcessing(ctx context.Context, limit int, processingBefore time.Time, maxAttempts int) ([]*OutboxEvent, error)
 	MarkInvalid(ctx context.Context, id uuid.UUID, errMsg string) error
+	// DeletePublishedBefore deletes at most limit PUBLISHED events created
+	// before the cutoff, oldest first, skipping every event whose type is in
+	// keepEventTypes, and returns how many were deleted. The age bound uses
+	// created_at: a PUBLISHED event's published_at is never earlier than its
+	// created_at, so the bound is conservative and served by the
+	// (status, created_at) index. PENDING, PROCESSING, FAILED and INVALID
+	// events are never deleted. A limit <= 0 deletes nothing and returns 0.
+	DeletePublishedBefore(ctx context.Context, before time.Time, keepEventTypes []string, limit int) (int64, error)
 }
 
 // IdempotentWriter is a narrow, opt-in contract for content-addressed idempotent

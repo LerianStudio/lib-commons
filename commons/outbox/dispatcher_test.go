@@ -41,6 +41,18 @@ type fakeRepo struct {
 	resetStuckCalls    int32
 	resetForRetryCalls int32
 	listPendingTenants []string
+
+	deletePublishedCalls  []deletePublishedCall
+	deletePublishedErr    error
+	deletePublishedResult int64
+}
+
+type deletePublishedCall struct {
+	tenantID string
+	scope    TenantDispatchScope
+	before   time.Time
+	keep     []string
+	limit    int
 }
 
 type tenantAwareFakeRepo struct {
@@ -222,6 +234,39 @@ func (repo *fakeRepo) MarkInvalid(_ context.Context, id uuid.UUID, _ string) err
 	repo.mu.Unlock()
 
 	return nil
+}
+
+func (repo *fakeRepo) DeletePublishedBefore(
+	ctx context.Context,
+	before time.Time,
+	keepEventTypes []string,
+	limit int,
+) (int64, error) {
+	tenantID, _ := TenantIDFromContext(ctx)
+	scope, _ := ctx.Value(activityScopeContextKey{}).(TenantDispatchScope)
+
+	repo.mu.Lock()
+	repo.deletePublishedCalls = append(repo.deletePublishedCalls, deletePublishedCall{
+		tenantID: tenantID,
+		scope:    scope,
+		before:   before,
+		keep:     append([]string(nil), keepEventTypes...),
+		limit:    limit,
+	})
+	repo.mu.Unlock()
+
+	if repo.deletePublishedErr != nil {
+		return 0, repo.deletePublishedErr
+	}
+
+	return repo.deletePublishedResult, nil
+}
+
+func (repo *fakeRepo) deletePublishedCallLog() []deletePublishedCall {
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	return append([]deletePublishedCall(nil), repo.deletePublishedCalls...)
 }
 
 func (repo *fakeRepo) listPendingTenantOrder() []string {

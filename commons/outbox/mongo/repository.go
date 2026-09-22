@@ -41,6 +41,8 @@ const (
 	mongoUpdateSet        = "$set"
 	mongoUpdateUnset      = "$unset"
 	mongoOperatorLTE      = "$lte"
+	mongoOperatorLT       = "$lt"
+	mongoOperatorIn       = "$in"
 )
 
 var (
@@ -347,7 +349,7 @@ func (repo *Repository) ListTenants(ctx context.Context) ([]string, error) {
 	}
 
 	distinctResult := collection.Distinct(ctx, repo.tenantField, bson.M{
-		mongoFieldStatus: bson.M{"$in": bson.A{outbox.OutboxStatusPending, outbox.OutboxStatusFailed, outbox.OutboxStatusProcessing}},
+		mongoFieldStatus: bson.M{mongoOperatorIn: bson.A{outbox.OutboxStatusPending, outbox.OutboxStatusFailed, outbox.OutboxStatusProcessing}},
 		repo.tenantField: bson.M{"$ne": defaultScopeTenantID},
 	})
 	if err := distinctResult.Err(); err != nil {
@@ -593,7 +595,7 @@ func (repo *Repository) ListFailedForRetry(ctx context.Context, limit int, faile
 
 	docs, err := repo.findCandidates(ctx, bson.M{
 		mongoFieldStatus:    outbox.OutboxStatusFailed,
-		mongoFieldAttempts:  bson.M{"$lt": maxAttempts},
+		mongoFieldAttempts:  bson.M{mongoOperatorLT: maxAttempts},
 		mongoFieldUpdatedAt: bson.M{mongoOperatorLTE: failedBefore},
 	}, bson.D{{Key: mongoFieldUpdatedAt, Value: 1}, {Key: "id", Value: 1}}, limit)
 	if err != nil {
@@ -629,7 +631,7 @@ func (repo *Repository) ResetForRetry(ctx context.Context, limit int, failedBefo
 
 	claimed, err := repo.claimMatching(ctx, bson.M{
 		mongoFieldStatus:    outbox.OutboxStatusFailed,
-		mongoFieldAttempts:  bson.M{"$lt": maxAttempts},
+		mongoFieldAttempts:  bson.M{mongoOperatorLT: maxAttempts},
 		mongoFieldUpdatedAt: bson.M{mongoOperatorLTE: failedBefore},
 	}, bson.D{{Key: mongoFieldUpdatedAt, Value: 1}, {Key: "id", Value: 1}}, limit, outbox.OutboxStatusFailed, outbox.OutboxStatusProcessing, func(_ document) bson.M {
 		return bson.M{mongoFieldStatus: outbox.OutboxStatusProcessing, mongoFieldUpdatedAt: time.Now().UTC()}

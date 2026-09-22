@@ -47,6 +47,10 @@ func (m *memOutboxRepo) Create(ctx context.Context, event *outbox.OutboxEvent) (
 	defer m.mu.Unlock()
 
 	now := time.Now().UTC()
+	if !event.CreatedAt.IsZero() {
+		now = event.CreatedAt
+	}
+
 	tenantID := extractTenantID(ctx)
 
 	created := &outbox.OutboxEvent{
@@ -343,6 +347,54 @@ func (m *memOutboxRepo) MarkInvalid(ctx context.Context, id uuid.UUID, errMsg st
 	e.UpdatedAt = time.Now().UTC()
 
 	return nil
+}
+
+func (m *memOutboxRepo) DeletePublishedBefore(
+	ctx context.Context,
+	before time.Time,
+	keepEventTypes []string,
+	limit int,
+) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if limit <= 0 {
+		return 0, nil
+	}
+
+	keep := make(map[string]struct{}, len(keepEventTypes))
+	for _, eventType := range keepEventTypes {
+		keep[strings.TrimSpace(eventType)] = struct{}{}
+	}
+
+	tenantID := extractTenantID(ctx)
+
+	var eligible []*outbox.OutboxEvent
+
+	for _, e := range m.events {
+		if tenantID != "" && m.tenantIDs[e.ID] != tenantID {
+			continue
+		}
+
+		if _, kept := keep[e.EventType]; kept || e.Status != outbox.OutboxStatusPublished || !e.CreatedAt.Before(before) {
+			continue
+		}
+
+		eligible = append(eligible, e)
+	}
+
+	sort.Slice(eligible, func(i, j int) bool { return eligible[i].CreatedAt.Before(eligible[j].CreatedAt) })
+
+	if len(eligible) > limit {
+		eligible = eligible[:limit]
+	}
+
+	for _, e := range eligible {
+		delete(m.events, e.ID)
+		delete(m.tenantIDs, e.ID)
+	}
+
+	return int64(len(eligible)), nil
 }
 
 // memRepoFactory creates a fresh in-memory repository for each test.

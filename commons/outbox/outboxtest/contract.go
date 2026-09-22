@@ -108,6 +108,7 @@ func Run(t *testing.T, factory Factory, opts ...RunOption) {
 	run("TenantIsolationAndDiscovery", func(t *testing.T) { testTenantIsolationAndDiscovery(t, factory) })
 	run("WrongTenantMutationsRejected", func(t *testing.T) { testWrongTenantMutationsRejected(t, factory) })
 	run("DispatcherLifecyclePersistsPublishedState", func(t *testing.T) { testDispatcherLifecyclePersistsPublishedState(t, factory) })
+	run("DeletePublishedBeforePurgesOnlyAgedPublished", func(t *testing.T) { testDeletePublishedBeforePurgesOnlyAgedPublished(t, factory) })
 }
 
 func testCreateThenGetRoundtrip(t *testing.T, factory Factory) {
@@ -817,4 +818,124 @@ func claimAllPending(t *testing.T, repo outbox.OutboxRepository, ctx context.Con
 	}
 
 	return events
+}
+
+// testDeletePublishedBeforePurgesOnlyAgedPublished pins the retention purge.
+//
+// Only PUBLISHED rows older than the cutoff may go. An INVALID row is the only
+// proof that a money fact was destroyed after the retry budget, a FAILED row is
+// still owed a retry, and PENDING/PROCESSING rows have not been delivered, so
+// none of them may be deleted at any age. The purge is bounded (limit, oldest
+// first) so a large backlog drains in batches instead of one long transaction.
+func testDeletePublishedBeforePurgesOnlyAgedPublished(t *testing.T, factory Factory) {
+	t.Helper()
+
+	repo := factory(t)
+	baseCtx := contractContext(t)
+	ctx := outbox.ContextWithTenantID(baseCtx, "tenant-a")
+	otherTenant := outbox.ContextWithTenantID(baseCtx, "tenant-b")
+
+	// Millisecond precision keeps Mongo's stored timestamps exact.
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	cutoff := now.Add(-time.Hour)
+	aged := func(offset time.Duration) time.Time { return now.Add(-2 * time.Hour).Add(offset) }
+
+	publishedOldest := createEventAt(t, repo, ctx, "payment.purge", aged(0))
+	publishedOlder := createEventAt(t, repo, ctx, "payment.purge", aged(time.Second))
+	publishedOld := createEventAt(t, repo, ctx, "payment.purge", aged(2*time.Second))
+	publishedKeptType := createEventAt(t, repo, ctx, "payment.keep", aged(3*time.Second))
+	invalidOld := createEventAt(t, repo, ctx, "payment.purge", aged(4*time.Second))
+	failedOld := createEventAt(t, repo, ctx, "payment.purge", aged(5*time.Second))
+	processingOld := createEventAt(t, repo, ctx, "payment.purge", aged(6*time.Second))
+	publishedRecent := createEventAt(t, repo, ctx, "payment.purge", now.Add(-30*time.Minute))
+
+	claimed := mustListPending(t, repo, ctx, 20)
+	require.Len(t, claimed, 8)
+
+	for _, event := range []*outbox.OutboxEvent{publishedOldest, publishedOlder, publishedOld, publishedKeptType, publishedRecent} {
+		require.NoError(t, repo.MarkPublished(ctx, event.ID, now))
+	}
+
+	require.NoError(t, repo.MarkInvalid(ctx, invalidOld.ID, "destroyed after retry budget"))
+	require.NoError(t, repo.MarkFailed(ctx, failedOld.ID, "broker unavailable", 100))
+
+	pendingOld := createEventAt(t, repo, ctx, "payment.purge", aged(7*time.Second))
+
+	otherPublished := createEventAt(t, repo, otherTenant, "payment.purge", aged(0))
+	otherClaimed := mustListPending(t, repo, otherTenant, 10)
+	require.Len(t, otherClaimed, 1)
+	require.NoError(t, repo.MarkPublished(otherTenant, otherPublished.ID, now))
+
+	keep := []string{"payment.keep"}
+
+	deleted, err := repo.DeletePublishedBefore(ctx, cutoff, keep, 0)
+	require.NoError(t, err)
+	require.Zero(t, deleted, "a non-positive limit never deletes")
+	requireEventStatus(t, repo, ctx, publishedOldest.ID, outbox.OutboxStatusPublished)
+
+	deleted, err = repo.DeletePublishedBefore(ctx, cutoff, keep, 2)
+	require.NoError(t, err)
+	require.Equal(t, int64(2), deleted)
+	requireEventGone(t, repo, ctx, publishedOldest.ID)
+	requireEventGone(t, repo, ctx, publishedOlder.ID)
+	requireEventStatus(t, repo, ctx, publishedOld.ID, outbox.OutboxStatusPublished)
+
+	deleted, err = repo.DeletePublishedBefore(ctx, cutoff, keep, 100)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), deleted)
+	requireEventGone(t, repo, ctx, publishedOld.ID)
+
+	deleted, err = repo.DeletePublishedBefore(ctx, cutoff, keep, 100)
+	require.NoError(t, err)
+	require.Zero(t, deleted)
+
+	requireEventStatus(t, repo, ctx, publishedKeptType.ID, outbox.OutboxStatusPublished)
+	requireEventStatus(t, repo, ctx, invalidOld.ID, outbox.OutboxStatusInvalid)
+	requireEventStatus(t, repo, ctx, failedOld.ID, outbox.OutboxStatusFailed)
+	requireEventStatus(t, repo, ctx, processingOld.ID, outbox.OutboxStatusProcessing)
+	requireEventStatus(t, repo, ctx, pendingOld.ID, outbox.OutboxStatusPending)
+	requireEventStatus(t, repo, ctx, publishedRecent.ID, outbox.OutboxStatusPublished)
+	requireEventStatus(t, repo, otherTenant, otherPublished.ID, outbox.OutboxStatusPublished)
+
+	deleted, err = repo.DeletePublishedBefore(ctx, cutoff, nil, 100)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), deleted, "an empty keep list excludes no event type")
+	requireEventGone(t, repo, ctx, publishedKeptType.ID)
+	requireEventStatus(t, repo, otherTenant, otherPublished.ID, outbox.OutboxStatusPublished)
+}
+
+func createEventAt(
+	t *testing.T,
+	repo outbox.OutboxRepository,
+	ctx context.Context,
+	eventType string,
+	createdAt time.Time,
+) *outbox.OutboxEvent {
+	t.Helper()
+
+	event := newEvent(t, ctx, eventType)
+	event.CreatedAt = createdAt
+	event.UpdatedAt = createdAt
+
+	created, err := repo.Create(ctx, event)
+	require.NoError(t, err)
+
+	return created
+}
+
+func requireEventStatus(t *testing.T, repo outbox.OutboxRepository, ctx context.Context, id uuid.UUID, status string) {
+	t.Helper()
+
+	stored, err := repo.GetByID(ctx, id)
+	require.NoError(t, err)
+	require.NotNil(t, stored)
+	require.Equal(t, status, stored.Status)
+}
+
+func requireEventGone(t *testing.T, repo outbox.OutboxRepository, ctx context.Context, id uuid.UUID) {
+	t.Helper()
+
+	stored, err := repo.GetByID(ctx, id)
+	require.Error(t, err)
+	require.Nil(t, stored)
 }
