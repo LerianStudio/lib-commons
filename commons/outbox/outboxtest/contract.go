@@ -31,6 +31,7 @@ type RunOption func(*runConfig)
 type runConfig struct {
 	skip      map[string]struct{}
 	txFactory TxFactory
+	notFound  error
 }
 
 // SkipSubtest skips one named contract subtest.
@@ -49,6 +50,15 @@ func SkipSubtest(name string) RunOption {
 func WithTransactionFactory(factory TxFactory) RunOption {
 	return func(cfg *runConfig) {
 		cfg.txFactory = factory
+	}
+}
+
+// WithNotFoundError names the error the repository's GetByID wraps for a
+// missing event, so the contract can tell "deleted" apart from any other
+// failure. Without it the contract accepts any error as "gone".
+func WithNotFoundError(err error) RunOption {
+	return func(cfg *runConfig) {
+		cfg.notFound = err
 	}
 }
 
@@ -108,7 +118,12 @@ func Run(t *testing.T, factory Factory, opts ...RunOption) {
 	run("TenantIsolationAndDiscovery", func(t *testing.T) { testTenantIsolationAndDiscovery(t, factory) })
 	run("WrongTenantMutationsRejected", func(t *testing.T) { testWrongTenantMutationsRejected(t, factory) })
 	run("DispatcherLifecyclePersistsPublishedState", func(t *testing.T) { testDispatcherLifecyclePersistsPublishedState(t, factory) })
-	run("DeletePublishedBeforePurgesOnlyAgedPublished", func(t *testing.T) { testDeletePublishedBeforePurgesOnlyAgedPublished(t, factory) })
+	run("DeletePublishedBeforePurgesOnlyAgedPublished", func(t *testing.T) {
+		testDeletePublishedBeforePurgesOnlyAgedPublished(t, factory, cfg.notFound)
+	})
+	run("DeletePublishedBeforeSparesSameIDInOtherTenant", func(t *testing.T) {
+		testDeletePublishedBeforeSparesSameIDInOtherTenant(t, factory, cfg.notFound)
+	})
 }
 
 func testCreateThenGetRoundtrip(t *testing.T, factory Factory) {
@@ -828,7 +843,7 @@ func claimAllPending(t *testing.T, repo outbox.OutboxRepository, ctx context.Con
 // still owed a retry, and PENDING/PROCESSING rows have not been delivered, so
 // none of them may be deleted at any age. The purge is bounded (limit, oldest
 // first) so a large backlog drains in batches instead of one long transaction.
-func testDeletePublishedBeforePurgesOnlyAgedPublished(t *testing.T, factory Factory) {
+func testDeletePublishedBeforePurgesOnlyAgedPublished(t *testing.T, factory Factory, notFound error) {
 	t.Helper()
 
 	repo := factory(t)
@@ -855,11 +870,15 @@ func testDeletePublishedBeforePurgesOnlyAgedPublished(t *testing.T, factory Fact
 	failedOld := createEventAt(t, repo, ctx, "payment.purge", aged(5*time.Second))
 	processingOld := createEventAt(t, repo, ctx, "payment.purge", aged(6*time.Second))
 	publishedRecent := createEventAt(t, repo, ctx, "payment.purge", now.Add(-30*time.Minute))
+	// created_at equal to the cutoff is not older than it and survives.
+	publishedAtCutoff := createEventAt(t, repo, ctx, "payment.purge", cutoff)
 
 	claimed := mustListPending(t, repo, ctx, 20)
-	require.Len(t, claimed, 8)
+	require.Len(t, claimed, 9)
 
-	for _, event := range []*outbox.OutboxEvent{publishedOldest, publishedOlder, publishedOld, publishedKeptType, publishedRecent} {
+	for _, event := range []*outbox.OutboxEvent{
+		publishedOldest, publishedOlder, publishedOld, publishedKeptType, publishedRecent, publishedAtCutoff,
+	} {
 		require.NoError(t, repo.MarkPublished(ctx, event.ID, now))
 	}
 
@@ -883,14 +902,14 @@ func testDeletePublishedBeforePurgesOnlyAgedPublished(t *testing.T, factory Fact
 	deleted, err = purger.DeletePublishedBefore(ctx, cutoff, keep, 2)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), deleted)
-	requireEventGone(t, repo, ctx, publishedOldest.ID)
-	requireEventGone(t, repo, ctx, publishedOlder.ID)
+	requireEventGone(t, repo, ctx, notFound, publishedOldest.ID)
+	requireEventGone(t, repo, ctx, notFound, publishedOlder.ID)
 	requireEventStatus(t, repo, ctx, publishedOld.ID, outbox.OutboxStatusPublished)
 
 	deleted, err = purger.DeletePublishedBefore(ctx, cutoff, keep, 100)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), deleted)
-	requireEventGone(t, repo, ctx, publishedOld.ID)
+	requireEventGone(t, repo, ctx, notFound, publishedOld.ID)
 
 	deleted, err = purger.DeletePublishedBefore(ctx, cutoff, keep, 100)
 	require.NoError(t, err)
@@ -902,12 +921,13 @@ func testDeletePublishedBeforePurgesOnlyAgedPublished(t *testing.T, factory Fact
 	requireEventStatus(t, repo, ctx, processingOld.ID, outbox.OutboxStatusProcessing)
 	requireEventStatus(t, repo, ctx, pendingOld.ID, outbox.OutboxStatusPending)
 	requireEventStatus(t, repo, ctx, publishedRecent.ID, outbox.OutboxStatusPublished)
+	requireEventStatus(t, repo, ctx, publishedAtCutoff.ID, outbox.OutboxStatusPublished)
 	requireEventStatus(t, repo, otherTenant, otherPublished.ID, outbox.OutboxStatusPublished)
 
 	deleted, err = purger.DeletePublishedBefore(ctx, cutoff, nil, 100)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), deleted, "an empty keep list excludes no event type")
-	requireEventGone(t, repo, ctx, publishedKeptType.ID)
+	requireEventGone(t, repo, ctx, notFound, publishedKeptType.ID)
 	requireEventStatus(t, repo, otherTenant, otherPublished.ID, outbox.OutboxStatusPublished)
 }
 
@@ -939,10 +959,70 @@ func requireEventStatus(t *testing.T, repo outbox.OutboxRepository, ctx context.
 	require.Equal(t, status, stored.Status)
 }
 
-func requireEventGone(t *testing.T, repo outbox.OutboxRepository, ctx context.Context, id uuid.UUID) {
+func requireEventGone(
+	t *testing.T,
+	repo outbox.OutboxRepository,
+	ctx context.Context,
+	notFound error,
+	id uuid.UUID,
+) {
 	t.Helper()
 
 	stored, err := repo.GetByID(ctx, id)
-	require.Error(t, err)
+	require.Error(t, err, "event %s must be deleted", id)
 	require.Nil(t, stored)
+
+	if notFound != nil {
+		require.ErrorIs(t, err, notFound, "event %s must read as not found, not fail otherwise", id)
+	}
+}
+
+// testDeletePublishedBeforeSparesSameIDInOtherTenant pins the tenant re-check on
+// the delete itself. Stores that key rows by (tenant, id) let two tenants hold
+// the same id; a delete matching by id alone would remove the other tenant's
+// row whatever its status.
+func testDeletePublishedBeforeSparesSameIDInOtherTenant(t *testing.T, factory Factory, notFound error) {
+	t.Helper()
+
+	repo := factory(t)
+
+	purger, ok := repo.(outbox.PublishedPurger)
+	if !ok {
+		t.Skip("repository does not implement outbox.PublishedPurger")
+	}
+
+	baseCtx := contractContext(t)
+	tenantA := outbox.ContextWithTenantID(baseCtx, "tenant-a")
+	tenantB := outbox.ContextWithTenantID(baseCtx, "tenant-b")
+
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	aged := now.Add(-2 * time.Hour)
+
+	eventA := newEvent(t, tenantA, "payment.purge")
+	eventA.CreatedAt, eventA.UpdatedAt = aged, aged
+	_, err := repo.Create(tenantA, eventA)
+	require.NoError(t, err)
+
+	eventB := newEvent(t, tenantB, "payment.purge")
+	eventB.ID = eventA.ID
+	eventB.CreatedAt, eventB.UpdatedAt = aged, aged
+
+	if _, err := repo.Create(tenantB, eventB); err != nil {
+		t.Skipf("repository cannot hold one id in two tenants: %v", err)
+	}
+
+	if stored, err := repo.GetByID(tenantA, eventA.ID); err != nil || stored == nil {
+		t.Skip("repository keys events by id alone; the same id cannot live in two tenants")
+	}
+
+	claimed := mustListPending(t, repo, tenantA, 10)
+	require.Len(t, claimed, 1)
+	require.NoError(t, repo.MarkPublished(tenantA, eventA.ID, now))
+
+	deleted, err := purger.DeletePublishedBefore(tenantA, now.Add(-time.Hour), nil, 100)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), deleted)
+
+	requireEventGone(t, repo, tenantA, notFound, eventA.ID)
+	requireEventStatus(t, repo, tenantB, eventB.ID, outbox.OutboxStatusPending)
 }

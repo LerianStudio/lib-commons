@@ -407,5 +407,5 @@ func memRepoFactory(t *testing.T) outbox.OutboxRepository {
 // TestRun_WithMemRepo exercises the outboxtest contract suite using an in-memory repository.
 // Some tests are skipped due to complex semantics that need real DB behavior.
 func TestRun_WithMemRepo(t *testing.T) {
-	Run(t, memRepoFactory)
+	Run(t, memRepoFactory, WithNotFoundError(sql.ErrNoRows))
 }
