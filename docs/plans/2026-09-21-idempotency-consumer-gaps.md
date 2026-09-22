@@ -274,6 +274,55 @@ The same mutation against the test as it stood at `f8188a5` printed `ok` — mea
 
 The second assertion is the one that matters: with the guard gone the refusal keeps the connection, and the request that follows it on that connection is reset. The guard restored, the whole package is green and the client dials exactly twice — one connection per answer the middleware gave itself, no request lost.
 
+#### Round 4 residue (orchestrator, 2026-09-22)
+
+Three items, none of which changes behaviour. The guard `2eade46` narrowed has three clauses and only one of them was held by a test: measured with `go test -overlay` deleting each clause in turn, the package stayed green on two. A wrong deletion poisons live connections, so both are now fenced by a failing test.
+
+1. **The chunked clause (`contentLength >= 0`) was unheld.** `TestRefusal_StreamedBodyUnread_RetiresTheConnection` now runs three cases: the original 70 KiB declared-length refusal, and a chunked refusal at 10 bytes and at 200 KB. A chunked upload declares no length, fasthttp reports `-1` and `readBodyWithStreaming` refuses chunked outright, so NOTHING is pre-read and ten bytes are as unread as 200 KB. Read as a number rather than as "no declared length", that `-1` sorts below every threshold and the guard keeps exactly the connections it exists to retire. The keep-alive probe gained `postChunked`. Commit `557899a`.
+2. **The body-limit clause (`contentLength <= c.App().Config().BodyLimit`) was unheld.** `TestRefusal_StreamedBodyBuffered_KeepsTheConnection` is now parameterised over the app's body limit: the original walk under the default 4 MiB limit (where the 8 KiB ceiling binds, 0/200/8192 kept and 8193 retired), and a second app at `BodyLimit: 4096` where the limit binds instead — 4096 kept, 4097 retired, redial, next request answered by the app. fasthttp copies `min(bodyLimit, Content-Length, 8 KiB)`, so on a 4 KiB route a 4097-byte body is a stream with exactly one byte still in the socket. Commit `557899a`.
+3. **`TestReplay_LiveCookieFromOtherMiddleware_Survives`'s doc comment named the wrong half of the branch.** Rewritten to what it pins: a cookie minted above the middleware reaches the client carrying THIS request's value. The capture here DOES hold a `Set-Cookie` (the handler's `session`), so the replay clears under that name and the live cookies survive only because the clearing is scoped to the cookie names being re-applied. It does NOT pin replacement-over-duplication — no live cookie here collides with a captured name — which is `TestReplay_LiveCookieCollidesWithCapturedName_ReplacedNotDuplicated`'s job. The comment now says which half each fences. Commit `bc432b9`.
+
+**RED for (1), measured 2026-09-22** with `contentLength >= 0 &&` deleted from the guard, `go test -overlay=… -tags=unit -race -count=1 -run TestRefusal_StreamedBodyUnread_RetiresTheConnection ./commons/net/http/idempotency/` (trimmed):
+
+```
+--- FAIL: TestRefusal_StreamedBodyUnread_RetiresTheConnection/chunked_10_bytes (0.01s)
+    fingerprint_provider_test.go:812: Should be true
+        no byte of a chunked body is pre-read, so this 10-byte refusal left all of it
+        in the connection: the next request on it is parsed from the chunk framing
+    fingerprint_provider_test.go:817: Not equal:
+        expected: 201
+        actual  : 400
+        the client reconnects and its next request is answered by the app: the refusal
+        costs a connection, never a request
+--- FAIL: TestRefusal_StreamedBodyUnread_RetiresTheConnection/chunked_204800_bytes (0.01s)
+    fingerprint_provider_test.go:812: Should be true
+        no byte of a chunked body is pre-read, so this 204800-byte refusal left all of it
+        in the connection: the next request on it is parsed from the chunk framing
+    fingerprint_provider_test.go:816: Received unexpected error:
+        write tcp 127.0.0.1:41156->127.0.0.1:38517: write: connection reset by peer
+        the connection died before this request was even sent
+```
+
+At 10 bytes the leftover chunk framing is parsed as the next request line and answered `400`; at 200 KB the server resets the socket before the follow-up is even written. The declared-length subtest stays green throughout, which is the point: size held the clause, framing did not.
+
+**RED for (2), measured 2026-09-22** with `&& contentLength <= c.App().Config().BodyLimit` deleted from the guard, `-run TestRefusal_StreamedBodyBuffered_KeepsTheConnection` (trimmed):
+
+```
+--- FAIL: TestRefusal_StreamedBodyBuffered_KeepsTheConnection/bounded_by_a_smaller_body_limit (0.01s)
+    fingerprint_provider_test.go:935: Should be true
+        one byte past the route's limit, fasthttp stopped copying at 4096 and that byte
+        is still in the connection: the next request on it is parsed starting from it
+    fingerprint_provider_test.go:940: Not equal:
+        expected: 201
+        actual  : 501
+        the client reconnects and its next request is answered by the app: a retirement
+        costs a connection, never a request
+```
+
+`501 Not Implemented`: the leftover `x` prefixes the next request line, fasthttp reads the method as `xPOST` and rejects it. The `bounded_by_the_8k_pre_read` subtest stays green under the same deletion, which is why the clause needed its own app rather than another size in the existing walk.
+
+**Correction to item (3)'s premise.** The round-4 finding held that the csrf cookie is never captured, therefore `clearCapturedHeader`'s Set-Cookie branch is not reached in this test. The second half does not follow and is false: the handler's own `session` cookie IS captured, so the branch runs. Measured with the `DelCookie` loop replaced by `c.Response().Header.Del(name)` — fasthttp's whole-jar wipe — `TestReplay_LiveCookieFromOtherMiddleware_Survives` fails with `counts["csrf"]` and `counts["locale"]` both `0` and `values["csrf"]` empty, while `TestReplay_LiveCookieCollidesWithCapturedName_ReplacedNotDuplicated` stays green. Drop the clearing entirely and the pair inverts. The two tests fence the branch from opposite sides, and the rewritten comment says so rather than repeating the false premise.
+
 
 ## Bugs found
 
