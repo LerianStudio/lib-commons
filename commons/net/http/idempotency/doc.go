@@ -235,10 +235,16 @@
 //     under the default kept, with the resend refused 409
 //     [RefusalCodeReplayUnavailable] rather than re-running a rejection path the
 //     route asked to have cached.
+//     [WithClientErrorPolicyFunc] decides the same question per RESPONSE, for a
+//     guard mounted above middleware that writes 4xx of its own — a rate
+//     limiter, a quota gate — whose refusals are not the handler's answer.
 //   - Handler failure or 5xx: the acquisition is compare-safely released only
 //     by its owner, allowing a retry without deleting a replacement lock. Use
 //     [WithServerErrorPolicy] with [ServerErrorPolicyFence] on routes where a
 //     failure there may still have committed, so the key is fenced instead.
+//     [WithServerErrorPolicyFunc] decides the same question per RESPONSE, for a
+//     route that knows which of its failures did not apply and wants only the
+//     ambiguous ones fenced.
 //
 // # What a replay does to response headers
 //
@@ -319,6 +325,11 @@
 //	    // how long the handler AND its completion may take, with margin
 //	    idempotency.WithProcessingTTL(30*time.Minute),
 //	)
+//
+// [WithProcessingTTLProvider] resolves that lease per request instead, the way
+// [WithTTLProvider] resolves the retention, so a service whose window moves at
+// runtime can follow it. It is evaluated when the lease is TAKEN, so a lease
+// already in the store keeps the value it was taken with.
 //
 // [WithKeyProvider] resolves the key itself for each mutating request; unset,
 // the middleware reads the X-Idempotency header, which is the shipped
