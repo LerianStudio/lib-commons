@@ -41,6 +41,9 @@ func TestCheck_ClientErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
 		wantReleased bool
 		// wantSeen is every status the func was consulted with.
 		wantSeen []int
+		// returns, when set, is what the func answers instead of the consumer
+		// rule below — the lane for a value that is neither constant.
+		returns *ClientErrorPolicy
 	}{
 		{
 			name:          "func releases a refusal written below the guard",
@@ -90,6 +93,18 @@ func TestCheck_ClientErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
 			handlerStatus: http.StatusTooManyRequests,
 			wantReleased:  false,
 		},
+		{
+			// Neither constant. The enum option validates and ignores such a
+			// value; the func has no such lane, so it reads as the documented
+			// default rather than as a third behaviour.
+			name:          "an out-of-range return reads as the cache default",
+			withFunc:      true,
+			opts:          []Option{WithClientErrorPolicy(ClientErrorPolicyRelease)},
+			handlerStatus: http.StatusUnprocessableEntity,
+			returns:       clientPolicyPtr(ClientErrorPolicy(9)),
+			wantReleased:  false,
+			wantSeen:      []int{http.StatusUnprocessableEntity},
+		},
 	}
 
 	for _, testCase := range tests {
@@ -116,6 +131,10 @@ func TestCheck_ClientErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
 			if testCase.withFunc {
 				opts = append(opts, WithClientErrorPolicyFunc(func(_ fiber.Ctx, status int) ClientErrorPolicy {
 					seen = append(seen, status)
+
+					if testCase.returns != nil {
+						return *testCase.returns
+					}
 
 					// The consumer's rule: a refusal written below the guard
 					// must not spend the key; everything else is cached.
@@ -144,6 +163,12 @@ func TestCheck_ClientErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
 		})
 	}
 }
+
+// clientPolicyPtr and serverPolicyPtr give a table row a policy value to
+// return, including one that is neither declared constant.
+func clientPolicyPtr(policy ClientErrorPolicy) *ClientErrorPolicy { return &policy }
+
+func serverPolicyPtr(policy ServerErrorPolicy) *ServerErrorPolicy { return &policy }
 
 // consulted records one call into a policy function.
 type consulted struct {
@@ -183,6 +208,9 @@ func TestCheck_ServerErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
 		wantReleased bool
 		wantFenced   bool
 		wantSeen     []consulted
+		// returns, when set, is what the func answers instead of the consumer
+		// rule below — the lane for a value that is neither constant.
+		returns *ServerErrorPolicy
 	}{
 		{
 			name:         "func releases a failure the route knows did not apply",
@@ -239,6 +267,20 @@ func TestCheck_ServerErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
 			wantReleased: true,
 			wantFenced:   false,
 		},
+		{
+			// Neither constant, so it reads as the documented default rather
+			// than as a third behaviour — and the default is the SAFE-TO-RETRY
+			// one, which is why a route relying on the fence must return it
+			// explicitly.
+			name:         "an out-of-range return reads as the release default",
+			withFunc:     true,
+			opts:         []Option{WithServerErrorPolicy(ServerErrorPolicyFence)},
+			handler:      func(c fiber.Ctx) error { return c.SendStatus(http.StatusInternalServerError) },
+			returns:      serverPolicyPtr(ServerErrorPolicy(9)),
+			wantReleased: true,
+			wantFenced:   false,
+			wantSeen:     []consulted{{status: http.StatusInternalServerError, err: nil}},
+		},
 	}
 
 	for _, testCase := range tests {
@@ -274,6 +316,10 @@ func TestCheck_ServerErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
 					func(_ fiber.Ctx, status int, err error) ServerErrorPolicy {
 						seen = append(seen, consulted{status: status, err: err})
 
+						if testCase.returns != nil {
+							return *testCase.returns
+						}
+
 						if errors.Is(err, errDownstreamDeclined) {
 							return ServerErrorPolicyRelease
 						}
@@ -292,9 +338,13 @@ func TestCheck_ServerErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
 			assert.Equal(t, int64(1), calls.Load())
 			assert.Equal(t, testCase.wantSeen, seen, "what the func was consulted with")
 
-			if testCase.wantFenced {
+			switch {
+			case testCase.wantFenced:
 				assert.Contains(t, string(stored), `"outcome":"`+outcomeUnrecorded+`"`,
 					"a fenced key holds a terminal outcome-unknown record")
+			case !testCase.wantReleased:
+				assert.NotContains(t, string(stored), outcomeUnrecorded,
+					"an ordinary completion must not be written as a fence")
 			}
 		})
 	}

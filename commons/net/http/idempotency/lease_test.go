@@ -649,13 +649,13 @@ func TestCheck_ProcessingTTLProvider_AppliesToTheNextAcquisition(t *testing.T) {
 	// The service hot-reloads its window while that request is still in flight.
 	lease.Store(int64(time.Hour))
 
-	assert.Equal(t, time.Second, mr.TTL(firstKey),
-		"a live lease must not be re-sized under the handler still running behind it")
-
+	// Past the second the lease was taken with, and nowhere near the hour it
+	// would hold if the reload had reached it. The key being GONE is what says
+	// a live lease is not re-sized under the handler still running behind it.
 	mr.FastForward(2 * time.Second)
 
 	_, err := mr.Get(firstKey)
-	require.Error(t, err, "the lease expired on the value it was taken with")
+	require.Error(t, err, "the lease expired on the value it was taken with, not the reloaded one")
 
 	close(firstRelease)
 	assert.Equal(t, http.StatusServiceUnavailable, <-firstStatus,
@@ -681,6 +681,7 @@ func TestCheck_ProcessingTTLProvider_AppliesToTheNextAcquisition(t *testing.T) {
 
 	close(secondRelease)
 	assert.Equal(t, http.StatusCreated, <-secondStatus)
+	assert.Equal(t, int64(2), calls.Load(), "two keys, two executions, neither one twice")
 }
 
 // deadlineStore fails the way a real store does when the context handed to it
