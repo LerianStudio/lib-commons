@@ -212,6 +212,7 @@ type Middleware struct {
 	maxBodyCache             int
 	redisTimeout             time.Duration
 	ttlProvider              TTLProvider
+	processingTTLProvider    TTLProvider
 	fingerprintScopeProvider FingerprintScopeProvider
 	fingerprintProvider      FingerprintProvider
 	responseCodec            ResponseCodec
@@ -392,6 +393,37 @@ func WithTTLProvider(provider TTLProvider) Option {
 	return func(m *Middleware) {
 		if provider != nil {
 			m.ttlProvider = provider
+		}
+	}
+}
+
+// WithProcessingTTLProvider resolves the in-flight lease for every request, the
+// way [WithTTLProvider] resolves the retention. It is evaluated when the lease
+// is TAKEN and nowhere else, so one middleware instance can follow hot-reloaded
+// application policy — a service whose retry window moves at runtime cannot
+// make the fixed [WithProcessingTTL] follow it — while a lease already written
+// into the store keeps the value it was taken with. When set it takes
+// precedence over [WithProcessingTTL].
+//
+// Unlike [WithTTLProvider], a provider error or a non-positive value does NOT
+// refuse the request: it falls back to [WithProcessingTTL], and to the
+// retention TTL when that is unset, which is exactly the lease an unconfigured
+// middleware takes. The asymmetry is deliberate. An unresolvable RETENTION
+// breaks the replay contract in the unsafe direction, so it fails closed; an
+// unresolvable LEASE falls back to a value that is longer or equal, never
+// shorter, so it cannot produce the mid-flight lapse and double execution
+// [WithProcessingTTL] documents at length.
+//
+// Everything that option says about SIZING the lease applies unchanged: the
+// value must cover the handler plus response capture, encoding and the store
+// round-trip, with margin, whatever resolved it.
+//
+// The provider runs on the request goroutine and must be safe for concurrent
+// use.
+func WithProcessingTTLProvider(provider TTLProvider) Option {
+	return func(m *Middleware) {
+		if provider != nil {
+			m.processingTTLProvider = provider
 		}
 	}
 }
@@ -1378,6 +1410,34 @@ func (m *Middleware) resolveServerErrorPolicy(c fiber.Ctx, status int, err error
 	return m.serverErrorPolicy
 }
 
+// resolveProcessingTTL is the single branch point for the in-flight lease: the
+// per-request provider when one is configured, the constant otherwise. A
+// provider that cannot answer falls back rather than refusing the request; see
+// [WithProcessingTTLProvider] for why this fails open where the retention
+// provider fails closed. A non-positive result reaches handleStore, which
+// borrows the retention TTL for it exactly as an unset lease does.
+func (m *Middleware) resolveProcessingTTL(ctx context.Context, c fiber.Ctx) time.Duration {
+	if m.processingTTLProvider == nil {
+		return m.processingTTL
+	}
+
+	lease, err := m.processingTTLProvider(c)
+	if err != nil {
+		m.logger.Log(ctx, obs.LevelWarn,
+			"idempotency: processing TTL provider failed; falling back to the configured lease",
+			"error", err,
+		)
+
+		return m.processingTTL
+	}
+
+	if lease <= 0 {
+		return m.processingTTL
+	}
+
+	return lease
+}
+
 func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerprint string, ttl time.Duration) error {
 	owner := uuid.NewString()
 	record := storeRecord{
@@ -1397,7 +1457,7 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 	// the in-flight lease, which has to survive everything between here and
 	// that Complete: the handler, the response capture and encoding, and the
 	// store round-trip. Nothing else holds the key for any of it.
-	lease := m.processingTTL
+	lease := m.resolveProcessingTTL(ctx, c)
 	if lease <= 0 {
 		lease = ttl
 	}

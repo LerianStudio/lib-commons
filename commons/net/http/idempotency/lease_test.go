@@ -488,3 +488,187 @@ func TestCheck_UnavailableDefaults_DifferInRetryGuidance(t *testing.T) {
 		"the mutation is committed; a new key would duplicate it")
 	assert.Contains(t, postBody.Message, "reconcile")
 }
+
+// TestCheck_ProcessingTTLProvider_SizesTheLease pins which value reaches
+// Acquire when the lease is resolved by a provider rather than a constant, and
+// what happens when that provider cannot answer.
+//
+// The fallback rows are the load-bearing ones. A provider that errors or
+// returns a non-positive duration must not refuse the request the way a
+// [WithTTLProvider] failure does: an unresolvable RETENTION breaks the replay
+// contract in the unsafe direction, while an unresolvable LEASE falls back to a
+// value that is longer or equal, never shorter, so it cannot produce the
+// double execution the option exists to prevent.
+func TestCheck_ProcessingTTLProvider_SizesTheLease(t *testing.T) {
+	t.Parallel()
+
+	const retention = time.Hour
+
+	failing := func(_ fiber.Ctx) (time.Duration, error) {
+		return 0, errors.New("runtime config unavailable")
+	}
+
+	tests := []struct {
+		name        string
+		opts        []Option
+		wantAcquire time.Duration
+	}{
+		{
+			name: "provider sizes the lease",
+			opts: []Option{WithKeyTTL(retention), WithProcessingTTLProvider(func(_ fiber.Ctx) (time.Duration, error) {
+				return 90 * time.Second, nil
+			})},
+			wantAcquire: 90 * time.Second,
+		},
+		{
+			name: "provider takes precedence over the constant",
+			opts: []Option{
+				WithKeyTTL(retention),
+				WithProcessingTTL(50 * time.Millisecond),
+				WithProcessingTTLProvider(func(_ fiber.Ctx) (time.Duration, error) {
+					return 30 * time.Minute, nil
+				}),
+			},
+			wantAcquire: 30 * time.Minute,
+		},
+		{
+			name:        "provider error falls back to the constant",
+			opts:        []Option{WithKeyTTL(retention), WithProcessingTTL(30 * time.Minute), WithProcessingTTLProvider(failing)},
+			wantAcquire: 30 * time.Minute,
+		},
+		{
+			name:        "provider error with no constant borrows the retention",
+			opts:        []Option{WithKeyTTL(retention), WithProcessingTTLProvider(failing)},
+			wantAcquire: retention,
+		},
+		{
+			name: "non-positive provider value falls back",
+			opts: []Option{WithKeyTTL(retention), WithProcessingTTL(30 * time.Minute), WithProcessingTTLProvider(func(_ fiber.Ctx) (time.Duration, error) {
+				return 0, nil
+			})},
+			wantAcquire: 30 * time.Minute,
+		},
+		{
+			name:        "no provider leaves the constant alone",
+			opts:        []Option{WithKeyTTL(retention), WithProcessingTTL(30 * time.Minute)},
+			wantAcquire: 30 * time.Minute,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			controller := gomock.NewController(t)
+			store := NewMockStore(controller)
+
+			var acquireTTL, completeTTL time.Duration
+
+			store.EXPECT().Acquire(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, _ string, _ []byte, ttl time.Duration) ([]byte, bool, error) {
+					acquireTTL = ttl
+
+					return nil, true, nil
+				})
+			store.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, _ string, _, _ []byte, ttl time.Duration) (bool, error) {
+					completeTTL = ttl
+
+					return true, nil
+				})
+
+			var calls atomic.Int64
+
+			middleware := NewWithStore(store, testCase.opts...)
+
+			response := doPost(t, countingApp(middleware.Check(), "tenant-lease-provider", &calls), "lease-provider-key")
+			response.Body.Close()
+
+			assert.Equal(t, http.StatusCreated, response.StatusCode)
+			assert.Equal(t, testCase.wantAcquire, acquireTTL, "the resolved lease goes to Acquire")
+			assert.Equal(t, retention, completeTTL, "the provider governs the lease only, never the retention")
+		})
+	}
+}
+
+// TestCheck_ProcessingTTLProvider_IsEvaluatedWhenTheLeaseIsTaken covers the
+// consumer case the constant cannot serve: a service that hot-reloads its retry
+// window at runtime needs the in-flight lease to follow the live value.
+//
+// Following it means at ACQUISITION and nowhere else. A lease already written
+// into the store is a commitment to the request holding it, so changing the
+// provider must not shorten the lease under a handler that is still running —
+// that is exactly the mid-flight lapse that lets a redelivery execute the
+// mutation a second time. The new value applies to the NEXT acquisition.
+func TestCheck_ProcessingTTLProvider_IsEvaluatedWhenTheLeaseIsTaken(t *testing.T) {
+	t.Parallel()
+
+	store, mr := realRedisStore(t)
+
+	var lease atomic.Int64
+
+	lease.Store(int64(time.Second))
+
+	middleware := NewWithStore(store,
+		WithKeyTTL(time.Hour),
+		WithProcessingTTLProvider(func(_ fiber.Ctx) (time.Duration, error) {
+			return time.Duration(lease.Load()), nil
+		}),
+	)
+
+	var calls atomic.Int64
+
+	firstEntered, firstRelease := make(chan struct{}), make(chan struct{})
+	firstApp := blockingApp(middleware.Check(), "tenant-live-lease", &calls, firstEntered, firstRelease)
+
+	firstStatus := make(chan int, 1)
+
+	go func() {
+		response := doPost(t, firstApp, "live-lease-a")
+		defer response.Body.Close()
+
+		firstStatus <- response.StatusCode
+	}()
+
+	<-firstEntered // the lease is now written and the handler still running
+
+	const firstKey = "idempotency:tenant-live-lease:live-lease-a"
+
+	assert.Equal(t, time.Second, mr.TTL(firstKey), "the provider's value at acquisition sized the lease")
+
+	// The service hot-reloads its window while that request is still in flight.
+	lease.Store(int64(time.Hour))
+
+	assert.Equal(t, time.Second, mr.TTL(firstKey),
+		"a live lease must not be re-sized under the handler still running behind it")
+
+	mr.FastForward(2 * time.Second)
+
+	_, err := mr.Get(firstKey)
+	require.Error(t, err, "the lease expired on the value it was taken with")
+
+	close(firstRelease)
+	assert.Equal(t, http.StatusServiceUnavailable, <-firstStatus,
+		"the lease lapsed mid-flight, so the completion is rejected")
+
+	// The NEXT acquisition is where the reloaded value lands.
+	secondEntered, secondRelease := make(chan struct{}), make(chan struct{})
+	secondApp := blockingApp(middleware.Check(), "tenant-live-lease", &calls, secondEntered, secondRelease)
+
+	secondStatus := make(chan int, 1)
+
+	go func() {
+		response := doPost(t, secondApp, "live-lease-b")
+		defer response.Body.Close()
+
+		secondStatus <- response.StatusCode
+	}()
+
+	<-secondEntered
+
+	assert.Equal(t, time.Hour, mr.TTL("idempotency:tenant-live-lease:live-lease-b"),
+		"the reloaded value applies to the next lease")
+
+	close(secondRelease)
+	assert.Equal(t, http.StatusCreated, <-secondStatus)
+}
