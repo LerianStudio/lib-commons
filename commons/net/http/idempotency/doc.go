@@ -238,6 +238,8 @@
 //     [WithClientErrorPolicyFunc] decides the same question per RESPONSE, for a
 //     guard mounted above middleware that writes 4xx of its own — a rate
 //     limiter, a quota gate — whose refusals are not the handler's answer.
+//     Only a 4xx that was WRITTEN reaches it: a 4xx RETURNED as an error takes
+//     the handler-failure branch below instead.
 //   - Handler failure or 5xx: the acquisition is compare-safely released only
 //     by its owner, allowing a retry without deleting a replacement lock. Use
 //     [WithServerErrorPolicy] with [ServerErrorPolicyFence] on routes where a

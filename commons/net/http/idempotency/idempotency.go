@@ -550,6 +550,24 @@ func WithClientErrorPolicy(policy ClientErrorPolicy) Option {
 //	    return idempotency.ClientErrorPolicyCache // the handler's own rejection
 //	})
 //
+// # Only a 4xx that was WRITTEN reaches this function
+//
+// A handler or middleware can deliver a 4xx two ways, and only one of them is a
+// client error as far as this middleware is concerned. Writing the status and
+// returning nil reaches this function. RETURNING the 4xx instead — a
+// fiber.NewError(fiber.StatusTooManyRequests, …) that the application's Fiber
+// error handler will turn into a document later — takes the handler-failure
+// branch, so it reaches [WithServerErrorPolicyFunc] with a non-nil err, and
+// with status still the untouched 200 because nothing has written a response
+// yet.
+//
+// This is not hypothetical for the case this option exists for: lib-commons'
+// own rate limiter writes its built-in 429 and returns nil, which arrives here,
+// but under commons/net/http/ratelimit.WithExceededHandler the consumer's
+// handler owns the return value and an error returned from it arrives at the
+// server seam instead. A route that wants one rule for both shapes must install
+// both functions.
+//
 // The function runs on the request goroutine with the response already written,
 // so it may read the response the chain produced, and it must be safe for
 // concurrent use.
@@ -641,6 +659,14 @@ func WithServerErrorPolicy(policy ServerErrorPolicy) Option {
 // 200 on an untouched response — and not the 5xx the caller will finally see;
 // only err identifies that failure. A handler that WROTE a 5xx and returned nil
 // is the mirror image: status is that 5xx and err is nil.
+//
+// It is also where a 4xx RETURNED as an error arrives. A
+// fiber.NewError(fiber.StatusTooManyRequests, …) has written no response, so
+// the middleware sees a handler failure and never consults
+// [WithClientErrorPolicyFunc] for it — status is the untouched 200 and err
+// carries the real status. Read it with fiber.Error when a route delivers
+// rejections that way, or the fence default for 5xx will hold keys spent on
+// client errors.
 //
 // Everything [WithServerErrorPolicy] says about the fence still applies to the
 // responses this function fences, including the [constants.IdempotencyFenced]

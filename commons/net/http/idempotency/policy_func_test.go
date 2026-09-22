@@ -12,6 +12,7 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 )
 
@@ -144,6 +145,12 @@ func TestCheck_ClientErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
 	}
 }
 
+// consulted records one call into a policy function.
+type consulted struct {
+	status int
+	err    error
+}
+
 // errDownstreamDeclined stands for the consumer's MTCH-0513: a downstream target
 // declined the operation before anything was written, so the handler's 5xx is
 // known NOT to have applied.
@@ -161,11 +168,6 @@ var errDownstreamDeclined = errors.New("downstream target declined")
 // mirror image. The rows pin both.
 func TestCheck_ServerErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
 	t.Parallel()
-
-	type consulted struct {
-		status int
-		err    error
-	}
 
 	tests := []struct {
 		name string
@@ -296,4 +298,65 @@ func TestCheck_ServerErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCheck_A4xxReturnedAsAnError_ReachesTheServerFunc pins the routing trap
+// between the two seams, which a consumer mounting both will otherwise find in
+// production.
+//
+// A 4xx has two shapes. WRITING the status and returning nil is a client error
+// and reaches the client function. RETURNING it — fiber.NewError, which the
+// application's Fiber error handler turns into a document later — has written
+// no response at all, so the middleware sees a handler failure: the SERVER
+// function is consulted, with the untouched 200 as status and the real status
+// inside err, and the client function is never called. lib-commons' own rate
+// limiter produces both shapes depending on whether a WithExceededHandler is
+// installed, so this is the routing a rate-limited route actually meets.
+func TestCheck_A4xxReturnedAsAnError_ReachesTheServerFunc(t *testing.T) {
+	t.Parallel()
+
+	controller := gomock.NewController(t)
+	store := NewMockStore(controller)
+	store.EXPECT().Acquire(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil, true, nil)
+	// The server func returns the default policy, which releases.
+	store.EXPECT().Release(gomock.Any(), gomock.Any(), gomock.Any()).Return(true, nil)
+
+	var (
+		clientSeen []int
+		serverSeen []consulted
+	)
+
+	middleware := NewWithStore(store,
+		WithClientErrorPolicyFunc(func(_ fiber.Ctx, status int) ClientErrorPolicy {
+			clientSeen = append(clientSeen, status)
+
+			return ClientErrorPolicyRelease
+		}),
+		WithServerErrorPolicyFunc(func(_ fiber.Ctx, status int, err error) ServerErrorPolicy {
+			serverSeen = append(serverSeen, consulted{status: status, err: err})
+
+			return ServerErrorPolicyRelease
+		}),
+	)
+
+	var calls atomic.Int64
+
+	app := countingMoneyApp(middleware.Check(), "tenant-returned-4xx", &calls, func(fiber.Ctx) error {
+		return fiber.NewError(http.StatusBadRequest, "rejected")
+	})
+
+	response := doPost(t, app, "returned-4xx-key")
+	response.Body.Close()
+
+	assert.Equal(t, int64(1), calls.Load())
+	assert.Nil(t, clientSeen, "a 4xx that was never written is not a client error here")
+	require.Len(t, serverSeen, 1, "it reaches the server seam instead")
+	assert.Equal(t, http.StatusOK, serverSeen[0].status,
+		"nothing wrote a response, so the status is the untouched 200")
+
+	var fiberErr *fiber.Error
+
+	require.ErrorAs(t, serverSeen[0].err, &fiberErr, "the real status travels inside err")
+	assert.Equal(t, http.StatusBadRequest, fiberErr.Code)
 }
