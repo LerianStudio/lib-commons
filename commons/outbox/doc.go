@@ -22,15 +22,28 @@
 // Retention is opt-in through WithRetentionPublished and needs a repository
 // implementing the optional PublishedPurger capability (the postgres and mongo
 // adapters do); NewDispatcher returns ErrOutboxRetentionUnsupported otherwise.
-// When enabled, each
-// dispatch scope is swept at most once per RetentionSweepInterval: one call to
-// DeletePublishedBefore removes up to RetentionBatchSize PUBLISHED events
-// older than the retention window, oldest first, sparing the types listed in
-// RetentionKeepEventTypes, so a large backlog drains one batch per interval
-// without a long transaction. PENDING, PROCESSING, FAILED and INVALID events
-// are never deleted: an INVALID event is the durable record that a fact was
-// abandoned after the retry budget. A failed sweep is logged and does not
-// affect dispatch.
+// When enabled, a dispatch scope is swept at most once per
+// RetentionSweepInterval: one call to DeletePublishedBefore removes up to
+// RetentionBatchSize PUBLISHED events older than the retention window, oldest
+// first, sparing the types listed in RetentionKeepEventTypes, so a large
+// backlog drains one batch per interval without a long transaction. PENDING,
+// PROCESSING, FAILED and INVALID events are not deleted at any age: an INVALID
+// event is the durable record that a fact was abandoned after the retry
+// budget. A failed sweep is logged and does not affect dispatch.
+//
+// A scope is swept only in a pass where it is dispatched. Pool-per-tenant and
+// schema-per-tenant repositories discover every known tenant, so each of them
+// is swept. In column-per-tenant (postgres) and tenant-field (mongo) modes,
+// discovery lists tenants with PENDING, PROCESSING or FAILED rows, so a tenant
+// whose rows are all PUBLISHED or INVALID is not swept until it has work again.
+// A retention-specific discovery listing tenants with PUBLISHED rows is the
+// follow-up if a column or mongo consumer needs idle tenants swept.
+//
+// The interval is kept per dispatcher instance, in memory: N replicas produce
+// up to N batches per scope per interval. Deletes are idempotent, so replicas
+// racing on one scope delete each row once. A scope's last sweep time is
+// forgotten once it is older than the interval, never because the scope
+// dropped out of one discovery pass.
 //
 // These optional interfaces and scheduling controls are backward compatible:
 // repositories that do not implement TenantDispatchScopeRepository continue to
