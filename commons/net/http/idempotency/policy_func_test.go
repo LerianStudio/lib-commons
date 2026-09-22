@@ -351,62 +351,111 @@ func TestCheck_ServerErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
 }
 
 // TestCheck_A4xxReturnedAsAnError_ReachesTheServerFunc pins the routing trap
-// between the two seams, which a consumer mounting both will otherwise find in
-// production.
+// between the two seams, and what the server seam is told when it is taken.
 //
 // A 4xx has two shapes. WRITING the status and returning nil is a client error
 // and reaches the client function. RETURNING it — fiber.NewError, which the
 // application's Fiber error handler turns into a document later — has written
 // no response at all, so the middleware sees a handler failure: the SERVER
-// function is consulted, with the untouched 200 as status and the real status
-// inside err, and the client function is never called. lib-commons' own rate
-// limiter produces both shapes depending on whether a WithExceededHandler is
-// installed, so this is the routing a rate-limited route actually meets.
+// function is consulted and the client one is never called. lib-commons' own
+// rate limiter produces both shapes depending on whether a WithExceededHandler
+// is installed, so this is the routing a rate-limited route actually meets.
+//
+// The status the server seam receives is the EFFECTIVE one: the code carried by
+// a returned *fiber.Error, the written status when the handler wrote anything,
+// and otherwise the untouched 200. err is the only fact among them, which is
+// why every row asserts it too.
 func TestCheck_A4xxReturnedAsAnError_ReachesTheServerFunc(t *testing.T) {
 	t.Parallel()
 
-	controller := gomock.NewController(t)
-	store := NewMockStore(controller)
-	store.EXPECT().Acquire(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		Return(nil, true, nil)
-	// The server func returns the default policy, which releases.
-	store.EXPECT().Release(gomock.Any(), gomock.Any(), gomock.Any()).Return(true, nil)
+	tests := []struct {
+		name       string
+		handler    fiber.Handler
+		wantStatus int
+		// wantFiberCode is the code inside err when err is a *fiber.Error, and
+		// zero when the row's error is a plain one.
+		wantFiberCode int
+	}{
+		{
+			name:          "a returned fiber error reports its own code",
+			handler:       func(fiber.Ctx) error { return fiber.NewError(http.StatusBadRequest, "rejected") },
+			wantStatus:    http.StatusBadRequest,
+			wantFiberCode: http.StatusBadRequest,
+		},
+		{
+			// Nothing to forecast from: the response is untouched and the error
+			// carries no status, so the seam is told exactly that.
+			name:       "a returned plain error leaves the untouched status",
+			handler:    func(fiber.Ctx) error { return errDownstreamDeclined },
+			wantStatus: http.StatusOK,
+		},
+		{
+			// A written response is a fact and outranks the forecast.
+			name: "a written status outranks the code inside the error",
+			handler: func(c fiber.Ctx) error {
+				if err := c.Status(http.StatusUnprocessableEntity).JSON(fiber.Map{"code": "INVALID"}); err != nil {
+					return err
+				}
 
-	var (
-		clientSeen []int
-		serverSeen []consulted
-	)
+				return fiber.NewError(http.StatusBadRequest, "rejected")
+			},
+			wantStatus:    http.StatusUnprocessableEntity,
+			wantFiberCode: http.StatusBadRequest,
+		},
+	}
 
-	middleware := NewWithStore(store,
-		WithClientErrorPolicyFunc(func(_ fiber.Ctx, status int) ClientErrorPolicy {
-			clientSeen = append(clientSeen, status)
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
 
-			return ClientErrorPolicyRelease
-		}),
-		WithServerErrorPolicyFunc(func(_ fiber.Ctx, status int, err error) ServerErrorPolicy {
-			serverSeen = append(serverSeen, consulted{status: status, err: err})
+			controller := gomock.NewController(t)
+			store := NewMockStore(controller)
+			store.EXPECT().Acquire(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(nil, true, nil)
+			// Both funcs return their default policy, which releases.
+			store.EXPECT().Release(gomock.Any(), gomock.Any(), gomock.Any()).Return(true, nil)
 
-			return ServerErrorPolicyRelease
-		}),
-	)
+			var (
+				clientSeen []int
+				serverSeen []consulted
+			)
 
-	var calls atomic.Int64
+			middleware := NewWithStore(store,
+				WithClientErrorPolicyFunc(func(_ fiber.Ctx, status int) ClientErrorPolicy {
+					clientSeen = append(clientSeen, status)
 
-	app := countingMoneyApp(middleware.Check(), "tenant-returned-4xx", &calls, func(fiber.Ctx) error {
-		return fiber.NewError(http.StatusBadRequest, "rejected")
-	})
+					return ClientErrorPolicyRelease
+				}),
+				WithServerErrorPolicyFunc(func(_ fiber.Ctx, status int, err error) ServerErrorPolicy {
+					serverSeen = append(serverSeen, consulted{status: status, err: err})
 
-	response := doPost(t, app, "returned-4xx-key")
-	response.Body.Close()
+					return ServerErrorPolicyRelease
+				}),
+			)
 
-	assert.Equal(t, int64(1), calls.Load())
-	assert.Nil(t, clientSeen, "a 4xx that was never written is not a client error here")
-	require.Len(t, serverSeen, 1, "it reaches the server seam instead")
-	assert.Equal(t, http.StatusOK, serverSeen[0].status,
-		"nothing wrote a response, so the status is the untouched 200")
+			var calls atomic.Int64
 
-	var fiberErr *fiber.Error
+			app := countingMoneyApp(middleware.Check(), "tenant-returned-4xx", &calls, testCase.handler)
 
-	require.ErrorAs(t, serverSeen[0].err, &fiberErr, "the real status travels inside err")
-	assert.Equal(t, http.StatusBadRequest, fiberErr.Code)
+			response := doPost(t, app, "returned-4xx-key")
+			response.Body.Close()
+
+			assert.Equal(t, int64(1), calls.Load())
+			assert.Nil(t, clientSeen, "a failure delivered as an error is never a client error here")
+			require.Len(t, serverSeen, 1, "it reaches the server seam instead")
+			assert.Equal(t, testCase.wantStatus, serverSeen[0].status)
+			require.Error(t, serverSeen[0].err, "err is the fact the seam can rely on")
+
+			var fiberErr *fiber.Error
+
+			if testCase.wantFiberCode == 0 {
+				assert.NotErrorAs(t, serverSeen[0].err, &fiberErr)
+
+				return
+			}
+
+			require.ErrorAs(t, serverSeen[0].err, &fiberErr)
+			assert.Equal(t, testCase.wantFiberCode, fiberErr.Code)
+		})
+	}
 }

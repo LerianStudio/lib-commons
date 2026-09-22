@@ -557,9 +557,12 @@ func WithClientErrorPolicy(policy ClientErrorPolicy) Option {
 // returning nil reaches this function. RETURNING the 4xx instead — a
 // fiber.NewError(fiber.StatusTooManyRequests, …) that the application's Fiber
 // error handler will turn into a document later — takes the handler-failure
-// branch, so it reaches [WithServerErrorPolicyFunc] with a non-nil err, and
-// with status still the untouched 200 because nothing has written a response
-// yet.
+// branch, so it reaches [WithServerErrorPolicyFunc] instead, with a non-nil err
+// and 429 as its status.
+//
+// A handler that WRITES a 4xx and ALSO returns an error takes that same
+// handler-failure branch: the server seam receives the written 4xx as its
+// status together with the non-nil err, and this function is not consulted.
 //
 // This is not hypothetical for the case this option exists for: lib-commons'
 // own rate limiter writes its built-in 429 and returns nil, which arrives here,
@@ -652,21 +655,29 @@ func WithServerErrorPolicy(policy ServerErrorPolicy) Option {
 //	    return idempotency.ServerErrorPolicyFence // may have been applied
 //	})
 //
-// The two arguments carry different facts and a route uses whichever it has.
-// err is the error the handler returned, and is nil when the handler only wrote
-// the status. A handler that RETURNS an error has not reached the application's
-// Fiber error handler yet, so status is the response as written so far — still
-// 200 on an untouched response — and not the 5xx the caller will finally see;
-// only err identifies that failure. A handler that WROTE a 5xx and returned nil
-// is the mirror image: status is that 5xx and err is nil.
+// # What the two arguments mean
 //
-// It is also where a 4xx RETURNED as an error arrives. A
-// fiber.NewError(fiber.StatusTooManyRequests, …) has written no response, so
-// the middleware sees a handler failure and never consults
-// [WithClientErrorPolicyFunc] for it — status is the untouched 200 and err
-// carries the real status. Read it with fiber.Error when a route delivers
-// rejections that way, or the fence default for 5xx will hold keys spent on
-// client errors.
+// err is the error the handler returned, and is nil when the handler only wrote
+// the status. It is the only argument here that is a fact rather than a
+// forecast, and a route that needs certainty reads it.
+//
+// status is the EFFECTIVE status: what the handler wrote, or — when the handler
+// returned an error having written nothing — the code inside that error when it
+// is a *fiber.Error. So a returned fiber.NewError(fiber.StatusTooManyRequests,
+// …) arrives here as 429 rather than as the untouched 200 the response object
+// still carries. That code has not been written by anything: the application's
+// Fiber error handler has not run yet and may map, wrap or replace it. It is
+// the best available forecast of the caller's status, not a promise.
+//
+// A returned error that is NOT a *fiber.Error leaves status at whatever the
+// response holds, which for an untouched response is 200. A handler that wrote
+// a status and ALSO returned an error reports the written status, because it
+// wrote a response and that is the honest report.
+//
+// This seam is also where a 4xx RETURNED as an error arrives: it has written no
+// response, so the middleware sees a handler failure and never consults
+// [WithClientErrorPolicyFunc] for it. A route delivering rejections that way
+// must handle them here, or the fence will hold keys spent on client errors.
 //
 // Everything [WithServerErrorPolicy] says about the fence still applies to the
 // responses this function fences, including the [constants.IdempotencyFenced]
@@ -1445,6 +1456,33 @@ func (m *Middleware) resolveClientErrorPolicy(c fiber.Ctx, status int) ClientErr
 	return m.clientErrorPolicy
 }
 
+// effectiveStatus is the status handed to the server policy seam. A handler
+// that WROTE a response is reported by what it wrote. A handler that returned
+// an error and wrote nothing leaves the response object at its default 200,
+// which says nothing at all about the failure — so when that error is a
+// *fiber.Error, its code is reported instead.
+//
+// That code is the status the application's Fiber error handler will MOST
+// LIKELY write, not a status anything has written: the error handler has not
+// run and may map, wrap or replace the code entirely. A consumer that needs
+// certainty about the failure inspects err, which is the only thing here that
+// is a fact rather than a forecast.
+func effectiveStatus(c fiber.Ctx, status int, err error) int {
+	// "Wrote nothing" is the default status AND an empty body: a handler that
+	// wrote a 200 document and then failed has written a response, and its own
+	// status is the honest report.
+	if err == nil || status != http.StatusOK || len(c.Response().Body()) > 0 {
+		return status
+	}
+
+	var fiberErr *fiber.Error
+	if errors.As(err, &fiberErr) {
+		return fiberErr.Code
+	}
+
+	return status
+}
+
 // resolveServerErrorPolicy is the single branch point for the handler-failure
 // and 5xx policy: the per-response function when one is configured, the enum
 // otherwise.
@@ -1615,7 +1653,7 @@ func (m *Middleware) handleStoreAcquired(
 		// "executed, receipt lost" is rewriting a refusal whose key is already
 		// gone. Fencing skips the release entirely rather than trying to order
 		// it after a seam the middleware does not own.
-		if m.resolveServerErrorPolicy(c, statusCode, handlerErr) == ServerErrorPolicyFence {
+		if m.resolveServerErrorPolicy(c, effectiveStatus(c, statusCode, handlerErr), handlerErr) == ServerErrorPolicyFence {
 			// The result is deliberately not turned into a document here. This
 			// branch must return handlerErr so the application's error handler
 			// runs and owns the response; authoring one would take that over.

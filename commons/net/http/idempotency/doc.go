@@ -239,7 +239,8 @@
 //     guard mounted above middleware that writes 4xx of its own — a rate
 //     limiter, a quota gate — whose refusals are not the handler's answer.
 //     Only a 4xx that was WRITTEN reaches it: a 4xx RETURNED as an error takes
-//     the handler-failure branch below instead.
+//     the handler-failure branch below instead, where it arrives carrying its
+//     own code as the status.
 //   - Handler failure or 5xx: the acquisition is compare-safely released only
 //     by its owner, allowing a retry without deleting a replacement lock. Use
 //     [WithServerErrorPolicy] with [ServerErrorPolicyFence] on routes where a
@@ -247,6 +248,10 @@
 //     [WithServerErrorPolicyFunc] decides the same question per RESPONSE, for a
 //     route that knows which of its failures did not apply and wants only the
 //     ambiguous ones fenced.
+//     Its status argument is the EFFECTIVE one: the written status, or the code
+//     inside a returned *fiber.Error when nothing was written — a forecast of
+//     what the application's error handler will write, not a fact. err is the
+//     fact.
 //
 // # What a replay does to response headers
 //
