@@ -540,9 +540,42 @@ func (k *keepAliveConn) close() {
 	}
 }
 
-// post sends one request and reads its response. It returns the status, the
-// replayed marker and whether the server retired the connection.
+// post sends one request under a declared Content-Length and reads its
+// response. It returns the status, the replayed marker and whether the server
+// retired the connection.
 func (k *keepAliveConn) post(key string, body []byte) (status int, replayed string, retired bool) {
+	k.t.Helper()
+
+	head := fmt.Sprintf("POST /test HTTP/1.1\r\nHost: idempotency.test\r\n%s: %s\r\n"+
+		"Content-Type: %s\r\nContent-Length: %d\r\n\r\n",
+		chttp.IdempotencyKey, key, fiber.MIMEOctetStream, len(body))
+
+	return k.roundTrip(append([]byte(head), body...))
+}
+
+// postChunked sends the same request with no Content-Length at all, framing the
+// body as a single HTTP/1.1 chunk.
+//
+// That is the framing the declared-length pre-read can never produce: fasthttp
+// reports ContentLength() == -1 and readBodyWithStreaming refuses chunked
+// outright, so NOTHING is lifted out of the connection before the stream is
+// handed over. Size cannot make such a body harmless the way a small declared
+// length does.
+func (k *keepAliveConn) postChunked(key string, body []byte) (status int, replayed string, retired bool) {
+	k.t.Helper()
+
+	wire := []byte(fmt.Sprintf("POST /test HTTP/1.1\r\nHost: idempotency.test\r\n%s: %s\r\n"+
+		"Content-Type: %s\r\nTransfer-Encoding: chunked\r\n\r\n%x\r\n",
+		chttp.IdempotencyKey, key, fiber.MIMEOctetStream, len(body)))
+	wire = append(wire, body...)
+	wire = append(wire, "\r\n0\r\n\r\n"...)
+
+	return k.roundTrip(wire)
+}
+
+// roundTrip writes one already-framed request on the pooled connection, dialling
+// again only if the previous answer retired it, and reads the response back.
+func (k *keepAliveConn) roundTrip(wire []byte) (status int, replayed string, retired bool) {
 	k.t.Helper()
 
 	if k.conn == nil {
@@ -554,11 +587,7 @@ func (k *keepAliveConn) post(key string, body []byte) (status int, replayed stri
 
 	require.NoError(k.t, k.conn.SetDeadline(time.Now().Add(10*time.Second)))
 
-	head := fmt.Sprintf("POST /test HTTP/1.1\r\nHost: idempotency.test\r\n%s: %s\r\n"+
-		"Content-Type: %s\r\nContent-Length: %d\r\n\r\n",
-		chttp.IdempotencyKey, key, fiber.MIMEOctetStream, len(body))
-
-	_, err := k.conn.Write(append([]byte(head), body...))
+	_, err := k.conn.Write(wire)
 	require.NoError(k.t, err, "the connection died before this request was even sent")
 
 	resp, err := http.ReadResponse(k.br, nil)
@@ -710,50 +739,98 @@ func TestFingerprintProvider_StreamedDuplicate_LeavesTheConnectionUsable(t *test
 // is parsed from the middle of that body. The guard is therefore right to fire
 // with no provider in sight, and narrowing it to the provider would put the same
 // reset back on every refused upload.
+//
+// The chunked subtests pin the other framing. The guard decides on
+// Content-Length, and a chunked upload declares none: fasthttp reports -1 and
+// pre-reads nothing, so ten bytes are as unread as 200 KB. Read as a number
+// rather than as "no declared length", that -1 sorts below every threshold and
+// the guard would keep exactly the connections it exists to retire.
 func TestRefusal_StreamedBodyUnread_RetiresTheConnection(t *testing.T) {
 	t.Parallel()
 
-	const bodySize = 70 << 10
+	newProbe := func(t *testing.T) (*keepAliveConn, *atomic.Int32) {
+		t.Helper()
 
-	body := bytes.Repeat([]byte("x"), bodySize)
+		m := New(newRedisClient(t, miniredis.RunT(t)), WithMaxKeyLength(8))
 
-	m := New(newRedisClient(t, miniredis.RunT(t)), WithMaxKeyLength(8))
+		var called atomic.Int32
 
-	var called atomic.Int32
+		app := fiber.New(fiber.Config{StreamRequestBody: true})
+		app.Use(tenantMiddleware("t1"))
+		app.Use(m.Check())
+		app.Post("/test", func(c fiber.Ctx) error {
+			called.Add(1)
 
-	app := fiber.New(fiber.Config{StreamRequestBody: true})
-	app.Use(tenantMiddleware("t1"))
-	app.Use(m.Check())
-	app.Post("/test", func(c fiber.Ctx) error {
-		called.Add(1)
-
-		if c.Request().IsBodyStream() {
-			if _, err := io.Copy(io.Discard, c.Request().BodyStream()); err != nil {
-				return err
+			if c.Request().IsBodyStream() {
+				if _, err := io.Copy(io.Discard, c.Request().BodyStream()); err != nil {
+					return err
+				}
 			}
-		}
 
-		return c.Status(fiber.StatusCreated).SendString("ok")
+			return c.Status(fiber.StatusCreated).SendString("ok")
+		})
+
+		return newKeepAliveConn(t, serveStreamProbe(t, app)), &called
+	}
+
+	t.Run("declared_length_past_the_pre_read", func(t *testing.T) {
+		t.Parallel()
+
+		client, called := newProbe(t)
+		body := bytes.Repeat([]byte("x"), 70<<10)
+
+		status, replayed, retired := client.post("this-key-is-far-too-long", body)
+		require.Equal(t, http.StatusBadRequest, status, "the key is longer than WithMaxKeyLength(8)")
+		assert.Empty(t, replayed, "nothing was replayed: the request was refused before any record was read")
+		assert.True(t, retired,
+			"the refusal answered without running the handler, so the upload was never read; "+
+				"keeping the connection leaves the next request parsed from the middle of it")
+
+		status, replayed, retired = client.post("short", body)
+		require.Equal(t, http.StatusCreated, status,
+			"the client reconnects and its next request is answered: the refusal costs a connection, never a request")
+		assert.Empty(t, replayed, "a fresh key on a fresh connection is not a duplicate")
+		assert.False(t, retired, "the handler ran and drained the body, so this connection stays usable")
+
+		assert.Equal(t, int32(1), called.Load(), "the refused upload must never reach the handler")
+		assert.Equal(t, 2, client.dials,
+			"one dial for the refused request and one for the request that follows it")
 	})
 
-	client := newKeepAliveConn(t, serveStreamProbe(t, app))
+	// A chunked upload — what a client streaming an export or a multipart file
+	// of unknown length actually sends — declares no length at all, and fasthttp
+	// pre-reads none of it: the whole body is still in the connection when the
+	// refusal answers, at ten bytes exactly as much as at 200 KB. The guard
+	// reads Content-Length to decide, so it MUST treat the -1 that chunked
+	// reports as "nothing was buffered" and never as "small enough to keep":
+	// held by size alone, a ten-byte chunked body looks like the harmless case
+	// and is the opposite of it.
+	for _, bodySize := range []int{10, 200 << 10} {
+		t.Run(fmt.Sprintf("chunked_%d_bytes", bodySize), func(t *testing.T) {
+			t.Parallel()
 
-	status, replayed, retired := client.post("this-key-is-far-too-long", body)
-	require.Equal(t, http.StatusBadRequest, status, "the key is longer than WithMaxKeyLength(8)")
-	assert.Empty(t, replayed, "nothing was replayed: the request was refused before any record was read")
-	assert.True(t, retired,
-		"the refusal answered without running the handler, so the upload was never read; "+
-			"keeping the connection leaves the next request parsed from the middle of it")
+			client, called := newProbe(t)
 
-	status, replayed, retired = client.post("short", body)
-	require.Equal(t, http.StatusCreated, status,
-		"the client reconnects and its next request is answered: the refusal costs a connection, never a request")
-	assert.Empty(t, replayed, "a fresh key on a fresh connection is not a duplicate")
-	assert.False(t, retired, "the handler ran and drained the body, so this connection stays usable")
+			status, replayed, retired := client.postChunked(
+				"this-key-is-far-too-long", bytes.Repeat([]byte("x"), bodySize))
+			require.Equal(t, http.StatusBadRequest, status, "the key is longer than WithMaxKeyLength(8)")
+			assert.Empty(t, replayed, "nothing was replayed: the request was refused before any record was read")
+			assert.True(t, retired,
+				"no byte of a chunked body is pre-read, so this %d-byte refusal left all of it in the "+
+					"connection: the next request on it is parsed from the chunk framing", bodySize)
 
-	assert.Equal(t, int32(1), called.Load(), "the refused upload must never reach the handler")
-	assert.Equal(t, 2, client.dials,
-		"one dial for the refused request and one for the request that follows it")
+			status, replayed, retired = client.post("short", []byte("small"))
+			require.Equal(t, http.StatusCreated, status,
+				"the client reconnects and its next request is answered by the app: the refusal costs a "+
+					"connection, never a request")
+			assert.Empty(t, replayed, "a fresh key on a fresh connection is not a duplicate")
+			assert.False(t, retired, "the handler ran and drained the body, so this connection stays usable")
+
+			assert.Equal(t, int32(1), called.Load(), "the refused upload must never reach the handler")
+			assert.Equal(t, 2, client.dials,
+				"one dial for the refused chunked request and one for the request that follows it")
+		})
+	}
 }
 
 // TestRefusal_StreamedBodyBuffered_KeepsTheConnection walks the boundary that
@@ -777,53 +854,102 @@ func TestRefusal_StreamedBodyUnread_RetiresTheConnection(t *testing.T) {
 func TestRefusal_StreamedBodyBuffered_KeepsTheConnection(t *testing.T) {
 	t.Parallel()
 
-	m := New(newRedisClient(t, miniredis.RunT(t)), WithMaxKeyLength(8))
+	newProbe := func(t *testing.T, bodyLimit int) (*keepAliveConn, *atomic.Int32) {
+		t.Helper()
 
-	var called atomic.Int32
+		m := New(newRedisClient(t, miniredis.RunT(t)), WithMaxKeyLength(8))
 
-	app := fiber.New(fiber.Config{StreamRequestBody: true})
-	app.Use(tenantMiddleware("t1"))
-	app.Use(m.Check())
-	app.Post("/test", func(c fiber.Ctx) error {
-		called.Add(1)
+		var called atomic.Int32
 
-		if c.Request().IsBodyStream() {
-			if _, err := io.Copy(io.Discard, c.Request().BodyStream()); err != nil {
-				return err
+		app := fiber.New(fiber.Config{StreamRequestBody: true, BodyLimit: bodyLimit})
+		app.Use(tenantMiddleware("t1"))
+		app.Use(m.Check())
+		app.Post("/test", func(c fiber.Ctx) error {
+			called.Add(1)
+
+			if c.Request().IsBodyStream() {
+				if _, err := io.Copy(io.Discard, c.Request().BodyStream()); err != nil {
+					return err
+				}
 			}
-		}
 
-		return c.Status(fiber.StatusCreated).SendString("ok")
-	})
+			return c.Status(fiber.StatusCreated).SendString("ok")
+		})
 
-	client := newKeepAliveConn(t, serveStreamProbe(t, app))
-
-	// Every one of these is fully buffered out of the connection before the
-	// handler chain even starts, so the refusal leaves nothing behind.
-	for _, bodySize := range []int{0, 200, 8 << 10} {
-		status, _, retired := client.post("this-key-is-far-too-long", bytes.Repeat([]byte("x"), bodySize))
-
-		require.Equal(t, http.StatusBadRequest, status,
-			"the %d-byte request is refused for its over-length key", bodySize)
-		assert.False(t, retired,
-			"fasthttp already copied the whole %d-byte body out of the connection, so this refusal "+
-				"read nothing only because there was nothing left to read: closing here costs the "+
-				"client a handshake per duplicate and protects nothing", bodySize)
+		return newKeepAliveConn(t, serveStreamProbe(t, app)), &called
 	}
 
-	// One byte past the pre-read: the remainder really is sitting in the
-	// connection, and the next request would be parsed from the middle of it.
-	status, _, retired := client.post("this-key-is-far-too-long", bytes.Repeat([]byte("x"), (8<<10)+1))
-	require.Equal(t, http.StatusBadRequest, status)
-	assert.True(t, retired,
-		"one byte past what fasthttp buffers, the refusal leaves an unread remainder in the connection")
+	// With the default body limit (4 MiB) the 8 KiB ceiling is the binding one,
+	// so the boundary sits where fasthttp stops copying.
+	t.Run("bounded_by_the_8k_pre_read", func(t *testing.T) {
+		t.Parallel()
 
-	status, _, retired = client.post("short", []byte("small"))
-	require.Equal(t, http.StatusCreated, status,
-		"the client reconnects and its next request is answered: a retirement costs a connection, never a request")
-	assert.False(t, retired, "the handler ran and owns the body")
+		client, called := newProbe(t, fiber.DefaultBodyLimit)
 
-	assert.Equal(t, int32(1), called.Load(), "only the well-formed request reaches the handler")
-	assert.Equal(t, 2, client.dials,
-		"one connection carries all four refusals; only the one that left a remainder is redialled")
+		// Every one of these is fully buffered out of the connection before the
+		// handler chain even starts, so the refusal leaves nothing behind.
+		for _, bodySize := range []int{0, 200, 8 << 10} {
+			status, _, retired := client.post("this-key-is-far-too-long", bytes.Repeat([]byte("x"), bodySize))
+
+			require.Equal(t, http.StatusBadRequest, status,
+				"the %d-byte request is refused for its over-length key", bodySize)
+			assert.False(t, retired,
+				"fasthttp already copied the whole %d-byte body out of the connection, so this refusal "+
+					"read nothing only because there was nothing left to read: closing here costs the "+
+					"client a handshake per duplicate and protects nothing", bodySize)
+		}
+
+		// One byte past the pre-read: the remainder really is sitting in the
+		// connection, and the next request would be parsed from the middle of it.
+		status, _, retired := client.post("this-key-is-far-too-long", bytes.Repeat([]byte("x"), (8<<10)+1))
+		require.Equal(t, http.StatusBadRequest, status)
+		assert.True(t, retired,
+			"one byte past what fasthttp buffers, the refusal leaves an unread remainder in the connection")
+
+		status, _, retired = client.post("short", []byte("small"))
+		require.Equal(t, http.StatusCreated, status,
+			"the client reconnects and its next request is answered: a retirement costs a connection, never a request")
+		assert.False(t, retired, "the handler ran and owns the body")
+
+		assert.Equal(t, int32(1), called.Load(), "only the well-formed request reaches the handler")
+		assert.Equal(t, 2, client.dials,
+			"one connection carries all four refusals; only the one that left a remainder is redialled")
+	})
+
+	// An app whose body limit is BELOW the 8 KiB ceiling moves the boundary down
+	// to the limit: fasthttp copies min(bodyLimit, Content-Length, 8 KiB), so on
+	// a 4 KiB route a 4097-byte body is a stream with exactly one byte still in
+	// the connection. A guard that stopped at the 8 KiB ceiling would read 4097
+	// as "buffered", keep the socket, and hand the next request that leftover
+	// byte — which is why the limit is a clause of its own and not a comment.
+	t.Run("bounded_by_a_smaller_body_limit", func(t *testing.T) {
+		t.Parallel()
+
+		const bodyLimit = 4096
+
+		client, called := newProbe(t, bodyLimit)
+
+		status, _, retired := client.post("this-key-is-far-too-long", bytes.Repeat([]byte("x"), bodyLimit))
+		require.Equal(t, http.StatusBadRequest, status,
+			"the %d-byte request is refused for its over-length key", bodyLimit)
+		assert.False(t, retired,
+			"a body exactly at the route's limit is copied out whole, so this refusal left nothing behind")
+
+		status, _, retired = client.post("this-key-is-far-too-long", bytes.Repeat([]byte("x"), bodyLimit+1))
+		require.Equal(t, http.StatusBadRequest, status,
+			"the %d-byte request is refused for its over-length key, not for its size", bodyLimit+1)
+		assert.True(t, retired,
+			"one byte past the route's limit, fasthttp stopped copying at %d and that byte is still in "+
+				"the connection: the next request on it is parsed starting from it", bodyLimit)
+
+		status, _, retired = client.post("short", []byte("small"))
+		require.Equal(t, http.StatusCreated, status,
+			"the client reconnects and its next request is answered by the app: a retirement costs a "+
+				"connection, never a request")
+		assert.False(t, retired, "the handler ran and owns the body")
+
+		assert.Equal(t, int32(1), called.Load(), "only the well-formed request reaches the handler")
+		assert.Equal(t, 2, client.dials,
+			"both refusals share the first connection; only the one that left a remainder is redialled")
+	})
 }
