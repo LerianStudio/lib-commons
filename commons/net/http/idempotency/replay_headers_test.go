@@ -191,18 +191,31 @@ func TestReplay_UncapturedLiveHeader_Survives(t *testing.T) {
 		"a header the app set on this request but never captured must survive the replay")
 }
 
-// TestReplay_LiveCookieFromOtherMiddleware_Survives pins the one captured name
-// whose unit of identity is not the header name. fasthttp clears the entire
-// cookie jar when a response header called "Set-Cookie" is deleted, so clearing
-// it before re-applying the capture also throws away a cookie another
-// middleware minted on THIS request: a service running csrf.New() or a session
-// rotator with app.Use answers a double-clicked mutation by dropping the fresh
-// token and reinstalling the captured one, and the user's next mutation is
-// refused as a CSRF failure.
+// TestReplay_LiveCookieFromOtherMiddleware_Survives pins that a cookie minted
+// ABOVE this middleware reaches the client on a replay carrying THIS request's
+// value, untouched.
+//
+// A csrf.New() or a session rotator mounted with app.Use runs on the duplicate
+// too and mints a fresh token for it. That cookie is written before c.Next(),
+// so it never enters the handler's delta and the capture never holds its name.
+// The capture here does hold a Set-Cookie all the same — the handler's own
+// session cookie — so the replay DOES clear under that name, and what keeps the
+// live token alive is that the clearing is scoped to the cookie names the
+// capture is re-applying. fasthttp's ResponseHeader.Del("Set-Cookie") empties
+// the whole jar; measured with the DelCookie loop replaced by that Del, this
+// test fails with both the csrf and the locale cookie gone from the replay, and
+// the user's next mutation is refused as a CSRF failure.
 //
 // It mints a DIFFERENT token per request, which is what makes it an assertion:
-// the version that minted the same bytes twice could not see the overwrite at
-// all, and passed over the defect.
+// a version that minted the same bytes twice could not tell a surviving cookie
+// from a reinstated one.
+//
+// What it does NOT pin is that a captured cookie is REPLACED rather than
+// duplicated: no live cookie here shares a name with a captured one, so the
+// clearing could be dropped entirely and every count below would still be 1.
+// That half is TestReplay_LiveCookieCollidesWithCapturedName_ReplacedNotDuplicated.
+// Between them the two fence the branch from both sides — drop the clearing and
+// the collision test goes red, widen it to the whole jar and this one does.
 func TestReplay_LiveCookieFromOtherMiddleware_Survives(t *testing.T) {
 	t.Parallel()
 
