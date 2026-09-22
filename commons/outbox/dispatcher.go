@@ -53,6 +53,7 @@ type Dispatcher struct {
 	tenantMetricMu           sync.Mutex
 	scopeActivity            map[TenantDispatchScope]dispatchScopeActivity
 	retentionSweptAt         map[TenantDispatchScope]time.Time
+	retentionPrunedAt        time.Time
 	scopeActivityMu          sync.Mutex
 	now                      func() time.Time
 
@@ -721,12 +722,18 @@ func (dispatcher *Dispatcher) claimRetentionSweep(scope TenantDispatchScope, now
 
 	// Sweep memory is pruned by age, not against discovery: column-per-tenant
 	// and mongo discovery list only tenants with outstanding work, so a scope
-	// that drops out for a tick must still wait out its interval. Pruning on each
-	// granted sweep keeps the map to the scopes swept within one interval.
-	for swept, last := range dispatcher.retentionSweptAt {
-		if now.Sub(last) >= dispatcher.cfg.RetentionSweepInterval {
-			delete(dispatcher.retentionSweptAt, swept)
+	// that drops out for a tick must still wait out its interval. The prune runs
+	// once per interval, not on every granted sweep: N scopes due in one pass
+	// would otherwise scan the map N times. An aged entry lives until the next
+	// prune, so the map holds at most the scopes swept within two intervals.
+	if dispatcher.retentionPrunedAt.IsZero() || now.Sub(dispatcher.retentionPrunedAt) >= dispatcher.cfg.RetentionSweepInterval {
+		for swept, last := range dispatcher.retentionSweptAt {
+			if now.Sub(last) >= dispatcher.cfg.RetentionSweepInterval {
+				delete(dispatcher.retentionSweptAt, swept)
+			}
 		}
+
+		dispatcher.retentionPrunedAt = now
 	}
 
 	dispatcher.retentionSweptAt[scope] = now

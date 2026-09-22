@@ -436,3 +436,52 @@ func TestDispatcherRetention_CancelledContextSkipsSweep(t *testing.T) {
 	dispatcher.sweepRetention(context.Background(), nil, scope, clock.Now())
 	require.Len(t, repo.deletePublishedCallLog(), 1)
 }
+
+func TestDispatcherRetention_SweepMemoryPrunedOncePerInterval(t *testing.T) {
+	t.Parallel()
+
+	scopeA := TenantDispatchScope{TenantID: "tenant-a"}
+	scopeB := TenantDispatchScope{TenantID: "tenant-b"}
+	scopeC := TenantDispatchScope{TenantID: "tenant-c"}
+	scopeD := TenantDispatchScope{TenantID: "tenant-d"}
+	repo := newActivityCountingRepo(scopeA)
+	clock := retentionClock()
+	dispatcher := newRetentionDispatcher(t, repo, clock, nil,
+		WithRetentionPublished(24*time.Hour),
+		WithRetentionSweepInterval(time.Hour),
+	)
+
+	sweepOnly := func(scope TenantDispatchScope) {
+		repo.mu.Lock()
+		repo.scopes = []TenantDispatchScope{scope}
+		repo.mu.Unlock()
+
+		dispatcher.dispatchAcrossTenants(context.Background())
+	}
+
+	// t0: A. t0+30m: B. t0+1h: C, and the interval since the last prune has
+	// passed, so A (1 h old) goes and B (30 min) stays. t0+1h30m: D, and only
+	// 30 min have passed since that prune, so B stays although it is now 1 h
+	// old: pruning is paid once per interval, not on every granted sweep.
+	sweepOnly(scopeA)
+	clock.Advance(30 * time.Minute)
+	sweepOnly(scopeB)
+	clock.Advance(30 * time.Minute)
+	sweepOnly(scopeC)
+	clock.Advance(30 * time.Minute)
+	sweepOnly(scopeD)
+
+	dispatcher.scopeActivityMu.Lock()
+	_, keptA := dispatcher.retentionSweptAt[scopeA]
+	_, keptB := dispatcher.retentionSweptAt[scopeB]
+	_, keptC := dispatcher.retentionSweptAt[scopeC]
+	_, keptD := dispatcher.retentionSweptAt[scopeD]
+	size := len(dispatcher.retentionSweptAt)
+	dispatcher.scopeActivityMu.Unlock()
+
+	require.False(t, keptA, "pruned at the interval boundary")
+	require.True(t, keptB, "an aged entry waits for the next interval boundary")
+	require.True(t, keptC)
+	require.True(t, keptD)
+	require.Equal(t, 3, size)
+}
