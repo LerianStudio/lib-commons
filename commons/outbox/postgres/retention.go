@@ -73,7 +73,7 @@ func (repo *Repository) DeletePublishedBefore(
 		}
 
 		args = append(args, filterArgs...)
-		selection += filter + fmt.Sprintf(" ORDER BY created_at ASC LIMIT $%d", len(args)+1)
+		selection += filter + fmt.Sprintf(" ORDER BY created_at ASC, id ASC LIMIT $%d", len(args)+1)
 		args = append(args, limit)
 
 		// The outer tenant filter reuses the inner placeholder: in column-per-tenant

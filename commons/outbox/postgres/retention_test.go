@@ -98,7 +98,7 @@ func TestDeletePublishedBefore_BoundedOldestFirstDelete(t *testing.T) {
 			name: "no keep list, no tenant column",
 			keep: []string{" ", ""},
 			query: `DELETE FROM "outbox_events" WHERE id IN (SELECT id FROM "outbox_events" ` +
-				`WHERE status = $1::outbox_event_status AND created_at < $2 ORDER BY created_at ASC LIMIT $3)`,
+				`WHERE status = $1::outbox_event_status AND created_at < $2 ORDER BY created_at ASC, id ASC LIMIT $3)`,
 			args: []driver.Value{"PUBLISHED", before, 500},
 		},
 		{
@@ -106,7 +106,7 @@ func TestDeletePublishedBefore_BoundedOldestFirstDelete(t *testing.T) {
 			keep: []string{"leilao.solicitado", " margem.solicitada "},
 			query: `DELETE FROM "outbox_events" WHERE id IN (SELECT id FROM "outbox_events" ` +
 				`WHERE status = $1::outbox_event_status AND created_at < $2 AND NOT (event_type = ANY($3::text[])) ` +
-				`ORDER BY created_at ASC LIMIT $4)`,
+				`ORDER BY created_at ASC, id ASC LIMIT $4)`,
 			args: []driver.Value{"PUBLISHED", before, "leilao.solicitado,margem.solicitada", 500},
 		},
 		{
@@ -114,7 +114,7 @@ func TestDeletePublishedBefore_BoundedOldestFirstDelete(t *testing.T) {
 			tenantColumn: "tenant_id",
 			query: `DELETE FROM "outbox_events" WHERE id IN (SELECT id FROM "outbox_events" ` +
 				`WHERE status = $1::outbox_event_status AND created_at < $2 AND "tenant_id" = $3 ` +
-				`ORDER BY created_at ASC LIMIT $4) AND "tenant_id" = $3`,
+				`ORDER BY created_at ASC, id ASC LIMIT $4) AND "tenant_id" = $3`,
 			args: []driver.Value{"PUBLISHED", before, "22222222-2222-2222-2222-222222222222", 500},
 		},
 	}
