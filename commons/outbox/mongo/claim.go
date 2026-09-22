@@ -187,7 +187,7 @@ func (repo *Repository) claimDocuments(
 	}
 
 	claimedFilter := mergeFilters(
-		bson.M{mongoFieldClaimToken: claimToken, "id": bson.M{"$in": claimedIDs}},
+		bson.M{mongoFieldClaimToken: claimToken, "id": bson.M{mongoOperatorIn: claimedIDs}},
 		repo.tenantMatchFilter(candidates[0].TenantID),
 	)
 	claimedFilter[mongoFieldStatus] = returnStatus

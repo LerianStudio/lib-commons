@@ -32,6 +32,21 @@ type OutboxRepository interface {
 	MarkInvalid(ctx context.Context, id uuid.UUID, errMsg string) error
 }
 
+// PublishedPurger is an additive capability for the dispatcher's retention
+// sweep. It is kept separate from OutboxRepository so existing implementations
+// are not forced to grow a method; NewDispatcher refuses to enable retention
+// on a repository that lacks it.
+type PublishedPurger interface {
+	// DeletePublishedBefore deletes at most limit PUBLISHED events created
+	// before the cutoff, oldest first, skipping every event whose type is in
+	// keepEventTypes, and returns how many were deleted. The age bound uses
+	// created_at: a PUBLISHED event's published_at is never earlier than its
+	// created_at, so the bound is conservative and served by the
+	// (status, created_at) index. PENDING, PROCESSING, FAILED and INVALID
+	// events are never deleted. A limit <= 0 deletes nothing and returns 0.
+	DeletePublishedBefore(ctx context.Context, before time.Time, keepEventTypes []string, limit int) (int64, error)
+}
+
 // IdempotentWriter is a narrow, opt-in contract for content-addressed idempotent
 // outbox writes. It is deliberately kept separate from OutboxRepository so that
 // only callers that need replay-safe upserts depend on it, and existing

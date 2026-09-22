@@ -42,5 +42,7 @@ func TestRun_AllSkipped(t *testing.T) {
 		SkipSubtest("TenantIsolationAndDiscovery"),
 		SkipSubtest("WrongTenantMutationsRejected"),
 		SkipSubtest("DispatcherLifecyclePersistsPublishedState"),
+		SkipSubtest("DeletePublishedBeforePurgesOnlyAgedPublished"),
+		SkipSubtest("DeletePublishedBeforeSparesSameIDInOtherTenant"),
 	)
 }

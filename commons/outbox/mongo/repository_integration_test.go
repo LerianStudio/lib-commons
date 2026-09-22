@@ -60,6 +60,8 @@ func (resolver *integrationTenantDatabaseResolver) DatabaseForTenant(_ context.C
 
 func setupMongoContainer(t *testing.T) (string, func()) {
 	t.Helper()
+	// The test container serves plain TCP; libMongo refuses it without this.
+	t.Setenv("ALLOW_INSECURE_TLS", "true")
 
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -280,7 +282,7 @@ func TestIntegration_Repository_ContractSuite(t *testing.T) {
 	outboxtest.Run(t, func(t *testing.T) outbox.OutboxRepository {
 		t.Helper()
 		return newIntegrationRepoFixtureFromClient(t, suite.ctx, suite.client).repo
-	})
+	}, outboxtest.WithNotFoundError(mongodriver.ErrNoDocuments))
 }
 
 func TestIntegration_Repository_CreateJoinsMongoTransactionContext(t *testing.T) {
@@ -352,7 +354,7 @@ func TestIntegration_Repository_CustomTenantFieldContractSuite(t *testing.T) {
 	outboxtest.Run(t, func(t *testing.T) outbox.OutboxRepository {
 		t.Helper()
 		return newIntegrationRepoFixtureFromClient(t, suite.ctx, suite.client, WithTenantField("scope")).repo
-	})
+	}, outboxtest.WithNotFoundError(mongodriver.ErrNoDocuments))
 }
 
 func TestIntegration_Repository_ResetForRetry(t *testing.T) {
