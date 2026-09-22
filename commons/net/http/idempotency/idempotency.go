@@ -1376,7 +1376,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	// application's own I/O and must not be charged to the store's budget.
 	// Unlike the retention, an unresolvable lease never refuses the request;
 	// see [WithProcessingTTLProvider].
-	lease := m.resolveProcessingTTL(c.Context(), c)
+	lease := m.resolveProcessingTTL(c)
 
 	// The deadline opens HERE, after the application's providers have run and
 	// not before them. [WithRedisTimeout] is a budget for the store, and a
@@ -1496,32 +1496,52 @@ func (m *Middleware) resolveServerErrorPolicy(c fiber.Ctx, status int, err error
 
 // resolveProcessingTTL is the single branch point for the in-flight lease: the
 // per-request provider when one is configured, the constant otherwise. Called
-// once per request, above the store deadline. A provider that cannot answer
+// once per request, above the store deadline, so it takes the request context
+// from c rather than the store-bounded one. A provider that cannot answer
 // falls back to the constant rather than refusing the request; see
 // [WithProcessingTTLProvider] for why this fails open where the retention
 // provider fails closed, and for the obligation that fallback puts on an
 // operator who configures both. A non-positive result reaches handleStore,
 // which borrows the retention TTL for it exactly as an unset lease does.
-func (m *Middleware) resolveProcessingTTL(ctx context.Context, c fiber.Ctx) time.Duration {
+func (m *Middleware) resolveProcessingTTL(c fiber.Ctx) time.Duration {
 	if m.processingTTLProvider == nil {
 		return m.processingTTL
 	}
 
 	lease, err := m.processingTTLProvider(c)
 	if err != nil {
-		m.logger.Log(ctx, obs.LevelWarn,
-			"idempotency: processing TTL provider failed; falling back to the configured lease",
-			"error", err,
-		)
+		m.logFallbackLease(c, "the processing TTL provider failed", err, 0)
 
 		return m.processingTTL
 	}
 
+	// Logged as loudly as the error above, and for the same reason: both mean
+	// the lease this request runs under is NOT the one the provider was
+	// installed to supply, and a fallback shorter than the protected operation
+	// is the mid-flight lapse that lets a redelivery execute it twice. A silent
+	// non-positive return is the worse of the two, because nothing else reports
+	// it at all.
 	if lease <= 0 {
+		m.logFallbackLease(c, "the processing TTL provider returned a non-positive lease", nil, lease)
+
 		return m.processingTTL
 	}
 
 	return lease
+}
+
+// logFallbackLease reports a request running under the fallback lease rather
+// than a resolved one. fallback_lease is what it fell back to; zero there means
+// [WithProcessingTTL] is unset and the lease borrows the retention TTL, which
+// resolveProcessingTTL cannot see from here.
+func (m *Middleware) logFallbackLease(c fiber.Ctx, cause string, err error, returned time.Duration) {
+	m.logger.Log(c.Context(), obs.LevelWarn,
+		"idempotency: "+cause+"; falling back to the configured lease",
+		"error", err,
+		"provider_lease", returned,
+		"fallback_lease", m.processingTTL,
+		"tenant_id", tmcore.GetTenantIDContext(c.Context()),
+	)
 }
 
 func (m *Middleware) handleStore(

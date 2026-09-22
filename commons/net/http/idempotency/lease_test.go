@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -765,4 +766,91 @@ func TestCheck_ProcessingTTLProvider_IsNotChargedToTheStoreBudget(t *testing.T) 
 
 	_, err := mr.Get("idempotency:tenant-lease-budget:lease-budget-key")
 	require.NoError(t, err, "the key must hold the completed record")
+}
+
+// TestCheck_ProcessingTTLProvider_ReportsEveryFallback covers the silent half
+// of the fallback.
+//
+// A provider ERROR was already logged. A provider returning a non-positive
+// duration was not, and it is the worse of the two: nothing else reports it, so
+// a route whose runtime config starts answering 0 quietly stops running on the
+// lease it was configured with and nobody learns until a redelivery executes a
+// mutation twice. Both now say the same thing, at the same level, naming what
+// the provider returned and what the request actually ran under.
+func TestCheck_ProcessingTTLProvider_ReportsEveryFallback(t *testing.T) {
+	t.Parallel()
+
+	const fallback = 30 * time.Minute
+
+	tests := []struct {
+		name         string
+		provider     TTLProvider
+		wantCause    string
+		wantProvided time.Duration
+		wantErr      bool
+	}{
+		{
+			name:         "a provider error is reported",
+			provider:     func(fiber.Ctx) (time.Duration, error) { return 0, errors.New("runtime config unavailable") },
+			wantCause:    "the processing TTL provider failed",
+			wantProvided: 0,
+			wantErr:      true,
+		},
+		{
+			name:         "a non-positive lease is reported too",
+			provider:     func(fiber.Ctx) (time.Duration, error) { return -time.Second, nil },
+			wantCause:    "the processing TTL provider returned a non-positive lease",
+			wantProvided: -time.Second,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			controller := gomock.NewController(t)
+			store := NewMockStore(controller)
+
+			var acquireTTL time.Duration
+
+			store.EXPECT().Acquire(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				DoAndReturn(func(_ context.Context, _ string, _ []byte, ttl time.Duration) ([]byte, bool, error) {
+					acquireTTL = ttl
+
+					return nil, true, nil
+				})
+			store.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(true, nil)
+
+			logger := &recordingLogger{}
+
+			middleware := NewWithStore(store,
+				WithLogger(logger),
+				WithKeyTTL(time.Hour),
+				WithProcessingTTL(fallback),
+				WithProcessingTTLProvider(testCase.provider),
+			)
+
+			var calls atomic.Int64
+
+			response := doPost(t, countingApp(middleware.Check(), "tenant-lease-log", &calls), "lease-log-key")
+			response.Body.Close()
+
+			require.Equal(t, http.StatusCreated, response.StatusCode)
+			assert.Equal(t, fallback, acquireTTL, "the request ran under the fallback lease")
+
+			line := logger.find(t, obs.LevelWarn, testCase.wantCause)
+
+			assert.Equal(t, testCase.wantProvided, line.kv["provider_lease"],
+				"the line names what the provider returned")
+			assert.Equal(t, fallback, line.kv["fallback_lease"],
+				"and the lease the request actually ran under")
+
+			if testCase.wantErr {
+				assert.NotNil(t, line.kv["error"])
+			} else {
+				assert.Nil(t, line.kv["error"], "a non-positive return is not an error")
+			}
+		})
+	}
 }
