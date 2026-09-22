@@ -464,19 +464,36 @@ func TestFingerprintProvider_DifferentIdentityIsReuse(t *testing.T) {
 // belongs to the request, not to the store — but the middleware used to open the
 // store's deadline before calling it, so a provider slower than
 // [WithRedisTimeout] left nothing of the budget for the first store call. That
-// call then failed on a perfectly healthy store, and the fail-open default did
-// what it exists to do: it ran the mutation UNPROTECTED. Every request on the
-// route took that path, so no key was ever held and a duplicate executed again.
+// call then failed on a perfectly healthy store, and under the fail-open default
+// that did what it exists to do: it ran the mutation UNPROTECTED. Every request
+// on the route took that path, so no key was ever held and a duplicate executed
+// again.
+//
+// The assertion is on the budget REMAINING at Acquire, not on the request
+// outrunning a timeout. The provider's delay is a guaranteed floor, so a
+// provider charged to the budget loses at least that much of it; a version that
+// merely hoped to outrun the timeout was measuring machine load instead, and
+// went red in a loaded parallel race suite while the code was correct.
 func TestFingerprintProvider_SlowProviderIsNotChargedToTheStoreDeadline(t *testing.T) {
 	t.Parallel()
 
-	conn := newRedisClient(t, miniredis.RunT(t))
-	m := New(conn,
-		WithRedisTimeout(50*time.Millisecond),
+	const (
+		budget       = time.Second
+		providerWork = 200 * time.Millisecond
+	)
+
+	base, _ := realRedisStore(t)
+	// Two requests, so two acquisitions. The spare slot turns an unexpected
+	// third into a failed length assertion instead of a blocked send that would
+	// hang the whole package until the test binary times out.
+	store := budgetStore{Store: base, remaining: make(chan time.Duration, 3)}
+
+	m := NewWithStore(store,
+		WithRedisTimeout(budget),
 		WithFingerprintProvider(func(fiber.Ctx) ([]byte, error) {
 			// Not CPU work: this stands in for reading the request's identity,
 			// which is I/O the store's budget must not be charged for.
-			time.Sleep(150 * time.Millisecond)
+			time.Sleep(providerWork)
 
 			return []byte("upload:june.csv:4096"), nil
 		}),
@@ -499,6 +516,13 @@ func TestFingerprintProvider_SlowProviderIsNotChargedToTheStoreDeadline(t *testi
 
 	second := postBody(t, app, "slow-provider-key", fiber.MIMEApplicationJSON, []byte(`{"amount":"1250.00"}`))
 	body := readBody(t, second)
+
+	require.Len(t, store.remaining, 2, "one acquisition per request, and no more")
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		assert.Greater(t, <-store.remaining, budget-providerWork/2,
+			"the provider's own work must not come out of the store's budget (request %d)", attempt)
+	}
 
 	assert.Equal(t, int32(1), calls.Load(),
 		"the store was healthy and the key was held, so the duplicate must not reach the handler")

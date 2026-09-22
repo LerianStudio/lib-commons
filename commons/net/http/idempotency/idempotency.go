@@ -162,6 +162,12 @@ const (
 	ClientErrorPolicyRelease
 )
 
+// ClientErrorPolicyFunc decides the [ClientErrorPolicy] for one response,
+// consulted only for a 4xx the handler chain wrote. See
+// [WithClientErrorPolicyFunc] for what status carries and what it does not.
+// Functions must be safe for concurrent use.
+type ClientErrorPolicyFunc func(c fiber.Ctx, status int) ClientErrorPolicy
+
 // ServerErrorPolicy controls what a handler failure or a 5xx response does to
 // the owned idempotency record.
 type ServerErrorPolicy uint8
@@ -175,6 +181,13 @@ const (
 	// refused for the whole retry window instead of freed.
 	ServerErrorPolicyFence
 )
+
+// ServerErrorPolicyFunc decides the [ServerErrorPolicy] for one response,
+// consulted for a handler failure or a 5xx. err is the error the handler
+// returned, nil when it only wrote the status; status is the effective status
+// described in [WithServerErrorPolicyFunc]. Functions must be safe for
+// concurrent use.
+type ServerErrorPolicyFunc func(c fiber.Ctx, status int, err error) ServerErrorPolicy
 
 // The three terminal refusals answered BEFORE the protected handler runs, when
 // a duplicate's key holds a record this version cannot act on. Each is the code
@@ -212,11 +225,14 @@ type Middleware struct {
 	maxBodyCache             int
 	redisTimeout             time.Duration
 	ttlProvider              TTLProvider
+	processingTTLProvider    TTLProvider
 	fingerprintScopeProvider FingerprintScopeProvider
 	fingerprintProvider      FingerprintProvider
 	responseCodec            ResponseCodec
 	clientErrorPolicy        ClientErrorPolicy
 	serverErrorPolicy        ServerErrorPolicy
+	clientErrorPolicyFunc    ClientErrorPolicyFunc
+	serverErrorPolicyFunc    ServerErrorPolicyFunc
 	onRejected               func(c fiber.Ctx) error
 	onConflict               fiber.Handler
 	onKeyReuse               fiber.Handler
@@ -394,6 +410,50 @@ func WithTTLProvider(provider TTLProvider) Option {
 	}
 }
 
+// WithProcessingTTLProvider resolves the in-flight lease for every request, the
+// way [WithTTLProvider] resolves the retention, so one middleware instance can
+// follow hot-reloaded application policy — a service whose retry window moves
+// at runtime cannot make the fixed [WithProcessingTTL] follow it. When set it
+// takes precedence over [WithProcessingTTL].
+//
+// It is evaluated before each acquisition ATTEMPT, including attempts that turn
+// out to be duplicates and are answered with a conflict or a replay, and it
+// runs above the store deadline alongside the other application providers, so
+// its own I/O is never charged to [WithRedisTimeout]. A lease already written
+// into the store keeps the value it was taken with: a later change applies to
+// the next acquisition and never re-sizes a lease under a handler still running
+// behind it.
+//
+// Unlike [WithTTLProvider], a provider error or a non-positive value does NOT
+// refuse the request: it falls back to exactly [WithProcessingTTL], and to the
+// retention TTL when that option is unset. The asymmetry is deliberate — an
+// unresolvable RETENTION breaks the replay contract in the unsafe direction, so
+// it fails closed, while a request whose lease cannot be resolved can still run
+// safely under the lease the route already declared.
+//
+// That fallback is a size the OPERATOR chose, not a safe one the library
+// picked. Configuring both options means [WithProcessingTTL] is what an
+// unresolvable provider lands on, however short: a 50ms constant behind a
+// provider that normally returns 30 minutes yields a 50ms lease the moment the
+// provider cannot answer, and with it the mid-flight lapse and double execution
+// [WithProcessingTTL] documents at length. Size that constant to cover the
+// handler and its completion on its own, or leave it unset — the fallback is
+// then the retention TTL, which is the lease an unconfigured middleware takes.
+//
+// Everything that option says about SIZING the lease applies unchanged: the
+// value must cover the handler plus response capture, encoding and the store
+// round-trip, with margin, whatever resolved it.
+//
+// The provider runs on the request goroutine and must be safe for concurrent
+// use.
+func WithProcessingTTLProvider(provider TTLProvider) Option {
+	return func(m *Middleware) {
+		if provider != nil {
+			m.processingTTLProvider = provider
+		}
+	}
+}
+
 // WithFingerprintScopeProvider namespaces request fingerprints with a scope
 // resolved for every keyed mutating request. The scope is domain-separated and
 // length-prefixed before hashing. A nil provider leaves the legacy fingerprint
@@ -484,6 +544,57 @@ func WithClientErrorPolicy(policy ClientErrorPolicy) Option {
 	}
 }
 
+// WithClientErrorPolicyFunc decides the 4xx policy per response instead of per
+// middleware. It is consulted after the handler chain returns, only for a 4xx,
+// and when set it replaces [WithClientErrorPolicy] entirely so the two forms
+// cannot disagree. A nil function leaves the enum in place, and a return value
+// that is neither constant reads as the default [ClientErrorPolicyCache].
+//
+// The enum cannot serve a guard mounted ABOVE a rate limiter or a quota gate:
+// some of the 4xx it observes were written below it and are not the handler's
+// answer at all, so caching them spends the caller's key on a transient refusal
+// and replays it for the whole retention window.
+//
+//	idempotency.WithClientErrorPolicyFunc(func(_ fiber.Ctx, status int) idempotency.ClientErrorPolicy {
+//	    if status == fiber.StatusTooManyRequests || status == fiber.StatusPaymentRequired {
+//	        return idempotency.ClientErrorPolicyRelease // refused below the guard: not an attempt
+//	    }
+//
+//	    return idempotency.ClientErrorPolicyCache // the handler's own rejection
+//	})
+//
+// # Only a 4xx that was WRITTEN reaches this function
+//
+// A handler or middleware can deliver a 4xx two ways, and only one of them is a
+// client error as far as this middleware is concerned. Writing the status and
+// returning nil reaches this function. RETURNING the 4xx instead — a
+// fiber.NewError(fiber.StatusTooManyRequests, …) that the application's Fiber
+// error handler will turn into a document later — takes the handler-failure
+// branch, so it reaches [WithServerErrorPolicyFunc] instead, with a non-nil err
+// and 429 as its status.
+//
+// A handler that WRITES a 4xx and ALSO returns an error takes that same
+// handler-failure branch: the server seam receives the written 4xx as its
+// status together with the non-nil err, and this function is not consulted.
+//
+// This is not hypothetical for the case this option exists for: lib-commons'
+// own rate limiter writes its built-in 429 and returns nil, which arrives here,
+// but under commons/net/http/ratelimit.WithExceededHandler the consumer's
+// handler owns the return value and an error returned from it arrives at the
+// server seam instead. A route that wants one rule for both shapes must install
+// both functions.
+//
+// The function runs on the request goroutine with the response already written,
+// so it may read the response the chain produced, and it must be safe for
+// concurrent use.
+func WithClientErrorPolicyFunc(fn ClientErrorPolicyFunc) Option {
+	return func(m *Middleware) {
+		if fn != nil {
+			m.clientErrorPolicyFunc = fn
+		}
+	}
+}
+
 // WithServerErrorPolicy controls what a handler failure or a 5xx response does
 // to the owned record. The default is [ServerErrorPolicyRelease], the shipped
 // behavior. Invalid values leave the default unchanged.
@@ -532,6 +643,68 @@ func WithServerErrorPolicy(policy ServerErrorPolicy) Option {
 	return func(m *Middleware) {
 		if policy == ServerErrorPolicyRelease || policy == ServerErrorPolicyFence {
 			m.serverErrorPolicy = policy
+		}
+	}
+}
+
+// WithServerErrorPolicyFunc decides the 5xx policy per response instead of per
+// middleware. It is consulted after the handler chain returns, for a handler
+// error or a 5xx response, and when set it replaces [WithServerErrorPolicy]
+// entirely so the two forms cannot disagree. A nil function leaves the enum in
+// place, and a return value that is neither constant reads as the default
+// [ServerErrorPolicyRelease].
+//
+// The enum fences every 5xx as "may have been applied", and a route that KNOWS
+// some of its failures did not apply — a downstream target declining before
+// anything was written, reported under its own error code — then holds those
+// keys for the whole retention window for nothing. This seam frees those and
+// fences the rest.
+//
+//	idempotency.WithServerErrorPolicyFunc(func(_ fiber.Ctx, _ int, err error) idempotency.ServerErrorPolicy {
+//	    if errors.Is(err, ErrTargetDeclined) {
+//	        return idempotency.ServerErrorPolicyRelease // nothing was written
+//	    }
+//
+//	    return idempotency.ServerErrorPolicyFence // may have been applied
+//	})
+//
+// # What the two arguments mean
+//
+// err is the error the handler returned, and is nil when the handler only wrote
+// the status. It is the only argument here that is a fact rather than a
+// forecast, and a route that needs certainty reads it.
+//
+// status is the EFFECTIVE status: what the handler wrote, or — when the handler
+// returned an error having written nothing — the code inside that error when it
+// is a *fiber.Error. So a returned fiber.NewError(fiber.StatusTooManyRequests,
+// …) arrives here as 429 rather than as the untouched 200 the response object
+// still carries. That code has not been written by anything: the application's
+// Fiber error handler has not run yet and may map, wrap or replace it. It is
+// the best available forecast of the caller's status, not a promise.
+//
+// A returned error that is NOT a *fiber.Error leaves status at whatever the
+// response holds, which for an untouched response is 200. A handler that wrote
+// a status and ALSO returned an error reports the written status, because it
+// wrote a response and that is the honest report. A handler that STREAMED a
+// response counts as having written one for the same reason, and the stream is
+// never read to establish that: reading it would buffer the whole body past
+// [WithMaxBodyCache] to decide a forecast.
+//
+// This seam is also where a 4xx RETURNED as an error arrives: it has written no
+// response, so the middleware sees a handler failure and never consults
+// [WithClientErrorPolicyFunc] for it. A route delivering rejections that way
+// must handle them here, or the fence will hold keys spent on client errors.
+//
+// Everything [WithServerErrorPolicy] says about the fence still applies to the
+// responses this function fences, including the [constants.IdempotencyFenced]
+// header obligation on an error handler that rewrites the 5xx.
+//
+// The function runs on the request goroutine and must be safe for concurrent
+// use.
+func WithServerErrorPolicyFunc(fn ServerErrorPolicyFunc) Option {
+	return func(m *Middleware) {
+		if fn != nil {
+			m.serverErrorPolicyFunc = fn
 		}
 	}
 }
@@ -1214,6 +1387,13 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 		return m.respondUnavailable(c)
 	}
 
+	// Resolved here for the same reason the TTL above is: a
+	// [WithProcessingTTLProvider] reading runtime configuration is the
+	// application's own I/O and must not be charged to the store's budget.
+	// Unlike the retention, an unresolvable lease never refuses the request;
+	// see [WithProcessingTTLProvider].
+	lease := m.resolveProcessingTTL(c)
+
 	// The deadline opens HERE, after the application's providers have run and
 	// not before them. [WithRedisTimeout] is a budget for the store, and a
 	// [WithFingerprintProvider] that walks a multipart request or reads an
@@ -1224,7 +1404,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), m.redisTimeout)
 	defer cancel()
 
-	return m.handleStore(ctx, c, key, fingerprint, ttl)
+	return m.handleStore(ctx, c, key, fingerprint, ttl, lease)
 }
 
 // resolveKey reads the idempotency key for this request. Without a provider it
@@ -1282,7 +1462,124 @@ func (m *Middleware) resolveTTL(c fiber.Ctx) (time.Duration, error) {
 	return ttl, nil
 }
 
-func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerprint string, ttl time.Duration) error {
+// resolveClientErrorPolicy is the single branch point for the 4xx policy: the
+// per-response function when one is configured, the enum otherwise.
+func (m *Middleware) resolveClientErrorPolicy(c fiber.Ctx, status int) ClientErrorPolicy {
+	if m.clientErrorPolicyFunc != nil {
+		return m.clientErrorPolicyFunc(c, status)
+	}
+
+	return m.clientErrorPolicy
+}
+
+// effectiveStatus is the status handed to the server policy seam. A handler
+// that WROTE a response is reported by what it wrote. A handler that returned
+// an error and wrote nothing leaves the response object at its default 200,
+// which says nothing at all about the failure — so when that error is a
+// *fiber.Error, its code is reported instead.
+//
+// That code is the status the application's Fiber error handler will MOST
+// LIKELY write, not a status anything has written: the error handler has not
+// run and may map, wrap or replace the code entirely. A consumer that needs
+// certainty about the failure inspects err, which is the only thing here that
+// is a fact rather than a forecast.
+//
+// It is only ever called once a server policy function is known to be
+// configured, because deciding a forecast nobody asked for must not cost a look
+// at the response.
+func effectiveStatus(c fiber.Ctx, status int, err error) int {
+	// "Wrote nothing" is the default status AND an empty body: a handler that
+	// wrote a 200 document and then failed has written a response, and its own
+	// status is the honest report.
+	//
+	// A STREAMED body counts as written WITHOUT being looked at, and the order
+	// of these tests is the point. fasthttp's Response.Body() is not an
+	// inspection when a body stream is set: it copies the entire stream into
+	// memory and closes it. Measuring its length here would buffer an unbounded
+	// response, past [WithMaxBodyCache], on a path that is about to discard it.
+	if err == nil || status != http.StatusOK || c.Response().IsBodyStream() ||
+		len(c.Response().Body()) > 0 {
+		return status
+	}
+
+	var fiberErr *fiber.Error
+	if errors.As(err, &fiberErr) {
+		return fiberErr.Code
+	}
+
+	return status
+}
+
+// resolveServerErrorPolicy is the single branch point for the handler-failure
+// and 5xx policy: the per-response function when one is configured, the enum
+// otherwise.
+func (m *Middleware) resolveServerErrorPolicy(c fiber.Ctx, status int, err error) ServerErrorPolicy {
+	// effectiveStatus is computed HERE and not at the call site: as an argument
+	// it would be evaluated before this nil check, so a middleware with no
+	// function installed would still pay for a forecast nothing consumes.
+	if m.serverErrorPolicyFunc != nil {
+		return m.serverErrorPolicyFunc(c, effectiveStatus(c, status, err), err)
+	}
+
+	return m.serverErrorPolicy
+}
+
+// resolveProcessingTTL is the single branch point for the in-flight lease: the
+// per-request provider when one is configured, the constant otherwise. Called
+// once per request, above the store deadline, so it takes the request context
+// from c rather than the store-bounded one. A provider that cannot answer
+// falls back to the constant rather than refusing the request; see
+// [WithProcessingTTLProvider] for why this fails open where the retention
+// provider fails closed, and for the obligation that fallback puts on an
+// operator who configures both. A non-positive result reaches handleStore,
+// which borrows the retention TTL for it exactly as an unset lease does.
+func (m *Middleware) resolveProcessingTTL(c fiber.Ctx) time.Duration {
+	if m.processingTTLProvider == nil {
+		return m.processingTTL
+	}
+
+	lease, err := m.processingTTLProvider(c)
+	if err != nil {
+		m.logFallbackLease(c, "the processing TTL provider failed", err, 0)
+
+		return m.processingTTL
+	}
+
+	// Logged as loudly as the error above, and for the same reason: both mean
+	// the lease this request runs under is NOT the one the provider was
+	// installed to supply, and a fallback shorter than the protected operation
+	// is the mid-flight lapse that lets a redelivery execute it twice. A silent
+	// non-positive return is the worse of the two, because nothing else reports
+	// it at all.
+	if lease <= 0 {
+		m.logFallbackLease(c, "the processing TTL provider returned a non-positive lease", nil, lease)
+
+		return m.processingTTL
+	}
+
+	return lease
+}
+
+// logFallbackLease reports a request running under the fallback lease rather
+// than a resolved one. fallback_lease is what it fell back to; zero there means
+// [WithProcessingTTL] is unset and the lease borrows the retention TTL, which
+// resolveProcessingTTL cannot see from here.
+func (m *Middleware) logFallbackLease(c fiber.Ctx, cause string, err error, returned time.Duration) {
+	m.logger.Log(c.Context(), obs.LevelWarn,
+		"idempotency: "+cause+"; falling back to the configured lease",
+		"error", err,
+		"provider_lease", returned,
+		"fallback_lease", m.processingTTL,
+		"tenant_id", tmcore.GetTenantIDContext(c.Context()),
+	)
+}
+
+func (m *Middleware) handleStore(
+	ctx context.Context,
+	c fiber.Ctx,
+	key, fingerprint string,
+	ttl, lease time.Duration,
+) error {
 	owner := uuid.NewString()
 	record := storeRecord{
 		State:       keyStateProcessing,
@@ -1297,11 +1594,11 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 		return m.onStoreError(c)
 	}
 
-	// ttl is the RETENTION window and stays with Complete below. Acquire takes
-	// the in-flight lease, which has to survive everything between here and
-	// that Complete: the handler, the response capture and encoding, and the
-	// store round-trip. Nothing else holds the key for any of it.
-	lease := m.processingTTL
+	// ttl is the RETENTION window and stays with Complete below. lease was
+	// resolved by the caller, above the store deadline, and takes the in-flight
+	// lease here: it has to survive everything between this point and that
+	// Complete — the handler, the response capture and encoding, and the store
+	// round-trip. Nothing else holds the key for any of it.
 	if lease <= 0 {
 		lease = ttl
 	}
@@ -1406,7 +1703,7 @@ func (m *Middleware) handleStoreAcquired(
 		// "executed, receipt lost" is rewriting a refusal whose key is already
 		// gone. Fencing skips the release entirely rather than trying to order
 		// it after a seam the middleware does not own.
-		if m.serverErrorPolicy == ServerErrorPolicyFence {
+		if m.resolveServerErrorPolicy(c, statusCode, handlerErr) == ServerErrorPolicyFence {
 			// The result is deliberately not turned into a document here. This
 			// branch must return handlerErr so the application's error handler
 			// runs and owns the response; authoring one would take that over.
@@ -1423,7 +1720,7 @@ func (m *Middleware) handleStoreAcquired(
 		return handlerErr
 	}
 
-	if statusCode >= http.StatusBadRequest && m.clientErrorPolicy == ClientErrorPolicyRelease {
+	if statusCode >= http.StatusBadRequest && m.resolveClientErrorPolicy(c, statusCode) == ClientErrorPolicyRelease {
 		m.releaseOwned(postCtx, key, processing, "client-error cleanup")
 
 		return handlerErr

@@ -235,10 +235,23 @@
 //     under the default kept, with the resend refused 409
 //     [RefusalCodeReplayUnavailable] rather than re-running a rejection path the
 //     route asked to have cached.
+//     [WithClientErrorPolicyFunc] decides the same question per RESPONSE, for a
+//     guard mounted above middleware that writes 4xx of its own — a rate
+//     limiter, a quota gate — whose refusals are not the handler's answer.
+//     Only a 4xx that was WRITTEN reaches it: a 4xx RETURNED as an error takes
+//     the handler-failure branch below instead, where it arrives carrying its
+//     own code as the status.
 //   - Handler failure or 5xx: the acquisition is compare-safely released only
 //     by its owner, allowing a retry without deleting a replacement lock. Use
 //     [WithServerErrorPolicy] with [ServerErrorPolicyFence] on routes where a
 //     failure there may still have committed, so the key is fenced instead.
+//     [WithServerErrorPolicyFunc] decides the same question per RESPONSE, for a
+//     route that knows which of its failures did not apply and wants only the
+//     ambiguous ones fenced.
+//     Its status argument is the EFFECTIVE one: the written status, or the code
+//     inside a returned *fiber.Error when nothing was written — a forecast of
+//     what the application's error handler will write, not a fact. err is the
+//     fact.
 //
 // # What a replay does to response headers
 //
@@ -319,6 +332,13 @@
 //	    // how long the handler AND its completion may take, with margin
 //	    idempotency.WithProcessingTTL(30*time.Minute),
 //	)
+//
+// [WithProcessingTTLProvider] resolves that lease per request instead, the way
+// [WithTTLProvider] resolves the retention, so a service whose window moves at
+// runtime can follow it. It is evaluated before each acquisition attempt, so a
+// lease already in the store keeps the value it was taken with. A provider that
+// cannot answer falls back to [WithProcessingTTL] — whatever that constant is,
+// so size it to stand alone — rather than refusing the request.
 //
 // [WithKeyProvider] resolves the key itself for each mutating request; unset,
 // the middleware reads the X-Idempotency header, which is the shipped
