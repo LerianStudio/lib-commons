@@ -80,7 +80,20 @@ func (repo *Repository) DeletePublishedBefore(
 		// mode the key is (tenant_id, id), so an id alone does not name one row.
 		query := "DELETE FROM " + table + " WHERE id IN (" + selection + ")" + filter // #nosec G202 -- table name validated at construction; quoteIdentifierPath escapes identifiers
 
-		result, execErr := tx.ExecContext(ctx, query, args...)
+		// withTenantTxOrExisting bounds only BeginTx by the transaction timeout;
+		// the statement itself runs on the caller's context. A DELETE waits for a
+		// transaction that still holds a lock on a selected row, so when the
+		// caller set no deadline the statement takes the same bound.
+		execCtx := ctx
+
+		if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+			var cancel context.CancelFunc
+
+			execCtx, cancel = context.WithTimeout(ctx, repo.transactionTimeout)
+			defer cancel()
+		}
+
+		result, execErr := tx.ExecContext(execCtx, query, args...)
 		if execErr != nil {
 			return 0, fmt.Errorf("executing delete: %w", execErr)
 		}

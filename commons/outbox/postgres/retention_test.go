@@ -153,3 +153,45 @@ func TestDeletePublishedBefore_BoundedOldestFirstDelete(t *testing.T) {
 		})
 	}
 }
+
+func TestDeletePublishedBefore_BoundsTheStatementByTheTransactionTimeout(t *testing.T) {
+	t.Parallel()
+
+	before := time.Date(2026, time.September, 1, 0, 0, 0, 0, time.UTC)
+
+	db, mock, err := sqlmock.New(sqlmock.ValueConverterOption(stringSliceConverter{}))
+	require.NoError(t, err)
+
+	defer func() { _ = db.Close() }()
+
+	// A DELETE waiting on a row lock looks like this: the statement does not
+	// return. The caller passed no deadline, so the repository's transaction
+	// timeout has to end the wait.
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta(`DELETE FROM "outbox_events" WHERE id IN (SELECT id FROM "outbox_events" `+
+		`WHERE status = $1::outbox_event_status AND created_at < $2 ORDER BY created_at ASC, id ASC LIMIT $3)`)).
+		WithArgs("PUBLISHED", before, 500).
+		WillDelayFor(2 * time.Second).
+		WillReturnResult(sqlmock.NewResult(0, 500))
+	mock.ExpectRollback()
+
+	repo := &Repository{
+		client:             newTestClient(t),
+		tenantResolver:     noopTenantResolver{},
+		tenantDiscoverer:   noopTenantDiscoverer{},
+		tableName:          "outbox_events",
+		transactionTimeout: 50 * time.Millisecond,
+		primaryDBLookup: func(context.Context) (*sql.DB, error) {
+			return db, nil
+		},
+	}
+
+	started := time.Now()
+	deleted, err := repo.DeletePublishedBefore(validTenantCtx(), before, nil, 500)
+	elapsed := time.Since(started)
+
+	require.Error(t, err)
+	require.Zero(t, deleted)
+	require.Less(t, elapsed, time.Second, "the statement must stop at the transaction timeout, not at the lock holder's pace")
+	require.NoError(t, mock.ExpectationsWereMet())
+}
