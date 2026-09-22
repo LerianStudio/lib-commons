@@ -684,17 +684,23 @@ func TestCheck_ProcessingTTLProvider_AppliesToTheNextAcquisition(t *testing.T) {
 	assert.Equal(t, int64(2), calls.Load(), "two keys, two executions, neither one twice")
 }
 
-// deadlineStore fails the way a real store does when the context handed to it
-// has already expired: it reports the context error instead of doing work. The
-// shipped Redis store behaves this way through go-redis; this wrapper makes it
-// deterministic.
-type deadlineStore struct {
+// budgetStore records how much of the store deadline was left when the
+// middleware called Acquire, and fails the way a real store does when that
+// deadline has already passed. The shipped Redis store behaves that way through
+// go-redis; this wrapper makes both facts observable.
+type budgetStore struct {
 	Store
+
+	remaining chan time.Duration
 }
 
-func (s deadlineStore) Acquire(
+func (s budgetStore) Acquire(
 	ctx context.Context, key string, candidate []byte, ttl time.Duration,
 ) ([]byte, bool, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		s.remaining <- time.Until(deadline)
+	}
+
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
@@ -712,17 +718,29 @@ func (s deadlineStore) Acquire(
 // store — which, on the fail-open default, runs the mutation with no key held
 // at all. The same defect the fingerprint provider was moved above the deadline
 // to fix.
+//
+// The assertion is on the budget REMAINING at Acquire, not on a race between
+// the provider and the timeout. The provider's delay is a guaranteed floor, so
+// a provider charged to the budget loses at least that much of it; a timeout
+// the test merely hoped to outrun would instead measure how loaded the machine
+// is, and would go red in a full parallel suite while the code was correct.
 func TestCheck_ProcessingTTLProvider_IsNotChargedToTheStoreBudget(t *testing.T) {
 	t.Parallel()
 
-	base, mr := realRedisStore(t)
+	const (
+		budget       = time.Second
+		providerWork = 200 * time.Millisecond
+	)
 
-	middleware := NewWithStore(deadlineStore{Store: base},
+	base, mr := realRedisStore(t)
+	store := budgetStore{Store: base, remaining: make(chan time.Duration, 1)}
+
+	middleware := NewWithStore(store,
 		WithKeyTTL(time.Hour),
-		WithRedisTimeout(20*time.Millisecond),
+		WithRedisTimeout(budget),
 		WithProcessingTTLProvider(func(_ fiber.Ctx) (time.Duration, error) {
 			// The application's own I/O: a runtime-config read, not a store call.
-			time.Sleep(60 * time.Millisecond)
+			time.Sleep(providerWork)
 
 			return 30 * time.Minute, nil
 		}),
@@ -732,6 +750,10 @@ func TestCheck_ProcessingTTLProvider_IsNotChargedToTheStoreBudget(t *testing.T) 
 
 	response := doPost(t, countingApp(middleware.Check(), "tenant-lease-budget", &calls), "lease-budget-key")
 	response.Body.Close()
+
+	remaining := <-store.remaining
+	assert.Greater(t, remaining, budget-providerWork/2,
+		"the provider's own work must not come out of the store's budget")
 
 	assert.Equal(t, http.StatusCreated, response.StatusCode,
 		"a slow lease provider must not time out a healthy store")
