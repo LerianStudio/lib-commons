@@ -495,10 +495,12 @@ func TestCheck_UnavailableDefaults_DifferInRetryGuidance(t *testing.T) {
 //
 // The fallback rows are the load-bearing ones. A provider that errors or
 // returns a non-positive duration must not refuse the request the way a
-// [WithTTLProvider] failure does: an unresolvable RETENTION breaks the replay
-// contract in the unsafe direction, while an unresolvable LEASE falls back to a
-// value that is longer or equal, never shorter, so it cannot produce the
-// double execution the option exists to prevent.
+// [WithTTLProvider] failure does, because an unresolvable retention breaks the
+// replay contract while a request whose lease cannot be resolved can still run
+// under the lease the route declared. What it lands on is exactly
+// [WithProcessingTTL], however short — the "short constant behind a long
+// provider" row is the hazard that carries, and the reason the option's
+// documentation tells an operator to size that constant to stand alone.
 func TestCheck_ProcessingTTLProvider_SizesTheLease(t *testing.T) {
 	t.Parallel()
 
@@ -535,6 +537,14 @@ func TestCheck_ProcessingTTLProvider_SizesTheLease(t *testing.T) {
 			name:        "provider error falls back to the constant",
 			opts:        []Option{WithKeyTTL(retention), WithProcessingTTL(30 * time.Minute), WithProcessingTTLProvider(failing)},
 			wantAcquire: 30 * time.Minute,
+		},
+		{
+			// The constant is the fallback whatever its size: a short one
+			// behind a long-running provider is a mid-flight lapse waiting for
+			// the provider's first bad day, not a safety net.
+			name:        "a short constant is still the whole fallback",
+			opts:        []Option{WithKeyTTL(retention), WithProcessingTTL(50 * time.Millisecond), WithProcessingTTLProvider(failing)},
+			wantAcquire: 50 * time.Millisecond,
 		},
 		{
 			name:        "provider error with no constant borrows the retention",
@@ -591,16 +601,16 @@ func TestCheck_ProcessingTTLProvider_SizesTheLease(t *testing.T) {
 	}
 }
 
-// TestCheck_ProcessingTTLProvider_IsEvaluatedWhenTheLeaseIsTaken covers the
+// TestCheck_ProcessingTTLProvider_AppliesToTheNextAcquisition covers the
 // consumer case the constant cannot serve: a service that hot-reloads its retry
 // window at runtime needs the in-flight lease to follow the live value.
 //
-// Following it means at ACQUISITION and nowhere else. A lease already written
-// into the store is a commitment to the request holding it, so changing the
-// provider must not shorten the lease under a handler that is still running —
-// that is exactly the mid-flight lapse that lets a redelivery execute the
-// mutation a second time. The new value applies to the NEXT acquisition.
-func TestCheck_ProcessingTTLProvider_IsEvaluatedWhenTheLeaseIsTaken(t *testing.T) {
+// Following it means at each ACQUISITION. A lease already written into the
+// store is a commitment to the request holding it, so changing the provider
+// must not shorten the lease under a handler that is still running — that is
+// exactly the mid-flight lapse that lets a redelivery execute the mutation a
+// second time. The new value applies to the NEXT acquisition.
+func TestCheck_ProcessingTTLProvider_AppliesToTheNextAcquisition(t *testing.T) {
 	t.Parallel()
 
 	store, mr := realRedisStore(t)

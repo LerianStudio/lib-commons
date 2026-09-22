@@ -398,21 +398,34 @@ func WithTTLProvider(provider TTLProvider) Option {
 }
 
 // WithProcessingTTLProvider resolves the in-flight lease for every request, the
-// way [WithTTLProvider] resolves the retention. It is evaluated when the lease
-// is TAKEN and nowhere else, so one middleware instance can follow hot-reloaded
-// application policy — a service whose retry window moves at runtime cannot
-// make the fixed [WithProcessingTTL] follow it — while a lease already written
-// into the store keeps the value it was taken with. When set it takes
-// precedence over [WithProcessingTTL].
+// way [WithTTLProvider] resolves the retention, so one middleware instance can
+// follow hot-reloaded application policy — a service whose retry window moves
+// at runtime cannot make the fixed [WithProcessingTTL] follow it. When set it
+// takes precedence over [WithProcessingTTL].
+//
+// It is evaluated before each acquisition ATTEMPT, including attempts that turn
+// out to be duplicates and are answered with a conflict or a replay, and it
+// runs above the store deadline alongside the other application providers, so
+// its own I/O is never charged to [WithRedisTimeout]. A lease already written
+// into the store keeps the value it was taken with: a later change applies to
+// the next acquisition and never re-sizes a lease under a handler still running
+// behind it.
 //
 // Unlike [WithTTLProvider], a provider error or a non-positive value does NOT
-// refuse the request: it falls back to [WithProcessingTTL], and to the
-// retention TTL when that is unset, which is exactly the lease an unconfigured
-// middleware takes. The asymmetry is deliberate. An unresolvable RETENTION
-// breaks the replay contract in the unsafe direction, so it fails closed; an
-// unresolvable LEASE falls back to a value that is longer or equal, never
-// shorter, so it cannot produce the mid-flight lapse and double execution
-// [WithProcessingTTL] documents at length.
+// refuse the request: it falls back to exactly [WithProcessingTTL], and to the
+// retention TTL when that option is unset. The asymmetry is deliberate — an
+// unresolvable RETENTION breaks the replay contract in the unsafe direction, so
+// it fails closed, while a request whose lease cannot be resolved can still run
+// safely under the lease the route already declared.
+//
+// That fallback is a size the OPERATOR chose, not a safe one the library
+// picked. Configuring both options means [WithProcessingTTL] is what an
+// unresolvable provider lands on, however short: a 50ms constant behind a
+// provider that normally returns 30 minutes yields a 50ms lease the moment the
+// provider cannot answer, and with it the mid-flight lapse and double execution
+// [WithProcessingTTL] documents at length. Size that constant to cover the
+// handler and its completion on its own, or leave it unset — the fallback is
+// then the retention TTL, which is the lease an unconfigured middleware takes.
 //
 // Everything that option says about SIZING the lease applies unchanged: the
 // value must cover the handler plus response capture, encoding and the store
@@ -1418,11 +1431,13 @@ func (m *Middleware) resolveServerErrorPolicy(c fiber.Ctx, status int, err error
 }
 
 // resolveProcessingTTL is the single branch point for the in-flight lease: the
-// per-request provider when one is configured, the constant otherwise. A
-// provider that cannot answer falls back rather than refusing the request; see
+// per-request provider when one is configured, the constant otherwise. Called
+// once per request, above the store deadline. A provider that cannot answer
+// falls back to the constant rather than refusing the request; see
 // [WithProcessingTTLProvider] for why this fails open where the retention
-// provider fails closed. A non-positive result reaches handleStore, which
-// borrows the retention TTL for it exactly as an unset lease does.
+// provider fails closed, and for the obligation that fallback puts on an
+// operator who configures both. A non-positive result reaches handleStore,
+// which borrows the retention TTL for it exactly as an unset lease does.
 func (m *Middleware) resolveProcessingTTL(ctx context.Context, c fiber.Ctx) time.Duration {
 	if m.processingTTLProvider == nil {
 		return m.processingTTL

@@ -328,8 +328,10 @@
 //
 // [WithProcessingTTLProvider] resolves that lease per request instead, the way
 // [WithTTLProvider] resolves the retention, so a service whose window moves at
-// runtime can follow it. It is evaluated when the lease is TAKEN, so a lease
-// already in the store keeps the value it was taken with.
+// runtime can follow it. It is evaluated before each acquisition attempt, so a
+// lease already in the store keeps the value it was taken with. A provider that
+// cannot answer falls back to [WithProcessingTTL] — whatever that constant is,
+// so size it to stand alone — rather than refusing the request.
 //
 // [WithKeyProvider] resolves the key itself for each mutating request; unset,
 // the middleware reads the X-Idempotency header, which is the shipped
