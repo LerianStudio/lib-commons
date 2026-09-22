@@ -3,9 +3,12 @@
 package idempotency
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/stretchr/testify/assert"
@@ -137,6 +140,160 @@ func TestCheck_ClientErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
 				"the policy decides what happens to the key, never what the client receives")
 			assert.Equal(t, int64(1), calls.Load())
 			assert.Equal(t, testCase.wantSeen, seen, "the statuses the func was consulted with")
+		})
+	}
+}
+
+// errDownstreamDeclined stands for the consumer's MTCH-0513: a downstream target
+// declined the operation before anything was written, so the handler's 5xx is
+// known NOT to have applied.
+var errDownstreamDeclined = errors.New("downstream target declined")
+
+// TestCheck_ServerErrorPolicyFunc_DecidesPerResponse covers the case the enum
+// cannot serve: [ServerErrorPolicyFence] holds the key for every 5xx as "this
+// may have been applied", but a route knows some of its failures did not apply
+// and wants those keys freed while the ambiguous ones stay fenced.
+//
+// The two arguments carry different facts and a route uses whichever it has. A
+// handler that RETURNS an error has not reached the application's Fiber error
+// handler yet, so the status here is still the untouched 200 and only err
+// identifies the failure; a handler that WROTE a 5xx and returned nil is the
+// mirror image. The rows pin both.
+func TestCheck_ServerErrorPolicyFunc_DecidesPerResponse(t *testing.T) {
+	t.Parallel()
+
+	type consulted struct {
+		status int
+		err    error
+	}
+
+	tests := []struct {
+		name string
+		// withFunc installs the per-response seam. The rows that leave it off
+		// pin that the enum path is untouched.
+		withFunc bool
+		opts     []Option
+		// handler is the failure under test: a returned error, or a written 5xx.
+		handler fiber.Handler
+		// wantReleased is the observable: a released key is compare-safely
+		// freed and may run again; anything else is written through Complete,
+		// as a terminal fence record when wantFenced says so.
+		wantReleased bool
+		wantFenced   bool
+		wantSeen     []consulted
+	}{
+		{
+			name:         "func releases a failure the route knows did not apply",
+			withFunc:     true,
+			handler:      func(fiber.Ctx) error { return errDownstreamDeclined },
+			wantReleased: true,
+			wantFenced:   false,
+			wantSeen:     []consulted{{status: http.StatusOK, err: errDownstreamDeclined}},
+		},
+		{
+			name:         "func fences a 5xx the route cannot account for",
+			withFunc:     true,
+			handler:      func(c fiber.Ctx) error { return c.SendStatus(http.StatusInternalServerError) },
+			wantReleased: false,
+			wantFenced:   true,
+			wantSeen:     []consulted{{status: http.StatusInternalServerError, err: nil}},
+		},
+		{
+			name:         "func is never consulted for a success",
+			withFunc:     true,
+			handler:      func(c fiber.Ctx) error { return c.SendStatus(http.StatusCreated) },
+			wantReleased: false,
+			wantFenced:   false,
+			wantSeen:     nil,
+		},
+		{
+			name:         "func overrides the release enum",
+			withFunc:     true,
+			opts:         []Option{WithServerErrorPolicy(ServerErrorPolicyRelease)},
+			handler:      func(c fiber.Ctx) error { return c.SendStatus(http.StatusInternalServerError) },
+			wantReleased: false,
+			wantFenced:   true,
+			wantSeen:     []consulted{{status: http.StatusInternalServerError, err: nil}},
+		},
+		{
+			name:         "func overrides the fence enum",
+			withFunc:     true,
+			opts:         []Option{WithServerErrorPolicy(ServerErrorPolicyFence)},
+			handler:      func(fiber.Ctx) error { return errDownstreamDeclined },
+			wantReleased: true,
+			wantFenced:   false,
+			wantSeen:     []consulted{{status: http.StatusOK, err: errDownstreamDeclined}},
+		},
+		{
+			name:         "fence enum stands when no func is set",
+			opts:         []Option{WithServerErrorPolicy(ServerErrorPolicyFence)},
+			handler:      func(c fiber.Ctx) error { return c.SendStatus(http.StatusInternalServerError) },
+			wantReleased: false,
+			wantFenced:   true,
+		},
+		{
+			name:         "release default stands when no func is set",
+			handler:      func(c fiber.Ctx) error { return c.SendStatus(http.StatusInternalServerError) },
+			wantReleased: true,
+			wantFenced:   false,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			controller := gomock.NewController(t)
+			store := NewMockStore(controller)
+			store.EXPECT().Acquire(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(nil, true, nil)
+
+			// A fence and an ordinary receipt both go through Complete and are
+			// told apart by the BYTES; a release goes through Release. gomock
+			// fails the row if the wrong call arrives.
+			var stored []byte
+
+			if testCase.wantReleased {
+				store.EXPECT().Release(gomock.Any(), gomock.Any(), gomock.Any()).Return(true, nil)
+			} else {
+				store.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+					DoAndReturn(func(_ context.Context, _ string, _, written []byte, _ time.Duration) (bool, error) {
+						stored = append([]byte(nil), written...)
+
+						return true, nil
+					})
+			}
+
+			var seen []consulted
+
+			opts := testCase.opts
+			if testCase.withFunc {
+				opts = append(opts, WithServerErrorPolicyFunc(
+					func(_ fiber.Ctx, status int, err error) ServerErrorPolicy {
+						seen = append(seen, consulted{status: status, err: err})
+
+						if errors.Is(err, errDownstreamDeclined) {
+							return ServerErrorPolicyRelease
+						}
+
+						return ServerErrorPolicyFence
+					}))
+			}
+
+			var calls atomic.Int64
+
+			app := countingMoneyApp(NewWithStore(store, opts...).Check(), "tenant-server-func", &calls, testCase.handler)
+
+			response := doPost(t, app, "server-func-key")
+			response.Body.Close()
+
+			assert.Equal(t, int64(1), calls.Load())
+			assert.Equal(t, testCase.wantSeen, seen, "what the func was consulted with")
+
+			if testCase.wantFenced {
+				assert.Contains(t, string(stored), `"outcome":"`+outcomeUnrecorded+`"`,
+					"a fenced key holds a terminal outcome-unknown record")
+			}
 		})
 	}
 }

@@ -218,6 +218,7 @@ type Middleware struct {
 	clientErrorPolicy        ClientErrorPolicy
 	serverErrorPolicy        ServerErrorPolicy
 	clientErrorPolicyFunc    func(c fiber.Ctx, status int) ClientErrorPolicy
+	serverErrorPolicyFunc    func(c fiber.Ctx, status int, err error) ServerErrorPolicy
 	onRejected               func(c fiber.Ctx) error
 	onConflict               fiber.Handler
 	onKeyReuse               fiber.Handler
@@ -563,6 +564,49 @@ func WithServerErrorPolicy(policy ServerErrorPolicy) Option {
 	return func(m *Middleware) {
 		if policy == ServerErrorPolicyRelease || policy == ServerErrorPolicyFence {
 			m.serverErrorPolicy = policy
+		}
+	}
+}
+
+// WithServerErrorPolicyFunc decides the 5xx policy per response instead of per
+// middleware. It is consulted after the handler chain returns, for a handler
+// error or a 5xx response, and when set it replaces [WithServerErrorPolicy]
+// entirely so the two forms cannot disagree. A nil function leaves the enum in
+// place, and a return value that is neither constant reads as the default
+// [ServerErrorPolicyRelease].
+//
+// The enum fences every 5xx as "may have been applied", and a route that KNOWS
+// some of its failures did not apply — a downstream target declining before
+// anything was written, reported under its own error code — then holds those
+// keys for the whole retention window for nothing. This seam frees those and
+// fences the rest.
+//
+//	idempotency.WithServerErrorPolicyFunc(func(_ fiber.Ctx, _ int, err error) idempotency.ServerErrorPolicy {
+//	    if errors.Is(err, ErrTargetDeclined) {
+//	        return idempotency.ServerErrorPolicyRelease // nothing was written
+//	    }
+//
+//	    return idempotency.ServerErrorPolicyFence // may have been applied
+//	})
+//
+// The two arguments carry different facts and a route uses whichever it has.
+// err is the error the handler returned, and is nil when the handler only wrote
+// the status. A handler that RETURNS an error has not reached the application's
+// Fiber error handler yet, so status is the response as written so far — still
+// 200 on an untouched response — and not the 5xx the caller will finally see;
+// only err identifies that failure. A handler that WROTE a 5xx and returned nil
+// is the mirror image: status is that 5xx and err is nil.
+//
+// Everything [WithServerErrorPolicy] says about the fence still applies to the
+// responses this function fences, including the [constants.IdempotencyFenced]
+// header obligation on an error handler that rewrites the 5xx.
+//
+// The function runs on the request goroutine and must be safe for concurrent
+// use.
+func WithServerErrorPolicyFunc(fn func(c fiber.Ctx, status int, err error) ServerErrorPolicy) Option {
+	return func(m *Middleware) {
+		if fn != nil {
+			m.serverErrorPolicyFunc = fn
 		}
 	}
 }
@@ -1323,6 +1367,17 @@ func (m *Middleware) resolveClientErrorPolicy(c fiber.Ctx, status int) ClientErr
 	return m.clientErrorPolicy
 }
 
+// resolveServerErrorPolicy is the single branch point for the handler-failure
+// and 5xx policy: the per-response function when one is configured, the enum
+// otherwise.
+func (m *Middleware) resolveServerErrorPolicy(c fiber.Ctx, status int, err error) ServerErrorPolicy {
+	if m.serverErrorPolicyFunc != nil {
+		return m.serverErrorPolicyFunc(c, status, err)
+	}
+
+	return m.serverErrorPolicy
+}
+
 func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerprint string, ttl time.Duration) error {
 	owner := uuid.NewString()
 	record := storeRecord{
@@ -1447,7 +1502,7 @@ func (m *Middleware) handleStoreAcquired(
 		// "executed, receipt lost" is rewriting a refusal whose key is already
 		// gone. Fencing skips the release entirely rather than trying to order
 		// it after a seam the middleware does not own.
-		if m.serverErrorPolicy == ServerErrorPolicyFence {
+		if m.resolveServerErrorPolicy(c, statusCode, handlerErr) == ServerErrorPolicyFence {
 			// The result is deliberately not turned into a document here. This
 			// branch must return handlerErr so the application's error handler
 			// runs and owns the response; authoring one would take that over.
