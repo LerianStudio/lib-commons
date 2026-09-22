@@ -672,3 +672,60 @@ func TestCheck_ProcessingTTLProvider_IsEvaluatedWhenTheLeaseIsTaken(t *testing.T
 	close(secondRelease)
 	assert.Equal(t, http.StatusCreated, <-secondStatus)
 }
+
+// deadlineStore fails the way a real store does when the context handed to it
+// has already expired: it reports the context error instead of doing work. The
+// shipped Redis store behaves this way through go-redis; this wrapper makes it
+// deterministic.
+type deadlineStore struct {
+	Store
+}
+
+func (s deadlineStore) Acquire(
+	ctx context.Context, key string, candidate []byte, ttl time.Duration,
+) ([]byte, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+
+	return s.Store.Acquire(ctx, key, candidate, ttl)
+}
+
+// TestCheck_ProcessingTTLProvider_IsNotChargedToTheStoreBudget pins the lease
+// provider on the same side of the deadline as every other application
+// provider.
+//
+// [WithRedisTimeout] is a budget for the STORE. A lease provider that reads
+// runtime configuration is the application's own I/O, and charging it to that
+// budget leaves the first store call timing out against a perfectly healthy
+// store — which, on the fail-open default, runs the mutation with no key held
+// at all. The same defect the fingerprint provider was moved above the deadline
+// to fix.
+func TestCheck_ProcessingTTLProvider_IsNotChargedToTheStoreBudget(t *testing.T) {
+	t.Parallel()
+
+	base, mr := realRedisStore(t)
+
+	middleware := NewWithStore(deadlineStore{Store: base},
+		WithKeyTTL(time.Hour),
+		WithRedisTimeout(20*time.Millisecond),
+		WithProcessingTTLProvider(func(_ fiber.Ctx) (time.Duration, error) {
+			// The application's own I/O: a runtime-config read, not a store call.
+			time.Sleep(60 * time.Millisecond)
+
+			return 30 * time.Minute, nil
+		}),
+	)
+
+	var calls atomic.Int64
+
+	response := doPost(t, countingApp(middleware.Check(), "tenant-lease-budget", &calls), "lease-budget-key")
+	response.Body.Close()
+
+	assert.Equal(t, http.StatusCreated, response.StatusCode,
+		"a slow lease provider must not time out a healthy store")
+	assert.Equal(t, int64(1), calls.Load(), "the mutation runs once, under a held key")
+
+	_, err := mr.Get("idempotency:tenant-lease-budget:lease-budget-key")
+	require.NoError(t, err, "the key must hold the completed record")
+}

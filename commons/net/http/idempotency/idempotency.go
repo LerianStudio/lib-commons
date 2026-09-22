@@ -1321,6 +1321,13 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 		return m.respondUnavailable(c)
 	}
 
+	// Resolved here for the same reason the TTL above is: a
+	// [WithProcessingTTLProvider] reading runtime configuration is the
+	// application's own I/O and must not be charged to the store's budget.
+	// Unlike the retention, an unresolvable lease never refuses the request;
+	// see [WithProcessingTTLProvider].
+	lease := m.resolveProcessingTTL(c.Context(), c)
+
 	// The deadline opens HERE, after the application's providers have run and
 	// not before them. [WithRedisTimeout] is a budget for the store, and a
 	// [WithFingerprintProvider] that walks a multipart request or reads an
@@ -1331,7 +1338,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), m.redisTimeout)
 	defer cancel()
 
-	return m.handleStore(ctx, c, key, fingerprint, ttl)
+	return m.handleStore(ctx, c, key, fingerprint, ttl, lease)
 }
 
 // resolveKey reads the idempotency key for this request. Without a provider it
@@ -1438,7 +1445,12 @@ func (m *Middleware) resolveProcessingTTL(ctx context.Context, c fiber.Ctx) time
 	return lease
 }
 
-func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerprint string, ttl time.Duration) error {
+func (m *Middleware) handleStore(
+	ctx context.Context,
+	c fiber.Ctx,
+	key, fingerprint string,
+	ttl, lease time.Duration,
+) error {
 	owner := uuid.NewString()
 	record := storeRecord{
 		State:       keyStateProcessing,
@@ -1453,11 +1465,11 @@ func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerpr
 		return m.onStoreError(c)
 	}
 
-	// ttl is the RETENTION window and stays with Complete below. Acquire takes
-	// the in-flight lease, which has to survive everything between here and
-	// that Complete: the handler, the response capture and encoding, and the
-	// store round-trip. Nothing else holds the key for any of it.
-	lease := m.resolveProcessingTTL(ctx, c)
+	// ttl is the RETENTION window and stays with Complete below. lease was
+	// resolved by the caller, above the store deadline, and takes the in-flight
+	// lease here: it has to survive everything between this point and that
+	// Complete — the handler, the response capture and encoding, and the store
+	// round-trip. Nothing else holds the key for any of it.
 	if lease <= 0 {
 		lease = ttl
 	}
