@@ -661,18 +661,6 @@ func (dispatcher *Dispatcher) reconcileScopeActivity(scopes []TenantDispatchScop
 			delete(dispatcher.scopeActivity, scope)
 		}
 	}
-
-	// An empty discovery routes to the single-scope path, whose sweep memory must
-	// survive the cycle or it would sweep on every tick.
-	if len(scopes) == 0 {
-		return
-	}
-
-	for scope := range dispatcher.retentionSweptAt {
-		if _, exists := activeScopes[scope]; !exists {
-			delete(dispatcher.retentionSweptAt, scope)
-		}
-	}
 }
 
 // sweepRetention deletes one bounded batch of aged PUBLISHED events for the
@@ -729,6 +717,16 @@ func (dispatcher *Dispatcher) claimRetentionSweep(scope TenantDispatchScope, now
 
 	if last, ok := dispatcher.retentionSweptAt[scope]; ok && now.Sub(last) < dispatcher.cfg.RetentionSweepInterval {
 		return false
+	}
+
+	// Sweep memory is pruned by age, not against discovery: column-per-tenant
+	// and mongo discovery list only tenants with outstanding work, so a scope
+	// that drops out for a tick must still wait out its interval. Pruning on each
+	// granted sweep keeps the map to the scopes swept within one interval.
+	for swept, last := range dispatcher.retentionSweptAt {
+		if now.Sub(last) >= dispatcher.cfg.RetentionSweepInterval {
+			delete(dispatcher.retentionSweptAt, swept)
+		}
 	}
 
 	dispatcher.retentionSweptAt[scope] = now

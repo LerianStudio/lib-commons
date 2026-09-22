@@ -11,7 +11,9 @@ import (
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
@@ -300,4 +302,137 @@ func TestNewDispatcher_RetentionRequiresPurgerCapability(t *testing.T) {
 	dispatcher, err = NewDispatcher(repo, NewHandlerRegistry(), nil, nil)
 	require.NoError(t, err, "a repository without the capability is fine while retention is disabled")
 	require.NotNil(t, dispatcher)
+}
+
+func TestDispatcherRetention_FlickeringScopeSweptOncePerInterval(t *testing.T) {
+	t.Parallel()
+
+	scopeA := TenantDispatchScope{TenantID: "tenant-a"}
+	scopeB := TenantDispatchScope{TenantID: "tenant-b"}
+	repo := newActivityCountingRepo(scopeA, scopeB)
+	clock := retentionClock()
+	dispatcher := newRetentionDispatcher(t, repo, clock, nil,
+		WithRetentionPublished(24*time.Hour),
+		WithRetentionSweepInterval(time.Hour),
+	)
+
+	sweepsOf := func(scope TenantDispatchScope) int {
+		count := 0
+
+		for _, call := range repo.deletePublishedCallLog() {
+			if call.scope == scope {
+				count++
+			}
+		}
+
+		return count
+	}
+
+	// Column-per-tenant and mongo discovery list only tenants with outstanding
+	// work, so tenant-a drops in and out of discovery between ticks.
+	for tick := range 30 {
+		repo.mu.Lock()
+		if tick%2 == 0 {
+			repo.scopes = []TenantDispatchScope{scopeA, scopeB}
+		} else {
+			repo.scopes = []TenantDispatchScope{scopeB}
+		}
+		repo.mu.Unlock()
+
+		dispatcher.dispatchAcrossTenants(context.Background())
+		clock.Advance(time.Minute)
+	}
+
+	require.Equal(t, 1, sweepsOf(scopeA), "a scope flickering out of discovery must keep its sweep time")
+	require.Equal(t, 1, sweepsOf(scopeB))
+
+	// Past the interval the entry ages out and the scope is due again.
+	clock.Advance(time.Hour)
+
+	repo.mu.Lock()
+	repo.scopes = []TenantDispatchScope{scopeA, scopeB}
+	repo.mu.Unlock()
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+	require.Equal(t, 2, sweepsOf(scopeA))
+	require.Equal(t, 2, sweepsOf(scopeB))
+}
+
+func TestDispatcherRetention_SweepMemoryPrunedByAge(t *testing.T) {
+	t.Parallel()
+
+	scopeA := TenantDispatchScope{TenantID: "tenant-a"}
+	scopeB := TenantDispatchScope{TenantID: "tenant-b"}
+	repo := newActivityCountingRepo(scopeA, scopeB)
+	clock := retentionClock()
+	dispatcher := newRetentionDispatcher(t, repo, clock, nil,
+		WithRetentionPublished(24*time.Hour),
+		WithRetentionSweepInterval(time.Hour),
+	)
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	repo.mu.Lock()
+	repo.scopes = []TenantDispatchScope{scopeB}
+	repo.mu.Unlock()
+
+	clock.Advance(time.Hour)
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	dispatcher.scopeActivityMu.Lock()
+	_, keptA := dispatcher.retentionSweptAt[scopeA]
+	_, keptB := dispatcher.retentionSweptAt[scopeB]
+	size := len(dispatcher.retentionSweptAt)
+	dispatcher.scopeActivityMu.Unlock()
+
+	require.False(t, keptA, "an entry older than the interval is pruned")
+	require.True(t, keptB)
+	require.Equal(t, 1, size)
+}
+
+func TestDispatcherRetention_PurgedMetricWithoutTenantAttribute(t *testing.T) {
+	t.Parallel()
+
+	scope := TenantDispatchScope{TenantID: "tenant-a"}
+	repo := newActivityCountingRepo(scope)
+	repo.deletePublishedResult = 42
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	dispatcher := newRetentionDispatcher(t, repo, retentionClock(), nil,
+		WithRetentionPublished(time.Hour),
+		WithMeterProvider(provider),
+	)
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	metricData := findOutboxMetric(collectOutboxMetrics(t, reader), "outbox.events.purged")
+	require.NotNil(t, metricData)
+
+	sum, ok := metricData.Data.(metricdata.Sum[int64])
+	require.True(t, ok)
+	require.Len(t, sum.DataPoints, 1)
+	require.Equal(t, int64(42), sum.DataPoints[0].Value)
+
+	_, hasTenant := sum.DataPoints[0].Attributes.Value(attribute.Key("tenant"))
+	require.False(t, hasTenant, "tenant attribute must be absent while tenant metrics are off")
+}
+
+func TestDispatcherRetention_CancelledContextSkipsSweep(t *testing.T) {
+	t.Parallel()
+
+	scope := TenantDispatchScope{TenantID: "tenant-a"}
+	repo := newActivityCountingRepo(scope)
+	clock := retentionClock()
+	dispatcher := newRetentionDispatcher(t, repo, clock, nil, WithRetentionPublished(time.Hour))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	dispatcher.sweepRetention(ctx, nil, scope, clock.Now())
+	require.Empty(t, repo.deletePublishedCallLog())
+
+	// The skipped sweep did not consume the interval.
+	dispatcher.sweepRetention(context.Background(), nil, scope, clock.Now())
+	require.Len(t, repo.deletePublishedCallLog(), 1)
 }
