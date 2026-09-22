@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -456,6 +457,100 @@ func TestCheck_A4xxReturnedAsAnError_ReachesTheServerFunc(t *testing.T) {
 
 			require.ErrorAs(t, serverSeen[0].err, &fiberErr)
 			assert.Equal(t, testCase.wantFiberCode, fiberErr.Code)
+		})
+	}
+}
+
+// watchedReader reports whether anything read from it.
+type watchedReader struct {
+	read atomic.Bool
+	data *strings.Reader
+}
+
+func (r *watchedReader) Read(p []byte) (int, error) {
+	r.read.Store(true)
+
+	return r.data.Read(p)
+}
+
+// TestCheck_AStreamedResponse_IsNeverDrainedByTheStatusForecast pins the one
+// thing the effective-status forecast must never do: read the response.
+//
+// fasthttp's Response.Body() is not an inspection when the response carries a
+// body STREAM — it copies the whole stream into memory and closes it. A handler
+// that streams a large document and then returns an error would therefore have
+// that entire stream buffered by the middleware, past [WithMaxBodyCache] and
+// with no bound at all, purely to decide a forecast the application's error
+// handler is about to discard along with the stream itself.
+//
+// Two guards, because one is not enough. A streamed response counts as WRITTEN
+// without being looked at, so its own status stands and no forecast is needed;
+// and the forecast is computed only after the nil-func check, so a middleware
+// with no server policy function installed never reaches the response at all.
+func TestCheck_AStreamedResponse_IsNeverDrainedByTheStatusForecast(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		withFunc bool
+	}{
+		{name: "no server policy func installed"},
+		{name: "server policy func installed", withFunc: true},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			controller := gomock.NewController(t)
+			store := NewMockStore(controller)
+			store.EXPECT().Acquire(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(nil, true, nil)
+			// Both the enum default and the func's return release.
+			store.EXPECT().Release(gomock.Any(), gomock.Any(), gomock.Any()).Return(true, nil)
+
+			var seen []consulted
+
+			var opts []Option
+			if testCase.withFunc {
+				opts = append(opts, WithServerErrorPolicyFunc(
+					func(_ fiber.Ctx, status int, err error) ServerErrorPolicy {
+						seen = append(seen, consulted{status: status, err: err})
+
+						return ServerErrorPolicyRelease
+					}))
+			}
+
+			body := &watchedReader{data: strings.NewReader(strings.Repeat("ledger-row\n", 4096))}
+
+			var calls atomic.Int64
+
+			app := countingMoneyApp(NewWithStore(store, opts...).Check(), "tenant-stream", &calls,
+				func(c fiber.Ctx) error {
+					if err := c.SendStream(body); err != nil {
+						return err
+					}
+
+					return fiber.NewError(http.StatusBadRequest, "rejected")
+				})
+
+			response := doPost(t, app, "stream-key")
+			response.Body.Close()
+
+			assert.Equal(t, int64(1), calls.Load())
+			assert.False(t, body.read.Load(),
+				"the middleware must not read a response stream it only meant to inspect")
+
+			if !testCase.withFunc {
+				assert.Nil(t, seen)
+
+				return
+			}
+
+			require.Len(t, seen, 1)
+			assert.Equal(t, http.StatusOK, seen[0].status,
+				"a streamed response is WRITTEN, so its own status stands and no forecast applies")
+			require.Error(t, seen[0].err)
 		})
 	}
 }

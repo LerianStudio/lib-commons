@@ -685,7 +685,10 @@ func WithServerErrorPolicy(policy ServerErrorPolicy) Option {
 // A returned error that is NOT a *fiber.Error leaves status at whatever the
 // response holds, which for an untouched response is 200. A handler that wrote
 // a status and ALSO returned an error reports the written status, because it
-// wrote a response and that is the honest report.
+// wrote a response and that is the honest report. A handler that STREAMED a
+// response counts as having written one for the same reason, and the stream is
+// never read to establish that: reading it would buffer the whole body past
+// [WithMaxBodyCache] to decide a forecast.
 //
 // This seam is also where a 4xx RETURNED as an error arrives: it has written no
 // response, so the middleware sees a handler failure and never consults
@@ -1480,11 +1483,22 @@ func (m *Middleware) resolveClientErrorPolicy(c fiber.Ctx, status int) ClientErr
 // run and may map, wrap or replace the code entirely. A consumer that needs
 // certainty about the failure inspects err, which is the only thing here that
 // is a fact rather than a forecast.
+//
+// It is only ever called once a server policy function is known to be
+// configured, because deciding a forecast nobody asked for must not cost a look
+// at the response.
 func effectiveStatus(c fiber.Ctx, status int, err error) int {
 	// "Wrote nothing" is the default status AND an empty body: a handler that
 	// wrote a 200 document and then failed has written a response, and its own
 	// status is the honest report.
-	if err == nil || status != http.StatusOK || len(c.Response().Body()) > 0 {
+	//
+	// A STREAMED body counts as written WITHOUT being looked at, and the order
+	// of these tests is the point. fasthttp's Response.Body() is not an
+	// inspection when a body stream is set: it copies the entire stream into
+	// memory and closes it. Measuring its length here would buffer an unbounded
+	// response, past [WithMaxBodyCache], on a path that is about to discard it.
+	if err == nil || status != http.StatusOK || c.Response().IsBodyStream() ||
+		len(c.Response().Body()) > 0 {
 		return status
 	}
 
@@ -1500,8 +1514,11 @@ func effectiveStatus(c fiber.Ctx, status int, err error) int {
 // and 5xx policy: the per-response function when one is configured, the enum
 // otherwise.
 func (m *Middleware) resolveServerErrorPolicy(c fiber.Ctx, status int, err error) ServerErrorPolicy {
+	// effectiveStatus is computed HERE and not at the call site: as an argument
+	// it would be evaluated before this nil check, so a middleware with no
+	// function installed would still pay for a forecast nothing consumes.
 	if m.serverErrorPolicyFunc != nil {
-		return m.serverErrorPolicyFunc(c, status, err)
+		return m.serverErrorPolicyFunc(c, effectiveStatus(c, status, err), err)
 	}
 
 	return m.serverErrorPolicy
@@ -1686,7 +1703,7 @@ func (m *Middleware) handleStoreAcquired(
 		// "executed, receipt lost" is rewriting a refusal whose key is already
 		// gone. Fencing skips the release entirely rather than trying to order
 		// it after a seam the middleware does not own.
-		if m.resolveServerErrorPolicy(c, effectiveStatus(c, statusCode, handlerErr), handlerErr) == ServerErrorPolicyFence {
+		if m.resolveServerErrorPolicy(c, statusCode, handlerErr) == ServerErrorPolicyFence {
 			// The result is deliberately not turned into a document here. This
 			// branch must return handlerErr so the application's error handler
 			// runs and owns the response; authoring one would take that over.
