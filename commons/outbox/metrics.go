@@ -16,6 +16,7 @@ type dispatcherMetrics struct {
 	eventsDispatched  *libMetrics.CounterBuilder
 	eventsFailed      *libMetrics.CounterBuilder
 	eventsStateFailed *libMetrics.CounterBuilder
+	eventsPurged      *libMetrics.CounterBuilder
 	dispatchLatency   metric.Float64Histogram
 	queueDepth        *libMetrics.GaugeBuilder
 }
@@ -59,6 +60,15 @@ func newDispatcherMetrics(provider metric.MeterProvider, logger obs.Logger) (dis
 	})
 	if err != nil {
 		return dispatcherMetrics{}, fmt.Errorf("create outbox.events.state_update_failed counter: %w", err)
+	}
+
+	metrics.eventsPurged, err = factory.Counter(libMetrics.Metric{
+		Name:        "outbox.events.purged",
+		Description: "Number of published outbox events deleted by the retention sweep",
+		Unit:        outboxMetricUnitEvent,
+	})
+	if err != nil {
+		return dispatcherMetrics{}, fmt.Errorf("create outbox.events.purged counter: %w", err)
 	}
 
 	metrics.dispatchLatency, err = meter.Float64Histogram(

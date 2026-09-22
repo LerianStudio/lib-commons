@@ -51,6 +51,7 @@ type Dispatcher struct {
 	tenantMetricKeys         map[string]struct{}
 	tenantMetricMu           sync.Mutex
 	scopeActivity            map[TenantDispatchScope]dispatchScopeActivity
+	retentionSweptAt         map[TenantDispatchScope]time.Time
 	scopeActivityMu          sync.Mutex
 	now                      func() time.Time
 
@@ -108,6 +109,7 @@ func NewDispatcher(
 		listPendingFailureCounts: make(map[string]int),
 		tenantMetricKeys:         make(map[string]struct{}),
 		scopeActivity:            make(map[TenantDispatchScope]dispatchScopeActivity),
+		retentionSweptAt:         make(map[TenantDispatchScope]time.Time),
 		now: func() time.Time {
 			return time.Now().UTC()
 		},
@@ -118,6 +120,10 @@ func NewDispatcher(
 		if opt != nil {
 			opt(dispatcher)
 		}
+	}
+
+	if err := dispatcher.cfg.validate(); err != nil {
+		return nil, err
 	}
 
 	dispatcher.cfg.normalize()
@@ -471,6 +477,21 @@ func (dispatcher *Dispatcher) addStateUpdateFailure(ctx context.Context, tenantK
 	}
 }
 
+func (dispatcher *Dispatcher) addPurgedEvents(ctx context.Context, tenantKey string, count int64) {
+	if dispatcher.metrics.eventsPurged == nil || count <= 0 {
+		return
+	}
+
+	builder := dispatcher.metrics.eventsPurged
+	if attr, ok := dispatcher.tenantMetricAttribute(tenantKey); ok {
+		builder = builder.WithAttributes(attr)
+	}
+
+	if err := builder.Add(ctx, count); err != nil {
+		dispatcher.logMetricError(ctx, "record outbox.events.purged", err)
+	}
+}
+
 func (dispatcher *Dispatcher) recordDispatchLatency(ctx context.Context, tenantKey string, latency time.Duration) {
 	if dispatcher.metrics.dispatchLatency == nil {
 		return
@@ -560,6 +581,7 @@ func (dispatcher *Dispatcher) dispatchAcrossTenants(ctx context.Context) {
 		tenantCtx, tenantSpan := tracer.Start(tenantCtx, "outbox.dispatcher.tenant")
 		result := dispatcher.DispatchOnceResult(tenantCtx)
 		dispatcher.recordScopeActivity(scope, result, now)
+		dispatcher.sweepRetention(tenantCtx, tracer, scope, now)
 		// Keep tenant trace correlation without exposing raw tenant identifiers.
 		tenantSpan.SetAttributes(
 			attribute.String("tenant.id_hash", hashTenantID(scope.TenantID)),
@@ -629,6 +651,79 @@ func (dispatcher *Dispatcher) reconcileScopeActivity(scopes []TenantDispatchScop
 			delete(dispatcher.scopeActivity, scope)
 		}
 	}
+
+	// An empty discovery routes to the single-scope path, whose sweep memory must
+	// survive the cycle or it would sweep on every tick.
+	if len(scopes) == 0 {
+		return
+	}
+
+	for scope := range dispatcher.retentionSweptAt {
+		if _, exists := activeScopes[scope]; !exists {
+			delete(dispatcher.retentionSweptAt, scope)
+		}
+	}
+}
+
+// sweepRetention deletes one bounded batch of aged PUBLISHED events for the
+// scope when retention is enabled and the scope's last sweep is at least
+// RetentionSweepInterval old. A failure is logged and never fails dispatch; the
+// scope waits for the next interval either way, so a persistent error warns
+// once per interval rather than once per tick.
+func (dispatcher *Dispatcher) sweepRetention(
+	ctx context.Context,
+	tracer trace.Tracer,
+	scope TenantDispatchScope,
+	now time.Time,
+) {
+	if !dispatcher.cfg.retentionEnabled() || ctx.Err() != nil || !dispatcher.claimRetentionSweep(scope, now) {
+		return
+	}
+
+	if nilcheck.Interface(tracer) {
+		tracer = noop.NewTracerProvider().Tracer("commons.noop")
+	}
+
+	ctx, span := tracer.Start(ctx, "outbox.dispatcher.retention_sweep")
+	defer span.End()
+
+	logger := dispatcher.resolvedLogger()
+
+	deleted, err := dispatcher.repo.DeletePublishedBefore(
+		ctx,
+		now.Add(-dispatcher.cfg.RetentionPublished),
+		dispatcher.cfg.RetentionKeepEventTypes,
+		dispatcher.cfg.RetentionBatchSize,
+	)
+	if err != nil {
+		libOpentelemetry.HandleSpanError(span, "outbox retention sweep failed", err)
+		logger.Log(ctx, obs.LevelWarn, "outbox retention sweep failed", "error", sanitizeErrorForStorage(err))
+
+		return
+	}
+
+	span.SetAttributes(attribute.Int64("outbox.retention.deleted", deleted))
+	dispatcher.addPurgedEvents(ctx, tenantKeyFromContext(ctx), deleted)
+	logger.Log(ctx, obs.LevelDebug, "outbox retention sweep completed", "deleted", deleted)
+}
+
+// claimRetentionSweep reports whether the scope is due for a sweep and, if so,
+// records now as its sweep time.
+func (dispatcher *Dispatcher) claimRetentionSweep(scope TenantDispatchScope, now time.Time) bool {
+	dispatcher.scopeActivityMu.Lock()
+	defer dispatcher.scopeActivityMu.Unlock()
+
+	if dispatcher.retentionSweptAt == nil {
+		dispatcher.retentionSweptAt = make(map[TenantDispatchScope]time.Time)
+	}
+
+	if last, ok := dispatcher.retentionSweptAt[scope]; ok && now.Sub(last) < dispatcher.cfg.RetentionSweepInterval {
+		return false
+	}
+
+	dispatcher.retentionSweptAt[scope] = now
+
+	return true
 }
 
 func (dispatcher *Dispatcher) resetScopePollSchedule() {
@@ -670,6 +765,7 @@ func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(ctx context.Contex
 	tenantID, ok := TenantIDFromContext(ctx)
 	if ok && tenantID != "" {
 		dispatcher.DispatchOnceResult(ctx)
+		dispatcher.sweepRetention(ctx, tracer, TenantDispatchScope{TenantID: tenantID}, dispatcher.currentTime())
 
 		return
 	}
@@ -691,6 +787,7 @@ func (dispatcher *Dispatcher) dispatchWithoutDiscoveredTenant(ctx context.Contex
 
 	fallbackCtx, fallbackSpan := tracer.Start(ctx, "outbox.dispatcher.default_scope")
 	result := dispatcher.DispatchOnceResult(fallbackCtx)
+	dispatcher.sweepRetention(fallbackCtx, tracer, TenantDispatchScope{}, dispatcher.currentTime())
 	fallbackSpan.SetAttributes(
 		attribute.Int("outbox.dispatch.processed", result.Processed),
 		attribute.Int("outbox.dispatch.published", result.Published),

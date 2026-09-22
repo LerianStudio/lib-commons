@@ -19,6 +19,16 @@
 // hot and bounds discovery latency for newly committed, retryable, or stuck
 // rows. Scope removal also evicts its activity state.
 //
+// Retention is opt-in through WithRetentionPublished. When enabled, each
+// dispatch scope is swept at most once per RetentionSweepInterval: one call to
+// DeletePublishedBefore removes up to RetentionBatchSize PUBLISHED events
+// older than the retention window, oldest first, sparing the types listed in
+// RetentionKeepEventTypes, so a large backlog drains one batch per interval
+// without a long transaction. PENDING, PROCESSING, FAILED and INVALID events
+// are never deleted: an INVALID event is the durable record that a fact was
+// abandoned after the retry budget. A failed sweep is logged and does not
+// affect dispatch.
+//
 // These optional interfaces and scheduling controls are backward compatible:
 // repositories that do not implement TenantDispatchScopeRepository continue to
 // produce one dispatch scope for every ListTenants entry, and

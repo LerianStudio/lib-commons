@@ -1,0 +1,283 @@
+//go:build unit
+
+package outbox
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/LerianStudio/lib-commons/v7/commons/obs"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/trace/noop"
+)
+
+func newRetentionDispatcher(
+	t *testing.T,
+	repo OutboxRepository,
+	clock *activityClock,
+	logger obs.Logger,
+	opts ...DispatcherOption,
+) *Dispatcher {
+	t.Helper()
+
+	handlers := NewHandlerRegistry()
+	require.NoError(t, handlers.Register("payment.created", func(context.Context, *OutboxEvent) error {
+		return nil
+	}))
+
+	base := []DispatcherOption{
+		WithDispatchInterval(2 * time.Second),
+		WithColdDispatchInterval(time.Minute),
+		WithPublishMaxAttempts(1),
+	}
+
+	dispatcher, err := NewDispatcher(
+		repo,
+		handlers,
+		logger,
+		noop.NewTracerProvider().Tracer("test"),
+		append(base, opts...)...,
+	)
+	require.NoError(t, err)
+	dispatcher.now = clock.Now
+
+	return dispatcher
+}
+
+func retentionClock() *activityClock {
+	return &activityClock{now: time.Date(2026, time.September, 22, 12, 0, 0, 0, time.UTC)}
+}
+
+func TestDispatcherRetention_DisabledByDefault(t *testing.T) {
+	t.Parallel()
+
+	scope := TenantDispatchScope{TenantID: "tenant-a"}
+	repo := newActivityCountingRepo(scope)
+	clock := retentionClock()
+	dispatcher := newRetentionDispatcher(t, repo, clock, nil)
+
+	for range 3 {
+		dispatcher.dispatchAcrossTenants(context.Background())
+		clock.Advance(2 * time.Hour)
+	}
+
+	require.Empty(t, repo.deletePublishedCallLog())
+}
+
+func TestDispatcherRetention_SweepsEachScopeOncePerInterval(t *testing.T) {
+	t.Parallel()
+
+	generic := TenantDispatchScope{TenantID: "tenant-a"}
+	module := TenantDispatchScope{TenantID: "tenant-a", PoolKey: "consignado"}
+	repo := newActivityCountingRepo(generic, module)
+	clock := retentionClock()
+	start := clock.Now()
+	dispatcher := newRetentionDispatcher(t, repo, clock, nil,
+		WithRetentionPublished(24*time.Hour),
+		WithRetentionSweepInterval(time.Hour),
+		WithRetentionBatchSize(250),
+		WithRetentionKeepEventTypes(" leilao.solicitado ", "", "margem.solicitada"),
+	)
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	calls := repo.deletePublishedCallLog()
+	require.Len(t, calls, 2)
+
+	for i, want := range []TenantDispatchScope{generic, module} {
+		require.Equal(t, want, calls[i].scope)
+		require.Equal(t, "tenant-a", calls[i].tenantID)
+		require.Equal(t, start.Add(-24*time.Hour), calls[i].before)
+		require.Equal(t, []string{"leilao.solicitado", "margem.solicitada"}, calls[i].keep)
+		require.Equal(t, 250, calls[i].limit)
+	}
+
+	// Every dispatch tick inside the sweep interval leaves retention alone.
+	for range 59 {
+		clock.Advance(time.Minute)
+		dispatcher.dispatchAcrossTenants(context.Background())
+	}
+
+	require.Len(t, repo.deletePublishedCallLog(), 2)
+
+	clock.Advance(time.Minute)
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	calls = repo.deletePublishedCallLog()
+	require.Len(t, calls, 4)
+	require.Equal(t, start.Add(time.Hour).Add(-24*time.Hour), calls[3].before)
+}
+
+func TestDispatcherRetention_DefaultsWhenOnlyRetentionIsSet(t *testing.T) {
+	t.Parallel()
+
+	scope := TenantDispatchScope{TenantID: "tenant-a"}
+	repo := newActivityCountingRepo(scope)
+	clock := retentionClock()
+	dispatcher := newRetentionDispatcher(t, repo, clock, nil, WithRetentionPublished(time.Hour))
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+	clock.Advance(59 * time.Minute)
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	calls := repo.deletePublishedCallLog()
+	require.Len(t, calls, 1)
+	require.Equal(t, 500, calls[0].limit)
+	require.Empty(t, calls[0].keep)
+
+	clock.Advance(time.Minute)
+	dispatcher.dispatchAcrossTenants(context.Background())
+	require.Len(t, repo.deletePublishedCallLog(), 2)
+}
+
+func TestDispatcherRetention_FailureWarnsAndDispatchStillRuns(t *testing.T) {
+	t.Parallel()
+
+	scope := TenantDispatchScope{TenantID: "tenant-a"}
+	repo := newActivityCountingRepo(scope)
+	repo.deletePublishedErr = errors.New("permission denied for table outbox_events")
+	event := &OutboxEvent{ID: uuid.New(), EventType: "payment.created", Payload: []byte("ok")}
+	repo.enqueue(scope, repo.pending, event)
+
+	logger := &recordingLogger{}
+	clock := retentionClock()
+	dispatcher := newRetentionDispatcher(t, repo, clock, logger, WithRetentionPublished(time.Hour))
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	require.Equal(t, []uuid.UUID{event.ID}, repo.markedPub)
+	require.Len(t, repo.deletePublishedCallLog(), 1)
+	require.True(t, logger.hasMessage(obs.LevelWarn, "outbox retention sweep failed"))
+
+	// A failed sweep waits for the next interval instead of retrying every tick.
+	clock.Advance(time.Minute)
+	dispatcher.dispatchAcrossTenants(context.Background())
+	require.Len(t, repo.deletePublishedCallLog(), 1)
+}
+
+func TestDispatcherRetention_LogsSweepAtDebugAndCountsPurgedEvents(t *testing.T) {
+	t.Parallel()
+
+	scope := TenantDispatchScope{TenantID: "tenant-a"}
+	repo := newActivityCountingRepo(scope)
+	repo.deletePublishedResult = 42
+
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	logger := &recordingLogger{}
+	clock := retentionClock()
+	dispatcher := newRetentionDispatcher(t, repo, clock, logger,
+		WithRetentionPublished(time.Hour),
+		WithMeterProvider(provider),
+		WithTenantMetricAttributes(true),
+	)
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	require.True(t, logger.hasMessage(obs.LevelDebug, "outbox retention sweep completed"))
+	requireIntMetricValue(t, collectOutboxMetrics(t, reader), "outbox.events.purged", "tenant-a", 42)
+}
+
+func TestDispatcherRetention_SingleTenantPathSweeps(t *testing.T) {
+	t.Parallel()
+
+	repo := &tenantAwareFakeRepo{fakeRepo: &fakeRepo{}, requiresTenant: false}
+	clock := retentionClock()
+	dispatcher := newRetentionDispatcher(t, repo, clock, nil, WithRetentionPublished(time.Hour))
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+	clock.Advance(30 * time.Minute)
+	dispatcher.dispatchAcrossTenants(context.Background())
+	require.Len(t, repo.deletePublishedCallLog(), 1)
+
+	clock.Advance(30 * time.Minute)
+	dispatcher.dispatchAcrossTenants(context.Background())
+	require.Len(t, repo.deletePublishedCallLog(), 2)
+}
+
+func TestDispatcherRetention_ContextTenantPathSweeps(t *testing.T) {
+	t.Parallel()
+
+	repo := &fakeRepo{}
+	clock := retentionClock()
+	dispatcher := newRetentionDispatcher(t, repo, clock, nil, WithRetentionPublished(time.Hour))
+	ctx := ContextWithTenantID(context.Background(), "tenant-a")
+
+	dispatcher.dispatchAcrossTenants(ctx)
+	dispatcher.dispatchAcrossTenants(ctx)
+
+	calls := repo.deletePublishedCallLog()
+	require.Len(t, calls, 1)
+	require.Equal(t, "tenant-a", calls[0].tenantID)
+}
+
+func TestDispatcherRetention_RequiredTenantWithoutTenantsDoesNotSweep(t *testing.T) {
+	t.Parallel()
+
+	repo := &tenantAwareFakeRepo{fakeRepo: &fakeRepo{}, requiresTenant: true}
+	dispatcher := newRetentionDispatcher(t, repo, retentionClock(), nil, WithRetentionPublished(time.Hour))
+
+	dispatcher.dispatchAcrossTenants(context.Background())
+
+	require.Empty(t, repo.deletePublishedCallLog())
+}
+
+func TestNewDispatcher_RejectsInvalidRetentionConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		opts    []DispatcherOption
+		wantErr bool
+	}{
+		{name: "negative retention", opts: []DispatcherOption{WithRetentionPublished(-time.Hour)}, wantErr: true},
+		{
+			name:    "negative batch size with retention",
+			opts:    []DispatcherOption{WithRetentionPublished(time.Hour), WithRetentionBatchSize(-1)},
+			wantErr: true,
+		},
+		{name: "negative batch size ignored while disabled", opts: []DispatcherOption{WithRetentionBatchSize(-1)}},
+		{name: "enabled", opts: []DispatcherOption{WithRetentionPublished(time.Hour), WithRetentionBatchSize(10)}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			dispatcher, err := NewDispatcher(&fakeRepo{}, NewHandlerRegistry(), nil, nil, test.opts...)
+			if test.wantErr {
+				require.ErrorIs(t, err, ErrOutboxRetentionConfigInvalid)
+				require.Nil(t, dispatcher)
+
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, dispatcher)
+		})
+	}
+}
+
+func TestDispatcherConfigNormalize_RetentionDefaults(t *testing.T) {
+	t.Parallel()
+
+	enabled := DispatcherConfig{RetentionPublished: time.Hour, RetentionSweepInterval: -time.Second}
+	enabled.normalize()
+	require.Equal(t, time.Hour, enabled.RetentionSweepInterval)
+	require.Equal(t, 500, enabled.RetentionBatchSize)
+
+	custom := DispatcherConfig{RetentionPublished: time.Hour, RetentionSweepInterval: time.Minute, RetentionBatchSize: 7}
+	custom.normalize()
+	require.Equal(t, time.Minute, custom.RetentionSweepInterval)
+	require.Equal(t, 7, custom.RetentionBatchSize)
+
+	disabled := DispatcherConfig{}
+	disabled.normalize()
+	require.Zero(t, disabled.RetentionPublished)
+	require.Zero(t, disabled.RetentionSweepInterval)
+	require.Zero(t, disabled.RetentionBatchSize)
+}
