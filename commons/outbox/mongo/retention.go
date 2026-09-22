@@ -12,6 +12,8 @@ import (
 	mongooptions "go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
+var _ outbox.PublishedPurger = (*Repository)(nil)
+
 // DeletePublishedBefore deletes at most limit PUBLISHED events created before
 // the cutoff, oldest first, skipping event types listed in keepEventTypes, and
 // returns how many documents were deleted.

@@ -10,6 +10,8 @@ import (
 	libOpentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
 )
 
+var _ outbox.PublishedPurger = (*Repository)(nil)
+
 // DeletePublishedBefore deletes at most limit PUBLISHED events created before
 // the cutoff, oldest first, skipping event types listed in keepEventTypes, and
 // returns how many rows were deleted.

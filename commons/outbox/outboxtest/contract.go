@@ -820,7 +820,8 @@ func claimAllPending(t *testing.T, repo outbox.OutboxRepository, ctx context.Con
 	return events
 }
 
-// testDeletePublishedBeforePurgesOnlyAgedPublished pins the retention purge.
+// testDeletePublishedBeforePurgesOnlyAgedPublished pins the retention purge
+// for repositories that implement outbox.PublishedPurger; others skip it.
 //
 // Only PUBLISHED rows older than the cutoff may go. An INVALID row is the only
 // proof that a money fact was destroyed after the retry budget, a FAILED row is
@@ -831,6 +832,12 @@ func testDeletePublishedBeforePurgesOnlyAgedPublished(t *testing.T, factory Fact
 	t.Helper()
 
 	repo := factory(t)
+
+	purger, ok := repo.(outbox.PublishedPurger)
+	if !ok {
+		t.Skip("repository does not implement outbox.PublishedPurger")
+	}
+
 	baseCtx := contractContext(t)
 	ctx := outbox.ContextWithTenantID(baseCtx, "tenant-a")
 	otherTenant := outbox.ContextWithTenantID(baseCtx, "tenant-b")
@@ -868,24 +875,24 @@ func testDeletePublishedBeforePurgesOnlyAgedPublished(t *testing.T, factory Fact
 
 	keep := []string{"payment.keep"}
 
-	deleted, err := repo.DeletePublishedBefore(ctx, cutoff, keep, 0)
+	deleted, err := purger.DeletePublishedBefore(ctx, cutoff, keep, 0)
 	require.NoError(t, err)
 	require.Zero(t, deleted, "a non-positive limit never deletes")
 	requireEventStatus(t, repo, ctx, publishedOldest.ID, outbox.OutboxStatusPublished)
 
-	deleted, err = repo.DeletePublishedBefore(ctx, cutoff, keep, 2)
+	deleted, err = purger.DeletePublishedBefore(ctx, cutoff, keep, 2)
 	require.NoError(t, err)
 	require.Equal(t, int64(2), deleted)
 	requireEventGone(t, repo, ctx, publishedOldest.ID)
 	requireEventGone(t, repo, ctx, publishedOlder.ID)
 	requireEventStatus(t, repo, ctx, publishedOld.ID, outbox.OutboxStatusPublished)
 
-	deleted, err = repo.DeletePublishedBefore(ctx, cutoff, keep, 100)
+	deleted, err = purger.DeletePublishedBefore(ctx, cutoff, keep, 100)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), deleted)
 	requireEventGone(t, repo, ctx, publishedOld.ID)
 
-	deleted, err = repo.DeletePublishedBefore(ctx, cutoff, keep, 100)
+	deleted, err = purger.DeletePublishedBefore(ctx, cutoff, keep, 100)
 	require.NoError(t, err)
 	require.Zero(t, deleted)
 
@@ -897,7 +904,7 @@ func testDeletePublishedBeforePurgesOnlyAgedPublished(t *testing.T, factory Fact
 	requireEventStatus(t, repo, ctx, publishedRecent.ID, outbox.OutboxStatusPublished)
 	requireEventStatus(t, repo, otherTenant, otherPublished.ID, outbox.OutboxStatusPublished)
 
-	deleted, err = repo.DeletePublishedBefore(ctx, cutoff, nil, 100)
+	deleted, err = purger.DeletePublishedBefore(ctx, cutoff, nil, 100)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), deleted, "an empty keep list excludes no event type")
 	requireEventGone(t, repo, ctx, publishedKeptType.ID)

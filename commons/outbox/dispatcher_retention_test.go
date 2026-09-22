@@ -281,3 +281,23 @@ func TestDispatcherConfigNormalize_RetentionDefaults(t *testing.T) {
 	require.Zero(t, disabled.RetentionSweepInterval)
 	require.Zero(t, disabled.RetentionBatchSize)
 }
+
+// nonPurgingRepo exposes only OutboxRepository: the embedded interface does
+// not promote the PublishedPurger capability of the value it wraps.
+type nonPurgingRepo struct {
+	OutboxRepository
+}
+
+func TestNewDispatcher_RetentionRequiresPurgerCapability(t *testing.T) {
+	t.Parallel()
+
+	repo := nonPurgingRepo{OutboxRepository: &fakeRepo{}}
+
+	dispatcher, err := NewDispatcher(repo, NewHandlerRegistry(), nil, nil, WithRetentionPublished(time.Hour))
+	require.ErrorIs(t, err, ErrOutboxRetentionUnsupported)
+	require.Nil(t, dispatcher)
+
+	dispatcher, err = NewDispatcher(repo, NewHandlerRegistry(), nil, nil)
+	require.NoError(t, err, "a repository without the capability is fine while retention is disabled")
+	require.NotNil(t, dispatcher)
+}

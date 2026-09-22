@@ -30,6 +30,13 @@ type OutboxRepository interface {
 	ResetForRetry(ctx context.Context, limit int, failedBefore time.Time, maxAttempts int) ([]*OutboxEvent, error)
 	ResetStuckProcessing(ctx context.Context, limit int, processingBefore time.Time, maxAttempts int) ([]*OutboxEvent, error)
 	MarkInvalid(ctx context.Context, id uuid.UUID, errMsg string) error
+}
+
+// PublishedPurger is an additive capability for the dispatcher's retention
+// sweep. It is kept separate from OutboxRepository so existing implementations
+// are not forced to grow a method; NewDispatcher refuses to enable retention
+// on a repository that lacks it.
+type PublishedPurger interface {
 	// DeletePublishedBefore deletes at most limit PUBLISHED events created
 	// before the cutoff, oldest first, skipping every event whose type is in
 	// keepEventTypes, and returns how many were deleted. The age bound uses

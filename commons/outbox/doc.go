@@ -19,7 +19,10 @@
 // hot and bounds discovery latency for newly committed, retryable, or stuck
 // rows. Scope removal also evicts its activity state.
 //
-// Retention is opt-in through WithRetentionPublished. When enabled, each
+// Retention is opt-in through WithRetentionPublished and needs a repository
+// implementing the optional PublishedPurger capability (the postgres and mongo
+// adapters do); NewDispatcher returns ErrOutboxRetentionUnsupported otherwise.
+// When enabled, each
 // dispatch scope is swept at most once per RetentionSweepInterval: one call to
 // DeletePublishedBefore removes up to RetentionBatchSize PUBLISHED events
 // older than the retention window, oldest first, sparing the types listed in

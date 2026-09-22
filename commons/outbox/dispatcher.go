@@ -40,6 +40,7 @@ type dispatchScopeActivity struct {
 // Dispatcher handles publishing outbox events through registered handlers.
 type Dispatcher struct {
 	repo            OutboxRepository
+	purger          PublishedPurger
 	handlers        *HandlerRegistry
 	retryClassifier RetryClassifier
 	logger          obs.Logger
@@ -124,6 +125,15 @@ func NewDispatcher(
 
 	if err := dispatcher.cfg.validate(); err != nil {
 		return nil, err
+	}
+
+	if dispatcher.cfg.retentionEnabled() {
+		purger, ok := repo.(PublishedPurger)
+		if !ok {
+			return nil, ErrOutboxRetentionUnsupported
+		}
+
+		dispatcher.purger = purger
 	}
 
 	dispatcher.cfg.normalize()
@@ -676,7 +686,7 @@ func (dispatcher *Dispatcher) sweepRetention(
 	scope TenantDispatchScope,
 	now time.Time,
 ) {
-	if !dispatcher.cfg.retentionEnabled() || ctx.Err() != nil || !dispatcher.claimRetentionSweep(scope, now) {
+	if dispatcher.purger == nil || ctx.Err() != nil || !dispatcher.claimRetentionSweep(scope, now) {
 		return
 	}
 
@@ -689,7 +699,7 @@ func (dispatcher *Dispatcher) sweepRetention(
 
 	logger := dispatcher.resolvedLogger()
 
-	deleted, err := dispatcher.repo.DeletePublishedBefore(
+	deleted, err := dispatcher.purger.DeletePublishedBefore(
 		ctx,
 		now.Add(-dispatcher.cfg.RetentionPublished),
 		dispatcher.cfg.RetentionKeepEventTypes,
