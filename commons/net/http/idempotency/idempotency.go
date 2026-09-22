@@ -217,6 +217,7 @@ type Middleware struct {
 	responseCodec            ResponseCodec
 	clientErrorPolicy        ClientErrorPolicy
 	serverErrorPolicy        ServerErrorPolicy
+	clientErrorPolicyFunc    func(c fiber.Ctx, status int) ClientErrorPolicy
 	onRejected               func(c fiber.Ctx) error
 	onConflict               fiber.Handler
 	onKeyReuse               fiber.Handler
@@ -480,6 +481,36 @@ func WithClientErrorPolicy(policy ClientErrorPolicy) Option {
 	return func(m *Middleware) {
 		if policy == ClientErrorPolicyCache || policy == ClientErrorPolicyRelease {
 			m.clientErrorPolicy = policy
+		}
+	}
+}
+
+// WithClientErrorPolicyFunc decides the 4xx policy per response instead of per
+// middleware. It is consulted after the handler chain returns, only for a 4xx,
+// and when set it replaces [WithClientErrorPolicy] entirely so the two forms
+// cannot disagree. A nil function leaves the enum in place, and a return value
+// that is neither constant reads as the default [ClientErrorPolicyCache].
+//
+// The enum cannot serve a guard mounted ABOVE a rate limiter or a quota gate:
+// some of the 4xx it observes were written below it and are not the handler's
+// answer at all, so caching them spends the caller's key on a transient refusal
+// and replays it for the whole retention window.
+//
+//	idempotency.WithClientErrorPolicyFunc(func(_ fiber.Ctx, status int) idempotency.ClientErrorPolicy {
+//	    if status == fiber.StatusTooManyRequests || status == fiber.StatusPaymentRequired {
+//	        return idempotency.ClientErrorPolicyRelease // refused below the guard: not an attempt
+//	    }
+//
+//	    return idempotency.ClientErrorPolicyCache // the handler's own rejection
+//	})
+//
+// The function runs on the request goroutine with the response already written,
+// so it may read the response the chain produced, and it must be safe for
+// concurrent use.
+func WithClientErrorPolicyFunc(fn func(c fiber.Ctx, status int) ClientErrorPolicy) Option {
+	return func(m *Middleware) {
+		if fn != nil {
+			m.clientErrorPolicyFunc = fn
 		}
 	}
 }
@@ -1282,6 +1313,16 @@ func (m *Middleware) resolveTTL(c fiber.Ctx) (time.Duration, error) {
 	return ttl, nil
 }
 
+// resolveClientErrorPolicy is the single branch point for the 4xx policy: the
+// per-response function when one is configured, the enum otherwise.
+func (m *Middleware) resolveClientErrorPolicy(c fiber.Ctx, status int) ClientErrorPolicy {
+	if m.clientErrorPolicyFunc != nil {
+		return m.clientErrorPolicyFunc(c, status)
+	}
+
+	return m.clientErrorPolicy
+}
+
 func (m *Middleware) handleStore(ctx context.Context, c fiber.Ctx, key, fingerprint string, ttl time.Duration) error {
 	owner := uuid.NewString()
 	record := storeRecord{
@@ -1423,7 +1464,7 @@ func (m *Middleware) handleStoreAcquired(
 		return handlerErr
 	}
 
-	if statusCode >= http.StatusBadRequest && m.clientErrorPolicy == ClientErrorPolicyRelease {
+	if statusCode >= http.StatusBadRequest && m.resolveClientErrorPolicy(c, statusCode) == ClientErrorPolicyRelease {
 		m.releaseOwned(postCtx, key, processing, "client-error cleanup")
 
 		return handlerErr
