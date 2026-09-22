@@ -733,7 +733,10 @@ func TestCheck_ProcessingTTLProvider_IsNotChargedToTheStoreBudget(t *testing.T) 
 	)
 
 	base, mr := realRedisStore(t)
-	store := budgetStore{Store: base, remaining: make(chan time.Duration, 1)}
+	// One request, so one acquisition. The spare slot turns an unexpected
+	// second into a failed length assertion instead of a blocked send that
+	// would hang the whole package until the test binary times out.
+	store := budgetStore{Store: base, remaining: make(chan time.Duration, 2)}
 
 	middleware := NewWithStore(store,
 		WithKeyTTL(time.Hour),
@@ -751,8 +754,9 @@ func TestCheck_ProcessingTTLProvider_IsNotChargedToTheStoreBudget(t *testing.T) 
 	response := doPost(t, countingApp(middleware.Check(), "tenant-lease-budget", &calls), "lease-budget-key")
 	response.Body.Close()
 
-	remaining := <-store.remaining
-	assert.Greater(t, remaining, budget-providerWork/2,
+	require.Len(t, store.remaining, 1, "one acquisition, and no more")
+
+	assert.Greater(t, <-store.remaining, budget-providerWork/2,
 		"the provider's own work must not come out of the store's budget")
 
 	assert.Equal(t, http.StatusCreated, response.StatusCode,
