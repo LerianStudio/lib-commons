@@ -256,12 +256,13 @@ func (sm *ServerManager) WithStdlibHTTPListener(srv *http.Server, listener net.L
 //     imported package registered there. (The main stdlib slot keeps the
 //     net/http fallback.)
 //   - At shutdown it drains CONCURRENTLY with the main HTTP server, with no
-//     ordering guarantee between the two. Both drains start under one
-//     shared shutdownTimeout budget, so together they take at most one
-//     shutdownTimeout and a stuck request on one never delays the other's
-//     drain; the additional server keeps the Shutdown-then-Close fallback.
-//     (A Fiber main server keeps its own drain, which runs in parallel.)
-//     gRPC and the admin app drain afterwards, each with its own budget.
+//     ordering guarantee between the two, so a stuck request on one never
+//     delays the other's drain. The additional drain and a stdlib main drain
+//     share ONE shutdownTimeout context created before either starts, so the
+//     pair takes at most one shutdownTimeout; the additional server keeps the
+//     Shutdown-then-Close fallback. A Fiber main server keeps its own drain
+//     bound (fiber's Shutdown takes no context), running in parallel. gRPC
+//     and the admin app drain afterwards, each with its own budget.
 //
 // A zero ReadHeaderTimeout is upgraded to the same safe default, a failed
 // bind surfaces on the shared startup error path prefixed "additional HTTP
