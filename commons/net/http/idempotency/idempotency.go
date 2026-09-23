@@ -146,6 +146,11 @@ type FingerprintScopeProvider func(c fiber.Ctx) string
 // what those bytes must satisfy. Providers must be safe for concurrent use.
 type FingerprintProvider func(c fiber.Ctx) ([]byte, error)
 
+// TenantProvider resolves the tenant the current request's record is rooted
+// at, replacing the tenant-manager context read. See [WithTenantProvider].
+// Providers must be safe for concurrent use.
+type TenantProvider func(c fiber.Ctx) (string, error)
+
 // ClientErrorPolicy controls whether successful handler returns with a 4xx
 // status are replayed or release their owned idempotency record.
 type ClientErrorPolicy uint8
@@ -228,6 +233,7 @@ type Middleware struct {
 	processingTTLProvider    TTLProvider
 	fingerprintScopeProvider FingerprintScopeProvider
 	fingerprintProvider      FingerprintProvider
+	tenantProvider           TenantProvider
 	responseCodec            ResponseCodec
 	clientErrorPolicy        ClientErrorPolicy
 	serverErrorPolicy        ServerErrorPolicy
@@ -519,6 +525,37 @@ func WithFingerprintProvider(provider FingerprintProvider) Option {
 	return func(m *Middleware) {
 		if provider != nil {
 			m.fingerprintProvider = provider
+		}
+	}
+}
+
+// WithTenantProvider resolves the tenant a record is rooted at from somewhere
+// other than the tenant-manager context. Unset, the middleware reads
+// [tmcore.GetTenantIDContext], which is the shipped behaviour and stays
+// byte-identical.
+//
+// It exists so a service whose tenant lives anywhere else — its own claim
+// parsing, a different major of the tenant-manager package — is heard WITHOUT
+// overwriting the request context. That overwrite is not cosmetic: every
+// handler, emitter and audit write below the middleware reads the same
+// context, so feeding the middleware that way hands all of them a tenant value
+// the application did not choose for them. When set, the provider is the ONLY
+// source: the middleware neither reads nor writes the tenant-manager context.
+//
+// The provider is called once per keyed request, after the key checks. The
+// middleware roots the record at EXACTLY the string returned — the key is
+// <prefix><tenant>:<key> — so the consumer owns canonicalisation: two
+// spellings of one tenant are two namespaces, and a provider whose output
+// changes shape across a deploy orphans every record written before it.
+//
+// An empty return or an error takes the absent-tenant branch, exactly as an
+// empty tenant-manager context does: pass-through by default, the
+// [WithRequireTenant] refusal when opted in. The error is logged; it is never a
+// refusal of its own.
+func WithTenantProvider(provider TenantProvider) Option {
+	return func(m *Middleware) {
+		if provider != nil {
+			m.tenantProvider = provider
 		}
 	}
 }
@@ -1350,7 +1387,7 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	}
 
 	// Build a tenant-scoped Redis key for per-tenant isolation.
-	tenantID := tmcore.GetTenantIDContext(c.Context())
+	tenantID := m.resolveTenant(c)
 	if tenantID == "" {
 		if m.requireTenant {
 			return m.respondTenantRequired(c)
@@ -1361,6 +1398,10 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 		// This is consistent with the middleware's fail-open philosophy.
 		return m.runChain(c)
 	}
+
+	// Kept for the log lines below, so they report the tenant the record is
+	// rooted at without asking the provider, or the context, a second time.
+	c.Locals(recordTenantKey{}, tenantID)
 
 	key := fmt.Sprintf("%s%s:%s", m.keyPrefix, tenantID, idempotencyKey)
 	if nilcheck.Interface(m.store) {
@@ -1415,6 +1456,36 @@ func (m *Middleware) resolveKey(c fiber.Ctx) (string, error) {
 	}
 
 	return c.Get(chttp.IdempotencyKey), nil
+}
+
+// recordTenantKey carries the tenant resolved for this request, for the log
+// lines that name it.
+type recordTenantKey struct{}
+
+// recordTenant is the tenant this request's record is rooted at.
+func recordTenant(c fiber.Ctx) string {
+	tenantID, _ := c.Locals(recordTenantKey{}).(string)
+
+	return tenantID
+}
+
+// resolveTenant reads the tenant this request's record is rooted at. Without a
+// provider it is the tenant-manager context, which is the shipped behaviour. A
+// provider error is the absent tenant; see [WithTenantProvider].
+func (m *Middleware) resolveTenant(c fiber.Ctx) string {
+	if m.tenantProvider == nil {
+		return tmcore.GetTenantIDContext(c.Context())
+	}
+
+	tenantID, err := m.tenantProvider(c)
+	if err != nil {
+		m.logger.Log(c.Context(), obs.LevelWarn,
+			"idempotency: tenant provider failed; treating the request as tenant-less", "error", err)
+
+		return ""
+	}
+
+	return tenantID
 }
 
 // resolveFingerprint builds the digest that identifies WHICH request spent this
@@ -1570,7 +1641,7 @@ func (m *Middleware) logFallbackLease(c fiber.Ctx, cause string, err error, retu
 		"error", err,
 		"provider_lease", returned,
 		"fallback_lease", m.processingTTL,
-		"tenant_id", tmcore.GetTenantIDContext(c.Context()),
+		"tenant_id", recordTenant(c),
 	)
 }
 
@@ -1627,7 +1698,7 @@ func (m *Middleware) handleStore(
 			m.logger.Log(ctx, obs.LevelError,
 				"idempotency: stored record could not be decoded; refusing the request",
 				"idempotency_key_digest", keyDigest(key),
-				"tenant_id", tmcore.GetTenantIDContext(ctx),
+				"tenant_id", recordTenant(c),
 				"record_bytes", len(stored),
 				"error", err,
 			)
@@ -1756,7 +1827,7 @@ func (m *Middleware) handleStoreAcquired(
 			"error", err,
 			"status_code", statusCode,
 			"idempotency_key_digest", keyDigest(key),
-			"tenant_id", tmcore.GetTenantIDContext(postCtx),
+			"tenant_id", recordTenant(c),
 		)
 
 		response = nil
@@ -1895,20 +1966,20 @@ func (m *Middleware) markOutcomeUnknown(
 
 	unknown, err := json.Marshal(record)
 	if err != nil {
-		m.logFenceFailure(ctx, key, record.Owner, "failed to marshal the fenced record", err)
+		m.logFenceFailure(ctx, recordTenant(c), key, record.Owner, "failed to marshal the fenced record", err)
 
 		return false
 	}
 
 	applied, err := m.store.Complete(ctx, key, processing, unknown, ttl)
 	if err != nil {
-		m.logFenceFailure(ctx, key, record.Owner, "the store rejected the fence write", err)
+		m.logFenceFailure(ctx, recordTenant(c), key, record.Owner, "the store rejected the fence write", err)
 
 		return false
 	}
 
 	if !applied {
-		m.logFenceFailure(ctx, key, record.Owner, "the fence write found a stale owner", nil)
+		m.logFenceFailure(ctx, recordTenant(c), key, record.Owner, "the fence write found a stale owner", nil)
 
 		return false
 	}
@@ -1918,7 +1989,7 @@ func (m *Middleware) markOutcomeUnknown(
 	m.logger.Log(ctx, obs.LevelWarn, "idempotency: key fenced with an unrecorded outcome",
 		"record_outcome", outcomeUnrecorded,
 		"idempotency_key_digest", keyDigest(key),
-		"tenant_id", tmcore.GetTenantIDContext(ctx),
+		"tenant_id", recordTenant(c),
 		"owner", record.Owner,
 	)
 
@@ -1938,11 +2009,11 @@ func (m *Middleware) markOutcomeUnknown(
 // key plus the tenant and prefix, which is exactly what an operator holds. The
 // tenant ID and the acquisition owner are logged raw; neither is client-supplied
 // and the owner is what correlates this line with the stored record.
-func (m *Middleware) logFenceFailure(ctx context.Context, key, owner, cause string, err error) {
+func (m *Middleware) logFenceFailure(ctx context.Context, tenantID, key, owner, cause string, err error) {
 	m.logger.Log(ctx, obs.LevelError,
 		"idempotency: key left UNFENCED after an unrecorded outcome; a resend may execute the operation again — "+cause,
 		"idempotency_key_digest", keyDigest(key),
-		"tenant_id", tmcore.GetTenantIDContext(ctx),
+		"tenant_id", tenantID,
 		"owner", owner,
 		"error", err,
 	)
@@ -1967,7 +2038,7 @@ func (m *Middleware) captureResponse(ctx context.Context, c fiber.Ctx, key strin
 			"body_size", len(body),
 			"max_body_cache", m.maxBodyCache,
 			"idempotency_key_digest", keyDigest(key),
-			"tenant_id", tmcore.GetTenantIDContext(c.Context()),
+			"tenant_id", recordTenant(c),
 		)
 
 		return nil, errResponseTooLarge

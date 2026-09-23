@@ -24,6 +24,14 @@
 // one header carrying two values at two moments, correct only while the chain
 // is assembled in the right order.
 //
+// [WithTenantProvider] replaces the tenant-manager read the same way, for a
+// service whose tenant lives anywhere else. When set it is the ONLY source: the
+// middleware neither reads nor writes the tenant-manager context, so feeding it
+// no longer means overwriting the request context every handler, emitter and
+// audit write below it shares. The record is rooted at exactly the string the
+// provider returns, so canonicalising the tenant is the consumer's job. An
+// empty return or a provider error is the absent tenant described next.
+//
 // Keys are scoped per-tenant to prevent cross-tenant collisions. When no tenant
 // is in context, idempotency is BYPASSED entirely rather than falling back to a
 // global namespace, which would collapse every tenant-less request onto a shared
