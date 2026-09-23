@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"strings"
@@ -536,8 +537,8 @@ func netListenAddress(address string) string {
 // resolved as "127.0.0.1:8081", and a wildcard bind covers every host on that
 // port anyway. So the ports must be the same number (a service name such as
 // "http" is resolved to its port) and either host must be a wildcard or the two
-// hosts must be the same: IP literals compare as IPs, so "::1" equals
-// "0:0:0:0:0:0:0:1", and other names compare case-insensitively. A host name
+// hosts must be the same: IP literals compare as IPs, zone included, so "::1"
+// equals "0:0:0:0:0:0:0:1", and other names compare case-insensitively. A host name
 // is never resolved to an IP: "localhost" and "127.0.0.1" compare different,
 // because resolving would make configuration validation depend on DNS and the
 // hosts file at boot; the kernel catches that pair at bind time.
@@ -577,17 +578,20 @@ func wildcardHost(host string) bool {
 		return true
 	}
 
-	ip := net.ParseIP(host)
+	addr, err := netip.ParseAddr(host)
 
-	return ip != nil && ip.IsUnspecified()
+	return err == nil && addr.Unmap().IsUnspecified()
 }
 
-// sameHost compares two host parts as IPs when both are IP literals, and as
-// case-insensitive names otherwise.
+// sameHost compares two host parts as IPs when both are IP literals, zone
+// included (so scoped IPv6 spellings of one address match) and IPv4-mapped
+// IPv6 equal to its IPv4 form, and as case-insensitive names otherwise.
 func sameHost(a, b string) bool {
-	ipA, ipB := net.ParseIP(a), net.ParseIP(b)
-	if ipA != nil && ipB != nil {
-		return ipA.Equal(ipB)
+	addrA, errA := netip.ParseAddr(a)
+	addrB, errB := netip.ParseAddr(b)
+
+	if errA == nil && errB == nil {
+		return addrA.Unmap() == addrB.Unmap()
 	}
 
 	return strings.EqualFold(a, b)
