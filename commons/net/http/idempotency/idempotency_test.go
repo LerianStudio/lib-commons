@@ -122,6 +122,64 @@ func doPost(t *testing.T, app *fiber.App, idempotencyKey string) *http.Response 
 	return resp
 }
 
+// postResult is what a request goroutine reports back to the test goroutine.
+// The assertions run there: a require inside the goroutine would stop it before
+// it sends, and the test would then block on its channels until the process
+// timeout instead of failing with the error.
+type postResult struct {
+	status int
+	err    error
+}
+
+// postAsync sends POST /test with the given idempotency key on its own goroutine
+// and reports the outcome over the returned channel.
+func postAsync(app *fiber.App, idempotencyKey string) <-chan postResult {
+	out := make(chan postResult, 1)
+
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/test", nil)
+		req.Header.Set(chttp.IdempotencyKey, idempotencyKey)
+
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
+		if err != nil {
+			out <- postResult{err: err}
+
+			return
+		}
+
+		resp.Body.Close()
+
+		out <- postResult{status: resp.StatusCode}
+	}()
+
+	return out
+}
+
+// awaitEntered blocks until the handler signals that it was entered. A request
+// that finishes first fails the test here, with its transport error when it
+// has one, instead of leaving the test blocked on the entry signal.
+func awaitEntered(t *testing.T, entered <-chan struct{}, result <-chan postResult) {
+	t.Helper()
+
+	select {
+	case <-entered:
+	case r := <-result:
+		require.NoError(t, r.err)
+		t.Fatalf("request finished with status %d before the handler was entered", r.status)
+	}
+}
+
+// awaitStatus returns the request's status code, failing the test on a
+// transport error.
+func awaitStatus(t *testing.T, result <-chan postResult) int {
+	t.Helper()
+
+	r := <-result
+	require.NoError(t, r.err)
+
+	return r.status
+}
+
 // readBody reads and returns the full response body, closing it.
 func readBody(t *testing.T, resp *http.Response) string {
 	t.Helper()
