@@ -266,6 +266,27 @@ Rules:
 - The `VERSION` environment variable and `commons/net/http.Version` are the
   legacy path and are removed in v8.
 
+### Instrumentation scope names (v7.5.0)
+
+Spans emitted by lib-commons now carry the package's full module path as
+`otel.scope.name` and the linked lib-commons version (`v7.5.0`, or `(devel)`
+when the binary has no module information) as `otel.scope.version`.
+
+| Package | Old `otel.scope.name` | New `otel.scope.name` |
+|---------|-----------------------|-----------------------|
+| `commons/postgres` | `postgres` | `github.com/LerianStudio/lib-commons/v7/commons/postgres` |
+| `commons/mongo` | `mongo` | `github.com/LerianStudio/lib-commons/v7/commons/mongo` |
+| `commons/redis` | `redis` | `github.com/LerianStudio/lib-commons/v7/commons/redis` |
+| `commons/rabbitmq` | `rabbitmq` | `github.com/LerianStudio/lib-commons/v7/commons/rabbitmq` |
+| `commons/net/http` (reverse proxy) | `http.proxy` | `github.com/LerianStudio/lib-commons/v7/commons/net/http` |
+| `commons/net/http/ratelimit` | `ratelimit` | `github.com/LerianStudio/lib-commons/v7/commons/net/http/ratelimit` |
+| `commons/net/http/pacing` | `pacing` | `github.com/LerianStudio/lib-commons/v7/commons/net/http/pacing` |
+
+Update dashboards, alerts, sampling rules and collector processors that filter
+on `otel.scope.name`, `otel.library.name` or the Prometheus label
+`otel_scope_name`. On span-derived metrics, the `otel_scope_version` label now
+changes on every lib-commons upgrade, which starts new Prometheus series.
+
 ## Environment Variables
 
 The following environment variables are recognized by lib-commons or by canonical sibling libraries that lib-commons integrates with. Observability variables are owned by `lib-observability`.
