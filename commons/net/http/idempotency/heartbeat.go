@@ -86,11 +86,12 @@ func (s *redisStore) Extend(ctx context.Context, key string, expected []byte, tt
 // records an error wrapping [ErrHeartbeatMisconfigured], reported by
 // [Middleware.Err], and the middleware refuses every keyed mutating request
 // with 503 rather than run it with a lease nobody renews. Check Err at boot.
-// Non-positive values are ignored.
+// Non-positive values are ignored; an interval below 50ms is raised to 50ms
+// silently.
 func WithProcessingHeartbeat(interval time.Duration) Option {
 	return func(m *Middleware) {
 		if interval > 0 {
-			m.heartbeatInterval = interval
+			m.heartbeatInterval = max(interval, heartbeatMinTick)
 		}
 	}
 }
@@ -151,7 +152,7 @@ func (m *Middleware) runChainWithHeartbeat(c fiber.Ctx, key string, processing [
 	// Construction checks the interval only against a fixed [WithProcessingTTL];
 	// a provider or retention lease is known only here, so the tick follows it.
 	tick := heartbeatTick(m.heartbeatInterval, lease)
-	if tick != m.heartbeatInterval {
+	if tick < m.heartbeatInterval {
 		m.logger.Log(c.Context(), obs.LevelWarn,
 			"idempotency: processing heartbeat interval shortened to fit the lease",
 			"configured_interval", m.heartbeatInterval,

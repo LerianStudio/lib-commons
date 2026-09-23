@@ -455,3 +455,30 @@ func TestCheck_ProcessingHeartbeat_RefusesALeaseBelowTheMinimum(t *testing.T) {
 		})
 	}
 }
+
+// A sub-floor interval is raised to the floor at construction, so the tick the
+// request runs at is the configured one and nothing claims the lease shortened
+// it.
+func TestCheck_ProcessingHeartbeat_SubFloorIntervalIsRaisedSilently(t *testing.T) {
+	t.Parallel()
+
+	store := &extendingStore{expiringStore: newExpiringStore()}
+	logger := &recordingLogger{}
+	middleware := NewWithStore(store,
+		WithLogger(logger),
+		WithKeyTTL(time.Hour),
+		WithProcessingTTL(time.Minute),
+		WithProcessingHeartbeat(25*time.Millisecond))
+	require.NoError(t, middleware.Err())
+
+	assert.Equal(t, heartbeatMinTick, middleware.heartbeatInterval)
+	assert.Equal(t, heartbeatMinTick, heartbeatTick(middleware.heartbeatInterval, time.Minute))
+
+	var calls atomic.Int32
+
+	resp := doPost(t, tenantEchoApp(middleware.Check(), "tenant-heartbeat", &calls), "floor-key")
+	resp.Body.Close()
+
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	assert.Equal(t, 0, logger.count("heartbeat interval shortened"), "the lease shortened nothing")
+}

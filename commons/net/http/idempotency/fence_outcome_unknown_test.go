@@ -341,3 +341,23 @@ func TestFenceOutcomeUnknown_RootsTheFenceAtTheProviderTenant(t *testing.T) {
 	assert.Contains(t, readBody(t, resend), RefusalCodeOutcomeUnrecorded)
 	assert.Equal(t, int64(0), calls.Load())
 }
+
+// A fence for a tenant carrying the store-key delimiter would land on another
+// tenant's address; it is refused and nothing is written.
+func TestFenceOutcomeUnknown_DelimiterInTenantIsRefused(t *testing.T) {
+	t.Parallel()
+
+	store, mr := realRedisStore(t)
+	mw := NewWithStore(store, WithTenantProvider(func(fiber.Ctx) (string, error) { return "a:b", nil }))
+
+	var (
+		fenceErr error
+		calls    atomic.Int64
+	)
+
+	resp := sendBridge(t, bridgeApp(mw, fenceRetention, &fenceErr, &calls), "{}", true)
+	resp.Body.Close()
+
+	require.ErrorIs(t, fenceErr, ErrTenantMalformed)
+	assert.Empty(t, mr.Keys(), "the fence must not plant a record")
+}
