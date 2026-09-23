@@ -264,6 +264,12 @@ type Middleware struct {
 	// key holds a record this version cannot act on. Unset, each keeps the
 	// routing it had: onPostHandlerUnavailable, then the built-in 422.
 	onTerminalRefusal func(c fiber.Ctx, code string) error
+	// heartbeatInterval is set by [WithProcessingHeartbeat]; extender is the
+	// store's [LeaseExtender], bound once at construction. configErr records a
+	// configuration construction could not honour; see [Middleware.Err].
+	heartbeatInterval time.Duration
+	extender          LeaseExtender
+	configErr         error
 }
 
 // New creates an idempotency middleware backed by the given Redis client.
@@ -275,6 +281,7 @@ func New(conn *libRedis.Client, opts ...Option) *Middleware {
 
 	m := newMiddleware(opts...)
 	m.store = newRedisStore(conn)
+	m.bindHeartbeat()
 
 	return m
 }
@@ -285,6 +292,7 @@ func NewWithStore(store Store, opts ...Option) *Middleware {
 	m := newMiddleware(opts...)
 	m.store = store
 	m.failClosed = true
+	m.bindHeartbeat()
 
 	return m
 }
@@ -1363,6 +1371,15 @@ func (m *Middleware) handle(c fiber.Ctx) error {
 	}
 
 	key := fmt.Sprintf("%s%s:%s", m.keyPrefix, tenantID, idempotencyKey)
+	if m.configErr != nil {
+		m.logger.Log(c.Context(), obs.LevelError, "idempotency: middleware misconfigured; refusing the request",
+			"error", m.configErr)
+
+		// Never fail open here: running the mutation would drop exactly the
+		// protection the misconfigured option was asked to add.
+		return m.respondUnavailable(c)
+	}
+
 	if nilcheck.Interface(m.store) {
 		m.logger.Log(c.Context(), obs.LevelWarn, "idempotency: store unavailable")
 
@@ -1611,7 +1628,7 @@ func (m *Middleware) handleStore(
 	}
 
 	if acquired {
-		return m.handleStoreAcquired(c, key, processing, record, ttl)
+		return m.handleStoreAcquired(c, key, processing, record, ttl, lease)
 	}
 
 	// Decoded into a FRESH struct, never into the candidate record above.
@@ -1684,14 +1701,14 @@ func (m *Middleware) handleStoreAcquired(
 	key string,
 	processing []byte,
 	record storeRecord,
-	ttl time.Duration,
+	ttl, lease time.Duration,
 ) error {
 	// Taken BEFORE the handler so the capture can be reduced to the handler's
 	// own contribution; see captureHeaderDelta for why the whole response is the
 	// wrong thing to store.
 	beforeHandler := snapshotResponseHeaders(c)
 
-	handlerErr := m.runChain(c)
+	handlerErr := m.runChainWithHeartbeat(c, key, processing, lease)
 
 	postCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), m.redisTimeout)
 	defer cancel()
