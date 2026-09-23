@@ -818,4 +818,5 @@ func TestFiberAbandonedConnectionKeepsServingPastTheDeadline(t *testing.T) {
 	resp, body = read()
 	assert.Equal(t, http.StatusOK, resp.StatusCode, "the abandoned connection still serves after the manager returned")
 	assert.Equal(t, "late", body)
+	assert.False(t, resp.Close, "the abandoned connection is still kept alive after the manager returned")
 }
