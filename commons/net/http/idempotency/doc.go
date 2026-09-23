@@ -24,6 +24,14 @@
 // one header carrying two values at two moments, correct only while the chain
 // is assembled in the right order.
 //
+// [WithTenantProvider] replaces the tenant-manager read the same way, for a
+// service whose tenant lives anywhere else. When set it is the ONLY source: the
+// middleware neither reads nor writes the tenant-manager context, so feeding it
+// no longer means overwriting the request context every handler, emitter and
+// audit write below it shares. The record is rooted at exactly the string the
+// provider returns, so canonicalising the tenant is the consumer's job. An
+// empty return or a provider error is the absent tenant described next.
+//
 // Keys are scoped per-tenant to prevent cross-tenant collisions. When no tenant
 // is in context, idempotency is BYPASSED entirely rather than falling back to a
 // global namespace, which would collapse every tenant-less request onto a shared
@@ -352,6 +360,24 @@
 // cannot answer falls back to [WithProcessingTTL] — whatever that constant is,
 // so size it to stand alone — rather than refusing the request.
 //
+// A handler whose duration cannot be bounded up front — a streamed upload —
+// takes [WithProcessingHeartbeat] instead of a guessed constant: the middleware
+// renews the lease every interval while the handler runs, through the optional
+// [LeaseExtender] store capability (the Redis store implements it), and stops
+// before the completion is written. A store without it, an interval not
+// shorter than a fixed [WithProcessingTTL], or a fixed lease below
+// [MinHeartbeatLease], is reported once by [Middleware.Err] and refuses keyed
+// mutations with 503 rather than run them unrenewed; a resolved per-request
+// lease below that minimum is refused the same way, before acquisition:
+//
+//	idem := idempotency.New(conn,
+//	    idempotency.WithProcessingTTL(time.Minute),
+//	    idempotency.WithProcessingHeartbeat(15*time.Second),
+//	)
+//	if err := idem.Err(); err != nil {
+//	    return err // fail boot
+//	}
+//
 // [WithKeyProvider] resolves the key itself for each mutating request; unset,
 // the middleware reads the X-Idempotency header, which is the shipped
 // behaviour. An empty return takes the unkeyed branch and a provider error
@@ -388,6 +414,18 @@
 // answers with a refusal document and never replays a captured success body,
 // because none was ever stored: capture or persistence is exactly what failed,
 // so replaying anything here would report an outcome nobody recorded.
+//
+// # Fencing a key from outside the middleware
+//
+// An application that learns elsewhere that a key's outcome is unknowable — a
+// cutover bridge reading a retiring release's storage, say — and answers the
+// request itself calls [Middleware.FenceOutcomeUnknown] with that request and a
+// TTL. It plants the same terminal record at the same address, with the
+// request's own fingerprint, so the byte-identical resend reaches the
+// outcome-unknown refusal above and a changed payload reaches key reuse. It
+// never replaces a record: a key already holding a receipt, a live request, or
+// a fence for another payload returns [ErrFenceKeyHeld] and keeps answering as
+// it did; re-fencing the same request is a no-op.
 //
 // # What changed for an over-cap response
 //
