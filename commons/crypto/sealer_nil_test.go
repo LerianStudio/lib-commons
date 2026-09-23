@@ -46,7 +46,7 @@ func TestSealer_ZeroValue(t *testing.T) {
 func TestSealer_Redaction(t *testing.T) {
 	t.Parallel()
 
-	secret := []byte("super-secret-sealer-key")
+	secret := []byte("super-secret-sealer-key-of-32-bytes")
 
 	s, err := NewSealer(testPurpose, secret)
 	require.NoError(t, err)

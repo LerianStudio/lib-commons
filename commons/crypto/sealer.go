@@ -16,6 +16,11 @@ import (
 // sealerKeySize is the AES-256 key length derived from the operator secret.
 const sealerKeySize = 32
 
+// minSecretLen is the shortest operator secret a Sealer accepts. HKDF adds no
+// work factor, so a shorter secret would cap the derived key's strength below
+// AES-256 and invite offline brute force from a single sealed payload.
+const minSecretLen = 32
+
 var (
 	// ErrNilSealer is returned when a Sealer method is called on a nil receiver.
 	ErrNilSealer = errors.New("sealer instance is nil")
@@ -23,6 +28,9 @@ var (
 	ErrEmptyPurpose = errors.New("sealer purpose must not be empty")
 	// ErrEmptySecret is returned when a Sealer is built or rotated with an empty secret.
 	ErrEmptySecret = errors.New("sealer secret must not be empty")
+	// ErrSecretTooShort is returned when a Sealer is built or rotated with a
+	// non-empty secret shorter than 32 bytes.
+	ErrSecretTooShort = errors.New("sealer secret must be at least 32 bytes")
 	// ErrOpenFailed is returned when a sealed payload cannot be opened. It does
 	// not say whether the key was wrong or the payload or additional data was
 	// tampered with.
@@ -57,7 +65,9 @@ type Sealer struct {
 }
 
 // NewSealer derives an AES-256-GCM key from secret, scoped by purpose.
-// Distinct purposes yield unrelated keys from the same secret.
+// secret is an operator secret of any format, at least 32 bytes; a shorter one
+// returns ErrSecretTooShort. Distinct purposes yield unrelated keys from the
+// same secret.
 func NewSealer(purpose string, secret []byte) (*Sealer, error) {
 	if purpose == "" {
 		return nil, ErrEmptyPurpose
@@ -79,6 +89,10 @@ func deriveAEAD(purpose string, secret []byte) (cipher.AEAD, [sha256.Size]byte, 
 
 	if len(secret) == 0 {
 		return nil, id, ErrEmptySecret
+	}
+
+	if len(secret) < minSecretLen {
+		return nil, id, ErrSecretTooShort
 	}
 
 	key, err := hkdf.Key(sha256.New, secret, nil, purpose, sealerKeySize)
@@ -163,8 +177,8 @@ func (s *Sealer) Open(sealed, additionalData []byte) ([]byte, error) {
 // previous. The generation before that is dropped. A next that derives the
 // key already in use is a no-op, so a configuration refresh that re-sends an
 // unchanged secret does not overwrite the previous generation with a copy of
-// the current one. An empty next returns ErrEmptySecret and leaves the keys
-// unchanged.
+// the current one. An empty next returns ErrEmptySecret, a next shorter than
+// 32 bytes returns ErrSecretTooShort, and both leave the keys unchanged.
 func (s *Sealer) Rotate(next []byte) error {
 	if _, err := s.keyset(); err != nil {
 		return err
