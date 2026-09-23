@@ -295,3 +295,49 @@ func TestFenceOutcomeUnknown_NilReceiver(t *testing.T) {
 
 	assert.Error(t, got)
 }
+
+// With a TenantProvider the fence must land where Check reads — the provider's
+// tenant — not at the tenant-manager context's, or the resend finds its key free.
+func TestFenceOutcomeUnknown_RootsTheFenceAtTheProviderTenant(t *testing.T) {
+	t.Parallel()
+
+	store, mr := realRedisStore(t)
+	mw := NewWithStore(store,
+		WithKeyTTL(fenceRetention),
+		WithTenantProvider(func(fiber.Ctx) (string, error) { return "tenant-from-provider", nil }),
+	)
+
+	var calls atomic.Int64
+
+	var fenceErr error
+
+	app := fiber.New()
+	app.Use(tenantMiddleware("tenant-from-tmcore"))
+	app.Use(func(c fiber.Ctx) error {
+		if c.Get(fenceHeader) == "" {
+			return c.Next()
+		}
+
+		fenceErr = mw.FenceOutcomeUnknown(c, fenceRetention)
+
+		return c.SendStatus(fiber.StatusConflict)
+	})
+	app.Use(mw.Check())
+	app.Post("/test", func(c fiber.Ctx) error {
+		calls.Add(1)
+
+		return c.SendStatus(fiber.StatusCreated)
+	})
+
+	sendBridge(t, app, `{}`, true).Body.Close()
+	require.NoError(t, fenceErr)
+
+	assert.Equal(t, []string{"idempotency:tenant-from-provider:bridge-key"}, mr.Keys(),
+		"exactly one fence, rooted at the provider tenant and none at the tmcore one")
+
+	resend := sendBridge(t, app, `{}`, false)
+
+	assert.Equal(t, http.StatusUnprocessableEntity, resend.StatusCode)
+	assert.Contains(t, readBody(t, resend), RefusalCodeOutcomeUnrecorded)
+	assert.Equal(t, int64(0), calls.Load())
+}
