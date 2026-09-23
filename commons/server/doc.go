@@ -13,6 +13,7 @@
 // main HTTP server under one shared shutdownTimeout budget; gRPC and the admin
 // app follow with their own budgets. For stdlib servers, a zero
 // ReadHeaderTimeout is upgraded to a safe default before launch so callers do
-// not accidentally expose Slowloris-prone listeners. Shutdown hooks run after
+// not accidentally expose Slowloris-prone listeners. Every HTTP drain, Fiber
+// and stdlib alike, is bounded by shutdownTimeout. Shutdown hooks run after
 // HTTP/gRPC drain and before telemetry/logger/license shutdown.
 package server

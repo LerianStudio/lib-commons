@@ -134,6 +134,10 @@ func NewServerManager(
 
 // WithHTTPServer configures a Fiber HTTP server for the ServerManager.
 //
+// At shutdown its drain is bounded by shutdownTimeout, shared with the
+// additional stdlib server when one is configured: past the deadline the
+// manager stops waiting for in-flight requests and proceeds.
+//
 // Mutually exclusive with WithStdlibHTTPServer: configuring both causes
 // StartWithGracefulShutdownWithError to return ErrConflictingHTTPServers
 // before any goroutine is launched.
@@ -162,8 +166,9 @@ func (sm *ServerManager) WithHTTPServer(app *fiber.App, address string) *ServerM
 //
 // During shutdown the admin app is the LAST server to drain: it keeps
 // answering, with whatever the service's handlers return, while the API and
-// gRPC servers finish their in-flight work, and closes last. A service that
-// wants /readyz to report 503 during the drain does so in its own handler.
+// gRPC servers finish their in-flight work, and closes last, its drain bounded
+// by its own shutdownTimeout. A service that wants /readyz to report 503
+// during the drain does so in its own handler.
 func (sm *ServerManager) WithAdminHTTPServer(app *fiber.App, address string) *ServerManager {
 	if sm == nil {
 		return nil
@@ -257,12 +262,11 @@ func (sm *ServerManager) WithStdlibHTTPListener(srv *http.Server, listener net.L
 //     net/http fallback.)
 //   - At shutdown it drains CONCURRENTLY with the main HTTP server, with no
 //     ordering guarantee between the two, so a stuck request on one never
-//     delays the other's drain. The additional drain and a stdlib main drain
-//     share ONE shutdownTimeout context created before either starts, so the
-//     pair takes at most one shutdownTimeout; the additional server keeps the
-//     Shutdown-then-Close fallback. A Fiber main server keeps its own drain
-//     bound (fiber's Shutdown takes no context), running in parallel. gRPC
-//     and the admin app drain afterwards, each with its own budget.
+//     delays the other's drain. Both drains, whichever main variant is
+//     configured, share ONE shutdownTimeout context created before either
+//     starts, so the pair takes at most one shutdownTimeout; the additional
+//     server keeps the Shutdown-then-Close fallback. gRPC and the admin app
+//     drain afterwards, each with its own budget.
 //
 // A zero ReadHeaderTimeout is upgraded to the same safe default, a failed
 // bind surfaces on the shared startup error path prefixed "additional HTTP
@@ -1054,11 +1058,7 @@ func (sm *ServerManager) shutdownHTTPServer(ctx context.Context) {
 	case sm.httpServer != nil:
 		sm.logInfo("Shutting down HTTP server...")
 
-		if err := sm.httpServer.Shutdown(); err != nil {
-			sm.logger.Log(context.Background(), obs.LevelError, "error during HTTP server shutdown", "error", err)
-		}
-
-		sm.awaitFiberListenExit(sm.httpServer, &sm.fiberListenDone)
+		sm.shutdownFiberApp(ctx, sm.httpServer, "HTTP", &sm.fiberListenDone)
 	case sm.stdlibHTTPServer != nil:
 		sm.shutdownStdlibServer(ctx, sm.stdlibHTTPServer, "HTTP")
 	}
@@ -1073,11 +1073,24 @@ func (sm *ServerManager) shutdownAdminHTTPServer() {
 
 	sm.logInfo("Shutting down admin HTTP server...")
 
-	if err := sm.adminServer.Shutdown(); err != nil {
-		sm.logger.Log(context.Background(), obs.LevelError, "error during admin HTTP server shutdown", "error", err)
+	ctx, cancel := context.WithTimeout(context.Background(), sm.shutdownTimeout)
+	defer cancel()
+
+	sm.shutdownFiberApp(ctx, sm.adminServer, "admin HTTP", &sm.adminListenDone)
+}
+
+// shutdownFiberApp drains a fiber app under ctx, then waits for its Listen
+// goroutine. ctx bounds the drain: fiber's plain Shutdown waits for every
+// in-flight request with no deadline, so one hung request would hold the
+// whole shutdown. Past the deadline the drain stops waiting and shutdown
+// proceeds; fasthttp does not interrupt a handler still running, which
+// finishes on its own.
+func (sm *ServerManager) shutdownFiberApp(ctx context.Context, app *fiber.App, label string, listenDone *chan struct{}) {
+	if err := app.ShutdownWithContext(ctx); err != nil {
+		sm.logger.Log(context.Background(), obs.LevelError, "error during "+label+" server shutdown", "error", err)
 	}
 
-	sm.awaitFiberListenExit(sm.adminServer, &sm.adminListenDone)
+	sm.awaitFiberListenExit(ctx, app, listenDone)
 }
 
 // awaitFiberListenExit blocks until the fiber Listen goroutine has returned,
@@ -1088,7 +1101,7 @@ func (sm *ServerManager) shutdownAdminHTTPServer() {
 // forever. That leaked goroutine outlives shutdown and, under the race
 // detector, trips on process globals such as os.Stdout that fiber's startup
 // path reads and the test harness swaps between tests and examples.
-func (sm *ServerManager) awaitFiberListenExit(app *fiber.App, listenDone *chan struct{}) {
+func (sm *ServerManager) awaitFiberListenExit(ctx context.Context, app *fiber.App, listenDone *chan struct{}) {
 	sm.lifecycleMu.Lock()
 	done := *listenDone
 	sm.lifecycleMu.Unlock()
@@ -1120,7 +1133,7 @@ func (sm *ServerManager) awaitFiberListenExit(app *fiber.App, listenDone *chan s
 		case <-retry.C:
 			// Listen may not have reached Serve when the first Shutdown ran;
 			// re-issue it so the bound listener is closed once registered.
-			_ = app.Shutdown()
+			_ = app.ShutdownWithContext(ctx)
 		}
 	}
 }

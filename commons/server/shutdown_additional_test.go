@@ -623,3 +623,115 @@ func TestAdditionalStdlibHTTPServerReadHeaderTimeout(t *testing.T) {
 		})
 	}
 }
+
+// hangingFiberApp answers /hang only once release is closed, signalling
+// entered when it starts holding a request.
+func hangingFiberApp(entered chan<- struct{}, release <-chan struct{}) *fiber.App {
+	app := fiber.New()
+
+	app.Get("/hang", func(c fiber.Ctx) error {
+		entered <- struct{}{}
+		<-release
+
+		return c.SendString("released")
+	})
+
+	return app
+}
+
+// awaitManager waits for the manager's result and returns how long it took
+// from start.
+func awaitManager(t *testing.T, done <-chan error, start time.Time) time.Duration {
+	t.Helper()
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("manager did not return within 10s: a Fiber drain is unbounded")
+	}
+
+	return time.Since(start)
+}
+
+// TestFiberMainDrainIsBoundedByTheSharedBudget measures that a request hung
+// on the Fiber main server holds the shutdown for one budget, not forever,
+// while the additional stdlib server drains beside it.
+func TestFiberMainDrainIsBoundedByTheSharedBudget(t *testing.T) {
+	const budget = time.Second
+
+	mainAddr := reserveFreeAddr(t)
+	extraAddr := reserveFreeAddr(t)
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	extraShutdownAt := make(chan time.Time, 1)
+	extra := newTestStdlibServer(extraAddr, probeMux("soap"))
+	extra.RegisterOnShutdown(func() { extraShutdownAt <- time.Now() })
+
+	shutdown := make(chan struct{})
+
+	sm := server.NewServerManager(nil, nil, nil).
+		WithHTTPServer(hangingFiberApp(entered, release), mainAddr).
+		WithAdditionalStdlibHTTPServer(extra).
+		WithShutdownChannel(shutdown).
+		WithShutdownTimeout(budget)
+
+	done := runManager(t, sm)
+
+	assert.Equal(t, "soap", fetchProbe(t, extraAddr))
+	holdRequest(t, mainAddr, "/hang", entered)
+
+	start := time.Now()
+	close(shutdown)
+
+	elapsed := awaitManager(t, done, start)
+	t.Logf("manager returned after %v with a hung Fiber main request (budget %v)", elapsed, budget)
+
+	assert.GreaterOrEqual(t, elapsed, budget-100*time.Millisecond, "the hung request is waited on for the budget")
+	assert.Less(t, elapsed, budget+800*time.Millisecond, "the Fiber main drain must end with the shared budget")
+
+	select {
+	case at := <-extraShutdownAt:
+		assert.Less(t, at.Sub(start), 500*time.Millisecond, "the additional drain must run beside the Fiber main drain")
+	default:
+		t.Fatal("the additional server's Shutdown was never invoked")
+	}
+}
+
+// TestFiberAdminDrainIsBoundedByItsBudget measures the same bound on the
+// admin app, which drains last under its own budget.
+func TestFiberAdminDrainIsBoundedByItsBudget(t *testing.T) {
+	const budget = time.Second
+
+	extraAddr := reserveFreeAddr(t)
+	adminAddr := reserveFreeAddr(t)
+
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+
+	shutdown := make(chan struct{})
+
+	sm := server.NewServerManager(nil, nil, nil).
+		WithAdditionalStdlibHTTPServer(newTestStdlibServer(extraAddr, probeMux("soap"))).
+		WithAdminHTTPServer(hangingFiberApp(entered, release), adminAddr).
+		WithShutdownChannel(shutdown).
+		WithShutdownTimeout(budget)
+
+	done := runManager(t, sm)
+
+	assert.Equal(t, "soap", fetchProbe(t, extraAddr))
+	holdRequest(t, adminAddr, "/hang", entered)
+
+	start := time.Now()
+	close(shutdown)
+
+	elapsed := awaitManager(t, done, start)
+	t.Logf("manager returned after %v with a hung admin request (budget %v)", elapsed, budget)
+
+	assert.GreaterOrEqual(t, elapsed, budget-100*time.Millisecond, "the hung request is waited on for the budget")
+	assert.Less(t, elapsed, budget+800*time.Millisecond, "the admin drain must end with its budget")
+}
