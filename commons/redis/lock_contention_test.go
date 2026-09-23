@@ -310,3 +310,75 @@ func TestWithLockOptions_StalledRedisUnderCallerDeadlineStillErrors(t *testing.T
 	assert.Equal(t, codes.Error, span.Status().Code,
 		"a Redis that stopped answering left the span clean because the caller carried a deadline")
 }
+
+// TestTryLock_OutcomeSeverity pins the log level and span status TryLock reports
+// per outcome. Only an unreachable Redis is a fault: in production debug is off,
+// so a fault logged at DEBUG is no output at all, and a busy lock or a caller
+// that gave up recorded as a span error is a false alarm on every skipped cycle.
+func TestTryLock_OutcomeSeverity(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     func(t *testing.T) (*RedisLockManager, context.Context)
+		wantLevel int
+		wantSpan  codes.Code
+	}{
+		{
+			name: "infrastructure fault is an error",
+			setup: func(t *testing.T) (*RedisLockManager, context.Context) {
+				return setupStalledLock(t), context.Background()
+			},
+			wantLevel: obs.LevelError,
+			wantSpan:  codes.Error,
+		},
+		{
+			name: "caller cancelled before the attempt is not",
+			setup: func(t *testing.T) (*RedisLockManager, context.Context) {
+				_, lock := setupTestLock(t)
+
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+
+				return lock, ctx
+			},
+			wantLevel: obs.LevelDebug,
+			wantSpan:  codes.Unset,
+		},
+		{
+			name: "contention is not",
+			setup: func(t *testing.T) (*RedisLockManager, context.Context) {
+				_, lock := setupTestLock(t)
+
+				handle, acquired, err := lock.TryLock(context.Background(), "test:try-lock:severity")
+				require.NoError(t, err)
+				require.True(t, acquired)
+
+				t.Cleanup(func() { _ = handle.Unlock(context.Background()) })
+
+				return lock, context.Background()
+			},
+			wantLevel: obs.LevelDebug,
+			wantSpan:  codes.Unset,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lock, base := tt.setup(t)
+			recorder := recordSpans(t)
+
+			logger := &recordingLogger{}
+			ctx := libobs.ContextWithLogger(base, logger)
+
+			handle, acquired, _ := lock.TryLock(ctx, "test:try-lock:severity")
+			assert.False(t, acquired)
+			assert.Nil(t, handle)
+
+			entries := logger.loggedEntries()
+			require.Len(t, entries, 1, "TryLock logs exactly one line per outcome; got %+v", entries)
+			assert.Equal(t, tt.wantLevel, entries[0].level, "wrong log level for this outcome; got %+v", entries)
+
+			span := lockSpanStatus(t, recorder, "redis.lock.try_lock")
+			assert.Equal(t, tt.wantSpan, span.Status().Code, "wrong span status for this outcome")
+		})
+	}
+}
