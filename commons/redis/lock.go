@@ -384,6 +384,10 @@ func (dl *RedisLockManager) WithLockOptions(ctx context.Context, lockKey string,
 // Returns the handle and true if lock was acquired, nil and false if lock is busy.
 // Returns an error for unexpected failures (network errors, context cancellation, etc.)
 //
+// TryLock is TryLockWithOptions with DefaultLockOptions() and Tries forced to 1,
+// which means a fixed 10-second expiry. Use TryLockWithOptions when the work
+// under the lock needs a different one.
+//
 // Use LockHandle.Unlock to release the lock when done:
 //
 //	handle, acquired, err := lock.TryLock(ctx, "lock:cache:refresh")
@@ -402,6 +406,56 @@ func (dl *RedisLockManager) TryLock(ctx context.Context, lockKey string) (LockHa
 		return nil, false, nilLockAssert(ctx, "TryLock")
 	}
 
+	opts := DefaultLockOptions()
+	opts.Tries = 1
+
+	return dl.tryLock(ctx, lockKey, opts)
+}
+
+// TryLockWithOptions attempts to acquire a lock using caller-supplied options.
+// It is TryLock with the expiry, retry and drift settings under the caller's
+// control instead of fixed.
+//
+// The contract is TryLock's: the handle and true when the lock was taken,
+// (nil, false, nil) when another process holds it, and an error only for an
+// unexpected failure. Unlike WithLockOptions, contention is not an error here —
+// a caller that wants the error shape uses that entry point instead.
+//
+// Tries is honoured as supplied, so Tries: 3 makes three attempts, separated by
+// RetryDelay, before reporting the lock busy. Options are validated the same way
+// WithLockOptions validates them.
+//
+// This method is declared on *RedisLockManager and deliberately NOT on the
+// LockManager interface: adding a method there would break every external
+// implementer. Consumers that need it hold the concrete type, or declare their
+// own narrow port containing just the methods they call.
+//
+// Example — a sweep that may run for half an hour and must not be retried:
+//
+//	opts := redis.DefaultLockOptions()
+//	opts.Expiry = 30 * time.Minute
+//	opts.Tries = 1
+//
+//	handle, acquired, err := lock.TryLockWithOptions(ctx, "lock:archival:sweep", opts)
+//	if err != nil {
+//	    return fmt.Errorf("failed to attempt lock acquisition: %w", err)
+//	}
+//	if !acquired {
+//	    return nil // another replica is running this sweep
+//	}
+//	defer handle.Unlock(ctx)
+func (dl *RedisLockManager) TryLockWithOptions(ctx context.Context, lockKey string, opts LockOptions) (LockHandle, bool, error) {
+	if dl == nil {
+		return nil, false, nilLockAssert(ctx, "TryLockWithOptions")
+	}
+
+	return dl.tryLock(ctx, lockKey, opts)
+}
+
+// tryLock is the single implementation behind TryLock and TryLockWithOptions.
+// The nil-receiver check is left to the callers so each names itself in the
+// assertion it fires.
+func (dl *RedisLockManager) tryLock(ctx context.Context, lockKey string, opts LockOptions) (LockHandle, bool, error) {
 	if dl.redsync == nil {
 		return nil, false, ErrLockNotInitialized
 	}
@@ -410,18 +464,22 @@ func (dl *RedisLockManager) TryLock(ctx context.Context, lockKey string) (LockHa
 		return nil, false, ErrEmptyLockKey
 	}
 
+	if err := validateLockOptions(opts); err != nil {
+		return nil, false, err
+	}
+
 	logger, tracer, _, _ := obsbridge.TrackingFromContext(ctx)
 	safeLockKey := safeLockKeyForLogs(lockKey)
 
 	ctx, span := tracer.Start(ctx, "redis.lock.try_lock")
 	defer span.End()
 
-	defaultOpts := DefaultLockOptions()
-
 	mutex := dl.redsync.NewMutex(
 		lockKey,
-		redsync.WithExpiry(defaultOpts.Expiry),
-		redsync.WithTries(1), // Only try once
+		redsync.WithExpiry(opts.Expiry),
+		redsync.WithTries(opts.Tries),
+		redsync.WithRetryDelay(opts.RetryDelay),
+		redsync.WithDriftFactor(opts.DriftFactor),
 	)
 
 	if err := mutex.LockContext(ctx); err != nil {
