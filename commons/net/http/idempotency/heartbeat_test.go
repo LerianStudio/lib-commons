@@ -227,6 +227,14 @@ func TestNewWithStore_ProcessingHeartbeat_RefusesAStoreThatCannotExtend(t *testi
 			store: &extendingStore{expiringStore: newExpiringStore()},
 			opts:  []Option{WithProcessingTTL(time.Second), WithProcessingHeartbeat(time.Second)},
 		},
+		{
+			name:  "fixed lease shorter than MinHeartbeatLease",
+			store: &extendingStore{expiringStore: newExpiringStore()},
+			opts: []Option{
+				WithProcessingTTL(MinHeartbeatLease - time.Millisecond),
+				WithProcessingHeartbeat(10 * time.Millisecond),
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -323,8 +331,12 @@ func TestHeartbeatTick(t *testing.T) {
 	}{
 		{name: "interval already inside the lease", interval: 10 * time.Second, lease: time.Minute, want: 10 * time.Second},
 		{name: "lease shorter than the interval", interval: 15 * time.Second, lease: 10 * time.Second, want: 10 * time.Second / 3},
-		{name: "pathological lease floors the tick", interval: time.Second, lease: 30 * time.Millisecond, want: heartbeatMinTick},
+		// lease/3 reaches the floor exactly at the minimum lease, never below it.
+		{name: "minimum lease ticks at the floor", interval: time.Second, lease: MinHeartbeatLease, want: heartbeatMinTick},
+		{name: "tiny interval floors the tick", interval: 10 * time.Millisecond, lease: time.Minute, want: heartbeatMinTick},
 	}
+
+	assert.Equal(t, 3*heartbeatMinTick, MinHeartbeatLease, "three floor ticks must fit the minimum lease")
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -379,4 +391,67 @@ func (l *recordingLogger) count(substring string) int {
 	}
 
 	return n
+}
+
+// A lease below MinHeartbeatLease cannot fit three beats at the floor, so the
+// heartbeat cannot hold it: the request is refused before acquisition instead
+// of running under a lease that lapses between beats.
+func TestCheck_ProcessingHeartbeat_RefusesALeaseBelowTheMinimum(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		lease      time.Duration
+		wantStatus int
+		wantCalls  int64
+	}{
+		{name: "30ms refused", lease: 30 * time.Millisecond, wantStatus: http.StatusServiceUnavailable},
+		{name: "149ms refused", lease: MinHeartbeatLease - time.Millisecond, wantStatus: http.StatusServiceUnavailable},
+		{name: "150ms proceeds", lease: MinHeartbeatLease, wantStatus: http.StatusCreated, wantCalls: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			store := &extendingStore{expiringStore: newExpiringStore()}
+			logger := &recordingLogger{}
+			middleware := NewWithStore(store,
+				WithLogger(logger),
+				WithKeyTTL(time.Hour),
+				WithProcessingTTLProvider(func(fiber.Ctx) (time.Duration, error) { return tt.lease, nil }),
+				WithProcessingHeartbeat(time.Second))
+			require.NoError(t, middleware.Err())
+
+			var calls atomic.Int64
+
+			app := fiber.New()
+			app.Use(tenantMiddleware("tenant-min-lease"))
+			app.Use(middleware.Check())
+			app.Post("/test", func(c fiber.Ctx) error {
+				calls.Add(1)
+
+				return c.SendStatus(fiber.StatusCreated)
+			})
+
+			resp := doPost(t, app, "min-lease-key")
+			resp.Body.Close()
+
+			assert.Equal(t, tt.wantStatus, resp.StatusCode)
+			assert.Equal(t, tt.wantCalls, calls.Load())
+
+			if tt.wantStatus != http.StatusServiceUnavailable {
+				return
+			}
+
+			store.mu.Lock()
+			assert.Empty(t, store.records, "a refused request must not acquire the key")
+			store.mu.Unlock()
+
+			line := logger.find(t, obs.LevelError, "lease shorter than the heartbeat minimum")
+			assert.Equal(t, time.Second, line.kv["configured_interval"])
+			assert.Equal(t, tt.lease, line.kv["effective_lease"])
+			assert.Equal(t, MinHeartbeatLease, line.kv["minimum_lease"])
+		})
+	}
 }

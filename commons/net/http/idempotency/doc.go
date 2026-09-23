@@ -364,9 +364,11 @@
 // takes [WithProcessingHeartbeat] instead of a guessed constant: the middleware
 // renews the lease every interval while the handler runs, through the optional
 // [LeaseExtender] store capability (the Redis store implements it), and stops
-// before the completion is written. A store without it, or an interval not
-// shorter than a fixed [WithProcessingTTL], is reported once by [Middleware.Err]
-// and refuses keyed mutations with 503 rather than run them unrenewed:
+// before the completion is written. A store without it, an interval not
+// shorter than a fixed [WithProcessingTTL], or a fixed lease below
+// [MinHeartbeatLease], is reported once by [Middleware.Err] and refuses keyed
+// mutations with 503 rather than run them unrenewed; a resolved per-request
+// lease below that minimum is refused the same way, before acquisition:
 //
 //	idem := idempotency.New(conn,
 //	    idempotency.WithProcessingTTL(time.Minute),

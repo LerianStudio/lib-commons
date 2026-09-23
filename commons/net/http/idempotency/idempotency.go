@@ -1813,6 +1813,10 @@ func (m *Middleware) handleStore(
 		lease = ttl
 	}
 
+	if m.extender != nil && lease < MinHeartbeatLease {
+		return m.refuseUnholdableLease(c, key, lease)
+	}
+
 	stored, acquired, err := m.store.Acquire(ctx, key, processing, lease)
 	if err != nil {
 		m.logger.Log(ctx, obs.LevelWarn, "idempotency: store acquire failed", "error", err)

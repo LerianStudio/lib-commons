@@ -70,7 +70,10 @@ func (s *redisStore) Extend(ctx context.Context, key string, expected []byte, tt
 // [WithProcessingTTLProvider], or the retention when neither is set). A
 // request whose lease is shorter than three intervals beats every third of its
 // lease instead, never faster than every 50ms, and logs one warning saying so;
-// size the interval to a few beats per lease to keep that warning quiet.
+// size the interval to a few beats per lease to keep that warning quiet. A
+// lease below [MinHeartbeatLease] cannot be held at that floor and is refused:
+// at construction for a fixed [WithProcessingTTL], per request (503, before
+// acquisition) for a lease resolved by a provider or taken from the retention.
 //
 // The heartbeat starts when the handler starts and stops, synchronously, when
 // it returns: no beat runs during or after the completion or release. A beat
@@ -113,6 +116,13 @@ func (m *Middleware) bindHeartbeat() {
 	extender, ok := m.store.(LeaseExtender)
 	if !ok {
 		m.configErr = fmt.Errorf("%w: store %T does not implement LeaseExtender", ErrHeartbeatMisconfigured, m.store)
+
+		return
+	}
+
+	if m.processingTTL > 0 && m.processingTTL < MinHeartbeatLease {
+		m.configErr = fmt.Errorf("%w: processing TTL %s is shorter than the heartbeat minimum lease %s",
+			ErrHeartbeatMisconfigured, m.processingTTL, MinHeartbeatLease)
 
 		return
 	}
@@ -219,10 +229,34 @@ func (m *Middleware) beat(ctx context.Context, tenantID, key string, processing 
 // per request. A lease that short cannot outlive one slow round trip anyway.
 const heartbeatMinTick = 50 * time.Millisecond
 
+// MinHeartbeatLease is the shortest in-flight lease [WithProcessingHeartbeat]
+// can hold: three beats at the 50ms tick floor. A shorter lease cannot fit
+// three beats, so one delayed renewal lets it lapse under a running handler.
+// With the heartbeat on, a fixed [WithProcessingTTL] below it makes
+// [Middleware.Err] non-nil, and a request whose resolved lease is below it is
+// refused with 503 before acquisition.
+const MinHeartbeatLease = 3 * heartbeatMinTick
+
 // heartbeatTick is how often a request beats: the configured interval, or a
 // third of the lease actually stored when that is shorter — so two beats may
 // fail and the third still lands before the lease lapses — floored at
 // heartbeatMinTick.
 func heartbeatTick(interval, lease time.Duration) time.Duration {
 	return max(min(interval, lease/3), heartbeatMinTick)
+}
+
+// refuseUnholdableLease answers a request whose effective lease is too short
+// for the heartbeat to hold. It runs before acquisition, so nothing is spent
+// and retrying is the correct instruction.
+func (m *Middleware) refuseUnholdableLease(c fiber.Ctx, key string, lease time.Duration) error {
+	m.logger.Log(c.Context(), obs.LevelError,
+		"idempotency: lease shorter than the heartbeat minimum; refusing the request",
+		"configured_interval", m.heartbeatInterval,
+		"effective_lease", lease,
+		"minimum_lease", MinHeartbeatLease,
+		"idempotency_key_digest", keyDigest(key),
+		"tenant_id", recordTenant(c),
+	)
+
+	return m.respondUnavailable(c)
 }
