@@ -3,9 +3,12 @@
 package server_test
 
 import (
+	"io"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,7 +31,8 @@ func probeMux(name string) *http.ServeMux {
 
 // TestAdditionalStdlibHTTPServerBesideFiberMainGRPCAndAdmin is the co-located
 // process: a Fiber API, a stdlib channel listener, gRPC and the admin app all
-// serve, and the additional listener drains first, the admin app last.
+// serve. The additional and main HTTP servers drain (in no guaranteed order
+// between them) before gRPC, and the admin app drains last.
 func TestAdditionalStdlibHTTPServerBesideFiberMainGRPCAndAdmin(t *testing.T) {
 	listener := newTestStdlibListener(t)
 	extraAddr := listener.Addr().String()
@@ -57,21 +61,211 @@ func TestAdditionalStdlibHTTPServerBesideFiberMainGRPCAndAdmin(t *testing.T) {
 	requireCleanExit(t, shutdown, done)
 
 	msgs := logger.getMessages()
-	order := []string{
-		"Shutting down additional HTTP server...",
-		"Shutting down HTTP server...",
-		"Shutting down gRPC server...",
-		"Shutting down admin HTTP server...",
-	}
+	grpcIdx := indexOf(msgs, "Shutting down gRPC server...")
+	adminIdx := indexOf(msgs, "Shutting down admin HTTP server...")
 
-	previous := -1
+	require.GreaterOrEqual(t, grpcIdx, 0, "messages=%v", msgs)
+	assert.Greater(t, adminIdx, grpcIdx, "the admin app must drain last (messages=%v)", msgs)
 
-	for _, banner := range order {
+	for _, banner := range []string{"Shutting down additional HTTP server...", "Shutting down HTTP server..."} {
 		idx := indexOf(msgs, banner)
 		require.GreaterOrEqual(t, idx, 0, "banner %q must appear (messages=%v)", banner, msgs)
-		assert.Greater(t, idx, previous, "shutdown order must be %v (messages=%v)", order, msgs)
-		previous = idx
+		assert.Less(t, idx, grpcIdx, "%q must come before gRPC (messages=%v)", banner, msgs)
 	}
+}
+
+// closeTimeListener records when the server under test first closed it,
+// which http.Server.Shutdown does as its first act.
+type closeTimeListener struct {
+	net.Listener
+	once     sync.Once
+	closedAt atomic.Int64
+}
+
+func (l *closeTimeListener) Close() error {
+	l.once.Do(func() { l.closedAt.Store(time.Now().UnixNano()) })
+
+	return l.Listener.Close()
+}
+
+// hangingMux answers /hang only when the request context ends, which for an
+// in-flight request happens when the server hard-closes its connection. It
+// signals entered once a request is being held.
+func hangingMux(entered chan<- struct{}, released chan<- time.Time) *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/hang", func(_ http.ResponseWriter, r *http.Request) {
+		entered <- struct{}{}
+		<-r.Context().Done()
+		released <- time.Now()
+	})
+
+	return mux
+}
+
+// holdRequest issues GET path against addr in the background and waits until
+// the handler signals it is holding the request.
+func holdRequest(t *testing.T, addr, path string, entered <-chan struct{}) {
+	t.Helper()
+
+	waitForHTTPListening(t, addr, 5*time.Second)
+
+	go func() {
+		resp, err := http.Get("http://" + addr + path) //nolint:noctx // the server ends this request
+		if err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the request did not reach its handler within 5s")
+	}
+}
+
+// TestAdditionalStdlibHTTPServerSharesOneDrainBudgetWithMain measures that a
+// request stuck on the additional server neither delays the main server's
+// drain nor stretches the pair past one shutdownTimeout.
+func TestAdditionalStdlibHTTPServerSharesOneDrainBudgetWithMain(t *testing.T) {
+	const budget = 1500 * time.Millisecond
+
+	mainListener := &closeTimeListener{Listener: newTestStdlibListener(t)}
+	mainAddr := mainListener.Addr().String()
+	extraAddr := reserveFreeAddr(t)
+
+	entered := make(chan struct{}, 1)
+	released := make(chan time.Time, 1)
+	extraShutdownAt := make(chan time.Time, 1)
+
+	extra := newTestStdlibServer(extraAddr, hangingMux(entered, released))
+	extra.RegisterOnShutdown(func() { extraShutdownAt <- time.Now() })
+
+	shutdown := make(chan struct{})
+
+	sm := server.NewServerManager(nil, nil, nil).
+		WithStdlibHTTPListener(newTestStdlibServer(mainAddr, probeMux("api")), mainListener).
+		WithAdditionalStdlibHTTPServer(extra).
+		WithShutdownChannel(shutdown).
+		WithShutdownTimeout(budget)
+
+	done := runManager(t, sm)
+
+	assert.Equal(t, "api", fetchProbe(t, mainAddr))
+	holdRequest(t, extraAddr, "/hang", entered)
+
+	start := time.Now()
+	close(shutdown)
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("manager did not finish its graceful shutdown within 10s")
+	}
+
+	elapsed := time.Since(start)
+
+	closedAt := mainListener.closedAt.Load()
+	require.NotZero(t, closedAt, "the main server was never shut down")
+	assert.Less(t, time.Unix(0, closedAt).Sub(start), 500*time.Millisecond,
+		"a stuck additional request must not delay the main drain")
+
+	select {
+	case at := <-extraShutdownAt:
+		assert.Less(t, at.Sub(start), 500*time.Millisecond, "the additional drain must start at once")
+	default:
+		t.Fatal("the additional server's Shutdown was never invoked")
+	}
+
+	select {
+	case at := <-released:
+		assert.GreaterOrEqual(t, at.Sub(start), budget-100*time.Millisecond,
+			"the stuck request is hard-closed only when the budget runs out")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stuck additional request was never released")
+	}
+
+	assert.GreaterOrEqual(t, elapsed, budget-100*time.Millisecond)
+	assert.Less(t, elapsed, 2*budget, "additional plus main must fit in ONE shutdownTimeout")
+}
+
+// TestAdditionalStdlibHTTPServerMainFinishesInFlightWhileAdditionalDrains pins
+// that a main request in flight at shutdown is answered while the additional
+// server is still stuck in its drain.
+func TestAdditionalStdlibHTTPServerMainFinishesInFlightWhileAdditionalDrains(t *testing.T) {
+	const budget = 1500 * time.Millisecond
+
+	mainAddr := reserveFreeAddr(t)
+	extraAddr := reserveFreeAddr(t)
+
+	mainEntered := make(chan struct{}, 1)
+	mainMux := http.NewServeMux()
+	mainMux.HandleFunc("/slow", func(w http.ResponseWriter, _ *http.Request) {
+		mainEntered <- struct{}{}
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte("api"))
+	})
+
+	entered := make(chan struct{}, 1)
+	released := make(chan time.Time, 1)
+	shutdown := make(chan struct{})
+
+	sm := server.NewServerManager(nil, nil, nil).
+		WithStdlibHTTPServer(newTestStdlibServer(mainAddr, mainMux)).
+		WithAdditionalStdlibHTTPServer(newTestStdlibServer(extraAddr, hangingMux(entered, released))).
+		WithShutdownChannel(shutdown).
+		WithShutdownTimeout(budget)
+
+	done := runManager(t, sm)
+
+	holdRequest(t, extraAddr, "/hang", entered)
+
+	type answer struct {
+		body string
+		err  error
+	}
+
+	mainAnswer := make(chan answer, 1)
+
+	go func() {
+		resp, err := http.Get("http://" + mainAddr + "/slow") //nolint:noctx // bounded by the handler
+		if err != nil {
+			mainAnswer <- answer{err: err}
+			return
+		}
+
+		defer func() { _ = resp.Body.Close() }()
+
+		body, err := io.ReadAll(resp.Body)
+		mainAnswer <- answer{body: string(body), err: err}
+	}()
+
+	select {
+	case <-mainEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the main request did not reach its handler within 5s")
+	}
+
+	start := time.Now()
+	close(shutdown)
+
+	select {
+	case got := <-mainAnswer:
+		require.NoError(t, got.err)
+		assert.Equal(t, "api", got.body)
+		assert.Less(t, time.Since(start), budget, "the main answer must not wait for the additional drain")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the in-flight main request was never answered")
+	}
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("manager did not finish its graceful shutdown within 10s")
+	}
+
+	<-released
 }
 
 // TestAdditionalStdlibHTTPServerBesideAStdlibMainServer pins that the new slot

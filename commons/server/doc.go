@@ -9,8 +9,10 @@
 // and stdlib HTTP variants are mutually exclusive; either HTTP variant can be
 // composed with gRPC. A second stdlib *http.Server on its own port goes through
 // WithAdditionalStdlibHTTPServer (or WithAdditionalStdlibHTTPListener), which
-// composes with every other slot and drains first at shutdown. For stdlib servers, a zero ReadHeaderTimeout is upgraded
-// to a safe default before launch so callers do not accidentally expose
-// Slowloris-prone listeners. Shutdown hooks run after HTTP/gRPC drain and
-// before telemetry/logger/license shutdown.
+// composes with every other slot and, at shutdown, drains concurrently with the
+// main HTTP server under one shared shutdownTimeout budget; gRPC and the admin
+// app follow with their own budgets. For stdlib servers, a zero
+// ReadHeaderTimeout is upgraded to a safe default before launch so callers do
+// not accidentally expose Slowloris-prone listeners. Shutdown hooks run after
+// HTTP/gRPC drain and before telemetry/logger/license shutdown.
 package server

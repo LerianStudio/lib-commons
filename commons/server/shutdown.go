@@ -240,9 +240,13 @@ func (sm *ServerManager) WithStdlibHTTPListener(srv *http.Server, listener net.L
 // It behaves like WithStdlibHTTPServer in every respect but two:
 //   - It is not subject to ErrConflictingHTTPServers: it composes with either
 //     main HTTP variant.
-//   - At shutdown it drains FIRST, before the main HTTP server, gRPC and the
-//     admin app, bounded by the same shutdownTimeout and with the same
-//     Shutdown-then-Close fallback.
+//   - At shutdown it drains CONCURRENTLY with the main HTTP server, with no
+//     ordering guarantee between the two. Both drains start under one
+//     shared shutdownTimeout budget, so together they take at most one
+//     shutdownTimeout and a stuck request on one never delays the other's
+//     drain; the additional server keeps the Shutdown-then-Close fallback.
+//     (A Fiber main server keeps its own drain, which runs in parallel.)
+//     gRPC and the admin app drain afterwards, each with its own budget.
 //
 // A zero ReadHeaderTimeout is upgraded to the same safe default, a failed
 // bind surfaces on the shared startup error path prefixed "additional HTTP
@@ -834,14 +838,16 @@ func (sm *ServerManager) executeShutdown() {
 			sm.logInfo("Shutdown initiated before servers were fully started.")
 		}
 
-		// The additional stdlib server carries channel-facing traffic, so it
-		// drains first, while the main server, gRPC and the admin probes are
-		// all still up.
-		if sm.additionalHTTP != nil {
-			sm.shutdownStdlibServer(sm.additionalHTTP, "additional HTTP")
-		}
+		// The additional and main HTTP servers drain concurrently under ONE
+		// shutdownTimeout budget, created once before either starts: a stuck
+		// request on one surface neither delays the other's drain nor doubles
+		// the total. gRPC and admin follow, each with its own budget.
+		drainCtx, cancelDrain := context.WithTimeout(context.Background(), sm.shutdownTimeout)
+		additionalDrained := sm.drainAdditionalHTTPServer(drainCtx)
 
-		sm.shutdownHTTPServer()
+		sm.shutdownHTTPServer(drainCtx)
+		<-additionalDrained
+		cancelDrain()
 
 		// Shutdown the gRPC server BEFORE telemetry to allow in-flight RPCs
 		// to complete and emit their final spans/metrics before the telemetry
@@ -930,7 +936,35 @@ func (sm *ServerManager) executeShutdown() {
 	})
 }
 
-func (sm *ServerManager) shutdownHTTPServer() {
+// drainAdditionalHTTPServer drains the additional stdlib server in its own
+// goroutine under ctx. The returned channel closes when the drain is over,
+// immediately when no additional server is configured.
+func (sm *ServerManager) drainAdditionalHTTPServer(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
+
+	if sm.additionalHTTP == nil {
+		close(done)
+
+		return done
+	}
+
+	runtime.SafeGoWithContextAndComponent(
+		context.Background(),
+		sm.logger,
+		"server",
+		"additional_stdlib_http_shutdown",
+		runtime.KeepRunning,
+		func(_ context.Context) {
+			defer close(done)
+
+			sm.shutdownStdlibServer(ctx, sm.additionalHTTP, "additional HTTP")
+		},
+	)
+
+	return done
+}
+
+func (sm *ServerManager) shutdownHTTPServer(ctx context.Context) {
 	// Shutdown the HTTP server if available. The fiber and stdlib paths
 	// are mutually exclusive (enforced by validateConfiguration), so at
 	// most one of these branches fires per shutdown.
@@ -944,7 +978,7 @@ func (sm *ServerManager) shutdownHTTPServer() {
 
 		sm.awaitFiberListenExit(sm.httpServer, &sm.fiberListenDone)
 	case sm.stdlibHTTPServer != nil:
-		sm.shutdownStdlibServer(sm.stdlibHTTPServer, "HTTP")
+		sm.shutdownStdlibServer(ctx, sm.stdlibHTTPServer, "HTTP")
 	}
 }
 
@@ -1009,21 +1043,16 @@ func (sm *ServerManager) awaitFiberListenExit(app *fiber.App, listenDone *chan s
 	}
 }
 
-// shutdownStdlibServer drains a stdlib server; label names it in logs.
-func (sm *ServerManager) shutdownStdlibServer(srv *http.Server, label string) {
+// shutdownStdlibServer drains a stdlib server under ctx; label names it in
+// logs. ctx is the drain budget, derived from context.Background() bounded by
+// shutdownTimeout, so an earlier signal/ctx cancellation does not abort the
+// in-flight request drain. If the drain fails or times out, fall back to
+// Close() so active connections are forcefully released instead of leaking
+// past the shutdown budget.
+func (sm *ServerManager) shutdownStdlibServer(ctx context.Context, srv *http.Server, label string) {
 	sm.logInfo("Shutting down " + label + " server...")
 
-	// Bound the drain by shutdownTimeout. Unlike fiber.App.Shutdown,
-	// stdlib http.Server.Shutdown accepts an explicit ctx — we use a
-	// fresh background-derived ctx so an earlier signal/ctx
-	// cancellation does not abort the in-flight request drain. If the
-	// drain fails or times out, fall back to Close() so active
-	// connections are forcefully released instead of leaking past the
-	// shutdown budget.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), sm.shutdownTimeout)
-	defer cancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
+	if err := srv.Shutdown(ctx); err != nil {
 		sm.logger.Log(context.Background(), obs.LevelError, "error during "+label+" server shutdown", "error", err)
 
 		if closeErr := srv.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
