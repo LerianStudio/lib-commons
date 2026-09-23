@@ -504,6 +504,20 @@ func (l *recordingLogger) find(t *testing.T, level int, substring string) logged
 	return loggedLine{}
 }
 
+// has reports whether any line, at any level, contains substring.
+func (l *recordingLogger) has(substring string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for _, line := range l.lines {
+		if strings.Contains(line.msg, substring) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // TestCheck_FenceFailure_SaysTheKeyIsUnprotected covers the case the fence
 // cannot close: the store is down for the receipt AND for the fence.
 //
