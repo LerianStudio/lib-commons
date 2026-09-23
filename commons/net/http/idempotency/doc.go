@@ -604,6 +604,9 @@
 // tenant-less mutation is refused" — an unkeyed one still passes. A route that
 // must never run a mutation without both takes both options, as above.
 //
+// A present tenant containing ':' is refused regardless of either option, with
+// 400 coded "IDEMPOTENCY_TENANT_MALFORMED" and no callback seam.
+//
 // Neither option survives a nil middleware. [New] returns nil for a nil
 // connection and [Middleware.Check] on a nil receiver is an unconditional
 // pass-through, so options are never applied and every request proceeds. A
