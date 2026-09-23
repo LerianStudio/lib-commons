@@ -30,9 +30,37 @@ func HandleFlag() {
 	os.Exit(0)
 }
 
+const (
+	manifestFormat = "go-buildinfo-v1"
+	scopeLerian    = "lerian"
+)
+
+// flagBody is the line printed by --version: the identity plus the manifest of
+// the Lerian modules linked into the binary, and no service name.
+type flagBody struct {
+	SchemaVersion string `json:"schemaVersion"`
+	identity
+	DependencyManifest manifest `json:"dependencyManifest"`
+}
+
+// manifest lists the modules linked into the binary.
+type manifest struct {
+	Format  string   `json:"format"`
+	Scope   string   `json:"scope"`
+	Modules []Module `json:"modules"`
+}
+
 // writeVersion encodes the identity of the running process, Lerian module
 // scope, without the service name: a binary knows what it was built from, not
 // what it was configured to be called.
 func writeVersion(w io.Writer) error {
-	return json.NewEncoder(w).Encode(newResponse(nil, false))
+	return json.NewEncoder(w).Encode(flagBody{
+		SchemaVersion: schemaVersion,
+		identity:      identity(Get()),
+		DependencyManifest: manifest{
+			Format:  manifestFormat,
+			Scope:   scopeLerian,
+			Modules: Modules(false),
+		},
+	})
 }

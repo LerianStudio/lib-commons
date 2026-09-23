@@ -50,19 +50,7 @@ func TestNewAdminAppServesTheVersionEndpoint(t *testing.T) {
 	require.NotNil(t, decoded)
 	assert.Equal(t, "v1", decoded["schemaVersion"])
 	assert.Equal(t, "midaz-ledger", decoded["service"], "service comes from the NewAdminApp argument")
-	assert.Contains(t, decoded, "dependencyManifest")
-}
-
-func TestNewAdminAppWidensTheManifestWithFull(t *testing.T) {
-	t.Parallel()
-
-	_, decoded := getAdmin(t, "midaz-ledger", "/version?full=1")
-
-	require.NotNil(t, decoded)
-
-	manifest, ok := decoded["dependencyManifest"].(map[string]any)
-	require.True(t, ok, "dependencyManifest must be an object")
-	assert.Equal(t, "full", manifest["scope"])
+	assert.NotContains(t, decoded, "dependencyManifest", "the manifest never leaves the process over HTTP")
 }
 
 func TestNewAdminAppMountsNothingElse(t *testing.T) {
