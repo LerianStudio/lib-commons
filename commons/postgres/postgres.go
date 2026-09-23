@@ -53,6 +53,13 @@ var (
 	ErrInvalidConfig = errors.New("invalid postgres config")
 	// ErrNotConnected indicates operations requiring an active connection were called before connect.
 	ErrNotConnected = errors.New("postgres client is not connected")
+	// ErrNilPool is returned when a constructor is handed a nil *sql.DB where an
+	// already-open pool is required.
+	ErrNilPool = errors.New("postgres pool is nil")
+	// ErrInjectedPools is returned when a client built by NewFromPools is asked
+	// to dial. Such a client holds pools it did not open and a config that was
+	// never validated nor TLS-checked, so it has no DSN it is entitled to dial.
+	ErrInjectedPools = errors.New("postgres client was built from injected pools and cannot dial")
 	// ErrInvalidDatabaseName indicates an invalid database identifier.
 	ErrInvalidDatabaseName = errors.New("invalid database name")
 	// ErrMigrationDirty indicates migrations stopped at a dirty version.
@@ -440,6 +447,10 @@ type Client struct {
 	// then runs a single pool and the resolver reads from primary.
 	replica *sql.DB
 
+	// injected marks a client built by NewFromPools over pools the caller
+	// opened. Such a client never dials -- see buildConnection.
+	injected bool
+
 	// statsCleanups releases the telemetry registrations bound to the CURRENT
 	// primary/replica pools. Swapped together with the pools on reconnect and
 	// drained on Close, so gauge callbacks never outlive the pool they observe.
@@ -577,7 +588,16 @@ type pools struct {
 // primary only, and the resolver is built with an empty replica set so reads
 // fall through to it. built.replica stays nil in that case, and every cleanup
 // path below relies on closeDB(nil) being a no-op.
+//
+// A client built by NewFromPools never reaches the dial below: its cfg skipped
+// validate() and the TLS policy, so cfg.PrimaryDSN is not a target it may open.
+// An empty one is worse than invalid -- pgx resolves it from the ambient libpq
+// environment and would attach the client to whatever database that names.
 func (c *Client) buildConnection(ctx context.Context) (pools, error) {
+	if c.injected {
+		return pools{}, fmt.Errorf("postgres connect: %w", ErrInjectedPools)
+	}
+
 	warnInsecureDSN(ctx, c.cfg.Logger, c.cfg.PrimaryDSN, "primary")
 
 	primary, primaryCleanup, err := c.newSQLDB(ctx, c.cfg.PrimaryDSN, sqlobs.PoolRolePrimary)
@@ -693,6 +713,13 @@ func (c *Client) Resolver(ctx context.Context) (dbresolver.DB, error) {
 
 	if c.resolver != nil {
 		return c.resolver, nil
+	}
+
+	// An injected client (NewFromPools) has nothing it may dial. Refuse here,
+	// before the retry bookkeeping below, so every call after Close answers
+	// ErrInjectedPools and never a rate-limit error.
+	if c.injected {
+		return nil, fmt.Errorf("postgres resolver: %w", ErrInjectedPools)
 	}
 
 	// Rate-limit lazy-connect retries: if previous attempts failed recently,
