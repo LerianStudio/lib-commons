@@ -21,6 +21,7 @@ import (
 
 	commons "github.com/LerianStudio/lib-commons/v7/commons"
 	"github.com/LerianStudio/lib-commons/v7/commons/backoff"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/otelscope"
 	"github.com/LerianStudio/lib-observability/v4/assert"
 	constant "github.com/LerianStudio/lib-observability/v4/constants"
 	"github.com/LerianStudio/lib-observability/v4/runtime"
@@ -31,9 +32,10 @@ import (
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/jackc/pgx/v5/stdlib"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+var tracer = otelscope.Tracer("commons/postgres")
 
 const (
 	defaultMaxOpenConns    = 25
@@ -498,8 +500,6 @@ func (c *Client) Connect(ctx context.Context) error {
 		return fmt.Errorf("postgres connect: %w", ErrNilContext)
 	}
 
-	tracer := otel.Tracer("postgres")
-
 	ctx, span := tracer.Start(ctx, "postgres.connect")
 	defer span.End()
 
@@ -707,8 +707,6 @@ func (c *Client) Resolver(ctx context.Context) (dbresolver.DB, error) {
 
 	c.lastConnectAttempt = time.Now()
 
-	tracer := otel.Tracer("postgres")
-
 	ctx, span := tracer.Start(ctx, "postgres.resolve")
 	defer span.End()
 
@@ -761,8 +759,6 @@ func (c *Client) Close() error {
 	if c == nil {
 		return nilClientAssert("close")
 	}
-
-	tracer := otel.Tracer("postgres")
 
 	_, span := tracer.Start(context.Background(), "postgres.close")
 	defer span.End()
@@ -914,8 +910,6 @@ func (m *Migrator) Up(ctx context.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("postgres migrate_up: %w", ErrNilContext)
 	}
-
-	tracer := otel.Tracer("postgres")
 
 	ctx, span := tracer.Start(ctx, "postgres.migrate_up")
 	defer span.End()

@@ -13,14 +13,16 @@ import (
 	"github.com/LerianStudio/lib-commons/v7/commons/obs"
 
 	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/otelscope"
 	libRedis "github.com/LerianStudio/lib-commons/v7/commons/redis"
 	tmcore "github.com/LerianStudio/lib-commons/v7/commons/tenant-manager/core"
 	constant "github.com/LerianStudio/lib-observability/v4/constants"
 	libTracing "github.com/LerianStudio/lib-observability/v4/tracing"
 	"github.com/redis/go-redis/v9"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 )
+
+var tracer = otelscope.Tracer("commons/net/http/pacing")
 
 // Public tuning defaults.
 const (
@@ -36,8 +38,6 @@ const (
 )
 
 const (
-	tracerName = "pacing"
-
 	namespaceTenant      = "tenant"
 	namespaceInstitution = "inst"
 
@@ -388,7 +388,7 @@ func (p *Pacer) Acquire(ctx context.Context, buckets ...Bucket) error {
 		return err
 	}
 
-	ctx, span := otel.Tracer(tracerName).Start(ctx, "pacing.acquire")
+	ctx, span := tracer.Start(ctx, "pacing.acquire")
 	defer span.End()
 
 	span.SetAttributes(

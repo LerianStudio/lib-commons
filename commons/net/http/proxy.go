@@ -10,12 +10,14 @@ import (
 
 	constant "github.com/LerianStudio/lib-commons/v7/commons/constants"
 	"github.com/LerianStudio/lib-commons/v7/commons/internal/nilcheck"
+	"github.com/LerianStudio/lib-commons/v7/commons/internal/otelscope"
 	opentelemetry "github.com/LerianStudio/lib-observability/v4/tracing"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.9.0"
 	"go.opentelemetry.io/otel/trace"
 )
+
+var tracer = otelscope.Tracer("commons/net/http")
 
 var (
 	// ErrInvalidProxyTarget indicates the proxy target URL is malformed or empty.
@@ -97,7 +99,7 @@ func ServeReverseProxy(target string, policy ReverseProxyPolicy, res http.Respon
 		return err
 	}
 
-	ctx, span := otel.Tracer("http.proxy").Start(
+	ctx, span := tracer.Start(
 		req.Context(),
 		"http.reverse_proxy",
 		trace.WithSpanKind(trace.SpanKindClient),

@@ -113,6 +113,7 @@ The former `commons/opentelemetry`, `commons/opentelemetry/metrics`, `commons/op
 
 ### Build and shell
 
+- `commons/buildinfo`: compiled build identity -- `Set(Build)` takes the `-ldflags` values, `Get()`/`Modules(full)` read them plus `runtime/debug`, `Handler(service)` serves `GET /version`, `HandleFlag()` answers `--version`, `Scope(pkg)` gives libraries their OTel instrumentation scope. See [Build identity](#build-identity)
 - `commons/shell/`: Makefile include helpers (`makefile_colors.mk`, `makefile_utils.mk`), shell scripts (`colors.sh`, `ascii.sh`), ASCII art (`logo.txt`)
 
 ## Minimal usage
@@ -185,13 +186,114 @@ if err := db.PingContext(ctx); err != nil {
 }
 ```
 
+## Build identity
+
+A binary carries its own identity: version, git revision, build time, Go version
+and the manifest of the Lerian modules linked into it. Those values are compiled
+in by the CI, never read from the environment, and `commons/buildinfo` is the
+single source for `--version`, `GET /version` and the OTel `service.version`.
+
+Build stage of the service Dockerfile:
+
+```dockerfile
+ARG TARGETARCH
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG BUILD_TIME=unknown
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+    go build -trimpath -buildvcs=false \
+      -ldflags="-s -w -X main.version=${VERSION} -X main.revision=${REVISION} -X main.buildTime=${BUILD_TIME}" \
+      -o /service ./cmd/app
+```
+
+Without the three `ARG` lines the build args are ignored and the image ships as
+`dev`. `ENTRYPOINT` must be the binary itself, with no shell wrapper, so that
+`docker run <image> --version` works.
+
+`main.go` of each binary:
+
+```go
+package main
+
+import "github.com/LerianStudio/lib-commons/v7/commons/buildinfo"
+
+// Filled at build time via -ldflags -X main.<name>. Empty on local builds.
+var version, revision, buildTime string
+
+func main() {
+    buildinfo.Set(buildinfo.Build{Version: version, Revision: revision, BuildTime: buildTime})
+    buildinfo.HandleFlag() // "--version" prints the identity as JSON and exits 0
+
+    // ... normal bootstrap
+}
+```
+
+The symbol names `main.version`, `main.revision` and `main.buildTime` are stable
+forever; a major bump of lib-commons changes its module path, not these.
+
+`/version` is served on the admin port, never on the API port. `NewAdminApp`
+returns a Fiber app with `GET /version` already mounted; the service adds
+`/health`, `/readyz` and `/metrics` to it:
+
+```go
+admin := server.NewAdminApp("midaz-ledger")
+admin.Get("/health", commonsHTTP.Ping)
+
+server.NewServerManager(licenseClient, telemetry, logger).
+    WithHTTPServer(app, ":3000").
+    WithAdminHTTPServer(admin, ":8081").
+    StartWithGracefulShutdown()
+```
+
+The admin address must differ from the main HTTP address, or the manager returns
+`server.ErrAdminAddressConflict` before starting anything. The admin server is
+the last one drained at shutdown: it keeps answering, with whatever your
+handlers return, while the API and gRPC servers finish in-flight work, then
+closes. To report 503 on `/readyz` during the drain, do it in your own handler.
+
+Rules:
+
+- `version` is SemVer without the `v` (`4.0.3`, `1.2.0-beta.1`), falling back to
+  `dev` when nothing was injected. Never `0.0.0`, and never a value read from an
+  environment variable.
+- `revision` and `buildTime` fall back to the toolchain VCS stamp
+  (`vcs.revision`, `vcs.time`), then to `unknown`.
+- `GET /version?full=1` widens `dependencyManifest` from the Lerian modules to
+  every module linked into the binary.
+- `commons/buildinfo.Scope(pkg)` gives a library its OTel instrumentation scope
+  (module path plus module version); libraries announce their version that way
+  and never expose an endpoint.
+- The `VERSION` environment variable and `commons/net/http.Version` are the
+  legacy path and are removed in v8.
+
+### Instrumentation scope names (v7.5.0)
+
+Spans emitted by lib-commons now carry the package's full module path as
+`otel.scope.name` and the linked lib-commons version (`v7.5.0`, or `(devel)`
+when the binary has no module information) as `otel.scope.version`.
+
+| Package | Old `otel.scope.name` | New `otel.scope.name` |
+|---------|-----------------------|-----------------------|
+| `commons/postgres` | `postgres` | `github.com/LerianStudio/lib-commons/v7/commons/postgres` |
+| `commons/mongo` | `mongo` | `github.com/LerianStudio/lib-commons/v7/commons/mongo` |
+| `commons/redis` | `redis` | `github.com/LerianStudio/lib-commons/v7/commons/redis` |
+| `commons/rabbitmq` | `rabbitmq` | `github.com/LerianStudio/lib-commons/v7/commons/rabbitmq` |
+| `commons/net/http` (reverse proxy) | `http.proxy` | `github.com/LerianStudio/lib-commons/v7/commons/net/http` |
+| `commons/net/http/ratelimit` | `ratelimit` | `github.com/LerianStudio/lib-commons/v7/commons/net/http/ratelimit` |
+| `commons/net/http/pacing` | `pacing` | `github.com/LerianStudio/lib-commons/v7/commons/net/http/pacing` |
+
+Update dashboards, alerts, sampling rules and collector processors that filter
+on `otel.scope.name`, `otel.library.name` or the Prometheus label
+`otel_scope_name`. On span-derived metrics, the `otel_scope_version` label now
+changes on every lib-commons upgrade, which starts new Prometheus series.
+
 ## Environment Variables
 
 The following environment variables are recognized by lib-commons or by canonical sibling libraries that lib-commons integrates with. Observability variables are owned by `lib-observability`.
 
 | Variable | Type | Default | Package | Description |
 | :--- | :--- | :--- | :--- | :--- |
-| `VERSION` | `string` | `"NO-VERSION"` | `commons` | Application version, printed at startup by `InitLocalEnvConfig` |
+| `VERSION` | `string` | `"NO-VERSION"` | `commons` | **Legacy.** Application version, printed at startup by `InitLocalEnvConfig`. The runtime version comes from `commons/buildinfo`, compiled in, never from this variable |
 | `ENV_NAME` | `string` | `"local"` | `commons` | Environment name; when `"local"`, a `.env` file is loaded automatically |
 | `ENV` | `string` | _(none)_ | `lib-observability/assert` | When set to `"production"`, stack traces are omitted from assertion failures |
 | `GO_ENV` | `string` | _(none)_ | `lib-observability/assert` | Fallback production check (same behavior as `ENV`) |

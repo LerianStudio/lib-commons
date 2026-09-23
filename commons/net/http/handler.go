@@ -31,6 +31,10 @@ func Ping(c fiber.Ctx) error {
 // NOTE: This endpoint intentionally exposes the build version. Callers that
 // need to restrict visibility should gate this route behind authentication
 // or omit it from public-facing routers.
+//
+// Deprecated: the runtime version is compiled in, not read from the
+// environment. Use buildinfo.Handler, mounted on the admin port by
+// server.NewAdminApp. Removed in v8.
 func Version(c fiber.Ctx) error {
 	return Respond(c, fiber.StatusOK, fiber.Map{
 		"version":     commons.GetenvOrDefault("VERSION", "0.0.0"),
