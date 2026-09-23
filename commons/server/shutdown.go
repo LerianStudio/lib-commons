@@ -393,8 +393,8 @@ func (sm *ServerManager) validateConfiguration() error {
 		return ErrConflictingHTTPServers
 	}
 
-	if sm.adminServer != nil {
-		if address := sm.mainHTTPAddress(); address != "" && sameListenAddress(address, sm.adminAddress) {
+	if admin := sm.adminAddressIfConfigured(); admin != "" {
+		if address := sm.mainHTTPAddress(); address != "" && sameListenAddress(address, admin) {
 			return ErrAdminAddressConflict
 		}
 	}
@@ -421,10 +421,10 @@ func (sm *ServerManager) validateAdditionalHTTP() error {
 		return nil
 	}
 
-	address := stdlibAddress(sm.additionalHTTP, sm.additionalListener)
+	address := stdlibBindAddress(sm.additionalHTTP, sm.additionalListener)
 
 	for _, other := range []string{sm.mainHTTPAddress(), sm.adminAddressIfConfigured(), sm.grpcAddressIfConfigured()} {
-		if address != "" && other != "" && sameListenAddress(address, other) {
+		if other != "" && sameListenAddress(address, other) {
 			return ErrAdditionalHTTPAddressConflict
 		}
 	}
@@ -432,14 +432,19 @@ func (sm *ServerManager) validateAdditionalHTTP() error {
 	return nil
 }
 
+// The address helpers below return the address a configured slot really
+// binds, or "" when the slot is empty, so an empty configured address is
+// spelled out: net/http binds ":http" (port 80) for an empty Addr, while
+// Fiber and gRPC hand "" to net.Listen, which picks an ephemeral port (":0").
+
 // mainHTTPAddress returns the address the main HTTP server binds, whichever
 // variant is configured, or "" when the manager serves no main HTTP traffic.
 func (sm *ServerManager) mainHTTPAddress() string {
 	switch {
 	case sm.httpServer != nil:
-		return sm.httpAddress
+		return netListenAddress(sm.httpAddress)
 	case sm.stdlibHTTPServer != nil:
-		return stdlibAddress(sm.stdlibHTTPServer, sm.stdlibHTTPListener)
+		return stdlibBindAddress(sm.stdlibHTTPServer, sm.stdlibHTTPListener)
 	default:
 		return ""
 	}
@@ -451,7 +456,7 @@ func (sm *ServerManager) adminAddressIfConfigured() string {
 		return ""
 	}
 
-	return sm.adminAddress
+	return netListenAddress(sm.adminAddress)
 }
 
 // grpcAddressIfConfigured returns the gRPC address, or "" without a gRPC server.
@@ -460,10 +465,10 @@ func (sm *ServerManager) grpcAddressIfConfigured() string {
 		return ""
 	}
 
-	return sm.grpcAddress
+	return netListenAddress(sm.grpcAddress)
 }
 
-// stdlibAddress returns the address a stdlib server binds: the pre-bound
+// stdlibAddress returns the address a stdlib server was given: the pre-bound
 // listener's when one was supplied, the server's Addr otherwise.
 func stdlibAddress(srv *http.Server, listener net.Listener) string {
 	if listener != nil {
@@ -471,6 +476,27 @@ func stdlibAddress(srv *http.Server, listener net.Listener) string {
 	}
 
 	return srv.Addr
+}
+
+// stdlibBindAddress is stdlibAddress with an empty Addr spelled ":80", the
+// port http.Server.ListenAndServe binds for it (":http"), written numerically
+// so it compares equal to ":80".
+func stdlibBindAddress(srv *http.Server, listener net.Listener) string {
+	if address := stdlibAddress(srv, listener); address != "" {
+		return address
+	}
+
+	return ":80"
+}
+
+// netListenAddress returns the address net.Listen binds for address: an
+// ephemeral port when address is empty.
+func netListenAddress(address string) string {
+	if address == "" {
+		return ":0"
+	}
+
+	return address
 }
 
 // sameListenAddress reports whether two listen addresses would bind the same

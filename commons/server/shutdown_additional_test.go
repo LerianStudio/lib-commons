@@ -477,3 +477,50 @@ func TestEphemeralPortsNeverConflict(t *testing.T) {
 		})
 	}
 }
+
+// TestEmptyStdlibAddressIsCheckedAsPort80 pins that an empty stdlib Addr,
+// which net/http binds as ":http", is compared as port 80 by both checks
+// instead of being skipped.
+func TestEmptyStdlibAddressIsCheckedAsPort80(t *testing.T) {
+	cases := map[string]struct {
+		configure func(sm *server.ServerManager) *server.ServerManager
+		want      error
+	}{
+		"additional empty vs stdlib main :80": {
+			configure: func(sm *server.ServerManager) *server.ServerManager {
+				return sm.WithStdlibHTTPServer(newTestStdlibServer(":80", http.NewServeMux())).
+					WithAdditionalStdlibHTTPServer(newTestStdlibServer("", http.NewServeMux()))
+			},
+			want: server.ErrAdditionalHTTPAddressConflict,
+		},
+		"additional :80 vs stdlib main empty": {
+			configure: func(sm *server.ServerManager) *server.ServerManager {
+				return sm.WithStdlibHTTPServer(newTestStdlibServer("", http.NewServeMux())).
+					WithAdditionalStdlibHTTPServer(newTestStdlibServer(":80", http.NewServeMux()))
+			},
+			want: server.ErrAdditionalHTTPAddressConflict,
+		},
+		"additional empty vs gRPC :80": {
+			configure: func(sm *server.ServerManager) *server.ServerManager {
+				return sm.WithGRPCServer(grpc.NewServer(), ":80").
+					WithAdditionalStdlibHTTPServer(newTestStdlibServer("", http.NewServeMux()))
+			},
+			want: server.ErrAdditionalHTTPAddressConflict,
+		},
+		"admin :80 vs stdlib main empty": {
+			configure: func(sm *server.ServerManager) *server.ServerManager {
+				return sm.WithStdlibHTTPServer(newTestStdlibServer("", http.NewServeMux())).
+					WithAdminHTTPServer(fiber.New(), ":80")
+			},
+			want: server.ErrAdminAddressConflict,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			sm := tc.configure(server.NewServerManager(nil, nil, nil))
+
+			require.ErrorIs(t, sm.StartWithGracefulShutdownWithError(), tc.want)
+		})
+	}
+}
