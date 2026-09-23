@@ -148,7 +148,7 @@ func TestCheck_ClientErrorPolicyRelease_CleansOwnedRecord(t *testing.T) {
 	assert.Equal(t, http.StatusUnprocessableEntity, response.StatusCode)
 }
 
-func TestCheck_OversizedResponse_FailsClosedWithoutCompletionMarker(t *testing.T) {
+func TestCheck_OversizedResponse_CompletesWithoutAReplayableReceipt(t *testing.T) {
 	t.Parallel()
 
 	controller := gomock.NewController(t)
@@ -156,39 +156,42 @@ func TestCheck_OversizedResponse_FailsClosedWithoutCompletionMarker(t *testing.T
 	store.EXPECT().Acquire(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(nil, true, nil)
 
-	// The one write the key receives is the terminal fence, and the assertion
-	// is on its BYTES. "Without completion marker" is about what a duplicate
-	// could be answered with: no captured response means no replayable success
-	// document, so nothing may later report an outcome that was never recorded.
-	var fenced []byte
+	// The one write the key receives is a COMPLETION, and the assertion is on
+	// its BYTES. The handler succeeded, so the record must say so — and it must
+	// carry no response, because none was stored: nothing may later answer a
+	// duplicate with a success document the middleware never captured.
+	var completed []byte
 
 	store.EXPECT().Complete(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ string, _, completed []byte, _ time.Duration) (bool, error) {
-			fenced = append([]byte(nil), completed...)
+		DoAndReturn(func(_ context.Context, _ string, _, stored []byte, _ time.Duration) (bool, error) {
+			completed = append([]byte(nil), stored...)
 
 			return true, nil
 		})
+
+	payload := bytes.Repeat([]byte("x"), 9)
 
 	middleware := NewWithStore(store, WithMaxBodyCache(8))
 	app := fiber.New()
 	app.Use(tenantMiddleware("tenant-size"))
 	app.Use(middleware.Check())
 	app.Post("/test", func(c fiber.Ctx) error {
-		return c.Status(http.StatusCreated).Send(bytes.Repeat([]byte("x"), 9))
+		return c.Status(http.StatusCreated).Send(payload)
 	})
 
 	response := doPost(t, app, "oversized-key")
 	body := readBody(t, response)
 
-	assert.Equal(t, http.StatusServiceUnavailable, response.StatusCode)
-	assert.Contains(t, body, "IDEMPOTENCY_UNAVAILABLE")
+	assert.Equal(t, http.StatusCreated, response.StatusCode,
+		"a body size is not a fault: the handler's success reaches its client unchanged")
+	assert.Equal(t, string(payload), body)
 
-	assert.Contains(t, string(fenced), `"outcome":"`+outcomeUnrecorded+`"`,
-		"the handler committed and its receipt could not be captured: the key must not come back")
-	assert.Contains(t, string(fenced), `"state":"`+keyStateComplete+`"`,
+	assert.Contains(t, string(completed), `"outcome":"`+outcomeNotReplayable+`"`,
+		"the receipt is missing, so a duplicate must be refused instead of executing the mutation again")
+	assert.Contains(t, string(completed), `"state":"`+keyStateComplete+`"`,
 		"the state field stays readable by a middleware that predates the outcome field, which refuses it")
-	assert.NotContains(t, string(fenced), `"response"`,
-		"no completion marker — a duplicate is refused, never answered with a fabricated success")
+	assert.NotContains(t, string(completed), `"response"`,
+		"nothing was captured — a duplicate is refused, never answered with a fabricated success")
 }
 
 func TestCheck_RetryAfter_IsExclusiveToInFlightConflict(t *testing.T) {

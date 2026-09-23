@@ -48,6 +48,18 @@ func (l *recordingLogger) hasLevel(level int) bool {
 	return false
 }
 
+func (l *recordingLogger) hasMessage(level int, msg string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, e := range l.entries {
+		if e.level == level && e.msg == msg {
+			return true
+		}
+	}
+
+	return false
+}
+
 func TestDispatcher_HandlePublishError_NilCallbacksDoNotBreak(t *testing.T) {
 	t.Parallel()
 

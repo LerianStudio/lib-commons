@@ -122,6 +122,64 @@ func doPost(t *testing.T, app *fiber.App, idempotencyKey string) *http.Response 
 	return resp
 }
 
+// postResult is what a request goroutine reports back to the test goroutine.
+// The assertions run there: a require inside the goroutine would stop it before
+// it sends, and the test would then block on its channels until the process
+// timeout instead of failing with the error.
+type postResult struct {
+	status int
+	err    error
+}
+
+// postAsync sends POST /test with the given idempotency key on its own goroutine
+// and reports the outcome over the returned channel.
+func postAsync(app *fiber.App, idempotencyKey string) <-chan postResult {
+	out := make(chan postResult, 1)
+
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/test", nil)
+		req.Header.Set(chttp.IdempotencyKey, idempotencyKey)
+
+		resp, err := app.Test(req, fiber.TestConfig{Timeout: 0})
+		if err != nil {
+			out <- postResult{err: err}
+
+			return
+		}
+
+		resp.Body.Close()
+
+		out <- postResult{status: resp.StatusCode}
+	}()
+
+	return out
+}
+
+// awaitEntered blocks until the handler signals that it was entered. A request
+// that finishes first fails the test here, with its transport error when it
+// has one, instead of leaving the test blocked on the entry signal.
+func awaitEntered(t *testing.T, entered <-chan struct{}, result <-chan postResult) {
+	t.Helper()
+
+	select {
+	case <-entered:
+	case r := <-result:
+		require.NoError(t, r.err)
+		t.Fatalf("request finished with status %d before the handler was entered", r.status)
+	}
+}
+
+// awaitStatus returns the request's status code, failing the test on a
+// transport error.
+func awaitStatus(t *testing.T, result <-chan postResult) int {
+	t.Helper()
+
+	r := <-result
+	require.NoError(t, r.err)
+
+	return r.status
+}
+
 // readBody reads and returns the full response body, closing it.
 func readBody(t *testing.T, resp *http.Response) string {
 	t.Helper()
@@ -836,22 +894,23 @@ func TestCheck_ConcurrentSameKey(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Max body cache limit — oversized response fails closed
+// Max body cache limit — oversized response is delivered, never replayed
 // ---------------------------------------------------------------------------
 
-// TestCheck_WithMaxBodyCache verifies that an oversized response never creates
-// a completion marker without an exact replay payload. The original call fails
-// closed after the handler, and the key blocks every retry for the retention
-// window rather than for the in-flight lease. (The two are equal here, since
-// neither TTL is overridden; the gap between them is exercised where they
-// differ, in TestCheck_CompletionFailure_FencesTheKeyForTheRetentionWindow.)
+// TestCheck_WithMaxBodyCache verifies what the option costs and what it does
+// NOT cost. An oversized success never creates a completion marker carrying a
+// replay payload — but the success itself is the client's, and it arrives
+// unchanged: the handler ran and committed, so reporting a store failure for it
+// would be reporting a fault that did not happen.
 //
-// The refusal is terminal, not the in-flight 409 this used to answer. That 409
-// was a FALSE in-flight: nothing was in flight, the handler had already
-// returned and committed, and "still processing, retry in 1 second" described a
-// request that would never complete. A client that took the invitation retried
-// until the lease lapsed and then executed the mutation a second time under the
-// same key.
+// The duplicate is then refused by the key for the retention window rather than
+// for the in-flight lease. The refusal is terminal, not the in-flight 409 this
+// once answered. That 409 was a FALSE in-flight — nothing was in flight, the
+// handler had already returned and committed, and "still processing, retry in 1
+// second" described a request that would never complete, so a client that took
+// the invitation retried until the lease lapsed and executed the mutation a
+// second time under the same key. This 409 carries no Retry-After and says the
+// operation completed.
 func TestCheck_WithMaxBodyCache(t *testing.T) {
 	t.Parallel()
 
@@ -876,12 +935,14 @@ func TestCheck_WithMaxBodyCache(t *testing.T) {
 	resp1, err := app.Test(req1, fiber.TestConfig{Timeout: 0})
 	require.NoError(t, err)
 
-	defer resp1.Body.Close()
+	body1 := readBody(t, resp1)
 
-	assert.Equal(t, http.StatusServiceUnavailable, resp1.StatusCode)
+	assert.Equal(t, http.StatusCreated, resp1.StatusCode)
+	assert.Contains(t, body1, "padding-to-exceed-limit",
+		"the handler's own document reaches the client; only the stored receipt is lost")
 
-	// Second request — same key. The terminal record holds, so the mutation
-	// cannot execute again without reconciliation.
+	// Second request — same key. The completed record holds no receipt, so the
+	// mutation cannot execute again and no body can be replayed.
 	req2 := httptest.NewRequest(http.MethodPost, "/test", nil)
 	req2.Header.Set(chttp.IdempotencyKey, "big-body-key")
 
@@ -890,8 +951,8 @@ func TestCheck_WithMaxBodyCache(t *testing.T) {
 
 	body2 := readBody(t, resp2)
 
-	assert.Equal(t, http.StatusUnprocessableEntity, resp2.StatusCode)
-	assert.Contains(t, body2, "IDEMPOTENCY_OUTCOME_UNRECORDED")
+	assert.Equal(t, http.StatusConflict, resp2.StatusCode)
+	assert.Contains(t, body2, RefusalCodeReplayUnavailable)
 	assert.Empty(t, resp2.Header.Get(fiber.HeaderRetryAfter),
 		"the answer never changes inside the retention window, so it must not advertise a retry")
 }

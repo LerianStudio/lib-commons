@@ -60,6 +60,41 @@
 // The query string is excluded: clients append cache-busting parameters on retry,
 // and that must not read as reuse.
 //
+// [WithFingerprintProvider] replaces the body in that digest with bytes the
+// application supplies, and is required on two shapes of route the raw body
+// cannot serve. Under Fiber's StreamRequestBody the handler receives a live body
+// stream, and reading the body to fingerprint it drains that stream into memory
+// and closes it, so every upload is buffered whole and the handler's streaming
+// branch is unreachable; with a provider the middleware never calls c.Body() and
+// the stream reaches the handler intact. And a multipart encoder picks a fresh
+// random boundary per request, so a byte-identical logical retry never matches
+// its own stored fingerprint and is refused "IDEMPOTENCY_KEY_REUSE"; a provider
+// over the declared part names, filenames and sizes is stable across that
+// boundary. The raw body remains the default because it is the strictest
+// identity available, and a provider error refuses the request before the
+// handler runs, exactly as a [WithKeyProvider] error does.
+//
+// On a streamed route a LARGE request the middleware answers itself costs the
+// connection. Whenever it answers without running the handler — a replay, or any
+// refusal that returns before the fingerprint is read, with or without a
+// provider — nobody read the upload, so that response carries
+// "Connection: close". Otherwise fasthttp recycles the stream struct without
+// draining the reader and parses the next request on that keep-alive connection
+// from the middle of this one's body, then resets it. Closing is what net/http
+// does with an unread body and what a pooled client understands: it dials again,
+// one reconnect per answer the middleware gave itself, and loses no request.
+// Draining instead would mean reading up to the route's body limit — a gigabyte
+// on the upload routes this option exists for — to answer a 409.
+//
+// "Large" is the whole cost. Fiber's StreamRequestBody is an APP-WIDE setting,
+// so a service that turns it on for one upload route serves every route that
+// way, and fasthttp reports a stream for bodies it has already fully buffered:
+// it lifts min(bodyLimit, Content-Length, 8 KiB) out of the connection before
+// the chain starts. A declared body within that bound leaves nothing behind and
+// keeps its connection, so an ordinary small mutation retried under the same key
+// is replayed on the connection it arrived on. Only a body past that bound, or a
+// chunked one (no Content-Length, nothing pre-read), is retired.
+//
 // The default prefix is "idempotency:" and can be overridden via [WithKeyPrefix].
 // This namespacing convention is consistent with other lib-commons packages that
 // use Redis (e.g., rate limiting uses "ratelimit:<tenantID>:..."). Per-tenant
@@ -126,7 +161,10 @@
 //   - Duplicate key with matching fingerprint and a cached response: the original
 //     response is replayed faithfully — status code, headers (including Location,
 //     ETag, Set-Cookie), content type, and body — with
-//     [constants.IdempotencyReplayed] set to "true".
+//     [constants.IdempotencyReplayed] set to "true". What the capture holds is
+//     the HANDLER's contribution, so a per-request header set above the
+//     middleware stays live on the duplicate; see "What a replay does to
+//     response headers" below.
 //   - Duplicate key still in "processing" state (in-flight): request is passed
 //     to [WithConflictHandler], or receives 409 Conflict with code
 //     "IDEMPOTENCY_CONFLICT" and Retry-After: 1 when no custom handler is configured.
@@ -159,8 +197,20 @@
 //     seam is set. The
 //     mark is checked before the state routing below, and no captured body is
 //     replayed because none was ever stored.
+//   - Duplicate key whose record is marked as carrying no replayable receipt —
+//     the original response exceeded [WithMaxBodyCache] and was delivered
+//     without being stored: request receives 409 Conflict with code
+//     [RefusalCodeReplayUnavailable], or the [WithReplayUnavailableHandler]
+//     document. Checked in the same place as the mark above, and unlike it this
+//     one reports a KNOWN outcome: the operation ran to completion, its response
+//     cannot be handed out again, and resending neither reproduces it nor runs
+//     the operation a second time. The document never says WHICH way it
+//     completed, because the same mark covers an over-cap success and an
+//     over-cap rejection. No Retry-After, and [constants.IdempotencyReplayed]
+//     stays unset because nothing was replayed.
 //   - Handler success: response status, headers, content type, and body are
-//     compare-safely completed only by the acquisition owner. Capture, encoding,
+//     compare-safely completed only by the acquisition owner. Encoding
+//     failures, including a [WithResponseCodec] that produces no bytes at all,
 //     persistence, or stale-owner failures return 503, and the key is marked
 //     terminal (see below) so callers reconcile instead of retrying under a new
 //     key. That 503 is the one branch [WithPostHandlerUnavailableHandler]
@@ -169,13 +219,88 @@
 //     "IDEMPOTENCY_UNFENCED" instead, which says the key is unprotected and a
 //     resend may execute the operation again, or the [WithUnfencedHandler]
 //     document when that separate seam is set.
+//   - Handler response whose body exceeds [WithMaxBodyCache]: the response is
+//     delivered to the client UNCHANGED and the record completes carrying no
+//     receipt, so the duplicate branch above answers a resend. A size is not a
+//     fault: the handler ran, and answering it with a failure would report a
+//     store problem for a request that was actually served — which is itself
+//     what makes a client resend.
 //   - Handler 4xx: cached and replayed by default. Use
 //     [WithClientErrorPolicy] with [ClientErrorPolicyRelease] to compare-safely
-//     release the record and allow a corrected request to reuse the key.
+//     release the record and allow a corrected request to reuse the key. That
+//     policy is the ONLY thing that decides whether a rejection may re-execute,
+//     and it is applied before the response is captured, so a rejection above
+//     [WithMaxBodyCache] reaches its client unchanged and then follows the same
+//     policy as a short one: released under [ClientErrorPolicyRelease], and
+//     under the default kept, with the resend refused 409
+//     [RefusalCodeReplayUnavailable] rather than re-running a rejection path the
+//     route asked to have cached.
+//     [WithClientErrorPolicyFunc] decides the same question per RESPONSE, for a
+//     guard mounted above middleware that writes 4xx of its own — a rate
+//     limiter, a quota gate — whose refusals are not the handler's answer.
+//     Only a 4xx that was WRITTEN reaches it: a 4xx RETURNED as an error takes
+//     the handler-failure branch below instead, where it arrives carrying its
+//     own code as the status.
 //   - Handler failure or 5xx: the acquisition is compare-safely released only
 //     by its owner, allowing a retry without deleting a replacement lock. Use
 //     [WithServerErrorPolicy] with [ServerErrorPolicyFence] on routes where a
 //     failure there may still have committed, so the key is fenced instead.
+//     [WithServerErrorPolicyFunc] decides the same question per RESPONSE, for a
+//     route that knows which of its failures did not apply and wants only the
+//     ambiguous ones fenced.
+//     Its status argument is the EFFECTIVE one: the written status, or the code
+//     inside a returned *fiber.Error when nothing was written — a forecast of
+//     what the application's error handler will write, not a fact. err is the
+//     fact.
+//
+// # What a replay does to response headers
+//
+// The capture is the HANDLER's contribution to the response, not the whole
+// response. The middleware snapshots the response headers immediately before
+// calling the handler and stores only what changed: the names the handler added,
+// overwrote or removed, and — Set-Cookie being identified by cookie name rather than by
+// header name — the cookies it added or changed. On a replay each captured name
+// is REPLACED (cleared, then re-applied whole and in order) and every other live
+// header stays.
+//
+// "Above" here means mounted before [Middleware.Check], because the snapshot is
+// taken immediately before the handler is called: everything written during that
+// call is the handler's contribution, whoever wrote it — including a middleware
+// mounted BELOW Check, whose headers are captured and replayed exactly as the
+// handler's own.
+//
+// The split is by authorship, and these are its consequences:
+//
+//   - Set above on THIS request and untouched by the handler — a correlation id
+//     from a requestid middleware, cors, helmet, a rotated session cookie, a
+//     freshly minted CSRF token: LIVE on the replay, because it was never
+//     captured. Handing back the original request's correlation id would
+//     misattribute the duplicate, and handing back the captured CSRF token gets
+//     the user's NEXT mutation refused.
+//   - Set by the handler — Location, ETag, Cache-Control, a Set-Cookie the
+//     handler minted: REPLAYED byte-identical. That is the receipt.
+//   - Set above and then overridden by the handler — helmet's Cache-Control
+//     turned into "no-store" on a receipt route: CAPTURED, and the replay
+//     applies the handler's value over the live one, because that is what the
+//     original response carried.
+//   - Set above and then DELETED by the handler — helmet's X-Frame-Options
+//     removed so a receipt can render in a partner iframe: captured as a
+//     removal, and the replay clears the name the middleware above has just set
+//     again on the duplicate. Removing a header is as much the handler's
+//     contribution as setting one. The one exception is a COOKIE the handler
+//     deleted: Set-Cookie is identified by cookie name rather than header name
+//     and a removal has no value to re-apply, so a cookie minted above and
+//     deleted by the handler stays live on the replay.
+//   - Content-Type, Content-Length, Transfer-Encoding and
+//     [constants.IdempotencyReplayed] are never captured: the content type
+//     travels as its own field, and the other three describe the transfer of
+//     one particular response rather than its content.
+//
+// A multi-valued captured name (two Link headers, two cookies the handler set)
+// replays whole and in order; clearing before re-applying is what stops a
+// globally mounted middleware and the capture from both putting the same header
+// on the duplicate, which a browser rejects for
+// Access-Control-Allow-Origin as "contains multiple values".
 //
 // # Lease and retention are two lifetimes
 //
@@ -208,6 +333,13 @@
 //	    idempotency.WithProcessingTTL(30*time.Minute),
 //	)
 //
+// [WithProcessingTTLProvider] resolves that lease per request instead, the way
+// [WithTTLProvider] resolves the retention, so a service whose window moves at
+// runtime can follow it. It is evaluated before each acquisition attempt, so a
+// lease already in the store keeps the value it was taken with. A provider that
+// cannot answer falls back to [WithProcessingTTL] — whatever that constant is,
+// so size it to stand alone — rather than refusing the request.
+//
 // [WithKeyProvider] resolves the key itself for each mutating request; unset,
 // the middleware reads the X-Idempotency header, which is the shipped
 // behaviour. An empty return takes the unkeyed branch and a provider error
@@ -219,7 +351,8 @@
 // [WithResponseCodec] transforms serialized replay responses before storage; use
 // authenticated encryption for sensitive bodies. [WithMaxBodyCache] bounds raw
 // response bodies, and encoded output is additionally bounded to twice that
-// value.
+// value; a success over the bound still reaches its client unchanged and loses
+// only its replay, which [WithReplayUnavailableHandler] answers.
 //
 // # A key whose outcome was never recorded
 //
@@ -244,6 +377,24 @@
 // because none was ever stored: capture or persistence is exactly what failed,
 // so replaying anything here would report an outcome nobody recorded.
 //
+// # What changed for an over-cap response
+//
+// This is the one behaviour in this package a v7 minor changed under a consumer
+// that was already wired, so it is called out rather than left to be discovered.
+// Before it, a response whose body exceeded [WithMaxBodyCache] was treated as a
+// capture FAILURE: the original request was answered 503
+// "IDEMPOTENCY_UNAVAILABLE" with the [constants.IdempotencyFenced] header set,
+// and its resend 422 "IDEMPOTENCY_OUTCOME_UNRECORDED" — both of them through
+// [WithPostHandlerUnavailableHandler], so a service that wired that seam
+// answered both with its own document.
+//
+// Now the handler's response is delivered unchanged and the resend is 409
+// [RefusalCodeReplayUnavailable], which deliberately never reaches that seam:
+// [WithReplayUnavailableHandler] is the only thing that owns it. A service with
+// a route whose responses can exceed the cap must wire the new seam, or its
+// clients meet the library's raw envelope on a status and code pair the old
+// behaviour never produced.
+//
 // # Mixed versions during a rolling upgrade
 //
 // The terminal mark is a FIELD on the stored record, not a third state value,
@@ -267,6 +418,35 @@
 // encoding rather than the plain truth, and anything reading these records
 // outside this package must read the outcome field to tell a real completion
 // from a fence.
+//
+// The outcome field carries a second value on the same terms: a request whose
+// response exceeded [WithMaxBodyCache] completed for real — whatever status it
+// completed WITH — and only its receipt is missing, so the record is a
+// completion marked as unreplayable rather than a fence. A reader that predates the value finds the same shape — state
+// "complete", no replay response — and refuses it through the same seam, which
+// is why it rides this field instead of a state value of its own.
+//
+// The response capture narrowed on the same terms, and needs no encoding trick
+// at all. A record written by a version that captured the WHOLE response holds
+// names this version would never store, and this version replays it with REPLACE
+// semantics over every name it holds — which is not what the version that wrote
+// it did: that one re-applied the captured names with a bare Add, so it could
+// hand the duplicate a live header twice. The upgrade therefore removes the
+// duplicate but not the staleness: a duplicate answered from such a record still
+// receives the original request's correlation id and its captured CSRF token,
+// each exactly once, until the record expires. The population self-heals within
+// one retention window, as those records expire and every new one holds only the
+// handler's delta.
+//
+// [WithFingerprintProvider] crosses a rolling upgrade differently, because what
+// changes is not the record's shape but the DIGEST inside it. Turning the option
+// on — or changing the bytes an existing provider returns — makes the same
+// logical request hash differently on the two halves of the rollout, so a retry
+// whose original was recorded by the old half is refused "IDEMPOTENCY_KEY_REUSE"
+// by the new one. That is the safe side of the gate and nothing executes twice,
+// but a caller retrying a large upload is turned away until the original record
+// expires. Give the route a retention TTL shorter than the rollout, or accept
+// one retention window of that refusal on retries that straddle the deploy.
 //
 // The same problem points FORWARD, and is closed the same way. This encoding
 // protects a future reader from what this version writes; nothing in it
@@ -389,8 +569,9 @@
 // ones observed AFTER it ran and for a duplicate that finds a record marked
 // terminal or written in an unrecognised state, [WithConflictHandler] for an
 // in-flight duplicate, [WithKeyReuseHandler] for the same key used by a
-// different request, and [WithUnfencedHandler] for the post-handler failure
-// whose fence also failed. That last one is deliberately a seam of its own and
+// different request, [WithReplayUnavailableHandler] for a duplicate whose
+// original response was too large to store, and [WithUnfencedHandler] for the
+// post-handler failure whose fence also failed. That last one is deliberately a seam of its own and
 // never a fallback: 503 "IDEMPOTENCY_UNFENCED" exists to be distinguishable
 // from the seam a service already wired, so it stays the default until a route
 // asks for something else in those exact words.

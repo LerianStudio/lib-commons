@@ -265,7 +265,7 @@ func TestIntegration_Repository_ContractSuite(t *testing.T) {
 		t.Helper()
 		current = newIntegrationRepoFixtureWithDSN(t, dsn)
 		return current.repo
-	}, outboxtest.WithTransactionFactory(func(t *testing.T, ctx context.Context) (outbox.Tx, func()) {
+	}, outboxtest.WithNotFoundError(sql.ErrNoRows), outboxtest.WithTransactionFactory(func(t *testing.T, ctx context.Context) (outbox.Tx, func()) {
 		t.Helper()
 		require.NotNil(t, current)
 

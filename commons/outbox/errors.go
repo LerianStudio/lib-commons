@@ -20,3 +20,11 @@ var (
 	ErrOutboxTransitionInvalid    = errors.New("invalid outbox status transition")
 	ErrReplayConflict             = errors.New("outbox event replay conflict: same id with divergent content")
 )
+
+// ErrOutboxRetentionConfigInvalid is returned by NewDispatcher for a negative
+// retention window or, while retention is enabled, a negative batch size.
+var ErrOutboxRetentionConfigInvalid = errors.New("invalid outbox retention config")
+
+// ErrOutboxRetentionUnsupported is returned by NewDispatcher when retention is
+// enabled on a repository that does not implement PublishedPurger.
+var ErrOutboxRetentionUnsupported = errors.New("outbox repository does not support published retention")

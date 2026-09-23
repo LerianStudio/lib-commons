@@ -2,6 +2,7 @@ package outbox
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -24,6 +25,8 @@ const (
 	defaultMaxTenantMetricDimensions    = 1000
 	defaultMaxTrackedFailureTenants     = 4096
 	defaultTenantFailureCounterFallback = "_default"
+	defaultRetentionSweepInterval       = time.Hour
+	defaultRetentionBatchSize           = 500
 )
 
 // DispatcherConfig controls dispatcher polling, retry, and metric behavior.
@@ -72,6 +75,20 @@ type DispatcherConfig struct {
 	// a dispatch attempt but remains retryable (marked FAILED). It must not
 	// panic; panics and errors are logged and swallowed.
 	OnFailed func(ctx context.Context, event *OutboxEvent, err error)
+	// RetentionPublished enables the retention sweep when positive: a PUBLISHED
+	// event created longer ago than this is deleted. Zero disables retention and
+	// the other Retention fields are ignored; a negative value is rejected.
+	// PENDING, PROCESSING, FAILED and INVALID events are never deleted.
+	RetentionPublished time.Duration
+	// RetentionSweepInterval is how often each dispatch scope is swept. It
+	// defaults to one hour when retention is enabled.
+	RetentionSweepInterval time.Duration
+	// RetentionBatchSize bounds the events deleted per sweep per dispatch scope,
+	// so a large backlog drains one batch per interval. It defaults to 500 when
+	// retention is enabled; a negative value is rejected.
+	RetentionBatchSize int
+	// RetentionKeepEventTypes lists event types the sweep never deletes.
+	RetentionKeepEventTypes []string
 }
 
 // DefaultDispatcherConfig returns the baseline dispatcher configuration.
@@ -154,6 +171,41 @@ func (cfg *DispatcherConfig) normalize() {
 	if cfg.MaxTrackedListPendingFailureTenants <= 0 {
 		cfg.MaxTrackedListPendingFailureTenants = defaults.MaxTrackedListPendingFailureTenants
 	}
+
+	cfg.normalizeRetention()
+}
+
+// normalizeRetention fills retention defaults only when retention is enabled,
+// leaving a disabled configuration exactly as the caller wrote it.
+func (cfg *DispatcherConfig) normalizeRetention() {
+	if !cfg.retentionEnabled() {
+		return
+	}
+
+	if cfg.RetentionSweepInterval <= 0 {
+		cfg.RetentionSweepInterval = defaultRetentionSweepInterval
+	}
+
+	if cfg.RetentionBatchSize == 0 {
+		cfg.RetentionBatchSize = defaultRetentionBatchSize
+	}
+}
+
+// validate rejects configuration that normalize must not silently repair.
+func (cfg *DispatcherConfig) validate() error {
+	if cfg.RetentionPublished < 0 {
+		return fmt.Errorf("%w: retention %s must not be negative", ErrOutboxRetentionConfigInvalid, cfg.RetentionPublished)
+	}
+
+	if cfg.RetentionPublished > 0 && cfg.RetentionBatchSize < 0 {
+		return fmt.Errorf("%w: batch size %d must not be negative", ErrOutboxRetentionConfigInvalid, cfg.RetentionBatchSize)
+	}
+
+	return nil
+}
+
+func (cfg *DispatcherConfig) retentionEnabled() bool {
+	return cfg.RetentionPublished > 0
 }
 
 // DispatcherOption mutates dispatcher configuration at construction.
@@ -350,5 +402,51 @@ func WithMeterProvider(provider metric.MeterProvider) DispatcherOption {
 		}
 
 		dispatcher.cfg.MeterProvider = provider
+	}
+}
+
+// WithRetentionPublished enables the retention sweep: PUBLISHED events created
+// longer ago than retention are deleted in bounded batches. Zero disables it;
+// a negative value makes NewDispatcher fail.
+func WithRetentionPublished(retention time.Duration) DispatcherOption {
+	return func(dispatcher *Dispatcher) {
+		dispatcher.cfg.RetentionPublished = retention
+	}
+}
+
+// WithRetentionSweepInterval sets how often each dispatch scope is swept.
+// Non-positive values keep the one-hour default.
+func WithRetentionSweepInterval(interval time.Duration) DispatcherOption {
+	return func(dispatcher *Dispatcher) {
+		dispatcher.cfg.RetentionSweepInterval = interval
+	}
+}
+
+// WithRetentionBatchSize bounds the events deleted per sweep per dispatch
+// scope. Zero keeps the default of 500; a negative value makes NewDispatcher
+// fail while retention is enabled.
+func WithRetentionBatchSize(size int) DispatcherOption {
+	return func(dispatcher *Dispatcher) {
+		dispatcher.cfg.RetentionBatchSize = size
+	}
+}
+
+// WithRetentionKeepEventTypes lists event types the retention sweep never
+// deletes. Blank entries are dropped.
+func WithRetentionKeepEventTypes(eventTypes ...string) DispatcherOption {
+	return func(dispatcher *Dispatcher) {
+		types := make([]string, 0, len(eventTypes))
+
+		for _, eventType := range eventTypes {
+			if normalized := strings.TrimSpace(eventType); normalized != "" {
+				types = append(types, normalized)
+			}
+		}
+
+		if len(types) == 0 {
+			types = nil
+		}
+
+		dispatcher.cfg.RetentionKeepEventTypes = types
 	}
 }

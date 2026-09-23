@@ -65,6 +65,7 @@ func TestNewDispatcherMetrics_DefaultProvider(t *testing.T) {
 	require.NotNil(t, metrics.eventsDispatched)
 	require.NotNil(t, metrics.eventsFailed)
 	require.NotNil(t, metrics.eventsStateFailed)
+	require.NotNil(t, metrics.eventsPurged)
 	require.NotNil(t, metrics.dispatchLatency)
 	require.NotNil(t, metrics.queueDepth)
 }
@@ -80,6 +81,7 @@ func TestNewDispatcherMetrics_ErrorPaths(t *testing.T) {
 		{name: "eventsDispatched counter", instrument: "outbox.events.dispatched", errText: "create outbox.events.dispatched counter"},
 		{name: "eventsFailed counter", instrument: "outbox.events.failed", errText: "create outbox.events.failed counter"},
 		{name: "eventsStateFailed counter", instrument: "outbox.events.state_update_failed", errText: "create outbox.events.state_update_failed counter"},
+		{name: "eventsPurged counter", instrument: "outbox.events.purged", errText: "create outbox.events.purged counter"},
 		{name: "dispatchLatency histogram", instrument: "outbox.dispatch.latency", errText: "create outbox.dispatch.latency histogram"},
 		{name: "queueDepth gauge", instrument: "outbox.queue.depth", errText: "create outbox.queue.depth gauge"},
 	}
