@@ -77,6 +77,18 @@ func TestCanonicalTenantID(t *testing.T) {
 			input:   "{550e8400-e29b-41d4-a716-446655440000}",
 			wantErr: true,
 		},
+		{
+			name:    "prefixed urn uuid form is rejected",
+			input:   "xurn:uuid:550e8400-e29b-41d4-a716-446655440000",
+			wantErr: true,
+		},
+		{
+			// A valid slug, not a UUID: it must not collapse onto the UUID
+			// inside it, which uuid.Parse would accept.
+			name:  "uuid wrapped in non-brace bytes stays a verbatim slug",
+			input: "0550e8400-e29b-41d4-a716-4466554400000",
+			want:  "0550e8400-e29b-41d4-a716-4466554400000",
+		},
 	}
 
 	for _, tt := range tests {
